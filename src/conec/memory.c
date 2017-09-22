@@ -23,7 +23,7 @@ static void *strArenaPos = NULL;
 static size_t strArenaSize = 0;
 
 /** Allocate a structure, aligned to a 16-byte boundary */
-void *memalloc(size_t size) {
+void *memAllocBlk(size_t size) {
 	void *memp;
 
 	// Align to 16-byte boundary
@@ -60,7 +60,7 @@ void *memalloc(size_t size) {
 }
 
 /** Allocate memory for a string and copy contents over, if not NULL */
-void *stralloc(char *s, size_t size) {
+char *memAllocStr(char *str, size_t size) {
 	void *strp;
 
 	// Give it room for C-string null terminator
@@ -95,9 +95,9 @@ void *stralloc(char *s, size_t size) {
 	}
 
 	// Copy string contents into it
-	if (s) {
-		strncpy((char*)strp, s, --size);
+	if (str) {
+		strncpy((char*)strp, str, --size);
 		*((char*)strp+size) = '\0';
 	}
-	return strp;
+	return (char*) strp;
 }
