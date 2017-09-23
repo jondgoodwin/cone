@@ -5,7 +5,7 @@
  * See Copyright Notice in conec.h
 */
 
-#include "memory.h"
+#include "../helpers.h"
 
 #include <stdio.h>
 

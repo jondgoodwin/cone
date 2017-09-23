@@ -9,6 +9,8 @@
  * See Copyright Notice in conec.h
 */
 
+#include "../helpers.h"
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -22,7 +24,7 @@ static size_t memArenaSize = 0;
 static void *strArenaPos = NULL;
 static size_t strArenaSize = 0;
 
-/** Allocate a structure, aligned to a 16-byte boundary */
+/** Allocate memory for a block, aligned to a 16-byte boundary */
 void *memAllocBlk(size_t size) {
 	void *memp;
 
@@ -59,7 +61,8 @@ void *memAllocBlk(size_t size) {
 	return memp;
 }
 
-/** Allocate memory for a string and copy contents over, if not NULL */
+/** Allocate memory for a string and copy contents over, if not NULL
+ * Allocates extra byte for string-ending 0, appending it to copied string */
 char *memAllocStr(char *str, size_t size) {
 	void *strp;
 
