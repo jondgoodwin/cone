@@ -15,14 +15,15 @@
 #include <stdio.h>
 #include <string.h>
 
-#define MEM_ARENA_SIZE 256 * 4096 - 64
-#define STR_ARENA_SIZE 128 * 4096 - 64
+// Public globals: Arena size configuration values
+size_t gMemBlkArenaSize = 256 * 4096;
+size_t gMemStrArenaSize = 128 * 4096;
 
-// Global variables for memory allocation arenas
-static void *memArenaPos = NULL;
-static size_t memArenaSize = 0;
-static void *strArenaPos = NULL;
-static size_t strArenaSize = 0;
+// Private globals: memory allocation arena bookkeeping
+static void *gMemBlkArenaPos = NULL;
+static size_t gMemBlkArenaLeft = 0;
+static void *gMemStrArenaPos = NULL;
+static size_t gMemStrArenaLeft = 0;
 
 /** Allocate memory for a block, aligned to a 16-byte boundary */
 void *memAllocBlk(size_t size) {
@@ -32,15 +33,15 @@ void *memAllocBlk(size_t size) {
 	size = (size + 15) & ~15;
 
 	// Return next bite out of arena, if it fits
-	if (size <= memArenaSize) {
-		memArenaSize -= size;
-		memp = memArenaPos;
-		memArenaPos = (char*)memArenaPos + size;
+	if (size <= gMemBlkArenaLeft) {
+		gMemBlkArenaLeft -= size;
+		memp = gMemBlkArenaPos;
+		gMemBlkArenaPos = (char*)gMemBlkArenaPos + size;
 		return memp;
 	}
 
 	// Return a newly allocated area, if bigger than arena can hold
-	if (size > MEM_ARENA_SIZE) {
+	if (size > gMemBlkArenaSize) {
 		memp = malloc(size);
 		if (memp==NULL) {
 			puts("Error: Out of memory");
@@ -50,14 +51,14 @@ void *memAllocBlk(size_t size) {
 	}
 
 	// Allocate a new Arena and return next bite out of it
-	memArenaPos = malloc(MEM_ARENA_SIZE);
-	if (memArenaPos==NULL) {
+	gMemBlkArenaPos = malloc(gMemBlkArenaSize);
+	if (gMemBlkArenaPos==NULL) {
 		puts("Error: Out of memory");
 		exit(1);
 	}
-	memArenaSize = MEM_ARENA_SIZE - size;
-	memp = memArenaPos;
-	memArenaPos = (char*)memArenaPos + size;
+	gMemBlkArenaLeft = gMemBlkArenaSize - size;
+	memp = gMemBlkArenaPos;
+	gMemBlkArenaPos = (char*)gMemBlkArenaPos + size;
 	return memp;
 }
 
@@ -70,14 +71,14 @@ char *memAllocStr(char *str, size_t size) {
 	size += 1;
 
 	// Return next bite out of arena, if it fits
-	if (size <= strArenaSize) {
-		strArenaSize -= size;
-		strp = strArenaPos;
-		strArenaPos = (char*)strArenaPos + size;
+	if (size <= gMemStrArenaLeft) {
+		gMemStrArenaLeft -= size;
+		strp = gMemStrArenaPos;
+		gMemStrArenaPos = (char*)gMemStrArenaPos + size;
 	}
 
 	// Return a newly allocated area, if bigger than arena can hold
-	else if (size > STR_ARENA_SIZE) {
+	else if (size > gMemStrArenaSize) {
 		strp = malloc(size);
 		if (strp==NULL) {
 			puts("Error: Out of memory");
@@ -87,14 +88,14 @@ char *memAllocStr(char *str, size_t size) {
 
 	// Allocate a new Arena and return next bite out of it
 	else {
-		strArenaPos = malloc(STR_ARENA_SIZE);
-		if (strArenaPos==NULL) {
+		gMemStrArenaPos = malloc(gMemStrArenaSize);
+		if (gMemStrArenaPos==NULL) {
 			puts("Error: Out of memory");
 			exit(1);
 		}
-		strArenaSize = STR_ARENA_SIZE - size;
-		strp = strArenaPos;
-		strArenaPos = (char*)strArenaPos + size;
+		gMemStrArenaLeft = gMemStrArenaSize - size;
+		strp = gMemStrArenaPos;
+		gMemStrArenaPos = (char*)gMemStrArenaPos + size;
 	}
 
 	// Copy string contents into it

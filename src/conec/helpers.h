@@ -14,6 +14,12 @@
  * Memory - memory.c
  * *****************************************************/
 
+// Configurable size for arenas (specify as multiples of 4096 byte pages)
+size_t gMemBlkArenaSize;	// Default is 256 pages
+size_t gMemStrArenaSize;	// Default is 128 pages
+
+// memory.c has static globals for arena bookkeeping
+
 // Allocate memory for a block, aligned to a 16-byte boundary
 void *memAllocBlk(size_t size);
 
