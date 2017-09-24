@@ -8,8 +8,9 @@
 #include "../helpers.h"
 
 #include <stdio.h>
+#include <stdarg.h>
 
-// Load a file into an allocated string, return pointer or NULL if not found
+/** Load a file into an allocated string, return pointer or NULL if not found */
 char *fileLoad(char *fn) {
 	FILE *file;
 	size_t filesize;
@@ -30,4 +31,14 @@ char *fileLoad(char *fn) {
 	filestr[filesize]='\0';
 	fclose(file);
 	return filestr;
+}
+
+/** Send an error message to stderr */
+void fileErrorMsg(const char *msg, ...) {
+	// Do a formatted output, passing along all parms
+	va_list argptr;
+	va_start(argptr, msg);
+	vfprintf(stderr, msg, argptr);
+	va_end(argptr);
+	fputs("\n", stderr);
 }

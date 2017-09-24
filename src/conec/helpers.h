@@ -10,6 +10,14 @@
 
 #include <stdio.h>
 
+// Exit error codes
+enum Exit {
+	ExitError,	// Program fails to compile due to caught errors
+	ExitNF,		// Could not find specified source files
+	ExitMem,	// Out of memory
+	ExitOpts	// Invalid compiler options
+};
+
 /* *****************************************************
  * Memory - memory.c
  * *****************************************************/
@@ -33,5 +41,7 @@ char *memAllocStr(char *str, size_t size);
 
 // Load a file into an allocated string, return pointer or NULL if not found
 char *fileLoad(char *fn);
+// Send an error message to stderr
+void fileErrorMsg(const char *msg, ...);
 
 #endif
