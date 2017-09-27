@@ -44,9 +44,12 @@ size_t gSymTblUsed = 0;		// Number of symbol table slots used
  */
 #define symHashFn(hash, strp, strl) \
 { \
+	char *p; \
+	size_t len = strl; \
+	p = strp; \
 	hash = 5381; \
-	while (strl--) \
-		hash = ((hash << 5) + hash) ^ ((size_t)*strp++); \
+	while (len--) \
+		hash = ((hash << 5) + hash) ^ ((size_t)*p++); \
 }
 
 /** Modulo operation that calculates primary table entry from symbol's hash.
@@ -105,7 +108,6 @@ void symGrow() {
 			newslotp->hash = oldslotp->hash;
 		}
 	}
-
 	// memFreeBlk(oldTable);
 }
 
@@ -114,10 +116,19 @@ void symGrow() {
 SymId *symGetId(char *strp, size_t strl) {
 	size_t hash;
 	SymTblSlot *slotp;
+
+	// Double table if it has gotten too full
+	if (gSymTblCeil <= gSymTblUsed)
+		symGrow();
+
+	// Hash provide string into table
 	symHashFn(hash, strp, strl);
 	symFindSlot(slotp, hash, strp, strl);
+
+	// If not already a symbol, allocate memory for string and add to table
 	if (slotp->id == NULL) {
 		SymId *symid;
+		gSymTblUsed++;
 		slotp->hash = hash;
 		slotp->id = symid = (SymId*) memAllocBlk(strl+1+sizeof(SymId));
 		symid->val = NULL;

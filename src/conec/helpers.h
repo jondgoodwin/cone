@@ -60,7 +60,7 @@ typedef struct SymId {
 	// char str[?];		// Symbol's c-string
 } SymId;
 // Macro to convert a SymInfo pointer to a pointer to its c-string
-#define symIdToStr(infop) ((char *) (infop)+1)
+#define symIdToStr(infop) ((char *) ((infop)+1))
 
 // Grow the symbol table, by either creating it or doubling its size 
 void symGrow();
