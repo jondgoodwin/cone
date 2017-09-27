@@ -19,11 +19,11 @@ Key development milestones:
 - AST structures
 - Primitive types (integers, floats, bool, null)
 - Parsing and LLVM code generation for:
- - "print" capability for numbers and string literals
- - local, mutable variables, number literals and assignment
- - arithmetic expressions
- - functions and implicit returns
- - if and while control structures, numeric comparison operators
+  - "print" capability for numbers and string literals
+  - local, mutable variables, number literals and assignment
+  - arithmetic expressions
+  - functions and implicit returns
+  - if and while control structures, numeric comparison operators
 - Reference documentation for this subset of the language
 - Tested code examples that run on Windows and Linux
 - Attempted port to WebAssembly and Android
