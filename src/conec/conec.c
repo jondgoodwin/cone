@@ -22,6 +22,8 @@ void main(int argv, char **argc) {
 		exit(1);
 	}
 
+	symGrow();
+
 	filestr = fileLoad(argc[1]);
 	if (filestr) {
 		printf("I wish I knew how to compile, but here is the source!\n\n%s", filestr);
