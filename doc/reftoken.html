@@ -21,12 +21,12 @@
 		<li><b><a href="#char">Character Literal</a></b>
 		begins with a single quote (').</li>
 		<li><b><a href="#quote">Text Literal</a></b>
-		begins with a double quote (").</li>
+		begins with a double quote ("), r", or r`</li>
 		<li><b><A href="#url">URL Literal</a></b>
 		begins with an at sign (@).</li>
 		<li><b><a href="#ident">Identifier</a></b>
 		begins with a unicode-defined letter, 
-		a dollar sign '$', or an underscore '_'.</li>
+		a dollar sign '$', an underscore '_', or a backtick (`).</li>
 		<li><b><a href="#keywords">Keyword</a></b>
 		looks like an identifier, but is reserved exclusively for the compiler.</li>
 		<li><b><a href="#oper">Operator</a></b>
@@ -67,6 +67,8 @@
 		<li><b>u16</b> unsigned, 16-bit.</li>
 		<li><b>u32</b> or <b>u</b> unsigned, 32-bit.</li>
 		<li><b>u64</b> unsigned, 64-bit.</li>
+		<li><b>usize</b> unsigned, 32- or 64-bit.</li>
+		<li><b>isize</b> signed, 32- or 64-bit.</li>
 		</ul>
 		
 		<h3>Float Literal</h3>
@@ -74,8 +76,7 @@
 		To distinguish it from an integer literal, it must contain a decimal point, exponent ('E' or 'e'),
 		or a type suffix that explicitly declares it to be a float ('f', 'd', 'f32' or 'f64').
 		A period is considered to be a decimal point if it is unambiguously not being used as part of a
-		range operator or a method call; which is to say that the period is not immediately followed
-		by a letter, quote, underscore or another period.</p>
+		range operator; which is to say that the period is not immediately followed by another period.</p>
 		<p>The Float token may specify an exponent, which is indicated by 
 		an 'e' or 'E' followed by an optional minus sign and additional numeric digits.</p>
 		<p>By default, an float literal is a 32-bit number.
@@ -103,24 +104,68 @@
 		<dt>\'</dt><dd>'</dd>
 		<dt>\"</dt><dd>"</dd>
 		<dt>\0</dt><dd>Null character (U+0000)</dd>
+		<dt>\x<i>nn</i></dt><dd>hexadecimal code value for a byte.</dd>
 		<dt>\u<i>nnnn</i></dt><dd>unicode character which matches the specified hexadecimal code point.</dd>
 		<dt>\U<i>nnnnnnnn</i></dt><dd>unicode character which matches the specified hexadecimal code point.</dd>
 		</dl>
 		
 		<h2 id="quote">Text Literal</h2>
-		<p>Text literals begin and end with the double quote (").
-		Any unicode character may appear between the opening and closing quote marks.
-		A backslashed <a href="escape">escape sequence</a> may appear in lieu of a character.</p>
-		<p>Text literals may span multiple lines. 
-		However, any control characters within a text literal, including
-		carrier return (U+000D), line feed (U+000A) and line-beginning tabs (U+0009),
-		are stripped and will not appear in the resulting literal's value.
-		Stripping them makes it possible to shape multi-line text literals 
-		into indented lines that match the code they are part of,
-		without this formatting being rendered as part of the displayed text.
-		To include renderable control characters in the text literal, specify them using escape sequences.</p>
+		<p>With text literals, multiple techniques are offered for specifying text content:
+		All allow specification of multiple unicode characters,
+		but they vary in the handling of a few special characters
+		as needed for different circumstances.</p>
 		<p>A null character (U+0000) is always appended to the end of a text literal, for C compability.
 		All text literals are treated as immutable.</p>
+		
+		<h3>Escaped vs. Raw Text</h3>
+		<p>Many times it is convenient to use <a href="escape">escape sequences</a>
+		in order to visibly include control and unicode characters.
+		Other times, such as with regular expressions or XML text,
+		it is less error-prone and more readable to be able to specify backslashes or double quotes without
+		having to escape them with backslashes.</p>
+		<p>The first characters of the string literal establishes how escape sequences are handled:</p>
+		<ul>
+		<li>Just a double quote (") begins a text literal that uses escape sequences.
+		If a double quote or backslash is needed as part of the content, they must be escaped with a backslash.</li>
+		<li>'r' followed by a double quote (r") begins a raw text literal which does not use escape sequences.
+		Backslashes need not be escaped. Double quotes cannot appear in the text literal.</li>
+		<li>'r' followed by a backtick (r`) begins a raw text literal which does not use escape sequences.
+		Backslashes and double-quotes need not be escaped. Backticks cannot appear in the text literal.</li>
+		<li>Three double-quotes (""") begins a text literal that uses escape sequences.
+		Backslashes must be escaped, but double quotes need not be.</li>
+		<li>'r' followed by three double quotes (r""") begins a raw text literal which does not use escape sequences.
+		Neither backslashes nor double quotes need to be escaped to appear in the text content.</li>
+		</ul>
+		<p>If a text literal begins with a single double-quote (or backtick),
+		it ends with the next double quote (or backtick).
+		If the text literal begins with a triple double-quote, it ends with a triple double-quote.
+		If there are more than three double-quotes at the end, the terminator is the last three:</p>
+<pre>
+""""Happy Birthday!""""   // yields the text literal: "Happy Birthday!"
+</pre>
+
+		<h3>Multi-line Text Literals</h3>
+		<p>Some text literals are long enough to require multiple lines of code to specify.
+		It would be convenient to be able to format such content properly using indentation and
+		readable margins, without that formatting necessarily carrying over into the text of the literal.</p>
+		<p>These are the rules that make that possible:</p>
+		<ul>
+		<li>Multi-line text literals must end the line right after the last of the opening double-quotes.
+		The end-of-line character(s) that follow are not included in the text literal.</li>
+		<li>The double quotes that terminate the literal must appear at the start of a subsequent line,
+		although they may be indented by any number of spaces or tabs.</li>
+		<li>The lines in-between contain the text literal's content.
+		Space or tab indentation equivalent to that found on the terminating double-quotes line are stripped.
+		A new-line character is appended to the line's content, unless the end-of-line is preceded by a backslash.</li>
+		</ul>
+		<p>For example:</p>
+<pre>
+// Equivalent to "a\nb"
+"
+   a
+   b\
+   "
+</pre>
 		
 		<h2 id="url">URL Literal</h2>
 		<p>As described later, the '@' operator returns the value of the resource whose 
@@ -138,14 +183,16 @@
 		<h2 id="ident">Identifier</h2>
 		<p>Other than the reserved <a href="#keywords">keywords</a>,
 		a program may define and use any identifier as a variable, member, function, method, type, etc.</p>
-		<p>An identifier begins with a letter, '$' or '_'. A letter may be 'a'-'z', 'A'-'Z', or
+		<p>Typically, an identifier begins with a letter, '$' or '_'. A letter may be 'a'-'z', 'A'-'Z', or
 		any unicode-defined universal letter as defined by C99 in ISO/IEC 9899:1999(E) Appendix D.
 		Identifiers are case-sensitive; 'abc' is different from 'ABC'.</p>
 		<p>Subsequent characters may be a letters, digits, '$', or '_'.
 		The final character may be '?', which is useful for methods or members returning a boolean value.</p>
+		<p>To be able to include other characters, such as punctuation, as part of an identifier
+		enclose the entire identifier in back-ticks.</p>
 		<p>The following are all valid identifiers:</p>
 <pre>
-balance toReturn True _temp_ $ funny? π
+balance toReturn True _temp_ $ funny? π `*`
 </pre>
 
 		<h3 id="keywords">Keywords</h3>
