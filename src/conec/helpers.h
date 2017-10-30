@@ -9,6 +9,7 @@
 #define helpers_h
 
 #include <stdio.h>
+#include "helpers/ast.h"
 
 // Exit error codes
 enum Exit {
@@ -52,12 +53,10 @@ void fileErrorMsg(const char *msg, ...);
 size_t gSymTblSlots;		// Initial maximum number of unique symbols (must be power of 2)
 unsigned int gSymTblUtil;	// % utilization that triggers doubling of table
 
-struct ANode;	// AST-node defined later...
-
 // A symbol's information in its allocated block
 typedef struct SymId {
-	struct ANode *val;	// Pointer to symbol's AST-node
-	// char str[?];		// Symbol's c-string
+	AstNode *val;			// Pointer to symbol's AST-node
+	// char str[?];			// Symbol's c-string
 } SymId;
 // Macro to convert a SymInfo pointer to a pointer to its c-string
 #define symIdToStr(infop) ((char *) ((infop)+1))
