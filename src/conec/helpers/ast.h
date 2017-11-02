@@ -8,25 +8,23 @@
 #ifndef ast_h
 #define ast_h
 
-#include "stdint.h"
-
-typedef struct AstNode AstNode;
+#include <stdint.h>
 
 // AstNode encodes every type of token or AST node in a fixed-size structure.
 // A single structure converges both purposes, as most tokens are proto-AST nodes.
-struct AstNode {
+typedef struct AstNode {
 	// The "value" information held by the node
 	union {
 		double floatlit;
 		uint64_t uintlit;
 		void *val;
 	} v;
-	AstNode *typeinfo;
+	struct AstNode *typeinfo;
 	// Token/Node's location in the source program
 	// Type information about the Token/AST Node
 	short int type;			// AstType
 	uint16_t flags;
-};
+} AstNode;
 
 // All the possible types for an AstNode
 enum AstType {

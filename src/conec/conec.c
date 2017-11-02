@@ -11,8 +11,26 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "parser/parser.h"
+
+// Very stupid parser
+void parse() {
+	AstNode *node;
+	while (1) {
+		if (lexType()==EofNode)
+			break;
+		if (node = lexMatch(LitNode)) {
+			printf("OMG Found a number %d\n", node->v.uintlit);
+		}
+		else {
+			lexGetNextToken();
+			puts("Danger Danger Will Robinson");
+		}
+	}
+}
+
 void main(int argv, char **argc) {
-	char *filestr;
+	Lexer *lex;
 
 	// Output compiler name and release level
 	puts(CONE_RELEASE);
@@ -22,10 +40,8 @@ void main(int argv, char **argc) {
 		exit(1);
 	}
 
-	filestr = fileLoad(argc[1]);
-	if (filestr) {
-		printf("I wish I knew how to compile, but here is the source!\n\n%s", filestr);
-	}
+	lex = lexNew(argc[1]);
+	parse();
 
 	getchar();
 }
