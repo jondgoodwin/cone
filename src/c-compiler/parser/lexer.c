@@ -8,7 +8,9 @@
  * See Copyright Notice in conec.h
 */
 
-#include "parser.h"
+#include "lexer.h"
+#include "../shared/memory.h"
+#include "../shared/fileio.h"
 
 #include <string.h>
 #include <stdlib.h>

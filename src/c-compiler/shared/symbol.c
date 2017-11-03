@@ -15,7 +15,8 @@
  * See Copyright Notice in conec.h
 */
 
-#include "../helpers.h"
+#include "symbol.h"
+#include "memory.h"
 
 #include <stdio.h>
 #include <assert.h>

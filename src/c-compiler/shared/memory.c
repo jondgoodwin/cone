@@ -9,7 +9,8 @@
  * See Copyright Notice in conec.h
 */
 
-#include "../helpers.h"
+#include "memory.h"
+#include "error.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -44,7 +45,7 @@ void *memAllocBlk(size_t size) {
 	if (size > gMemBlkArenaSize) {
 		memp = malloc(size);
 		if (memp==NULL) {
-			fileErrorMsg("Error: Out of memory");
+			errorExit("Error: Out of memory");
 			exit(ExitMem);
 		}
 		return memp;
@@ -53,7 +54,7 @@ void *memAllocBlk(size_t size) {
 	// Allocate a new Arena and return next bite out of it
 	gMemBlkArenaPos = malloc(gMemBlkArenaSize);
 	if (gMemBlkArenaPos==NULL) {
-		fileErrorMsg("Error: Out of memory");
+		errorExit("Error: Out of memory");
 		exit(ExitMem);
 	}
 	gMemBlkArenaLeft = gMemBlkArenaSize - size;
@@ -81,7 +82,7 @@ char *memAllocStr(char *str, size_t size) {
 	else if (size > gMemStrArenaSize) {
 		strp = malloc(size);
 		if (strp==NULL) {
-			fileErrorMsg("Error: Out of memory");
+			errorExit("Error: Out of memory");
 			exit(ExitMem);
 		}
 	}
@@ -90,7 +91,7 @@ char *memAllocStr(char *str, size_t size) {
 	else {
 		gMemStrArenaPos = malloc(gMemStrArenaSize);
 		if (gMemStrArenaPos==NULL) {
-			fileErrorMsg("Error: Out of memory");
+			errorExit("Error: Out of memory");
 			exit(ExitMem);
 		}
 		gMemStrArenaLeft = gMemStrArenaSize - size;

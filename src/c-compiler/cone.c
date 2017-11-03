@@ -5,13 +5,13 @@
  * See Copyright Notice in conec.h
 */
 
-#include "conec.h"
-#include "helpers.h"
+#include "cone.h"
+#include "shared/ast.h"
+#include "shared/error.h"
+#include "parser/lexer.h"
 
 #include <stdio.h>
 #include <stdlib.h>
-
-#include "parser/parser.h"
 
 // Very stupid parser
 void parse() {
