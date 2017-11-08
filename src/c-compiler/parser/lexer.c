@@ -9,26 +9,12 @@
 */
 
 #include "lexer.h"
+#include "../shared/ast.h"
 #include "../shared/memory.h"
 #include "../shared/fileio.h"
 
 #include <string.h>
 #include <stdlib.h>
-
-// Lexer state per source file scanned and parsed
-typedef struct Lexer {
-	AstNode *token;	// Current token
-	char *url;		// The url where the source text came from
-
-	// Program source pointers
-	char *source;	// The source text
-	char *srcp;		// Current pointer
-	char *tokp;		// Start of current token
-	char *linep;	// Pointer to start of current line
-
-	uint32_t linenbr;	// Current line number
-	uint32_t flags;		// Lexer flags
-} Lexer;
 
 // Global lexer state
 Lexer *lex = NULL;		// Current lexer
