@@ -18,6 +18,9 @@ typedef struct Lexer {
 	char *url;		// The url where the source text came from
 	char *source;	// The source text (0-terminated)
 
+	struct Lexer *next;	// Next lexer (linked list of injected lexers)
+	struct Lexer *prev; // Previous lexer
+
 	// Lexer's evolving state
 	AstNode *token;	// Current token
 	char *srcp;		// Current pointer
@@ -28,9 +31,10 @@ typedef struct Lexer {
 	uint32_t flags;		// Lexer flags
 } Lexer;
 
+void lexInject(char *url, char *src);
+void lexPop();
 void lexGetNextToken();
 uint16_t lexType();
 AstNode *lexMatch(uint16_t nodetype);
-Lexer *lexNew(char *url);
 
 #endif

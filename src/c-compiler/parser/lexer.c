@@ -11,13 +11,48 @@
 #include "lexer.h"
 #include "../shared/ast.h"
 #include "../shared/memory.h"
-#include "../shared/fileio.h"
 
 #include <string.h>
 #include <stdlib.h>
 
 // Global lexer state
 Lexer *lex = NULL;		// Current lexer
+
+// Inject a new source stream into the lexer
+void lexInject(char *url, char *src) {
+	Lexer *prev;
+
+	// Obtain next lexer block via link chain or allocation
+	prev = lex;
+	if (lex == NULL)
+		lex = (Lexer*) memAllocBlk(sizeof(Lexer));
+	else if (lex->next == NULL) {
+		lex->next = (Lexer*) memAllocBlk(sizeof(Lexer));
+		lex = lex->next;
+	}
+	else
+		lex = lex->next; // Re-use an old lexer block
+	lex->next = NULL;
+	lex->prev = prev;
+
+	// Initialize lexer's source info
+	lex->url = url;
+	lex->source = src;
+
+	// Initialize lexer context
+	lex->srcp = lex->tokp = lex->linep = src;
+	lex->linenbr = 1;
+	lex->flags = 0;
+
+	// Prime the pump with the first token
+	lexGetNextToken();
+}
+
+// Restore previous lexer's stream
+void lexPop() {
+	if (lex)
+		lex = lex->prev;
+}
 
 /** Tokenize an integer or floating point number */
 void lexScanNumber(char *srcp) {
@@ -141,22 +176,4 @@ AstNode *lexMatch(uint16_t nodetype) {
 	}
 	else
 		return NULL;
-}
-
-// Create a new lexer for program source file
-Lexer *lexNew(char *url) {
-	// Allocate lexer block and load source
-	lex = (Lexer*) memAllocBlk(sizeof(Lexer));
-	lex->url = url;
-	if (!(lex->source = fileLoad(url))) {
-		// error message
-		lex->source = "";
-	}
-	// Initialize lexer block
-	lex->srcp = lex->tokp = lex->linep = lex->source;
-	lex->linenbr = 1;
-	lex->flags = 0;
-	lex->token = NULL;
-	lexGetNextToken(); // Prime the pump
-	return lex;
 }

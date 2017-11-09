@@ -6,6 +6,7 @@
 */
 
 #include "cone.h"
+#include "shared/fileio.h"
 #include "shared/ast.h"
 #include "shared/error.h"
 #include "parser/lexer.h"
@@ -30,7 +31,7 @@ void parse() {
 }
 
 void main(int argv, char **argc) {
-	Lexer *lex;
+	char *src;
 
 	// Output compiler name and release level
 	puts(CONE_RELEASE);
@@ -40,8 +41,13 @@ void main(int argv, char **argc) {
 		exit(1);
 	}
 
-	lex = lexNew(argc[1]);
-	parse();
+	src = fileLoad(argc[1]);
+	if (src) {
+		lexInject(argc[1], src);
+		parse();
+	}
+	else
+		puts("Cannot load source to compile it!");
 
 	getchar();
 }
