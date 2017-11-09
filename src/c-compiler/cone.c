@@ -50,5 +50,7 @@ void main(int argv, char **argc) {
 		errorExit(ExitNF, "Cannot load source file.");
 
 	errorSummary();
-	getchar();
+#ifdef _DEBUG
+	getchar();	// Hack for VS debugging
+#endif
 }

@@ -26,7 +26,9 @@ void errorExit(int exitcode, const char *msg, ...) {
 	fputs("\n", stderr);
 
 	// Exit with return code
-	getchar();
+#ifdef _DEBUG
+	getchar();	// Hack for VS debugging
+#endif
 	exit(exitcode);
 }
 
@@ -64,7 +66,7 @@ void errorMsg(AstNode *node, int code, const char *msg, ...) {
 	pos = (spaces = node->srcp - node->linep) + 1;
 	while (spaces--)
 		fputc(' ', stderr);
-	fprintf(stderr, "^--- %s:%d:%d\n", node->lexer->url, node->linenbr, (node->srcp - node->linep) + 1);
+	fprintf(stderr, "^--- %s:%d:%d\n", node->lexer->url, node->linenbr, pos);
 }
 
 // Generate final message for a compile
