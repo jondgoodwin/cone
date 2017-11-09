@@ -17,6 +17,7 @@ enum ErrorCode {
 };
 
 // Send an error message to stderr
-void errorExit(const char *msg, ...);
+void errorExit(int exitcode, const char *msg, ...);
+void errorSummary();
 
 #endif

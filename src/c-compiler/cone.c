@@ -47,7 +47,8 @@ void main(int argv, char **argc) {
 		parse();
 	}
 	else
-		puts("Cannot load source to compile it!");
+		errorExit(ExitNF, "Cannot load source file.");
 
+	errorSummary();
 	getchar();
 }

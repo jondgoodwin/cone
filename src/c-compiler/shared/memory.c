@@ -44,19 +44,15 @@ void *memAllocBlk(size_t size) {
 	// Return a newly allocated area, if bigger than arena can hold
 	if (size > gMemBlkArenaSize) {
 		memp = malloc(size);
-		if (memp==NULL) {
-			errorExit("Error: Out of memory");
-			exit(ExitMem);
-		}
+		if (memp==NULL)
+			errorExit(ExitMem, "Error: Out of memory");
 		return memp;
 	}
 
 	// Allocate a new Arena and return next bite out of it
 	gMemBlkArenaPos = malloc(gMemBlkArenaSize);
-	if (gMemBlkArenaPos==NULL) {
-		errorExit("Error: Out of memory");
-		exit(ExitMem);
-	}
+	if (gMemBlkArenaPos==NULL)
+		errorExit(ExitMem, "Error: Out of memory");
 	gMemBlkArenaLeft = gMemBlkArenaSize - size;
 	memp = gMemBlkArenaPos;
 	gMemBlkArenaPos = (char*)gMemBlkArenaPos + size;
@@ -81,19 +77,15 @@ char *memAllocStr(char *str, size_t size) {
 	// Return a newly allocated area, if bigger than arena can hold
 	else if (size > gMemStrArenaSize) {
 		strp = malloc(size);
-		if (strp==NULL) {
-			errorExit("Error: Out of memory");
-			exit(ExitMem);
-		}
+		if (strp==NULL)
+			errorExit(ExitMem, "Error: Out of memory");
 	}
 
 	// Allocate a new Arena and return next bite out of it
 	else {
 		gMemStrArenaPos = malloc(gMemStrArenaSize);
-		if (gMemStrArenaPos==NULL) {
-			errorExit("Error: Out of memory");
-			exit(ExitMem);
-		}
+		if (gMemStrArenaPos==NULL)
+			errorExit(ExitMem, "Error: Out of memory");
 		gMemStrArenaLeft = gMemStrArenaSize - size;
 		strp = gMemStrArenaPos;
 		gMemStrArenaPos = (char*)gMemStrArenaPos + size;
