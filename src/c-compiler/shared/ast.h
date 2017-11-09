@@ -37,7 +37,10 @@ typedef struct AstNode {
 // All the possible types for an AstNode
 enum AstType {
 	EofNode,		// End-of-file
-	LitNode,		// Literal
+
+	IntNode,		// Integer literal
+	FloatNode,		// Float literal
+
 	NbrAstTypes
 };
 

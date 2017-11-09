@@ -123,6 +123,7 @@ void lexScanNumber(char *srcp) {
 	// Set value and type
 	if (isFloat) {
 		lex->token->v.floatlit = atof(srcbeg);
+		lex->token->type = FloatNode;
 	}
 	else {
 		lex->token->v.uintlit = intval;
@@ -170,7 +171,7 @@ void lexGetNextToken() {
 		// Numeric literal (integer or float)
 		case '0': case '1': case '2': case '3': case '4': 
 		case '5': case '6': case '7': case '8': case '9':
-			lex_node_init(LitNode);
+			lex_node_init(IntNode);	// May change to FloatNode
 			lexScanNumber(srcp);
 			return;
 
@@ -183,7 +184,7 @@ void lexGetNextToken() {
 	}
 }
 
-uint16_t lexType() {
+uint16_t lexGetType() {
 	return lex->token->type;
 }
 

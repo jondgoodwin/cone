@@ -10,25 +10,10 @@
 #include "shared/ast.h"
 #include "shared/error.h"
 #include "parser/lexer.h"
+#include "parser/parser.h"
 
 #include <stdio.h>
 #include <stdlib.h>
-
-// Very stupid parser
-void parse() {
-	AstNode *node;
-	while (1) {
-		if (lexType()==EofNode)
-			break;
-		if (node = lexMatch(LitNode)) {
-			printf("OMG Found a number %d\n", node->v.uintlit);
-		}
-		else {
-			lexGetNextToken();
-			puts("Danger Danger Will Robinson");
-		}
-	}
-}
 
 void main(int argv, char **argc) {
 	char *src;
