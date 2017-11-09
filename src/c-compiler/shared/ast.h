@@ -15,13 +15,25 @@ typedef struct Lexer Lexer;
 // AstNode encodes every type of token or AST node in a fixed-size structure.
 // A single structure converges both purposes, as most tokens are proto-AST nodes.
 typedef struct AstNode {
+	// The language type
+	struct AstNode *langtype;
+
 	// The "value" information held by the node
 	union {
 		double floatlit;
 		uint64_t uintlit;
 		void *val;
+		struct {
+			struct AstNode *n1;
+			struct AstNode *n2;
+		} node;
+		struct {
+			struct AstNode **subs;
+			uint32_t used;
+			uint32_t avail;
+		} nodes;
+		void *info;
 	} v;
-	struct AstNode *typeinfo;
 
 	// Token/Node's location in the source program
 	Lexer *lexer;	// Contains -> url (filepath) and -> source
@@ -29,8 +41,8 @@ typedef struct AstNode {
 	char *linep;	// Points to start of line that token begins on
 	uint32_t linenbr;	// Line number (starting with 1)
 
-	// Type information about the Token/AST Node
-	short int type;			// AstType
+	// Additional information
+	short int asttype;			// AstType
 	uint16_t flags;
 } AstNode;
 

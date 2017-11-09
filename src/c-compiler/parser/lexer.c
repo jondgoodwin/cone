@@ -123,7 +123,7 @@ void lexScanNumber(char *srcp) {
 	// Set value and type
 	if (isFloat) {
 		lex->token->v.floatlit = atof(srcbeg);
-		lex->token->type = FloatNode;
+		lex->token->asttype = FloatNode;
 	}
 	else {
 		lex->token->v.uintlit = intval;
@@ -132,9 +132,9 @@ void lexScanNumber(char *srcp) {
 }
 
 // Initialize an AstNode for a token
-#define lex_node_init(asttype) { \
+#define lex_node_init(asttyp) { \
 	AstNode *tok = lex->token; \
-	tok->type = asttype; \
+	tok->asttype = asttyp; \
 	tok->lexer = lex; \
 	tok->srcp = srcp; \
 	tok->linep = lex->linep; \
@@ -153,7 +153,7 @@ void lexGetNextToken() {
 
 		// End-of-file
 		case '\0': case '\x1a':
-			lex->token->type = EofNode;
+			lex->token->asttype = EofNode;
 			return;
 
 		// Ignore white space
@@ -185,11 +185,11 @@ void lexGetNextToken() {
 }
 
 uint16_t lexGetType() {
-	return lex->token->type;
+	return lex->token->asttype;
 }
 
 AstNode *lexMatch(uint16_t nodetype) {
-	if (lex->token->type == nodetype) {
+	if (lex->token->asttype == nodetype) {
 		AstNode *node = lex->token;
 		lexGetNextToken();
 		return node;
