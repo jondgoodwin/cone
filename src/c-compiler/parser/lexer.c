@@ -11,6 +11,7 @@
 #include "lexer.h"
 #include "../shared/ast.h"
 #include "../shared/memory.h"
+#include "../shared/error.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -122,13 +123,21 @@ void lexScanNumber(char *srcp) {
 	// Set value and type
 	if (isFloat) {
 		lex->token->v.floatlit = atof(srcbeg);
-		lex->token->type = LitNode;
 	}
 	else {
 		lex->token->v.uintlit = intval;
-		lex->token->type = LitNode;
 	}
 	lex->srcp = srcp;
+}
+
+// Initialize an AstNode for a token
+#define lex_node_init(asttype) { \
+	AstNode *tok = lex->token; \
+	tok->type = asttype; \
+	tok->lexer = lex; \
+	tok->srcp = srcp; \
+	tok->linep = lex->linep; \
+	tok->linenbr = lex->linenbr; \
 }
 
 // Retrieve next token from the lexer
@@ -147,18 +156,28 @@ void lexGetNextToken() {
 			return;
 
 		// Ignore white space
-		case ' ': case '\t':
+		case ' ': case '\t': case '\r':
 			srcp++;
+			break;
+
+		// Handle new line
+		case '\n':
+			srcp++;
+			lex->linep = srcp;
+			lex->linenbr++;
 			break;
 
 		// Numeric literal (integer or float)
 		case '0': case '1': case '2': case '3': case '4': 
 		case '5': case '6': case '7': case '8': case '9':
+			lex_node_init(LitNode);
 			lexScanNumber(srcp);
 			return;
 
 		// Bad character
 		default:
+			lex_node_init(0);
+			errorMsg(lex->token, ErrorBadTok, "Bad character '%c' starting unknown token", *srcp);
 			srcp++;
 		}
 	}
