@@ -46,7 +46,7 @@ void lexInject(char *url, char *src) {
 	lex->flags = 0;
 
 	// Prime the pump with the first token
-	lexGetNextToken();
+	lexNextToken();
 }
 
 // Restore previous lexer's stream
@@ -141,8 +141,8 @@ void lexScanNumber(char *srcp) {
 	tok->linenbr = lex->linenbr; \
 }
 
-// Retrieve next token from the lexer
-void lexGetNextToken() {
+// Decode next token from the source into new lex->token
+void lexNextToken() {
 	char *srcp;
 	AstNode *token;
 	token = lex->token = (struct AstNode*) memAllocBlk(sizeof(AstNode));
@@ -175,6 +175,12 @@ void lexGetNextToken() {
 			lexScanNumber(srcp);
 			return;
 
+		// '-'
+		case '-':
+			lex_node_init(MinusNode);
+			lex->srcp = ++srcp;
+			return;
+
 		// Bad character
 		default:
 			lex_node_init(0);
@@ -184,14 +190,23 @@ void lexGetNextToken() {
 	}
 }
 
+// Return current node's ast type
 uint16_t lexGetType() {
 	return lex->token->asttype;
 }
 
+// Return current token's node after figuring out the next one
+AstNode *lexGetAndNext() {
+	AstNode *node = lex->token;
+	lexNextToken();
+	return node;
+}
+
+// Return current node's token if it matches the specified ast type
 AstNode *lexMatch(uint16_t nodetype) {
 	if (lex->token->asttype == nodetype) {
 		AstNode *node = lex->token;
-		lexGetNextToken();
+		lexNextToken();
 		return node;
 	}
 	else

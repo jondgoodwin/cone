@@ -53,6 +53,9 @@ enum AstType {
 	IntNode,		// Integer literal
 	FloatNode,		// Float literal
 
+	MinusNode,		// '-' as minus operator (default)
+	NegNode,		// '-' as negative operator
+
 	NbrAstTypes
 };
 
