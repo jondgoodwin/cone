@@ -11,9 +11,11 @@
 #include "shared/error.h"
 #include "parser/lexer.h"
 #include "parser/parser.h"
+#include "genllvm/genllvm.h"
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <assert.h>
 
 void main(int argv, char **argc) {
 	char *src;
@@ -21,18 +23,15 @@ void main(int argv, char **argc) {
 	// Output compiler name and release level
 	puts(CONE_RELEASE);
 
-	if (argv<2) {
-		puts("Specify a Cone program to compile");
-		exit(1);
-	}
+	if (argv<2)
+		errorExit(ExitOpts, "Specify a Cone program to compile.");
 
 	src = fileLoad(argc[1]);
-	if (src) {
-		lexInject(argc[1], src);
-		parse();
-	}
-	else
-		errorExit(ExitNF, "Cannot load source file.");
+	if (!src)
+		errorExit(ExitNF, "Cannot find or read source file.");
+		
+	lexInject(argc[1], src);
+	genllvm(parse());
 
 	errorSummary();
 #ifdef _DEBUG

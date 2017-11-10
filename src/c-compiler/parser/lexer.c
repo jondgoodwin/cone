@@ -131,6 +131,18 @@ void lexScanNumber(char *srcp) {
 	lex->srcp = srcp;
 }
 
+// Create a new Ast Node independent from lexer
+AstNode *lexNewAstNode(int asttyp) {
+	AstNode *tok = (struct AstNode*) memAllocBlk(sizeof(AstNode));
+	tok->asttype = asttyp; \
+	tok->lexer = lex; \
+	tok->srcp = lex->srcp; \
+	tok->linep = lex->linep; \
+	tok->linenbr = lex->linenbr; \
+	tok->flags = 0; \
+	return tok;
+}
+
 // Initialize an AstNode for a token
 #define lex_node_init(asttyp) { \
 	AstNode *tok = lex->token; \
@@ -139,6 +151,7 @@ void lexScanNumber(char *srcp) {
 	tok->srcp = srcp; \
 	tok->linep = lex->linep; \
 	tok->linenbr = lex->linenbr; \
+	tok->flags = 0; \
 }
 
 // Decode next token from the source into new lex->token
@@ -146,7 +159,6 @@ void lexNextToken() {
 	char *srcp;
 	AstNode *token;
 	token = lex->token = (struct AstNode*) memAllocBlk(sizeof(AstNode));
-	token->flags = 0;
 	srcp = lex->srcp;
 	while (1) {
 		switch (*srcp) {

@@ -1,15 +1,13 @@
-/** Parser
+/** Generator for LLVM
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
  * See Copyright Notice in conec.h
 */
 
-#ifndef parser_h
-#define parser_h
+#ifndef genllvm_h
+#define genllvm_h
 
-#include "../shared/ast.h"
-
-AstNode *parse();
+void genllvm(AstNode *pgmnode);
 
 #endif

@@ -33,6 +33,7 @@ typedef struct Lexer {
 
 void lexInject(char *url, char *src);
 void lexPop();
+AstNode *lexNewAstNode(int asttyp);
 void lexNextToken();
 uint16_t lexGetType();
 AstNode *lexGetAndNext();

@@ -27,11 +27,6 @@ typedef struct AstNode {
 			struct AstNode *n1;
 			struct AstNode *n2;
 		} node;
-		struct {
-			struct AstNode **subs;
-			uint32_t used;
-			uint32_t avail;
-		} nodes;
 		void *info;
 	} v;
 
@@ -50,6 +45,8 @@ typedef struct AstNode {
 enum AstType {
 	EofNode,		// End-of-file
 
+	BlockNode,		// Block (list of statements)
+
 	IntNode,		// Integer literal
 	FloatNode,		// Float literal
 
@@ -58,5 +55,15 @@ enum AstType {
 
 	NbrAstTypes
 };
+
+// Header for a variable-sized structure holding a list of AstNodes
+// The nodes immediately follow the header
+typedef struct Nodes {
+	uint32_t used;
+	uint32_t avail;
+} Nodes;
+
+Nodes *nodesNew(int size);
+void nodesAdd(Nodes **nodesp, AstNode *node);
 
 #endif

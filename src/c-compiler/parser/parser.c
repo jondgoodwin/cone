@@ -28,7 +28,7 @@ AstNode *parseterm() {
 // Parse a prefix operator, e.g.: -
 AstNode *parseprefix() {
 	AstNode *node;
-	if (lexMatch(MinusNode)) {
+	if (lexGetType()==MinusNode) {
 		AstNode *opnode;
 		node = lexGetAndNext();
 		opnode = parseprefix();
@@ -49,15 +49,16 @@ AstNode *parseprefix() {
 }
 
 // Parse a program
-void parse() {
-	AstNode *node;
+AstNode *parse() {
+	AstNode *program;
+	Nodes **nodes;
+
+	// Create a Block node for the program
+	program = lexNewAstNode(BlockNode);
+	nodes = (Nodes**) &program->v.info;
+	*nodes = nodesNew(8);
 	while (lexGetType() != EofNode) {
-		node = parseprefix();
-		if (node->asttype == IntNode) {
-			printf("OMG Found an integer %d\n", node->v.uintlit);
-		}
-		else if (node->asttype == FloatNode) {
-			printf("OMG Found a float %f\n", node->v.floatlit);
-		}
+		nodesAdd(nodes, parseprefix());
 	}
+	return program;
 }
