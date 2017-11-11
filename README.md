@@ -56,10 +56,14 @@ When finished, Cone will support these features:
 - Unicode-aware (UTF8) text strings and variable names
 - Fast compilation and convenient packaging
 
-## Examples and Documentation
+## Documentation and Examples
 
-Language documentation and examples are TBD.
-That said, Cone will strongly resemble its dynamically-typed cousin [Acorn][acorn],
+ - [Cone Language Reference][coneref] (under development)
+ - Showcase (TBD)
+ - Web-based playground (TBD)
+ - Example code (TBD)
+
+Note: Cone will strongly resemble its dynamically-typed cousin [Acorn][acorn],
 which has a [showcase][acornshow] and [reference documentation][acornref].
 
 ## Building (Windows)
@@ -82,6 +86,7 @@ See LICENSE and COPYRIGHT for details.
 [3dweb]: http://web3d.jondgoodwin.com/faq.html
 [gmm]: http://jondgoodwin.com/pling/gmm.pdf
 [plan]: https://github.com/jondgoodwin/cone/blob/master/PLAN.md
+[coneref]: http://web3d.jondgoodwin.com/cone
 [acorn]: https://github.com/jondgoodwin/acornvm
 [acornshow]: http://web3d.jondgoodwin.com/acorn/showcase.html
 [acornref]: http://web3d.jondgoodwin.com/acorn
