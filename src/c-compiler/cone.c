@@ -7,6 +7,7 @@
 
 #include "cone.h"
 #include "shared/fileio.h"
+#include "shared/symbol.h"
 #include "shared/ast.h"
 #include "shared/error.h"
 #include "parser/lexer.h"
@@ -30,6 +31,7 @@ void main(int argv, char **argc) {
 	if (!src)
 		errorExit(ExitNF, "Cannot find or read source file.");
 		
+	symInit();
 	lexInject(argc[1], src);
 	genllvm(parse());
 

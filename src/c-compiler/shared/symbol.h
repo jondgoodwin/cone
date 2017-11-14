@@ -34,4 +34,7 @@ void symGrow();
 // For unknown symbol, it allocates memory for the string (SymId) and adds it to symbol table.
 SymId *symGetId(char *strp, size_t strl);
 
+// Initialize the symbol table with reserved symbols
+void symInit();
+
 #endif

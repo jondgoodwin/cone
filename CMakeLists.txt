@@ -13,6 +13,7 @@ add_executable(cone
 	src/c-compiler/shared/fileio.c
 	src/c-compiler/shared/memory.c
 	src/c-compiler/shared/symbol.c
+	src/c-compiler/shared/type.c
 	src/c-compiler/parser/lexer.c
 	src/c-compiler/parser/parser.c
 	src/c-compiler/genllvm/genllvm.c

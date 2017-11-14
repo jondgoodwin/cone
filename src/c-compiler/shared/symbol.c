@@ -17,6 +17,7 @@
 
 #include "symbol.h"
 #include "memory.h"
+#include "type.h"
 
 #include <stdio.h>
 #include <assert.h>
@@ -137,4 +138,10 @@ SymId *symGetId(char *strp, size_t strl) {
 		((char*)(symid+1))[strl] = '\0';
 	}
 	return slotp->id;
+}
+
+// Initialize symbol table
+void symInit() {
+	symGrow();
+	typInit();
 }

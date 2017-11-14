@@ -24,7 +24,7 @@ void genllvm(AstNode *pgmnode) {
 		AstNode *node;
 		node = *nodep++;
 		if (node->asttype == IntNode) {
-			printf("OMG Found an integer %d\n", node->v.uintlit);
+			printf("OMG Found an integer %ld\n", node->v.uintlit);
 		}
 		else if (node->asttype == FloatNode) {
 			printf("OMG Found a float %f\n", node->v.floatlit);
