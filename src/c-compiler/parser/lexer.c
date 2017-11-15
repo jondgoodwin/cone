@@ -122,50 +122,26 @@ void lexScanNumber(char *srcp) {
 
 	// Set value and type
 	if (isFloat) {
-		lex->token->v.floatlit = atof(srcbeg);
-		lex->token->asttype = FloatNode;
+		lex->val.floatlit = atof(srcbeg);
+		lex->toktype = FloatLitToken;
 	}
 	else {
-		lex->token->v.uintlit = intval;
+		lex->val.uintlit = intval;
+		lex->toktype = IntLitToken;
 	}
 	lex->srcp = srcp;
-}
-
-// Create a new Ast Node independent from lexer
-AstNode *lexNewAstNode(int asttyp) {
-	AstNode *tok = (struct AstNode*) memAllocBlk(sizeof(AstNode));
-	tok->asttype = asttyp; \
-	tok->lexer = lex; \
-	tok->srcp = lex->srcp; \
-	tok->linep = lex->linep; \
-	tok->linenbr = lex->linenbr; \
-	tok->flags = 0; \
-	return tok;
-}
-
-// Initialize an AstNode for a token
-#define lex_node_init(asttyp) { \
-	AstNode *tok = lex->token; \
-	tok->asttype = asttyp; \
-	tok->lexer = lex; \
-	tok->srcp = srcp; \
-	tok->linep = lex->linep; \
-	tok->linenbr = lex->linenbr; \
-	tok->flags = 0; \
 }
 
 // Decode next token from the source into new lex->token
 void lexNextToken() {
 	char *srcp;
-	AstNode *token;
-	token = lex->token = (struct AstNode*) memAllocBlk(sizeof(AstNode));
 	srcp = lex->srcp;
 	while (1) {
 		switch (*srcp) {
 
 		// End-of-file
 		case '\0': case '\x1a':
-			lex->token->asttype = EofNode;
+			lex->toktype = EofToken;
 			return;
 
 		// Ignore white space
@@ -183,44 +159,23 @@ void lexNextToken() {
 		// Numeric literal (integer or float)
 		case '0': case '1': case '2': case '3': case '4': 
 		case '5': case '6': case '7': case '8': case '9':
-			lex_node_init(IntNode);	// May change to FloatNode
 			lexScanNumber(srcp);
 			return;
 
 		// '-'
 		case '-':
-			lex_node_init(MinusNode);
+			lex->toktype = DashOpToken;
 			lex->srcp = ++srcp;
 			return;
 
 		// Bad character
 		default:
-			lex_node_init(0);
-			errorMsg(lex->token, ErrorBadTok, "Bad character '%c' starting unknown token", *srcp);
-			srcp++;
+			{
+				AstNode *node;
+				lex->srcp = srcp;
+				astNewNode(node, AstNode, UnkNode);
+				errorMsg(node, ErrorBadTok, "Bad character '%c' starting unknown token", *srcp++);
+			}
 		}
 	}
-}
-
-// Return current node's ast type
-uint16_t lexGetType() {
-	return lex->token->asttype;
-}
-
-// Return current token's node after figuring out the next one
-AstNode *lexGetAndNext() {
-	AstNode *node = lex->token;
-	lexNextToken();
-	return node;
-}
-
-// Return current node's token if it matches the specified ast type
-AstNode *lexMatch(uint16_t nodetype) {
-	if (lex->token->asttype == nodetype) {
-		AstNode *node = lex->token;
-		lexNextToken();
-		return node;
-	}
-	else
-		return NULL;
 }

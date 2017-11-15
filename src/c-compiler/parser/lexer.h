@@ -14,6 +14,12 @@ typedef struct AstNode AstNode;
 
 // Lexer state (one per source file)
 typedef struct Lexer {
+	// Value info about a discovered token
+	union {
+		double floatlit;
+		uint64_t uintlit;
+	} val;
+
 	// immutable info about source
 	char *url;		// The url where the source text came from
 	char *source;	// The source text (0-terminated)
@@ -22,21 +28,33 @@ typedef struct Lexer {
 	struct Lexer *prev; // Previous lexer
 
 	// Lexer's evolving state
-	AstNode *token;	// Current token
 	char *srcp;		// Current pointer
 	char *tokp;		// Start of current token
 	char *linep;	// Pointer to start of current line
 
 	uint32_t linenbr;	// Current line number
 	uint32_t flags;		// Lexer flags
+	uint16_t toktype;	// TokenTypes
 } Lexer;
 
+// All the possible types for a token
+enum TokenTypes {
+	EofToken,		// End-of-file
+
+	IntLitToken,	// Integer literal
+	FloatLitToken,	// Float literal
+
+	DashOpToken,	// '-'
+
+	NbrTokens
+};
+
+// Current lexer
+Lexer *lex;
+
+// Lexer functions
 void lexInject(char *url, char *src);
 void lexPop();
-AstNode *lexNewAstNode(int asttyp);
 void lexNextToken();
-uint16_t lexGetType();
-AstNode *lexGetAndNext();
-AstNode *lexMatch(uint16_t nodetype);
 
 #endif

@@ -17,17 +17,17 @@ void genllvm(AstNode *pgmnode) {
 	AstNode **nodep;
 
 	assert(pgmnode->asttype == BlockNode);
-	nodes = (Nodes*) pgmnode->v.info;
+	nodes = (Nodes*) ((BlockAstNode*)pgmnode)->nodes;
 	nodep = (AstNode**)(nodes+1);
 	cnt = nodes->used;
 	while (cnt--) {
 		AstNode *node;
 		node = *nodep++;
-		if (node->asttype == IntNode) {
-			printf("OMG Found an integer %ld\n", node->v.uintlit);
+		if (node->asttype == ULitNode) {
+			printf("OMG Found an integer %ld\n", ((ULitAstNode*)node)->uintlit);
 		}
-		else if (node->asttype == FloatNode) {
-			printf("OMG Found a float %f\n", node->v.floatlit);
+		else if (node->asttype == FLitNode) {
+			printf("OMG Found a float %f\n", ((FLitAstNode*)node)->floatlit);
 		}
 	}
 }

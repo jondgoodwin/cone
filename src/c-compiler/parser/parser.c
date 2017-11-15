@@ -9,16 +9,28 @@
 
 #include "parser.h"
 #include "../shared/ast.h"
+#include "../shared/memory.h"
 #include "lexer.h"
 
 #include <stdio.h>
 
 // Parse a term: literal, identifier, etc.
 AstNode *parseterm() {
-	switch (lexGetType()) {
-	case IntNode:
-	case FloatNode:
-		return lexGetAndNext();
+	switch (lex->toktype) {
+	case IntLitToken:
+		{
+			ULitAstNode *node;
+			astNewNodeAndNext(node, ULitAstNode, ULitNode);
+			node->uintlit = lex->val.uintlit;
+			return (AstNode *)node;
+		}
+	case FloatLitToken:
+		{
+			FLitAstNode *node;
+			astNewNodeAndNext(node, FLitAstNode, FLitNode);
+			node->floatlit = lex->val.floatlit;
+			return (AstNode *)node;
+		}
 	default:
 		// error message
 		return NULL;
@@ -27,22 +39,21 @@ AstNode *parseterm() {
 
 // Parse a prefix operator, e.g.: -
 AstNode *parseprefix() {
-	AstNode *node;
-	if (lexGetType()==MinusNode) {
+	if (lex->toktype==DashOpToken) {
+		UnaryAstNode *node;
 		AstNode *opnode;
-		node = lexGetAndNext();
+		astNewNodeAndNext(node, UnaryAstNode, UnaryNode);
 		opnode = parseprefix();
 		// Optimize negative numeric literal
-		if (opnode->asttype == IntNode) {
-			opnode->v.uintlit = -((int32_t)opnode->v.uintlit);
-			return opnode;
-		} else if (opnode->asttype == FloatNode) {
-			opnode->v.floatlit = -opnode->v.floatlit;
-			return opnode;
+		if (opnode->asttype == ULitNode) {
+			((ULitAstNode*)opnode)->uintlit = -(int32_t)((ULitAstNode*)opnode)->uintlit;
+			return (AstNode *)opnode;
+		} else if (opnode->asttype == FLitNode) {
+			((FLitAstNode*)opnode)->floatlit = -(int32_t)((FLitAstNode*)opnode)->floatlit;
+			return (AstNode *)opnode;
 		} else {
-			node->asttype = NegNode;
-			node->v.node.n1 = parseprefix();
-			return node;
+			node->expnode = parseprefix();
+			return (AstNode *)node;
 		}
 	}
 	return parseterm();
@@ -50,15 +61,15 @@ AstNode *parseprefix() {
 
 // Parse a program
 AstNode *parse() {
-	AstNode *program;
+	BlockAstNode *program;
 	Nodes **nodes;
 
 	// Create a Block node for the program
-	program = lexNewAstNode(BlockNode);
-	nodes = (Nodes**) &program->v.info;
+	astNewNode(program, BlockAstNode, BlockNode);
+	nodes = (Nodes**) &program->nodes;
 	*nodes = nodesNew(8);
-	while (lexGetType() != EofNode) {
+	while (lex->toktype != EofToken) {
 		nodesAdd(nodes, parseprefix());
 	}
-	return program;
+	return (AstNode*) program;
 }
