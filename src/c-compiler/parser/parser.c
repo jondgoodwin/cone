@@ -20,15 +20,17 @@ AstNode *parseterm() {
 	case IntLitToken:
 		{
 			ULitAstNode *node;
-			astNewNodeAndNext(node, ULitAstNode, ULitNode);
+			astNewNode(node, ULitAstNode, ULitNode);
 			node->uintlit = lex->val.uintlit;
+			lexNextToken();
 			return (AstNode *)node;
 		}
 	case FloatLitToken:
 		{
 			FLitAstNode *node;
-			astNewNodeAndNext(node, FLitAstNode, FLitNode);
+			astNewNode(node, FLitAstNode, FLitNode);
 			node->floatlit = lex->val.floatlit;
+			lexNextToken();
 			return (AstNode *)node;
 		}
 	default:

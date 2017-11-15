@@ -34,6 +34,7 @@ typedef struct AstNode {
 	AstNodeHdr;
 } AstNode;
 
+// Expression Ast Node header, offering consistent access into to the value's type
 #define ExpAstNodeHdr \
 	AstNodeHdr; \
 	LangTypeInfo *vtype
@@ -63,6 +64,7 @@ typedef struct Nodes {
 	uint32_t avail;
 } Nodes;
 
+// Block
 typedef struct BlockAstNode {
 	AstNodeHdr;
 	Nodes *nodes;
@@ -82,6 +84,7 @@ enum AstType {
 	NbrAstTypes
 };
 
+// Allocate and initialize a new AST node, then retrieve next token
 #define astNewNodeAndNext(node, aststruct, asttyp) {\
 	astNewNode(node, aststruct, asttyp); \
 	lexNextToken(); \

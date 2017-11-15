@@ -57,7 +57,7 @@ void errorMsg(AstNode *node, int code, const char *msg, ...) {
 	// Reflect the source code line
 	fputs(" --> ", stderr);
 	srcp = node->linep;
-	if (*srcp && *srcp!='\n')
+	while (*srcp && *srcp!='\n')
 		fputc(*srcp++, stderr);
 	fputc('\n', stderr);
 
