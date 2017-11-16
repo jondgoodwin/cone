@@ -6,6 +6,7 @@
 */
 
 #include "cone.h"
+#include "shared/globals.h"
 #include "shared/fileio.h"
 #include "shared/symbol.h"
 #include "shared/ast.h"
@@ -17,6 +18,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
+
+void options(int argv, char **argc) {
+	target.ptrsize = 32;
+	#if _WIN64 || __x86_64__ || __ppc64__
+		target.ptrsize = 64;
+	#endif
+}
 
 void main(int argv, char **argc) {
 	char *src;
@@ -32,6 +40,7 @@ void main(int argv, char **argc) {
 		errorExit(ExitNF, "Cannot find or read source file.");
 		
 	symInit();
+	options(argv, argc);
 	lexInject(argc[1], src);
 	genllvm(parse());
 

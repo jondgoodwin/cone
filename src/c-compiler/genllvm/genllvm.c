@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <assert.h>
 
+// Generate AST into LLVM IR using LLVM
 void genllvm(AstNode *pgmnode) {
 	Nodes *nodes;
 	uint32_t cnt;

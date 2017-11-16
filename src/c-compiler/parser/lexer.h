@@ -8,6 +8,8 @@
 #ifndef lexer_h
 #define lexer_h
 
+#include "../shared/type.h"
+
 #include <stdint.h>
 
 typedef struct AstNode AstNode;
@@ -19,6 +21,7 @@ typedef struct Lexer {
 		double floatlit;
 		uint64_t uintlit;
 	} val;
+	LangTypeInfo *langtype;
 
 	// immutable info about source
 	char *url;		// The url where the source text came from

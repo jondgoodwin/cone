@@ -22,6 +22,7 @@ AstNode *parseterm() {
 			ULitAstNode *node;
 			astNewNode(node, ULitAstNode, ULitNode);
 			node->uintlit = lex->val.uintlit;
+			node->vtype = lex->langtype;
 			lexNextToken();
 			return (AstNode *)node;
 		}
@@ -30,6 +31,7 @@ AstNode *parseterm() {
 			FLitAstNode *node;
 			astNewNode(node, FLitAstNode, FLitNode);
 			node->floatlit = lex->val.floatlit;
+			node->vtype = lex->langtype;
 			lexNextToken();
 			return (AstNode *)node;
 		}

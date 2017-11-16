@@ -10,6 +10,8 @@
 
 #include "lexer.h"
 #include "../shared/ast.h"
+#include "../shared/type.h"
+#include "../shared/globals.h"
 #include "../shared/memory.h"
 #include "../shared/error.h"
 
@@ -119,6 +121,44 @@ void lexScanNumber(char *srcp) {
 	}
 
 	// Process number's explicit type as part of the token
+	if (*srcp=='d') {
+		srcp++;
+		lex->langtype = f64Type;
+	} else if (*srcp=='f') {
+		lex->langtype = f32Type;
+		if (*(++srcp)=='6' && *(srcp+1)=='4') {
+			lex->langtype = f64Type;
+			srcp += 2;
+		}
+		else if (*srcp=='3' && *(srcp+1)=='2')
+			srcp += 2;
+	} else if (*srcp=='i') {
+		lex->langtype = i32Type;
+		if (*(++srcp)=='8') {		
+			srcp++; lex->langtype = i8Type;
+		} else if (*srcp=='1' && *(srcp+1)=='6') {
+			srcp += 2; lex->langtype = i16Type;
+		} else if (*srcp=='3' && *(srcp+1)=='2') {
+			srcp += 2;
+		} else if (*srcp=='6' && *(srcp+1)=='4') {
+			srcp += 2; lex->langtype = i64Type;
+		} else if (strncmp(srcp, "size", 4)==0) {
+			srcp += 2; lex->langtype = target.ptrsize==64? i64Type : i32Type;
+		}
+	} else if (*srcp=='u') {
+		lex->langtype = u32Type;
+		if (*(++srcp)=='8') {		
+			srcp++; lex->langtype = u8Type;
+		} else if (*srcp=='1' && *(srcp+1)=='6') {
+			srcp += 2; lex->langtype = u16Type;
+		} else if (*srcp=='3' && *(srcp+1)=='2') {
+			srcp += 2;
+		} else if (*srcp=='6' && *(srcp+1)=='4') {
+			srcp += 2; lex->langtype = u64Type;
+		} else if (strncmp(srcp, "size", 4)==0) {
+			srcp += 2; lex->langtype = target.ptrsize==64? u64Type : u32Type;
+		}
+	}
 
 	// Set value and type
 	if (isFloat) {
