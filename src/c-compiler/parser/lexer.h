@@ -48,6 +48,7 @@ enum TokenTypes {
 	FloatLitToken,	// Float literal
 
 	DashOpToken,	// '-'
+	SlashOpToken,	// '/'
 
 	NbrTokens
 };

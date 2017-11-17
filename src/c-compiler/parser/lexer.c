@@ -202,6 +202,21 @@ void lexNextToken() {
 			lexScanNumber(srcp);
 			return;
 
+		// '/' or '//' or '/*'
+		case '/':
+			// Line comment: '//'
+			if (*(srcp+1)=='/') {
+				srcp += 2;
+				while (*srcp && *srcp!='\n' && *srcp!='\x1a')
+					srcp++;
+			}
+			// '/' operator (e.g., division)
+			else {
+				lex->toktype = SlashOpToken;
+				lex->srcp = ++srcp;
+				return;
+			}
+
 		// '-'
 		case '-':
 			lex->toktype = DashOpToken;
