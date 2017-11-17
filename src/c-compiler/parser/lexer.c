@@ -38,6 +38,10 @@ void lexInject(char *url, char *src) {
 	lex->next = NULL;
 	lex->prev = prev;
 
+	// Skip over UTF8 Byte-order mark (BOM = U+FEFF) at start of source, if there
+	if (*src=='\xEF' && *(src+1)=='\xBB' && *(src+2)=='\xBF')
+		src += 3;
+
 	// Initialize lexer's source info
 	lex->url = url;
 	lex->source = src;
