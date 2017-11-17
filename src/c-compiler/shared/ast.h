@@ -16,6 +16,8 @@ typedef struct Lexer Lexer;
 
 // All AST nodes begin with this header, mostly containing lexer data describing
 // where in the source this structure came from (useful for error messages)
+// - asttype contains the AstType code
+// - flags contains node-specific flags
 // - lexer contains -> url (filepath) and -> source
 // - srcp points to start of source token
 // - linep points to start of line that token begins on
@@ -26,18 +28,35 @@ typedef struct Lexer Lexer;
 	char *linep; \
 	uint32_t linenbr; \
 	uint16_t asttype; \
-	uint16_t subtype
+	uint16_t flags
 
-// AstNode encodes every type of token or AST node in a fixed-size structure.
-// A single structure converges both purposes, as most tokens are proto-AST nodes.
+// AstNode is a castable struct for all AST nodes.
 typedef struct AstNode {
 	AstNodeHdr;
 } AstNode;
 
-// Expression Ast Node header, offering consistent access into to the value's type
+// Identifier that refers to a type
+typedef struct TypeAstNode {
+	AstNodeHdr;
+	LangTypeInfo *type;
+	char *name;
+} TypeAstNode;
+
+// Expression Ast Node header, offering access to the node's type info
+// - vtype is the value type for an expression (e.g., 'i32')
+// - perm is the permission type (e.g., 'mut')
+// - alloc is the allocator type (e.g., 'global')
 #define ExpAstNodeHdr \
 	AstNodeHdr; \
-	LangTypeInfo *vtype
+	LangTypeInfo *vtype; \
+	LangTypeInfo *perm; \
+	LangTypeInfo *alloc
+
+// ExpAstNode is a castable struct for all expression nodes,
+// providing convenient access to the expression's type info
+typedef struct ExpAstNode {
+	ExpAstNodeHdr;
+} ExpAstNode;
 
 // Unsigned integer literal
 typedef struct ULitAstNode {
@@ -50,6 +69,12 @@ typedef struct FLitAstNode {
 	ExpAstNodeHdr;
 	double floatlit;
 } FLitAstNode;
+
+// Variable identifier
+typedef struct VarAstNode {
+	ExpAstNodeHdr;
+	char *name;
+} VarAstNode;
 
 // Unary operator (e.g., negative)
 typedef struct UnaryAstNode {
@@ -72,14 +97,22 @@ typedef struct BlockAstNode {
 
 // All the possible types for an AstNode
 enum AstType {
-	UnkNode,		// Unknown token (bad character)
+	// Type node
+	TypeNode,		// Identifier that refers to a type
+
+	// Expression nodes (having value, permission, alloc types)
+	ULitNode,		// Integer literal
+	FLitNode,		// Float literal
+	VarNode,		// Variable node
+	UnaryNode,		// Unary method operator
 
 	BlockNode,		// Block (list of statements)
 
-	ULitNode,		// Integer literal
-	FLitNode,		// Float literal
-
-	UnaryNode,		// Unary method operator
+	// Lexer-only nodes that are *never* found in a program's AST.
+	// KeywordNode exists for symbol table consistency
+	// UnkNode exists so the lexer can generate an error message
+	KeywordNode,	// Keyword token (flags is the keyword's token type)
+	UnkNode,		// Unknown 'bad' token
 
 	NbrAstTypes
 };
