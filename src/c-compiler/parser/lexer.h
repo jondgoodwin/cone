@@ -47,8 +47,12 @@ enum TokenTypes {
 	IntLitToken,	// Integer literal
 	FloatLitToken,	// Float literal
 
-	DashOpToken,	// '-'
-	SlashOpToken,	// '/'
+	ReservedToken,	// Reserved
+	IdentToken,		// Identifier
+
+	DashToken,			// '-'
+	SlashToken,			// '/'
+	UnderscoreToken,	// '_'
 
 	NbrTokens
 };

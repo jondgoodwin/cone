@@ -14,6 +14,7 @@
 #include "../shared/globals.h"
 #include "../shared/memory.h"
 #include "../shared/error.h"
+#include "../shared/utf8.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -176,6 +177,46 @@ void lexScanNumber(char *srcp) {
 	lex->srcp = srcp;
 }
 
+/** Tokenize an identifier or reserved token */
+void lexScanIdent(char *srcp) {
+	char *srcbeg = srcp++;	// Pointer to the start of the token
+	while (1) {
+		switch (*srcp) {
+
+		// Allow digit, letter or underscore in token
+		case '0': case '1': case '2': case '3': case '4':
+		case '5': case '6': case '7': case '8': case '9':
+		case 'a': case 'b': case 'c': case 'd': case 'e':
+		case 'f': case 'g': case 'h': case 'i': case 'j':
+		case 'k': case 'l': case 'm': case 'n': case 'o':
+		case 'p': case 'q': case 'r': case 's': case 't':
+		case 'u': case 'v': case 'w': case 'x': case 'y': case 'z':
+		case 'A': case 'B': case 'C': case 'D': case 'E':
+		case 'F': case 'G': case 'H': case 'I': case 'J':
+		case 'K': case 'L': case 'M': case 'N': case 'O':
+		case 'P': case 'Q': case 'R': case 'S': case 'T':
+		case 'U': case 'V': case 'W': case 'X': case 'Y': case 'Z':
+		case '_':
+			srcp++;
+			break;
+
+		default:
+			// Allow unicode letters in identifier name
+			if (utf8IsLetter(srcp))
+				srcp += utf8ByteSkip(srcp);
+			else {
+				// Identifier may end with '?'
+				if (*srcp == '?')
+					srcp++;
+				// Find identifier token in symbol table and preserve info about it
+				lex->toktype = IdentToken;
+				lex->srcp = srcp;
+				return;
+			}
+		}
+	}
+}
+
 // Decode next token from the source into new lex->token
 void lexNextToken() {
 	char *srcp;
@@ -183,10 +224,57 @@ void lexNextToken() {
 	while (1) {
 		switch (*srcp) {
 
-		// End-of-file
-		case '\0': case '\x1a':
-			lex->toktype = EofToken;
+		// Numeric literal (integer or float)
+		case '0': case '1': case '2': case '3': case '4':
+		case '5': case '6': case '7': case '8': case '9':
+			lexScanNumber(srcp);
 			return;
+
+		// Identifier
+		case 'a': case 'b': case 'c': case 'd': case 'e':
+		case 'f': case 'g': case 'h': case 'i': case 'j':
+		case 'k': case 'l': case 'm': case 'n': case 'o':
+		case 'p': case 'q': case 'r': case 's': case 't':
+		case 'u': case 'v': case 'w': case 'x': case 'y': case 'z':
+		case 'A': case 'B': case 'C': case 'D': case 'E':
+		case 'F': case 'G': case 'H': case 'I': case 'J':
+		case 'K': case 'L': case 'M': case 'N': case 'O':
+		case 'P': case 'Q': case 'R': case 'S': case 'T':
+		case 'U': case 'V': case 'W': case 'X': case 'Y': case 'Z':
+		case '$':
+			lexScanIdent(srcp);
+			return;
+
+		// '_' or identifier that starts with underscore
+		case '_':
+			if (utf8IsLetter(srcp+1))
+				lexScanNumber(srcp);
+			else {
+				lex->toktype = UnderscoreToken;
+				lex->srcp = ++srcp;
+			}
+			return;
+
+		// '-'
+		case '-':
+			lex->toktype = DashToken;
+			lex->srcp = ++srcp;
+			return;
+
+		// '/' or '//' or '/*'
+		case '/':
+			// Line comment: '//'
+			if (*(srcp+1)=='/') {
+				srcp += 2;
+				while (*srcp && *srcp!='\n' && *srcp!='\x1a')
+					srcp++;
+			}
+			// '/' operator (e.g., division)
+			else {
+				lex->toktype = SlashToken;
+				lex->srcp = ++srcp;
+				return;
+			}
 
 		// Ignore white space
 		case ' ': case '\t': case '\r':
@@ -200,31 +288,9 @@ void lexNextToken() {
 			lex->linenbr++;
 			break;
 
-		// Numeric literal (integer or float)
-		case '0': case '1': case '2': case '3': case '4': 
-		case '5': case '6': case '7': case '8': case '9':
-			lexScanNumber(srcp);
-			return;
-
-		// '/' or '//' or '/*'
-		case '/':
-			// Line comment: '//'
-			if (*(srcp+1)=='/') {
-				srcp += 2;
-				while (*srcp && *srcp!='\n' && *srcp!='\x1a')
-					srcp++;
-			}
-			// '/' operator (e.g., division)
-			else {
-				lex->toktype = SlashOpToken;
-				lex->srcp = ++srcp;
-				return;
-			}
-
-		// '-'
-		case '-':
-			lex->toktype = DashOpToken;
-			lex->srcp = ++srcp;
+		// End-of-file
+		case '\0': case '\x1a':
+			lex->toktype = EofToken;
 			return;
 
 		// Bad character
@@ -233,7 +299,8 @@ void lexNextToken() {
 				AstNode *node;
 				lex->srcp = srcp;
 				astNewNode(node, AstNode, UnkNode);
-				errorMsg(node, ErrorBadTok, "Bad character '%c' starting unknown token", *srcp++);
+				errorMsg(node, ErrorBadTok, "Bad character '%c' starting unknown token", *srcp);
+				srcp += utf8ByteSkip(srcp);
 			}
 		}
 	}
