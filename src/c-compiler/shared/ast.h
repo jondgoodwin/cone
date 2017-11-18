@@ -89,6 +89,18 @@ typedef struct Nodes {
 	uint32_t avail;
 } Nodes;
 
+// Program
+typedef struct PgmAstNode {
+	AstNodeHdr;
+	Nodes *nodes;
+} PgmAstNode;
+
+// Function block
+typedef struct FnBlkAstNode {
+	AstNodeHdr;
+	Nodes *nodes;
+} FnBlkAstNode;
+
 // Block
 typedef struct BlockAstNode {
 	AstNodeHdr;
@@ -106,6 +118,8 @@ enum AstType {
 	VarNode,		// Variable node
 	UnaryNode,		// Unary method operator
 
+	PgmNode,		// Program (global area)
+	FnBlkNode,		// Function block
 	BlockNode,		// Block (list of statements)
 
 	// Lexer-only nodes that are *never* found in a program's AST.

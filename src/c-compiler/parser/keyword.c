@@ -26,5 +26,5 @@ void keyAdd(char *keyword, uint16_t toktype) {
 }
 
 void keywordInit() {
-	keyAdd("fn", FuncToken);
+	keyAdd("fn", FnToken);
 }

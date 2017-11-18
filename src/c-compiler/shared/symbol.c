@@ -64,7 +64,7 @@ size_t gSymTblUsed = 0;		// Number of symbol table slots used
 		char *symtstr; \
 		Symbol *slot; \
 		slot = &gSymTable[tbli]; \
-		if (slot->name==NULL || (slot->hash == hash && (symtstr=slot->name)[strl]=='\0' && strncmp(strp, symtstr, strl))) \
+		if (slot->name==NULL || (slot->hash == hash && (symtstr=slot->name)[strl]=='\0' && strncmp(strp, symtstr, strl)==0)) \
 			break; \
 		tbli = symHashMod(tbli + step, gSymTblAvail); \
 	} \

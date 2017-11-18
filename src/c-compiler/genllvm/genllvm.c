@@ -11,24 +11,28 @@
 #include <stdio.h>
 #include <assert.h>
 
+// Generate a term
+void genlTerm(AstNode *termnode) {
+	if (termnode->asttype == ULitNode) {
+		printf("OMG Found an integer %ld\n", ((ULitAstNode*)termnode)->uintlit);
+	}
+	else if (termnode->asttype == FLitNode) {
+		printf("OMG Found a float %f\n", ((FLitAstNode*)termnode)->floatlit);
+	}
+}
+
 // Generate AST into LLVM IR using LLVM
 void genllvm(AstNode *pgmnode) {
 	Nodes *nodes;
 	uint32_t cnt;
 	AstNode **nodep;
 
-	assert(pgmnode->asttype == BlockNode);
-	nodes = (Nodes*) ((BlockAstNode*)pgmnode)->nodes;
+	assert(pgmnode->asttype == PgmNode);
+	nodes = (Nodes*) ((PgmAstNode*)pgmnode)->nodes;
 	nodep = (AstNode**)(nodes+1);
 	cnt = nodes->used;
 	while (cnt--) {
 		AstNode *node;
-		node = *nodep++;
-		if (node->asttype == ULitNode) {
-			printf("OMG Found an integer %ld\n", ((ULitAstNode*)node)->uintlit);
-		}
-		else if (node->asttype == FLitNode) {
-			printf("OMG Found a float %f\n", ((FLitAstNode*)node)->floatlit);
-		}
+		genlTerm(*nodep++);
 	}
 }

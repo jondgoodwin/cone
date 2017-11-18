@@ -266,6 +266,26 @@ void lexNextToken() {
 			lex->srcp = ++srcp;
 			return;
 
+		// '{'
+		case '{':
+			lex->toktype = LCurlyToken; lex->srcp = ++srcp;	return;
+
+		// '}'
+		case '}':
+			lex->toktype = RCurlyToken; lex->srcp = ++srcp; return;
+
+		// '('
+		case '(':
+			lex->toktype = LParenToken; lex->srcp = ++srcp; return;
+
+		// ')'
+		case ')':
+			lex->toktype = RParenToken; lex->srcp = ++srcp; return;
+
+		// ';'
+		case ';':
+			lex->toktype = SemiToken; lex->srcp = ++srcp; return;
+
 		// '/' or '//' or '/*'
 		case '/':
 			// Line comment: '//'

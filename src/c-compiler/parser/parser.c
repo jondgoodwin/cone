@@ -63,17 +63,46 @@ AstNode *parseprefix() {
 	return parseterm();
 }
 
-// Parse a program
-AstNode *parse() {
-	BlockAstNode *program;
+// Parse a function block
+AstNode *parseFn() {
+	FnBlkAstNode *fnnode;
 	Nodes **nodes;
 
-	// Create a Block node for the program
-	astNewNode(program, BlockAstNode, BlockNode);
+	if (lex->toktype == LCurlyToken)
+		lexNextToken();
+
+	// Create and populate a function block node
+	astNewNode(fnnode, FnBlkAstNode, FnBlkNode);
+	nodes = (Nodes**) &fnnode->nodes;
+	*nodes = nodesNew(8);
+	while (lex->toktype != EofToken && lex->toktype != RCurlyToken) {
+		nodesAdd(nodes, parseprefix());
+	}
+
+	if (lex->toktype == RCurlyToken)
+		lexNextToken();
+
+	return (AstNode*) fnnode;
+}
+
+// Parse a program
+AstNode *parse() {
+	PgmAstNode *program;
+	Nodes **nodes;
+
+	// Create and populate a Program node for the program
+	astNewNode(program, PgmAstNode, PgmNode);
 	nodes = (Nodes**) &program->nodes;
 	*nodes = nodesNew(8);
 	while (lex->toktype != EofToken) {
-		nodesAdd(nodes, parseprefix());
+		switch (lex->toktype) {
+		case FnToken:
+			lexNextToken();
+			nodesAdd(nodes, parseFn());
+			break;
+		default:
+			nodesAdd(nodes, parseprefix());
+		}
 	}
 	return (AstNode*) program;
 }

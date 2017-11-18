@@ -52,12 +52,17 @@ enum TokenTypes {
 	IdentToken,		// Identifier
 
 	// Punctuation tokens
+	SemiToken,			// ';'
+	LCurlyToken,		// '{'
+	RCurlyToken,		// '}'
+	LParenToken,		// '('
+	RParenToken,		// ')'
 	DashToken,			// '-'
 	SlashToken,			// '/'
 	UnderscoreToken,	// '_'
 
 	// Keywords
-	FuncToken,		// 'fn'
+	FnToken,		// 'fn'
 
 	NbrTokens
 };
