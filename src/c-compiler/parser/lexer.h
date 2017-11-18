@@ -46,15 +46,18 @@ typedef struct Lexer {
 enum TokenTypes {
 	EofToken,		// End-of-file
 
+	// Numeric and Identifier tokens
 	IntLitToken,	// Integer literal
 	FloatLitToken,	// Float literal
-
-	ReservedToken,	// Reserved
 	IdentToken,		// Identifier
 
+	// Punctuation tokens
 	DashToken,			// '-'
 	SlashToken,			// '/'
 	UnderscoreToken,	// '_'
+
+	// Keywords
+	FuncToken,		// 'fn'
 
 	NbrTokens
 };

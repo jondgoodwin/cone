@@ -206,12 +206,15 @@ void lexScanIdent(char *srcp) {
 			if (utf8IsLetter(srcp))
 				srcp += utf8ByteSkip(srcp);
 			else {
+				AstNode *identNode;
 				// Identifier may end with '?'
 				if (*srcp == '?')
 					srcp++;
 				// Find identifier token in symbol table and preserve info about it
+				// Substitute token type when identifier is a keyword
 				lex->val.ident = symFind(srcbeg, srcp-srcbeg);
-				lex->toktype = IdentToken;
+				identNode = lex->val.ident->node;
+				lex->toktype = (identNode && identNode->asttype == KeywordNode)? identNode->flags : IdentToken;
 				lex->srcp = srcp;
 				return;
 			}

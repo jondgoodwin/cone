@@ -135,5 +135,4 @@ Symbol *symFind(char *strp, size_t strl) {
 // Initialize symbol table
 void symInit() {
 	symGrow();
-	typInit();
 }

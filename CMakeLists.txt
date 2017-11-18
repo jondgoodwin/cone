@@ -15,6 +15,7 @@ add_executable(cone
 	src/c-compiler/shared/symbol.c
 	src/c-compiler/shared/type.c
 	src/c-compiler/shared/utf8.c
+	src/c-compiler/parser/keyword.c
 	src/c-compiler/parser/lexer.c
 	src/c-compiler/parser/parser.c
 	src/c-compiler/genllvm/genllvm.c
