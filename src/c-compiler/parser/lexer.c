@@ -11,6 +11,7 @@
 #include "lexer.h"
 #include "../shared/ast.h"
 #include "../shared/type.h"
+#include "../shared/symbol.h"
 #include "../shared/globals.h"
 #include "../shared/memory.h"
 #include "../shared/error.h"
@@ -209,6 +210,7 @@ void lexScanIdent(char *srcp) {
 				if (*srcp == '?')
 					srcp++;
 				// Find identifier token in symbol table and preserve info about it
+				lex->val.ident = symFind(srcbeg, srcp-srcbeg);
 				lex->toktype = IdentToken;
 				lex->srcp = srcp;
 				return;

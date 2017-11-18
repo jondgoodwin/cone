@@ -9,6 +9,7 @@
 #define lexer_h
 
 #include "../shared/type.h"
+#include "../shared/symbol.h"
 
 #include <stdint.h>
 
@@ -20,6 +21,7 @@ typedef struct Lexer {
 	union {
 		double floatlit;
 		uint64_t uintlit;
+		Symbol *ident;
 	} val;
 	LangTypeInfo *langtype;
 

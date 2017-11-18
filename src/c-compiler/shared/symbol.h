@@ -17,22 +17,19 @@
  * *****************************************************/
 
 // Configurable size for symbol table and % utilization trigger
-size_t gSymTblSlots;		// Initial maximum number of unique symbols (must be power of 2)
+size_t gSymbols;		// Initial maximum number of unique symbols (must be power of 2)
 unsigned int gSymTblUtil;	// % utilization that triggers doubling of table
 
-// A symbol's information in its allocated block
-typedef struct SymId {
-	AstNode *val;			// Pointer to symbol's AST-node
-	// char str[?];			// Symbol's c-string
-} SymId;
-// Macro to convert a SymInfo pointer to a pointer to its c-string
-#define symIdToStr(infop) ((char *) ((infop)+1))
+// Symbol info (a slot in the symbol table)
+typedef struct Symbol {
+	char *name;		// Symbol's name
+	AstNode *node;	// AST node currently assigned to symbol
+	size_t hash;	// Symbol's computed hash
+} Symbol;
 
-// Grow the symbol table, by either creating it or doubling its size 
-void symGrow();
-// Get pointer to SymId for the symbol's string. 
-// For unknown symbol, it allocates memory for the string (SymId) and adds it to symbol table.
-SymId *symGetId(char *strp, size_t strl);
+// Get pointer to Symbol for the symbol's string in the symbol table 
+// For unknown symbol, it allocates memory for the string and adds it to symbol table.
+Symbol *symFind(char *strp, size_t strl);
 
 // Initialize the symbol table with reserved symbols
 void symInit();

@@ -24,17 +24,11 @@
 #include <string.h>
 
 // Public globals
-size_t gSymTblSlots = 16384;	// Initial maximum number of unique symbols (must be power of 2)
+size_t gSymbols = 16384;	// Initial maximum number of unique symbols (must be power of 2)
 unsigned int gSymTblUtil = 80;	// % utilization that triggers doubling of table
 
-// The structure of a slot in the symbol table
-typedef struct SymTblSlot {
-	SymId *id;		// Symbol's allocated info (AST-node and string)
-	size_t hash;	// Symbol's computed hash
-} SymTblSlot;
-
 // Private globals
-SymTblSlot *gSymTable = NULL;	// The symbol table array
+Symbol *gSymTable = NULL;	// The symbol table array
 size_t gSymTblAvail = 0;	// Number of allocated symbol table slots (power of 2)
 size_t gSymTblCeil = 0;		// Ceiling that triggers table growth
 size_t gSymTblUsed = 0;		// Number of symbol table slots used
@@ -68,9 +62,9 @@ size_t gSymTblUsed = 0;		// Number of symbol table slots used
 	size_t tbli, step; \
 	for (tbli = symHashMod(hash, gSymTblAvail), step = 1;; ++step) { \
 		char *symtstr; \
-		SymTblSlot *slot; \
+		Symbol *slot; \
 		slot = &gSymTable[tbli]; \
-		if (slot->id==NULL || (slot->hash == hash && (symtstr=symIdToStr(slot))[strl]=='\0' && strncmp(strp, symtstr, strl))) \
+		if (slot->name==NULL || (slot->hash == hash && (symtstr=slot->name)[strl]=='\0' && strncmp(strp, symtstr, strl))) \
 			break; \
 		tbli = symHashMod(tbli + step, gSymTblAvail); \
 	} \
@@ -80,7 +74,7 @@ size_t gSymTblUsed = 0;		// Number of symbol table slots used
 /** Grow the symbol table, by either creating it or doubling its size */
 void symGrow() {
 	size_t oldTblAvail;
-	SymTblSlot *oldTable;
+	Symbol *oldTable;
 	size_t newTblMem;
 	size_t oldslot;
 
@@ -89,25 +83,26 @@ void symGrow() {
 	oldTblAvail = gSymTblAvail;
 
 	// Allocate and initialize new symbol table
-	gSymTblAvail = oldTblAvail==0? gSymTblSlots : oldTblAvail<<1;
+	gSymTblAvail = oldTblAvail==0? gSymbols : oldTblAvail<<1;
 	gSymTblCeil = (gSymTblUtil * gSymTblAvail) / 100;
-	newTblMem = gSymTblAvail * sizeof(SymTblSlot);
-	gSymTable = (SymTblSlot*) memAllocBlk(newTblMem);
+	newTblMem = gSymTblAvail * sizeof(Symbol);
+	gSymTable = (Symbol*) memAllocBlk(newTblMem);
 	memset(gSymTable, 0, newTblMem); // Fill with NULL pointers & 0s
 
 	// Copy existing symbol slots to re-hashed positions in new table
 	for (oldslot=0; oldslot < oldTblAvail; oldslot++) {
-		SymTblSlot *oldslotp, *newslotp;
+		Symbol *oldslotp, *newslotp;
 		oldslotp = &oldTable[oldslot];
-		if (oldslotp->id) {
+		if (oldslotp->name) {
 			char *strp;
 			size_t strl, hash;
-			strp = symIdToStr(oldslotp->id);
+			strp = oldslotp->name;
 			strl = strlen(strp);
 			hash = oldslotp->hash;
 			symFindSlot(newslotp, hash, strp, strl);
-			newslotp->id = oldslotp->id;
+			newslotp->name = oldslotp->name;
 			newslotp->hash = oldslotp->hash;
+			newslotp->node = oldslotp->node;
 		}
 	}
 	// memFreeBlk(oldTable);
@@ -115,29 +110,26 @@ void symGrow() {
 
 /** Get pointer to SymId for the symbol's string. 
  * For unknown symbol, this allocates memory for the string (SymId) and adds it to symbol table. */
-SymId *symGetId(char *strp, size_t strl) {
+Symbol *symFind(char *strp, size_t strl) {
 	size_t hash;
-	SymTblSlot *slotp;
-
-	// Double table if it has gotten too full
-	if (gSymTblCeil <= gSymTblUsed)
-		symGrow();
+	Symbol *slotp;
 
 	// Hash provide string into table
 	symHashFn(hash, strp, strl);
 	symFindSlot(slotp, hash, strp, strl);
 
 	// If not already a symbol, allocate memory for string and add to table
-	if (slotp->id == NULL) {
-		SymId *symid;
-		gSymTblUsed++;
+	if (slotp->name == NULL) {
+		// Double table if it has gotten too full
+		if (++gSymTblUsed >= gSymTblCeil)
+			symGrow();
+
+		// Populate symbol info into table
+		slotp->name = memAllocStr(strp, strl);
 		slotp->hash = hash;
-		slotp->id = symid = (SymId*) memAllocBlk(strl+1+sizeof(SymId));
-		symid->val = NULL;
-		strncpy((char*)(symid+1), strp, strl);
-		((char*)(symid+1))[strl] = '\0';
+		slotp->node = NULL;		// Undefined symbol
 	}
-	return slotp->id;
+	return slotp;
 }
 
 // Initialize symbol table
