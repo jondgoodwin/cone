@@ -10,7 +10,7 @@
 
 #include "lexer.h"
 #include "../shared/ast.h"
-#include "../shared/type.h"
+#include "../types/type.h"
 #include "../shared/symbol.h"
 #include "../shared/globals.h"
 #include "../shared/memory.h"

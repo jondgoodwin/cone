@@ -13,7 +13,7 @@ add_executable(cone
 	src/c-compiler/shared/fileio.c
 	src/c-compiler/shared/memory.c
 	src/c-compiler/shared/symbol.c
-	src/c-compiler/shared/type.c
+	src/c-compiler/types/type.c
 	src/c-compiler/shared/utf8.c
 	src/c-compiler/parser/keyword.c
 	src/c-compiler/parser/lexer.c

@@ -8,7 +8,7 @@
 #ifndef ast_h
 #define ast_h
 
-#include "type.h"
+#include "../types/type.h"
 
 #include <stdint.h>
 

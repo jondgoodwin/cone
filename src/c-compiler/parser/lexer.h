@@ -8,7 +8,7 @@
 #ifndef lexer_h
 #define lexer_h
 
-#include "../shared/type.h"
+#include "../types/type.h"
 #include "../shared/symbol.h"
 
 #include <stdint.h>

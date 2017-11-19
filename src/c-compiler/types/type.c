@@ -6,7 +6,7 @@
 */
 
 #include "type.h"
-#include "memory.h"
+#include "../shared/memory.h"
 
 #define primtype(dest, typ, nbyt) {\
 	dest = (LangTypeInfo*) (ptype = allocTypeInfo(PrimTypeInfo)); \
