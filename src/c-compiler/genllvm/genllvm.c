@@ -32,7 +32,6 @@ void genllvm(AstNode *pgmnode) {
 	nodep = (AstNode**)(nodes+1);
 	cnt = nodes->used;
 	while (cnt--) {
-		AstNode *node;
 		genlTerm(*nodep++);
 	}
 }

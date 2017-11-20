@@ -74,6 +74,9 @@ typedef struct TypeTypeInfo {
 	LangTypeInfo *typeinfo;
 } TypeTypeInfo;
 
+#include "permission.h"
+
+// Primitive numeric types
 LangTypeInfo *i8Type;
 LangTypeInfo *i16Type;
 LangTypeInfo *i32Type;
@@ -84,6 +87,15 @@ LangTypeInfo *u32Type;
 LangTypeInfo *u64Type;
 LangTypeInfo *f32Type;
 LangTypeInfo *f64Type;
+
+// Built-in permission types
+LangTypeInfo *mutPerm;
+LangTypeInfo *mmutPerm;
+LangTypeInfo *immPerm;
+LangTypeInfo *constPerm;
+LangTypeInfo *constxPerm;
+LangTypeInfo *mutxPerm;
+LangTypeInfo *idPerm;
 
 void typInit();
 
