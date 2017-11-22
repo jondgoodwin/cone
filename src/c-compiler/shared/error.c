@@ -33,8 +33,7 @@ void errorExit(int exitcode, const char *msg, ...) {
 }
 
 // Send an error message to stderr
-void errorMsg(AstNode *node, int code, const char *msg, ...) {
-	va_list argptr;
+void errorOut(char *tokp, uint32_t linenbr, char *linep, char *url, int code, const char *msg, va_list args) {
 	char *srcp;
 	int pos, spaces;
 
@@ -49,24 +48,38 @@ void errorMsg(AstNode *node, int code, const char *msg, ...) {
 	}
 
 	// Do a formatted output of message, passing along all parms
-	va_start(argptr, msg);
-	vfprintf(stderr, msg, argptr);
-	va_end(argptr);
+	vfprintf(stderr, msg, args);
 	fputs("\n", stderr);
 
 	// Reflect the source code line
 	fputs(" --> ", stderr);
-	srcp = node->linep;
+	srcp = linep;
 	while (*srcp && *srcp!='\n')
 		fputc(*srcp++, stderr);
 	fputc('\n', stderr);
 
 	// Depict where error message applies along with source file/pos info
 	fprintf(stderr, "     ");
-	pos = (spaces = node->srcp - node->linep) + 1;
+	pos = (spaces = tokp - linep) + 1;
 	while (spaces--)
 		fputc(' ', stderr);
-	fprintf(stderr, "^--- %s:%d:%d\n", node->lexer->url, node->linenbr, pos);
+	fprintf(stderr, "^--- %s:%d:%d\n", url, linenbr, pos);
+}
+
+// Send an error message to stderr
+void errorMsgNode(AstNode *node, int code, const char *msg, ...) {
+	va_list argptr;
+	va_start(argptr, msg);
+	errorOut(node->srcp, node->linenbr, node->linep, node->lexer->url, code, msg, argptr);
+	va_end(argptr);
+}
+
+// Send an error message to stderr
+void errorMsgLex(int code, const char *msg, ...) {
+	va_list argptr;
+	va_start(argptr, msg);
+	errorOut(lex->tokp, lex->linenbr, lex->linep, lex->url, code, msg, argptr);
+	va_end(argptr);
 }
 
 // Generate final message for a compile

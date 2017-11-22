@@ -10,9 +10,27 @@
 #include "parser.h"
 #include "../shared/ast.h"
 #include "../shared/memory.h"
+#include "../shared/error.h"
 #include "lexer.h"
 
 #include <stdio.h>
+
+// We expect semicolon since statement has run its course
+void parseSemi() {
+	if (lex->toktype != SemiToken)
+		errorMsgLex(ErrorNoSemi, "Expected semicolon - skipping forward to find it");
+	while (lex->toktype != SemiToken) {
+		if (lex->toktype == EofToken || lex->toktype == RCurlyToken)
+			return;
+		lexNextToken();
+	}
+	lexNextToken();
+}
+
+void parseRCurly(AstNode *node) {
+	if (lex->toktype == RCurlyToken)
+		lexNextToken();
+}
 
 // Parse a term: literal, identifier, etc.
 AstNode *parseterm() {
@@ -44,12 +62,12 @@ AstNode *parseterm() {
 }
 
 // Parse a prefix operator, e.g.: -
-AstNode *parseprefix() {
+AstNode *parsePrefix() {
 	if (lex->toktype==DashToken) {
 		UnaryAstNode *node;
 		AstNode *opnode;
 		astNewNodeAndNext(node, UnaryAstNode, UnaryNode);
-		opnode = parseprefix();
+		opnode = parsePrefix();
 		// Optimize negative numeric literal
 		if (opnode->asttype == ULitNode) {
 			((ULitAstNode*)opnode)->uintlit = -(int32_t)((ULitAstNode*)opnode)->uintlit;
@@ -58,11 +76,19 @@ AstNode *parseprefix() {
 			((FLitAstNode*)opnode)->floatlit = -(int32_t)((FLitAstNode*)opnode)->floatlit;
 			return (AstNode *)opnode;
 		} else {
-			node->expnode = parseprefix();
+			node->expnode = parsePrefix();
 			return (AstNode *)node;
 		}
 	}
 	return parseterm();
+}
+
+// Parse a statement within a function
+AstNode *parseStmt() {
+	AstNode *stmtnode;
+	stmtnode = parsePrefix();
+	parseSemi();
+	return stmtnode;
 }
 
 // Parse a function block
@@ -78,7 +104,7 @@ AstNode *parseFn() {
 	nodes = (Nodes**) &fnnode->nodes;
 	*nodes = nodesNew(8);
 	while (lex->toktype != EofToken && lex->toktype != RCurlyToken) {
-		nodesAdd(nodes, parseprefix());
+		nodesAdd(nodes, parseStmt());
 	}
 
 	if (lex->toktype == RCurlyToken)
@@ -87,14 +113,14 @@ AstNode *parseFn() {
 	return (AstNode*) fnnode;
 }
 
-// Parse a program
+// Parse a program's global area
 AstNode *parse() {
-	PgmAstNode *program;
+	GlobalAstNode *global;
 	Nodes **nodes;
 
 	// Create and populate a Program node for the program
-	astNewNode(program, PgmAstNode, PgmNode);
-	nodes = (Nodes**) &program->nodes;
+	astNewNode(global, GlobalAstNode, GlobalNode);
+	nodes = (Nodes**) &global->nodes;
 	*nodes = nodesNew(8);
 	while (lex->toktype != EofToken) {
 		switch (lex->toktype) {
@@ -103,8 +129,8 @@ AstNode *parse() {
 			nodesAdd(nodes, parseFn());
 			break;
 		default:
-			nodesAdd(nodes, parseprefix());
+			nodesAdd(nodes, parsePrefix());
 		}
 	}
-	return (AstNode*) program;
+	return (AstNode*) global;
 }

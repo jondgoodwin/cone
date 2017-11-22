@@ -90,10 +90,10 @@ typedef struct Nodes {
 } Nodes;
 
 // Program
-typedef struct PgmAstNode {
+typedef struct GlobalAstNode {
 	AstNodeHdr;
 	Nodes *nodes;
-} PgmAstNode;
+} GlobalAstNode;
 
 // Function block
 typedef struct FnBlkAstNode {
@@ -118,7 +118,7 @@ enum AstType {
 	VarNode,		// Variable node
 	UnaryNode,		// Unary method operator
 
-	PgmNode,		// Program (global area)
+	GlobalNode,		// Program (global area)
 	FnBlkNode,		// Function block
 	BlockNode,		// Block (list of statements)
 
@@ -142,7 +142,7 @@ enum AstType {
 	node = (aststruct*) memAllocBlk(sizeof(aststruct)); \
 	node->asttype = asttyp; \
 	node->lexer = lex; \
-	node->srcp = lex->srcp; \
+	node->srcp = lex->tokp; \
 	node->linep = lex->linep; \
 	node->linenbr = lex->linenbr; \
 }

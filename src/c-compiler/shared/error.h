@@ -21,6 +21,7 @@ enum ErrorCode {
 	// Non-terminating errors
 	ErrorCode = 1000,
 	ErrorBadTok,	// Bad character starting an unknown token
+	ErrorNoSemi,	// Missing semicolon
 
 	// Warnings
 	WarnCode = 3000,
@@ -28,7 +29,8 @@ enum ErrorCode {
 
 // Send an error message to stderr
 void errorExit(int exitcode, const char *msg, ...);
-void errorMsg(AstNode *node, int code, const char *msg, ...);
+void errorMsgNode(AstNode *node, int code, const char *msg, ...);
+void errorMsgLex(int code, const char *msg, ...);
 void errorSummary();
 
 #endif

@@ -71,7 +71,7 @@ void lexScanNumber(char *srcp) {
 	uint64_t intval;	// Calculated integer value for integer literal
 	char isFloat;		// nonzero when number token is a float, 'e' when in exponent
 
-	srcbeg = srcp;
+	lex->tokp = srcbeg = srcp;
 
 	// A leading zero may indicate a non-base 10 number
 	base = 10;
@@ -181,6 +181,7 @@ void lexScanNumber(char *srcp) {
 /** Tokenize an identifier or reserved token */
 void lexScanIdent(char *srcp) {
 	char *srcbeg = srcp++;	// Pointer to the start of the token
+	lex->tokp = srcbeg;
 	while (1) {
 		switch (*srcp) {
 
@@ -220,6 +221,15 @@ void lexScanIdent(char *srcp) {
 			}
 		}
 	}
+}
+
+// Shortcut macro for return a punctuation token
+#define lexReturnPuncTok(tok, skip) { \
+	lex->toktype = tok; \
+	lex->tokp = srcp; \
+	srcp += skip; \
+	lex->srcp = srcp; \
+	return; \
 }
 
 // Decode next token from the source into new lex->token
@@ -262,29 +272,27 @@ void lexNextToken() {
 
 		// '-'
 		case '-':
-			lex->toktype = DashToken;
-			lex->srcp = ++srcp;
-			return;
+			lexReturnPuncTok(DashToken, 1);
 
 		// '{'
 		case '{':
-			lex->toktype = LCurlyToken; lex->srcp = ++srcp;	return;
+			lexReturnPuncTok(LCurlyToken, 1);
 
 		// '}'
 		case '}':
-			lex->toktype = RCurlyToken; lex->srcp = ++srcp; return;
+			lexReturnPuncTok(RCurlyToken, 1);
 
 		// '('
 		case '(':
-			lex->toktype = LParenToken; lex->srcp = ++srcp; return;
+			lexReturnPuncTok(LParenToken, 1);
 
 		// ')'
 		case ')':
-			lex->toktype = RParenToken; lex->srcp = ++srcp; return;
+			lexReturnPuncTok(RParenToken, 1);
 
 		// ';'
 		case ';':
-			lex->toktype = SemiToken; lex->srcp = ++srcp; return;
+			lexReturnPuncTok(SemiToken, 1);
 
 		// '/' or '//' or '/*'
 		case '/':
@@ -295,11 +303,9 @@ void lexNextToken() {
 					srcp++;
 			}
 			// '/' operator (e.g., division)
-			else {
-				lex->toktype = SlashToken;
-				lex->srcp = ++srcp;
-				return;
-			}
+			else
+				lexReturnPuncTok(SlashToken, 1);
+			break;
 
 		// Ignore white space
 		case ' ': case '\t': case '\r':
@@ -321,10 +327,8 @@ void lexNextToken() {
 		// Bad character
 		default:
 			{
-				AstNode *node;
-				lex->srcp = srcp;
-				astNewNode(node, AstNode, UnkNode);
-				errorMsg(node, ErrorBadTok, "Bad character '%c' starting unknown token", *srcp);
+				lex->tokp = srcp;
+				errorMsgLex(ErrorBadTok, "Bad character '%c' starting unknown token", *srcp);
 				srcp += utf8ByteSkip(srcp);
 			}
 		}
