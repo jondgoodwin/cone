@@ -10,6 +10,14 @@
 
 #include "../shared/ast.h"
 
+// parser.c
 AstNode *parse();
+void parseSemi();
+void parseRCurly();
 
+// parsestmt.c
+void parseStmtBlock(Nodes **nodes);
+
+// parseexp.c
+AstNode *parseExp();
 #endif

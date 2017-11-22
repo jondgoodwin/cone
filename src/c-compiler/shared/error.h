@@ -22,6 +22,9 @@ enum ErrorCode {
 	ErrorCode = 1000,
 	ErrorBadTok,	// Bad character starting an unknown token
 	ErrorNoSemi,	// Missing semicolon
+	ErrorNoRCurly,	// Missing right curly brace
+	ErrorBadTerm,   // Invalid term - something other than var, lit, etc.
+	ErrorBadGloStmt, // Invalid global area type, var or function statement
 
 	// Warnings
 	WarnCode = 3000,

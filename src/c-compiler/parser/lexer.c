@@ -227,8 +227,7 @@ void lexScanIdent(char *srcp) {
 #define lexReturnPuncTok(tok, skip) { \
 	lex->toktype = tok; \
 	lex->tokp = srcp; \
-	srcp += skip; \
-	lex->srcp = srcp; \
+	lex->srcp = srcp + skip; \
 	return; \
 }
 
@@ -321,8 +320,7 @@ void lexNextToken() {
 
 		// End-of-file
 		case '\0': case '\x1a':
-			lex->toktype = EofToken;
-			return;
+			lexReturnPuncTok(EofToken, 0);
 
 		// Bad character
 		default:
