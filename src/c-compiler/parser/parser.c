@@ -38,8 +38,50 @@ void parseRCurly() {
 // Parse a function block
 AstNode *parseFn() {
 	FnBlkAstNode *fnnode;
+	Symbol *fnsym;
+	Symbol nosym;
 	astNewNode(fnnode, FnBlkAstNode, FnBlkNode);
-	parseStmtBlock(&fnnode->nodes);
+
+	// Process function name, if provided
+	if (lex->toktype == IdentToken) {
+		fnsym = lex->val.ident;
+		lexNextToken();
+	}
+	else {
+		// For anonymous function, create and populate fake symbol table entry
+		fnsym = &nosym;
+		fnsym->name = NULL;
+		fnsym->node = NULL;
+	}
+
+	// Process parameter declarations
+	if (lex->toktype == LParenToken) {
+		lexNextToken();
+		if (lex->toktype == RParenToken)
+			lexNextToken();
+		else
+			errorMsgLex(ErrorNoRParen, "Expected right parenthesis that ends parameters");
+	}
+	else
+		errorMsgLex(ErrorNoLParen, "Expected left parenthesis for parameter declarations");
+
+	// Error out if name is already used but types don't match
+
+	// Process implementation block, if provided
+	if (lex->toktype == LCurlyToken) {
+		// If func is already fully defined with an implementation, error out
+		if (fnsym->node && fnsym->node->asttype == FnBlkNode &&
+			((FnBlkAstNode*)fnsym->node)->nodes)
+			errorMsgNode((AstNode *)fnnode, ErrorFnDupImpl, "Function already has an implementation");
+		else
+			fnsym->node = (AstNode*)fnnode;
+		parseStmtBlock(&fnnode->nodes);
+	} else {
+		parseSemi();
+		// Attach AST to symbol, if it is not defined already
+		if (fnsym->node == NULL)
+			fnsym->node = (AstNode*)fnnode;
+	}
 	return (AstNode*) fnnode;
 }
 

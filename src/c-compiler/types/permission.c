@@ -20,11 +20,11 @@
 // Initialize built-in static permission type global variables
 void permInit() {
 	PermTypeInfo *perm;
-	permtype(mutPerm, PermType, MutPerm, MayRead | MayWrite | MaySend | MayUnlock | MayIntRef);
-	permtype(mmutPerm, PermType, MmutPerm, MayRead | MayWrite | MayAlias | MayAliasWrite | MayUnlock);
-	permtype(immPerm, PermType, ImmPerm, MayRead | MayAlias | MaySend | MayUnlock | MayIntRef);
-	permtype(constPerm, PermType, ConstPerm, MayRead | MayAlias | MayUnlock);
-	permtype(constxPerm, PermType, ConstxPerm, MayRead | MayAlias | MayUnlock | MayIntRef);
-	permtype(mutxPerm, PermType, MutxPerm, MayRead | MayWrite | MayAlias | MayUnlock | MayIntRef);
-	permtype(idPerm, PermType, IdPerm, MayAlias | MaySend | MayUnlock);
+	permtype(mutPerm, PermType, MutPerm, MayRead | MayWrite | MaySync | MayIntRef | IsLockless);
+	permtype(mmutPerm, PermType, MmutPerm, MayRead | MayWrite | MayAlias | MayAliasWrite | IsLockless);
+	permtype(immPerm, PermType, ImmPerm, MayRead | MayAlias | MaySync | MayIntRef | IsLockless);
+	permtype(constPerm, PermType, ConstPerm, MayRead | MayAlias | IsLockless);
+	permtype(constxPerm, PermType, ConstxPerm, MayRead | MayAlias | MayIntRef | IsLockless);
+	permtype(mutxPerm, PermType, MutxPerm, MayRead | MayWrite | MayAlias | MayIntRef | IsLockless);
+	permtype(idPerm, PermType, IdPerm, MayAlias | MaySync | IsLockless);
 }

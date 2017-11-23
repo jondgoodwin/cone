@@ -25,6 +25,9 @@ enum ErrorCode {
 	ErrorNoRCurly,	// Missing right curly brace
 	ErrorBadTerm,   // Invalid term - something other than var, lit, etc.
 	ErrorBadGloStmt, // Invalid global area type, var or function statement
+	ErrorFnDupImpl, // Function already has another implementation
+	ErrorNoLParen,   // Expected left parenthesis not found
+	ErrorNoRParen,	 // Expected right parenthesis not found
 
 	// Warnings
 	WarnCode = 3000,
