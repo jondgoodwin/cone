@@ -98,6 +98,8 @@ typedef struct GlobalAstNode {
 // Function block
 typedef struct FnBlkAstNode {
 	AstNodeHdr;
+	char *name;
+	FnTypeInfo *fnsig;
 	Nodes *nodes;
 } FnBlkAstNode;
 
@@ -141,6 +143,7 @@ enum AstType {
 #define astNewNode(node, aststruct, asttyp) {\
 	node = (aststruct*) memAllocBlk(sizeof(aststruct)); \
 	node->asttype = asttyp; \
+	node->flags = 0; \
 	node->lexer = lex; \
 	node->srcp = lex->tokp; \
 	node->linep = lex->linep; \

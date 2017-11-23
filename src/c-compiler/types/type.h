@@ -21,7 +21,7 @@ enum LangTypes {
 
 	ArrayType,	// Also dynamic arrays? SOA?
 
-	FuncType,	// Also method, closure, behavior, co-routine, thread, ...
+	FnType,		// Also method, closure, behavior, co-routine, thread, ...
 
 	StructType,	// Also class, interface, actor, etc.?
 
@@ -51,6 +51,14 @@ typedef struct PrimTypeInfo {
 	TypeHeader;
 	unsigned char nbytes;	// e.g., int32 uses 4 bytes
 } PrimTypeInfo;
+
+// For function signatures
+typedef struct FnTypeInfo {
+	TypeHeader;
+	uint16_t flags;
+	LangTypeInfo *rettype;	// return type
+	// named parameters and their types
+} FnTypeInfo;
 
 // For pointers
 typedef struct PtrTypeInfo {
@@ -96,6 +104,14 @@ LangTypeInfo *constPerm;
 LangTypeInfo *constxPerm;
 LangTypeInfo *mutxPerm;
 LangTypeInfo *idPerm;
+
+struct Symbol;
+
+// Communication block between function impl and type parser
+typedef struct TypeAndName {
+	FnTypeInfo *typeinfo;
+	struct Symbol *symname;	// NULL = no name specified
+} TypeAndName;
 
 void typInit();
 

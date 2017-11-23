@@ -38,49 +38,32 @@ void parseRCurly() {
 // Parse a function block
 AstNode *parseFn() {
 	FnBlkAstNode *fnnode;
-	Symbol *fnsym;
-	Symbol nosym;
+	TypeAndName typnam;
+	Symbol *oldsym;
+
+	// Process the function's signature info, then put info in new AST node
+	parseFnType(&typnam);
 	astNewNode(fnnode, FnBlkAstNode, FnBlkNode);
+	oldsym = typnam.symname;
+	fnnode->name = typnam.symname->name;
+	fnnode->fnsig = typnam.typeinfo;
 
-	// Process function name, if provided
-	if (lexIsToken(IdentToken)) {
-		fnsym = lex->val.ident;
-		lexNextToken();
-	}
-	else {
-		// For anonymous function, create and populate fake symbol table entry
-		fnsym = &nosym;
-		fnsym->name = NULL;
-		fnsym->node = NULL;
-	}
+	// Error if name is already used but types don't match
 
-	// Process parameter declarations
-	if (lexIsToken(LParenToken)) {
-		lexNextToken();
-		if (lexIsToken(RParenToken))
-			lexNextToken();
-		else
-			errorMsgLex(ErrorNoRParen, "Expected right parenthesis that ends parameters");
-	}
-	else
-		errorMsgLex(ErrorNoLParen, "Expected left parenthesis for parameter declarations");
-
-	// Error out if name is already used but types don't match
-
-	// Process implementation block, if provided
+	// Process statements block that implements function, if provided
 	if (lexIsToken(LCurlyToken)) {
 		// If func is already fully defined with an implementation, error out
-		if (fnsym->node && fnsym->node->asttype == FnBlkNode &&
-			((FnBlkAstNode*)fnsym->node)->nodes)
+		if (oldsym->node && oldsym->node->asttype == FnBlkNode &&
+			((FnBlkAstNode*)oldsym->node)->nodes)
 			errorMsgNode((AstNode *)fnnode, ErrorFnDupImpl, "Function already has an implementation");
 		else
-			fnsym->node = (AstNode*)fnnode;
+			oldsym->node = (AstNode*)fnnode;
 		parseStmtBlock(&fnnode->nodes);
 	} else {
 		parseSemi();
 		// Attach AST to symbol, if it is not defined already
-		if (fnsym->node == NULL)
-			fnsym->node = (AstNode*)fnnode;
+		if (oldsym->node == NULL)
+			oldsym->node = (AstNode*)fnnode;
 	}
 	return (AstNode*) fnnode;
 }
@@ -97,7 +80,6 @@ AstNode *parse() {
 	while (! lexIsToken( EofToken)) {
 		switch (lex->toktype) {
 		case FnToken:
-			lexNextToken();
 			nodesAdd(nodes, parseFn());
 			break;
 		default:

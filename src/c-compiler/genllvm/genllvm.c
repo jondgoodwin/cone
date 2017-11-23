@@ -28,7 +28,7 @@ void genlFn(AstNode *fnnode) {
 	AstNode **nodep;
 
 	assert(fnnode->asttype == FnBlkNode);
-	nodes = (Nodes*) ((GlobalAstNode*)fnnode)->nodes;
+	nodes = (Nodes*) ((FnBlkAstNode*)fnnode)->nodes;
 	nodep = (AstNode**)(nodes+1);
 	cnt = nodes->used;
 	while (cnt--) {

@@ -20,4 +20,8 @@ void parseStmtBlock(Nodes **nodes);
 
 // parseexp.c
 AstNode *parseExp();
+
+// parsetype.c
+void parseFnType(TypeAndName *typnam);
+
 #endif
