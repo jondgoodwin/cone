@@ -25,11 +25,11 @@ AstNode *parseExpStmt() {
 
 // Parse a statement block inside a control structure
 void parseStmtBlock(Nodes **nodes) {
-	if (lex->toktype == LCurlyToken)
+	if (lexIsToken(LCurlyToken))
 		lexNextToken();
 
 	*nodes = nodesNew(8);
-	while (lex->toktype != EofToken && lex->toktype != RCurlyToken) {
+	while (! lexIsToken(EofToken) && ! lexIsToken(RCurlyToken)) {
 		nodesAdd(nodes, parseExpStmt());
 	}
 

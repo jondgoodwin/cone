@@ -46,7 +46,7 @@ AstNode *parseterm() {
 
 // Parse a prefix operator, e.g.: -
 AstNode *parsePrefix() {
-	if (lex->toktype==DashToken) {
+	if (lexIsToken(DashToken)) {
 		UnaryAstNode *node;
 		AstNode *opnode;
 		astNewNodeAndNext(node, UnaryAstNode, UnaryNode);

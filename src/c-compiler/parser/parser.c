@@ -17,10 +17,10 @@
 
 // We expect semicolon since statement has run its course
 void parseSemi() {
-	if (lex->toktype != SemiToken)
+	if (!lexIsToken(SemiToken))
 		errorMsgLex(ErrorNoSemi, "Expected semicolon - skipping forward to find it");
-	while (lex->toktype != SemiToken) {
-		if (lex->toktype == EofToken || lex->toktype == RCurlyToken)
+	while (! lexIsToken(SemiToken)) {
+		if (lexIsToken(EofToken) || lexIsToken(RCurlyToken))
 			return;
 		lexNextToken();
 	}
@@ -29,7 +29,7 @@ void parseSemi() {
 
 // Expect right curly brace and move past
 void parseRCurly() {
-	if (lex->toktype == RCurlyToken)
+	if (lexIsToken(RCurlyToken))
 		lexNextToken();
 	else
 		errorMsgLex(ErrorNoRCurly, "Expected closing brace '}'");
@@ -43,7 +43,7 @@ AstNode *parseFn() {
 	astNewNode(fnnode, FnBlkAstNode, FnBlkNode);
 
 	// Process function name, if provided
-	if (lex->toktype == IdentToken) {
+	if (lexIsToken(IdentToken)) {
 		fnsym = lex->val.ident;
 		lexNextToken();
 	}
@@ -55,9 +55,9 @@ AstNode *parseFn() {
 	}
 
 	// Process parameter declarations
-	if (lex->toktype == LParenToken) {
+	if (lexIsToken(LParenToken)) {
 		lexNextToken();
-		if (lex->toktype == RParenToken)
+		if (lexIsToken(RParenToken))
 			lexNextToken();
 		else
 			errorMsgLex(ErrorNoRParen, "Expected right parenthesis that ends parameters");
@@ -68,7 +68,7 @@ AstNode *parseFn() {
 	// Error out if name is already used but types don't match
 
 	// Process implementation block, if provided
-	if (lex->toktype == LCurlyToken) {
+	if (lexIsToken(LCurlyToken)) {
 		// If func is already fully defined with an implementation, error out
 		if (fnsym->node && fnsym->node->asttype == FnBlkNode &&
 			((FnBlkAstNode*)fnsym->node)->nodes)
@@ -94,7 +94,7 @@ AstNode *parse() {
 	astNewNode(global, GlobalAstNode, GlobalNode);
 	nodes = (Nodes**) &global->nodes;
 	*nodes = nodesNew(8);
-	while (lex->toktype != EofToken) {
+	while (! lexIsToken( EofToken)) {
 		switch (lex->toktype) {
 		case FnToken:
 			lexNextToken();

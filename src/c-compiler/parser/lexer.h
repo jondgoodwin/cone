@@ -70,6 +70,8 @@ enum TokenTypes {
 // Current lexer
 Lexer *lex;
 
+#define lexIsToken(tok) (lex->toktype == (tok))
+
 // Lexer functions
 void lexInject(char *url, char *src);
 void lexPop();
