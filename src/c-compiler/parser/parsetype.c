@@ -49,7 +49,7 @@ void parseFnType(TypeAndName *typnam) {
 		errorMsgLex(ErrorNoLParen, "Expected left parenthesis for parameter declarations");
 
 	// Process return type info
-	fnsig->rettype = (LangTypeInfo*)parseQuadType();
+	fnsig->rettype = parseType();
 }
 
 // Parse a single type sequence

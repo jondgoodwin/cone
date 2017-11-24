@@ -48,9 +48,7 @@ typedef struct TypeAstNode {
 // - alloc is the allocator type (e.g., 'global')
 #define ExpAstNodeHdr \
 	AstNodeHdr; \
-	LangTypeInfo *vtype; \
-	LangTypeInfo *perm; \
-	LangTypeInfo *alloc
+	LangTypeInfo *vtype
 
 // ExpAstNode is a castable struct for all expression nodes,
 // providing convenient access to the expression's type info

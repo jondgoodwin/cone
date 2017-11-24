@@ -41,7 +41,7 @@ enum PermType {
 // If off, any new alias turns off use of the old alias for the lifetime of the new alias.
 #define MayAlias 0x04		
 #define MayAliasWrite 0x08	// If on, another live alias may be created able to write the contents.
-#define MaySync 0x10		// If on, a reference may be shared with or sent to another thread.
+#define RaceSafe 0x10		// If on, a reference may be shared with or sent to another thread.
 // If on, lifetime-constrained interior references may be borrowed from this alias.
 #define MayIntRef 0x20
 // If on, no locks are needed to read or mutate the contents. 
