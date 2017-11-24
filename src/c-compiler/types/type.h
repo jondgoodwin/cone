@@ -9,9 +9,12 @@
 #define type_h
 
 #include <stdint.h>
+typedef struct Symbol Symbol;
 
 // All the possible types for a language type
 enum LangTypes {
+	VoidType,	// represening no values, e.g., no return values on a fn
+
 	// PrimTypeInfo
 	IntType,	// Integer
 	UintType,	// Unsigned integer
@@ -82,6 +85,16 @@ typedef struct TypeTypeInfo {
 	LangTypeInfo *typeinfo;
 } TypeTypeInfo;
 
+// The multi-dimensional type info for a value
+typedef struct QuadTypeInfo {
+	TypeHeader;
+	Symbol *name;
+	LangTypeInfo *valtype;
+	LangTypeInfo *permtype;
+	LangTypeInfo *alloctype;
+	LangTypeInfo *lifetype;
+} QuadTypeInfo;
+
 #include "permission.h"
 
 // Primitive numeric types
@@ -105,7 +118,7 @@ LangTypeInfo *constxPerm;
 LangTypeInfo *mutxPerm;
 LangTypeInfo *idPerm;
 
-struct Symbol;
+LangTypeInfo *voidType;
 
 // Communication block between function impl and type parser
 typedef struct TypeAndName {

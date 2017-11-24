@@ -23,5 +23,7 @@ AstNode *parseExp();
 
 // parsetype.c
 void parseFnType(TypeAndName *typnam);
+LangTypeInfo *parseType();
+QuadTypeInfo *parseQuadType();
 
 #endif

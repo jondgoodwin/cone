@@ -47,6 +47,8 @@ void typAddIdent(char *name, LangTypeInfo *type) {
 // Initialize built-in types
 void typInit() {
 	// Built-in global variable types
+	voidType = (LangTypeInfo*) (allocTypeInfo(LangTypeInfo));
+	voidType->type = VoidType;
 	primInit();
 	permInit();
 

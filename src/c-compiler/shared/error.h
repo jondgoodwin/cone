@@ -28,6 +28,7 @@ enum ErrorCode {
 	ErrorFnDupImpl, // Function already has another implementation
 	ErrorNoLParen,   // Expected left parenthesis not found
 	ErrorNoRParen,	 // Expected right parenthesis not found
+	ErrorDupType,	// May not specify duplicate types
 
 	// Warnings
 	WarnCode = 3000,
