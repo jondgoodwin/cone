@@ -13,12 +13,11 @@
 struct AstNode;
 
 // Permission type info
-typedef struct PermTypeInfo {
-	TypeHeader;
+typedef struct PermTypeAstNode {
+	AstNodeHdr;
 	uint8_t ptype;
-	uint8_t flags;
 	struct AstNode *locker;
-} PermTypeInfo;
+} PermTypeAstNode;
 
 // Permission types
 enum PermType {

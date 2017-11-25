@@ -12,14 +12,14 @@
 
 // Macro for creating primitive types
 #define primtype(dest, typ, nbyt) {\
-	dest = (LangTypeInfo*) (ptype = allocTypeInfo(PrimTypeInfo)); \
-	ptype->type = typ; \
+	dest = (AstNode*) (ptype = allocTypeAstNode(PrimTypeAstNode)); \
+	ptype->asttype = typ; \
 	ptype->nbytes = nbyt; \
 }
 
 // Initialize Integer and Float primitive types
 void primInit() {
-	PrimTypeInfo *ptype;
+	PrimTypeAstNode *ptype;
 	primtype(i8Type, IntType, 1);
 	primtype(i16Type, IntType, 2);
 	primtype(i32Type, IntType, 4);
@@ -33,7 +33,7 @@ void primInit() {
 }
 
 // Add a type identifier to the symbol table
-void typAddIdent(char *name, LangTypeInfo *type) {
+void typAddIdent(char *name, AstNode *type) {
 	Symbol *sym;
 	TypeAstNode *node;
 	sym = symFind(name, strlen(name));
@@ -47,8 +47,8 @@ void typAddIdent(char *name, LangTypeInfo *type) {
 // Initialize built-in types
 void typInit() {
 	// Built-in global variable types
-	voidType = (LangTypeInfo*) (allocTypeInfo(LangTypeInfo));
-	voidType->type = VoidType;
+	voidType = (AstNode*) (allocTypeAstNode(AstNode));
+	voidType->asttype = VoidType;
 	primInit();
 	permInit();
 

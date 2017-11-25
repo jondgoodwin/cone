@@ -10,8 +10,8 @@
 
 // Macro for creating permission types
 #define permtype(dest, typ, ptyp, flgs) {\
-	dest = (LangTypeInfo*) (perm = allocTypeInfo(PermTypeInfo)); \
-	perm->type = typ; \
+	dest = (AstNode*) (perm = allocTypeAstNode(PermTypeAstNode)); \
+	perm->asttype = typ; \
 	perm->ptype = ptyp; \
 	perm->flags = flgs; \
 	perm->locker = NULL; \
@@ -19,7 +19,7 @@
 
 // Initialize built-in static permission type global variables
 void permInit() {
-	PermTypeInfo *perm;
+	PermTypeAstNode *perm;
 	permtype(mutPerm, PermType, MutPerm, MayRead | MayWrite | RaceSafe | MayIntRef | IsLockless);
 	permtype(mmutPerm, PermType, MmutPerm, MayRead | MayWrite | MayAlias | MayAliasWrite | IsLockless);
 	permtype(immPerm, PermType, ImmPerm, MayRead | MayAlias | RaceSafe | MayIntRef | IsLockless);

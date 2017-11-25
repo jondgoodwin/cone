@@ -46,7 +46,7 @@ AstNode *parseFn() {
 	astNewNode(fnnode, FnBlkAstNode, FnBlkNode);
 	oldsym = typnam.symname;
 	fnnode->name = typnam.symname->name;
-	fnnode->fnsig = typnam.typeinfo;
+	fnnode->fnsig = typnam.TypeAstNode;
 
 	// Error if name is already used but types don't match
 

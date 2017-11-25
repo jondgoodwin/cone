@@ -8,6 +8,7 @@
 #ifndef type_h
 #define type_h
 
+#include "../shared/ast.h"
 #include <stdint.h>
 typedef struct Symbol Symbol;
 
@@ -15,7 +16,7 @@ typedef struct Symbol Symbol;
 enum LangTypes {
 	VoidType,	// represening no values, e.g., no return values on a fn
 
-	// PrimTypeInfo
+	// PrimTypeAstNode
 	IntType,	// Integer
 	UintType,	// Unsigned integer
 	FloatType,	// Floating point number
@@ -40,89 +41,81 @@ enum LangTypes {
 	NbrLangTypes
 };
 
-#define allocTypeInfo(TypeInfo) ((TypeInfo *) memAllocBlk(sizeof(TypeInfo)))
-
-#define TypeHeader uint16_t type
-
-// Generic type info structure for all types
-typedef struct LangTypeInfo {
-	TypeHeader;
-} LangTypeInfo;
+#define allocTypeAstNode(TypeAstNode) ((TypeAstNode *) memAllocBlk(sizeof(TypeAstNode)))
 
 // For primitives such as integer, unsigned integet, floats
-typedef struct PrimTypeInfo {
-	TypeHeader;
+typedef struct PrimTypeAstNode {
+	AstNodeHdr;
 	unsigned char nbytes;	// e.g., int32 uses 4 bytes
-} PrimTypeInfo;
+} PrimTypeAstNode;
 
 // For function signatures
-typedef struct FnTypeInfo {
-	TypeHeader;
-	uint16_t flags;
-	LangTypeInfo *rettype;	// return type
+typedef struct FnTypeAstNode {
+	AstNodeHdr;
+	AstNode *rettype;	// return type
 	// named parameters and their types
-} FnTypeInfo;
+} FnTypeAstNode;
 
 // For pointers
-typedef struct PtrTypeInfo {
-	TypeHeader;
+typedef struct PtrTypeAstNode {
+	AstNodeHdr;
 	unsigned char nbytes;	// e.g., 32-bit uses 4 bytes
 	unsigned char subtype;	// Simple, vtabled
-	LangTypeInfo *ptrtotype;	// Type of value pointer points to
-} PtrTypeInfo;
+	AstNode *ptrtotype;	// Type of value pointer points to
+} PtrTypeAstNode;
 
 // For arrays
-typedef struct ArrTypeInfo {
-	TypeHeader;
+typedef struct ArrTypeAstNode {
+	AstNodeHdr;
 	uint32_t nbrelems;		// Number of elements
-	LangTypeInfo *elemtype;	// Type of array's elements
-} ArrTypeInfo;
+	AstNode *elemtype;	// Type of array's elements
+} ArrTypeAstNode;
 
 // For identifiers that are types rather than values
-typedef struct TypeTypeInfo {
-	TypeHeader;
+typedef struct TypeTypeAstNode {
+	AstNodeHdr;
 	unsigned char subtype;
-	LangTypeInfo *typeinfo;
-} TypeTypeInfo;
+	AstNode *TypeAstNode;
+} TypeTypeAstNode;
 
 // The multi-dimensional type info for a value
-typedef struct QuadTypeInfo {
-	TypeHeader;
+typedef struct QuadTypeAstNode {
+	AstNodeHdr;
 	Symbol *name;
-	LangTypeInfo *valtype;
-	LangTypeInfo *permtype;
-	LangTypeInfo *alloctype;
-	LangTypeInfo *lifetype;
-} QuadTypeInfo;
+	AstNode *valtype;
+	AstNode *permtype;
+	AstNode *alloctype;
+	AstNode *lifetype;
+} QuadTypeAstNode;
 
 #include "permission.h"
 
 // Primitive numeric types
-LangTypeInfo *i8Type;
-LangTypeInfo *i16Type;
-LangTypeInfo *i32Type;
-LangTypeInfo *i64Type;
-LangTypeInfo *u8Type;
-LangTypeInfo *u16Type;
-LangTypeInfo *u32Type;
-LangTypeInfo *u64Type;
-LangTypeInfo *f32Type;
-LangTypeInfo *f64Type;
+AstNode *i8Type;
+AstNode *i16Type;
+AstNode *i32Type;
+AstNode *i64Type;
+AstNode *u8Type;
+AstNode *u16Type;
+AstNode *u32Type;
+AstNode *u64Type;
+AstNode *f32Type;
+AstNode *f64Type;
 
 // Built-in permission types
-LangTypeInfo *mutPerm;
-LangTypeInfo *mmutPerm;
-LangTypeInfo *immPerm;
-LangTypeInfo *constPerm;
-LangTypeInfo *constxPerm;
-LangTypeInfo *mutxPerm;
-LangTypeInfo *idPerm;
+AstNode *mutPerm;
+AstNode *mmutPerm;
+AstNode *immPerm;
+AstNode *constPerm;
+AstNode *constxPerm;
+AstNode *mutxPerm;
+AstNode *idPerm;
 
-LangTypeInfo *voidType;
+AstNode *voidType;
 
 // Communication block between function impl and type parser
 typedef struct TypeAndName {
-	FnTypeInfo *typeinfo;
+	FnTypeAstNode *TypeAstNode;
 	struct Symbol *symname;	// NULL = no name specified
 } TypeAndName;
 

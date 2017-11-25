@@ -17,7 +17,7 @@
 
 // Parse a function's type signature
 void parseFnType(TypeAndName *typnam) {
-	FnTypeInfo *fnsig;
+	FnTypeAstNode *fnsig;
 
 	// Skip past the 'fn'
 	lexNextToken();
@@ -33,8 +33,8 @@ void parseFnType(TypeAndName *typnam) {
 	}
 
 	// Set up memory block for the function's type signature
-	fnsig = typnam->typeinfo = (FnTypeInfo*) memAllocBlk(sizeof(FnTypeInfo));
-	fnsig->type = FnType;
+	fnsig = typnam->TypeAstNode = (FnTypeAstNode*) memAllocBlk(sizeof(FnTypeAstNode));
+	fnsig->asttype = FnType;
 	fnsig->flags = 0;
 
 	// Process parameter declarations
@@ -53,7 +53,7 @@ void parseFnType(TypeAndName *typnam) {
 }
 
 // Parse a single type sequence
-LangTypeInfo* parseType() {
+AstNode* parseType() {
 	switch (lex->toktype) {
 	case IdentToken:
 		{
@@ -68,7 +68,7 @@ LangTypeInfo* parseType() {
 		{
 		TypeAndName typnam;
 		parseFnType(&typnam);
-		return (LangTypeInfo*) typnam.typeinfo;
+		return (AstNode*) typnam.TypeAstNode;
 		}
 	default:
 		return voidType;
@@ -76,10 +76,10 @@ LangTypeInfo* parseType() {
 }
 
 // Parse a multi-dimensional type for an expression's value
-QuadTypeInfo *parseQuadType() {
-	QuadTypeInfo *quad;
-	LangTypeInfo *typ;
-	quad = (QuadTypeInfo*)memAllocBlk(sizeof(QuadTypeInfo));
+QuadTypeAstNode *parseQuadType() {
+	QuadTypeAstNode *quad;
+	AstNode *typ;
+	quad = (QuadTypeAstNode*)memAllocBlk(sizeof(QuadTypeAstNode));
 	quad->valtype = voidType;
 	quad->permtype = voidType;
 	quad->alloctype = voidType;
@@ -96,12 +96,12 @@ QuadTypeInfo *parseQuadType() {
 		}
 		else {
 			// Plug the type info in the correct unoccupied slot
-			if (typ->type == PermType) {
+			if (typ->asttype == PermType) {
 				if (quad->permtype==voidType)
 					quad->permtype = typ;
 				else
 					errorMsgLex(ErrorDupType, "May not specify permissions more than once");
-			} else if (typ->type == AllocType) {
+			} else if (typ->asttype == AllocType) {
 				if (quad->alloctype==voidType)
 					quad->alloctype = typ;
 				else

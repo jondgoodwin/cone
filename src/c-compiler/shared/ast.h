@@ -8,7 +8,8 @@
 #ifndef ast_h
 #define ast_h
 
-#include "../types/type.h"
+typedef struct AstNode AstNode;
+typedef struct FnTypeAstNode FnTypeAstNode;
 
 #include <stdint.h>
 
@@ -38,7 +39,7 @@ typedef struct AstNode {
 // Identifier that refers to a type
 typedef struct TypeAstNode {
 	AstNodeHdr;
-	LangTypeInfo *type;
+	AstNode *type;
 	char *name;
 } TypeAstNode;
 
@@ -48,7 +49,7 @@ typedef struct TypeAstNode {
 // - alloc is the allocator type (e.g., 'global')
 #define ExpAstNodeHdr \
 	AstNodeHdr; \
-	LangTypeInfo *vtype
+	AstNode *vtype
 
 // ExpAstNode is a castable struct for all expression nodes,
 // providing convenient access to the expression's type info
@@ -97,7 +98,7 @@ typedef struct GlobalAstNode {
 typedef struct FnBlkAstNode {
 	AstNodeHdr;
 	char *name;
-	FnTypeInfo *fnsig;
+	FnTypeAstNode *fnsig;
 	Nodes *nodes;
 } FnBlkAstNode;
 

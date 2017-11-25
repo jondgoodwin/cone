@@ -23,7 +23,7 @@ typedef struct Lexer {
 		uint64_t uintlit;
 		Symbol *ident;
 	} val;
-	LangTypeInfo *langtype;
+	AstNode *langtype;
 
 	// immutable info about source
 	char *url;		// The url where the source text came from

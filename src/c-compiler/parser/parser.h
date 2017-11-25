@@ -9,6 +9,7 @@
 #define parser_h
 
 #include "../shared/ast.h"
+#include "../types/type.h"
 
 // parser.c
 AstNode *parse();
@@ -23,7 +24,7 @@ AstNode *parseExp();
 
 // parsetype.c
 void parseFnType(TypeAndName *typnam);
-LangTypeInfo *parseType();
-QuadTypeInfo *parseQuadType();
+AstNode *parseType();
+QuadTypeAstNode *parseQuadType();
 
 #endif
