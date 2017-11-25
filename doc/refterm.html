@@ -13,13 +13,17 @@
 
     <div class="text">
 
-		<p>The term is the basic building block for an expression. 
-		A term can be a literal, a variable, 
+		<p>This chapter talks about the term: a literal, a variable, 
 		or a <a href="#pseudo">pseudo-variable</a> (e.g., 'this' or 'self').
-		A simple term references a single value of a specific value type.
-		While talking about terms, we can introduce several important concepts:
-		value type, lexical lifetime (scope), allocator, permission, declarations, 
-		and assignment (aliasing) behavior.</p>
+		Each term references a single value of a specific type.
+		The term is the basic building block for an expression.</p>
+		<p>You might be tempted to skip over this chapter,
+		because it seems to cover concepts familiar to you from other languages.
+		That is somewhat, but not entirely, true.</p>
+		<p>Importantly, this chapter introduces the distinction that Cone makes between
+		different kinds of types: value, permission, allocator and lifetime.
+		This fundamental distinction impacts many aspects of the language,
+		including how variables are declared and how assignment works.</p>
 
 		<h2>Value type</h2>
 		<p>A <b>value type</b> specifies how a value is encoded inside the computer.
@@ -30,7 +34,7 @@
 		Later on, we will describe how to define new compound value types using 
 		type constructors like struct, array, pointer, class, interface, etc.<p>
 		<p>The names of value types are capitalized by convention.
-		This helps cleanly separate the global identifier namespace between value types and variables,
+		This helps cleanly separate the global namespace between value types and variables,
 		reducing unexpected naming conflicts and improving code clarity.
 		One notable exception to this naming convention is the type names for the primitive numeric types:
 		<ul>
@@ -43,9 +47,8 @@
 		<li><span class="pre">f32</span> and <span class="pre">f64</span>
 		are the type names for floating point numbers.</li>
 		</ul>
-		<p>There are other kinds of types, other than value types,
-		which will be discussed later (e.g., allocator or permission type).
-		Generally, when we talk about the type of a value, we are talking about its value type.</p>
+		<p>Although there are other kinds of types (e.g., allocator or permission type),
+		when we talk about the type of a value, we are typically referring to its value type.</p>
 		
 		<h2>Literal</h2>
 		<p>A literal is a specific unchangeable value,
@@ -75,81 +78,100 @@ null    // Null (represents the absence of a value)
 		This ensures literals can never be corrupted by any downstream code.</p>
 		
 		<h2 id="vars">Variable</h2>
-		<p>A variable holds a single value. A variable's value is set, modified and retrieved using its name
-		(an <a href="reftoken.html#ident">identifier token</a>).</p>
-		<p>Variables must be declared prior to use.
-		Before showing how to declare a variable, let's introduce scope, allocators and permissions.</p>
+		<p>A variable holds a single value of a specific value type. 
+		A variable's value is set and retrieved using its "unique" name.</p>
 		
-		<h3>Scope</h3>
-		<p>A variable is typically declared within its intended scope of use (its lexical lifetime).
-		Its scope is global if declared outside of any function or other block.
-		Otherwise, the variable's scope is limited to the inner-most block it is declared within.
-		A variable can only be used within its lexical scope. It is unknown outside that scope.</p>
-		
-		<h3 id="varalloc">Allocators</h3>
-		<p>A variable's value is stored within a larger collection of values managed by memory allocators.
-		An allocator is responsible for allocating space for the variables it manages and watches over.
-		Allocators free allocated space when a variable is no longer needed.
-		Allocators are similar to, but far more powerful, than "storage classes" in other languages.</p>
-		<p>The <a href="refalloc.html">Allocator chapter</a> describes allocators in greater depth.
-		For now, let's introduce two commonly used allocators:</p>
-		<ul>
-		<li>the <span class="pre">local</span> allocator allocates space for a function's local variables on the execution stack.
-		Thus, each time a function is called, its local variables are allocated and are unique for that call.
-		Two identically-named local variables in different functions,
-		or even two calls to the same function, will not collide with each other.
-		Such variables provide a working state for the function.
-		When the function is finished and returns to its caller, 
-		its local variable space is freed from the execution stack by the local allocator.
-		<p><b>Note</b>: A function's parameters are also managed as part of the local allocator.</p></li>
-		<li>the <span class="pre">global</span> allocator provides a variable storage area that is 
-		shared across and accessible by any function at any time.</li>
-		</ul>
-		<p><span class="pre">var</span> may be used in place of naming a specific allocator.
-		It is a scope-sensitive keyword that refers to the default allocator
-		for the lexical scope where the variable is defined.
-		Unless overridden by another default, 'var' uses the local allocator when a variable
-		is declared within a function block and the global allocator for declarations
-		external to all function blocks.</p>
-		
-		<h3>Permissions</h3>
-		<p>Permissions enable and constrain how variables may be used. 
-		For now, let's introduce two commonly used permissions:</p>
-		<ul>
-		<li><span class="pre">imm</span> (immutable) allows a variable's contents to be examined as often as wished.
-		It constrains a variable's value from being changed.</li>
-		<li><span class="pre">mut</span> (mutable) allows a variable's value to be examined or changed.
-		However, 'mut' places some constraints on whether other variables can also access the same contents.</li>
-		</ul>
-		<p>Detailed descriptions of these and other permissions may be found in the 
-		<a href="refperm.html">Permissions chapter</a>.
-
 		<h3>Variable declarations</h3>
-		<p>The purpose of a variable declaration is to specify its lexical lifetime (scope), 
-		allocator, permission and value type ahead of its use later in the program.
-		Doing so provides invaluable compile-time context to the variable's use, 
+		<p>Variables must be declared prior to use.
+		The purpose of a variable declaration is to specify its value type, permission, and scope (lexical lifetime)
+		in advance of its use later in the program.
+		Doing so provides invaluable context to the variable's use, 
 		allowing the compiler to optimize execution performance and memory use,
 		as well as enforce safety constraints.</p>
-		<p>A variable declaration typically begins with the allocator.
-		This is followed by the name, permission and value type (often but not necessarily in that order).
-		The scope is determined by the block the declaration is placed within. For example:
+		<p>A variable declaration statement begins with either
+		<span class="pre">let</span> or <span class="pre">var</span> followed by the variable name
+		(an <a href="reftoken.html#ident">identifier token</a>).
+		If specified, the variable's value type and permission follow the name.
+		For example:
 <pre>
-// If declared within a function's scope, space for this variable
-// is allocated using the local allocator
-var height mut f32	// height holds a mutable floating point number
+let height f32  // height holds a floating point number
 </pre>
-		<p>Multiple variables can be declared at the same time using a variable declaration block:</p>
+
+		<h3>Permissions</h3>
+		<p>The difference between <span class="pre">let</span> and <span class="pre">var</span>
+		rests with the permission you are granting the variable.
+		A variable's permission enables and constrains how it may be used, 
+		properties which can help improve a program's safety and comprehensibility.
+		The compiler enforces a permission's constraints on every use of the variable.</p>
+		<ul>
+		<li><span class="pre">let</span> declares that the variable's value will never change after it is initialized.
+		It essentially declares the variable to have the <span class="pre">imm</span> (immutable) permission.</li>
+		<li><span class="pre">var</span> allows a variable value to be changed after initialization.
+		By default, it declares the variable to have the <span class="pre">mut</span> (mutable) permission.</li>
+		</ul>
+		<p>Cone supports a number of other permissions in addition to
+		<span class="pre">imm</span> and <span class="pre">mut</span>.
+		The <a href="refperm.html">Permissions</a> chapter offers a more thorough
+		treatment of all permissions, the capabilities they enable and deny,
+		and the implications for using each.
+		There is no one perfect permission that can do everything.
+		Each has its advantages and limitations.
+		That said, <span class="pre">imm</span> and <span class="pre">mut</span> are a good starter set.</p>
+		<p>Explicitly specifying a permission on a <span class="pre">var</span> variable declaration statement
+		overrides the default permission of <span class="pre">mut</span>:
 <pre>
-var mut
-	height f32
-	depth f32
-	number i32
+var height f32 mmut // height holds a shared mutable floating point number
 </pre>
+		
+		<h3>Scope, Lifetime and Allocator</h3>
+		<p>The location of the variable declaration statement implicitly determines the variable's scope.
+		This scope establishes several things about the variable: which part of memory it resides within,
+		how long the it lives (its lexical lifetime) and which parts of a program's code can access it.</p>
+		<p>There are two key places where a variable can be located:</p>
+		<ul>
+		<li><b>global</b> variables are declared outside of all function blocks.
+		Space for them is allocated automatically when a program is loaded for execution.
+		Global variables are shared across and accessible by any function at any time.</li>
+		<li><b>local</b> variables are declared within a function block.
+		Every time a function is called, space is allocated on the current stack
+		for all its declared local variables.</p>
+		<p>Local variables are exclusive to that call.
+		Two identically-named local variables in different functions,
+		or even two calls to the same function, will not collide with each other.
+		Local variables provide a working state for the function.
+		When the function is finished and returns to its caller, 
+		its local variable space is automatically freed from the stack.</li>
+		</ul>
+		<p>Thus:</p>
+<pre>
+let glowy i32     // Global immutable variable
+fn a_function()
+  var loco f32    // Local mutable variable
+</pre>
+		<p>The lifetime of global variables is the same as the program's lifetime.
+		Global variables come into being when the program starts and disappear when the program stops.</p>
+		<p>By contrast, the lifetime of a local variable is bounded by the inner-most lexical block
+		the variable is declared within.
+		(Additional indentation of lines typically signals entrance into a new inner block.)
+		The variable is unknown outside its declared scope;
+		any attempt to access it outside its lexical block will fail.</p>
+<pre>
+fn a_function()
+  var loco f32
+  while true
+    var x i32  // indentation shows x's lifetime is bounded by while block
+  x // Error!! x is not accessible here outside the while block
+</pre>
+		<p>As a side note: Cone considers <span class="pre">global</span> and <span class="pre">local</span>
+		to be <b>allocators</b>. Cone has other allocators which focus on heap and reference pointers.
+		The <a href="refalloc.html">Pointers and Allocators</a> chapter offers an extensive treatment
+		of allocators and reference pointers.
+		It explains how variable lifetimes can constrain the aliasing and use of variables and reference pointers.</p>
 		
 		<h2 id="#pseudo">Pseudo-variables</h2>
 		<p>Pseudo-variables look like variables, but are not, as their value is managed by Acorn based on the
 		context where they are encountered. They need not be declared, as the compiler already
-		knows their scope, allocator, value type and permission (usually <span class="pre">imm</span>).
+		knows their value type, scope, allocator, and permission (usually <span class="pre">imm</span>).
 		<p>Two commonly used pseudo-variables are:</p>
 		<ul>
 		<li><a href="refmethod.html#self"><span class="pre">self</span></a>,
@@ -167,50 +189,40 @@ height = 3.4     // height's value is now 3.4
 depth = height   // weight's value is now 3.4
 number = 42      // number's value has discovered the meaning of life
 </pre>
-		<p>Assignment is one form of aliasing (where contents flow from one variable location to another).
-		As simple as it looks on the surface, several compile-time behaviors might be triggered based on the
-		types of the variables involved:</p>
-		<ul>
-		<li><b>Value type match</b>. The value type of the variable on the left needs to match
-		the value type of the expression on the right. An error is generated if they do not match.
-		Acceptable matches include:
-		<ul>
-		<li>Their value types are equivalent</li>
-		<li>The left-hand variable's value type is a subtype of the right-hand expression's type</li>
-		<li>The value on the right can be automatically converted to the value type of the left-hand variable.
-		This generally only applies to integer and floating point numbers.</li>
-		</ul></li>
-		<li><b>Permission checks</b>:
-		<ul>
-		<li>Right-hand variables must permit the contents to be read</li>
-		<li>Left-hand variables must permit the contents to be changed. 
-		Its permission must also be a valid subtype of the expression's permission.</li>
-		<li>If the right-hand variable restricts aliasing, ownership of the contents transfers
-		from the right-hand variable to the left-hand variable, deactivating all further use
-		of the right-hand variable.</li>
-		</ul>
-		<li><b>Allocator checks and aliasing behavior</b>.
-		The allocators for the right-hand and left-hand variables must be the same.
-		Additionally, some allocators may trigger aliasing and de-aliasing behaviors
-		on the relevant allocator (e.g., reference counts increasing or decreasing).</li>
-		</ul>
+
+		<h3>Assignment type checking</h3>
+		<p>In order for an assignment to be valid, the variable on the left has to be mutable
+		and the value types have to match on both sides of the <span class="pre">=</span>.
+		Either the value types must be the same or the value type of the variable on the left has to
+		be a subtype of the value of the expression on the right.
+		The Subtyping chapter provides additional details on valid subtypes and coercions.</p>
+		
+		<h3>Copy, move and reference pointers</h3>
+		<p>For most value types, the assignment operator stores a <i>copy</i> of the value on the right
+		into the variable on the left.</p>
+		<p>However, if the value type is a reference pointer (or contains one),
+		aliasing rules kick into effect.
+		Depending on the pointer's information regarding permissions, allocators, lifetime and value types,
+		the assignment might be invalid (with a compiler error), trigger a change of ownership,
+		or be wrapped in aliasing/dealiasing logic specific to the allocator.
+		These rules are detailed in the <a href="refalloc.html">Pointers and Allocators</a> chapter.</p>
 		
 		<h3>Variable declaration initialization</h3>
 		<p>Variable declarations permit assignments as part of the declaration.
 		These assignments establish the initial value of the declared variable:</p>
 <pre>
-var height mut f32 = 5.2
+var height f32 = 5.2
 </pre>
-		<p>Variable declarations offer one more trick up their sleeve: type inference.
+		<p>Variable declarations offer one more trick up their sleeve: <i>type inference</i>.
 		If typing information is omitted on the left-hand variable,
-		it adopts the types of the right-hand value.</p>
+		the variable's value type is declared to be the value type of the expression to the right.</p>
 <pre>
 var height = 5.2
 </pre>
 		
 		<h3 id="parallel">Parallel Assignment</h3>
-		<p>There are several situations where it is helpful to 
-		simultaneously assign multiple values to multiple variables:</p>
+		<p>Parallel assignment makes it possible to simultaneously assign multiple values to multiple variables.
+		This can be convenient when swapping the values held by two variables:</p>
 <pre>
 // Swap the variable values for a and b
 a,b = b,a
