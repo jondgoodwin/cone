@@ -7,19 +7,20 @@
 
 #include "type.h"
 #include "../shared/memory.h"
+#include "../parser/lexer.h"
 
 // Macro for creating permission types
 #define permtype(dest, typ, ptyp, flgs) {\
-	dest = (AstNode*) (perm = allocTypeAstNode(PermTypeAstNode)); \
-	perm->asttype = typ; \
+	PermTypeAstNode *perm; \
+	astNewNode(perm, PermTypeAstNode, typ); \
 	perm->ptype = ptyp; \
 	perm->flags = flgs; \
 	perm->locker = NULL; \
+	dest = (AstNode *)perm; \
 }
 
 // Initialize built-in static permission type global variables
 void permInit() {
-	PermTypeAstNode *perm;
 	permtype(mutPerm, PermType, MutPerm, MayRead | MayWrite | RaceSafe | MayIntRef | IsLockless);
 	permtype(mmutPerm, PermType, MmutPerm, MayRead | MayWrite | MayAlias | MayAliasWrite | IsLockless);
 	permtype(immPerm, PermType, ImmPerm, MayRead | MayAlias | RaceSafe | MayIntRef | IsLockless);

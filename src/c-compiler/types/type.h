@@ -12,36 +12,12 @@
 #include <stdint.h>
 typedef struct Symbol Symbol;
 
-// All the possible types for a language type
-enum LangTypes {
-	VoidType,	// represening no values, e.g., no return values on a fn
-
-	// PrimTypeAstNode
-	IntType,	// Integer
-	UintType,	// Unsigned integer
-	FloatType,	// Floating point number
-
-	PtrType,	// Also smart pointers?
-
-	ArrayType,	// Also dynamic arrays? SOA?
-
-	FnType,		// Also method, closure, behavior, co-routine, thread, ...
-
-	StructType,	// Also class, interface, actor, etc.?
-
-	EnumType,	// Also sum type, etc.?
-
-	ModuleType,	// Modules, Generics ?
-
-	// Type types
-	ValueType,	// Value Type
-	PermType,	// Permission
-	AllocType,	// Allocator
-
-	NbrLangTypes
-};
-
 #define allocTypeAstNode(TypeAstNode) ((TypeAstNode *) memAllocBlk(sizeof(TypeAstNode)))
+
+// Void type - e.g., for fn with no return value
+typedef struct VoidTypeAstNode {
+	AstNodeHdr;
+} VoidTypeAstNode;
 
 // For primitives such as integer, unsigned integet, floats
 typedef struct PrimTypeAstNode {
@@ -78,16 +54,6 @@ typedef struct TypeTypeAstNode {
 	AstNode *TypeAstNode;
 } TypeTypeAstNode;
 
-// The multi-dimensional type info for a value
-typedef struct QuadTypeAstNode {
-	AstNodeHdr;
-	Symbol *name;
-	AstNode *valtype;
-	AstNode *permtype;
-	AstNode *alloctype;
-	AstNode *lifetype;
-} QuadTypeAstNode;
-
 #include "permission.h"
 
 // Primitive numeric types
@@ -110,8 +76,6 @@ AstNode *constPerm;
 AstNode *constxPerm;
 AstNode *mutxPerm;
 AstNode *idPerm;
-
-AstNode *voidType;
 
 // Communication block between function impl and type parser
 typedef struct TypeAndName {

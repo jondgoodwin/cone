@@ -8,9 +8,6 @@
 #ifndef ast_h
 #define ast_h
 
-typedef struct AstNode AstNode;
-typedef struct FnTypeAstNode FnTypeAstNode;
-
 #include <stdint.h>
 
 typedef struct Lexer Lexer;
@@ -95,6 +92,7 @@ typedef struct GlobalAstNode {
 } GlobalAstNode;
 
 // Function block
+typedef struct FnTypeAstNode FnTypeAstNode;
 typedef struct FnBlkAstNode {
 	AstNodeHdr;
 	char *name;
@@ -129,7 +127,29 @@ enum AstType {
 	KeywordNode,	// Keyword token (flags is the keyword's token type)
 	UnkNode,		// Unknown 'bad' token
 
-	NbrAstTypes
+	VoidType,	// represening no values, e.g., no return values on a fn
+
+	// PrimTypeAstNode
+	IntType,	// Integer
+	UintType,	// Unsigned integer
+	FloatType,	// Floating point number
+
+	PtrType,	// Also smart pointers?
+
+	ArrayType,	// Also dynamic arrays? SOA?
+
+	FnType,		// Also method, closure, behavior, co-routine, thread, ...
+
+	StructType,	// Also class, interface, actor, etc.?
+
+	EnumType,	// Also sum type, etc.?
+
+	ModuleType,	// Modules, Generics ?
+
+	// Type types
+	ValueType,	// Value Type
+	PermType,	// Permission
+	AllocType,	// Allocator
 };
 
 // Allocate and initialize a new AST node, then retrieve next token

@@ -8,18 +8,20 @@
 #include "type.h"
 #include "../shared/symbol.h"
 #include "../shared/memory.h"
+#include "../parser/lexer.h"
 #include <string.h>
 
 // Macro for creating primitive types
 #define primtype(dest, typ, nbyt) {\
-	dest = (AstNode*) (ptype = allocTypeAstNode(PrimTypeAstNode)); \
+	PrimTypeAstNode *ptype; \
+	astNewNode(ptype, PrimTypeAstNode, typ); \
 	ptype->asttype = typ; \
 	ptype->nbytes = nbyt; \
+	dest = (AstNode*) ptype; \
 }
 
 // Initialize Integer and Float primitive types
 void primInit() {
-	PrimTypeAstNode *ptype;
 	primtype(i8Type, IntType, 1);
 	primtype(i16Type, IntType, 2);
 	primtype(i32Type, IntType, 4);
@@ -47,8 +49,6 @@ void typAddIdent(char *name, AstNode *type) {
 // Initialize built-in types
 void typInit() {
 	// Built-in global variable types
-	voidType = (AstNode*) (allocTypeAstNode(AstNode));
-	voidType->asttype = VoidType;
 	primInit();
 	permInit();
 

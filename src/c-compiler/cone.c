@@ -34,7 +34,6 @@ void main(int argv, char **argc) {
 	options(argv, argc);
 	symInit();
 	keywordInit();
-	typInit();
 
 	// Output compiler name and release level
 	puts(CONE_RELEASE);
@@ -48,6 +47,7 @@ void main(int argv, char **argc) {
 
 	// Parse and generate
 	lexInject(argc[1], src);
+	typInit();
 	genllvm(parse());
 
 	// Close up everything necessary

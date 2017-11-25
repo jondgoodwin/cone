@@ -48,8 +48,13 @@ void parseFnType(TypeAndName *typnam) {
 	else
 		errorMsgLex(ErrorNoLParen, "Expected left parenthesis for parameter declarations");
 
-	// Process return type info
-	fnsig->rettype = parseType();
+	// Parse return type info - turn into void if none specified
+	if ((fnsig->rettype = parseType())==NULL) {
+		VoidTypeAstNode *voidtype;
+		astNewNode(voidtype, VoidTypeAstNode, VoidType);
+		fnsig->rettype = (AstNode*)voidtype;
+	}
+
 }
 
 // Parse a single type sequence
@@ -62,7 +67,7 @@ AstNode* parseType() {
 			lexNextToken();
 			return inode->type;
 		} else
-			return voidType;
+			return NULL;
 		}
 	case FnToken:
 		{
@@ -71,47 +76,6 @@ AstNode* parseType() {
 		return (AstNode*) typnam.TypeAstNode;
 		}
 	default:
-		return voidType;
-	}
-}
-
-// Parse a multi-dimensional type for an expression's value
-QuadTypeAstNode *parseQuadType() {
-	QuadTypeAstNode *quad;
-	AstNode *typ;
-	quad = (QuadTypeAstNode*)memAllocBlk(sizeof(QuadTypeAstNode));
-	quad->valtype = voidType;
-	quad->permtype = voidType;
-	quad->alloctype = voidType;
-	quad->lifetype = voidType;
-
-	while (1) {
-		typ = parseType();
-		if (typ == voidType) {
-			// Not a type: If it's a name, pick it up, else return
-			if (lexIsToken(IdentToken))
-				quad->name = lex->val.ident;
-			else
-				return quad;
-		}
-		else {
-			// Plug the type info in the correct unoccupied slot
-			if (typ->asttype == PermType) {
-				if (quad->permtype==voidType)
-					quad->permtype = typ;
-				else
-					errorMsgLex(ErrorDupType, "May not specify permissions more than once");
-			} else if (typ->asttype == AllocType) {
-				if (quad->alloctype==voidType)
-					quad->alloctype = typ;
-				else
-					errorMsgLex(ErrorDupType, "May not specify permissions more than once");
-			} else {
-				if (quad->valtype==voidType)
-					quad->valtype = typ;
-				else
-					errorMsgLex(ErrorDupType, "May not specify permissions more than once");
-			}
-		}
+		return NULL;
 	}
 }
