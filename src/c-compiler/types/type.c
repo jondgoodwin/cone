@@ -14,7 +14,7 @@
 // Macro for creating primitive types
 #define primtype(dest, typ, nbyt) {\
 	PrimTypeAstNode *ptype; \
-	astNewNode(ptype, PrimTypeAstNode, typ); \
+	newAstNode(ptype, PrimTypeAstNode, typ); \
 	ptype->asttype = typ; \
 	ptype->nbytes = nbyt; \
 	dest = (AstNode*) ptype; \

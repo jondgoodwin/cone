@@ -52,7 +52,7 @@ void parseFnType(TypeAndName *typnam) {
 	// Parse return type info - turn into void if none specified
 	if ((fnsig->rettype = parseType())==NULL) {
 		VoidTypeAstNode *voidtype;
-		astNewNode(voidtype, VoidTypeAstNode, VoidType);
+		newAstNode(voidtype, VoidTypeAstNode, VoidType);
 		fnsig->rettype = (AstNode*)voidtype;
 	}
 

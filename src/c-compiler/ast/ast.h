@@ -31,7 +31,7 @@ enum AstType {
 	KeywordNode = (VoidGroup<<8),	// Keyword token (flags is the keyword's token type)
 
 	// Untyped (Basic) AST nodes
-	GlobalNode,		// Program (global area)
+	PgmNode,		// Program (global area)
 	BlockNode,		// Block (list of statements)
 
 	// Expression nodes (having value type)
@@ -118,24 +118,9 @@ typedef struct NamedAstNode {
 	NamedAstHdr;
 } NamedAstNode;
 
-
-// Program
-typedef struct GlobalAstNode {
-	BasicAstHdr;
-	Nodes *nodes;
-} GlobalAstNode;
-
-// Function block
-typedef struct FnBlkAstNode {
-	NamedAstHdr;
-	Nodes *nodes;
-} FnBlkAstNode;
-
-// Block
-typedef struct BlockAstNode {
-	BasicAstHdr;
-	Nodes *nodes;
-} BlockAstNode;
+#include "block.h"
+#include "../types/type.h"
+#include "../types/permission.h"
 
 // Unsigned integer literal
 typedef struct ULitAstNode {
@@ -169,13 +154,13 @@ typedef struct TypeAstNode {
 } TypeAstNode;
 
 // Allocate and initialize a new AST node, then retrieve next token
-#define astNewNodeAndNext(node, aststruct, asttyp) {\
-	astNewNode(node, aststruct, asttyp); \
+#define newAstNodeAndNext(node, aststruct, asttyp) {\
+	newAstNode(node, aststruct, asttyp); \
 	lexNextToken(); \
 }
 
 // Allocate and initialize a new AST node
-#define astNewNode(node, aststruct, asttyp) {\
+#define newAstNode(node, aststruct, asttyp) {\
 	node = (aststruct*) memAllocBlk(sizeof(aststruct)); \
 	node->asttype = asttyp; \
 	node->flags = 0; \
@@ -185,9 +170,8 @@ typedef struct TypeAstNode {
 	node->linenbr = lex->linenbr; \
 }
 
-#include "../types/type.h"
-#include "../types/permission.h"
-
 void astPrint(AstNode *pgm);
+void astPrintNode(int indent, AstNode *node);
+void astPrintLn(int indent, char *str, ...);
 
 #endif

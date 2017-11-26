@@ -38,13 +38,13 @@ void parseRCurly() {
 
 // Parse a function block
 AstNode *parseFn() {
-	FnBlkAstNode *fnnode;
+	FnImplAstNode *fnnode;
 	TypeAndName typnam;
 	Symbol *oldsym;
 
 	// Process the function's signature info, then put info in new AST node
 	parseFnType(&typnam);
-	astNewNode(fnnode, FnBlkAstNode, FnImplNode);
+	fnnode = newFnImplNode();
 	oldsym = typnam.symname;
 	fnnode->name = typnam.symname;
 	fnnode->vtype = (AstNode*) typnam.TypeAstNode;
@@ -55,7 +55,7 @@ AstNode *parseFn() {
 	if (lexIsToken(LCurlyToken)) {
 		// If func is already fully defined with an implementation, error out
 		if (oldsym->node && oldsym->node->asttype == FnImplNode &&
-			((FnBlkAstNode*)oldsym->node)->nodes)
+			((FnImplAstNode*)oldsym->node)->nodes)
 			errorMsgNode((AstNode *)fnnode, ErrorFnDupImpl, "Function already has an implementation");
 		else
 			oldsym->node = (AstNode*)fnnode;
@@ -71,13 +71,12 @@ AstNode *parseFn() {
 
 // Parse a program's global area
 AstNode *parse() {
-	GlobalAstNode *global;
+	PgmAstNode *pgm;
 	Nodes **nodes;
 
 	// Create and populate a Program node for the program
-	astNewNode(global, GlobalAstNode, GlobalNode);
-	nodes = &global->nodes;
-	*nodes = newNodes(8);
+	pgm = newPgmNode();
+	nodes = &pgm->nodes;
 	while (! lexIsToken( EofToken)) {
 		switch (lex->toktype) {
 		case FnToken:
@@ -87,5 +86,5 @@ AstNode *parse() {
 			errorMsgLex(ErrorBadGloStmt, "Invalid global area type, var or function statement");						
 		}
 	}
-	return (AstNode*) global;
+	return (AstNode*) pgm;
 }

@@ -21,7 +21,7 @@ AstNode *parseterm() {
 	case IntLitToken:
 		{
 			ULitAstNode *node;
-			astNewNode(node, ULitAstNode, ULitNode);
+			newAstNode(node, ULitAstNode, ULitNode);
 			node->uintlit = lex->val.uintlit;
 			node->vtype = lex->langtype;
 			lexNextToken();
@@ -30,7 +30,7 @@ AstNode *parseterm() {
 	case FloatLitToken:
 		{
 			FLitAstNode *node;
-			astNewNode(node, FLitAstNode, FLitNode);
+			newAstNode(node, FLitAstNode, FLitNode);
 			node->floatlit = lex->val.floatlit;
 			node->vtype = lex->langtype;
 			lexNextToken();
@@ -47,7 +47,7 @@ AstNode *parsePrefix() {
 	if (lexIsToken(DashToken)) {
 		UnaryAstNode *node;
 		AstNode *opnode;
-		astNewNodeAndNext(node, UnaryAstNode, UnaryNode);
+		newAstNodeAndNext(node, UnaryAstNode, UnaryNode);
 		opnode = parsePrefix();
 		// Optimize negative numeric literal
 		if (opnode->asttype == ULitNode) {

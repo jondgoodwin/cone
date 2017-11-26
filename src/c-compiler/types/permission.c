@@ -12,7 +12,7 @@
 // Macro for creating permission types
 #define permtype(dest, typ, ptyp, flgs) {\
 	PermTypeAstNode *perm; \
-	astNewNode(perm, PermTypeAstNode, typ); \
+	newAstNode(perm, PermTypeAstNode, typ); \
 	perm->ptype = ptyp; \
 	perm->flags = flgs; \
 	perm->locker = NULL; \

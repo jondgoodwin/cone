@@ -27,8 +27,10 @@ void astPrintLn(int indent, char *str, ...) {
 
 void astPrintNode(int indent, AstNode *node) {
 	switch (node->asttype) {
-	case GlobalNode:
-		astPrintLn(indent, "AST for program %s", node->lexer->url); break;
+	case PgmNode:
+		pgmPrint(indent, (PgmAstNode *)node); break;
+	case FnImplNode:
+		fnImplPrint(indent, (FnImplAstNode *)node); break;
 	default:
 		astPrintLn(indent, "**** UNKNOWN NODE ****");
 	}
