@@ -8,15 +8,11 @@
 #ifndef permission_h
 #define permission_h
 
-#include "../ast/ast.h"
-
-struct AstNode;
-
 // Permission type info
 typedef struct PermTypeAstNode {
-	BasicAstHdr;
+	NamedAstHdr;
+	AstNode *locker;
 	uint8_t ptype;
-	struct AstNode *locker;
 } PermTypeAstNode;
 
 // Permission types
@@ -46,6 +42,15 @@ enum PermType {
 // If on, no locks are needed to read or mutate the contents. 
 // If off, the permission's designated locking mechanism must be wrapped around all content access.
 #define IsLockless 0x40
+
+// Built-in permission types
+AstNode *mutPerm;
+AstNode *mmutPerm;
+AstNode *immPerm;
+AstNode *constPerm;
+AstNode *constxPerm;
+AstNode *mutxPerm;
+AstNode *idPerm;
 
 void permInit();
 

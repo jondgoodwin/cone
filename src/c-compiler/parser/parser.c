@@ -11,6 +11,7 @@
 #include "../ast/ast.h"
 #include "../shared/memory.h"
 #include "../shared/error.h"
+#include "../shared/symbol.h"
 #include "lexer.h"
 
 #include <stdio.h>
@@ -45,8 +46,8 @@ AstNode *parseFn() {
 	parseFnType(&typnam);
 	astNewNode(fnnode, FnBlkAstNode, FnImplNode);
 	oldsym = typnam.symname;
-	fnnode->name = typnam.symname->name;
-	fnnode->fnsig = typnam.TypeAstNode;
+	fnnode->name = typnam.symname;
+	fnnode->vtype = (AstNode*) typnam.TypeAstNode;
 
 	// Error if name is already used but types don't match
 

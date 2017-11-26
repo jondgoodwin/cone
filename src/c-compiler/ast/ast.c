@@ -6,7 +6,11 @@
 */
 
 #include "ast.h"
+#include "../parser/lexer.h"
+
+#include <stdio.h>
 #include <string.h>
+#include <stdarg.h>
 
 // Allocate and initialize a new nodes block
 Nodes *nodesNew(int size) {
@@ -34,4 +38,32 @@ void nodesAdd(Nodes **nodesp, AstNode *node) {
 	}
 	*((AstNode**)(nodes+1)+nodes->used) = node;
 	nodes->used++;
+}
+
+FILE *astfile;
+
+void astPrintLn(int indent, char *str, ...) {
+	int cnt;
+	va_list argptr;
+	for (cnt=0; cnt<indent; cnt++)
+		fprintf(astfile, (cnt&3)==0? "| " : "  ");
+	va_start(argptr, str);
+	vfprintf(astfile, str, argptr);
+	va_end(argptr);
+	fprintf(astfile, "\n");
+}
+
+void astPrintNode(int indent, AstNode *node) {
+	switch (node->asttype) {
+	case GlobalNode:
+		astPrintLn(indent, "AST for program %s", node->lexer->url); break;
+	default:
+		astPrintLn(indent, "**** UNKNOWN NODE ****");
+	}
+}
+
+void astPrint(AstNode *pgm) {
+	astfile = fopen("program.ast", "wb");
+	astPrintNode(0, pgm);
+	fclose(astfile);
 }

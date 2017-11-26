@@ -62,9 +62,11 @@ enum AstType {
 
 	ModuleType,	// Modules, Generics ?
 
-	// Type types
-	PermType = (PermGroup<<8),	// Permission
-	AllocType = (AllocGroup<<8),	// Allocator
+	// Permission type nodes
+	PermType = (PermGroup<<8),
+
+	// Allocator type nodes
+	AllocType = (AllocGroup<<8),
 };
 
 // All AST nodes begin with this header, mostly containing lexer data describing
@@ -115,6 +117,33 @@ typedef struct NamedAstNode {
 	NamedAstHdr;
 } NamedAstNode;
 
+// Header for a variable-sized structure holding a list of AstNodes
+// The nodes immediately follow the header
+typedef struct Nodes {
+	uint32_t used;
+	uint32_t avail;
+} Nodes;
+
+
+
+// Program
+typedef struct GlobalAstNode {
+	BasicAstHdr;
+	Nodes *nodes;
+} GlobalAstNode;
+
+// Function block
+typedef struct FnBlkAstNode {
+	NamedAstHdr;
+	Nodes *nodes;
+} FnBlkAstNode;
+
+// Block
+typedef struct BlockAstNode {
+	BasicAstHdr;
+	Nodes *nodes;
+} BlockAstNode;
+
 // Unsigned integer literal
 typedef struct ULitAstNode {
 	TypedAstHdr;
@@ -129,8 +158,8 @@ typedef struct FLitAstNode {
 
 // Variable identifier
 typedef struct VarAstNode {
-	TypedAstHdr;
-	char *name;
+	NamedAstHdr;
+	AstNode *perm;	// Permission (often mut or imm)
 } VarAstNode;
 
 // Unary operator (e.g., negative)
@@ -139,40 +168,12 @@ typedef struct UnaryAstNode {
 	AstNode *expnode;
 } UnaryAstNode;
 
-// Header for a variable-sized structure holding a list of AstNodes
-// The nodes immediately follow the header
-typedef struct Nodes {
-	uint32_t used;
-	uint32_t avail;
-} Nodes;
-
-// Program
-typedef struct GlobalAstNode {
-	BasicAstHdr;
-	Nodes *nodes;
-} GlobalAstNode;
-
 // Identifier that refers to a type
 typedef struct TypeAstNode {
 	BasicAstHdr;
 	AstNode *type;
 	char *name;
 } TypeAstNode;
-
-// Function block
-typedef struct FnTypeAstNode FnTypeAstNode;
-typedef struct FnBlkAstNode {
-	BasicAstHdr;
-	char *name;
-	FnTypeAstNode *fnsig;
-	Nodes *nodes;
-} FnBlkAstNode;
-
-// Block
-typedef struct BlockAstNode {
-	BasicAstHdr;
-	Nodes *nodes;
-} BlockAstNode;
 
 // Allocate and initialize a new AST node, then retrieve next token
 #define astNewNodeAndNext(node, aststruct, asttyp) {\
@@ -196,5 +197,8 @@ Nodes *nodesNew(int size);
 void nodesAdd(Nodes **nodesp, AstNode *node);
 
 #include "../types/type.h"
+#include "../types/permission.h"
+
+void astPrint(AstNode *pgm);
 
 #endif

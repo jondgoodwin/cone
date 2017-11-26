@@ -34,6 +34,8 @@ enum ErrorCode {
 	WarnCode = 3000,
 };
 
+int errors;
+
 // Send an error message to stderr
 void errorExit(int exitcode, const char *msg, ...);
 void errorMsgNode(AstNode *node, int code, const char *msg, ...);

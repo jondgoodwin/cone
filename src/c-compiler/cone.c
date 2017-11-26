@@ -29,6 +29,7 @@ void options(int argv, char **argc) {
 
 void main(int argv, char **argc) {
 	char *src;
+	AstNode *pgm;
 
 	// Initialize compiler's global structures
 	options(argv, argc);
@@ -48,7 +49,12 @@ void main(int argv, char **argc) {
 	// Parse and generate
 	lexInject(argc[1], src);
 	typInit();
-	genllvm(parse());
+	pgm = parse();
+#ifdef _DEBUG
+	astPrint(pgm);
+#endif
+	if (errors==0)
+		genllvm(pgm);
 
 	// Close up everything necessary
 	errorSummary();
