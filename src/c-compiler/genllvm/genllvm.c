@@ -5,7 +5,7 @@
  * See Copyright Notice in conec.h
 */
 
-#include "../shared/ast.h"
+#include "../ast/ast.h"
 #include "../shared/error.h"
 
 #include <stdio.h>
@@ -27,7 +27,7 @@ void genlFn(AstNode *fnnode) {
 	uint32_t cnt;
 	AstNode **nodep;
 
-	assert(fnnode->asttype == FnBlkNode);
+	assert(fnnode->asttype == FnImplNode);
 	nodes = (Nodes*) ((FnBlkAstNode*)fnnode)->nodes;
 	nodep = (AstNode**)(nodes+1);
 	cnt = nodes->used;
@@ -47,7 +47,7 @@ void genllvm(AstNode *globalnode) {
 	nodep = (AstNode**)(nodes+1);
 	cnt = nodes->used;
 	while (cnt--) {
-		if ((*nodep)->asttype == FnBlkNode)
+		if ((*nodep)->asttype == FnImplNode)
 			genlFn(*nodep);
 		nodep++;
 	}

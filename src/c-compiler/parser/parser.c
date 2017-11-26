@@ -8,7 +8,7 @@
 */
 
 #include "parser.h"
-#include "../shared/ast.h"
+#include "../ast/ast.h"
 #include "../shared/memory.h"
 #include "../shared/error.h"
 #include "lexer.h"
@@ -43,7 +43,7 @@ AstNode *parseFn() {
 
 	// Process the function's signature info, then put info in new AST node
 	parseFnType(&typnam);
-	astNewNode(fnnode, FnBlkAstNode, FnBlkNode);
+	astNewNode(fnnode, FnBlkAstNode, FnImplNode);
 	oldsym = typnam.symname;
 	fnnode->name = typnam.symname->name;
 	fnnode->fnsig = typnam.TypeAstNode;
@@ -53,7 +53,7 @@ AstNode *parseFn() {
 	// Process statements block that implements function, if provided
 	if (lexIsToken(LCurlyToken)) {
 		// If func is already fully defined with an implementation, error out
-		if (oldsym->node && oldsym->node->asttype == FnBlkNode &&
+		if (oldsym->node && oldsym->node->asttype == FnImplNode &&
 			((FnBlkAstNode*)oldsym->node)->nodes)
 			errorMsgNode((AstNode *)fnnode, ErrorFnDupImpl, "Function already has an implementation");
 		else

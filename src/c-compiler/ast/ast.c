@@ -6,7 +6,6 @@
 */
 
 #include "ast.h"
-#include "memory.h"
 #include <string.h>
 
 // Allocate and initialize a new nodes block

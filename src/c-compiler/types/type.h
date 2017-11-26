@@ -8,7 +8,6 @@
 #ifndef type_h
 #define type_h
 
-#include "../shared/ast.h"
 #include <stdint.h>
 typedef struct Symbol Symbol;
 
@@ -16,25 +15,25 @@ typedef struct Symbol Symbol;
 
 // Void type - e.g., for fn with no return value
 typedef struct VoidTypeAstNode {
-	AstNodeHdr;
+	BasicAstHdr;
 } VoidTypeAstNode;
 
 // For primitives such as integer, unsigned integet, floats
 typedef struct PrimTypeAstNode {
-	AstNodeHdr;
+	BasicAstHdr;
 	unsigned char nbytes;	// e.g., int32 uses 4 bytes
 } PrimTypeAstNode;
 
 // For function signatures
 typedef struct FnTypeAstNode {
-	AstNodeHdr;
+	BasicAstHdr;
 	AstNode *rettype;	// return type
 	// named parameters and their types
 } FnTypeAstNode;
 
 // For pointers
 typedef struct PtrTypeAstNode {
-	AstNodeHdr;
+	BasicAstHdr;
 	unsigned char nbytes;	// e.g., 32-bit uses 4 bytes
 	unsigned char subtype;	// Simple, vtabled
 	AstNode *ptrtotype;	// Type of value pointer points to
@@ -42,14 +41,14 @@ typedef struct PtrTypeAstNode {
 
 // For arrays
 typedef struct ArrTypeAstNode {
-	AstNodeHdr;
+	BasicAstHdr;
 	uint32_t nbrelems;		// Number of elements
 	AstNode *elemtype;	// Type of array's elements
 } ArrTypeAstNode;
 
 // For identifiers that are types rather than values
 typedef struct TypeTypeAstNode {
-	AstNodeHdr;
+	BasicAstHdr;
 	unsigned char subtype;
 	AstNode *TypeAstNode;
 } TypeTypeAstNode;

@@ -8,7 +8,7 @@
 #ifndef symbol_h
 #define symbol_h
 
-#include "ast.h"
+typedef struct AstNode AstNode;	// ../ast/ast.h
 
 #include <stdlib.h>
 

@@ -8,13 +8,13 @@
 #ifndef permission_h
 #define permission_h
 
-#include "type.h"
+#include "../ast/ast.h"
 
 struct AstNode;
 
 // Permission type info
 typedef struct PermTypeAstNode {
-	AstNodeHdr;
+	BasicAstHdr;
 	uint8_t ptype;
 	struct AstNode *locker;
 } PermTypeAstNode;

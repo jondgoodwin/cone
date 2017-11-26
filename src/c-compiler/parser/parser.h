@@ -8,8 +8,7 @@
 #ifndef parser_h
 #define parser_h
 
-#include "../shared/ast.h"
-#include "../types/type.h"
+#include "../ast/ast.h"
 
 // parser.c
 AstNode *parse();

@@ -10,7 +10,7 @@
 
 #include "keyword.h"
 #include "lexer.h"
-#include "../shared/ast.h"
+#include "../ast/ast.h"
 #include "../shared/symbol.h"
 #include "../shared/memory.h"
 

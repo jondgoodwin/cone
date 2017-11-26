@@ -17,7 +17,6 @@
 
 #include "symbol.h"
 #include "memory.h"
-#include "../types/type.h"
 
 #include <stdio.h>
 #include <assert.h>

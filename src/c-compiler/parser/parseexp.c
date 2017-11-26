@@ -8,7 +8,7 @@
 */
 
 #include "parser.h"
-#include "../shared/ast.h"
+#include "../ast/ast.h"
 #include "../shared/memory.h"
 #include "../shared/error.h"
 #include "lexer.h"

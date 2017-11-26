@@ -9,7 +9,7 @@
 #include "shared/globals.h"
 #include "shared/fileio.h"
 #include "shared/symbol.h"
-#include "shared/ast.h"
+#include "ast/ast.h"
 #include "shared/error.h"
 #include "parser/keyword.h"
 #include "parser/lexer.h"

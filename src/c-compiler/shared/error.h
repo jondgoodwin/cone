@@ -8,7 +8,7 @@
 #ifndef error_h
 #define error_h
 
-#include "ast.h"
+typedef struct AstNode AstNode;	// ../ast/ast.h
 
 // Exit error codes
 enum ErrorCode {

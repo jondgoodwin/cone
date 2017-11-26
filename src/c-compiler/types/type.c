@@ -5,7 +5,7 @@
  * See Copyright Notice in conec.h
 */
 
-#include "type.h"
+#include "../ast/ast.h"
 #include "../shared/symbol.h"
 #include "../shared/memory.h"
 #include "../parser/lexer.h"

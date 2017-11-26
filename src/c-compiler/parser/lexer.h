@@ -8,12 +8,11 @@
 #ifndef lexer_h
 #define lexer_h
 
-#include "../types/type.h"
 #include "../shared/symbol.h"
 
 #include <stdint.h>
 
-typedef struct AstNode AstNode;
+typedef struct AstNode AstNode;	// ../ast/ast.h
 
 // Lexer state (one per source file)
 typedef struct Lexer {
