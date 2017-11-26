@@ -76,8 +76,8 @@ AstNode *parse() {
 
 	// Create and populate a Program node for the program
 	astNewNode(global, GlobalAstNode, GlobalNode);
-	nodes = (Nodes**) &global->nodes;
-	*nodes = nodesNew(8);
+	nodes = &global->nodes;
+	*nodes = newNodes(8);
 	while (! lexIsToken( EofToken)) {
 		switch (lex->toktype) {
 		case FnToken:

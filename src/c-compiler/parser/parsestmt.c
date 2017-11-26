@@ -28,7 +28,7 @@ void parseStmtBlock(Nodes **nodes) {
 	if (lexIsToken(LCurlyToken))
 		lexNextToken();
 
-	*nodes = nodesNew(8);
+	*nodes = newNodes(8);
 	while (! lexIsToken(EofToken) && ! lexIsToken(RCurlyToken)) {
 		nodesAdd(nodes, parseExpStmt());
 	}

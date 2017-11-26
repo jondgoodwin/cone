@@ -9,6 +9,7 @@
 #define ast_h
 
 #include "../shared/memory.h"
+#include "nodes.h"
 typedef struct Symbol Symbol;	// ../shared/symbol.h
 typedef struct Lexer Lexer;		// ../parser/lexer.h
 
@@ -117,14 +118,6 @@ typedef struct NamedAstNode {
 	NamedAstHdr;
 } NamedAstNode;
 
-// Header for a variable-sized structure holding a list of AstNodes
-// The nodes immediately follow the header
-typedef struct Nodes {
-	uint32_t used;
-	uint32_t avail;
-} Nodes;
-
-
 
 // Program
 typedef struct GlobalAstNode {
@@ -191,10 +184,6 @@ typedef struct TypeAstNode {
 	node->linep = lex->linep; \
 	node->linenbr = lex->linenbr; \
 }
-
-// Helper Functions
-Nodes *nodesNew(int size);
-void nodesAdd(Nodes **nodesp, AstNode *node);
 
 #include "../types/type.h"
 #include "../types/permission.h"

@@ -22,33 +22,25 @@ void genlTerm(AstNode *termnode) {
 }
 
 // Generate a function block
-void genlFn(AstNode *fnnode) {
-	Nodes *nodes;
+void genlFn(FnBlkAstNode *fnnode) {
+	AstNode **nodesp;
 	uint32_t cnt;
-	AstNode **nodep;
 
 	assert(fnnode->asttype == FnImplNode);
-	nodes = (Nodes*) ((FnBlkAstNode*)fnnode)->nodes;
-	nodep = (AstNode**)(nodes+1);
-	cnt = nodes->used;
-	while (cnt--) {
-		genlTerm(*nodep++);
+	for (nodesFor(fnnode->nodes, cnt, nodesp)) {
+		genlTerm(*nodesp);
 	}
 }
 
 // Generate AST into LLVM IR using LLVM
-void genllvm(AstNode *globalnode) {
-	Nodes *nodes;
+void genllvm(GlobalAstNode *globalnode) {
 	uint32_t cnt;
-	AstNode **nodep;
+	AstNode **nodesp;
 
 	assert(globalnode->asttype == GlobalNode);
-	nodes = (Nodes*) ((GlobalAstNode*)globalnode)->nodes;
-	nodep = (AstNode**)(nodes+1);
-	cnt = nodes->used;
-	while (cnt--) {
-		if ((*nodep)->asttype == FnImplNode)
-			genlFn(*nodep);
-		nodep++;
+	for (nodesFor(globalnode->nodes, cnt, nodesp)) {
+		AstNode *nodep = *nodesp;
+		if (nodep->asttype == FnImplNode)
+			genlFn((FnBlkAstNode*) nodep);
 	}
 }
