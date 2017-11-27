@@ -70,9 +70,27 @@ AstNode* parseType() {
 			return NULL;
 		}
 	case FnToken:
-		{
 		return (AstNode*) parseFnSig();
-		}
+	case i8Token:
+		{AstNode *node; node = (AstNode*) newNbrTypeNode(IntType, 1, lex->val.ident); lexNextToken(); return node;}
+	case i16Token:
+		{AstNode *node; node = (AstNode*) newNbrTypeNode(IntType, 2, lex->val.ident); lexNextToken(); return node;}
+	case i32Token:
+		{AstNode *node; node = (AstNode*) newNbrTypeNode(IntType, 4, lex->val.ident); lexNextToken(); return node;}
+	case i64Token:
+		{AstNode *node; node = (AstNode*) newNbrTypeNode(IntType, 8, lex->val.ident); lexNextToken(); return node;}
+	case u8Token:
+		{AstNode *node; node = (AstNode*) newNbrTypeNode(UintType, 1, lex->val.ident); lexNextToken(); return node;}
+	case u16Token:
+		{AstNode *node; node = (AstNode*) newNbrTypeNode(UintType, 2, lex->val.ident); lexNextToken(); return node;}
+	case u32Token:
+		{AstNode *node; node = (AstNode*) newNbrTypeNode(UintType, 4, lex->val.ident); lexNextToken(); return node;}
+	case u64Token:
+		{AstNode *node; node = (AstNode*) newNbrTypeNode(UintType, 8, lex->val.ident); lexNextToken(); return node;}
+	case f32Token:
+		{AstNode *node; node = (AstNode*) newNbrTypeNode(FloatType, 4, lex->val.ident); lexNextToken(); return node;}
+	case f64Token:
+		{AstNode *node; node = (AstNode*) newNbrTypeNode(FloatType, 8, lex->val.ident); lexNextToken(); return node;}
 	default:
 		return NULL;
 	}

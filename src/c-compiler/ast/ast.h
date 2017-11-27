@@ -46,7 +46,7 @@ enum AstType {
 
 	VoidType = (VTypeGroup<<8),	// representing no values, e.g., no return values on a fn
 
-	// PrimTypeAstNode
+	// NbrTypeAstNode
 	IntType,	// Integer
 	UintType,	// Unsigned integer
 	FloatType,	// Floating point number
@@ -118,10 +118,11 @@ typedef struct NamedAstNode {
 	NamedAstHdr;
 } NamedAstNode;
 
-#include "block.h"
-#include "expr.h"
+#include "../ast/block.h"
+#include "../ast/expr.h"
 #include "../types/type.h"
 #include "../types/fnsig.h"
+#include "../types/number.h"
 #include "../types/permission.h"
 
 // Identifier that refers to a type
@@ -130,12 +131,6 @@ typedef struct TypeAstNode {
 	AstNode *type;
 	char *name;
 } TypeAstNode;
-
-// Allocate and initialize a new AST node, then retrieve next token
-#define newAstNodeAndNext(node, aststruct, asttyp) {\
-	newAstNode(node, aststruct, asttyp); \
-	lexNextToken(); \
-}
 
 // Allocate and initialize a new AST node
 #define newAstNode(node, aststruct, asttyp) {\

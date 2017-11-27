@@ -16,12 +16,6 @@ typedef struct VoidTypeAstNode {
 	TypedAstHdr;
 } VoidTypeAstNode;
 
-// For primitives such as integer, unsigned integet, floats
-typedef struct PrimTypeAstNode {
-	NamedAstHdr;
-	unsigned char nbytes;	// e.g., int32 uses 4 bytes
-} PrimTypeAstNode;
-
 // For pointers
 typedef struct PtrTypeAstNode {
 	NamedAstHdr;
@@ -46,18 +40,6 @@ typedef struct TypeTypeAstNode {
 
 // Represents the absence of type information
 AstNode *voidType;
-
-// Primitive numeric types
-AstNode *i8Type;
-AstNode *i16Type;
-AstNode *i32Type;
-AstNode *i64Type;
-AstNode *u8Type;
-AstNode *u16Type;
-AstNode *u32Type;
-AstNode *u64Type;
-AstNode *f32Type;
-AstNode *f64Type;
 
 void typInit();
 VoidTypeAstNode *newVoidNode();

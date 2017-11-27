@@ -9,6 +9,7 @@
 */
 
 #include "lexer.h"
+#include "keyword.h"
 #include "../ast/ast.h"
 #include "../shared/symbol.h"
 #include "../shared/globals.h"

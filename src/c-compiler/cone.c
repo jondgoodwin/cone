@@ -33,8 +33,10 @@ void main(int argv, char **argc) {
 
 	// Initialize compiler's global structures
 	options(argv, argc);
+	lexInject("*compiler*", "");
 	symInit();
 	keywordInit();
+	typInit();
 
 	// Output compiler name and release level
 	puts(CONE_RELEASE);
@@ -48,7 +50,6 @@ void main(int argv, char **argc) {
 
 	// Parse and generate
 	lexInject(argc[1], src);
-	typInit();
 	pgm = parse();
 #ifdef _DEBUG
 	astPrint(pgm);

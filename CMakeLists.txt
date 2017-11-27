@@ -21,6 +21,7 @@ add_executable(cone
 
 	src/c-compiler/types/type.c
 	src/c-compiler/types/fnsig.c
+	src/c-compiler/types/number.c
 	src/c-compiler/types/permission.c
 
 	src/c-compiler/parser/keyword.c

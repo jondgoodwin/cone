@@ -43,7 +43,8 @@ AstNode *parsePrefix() {
 	if (lexIsToken(DashToken)) {
 		UnaryAstNode *node;
 		AstNode *opnode;
-		newAstNodeAndNext(node, UnaryAstNode, UnaryNode);
+		newAstNode(node, UnaryAstNode, UnaryNode);
+		lexNextToken();
 		opnode = parsePrefix();
 		// Optimize negative numeric literal
 		if (opnode->asttype == ULitNode) {

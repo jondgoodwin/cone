@@ -21,5 +21,5 @@ FnSigAstNode *newFnSigNode() {
 // Serialize the AST for a Unsigned literal
 void fnsigPrint(int indent, FnSigAstNode *sig, char* prefix) {
 	astPrintLn(indent, "%s fn signature", prefix);
-	astPrintNode(indent+1, sig->rettype, "-ret: ");
+	astPrintNode(indent+1, sig->rettype, "-return type:");
 }

@@ -62,6 +62,18 @@ enum TokenTypes {
 	// Keywords
 	FnToken,		// 'fn'
 
+	// Number types
+	i8Token,
+	i16Token,
+	i32Token,
+	i64Token,
+	u8Token,
+	u16Token,
+	u32Token,
+	u64Token,
+	f32Token,
+	f64Token,
+
 	NbrTokens
 };
 
