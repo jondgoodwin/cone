@@ -31,6 +31,10 @@ void astPrintNode(int indent, AstNode *node) {
 		pgmPrint(indent, (PgmAstNode *)node); break;
 	case FnImplNode:
 		fnImplPrint(indent, (FnImplAstNode *)node); break;
+	case ULitNode:
+		ulitPrint(indent, (ULitAstNode *)node); break;
+	case FLitNode:
+		flitPrint(indent, (FLitAstNode *)node); break;
 	default:
 		astPrintLn(indent, "**** UNKNOWN NODE ****");
 	}

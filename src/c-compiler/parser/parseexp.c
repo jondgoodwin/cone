@@ -21,18 +21,14 @@ AstNode *parseterm() {
 	case IntLitToken:
 		{
 			ULitAstNode *node;
-			newAstNode(node, ULitAstNode, ULitNode);
-			node->uintlit = lex->val.uintlit;
-			node->vtype = lex->langtype;
+			node = newULitNode(lex->val.uintlit, lex->langtype);
 			lexNextToken();
 			return (AstNode *)node;
 		}
 	case FloatLitToken:
 		{
 			FLitAstNode *node;
-			newAstNode(node, FLitAstNode, FLitNode);
-			node->floatlit = lex->val.floatlit;
-			node->vtype = lex->langtype;
+			node = newFLitNode(lex->val.floatlit, lex->langtype);
 			lexNextToken();
 			return (AstNode *)node;
 		}

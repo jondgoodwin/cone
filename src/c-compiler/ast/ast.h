@@ -119,32 +119,9 @@ typedef struct NamedAstNode {
 } NamedAstNode;
 
 #include "block.h"
+#include "expr.h"
 #include "../types/type.h"
 #include "../types/permission.h"
-
-// Unsigned integer literal
-typedef struct ULitAstNode {
-	TypedAstHdr;
-	uint64_t uintlit;
-} ULitAstNode;
-
-// Float literal
-typedef struct FLitAstNode {
-	TypedAstHdr;
-	double floatlit;
-} FLitAstNode;
-
-// Variable identifier
-typedef struct VarAstNode {
-	NamedAstHdr;
-	AstNode *perm;	// Permission (often mut or imm)
-} VarAstNode;
-
-// Unary operator (e.g., negative)
-typedef struct UnaryAstNode {
-	TypedAstHdr;
-	AstNode *expnode;
-} UnaryAstNode;
 
 // Identifier that refers to a type
 typedef struct TypeAstNode {

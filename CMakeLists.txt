@@ -17,6 +17,7 @@ add_executable(cone
 	src/c-compiler/ast/ast.c
 	src/c-compiler/ast/nodes.c
 	src/c-compiler/ast/block.c
+	src/c-compiler/ast/expr.c
 
 	src/c-compiler/types/type.c
 	src/c-compiler/types/permission.c
