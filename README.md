@@ -59,7 +59,7 @@ When finished, Cone will support these features:
 ## Documentation and Examples
 
  - [Cone Language Reference][coneref] (under development)
- - Showcase (TBD)
+ - [Showcase][showcase]
  - Web-based playground (TBD)
  - Example code (TBD)
 
@@ -87,6 +87,7 @@ See LICENSE and COPYRIGHT for details.
 [gmm]: http://jondgoodwin.com/pling/gmm.pdf
 [plan]: https://github.com/jondgoodwin/cone/blob/master/PLAN.md
 [coneref]: http://web3d.jondgoodwin.com/cone
+[showcase]: http://web3d.jondgoodwin.com/cone/showcase.html
 [acorn]: https://github.com/jondgoodwin/acornvm
 [acornshow]: http://web3d.jondgoodwin.com/acorn/showcase.html
 [acornref]: http://web3d.jondgoodwin.com/acorn
