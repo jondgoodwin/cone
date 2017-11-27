@@ -43,7 +43,7 @@ enum PermType {
 // If off, the permission's designated locking mechanism must be wrapped around all content access.
 #define IsLockless 0x40
 
-// Built-in permission types
+// Built-in permission types - for implicit (non-declared but known) permissions
 AstNode *mutPerm;
 AstNode *mmutPerm;
 AstNode *immPerm;
@@ -52,6 +52,7 @@ AstNode *constxPerm;
 AstNode *mutxPerm;
 AstNode *idPerm;
 
-void permInit();
+PermTypeAstNode *newPermTypeNode(char ptyp, uint16_t flags, AstNode *locker, Symbol *name);
+void permTypePrint(int indent, PermTypeAstNode *node, char* prefix);
 
 #endif

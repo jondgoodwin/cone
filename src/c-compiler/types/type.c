@@ -23,39 +23,8 @@ void voidPrint(int indent, VoidTypeAstNode *voidnode, char *prefix) {
 	astPrintLn(indent, "%s (void)", prefix);
 }
 
-// Macro for creating primitive types
-#define primtype(dest, typ, nbyt) {\
-	NbrTypeAstNode *ptype; \
-	newAstNode(ptype, NbrTypeAstNode, typ); \
-	ptype->asttype = typ; \
-	ptype->nbytes = nbyt; \
-	dest = (AstNode*) ptype; \
-}
-
-// Add a type identifier to the symbol table
-void typAddIdent(char *name, AstNode *type) {
-	Symbol *sym;
-	TypeAstNode *node;
-	sym = symFind(name, strlen(name));
-	sym->node = (AstNode*) (node = (TypeAstNode*)memAllocBlk(sizeof(TypeAstNode)));
-	node->asttype = TypeNode;
-	node->flags = 0;
-	node->type = type;
-	node->name = sym->name;
-}
-
 // Initialize built-in types
 void typInit() {
 	// Built-in global variable types
 	voidType = (AstNode*) newVoidNode();
-	permInit();
-
-	// Add type identifiers to the symbol table
-	typAddIdent("mut", mutPerm);
-	typAddIdent("mmut", mmutPerm);
-	typAddIdent("imm", immPerm);
-	typAddIdent("const", constPerm);
-	typAddIdent("constx", constxPerm);
-	typAddIdent("mutx", mutxPerm);
-	typAddIdent("id", idPerm);
 }

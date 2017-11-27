@@ -8,24 +8,20 @@
 #include "../ast/ast.h"
 #include "../shared/memory.h"
 #include "../parser/lexer.h"
+#include "../shared/symbol.h"
 
-// Macro for creating permission types
-#define permtype(dest, typ, ptyp, flgs) {\
-	PermTypeAstNode *perm; \
-	newAstNode(perm, PermTypeAstNode, typ); \
-	perm->ptype = ptyp; \
-	perm->flags = flgs; \
-	perm->locker = NULL; \
-	dest = (AstNode *)perm; \
+// Create a new primitive number type node
+PermTypeAstNode *newPermTypeNode(char ptyp, uint16_t flags, AstNode *locker, Symbol *name) {
+	PermTypeAstNode *node;
+	newAstNode(node, PermTypeAstNode, PermType);
+	node->name = name;
+	node->flags = flags;
+	node->ptype = ptyp;
+	node->locker = locker;
+	return node;
 }
 
-// Initialize built-in static permission type global variables
-void permInit() {
-	permtype(mutPerm, PermType, MutPerm, MayRead | MayWrite | RaceSafe | MayIntRef | IsLockless);
-	permtype(mmutPerm, PermType, MmutPerm, MayRead | MayWrite | MayAlias | MayAliasWrite | IsLockless);
-	permtype(immPerm, PermType, ImmPerm, MayRead | MayAlias | RaceSafe | MayIntRef | IsLockless);
-	permtype(constPerm, PermType, ConstPerm, MayRead | MayAlias | IsLockless);
-	permtype(constxPerm, PermType, ConstxPerm, MayRead | MayAlias | MayIntRef | IsLockless);
-	permtype(mutxPerm, PermType, MutxPerm, MayRead | MayWrite | MayAlias | MayIntRef | IsLockless);
-	permtype(idPerm, PermType, IdPerm, MayAlias | RaceSafe | IsLockless);
+// Serialize the AST for a Unsigned literal
+void permTypePrint(int indent, PermTypeAstNode *node, char* prefix) {
+	astPrintLn(indent, "%s %s", prefix, node->name->name);
 }

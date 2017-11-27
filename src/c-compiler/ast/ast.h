@@ -9,7 +9,7 @@
 #define ast_h
 
 #include "../shared/memory.h"
-#include "nodes.h"
+#include "../ast/nodes.h"
 typedef struct Symbol Symbol;	// ../shared/symbol.h
 typedef struct Lexer Lexer;		// ../parser/lexer.h
 
@@ -23,6 +23,9 @@ enum AstGroup {
 	PermGroup,	// Nodes that describe a permission type
 	AllocGroup	// Nodes that describe an allocator type
 };
+
+// Retrieve the group for an ast type
+#define astgroup(typ) ((typ)>>8)
 
 // All the possible types for an AstNode
 enum AstType {
@@ -41,9 +44,7 @@ enum AstType {
 	UnaryNode,		// Unary method operator
 	FnImplNode,		// Function implementation (vtype is its signature)
 
-	// Type node
-	TypeNode,		// Identifier that refers to a type
-
+	// AST nodes that are value types
 	VoidType = (VTypeGroup<<8),	// representing no values, e.g., no return values on a fn
 
 	// NbrTypeAstNode
@@ -124,13 +125,6 @@ typedef struct NamedAstNode {
 #include "../types/fnsig.h"
 #include "../types/number.h"
 #include "../types/permission.h"
-
-// Identifier that refers to a type
-typedef struct TypeAstNode {
-	BasicAstHdr;
-	AstNode *type;
-	char *name;
-} TypeAstNode;
 
 // Allocate and initialize a new AST node
 #define newAstNode(node, aststruct, asttyp) {\

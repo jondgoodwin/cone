@@ -39,6 +39,8 @@ void astPrintNode(int indent, AstNode *node, char *prefix) {
 		fnsigPrint(indent, (FnSigAstNode *)node, prefix); break;
 	case IntType: case UintType: case FloatType:
 		nbrTypePrint(indent, (NbrTypeAstNode *)node, prefix); break;
+	case PermType:
+		permTypePrint(indent, (PermTypeAstNode *)node, prefix); break;
 	case VoidType:
 		voidPrint(indent, (VoidTypeAstNode *)node, prefix); break;
 	default:

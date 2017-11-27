@@ -31,13 +31,6 @@ typedef struct ArrTypeAstNode {
 	AstNode *elemtype;	// Type of array's elements
 } ArrTypeAstNode;
 
-// For identifiers that are types rather than values
-typedef struct TypeTypeAstNode {
-	NamedAstHdr;
-	unsigned char subtype;
-	AstNode *TypeAstNode;
-} TypeTypeAstNode;
-
 // Represents the absence of type information
 AstNode *voidType;
 

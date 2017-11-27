@@ -39,4 +39,12 @@ void keywordInit() {
 	u64Type = (AstNode*) newNbrTypeNode(UintType, 8, keyAdd("u64", u64Token));
 	i8Type = (AstNode*) newNbrTypeNode(FloatType, 4, keyAdd("f32", f32Token));
 	i8Type = (AstNode*) newNbrTypeNode(FloatType, 8, keyAdd("f64", f64Token));
+
+	mutPerm = (AstNode*) newPermTypeNode(MutPerm, MayRead | MayWrite | RaceSafe | MayIntRef | IsLockless, NULL, keyAdd("mut", mutToken));
+	mmutPerm = (AstNode*) newPermTypeNode(MmutPerm, MayRead | MayWrite | MayAlias | MayAliasWrite | IsLockless, NULL, keyAdd("mutx", mutxToken));
+	immPerm = (AstNode*) newPermTypeNode(ImmPerm, MayRead | MayAlias | RaceSafe | MayIntRef | IsLockless, NULL, keyAdd("imm", immToken));
+	constPerm = (AstNode*) newPermTypeNode(ConstPerm, MayRead | MayAlias | IsLockless, NULL, keyAdd("const", constToken));
+	constxPerm = (AstNode*) newPermTypeNode(ConstxPerm, MayRead | MayAlias | MayIntRef | IsLockless, NULL, keyAdd("constx", constxToken));
+	mutxPerm = (AstNode*) newPermTypeNode(MutxPerm, MayRead | MayWrite | MayAlias | MayIntRef | IsLockless, NULL, keyAdd("mutx", mutxToken));
+	idPerm = (AstNode*) newPermTypeNode(IdPerm, MayAlias | RaceSafe | IsLockless, NULL, keyAdd("id", idToken));
 }
