@@ -29,7 +29,7 @@ typedef struct BlockAstNode {
 PgmAstNode *newPgmNode();
 void pgmPrint(int indent, PgmAstNode *pgm);
 
-FnImplAstNode *newFnImplNode();
+FnImplAstNode *newFnImplNode(Symbol *name, AstNode *sig);
 void fnImplPrint(int indent, FnImplAstNode *fn);
 
 #endif

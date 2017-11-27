@@ -11,8 +11,6 @@
 #include <stdint.h>
 typedef struct Symbol Symbol;
 
-#define allocTypeAstNode(TypeAstNode) ((TypeAstNode *) memAllocBlk(sizeof(TypeAstNode)))
-
 // Void type - e.g., for fn with no return value
 typedef struct VoidTypeAstNode {
 	TypedAstHdr;
@@ -23,13 +21,6 @@ typedef struct PrimTypeAstNode {
 	NamedAstHdr;
 	unsigned char nbytes;	// e.g., int32 uses 4 bytes
 } PrimTypeAstNode;
-
-// For function signatures
-typedef struct FnTypeAstNode {
-	NamedAstHdr;
-	AstNode *rettype;	// return type
-	// named parameters and their types
-} FnTypeAstNode;
 
 // For pointers
 typedef struct PtrTypeAstNode {
@@ -53,6 +44,9 @@ typedef struct TypeTypeAstNode {
 	AstNode *TypeAstNode;
 } TypeTypeAstNode;
 
+// Represents the absence of type information
+AstNode *voidType;
+
 // Primitive numeric types
 AstNode *i8Type;
 AstNode *i16Type;
@@ -65,12 +59,8 @@ AstNode *u64Type;
 AstNode *f32Type;
 AstNode *f64Type;
 
-// Communication block between function impl and type parser
-typedef struct TypeAndName {
-	FnTypeAstNode *TypeAstNode;
-	struct Symbol *symname;	// NULL = no name specified
-} TypeAndName;
-
 void typInit();
+VoidTypeAstNode *newVoidNode();
+void voidPrint(int indent, VoidTypeAstNode *voidnode, char *prefix);
 
 #endif

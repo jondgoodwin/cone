@@ -39,15 +39,13 @@ void parseRCurly() {
 // Parse a function block
 AstNode *parseFn() {
 	FnImplAstNode *fnnode;
-	TypeAndName typnam;
 	Symbol *oldsym;
+	FnSigAstNode *sig;
 
 	// Process the function's signature info, then put info in new AST node
-	parseFnType(&typnam);
-	fnnode = newFnImplNode();
-	oldsym = typnam.symname;
-	fnnode->name = typnam.symname;
-	fnnode->vtype = (AstNode*) typnam.TypeAstNode;
+	sig = (FnSigAstNode*) parseFnSig();
+	fnnode = newFnImplNode(sig->name, (AstNode*) sig);
+	oldsym = fnnode->name;
 
 	// Error if name is already used but types don't match
 

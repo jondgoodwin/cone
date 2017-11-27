@@ -25,13 +25,15 @@ void pgmPrint(int indent, PgmAstNode *pgm) {
 
 	astPrintLn(indent, "AST for program %s", pgm->lexer->url);
 	for (nodesFor(pgm->nodes, cnt, nodesp))
-		astPrintNode(indent+1, *nodesp);
+		astPrintNode(indent+1, *nodesp, "");
 }
 
 // Create a new Function Implementation node
-FnImplAstNode *newFnImplNode() {
+FnImplAstNode *newFnImplNode(Symbol *name, AstNode *sig) {
 	FnImplAstNode *fn;
 	newAstNode(fn, FnImplAstNode, FnImplNode);
+	fn->name = name;
+	fn->vtype = sig;
 	fn->nodes = NULL;
 	return fn;
 }
@@ -42,8 +44,8 @@ void fnImplPrint(int indent, FnImplAstNode *fn) {
 	uint32_t cnt;
 
 	astPrintLn(indent, "fn %s()", fn->name->name);
-	astPrintNode(indent+1, fn->vtype);
-	astPrintLn(indent, "-Block:");
+	astPrintNode(indent, fn->vtype, "-");
+	astPrintLn(indent, "-Statements:");
 	for (nodesFor(fn->nodes, cnt, nodesp))
-		astPrintNode(indent+1, *nodesp);
+		astPrintNode(indent+1, *nodesp, "");
 }

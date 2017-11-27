@@ -25,7 +25,7 @@ void astPrintLn(int indent, char *str, ...) {
 	fprintf(astfile, "\n");
 }
 
-void astPrintNode(int indent, AstNode *node) {
+void astPrintNode(int indent, AstNode *node, char *prefix) {
 	switch (node->asttype) {
 	case PgmNode:
 		pgmPrint(indent, (PgmAstNode *)node); break;
@@ -35,13 +35,17 @@ void astPrintNode(int indent, AstNode *node) {
 		ulitPrint(indent, (ULitAstNode *)node); break;
 	case FLitNode:
 		flitPrint(indent, (FLitAstNode *)node); break;
+	case FnSig:
+		fnsigPrint(indent, (FnSigAstNode *)node, prefix); break;
+	case VoidType:
+		voidPrint(indent, (VoidTypeAstNode *)node, prefix); break;
 	default:
-		astPrintLn(indent, "**** UNKNOWN NODE ****");
+		astPrintLn(indent, "%s **** UNKNOWN NODE ****", prefix);
 	}
 }
 
 void astPrint(AstNode *pgm) {
 	astfile = fopen("program.ast", "wb");
-	astPrintNode(0, pgm);
+	astPrintNode(0, pgm, "");
 	fclose(astfile);
 }

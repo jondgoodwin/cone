@@ -22,7 +22,7 @@ void parseStmtBlock(Nodes **nodes);
 AstNode *parseExp();
 
 // parsetype.c
-void parseFnType(TypeAndName *typnam);
+AstNode *parseFnSig();
 AstNode *parseType();
 
 #endif

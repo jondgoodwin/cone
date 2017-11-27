@@ -55,7 +55,7 @@ enum AstType {
 
 	ArrayType,	// Also dynamic arrays? SOA?
 
-	FnType,		// Also method, closure, behavior, co-routine, thread, ...
+	FnSig,		// Also method, closure, behavior, co-routine, thread, ...
 
 	StructType,	// Also class, interface, actor, etc.?
 
@@ -121,6 +121,7 @@ typedef struct NamedAstNode {
 #include "block.h"
 #include "expr.h"
 #include "../types/type.h"
+#include "../types/fnsig.h"
 #include "../types/permission.h"
 
 // Identifier that refers to a type
@@ -148,7 +149,7 @@ typedef struct TypeAstNode {
 }
 
 void astPrint(AstNode *pgm);
-void astPrintNode(int indent, AstNode *node);
+void astPrintNode(int indent, AstNode *node, char *prefix);
 void astPrintLn(int indent, char *str, ...);
 
 #endif

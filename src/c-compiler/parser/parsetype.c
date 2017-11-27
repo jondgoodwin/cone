@@ -17,26 +17,26 @@
 #include <stdio.h>
 
 // Parse a function's type signature
-void parseFnType(TypeAndName *typnam) {
-	FnTypeAstNode *fnsig;
+AstNode *parseFnSig() {
+	FnSigAstNode *fnsig;
+	Symbol *name;
 
 	// Skip past the 'fn'
 	lexNextToken();
 
 	// Process function name, if provided
 	if (lexIsToken(IdentToken)) {
-		typnam->symname = lex->val.ident;
+		name = lex->val.ident;
 		lexNextToken();
 	}
 	else {
 		// For anonymous function, create and populate fake symbol table entry
-		typnam->symname = NULL;
+		name = NULL;
 	}
 
 	// Set up memory block for the function's type signature
-	fnsig = typnam->TypeAstNode = (FnTypeAstNode*) memAllocBlk(sizeof(FnTypeAstNode));
-	fnsig->asttype = FnType;
-	fnsig->flags = 0;
+	fnsig = newFnSigNode();
+	fnsig->name = name;
 
 	// Process parameter declarations
 	if (lexIsToken(LParenToken)) {
@@ -51,11 +51,10 @@ void parseFnType(TypeAndName *typnam) {
 
 	// Parse return type info - turn into void if none specified
 	if ((fnsig->rettype = parseType())==NULL) {
-		VoidTypeAstNode *voidtype;
-		newAstNode(voidtype, VoidTypeAstNode, VoidType);
-		fnsig->rettype = (AstNode*)voidtype;
+		fnsig->rettype = voidType;
 	}
 
+	return (AstNode*) fnsig;
 }
 
 // Parse a single type sequence
@@ -72,9 +71,7 @@ AstNode* parseType() {
 		}
 	case FnToken:
 		{
-		TypeAndName typnam;
-		parseFnType(&typnam);
-		return (AstNode*) typnam.TypeAstNode;
+		return (AstNode*) parseFnSig();
 		}
 	default:
 		return NULL;
