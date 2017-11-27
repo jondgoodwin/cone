@@ -23,6 +23,7 @@ AstNode *parseExp();
 
 // parsetype.c
 AstNode *parseFnSig();
-AstNode *parseType();
+AstNode *parseVtype();
+AstNode* parsePerm();
 
 #endif

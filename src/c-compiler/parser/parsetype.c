@@ -50,20 +50,20 @@ AstNode *parseFnSig() {
 		errorMsgLex(ErrorNoLParen, "Expected left parenthesis for parameter declarations");
 
 	// Parse return type info - turn into void if none specified
-	if ((fnsig->rettype = parseType())==NULL) {
+	if ((fnsig->rettype = parseVtype())==NULL) {
 		fnsig->rettype = voidType;
 	}
 
 	return (AstNode*) fnsig;
 }
 
-// Parse a single type sequence
-AstNode* parseType() {
+// Parse a value type signature. Return NULL if none found.
+AstNode* parseVtype() {
 	switch (lex->toktype) {
 	case IdentToken:
 		{
 		AstNode *inode = lex->val.ident->node;
-		if (astgroup(inode->asttype)>=VTypeGroup) {
+		if (astgroup(inode->asttype)==VTypeGroup) {
 			lexNextToken();
 			return ((TypedAstNode*)inode)->vtype;
 		} else
@@ -91,7 +91,23 @@ AstNode* parseType() {
 		{AstNode *node; node = (AstNode*) newNbrTypeNode(FloatType, 4, lex->val.ident); lexNextToken(); return node;}
 	case f64Token:
 		{AstNode *node; node = (AstNode*) newNbrTypeNode(FloatType, 8, lex->val.ident); lexNextToken(); return node;}
+	default:
+		return NULL;
+	}
+}
 
+// Parse a permission type. Return NULL if not found.
+AstNode* parsePerm() {
+	switch (lex->toktype) {
+	case IdentToken:
+		{
+		AstNode *inode = lex->val.ident->node;
+		if (astgroup(inode->asttype)==PermGroup) {
+			lexNextToken();
+			return ((TypedAstNode*)inode)->vtype;
+		} else
+			return NULL;
+		}
 	case mutToken:
 		{AstNode *node; node = (AstNode*) newPermTypeNode(MutPerm, MayRead | MayWrite | RaceSafe | MayIntRef | IsLockless, NULL, lex->val.ident); lexNextToken(); return node;}
 	case mmutToken:
@@ -110,3 +126,4 @@ AstNode* parseType() {
 		return NULL;
 	}
 }
+

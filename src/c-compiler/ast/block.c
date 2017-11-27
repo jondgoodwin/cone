@@ -45,7 +45,7 @@ void fnImplPrint(int indent, FnImplAstNode *fn) {
 
 	astPrintLn(indent, "fn %s()", fn->name->name);
 	astPrintNode(indent, fn->vtype, "-");
-	astPrintLn(indent, "-Statements:");
+	astPrintLn(indent, "-fn statements:");
 	for (nodesFor(fn->nodes, cnt, nodesp))
 		astPrintNode(indent+1, *nodesp, "");
 }

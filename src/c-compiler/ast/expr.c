@@ -21,7 +21,7 @@ ULitAstNode *newULitNode(uint64_t nbr, AstNode *type) {
 
 // Serialize the AST for a Unsigned literal
 void ulitPrint(int indent, ULitAstNode *lit) {
-	astPrintLn(indent, "Unsiged literal %ld", lit->uintlit);
+	astPrintLn(indent, "Unsigned literal %ld", lit->uintlit);
 }
 
 // Create a new unsigned literal node
