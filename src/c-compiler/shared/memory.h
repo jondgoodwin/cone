@@ -21,4 +21,7 @@ void *memAllocBlk(size_t size);
 // Allocates extra byte for string-ending 0, appending it to copied string
 char *memAllocStr(char *str, size_t size);
 
+// Return memory allocated and used
+size_t memUsed();
+
 #endif

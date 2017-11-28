@@ -12,9 +12,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <time.h>
 
 int errors = 0;
 int warnings = 0;
+clock_t startTime;
 
 // Send an error message to stderr
 void errorExit(int exitcode, const char *msg, ...) {
@@ -84,7 +86,9 @@ void errorMsgLex(int code, const char *msg, ...) {
 
 // Generate final message for a compile
 void errorSummary() {
+	float dur;
 	if (errors > 0)
 		errorExit(ExitError, "Unsuccessful compile: %d errors, %d warnings", errors, warnings);
-	fprintf(stderr, "Compilation was successful. %d warnings detected\n", warnings);
+	dur = (float)(clock()-startTime)/CLOCKS_PER_SEC;
+	fprintf(stderr, "Compile finished in %f sec (%d kb). %d warnings detected\n", dur, memUsed()/1024, warnings);
 }

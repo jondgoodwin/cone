@@ -26,6 +26,8 @@ static size_t gMemBlkArenaLeft = 0;
 static void *gMemStrArenaPos = NULL;
 static size_t gMemStrArenaLeft = 0;
 
+size_t memAllocated = 0;
+
 /** Allocate memory for a block, aligned to a 16-byte boundary */
 void *memAllocBlk(size_t size) {
 	void *memp;
@@ -44,6 +46,7 @@ void *memAllocBlk(size_t size) {
 	// Return a newly allocated area, if bigger than arena can hold
 	if (size > gMemBlkArenaSize) {
 		memp = malloc(size);
+		memAllocated += size;
 		if (memp==NULL)
 			errorExit(ExitMem, "Error: Out of memory");
 		return memp;
@@ -51,6 +54,7 @@ void *memAllocBlk(size_t size) {
 
 	// Allocate a new Arena and return next bite out of it
 	gMemBlkArenaPos = malloc(gMemBlkArenaSize);
+	memAllocated += gMemBlkArenaSize;
 	if (gMemBlkArenaPos==NULL)
 		errorExit(ExitMem, "Error: Out of memory");
 	gMemBlkArenaLeft = gMemBlkArenaSize - size;
@@ -77,6 +81,7 @@ char *memAllocStr(char *str, size_t size) {
 	// Return a newly allocated area, if bigger than arena can hold
 	else if (size > gMemStrArenaSize) {
 		strp = malloc(size);
+		memAllocated += size;
 		if (strp==NULL)
 			errorExit(ExitMem, "Error: Out of memory");
 	}
@@ -84,6 +89,7 @@ char *memAllocStr(char *str, size_t size) {
 	// Allocate a new Arena and return next bite out of it
 	else {
 		gMemStrArenaPos = malloc(gMemStrArenaSize);
+		memAllocated += gMemStrArenaSize;
 		if (gMemStrArenaPos==NULL)
 			errorExit(ExitMem, "Error: Out of memory");
 		gMemStrArenaLeft = gMemStrArenaSize - size;
@@ -97,4 +103,10 @@ char *memAllocStr(char *str, size_t size) {
 		*((char*)strp+size) = '\0';
 	}
 	return (char*) strp;
+}
+
+size_t symUnused();
+// Return how much memory actually needed for use
+size_t memUsed() {
+	return memAllocated - gMemBlkArenaLeft - gMemStrArenaLeft - symUnused();
 }

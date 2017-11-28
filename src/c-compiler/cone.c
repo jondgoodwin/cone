@@ -18,7 +18,10 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 #include <assert.h>
+
+clock_t startTime;
 
 void options(int argv, char **argc) {
 	target.ptrsize = 32;
@@ -32,6 +35,7 @@ void main(int argv, char **argc) {
 	AstNode *pgm;
 
 	// Initialize compiler's global structures
+	startTime = clock();
 	options(argv, argc);
 	lexInject("*compiler*", "");
 	symInit();

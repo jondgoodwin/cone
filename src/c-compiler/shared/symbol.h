@@ -31,6 +31,8 @@ typedef struct Symbol {
 // For unknown symbol, it allocates memory for the string and adds it to symbol table.
 Symbol *symFind(char *strp, size_t strl);
 
+size_t symUnused();
+	
 // Initialize the symbol table with reserved symbols
 void symInit();
 

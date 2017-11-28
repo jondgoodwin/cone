@@ -131,6 +131,11 @@ Symbol *symFind(char *strp, size_t strl) {
 	return slotp;
 }
 
+// Return size of unused space for symbol table
+size_t symUnused() {
+	return (gSymTblAvail-gSymTblUsed)*sizeof(Symbol);
+}
+
 // Initialize symbol table
 void symInit() {
 	symGrow();
