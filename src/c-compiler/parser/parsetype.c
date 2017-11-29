@@ -109,17 +109,17 @@ AstNode* parsePerm() {
 			return NULL;
 		}
 	case mutToken:
-		{AstNode *node; node = (AstNode*) newPermTypeNode(MutPerm, MayRead | MayWrite | RaceSafe | MayIntRef | IsLockless, NULL, lex->val.ident); lexNextToken(); return node;}
+		{AstNode *node; node = (AstNode*) newPermTypeNode(MutPerm, MayRead | MayWrite | RaceSafe | MayIntRefSum | IsLockless, NULL, lex->val.ident); lexNextToken(); return node;}
 	case mmutToken:
 		{AstNode *node; node = (AstNode*) newPermTypeNode(MmutPerm, MayRead | MayWrite | MayAlias | MayAliasWrite | IsLockless, NULL, lex->val.ident); lexNextToken(); return node;}
 	case immToken:
-		{AstNode *node; node = (AstNode*) newPermTypeNode(ImmPerm, MayRead | MayAlias | RaceSafe | MayIntRef | IsLockless, NULL, lex->val.ident); lexNextToken(); return node;}
+		{AstNode *node; node = (AstNode*) newPermTypeNode(ImmPerm, MayRead | MayAlias | RaceSafe | MayIntRefSum | IsLockless, NULL, lex->val.ident); lexNextToken(); return node;}
 	case constToken:
 		{AstNode *node; node = (AstNode*) newPermTypeNode(ConstPerm, MayRead | MayAlias | IsLockless, NULL, lex->val.ident); lexNextToken(); return node;}
 	case constxToken:
-		{AstNode *node; node = (AstNode*) newPermTypeNode(ConstxPerm, MayRead | MayAlias | MayIntRef | IsLockless, NULL, lex->val.ident); lexNextToken(); return node;}
+		{AstNode *node; node = (AstNode*) newPermTypeNode(ConstxPerm, MayRead | MayAlias | MayIntRefSum | IsLockless, NULL, lex->val.ident); lexNextToken(); return node;}
 	case mutxToken:
-		{AstNode *node; node = (AstNode*) newPermTypeNode(MutxPerm, MayRead | MayWrite | MayAlias | MayIntRef | IsLockless, NULL, lex->val.ident); lexNextToken(); return node;}
+		{AstNode *node; node = (AstNode*) newPermTypeNode(MutxPerm, MayRead | MayWrite | MayAlias | MayIntRefSum | IsLockless, NULL, lex->val.ident); lexNextToken(); return node;}
 	case idToken:
 		{AstNode *node; node = (AstNode*) newPermTypeNode(IdPerm, MayAlias | RaceSafe | IsLockless, NULL, lex->val.ident); lexNextToken(); return node;}
 	default:

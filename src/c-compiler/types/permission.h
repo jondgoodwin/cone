@@ -37,8 +37,8 @@ enum PermType {
 #define MayAlias 0x04		
 #define MayAliasWrite 0x08	// If on, another live alias may be created able to write the contents.
 #define RaceSafe 0x10		// If on, a reference may be shared with or sent to another thread.
-// If on, lifetime-constrained interior references may be borrowed from this alias.
-#define MayIntRef 0x20
+// If on, interior references may be made within a sum type
+#define MayIntRefSum 0x20
 // If on, no locks are needed to read or mutate the contents. 
 // If off, the permission's designated locking mechanism must be wrapped around all content access.
 #define IsLockless 0x40
