@@ -24,6 +24,7 @@ typedef struct pass_opt_t {
 	int simple_builtin;	// Use a minimal builtin package
 	int strip_debug;	// Strip debug info
 	int print_filenames;	// Print source file names as each is processed
+	int print_ast;		// Print out AST
 	int check_tree;		// Verify AST well-formedness
 	int lint_llvm;		// Run the LLVM linting pass on generated IR
 	int docs;			// Generate code documentation

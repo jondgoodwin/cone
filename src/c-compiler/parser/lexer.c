@@ -12,7 +12,6 @@
 #include "keyword.h"
 #include "../ast/ast.h"
 #include "../shared/symbol.h"
-#include "../shared/globals.h"
 #include "../shared/memory.h"
 #include "../shared/error.h"
 #include "../shared/utf8.h"
@@ -148,9 +147,9 @@ void lexScanNumber(char *srcp) {
 			srcp += 2;
 		} else if (*srcp=='6' && *(srcp+1)=='4') {
 			srcp += 2; lex->langtype = i64Type;
-		} else if (strncmp(srcp, "size", 4)==0) {
-			srcp += 2; lex->langtype = target.ptrsize==64? i64Type : i32Type;
-		}
+		} /* else if (strncmp(srcp, "size", 4)==0) {
+			srcp += 2; lex->langtype = isizeType;
+		} */
 	} else if (*srcp=='u') {
 		lex->langtype = u32Type;
 		if (*(++srcp)=='8') {		
@@ -161,9 +160,9 @@ void lexScanNumber(char *srcp) {
 			srcp += 2;
 		} else if (*srcp=='6' && *(srcp+1)=='4') {
 			srcp += 2; lex->langtype = u64Type;
-		} else if (strncmp(srcp, "size", 4)==0) {
-			srcp += 2; lex->langtype = target.ptrsize==64? u64Type : u32Type;
-		}
+		} /* else if (strncmp(srcp, "size", 4)==0) {
+			srcp += 2; lex->langtype = usizeType;
+		} */
 	}
 
 	// Set value and type

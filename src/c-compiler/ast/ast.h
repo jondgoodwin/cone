@@ -137,7 +137,7 @@ typedef struct NamedAstNode {
 	node->linenbr = lex->linenbr; \
 }
 
-void astPrint(AstNode *pgm);
+void astPrint(char *dir, char *srcfn, AstNode *pgm);
 void astPrintNode(int indent, AstNode *node, char *prefix);
 void astPrintLn(int indent, char *str, ...);
 

@@ -8,7 +8,6 @@
 #include "cone.h"
 #include "shared/options.h"
 #include "pass/pass.h"
-#include "shared/globals.h"
 #include "shared/fileio.h"
 #include "shared/symbol.h"
 #include "ast/ast.h"
@@ -53,7 +52,6 @@ enum
 	OPT_VERBOSE,
 	OPT_PASSES,
 	OPT_AST,
-	OPT_ASTPACKAGE,
 	OPT_TRACE,
 	OPT_WIDTH,
 	OPT_IMMERR,
@@ -96,7 +94,6 @@ static opt_arg_t args[] =
 	{"verbose", 'V', OPT_ARG_REQUIRED, OPT_VERBOSE},
 	{"pass", 'r', OPT_ARG_REQUIRED, OPT_PASSES},
 	{"ast", 'a', OPT_ARG_NONE, OPT_AST},
-	{"astpackage", '\0', OPT_ARG_NONE, OPT_ASTPACKAGE},
 	{"trace", 't', OPT_ARG_NONE, OPT_TRACE},
 	{"width", 'w', OPT_ARG_REQUIRED, OPT_WIDTH},
 	{"immerr", '\0', OPT_ARG_NONE, OPT_IMMERR},
@@ -180,7 +177,6 @@ static void usage()
     "    =obj          Output an object file.\n"
     "    =all          The default: generate an executable.\n"
     "  --ast, -a       Output an abstract syntax tree for the whole program.\n"
-    "  --astpackage    Output an abstract syntax tree for the main package.\n"
     "  --trace, -t     Enable parse trace.\n"
     "  --width, -w     Width to target when printing the AST.\n"
     "    =columns      Defaults to the terminal width.\n"
@@ -196,22 +192,16 @@ static void usage()
     );
 }
 
-int options(int argc, char **argv) {
+int setPassOptions(pass_opt_t *opt, int *argc, char **argv) {
 	opt_state_t s;
-	pass_opt_t opt;
 	int id;
 	int ok = 1;
 	int print_usage = 0;
 	int i;
 
-	target.ptrsize = 32;
-	#if _WIN64 || __x86_64__ || __ppc64__
-		target.ptrsize = 64;
-	#endif
+	passOptInit(opt);
 
-	passOptInit(&opt);
-
-	optInit(args, &s, &argc, argv);
+	optInit(args, &s, argc, argv);
 #if CONE_DEFAULT_PIC
 	opt.pic = 1;
 #endif
@@ -226,23 +216,23 @@ int options(int argc, char **argv) {
 			usage();
 			return 0;
 
-		case OPT_DEBUG: opt.release = 0; break;
-		case OPT_STRIP: opt.strip_debug = 1; break;
-		case OPT_OUTPUT: opt.output = s.arg_val; break;
-		case OPT_LIBRARY: opt.library = 1; break;
-		case OPT_RUNTIMEBC: opt.runtimebc = 1; break;
-		case OPT_PIC: opt.pic = 1; break;
-		case OPT_NOPIC: opt.pic = 0; break;
+		case OPT_DEBUG: opt->release = 0; break;
+		case OPT_STRIP: opt->strip_debug = 1; break;
+		case OPT_OUTPUT: opt->output = s.arg_val; break;
+		case OPT_LIBRARY: opt->library = 1; break;
+		case OPT_RUNTIMEBC: opt->runtimebc = 1; break;
+		case OPT_PIC: opt->pic = 1; break;
+		case OPT_NOPIC: opt->pic = 0; break;
 		case OPT_DOCS:
 			{
-			opt.docs = 1;
-			opt.docs_private = 1;
+			opt->docs = 1;
+			opt->docs_private = 1;
 			}
 			break;
 		case OPT_DOCS_PUBLIC:
 			{
-			opt.docs = 1;
-			opt.docs_private = 1;
+			opt->docs = 1;
+			opt->docs_private = 1;
 			}
 			break;
 		case OPT_BUILDFLAG: 
@@ -256,30 +246,29 @@ int options(int argc, char **argv) {
 			//	ok = false;
 			break;
 
-		case OPT_CPU: opt.cpu = s.arg_val; break;
-		case OPT_FEATURES: opt.features = s.arg_val; break;
-		case OPT_TRIPLE: opt.triple = s.arg_val; break;
-		case OPT_STATS: opt.print_stats = 1; break;
-		case OPT_LINK_ARCH: opt.link_arch = s.arg_val; break;
-		case OPT_LINKER: opt.linker = s.arg_val; break;
+		case OPT_CPU: opt->cpu = s.arg_val; break;
+		case OPT_FEATURES: opt->features = s.arg_val; break;
+		case OPT_TRIPLE: opt->triple = s.arg_val; break;
+		case OPT_STATS: opt->print_stats = 1; break;
+		case OPT_LINK_ARCH: opt->link_arch = s.arg_val; break;
+		case OPT_LINKER: opt->linker = s.arg_val; break;
 
-		// case OPT_AST: print_program_ast = 1; break;
-		// case OPT_ASTPACKAGE: print_package_ast = 1; break;
-		case OPT_TRACE: opt.parse_trace = 1; break;
-		case OPT_WIDTH: opt.ast_print_width = atoi(s.arg_val); break;
+		case OPT_AST: opt->print_ast = 1; break;
+		case OPT_TRACE: opt->parse_trace = 1; break;
+		case OPT_WIDTH: opt->ast_print_width = atoi(s.arg_val); break;
 		// case OPT_IMMERR: errors_set_immediate(opt.check.errors, 1); break;
-		case OPT_VERIFY: opt.verify = 1; break;
-		case OPT_EXTFUN: opt.extfun = 1; break;
-		case OPT_SIMPLEBUILTIN: opt.simple_builtin = 1; break;
-		case OPT_FILENAMES: opt.print_filenames = 1; break;
-		case OPT_CHECKTREE: opt.check_tree = 1; break;
-		case OPT_LINT_LLVM: opt.lint_llvm = 1; break;
+		case OPT_VERIFY: opt->verify = 1; break;
+		case OPT_EXTFUN: opt->extfun = 1; break;
+		case OPT_SIMPLEBUILTIN: opt->simple_builtin = 1; break;
+		case OPT_FILENAMES: opt->print_filenames = 1; break;
+		case OPT_CHECKTREE: opt->check_tree = 1; break;
+		case OPT_LINT_LLVM: opt->lint_llvm = 1; break;
 
 		case OPT_VERBOSE:
 			{/*
 			int v = atoi(s.arg_val);
 			if (v >= 0 && v <= 4) {
-				opt.verbosity = (verbosity_level)v;
+				opt->verbosity = (verbosity_level)v;
 			} else {
 				ok = 0;
 			}*/
@@ -298,7 +287,7 @@ int options(int argc, char **argv) {
 		}
 	}
 
-	for (i = 1; i < argc; i++) {
+	for (i = 1; i < *argc; i++) {
 		if(argv[i][0] == '-') {
 			printf("Unrecognised option: %s\n", argv[i]);
 			ok = 0;
@@ -312,39 +301,43 @@ int options(int argc, char **argv) {
 			usage();
 		return -1;
 	}
-	return 0;
+	return 1;
 }
 
-void main(int argv, char **argc) {
+void main(int argc, char **argv) {
+	pass_opt_t passopt;
+	AstNode *pgmast;
+	int ok;
+	char *srcfn;
 	char *src;
-	AstNode *pgm;
 
+	// Get compiler's instruction options from passed arguments
+	ok = setPassOptions(&passopt, &argc, argv);
+	if (ok<=0)
+		exit(ok==0? 0 : ExitOpts);
+	if (argc<2)
+		errorExit(ExitOpts, "Specify a Cone program to compile.");
+	srcfn = argv[1];
+		
 	// Initialize compiler's global structures
 	startTime = clock();
-	options(argv, argc);
 	lexInject("*compiler*", "");
 	symInit();
 	keywordInit();
 	typInit();
 
-	// Output compiler name and release level
-	puts(CONE_RELEASE);
-
 	// Load specified source file
-	if (argv<2)
-		errorExit(ExitOpts, "Specify a Cone program to compile.");
-	src = fileLoad(argc[1]);
+	src = fileLoad(srcfn);
 	if (!src)
 		errorExit(ExitNF, "Cannot find or read source file.");
 
 	// Parse and generate
-	lexInject(argc[1], src);
-	pgm = parse();
-#ifdef _DEBUG
-	astPrint(pgm);
-#endif
+	lexInject(srcfn, src);
+	pgmast = parse();
+	if (passopt.print_ast)
+		astPrint(passopt.output, srcfn, pgmast);
 	if (errors==0)
-		genllvm(pgm);
+		genllvm(pgmast);
 
 	// Close up everything necessary
 	errorSummary();
