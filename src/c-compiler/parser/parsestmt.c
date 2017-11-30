@@ -17,10 +17,11 @@
 
 // Parse an expression statement within a function
 AstNode *parseExpStmt() {
-	AstNode *stmtnode;
-	stmtnode = parseExp();
+	StmtExpAstNode *stmtnode;
+	stmtnode = newStmtExpNode();
+	stmtnode->exp = parseExp();
 	parseSemi();
-	return stmtnode;
+	return (AstNode*) stmtnode;
 }
 
 // Parse a statement block inside a control structure

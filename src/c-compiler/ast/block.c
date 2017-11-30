@@ -49,3 +49,16 @@ void fnImplPrint(int indent, FnImplAstNode *fn) {
 	for (nodesFor(fn->nodes, cnt, nodesp))
 		astPrintNode(indent+1, *nodesp, "");
 }
+
+// Create a new Function Implementation node
+StmtExpAstNode *newStmtExpNode() {
+	StmtExpAstNode *node;
+	newAstNode(node, StmtExpAstNode, StmtExpNode);
+	return node;
+}
+
+// Serialize the AST for a program
+void stmtExpPrint(int indent, StmtExpAstNode *node) {
+	astPrintLn(indent, "statement expression");
+	astPrintNode(indent+1, node->exp, "");
+}

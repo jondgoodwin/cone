@@ -28,7 +28,10 @@ void genlFn(FnImplAstNode *fnnode) {
 
 	assert(fnnode->asttype == FnImplNode);
 	for (nodesFor(fnnode->nodes, cnt, nodesp)) {
-		genlTerm(*nodesp);
+		switch ((*nodesp)->asttype) {
+		case StmtExpNode:
+			genlTerm(((StmtExpAstNode*)*nodesp)->exp);
+		}
 	}
 }
 

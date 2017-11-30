@@ -26,10 +26,19 @@ typedef struct BlockAstNode {
 	Nodes *nodes;
 } BlockAstNode;
 
+// Statement expressions (incl. return, yield, ...)
+typedef struct StmtExpAstNode {
+	BasicAstHdr;
+	AstNode *exp;
+} StmtExpAstNode;
+
 PgmAstNode *newPgmNode();
 void pgmPrint(int indent, PgmAstNode *pgm);
 
 FnImplAstNode *newFnImplNode(Symbol *name, AstNode *sig);
 void fnImplPrint(int indent, FnImplAstNode *fn);
+
+StmtExpAstNode *newStmtExpNode();
+void stmtExpPrint(int indent, StmtExpAstNode *node);
 
 #endif

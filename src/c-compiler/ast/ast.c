@@ -31,6 +31,8 @@ void astPrintNode(int indent, AstNode *node, char *prefix) {
 		pgmPrint(indent, (PgmAstNode *)node); break;
 	case FnImplNode:
 		fnImplPrint(indent, (FnImplAstNode *)node); break;
+	case StmtExpNode:
+		stmtExpPrint(indent, (StmtExpAstNode *)node); break;
 	case ULitNode:
 		ulitPrint(indent, (ULitAstNode *)node); break;
 	case FLitNode:
