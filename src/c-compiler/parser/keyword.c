@@ -28,6 +28,7 @@ Symbol *keyAdd(char *keyword, uint16_t toktype) {
 
 void keywordInit() {
 	keyAdd("fn", FnToken);
+	keyAdd("return", RetToken);
 
 	i8Type = (AstNode*) newNbrTypeNode(IntType, 1, keyAdd("i8", i8Token));
 	i16Type = (AstNode*) newNbrTypeNode(IntType, 2, keyAdd("i16", i16Token));

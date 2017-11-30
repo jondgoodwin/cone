@@ -41,4 +41,7 @@ void fnImplPrint(int indent, FnImplAstNode *fn);
 StmtExpAstNode *newStmtExpNode();
 void stmtExpPrint(int indent, StmtExpAstNode *node);
 
+StmtExpAstNode *newReturnNode();
+void returnPrint(int indent, StmtExpAstNode *node);
+
 #endif

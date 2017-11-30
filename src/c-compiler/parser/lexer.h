@@ -61,6 +61,7 @@ enum TokenTypes {
 
 	// Keywords
 	FnToken,		// 'fn'
+	RetToken,		// 'return'
 
 	// Number types
 	i8Token,

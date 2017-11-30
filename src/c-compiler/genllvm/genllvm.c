@@ -21,6 +21,12 @@ void genlTerm(AstNode *termnode) {
 	}
 }
 
+// Generate a return statement
+void genlReturn(StmtExpAstNode *node) {
+	if (node->exp != voidType)
+		genlTerm(node->exp);
+}
+
 // Generate a function block
 void genlFn(FnImplAstNode *fnnode) {
 	AstNode **nodesp;
@@ -30,7 +36,9 @@ void genlFn(FnImplAstNode *fnnode) {
 	for (nodesFor(fnnode->nodes, cnt, nodesp)) {
 		switch ((*nodesp)->asttype) {
 		case StmtExpNode:
-			genlTerm(((StmtExpAstNode*)*nodesp)->exp);
+			genlTerm(((StmtExpAstNode*)*nodesp)->exp); break;
+		case ReturnNode:
+			genlReturn((StmtExpAstNode*)*nodesp); break;
 		}
 	}
 }

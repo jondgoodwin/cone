@@ -37,7 +37,7 @@ enum AstType {
 	PgmNode,		// Program (global area)
 	BlockNode,		// Block (list of statements)
 	StmtExpNode,	// Statement expression
-	RetNode,		// Return node
+	ReturnNode,		// Return node
 
 	// Expression nodes (having value type)
 	ULitNode = (ExpGroup<<8),		// Integer literal

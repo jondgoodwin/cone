@@ -24,6 +24,17 @@ AstNode *parseExpStmt() {
 	return (AstNode*) stmtnode;
 }
 
+// Parse a return statement
+AstNode *parseReturn() {
+	StmtExpAstNode *stmtnode;
+	lexNextToken(); // Skip past 'return'
+	stmtnode = newReturnNode();
+	if (!lexIsToken(SemiToken))
+		stmtnode->exp = parseExp();
+	parseSemi();
+	return (AstNode*) stmtnode;
+}
+
 // Parse a statement block inside a control structure
 void parseStmtBlock(Nodes **nodes) {
 	if (lexIsToken(LCurlyToken))
@@ -31,7 +42,13 @@ void parseStmtBlock(Nodes **nodes) {
 
 	*nodes = newNodes(8);
 	while (! lexIsToken(EofToken) && ! lexIsToken(RCurlyToken)) {
-		nodesAdd(nodes, parseExpStmt());
+		switch (lex->toktype) {
+		case RetToken:
+			nodesAdd(nodes, parseReturn());
+			break;
+		default:
+			nodesAdd(nodes, parseExpStmt());
+		}
 	}
 
 	parseRCurly();

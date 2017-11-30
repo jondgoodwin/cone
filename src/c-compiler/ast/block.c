@@ -50,7 +50,7 @@ void fnImplPrint(int indent, FnImplAstNode *fn) {
 		astPrintNode(indent+1, *nodesp, "");
 }
 
-// Create a new Function Implementation node
+// Create a new expression statement node
 StmtExpAstNode *newStmtExpNode() {
 	StmtExpAstNode *node;
 	newAstNode(node, StmtExpAstNode, StmtExpNode);
@@ -60,5 +60,19 @@ StmtExpAstNode *newStmtExpNode() {
 // Serialize the AST for a program
 void stmtExpPrint(int indent, StmtExpAstNode *node) {
 	astPrintLn(indent, "statement expression");
+	astPrintNode(indent+1, node->exp, "");
+}
+
+// Create a new return statement node
+StmtExpAstNode *newReturnNode() {
+	StmtExpAstNode *node;
+	newAstNode(node, StmtExpAstNode, ReturnNode);
+	node->exp = voidType;
+	return node;
+}
+
+// Serialize the AST for a program
+void returnPrint(int indent, StmtExpAstNode *node) {
+	astPrintLn(indent, "return");
 	astPrintNode(indent+1, node->exp, "");
 }
