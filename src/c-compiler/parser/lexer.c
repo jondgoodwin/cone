@@ -62,6 +62,65 @@ void lexPop() {
 		lex = lex->prev;
 }
 
+/** Return value of hex digit, or -1 if not correct */
+char *lexHexDigits(int cnt, char *srcp, uint32_t *val) {
+	*val = 0;
+	while (cnt--) {
+		*val <<= 4;
+		if (*srcp>='0' && *srcp<='9')
+			*val += *srcp++ - '0';
+		else if (*srcp>='A' && *srcp<='F')
+			*val += *srcp++ - ('A' - 10);
+		else if (*srcp>='a' && *srcp<='f')
+			*val += *srcp++ - ('a' - 10);
+		else {
+			errorMsgLex(ErrorBadTok, "Invalid hexadecimal character '%c'", *srcp);
+			return srcp;
+		}
+	}
+	return srcp;
+}
+
+/** Turn escape sequence into a single character */
+char *lexScanEscape(char *srcp, uint32_t *charval) {
+	switch (*++srcp) {
+	case 'a': *charval = '\a'; return ++srcp;
+	case 'b': *charval = '\b'; return ++srcp;
+	case 'f': *charval = '\f'; return ++srcp;
+	case 'n': *charval = '\n'; return ++srcp;
+	case 'r': *charval = '\r'; return ++srcp;
+	case 't': *charval = '\t'; return ++srcp;
+	case 'v': *charval = '\v'; return ++srcp;
+	case '\'': *charval = '\''; return ++srcp;
+	case '\"': *charval = '\"'; return ++srcp;
+	case '\\': *charval = '\\'; return ++srcp;
+	case '\0': *charval = '\0'; return ++srcp;
+	case 'x': return lexHexDigits(2, ++srcp, charval);
+	case 'u': return lexHexDigits(4, ++srcp, charval);
+	case 'U': return lexHexDigits(8, ++srcp, charval);
+	default:
+		errorMsgLex(ErrorBadTok, "Invalid escape sequence '%c'", *srcp);
+		*charval = *srcp++;
+		return srcp;
+	}
+}
+
+/** Tokenize a character */
+void lexScanChar(char *srcp) {
+	lex->tokp = srcp++;
+	if (*srcp == '\\')
+		srcp = lexScanEscape(srcp, &lex->val.uintlit);
+	else
+		lex->val.uintlit = *srcp++;
+	if (*srcp == '\'')
+		srcp++;
+	else
+		errorMsgLex(ErrorBadTok, "Only one character allowed in character literal");
+	lex->langtype = u32Type;
+	lex->toktype = IntLitToken;
+	lex->srcp = srcp;
+}
+
 /** Tokenize an integer or floating point number */
 void lexScanNumber(char *srcp) {
 
@@ -256,6 +315,11 @@ void lexNextToken() {
 		case 'U': case 'V': case 'W': case 'X': case 'Y': case 'Z':
 		case '$':
 			lexScanIdent(srcp);
+			return;
+
+		// ' ' - single character surrounded with single ticks
+		case '\'':
+			lexScanChar(srcp);
 			return;
 
 		// '_' or identifier that starts with underscore
