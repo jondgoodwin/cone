@@ -14,7 +14,7 @@
 // Generate a term
 void genlTerm(AstNode *termnode) {
 	if (termnode->asttype == ULitNode) {
-		printf("OMG Found an integer %ld\n", ((ULitAstNode*)termnode)->uintlit);
+		printf("OMG Found an integer %lld\n", ((ULitAstNode*)termnode)->uintlit);
 	}
 	else if (termnode->asttype == FLitNode) {
 		printf("OMG Found a float %f\n", ((FLitAstNode*)termnode)->floatlit);

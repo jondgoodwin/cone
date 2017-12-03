@@ -63,7 +63,7 @@ void lexPop() {
 }
 
 /** Return value of hex digit, or -1 if not correct */
-char *lexHexDigits(int cnt, char *srcp, uint32_t *val) {
+char *lexHexDigits(int cnt, char *srcp, uint64_t *val) {
 	*val = 0;
 	while (cnt--) {
 		*val <<= 4;
@@ -82,7 +82,7 @@ char *lexHexDigits(int cnt, char *srcp, uint32_t *val) {
 }
 
 /** Turn escape sequence into a single character */
-char *lexScanEscape(char *srcp, uint32_t *charval) {
+char *lexScanEscape(char *srcp, uint64_t *charval) {
 	switch (*++srcp) {
 	case 'a': *charval = '\a'; return ++srcp;
 	case 'b': *charval = '\b'; return ++srcp;
