@@ -64,19 +64,20 @@ When finished, Cone will support these features:
  - Example code (TBD)
 
 Note: Cone will strongly resemble its dynamically-typed cousin [Acorn][acorn],
-which has a [showcase][acornshow] and [reference documentation][acornref].
+which has its own [reference documentation][acornref].
 
 ## Building (Windows)
 
-A Visual C++ solutions file can be created using the VS project file.
+A Visual Studio C++ solution can be created using the Cone.vcxproj project file.
 The generated object and executable files are created relative to the location of the 
-solutions file. The build depends on LLVM being installed and available.
+solutions file. The build depends on [LLVM 5][llvm] being installed and available at $(LLVMDIR).
 
 ## Building (Linux)
 
-To build on Linux (TBD):
+To build on Linux:
 
 	cmake
+	make
 
 ## License
 
@@ -89,5 +90,5 @@ See LICENSE and COPYRIGHT for details.
 [coneref]: http://web3d.jondgoodwin.com/cone
 [showcase]: http://web3d.jondgoodwin.com/cone/showcase.html
 [acorn]: https://github.com/jondgoodwin/acornvm
-[acornshow]: http://web3d.jondgoodwin.com/acorn/showcase.html
 [acornref]: http://web3d.jondgoodwin.com/acorn
+[llvm]: https://llvm.org/
