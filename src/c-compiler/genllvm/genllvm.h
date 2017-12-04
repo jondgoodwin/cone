@@ -8,6 +8,6 @@
 #ifndef genllvm_h
 #define genllvm_h
 
-void genllvm(AstNode *PgmNode);
+void genllvm(pass_opt_t *opt, AstNode *PgmNode);
 
 #endif

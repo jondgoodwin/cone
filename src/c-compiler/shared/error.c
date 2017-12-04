@@ -35,10 +35,7 @@ void errorExit(int exitcode, const char *msg, ...) {
 }
 
 // Send an error message to stderr
-void errorOut(char *tokp, uint32_t linenbr, char *linep, char *url, int code, const char *msg, va_list args) {
-	char *srcp;
-	int pos, spaces;
-
+void errorOut(int code, const char *msg, va_list args) {
 	// Prefix for error message
 	if (code<WarnCode) {
 		errors++;
@@ -52,6 +49,15 @@ void errorOut(char *tokp, uint32_t linenbr, char *linep, char *url, int code, co
 	// Do a formatted output of message, passing along all parms
 	vfprintf(stderr, msg, args);
 	fputs("\n", stderr);
+}
+
+// Send an error message plus code context to stderr
+void errorOutCode(char *tokp, uint32_t linenbr, char *linep, char *url, int code, const char *msg, va_list args) {
+	char *srcp;
+	int pos, spaces;
+
+	// Send out the error message and count
+	errorOut(code, msg, args);
 
 	// Reflect the source code line
 	fputs(" --> ", stderr);
@@ -72,7 +78,7 @@ void errorOut(char *tokp, uint32_t linenbr, char *linep, char *url, int code, co
 void errorMsgNode(AstNode *node, int code, const char *msg, ...) {
 	va_list argptr;
 	va_start(argptr, msg);
-	errorOut(node->srcp, node->linenbr, node->linep, node->lexer->url, code, msg, argptr);
+	errorOutCode(node->srcp, node->linenbr, node->linep, node->lexer->url, code, msg, argptr);
 	va_end(argptr);
 }
 
@@ -80,7 +86,15 @@ void errorMsgNode(AstNode *node, int code, const char *msg, ...) {
 void errorMsgLex(int code, const char *msg, ...) {
 	va_list argptr;
 	va_start(argptr, msg);
-	errorOut(lex->tokp, lex->linenbr, lex->linep, lex->url, code, msg, argptr);
+	errorOutCode(lex->tokp, lex->linenbr, lex->linep, lex->url, code, msg, argptr);
+	va_end(argptr);
+}
+
+// Send an error message to stderr
+void errorMsg(int code, const char *msg, ...) {
+	va_list argptr;
+	va_start(argptr, msg);
+	errorOut(code, msg, argptr);
 	va_end(argptr);
 }
 

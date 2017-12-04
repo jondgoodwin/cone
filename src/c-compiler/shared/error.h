@@ -21,6 +21,7 @@ enum ErrorCode {
 	// Non-terminating errors
 	ErrorCode = 1000,
 	ErrorBadTok,	// Bad character starting an unknown token
+	ErrorGenErr,	// Failure to perform generation activity
 	ErrorNoSemi,	// Missing semicolon
 	ErrorNoRCurly,	// Missing right curly brace
 	ErrorBadTerm,   // Invalid term - something other than var, lit, etc.
@@ -40,6 +41,7 @@ int errors;
 void errorExit(int exitcode, const char *msg, ...);
 void errorMsgNode(AstNode *node, int code, const char *msg, ...);
 void errorMsgLex(int code, const char *msg, ...);
+void errorMsg(int code, const char *msg, ...);
 void errorSummary();
 
 #endif

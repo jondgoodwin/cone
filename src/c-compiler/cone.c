@@ -337,7 +337,7 @@ void main(int argc, char **argv) {
 	if (passopt.print_ast)
 		astPrint(passopt.output, srcfn, pgmast);
 	if (errors==0)
-		genllvm(pgmast);
+		genllvm(&passopt, pgmast);
 
 	// Close up everything necessary
 	errorSummary();
