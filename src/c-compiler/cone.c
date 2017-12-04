@@ -306,7 +306,7 @@ int setPassOptions(pass_opt_t *opt, int *argc, char **argv) {
 
 void main(int argc, char **argv) {
 	pass_opt_t passopt;
-	AstNode *pgmast;
+	PgmAstNode *pgmast;
 	int ok;
 	char *srcfn;
 	char *src;
@@ -335,7 +335,7 @@ void main(int argc, char **argv) {
 	lexInject(srcfn, src);
 	pgmast = parse();
 	if (passopt.print_ast)
-		astPrint(passopt.output, srcfn, pgmast);
+		astPrint(passopt.output, srcfn, (AstNode*)pgmast);
 	if (errors==0)
 		genllvm(&passopt, pgmast);
 

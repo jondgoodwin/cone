@@ -6,10 +6,11 @@
 */
 
 #include "../ast/ast.h"
+#include "genllvm.h"
 #include "../shared/error.h"
-#include "pass/pass.h"
+#include "../pass/pass.h"
+#include "../shared/symbol.h"
 
-#include <llvm-c/Core.h>
 #include <llvm-c/ExecutionEngine.h>
 #include <llvm-c/Target.h>
 #include <llvm-c/Analysis.h>
@@ -19,7 +20,7 @@
 #include <assert.h>
 
 // Generate a term
-void genlTerm(AstNode *termnode) {
+void genlTerm(genl_t *gen, AstNode *termnode) {
 	if (termnode->asttype == ULitNode) {
 		printf("OMG Found an integer %lld\n", ((ULitAstNode*)termnode)->uintlit);
 	}
@@ -29,61 +30,64 @@ void genlTerm(AstNode *termnode) {
 }
 
 // Generate a return statement
-void genlReturn(StmtExpAstNode *node) {
+void genlReturn(genl_t *gen, StmtExpAstNode *node) {
 	if (node->exp != voidType)
-		genlTerm(node->exp);
+		genlTerm(gen, node->exp);
+
+	// tmp = +(a, b)
+	LLVMValueRef tmp = LLVMBuildAdd(gen->builder, LLVMGetParam(gen->fn, 0), LLVMGetParam(gen->fn, 1), "tmp");
+
+	// return tmp
+	LLVMBuildRet(gen->builder, tmp);
 }
 
 // Generate a function block
-void genlFn(FnImplAstNode *fnnode) {
+void genlFn(genl_t *gen, FnImplAstNode *fnnode) {
 	AstNode **nodesp;
 	uint32_t cnt;
+
+	// fn sum(a i32, b i32) i32 {..} ==> sum, builder
+	LLVMTypeRef param_types[] = { LLVMInt32TypeInContext(gen->context), LLVMInt32TypeInContext(gen->context) };
+	LLVMTypeRef ret_type = LLVMFunctionType(LLVMInt32TypeInContext(gen->context), param_types, 2, 0);
+	gen->fn = LLVMAddFunction(gen->module, fnnode->name->name, ret_type);
+	LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "entry");
+	gen->builder = LLVMCreateBuilder();
+	LLVMPositionBuilderAtEnd(gen->builder, entry);
 
 	assert(fnnode->asttype == FnImplNode);
 	for (nodesFor(fnnode->nodes, cnt, nodesp)) {
 		switch ((*nodesp)->asttype) {
 		case StmtExpNode:
-			genlTerm(((StmtExpAstNode*)*nodesp)->exp); break;
+			genlTerm(gen, ((StmtExpAstNode*)*nodesp)->exp); break;
 		case ReturnNode:
-			genlReturn((StmtExpAstNode*)*nodesp); break;
+			genlReturn(gen, (StmtExpAstNode*)*nodesp); break;
 		}
 	}
+
+	LLVMDisposeBuilder(gen->builder);
 }
 
 // Generate module from AST
-LLVMModuleRef genlMod(PgmAstNode *pgm) {
+void genlModule(genl_t *gen, PgmAstNode *pgm) {
 	uint32_t cnt;
 	AstNode **nodesp;
+	char *error=NULL;
 
-	LLVMModuleRef mod = LLVMModuleCreateWithName("my_module");
+	gen->module = LLVMModuleCreateWithNameInContext("my_module", gen->context);
 
 	assert(pgm->asttype == PgmNode);
 	for (nodesFor(pgm->nodes, cnt, nodesp)) {
 		AstNode *nodep = *nodesp;
 		if (nodep->asttype == FnImplNode)
-			genlFn((FnImplAstNode*)nodep);
+			genlFn(gen, (FnImplAstNode*)nodep);
 	}
 
-	// fn sum(a i32, b i32) i32 {..} ==> sum, builder
-	LLVMTypeRef param_types[] = { LLVMInt32Type(), LLVMInt32Type() };
-	LLVMTypeRef ret_type = LLVMFunctionType(LLVMInt32Type(), param_types, 2, 0);
-	LLVMValueRef sum = LLVMAddFunction(mod, "sum", ret_type);
-	LLVMBasicBlockRef entry = LLVMAppendBasicBlock(sum, "entry");
-	LLVMBuilderRef builder = LLVMCreateBuilder();
-	LLVMPositionBuilderAtEnd(builder, entry);
-
-	// tmp = +(a, b)
-	LLVMValueRef tmp = LLVMBuildAdd(builder, LLVMGetParam(sum, 0), LLVMGetParam(sum, 1), "tmp");
-
-	// return tmp
-	LLVMBuildRet(builder, tmp);
-
-	LLVMDisposeBuilder(builder);
-
-	char *error = NULL;
-	LLVMVerifyModule(mod, LLVMAbortProcessAction, &error);
-	LLVMDisposeMessage(error);
-	return mod;
+	LLVMVerifyModule(gen->module, LLVMReturnStatusAction, &error);
+	if (error) {
+		if (*error)
+			errorMsg(ErrorGenErr, "Module verification failed:\n%s", error);
+		LLVMDisposeMessage(error);
+	}
 }
 
 // Use provided options (triple, etc.) to creation a machine
@@ -147,15 +151,17 @@ void genlOut(LLVMModuleRef mod, char *triple, LLVMTargetMachineRef machine) {
 }
 
 // Generate AST into LLVM IR using LLVM
-void genllvm(pass_opt_t *opt, PgmAstNode *pgm) {
-	LLVMModuleRef mod;
+void genllvm(pass_opt_t *opt, PgmAstNode *pgmast) {
+	genl_t gen;
 	LLVMTargetMachineRef machine;
 
-	mod = genlMod(pgm);
+	gen.context = LLVMContextCreate();
+	genlModule(&gen, pgmast);
 	machine = genlCreateMachine(opt);
 	if (!machine)
-		genlOut(mod, opt->triple, machine);
+		genlOut(gen.module, opt->triple, machine);
 
-	LLVMDisposeModule(mod);
+	LLVMDisposeModule(gen.module);
 	LLVMDisposeTargetMachine(machine);
+	LLVMContextDispose(gen.context);
 }

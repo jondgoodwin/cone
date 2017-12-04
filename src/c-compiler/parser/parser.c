@@ -68,7 +68,7 @@ AstNode *parseFn() {
 }
 
 // Parse a program's global area
-AstNode *parse() {
+PgmAstNode *parse() {
 	PgmAstNode *pgm;
 	Nodes **nodes;
 
@@ -84,5 +84,5 @@ AstNode *parse() {
 			errorMsgLex(ErrorBadGloStmt, "Invalid global area type, var or function statement");						
 		}
 	}
-	return (AstNode*) pgm;
+	return pgm;
 }

@@ -8,6 +8,18 @@
 #ifndef genllvm_h
 #define genllvm_h
 
-void genllvm(pass_opt_t *opt, AstNode *PgmNode);
+#include "../ast/ast.h"
+#include "../pass/pass.h"
+
+#include <llvm-c/Core.h>
+
+typedef struct genl_t {
+	LLVMContextRef context;
+	LLVMModuleRef module;
+	LLVMValueRef fn;
+	LLVMBuilderRef builder;
+} genl_t;
+
+void genllvm(pass_opt_t *opt, PgmAstNode *pgmast);
 
 #endif
