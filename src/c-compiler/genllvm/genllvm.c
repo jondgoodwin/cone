@@ -20,25 +20,50 @@
 #include <assert.h>
 
 // Generate a term
-void genlTerm(genl_t *gen, AstNode *termnode) {
+LLVMValueRef genlTerm(genl_t *gen, AstNode *termnode) {
 	if (termnode->asttype == ULitNode) {
-		printf("OMG Found an integer %lld\n", ((ULitAstNode*)termnode)->uintlit);
+		return LLVMConstInt(LLVMInt32TypeInContext(gen->context), ((ULitAstNode*)termnode)->uintlit, 0);
 	}
 	else if (termnode->asttype == FLitNode) {
-		printf("OMG Found a float %f\n", ((FLitAstNode*)termnode)->floatlit);
+		return LLVMConstReal(LLVMFloatTypeInContext(gen->context), ((FLitAstNode*)termnode)->floatlit);
 	}
+	else
+		return NULL;
 }
 
 // Generate a return statement
 void genlReturn(genl_t *gen, StmtExpAstNode *node) {
 	if (node->exp != voidType)
-		genlTerm(gen, node->exp);
+		LLVMBuildRet(gen->builder, genlTerm(gen, node->exp));
+	else
+		LLVMBuildRetVoid(gen->builder);
+}
 
-	// tmp = +(a, b)
-	LLVMValueRef tmp = LLVMBuildAdd(gen->builder, LLVMGetParam(gen->fn, 0), LLVMGetParam(gen->fn, 1), "tmp");
+// Generate a type value
+LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
+	switch (typ->asttype) {
+	case IntType: case UintType:
+	{
+		switch (((NbrTypeAstNode*)typ)->nbytes) {
+		case 1: return LLVMInt8TypeInContext(gen->context);
+		case 2: return LLVMInt16TypeInContext(gen->context);
+		case 4: return LLVMInt32TypeInContext(gen->context);
+		case 8: return LLVMInt64TypeInContext(gen->context);
+		}
+	}
+	case FloatType:
+	{
+		switch (((NbrTypeAstNode*)typ)->nbytes) {
+		case 4: return LLVMFloatTypeInContext(gen->context);
+		case 8: return LLVMDoubleTypeInContext(gen->context);
+		}
+	}
+	case VoidType:
+		return LLVMVoidTypeInContext(gen->context);
 
-	// return tmp
-	LLVMBuildRet(gen->builder, tmp);
+	default:
+			return NULL;
+	}
 }
 
 // Generate a function block
@@ -48,7 +73,7 @@ void genlFn(genl_t *gen, FnImplAstNode *fnnode) {
 
 	// fn sum(a i32, b i32) i32 {..} ==> sum, builder
 	LLVMTypeRef param_types[] = { LLVMInt32TypeInContext(gen->context), LLVMInt32TypeInContext(gen->context) };
-	LLVMTypeRef ret_type = LLVMFunctionType(LLVMInt32TypeInContext(gen->context), param_types, 2, 0);
+	LLVMTypeRef ret_type = LLVMFunctionType(genlType(gen, ((FnSigAstNode*)fnnode->vtype)->rettype), param_types, 0, 0);
 	gen->fn = LLVMAddFunction(gen->module, fnnode->name->name, ret_type);
 	LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "entry");
 	gen->builder = LLVMCreateBuilder();
@@ -138,9 +163,9 @@ void genlOut(LLVMModuleRef mod, char *triple, LLVMTargetMachineRef machine) {
 	LLVMDisposeMessage(layout);
 
 	// Write out bitcode to file
-	if (LLVMWriteBitcodeToFile(mod, "sum.bc") != 0) {
-		errorMsg(ErrorGenErr, "Error writing bitcode to file");
-	}
+	//if (LLVMWriteBitcodeToFile(mod, "sum.bc") != 0) {
+		//errorMsg(ErrorGenErr, "Error writing bitcode to file");
+	//}
 
 	// or LLVMAssemblyFile
 	if (LLVMTargetMachineEmitToFile(machine, mod, "sum.obj", LLVMObjectFile, &err) != 0) {
@@ -158,7 +183,7 @@ void genllvm(pass_opt_t *opt, PgmAstNode *pgmast) {
 	gen.context = LLVMContextCreate();
 	genlModule(&gen, pgmast);
 	machine = genlCreateMachine(opt);
-	if (!machine)
+	if (machine)
 		genlOut(gen.module, opt->triple, machine);
 
 	LLVMDisposeModule(gen.module);
