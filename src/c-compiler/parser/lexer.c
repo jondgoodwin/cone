@@ -266,9 +266,6 @@ void lexScanIdent(char *srcp) {
 				srcp += utf8ByteSkip(srcp);
 			else {
 				AstNode *identNode;
-				// Identifier may end with '?'
-				if (*srcp == '?')
-					srcp++;
 				// Find identifier token in symbol table and preserve info about it
 				// Substitute token type when identifier is a keyword
 				lex->val.ident = symFind(srcbeg, srcp-srcbeg);
@@ -279,6 +276,25 @@ void lexScanIdent(char *srcp) {
 			}
 		}
 	}
+}
+
+/** Tokenize an identifier or reserved token */
+void lexScanTickedIdent(char *srcp) {
+	char *srcbeg = srcp++;	// Pointer to the start of the token
+	lex->tokp = srcbeg;
+
+	// Look for closing backtick, but not past end of line
+	while (*srcp != '`' && *srcp && *srcp != '\n' && *srcp != '\x1a')
+		srcp++;
+	if (*srcp != '`') {
+		errorMsgLex(ErrorBadTok, "Back-ticked identifier requires closing backtick");
+		srcp = srcbeg + 2;
+	}
+
+	// Find identifier token in symbol table and preserve info about it
+	lex->val.ident = symFind(srcbeg+1, srcp - srcbeg - 1);
+	lex->toktype = IdentToken;
+	lex->srcp = srcp+1;
 }
 
 // Shortcut macro for return a punctuation token
@@ -302,6 +318,11 @@ void lexNextToken() {
 			lexScanNumber(srcp);
 			return;
 
+		// ' ' - single character surrounded with single ticks
+		case '\'':
+			lexScanChar(srcp);
+			return;
+
 		// Identifier
 		case 'a': case 'b': case 'c': case 'd': case 'e':
 		case 'f': case 'g': case 'h': case 'i': case 'j':
@@ -317,19 +338,19 @@ void lexNextToken() {
 			lexScanIdent(srcp);
 			return;
 
-		// ' ' - single character surrounded with single ticks
-		case '\'':
-			lexScanChar(srcp);
-			return;
-
 		// '_' or identifier that starts with underscore
 		case '_':
-			if (utf8IsLetter(srcp+1))
-				lexScanNumber(srcp);
+			if (utf8IsLetter(srcp+1) || *(srcp + 1) == '_' || *(srcp + 1) == '$' || (*(srcp+1)>='0' && *(srcp+1)<='9'))
+				lexScanIdent(srcp);
 			else {
 				lex->toktype = UnderscoreToken;
 				lex->srcp = ++srcp;
 			}
+			return;
+
+		// backtick enclosed identifiers
+		case '`':
+			lexScanTickedIdent(srcp);
 			return;
 
 		// '-'
