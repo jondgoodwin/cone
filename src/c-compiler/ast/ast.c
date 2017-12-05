@@ -7,6 +7,7 @@
 
 #include "ast.h"
 #include "../parser/lexer.h"
+#include "../shared/fileio.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -53,19 +54,7 @@ void astPrintNode(int indent, AstNode *node, char *prefix) {
 }
 
 void astPrint(char *dir, char *srcfn, AstNode *pgmast) {
-	// Quick and dirty concatenation of path to filename to .ast extension
-	char *outnm, *outp;
-	if (dir==NULL)
-		dir = "";
-	outnm = memAllocStr(dir, strlen(dir)+strlen(srcfn)+5);
-	if (strlen(dir) && outnm[strlen(outnm)-1]!='/' && outnm[strlen(outnm)-1]!='\\')
-		strcat(outnm,"/");
-	strcat(outnm, srcfn);
-	outp = &outnm[strlen(outnm)];
-	while (*--outp != '.');
-	strcpy(++outp, "ast");
-
-	astfile = fopen(outnm, "wb");
+	astfile = fopen(fileMakePath(dir, pgmast->lexer->fname, "ast"), "wb");
 	astPrintNode(0, pgmast, "");
 	fclose(astfile);
 }

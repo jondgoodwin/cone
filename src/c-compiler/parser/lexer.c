@@ -15,6 +15,7 @@
 #include "../shared/memory.h"
 #include "../shared/error.h"
 #include "../shared/utf8.h"
+#include "../shared/fileio.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -45,6 +46,7 @@ void lexInject(char *url, char *src) {
 
 	// Initialize lexer's source info
 	lex->url = url;
+	lex->fname = fileName(url);
 	lex->source = src;
 
 	// Initialize lexer context

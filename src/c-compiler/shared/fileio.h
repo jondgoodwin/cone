@@ -11,4 +11,10 @@
 // Load a file into an allocated string, return pointer or NULL if not found
 char *fileLoad(char *fn);
 
+// Extract a filename only (no extension) from a path
+char *fileName(char *fn);
+
+// Concatenate folder, filename and extension into a path
+char *fileMakePath(char *dir, char *srcfn, char *ext);
+
 #endif

@@ -25,6 +25,7 @@ typedef struct Lexer {
 
 	// immutable info about source
 	char *url;		// The url where the source text came from
+	char *fname;	// The filename of the url (no extension)
 	char *source;	// The source text (0-terminated)
 
 	struct Lexer *next;	// Next lexer (linked list of injected lexers)

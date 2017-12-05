@@ -6,10 +6,12 @@
 */
 
 #include "../ast/ast.h"
-#include "genllvm.h"
+#include "../parser/lexer.h"
 #include "../shared/error.h"
 #include "../pass/pass.h"
 #include "../shared/symbol.h"
+#include "../shared/fileio.h"
+#include "genllvm.h"
 
 #include <llvm-c/ExecutionEngine.h>
 #include <llvm-c/Target.h>
@@ -98,7 +100,7 @@ void genlModule(genl_t *gen, PgmAstNode *pgm) {
 	AstNode **nodesp;
 	char *error=NULL;
 
-	gen->module = LLVMModuleCreateWithNameInContext("my_module", gen->context);
+	gen->module = LLVMModuleCreateWithNameInContext(gen->srcname, gen->context);
 
 	assert(pgm->asttype == PgmNode);
 	for (nodesFor(pgm->nodes, cnt, nodesp)) {
@@ -151,7 +153,7 @@ LLVMTargetMachineRef genlCreateMachine(pass_opt_t *opt) {
 }
 
 // Generate requested object file
-void genlOut(LLVMModuleRef mod, char *triple, LLVMTargetMachineRef machine) {
+void genlOut(char *objpath, char *asmpath, LLVMModuleRef mod, char *triple, LLVMTargetMachineRef machine) {
 	char *err;
 	LLVMTargetDataRef dataref;
 	char *layout;
@@ -162,29 +164,41 @@ void genlOut(LLVMModuleRef mod, char *triple, LLVMTargetMachineRef machine) {
 	LLVMSetDataLayout(mod, layout);
 	LLVMDisposeMessage(layout);
 
-	// Write out bitcode to file
-	//if (LLVMWriteBitcodeToFile(mod, "sum.bc") != 0) {
-		//errorMsg(ErrorGenErr, "Error writing bitcode to file");
-	//}
+	// Generate assembly file if requested
+	if (asmpath && LLVMTargetMachineEmitToFile(machine, mod, asmpath, LLVMAssemblyFile, &err) != 0) {
+		errorMsg(ErrorGenErr, "Could not emit asm file: %s", err);
+		LLVMDisposeMessage(err);
+	}
 
-	// or LLVMAssemblyFile
-	if (LLVMTargetMachineEmitToFile(machine, mod, "sum.obj", LLVMObjectFile, &err) != 0) {
+	// Generate .o or .obj file
+	if (LLVMTargetMachineEmitToFile(machine, mod, objpath, LLVMObjectFile, &err) != 0) {
 		errorMsg(ErrorGenErr, "Could not emit obj file: %s", err);
 		LLVMDisposeMessage(err);
-		return;
 	}
 }
 
 // Generate AST into LLVM IR using LLVM
 void genllvm(pass_opt_t *opt, PgmAstNode *pgmast) {
+	char *err;
 	genl_t gen;
 	LLVMTargetMachineRef machine;
 
+	gen.srcname = pgmast->lexer->fname;
 	gen.context = LLVMContextCreate();
+
+	// Generate AST to IR
 	genlModule(&gen, pgmast);
+	if (opt->print_llvmir && LLVMPrintModuleToFile(gen.module, fileMakePath(opt->output, pgmast->lexer->fname, "ir"), &err) != 0) {
+		errorMsg(ErrorGenErr, "Could not emit obj file: %s", err);
+		LLVMDisposeMessage(err);
+	}
+
+	// Transform IR to target's ASM and OBJ
 	machine = genlCreateMachine(opt);
 	if (machine)
-		genlOut(gen.module, opt->triple, machine);
+		genlOut(fileMakePath(opt->output, pgmast->lexer->fname, "obj"),
+			opt->print_asm? fileMakePath(opt->output, pgmast->lexer->fname, "asm") : NULL,
+			gen.module, opt->triple, machine);
 
 	LLVMDisposeModule(gen.module);
 	LLVMDisposeTargetMachine(machine);

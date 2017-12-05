@@ -50,8 +50,9 @@ enum
 	OPT_LINKER,
 
 	OPT_VERBOSE,
-	OPT_PASSES,
 	OPT_AST,
+	OPT_ASM,
+	OPT_LLVMIR,
 	OPT_TRACE,
 	OPT_WIDTH,
 	OPT_IMMERR,
@@ -92,8 +93,9 @@ static opt_arg_t args[] =
 	{"linker", '\0', OPT_ARG_REQUIRED, OPT_LINKER},
 
 	{"verbose", 'V', OPT_ARG_REQUIRED, OPT_VERBOSE},
-	{"pass", 'r', OPT_ARG_REQUIRED, OPT_PASSES},
 	{"ast", 'a', OPT_ARG_NONE, OPT_AST},
+	{"asm", '\0', OPT_ARG_NONE, OPT_ASM },
+	{"llvmir", '\0', OPT_ARG_NONE, OPT_LLVMIR },
 	{"trace", 't', OPT_ARG_NONE, OPT_TRACE},
 	{"width", 'w', OPT_ARG_REQUIRED, OPT_WIDTH},
 	{"immerr", '\0', OPT_ARG_NONE, OPT_IMMERR},
@@ -155,29 +157,10 @@ static void usage()
     "    =2            More detailed compilation information.\n"
     "    =3            External tool command lines.\n"
     "    =4            Very low-level detail.\n"
-    "  --pass, -r      Restrict phases.\n"
-    "    =parse\n"
-    "    =syntax\n"
-    "    =sugar\n"
-    "    =scope\n"
-    "    =import\n"
-    "    =name\n"
-    "    =flatten\n"
-    "    =traits\n"
-    "    =docs\n"
-    "    =refer\n"
-    "    =expr\n"
-    "    =verify\n"
-    "    =final\n"
-    "    =reach\n"
-    "    =paint\n"
-    "    =ir           Output LLVM IR.\n"
-    "    =bitcode      Output LLVM bitcode.\n"
-    "    =asm          Output assembly.\n"
-    "    =obj          Output an object file.\n"
-    "    =all          The default: generate an executable.\n"
     "  --ast, -a       Output an abstract syntax tree for the whole program.\n"
-    "  --trace, -t     Enable parse trace.\n"
+    "  --asm           Output an assembly file.\n"
+	"  --llvmir        Output an LLVM IR file.\n"
+	"  --trace, -t     Enable parse trace.\n"
     "  --width, -w     Width to target when printing the AST.\n"
     "    =columns      Defaults to the terminal width.\n"
     "  --immerr        Report errors immediately rather than deferring.\n"
@@ -254,6 +237,8 @@ int setPassOptions(pass_opt_t *opt, int *argc, char **argv) {
 		case OPT_LINKER: opt->linker = s.arg_val; break;
 
 		case OPT_AST: opt->print_ast = 1; break;
+		case OPT_ASM: opt->print_asm = 1; break;
+		case OPT_LLVMIR: opt->print_llvmir = 1; break;
 		case OPT_TRACE: opt->parse_trace = 1; break;
 		case OPT_WIDTH: opt->ast_print_width = atoi(s.arg_val); break;
 		// case OPT_IMMERR: errors_set_immediate(opt.check.errors, 1); break;
@@ -273,14 +258,6 @@ int setPassOptions(pass_opt_t *opt, int *argc, char **argv) {
 				ok = 0;
 			}*/
 			}
-			break;
-
-		case OPT_PASSES:
-			/*
-			if (!limit_passes(&opt, s.arg_val)) {
-				ok = false;
-				print_usage = 1;
-			} */
 			break;
 
 		default: usage(); return -1;

@@ -18,6 +18,8 @@ typedef struct genl_t {
 	LLVMModuleRef module;
 	LLVMValueRef fn;
 	LLVMBuilderRef builder;
+
+	char *srcname;
 } genl_t;
 
 void genllvm(pass_opt_t *opt, PgmAstNode *pgmast);
