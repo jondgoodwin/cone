@@ -20,33 +20,35 @@
 		
 <pre>
 /* Statements */
-	program ::= stmts
-	stmts ::= (( if_stmt | match_stmt | while_stmt | break_stmt | cont_stmt | each_stmt | return_stmt | do_stmt | exp_stmt )? ';' )*
-	block ::= '{' stmts '}'
-	do_stmt ::= 'do' exp? block
+	program ::= dcl_stmt*
+	dcl_stmt ::= var_stmt | fn_stmt
+	var_stmt ::= perm_ident ident_token value_type? (',' ident_token value_type?)* ('=' append_exp (',' append_exp)*)? ';'
+	fn_stmt ::= fn_type block
+	block ::= '{' stmt* '}'
+	stmt ::= if_stmt | match_stmt | while_stmt | break_stmt | cont_stmt | each_stmt | return_stmt | do_stmt | exp_stmt | ';'
 	if_stmt ::= 'if' logic_exp block ( 'elif' logic_exp block )* ( 'else' block )?
 	match_stmt ::= 'match' exp ('using' exp)? ('into' var_list)? ('with' exp ('into' var_list)? block)+ ('else' block)?
 	while_stmt ::= 'while' logic_exp block
 	each_stmt  ::= 'each' (ident_token ':')? var_list 'in' (exp|'...') block
-	break_stmt ::= 'break' clause
-	cont_stmt  ::= 'continue' clause
-	return_stmt ::= 'return' this_exp? clause
-	exp_stmt   ::= this_exp clause
+	break_stmt ::= 'break' clause ';'
+	cont_stmt  ::= 'continue' clause ';'
+	return_stmt ::= 'return' this_exp? clause ';'
+	do_stmt ::= 'do' exp? block
+	exp_stmt   ::= this_exp clause ';'
 	
 	this_exp ::= exp (('using' exp)? block)?
 	clause ::= ('if' logic_exp | 'while' logic_exp | 'each' (ident_token ':')? var_list 'in' exp)*
+	var_list ::= perm_ident? ident_token value_type (',' perm_ident? ident_token value_type)*
 
-/* Variable definitions */
-	var_list ::= typed_ident ( ',' typed_ident )*
-	var_defs ::= typed_ident ( '=' append_exp ) (',' typed_ident ('=' append_exp))*
-	typed_ident ::= ident_token (perm_type)? (value_type)?
-	alloc_type ::= ident_token
-	perm_type ::= 'mut' | 'imm' | 'mmut' | 'const' | 'mutx' | 'id' | ident_token
-	value_type ::= nbrtype | fntype | arraytype | ptrtype
+/* Type declarations */
+	value_type ::= nbrtype | arraytype | ptrtype | fntype
 	nbrtype ::= 'i8' | 'i16' | 'i32' | 'i64' | 'u8' | 'u16' | 'u32' | 'u64' | 'f32' | 'f64'
-	fntype ::= 'fn' (ident_token)? '(' var_list ')' value_type
 	arraytype ::= '[' integer_token? ']' value_type
-	ptrtype ::= alloc_type? '&' perm_type? value_type
+	ptrtype ::= ((alloc_type '-&') | '&') perm_type? value_type
+	fntype ::= 'fn' (ident_token)? '(' fnparm (',' fnparm)* ')' (value_type (',' value_type)*)?
+	fnparm ::= perm_ident? ident_token value_type? ('=' (literal | ident))?
+	perm_ident ::= 'mut' | 'imm' | 'mmut' | 'const' | 'mutx' | 'id' | ident_token
+	alloc_type ::= ident_token
 
 /* General Use Expressions (with possible assignments) */
 	exp ::= assgn_exp
@@ -65,19 +67,18 @@
 	term ::=  (value | suffix | ('+' value (text_token|symbol_token)?)) suffix*
 	suffix ::= (('.'|'.:'|'::') property)? ('(' (if_exp (',' if_exp)*)? ')' | '[' (append_exp (',' append_exp)*)? ']')?
 	property ::= ident_token | symbol_token | integer_token | '(' exp ')'
-	value ::=  literal | ident_token | pseudo | '(' exp ')' | fn_val | 'yield' this_exp?
+	value ::=  literal | ident_token | pseudo | '(' exp ')' | 'yield' this_exp? | '&' ident_token suffix* | fn_type block
 	pseudo ::= 'self' | 'this' | 'context' | 'selfmethod' | 'baseurl' | '...'
-	fn_val ::= fntype block
 	
-/* Literals */
+/* Literals and other tokens */
 	literal ::= float_token | integer_token | text_token | symbol_token | url_token | 'true' | 'false' | 'null'
 	float_token ::= (('0'-'9') ('0'-'9')*) '.' ('0'-'9')* (('e'|'E') ('-'|'+')? ('0'-'9')+)?
 	integer_token ::= (('0'-'9') ('0'-'9')*) | '0x' (('0'-'9')|('a'-'f')|('A'-'F'))+
 	text_token ::= '"' any_char '"'
 	symbol_token ::= "'" any_char "'"
 	url_token ::= "@" any_char (space | tab | lf | cr)
-	
-	ident_token ::= ('$' | '_' | alpha_char) (alpha_char | ('0'-'9') | '$' | '_')*
+
+	ident_token ::= '`' any_char* '`' | ('$' | '_' | alpha_char) (alpha_char | ('0'-'9') | '$' | '_')*
 </pre>
 	<p>Railroad diagrams courtesy of the 
 	<a href="http://bottlecaps.de/rr/ui">Railroad Diagram Generator</a>.</p>
