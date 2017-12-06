@@ -38,27 +38,50 @@ void pgmPass(AstPass *pstate, PgmAstNode *pgm) {
 		astPass(pstate, *nodesp);
 }
 
+// Create a new block node
+BlockAstNode *newBlockNode() {
+	BlockAstNode *blk;
+	newAstNode(blk, BlockAstNode, BlockNode);
+	blk->nodes = newNodes(8);
+	return blk;
+}
+
+// Serialize the AST for a block
+void blockPrint(int indent, BlockAstNode *blk) {
+	AstNode **nodesp;
+	uint32_t cnt;
+
+	astPrintLn(indent, "block statements:");
+	if (blk->nodes)
+		for (nodesFor(blk->nodes, cnt, nodesp))
+			astPrintNode(indent + 1, *nodesp, "");
+}
+
+// Check the block's AST
+void blockPass(AstPass *pstate, BlockAstNode *blk) {
+	AstNode **nodesp;
+	uint32_t cnt;
+
+	if (blk->nodes)
+		for (nodesFor(blk->nodes, cnt, nodesp))
+			astPass(pstate, *nodesp);
+}
+
 // Create a new Function Implementation node
 FnImplAstNode *newFnImplNode(Symbol *name, AstNode *sig) {
 	FnImplAstNode *fn;
 	newAstNode(fn, FnImplAstNode, FnImplNode);
 	fn->name = name;
 	fn->vtype = sig;
-	fn->nodes = NULL;
+	fn->value = NULL;
 	return fn;
 }
 
 // Serialize the AST for a function implementation
 void fnImplPrint(int indent, FnImplAstNode *fn) {
-	AstNode **nodesp;
-	uint32_t cnt;
-
 	astPrintLn(indent, "fn %s()", fn->name->name);
 	astPrintNode(indent, fn->vtype, "-");
-	astPrintLn(indent, "-fn statements:");
-	if (fn->nodes)
-		for (nodesFor(fn->nodes, cnt, nodesp))
-			astPrintNode(indent+1, *nodesp, "");
+	astPrintNode(indent+1, fn->value, "");
 }
 
 // Add function to global namespace if it does not conflict or dupe implementation with prior definition
@@ -72,8 +95,8 @@ void fnImplGlobalPass(FnImplAstNode *fnnode) {
 	else if (!typeEqual((AstNode*)fnnode, name->node)) {
 		errorMsgNode((AstNode *)fnnode, ErrorTypNotSame, "Name is already defined with a different type/signature.");
 		errorMsgNode(name->node, ErrorTypNotSame, "This is the conflicting definition for that name.");
-	} else if (fnnode->nodes) {
-		if (((FnImplAstNode*)name->node)->nodes) {
+	} else if (fnnode->value) {
+		if (((FnImplAstNode*)name->node)->value) {
 			errorMsgNode((AstNode *)fnnode, ErrorFnDupImpl, "Function has a duplicate implementations. Only one allowed.");
 			errorMsgNode(name->node, ErrorFnDupImpl, "This is the other function implementation.");
 		} else
@@ -83,18 +106,14 @@ void fnImplGlobalPass(FnImplAstNode *fnnode) {
 
 // Check the function's AST
 void fnImplPass(AstPass *pstate, FnImplAstNode *fn) {
-	AstNode **nodesp;
-	uint32_t cnt;
-
 	switch (pstate->pass) {
 	case GlobalPass:
 		fnImplGlobalPass(fn);
 		return;
 	}
 
-	if (fn->nodes)
-		for (nodesFor(fn->nodes, cnt, nodesp))
-			astPass(pstate, *nodesp);
+	if (fn->value)
+		astPass(pstate, fn->value);
 }
 
 // Create a new expression statement node

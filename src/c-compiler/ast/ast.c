@@ -34,6 +34,8 @@ void astPrintNode(int indent, AstNode *node, char *prefix) {
 		pgmPrint(indent, (PgmAstNode *)node); break;
 	case FnImplNode:
 		fnImplPrint(indent, (FnImplAstNode *)node); break;
+	case BlockNode:
+		blockPrint(indent, (BlockAstNode *)node); break;
 	case StmtExpNode:
 		stmtExpPrint(indent, (StmtExpAstNode *)node); break;
 	case ReturnNode:
@@ -70,6 +72,8 @@ void astPass(AstPass *pstate, AstNode *node) {
 		pgmPass(pstate, (PgmAstNode*)node); break;
 	case FnImplNode:
 		fnImplPass(pstate, (FnImplAstNode *)node); break;
+	case BlockNode:
+		blockPass(pstate, (BlockAstNode *)node); break;
 	case StmtExpNode:
 		stmtExpPass(pstate, (StmtExpAstNode *)node); break;
 	case ReturnNode:

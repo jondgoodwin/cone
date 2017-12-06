@@ -17,13 +17,15 @@ typedef struct PgmAstNode {
 // Function block
 typedef struct FnImplAstNode {
 	NamedAstHdr;
-	Nodes *nodes;	// May be NULL if not implemented
+	AstNode *value;	// May be NULL if not initialized
 } FnImplAstNode;
 
 // Block
 typedef struct BlockAstNode {
 	BasicAstHdr;
 	Nodes *nodes;
+	// Dict *locals;
+	uint16_t scope;
 } BlockAstNode;
 
 // Statement expressions (incl. return, yield, ...)
@@ -39,6 +41,10 @@ void pgmPass(AstPass *pstate, PgmAstNode *pgm);
 FnImplAstNode *newFnImplNode(Symbol *name, AstNode *sig);
 void fnImplPrint(int indent, FnImplAstNode *fn);
 void fnImplPass(AstPass *pstate, FnImplAstNode *node);
+
+BlockAstNode *newBlockNode();
+void blockPrint(int indent, BlockAstNode *blk);
+void blockPass(AstPass *pstate, BlockAstNode *node);
 
 StmtExpAstNode *newStmtExpNode();
 void stmtExpPrint(int indent, StmtExpAstNode *node);

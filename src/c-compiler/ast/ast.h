@@ -113,8 +113,8 @@ typedef struct TypedAstNode {
 	TypedAstHdr; \
 	Symbol *name; \
 	AstNode *prev; \
-	uint16_t lifetime; \
-	uint16_t moreinfo
+	uint16_t scope; \
+	uint16_t index
 
 // Castable structure for all named AST nodes
 typedef struct NamedAstNode {

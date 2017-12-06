@@ -70,11 +70,13 @@ LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
 
 // Generate a function block
 void genlFn(genl_t *gen, FnImplAstNode *fnnode) {
+	BlockAstNode *blk;
 	AstNode **nodesp;
 	uint32_t cnt;
 
-	if (!fnnode->nodes)
+	if (!fnnode->value)
 		return;
+	blk = (BlockAstNode *)fnnode->value;
 
 	// fn sum(a i32, b i32) i32 {..} ==> sum, builder
 	LLVMTypeRef param_types[] = { LLVMInt32TypeInContext(gen->context), LLVMInt32TypeInContext(gen->context) };
@@ -85,7 +87,7 @@ void genlFn(genl_t *gen, FnImplAstNode *fnnode) {
 	LLVMPositionBuilderAtEnd(gen->builder, entry);
 
 	assert(fnnode->asttype == FnImplNode);
-	for (nodesFor(fnnode->nodes, cnt, nodesp)) {
+	for (nodesFor(blk->nodes, cnt, nodesp)) {
 		switch ((*nodesp)->asttype) {
 		case StmtExpNode:
 			genlTerm(gen, ((StmtExpAstNode*)*nodesp)->exp); break;
