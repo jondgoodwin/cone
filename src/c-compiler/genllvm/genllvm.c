@@ -69,24 +69,27 @@ LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
 }
 
 // Generate a function block
-void genlFn(genl_t *gen, FnImplAstNode *fnnode) {
+void genlFn(genl_t *gen, VarAstNode *fnnode) {
 	BlockAstNode *blk;
 	AstNode **nodesp;
 	uint32_t cnt;
 
 	if (!fnnode->value)
 		return;
-	blk = (BlockAstNode *)fnnode->value;
+	assert(fnnode->value->asttype == BlockNode);
 
-	// fn sum(a i32, b i32) i32 {..} ==> sum, builder
+	// Add function and its signature to module
 	LLVMTypeRef param_types[] = { LLVMInt32TypeInContext(gen->context), LLVMInt32TypeInContext(gen->context) };
 	LLVMTypeRef ret_type = LLVMFunctionType(genlType(gen, ((FnSigAstNode*)fnnode->vtype)->rettype), param_types, 0, 0);
 	gen->fn = LLVMAddFunction(gen->module, fnnode->name->name, ret_type);
+
+	// Attach block and builder to function
 	LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "entry");
 	gen->builder = LLVMCreateBuilder();
 	LLVMPositionBuilderAtEnd(gen->builder, entry);
 
-	assert(fnnode->asttype == FnImplNode);
+	// Populate block with statements
+	blk = (BlockAstNode *)fnnode->value;
 	for (nodesFor(blk->nodes, cnt, nodesp)) {
 		switch ((*nodesp)->asttype) {
 		case StmtExpNode:
@@ -110,8 +113,8 @@ void genlModule(genl_t *gen, PgmAstNode *pgm) {
 	assert(pgm->asttype == PgmNode);
 	for (nodesFor(pgm->nodes, cnt, nodesp)) {
 		AstNode *nodep = *nodesp;
-		if (nodep->asttype == FnImplNode)
-			genlFn(gen, (FnImplAstNode*)nodep);
+		if (nodep->asttype == VarNode)
+			genlFn(gen, (VarAstNode*)nodep);
 	}
 
 	LLVMVerifyModule(gen->module, LLVMReturnStatusAction, &error);

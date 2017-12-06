@@ -7,7 +7,6 @@
 
 #include "ast.h"
 #include "../shared/memory.h"
-#include "../shared/error.h"
 #include "../parser/lexer.h"
 #include "../shared/symbol.h"
 
@@ -65,55 +64,6 @@ void blockPass(AstPass *pstate, BlockAstNode *blk) {
 	if (blk->nodes)
 		for (nodesFor(blk->nodes, cnt, nodesp))
 			astPass(pstate, *nodesp);
-}
-
-// Create a new Function Implementation node
-FnImplAstNode *newFnImplNode(Symbol *name, AstNode *sig) {
-	FnImplAstNode *fn;
-	newAstNode(fn, FnImplAstNode, FnImplNode);
-	fn->name = name;
-	fn->vtype = sig;
-	fn->value = NULL;
-	return fn;
-}
-
-// Serialize the AST for a function implementation
-void fnImplPrint(int indent, FnImplAstNode *fn) {
-	astPrintLn(indent, "fn %s()", fn->name->name);
-	astPrintNode(indent, fn->vtype, "-");
-	astPrintNode(indent+1, fn->value, "");
-}
-
-// Add function to global namespace if it does not conflict or dupe implementation with prior definition
-void fnImplGlobalPass(FnImplAstNode *fnnode) {
-	Symbol *name = fnnode->name;
-
-	// Remember function in symbol table, but error out if prior name has a different type
-	// or both this and saved node define an implementation
-	if (!name->node)
-		name->node = (AstNode*)fnnode;
-	else if (!typeEqual((AstNode*)fnnode, name->node)) {
-		errorMsgNode((AstNode *)fnnode, ErrorTypNotSame, "Name is already defined with a different type/signature.");
-		errorMsgNode(name->node, ErrorTypNotSame, "This is the conflicting definition for that name.");
-	} else if (fnnode->value) {
-		if (((FnImplAstNode*)name->node)->value) {
-			errorMsgNode((AstNode *)fnnode, ErrorFnDupImpl, "Function has a duplicate implementations. Only one allowed.");
-			errorMsgNode(name->node, ErrorFnDupImpl, "This is the other function implementation.");
-		} else
-			name->node = (AstNode*)fnnode;
-	}
-}
-
-// Check the function's AST
-void fnImplPass(AstPass *pstate, FnImplAstNode *fn) {
-	switch (pstate->pass) {
-	case GlobalPass:
-		fnImplGlobalPass(fn);
-		return;
-	}
-
-	if (fn->value)
-		astPass(pstate, fn->value);
 }
 
 // Create a new expression statement node

@@ -42,9 +42,8 @@ enum AstType {
 	// Expression nodes (having value type)
 	ULitNode = (ExpGroup<<8),		// Integer literal
 	FLitNode,		// Float literal
-	VarNode,		// Variable node
+	VarNode,		// Variable node (including a function implementation)
 	UnaryNode,		// Unary method operator
-	FnImplNode,		// Function implementation (vtype is its signature)
 
 	// AST nodes that are value types
 	VoidType = (VTypeGroup<<8),	// representing no values, e.g., no return values on a fn
