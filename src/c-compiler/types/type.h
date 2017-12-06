@@ -34,7 +34,9 @@ typedef struct ArrTypeAstNode {
 // Represents the absence of type information
 AstNode *voidType;
 
-void typInit();
+void typeInit();
+int typeEqual(AstNode *node1, AstNode *node2);
+
 VoidTypeAstNode *newVoidNode();
 void voidPrint(int indent, VoidTypeAstNode *voidnode, char *prefix);
 

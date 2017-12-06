@@ -51,31 +51,19 @@ void parseLCurly() {
 // Parse a function block
 AstNode *parseFn() {
 	FnImplAstNode *fnnode;
-	Symbol *oldsym;
 	FnSigAstNode *sig;
 
 	// Process the function's signature info, then put info in new AST node
 	sig = (FnSigAstNode*) parseFnSig();
 	fnnode = newFnImplNode(sig->name, (AstNode*) sig);
-	oldsym = fnnode->name;
 
 	// Process statements block that implements function, if provided
 	if (!lexIsToken(LCurlyToken) && !lexIsToken(SemiToken))
 		parseLCurly();
-	if (lexIsToken(LCurlyToken)) {
-		// If func is already fully defined with an implementation, error out
-		if (oldsym->node && oldsym->node->asttype == FnImplNode &&
-			((FnImplAstNode*)oldsym->node)->nodes)
-			errorMsgNode((AstNode *)fnnode, ErrorFnDupImpl, "Function already has an implementation");
-		else
-			oldsym->node = (AstNode*)fnnode;
+	if (lexIsToken(LCurlyToken))
 		parseStmtBlock(&fnnode->nodes);
-	} else {
+	else
 		parseSemi();
-		// Attach AST to symbol, if it is not defined already
-		if (oldsym->node == NULL)
-			oldsym->node = (AstNode*)fnnode;
-	}
 	return (AstNode*) fnnode;
 }
 

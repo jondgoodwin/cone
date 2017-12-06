@@ -34,14 +34,18 @@ typedef struct StmtExpAstNode {
 
 PgmAstNode *newPgmNode();
 void pgmPrint(int indent, PgmAstNode *pgm);
+void pgmPass(AstPass *pstate, PgmAstNode *pgm);
 
 FnImplAstNode *newFnImplNode(Symbol *name, AstNode *sig);
 void fnImplPrint(int indent, FnImplAstNode *fn);
+void fnImplPass(AstPass *pstate, FnImplAstNode *node);
 
 StmtExpAstNode *newStmtExpNode();
 void stmtExpPrint(int indent, StmtExpAstNode *node);
+void stmtExpPass(AstPass *pstate, StmtExpAstNode *node);
 
 StmtExpAstNode *newReturnNode();
 void returnPrint(int indent, StmtExpAstNode *node);
+void returnPass(AstPass *pstate, StmtExpAstNode *node);
 
 #endif

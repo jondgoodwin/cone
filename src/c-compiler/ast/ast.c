@@ -15,6 +15,7 @@
 
 FILE *astfile;
 
+// Output an indented, serialized line to astfile
 void astPrintLn(int indent, char *str, ...) {
 	int cnt;
 	va_list argptr;
@@ -26,6 +27,7 @@ void astPrintLn(int indent, char *str, ...) {
 	fprintf(astfile, "\n");
 }
 
+// Serialize a specific AST node
 void astPrintNode(int indent, AstNode *node, char *prefix) {
 	switch (node->asttype) {
 	case PgmNode:
@@ -53,8 +55,40 @@ void astPrintNode(int indent, AstNode *node, char *prefix) {
 	}
 }
 
+// Serialize the program's AST to dir+srcfn
 void astPrint(char *dir, char *srcfn, AstNode *pgmast) {
 	astfile = fopen(fileMakePath(dir, pgmast->lexer->fname, "ast"), "wb");
 	astPrintNode(0, pgmast, "");
 	fclose(astfile);
+}
+
+// Dispatch a pass to a node
+// Syntactic sugar, name resolution, type inference and type checking
+void astPass(AstPass *pstate, AstNode *node) {
+	switch (node->asttype) {
+	case PgmNode:
+		pgmPass(pstate, (PgmAstNode*)node); break;
+	case FnImplNode:
+		fnImplPass(pstate, (FnImplAstNode *)node); break;
+	case StmtExpNode:
+		stmtExpPass(pstate, (StmtExpAstNode *)node); break;
+	case ReturnNode:
+		returnPass(pstate, (StmtExpAstNode *)node); break;
+	case ULitNode:
+	case FLitNode:
+	case FnSig:
+	case IntType: case UintType: case FloatType:
+	case PermType:
+	case VoidType:
+		break;
+	default:
+		puts("**** ERROR **** Attempting to check an unknown node");
+	}
+}
+
+// Run all passes against the AST (after parse and before gen)
+void astPasses(PgmAstNode *pgm) {
+	AstPass pstate;
+	pstate.pass = GlobalPass;
+	astPass(&pstate, (AstNode*) pgm);
 }

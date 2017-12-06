@@ -73,6 +73,9 @@ void genlFn(genl_t *gen, FnImplAstNode *fnnode) {
 	AstNode **nodesp;
 	uint32_t cnt;
 
+	if (!fnnode->nodes)
+		return;
+
 	// fn sum(a i32, b i32) i32 {..} ==> sum, builder
 	LLVMTypeRef param_types[] = { LLVMInt32TypeInContext(gen->context), LLVMInt32TypeInContext(gen->context) };
 	LLVMTypeRef ret_type = LLVMFunctionType(genlType(gen, ((FnSigAstNode*)fnnode->vtype)->rettype), param_types, 0, 0);

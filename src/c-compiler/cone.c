@@ -301,7 +301,7 @@ void main(int argc, char **argv) {
 	lexInject("*compiler*", "");
 	symInit();
 	keywordInit();
-	typInit();
+	typeInit();
 
 	// Load specified source file
 	src = fileLoad(srcfn);
@@ -312,9 +312,12 @@ void main(int argc, char **argv) {
 	lexInject(srcfn, src);
 	pgmast = parse();
 	if (errors == 0) {
-		if (passopt.print_ast)
-			astPrint(passopt.output, srcfn, (AstNode*)pgmast);
-		genllvm(&passopt, pgmast);
+		astPasses(pgmast);
+		if (errors == 0) {
+			if (passopt.print_ast)
+				astPrint(passopt.output, srcfn, (AstNode*)pgmast);
+			genllvm(&passopt, pgmast);
+		}
 	}
 
 	// Close up everything necessary

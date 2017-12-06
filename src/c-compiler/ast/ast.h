@@ -121,6 +121,18 @@ typedef struct NamedAstNode {
 	NamedAstHdr;
 } NamedAstNode;
 
+
+// The AST passes between parse and generation
+enum Passes {
+	GlobalPass,
+	TypeCheck
+};
+
+// Context for AST passes
+typedef struct AstPass {
+	int pass;	// Passes
+} AstPass;
+
 #include "../ast/block.h"
 #include "../ast/expr.h"
 #include "../types/type.h"
@@ -142,5 +154,7 @@ typedef struct NamedAstNode {
 void astPrint(char *dir, char *srcfn, AstNode *pgm);
 void astPrintNode(int indent, AstNode *node, char *prefix);
 void astPrintLn(int indent, char *str, ...);
+void astPass(AstPass *pstate, AstNode *pgm);
+void astPasses(PgmAstNode *pgm);
 
 #endif
