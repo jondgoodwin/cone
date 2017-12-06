@@ -37,8 +37,11 @@ AstNode *parseReturn() {
 
 // Parse a statement block inside a control structure
 void parseStmtBlock(Nodes **nodes) {
-	if (lexIsToken(LCurlyToken))
-		lexNextToken();
+	if (!lexIsToken(LCurlyToken))
+		parseLCurly();
+	if (!lexIsToken(LCurlyToken))
+		return;
+	lexNextToken();
 
 	*nodes = newNodes(8);
 	while (! lexIsToken(EofToken) && ! lexIsToken(RCurlyToken)) {

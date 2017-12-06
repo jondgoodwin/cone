@@ -14,6 +14,7 @@
 PgmAstNode *parse();
 void parseSemi();
 void parseRCurly();
+void parseLCurly();
 
 // parsestmt.c
 void parseStmtBlock(Nodes **nodes);

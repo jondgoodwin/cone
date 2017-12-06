@@ -28,12 +28,24 @@ void parseSemi() {
 	lexNextToken();
 }
 
-// Expect right curly brace and move past
+// Expect right curly brace. If not found, search for '}' or ';'
 void parseRCurly() {
-	if (lexIsToken(RCurlyToken))
+	if (!lexIsToken(RCurlyToken))
+		errorMsgLex(ErrorNoRCurly, "Expected closing brace '}' - skipping forward to find it");
+	while (! lexIsToken(RCurlyToken) && ! lexIsToken(SemiToken)) {
+		if (lexIsToken(EofToken))
+			return;
 		lexNextToken();
-	else
-		errorMsgLex(ErrorNoRCurly, "Expected closing brace '}'");
+	}
+	lexNextToken();
+}
+
+// Expect left curly brace. If not found, search for '{'
+void parseLCurly() {
+	errorMsgLex(ErrorNoLCurly, "Expected opening brace '{' - skipping forward to find it");
+	while (!lexIsToken(LCurlyToken) && !lexIsToken(SemiToken) && !lexIsToken(EofToken)) {
+		lexNextToken();
+	}
 }
 
 // Parse a function block
@@ -47,9 +59,9 @@ AstNode *parseFn() {
 	fnnode = newFnImplNode(sig->name, (AstNode*) sig);
 	oldsym = fnnode->name;
 
-	// Error if name is already used but types don't match
-
 	// Process statements block that implements function, if provided
+	if (!lexIsToken(LCurlyToken) && !lexIsToken(SemiToken))
+		parseLCurly();
 	if (lexIsToken(LCurlyToken)) {
 		// If func is already fully defined with an implementation, error out
 		if (oldsym->node && oldsym->node->asttype == FnImplNode &&
@@ -81,7 +93,11 @@ PgmAstNode *parse() {
 			nodesAdd(nodes, parseFn());
 			break;
 		default:
-			errorMsgLex(ErrorBadGloStmt, "Invalid global area type, var or function statement");						
+			errorMsgLex(ErrorBadGloStmt, "Invalid global area type, var or function statement");
+			while (!lexIsToken(SemiToken) && !lexIsToken(EofToken)) {
+				lexNextToken();
+			}
+			lexNextToken();
 		}
 	}
 	return pgm;

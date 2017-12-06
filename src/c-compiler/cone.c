@@ -290,12 +290,12 @@ void main(int argc, char **argv) {
 
 	// Get compiler's instruction options from passed arguments
 	ok = setPassOptions(&passopt, &argc, argv);
-	if (ok<=0)
-		exit(ok==0? 0 : ExitOpts);
-	if (argc<2)
+	if (ok <= 0)
+		exit(ok == 0 ? 0 : ExitOpts);
+	if (argc < 2)
 		errorExit(ExitOpts, "Specify a Cone program to compile.");
 	srcfn = argv[1];
-		
+
 	// Initialize compiler's global structures
 	startTime = clock();
 	lexInject("*compiler*", "");
@@ -311,10 +311,11 @@ void main(int argc, char **argv) {
 	// Parse and generate
 	lexInject(srcfn, src);
 	pgmast = parse();
-	if (passopt.print_ast)
-		astPrint(passopt.output, srcfn, (AstNode*)pgmast);
-	if (errors==0)
+	if (errors == 0) {
+		if (passopt.print_ast)
+			astPrint(passopt.output, srcfn, (AstNode*)pgmast);
 		genllvm(&passopt, pgmast);
+	}
 
 	// Close up everything necessary
 	errorSummary();

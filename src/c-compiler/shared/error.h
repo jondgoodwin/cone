@@ -23,6 +23,7 @@ enum ErrorCode {
 	ErrorBadTok,	// Bad character starting an unknown token
 	ErrorGenErr,	// Failure to perform generation activity
 	ErrorNoSemi,	// Missing semicolon
+	ErrorNoLCurly,  // Missing left curly brace
 	ErrorNoRCurly,	// Missing right curly brace
 	ErrorBadTerm,   // Invalid term - something other than var, lit, etc.
 	ErrorBadGloStmt, // Invalid global area type, var or function statement
