@@ -9,7 +9,7 @@
 #define genllvm_h
 
 #include "../ast/ast.h"
-#include "../pass/pass.h"
+#include "../coneopts.h"
 
 #include <llvm-c/Core.h>
 
@@ -22,6 +22,6 @@ typedef struct genl_t {
 	char *srcname;
 } genl_t;
 
-void genllvm(pass_opt_t *opt, PgmAstNode *pgmast);
+void genllvm(ConeOptions *opt, PgmAstNode *pgmast);
 
 #endif

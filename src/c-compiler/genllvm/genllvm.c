@@ -8,7 +8,7 @@
 #include "../ast/ast.h"
 #include "../parser/lexer.h"
 #include "../shared/error.h"
-#include "../pass/pass.h"
+#include "../coneopts.h"
 #include "../shared/symbol.h"
 #include "../shared/fileio.h"
 #include "genllvm.h"
@@ -121,7 +121,7 @@ void genlModule(genl_t *gen, PgmAstNode *pgm) {
 }
 
 // Use provided options (triple, etc.) to creation a machine
-LLVMTargetMachineRef genlCreateMachine(pass_opt_t *opt) {
+LLVMTargetMachineRef genlCreateMachine(ConeOptions *opt) {
 	char *err;
 	LLVMTargetRef target;
 	LLVMCodeGenOptLevel opt_level;
@@ -181,7 +181,7 @@ void genlOut(char *objpath, char *asmpath, LLVMModuleRef mod, char *triple, LLVM
 }
 
 // Generate AST into LLVM IR using LLVM
-void genllvm(pass_opt_t *opt, PgmAstNode *pgmast) {
+void genllvm(ConeOptions *opt, PgmAstNode *pgmast) {
 	char *err;
 	genl_t gen;
 	LLVMTargetMachineRef machine;

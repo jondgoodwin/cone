@@ -1,17 +1,17 @@
-/** Compiler passes
+/** Cone compiler options
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
  * See Copyright Notice in conec.h
 */
 
-#ifndef pass_h
-#define pass_h
+#ifndef coneopts_h
+#define coneopts_h
 
 #include <stdint.h>
 
-// Pass options
-typedef struct pass_opt_t {
+// Compiler options
+typedef struct ConeOptions {
 
 	// Boolean flags
 	int release;	// 0=debug (no optimizations). 1=release (default)
@@ -53,8 +53,8 @@ typedef struct pass_opt_t {
 	//typecheck_t check;
 
 	void* data; // User-defined data for unit test callbacks.
-} pass_opt_t;
+} ConeOptions;
 
-void passOptInit(pass_opt_t* options);
+int coneOptSet(ConeOptions *opt, int *argc, char **argv);
 
 #endif

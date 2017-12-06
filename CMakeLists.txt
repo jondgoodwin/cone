@@ -8,14 +8,14 @@ include_directories("${CMAKE_SOURCE_DIR}/src/c-compiler/")
 
 add_executable(cone 
 	src/c-compiler/cone.c
+	src/c-compiler/coneopts.c
+
 	src/c-compiler/shared/options.c
 	src/c-compiler/shared/error.c
 	src/c-compiler/shared/fileio.c
 	src/c-compiler/shared/memory.c
 	src/c-compiler/shared/symbol.c
 	src/c-compiler/shared/utf8.c
-	
-	src/c-compiler/pass/pass.c
 
 	src/c-compiler/ast/ast.c
 	src/c-compiler/ast/nodes.c
