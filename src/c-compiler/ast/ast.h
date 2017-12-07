@@ -15,6 +15,19 @@ typedef struct Lexer Lexer;		// ../parser/lexer.h
 
 #include <stdint.h>
 
+// The AST passes between parse and generation
+enum Passes {
+	// Add global vars to symbol table and ensure no dupe conflicts in type/implementation
+	GlobalPass,
+	// Apply syntactic sugar, resolve local names/scopes, do type inference/checks
+	TypeCheck
+};
+
+// Context for AST passes
+typedef struct AstPass {
+	int pass;	// Passes
+} AstPass;
+
 // AST Groupings
 enum AstGroup {
 	VoidGroup,	// Statements that return no value
@@ -120,17 +133,6 @@ typedef struct NamedAstNode {
 	NamedAstHdr;
 } NamedAstNode;
 
-
-// The AST passes between parse and generation
-enum Passes {
-	GlobalPass,
-	TypeCheck
-};
-
-// Context for AST passes
-typedef struct AstPass {
-	int pass;	// Passes
-} AstPass;
 
 #include "../ast/block.h"
 #include "../ast/expr.h"

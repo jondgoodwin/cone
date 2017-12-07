@@ -24,9 +24,9 @@ VarAstNode *newVarNode(Symbol *name, AstNode *type, AstNode *perm) {
 // Serialize the AST for a variable/function
 void varPrint(int indent, VarAstNode *var) {
 	astPrintLn(indent, var->vtype->asttype==FnSig? "fn %s()" : "var %s", var->name->name);
-	astPrintNode(indent, var->vtype, "-");
+	astPrintNode(indent+1, var->vtype, "");
 	if (var->value)
-		astPrintNode(indent + 1, var->value, "");
+		astPrintNode(indent+1, var->value, "");
 }
 
 // Add variable to global namespace if it does not conflict or dupe implementation with prior definition
@@ -51,12 +51,31 @@ void varGlobalPass(VarAstNode *varnode) {
 	}
 }
 
+// Syntactic sugar: Turn last statement implicit returns into explicit returns
+void fnImplicitReturn(AstNode *rettype, BlockAstNode *blk) {
+	AstNode *laststmt;
+	laststmt = nodesGet(blk->nodes, blk->nodes->used - 1);
+	if (rettype == voidType) {
+		if (laststmt->asttype != ReturnNode)
+			nodesAdd(&blk->nodes, (AstNode*) newReturnNode());
+	}
+	else {
+		if (laststmt->asttype == StmtExpNode)
+			laststmt->asttype = ReturnNode;
+	}
+}
+
 // Check the variable's AST
 void varPass(AstPass *pstate, VarAstNode *var) {
 	switch (pstate->pass) {
 	case GlobalPass:
 		varGlobalPass(var);
 		return;
+	case TypeCheck:
+		// Syntactic sugar: Turn implicit returns into explicit returns
+		if (var->vtype->asttype == FnSig && var->value && var->value->asttype == BlockNode)
+			fnImplicitReturn(((FnSigAstNode*)var->vtype)->rettype, (BlockAstNode *)var->value);
+		break;
 	}
 
 	if (var->value)

@@ -93,6 +93,12 @@ void astPass(AstPass *pstate, AstNode *node) {
 // Run all passes against the AST (after parse and before gen)
 void astPasses(PgmAstNode *pgm) {
 	AstPass pstate;
+
+	// Capture all globals in symbol table and check for namespace collisions
 	pstate.pass = GlobalPass;
 	astPass(&pstate, (AstNode*) pgm);
+
+	// Apply syntactic sugar, resolve local names/scopes, type inference/check
+	pstate.pass = TypeCheck;
+	astPass(&pstate, (AstNode*)pgm);
 }
