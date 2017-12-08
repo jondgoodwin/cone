@@ -10,7 +10,8 @@
 
 // Permission type info
 typedef struct PermTypeAstNode {
-	NamedAstHdr;
+	TypedAstHdr;
+	Symbol *namesym;
 	AstNode *locker;
 	uint8_t ptype;
 } PermTypeAstNode;
@@ -52,7 +53,7 @@ AstNode *constxPerm;
 AstNode *mutxPerm;
 AstNode *idPerm;
 
-PermTypeAstNode *newPermTypeNode(char ptyp, uint16_t flags, AstNode *locker, Symbol *name);
+PermTypeAstNode *newPermTypeNode(char ptyp, uint16_t flags, AstNode *locker, Symbol *namesym);
 void permTypePrint(int indent, PermTypeAstNode *node, char* prefix);
 
 #endif

@@ -11,15 +11,15 @@
 #include "../shared/symbol.h"
 
 // Create a new primitive number type node
-NbrTypeAstNode *newNbrTypeNode(uint16_t typ, char nbytes, Symbol *name) {
+NbrTypeAstNode *newNbrTypeNode(uint16_t typ, char nbytes, Symbol *namesym) {
 	NbrTypeAstNode *node;
 	newAstNode(node, NbrTypeAstNode, typ);
-	node->name = name;
+	node->namesym = namesym;
 	node->nbytes = nbytes;
 	return node;
 }
 
 // Serialize the AST for a Unsigned literal
 void nbrTypePrint(int indent, NbrTypeAstNode *node, char* prefix) {
-	astPrintLn(indent, "%s %s", prefix, node->name->name);
+	astPrintLn(indent, "%s %s", prefix, node->namesym->namestr);
 }

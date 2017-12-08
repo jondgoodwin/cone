@@ -22,7 +22,7 @@ unsigned int gSymTblUtil;	// % utilization that triggers doubling of table
 
 // Symbol info (a slot in the symbol table)
 typedef struct Symbol {
-	char *name;		// Symbol's name
+	char *namestr;		// Symbol's name
 	AstNode *node;	// AST node currently assigned to symbol
 	size_t hash;	// Symbol's computed hash
 } Symbol;

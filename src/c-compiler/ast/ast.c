@@ -32,8 +32,10 @@ void astPrintNode(int indent, AstNode *node, char *prefix) {
 	switch (node->asttype) {
 	case PgmNode:
 		pgmPrint(indent, (PgmAstNode *)node); break;
-	case VarNode:
-		varPrint(indent, (VarAstNode *)node); break;
+	case NameUseNode:
+		nameUsePrint(indent, (NameUseAstNode *)node); break;
+	case NameDclNode:
+		nameDclPrint(indent, (NameDclAstNode *)node); break;
 	case BlockNode:
 		blockPrint(indent, (BlockAstNode *)node); break;
 	case StmtExpNode:
@@ -70,8 +72,10 @@ void astPass(AstPass *pstate, AstNode *node) {
 	switch (node->asttype) {
 	case PgmNode:
 		pgmPass(pstate, (PgmAstNode*)node); break;
-	case VarNode:
-		varPass(pstate, (VarAstNode *)node); break;
+	case NameDclNode:
+		nameDclPass(pstate, (NameDclAstNode *)node); break;
+	case NameUseNode:
+		nameUsePass(pstate, (NameUseAstNode *)node); break;
 	case BlockNode:
 		blockPass(pstate, (BlockAstNode *)node); break;
 	case StmtExpNode:

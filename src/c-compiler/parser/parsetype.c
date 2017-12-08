@@ -19,24 +19,24 @@
 // Parse a function's type signature
 AstNode *parseFnSig() {
 	FnSigAstNode *fnsig;
-	Symbol *name;
+	Symbol *namesym;
 
 	// Skip past the 'fn'
 	lexNextToken();
 
 	// Process function name, if provided
 	if (lexIsToken(IdentToken)) {
-		name = lex->val.ident;
+		namesym = lex->val.ident;
 		lexNextToken();
 	}
 	else {
 		// For anonymous function, create and populate fake symbol table entry
-		name = NULL;
+		namesym = NULL;
 	}
 
 	// Set up memory block for the function's type signature
 	fnsig = newFnSigNode();
-	fnsig->name = name;
+	fnsig->namesym = namesym;
 
 	// Process parameter declarations
 	if (lexIsToken(LParenToken)) {
@@ -69,8 +69,6 @@ AstNode* parseVtype() {
 		} else
 			return NULL;
 		}
-	case FnToken:
-		return (AstNode*) parseFnSig();
 	case i8Token:
 		{AstNode *node; node = (AstNode*) newNbrTypeNode(IntType, 1, lex->val.ident); lexNextToken(); return node;}
 	case i16Token:

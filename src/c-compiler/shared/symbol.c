@@ -63,7 +63,7 @@ size_t gSymTblUsed = 0;		// Number of symbol table slots used
 		char *symtstr; \
 		Symbol *slot; \
 		slot = &gSymTable[tbli]; \
-		if (slot->name==NULL || (slot->hash == hash && (symtstr=slot->name)[strl]=='\0' && strncmp(strp, symtstr, strl)==0)) \
+		if (slot->namestr==NULL || (slot->hash == hash && (symtstr=slot->namestr)[strl]=='\0' && strncmp(strp, symtstr, strl)==0)) \
 			break; \
 		tbli = symHashMod(tbli + step, gSymTblAvail); \
 	} \
@@ -92,14 +92,14 @@ void symGrow() {
 	for (oldslot=0; oldslot < oldTblAvail; oldslot++) {
 		Symbol *oldslotp, *newslotp;
 		oldslotp = &oldTable[oldslot];
-		if (oldslotp->name) {
+		if (oldslotp->namestr) {
 			char *strp;
 			size_t strl, hash;
-			strp = oldslotp->name;
+			strp = oldslotp->namestr;
 			strl = strlen(strp);
 			hash = oldslotp->hash;
 			symFindSlot(newslotp, hash, strp, strl);
-			newslotp->name = oldslotp->name;
+			newslotp->namestr = oldslotp->namestr;
 			newslotp->hash = oldslotp->hash;
 			newslotp->node = oldslotp->node;
 		}
@@ -118,13 +118,13 @@ Symbol *symFind(char *strp, size_t strl) {
 	symFindSlot(slotp, hash, strp, strl);
 
 	// If not already a symbol, allocate memory for string and add to table
-	if (slotp->name == NULL) {
+	if (slotp->namestr == NULL) {
 		// Double table if it has gotten too full
 		if (++gSymTblUsed >= gSymTblCeil)
 			symGrow();
 
 		// Populate symbol info into table
-		slotp->name = memAllocStr(strp, strl);
+		slotp->namestr = memAllocStr(strp, strl);
 		slotp->hash = hash;
 		slotp->node = NULL;		// Undefined symbol
 	}

@@ -11,10 +11,10 @@
 #include "../shared/symbol.h"
 
 // Create a new primitive number type node
-PermTypeAstNode *newPermTypeNode(char ptyp, uint16_t flags, AstNode *locker, Symbol *name) {
+PermTypeAstNode *newPermTypeNode(char ptyp, uint16_t flags, AstNode *locker, Symbol *namesym) {
 	PermTypeAstNode *node;
 	newAstNode(node, PermTypeAstNode, PermType);
-	node->name = name;
+	node->namesym = namesym;
 	node->flags = flags;
 	node->ptype = ptyp;
 	node->locker = locker;
@@ -23,5 +23,5 @@ PermTypeAstNode *newPermTypeNode(char ptyp, uint16_t flags, AstNode *locker, Sym
 
 // Serialize the AST for a Unsigned literal
 void permTypePrint(int indent, PermTypeAstNode *node, char* prefix) {
-	astPrintLn(indent, "%s %s", prefix, node->name->name);
+	astPrintLn(indent, "%s %s", prefix, node->namesym->namestr);
 }

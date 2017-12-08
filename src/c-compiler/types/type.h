@@ -18,7 +18,7 @@ typedef struct VoidTypeAstNode {
 
 // For pointers
 typedef struct PtrTypeAstNode {
-	NamedAstHdr;
+	TypedAstHdr;
 	unsigned char nbytes;	// e.g., 32-bit uses 4 bytes
 	unsigned char subtype;	// Simple, vtabled
 	AstNode *ptrtotype;	// Type of value pointer points to
@@ -26,7 +26,7 @@ typedef struct PtrTypeAstNode {
 
 // For arrays
 typedef struct ArrTypeAstNode {
-	NamedAstHdr;
+	TypedAstHdr;
 	uint32_t nbrelems;		// Number of elements
 	AstNode *elemtype;	// Type of array's elements
 } ArrTypeAstNode;

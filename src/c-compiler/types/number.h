@@ -10,7 +10,8 @@
 
 // For primitives such as integer, unsigned integet, floats
 typedef struct NbrTypeAstNode {
-	NamedAstHdr;
+	TypedAstHdr;
+	Symbol *namesym;
 	unsigned char nbytes;	// e.g., int32 uses 4 bytes
 } NbrTypeAstNode;
 
@@ -26,7 +27,7 @@ AstNode *u64Type;
 AstNode *f32Type;
 AstNode *f64Type;
 
-NbrTypeAstNode *newNbrTypeNode(uint16_t typ, char nbytes, Symbol *name);
+NbrTypeAstNode *newNbrTypeNode(uint16_t typ, char nbytes, Symbol *namesym);
 void nbrTypePrint(int indent, NbrTypeAstNode *node, char* prefix);
 
 #endif

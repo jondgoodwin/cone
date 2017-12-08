@@ -20,22 +20,11 @@ typedef struct FLitAstNode {
 	double floatlit;
 } FLitAstNode;
 
-// Variable identifier
-typedef struct VarAstNode {
-	NamedAstHdr;
-	AstNode *perm;	// Permission (often mut or imm)
-	AstNode *value;	// May be NULL if not initialized
-} VarAstNode;
-
 // Unary operator (e.g., negative)
 typedef struct UnaryAstNode {
 	TypedAstHdr;
 	AstNode *expnode;
 } UnaryAstNode;
-
-VarAstNode *newVarNode(Symbol *name, AstNode *sig, AstNode *perm);
-void varPrint(int indent, VarAstNode *fn);
-void varPass(AstPass *pstate, VarAstNode *node);
 
 ULitAstNode *newULitNode(uint64_t nbr, AstNode *type);
 void ulitPrint(int indent, ULitAstNode *node);

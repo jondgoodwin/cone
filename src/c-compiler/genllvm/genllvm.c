@@ -69,7 +69,7 @@ LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
 }
 
 // Generate a function block
-void genlFn(genl_t *gen, VarAstNode *fnnode) {
+void genlFn(genl_t *gen, NameDclAstNode *fnnode) {
 	BlockAstNode *blk;
 	AstNode **nodesp;
 	uint32_t cnt;
@@ -81,7 +81,7 @@ void genlFn(genl_t *gen, VarAstNode *fnnode) {
 	// Add function and its signature to module
 	LLVMTypeRef param_types[] = { LLVMInt32TypeInContext(gen->context), LLVMInt32TypeInContext(gen->context) };
 	LLVMTypeRef ret_type = LLVMFunctionType(genlType(gen, ((FnSigAstNode*)fnnode->vtype)->rettype), param_types, 0, 0);
-	gen->fn = LLVMAddFunction(gen->module, fnnode->name->name, ret_type);
+	gen->fn = LLVMAddFunction(gen->module, fnnode->namesym->namestr, ret_type);
 
 	// Attach block and builder to function
 	LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "entry");
@@ -113,8 +113,8 @@ void genlModule(genl_t *gen, PgmAstNode *pgm) {
 	assert(pgm->asttype == PgmNode);
 	for (nodesFor(pgm->nodes, cnt, nodesp)) {
 		AstNode *nodep = *nodesp;
-		if (nodep->asttype == VarNode)
-			genlFn(gen, (VarAstNode*)nodep);
+		if (nodep->asttype == NameDclNode)
+			genlFn(gen, (NameDclAstNode*)nodep);
 	}
 
 	LLVMVerifyModule(gen->module, LLVMReturnStatusAction, &error);

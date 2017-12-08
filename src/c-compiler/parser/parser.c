@@ -50,12 +50,12 @@ void parseLCurly() {
 
 // Parse a function block
 AstNode *parseFn() {
-	VarAstNode *fnnode;
+	NameDclAstNode *fnnode;
 	FnSigAstNode *sig;
 
 	// Process the function's signature info, then put info in new AST node
 	sig = (FnSigAstNode*) parseFnSig();
-	fnnode = newVarNode(sig->name, (AstNode*) sig, immPerm);
+	fnnode = newNameDclNode(sig->namesym, (AstNode*) sig, immPerm);
 
 	// Process statements block that implements function, if provided
 	if (!lexIsToken(LCurlyToken) && !lexIsToken(SemiToken))

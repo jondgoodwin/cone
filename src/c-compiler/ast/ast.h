@@ -52,10 +52,13 @@ enum AstType {
 	StmtExpNode,	// Statement expression
 	ReturnNode,		// Return node
 
+	// Names (variable, function, named type)
+	NameDclNode,	// Name declaration node
+	NameUseNode,	// Name use node
+
 	// Expression nodes (having value type)
 	ULitNode = (ExpGroup<<8),		// Integer literal
 	FLitNode,		// Float literal
-	VarNode,		// Variable node (including a function implementation)
 	UnaryNode,		// Unary method operator
 
 	// AST nodes that are value types
@@ -117,29 +120,14 @@ typedef struct TypedAstNode {
 	TypedAstHdr;
 } TypedAstNode;
 
-// Named Ast Node header, for all nodes having a symbol table entry
-// - name points to the symbol table entry, where char* and hash can be found
-// - prev points to the AstNode for the node held in earlier scope for this name
-// - lifetime starts with 0=global, increments for inner local lexical blocks
-#define NamedAstHdr \
-	TypedAstHdr; \
-	Symbol *name; \
-	AstNode *prev; \
-	uint16_t scope; \
-	uint16_t index
 
-// Castable structure for all named AST nodes
-typedef struct NamedAstNode {
-	NamedAstHdr;
-} NamedAstNode;
-
-
+#include "../types/permission.h"
 #include "../ast/block.h"
 #include "../ast/expr.h"
+#include "../ast/name.h"
 #include "../types/type.h"
 #include "../types/fnsig.h"
 #include "../types/number.h"
-#include "../types/permission.h"
 
 // Allocate and initialize a new AST node
 #define newAstNode(node, aststruct, asttyp) {\
