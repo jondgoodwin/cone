@@ -11,23 +11,22 @@
 // For primitives such as integer, unsigned integet, floats
 typedef struct NbrTypeAstNode {
 	TypedAstHdr;
-	Symbol *namesym;
 	unsigned char nbytes;	// e.g., int32 uses 4 bytes
 } NbrTypeAstNode;
 
 // Primitive numeric types - for implicit (nondeclared but known) types
-AstNode *i8Type;
-AstNode *i16Type;
-AstNode *i32Type;
-AstNode *i64Type;
-AstNode *u8Type;
-AstNode *u16Type;
-AstNode *u32Type;
-AstNode *u64Type;
-AstNode *f32Type;
-AstNode *f64Type;
+NbrTypeAstNode *i8Type;
+NbrTypeAstNode *i16Type;
+NbrTypeAstNode *i32Type;
+NbrTypeAstNode *i64Type;
+NbrTypeAstNode *u8Type;
+NbrTypeAstNode *u16Type;
+NbrTypeAstNode *u32Type;
+NbrTypeAstNode *u64Type;
+NbrTypeAstNode *f32Type;
+NbrTypeAstNode *f64Type;
 
-NbrTypeAstNode *newNbrTypeNode(uint16_t typ, char nbytes, Symbol *namesym);
+NbrTypeAstNode *newNbrTypeNode(uint16_t typ, char nbytes);
 void nbrTypePrint(int indent, NbrTypeAstNode *node, char* prefix);
 
 #endif

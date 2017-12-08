@@ -33,9 +33,9 @@ void astPrintNode(int indent, AstNode *node, char *prefix) {
 	case PgmNode:
 		pgmPrint(indent, (PgmAstNode *)node); break;
 	case NameUseNode:
-		nameUsePrint(indent, (NameUseAstNode *)node); break;
+		nameUsePrint(indent, (NameUseAstNode *)node, prefix); break;
 	case NameDclNode:
-		nameDclPrint(indent, (NameDclAstNode *)node); break;
+		nameDclPrint(indent, (NameDclAstNode *)node, prefix); break;
 	case BlockNode:
 		blockPrint(indent, (BlockAstNode *)node); break;
 	case StmtExpNode:

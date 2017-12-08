@@ -43,6 +43,8 @@ void genlReturn(genl_t *gen, StmtExpAstNode *node) {
 
 // Generate a type value
 LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
+	if (typ->asttype == NameUseNode) // HACK
+		typ = ((NameUseAstNode *)typ)->dclnode->value;
 	switch (typ->asttype) {
 	case IntType: case UintType:
 	{

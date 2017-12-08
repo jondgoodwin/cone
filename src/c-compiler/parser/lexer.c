@@ -118,7 +118,7 @@ void lexScanChar(char *srcp) {
 		srcp++;
 	else
 		errorMsgLex(ErrorBadTok, "Only one character allowed in character literal");
-	lex->langtype = u32Type;
+	lex->langtype = (AstNode*)u32Type;
 	lex->toktype = IntLitToken;
 	lex->srcp = srcp;
 }
@@ -189,38 +189,38 @@ void lexScanNumber(char *srcp) {
 	// Process number's explicit type as part of the token
 	if (*srcp=='d') {
 		srcp++;
-		lex->langtype = f64Type;
+		lex->langtype = (AstNode*)f64Type;
 	} else if (*srcp=='f') {
-		lex->langtype = f32Type;
+		lex->langtype = (AstNode*)f32Type;
 		if (*(++srcp)=='6' && *(srcp+1)=='4') {
-			lex->langtype = f64Type;
+			lex->langtype = (AstNode*)f64Type;
 			srcp += 2;
 		}
 		else if (*srcp=='3' && *(srcp+1)=='2')
 			srcp += 2;
 	} else if (*srcp=='i') {
-		lex->langtype = i32Type;
+		lex->langtype = (AstNode*)i32Type;
 		if (*(++srcp)=='8') {		
-			srcp++; lex->langtype = i8Type;
+			srcp++; lex->langtype = (AstNode*)i8Type;
 		} else if (*srcp=='1' && *(srcp+1)=='6') {
-			srcp += 2; lex->langtype = i16Type;
+			srcp += 2; lex->langtype = (AstNode*)i16Type;
 		} else if (*srcp=='3' && *(srcp+1)=='2') {
 			srcp += 2;
 		} else if (*srcp=='6' && *(srcp+1)=='4') {
-			srcp += 2; lex->langtype = i64Type;
+			srcp += 2; lex->langtype = (AstNode*)i64Type;
 		} /* else if (strncmp(srcp, "size", 4)==0) {
 			srcp += 2; lex->langtype = isizeType;
 		} */
 	} else if (*srcp=='u') {
-		lex->langtype = u32Type;
+		lex->langtype = (AstNode*)u32Type;
 		if (*(++srcp)=='8') {		
-			srcp++; lex->langtype = u8Type;
+			srcp++; lex->langtype = (AstNode*)u8Type;
 		} else if (*srcp=='1' && *(srcp+1)=='6') {
-			srcp += 2; lex->langtype = u16Type;
+			srcp += 2; lex->langtype = (AstNode*)u16Type;
 		} else if (*srcp=='3' && *(srcp+1)=='2') {
 			srcp += 2;
 		} else if (*srcp=='6' && *(srcp+1)=='4') {
-			srcp += 2; lex->langtype = u64Type;
+			srcp += 2; lex->langtype = (AstNode*)u64Type;
 		} /* else if (strncmp(srcp, "size", 4)==0) {
 			srcp += 2; lex->langtype = usizeType;
 		} */

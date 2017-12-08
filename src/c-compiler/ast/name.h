@@ -26,11 +26,11 @@ typedef struct NameUseAstNode {
 } NameUseAstNode;
 
 NameUseAstNode *newNameUseNode(Symbol *namesym);
-void nameUsePrint(int indent, NameUseAstNode *name);
+void nameUsePrint(int indent, NameUseAstNode *name, char *prefix);
 void nameUsePass(AstPass *pstate, NameUseAstNode *name);
 
-NameDclAstNode *newNameDclNode(Symbol *namesym, AstNode *sig, PermTypeAstNode *perm);
-void nameDclPrint(int indent, NameDclAstNode *fn);
+NameDclAstNode *newNameDclNode(Symbol *namesym, AstNode *sig, PermTypeAstNode *perm, AstNode *val);
+void nameDclPrint(int indent, NameDclAstNode *fn, char *prefix);
 void nameDclPass(AstPass *pstate, NameDclAstNode *node);
 
 #endif

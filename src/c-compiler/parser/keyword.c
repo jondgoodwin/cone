@@ -28,27 +28,26 @@ Symbol *keyAdd(char *keyword, uint16_t toktype) {
 
 // Add a compiler built-in type to the global symbol table as immutable, declared type name
 // This gives a program's later NameUse something to point to
-NameDclAstNode *newNameDclNodeStr(char *namestr, AstNode *type) {
+void newNameDclNodeStr(char *namestr, AstNode *type) {
 	Symbol *sym;
 	sym = symFind(namestr, strlen(namestr));
-	sym->node = type;
-	return newNameDclNode(sym, type, immPerm);
+	sym->node = (AstNode*) newNameDclNode(sym, NULL, immPerm, type);
 }
 
 void keywordInit() {
 	keyAdd("fn", FnToken);
 	keyAdd("return", RetToken);
 
-	i8Type = (AstNode*) newNbrTypeNode(IntType, 1, keyAdd("i8", i8Token));
-	i16Type = (AstNode*) newNbrTypeNode(IntType, 2, keyAdd("i16", i16Token));
-	i32Type = (AstNode*) newNbrTypeNode(IntType, 4, keyAdd("i32", i32Token));
-	i64Type = (AstNode*) newNbrTypeNode(IntType, 8, keyAdd("i64", i64Token));
-	u8Type = (AstNode*) newNbrTypeNode(UintType, 1, keyAdd("u8", u8Token));
-	u16Type = (AstNode*) newNbrTypeNode(UintType, 2, keyAdd("u16", u16Token));
-	u32Type = (AstNode*) newNbrTypeNode(UintType, 4, keyAdd("u32", u32Token));
-	u64Type = (AstNode*) newNbrTypeNode(UintType, 8, keyAdd("u64", u64Token));
-	i8Type = (AstNode*) newNbrTypeNode(FloatType, 4, keyAdd("f32", f32Token));
-	i8Type = (AstNode*) newNbrTypeNode(FloatType, 8, keyAdd("f64", f64Token));
+	newNameDclNodeStr("i8", (AstNode*)(i8Type = newNbrTypeNode(IntType, 1)));
+	newNameDclNodeStr("i16", (AstNode*)(i16Type = newNbrTypeNode(IntType, 2)));
+	newNameDclNodeStr("i32", (AstNode*)(i32Type = newNbrTypeNode(IntType, 4)));
+	newNameDclNodeStr("i64", (AstNode*)(i64Type = newNbrTypeNode(IntType, 8)));
+	newNameDclNodeStr("u8", (AstNode*)(u8Type = newNbrTypeNode(UintType, 1)));
+	newNameDclNodeStr("u16", (AstNode*)(u16Type = newNbrTypeNode(UintType, 2)));
+	newNameDclNodeStr("u32", (AstNode*)(u32Type = newNbrTypeNode(UintType, 4)));
+	newNameDclNodeStr("u64", (AstNode*)(u64Type = newNbrTypeNode(UintType, 8)));
+	newNameDclNodeStr("f32", (AstNode*)(f32Type = newNbrTypeNode(FloatType, 4)));
+	newNameDclNodeStr("f64", (AstNode*)(f64Type = newNbrTypeNode(FloatType, 8)));
 
 	newNameDclNodeStr("mut", (AstNode*) (mutPerm = newPermTypeNode(MutPerm, MayRead | MayWrite | RaceSafe | MayIntRefSum | IsLockless, NULL)));
 	newNameDclNodeStr("mmut", (AstNode*) (mmutPerm = newPermTypeNode(MmutPerm, MayRead | MayWrite | MayAlias | MayAliasWrite | IsLockless, NULL)));

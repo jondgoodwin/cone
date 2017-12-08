@@ -20,8 +20,15 @@ NameUseAstNode *newNameUseNode(Symbol *namesym) {
 }
 
 // Serialize the AST for a name use
-void nameUsePrint(int indent, NameUseAstNode *name) {
-	astPrintLn(indent, "%s name reference", name->namesym->namestr);
+void nameUsePrint(int indent, NameUseAstNode *name, char *prefix) {
+	astPrintLn(indent, "%s `%s`", prefix, name->namesym->namestr);
+}
+
+// Resolve NameUse nodes to the symbol table's current NameDcl
+void nameUseResolve(NameUseAstNode *name) {
+	if (!name || (AstNode*)name == voidType) // HACK
+		return;
+	name->dclnode = (NameDclAstNode*)name->namesym->node;
 }
 
 // Check the name use's AST
@@ -30,13 +37,13 @@ void nameUsePass(AstPass *pstate, NameUseAstNode *name) {
 
 
 // Create a new name declaraction node
-NameDclAstNode *newNameDclNode(Symbol *namesym, AstNode *type, PermTypeAstNode *perm) {
+NameDclAstNode *newNameDclNode(Symbol *namesym, AstNode *type, PermTypeAstNode *perm, AstNode *val) {
 	NameDclAstNode *name;
 	newAstNode(name, NameDclAstNode, NameDclNode);
 	name->vtype = type;
 	name->perm = perm;
 	name->namesym = namesym;
-	name->value = NULL;
+	name->value = val;
 	name->prev = NULL;
 	name->scope = 0;
 	name->index = 0;
@@ -44,32 +51,32 @@ NameDclAstNode *newNameDclNode(Symbol *namesym, AstNode *type, PermTypeAstNode *
 }
 
 // Serialize the AST for a variable/function
-void nameDclPrint(int indent, NameDclAstNode *name) {
-	astPrintLn(indent, name->vtype->asttype == FnSig ? "fn %s()" : "var %s", name->namesym->namestr);
+void nameDclPrint(int indent, NameDclAstNode *name, char *prefix) {
+	astPrintLn(indent, name->vtype->asttype == FnSig ? "%s fn %s()" : "%s var %s", prefix, name->namesym->namestr);
 	astPrintNode(indent + 1, name->vtype, "");
 	if (name->value)
 		astPrintNode(indent + 1, name->value, "");
 }
 
 // Add name declaration to global namespace if it does not conflict or dupe implementation with prior definition
-void nameDclGlobalPass(NameDclAstNode *NameDclNode) {
-	Symbol *namesym = NameDclNode->namesym;
+void nameDclGlobalPass(NameDclAstNode *name) {
+	Symbol *namesym = name->namesym;
 
 	// Remember function in symbol table, but error out if prior name has a different type
 	// or both this and saved node define an implementation
 	if (!namesym->node)
-		namesym->node = (AstNode*)NameDclNode;
-	else if (!typeEqual((AstNode*)NameDclNode, namesym->node)) {
-		errorMsgNode((AstNode *)NameDclNode, ErrorTypNotSame, "Name is already defined with a different type/signature.");
+		namesym->node = (AstNode*)name;
+	else if (!typeEqual((AstNode*)name, namesym->node)) {
+		errorMsgNode((AstNode *)name, ErrorTypNotSame, "Name is already defined with a different type/signature.");
 		errorMsgNode(namesym->node, ErrorTypNotSame, "This is the conflicting definition for that name.");
 	}
-	else if (NameDclNode->value) {
+	else if (name->value) {
 		if (((NameDclAstNode*)namesym->node)->value) {
-			errorMsgNode((AstNode *)NameDclNode, ErrorDupImpl, "Name has a duplicate implementation/value. Only one allowed.");
+			errorMsgNode((AstNode *)name, ErrorDupImpl, "Name has a duplicate implementation/value. Only one allowed.");
 			errorMsgNode(namesym->node, ErrorDupImpl, "This is the other implementation/value.");
 		}
 		else
-			namesym->node = (AstNode*)NameDclNode;
+			namesym->node = (AstNode*)name;
 	}
 }
 
@@ -92,6 +99,7 @@ void nameDclPass(AstPass *pstate, NameDclAstNode *name) {
 	switch (pstate->pass) {
 	case GlobalPass:
 		nameDclGlobalPass(name);
+		nameUseResolve((NameUseAstNode*)((FnSigAstNode*)name->vtype)->rettype); // HACK
 		return;
 	case TypeCheck:
 		// Syntactic sugar: Turn implicit returns into explicit returns
