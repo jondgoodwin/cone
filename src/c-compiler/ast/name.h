@@ -29,7 +29,7 @@ NameUseAstNode *newNameUseNode(Symbol *namesym);
 void nameUsePrint(int indent, NameUseAstNode *name);
 void nameUsePass(AstPass *pstate, NameUseAstNode *name);
 
-NameDclAstNode *newNameDclNode(Symbol *namesym, AstNode *sig, AstNode *perm);
+NameDclAstNode *newNameDclNode(Symbol *namesym, AstNode *sig, PermTypeAstNode *perm);
 void nameDclPrint(int indent, NameDclAstNode *fn);
 void nameDclPass(AstPass *pstate, NameDclAstNode *node);
 

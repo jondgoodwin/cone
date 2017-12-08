@@ -11,10 +11,9 @@
 #include "../shared/symbol.h"
 
 // Create a new primitive number type node
-PermTypeAstNode *newPermTypeNode(char ptyp, uint16_t flags, AstNode *locker, Symbol *namesym) {
+PermTypeAstNode *newPermTypeNode(char ptyp, uint16_t flags, AstNode *locker) {
 	PermTypeAstNode *node;
 	newAstNode(node, PermTypeAstNode, PermType);
-	node->namesym = namesym;
 	node->flags = flags;
 	node->ptype = ptyp;
 	node->locker = locker;
@@ -23,5 +22,13 @@ PermTypeAstNode *newPermTypeNode(char ptyp, uint16_t flags, AstNode *locker, Sym
 
 // Serialize the AST for a Unsigned literal
 void permTypePrint(int indent, PermTypeAstNode *node, char* prefix) {
-	astPrintLn(indent, "%s %s", prefix, node->namesym->namestr);
+	switch (node->ptype) {
+	case MutPerm: astPrintLn(indent, "%s %s", prefix, "mut"); break;
+	case MmutPerm: astPrintLn(indent, "%s %s", prefix, "mmut"); break;
+	case ImmPerm: astPrintLn(indent, "%s %s", prefix, "imm"); break;
+	case ConstPerm: astPrintLn(indent, "%s %s", prefix, "const"); break;
+	case MutxPerm: astPrintLn(indent, "%s %s", prefix, "mutx"); break;
+	case IdPerm: astPrintLn(indent, "%s %s", prefix, "id"); break;
+	default: astPrintLn(indent, "%s %s", prefix, "lock"); break;
+	}
 }

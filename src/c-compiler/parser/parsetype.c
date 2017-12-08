@@ -96,28 +96,7 @@ AstNode* parseVtype() {
 AstNode* parsePerm() {
 	switch (lex->toktype) {
 	case IdentToken:
-		{
-		AstNode *inode = lex->val.ident->node;
-		if (astgroup(inode->asttype)==PermGroup) {
-			lexNextToken();
-			return ((TypedAstNode*)inode)->vtype;
-		} else
-			return NULL;
-		}
-	case mutToken:
-		{AstNode *node; node = (AstNode*) newPermTypeNode(MutPerm, MayRead | MayWrite | RaceSafe | MayIntRefSum | IsLockless, NULL, lex->val.ident); lexNextToken(); return node;}
-	case mmutToken:
-		{AstNode *node; node = (AstNode*) newPermTypeNode(MmutPerm, MayRead | MayWrite | MayAlias | MayAliasWrite | IsLockless, NULL, lex->val.ident); lexNextToken(); return node;}
-	case immToken:
-		{AstNode *node; node = (AstNode*) newPermTypeNode(ImmPerm, MayRead | MayAlias | RaceSafe | MayIntRefSum | IsLockless, NULL, lex->val.ident); lexNextToken(); return node;}
-	case constToken:
-		{AstNode *node; node = (AstNode*) newPermTypeNode(ConstPerm, MayRead | MayAlias | IsLockless, NULL, lex->val.ident); lexNextToken(); return node;}
-	case constxToken:
-		{AstNode *node; node = (AstNode*) newPermTypeNode(ConstxPerm, MayRead | MayAlias | MayIntRefSum | IsLockless, NULL, lex->val.ident); lexNextToken(); return node;}
-	case mutxToken:
-		{AstNode *node; node = (AstNode*) newPermTypeNode(MutxPerm, MayRead | MayWrite | MayAlias | MayIntRefSum | IsLockless, NULL, lex->val.ident); lexNextToken(); return node;}
-	case idToken:
-		{AstNode *node; node = (AstNode*) newPermTypeNode(IdPerm, MayAlias | RaceSafe | IsLockless, NULL, lex->val.ident); lexNextToken(); return node;}
+		return (AstNode*) newNameUseNode(lex->val.ident);
 	default:
 		return NULL;
 	}

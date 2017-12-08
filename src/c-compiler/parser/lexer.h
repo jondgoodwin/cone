@@ -76,15 +76,6 @@ enum TokenTypes {
 	f32Token,
 	f64Token,
 
-	// Permission types
-	mutToken,
-	mmutToken,
-	immToken,
-	constToken,
-	constxToken,
-	mutxToken,
-	idToken,
-
 	NbrTokens
 };
 

@@ -26,6 +26,15 @@ Symbol *keyAdd(char *keyword, uint16_t toktype) {
 	return sym;
 }
 
+// Add a compiler built-in type to the global symbol table as immutable, declared type name
+// This gives a program's later NameUse something to point to
+NameDclAstNode *newNameDclNodeStr(char *namestr, AstNode *type) {
+	Symbol *sym;
+	sym = symFind(namestr, strlen(namestr));
+	sym->node = type;
+	return newNameDclNode(sym, type, immPerm);
+}
+
 void keywordInit() {
 	keyAdd("fn", FnToken);
 	keyAdd("return", RetToken);
@@ -41,11 +50,10 @@ void keywordInit() {
 	i8Type = (AstNode*) newNbrTypeNode(FloatType, 4, keyAdd("f32", f32Token));
 	i8Type = (AstNode*) newNbrTypeNode(FloatType, 8, keyAdd("f64", f64Token));
 
-	mutPerm = (AstNode*) newPermTypeNode(MutPerm, MayRead | MayWrite | RaceSafe | MayIntRefSum | IsLockless, NULL, keyAdd("mut", mutToken));
-	mmutPerm = (AstNode*) newPermTypeNode(MmutPerm, MayRead | MayWrite | MayAlias | MayAliasWrite | IsLockless, NULL, keyAdd("mutx", mutxToken));
-	immPerm = (AstNode*) newPermTypeNode(ImmPerm, MayRead | MayAlias | RaceSafe | MayIntRefSum | IsLockless, NULL, keyAdd("imm", immToken));
-	constPerm = (AstNode*) newPermTypeNode(ConstPerm, MayRead | MayAlias | IsLockless, NULL, keyAdd("const", constToken));
-	constxPerm = (AstNode*) newPermTypeNode(ConstxPerm, MayRead | MayAlias | MayIntRefSum | IsLockless, NULL, keyAdd("constx", constxToken));
-	mutxPerm = (AstNode*) newPermTypeNode(MutxPerm, MayRead | MayWrite | MayAlias | MayIntRefSum | IsLockless, NULL, keyAdd("mutx", mutxToken));
-	idPerm = (AstNode*) newPermTypeNode(IdPerm, MayAlias | RaceSafe | IsLockless, NULL, keyAdd("id", idToken));
+	newNameDclNodeStr("mut", (AstNode*) (mutPerm = newPermTypeNode(MutPerm, MayRead | MayWrite | RaceSafe | MayIntRefSum | IsLockless, NULL)));
+	newNameDclNodeStr("mmut", (AstNode*) (mmutPerm = newPermTypeNode(MmutPerm, MayRead | MayWrite | MayAlias | MayAliasWrite | IsLockless, NULL)));
+	newNameDclNodeStr("imm", (AstNode*) (immPerm = newPermTypeNode(ImmPerm, MayRead | MayAlias | RaceSafe | MayIntRefSum | IsLockless, NULL)));
+	newNameDclNodeStr("const", (AstNode*) (constPerm = newPermTypeNode(ConstPerm, MayRead | MayAlias | IsLockless, NULL)));
+	newNameDclNodeStr("mutx", (AstNode*) (mutxPerm = newPermTypeNode(MutxPerm, MayRead | MayWrite | MayAlias | MayIntRefSum | IsLockless, NULL)));
+	newNameDclNodeStr("id", (AstNode*) (idPerm = newPermTypeNode(IdPerm, MayAlias | RaceSafe | IsLockless, NULL)));
 }

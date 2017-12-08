@@ -30,11 +30,11 @@ void nameUsePass(AstPass *pstate, NameUseAstNode *name) {
 
 
 // Create a new name declaraction node
-NameDclAstNode *newNameDclNode(Symbol *namesym, AstNode *type, AstNode *perm) {
+NameDclAstNode *newNameDclNode(Symbol *namesym, AstNode *type, PermTypeAstNode *perm) {
 	NameDclAstNode *name;
 	newAstNode(name, NameDclAstNode, NameDclNode);
 	name->vtype = type;
-	name->perm = (PermTypeAstNode *)immPerm;
+	name->perm = perm;
 	name->namesym = namesym;
 	name->value = NULL;
 	name->prev = NULL;
