@@ -19,7 +19,7 @@
 // Parse a function's type signature
 AstNode *parseFnSig() {
 	FnSigAstNode *fnsig;
-	Symbol *namesym;
+	Symbol *namesym = NULL;
 
 	// Skip past the 'fn'
 	lexNextToken();
@@ -29,14 +29,9 @@ AstNode *parseFnSig() {
 		namesym = lex->val.ident;
 		lexNextToken();
 	}
-	else {
-		// For anonymous function, create and populate fake symbol table entry
-		namesym = NULL;
-	}
 
 	// Set up memory block for the function's type signature
 	fnsig = newFnSigNode();
-	fnsig->namesym = namesym;
 
 	// Process parameter declarations
 	if (lexIsToken(LParenToken)) {
@@ -54,7 +49,10 @@ AstNode *parseFnSig() {
 		fnsig->rettype = voidType;
 	}
 
-	return (AstNode*) fnsig;
+	if (namesym == NULL)
+		return (AstNode*)fnsig;
+	else
+		return (AstNode*)newNameDclNode(namesym, (AstNode*)fnsig, immPerm);
 }
 
 // Parse a value type signature. Return NULL if none found.

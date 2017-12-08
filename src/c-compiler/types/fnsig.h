@@ -11,7 +11,6 @@
 // For function signatures
 typedef struct FnSigAstNode {
 	TypedAstHdr;
-	Symbol *namesym;
 	AstNode *rettype;		// void, one or tuple
 	// Inodes *parms;		// void or
 } FnSigAstNode;

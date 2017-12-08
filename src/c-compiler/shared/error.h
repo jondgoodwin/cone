@@ -32,6 +32,7 @@ enum ErrorCode {
 	ErrorNoRParen,	 // Expected right parenthesis not found
 	ErrorDupType,	// May not specify duplicate types
 	ErrorTypNotSame, // Type does not match prior definition
+	ErrorNoName,	// Name is required but not provided
 
 	// Warnings
 	WarnCode = 3000,

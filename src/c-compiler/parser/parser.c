@@ -51,11 +51,15 @@ void parseLCurly() {
 // Parse a function block
 AstNode *parseFn() {
 	NameDclAstNode *fnnode;
-	FnSigAstNode *sig;
+	AstNode *sig;
 
-	// Process the function's signature info, then put info in new AST node
-	sig = (FnSigAstNode*) parseFnSig();
-	fnnode = newNameDclNode(sig->namesym, (AstNode*) sig, immPerm);
+	// Process the function's signature info. I
+	sig = parseFnSig();
+	if (sig->asttype != NameDclNode) {
+		errorMsgNode(sig, ErrorNoName, "Functions declarations must be named");
+		return sig;
+	}
+	fnnode = (NameDclAstNode *)sig;
 
 	// Process statements block that implements function, if provided
 	if (!lexIsToken(LCurlyToken) && !lexIsToken(SemiToken))

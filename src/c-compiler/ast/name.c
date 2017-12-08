@@ -29,7 +29,6 @@ void nameUsePass(AstPass *pstate, NameUseAstNode *name) {
 }
 
 
-
 // Create a new name declaraction node
 NameDclAstNode *newNameDclNode(Symbol *namesym, AstNode *type, AstNode *perm) {
 	NameDclAstNode *name;

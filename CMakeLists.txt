@@ -18,6 +18,7 @@ add_executable(cone
 	src/c-compiler/shared/utf8.c
 
 	src/c-compiler/ast/ast.c
+	src/c-compiler/ast/name.c
 	src/c-compiler/ast/nodes.c
 	src/c-compiler/ast/block.c
 	src/c-compiler/ast/expr.c
