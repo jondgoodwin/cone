@@ -225,6 +225,8 @@ void lexScanNumber(char *srcp) {
 			srcp += 2; lex->langtype = usizeType;
 		} */
 	}
+	else
+		lex->langtype = (AstNode*)(isFloat ? f32Type : i32Type);
 
 	// Set value and type
 	if (isFloat) {

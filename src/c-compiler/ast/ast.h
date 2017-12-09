@@ -15,18 +15,7 @@ typedef struct Lexer Lexer;		// ../parser/lexer.h
 
 #include <stdint.h>
 
-// The AST analytical passes performed in between parse and generation
-enum Passes {
-	// Scope all declared names and resolve all name uses accordingly
-	NameResolution,
-	// Do return inference and type inference/checks.
-	TypeCheck
-};
-
-// Context for AST passes
-typedef struct AstPass {
-	int pass;	// Passes
-} AstPass;
+typedef struct AstPass AstPass;
 
 // AST Groupings
 enum AstGroup {
@@ -127,6 +116,20 @@ typedef struct TypedAstNode {
 #include "../types/type.h"
 #include "../types/fnsig.h"
 #include "../types/number.h"
+
+// The AST analytical passes performed in between parse and generation
+enum Passes {
+	// Scope all declared names and resolve all name uses accordingly
+	NameResolution,
+	// Do return inference and type inference/checks.
+	TypeCheck
+};
+
+// Context for AST passes
+typedef struct AstPass {
+	int pass;	// Passes
+	FnSigAstNode *fnsig;	// The type signature of the function we are within
+} AstPass;
 
 // Allocate and initialize a new AST node
 #define newAstNode(node, aststruct, asttyp) {\

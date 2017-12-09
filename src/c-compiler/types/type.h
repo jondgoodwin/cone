@@ -35,7 +35,8 @@ typedef struct ArrTypeAstNode {
 AstNode *voidType;
 
 void typeInit();
-int typeEqual(AstNode *node1, AstNode *node2);
+int typeIsSame(AstNode *node1, AstNode *node2);
+int typeIsSubtype(AstNode *subtype, AstNode *node);
 
 VoidTypeAstNode *newVoidNode();
 void voidPrint(int indent, VoidTypeAstNode *voidnode, char *prefix);

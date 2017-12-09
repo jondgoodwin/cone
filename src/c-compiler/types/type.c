@@ -10,20 +10,17 @@
 #include "../shared/memory.h"
 #include "../parser/lexer.h"
 #include <string.h>
+#include <assert.h>
 
-// Return true if the types for both nodes are the same
+#define getVtype(node) {\
+	if (astgroup(node->asttype) == ExpGroup) \
+		node = ((TypedAstNode *)node)->vtype; \
+	if (node->asttype == VtypeNameUseNode) \
+		node = ((NameUseAstNode *)node)->dclnode->value; \
+	assert(astgroup(node->asttype) == VTypeGroup); \
+}
+
 int typeEqual(AstNode *node1, AstNode *node2) {
-
-	// Convert expression nodes to their value type
-	if (astgroup(node1->asttype) == ExpGroup)
-		node1 = ((TypedAstNode *)node1)->vtype;
-	if (astgroup(node2->asttype) == ExpGroup)
-		node2 = ((TypedAstNode *)node2)->vtype;
-
-	// If they are the same type name, types match
-	if (node1 == node2)
-		return 1;
-
 	// Otherwise use type-specific equality checks
 	switch (node1->asttype) {
 	case FnSig:
@@ -31,6 +28,39 @@ int typeEqual(AstNode *node1, AstNode *node2) {
 	default:
 		return 0;
 	}
+}
+// Return true if the types for both nodes are equivalent
+int typeIsSame(AstNode *node1, AstNode *node2) {
+
+	// Convert nodes to their value types
+	getVtype(node1);
+	getVtype(node2);
+
+	// If they are the same type name, types match
+	if (node1 == node2)
+		return 1;
+
+	return typeEqual(node1, node2);
+}
+
+// can node be subtyped to subtype?
+int typeIsSubtype(AstNode *subtype, AstNode *node) {
+	int ret;
+
+	// Convert nodes to their value types
+	getVtype(subtype);
+	getVtype(node);
+
+	// If they are the same value type info, types match
+	if (subtype == node)
+		return 1;
+
+	// If types are equivalent, it is a valid subtype
+	if (ret = typeEqual(subtype, node))
+		return ret;
+
+	// Need some subtyping logic here!!
+	return 0;
 }
 
 // Create a new Void type node

@@ -93,15 +93,21 @@ void fnImplicitReturn(AstNode *rettype, BlockAstNode *blk) {
 
 // Check the name declaration's AST
 void nameDclPass(AstPass *pstate, NameDclAstNode *name) {
+	FnSigAstNode *oldfnsig = pstate->fnsig;
+
 	switch (pstate->pass) {
 	case NameResolution:
 		// Scoping stuff
 		break;
 
 	case TypeCheck:
-		// Syntactic sugar: Turn implicit returns into explicit returns
-		if (name->vtype->asttype == FnSig && name->value && name->value->asttype == BlockNode)
+		// Special handling for a function...
+		if (name->vtype->asttype == FnSig && name->value && name->value->asttype == BlockNode) {
+			// Syntactic sugar: Turn implicit returns into explicit returns
 			fnImplicitReturn(((FnSigAstNode*)name->vtype)->rettype, (BlockAstNode *)name->value);
+			// Provide parameter and return type context for type checking function's logic
+			pstate->fnsig = (FnSigAstNode*)name->vtype;
+		}
 		break;
 	}
 
@@ -109,4 +115,6 @@ void nameDclPass(AstPass *pstate, NameDclAstNode *name) {
 	astPass(pstate, (AstNode*)name->perm);
 	if (name->value)
 		astPass(pstate, name->value);
+
+	pstate->fnsig = oldfnsig;
 }
