@@ -43,9 +43,10 @@ void genlReturn(genl_t *gen, StmtExpAstNode *node) {
 
 // Generate a type value
 LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
-	if (typ->asttype == NameUseNode) // HACK
-		typ = ((NameUseAstNode *)typ)->dclnode->value;
 	switch (typ->asttype) {
+	// If it's a name, resolve it to the actual type info
+	case VtypeNameUseNode:
+		return genlType(gen, ((NameUseAstNode *)typ)->dclnode->value);
 	case IntNbrType: case UintNbrType:
 	{
 		switch (((NbrAstNode*)typ)->nbytes) {
@@ -66,7 +67,7 @@ LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
 		return LLVMVoidTypeInContext(gen->context);
 
 	default:
-			return NULL;
+		return NULL;
 	}
 }
 

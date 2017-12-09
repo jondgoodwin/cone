@@ -20,9 +20,14 @@ FnSigAstNode *newFnSigNode() {
 }
 
 // Serialize the AST for a Unsigned literal
-void fnsigPrint(int indent, FnSigAstNode *sig, char* prefix) {
+void fnSigPrint(int indent, FnSigAstNode *sig, char* prefix) {
 	astPrintLn(indent, "%s fn signature", prefix);
 	astPrintNode(indent+1, sig->rettype, "-return type:");
+}
+
+// Traverse the signature tree
+void fnSigPass(AstPass *pstate, FnSigAstNode *name) {
+	astPass(pstate, name->rettype);
 }
 
 // Compare two function signatures to see if they are equivalent

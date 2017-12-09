@@ -52,7 +52,7 @@ enum AstType {
 	StmtExpNode,	// Statement expression
 	ReturnNode,		// Return node
 
-	// Names (variable, function, named type)
+	// Name usage (we do not know what type of name it is until name resolution pass)
 	NameUseNode,	// Name use node
 
 	// Expression nodes (having value type)
@@ -64,6 +64,7 @@ enum AstType {
 
 	// Value type AST nodes
 	VtypeNameDclNode = (VTypeGroup<<8),
+	VtypeNameUseNode,
 	VoidType,	// representing no values, e.g., no return values on a fn
 	IntNbrType,	// Integer
 	UintNbrType,	// Unsigned integer
@@ -77,10 +78,12 @@ enum AstType {
 
 	// Permission type nodes
 	PermNameDclNode = (PermGroup << 8),
+	PermNameUseNode,
 	PermType,
 
 	// Allocator type nodes
 	AllocNameDclNode = (AllocGroup<<8),
+	AllocNameUseNode,
 	AllocType,
 };
 

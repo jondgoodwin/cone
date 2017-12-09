@@ -20,7 +20,7 @@ typedef struct NameDclAstNode {
 
 // Name use node - when populated, it refers to the applicable declaration for the name
 typedef struct NameUseAstNode {
-	BasicAstHdr;
+	TypedAstHdr;
 	Symbol *namesym;			// Pointer to the global symbol table entry
 	NameDclAstNode *dclnode;	// Declaration of this name (NULL until names are resolved)
 } NameUseAstNode;

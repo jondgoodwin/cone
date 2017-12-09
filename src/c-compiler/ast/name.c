@@ -26,15 +26,19 @@ void nameUsePrint(int indent, NameUseAstNode *name, char *prefix) {
 	astPrintLn(indent, "%s `%s`", prefix, name->namesym->namestr);
 }
 
-// Resolve NameUse nodes to the symbol table's current NameDcl
-void nameUseResolve(NameUseAstNode *name) {
-	if (!name || (AstNode*)name == voidType) // HACK
-		return;
-	name->dclnode = (NameDclAstNode*)name->namesym->node;
-}
-
 // Check the name use's AST
 void nameUsePass(AstPass *pstate, NameUseAstNode *name) {
+	// During name resolution, point to name declaration and copy over needed fields
+	if (pstate->pass == NameResolution) {
+		name->dclnode = (NameDclAstNode*)name->namesym->node;
+		name->vtype = name->dclnode->vtype;
+		switch (name->dclnode->asttype) {
+		case VarNameDclNode: name->asttype = VarNameUseNode; return;
+		case VtypeNameDclNode: name->asttype = VtypeNameUseNode; return;
+		case PermNameDclNode: name->asttype = PermNameUseNode; return;
+		case AllocNameDclNode: name->asttype = AllocNameUseNode; return;
+		}
+	}
 }
 
 
@@ -91,8 +95,9 @@ void fnImplicitReturn(AstNode *rettype, BlockAstNode *blk) {
 void nameDclPass(AstPass *pstate, NameDclAstNode *name) {
 	switch (pstate->pass) {
 	case NameResolution:
-		nameUseResolve((NameUseAstNode*)((FnSigAstNode*)name->vtype)->rettype); // HACK
-		return;
+		// Scoping stuff
+		break;
+
 	case TypeCheck:
 		// Syntactic sugar: Turn implicit returns into explicit returns
 		if (name->vtype->asttype == FnSig && name->value && name->value->asttype == BlockNode)
@@ -100,6 +105,8 @@ void nameDclPass(AstPass *pstate, NameDclAstNode *name) {
 		break;
 	}
 
+	astPass(pstate, name->vtype);
+	astPass(pstate, (AstNode*)name->perm);
 	if (name->value)
 		astPass(pstate, name->value);
 }
