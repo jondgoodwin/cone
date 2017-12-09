@@ -10,16 +10,30 @@
 #include "../parser/lexer.h"
 #include "../shared/symbol.h"
 
+// Declare built-in number types and their names
+void nbrDclNames() {
+	newNameDclNodeStr("i8", VtypeNameDclNode, (AstNode*)(i8Type = newNbrTypeNode(IntNbrType, 1)));
+	newNameDclNodeStr("i16", VtypeNameDclNode, (AstNode*)(i16Type = newNbrTypeNode(IntNbrType, 2)));
+	newNameDclNodeStr("i32", VtypeNameDclNode, (AstNode*)(i32Type = newNbrTypeNode(IntNbrType, 4)));
+	newNameDclNodeStr("i64", VtypeNameDclNode, (AstNode*)(i64Type = newNbrTypeNode(IntNbrType, 8)));
+	newNameDclNodeStr("u8", VtypeNameDclNode, (AstNode*)(u8Type = newNbrTypeNode(UintNbrType, 1)));
+	newNameDclNodeStr("u16", VtypeNameDclNode, (AstNode*)(u16Type = newNbrTypeNode(UintNbrType, 2)));
+	newNameDclNodeStr("u32", VtypeNameDclNode, (AstNode*)(u32Type = newNbrTypeNode(UintNbrType, 4)));
+	newNameDclNodeStr("u64", VtypeNameDclNode, (AstNode*)(u64Type = newNbrTypeNode(UintNbrType, 8)));
+	newNameDclNodeStr("f32", VtypeNameDclNode, (AstNode*)(f32Type = newNbrTypeNode(FloatNbrType, 4)));
+	newNameDclNodeStr("f64", VtypeNameDclNode, (AstNode*)(f64Type = newNbrTypeNode(FloatNbrType, 8)));
+}
+
 // Create a new primitive number type node
-NbrTypeAstNode *newNbrTypeNode(uint16_t typ, char nbytes) {
-	NbrTypeAstNode *node;
-	newAstNode(node, NbrTypeAstNode, typ);
+NbrAstNode *newNbrTypeNode(uint16_t typ, char nbytes) {
+	NbrAstNode *node;
+	newAstNode(node, NbrAstNode, typ);
 	node->nbytes = nbytes;
 	return node;
 }
 
 // Serialize the AST for a numeric literal
-void nbrTypePrint(int indent, NbrTypeAstNode *node, char* prefix) {
+void nbrTypePrint(int indent, NbrAstNode *node, char* prefix) {
 	if (node==i8Type)
 		astPrintLn(indent, "%s %s", prefix, "i8");
 	else if (node == i16Type)

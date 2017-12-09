@@ -34,7 +34,7 @@ void astPrintNode(int indent, AstNode *node, char *prefix) {
 		pgmPrint(indent, (PgmAstNode *)node); break;
 	case NameUseNode:
 		nameUsePrint(indent, (NameUseAstNode *)node, prefix); break;
-	case NameDclNode:
+	case VarNameDclNode: case VtypeNameDclNode: case PermNameDclNode: case AllocNameDclNode:
 		nameDclPrint(indent, (NameDclAstNode *)node, prefix); break;
 	case BlockNode:
 		blockPrint(indent, (BlockAstNode *)node); break;
@@ -48,10 +48,10 @@ void astPrintNode(int indent, AstNode *node, char *prefix) {
 		flitPrint(indent, (FLitAstNode *)node); break;
 	case FnSig:
 		fnsigPrint(indent, (FnSigAstNode *)node, prefix); break;
-	case IntType: case UintType: case FloatType:
-		nbrTypePrint(indent, (NbrTypeAstNode *)node, prefix); break;
+	case IntNbrType: case UintNbrType: case FloatNbrType:
+		nbrTypePrint(indent, (NbrAstNode *)node, prefix); break;
 	case PermType:
-		permTypePrint(indent, (PermTypeAstNode *)node, prefix); break;
+		permPrint(indent, (PermAstNode *)node, prefix); break;
 	case VoidType:
 		voidPrint(indent, (VoidTypeAstNode *)node, prefix); break;
 	default:
@@ -72,7 +72,7 @@ void astPass(AstPass *pstate, AstNode *node) {
 	switch (node->asttype) {
 	case PgmNode:
 		pgmPass(pstate, (PgmAstNode*)node); break;
-	case NameDclNode:
+	case VarNameDclNode: case VtypeNameDclNode: case PermNameDclNode: case AllocNameDclNode:
 		nameDclPass(pstate, (NameDclAstNode *)node); break;
 	case NameUseNode:
 		nameUsePass(pstate, (NameUseAstNode *)node); break;
@@ -85,7 +85,7 @@ void astPass(AstPass *pstate, AstNode *node) {
 	case ULitNode:
 	case FLitNode:
 	case FnSig:
-	case IntType: case UintType: case FloatType:
+	case IntNbrType: case UintNbrType: case FloatNbrType:
 	case PermType:
 	case VoidType:
 		break;

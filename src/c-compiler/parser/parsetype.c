@@ -52,7 +52,7 @@ AstNode *parseFnSig() {
 	if (namesym == NULL)
 		return (AstNode*)fnsig;
 	else
-		return (AstNode*)newNameDclNode(namesym, (AstNode*)fnsig, immPerm, NULL);
+		return (AstNode*)newNameDclNode(namesym, VarNameDclNode, (AstNode*)fnsig, immPerm, NULL);
 }
 
 // Parse a value type signature. Return NULL if none found.

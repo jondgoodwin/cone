@@ -11,6 +11,8 @@
 #include "../shared/symbol.h"
 #include "../shared/error.h"
 
+#include <string.h>
+
 // Create a new name use node
 NameUseAstNode *newNameUseNode(Symbol *namesym) {
 	NameUseAstNode *name;
@@ -37,9 +39,9 @@ void nameUsePass(AstPass *pstate, NameUseAstNode *name) {
 
 
 // Create a new name declaraction node
-NameDclAstNode *newNameDclNode(Symbol *namesym, AstNode *type, PermTypeAstNode *perm, AstNode *val) {
+NameDclAstNode *newNameDclNode(Symbol *namesym, uint16_t asttype, AstNode *type, PermAstNode *perm, AstNode *val) {
 	NameDclAstNode *name;
-	newAstNode(name, NameDclAstNode, NameDclNode);
+	newAstNode(name, NameDclAstNode, asttype);
 	name->vtype = type;
 	name->perm = perm;
 	name->namesym = namesym;
@@ -48,6 +50,19 @@ NameDclAstNode *newNameDclNode(Symbol *namesym, AstNode *type, PermTypeAstNode *
 	name->scope = 0;
 	name->index = 0;
 	return name;
+}
+
+// Add a compiler built-in type to the global symbol table as immutable, declared type name
+// This gives a program's later NameUse nodes something to point to
+void newNameDclNodeStr(char *namestr, uint16_t asttype, AstNode *type) {
+	Symbol *sym;
+	sym = symFind(namestr, strlen(namestr));
+	sym->node = (AstNode*)newNameDclNode(sym, asttype, NULL, immPerm, type);
+}
+
+// Return true if node is one of the specialized name declaration nodes
+int isNameDclNode(AstNode *node) {
+	return node->asttype == VarNameDclNode || node->asttype == VtypeNameDclNode || node->asttype == PermNameDclNode || node->asttype == AllocNameDclNode;
 }
 
 // Serialize the AST for a variable/function

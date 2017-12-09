@@ -10,10 +10,20 @@
 #include "../parser/lexer.h"
 #include "../shared/symbol.h"
 
+// Declare built-in permission types and their names
+void permDclNames() {
+	newNameDclNodeStr("mut", PermNameDclNode, (AstNode*)(mutPerm = newPermNode(MutPerm, MayRead | MayWrite | RaceSafe | MayIntRefSum | IsLockless, NULL)));
+	newNameDclNodeStr("mmut", PermNameDclNode, (AstNode*)(mmutPerm = newPermNode(MmutPerm, MayRead | MayWrite | MayAlias | MayAliasWrite | IsLockless, NULL)));
+	newNameDclNodeStr("imm", PermNameDclNode, (AstNode*)(immPerm = newPermNode(ImmPerm, MayRead | MayAlias | RaceSafe | MayIntRefSum | IsLockless, NULL)));
+	newNameDclNodeStr("const", PermNameDclNode, (AstNode*)(constPerm = newPermNode(ConstPerm, MayRead | MayAlias | IsLockless, NULL)));
+	newNameDclNodeStr("mutx", PermNameDclNode, (AstNode*)(mutxPerm = newPermNode(MutxPerm, MayRead | MayWrite | MayAlias | MayIntRefSum | IsLockless, NULL)));
+	newNameDclNodeStr("id", PermNameDclNode, (AstNode*)(idPerm = newPermNode(IdPerm, MayAlias | RaceSafe | IsLockless, NULL)));
+}
+
 // Create a new primitive number type node
-PermTypeAstNode *newPermTypeNode(char ptyp, uint16_t flags, AstNode *locker) {
-	PermTypeAstNode *node;
-	newAstNode(node, PermTypeAstNode, PermType);
+PermAstNode *newPermNode(char ptyp, uint16_t flags, AstNode *locker) {
+	PermAstNode *node;
+	newAstNode(node, PermAstNode, PermType);
 	node->flags = flags;
 	node->ptype = ptyp;
 	node->locker = locker;
@@ -21,7 +31,7 @@ PermTypeAstNode *newPermTypeNode(char ptyp, uint16_t flags, AstNode *locker) {
 }
 
 // Serialize the AST for a Unsigned literal
-void permTypePrint(int indent, PermTypeAstNode *node, char* prefix) {
+void permPrint(int indent, PermAstNode *node, char* prefix) {
 	switch (node->ptype) {
 	case MutPerm: astPrintLn(indent, "%s %s", prefix, "mut"); break;
 	case MmutPerm: astPrintLn(indent, "%s %s", prefix, "mmut"); break;

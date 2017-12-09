@@ -9,14 +9,14 @@
 #define permission_h
 
 // Permission type info
-typedef struct PermTypeAstNode {
+typedef struct PermAstNode {
 	TypedAstHdr;
 	AstNode *locker;
 	uint8_t ptype;
-} PermTypeAstNode;
+} PermAstNode;
 
 // Permission types
-enum PermType {
+enum Perm {
 	MutPerm,
 	MmutPerm,
 	ImmPerm,
@@ -43,14 +43,15 @@ enum PermType {
 #define IsLockless 0x40
 
 // Built-in permission types - for implicit (non-declared but known) permissions
-PermTypeAstNode *mutPerm;
-PermTypeAstNode *mmutPerm;
-PermTypeAstNode *immPerm;
-PermTypeAstNode *constPerm;
-PermTypeAstNode *mutxPerm;
-PermTypeAstNode *idPerm;
+PermAstNode *mutPerm;
+PermAstNode *mmutPerm;
+PermAstNode *immPerm;
+PermAstNode *constPerm;
+PermAstNode *mutxPerm;
+PermAstNode *idPerm;
 
-PermTypeAstNode *newPermTypeNode(char ptyp, uint16_t flags, AstNode *locker);
-void permTypePrint(int indent, PermTypeAstNode *node, char* prefix);
+void permDclNames();
+PermAstNode *newPermNode(char ptyp, uint16_t flags, AstNode *locker);
+void permPrint(int indent, PermAstNode *node, char* prefix);
 
 #endif

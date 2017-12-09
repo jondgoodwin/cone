@@ -53,39 +53,35 @@ enum AstType {
 	ReturnNode,		// Return node
 
 	// Names (variable, function, named type)
-	NameDclNode,	// Name declaration node
 	NameUseNode,	// Name use node
 
 	// Expression nodes (having value type)
-	ULitNode = (ExpGroup<<8),		// Integer literal
+	VarNameDclNode = (ExpGroup<<8),
+	VarNameUseNode,	// Variable reference
+	ULitNode,		// Integer literal
 	FLitNode,		// Float literal
 	UnaryNode,		// Unary method operator
 
-	// AST nodes that are value types
-	VoidType = (VTypeGroup<<8),	// representing no values, e.g., no return values on a fn
-
-	// NbrTypeAstNode
-	IntType,	// Integer
-	UintType,	// Unsigned integer
-	FloatType,	// Floating point number
-
+	// Value type AST nodes
+	VtypeNameDclNode = (VTypeGroup<<8),
+	VoidType,	// representing no values, e.g., no return values on a fn
+	IntNbrType,	// Integer
+	UintNbrType,	// Unsigned integer
+	FloatNbrType,	// Floating point number
 	PtrType,	// Also smart pointers?
-
 	ArrayType,	// Also dynamic arrays? SOA?
-
 	FnSig,		// Also method, closure, behavior, co-routine, thread, ...
-
 	StructType,	// Also class, interface, actor, etc.?
-
 	EnumType,	// Also sum type, etc.?
-
 	ModuleType,	// Modules, Generics ?
 
 	// Permission type nodes
-	PermType = (PermGroup<<8),
+	PermNameDclNode = (PermGroup << 8),
+	PermType,
 
 	// Allocator type nodes
-	AllocType = (AllocGroup<<8),
+	AllocNameDclNode = (AllocGroup<<8),
+	AllocType,
 };
 
 // All AST nodes begin with this header, mostly containing lexer data describing

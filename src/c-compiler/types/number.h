@@ -9,24 +9,25 @@
 #define number_h
 
 // For primitives such as integer, unsigned integet, floats
-typedef struct NbrTypeAstNode {
+typedef struct NbrAstNode {
 	TypedAstHdr;
 	unsigned char nbytes;	// e.g., int32 uses 4 bytes
-} NbrTypeAstNode;
+} NbrAstNode;
 
 // Primitive numeric types - for implicit (nondeclared but known) types
-NbrTypeAstNode *i8Type;
-NbrTypeAstNode *i16Type;
-NbrTypeAstNode *i32Type;
-NbrTypeAstNode *i64Type;
-NbrTypeAstNode *u8Type;
-NbrTypeAstNode *u16Type;
-NbrTypeAstNode *u32Type;
-NbrTypeAstNode *u64Type;
-NbrTypeAstNode *f32Type;
-NbrTypeAstNode *f64Type;
+NbrAstNode *i8Type;
+NbrAstNode *i16Type;
+NbrAstNode *i32Type;
+NbrAstNode *i64Type;
+NbrAstNode *u8Type;
+NbrAstNode *u16Type;
+NbrAstNode *u32Type;
+NbrAstNode *u64Type;
+NbrAstNode *f32Type;
+NbrAstNode *f64Type;
 
-NbrTypeAstNode *newNbrTypeNode(uint16_t typ, char nbytes);
-void nbrTypePrint(int indent, NbrTypeAstNode *node, char* prefix);
+void nbrDclNames();
+NbrAstNode *newNbrTypeNode(uint16_t typ, char nbytes);
+void nbrTypePrint(int indent, NbrAstNode *node, char* prefix);
 
 #endif

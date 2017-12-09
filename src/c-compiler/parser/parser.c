@@ -55,7 +55,7 @@ AstNode *parseFn() {
 
 	// Process the function's signature info. I
 	sig = parseFnSig();
-	if (sig->asttype != NameDclNode) {
+	if (sig->asttype != VarNameDclNode) {
 		errorMsgNode(sig, ErrorNoName, "Functions declarations must be named");
 		return sig;
 	}

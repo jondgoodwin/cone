@@ -46,18 +46,18 @@ LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
 	if (typ->asttype == NameUseNode) // HACK
 		typ = ((NameUseAstNode *)typ)->dclnode->value;
 	switch (typ->asttype) {
-	case IntType: case UintType:
+	case IntNbrType: case UintNbrType:
 	{
-		switch (((NbrTypeAstNode*)typ)->nbytes) {
+		switch (((NbrAstNode*)typ)->nbytes) {
 		case 1: return LLVMInt8TypeInContext(gen->context);
 		case 2: return LLVMInt16TypeInContext(gen->context);
 		case 4: return LLVMInt32TypeInContext(gen->context);
 		case 8: return LLVMInt64TypeInContext(gen->context);
 		}
 	}
-	case FloatType:
+	case FloatNbrType:
 	{
-		switch (((NbrTypeAstNode*)typ)->nbytes) {
+		switch (((NbrAstNode*)typ)->nbytes) {
 		case 4: return LLVMFloatTypeInContext(gen->context);
 		case 8: return LLVMDoubleTypeInContext(gen->context);
 		}
@@ -115,7 +115,7 @@ void genlModule(genl_t *gen, PgmAstNode *pgm) {
 	assert(pgm->asttype == PgmNode);
 	for (nodesFor(pgm->nodes, cnt, nodesp)) {
 		AstNode *nodep = *nodesp;
-		if (nodep->asttype == NameDclNode)
+		if (nodep->asttype == VarNameDclNode) // Incorrect - check if function too
 			genlFn(gen, (NameDclAstNode*)nodep);
 	}
 
