@@ -99,7 +99,7 @@ void astPasses(PgmAstNode *pgm) {
 	AstPass pstate;
 
 	// Capture all globals in symbol table and check for namespace collisions
-	pstate.pass = GlobalPass;
+	pstate.pass = NameResolution;
 	astPass(&pstate, (AstNode*) pgm);
 
 	// Apply syntactic sugar, resolve local names/scopes, type inference/check

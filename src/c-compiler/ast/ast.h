@@ -15,11 +15,11 @@ typedef struct Lexer Lexer;		// ../parser/lexer.h
 
 #include <stdint.h>
 
-// The AST passes between parse and generation
+// The AST analytical passes performed in between parse and generation
 enum Passes {
-	// Add global vars to symbol table and ensure no dupe conflicts in type/implementation
-	GlobalPass,
-	// Apply syntactic sugar, resolve local names/scopes, do type inference/checks
+	// Scope all declared names and resolve all name uses accordingly
+	NameResolution,
+	// Do return inference and type inference/checks.
 	TypeCheck
 };
 

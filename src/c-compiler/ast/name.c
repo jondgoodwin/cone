@@ -73,28 +73,6 @@ void nameDclPrint(int indent, NameDclAstNode *name, char *prefix) {
 		astPrintNode(indent + 1, name->value, "");
 }
 
-// Add name declaration to global namespace if it does not conflict or dupe implementation with prior definition
-void nameDclGlobalPass(NameDclAstNode *name) {
-	Symbol *namesym = name->namesym;
-
-	// Remember function in symbol table, but error out if prior name has a different type
-	// or both this and saved node define an implementation
-	if (!namesym->node)
-		namesym->node = (AstNode*)name;
-	else if (!typeEqual((AstNode*)name, namesym->node)) {
-		errorMsgNode((AstNode *)name, ErrorTypNotSame, "Name is already defined with a different type/signature.");
-		errorMsgNode(namesym->node, ErrorTypNotSame, "This is the conflicting definition for that name.");
-	}
-	else if (name->value) {
-		if (((NameDclAstNode*)namesym->node)->value) {
-			errorMsgNode((AstNode *)name, ErrorDupImpl, "Name has a duplicate implementation/value. Only one allowed.");
-			errorMsgNode(namesym->node, ErrorDupImpl, "This is the other implementation/value.");
-		}
-		else
-			namesym->node = (AstNode*)name;
-	}
-}
-
 // Syntactic sugar: Turn last statement implicit returns into explicit returns
 void fnImplicitReturn(AstNode *rettype, BlockAstNode *blk) {
 	AstNode *laststmt;
@@ -112,8 +90,7 @@ void fnImplicitReturn(AstNode *rettype, BlockAstNode *blk) {
 // Check the name declaration's AST
 void nameDclPass(AstPass *pstate, NameDclAstNode *name) {
 	switch (pstate->pass) {
-	case GlobalPass:
-		nameDclGlobalPass(name);
+	case NameResolution:
 		nameUseResolve((NameUseAstNode*)((FnSigAstNode*)name->vtype)->rettype); // HACK
 		return;
 	case TypeCheck:

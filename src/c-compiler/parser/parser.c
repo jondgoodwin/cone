@@ -72,8 +72,21 @@ AstNode *parseFn() {
 	return (AstNode*) fnnode;
 }
 
+// Add name declaration to global symbol table if not already defined
+void registerGlobalName(NameDclAstNode *name) {
+	Symbol *namesym = name->namesym;
+
+	if (namesym->node) {
+		errorMsgNode((AstNode *)name, ErrorDupName, "Global name is already defined. Only one allowed.");
+		errorMsgNode(namesym->node, ErrorDupName, "This is the conflicting definition for that name.");
+	}
+	else
+		namesym->node = (AstNode*)name;
+}
+
 // Parse a program's global area
 PgmAstNode *parse() {
+	AstNode *node;
 	PgmAstNode *pgm;
 	Nodes **nodes;
 
@@ -83,7 +96,9 @@ PgmAstNode *parse() {
 	while (! lexIsToken( EofToken)) {
 		switch (lex->toktype) {
 		case FnToken:
-			nodesAdd(nodes, parseFn());
+			nodesAdd(nodes, node=parseFn());
+			if (isNameDclNode(node))
+				registerGlobalName((NameDclAstNode *)node);
 			break;
 		default:
 			errorMsgLex(ErrorBadGloStmt, "Invalid global area type, var or function statement");

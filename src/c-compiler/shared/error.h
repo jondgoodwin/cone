@@ -30,8 +30,7 @@ enum ErrorCode {
 	ErrorDupImpl, // Function already has another implementation
 	ErrorNoLParen,   // Expected left parenthesis not found
 	ErrorNoRParen,	 // Expected right parenthesis not found
-	ErrorDupType,	// May not specify duplicate types
-	ErrorTypNotSame, // Type does not match prior definition
+	ErrorDupName,	// Duplicate name declaration
 	ErrorNoName,	// Name is required but not provided
 
 	// Warnings
