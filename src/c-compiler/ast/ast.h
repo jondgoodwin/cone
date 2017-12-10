@@ -1,4 +1,20 @@
-/** AST encoding definitions: AstNode, AstType
+/** AST structures and macros
+*
+* The AST, together with the symbol table, is the skeleton of the compiler.
+* It connects together every stage:
+*
+* - The parser transforms programs into AST
+* - The semantic analysis walks the AST over multiple passes
+* - Macro and template expansion happens via AST cloning
+* - Generation transforms AST into LLVM IR
+*
+* The AST is comprised of heterogeneous nodes that share common BasicAstHdr info.
+* In some cases, it is possible for several distinct node types to share an 
+* identical data structure (e.g., statement expression and return).
+*
+* This include file will pull in the include files for all node types, including types.
+* It also defines the structures needed for semantic analysis passes.
+*
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -17,10 +33,10 @@ typedef struct Lexer Lexer;		// ../parser/lexer.h
 
 typedef struct AstPass AstPass;
 
-// AST Groupings
+// AST groupings - every node belongs to one of these groups
 enum AstGroup {
 	VoidGroup,	// Statements that return no value
-	ExpGroup,	// Nodes that output a value
+	ExpGroup,	// Nodes that return a value
 	VTypeGroup,	// Nodes that describe a value type
 	PermGroup,	// Nodes that describe a permission type
 	AllocGroup	// Nodes that describe an allocator type
@@ -125,9 +141,9 @@ enum Passes {
 	TypeCheck
 };
 
-// Context for AST passes
+// Context used across all AST semantic analysis passes
 typedef struct AstPass {
-	int pass;	// Passes
+	int pass;				// Passes
 	FnSigAstNode *fnsig;	// The type signature of the function we are within
 } AstPass;
 
