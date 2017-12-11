@@ -29,6 +29,12 @@ LLVMValueRef genlTerm(genl_t *gen, AstNode *termnode) {
 	else if (termnode->asttype == FLitNode) {
 		return LLVMConstReal(LLVMFloatTypeInContext(gen->context), ((FLitAstNode*)termnode)->floatlit);
 	}
+	else if (termnode->asttype == VarNameUseNode) {
+		// Load from a global variable (generalize later for local variable if scope<>0)
+		char *name = ((NameUseAstNode *)termnode)->dclnode->namesym->namestr;
+		LLVMValueRef glovar = LLVMGetNamedGlobal(gen->module, name);
+		return LLVMBuildLoad(gen->builder, glovar, name);
+	}
 	else
 		return NULL;
 }

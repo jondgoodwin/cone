@@ -109,9 +109,15 @@ PgmAstNode *parse() {
 			if (perm && perm->asttype == PermNameDclNode) {
 				nodesAdd(nodes, node = parseVarDcl());
 				if (isNameDclNode(node)) {
-					registerGlobalName((NameDclAstNode *)node);
-					if (!litIsLiteral(((NameDclAstNode*)node)->value))
+					NameDclAstNode *vardcl = (NameDclAstNode*)node;
+					registerGlobalName(vardcl);
+					if (!litIsLiteral(vardcl->value))
 						errorMsgNode(node, ErrorNotLit, "Global variable may only be initialized with a literal.");
+					else {
+						// Type inference is straightforward for literal initializers
+						if (vardcl->vtype == voidType)
+							vardcl->vtype = ((TypedAstNode *)vardcl->value)->vtype;
+					}
 				}
 				break;
 			}

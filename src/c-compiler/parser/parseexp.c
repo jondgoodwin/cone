@@ -32,6 +32,13 @@ AstNode *parseterm() {
 			lexNextToken();
 			return (AstNode *)node;
 		}
+	case IdentToken:
+		{
+			NameUseAstNode *node;
+			node = newNameUseNode(lex->val.ident);
+			lexNextToken();
+			return (AstNode*)node;
+		}
 	default:
 		errorMsgLex(ErrorBadTerm, "Invalid term value: expected variable, literal, etc.");
 		return NULL;

@@ -45,6 +45,7 @@ int typeIsSame(AstNode *node1, AstNode *node2) {
 
 // can node be subtyped to subtype?
 int typeIsSubtype(AstNode *subtype, AstNode *node) {
+	NameUseAstNode *var = (NameUseAstNode *)node;
 	int ret;
 
 	// Convert nodes to their value types

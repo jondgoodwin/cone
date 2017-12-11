@@ -76,9 +76,8 @@ void astPass(AstPass *pstate, AstNode *node) {
 	case VarNameDclNode: case VtypeNameDclNode: case PermNameDclNode: case AllocNameDclNode:
 		nameDclPass(pstate, (NameDclAstNode *)node); break;
 	case NameUseNode:
-		nameUsePass(pstate, (NameUseAstNode *)node); break;
 	case VarNameUseNode: case VtypeNameUseNode: case PermNameUseNode: case AllocNameUseNode:
-		break;
+		nameUsePass(pstate, (NameUseAstNode *)node); break;
 	case BlockNode:
 		blockPass(pstate, (BlockAstNode *)node); break;
 	case StmtExpNode:

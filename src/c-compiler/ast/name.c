@@ -29,15 +29,19 @@ void nameUsePrint(int indent, NameUseAstNode *name, char *prefix) {
 // Check the name use's AST
 void nameUsePass(AstPass *pstate, NameUseAstNode *name) {
 	// During name resolution, point to name declaration and copy over needed fields
-	if (pstate->pass == NameResolution) {
+	switch (pstate->pass) {
+	case NameResolution:
 		name->dclnode = (NameDclAstNode*)name->namesym->node;
-		name->vtype = name->dclnode->vtype;
 		switch (name->dclnode->asttype) {
 		case VarNameDclNode: name->asttype = VarNameUseNode; return;
 		case VtypeNameDclNode: name->asttype = VtypeNameUseNode; return;
 		case PermNameDclNode: name->asttype = PermNameUseNode; return;
 		case AllocNameDclNode: name->asttype = AllocNameUseNode; return;
 		}
+		break;
+	case TypeCheck:
+		name->vtype = name->dclnode->vtype;
+		break;
 	}
 }
 
