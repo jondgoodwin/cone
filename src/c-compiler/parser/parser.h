@@ -17,6 +17,7 @@ void parseRCurly();
 void parseLCurly();
 
 // parsestmt.c
+AstNode *parseVarDcl();
 void parseStmtBlock(Nodes **nodes);
 
 // parseexp.c

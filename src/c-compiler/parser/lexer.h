@@ -59,6 +59,7 @@ enum TokenTypes {
 	DashToken,			// '-'
 	SlashToken,			// '/'
 	UnderscoreToken,	// '_'
+	AssgnToken,			// '='
 
 	// Keywords
 	FnToken,		// 'fn'

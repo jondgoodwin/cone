@@ -377,7 +377,11 @@ void lexNextToken() {
 		case ')':
 			lexReturnPuncTok(RParenToken, 1);
 
-		// ';'
+		// '='
+		case '=':
+			lexReturnPuncTok(AssgnToken, 1);
+
+			// ';'
 		case ';':
 			lexReturnPuncTok(SemiToken, 1);
 

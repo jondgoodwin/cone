@@ -71,6 +71,15 @@ LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
 	}
 }
 
+// Generate global variable
+void genlGloVar(genl_t *gen, NameDclAstNode *varnode) {
+	LLVMValueRef var;
+	var = LLVMAddGlobal(gen->module, genlType(gen, varnode->vtype), varnode->namesym->namestr);
+	if (varnode->value) {
+		LLVMSetInitializer(var, genlTerm(gen, varnode->value));
+	}
+}
+
 // Generate a function block
 void genlFn(genl_t *gen, NameDclAstNode *fnnode) {
 	BlockAstNode *blk;
@@ -116,8 +125,12 @@ void genlModule(genl_t *gen, PgmAstNode *pgm) {
 	assert(pgm->asttype == PgmNode);
 	for (nodesFor(pgm->nodes, cnt, nodesp)) {
 		AstNode *nodep = *nodesp;
-		if (nodep->asttype == VarNameDclNode) // Incorrect - check if function too
-			genlFn(gen, (NameDclAstNode*)nodep);
+		if (nodep->asttype == VarNameDclNode) {
+			if (((NameDclAstNode*)nodep)->vtype->asttype == FnSig)
+				genlFn(gen, (NameDclAstNode*)nodep);
+			else
+				genlGloVar(gen, (NameDclAstNode*)nodep);
+		}
 	}
 
 	LLVMVerifyModule(gen->module, LLVMReturnStatusAction, &error);

@@ -108,6 +108,15 @@ void nameDclPass(AstPass *pstate, NameDclAstNode *name) {
 			// Provide parameter and return type context for type checking function's logic
 			pstate->fnsig = (FnSigAstNode*)name->vtype;
 		}
+		// Type check non-function variable declaration:
+		else if (name->value) {
+			// Infer the var's vtype from its value, if not provided
+			if (name->vtype == voidType)
+				name->vtype = ((TypedAstNode *)name->value)->vtype;
+			// Otherwise, verify that declared type and initial value type matches
+			else if (!typeIsSubtype(name->vtype, name->value))
+				errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
+		}
 		break;
 	}
 

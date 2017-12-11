@@ -38,3 +38,7 @@ FLitAstNode *newFLitNode(double nbr, AstNode *type) {
 void flitPrint(int indent, FLitAstNode *lit) {
 	astPrintLn(indent, "Float literal %g", lit->floatlit);
 }
+
+int litIsLiteral(AstNode* node) {
+	return (node->asttype == FLitNode || node->asttype == ULitNode);
+}

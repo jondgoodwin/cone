@@ -95,13 +95,32 @@ PgmAstNode *parse() {
 	nodes = &pgm->nodes;
 	while (! lexIsToken( EofToken)) {
 		switch (lex->toktype) {
+
+		// 'fn' function definition
 		case FnToken:
 			nodesAdd(nodes, node=parseFn());
 			if (isNameDclNode(node))
 				registerGlobalName((NameDclAstNode *)node);
 			break;
+
+		// A global variable declaration, if it begins with a permission
+		case IdentToken: {
+			AstNode *perm = lex->val.ident->node;
+			if (perm && perm->asttype == PermNameDclNode) {
+				nodesAdd(nodes, node = parseVarDcl());
+				if (isNameDclNode(node)) {
+					registerGlobalName((NameDclAstNode *)node);
+					if (!litIsLiteral(((NameDclAstNode*)node)->value))
+						errorMsgNode(node, ErrorNotLit, "Global variable may only be initialized with a literal.");
+				}
+				break;
+			}
+		}
+		// Notice, this falls through to below if not a permission
+
+		// Unknown statement
 		default:
-			errorMsgLex(ErrorBadGloStmt, "Invalid global area type, var or function statement");
+			errorMsgLex(ErrorBadGloStmt, "Invalid global area statement");
 			while (!lexIsToken(SemiToken) && !lexIsToken(EofToken)) {
 				lexNextToken();
 			}

@@ -33,6 +33,8 @@ enum ErrorCode {
 	ErrorDupName,	// Duplicate name declaration
 	ErrorNoName,	// Name is required but not provided
 	ErrorInvType,	// Types do not match correctly
+	ErrorNoIdent,	// Identifier expected but not provided
+	ErrorNotLit,	// Value can only be a literal
 
 	// Warnings
 	WarnCode = 3000,

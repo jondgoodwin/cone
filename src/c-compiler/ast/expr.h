@@ -32,4 +32,6 @@ void ulitPrint(int indent, ULitAstNode *node);
 FLitAstNode *newFLitNode(double nbr, AstNode *type);
 void flitPrint(int indent, FLitAstNode *node);
 
+int litIsLiteral(AstNode* node);
+
 #endif
