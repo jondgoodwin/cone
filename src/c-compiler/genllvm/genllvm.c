@@ -31,7 +31,7 @@ LLVMValueRef genlTerm(genl_t *gen, AstNode *termnode) {
 	}
 	else if (termnode->asttype == VarNameUseNode) {
 		// Load from a global variable (generalize later for local variable if scope<>0)
-		char *name = ((NameUseAstNode *)termnode)->dclnode->namesym->namestr;
+		char *name = &((NameUseAstNode *)termnode)->dclnode->namesym->namestr;
 		LLVMValueRef glovar = LLVMGetNamedGlobal(gen->module, name);
 		return LLVMBuildLoad(gen->builder, glovar, name);
 	}
@@ -80,7 +80,7 @@ LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
 // Generate global variable
 void genlGloVar(genl_t *gen, NameDclAstNode *varnode) {
 	LLVMValueRef var;
-	var = LLVMAddGlobal(gen->module, genlType(gen, varnode->vtype), varnode->namesym->namestr);
+	var = LLVMAddGlobal(gen->module, genlType(gen, varnode->vtype), &varnode->namesym->namestr);
 	if (varnode->value) {
 		LLVMSetInitializer(var, genlTerm(gen, varnode->value));
 	}
@@ -99,7 +99,7 @@ void genlFn(genl_t *gen, NameDclAstNode *fnnode) {
 	// Add function and its signature to module
 	LLVMTypeRef param_types[] = { LLVMInt32TypeInContext(gen->context), LLVMInt32TypeInContext(gen->context) };
 	LLVMTypeRef ret_type = LLVMFunctionType(genlType(gen, ((FnSigAstNode*)fnnode->vtype)->rettype), param_types, 0, 0);
-	gen->fn = LLVMAddFunction(gen->module, fnnode->namesym->namestr, ret_type);
+	gen->fn = LLVMAddFunction(gen->module, &fnnode->namesym->namestr, ret_type);
 
 	// Attach block and builder to function
 	LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "entry");

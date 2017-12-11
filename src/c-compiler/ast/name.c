@@ -23,7 +23,7 @@ NameUseAstNode *newNameUseNode(Symbol *namesym) {
 
 // Serialize the AST for a name use
 void nameUsePrint(int indent, NameUseAstNode *name, char *prefix) {
-	astPrintLn(indent, "%s `%s`", prefix, name->namesym->namestr);
+	astPrintLn(indent, "%s `%s`", prefix, &name->namesym->namestr);
 }
 
 // Check the name use's AST
@@ -75,7 +75,7 @@ int isNameDclNode(AstNode *node) {
 
 // Serialize the AST for a variable/function
 void nameDclPrint(int indent, NameDclAstNode *name, char *prefix) {
-	astPrintLn(indent, name->vtype->asttype == FnSig ? "%s fn %s()" : "%s var %s", prefix, name->namesym->namestr);
+	astPrintLn(indent, name->vtype->asttype == FnSig ? "%s fn %s()" : "%s var %s", prefix, &name->namesym->namestr);
 	astPrintNode(indent + 1, name->vtype, "");
 	if (name->value)
 		astPrintNode(indent + 1, name->value, "");

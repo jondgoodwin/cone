@@ -20,11 +20,12 @@ typedef struct AstNode AstNode;	// ../ast/ast.h
 size_t gSymbols;		// Initial maximum number of unique symbols (must be power of 2)
 unsigned int gSymTblUtil;	// % utilization that triggers doubling of table
 
-// Symbol info (a slot in the symbol table)
+// Symbol info (a name-unique, unmovable allocated block in memory
 typedef struct Symbol {
-	char *namestr;		// Symbol's name
 	AstNode *node;	// AST node currently assigned to symbol
 	size_t hash;	// Symbol's computed hash
+	unsigned char namesz;	// Number of characters in the name (<=255)
+	char namestr;	// First byte of symbol's name (the rest follow)
 } Symbol;
 
 // Get pointer to Symbol for the symbol's string in the symbol table 

@@ -27,7 +27,7 @@ size_t gSymbols = 16384;	// Initial maximum number of unique symbols (must be po
 unsigned int gSymTblUtil = 80;	// % utilization that triggers doubling of table
 
 // Private globals
-Symbol *gSymTable = NULL;	// The symbol table array
+Symbol **gSymTable = NULL;	// The symbol table array
 size_t gSymTblAvail = 0;	// Number of allocated symbol table slots (power of 2)
 size_t gSymTblCeil = 0;		// Ceiling that triggers table growth
 size_t gSymTblUsed = 0;		// Number of symbol table slots used
@@ -60,10 +60,9 @@ size_t gSymTblUsed = 0;		// Number of symbol table slots used
 { \
 	size_t tbli, step; \
 	for (tbli = symHashMod(hash, gSymTblAvail), step = 1;; ++step) { \
-		char *symtstr; \
 		Symbol *slot; \
-		slot = &gSymTable[tbli]; \
-		if (slot->namestr==NULL || (slot->hash == hash && (symtstr=slot->namestr)[strl]=='\0' && strncmp(strp, symtstr, strl)==0)) \
+		slot = gSymTable[tbli]; \
+		if (slot==NULL || (slot->hash == hash && slot->namesz == strl && strncmp(strp, &slot->namestr, strl)==0)) \
 			break; \
 		tbli = symHashMod(tbli + step, gSymTblAvail); \
 	} \
@@ -73,7 +72,7 @@ size_t gSymTblUsed = 0;		// Number of symbol table slots used
 /** Grow the symbol table, by either creating it or doubling its size */
 void symGrow() {
 	size_t oldTblAvail;
-	Symbol *oldTable;
+	Symbol **oldTable;
 	size_t newTblMem;
 	size_t oldslot;
 
@@ -84,24 +83,23 @@ void symGrow() {
 	// Allocate and initialize new symbol table
 	gSymTblAvail = oldTblAvail==0? gSymbols : oldTblAvail<<1;
 	gSymTblCeil = (gSymTblUtil * gSymTblAvail) / 100;
-	newTblMem = gSymTblAvail * sizeof(Symbol);
-	gSymTable = (Symbol*) memAllocBlk(newTblMem);
+	newTblMem = gSymTblAvail * sizeof(Symbol*);
+	gSymTable = (Symbol**) memAllocBlk(newTblMem);
 	memset(gSymTable, 0, newTblMem); // Fill with NULL pointers & 0s
 
 	// Copy existing symbol slots to re-hashed positions in new table
 	for (oldslot=0; oldslot < oldTblAvail; oldslot++) {
-		Symbol *oldslotp, *newslotp;
+		Symbol **oldslotp, **newslotp;
 		oldslotp = &oldTable[oldslot];
-		if (oldslotp->namestr) {
+		if (*oldslotp) {
 			char *strp;
 			size_t strl, hash;
-			strp = oldslotp->namestr;
-			strl = strlen(strp);
-			hash = oldslotp->hash;
+			Symbol *oldsymp = *oldslotp;
+			strp = &oldsymp->namestr;
+			strl = oldsymp->namesz;
+			hash = oldsymp->hash;
 			symFindSlot(newslotp, hash, strp, strl);
-			newslotp->namestr = oldslotp->namestr;
-			newslotp->hash = oldslotp->hash;
-			newslotp->node = oldslotp->node;
+			*newslotp = *oldslotp;
 		}
 	}
 	// memFreeBlk(oldTable);
@@ -111,24 +109,28 @@ void symGrow() {
  * For unknown symbol, this allocates memory for the string (SymId) and adds it to symbol table. */
 Symbol *symFind(char *strp, size_t strl) {
 	size_t hash;
-	Symbol *slotp;
+	Symbol **slotp;
 
 	// Hash provide string into table
 	symHashFn(hash, strp, strl);
 	symFindSlot(slotp, hash, strp, strl);
 
 	// If not already a symbol, allocate memory for string and add to table
-	if (slotp->namestr == NULL) {
+	if (*slotp == NULL) {
+		Symbol *newsym;
 		// Double table if it has gotten too full
 		if (++gSymTblUsed >= gSymTblCeil)
 			symGrow();
 
-		// Populate symbol info into table
-		slotp->namestr = memAllocStr(strp, strl);
-		slotp->hash = hash;
-		slotp->node = NULL;		// Undefined symbol
+		// Allocate and populate symbol info
+		*slotp = newsym = memAllocBlk(sizeof(Symbol) + strl);
+		memcpy(&newsym->namestr, strp, strl);
+		(&newsym->namestr)[strl] = '\0';
+		newsym->hash = hash;
+		newsym->namesz = (unsigned char)strl;
+		newsym->node = NULL;		// Node not yet known
 	}
-	return slotp;
+	return *slotp;
 }
 
 // Return size of unused space for symbol table
