@@ -1,4 +1,4 @@
-/** AST handling for expression nodes: Literals, Variables, etc.
+/** AST handling for expression nodes
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -8,30 +8,10 @@
 #ifndef expr_h
 #define expr_h
 
-// Unsigned integer literal
-typedef struct ULitAstNode {
-	TypedAstHdr;
-	uint64_t uintlit;
-} ULitAstNode;
-
-// Float literal
-typedef struct FLitAstNode {
-	TypedAstHdr;
-	double floatlit;
-} FLitAstNode;
-
 // Unary operator (e.g., negative)
 typedef struct UnaryAstNode {
 	TypedAstHdr;
 	AstNode *expnode;
 } UnaryAstNode;
-
-ULitAstNode *newULitNode(uint64_t nbr, AstNode *type);
-void ulitPrint(int indent, ULitAstNode *node);
-
-FLitAstNode *newFLitNode(double nbr, AstNode *type);
-void flitPrint(int indent, FLitAstNode *node);
-
-int litIsLiteral(AstNode* node);
 
 #endif

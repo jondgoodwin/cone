@@ -129,6 +129,7 @@ typedef struct TypedAstNode {
 #include "../ast/block.h"
 #include "../ast/expr.h"
 #include "../ast/name.h"
+#include "../ast/literal.h"
 #include "../types/type.h"
 #include "../types/fnsig.h"
 #include "../types/number.h"
