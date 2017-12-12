@@ -39,3 +39,35 @@ void nodesAdd(Nodes **nodesp, AstNode *node) {
 	*((AstNode**)(nodes+1)+nodes->used) = node;
 	nodes->used++;
 }
+
+// Allocate and initialize a new Inodes block
+Inodes *newInodes(int size) {
+	Inodes *nodes;
+	nodes = (Inodes*)memAllocBlk(sizeof(Inodes) + size * sizeof(SymNode));
+	nodes->avail = size;
+	nodes->used = 0;
+	return nodes;
+}
+
+// Add a Symbol:AstNode pair to the end of a Inodes, growing it if full (changing its memory location)
+// This assumes an inodes can only have a single parent, whose address we point at
+void inodesAdd(Inodes **nodesp, Symbol *name, AstNode *node) {
+	Inodes *inodes = *nodesp;
+	// If full, double its size
+	if (inodes->used >= inodes->avail) {
+		Inodes *oldnodes;
+		SymNode *op, *np;
+		oldnodes = inodes;
+		inodes = newInodes(oldnodes->avail << 1);
+		op = (SymNode *)(oldnodes + 1);
+		np = (SymNode *)(inodes + 1);
+		memcpy(np, op, (inodes->used = oldnodes->used) * sizeof(SymNode));
+		*nodesp = inodes; // Point to new larger block
+	}
+	SymNode *slotp = ((SymNode*)(inodes + 1)) + inodes->used;
+	slotp->name = name;
+	slotp->node = node;
+	inodes->used++;
+}
+
+
