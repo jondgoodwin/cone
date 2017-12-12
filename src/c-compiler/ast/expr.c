@@ -11,3 +11,39 @@
 #include "../shared/symbol.h"
 #include "../shared/error.h"
 
+// Create a new name use node
+AssignAstNode *newAssignAstNode(int16_t assigntype, AstNode *lval, AstNode *rval) {
+	AssignAstNode *node;
+	newAstNode(node, AssignAstNode, AssignNode);
+	node->assignType = assigntype;
+	node->lval = lval;
+	node->rval = rval;
+	return node;
+}
+
+void assignPrint(int indent, AssignAstNode *node) {
+	astPrintLn(indent, "= (assign)");
+	astPrintNode(indent + 1, node->lval, "");
+	astPrintNode(indent + 1, node->rval, "");
+}
+int isLval(AstNode *node) {
+	return node->asttype == VarNameUseNode;
+}
+
+void assignPass(AstPass *pstate, AssignAstNode *node) {
+	astPass(pstate, node->lval);
+	astPass(pstate, node->rval);
+
+	switch (pstate->pass) {
+	case TypeCheck:
+		if (!isLval(node->lval))
+			errorMsgNode(node->lval, ErrorBadLval, "Expression to left of assignment must be lval");
+		else if (!typeIsSubtype(node->lval, node->rval))
+			errorMsgNode(node->lval, ErrorInvType, "Lval's type does not match the expression's type");
+		else if (!(MayWrite & permGetFlags(node->lval)))
+			errorMsgNode(node->lval, ErrorNoMut, "You do not have permission to modify lval");
+		node->vtype = ((TypedAstNode*)node->rval)->vtype;
+	}
+
+	return;
+}

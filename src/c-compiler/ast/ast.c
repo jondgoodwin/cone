@@ -43,6 +43,8 @@ void astPrintNode(int indent, AstNode *node, char *prefix) {
 		stmtExpPrint(indent, (StmtExpAstNode *)node); break;
 	case ReturnNode:
 		returnPrint(indent, (StmtExpAstNode *)node); break;
+	case AssignNode:
+		assignPrint(indent, (AssignAstNode *)node); break;
 	case ULitNode:
 		ulitPrint(indent, (ULitAstNode *)node); break;
 	case FLitNode:
@@ -84,6 +86,8 @@ void astPass(AstPass *pstate, AstNode *node) {
 		stmtExpPass(pstate, (StmtExpAstNode *)node); break;
 	case ReturnNode:
 		returnPass(pstate, (StmtExpAstNode *)node); break;
+	case AssignNode:
+		assignPass(pstate, (AssignAstNode *)node); break;
 	case FnSig:
 		fnSigPass(pstate, (FnSigAstNode *)node); break;
 	case ULitNode:

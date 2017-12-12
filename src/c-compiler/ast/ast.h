@@ -65,6 +65,7 @@ enum AstType {
 	VarNameUseNode,	// Variable reference
 	ULitNode,		// Integer literal
 	FLitNode,		// Float literal
+	AssignNode,		// Assignment expression
 	UnaryNode,		// Unary method operator
 
 	// Value type AST nodes

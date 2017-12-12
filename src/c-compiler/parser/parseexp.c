@@ -68,8 +68,20 @@ AstNode *parsePrefix() {
 	return parseterm();
 }
 
+// Parse an assignment expression
+AstNode *parseAssign() {
+	AstNode *lval = parsePrefix();
+	if (lexIsToken(AssgnToken)) {
+		lexNextToken();
+		AstNode *rval = parsePrefix();
+		return (AstNode*) newAssignAstNode(NormalAssign, lval, rval);
+	}
+	else
+		return lval;
+}
+
 // Parse an expression
 AstNode *parseExp() {
-	return parsePrefix();
+	return parseAssign();
 }
 

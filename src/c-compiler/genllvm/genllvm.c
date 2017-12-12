@@ -35,6 +35,12 @@ LLVMValueRef genlTerm(genl_t *gen, AstNode *termnode) {
 		LLVMValueRef glovar = LLVMGetNamedGlobal(gen->module, name);
 		return LLVMBuildLoad(gen->builder, glovar, name);
 	}
+	else if (termnode->asttype == AssignNode) {
+		AssignAstNode *node = (AssignAstNode*) termnode;
+		char *lvalname = &((NameUseAstNode *)node->lval)->dclnode->namesym->namestr;
+		LLVMValueRef glovar = LLVMGetNamedGlobal(gen->module, lvalname);
+		return LLVMBuildStore(gen->builder, genlTerm(gen, node->rval), glovar);
+	}
 	else
 		return NULL;
 }

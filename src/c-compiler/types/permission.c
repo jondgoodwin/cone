@@ -42,3 +42,15 @@ void permPrint(int indent, PermAstNode *node, char* prefix) {
 	default: astPrintLn(indent, "%s %s", prefix, "lock"); break;
 	}
 }
+
+// Retrieve the permission flags for the node
+int8_t permGetFlags(AstNode *node) {
+	switch (node->asttype) {
+	case VarNameUseNode:
+	{
+		return ((NameUseAstNode*)node)->dclnode->perm->flags;
+	}
+	default:
+		return 0;
+	}
+}

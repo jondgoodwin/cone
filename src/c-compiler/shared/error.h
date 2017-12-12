@@ -35,6 +35,8 @@ enum ErrorCode {
 	ErrorInvType,	// Types do not match correctly
 	ErrorNoIdent,	// Identifier expected but not provided
 	ErrorNotLit,	// Value can only be a literal
+	ErrorBadLval,	// Expression is not an lval
+	ErrorNoMut,		// Mutation is not allowed
 
 	// Warnings
 	WarnCode = 3000,
