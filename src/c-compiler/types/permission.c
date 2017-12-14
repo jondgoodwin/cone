@@ -44,7 +44,7 @@ void permPrint(int indent, PermAstNode *node, char* prefix) {
 }
 
 // Retrieve the permission flags for the node
-int8_t permGetFlags(AstNode *node) {
+uint16_t permGetFlags(AstNode *node) {
 	switch (node->asttype) {
 	case VarNameUseNode:
 	{

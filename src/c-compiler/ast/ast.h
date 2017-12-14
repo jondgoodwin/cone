@@ -29,6 +29,8 @@
 typedef struct Symbol Symbol;	// ../shared/symbol.h
 typedef struct Lexer Lexer;		// ../parser/lexer.h
 
+#include <llvm-c/Core.h>
+
 #include <stdint.h>
 
 typedef struct AstPass AstPass;
