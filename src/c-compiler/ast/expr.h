@@ -28,7 +28,7 @@ typedef struct UnaryAstNode {
 } UnaryAstNode;
 
 AssignAstNode *newAssignAstNode(int16_t assigntype, AstNode *lval, AstNode *rval);
-void assignPrint(int indent, AssignAstNode *node);
+void assignPrint(AssignAstNode *node);
 void assignPass(AstPass *pstate, AssignAstNode *node);
 
 #endif

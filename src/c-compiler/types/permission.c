@@ -31,15 +31,15 @@ PermAstNode *newPermNode(char ptyp, uint16_t flags, AstNode *locker) {
 }
 
 // Serialize the AST for a Unsigned literal
-void permPrint(int indent, PermAstNode *node, char* prefix) {
+void permPrint(PermAstNode *node) {
 	switch (node->ptype) {
-	case MutPerm: astPrintLn(indent, "%s %s", prefix, "mut"); break;
-	case MmutPerm: astPrintLn(indent, "%s %s", prefix, "mmut"); break;
-	case ImmPerm: astPrintLn(indent, "%s %s", prefix, "imm"); break;
-	case ConstPerm: astPrintLn(indent, "%s %s", prefix, "const"); break;
-	case MutxPerm: astPrintLn(indent, "%s %s", prefix, "mutx"); break;
-	case IdPerm: astPrintLn(indent, "%s %s", prefix, "id"); break;
-	default: astPrintLn(indent, "%s %s", prefix, "lock"); break;
+	case MutPerm: astFprint("mut "); break;
+	case MmutPerm: astFprint("mmut "); break;
+	case ImmPerm: astFprint("imm "); break;
+	case ConstPerm: astFprint("const "); break;
+	case MutxPerm: astFprint("mutx "); break;
+	case IdPerm: astFprint("id "); break;
+	default: astFprint("lock "); break;
 	}
 }
 

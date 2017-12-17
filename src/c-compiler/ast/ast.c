@@ -13,59 +13,79 @@
 #include <string.h>
 #include <stdarg.h>
 
+// State for astPrint
 FILE *astfile;
+int astIndent=0;
 
-// Output an indented, serialized line to astfile
-void astPrintLn(int indent, char *str, ...) {
-	int cnt;
+// Output a string to astfile
+void astFprint(char *str, ...) {
 	va_list argptr;
-	for (cnt=0; cnt<indent; cnt++)
-		fprintf(astfile, (cnt&3)==0? "| " : "  ");
 	va_start(argptr, str);
 	vfprintf(astfile, str, argptr);
 	va_end(argptr);
-	fprintf(astfile, "\n");
+}
+
+// Print new line character
+void astPrintNL() {
+	fputc('\n', astfile);
+}
+
+// Output a line's beginning indentation
+void astPrintIndent() {
+	int cnt;
+	for (cnt = 0; cnt<astIndent; cnt++)
+		fprintf(astfile, (cnt & 3) == 0 ? "| " : "  ");
+}
+
+// Increment indentation
+void astPrintIncr() {
+	astIndent++;
+}
+
+// Decrement indentation
+void astPrintDecr() {
+	astIndent--;
 }
 
 // Serialize a specific AST node
-void astPrintNode(int indent, AstNode *node, char *prefix) {
+void astPrintNode(AstNode *node) {
 	switch (node->asttype) {
 	case PgmNode:
-		pgmPrint(indent, (PgmAstNode *)node); break;
+		pgmPrint((PgmAstNode *)node); break;
 	case NameUseNode:
 	case VarNameUseNode: case VtypeNameUseNode: case PermNameUseNode: case AllocNameUseNode:
-		nameUsePrint(indent, (NameUseAstNode *)node, prefix); break;
+		nameUsePrint((NameUseAstNode *)node); break;
 	case VarNameDclNode: case VtypeNameDclNode: case PermNameDclNode: case AllocNameDclNode:
-		nameDclPrint(indent, (NameDclAstNode *)node, prefix); break;
+		nameDclPrint((NameDclAstNode *)node); break;
 	case BlockNode:
-		blockPrint(indent, (BlockAstNode *)node); break;
+		blockPrint((BlockAstNode *)node); break;
 	case StmtExpNode:
-		stmtExpPrint(indent, (StmtExpAstNode *)node); break;
+		stmtExpPrint((StmtExpAstNode *)node); break;
 	case ReturnNode:
-		returnPrint(indent, (StmtExpAstNode *)node); break;
+		returnPrint((StmtExpAstNode *)node); break;
 	case AssignNode:
-		assignPrint(indent, (AssignAstNode *)node); break;
+		assignPrint((AssignAstNode *)node); break;
 	case ULitNode:
-		ulitPrint(indent, (ULitAstNode *)node); break;
+		ulitPrint((ULitAstNode *)node); break;
 	case FLitNode:
-		flitPrint(indent, (FLitAstNode *)node); break;
+		flitPrint((FLitAstNode *)node); break;
 	case FnSig:
-		fnSigPrint(indent, (FnSigAstNode *)node, prefix); break;
+		fnSigPrint((FnSigAstNode *)node); break;
 	case IntNbrType: case UintNbrType: case FloatNbrType:
-		nbrTypePrint(indent, (NbrAstNode *)node, prefix); break;
+		nbrTypePrint((NbrAstNode *)node); break;
 	case PermType:
-		permPrint(indent, (PermAstNode *)node, prefix); break;
+		permPrint((PermAstNode *)node); break;
 	case VoidType:
-		voidPrint(indent, (VoidTypeAstNode *)node, prefix); break;
+		voidPrint((VoidTypeAstNode *)node); break;
 	default:
-		astPrintLn(indent, "%s **** UNKNOWN NODE ****", prefix);
+		astFprint("**** UNKNOWN NODE ****");
 	}
 }
 
 // Serialize the program's AST to dir+srcfn
 void astPrint(char *dir, char *srcfn, AstNode *pgmast) {
 	astfile = fopen(fileMakePath(dir, pgmast->lexer->fname, "ast"), "wb");
-	astPrintNode(0, pgmast, "");
+	astPrintNode(pgmast);
 	fclose(astfile);
 }
 

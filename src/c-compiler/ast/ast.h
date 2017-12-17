@@ -163,9 +163,14 @@ typedef struct AstPass {
 }
 
 void astPrint(char *dir, char *srcfn, AstNode *pgm);
-void astPrintNode(int indent, AstNode *node, char *prefix);
-void astPrintLn(int indent, char *str, ...);
-void astPass(AstPass *pstate, AstNode *pgm);
+void astPrintNode(AstNode *node);
+void astFprint(char *str, ...);
+void astPrintNL();
+void astPrintIndent();
+void astPrintIncr();
+void astPrintDecr();
+
 void astPasses(PgmAstNode *pgm);
+void astPass(AstPass *pstate, AstNode *pgm);
 
 #endif

@@ -29,19 +29,19 @@ typedef struct StmtExpAstNode {
 } StmtExpAstNode;
 
 PgmAstNode *newPgmNode();
-void pgmPrint(int indent, PgmAstNode *pgm);
+void pgmPrint(PgmAstNode *pgm);
 void pgmPass(AstPass *pstate, PgmAstNode *pgm);
 
 BlockAstNode *newBlockNode();
-void blockPrint(int indent, BlockAstNode *blk);
+void blockPrint(BlockAstNode *blk);
 void blockPass(AstPass *pstate, BlockAstNode *node);
 
 StmtExpAstNode *newStmtExpNode();
-void stmtExpPrint(int indent, StmtExpAstNode *node);
+void stmtExpPrint(StmtExpAstNode *node);
 void stmtExpPass(AstPass *pstate, StmtExpAstNode *node);
 
 StmtExpAstNode *newReturnNode();
-void returnPrint(int indent, StmtExpAstNode *node);
+void returnPrint(StmtExpAstNode *node);
 void returnPass(AstPass *pstate, StmtExpAstNode *node);
 
 #endif

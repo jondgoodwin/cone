@@ -28,6 +28,6 @@ NbrAstNode *f64Type;
 
 void nbrDclNames();
 NbrAstNode *newNbrTypeNode(uint16_t typ, char nbytes);
-void nbrTypePrint(int indent, NbrAstNode *node, char* prefix);
+void nbrTypePrint(NbrAstNode *node);
 
 #endif

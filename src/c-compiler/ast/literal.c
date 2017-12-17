@@ -21,8 +21,8 @@ ULitAstNode *newULitNode(uint64_t nbr, AstNode *type) {
 }
 
 // Serialize the AST for a Unsigned literal
-void ulitPrint(int indent, ULitAstNode *lit) {
-	astPrintLn(indent, "Unsigned literal %ld", lit->uintlit);
+void ulitPrint(ULitAstNode *lit) {
+	astFprint("%ld", lit->uintlit);
 }
 
 // Create a new unsigned literal node
@@ -35,8 +35,8 @@ FLitAstNode *newFLitNode(double nbr, AstNode *type) {
 }
 
 // Serialize the AST for a Unsigned literal
-void flitPrint(int indent, FLitAstNode *lit) {
-	astPrintLn(indent, "Float literal %g", lit->floatlit);
+void flitPrint(FLitAstNode *lit) {
+	astFprint("%g", lit->floatlit);
 }
 
 int litIsLiteral(AstNode* node) {

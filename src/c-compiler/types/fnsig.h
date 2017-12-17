@@ -16,7 +16,7 @@ typedef struct FnSigAstNode {
 } FnSigAstNode;
 
 FnSigAstNode *newFnSigNode();
-void fnSigPrint(int indent, FnSigAstNode *node, char *prefix);
+void fnSigPrint(FnSigAstNode *node);
 void fnSigPass(AstPass *pstate, FnSigAstNode *name);
 int fnSigEqual(FnSigAstNode *node1, FnSigAstNode *node2);
 

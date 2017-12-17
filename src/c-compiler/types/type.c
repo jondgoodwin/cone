@@ -72,8 +72,8 @@ VoidTypeAstNode *newVoidNode() {
 }
 
 // Serialize the void type node
-void voidPrint(int indent, VoidTypeAstNode *voidnode, char *prefix) {
-	astPrintLn(indent, "%s (void)", prefix);
+void voidPrint(VoidTypeAstNode *voidnode) {
+	astFprint("void");
 }
 
 // Initialize built-in types

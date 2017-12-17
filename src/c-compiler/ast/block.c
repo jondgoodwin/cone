@@ -20,13 +20,15 @@ PgmAstNode *newPgmNode() {
 }
 
 // Serialize the AST for a program
-void pgmPrint(int indent, PgmAstNode *pgm) {
+void pgmPrint(PgmAstNode *pgm) {
 	AstNode **nodesp;
 	uint32_t cnt;
 
-	astPrintLn(indent, "AST for program %s", pgm->lexer->url);
+	astFprint("AST for program %s\n", pgm->lexer->url);
+	astPrintIncr();
 	for (nodesFor(pgm->nodes, cnt, nodesp))
-		astPrintNode(indent+1, *nodesp, "");
+		astPrintNode(*nodesp);
+	astPrintDecr();
 }
 
 // Check the program's AST
@@ -47,14 +49,17 @@ BlockAstNode *newBlockNode() {
 }
 
 // Serialize the AST for a block
-void blockPrint(int indent, BlockAstNode *blk) {
+void blockPrint(BlockAstNode *blk) {
 	AstNode **nodesp;
 	uint32_t cnt;
 
-	astPrintLn(indent, "block statements:");
-	if (blk->nodes)
+	astFprint("block:\n");
+	if (blk->nodes) {
+		astPrintIncr();
 		for (nodesFor(blk->nodes, cnt, nodesp))
-			astPrintNode(indent + 1, *nodesp, "");
+			astPrintNode(*nodesp);
+		astPrintDecr();
+	}
 }
 
 // Check the block's AST
@@ -75,9 +80,11 @@ StmtExpAstNode *newStmtExpNode() {
 }
 
 // Serialize the AST for a statement expression
-void stmtExpPrint(int indent, StmtExpAstNode *node) {
-	astPrintLn(indent, "statement expression");
-	astPrintNode(indent+1, node->exp, "");
+void stmtExpPrint(StmtExpAstNode *node) {
+	astPrintIndent();
+	astFprint("stmtexp ");
+	astPrintNode(node->exp);
+	astPrintNL();
 }
 
 // Check the AST for a statement expression
@@ -94,9 +101,11 @@ StmtExpAstNode *newReturnNode() {
 }
 
 // Serialize the AST for a return statement
-void returnPrint(int indent, StmtExpAstNode *node) {
-	astPrintLn(indent, "return");
-	astPrintNode(indent+1, node->exp, "");
+void returnPrint(StmtExpAstNode *node) {
+	astPrintIndent();
+	astFprint("return ");
+	astPrintNode(node->exp);
+	astPrintNL();
 }
 
 // Check the AST for a return statement

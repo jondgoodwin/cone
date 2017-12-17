@@ -20,9 +20,9 @@ FnSigAstNode *newFnSigNode() {
 }
 
 // Serialize the AST for a Unsigned literal
-void fnSigPrint(int indent, FnSigAstNode *sig, char* prefix) {
-	astPrintLn(indent, "%s fn signature", prefix);
-	astPrintNode(indent+1, sig->rettype, "-return type:");
+void fnSigPrint(FnSigAstNode *sig) {
+	astFprint("fn()->");
+	astPrintNode(sig->rettype);
 }
 
 // Traverse the signature tree

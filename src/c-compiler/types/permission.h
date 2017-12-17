@@ -52,7 +52,7 @@ PermAstNode *idPerm;
 
 void permDclNames();
 PermAstNode *newPermNode(char ptyp, uint16_t flags, AstNode *locker);
-void permPrint(int indent, PermAstNode *node, char* prefix);
+void permPrint(PermAstNode *node);
 uint16_t permGetFlags(AstNode *node);
 
 #endif

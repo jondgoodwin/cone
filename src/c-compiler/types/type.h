@@ -39,6 +39,6 @@ int typeIsSame(AstNode *node1, AstNode *node2);
 int typeIsSubtype(AstNode *subtype, AstNode *node);
 
 VoidTypeAstNode *newVoidNode();
-void voidPrint(int indent, VoidTypeAstNode *voidnode, char *prefix);
+void voidPrint(VoidTypeAstNode *voidnode);
 
 #endif

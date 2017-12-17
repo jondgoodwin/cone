@@ -21,10 +21,10 @@ typedef struct FLitAstNode {
 } FLitAstNode;
 
 ULitAstNode *newULitNode(uint64_t nbr, AstNode *type);
-void ulitPrint(int indent, ULitAstNode *node);
+void ulitPrint(ULitAstNode *node);
 
 FLitAstNode *newFLitNode(double nbr, AstNode *type);
-void flitPrint(int indent, FLitAstNode *node);
+void flitPrint(FLitAstNode *node);
 
 int litIsLiteral(AstNode* node);
 

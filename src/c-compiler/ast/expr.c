@@ -21,10 +21,12 @@ AssignAstNode *newAssignAstNode(int16_t assigntype, AstNode *lval, AstNode *rval
 	return node;
 }
 
-void assignPrint(int indent, AssignAstNode *node) {
-	astPrintLn(indent, "= (assign)");
-	astPrintNode(indent + 1, node->lval, "");
-	astPrintNode(indent + 1, node->rval, "");
+void assignPrint(AssignAstNode *node) {
+	astFprint("(=, ");
+	astPrintNode(node->lval);
+	astFprint(", ");
+	astPrintNode(node->rval);
+	astFprint(")");
 }
 int isLval(AstNode *node) {
 	return node->asttype == VarNameUseNode;

@@ -27,13 +27,13 @@ typedef struct NameUseAstNode {
 } NameUseAstNode;
 
 NameUseAstNode *newNameUseNode(Symbol *namesym);
-void nameUsePrint(int indent, NameUseAstNode *name, char *prefix);
+void nameUsePrint(NameUseAstNode *name);
 void nameUsePass(AstPass *pstate, NameUseAstNode *name);
 
 NameDclAstNode *newNameDclNode(Symbol *namesym, uint16_t asttype, AstNode *sig, PermAstNode *perm, AstNode *val);
 void newNameDclNodeStr(char *namestr, uint16_t asttype, AstNode *type);
 int isNameDclNode(AstNode *node);
-void nameDclPrint(int indent, NameDclAstNode *fn, char *prefix);
+void nameDclPrint(NameDclAstNode *fn);
 void nameDclPass(AstPass *pstate, NameDclAstNode *node);
 
 #endif

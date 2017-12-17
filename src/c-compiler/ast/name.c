@@ -22,8 +22,8 @@ NameUseAstNode *newNameUseNode(Symbol *namesym) {
 }
 
 // Serialize the AST for a name use
-void nameUsePrint(int indent, NameUseAstNode *name, char *prefix) {
-	astPrintLn(indent, "%s `%s`", prefix, &name->namesym->namestr);
+void nameUsePrint(NameUseAstNode *name) {
+	astFprint(&name->namesym->namestr);
 }
 
 // Check the name use's AST
@@ -74,11 +74,20 @@ int isNameDclNode(AstNode *node) {
 }
 
 // Serialize the AST for a variable/function
-void nameDclPrint(int indent, NameDclAstNode *name, char *prefix) {
-	astPrintLn(indent, name->vtype->asttype == FnSig ? "%s fn %s()" : "%s var %s", prefix, &name->namesym->namestr);
-	astPrintNode(indent + 1, name->vtype, "");
-	if (name->value)
-		astPrintNode(indent + 1, name->value, "");
+void nameDclPrint(NameDclAstNode *name) {
+	int newline = 1;
+	astPrintIndent();
+	astPrintNode((AstNode*)name->perm);
+	astFprint("%s ", &name->namesym->namestr);
+	astPrintNode(name->vtype);
+	if (name->value) {
+		astFprint(" = ");
+		astPrintNode(name->value);
+		if (name->value->asttype == BlockNode)
+			newline = 0;
+	}
+	if (newline)
+		astPrintNL();
 }
 
 // Syntactic sugar: Turn last statement implicit returns into explicit returns

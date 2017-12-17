@@ -33,25 +33,25 @@ NbrAstNode *newNbrTypeNode(uint16_t typ, char nbytes) {
 }
 
 // Serialize the AST for a numeric literal
-void nbrTypePrint(int indent, NbrAstNode *node, char* prefix) {
+void nbrTypePrint(NbrAstNode *node) {
 	if (node==i8Type)
-		astPrintLn(indent, "%s %s", prefix, "i8");
+		astFprint("i8");
 	else if (node == i16Type)
-		astPrintLn(indent, "%s %s", prefix, "i16");
+		astFprint("i16");
 	else if (node == i32Type)
-		astPrintLn(indent, "%s %s", prefix, "i32");
+		astFprint("i32");
 	else if (node == i64Type)
-		astPrintLn(indent, "%s %s", prefix, "i64");
+		astFprint("i64");
 	else if (node == u8Type)
-		astPrintLn(indent, "%s %s", prefix, "u8");
+		astFprint("u8");
 	else if (node == u16Type)
-		astPrintLn(indent, "%s %s", prefix, "u16");
+		astFprint("u16");
 	else if (node == u32Type)
-		astPrintLn(indent, "%s %s", prefix, "u32");
+		astFprint("u32");
 	else if (node == u64Type)
-		astPrintLn(indent, "%s %s", prefix, "u64");
+		astFprint("u64");
 	else if (node == f32Type)
-		astPrintLn(indent, "%s %s", prefix, "f32");
+		astFprint("f32");
 	else if (node == f64Type)
-		astPrintLn(indent, "%s %s", prefix, "f64");
+		astFprint("f64");
 }
