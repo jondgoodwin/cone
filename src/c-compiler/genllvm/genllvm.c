@@ -93,13 +93,23 @@ LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
 	}
 }
 
+// Generate LLVMValueRef for a global variable or function
+void genlGloVarName(genl_t *gen, NameDclAstNode *glovar) {
+	// Handle when it is just a global variable
+	if (glovar->vtype->asttype != FnSig) {
+		glovar->llvmvar = LLVMAddGlobal(gen->module, genlType(gen, glovar->vtype), &glovar->namesym->namestr);
+		return;
+	}
+
+	// Handle when it is a function
+	LLVMTypeRef param_types[] = { LLVMInt32TypeInContext(gen->context), LLVMInt32TypeInContext(gen->context) };
+	LLVMTypeRef ret_type = LLVMFunctionType(genlType(gen, ((FnSigAstNode*)glovar->vtype)->rettype), param_types, 0, 0);
+	glovar->llvmvar = LLVMAddFunction(gen->module, &glovar->namesym->namestr, ret_type);
+}
+
 // Generate global variable
 void genlGloVar(genl_t *gen, NameDclAstNode *varnode) {
-	LLVMValueRef var;
-	varnode->llvmvar = var = LLVMAddGlobal(gen->module, genlType(gen, varnode->vtype), &varnode->namesym->namestr);
-	if (varnode->value) {
-		LLVMSetInitializer(var, genlTerm(gen, varnode->value));
-	}
+	LLVMSetInitializer(varnode->llvmvar, genlTerm(gen, varnode->value));
 }
 
 // Generate a function block
@@ -108,14 +118,8 @@ void genlFn(genl_t *gen, NameDclAstNode *fnnode) {
 	AstNode **nodesp;
 	uint32_t cnt;
 
-	if (!fnnode->value)
-		return;
 	assert(fnnode->value->asttype == BlockNode);
-
-	// Add function and its signature to module
-	LLVMTypeRef param_types[] = { LLVMInt32TypeInContext(gen->context), LLVMInt32TypeInContext(gen->context) };
-	LLVMTypeRef ret_type = LLVMFunctionType(genlType(gen, ((FnSigAstNode*)fnnode->vtype)->rettype), param_types, 0, 0);
-	fnnode->llvmvar = gen->fn = LLVMAddFunction(gen->module, &fnnode->namesym->namestr, ret_type);
+	gen->fn = fnnode->llvmvar;
 
 	// Attach block and builder to function
 	LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "entry");
@@ -136,18 +140,28 @@ void genlFn(genl_t *gen, NameDclAstNode *fnnode) {
 	LLVMDisposeBuilder(gen->builder);
 }
 
-// Generate module from AST
+// Generate module's nodes
 void genlModule(genl_t *gen, PgmAstNode *pgm) {
 	uint32_t cnt;
 	AstNode **nodesp;
 	char *error=NULL;
 
+	assert(pgm->asttype == PgmNode);
+
 	gen->module = LLVMModuleCreateWithNameInContext(gen->srcname, gen->context);
 
-	assert(pgm->asttype == PgmNode);
+	// First generate the global variable LLVMValueRef for every global variable
+	// This way forward references to global variables will work correctly
 	for (nodesFor(pgm->nodes, cnt, nodesp)) {
 		AstNode *nodep = *nodesp;
-		if (nodep->asttype == VarNameDclNode) {
+		if (nodep->asttype == VarNameDclNode)
+			genlGloVarName(gen, (NameDclAstNode *)nodep);
+	}
+
+	// Generate the function's block or the variable's initialization value
+	for (nodesFor(pgm->nodes, cnt, nodesp)) {
+		AstNode *nodep = *nodesp;
+		if (nodep->asttype == VarNameDclNode && ((NameDclAstNode*)nodep)->value) {
 			if (((NameDclAstNode*)nodep)->vtype->asttype == FnSig)
 				genlFn(gen, (NameDclAstNode*)nodep);
 			else
@@ -155,6 +169,7 @@ void genlModule(genl_t *gen, PgmAstNode *pgm) {
 		}
 	}
 
+	// Verify generated IR
 	LLVMVerifyModule(gen->module, LLVMReturnStatusAction, &error);
 	if (error) {
 		if (*error)
