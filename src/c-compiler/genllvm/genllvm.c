@@ -23,25 +23,36 @@
 
 // Generate a term
 LLVMValueRef genlTerm(genl_t *gen, AstNode *termnode) {
-	if (termnode->asttype == ULitNode) {
+	switch (termnode->asttype) {
+	case ULitNode:
 		return LLVMConstInt(LLVMInt32TypeInContext(gen->context), ((ULitAstNode*)termnode)->uintlit, 0);
-	}
-	else if (termnode->asttype == FLitNode) {
+	case FLitNode:
 		return LLVMConstReal(LLVMFloatTypeInContext(gen->context), ((FLitAstNode*)termnode)->floatlit);
-	}
-	else if (termnode->asttype == VarNameUseNode) {
+	case VarNameUseNode:
+	{
 		// Load from a global variable (generalize later for local variable if scope > 0)
 		char *name = &((NameUseAstNode *)termnode)->dclnode->namesym->namestr;
 		return LLVMBuildLoad(gen->builder, ((NameUseAstNode *)termnode)->dclnode->llvmvar, name);
 	}
-	else if (termnode->asttype == AssignNode) {
-		AssignAstNode *node = (AssignAstNode*) termnode;
+	case FnCallNode:
+	{
+		LLVMValueRef fnargs;
+		FnCallAstNode *fncall = (FnCallAstNode*)termnode;
+		NameUseAstNode *fnuse = (NameUseAstNode *)fncall->fn;
+		char *fnname = &fnuse->dclnode->namesym->namestr;
+		return LLVMBuildCall(gen->builder, LLVMGetNamedFunction(gen->module, fnname), &fnargs, 0, "");
+	}
+	case AssignNode:
+	{
+		AssignAstNode *node = (AssignAstNode*)termnode;
 		char *lvalname = &((NameUseAstNode *)node->lval)->dclnode->namesym->namestr;
 		LLVMValueRef glovar = LLVMGetNamedGlobal(gen->module, lvalname);
 		return LLVMBuildStore(gen->builder, genlTerm(gen, node->rval), glovar);
 	}
-	else
+	default:
+		printf("Unknown AST node to genLTerm!");
 		return NULL;
+	}
 }
 
 // Generate a return statement

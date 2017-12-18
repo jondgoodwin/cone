@@ -37,6 +37,7 @@ enum ErrorCode {
 	ErrorNotLit,	// Value can only be a literal
 	ErrorBadLval,	// Expression is not an lval
 	ErrorNoMut,		// Mutation is not allowed
+	ErrorNotFn,		// Not a function
 
 	// Warnings
 	WarnCode = 3000,

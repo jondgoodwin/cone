@@ -16,7 +16,7 @@
 #include <stdio.h>
 
 // Parse a term: literal, identifier, etc.
-AstNode *parseterm() {
+AstNode *parseTerm() {
 	switch (lex->toktype) {
 	case IntLitToken:
 		{
@@ -39,9 +39,46 @@ AstNode *parseterm() {
 			lexNextToken();
 			return (AstNode*)node;
 		}
+	case LParenToken:
+		{
+			lexNextToken();
+			parseExp();
+			if (lex->toktype == RParenToken)
+				lexNextToken();
+			else {
+				errorMsgLex(ErrorNoRParen, "Missing matching right-hand parenthesis ')'");
+				lexNextToken(); // search?
+			}
+		}
 	default:
 		errorMsgLex(ErrorBadTerm, "Invalid term value: expected variable, literal, etc.");
 		return NULL;
+	}
+}
+
+// Parse the postfix operators: '.', '::', '()'
+AstNode *parsePostfix() {
+	AstNode *node = parseTerm();
+	while (1) {
+		switch (lex->toktype) {
+
+		// Function call with possible parameters
+		case LParenToken:
+			{
+				lexNextToken();
+				node = (AstNode*)newFnCallAstNode(node);
+				if (lex->toktype != RParenToken)
+					parseExp();
+				if (lex->toktype == RParenToken)
+					lexNextToken();
+				else {
+					errorMsgLex(ErrorNoRParen, "Missing matching right-hand parenthesis ')'");
+					lexNextToken(); // search?
+				}
+			}
+		default:
+			return node;
+		}
 	}
 }
 
@@ -65,7 +102,7 @@ AstNode *parsePrefix() {
 			return (AstNode *)node;
 		}
 	}
-	return parseterm();
+	return parsePostfix();
 }
 
 // Parse an assignment expression

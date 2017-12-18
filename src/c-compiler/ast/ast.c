@@ -65,6 +65,8 @@ void astPrintNode(AstNode *node) {
 		returnPrint((StmtExpAstNode *)node); break;
 	case AssignNode:
 		assignPrint((AssignAstNode *)node); break;
+	case FnCallNode:
+		fnCallPrint((FnCallAstNode *)node); break;
 	case ULitNode:
 		ulitPrint((ULitAstNode *)node); break;
 	case FLitNode:
@@ -108,6 +110,8 @@ void astPass(AstPass *pstate, AstNode *node) {
 		returnPass(pstate, (StmtExpAstNode *)node); break;
 	case AssignNode:
 		assignPass(pstate, (AssignAstNode *)node); break;
+	case FnCallNode:
+		fnCallPass(pstate, (FnCallAstNode *)node); break;
 	case FnSig:
 		fnSigPass(pstate, (FnSigAstNode *)node); break;
 	case ULitNode:

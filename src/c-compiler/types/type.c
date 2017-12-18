@@ -20,6 +20,12 @@
 	assert(astgroup(node->asttype) == VTypeGroup); \
 }
 
+// Return value type
+AstNode *typeGetVtype(AstNode *node) {
+	getVtype(node);
+	return node;
+}
+
 int typeEqual(AstNode *node1, AstNode *node2) {
 	// Otherwise use type-specific equality checks
 	switch (node1->asttype) {
@@ -29,6 +35,7 @@ int typeEqual(AstNode *node1, AstNode *node2) {
 		return 0;
 	}
 }
+
 // Return true if the types for both nodes are equivalent
 int typeIsSame(AstNode *node1, AstNode *node2) {
 

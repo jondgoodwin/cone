@@ -23,6 +23,7 @@ ULitAstNode *newULitNode(uint64_t nbr, AstNode *type) {
 // Serialize the AST for a Unsigned literal
 void ulitPrint(ULitAstNode *lit) {
 	astFprint("%ld", lit->uintlit);
+	astPrintNode(lit->vtype);
 }
 
 // Create a new unsigned literal node
@@ -37,6 +38,7 @@ FLitAstNode *newFLitNode(double nbr, AstNode *type) {
 // Serialize the AST for a Unsigned literal
 void flitPrint(FLitAstNode *lit) {
 	astFprint("%g", lit->floatlit);
+	astPrintNode(lit->vtype);
 }
 
 int litIsLiteral(AstNode* node) {

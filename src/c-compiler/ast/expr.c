@@ -46,6 +46,33 @@ void assignPass(AstPass *pstate, AssignAstNode *node) {
 			errorMsgNode(node->lval, ErrorNoMut, "You do not have permission to modify lval");
 		node->vtype = ((TypedAstNode*)node->rval)->vtype;
 	}
+}
 
-	return;
+// Create a new name use node
+FnCallAstNode *newFnCallAstNode(AstNode *fn) {
+	FnCallAstNode *node;
+	newAstNode(node, FnCallAstNode, FnCallNode);
+	node->fn = fn;
+	node->parms = NULL;
+	return node;
+}
+
+void fnCallPrint(FnCallAstNode *node) {
+	astPrintNode(node->fn);
+	astFprint("()");
+}
+
+void fnCallPass(AstPass *pstate, FnCallAstNode *node) {
+	astPass(pstate, node->fn);
+
+	switch (pstate->pass) {
+	case TypeCheck:
+	{
+		AstNode *vtype = typeGetVtype(node->fn);
+		if (vtype->asttype == FnSig)
+			node->vtype = ((FnSigAstNode*)vtype)->rettype;
+		else
+			errorMsgNode(node->fn, ErrorNotFn, "Cannot call a value that is not a function");
+	}
+	}
 }

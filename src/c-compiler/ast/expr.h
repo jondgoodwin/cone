@@ -21,6 +21,13 @@ typedef struct AssignAstNode {
 	int16_t assignType;
 } AssignAstNode;
 
+// Function call node
+typedef struct FnCallAstNode {
+	TypedAstHdr;
+	AstNode *fn;
+	Nodes *parms;
+} FnCallAstNode;
+
 // Unary operator (e.g., negative)
 typedef struct UnaryAstNode {
 	TypedAstHdr;
@@ -30,5 +37,9 @@ typedef struct UnaryAstNode {
 AssignAstNode *newAssignAstNode(int16_t assigntype, AstNode *lval, AstNode *rval);
 void assignPrint(AssignAstNode *node);
 void assignPass(AstPass *pstate, AssignAstNode *node);
+
+FnCallAstNode *newFnCallAstNode(AstNode *fn);
+void fnCallPrint(FnCallAstNode *node);
+void fnCallPass(AstPass *pstate, FnCallAstNode *node);
 
 #endif

@@ -68,6 +68,7 @@ enum AstType {
 	ULitNode,		// Integer literal
 	FLitNode,		// Float literal
 	AssignNode,		// Assignment expression
+	FnCallNode,		// Function call
 	UnaryNode,		// Unary method operator
 
 	// Value type AST nodes
