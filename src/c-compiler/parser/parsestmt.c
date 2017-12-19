@@ -47,7 +47,7 @@ AstNode *parseVarDcl() {
 		val = parseExp();
 	}
 	else
-		val = voidType;
+		val = NULL;
 	parseSemi();
 
 	return (AstNode*) newNameDclNode(namesym, VarNameDclNode, vtype, perm, val);

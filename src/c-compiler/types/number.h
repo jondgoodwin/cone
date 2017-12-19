@@ -11,7 +11,7 @@
 // For primitives such as integer, unsigned integet, floats
 typedef struct NbrAstNode {
 	TypedAstHdr;
-	unsigned char nbytes;	// e.g., int32 uses 4 bytes
+	unsigned char bits;	// e.g., int32 uses 32 bits
 } NbrAstNode;
 
 // Primitive numeric types - for implicit (nondeclared but known) types
@@ -27,7 +27,8 @@ NbrAstNode *f32Type;
 NbrAstNode *f64Type;
 
 void nbrDclNames();
-NbrAstNode *newNbrTypeNode(uint16_t typ, char nbytes);
+NbrAstNode *newNbrTypeNode(uint16_t typ, char bits);
 void nbrTypePrint(NbrAstNode *node);
+int isNbr(AstNode *node);
 
 #endif

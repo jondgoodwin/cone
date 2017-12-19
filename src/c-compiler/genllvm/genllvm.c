@@ -21,13 +21,43 @@
 #include <stdio.h>
 #include <assert.h>
 
+// Generate a type value
+LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
+	switch (typ->asttype) {
+		// If it's a name, resolve it to the actual type info
+	case VtypeNameUseNode:
+		return genlType(gen, ((NameUseAstNode *)typ)->dclnode->value);
+	case IntNbrType: case UintNbrType:
+	{
+		switch (((NbrAstNode*)typ)->bits) {
+		case 8: return LLVMInt8TypeInContext(gen->context);
+		case 16: return LLVMInt16TypeInContext(gen->context);
+		case 32: return LLVMInt32TypeInContext(gen->context);
+		case 64: return LLVMInt64TypeInContext(gen->context);
+		}
+	}
+	case FloatNbrType:
+	{
+		switch (((NbrAstNode*)typ)->bits) {
+		case 32: return LLVMFloatTypeInContext(gen->context);
+		case 64: return LLVMDoubleTypeInContext(gen->context);
+		}
+	}
+	case VoidType:
+		return LLVMVoidTypeInContext(gen->context);
+
+	default:
+		return NULL;
+	}
+}
+
 // Generate a term
 LLVMValueRef genlTerm(genl_t *gen, AstNode *termnode) {
 	switch (termnode->asttype) {
 	case ULitNode:
-		return LLVMConstInt(LLVMInt32TypeInContext(gen->context), ((ULitAstNode*)termnode)->uintlit, 0);
+		return LLVMConstInt(genlType(gen, ((ULitAstNode*)termnode)->vtype), ((ULitAstNode*)termnode)->uintlit, 0);
 	case FLitNode:
-		return LLVMConstReal(LLVMFloatTypeInContext(gen->context), ((FLitAstNode*)termnode)->floatlit);
+		return LLVMConstReal(genlType(gen, ((ULitAstNode*)termnode)->vtype), ((FLitAstNode*)termnode)->floatlit);
 	case VarNameUseNode:
 	{
 		// Load from a global variable (generalize later for local variable if scope > 0)
@@ -49,6 +79,46 @@ LLVMValueRef genlTerm(genl_t *gen, AstNode *termnode) {
 		LLVMValueRef glovar = LLVMGetNamedGlobal(gen->module, lvalname);
 		return LLVMBuildStore(gen->builder, genlTerm(gen, node->rval), glovar);
 	}
+	case CastNode:
+	{
+		CastAstNode *node = (CastAstNode*)termnode;
+		NbrAstNode *fromtype = (NbrAstNode *)typeGetVtype(node->exp);
+		NbrAstNode *totype = (NbrAstNode *)typeGetVtype(node->vtype);
+		if (totype->asttype == UintNbrType) {
+			if (fromtype->asttype == FloatNbrType)
+				return LLVMBuildFPToUI(gen->builder, genlTerm(gen, node->exp), genlType(gen, (AstNode*)totype), "");
+			else if (totype->bits < fromtype->bits)
+				return LLVMBuildTrunc(gen->builder, genlTerm(gen, node->exp), genlType(gen, (AstNode*)totype), "");
+			else if (totype->bits > fromtype->bits)
+				return LLVMBuildZExt(gen->builder, genlTerm(gen, node->exp), genlType(gen, (AstNode*)totype), "");
+			else
+				return LLVMBuildBitCast(gen->builder, genlTerm(gen, node->exp), genlType(gen, (AstNode*)totype), "");
+		}
+		else if (totype->asttype == IntNbrType) {
+			if (fromtype->asttype == FloatNbrType)
+				return LLVMBuildFPToSI(gen->builder, genlTerm(gen, node->exp), genlType(gen, (AstNode*)totype), "");
+			else if (totype->bits < fromtype->bits)
+				return LLVMBuildTrunc(gen->builder, genlTerm(gen, node->exp), genlType(gen, (AstNode*)totype), "");
+			else if (totype->bits > fromtype->bits) {
+				if (fromtype->asttype == IntNbrType)
+					return LLVMBuildSExt(gen->builder, genlTerm(gen, node->exp), genlType(gen, (AstNode*)totype), "");
+				else
+					return LLVMBuildZExt(gen->builder, genlTerm(gen, node->exp), genlType(gen, (AstNode*)totype), "");
+			}
+			else
+				return LLVMBuildBitCast(gen->builder, genlTerm(gen, node->exp), genlType(gen, (AstNode*)totype), "");
+		}
+		else {
+			if (fromtype->asttype == IntNbrType)
+				return LLVMBuildSIToFP(gen->builder, genlTerm(gen, node->exp), genlType(gen, (AstNode*)totype), "");
+			else if (fromtype->asttype == UintNbrType)
+				return LLVMBuildUIToFP(gen->builder, genlTerm(gen, node->exp), genlType(gen, (AstNode*)totype), "");
+			else if (totype->bits < fromtype->bits)
+				return LLVMBuildFPTrunc(gen->builder, genlTerm(gen, node->exp), genlType(gen, (AstNode*)totype), "");
+			else if (totype->bits > fromtype->bits)
+				return LLVMBuildFPExt(gen->builder, genlTerm(gen, node->exp), genlType(gen, (AstNode*)totype), "");
+		}
+	}
 	default:
 		printf("Unknown AST node to genLTerm!");
 		return NULL;
@@ -61,36 +131,6 @@ void genlReturn(genl_t *gen, StmtExpAstNode *node) {
 		LLVMBuildRet(gen->builder, genlTerm(gen, node->exp));
 	else
 		LLVMBuildRetVoid(gen->builder);
-}
-
-// Generate a type value
-LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
-	switch (typ->asttype) {
-	// If it's a name, resolve it to the actual type info
-	case VtypeNameUseNode:
-		return genlType(gen, ((NameUseAstNode *)typ)->dclnode->value);
-	case IntNbrType: case UintNbrType:
-	{
-		switch (((NbrAstNode*)typ)->nbytes) {
-		case 1: return LLVMInt8TypeInContext(gen->context);
-		case 2: return LLVMInt16TypeInContext(gen->context);
-		case 4: return LLVMInt32TypeInContext(gen->context);
-		case 8: return LLVMInt64TypeInContext(gen->context);
-		}
-	}
-	case FloatNbrType:
-	{
-		switch (((NbrAstNode*)typ)->nbytes) {
-		case 4: return LLVMFloatTypeInContext(gen->context);
-		case 8: return LLVMDoubleTypeInContext(gen->context);
-		}
-	}
-	case VoidType:
-		return LLVMVoidTypeInContext(gen->context);
-
-	default:
-		return NULL;
-	}
 }
 
 // Generate LLVMValueRef for a global variable or function

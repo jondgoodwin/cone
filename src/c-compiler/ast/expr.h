@@ -28,6 +28,12 @@ typedef struct FnCallAstNode {
 	Nodes *parms;
 } FnCallAstNode;
 
+// Cast to another type
+typedef struct CastAstNode {
+	TypedAstHdr;
+	AstNode *exp;
+} CastAstNode;
+
 // Unary operator (e.g., negative)
 typedef struct UnaryAstNode {
 	TypedAstHdr;
@@ -41,5 +47,9 @@ void assignPass(AstPass *pstate, AssignAstNode *node);
 FnCallAstNode *newFnCallAstNode(AstNode *fn);
 void fnCallPrint(FnCallAstNode *node);
 void fnCallPass(AstPass *pstate, FnCallAstNode *node);
+
+CastAstNode *newCastAstNode(AstNode *exp, AstNode *type);
+void castPrint(CastAstNode *node);
+void castPass(AstPass *pstate, CastAstNode *node);
 
 #endif

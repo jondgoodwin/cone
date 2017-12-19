@@ -127,7 +127,7 @@ void nameDclPass(AstPass *pstate, NameDclAstNode *name) {
 			if (name->vtype == voidType)
 				name->vtype = ((TypedAstNode *)name->value)->vtype;
 			// Otherwise, verify that declared type and initial value type matches
-			else if (!typeIsSubtype(name->vtype, name->value))
+			else if (!typeCoerces(name->vtype, &name->value))
 				errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
 		}
 		break;

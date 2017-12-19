@@ -50,23 +50,29 @@ int typeIsSame(AstNode *node1, AstNode *node2) {
 	return typeEqual(node1, node2);
 }
 
-// can node be subtyped to subtype?
-int typeIsSubtype(AstNode *subtype, AstNode *node) {
-	NameUseAstNode *var = (NameUseAstNode *)node;
+// can from's value be coerced to to's value type?
+// This might inject a 'cast' node in front of the 'from' node with non-matching numbers
+int typeCoerces(AstNode *to, AstNode **from) {
 	int ret;
+	AstNode *fromtype = *from;
 
 	// Convert nodes to their value types
-	getVtype(subtype);
-	getVtype(node);
+	getVtype(to);
+	getVtype(fromtype);
 
 	// If they are the same value type info, types match
-	if (subtype == node)
+	if (to == fromtype)
 		return 1;
 
 	// If types are equivalent, it is a valid subtype
-	if (ret = typeEqual(subtype, node))
+	if (ret = typeEqual(to, fromtype))
 		return ret;
 
+	// Not identical - but if both are numbers - cast between them
+	if (isNbr(to) && isNbr(fromtype)) {
+		*from = (AstNode*) newCastAstNode(*from, to);
+		return 1;
+	}
 	// Need some subtyping logic here!!
 	return 0;
 }

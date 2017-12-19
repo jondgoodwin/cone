@@ -113,7 +113,7 @@ void returnPass(AstPass *pstate, StmtExpAstNode *node) {
 	astPass(pstate, node->exp);
 	// Ensure the vtype of the expression can be coerced to the function's declared return type
 	if (pstate->pass == TypeCheck) {
-		if (!typeIsSubtype(pstate->fnsig->rettype, node->exp)) {
+		if (!typeCoerces(pstate->fnsig->rettype, &node->exp)) {
 			errorMsgNode(node->exp, ErrorInvType, "Return expression type does not match return type on function");
 			errorMsgNode((AstNode*)pstate->fnsig->rettype, ErrorInvType, "This is the declared function's return type");
 		}

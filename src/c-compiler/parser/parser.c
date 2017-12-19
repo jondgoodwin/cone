@@ -111,12 +111,14 @@ PgmAstNode *parse() {
 				if (isNameDclNode(node)) {
 					NameDclAstNode *vardcl = (NameDclAstNode*)node;
 					registerGlobalName(vardcl);
-					if (!litIsLiteral(vardcl->value))
-						errorMsgNode(node, ErrorNotLit, "Global variable may only be initialized with a literal.");
-					else {
-						// Type inference is straightforward for literal initializers
-						if (vardcl->vtype == voidType)
-							vardcl->vtype = ((TypedAstNode *)vardcl->value)->vtype;
+					if (vardcl->value) {
+						if (!litIsLiteral(vardcl->value))
+							errorMsgNode(node, ErrorNotLit, "Global variable may only be initialized with a literal.");
+						else {
+							// Type inference is straightforward for literal initializers
+							if (vardcl->vtype == voidType)
+								vardcl->vtype = ((TypedAstNode *)vardcl->value)->vtype;
+						}
 					}
 				}
 				break;

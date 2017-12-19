@@ -11,7 +11,7 @@
 #include "../shared/symbol.h"
 #include "../shared/error.h"
 
-// Create a new name use node
+// Create a new assignment node
 AssignAstNode *newAssignAstNode(int16_t assigntype, AstNode *lval, AstNode *rval) {
 	AssignAstNode *node;
 	newAstNode(node, AssignAstNode, AssignNode);
@@ -21,6 +21,7 @@ AssignAstNode *newAssignAstNode(int16_t assigntype, AstNode *lval, AstNode *rval
 	return node;
 }
 
+// Serialize assignment node
 void assignPrint(AssignAstNode *node) {
 	astFprint("(=, ");
 	astPrintNode(node->lval);
@@ -28,10 +29,13 @@ void assignPrint(AssignAstNode *node) {
 	astPrintNode(node->rval);
 	astFprint(")");
 }
+
+// lval expression is valid lval
 int isLval(AstNode *node) {
 	return node->asttype == VarNameUseNode;
 }
 
+// Analyze assignment node
 void assignPass(AstPass *pstate, AssignAstNode *node) {
 	astPass(pstate, node->lval);
 	astPass(pstate, node->rval);
@@ -40,7 +44,7 @@ void assignPass(AstPass *pstate, AssignAstNode *node) {
 	case TypeCheck:
 		if (!isLval(node->lval))
 			errorMsgNode(node->lval, ErrorBadLval, "Expression to left of assignment must be lval");
-		else if (!typeIsSubtype(node->lval, node->rval))
+		else if (!typeCoerces(node->lval, &node->rval))
 			errorMsgNode(node->lval, ErrorInvType, "Lval's type does not match the expression's type");
 		else if (!(MayWrite & permGetFlags(node->lval)))
 			errorMsgNode(node->lval, ErrorNoMut, "You do not have permission to modify lval");
@@ -48,7 +52,7 @@ void assignPass(AstPass *pstate, AssignAstNode *node) {
 	}
 }
 
-// Create a new name use node
+// Create a function call node
 FnCallAstNode *newFnCallAstNode(AstNode *fn) {
 	FnCallAstNode *node;
 	newAstNode(node, FnCallAstNode, FnCallNode);
@@ -57,11 +61,13 @@ FnCallAstNode *newFnCallAstNode(AstNode *fn) {
 	return node;
 }
 
+// Serialize function call node
 void fnCallPrint(FnCallAstNode *node) {
 	astPrintNode(node->fn);
 	astFprint("()");
 }
 
+// Analyze function call node
 void fnCallPass(AstPass *pstate, FnCallAstNode *node) {
 	astPass(pstate, node->fn);
 
@@ -75,4 +81,27 @@ void fnCallPass(AstPass *pstate, FnCallAstNode *node) {
 			errorMsgNode(node->fn, ErrorNotFn, "Cannot call a value that is not a function");
 	}
 	}
+}
+
+// Create a new name use node
+CastAstNode *newCastAstNode(AstNode *exp, AstNode *type) {
+	CastAstNode *node;
+	newAstNode(node, CastAstNode, CastNode);
+	node->vtype = type;
+	node->exp = exp;
+	return node;
+}
+
+// Serialize cast
+void castPrint(CastAstNode *node) {
+	astFprint("(cast, ");
+	astPrintNode(node->vtype);
+	astFprint(", ");
+	astPrintNode(node->exp);
+	astFprint(")");
+}
+
+// Analyze cast node
+void castPass(AstPass *pstate, CastAstNode *node) {
+	astPass(pstate, node->exp);
 }
