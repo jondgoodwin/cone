@@ -56,6 +56,7 @@ enum TokenTypes {
 	RCurlyToken,		// '}'
 	LParenToken,		// '('
 	RParenToken,		// ')'
+	CommaToken,			// ','
 	DashToken,			// '-'
 	SlashToken,			// '/'
 	UnderscoreToken,	// '_'

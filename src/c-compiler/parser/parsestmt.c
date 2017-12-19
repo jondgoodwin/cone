@@ -16,43 +16,6 @@
 
 #include <stdio.h>
 
-// Parse a variable declaration
-AstNode *parseVarDcl() {
-	Symbol *namesym = NULL;
-	AstNode *vtype;
-	PermAstNode *perm;
-	AstNode *val;
-
-	// Grab the permission type that we already know is there
-	perm = (PermAstNode*)((NameDclAstNode *)lex->val.ident->node)->value;
-	lexNextToken();
-
-	// Obtain variable's name
-	if (lexIsToken(IdentToken)) {
-		namesym = lex->val.ident;
-		lexNextToken();
-	}
-	else {
-		errorMsgLex(ErrorNoIdent, "Expected variable name for declaration");
-		return (AstNode*)newVoidNode();
-	}
-
-	// Get value type, if provided
-	if ((vtype = parseVtype()) == NULL)
-		vtype = voidType;
-
-	// Get initialization value after '=', if provided
-	if (lexIsToken(AssgnToken)) {
-		lexNextToken();
-		val = parseExp();
-	}
-	else
-		val = NULL;
-	parseSemi();
-
-	return (AstNode*) newNameDclNode(namesym, VarNameDclNode, vtype, perm, val);
-}
-
 // Parse an expression statement within a function
 AstNode *parseExpStmt() {
 	StmtExpAstNode *stmtnode;

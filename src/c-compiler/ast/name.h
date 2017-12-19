@@ -10,7 +10,7 @@
 // Name declaration node (e.g., variable, fn implementation, or named type)
 typedef struct NameDclAstNode {
 	TypedAstHdr;				// 'vtype': type of this name's value
-	PermAstNode *perm;		// Permission type (often mut or imm)
+	PermAstNode *perm;			// Permission type (often mut or imm)
 	Symbol *namesym;			// Pointer to the global symbol table entry
 	AstNode *value;				// Starting value/declaration (NULL if not initialized)
 	struct NameDclAstNode *prev; // previous name this overrides in global symbol table

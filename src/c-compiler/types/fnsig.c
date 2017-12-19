@@ -14,6 +14,7 @@
 FnSigAstNode *newFnSigNode() {
 	FnSigAstNode *sig;
 	newAstNode(sig, FnSigAstNode, FnSig);
+	sig->parms = newInodes(8);
 	sig->rettype = voidType;
 	sig->vtype = NULL;
 	return sig;

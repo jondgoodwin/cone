@@ -12,7 +12,7 @@
 typedef struct FnSigAstNode {
 	TypedAstHdr;
 	AstNode *rettype;		// void, one or tuple
-	// Inodes *parms;		// void or
+	Inodes *parms;			// list of parms
 } FnSigAstNode;
 
 FnSigAstNode *newFnSigNode();

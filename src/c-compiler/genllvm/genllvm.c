@@ -168,7 +168,7 @@ void genlFn(genl_t *gen, NameDclAstNode *fnnode) {
 
 	// Populate block with statements
 	blk = (BlockAstNode *)fnnode->value;
-	for (nodesFor(blk->nodes, cnt, nodesp)) {
+	for (nodesFor(blk->stmts, cnt, nodesp)) {
 		switch ((*nodesp)->asttype) {
 		case StmtExpNode:
 			genlTerm(gen, ((StmtExpAstNode*)*nodesp)->exp); break;

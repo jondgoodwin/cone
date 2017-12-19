@@ -66,7 +66,7 @@ AstNode *parseFn() {
 		parseLCurly();
 	if (lexIsToken(LCurlyToken)) {
 		fnnode->value = (AstNode *) newBlockNode();
-		parseStmtBlock(&((BlockAstNode*)fnnode->value)->nodes);
+		parseStmtBlock(&((BlockAstNode*)fnnode->value)->stmts);
 	} else
 		parseSemi();
 	return (AstNode*) fnnode;
@@ -107,7 +107,8 @@ PgmAstNode *parse() {
 		case IdentToken: {
 			AstNode *perm = lex->val.ident->node;
 			if (perm && perm->asttype == PermNameDclNode) {
-				nodesAdd(nodes, node = parseVarDcl());
+				nodesAdd(nodes, node = (AstNode*)parseVarDcl(immPerm));
+				parseSemi();
 				if (isNameDclNode(node)) {
 					NameDclAstNode *vardcl = (NameDclAstNode*)node;
 					registerGlobalName(vardcl);

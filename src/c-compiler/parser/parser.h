@@ -17,15 +17,14 @@ void parseRCurly();
 void parseLCurly();
 
 // parsestmt.c
-AstNode *parseVarDcl();
 void parseStmtBlock(Nodes **nodes);
 
 // parseexp.c
 AstNode *parseExp();
 
 // parsetype.c
+NameDclAstNode *parseVarDcl(PermAstNode *defperm);
 AstNode *parseFnSig();
 AstNode *parseVtype();
-AstNode* parsePerm();
 
 #endif

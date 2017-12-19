@@ -17,8 +17,8 @@ typedef struct PgmAstNode {
 // Block
 typedef struct BlockAstNode {
 	BasicAstHdr;
-	Nodes *nodes;
-	// Dict *locals;
+	Inodes *locals;
+	Nodes *stmts;
 	uint16_t scope;
 } BlockAstNode;
 

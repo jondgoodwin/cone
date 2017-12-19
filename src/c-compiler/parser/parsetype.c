@@ -15,6 +15,48 @@
 #include "lexer.h"
 
 #include <stdio.h>
+#include <assert.h>
+
+// Parse a variable declaration
+NameDclAstNode *parseVarDcl(PermAstNode *defperm) {
+	Symbol *namesym = NULL;
+	AstNode *vtype;
+	PermAstNode *perm;
+	AstNode *val;
+
+	// Grab the permission type, if there
+	assert(lexIsToken(IdentToken));
+	if (lex->val.ident->node && lex->val.ident->node->asttype == PermNameDclNode) {
+		perm = (PermAstNode*)((NameDclAstNode *)lex->val.ident->node)->value;
+		lexNextToken();
+	}
+	else
+		perm = defperm;
+
+	// Obtain variable's name
+	if (lexIsToken(IdentToken)) {
+		namesym = lex->val.ident;
+		lexNextToken();
+	}
+	else {
+		errorMsgLex(ErrorNoIdent, "Expected variable name for declaration");
+		return newNameDclNode(symFind("_",1), VarNameDclNode, voidType, perm, NULL);
+	}
+
+	// Get value type, if provided
+	if ((vtype = parseVtype()) == NULL)
+		vtype = voidType;
+
+	// Get initialization value after '=', if provided
+	if (lexIsToken(AssgnToken)) {
+		lexNextToken();
+		val = parseExp();
+	}
+	else
+		val = NULL;
+
+	return newNameDclNode(namesym, VarNameDclNode, vtype, perm, val);
+}
 
 // Parse a function's type signature
 AstNode *parseFnSig() {
@@ -36,6 +78,13 @@ AstNode *parseFnSig() {
 	// Process parameter declarations
 	if (lexIsToken(LParenToken)) {
 		lexNextToken();
+		while (lexIsToken(IdentToken)) {
+			NameDclAstNode *parm = parseVarDcl(constPerm);
+			inodesAdd(&fnsig->parms, parm->namesym, (AstNode*)parm);
+			if (!lexIsToken(CommaToken))
+				break;
+			lexNextToken();
+		}
 		if (lexIsToken(RParenToken))
 			lexNextToken();
 		else
@@ -67,14 +116,3 @@ AstNode* parseVtype() {
 		return NULL;
 	}
 }
-
-// Parse a permission type. Return NULL if not found.
-AstNode* parsePerm() {
-	switch (lex->toktype) {
-	case IdentToken:
-		return (AstNode*) newNameUseNode(lex->val.ident);
-	default:
-		return NULL;
-	}
-}
-

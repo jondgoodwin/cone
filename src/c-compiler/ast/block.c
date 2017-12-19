@@ -44,7 +44,8 @@ void pgmPass(AstPass *pstate, PgmAstNode *pgm) {
 BlockAstNode *newBlockNode() {
 	BlockAstNode *blk;
 	newAstNode(blk, BlockAstNode, BlockNode);
-	blk->nodes = newNodes(8);
+	blk->locals = newInodes(8);
+	blk->stmts = newNodes(8);
 	return blk;
 }
 
@@ -54,9 +55,9 @@ void blockPrint(BlockAstNode *blk) {
 	uint32_t cnt;
 
 	astFprint("block:\n");
-	if (blk->nodes) {
+	if (blk->stmts) {
 		astPrintIncr();
-		for (nodesFor(blk->nodes, cnt, nodesp))
+		for (nodesFor(blk->stmts, cnt, nodesp))
 			astPrintNode(*nodesp);
 		astPrintDecr();
 	}
@@ -67,8 +68,8 @@ void blockPass(AstPass *pstate, BlockAstNode *blk) {
 	AstNode **nodesp;
 	uint32_t cnt;
 
-	if (blk->nodes)
-		for (nodesFor(blk->nodes, cnt, nodesp))
+	if (blk->stmts)
+		for (nodesFor(blk->stmts, cnt, nodesp))
 			astPass(pstate, *nodesp);
 }
 

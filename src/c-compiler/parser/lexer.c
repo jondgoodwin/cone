@@ -357,9 +357,8 @@ void lexNextToken() {
 			lexScanTickedIdent(srcp);
 			return;
 
-		// '-'
-		case '-':
-			lexReturnPuncTok(DashToken, 1);
+		case ',': lexReturnPuncTok(CommaToken, 1);
+		case '-': lexReturnPuncTok(DashToken, 1);
 
 		// '{'
 		case '{':
