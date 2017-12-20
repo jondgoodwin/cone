@@ -188,9 +188,11 @@ void lexScanNumber(char *srcp) {
 
 	// Process number's explicit type as part of the token
 	if (*srcp=='d') {
+		isFloat = 'd';
 		srcp++;
 		lex->langtype = (AstNode*)f64Type;
 	} else if (*srcp=='f') {
+		isFloat = 'f';
 		lex->langtype = (AstNode*)f32Type;
 		if (*(++srcp)=='6' && *(srcp+1)=='4') {
 			lex->langtype = (AstNode*)f64Type;

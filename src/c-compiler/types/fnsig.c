@@ -10,7 +10,7 @@
 #include "../parser/lexer.h"
 #include "../shared/symbol.h"
 
-// Create a new unsigned literal node
+// Create a new function signature node
 FnSigAstNode *newFnSigNode() {
 	FnSigAstNode *sig;
 	newAstNode(sig, FnSigAstNode, FnSig);
@@ -20,15 +20,27 @@ FnSigAstNode *newFnSigNode() {
 	return sig;
 }
 
-// Serialize the AST for a Unsigned literal
+// Serialize the AST for a function signature
 void fnSigPrint(FnSigAstNode *sig) {
-	astFprint("fn()->");
+	SymNode *nodesp;
+	uint32_t cnt;
+	astFprint("fn(");
+	for (inodesFor(sig->parms, cnt, nodesp)) {
+		astPrintNode(nodesp->node);
+		if (cnt > 1)
+			astFprint(", ");
+	}
+	astFprint(") ");
 	astPrintNode(sig->rettype);
 }
 
-// Traverse the signature tree
-void fnSigPass(AstPass *pstate, FnSigAstNode *name) {
-	astPass(pstate, name->rettype);
+// Traverse the function signature tree
+void fnSigPass(AstPass *pstate, FnSigAstNode *sig) {
+	SymNode *nodesp;
+	uint32_t cnt;
+	for (inodesFor(sig->parms, cnt, nodesp))
+		astPass(pstate, nodesp->node);
+	astPass(pstate, sig->rettype);
 }
 
 // Compare two function signatures to see if they are equivalent

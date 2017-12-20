@@ -63,8 +63,16 @@ FnCallAstNode *newFnCallAstNode(AstNode *fn) {
 
 // Serialize function call node
 void fnCallPrint(FnCallAstNode *node) {
+	AstNode **nodesp;
+	uint32_t cnt;
 	astPrintNode(node->fn);
-	astFprint("()");
+	astFprint("(");
+	for (nodesFor(node->parms, cnt, nodesp)) {
+		astPrintNode(*nodesp);
+		if (cnt > 1)
+			astFprint(", ");
+	}
+	astFprint(")");
 }
 
 // Analyze function call node

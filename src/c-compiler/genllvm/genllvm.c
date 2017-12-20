@@ -24,7 +24,10 @@
 // Generate a type value
 LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
 	switch (typ->asttype) {
-		// If it's a name, resolve it to the actual type info
+	// If it's a name declaration (e.g., parm), resolve it to the actual type info
+	case VarNameDclNode:
+		return genlType(gen, ((NameDclAstNode *)typ)->vtype);
+	// If it's a name, resolve it to the actual type info
 	case VtypeNameUseNode:
 		return genlType(gen, ((NameUseAstNode *)typ)->dclnode->value);
 	case IntNbrType: case UintNbrType:
@@ -66,11 +69,16 @@ LLVMValueRef genlTerm(genl_t *gen, AstNode *termnode) {
 	}
 	case FnCallNode:
 	{
-		LLVMValueRef fnargs;
 		FnCallAstNode *fncall = (FnCallAstNode*)termnode;
 		NameUseAstNode *fnuse = (NameUseAstNode *)fncall->fn;
 		char *fnname = &fnuse->dclnode->namesym->namestr;
-		return LLVMBuildCall(gen->builder, LLVMGetNamedFunction(gen->module, fnname), &fnargs, 0, "");
+		LLVMValueRef *fnargs = (LLVMValueRef*)memAllocBlk(fncall->parms->used * sizeof(LLVMValueRef*));
+		LLVMValueRef *fnarg = fnargs;
+		AstNode **nodesp;
+		uint32_t cnt;
+		for (nodesFor(fncall->parms, cnt, nodesp))
+			*fnarg++ = genlTerm(gen, *nodesp);
+		return LLVMBuildCall(gen->builder, LLVMGetNamedFunction(gen->module, fnname), fnargs, fncall->parms->used, "");
 	}
 	case AssignNode:
 	{
@@ -141,9 +149,16 @@ void genlGloVarName(genl_t *gen, NameDclAstNode *glovar) {
 		return;
 	}
 
-	// Handle when it is a function
-	LLVMTypeRef param_types[] = { LLVMInt32TypeInContext(gen->context), LLVMInt32TypeInContext(gen->context) };
-	LLVMTypeRef ret_type = LLVMFunctionType(genlType(gen, ((FnSigAstNode*)glovar->vtype)->rettype), param_types, 0, 0);
+	// Handle when it is a function, building info from function signature
+	FnSigAstNode *fnsig = (FnSigAstNode*)glovar->vtype;
+	LLVMTypeRef *param_types = (LLVMTypeRef *)memAllocBlk(fnsig->parms->used * sizeof(LLVMTypeRef));
+	LLVMTypeRef *parm = param_types;
+	SymNode *nodesp;
+	uint32_t cnt;
+	for (inodesFor(fnsig->parms, cnt, nodesp)) {
+		*parm++ = genlType(gen, nodesp->node);
+	}
+	LLVMTypeRef ret_type = LLVMFunctionType(genlType(gen, fnsig->rettype), param_types, fnsig->parms->used, 0);
 	glovar->llvmvar = LLVMAddFunction(gen->module, &glovar->namesym->namestr, ret_type);
 }
 

@@ -59,13 +59,21 @@ AstNode *parsePostfix() {
 
 		// Function call with possible parameters
 		case LParenToken:
-			{
-				lexNextToken();
-				node = (AstNode*)newFnCallAstNode(node);
-				if (lex->toktype != RParenToken)
-					parseExp();
-				parseRParen();
-			}
+		{
+			FnCallAstNode *fncall = newFnCallAstNode(node);
+			lexNextToken();
+			fncall->parms = newNodes(8);
+			if (!lexIsToken(RParenToken))
+				while (1) {
+					nodesAdd(&fncall->parms, parseExp());
+					if (lexIsToken(CommaToken))
+						lexNextToken();
+					else
+						break;
+				}
+			parseRParen();
+			node = (AstNode *)fncall;
+		}
 		default:
 			return node;
 		}

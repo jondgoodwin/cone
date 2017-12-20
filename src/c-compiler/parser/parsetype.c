@@ -62,6 +62,7 @@ NameDclAstNode *parseVarDcl(PermAstNode *defperm) {
 AstNode *parseFnSig() {
 	FnSigAstNode *fnsig;
 	Symbol *namesym = NULL;
+	int16_t parmnbr = 0;
 
 	// Skip past the 'fn'
 	lexNextToken();
@@ -79,7 +80,9 @@ AstNode *parseFnSig() {
 	if (lexIsToken(LParenToken)) {
 		lexNextToken();
 		while (lexIsToken(IdentToken)) {
-			NameDclAstNode *parm = parseVarDcl(constPerm);
+			NameDclAstNode *parm = parseVarDcl(immPerm);
+			parm->scope = 1;
+			parm->index = parmnbr++;
 			inodesAdd(&fnsig->parms, parm->namesym, (AstNode*)parm);
 			if (!lexIsToken(CommaToken))
 				break;
