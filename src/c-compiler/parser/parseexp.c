@@ -43,12 +43,7 @@ AstNode *parseTerm() {
 		{
 			lexNextToken();
 			parseExp();
-			if (lex->toktype == RParenToken)
-				lexNextToken();
-			else {
-				errorMsgLex(ErrorNoRParen, "Missing matching right-hand parenthesis ')'");
-				lexNextToken(); // search?
-			}
+			parseRParen();
 		}
 	default:
 		errorMsgLex(ErrorBadTerm, "Invalid term value: expected variable, literal, etc.");
@@ -69,12 +64,7 @@ AstNode *parsePostfix() {
 				node = (AstNode*)newFnCallAstNode(node);
 				if (lex->toktype != RParenToken)
 					parseExp();
-				if (lex->toktype == RParenToken)
-					lexNextToken();
-				else {
-					errorMsgLex(ErrorNoRParen, "Missing matching right-hand parenthesis ')'");
-					lexNextToken(); // search?
-				}
+				parseRParen();
 			}
 		default:
 			return node;

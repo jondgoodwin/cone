@@ -85,10 +85,7 @@ AstNode *parseFnSig() {
 				break;
 			lexNextToken();
 		}
-		if (lexIsToken(RParenToken))
-			lexNextToken();
-		else
-			errorMsgLex(ErrorNoRParen, "Expected right parenthesis that ends parameters");
+		parseRParen();
 	}
 	else
 		errorMsgLex(ErrorNoLParen, "Expected left parenthesis for parameter declarations");

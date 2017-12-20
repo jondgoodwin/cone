@@ -48,6 +48,18 @@ void parseLCurly() {
 	}
 }
 
+// Expect right parenthesis. If not found, search for it or '}' or ';'
+void parseRParen() {
+	if (!lexIsToken(RParenToken))
+		errorMsgLex(ErrorNoRParen, "Expected right parenthesis - skipping forward to find it");
+	while (!lexIsToken(RParenToken)) {
+		if (lexIsToken(EofToken) || lexIsToken(SemiToken) || lexIsToken(RCurlyToken))
+			return;
+		lexNextToken();
+	}
+	lexNextToken();
+}
+
 // Parse a function block
 AstNode *parseFn() {
 	NameDclAstNode *fnnode;
