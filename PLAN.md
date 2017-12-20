@@ -1,4 +1,4 @@
-# Cone - 0.0.1 Project Plan (as of Dec. 4, 2017)
+# Cone - 0.0.1 Project Plan (as of Dec. 20, 2017)
 
 The current development objective is for the compiler to be able to load,
 scan, parse, generate (via LLVM), link, and run Cone programs that use numeric expressions, 
@@ -8,13 +8,19 @@ local variables, if/while blocks, and function definition/application
 Completed so far: A simple end-to-end compiler that turns source into tokens, tokens into AST,
 and AST (via LLVM) into linkable .obj files. It supports the following features:
 
-- Functions and returns
+- Function declarations with typed parameters, return type and code block
+- Global variable declaration and initialization
+- Statements and (implicit) return
+- Function calls
 - Primitive numeric types (integers, floats)
+- Global and parameter variable reference
+- Assignment expressions
+- Type inference, type checking and automatic number casting on expressions
 
 Next steps:
 
+- Local variable declaration and use
 - Arithmetic expressions
-- Local, mutable variables, and assignment
 - If and while control structures, numeric comparison operators
 - Tested code examples that run on Windows and Linux
 - Attempted port to WebAssembly and Android
