@@ -8,6 +8,7 @@
 #include "ast.h"
 #include "../parser/lexer.h"
 #include "../shared/fileio.h"
+#include "../shared/error.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -136,6 +137,8 @@ void astPasses(PgmAstNode *pgm) {
 	// Capture all globals in symbol table and check for namespace collisions
 	pstate.pass = NameResolution;
 	astPass(&pstate, (AstNode*) pgm);
+	if (errors)
+		return;
 
 	// Apply syntactic sugar, resolve local names/scopes, type inference/check
 	pstate.pass = TypeCheck;

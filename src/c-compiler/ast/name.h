@@ -13,7 +13,7 @@ typedef struct NameDclAstNode {
 	PermAstNode *perm;			// Permission type (often mut or imm)
 	Symbol *namesym;			// Pointer to the global symbol table entry
 	AstNode *value;				// Starting value/declaration (NULL if not initialized)
-	struct NameDclAstNode *prev; // previous name this overrides in global symbol table
+	struct AstNode *prev;		// previous name this overrides in global symbol table
 	LLVMValueRef llvmvar;		// LLVM's handle for a declared variable (for generation)
 	uint16_t scope;				// 0=global
 	uint16_t index;				// index within this scope (e.g., parameter number)

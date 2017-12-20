@@ -32,12 +32,16 @@ void nameUsePass(AstPass *pstate, NameUseAstNode *name) {
 	switch (pstate->pass) {
 	case NameResolution:
 		name->dclnode = (NameDclAstNode*)name->namesym->node;
-		switch (name->dclnode->asttype) {
-		case VarNameDclNode: name->asttype = VarNameUseNode; return;
-		case VtypeNameDclNode: name->asttype = VtypeNameUseNode; return;
-		case PermNameDclNode: name->asttype = PermNameUseNode; return;
-		case AllocNameDclNode: name->asttype = AllocNameUseNode; return;
+		if (name->dclnode) {
+			switch (name->dclnode->asttype) {
+			case VarNameDclNode: name->asttype = VarNameUseNode; return;
+			case VtypeNameDclNode: name->asttype = VtypeNameUseNode; return;
+			case PermNameDclNode: name->asttype = PermNameUseNode; return;
+			case AllocNameDclNode: name->asttype = AllocNameUseNode; return;
+			}
 		}
+		else
+			errorMsgNode((AstNode*)name, ErrorUnkName, "The name %s does not refer to a declared name", &name->namesym->namestr);
 		break;
 	case TypeCheck:
 		name->vtype = name->dclnode->vtype;
@@ -104,39 +108,70 @@ void fnImplicitReturn(AstNode *rettype, BlockAstNode *blk) {
 	}
 }
 
+// Enable resolution of fn parameter references to parameters
+void nameDclFnNameResolve(AstPass *pstate, NameDclAstNode *name) {
+	FnSigAstNode *fnsig = (FnSigAstNode*)name->vtype;
+	SymNode *nodesp;
+	uint32_t cnt;
+	// Load parameters into global symbol table (with unhooking mechanism)
+	for (inodesFor(fnsig->parms, cnt, nodesp)) {
+		NameDclAstNode *parm = (NameDclAstNode*)nodesp->node;
+		parm->prev = parm->namesym->node;
+		parm->namesym->node = (AstNode*)parm;
+	}
+	astPass(pstate, name->value);
+	// Unhood parameters from global symbol table
+	for (inodesFor(fnsig->parms, cnt, nodesp)) {
+		NameDclAstNode *parm = (NameDclAstNode*)nodesp->node;
+		parm->namesym->node = parm->prev;
+	}
+}
+
+// Provide parameter and return type context for type checking function's logic
+void nameDclFnTypeCheck(AstPass *pstate, NameDclAstNode *name) {
+	FnSigAstNode *oldfnsig = pstate->fnsig;
+	pstate->fnsig = (FnSigAstNode*)name->vtype;
+	astPass(pstate, name->value);
+	pstate->fnsig = oldfnsig;
+}
+
+// Type check variable against its initial value
+void nameDclVarTypeCheck(AstPass *pstate, NameDclAstNode *name) {
+	astPass(pstate, name->value);
+	// Infer the var's vtype from its value, if not provided
+	if (name->vtype == voidType)
+		name->vtype = ((TypedAstNode *)name->value)->vtype;
+	// Otherwise, verify that declared type and initial value type matches
+	else if (!typeCoerces(name->vtype, &name->value))
+		errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
+}
+
 // Check the name declaration's AST
 void nameDclPass(AstPass *pstate, NameDclAstNode *name) {
-	FnSigAstNode *oldfnsig = pstate->fnsig;
-
-	switch (pstate->pass) {
-	case NameResolution:
-		// Scoping stuff
-		break;
-
-	case TypeCheck:
-		// Special handling for a function...
-		if (name->vtype->asttype == FnSig && name->value && name->value->asttype == BlockNode) {
-			// Syntactic sugar: Turn implicit returns into explicit returns
-			fnImplicitReturn(((FnSigAstNode*)name->vtype)->rettype, (BlockAstNode *)name->value);
-			// Provide parameter and return type context for type checking function's logic
-			pstate->fnsig = (FnSigAstNode*)name->vtype;
-		}
-		// Type check non-function variable declaration:
-		else if (name->value) {
-			// Infer the var's vtype from its value, if not provided
-			if (name->vtype == voidType)
-				name->vtype = ((TypedAstNode *)name->value)->vtype;
-			// Otherwise, verify that declared type and initial value type matches
-			else if (!typeCoerces(name->vtype, &name->value))
-				errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
-		}
-		break;
-	}
-
-	astPass(pstate, name->vtype);
+	AstNode *vtype = name->vtype;
 	astPass(pstate, (AstNode*)name->perm);
-	if (name->value)
-		astPass(pstate, name->value);
+	astPass(pstate, vtype);
 
-	pstate->fnsig = oldfnsig;
+	// Process nodes in name's initial value/code block
+	if (name->value) {
+		switch (pstate->pass) {
+		case NameResolution:
+			if (vtype->asttype == FnSig)
+				nameDclFnNameResolve(pstate, name);
+			break;
+		case TypeCheck:
+			if (vtype->asttype == FnSig) {
+				// Syntactic sugar: Turn implicit returns into explicit returns
+				fnImplicitReturn(((FnSigAstNode*)name->vtype)->rettype, (BlockAstNode *)name->value);
+				// Do type checking of function (with fnsig as context)
+				nameDclFnTypeCheck(pstate, name);
+			}
+			else
+				nameDclVarTypeCheck(pstate, name);
+			break;
+		}
+	}
+	else if (vtype == voidType)
+		errorMsgNode((AstNode*)name, ErrorNoType, "Name must specify a type");
+
 }

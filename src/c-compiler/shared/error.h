@@ -38,6 +38,8 @@ enum ErrorCode {
 	ErrorBadLval,	// Expression is not an lval
 	ErrorNoMut,		// Mutation is not allowed
 	ErrorNotFn,		// Not a function
+	ErrorUnkName,	// Unknown name (no declaration exists)
+	ErrorNoType,	// No type specified (or inferrable)
 
 	// Warnings
 	WarnCode = 3000,

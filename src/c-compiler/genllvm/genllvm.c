@@ -63,9 +63,13 @@ LLVMValueRef genlTerm(genl_t *gen, AstNode *termnode) {
 		return LLVMConstReal(genlType(gen, ((ULitAstNode*)termnode)->vtype), ((FLitAstNode*)termnode)->floatlit);
 	case VarNameUseNode:
 	{
-		// Load from a global variable (generalize later for local variable if scope > 0)
+		// Load from a variable. If pointer, do a load otherwise assume it is the (immutable) value
 		char *name = &((NameUseAstNode *)termnode)->dclnode->namesym->namestr;
-		return LLVMBuildLoad(gen->builder, ((NameUseAstNode *)termnode)->dclnode->llvmvar, name);
+		LLVMValueRef varval = ((NameUseAstNode *)termnode)->dclnode->llvmvar;
+		if (LLVMGetTypeKind(LLVMTypeOf(varval)) == LLVMPointerTypeKind)
+			return LLVMBuildLoad(gen->builder, varval, name);
+		else
+			return varval;
 	}
 	case FnCallNode:
 	{
@@ -156,6 +160,7 @@ void genlGloVarName(genl_t *gen, NameDclAstNode *glovar) {
 	SymNode *nodesp;
 	uint32_t cnt;
 	for (inodesFor(fnsig->parms, cnt, nodesp)) {
+		assert(nodesp->node->asttype == VarNameDclNode);
 		*parm++ = genlType(gen, nodesp->node);
 	}
 	LLVMTypeRef ret_type = LLVMFunctionType(genlType(gen, fnsig->rettype), param_types, fnsig->parms->used, 0);
@@ -169,12 +174,21 @@ void genlGloVar(genl_t *gen, NameDclAstNode *varnode) {
 
 // Generate a function block
 void genlFn(genl_t *gen, NameDclAstNode *fnnode) {
+	FnSigAstNode *fnsig = (FnSigAstNode*)fnnode->vtype;
 	BlockAstNode *blk;
 	AstNode **nodesp;
 	uint32_t cnt;
 
 	assert(fnnode->value->asttype == BlockNode);
 	gen->fn = fnnode->llvmvar;
+
+	// Generate LLVMValueRef's for all parameters, so we can use them as local vars in code
+	SymNode *inodesp;
+	for (inodesFor(fnsig->parms, cnt, inodesp)) {
+		assert(inodesp->node->asttype == VarNameDclNode);
+		NameDclAstNode *var = (NameDclAstNode*)inodesp->node;
+		var->llvmvar = LLVMGetParam(gen->fn, var->index);
+	}
 
 	// Attach block and builder to function
 	LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "entry");
