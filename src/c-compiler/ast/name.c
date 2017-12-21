@@ -79,19 +79,13 @@ int isNameDclNode(AstNode *node) {
 
 // Serialize the AST for a variable/function
 void nameDclPrint(NameDclAstNode *name) {
-	int newline = 1;
-	astPrintIndent();
 	astPrintNode((AstNode*)name->perm);
 	astFprint("%s ", &name->namesym->namestr);
 	astPrintNode(name->vtype);
 	if (name->value) {
 		astFprint(" = ");
 		astPrintNode(name->value);
-		if (name->value->asttype == BlockNode)
-			newline = 0;
 	}
-	if (newline)
-		astPrintNL();
 }
 
 // Syntactic sugar: Turn last statement implicit returns into explicit returns

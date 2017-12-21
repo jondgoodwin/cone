@@ -26,8 +26,11 @@ void pgmPrint(PgmAstNode *pgm) {
 
 	astFprint("AST for program %s\n", pgm->lexer->url);
 	astPrintIncr();
-	for (nodesFor(pgm->nodes, cnt, nodesp))
+	for (nodesFor(pgm->nodes, cnt, nodesp)) {
+		astPrintIndent();
 		astPrintNode(*nodesp);
+		astPrintNL();
+	}
 	astPrintDecr();
 }
 
@@ -70,8 +73,12 @@ void blockPrint(BlockAstNode *blk) {
 	astFprint("block:\n");
 	if (blk->stmts) {
 		astPrintIncr();
-		for (nodesFor(blk->stmts, cnt, nodesp))
+		for (nodesFor(blk->stmts, cnt, nodesp)) {
+			astPrintIndent();
 			astPrintNode(*nodesp);
+			if (cnt > 1)
+				astPrintNL();
+		}
 		astPrintDecr();
 	}
 }
@@ -95,10 +102,8 @@ StmtExpAstNode *newStmtExpNode() {
 
 // Serialize the AST for a statement expression
 void stmtExpPrint(StmtExpAstNode *node) {
-	astPrintIndent();
 	astFprint("stmtexp ");
 	astPrintNode(node->exp);
-	astPrintNL();
 }
 
 // Check the AST for a statement expression
@@ -116,10 +121,8 @@ StmtExpAstNode *newReturnNode() {
 
 // Serialize the AST for a return statement
 void returnPrint(StmtExpAstNode *node) {
-	astPrintIndent();
 	astFprint("return ");
 	astPrintNode(node->exp);
-	astPrintNL();
 }
 
 // Check the AST for a return statement
