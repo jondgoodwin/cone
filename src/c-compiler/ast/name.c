@@ -1,4 +1,4 @@
-/** AST handling for names
+/** AST handling for Name use and declaration nodes
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -107,14 +107,27 @@ void nameDclFnNameResolve(AstPass *pstate, NameDclAstNode *name) {
 	int16_t oldscope = pstate->scope;
 	pstate->scope = 1;
 	FnSigAstNode *fnsig = (FnSigAstNode*)name->vtype;
-	SymNode *nodesp;
-	uint32_t cnt;
-	// Load parameters into global symbol table (with unhooking mechanism)
-	inodesHook(fnsig->parms);
+	inodesHook(fnsig->parms);		// Load into global symbol table
 	astPass(pstate, name->value);
-	// Unhook parameters from global symbol table
-	inodesUnhook(fnsig->parms);
+	inodesUnhook(fnsig->parms);		// Unhook from symbol table
 	pstate->scope = oldscope;
+}
+
+// Enable name resolution of local variables
+void nameDclVarNameResolve(AstPass *pstate, NameDclAstNode *name) {
+	// Variable declaration within a block is a local variable
+	if (pstate->scope > 1) {
+		// Capture variable's scope info and have block know about variable
+		name->scope = pstate->scope;
+		inodesAdd(&pstate->blk->locals, name->namesym, (AstNode*)name);
+
+		// Hook variable into global symbol table (will be unhooked by block)
+		name->prev = name->namesym->node; // Latent unhooker
+		name->namesym->node = (AstNode*)name;
+	}
+
+	if (name->value)
+		astPass(pstate, name->value);
 }
 
 // Provide parameter and return type context for type checking function's logic
@@ -146,15 +159,17 @@ void nameDclPass(AstPass *pstate, NameDclAstNode *name) {
 	astPass(pstate, vtype);
 
 	// Process nodes in name's initial value/code block
-	if (name->value) {
-		switch (pstate->pass) {
-		case NameResolution:
-			if (vtype->asttype == FnSig)
+	switch (pstate->pass) {
+	case NameResolution:
+		if (vtype->asttype == FnSig) {
+			if (name->value)
 				nameDclFnNameResolve(pstate, name);
-			else
-				astPass(pstate, name->value);
-			break;
-		case TypeCheck:
+		}
+		else
+			nameDclVarNameResolve(pstate, name);
+		break;
+	case TypeCheck:
+		if (name->value) {
 			if (vtype->asttype == FnSig) {
 				// Syntactic sugar: Turn implicit returns into explicit returns
 				fnImplicitReturn(((FnSigAstNode*)name->vtype)->rettype, (BlockAstNode *)name->value);
@@ -163,10 +178,9 @@ void nameDclPass(AstPass *pstate, NameDclAstNode *name) {
 			}
 			else
 				nameDclVarTypeCheck(pstate, name);
-			break;
 		}
+		else if (vtype == voidType)
+			errorMsgNode((AstNode*)name, ErrorNoType, "Name must specify a type");
+		break;
 	}
-	else if (vtype == voidType)
-		errorMsgNode((AstNode*)name, ErrorNoType, "Name must specify a type");
-
 }

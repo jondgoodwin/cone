@@ -77,6 +77,10 @@ void fnCallPrint(FnCallAstNode *node) {
 
 // Analyze function call node
 void fnCallPass(AstPass *pstate, FnCallAstNode *node) {
+	AstNode **argsp;
+	uint32_t cnt;
+	for (nodesFor(node->parms, cnt, argsp))
+		astPass(pstate, *argsp);
 	astPass(pstate, node->fn);
 
 	switch (pstate->pass) {
@@ -117,6 +121,7 @@ void fnCallPass(AstPass *pstate, FnCallAstNode *node) {
 				}
 			}
 		}
+		break;
 	}
 	}
 }

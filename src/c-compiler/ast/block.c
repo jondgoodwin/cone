@@ -1,4 +1,4 @@
-/** AST handling for block nodes: Program, FnImpl, Block, etc.
+/** AST handling for block nodes: Program, Block, etc.
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -92,10 +92,17 @@ void blockPass(AstPass *pstate, BlockAstNode *blk) {
 	blk->scope = ++pstate->scope; // Increment scope counter
 	BlockAstNode *oldblk = pstate->blk;
 	pstate->blk = blk;
+
+	// Traverse block info
 	AstNode **nodesp;
 	uint32_t cnt;
 	for (nodesFor(blk->stmts, cnt, nodesp))
 		astPass(pstate, *nodesp);
+
+	// Unhook local variables that hooked themselves
+	if(pstate->pass == NameResolution)
+		inodesUnhook(blk->locals);
+
 	pstate->blk = oldblk;
 	pstate->scope = oldscope;
 }

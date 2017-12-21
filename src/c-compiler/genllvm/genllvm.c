@@ -173,6 +173,28 @@ void genlGloVar(genl_t *gen, NameDclAstNode *varnode) {
 	LLVMSetInitializer(varnode->llvmvar, genlTerm(gen, varnode->value));
 }
 
+// Generate parameter variable
+void genlParmVar(genl_t *gen, NameDclAstNode *var) {
+	assert(var->asttype == VarNameDclNode);
+	if (MayWrite & permGetFlags((AstNode*)var)) {
+		// Transform parameter value into something mutable 
+		var->llvmvar = LLVMBuildAlloca(gen->builder, genlType(gen, (AstNode*)var), &var->namesym->namestr);
+		LLVMBuildStore(gen->builder, LLVMGetParam(gen->fn, var->index), var->llvmvar);
+	}
+	else {
+		var->llvmvar = LLVMGetParam(gen->fn, var->index);
+		LLVMSetValueName(var->llvmvar, &var->namesym->namestr);
+	}
+}
+
+// Generate local variable
+void genlLocalVar(genl_t *gen, NameDclAstNode *var) {
+	assert(var->asttype == VarNameDclNode);
+	var->llvmvar = LLVMBuildAlloca(gen->builder, genlType(gen, (AstNode*)var), &var->namesym->namestr);
+	if (var->value)
+		LLVMBuildStore(gen->builder, genlTerm(gen, var->value), var->llvmvar);
+}
+
 // Generate a function block
 void genlFn(genl_t *gen, NameDclAstNode *fnnode) {
 	FnSigAstNode *fnsig = (FnSigAstNode*)fnnode->vtype;
@@ -190,24 +212,15 @@ void genlFn(genl_t *gen, NameDclAstNode *fnnode) {
 
 	// Generate LLVMValueRef's for all parameters, so we can use them as local vars in code
 	SymNode *inodesp;
-	for (inodesFor(fnsig->parms, cnt, inodesp)) {
-		assert(inodesp->node->asttype == VarNameDclNode);
-		NameDclAstNode *var = (NameDclAstNode*)inodesp->node;
-		if (MayWrite & permGetFlags((AstNode*)var)) {
-			// Transform parameter value into something mutable 
-			var->llvmvar = LLVMBuildAlloca(gen->builder, genlType(gen, (AstNode*)var), &var->namesym->namestr);
-			LLVMBuildStore(gen->builder, LLVMGetParam(gen->fn, var->index), var->llvmvar);
-		}
-		else {
-			var->llvmvar = LLVMGetParam(gen->fn, var->index);
-			LLVMSetValueName(var->llvmvar, &var->namesym->namestr);
-		}
-	}
+	for (inodesFor(fnsig->parms, cnt, inodesp))
+		genlParmVar(gen, (NameDclAstNode*)inodesp->node);
 
 	// Populate block with statements
 	blk = (BlockAstNode *)fnnode->value;
 	for (nodesFor(blk->stmts, cnt, nodesp)) {
 		switch ((*nodesp)->asttype) {
+		case VarNameDclNode:
+			genlLocalVar(gen, (NameDclAstNode*)*nodesp); break;
 		case StmtExpNode:
 			genlTerm(gen, ((StmtExpAstNode*)*nodesp)->exp); break;
 		case ReturnNode:
