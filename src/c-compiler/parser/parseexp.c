@@ -82,24 +82,14 @@ AstNode *parsePostfix() {
 
 // Parse a prefix operator, e.g.: -
 AstNode *parsePrefix() {
+	/*
 	if (lexIsToken(DashToken)) {
-		UnaryAstNode *node;
-		AstNode *opnode;
-		newAstNode(node, UnaryAstNode, UnaryNode);
+		// newAstNode(node, UnaryAstNode, UnaryNode);
 		lexNextToken();
-		opnode = parsePrefix();
-		// Optimize negative numeric literal
-		if (opnode->asttype == ULitNode) {
-			((ULitAstNode*)opnode)->uintlit = -(int32_t)((ULitAstNode*)opnode)->uintlit;
-			return (AstNode *)opnode;
-		} else if (opnode->asttype == FLitNode) {
-			((FLitAstNode*)opnode)->floatlit = -(int32_t)((FLitAstNode*)opnode)->floatlit;
-			return (AstNode *)opnode;
-		} else {
-			node->expnode = parsePrefix();
-			return (AstNode *)node;
-		}
+		node->expnode = parsePrefix();
+		return (AstNode *)node;
 	}
+	*/
 	return parsePostfix();
 }
 

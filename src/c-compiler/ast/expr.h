@@ -34,12 +34,6 @@ typedef struct CastAstNode {
 	AstNode *exp;
 } CastAstNode;
 
-// Unary operator (e.g., negative)
-typedef struct UnaryAstNode {
-	TypedAstHdr;
-	AstNode *expnode;
-} UnaryAstNode;
-
 AssignAstNode *newAssignAstNode(int16_t assigntype, AstNode *lval, AstNode *rval);
 void assignPrint(AssignAstNode *node);
 void assignPass(AstPass *pstate, AssignAstNode *node);
