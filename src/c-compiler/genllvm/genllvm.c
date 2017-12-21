@@ -17,6 +17,7 @@
 #include <llvm-c/Target.h>
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitWriter.h>
+#include <llvm-c/Transforms/Scalar.h>
 
 #include <stdio.h>
 #include <assert.h>
@@ -87,9 +88,8 @@ LLVMValueRef genlTerm(genl_t *gen, AstNode *termnode) {
 	case AssignNode:
 	{
 		AssignAstNode *node = (AssignAstNode*)termnode;
-		char *lvalname = &((NameUseAstNode *)node->lval)->dclnode->namesym->namestr;
-		LLVMValueRef glovar = LLVMGetNamedGlobal(gen->module, lvalname);
-		return LLVMBuildStore(gen->builder, genlTerm(gen, node->rval), glovar);
+		NameDclAstNode *lvalvar = ((NameUseAstNode *)node->lval)->dclnode;
+		return LLVMBuildStore(gen->builder, genlTerm(gen, node->rval), lvalvar->llvmvar);
 	}
 	case CastNode:
 	{
@@ -182,18 +182,24 @@ void genlFn(genl_t *gen, NameDclAstNode *fnnode) {
 	assert(fnnode->value->asttype == BlockNode);
 	gen->fn = fnnode->llvmvar;
 
+	// Attach block and builder to function
+	LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "entry");
+	gen->builder = LLVMCreateBuilder();
+	LLVMPositionBuilderAtEnd(gen->builder, entry);
+
 	// Generate LLVMValueRef's for all parameters, so we can use them as local vars in code
 	SymNode *inodesp;
 	for (inodesFor(fnsig->parms, cnt, inodesp)) {
 		assert(inodesp->node->asttype == VarNameDclNode);
 		NameDclAstNode *var = (NameDclAstNode*)inodesp->node;
-		var->llvmvar = LLVMGetParam(gen->fn, var->index);
+		if (MayWrite & permGetFlags((AstNode*)var)) {
+			// Transform parameter value into something mutable 
+			var->llvmvar = LLVMBuildAlloca(gen->builder, genlType(gen, (AstNode*)var), &var->namesym->namestr);
+			LLVMBuildStore(gen->builder, LLVMGetParam(gen->fn, var->index), var->llvmvar);
+		}
+		else
+			var->llvmvar = LLVMGetParam(gen->fn, var->index);
 	}
-
-	// Attach block and builder to function
-	LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "entry");
-	gen->builder = LLVMCreateBuilder();
-	LLVMPositionBuilderAtEnd(gen->builder, entry);
 
 	// Populate block with statements
 	blk = (BlockAstNode *)fnnode->value;
@@ -318,8 +324,20 @@ void genllvm(ConeOptions *opt, PgmAstNode *pgmast) {
 
 	// Generate AST to IR
 	genlModule(&gen, pgmast);
+
+	// Optimize the generated LLVM IR
+	LLVMPassManagerRef passmgr = LLVMCreatePassManager();
+	LLVMAddPromoteMemoryToRegisterPass(passmgr);	// Promote allocas to registers.
+	LLVMAddInstructionCombiningPass(passmgr);		// Do simple "peephole" and bit-twiddling optimizations
+	LLVMAddReassociatePass(passmgr);				// Reassociate expressions.
+	LLVMAddGVNPass(passmgr);						// Eliminate common subexpressions.
+	LLVMAddCFGSimplificationPass(passmgr);			// Simplify the control flow graph
+	LLVMRunPassManager(passmgr, gen.module);
+	LLVMDisposePassManager(passmgr);
+
+	// Serialize the LLVM IR, if requested
 	if (opt->print_llvmir && LLVMPrintModuleToFile(gen.module, fileMakePath(opt->output, pgmast->lexer->fname, "ir"), &err) != 0) {
-		errorMsg(ErrorGenErr, "Could not emit obj file: %s", err);
+		errorMsg(ErrorGenErr, "Could not emit ir file: %s", err);
 		LLVMDisposeMessage(err);
 	}
 
