@@ -50,6 +50,19 @@ void parseStmtBlock(Nodes **nodes) {
 		case RetToken:
 			nodesAdd(nodes, parseReturn());
 			break;
+
+		// A local variable declaration, if it begins with a permission
+		case IdentToken: {
+			AstNode *perm = lex->val.ident->node;
+			if (perm && perm->asttype == PermNameDclNode) {
+				NameDclAstNode *local;
+				nodesAdd(nodes, (AstNode*)(local = parseVarDcl(immPerm)));
+				parseSemi();
+				break;
+			}
+		}
+		// Notice, this falls through to below if not a permission
+
 		default:
 			nodesAdd(nodes, parseExpStmt());
 		}

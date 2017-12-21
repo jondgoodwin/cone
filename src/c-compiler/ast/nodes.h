@@ -45,6 +45,8 @@ typedef struct SymNode {
 
 Inodes *newInodes(int size);
 void inodesAdd(Inodes **nodesp, Symbol *name, AstNode *node);
+void inodesHook(Inodes *inodes);
+void inodesUnhook(Inodes *inodes);
 
 #define inodesFor(node, cnt, nodesp) nodesp = (SymNode*)((node)+1), cnt = (node)->used; cnt; cnt--, nodesp++
 #define inodesGet(node, index) ((SymNode*)((node)+1))[index]

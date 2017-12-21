@@ -104,21 +104,17 @@ void fnImplicitReturn(AstNode *rettype, BlockAstNode *blk) {
 
 // Enable resolution of fn parameter references to parameters
 void nameDclFnNameResolve(AstPass *pstate, NameDclAstNode *name) {
+	int16_t oldscope = pstate->scope;
+	pstate->scope = 1;
 	FnSigAstNode *fnsig = (FnSigAstNode*)name->vtype;
 	SymNode *nodesp;
 	uint32_t cnt;
 	// Load parameters into global symbol table (with unhooking mechanism)
-	for (inodesFor(fnsig->parms, cnt, nodesp)) {
-		NameDclAstNode *parm = (NameDclAstNode*)nodesp->node;
-		parm->prev = parm->namesym->node;
-		parm->namesym->node = (AstNode*)parm;
-	}
+	inodesHook(fnsig->parms);
 	astPass(pstate, name->value);
-	// Unhood parameters from global symbol table
-	for (inodesFor(fnsig->parms, cnt, nodesp)) {
-		NameDclAstNode *parm = (NameDclAstNode*)nodesp->node;
-		parm->namesym->node = parm->prev;
-	}
+	// Unhook parameters from global symbol table
+	inodesUnhook(fnsig->parms);
+	pstate->scope = oldscope;
 }
 
 // Provide parameter and return type context for type checking function's logic

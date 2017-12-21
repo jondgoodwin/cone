@@ -85,12 +85,19 @@ void blockPrint(BlockAstNode *blk) {
 
 // Check the block's AST
 void blockPass(AstPass *pstate, BlockAstNode *blk) {
+	if (blk->stmts == NULL)
+		return;
+
+	int16_t oldscope = pstate->scope;
+	blk->scope = ++pstate->scope; // Increment scope counter
+	BlockAstNode *oldblk = pstate->blk;
+	pstate->blk = blk;
 	AstNode **nodesp;
 	uint32_t cnt;
-
-	if (blk->stmts)
-		for (nodesFor(blk->stmts, cnt, nodesp))
-			astPass(pstate, *nodesp);
+	for (nodesFor(blk->stmts, cnt, nodesp))
+		astPass(pstate, *nodesp);
+	pstate->blk = oldblk;
+	pstate->scope = oldscope;
 }
 
 // Create a new expression statement node

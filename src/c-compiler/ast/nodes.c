@@ -6,6 +6,7 @@
 */
 
 #include "ast.h"
+#include "../shared/symbol.h"
 #include "../parser/lexer.h"
 
 #include <stdio.h>
@@ -70,4 +71,23 @@ void inodesAdd(Inodes **nodesp, Symbol *name, AstNode *node) {
 	inodes->used++;
 }
 
+// Hook symbols in inodes into global symbol table
+void inodesHook(Inodes *inodes) {
+	SymNode *nodesp;
+	uint32_t cnt;
+	for (inodesFor(inodes, cnt, nodesp)) {
+		NameDclAstNode *parm = (NameDclAstNode*)nodesp->node;
+		parm->prev = parm->namesym->node; // Latent unhooker
+		parm->namesym->node = (AstNode*)parm;
+	}
+}
 
+// Unhook symbols from global symbol table
+void inodesUnhook(Inodes *inodes) {
+	SymNode *nodesp;
+	uint32_t cnt;
+	for (inodesFor(inodes, cnt, nodesp)) {
+		NameDclAstNode *parm = (NameDclAstNode*)nodesp->node;
+		parm->namesym->node = parm->prev;
+	}
+}
