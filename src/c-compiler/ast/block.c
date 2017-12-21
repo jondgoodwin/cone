@@ -36,8 +36,21 @@ void pgmPass(AstPass *pstate, PgmAstNode *pgm) {
 	AstNode **nodesp;
 	uint32_t cnt;
 
-	for (nodesFor(pgm->nodes, cnt, nodesp))
+	// For global variables and functions, handle all their type info first
+	for (nodesFor(pgm->nodes, cnt, nodesp)) {
+		if ((*nodesp)->asttype == VarNameDclNode) {
+			NameDclAstNode *name = (NameDclAstNode*)*nodesp;
+			astPass(pstate, (AstNode*)name->perm);
+			astPass(pstate, name->vtype);
+		}
+	}
+	if (errors)
+		return;
+
+	// Now we can process the full node info
+	for (nodesFor(pgm->nodes, cnt, nodesp)) {
 		astPass(pstate, *nodesp);
+	}
 }
 
 // Create a new block node

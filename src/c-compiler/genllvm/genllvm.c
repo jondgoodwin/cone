@@ -65,10 +65,11 @@ LLVMValueRef genlTerm(genl_t *gen, AstNode *termnode) {
 	case VarNameUseNode:
 	{
 		// Load from a variable. If pointer, do a load otherwise assume it is the (immutable) value
-		char *name = &((NameUseAstNode *)termnode)->dclnode->namesym->namestr;
 		LLVMValueRef varval = ((NameUseAstNode *)termnode)->dclnode->llvmvar;
-		if (LLVMGetTypeKind(LLVMTypeOf(varval)) == LLVMPointerTypeKind)
+		if (LLVMGetTypeKind(LLVMTypeOf(varval)) == LLVMPointerTypeKind) {
+			char *name = &((NameUseAstNode *)termnode)->dclnode->namesym->namestr;
 			return LLVMBuildLoad(gen->builder, varval, name);
+		}
 		else
 			return varval;
 	}
@@ -197,8 +198,10 @@ void genlFn(genl_t *gen, NameDclAstNode *fnnode) {
 			var->llvmvar = LLVMBuildAlloca(gen->builder, genlType(gen, (AstNode*)var), &var->namesym->namestr);
 			LLVMBuildStore(gen->builder, LLVMGetParam(gen->fn, var->index), var->llvmvar);
 		}
-		else
+		else {
 			var->llvmvar = LLVMGetParam(gen->fn, var->index);
+			LLVMSetValueName(var->llvmvar, &var->namesym->namestr);
+		}
 	}
 
 	// Populate block with statements

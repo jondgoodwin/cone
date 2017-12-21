@@ -82,11 +82,41 @@ void fnCallPass(AstPass *pstate, FnCallAstNode *node) {
 	switch (pstate->pass) {
 	case TypeCheck:
 	{
-		AstNode *vtype = typeGetVtype(node->fn);
-		if (vtype->asttype == FnSig)
-			node->vtype = ((FnSigAstNode*)vtype)->rettype;
+		// Capture return vtype and ensure we are calling a function
+		AstNode *fnsig = typeGetVtype(node->fn);
+		if (fnsig->asttype == FnSig)
+			node->vtype = ((FnSigAstNode*)fnsig)->rettype;
 		else
 			errorMsgNode(node->fn, ErrorNotFn, "Cannot call a value that is not a function");
+
+		// Error out if we have too many arguments
+		int argsunder = ((FnSigAstNode*)fnsig)->parms->used - node->parms->used;
+		if (argsunder < 0) {
+			errorMsgNode((AstNode*)node, ErrorManyArgs, "Too many arguments specified vs. function declaration");
+			return;
+		}
+
+		// Type check that passed arguments match declared parameters
+		AstNode **argsp;
+		uint32_t cnt;
+		SymNode *parmp = (SymNode*)((((FnSigAstNode*)fnsig)->parms)+1);
+		for (nodesFor(node->parms, cnt, argsp)) {
+			if (!typeCoerces(parmp->node, argsp))
+				errorMsgNode(*argsp, ErrorInvType, "Argument type does not match declared parameter");
+			parmp++;
+		}
+
+		// If we have too few arguments, use default values, if provided
+		if (argsunder > 0) {
+			if (((NameDclAstNode*)parmp->node)->value == NULL)
+				errorMsgNode((AstNode*)node, ErrorFewArgs, "Function call requires more arguments than specified");
+			else {
+				while (argsunder--) {
+					nodesAdd(&node->parms, ((NameDclAstNode*)parmp->node)->value);
+					parmp++;
+				}
+			}
+		}
 	}
 	}
 }

@@ -78,11 +78,16 @@ AstNode *parseFnSig() {
 
 	// Process parameter declarations
 	if (lexIsToken(LParenToken)) {
+		int usesDefaults = 0;
 		lexNextToken();
 		while (lexIsToken(IdentToken)) {
 			NameDclAstNode *parm = parseVarDcl(immPerm);
 			parm->scope = 1;
 			parm->index = parmnbr++;
+			if (usesDefaults && parm->value == NULL)
+				errorMsgNode((AstNode*)parm, ErrorNoInit, "Must specify default value since prior parm did");
+			else if (parm->value)
+				usesDefaults = 1;
 			inodesAdd(&fnsig->parms, parm->namesym, (AstNode*)parm);
 			if (!lexIsToken(CommaToken))
 				break;

@@ -40,6 +40,9 @@ enum ErrorCode {
 	ErrorNotFn,		// Not a function
 	ErrorUnkName,	// Unknown name (no declaration exists)
 	ErrorNoType,	// No type specified (or inferrable)
+	ErrorNoInit,	// Parm didn't specify required default value
+	ErrorFewArgs,	// Too few arguments specified
+	ErrorManyArgs,	// Too many arguments specified
 
 	// Warnings
 	WarnCode = 3000,

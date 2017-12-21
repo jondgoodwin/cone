@@ -138,6 +138,9 @@ void nameDclFnTypeCheck(AstPass *pstate, NameDclAstNode *name) {
 // Type check variable against its initial value
 void nameDclVarTypeCheck(AstPass *pstate, NameDclAstNode *name) {
 	astPass(pstate, name->value);
+	// Global variables and function parameters require literal initializers
+	if (name->scope <= 1 && !litIsLiteral(name->value))
+		errorMsgNode(name->value, ErrorNotLit, "Variable may only be initialized with a literal.");
 	// Infer the var's vtype from its value, if not provided
 	if (name->vtype == voidType)
 		name->vtype = ((TypedAstNode *)name->value)->vtype;
@@ -158,6 +161,8 @@ void nameDclPass(AstPass *pstate, NameDclAstNode *name) {
 		case NameResolution:
 			if (vtype->asttype == FnSig)
 				nameDclFnNameResolve(pstate, name);
+			else
+				astPass(pstate, name->value);
 			break;
 		case TypeCheck:
 			if (vtype->asttype == FnSig) {
