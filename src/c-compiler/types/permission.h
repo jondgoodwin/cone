@@ -10,7 +10,7 @@
 
 // Permission type info
 typedef struct PermAstNode {
-	TypedAstHdr;
+	TypeAstHdr;
 	AstNode *locker;
 	uint8_t ptype;
 } PermAstNode;

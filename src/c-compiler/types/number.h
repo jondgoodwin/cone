@@ -10,7 +10,7 @@
 
 // For primitives such as integer, unsigned integet, floats
 typedef struct NbrAstNode {
-	TypedAstHdr;
+	TypeAstHdr;
 	unsigned char bits;	// e.g., int32 uses 32 bits
 } NbrAstNode;
 

@@ -10,8 +10,27 @@
 #include "../parser/lexer.h"
 #include "../shared/symbol.h"
 
+Inodes *uinstnames;
+Inodes *utypenames;
+Inodes *iinstnames;
+Inodes *itypenames;
+Inodes *finstnames;
+Inodes *ftypenames;
+Nodes *nbrtraits;
+
 // Declare built-in number types and their names
 void nbrDclNames() {
+	uinstnames = newInodes(1);
+	utypenames = newInodes(1);
+
+	iinstnames = newInodes(1);
+	itypenames = newInodes(1);
+
+	finstnames = newInodes(1);
+	ftypenames = newInodes(1);
+
+	nbrtraits = newNodes(8);	// Needs 'copy' etc.
+
 	newNameDclNodeStr("i8", VtypeNameDclNode, (AstNode*)(i8Type = newNbrTypeNode(IntNbrType, 8)));
 	newNameDclNodeStr("i16", VtypeNameDclNode, (AstNode*)(i16Type = newNbrTypeNode(IntNbrType, 16)));
 	newNameDclNodeStr("i32", VtypeNameDclNode, (AstNode*)(i32Type = newNbrTypeNode(IntNbrType, 32)));
@@ -28,6 +47,20 @@ void nbrDclNames() {
 NbrAstNode *newNbrTypeNode(uint16_t typ, char bits) {
 	NbrAstNode *node;
 	newAstNode(node, NbrAstNode, typ);
+	if (typ == IntNbrType) {
+		node->instnames = iinstnames;
+		node->typenames = itypenames;
+	}
+	else if (typ == UintNbrType) {
+		node->instnames = uinstnames;
+		node->typenames = utypenames;
+	}
+	else if (typ == FloatNbrType) {
+		node->instnames = finstnames;
+		node->typenames = ftypenames;
+	}
+	node->traits = nbrtraits;
+
 	node->bits = bits;
 	return node;
 }

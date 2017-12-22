@@ -13,20 +13,18 @@ typedef struct Symbol Symbol;
 
 // Void type - e.g., for fn with no return value
 typedef struct VoidTypeAstNode {
-	TypedAstHdr;
+	TypeAstHdr;
 } VoidTypeAstNode;
 
 // For pointers
 typedef struct PtrTypeAstNode {
-	TypedAstHdr;
-	unsigned char nbytes;	// e.g., 32-bit uses 4 bytes
-	unsigned char subtype;	// Simple, vtabled
+	TypeAstHdr;
 	AstNode *ptrtotype;	// Type of value pointer points to
 } PtrTypeAstNode;
 
 // For arrays
 typedef struct ArrTypeAstNode {
-	TypedAstHdr;
+	TypeAstHdr;
 	uint32_t nbrelems;		// Number of elements
 	AstNode *elemtype;	// Type of array's elements
 } ArrTypeAstNode;

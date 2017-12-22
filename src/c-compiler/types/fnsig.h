@@ -10,7 +10,7 @@
 
 // For function signatures
 typedef struct FnSigAstNode {
-	TypedAstHdr;
+	TypeAstHdr;
 	AstNode *rettype;		// void, one or tuple
 	Inodes *parms;			// list of parms
 } FnSigAstNode;

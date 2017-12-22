@@ -14,6 +14,9 @@
 FnSigAstNode *newFnSigNode() {
 	FnSigAstNode *sig;
 	newAstNode(sig, FnSigAstNode, FnSig);
+	sig->instnames = newInodes(1); // probably share these across all fnsigs
+	sig->typenames = newInodes(1); // ditto
+	sig->traits = newNodes(1);    // ditto
 	sig->parms = newInodes(8);
 	sig->rettype = voidType;
 	sig->vtype = NULL;

@@ -129,6 +129,21 @@ typedef struct TypedAstNode {
 	TypedAstHdr;
 } TypedAstNode;
 
+// Type Ast Node header for all type structures
+// - instnames is the list of an instance's named methods and properties/fields
+// - typenames is the list of the type's named functions and constants
+// - traits is the list of all named traits the type implements
+#define TypeAstHdr \
+	TypedAstHdr; \
+	Inodes *instnames; \
+	Inodes *typenames; \
+	Nodes *traits
+
+// Castable structure for all type AST nodes
+typedef struct TypeAstNode {
+	TypeAstHdr;
+} TypeAstNode;
+
 
 #include "../types/permission.h"
 #include "../ast/block.h"

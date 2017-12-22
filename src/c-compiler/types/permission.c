@@ -20,17 +20,20 @@ void permDclNames() {
 	newNameDclNodeStr("id", PermNameDclNode, (AstNode*)(idPerm = newPermNode(IdPerm, MayAlias | RaceSafe | IsLockless, NULL)));
 }
 
-// Create a new primitive number type node
+// Create a new permission node
 PermAstNode *newPermNode(char ptyp, uint16_t flags, AstNode *locker) {
 	PermAstNode *node;
 	newAstNode(node, PermAstNode, PermType);
+	node->instnames = newInodes(1);	// May not need members for static types
+	node->typenames = newInodes(1); // May not need members for static types
+	node->traits = newNodes(8);	// build appropriate list using the permission's flags
 	node->flags = flags;
 	node->ptype = ptyp;
 	node->locker = locker;
 	return node;
 }
 
-// Serialize the AST for a Unsigned literal
+// Serialize the AST for a permission
 void permPrint(PermAstNode *node) {
 	switch (node->ptype) {
 	case MutPerm: astFprint("mut "); break;
