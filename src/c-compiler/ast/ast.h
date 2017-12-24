@@ -66,6 +66,7 @@ enum AstType {
 	// Expression nodes (having value type)
 	VarNameDclNode = (ExpGroup<<8),
 	VarNameUseNode,	// Variable reference
+	FieldNameUseNode,	// Member of a namespace
 	ULitNode,		// Integer literal
 	FLitNode,		// Float literal
 	AssignNode,		// Assignment expression

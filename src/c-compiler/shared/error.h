@@ -43,6 +43,8 @@ enum ErrorCode {
 	ErrorNoInit,	// Parm didn't specify required default value
 	ErrorFewArgs,	// Too few arguments specified
 	ErrorManyArgs,	// Too many arguments specified
+	ErrorNoMbr,		// Field/method not specified
+	ErrorNoMeth,	// No such method defined by the object's type
 
 	// Warnings
 	WarnCode = 3000,

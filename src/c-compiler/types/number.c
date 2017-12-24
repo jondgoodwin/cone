@@ -63,10 +63,7 @@ NbrAstNode *newNbrTypeNode(uint16_t typ, char bits) {
 	// Build method dictionary for the type, which ultimately point to internal op codes
 	nbrtypenode->instnames = newInodes(16);
 	Symbol *opsym = symFind("+", 1);
-	AstNode *xxx;
-	inodesAdd(&nbrtypenode->instnames, opsym, xxx = (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(AddOpCode)));
-	if (bits == 32 && typ == IntNbrType)
-		opsym->node = xxx;
+	inodesAdd(&nbrtypenode->instnames, opsym, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(AddOpCode)));
 	opsym = symFind("-", 1);
 	inodesAdd(&nbrtypenode->instnames, opsym, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(SubOpCode)));
 

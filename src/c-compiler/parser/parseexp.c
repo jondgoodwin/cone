@@ -14,6 +14,7 @@
 #include "lexer.h"
 
 #include <stdio.h>
+#include <assert.h>
 
 // Parse a term: literal, identifier, etc.
 AstNode *parseTerm() {
@@ -73,7 +74,45 @@ AstNode *parsePostfix() {
 				}
 			parseRParen();
 			node = (AstNode *)fncall;
+			break;
 		}
+
+		// Object call with possible parameters
+		case DotToken:
+		{
+			lexNextToken();
+			// Get field/method name
+			if (!lexIsToken(IdentToken)) {
+				errorMsgLex(ErrorNoMbr, "This should be a named field/method");
+				lexNextToken();
+				break;
+			}
+			AstNode *method = (AstNode*)newNameUseNode(lex->val.ident);
+			lexNextToken();
+			method->asttype = FieldNameUseNode;
+			
+			// If parameters provided, make this a function call
+			// (where FieldNameUseNode signals it is an OO call)
+			if (lexIsToken(LParenToken)) {
+				lexNextToken();
+				FnCallAstNode *fncall = newFnCallAstNode(method);
+				fncall->parms = newNodes(8);
+				nodesAdd(&fncall->parms, node); // treat object as first parameter (self)
+				while (1) {
+					nodesAdd(&fncall->parms, parseExp());
+					if (lexIsToken(CommaToken))
+						lexNextToken();
+					else
+						break;
+				}
+				parseRParen();
+				node = (AstNode *)fncall;
+			}
+			else {
+				assert(0 && "Add logic to handle object member with no parameters!");
+			}
+		}
+
 		default:
 			return node;
 		}

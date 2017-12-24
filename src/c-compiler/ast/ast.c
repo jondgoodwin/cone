@@ -119,6 +119,8 @@ void astPass(AstPass *pstate, AstNode *node) {
 		castPass(pstate, (CastAstNode *)node); break;
 	case FnSig:
 		fnSigPass(pstate, (FnSigAstNode *)node); break;
+
+	case FieldNameUseNode:
 	case ULitNode:
 	case FLitNode:
 	case IntNbrType: case UintNbrType: case FloatNbrType:

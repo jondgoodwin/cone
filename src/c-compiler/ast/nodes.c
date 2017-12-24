@@ -71,6 +71,17 @@ void inodesAdd(Inodes **nodesp, Symbol *name, AstNode *node) {
 	inodes->used++;
 }
 
+// Find a symbol in an inodes list, returning NULL if not found
+SymNode *inodesFind(Inodes *inodes, Symbol *name) {
+	SymNode *nodesp;
+	uint32_t cnt;
+	for (inodesFor(inodes, cnt, nodesp)) {
+		if (nodesp->name == name)
+			return nodesp;
+	}
+	return NULL;
+}
+
 // Hook symbols in inodes into global symbol table
 void inodesHook(Inodes *inodes) {
 	SymNode *nodesp;

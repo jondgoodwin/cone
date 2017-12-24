@@ -11,6 +11,8 @@
 #include "../shared/symbol.h"
 #include "../shared/error.h"
 
+#include <assert.h>
+
 // Create a new assignment node
 AssignAstNode *newAssignAstNode(int16_t assigntype, AstNode *lval, AstNode *rval) {
 	AssignAstNode *node;
@@ -86,6 +88,22 @@ void fnCallPass(AstPass *pstate, FnCallAstNode *node) {
 	switch (pstate->pass) {
 	case TypeCheck:
 	{
+		// If this is an object call, resolve function name within first argument's type
+		if (node->fn->asttype == FieldNameUseNode) {
+			NameUseAstNode *methname = (NameUseAstNode*)node->fn;
+			Symbol *methsym = methname->namesym;
+			AstNode *firstarg = inodesNodes(node->parms)->node;
+			astPass(pstate, firstarg);
+			SymNode *method = inodesFind(((TypeAstNode*)typeGetVtype(firstarg))->instnames, methsym);
+			if (method) {
+				methname->asttype = VarNameUseNode;
+				methname->dclnode = (NameDclAstNode*)method->node;
+				methname->vtype = methname->dclnode->vtype;
+			}
+			else
+				errorMsgNode((AstNode*)node, ErrorNoMeth, "The method `%s` is not defined by the object's type.", &methsym->namestr);
+		}
+
 		// Capture return vtype and ensure we are calling a function
 		AstNode *fnsig = typeGetVtype(node->fn);
 		if (fnsig->asttype == FnSig)

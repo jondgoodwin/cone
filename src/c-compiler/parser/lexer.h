@@ -57,6 +57,7 @@ enum TokenTypes {
 	LParenToken,		// '('
 	RParenToken,		// ')'
 	CommaToken,			// ','
+	DotToken,			// '.'
 	DashToken,			// '-'
 	SlashToken,			// '/'
 	UnderscoreToken,	// '_'
