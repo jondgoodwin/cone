@@ -107,6 +107,23 @@ void blockPass(AstPass *pstate, BlockAstNode *blk) {
 	pstate->scope = oldscope;
 }
 
+// Create a new op code node
+OpCodeAstNode *newOpCodeNode(int16_t opcode) {
+	OpCodeAstNode *op;
+	newAstNode(op, OpCodeAstNode, OpCodeNode);
+	op->opcode = opcode;
+	return op;
+}
+
+// Serialize the AST for an opcode
+void opCodePrint(OpCodeAstNode *op) {
+	astFprint("op code");
+}
+
+// Check the op code's AST
+void opCodePass(AstPass *pstate, OpCodeAstNode *op) {
+}
+
 // Create a new expression statement node
 StmtExpAstNode *newStmtExpNode() {
 	StmtExpAstNode *node;

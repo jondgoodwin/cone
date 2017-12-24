@@ -10,23 +10,15 @@
 #include "../parser/lexer.h"
 #include "../shared/symbol.h"
 
-Inodes *uinstnames;
 Inodes *utypenames;
-Inodes *iinstnames;
 Inodes *itypenames;
-Inodes *finstnames;
 Inodes *ftypenames;
 Nodes *nbrtraits;
 
 // Declare built-in number types and their names
 void nbrDclNames() {
-	uinstnames = newInodes(1);
 	utypenames = newInodes(1);
-
-	iinstnames = newInodes(1);
 	itypenames = newInodes(1);
-
-	finstnames = newInodes(1);
 	ftypenames = newInodes(1);
 
 	nbrtraits = newNodes(8);	// Needs 'copy' etc.
@@ -45,24 +37,40 @@ void nbrDclNames() {
 
 // Create a new primitive number type node
 NbrAstNode *newNbrTypeNode(uint16_t typ, char bits) {
-	NbrAstNode *node;
-	newAstNode(node, NbrAstNode, typ);
+	// Start by creating the node for this number type
+	NbrAstNode *nbrtypenode;
+	newAstNode(nbrtypenode, NbrAstNode, typ);
 	if (typ == IntNbrType) {
-		node->instnames = iinstnames;
-		node->typenames = itypenames;
+		nbrtypenode->typenames = itypenames;
 	}
 	else if (typ == UintNbrType) {
-		node->instnames = uinstnames;
-		node->typenames = utypenames;
+		nbrtypenode->typenames = utypenames;
 	}
 	else if (typ == FloatNbrType) {
-		node->instnames = finstnames;
-		node->typenames = ftypenames;
+		nbrtypenode->typenames = ftypenames;
 	}
-	node->traits = nbrtraits;
+	nbrtypenode->traits = nbrtraits;
+	nbrtypenode->bits = bits;
 
-	node->bits = bits;
-	return node;
+	// Create function signature for binary methods using on this type
+	FnSigAstNode *binsig = newFnSigNode();
+	binsig->rettype = (AstNode*)nbrtypenode;
+	Symbol *parm1 = symFind("a", 1);
+	inodesAdd(&binsig->parms, parm1, (AstNode *)newNameDclNode(parm1, VarNameDclNode, (AstNode*)nbrtypenode, immPerm, NULL));
+	Symbol *parm2 = symFind("b", 1);
+	inodesAdd(&binsig->parms, parm2, (AstNode *)newNameDclNode(parm2, VarNameDclNode, (AstNode*)nbrtypenode, immPerm, NULL));
+
+	// Build method dictionary for the type, which ultimately point to internal op codes
+	nbrtypenode->instnames = newInodes(16);
+	Symbol *opsym = symFind("+", 1);
+	AstNode *xxx;
+	inodesAdd(&nbrtypenode->instnames, opsym, xxx = (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(AddOpCode)));
+	if (bits == 32 && typ == IntNbrType)
+		opsym->node = xxx;
+	opsym = symFind("-", 1);
+	inodesAdd(&nbrtypenode->instnames, opsym, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(SubOpCode)));
+
+	return nbrtypenode;
 }
 
 // Serialize the AST for a numeric literal

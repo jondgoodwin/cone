@@ -77,14 +77,34 @@ LLVMValueRef genlTerm(genl_t *gen, AstNode *termnode) {
 	{
 		FnCallAstNode *fncall = (FnCallAstNode*)termnode;
 		NameUseAstNode *fnuse = (NameUseAstNode *)fncall->fn;
-		char *fnname = &fnuse->dclnode->namesym->namestr;
 		LLVMValueRef *fnargs = (LLVMValueRef*)memAllocBlk(fncall->parms->used * sizeof(LLVMValueRef*));
 		LLVMValueRef *fnarg = fnargs;
 		AstNode **nodesp;
 		uint32_t cnt;
 		for (nodesFor(fncall->parms, cnt, nodesp))
 			*fnarg++ = genlTerm(gen, *nodesp);
-		return LLVMBuildCall(gen->builder, LLVMGetNamedFunction(gen->module, fnname), fnargs, fncall->parms->used, "");
+		switch (fnuse->dclnode->value->asttype) {
+		case BlockNode: {
+				char *fnname = &fnuse->dclnode->namesym->namestr;
+				return LLVMBuildCall(gen->builder, LLVMGetNamedFunction(gen->module, fnname), fnargs, fncall->parms->used, "");
+			}
+		case OpCodeNode: {
+			LLVMTypeKind typekind = LLVMGetTypeKind(LLVMTypeOf(fnargs[0]));
+			// Floating point op codes
+			if (typekind == LLVMFloatTypeKind || typekind == LLVMDoubleTypeKind) {
+
+			}
+			// Integer op codes
+			else {
+				switch (((OpCodeAstNode *)fnuse->dclnode->value)->opcode) {
+				case AddOpCode: return LLVMBuildAdd(gen->builder, fnargs[0], fnargs[1], "");
+				case SubOpCode: return LLVMBuildSub(gen->builder, fnargs[0], fnargs[1], "");
+				}
+			}
+		}
+		default:
+			assert(0 && "invalid type of function call");
+		}
 	}
 	case AssignNode:
 	{

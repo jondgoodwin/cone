@@ -28,6 +28,19 @@ typedef struct StmtExpAstNode {
 	AstNode *exp;
 } StmtExpAstNode;
 
+// The various op codes supported by OpCodeAstNode
+enum OpCode {
+	AddOpCode,
+	SubOpCode
+};
+
+// An internal operation (e.g., add). 
+// Used as an alternative to FnDcl->value = Block within a function declaration.
+typedef struct OpCodeAstNode {
+	BasicAstHdr;
+	int16_t opcode;
+} OpCodeAstNode;
+
 PgmAstNode *newPgmNode();
 void pgmPrint(PgmAstNode *pgm);
 void pgmPass(AstPass *pstate, PgmAstNode *pgm);
@@ -35,6 +48,8 @@ void pgmPass(AstPass *pstate, PgmAstNode *pgm);
 BlockAstNode *newBlockNode();
 void blockPrint(BlockAstNode *blk);
 void blockPass(AstPass *pstate, BlockAstNode *node);
+
+OpCodeAstNode *newOpCodeNode(int16_t opcode);
 
 StmtExpAstNode *newStmtExpNode();
 void stmtExpPrint(StmtExpAstNode *node);
