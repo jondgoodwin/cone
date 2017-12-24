@@ -23,7 +23,7 @@ NameUseAstNode *newNameUseNode(Symbol *namesym) {
 
 // Serialize the AST for a name use
 void nameUsePrint(NameUseAstNode *name) {
-	astFprint(&name->namesym->namestr);
+	astFprint("%s", &name->namesym->namestr);
 }
 
 // Check the name use's AST

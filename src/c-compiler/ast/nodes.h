@@ -26,6 +26,7 @@ typedef struct Nodes {
 Nodes *newNodes(int size);
 void nodesAdd(Nodes **nodesp, AstNode *node);
 
+#define nodesNodes(node) ((AstNode**)((node)+1))
 #define nodesFor(node, cnt, nodesp) nodesp = (AstNode**)((node)+1), cnt = (node)->used; cnt; cnt--, nodesp++
 #define nodesGet(node, index) ((AstNode**)((node)+1))[index]
 

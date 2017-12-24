@@ -98,12 +98,14 @@ AstNode *parsePostfix() {
 				FnCallAstNode *fncall = newFnCallAstNode(method);
 				fncall->parms = newNodes(8);
 				nodesAdd(&fncall->parms, node); // treat object as first parameter (self)
-				while (1) {
-					nodesAdd(&fncall->parms, parseExp());
-					if (lexIsToken(CommaToken))
-						lexNextToken();
-					else
-						break;
+				if (!lexIsToken(RParenToken)) {
+					while (1) {
+						nodesAdd(&fncall->parms, parseExp());
+						if (lexIsToken(CommaToken))
+							lexNextToken();
+						else
+							break;
+					}
 				}
 				parseRParen();
 				node = (AstNode *)fncall;

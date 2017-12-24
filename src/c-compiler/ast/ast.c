@@ -54,7 +54,7 @@ void astPrintNode(AstNode *node) {
 	case PgmNode:
 		pgmPrint((PgmAstNode *)node); break;
 	case NameUseNode:
-	case VarNameUseNode: case VtypeNameUseNode: case PermNameUseNode: case AllocNameUseNode:
+	case VarNameUseNode: case FieldNameUseNode: case VtypeNameUseNode: case PermNameUseNode: case AllocNameUseNode:
 		nameUsePrint((NameUseAstNode *)node); break;
 	case VarNameDclNode: case VtypeNameDclNode: case PermNameDclNode: case AllocNameDclNode:
 		nameDclPrint((NameDclAstNode *)node); break;

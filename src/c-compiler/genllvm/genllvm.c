@@ -89,16 +89,36 @@ LLVMValueRef genlTerm(genl_t *gen, AstNode *termnode) {
 				return LLVMBuildCall(gen->builder, LLVMGetNamedFunction(gen->module, fnname), fnargs, fncall->parms->used, "");
 			}
 		case OpCodeNode: {
-			LLVMTypeKind typekind = LLVMGetTypeKind(LLVMTypeOf(fnargs[0]));
-			// Floating point op codes
-			if (typekind == LLVMFloatTypeKind || typekind == LLVMDoubleTypeKind) {
+			int16_t nbrtype = typeGetVtype(*nodesNodes(fncall->parms))->asttype;
 
+			// Floating point op codes
+			if (nbrtype == FloatNbrType) {
+				switch (((OpCodeAstNode *)fnuse->dclnode->value)->opcode) {
+				case NegOpCode: return LLVMBuildFNeg(gen->builder, fnargs[0], "");
+				case AddOpCode: return LLVMBuildFAdd(gen->builder, fnargs[0], fnargs[1], "");
+				case SubOpCode: return LLVMBuildFSub(gen->builder, fnargs[0], fnargs[1], "");
+				case MulOpCode: return LLVMBuildFMul(gen->builder, fnargs[0], fnargs[1], "");
+				case DivOpCode: return LLVMBuildFDiv(gen->builder, fnargs[0], fnargs[1], "");
+				case RemOpCode: return LLVMBuildFRem(gen->builder, fnargs[0], fnargs[1], "");
+				}
 			}
 			// Integer op codes
 			else {
 				switch (((OpCodeAstNode *)fnuse->dclnode->value)->opcode) {
+				case NegOpCode: return LLVMBuildNeg(gen->builder, fnargs[0], "");
 				case AddOpCode: return LLVMBuildAdd(gen->builder, fnargs[0], fnargs[1], "");
 				case SubOpCode: return LLVMBuildSub(gen->builder, fnargs[0], fnargs[1], "");
+				case MulOpCode: return LLVMBuildMul(gen->builder, fnargs[0], fnargs[1], "");
+				case DivOpCode: 
+					if (nbrtype == IntNbrType)
+						return LLVMBuildSDiv(gen->builder, fnargs[0], fnargs[1], "");
+					else
+						return LLVMBuildUDiv(gen->builder, fnargs[0], fnargs[1], "");
+				case RemOpCode: 
+					if (nbrtype == IntNbrType)
+						return LLVMBuildSRem(gen->builder, fnargs[0], fnargs[1], "");
+					else
+						return LLVMBuildURem(gen->builder, fnargs[0], fnargs[1], "");
 				}
 			}
 		}

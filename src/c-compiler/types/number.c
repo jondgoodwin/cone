@@ -52,7 +52,13 @@ NbrAstNode *newNbrTypeNode(uint16_t typ, char bits) {
 	nbrtypenode->traits = nbrtraits;
 	nbrtypenode->bits = bits;
 
-	// Create function signature for binary methods using on this type
+	// Create function signature for unary methods for this type
+	FnSigAstNode *unarysig = newFnSigNode();
+	unarysig->rettype = (AstNode*)nbrtypenode;
+	Symbol *una1 = symFind("a", 1);
+	inodesAdd(&unarysig->parms, una1, (AstNode *)newNameDclNode(una1, VarNameDclNode, (AstNode*)nbrtypenode, immPerm, NULL));
+
+	// Create function signature for binary methods for this type
 	FnSigAstNode *binsig = newFnSigNode();
 	binsig->rettype = (AstNode*)nbrtypenode;
 	Symbol *parm1 = symFind("a", 1);
@@ -62,10 +68,18 @@ NbrAstNode *newNbrTypeNode(uint16_t typ, char bits) {
 
 	// Build method dictionary for the type, which ultimately point to internal op codes
 	nbrtypenode->instnames = newInodes(16);
-	Symbol *opsym = symFind("+", 1);
+	Symbol *opsym = symFind("neg", 3);
+	inodesAdd(&nbrtypenode->instnames, opsym, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)unarysig, immPerm, (AstNode *)newOpCodeNode(NegOpCode)));
+	opsym = symFind("+", 1);
 	inodesAdd(&nbrtypenode->instnames, opsym, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(AddOpCode)));
 	opsym = symFind("-", 1);
 	inodesAdd(&nbrtypenode->instnames, opsym, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(SubOpCode)));
+	opsym = symFind("*", 1);
+	inodesAdd(&nbrtypenode->instnames, opsym, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(MulOpCode)));
+	opsym = symFind("/", 1);
+	inodesAdd(&nbrtypenode->instnames, opsym, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(DivOpCode)));
+	opsym = symFind("%", 1);
+	inodesAdd(&nbrtypenode->instnames, opsym, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(RemOpCode)));
 
 	return nbrtypenode;
 }

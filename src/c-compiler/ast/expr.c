@@ -92,7 +92,7 @@ void fnCallPass(AstPass *pstate, FnCallAstNode *node) {
 		if (node->fn->asttype == FieldNameUseNode) {
 			NameUseAstNode *methname = (NameUseAstNode*)node->fn;
 			Symbol *methsym = methname->namesym;
-			AstNode *firstarg = inodesNodes(node->parms)->node;
+			AstNode *firstarg = *nodesNodes(node->parms);
 			astPass(pstate, firstarg);
 			SymNode *method = inodesFind(((TypeAstNode*)typeGetVtype(firstarg))->instnames, methsym);
 			if (method) {
