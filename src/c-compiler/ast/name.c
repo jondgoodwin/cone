@@ -21,6 +21,13 @@ NameUseAstNode *newNameUseNode(Symbol *namesym) {
 	return name;
 }
 
+NameUseAstNode *newFieldUseNode(Symbol *namesym) {
+	NameUseAstNode *name;
+	newAstNode(name, NameUseAstNode, FieldNameUseNode);
+	name->namesym = namesym;
+	return name;
+}
+
 // Serialize the AST for a name use
 void nameUsePrint(NameUseAstNode *name) {
 	astFprint("%s", &name->namesym->namestr);

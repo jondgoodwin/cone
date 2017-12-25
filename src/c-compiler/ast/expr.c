@@ -55,11 +55,11 @@ void assignPass(AstPass *pstate, AssignAstNode *node) {
 }
 
 // Create a function call node
-FnCallAstNode *newFnCallAstNode(AstNode *fn) {
+FnCallAstNode *newFnCallAstNode(AstNode *fn, int nnodes) {
 	FnCallAstNode *node;
 	newAstNode(node, FnCallAstNode, FnCallNode);
 	node->fn = fn;
-	node->parms = NULL;
+	node->parms = newNodes(nnodes);
 	return node;
 }
 
@@ -100,8 +100,10 @@ void fnCallPass(AstPass *pstate, FnCallAstNode *node) {
 				methname->dclnode = (NameDclAstNode*)method->node;
 				methname->vtype = methname->dclnode->vtype;
 			}
-			else
+			else {
 				errorMsgNode((AstNode*)node, ErrorNoMeth, "The method `%s` is not defined by the object's type.", &methsym->namestr);
+				return;
+			}
 		}
 
 		// Capture return vtype and ensure we are calling a function

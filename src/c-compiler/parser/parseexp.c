@@ -9,6 +9,7 @@
 
 #include "parser.h"
 #include "../ast/ast.h"
+#include "../shared/symbol.h"
 #include "../shared/memory.h"
 #include "../shared/error.h"
 #include "lexer.h"
@@ -42,9 +43,11 @@ AstNode *parseTerm() {
 		}
 	case LParenToken:
 		{
+			AstNode *node;
 			lexNextToken();
-			parseExp();
+			node = parseExp();
 			parseRParen();
+			return node;
 		}
 	default:
 		errorMsgLex(ErrorBadTerm, "Invalid term value: expected variable, literal, etc.");
@@ -61,9 +64,8 @@ AstNode *parsePostfix() {
 		// Function call with possible parameters
 		case LParenToken:
 		{
-			FnCallAstNode *fncall = newFnCallAstNode(node);
+			FnCallAstNode *fncall = newFnCallAstNode(node, 8);
 			lexNextToken();
-			fncall->parms = newNodes(8);
 			if (!lexIsToken(RParenToken))
 				while (1) {
 					nodesAdd(&fncall->parms, parseExp());
@@ -95,8 +97,7 @@ AstNode *parsePostfix() {
 			// (where FieldNameUseNode signals it is an OO call)
 			if (lexIsToken(LParenToken)) {
 				lexNextToken();
-				FnCallAstNode *fncall = newFnCallAstNode(method);
-				fncall->parms = newNodes(8);
+				FnCallAstNode *fncall = newFnCallAstNode(method, 8);
 				nodesAdd(&fncall->parms, node); // treat object as first parameter (self)
 				if (!lexIsToken(RParenToken)) {
 					while (1) {
@@ -123,23 +124,74 @@ AstNode *parsePostfix() {
 
 // Parse a prefix operator, e.g.: -
 AstNode *parsePrefix() {
-	/*
 	if (lexIsToken(DashToken)) {
-		// newAstNode(node, UnaryAstNode, UnaryNode);
+		FnCallAstNode *node = newFnCallAstNode((AstNode*)newFieldUseNode(symFind("neg", 3)), 1);
 		lexNextToken();
-		node->expnode = parsePrefix();
+		nodesAdd(&node->parms, parsePrefix());
 		return (AstNode *)node;
 	}
-	*/
 	return parsePostfix();
+}
+
+// Parse binary multiply, divide, rem operator
+AstNode *parseMult() {
+	AstNode *lhnode = parsePrefix();
+	while (1) {
+		if (lexIsToken(StarToken)) {
+			FnCallAstNode *node = newFnCallAstNode((AstNode*)newFieldUseNode(symFind("*", 1)), 2);
+			lexNextToken();
+			nodesAdd(&node->parms, lhnode);
+			nodesAdd(&node->parms, parsePrefix());
+			lhnode = (AstNode*)node;
+		}
+		else if (lexIsToken(SlashToken)) {
+			FnCallAstNode *node = newFnCallAstNode((AstNode*)newFieldUseNode(symFind("/", 1)), 2);
+			lexNextToken();
+			nodesAdd(&node->parms, lhnode);
+			nodesAdd(&node->parms, parsePrefix());
+			lhnode = (AstNode*)node;
+		}
+		else if (lexIsToken(PercentToken)) {
+			FnCallAstNode *node = newFnCallAstNode((AstNode*)newFieldUseNode(symFind("%", 1)), 2);
+			lexNextToken();
+			nodesAdd(&node->parms, lhnode);
+			nodesAdd(&node->parms, parsePrefix());
+			lhnode = (AstNode*)node;
+		}
+		else
+			return lhnode;
+	}
+}
+
+// Parse binary add, subtract operator
+AstNode *parseAdd() {
+	AstNode *lhnode = parseMult();
+	while (1) {
+		if (lexIsToken(PlusToken)) {
+			FnCallAstNode *node = newFnCallAstNode((AstNode*)newFieldUseNode(symFind("+", 1)), 2);
+			lexNextToken();
+			nodesAdd(&node->parms, lhnode);
+			nodesAdd(&node->parms, parseMult());
+			lhnode = (AstNode*)node;
+		}
+		else if (lexIsToken(DashToken)) {
+			FnCallAstNode *node = newFnCallAstNode((AstNode*)newFieldUseNode(symFind("-", 1)), 2);
+			lexNextToken();
+			nodesAdd(&node->parms, lhnode);
+			nodesAdd(&node->parms, parseMult());
+			lhnode = (AstNode*)node;
+		}
+		else
+			return lhnode;
+	}
 }
 
 // Parse an assignment expression
 AstNode *parseAssign() {
-	AstNode *lval = parsePrefix();
+	AstNode *lval = parseAdd();
 	if (lexIsToken(AssgnToken)) {
 		lexNextToken();
-		AstNode *rval = parsePrefix();
+		AstNode *rval = parseAdd();
 		return (AstNode*) newAssignAstNode(NormalAssign, lval, rval);
 	}
 	else

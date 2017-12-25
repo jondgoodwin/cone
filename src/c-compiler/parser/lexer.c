@@ -362,6 +362,9 @@ void lexNextToken() {
 		case '.': lexReturnPuncTok(DotToken, 1);
 		case ',': lexReturnPuncTok(CommaToken, 1);
 		case '-': lexReturnPuncTok(DashToken, 1);
+		case '*': lexReturnPuncTok(StarToken, 1);
+		case '+': lexReturnPuncTok(PlusToken, 1);
+		case '%': lexReturnPuncTok(PercentToken, 1);
 
 		// '{'
 		case '{':

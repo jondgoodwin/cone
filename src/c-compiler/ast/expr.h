@@ -38,7 +38,7 @@ AssignAstNode *newAssignAstNode(int16_t assigntype, AstNode *lval, AstNode *rval
 void assignPrint(AssignAstNode *node);
 void assignPass(AstPass *pstate, AssignAstNode *node);
 
-FnCallAstNode *newFnCallAstNode(AstNode *fn);
+FnCallAstNode *newFnCallAstNode(AstNode *fn, int nnodes);
 void fnCallPrint(FnCallAstNode *node);
 void fnCallPass(AstPass *pstate, FnCallAstNode *node);
 
