@@ -1,4 +1,4 @@
-# Cone - 0.1.0 Project Plan (as of Dec. 22, 2017)
+# Cone - 0.1.0 Project Plan (as of Dec. 26, 2017)
 
 The current development objective is for the compiler to be able to load,
 scan, parse, generate (via LLVM), link, and run Cone programs that use numeric expressions, 
@@ -17,11 +17,13 @@ and AST (via LLVM) into linkable .obj files. It supports the following features:
 - Global, local and parameter variable reference
 - Number literals and types (integers, floats) of different sizes
 - Type inference, type checking and automatic number casting on expressions
+- Arithmetic operators
 
 Next steps:
 
-- Arithmetic expressions
-- If and while control structures, numeric comparison operators
+- Logic operators & Bool
+- Comparison operators
+- If and while control structures
 
 - Tested code examples that run on Windows and Linux
 - Attempted port to WebAssembly and Android
