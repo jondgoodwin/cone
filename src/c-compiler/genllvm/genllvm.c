@@ -105,6 +105,7 @@ LLVMValueRef genlTerm(genl_t *gen, AstNode *termnode) {
 			// Integer op codes
 			else {
 				switch (((OpCodeAstNode *)fnuse->dclnode->value)->opcode) {
+				// Arithmetic
 				case NegOpCode: return LLVMBuildNeg(gen->builder, fnargs[0], "");
 				case AddOpCode: return LLVMBuildAdd(gen->builder, fnargs[0], fnargs[1], "");
 				case SubOpCode: return LLVMBuildSub(gen->builder, fnargs[0], fnargs[1], "");
@@ -119,6 +120,17 @@ LLVMValueRef genlTerm(genl_t *gen, AstNode *termnode) {
 						return LLVMBuildSRem(gen->builder, fnargs[0], fnargs[1], "");
 					else
 						return LLVMBuildURem(gen->builder, fnargs[0], fnargs[1], "");
+				// Bitwise
+				case NotOpCode: return LLVMBuildNot(gen->builder, fnargs[0], "");
+				case AndOpCode: return LLVMBuildAnd(gen->builder, fnargs[0], fnargs[1], "");
+				case OrOpCode: return LLVMBuildOr(gen->builder, fnargs[0], fnargs[1], "");
+				case XorOpCode: return LLVMBuildXor(gen->builder, fnargs[0], fnargs[1], "");
+				case ShlOpCode: return LLVMBuildShl(gen->builder, fnargs[0], fnargs[1], "");
+				case ShrOpCode:
+					if (nbrtype == IntNbrType)
+						return LLVMBuildAShr(gen->builder, fnargs[0], fnargs[1], "");
+					else
+						return LLVMBuildLShr(gen->builder, fnargs[0], fnargs[1], "");
 				}
 			}
 		}

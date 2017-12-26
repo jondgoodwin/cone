@@ -81,6 +81,20 @@ NbrAstNode *newNbrTypeNode(uint16_t typ, char bits) {
 	opsym = symFind("%", 1);
 	inodesAdd(&nbrtypenode->instnames, opsym, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(RemOpCode)));
 
+	if (typ != FloatNbrType) {
+		opsym = symFind("~", 1);
+		inodesAdd(&nbrtypenode->instnames, opsym, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)unarysig, immPerm, (AstNode *)newOpCodeNode(NotOpCode)));
+		opsym = symFind("&", 1);
+		inodesAdd(&nbrtypenode->instnames, opsym, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(AndOpCode)));
+		opsym = symFind("|", 1);
+		inodesAdd(&nbrtypenode->instnames, opsym, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(OrOpCode)));
+		opsym = symFind("^", 1);
+		inodesAdd(&nbrtypenode->instnames, opsym, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(XorOpCode)));
+		opsym = symFind("shl", 3);
+		inodesAdd(&nbrtypenode->instnames, opsym, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(ShlOpCode)));
+		opsym = symFind("shr", 3);
+		inodesAdd(&nbrtypenode->instnames, opsym, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(ShrOpCode)));
+	}
 	return nbrtypenode;
 }
 

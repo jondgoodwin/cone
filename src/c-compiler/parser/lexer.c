@@ -365,6 +365,10 @@ void lexNextToken() {
 		case '*': lexReturnPuncTok(StarToken, 1);
 		case '+': lexReturnPuncTok(PlusToken, 1);
 		case '%': lexReturnPuncTok(PercentToken, 1);
+		case '~': lexReturnPuncTok(TildeToken, 1);
+		case '&': lexReturnPuncTok(AmperToken, 1);
+		case '^': lexReturnPuncTok(CaretToken, 1);
+		case '|': lexReturnPuncTok(BarToken, 1);
 
 		// '{'
 		case '{':

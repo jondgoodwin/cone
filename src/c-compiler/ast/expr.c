@@ -110,8 +110,10 @@ void fnCallPass(AstPass *pstate, FnCallAstNode *node) {
 		AstNode *fnsig = typeGetVtype(node->fn);
 		if (fnsig->asttype == FnSig)
 			node->vtype = ((FnSigAstNode*)fnsig)->rettype;
-		else
+		else {
 			errorMsgNode(node->fn, ErrorNotFn, "Cannot call a value that is not a function");
+			return;
+		}
 
 		// Error out if we have too many arguments
 		int argsunder = ((FnSigAstNode*)fnsig)->parms->used - node->parms->used;

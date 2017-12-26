@@ -130,6 +130,12 @@ AstNode *parsePrefix() {
 		nodesAdd(&node->parms, parsePrefix());
 		return (AstNode *)node;
 	}
+	else if (lexIsToken(TildeToken)) {
+		FnCallAstNode *node = newFnCallAstNode((AstNode*)newFieldUseNode(symFind("~", 1)), 1);
+		lexNextToken();
+		nodesAdd(&node->parms, parsePrefix());
+		return (AstNode *)node;
+	}
 	return parsePostfix();
 }
 
@@ -186,12 +192,60 @@ AstNode *parseAdd() {
 	}
 }
 
+// Parse bitwise And
+AstNode *parseAnd() {
+	AstNode *lhnode = parseAdd();
+	while (1) {
+		if (lexIsToken(AmperToken)) {
+			FnCallAstNode *node = newFnCallAstNode((AstNode*)newFieldUseNode(symFind("&", 1)), 2);
+			lexNextToken();
+			nodesAdd(&node->parms, lhnode);
+			nodesAdd(&node->parms, parseAdd());
+			lhnode = (AstNode*)node;
+		}
+		else
+			return lhnode;
+	}
+}
+
+// Parse bitwise Xor
+AstNode *parseXor() {
+	AstNode *lhnode = parseAnd();
+	while (1) {
+		if (lexIsToken(CaretToken)) {
+			FnCallAstNode *node = newFnCallAstNode((AstNode*)newFieldUseNode(symFind("^", 1)), 2);
+			lexNextToken();
+			nodesAdd(&node->parms, lhnode);
+			nodesAdd(&node->parms, parseAnd());
+			lhnode = (AstNode*)node;
+		}
+		else
+			return lhnode;
+	}
+}
+
+// Parse bitwise or
+AstNode *parseOr() {
+	AstNode *lhnode = parseXor();
+	while (1) {
+		if (lexIsToken(BarToken)) {
+			FnCallAstNode *node = newFnCallAstNode((AstNode*)newFieldUseNode(symFind("|", 1)), 2);
+			lexNextToken();
+			nodesAdd(&node->parms, lhnode);
+			nodesAdd(&node->parms, parseXor());
+			lhnode = (AstNode*)node;
+		}
+		else
+			return lhnode;
+	}
+}
+
 // Parse an assignment expression
 AstNode *parseAssign() {
-	AstNode *lval = parseAdd();
+	AstNode *lval = parseOr();
 	if (lexIsToken(AssgnToken)) {
 		lexNextToken();
-		AstNode *rval = parseAdd();
+		AstNode *rval = parseOr();
 		return (AstNode*) newAssignAstNode(NormalAssign, lval, rval);
 	}
 	else

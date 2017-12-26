@@ -30,12 +30,21 @@ typedef struct StmtExpAstNode {
 
 // The various op codes supported by OpCodeAstNode
 enum OpCode {
+	// Arithmetic
 	NegOpCode,
 	AddOpCode,
 	SubOpCode,
 	MulOpCode,
 	DivOpCode,
-	RemOpCode
+	RemOpCode,
+
+	// Bitwise
+	NotOpCode,
+	AndOpCode,
+	OrOpCode,
+	XorOpCode,
+	ShlOpCode,
+	ShrOpCode
 };
 
 // An internal operation (e.g., add). 

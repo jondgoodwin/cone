@@ -63,6 +63,10 @@ enum TokenTypes {
 	StarToken,			// '*'
 	PercentToken,		// '%'
 	SlashToken,			// '/'
+	AmperToken,			// '&'
+	BarToken,			// '|'
+	CaretToken,			// '^'
+	TildeToken,			// '~'
 	UnderscoreToken,	// '_'
 	AssgnToken,			// '='
 
