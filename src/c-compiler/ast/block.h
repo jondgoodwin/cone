@@ -68,6 +68,10 @@ BlockAstNode *newBlockNode();
 void blockPrint(BlockAstNode *blk);
 void blockPass(AstPass *pstate, BlockAstNode *node);
 
+IfAstNode *newIfNode();
+void ifPrint(IfAstNode *ifnode);
+void ifPass(AstPass *pstate, IfAstNode *ifnode);
+
 OpCodeAstNode *newOpCodeNode(int16_t opcode);
 
 StmtExpAstNode *newStmtExpNode();

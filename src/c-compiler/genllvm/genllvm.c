@@ -283,11 +283,12 @@ LLVMValueRef genlIf(genl_t *gen, IfAstNode *ifnode) {
 	}
 
 	endif = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "endif");
+	LLVMBasicBlockRef nextMemBlk;
 	for (nodesFor(ifnode->condblk, cnt, nodesp)) {
 
 		// Set up block for next condition (or endif if this is last condition)
 		if (i + 1 < count)
-			nextif = LLVMInsertBasicBlockInContext(gen->context, endif, "ifnext");
+			nextif = nextMemBlk = LLVMInsertBasicBlockInContext(gen->context, endif, "ifnext");
 		else
 			nextif = endif;
 
@@ -296,12 +297,12 @@ LLVMValueRef genlIf(genl_t *gen, IfAstNode *ifnode) {
 		if (*nodesp != voidType) {
 			ablk = LLVMInsertBasicBlockInContext(gen->context, nextif, "ifblk");
 			LLVMBuildCondBr(gen->builder, genlCondExp(gen, *nodesp), ablk, nextif);
+			LLVMPositionBuilderAtEnd(gen->builder, ablk);
 		}
 		else
-			ablk = nextif;
+			ablk = nextMemBlk;
 
 		// Generate this condition's code block, along with jump to endif
-		LLVMPositionBuilderAtEnd(gen->builder, ablk);
 		LLVMValueRef blkval = genlBlock(gen, (BlockAstNode*)*(nodesp + 1));
 		LLVMBuildBr(gen->builder, endif);
 
@@ -476,6 +477,12 @@ void genllvm(ConeOptions *opt, PgmAstNode *pgmast) {
 
 	// Generate AST to IR
 	genlModule(&gen, pgmast);
+
+	// Serialize the LLVM IR, if requested
+	if (opt->print_llvmir && LLVMPrintModuleToFile(gen.module, fileMakePath(opt->output, pgmast->lexer->fname, "preir"), &err) != 0) {
+		errorMsg(ErrorGenErr, "Could not emit pre-ir file: %s", err);
+		LLVMDisposeMessage(err);
+	}
 
 	// Optimize the generated LLVM IR
 	LLVMPassManagerRef passmgr = LLVMCreatePassManager();

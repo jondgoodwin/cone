@@ -60,6 +60,8 @@ void astPrintNode(AstNode *node) {
 		nameDclPrint((NameDclAstNode *)node); break;
 	case BlockNode:
 		blockPrint((BlockAstNode *)node); break;
+	case IfNode:
+		ifPrint((IfAstNode *)node); break;
 	case StmtExpNode:
 		stmtExpPrint((StmtExpAstNode *)node); break;
 	case ReturnNode:
@@ -107,6 +109,8 @@ void astPass(AstPass *pstate, AstNode *node) {
 		nameUsePass(pstate, (NameUseAstNode *)node); break;
 	case BlockNode:
 		blockPass(pstate, (BlockAstNode *)node); break;
+	case IfNode:
+		ifPass(pstate, (IfAstNode *)node); break;
 	case StmtExpNode:
 		stmtExpPass(pstate, (StmtExpAstNode *)node); break;
 	case ReturnNode:

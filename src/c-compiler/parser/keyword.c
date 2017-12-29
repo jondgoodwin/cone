@@ -33,4 +33,7 @@ void keywordInit() {
 
 	keyAdd("fn", FnToken);
 	keyAdd("return", RetToken);
+	keyAdd("if", IfToken);
+	keyAdd("elif", ElifToken);
+	keyAdd("else", ElseToken);
 }

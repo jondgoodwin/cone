@@ -18,7 +18,8 @@ void parseLCurly();
 void parseRParen();
 
 // parsestmt.c
-void parseStmtBlock(Nodes **nodes);
+AstNode *parseIf();
+AstNode *parseStmtBlock();
 
 // parseexp.c
 AstNode *parseExp();

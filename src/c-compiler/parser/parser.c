@@ -76,10 +76,9 @@ AstNode *parseFn() {
 	// Process statements block that implements function, if provided
 	if (!lexIsToken(LCurlyToken) && !lexIsToken(SemiToken))
 		parseLCurly();
-	if (lexIsToken(LCurlyToken)) {
-		fnnode->value = (AstNode *) newBlockNode();
-		parseStmtBlock(&((BlockAstNode*)fnnode->value)->stmts);
-	} else
+	if (lexIsToken(LCurlyToken))
+		fnnode->value = parseStmtBlock();
+	else
 		parseSemi();
 	return (AstNode*) fnnode;
 }

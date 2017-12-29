@@ -60,6 +60,7 @@ void pgmPass(AstPass *pstate, PgmAstNode *pgm) {
 BlockAstNode *newBlockNode() {
 	BlockAstNode *blk;
 	newAstNode(blk, BlockAstNode, BlockNode);
+	blk->vtype = voidType;
 	blk->locals = newInodes(8);
 	blk->stmts = newNodes(8);
 	return blk;
@@ -112,6 +113,7 @@ IfAstNode *newIfNode() {
 	IfAstNode *ifnode;
 	newAstNode(ifnode, IfAstNode, IfNode);
 	ifnode->condblk = newNodes(4);
+	ifnode->vtype = voidType;
 	return ifnode;
 }
 
