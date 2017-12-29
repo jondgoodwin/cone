@@ -22,6 +22,8 @@
 #include <stdio.h>
 #include <assert.h>
 
+LLVMValueRef genlBlock(genl_t *gen, BlockAstNode *blk);
+
 // Generate a type value
 LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
 	switch (typ->asttype) {
@@ -190,6 +192,19 @@ LLVMValueRef genlTerm(genl_t *gen, AstNode *termnode) {
 	}
 }
 
+// Generate a conditional expression
+LLVMValueRef genlCondExp(genl_t *gen, AstNode *condnode) {
+	switch (condnode->asttype) {
+	default:
+	{
+		AstNode *vtype = typeGetVtype(condnode);
+		if (vtype->asttype == UintNbrType || vtype->asttype == IntNbrType)
+			return LLVMBuildICmp(gen->builder, LLVMIntNE, genlTerm(gen, condnode), LLVMConstNull(genlType(gen, vtype)), "iszero");
+	}
+	}
+	return NULL;
+}
+
 // Generate a return statement
 void genlReturn(genl_t *gen, StmtExpAstNode *node) {
 	if (node->exp != voidType)
@@ -247,12 +262,90 @@ void genlLocalVar(genl_t *gen, NameDclAstNode *var) {
 		LLVMBuildStore(gen->builder, genlTerm(gen, var->value), var->llvmvar);
 }
 
-// Generate a function block
-void genlFn(genl_t *gen, NameDclAstNode *fnnode) {
-	FnSigAstNode *fnsig = (FnSigAstNode*)fnnode->vtype;
-	BlockAstNode *blk;
+// Generate an if statement
+LLVMValueRef genlIf(genl_t *gen, IfAstNode *ifnode) {
+	LLVMBasicBlockRef endif;
+	LLVMBasicBlockRef nextif;
+	AstNode *vtype;
+	int i,count;
+	LLVMValueRef *blkvals;
+	LLVMBasicBlockRef *blks;
 	AstNode **nodesp;
 	uint32_t cnt;
+
+	// If we are returning a value in each block, set up space for phi info
+	vtype = typeGetVtype(ifnode->vtype);
+	count = ifnode->condblk->used / 2;
+	i = 0;
+	if (vtype != voidType) {
+		blkvals = memAllocBlk(count * sizeof(LLVMValueRef));
+		blks = memAllocBlk(count * sizeof(LLVMBasicBlockRef));
+	}
+
+	endif = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "endif");
+	for (nodesFor(ifnode->condblk, cnt, nodesp)) {
+
+		// Set up block for next condition (or endif if this is last condition)
+		if (i + 1 < count)
+			nextif = LLVMInsertBasicBlockInContext(gen->context, endif, "ifnext");
+		else
+			nextif = endif;
+
+		// Set up this condition's statement block and then conditionally jump to it or next condition
+		LLVMBasicBlockRef ablk;
+		if (*nodesp != voidType) {
+			ablk = LLVMInsertBasicBlockInContext(gen->context, nextif, "ifblk");
+			LLVMBuildCondBr(gen->builder, genlCondExp(gen, *nodesp), ablk, nextif);
+		}
+		else
+			ablk = nextif;
+
+		// Generate this condition's code block, along with jump to endif
+		LLVMPositionBuilderAtEnd(gen->builder, ablk);
+		LLVMValueRef blkval = genlBlock(gen, (BlockAstNode*)*(nodesp + 1));
+		LLVMBuildBr(gen->builder, endif);
+
+		// Remember value and block if needed for phi merge
+		if (vtype != voidType) {
+			blkvals[i] = blkval;
+			blks[i] = ablk;
+		}
+
+		LLVMPositionBuilderAtEnd(gen->builder, nextif);
+		cnt--; nodesp++; i++;
+	}
+
+	// Merge point at end of if. Create merged phi value if needed.
+	if (vtype != voidType) {
+		LLVMValueRef phi = LLVMBuildPhi(gen->builder, genlType(gen, vtype), "ifval");
+		LLVMAddIncoming(phi, blkvals, blks, count);
+	}
+
+	return NULL;
+}
+
+// Generate a block's statements
+LLVMValueRef genlBlock(genl_t *gen, BlockAstNode *blk) {
+	AstNode **nodesp;
+	uint32_t cnt;
+	for (nodesFor(blk->stmts, cnt, nodesp)) {
+		switch ((*nodesp)->asttype) {
+		case VarNameDclNode:
+			genlLocalVar(gen, (NameDclAstNode*)*nodesp); break;
+		case StmtExpNode:
+			genlTerm(gen, ((StmtExpAstNode*)*nodesp)->exp); break;
+		case ReturnNode:
+			genlReturn(gen, (StmtExpAstNode*)*nodesp); break;
+		case IfNode:
+			genlIf(gen, (IfAstNode*)*nodesp); break;
+		}
+	}
+	return NULL;
+}
+
+// Generate a function
+void genlFn(genl_t *gen, NameDclAstNode *fnnode) {
+	FnSigAstNode *fnsig = (FnSigAstNode*)fnnode->vtype;
 
 	assert(fnnode->value->asttype == BlockNode);
 	gen->fn = fnnode->llvmvar;
@@ -263,22 +356,13 @@ void genlFn(genl_t *gen, NameDclAstNode *fnnode) {
 	LLVMPositionBuilderAtEnd(gen->builder, entry);
 
 	// Generate LLVMValueRef's for all parameters, so we can use them as local vars in code
+	uint32_t cnt;
 	SymNode *inodesp;
 	for (inodesFor(fnsig->parms, cnt, inodesp))
 		genlParmVar(gen, (NameDclAstNode*)inodesp->node);
 
-	// Populate block with statements
-	blk = (BlockAstNode *)fnnode->value;
-	for (nodesFor(blk->stmts, cnt, nodesp)) {
-		switch ((*nodesp)->asttype) {
-		case VarNameDclNode:
-			genlLocalVar(gen, (NameDclAstNode*)*nodesp); break;
-		case StmtExpNode:
-			genlTerm(gen, ((StmtExpAstNode*)*nodesp)->exp); break;
-		case ReturnNode:
-			genlReturn(gen, (StmtExpAstNode*)*nodesp); break;
-		}
-	}
+	// Generate the function's code (always a block)
+	genlBlock(gen, (BlockAstNode *)fnnode->value);
 
 	LLVMDisposeBuilder(gen->builder);
 }

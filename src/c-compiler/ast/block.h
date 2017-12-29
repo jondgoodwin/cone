@@ -16,11 +16,17 @@ typedef struct PgmAstNode {
 
 // Block
 typedef struct BlockAstNode {
-	BasicAstHdr;
+	TypedAstHdr;
 	Inodes *locals;
 	Nodes *stmts;
 	uint16_t scope;
 } BlockAstNode;
+
+// If statement
+typedef struct IfAstNode {
+	TypedAstHdr;
+	Nodes *condblk;
+} IfAstNode;
 
 // Statement expressions (incl. return, yield, ...)
 typedef struct StmtExpAstNode {

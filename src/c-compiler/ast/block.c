@@ -107,6 +107,47 @@ void blockPass(AstPass *pstate, BlockAstNode *blk) {
 	pstate->scope = oldscope;
 }
 
+// Create a new If node
+IfAstNode *newIfNode() {
+	IfAstNode *ifnode;
+	newAstNode(ifnode, IfAstNode, IfNode);
+	ifnode->condblk = newNodes(4);
+	return ifnode;
+}
+
+// Serialize the AST for an if statement
+void ifPrint(IfAstNode *ifnode) {
+	AstNode **nodesp;
+	uint32_t cnt;
+	int firstflag = 1;
+
+	for (nodesFor(ifnode->condblk, cnt, nodesp)) {
+		if (firstflag) {
+			astFprint("if ");
+			firstflag = 0;
+			astPrintNode(*nodesp);
+		}
+		else if (*nodesp == voidType)
+			astFprint("else");
+		else {
+			astFprint("elif ");
+			astPrintNode(*nodesp);
+		}
+		astPrintNL();
+		astPrintIndent();
+		astPrintNode(*(++nodesp));
+		cnt--;
+	}
+}
+
+// Check the if statement's AST
+void ifPass(AstPass *pstate, IfAstNode *ifnode) {
+	AstNode **nodesp;
+	uint32_t cnt;
+	for (nodesFor(ifnode->condblk, cnt, nodesp))
+		astPass(pstate, *nodesp);
+}
+
 // Create a new op code node
 OpCodeAstNode *newOpCodeNode(int16_t opcode) {
 	OpCodeAstNode *op;
