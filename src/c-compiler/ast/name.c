@@ -98,7 +98,7 @@ void nameDclPrint(NameDclAstNode *name) {
 // Syntactic sugar: Turn last statement implicit returns into explicit returns
 void fnImplicitReturn(AstNode *rettype, BlockAstNode *blk) {
 	AstNode *laststmt;
-	laststmt = nodesGet(blk->stmts, blk->stmts->used - 1);
+	laststmt = nodesLast(blk->stmts);
 	if (rettype == voidType) {
 		if (laststmt->asttype != ReturnNode)
 			nodesAdd(&blk->stmts, (AstNode*) newReturnNode());

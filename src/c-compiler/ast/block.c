@@ -86,9 +86,6 @@ void blockPrint(BlockAstNode *blk) {
 
 // Check the block's AST
 void blockPass(AstPass *pstate, BlockAstNode *blk) {
-	if (blk->stmts == NULL)
-		return;
-
 	int16_t oldscope = pstate->scope;
 	blk->scope = ++pstate->scope; // Increment scope counter
 	BlockAstNode *oldblk = pstate->blk;
@@ -100,9 +97,15 @@ void blockPass(AstPass *pstate, BlockAstNode *blk) {
 	for (nodesFor(blk->stmts, cnt, nodesp))
 		astPass(pstate, *nodesp);
 
-	// Unhook local variables that hooked themselves
-	if(pstate->pass == NameResolution)
-		inodesUnhook(blk->locals);
+	switch (pstate->pass) {
+	case NameResolution:
+		// Unhook local variables that hooked themselves
+		inodesUnhook(blk->locals); break;
+
+	case TypeCheck:
+		// Type of the block is the type of its last statement
+		blk->vtype = ((TypedAstNode*)nodesLast(blk->stmts))->vtype; break;
+	}
 
 	pstate->blk = oldblk;
 	pstate->scope = oldscope;
@@ -146,8 +149,18 @@ void ifPrint(IfAstNode *ifnode) {
 void ifPass(AstPass *pstate, IfAstNode *ifnode) {
 	AstNode **nodesp;
 	uint32_t cnt;
-	for (nodesFor(ifnode->condblk, cnt, nodesp))
+	for (nodesFor(ifnode->condblk, cnt, nodesp)) {
 		astPass(pstate, *nodesp);
+
+		if (pstate->pass == TypeCheck && cnt&1) {
+			// vtype of 'if' node is that of all blocks, if they are the same
+			// Otherwise it is voidType
+			if (cnt == ifnode->condblk->used-1)
+				ifnode->vtype = ((TypedAstNode*)*nodesp)->vtype;
+			if (!typeIsSame(ifnode->vtype, ((TypedAstNode*)*nodesp)->vtype))
+				ifnode->vtype = voidType;
+		}
+	}
 }
 
 // Create a new op code node

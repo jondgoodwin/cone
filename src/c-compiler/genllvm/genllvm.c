@@ -142,9 +142,11 @@ LLVMValueRef genlTerm(genl_t *gen, AstNode *termnode) {
 	}
 	case AssignNode:
 	{
+		LLVMValueRef val;
 		AssignAstNode *node = (AssignAstNode*)termnode;
 		NameDclAstNode *lvalvar = ((NameUseAstNode *)node->lval)->dclnode;
-		return LLVMBuildStore(gen->builder, genlTerm(gen, node->rval), lvalvar->llvmvar);
+		LLVMBuildStore(gen->builder, (val=genlTerm(gen, node->rval)), lvalvar->llvmvar);
+		return val;
 	}
 	case CastNode:
 	{
@@ -206,11 +208,12 @@ LLVMValueRef genlCondExp(genl_t *gen, AstNode *condnode) {
 }
 
 // Generate a return statement
-void genlReturn(genl_t *gen, StmtExpAstNode *node) {
+LLVMValueRef genlReturn(genl_t *gen, StmtExpAstNode *node) {
 	if (node->exp != voidType)
 		LLVMBuildRet(gen->builder, genlTerm(gen, node->exp));
 	else
 		LLVMBuildRetVoid(gen->builder);
+	return NULL;
 }
 
 // Generate LLVMValueRef for a global variable or function
@@ -255,11 +258,13 @@ void genlParmVar(genl_t *gen, NameDclAstNode *var) {
 }
 
 // Generate local variable
-void genlLocalVar(genl_t *gen, NameDclAstNode *var) {
+LLVMValueRef genlLocalVar(genl_t *gen, NameDclAstNode *var) {
 	assert(var->asttype == VarNameDclNode);
+	LLVMValueRef val = NULL;
 	var->llvmvar = LLVMBuildAlloca(gen->builder, genlType(gen, (AstNode*)var), &var->namesym->namestr);
 	if (var->value)
-		LLVMBuildStore(gen->builder, genlTerm(gen, var->value), var->llvmvar);
+		LLVMBuildStore(gen->builder, (val = genlTerm(gen, var->value)), var->llvmvar);
+	return val;
 }
 
 // Generate an if statement
@@ -320,6 +325,7 @@ LLVMValueRef genlIf(genl_t *gen, IfAstNode *ifnode) {
 	if (vtype != voidType) {
 		LLVMValueRef phi = LLVMBuildPhi(gen->builder, genlType(gen, vtype), "ifval");
 		LLVMAddIncoming(phi, blkvals, blks, count);
+		return phi;
 	}
 
 	return NULL;
@@ -329,19 +335,20 @@ LLVMValueRef genlIf(genl_t *gen, IfAstNode *ifnode) {
 LLVMValueRef genlBlock(genl_t *gen, BlockAstNode *blk) {
 	AstNode **nodesp;
 	uint32_t cnt;
+	LLVMValueRef lastval;
 	for (nodesFor(blk->stmts, cnt, nodesp)) {
 		switch ((*nodesp)->asttype) {
 		case VarNameDclNode:
-			genlLocalVar(gen, (NameDclAstNode*)*nodesp); break;
+			lastval = genlLocalVar(gen, (NameDclAstNode*)*nodesp); break;
 		case StmtExpNode:
-			genlTerm(gen, ((StmtExpAstNode*)*nodesp)->exp); break;
+			lastval = genlTerm(gen, ((StmtExpAstNode*)*nodesp)->exp); break;
 		case ReturnNode:
-			genlReturn(gen, (StmtExpAstNode*)*nodesp); break;
+			lastval = genlReturn(gen, (StmtExpAstNode*)*nodesp); break;
 		case IfNode:
-			genlIf(gen, (IfAstNode*)*nodesp); break;
+			lastval = genlIf(gen, (IfAstNode*)*nodesp); break;
 		}
 	}
-	return NULL;
+	return lastval;
 }
 
 // Generate a function
