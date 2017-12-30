@@ -24,4 +24,9 @@ typedef struct genl_t {
 
 void genllvm(ConeOptions *opt, PgmAstNode *pgmast);
 
+// genlexpr.c
+LLVMTypeRef genlType(genl_t *gen, AstNode *typ);
+LLVMValueRef genlBlock(genl_t *gen, BlockAstNode *blk);
+LLVMValueRef genlExpr(genl_t *gen, AstNode *termnode);
+
 #endif
