@@ -36,4 +36,7 @@ void keywordInit() {
 	keyAdd("if", IfToken);
 	keyAdd("elif", ElifToken);
 	keyAdd("else", ElseToken);
+
+	keyAdd("true", trueToken);
+	keyAdd("false", falseToken);
 }

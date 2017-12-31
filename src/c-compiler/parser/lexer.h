@@ -76,6 +76,8 @@ enum TokenTypes {
 	IfToken,		// 'if'
 	ElifToken,		// 'elif'
 	ElseToken,		// 'else'
+	trueToken,		// 'true'
+	falseToken,		// 'false'
 
 	NbrTokens
 };

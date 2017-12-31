@@ -88,7 +88,7 @@ int isNameDclNode(AstNode *node) {
 void nameDclPrint(NameDclAstNode *name) {
 	astPrintNode((AstNode*)name->perm);
 	astFprint("%s ", &name->namesym->namestr);
-	astPrintNode(name->vtype);
+		astPrintNode(name->vtype);
 	if (name->value) {
 		astFprint(" = ");
 		astPrintNode(name->value);

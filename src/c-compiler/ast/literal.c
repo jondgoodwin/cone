@@ -22,8 +22,12 @@ ULitAstNode *newULitNode(uint64_t nbr, AstNode *type) {
 
 // Serialize the AST for a Unsigned literal
 void ulitPrint(ULitAstNode *lit) {
-	astFprint("%ld", lit->uintlit);
-	astPrintNode(lit->vtype);
+	if (((NbrAstNode*)lit->vtype)->bits == 1)
+		astFprint(lit->uintlit == 1 ? "true" : "false");
+	else {
+		astFprint("%ld", lit->uintlit);
+		astPrintNode(lit->vtype);
+	}
 }
 
 // Create a new unsigned literal node

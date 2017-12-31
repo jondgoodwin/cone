@@ -15,6 +15,7 @@ typedef struct NbrAstNode {
 } NbrAstNode;
 
 // Primitive numeric types - for implicit (nondeclared but known) types
+NbrAstNode *boolType;	// i1
 NbrAstNode *i8Type;
 NbrAstNode *i16Type;
 NbrAstNode *i32Type;

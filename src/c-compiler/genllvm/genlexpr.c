@@ -34,6 +34,7 @@ LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
 	case IntNbrType: case UintNbrType:
 	{
 		switch (((NbrAstNode*)typ)->bits) {
+		case 1: return LLVMInt1TypeInContext(gen->context);
 		case 8: return LLVMInt8TypeInContext(gen->context);
 		case 16: return LLVMInt16TypeInContext(gen->context);
 		case 32: return LLVMInt32TypeInContext(gen->context);

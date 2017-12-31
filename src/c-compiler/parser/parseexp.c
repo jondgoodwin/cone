@@ -20,24 +20,33 @@
 // Parse a term: literal, identifier, etc.
 AstNode *parseTerm() {
 	switch (lex->toktype) {
+	case trueToken:
+	{
+		ULitAstNode *node = newULitNode(1, (AstNode*)boolType);
+		lexNextToken();
+		return (AstNode *)node;
+	}
+	case falseToken:
+	{
+		ULitAstNode *node = newULitNode(0, (AstNode*)boolType);
+		lexNextToken();
+		return (AstNode *)node;
+	}
 	case IntLitToken:
 		{
-			ULitAstNode *node;
-			node = newULitNode(lex->val.uintlit, lex->langtype);
+			ULitAstNode *node = newULitNode(lex->val.uintlit, lex->langtype);
 			lexNextToken();
 			return (AstNode *)node;
 		}
 	case FloatLitToken:
 		{
-			FLitAstNode *node;
-			node = newFLitNode(lex->val.floatlit, lex->langtype);
+			FLitAstNode *node = newFLitNode(lex->val.floatlit, lex->langtype);
 			lexNextToken();
 			return (AstNode *)node;
 		}
 	case IdentToken:
 		{
-			NameUseAstNode *node;
-			node = newNameUseNode(lex->val.ident);
+			NameUseAstNode *node = newNameUseNode(lex->val.ident);
 			lexNextToken();
 			return (AstNode*)node;
 		}
