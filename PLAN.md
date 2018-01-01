@@ -1,29 +1,24 @@
-# Cone - 0.1.0 Project Plan (as of Dec. 26, 2017)
+# Cone - 0.1.0 Project Plan (as of Jan. 1, 2017)
 
-The current development objective is for the compiler to be able to load,
-scan, parse, generate (via LLVM), link, and run Cone programs that use numeric expressions, 
-local variables, if/while blocks, and function definition/application
-(e.g., roughly equivalent to capability in LLVM's sample language Kaleidoscope).
+## Current status
 
-Completed so far: A simple end-to-end compiler that turns source into tokens, tokens into AST,
-and AST (via LLVM) into linkable .obj files. It supports the following features:
+The compiler successfully translates Cone programs to .obj files. 
+It supports the following documented language features:
 
 - Function declarations with typed parameters, return type and code block
 - Global & local variable declaration and initialization
 - Return statements (implicit and explicit)
-- Expression statements
-- Assignment expressions  (with permission checking)
-- Function calls
+- Assignment expressions (with permission checking)
+- Function and method calls
+- Arithmetic, bitwise and comparison operators
 - Global, local and parameter variable reference
-- Number literals and types (integers, floats) of different sizes
+- Number literals and types (integers, floats, Bool) of different sizes
 - Type inference, type checking and automatic number casting on expressions
-- Arithmetic operators
 
-Next steps:
+## Next steps
 
-- Logic operators & Bool
-- Comparison operators
-- If and while control structures
-
-- Tested code examples that run on Windows and Linux
-- Attempted port to WebAssembly and Android
+- Control flow: if, while and the lazy logical operators
+- Pointer/reference type
+- Permission enforcement
+- Lexical memory management: moves, drops and borrows
+- Code generation for Linux, Android and WebAssembly
