@@ -66,9 +66,16 @@ enum TokenTypes {
 	AmperToken,			// '&'
 	BarToken,			// '|'
 	CaretToken,			// '^'
+	NotToken,			// '!'
 	TildeToken,			// '~'
 	UnderscoreToken,	// '_'
 	AssgnToken,			// '='
+	EqToken,			// '=='
+	NeToken,			// '!='
+	LtToken,			// '<'
+	LeToken,			// '<='
+	GtToken,			// '>'
+	GeToken,			// '>='
 
 	// Keywords
 	FnToken,		// 'fn'

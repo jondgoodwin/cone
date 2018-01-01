@@ -249,12 +249,35 @@ AstNode *parseOr() {
 	}
 }
 
+// Parse comparison operator
+AstNode *parseCmp() {
+	AstNode *lhnode = parseOr();
+	char *cmpop;
+	int cmpsz = 2;
+
+	switch (lex->toktype) {
+	case EqToken:  cmpop = "=="; break;
+	case NeToken:  cmpop = "!="; break;
+	case LtToken:  cmpop = "<"; cmpsz = 1; break;
+	case LeToken:  cmpop = "<="; break;
+	case GtToken:  cmpop = ">"; cmpsz = 1; break;
+	case GeToken:  cmpop = ">="; break;
+	default: return lhnode;
+	}
+
+	FnCallAstNode *node = newFnCallAstNode((AstNode*)newFieldUseNode(symFind(cmpop, cmpsz)), 2);
+	lexNextToken();
+	nodesAdd(&node->parms, lhnode);
+	nodesAdd(&node->parms, parseOr());
+	return (AstNode*)node;
+}
+
 // Parse an assignment expression
 AstNode *parseAssign() {
-	AstNode *lval = parseOr();
+	AstNode *lval = parseCmp();
 	if (lexIsToken(AssgnToken)) {
 		lexNextToken();
-		AstNode *rval = parseOr();
+		AstNode *rval = parseCmp();
 		return (AstNode*) newAssignAstNode(NormalAssign, lval, rval);
 	}
 	else

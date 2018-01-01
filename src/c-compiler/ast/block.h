@@ -44,6 +44,14 @@ enum OpCode {
 	DivOpCode,
 	RemOpCode,
 
+	// Comparison
+	EqOpCode,
+	NeOpCode,
+	LtOpCode,
+	LeOpCode,
+	GtOpCode,
+	GeOpCode,
+
 	// Bitwise
 	NotOpCode,
 	AndOpCode,

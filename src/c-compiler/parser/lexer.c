@@ -370,6 +370,42 @@ void lexNextToken() {
 		case '^': lexReturnPuncTok(CaretToken, 1);
 		case '|': lexReturnPuncTok(BarToken, 1);
 
+		// '=' and '=='
+		case '=':
+			if (*(srcp + 1) == '=')	{
+				lexReturnPuncTok(EqToken, 2);
+			}
+			else {
+				lexReturnPuncTok(AssgnToken, 1);
+			}
+
+		// '!' and '!='
+		case '!':
+			if (*(srcp + 1) == '=') {
+				lexReturnPuncTok(NeToken, 2);
+			}
+			else {
+				lexReturnPuncTok(NotToken, 1);
+			}
+
+		// '<' and '<='
+		case '<':
+			if (*(srcp + 1) == '=') {
+				lexReturnPuncTok(LeToken, 2);
+			}
+			else {
+				lexReturnPuncTok(LtToken, 1);
+			}
+
+		// '>' and '>='
+		case '>':
+			if (*(srcp + 1) == '=') {
+				lexReturnPuncTok(GeToken, 2);
+			}
+			else {
+				lexReturnPuncTok(GtToken, 1);
+			}
+
 		// '{'
 		case '{':
 			lexReturnPuncTok(LCurlyToken, 1);
@@ -386,11 +422,7 @@ void lexNextToken() {
 		case ')':
 			lexReturnPuncTok(RParenToken, 1);
 
-		// '='
-		case '=':
-			lexReturnPuncTok(AssgnToken, 1);
-
-			// ';'
+		// ';'
 		case ';':
 			lexReturnPuncTok(SemiToken, 1);
 

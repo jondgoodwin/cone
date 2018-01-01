@@ -23,15 +23,15 @@ void nbrDclNames() {
 
 	nbrtraits = newNodes(8);	// Needs 'copy' etc.
 
-	newNameDclNodeStr("Bool", VtypeNameDclNode, (AstNode*)(boolType = newNbrTypeNode(IntNbrType, 1)));
-	newNameDclNodeStr("i8", VtypeNameDclNode, (AstNode*)(i8Type = newNbrTypeNode(IntNbrType, 8)));
-	newNameDclNodeStr("i16", VtypeNameDclNode, (AstNode*)(i16Type = newNbrTypeNode(IntNbrType, 16)));
-	newNameDclNodeStr("i32", VtypeNameDclNode, (AstNode*)(i32Type = newNbrTypeNode(IntNbrType, 32)));
-	newNameDclNodeStr("i64", VtypeNameDclNode, (AstNode*)(i64Type = newNbrTypeNode(IntNbrType, 64)));
+	newNameDclNodeStr("Bool", VtypeNameDclNode, (AstNode*)(boolType = newNbrTypeNode(UintNbrType, 1)));
 	newNameDclNodeStr("u8", VtypeNameDclNode, (AstNode*)(u8Type = newNbrTypeNode(UintNbrType, 8)));
 	newNameDclNodeStr("u16", VtypeNameDclNode, (AstNode*)(u16Type = newNbrTypeNode(UintNbrType, 16)));
 	newNameDclNodeStr("u32", VtypeNameDclNode, (AstNode*)(u32Type = newNbrTypeNode(UintNbrType, 32)));
 	newNameDclNodeStr("u64", VtypeNameDclNode, (AstNode*)(u64Type = newNbrTypeNode(UintNbrType, 64)));
+	newNameDclNodeStr("i8", VtypeNameDclNode, (AstNode*)(i8Type = newNbrTypeNode(IntNbrType, 8)));
+	newNameDclNodeStr("i16", VtypeNameDclNode, (AstNode*)(i16Type = newNbrTypeNode(IntNbrType, 16)));
+	newNameDclNodeStr("i32", VtypeNameDclNode, (AstNode*)(i32Type = newNbrTypeNode(IntNbrType, 32)));
+	newNameDclNodeStr("i64", VtypeNameDclNode, (AstNode*)(i64Type = newNbrTypeNode(IntNbrType, 64)));
 	newNameDclNodeStr("f32", VtypeNameDclNode, (AstNode*)(f32Type = newNbrTypeNode(FloatNbrType, 32)));
 	newNameDclNodeStr("f64", VtypeNameDclNode, (AstNode*)(f64Type = newNbrTypeNode(FloatNbrType, 64)));
 }
@@ -70,6 +70,8 @@ NbrAstNode *newNbrTypeNode(uint16_t typ, char bits) {
 	// Build method dictionary for the type, which ultimately point to internal op codes
 	nbrtypenode->instnames = newInodes(16);
 	Symbol *opsym;
+
+	// Arithmetic operators (not applicable to boolean)
 	if (bits > 1) {
 		opsym = symFind("neg", 3);
 		inodesAdd(&nbrtypenode->instnames, opsym, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)unarysig, immPerm, (AstNode *)newOpCodeNode(NegOpCode)));
@@ -85,6 +87,7 @@ NbrAstNode *newNbrTypeNode(uint16_t typ, char bits) {
 		inodesAdd(&nbrtypenode->instnames, opsym, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(RemOpCode)));
 	}
 
+	// Bitwise operators (integer only)
 	if (typ != FloatNbrType) {
 		opsym = symFind("~", 1);
 		inodesAdd(&nbrtypenode->instnames, opsym, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)unarysig, immPerm, (AstNode *)newOpCodeNode(NotOpCode)));
@@ -101,12 +104,33 @@ NbrAstNode *newNbrTypeNode(uint16_t typ, char bits) {
 			inodesAdd(&nbrtypenode->instnames, opsym, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(ShrOpCode)));
 		}
 	}
+
+	// Create function signature for comparison methods for this type
+	FnSigAstNode *cmpsig = newFnSigNode();
+	cmpsig->rettype = (AstNode*)boolType;
+	inodesAdd(&cmpsig->parms, parm1, (AstNode *)newNameDclNode(parm1, VarNameDclNode, (AstNode*)nbrtypenode, immPerm, NULL));
+	inodesAdd(&cmpsig->parms, parm2, (AstNode *)newNameDclNode(parm2, VarNameDclNode, (AstNode*)nbrtypenode, immPerm, NULL));
+
+	// Comparison operators
+	opsym = symFind("==", 2);
+	inodesAdd(&nbrtypenode->instnames, opsym, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)cmpsig, immPerm, (AstNode *)newOpCodeNode(EqOpCode)));
+	opsym = symFind("!=", 2);
+	inodesAdd(&nbrtypenode->instnames, opsym, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)cmpsig, immPerm, (AstNode *)newOpCodeNode(NeOpCode)));
+	opsym = symFind("<", 1);
+	inodesAdd(&nbrtypenode->instnames, opsym, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)cmpsig, immPerm, (AstNode *)newOpCodeNode(LtOpCode)));
+	opsym = symFind("<=", 2);
+	inodesAdd(&nbrtypenode->instnames, opsym, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)cmpsig, immPerm, (AstNode *)newOpCodeNode(LeOpCode)));
+	opsym = symFind(">", 1);
+	inodesAdd(&nbrtypenode->instnames, opsym, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)cmpsig, immPerm, (AstNode *)newOpCodeNode(GtOpCode)));
+	opsym = symFind(">=", 2);
+	inodesAdd(&nbrtypenode->instnames, opsym, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)cmpsig, immPerm, (AstNode *)newOpCodeNode(GeOpCode)));
+
 	return nbrtypenode;
 }
 
 // Serialize the AST for a numeric literal
 void nbrTypePrint(NbrAstNode *node) {
-	if (node==i8Type)
+	if (node == i8Type)
 		astFprint("i8");
 	else if (node == i16Type)
 		astFprint("i16");
@@ -126,6 +150,8 @@ void nbrTypePrint(NbrAstNode *node) {
 		astFprint("f32");
 	else if (node == f64Type)
 		astFprint("f64");
+	else if (node == boolType)
+		astFprint("Bool");
 }
 
 // Is a number-typed node

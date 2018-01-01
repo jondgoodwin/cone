@@ -163,12 +163,20 @@ LLVMValueRef genlFnCall(genl_t *gen, FnCallAstNode *fncall) {
 			case MulOpCode: return LLVMBuildFMul(gen->builder, fnargs[0], fnargs[1], "");
 			case DivOpCode: return LLVMBuildFDiv(gen->builder, fnargs[0], fnargs[1], "");
 			case RemOpCode: return LLVMBuildFRem(gen->builder, fnargs[0], fnargs[1], "");
+			// Comparison
+			case EqOpCode: return LLVMBuildFCmp(gen->builder, LLVMRealOEQ, fnargs[0], fnargs[1], "");
+			case NeOpCode: return LLVMBuildFCmp(gen->builder, LLVMRealONE, fnargs[0], fnargs[1], "");
+			case LtOpCode: return LLVMBuildFCmp(gen->builder, LLVMRealOLT, fnargs[0], fnargs[1], "");
+			case LeOpCode: return LLVMBuildFCmp(gen->builder, LLVMRealOLE, fnargs[0], fnargs[1], "");
+			case GtOpCode: return LLVMBuildFCmp(gen->builder, LLVMRealOGT, fnargs[0], fnargs[1], "");
+			case GeOpCode: return LLVMBuildFCmp(gen->builder, LLVMRealOGE, fnargs[0], fnargs[1], "");
 			}
 		}
 		// Integer op codes
 		else {
 			switch (((OpCodeAstNode *)fnuse->dclnode->value)->opcode) {
-				// Arithmetic
+			
+			// Arithmetic
 			case NegOpCode: return LLVMBuildNeg(gen->builder, fnargs[0], "");
 			case AddOpCode: return LLVMBuildAdd(gen->builder, fnargs[0], fnargs[1], "");
 			case SubOpCode: return LLVMBuildSub(gen->builder, fnargs[0], fnargs[1], "");
@@ -183,7 +191,32 @@ LLVMValueRef genlFnCall(genl_t *gen, FnCallAstNode *fncall) {
 					return LLVMBuildSRem(gen->builder, fnargs[0], fnargs[1], "");
 				else
 					return LLVMBuildURem(gen->builder, fnargs[0], fnargs[1], "");
-				// Bitwise
+			
+			// Comparison
+			case EqOpCode: return LLVMBuildICmp(gen->builder, LLVMIntEQ, fnargs[0], fnargs[1], "");
+			case NeOpCode: return LLVMBuildICmp(gen->builder, LLVMIntNE, fnargs[0], fnargs[1], "");
+			case LtOpCode:
+				if (nbrtype == IntNbrType)
+					return LLVMBuildICmp(gen->builder, LLVMIntSLT, fnargs[0], fnargs[1], "");
+				else
+					return LLVMBuildICmp(gen->builder, LLVMIntULT, fnargs[0], fnargs[1], "");
+			case LeOpCode:
+				if (nbrtype == IntNbrType)
+					return LLVMBuildICmp(gen->builder, LLVMIntSLE, fnargs[0], fnargs[1], "");
+				else
+					return LLVMBuildICmp(gen->builder, LLVMIntULE, fnargs[0], fnargs[1], "");
+			case GtOpCode:
+				if (nbrtype == IntNbrType)
+					return LLVMBuildICmp(gen->builder, LLVMIntSGT, fnargs[0], fnargs[1], "");
+				else
+					return LLVMBuildICmp(gen->builder, LLVMIntUGT, fnargs[0], fnargs[1], "");
+			case GeOpCode:
+				if (nbrtype == IntNbrType)
+					return LLVMBuildICmp(gen->builder, LLVMIntSGE, fnargs[0], fnargs[1], "");
+				else
+					return LLVMBuildICmp(gen->builder, LLVMIntUGE, fnargs[0], fnargs[1], "");
+
+			// Bitwise
 			case NotOpCode: return LLVMBuildNot(gen->builder, fnargs[0], "");
 			case AndOpCode: return LLVMBuildAnd(gen->builder, fnargs[0], fnargs[1], "");
 			case OrOpCode: return LLVMBuildOr(gen->builder, fnargs[0], fnargs[1], "");
