@@ -152,13 +152,20 @@ void ifPass(AstPass *pstate, IfAstNode *ifnode) {
 	for (nodesFor(ifnode->condblk, cnt, nodesp)) {
 		astPass(pstate, *nodesp);
 
-		if (pstate->pass == TypeCheck && cnt&1) {
-			// vtype of 'if' node is that of all blocks, if they are the same
-			// Otherwise it is voidType
-			if (cnt == ifnode->condblk->used-1)
-				ifnode->vtype = ((TypedAstNode*)*nodesp)->vtype;
-			if (!typeIsSame(ifnode->vtype, ((TypedAstNode*)*nodesp)->vtype))
-				ifnode->vtype = voidType;
+		if (pstate->pass == TypeCheck) {
+			if (cnt & 1) {
+				// vtype of 'if' node is that of all blocks, if they are the same
+				// Otherwise it is voidType
+				if (cnt == ifnode->condblk->used - 1)
+					ifnode->vtype = ((TypedAstNode*)*nodesp)->vtype;
+				if (!typeIsSame(ifnode->vtype, ((TypedAstNode*)*nodesp)->vtype))
+					ifnode->vtype = voidType;
+			}
+			else {
+				// Conditional expression should be a boolean
+				if (*nodesp)
+					typeCoerces((AstNode*)boolType, nodesp);
+			}
 		}
 	}
 }

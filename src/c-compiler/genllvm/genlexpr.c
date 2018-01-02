@@ -56,19 +56,6 @@ LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
 	}
 }
 
-// Generate a conditional expression
-LLVMValueRef genlCondExp(genl_t *gen, AstNode *condnode) {
-	switch (condnode->asttype) {
-	default:
-	{
-		AstNode *vtype = typeGetVtype(condnode);
-		if (vtype->asttype == UintNbrType || vtype->asttype == IntNbrType)
-			return LLVMBuildICmp(gen->builder, LLVMIntNE, genlExpr(gen, condnode), LLVMConstNull(genlType(gen, vtype)), "iszero");
-	}
-	}
-	return NULL;
-}
-
 // Generate an if statement
 LLVMValueRef genlIf(genl_t *gen, IfAstNode *ifnode) {
 	LLVMBasicBlockRef endif;
@@ -103,7 +90,7 @@ LLVMValueRef genlIf(genl_t *gen, IfAstNode *ifnode) {
 		LLVMBasicBlockRef ablk;
 		if (*nodesp != voidType) {
 			ablk = LLVMInsertBasicBlockInContext(gen->context, nextif, "ifblk");
-			LLVMBuildCondBr(gen->builder, genlCondExp(gen, *nodesp), ablk, nextif);
+			LLVMBuildCondBr(gen->builder, genlExpr(gen, *nodesp), ablk, nextif);
 			LLVMPositionBuilderAtEnd(gen->builder, ablk);
 		}
 		else
@@ -240,6 +227,17 @@ LLVMValueRef genlFnCall(genl_t *gen, FnCallAstNode *fncall) {
 LLVMValueRef genlCast(genl_t *gen, CastAstNode* node) {
 	NbrAstNode *fromtype = (NbrAstNode *)typeGetVtype(node->exp);
 	NbrAstNode *totype = (NbrAstNode *)typeGetVtype(node->vtype);
+
+	// Casting a number to Bool means false if zero and true otherwise
+	if (totype == boolType) {
+		AstNode *vtype = typeGetVtype(node->exp);
+		if (fromtype->asttype == FloatNbrType)
+			return LLVMBuildFCmp(gen->builder, LLVMRealONE, genlExpr(gen, node->exp), LLVMConstNull(genlType(gen, vtype)), "");
+		else
+			return LLVMBuildICmp(gen->builder, LLVMIntNE, genlExpr(gen, node->exp), LLVMConstNull(genlType(gen, vtype)), "");
+	}
+
+	// Handle number to number casts, depending on relative size and encoding format
 	switch (totype->asttype) {
 
 	case UintNbrType:
