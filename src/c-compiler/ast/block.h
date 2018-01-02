@@ -28,11 +28,11 @@ typedef struct IfAstNode {
 	Nodes *condblk;
 } IfAstNode;
 
-// Statement expressions (incl. return, yield, ...)
-typedef struct StmtExpAstNode {
+// Return/yield statement
+typedef struct ReturnAstNode {
 	BasicAstHdr;
 	AstNode *exp;
-} StmtExpAstNode;
+} ReturnAstNode;
 
 // The various op codes supported by OpCodeAstNode
 enum OpCode {
@@ -82,12 +82,8 @@ void ifPass(AstPass *pstate, IfAstNode *ifnode);
 
 OpCodeAstNode *newOpCodeNode(int16_t opcode);
 
-StmtExpAstNode *newStmtExpNode();
-void stmtExpPrint(StmtExpAstNode *node);
-void stmtExpPass(AstPass *pstate, StmtExpAstNode *node);
-
-StmtExpAstNode *newReturnNode();
-void returnPrint(StmtExpAstNode *node);
-void returnPass(AstPass *pstate, StmtExpAstNode *node);
+ReturnAstNode *newReturnNode();
+void returnPrint(ReturnAstNode *node);
+void returnPass(AstPass *pstate, ReturnAstNode *node);
 
 #endif

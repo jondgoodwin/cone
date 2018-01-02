@@ -56,7 +56,6 @@ enum AstType {
 	// Untyped (Basic) AST nodes
 	PgmNode,		// Program (global area)
 	OpCodeNode,		// Alternative to fndcl block for internal operations (e.g., add)
-	StmtExpNode,	// Statement expression
 	ReturnNode,		// Return node
 
 	// Name usage (we do not know what type of name it is until name resolution pass)

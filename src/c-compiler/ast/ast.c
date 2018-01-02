@@ -17,6 +17,7 @@
 // State for astPrint
 FILE *astfile;
 int astIndent=0;
+int astisNL = 1;
 
 // Output a string to astfile
 void astFprint(char *str, ...) {
@@ -24,11 +25,14 @@ void astFprint(char *str, ...) {
 	va_start(argptr, str);
 	vfprintf(astfile, str, argptr);
 	va_end(argptr);
+	astisNL = 0;
 }
 
 // Print new line character
 void astPrintNL() {
-	fputc('\n', astfile);
+	if (!astisNL)
+		fputc('\n', astfile);
+	astisNL = 1;
 }
 
 // Output a line's beginning indentation
@@ -36,6 +40,7 @@ void astPrintIndent() {
 	int cnt;
 	for (cnt = 0; cnt<astIndent; cnt++)
 		fprintf(astfile, (cnt & 3) == 0 ? "| " : "  ");
+	astisNL = 0;
 }
 
 // Increment indentation
@@ -62,10 +67,8 @@ void astPrintNode(AstNode *node) {
 		blockPrint((BlockAstNode *)node); break;
 	case IfNode:
 		ifPrint((IfAstNode *)node); break;
-	case StmtExpNode:
-		stmtExpPrint((StmtExpAstNode *)node); break;
 	case ReturnNode:
-		returnPrint((StmtExpAstNode *)node); break;
+		returnPrint((ReturnAstNode *)node); break;
 	case AssignNode:
 		assignPrint((AssignAstNode *)node); break;
 	case FnCallNode:
@@ -111,10 +114,8 @@ void astPass(AstPass *pstate, AstNode *node) {
 		blockPass(pstate, (BlockAstNode *)node); break;
 	case IfNode:
 		ifPass(pstate, (IfAstNode *)node); break;
-	case StmtExpNode:
-		stmtExpPass(pstate, (StmtExpAstNode *)node); break;
 	case ReturnNode:
-		returnPass(pstate, (StmtExpAstNode *)node); break;
+		returnPass(pstate, (ReturnAstNode *)node); break;
 	case AssignNode:
 		assignPass(pstate, (AssignAstNode *)node); break;
 	case FnCallNode:

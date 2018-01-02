@@ -279,7 +279,7 @@ LLVMValueRef genlCast(genl_t *gen, CastAstNode* node) {
 }
 
 // Generate a return statement
-LLVMValueRef genlReturn(genl_t *gen, StmtExpAstNode *node) {
+LLVMValueRef genlReturn(genl_t *gen, ReturnAstNode *node) {
 	if (node->exp != voidType)
 		LLVMBuildRet(gen->builder, genlExpr(gen, node->exp));
 	else
@@ -339,10 +339,8 @@ LLVMValueRef genlExpr(genl_t *gen, AstNode *termnode) {
 		return genlCast(gen, (CastAstNode*)termnode);
 	case VarNameDclNode:
 		return genlLocalVar(gen, (NameDclAstNode*)termnode); break;
-	case StmtExpNode:
-		return genlExpr(gen, ((StmtExpAstNode*)termnode)->exp); break;
 	case ReturnNode:
-		return genlReturn(gen, (StmtExpAstNode*)termnode); break;
+		return genlReturn(gen, (ReturnAstNode*)termnode); break;
 	case IfNode:
 		return genlIf(gen, (IfAstNode*)termnode); break;
 	default:

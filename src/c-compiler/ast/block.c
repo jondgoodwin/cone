@@ -71,14 +71,12 @@ void blockPrint(BlockAstNode *blk) {
 	AstNode **nodesp;
 	uint32_t cnt;
 
-	astFprint("block:\n");
 	if (blk->stmts) {
 		astPrintIncr();
 		for (nodesFor(blk->stmts, cnt, nodesp)) {
 			astPrintIndent();
 			astPrintNode(*nodesp);
-			if (cnt > 1)
-				astPrintNL();
+			astPrintNL();
 		}
 		astPrintDecr();
 	}
@@ -132,14 +130,16 @@ void ifPrint(IfAstNode *ifnode) {
 			firstflag = 0;
 			astPrintNode(*nodesp);
 		}
-		else if (*nodesp == voidType)
-			astFprint("else");
 		else {
-			astFprint("elif ");
-			astPrintNode(*nodesp);
+			astPrintIndent();
+			if (*nodesp == voidType)
+				astFprint("else");
+			else {
+				astFprint("elif ");
+				astPrintNode(*nodesp);
+			}
 		}
 		astPrintNL();
-		astPrintIndent();
 		astPrintNode(*(++nodesp));
 		cnt--;
 	}
@@ -187,40 +187,22 @@ void opCodePrint(OpCodeAstNode *op) {
 void opCodePass(AstPass *pstate, OpCodeAstNode *op) {
 }
 
-// Create a new expression statement node
-StmtExpAstNode *newStmtExpNode() {
-	StmtExpAstNode *node;
-	newAstNode(node, StmtExpAstNode, StmtExpNode);
-	return node;
-}
-
-// Serialize the AST for a statement expression
-void stmtExpPrint(StmtExpAstNode *node) {
-	astFprint("stmtexp ");
-	astPrintNode(node->exp);
-}
-
-// Check the AST for a statement expression
-void stmtExpPass(AstPass *pstate, StmtExpAstNode *node) {
-	astPass(pstate, node->exp);
-}
-
 // Create a new return statement node
-StmtExpAstNode *newReturnNode() {
-	StmtExpAstNode *node;
-	newAstNode(node, StmtExpAstNode, ReturnNode);
+ReturnAstNode *newReturnNode() {
+	ReturnAstNode *node;
+	newAstNode(node, ReturnAstNode, ReturnNode);
 	node->exp = voidType;
 	return node;
 }
 
 // Serialize the AST for a return statement
-void returnPrint(StmtExpAstNode *node) {
+void returnPrint(ReturnAstNode *node) {
 	astFprint("return ");
 	astPrintNode(node->exp);
 }
 
 // Check the AST for a return statement
-void returnPass(AstPass *pstate, StmtExpAstNode *node) {
+void returnPass(AstPass *pstate, ReturnAstNode *node) {
 	astPass(pstate, node->exp);
 	// Ensure the vtype of the expression can be coerced to the function's declared return type
 	if (pstate->pass == TypeCheck) {

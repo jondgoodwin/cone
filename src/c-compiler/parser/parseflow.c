@@ -18,16 +18,14 @@
 
 // Parse an expression statement within a function
 AstNode *parseExpStmt() {
-	StmtExpAstNode *stmtnode;
-	stmtnode = newStmtExpNode();
-	stmtnode->exp = parseExp();
+	AstNode *node = (AstNode *) parseExp();
 	parseSemi();
-	return (AstNode*) stmtnode;
+	return node;
 }
 
 // Parse a return statement
 AstNode *parseReturn() {
-	StmtExpAstNode *stmtnode;
+	ReturnAstNode *stmtnode;
 	lexNextToken(); // Skip past 'return'
 	stmtnode = newReturnNode();
 	if (!lexIsToken(SemiToken))

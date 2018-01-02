@@ -91,6 +91,8 @@ void nameDclPrint(NameDclAstNode *name) {
 		astPrintNode(name->vtype);
 	if (name->value) {
 		astFprint(" = ");
+		if (name->value->asttype == BlockNode)
+			astPrintNL();
 		astPrintNode(name->value);
 	}
 }
@@ -104,8 +106,12 @@ void fnImplicitReturn(AstNode *rettype, BlockAstNode *blk) {
 			nodesAdd(&blk->stmts, (AstNode*) newReturnNode());
 	}
 	else {
-		if (laststmt->asttype == StmtExpNode)
-			laststmt->asttype = ReturnNode;
+		// Inject return in front of expression
+		if (astgroup(laststmt->asttype) == ExpGroup) {
+			ReturnAstNode *retnode = newReturnNode();
+			retnode->exp = laststmt;
+			nodesLast(blk->stmts) = (AstNode*)retnode;
+		}
 	}
 }
 
