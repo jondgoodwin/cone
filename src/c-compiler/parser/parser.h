@@ -17,11 +17,11 @@ void parseRCurly();
 void parseLCurly();
 void parseRParen();
 
-// parsestmt.c
+// parseflow.c
 AstNode *parseIf();
-AstNode *parseStmtBlock();
+AstNode *parseBlock();
 
-// parseexp.c
+// parseexpr.c
 AstNode *parseExp();
 
 // parsetype.c

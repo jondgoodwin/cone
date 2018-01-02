@@ -41,22 +41,22 @@ AstNode *parseIf() {
 	IfAstNode *ifnode = newIfNode();
 	lexNextToken();
 	nodesAdd(&ifnode->condblk, parseExp());
-	nodesAdd(&ifnode->condblk, parseStmtBlock());
+	nodesAdd(&ifnode->condblk, parseBlock());
 	while (lexIsToken(ElifToken)) {
 		lexNextToken();
 		nodesAdd(&ifnode->condblk, parseExp());
-		nodesAdd(&ifnode->condblk, parseStmtBlock());
+		nodesAdd(&ifnode->condblk, parseBlock());
 	}
 	if (lexIsToken(ElseToken)) {
 		lexNextToken();
 		nodesAdd(&ifnode->condblk, voidType);
-		nodesAdd(&ifnode->condblk, parseStmtBlock());
+		nodesAdd(&ifnode->condblk, parseBlock());
 	}
 	return (AstNode *)ifnode;
 }
 
-// Parse a statement block inside a control structure
-AstNode *parseStmtBlock() {
+// Parse a block of statements/expressions
+AstNode *parseBlock() {
 	BlockAstNode *blk = newBlockNode();
 
 	if (!lexIsToken(LCurlyToken))
@@ -68,6 +68,10 @@ AstNode *parseStmtBlock() {
 	blk->stmts = newNodes(8);
 	while (! lexIsToken(EofToken) && ! lexIsToken(RCurlyToken)) {
 		switch (lex->toktype) {
+		case SemiToken:
+			lexNextToken();
+			break;
+
 		case RetToken:
 			nodesAdd(&blk->stmts, parseReturn());
 			break;
@@ -76,7 +80,11 @@ AstNode *parseStmtBlock() {
 			nodesAdd(&blk->stmts, parseIf());
 			break;
 
-			// A local variable declaration, if it begins with a permission
+		case LCurlyToken:
+			nodesAdd(&blk->stmts, parseBlock());
+			break;
+
+		// A local variable declaration, if it begins with a permission
 		case IdentToken: {
 			AstNode *perm = lex->val.ident->node;
 			if (perm && perm->asttype == PermNameDclNode) {

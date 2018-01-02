@@ -284,8 +284,18 @@ AstNode *parseAssign() {
 		return lval;
 }
 
+AstNode *parseExpBlock() {
+	switch (lex->toktype) {
+	case IfToken:
+		return parseIf();
+	case LCurlyToken:
+		return parseBlock();
+	default:
+		return parseAssign();
+	}
+}
+
 // Parse an expression
 AstNode *parseExp() {
 	return parseAssign();
 }
-

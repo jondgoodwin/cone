@@ -55,8 +55,6 @@ enum AstType {
 
 	// Untyped (Basic) AST nodes
 	PgmNode,		// Program (global area)
-	BlockNode,		// Block (list of statements)
-	IfNode,			// if .. elif .. else statement
 	OpCodeNode,		// Alternative to fndcl block for internal operations (e.g., add)
 	StmtExpNode,	// Statement expression
 	ReturnNode,		// Return node
@@ -64,7 +62,7 @@ enum AstType {
 	// Name usage (we do not know what type of name it is until name resolution pass)
 	NameUseNode,	// Name use node
 
-	// Expression nodes (having value type)
+	// Expression nodes (having value type - or sometimes nullType)
 	VarNameDclNode = (ExpGroup<<8),
 	VarNameUseNode,	// Variable reference
 	FieldNameUseNode,	// Member of a namespace
@@ -74,6 +72,8 @@ enum AstType {
 	FnCallNode,		// Function call
 	CastNode,		// Cast exp to another type
 	UnaryNode,		// Unary method operator
+	BlockNode,		// Block (list of statements)
+	IfNode,			// if .. elif .. else statement
 
 	// Value type AST nodes
 	VtypeNameDclNode = (VTypeGroup<<8),

@@ -32,8 +32,8 @@ add_executable(cone
 	src/c-compiler/parser/keyword.c
 	src/c-compiler/parser/lexer.c
 	src/c-compiler/parser/parser.c
-	src/c-compiler/parser/parsestmt.c
-	src/c-compiler/parser/parseexp.c
+	src/c-compiler/parser/parseflow.c
+	src/c-compiler/parser/parseexpr.c
 	src/c-compiler/parser/parsetype.c
 
 	src/c-compiler/genllvm/genllvm.c

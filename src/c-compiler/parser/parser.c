@@ -77,7 +77,7 @@ AstNode *parseFn() {
 	if (!lexIsToken(LCurlyToken) && !lexIsToken(SemiToken))
 		parseLCurly();
 	if (lexIsToken(LCurlyToken))
-		fnnode->value = parseStmtBlock();
+		fnnode->value = parseBlock();
 	else
 		parseSemi();
 	return (AstNode*) fnnode;
