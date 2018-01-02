@@ -92,8 +92,13 @@ void blockPass(AstPass *pstate, BlockAstNode *blk) {
 	// Traverse block info
 	AstNode **nodesp;
 	uint32_t cnt;
-	for (nodesFor(blk->stmts, cnt, nodesp))
+	for (nodesFor(blk->stmts, cnt, nodesp)) {
+		// A return can only appear as the last statement in a block
+		if (pstate->pass == NameResolution && cnt > 1 && (*nodesp)->asttype == ReturnNode) {
+			errorMsgNode(*nodesp, ErrorRetNotLast, "return may only appear as the last statement in a block");
+		}
 		astPass(pstate, *nodesp);
+	}
 
 	switch (pstate->pass) {
 	case NameResolution:

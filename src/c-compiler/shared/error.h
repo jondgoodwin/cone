@@ -27,9 +27,9 @@ enum ErrorCode {
 	ErrorNoRCurly,	// Missing right curly brace
 	ErrorBadTerm,   // Invalid term - something other than var, lit, etc.
 	ErrorBadGloStmt, // Invalid global area type, var or function statement
-	ErrorDupImpl, // Function already has another implementation
-	ErrorNoLParen,   // Expected left parenthesis not found
-	ErrorNoRParen,	 // Expected right parenthesis not found
+	ErrorDupImpl,	// Function already has another implementation
+	ErrorNoLParen,  // Expected left parenthesis not found
+	ErrorNoRParen,	// Expected right parenthesis not found
 	ErrorDupName,	// Duplicate name declaration
 	ErrorNoName,	// Name is required but not provided
 	ErrorInvType,	// Types do not match correctly
@@ -45,6 +45,7 @@ enum ErrorCode {
 	ErrorManyArgs,	// Too many arguments specified
 	ErrorNoMbr,		// Field/method not specified
 	ErrorNoMeth,	// No such method defined by the object's type
+	ErrorRetNotLast, // Return was found not at the end of the block
 
 	// Warnings
 	WarnCode = 3000,

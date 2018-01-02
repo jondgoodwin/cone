@@ -25,9 +25,8 @@ AstNode *parseExpStmt() {
 
 // Parse a return statement
 AstNode *parseReturn() {
-	ReturnAstNode *stmtnode;
+	ReturnAstNode *stmtnode = newReturnNode();
 	lexNextToken(); // Skip past 'return'
-	stmtnode = newReturnNode();
 	if (!lexIsToken(SemiToken))
 		stmtnode->exp = parseExp();
 	parseSemi();
