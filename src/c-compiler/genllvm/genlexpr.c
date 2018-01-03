@@ -341,6 +341,8 @@ LLVMValueRef genlExpr(genl_t *gen, AstNode *termnode) {
 		return genlLocalVar(gen, (NameDclAstNode*)termnode); break;
 	case ReturnNode:
 		return genlReturn(gen, (ReturnAstNode*)termnode); break;
+	case BlockNode:
+		return genlBlock(gen, (BlockAstNode*)termnode); break;
 	case IfNode:
 		return genlIf(gen, (IfAstNode*)termnode); break;
 	default:

@@ -46,6 +46,8 @@ enum ErrorCode {
 	ErrorNoMbr,		// Field/method not specified
 	ErrorNoMeth,	// No such method defined by the object's type
 	ErrorRetNotLast, // Return was found not at the end of the block
+	ErrorNoRet,		// Return value expected but not given
+	ErrorNoElse,	// Missing 'else' branch
 
 	// Warnings
 	WarnCode = 3000,

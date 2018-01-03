@@ -18,7 +18,7 @@
 
 // Parse an expression statement within a function
 AstNode *parseExpStmt() {
-	AstNode *node = (AstNode *) parseExp();
+	AstNode *node = (AstNode *) parseExpr();
 	parseSemi();
 	return node;
 }
@@ -28,7 +28,7 @@ AstNode *parseReturn() {
 	ReturnAstNode *stmtnode = newReturnNode();
 	lexNextToken(); // Skip past 'return'
 	if (!lexIsToken(SemiToken))
-		stmtnode->exp = parseExp();
+		stmtnode->exp = parseExpr();
 	parseSemi();
 	return (AstNode*) stmtnode;
 }
@@ -37,11 +37,11 @@ AstNode *parseReturn() {
 AstNode *parseIf() {
 	IfAstNode *ifnode = newIfNode();
 	lexNextToken();
-	nodesAdd(&ifnode->condblk, parseExp());
+	nodesAdd(&ifnode->condblk, parseExpr());
 	nodesAdd(&ifnode->condblk, parseBlock());
 	while (lexIsToken(ElifToken)) {
 		lexNextToken();
-		nodesAdd(&ifnode->condblk, parseExp());
+		nodesAdd(&ifnode->condblk, parseExpr());
 		nodesAdd(&ifnode->condblk, parseBlock());
 	}
 	if (lexIsToken(ElseToken)) {

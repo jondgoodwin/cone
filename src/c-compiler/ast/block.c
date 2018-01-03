@@ -106,8 +106,8 @@ void blockPass(AstPass *pstate, BlockAstNode *blk) {
 		inodesUnhook(blk->locals); break;
 
 	case TypeCheck:
-		// Type of the block is the type of its last statement
-		blk->vtype = ((TypedAstNode*)nodesLast(blk->stmts))->vtype; break;
+		// When coerced by typeCoerces, vtype of the block will be specified
+		break;
 	}
 
 	pstate->blk = oldblk;
@@ -157,20 +157,12 @@ void ifPass(AstPass *pstate, IfAstNode *ifnode) {
 	for (nodesFor(ifnode->condblk, cnt, nodesp)) {
 		astPass(pstate, *nodesp);
 
+		// Type check the 'if':
+		// - conditional must be a Bool
+		// - if's vtype is specified/checked only when coerced by typeCoerces
 		if (pstate->pass == TypeCheck) {
-			if (cnt & 1) {
-				// vtype of 'if' node is that of all blocks, if they are the same
-				// Otherwise it is voidType
-				if (cnt == ifnode->condblk->used - 1)
-					ifnode->vtype = ((TypedAstNode*)*nodesp)->vtype;
-				if (!typeIsSame(ifnode->vtype, ((TypedAstNode*)*nodesp)->vtype))
-					ifnode->vtype = voidType;
-			}
-			else {
-				// Conditional expression should be a boolean
-				if (*nodesp)
-					typeCoerces((AstNode*)boolType, nodesp);
-			}
+			if ((cnt & 1)==0 && *nodesp)
+				typeCoerces((AstNode*)boolType, nodesp); // Conditional exp
 		}
 	}
 }
@@ -206,9 +198,16 @@ void returnPrint(ReturnAstNode *node) {
 	astPrintNode(node->exp);
 }
 
-// Check the AST for a return statement
+// Semantic analysis for return statements
+// Related analysis for return elsewhere:
+// - Block ensures that return can only appear at end of block
+// - NameDcl turns fn block's final expression into an implicit return
 void returnPass(AstPass *pstate, ReturnAstNode *node) {
+	// If we are returning the value from an 'if', recursively strip out any of its path's redudant 'return's
+
+	// Process the return's expression
 	astPass(pstate, node->exp);
+
 	// Ensure the vtype of the expression can be coerced to the function's declared return type
 	if (pstate->pass == TypeCheck) {
 		if (!typeCoerces(pstate->fnsig->rettype, &node->exp)) {

@@ -50,7 +50,7 @@ NameDclAstNode *parseVarDcl(PermAstNode *defperm) {
 	// Get initialization value after '=', if provided
 	if (lexIsToken(AssgnToken)) {
 		lexNextToken();
-		val = parseExp();
+		val = parseExpr();
 	}
 	else
 		val = NULL;

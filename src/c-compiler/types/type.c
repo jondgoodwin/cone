@@ -9,6 +9,7 @@
 #include "../shared/symbol.h"
 #include "../shared/memory.h"
 #include "../parser/lexer.h"
+#include "../shared/error.h"
 #include <string.h>
 #include <assert.h>
 
@@ -58,8 +59,32 @@ int typeCoerces(AstNode *to, AstNode **from) {
 
 	// Convert nodes to their value types
 	getVtype(to);
-	getVtype(fromtype);
 
+	// When coercing a block, do so on its last expression
+	while ((*from)->asttype == BlockNode) {
+		((TypedAstNode*)*from)->vtype = to;
+		from = &nodesLast(((BlockAstNode*)*from)->stmts);
+	}
+
+	// Coercing an 'if' requires we do so on all its paths
+	if ((*from)->asttype == IfNode) {
+		int16_t cnt;
+		AstNode **nodesp;
+		IfAstNode *ifnode = (IfAstNode*)*from;
+		ifnode->vtype = to;
+		if (nodesGet(ifnode->condblk, ifnode->condblk->used - 2) != voidType)
+			errorMsgNode((AstNode*)ifnode, ErrorNoElse, "Missing else branch which needs to provide a value");
+		for (nodesFor(ifnode->condblk, cnt, nodesp)) {
+			cnt--; nodesp++;
+			AstNode **lastnode = &nodesLast(((BlockAstNode*)*nodesp)->stmts);
+			if (!typeCoerces(to, lastnode)) {
+				errorMsgNode(*lastnode, ErrorInvType, "expression type does not match expected type");
+			}
+		}
+		return 1;
+	}
+
+	getVtype(fromtype);
 	// If they are the same value type info, types match
 	if (to == fromtype)
 		return 1;

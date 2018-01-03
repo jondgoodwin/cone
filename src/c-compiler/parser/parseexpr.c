@@ -54,7 +54,7 @@ AstNode *parseTerm() {
 		{
 			AstNode *node;
 			lexNextToken();
-			node = parseExp();
+			node = parseExpr();
 			parseRParen();
 			return node;
 		}
@@ -77,7 +77,7 @@ AstNode *parsePostfix() {
 			lexNextToken();
 			if (!lexIsToken(RParenToken))
 				while (1) {
-					nodesAdd(&fncall->parms, parseExp());
+					nodesAdd(&fncall->parms, parseExpr());
 					if (lexIsToken(CommaToken))
 						lexNextToken();
 					else
@@ -110,7 +110,7 @@ AstNode *parsePostfix() {
 				nodesAdd(&fncall->parms, node); // treat object as first parameter (self)
 				if (!lexIsToken(RParenToken)) {
 					while (1) {
-						nodesAdd(&fncall->parms, parseExp());
+						nodesAdd(&fncall->parms, parseExpr());
 						if (lexIsToken(CommaToken))
 							lexNextToken();
 						else
@@ -277,7 +277,7 @@ AstNode *parseAssign() {
 	AstNode *lval = parseCmp();
 	if (lexIsToken(AssgnToken)) {
 		lexNextToken();
-		AstNode *rval = parseCmp();
+		AstNode *rval = parseExpr();
 		return (AstNode*) newAssignAstNode(NormalAssign, lval, rval);
 	}
 	else
@@ -296,6 +296,6 @@ AstNode *parseExpBlock() {
 }
 
 // Parse an expression
-AstNode *parseExp() {
-	return parseAssign();
+AstNode *parseExpr() {
+	return parseExpBlock();
 }

@@ -22,7 +22,7 @@ AstNode *parseIf();
 AstNode *parseBlock();
 
 // parseexpr.c
-AstNode *parseExp();
+AstNode *parseExpr();
 
 // parsetype.c
 NameDclAstNode *parseVarDcl(PermAstNode *defperm);

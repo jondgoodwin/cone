@@ -112,6 +112,8 @@ void fnImplicitReturn(AstNode *rettype, BlockAstNode *blk) {
 			retnode->exp = laststmt;
 			nodesLast(blk->stmts) = (AstNode*)retnode;
 		}
+		else if (laststmt->asttype != ReturnNode)
+			errorMsgNode(laststmt, ErrorNoRet, "A return value is expected but this statement cannot give one.");
 	}
 }
 
