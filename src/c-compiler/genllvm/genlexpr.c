@@ -61,7 +61,7 @@ LLVMValueRef genlIf(genl_t *gen, IfAstNode *ifnode) {
 	LLVMBasicBlockRef endif;
 	LLVMBasicBlockRef nextif;
 	AstNode *vtype;
-	int i, count;
+	int i, phicnt, count;
 	LLVMValueRef *blkvals;
 	LLVMBasicBlockRef *blks;
 	AstNode **nodesp;
@@ -70,7 +70,7 @@ LLVMValueRef genlIf(genl_t *gen, IfAstNode *ifnode) {
 	// If we are returning a value in each block, set up space for phi info
 	vtype = typeGetVtype(ifnode->vtype);
 	count = ifnode->condblk->used / 2;
-	i = 0;
+	i = phicnt = 0;
 	if (vtype != voidType) {
 		blkvals = memAllocBlk(count * sizeof(LLVMValueRef));
 		blks = memAllocBlk(count * sizeof(LLVMBasicBlockRef));
@@ -96,14 +96,15 @@ LLVMValueRef genlIf(genl_t *gen, IfAstNode *ifnode) {
 		else
 			ablk = nextMemBlk;
 
-		// Generate this condition's code block, along with jump to endif
+		// Generate this condition's code block, along with jump to endif if block does not end with a return
 		LLVMValueRef blkval = genlBlock(gen, (BlockAstNode*)*(nodesp + 1));
-		LLVMBuildBr(gen->builder, endif);
-
-		// Remember value and block if needed for phi merge
-		if (vtype != voidType) {
-			blkvals[i] = blkval;
-			blks[i] = ablk;
+		if (nodesLast(((BlockAstNode*)*(nodesp + 1))->stmts)->asttype != ReturnNode) {
+			LLVMBuildBr(gen->builder, endif);
+			// Remember value and block if needed for phi merge
+			if (vtype != voidType) {
+				blkvals[phicnt] = blkval;
+				blks[phicnt++] = ablk;
+			}
 		}
 
 		LLVMPositionBuilderAtEnd(gen->builder, nextif);
@@ -111,9 +112,9 @@ LLVMValueRef genlIf(genl_t *gen, IfAstNode *ifnode) {
 	}
 
 	// Merge point at end of if. Create merged phi value if needed.
-	if (vtype != voidType) {
+	if (phicnt) {
 		LLVMValueRef phi = LLVMBuildPhi(gen->builder, genlType(gen, vtype), "ifval");
-		LLVMAddIncoming(phi, blkvals, blks, count);
+		LLVMAddIncoming(phi, blkvals, blks, phicnt);
 		return phi;
 	}
 
