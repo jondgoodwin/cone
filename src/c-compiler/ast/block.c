@@ -150,6 +150,21 @@ void ifPrint(IfAstNode *ifnode) {
 	}
 }
 
+// Recursively strip 'returns' out of all block-ends in 'if' (see returnPass)
+void ifRemoveReturns(IfAstNode *ifnode) {
+	AstNode **nodesp;
+	int16_t cnt;
+	for (nodesFor(ifnode->condblk, cnt, nodesp)) {
+		AstNode **laststmt;
+		cnt--; nodesp++;
+		laststmt = &nodesLast(((BlockAstNode*)*nodesp)->stmts);
+		if ((*laststmt)->asttype == ReturnNode)
+			*laststmt = ((ReturnAstNode*)*laststmt)->exp;
+		if ((*laststmt)->asttype == IfNode)
+			ifRemoveReturns((IfAstNode*)*laststmt);
+	}
+}
+
 // Check the if statement's AST
 void ifPass(AstPass *pstate, IfAstNode *ifnode) {
 	AstNode **nodesp;
@@ -204,6 +219,8 @@ void returnPrint(ReturnAstNode *node) {
 // - NameDcl turns fn block's final expression into an implicit return
 void returnPass(AstPass *pstate, ReturnAstNode *node) {
 	// If we are returning the value from an 'if', recursively strip out any of its path's redudant 'return's
+	if (pstate->pass == TypeCheck && node->exp->asttype == IfNode)
+		ifRemoveReturns((IfAstNode*)(node->exp));
 
 	// Process the return's expression
 	astPass(pstate, node->exp);
