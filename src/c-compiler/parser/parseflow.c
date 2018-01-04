@@ -90,6 +90,26 @@ AstNode *parseBlock() {
 			nodesAdd(&blk->stmts, parseWhile());
 			break;
 
+		case BreakToken:
+		{
+			AstNode *node;
+			newAstNode(node, AstNode, BreakNode);
+			nodesAdd(&blk->stmts, node);
+			lexNextToken();
+			parseSemi();
+			break;
+		}
+
+		case ContinueToken:
+		{
+			AstNode *node;
+			newAstNode(node, AstNode, ContinueNode);
+			nodesAdd(&blk->stmts, node);
+			lexNextToken();
+			parseSemi();
+			break;
+		}
+
 		case LCurlyToken:
 			nodesAdd(&blk->stmts, parseBlock());
 			break;

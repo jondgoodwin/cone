@@ -69,6 +69,10 @@ void astPrintNode(AstNode *node) {
 		ifPrint((IfAstNode *)node); break;
 	case WhileNode:
 		whilePrint((WhileAstNode *)node); break;
+	case BreakNode:
+		astFprint("break"); break;
+	case ContinueNode:
+		astFprint("continue"); break;
 	case ReturnNode:
 		returnPrint((ReturnAstNode *)node); break;
 	case AssignNode:
@@ -118,6 +122,9 @@ void astPass(AstPass *pstate, AstNode *node) {
 		ifPass(pstate, (IfAstNode *)node); break;
 	case WhileNode:
 		whilePass(pstate, (WhileAstNode *)node); break;
+	case BreakNode:
+	case ContinueNode:
+		breakPass(pstate, node); break;
 	case ReturnNode:
 		returnPass(pstate, (ReturnAstNode *)node); break;
 	case AssignNode:
@@ -147,6 +154,7 @@ void astPasses(PgmAstNode *pgm) {
 	pstate.fnsig = NULL;
 	pstate.blk = NULL;
 	pstate.scope = 0;
+	pstate.flags = 0;
 
 	// Resolve all name uses to their appropriate declaration
 	pstate.pass = NameResolution;

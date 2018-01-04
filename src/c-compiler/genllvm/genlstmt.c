@@ -25,9 +25,15 @@
 // Generate a while block
 void genlWhile(genl_t *gen, WhileAstNode *wnode) {
 	LLVMBasicBlockRef whilebeg, whileblk, whileend;
-	whilebeg = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "whilebeg");
+	LLVMBasicBlockRef svwhilebeg, svwhileend;
+
+	// Push and pop for break and continue statements
+	svwhilebeg = gen->whilebeg;
+	svwhileend = gen->whileend;
+
+	gen->whilebeg = whilebeg = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "whilebeg");
 	whileblk = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "whileblk");
-	whileend = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "whileend");
+	gen->whileend = whileend = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "whileend");
 
 	LLVMBuildBr(gen->builder, whilebeg);
 	LLVMPositionBuilderAtEnd(gen->builder, whilebeg);
@@ -36,6 +42,9 @@ void genlWhile(genl_t *gen, WhileAstNode *wnode) {
 	genlBlock(gen, (BlockAstNode*)wnode->blk);
 	LLVMBuildBr(gen->builder, whilebeg);
 	LLVMPositionBuilderAtEnd(gen->builder, whileend);
+
+	gen->whilebeg = svwhilebeg;
+	gen->whileend = svwhileend;
 }
 
 // Generate a return statement
@@ -55,6 +64,10 @@ LLVMValueRef genlBlock(genl_t *gen, BlockAstNode *blk) {
 		switch ((*nodesp)->asttype) {
 		case WhileNode:
 			genlWhile(gen, (WhileAstNode *)*nodesp); break;
+		case BreakNode:
+			LLVMBuildBr(gen->builder, gen->whileend); break;
+		case ContinueNode:
+			LLVMBuildBr(gen->builder, gen->whilebeg); break;
 		case ReturnNode:
 			genlReturn(gen, (ReturnAstNode*)*nodesp); break;
 		default:

@@ -91,6 +91,8 @@ WhileAstNode *newWhileNode();
 void whilePrint(WhileAstNode *wnode);
 void whilePass(AstPass *pstate, WhileAstNode *wnode);
 
+void breakPass(AstPass *pstate, AstNode *node);
+
 OpCodeAstNode *newOpCodeNode(int16_t opcode);
 
 ReturnAstNode *newReturnNode();

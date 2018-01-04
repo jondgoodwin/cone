@@ -84,6 +84,8 @@ enum TokenTypes {
 	ElifToken,		// 'elif'
 	ElseToken,		// 'else'
 	WhileToken,		// 'while'
+	BreakToken,		// 'break'
+	ContinueToken,	// 'continue'
 	trueToken,		// 'true'
 	falseToken,		// 'false'
 

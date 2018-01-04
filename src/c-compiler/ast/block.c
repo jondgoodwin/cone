@@ -94,8 +94,15 @@ void blockPass(AstPass *pstate, BlockAstNode *blk) {
 	uint32_t cnt;
 	for (nodesFor(blk->stmts, cnt, nodesp)) {
 		// A return can only appear as the last statement in a block
-		if (pstate->pass == NameResolution && cnt > 1 && (*nodesp)->asttype == ReturnNode) {
-			errorMsgNode(*nodesp, ErrorRetNotLast, "return may only appear as the last statement in a block");
+		if (pstate->pass == NameResolution && cnt > 1) {
+			switch ((*nodesp)->asttype) {
+			case ReturnNode:
+				errorMsgNode(*nodesp, ErrorRetNotLast, "return may only appear as the last statement in a block"); break;
+			case BreakNode:
+				errorMsgNode(*nodesp, ErrorRetNotLast, "break may only appear as the last statement in a block"); break;
+			case ContinueNode:
+				errorMsgNode(*nodesp, ErrorRetNotLast, "continue may only appear as the last statement in a block"); break;
+			}
 		}
 		astPass(pstate, *nodesp);
 	}
@@ -200,11 +207,22 @@ void whilePrint(WhileAstNode *node) {
 
 // Semantic pass on the while block
 void whilePass(AstPass *pstate, WhileAstNode *node) {
+	uint16_t svflags = pstate->flags;
+	pstate->flags |= PassWithinWhile;
+
 	astPass(pstate, node->condexp);
 	astPass(pstate, node->blk);
 
 	if (pstate->pass == TypeCheck)
 		typeCoerces((AstNode*)boolType, &node->condexp);
+
+	pstate->flags = svflags;
+}
+
+// Semantic pass on break or continue
+void breakPass(AstPass *pstate, AstNode *node) {
+	if (pstate->pass==NameResolution && !(pstate->flags & PassWithinWhile))
+		errorMsgNode(node, ErrorNoWhile, "break/continue may only be used within a while/each block");
 }
 
 // Create a new op code node

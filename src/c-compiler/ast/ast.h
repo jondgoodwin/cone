@@ -58,6 +58,8 @@ enum AstType {
 	OpCodeNode,		// Alternative to fndcl block for internal operations (e.g., add)
 	ReturnNode,		// Return node
 	WhileNode,		// While node
+	BreakNode,		// Break node
+	ContinueNode,	// Continue node
 
 	// Name usage (we do not know what type of name it is until name resolution pass)
 	NameUseNode,	// Name use node
@@ -172,7 +174,10 @@ typedef struct AstPass {
 	BlockAstNode *blk;		// The current block we are within
 
 	int16_t scope;			// The current block scope (0=global, 1=fnsig, 2+=blocks)
+	uint16_t flags;
 } AstPass;
+
+#define PassWithinWhile 0x0001
 
 // Allocate and initialize a new AST node
 #define newAstNode(node, aststruct, asttyp) {\

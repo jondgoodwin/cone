@@ -18,6 +18,8 @@ typedef struct genl_t {
 	LLVMModuleRef module;
 	LLVMValueRef fn;
 	LLVMBuilderRef builder;
+	LLVMBasicBlockRef whilebeg;
+	LLVMBasicBlockRef whileend;
 
 	char *srcname;
 } genl_t;

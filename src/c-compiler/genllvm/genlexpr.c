@@ -98,7 +98,8 @@ LLVMValueRef genlIf(genl_t *gen, IfAstNode *ifnode) {
 
 		// Generate this condition's code block, along with jump to endif if block does not end with a return
 		LLVMValueRef blkval = genlBlock(gen, (BlockAstNode*)*(nodesp + 1));
-		if (nodesLast(((BlockAstNode*)*(nodesp + 1))->stmts)->asttype != ReturnNode) {
+		int16_t lastStmtAsttype = nodesLast(((BlockAstNode*)*(nodesp + 1))->stmts)->asttype;
+		if (lastStmtAsttype != ReturnNode && lastStmtAsttype != BreakNode && lastStmtAsttype != ContinueNode) {
 			LLVMBuildBr(gen->builder, endif);
 			// Remember value and block if needed for phi merge
 			if (vtype != voidType) {
