@@ -279,15 +279,6 @@ LLVMValueRef genlCast(genl_t *gen, CastAstNode* node) {
 	}
 }
 
-// Generate a return statement
-LLVMValueRef genlReturn(genl_t *gen, ReturnAstNode *node) {
-	if (node->exp != voidType)
-		LLVMBuildRet(gen->builder, genlExpr(gen, node->exp));
-	else
-		LLVMBuildRetVoid(gen->builder);
-	return NULL;
-}
-
 // Generate local variable
 LLVMValueRef genlLocalVar(genl_t *gen, NameDclAstNode *var) {
 	assert(var->asttype == VarNameDclNode);
@@ -296,16 +287,6 @@ LLVMValueRef genlLocalVar(genl_t *gen, NameDclAstNode *var) {
 	if (var->value)
 		LLVMBuildStore(gen->builder, (val = genlExpr(gen, var->value)), var->llvmvar);
 	return val;
-}
-
-// Generate a block's statements
-LLVMValueRef genlBlock(genl_t *gen, BlockAstNode *blk) {
-	AstNode **nodesp;
-	uint32_t cnt;
-	LLVMValueRef lastval;
-	for (nodesFor(blk->stmts, cnt, nodesp))
-		lastval = genlExpr(gen, *nodesp);
-	return lastval;
 }
 
 // Generate a term
@@ -340,8 +321,6 @@ LLVMValueRef genlExpr(genl_t *gen, AstNode *termnode) {
 		return genlCast(gen, (CastAstNode*)termnode);
 	case VarNameDclNode:
 		return genlLocalVar(gen, (NameDclAstNode*)termnode); break;
-	case ReturnNode:
-		return genlReturn(gen, (ReturnAstNode*)termnode); break;
 	case BlockNode:
 		return genlBlock(gen, (BlockAstNode*)termnode); break;
 	case IfNode:

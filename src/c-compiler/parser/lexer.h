@@ -83,6 +83,7 @@ enum TokenTypes {
 	IfToken,		// 'if'
 	ElifToken,		// 'elif'
 	ElseToken,		// 'else'
+	WhileToken,		// 'while'
 	trueToken,		// 'true'
 	falseToken,		// 'false'
 

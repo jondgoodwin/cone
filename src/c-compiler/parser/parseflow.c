@@ -52,6 +52,15 @@ AstNode *parseIf() {
 	return (AstNode *)ifnode;
 }
 
+// Parse while block
+AstNode *parseWhile() {
+	WhileAstNode *wnode = newWhileNode();
+	lexNextToken();
+	wnode->condexp = parseExpr();
+	wnode->blk = parseBlock();
+	return (AstNode *)wnode;
+}
+
 // Parse a block of statements/expressions
 AstNode *parseBlock() {
 	BlockAstNode *blk = newBlockNode();
@@ -75,6 +84,10 @@ AstNode *parseBlock() {
 
 		case IfToken:
 			nodesAdd(&blk->stmts, parseIf());
+			break;
+
+		case WhileToken:
+			nodesAdd(&blk->stmts, parseWhile());
 			break;
 
 		case LCurlyToken:

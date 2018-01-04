@@ -57,6 +57,7 @@ enum AstType {
 	PgmNode,		// Program (global area)
 	OpCodeNode,		// Alternative to fndcl block for internal operations (e.g., add)
 	ReturnNode,		// Return node
+	WhileNode,		// While node
 
 	// Name usage (we do not know what type of name it is until name resolution pass)
 	NameUseNode,	// Name use node

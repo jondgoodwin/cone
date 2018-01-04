@@ -182,6 +182,31 @@ void ifPass(AstPass *pstate, IfAstNode *ifnode) {
 	}
 }
 
+// Create a new While node
+WhileAstNode *newWhileNode() {
+	WhileAstNode *node;
+	newAstNode(node, WhileAstNode, WhileNode);
+	node->blk = NULL;
+	return node;
+}
+
+// Serialize the AST for an while block
+void whilePrint(WhileAstNode *node) {
+	astFprint("while ");
+	astPrintNode(node->condexp);
+	astPrintNL();
+	astPrintNode(node->blk);
+}
+
+// Semantic pass on the while block
+void whilePass(AstPass *pstate, WhileAstNode *node) {
+	astPass(pstate, node->condexp);
+	astPass(pstate, node->blk);
+
+	if (pstate->pass == TypeCheck)
+		typeCoerces((AstNode*)boolType, &node->condexp);
+}
+
 // Create a new op code node
 OpCodeAstNode *newOpCodeNode(int16_t opcode) {
 	OpCodeAstNode *op;

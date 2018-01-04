@@ -67,6 +67,8 @@ void astPrintNode(AstNode *node) {
 		blockPrint((BlockAstNode *)node); break;
 	case IfNode:
 		ifPrint((IfAstNode *)node); break;
+	case WhileNode:
+		whilePrint((WhileAstNode *)node); break;
 	case ReturnNode:
 		returnPrint((ReturnAstNode *)node); break;
 	case AssignNode:
@@ -114,6 +116,8 @@ void astPass(AstPass *pstate, AstNode *node) {
 		blockPass(pstate, (BlockAstNode *)node); break;
 	case IfNode:
 		ifPass(pstate, (IfAstNode *)node); break;
+	case WhileNode:
+		whilePass(pstate, (WhileAstNode *)node); break;
 	case ReturnNode:
 		returnPass(pstate, (ReturnAstNode *)node); break;
 	case AssignNode:

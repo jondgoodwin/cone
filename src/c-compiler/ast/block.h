@@ -28,6 +28,13 @@ typedef struct IfAstNode {
 	Nodes *condblk;
 } IfAstNode;
 
+// While statement
+typedef struct WhileAstNode {
+	BasicAstHdr;
+	AstNode *condexp;
+	AstNode *blk;
+} WhileAstNode;
+
 // Return/yield statement
 typedef struct ReturnAstNode {
 	BasicAstHdr;
@@ -79,6 +86,10 @@ void blockPass(AstPass *pstate, BlockAstNode *node);
 IfAstNode *newIfNode();
 void ifPrint(IfAstNode *ifnode);
 void ifPass(AstPass *pstate, IfAstNode *ifnode);
+
+WhileAstNode *newWhileNode();
+void whilePrint(WhileAstNode *wnode);
+void whilePass(AstPass *pstate, WhileAstNode *wnode);
 
 OpCodeAstNode *newOpCodeNode(int16_t opcode);
 
