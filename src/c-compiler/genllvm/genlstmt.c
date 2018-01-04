@@ -22,6 +22,16 @@
 #include <stdio.h>
 #include <assert.h>
 
+// Create a new basic block after the current one
+LLVMBasicBlockRef genlInsertBlock(genl_t *gen, char *name) {
+	LLVMBasicBlockRef nextblock = LLVMGetNextBasicBlock(LLVMGetInsertBlock(gen->builder));
+	if (nextblock)
+		return LLVMInsertBasicBlockInContext(gen->context, nextblock, name);
+	else
+		return LLVMAppendBasicBlockInContext(gen->context, gen->fn, name);
+
+}
+
 // Generate a while block
 void genlWhile(genl_t *gen, WhileAstNode *wnode) {
 	LLVMBasicBlockRef whilebeg, whileblk, whileend;
@@ -31,9 +41,9 @@ void genlWhile(genl_t *gen, WhileAstNode *wnode) {
 	svwhilebeg = gen->whilebeg;
 	svwhileend = gen->whileend;
 
-	gen->whilebeg = whilebeg = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "whilebeg");
-	whileblk = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "whileblk");
-	gen->whileend = whileend = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "whileend");
+	gen->whileend = whileend = genlInsertBlock(gen, "whileend");
+	whileblk = genlInsertBlock(gen, "whileblk");
+	gen->whilebeg = whilebeg = genlInsertBlock(gen, "whilebeg");
 
 	LLVMBuildBr(gen->builder, whilebeg);
 	LLVMPositionBuilderAtEnd(gen->builder, whilebeg);

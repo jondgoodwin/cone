@@ -76,7 +76,7 @@ LLVMValueRef genlIf(genl_t *gen, IfAstNode *ifnode) {
 		blks = memAllocBlk(count * sizeof(LLVMBasicBlockRef));
 	}
 
-	endif = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "endif");
+	endif = genlInsertBlock(gen, "endif");
 	LLVMBasicBlockRef nextMemBlk;
 	for (nodesFor(ifnode->condblk, cnt, nodesp)) {
 
