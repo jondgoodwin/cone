@@ -16,11 +16,35 @@
 
 #include <stdio.h>
 
-// Parse an expression statement within a function
-AstNode *parseExpStmt() {
-	AstNode *node = (AstNode *) parseExpr();
+// Parse control flow suffixes
+AstNode *parseSuffix(AstNode *node) {
+	while (lexIsToken(IfToken) || lexIsToken(WhileToken)) {
+		if (lexIsToken(IfToken)) {
+			BlockAstNode *blk;
+			IfAstNode *ifnode = newIfNode();
+			lexNextToken();
+			nodesAdd(&ifnode->condblk, parseExpr());
+			nodesAdd(&ifnode->condblk, (AstNode*)(blk = newBlockNode()));
+			nodesAdd(&blk->stmts, node);
+			node = (AstNode*)ifnode;
+		}
+		else {
+			BlockAstNode *blk;
+			WhileAstNode *wnode = newWhileNode();
+			lexNextToken();
+			wnode->condexp = parseExpr();
+			wnode->blk = (AstNode*)(blk = newBlockNode());
+			nodesAdd(&blk->stmts, node);
+			node = (AstNode*)wnode;
+		}
+	}
 	parseSemi();
 	return node;
+}
+
+// Parse an expression statement within a function
+AstNode *parseExpStmt() {
+	return parseSuffix((AstNode *)parseExpr());
 }
 
 // Parse a return statement
@@ -29,8 +53,7 @@ AstNode *parseReturn() {
 	lexNextToken(); // Skip past 'return'
 	if (!lexIsToken(SemiToken))
 		stmtnode->exp = parseExpr();
-	parseSemi();
-	return (AstNode*) stmtnode;
+	return parseSuffix((AstNode*)stmtnode);
 }
 
 // Parse if statement/expression
@@ -94,9 +117,8 @@ AstNode *parseBlock() {
 		{
 			AstNode *node;
 			newAstNode(node, AstNode, BreakNode);
-			nodesAdd(&blk->stmts, node);
 			lexNextToken();
-			parseSemi();
+			nodesAdd(&blk->stmts, parseSuffix(node));
 			break;
 		}
 
@@ -104,9 +126,8 @@ AstNode *parseBlock() {
 		{
 			AstNode *node;
 			newAstNode(node, AstNode, ContinueNode);
-			nodesAdd(&blk->stmts, node);
 			lexNextToken();
-			parseSemi();
+			nodesAdd(&blk->stmts, parseSuffix(node));
 			break;
 		}
 
