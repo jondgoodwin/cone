@@ -280,6 +280,40 @@ LLVMValueRef genlCast(genl_t *gen, CastAstNode* node) {
 	}
 }
 
+// Generate not
+LLVMValueRef genlNot(genl_t *gen, LogicAstNode* node) {
+	return LLVMBuildXor(gen->builder, genlExpr(gen, node->lexp), LLVMConstInt(LLVMInt1TypeInContext(gen->context), 1, 0), "not");
+}
+
+// Generate and, or
+LLVMValueRef genlLogic(genl_t *gen, LogicAstNode* node) {
+	LLVMBasicBlockRef logicblks[2], logicphi;
+	LLVMValueRef logicvals[2];
+
+	// Set up basic blocks
+	logicblks[0] = LLVMGetInsertBlock(gen->builder);
+	logicphi = genlInsertBlock(gen, node->asttype==AndLogicNode? "andphi" : "orphi");
+	logicblks[1] = genlInsertBlock(gen, node->asttype==AndLogicNode? "andrhs" : "orrhs");
+
+	// Generate left-hand condition and conditional branch
+	logicvals[0] = genlExpr(gen, node->lexp);
+	if (node->asttype==OrLogicNode)
+		LLVMBuildCondBr(gen->builder, logicvals[0], logicphi, logicblks[1]);
+	else
+		LLVMBuildCondBr(gen->builder, logicvals[0], logicblks[1], logicphi);
+
+	// Generate right-hand condition and branch to phi
+	LLVMPositionBuilderAtEnd(gen->builder, logicblks[1]);
+	logicvals[1] = genlExpr(gen, node->rexp);
+	LLVMBuildBr(gen->builder, logicphi);
+
+	// Generate phi
+	LLVMPositionBuilderAtEnd(gen->builder, logicphi);
+	LLVMValueRef phi = LLVMBuildPhi(gen->builder, genlType(gen, (AstNode*)boolType), "logicval");
+	LLVMAddIncoming(phi, logicvals, logicblks, 2);
+	return phi;
+}
+
 // Generate local variable
 LLVMValueRef genlLocalVar(genl_t *gen, NameDclAstNode *var) {
 	assert(var->asttype == VarNameDclNode);
@@ -320,6 +354,10 @@ LLVMValueRef genlExpr(genl_t *gen, AstNode *termnode) {
 	}
 	case CastNode:
 		return genlCast(gen, (CastAstNode*)termnode);
+	case OrLogicNode: case AndLogicNode:
+		return genlLogic(gen, (LogicAstNode*)termnode);
+	case NotLogicNode:
+		return genlNot(gen, (LogicAstNode*)termnode);
 	case VarNameDclNode:
 		return genlLocalVar(gen, (NameDclAstNode*)termnode); break;
 	case BlockNode:

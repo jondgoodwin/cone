@@ -73,7 +73,9 @@ enum AstType {
 	AssignNode,		// Assignment expression
 	FnCallNode,		// Function call
 	CastNode,		// Cast exp to another type
-	UnaryNode,		// Unary method operator
+	NotLogicNode,	// ! / not
+	OrLogicNode,	// || / or
+	AndLogicNode,	// && / and
 	BlockNode,		// Block (list of statements)
 	IfNode,			// if .. elif .. else statement
 

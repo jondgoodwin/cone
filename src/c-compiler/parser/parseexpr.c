@@ -272,9 +272,46 @@ AstNode *parseCmp() {
 	return (AstNode*)node;
 }
 
+// Parse 'not' logical operator
+AstNode *parseNotLogic() {
+	if (lexIsToken(NotToken)) {
+		LogicAstNode *node = newLogicAstNode(NotLogicNode);
+		lexNextToken();
+		node->lexp = parseNotLogic();
+		return (AstNode*)node;
+	}
+	return parseCmp();
+}
+
+// Parse 'and' logical operator
+AstNode *parseAndLogic() {
+	AstNode *lhnode = parseNotLogic();
+	while (lexIsToken(AndToken)) {
+		LogicAstNode *node = newLogicAstNode(AndLogicNode);
+		lexNextToken();
+		node->lexp = lhnode;
+		node->rexp = parseNotLogic();
+		lhnode = (AstNode*)node;
+	}
+	return lhnode;
+}
+
+// Parse 'or' logical operator
+AstNode *parseOrLogic() {
+	AstNode *lhnode = parseAndLogic();
+	while (lexIsToken(OrToken)) {
+		LogicAstNode *node = newLogicAstNode(OrLogicNode);
+		lexNextToken();
+		node->lexp = lhnode;
+		node->rexp = parseAndLogic();
+		lhnode = (AstNode*)node;
+	}
+	return lhnode;
+}
+
 // Parse an assignment expression
 AstNode *parseAssign() {
-	AstNode *lval = parseCmp();
+	AstNode *lval = parseOrLogic();
 	if (lexIsToken(AssgnToken)) {
 		lexNextToken();
 		AstNode *rval = parseExpr();

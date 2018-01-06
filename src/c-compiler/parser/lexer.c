@@ -366,9 +366,23 @@ void lexNextToken() {
 		case '+': lexReturnPuncTok(PlusToken, 1);
 		case '%': lexReturnPuncTok(PercentToken, 1);
 		case '~': lexReturnPuncTok(TildeToken, 1);
-		case '&': lexReturnPuncTok(AmperToken, 1);
 		case '^': lexReturnPuncTok(CaretToken, 1);
-		case '|': lexReturnPuncTok(BarToken, 1);
+
+		case '&': 
+			if (*(srcp + 1) == '&') {
+				lexReturnPuncTok(AndToken, 2);
+			}
+			else {
+				lexReturnPuncTok(AmperToken, 1);
+			}
+
+		case '|': 
+			if (*(srcp + 1) == '|') {
+				lexReturnPuncTok(OrToken, 2);
+			}
+			else {
+				lexReturnPuncTok(BarToken, 1);
+			}
 
 		// '=' and '=='
 		case '=':

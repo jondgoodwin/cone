@@ -148,7 +148,7 @@ void fnCallPass(AstPass *pstate, FnCallAstNode *node) {
 	}
 }
 
-// Create a new name use node
+// Create a new cast node
 CastAstNode *newCastAstNode(AstNode *exp, AstNode *type) {
 	CastAstNode *node;
 	newAstNode(node, CastAstNode, CastNode);
@@ -169,4 +169,45 @@ void castPrint(CastAstNode *node) {
 // Analyze cast node
 void castPass(AstPass *pstate, CastAstNode *node) {
 	astPass(pstate, node->exp);
+}
+
+// Create a new name use node
+LogicAstNode *newLogicAstNode(int16_t typ) {
+	LogicAstNode *node;
+	newAstNode(node, LogicAstNode, typ);
+	node->vtype = (AstNode*)boolType;
+	return node;
+}
+
+// Serialize logic node
+void logicPrint(LogicAstNode *node) {
+	if (node->asttype == NotLogicNode) {
+		astFprint("!");
+		astPrintNode(node->lexp);
+	}
+	else {
+		astFprint(node->asttype == AndLogicNode? "(&&, " : "(||, ");
+		astPrintNode(node->lexp);
+		astFprint(", ");
+		astPrintNode(node->rexp);
+		astFprint(")");
+	}
+}
+
+// Analyze not logic node
+void logicNotPass(AstPass *pstate, LogicAstNode *node) {
+	astPass(pstate, node->lexp);
+	if (pstate->pass == TypeCheck)
+		typeCoerces((AstNode*)boolType, &node->lexp);
+}
+
+// Analyze logic node
+void logicPass(AstPass *pstate, LogicAstNode *node) {
+	astPass(pstate, node->lexp);
+	astPass(pstate, node->rexp);
+
+	if (pstate->pass == TypeCheck) {
+		typeCoerces((AstNode*)boolType, &node->lexp);
+		typeCoerces((AstNode*)boolType, &node->rexp);
+	}
 }

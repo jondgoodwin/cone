@@ -39,6 +39,9 @@ void keywordInit() {
 	keyAdd("while", WhileToken);
 	keyAdd("break", BreakToken);
 	keyAdd("continue", ContinueToken);
+	keyAdd("not", NotToken);
+	keyAdd("or", OrToken);
+	keyAdd("and", AndToken);
 
 	keyAdd("true", trueToken);
 	keyAdd("false", falseToken);
