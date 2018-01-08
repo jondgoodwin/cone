@@ -48,10 +48,18 @@ LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
 		case 64: return LLVMDoubleTypeInContext(gen->context);
 		}
 	}
+
 	case VoidType:
 		return LLVMVoidTypeInContext(gen->context);
 
+	case PtrType:
+	{
+		PtrTypeAstNode *ptype = (PtrTypeAstNode *)typ;
+		return LLVMPointerType(genlType(gen, ptype->pvtype), 0);
+	}
+
 	default:
+		assert(0 && "Invalid vtype to generate");
 		return NULL;
 	}
 }

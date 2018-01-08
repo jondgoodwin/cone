@@ -49,6 +49,7 @@ enum ErrorCode {
 	ErrorNoRet,		// Return value expected but not given
 	ErrorNoElse,	// Missing 'else' branch
 	ErrorNoWhile,	// 'break' or 'continue' allowed only in while/each loop
+	ErrorNoVtype,	// Missing value type
 
 	// Warnings
 	WarnCode = 3000,

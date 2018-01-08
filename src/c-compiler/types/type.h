@@ -16,12 +16,6 @@ typedef struct VoidTypeAstNode {
 	TypeAstHdr;
 } VoidTypeAstNode;
 
-// For pointers
-typedef struct PtrTypeAstNode {
-	TypeAstHdr;
-	AstNode *ptrtotype;	// Type of value pointer points to
-} PtrTypeAstNode;
-
 // For arrays
 typedef struct ArrTypeAstNode {
 	TypeAstHdr;

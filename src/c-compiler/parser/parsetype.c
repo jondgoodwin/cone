@@ -109,10 +109,37 @@ AstNode *parseFnSig() {
 		return (AstNode*)newNameDclNode(namesym, VarNameDclNode, (AstNode*)fnsig, immPerm, NULL);
 }
 
+// Parse a pointer type
+AstNode *parsePtrType() {
+	PtrTypeAstNode *ptype = newPtrTypeNode();
+	lexNextToken();
+
+	// For now - no allocator may be specified
+	ptype->alloc = voidType;	// default is borrowed reference
+
+	// Get permission, if specified (default is const)
+	if (lexIsToken(IdentToken) && lex->val.ident->node && lex->val.ident->node->asttype == PermNameDclNode) {
+		ptype->perm = (PermAstNode*)((NameDclAstNode *)lex->val.ident->node)->value;
+		lexNextToken();
+	}
+	else
+		ptype->perm = constPerm;
+
+	// Get value type, if provided
+	if ((ptype->pvtype = parseVtype()) == NULL) {
+		errorMsgLex(ErrorNoVtype, "Missing value type for the pointer");
+		ptype->pvtype = voidType;
+	}
+
+	return (AstNode *)ptype;
+}
+
 // Parse a value type signature. Return NULL if none found.
 AstNode* parseVtype() {
 	AstNode *vtype;
 	switch (lex->toktype) {
+	case AmperToken:
+		return parsePtrType();
 	case IdentToken:
 		vtype = (AstNode*)newNameUseNode(lex->val.ident);
 		lexNextToken();

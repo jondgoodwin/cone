@@ -160,6 +160,7 @@ typedef struct TypeAstNode {
 #include "../types/type.h"
 #include "../types/fnsig.h"
 #include "../types/number.h"
+#include "../types/pointer.h"
 
 // The AST analytical passes performed in between parse and generation
 enum Passes {
