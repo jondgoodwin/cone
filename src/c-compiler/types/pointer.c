@@ -34,3 +34,10 @@ void ptrTypePass(AstPass *pstate, PtrTypeAstNode *node) {
 	astPass(pstate, (AstNode*)node->perm);
 	astPass(pstate, node->pvtype);
 }
+
+// Compare two function signatures to see if they are equivalent
+int ptrTypeEqual(PtrTypeAstNode *node1, PtrTypeAstNode *node2) {
+	return typeIsSame(node1->pvtype,node2->pvtype) 
+		/* && typeIsSame((AstNode *)node1->perm, (AstNode *)node2->perm) */
+		/*&& typeIsSame(node1->alloc, node2->alloc)*/;
+}

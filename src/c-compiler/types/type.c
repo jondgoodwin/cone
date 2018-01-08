@@ -27,11 +27,20 @@ AstNode *typeGetVtype(AstNode *node) {
 	return node;
 }
 
+// Internal routine only - we know that node1 and node2 are both types
 int typeEqual(AstNode *node1, AstNode *node2) {
+	// If they are the same type name, types match
+	if (node1 == node2)
+		return 1;
+	if (node1->asttype != node2->asttype)
+		return 0;
+
 	// Otherwise use type-specific equality checks
 	switch (node1->asttype) {
 	case FnSig:
 		return fnSigEqual((FnSigAstNode*)node1, (FnSigAstNode*)node2);
+	case PtrType:
+		return ptrTypeEqual((PtrTypeAstNode*)node1, (PtrTypeAstNode*)node2);
 	default:
 		return 0;
 	}
@@ -43,10 +52,6 @@ int typeIsSame(AstNode *node1, AstNode *node2) {
 	// Convert nodes to their value types
 	getVtype(node1);
 	getVtype(node2);
-
-	// If they are the same type name, types match
-	if (node1 == node2)
-		return 1;
 
 	return typeEqual(node1, node2);
 }

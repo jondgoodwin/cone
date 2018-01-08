@@ -171,7 +171,64 @@ void castPass(AstPass *pstate, CastAstNode *node) {
 	astPass(pstate, node->exp);
 }
 
-// Create a new name use node
+// Create a new deref node
+DerefAstNode *newDerefAstNode() {
+	DerefAstNode *node;
+	newAstNode(node, DerefAstNode, DerefNode);
+	node->vtype = voidType;
+	return node;
+}
+
+// Serialize deref
+void derefPrint(DerefAstNode *node) {
+	astFprint("*");
+	astPrintNode(node->exp);
+}
+
+// Analyze deref node
+void derefPass(AstPass *pstate, DerefAstNode *node) {
+	astPass(pstate, node->exp);
+	if (pstate->pass == TypeCheck) {
+		PtrTypeAstNode *ptype = (PtrTypeAstNode*)((TypedAstNode *)node->exp)->vtype;
+		if (ptype->asttype == PtrType)
+			node->vtype = ptype->pvtype;
+		else
+			errorMsgNode((AstNode*)node, ErrorNotPtr, "Cannot de-reference a non-pointer value.");
+	}
+}
+
+// Create a new addr node
+AddrAstNode *newAddrAstNode() {
+	AddrAstNode *node;
+	newAstNode(node, AddrAstNode, AddrNode);
+	return node;
+}
+
+// Serialize addr
+void addrPrint(AddrAstNode *node) {
+	astFprint("&(");
+	astPrintNode(node->vtype);
+	astFprint("->");
+	astPrintNode(node->exp);
+	astFprint(")");
+}
+
+// Analyze addr node
+void addrPass(AstPass *pstate, AddrAstNode *node) {
+	astPass(pstate, node->exp);
+	if (pstate->pass == TypeCheck) {
+		if (((TypedAstNode *)node->exp)->asttype != VarNameUseNode)
+			errorMsgNode((AstNode*)node, ErrorNotLval, "& only applies to lvals, such as variables");
+		else {
+			PtrTypeAstNode *ptype = (PtrTypeAstNode *)node->vtype;
+			ptype->pvtype = ((TypedAstNode *)node->exp)->vtype;
+			// coercion checks on permission and allocator/scope
+		}
+	}
+
+}
+
+// Create a new logic operator node
 LogicAstNode *newLogicAstNode(int16_t typ) {
 	LogicAstNode *node;
 	newAstNode(node, LogicAstNode, typ);

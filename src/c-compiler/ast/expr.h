@@ -34,6 +34,16 @@ typedef struct CastAstNode {
 	AstNode *exp;
 } CastAstNode;
 
+typedef struct AddrAstNode {
+	TypedAstHdr;
+	AstNode *exp;
+} AddrAstNode;
+
+typedef struct DerefAstNode {
+	TypedAstHdr;
+	AstNode *exp;
+} DerefAstNode;
+
 // Logic operator: not, or, and
 typedef struct LogicAstNode {
 	TypedAstHdr;
@@ -52,6 +62,14 @@ void fnCallPass(AstPass *pstate, FnCallAstNode *node);
 CastAstNode *newCastAstNode(AstNode *exp, AstNode *type);
 void castPrint(CastAstNode *node);
 void castPass(AstPass *pstate, CastAstNode *node);
+
+DerefAstNode *newDerefAstNode();
+void derefPrint(DerefAstNode *node);
+void derefPass(AstPass *pstate, DerefAstNode *node);
+
+AddrAstNode *newAddrAstNode();
+void addrPrint(AddrAstNode *node);
+void addrPass(AstPass *pstate, AddrAstNode *node);
 
 LogicAstNode *newLogicAstNode(int16_t typ);
 void logicPrint(LogicAstNode *node);

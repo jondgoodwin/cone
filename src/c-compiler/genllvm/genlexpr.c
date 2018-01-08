@@ -362,6 +362,15 @@ LLVMValueRef genlExpr(genl_t *gen, AstNode *termnode) {
 	}
 	case CastNode:
 		return genlCast(gen, (CastAstNode*)termnode);
+	case AddrNode:
+	{
+		AddrAstNode *anode = (AddrAstNode*)termnode;
+		assert(anode->exp->asttype == VarNameUseNode);
+		NameUseAstNode *var = (NameUseAstNode*)anode->exp;
+		return var->dclnode->llvmvar;
+	}
+	case DerefNode:
+		return LLVMBuildLoad(gen->builder, genlExpr(gen, ((DerefAstNode*)termnode)->exp), "deref");
 	case OrLogicNode: case AndLogicNode:
 		return genlLogic(gen, (LogicAstNode*)termnode);
 	case NotLogicNode:

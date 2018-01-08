@@ -50,6 +50,8 @@ enum ErrorCode {
 	ErrorNoElse,	// Missing 'else' branch
 	ErrorNoWhile,	// 'break' or 'continue' allowed only in while/each loop
 	ErrorNoVtype,	// Missing value type
+	ErrorNotPtr,	// Not a pointer
+	ErrorNotLval,	// Not an lval
 
 	// Warnings
 	WarnCode = 3000,

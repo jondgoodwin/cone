@@ -107,7 +107,7 @@ NbrAstNode *newNbrTypeNode(uint16_t typ, char bits) {
 
 	// Create function signature for comparison methods for this type
 	FnSigAstNode *cmpsig = newFnSigNode();
-	cmpsig->rettype = (AstNode*)boolType;
+	cmpsig->rettype = bits==1? (AstNode*)nbrtypenode : (AstNode*)boolType;
 	inodesAdd(&cmpsig->parms, parm1, (AstNode *)newNameDclNode(parm1, VarNameDclNode, (AstNode*)nbrtypenode, immPerm, NULL));
 	inodesAdd(&cmpsig->parms, parm2, (AstNode *)newNameDclNode(parm2, VarNameDclNode, (AstNode*)nbrtypenode, immPerm, NULL));
 

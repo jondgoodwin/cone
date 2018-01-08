@@ -145,6 +145,30 @@ AstNode *parsePrefix() {
 		nodesAdd(&node->parms, parsePrefix());
 		return (AstNode *)node;
 	}
+	else if (lexIsToken(AmperToken)) {
+		AddrAstNode *node = newAddrAstNode();
+		lexNextToken();
+
+		PtrTypeAstNode *ptype = newPtrTypeNode();
+		ptype->alloc = voidType;
+		ptype->pvtype = voidType;
+		if (lex->val.ident->node && lex->val.ident->node->asttype == PermNameDclNode) {
+			ptype->perm = (PermAstNode*)((NameDclAstNode *)lex->val.ident->node)->value;
+			lexNextToken();
+		}
+		else
+			ptype->perm = constPerm;
+
+		node->vtype = (AstNode *)ptype;
+		node->exp = parsePrefix();
+		return (AstNode *)node;
+	}
+	else if (lexIsToken(StarToken)) {
+		DerefAstNode *node = newDerefAstNode();
+		lexNextToken();
+		node->exp = parsePrefix();
+		return (AstNode *)node;
+	}
 	return parsePostfix();
 }
 

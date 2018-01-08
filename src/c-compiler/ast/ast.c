@@ -81,6 +81,10 @@ void astPrintNode(AstNode *node) {
 		fnCallPrint((FnCallAstNode *)node); break;
 	case CastNode:
 		castPrint((CastAstNode *)node); break;
+	case DerefNode:
+		derefPrint((DerefAstNode *)node); break;
+	case AddrNode:
+		addrPrint((AddrAstNode *)node); break;
 	case NotLogicNode: case OrLogicNode: case AndLogicNode:
 		logicPrint((LogicAstNode *)node); break;
 	case ULitNode:
@@ -137,6 +141,10 @@ void astPass(AstPass *pstate, AstNode *node) {
 		fnCallPass(pstate, (FnCallAstNode *)node); break;
 	case CastNode:
 		castPass(pstate, (CastAstNode *)node); break;
+	case DerefNode:
+		derefPass(pstate, (DerefAstNode *)node); break;
+	case AddrNode:
+		addrPass(pstate, (AddrAstNode *)node); break;
 	case NotLogicNode:
 		logicNotPass(pstate, (LogicAstNode *)node); break;
 	case OrLogicNode: case AndLogicNode:

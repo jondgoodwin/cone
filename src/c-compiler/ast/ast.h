@@ -73,6 +73,8 @@ enum AstType {
 	AssignNode,		// Assignment expression
 	FnCallNode,		// Function call
 	CastNode,		// Cast exp to another type
+	AddrNode,		// & (address of) operator
+	DerefNode,		// * (pointed at) operator
 	NotLogicNode,	// ! / not
 	OrLogicNode,	// || / or
 	AndLogicNode,	// && / and
