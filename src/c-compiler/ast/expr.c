@@ -32,9 +32,17 @@ void assignPrint(AssignAstNode *node) {
 	astFprint(")");
 }
 
-// lval expression is valid lval
+// expression is valid lval expression
 int isLval(AstNode *node) {
-	return node->asttype == VarNameUseNode;
+	switch (node->asttype) {
+	case VarNameUseNode:
+	case DerefNode:
+		return 1;
+	// future:  [] indexing and .member
+	default: break;
+	}
+
+	return 0;
 }
 
 // Analyze assignment node

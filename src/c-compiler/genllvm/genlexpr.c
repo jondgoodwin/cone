@@ -332,6 +332,17 @@ LLVMValueRef genlLocalVar(genl_t *gen, NameDclAstNode *var) {
 	return val;
 }
 
+// Generate an lval pointer
+LLVMValueRef genlLval(genl_t *gen, AstNode *lval) {
+	switch (lval->asttype) {
+	case VarNameUseNode:
+		return ((NameDclAstNode *)((NameUseAstNode *)lval)->dclnode)->llvmvar;
+	case DerefNode:
+		return genlExpr(gen, ((DerefAstNode *)lval)->exp);
+	}
+	return NULL;
+}
+
 // Generate a term
 LLVMValueRef genlExpr(genl_t *gen, AstNode *termnode) {
 	switch (termnode->asttype) {
@@ -356,8 +367,7 @@ LLVMValueRef genlExpr(genl_t *gen, AstNode *termnode) {
 	{
 		LLVMValueRef val;
 		AssignAstNode *node = (AssignAstNode*)termnode;
-		NameDclAstNode *lvalvar = ((NameUseAstNode *)node->lval)->dclnode;
-		LLVMBuildStore(gen->builder, (val = genlExpr(gen, node->rval)), lvalvar->llvmvar);
+		LLVMBuildStore(gen->builder, (val = genlExpr(gen, node->rval)), genlLval(gen, node->lval));
 		return val;
 	}
 	case CastNode:

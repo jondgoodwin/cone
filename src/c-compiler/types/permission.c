@@ -10,6 +10,8 @@
 #include "../parser/lexer.h"
 #include "../shared/symbol.h"
 
+#include <assert.h>
+
 // Declare built-in permission types and their names
 void permDclNames() {
 	newNameDclNodeStr("mut", PermNameDclNode, (AstNode*)(mutPerm = newPermNode(MutPerm, MayRead | MayWrite | RaceSafe | MayIntRefSum | IsLockless, NULL)));
@@ -53,6 +55,12 @@ uint16_t permGetFlags(AstNode *node) {
 		return ((NameUseAstNode*)node)->dclnode->perm->flags;
 	case VarNameDclNode:
 		return ((NameDclAstNode*)node)->perm->flags;
+	case DerefNode:
+	{
+		PtrTypeAstNode *vtype = (PtrTypeAstNode*)typeGetVtype(((DerefAstNode *)node)->exp);
+		assert(vtype->asttype == PtrType);
+		return vtype->perm->flags;
+	}
 	default:
 		return 0;
 	}
