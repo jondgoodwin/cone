@@ -25,15 +25,9 @@
 // Generate parameter variable
 void genlParmVar(genl_t *gen, NameDclAstNode *var) {
 	assert(var->asttype == VarNameDclNode);
-	if (MayWrite & permGetFlags((AstNode*)var)) {
-		// Transform parameter value into something mutable 
-		var->llvmvar = LLVMBuildAlloca(gen->builder, genlType(gen, (AstNode*)var), &var->namesym->namestr);
-		LLVMBuildStore(gen->builder, LLVMGetParam(gen->fn, var->index), var->llvmvar);
-	}
-	else {
-		var->llvmvar = LLVMGetParam(gen->fn, var->index);
-		LLVMSetValueName(var->llvmvar, &var->namesym->namestr);
-	}
+	// We always alloca in case variable is mutable or we want to take address of its value
+	var->llvmvar = LLVMBuildAlloca(gen->builder, genlType(gen, (AstNode*)var), &var->namesym->namestr);
+	LLVMBuildStore(gen->builder, LLVMGetParam(gen->fn, var->index), var->llvmvar);
 }
 
 // Generate a function
