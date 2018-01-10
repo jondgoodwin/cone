@@ -48,7 +48,7 @@ void fnSigPass(AstPass *pstate, FnSigAstNode *sig) {
 
 // Compare two function signatures to see if they are equivalent
 int fnSigEqual(FnSigAstNode *node1, FnSigAstNode *node2) {
-	AstNode **nodes1p, **nodes2p;
+	SymNode *nodes1p, *nodes2p;
 	int16_t cnt;
 
 	// Return types and number of parameters must match
@@ -58,8 +58,8 @@ int fnSigEqual(FnSigAstNode *node1, FnSigAstNode *node2) {
 
 	// Every parameter's type must also match
 	nodes2p = &nodesGet(node2->parms, 0);
-	for (nodesFor(node1->parms, cnt, nodes1p)) {
-		if (!typeIsSame(*nodes1p, *nodes2p))
+	for (inodesFor(node1->parms, cnt, nodes1p)) {
+		if (!typeIsSame(nodes1p->node, nodes2p->node))
 			return 0;
 		nodes2p++;
 	}

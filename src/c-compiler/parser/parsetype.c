@@ -126,7 +126,10 @@ AstNode *parsePtrType() {
 		ptype->perm = constPerm;
 
 	// Get value type, if provided
-	if ((ptype->pvtype = parseVtype()) == NULL) {
+	if (lexIsToken(FnToken)) {
+		ptype->pvtype = parseFnSig();
+	}
+	else if ((ptype->pvtype = parseVtype()) == NULL) {
 		errorMsgLex(ErrorNoVtype, "Missing value type for the pointer");
 		ptype->pvtype = voidType;
 	}
