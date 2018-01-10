@@ -229,7 +229,8 @@ void addrPass(AstPass *pstate, AddrAstNode *node) {
 			errorMsgNode((AstNode*)node, ErrorNotLval, "& only applies to lvals, such as variables");
 		else {
 			PtrTypeAstNode *ptype = (PtrTypeAstNode *)node->vtype;
-			ptype->pvtype = ((TypedAstNode *)node->exp)->vtype;
+			if (ptype->pvtype==NULL)
+				ptype->pvtype = ((TypedAstNode *)node->exp)->vtype;
 			// coercion checks on permission and allocator/scope
 		}
 	}

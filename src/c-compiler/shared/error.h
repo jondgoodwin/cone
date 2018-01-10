@@ -52,6 +52,7 @@ enum ErrorCode {
 	ErrorNoVtype,	// Missing value type
 	ErrorNotPtr,	// Not a pointer
 	ErrorNotLval,	// Not an lval
+	ErrorAddr,		// Invalid expr to get an addr (&) of
 
 	// Warnings
 	WarnCode = 3000,
