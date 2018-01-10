@@ -103,8 +103,18 @@ int typeCoerces(AstNode *to, AstNode **from) {
 		*from = (AstNode*) newCastAstNode(*from, to);
 		return 1;
 	}
-	// Need some subtyping logic here!!
-	return 0;
+
+	// Types must be of the same kind
+	if (to->asttype != fromtype->asttype)
+		return 0;
+
+	// Type-specific coercion logic
+	switch (to->asttype) {
+	case PtrType:
+		return ptrTypeCoerces((PtrTypeAstNode*)to, (PtrTypeAstNode*)fromtype);
+	default:
+		return 0;
+	}
 }
 
 // Create a new Void type node

@@ -65,3 +65,21 @@ uint16_t permGetFlags(AstNode *node) {
 		return 0;
 	}
 }
+
+// Are the permissions the same?
+int permIsSame(PermAstNode *node1, PermAstNode *node2) {
+	return node1 == node2;
+}
+
+// Will 'from' permission coerce to the target?
+int permCoerces(PermAstNode *to, PermAstNode *from) {
+	if (permIsSame(to, from) || to==idPerm)
+		return 1;
+	if (from == mutPerm &&
+		(to == constPerm || to == mmutPerm || to == immPerm || to == mutxPerm))
+		return 1;
+	if (to == constPerm &&
+		(from == mmutPerm || from == immPerm || from == mutxPerm))
+		return 1;
+	return 0;
+}

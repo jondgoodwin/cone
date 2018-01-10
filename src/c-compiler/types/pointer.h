@@ -21,5 +21,6 @@ PtrTypeAstNode *newPtrTypeNode();
 void ptrTypePrint(PtrTypeAstNode *node);
 void ptrTypePass(AstPass *pstate, PtrTypeAstNode *name);
 int ptrTypeEqual(PtrTypeAstNode *node1, PtrTypeAstNode *node2);
+int ptrTypeCoerces(PtrTypeAstNode *to, PtrTypeAstNode *from);
 
 #endif
