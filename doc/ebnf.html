@@ -44,7 +44,7 @@
 	value_type ::= nbrtype | arraytype | ptrtype | fntype
 	nbrtype ::= 'i8' | 'i16' | 'i32' | 'i64' | 'u8' | 'u16' | 'u32' | 'u64' | 'f32' | 'f64'
 	arraytype ::= '[' integer_token? ']' value_type
-	ptrtype ::= ((alloc_type '-&') | '&') perm_type? value_type
+	ptrtype ::= '&' alloc-type? perm_type? value_type
 	fntype ::= 'fn' (ident_token)? '(' fnparm (',' fnparm)* ')' (value_type (',' value_type)*)?
 	fnparm ::= perm_ident? ident_token value_type? ('=' (literal | ident))?
 	perm_ident ::= 'mut' | 'imm' | 'mmut' | 'const' | 'mutx' | 'id' | ident_token
@@ -53,20 +53,22 @@
 /* General Use Expressions (with possible assignments) */
 	exp ::= if_stmt | match_stmt | block | assgn_exp
 	assgn_exp ::= ( 'local'? lvar (',' lvar)* '=' | ('local')? lvar ('+='|'-='|'*='|'/=') | property (':'|':=') )* append_exp (',' append_exp)*
-	lvar ::= (suffix | ident_token) suffix*
+	lvar ::= (ident_token (('[' exp ']') | ('.' ident_token))?) | ('.' ident_token) | ('*' exp)
 
 /* Expressions without any assignments */
 	append_exp ::= ('<<' | '>>' | (ternary_exp ('<<' | '>>')))? ternary_exp
 	logic_exp ::= not_exp (('||'|'&&'|'and'|'or') not_exp)*
 	not_exp ::= ('!'|'not')* eval_exp
-	eval_exp ::= range_exp (('=='|'!='|'==='|'~~'|'<=>'|'<'|'<='|'>'|'>=') range_exp)?
-	range_exp ::= arith_exp ('..' arith_exp)? ('..' arith_exp)?
+	eval_exp ::= range_exp (('=='|'!='|'~~'|'<=>'|'<'|'<='|'>'|'>=') range_exp)?
+	range_exp ::= bit_exp ('..' bit_exp)? ('..' bit_exp)?
+	bit_exp ::= arith_exp (('|'|'&'|'^') arith_exp)*
 	arith_exp ::= prefix_exp (('+'|'-'|'*'|'/'|'%') prefix_exp)*
-	prefix_exp ::= ('-'*|'@')? term
+	prefix_exp ::= (('-'|'~'|'*')*|'@')? term
 	term ::=  (value | suffix | ('+' value (text_token|symbol_token)?)) suffix*
 	suffix ::= (('.'|'::') property)? ('(' (if_exp (',' if_exp)*)? ')' | '[' (append_exp (',' append_exp)*)? ']')?
 	property ::= ident_token | symbol_token | integer_token | '(' exp ')'
-	value ::=  literal | ident_token | pseudo | '(' exp ')' | 'yield' this_exp? | '&' ident_token suffix* | fn_type block
+	value ::=  literal | ident_token | pseudo | '(' exp ')' | 'yield' this_exp? | addr | fn_type block
+	addr ::= '&' ((ident_token (('[' exp ']') | ('.' ident_token))?) | ('.' ident_token) | fn_stmt)
 	pseudo ::= 'self' | 'this' | 'context' | 'selfmethod' | 'baseurl' | '...'
 	
 /* Literals and other tokens */
