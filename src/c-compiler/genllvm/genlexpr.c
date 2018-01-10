@@ -58,6 +58,21 @@ LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
 		return LLVMPointerType(genlType(gen, ptype->pvtype), 0);
 	}
 
+	case FnSig:
+	{
+		// Building typeref from function signature
+		FnSigAstNode *fnsig = (FnSigAstNode*)typ;
+		LLVMTypeRef *param_types = (LLVMTypeRef *)memAllocBlk(fnsig->parms->used * sizeof(LLVMTypeRef));
+		LLVMTypeRef *parm = param_types;
+		SymNode *nodesp;
+		uint32_t cnt;
+		for (inodesFor(fnsig->parms, cnt, nodesp)) {
+			assert(nodesp->node->asttype == VarNameDclNode);
+			*parm++ = genlType(gen, nodesp->node);
+		}
+		return LLVMFunctionType(genlType(gen, fnsig->rettype), param_types, fnsig->parms->used, 0);
+	}
+
 	default:
 		assert(0 && "Invalid vtype to generate");
 		return NULL;
@@ -140,6 +155,11 @@ LLVMValueRef genlFnCall(genl_t *gen, FnCallAstNode *fncall) {
 	uint32_t cnt;
 	for (nodesFor(fncall->parms, cnt, nodesp))
 		*fnarg++ = genlExpr(gen, *nodesp);
+
+	// Handle call when we have a pointer to a function
+	if (fncall->fn->asttype == DerefNode) {
+		return LLVMBuildCall(gen->builder, genlExpr(gen, ((DerefAstNode*)fncall->fn)->exp), fnargs, fncall->parms->used, "");
+	}
 
 	// A function call may be to an internal op code, or to program-defined code
 	NameUseAstNode *fnuse = (NameUseAstNode *)fncall->fn;

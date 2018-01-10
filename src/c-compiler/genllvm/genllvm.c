@@ -67,18 +67,8 @@ void genlGloVarName(genl_t *gen, NameDclAstNode *glovar) {
 		return;
 	}
 
-	// Handle when it is a function, building info from function signature
-	FnSigAstNode *fnsig = (FnSigAstNode*)glovar->vtype;
-	LLVMTypeRef *param_types = (LLVMTypeRef *)memAllocBlk(fnsig->parms->used * sizeof(LLVMTypeRef));
-	LLVMTypeRef *parm = param_types;
-	SymNode *nodesp;
-	uint32_t cnt;
-	for (inodesFor(fnsig->parms, cnt, nodesp)) {
-		assert(nodesp->node->asttype == VarNameDclNode);
-		*parm++ = genlType(gen, nodesp->node);
-	}
-	LLVMTypeRef ret_type = LLVMFunctionType(genlType(gen, fnsig->rettype), param_types, fnsig->parms->used, 0);
-	glovar->llvmvar = LLVMAddFunction(gen->module, &glovar->namesym->namestr, ret_type);
+	// Add function to the module
+	glovar->llvmvar = LLVMAddFunction(gen->module, &glovar->namesym->namestr, genlType(gen, glovar->vtype));
 }
 
 // Generate module's nodes
