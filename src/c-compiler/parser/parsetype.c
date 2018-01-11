@@ -17,6 +17,19 @@
 #include <stdio.h>
 #include <assert.h>
 
+// Parse a permission, return defperm if not found
+PermAstNode *parsePerm(PermAstNode *defperm) {
+	if (lexIsToken(IdentToken)
+		&& lex->val.ident->node && lex->val.ident->node->asttype == PermNameDclNode) {
+		PermAstNode *perm;
+		perm = (PermAstNode*)((NameDclAstNode *)lex->val.ident->node)->value;
+		lexNextToken();
+		return perm;
+	}
+	else
+		return defperm;
+}
+
 // Parse a variable declaration
 NameDclAstNode *parseVarDcl(PermAstNode *defperm) {
 	Symbol *namesym = NULL;
@@ -24,14 +37,8 @@ NameDclAstNode *parseVarDcl(PermAstNode *defperm) {
 	PermAstNode *perm;
 	AstNode *val;
 
-	// Grab the permission type, if there
-	assert(lexIsToken(IdentToken));
-	if (lex->val.ident->node && lex->val.ident->node->asttype == PermNameDclNode) {
-		perm = (PermAstNode*)((NameDclAstNode *)lex->val.ident->node)->value;
-		lexNextToken();
-	}
-	else
-		perm = defperm;
+	// Grab the permission type
+	perm = parsePerm(defperm);
 
 	// Obtain variable's name
 	if (lexIsToken(IdentToken)) {
@@ -148,6 +155,6 @@ AstNode* parseVtype() {
 		lexNextToken();
 		return vtype;
 	default:
-		return NULL;
+		return voidType;
 	}
 }

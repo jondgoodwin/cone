@@ -25,6 +25,7 @@ AstNode *parseBlock();
 AstNode *parseExpr();
 
 // parsetype.c
+PermAstNode *parsePerm(PermAstNode *defperm);
 NameDclAstNode *parseVarDcl(PermAstNode *defperm);
 AstNode *parseFnSig();
 AstNode *parseVtype();

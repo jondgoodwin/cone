@@ -26,12 +26,7 @@ AstNode *parseAddr() {
 	PtrTypeAstNode *ptype = newPtrTypeNode();
 	ptype->pvtype = NULL;     // Type inference will correct this
 	ptype->alloc = voidType;  // Borrowed reference
-	if (lex->val.ident->node && lex->val.ident->node->asttype == PermNameDclNode) {
-		ptype->perm = (PermAstNode*)((NameDclAstNode *)lex->val.ident->node)->value;
-		lexNextToken();
-	}
-	else
-		ptype->perm = constPerm;
+	ptype->perm = parsePerm(constPerm);
 	anode->vtype = (AstNode *)ptype;
 
 	// Parse what we are getting the address of ...
