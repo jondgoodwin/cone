@@ -53,6 +53,7 @@ enum ErrorCode {
 	ErrorNotPtr,	// Not a pointer
 	ErrorNotLval,	// Not an lval
 	ErrorAddr,		// Invalid expr to get an addr (&) of
+	ErrorBadPerm,	// Permission not allowed
 
 	// Warnings
 	WarnCode = 3000,
