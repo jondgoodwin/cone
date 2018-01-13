@@ -1,0 +1,124 @@
+<html>
+  <head>
+	  <title>Permissions - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Permissions</div>
+		</div>
+
+    <div class="text">
+
+	<p>Permissions enable and constrain how variables and references may be used.
+	For example, they grant or deny the right to read a value, modify a value, make a copy of an reference
+	or share access to values across threads.</p>
+	<p>Their primary purpose is to improve program safety by preventing race conditions,
+	where multiple concurrent threads step all over each other when trying to access the same value.
+	Prudent use of permissions can also help make code easier to understand and improve execution performance.</p>
+	
+	<h2>Static permissions</h2>
+	<p>Several permissions are built in to the language.
+	These permissions are static, which means they are completely enforced when the program is compiled.
+	They need no runtime enforcement support, making them more efficient than runtime permissions.</p>
+	
+	<h3>imm, mut and mmut</h3>
+	<p>Three permissions form the root set of static permissions:
+	<ul>
+	<li><span class="pre">imm</span> (immutable)
+	declares that a variable or reference's value will never change after it is initialized.
+	Multiple threads may share access to immutable values.</li>
+	<li><span class="pre">mut</span> (mutable) allows a variable or reference's
+	value to be changed after initialization.
+	Only one working variable or reference has access to that value at a time,
+	however that single owner access may be transferred to other variables or threads.</li>
+	<li><span class="pre">mmut</span> (multiple mutable)
+	allows multiple references and/or variables to access or change a specific value.
+	However, all references to such values are restricted to a single thread.
+	Also, <span class="pre">mmut</span> restricts sum typed values from interior references.</li>
+	</ul>
+	
+	<h4>mut and Lexical Ownership</h4>
+	<p>The <span class="pre">mut</span> permission seems powerful on first glance.
+	Not only does it allow both reads and writes, it allows value movement from thread-to-thread.
+	However, the <span class="pre">mut</span> permission has one significant limitation:
+	there can only be one active reference to its value at a time.</p>
+	<p>The language enforces this restriction:</p>
+	<ul>
+	<li><span class="pre">mut</span> references are never copied; they are always moved.
+	The original variable that held the reference is no longer usable.
+<pre>
+mut var = 5
+imm ref = &amp;mut var
+imm ref2 = ref   // Moves the reference from ref to ref2
+imm var2 = *ref  // Error: ref is no longer usable
+</pre>
+	</li>
+	<li>Whenever a reference is borrowed from a <span class="pre">mut</span> reference,
+	the original reference is unusable for the lifetime of the borrowed reference.
+<pre>
+mut pt = Point {x: 1, y: 2}
+  imm ref = &amp;mut pt
+  ref.x = 4
+  pt.x = 5    // Error, pt is unusable while borrowed 'ref' exists
+pt.x = 5      // Allowed, since borrowed 'ref' has expired
+</pre>
+	</li>
+	</ul>
+	<p>This restriction makes <span class="pre">mut</span> references unsuitable for
+	many data structures that require the use of multiple references to the same object.</p>
+	
+	<h4>mut Coercion</h4>
+	<p>One of the key advantages of the <span class="pre">mut</span> permission is that
+	a reference with that permission may be safely converted into a reference of any other permission.
+	Thus, it is possible to convert a <span class="pre">mut</span> reference into an
+	<span class="pre">imm</span> or <span class="pre">mmut</span> reference,
+	either of which make it possible to create multiple references to the same object, 
+	but which also impose a different set of restrictions.</p>
+	<p>This coercion flexibility of <span class="pre">mut</span>
+	is the reason constructors generally return a new <span class="pre">mut</span> value.
+	Freshly made, there exists only one reference to the brand new object,
+	and then a subsequent permission coercion can transform it (with zero runtime overhead)
+	into a reference with a different permission:</p>
+<pre>
+imm ptimm &amp;imm Point = Point {x: 1, y: 2}
+imm ptmmut &amp;mmut Point = Point {x: 1, y: 5}
+</pre>
+
+	<h3>const, mutx and id</h3>
+	<p>These three static permissions are typically used as temporary permissions
+	derived from the three root permissions:</p>
+	<ul>
+	<li><span class="pre">const</span> (constant)
+	declares that this reference may only read its value, but not modify it.
+	It may be derived (coerced) from a
+	<span class="pre">mut</span>, <span class="pre">mmut</span>, or <span class="pre">imm</span> reference.</li>
+	<li><span class="pre">mutx</span> (exclusive mutable) 
+	declares that this reference may read or modify its value.
+	It may be derived (coerced) from a
+	<span class="pre">mut</span> or <span class="pre">mmut</span> reference.</li>
+	<li><span class="pre">id</span> (identifier)
+	declares that this reference may neither read or modify its value.
+	It may only be compared with another reference.
+	It may be derived (coerced) from any reference.</li>
+	</ul>
+
+	<h3>Struct member permissions</h3>
+	<p>TBD</p>
+	
+	<h3>Thread Communications</h3>
+	<p>TBD</p>
+	
+	<h2>Synchronization Permissions</h2>
+	<p>TBD</p>
+	
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="refalloc.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>
