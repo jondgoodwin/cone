@@ -22,6 +22,14 @@
 #include <stdio.h>
 #include <assert.h>
 
+#ifdef _WIN32
+#define asmext "asm"
+#define objext "obj"
+#else
+#define asmext "a"
+#define objext "s"
+#endif
+
 // Generate parameter variable
 void genlParmVar(genl_t *gen, NameDclAstNode *var) {
 	assert(var->asttype == VarNameDclNode);
@@ -206,8 +214,8 @@ void genllvm(ConeOptions *opt, PgmAstNode *pgmast) {
 	// Transform IR to target's ASM and OBJ
 	machine = genlCreateMachine(opt);
 	if (machine)
-		genlOut(fileMakePath(opt->output, pgmast->lexer->fname, "obj"),
-			opt->print_asm? fileMakePath(opt->output, pgmast->lexer->fname, "asm") : NULL,
+		genlOut(fileMakePath(opt->output, pgmast->lexer->fname, objext),
+			opt->print_asm? fileMakePath(opt->output, pgmast->lexer->fname, asmext) : NULL,
 			gen.module, opt->triple, machine);
 
 	LLVMDisposeModule(gen.module);
