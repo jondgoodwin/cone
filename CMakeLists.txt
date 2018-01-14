@@ -38,7 +38,7 @@ add_executable(cone
 	src/c-compiler/parser/parsetype.c
 
 	src/c-compiler/genllvm/genllvm.c
-	src/c-compiler/genllvm/genstmt.c
+	src/c-compiler/genllvm/genlstmt.c
 	src/c-compiler/genllvm/genlexpr.c
 )
 
