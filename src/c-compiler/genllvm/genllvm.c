@@ -72,6 +72,8 @@ void genlGloVarName(genl_t *gen, NameDclAstNode *glovar) {
 	// Handle when it is just a global variable
 	if (glovar->vtype->asttype != FnSig) {
 		glovar->llvmvar = LLVMAddGlobal(gen->module, genlType(gen, glovar->vtype), &glovar->namesym->namestr);
+		if (glovar->perm == immPerm)
+			LLVMSetGlobalConstant(glovar->llvmvar, 1);
 		return;
 	}
 
