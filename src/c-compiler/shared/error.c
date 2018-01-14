@@ -104,5 +104,5 @@ void errorSummary() {
 	if (errors > 0)
 		errorExit(ExitError, "Unsuccessful compile: %d errors, %d warnings", errors, warnings);
 	dur = (float)(clock()-startTime)/CLOCKS_PER_SEC;
-	fprintf(stderr, "Compile finished in %f sec (%d kb). %d warnings detected\n", dur, memUsed()/1024, warnings);
+	fprintf(stderr, "Compile finished in %f sec (%lu kb). %d warnings detected\n", dur, memUsed()/1024, warnings);
 }

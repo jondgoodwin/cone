@@ -22,7 +22,7 @@
 
 clock_t startTime;
 
-void main(int argc, char **argv) {
+int main(int argc, char **argv) {
 	ConeOptions coneopt;
 	PgmAstNode *pgmast;
 	int ok;
