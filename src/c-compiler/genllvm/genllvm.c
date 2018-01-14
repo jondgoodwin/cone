@@ -26,8 +26,8 @@
 #define asmext "asm"
 #define objext "obj"
 #else
-#define asmext "a"
-#define objext "s"
+#define asmext "s"
+#define objext "o"
 #endif
 
 // Generate parameter variable
