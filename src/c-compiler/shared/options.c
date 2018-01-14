@@ -9,6 +9,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stddef.h>
 
 #define MATCH_LONG  1
 #define MATCH_SHORT 2

@@ -9,6 +9,7 @@
 #define coneopts_h
 
 #include <stdint.h>
+#include <stddef.h>
 
 // Compiler options
 typedef struct ConeOptions {

@@ -10,6 +10,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stddef.h>
 
 /** Load a file into an allocated string, return pointer or NULL if not found */
 char *fileLoad(char *fn) {

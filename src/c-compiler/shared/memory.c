@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <stddef.h>
 
 // Public globals: Arena size configuration values
 size_t gMemBlkArenaSize = 256 * 4096;

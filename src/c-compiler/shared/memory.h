@@ -9,6 +9,7 @@
 #define memory_h
 
 #include <stdlib.h>
+#include <stddef.h>
 
 // Configurable size for arenas (specify as multiples of 4096 byte pages)
 size_t gMemBlkArenaSize;	// Default is 256 pages

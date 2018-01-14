@@ -57,7 +57,7 @@ int fnSigEqual(FnSigAstNode *node1, FnSigAstNode *node2) {
 		return 0;
 
 	// Every parameter's type must also match
-	nodes2p = &nodesGet(node2->parms, 0);
+	nodes2p = &inodesGet(node2->parms, 0);
 	for (inodesFor(node1->parms, cnt, nodes1p)) {
 		if (!typeIsSame(nodes1p->node, nodes2p->node))
 			return 0;

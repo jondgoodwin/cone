@@ -11,6 +11,7 @@
 typedef struct AstNode AstNode;	// ../ast/ast.h
 
 #include <stdlib.h>
+#include <stddef.h>
 
 /* *****************************************************
  * Symbols and Symbol Table - symbol.c
