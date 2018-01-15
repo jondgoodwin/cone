@@ -4,9 +4,13 @@ set(CMAKE_BINARY_DIR ${CMAKE_SOURCE_DIR}/bin)
 set(EXECUTABLE_OUTPUT_PATH ${CMAKE_SOURCE_DIR})
 set(LIBRARY_OUTPUT_PATH ${CMAKE_BINARY_DIR})
 
-include_directories("${CMAKE_SOURCE_DIR}/src/c-compiler/" "/usr/include/llvm-c-5.0" "/usr/include/llvm-5.0")
+SET (LLVM_HOME "/usr/lib/llvm-5.0/lib")
+SET (LLVM_LIB "libLLVM-5.0.so")
 
-SET (LLVM_LIB "/usr/lib/llvm-5.0/lib")
+include_directories(
+    "${CMAKE_SOURCE_DIR}/src/c-compiler/"
+    "${LLVM_HOME}/include"
+)
 
 add_executable(cone 
 	src/c-compiler/cone.c
@@ -44,4 +48,4 @@ add_executable(cone
 	src/c-compiler/genllvm/genlexpr.c
 )
 
-target_link_libraries(cone "${LLVM_LIB}/libLLVM-5.0.so")
+target_link_libraries(cone "${LLVM_HOME}/lib/${LLVM_LIB}")

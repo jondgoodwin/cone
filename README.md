@@ -80,6 +80,20 @@ To build on Linux:
 	cmake .
 	make
 
+## Building (Mac OS)
+
+To build on Mac OS:
+
+	brew install --with-toolchain llvm
+	llvm-config --bindir
+
+Modify CMakeLists.txt so that LLVM_HOME points to LLVM's path
+(e.g., "/usr/local/Cellar/llvm/5.0.1" without the /bin) and 
+modify LLVM_LIB to "libLLVM.dylib".
+
+	cmake .
+	make
+
 ## License
 
 The Cone programming language compiler is distributed under the terms of the MIT license. 

@@ -59,7 +59,6 @@ int typeIsSame(AstNode *node1, AstNode *node2) {
 // can from's value be coerced to to's value type?
 // This might inject a 'cast' node in front of the 'from' node with non-matching numbers
 int typeCoerces(AstNode *to, AstNode **from) {
-	int ret;
 	AstNode *fromtype = *from;
 
 	// Convert nodes to their value types
@@ -95,8 +94,8 @@ int typeCoerces(AstNode *to, AstNode **from) {
 		return 1;
 
 	// If types are equivalent, it is a valid subtype
-	if (ret = typeEqual(to, fromtype))
-		return ret;
+	if (typeEqual(to, fromtype))
+		return 1;
 
 	// Not identical - but if both are numbers - cast between them
 	if (isNbr(to) && isNbr(fromtype)) {
