@@ -8,36 +8,11 @@
 #ifndef expr_h
 #define expr_h
 
-// Variations on assignment
-enum AssignType {
-	NormalAssign
-};
-
-// Assignment node
-typedef struct AssignAstNode {
-	TypedAstHdr;
-	AstNode *lval;
-	AstNode *rval;
-	int16_t assignType;
-} AssignAstNode;
-
-// Function call node
-typedef struct FnCallAstNode {
-	TypedAstHdr;
-	AstNode *fn;
-	Nodes *parms;
-} FnCallAstNode;
-
 // Cast to another type
 typedef struct CastAstNode {
 	TypedAstHdr;
 	AstNode *exp;
 } CastAstNode;
-
-typedef struct AddrAstNode {
-	TypedAstHdr;
-	AstNode *exp;
-} AddrAstNode;
 
 typedef struct DerefAstNode {
 	TypedAstHdr;
@@ -51,14 +26,6 @@ typedef struct LogicAstNode {
 	AstNode *rexp;
 } LogicAstNode;
 
-AssignAstNode *newAssignAstNode(int16_t assigntype, AstNode *lval, AstNode *rval);
-void assignPrint(AssignAstNode *node);
-void assignPass(AstPass *pstate, AssignAstNode *node);
-
-FnCallAstNode *newFnCallAstNode(AstNode *fn, int nnodes);
-void fnCallPrint(FnCallAstNode *node);
-void fnCallPass(AstPass *pstate, FnCallAstNode *node);
-
 CastAstNode *newCastAstNode(AstNode *exp, AstNode *type);
 void castPrint(CastAstNode *node);
 void castPass(AstPass *pstate, CastAstNode *node);
@@ -66,10 +33,6 @@ void castPass(AstPass *pstate, CastAstNode *node);
 DerefAstNode *newDerefAstNode();
 void derefPrint(DerefAstNode *node);
 void derefPass(AstPass *pstate, DerefAstNode *node);
-
-AddrAstNode *newAddrAstNode();
-void addrPrint(AddrAstNode *node);
-void addrPass(AstPass *pstate, AddrAstNode *node);
 
 LogicAstNode *newLogicAstNode(int16_t typ);
 void logicPrint(LogicAstNode *node);

@@ -157,6 +157,7 @@ typedef struct TypeAstNode {
 #include "../types/permission.h"
 #include "../ast/block.h"
 #include "../ast/expr.h"
+#include "../ast/copyexpr.h"
 #include "../ast/name.h"
 #include "../ast/literal.h"
 #include "../types/type.h"
