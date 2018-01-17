@@ -25,68 +25,88 @@
 	These permissions are static, which means they are completely enforced when the program is compiled.
 	They need no runtime enforcement support, making them more efficient than runtime permissions.</p>
 	
-	<h3>imm, mut and mmut</h3>
+	<h3>imm, mut and uni</h3>
 	<p>Three permissions form the root set of static permissions:
 	<ul>
 	<li><span class="pre">imm</span> (immutable)
 	declares that a variable or reference's value will never change after it is initialized.
 	Multiple threads may share access to immutable values.</li>
-	<li><span class="pre">mut</span> (mutable) allows a variable or reference's
-	value to be changed after initialization.
-	Only one working variable or reference has access to that value at a time,
-	however that single owner access may be transferred to other variables or threads.</li>
-	<li><span class="pre">mmut</span> (multiple mutable)
+	<li><span class="pre">mut</span> (mutable)
 	allows multiple references and/or variables to access or change a specific value.
-	However, all references to such values are restricted to a single thread.
-	Also, <span class="pre">mmut</span> restricts sum typed values from interior references.</li>
+	However, all references to such values are restricted to a single thread.</li>
+	<li><span class="pre">uni</span> (unique) 
+	allows the referenced object to be changed, just like <span class="pre">mut</span>.
+	However, it carries a significant restriction:
+	there can only be one active reference to its object at a time.
+	Ownership of such a reference may be moved around, including to another thread
+	(which cannot be done with a <span class="pre">mut</span> reference.</li>
 	</ul>
 	
-	<h4>mut and Lexical Ownership</h4>
-	<p>The <span class="pre">mut</span> permission seems powerful on first glance.
-	Not only does it allow both reads and writes, it allows the reference to move from thread-to-thread.
-	However, the <span class="pre">mut</span> permission does have one significant limitation:
-	there can only be one active reference to its value at a time.</p>
-	<p>The language enforces this restriction:</p>
-	<ul>
-	<li><span class="pre">mut</span> references are never copied; they are always moved.
-	The original variable that held the reference is no longer usable.
+	<h4>uni as the first permission</h4>
+	<p>The <span class="pre">uni</span> permission, and its single reference restriction,
+	may seem a bit unusual. However, the concept is not new to Cone.
+	Rust's &mut reference, Pony's iso reference capability, and C's restrict keyword accomplish something similar.</p>
+	<p><span class="pre">uni</span> is best understood as
+	the first permission an object's reference gets in the early days of its existence.
+	Whenever a type constructor creates and returns a new reference, 
+	it typically has the <span class="pre">uni</span> permission.
+	This makes sense: since the just-created reference is the only one in existence, 
+	it naturally complies with the single reference restriction.</p>
+	<p>So long as the reference keeps its <span class="pre">uni</span> permission,
+	this single reference to an object can be freely and safely moved around a program,
+	hopping from function-to-function or even thread-to-thread.
+	When a <span class="pre">uni</span> reference is assigned to another variable or
+	passed to a function (or returned), the reference moves to its new owner.
+	Any subsequent attempt to use the previous owner of the reference will trigger an error:
 <pre>
-mut var = 5
-imm ref = &amp;mut var
-imm ref2 = ref   // Moves the reference from ref to ref2
-imm var2 = *ref  // Error: ref is no longer usable
-</pre>
-	</li>
-	<li>Whenever a reference is borrowed from a <span class="pre">mut</span> reference,
-	the original reference is unusable for the lifetime of the borrowed reference.
-<pre>
-mut pt = Point {x: 1, y: 2}
-  imm ref = &amp;mut pt
-  ref.x = 4
-  pt.x = 5    // Error, pt is unusable while borrowed 'ref' exists
-pt.x = 5      // Allowed, since borrowed 'ref' has expired
-</pre>
-	</li>
-	</ul>
-	<p>This restriction makes <span class="pre">mut</span> references unsuitable for
-	many data structures that require the use of multiple references to the same object.</p>
-	
-	<h4>mut Coercion</h4>
-	<p>One of the key advantages of the <span class="pre">mut</span> permission is that
-	a reference with that permission may be safely converted into a reference of any other permission.
-	Thus, it is possible to convert a <span class="pre">mut</span> reference into an
-	<span class="pre">imm</span> or <span class="pre">mmut</span> reference,
-	both allowing multiple references to the same object (but imposing other restrictions).</p>
-	<p>This coercion flexibility of <span class="pre">mut</span>
-	is the reason constructors typically return a new <span class="pre">mut</span> value.
-	Freshly made, there exists only one reference to the brand new object.
-	A subsequent permission coercion can transform this single reference (with zero runtime overhead)
-	into a reference with a different permission:</p>
-<pre>
-imm ptimm &amp;imm Point = Point {x: 1, y: 2}
-imm ptmmut &amp;mmut Point = Point {x: 1, y: 5}
+imm ref = &gc Point{x: 1.0, y: 3.0} // Create new object and reference
+imm newref = ref   // Move reference to newref
+imm x = ref.x      // ERROR! ref is no longer usable
 </pre>
 
+	<h4>uni as the universal donor</h4>
+	<p>In many cases, the single reference restriction of <span class="pre">uni</span>
+	poses no hardship and the reference keeps its <span class="pre">uni</span>
+	permission throughout the object's lifetime.
+	In addition to flexibility of movement, there can be 
+	other benefits to keeping a mutable reference as <span class="pre">uni</span>,
+	such as improved performance optimizations and sum type safety.</p>
+	<p>However, the single reference restriction makes <span class="pre">uni</span> references unsuitable for
+	many data structures that require the use of multiple references to the same object.
+	Should a program's logic need multiple references to the same object,
+	the <span class="pre">uni</span> reference may be transitioned to a new reference with a sharable permission, 
+	such as <span class="pre">mut</span> or <span class="pre">imm</span>:
+<pre>
+imm ref = &amp;gc Point{x: 1.0, y: 3.0} // Create new object and reference
+imm newref1 &amp;mut = ref      // Move reference to newref with 'mut' permission
+imm newref2 &amp;mut = newref1  // Two 'mut' references to the same object
+imm x = newref1.x      // Either reference may be used
+</pre>
+	<p>This transition may be more concisely performed at reference creation:</p>
+<pre>
+imm newref1 = &amp;gc mut Point{x: 1.0, y: 3.0} // Create new 'mut' reference
+</pre>
+	<h4>uni and temporary transitions</h4>
+	<p>In many cases, the transition from <span class="pre">uni</span> to a shared reference is a one way trip.
+	You cannot safely transition a <span class="pre">mut</span> reference back to a
+	<span class="pre">uni</span> reference (or even to an <span class="pre">imm</span> reference).
+	The reference is now "frozen" to the restrictions of its new permission:
+	As <span class="pre">mut</span>, it can never be shared across threads.
+	As <span class="pre">imm</span>, it can never be altered.</p>
+	<p>Using borrowed references, however, it becomes possible to temporarily transition
+	a reference to another permission. 
+	During the lifetime of a borrowed reference, the original <span class="pre">uni</span> reference may not be used.
+	However, once the lexical lifetime of the borrowed reference expires,
+	the original <span class="pre">uni</span> reference becomes usable again:</p>
+<pre>
+imm ref = &amp;gc Point {x: 1, y: 2}
+  imm ref2 = &amp;mut ref
+  imm ref3 = &amp;mut ref
+  ref2.x = ref3.y
+  ref.y = 5    // Error, ref is unusable while borrowed 'ref2' exists
+ref.x = 5      // Allowed, since borrowed references have expired
+</pre>
+	
 	<h3>const, mutx and id</h3>
 	<p>The remaining static permissions are temporary permissions derived from the three root permissions.
 	General-purpose functions specify them on their reference parameters,
@@ -96,7 +116,7 @@ imm ptmmut &amp;mmut Point = Point {x: 1, y: 5}
 	<li><span class="pre">const</span> (constant)
 	declares that the reference will only be used to read its value, and will not attempt to modify it.
 	A <span class="pre">const</span> parameter accepts nearly any other kind of reference, including
-	<span class="pre">mut</span>, <span class="pre">mmut</span>, or <span class="pre">imm</span>.
+	<span class="pre">uni</span>, <span class="pre">mut</span>, or <span class="pre">imm</span>.
 	<p>Although similar, the difference between <span class="pre">const</span> and <span class="pre">imm</span>
 	is important. 
 	<span class="pre">imm</span> guarantees that no other mutable reference to the same object exists,
@@ -107,11 +127,11 @@ imm ptmmut &amp;mmut Point = Point {x: 1, y: 5}
 	declares that the reference will be used to read or modify the value it refers to.
 	However (similar to mut), it promises never to allow two usable copies of the reference to exist at the same time.
 	A <span class="pre">mutx</span> parameter accepts a 
-	<span class="pre">mut</span>, <span class="pre">mmut</span>, or <span class="pre">mutx</span> reference.
-	<p>Although <span class="pre">mut</span> and <span class="pre">mutx</span> are similar,
-	a <span class="pre">mut</span> reference may be moved to another thread;
+	<span class="pre">uni</span>, <span class="pre">mut</span>, or <span class="pre">mutx</span> reference.
+	<p>Although <span class="pre">uni</span> and <span class="pre">mutx</span> are similar,
+	a <span class="pre">uni</span> reference may be moved to another thread;
 	a <span class="pre">mutx</span> reference may not be.
-	This is because <span class="pre">mut</span> promises no other reference to the object exists.
+	This is because <span class="pre">uni</span> promises no other reference to the object exists.
 	<span class="pre">mutx</span> cannot make that promise.</p>
 	</li>
 	<li><span class="pre">id</span> (identifier)
@@ -122,7 +142,7 @@ imm ptmmut &amp;mmut Point = Point {x: 1, y: 5}
 
 	<h3>Thread Communications</h3>
 	<p>Among the static permissions, only <span class="pre">imm</span> references may be shared between threads.
-	Additionally, a <span class="pre">mut</span> reference may be moved from one thread to another.
+	Additionally, a <span class="pre">uni</span> reference may be moved from one thread to another.
 	All references to an object carrying any other permission are restricted to the same thread.</p>
 	
 	<h3>Struct member permissions</h3>
@@ -131,7 +151,7 @@ imm ptmmut &amp;mmut Point = Point {x: 1, y: 5}
 	<h2>Runtime (Synchronization) Permissions</h2>
 	<p>In addition to the static permissions, Cone also offers runtime permissions.
 	Runtime permissions enable the use of shared references that are not limited by 
-	the restrictions placed on <span class="pre">mmut</span> references.
+	the restrictions placed on <span class="pre">mut</span> references.
 	Using runtime permissions, it becomes possible to share object references across threads
 	or to obtain interior references to shared references on sum or array types.</p>
 	<p>The penalty for this added freedom is that reference use carries a small runtime performance hit.
@@ -143,7 +163,7 @@ imm ptmmut &amp;mmut Point = Point {x: 1, y: 5}
 	
 	<h3>Runtime Permission Coercions</h3>
 	<p>The only coercion allowed by runtime permissions is from a
-	<span class="pre">mut</span> permission to any runtime permission.
+	<span class="pre">uni</span> permission to any runtime permission.
 	This is a one-way trip. If one reference to an object uses a runtime permission,
 	all other references to that object must use the same runtime permission.</p>
 	<p>This means that objects protected by runtime permissions cannot use functions
@@ -163,7 +183,7 @@ point.x += point.y  // Access to point safely protected by Lock twice
 </pre>
 	
 	<h3>MutLock</h3>
-	<p><span class="pre">mmut</span> references are restricted from obtaining 
+	<p><span class="pre">mut</span> references are restricted from obtaining 
 	interior references to sum-typed or variable-sized array objects.
 	This restriction is necessary to protect the structural integrity of these objects.
 	Otherwise, it might be possible for one reference to alter the structure of the object
