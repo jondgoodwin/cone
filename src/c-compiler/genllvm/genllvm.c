@@ -102,11 +102,25 @@ void genlModule(genl_t *gen, PgmAstNode *pgm) {
 	// Generate the function's block or the variable's initialization value
 	for (nodesFor(pgm->nodes, cnt, nodesp)) {
 		AstNode *nodep = *nodesp;
-		if (nodep->asttype == VarNameDclNode && ((NameDclAstNode*)nodep)->value) {
-			if (((NameDclAstNode*)nodep)->vtype->asttype == FnSig)
-				genlFn(gen, (NameDclAstNode*)nodep);
-			else
-				genlGloVar(gen, (NameDclAstNode*)nodep);
+		switch (nodep->asttype) {
+		case VarNameDclNode:
+			if (((NameDclAstNode*)nodep)->value) {
+				if (((NameDclAstNode*)nodep)->vtype->asttype == FnSig)
+					genlFn(gen, (NameDclAstNode*)nodep);
+				else
+					genlGloVar(gen, (NameDclAstNode*)nodep);
+			}
+			break;
+
+		case VtypeNameDclNode:
+		{
+			NameDclAstNode *dclnode = (NameDclAstNode *)nodep;
+			dclnode->llvmvar = genlType(gen, dclnode->value);
+			break;
+		}
+
+		default:
+			assert(0 && "Invalid global area node");
 		}
 	}
 

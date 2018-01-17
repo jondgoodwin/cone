@@ -199,3 +199,8 @@ void nameDclPass(AstPass *pstate, NameDclAstNode *name) {
 		break;
 	}
 }
+
+// Check the value type declaration's AST
+void nameVtypeDclPass(AstPass *pstate, NameDclAstNode *name) {
+	astPass(pstate, name->value);
+}

@@ -36,5 +36,6 @@ void newNameDclNodeStr(char *namestr, uint16_t asttype, AstNode *type);
 int isNameDclNode(AstNode *node);
 void nameDclPrint(NameDclAstNode *fn);
 void nameDclPass(AstPass *pstate, NameDclAstNode *node);
+void nameVtypeDclPass(AstPass *pstate, NameDclAstNode *name);
 
 #endif

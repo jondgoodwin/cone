@@ -114,6 +114,12 @@ PgmAstNode *parse() {
 				registerGlobalName((NameDclAstNode *)node);
 			break;
 
+		// 'struct' definition
+		case StructToken:
+			nodesAdd(nodes, node = parseStruct());
+			registerGlobalName((NameDclAstNode *)node);
+			break;
+
 		// A global variable declaration, if it begins with a permission
 		case IdentToken: {
 			AstNode *perm = lex->val.ident->node;

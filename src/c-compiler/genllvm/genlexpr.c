@@ -73,6 +73,21 @@ LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
 		return LLVMFunctionType(genlType(gen, fnsig->rettype), param_types, fnsig->parms->used, 0);
 	}
 
+	case StructType:
+	{
+		// Building typeref from struct
+		StructAstNode *strnode = (StructAstNode*)typ;
+		LLVMTypeRef *field_types = (LLVMTypeRef *)memAllocBlk(strnode->fields->used * sizeof(LLVMTypeRef));
+		LLVMTypeRef *field = field_types;
+		SymNode *nodesp;
+		uint32_t cnt;
+		for (inodesFor(strnode->fields, cnt, nodesp)) {
+			assert(nodesp->node->asttype == VarNameDclNode);
+			*field++ = genlType(gen, nodesp->node);
+		}
+		return LLVMStructTypeInContext(gen->context, field_types, cnt, 0);
+	}
+
 	default:
 		assert(0 && "Invalid vtype to generate");
 		return NULL;

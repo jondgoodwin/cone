@@ -25,7 +25,10 @@ void structPrint(StructAstNode *node) {
 
 // Semantically analyze a struct type
 void structPass(AstPass *pstate, StructAstNode *node) {
-	// Analyze fields?
+	SymNode *nodesp;
+	uint32_t cnt;
+	for (inodesFor(node->fields, cnt, nodesp))
+		astPass(pstate, nodesp->node);
 }
 
 // Compare two struct signatures to see if they are equivalent

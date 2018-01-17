@@ -32,6 +32,7 @@ void keywordInit() {
 	nbrDclNames();
 
 	keyAdd("fn", FnToken);
+	keyAdd("struct", StructToken);
 	keyAdd("return", RetToken);
 	keyAdd("if", IfToken);
 	keyAdd("elif", ElifToken);

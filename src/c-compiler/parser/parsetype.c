@@ -65,6 +65,44 @@ NameDclAstNode *parseVarDcl(PermAstNode *defperm) {
 	return newNameDclNode(namesym, VarNameDclNode, vtype, perm, val);
 }
 
+// Parse a struct
+AstNode *parseStruct() {
+	NameDclAstNode *strdclnode;
+	StructAstNode *strnode;
+	int16_t fieldnbr = 0;
+
+	strnode = newStructNode();
+	strdclnode = newNameDclNode(NULL, VtypeNameDclNode, voidType, immPerm, (AstNode*)strnode);
+
+	// Skip past 'struct'
+	lexNextToken();
+
+	// Process struct type name, if provided
+	if (lexIsToken(IdentToken)) {
+		strdclnode->namesym = lex->val.ident;
+		lexNextToken();
+	}
+
+	// Process field definitions
+	if (lexIsToken(LCurlyToken)) {
+		lexNextToken();
+		while (lexIsToken(IdentToken)) {
+			NameDclAstNode *field = parseVarDcl(mutPerm);
+			field->scope = 1;
+			field->index = fieldnbr++;
+			inodesAdd(&strnode->fields, field->namesym, (AstNode*)field);
+			if (!lexIsToken(SemiToken))
+				break;
+			lexNextToken();
+		}
+		parseRCurly();
+	}
+	else
+		errorMsgLex(ErrorNoLCurly, "Expected left curly for struct's fields");
+
+	return (AstNode*)strdclnode;
+}
+
 // Parse a function's type signature
 AstNode *parseFnSig() {
 	FnSigAstNode *fnsig;
