@@ -95,6 +95,8 @@ void astPrintNode(AstNode *node) {
 		fnSigPrint((FnSigAstNode *)node); break;
 	case RefType:
 		ptrTypePrint((PtrAstNode *)node); break;
+	case StructType:
+		structPrint((StructAstNode *)node); break;
 	case IntNbrType: case UintNbrType: case FloatNbrType:
 		nbrTypePrint((NbrAstNode *)node); break;
 	case PermType:
@@ -153,6 +155,8 @@ void astPass(AstPass *pstate, AstNode *node) {
 		fnSigPass(pstate, (FnSigAstNode *)node); break;
 	case RefType:
 		ptrTypePass(pstate, (PtrAstNode *)node); break;
+	case StructType:
+		structPass(pstate, (StructAstNode *)node); break;
 
 	case FieldNameUseNode:
 	case ULitNode:
