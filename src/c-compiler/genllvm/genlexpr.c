@@ -25,9 +25,6 @@
 // Generate a type value
 LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
 	switch (typ->asttype) {
-	// If it's a name declaration (e.g., parm), resolve it to the actual type info
-	case VarNameDclNode:
-		return genlType(gen, ((NameDclAstNode *)typ)->vtype);
 	// If it's a name, resolve it to the actual type info
 	case VtypeNameUseNode:
 		return genlType(gen, ((NameUseAstNode *)typ)->dclnode->value);
@@ -68,7 +65,7 @@ LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
 		uint32_t cnt;
 		for (inodesFor(fnsig->parms, cnt, nodesp)) {
 			assert(nodesp->node->asttype == VarNameDclNode);
-			*parm++ = genlType(gen, nodesp->node);
+			*parm++ = genlType(gen, ((TypedAstNode *)nodesp->node)->vtype);
 		}
 		return LLVMFunctionType(genlType(gen, fnsig->rettype), param_types, fnsig->parms->used, 0);
 	}
@@ -83,9 +80,9 @@ LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
 		uint32_t cnt;
 		for (inodesFor(strnode->fields, cnt, nodesp)) {
 			assert(nodesp->node->asttype == VarNameDclNode);
-			*field++ = genlType(gen, nodesp->node);
+			*field++ = genlType(gen, ((TypedAstNode *)nodesp->node)->vtype);
 		}
-		return LLVMStructTypeInContext(gen->context, field_types, cnt, 0);
+		return LLVMStructTypeInContext(gen->context, field_types, strnode->fields->used, 0);
 	}
 
 	default:
@@ -361,7 +358,7 @@ LLVMValueRef genlLogic(genl_t *gen, LogicAstNode* node) {
 LLVMValueRef genlLocalVar(genl_t *gen, NameDclAstNode *var) {
 	assert(var->asttype == VarNameDclNode);
 	LLVMValueRef val = NULL;
-	var->llvmvar = LLVMBuildAlloca(gen->builder, genlType(gen, (AstNode*)var), &var->namesym->namestr);
+	var->llvmvar = LLVMBuildAlloca(gen->builder, genlType(gen, var->vtype), &var->namesym->namestr);
 	if (var->value)
 		LLVMBuildStore(gen->builder, (val = genlExpr(gen, var->value)), var->llvmvar);
 	return val;
