@@ -39,8 +39,8 @@ int typeEqual(AstNode *node1, AstNode *node2) {
 	switch (node1->asttype) {
 	case FnSig:
 		return fnSigEqual((FnSigAstNode*)node1, (FnSigAstNode*)node2);
-	case PtrType:
-		return ptrTypeEqual((PtrTypeAstNode*)node1, (PtrTypeAstNode*)node2);
+	case RefType:
+		return ptrTypeEqual((PtrAstNode*)node1, (PtrAstNode*)node2);
 	default:
 		return 0;
 	}
@@ -109,8 +109,8 @@ int typeCoerces(AstNode *to, AstNode **from) {
 
 	// Type-specific coercion logic
 	switch (to->asttype) {
-	case PtrType:
-		return ptrTypeCoerces((PtrTypeAstNode*)to, (PtrTypeAstNode*)fromtype);
+	case RefType:
+		return ptrTypeCoerces((PtrAstNode*)to, (PtrAstNode*)fromtype);
 	default:
 		return 0;
 	}

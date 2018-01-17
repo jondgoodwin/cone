@@ -88,10 +88,11 @@ enum AstType {
 	IntNbrType,	// Integer
 	UintNbrType,	// Unsigned integer
 	FloatNbrType,	// Floating point number
-	PtrType,	// Also smart pointers?
-	ArrayType,	// Also dynamic arrays? SOA?
+	RefType,	// Reference
+	PtrType,	// Pointer
 	FnSig,		// Also method, closure, behavior, co-routine, thread, ...
-	StructType,	// Also class, interface, actor, etc.?
+	StructType,	// Also interface, trait, tuple, actor, etc.
+	ArrayType,	// Also dynamic arrays? SOA?
 	EnumType,	// Also sum type, etc.?
 	ModuleType,	// Modules, Generics ?
 

@@ -187,7 +187,7 @@ void addrPass(AstPass *pstate, AddrAstNode *node) {
 		if (((TypedAstNode *)node->exp)->asttype != VarNameUseNode)
 			errorMsgNode((AstNode*)node, ErrorNotLval, "& only applies to lvals, such as variables");
 		else {
-			PtrTypeAstNode *ptype = (PtrTypeAstNode *)node->vtype;
+			PtrAstNode *ptype = (PtrAstNode *)node->vtype;
 			if (ptype->pvtype==NULL)
 				ptype->pvtype = ((TypedAstNode *)node->exp)->vtype;
 			if (!permCoerces(ptype->perm, ((NameUseAstNode*)node->exp)->dclnode->perm))

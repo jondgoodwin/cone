@@ -118,7 +118,7 @@ AstNode *parseFnSig() {
 
 // Parse a pointer type
 AstNode *parsePtrType() {
-	PtrTypeAstNode *ptype = newPtrTypeNode();
+	PtrAstNode *ptype = newPtrTypeNode();
 	lexNextToken();
 
 	// For now - no allocator may be specified

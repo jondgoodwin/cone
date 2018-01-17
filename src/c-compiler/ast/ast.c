@@ -93,8 +93,8 @@ void astPrintNode(AstNode *node) {
 		flitPrint((FLitAstNode *)node); break;
 	case FnSig:
 		fnSigPrint((FnSigAstNode *)node); break;
-	case PtrType:
-		ptrTypePrint((PtrTypeAstNode *)node); break;
+	case RefType:
+		ptrTypePrint((PtrAstNode *)node); break;
 	case IntNbrType: case UintNbrType: case FloatNbrType:
 		nbrTypePrint((NbrAstNode *)node); break;
 	case PermType:
@@ -151,8 +151,8 @@ void astPass(AstPass *pstate, AstNode *node) {
 		logicPass(pstate, (LogicAstNode *)node); break;
 	case FnSig:
 		fnSigPass(pstate, (FnSigAstNode *)node); break;
-	case PtrType:
-		ptrTypePass(pstate, (PtrTypeAstNode *)node); break;
+	case RefType:
+		ptrTypePass(pstate, (PtrAstNode *)node); break;
 
 	case FieldNameUseNode:
 	case ULitNode:

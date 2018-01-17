@@ -9,18 +9,18 @@
 #define pointer_h
 
 // For pointers
-typedef struct PtrTypeAstNode {
+typedef struct PtrAstNode {
 	TypeAstHdr;
 	AstNode *pvtype;	// Value type
 	PermAstNode *perm;	// Permission
 	AstNode *alloc;		// Allocator
 	int16_t scope;		// Lifetime
-} PtrTypeAstNode;
+} PtrAstNode;
 
-PtrTypeAstNode *newPtrTypeNode();
-void ptrTypePrint(PtrTypeAstNode *node);
-void ptrTypePass(AstPass *pstate, PtrTypeAstNode *name);
-int ptrTypeEqual(PtrTypeAstNode *node1, PtrTypeAstNode *node2);
-int ptrTypeCoerces(PtrTypeAstNode *to, PtrTypeAstNode *from);
+PtrAstNode *newPtrTypeNode();
+void ptrTypePrint(PtrAstNode *node);
+void ptrTypePass(AstPass *pstate, PtrAstNode *name);
+int ptrTypeEqual(PtrAstNode *node1, PtrAstNode *node2);
+int ptrTypeCoerces(PtrAstNode *to, PtrAstNode *from);
 
 #endif

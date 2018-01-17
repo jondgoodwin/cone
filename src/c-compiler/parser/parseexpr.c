@@ -23,7 +23,7 @@ AstNode *parseAddr() {
 	lexNextToken();
 
 	// Address node's value type is a partially populated pointer type
-	PtrTypeAstNode *ptype = newPtrTypeNode();
+	PtrAstNode *ptype = newPtrTypeNode();
 	ptype->pvtype = NULL;     // Type inference will correct this
 	ptype->alloc = voidType;  // Borrowed reference
 	ptype->perm = parsePerm(constPerm);

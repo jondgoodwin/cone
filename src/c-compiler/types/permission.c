@@ -57,8 +57,8 @@ uint16_t permGetFlags(AstNode *node) {
 		return ((NameDclAstNode*)node)->perm->flags;
 	case DerefNode:
 	{
-		PtrTypeAstNode *vtype = (PtrTypeAstNode*)typeGetVtype(((DerefAstNode *)node)->exp);
-		assert(vtype->asttype == PtrType);
+		PtrAstNode *vtype = (PtrAstNode*)typeGetVtype(((DerefAstNode *)node)->exp);
+		assert(vtype->asttype == RefType);
 		return vtype->perm->flags;
 	}
 	default:
