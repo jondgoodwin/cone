@@ -17,8 +17,8 @@ typedef struct PermAstNode {
 
 // Permission types
 enum Perm {
+	UniPerm,
 	MutPerm,
-	MmutPerm,
 	ImmPerm,
 	ConstPerm,
 	MutxPerm,
@@ -43,8 +43,8 @@ enum Perm {
 #define IsLockless 0x40
 
 // Built-in permission types - for implicit (non-declared but known) permissions
+PermAstNode *uniPerm;
 PermAstNode *mutPerm;
-PermAstNode *mmutPerm;
 PermAstNode *immPerm;
 PermAstNode *constPerm;
 PermAstNode *mutxPerm;

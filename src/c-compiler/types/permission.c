@@ -14,8 +14,8 @@
 
 // Declare built-in permission types and their names
 void permDclNames() {
-	newNameDclNodeStr("mut", PermNameDclNode, (AstNode*)(mutPerm = newPermNode(MutPerm, MayRead | MayWrite | RaceSafe | MayIntRefSum | IsLockless, NULL)));
-	newNameDclNodeStr("mmut", PermNameDclNode, (AstNode*)(mmutPerm = newPermNode(MmutPerm, MayRead | MayWrite | MayAlias | MayAliasWrite | IsLockless, NULL)));
+	newNameDclNodeStr("uni", PermNameDclNode, (AstNode*)(uniPerm = newPermNode(UniPerm, MayRead | MayWrite | RaceSafe | MayIntRefSum | IsLockless, NULL)));
+	newNameDclNodeStr("mut", PermNameDclNode, (AstNode*)(mutPerm = newPermNode(MutPerm, MayRead | MayWrite | MayAlias | MayAliasWrite | IsLockless, NULL)));
 	newNameDclNodeStr("imm", PermNameDclNode, (AstNode*)(immPerm = newPermNode(ImmPerm, MayRead | MayAlias | RaceSafe | MayIntRefSum | IsLockless, NULL)));
 	newNameDclNodeStr("const", PermNameDclNode, (AstNode*)(constPerm = newPermNode(ConstPerm, MayRead | MayAlias | IsLockless, NULL)));
 	newNameDclNodeStr("mutx", PermNameDclNode, (AstNode*)(mutxPerm = newPermNode(MutxPerm, MayRead | MayWrite | MayAlias | MayIntRefSum | IsLockless, NULL)));
@@ -38,8 +38,8 @@ PermAstNode *newPermNode(char ptyp, uint16_t flags, AstNode *locker) {
 // Serialize the AST for a permission
 void permPrint(PermAstNode *node) {
 	switch (node->ptype) {
+	case UniPerm: astFprint("uni "); break;
 	case MutPerm: astFprint("mut "); break;
-	case MmutPerm: astFprint("mmut "); break;
 	case ImmPerm: astFprint("imm "); break;
 	case ConstPerm: astFprint("const "); break;
 	case MutxPerm: astFprint("mutx "); break;
@@ -75,11 +75,11 @@ int permIsSame(PermAstNode *node1, PermAstNode *node2) {
 int permCoerces(PermAstNode *to, PermAstNode *from) {
 	if (permIsSame(to, from) || to==idPerm)
 		return 1;
-	if (from == mutPerm &&
-		(to == constPerm || to == mmutPerm || to == immPerm || to == mutxPerm))
+	if (from == uniPerm &&
+		(to == constPerm || to == mutPerm || to == immPerm || to == mutxPerm))
 		return 1;
 	if (to == constPerm &&
-		(from == mmutPerm || from == immPerm || from == mutxPerm))
+		(from == mutPerm || from == immPerm || from == mutxPerm))
 		return 1;
 	return 0;
 }
