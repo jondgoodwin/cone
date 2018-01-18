@@ -377,6 +377,14 @@ LLVMValueRef genlLocalVar(genl_t *gen, NameDclAstNode *var) {
 	return val;
 }
 
+// Generate an element retrieval
+LLVMValueRef genlElementAddr(genl_t *gen, ElementAstNode *elem) {
+	NameDclAstNode *flddcl = ((NameUseAstNode*)elem->element)->dclnode;
+	LLVMValueRef addrelem = LLVMBuildStructGEP(gen->builder, genlExpr(gen, elem->owner), flddcl->index, &flddcl->namesym->namestr);
+	// LLVMSetIsInBounds(addrelem, 0); // fails for global variables
+	return addrelem;
+}
+
 // Generate an lval pointer
 LLVMValueRef genlLval(genl_t *gen, AstNode *lval) {
 	switch (lval->asttype) {
@@ -384,16 +392,10 @@ LLVMValueRef genlLval(genl_t *gen, AstNode *lval) {
 		return ((NameDclAstNode *)((NameUseAstNode *)lval)->dclnode)->llvmvar;
 	case DerefNode:
 		return genlExpr(gen, ((DerefAstNode *)lval)->exp);
+	case ElementNode:
+		return genlElementAddr(gen, (ElementAstNode*)lval);
 	}
 	return NULL;
-}
-
-// Generate an element retrieval
-LLVMValueRef genlElement(genl_t *gen, ElementAstNode *elem) {
-	NameDclAstNode *flddcl = ((NameUseAstNode*)elem->element)->dclnode;
-	LLVMValueRef addrelem = LLVMBuildStructGEP(gen->builder, genlExpr(gen, elem->owner), flddcl->index, &flddcl->namesym->namestr);
-	LLVMSetIsInBounds(addrelem, 0);
-	return LLVMBuildLoad(gen->builder, addrelem, &flddcl->namesym->namestr);
 }
 
 // Generate a term
@@ -444,7 +446,7 @@ LLVMValueRef genlExpr(genl_t *gen, AstNode *termnode) {
 	case DerefNode:
 		return LLVMBuildLoad(gen->builder, genlExpr(gen, ((DerefAstNode*)termnode)->exp), "deref");
 	case ElementNode:
-		return genlElement(gen, (ElementAstNode*)termnode);
+		return 	LLVMBuildLoad(gen->builder, genlElementAddr(gen, (ElementAstNode*)termnode), "");
 	case OrLogicNode: case AndLogicNode:
 		return genlLogic(gen, (LogicAstNode*)termnode);
 	case NotLogicNode:

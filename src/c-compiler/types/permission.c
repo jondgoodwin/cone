@@ -66,6 +66,16 @@ uint16_t permGetFlags(AstNode *node) {
 	}
 }
 
+// Is Lval mutable
+int permIsMutable(AstNode *lval) {
+	if (lval->asttype == ElementNode) {
+		ElementAstNode *elem = (ElementAstNode *)lval;
+		return MayWrite & permGetFlags(elem->owner) & permGetFlags(elem->element);
+	}
+	else
+		return MayWrite & permGetFlags(lval);
+}
+
 // Are the permissions the same?
 int permIsSame(PermAstNode *node1, PermAstNode *node2) {
 	return node1 == node2;

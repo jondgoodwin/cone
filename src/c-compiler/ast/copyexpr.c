@@ -41,6 +41,7 @@ int isLval(AstNode *node) {
 	switch (node->asttype) {
 	case VarNameUseNode:
 	case DerefNode:
+	case ElementNode:
 		return 1;
 	// future:  [] indexing and .member
 	default: break;
@@ -60,7 +61,7 @@ void assignPass(AstPass *pstate, AssignAstNode *node) {
 			errorMsgNode(node->lval, ErrorBadLval, "Expression to left of assignment must be lval");
 		else if (!typeCoerces(node->lval, &node->rval))
 			errorMsgNode(node->rval, ErrorInvType, "Expression's type does not match lval's type");
-		else if (!(MayWrite & permGetFlags(node->lval)))
+		else if (!permIsMutable(node->lval))
 			errorMsgNode(node->lval, ErrorNoMut, "You do not have permission to modify lval");
 		else
 			handleCopy(pstate, node->rval);

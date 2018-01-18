@@ -54,6 +54,7 @@ void permDclNames();
 PermAstNode *newPermNode(char ptyp, uint16_t flags, AstNode *locker);
 void permPrint(PermAstNode *node);
 uint16_t permGetFlags(AstNode *node);
+int permIsMutable(AstNode *lval);
 int permIsSame(PermAstNode *node1, PermAstNode *node2);
 int permCoerces(PermAstNode *node1, PermAstNode *node2);
 
