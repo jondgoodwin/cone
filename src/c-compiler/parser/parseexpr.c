@@ -147,7 +147,10 @@ AstNode *parsePostfix() {
 				node = (AstNode *)fncall;
 			}
 			else {
-				assert(0 && "Add logic to handle object member with no parameters!");
+				ElementAstNode *elem = newElementAstNode();
+				elem->owner = node;
+				elem->element = method;
+				node = (AstNode *)elem;
 			}
 		}
 

@@ -388,6 +388,14 @@ LLVMValueRef genlLval(genl_t *gen, AstNode *lval) {
 	return NULL;
 }
 
+// Generate an element retrieval
+LLVMValueRef genlElement(genl_t *gen, ElementAstNode *elem) {
+	NameDclAstNode *flddcl = ((NameUseAstNode*)elem->element)->dclnode;
+	LLVMValueRef addrelem = LLVMBuildStructGEP(gen->builder, genlExpr(gen, elem->owner), flddcl->index, &flddcl->namesym->namestr);
+	LLVMSetIsInBounds(addrelem, 0);
+	return LLVMBuildLoad(gen->builder, addrelem, &flddcl->namesym->namestr);
+}
+
 // Generate a term
 LLVMValueRef genlExpr(genl_t *gen, AstNode *termnode) {
 	switch (termnode->asttype) {
@@ -399,9 +407,18 @@ LLVMValueRef genlExpr(genl_t *gen, AstNode *termnode) {
 	{
 		// Load from a variable. If pointer, do a load otherwise assume it is the (immutable) value
 		LLVMValueRef varval = ((NameUseAstNode *)termnode)->dclnode->llvmvar;
-		if (LLVMGetTypeKind(LLVMTypeOf(varval)) == LLVMPointerTypeKind) {
-			char *name = &((NameUseAstNode *)termnode)->dclnode->namesym->namestr;
-			return LLVMBuildLoad(gen->builder, varval, name);
+		LLVMTypeRef vartype = LLVMTypeOf(varval);
+		if (LLVMGetTypeKind(vartype) == LLVMPointerTypeKind) {
+			switch (LLVMGetTypeKind(LLVMGetElementType(vartype))) {
+			case LLVMStructTypeKind:
+			case LLVMArrayTypeKind:
+				return varval;
+			default:
+			{
+				char *name = &((NameUseAstNode *)termnode)->dclnode->namesym->namestr;
+				return LLVMBuildLoad(gen->builder, varval, name);
+			}
+			}
 		}
 		else
 			return varval;
@@ -426,6 +443,8 @@ LLVMValueRef genlExpr(genl_t *gen, AstNode *termnode) {
 	}
 	case DerefNode:
 		return LLVMBuildLoad(gen->builder, genlExpr(gen, ((DerefAstNode*)termnode)->exp), "deref");
+	case ElementNode:
+		return genlElement(gen, (ElementAstNode*)termnode);
 	case OrLogicNode: case AndLogicNode:
 		return genlLogic(gen, (LogicAstNode*)termnode);
 	case NotLogicNode:

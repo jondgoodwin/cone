@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
+#include <assert.h>
 
 // State for astPrint
 FILE *astfile;
@@ -83,6 +84,8 @@ void astPrintNode(AstNode *node) {
 		castPrint((CastAstNode *)node); break;
 	case DerefNode:
 		derefPrint((DerefAstNode *)node); break;
+	case ElementNode:
+		elementPrint((ElementAstNode *)node); break;
 	case AddrNode:
 		addrPrint((AddrAstNode *)node); break;
 	case NotLogicNode: case OrLogicNode: case AndLogicNode:
@@ -147,6 +150,8 @@ void astPass(AstPass *pstate, AstNode *node) {
 		castPass(pstate, (CastAstNode *)node); break;
 	case DerefNode:
 		derefPass(pstate, (DerefAstNode *)node); break;
+	case ElementNode:
+		elementPass(pstate, (ElementAstNode *)node); break;
 	case AddrNode:
 		addrPass(pstate, (AddrAstNode *)node); break;
 	case NotLogicNode:
@@ -168,7 +173,7 @@ void astPass(AstPass *pstate, AstNode *node) {
 	case VoidType:
 		break;
 	default:
-		puts("**** ERROR **** Attempting to check an unknown node");
+		assert(0 && "**** ERROR **** Attempting to check an unknown node");
 	}
 }
 

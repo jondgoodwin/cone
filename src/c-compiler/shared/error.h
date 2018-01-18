@@ -54,6 +54,7 @@ enum ErrorCode {
 	ErrorNotLval,	// Not an lval
 	ErrorAddr,		// Invalid expr to get an addr (&) of
 	ErrorBadPerm,	// Permission not allowed
+	ErrorNoFlds,	// Expression's type does not support fields
 
 	// Warnings
 	WarnCode = 3000,

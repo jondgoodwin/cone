@@ -19,6 +19,12 @@ typedef struct DerefAstNode {
 	AstNode *exp;
 } DerefAstNode;
 
+typedef struct ElementAstNode {
+	TypedAstHdr;
+	AstNode *owner;
+	AstNode *element;
+} ElementAstNode;
+
 // Logic operator: not, or, and
 typedef struct LogicAstNode {
 	TypedAstHdr;
@@ -33,6 +39,10 @@ void castPass(AstPass *pstate, CastAstNode *node);
 DerefAstNode *newDerefAstNode();
 void derefPrint(DerefAstNode *node);
 void derefPass(AstPass *pstate, DerefAstNode *node);
+
+ElementAstNode *newElementAstNode();
+void elementPrint(ElementAstNode *node);
+void elementPass(AstPass *pstate, ElementAstNode *node);
 
 LogicAstNode *newLogicAstNode(int16_t typ);
 void logicPrint(LogicAstNode *node);

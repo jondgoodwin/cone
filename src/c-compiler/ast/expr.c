@@ -62,6 +62,45 @@ void derefPass(AstPass *pstate, DerefAstNode *node) {
 	}
 }
 
+// Create a new element node
+ElementAstNode *newElementAstNode() {
+	ElementAstNode *node;
+	newAstNode(node, ElementAstNode, ElementNode);
+	node->vtype = voidType;
+	return node;
+}
+
+// Serialize element
+void elementPrint(ElementAstNode *node) {
+	astPrintNode(node->owner);
+	astFprint(".");
+	astPrintNode(node->element);
+}
+
+// Analyze element node
+void elementPass(AstPass *pstate, ElementAstNode *node) {
+	astPass(pstate, node->owner);
+	if (pstate->pass == TypeCheck) {
+		if (node->element->asttype == FieldNameUseNode) {
+			AstNode *ownvtype = typeGetVtype(node->owner);
+			if (ownvtype->asttype == StructType) {
+				NameUseAstNode *fldname = (NameUseAstNode*)node->element;
+				Symbol *fldsym = fldname->namesym;
+				SymNode *field = inodesFind(((StructAstNode *)ownvtype)->fields, fldsym);
+				if (field) {
+					fldname->asttype = VarNameUseNode;
+					fldname->dclnode = (NameDclAstNode*)field->node;
+					node->vtype = fldname->vtype = fldname->dclnode->vtype;
+				}
+				else
+					errorMsgNode((AstNode*)node, ErrorNoMeth, "The field `%s` is not defined by the object's type.", &fldsym->namestr);
+			}
+			else
+				errorMsgNode(node->element, ErrorNoFlds, "Fields not supported by expression's type");
+		}
+	}
+}
+
 // Create a new logic operator node
 LogicAstNode *newLogicAstNode(int16_t typ) {
 	LogicAstNode *node;
