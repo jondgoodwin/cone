@@ -35,7 +35,7 @@ void ptrTypePass(AstPass *pstate, PtrAstNode *node) {
 	astPass(pstate, node->pvtype);
 }
 
-// Compare two function signatures to see if they are equivalent
+// Compare two pointer signatures to see if they are equivalent
 int ptrTypeEqual(PtrAstNode *node1, PtrAstNode *node2) {
 	return typeIsSame(node1->pvtype,node2->pvtype) 
 		&& permIsSame(node1->perm, node2->perm)

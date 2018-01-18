@@ -68,6 +68,7 @@ NameDclAstNode *newNameDclNode(Symbol *namesym, uint16_t asttype, AstNode *type,
 	name->prev = NULL;
 	name->scope = 0;
 	name->index = 0;
+	name->llvmvar = NULL;
 	return name;
 }
 
@@ -169,9 +170,9 @@ void nameDclVarTypeCheck(AstPass *pstate, NameDclAstNode *name) {
 
 // Check the name declaration's AST
 void nameDclPass(AstPass *pstate, NameDclAstNode *name) {
-	AstNode *vtype = name->vtype;
 	astPass(pstate, (AstNode*)name->perm);
-	astPass(pstate, vtype);
+	astPass(pstate, name->vtype);
+	AstNode *vtype = typeGetVtype(name->vtype);
 
 	// Process nodes in name's initial value/code block
 	switch (pstate->pass) {

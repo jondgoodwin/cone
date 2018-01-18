@@ -112,12 +112,9 @@ void genlModule(genl_t *gen, PgmAstNode *pgm) {
 			}
 			break;
 
+		// No need to generate type declarations: type uses will do so
 		case VtypeNameDclNode:
-		{
-			NameDclAstNode *dclnode = (NameDclAstNode *)nodep;
-			dclnode->llvmvar = genlType(gen, dclnode->value);
 			break;
-		}
 
 		default:
 			assert(0 && "Invalid global area node");

@@ -22,12 +22,9 @@
 #include <stdio.h>
 #include <assert.h>
 
-// Generate a type value
-LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
+// Generate a LLVMTypeRef from a basic type definition node
+LLVMTypeRef _genlType(genl_t *gen, char *name, AstNode *typ) {
 	switch (typ->asttype) {
-	// If it's a name, resolve it to the actual type info
-	case VtypeNameUseNode:
-		return genlType(gen, ((NameUseAstNode *)typ)->dclnode->value);
 	case IntNbrType: case UintNbrType:
 	{
 		switch (((NbrAstNode*)typ)->bits) {
@@ -57,7 +54,7 @@ LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
 
 	case FnSig:
 	{
-		// Building typeref from function signature
+		// Build typeref from function signature
 		FnSigAstNode *fnsig = (FnSigAstNode*)typ;
 		LLVMTypeRef *param_types = (LLVMTypeRef *)memAllocBlk(fnsig->parms->used * sizeof(LLVMTypeRef));
 		LLVMTypeRef *parm = param_types;
@@ -72,7 +69,7 @@ LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
 
 	case StructType:
 	{
-		// Building typeref from struct
+		// Build typeref from struct
 		StructAstNode *strnode = (StructAstNode*)typ;
 		LLVMTypeRef *field_types = (LLVMTypeRef *)memAllocBlk(strnode->fields->used * sizeof(LLVMTypeRef));
 		LLVMTypeRef *field = field_types;
@@ -82,13 +79,29 @@ LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
 			assert(nodesp->node->asttype == VarNameDclNode);
 			*field++ = genlType(gen, ((TypedAstNode *)nodesp->node)->vtype);
 		}
-		return LLVMStructTypeInContext(gen->context, field_types, strnode->fields->used, 0);
+		LLVMTypeRef structype = LLVMStructCreateNamed(gen->context, name);
+		LLVMStructSetBody(structype, field_types, strnode->fields->used, 0);
+		return structype;
 	}
 
 	default:
 		assert(0 && "Invalid vtype to generate");
 		return NULL;
 	}
+}
+
+// Generate a type value
+LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
+	char *name = "";
+	if (typ->asttype == VtypeNameUseNode) {
+		// with vtype name use, we can memoize type value and give it a name
+		NameDclAstNode *dclnode = ((NameUseAstNode*)typ)->dclnode;
+		if (dclnode->llvmvar)
+			return (LLVMTypeRef)dclnode->llvmvar;
+		return (LLVMTypeRef)(dclnode->llvmvar = (LLVMValueRef)_genlType(gen, &dclnode->namesym->namestr, dclnode->value));
+	}
+	else
+		return _genlType(gen, "", typ);
 }
 
 // Generate an if statement
