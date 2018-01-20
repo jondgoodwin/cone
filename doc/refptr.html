@@ -1,6 +1,6 @@
 <html>
   <head>
-	  <title>References and Pointers - Cone Reference</title>
+	  <title>Raw Pointers - Cone Reference</title>
 		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 	  <link rel="stylesheet" type="text/css" href="standard.css" />
@@ -8,235 +8,48 @@
   <body>
 		<div id="header">
 			<a href="/"><div id="title">Cone</div></a>
-			<div id="sub">References and Pointers</div>
+			<div id="sub">Raw Pointers</div>
 		</div>
 
     <div class="text">
 
-	<p>References and pointers enable different parts of a program to access the contents of an object without
-	actually moving the object's contents around. 
-	In many cases, copying around a reference or pointer is faster than copying the object.
-	Furthermore, it is possible to have many different references to the same object,
-	all of them seeing the most current contents of that object.</p>
-	<p>Although they serve a common purpose, references are handled differently than pointers:</p>
+	<p>Although pointers offer a similar capability to references, they are handled quite differently.
+	Pointers offer more power and versatility than references, 
+	but do so without the security of compiler-enforced safety.</p>
+	<p>Specifically:</p>
 	<ul>
-	<li>Use of a <b>reference</b> typically focuses only on the object it references.
-	In fact, a reference is often implicitly understood to just be a stand-in for the object it references.
-	Strict safety rules ensure that references always refer to a valid object of the right type.
-	Because of their safety and convenience, references are typically used more often than pointers.</li>
-	<li>By contrast, use of a <b>pointer</b> may focus on the pointer itself 
-	and the arithmetic operations we can perform on it (e.g., incrementing a pointer).
-	The ability to perform pointer arithmetic is a necessary capability for many algorithms.
-	However, pointer arithmetic carries a notable risk: it is impossible for the language to guarantee 
-	that a pointer always safely points to a valid object.
-	Because of this risk, pointers may only be used within <span class="pre">trust</span> blocks.</li>
-	</ul>
-	
-	<h2>References</h2>
-	
-	<p>The <span class="pre">&</span> operator is used to obtain a reference to a variable's contents.
-	The <span class="pre">*</span> (dereferencing) operator is used to access the contents a reference refers to:</p>
-<pre>
-imm a = 3
-imm ptr = &amp;a    // ptr holds a reference to a's contents
-imm val = *ptr  // val is now 3
-</pre>
-	<p>Despite this seeming simplicity, references are powerful, flexible and fragile.
-	In addition to describing variations on reference use, this chapter also introduces
-	reference use constraints designed to help ensure program safety.</p>
-
-	<h3>Reference Type Declarations</h3>
-	<p>References are value types.
-	Mirroring the <span class="pre">&amp;</span> operator,
-	a reference declaration begins with <span class="pre">&amp;</span>,
-	followed (optionally) by the reference's allocator and permission,
-	and then always ending with the value type of the object being referred to.</p>
-<pre>
-// reference's allocator is gc and permission is mut. Object's value type is Coord
-imm ptr1 &amp;gc mut Coord
-
-imm ptr2 &amp;mut Coord   // omitted allocator is 'borrowed reference'
-imm ptr3 &amp;Coord       // omitted permission is 'const'
-</pre>
-	<p>Due to type inference, explicit reference declarations are often unnecessary on most variable declarations. 
-	However, functions typically do require explicit declaration of references used as parameters or return values.
-	For example:</p>
-<pre>
-// next takes a reference and returns a number
-fn next(x &amp;i32) i32
-  *x + 1
-
-fn caller()
-  imm a = 3
-  next(&amp;a)  // gets back 4
-</pre>
-
-	<h4>Reference Permission</h4>
-	<p>Every reference is given a permission that governs what can be done with it, 
-	such as whether the reference may be copied (aliased) or used to read or modify the object it refers to.
-	The <span class="pre">const</span> permission is the default given to a reference when none is specified.
-	<span class="pre">const</span> grants a reference the ability to view the contents of the object but not change it.</p>
-	<p>If some other permission than <span class="pre">const</span> is desired when
-	creating a new reference using the <span class="pre">&amp;</span> operator,
-	specify it just after the <span class="pre">&amp;</span>:</p>
-<pre>
-mut a = 3
-imm ptr = &amp;mut a  // ptr holds a mutable reference to a's contents
-imm val = *ptr    // val is now 3
-*ptr = 10         // a is now 10. val is still 3.
-</pre>
-	<p>Note that the permission given to the reference may not exceed the permissions granted
-	to the variable that holds the object.
-	Also notice that in this example, the variable 'ptr' that holds the reference is itself immutable
-	(it can only ever refer to 'a'). However, it holds a reference able to change (mutate) 'a'.
-	These are distinct permissions governing different aspects of 'ptr'.</p>
-	
-	<h4>Reference Allocator</h4>
-	<p>A reference may declare the allocator used to create the object and the reference to it.
-	Each allocator watches over the references in its domain, protecting against invalid memory references
-	and automatically freeing objects when they are no longer needed.</p>
-	<p>The initial reference to an object is created by the allocator when the object is created.
-	Making a copy of an allocator-specific reference is as easy as an assignment or an argument on a function call.
-	However, a variable can only hold a reference whose allocator matches the allocator declared by the variable.</p>
-	
-	<h4>Borrowed References</h4>
-	<p>A reference that does <b>not</b> specify an allocator is called a borrowed reference.
-	Borrowed references are lifetime-constrained, which means that a borrowed reference may never
-	outlive the object it refers to. This constraint is enforced by ensuring the lexical scope of the
-	borrowed reference is wholly encompassed by the lexical scope of the reference or object it borrowed from.</p>
-	<p>There are two ways to create a borrowed reference:</p>
-	<ul>
-	<li>Use the <span class="pre">&amp;</span> operator to create a borrowed reference
-	to a global, local or parameter variable.</li>
-	<li>Copy an existing reference into a variable or function parameter declared as a borrowed reference.
-<pre>
-// next takes an allocator-less borrowed reference
-fn next(x &amp;mut i32) i32
-  *x += 1
-
-fn caller()
-  // Allocate a new number
-  imm nbrptr = i32(5)
-  // Pass reference to next (coerced to borrowed reference)
-  next(nbrptr)
-</pre>
-	</li>
-	</ul>
-	
-	<h3>References and Functions</h3>
-	<p>A reference may be created to any function using the <span class="pre">&</span> operator.
-	Later, that reference may be used to call the function it refers to.</p>
-<pre>
-fn incr(x i32) i32
-  x + 1
-
-fn caller()
-  imm fnptr = &amp;incr
-  *fnptr(4)            // returns 5
-</pre>
-	<p>Using a similar technique, it is also possible to make use of anonymous functions:</p>
-<pre>
-fn caller()
-  imm fnptr = &amp;fn (nbr i32) i32 {nbr+1}
-  *fnptr(4)            // returns 5
-</pre>
-	<p>Note that references to functions are lifetime-constrained borrowed references.</p>
-
-	<h3>Automatic Reference Dereferencing</h3>
-	<p>It is not necessary to use the <span class="pre">*</span> dereference operator
-	when applying a method to (or calling) an object referred to by a reference.
-	It will be inferred automatically:</p>
-<pre>
-mut a = -4
-imm ptr = &amp;mut a
-imm y = ptr.abs    // y is 4. Equivalent to: (*ptr).abs
-</pre>
-	
-	<h3>References and Structs</h3>
-	<p>References and Structs intersect in interesting ways.</p>
-	<h4>Interior Reference Within a Struct</h4>
-	<p>The <span class="pre">&amp;</span> may be used to obtain a borrowed reference to a
-	specific member of a struct.
-<pre>
-struct Coord
-  x f32
-  y f32
-  
-imm pos = Coord(3., 2.)
-imm ptr = &amp;pos.y         // ptr is a borrowed reference
-imm y3 = *ptr            // y3 will be 2.0
-</pre>
-
-	<h4>References as members</h4>
-	<p>A struct (or array or sum type) may include one or more references as members.
-	A struct that holds references is not implicitly copyable.
-	To become copyable, it must implement the 'clone' method.
-	Otherwise, attempts to copy it will in fact move it (if allowed).</p>
-	<p>Any type of reference may be held by a struct, assuming the member type declarations match the references assigned.
-	However, if a struct holds a borrowed reference, then it (like its borrowed reference)
-	is lifetime-constrained to survive no longer than any of the borrowed references it holds.</p>
-
-	<h4>Interface/Trait Fat References</h4>
-	<p>If a struct reference is coerced through an interface or trait, a "fat" reference is automatically created.
-	The reference is twice the size of a regular reference, as it holds not only a reference to the object
-	but also a reference to the "vtable" that maps the interface or trait's members/methods
-	to their concrete position in the object's struct.</p>
-	
-	<h3>References and Arrays</h3>
-	<p>As with structs above, the <span class="pre">&amp;</span> operator
-	may be used to obtain a reference to a specific element of an array according to its valid index:</p>
-<pre>
-mut rolls = [3,5,2]
-imm ptr = &amp;rolls[1]
-imm roll = *ptr        // roll = 5
-</pre>
-	<p>To ensure that array references can be constrained to always stay within the boundaries
-	of an array, reference arithmetic can only be performed within a <span class="pre">trust</span> block.
-	However, arrays offer built-in mechanisms like iterators and slices
-	that make it possible to safely focus attention on a specific but changeable
-	set of array elements.</p>
-
-	<h3>References and Sum Types</h3>
-	<p>The <span class="pre">&amp;</span> operator may not be used to safely refer 
-	to an interior value within a sum type, due to the potential for structural changes to the sum typed
-	object that invalidate the value being refered to.
-	The sum type's pattern matching facilities must be used to get such a borrowed reference,
-	as the lifetime constraints on the match block and the object's permissions avoid
-	the possibility of reference misfires due to structural changes.</p>
-	
-	<h3>Lifetime Annotations</h3>
-	<p>TBD. Only apply to borrowed references. Two scenarios.</p>
-	
-	<h2>Pointers</h2>
-	<p>As mentioned earlier, pointers are handled differently than references:
-	<ul>
-	<li>Pointers are declared using the <span class="pre">*</span> operator.</li>
-	<li>Similar to borrowed references, pointers never belong to an allocator and are never managed by one.</li>
+	<li>Pointers are declared using <span class="pre">*</span> 
+	(rather than <span class="pre">&amp;</span> for references).</li>
 	<li>Pointers are never automatically dereferenced.
 	The <span class="pre">*</span> operator must be explicitly used to view or change the object it points to.</li>
 	<li>Pointers may only be used within a trust block.</li>
-	<li>No memory safety mechanisms, such as lifetime constraints, are applied to pointers.
-	Using pointers safely is solely the responsibility of the programmer.</li>
+	<li>Like borrowed references, pointers never belong to an allocator nor are managed by one.</li>
+	<li>Using pointers safely is solely the responsibility of the programmer.
+	No memory safety enforcement mechanisms, such as lifetime constraints, apply to pointers.</li>
 	</ul>
-	<h3>Pointer Conversions</h3>
-	<p>Pointers are always created by copying (coercing) a reference.
-	Pointer creation need not happen within a trust block:</p>
+
+	<h2>Pointer Creation</h2>
+	<p>A pointer is typically created by copying (coercing) a reference.
+	Such pointer creation need not happen within a trust block:</p>
 <pre>
 imm nbr = 3
 imm nbrptr *mut i32 = &amp;nbr   // Create a pointer from a reference
 trust
     *nbrptr = 4    // trust block required to use the pointer
 </pre>
-	<p>Within a trust block, a pointer can be used to overwrite a reference:</p>
+	<p>The reverse is also possible, going from a pointer back to a reference.
+	</p>
 <pre>
 trust
     val.nbrref = nbrptr
 </pre>
-	<p>The only type checks performed here are for matching value type and permissions.
-	No attempt is made to validate the pointer (or reference) points to a valid object
+	<p>However, this must be done within a trust block because the usual safety checks are not performed.
+	The only type checks performed are for matching value type and permissions.
+	No attempt is made to verify that the pointer (or reference) points to a valid object
 	nor that it is managed by the reference's allocator.</p>
+	<p>Another way to create a pointer is to call an FFI function that returns a pointer.</p>
 	
-	<h3>Pointer Arithmetic</h3>
+	<h2>Pointer Arithmetic</h2>
 	<p>Pointers support addition and subtraction with unsigned integers.
 	The integer dispacement is automatically multipled by the byte size of the object pointed to.</p>
 	
@@ -251,7 +64,7 @@ trust
 	<p>Additionally, two pointers may be subtracted from each other or compared.</p>
 	
 	<p style="text-align: right; margin-top: 2em;">
-		<a href="refperm.html"><img alt="_" src="next.png" /></a>
+		<a href="refconcur.html"><img alt="_" src="next.png" /></a>
 	</p>
 
 	</div>
