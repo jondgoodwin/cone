@@ -48,8 +48,8 @@ LLVMTypeRef _genlType(genl_t *gen, char *name, AstNode *typ) {
 
 	case RefType:
 	{
-		PtrAstNode *ptype = (PtrAstNode *)typ;
-		return LLVMPointerType(genlType(gen, ptype->pvtype), 0);
+		LLVMTypeRef pvtype = genlType(gen, ((PtrAstNode *)typ)->pvtype);
+		return LLVMPointerType(pvtype, 0);
 	}
 
 	case FnSig:
@@ -377,23 +377,19 @@ LLVMValueRef genlLocalVar(genl_t *gen, NameDclAstNode *var) {
 	return val;
 }
 
-// Generate an element retrieval
-LLVMValueRef genlElementAddr(genl_t *gen, ElementAstNode *elem) {
-	NameDclAstNode *flddcl = ((NameUseAstNode*)elem->element)->dclnode;
-	LLVMValueRef addrelem = LLVMBuildStructGEP(gen->builder, genlExpr(gen, elem->owner), flddcl->index, &flddcl->namesym->namestr);
-	// LLVMSetIsInBounds(addrelem, 0); // fails for global variables
-	return addrelem;
-}
-
 // Generate an lval pointer
 LLVMValueRef genlLval(genl_t *gen, AstNode *lval) {
 	switch (lval->asttype) {
 	case VarNameUseNode:
-		return ((NameDclAstNode *)((NameUseAstNode *)lval)->dclnode)->llvmvar;
+		return ((NameUseAstNode *)lval)->dclnode->llvmvar;
 	case DerefNode:
 		return genlExpr(gen, ((DerefAstNode *)lval)->exp);
 	case ElementNode:
-		return genlElementAddr(gen, (ElementAstNode*)lval);
+	{
+		ElementAstNode *elem = (ElementAstNode *)lval;
+		NameDclAstNode *flddcl = ((NameUseAstNode*)elem->element)->dclnode;
+		return LLVMBuildStructGEP(gen->builder, genlLval(gen, elem->owner), flddcl->index, &flddcl->namesym->namestr);
+	}
 	}
 	return NULL;
 }
@@ -407,23 +403,8 @@ LLVMValueRef genlExpr(genl_t *gen, AstNode *termnode) {
 		return LLVMConstReal(genlType(gen, ((ULitAstNode*)termnode)->vtype), ((FLitAstNode*)termnode)->floatlit);
 	case VarNameUseNode:
 	{
-		// Load from a variable. If pointer, do a load otherwise assume it is the (immutable) value
-		LLVMValueRef varval = ((NameUseAstNode *)termnode)->dclnode->llvmvar;
-		LLVMTypeRef vartype = LLVMTypeOf(varval);
-		if (LLVMGetTypeKind(vartype) == LLVMPointerTypeKind) {
-			switch (LLVMGetTypeKind(LLVMGetElementType(vartype))) {
-			case LLVMStructTypeKind:
-			case LLVMArrayTypeKind:
-				return varval;
-			default:
-			{
-				char *name = &((NameUseAstNode *)termnode)->dclnode->namesym->namestr;
-				return LLVMBuildLoad(gen->builder, varval, name);
-			}
-			}
-		}
-		else
-			return varval;
+		NameDclAstNode *vardcl = ((NameUseAstNode *)termnode)->dclnode;
+		return LLVMBuildLoad(gen->builder, vardcl->llvmvar, &vardcl->namesym->namestr);
 	}
 	case FnCallNode:
 		return genlFnCall(gen, (FnCallAstNode*)termnode);
@@ -446,7 +427,11 @@ LLVMValueRef genlExpr(genl_t *gen, AstNode *termnode) {
 	case DerefNode:
 		return LLVMBuildLoad(gen->builder, genlExpr(gen, ((DerefAstNode*)termnode)->exp), "deref");
 	case ElementNode:
-		return 	LLVMBuildLoad(gen->builder, genlElementAddr(gen, (ElementAstNode*)termnode), "");
+	{
+		ElementAstNode *elem = (ElementAstNode*)termnode;
+		NameDclAstNode *flddcl = ((NameUseAstNode*)elem->element)->dclnode;
+		return LLVMBuildExtractValue(gen->builder, genlExpr(gen, elem->owner), flddcl->index, &flddcl->namesym->namestr);
+	}
 	case OrLogicNode: case AndLogicNode:
 		return genlLogic(gen, (LogicAstNode*)termnode);
 	case NotLogicNode:
