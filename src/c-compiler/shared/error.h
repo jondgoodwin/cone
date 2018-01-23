@@ -13,6 +13,7 @@ typedef struct AstNode AstNode;	// ../ast/ast.h
 // Exit error codes
 enum ErrorCode {
 	// Terminating errors
+	ExitSuccess,
 	ExitError,	// Program fails to compile due to caught errors
 	ExitNF,		// Could not find specified source files
 	ExitMem,	// Out of memory

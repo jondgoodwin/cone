@@ -4,7 +4,7 @@ set(CMAKE_BINARY_DIR ${CMAKE_SOURCE_DIR}/bin)
 set(EXECUTABLE_OUTPUT_PATH ${CMAKE_SOURCE_DIR})
 set(LIBRARY_OUTPUT_PATH ${CMAKE_BINARY_DIR})
 
-SET (LLVM_HOME "/usr/lib/llvm-5.0/lib")
+SET (LLVM_HOME "/usr/lib/llvm-5.0")
 SET (LLVM_LIB "libLLVM-5.0.so")
 
 include_directories(
