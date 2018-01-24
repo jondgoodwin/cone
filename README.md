@@ -58,10 +58,10 @@ When finished, Cone will support these features:
 
 ## Documentation and Examples
 
- - [Cone Language Reference][coneref] (under development)
+ - [Cone Language Reference][coneref]
  - [Showcase][showcase]
- - Web-based playground (TBD)
- - Example code (TBD)
+ - [Web-based playground][playground]
+ - [Example code][examples]
 
 Note: Cone will strongly resemble its dynamically-typed cousin [Acorn][acorn],
 which has its own [reference documentation][acornref].
@@ -104,6 +104,8 @@ See LICENSE and COPYRIGHT for details.
 [plan]: https://github.com/jondgoodwin/cone/blob/master/PLAN.md
 [coneref]: http://web3d.jondgoodwin.com/cone
 [showcase]: http://web3d.jondgoodwin.com/cone/showcase.html
+[playground]: http://playground.jondgoodwin.com/acorn
+[examples]: http://github.com/jondgoodwin/cone/tree/master/text
 [acorn]: https://github.com/jondgoodwin/acornvm
 [acornref]: http://web3d.jondgoodwin.com/acorn
 [llvm]: https://llvm.org/
