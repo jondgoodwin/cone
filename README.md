@@ -104,7 +104,7 @@ See LICENSE and COPYRIGHT for details.
 [plan]: https://github.com/jondgoodwin/cone/blob/master/PLAN.md
 [coneref]: http://web3d.jondgoodwin.com/cone
 [showcase]: http://web3d.jondgoodwin.com/cone/showcase.html
-[playground]: http://playground.jondgoodwin.com/acorn
+[playground]: http://playcone.jondgoodwin.com
 [examples]: http://github.com/jondgoodwin/cone/tree/master/text
 [acorn]: https://github.com/jondgoodwin/acornvm
 [acornref]: http://web3d.jondgoodwin.com/acorn
