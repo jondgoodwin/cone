@@ -188,7 +188,7 @@ LLVMValueRef genlFnCall(genl_t *gen, FnCallAstNode *fncall) {
 
 	// A function call may be to an internal op code, or to program-defined code
 	NameUseAstNode *fnuse = (NameUseAstNode *)fncall->fn;
-	switch (fnuse->dclnode->value->asttype) {
+	switch (fnuse->dclnode->value? fnuse->dclnode->value->asttype : BlockNode) {
 	case BlockNode: {
 		char *fnname = &fnuse->dclnode->namesym->namestr;
 		return LLVMBuildCall(gen->builder, LLVMGetNamedFunction(gen->module, fnname), fnargs, fncall->parms->used, "");

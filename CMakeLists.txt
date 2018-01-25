@@ -51,3 +51,7 @@ add_executable(cone
 )
 
 target_link_libraries(cone "${LLVM_HOME}/lib/${LLVM_LIB}")
+
+add_library(conestd
+	src/conestd/stdio.c
+)
