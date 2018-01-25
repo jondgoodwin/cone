@@ -7,64 +7,56 @@ and programmer flexibility and convenience.
 The Cone compiler is currently under development and in very early stages.
 The current status and next steps are documented in [PLAN.md][plan].
 
+## Documentation and Examples
+
+ - [Cone Language Reference][coneref]
+ - [Showcase][showcase]
+ - [Web-based playground][playground], using pre-built gists:
+   - [Calculating pi][pi]
+
+Note: Cone resembles its dynamically-typed cousin [Acorn][acorn],
+which has its own [reference documentation][acornref].
+
 ## Language Features
 
 When finished, Cone will support these features:
 
 - Readable, modular marriage of 3D content and behavior:
-  - 'this' blocks and operators for specifying static or runtime content
-  - @ operator for snap-together inclusion of Internet-hosted content
-  - Content iterators and 'each' control block
-- Url-based packaging and resource handling:
-  - Dynamic, asynchronous-capable resource loading
-  - Extensible url schemes and content type de-serialization
-  - Programs are treated as dynamically loadable resources
-  - Automatic resource unzip and de-compression
-  - Relative url addressing
-- Memory, type, and concurrency safe
-- [Gradual memory management][gmm]
-  - Supports use of multiple GCs in one program
-  - Static allocators: stack and Rust-like lexical GC
-  - Runtime GCs: reference counting and tracing GC
-  - Object pools and arenas
-  - Lifetime-checked borrowed references
-- Robust type system
-  - Sum types, structs, arrays, slices, ranges, aliases
-  - Type inference
-  - Structural and nominative typing
-- Modules, Interfaces, Generics and Classes
-  - Multiple inheritance
-  - Method override and super
-  - Operator overloading
-  - Computable properties (get/set functions and closures)
+  - Simple, outline-like declarative syntax for content
+  - Procedural generation and behavior interwoven in content
+  - Snap-together, Internet-hosted, url-located parts
+- Compile-time memory, type, and concurrency safety checks
+- [Gradual memory management][gmm]: safely manage memory your way
+  - Lexical, single-owner strategy for performance
+  - Ref-counted or tracing GC for flexibility
+  - Lifetime-constrained references for performance/simplicity
+  - Custom allocators (pools/arenas) for performance
 - Lightweight concurrency
   - Co-routines, threads and actors
   - Lockless and locked permissions for safe data sharing
-- Functions, Methods and Closures
-  - Variadic parameters and multiple return values
-  - Implicit return and tail-call optimization
-- Extensible pattern matching:
+- Robust type system
+  - Sum types, structs, arrays, slices, ranges, aliases
+  - struct subtyping via trait, interface, & parent inheritance
+  - Attach methods to any type
+- Modules, macros, templates and meta-programming
+- Extensible pattern matching
   - Type-defined '~~' match operator
   - 'match' blocks using custom match methods
   - Content extraction during matching
+- Functions, Methods and Closures
+  - Multiple return values and implicit return
+  - Computed properties
 - 'do' block for context management
 - Concise, readable code:
   - 'this'-implied prefix operators for method cascading, etc.
+  - Operator overloading
   - Control clauses for 'if', 'while', 'each'
+  - Type inference
   - Parallel assignment
   - Auto-detected off-side rule
+  - Blocks and 'if' are expressions
 - Unicode-aware (UTF8) text strings and variable names
 - Fast compilation and convenient packaging
-
-## Documentation and Examples
-
- - [Cone Language Reference][coneref]
- - [Showcase][showcase]
- - [Web-based playground][playground]
- - [Example code][examples]
-
-Note: Cone will strongly resemble its dynamically-typed cousin [Acorn][acorn],
-which has its own [reference documentation][acornref].
 
 ## Building (Windows)
 
@@ -109,3 +101,5 @@ See LICENSE and COPYRIGHT for details.
 [acorn]: https://github.com/jondgoodwin/acornvm
 [acornref]: http://web3d.jondgoodwin.com/acorn
 [llvm]: https://llvm.org/
+
+[pi]: http://playcone.jondgoodwin.com/?gist=4510655502edcde9d50d185cfd7f3c2e
