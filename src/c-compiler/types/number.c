@@ -40,7 +40,7 @@ void nbrDclNames() {
 	strArr->size = 0;
 	strArr->elemtype = (AstNode*)u8Type;
 	strType = newPtrTypeNode();
-	strType->pvtype = (AstNode*)strArr;
+	strType->pvtype = (AstNode*)/*strArr*/u8Type;
 	strType->perm = immPerm;
 	strType->alloc = NULL;
 	strType->scope = 0;

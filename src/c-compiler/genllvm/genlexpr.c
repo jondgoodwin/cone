@@ -411,7 +411,12 @@ LLVMValueRef genlExpr(genl_t *gen, AstNode *termnode) {
 	case SLitNode:
 	{
 		char *strlit = ((SLitAstNode *)termnode)->strlit;
-		return LLVMConstStringInContext(gen->context, strlit, strlen(strlit), 0);
+		uint32_t size = strlen(strlit);
+		LLVMValueRef sglobal = LLVMAddGlobal(gen->module, LLVMArrayType(LLVMInt8TypeInContext(gen->context), size), "string");
+		LLVMSetLinkage(sglobal, LLVMInternalLinkage);
+		LLVMSetGlobalConstant(sglobal, 1);
+		LLVMSetInitializer(sglobal, LLVMConstStringInContext(gen->context, strlit, size, 1));
+		return LLVMBuildStructGEP(gen->builder, sglobal, 0, "");
 	}
 	case VarNameUseNode:
 	{
