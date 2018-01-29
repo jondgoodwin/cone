@@ -36,8 +36,11 @@ void nbrDclNames() {
 	newNameDclNodeStr("f64", VtypeNameDclNode, (AstNode*)(f64Type = newNbrTypeNode(FloatNbrType, 64)));
 
 	// Reference to a literal string
+	ArrayAstNode *strArr = newArrayNode();
+	strArr->size = 0;
+	strArr->elemtype = (AstNode*)u8Type;
 	strType = newPtrTypeNode();
-	strType->pvtype = (AstNode*)u8Type;
+	strType->pvtype = (AstNode*)strArr;
 	strType->perm = immPerm;
 	strType->alloc = NULL;
 	strType->scope = 0;

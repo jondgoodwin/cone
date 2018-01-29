@@ -182,12 +182,30 @@ AstNode *parsePtrType() {
 	return (AstNode *)ptype;
 }
 
+// Parse an array type
+AstNode *parseArrayType() {
+	ArrayAstNode *atype = newArrayNode();
+	lexNextToken();
+
+	atype->size = 0;
+	lexNextToken(); // closing bracket - assume no size for now
+
+	if ((atype->elemtype = parseVtype()) == NULL) {
+		errorMsgLex(ErrorNoVtype, "Missing value type for the array element");
+		atype->elemtype = voidType;
+	}
+
+	return (AstNode *)atype;
+}
+
 // Parse a value type signature. Return NULL if none found.
 AstNode* parseVtype() {
 	AstNode *vtype;
 	switch (lex->toktype) {
 	case AmperToken:
 		return parsePtrType();
+	case LBracketToken:
+		return parseArrayType();
 	case IdentToken:
 		vtype = (AstNode*)newNameUseNode(lex->val.ident);
 		lexNextToken();

@@ -56,6 +56,8 @@ enum TokenTypes {
 	SemiToken,			// ';'
 	LCurlyToken,		// '{'
 	RCurlyToken,		// '}'
+	LBracketToken,		// '['
+	RBracketToken,		// ']'
 	LParenToken,		// '('
 	RParenToken,		// ')'
 	CommaToken,			// ','

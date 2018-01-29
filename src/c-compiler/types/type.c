@@ -111,6 +111,8 @@ int typeCoerces(AstNode *to, AstNode **from) {
 	switch (to->asttype) {
 	case RefType:
 		return ptrTypeCoerces((PtrAstNode*)to, (PtrAstNode*)fromtype);
+	case ArrayType:
+		return arrayCoerces((ArrayAstNode*)to, (ArrayAstNode*)fromtype);
 	default:
 		return 0;
 	}

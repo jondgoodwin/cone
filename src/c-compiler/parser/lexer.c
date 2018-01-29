@@ -450,21 +450,12 @@ void lexNextToken() {
 				lexReturnPuncTok(GtToken, 1);
 			}
 
-		// '{'
-		case '{':
-			lexReturnPuncTok(LCurlyToken, 1);
-
-		// '}'
-		case '}':
-			lexReturnPuncTok(RCurlyToken, 1);
-
-		// '('
-		case '(':
-			lexReturnPuncTok(LParenToken, 1);
-
-		// ')'
-		case ')':
-			lexReturnPuncTok(RParenToken, 1);
+		case '{': lexReturnPuncTok(LCurlyToken, 1);
+		case '}': lexReturnPuncTok(RCurlyToken, 1);
+		case '[': lexReturnPuncTok(LBracketToken, 1);
+		case ']': lexReturnPuncTok(RBracketToken, 1);
+		case '(': lexReturnPuncTok(LParenToken, 1);
+		case ')': lexReturnPuncTok(RParenToken, 1);
 
 		// ';'
 		case ';':

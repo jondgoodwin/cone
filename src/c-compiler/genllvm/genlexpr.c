@@ -85,6 +85,12 @@ LLVMTypeRef _genlType(genl_t *gen, char *name, AstNode *typ) {
 		return structype;
 	}
 
+	case ArrayType:
+	{
+		ArrayAstNode *anode = (ArrayAstNode*)typ;
+		return LLVMArrayType(genlType(gen, anode->elemtype), anode->size);
+	}
+
 	default:
 		assert(0 && "Invalid vtype to generate");
 		return NULL;
