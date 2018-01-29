@@ -12,7 +12,10 @@ The current status and next steps are documented in [PLAN.md][plan].
  - [Cone Language Reference][coneref]
  - [Showcase][showcase]
  - [Web-based playground][playground], using pre-built gists:
+   - [Hello, world!][hello]
    - [Calculating pi][pi]
+   - [Permissions][perm]
+   - [Structs][struct]
 
 Note: Cone resembles its dynamically-typed cousin [Acorn][acorn],
 which has its own [reference documentation][acornref].
@@ -102,4 +105,7 @@ See LICENSE and COPYRIGHT for details.
 [acornref]: http://web3d.jondgoodwin.com/acorn
 [llvm]: https://llvm.org/
 
+[hello]: http://playcone.jondgoodwin.com/?gist=f55a8caa2605a11223437167730c53af
 [pi]: http://playcone.jondgoodwin.com/?gist=4510655502edcde9d50d185cfd7f3c2e
+[perm]: http://playcone.jondgoodwin.com/?gist=96ecaecb4827c2b9e6aaad35feb2bfd1
+[struct]: http://playcone.jondgoodwin.com/?gist=cd702c7c1ffc8f97d7762735d04fd9de
