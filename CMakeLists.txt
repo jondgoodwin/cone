@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 2.8)
-project(cone)
+project(conec)
 set(CMAKE_BINARY_DIR ${CMAKE_SOURCE_DIR}/bin)
 set(EXECUTABLE_OUTPUT_PATH ${CMAKE_SOURCE_DIR})
 set(LIBRARY_OUTPUT_PATH ${CMAKE_BINARY_DIR})
@@ -12,8 +12,8 @@ include_directories(
     "${LLVM_HOME}/include"
 )
 
-add_executable(cone 
-	src/c-compiler/cone.c
+add_executable(conec 
+	src/c-compiler/conec.c
 	src/c-compiler/coneopts.c
 
 	src/c-compiler/shared/options.c
@@ -51,7 +51,7 @@ add_executable(cone
 	src/c-compiler/genllvm/genlexpr.c
 )
 
-target_link_libraries(cone "${LLVM_HOME}/lib/${LLVM_LIB}")
+target_link_libraries(conec "${LLVM_HOME}/lib/${LLVM_LIB}")
 
 add_library(conestd
 	src/conestd/stdio.c

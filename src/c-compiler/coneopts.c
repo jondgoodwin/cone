@@ -5,7 +5,7 @@
  * See Copyright Notice in conec.h
 */
 
-#include "cone.h"
+#include "conec.h"
 #include "coneopts.h"
 #include "shared/options.h"
 
