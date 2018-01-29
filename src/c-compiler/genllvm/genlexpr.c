@@ -411,7 +411,7 @@ LLVMValueRef genlExpr(genl_t *gen, AstNode *termnode) {
 	case SLitNode:
 	{
 		char *strlit = ((SLitAstNode *)termnode)->strlit;
-		uint32_t size = strlen(strlit);
+		uint32_t size = strlen(strlit)+1;
 		LLVMValueRef sglobal = LLVMAddGlobal(gen->module, LLVMArrayType(LLVMInt8TypeInContext(gen->context), size), "string");
 		LLVMSetLinkage(sglobal, LLVMInternalLinkage);
 		LLVMSetGlobalConstant(sglobal, 1);
