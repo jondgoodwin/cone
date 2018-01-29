@@ -94,6 +94,8 @@ void astPrintNode(AstNode *node) {
 		ulitPrint((ULitAstNode *)node); break;
 	case FLitNode:
 		flitPrint((FLitAstNode *)node); break;
+	case SLitNode:
+		slitPrint((SLitAstNode *)node); break;
 	case FnSig:
 		fnSigPrint((FnSigAstNode *)node); break;
 	case RefType:
@@ -168,6 +170,7 @@ void astPass(AstPass *pstate, AstNode *node) {
 	case FieldNameUseNode:
 	case ULitNode:
 	case FLitNode:
+	case SLitNode:
 	case IntNbrType: case UintNbrType: case FloatNbrType:
 	case PermType:
 	case VoidType:

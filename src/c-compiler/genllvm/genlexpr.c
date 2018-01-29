@@ -20,6 +20,7 @@
 #include <llvm-c/Transforms/Scalar.h>
 
 #include <stdio.h>
+#include <string.h>
 #include <assert.h>
 
 // Generate a LLVMTypeRef from a basic type definition node
@@ -401,6 +402,11 @@ LLVMValueRef genlExpr(genl_t *gen, AstNode *termnode) {
 		return LLVMConstInt(genlType(gen, ((ULitAstNode*)termnode)->vtype), ((ULitAstNode*)termnode)->uintlit, 0);
 	case FLitNode:
 		return LLVMConstReal(genlType(gen, ((ULitAstNode*)termnode)->vtype), ((FLitAstNode*)termnode)->floatlit);
+	case SLitNode:
+	{
+		char *strlit = ((SLitAstNode *)termnode)->strlit;
+		return LLVMConstStringInContext(gen->context, strlit, strlen(strlit), 0);
+	}
 	case VarNameUseNode:
 	{
 		NameDclAstNode *vardcl = ((NameUseAstNode *)termnode)->dclnode;

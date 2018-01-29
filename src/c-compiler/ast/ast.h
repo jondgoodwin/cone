@@ -70,6 +70,7 @@ enum AstType {
 	FieldNameUseNode,	// Member of a namespace
 	ULitNode,		// Integer literal
 	FLitNode,		// Float literal
+	SLitNode,		// String literal
 	AssignNode,		// Assignment expression
 	FnCallNode,		// Function call
 	CastNode,		// Cast exp to another type

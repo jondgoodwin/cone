@@ -34,6 +34,13 @@ void nbrDclNames() {
 	newNameDclNodeStr("i64", VtypeNameDclNode, (AstNode*)(i64Type = newNbrTypeNode(IntNbrType, 64)));
 	newNameDclNodeStr("f32", VtypeNameDclNode, (AstNode*)(f32Type = newNbrTypeNode(FloatNbrType, 32)));
 	newNameDclNodeStr("f64", VtypeNameDclNode, (AstNode*)(f64Type = newNbrTypeNode(FloatNbrType, 64)));
+
+	// Reference to a literal string
+	strType = newPtrTypeNode();
+	strType->pvtype = (AstNode*)u8Type;
+	strType->perm = immPerm;
+	strType->alloc = NULL;
+	strType->scope = 0;
 }
 
 // Create a new primitive number type node

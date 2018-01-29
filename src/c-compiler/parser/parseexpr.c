@@ -68,6 +68,12 @@ AstNode *parseTerm() {
 			lexNextToken();
 			return (AstNode *)node;
 		}
+	case StrLitToken:
+		{
+			SLitAstNode *node = newSLitNode(lex->val.strlit, lex->langtype);
+			lexNextToken();
+			return (AstNode *)node;
+		}
 	case IdentToken:
 		{
 			NameUseAstNode *node = newNameUseNode(lex->val.ident);

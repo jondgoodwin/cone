@@ -123,6 +123,31 @@ void lexScanChar(char *srcp) {
 	lex->srcp = srcp;
 }
 
+void lexScanString(char *srcp) {
+	lex->tokp = srcp++;
+
+	// Conservatively count the size of the string
+	uint32_t srclen = 0;
+	while (*srcp != '"') {
+		srclen++;
+		srcp++;
+	}
+
+	// Build string literal
+	char *newp = memAllocStr(NULL, srclen);
+	lex->val.strlit = newp;
+	srcp = lex->tokp+1;
+	while (*srcp != '"') {
+		*newp++ = *srcp++;
+	}
+	*newp = '\0';
+	srcp++;
+
+	lex->langtype = (AstNode*)strType;
+	lex->toktype = StrLitToken;
+	lex->srcp = srcp;
+}
+
 /** Tokenize an integer or floating point number */
 void lexScanNumber(char *srcp) {
 
@@ -324,9 +349,14 @@ void lexNextToken() {
 			lexScanNumber(srcp);
 			return;
 
-		// ' ' - single character surrounded with single ticks
+		// ' ' - single character surrounded with single quotes
 		case '\'':
 			lexScanChar(srcp);
+			return;
+
+		// " " - string surrounded with double quotes
+		case '"':
+			lexScanString(srcp);
 			return;
 
 		// Identifier

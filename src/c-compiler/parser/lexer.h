@@ -19,6 +19,7 @@ typedef struct Lexer {
 	union {
 		double floatlit;
 		uint64_t uintlit;
+		char *strlit;
 		Symbol *ident;
 	} val;
 	AstNode *langtype;
@@ -48,6 +49,7 @@ enum TokenTypes {
 	// Numeric and Identifier tokens
 	IntLitToken,	// Integer literal
 	FloatLitToken,	// Float literal
+	StrLitToken,	// String literal
 	IdentToken,		// Identifier
 
 	// Punctuation tokens

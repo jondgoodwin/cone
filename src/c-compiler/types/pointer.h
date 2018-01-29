@@ -17,6 +17,8 @@ typedef struct PtrAstNode {
 	int16_t scope;		// Lifetime
 } PtrAstNode;
 
+PtrAstNode *strType;
+
 PtrAstNode *newPtrTypeNode();
 void ptrTypePrint(PtrAstNode *node);
 void ptrTypePass(AstPass *pstate, PtrAstNode *name);

@@ -45,6 +45,20 @@ void flitPrint(FLitAstNode *lit) {
 	astPrintNode(lit->vtype);
 }
 
+// Create a new string literal node
+SLitAstNode *newSLitNode(char *str, AstNode *type) {
+	SLitAstNode *lit;
+	newAstNode(lit, SLitAstNode, SLitNode);
+	lit->strlit = str;
+	lit->vtype = type;
+	return lit;
+}
+
+// Serialize the AST for a string
+void slitPrint(SLitAstNode *lit) {
+	astFprint("\"%s\"", lit->strlit);
+}
+
 int litIsLiteral(AstNode* node) {
 	return (node->asttype == FLitNode || node->asttype == ULitNode);
 }

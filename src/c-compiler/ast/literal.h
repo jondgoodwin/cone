@@ -20,11 +20,20 @@ typedef struct FLitAstNode {
 	double floatlit;
 } FLitAstNode;
 
+// String literal
+typedef struct SLitAstNode {
+	TypedAstHdr;
+	char *strlit;
+} SLitAstNode;
+
 ULitAstNode *newULitNode(uint64_t nbr, AstNode *type);
 void ulitPrint(ULitAstNode *node);
 
 FLitAstNode *newFLitNode(double nbr, AstNode *type);
 void flitPrint(FLitAstNode *node);
+
+SLitAstNode *newSLitNode(char *str, AstNode *type);
+void slitPrint(SLitAstNode *node);
 
 int litIsLiteral(AstNode* node);
 
