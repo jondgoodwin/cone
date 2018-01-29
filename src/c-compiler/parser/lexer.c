@@ -124,6 +124,7 @@ void lexScanChar(char *srcp) {
 }
 
 void lexScanString(char *srcp) {
+	uint64_t uchar;
 	lex->tokp = srcp++;
 
 	// Conservatively count the size of the string
@@ -138,7 +139,27 @@ void lexScanString(char *srcp) {
 	lex->val.strlit = newp;
 	srcp = lex->tokp+1;
 	while (*srcp != '"') {
-		*newp++ = *srcp++;
+		if (*srcp == '\\')
+			srcp = lexScanEscape(srcp, &uchar);
+		else
+			uchar = *srcp++;
+		if (uchar<0x80)
+			*newp++ = (unsigned char)uchar;
+		else if (uchar<0x800) {
+			*newp++ = 0xC0 | (unsigned char)(uchar >> 6);
+			*newp++ = 0x80 | (uchar & 0x3f);
+		}
+		else if (uchar<0x10000) {
+			*newp++ = 0xE0 | (unsigned char)(uchar >> 12);
+			*newp++ = 0x80 | ((uchar >> 6) & 0x3F);
+			*newp++ = 0x80 | (uchar & 0x3f);
+		}
+		else if (uchar<0x110000) {
+			*newp++ = 0xF0 | (unsigned char)(uchar >> 18);
+			*newp++ = 0x80 | ((uchar >> 12) & 0x3F);
+			*newp++ = 0x80 | ((uchar >> 6) & 0x3F);
+			*newp++ = 0x80 | (uchar & 0x3f);
+		}
 	}
 	*newp = '\0';
 	srcp++;
