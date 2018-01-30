@@ -349,6 +349,37 @@ void lexScanTickedIdent(char *srcp) {
 	lex->srcp = srcp+1;
 }
 
+// Skip over nested block comment
+char *lexBlockComment(char *srcp) {
+	int nest = 1;
+	while (*srcp) {
+		if (*srcp == '*' && *(srcp + 1) == '/') {
+			if (--nest == 0)
+				return srcp+2;
+			++srcp;
+		}
+		else if (*srcp == '/' && *(srcp + 1) == '*') {
+			++nest;
+			++srcp;
+		}
+		// ignore tokens inside line comment
+		else if (*srcp == '/' && *(srcp + 1) == '/') {
+			srcp += 2;
+			while (*srcp && *srcp++ != '\n');
+		}
+		// ignore tokens inside string literal
+		else if (*srcp == '"') {
+			++srcp;
+			while (*srcp && *srcp++ != '"') {
+				if (*(srcp - 1) == '\\' && *srcp == '"')
+					srcp++;
+			}
+		}
+		++srcp;
+	}
+	return srcp;
+}
+
 // Shortcut macro for return a punctuation token
 #define lexReturnPuncTok(tok, skip) { \
 	lex->toktype = tok; \
@@ -489,6 +520,10 @@ void lexNextToken() {
 				srcp += 2;
 				while (*srcp && *srcp!='\n' && *srcp!='\x1a')
 					srcp++;
+			}
+			// Block comment, nested: '/*'
+			else if (*(srcp + 1) == '*') {
+				srcp = lexBlockComment(srcp+2);
 			}
 			// '/' operator (e.g., division)
 			else
