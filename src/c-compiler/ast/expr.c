@@ -62,6 +62,16 @@ void derefPass(AstPass *pstate, DerefAstNode *node) {
 	}
 }
 
+// Insert automatic deref, if node is a ref
+void derefAuto(AstNode **node) {
+	if (typeGetVtype(*node)->asttype != RefType)
+		return;
+	DerefAstNode *deref = newDerefAstNode();
+	deref->exp = *node;
+	deref->vtype = ((PtrAstNode*)((TypedAstNode *)*node)->vtype)->pvtype;
+	*node = (AstNode*)deref;
+}
+
 // Create a new element node
 ElementAstNode *newElementAstNode() {
 	ElementAstNode *node;
@@ -82,6 +92,7 @@ void elementPass(AstPass *pstate, ElementAstNode *node) {
 	astPass(pstate, node->owner);
 	if (pstate->pass == TypeCheck) {
 		if (node->element->asttype == FieldNameUseNode) {
+			derefAuto(&node->owner);
 			AstNode *ownvtype = typeGetVtype(node->owner);
 			if (ownvtype->asttype == StructType) {
 				NameUseAstNode *fldname = (NameUseAstNode*)node->element;

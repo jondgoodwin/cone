@@ -39,6 +39,7 @@ void castPass(AstPass *pstate, CastAstNode *node);
 DerefAstNode *newDerefAstNode();
 void derefPrint(DerefAstNode *node);
 void derefPass(AstPass *pstate, DerefAstNode *node);
+void derefAuto(AstNode **node);
 
 ElementAstNode *newElementAstNode();
 void elementPrint(ElementAstNode *node);

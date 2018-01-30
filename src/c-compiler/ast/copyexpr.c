@@ -107,6 +107,7 @@ void fnCallPass(AstPass *pstate, FnCallAstNode *node) {
 		if (node->fn->asttype == FieldNameUseNode) {
 			NameUseAstNode *methname = (NameUseAstNode*)node->fn;
 			Symbol *methsym = methname->namesym;
+			derefAuto(nodesNodes(node->parms));
 			AstNode *firstarg = *nodesNodes(node->parms);
 			astPass(pstate, firstarg);
 			SymNode *method = inodesFind(((TypeAstNode*)typeGetVtype(firstarg))->instnames, methsym);
@@ -120,6 +121,8 @@ void fnCallPass(AstPass *pstate, FnCallAstNode *node) {
 				return;
 			}
 		}
+		else
+			derefAuto(&node->fn);
 
 		// Capture return vtype and ensure we are calling a function
 		AstNode *fnsig = typeGetVtype(node->fn);
