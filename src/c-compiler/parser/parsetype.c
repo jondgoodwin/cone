@@ -83,17 +83,25 @@ AstNode *parseStruct() {
 		lexNextToken();
 	}
 
-	// Process field definitions
+	// Process field or method definitions
 	if (lexIsToken(LCurlyToken)) {
 		lexNextToken();
-		while (lexIsToken(IdentToken)) {
-			NameDclAstNode *field = parseVarDcl(mutPerm);
-			field->scope = 1;
-			field->index = fieldnbr++;
-			inodesAdd(&strnode->fields, field->namesym, (AstNode*)field);
-			if (!lexIsToken(SemiToken))
+		while (1) {
+			if (lexIsToken(FnToken)) {
+				NameDclAstNode *fn = (NameDclAstNode *)parseFn();
+				inodesAdd(&strnode->mbrs, fn->namesym, (AstNode*)fn);
+			}
+			else if (lexIsToken(IdentToken)) {
+				NameDclAstNode *field = parseVarDcl(mutPerm);
+				field->scope = 1;
+				field->index = fieldnbr++;
+				inodesAdd(&strnode->fields, field->namesym, (AstNode*)field);
+				if (!lexIsToken(SemiToken))
+					break;
+				lexNextToken();
+			}
+			else
 				break;
-			lexNextToken();
 		}
 		parseRCurly();
 	}

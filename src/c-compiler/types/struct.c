@@ -14,6 +14,7 @@
 StructAstNode *newStructNode() {
 	StructAstNode *snode;
 	newAstNode(snode, StructAstNode, StructType);
+	snode->mbrs = newInodes(8);
 	snode->fields = newInodes(8);
 	return snode;
 }
@@ -28,6 +29,8 @@ void structPass(AstPass *pstate, StructAstNode *node) {
 	SymNode *nodesp;
 	uint32_t cnt;
 	for (inodesFor(node->fields, cnt, nodesp))
+		astPass(pstate, nodesp->node);
+	for (inodesFor(node->mbrs, cnt, nodesp))
 		astPass(pstate, nodesp->node);
 }
 

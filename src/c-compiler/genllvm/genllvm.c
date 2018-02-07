@@ -40,6 +40,8 @@ void genlParmVar(genl_t *gen, NameDclAstNode *var) {
 
 // Generate a function
 void genlFn(genl_t *gen, NameDclAstNode *fnnode) {
+	LLVMValueRef svfn = gen->fn;
+	LLVMBuilderRef svbuilder = gen->builder;
 	FnSigAstNode *fnsig = (FnSigAstNode*)fnnode->vtype;
 
 	assert(fnnode->value->asttype == BlockNode);
@@ -60,6 +62,9 @@ void genlFn(genl_t *gen, NameDclAstNode *fnnode) {
 	genlBlock(gen, (BlockAstNode *)fnnode->value);
 
 	LLVMDisposeBuilder(gen->builder);
+
+	gen->builder = svbuilder;
+	gen->fn = svfn;
 }
 
 // Generate global variable

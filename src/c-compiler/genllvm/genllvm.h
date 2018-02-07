@@ -25,6 +25,8 @@ typedef struct genl_t {
 } genl_t;
 
 void genllvm(ConeOptions *opt, PgmAstNode *pgmast);
+void genlFn(genl_t *gen, NameDclAstNode *fnnode);
+void genlGloVarName(genl_t *gen, NameDclAstNode *glovar);
 
 // genlstmt.c
 LLVMBasicBlockRef genlInsertBlock(genl_t *gen, char *name);
