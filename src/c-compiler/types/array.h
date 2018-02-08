@@ -19,6 +19,5 @@ ArrayAstNode *newArrayNode();
 void arrayPrint(ArrayAstNode *node);
 void arrayPass(AstPass *pstate, ArrayAstNode *name);
 int arrayEqual(ArrayAstNode *node1, ArrayAstNode *node2);
-int arrayCoerces(ArrayAstNode *to, ArrayAstNode *from);
 
 #endif

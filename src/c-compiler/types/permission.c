@@ -81,7 +81,7 @@ int permIsSame(PermAstNode *node1, PermAstNode *node2) {
 }
 
 // Will 'from' permission coerce to the target?
-int permCoerces(PermAstNode *to, PermAstNode *from) {
+int permMatches(PermAstNode *to, PermAstNode *from) {
 	if (permIsSame(to, from) || to==idPerm)
 		return 1;
 	if (from == uniPerm &&

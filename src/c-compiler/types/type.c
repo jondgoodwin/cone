@@ -56,6 +56,46 @@ int typeIsSame(AstNode *node1, AstNode *node2) {
 	return typeEqual(node1, node2);
 }
 
+// Is totype equivalent or a non-changing subtype of fromtype
+// 0 - no
+// 1 - yes, without conversion
+// 2+ - requires increasingly lossy conversion/coercion
+int typeMatches(AstNode *totype, AstNode *fromtype) {
+	// Convert, if needed, from names to the type declaration
+	if (totype->asttype == VtypeNameUseNode)
+		totype = ((NameUseAstNode *)totype)->dclnode->value;
+	assert(astgroup(totype->asttype) == VTypeGroup);
+	if (fromtype->asttype == VtypeNameUseNode)
+		fromtype = ((NameUseAstNode *)fromtype)->dclnode->value;
+	assert(astgroup(fromtype->asttype) == VTypeGroup);
+
+	// If they are the same value type info, types match
+	if (totype == fromtype)
+		return 1;
+
+	// Types must be of the same kind
+	if (totype->asttype != fromtype->asttype) {
+		if (isNbr(totype) && isNbr(fromtype))
+			return 4; // Coerceable to a different number type, with potential loss
+		else
+			return 0;
+	}
+
+	// Type-specific matching logic
+	switch (totype->asttype) {
+	case RefType:
+		return ptrTypeMatches((PtrAstNode*)totype, (PtrAstNode*)fromtype);
+	case ArrayType:
+		return arrayEqual((ArrayAstNode*)totype, (ArrayAstNode*)fromtype);
+	case UintNbrType:
+	case IntNbrType:
+	case FloatNbrType:
+		return ((NbrAstNode *)totype)->bits > ((NbrAstNode *)fromtype)->bits ? 3 : 2;
+	default:
+		return typeEqual(totype, fromtype);
+	}
+}
+
 // can from's value be coerced to to's value type?
 // This might inject a 'cast' node in front of the 'from' node with non-matching numbers
 int typeCoerces(AstNode *to, AstNode **from) {
@@ -89,33 +129,19 @@ int typeCoerces(AstNode *to, AstNode **from) {
 	}
 
 	getVtype(fromtype);
-	// If they are the same value type info, types match
-	if (to == fromtype)
-		return 1;
 
-	// If types are equivalent, it is a valid subtype
-	if (typeEqual(to, fromtype))
-		return 1;
+	// Are types equivalent, or is 'to' a subtype of fromtype?
+	int match = typeMatches(to, fromtype);
+	if (match <= 1)
+		return match; // return fail or non-changing matches. Fall through to perform any coercion
 
-	// Not identical - but if both are numbers - cast between them
-	if (isNbr(to) && isNbr(fromtype)) {
+	// Add coercion operation. When both are numbers - cast between them
+	if (isNbr(to)) {
 		*from = (AstNode*) newCastAstNode(*from, to);
 		return 1;
 	}
 
-	// Types must be of the same kind
-	if (to->asttype != fromtype->asttype)
-		return 0;
-
-	// Type-specific coercion logic
-	switch (to->asttype) {
-	case RefType:
-		return ptrTypeCoerces((PtrAstNode*)to, (PtrAstNode*)fromtype);
-	case ArrayType:
-		return arrayCoerces((ArrayAstNode*)to, (ArrayAstNode*)fromtype);
-	default:
-		return 0;
-	}
+	return 0;
 }
 
 // Create a new Void type node

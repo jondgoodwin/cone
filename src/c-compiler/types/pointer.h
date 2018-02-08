@@ -23,6 +23,6 @@ PtrAstNode *newPtrTypeNode();
 void ptrTypePrint(PtrAstNode *node);
 void ptrTypePass(AstPass *pstate, PtrAstNode *name);
 int ptrTypeEqual(PtrAstNode *node1, PtrAstNode *node2);
-int ptrTypeCoerces(PtrAstNode *to, PtrAstNode *from);
+int ptrTypeMatches(PtrAstNode *to, PtrAstNode *from);
 
 #endif

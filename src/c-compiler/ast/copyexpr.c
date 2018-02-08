@@ -211,7 +211,7 @@ void addrPass(AstPass *pstate, AddrAstNode *node) {
 			PtrAstNode *ptype = (PtrAstNode *)node->vtype;
 			if (ptype->pvtype==NULL)
 				ptype->pvtype = ((TypedAstNode *)node->exp)->vtype;
-			if (!permCoerces(ptype->perm, ((NameUseAstNode*)node->exp)->dclnode->perm))
+			if (!permMatches(ptype->perm, ((NameUseAstNode*)node->exp)->dclnode->perm))
 				errorMsgNode((AstNode *)node, ErrorBadPerm, "Reference cannot obtain this permission");
 			// coercion checks on permission and allocator/scope
 		}

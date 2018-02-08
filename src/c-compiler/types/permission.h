@@ -56,6 +56,6 @@ void permPrint(PermAstNode *node);
 uint16_t permGetFlags(AstNode *node);
 int permIsMutable(AstNode *lval);
 int permIsSame(PermAstNode *node1, PermAstNode *node2);
-int permCoerces(PermAstNode *node1, PermAstNode *node2);
+int permMatches(PermAstNode *node1, PermAstNode *node2);
 
 #endif

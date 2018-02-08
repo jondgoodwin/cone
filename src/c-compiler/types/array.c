@@ -33,8 +33,3 @@ int arrayEqual(ArrayAstNode *node1, ArrayAstNode *node2) {
 	return (node1->size == node2->size
 		/* && typeEqual(node1->elemtype, node2->elemtype*/);
 }
-
-// Will from array coerce to a to array (we know they are not the same)
-int arrayCoerces(ArrayAstNode *to, ArrayAstNode *from) {
-	return 1;
-}

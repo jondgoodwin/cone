@@ -29,6 +29,7 @@ AstNode *voidType;
 void typeInit();
 AstNode *typeGetVtype(AstNode *node);
 int typeIsSame(AstNode *node1, AstNode *node2);
+int typeMatches(AstNode *totype, AstNode *fromtype);
 int typeCoerces(AstNode *to, AstNode **from);
 
 VoidTypeAstNode *newVoidNode();
