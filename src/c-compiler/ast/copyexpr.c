@@ -92,6 +92,24 @@ void fnCallPrint(FnCallAstNode *node) {
 	astFprint(")");
 }
 
+NameDclAstNode *fnCallFindMethod(FnCallAstNode *node, Symbol *methsym) {
+	// Get type of object call's object (first arg). Use value type of a ref
+	AstNode *objtype = typeGetVtype(*nodesNodes(node->parms));
+	if (objtype->asttype == RefType)
+		objtype = typeGetVtype(((PtrAstNode *)objtype)->pvtype);
+
+	// Look for a method that matches name
+	AstNode **nodesp;
+	uint32_t cnt;
+	for (nodesFor(((TypeAstNode*)objtype)->methods, cnt, nodesp)) {
+		NameDclAstNode *method = (NameDclAstNode*)*nodesp;
+		if (method->namesym == methsym) {
+			return method;
+		}
+	}
+	return NULL;
+}
+
 // Analyze function call node
 void fnCallPass(AstPass *pstate, FnCallAstNode *node) {
 	AstNode **argsp;
@@ -103,24 +121,12 @@ void fnCallPass(AstPass *pstate, FnCallAstNode *node) {
 	switch (pstate->pass) {
 	case TypeCheck:
 	{
-		// If this is an object call, resolve function name within first argument's type
+		// If this is an object call, resolve method name within first argument's type
 		if (node->fn->asttype == FieldNameUseNode) {
 			NameUseAstNode *methname = (NameUseAstNode*)node->fn;
 			Symbol *methsym = methname->namesym;
-			derefAuto(nodesNodes(node->parms));
-			AstNode *firstarg = *nodesNodes(node->parms);
-			astPass(pstate, firstarg);
-			AstNode **nodesp;
-			uint32_t cnt;
-			NameDclAstNode *method = NULL;
-			for (nodesFor(((TypeAstNode*)typeGetVtype(firstarg))->methods, cnt, nodesp)) {
-				NameDclAstNode *meth = (NameDclAstNode*)*nodesp;
-				if (meth->namesym == methsym) {
-					method = meth;
-					break;
-				}
-			}
-			if (method) {
+			NameDclAstNode *method;
+			if (method = fnCallFindMethod(node, methsym)) {
 				methname->asttype = VarNameUseNode;
 				methname->dclnode = method;
 				methname->vtype = methname->dclnode->vtype;
@@ -130,6 +136,8 @@ void fnCallPass(AstPass *pstate, FnCallAstNode *node) {
 				return;
 			}
 		}
+
+		// Automatically deref a reference to the function
 		else
 			derefAuto(&node->fn);
 
