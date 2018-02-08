@@ -98,6 +98,11 @@ NbrAstNode *newNbrTypeNode(uint16_t typ, char bits) {
 			nodesAdd(&nbrtypenode->methods, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(ShrOpCode)));
 		}
 	}
+	// Floating point functions (intrinsics)
+	else {
+		opsym = symFind("sqrt", 4);
+		nodesAdd(&nbrtypenode->methods, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)unarysig, immPerm, (AstNode *)newOpCodeNode(SqrtOpCode)));
+	}
 
 	// Create function signature for comparison methods for this type
 	FnSigAstNode *cmpsig = newFnSigNode();

@@ -65,7 +65,10 @@ enum OpCode {
 	OrOpCode,
 	XorOpCode,
 	ShlOpCode,
-	ShrOpCode
+	ShrOpCode,
+
+	// Intrinsic functions
+	SqrtOpCode
 };
 
 // An internal operation (e.g., add). 

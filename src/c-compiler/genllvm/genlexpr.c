@@ -234,6 +234,14 @@ LLVMValueRef genlFnCall(genl_t *gen, FnCallAstNode *fncall) {
 			case LeOpCode: return LLVMBuildFCmp(gen->builder, LLVMRealOLE, fnargs[0], fnargs[1], "");
 			case GtOpCode: return LLVMBuildFCmp(gen->builder, LLVMRealOGT, fnargs[0], fnargs[1], "");
 			case GeOpCode: return LLVMBuildFCmp(gen->builder, LLVMRealOGE, fnargs[0], fnargs[1], "");
+			// Intrinsic functions
+			case SqrtOpCode: 
+			{
+				LLVMTypeRef param_types[] = { LLVMFloatTypeInContext(gen->context) };
+				LLVMTypeRef fn_type = LLVMFunctionType(LLVMFloatTypeInContext(gen->context), param_types, 1, 0);
+				LLVMValueRef fn = LLVMAddFunction(gen->module, "llvm.sqrt.f32", fn_type);
+				return LLVMBuildCall(gen->builder, fn, fnargs, fncall->parms->used, "");
+			}
 			}
 		}
 		// Integer op codes
