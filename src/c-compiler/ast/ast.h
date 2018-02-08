@@ -146,7 +146,7 @@ typedef struct TypedAstNode {
 // - subtypes is the list of traits, etc. the type implements
 #define TypeAstHdr \
 	TypedAstHdr; \
-	Inodes *mbrs; \
+	Nodes *methods; \
 	Nodes *subtypes
 
 // Castable structure for all type AST nodes

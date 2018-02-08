@@ -14,7 +14,7 @@
 StructAstNode *newStructNode() {
 	StructAstNode *snode;
 	newAstNode(snode, StructAstNode, StructType);
-	snode->mbrs = newInodes(8);
+	snode->methods = newNodes(8);
 	snode->fields = newInodes(8);
 	return snode;
 }
@@ -26,12 +26,13 @@ void structPrint(StructAstNode *node) {
 
 // Semantically analyze a struct type
 void structPass(AstPass *pstate, StructAstNode *node) {
-	SymNode *nodesp;
+	SymNode *inodesp;
+	AstNode **nodesp;
 	uint32_t cnt;
-	for (inodesFor(node->fields, cnt, nodesp))
-		astPass(pstate, nodesp->node);
-	for (inodesFor(node->mbrs, cnt, nodesp))
-		astPass(pstate, nodesp->node);
+	for (inodesFor(node->fields, cnt, inodesp))
+		astPass(pstate, inodesp->node);
+	for (nodesFor(node->methods, cnt, nodesp))
+		astPass(pstate, *nodesp);
 }
 
 // Compare two struct signatures to see if they are equivalent

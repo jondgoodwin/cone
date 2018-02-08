@@ -107,12 +107,12 @@ LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
 			return (LLVMTypeRef)dclnode->llvmvar;
 
 		LLVMTypeRef typeref = (LLVMTypeRef)(dclnode->llvmvar = (LLVMValueRef)_genlType(gen, &dclnode->namesym->namestr, dclnode->value));
-		SymNode *nodesp;
+		AstNode **nodesp;
 		uint32_t cnt;
 		TypeAstNode *tnode = (TypeAstNode*)dclnode->value;
-		if (tnode->mbrs) {
-			for (inodesFor(tnode->mbrs, cnt, nodesp)) {
-				NameDclAstNode *fnnode = (NameDclAstNode*)nodesp->node;
+		if (tnode->methods) {
+			for (nodesFor(tnode->methods, cnt, nodesp)) {
+				NameDclAstNode *fnnode = (NameDclAstNode*)(*nodesp);
 				assert(fnnode->asttype == VarNameDclNode);
 				if (fnnode->value->asttype != OpCodeNode) {
 					genlGloVarName(gen, fnnode);

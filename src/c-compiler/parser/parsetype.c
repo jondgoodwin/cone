@@ -89,7 +89,7 @@ AstNode *parseStruct() {
 		while (1) {
 			if (lexIsToken(FnToken)) {
 				NameDclAstNode *fn = (NameDclAstNode *)parseFn();
-				inodesAdd(&strnode->mbrs, fn->namesym, (AstNode*)fn);
+				nodesAdd(&strnode->methods, (AstNode*)fn);
 			}
 			else if (lexIsToken(IdentToken)) {
 				NameDclAstNode *field = parseVarDcl(mutPerm);

@@ -14,7 +14,7 @@
 FnSigAstNode *newFnSigNode() {
 	FnSigAstNode *sig;
 	newAstNode(sig, FnSigAstNode, FnSig);
-	sig->mbrs = newInodes(1); // probably share these across all fnsigs
+	sig->methods = newNodes(1); // probably share these across all fnsigs
 	sig->subtypes = newNodes(1);    // ditto
 	sig->parms = newInodes(8);
 	sig->rettype = voidType;

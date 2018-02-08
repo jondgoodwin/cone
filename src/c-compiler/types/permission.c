@@ -26,7 +26,7 @@ void permDclNames() {
 PermAstNode *newPermNode(char ptyp, uint16_t flags, AstNode *locker) {
 	PermAstNode *node;
 	newAstNode(node, PermAstNode, PermType);
-	node->mbrs = newInodes(1);	// May not need members for static types
+	node->methods = newNodes(1);	// May not need members for static types
 	node->subtypes = newNodes(8);	// build appropriate list using the permission's flags
 	node->flags = flags;
 	node->ptype = ptyp;

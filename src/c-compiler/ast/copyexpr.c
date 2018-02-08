@@ -110,10 +110,19 @@ void fnCallPass(AstPass *pstate, FnCallAstNode *node) {
 			derefAuto(nodesNodes(node->parms));
 			AstNode *firstarg = *nodesNodes(node->parms);
 			astPass(pstate, firstarg);
-			SymNode *method = inodesFind(((TypeAstNode*)typeGetVtype(firstarg))->mbrs, methsym);
+			AstNode **nodesp;
+			uint32_t cnt;
+			NameDclAstNode *method = NULL;
+			for (nodesFor(((TypeAstNode*)typeGetVtype(firstarg))->methods, cnt, nodesp)) {
+				NameDclAstNode *meth = (NameDclAstNode*)*nodesp;
+				if (meth->namesym == methsym) {
+					method = meth;
+					break;
+				}
+			}
 			if (method) {
 				methname->asttype = VarNameUseNode;
-				methname->dclnode = (NameDclAstNode*)method->node;
+				methname->dclnode = method;
 				methname->vtype = methname->dclnode->vtype;
 			}
 			else {
