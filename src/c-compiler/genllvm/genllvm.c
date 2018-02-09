@@ -74,16 +74,18 @@ void genlGloVar(genl_t *gen, NameDclAstNode *varnode) {
 
 // Generate LLVMValueRef for a global variable or function
 void genlGloVarName(genl_t *gen, NameDclAstNode *glovar) {
+	char *varname = glovar->guname ? glovar->guname : &glovar->namesym->namestr;
+
 	// Handle when it is just a global variable
 	if (glovar->vtype->asttype != FnSig) {
-		glovar->llvmvar = LLVMAddGlobal(gen->module, genlType(gen, glovar->vtype), &glovar->namesym->namestr);
+		glovar->llvmvar = LLVMAddGlobal(gen->module, genlType(gen, glovar->vtype), varname);
 		if (glovar->perm == immPerm)
 			LLVMSetGlobalConstant(glovar->llvmvar, 1);
 		return;
 	}
 
 	// Add function to the module
-	glovar->llvmvar = LLVMAddFunction(gen->module, &glovar->namesym->namestr, genlType(gen, glovar->vtype));
+	glovar->llvmvar = LLVMAddFunction(gen->module, varname, genlType(gen, glovar->vtype));
 }
 
 // Generate module's nodes

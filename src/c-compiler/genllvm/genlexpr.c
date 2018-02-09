@@ -220,7 +220,7 @@ LLVMValueRef genlFnCall(genl_t *gen, FnCallAstNode *fncall) {
 	NameUseAstNode *fnuse = (NameUseAstNode *)fncall->fn;
 	switch (fnuse->dclnode->value? fnuse->dclnode->value->asttype : BlockNode) {
 	case BlockNode: {
-		char *fnname = &fnuse->dclnode->namesym->namestr;
+		char *fnname = fnuse->dclnode->guname? fnuse->dclnode->guname : &fnuse->dclnode->namesym->namestr;
 		return LLVMBuildCall(gen->builder, LLVMGetNamedFunction(gen->module, fnname), fnargs, fncall->parms->used, "");
 	}
 	case OpCodeNode: {

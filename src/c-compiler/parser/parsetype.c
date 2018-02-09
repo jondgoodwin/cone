@@ -89,6 +89,7 @@ AstNode *parseStruct() {
 		while (1) {
 			if (lexIsToken(FnToken)) {
 				NameDclAstNode *fn = (NameDclAstNode *)parseFn();
+				fn->flags |= FlagMangleName;
 				nodesAdd(&strnode->methods, (AstNode*)fn);
 			}
 			else if (lexIsToken(IdentToken)) {

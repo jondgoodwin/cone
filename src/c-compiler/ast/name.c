@@ -64,6 +64,7 @@ NameDclAstNode *newNameDclNode(Symbol *namesym, uint16_t asttype, AstNode *type,
 	name->vtype = type;
 	name->perm = perm;
 	name->namesym = namesym;
+	name->guname = NULL;
 	name->value = val;
 	name->prev = NULL;
 	name->scope = 0;
@@ -146,11 +147,25 @@ void nameDclVarNameResolve(AstPass *pstate, NameDclAstNode *name) {
 		astPass(pstate, name->value);
 }
 
+// Create and return mangled (globally unique) name
+char *nameDclMangleName(AstPass *pstate, NameDclAstNode *name) {
+	char workbuf[2048] = { '\0' };
+	if (pstate->typenode) {
+		strcat(workbuf, &pstate->typenode->namesym->namestr);
+		strcat(workbuf, ":");
+	}
+	strcat(workbuf, &name->namesym->namestr);
+	return memAllocStr(workbuf, strlen(workbuf));
+}
+
 // Provide parameter and return type context for type checking function's logic
 void nameDclFnTypeCheck(AstPass *pstate, NameDclAstNode *name) {
 	FnSigAstNode *oldfnsig = pstate->fnsig;
 	pstate->fnsig = (FnSigAstNode*)name->vtype;
 	astPass(pstate, name->value);
+	if ((name->flags & FlagMangleName) || pstate->typenode) {
+		name->guname = nameDclMangleName(pstate, name);
+	}
 	pstate->fnsig = oldfnsig;
 }
 
@@ -168,7 +183,7 @@ void nameDclVarTypeCheck(AstPass *pstate, NameDclAstNode *name) {
 		errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
 }
 
-// Check the name declaration's AST
+// Check the function or variable declaration's AST
 void nameDclPass(AstPass *pstate, NameDclAstNode *name) {
 	astPass(pstate, (AstNode*)name->perm);
 	astPass(pstate, name->vtype);
@@ -203,5 +218,8 @@ void nameDclPass(AstPass *pstate, NameDclAstNode *name) {
 
 // Check the value type declaration's AST
 void nameVtypeDclPass(AstPass *pstate, NameDclAstNode *name) {
+	NameDclAstNode *svtype = pstate->typenode;
+	pstate->typenode = name;
 	astPass(pstate, name->value);
+	pstate->typenode = svtype;
 }
