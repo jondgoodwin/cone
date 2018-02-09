@@ -144,6 +144,31 @@ int typeCoerces(AstNode *to, AstNode **from) {
 	return 0;
 }
 
+// Add type mangle info to buffer
+char *typeMangle(char *bufp, AstNode *vtype) {
+	switch (vtype->asttype) {
+	case VtypeNameUseNode: case PermNameUseNode:
+	{
+		strcpy(bufp, &((NameUseAstNode *)vtype)->dclnode->namesym->namestr);
+		break;
+	}
+	case RefType:
+	{
+		PtrAstNode *pvtype = (PtrAstNode *)vtype;
+		*bufp++ = '&';
+		if (pvtype->perm != constPerm) {
+			bufp = typeMangle(bufp, (AstNode*)pvtype->perm);
+			*bufp++ = ' ';
+		}
+		bufp = typeMangle(bufp, pvtype->pvtype);
+		break;
+	}
+	default:
+		assert(0 && "unknown type for parameter type mangling");
+	}
+	return bufp + strlen(bufp);
+}
+
 // Create a new Void type node
 VoidTypeAstNode *newVoidNode() {
 	VoidTypeAstNode *voidnode;

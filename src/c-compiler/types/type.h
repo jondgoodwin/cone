@@ -32,6 +32,8 @@ int typeIsSame(AstNode *node1, AstNode *node2);
 int typeMatches(AstNode *totype, AstNode *fromtype);
 int typeCoerces(AstNode *to, AstNode **from);
 
+char *typeMangle(char *bufp, AstNode *vtype);
+
 VoidTypeAstNode *newVoidNode();
 void voidPrint(VoidTypeAstNode *voidnode);
 

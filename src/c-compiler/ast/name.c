@@ -12,6 +12,7 @@
 #include "../shared/error.h"
 
 #include <string.h>
+#include <assert.h>
 
 // Create a new name use node
 NameUseAstNode *newNameUseNode(Symbol *namesym) {
@@ -155,6 +156,17 @@ char *nameDclMangleName(AstPass *pstate, NameDclAstNode *name) {
 		strcat(workbuf, ":");
 	}
 	strcat(workbuf, &name->namesym->namestr);
+	if (name->flags & FlagMangleParms) {
+		FnSigAstNode *fnsig = (FnSigAstNode *)name->vtype;
+		char *bufp = workbuf + strlen(workbuf);
+		int16_t cnt;
+		SymNode *nodesp;
+		for (inodesFor(fnsig->parms, cnt, nodesp)) {
+			*bufp++ = ':';
+			bufp = typeMangle(bufp, ((NameDclAstNode *)nodesp->node)->vtype);
+		}
+		*bufp = '\0';
+	}
 	return memAllocStr(workbuf, strlen(workbuf));
 }
 
@@ -163,7 +175,7 @@ void nameDclFnTypeCheck(AstPass *pstate, NameDclAstNode *name) {
 	FnSigAstNode *oldfnsig = pstate->fnsig;
 	pstate->fnsig = (FnSigAstNode*)name->vtype;
 	astPass(pstate, name->value);
-	if ((name->flags & FlagMangleName) || pstate->typenode) {
+	if ((name->flags & FlagMangleParms) || pstate->typenode) {
 		name->guname = nameDclMangleName(pstate, name);
 	}
 	pstate->fnsig = oldfnsig;
