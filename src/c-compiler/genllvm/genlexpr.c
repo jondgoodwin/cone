@@ -192,6 +192,14 @@ LLVMValueRef genlIf(genl_t *gen, IfAstNode *ifnode) {
 	return NULL;
 }
 
+// Obtain value ref for a specific named intrinsic function
+LLVMValueRef genlGetIntrinsicFn(genl_t *gen, char *fnname, NameUseAstNode *fnuse) {
+	LLVMValueRef fn = LLVMGetNamedFunction(gen->module, fnname);
+	if (!fn)
+		fn = LLVMAddFunction(gen->module, fnname, genlType(gen, typeGetVtype((AstNode*)fnuse->dclnode)));
+	return fn;
+}
+
 // Generate a function call, including special op codes
 LLVMValueRef genlFnCall(genl_t *gen, FnCallAstNode *fncall) {
 
@@ -216,10 +224,11 @@ LLVMValueRef genlFnCall(genl_t *gen, FnCallAstNode *fncall) {
 		return LLVMBuildCall(gen->builder, LLVMGetNamedFunction(gen->module, fnname), fnargs, fncall->parms->used, "");
 	}
 	case OpCodeNode: {
-		int16_t nbrtype = typeGetVtype(*nodesNodes(fncall->parms))->asttype;
+		NbrAstNode *nbrtype = (NbrAstNode *)typeGetVtype(*nodesNodes(fncall->parms));
+		int16_t nbrasttype = nbrtype->asttype;
 
 		// Floating point op codes
-		if (nbrtype == FloatNbrType) {
+		if (nbrasttype == FloatNbrType) {
 			switch (((OpCodeAstNode *)fnuse->dclnode->value)->opcode) {
 			case NegOpCode: return LLVMBuildFNeg(gen->builder, fnargs[0], "");
 			case AddOpCode: return LLVMBuildFAdd(gen->builder, fnargs[0], fnargs[1], "");
@@ -237,10 +246,8 @@ LLVMValueRef genlFnCall(genl_t *gen, FnCallAstNode *fncall) {
 			// Intrinsic functions
 			case SqrtOpCode: 
 			{
-				LLVMTypeRef param_types[] = { LLVMFloatTypeInContext(gen->context) };
-				LLVMTypeRef fn_type = LLVMFunctionType(LLVMFloatTypeInContext(gen->context), param_types, 1, 0);
-				LLVMValueRef fn = LLVMAddFunction(gen->module, "llvm.sqrt.f32", fn_type);
-				return LLVMBuildCall(gen->builder, fn, fnargs, fncall->parms->used, "");
+				char *fnname = nbrtype->bits == 32 ? "llvm.sqrt.f32" : "llvm.sqrt.f64";
+				return LLVMBuildCall(gen->builder, genlGetIntrinsicFn(gen, fnname, fnuse), fnargs, fncall->parms->used, "");
 			}
 			}
 		}
@@ -254,12 +261,12 @@ LLVMValueRef genlFnCall(genl_t *gen, FnCallAstNode *fncall) {
 			case SubOpCode: return LLVMBuildSub(gen->builder, fnargs[0], fnargs[1], "");
 			case MulOpCode: return LLVMBuildMul(gen->builder, fnargs[0], fnargs[1], "");
 			case DivOpCode:
-				if (nbrtype == IntNbrType)
+				if (nbrasttype == IntNbrType)
 					return LLVMBuildSDiv(gen->builder, fnargs[0], fnargs[1], "");
 				else
 					return LLVMBuildUDiv(gen->builder, fnargs[0], fnargs[1], "");
 			case RemOpCode:
-				if (nbrtype == IntNbrType)
+				if (nbrasttype == IntNbrType)
 					return LLVMBuildSRem(gen->builder, fnargs[0], fnargs[1], "");
 				else
 					return LLVMBuildURem(gen->builder, fnargs[0], fnargs[1], "");
@@ -268,22 +275,22 @@ LLVMValueRef genlFnCall(genl_t *gen, FnCallAstNode *fncall) {
 			case EqOpCode: return LLVMBuildICmp(gen->builder, LLVMIntEQ, fnargs[0], fnargs[1], "");
 			case NeOpCode: return LLVMBuildICmp(gen->builder, LLVMIntNE, fnargs[0], fnargs[1], "");
 			case LtOpCode:
-				if (nbrtype == IntNbrType)
+				if (nbrasttype == IntNbrType)
 					return LLVMBuildICmp(gen->builder, LLVMIntSLT, fnargs[0], fnargs[1], "");
 				else
 					return LLVMBuildICmp(gen->builder, LLVMIntULT, fnargs[0], fnargs[1], "");
 			case LeOpCode:
-				if (nbrtype == IntNbrType)
+				if (nbrasttype == IntNbrType)
 					return LLVMBuildICmp(gen->builder, LLVMIntSLE, fnargs[0], fnargs[1], "");
 				else
 					return LLVMBuildICmp(gen->builder, LLVMIntULE, fnargs[0], fnargs[1], "");
 			case GtOpCode:
-				if (nbrtype == IntNbrType)
+				if (nbrasttype == IntNbrType)
 					return LLVMBuildICmp(gen->builder, LLVMIntSGT, fnargs[0], fnargs[1], "");
 				else
 					return LLVMBuildICmp(gen->builder, LLVMIntUGT, fnargs[0], fnargs[1], "");
 			case GeOpCode:
-				if (nbrtype == IntNbrType)
+				if (nbrasttype == IntNbrType)
 					return LLVMBuildICmp(gen->builder, LLVMIntSGE, fnargs[0], fnargs[1], "");
 				else
 					return LLVMBuildICmp(gen->builder, LLVMIntUGE, fnargs[0], fnargs[1], "");
@@ -295,7 +302,7 @@ LLVMValueRef genlFnCall(genl_t *gen, FnCallAstNode *fncall) {
 			case XorOpCode: return LLVMBuildXor(gen->builder, fnargs[0], fnargs[1], "");
 			case ShlOpCode: return LLVMBuildShl(gen->builder, fnargs[0], fnargs[1], "");
 			case ShrOpCode:
-				if (nbrtype == IntNbrType)
+				if (nbrasttype == IntNbrType)
 					return LLVMBuildAShr(gen->builder, fnargs[0], fnargs[1], "");
 				else
 					return LLVMBuildLShr(gen->builder, fnargs[0], fnargs[1], "");
