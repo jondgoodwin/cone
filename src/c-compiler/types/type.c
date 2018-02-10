@@ -87,6 +87,8 @@ int typeMatches(AstNode *totype, AstNode *fromtype) {
 		return ptrTypeMatches((PtrAstNode*)totype, (PtrAstNode*)fromtype);
 	case ArrayType:
 		return arrayEqual((ArrayAstNode*)totype, (ArrayAstNode*)fromtype);
+	//case FnSig:
+	//	return fnSigMatches((FnSigAstNode*)totype, (FnSigAstNode*)fromtype);
 	case UintNbrType:
 	case IntNbrType:
 	case FloatNbrType:

@@ -64,3 +64,35 @@ int fnSigEqual(FnSigAstNode *node1, FnSigAstNode *node2) {
 	}
 	return 1;
 }
+
+// Will the function call (caller) be able to call the 'to' function
+// Return 0 if not. 1 if perfect match. 2+ for imperfect matches
+int fnSigMatchesCall(FnSigAstNode *to, FnCallAstNode *caller) {
+	int matchsum = 1;
+
+	// Too many arguments is not a match
+	if (caller->parms->used > to->parms->used)
+		return 0;
+
+	// Every parameter's type must also match
+	SymNode *tonodesp;
+	AstNode **callnodesp;
+	int16_t cnt;
+	tonodesp = &inodesGet(to->parms, 0);
+	for (nodesFor(caller->parms, cnt, callnodesp)) {
+		int match;
+		switch (match = typeMatches(((TypedAstNode *)tonodesp->node)->vtype, ((TypedAstNode*)*callnodesp)->vtype)) {
+		case 0: return 0;
+		case 1: break;
+		default: matchsum += match;
+		}
+		tonodesp++;
+	}
+	// Match fails if not enough arguments & method has no default values on parms
+	if (caller->parms->used != to->parms->used 
+		&& ((NameDclAstNode *)tonodesp)->value==NULL)
+		return 0;
+
+	// It is a match; return how perfect a match it is
+	return matchsum;
+}

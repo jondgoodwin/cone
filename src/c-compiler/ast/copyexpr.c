@@ -98,16 +98,28 @@ NameDclAstNode *fnCallFindMethod(FnCallAstNode *node, Symbol *methsym) {
 	if (objtype->asttype == RefType)
 		objtype = typeGetVtype(((PtrAstNode *)objtype)->pvtype);
 
-	// Look for a method that matches name
+	// Look for best-fit method among those defined for the type
+	int bestnbr = 0x7fffffff; // ridiculously high number
+	NameDclAstNode *bestmethod = NULL;
 	AstNode **nodesp;
 	uint32_t cnt;
 	for (nodesFor(((TypeAstNode*)objtype)->methods, cnt, nodesp)) {
 		NameDclAstNode *method = (NameDclAstNode*)*nodesp;
 		if (method->namesym == methsym) {
-			return method;
+			int match;
+			switch (match = fnSigMatchesCall((FnSigAstNode *)method->vtype, node)) {
+			case 0: continue;		// not an acceptable match
+			case 1: return method;	// perfect match!
+			default:				// imprecise match using conversions
+				if (match < bestnbr) {
+					// Remember this as best found so far
+					bestnbr = match;
+					bestmethod = method;
+				}
+			}
 		}
 	}
-	return NULL;
+	return bestmethod;
 }
 
 // Analyze function call node
