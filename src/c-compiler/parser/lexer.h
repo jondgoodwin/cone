@@ -93,6 +93,7 @@ enum TokenTypes {
 	WhileToken,		// 'while'
 	BreakToken,		// 'break'
 	ContinueToken,	// 'continue'
+	AsToken,		// 'as'
 	trueToken,		// 'true'
 	falseToken,		// 'false'
 

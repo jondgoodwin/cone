@@ -189,29 +189,41 @@ AstNode *parsePrefix() {
 	return parsePostfix();
 }
 
+// Parse type cast
+AstNode *parseCast() {
+	AstNode *lhnode = parsePrefix();
+	if (lexIsToken(AsToken)) {
+		CastAstNode *node = newCastAstNode(lhnode, NULL);
+		lexNextToken();
+		node->vtype = parseVtype();
+		return (AstNode*)node;
+	}
+	return lhnode;
+}
+
 // Parse binary multiply, divide, rem operator
 AstNode *parseMult() {
-	AstNode *lhnode = parsePrefix();
+	AstNode *lhnode = parseCast();
 	while (1) {
 		if (lexIsToken(StarToken)) {
 			FnCallAstNode *node = newFnCallAstNode((AstNode*)newFieldUseNode(symFind("*", 1)), 2);
 			lexNextToken();
 			nodesAdd(&node->parms, lhnode);
-			nodesAdd(&node->parms, parsePrefix());
+			nodesAdd(&node->parms, parseCast());
 			lhnode = (AstNode*)node;
 		}
 		else if (lexIsToken(SlashToken)) {
 			FnCallAstNode *node = newFnCallAstNode((AstNode*)newFieldUseNode(symFind("/", 1)), 2);
 			lexNextToken();
 			nodesAdd(&node->parms, lhnode);
-			nodesAdd(&node->parms, parsePrefix());
+			nodesAdd(&node->parms, parseCast());
 			lhnode = (AstNode*)node;
 		}
 		else if (lexIsToken(PercentToken)) {
 			FnCallAstNode *node = newFnCallAstNode((AstNode*)newFieldUseNode(symFind("%", 1)), 2);
 			lexNextToken();
 			nodesAdd(&node->parms, lhnode);
-			nodesAdd(&node->parms, parsePrefix());
+			nodesAdd(&node->parms, parseCast());
 			lhnode = (AstNode*)node;
 		}
 		else

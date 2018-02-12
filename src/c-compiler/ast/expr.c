@@ -34,6 +34,9 @@ void castPrint(CastAstNode *node) {
 // Analyze cast node
 void castPass(AstPass *pstate, CastAstNode *node) {
 	astPass(pstate, node->exp);
+	astPass(pstate, node->vtype);
+	if (pstate->pass == TypeCheck && 0 == typeMatches(node->vtype, ((TypedAstNode *)node->exp)->vtype))
+		errorMsgNode(node->vtype, ErrorInvType, "expression may not be type cast to this type");
 }
 
 // Create a new deref node
