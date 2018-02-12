@@ -95,7 +95,7 @@ void fnCallPrint(FnCallAstNode *node) {
 NameDclAstNode *fnCallFindMethod(FnCallAstNode *node, Symbol *methsym) {
 	// Get type of object call's object (first arg). Use value type of a ref
 	AstNode *objtype = typeGetVtype(*nodesNodes(node->parms));
-	if (objtype->asttype == RefType)
+	if (objtype->asttype == RefType || objtype->asttype == PtrType)
 		objtype = typeGetVtype(((PtrAstNode *)objtype)->pvtype);
 
 	// Look for best-fit method among those defined for the type

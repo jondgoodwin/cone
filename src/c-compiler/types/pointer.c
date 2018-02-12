@@ -19,7 +19,7 @@ PtrAstNode *newPtrTypeNode() {
 
 // Serialize a pointer type
 void ptrTypePrint(PtrAstNode *node) {
-	astFprint("&(");
+	astFprint(node->asttype == RefType? "&(" : "*(");
 	astPrintNode(node->alloc);
 	astFprint(", ");
 	astPrintNode((AstNode*)node->perm);

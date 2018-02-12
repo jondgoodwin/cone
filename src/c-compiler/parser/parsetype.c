@@ -166,6 +166,8 @@ AstNode *parseFnSig() {
 // Parse a pointer type
 AstNode *parsePtrType() {
 	PtrAstNode *ptype = newPtrTypeNode();
+	if (lexIsToken(StarToken))
+		ptype->asttype = PtrType;
 	lexNextToken();
 
 	// For now - no allocator may be specified
@@ -211,7 +213,7 @@ AstNode *parseArrayType() {
 AstNode* parseVtype() {
 	AstNode *vtype;
 	switch (lex->toktype) {
-	case AmperToken:
+	case AmperToken: case StarToken:
 		return parsePtrType();
 	case LBracketToken:
 		return parseArrayType();

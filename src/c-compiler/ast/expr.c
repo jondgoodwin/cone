@@ -55,7 +55,7 @@ void derefPass(AstPass *pstate, DerefAstNode *node) {
 	astPass(pstate, node->exp);
 	if (pstate->pass == TypeCheck) {
 		PtrAstNode *ptype = (PtrAstNode*)((TypedAstNode *)node->exp)->vtype;
-		if (ptype->asttype == RefType)
+		if (ptype->asttype == RefType || ptype->asttype == PtrType)
 			node->vtype = ptype->pvtype;
 		else
 			errorMsgNode((AstNode*)node, ErrorNotPtr, "Cannot de-reference a non-pointer value.");

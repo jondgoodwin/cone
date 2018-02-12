@@ -98,7 +98,7 @@ void astPrintNode(AstNode *node) {
 		slitPrint((SLitAstNode *)node); break;
 	case FnSig:
 		fnSigPrint((FnSigAstNode *)node); break;
-	case RefType:
+	case RefType: case PtrType:
 		ptrTypePrint((PtrAstNode *)node); break;
 	case StructType:
 		structPrint((StructAstNode *)node); break;
@@ -164,7 +164,7 @@ void astPass(AstPass *pstate, AstNode *node) {
 		logicPass(pstate, (LogicAstNode *)node); break;
 	case FnSig:
 		fnSigPass(pstate, (FnSigAstNode *)node); break;
-	case RefType:
+	case RefType: case PtrType:
 		ptrTypePass(pstate, (PtrAstNode *)node); break;
 	case StructType:
 		structPass(pstate, (StructAstNode *)node); break;

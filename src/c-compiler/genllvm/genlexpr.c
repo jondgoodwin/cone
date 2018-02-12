@@ -47,7 +47,7 @@ LLVMTypeRef _genlType(genl_t *gen, char *name, AstNode *typ) {
 	case VoidType:
 		return LLVMVoidTypeInContext(gen->context);
 
-	case RefType:
+	case RefType: case PtrType:
 	{
 		LLVMTypeRef pvtype = genlType(gen, ((PtrAstNode *)typ)->pvtype);
 		return LLVMPointerType(pvtype, 0);

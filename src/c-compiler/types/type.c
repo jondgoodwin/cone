@@ -39,7 +39,7 @@ int typeEqual(AstNode *node1, AstNode *node2) {
 	switch (node1->asttype) {
 	case FnSig:
 		return fnSigEqual((FnSigAstNode*)node1, (FnSigAstNode*)node2);
-	case RefType:
+	case RefType: case PtrType:
 		return ptrTypeEqual((PtrAstNode*)node1, (PtrAstNode*)node2);
 	default:
 		return 0;
@@ -73,26 +73,28 @@ int typeMatches(AstNode *totype, AstNode *fromtype) {
 	if (totype == fromtype)
 		return 1;
 
-	// Types must be of the same kind
-	if (totype->asttype != fromtype->asttype) {
-		if (isNbr(totype) && isNbr(fromtype))
-			return 4; // Coerceable to a different number type, with potential loss
-		else
-			return 0;
-	}
-
 	// Type-specific matching logic
 	switch (totype->asttype) {
-	case RefType:
+	case RefType: case PtrType:
+		if (fromtype->asttype != RefType && fromtype->asttype != PtrType)
+			return 0;
 		return ptrTypeMatches((PtrAstNode*)totype, (PtrAstNode*)fromtype);
+
 	case ArrayType:
+		if (totype->asttype != fromtype->asttype)
+			return 0;
 		return arrayEqual((ArrayAstNode*)totype, (ArrayAstNode*)fromtype);
+
 	//case FnSig:
 	//	return fnSigMatches((FnSigAstNode*)totype, (FnSigAstNode*)fromtype);
+
 	case UintNbrType:
 	case IntNbrType:
 	case FloatNbrType:
+		if (totype->asttype != fromtype->asttype)
+			return isNbr(totype) && isNbr(fromtype) ? 4 : 0;
 		return ((NbrAstNode *)totype)->bits > ((NbrAstNode *)fromtype)->bits ? 3 : 2;
+
 	default:
 		return typeEqual(totype, fromtype);
 	}
@@ -154,7 +156,7 @@ char *typeMangle(char *bufp, AstNode *vtype) {
 		strcpy(bufp, &((NameUseAstNode *)vtype)->dclnode->namesym->namestr);
 		break;
 	}
-	case RefType:
+	case RefType: case PtrType:
 	{
 		PtrAstNode *pvtype = (PtrAstNode *)vtype;
 		*bufp++ = '&';
