@@ -14,6 +14,24 @@
 // Compiler options
 typedef struct ConeOptions {
 
+	char **package_search_paths;
+	char **safe_packages;
+	// magic_package_t* magic_packages;
+
+	char* output;
+	char* link_arch;
+	char* linker;
+
+	char* triple;
+	char* cpu;
+	char* features;
+
+	//typecheck_t check;
+
+	void* data; // User-defined data for unit test callbacks
+
+	int ptrsize;	// Size of a pointer (in bits)
+
 	// Boolean flags
 	int release;	// 0=debug (no optimizations). 1=release (default)
 	int library;	// 1=generate a C-API compatible static library
@@ -38,22 +56,6 @@ typedef struct ConeOptions {
 	size_t ast_print_width;
 	int allow_test_symbols;
 	int parse_trace;
-
-	char **package_search_paths;
-	char **safe_packages;
-	// magic_package_t* magic_packages;
-
-	char* output;
-	char* link_arch;
-	char* linker;
-
-	char* triple;
-	char* cpu;
-	char* features;
-
-	//typecheck_t check;
-
-	void* data; // User-defined data for unit test callbacks.
 } ConeOptions;
 
 int coneOptSet(ConeOptions *opt, int *argc, char **argv);

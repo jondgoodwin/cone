@@ -20,10 +20,12 @@ NbrAstNode *i8Type;
 NbrAstNode *i16Type;
 NbrAstNode *i32Type;
 NbrAstNode *i64Type;
+NbrAstNode *isizeType;
 NbrAstNode *u8Type;
 NbrAstNode *u16Type;
 NbrAstNode *u32Type;
 NbrAstNode *u64Type;
+NbrAstNode *usizeType;
 NbrAstNode *f32Type;
 NbrAstNode *f64Type;
 

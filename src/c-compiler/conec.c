@@ -29,7 +29,10 @@ int main(int argc, char **argv) {
 	char *srcfn;
 	char *src;
 
-	// Get compiler's instruction options from passed arguments
+	// Start measuring processing time for compilation
+	startTime = clock();
+
+	// Get compiler's options from passed arguments
 	ok = coneOptSet(&coneopt, &argc, argv);
 	if (ok <= 0)
 		exit(ok == 0 ? 0 : ExitOpts);
@@ -38,7 +41,6 @@ int main(int argc, char **argv) {
 	srcfn = argv[1];
 
 	// Initialize compiler's global structures
-	startTime = clock();
 	lexInject("*compiler*", "");
 	symInit();
 	keywordInit();

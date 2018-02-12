@@ -167,8 +167,11 @@ LLVMTargetMachineRef genlCreateMachine(ConeOptions *opt) {
 		opt->cpu = "generic";
 	if (!opt->features)
 		opt->features = "";
-	if (!(machine = LLVMCreateTargetMachine(target, opt->triple, opt->cpu, opt->features, opt_level, reloc, LLVMCodeModelDefault)))
+	if (!(machine = LLVMCreateTargetMachine(target, opt->triple, opt->cpu, opt->features, opt_level, reloc, LLVMCodeModelDefault))) {
 		errorMsg(ErrorGenErr, "Could not create target machine");
+		return NULL;
+	}
+
 	return machine;
 }
 
@@ -201,7 +204,15 @@ void genlOut(char *objpath, char *asmpath, LLVMModuleRef mod, char *triple, LLVM
 void genllvm(ConeOptions *opt, PgmAstNode *pgmast) {
 	char *err;
 	genl_t gen;
-	LLVMTargetMachineRef machine;
+
+	LLVMTargetMachineRef machine = genlCreateMachine(opt);
+	if (!machine)
+		exit(ExitOpts);
+
+	// Obtain data layout info, particularly pointer sizes
+	LLVMTargetDataRef datalayout = LLVMCreateTargetDataLayout(machine);
+	opt->ptrsize = LLVMPointerSize(datalayout) << 3;
+	usizeType->bits = isizeType->bits = opt->ptrsize;
 
 	gen.srcname = pgmast->lexer->fname;
 	gen.context = LLVMContextCreate();
@@ -232,13 +243,12 @@ void genllvm(ConeOptions *opt, PgmAstNode *pgmast) {
 	}
 
 	// Transform IR to target's ASM and OBJ
-	machine = genlCreateMachine(opt);
 	if (machine)
 		genlOut(fileMakePath(opt->output, pgmast->lexer->fname, objext),
 			opt->print_asm? fileMakePath(opt->output, pgmast->lexer->fname, asmext) : NULL,
 			gen.module, opt->triple, machine);
 
 	LLVMDisposeModule(gen.module);
-	LLVMDisposeTargetMachine(machine);
 	LLVMContextDispose(gen.context);
+	LLVMDisposeTargetMachine(machine);
 }

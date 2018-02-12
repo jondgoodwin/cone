@@ -256,9 +256,9 @@ void lexScanNumber(char *srcp) {
 			srcp += 2;
 		} else if (*srcp=='6' && *(srcp+1)=='4') {
 			srcp += 2; lex->langtype = (AstNode*)i64Type;
-		} /* else if (strncmp(srcp, "size", 4)==0) {
-			srcp += 2; lex->langtype = isizeType;
-		} */
+		} else if (strncmp(srcp, "size", 4)==0) {
+			srcp += 4; lex->langtype = (AstNode*)isizeType;
+		}
 	} else if (*srcp=='u') {
 		lex->langtype = (AstNode*)u32Type;
 		if (*(++srcp)=='8') {		
@@ -269,9 +269,9 @@ void lexScanNumber(char *srcp) {
 			srcp += 2;
 		} else if (*srcp=='6' && *(srcp+1)=='4') {
 			srcp += 2; lex->langtype = (AstNode*)u64Type;
-		} /* else if (strncmp(srcp, "size", 4)==0) {
-			srcp += 2; lex->langtype = usizeType;
-		} */
+		} else if (strncmp(srcp, "size", 4)==0) {
+			srcp += 4; lex->langtype = (AstNode*)usizeType;
+		}
 	}
 	else
 		lex->langtype = (AstNode*)(isFloat ? f32Type : i32Type);
