@@ -356,7 +356,7 @@ LLVMValueRef genlCast(genl_t *gen, CastAstNode* node) {
 		else
 			return LLVMBuildBitCast(gen->builder, genlExpr(gen, node->exp), genlType(gen, (AstNode*)totype), "");
 
-	default:
+	case FloatNbrType:
 		if (fromtype->asttype == IntNbrType)
 			return LLVMBuildSIToFP(gen->builder, genlExpr(gen, node->exp), genlType(gen, (AstNode*)totype), "");
 		else if (fromtype->asttype == UintNbrType)
@@ -367,6 +367,13 @@ LLVMValueRef genlCast(genl_t *gen, CastAstNode* node) {
 			return LLVMBuildFPExt(gen->builder, genlExpr(gen, node->exp), genlType(gen, (AstNode*)totype), "");
 		else
 			return genlExpr(gen, node->exp);
+
+	case RefType: case PtrType:
+		return LLVMBuildBitCast(gen->builder, genlExpr(gen, node->exp), genlType(gen, (AstNode*)totype), "");
+
+	default:
+		assert(0 && "Unknown type to cast to");
+		return NULL;
 	}
 }
 

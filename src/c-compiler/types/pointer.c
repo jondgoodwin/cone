@@ -44,7 +44,8 @@ int ptrTypeEqual(PtrAstNode *node1, PtrAstNode *node2) {
 
 // Will from pointer coerce to a to pointer (we know they are not the same)
 int ptrTypeMatches(PtrAstNode *to, PtrAstNode *from) {
-	return typeMatches(to->pvtype, from->pvtype)
-		&& permMatches(to->perm, from->perm)
-		&& (to->alloc == from->alloc || to->alloc == voidType);
+	if (0 == permMatches(to->perm, from->perm)
+		|| (to->alloc != from->alloc && to->alloc != voidType))
+		return 0;
+	return typeMatches(to->pvtype, from->pvtype) == 1 ? 1 : 2;
 }
