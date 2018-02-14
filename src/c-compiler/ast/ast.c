@@ -101,6 +101,7 @@ void astPrintNode(AstNode *node) {
 	case RefType: case PtrType:
 		ptrTypePrint((PtrAstNode *)node); break;
 	case StructType:
+	case AllocType:
 		structPrint((StructAstNode *)node); break;
 	case ArrayType:
 		arrayPrint((ArrayAstNode *)node); break;
@@ -131,6 +132,7 @@ void astPass(AstPass *pstate, AstNode *node) {
 	case VarNameDclNode:
 		nameDclPass(pstate, (NameDclAstNode *)node); break;
 	case VtypeNameDclNode:
+	case AllocNameDclNode:
 		nameVtypeDclPass(pstate, (NameDclAstNode *)node); break;
 	case NameUseNode:
 	case VarNameUseNode: case VtypeNameUseNode: case PermNameUseNode: case AllocNameUseNode:
@@ -167,6 +169,7 @@ void astPass(AstPass *pstate, AstNode *node) {
 	case RefType: case PtrType:
 		ptrTypePass(pstate, (PtrAstNode *)node); break;
 	case StructType:
+	case AllocType:
 		structPass(pstate, (StructAstNode *)node); break;
 	case ArrayType:
 		arrayPass(pstate, (ArrayAstNode *)node); break;

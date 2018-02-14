@@ -121,6 +121,7 @@ void genlModule(genl_t *gen, PgmAstNode *pgm) {
 
 		// No need to generate type declarations: type uses will do so
 		case VtypeNameDclNode:
+		case AllocNameDclNode:
 			break;
 
 		default:

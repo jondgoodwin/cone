@@ -116,6 +116,7 @@ PgmAstNode *parse() {
 
 		// 'struct' definition
 		case StructToken:
+		case AllocToken:
 			nodesAdd(nodes, node = parseStruct());
 			registerGlobalName((NameDclAstNode *)node);
 			break;

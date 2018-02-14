@@ -33,6 +33,7 @@ void keywordInit() {
 
 	keyAdd("fn", FnToken);
 	keyAdd("struct", StructToken);
+	keyAdd("alloc", AllocToken);
 	keyAdd("return", RetToken);
 	keyAdd("if", IfToken);
 	keyAdd("elif", ElifToken);

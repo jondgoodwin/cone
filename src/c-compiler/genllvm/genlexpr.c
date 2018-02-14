@@ -69,6 +69,7 @@ LLVMTypeRef _genlType(genl_t *gen, char *name, AstNode *typ) {
 	}
 
 	case StructType:
+	case AllocType:
 	{
 		// Build typeref from struct
 		StructAstNode *strnode = (StructAstNode*)typ;

@@ -86,6 +86,7 @@ enum TokenTypes {
 	// Keywords
 	FnToken,		// 'fn'
 	StructToken,	// 'struct'
+	AllocToken,		// 'alloc'
 	RetToken,		// 'return'
 	IfToken,		// 'if'
 	ElifToken,		// 'elif'

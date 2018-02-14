@@ -73,8 +73,12 @@ AstNode *parseStruct() {
 
 	strnode = newStructNode();
 	strdclnode = newNameDclNode(NULL, VtypeNameDclNode, voidType, immPerm, (AstNode*)strnode);
+	if (lexIsToken(AllocToken)) {
+		strnode->asttype = AllocType;
+		strdclnode->asttype = AllocNameDclNode;
+	}
 
-	// Skip past 'struct'
+	// Skip past 'struct'/'alloc'
 	lexNextToken();
 
 	// Process struct type name, if provided
@@ -107,7 +111,7 @@ AstNode *parseStruct() {
 		parseRCurly();
 	}
 	else
-		errorMsgLex(ErrorNoLCurly, "Expected left curly for struct's fields");
+		errorMsgLex(ErrorNoLCurly, "Expected left curly bracket enclosing fields or methods");
 
 	return (AstNode*)strdclnode;
 }

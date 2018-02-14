@@ -16,9 +16,8 @@
 #define getVtype(node) {\
 	if (astgroup(node->asttype) == ExpGroup) \
 		node = ((TypedAstNode *)node)->vtype; \
-	if (node->asttype == VtypeNameUseNode) \
+	if (node->asttype == VtypeNameUseNode || node->asttype == AllocNameUseNode) \
 		node = ((NameUseAstNode *)node)->dclnode->value; \
-	assert(astgroup(node->asttype) == VTypeGroup); \
 }
 
 // Return value type
@@ -62,12 +61,10 @@ int typeIsSame(AstNode *node1, AstNode *node2) {
 // 2+ - requires increasingly lossy conversion/coercion
 int typeMatches(AstNode *totype, AstNode *fromtype) {
 	// Convert, if needed, from names to the type declaration
-	if (totype->asttype == VtypeNameUseNode)
+	if (totype->asttype == VtypeNameUseNode || totype->asttype == AllocNameUseNode)
 		totype = ((NameUseAstNode *)totype)->dclnode->value;
-	assert(astgroup(totype->asttype) == VTypeGroup);
-	if (fromtype->asttype == VtypeNameUseNode)
+	if (fromtype->asttype == VtypeNameUseNode || fromtype->asttype == AllocNameUseNode)
 		fromtype = ((NameUseAstNode *)fromtype)->dclnode->value;
-	assert(astgroup(fromtype->asttype) == VTypeGroup);
 
 	// If they are the same value type info, types match
 	if (totype == fromtype)
