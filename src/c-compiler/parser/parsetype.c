@@ -174,16 +174,24 @@ AstNode *parsePtrType() {
 		ptype->asttype = PtrType;
 	lexNextToken();
 
-	// For now - no allocator may be specified
-	ptype->alloc = voidType;	// default is borrowed reference
+	// Set defaults
+	ptype->alloc = voidType;	// borrowed reference
+	ptype->perm = constPerm;
 
-	// Get permission, if specified (default is const)
+	// Get allocator for references, if specified
+	if (ptype->asttype == RefType) {
+		if (lexIsToken(IdentToken) && lex->val.ident->node && lex->val.ident->node->asttype == AllocNameDclNode) {
+			ptype->alloc = ((NameDclAstNode *)lex->val.ident->node)->value;
+			lexNextToken();
+			ptype->perm = uniPerm;
+		}
+	}
+
+	// Get permission, if specified
 	if (lexIsToken(IdentToken) && lex->val.ident->node && lex->val.ident->node->asttype == PermNameDclNode) {
 		ptype->perm = (PermAstNode*)((NameDclAstNode *)lex->val.ident->node)->value;
 		lexNextToken();
 	}
-	else
-		ptype->perm = constPerm;
 
 	// Get value type, if provided
 	if (lexIsToken(FnToken)) {

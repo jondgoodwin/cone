@@ -21,7 +21,7 @@ StructAstNode *newStructNode() {
 
 // Serialize a struct type
 void structPrint(StructAstNode *node) {
-	astFprint("struct {}");
+	astFprint(node->asttype == StructType? "struct {}" : "alloc {}");
 }
 
 // Semantically analyze a struct type
