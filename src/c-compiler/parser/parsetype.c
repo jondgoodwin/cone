@@ -30,6 +30,20 @@ PermAstNode *parsePerm(PermAstNode *defperm) {
 		return defperm;
 }
 
+// Parse an allocator + permission for a reference type
+void parseAllocPerm(PtrAstNode *refnode) {
+	if (lexIsToken(IdentToken)
+		&& lex->val.ident->node && lex->val.ident->node->asttype == AllocNameDclNode) {
+		refnode->alloc = ((NameDclAstNode *)lex->val.ident->node)->value;
+		lexNextToken();
+		refnode->perm = parsePerm(uniPerm);
+	}
+	else {
+		refnode->alloc = voidType;
+		refnode->perm = parsePerm(constPerm);
+	}
+}
+
 // Parse a variable declaration
 NameDclAstNode *parseVarDcl(PermAstNode *defperm) {
 	Symbol *namesym = NULL;
@@ -63,6 +77,33 @@ NameDclAstNode *parseVarDcl(PermAstNode *defperm) {
 		val = NULL;
 
 	return newNameDclNode(namesym, VarNameDclNode, vtype, perm, val);
+}
+
+// Parse a pointer type
+AstNode *parsePtrType() {
+	PtrAstNode *ptype = newPtrTypeNode();
+	if (lexIsToken(StarToken))
+		ptype->asttype = PtrType;
+	lexNextToken();
+
+	// Get allocator/permission for references
+	if (ptype->asttype == RefType)
+		parseAllocPerm(ptype);
+	else {
+		ptype->alloc = voidType;	// no allocator
+		ptype->perm = parsePerm(constPerm);
+	}
+
+	// Get value type, if provided
+	if (lexIsToken(FnToken)) {
+		ptype->pvtype = parseFnSig();
+	}
+	else if ((ptype->pvtype = parseVtype()) == NULL) {
+		errorMsgLex(ErrorNoVtype, "Missing value type for the pointer");
+		ptype->pvtype = voidType;
+	}
+
+	return (AstNode *)ptype;
 }
 
 // Parse a struct
@@ -165,44 +206,6 @@ AstNode *parseFnSig() {
 		return (AstNode*)fnsig;
 	else
 		return (AstNode*)newNameDclNode(namesym, VarNameDclNode, (AstNode*)fnsig, immPerm, NULL);
-}
-
-// Parse a pointer type
-AstNode *parsePtrType() {
-	PtrAstNode *ptype = newPtrTypeNode();
-	if (lexIsToken(StarToken))
-		ptype->asttype = PtrType;
-	lexNextToken();
-
-	// Set defaults
-	ptype->alloc = voidType;	// borrowed reference
-	ptype->perm = constPerm;
-
-	// Get allocator for references, if specified
-	if (ptype->asttype == RefType) {
-		if (lexIsToken(IdentToken) && lex->val.ident->node && lex->val.ident->node->asttype == AllocNameDclNode) {
-			ptype->alloc = ((NameDclAstNode *)lex->val.ident->node)->value;
-			lexNextToken();
-			ptype->perm = uniPerm;
-		}
-	}
-
-	// Get permission, if specified
-	if (lexIsToken(IdentToken) && lex->val.ident->node && lex->val.ident->node->asttype == PermNameDclNode) {
-		ptype->perm = (PermAstNode*)((NameDclAstNode *)lex->val.ident->node)->value;
-		lexNextToken();
-	}
-
-	// Get value type, if provided
-	if (lexIsToken(FnToken)) {
-		ptype->pvtype = parseFnSig();
-	}
-	else if ((ptype->pvtype = parseVtype()) == NULL) {
-		errorMsgLex(ErrorNoVtype, "Missing value type for the pointer");
-		ptype->pvtype = voidType;
-	}
-
-	return (AstNode *)ptype;
 }
 
 // Parse an array type

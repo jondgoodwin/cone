@@ -26,6 +26,7 @@ AstNode *parseExpr();
 
 // parsetype.c
 PermAstNode *parsePerm(PermAstNode *defperm);
+void parseAllocPerm(PtrAstNode *refnode);
 NameDclAstNode *parseVarDcl(PermAstNode *defperm);
 AstNode *parseFn();
 AstNode *parseFnSig();

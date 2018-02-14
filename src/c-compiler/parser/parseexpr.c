@@ -25,8 +25,7 @@ AstNode *parseAddr() {
 	// Address node's value type is a partially populated pointer type
 	PtrAstNode *ptype = newPtrTypeNode();
 	ptype->pvtype = NULL;     // Type inference will correct this
-	ptype->alloc = voidType;  // Borrowed reference
-	ptype->perm = parsePerm(constPerm);
+	parseAllocPerm(ptype);
 	anode->vtype = (AstNode *)ptype;
 
 	// Parse what we are getting the address of ...

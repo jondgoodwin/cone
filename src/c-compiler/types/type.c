@@ -148,7 +148,7 @@ int typeCoerces(AstNode *to, AstNode **from) {
 // Add type mangle info to buffer
 char *typeMangle(char *bufp, AstNode *vtype) {
 	switch (vtype->asttype) {
-	case VtypeNameUseNode: case PermNameUseNode:
+	case VtypeNameUseNode: case PermNameUseNode: case AllocNameUseNode:
 	{
 		strcpy(bufp, &((NameUseAstNode *)vtype)->dclnode->namesym->namestr);
 		break;
