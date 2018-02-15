@@ -213,20 +213,56 @@ void addrPrint(AddrAstNode *node) {
 	astFprint(")");
 }
 
+// Type check borrowed reference creator
+void addrTypeCheckBorrow(AddrAstNode *node, PtrAstNode *ptype) {
+	if (((TypedAstNode *)node->exp)->asttype != VarNameUseNode)
+		errorMsgNode((AstNode*)node, ErrorNotLval, "& only applies to lvals, such as variables");
+	else {
+		if (!permMatches(ptype->perm, ((NameUseAstNode*)node->exp)->dclnode->perm))
+			errorMsgNode((AstNode *)node, ErrorBadPerm, "Reference cannot obtain this permission");
+	}
+}
+
+// Type check and expand code for allocator reference creator
+void addrTypeCheckAlloc(AddrAstNode *anode, PtrAstNode *ptype) {
+	BlockAstNode *blknode = newBlockNode();
+
+	// Find allocate method in alloc
+	Symbol *symalloc = symFind("allocate", 8);
+	TypeAstNode *alloctype = (TypeAstNode*)ptype->alloc;
+	int32_t cnt;
+	AstNode **nodesp;
+	NameDclAstNode *allocmeth = NULL;
+	for (nodesFor(alloctype->methods, cnt, nodesp)) {
+		NameDclAstNode *meth = (NameDclAstNode*)*nodesp;
+		if (meth->namesym == symalloc) {
+			allocmeth = meth;
+			break;
+		}
+	}
+
+	// alloc.allocate(sizeof(vtype))
+	NameUseAstNode *usealloc = newNameUseNode(symalloc);
+	usealloc->asttype = VarNameUseNode;
+	usealloc->dclnode = allocmeth;
+	usealloc->vtype = allocmeth->vtype;
+	FnCallAstNode *callalloc = newFnCallAstNode((AstNode*)usealloc, 1);
+	nodesAdd(&callalloc->parms, (AstNode*)newULitNode(4, (AstNode*)u32Type));
+	nodesAdd(&blknode->stmts, (AstNode*)callalloc);
+	anode->exp = (AstNode*)blknode;
+}
+
 // Analyze addr node
 void addrPass(AstPass *pstate, AddrAstNode *node) {
 	astPass(pstate, node->exp);
 	if (pstate->pass == TypeCheck) {
-		if (((TypedAstNode *)node->exp)->asttype != VarNameUseNode)
-			errorMsgNode((AstNode*)node, ErrorNotLval, "& only applies to lvals, such as variables");
-		else {
-			PtrAstNode *ptype = (PtrAstNode *)node->vtype;
-			if (ptype->pvtype==NULL)
-				ptype->pvtype = ((TypedAstNode *)node->exp)->vtype;
-			if (!permMatches(ptype->perm, ((NameUseAstNode*)node->exp)->dclnode->perm))
-				errorMsgNode((AstNode *)node, ErrorBadPerm, "Reference cannot obtain this permission");
-			// coercion checks on permission and allocator/scope
-		}
+		PtrAstNode *ptype = (PtrAstNode *)node->vtype;
+		if (ptype->pvtype == NULL)
+			ptype->pvtype = ((TypedAstNode *)node->exp)->vtype; // inferred
+		if (ptype->alloc == voidType)
+			addrTypeCheckBorrow(node, ptype);
+		else
+			addrTypeCheckAlloc(node, ptype);
 	}
 
 }

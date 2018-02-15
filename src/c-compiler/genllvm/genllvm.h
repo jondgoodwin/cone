@@ -12,8 +12,10 @@
 #include "../coneopts.h"
 
 #include <llvm-c/Core.h>
+#include <llvm-c/ExecutionEngine.h>
 
 typedef struct genl_t {
+	LLVMTargetDataRef datalayout;
 	LLVMContextRef context;
 	LLVMModuleRef module;
 	LLVMValueRef fn;

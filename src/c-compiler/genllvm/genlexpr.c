@@ -101,12 +101,13 @@ LLVMTypeRef _genlType(genl_t *gen, char *name, AstNode *typ) {
 // Generate a type value
 LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
 	char *name = "";
-	if (typ->asttype == VtypeNameUseNode) {
+	if (typ->asttype == VtypeNameUseNode || typ->asttype == AllocNameUseNode || typ->asttype == AllocNameDclNode) {
 		// with vtype name use, we can memoize type value and give it a name
-		NameDclAstNode *dclnode = ((NameUseAstNode*)typ)->dclnode;
+		NameDclAstNode *dclnode = typ->asttype==AllocNameDclNode? (NameDclAstNode*)typ : ((NameUseAstNode*)typ)->dclnode;
 		if (dclnode->llvmvar)
 			return (LLVMTypeRef)dclnode->llvmvar;
 
+		// Also process the type's methods
 		LLVMTypeRef typeref = (LLVMTypeRef)(dclnode->llvmvar = (LLVMValueRef)_genlType(gen, &dclnode->namesym->namestr, dclnode->value));
 		AstNode **nodesp;
 		uint32_t cnt;
@@ -125,6 +126,11 @@ LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
 	}
 	else
 		return _genlType(gen, "", typ);
+}
+
+LLVMValueRef genlSizeof(genl_t *gen, AstNode *vtype) {
+	unsigned long long size = LLVMABISizeOfType(gen->datalayout, genlType(gen, vtype));
+	return LLVMConstInt(genlType(gen, (AstNode*)usizeType), size, 0);
 }
 
 // Generate an if statement
@@ -475,9 +481,14 @@ LLVMValueRef genlExpr(genl_t *gen, AstNode *termnode) {
 	case AddrNode:
 	{
 		AddrAstNode *anode = (AddrAstNode*)termnode;
-		assert(anode->exp->asttype == VarNameUseNode);
-		NameUseAstNode *var = (NameUseAstNode*)anode->exp;
-		return var->dclnode->llvmvar;
+		PtrAstNode *ptype = (PtrAstNode *)anode->vtype;
+		if (ptype->alloc == voidType) {
+			assert(anode->exp->asttype == VarNameUseNode);
+			NameUseAstNode *var = (NameUseAstNode*)anode->exp;
+			return var->dclnode->llvmvar;
+		}
+		else
+			return genlExpr(gen, anode->exp);
 	}
 	case DerefNode:
 		return LLVMBuildLoad(gen->builder, genlExpr(gen, ((DerefAstNode*)termnode)->exp), "deref");

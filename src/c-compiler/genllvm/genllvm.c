@@ -121,7 +121,11 @@ void genlModule(genl_t *gen, PgmAstNode *pgm) {
 
 		// No need to generate type declarations: type uses will do so
 		case VtypeNameDclNode:
+			break;
+
+		// Generate allocator definition
 		case AllocNameDclNode:
+			genlType(gen, nodep);
 			break;
 
 		default:
@@ -211,8 +215,8 @@ void genllvm(ConeOptions *opt, PgmAstNode *pgmast) {
 		exit(ExitOpts);
 
 	// Obtain data layout info, particularly pointer sizes
-	LLVMTargetDataRef datalayout = LLVMCreateTargetDataLayout(machine);
-	opt->ptrsize = LLVMPointerSize(datalayout) << 3;
+	gen.datalayout = LLVMCreateTargetDataLayout(machine);
+	opt->ptrsize = LLVMPointerSize(gen.datalayout) << 3;
 	usizeType->bits = isizeType->bits = opt->ptrsize;
 
 	gen.srcname = pgmast->lexer->fname;
