@@ -17,28 +17,7 @@
 #include <stdio.h>
 #include <assert.h>
 
-// Parse an address term - current token is '&'
-AstNode *parseAddr() {
-	AddrAstNode *anode = newAddrAstNode();
-	lexNextToken();
-
-	// Address node's value type is a partially populated pointer type
-	PtrAstNode *ptype = newPtrTypeNode();
-	ptype->pvtype = NULL;     // Type inference will correct this
-	parseAllocPerm(ptype);
-	anode->vtype = (AstNode *)ptype;
-
-	// Parse what we are getting the address of ...
-	if (lexIsToken(IdentToken)) {
-		NameUseAstNode *node = newNameUseNode(lex->val.ident);
-		lexNextToken();
-		anode->exp = (AstNode*)node;
-	}
-	else
-		errorMsgLex(ErrorAddr, "Invalid expression to get the address of");
-
-	return (AstNode *)anode;
-}
+AstNode *parseAddr();
 
 // Parse a term: literal, identifier, etc.
 AstNode *parseTerm() {
@@ -93,6 +72,23 @@ AstNode *parseTerm() {
 		errorMsgLex(ErrorBadTerm, "Invalid term value: expected variable, literal, etc.");
 		return NULL;
 	}
+}
+
+// Parse an address term - current token is '&'
+AstNode *parseAddr() {
+	AddrAstNode *anode = newAddrAstNode();
+	lexNextToken();
+
+	// Address node's value type is a partially populated pointer type
+	PtrAstNode *ptype = newPtrTypeNode();
+	ptype->pvtype = NULL;     // Type inference will correct this
+	parseAllocPerm(ptype);
+	anode->vtype = (AstNode *)ptype;
+
+	// A value or constructor
+	anode->exp = parseTerm();
+
+	return (AstNode *)anode;
 }
 
 // Parse the postfix operators: '.', '::', '()'
