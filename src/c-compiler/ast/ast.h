@@ -73,6 +73,7 @@ enum AstType {
 	SLitNode,		// String literal
 	AssignNode,		// Assignment expression
 	FnCallNode,		// Function call
+	SizeofNode,		// Sizeof a type (usize)
 	CastNode,		// Cast exp to another type
 	AddrNode,		// & (address of) operator
 	DerefNode,		// * (pointed at) operator

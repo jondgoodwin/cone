@@ -8,6 +8,12 @@
 #ifndef expr_h
 #define expr_h
 
+// Get size of a type
+typedef struct SizeofAstNode {
+	TypedAstHdr;
+	AstNode *type;
+} SizeofAstNode;
+
 // Cast to another type
 typedef struct CastAstNode {
 	TypedAstHdr;
@@ -31,6 +37,10 @@ typedef struct LogicAstNode {
 	AstNode *lexp;
 	AstNode *rexp;
 } LogicAstNode;
+
+SizeofAstNode *newSizeofAstNode();
+void sizeofPrint(SizeofAstNode *node);
+void sizeofPass(AstPass *pstate, SizeofAstNode *node);
 
 CastAstNode *newCastAstNode(AstNode *exp, AstNode *type);
 void castPrint(CastAstNode *node);

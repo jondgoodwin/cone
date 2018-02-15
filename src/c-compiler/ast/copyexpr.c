@@ -241,13 +241,24 @@ void addrTypeCheckAlloc(AddrAstNode *anode, PtrAstNode *ptype) {
 		}
 	}
 
-	// alloc.allocate(sizeof(vtype))
+	// szvtype = sizeof(vtype)
+	Symbol *szvtsym = symFind("szvtype", 7);
+	SizeofAstNode *szvtval = newSizeofAstNode();
+	szvtval->type = ptype->pvtype;
+	NameDclAstNode *szvtype = newNameDclNode(szvtsym, VarNameDclNode, (AstNode*)usizeType, immPerm, (AstNode*)szvtval);
+	nodesAdd(&blknode->stmts, (AstNode*)szvtype);
+	NameUseAstNode *szvtuse = newNameUseNode(szvtsym);
+	szvtuse->asttype = VarNameUseNode;
+	szvtuse->dclnode = szvtype;
+	szvtuse->vtype = szvtype->vtype;
+
+	// alloc.allocate(szvtype)
 	NameUseAstNode *usealloc = newNameUseNode(symalloc);
 	usealloc->asttype = VarNameUseNode;
 	usealloc->dclnode = allocmeth;
 	usealloc->vtype = allocmeth->vtype;
 	FnCallAstNode *callalloc = newFnCallAstNode((AstNode*)usealloc, 1);
-	nodesAdd(&callalloc->parms, (AstNode*)newULitNode(4, (AstNode*)u32Type));
+	nodesAdd(&callalloc->parms, (AstNode*)szvtuse);
 	nodesAdd(&blknode->stmts, (AstNode*)callalloc);
 	anode->exp = (AstNode*)blknode;
 }

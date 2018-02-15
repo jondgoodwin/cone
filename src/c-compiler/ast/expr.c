@@ -13,6 +13,26 @@
 
 #include <assert.h>
 
+// Create a new sizeof node
+SizeofAstNode *newSizeofAstNode() {
+	SizeofAstNode *node;
+	newAstNode(node, SizeofAstNode, SizeofNode);
+	node->vtype = (AstNode*)usizeType;
+	return node;
+}
+
+// Serialize sizeof
+void sizeofPrint(SizeofAstNode *node) {
+	astFprint("(sizeof, ");
+	astPrintNode(node->type);
+	astFprint(")");
+}
+
+// Analyze sizeof node
+void sizeofPass(AstPass *pstate, SizeofAstNode *node) {
+	astPass(pstate, node->type);
+}
+
 // Create a new cast node
 CastAstNode *newCastAstNode(AstNode *exp, AstNode *type) {
 	CastAstNode *node;

@@ -476,6 +476,8 @@ LLVMValueRef genlExpr(genl_t *gen, AstNode *termnode) {
 		LLVMBuildStore(gen->builder, (val = genlExpr(gen, node->rval)), genlLval(gen, node->lval));
 		return val;
 	}
+	case SizeofNode:
+		return genlSizeof(gen, ((SizeofAstNode*)termnode)->type);
 	case CastNode:
 		return genlCast(gen, (CastAstNode*)termnode);
 	case AddrNode:

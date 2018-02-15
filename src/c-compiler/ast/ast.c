@@ -80,6 +80,8 @@ void astPrintNode(AstNode *node) {
 		assignPrint((AssignAstNode *)node); break;
 	case FnCallNode:
 		fnCallPrint((FnCallAstNode *)node); break;
+	case SizeofNode:
+		sizeofPrint((SizeofAstNode *)node); break;
 	case CastNode:
 		castPrint((CastAstNode *)node); break;
 	case DerefNode:
@@ -152,6 +154,8 @@ void astPass(AstPass *pstate, AstNode *node) {
 		assignPass(pstate, (AssignAstNode *)node); break;
 	case FnCallNode:
 		fnCallPass(pstate, (FnCallAstNode *)node); break;
+	case SizeofNode:
+		sizeofPass(pstate, (SizeofAstNode *)node); break;
 	case CastNode:
 		castPass(pstate, (CastAstNode *)node); break;
 	case DerefNode:
