@@ -252,14 +252,34 @@ void addrTypeCheckAlloc(AddrAstNode *anode, PtrAstNode *ptype) {
 	szvtuse->dclnode = szvtype;
 	szvtuse->vtype = szvtype->vtype;
 
-	// alloc.allocate(szvtype)
+	// p1 = alloc.allocate(szvtype)
 	NameUseAstNode *usealloc = newNameUseNode(symalloc);
 	usealloc->asttype = VarNameUseNode;
 	usealloc->dclnode = allocmeth;
 	usealloc->vtype = allocmeth->vtype;
 	FnCallAstNode *callalloc = newFnCallAstNode((AstNode*)usealloc, 1);
+	callalloc->vtype = allocmeth->vtype;
 	nodesAdd(&callalloc->parms, (AstNode*)szvtuse);
-	nodesAdd(&blknode->stmts, (AstNode*)callalloc);
+	// ---
+	Symbol *pT = symFind("pT", 2);
+	CastAstNode *castvt = newCastAstNode((AstNode*)callalloc, (AstNode*)ptype);
+	NameDclAstNode *p1dcl = newNameDclNode(pT, VarNameDclNode, (AstNode*)ptype, immPerm, (AstNode*)castvt);
+	nodesAdd(&blknode->stmts, (AstNode*)p1dcl);
+	NameUseAstNode *p1use = newNameUseNode(pT);
+	p1use->asttype = VarNameUseNode;
+	p1use->dclnode = p1dcl;
+	p1use->vtype = p1dcl->vtype;
+
+	// *p1 = value
+	DerefAstNode *derefp1 = newDerefAstNode();
+	derefp1->exp = (AstNode*)p1use;
+	derefp1->vtype = ptype->pvtype;
+	AssignAstNode *copynode = newAssignAstNode(AssignNode, (AstNode*)derefp1, anode->exp);
+	nodesAdd(&blknode->stmts, (AstNode*)copynode);
+
+	// return p1
+	nodesAdd(&blknode->stmts, (AstNode*)p1use);
+
 	anode->exp = (AstNode*)blknode;
 }
 
