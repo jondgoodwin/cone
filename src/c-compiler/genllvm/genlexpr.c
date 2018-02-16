@@ -113,13 +113,18 @@ LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
 		uint32_t cnt;
 		TypeAstNode *tnode = (TypeAstNode*)dclnode->value;
 		if (tnode->methods) {
+			// Declare just method names first, enabling forward references
 			for (nodesFor(tnode->methods, cnt, nodesp)) {
 				NameDclAstNode *fnnode = (NameDclAstNode*)(*nodesp);
 				assert(fnnode->asttype == VarNameDclNode);
-				if (fnnode->value->asttype != OpCodeNode) {
+				if (fnnode->value->asttype != OpCodeNode)
 					genlGloVarName(gen, fnnode);
+			}
+			// Now generate the code for each method
+			for (nodesFor(tnode->methods, cnt, nodesp)) {
+				NameDclAstNode *fnnode = (NameDclAstNode*)(*nodesp);
+				if (fnnode->value->asttype != OpCodeNode)
 					genlFn(gen, fnnode);
-				}
 			}
 		}
 		return typeref;
