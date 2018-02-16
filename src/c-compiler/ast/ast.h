@@ -172,6 +172,7 @@ typedef struct TypeAstNode {
 #include "../types/pointer.h"
 #include "../types/struct.h"
 #include "../types/array.h"
+#include "../types/alloc.h"
 
 // The AST analytical passes performed in between parse and generation
 enum Passes {

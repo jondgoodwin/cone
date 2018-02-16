@@ -38,6 +38,7 @@ add_executable(conec
 	src/c-compiler/types/array.c
 	src/c-compiler/types/number.c
 	src/c-compiler/types/permission.c
+	src/c-compiler/types/alloc.c
 
 	src/c-compiler/parser/keyword.c
 	src/c-compiler/parser/lexer.c
