@@ -58,8 +58,6 @@ AstNode *parseTerm() {
 			lexNextToken();
 			return (AstNode*)node;
 		}
-	case AmperToken:
-		return parseAddr();
 	case LParenToken:
 		{
 			AstNode *node;
@@ -72,23 +70,6 @@ AstNode *parseTerm() {
 		errorMsgLex(ErrorBadTerm, "Invalid term value: expected variable, literal, etc.");
 		return NULL;
 	}
-}
-
-// Parse an address term - current token is '&'
-AstNode *parseAddr() {
-	AddrAstNode *anode = newAddrAstNode();
-	lexNextToken();
-
-	// Address node's value type is a partially populated pointer type
-	PtrAstNode *ptype = newPtrTypeNode();
-	ptype->pvtype = NULL;     // Type inference will correct this
-	parseAllocPerm(ptype);
-	anode->vtype = (AstNode *)ptype;
-
-	// A value or constructor
-	anode->exp = parseTerm();
-
-	return (AstNode *)anode;
 }
 
 // Parse the postfix operators: '.', '::', '()'
@@ -161,27 +142,52 @@ AstNode *parsePostfix() {
 	}
 }
 
+// Parse an address term - current token is '&'
+AstNode *parseAddr() {
+	AddrAstNode *anode = newAddrAstNode();
+	lexNextToken();
+
+	// Address node's value type is a partially populated pointer type
+	PtrAstNode *ptype = newPtrTypeNode();
+	ptype->pvtype = NULL;     // Type inference will correct this
+	parseAllocPerm(ptype);
+	anode->vtype = (AstNode *)ptype;
+
+	// A value or constructor
+	anode->exp = parseTerm();
+
+	return (AstNode *)anode;
+}
+
 // Parse a prefix operator, e.g.: -
 AstNode *parsePrefix() {
-	if (lexIsToken(DashToken)) {
+	switch (lex->toktype) {
+	case DashToken:
+	{
 		FnCallAstNode *node = newFnCallAstNode((AstNode*)newFieldUseNode(symFind("neg", 3)), 1);
 		lexNextToken();
 		nodesAdd(&node->parms, parsePrefix());
 		return (AstNode *)node;
 	}
-	else if (lexIsToken(TildeToken)) {
+	case TildeToken:
+	{
 		FnCallAstNode *node = newFnCallAstNode((AstNode*)newFieldUseNode(symFind("~", 1)), 1);
 		lexNextToken();
 		nodesAdd(&node->parms, parsePrefix());
 		return (AstNode *)node;
 	}
-	else if (lexIsToken(StarToken)) {
+	case StarToken:
+	{
 		DerefAstNode *node = newDerefAstNode();
 		lexNextToken();
 		node->exp = parsePrefix();
 		return (AstNode *)node;
 	}
-	return parsePostfix();
+	case AmperToken:
+		return parseAddr();
+	default:
+		return parsePostfix();
+	}
 }
 
 // Parse type cast
