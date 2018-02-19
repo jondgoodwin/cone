@@ -56,6 +56,7 @@ enum ErrorCode {
 	ErrorAddr,		// Invalid expr to get an addr (&) of
 	ErrorBadPerm,	// Permission not allowed
 	ErrorNoFlds,	// Expression's type does not support fields
+	ErrorBadAlloc,  // Missing valid alloc methods
 
 	// Warnings
 	WarnCode = 3000,

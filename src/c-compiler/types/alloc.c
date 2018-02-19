@@ -7,6 +7,7 @@
 
 #include "../ast/ast.h"
 #include "../shared/memory.h"
+#include "../shared/error.h"
 #include "../parser/lexer.h"
 #include "../shared/symbol.h"
 
@@ -29,6 +30,10 @@ void allocAllocate(AddrAstNode *anode, PtrAstNode *ptype) {
 			allocmeth = meth;
 			break;
 		}
+	}
+	if (allocmeth == NULL || ((FnSigAstNode*)allocmeth->vtype)->parms->used != 1) {
+		errorMsgNode((AstNode*)ptype, ErrorBadAlloc, "Allocator is missing valid allocate method");
+		return;
 	}
 
 	// szvtype = sizeof(vtype)
