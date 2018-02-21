@@ -135,6 +135,12 @@ LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
 
 LLVMValueRef genlSizeof(genl_t *gen, AstNode *vtype) {
 	unsigned long long size = LLVMABISizeOfType(gen->datalayout, genlType(gen, vtype));
+	if (vtype->asttype == AllocType) {
+		if (LLVMPointerSize(gen->datalayout) == 32)
+			size = (size + 3) & 0xFFFFFFFC;
+		else
+			size = (size + 7) & 0xFFFFFFFFFFFFFFF8;
+	}
 	return LLVMConstInt(genlType(gen, (AstNode*)usizeType), size, 0);
 }
 
