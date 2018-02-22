@@ -1,11 +1,11 @@
-/** AST handling for names
+/** AST handling for variable declaration nodes
  *
  * This source file is part of the Cone Programming Language C compiler
  * See Copyright Notice in conec.h
 */
 
-#ifndef name_h
-#define name_h
+#ifndef vardcl_h
+#define vardcl_h
 
 // Name declaration node (e.g., variable, fn implementation, or named type)
 typedef struct NameDclAstNode {
@@ -19,18 +19,6 @@ typedef struct NameDclAstNode {
 	uint16_t scope;				// 0=global
 	uint16_t index;				// index within this scope (e.g., parameter number)
 } NameDclAstNode;
-
-// Name use node - when populated, it refers to the applicable declaration for the name
-typedef struct NameUseAstNode {
-	TypedAstHdr;
-	Symbol *namesym;			// Pointer to the global symbol table entry
-	NameDclAstNode *dclnode;	// Declaration of this name (NULL until names are resolved)
-} NameUseAstNode;
-
-NameUseAstNode *newNameUseNode(Symbol *namesym);
-NameUseAstNode *newFieldUseNode(Symbol *namesym);
-void nameUsePrint(NameUseAstNode *name);
-void nameUsePass(AstPass *pstate, NameUseAstNode *name);
 
 NameDclAstNode *newNameDclNode(Symbol *namesym, uint16_t asttype, AstNode *sig, PermAstNode *perm, AstNode *val);
 void newNameDclNodeStr(char *namestr, uint16_t asttype, AstNode *type);
