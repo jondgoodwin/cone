@@ -89,10 +89,10 @@ void registerGlobalName(NameDclAstNode *name) {
 
 	if (namesym->node) {
 		errorMsgNode((AstNode *)name, ErrorDupName, "Global name is already defined. Only one allowed.");
-		errorMsgNode(namesym->node, ErrorDupName, "This is the conflicting definition for that name.");
+		errorMsgNode((AstNode*)namesym->node, ErrorDupName, "This is the conflicting definition for that name.");
 	}
 	else
-		namesym->node = (AstNode*)name;
+		namesym->node = (NamedAstNode*)name;
 }
 
 // Parse a program's global area
@@ -123,7 +123,7 @@ PgmAstNode *parse() {
 
 		// A global variable declaration, if it begins with a permission
 		case IdentToken: {
-			AstNode *perm = lex->val.ident->node;
+			NamedAstNode *perm = lex->val.ident->node;
 			if (perm && perm->asttype == PermNameDclNode) {
 				nodesAdd(nodes, node = (AstNode*)parseVarDcl(immPerm));
 				parseSemi();

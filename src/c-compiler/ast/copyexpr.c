@@ -174,7 +174,7 @@ case TypeCheck:
 	uint32_t cnt;
 	SymNode *parmp = (SymNode*)((((FnSigAstNode*)fnsig)->parms) + 1);
 	for (nodesFor(node->parms, cnt, argsp)) {
-		if (!typeCoerces(parmp->node, argsp))
+		if (!typeCoerces((AstNode*)parmp->node, argsp))
 			errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
 		else
 			handleCopy(pstate, *argsp);

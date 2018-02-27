@@ -18,9 +18,9 @@
 
 Symbol *keyAdd(char *keyword, uint16_t toktype) {
 	Symbol *sym;
-	AstNode *node;
+	NamedAstNode *node;
 	sym = symFind(keyword, strlen(keyword));
-	sym->node = node = (AstNode*)memAllocBlk(sizeof(AstNode));
+	sym->node = node = (NamedAstNode*)memAllocBlk(sizeof(AstNode));
 	node->asttype = KeywordNode;
 	node->flags = toktype;
 	return sym;

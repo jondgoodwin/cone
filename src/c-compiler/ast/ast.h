@@ -154,7 +154,7 @@ typedef struct TypedAstNode {
 	struct NamedAstNode *owner; \
 	char *guname; \
 	Symbol *namesym; \
-	struct AstNode *prev
+	struct NamedAstNode *prev
 
 // Castable structure for all named AST nodes
 typedef struct NamedAstNode {

@@ -30,7 +30,7 @@ void structPass(AstPass *pstate, StructAstNode *node) {
 	AstNode **nodesp;
 	uint32_t cnt;
 	for (inodesFor(node->fields, cnt, inodesp))
-		astPass(pstate, inodesp->node);
+		astPass(pstate, (AstNode*)inodesp->node);
 	for (nodesFor(node->methods, cnt, nodesp))
 		astPass(pstate, *nodesp);
 }

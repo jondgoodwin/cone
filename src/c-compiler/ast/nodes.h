@@ -9,6 +9,7 @@
 #define nodes_h
 
 typedef struct AstNode AstNode;
+typedef struct NamedAstNode NamedAstNode;
 typedef struct Symbol Symbol;
 
 #include <stdint.h>
@@ -42,7 +43,7 @@ typedef struct Inodes {
 
 typedef struct SymNode {
 	Symbol *name;
-	AstNode *node;
+	struct NamedAstNode *node;
 } SymNode;
 
 Inodes *newInodes(int size);

@@ -28,7 +28,7 @@ void fnSigPrint(FnSigAstNode *sig) {
 	uint32_t cnt;
 	astFprint("fn(");
 	for (inodesFor(sig->parms, cnt, nodesp)) {
-		astPrintNode(nodesp->node);
+		astPrintNode((AstNode*)nodesp->node);
 		if (cnt > 1)
 			astFprint(", ");
 	}
@@ -41,7 +41,7 @@ void fnSigPass(AstPass *pstate, FnSigAstNode *sig) {
 	SymNode *nodesp;
 	uint32_t cnt;
 	for (inodesFor(sig->parms, cnt, nodesp))
-		astPass(pstate, nodesp->node);
+		astPass(pstate, (AstNode*)nodesp->node);
 	astPass(pstate, sig->rettype);
 }
 
@@ -58,7 +58,7 @@ int fnSigEqual(FnSigAstNode *node1, FnSigAstNode *node2) {
 	// Every parameter's type must also match
 	nodes2p = &inodesGet(node2->parms, 0);
 	for (inodesFor(node1->parms, cnt, nodes1p)) {
-		if (!typeIsSame(nodes1p->node, nodes2p->node))
+		if (!typeIsSame((AstNode*)nodes1p->node, (AstNode*)nodes2p->node))
 			return 0;
 		nodes2p++;
 	}

@@ -321,7 +321,7 @@ void lexScanIdent(char *srcp) {
 				// Find identifier token in symbol table and preserve info about it
 				// Substitute token type when identifier is a keyword
 				lex->val.ident = symFind(srcbeg, srcp-srcbeg);
-				identNode = lex->val.ident->node;
+				identNode = (AstNode*)lex->val.ident->node;
 				lex->toktype = (identNode && identNode->asttype == KeywordNode)? identNode->flags : IdentToken;
 				lex->srcp = srcp;
 				return;

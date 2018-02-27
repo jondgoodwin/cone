@@ -8,7 +8,7 @@
 #ifndef symbol_h
 #define symbol_h
 
-typedef struct AstNode AstNode;	// ../ast/ast.h
+typedef struct NamedAstNode NamedAstNode;	// ../ast/ast.h
 
 #include <stdlib.h>
 #include <stddef.h>
@@ -23,7 +23,7 @@ unsigned int gSymTblUtil;	// % utilization that triggers doubling of table
 
 // Symbol info (a name-unique, unmovable allocated block in memory
 typedef struct Symbol {
-	AstNode *node;	// AST node currently assigned to symbol
+	NamedAstNode *node;	// AST node currently assigned to symbol
 	size_t hash;	// Symbol's computed hash
 	unsigned char namesz;	// Number of characters in the name (<=255)
 	char namestr;	// First byte of symbol's name (the rest follow)

@@ -137,7 +137,7 @@ AstNode *parseBlock() {
 
 		// A local variable declaration, if it begins with a permission
 		case IdentToken: {
-			AstNode *perm = lex->val.ident->node;
+			NamedAstNode *perm = lex->val.ident->node;
 			if (perm && perm->asttype == PermNameDclNode) {
 				NameDclAstNode *local;
 				nodesAdd(&blk->stmts, (AstNode*)(local = parseVarDcl(immPerm)));

@@ -35,7 +35,7 @@ NameDclAstNode *newNameDclNode(Symbol *namesym, uint16_t asttype, AstNode *type,
 void newNameDclNodeStr(char *namestr, uint16_t asttype, AstNode *type) {
 	Symbol *sym;
 	sym = symFind(namestr, strlen(namestr));
-	sym->node = (AstNode*)newNameDclNode(sym, asttype, NULL, immPerm, type);
+	sym->node = (NamedAstNode*)newNameDclNode(sym, asttype, NULL, immPerm, type);
 }
 
 // Return true if node is one of the specialized name declaration nodes
@@ -97,7 +97,7 @@ void nameDclVarNameResolve(AstPass *pstate, NameDclAstNode *name) {
 
 		// Hook variable into global symbol table (will be unhooked by block)
 		name->prev = name->namesym->node; // Latent unhooker
-		name->namesym->node = (AstNode*)name;
+		name->namesym->node = (NamedAstNode*)name;
 	}
 
 	if (name->value)

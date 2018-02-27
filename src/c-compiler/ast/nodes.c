@@ -67,7 +67,7 @@ void inodesAdd(Inodes **nodesp, Symbol *name, AstNode *node) {
 	}
 	SymNode *slotp = ((SymNode*)(inodes + 1)) + inodes->used;
 	slotp->name = name;
-	slotp->node = node;
+	slotp->node = (NamedAstNode*)node;
 	inodes->used++;
 }
 
@@ -89,7 +89,7 @@ void inodesHook(Inodes *inodes) {
 	for (inodesFor(inodes, cnt, nodesp)) {
 		NameDclAstNode *parm = (NameDclAstNode*)nodesp->node;
 		parm->prev = parm->namesym->node; // Latent unhooker
-		parm->namesym->node = (AstNode*)parm;
+		parm->namesym->node = (NamedAstNode*)parm;
 	}
 }
 
