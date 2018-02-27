@@ -46,6 +46,7 @@ void parseAllocPerm(PtrAstNode *refnode) {
 
 // Parse a variable declaration
 NameDclAstNode *parseVarDcl(ParseState *parse, PermAstNode *defperm) {
+	NameDclAstNode *varnode;
 	Symbol *namesym = NULL;
 	AstNode *vtype;
 	PermAstNode *perm;
@@ -76,7 +77,9 @@ NameDclAstNode *parseVarDcl(ParseState *parse, PermAstNode *defperm) {
 	else
 		val = NULL;
 
-	return newNameDclNode(namesym, VarNameDclNode, vtype, perm, val);
+	varnode = newNameDclNode(namesym, VarNameDclNode, vtype, perm, val);
+	varnode->owner = parse->owner;
+	return varnode;
 }
 
 // Parse a pointer type
@@ -108,12 +111,15 @@ AstNode *parsePtrType(ParseState *parse) {
 
 // Parse a struct
 AstNode *parseStruct(ParseState *parse) {
+	NamedAstNode *svowner = parse->owner;
 	NameDclAstNode *strdclnode;
 	StructAstNode *strnode;
 	int16_t fieldnbr = 0;
 
 	strnode = newStructNode();
 	strdclnode = newNameDclNode(NULL, VtypeNameDclNode, voidType, immPerm, (AstNode*)strnode);
+	strdclnode->owner = parse->owner;
+	parse->owner = (NamedAstNode *)strdclnode;
 	if (lexIsToken(AllocToken)) {
 		strnode->asttype = AllocType;
 		strdclnode->asttype = AllocNameDclNode;
@@ -154,6 +160,7 @@ AstNode *parseStruct(ParseState *parse) {
 	else
 		errorMsgLex(ErrorNoLCurly, "Expected left curly bracket enclosing fields or methods");
 
+	parse->owner = svowner;
 	return (AstNode*)strdclnode;
 }
 

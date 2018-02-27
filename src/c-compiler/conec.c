@@ -53,7 +53,7 @@ int main(int argc, char **argv) {
 
 	// Parse and generate
 	lexInject(srcfn, src);
-	modnode = parseModule();
+	modnode = parsePgm();
 	if (errors == 0) {
 		astPasses(modnode);
 		if (errors == 0) {

@@ -15,7 +15,7 @@ typedef struct ParseState {
 } ParseState;
 
 // parser.c
-ModuleAstNode *parseModule();
+ModuleAstNode *parsePgm();
 void parseSemi();
 void parseRCurly();
 void parseLCurly();

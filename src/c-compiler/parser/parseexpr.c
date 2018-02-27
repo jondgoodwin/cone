@@ -17,7 +17,7 @@
 #include <stdio.h>
 #include <assert.h>
 
-AstNode *parseAddr();
+AstNode *parseAddr(ParseState *parse);
 
 // Parse a term: literal, identifier, etc.
 AstNode *parseTerm(ParseState *parse) {

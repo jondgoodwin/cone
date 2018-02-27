@@ -72,6 +72,7 @@ AstNode *parseFn(ParseState *parse) {
 		return sig;
 	}
 	fnnode = (NameDclAstNode *)sig;
+	fnnode->owner = parse->owner;
 
 	// Process statements block that implements function, if provided
 	if (!lexIsToken(LCurlyToken) && !lexIsToken(SemiToken))
@@ -95,23 +96,19 @@ void registerGlobalName(NameDclAstNode *name) {
 		namesym->node = (NamedAstNode*)name;
 }
 
-// Parse a program's global area
-ModuleAstNode *parseModule() {
-	ParseState parse;
+// Parse a module's global statement block
+ModuleAstNode *parseModuleBlk(ParseState *parse, ModuleAstNode *mod) {
 	AstNode *node;
-	ModuleAstNode *mod;
 	Nodes **nodes;
 
 	// Create and populate a Module node for the program
-	mod = newModuleNode();
-	parse.owner = (NamedAstNode *)mod;
 	nodes = &mod->nodes;
 	while (!lexIsToken(EofToken)) {
 		switch (lex->toktype) {
 
 		// 'fn' function definition
 		case FnToken:
-			nodesAdd(nodes, node=parseFn(&parse));
+			nodesAdd(nodes, node=parseFn(parse));
 			if (isNameDclNode(node))
 				registerGlobalName((NameDclAstNode *)node);
 			break;
@@ -119,7 +116,7 @@ ModuleAstNode *parseModule() {
 		// 'struct' definition
 		case StructToken:
 		case AllocToken:
-			nodesAdd(nodes, node = parseStruct(&parse));
+			nodesAdd(nodes, node = parseStruct(parse));
 			registerGlobalName((NameDclAstNode *)node);
 			break;
 
@@ -127,7 +124,7 @@ ModuleAstNode *parseModule() {
 		case IdentToken: {
 			NamedAstNode *perm = lex->val.ident->node;
 			if (perm && perm->asttype == PermNameDclNode) {
-				nodesAdd(nodes, node = (AstNode*)parseVarDcl(&parse, immPerm));
+				nodesAdd(nodes, node = (AstNode*)parseVarDcl(parse, immPerm));
 				parseSemi();
 				if (isNameDclNode(node)) {
 					NameDclAstNode *vardcl = (NameDclAstNode*)node;
@@ -148,4 +145,13 @@ ModuleAstNode *parseModule() {
 		}
 	}
 	return mod;
+}
+
+// Parse a program = the main module
+ModuleAstNode *parsePgm() {
+	ParseState parse;
+	ModuleAstNode *mod;
+	mod = newModuleNode();
+	parse.owner = (NamedAstNode *)mod;
+	return parseModuleBlk(&parse, mod);
 }
