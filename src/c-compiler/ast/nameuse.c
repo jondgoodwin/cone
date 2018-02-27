@@ -40,15 +40,7 @@ void nameUsePass(AstPass *pstate, NameUseAstNode *name) {
 	switch (pstate->pass) {
 	case NameResolution:
 		name->dclnode = (NameDclAstNode*)name->namesym->node;
-		if (name->dclnode) {
-			switch (name->dclnode->asttype) {
-			case VarNameDclNode: name->asttype = VarNameUseNode; return;
-			case VtypeNameDclNode: name->asttype = VtypeNameUseNode; return;
-			case PermNameDclNode: name->asttype = PermNameUseNode; return;
-			case AllocNameDclNode: name->asttype = AllocNameUseNode; return;
-			}
-		}
-		else
+		if (!name->dclnode)
 			errorMsgNode((AstNode*)name, ErrorUnkName, "The name %s does not refer to a declared name", &name->namesym->namestr);
 		break;
 	case TypeCheck:

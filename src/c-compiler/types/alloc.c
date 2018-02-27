@@ -43,13 +43,13 @@ void allocAllocate(AddrAstNode *anode, PtrAstNode *ptype) {
 	NameDclAstNode *szvtype = newNameDclNode(szvtsym, VarNameDclNode, (AstNode*)usizeType, immPerm, (AstNode*)szvtval);
 	nodesAdd(&blknode->stmts, (AstNode*)szvtype);
 	NameUseAstNode *szvtuse = newNameUseNode(szvtsym);
-	szvtuse->asttype = VarNameUseNode;
+	szvtuse->asttype = NameUseNode;
 	szvtuse->dclnode = szvtype;
 	szvtuse->vtype = szvtype->vtype;
 
 	// p1 = alloc.allocate(szvtype)
 	NameUseAstNode *usealloc = newNameUseNode(symalloc);
-	usealloc->asttype = VarNameUseNode;
+	usealloc->asttype = NameUseNode;
 	usealloc->dclnode = allocmeth;
 	usealloc->vtype = allocmeth->vtype;
 	FnCallAstNode *callalloc = newFnCallAstNode((AstNode*)usealloc, 1);
@@ -61,7 +61,7 @@ void allocAllocate(AddrAstNode *anode, PtrAstNode *ptype) {
 	NameDclAstNode *p1dcl = newNameDclNode(pT, VarNameDclNode, (AstNode*)ptype, immPerm, (AstNode*)castvt);
 	nodesAdd(&blknode->stmts, (AstNode*)p1dcl);
 	NameUseAstNode *p1use = newNameUseNode(pT);
-	p1use->asttype = VarNameUseNode;
+	p1use->asttype = NameUseNode;
 	p1use->dclnode = p1dcl;
 	p1use->vtype = p1dcl->vtype;
 

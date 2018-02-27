@@ -14,9 +14,9 @@
 #include <assert.h>
 
 #define getVtype(node) {\
-	if (astgroup(node->asttype) == ExpGroup) \
+	if (isExpNode(node)) \
 		node = ((TypedAstNode *)node)->vtype; \
-	if (node->asttype == VtypeNameUseNode || node->asttype == AllocNameUseNode) \
+	if (node->asttype == NameUseNode) \
 		node = ((NameUseAstNode *)node)->dclnode->value; \
 }
 
@@ -61,9 +61,9 @@ int typeIsSame(AstNode *node1, AstNode *node2) {
 // 2+ - requires increasingly lossy conversion/coercion
 int typeMatches(AstNode *totype, AstNode *fromtype) {
 	// Convert, if needed, from names to the type declaration
-	if (totype->asttype == VtypeNameUseNode || totype->asttype == AllocNameUseNode)
+	if (totype->asttype == NameUseNode)
 		totype = ((NameUseAstNode *)totype)->dclnode->value;
-	if (fromtype->asttype == VtypeNameUseNode || fromtype->asttype == AllocNameUseNode)
+	if (fromtype->asttype == NameUseNode)
 		fromtype = ((NameUseAstNode *)fromtype)->dclnode->value;
 
 	// If they are the same value type info, types match
@@ -148,7 +148,7 @@ int typeCoerces(AstNode *to, AstNode **from) {
 // Add type mangle info to buffer
 char *typeMangle(char *bufp, AstNode *vtype) {
 	switch (vtype->asttype) {
-	case VtypeNameUseNode: case PermNameUseNode: case AllocNameUseNode:
+	case NameUseNode:
 	{
 		strcpy(bufp, &((NameUseAstNode *)vtype)->dclnode->namesym->namestr);
 		break;

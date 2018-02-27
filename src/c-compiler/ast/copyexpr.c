@@ -39,7 +39,7 @@ void assignPrint(AssignAstNode *node) {
 // expression is valid lval expression
 int isLval(AstNode *node) {
 	switch (node->asttype) {
-	case VarNameUseNode:
+	case NameUseNode:
 	case DerefNode:
 	case ElementNode:
 		return 1;
@@ -139,7 +139,7 @@ case TypeCheck:
 		Symbol *methsym = methname->namesym;
 		NameDclAstNode *method;
 		if (method = fnCallFindMethod(node, methsym)) {
-			methname->asttype = VarNameUseNode;
+			methname->asttype = NameUseNode;
 			methname->dclnode = method;
 			methname->vtype = methname->dclnode->vtype;
 		}
@@ -215,19 +215,20 @@ void addrPrint(AddrAstNode *node) {
 
 // Type check borrowed reference creator
 void addrTypeCheckBorrow(AddrAstNode *node, PtrAstNode *ptype) {
-	if (((TypedAstNode *)node->exp)->asttype != VarNameUseNode)
-		errorMsgNode((AstNode*)node, ErrorNotLval, "& only applies to lvals, such as variables");
-	else {
-		if (!permMatches(ptype->perm, ((NameUseAstNode*)node->exp)->dclnode->perm))
-			errorMsgNode((AstNode *)node, ErrorBadPerm, "Reference cannot obtain this permission");
+	AstNode *exp = node->exp;
+	if (exp->asttype != NameUseNode || ((NameUseAstNode*)exp)->dclnode->asttype != VarNameDclNode) {
+		errorMsgNode((AstNode*)node, ErrorNotLval, "May only borrow from lvals (e.g., variable)");
+		return;
 	}
+	if (!permMatches(ptype->perm, ((NameUseAstNode*)exp)->dclnode->perm))
+		errorMsgNode((AstNode *)node, ErrorBadPerm, "Borrowed reference cannot obtain this permission");
 }
 
 // Analyze addr node
 void addrPass(AstPass *pstate, AddrAstNode *node) {
 	astPass(pstate, node->exp);
 	if (pstate->pass == TypeCheck) {
-		if (astgroup(node->exp->asttype) != ExpGroup) {
+		if (!isExpNode(node->exp)) {
 			errorMsgNode(node->exp, ErrorBadTerm, "Needs to be an expression");
 			return;
 		}
@@ -239,5 +240,4 @@ void addrPass(AstPass *pstate, AddrAstNode *node) {
 		else
 			allocAllocate(node, ptype);
 	}
-
 }

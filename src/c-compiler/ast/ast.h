@@ -46,6 +46,8 @@ enum AstGroup {
 
 // Retrieve the group for an ast type
 #define astgroup(typ) ((typ)>>8)
+#define isExpNode(node) (astgroup(node->asttype)==ExpGroup \
+  || (node->asttype==NameUseNode && astgroup((((NameUseAstNode*)node)->dclnode)->asttype)==ExpGroup))
 
 // All the possible types for an AstNode
 enum AstType {
@@ -66,7 +68,6 @@ enum AstType {
 
 	// Expression nodes (having value type - or sometimes nullType)
 	VarNameDclNode = (ExpGroup<<8),
-	VarNameUseNode,	// Variable reference
 	FieldNameUseNode,	// Member of a namespace
 	ULitNode,		// Integer literal
 	FLitNode,		// Float literal
@@ -86,7 +87,6 @@ enum AstType {
 
 	// Value type AST nodes
 	VtypeNameDclNode = (VTypeGroup<<8),
-	VtypeNameUseNode,
 	VoidType,	// representing no values, e.g., no return values on a fn
 	IntNbrType,	// Integer
 	UintNbrType,	// Unsigned integer
@@ -101,12 +101,10 @@ enum AstType {
 
 	// Permission type nodes
 	PermNameDclNode = (PermGroup << 8),
-	PermNameUseNode,
 	PermType,
 
 	// Allocator type nodes
 	AllocNameDclNode = (AllocGroup<<8),
-	AllocNameUseNode,
 	AllocType,
 };
 

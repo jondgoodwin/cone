@@ -66,7 +66,7 @@ void fnImplicitReturn(AstNode *rettype, BlockAstNode *blk) {
 	}
 	else {
 		// Inject return in front of expression
-		if (astgroup(laststmt->asttype) == ExpGroup) {
+		if (isExpNode(laststmt)) {
 			ReturnAstNode *retnode = newReturnNode();
 			retnode->exp = laststmt;
 			nodesLast(blk->stmts) = (AstNode*)retnode;

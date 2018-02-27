@@ -122,7 +122,7 @@ void elementPass(AstPass *pstate, ElementAstNode *node) {
 				Symbol *fldsym = fldname->namesym;
 				SymNode *field = inodesFind(((StructAstNode *)ownvtype)->fields, fldsym);
 				if (field) {
-					fldname->asttype = VarNameUseNode;
+					fldname->asttype = NameUseNode;
 					fldname->dclnode = (NameDclAstNode*)field->node;
 					node->vtype = fldname->vtype = fldname->dclnode->vtype;
 				}

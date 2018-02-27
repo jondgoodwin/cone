@@ -60,7 +60,7 @@ void astPrintNode(AstNode *node) {
 	case PgmNode:
 		pgmPrint((PgmAstNode *)node); break;
 	case NameUseNode:
-	case VarNameUseNode: case FieldNameUseNode: case VtypeNameUseNode: case PermNameUseNode: case AllocNameUseNode:
+	case FieldNameUseNode:
 		nameUsePrint((NameUseAstNode *)node); break;
 	case VarNameDclNode: case VtypeNameDclNode: case PermNameDclNode: case AllocNameDclNode:
 		nameDclPrint((NameDclAstNode *)node); break;
@@ -137,7 +137,6 @@ void astPass(AstPass *pstate, AstNode *node) {
 	case AllocNameDclNode:
 		nameVtypeDclPass(pstate, (NameDclAstNode *)node); break;
 	case NameUseNode:
-	case VarNameUseNode: case VtypeNameUseNode: case PermNameUseNode: case AllocNameUseNode:
 		nameUsePass(pstate, (NameUseAstNode *)node); break;
 	case BlockNode:
 		blockPass(pstate, (BlockAstNode *)node); break;
