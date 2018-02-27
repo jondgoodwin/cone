@@ -9,10 +9,7 @@
 
 // Name declaration node (e.g., variable, fn implementation, or named type)
 typedef struct NameDclAstNode {
-	TypedAstHdr;				// 'vtype': type of this name's value
-	Symbol *namesym;			// Pointer to the global symbol table entry
-	struct AstNode *prev;		// previous name this overrides in global symbol table
-	char *guname;				// Globally unique name (typically mangled)
+	NamedAstHdr;				// 'vtype': type of this name's value
 	PermAstNode *perm;			// Permission type (often mut or imm)
 	AstNode *value;				// Starting value/declaration (NULL if not initialized)
 	LLVMValueRef llvmvar;		// LLVM's handle for a declared variable (for generation)

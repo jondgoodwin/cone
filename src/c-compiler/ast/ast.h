@@ -144,6 +144,23 @@ typedef struct TypedAstNode {
 	TypedAstHdr;
 } TypedAstNode;
 
+// Named Ast Node header, for variable and type declarations
+// - owner is the namespace node this name belongs to
+// - guname is the globally unique name (typically mangled)
+// - namesym points to the global symbol table entry (holds name string)
+// - prev points to named node this overrides in global symbol table
+#define NamedAstHdr \
+	TypedAstHdr; \
+	struct NamedAstNode *owner; \
+	char *guname; \
+	Symbol *namesym; \
+	struct AstNode *prev
+
+// Castable structure for all named AST nodes
+typedef struct NamedAstNode {
+	NamedAstHdr;
+} NamedAstNode;
+
 // Type Ast Node header for all type structures
 // - mbrs is the list of a type instance's methods and fields
 // - subtypes is the list of traits, etc. the type implements
