@@ -108,10 +108,10 @@ AstNode *parsePostfix() {
 			}
 			AstNode *method = (AstNode*)newNameUseNode(lex->val.ident);
 			lexNextToken();
-			method->asttype = FieldNameUseNode;
+			method->asttype = MemberUseNode;
 			
 			// If parameters provided, make this a function call
-			// (where FieldNameUseNode signals it is an OO call)
+			// (where MemberUseNode signals it is an OO call)
 			if (lexIsToken(LParenToken)) {
 				lexNextToken();
 				FnCallAstNode *fncall = newFnCallAstNode(method, 8);
@@ -164,14 +164,14 @@ AstNode *parsePrefix() {
 	switch (lex->toktype) {
 	case DashToken:
 	{
-		FnCallAstNode *node = newFnCallAstNode((AstNode*)newFieldUseNode(symFind("neg", 3)), 1);
+		FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(symFind("neg", 3)), 1);
 		lexNextToken();
 		nodesAdd(&node->parms, parsePrefix());
 		return (AstNode *)node;
 	}
 	case TildeToken:
 	{
-		FnCallAstNode *node = newFnCallAstNode((AstNode*)newFieldUseNode(symFind("~", 1)), 1);
+		FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(symFind("~", 1)), 1);
 		lexNextToken();
 		nodesAdd(&node->parms, parsePrefix());
 		return (AstNode *)node;
@@ -207,21 +207,21 @@ AstNode *parseMult() {
 	AstNode *lhnode = parseCast();
 	while (1) {
 		if (lexIsToken(StarToken)) {
-			FnCallAstNode *node = newFnCallAstNode((AstNode*)newFieldUseNode(symFind("*", 1)), 2);
+			FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(symFind("*", 1)), 2);
 			lexNextToken();
 			nodesAdd(&node->parms, lhnode);
 			nodesAdd(&node->parms, parseCast());
 			lhnode = (AstNode*)node;
 		}
 		else if (lexIsToken(SlashToken)) {
-			FnCallAstNode *node = newFnCallAstNode((AstNode*)newFieldUseNode(symFind("/", 1)), 2);
+			FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(symFind("/", 1)), 2);
 			lexNextToken();
 			nodesAdd(&node->parms, lhnode);
 			nodesAdd(&node->parms, parseCast());
 			lhnode = (AstNode*)node;
 		}
 		else if (lexIsToken(PercentToken)) {
-			FnCallAstNode *node = newFnCallAstNode((AstNode*)newFieldUseNode(symFind("%", 1)), 2);
+			FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(symFind("%", 1)), 2);
 			lexNextToken();
 			nodesAdd(&node->parms, lhnode);
 			nodesAdd(&node->parms, parseCast());
@@ -237,14 +237,14 @@ AstNode *parseAdd() {
 	AstNode *lhnode = parseMult();
 	while (1) {
 		if (lexIsToken(PlusToken)) {
-			FnCallAstNode *node = newFnCallAstNode((AstNode*)newFieldUseNode(symFind("+", 1)), 2);
+			FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(symFind("+", 1)), 2);
 			lexNextToken();
 			nodesAdd(&node->parms, lhnode);
 			nodesAdd(&node->parms, parseMult());
 			lhnode = (AstNode*)node;
 		}
 		else if (lexIsToken(DashToken)) {
-			FnCallAstNode *node = newFnCallAstNode((AstNode*)newFieldUseNode(symFind("-", 1)), 2);
+			FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(symFind("-", 1)), 2);
 			lexNextToken();
 			nodesAdd(&node->parms, lhnode);
 			nodesAdd(&node->parms, parseMult());
@@ -260,7 +260,7 @@ AstNode *parseAnd() {
 	AstNode *lhnode = parseAdd();
 	while (1) {
 		if (lexIsToken(AmperToken)) {
-			FnCallAstNode *node = newFnCallAstNode((AstNode*)newFieldUseNode(symFind("&", 1)), 2);
+			FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(symFind("&", 1)), 2);
 			lexNextToken();
 			nodesAdd(&node->parms, lhnode);
 			nodesAdd(&node->parms, parseAdd());
@@ -276,7 +276,7 @@ AstNode *parseXor() {
 	AstNode *lhnode = parseAnd();
 	while (1) {
 		if (lexIsToken(CaretToken)) {
-			FnCallAstNode *node = newFnCallAstNode((AstNode*)newFieldUseNode(symFind("^", 1)), 2);
+			FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(symFind("^", 1)), 2);
 			lexNextToken();
 			nodesAdd(&node->parms, lhnode);
 			nodesAdd(&node->parms, parseAnd());
@@ -292,7 +292,7 @@ AstNode *parseOr() {
 	AstNode *lhnode = parseXor();
 	while (1) {
 		if (lexIsToken(BarToken)) {
-			FnCallAstNode *node = newFnCallAstNode((AstNode*)newFieldUseNode(symFind("|", 1)), 2);
+			FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(symFind("|", 1)), 2);
 			lexNextToken();
 			nodesAdd(&node->parms, lhnode);
 			nodesAdd(&node->parms, parseXor());
@@ -319,7 +319,7 @@ AstNode *parseCmp() {
 	default: return lhnode;
 	}
 
-	FnCallAstNode *node = newFnCallAstNode((AstNode*)newFieldUseNode(symFind(cmpop, cmpsz)), 2);
+	FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(symFind(cmpop, cmpsz)), 2);
 	lexNextToken();
 	nodesAdd(&node->parms, lhnode);
 	nodesAdd(&node->parms, parseOr());

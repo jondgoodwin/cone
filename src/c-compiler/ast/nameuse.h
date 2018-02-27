@@ -15,7 +15,7 @@ typedef struct NameUseAstNode {
 } NameUseAstNode;
 
 NameUseAstNode *newNameUseNode(Symbol *namesym);
-NameUseAstNode *newFieldUseNode(Symbol *namesym);
+NameUseAstNode *newMemberUseNode(Symbol *namesym);
 void nameUsePrint(NameUseAstNode *name);
 void nameUsePass(AstPass *pstate, NameUseAstNode *name);
 

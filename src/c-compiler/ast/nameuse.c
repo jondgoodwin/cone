@@ -22,9 +22,9 @@ NameUseAstNode *newNameUseNode(Symbol *namesym) {
 	return name;
 }
 
-NameUseAstNode *newFieldUseNode(Symbol *namesym) {
+NameUseAstNode *newMemberUseNode(Symbol *namesym) {
 	NameUseAstNode *name;
-	newAstNode(name, NameUseAstNode, FieldNameUseNode);
+	newAstNode(name, NameUseAstNode, MemberUseNode);
 	name->namesym = namesym;
 	return name;
 }

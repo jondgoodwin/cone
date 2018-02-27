@@ -114,7 +114,7 @@ void elementPrint(ElementAstNode *node) {
 void elementPass(AstPass *pstate, ElementAstNode *node) {
 	astPass(pstate, node->owner);
 	if (pstate->pass == TypeCheck) {
-		if (node->element->asttype == FieldNameUseNode) {
+		if (node->element->asttype == MemberUseNode) {
 			derefAuto(&node->owner);
 			AstNode *ownvtype = typeGetVtype(node->owner);
 			if (ownvtype->asttype == StructType) {

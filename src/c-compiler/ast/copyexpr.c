@@ -134,7 +134,7 @@ switch (pstate->pass) {
 case TypeCheck:
 {
 	// If this is an object call, resolve method name within first argument's type
-	if (node->fn->asttype == FieldNameUseNode) {
+	if (node->fn->asttype == MemberUseNode) {
 		NameUseAstNode *methname = (NameUseAstNode*)node->fn;
 		Symbol *methsym = methname->namesym;
 		NameDclAstNode *method;

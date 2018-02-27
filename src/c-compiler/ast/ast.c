@@ -60,7 +60,7 @@ void astPrintNode(AstNode *node) {
 	case PgmNode:
 		pgmPrint((PgmAstNode *)node); break;
 	case NameUseNode:
-	case FieldNameUseNode:
+	case MemberUseNode:
 		nameUsePrint((NameUseAstNode *)node); break;
 	case VarNameDclNode: case VtypeNameDclNode: case PermNameDclNode: case AllocNameDclNode:
 		nameDclPrint((NameDclAstNode *)node); break;
@@ -177,7 +177,7 @@ void astPass(AstPass *pstate, AstNode *node) {
 	case ArrayType:
 		arrayPass(pstate, (ArrayAstNode *)node); break;
 
-	case FieldNameUseNode:
+	case MemberUseNode:
 	case ULitNode:
 	case FLitNode:
 	case SLitNode:

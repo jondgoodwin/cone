@@ -68,7 +68,7 @@ enum AstType {
 
 	// Expression nodes (having value type - or sometimes nullType)
 	VarNameDclNode = (ExpGroup<<8),
-	FieldNameUseNode,	// Member of a namespace
+	MemberUseNode,	// Member of a type's namespace (field/method)
 	ULitNode,		// Integer literal
 	FLitNode,		// Float literal
 	SLitNode,		// String literal
