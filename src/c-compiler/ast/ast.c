@@ -57,8 +57,8 @@ void astPrintDecr() {
 // Serialize a specific AST node
 void astPrintNode(AstNode *node) {
 	switch (node->asttype) {
-	case PgmNode:
-		pgmPrint((PgmAstNode *)node); break;
+	case ModuleNode:
+		modPrint((ModuleAstNode *)node); break;
 	case NameUseNode:
 	case MemberUseNode:
 		nameUsePrint((NameUseAstNode *)node); break;
@@ -129,8 +129,8 @@ void astPrint(char *dir, char *srcfn, AstNode *pgmast) {
 // Syntactic sugar, name resolution, type inference and type checking
 void astPass(AstPass *pstate, AstNode *node) {
 	switch (node->asttype) {
-	case PgmNode:
-		pgmPass(pstate, (PgmAstNode*)node); break;
+	case ModuleNode:
+		modPass(pstate, (ModuleAstNode*)node); break;
 	case VarNameDclNode:
 		nameDclPass(pstate, (NameDclAstNode *)node); break;
 	case VtypeNameDclNode:
@@ -191,7 +191,7 @@ void astPass(AstPass *pstate, AstNode *node) {
 }
 
 // Run all passes against the AST (after parse and before gen)
-void astPasses(PgmAstNode *pgm) {
+void astPasses(ModuleAstNode *mod) {
 	AstPass pstate;
 	pstate.fnsig = NULL;
 	pstate.blk = NULL;
@@ -201,11 +201,11 @@ void astPasses(PgmAstNode *pgm) {
 
 	// Resolve all name uses to their appropriate declaration
 	pstate.pass = NameResolution;
-	astPass(&pstate, (AstNode*) pgm);
+	astPass(&pstate, (AstNode*) mod);
 	if (errors)
 		return;
 
 	// Apply syntactic sugar, and perform type inference/check
 	pstate.pass = TypeCheck;
-	astPass(&pstate, (AstNode*)pgm);
+	astPass(&pstate, (AstNode*)mod);
 }

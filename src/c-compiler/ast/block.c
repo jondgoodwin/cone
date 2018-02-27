@@ -11,22 +11,22 @@
 #include "../shared/symbol.h"
 #include "../shared/error.h"
 
-// Create a new Program node
-PgmAstNode *newPgmNode() {
-	PgmAstNode *pgm;
-	newAstNode(pgm, PgmAstNode, PgmNode);
-	pgm->nodes = newNodes(8);
-	return pgm;
+// Create a new Module node
+ModuleAstNode *newModuleNode() {
+	ModuleAstNode *mod;
+	newAstNode(mod, ModuleAstNode, ModuleNode);
+	mod->nodes = newNodes(8);
+	return mod;
 }
 
-// Serialize the AST for a program
-void pgmPrint(PgmAstNode *pgm) {
+// Serialize the AST for a module
+void modPrint(ModuleAstNode *mod) {
 	AstNode **nodesp;
 	uint32_t cnt;
 
-	astFprint("AST for program %s\n", pgm->lexer->url);
+	astFprint("AST for program %s\n", mod->lexer->url);
 	astPrintIncr();
-	for (nodesFor(pgm->nodes, cnt, nodesp)) {
+	for (nodesFor(mod->nodes, cnt, nodesp)) {
 		astPrintIndent();
 		astPrintNode(*nodesp);
 		astPrintNL();
@@ -34,8 +34,8 @@ void pgmPrint(PgmAstNode *pgm) {
 	astPrintDecr();
 }
 
-// Check the program's AST
-void pgmPass(AstPass *pstate, PgmAstNode *pgm) {
+// Check the module's AST
+void modPass(AstPass *pstate, ModuleAstNode *pgm) {
 	AstNode **nodesp;
 	uint32_t cnt;
 

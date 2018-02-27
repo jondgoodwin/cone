@@ -89,25 +89,25 @@ void genlGloVarName(genl_t *gen, NameDclAstNode *glovar) {
 }
 
 // Generate module's nodes
-void genlModule(genl_t *gen, PgmAstNode *pgm) {
+void genlModule(genl_t *gen, ModuleAstNode *mod) {
 	uint32_t cnt;
 	AstNode **nodesp;
 	char *error=NULL;
 
-	assert(pgm->asttype == PgmNode);
+	assert(mod->asttype == ModuleNode);
 
 	gen->module = LLVMModuleCreateWithNameInContext(gen->srcname, gen->context);
 
 	// First generate the global variable LLVMValueRef for every global variable
 	// This way forward references to global variables will work correctly
-	for (nodesFor(pgm->nodes, cnt, nodesp)) {
+	for (nodesFor(mod->nodes, cnt, nodesp)) {
 		AstNode *nodep = *nodesp;
 		if (nodep->asttype == VarNameDclNode)
 			genlGloVarName(gen, (NameDclAstNode *)nodep);
 	}
 
 	// Generate the function's block or the variable's initialization value
-	for (nodesFor(pgm->nodes, cnt, nodesp)) {
+	for (nodesFor(mod->nodes, cnt, nodesp)) {
 		AstNode *nodep = *nodesp;
 		switch (nodep->asttype) {
 		case VarNameDclNode:
@@ -206,7 +206,7 @@ void genlOut(char *objpath, char *asmpath, LLVMModuleRef mod, char *triple, LLVM
 }
 
 // Generate AST into LLVM IR using LLVM
-void genllvm(ConeOptions *opt, PgmAstNode *pgmast) {
+void genllvm(ConeOptions *opt, ModuleAstNode *mod) {
 	char *err;
 	genl_t gen;
 
@@ -219,14 +219,14 @@ void genllvm(ConeOptions *opt, PgmAstNode *pgmast) {
 	opt->ptrsize = LLVMPointerSize(gen.datalayout) << 3;
 	usizeType->bits = isizeType->bits = opt->ptrsize;
 
-	gen.srcname = pgmast->lexer->fname;
+	gen.srcname = mod->lexer->fname;
 	gen.context = LLVMContextCreate();
 
 	// Generate AST to IR
-	genlModule(&gen, pgmast);
+	genlModule(&gen, mod);
 
 	// Serialize the LLVM IR, if requested
-	if (opt->print_llvmir && LLVMPrintModuleToFile(gen.module, fileMakePath(opt->output, pgmast->lexer->fname, "preir"), &err) != 0) {
+	if (opt->print_llvmir && LLVMPrintModuleToFile(gen.module, fileMakePath(opt->output, mod->lexer->fname, "preir"), &err) != 0) {
 		errorMsg(ErrorGenErr, "Could not emit pre-ir file: %s", err);
 		LLVMDisposeMessage(err);
 	}
@@ -242,15 +242,15 @@ void genllvm(ConeOptions *opt, PgmAstNode *pgmast) {
 	LLVMDisposePassManager(passmgr);
 
 	// Serialize the LLVM IR, if requested
-	if (opt->print_llvmir && LLVMPrintModuleToFile(gen.module, fileMakePath(opt->output, pgmast->lexer->fname, "ir"), &err) != 0) {
+	if (opt->print_llvmir && LLVMPrintModuleToFile(gen.module, fileMakePath(opt->output, mod->lexer->fname, "ir"), &err) != 0) {
 		errorMsg(ErrorGenErr, "Could not emit ir file: %s", err);
 		LLVMDisposeMessage(err);
 	}
 
 	// Transform IR to target's ASM and OBJ
 	if (machine)
-		genlOut(fileMakePath(opt->output, pgmast->lexer->fname, objext),
-			opt->print_asm? fileMakePath(opt->output, pgmast->lexer->fname, asmext) : NULL,
+		genlOut(fileMakePath(opt->output, mod->lexer->fname, objext),
+			opt->print_asm? fileMakePath(opt->output, mod->lexer->fname, asmext) : NULL,
 			gen.module, opt->triple, machine);
 
 	LLVMDisposeModule(gen.module);

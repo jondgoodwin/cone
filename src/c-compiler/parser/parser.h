@@ -11,7 +11,7 @@
 #include "../ast/ast.h"
 
 // parser.c
-PgmAstNode *parse();
+ModuleAstNode *parse();
 void parseSemi();
 void parseRCurly();
 void parseLCurly();

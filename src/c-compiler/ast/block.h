@@ -9,10 +9,10 @@
 #define block_h
 
 // Program
-typedef struct PgmAstNode {
-	BasicAstHdr;
+typedef struct ModuleAstNode {
+	NamedAstHdr;
 	Nodes *nodes;
-} PgmAstNode;
+} ModuleAstNode;
 
 // Block
 typedef struct BlockAstNode {
@@ -78,9 +78,9 @@ typedef struct OpCodeAstNode {
 	int16_t opcode;
 } OpCodeAstNode;
 
-PgmAstNode *newPgmNode();
-void pgmPrint(PgmAstNode *pgm);
-void pgmPass(AstPass *pstate, PgmAstNode *pgm);
+ModuleAstNode *newModuleNode();
+void modPrint(ModuleAstNode *mod);
+void modPass(AstPass *pstate, ModuleAstNode *mod);
 
 BlockAstNode *newBlockNode();
 void blockPrint(BlockAstNode *blk);

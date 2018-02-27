@@ -56,7 +56,7 @@ enum AstType {
 	KeywordNode = (VoidGroup<<8),	// Keyword token (flags is the keyword's token type)
 
 	// Untyped (Basic) AST nodes
-	PgmNode,		// Program (global area)
+	ModuleNode,		// Program (global area)
 	OpCodeNode,		// Alternative to fndcl block for internal operations (e.g., add)
 	ReturnNode,		// Return node
 	WhileNode,		// While node
@@ -230,7 +230,7 @@ void astPrintIndent();
 void astPrintIncr();
 void astPrintDecr();
 
-void astPasses(PgmAstNode *pgm);
+void astPasses(ModuleAstNode *pgm);
 void astPass(AstPass *pstate, AstNode *pgm);
 
 #endif

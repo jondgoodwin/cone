@@ -26,7 +26,7 @@ typedef struct genl_t {
 	char *srcname;
 } genl_t;
 
-void genllvm(ConeOptions *opt, PgmAstNode *pgmast);
+void genllvm(ConeOptions *opt, ModuleAstNode *mod);
 void genlFn(genl_t *gen, NameDclAstNode *fnnode);
 void genlGloVarName(genl_t *gen, NameDclAstNode *glovar);
 

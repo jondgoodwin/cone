@@ -24,7 +24,7 @@ clock_t startTime;
 
 int main(int argc, char **argv) {
 	ConeOptions coneopt;
-	PgmAstNode *pgmast;
+	ModuleAstNode *modnode;
 	int ok;
 	char *srcfn;
 	char *src;
@@ -53,13 +53,13 @@ int main(int argc, char **argv) {
 
 	// Parse and generate
 	lexInject(srcfn, src);
-	pgmast = parse();
+	modnode = parse();
 	if (errors == 0) {
-		astPasses(pgmast);
+		astPasses(modnode);
 		if (errors == 0) {
 			if (coneopt.print_ast)
-				astPrint(coneopt.output, srcfn, (AstNode*)pgmast);
-			genllvm(&coneopt, pgmast);
+				astPrint(coneopt.output, srcfn, (AstNode*)modnode);
+			genllvm(&coneopt, modnode);
 		}
 	}
 

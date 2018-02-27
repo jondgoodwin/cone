@@ -96,14 +96,14 @@ void registerGlobalName(NameDclAstNode *name) {
 }
 
 // Parse a program's global area
-PgmAstNode *parse() {
+ModuleAstNode *parse() {
 	AstNode *node;
-	PgmAstNode *pgm;
+	ModuleAstNode *mod;
 	Nodes **nodes;
 
 	// Create and populate a Program node for the program
-	pgm = newPgmNode();
-	nodes = &pgm->nodes;
+	mod = newModuleNode();
+	nodes = &mod->nodes;
 	while (! lexIsToken( EofToken)) {
 		switch (lex->toktype) {
 
@@ -145,5 +145,5 @@ PgmAstNode *parse() {
 			lexNextToken();
 		}
 	}
-	return pgm;
+	return mod;
 }
