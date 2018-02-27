@@ -15,7 +15,11 @@
 ModuleAstNode *newModuleNode() {
 	ModuleAstNode *mod;
 	newAstNode(mod, ModuleAstNode, ModuleNode);
-	mod->nodes = newNodes(8);
+	mod->guname = NULL;
+	mod->namesym = NULL;
+	mod->prev = NULL;
+	mod->owner = NULL;
+	mod->nodes = newNodes(16);
 	return mod;
 }
 

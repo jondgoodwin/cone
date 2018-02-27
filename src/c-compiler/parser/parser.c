@@ -101,10 +101,10 @@ ModuleAstNode *parse() {
 	ModuleAstNode *mod;
 	Nodes **nodes;
 
-	// Create and populate a Program node for the program
+	// Create and populate a Module node for the program
 	mod = newModuleNode();
 	nodes = &mod->nodes;
-	while (! lexIsToken( EofToken)) {
+	while (!lexIsToken(EofToken)) {
 		switch (lex->toktype) {
 
 		// 'fn' function definition
