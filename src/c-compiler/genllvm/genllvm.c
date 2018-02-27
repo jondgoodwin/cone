@@ -31,7 +31,7 @@
 #endif
 
 // Generate parameter variable
-void genlParmVar(genl_t *gen, NameDclAstNode *var) {
+void genlParmVar(GenState *gen, NameDclAstNode *var) {
 	assert(var->asttype == VarNameDclNode);
 	// We always alloca in case variable is mutable or we want to take address of its value
 	var->llvmvar = LLVMBuildAlloca(gen->builder, genlType(gen, var->vtype), &var->namesym->namestr);
@@ -39,7 +39,7 @@ void genlParmVar(genl_t *gen, NameDclAstNode *var) {
 }
 
 // Generate a function
-void genlFn(genl_t *gen, NameDclAstNode *fnnode) {
+void genlFn(GenState *gen, NameDclAstNode *fnnode) {
 	LLVMValueRef svfn = gen->fn;
 	LLVMBuilderRef svbuilder = gen->builder;
 	FnSigAstNode *fnsig = (FnSigAstNode*)fnnode->vtype;
@@ -68,12 +68,12 @@ void genlFn(genl_t *gen, NameDclAstNode *fnnode) {
 }
 
 // Generate global variable
-void genlGloVar(genl_t *gen, NameDclAstNode *varnode) {
+void genlGloVar(GenState *gen, NameDclAstNode *varnode) {
 	LLVMSetInitializer(varnode->llvmvar, genlExpr(gen, varnode->value));
 }
 
 // Generate LLVMValueRef for a global variable or function
-void genlGloVarName(genl_t *gen, NameDclAstNode *glovar) {
+void genlGloVarName(GenState *gen, NameDclAstNode *glovar) {
 	char *varname = glovar->guname ? glovar->guname : &glovar->namesym->namestr;
 
 	// Handle when it is just a global variable
@@ -89,7 +89,7 @@ void genlGloVarName(genl_t *gen, NameDclAstNode *glovar) {
 }
 
 // Generate module's nodes
-void genlModule(genl_t *gen, ModuleAstNode *mod) {
+void genlModule(GenState *gen, ModuleAstNode *mod) {
 	uint32_t cnt;
 	AstNode **nodesp;
 	char *error=NULL;
@@ -208,7 +208,7 @@ void genlOut(char *objpath, char *asmpath, LLVMModuleRef mod, char *triple, LLVM
 // Generate AST into LLVM IR using LLVM
 void genllvm(ConeOptions *opt, ModuleAstNode *mod) {
 	char *err;
-	genl_t gen;
+	GenState gen;
 
 	LLVMTargetMachineRef machine = genlCreateMachine(opt);
 	if (!machine)

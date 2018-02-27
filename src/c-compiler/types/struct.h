@@ -16,7 +16,7 @@ typedef struct StructAstNode {
 
 StructAstNode *newStructNode();
 void structPrint(StructAstNode *node);
-void structPass(AstPass *pstate, StructAstNode *name);
+void structPass(PassState *pstate, StructAstNode *name);
 int structEqual(StructAstNode *node1, StructAstNode *node2);
 int structCoerces(StructAstNode *to, StructAstNode *from);
 

@@ -127,7 +127,7 @@ void astPrint(char *dir, char *srcfn, AstNode *pgmast) {
 
 // Dispatch a pass to a node
 // Syntactic sugar, name resolution, type inference and type checking
-void astPass(AstPass *pstate, AstNode *node) {
+void astPass(PassState *pstate, AstNode *node) {
 	switch (node->asttype) {
 	case ModuleNode:
 		modPass(pstate, (ModuleAstNode*)node); break;
@@ -192,7 +192,7 @@ void astPass(AstPass *pstate, AstNode *node) {
 
 // Run all passes against the AST (after parse and before gen)
 void astPasses(ModuleAstNode *mod) {
-	AstPass pstate;
+	PassState pstate;
 	pstate.fnsig = NULL;
 	pstate.blk = NULL;
 	pstate.typenode = NULL;

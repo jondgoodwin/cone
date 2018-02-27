@@ -80,26 +80,26 @@ typedef struct OpCodeAstNode {
 
 ModuleAstNode *newModuleNode();
 void modPrint(ModuleAstNode *mod);
-void modPass(AstPass *pstate, ModuleAstNode *mod);
+void modPass(PassState *pstate, ModuleAstNode *mod);
 
 BlockAstNode *newBlockNode();
 void blockPrint(BlockAstNode *blk);
-void blockPass(AstPass *pstate, BlockAstNode *node);
+void blockPass(PassState *pstate, BlockAstNode *node);
 
 IfAstNode *newIfNode();
 void ifPrint(IfAstNode *ifnode);
-void ifPass(AstPass *pstate, IfAstNode *ifnode);
+void ifPass(PassState *pstate, IfAstNode *ifnode);
 
 WhileAstNode *newWhileNode();
 void whilePrint(WhileAstNode *wnode);
-void whilePass(AstPass *pstate, WhileAstNode *wnode);
+void whilePass(PassState *pstate, WhileAstNode *wnode);
 
-void breakPass(AstPass *pstate, AstNode *node);
+void breakPass(PassState *pstate, AstNode *node);
 
 OpCodeAstNode *newOpCodeNode(int16_t opcode);
 
 ReturnAstNode *newReturnNode();
 void returnPrint(ReturnAstNode *node);
-void returnPass(AstPass *pstate, ReturnAstNode *node);
+void returnPass(PassState *pstate, ReturnAstNode *node);
 
 #endif

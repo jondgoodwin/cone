@@ -77,7 +77,7 @@ void fnImplicitReturn(AstNode *rettype, BlockAstNode *blk) {
 }
 
 // Enable resolution of fn parameter references to parameters
-void nameDclFnNameResolve(AstPass *pstate, NameDclAstNode *name) {
+void nameDclFnNameResolve(PassState *pstate, NameDclAstNode *name) {
 	int16_t oldscope = pstate->scope;
 	pstate->scope = 1;
 	FnSigAstNode *fnsig = (FnSigAstNode*)name->vtype;
@@ -88,7 +88,7 @@ void nameDclFnNameResolve(AstPass *pstate, NameDclAstNode *name) {
 }
 
 // Enable name resolution of local variables
-void nameDclVarNameResolve(AstPass *pstate, NameDclAstNode *name) {
+void nameDclVarNameResolve(PassState *pstate, NameDclAstNode *name) {
 	// Variable declaration within a block is a local variable
 	if (pstate->scope > 1) {
 		// Capture variable's scope info and have block know about variable
@@ -105,7 +105,7 @@ void nameDclVarNameResolve(AstPass *pstate, NameDclAstNode *name) {
 }
 
 // Create and return mangled (globally unique) name
-char *nameDclMangleName(AstPass *pstate, NameDclAstNode *name) {
+char *nameDclMangleName(PassState *pstate, NameDclAstNode *name) {
 	char workbuf[2048] = { '\0' };
 	if (pstate->typenode) {
 		strcat(workbuf, &pstate->typenode->namesym->namestr);
@@ -127,7 +127,7 @@ char *nameDclMangleName(AstPass *pstate, NameDclAstNode *name) {
 }
 
 // Provide parameter and return type context for type checking function's logic
-void nameDclFnTypeCheck(AstPass *pstate, NameDclAstNode *name) {
+void nameDclFnTypeCheck(PassState *pstate, NameDclAstNode *name) {
 	FnSigAstNode *oldfnsig = pstate->fnsig;
 	pstate->fnsig = (FnSigAstNode*)name->vtype;
 	astPass(pstate, name->value);
@@ -138,7 +138,7 @@ void nameDclFnTypeCheck(AstPass *pstate, NameDclAstNode *name) {
 }
 
 // Type check variable against its initial value
-void nameDclVarTypeCheck(AstPass *pstate, NameDclAstNode *name) {
+void nameDclVarTypeCheck(PassState *pstate, NameDclAstNode *name) {
 	astPass(pstate, name->value);
 	// Global variables and function parameters require literal initializers
 	if (name->scope <= 1 && !litIsLiteral(name->value))
@@ -152,7 +152,7 @@ void nameDclVarTypeCheck(AstPass *pstate, NameDclAstNode *name) {
 }
 
 // Check the function or variable declaration's AST
-void nameDclPass(AstPass *pstate, NameDclAstNode *name) {
+void nameDclPass(PassState *pstate, NameDclAstNode *name) {
 	astPass(pstate, (AstNode*)name->perm);
 	astPass(pstate, name->vtype);
 	AstNode *vtype = typeGetVtype(name->vtype);
@@ -185,7 +185,7 @@ void nameDclPass(AstPass *pstate, NameDclAstNode *name) {
 }
 
 // Check the value type declaration's AST
-void nameVtypeDclPass(AstPass *pstate, NameDclAstNode *name) {
+void nameVtypeDclPass(PassState *pstate, NameDclAstNode *name) {
 	NameDclAstNode *svtype = pstate->typenode;
 	pstate->typenode = name;
 	astPass(pstate, name->value);

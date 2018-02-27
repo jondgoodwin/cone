@@ -21,7 +21,7 @@ PtrAstNode *strType;
 
 PtrAstNode *newPtrTypeNode();
 void ptrTypePrint(PtrAstNode *node);
-void ptrTypePass(AstPass *pstate, PtrAstNode *name);
+void ptrTypePass(PassState *pstate, PtrAstNode *name);
 int ptrTypeEqual(PtrAstNode *node1, PtrAstNode *node2);
 int ptrTypeMatches(PtrAstNode *to, PtrAstNode *from);
 

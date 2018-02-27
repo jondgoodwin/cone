@@ -35,14 +35,14 @@ typedef struct AddrAstNode {
 
 AssignAstNode *newAssignAstNode(int16_t assigntype, AstNode *lval, AstNode *rval);
 void assignPrint(AssignAstNode *node);
-void assignPass(AstPass *pstate, AssignAstNode *node);
+void assignPass(PassState *pstate, AssignAstNode *node);
 
 FnCallAstNode *newFnCallAstNode(AstNode *fn, int nnodes);
 void fnCallPrint(FnCallAstNode *node);
-void fnCallPass(AstPass *pstate, FnCallAstNode *node);
+void fnCallPass(PassState *pstate, FnCallAstNode *node);
 
 AddrAstNode *newAddrAstNode();
 void addrPrint(AddrAstNode *node);
-void addrPass(AstPass *pstate, AddrAstNode *node);
+void addrPass(PassState *pstate, AddrAstNode *node);
 
 #endif

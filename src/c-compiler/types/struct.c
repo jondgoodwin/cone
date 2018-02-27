@@ -25,7 +25,7 @@ void structPrint(StructAstNode *node) {
 }
 
 // Semantically analyze a struct type
-void structPass(AstPass *pstate, StructAstNode *node) {
+void structPass(PassState *pstate, StructAstNode *node) {
 	SymNode *inodesp;
 	AstNode **nodesp;
 	uint32_t cnt;

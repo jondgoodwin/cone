@@ -33,7 +33,7 @@ typedef struct Lexer Lexer;		// ../parser/lexer.h
 
 #include <stdint.h>
 
-typedef struct AstPass AstPass;
+typedef struct PassState PassState;
 
 // AST groupings - every node belongs to one of these groups
 enum AstGroup {
@@ -199,7 +199,7 @@ enum Passes {
 };
 
 // Context used across all AST semantic analysis passes
-typedef struct AstPass {
+typedef struct PassState {
 	int pass;				// Passes
 	FnSigAstNode *fnsig;	// The type signature of the function we are within
 	BlockAstNode *blk;		// The current block we are within
@@ -207,7 +207,7 @@ typedef struct AstPass {
 
 	int16_t scope;			// The current block scope (0=global, 1=fnsig, 2+=blocks)
 	uint16_t flags;
-} AstPass;
+} PassState;
 
 #define PassWithinWhile 0x0001
 
@@ -231,6 +231,6 @@ void astPrintIncr();
 void astPrintDecr();
 
 void astPasses(ModuleAstNode *pgm);
-void astPass(AstPass *pstate, AstNode *pgm);
+void astPass(PassState *pstate, AstNode *pgm);
 
 #endif

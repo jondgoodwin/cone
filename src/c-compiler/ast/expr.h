@@ -40,24 +40,24 @@ typedef struct LogicAstNode {
 
 SizeofAstNode *newSizeofAstNode();
 void sizeofPrint(SizeofAstNode *node);
-void sizeofPass(AstPass *pstate, SizeofAstNode *node);
+void sizeofPass(PassState *pstate, SizeofAstNode *node);
 
 CastAstNode *newCastAstNode(AstNode *exp, AstNode *type);
 void castPrint(CastAstNode *node);
-void castPass(AstPass *pstate, CastAstNode *node);
+void castPass(PassState *pstate, CastAstNode *node);
 
 DerefAstNode *newDerefAstNode();
 void derefPrint(DerefAstNode *node);
-void derefPass(AstPass *pstate, DerefAstNode *node);
+void derefPass(PassState *pstate, DerefAstNode *node);
 void derefAuto(AstNode **node);
 
 ElementAstNode *newElementAstNode();
 void elementPrint(ElementAstNode *node);
-void elementPass(AstPass *pstate, ElementAstNode *node);
+void elementPass(PassState *pstate, ElementAstNode *node);
 
 LogicAstNode *newLogicAstNode(int16_t typ);
 void logicPrint(LogicAstNode *node);
-void logicPass(AstPass *pstate, LogicAstNode *node);
-void logicNotPass(AstPass *pstate, LogicAstNode *node);
+void logicPass(PassState *pstate, LogicAstNode *node);
+void logicNotPass(PassState *pstate, LogicAstNode *node);
 
 #endif

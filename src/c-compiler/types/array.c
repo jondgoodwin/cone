@@ -24,7 +24,7 @@ void arrayPrint(ArrayAstNode *node) {
 }
 
 // Semantically analyze an array type
-void arrayPass(AstPass *pstate, ArrayAstNode *node) {
+void arrayPass(PassState *pstate, ArrayAstNode *node) {
 	astPass(pstate, node->elemtype);
 }
 

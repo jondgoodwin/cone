@@ -37,7 +37,7 @@ void fnSigPrint(FnSigAstNode *sig) {
 }
 
 // Traverse the function signature tree
-void fnSigPass(AstPass *pstate, FnSigAstNode *sig) {
+void fnSigPass(PassState *pstate, FnSigAstNode *sig) {
 	SymNode *nodesp;
 	uint32_t cnt;
 	for (inodesFor(sig->parms, cnt, nodesp))

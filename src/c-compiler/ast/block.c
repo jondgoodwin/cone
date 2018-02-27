@@ -39,7 +39,7 @@ void modPrint(ModuleAstNode *mod) {
 }
 
 // Check the module's AST
-void modPass(AstPass *pstate, ModuleAstNode *pgm) {
+void modPass(PassState *pstate, ModuleAstNode *pgm) {
 	AstNode **nodesp;
 	uint32_t cnt;
 
@@ -87,7 +87,7 @@ void blockPrint(BlockAstNode *blk) {
 }
 
 // Check the block's AST
-void blockPass(AstPass *pstate, BlockAstNode *blk) {
+void blockPass(PassState *pstate, BlockAstNode *blk) {
 	int16_t oldscope = pstate->scope;
 	blk->scope = ++pstate->scope; // Increment scope counter
 	BlockAstNode *oldblk = pstate->blk;
@@ -177,7 +177,7 @@ void ifRemoveReturns(IfAstNode *ifnode) {
 }
 
 // Check the if statement's AST
-void ifPass(AstPass *pstate, IfAstNode *ifnode) {
+void ifPass(PassState *pstate, IfAstNode *ifnode) {
 	AstNode **nodesp;
 	uint32_t cnt;
 	for (nodesFor(ifnode->condblk, cnt, nodesp)) {
@@ -210,7 +210,7 @@ void whilePrint(WhileAstNode *node) {
 }
 
 // Semantic pass on the while block
-void whilePass(AstPass *pstate, WhileAstNode *node) {
+void whilePass(PassState *pstate, WhileAstNode *node) {
 	uint16_t svflags = pstate->flags;
 	pstate->flags |= PassWithinWhile;
 
@@ -224,7 +224,7 @@ void whilePass(AstPass *pstate, WhileAstNode *node) {
 }
 
 // Semantic pass on break or continue
-void breakPass(AstPass *pstate, AstNode *node) {
+void breakPass(PassState *pstate, AstNode *node) {
 	if (pstate->pass==NameResolution && !(pstate->flags & PassWithinWhile))
 		errorMsgNode(node, ErrorNoWhile, "break/continue may only be used within a while/each block");
 }
@@ -243,7 +243,7 @@ void opCodePrint(OpCodeAstNode *op) {
 }
 
 // Check the op code's AST
-void opCodePass(AstPass *pstate, OpCodeAstNode *op) {
+void opCodePass(PassState *pstate, OpCodeAstNode *op) {
 }
 
 // Create a new return statement node
@@ -264,7 +264,7 @@ void returnPrint(ReturnAstNode *node) {
 // Related analysis for return elsewhere:
 // - Block ensures that return can only appear at end of block
 // - NameDcl turns fn block's final expression into an implicit return
-void returnPass(AstPass *pstate, ReturnAstNode *node) {
+void returnPass(PassState *pstate, ReturnAstNode *node) {
 	// If we are returning the value from an 'if', recursively strip out any of its path's redudant 'return's
 	if (pstate->pass == TypeCheck && node->exp->asttype == IfNode)
 		ifRemoveReturns((IfAstNode*)(node->exp));

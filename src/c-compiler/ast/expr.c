@@ -29,7 +29,7 @@ void sizeofPrint(SizeofAstNode *node) {
 }
 
 // Analyze sizeof node
-void sizeofPass(AstPass *pstate, SizeofAstNode *node) {
+void sizeofPass(PassState *pstate, SizeofAstNode *node) {
 	astPass(pstate, node->type);
 }
 
@@ -52,7 +52,7 @@ void castPrint(CastAstNode *node) {
 }
 
 // Analyze cast node
-void castPass(AstPass *pstate, CastAstNode *node) {
+void castPass(PassState *pstate, CastAstNode *node) {
 	astPass(pstate, node->exp);
 	astPass(pstate, node->vtype);
 	if (pstate->pass == TypeCheck && 0 == typeMatches(node->vtype, ((TypedAstNode *)node->exp)->vtype))
@@ -74,7 +74,7 @@ void derefPrint(DerefAstNode *node) {
 }
 
 // Analyze deref node
-void derefPass(AstPass *pstate, DerefAstNode *node) {
+void derefPass(PassState *pstate, DerefAstNode *node) {
 	astPass(pstate, node->exp);
 	if (pstate->pass == TypeCheck) {
 		PtrAstNode *ptype = (PtrAstNode*)((TypedAstNode *)node->exp)->vtype;
@@ -111,7 +111,7 @@ void elementPrint(ElementAstNode *node) {
 }
 
 // Analyze element node
-void elementPass(AstPass *pstate, ElementAstNode *node) {
+void elementPass(PassState *pstate, ElementAstNode *node) {
 	astPass(pstate, node->owner);
 	if (pstate->pass == TypeCheck) {
 		if (node->element->asttype == MemberUseNode) {
@@ -159,14 +159,14 @@ void logicPrint(LogicAstNode *node) {
 }
 
 // Analyze not logic node
-void logicNotPass(AstPass *pstate, LogicAstNode *node) {
+void logicNotPass(PassState *pstate, LogicAstNode *node) {
 	astPass(pstate, node->lexp);
 	if (pstate->pass == TypeCheck)
 		typeCoerces((AstNode*)boolType, &node->lexp);
 }
 
 // Analyze logic node
-void logicPass(AstPass *pstate, LogicAstNode *node) {
+void logicPass(PassState *pstate, LogicAstNode *node) {
 	astPass(pstate, node->lexp);
 	astPass(pstate, node->rexp);
 

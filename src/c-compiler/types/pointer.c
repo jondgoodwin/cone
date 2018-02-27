@@ -29,7 +29,7 @@ void ptrTypePrint(PtrAstNode *node) {
 }
 
 // Semantically analyze a pointer type
-void ptrTypePass(AstPass *pstate, PtrAstNode *node) {
+void ptrTypePass(PassState *pstate, PtrAstNode *node) {
 	astPass(pstate, node->alloc);
 	astPass(pstate, (AstNode*)node->perm);
 	astPass(pstate, node->pvtype);

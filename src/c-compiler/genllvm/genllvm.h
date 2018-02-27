@@ -14,7 +14,7 @@
 #include <llvm-c/Core.h>
 #include <llvm-c/ExecutionEngine.h>
 
-typedef struct genl_t {
+typedef struct GenState {
 	LLVMTargetDataRef datalayout;
 	LLVMContextRef context;
 	LLVMModuleRef module;
@@ -24,18 +24,18 @@ typedef struct genl_t {
 	LLVMBasicBlockRef whileend;
 
 	char *srcname;
-} genl_t;
+} GenState;
 
 void genllvm(ConeOptions *opt, ModuleAstNode *mod);
-void genlFn(genl_t *gen, NameDclAstNode *fnnode);
-void genlGloVarName(genl_t *gen, NameDclAstNode *glovar);
+void genlFn(GenState *gen, NameDclAstNode *fnnode);
+void genlGloVarName(GenState *gen, NameDclAstNode *glovar);
 
 // genlstmt.c
-LLVMBasicBlockRef genlInsertBlock(genl_t *gen, char *name);
-LLVMValueRef genlBlock(genl_t *gen, BlockAstNode *blk);
+LLVMBasicBlockRef genlInsertBlock(GenState *gen, char *name);
+LLVMValueRef genlBlock(GenState *gen, BlockAstNode *blk);
 
 // genlexpr.c
-LLVMTypeRef genlType(genl_t *gen, AstNode *typ);
-LLVMValueRef genlExpr(genl_t *gen, AstNode *termnode);
+LLVMTypeRef genlType(GenState *gen, AstNode *typ);
+LLVMValueRef genlExpr(GenState *gen, AstNode *termnode);
 
 #endif

@@ -23,7 +23,7 @@
 #include <assert.h>
 
 // Create a new basic block after the current one
-LLVMBasicBlockRef genlInsertBlock(genl_t *gen, char *name) {
+LLVMBasicBlockRef genlInsertBlock(GenState *gen, char *name) {
 	LLVMBasicBlockRef nextblock = LLVMGetNextBasicBlock(LLVMGetInsertBlock(gen->builder));
 	if (nextblock)
 		return LLVMInsertBasicBlockInContext(gen->context, nextblock, name);
@@ -33,7 +33,7 @@ LLVMBasicBlockRef genlInsertBlock(genl_t *gen, char *name) {
 }
 
 // Generate a while block
-void genlWhile(genl_t *gen, WhileAstNode *wnode) {
+void genlWhile(GenState *gen, WhileAstNode *wnode) {
 	LLVMBasicBlockRef whilebeg, whileblk, whileend;
 	LLVMBasicBlockRef svwhilebeg, svwhileend;
 
@@ -58,7 +58,7 @@ void genlWhile(genl_t *gen, WhileAstNode *wnode) {
 }
 
 // Generate a return statement
-void genlReturn(genl_t *gen, ReturnAstNode *node) {
+void genlReturn(GenState *gen, ReturnAstNode *node) {
 	if (node->exp != voidType)
 		LLVMBuildRet(gen->builder, genlExpr(gen, node->exp));
 	else
@@ -66,7 +66,7 @@ void genlReturn(genl_t *gen, ReturnAstNode *node) {
 }
 
 // Generate a block's statements
-LLVMValueRef genlBlock(genl_t *gen, BlockAstNode *blk) {
+LLVMValueRef genlBlock(GenState *gen, BlockAstNode *blk) {
 	AstNode **nodesp;
 	uint32_t cnt;
 	LLVMValueRef lastval = NULL; // Should never be used by caller

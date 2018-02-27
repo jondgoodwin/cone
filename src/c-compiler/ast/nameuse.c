@@ -35,7 +35,7 @@ void nameUsePrint(NameUseAstNode *name) {
 }
 
 // Check the name use's AST
-void nameUsePass(AstPass *pstate, NameUseAstNode *name) {
+void nameUsePass(PassState *pstate, NameUseAstNode *name) {
 	// During name resolution, point to name declaration and copy over needed fields
 	switch (pstate->pass) {
 	case NameResolution:

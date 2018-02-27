@@ -13,7 +13,7 @@
 
 #include <assert.h>
 
-void handleCopy(AstPass *pstate, AstNode *node) {
+void handleCopy(PassState *pstate, AstNode *node) {
 
 }
 
@@ -51,7 +51,7 @@ int isLval(AstNode *node) {
 }
 
 // Analyze assignment node
-void assignPass(AstPass *pstate, AssignAstNode *node) {
+void assignPass(PassState *pstate, AssignAstNode *node) {
 	astPass(pstate, node->lval);
 	astPass(pstate, node->rval);
 
@@ -123,7 +123,7 @@ NameDclAstNode *fnCallFindMethod(FnCallAstNode *node, Symbol *methsym) {
 }
 
 // Analyze function call node
-void fnCallPass(AstPass *pstate, FnCallAstNode *node) {
+void fnCallPass(PassState *pstate, FnCallAstNode *node) {
 	AstNode **argsp;
 	uint32_t cnt;
 	for (nodesFor(node->parms, cnt, argsp))
@@ -225,7 +225,7 @@ void addrTypeCheckBorrow(AddrAstNode *node, PtrAstNode *ptype) {
 }
 
 // Analyze addr node
-void addrPass(AstPass *pstate, AddrAstNode *node) {
+void addrPass(PassState *pstate, AddrAstNode *node) {
 	astPass(pstate, node->exp);
 	if (pstate->pass == TypeCheck) {
 		if (!isExpNode(node->exp)) {

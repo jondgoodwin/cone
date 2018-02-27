@@ -24,7 +24,7 @@
 #include <assert.h>
 
 // Generate a LLVMTypeRef from a basic type definition node
-LLVMTypeRef _genlType(genl_t *gen, char *name, AstNode *typ) {
+LLVMTypeRef _genlType(GenState *gen, char *name, AstNode *typ) {
 	switch (typ->asttype) {
 	case IntNbrType: case UintNbrType:
 	{
@@ -99,7 +99,7 @@ LLVMTypeRef _genlType(genl_t *gen, char *name, AstNode *typ) {
 }
 
 // Generate a type value
-LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
+LLVMTypeRef genlType(GenState *gen, AstNode *typ) {
 	char *name = "";
 	if (typ->asttype == NameUseNode || typ->asttype == AllocNameDclNode) {
 		// with vtype name use, we can memoize type value and give it a name
@@ -133,7 +133,7 @@ LLVMTypeRef genlType(genl_t *gen, AstNode *typ) {
 		return _genlType(gen, "", typ);
 }
 
-LLVMValueRef genlSizeof(genl_t *gen, AstNode *vtype) {
+LLVMValueRef genlSizeof(GenState *gen, AstNode *vtype) {
 	unsigned long long size = LLVMABISizeOfType(gen->datalayout, genlType(gen, vtype));
 	if (vtype->asttype == AllocType) {
 		if (LLVMPointerSize(gen->datalayout) == 32)
@@ -145,7 +145,7 @@ LLVMValueRef genlSizeof(genl_t *gen, AstNode *vtype) {
 }
 
 // Generate an if statement
-LLVMValueRef genlIf(genl_t *gen, IfAstNode *ifnode) {
+LLVMValueRef genlIf(GenState *gen, IfAstNode *ifnode) {
 	LLVMBasicBlockRef endif;
 	LLVMBasicBlockRef nextif;
 	AstNode *vtype;
@@ -211,7 +211,7 @@ LLVMValueRef genlIf(genl_t *gen, IfAstNode *ifnode) {
 }
 
 // Obtain value ref for a specific named intrinsic function
-LLVMValueRef genlGetIntrinsicFn(genl_t *gen, char *fnname, NameUseAstNode *fnuse) {
+LLVMValueRef genlGetIntrinsicFn(GenState *gen, char *fnname, NameUseAstNode *fnuse) {
 	LLVMValueRef fn = LLVMGetNamedFunction(gen->module, fnname);
 	if (!fn)
 		fn = LLVMAddFunction(gen->module, fnname, genlType(gen, typeGetVtype((AstNode*)fnuse->dclnode)));
@@ -219,7 +219,7 @@ LLVMValueRef genlGetIntrinsicFn(genl_t *gen, char *fnname, NameUseAstNode *fnuse
 }
 
 // Generate a function call, including special op codes
-LLVMValueRef genlFnCall(genl_t *gen, FnCallAstNode *fncall) {
+LLVMValueRef genlFnCall(GenState *gen, FnCallAstNode *fncall) {
 
 	// Get Valuerefs for all the parameters to pass to the function
 	LLVMValueRef *fnargs = (LLVMValueRef*)memAllocBlk(fncall->parms->used * sizeof(LLVMValueRef*));
@@ -334,7 +334,7 @@ LLVMValueRef genlFnCall(genl_t *gen, FnCallAstNode *fncall) {
 }
 
 // Generate a cast (value conversion)
-LLVMValueRef genlCast(genl_t *gen, CastAstNode* node) {
+LLVMValueRef genlCast(GenState *gen, CastAstNode* node) {
 	NbrAstNode *fromtype = (NbrAstNode *)typeGetVtype(node->exp);
 	NbrAstNode *totype = (NbrAstNode *)typeGetVtype(node->vtype);
 
@@ -396,12 +396,12 @@ LLVMValueRef genlCast(genl_t *gen, CastAstNode* node) {
 }
 
 // Generate not
-LLVMValueRef genlNot(genl_t *gen, LogicAstNode* node) {
+LLVMValueRef genlNot(GenState *gen, LogicAstNode* node) {
 	return LLVMBuildXor(gen->builder, genlExpr(gen, node->lexp), LLVMConstInt(LLVMInt1TypeInContext(gen->context), 1, 0), "not");
 }
 
 // Generate and, or
-LLVMValueRef genlLogic(genl_t *gen, LogicAstNode* node) {
+LLVMValueRef genlLogic(GenState *gen, LogicAstNode* node) {
 	LLVMBasicBlockRef logicblks[2], logicphi;
 	LLVMValueRef logicvals[2];
 
@@ -430,7 +430,7 @@ LLVMValueRef genlLogic(genl_t *gen, LogicAstNode* node) {
 }
 
 // Generate local variable
-LLVMValueRef genlLocalVar(genl_t *gen, NameDclAstNode *var) {
+LLVMValueRef genlLocalVar(GenState *gen, NameDclAstNode *var) {
 	assert(var->asttype == VarNameDclNode);
 	LLVMValueRef val = NULL;
 	var->llvmvar = LLVMBuildAlloca(gen->builder, genlType(gen, var->vtype), &var->namesym->namestr);
@@ -440,7 +440,7 @@ LLVMValueRef genlLocalVar(genl_t *gen, NameDclAstNode *var) {
 }
 
 // Generate an lval pointer
-LLVMValueRef genlLval(genl_t *gen, AstNode *lval) {
+LLVMValueRef genlLval(GenState *gen, AstNode *lval) {
 	switch (lval->asttype) {
 	case NameUseNode:
 		return ((NameUseAstNode *)lval)->dclnode->llvmvar;
@@ -457,7 +457,7 @@ LLVMValueRef genlLval(genl_t *gen, AstNode *lval) {
 }
 
 // Generate a term
-LLVMValueRef genlExpr(genl_t *gen, AstNode *termnode) {
+LLVMValueRef genlExpr(GenState *gen, AstNode *termnode) {
 	switch (termnode->asttype) {
 	case ULitNode:
 		return LLVMConstInt(genlType(gen, ((ULitAstNode*)termnode)->vtype), ((ULitAstNode*)termnode)->uintlit, 0);
