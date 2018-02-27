@@ -20,7 +20,7 @@
 AstNode *parseAddr();
 
 // Parse a term: literal, identifier, etc.
-AstNode *parseTerm() {
+AstNode *parseTerm(ParseState *parse) {
 	switch (lex->toktype) {
 	case trueToken:
 	{
@@ -62,7 +62,7 @@ AstNode *parseTerm() {
 		{
 			AstNode *node;
 			lexNextToken();
-			node = parseExpr();
+			node = parseExpr(parse);
 			parseRParen();
 			return node;
 		}
@@ -73,8 +73,8 @@ AstNode *parseTerm() {
 }
 
 // Parse the postfix operators: '.', '::', '()'
-AstNode *parsePostfix() {
-	AstNode *node = parseTerm();
+AstNode *parsePostfix(ParseState *parse) {
+	AstNode *node = parseTerm(parse);
 	while (1) {
 		switch (lex->toktype) {
 
@@ -85,7 +85,7 @@ AstNode *parsePostfix() {
 			lexNextToken();
 			if (!lexIsToken(RParenToken))
 				while (1) {
-					nodesAdd(&fncall->parms, parseExpr());
+					nodesAdd(&fncall->parms, parseExpr(parse));
 					if (lexIsToken(CommaToken))
 						lexNextToken();
 					else
@@ -118,7 +118,7 @@ AstNode *parsePostfix() {
 				nodesAdd(&fncall->parms, node); // treat object as first parameter (self)
 				if (!lexIsToken(RParenToken)) {
 					while (1) {
-						nodesAdd(&fncall->parms, parseExpr());
+						nodesAdd(&fncall->parms, parseExpr(parse));
 						if (lexIsToken(CommaToken))
 							lexNextToken();
 						else
@@ -143,7 +143,7 @@ AstNode *parsePostfix() {
 }
 
 // Parse an address term - current token is '&'
-AstNode *parseAddr() {
+AstNode *parseAddr(ParseState *parse) {
 	AddrAstNode *anode = newAddrAstNode();
 	lexNextToken();
 
@@ -154,77 +154,77 @@ AstNode *parseAddr() {
 	anode->vtype = (AstNode *)ptype;
 
 	// A value or constructor
-	anode->exp = parseTerm();
+	anode->exp = parseTerm(parse);
 
 	return (AstNode *)anode;
 }
 
 // Parse a prefix operator, e.g.: -
-AstNode *parsePrefix() {
+AstNode *parsePrefix(ParseState *parse) {
 	switch (lex->toktype) {
 	case DashToken:
 	{
 		FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(symFind("neg", 3)), 1);
 		lexNextToken();
-		nodesAdd(&node->parms, parsePrefix());
+		nodesAdd(&node->parms, parsePrefix(parse));
 		return (AstNode *)node;
 	}
 	case TildeToken:
 	{
 		FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(symFind("~", 1)), 1);
 		lexNextToken();
-		nodesAdd(&node->parms, parsePrefix());
+		nodesAdd(&node->parms, parsePrefix(parse));
 		return (AstNode *)node;
 	}
 	case StarToken:
 	{
 		DerefAstNode *node = newDerefAstNode();
 		lexNextToken();
-		node->exp = parsePrefix();
+		node->exp = parsePrefix(parse);
 		return (AstNode *)node;
 	}
 	case AmperToken:
-		return parseAddr();
+		return parseAddr(parse);
 	default:
-		return parsePostfix();
+		return parsePostfix(parse);
 	}
 }
 
 // Parse type cast
-AstNode *parseCast() {
-	AstNode *lhnode = parsePrefix();
+AstNode *parseCast(ParseState *parse) {
+	AstNode *lhnode = parsePrefix(parse);
 	if (lexIsToken(AsToken)) {
 		CastAstNode *node = newCastAstNode(lhnode, NULL);
 		lexNextToken();
-		node->vtype = parseVtype();
+		node->vtype = parseVtype(parse);
 		return (AstNode*)node;
 	}
 	return lhnode;
 }
 
 // Parse binary multiply, divide, rem operator
-AstNode *parseMult() {
-	AstNode *lhnode = parseCast();
+AstNode *parseMult(ParseState *parse) {
+	AstNode *lhnode = parseCast(parse);
 	while (1) {
 		if (lexIsToken(StarToken)) {
 			FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(symFind("*", 1)), 2);
 			lexNextToken();
 			nodesAdd(&node->parms, lhnode);
-			nodesAdd(&node->parms, parseCast());
+			nodesAdd(&node->parms, parseCast(parse));
 			lhnode = (AstNode*)node;
 		}
 		else if (lexIsToken(SlashToken)) {
 			FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(symFind("/", 1)), 2);
 			lexNextToken();
 			nodesAdd(&node->parms, lhnode);
-			nodesAdd(&node->parms, parseCast());
+			nodesAdd(&node->parms, parseCast(parse));
 			lhnode = (AstNode*)node;
 		}
 		else if (lexIsToken(PercentToken)) {
 			FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(symFind("%", 1)), 2);
 			lexNextToken();
 			nodesAdd(&node->parms, lhnode);
-			nodesAdd(&node->parms, parseCast());
+			nodesAdd(&node->parms, parseCast(parse));
 			lhnode = (AstNode*)node;
 		}
 		else
@@ -233,21 +233,21 @@ AstNode *parseMult() {
 }
 
 // Parse binary add, subtract operator
-AstNode *parseAdd() {
-	AstNode *lhnode = parseMult();
+AstNode *parseAdd(ParseState *parse) {
+	AstNode *lhnode = parseMult(parse);
 	while (1) {
 		if (lexIsToken(PlusToken)) {
 			FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(symFind("+", 1)), 2);
 			lexNextToken();
 			nodesAdd(&node->parms, lhnode);
-			nodesAdd(&node->parms, parseMult());
+			nodesAdd(&node->parms, parseMult(parse));
 			lhnode = (AstNode*)node;
 		}
 		else if (lexIsToken(DashToken)) {
 			FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(symFind("-", 1)), 2);
 			lexNextToken();
 			nodesAdd(&node->parms, lhnode);
-			nodesAdd(&node->parms, parseMult());
+			nodesAdd(&node->parms, parseMult(parse));
 			lhnode = (AstNode*)node;
 		}
 		else
@@ -256,14 +256,14 @@ AstNode *parseAdd() {
 }
 
 // Parse bitwise And
-AstNode *parseAnd() {
-	AstNode *lhnode = parseAdd();
+AstNode *parseAnd(ParseState *parse) {
+	AstNode *lhnode = parseAdd(parse);
 	while (1) {
 		if (lexIsToken(AmperToken)) {
 			FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(symFind("&", 1)), 2);
 			lexNextToken();
 			nodesAdd(&node->parms, lhnode);
-			nodesAdd(&node->parms, parseAdd());
+			nodesAdd(&node->parms, parseAdd(parse));
 			lhnode = (AstNode*)node;
 		}
 		else
@@ -272,14 +272,14 @@ AstNode *parseAnd() {
 }
 
 // Parse bitwise Xor
-AstNode *parseXor() {
-	AstNode *lhnode = parseAnd();
+AstNode *parseXor(ParseState *parse) {
+	AstNode *lhnode = parseAnd(parse);
 	while (1) {
 		if (lexIsToken(CaretToken)) {
 			FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(symFind("^", 1)), 2);
 			lexNextToken();
 			nodesAdd(&node->parms, lhnode);
-			nodesAdd(&node->parms, parseAnd());
+			nodesAdd(&node->parms, parseAnd(parse));
 			lhnode = (AstNode*)node;
 		}
 		else
@@ -288,14 +288,14 @@ AstNode *parseXor() {
 }
 
 // Parse bitwise or
-AstNode *parseOr() {
-	AstNode *lhnode = parseXor();
+AstNode *parseOr(ParseState *parse) {
+	AstNode *lhnode = parseXor(parse);
 	while (1) {
 		if (lexIsToken(BarToken)) {
 			FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(symFind("|", 1)), 2);
 			lexNextToken();
 			nodesAdd(&node->parms, lhnode);
-			nodesAdd(&node->parms, parseXor());
+			nodesAdd(&node->parms, parseXor(parse));
 			lhnode = (AstNode*)node;
 		}
 		else
@@ -304,8 +304,8 @@ AstNode *parseOr() {
 }
 
 // Parse comparison operator
-AstNode *parseCmp() {
-	AstNode *lhnode = parseOr();
+AstNode *parseCmp(ParseState *parse) {
+	AstNode *lhnode = parseOr(parse);
 	char *cmpop;
 	int cmpsz = 2;
 
@@ -322,71 +322,71 @@ AstNode *parseCmp() {
 	FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(symFind(cmpop, cmpsz)), 2);
 	lexNextToken();
 	nodesAdd(&node->parms, lhnode);
-	nodesAdd(&node->parms, parseOr());
+	nodesAdd(&node->parms, parseOr(parse));
 	return (AstNode*)node;
 }
 
 // Parse 'not' logical operator
-AstNode *parseNotLogic() {
+AstNode *parseNotLogic(ParseState *parse) {
 	if (lexIsToken(NotToken)) {
 		LogicAstNode *node = newLogicAstNode(NotLogicNode);
 		lexNextToken();
-		node->lexp = parseNotLogic();
+		node->lexp = parseNotLogic(parse);
 		return (AstNode*)node;
 	}
-	return parseCmp();
+	return parseCmp(parse);
 }
 
 // Parse 'and' logical operator
-AstNode *parseAndLogic() {
-	AstNode *lhnode = parseNotLogic();
+AstNode *parseAndLogic(ParseState *parse) {
+	AstNode *lhnode = parseNotLogic(parse);
 	while (lexIsToken(AndToken)) {
 		LogicAstNode *node = newLogicAstNode(AndLogicNode);
 		lexNextToken();
 		node->lexp = lhnode;
-		node->rexp = parseNotLogic();
+		node->rexp = parseNotLogic(parse);
 		lhnode = (AstNode*)node;
 	}
 	return lhnode;
 }
 
 // Parse 'or' logical operator
-AstNode *parseOrLogic() {
-	AstNode *lhnode = parseAndLogic();
+AstNode *parseOrLogic(ParseState *parse) {
+	AstNode *lhnode = parseAndLogic(parse);
 	while (lexIsToken(OrToken)) {
 		LogicAstNode *node = newLogicAstNode(OrLogicNode);
 		lexNextToken();
 		node->lexp = lhnode;
-		node->rexp = parseAndLogic();
+		node->rexp = parseAndLogic(parse);
 		lhnode = (AstNode*)node;
 	}
 	return lhnode;
 }
 
 // Parse an assignment expression
-AstNode *parseAssign() {
-	AstNode *lval = parseOrLogic();
+AstNode *parseAssign(ParseState *parse) {
+	AstNode *lval = parseOrLogic(parse);
 	if (lexIsToken(AssgnToken)) {
 		lexNextToken();
-		AstNode *rval = parseExpr();
+		AstNode *rval = parseExpr(parse);
 		return (AstNode*) newAssignAstNode(NormalAssign, lval, rval);
 	}
 	else
 		return lval;
 }
 
-AstNode *parseExpBlock() {
+AstNode *parseExpBlock(ParseState *parse) {
 	switch (lex->toktype) {
 	case IfToken:
-		return parseIf();
+		return parseIf(parse);
 	case LCurlyToken:
-		return parseBlock();
+		return parseBlock(parse);
 	default:
-		return parseAssign();
+		return parseAssign(parse);
 	}
 }
 
 // Parse an expression
-AstNode *parseExpr() {
-	return parseExpBlock();
+AstNode *parseExpr(ParseState *parse) {
+	return parseExpBlock(parse);
 }

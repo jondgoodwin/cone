@@ -10,27 +10,31 @@
 
 #include "../ast/ast.h"
 
+typedef struct ParseState {
+	NamedAstNode *owner;	// Current namespace owning named nodes
+} ParseState;
+
 // parser.c
-ModuleAstNode *parse();
+ModuleAstNode *parseModule();
 void parseSemi();
 void parseRCurly();
 void parseLCurly();
 void parseRParen();
 
 // parseflow.c
-AstNode *parseIf();
-AstNode *parseBlock();
+AstNode *parseIf(ParseState *parse);
+AstNode *parseBlock(ParseState *parse);
 
 // parseexpr.c
-AstNode *parseExpr();
+AstNode *parseExpr(ParseState *parse);
 
 // parsetype.c
 PermAstNode *parsePerm(PermAstNode *defperm);
 void parseAllocPerm(PtrAstNode *refnode);
-NameDclAstNode *parseVarDcl(PermAstNode *defperm);
-AstNode *parseFn();
-AstNode *parseFnSig();
-AstNode *parseStruct();
-AstNode *parseVtype();
+NameDclAstNode *parseVarDcl(ParseState *parse, PermAstNode *defperm);
+AstNode *parseFn(ParseState *parse);
+AstNode *parseFnSig(ParseState *parse);
+AstNode *parseStruct(ParseState *parse);
+AstNode *parseVtype(ParseState *parse);
 
 #endif
