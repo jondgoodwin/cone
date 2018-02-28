@@ -21,6 +21,7 @@
 
 #include <stdio.h>
 #include <assert.h>
+#include <string.h>
 
 #ifdef _WIN32
 #define asmext "asm"
@@ -72,20 +73,45 @@ void genlGloVar(GenState *gen, NameDclAstNode *varnode) {
 	LLVMSetInitializer(varnode->llvmvar, genlExpr(gen, varnode->value));
 }
 
+// Create and return globally unique name, mangled as necessary
+char *genlGlobalName(NamedAstNode *name) {
+	// Is mangling necessary? Only if we need namespace qualifier or function might be overloaded
+	if (!(name->flags & FlagMangleParms) && !name->owner->namesym)
+		return &name->namesym->namestr;
+
+	char workbuf[2048] = { '\0' };
+	if (name->owner->namesym) {
+		strcat(workbuf, &name->owner->namesym->namestr);
+		strcat(workbuf, ":");
+	}
+	strcat(workbuf, &name->namesym->namestr);
+	if (name->flags & FlagMangleParms) {
+		FnSigAstNode *fnsig = (FnSigAstNode *)name->vtype;
+		char *bufp = workbuf + strlen(workbuf);
+		int16_t cnt;
+		SymNode *nodesp;
+		for (inodesFor(fnsig->parms, cnt, nodesp)) {
+			*bufp++ = ':';
+			bufp = typeMangle(bufp, ((TypedAstNode *)nodesp->node)->vtype);
+		}
+		*bufp = '\0';
+	}
+	return memAllocStr(workbuf, strlen(workbuf));
+}
+
 // Generate LLVMValueRef for a global variable or function
 void genlGloVarName(GenState *gen, NameDclAstNode *glovar) {
-	char *varname = glovar->guname ? glovar->guname : &glovar->namesym->namestr;
 
 	// Handle when it is just a global variable
 	if (glovar->vtype->asttype != FnSig) {
-		glovar->llvmvar = LLVMAddGlobal(gen->module, genlType(gen, glovar->vtype), varname);
+		glovar->llvmvar = LLVMAddGlobal(gen->module, genlType(gen, glovar->vtype), genlGlobalName((NamedAstNode*)glovar));
 		if (glovar->perm == immPerm)
 			LLVMSetGlobalConstant(glovar->llvmvar, 1);
 		return;
 	}
 
 	// Add function to the module
-	glovar->llvmvar = LLVMAddFunction(gen->module, varname, genlType(gen, glovar->vtype));
+	glovar->llvmvar = LLVMAddFunction(gen->module, genlGlobalName((NamedAstNode*)glovar), genlType(gen, glovar->vtype));
 }
 
 // Generate module's nodes

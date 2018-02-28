@@ -146,13 +146,11 @@ typedef struct TypedAstNode {
 
 // Named Ast Node header, for variable and type declarations
 // - owner is the namespace node this name belongs to
-// - guname is the globally unique name (typically mangled)
 // - namesym points to the global symbol table entry (holds name string)
 // - prev points to named node this overrides in global symbol table
 #define NamedAstHdr \
 	TypedAstHdr; \
 	struct NamedAstNode *owner; \
-	char *guname; \
 	Symbol *namesym; \
 	struct NamedAstNode *prev
 

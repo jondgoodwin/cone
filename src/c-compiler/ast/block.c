@@ -15,7 +15,6 @@
 ModuleAstNode *newModuleNode() {
 	ModuleAstNode *mod;
 	newAstNode(mod, ModuleAstNode, ModuleNode);
-	mod->guname = NULL;
 	mod->namesym = NULL;
 	mod->prev = NULL;
 	mod->owner = NULL;

@@ -21,7 +21,6 @@ NameDclAstNode *newNameDclNode(Symbol *namesym, uint16_t asttype, AstNode *type,
 	name->vtype = type;
 	name->perm = perm;
 	name->namesym = namesym;
-	name->guname = NULL;
 	name->value = val;
 	name->prev = NULL;
 	name->scope = 0;
@@ -104,38 +103,11 @@ void nameDclVarNameResolve(PassState *pstate, NameDclAstNode *name) {
 		astPass(pstate, name->value);
 }
 
-// Create and return mangled (globally unique) name
-char *nameDclMangleName(NameDclAstNode *name) {
-	// Is mangling necessary? Only if we need namespace qualifier or function might be overloaded
-	if (!(name->flags & FlagMangleParms) && !name->owner->namesym)
-		return &name->namesym->namestr;
-
-	char workbuf[2048] = { '\0' };
-	if (name->owner->namesym) {
-		strcat(workbuf, &name->owner->namesym->namestr);
-		strcat(workbuf, ":");
-	}
-	strcat(workbuf, &name->namesym->namestr);
-	if (name->flags & FlagMangleParms) {
-		FnSigAstNode *fnsig = (FnSigAstNode *)name->vtype;
-		char *bufp = workbuf + strlen(workbuf);
-		int16_t cnt;
-		SymNode *nodesp;
-		for (inodesFor(fnsig->parms, cnt, nodesp)) {
-			*bufp++ = ':';
-			bufp = typeMangle(bufp, ((NameDclAstNode *)nodesp->node)->vtype);
-		}
-		*bufp = '\0';
-	}
-	return memAllocStr(workbuf, strlen(workbuf));
-}
-
 // Provide parameter and return type context for type checking function's logic
 void nameDclFnTypeCheck(PassState *pstate, NameDclAstNode *varnode) {
 	FnSigAstNode *oldfnsig = pstate->fnsig;
 	pstate->fnsig = (FnSigAstNode*)varnode->vtype;
 	astPass(pstate, varnode->value);
-	varnode->guname = nameDclMangleName(varnode);
 	pstate->fnsig = oldfnsig;
 }
 
