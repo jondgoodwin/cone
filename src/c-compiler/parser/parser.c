@@ -123,7 +123,7 @@ ModuleAstNode *parseModuleBlk(ParseState *parse, ModuleAstNode *mod) {
 			break;
 
 		case ModToken:
-			nodesAdd(nodes, parseModule(parse));
+			nodesAdd(nodes, (AstNode*)parseModule(parse));
 			break;
 
 		// A global variable declaration, if it begins with a permission
@@ -158,6 +158,7 @@ ModuleAstNode *parseModule(ParseState *parse) {
 	NamedAstNode *svowner = parse->owner;
 	ModuleAstNode *mod;
 	mod = newModuleNode();
+	mod->owner = svowner;
 	parse->owner = (NamedAstNode *)mod;
 	lexNextToken();
 	// Process mod name

@@ -123,11 +123,6 @@ void genlGloVarName(GenState *gen, NameDclAstNode *glovar) {
 void genlModule(GenState *gen, ModuleAstNode *mod) {
 	uint32_t cnt;
 	AstNode **nodesp;
-	char *error=NULL;
-
-	assert(mod->asttype == ModuleNode);
-
-	gen->module = LLVMModuleCreateWithNameInContext(gen->srcname, gen->context);
 
 	// First generate the global variable LLVMValueRef for every global variable
 	// This way forward references to global variables will work correctly
@@ -159,11 +154,22 @@ void genlModule(GenState *gen, ModuleAstNode *mod) {
 			genlType(gen, nodep);
 			break;
 
+		case ModuleNode:
+			genlModule(gen, (ModuleAstNode*)nodep);
+			break;
+
 		default:
 			assert(0 && "Invalid global area node");
 		}
 	}
+}
 
+void genlPackage(GenState *gen, ModuleAstNode *mod) {
+	char *error = NULL;
+
+	assert(mod->asttype == ModuleNode);
+	gen->module = LLVMModuleCreateWithNameInContext(gen->srcname, gen->context);
+	genlModule(gen, mod);
 	// Verify generated IR
 	LLVMVerifyModule(gen->module, LLVMReturnStatusAction, &error);
 	if (error) {
@@ -254,7 +260,7 @@ void genllvm(ConeOptions *opt, ModuleAstNode *mod) {
 	gen.context = LLVMContextCreate();
 
 	// Generate AST to IR
-	genlModule(&gen, mod);
+	genlPackage(&gen, mod);
 
 	// Serialize the LLVM IR, if requested
 	if (opt->print_llvmir && LLVMPrintModuleToFile(gen.module, fileMakePath(opt->output, mod->lexer->fname, "preir"), &err) != 0) {
