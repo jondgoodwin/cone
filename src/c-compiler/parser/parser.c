@@ -96,6 +96,8 @@ void registerGlobalName(NameDclAstNode *name) {
 		namesym->node = (NamedAstNode*)name;
 }
 
+ModuleAstNode *parseModule(ParseState *parse);
+
 // Parse a module's global statement block
 ModuleAstNode *parseModuleBlk(ParseState *parse, ModuleAstNode *mod) {
 	AstNode *node;
@@ -103,7 +105,7 @@ ModuleAstNode *parseModuleBlk(ParseState *parse, ModuleAstNode *mod) {
 
 	// Create and populate a Module node for the program
 	nodes = &mod->nodes;
-	while (!lexIsToken(EofToken)) {
+	while (!lexIsToken(EofToken) && !lexIsToken(RCurlyToken)) {
 		switch (lex->toktype) {
 
 		// 'fn' function definition
@@ -118,6 +120,10 @@ ModuleAstNode *parseModuleBlk(ParseState *parse, ModuleAstNode *mod) {
 		case AllocToken:
 			nodesAdd(nodes, node = parseStruct(parse));
 			registerGlobalName((NameDclAstNode *)node);
+			break;
+
+		case ModToken:
+			nodesAdd(nodes, parseModule(parse));
 			break;
 
 		// A global variable declaration, if it begins with a permission
@@ -144,6 +150,31 @@ ModuleAstNode *parseModuleBlk(ParseState *parse, ModuleAstNode *mod) {
 			lexNextToken();
 		}
 	}
+	return mod;
+}
+
+// Parse a submodule within a program
+ModuleAstNode *parseModule(ParseState *parse) {
+	NamedAstNode *svowner = parse->owner;
+	ModuleAstNode *mod;
+	mod = newModuleNode();
+	parse->owner = (NamedAstNode *)mod;
+	lexNextToken();
+	// Process mod name
+	if (lexIsToken(IdentToken)) {
+		mod->namesym = lex->val.ident;
+		lexNextToken();
+	}
+	if (!lexIsToken(LCurlyToken) && !lexIsToken(SemiToken))
+		parseLCurly();
+	if (lexIsToken(LCurlyToken)) {
+		lexNextToken();
+		parseModuleBlk(parse, mod);
+		parseRCurly();
+	}
+	else
+		parseSemi();
+	parse->owner = svowner;
 	return mod;
 }
 

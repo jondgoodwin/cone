@@ -73,6 +73,14 @@ void genlGloVar(GenState *gen, NameDclAstNode *varnode) {
 	LLVMSetInitializer(varnode->llvmvar, genlExpr(gen, varnode->value));
 }
 
+void genlNamePrefix(NamedAstNode *name, char *workbuf) {
+	if (name->namesym==NULL)
+		return;
+	genlNamePrefix(name->owner, workbuf);
+	strcat(workbuf, &name->namesym->namestr);
+	strcat(workbuf, ":");
+}
+
 // Create and return globally unique name, mangled as necessary
 char *genlGlobalName(NamedAstNode *name) {
 	// Is mangling necessary? Only if we need namespace qualifier or function might be overloaded
@@ -80,10 +88,7 @@ char *genlGlobalName(NamedAstNode *name) {
 		return &name->namesym->namestr;
 
 	char workbuf[2048] = { '\0' };
-	if (name->owner->namesym) {
-		strcat(workbuf, &name->owner->namesym->namestr);
-		strcat(workbuf, ":");
-	}
+	genlNamePrefix(name->owner, workbuf);
 	strcat(workbuf, &name->namesym->namestr);
 	if (name->flags & FlagMangleParms) {
 		FnSigAstNode *fnsig = (FnSigAstNode *)name->vtype;
