@@ -105,10 +105,14 @@ void nameDclVarNameResolve(PassState *pstate, NameDclAstNode *name) {
 }
 
 // Create and return mangled (globally unique) name
-char *nameDclMangleName(PassState *pstate, NameDclAstNode *name) {
+char *nameDclMangleName(NameDclAstNode *name) {
+	// Is mangling necessary? Only if we need namespace qualifier or function might be overloaded
+	if (!(name->flags & FlagMangleParms) && !name->owner->namesym)
+		return &name->namesym->namestr;
+
 	char workbuf[2048] = { '\0' };
-	if (pstate->typenode) {
-		strcat(workbuf, &pstate->typenode->namesym->namestr);
+	if (name->owner->namesym) {
+		strcat(workbuf, &name->owner->namesym->namestr);
 		strcat(workbuf, ":");
 	}
 	strcat(workbuf, &name->namesym->namestr);
@@ -127,13 +131,11 @@ char *nameDclMangleName(PassState *pstate, NameDclAstNode *name) {
 }
 
 // Provide parameter and return type context for type checking function's logic
-void nameDclFnTypeCheck(PassState *pstate, NameDclAstNode *name) {
+void nameDclFnTypeCheck(PassState *pstate, NameDclAstNode *varnode) {
 	FnSigAstNode *oldfnsig = pstate->fnsig;
-	pstate->fnsig = (FnSigAstNode*)name->vtype;
-	astPass(pstate, name->value);
-	if ((name->flags & FlagMangleParms) || pstate->typenode) {
-		name->guname = nameDclMangleName(pstate, name);
-	}
+	pstate->fnsig = (FnSigAstNode*)varnode->vtype;
+	astPass(pstate, varnode->value);
+	varnode->guname = nameDclMangleName(varnode);
 	pstate->fnsig = oldfnsig;
 }
 
@@ -186,8 +188,5 @@ void nameDclPass(PassState *pstate, NameDclAstNode *name) {
 
 // Check the value type declaration's AST
 void nameVtypeDclPass(PassState *pstate, NameDclAstNode *name) {
-	NameDclAstNode *svtype = pstate->typenode;
-	pstate->typenode = name;
 	astPass(pstate, name->value);
-	pstate->typenode = svtype;
 }

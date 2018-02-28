@@ -195,7 +195,6 @@ void astPasses(ModuleAstNode *mod) {
 	PassState pstate;
 	pstate.fnsig = NULL;
 	pstate.blk = NULL;
-	pstate.typenode = NULL;
 	pstate.scope = 0;
 	pstate.flags = 0;
 
