@@ -27,7 +27,10 @@ void modPrint(ModuleAstNode *mod) {
 	AstNode **nodesp;
 	uint32_t cnt;
 
-	astFprint("AST for program %s\n", mod->lexer->url);
+	if (mod->namesym)
+		astFprint("module %s\n", &mod->namesym->namestr);
+	else
+		astFprint("AST for program %s\n", mod->lexer->url);
 	astPrintIncr();
 	for (nodesFor(mod->nodes, cnt, nodesp)) {
 		astPrintIndent();
