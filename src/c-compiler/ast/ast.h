@@ -147,12 +147,16 @@ typedef struct TypedAstNode {
 // Named Ast Node header, for variable and type declarations
 // - owner is the namespace node this name belongs to
 // - namesym points to the global symbol table entry (holds name string)
-// - prev points to named node this overrides in global symbol table
+// - hooklinks starts linked list of all names in this name's namespace
+// - hooklink links this name as part of owner's hooklinks
+// - prevname points to named node this overrides in global symbol table
 #define NamedAstHdr \
 	TypedAstHdr; \
 	struct NamedAstNode *owner; \
 	Symbol *namesym; \
-	struct NamedAstNode *prev
+	struct NamedAstNode *hooklinks; \
+	struct NamedAstNode *hooklink; \
+	struct NamedAstNode *prevname
 
 // Castable structure for all named AST nodes
 typedef struct NamedAstNode {

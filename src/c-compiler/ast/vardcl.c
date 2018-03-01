@@ -22,7 +22,8 @@ NameDclAstNode *newNameDclNode(Symbol *namesym, uint16_t asttype, AstNode *type,
 	name->perm = perm;
 	name->namesym = namesym;
 	name->value = val;
-	name->prev = NULL;
+	name->hooklink = NULL;
+	name->prevname = NULL;
 	name->scope = 0;
 	name->index = 0;
 	name->llvmvar = NULL;
@@ -86,17 +87,36 @@ void nameDclFnNameResolve(PassState *pstate, NameDclAstNode *name) {
 	pstate->scope = oldscope;
 }
 
+// Hook a node into global symbol table, such that its owner can withdraw it later
+void nameDclHook(NamedAstNode *name, Symbol *namesym) {
+	name->hooklink = name->owner->hooklinks; // Add to owner's hook list
+	name->owner->hooklinks = (NamedAstNode*)name;
+	name->prevname = namesym->node; // Latent unhooker
+	namesym->node = (NamedAstNode*)name;
+}
+
+// Unhook all of an owners names from global symbol table (LIFO)
+void nameDclUnhook(NamedAstNode *owner) {
+	NamedAstNode *node = owner->hooklinks;
+	while (node) {
+		NamedAstNode *next = node->hooklink;
+		node->namesym->node = node->prevname;
+		node->hooklink = NULL;
+		node = next;
+	}
+	owner->hooklinks = NULL;
+}
+
 // Enable name resolution of local variables
 void nameDclVarNameResolve(PassState *pstate, NameDclAstNode *name) {
+
 	// Variable declaration within a block is a local variable
 	if (pstate->scope > 1) {
+		name->prevname = name->namesym->node; // Latent unhooker
+		name->namesym->node = (NamedAstNode*)name;
 		// Capture variable's scope info and have block know about variable
 		name->scope = pstate->scope;
 		inodesAdd(&pstate->blk->locals, name->namesym, (AstNode*)name);
-
-		// Hook variable into global symbol table (will be unhooked by block)
-		name->prev = name->namesym->node; // Latent unhooker
-		name->namesym->node = (NamedAstNode*)name;
 	}
 
 	if (name->value)
@@ -134,6 +154,10 @@ void nameDclPass(PassState *pstate, NameDclAstNode *name) {
 	// Process nodes in name's initial value/code block
 	switch (pstate->pass) {
 	case NameResolution:
+		// Hook into global symbol table if not a global owner by module
+		// (because those have already been hooked by module for forward references)
+		/*if (name->owner->asttype != ModuleNode)
+			nameDclHook((NamedAstNode*)name, name->namesym);*/
 		if (vtype->asttype == FnSig) {
 			if (name->value)
 				nameDclFnNameResolve(pstate, name);
@@ -141,6 +165,7 @@ void nameDclPass(PassState *pstate, NameDclAstNode *name) {
 		else
 			nameDclVarNameResolve(pstate, name);
 		break;
+
 	case TypeCheck:
 		if (name->value) {
 			if (vtype->asttype == FnSig) {

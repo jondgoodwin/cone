@@ -88,7 +88,7 @@ void inodesHook(Inodes *inodes) {
 	uint32_t cnt;
 	for (inodesFor(inodes, cnt, nodesp)) {
 		NameDclAstNode *parm = (NameDclAstNode*)nodesp->node;
-		parm->prev = parm->namesym->node; // Latent unhooker
+		parm->prevname = parm->namesym->node; // Latent unhooker
 		parm->namesym->node = (NamedAstNode*)parm;
 	}
 }
@@ -99,6 +99,6 @@ void inodesUnhook(Inodes *inodes) {
 	uint32_t cnt;
 	for (inodesFor(inodes, cnt, nodesp)) {
 		NameDclAstNode *parm = (NameDclAstNode*)nodesp->node;
-		parm->namesym->node = parm->prev;
+		parm->namesym->node = parm->prevname;
 	}
 }

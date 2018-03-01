@@ -17,6 +17,9 @@ typedef struct NameDclAstNode {
 	uint16_t index;				// index within this scope (e.g., parameter number)
 } NameDclAstNode;
 
+void nameDclHook(NamedAstNode *name, Symbol *namesym);
+void nameDclUnhook(NamedAstNode *owner);
+
 NameDclAstNode *newNameDclNode(Symbol *namesym, uint16_t asttype, AstNode *sig, PermAstNode *perm, AstNode *val);
 void newNameDclNodeStr(char *namestr, uint16_t asttype, AstNode *type);
 int isNameDclNode(AstNode *node);

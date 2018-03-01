@@ -16,7 +16,9 @@ ModuleAstNode *newModuleNode() {
 	ModuleAstNode *mod;
 	newAstNode(mod, ModuleAstNode, ModuleNode);
 	mod->namesym = NULL;
-	mod->prev = NULL;
+	mod->hooklinks = NULL;
+	mod->hooklink = NULL;
+	mod->prevname = NULL;
 	mod->owner = NULL;
 	mod->nodes = newNodes(16);
 	return mod;
@@ -41,12 +43,24 @@ void modPrint(ModuleAstNode *mod) {
 }
 
 // Check the module's AST
-void modPass(PassState *pstate, ModuleAstNode *pgm) {
+void modPass(PassState *pstate, ModuleAstNode *mod) {
 	AstNode **nodesp;
 	uint32_t cnt;
 
+	if (pstate->pass == NameResolution && mod->owner)
+		nameDclHook((NamedAstNode *)mod, mod->namesym);
+
 	// For global variables and functions, handle all their type info first
-	for (nodesFor(pgm->nodes, cnt, nodesp)) {
+	for (nodesFor(mod->nodes, cnt, nodesp)) {
+		// Hook global vars/fns in global symbol table (alloc/perm already there)
+		if (pstate->pass == NameResolution) {
+			switch ((*nodesp)->asttype) {
+			case VarNameDclNode:
+			case VtypeNameDclNode:
+				nameDclHook((NamedAstNode*)*nodesp, ((NamedAstNode*)*nodesp)->namesym);
+				break;
+			}
+		}
 		if ((*nodesp)->asttype == VarNameDclNode) {
 			NameDclAstNode *name = (NameDclAstNode*)*nodesp;
 			astPass(pstate, (AstNode*)name->perm);
@@ -57,9 +71,12 @@ void modPass(PassState *pstate, ModuleAstNode *pgm) {
 		return;
 
 	// Now we can process the full node info
-	for (nodesFor(pgm->nodes, cnt, nodesp)) {
+	for (nodesFor(mod->nodes, cnt, nodesp)) {
 		astPass(pstate, *nodesp);
 	}
+
+	if (pstate->pass == NameResolution)
+		nameDclUnhook((NamedAstNode*)mod);
 }
 
 // Create a new block node

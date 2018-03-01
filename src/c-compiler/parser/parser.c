@@ -92,8 +92,8 @@ void registerGlobalName(NameDclAstNode *name) {
 		errorMsgNode((AstNode *)name, ErrorDupName, "Global name is already defined. Only one allowed.");
 		errorMsgNode((AstNode*)namesym->node, ErrorDupName, "This is the conflicting definition for that name.");
 	}
-	else
-		namesym->node = (NamedAstNode*)name;
+	else if (name->asttype == PermNameDclNode || name->asttype == AllocNameDclNode)
+		name->namesym->node = (NamedAstNode*)name;
 }
 
 ModuleAstNode *parseModule(ParseState *parse);
