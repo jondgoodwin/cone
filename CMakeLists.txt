@@ -24,6 +24,7 @@ add_executable(conec
 	src/c-compiler/shared/utf8.c
 
 	src/c-compiler/ast/ast.c
+	src/c-compiler/ast/namespace.c
 	src/c-compiler/ast/nameuse.c
 	src/c-compiler/ast/vardcl.c
 	src/c-compiler/ast/literal.c

@@ -48,7 +48,7 @@ void modPass(PassState *pstate, ModuleAstNode *mod) {
 	uint32_t cnt;
 
 	if (pstate->pass == NameResolution && mod->owner)
-		nameDclHook((NamedAstNode *)mod, mod->namesym);
+		namespaceHook((NamedAstNode *)mod, mod->namesym);
 
 	// For global variables and functions, handle all their type info first
 	for (nodesFor(mod->nodes, cnt, nodesp)) {
@@ -57,7 +57,7 @@ void modPass(PassState *pstate, ModuleAstNode *mod) {
 			switch ((*nodesp)->asttype) {
 			case VarNameDclNode:
 			case VtypeNameDclNode:
-				nameDclHook((NamedAstNode*)*nodesp, ((NamedAstNode*)*nodesp)->namesym);
+				namespaceHook((NamedAstNode*)*nodesp, ((NamedAstNode*)*nodesp)->namesym);
 				break;
 			}
 		}
@@ -76,7 +76,7 @@ void modPass(PassState *pstate, ModuleAstNode *mod) {
 	}
 
 	if (pstate->pass == NameResolution)
-		nameDclUnhook((NamedAstNode*)mod);
+		namespaceUnhook((NamedAstNode*)mod);
 }
 
 // Create a new block node

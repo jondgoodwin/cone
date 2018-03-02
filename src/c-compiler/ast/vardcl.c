@@ -87,26 +87,6 @@ void nameDclFnNameResolve(PassState *pstate, NameDclAstNode *name) {
 	pstate->scope = oldscope;
 }
 
-// Hook a node into global symbol table, such that its owner can withdraw it later
-void nameDclHook(NamedAstNode *name, Symbol *namesym) {
-	name->hooklink = name->owner->hooklinks; // Add to owner's hook list
-	name->owner->hooklinks = (NamedAstNode*)name;
-	name->prevname = namesym->node; // Latent unhooker
-	namesym->node = (NamedAstNode*)name;
-}
-
-// Unhook all of an owners names from global symbol table (LIFO)
-void nameDclUnhook(NamedAstNode *owner) {
-	NamedAstNode *node = owner->hooklinks;
-	while (node) {
-		NamedAstNode *next = node->hooklink;
-		node->namesym->node = node->prevname;
-		node->hooklink = NULL;
-		node = next;
-	}
-	owner->hooklinks = NULL;
-}
-
 // Enable name resolution of local variables
 void nameDclVarNameResolve(PassState *pstate, NameDclAstNode *name) {
 
@@ -157,7 +137,7 @@ void nameDclPass(PassState *pstate, NameDclAstNode *name) {
 		// Hook into global symbol table if not a global owner by module
 		// (because those have already been hooked by module for forward references)
 		/*if (name->owner->asttype != ModuleNode)
-			nameDclHook((NamedAstNode*)name, name->namesym);*/
+			namespaceHook((NamedAstNode*)name, name->namesym);*/
 		if (vtype->asttype == FnSig) {
 			if (name->value)
 				nameDclFnNameResolve(pstate, name);
