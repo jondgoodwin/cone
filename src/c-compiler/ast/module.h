@@ -6,8 +6,8 @@
  * See Copyright Notice in conec.h
 */
 
-#ifndef namespace_h
-#define namespace_h
+#ifndef module_h
+#define module_h
 
 // Namespace Ownert Node header, for named declarations and blocks
 // - owner is the namespace node this name belongs to
@@ -33,6 +33,16 @@
 typedef struct NamedAstNode {
 	NamedAstHdr;
 } NamedAstNode;
+
+// Module
+typedef struct ModuleAstNode {
+	NamedAstHdr;
+	Nodes *nodes;
+} ModuleAstNode;
+
+ModuleAstNode *newModuleNode();
+void modPrint(ModuleAstNode *mod);
+void modPass(PassState *pstate, ModuleAstNode *mod);
 
 void namespaceHook(NamedAstNode *name, Symbol *namesym);
 void namespaceUnhook(NamedAstNode *owner);

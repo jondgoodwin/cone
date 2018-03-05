@@ -144,7 +144,7 @@ typedef struct TypedAstNode {
 	TypedAstHdr;
 } TypedAstNode;
 
-#include "namespace.h"
+#include "module.h"
 
 // Type Ast Node header for all type structures
 // - mbrs is the list of a type instance's methods and fields

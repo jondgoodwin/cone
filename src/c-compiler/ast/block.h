@@ -8,12 +8,6 @@
 #ifndef block_h
 #define block_h
 
-// Program
-typedef struct ModuleAstNode {
-	NamedAstHdr;
-	Nodes *nodes;
-} ModuleAstNode;
-
 // Block
 typedef struct BlockAstNode {
 	TypedAstHdr;
@@ -77,10 +71,6 @@ typedef struct OpCodeAstNode {
 	BasicAstHdr;
 	int16_t opcode;
 } OpCodeAstNode;
-
-ModuleAstNode *newModuleNode();
-void modPrint(ModuleAstNode *mod);
-void modPass(PassState *pstate, ModuleAstNode *mod);
 
 BlockAstNode *newBlockNode();
 void blockPrint(BlockAstNode *blk);
