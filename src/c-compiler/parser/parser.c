@@ -92,6 +92,8 @@ ModuleAstNode *parseModuleBlk(ParseState *parse, ModuleAstNode *mod) {
 	AstNode *node;
 	Name *alias;
 
+	modHook((ModuleAstNode*)mod->owner, mod);
+
 	// Create and populate a Module node for the program
 	while (!lexIsToken(EofToken) && !lexIsToken(RCurlyToken)) {
 		alias = NULL;
@@ -143,10 +145,11 @@ ModuleAstNode *parseModuleBlk(ParseState *parse, ModuleAstNode *mod) {
 				errorMsgNode((AstNode *)namednode, ErrorDupName, "Global name is already defined. Only one allowed.");
 				errorMsgNode((AstNode*)name->node, ErrorDupName, "This is the conflicting definition for that name.");
 			}
-			else if (namednode->asttype == PermNameDclNode || namednode->asttype == AllocNameDclNode)
-				namednode->namesym->node = (NamedAstNode*)namednode;
+			else
+				nameHook(namednode, name);
 		}
 	}
+	modHook(mod, (ModuleAstNode*)mod->owner);
 	return mod;
 }
 

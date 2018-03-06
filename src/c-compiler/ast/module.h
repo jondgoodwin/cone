@@ -17,6 +17,7 @@ typedef struct ModuleAstNode {
 
 ModuleAstNode *newModuleNode();
 void modPrint(ModuleAstNode *mod);
+void modHook(ModuleAstNode *oldmod, ModuleAstNode *newmod);
 void modPass(PassState *pstate, ModuleAstNode *mod);
 
 #endif

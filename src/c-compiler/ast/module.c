@@ -45,39 +45,49 @@ void modPrint(ModuleAstNode *mod) {
 	astPrintDecr();
 }
 
+// Unhook old module's names, hook new module's names
+// (works equally well from parent to child or child to parent
+void modHook(ModuleAstNode *oldmod, ModuleAstNode *newmod) {
+	if (oldmod)
+		nameUnhook((NamedAstNode *)oldmod);
+	if (newmod) {
+		AstNode **nodesp;
+		uint32_t cnt;
+		for (nodesFor(newmod->nodes, cnt, nodesp)) {
+			if (isNamedNode(*nodesp)) {
+				NamedAstNode *namednode = (NamedAstNode*)*nodesp;
+				nameHook(namednode, namednode->namesym);
+			}
+		}
+	}
+}
+
 // Check the module's AST
 void modPass(PassState *pstate, ModuleAstNode *mod) {
 	AstNode **nodesp;
 	uint32_t cnt;
 
-	if (pstate->pass == NameResolution && mod->owner)
-		nameHook((NamedAstNode *)mod, mod->namesym);
+	// Switch name table over to new mod for name resolution
+	if (pstate->pass == NameResolution)
+		modHook((ModuleAstNode*)mod->owner, mod);
 
 	// For global variables and functions, handle all their type info first
 	for (nodesFor(mod->nodes, cnt, nodesp)) {
-		// Hook global vars/fns in global name table (alloc/perm already there)
-		if (pstate->pass == NameResolution) {
-			switch ((*nodesp)->asttype) {
-			case VarNameDclNode:
-			case VtypeNameDclNode:
-				nameHook((NamedAstNode*)*nodesp, ((NamedAstNode*)*nodesp)->namesym);
-				break;
-			}
-		}
 		if ((*nodesp)->asttype == VarNameDclNode) {
 			NameDclAstNode *name = (NameDclAstNode*)*nodesp;
 			astPass(pstate, (AstNode*)name->perm);
 			astPass(pstate, name->vtype);
 		}
 	}
-	if (errors)
-		return;
 
 	// Now we can process the full node info
-	for (nodesFor(mod->nodes, cnt, nodesp)) {
-		astPass(pstate, *nodesp);
+	if (errors == 0) {
+		for (nodesFor(mod->nodes, cnt, nodesp)) {
+			astPass(pstate, *nodesp);
+		}
 	}
 
+	// Switch name table back to owner module
 	if (pstate->pass == NameResolution)
-		nameUnhook((NamedAstNode*)mod);
+		modHook(mod, (ModuleAstNode*)mod->owner);
 }

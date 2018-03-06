@@ -157,6 +157,7 @@ void nameUnhook(NamedAstNode *owner) {
 	while (node) {
 		NamedAstNode *next = node->hooklink;
 		node->namesym->node = node->prevname;
+		node->prevname = NULL;
 		node->hooklink = NULL;
 		node = next;
 	}
