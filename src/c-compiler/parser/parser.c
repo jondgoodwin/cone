@@ -84,58 +84,40 @@ AstNode *parseFn(ParseState *parse) {
 	return (AstNode*) fnnode;
 }
 
-// Add name declaration to global name table if not already defined
-void registerGlobalName(NameDclAstNode *name) {
-	Name *namesym = name->namesym;
-
-	if (namesym->node) {
-		errorMsgNode((AstNode *)name, ErrorDupName, "Global name is already defined. Only one allowed.");
-		errorMsgNode((AstNode*)namesym->node, ErrorDupName, "This is the conflicting definition for that name.");
-	}
-	else if (name->asttype == PermNameDclNode || name->asttype == AllocNameDclNode)
-		name->namesym->node = (NamedAstNode*)name;
-}
-
 ModuleAstNode *parseModule(ParseState *parse);
 
 // Parse a module's global statement block
 ModuleAstNode *parseModuleBlk(ParseState *parse, ModuleAstNode *mod) {
+	Nodes **modnodes = &mod->nodes;
 	AstNode *node;
-	Nodes **nodes;
+	Name *alias;
 
 	// Create and populate a Module node for the program
-	nodes = &mod->nodes;
 	while (!lexIsToken(EofToken) && !lexIsToken(RCurlyToken)) {
+		alias = NULL;
 		switch (lex->toktype) {
 
 		// 'fn' function definition
 		case FnToken:
-			nodesAdd(nodes, node=parseFn(parse));
-			if (isNameDclNode(node))
-				registerGlobalName((NameDclAstNode *)node);
+			node=parseFn(parse);
 			break;
 
 		// 'struct' definition
 		case StructToken:
 		case AllocToken:
-			nodesAdd(nodes, node = parseStruct(parse));
-			registerGlobalName((NameDclAstNode *)node);
+			node = parseStruct(parse);
 			break;
 
 		case ModToken:
-			nodesAdd(nodes, (AstNode*)parseModule(parse));
+			node = (AstNode*)parseModule(parse);
 			break;
 
 		// A global variable declaration, if it begins with a permission
 		case IdentToken: {
 			NamedAstNode *perm = lex->val.ident->node;
 			if (perm && perm->asttype == PermNameDclNode) {
-				nodesAdd(nodes, node = (AstNode*)parseVarDcl(parse, immPerm));
+				node = (AstNode*)parseVarDcl(parse, immPerm);
 				parseSemi();
-				if (isNameDclNode(node)) {
-					NameDclAstNode *vardcl = (NameDclAstNode*)node;
-					registerGlobalName(vardcl);
-				}
 				break;
 			}
 		}
@@ -148,6 +130,21 @@ ModuleAstNode *parseModuleBlk(ParseState *parse, ModuleAstNode *mod) {
 				lexNextToken();
 			}
 			lexNextToken();
+			continue; // restart loop for next statement
+		}
+
+		// Add parsed node to module, module's dictionary and name table
+		nodesAdd(modnodes, node);
+		if (isNamedNode(node)) {
+			NamedAstNode *namednode = (NamedAstNode*)node;
+			Name *name = alias ? alias : namednode->namesym;
+
+			if (name->node) {
+				errorMsgNode((AstNode *)namednode, ErrorDupName, "Global name is already defined. Only one allowed.");
+				errorMsgNode((AstNode*)name->node, ErrorDupName, "This is the conflicting definition for that name.");
+			}
+			else if (namednode->asttype == PermNameDclNode || namednode->asttype == AllocNameDclNode)
+				namednode->namesym->node = (NamedAstNode*)namednode;
 		}
 	}
 	return mod;

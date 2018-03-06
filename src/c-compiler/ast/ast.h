@@ -156,6 +156,13 @@ typedef struct TypedAstNode {
 	struct NamedAstNode *owner; \
 	struct NamedAstNode *hooklinks
 
+#define isNamedNode(node) ((node)->asttype == ModuleNode \
+  || (node)->asttype == VtypeNameDclNode \
+  || (node)->asttype == VarNameDclNode \
+  || (node)->asttype == AllocNameDclNode \
+  || (node)->asttype == PermNameDclNode \
+)
+
 // Named Ast Node header, for variable and type declarations
 // - owner is the namespace node this name belongs to
 // - namesym points to the global name table entry (holds name string)
@@ -172,12 +179,6 @@ typedef struct TypedAstNode {
 typedef struct NamedAstNode {
 	NamedAstHdr;
 } NamedAstNode;
-
-// Module
-typedef struct ModuleAstNode {
-	NamedAstHdr;
-	Nodes *nodes;
-} ModuleAstNode;
 
 // Type Ast Node header for all type structures
 // - mbrs is the list of a type instance's methods and fields

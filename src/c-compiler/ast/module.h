@@ -1,4 +1,4 @@
-/** Namespace structures and helper functions
+/** Module and import structures and helper functions
  *
  * @file
  *
@@ -8,6 +8,12 @@
 
 #ifndef module_h
 #define module_h
+
+// Module
+typedef struct ModuleAstNode {
+	NamedAstHdr;
+	Nodes *nodes;
+} ModuleAstNode;
 
 ModuleAstNode *newModuleNode();
 void modPrint(ModuleAstNode *mod);

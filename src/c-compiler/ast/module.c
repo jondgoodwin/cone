@@ -1,4 +1,4 @@
-/** Namespace node helper routines
+/** Module and import node helper routines
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -23,7 +23,7 @@ ModuleAstNode *newModuleNode() {
 	mod->hooklink = NULL;
 	mod->prevname = NULL;
 	mod->owner = NULL;
-	mod->nodes = newNodes(16);
+	mod->nodes = newNodes(64);
 	return mod;
 }
 
