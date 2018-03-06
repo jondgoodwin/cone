@@ -8,22 +8,22 @@
 #include "ast.h"
 #include "../shared/memory.h"
 #include "../parser/lexer.h"
-#include "../shared/symbol.h"
+#include "../shared/name.h"
 #include "../shared/error.h"
 
 #include <string.h>
 #include <assert.h>
 
-// Hook a node into global symbol table, such that its owner can withdraw it later
-void namespaceHook(NamedAstNode *name, Symbol *namesym) {
-	name->hooklink = name->owner->hooklinks; // Add to owner's hook list
-	name->owner->hooklinks = (NamedAstNode*)name;
-	name->prevname = namesym->node; // Latent unhooker
-	namesym->node = (NamedAstNode*)name;
+// Hook a node into global name table, such that its owner can withdraw it later
+void nameHook(NamedAstNode *namenode, Name *name) {
+	namenode->hooklink = namenode->owner->hooklinks; // Add to owner's hook list
+	namenode->owner->hooklinks = (NamedAstNode*)namenode;
+	namenode->prevname = name->node; // Latent unhooker
+	name->node = (NamedAstNode*)namenode;
 }
 
-// Unhook all of an owners names from global symbol table (LIFO)
-void namespaceUnhook(NamedAstNode *owner) {
+// Unhook all of an owner's names from global name table (LIFO)
+void nameUnhook(NamedAstNode *owner) {
 	NamedAstNode *node = owner->hooklinks;
 	while (node) {
 		NamedAstNode *next = node->hooklink;
@@ -71,16 +71,16 @@ void modPass(PassState *pstate, ModuleAstNode *mod) {
 	uint32_t cnt;
 
 	if (pstate->pass == NameResolution && mod->owner)
-		namespaceHook((NamedAstNode *)mod, mod->namesym);
+		nameHook((NamedAstNode *)mod, mod->namesym);
 
 	// For global variables and functions, handle all their type info first
 	for (nodesFor(mod->nodes, cnt, nodesp)) {
-		// Hook global vars/fns in global symbol table (alloc/perm already there)
+		// Hook global vars/fns in global name table (alloc/perm already there)
 		if (pstate->pass == NameResolution) {
 			switch ((*nodesp)->asttype) {
 			case VarNameDclNode:
 			case VtypeNameDclNode:
-				namespaceHook((NamedAstNode*)*nodesp, ((NamedAstNode*)*nodesp)->namesym);
+				nameHook((NamedAstNode*)*nodesp, ((NamedAstNode*)*nodesp)->namesym);
 				break;
 			}
 		}
@@ -99,5 +99,5 @@ void modPass(PassState *pstate, ModuleAstNode *mod) {
 	}
 
 	if (pstate->pass == NameResolution)
-		namespaceUnhook((NamedAstNode*)mod);
+		nameUnhook((NamedAstNode*)mod);
 }

@@ -11,7 +11,7 @@
 #include "../ast/ast.h"
 #include "../shared/memory.h"
 #include "../shared/error.h"
-#include "../shared/symbol.h"
+#include "../shared/name.h"
 #include "lexer.h"
 
 #include <stdio.h>
@@ -47,7 +47,7 @@ void parseAllocPerm(PtrAstNode *refnode) {
 // Parse a variable declaration
 NameDclAstNode *parseVarDcl(ParseState *parse, PermAstNode *defperm) {
 	NameDclAstNode *varnode;
-	Symbol *namesym = NULL;
+	Name *namesym = NULL;
 	AstNode *vtype;
 	PermAstNode *perm;
 	AstNode *val;
@@ -62,7 +62,7 @@ NameDclAstNode *parseVarDcl(ParseState *parse, PermAstNode *defperm) {
 	}
 	else {
 		errorMsgLex(ErrorNoIdent, "Expected variable name for declaration");
-		return newNameDclNode(symFind("_",1), VarNameDclNode, voidType, perm, NULL);
+		return newNameDclNode(nameFind("_",1), VarNameDclNode, voidType, perm, NULL);
 	}
 
 	// Get value type, if provided
@@ -167,7 +167,7 @@ AstNode *parseStruct(ParseState *parse) {
 // Parse a function's type signature
 AstNode *parseFnSig(ParseState *parse) {
 	FnSigAstNode *fnsig;
-	Symbol *namesym = NULL;
+	Name *namesym = NULL;
 	int16_t parmnbr = 0;
 
 	// Skip past the 'fn'

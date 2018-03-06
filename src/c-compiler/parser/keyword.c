@@ -11,15 +11,15 @@
 #include "keyword.h"
 #include "lexer.h"
 #include "../ast/ast.h"
-#include "../shared/symbol.h"
+#include "../shared/name.h"
 #include "../shared/memory.h"
 
 #include <string.h>
 
-Symbol *keyAdd(char *keyword, uint16_t toktype) {
-	Symbol *sym;
+Name *keyAdd(char *keyword, uint16_t toktype) {
+	Name *sym;
 	NamedAstNode *node;
-	sym = symFind(keyword, strlen(keyword));
+	sym = nameFind(keyword, strlen(keyword));
 	sym->node = node = (NamedAstNode*)memAllocBlk(sizeof(AstNode));
 	node->asttype = KeywordNode;
 	node->flags = toktype;
@@ -27,7 +27,7 @@ Symbol *keyAdd(char *keyword, uint16_t toktype) {
 }
 
 void keywordInit() {
-	// Declare built-in types and publish their names to the symbol table
+	// Declare built-in types and publish their names to the name table
 	permDclNames();
 	nbrDclNames();
 

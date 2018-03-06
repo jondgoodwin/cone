@@ -8,7 +8,7 @@
 #include "ast.h"
 #include "../shared/memory.h"
 #include "../parser/lexer.h"
-#include "../shared/symbol.h"
+#include "../shared/name.h"
 #include "../shared/error.h"
 
 #include <assert.h>
@@ -92,7 +92,7 @@ void fnCallPrint(FnCallAstNode *node) {
 	astFprint(")");
 }
 
-NameDclAstNode *fnCallFindMethod(FnCallAstNode *node, Symbol *methsym) {
+NameDclAstNode *fnCallFindMethod(FnCallAstNode *node, Name *methsym) {
 	// Get type of object call's object (first arg). Use value type of a ref
 	AstNode *objtype = typeGetVtype(*nodesNodes(node->parms));
 	if (objtype->asttype == RefType || objtype->asttype == PtrType)
@@ -136,7 +136,7 @@ case TypeCheck:
 	// If this is an object call, resolve method name within first argument's type
 	if (node->fn->asttype == MemberUseNode) {
 		NameUseAstNode *methname = (NameUseAstNode*)node->fn;
-		Symbol *methsym = methname->namesym;
+		Name *methsym = methname->namesym;
 		NameDclAstNode *method;
 		if (method = fnCallFindMethod(node, methsym)) {
 			methname->asttype = NameUseNode;

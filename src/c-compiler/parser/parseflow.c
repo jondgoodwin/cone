@@ -11,7 +11,7 @@
 #include "../ast/ast.h"
 #include "../shared/memory.h"
 #include "../shared/error.h"
-#include "../shared/symbol.h"
+#include "../shared/name.h"
 #include "lexer.h"
 
 #include <stdio.h>

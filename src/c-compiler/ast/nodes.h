@@ -10,7 +10,7 @@
 
 typedef struct AstNode AstNode;
 typedef struct NamedAstNode NamedAstNode;
-typedef struct Symbol Symbol;
+typedef struct Name Name;
 
 #include <stdint.h>
 
@@ -32,9 +32,9 @@ void nodesAdd(Nodes **nodesp, AstNode *node);
 #define nodesGet(nodes, index) ((AstNode**)((nodes)+1))[index]
 #define nodesLast(nodes) nodesGet(nodes, nodes->used-1)
 
-// *** Inodes: Hash-indexed & ordered array of Symbol:AstNode pairs ***
+// *** Inodes: Hash-indexed & ordered array of Name:AstNode pairs ***
 
-// Header for a variable-sized structure holding a list of Symbol:AstNode pairs
+// Header for a variable-sized structure holding a list of Name:AstNode pairs
 // The SymNode pairs immediately follow the header
 typedef struct Inodes {
 	uint32_t used;
@@ -42,13 +42,13 @@ typedef struct Inodes {
 } Inodes;
 
 typedef struct SymNode {
-	Symbol *name;
+	Name *name;
 	struct NamedAstNode *node;
 } SymNode;
 
 Inodes *newInodes(int size);
-void inodesAdd(Inodes **nodesp, Symbol *name, AstNode *node);
-SymNode *inodesFind(Inodes *inodes, Symbol *name);
+void inodesAdd(Inodes **nodesp, Name *name, AstNode *node);
+SymNode *inodesFind(Inodes *inodes, Name *name);
 void inodesHook(Inodes *inodes);
 void inodesUnhook(Inodes *inodes);
 

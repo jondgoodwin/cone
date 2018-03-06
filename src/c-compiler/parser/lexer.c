@@ -11,7 +11,7 @@
 #include "lexer.h"
 #include "keyword.h"
 #include "../ast/ast.h"
-#include "../shared/symbol.h"
+#include "../shared/name.h"
 #include "../shared/memory.h"
 #include "../shared/error.h"
 #include "../shared/utf8.h"
@@ -318,9 +318,9 @@ void lexScanIdent(char *srcp) {
 				srcp += utf8ByteSkip(srcp);
 			else {
 				AstNode *identNode;
-				// Find identifier token in symbol table and preserve info about it
+				// Find identifier token in name table and preserve info about it
 				// Substitute token type when identifier is a keyword
-				lex->val.ident = symFind(srcbeg, srcp-srcbeg);
+				lex->val.ident = nameFind(srcbeg, srcp-srcbeg);
 				identNode = (AstNode*)lex->val.ident->node;
 				lex->toktype = (identNode && identNode->asttype == KeywordNode)? identNode->flags : IdentToken;
 				lex->srcp = srcp;
@@ -343,8 +343,8 @@ void lexScanTickedIdent(char *srcp) {
 		srcp = srcbeg + 2;
 	}
 
-	// Find identifier token in symbol table and preserve info about it
-	lex->val.ident = symFind(srcbeg+1, srcp - srcbeg - 1);
+	// Find identifier token in name table and preserve info about it
+	lex->val.ident = nameFind(srcbeg+1, srcp - srcbeg - 1);
 	lex->toktype = IdentToken;
 	lex->srcp = srcp+1;
 }

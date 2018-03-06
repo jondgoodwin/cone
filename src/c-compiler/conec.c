@@ -8,7 +8,7 @@
 #include "conec.h"
 #include "coneopts.h"
 #include "shared/fileio.h"
-#include "shared/symbol.h"
+#include "shared/name.h"
 #include "ast/ast.h"
 #include "shared/error.h"
 #include "parser/keyword.h"
@@ -42,7 +42,7 @@ int main(int argc, char **argv) {
 
 	// Initialize compiler's global structures
 	lexInject("*compiler*", "");
-	symInit();
+	nameInit();
 	keywordInit();
 	typeInit();
 

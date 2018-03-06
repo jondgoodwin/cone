@@ -9,7 +9,7 @@
 #include "../shared/memory.h"
 #include "../shared/error.h"
 #include "../parser/lexer.h"
-#include "../shared/symbol.h"
+#include "../shared/name.h"
 
 #include <assert.h>
 
@@ -19,7 +19,7 @@ void allocAllocate(AddrAstNode *anode, PtrAstNode *ptype) {
 	BlockAstNode *blknode = newBlockNode();
 
 	// Find 'allocate' method in alloc
-	Symbol *symalloc = symFind("allocate", 8);
+	Name *symalloc = nameFind("allocate", 8);
 	TypeAstNode *alloctype = (TypeAstNode*)ptype->alloc;
 	int32_t cnt;
 	AstNode **nodesp;
@@ -37,7 +37,7 @@ void allocAllocate(AddrAstNode *anode, PtrAstNode *ptype) {
 	}
 
 	// szvtype = sizeof(vtype)
-	Symbol *szvtsym = symFind("szvtype", 7);
+	Name *szvtsym = nameFind("szvtype", 7);
 	SizeofAstNode *szvtval = newSizeofAstNode();
 	szvtval->type = ptype->pvtype;
 	NameDclAstNode *szvtype = newNameDclNode(szvtsym, VarNameDclNode, (AstNode*)usizeType, immPerm, (AstNode*)szvtval);
@@ -56,7 +56,7 @@ void allocAllocate(AddrAstNode *anode, PtrAstNode *ptype) {
 	callalloc->vtype = allocmeth->vtype;
 	nodesAdd(&callalloc->parms, (AstNode*)szvtuse);
 	// ---
-	Symbol *pT = symFind("pT", 2);
+	Name *pT = nameFind("pT", 2);
 	CastAstNode *castvt = newCastAstNode((AstNode*)callalloc, (AstNode*)ptype);
 	NameDclAstNode *p1dcl = newNameDclNode(pT, VarNameDclNode, (AstNode*)ptype, immPerm, (AstNode*)castvt);
 	nodesAdd(&blknode->stmts, (AstNode*)p1dcl);

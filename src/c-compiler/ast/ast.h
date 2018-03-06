@@ -1,6 +1,6 @@
 /** AST structures and macros
 *
-* The AST, together with the symbol table, is the skeleton of the compiler.
+* The AST, together with the name table, is the skeleton of the compiler.
 * It connects together every stage:
 *
 * - The parser transforms programs into AST
@@ -26,7 +26,7 @@
 
 #include "../shared/memory.h"
 #include "../ast/nodes.h"
-typedef struct Symbol Symbol;	// ../shared/symbol.h
+typedef struct Name Name;	// ../shared/name.h
 typedef struct Lexer Lexer;		// ../parser/lexer.h
 
 #include <llvm-c/Core.h>
@@ -52,7 +52,7 @@ enum AstGroup {
 // All the possible types for an AstNode
 enum AstType {
 	// Lexer-only nodes that are *never* found in a program's AST.
-	// KeywordNode exists for symbol table consistency
+	// KeywordNode exists for name table consistency
 	KeywordNode = (VoidGroup<<8),	// Keyword token (flags is the keyword's token type)
 
 	// Untyped (Basic) AST nodes

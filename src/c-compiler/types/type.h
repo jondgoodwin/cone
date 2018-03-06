@@ -9,7 +9,7 @@
 #define type_h
 
 #include <stdint.h>
-typedef struct Symbol Symbol;
+typedef struct Name Name;
 
 // Void type - e.g., for fn with no return value
 typedef struct VoidTypeAstNode {

@@ -8,14 +8,14 @@
 #include "ast.h"
 #include "../shared/memory.h"
 #include "../parser/lexer.h"
-#include "../shared/symbol.h"
+#include "../shared/name.h"
 #include "../shared/error.h"
 
 #include <string.h>
 #include <assert.h>
 
 // Create a new name declaraction node
-NameDclAstNode *newNameDclNode(Symbol *namesym, uint16_t asttype, AstNode *type, PermAstNode *perm, AstNode *val) {
+NameDclAstNode *newNameDclNode(Name *namesym, uint16_t asttype, AstNode *type, PermAstNode *perm, AstNode *val) {
 	NameDclAstNode *name;
 	newAstNode(name, NameDclAstNode, asttype);
 	name->vtype = type;
@@ -30,11 +30,11 @@ NameDclAstNode *newNameDclNode(Symbol *namesym, uint16_t asttype, AstNode *type,
 	return name;
 }
 
-// Add a compiler built-in type to the global symbol table as immutable, declared type name
+// Add a compiler built-in type to the global name table as immutable, declared type name
 // This gives a program's later NameUse nodes something to point to
 void newNameDclNodeStr(char *namestr, uint16_t asttype, AstNode *type) {
-	Symbol *sym;
-	sym = symFind(namestr, strlen(namestr));
+	Name *sym;
+	sym = nameFind(namestr, strlen(namestr));
 	sym->node = (NamedAstNode*)newNameDclNode(sym, asttype, NULL, immPerm, type);
 }
 
@@ -81,9 +81,9 @@ void nameDclFnNameResolve(PassState *pstate, NameDclAstNode *name) {
 	int16_t oldscope = pstate->scope;
 	pstate->scope = 1;
 	FnSigAstNode *fnsig = (FnSigAstNode*)name->vtype;
-	inodesHook(fnsig->parms);		// Load into global symbol table
+	inodesHook(fnsig->parms);		// Load into global name table
 	astPass(pstate, name->value);
-	inodesUnhook(fnsig->parms);		// Unhook from symbol table
+	inodesUnhook(fnsig->parms);		// Unhook from name table
 	pstate->scope = oldscope;
 }
 
@@ -134,7 +134,7 @@ void nameDclPass(PassState *pstate, NameDclAstNode *name) {
 	// Process nodes in name's initial value/code block
 	switch (pstate->pass) {
 	case NameResolution:
-		// Hook into global symbol table if not a global owner by module
+		// Hook into global name table if not a global owner by module
 		// (because those have already been hooked by module for forward references)
 		/*if (name->owner->asttype != ModuleNode)
 			namespaceHook((NamedAstNode*)name, name->namesym);*/

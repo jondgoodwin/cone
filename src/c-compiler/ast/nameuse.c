@@ -8,21 +8,21 @@
 #include "ast.h"
 #include "../shared/memory.h"
 #include "../parser/lexer.h"
-#include "../shared/symbol.h"
+#include "../shared/name.h"
 #include "../shared/error.h"
 
 #include <string.h>
 #include <assert.h>
 
 // Create a new name use node
-NameUseAstNode *newNameUseNode(Symbol *namesym) {
+NameUseAstNode *newNameUseNode(Name *namesym) {
 	NameUseAstNode *name;
 	newAstNode(name, NameUseAstNode, NameUseNode);
 	name->namesym = namesym;
 	return name;
 }
 
-NameUseAstNode *newMemberUseNode(Symbol *namesym) {
+NameUseAstNode *newMemberUseNode(Name *namesym) {
 	NameUseAstNode *name;
 	newAstNode(name, NameUseAstNode, MemberUseNode);
 	name->namesym = namesym;

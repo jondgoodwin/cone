@@ -9,7 +9,7 @@
 #define lexer_h
 
 typedef struct AstNode AstNode;	// ../ast/ast.h
-typedef struct Symbol Symbol;	// ../shared/symbol.h
+typedef struct Name Name;	// ../shared/name.h
 
 #include <stdint.h>
 
@@ -20,7 +20,7 @@ typedef struct Lexer {
 		double floatlit;
 		uint64_t uintlit;
 		char *strlit;
-		Symbol *ident;
+		Name *ident;
 	} val;
 	AstNode *langtype;
 

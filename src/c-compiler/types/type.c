@@ -6,7 +6,7 @@
 */
 
 #include "../ast/ast.h"
-#include "../shared/symbol.h"
+#include "../shared/name.h"
 #include "../shared/memory.h"
 #include "../parser/lexer.h"
 #include "../shared/error.h"

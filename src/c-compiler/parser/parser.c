@@ -11,7 +11,7 @@
 #include "../ast/ast.h"
 #include "../shared/memory.h"
 #include "../shared/error.h"
-#include "../shared/symbol.h"
+#include "../shared/name.h"
 #include "lexer.h"
 
 #include <stdio.h>
@@ -84,9 +84,9 @@ AstNode *parseFn(ParseState *parse) {
 	return (AstNode*) fnnode;
 }
 
-// Add name declaration to global symbol table if not already defined
+// Add name declaration to global name table if not already defined
 void registerGlobalName(NameDclAstNode *name) {
-	Symbol *namesym = name->namesym;
+	Name *namesym = name->namesym;
 
 	if (namesym->node) {
 		errorMsgNode((AstNode *)name, ErrorDupName, "Global name is already defined. Only one allowed.");

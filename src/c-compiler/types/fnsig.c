@@ -8,7 +8,7 @@
 #include "../ast/ast.h"
 #include "../shared/memory.h"
 #include "../parser/lexer.h"
-#include "../shared/symbol.h"
+#include "../shared/name.h"
 
 // Create a new function signature node
 FnSigAstNode *newFnSigNode() {

@@ -6,7 +6,7 @@
 */
 
 #include "ast.h"
-#include "../shared/symbol.h"
+#include "../shared/name.h"
 #include "../parser/lexer.h"
 
 #include <stdio.h>
@@ -50,9 +50,9 @@ Inodes *newInodes(int size) {
 	return nodes;
 }
 
-// Add a Symbol:AstNode pair to the end of a Inodes, growing it if full (changing its memory location)
+// Add a Name:AstNode pair to the end of a Inodes, growing it if full (changing its memory location)
 // This assumes an inodes can only have a single parent, whose address we point at
-void inodesAdd(Inodes **nodesp, Symbol *name, AstNode *node) {
+void inodesAdd(Inodes **nodesp, Name *name, AstNode *node) {
 	Inodes *inodes = *nodesp;
 	// If full, double its size
 	if (inodes->used >= inodes->avail) {
@@ -71,8 +71,8 @@ void inodesAdd(Inodes **nodesp, Symbol *name, AstNode *node) {
 	inodes->used++;
 }
 
-// Find a symbol in an inodes list, returning NULL if not found
-SymNode *inodesFind(Inodes *inodes, Symbol *name) {
+// Find a name in an inodes list, returning NULL if not found
+SymNode *inodesFind(Inodes *inodes, Name *name) {
 	SymNode *nodesp;
 	uint32_t cnt;
 	for (inodesFor(inodes, cnt, nodesp)) {
@@ -82,7 +82,7 @@ SymNode *inodesFind(Inodes *inodes, Symbol *name) {
 	return NULL;
 }
 
-// Hook symbols in inodes into global symbol table
+// Hook names in inodes into global name table
 void inodesHook(Inodes *inodes) {
 	SymNode *nodesp;
 	uint32_t cnt;
@@ -93,7 +93,7 @@ void inodesHook(Inodes *inodes) {
 	}
 }
 
-// Unhook symbols from global symbol table
+// Unhook names from global name table
 void inodesUnhook(Inodes *inodes) {
 	SymNode *nodesp;
 	uint32_t cnt;

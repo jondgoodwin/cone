@@ -8,7 +8,7 @@
 #include "../ast/ast.h"
 #include "../shared/memory.h"
 #include "../parser/lexer.h"
-#include "../shared/symbol.h"
+#include "../shared/name.h"
 
 Nodes *nbrsubtypes;
 
@@ -52,57 +52,57 @@ NbrAstNode *newNbrTypeNode(uint16_t typ, char bits) {
 	// Create function signature for unary methods for this type
 	FnSigAstNode *unarysig = newFnSigNode();
 	unarysig->rettype = (AstNode*)nbrtypenode;
-	Symbol *una1 = symFind("a", 1);
+	Name *una1 = nameFind("a", 1);
 	inodesAdd(&unarysig->parms, una1, (AstNode *)newNameDclNode(una1, VarNameDclNode, (AstNode*)nbrtypenode, immPerm, NULL));
 
 	// Create function signature for binary methods for this type
 	FnSigAstNode *binsig = newFnSigNode();
 	binsig->rettype = (AstNode*)nbrtypenode;
-	Symbol *parm1 = symFind("a", 1);
+	Name *parm1 = nameFind("a", 1);
 	inodesAdd(&binsig->parms, parm1, (AstNode *)newNameDclNode(parm1, VarNameDclNode, (AstNode*)nbrtypenode, immPerm, NULL));
-	Symbol *parm2 = symFind("b", 1);
+	Name *parm2 = nameFind("b", 1);
 	inodesAdd(&binsig->parms, parm2, (AstNode *)newNameDclNode(parm2, VarNameDclNode, (AstNode*)nbrtypenode, immPerm, NULL));
 
 	// Build method dictionary for the type, which ultimately point to internal op codes
 	nbrtypenode->methods = newNodes(16);
-	Symbol *opsym;
+	Name *opsym;
 
 	// Arithmetic operators (not applicable to boolean)
 	if (bits > 1) {
-		opsym = symFind("neg", 3);
+		opsym = nameFind("neg", 3);
 		nodesAdd(&nbrtypenode->methods, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)unarysig, immPerm, (AstNode *)newOpCodeNode(NegOpCode)));
-		opsym = symFind("+", 1);
+		opsym = nameFind("+", 1);
 		nodesAdd(&nbrtypenode->methods, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(AddOpCode)));
-		opsym = symFind("-", 1);
+		opsym = nameFind("-", 1);
 		nodesAdd(&nbrtypenode->methods, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(SubOpCode)));
-		opsym = symFind("*", 1);
+		opsym = nameFind("*", 1);
 		nodesAdd(&nbrtypenode->methods, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(MulOpCode)));
-		opsym = symFind("/", 1);
+		opsym = nameFind("/", 1);
 		nodesAdd(&nbrtypenode->methods, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(DivOpCode)));
-		opsym = symFind("%", 1);
+		opsym = nameFind("%", 1);
 		nodesAdd(&nbrtypenode->methods, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(RemOpCode)));
 	}
 
 	// Bitwise operators (integer only)
 	if (typ != FloatNbrType) {
-		opsym = symFind("~", 1);
+		opsym = nameFind("~", 1);
 		nodesAdd(&nbrtypenode->methods, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)unarysig, immPerm, (AstNode *)newOpCodeNode(NotOpCode)));
-		opsym = symFind("&", 1);
+		opsym = nameFind("&", 1);
 		nodesAdd(&nbrtypenode->methods, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(AndOpCode)));
-		opsym = symFind("|", 1);
+		opsym = nameFind("|", 1);
 		nodesAdd(&nbrtypenode->methods, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(OrOpCode)));
-		opsym = symFind("^", 1);
+		opsym = nameFind("^", 1);
 		nodesAdd(&nbrtypenode->methods, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(XorOpCode)));
 		if (bits > 1) {
-			opsym = symFind("shl", 3);
+			opsym = nameFind("shl", 3);
 			nodesAdd(&nbrtypenode->methods, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(ShlOpCode)));
-			opsym = symFind("shr", 3);
+			opsym = nameFind("shr", 3);
 			nodesAdd(&nbrtypenode->methods, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)binsig, immPerm, (AstNode *)newOpCodeNode(ShrOpCode)));
 		}
 	}
 	// Floating point functions (intrinsics)
 	else {
-		opsym = symFind("sqrt", 4);
+		opsym = nameFind("sqrt", 4);
 		nodesAdd(&nbrtypenode->methods, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)unarysig, immPerm, (AstNode *)newOpCodeNode(SqrtOpCode)));
 	}
 
@@ -113,17 +113,17 @@ NbrAstNode *newNbrTypeNode(uint16_t typ, char bits) {
 	inodesAdd(&cmpsig->parms, parm2, (AstNode *)newNameDclNode(parm2, VarNameDclNode, (AstNode*)nbrtypenode, immPerm, NULL));
 
 	// Comparison operators
-	opsym = symFind("==", 2);
+	opsym = nameFind("==", 2);
 	nodesAdd(&nbrtypenode->methods, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)cmpsig, immPerm, (AstNode *)newOpCodeNode(EqOpCode)));
-	opsym = symFind("!=", 2);
+	opsym = nameFind("!=", 2);
 	nodesAdd(&nbrtypenode->methods, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)cmpsig, immPerm, (AstNode *)newOpCodeNode(NeOpCode)));
-	opsym = symFind("<", 1);
+	opsym = nameFind("<", 1);
 	nodesAdd(&nbrtypenode->methods, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)cmpsig, immPerm, (AstNode *)newOpCodeNode(LtOpCode)));
-	opsym = symFind("<=", 2);
+	opsym = nameFind("<=", 2);
 	nodesAdd(&nbrtypenode->methods, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)cmpsig, immPerm, (AstNode *)newOpCodeNode(LeOpCode)));
-	opsym = symFind(">", 1);
+	opsym = nameFind(">", 1);
 	nodesAdd(&nbrtypenode->methods, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)cmpsig, immPerm, (AstNode *)newOpCodeNode(GtOpCode)));
-	opsym = symFind(">=", 2);
+	opsym = nameFind(">=", 2);
 	nodesAdd(&nbrtypenode->methods, (AstNode *)newNameDclNode(opsym, VarNameDclNode, (AstNode *)cmpsig, immPerm, (AstNode *)newOpCodeNode(GeOpCode)));
 
 	return nbrtypenode;

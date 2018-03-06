@@ -19,13 +19,13 @@
 
 // Named Ast Node header, for variable and type declarations
 // - owner is the namespace node this name belongs to
-// - namesym points to the global symbol table entry (holds name string)
+// - namesym points to the global name table entry (holds name string)
 // - hooklinks starts linked list of all names in this name's namespace
 // - hooklink links this name as part of owner's hooklinks
-// - prevname points to named node this overrides in global symbol table
+// - prevname points to named node this overrides in global name table
 #define NamedAstHdr \
 	OwnerAstHdr; \
-	Symbol *namesym; \
+	Name *namesym; \
 	struct NamedAstNode *hooklink; \
 	struct NamedAstNode *prevname
 
@@ -44,7 +44,7 @@ ModuleAstNode *newModuleNode();
 void modPrint(ModuleAstNode *mod);
 void modPass(PassState *pstate, ModuleAstNode *mod);
 
-void namespaceHook(NamedAstNode *name, Symbol *namesym);
-void namespaceUnhook(NamedAstNode *owner);
+void nameHook(NamedAstNode *name, Name *namesym);
+void nameUnhook(NamedAstNode *owner);
 
 #endif

@@ -8,7 +8,7 @@
 #include "ast.h"
 #include "../shared/memory.h"
 #include "../parser/lexer.h"
-#include "../shared/symbol.h"
+#include "../shared/name.h"
 #include "../shared/error.h"
 
 #include <assert.h>
@@ -119,7 +119,7 @@ void elementPass(PassState *pstate, ElementAstNode *node) {
 			AstNode *ownvtype = typeGetVtype(node->owner);
 			if (ownvtype->asttype == StructType) {
 				NameUseAstNode *fldname = (NameUseAstNode*)node->element;
-				Symbol *fldsym = fldname->namesym;
+				Name *fldsym = fldname->namesym;
 				SymNode *field = inodesFind(((StructAstNode *)ownvtype)->fields, fldsym);
 				if (field) {
 					fldname->asttype = NameUseNode;

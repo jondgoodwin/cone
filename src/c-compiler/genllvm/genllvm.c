@@ -9,7 +9,7 @@
 #include "../parser/lexer.h"
 #include "../shared/error.h"
 #include "../coneopts.h"
-#include "../shared/symbol.h"
+#include "../shared/name.h"
 #include "../shared/fileio.h"
 #include "genllvm.h"
 
