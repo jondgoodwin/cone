@@ -9,7 +9,7 @@
 #include "../shared/memory.h"
 #include "../shared/error.h"
 #include "../parser/lexer.h"
-#include "../shared/name.h"
+#include "../shared/nametbl.h"
 
 #include <assert.h>
 

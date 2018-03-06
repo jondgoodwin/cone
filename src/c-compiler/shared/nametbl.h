@@ -5,10 +5,10 @@
  * See Copyright Notice in conec.h
 */
 
-#ifndef name_h
-#define name_h
+#ifndef nametbl_h
+#define nametbl_h
 
-typedef struct NamedAstNode NamedAstNode;	// ../ast/ast.h
+#include "../ast/ast.h"
 
 #include <stdlib.h>
 #include <stddef.h>
@@ -37,5 +37,8 @@ size_t nameUnused();
 	
 // Initialize the name table with reserved names
 void nameInit();
+
+void nameHook(NamedAstNode *name, Name *namesym);
+void nameUnhook(NamedAstNode *owner);
 
 #endif

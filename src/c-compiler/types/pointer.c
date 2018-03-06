@@ -8,7 +8,7 @@
 #include "../ast/ast.h"
 #include "../shared/memory.h"
 #include "../parser/lexer.h"
-#include "../shared/name.h"
+#include "../shared/nametbl.h"
 
 // Create a new pointer type whose info will be filled in afterwards
 PtrAstNode *newPtrTypeNode() {

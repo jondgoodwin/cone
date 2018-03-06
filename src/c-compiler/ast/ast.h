@@ -26,7 +26,7 @@
 
 #include "../shared/memory.h"
 #include "../ast/nodes.h"
-typedef struct Name Name;	// ../shared/name.h
+typedef struct Name Name;		// ../ast/nametbl.h
 typedef struct Lexer Lexer;		// ../parser/lexer.h
 
 #include <llvm-c/Core.h>
@@ -108,6 +108,10 @@ enum AstType {
 	AllocType,
 };
 
+// ******************************
+// AST node traits: header macros and structs that begin all AST node structs
+// ******************************
+
 // All AST nodes begin with this header, mostly containing lexer data describing
 // where in the source this structure came from (useful for error messages)
 // - asttype contains the AstType code
@@ -144,7 +148,36 @@ typedef struct TypedAstNode {
 	TypedAstHdr;
 } TypedAstNode;
 
-#include "module.h"
+// Namespace Ownert Node header, for named declarations and blocks
+// - owner is the namespace node this name belongs to
+// - hooklinks starts linked list of all names in this name's namespace
+#define OwnerAstHdr \
+	TypedAstHdr; \
+	struct NamedAstNode *owner; \
+	struct NamedAstNode *hooklinks
+
+// Named Ast Node header, for variable and type declarations
+// - owner is the namespace node this name belongs to
+// - namesym points to the global name table entry (holds name string)
+// - hooklinks starts linked list of all names in this name's namespace
+// - hooklink links this name as part of owner's hooklinks
+// - prevname points to named node this overrides in global name table
+#define NamedAstHdr \
+	OwnerAstHdr; \
+	Name *namesym; \
+	struct NamedAstNode *hooklink; \
+	struct NamedAstNode *prevname
+
+// Castable structure for all named AST nodes
+typedef struct NamedAstNode {
+	NamedAstHdr;
+} NamedAstNode;
+
+// Module
+typedef struct ModuleAstNode {
+	NamedAstHdr;
+	Nodes *nodes;
+} ModuleAstNode;
 
 // Type Ast Node header for all type structures
 // - mbrs is the list of a type instance's methods and fields
@@ -161,6 +194,7 @@ typedef struct TypeAstNode {
 
 
 #include "../types/permission.h"
+#include "../ast/module.h"
 #include "../ast/block.h"
 #include "../ast/expr.h"
 #include "../ast/copyexpr.h"

@@ -8,7 +8,7 @@
 #include "conec.h"
 #include "coneopts.h"
 #include "shared/fileio.h"
-#include "shared/name.h"
+#include "shared/nametbl.h"
 #include "ast/ast.h"
 #include "shared/error.h"
 #include "parser/keyword.h"

@@ -9,7 +9,7 @@
 
 #include "parser.h"
 #include "../ast/ast.h"
-#include "../shared/name.h"
+#include "../shared/nametbl.h"
 #include "../shared/memory.h"
 #include "../shared/error.h"
 #include "lexer.h"

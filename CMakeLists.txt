@@ -23,7 +23,7 @@ add_executable(conec
 	src/c-compiler/shared/utf8.c
 
 	src/c-compiler/ast/ast.c
-	src/c-compiler/ast/name.c
+	src/c-compiler/ast/nametbl.c
 	src/c-compiler/ast/module.c
 	src/c-compiler/ast/nameuse.c
 	src/c-compiler/ast/vardcl.c

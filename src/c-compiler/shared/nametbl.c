@@ -15,7 +15,7 @@
  * See Copyright Notice in conec.h
 */
 
-#include "name.h"
+#include "nametbl.h"
 #include "memory.h"
 
 #include <stdio.h>
@@ -141,4 +141,24 @@ size_t nameUnused() {
 // Initialize name table
 void nameInit() {
 	nameGrow();
+}
+
+// Hook a node into global name table, such that its owner can withdraw it later
+void nameHook(NamedAstNode *namenode, Name *name) {
+	namenode->hooklink = namenode->owner->hooklinks; // Add to owner's hook list
+	namenode->owner->hooklinks = (NamedAstNode*)namenode;
+	namenode->prevname = name->node; // Latent unhooker
+	name->node = (NamedAstNode*)namenode;
+}
+
+// Unhook all of an owner's names from global name table (LIFO)
+void nameUnhook(NamedAstNode *owner) {
+	NamedAstNode *node = owner->hooklinks;
+	while (node) {
+		NamedAstNode *next = node->hooklink;
+		node->namesym->node = node->prevname;
+		node->hooklink = NULL;
+		node = next;
+	}
+	owner->hooklinks = NULL;
 }

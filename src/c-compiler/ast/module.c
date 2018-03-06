@@ -8,31 +8,11 @@
 #include "ast.h"
 #include "../shared/memory.h"
 #include "../parser/lexer.h"
-#include "../shared/name.h"
+#include "../shared/nametbl.h"
 #include "../shared/error.h"
 
 #include <string.h>
 #include <assert.h>
-
-// Hook a node into global name table, such that its owner can withdraw it later
-void nameHook(NamedAstNode *namenode, Name *name) {
-	namenode->hooklink = namenode->owner->hooklinks; // Add to owner's hook list
-	namenode->owner->hooklinks = (NamedAstNode*)namenode;
-	namenode->prevname = name->node; // Latent unhooker
-	name->node = (NamedAstNode*)namenode;
-}
-
-// Unhook all of an owner's names from global name table (LIFO)
-void nameUnhook(NamedAstNode *owner) {
-	NamedAstNode *node = owner->hooklinks;
-	while (node) {
-		NamedAstNode *next = node->hooklink;
-		node->namesym->node = node->prevname;
-		node->hooklink = NULL;
-		node = next;
-	}
-	owner->hooklinks = NULL;
-}
 
 // Create a new Module node
 ModuleAstNode *newModuleNode() {
