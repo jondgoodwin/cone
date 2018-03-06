@@ -6,7 +6,7 @@
 */
 
 #include "ast.h"
-#include "../shared/nametbl.h"
+#include "../ast/nametbl.h"
 #include "../parser/lexer.h"
 
 #include <stdio.h>

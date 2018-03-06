@@ -9,7 +9,7 @@
 #define lexer_h
 
 typedef struct AstNode AstNode;	// ../ast/ast.h
-typedef struct Name Name;	// ../shared/nametbl.h
+typedef struct Name Name;	// ../ast/nametbl.h
 
 #include <stdint.h>
 

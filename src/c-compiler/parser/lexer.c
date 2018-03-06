@@ -11,7 +11,7 @@
 #include "lexer.h"
 #include "keyword.h"
 #include "../ast/ast.h"
-#include "../shared/nametbl.h"
+#include "../ast/nametbl.h"
 #include "../shared/memory.h"
 #include "../shared/error.h"
 #include "../shared/utf8.h"

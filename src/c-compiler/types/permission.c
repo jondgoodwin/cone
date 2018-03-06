@@ -8,7 +8,7 @@
 #include "../ast/ast.h"
 #include "../shared/memory.h"
 #include "../parser/lexer.h"
-#include "../shared/nametbl.h"
+#include "../ast/nametbl.h"
 
 #include <assert.h>
 
