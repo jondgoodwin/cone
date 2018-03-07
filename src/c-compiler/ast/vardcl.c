@@ -19,11 +19,13 @@ NameDclAstNode *newNameDclNode(Name *namesym, uint16_t asttype, AstNode *type, P
 	NameDclAstNode *name;
 	newAstNode(name, NameDclAstNode, asttype);
 	name->vtype = type;
-	name->perm = perm;
+	name->owner = NULL;
+	name->hooklinks = NULL;
 	name->namesym = namesym;
-	name->value = val;
 	name->hooklink = NULL;
 	name->prevname = NULL;
+	name->perm = perm;
+	name->value = val;
 	name->scope = 0;
 	name->index = 0;
 	name->llvmvar = NULL;
@@ -81,9 +83,9 @@ void nameDclFnNameResolve(PassState *pstate, NameDclAstNode *name) {
 	int16_t oldscope = pstate->scope;
 	pstate->scope = 1;
 	FnSigAstNode *fnsig = (FnSigAstNode*)name->vtype;
-	inodesHook(fnsig->parms);		// Load into global name table
+	inodesHook((OwnerAstNode*)name, fnsig->parms);		// Load into global name table
 	astPass(pstate, name->value);
-	inodesUnhook(fnsig->parms);		// Unhook from name table
+	nameUnhook((OwnerAstNode*)name);		// Unhook from name table
 	pstate->scope = oldscope;
 }
 
@@ -92,8 +94,7 @@ void nameDclVarNameResolve(PassState *pstate, NameDclAstNode *name) {
 
 	// Variable declaration within a block is a local variable
 	if (pstate->scope > 1) {
-		name->prevname = name->namesym->node; // Latent unhooker
-		name->namesym->node = (NamedAstNode*)name;
+		nameHook((OwnerAstNode *)pstate->blk, (NamedAstNode*)name, name->namesym);
 		// Capture variable's scope info and have block know about variable
 		name->scope = pstate->scope;
 		inodesAdd(&pstate->blk->locals, name->namesym, (AstNode*)name);

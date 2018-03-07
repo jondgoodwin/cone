@@ -10,7 +10,7 @@
 
 // Block
 typedef struct BlockAstNode {
-	TypedAstHdr;
+	OwnerAstHdr;
 	Inodes *locals;
 	Nodes *stmts;
 	uint16_t scope;

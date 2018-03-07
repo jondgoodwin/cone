@@ -83,22 +83,9 @@ SymNode *inodesFind(Inodes *inodes, Name *name) {
 }
 
 // Hook names in inodes into global name table
-void inodesHook(Inodes *inodes) {
+void inodesHook(OwnerAstNode *owner, Inodes *inodes) {
 	SymNode *nodesp;
 	uint32_t cnt;
-	for (inodesFor(inodes, cnt, nodesp)) {
-		NameDclAstNode *parm = (NameDclAstNode*)nodesp->node;
-		parm->prevname = parm->namesym->node; // Latent unhooker
-		parm->namesym->node = (NamedAstNode*)parm;
-	}
-}
-
-// Unhook names from global name table
-void inodesUnhook(Inodes *inodes) {
-	SymNode *nodesp;
-	uint32_t cnt;
-	for (inodesFor(inodes, cnt, nodesp)) {
-		NameDclAstNode *parm = (NameDclAstNode*)nodesp->node;
-		parm->namesym->node = parm->prevname;
-	}
+	for (inodesFor(inodes, cnt, nodesp))
+		nameHook(owner, nodesp->node, nodesp->name);
 }

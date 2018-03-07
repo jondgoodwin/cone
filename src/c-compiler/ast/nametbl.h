@@ -38,7 +38,7 @@ size_t nameUnused();
 // Initialize the name table with reserved names
 void nameInit();
 
-void nameHook(NamedAstNode *name, Name *namesym);
-void nameUnhook(NamedAstNode *owner);
+void nameHook(OwnerAstNode *owner, NamedAstNode *name, Name *namesym);
+void nameUnhook(OwnerAstNode *owner);
 
 #endif

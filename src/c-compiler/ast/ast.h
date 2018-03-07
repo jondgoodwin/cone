@@ -156,6 +156,11 @@ typedef struct TypedAstNode {
 	struct NamedAstNode *owner; \
 	struct NamedAstNode *hooklinks
 
+// Castable structure for all owner nodes
+typedef struct OwnerAstNode {
+	OwnerAstHdr;
+} OwnerAstNode;
+
 #define isNamedNode(node) ((node)->asttype == ModuleNode \
   || (node)->asttype == VtypeNameDclNode \
   || (node)->asttype == VarNameDclNode \

@@ -144,15 +144,15 @@ void nameInit() {
 }
 
 // Hook a node into global name table, such that its owner can withdraw it later
-void nameHook(NamedAstNode *namenode, Name *name) {
-	namenode->hooklink = namenode->owner->hooklinks; // Add to owner's hook list
-	namenode->owner->hooklinks = (NamedAstNode*)namenode;
+void nameHook(OwnerAstNode *owner, NamedAstNode *namenode, Name *name) {
+	namenode->hooklink = owner->hooklinks; // Add to owner's hook list
+	owner->hooklinks = (NamedAstNode*)namenode;
 	namenode->prevname = name->node; // Latent unhooker
 	name->node = (NamedAstNode*)namenode;
 }
 
 // Unhook all of an owner's names from global name table (LIFO)
-void nameUnhook(NamedAstNode *owner) {
+void nameUnhook(OwnerAstNode *owner) {
 	NamedAstNode *node = owner->hooklinks;
 	while (node) {
 		NamedAstNode *next = node->hooklink;

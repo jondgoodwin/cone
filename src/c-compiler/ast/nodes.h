@@ -10,6 +10,7 @@
 
 typedef struct AstNode AstNode;
 typedef struct NamedAstNode NamedAstNode;
+typedef struct OwnerAstNode OwnerAstNode;
 typedef struct Name Name;
 
 #include <stdint.h>
@@ -49,8 +50,7 @@ typedef struct SymNode {
 Inodes *newInodes(int size);
 void inodesAdd(Inodes **nodesp, Name *name, AstNode *node);
 SymNode *inodesFind(Inodes *inodes, Name *name);
-void inodesHook(Inodes *inodes);
-void inodesUnhook(Inodes *inodes);
+void inodesHook(OwnerAstNode *owner, Inodes *inodes);
 
 #define inodesNodes(node) ((SymNode*)((node)+1))
 #define inodesFor(node, cnt, nodesp) nodesp = (SymNode*)((node)+1), cnt = (node)->used; cnt; cnt--, nodesp++
