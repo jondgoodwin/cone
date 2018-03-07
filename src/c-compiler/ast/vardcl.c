@@ -94,10 +94,8 @@ void nameDclVarNameResolve(PassState *pstate, NameDclAstNode *name) {
 
 	// Variable declaration within a block is a local variable
 	if (pstate->scope > 1) {
-		nameHook((OwnerAstNode *)pstate->blk, (NamedAstNode*)name, name->namesym);
-		// Capture variable's scope info and have block know about variable
 		name->scope = pstate->scope;
-		inodesAdd(&pstate->blk->locals, name->namesym, (AstNode*)name);
+		nameHook((OwnerAstNode *)pstate->blk, (NamedAstNode*)name, name->namesym);
 	}
 
 	if (name->value)

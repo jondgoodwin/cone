@@ -18,7 +18,6 @@ BlockAstNode *newBlockNode() {
 	blk->hooklinks = NULL;
 	blk->owner = NULL;
 	blk->vtype = voidType;
-	blk->locals = newInodes(8);
 	blk->stmts = newNodes(8);
 	return blk;
 }
