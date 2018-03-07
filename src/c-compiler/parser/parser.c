@@ -135,18 +135,11 @@ ModuleAstNode *parseModuleBlk(ParseState *parse, ModuleAstNode *mod) {
 			continue; // restart loop for next statement
 		}
 
-		// Add parsed node to module, module's dictionary and name table
+		// Add parsed node to module's nodes, module's namednodes and global name table
+		// Note: will generate an error if name is a duplicate
 		nodesAdd(modnodes, node);
 		if (isNamedNode(node)) {
-			NamedAstNode *namednode = (NamedAstNode*)node;
-			Name *name = alias ? alias : namednode->namesym;
-
-			if (name->node) {
-				errorMsgNode((AstNode *)namednode, ErrorDupName, "Global name is already defined. Only one allowed.");
-				errorMsgNode((AstNode*)name->node, ErrorDupName, "This is the conflicting definition for that name.");
-			}
-			else
-				nameHook(namednode, name);
+			modAddNamedNode(mod, (NamedAstNode*)node, alias);
 		}
 	}
 	modHook(mod, (ModuleAstNode*)mod->owner);

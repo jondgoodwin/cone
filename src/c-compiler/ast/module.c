@@ -24,6 +24,7 @@ ModuleAstNode *newModuleNode() {
 	mod->prevname = NULL;
 	mod->owner = NULL;
 	mod->nodes = newNodes(64);
+	mod->namednodes = newInodes(64);
 	return mod;
 }
 
@@ -45,20 +46,30 @@ void modPrint(ModuleAstNode *mod) {
 	astPrintDecr();
 }
 
+void modAddNamedNode(ModuleAstNode *mod, NamedAstNode *node, Name *alias) {
+	Name *name = alias ? alias : node->namesym;
+
+	if (name->node) {
+		errorMsgNode((AstNode *)node, ErrorDupName, "Global name is already defined. Only one allowed.");
+		errorMsgNode((AstNode*)name->node, ErrorDupName, "This is the conflicting definition for that name.");
+	}
+	else {
+		inodesAdd(&mod->namednodes, name, (AstNode *)node);
+		nameHook(node, name);
+	}
+
+}
+
 // Unhook old module's names, hook new module's names
 // (works equally well from parent to child or child to parent
 void modHook(ModuleAstNode *oldmod, ModuleAstNode *newmod) {
 	if (oldmod)
 		nameUnhook((NamedAstNode *)oldmod);
 	if (newmod) {
-		AstNode **nodesp;
+		SymNode *nodesp;
 		uint32_t cnt;
-		for (nodesFor(newmod->nodes, cnt, nodesp)) {
-			if (isNamedNode(*nodesp)) {
-				NamedAstNode *namednode = (NamedAstNode*)*nodesp;
-				nameHook(namednode, namednode->namesym);
-			}
-		}
+		for (inodesFor(newmod->namednodes, cnt, nodesp))
+			nameHook(nodesp->node, nodesp->name);
 	}
 }
 
