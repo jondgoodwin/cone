@@ -94,8 +94,14 @@ void nameDclVarNameResolve(PassState *pstate, NameDclAstNode *name) {
 
 	// Variable declaration within a block is a local variable
 	if (pstate->scope > 1) {
-		name->scope = pstate->scope;
-		nameHook((OwnerAstNode *)pstate->blk, (NamedAstNode*)name, name->namesym);
+		if (name->namesym->node && pstate->scope == ((NameDclAstNode*)name->namesym->node)->scope) {
+			errorMsgNode((AstNode *)name, ErrorDupName, "Name is already defined. Only one allowed.");
+			errorMsgNode((AstNode*)name->namesym->node, ErrorDupName, "This is the conflicting definition for that name.");
+		}
+		else {
+			name->scope = pstate->scope;
+			nameHook((OwnerAstNode *)pstate->blk, (NamedAstNode*)name, name->namesym);
+		}
 	}
 
 	if (name->value)
