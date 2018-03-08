@@ -19,6 +19,43 @@
 
 AstNode *parseAddr(ParseState *parse);
 
+// Parse a name use, which may be prefixed with module paths
+AstNode *parseNameUse(ParseState *parse) {
+	SymNode *childmod;
+
+	// Relative path default is current module
+	ModuleAstNode *mod = parse->mod;
+
+	// Absolute path starts with '::', referring to program's module
+	if (lexIsToken(DblColonToken)) {
+		mod = parse->pgmmod;
+		lexNextToken();
+	}
+
+	// Walk down through module names
+	while (lexIsToken(IdentToken) && (childmod = inodesFind(mod->namednodes, lex->val.ident))) {
+		if (childmod->node->asttype != ModuleNode)
+			break;
+		mod = (ModuleAstNode*)childmod->node;
+		lexNextToken();
+		if (!lexIsToken(DblColonToken)) {
+			errorMsgLex(ErrorNoDbl, "Missing '::' after module name qualifier");
+			return (AstNode*)mod;
+		}
+		lexNextToken();
+	}
+
+	// At last we get to the variable name
+	if (!lexIsToken(IdentToken)) {
+		errorMsgLex(ErrorNoVar, "Missing variable name after module path");
+		return (AstNode*)mod;
+	}
+	NameUseAstNode *nameuse = newNameUseNode(lex->val.ident);
+	nameuse->mod = mod;
+	lexNextToken();
+	return (AstNode *)nameuse;
+}
+
 // Parse a term: literal, identifier, etc.
 AstNode *parseTerm(ParseState *parse) {
 	switch (lex->toktype) {
@@ -53,11 +90,8 @@ AstNode *parseTerm(ParseState *parse) {
 			return (AstNode *)node;
 		}
 	case IdentToken:
-		{
-			NameUseAstNode *node = newNameUseNode(lex->val.ident);
-			lexNextToken();
-			return (AstNode*)node;
-		}
+	case DblColonToken:
+		return (AstNode*)parseNameUse(parse);
 	case LParenToken:
 		{
 			AstNode *node;

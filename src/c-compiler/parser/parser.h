@@ -11,6 +11,8 @@
 #include "../ast/ast.h"
 
 typedef struct ParseState {
+	ModuleAstNode *pgmmod;	// Root module for program
+	ModuleAstNode *mod;		// Current module
 	NamedAstNode *owner;	// Current namespace owning named nodes
 } ParseState;
 

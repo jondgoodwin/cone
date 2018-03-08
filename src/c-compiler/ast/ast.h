@@ -226,6 +226,7 @@ enum Passes {
 // Context used across all AST semantic analysis passes
 typedef struct PassState {
 	int pass;				// Passes
+	ModuleAstNode *mod;		// Current module
 	FnSigAstNode *fnsig;	// The type signature of the function we are within
 	BlockAstNode *blk;		// The current block we are within
 

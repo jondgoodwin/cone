@@ -57,6 +57,8 @@ enum ErrorCode {
 	ErrorBadPerm,	// Permission not allowed
 	ErrorNoFlds,	// Expression's type does not support fields
 	ErrorBadAlloc,  // Missing valid alloc methods
+	ErrorNoDbl,		// Missing '::'
+	ErrorNoVar,		// Missing variable name
 
 	// Warnings
 	WarnCode = 3000,

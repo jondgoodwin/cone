@@ -193,6 +193,7 @@ void astPass(PassState *pstate, AstNode *node) {
 // Run all passes against the AST (after parse and before gen)
 void astPasses(ModuleAstNode *mod) {
 	PassState pstate;
+	pstate.mod = mod;
 	pstate.fnsig = NULL;
 	pstate.blk = NULL;
 	pstate.scope = 0;

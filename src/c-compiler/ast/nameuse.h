@@ -11,6 +11,7 @@
 typedef struct NameUseAstNode {
 	TypedAstHdr;
 	Name *namesym;			// Pointer to the global name table entry
+	ModuleAstNode *mod;		// Module this name belongs to
 	NameDclAstNode *dclnode;	// Declaration of this name (NULL until names are resolved)
 } NameUseAstNode;
 

@@ -92,6 +92,7 @@ ModuleAstNode *parseModuleBlk(ParseState *parse, ModuleAstNode *mod) {
 	AstNode *node;
 	Name *alias;
 
+	parse->mod = mod;
 	modHook((ModuleAstNode*)mod->owner, mod);
 
 	// Create and populate a Module node for the program
@@ -143,6 +144,7 @@ ModuleAstNode *parseModuleBlk(ParseState *parse, ModuleAstNode *mod) {
 		}
 	}
 	modHook(mod, (ModuleAstNode*)mod->owner);
+	parse->mod = (ModuleAstNode*)mod->owner;
 	return mod;
 }
 
@@ -177,6 +179,7 @@ ModuleAstNode *parsePgm() {
 	ParseState parse;
 	ModuleAstNode *mod;
 	mod = newModuleNode();
+	parse.pgmmod = mod;
 	parse.owner = (NamedAstNode *)mod;
 	return parseModuleBlk(&parse, mod);
 }

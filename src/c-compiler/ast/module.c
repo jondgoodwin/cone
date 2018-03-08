@@ -71,6 +71,8 @@ void modHook(ModuleAstNode *oldmod, ModuleAstNode *newmod) {
 
 // Check the module's AST
 void modPass(PassState *pstate, ModuleAstNode *mod) {
+	ModuleAstNode *svmod = pstate->mod;
+	pstate->mod = mod;
 	AstNode **nodesp;
 	uint32_t cnt;
 
@@ -97,4 +99,6 @@ void modPass(PassState *pstate, ModuleAstNode *mod) {
 	// Switch name table back to owner module
 	if (pstate->pass == NameResolution)
 		modHook(mod, (ModuleAstNode*)mod->owner);
+
+	pstate->mod = svmod;
 }

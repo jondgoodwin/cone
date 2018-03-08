@@ -18,6 +18,8 @@
 NameUseAstNode *newNameUseNode(Name *namesym) {
 	NameUseAstNode *name;
 	newAstNode(name, NameUseAstNode, NameUseNode);
+	name->mod = NULL;
+	name->dclnode = NULL;
 	name->namesym = namesym;
 	return name;
 }
@@ -39,7 +41,13 @@ void nameUsePass(PassState *pstate, NameUseAstNode *name) {
 	// During name resolution, point to name declaration and copy over needed fields
 	switch (pstate->pass) {
 	case NameResolution:
-		name->dclnode = (NameDclAstNode*)name->namesym->node;
+		if (name->mod==NULL || name->mod == pstate->mod)
+			name->dclnode = (NameDclAstNode*)name->namesym->node;
+		else {
+			SymNode *symnode = inodesFind(name->mod->namednodes, name->namesym);
+			if (symnode)
+				name->dclnode = (NameDclAstNode*)symnode->node;
+		}
 		if (!name->dclnode)
 			errorMsgNode((AstNode*)name, ErrorUnkName, "The name %s does not refer to a declared name", &name->namesym->namestr);
 		break;

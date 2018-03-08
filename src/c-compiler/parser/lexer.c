@@ -509,7 +509,16 @@ void lexNextToken() {
 		case '(': lexReturnPuncTok(LParenToken, 1);
 		case ')': lexReturnPuncTok(RParenToken, 1);
 
-		// ';'
+		// ':' and '::'
+		case ':':
+			if (*(srcp + 1) == ':') {
+				lexReturnPuncTok(DblColonToken, 2);
+			}
+			else {
+				lexReturnPuncTok(ColonToken, 1);
+			}
+
+			// ';'
 		case ';':
 			lexReturnPuncTok(SemiToken, 1);
 
