@@ -84,16 +84,36 @@ AstNode *parseFn(ParseState *parse) {
 	return (AstNode*) fnnode;
 }
 
+void parseStmts(ParseState *parse, ModuleAstNode *mod);
+
+void parseInclude(ParseState *parse) {
+	char *filename;
+	lexNextToken();
+	switch (lex->toktype) {
+	case IdentToken:
+	case StrLitToken:
+		filename = lex->val.strlit;
+		lexNextToken();
+		break;
+	default:
+		return;
+	}
+	parseSemi();
+
+	lexInjectFile(filename);
+	parseStmts(parse, parse->mod);
+	if (lex->toktype != EofToken) {
+		// error message
+	}
+	lexPop();
+}
+
 ModuleAstNode *parseModule(ParseState *parse);
 
-// Parse a module's global statement block
-ModuleAstNode *parseModuleBlk(ParseState *parse, ModuleAstNode *mod) {
+void parseStmts(ParseState *parse, ModuleAstNode *mod) {
 	Nodes **modnodes = &mod->nodes;
 	AstNode *node;
 	Name *alias;
-
-	parse->mod = mod;
-	modHook((ModuleAstNode*)mod->owner, mod);
 
 	// Create and populate a Module node for the program
 	while (!lexIsToken(EofToken) && !lexIsToken(RCurlyToken)) {
@@ -102,7 +122,7 @@ ModuleAstNode *parseModuleBlk(ParseState *parse, ModuleAstNode *mod) {
 
 		// 'fn' function definition
 		case FnToken:
-			node=parseFn(parse);
+			node = parseFn(parse);
 			break;
 
 		// 'struct' definition
@@ -110,6 +130,10 @@ ModuleAstNode *parseModuleBlk(ParseState *parse, ModuleAstNode *mod) {
 		case AllocToken:
 			node = parseStruct(parse);
 			break;
+
+		case IncludeToken:
+			parseInclude(parse);
+			continue;
 
 		case ModToken:
 			node = (AstNode*)parseModule(parse);
@@ -143,6 +167,13 @@ ModuleAstNode *parseModuleBlk(ParseState *parse, ModuleAstNode *mod) {
 			modAddNamedNode(mod, (NamedAstNode*)node, alias);
 		}
 	}
+}
+
+// Parse a module's global statement block
+ModuleAstNode *parseModuleBlk(ParseState *parse, ModuleAstNode *mod) {
+	parse->mod = mod;
+	modHook((ModuleAstNode*)mod->owner, mod);
+	parseStmts(parse, mod);
 	modHook(mod, (ModuleAstNode*)mod->owner);
 	parse->mod = (ModuleAstNode*)mod->owner;
 	return mod;

@@ -27,7 +27,6 @@ int main(int argc, char **argv) {
 	ModuleAstNode *modnode;
 	int ok;
 	char *srcfn;
-	char *src;
 
 	// Start measuring processing time for compilation
 	startTime = clock();
@@ -46,13 +45,8 @@ int main(int argc, char **argv) {
 	keywordInit();
 	typeInit();
 
-	// Load specified source file
-	src = fileLoad(srcfn);
-	if (!src)
-		errorExit(ExitNF, "Cannot find or read source file.");
-
 	// Parse and generate
-	lexInject(srcfn, src);
+	lexInjectFile(srcfn);
 	modnode = parsePgm();
 	if (errors == 0) {
 		astPasses(modnode);

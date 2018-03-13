@@ -58,6 +58,17 @@ void lexInject(char *url, char *src) {
 	lexNextToken();
 }
 
+// Inject a new source stream into the lexer
+void lexInjectFile(char *url) {
+	char *src;
+	// Load specified source file
+	src = fileLoad(url);
+	if (!src)
+		errorExit(ExitNF, "Cannot find or read source file.");
+
+	lexInject(url, src);
+}
+
 // Restore previous lexer's stream
 void lexPop() {
 	if (lex)

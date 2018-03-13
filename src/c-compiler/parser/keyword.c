@@ -31,10 +31,11 @@ void keywordInit() {
 	permDclNames();
 	nbrDclNames();
 
+	keyAdd("include", IncludeToken);
+	keyAdd("mod", ModToken);
 	keyAdd("fn", FnToken);
 	keyAdd("struct", StructToken);
 	keyAdd("alloc", AllocToken);
-	keyAdd("mod", ModToken);
 	keyAdd("return", RetToken);
 	keyAdd("if", IfToken);
 	keyAdd("elif", ElifToken);

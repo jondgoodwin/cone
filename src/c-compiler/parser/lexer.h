@@ -86,10 +86,11 @@ enum TokenTypes {
 	GeToken,			// '>='
 
 	// Keywords
+	IncludeToken,	// 'include'
+	ModToken,		// 'mod'
 	FnToken,		// 'fn'
 	StructToken,	// 'struct'
 	AllocToken,		// 'alloc'
-	ModToken,		// 'mod'
 	RetToken,		// 'return'
 	IfToken,		// 'if'
 	ElifToken,		// 'elif'
@@ -110,6 +111,7 @@ Lexer *lex;
 #define lexIsToken(tok) (lex->toktype == (tok))
 
 // Lexer functions
+void lexInjectFile(char *url);
 void lexInject(char *url, char *src);
 void lexPop();
 void lexNextToken();
