@@ -17,4 +17,12 @@ char *fileName(char *fn);
 // Concatenate folder, filename and extension into a path
 char *fileMakePath(char *dir, char *srcfn, char *ext);
 
+// Create a new source file url relative to current, substituting new path and .cone extension
+char *fileSrcUrl(char *cururl, char *srcfn, int newfolder);
+
+// Load source file, where srcfn is relative to cururl
+// - Look at fn+.cone or fn+/mod.cone
+// - return full pathname for source file
+char *fileLoadSrc(char *cururl, char *srcfn, char **fn);
+
 #endif

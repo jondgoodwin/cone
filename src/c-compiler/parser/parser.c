@@ -86,11 +86,15 @@ AstNode *parseFn(ParseState *parse) {
 
 void parseStmts(ParseState *parse, ModuleAstNode *mod);
 
+// Parse include statement
 void parseInclude(ParseState *parse) {
 	char *filename;
 	lexNextToken();
 	switch (lex->toktype) {
 	case IdentToken:
+		filename = &lex->val.ident->namestr;
+		lexNextToken();
+		break;
 	case StrLitToken:
 		filename = lex->val.strlit;
 		lexNextToken();

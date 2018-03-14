@@ -72,3 +72,49 @@ char *fileMakePath(char *dir, char *srcfn, char *ext) {
 	strcat(outnm, ext);
 	return outnm;
 }
+
+// Get number of characters in string up to file name
+size_t fileFolder(char *fn) {
+	char *fnp = &fn[strlen(fn) - 1];
+
+	// Look backwards for '/' If not found, we are done
+	while (fnp != fn && *fnp != '/' && *fnp != '\\')
+		--fnp;
+	if (fnp == fn)
+		return 0;
+	return fnp - fn + 1;
+}
+
+// Return position of last period (after last slash)
+char *fileExtPos(char *fn) {
+	char *dotpos = strrchr(fn, '.');
+	return dotpos && dotpos > strrchr(fn, '/') ? dotpos : 0;
+}
+
+// Create a new source file url relative to current, substituting new path and .cone extension
+char *fileSrcUrl(char *cururl, char *srcfn, int newfolder) {
+	char *outnm;
+	if (cururl == NULL)
+		cururl = "";
+	outnm = memAllocStr("", strlen(cururl) + strlen(srcfn) + newfolder ? 10 : 6);
+	if (cururl && srcfn[0]!='/')
+		strncat(outnm, cururl, fileFolder(cururl));
+	strcat(outnm, srcfn);
+	if (newfolder)
+		strcat(outnm, "/mod.cone");
+	else if (!fileExtPos(outnm))
+		strcat(outnm, ".cone");
+	return outnm;
+}
+
+// Load source file, where srcfn is relative to cururl
+// - Look at fn+.cone or fn+/mod.cone
+// - return full pathname for source file
+char *fileLoadSrc(char *cururl, char *srcfn, char **fn) {
+	char *src;
+	*fn = fileSrcUrl(cururl, srcfn, 0);
+	if (src = fileLoad(*fn))
+		return src;
+	*fn = fileSrcUrl(cururl, srcfn, 1);
+	return fileLoad(*fn);
+}

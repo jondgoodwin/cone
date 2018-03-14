@@ -61,12 +61,13 @@ void lexInject(char *url, char *src) {
 // Inject a new source stream into the lexer
 void lexInjectFile(char *url) {
 	char *src;
+	char *fn;
 	// Load specified source file
-	src = fileLoad(url);
+	src = fileLoadSrc(lex? lex->url : NULL, url, &fn);
 	if (!src)
-		errorExit(ExitNF, "Cannot find or read source file.");
+		errorExit(ExitNF, "Cannot find or read source file %s", url);
 
-	lexInject(url, src);
+	lexInject(fn, src);
 }
 
 // Restore previous lexer's stream
