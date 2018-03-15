@@ -198,23 +198,30 @@ ModuleAstNode *parseModule(ParseState *parse) {
 	NamedAstNode *svowner = parse->owner;
 	ModuleAstNode *mod;
 	char *filename, *modname;
+
+	// Parse enough to know what we are dealing with
+	lexNextToken();
+	filename = parseFile();
+	modname = fileName(filename);
+	if (!lexIsToken(LCurlyToken) && !lexIsToken(SemiToken))
+		parseLCurly();
+
+	// This is a new module, build it
 	mod = newModuleNode();
 	mod->owner = svowner;
 	parse->owner = (NamedAstNode *)mod;
-	lexNextToken();
-	// Process mod name
-	filename = parseFile();
-	modname = fileName(filename);
 	mod->namesym = nameFind(modname, strlen(modname));
-	if (!lexIsToken(LCurlyToken) && !lexIsToken(SemiToken))
-		parseLCurly();
 	if (lexIsToken(LCurlyToken)) {
 		lexNextToken();
 		parseModuleBlk(parse, mod);
 		parseRCurly();
 	}
-	else
+	else {
 		parseSemi();
+		lexInjectFile(filename);
+		parseModuleBlk(parse, mod);
+		lexPop();
+	}
 	parse->owner = svowner;
 	return mod;
 }
