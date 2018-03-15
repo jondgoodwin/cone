@@ -59,6 +59,7 @@ enum ErrorCode {
 	ErrorBadAlloc,  // Missing valid alloc methods
 	ErrorNoDbl,		// Missing '::'
 	ErrorNoVar,		// Missing variable name
+	ErrorNoEof,		// Missing end-of-file
 
 	// Warnings
 	WarnCode = 3000,

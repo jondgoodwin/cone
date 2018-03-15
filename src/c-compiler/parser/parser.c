@@ -11,10 +11,12 @@
 #include "../ast/ast.h"
 #include "../shared/memory.h"
 #include "../shared/error.h"
+#include "../shared/fileio.h"
 #include "../ast/nametbl.h"
 #include "lexer.h"
 
 #include <stdio.h>
+#include <string.h>
 
 // We expect semicolon since statement has run its course
 void parseSemi() {
@@ -84,12 +86,9 @@ AstNode *parseFn(ParseState *parse) {
 	return (AstNode*) fnnode;
 }
 
-void parseStmts(ParseState *parse, ModuleAstNode *mod);
-
-// Parse include statement
-void parseInclude(ParseState *parse) {
+// Parse source filename/path as identifier or string literal
+char *parseFile() {
 	char *filename;
-	lexNextToken();
 	switch (lex->toktype) {
 	case IdentToken:
 		filename = &lex->val.ident->namestr;
@@ -100,14 +99,25 @@ void parseInclude(ParseState *parse) {
 		lexNextToken();
 		break;
 	default:
-		return;
+		errorExit(ExitNF, "Invalid source file; expected identifier or string");
+		filename = NULL;
 	}
+	return filename;
+}
+
+void parseStmts(ParseState *parse, ModuleAstNode *mod);
+
+// Parse include statement
+void parseInclude(ParseState *parse) {
+	char *filename;
+	lexNextToken();
+	filename = parseFile();
 	parseSemi();
 
 	lexInjectFile(filename);
 	parseStmts(parse, parse->mod);
 	if (lex->toktype != EofToken) {
-		// error message
+		errorMsgLex(ErrorNoEof, "Expected end-of-file");
 	}
 	lexPop();
 }
@@ -187,15 +197,15 @@ ModuleAstNode *parseModuleBlk(ParseState *parse, ModuleAstNode *mod) {
 ModuleAstNode *parseModule(ParseState *parse) {
 	NamedAstNode *svowner = parse->owner;
 	ModuleAstNode *mod;
+	char *filename, *modname;
 	mod = newModuleNode();
 	mod->owner = svowner;
 	parse->owner = (NamedAstNode *)mod;
 	lexNextToken();
 	// Process mod name
-	if (lexIsToken(IdentToken)) {
-		mod->namesym = lex->val.ident;
-		lexNextToken();
-	}
+	filename = parseFile();
+	modname = fileName(filename);
+	mod->namesym = nameFind(modname, strlen(modname));
 	if (!lexIsToken(LCurlyToken) && !lexIsToken(SemiToken))
 		parseLCurly();
 	if (lexIsToken(LCurlyToken)) {
