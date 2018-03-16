@@ -85,7 +85,7 @@ void genlNamePrefix(NamedAstNode *name, char *workbuf) {
 // Create and return globally unique name, mangled as necessary
 char *genlGlobalName(NamedAstNode *name) {
 	// Is mangling necessary? Only if we need namespace qualifier or function might be overloaded
-	if (!(name->flags & FlagMangleParms) && !name->owner->namesym)
+	if ((name->flags & FlagExtern) || !(name->flags & FlagMangleParms) && !name->owner->namesym)
 		return &name->namesym->namestr;
 
 	char workbuf[2048] = { '\0' };

@@ -129,7 +129,8 @@ enum AstType {
 	uint16_t flags
 
 enum AstFlags {
-	FlagMangleParms = 0x0001 // Should fn parm types be part of guname?
+	FlagMangleParms = 0x0001,	// Should fn parm types be part of guname?
+	FlagExtern = 0x0002			// C ABI extern
 };
 
 // AstNode is a castable struct for all AST nodes.

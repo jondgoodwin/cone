@@ -88,6 +88,7 @@ enum TokenTypes {
 	// Keywords
 	IncludeToken,	// 'include'
 	ModToken,		// 'mod'
+	ExternToken,	// 'extern'
 	FnToken,		// 'fn'
 	StructToken,	// 'struct'
 	AllocToken,		// 'alloc'

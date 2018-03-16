@@ -131,6 +131,13 @@ void parseInclude(ParseState *parse) {
 // Return NULL if not either
 AstNode *parseFnOrVar(ParseState *parse) {
 	AstNode *node;
+	int16_t flags = 0;
+
+	// extern keyword
+	if (lexIsToken(ExternToken)) {
+		flags |= FlagExtern;
+		lexNextToken();
+	}
 
 	if (lexIsToken(FnToken)) {
 		node = parseFn(parse);
@@ -148,6 +155,7 @@ AstNode *parseFnOrVar(ParseState *parse) {
 	else
 		return NULL;
 
+	node->flags |= flags;
 	return node;
 }
 

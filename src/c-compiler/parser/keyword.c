@@ -33,6 +33,7 @@ void keywordInit() {
 
 	keyAdd("include", IncludeToken);
 	keyAdd("mod", ModToken);
+	keyAdd("extern", ExternToken);
 	keyAdd("fn", FnToken);
 	keyAdd("struct", StructToken);
 	keyAdd("alloc", AllocToken);
