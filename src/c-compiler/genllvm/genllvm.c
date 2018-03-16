@@ -18,6 +18,7 @@
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitWriter.h>
 #include <llvm-c/Transforms/Scalar.h>
+#include <llvm-c/Transforms/IPO.h>
 
 #include <stdio.h>
 #include <assert.h>
@@ -257,7 +258,7 @@ void genllvm(ConeOptions *opt, ModuleAstNode *mod) {
 	usizeType->bits = isizeType->bits = opt->ptrsize;
 
 	gen.srcname = mod->lexer->fname;
-	gen.context = LLVMContextCreate();
+	gen.context = LLVMGetGlobalContext(); // LLVM inlining bugs prevent use of LLVMContextCreate();
 
 	// Generate AST to IR
 	genlPackage(&gen, mod);
@@ -275,6 +276,7 @@ void genllvm(ConeOptions *opt, ModuleAstNode *mod) {
 	LLVMAddReassociatePass(passmgr);				// Reassociate expressions.
 	LLVMAddGVNPass(passmgr);						// Eliminate common subexpressions.
 	LLVMAddCFGSimplificationPass(passmgr);			// Simplify the control flow graph
+	LLVMAddFunctionInliningPass(passmgr);			// Function inlining
 	LLVMRunPassManager(passmgr, gen.module);
 	LLVMDisposePassManager(passmgr);
 
@@ -291,6 +293,6 @@ void genllvm(ConeOptions *opt, ModuleAstNode *mod) {
 			gen.module, opt->triple, machine);
 
 	LLVMDisposeModule(gen.module);
-	LLVMContextDispose(gen.context);
+	// LLVMContextDispose(gen.context);  // Only need if we created a new context
 	LLVMDisposeTargetMachine(machine);
 }
