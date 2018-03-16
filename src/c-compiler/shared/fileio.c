@@ -96,7 +96,7 @@ char *fileSrcUrl(char *cururl, char *srcfn, int newfolder) {
 	char *outnm;
 	if (cururl == NULL)
 		cururl = "";
-	outnm = memAllocStr("", strlen(cururl) + strlen(srcfn) + newfolder ? 10 : 6);
+	outnm = memAllocStr("", strlen(cururl) + strlen(srcfn) + (newfolder ? 10 : 6));
 	if (cururl && srcfn[0]!='/')
 		strncat(outnm, cururl, fileFolder(cururl));
 	strcat(outnm, srcfn);
