@@ -18,16 +18,21 @@
 #include <stdio.h>
 #include <string.h>
 
-// We expect semicolon since statement has run its course
-void parseSemi() {
-	if (!lexIsToken(SemiToken))
-		errorMsgLex(ErrorNoSemi, "Expected semicolon - skipping forward to find it");
-	while (! lexIsToken(SemiToken)) {
+// Skip to next statement
+void parseSkipToNextStmt() {
+	while (!lexIsToken(SemiToken)) {
 		if (lexIsToken(EofToken) || lexIsToken(RCurlyToken))
 			return;
 		lexNextToken();
 	}
 	lexNextToken();
+}
+
+// We expect semicolon since statement has run its course
+void parseSemi() {
+	if (!lexIsToken(SemiToken))
+		errorMsgLex(ErrorNoSemi, "Expected semicolon - skipping forward to find it");
+	parseSkipToNextStmt();
 }
 
 // Expect right curly brace. If not found, search for '}' or ';'
@@ -122,6 +127,30 @@ void parseInclude(ParseState *parse) {
 	lexPop();
 }
 
+// Parse function or variable, as it may be preceded by a qualifier
+// Return NULL if not either
+AstNode *parseFnOrVar(ParseState *parse) {
+	AstNode *node;
+
+	if (lexIsToken(FnToken)) {
+		node = parseFn(parse);
+	}
+
+	// A global variable declaration, if it begins with a permission
+	else if lexIsToken(IdentToken) {
+		NamedAstNode *perm = lex->val.ident->node;
+		if (perm && perm->asttype != PermNameDclNode) {
+			return NULL;
+		}
+		node = (AstNode*)parseVarDcl(parse, immPerm);
+		parseSemi();
+	}
+	else
+		return NULL;
+
+	return node;
+}
+
 ModuleAstNode *parseModule(ParseState *parse);
 
 void parseStmts(ParseState *parse, ModuleAstNode *mod) {
@@ -131,12 +160,16 @@ void parseStmts(ParseState *parse, ModuleAstNode *mod) {
 
 	// Create and populate a Module node for the program
 	while (!lexIsToken(EofToken) && !lexIsToken(RCurlyToken)) {
+		node = NULL;
 		alias = NULL;
 		switch (lex->toktype) {
 
-		// 'fn' function definition
-		case FnToken:
-			node = parseFn(parse);
+		case IncludeToken:
+			parseInclude(parse);
+			continue; // Does not generate a node
+
+		case ModToken:
+			node = (AstNode*)parseModule(parse);
 			break;
 
 		// 'struct' definition
@@ -145,40 +178,21 @@ void parseStmts(ParseState *parse, ModuleAstNode *mod) {
 			node = parseStruct(parse);
 			break;
 
-		case IncludeToken:
-			parseInclude(parse);
-			continue;
-
-		case ModToken:
-			node = (AstNode*)parseModule(parse);
-			break;
-
-		// A global variable declaration, if it begins with a permission
-		case IdentToken: {
-			NamedAstNode *perm = lex->val.ident->node;
-			if (perm && perm->asttype == PermNameDclNode) {
-				node = (AstNode*)parseVarDcl(parse, immPerm);
-				parseSemi();
-				break;
-			}
-		}
-		// Notice, this falls through to below if not a permission
-
-		// Unknown statement
 		default:
-			errorMsgLex(ErrorBadGloStmt, "Invalid global area statement");
-			while (!lexIsToken(SemiToken) && !lexIsToken(EofToken)) {
-				lexNextToken();
+			if (!(node = parseFnOrVar(parse))) {
+				errorMsgLex(ErrorBadGloStmt, "Invalid global area statement");
+				parseSkipToNextStmt();
+				continue; // restart loop for next statement
 			}
-			lexNextToken();
-			continue; // restart loop for next statement
 		}
 
 		// Add parsed node to module's nodes, module's namednodes and global name table
 		// Note: will generate an error if name is a duplicate
-		nodesAdd(modnodes, node);
-		if (isNamedNode(node)) {
-			modAddNamedNode(mod, (NamedAstNode*)node, alias);
+		if (node != NULL) {
+			nodesAdd(modnodes, node);
+			if (isNamedNode(node)) {
+				modAddNamedNode(mod, (NamedAstNode*)node, alias);
+			}
 		}
 	}
 }
