@@ -99,6 +99,11 @@ AstNode *parsePtrType(ParseState *parse) {
 
 	// Get value type, if provided
 	if (lexIsToken(FnToken)) {
+		lexNextToken();
+		if (lexIsToken(IdentToken)) {
+			errorMsgLex(WarnName, "Unnecessary name is ignored");
+			lexNextToken();
+		}
 		ptype->pvtype = parseFnSig(parse);
 	}
 	else if ((ptype->pvtype = parseVtype(parse)) == NULL) {
@@ -167,17 +172,7 @@ AstNode *parseStruct(ParseState *parse) {
 // Parse a function's type signature
 AstNode *parseFnSig(ParseState *parse) {
 	FnSigAstNode *fnsig;
-	Name *namesym = NULL;
 	int16_t parmnbr = 0;
-
-	// Skip past the 'fn'
-	lexNextToken();
-
-	// Process function name, if provided
-	if (lexIsToken(IdentToken)) {
-		namesym = lex->val.ident;
-		lexNextToken();
-	}
 
 	// Set up memory block for the function's type signature
 	fnsig = newFnSigNode();
@@ -209,10 +204,7 @@ AstNode *parseFnSig(ParseState *parse) {
 		fnsig->rettype = voidType;
 	}
 
-	if (namesym == NULL)
-		return (AstNode*)fnsig;
-	else
-		return (AstNode*)newNameDclNode(namesym, VarNameDclNode, (AstNode*)fnsig, immPerm, NULL);
+	return (AstNode*)fnsig;
 }
 
 // Parse an array type

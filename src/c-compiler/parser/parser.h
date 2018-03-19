@@ -19,6 +19,7 @@ typedef struct ParseState {
 // parser.c
 ModuleAstNode *parsePgm();
 ModuleAstNode *parseModuleBlk(ParseState *parse, ModuleAstNode *mod);
+AstNode *parseFn(ParseState *parse);
 void parseSemi();
 void parseRCurly();
 void parseLCurly();
@@ -35,7 +36,6 @@ AstNode *parseExpr(ParseState *parse);
 PermAstNode *parsePerm(PermAstNode *defperm);
 void parseAllocPerm(PtrAstNode *refnode);
 NameDclAstNode *parseVarDcl(ParseState *parse, PermAstNode *defperm);
-AstNode *parseFn(ParseState *parse);
 AstNode *parseFnSig(ParseState *parse);
 AstNode *parseStruct(ParseState *parse);
 AstNode *parseVtype(ParseState *parse);

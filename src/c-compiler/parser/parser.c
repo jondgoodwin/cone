@@ -70,16 +70,23 @@ void parseRParen() {
 // Parse a function block
 AstNode *parseFn(ParseState *parse) {
 	NameDclAstNode *fnnode;
-	AstNode *sig;
+
+	fnnode = newNameDclNode(NULL, VarNameDclNode, NULL, immPerm, NULL);
+	fnnode->owner = parse->owner;
+
+	// Skip past the 'fn'
+	lexNextToken();
+
+	// Process function name, if provided
+	if (lexIsToken(IdentToken)) {
+		fnnode->namesym = lex->val.ident;
+		lexNextToken();
+	}
+	else
+		errorMsgLex(ErrorNoName, "Functions declarations must be named");
 
 	// Process the function's signature info. I
-	sig = parseFnSig(parse);
-	if (sig->asttype != VarNameDclNode) {
-		errorMsgNode(sig, ErrorNoName, "Functions declarations must be named");
-		return sig;
-	}
-	fnnode = (NameDclAstNode *)sig;
-	fnnode->owner = parse->owner;
+	fnnode->vtype = parseFnSig(parse);
 
 	// Process statements block that implements function, if provided
 	if (!lexIsToken(LCurlyToken) && !lexIsToken(SemiToken))

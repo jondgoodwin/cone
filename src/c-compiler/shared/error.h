@@ -63,6 +63,7 @@ enum ErrorCode {
 
 	// Warnings
 	WarnCode = 3000,
+	WarnName,		// Unnecessary name
 };
 
 int errors;
