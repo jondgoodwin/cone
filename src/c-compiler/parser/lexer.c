@@ -334,7 +334,12 @@ void lexScanIdent(char *srcp) {
 				// Substitute token type when identifier is a keyword
 				lex->val.ident = nameFind(srcbeg, srcp-srcbeg);
 				identNode = (AstNode*)lex->val.ident->node;
-				lex->toktype = (identNode && identNode->asttype == KeywordNode)? identNode->flags : IdentToken;
+				if (identNode && identNode->asttype == KeywordNode)
+					lex->toktype = identNode->flags;
+				else if (identNode && identNode->asttype == PermNameDclNode)
+					lex->toktype = PermToken;
+				else
+					lex->toktype = IdentToken;
 				lex->srcp = srcp;
 				return;
 			}

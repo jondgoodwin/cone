@@ -19,8 +19,7 @@
 
 // Parse a permission, return defperm if not found
 PermAstNode *parsePerm(PermAstNode *defperm) {
-	if (lexIsToken(IdentToken)
-		&& lex->val.ident->node && lex->val.ident->node->asttype == PermNameDclNode) {
+	if (lexIsToken(PermToken)) {
 		PermAstNode *perm;
 		perm = (PermAstNode*)((NameDclAstNode *)lex->val.ident->node)->value;
 		lexNextToken();
@@ -181,7 +180,7 @@ AstNode *parseFnSig(ParseState *parse) {
 	if (lexIsToken(LParenToken)) {
 		int usesDefaults = 0;
 		lexNextToken();
-		while (lexIsToken(IdentToken)) {
+		while (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
 			NameDclAstNode *parm = parseVarDcl(parse, immPerm);
 			parm->scope = 1;
 			parm->index = parmnbr++;

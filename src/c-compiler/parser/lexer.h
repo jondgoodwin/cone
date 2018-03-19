@@ -51,6 +51,7 @@ enum TokenTypes {
 	FloatLitToken,	// Float literal
 	StrLitToken,	// String literal
 	IdentToken,		// Identifier
+	PermToken,		// Permission identifier
 
 	// Punctuation tokens
 	SemiToken,			// ';'

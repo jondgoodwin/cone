@@ -162,11 +162,7 @@ AstNode *parseFnOrVar(ParseState *parse) {
 	}
 
 	// A global variable declaration, if it begins with a permission
-	else if lexIsToken(IdentToken) {
-		NamedAstNode *perm = lex->val.ident->node;
-		if (perm && perm->asttype != PermNameDclNode) {
-			return NULL;
-		}
+	else if lexIsToken(PermToken) {
 		node = (AstNode*)parseVarDcl(parse, immPerm);
 		parseSemi();
 	}
@@ -204,12 +200,20 @@ void parseStmts(ParseState *parse, ModuleAstNode *mod) {
 			node = parseStruct(parse);
 			break;
 
-		default:
+		case ExternToken:
+		case FnToken:
+		case PermToken:
 			if (!(node = parseFnOrVar(parse))) {
 				errorMsgLex(ErrorBadGloStmt, "Invalid global area statement");
 				parseSkipToNextStmt();
 				continue; // restart loop for next statement
 			}
+			break;
+
+		default:
+			errorMsgLex(ErrorBadGloStmt, "Invalid global area statement");
+			parseSkipToNextStmt();
+			continue; // restart loop for next statement
 		}
 
 		// Add parsed node to module's nodes, module's namednodes and global name table
