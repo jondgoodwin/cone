@@ -44,7 +44,7 @@ void parseAllocPerm(PtrAstNode *refnode) {
 }
 
 // Parse a variable declaration
-NameDclAstNode *parseVarDcl(ParseState *parse, PermAstNode *defperm) {
+NameDclAstNode *parseVarDcl(ParseState *parse, PermAstNode *defperm, int16_t flags) {
 	NameDclAstNode *varnode;
 	Name *namesym = NULL;
 	AstNode *vtype;
@@ -70,11 +70,16 @@ NameDclAstNode *parseVarDcl(ParseState *parse, PermAstNode *defperm) {
 
 	// Get initialization value after '=', if provided
 	if (lexIsToken(AssgnToken)) {
+		if (!(flags&ParseMayImpl))
+			errorMsgLex(ErrorBadImpl, "A default/initial value may not be specified here.");
 		lexNextToken();
 		val = parseExpr(parse);
 	}
-	else
+	else {
+		if (!(flags&ParseMaySig))
+			errorMsgLex(ErrorNoInit, "Must specify default/initial value.");
 		val = NULL;
+	}
 
 	varnode = newNameDclNode(namesym, VarNameDclNode, vtype, perm, val);
 	varnode->owner = parse->owner;
@@ -147,8 +152,8 @@ AstNode *parseStruct(ParseState *parse) {
 				fn->flags |= FlagMangleParms;
 				nodesAdd(&strnode->methods, (AstNode*)fn);
 			}
-			else if (lexIsToken(IdentToken)) {
-				NameDclAstNode *field = parseVarDcl(parse, mutPerm);
+			else if (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
+				NameDclAstNode *field = parseVarDcl(parse, mutPerm, ParseMayImpl | ParseMaySig);
 				field->scope = 1;
 				field->index = fieldnbr++;
 				inodesAdd(&strnode->fields, field->namesym, (AstNode*)field);
@@ -172,22 +177,20 @@ AstNode *parseStruct(ParseState *parse) {
 AstNode *parseFnSig(ParseState *parse) {
 	FnSigAstNode *fnsig;
 	int16_t parmnbr = 0;
+	int16_t parseflags = ParseMaySig | ParseMayImpl;
 
 	// Set up memory block for the function's type signature
 	fnsig = newFnSigNode();
 
 	// Process parameter declarations
 	if (lexIsToken(LParenToken)) {
-		int usesDefaults = 0;
 		lexNextToken();
 		while (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
-			NameDclAstNode *parm = parseVarDcl(parse, immPerm);
+			NameDclAstNode *parm = parseVarDcl(parse, immPerm, parseflags);
 			parm->scope = 1;
 			parm->index = parmnbr++;
-			if (usesDefaults && parm->value == NULL)
-				errorMsgNode((AstNode*)parm, ErrorNoInit, "Must specify default value since prior parm did");
-			else if (parm->value)
-				usesDefaults = 1;
+			if (parm->value)
+				parseflags = ParseMayImpl; // force remaining parms to specify default
 			inodesAdd(&fnsig->parms, parm->namesym, (AstNode*)parm);
 			if (!lexIsToken(CommaToken))
 				break;

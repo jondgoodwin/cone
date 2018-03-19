@@ -43,7 +43,7 @@ AstNode *parseExpr(ParseState *parse);
 // parsetype.c
 PermAstNode *parsePerm(PermAstNode *defperm);
 void parseAllocPerm(PtrAstNode *refnode);
-NameDclAstNode *parseVarDcl(ParseState *parse, PermAstNode *defperm);
+NameDclAstNode *parseVarDcl(ParseState *parse, PermAstNode *defperm, int16_t flags);
 AstNode *parseFnSig(ParseState *parse);
 AstNode *parseStruct(ParseState *parse);
 AstNode *parseVtype(ParseState *parse);

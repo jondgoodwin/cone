@@ -163,7 +163,7 @@ AstNode *parseFnOrVar(ParseState *parse) {
 
 	// A global variable declaration, if it begins with a permission
 	else if lexIsToken(PermToken) {
-		node = (AstNode*)parseVarDcl(parse, immPerm);
+		node = (AstNode*)parseVarDcl(parse, immPerm, (flags&FlagExtern) ? ParseMaySig : ParseMayImpl);
 		parseSemi();
 	}
 	else

@@ -137,7 +137,7 @@ AstNode *parseBlock(ParseState *parse) {
 
 		// A local variable declaration, if it begins with a permission
 		case PermToken:
-			nodesAdd(&blk->stmts, (AstNode*)parseVarDcl(parse, immPerm));
+			nodesAdd(&blk->stmts, (AstNode*)parseVarDcl(parse, immPerm, ParseMaySig|ParseMayImpl));
 			parseSemi();
 			break;
 
