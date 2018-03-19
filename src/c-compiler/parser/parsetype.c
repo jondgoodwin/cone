@@ -173,6 +173,14 @@ AstNode *parseStruct(ParseState *parse) {
 	return (AstNode*)strdclnode;
 }
 
+void parseInjectSelf(FnSigAstNode *fnsig, Name *typename) {
+	NameUseAstNode *selftype = newNameUseNode(typename);
+	NameDclAstNode *selfparm = newNameDclNode(nameFind("self", 4), VarNameDclNode, (AstNode*)selftype, constPerm, NULL);
+	selfparm->scope = 1;
+	selfparm->index = 0;
+	inodesAdd(&fnsig->parms, selfparm->namesym, (AstNode*)selfparm);
+}
+
 // Parse a function's type signature
 AstNode *parseFnSig(ParseState *parse) {
 	FnSigAstNode *fnsig;
@@ -185,17 +193,17 @@ AstNode *parseFnSig(ParseState *parse) {
 	// Process parameter declarations
 	if (lexIsToken(LParenToken)) {
 		lexNextToken();
+		// A type's method with no parameters should still define self
+		if (lexIsToken(RParenToken) && parse->owner->asttype == VtypeNameDclNode)
+			parseInjectSelf(fnsig, parse->owner->namesym);
 		while (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
 			NameDclAstNode *parm = parseVarDcl(parse, immPerm, parseflags);
 			// Do special inference if function is a type's method
 			if (parse->owner->asttype == VtypeNameDclNode) {
 				// Create default self parm, if 'self' was not specified
 				if (parmnbr == 0 && parm->namesym != nameFind("self", 4)) {
-					NameUseAstNode *selftype = newNameUseNode(parse->owner->namesym);
-					NameDclAstNode *selfparm = newNameDclNode(nameFind("self", 4), VarNameDclNode, (AstNode*)selftype, constPerm, NULL);
-					selfparm->scope = 1;
-					selfparm->index = parmnbr++;
-					inodesAdd(&fnsig->parms, selfparm->namesym, (AstNode*)selfparm);
+					parseInjectSelf(fnsig, parse->owner->namesym);
+					++parmnbr;
 				}
 				// Infer value type of a parameter (or its reference) if unspecified
 				if (parm->vtype == voidType) {
