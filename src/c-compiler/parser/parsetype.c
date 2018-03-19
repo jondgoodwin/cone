@@ -144,7 +144,7 @@ AstNode *parseStruct(ParseState *parse) {
 		lexNextToken();
 		while (1) {
 			if (lexIsToken(FnToken)) {
-				NameDclAstNode *fn = (NameDclAstNode *)parseFn(parse);
+				NameDclAstNode *fn = (NameDclAstNode *)parseFn(parse, ParseMayName | ParseMayImpl);
 				fn->flags |= FlagMangleParms;
 				nodesAdd(&strnode->methods, (AstNode*)fn);
 			}

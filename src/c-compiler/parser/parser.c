@@ -68,7 +68,7 @@ void parseRParen() {
 }
 
 // Parse a function block
-AstNode *parseFn(ParseState *parse) {
+AstNode *parseFn(ParseState *parse, int16_t flags) {
 	NameDclAstNode *fnnode;
 
 	fnnode = newNameDclNode(NULL, VarNameDclNode, NULL, immPerm, NULL);
@@ -79,11 +79,15 @@ AstNode *parseFn(ParseState *parse) {
 
 	// Process function name, if provided
 	if (lexIsToken(IdentToken)) {
+		if (!(flags&ParseMayName))
+			errorMsgLex(WarnName, "Unnecessary function name is ignored");
 		fnnode->namesym = lex->val.ident;
 		lexNextToken();
 	}
-	else
-		errorMsgLex(ErrorNoName, "Functions declarations must be named");
+	else {
+		if (!(flags&ParseMayAnon))
+			errorMsgLex(ErrorNoName, "Functions declarations must be named");
+	}
 
 	// Process the function's signature info. I
 	fnnode->vtype = parseFnSig(parse);
@@ -91,10 +95,17 @@ AstNode *parseFn(ParseState *parse) {
 	// Process statements block that implements function, if provided
 	if (!lexIsToken(LCurlyToken) && !lexIsToken(SemiToken))
 		parseLCurly();
-	if (lexIsToken(LCurlyToken))
+	if (lexIsToken(LCurlyToken)) {
+		if (!(flags&ParseMayImpl))
+			errorMsgLex(ErrorBadImpl, "Function implementation is not allowed here.");
 		fnnode->value = parseBlock(parse);
-	else
+	}
+	else {
+		if (!(flags&ParseMaySig))
+			errorMsgLex(ErrorNoImpl, "Function must be implemented.");
 		parseSemi();
+	}
+
 	return (AstNode*) fnnode;
 }
 
@@ -147,7 +158,7 @@ AstNode *parseFnOrVar(ParseState *parse) {
 	}
 
 	if (lexIsToken(FnToken)) {
-		node = parseFn(parse);
+		node = parseFn(parse, (flags&FlagExtern)? (ParseMayName | ParseMaySig) : (ParseMayName | ParseMayImpl));
 	}
 
 	// A global variable declaration, if it begins with a permission

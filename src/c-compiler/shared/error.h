@@ -60,6 +60,8 @@ enum ErrorCode {
 	ErrorNoDbl,		// Missing '::'
 	ErrorNoVar,		// Missing variable name
 	ErrorNoEof,		// Missing end-of-file
+	ErrorNoImpl,	// Function must be implemented
+	ErrorBadImpl,	// Function must not be implemented
 
 	// Warnings
 	WarnCode = 3000,

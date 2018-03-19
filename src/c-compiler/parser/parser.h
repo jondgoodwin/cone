@@ -16,10 +16,18 @@ typedef struct ParseState {
 	NamedAstNode *owner;	// Current namespace owning named nodes
 } ParseState;
 
+// When parsing a variable definition, what syntax is allowed?
+enum ParseFlags {
+	ParseMayName = 0x8000,		// The variable may be named
+	ParseMayAnon = 0x4000,		// The variable may be anonymous
+	ParseMaySig  = 0x2000,		// The variable may be signature only
+	ParseMayImpl = 0x1000		// The variable may implement a code block
+};
+
 // parser.c
 ModuleAstNode *parsePgm();
 ModuleAstNode *parseModuleBlk(ParseState *parse, ModuleAstNode *mod);
-AstNode *parseFn(ParseState *parse);
+AstNode *parseFn(ParseState *parse, int16_t flags);
 void parseSemi();
 void parseRCurly();
 void parseLCurly();
