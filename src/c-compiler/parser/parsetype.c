@@ -187,6 +187,28 @@ AstNode *parseFnSig(ParseState *parse) {
 		lexNextToken();
 		while (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
 			NameDclAstNode *parm = parseVarDcl(parse, immPerm, parseflags);
+			// Do special inference if function is a type's method
+			if (parse->owner->asttype == VtypeNameDclNode) {
+				// Create default self parm, if 'self' was not specified
+				if (parmnbr == 0 && parm->namesym != nameFind("self", 4)) {
+					NameUseAstNode *selftype = newNameUseNode(parse->owner->namesym);
+					NameDclAstNode *selfparm = newNameDclNode(nameFind("self", 4), VarNameDclNode, (AstNode*)selftype, constPerm, NULL);
+					selfparm->scope = 1;
+					selfparm->index = parmnbr++;
+					inodesAdd(&fnsig->parms, selfparm->namesym, (AstNode*)selfparm);
+				}
+				// Infer value type of a parameter (or its reference) if unspecified
+				if (parm->vtype == voidType) {
+					parm->vtype = (AstNode*)newNameUseNode(parse->owner->namesym);
+				}
+				else if (parm->vtype->asttype == RefType) {
+					PtrAstNode *refnode = (PtrAstNode *)parm->vtype;
+					if (refnode->pvtype == voidType) {
+						refnode->pvtype = (AstNode*)newNameUseNode(parse->owner->namesym);
+					}
+				}
+			}
+			// Add parameter to function's parm list
 			parm->scope = 1;
 			parm->index = parmnbr++;
 			if (parm->value)
