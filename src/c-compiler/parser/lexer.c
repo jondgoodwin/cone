@@ -615,6 +615,22 @@ void lexNextToken() {
 			srcp++;
 			break;
 
+		// Handle line continuation in off-side mode
+		case '\\':
+			++srcp;
+			if (lex->nbrcurly == 0) {
+				// Skip to end of line
+				while (*srcp && *srcp != '\n' && *srcp != '\x1a')
+					srcp++;
+				// Skip over new line
+				if (*srcp == '\n') {
+					srcp++;
+					lex->linep = srcp;
+					lex->linenbr++;
+				}
+			}
+			break;
+
 		// Handle new line
 		case '\n':
 			srcp++;
@@ -640,10 +656,16 @@ void lexNextToken() {
 					else
 						break;
 				}
-				lex->inject = 1;
-				lex->tokp = lex->srcp = srcp;
-				if (lexInjectToken())
-					return;
+				// If line continuation, skip over and don't inject
+				if (*srcp == '\\')
+					++srcp;
+				// For non-blank, non-comment line in off-side mode, inject token if needed
+				else if (*srcp != '\n' && !(*srcp == '/' && *(srcp + 1) == '/')) {
+					lex->inject = 1;
+					lex->tokp = lex->srcp = srcp;
+					if (lexInjectToken())
+						return;
+				}
 			}
 			break;
 
