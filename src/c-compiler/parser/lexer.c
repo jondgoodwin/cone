@@ -56,6 +56,10 @@ void lexInject(char *url, char *src) {
 	lex->nbrcurly = 0;
 	lex->nbrtoks = 0;
 	lex->indentch = '\0';
+	lex->inject = 0;
+	lex->curindent = 0;
+	lex->indentlvl = 0;
+	lex->indents[0] = 0;
 
 	// Prime the pump with the first token
 	lexNextToken();
@@ -408,18 +412,22 @@ char *lexBlockComment(char *srcp) {
 	return; \
 }
 
-// Process leading spaces/tabs on a new line in off-side mode
+// Inject tokens for off-side rule indentation
 // Returns 1 if token is injected, 0 otherwise
-// - Same indentation - inject ';' if nbrtoks > 1
+// - Same indentation - inject ';' if nbrtoks > 1 and not continuation
 // - Greater indent - inject '{'
-// - Lesser indent - inject ';' and needed '}'s
-// - Line continuation (\) - (undent logic?) + ignored white space
-int lexNewLine() {
+// - Lesser indent - inject ';' if nbrtoks > 1, then needed '}'s
+int lexInjectToken() {
+	lex->inject = 0;
 	return 0;
 }
 
 // Decode next token from the source into new lex->token
 void lexNextToken() {
+	// Inject tokens, if needed based on current line's indentation
+	if (lex->inject && lexInjectToken())
+		return;
+
 	char *srcp;
 	srcp = lex->srcp;
 	lex->nbrtoks++;
@@ -610,13 +618,23 @@ void lexNextToken() {
 					else
 						break;
 				}
-				if (lexNewLine())
+				lex->inject = 1;
+				lex->tokp = lex->srcp = srcp;
+				if (lexInjectToken())
 					return;
 			}
 			break;
 
 		// End-of-file
 		case '\0': case '\x1a':
+			if (lex->nbrcurly == 0) {
+				// For off-side, pretend eof is a new line to force needed injections
+				lex->inject = 1;
+				lex->curindent = 0;
+				lex->tokp = lex->srcp = srcp;
+				if (lexInjectToken())
+					return;
+			}
 			lexReturnPuncTok(EofToken, 0);
 
 		// Bad character

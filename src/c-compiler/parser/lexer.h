@@ -13,6 +13,8 @@ typedef struct Name Name;	// ../ast/nametbl.h
 
 #include <stdint.h>
 
+#define LEX_MAX_INDENTS 1024
+
 // Lexer state (one per source file)
 typedef struct Lexer {
 	// Value info about a discovered token
@@ -41,12 +43,16 @@ typedef struct Lexer {
 	uint32_t flags;		// Lexer flags
 	uint16_t toktype;	// TokenTypes
 
+	// ** Off-side rule state -->
 	// if nbrcurly > 0, offside rule is turned off
 	int16_t nbrcurly;	// Number of explicit curly braces active
 	// if nbrtoks > 1, implicit semicolon needed to end statement
 	int16_t nbrtoks;	// Number of tokens (+1) in current stmt
 	int16_t curindent;	// Indentation level of current line
+	int16_t indents[LEX_MAX_INDENTS]; // LIFO list of indent levels
+	int16_t indentlvl;	// Current index in indents[]
 	char indentch;		// Are we using spaces or tabs?
+	char inject;		// non-zero if we need to inject tokens
 } Lexer;
 
 // All the possible types for a token
