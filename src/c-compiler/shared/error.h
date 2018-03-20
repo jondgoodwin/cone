@@ -18,6 +18,7 @@ enum ErrorCode {
 	ExitNF,		// Could not find specified source files
 	ExitMem,	// Out of memory
 	ExitOpts,	// Invalid compiler options
+	ExitIndent,	// Too many indent levels in lexer
 
 	// Non-terminating errors
 	ErrorCode = 1000,

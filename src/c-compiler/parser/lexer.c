@@ -414,10 +414,30 @@ char *lexBlockComment(char *srcp) {
 
 // Inject tokens for off-side rule indentation
 // Returns 1 if token is injected, 0 otherwise
-// - Same indentation - inject ';' if nbrtoks > 1 and not continuation
-// - Greater indent - inject '{'
-// - Lesser indent - inject ';' if nbrtoks > 1, then needed '}'s
+// - Same indentation -  and not continuation
 int lexInjectToken() {
+	// Inject '{' if indentation increases
+	if (lex->curindent > lex->indents[lex->indentlvl]) {
+		if (lex->indentlvl >= LEX_MAX_INDENTS)
+			errorExit(ExitIndent, "Too many indent levels in source file.");
+		lex->indents[++lex->indentlvl] = lex->curindent;
+		lex->inject = 0;
+		lex->toktype = LCurlyToken;
+		return 1;
+	}
+	// inject ';' if nbrtoks > 1 (unfinished statement)
+	if (lex->nbrtoks > 1) {
+		lex->nbrtoks = 0;
+		lex->toktype = SemiToken;
+		return 1;
+	}
+	// Inject '}' if indentation decreases
+	if (lex->curindent < lex->indents[lex->indentlvl]) {
+		--lex->indentlvl;
+		lex->nbrtoks = 0;
+		lex->toktype = RCurlyToken;
+		return 1;
+	}
 	lex->inject = 0;
 	return 0;
 }
@@ -557,12 +577,14 @@ void lexNextToken() {
 
 		// ';'
 		case ';':
+			lex->nbrtoks = 0;
 			lexReturnPuncTok(SemiToken, 1);
 
-		case '{': lex->nbrcurly++;
-			lex->nbrtoks = 0;
+		case '{': 
+			lex->nbrcurly++;
 			lexReturnPuncTok(LCurlyToken, 1);
-		case '}': if (lex->nbrcurly > 0) --lex->nbrcurly;
+		case '}': 
+			if (lex->nbrcurly > 0) --lex->nbrcurly;
 			lex->nbrtoks = 0;
 			lexReturnPuncTok(RCurlyToken, 1);
 		
@@ -603,7 +625,7 @@ void lexNextToken() {
 				// Count line's indentation
 				lex->curindent = 0;
 				while (1) {
-					if (*srcp == '\n')
+					if (*srcp == '\r')
 						srcp++;
 					else if (*srcp == ' ' || *srcp == '\t') {
 						if (lex->indentch == '\0')
