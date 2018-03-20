@@ -40,6 +40,13 @@ typedef struct Lexer {
 	uint32_t linenbr;	// Current line number
 	uint32_t flags;		// Lexer flags
 	uint16_t toktype;	// TokenTypes
+
+	// if nbrcurly > 0, offside rule is turned off
+	int16_t nbrcurly;	// Number of explicit curly braces active
+	// if nbrtoks > 1, implicit semicolon needed to end statement
+	int16_t nbrtoks;	// Number of tokens (+1) in current stmt
+	int16_t curindent;	// Indentation level of current line
+	char indentch;		// Are we using spaces or tabs?
 } Lexer;
 
 // All the possible types for a token

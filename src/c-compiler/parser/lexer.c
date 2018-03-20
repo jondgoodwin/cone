@@ -53,6 +53,9 @@ void lexInject(char *url, char *src) {
 	lex->srcp = lex->tokp = lex->linep = src;
 	lex->linenbr = 1;
 	lex->flags = 0;
+	lex->nbrcurly = 0;
+	lex->nbrtoks = 0;
+	lex->indentch = '\0';
 
 	// Prime the pump with the first token
 	lexNextToken();
@@ -405,10 +408,21 @@ char *lexBlockComment(char *srcp) {
 	return; \
 }
 
+// Process leading spaces/tabs on a new line in off-side mode
+// Returns 1 if token is injected, 0 otherwise
+// - Same indentation - inject ';' if nbrtoks > 1
+// - Greater indent - inject '{'
+// - Lesser indent - inject ';' and needed '}'s
+// - Line continuation (\) - (undent logic?) + ignored white space
+int lexNewLine() {
+	return 0;
+}
+
 // Decode next token from the source into new lex->token
 void lexNextToken() {
 	char *srcp;
 	srcp = lex->srcp;
+	lex->nbrtoks++;
 	while (1) {
 		switch (*srcp) {
 
@@ -519,8 +533,6 @@ void lexNextToken() {
 				lexReturnPuncTok(GtToken, 1);
 			}
 
-		case '{': lexReturnPuncTok(LCurlyToken, 1);
-		case '}': lexReturnPuncTok(RCurlyToken, 1);
 		case '[': lexReturnPuncTok(LBracketToken, 1);
 		case ']': lexReturnPuncTok(RBracketToken, 1);
 		case '(': lexReturnPuncTok(LParenToken, 1);
@@ -535,10 +547,17 @@ void lexNextToken() {
 				lexReturnPuncTok(ColonToken, 1);
 			}
 
-			// ';'
+		// ';'
 		case ';':
 			lexReturnPuncTok(SemiToken, 1);
 
+		case '{': lex->nbrcurly++;
+			lex->nbrtoks = 0;
+			lexReturnPuncTok(LCurlyToken, 1);
+		case '}': if (lex->nbrcurly > 0) --lex->nbrcurly;
+			lex->nbrtoks = 0;
+			lexReturnPuncTok(RCurlyToken, 1);
+		
 		// '/' or '//' or '/*'
 		case '/':
 			// Line comment: '//'
@@ -557,7 +576,12 @@ void lexNextToken() {
 			break;
 
 		// Ignore white space
-		case ' ': case '\t': case '\r':
+		case ' ': case '\t':
+			srcp++;
+			break;
+
+		// Ignore carrier return
+		case '\r':
 			srcp++;
 			break;
 
@@ -566,6 +590,29 @@ void lexNextToken() {
 			srcp++;
 			lex->linep = srcp;
 			lex->linenbr++;
+			// In off-side mode
+			if (lex->nbrcurly == 0) {
+				// Count line's indentation
+				lex->curindent = 0;
+				while (1) {
+					if (*srcp == '\n')
+						srcp++;
+					else if (*srcp == ' ' || *srcp == '\t') {
+						if (lex->indentch == '\0')
+							lex->indentch = *srcp;
+						if (*srcp != lex->indentch) {
+							lex->tokp = lex->srcp = srcp;
+							errorMsgLex(WarnIndent, "Inconsistent line indentation character (tab vs. space)");
+						}
+						srcp++;
+						lex->curindent++;
+					}
+					else
+						break;
+				}
+				if (lexNewLine())
+					return;
+			}
 			break;
 
 		// End-of-file

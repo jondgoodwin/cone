@@ -66,6 +66,7 @@ enum ErrorCode {
 	// Warnings
 	WarnCode = 3000,
 	WarnName,		// Unnecessary name
+	WarnIndent,		// Inconsistent indent character
 };
 
 int errors;
