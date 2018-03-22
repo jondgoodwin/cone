@@ -1,8 +1,13 @@
 # Cone Programming Language
-Cone is a statically-type, object-oriented programming language, 
-used to build realistic, interactive, [3D web][3dweb] worlds.
-It is designed for real-time performance and responsiveness, compile-time safety, 
-and programmer flexibility and convenience.
+Cone is a fast, fit, friendly, and safe systems programming language.
+It features:
+
+- [3d web][3dweb] support
+- Concise, readable syntax
+- Lean, native runtime
+- Custom allocators
+- Memory, thread & type safe
+- Extensive code reuse features
 
 The Cone compiler is currently under development and in very early stages.
 The current status and next steps are documented in [PLAN.md][plan].
@@ -94,18 +99,18 @@ modify LLVM_LIB to "libLLVM.dylib".
 The Cone programming language compiler is distributed under the terms of the MIT license. 
 See LICENSE and COPYRIGHT for details.
 
-[3dweb]: http://web3d.jondgoodwin.com/faq.html
+[3dweb]: http://cone.jondgoodwin.com/web3d.html
 [gmm]: http://jondgoodwin.com/pling/gmm.pdf
 [plan]: https://github.com/jondgoodwin/cone/blob/master/PLAN.md
-[coneref]: http://web3d.jondgoodwin.com/cone
-[showcase]: http://web3d.jondgoodwin.com/cone/showcase.html
-[playground]: http://playcone.jondgoodwin.com
+[coneref]: http://cone.jondgoodwin.com/coneref/index.html
+[showcase]: http://cone.jondgoodwin.com/coneref/showcase.html
+[playground]: http://cone.jondgoodwin.com/play/index.html
 [examples]: http://github.com/jondgoodwin/cone/tree/master/text
 [acorn]: https://github.com/jondgoodwin/acornvm
 [acornref]: http://web3d.jondgoodwin.com/acorn
 [llvm]: https://llvm.org/
 
-[hello]: http://playcone.jondgoodwin.com/?gist=f55a8caa2605a11223437167730c53af
-[pi]: http://playcone.jondgoodwin.com/?gist=4510655502edcde9d50d185cfd7f3c2e
-[perm]: http://playcone.jondgoodwin.com/?gist=96ecaecb4827c2b9e6aaad35feb2bfd1
-[struct]: http://playcone.jondgoodwin.com/?gist=cd702c7c1ffc8f97d7762735d04fd9de
+[hello]: http://cone.jondgoodwin.com/play/index.html?gist=f55a8caa2605a11223437167730c53af
+[pi]: http://cone.jondgoodwin.com/play/index.html?gist=4510655502edcde9d50d185cfd7f3c2e
+[perm]: http://cone.jondgoodwin.com/play/index.html?gist=96ecaecb4827c2b9e6aaad35feb2bfd1
+[struct]: http://cone.jondgoodwin.com/play/index.html?gist=cd702c7c1ffc8f97d7762735d04fd9de

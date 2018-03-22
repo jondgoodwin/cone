@@ -1,11 +1,11 @@
-# Cone - 0.1.0 -> 0.2.0 Project Plan (as of Jan. 31, 2017)
+# Cone - 0.1.0 -> 0.2.0 Project Plan (as of March 22, 2017)
 
 ## Current status
 
 The compiler translates Cone programs to C-ABI compatible object files on Windows, Linux and Mac OS.
 As demonstrated by the Cone playground, it supports the following documented language features:
 
-- Function declarations with typed parameters, return type and code block
+- Function & method declarations with typed parameters, return type and code block
 - Global & local variable declaration and initialization
 - Return statements (implicit and explicit)
 - Assignment expressions
@@ -19,17 +19,16 @@ As demonstrated by the Cone playground, it supports the following documented lan
 - Type inference, type checking/coercion, and number casting for:
   - Integers (e.g., i32, u32) and Bool
   - Floats (f32 and f64)
-  - References
+  - Allocator/borrowed References and Pointers
   - Structs
 - Permission specification, coercion and mutation enforcement
+- Modules
 
 ## Next steps
 
+- Package import and package management
 - Struct literals
-- Method definition for types
 - Constructors and finalizers
 - Simple macro/inline
-- lex reference allocator + methods
-- Allocator events: drop, alias, de-alias
+- Full allocator support: drop, alias, de-alias
 - 'uni'/reference constraints: move semantics, var shadows
-- Modules and packaging
