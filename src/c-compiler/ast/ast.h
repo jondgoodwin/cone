@@ -216,6 +216,8 @@ typedef struct TypeAstNode {
 #include "../types/array.h"
 #include "../types/alloc.h"
 
+#include "../std/stdlib.h"
+
 // The AST analytical passes performed in between parse and generation
 enum Passes {
 	// Scope all declared names and resolve all name uses accordingly

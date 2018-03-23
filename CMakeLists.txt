@@ -33,6 +33,9 @@ add_executable(conec
 	src/c-compiler/ast/expr.c
 	src/c-compiler/ast/copyexpr.c
 
+	src/c-compiler/std/stdlib.c
+	src/c-compiler/std/stdnumber.c
+
 	src/c-compiler/types/type.c
 	src/c-compiler/types/fnsig.c
 	src/c-compiler/types/pointer.c
@@ -42,7 +45,6 @@ add_executable(conec
 	src/c-compiler/types/permission.c
 	src/c-compiler/types/alloc.c
 
-	src/c-compiler/parser/keyword.c
 	src/c-compiler/parser/lexer.c
 	src/c-compiler/parser/parser.c
 	src/c-compiler/parser/parseflow.c

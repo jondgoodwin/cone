@@ -23,10 +23,6 @@ typedef struct ArrTypeAstNode {
 	AstNode *elemtype;	// Type of array's elements
 } ArrTypeAstNode;
 
-// Represents the absence of type information
-AstNode *voidType;
-
-void typeInit();
 AstNode *typeGetVtype(AstNode *node);
 int typeIsSame(AstNode *node1, AstNode *node2);
 int typeMatches(AstNode *totype, AstNode *fromtype);

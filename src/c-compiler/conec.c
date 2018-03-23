@@ -11,7 +11,6 @@
 #include "ast/nametbl.h"
 #include "ast/ast.h"
 #include "shared/error.h"
-#include "parser/keyword.h"
 #include "parser/lexer.h"
 #include "parser/parser.h"
 #include "genllvm/genllvm.h"
@@ -39,13 +38,11 @@ int main(int argc, char **argv) {
 		errorExit(ExitOpts, "Specify a Cone program to compile.");
 	srcfn = argv[1];
 
-	// Initialize compiler's global structures
-	lexInject("*compiler*", "");
+	// Initialize name table and populate with std library names
 	nameInit();
-	keywordInit();
-	typeInit();
+	stdlibInit();
 
-	// Parse and generate
+	// Parse source file, do semantic analysis, and generate code
 	lexInjectFile(srcfn);
 	modnode = parsePgm();
 	if (errors == 0) {

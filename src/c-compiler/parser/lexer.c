@@ -9,7 +9,6 @@
 */
 
 #include "lexer.h"
-#include "keyword.h"
 #include "../ast/ast.h"
 #include "../ast/nametbl.h"
 #include "../shared/memory.h"

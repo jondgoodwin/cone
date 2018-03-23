@@ -181,9 +181,3 @@ VoidTypeAstNode *newVoidNode() {
 void voidPrint(VoidTypeAstNode *voidnode) {
 	astFprint("void");
 }
-
-// Initialize built-in types
-void typeInit() {
-	// Built-in global variable types
-	voidType = (AstNode*) newVoidNode();
-}
