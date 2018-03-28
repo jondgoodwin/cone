@@ -33,6 +33,7 @@ typedef struct ConeOptions {
 	int ptrsize;	// Size of a pointer (in bits)
 
 	// Boolean flags
+	int wasm;		// 1=WebAssembly
 	int release;	// 0=debug (no optimizations). 1=release (default)
 	int library;	// 1=generate a C-API compatible static library
 	int runtimebc;	// Compile with the LLVM bitcode file for the runtime

@@ -33,6 +33,7 @@ enum
 	OPT_SAFE,
 	OPT_CPU,
 	OPT_FEATURES,
+	OPT_WASM,
 	OPT_TRIPLE,
 	OPT_STATS,
 	OPT_LINK_ARCH,
@@ -76,6 +77,7 @@ static opt_arg_t args[] =
 	{ "safe", '\0', OPT_ARG_OPTIONAL, OPT_SAFE },
 	{ "cpu", '\0', OPT_ARG_REQUIRED, OPT_CPU },
 	{ "features", '\0', OPT_ARG_REQUIRED, OPT_FEATURES },
+	{ "wasm", '\0', OPT_ARG_NONE, OPT_WASM },
 	{ "triple", '\0', OPT_ARG_REQUIRED, OPT_TRIPLE },
 	{ "stats", '\0', OPT_ARG_NONE, OPT_STATS },
 	{ "link-arch", '\0', OPT_ARG_REQUIRED, OPT_LINK_ARCH },
@@ -118,6 +120,7 @@ static void usage()
 		"    =path         Defaults to the current directory.\n"
 		"  --library, -l   Generate a C-API compatible static library.\n"
 		"  --runtimebc     Compile with the LLVM bitcode file for the runtime.\n"
+		"  --wasm          Compile for WebAssembly target.\n"
 		"  --pic           Compile using position independent code.\n"
 		"  --nopic         Don't compile using position independent code.\n"
 		"  --docs, -g      Generate code documentation.\n"
@@ -220,6 +223,7 @@ int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
 			//if (!package_add_safe(s.arg_val, &opt))
 			//	ok = false;
 			break;
+		case OPT_WASM: opt->wasm = 1; opt->triple = "wasm32-unknown-unknown-wasm"; break;
 
 		case OPT_CPU: opt->cpu = s.arg_val; break;
 		case OPT_FEATURES: opt->features = s.arg_val; break;

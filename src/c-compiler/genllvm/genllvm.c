@@ -288,8 +288,8 @@ void genllvm(ConeOptions *opt, ModuleAstNode *mod) {
 
 	// Transform IR to target's ASM and OBJ
 	if (machine)
-		genlOut(fileMakePath(opt->output, mod->lexer->fname, objext),
-			opt->print_asm? fileMakePath(opt->output, mod->lexer->fname, asmext) : NULL,
+		genlOut(fileMakePath(opt->output, mod->lexer->fname, opt->wasm? "wasm" : objext),
+			opt->print_asm? fileMakePath(opt->output, mod->lexer->fname, opt->wasm? "wat" : asmext) : NULL,
 			gen.module, opt->triple, machine);
 
 	LLVMDisposeModule(gen.module);
