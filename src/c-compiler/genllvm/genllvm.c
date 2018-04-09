@@ -19,6 +19,9 @@
 #include <llvm-c/BitWriter.h>
 #include <llvm-c/Transforms/Scalar.h>
 #include <llvm-c/Transforms/IPO.h>
+#if LLVM_VERSION_MAJOR >= 7
+#include "llvm/Transforms/Utils.h"
+#endif
 
 #include <stdio.h>
 #include <assert.h>

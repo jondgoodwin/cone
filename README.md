@@ -89,10 +89,11 @@ Note: To generate WebAssembly, it is necessary to custom-build LLVM, e.g.:
 	svn co http://llvm.org/svn/llvm-project/cfe/trunk clang
 	svn co http://llvm.org/svn/llvm-project/lld/trunk lld
 	cd ../..
-	mkdir llvm-wasm
-	cd llvm-wasm
-	CC=clang CXX=clang++ cmake -G "Unix Makefiles" -DLLVM_BUILD_LLVM_DYLIB=ON -DCMAKE_INSTALL_PREFIX=/llvm -DLLVM_TARGETS_TO_BUILD= -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD=WebAssembly /llvm/llvm-src
+	mkdir llvm-build
+	cd llvm-build
+	CC=clang CXX=clang++ cmake -G "Unix Makefiles" -DLLVM_BUILD_LLVM_DYLIB=ON -DCMAKE_INSTALL_PREFIX=/llvm/wasm -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD=WebAssembly /llvm/llvm-src
 	make
+	make install
 
 ## Building (Mac OS)
 
