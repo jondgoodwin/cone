@@ -17,7 +17,7 @@
 	if (isExpNode(node)) \
 		node = ((TypedAstNode *)node)->vtype; \
 	if (node->asttype == NameUseNode) \
-		node = ((NameUseAstNode *)node)->dclnode->value; \
+		node = ((TypeDclAstNode*)((NameUseAstNode *)node)->dclnode)->value; \
 }
 
 // Return value type
@@ -62,9 +62,9 @@ int typeIsSame(AstNode *node1, AstNode *node2) {
 int typeMatches(AstNode *totype, AstNode *fromtype) {
 	// Convert, if needed, from names to the type declaration
 	if (totype->asttype == NameUseNode)
-		totype = ((NameUseAstNode *)totype)->dclnode->value;
+		totype = ((TypeDclAstNode*)((NameUseAstNode *)totype)->dclnode)->value;
 	if (fromtype->asttype == NameUseNode)
-		fromtype = ((NameUseAstNode *)fromtype)->dclnode->value;
+		fromtype = ((TypeDclAstNode*)((NameUseAstNode *)fromtype)->dclnode)->value;
 
 	// If they are the same value type info, types match
 	if (totype == fromtype)
@@ -180,4 +180,46 @@ VoidTypeAstNode *newVoidNode() {
 // Serialize the void type node
 void voidPrint(VoidTypeAstNode *voidnode) {
 	astFprint("void");
+}
+
+// Create a new name declaraction node
+TypeDclAstNode *newTypeDclNode(Name *namesym, uint16_t asttype, AstNode *type, AstNode *val) {
+    TypeDclAstNode *name;
+    newAstNode(name, TypeDclAstNode, asttype);
+    name->vtype = type;
+    name->owner = NULL;
+    name->hooklinks = NULL;
+    name->namesym = namesym;
+    name->hooklink = NULL;
+    name->prevname = NULL;
+    name->value = val;
+    name->scope = 0;
+    name->index = 0;
+    name->llvmvar = NULL;
+    return name;
+}
+
+// Add a compiler built-in type to the global name table as immutable, declared type name
+// This gives a program's later NameUse nodes something to point to
+void newTypeDclNodeStr(char *namestr, uint16_t asttype, AstNode *type) {
+    Name *sym;
+    sym = nameFind(namestr, strlen(namestr));
+    sym->node = (NamedAstNode*)newTypeDclNode(sym, asttype, NULL, type);
+}
+
+// Check the value type declaration's AST
+void nameVtypeDclPass(PassState *pstate, TypeDclAstNode *name) {
+    astPass(pstate, name->value);
+}
+
+// Serialize the AST for a type declaration
+void typeDclPrint(TypeDclAstNode *name) {
+    astFprint("%s ", &name->namesym->namestr);
+    astPrintNode(name->vtype);
+    if (name->value) {
+        astFprint(" = ");
+        if (name->value->asttype == BlockNode)
+            astPrintNL();
+        astPrintNode(name->value);
+    }
 }

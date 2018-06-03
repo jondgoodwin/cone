@@ -36,7 +36,7 @@
 #endif
 
 // Generate parameter variable
-void genlParmVar(GenState *gen, NameDclAstNode *var) {
+void genlParmVar(GenState *gen, VarDclAstNode *var) {
 	assert(var->asttype == VarNameDclNode);
 	// We always alloca in case variable is mutable or we want to take address of its value
 	var->llvmvar = LLVMBuildAlloca(gen->builder, genlType(gen, var->vtype), &var->namesym->namestr);
@@ -44,7 +44,7 @@ void genlParmVar(GenState *gen, NameDclAstNode *var) {
 }
 
 // Generate a function
-void genlFn(GenState *gen, NameDclAstNode *fnnode) {
+void genlFn(GenState *gen, VarDclAstNode *fnnode) {
 	LLVMValueRef svfn = gen->fn;
 	LLVMBuilderRef svbuilder = gen->builder;
 	FnSigAstNode *fnsig = (FnSigAstNode*)fnnode->vtype;
@@ -61,7 +61,7 @@ void genlFn(GenState *gen, NameDclAstNode *fnnode) {
 	uint32_t cnt;
 	SymNode *inodesp;
 	for (inodesFor(fnsig->parms, cnt, inodesp))
-		genlParmVar(gen, (NameDclAstNode*)inodesp->node);
+		genlParmVar(gen, (VarDclAstNode*)inodesp->node);
 
 	// Generate the function's code (always a block)
 	genlBlock(gen, (BlockAstNode *)fnnode->value);
@@ -73,7 +73,7 @@ void genlFn(GenState *gen, NameDclAstNode *fnnode) {
 }
 
 // Generate global variable
-void genlGloVar(GenState *gen, NameDclAstNode *varnode) {
+void genlGloVar(GenState *gen, VarDclAstNode *varnode) {
 	LLVMSetInitializer(varnode->llvmvar, genlExpr(gen, varnode->value));
 }
 
@@ -109,7 +109,7 @@ char *genlGlobalName(NamedAstNode *name) {
 }
 
 // Generate LLVMValueRef for a global variable or function
-void genlGloVarName(GenState *gen, NameDclAstNode *glovar) {
+void genlGloVarName(GenState *gen, VarDclAstNode *glovar) {
 
 	// Handle when it is just a global variable
 	if (glovar->vtype->asttype != FnSig) {
@@ -133,7 +133,7 @@ void genlModule(GenState *gen, ModuleAstNode *mod) {
 	for (nodesFor(mod->nodes, cnt, nodesp)) {
 		AstNode *nodep = *nodesp;
 		if (nodep->asttype == VarNameDclNode)
-			genlGloVarName(gen, (NameDclAstNode *)nodep);
+			genlGloVarName(gen, (VarDclAstNode *)nodep);
 	}
 
 	// Generate the function's block or the variable's initialization value
@@ -141,11 +141,11 @@ void genlModule(GenState *gen, ModuleAstNode *mod) {
 		AstNode *nodep = *nodesp;
 		switch (nodep->asttype) {
 		case VarNameDclNode:
-			if (((NameDclAstNode*)nodep)->value) {
-				if (((NameDclAstNode*)nodep)->vtype->asttype == FnSig)
-					genlFn(gen, (NameDclAstNode*)nodep);
+			if (((VarDclAstNode*)nodep)->value) {
+				if (((VarDclAstNode*)nodep)->vtype->asttype == FnSig)
+					genlFn(gen, (VarDclAstNode*)nodep);
 				else
-					genlGloVar(gen, (NameDclAstNode*)nodep);
+					genlGloVar(gen, (VarDclAstNode*)nodep);
 			}
 			break;
 

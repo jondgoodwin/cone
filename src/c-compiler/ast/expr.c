@@ -123,7 +123,7 @@ void elementPass(PassState *pstate, ElementAstNode *node) {
 				SymNode *field = inodesFind(((StructAstNode *)ownvtype)->fields, fldsym);
 				if (field) {
 					fldname->asttype = NameUseNode;
-					fldname->dclnode = (NameDclAstNode*)field->node;
+					fldname->dclnode = (NamedAstNode*)field->node;
 					node->vtype = fldname->vtype = fldname->dclnode->vtype;
 				}
 				else

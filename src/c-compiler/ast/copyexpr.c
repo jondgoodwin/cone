@@ -92,7 +92,7 @@ void fnCallPrint(FnCallAstNode *node) {
 	astFprint(")");
 }
 
-NameDclAstNode *fnCallFindMethod(FnCallAstNode *node, Name *methsym) {
+VarDclAstNode *fnCallFindMethod(FnCallAstNode *node, Name *methsym) {
 	// Get type of object call's object (first arg). Use value type of a ref
 	AstNode *objtype = typeGetVtype(*nodesNodes(node->parms));
 	if (objtype->asttype == RefType || objtype->asttype == PtrType)
@@ -100,11 +100,11 @@ NameDclAstNode *fnCallFindMethod(FnCallAstNode *node, Name *methsym) {
 
 	// Look for best-fit method among those defined for the type
 	int bestnbr = 0x7fffffff; // ridiculously high number
-	NameDclAstNode *bestmethod = NULL;
+	VarDclAstNode *bestmethod = NULL;
 	AstNode **nodesp;
 	uint32_t cnt;
 	for (nodesFor(((TypeAstNode*)objtype)->methods, cnt, nodesp)) {
-		NameDclAstNode *method = (NameDclAstNode*)*nodesp;
+		VarDclAstNode *method = (VarDclAstNode*)*nodesp;
 		if (method->namesym == methsym) {
 			int match;
 			switch (match = fnSigMatchesCall((FnSigAstNode *)method->vtype, node)) {
@@ -137,10 +137,10 @@ case TypeCheck:
 	if (node->fn->asttype == MemberUseNode) {
 		NameUseAstNode *methname = (NameUseAstNode*)node->fn;
 		Name *methsym = methname->namesym;
-		NameDclAstNode *method;
+		VarDclAstNode *method;
 		if (method = fnCallFindMethod(node, methsym)) {
 			methname->asttype = NameUseNode;
-			methname->dclnode = method;
+			methname->dclnode = (NamedAstNode*)method;
 			methname->vtype = methname->dclnode->vtype;
 		}
 		else {
@@ -183,11 +183,11 @@ case TypeCheck:
 
 	// If we have too few arguments, use default values, if provided
 	if (argsunder > 0) {
-		if (((NameDclAstNode*)parmp->node)->value == NULL)
+		if (((VarDclAstNode*)parmp->node)->value == NULL)
 			errorMsgNode((AstNode*)node, ErrorFewArgs, "Function call requires more arguments than specified");
 		else {
 			while (argsunder--) {
-				nodesAdd(&node->parms, ((NameDclAstNode*)parmp->node)->value);
+				nodesAdd(&node->parms, ((VarDclAstNode*)parmp->node)->value);
 				parmp++;
 			}
 		}
@@ -220,7 +220,7 @@ void addrTypeCheckBorrow(AddrAstNode *node, PtrAstNode *ptype) {
 		errorMsgNode((AstNode*)node, ErrorNotLval, "May only borrow from lvals (e.g., variable)");
 		return;
 	}
-	if (!permMatches(ptype->perm, ((NameUseAstNode*)exp)->dclnode->perm))
+	if (!permMatches(ptype->perm, ((VarDclAstNode*)((NameUseAstNode*)exp)->dclnode)->perm))
 		errorMsgNode((AstNode *)node, ErrorBadPerm, "Borrowed reference cannot obtain this permission");
 }
 

@@ -23,9 +23,9 @@ void allocAllocate(AddrAstNode *anode, PtrAstNode *ptype) {
 	TypeAstNode *alloctype = (TypeAstNode*)ptype->alloc;
 	int32_t cnt;
 	AstNode **nodesp;
-	NameDclAstNode *allocmeth = NULL;
+	VarDclAstNode *allocmeth = NULL;
 	for (nodesFor(alloctype->methods, cnt, nodesp)) {
-		NameDclAstNode *meth = (NameDclAstNode*)*nodesp;
+		VarDclAstNode *meth = (VarDclAstNode*)*nodesp;
 		if (meth->namesym == symalloc) {
 			allocmeth = meth;
 			break;
@@ -40,17 +40,17 @@ void allocAllocate(AddrAstNode *anode, PtrAstNode *ptype) {
 	Name *szvtsym = nameFind("szvtype", 7);
 	SizeofAstNode *szvtval = newSizeofAstNode();
 	szvtval->type = ptype->pvtype;
-	NameDclAstNode *szvtype = newNameDclNode(szvtsym, VarNameDclNode, (AstNode*)usizeType, immPerm, (AstNode*)szvtval);
+	VarDclAstNode *szvtype = newNameDclNode(szvtsym, VarNameDclNode, (AstNode*)usizeType, immPerm, (AstNode*)szvtval);
 	nodesAdd(&blknode->stmts, (AstNode*)szvtype);
 	NameUseAstNode *szvtuse = newNameUseNode(szvtsym);
 	szvtuse->asttype = NameUseNode;
-	szvtuse->dclnode = szvtype;
+	szvtuse->dclnode = (NamedAstNode*)szvtype;
 	szvtuse->vtype = szvtype->vtype;
 
 	// p1 = alloc.allocate(szvtype)
 	NameUseAstNode *usealloc = newNameUseNode(symalloc);
 	usealloc->asttype = NameUseNode;
-	usealloc->dclnode = allocmeth;
+	usealloc->dclnode = (NamedAstNode*)allocmeth;
 	usealloc->vtype = allocmeth->vtype;
 	FnCallAstNode *callalloc = newFnCallAstNode((AstNode*)usealloc, 1);
 	callalloc->vtype = allocmeth->vtype;
@@ -58,11 +58,11 @@ void allocAllocate(AddrAstNode *anode, PtrAstNode *ptype) {
 	// ---
 	Name *pT = nameFind("pT", 2);
 	CastAstNode *castvt = newCastAstNode((AstNode*)callalloc, (AstNode*)ptype);
-	NameDclAstNode *p1dcl = newNameDclNode(pT, VarNameDclNode, (AstNode*)ptype, immPerm, (AstNode*)castvt);
+	VarDclAstNode *p1dcl = newNameDclNode(pT, VarNameDclNode, (AstNode*)ptype, immPerm, (AstNode*)castvt);
 	nodesAdd(&blknode->stmts, (AstNode*)p1dcl);
 	NameUseAstNode *p1use = newNameUseNode(pT);
 	p1use->asttype = NameUseNode;
-	p1use->dclnode = p1dcl;
+	p1use->dclnode = (NamedAstNode*)p1dcl;
 	p1use->vtype = p1dcl->vtype;
 
 	// *p1 = value

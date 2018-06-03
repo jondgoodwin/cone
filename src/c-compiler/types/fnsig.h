@@ -8,6 +8,8 @@
 #ifndef fnsig_h
 #define fnsig_h
 
+typedef struct FnCallAstNode FnCallAstNode;
+
 // For function signatures
 typedef struct FnSigAstNode {
 	TypeAstHdr;

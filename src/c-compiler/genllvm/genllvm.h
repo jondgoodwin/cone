@@ -27,8 +27,8 @@ typedef struct GenState {
 } GenState;
 
 void genllvm(ConeOptions *opt, ModuleAstNode *mod);
-void genlFn(GenState *gen, NameDclAstNode *fnnode);
-void genlGloVarName(GenState *gen, NameDclAstNode *glovar);
+void genlFn(GenState *gen, VarDclAstNode *fnnode);
+void genlGloVarName(GenState *gen, VarDclAstNode *glovar);
 
 // genlstmt.c
 LLVMBasicBlockRef genlInsertBlock(GenState *gen, char *name);

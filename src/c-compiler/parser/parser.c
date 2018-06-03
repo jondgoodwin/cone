@@ -69,7 +69,7 @@ void parseRParen() {
 
 // Parse a function block
 AstNode *parseFn(ParseState *parse, int16_t flags) {
-	NameDclAstNode *fnnode;
+	VarDclAstNode *fnnode;
 
 	fnnode = newNameDclNode(NULL, VarNameDclNode, NULL, immPerm, NULL);
 	fnnode->owner = parse->owner;

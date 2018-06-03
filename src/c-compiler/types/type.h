@@ -11,6 +11,15 @@
 #include <stdint.h>
 typedef struct Name Name;
 
+// Name declaration node (e.g., variable, fn implementation, or named type)
+typedef struct TypeDclAstNode {
+    NamedAstHdr;				// 'vtype': type of this name's value
+    AstNode *value;				// Starting value/declaration (NULL if not initialized)
+    LLVMValueRef llvmvar;		// LLVM's handle for a declared variable (for generation)
+    uint16_t scope;				// 0=global
+    uint16_t index;				// index within this scope (e.g., parameter number)
+} TypeDclAstNode;
+
 // Void type - e.g., for fn with no return value
 typedef struct VoidTypeAstNode {
 	TypeAstHdr;
@@ -32,5 +41,9 @@ char *typeMangle(char *bufp, AstNode *vtype);
 
 VoidTypeAstNode *newVoidNode();
 void voidPrint(VoidTypeAstNode *voidnode);
+
+void newTypeDclNodeStr(char *namestr, uint16_t asttype, AstNode *type);
+void nameVtypeDclPass(PassState *pstate, TypeDclAstNode *name);
+void typeDclPrint(TypeDclAstNode *name);
 
 #endif

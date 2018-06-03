@@ -21,7 +21,7 @@
 PermAstNode *parsePerm(PermAstNode *defperm) {
 	if (lexIsToken(PermToken)) {
 		PermAstNode *perm;
-		perm = (PermAstNode*)((NameDclAstNode *)lex->val.ident->node)->value;
+		perm = (PermAstNode*)((TypeDclAstNode *)lex->val.ident->node)->value;
 		lexNextToken();
 		return perm;
 	}
@@ -33,7 +33,7 @@ PermAstNode *parsePerm(PermAstNode *defperm) {
 void parseAllocPerm(PtrAstNode *refnode) {
 	if (lexIsToken(IdentToken)
 		&& lex->val.ident->node && lex->val.ident->node->asttype == AllocNameDclNode) {
-		refnode->alloc = ((NameDclAstNode *)lex->val.ident->node)->value;
+		refnode->alloc = ((TypeDclAstNode *)lex->val.ident->node)->value;
 		lexNextToken();
 		refnode->perm = parsePerm(uniPerm);
 	}
@@ -44,8 +44,8 @@ void parseAllocPerm(PtrAstNode *refnode) {
 }
 
 // Parse a variable declaration
-NameDclAstNode *parseVarDcl(ParseState *parse, PermAstNode *defperm, int16_t flags) {
-	NameDclAstNode *varnode;
+VarDclAstNode *parseVarDcl(ParseState *parse, PermAstNode *defperm, int16_t flags) {
+	VarDclAstNode *varnode;
 	Name *namesym = NULL;
 	AstNode *vtype;
 	PermAstNode *perm;
@@ -121,7 +121,7 @@ AstNode *parsePtrType(ParseState *parse) {
 // Parse a struct
 AstNode *parseStruct(ParseState *parse) {
 	NamedAstNode *svowner = parse->owner;
-	NameDclAstNode *strdclnode;
+	TypeDclAstNode *strdclnode;
 	StructAstNode *strnode;
 	int16_t fieldnbr = 0;
 
@@ -148,12 +148,12 @@ AstNode *parseStruct(ParseState *parse) {
 		lexNextToken();
 		while (1) {
 			if (lexIsToken(FnToken)) {
-				NameDclAstNode *fn = (NameDclAstNode *)parseFn(parse, ParseMayName | ParseMayImpl);
+				VarDclAstNode *fn = (VarDclAstNode *)parseFn(parse, ParseMayName | ParseMayImpl);
 				fn->flags |= FlagMangleParms;
 				nodesAdd(&strnode->methods, (AstNode*)fn);
 			}
 			else if (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
-				NameDclAstNode *field = parseVarDcl(parse, mutPerm, ParseMayImpl | ParseMaySig);
+				VarDclAstNode *field = parseVarDcl(parse, mutPerm, ParseMayImpl | ParseMaySig);
 				field->scope = 1;
 				field->index = fieldnbr++;
 				inodesAdd(&strnode->fields, field->namesym, (AstNode*)field);
@@ -175,7 +175,7 @@ AstNode *parseStruct(ParseState *parse) {
 
 void parseInjectSelf(FnSigAstNode *fnsig, Name *typename) {
 	NameUseAstNode *selftype = newNameUseNode(typename);
-	NameDclAstNode *selfparm = newNameDclNode(nameFind("self", 4), VarNameDclNode, (AstNode*)selftype, constPerm, NULL);
+	VarDclAstNode *selfparm = newNameDclNode(nameFind("self", 4), VarNameDclNode, (AstNode*)selftype, constPerm, NULL);
 	selfparm->scope = 1;
 	selfparm->index = 0;
 	inodesAdd(&fnsig->parms, selfparm->namesym, (AstNode*)selfparm);
@@ -197,7 +197,7 @@ AstNode *parseFnSig(ParseState *parse) {
 		if (lexIsToken(RParenToken) && parse->owner->asttype == VtypeNameDclNode)
 			parseInjectSelf(fnsig, parse->owner->namesym);
 		while (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
-			NameDclAstNode *parm = parseVarDcl(parse, immPerm, parseflags);
+			VarDclAstNode *parm = parseVarDcl(parse, immPerm, parseflags);
 			// Do special inference if function is a type's method
 			if (parse->owner->asttype == VtypeNameDclNode) {
 				// Create default self parm, if 'self' was not specified

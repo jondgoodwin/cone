@@ -8,20 +8,17 @@
 #define vardcl_h
 
 // Name declaration node (e.g., variable, fn implementation, or named type)
-typedef struct NameDclAstNode {
+typedef struct VarDclAstNode {
 	NamedAstHdr;				// 'vtype': type of this name's value
 	PermAstNode *perm;			// Permission type (often mut or imm)
 	AstNode *value;				// Starting value/declaration (NULL if not initialized)
 	LLVMValueRef llvmvar;		// LLVM's handle for a declared variable (for generation)
 	uint16_t scope;				// 0=global
 	uint16_t index;				// index within this scope (e.g., parameter number)
-} NameDclAstNode;
+} VarDclAstNode;
 
-NameDclAstNode *newNameDclNode(Name *namesym, uint16_t asttype, AstNode *sig, PermAstNode *perm, AstNode *val);
-void newNameDclNodeStr(char *namestr, uint16_t asttype, AstNode *type);
-int isNameDclNode(AstNode *node);
-void nameDclPrint(NameDclAstNode *fn);
-void nameDclPass(PassState *pstate, NameDclAstNode *node);
-void nameVtypeDclPass(PassState *pstate, NameDclAstNode *name);
+VarDclAstNode *newNameDclNode(Name *namesym, uint16_t asttype, AstNode *sig, PermAstNode *perm, AstNode *val);
+void varDclPrint(VarDclAstNode *fn);
+void varDclPass(PassState *pstate, VarDclAstNode *node);
 
 #endif

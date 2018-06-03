@@ -46,12 +46,12 @@ void keywordInit() {
 
 // Declare built-in permission types and their names
 void stdPermInit() {
-	newNameDclNodeStr("uni", PermNameDclNode, (AstNode*)(uniPerm = newPermNode(UniPerm, MayRead | MayWrite | RaceSafe | MayIntRefSum | IsLockless, NULL)));
-	newNameDclNodeStr("mut", PermNameDclNode, (AstNode*)(mutPerm = newPermNode(MutPerm, MayRead | MayWrite | MayAlias | MayAliasWrite | IsLockless, NULL)));
-	newNameDclNodeStr("imm", PermNameDclNode, (AstNode*)(immPerm = newPermNode(ImmPerm, MayRead | MayAlias | RaceSafe | MayIntRefSum | IsLockless, NULL)));
-	newNameDclNodeStr("const", PermNameDclNode, (AstNode*)(constPerm = newPermNode(ConstPerm, MayRead | MayAlias | IsLockless, NULL)));
-	newNameDclNodeStr("mutx", PermNameDclNode, (AstNode*)(mutxPerm = newPermNode(MutxPerm, MayRead | MayWrite | MayAlias | MayIntRefSum | IsLockless, NULL)));
-	newNameDclNodeStr("id", PermNameDclNode, (AstNode*)(idPerm = newPermNode(IdPerm, MayAlias | RaceSafe | IsLockless, NULL)));
+	newTypeDclNodeStr("uni", PermNameDclNode, (AstNode*)(uniPerm = newPermNode(UniPerm, MayRead | MayWrite | RaceSafe | MayIntRefSum | IsLockless, NULL)));
+	newTypeDclNodeStr("mut", PermNameDclNode, (AstNode*)(mutPerm = newPermNode(MutPerm, MayRead | MayWrite | MayAlias | MayAliasWrite | IsLockless, NULL)));
+	newTypeDclNodeStr("imm", PermNameDclNode, (AstNode*)(immPerm = newPermNode(ImmPerm, MayRead | MayAlias | RaceSafe | MayIntRefSum | IsLockless, NULL)));
+	newTypeDclNodeStr("const", PermNameDclNode, (AstNode*)(constPerm = newPermNode(ConstPerm, MayRead | MayAlias | IsLockless, NULL)));
+	newTypeDclNodeStr("mutx", PermNameDclNode, (AstNode*)(mutxPerm = newPermNode(MutxPerm, MayRead | MayWrite | MayAlias | MayIntRefSum | IsLockless, NULL)));
+	newTypeDclNodeStr("id", PermNameDclNode, (AstNode*)(idPerm = newPermNode(IdPerm, MayAlias | RaceSafe | IsLockless, NULL)));
 }
 
 // Set up the standard library, whose names are always shared by all modules

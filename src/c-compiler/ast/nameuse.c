@@ -42,11 +42,11 @@ void nameUsePass(PassState *pstate, NameUseAstNode *name) {
 	switch (pstate->pass) {
 	case NameResolution:
 		if (name->mod==NULL || name->mod == pstate->mod)
-			name->dclnode = (NameDclAstNode*)name->namesym->node;
+			name->dclnode = (NamedAstNode*)name->namesym->node;
 		else {
 			SymNode *symnode = inodesFind(name->mod->namednodes, name->namesym);
 			if (symnode)
-				name->dclnode = (NameDclAstNode*)symnode->node;
+				name->dclnode = (NamedAstNode*)symnode->node;
 		}
 		if (!name->dclnode)
 			errorMsgNode((AstNode*)name, ErrorUnkName, "The name %s does not refer to a declared name", &name->namesym->namestr);

@@ -15,9 +15,9 @@
 #include <assert.h>
 
 // Create a new name declaraction node
-NameDclAstNode *newNameDclNode(Name *namesym, uint16_t asttype, AstNode *type, PermAstNode *perm, AstNode *val) {
-	NameDclAstNode *name;
-	newAstNode(name, NameDclAstNode, asttype);
+VarDclAstNode *newNameDclNode(Name *namesym, uint16_t asttype, AstNode *type, PermAstNode *perm, AstNode *val) {
+	VarDclAstNode *name;
+	newAstNode(name, VarDclAstNode, asttype);
 	name->vtype = type;
 	name->owner = NULL;
 	name->hooklinks = NULL;
@@ -32,24 +32,11 @@ NameDclAstNode *newNameDclNode(Name *namesym, uint16_t asttype, AstNode *type, P
 	return name;
 }
 
-// Add a compiler built-in type to the global name table as immutable, declared type name
-// This gives a program's later NameUse nodes something to point to
-void newNameDclNodeStr(char *namestr, uint16_t asttype, AstNode *type) {
-	Name *sym;
-	sym = nameFind(namestr, strlen(namestr));
-	sym->node = (NamedAstNode*)newNameDclNode(sym, asttype, NULL, immPerm, type);
-}
-
-// Return true if node is one of the specialized name declaration nodes
-int isNameDclNode(AstNode *node) {
-	return node->asttype == VarNameDclNode || node->asttype == VtypeNameDclNode || node->asttype == PermNameDclNode || node->asttype == AllocNameDclNode;
-}
-
 // Serialize the AST for a variable/function
-void nameDclPrint(NameDclAstNode *name) {
+void varDclPrint(VarDclAstNode *name) {
 	astPrintNode((AstNode*)name->perm);
 	astFprint("%s ", &name->namesym->namestr);
-		astPrintNode(name->vtype);
+	astPrintNode(name->vtype);
 	if (name->value) {
 		astFprint(" = ");
 		if (name->value->asttype == BlockNode)
@@ -79,7 +66,7 @@ void fnImplicitReturn(AstNode *rettype, BlockAstNode *blk) {
 }
 
 // Enable resolution of fn parameter references to parameters
-void nameDclFnNameResolve(PassState *pstate, NameDclAstNode *name) {
+void varDclFnNameResolve(PassState *pstate, VarDclAstNode *name) {
 	int16_t oldscope = pstate->scope;
 	pstate->scope = 1;
 	FnSigAstNode *fnsig = (FnSigAstNode*)name->vtype;
@@ -90,11 +77,11 @@ void nameDclFnNameResolve(PassState *pstate, NameDclAstNode *name) {
 }
 
 // Enable name resolution of local variables
-void nameDclVarNameResolve(PassState *pstate, NameDclAstNode *name) {
+void varDclNameResolve(PassState *pstate, VarDclAstNode *name) {
 
 	// Variable declaration within a block is a local variable
 	if (pstate->scope > 1) {
-		if (name->namesym->node && pstate->scope == ((NameDclAstNode*)name->namesym->node)->scope) {
+		if (name->namesym->node && pstate->scope == ((VarDclAstNode*)name->namesym->node)->scope) {
 			errorMsgNode((AstNode *)name, ErrorDupName, "Name is already defined. Only one allowed.");
 			errorMsgNode((AstNode*)name->namesym->node, ErrorDupName, "This is the conflicting definition for that name.");
 		}
@@ -109,7 +96,7 @@ void nameDclVarNameResolve(PassState *pstate, NameDclAstNode *name) {
 }
 
 // Provide parameter and return type context for type checking function's logic
-void nameDclFnTypeCheck(PassState *pstate, NameDclAstNode *varnode) {
+void varDclFnTypeCheck(PassState *pstate, VarDclAstNode *varnode) {
 	FnSigAstNode *oldfnsig = pstate->fnsig;
 	pstate->fnsig = (FnSigAstNode*)varnode->vtype;
 	astPass(pstate, varnode->value);
@@ -117,7 +104,7 @@ void nameDclFnTypeCheck(PassState *pstate, NameDclAstNode *varnode) {
 }
 
 // Type check variable against its initial value
-void nameDclVarTypeCheck(PassState *pstate, NameDclAstNode *name) {
+void varDclTypeCheck(PassState *pstate, VarDclAstNode *name) {
 	astPass(pstate, name->value);
 	// Global variables and function parameters require literal initializers
 	if (name->scope <= 1 && !litIsLiteral(name->value))
@@ -131,7 +118,7 @@ void nameDclVarTypeCheck(PassState *pstate, NameDclAstNode *name) {
 }
 
 // Check the function or variable declaration's AST
-void nameDclPass(PassState *pstate, NameDclAstNode *name) {
+void varDclPass(PassState *pstate, VarDclAstNode *name) {
 	astPass(pstate, (AstNode*)name->perm);
 	astPass(pstate, name->vtype);
 	AstNode *vtype = typeGetVtype(name->vtype);
@@ -145,10 +132,10 @@ void nameDclPass(PassState *pstate, NameDclAstNode *name) {
 			namespaceHook((NamedAstNode*)name, name->namesym);*/
 		if (vtype->asttype == FnSig) {
 			if (name->value)
-				nameDclFnNameResolve(pstate, name);
+				varDclFnNameResolve(pstate, name);
 		}
 		else
-			nameDclVarNameResolve(pstate, name);
+			varDclNameResolve(pstate, name);
 		break;
 
 	case TypeCheck:
@@ -157,18 +144,13 @@ void nameDclPass(PassState *pstate, NameDclAstNode *name) {
 				// Syntactic sugar: Turn implicit returns into explicit returns
 				fnImplicitReturn(((FnSigAstNode*)name->vtype)->rettype, (BlockAstNode *)name->value);
 				// Do type checking of function (with fnsig as context)
-				nameDclFnTypeCheck(pstate, name);
+				varDclFnTypeCheck(pstate, name);
 			}
 			else
-				nameDclVarTypeCheck(pstate, name);
+				varDclTypeCheck(pstate, name);
 		}
 		else if (vtype == voidType)
 			errorMsgNode((AstNode*)name, ErrorNoType, "Name must specify a type");
 		break;
 	}
-}
-
-// Check the value type declaration's AST
-void nameVtypeDclPass(PassState *pstate, NameDclAstNode *name) {
-	astPass(pstate, name->value);
 }

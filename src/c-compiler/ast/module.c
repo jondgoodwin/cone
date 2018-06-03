@@ -83,7 +83,7 @@ void modPass(PassState *pstate, ModuleAstNode *mod) {
 	// For global variables and functions, handle all their type info first
 	for (nodesFor(mod->nodes, cnt, nodesp)) {
 		if ((*nodesp)->asttype == VarNameDclNode) {
-			NameDclAstNode *name = (NameDclAstNode*)*nodesp;
+			VarDclAstNode *name = (VarDclAstNode*)*nodesp;
 			astPass(pstate, (AstNode*)name->perm);
 			astPass(pstate, name->vtype);
 		}

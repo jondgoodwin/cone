@@ -90,7 +90,7 @@ int fnSigMatchesCall(FnSigAstNode *to, FnCallAstNode *caller) {
 	}
 	// Match fails if not enough arguments & method has no default values on parms
 	if (caller->parms->used != to->parms->used 
-		&& ((NameDclAstNode *)tonodesp)->value==NULL)
+		&& ((VarDclAstNode *)tonodesp)->value==NULL)
 		return 0;
 
 	// It is a match; return how perfect a match it is

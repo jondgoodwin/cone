@@ -201,13 +201,6 @@ typedef struct TypeAstNode {
 
 
 #include "../types/permission.h"
-#include "../ast/module.h"
-#include "../ast/block.h"
-#include "../ast/expr.h"
-#include "../ast/copyexpr.h"
-#include "../ast/vardcl.h"
-#include "../ast/nameuse.h"
-#include "../ast/literal.h"
 #include "../types/type.h"
 #include "../types/fnsig.h"
 #include "../types/number.h"
@@ -215,6 +208,14 @@ typedef struct TypeAstNode {
 #include "../types/struct.h"
 #include "../types/array.h"
 #include "../types/alloc.h"
+
+#include "../ast/module.h"
+#include "../ast/block.h"
+#include "../ast/expr.h"
+#include "../ast/copyexpr.h"
+#include "../ast/vardcl.h"
+#include "../ast/nameuse.h"
+#include "../ast/literal.h"
 
 #include "../std/stdlib.h"
 
