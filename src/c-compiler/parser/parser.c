@@ -71,7 +71,7 @@ void parseRParen() {
 AstNode *parseFn(ParseState *parse, int16_t flags) {
 	VarDclAstNode *fnnode;
 
-	fnnode = newNameDclNode(NULL, VarNameDclNode, NULL, immPerm, NULL);
+	fnnode = newVarDclNode(NULL, VarNameDclNode, NULL, immPerm, NULL);
 	fnnode->owner = parse->owner;
 
 	// Skip past the 'fn'

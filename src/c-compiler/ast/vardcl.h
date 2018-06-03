@@ -17,7 +17,7 @@ typedef struct VarDclAstNode {
 	uint16_t index;				// index within this scope (e.g., parameter number)
 } VarDclAstNode;
 
-VarDclAstNode *newNameDclNode(Name *namesym, uint16_t asttype, AstNode *sig, PermAstNode *perm, AstNode *val);
+VarDclAstNode *newVarDclNode(Name *namesym, uint16_t asttype, AstNode *sig, PermAstNode *perm, AstNode *val);
 void varDclPrint(VarDclAstNode *fn);
 void varDclPass(PassState *pstate, VarDclAstNode *node);
 

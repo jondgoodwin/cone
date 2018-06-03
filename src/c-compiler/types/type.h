@@ -42,6 +42,7 @@ char *typeMangle(char *bufp, AstNode *vtype);
 VoidTypeAstNode *newVoidNode();
 void voidPrint(VoidTypeAstNode *voidnode);
 
+TypeDclAstNode *newTypeDclNode(Name *namesym, uint16_t asttype, AstNode *type, AstNode *val);
 void newTypeDclNodeStr(char *namestr, uint16_t asttype, AstNode *type);
 void nameVtypeDclPass(PassState *pstate, TypeDclAstNode *name);
 void typeDclPrint(TypeDclAstNode *name);

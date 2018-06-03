@@ -15,7 +15,7 @@
 #include <assert.h>
 
 // Create a new name declaraction node
-VarDclAstNode *newNameDclNode(Name *namesym, uint16_t asttype, AstNode *type, PermAstNode *perm, AstNode *val) {
+VarDclAstNode *newVarDclNode(Name *namesym, uint16_t asttype, AstNode *type, PermAstNode *perm, AstNode *val) {
 	VarDclAstNode *name;
 	newAstNode(name, VarDclAstNode, asttype);
 	name->vtype = type;
