@@ -57,7 +57,7 @@ enum AstType {
 
 	// Untyped (Basic) AST nodes
 	ModuleNode,		// Program (global area)
-	OpCodeNode,		// Alternative to fndcl block for internal operations (e.g., add)
+	IntrinsicNode,		// Alternative to fndcl block for internal operations (e.g., add)
 	ReturnNode,		// Return node
 	WhileNode,		// While node
 	BreakNode,		// Break node

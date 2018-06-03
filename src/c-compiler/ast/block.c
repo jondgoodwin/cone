@@ -181,21 +181,21 @@ void breakPass(PassState *pstate, AstNode *node) {
 		errorMsgNode(node, ErrorNoWhile, "break/continue may only be used within a while/each block");
 }
 
-// Create a new op code node
-OpCodeAstNode *newOpCodeNode(int16_t opcode) {
-	OpCodeAstNode *op;
-	newAstNode(op, OpCodeAstNode, OpCodeNode);
-	op->opcode = opcode;
-	return op;
+// Create a new intrinsic node
+IntrinsicAstNode *newIntrinsicNode(int16_t intrinsic) {
+	IntrinsicAstNode *intrinsicNode;
+	newAstNode(intrinsicNode, IntrinsicAstNode, IntrinsicNode);
+	intrinsicNode->intrinsicFn = intrinsic;
+	return intrinsicNode;
 }
 
-// Serialize the AST for an opcode
-void opCodePrint(OpCodeAstNode *op) {
-	astFprint("op code");
+// Serialize the AST for an intrinsic
+void intrinsicPrint(IntrinsicAstNode *intrinsicNode) {
+	astFprint("intrinsic function");
 }
 
-// Check the op code's AST
-void opCodePass(PassState *pstate, OpCodeAstNode *op) {
+// Check the intrinsic node's AST
+void intrinsicPass(PassState *pstate, IntrinsicAstNode *intrinsicNode) {
 }
 
 // Create a new return statement node

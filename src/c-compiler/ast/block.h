@@ -34,42 +34,42 @@ typedef struct ReturnAstNode {
 	AstNode *exp;
 } ReturnAstNode;
 
-// The various op codes supported by OpCodeAstNode
-enum OpCode {
+// The various intrinsic functions supported by IntrinsicAstNode
+enum IntrinsicFn {
 	// Arithmetic
-	NegOpCode,
-	AddOpCode,
-	SubOpCode,
-	MulOpCode,
-	DivOpCode,
-	RemOpCode,
+	NegIntrinsic,
+	AddIntrinsic,
+	SubIntrinsic,
+	MulIntrinsic,
+	DivIntrinsic,
+	RemIntrinsic,
 
 	// Comparison
-	EqOpCode,
-	NeOpCode,
-	LtOpCode,
-	LeOpCode,
-	GtOpCode,
-	GeOpCode,
+	EqIntrinsic,
+	NeIntrinsic,
+	LtIntrinsic,
+	LeIntrinsic,
+	GtIntrinsic,
+	GeIntrinsic,
 
 	// Bitwise
-	NotOpCode,
-	AndOpCode,
-	OrOpCode,
-	XorOpCode,
-	ShlOpCode,
-	ShrOpCode,
+	NotIntrinsic,
+	AndIntrinsic,
+	OrIntrinsic,
+	XorIntrinsic,
+	ShlIntrinsic,
+	ShrIntrinsic,
 
 	// Intrinsic functions
-	SqrtOpCode
+	SqrtIntrinsic
 };
 
 // An internal operation (e.g., add). 
 // Used as an alternative to FnDcl->value = Block within a function declaration.
-typedef struct OpCodeAstNode {
+typedef struct IntrinsicAstNode {
 	BasicAstHdr;
-	int16_t opcode;
-} OpCodeAstNode;
+	int16_t intrinsicFn;
+} IntrinsicAstNode;
 
 BlockAstNode *newBlockNode();
 void blockPrint(BlockAstNode *blk);
@@ -85,7 +85,7 @@ void whilePass(PassState *pstate, WhileAstNode *wnode);
 
 void breakPass(PassState *pstate, AstNode *node);
 
-OpCodeAstNode *newOpCodeNode(int16_t opcode);
+IntrinsicAstNode *newIntrinsicNode(int16_t intrinsicFn);
 
 ReturnAstNode *newReturnNode();
 void returnPrint(ReturnAstNode *node);

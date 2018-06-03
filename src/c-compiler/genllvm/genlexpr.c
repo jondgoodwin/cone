@@ -117,13 +117,13 @@ LLVMTypeRef genlType(GenState *gen, AstNode *typ) {
 			for (nodesFor(tnode->methods, cnt, nodesp)) {
 				NameDclAstNode *fnnode = (NameDclAstNode*)(*nodesp);
 				assert(fnnode->asttype == VarNameDclNode);
-				if (fnnode->value->asttype != OpCodeNode)
+				if (fnnode->value->asttype != IntrinsicNode)
 					genlGloVarName(gen, fnnode);
 			}
 			// Now generate the code for each method
 			for (nodesFor(tnode->methods, cnt, nodesp)) {
 				NameDclAstNode *fnnode = (NameDclAstNode*)(*nodesp);
-				if (fnnode->value->asttype != OpCodeNode)
+				if (fnnode->value->asttype != IntrinsicNode)
 					genlFn(gen, fnnode);
 			}
 		}
@@ -218,7 +218,7 @@ LLVMValueRef genlGetIntrinsicFn(GenState *gen, char *fnname, NameUseAstNode *fnu
 	return fn;
 }
 
-// Generate a function call, including special op codes
+// Generate a function call, including special intrinsics
 LLVMValueRef genlFnCall(GenState *gen, FnCallAstNode *fncall) {
 
 	// Get Valuerefs for all the parameters to pass to the function
@@ -234,91 +234,91 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallAstNode *fncall) {
 		return LLVMBuildCall(gen->builder, genlExpr(gen, ((DerefAstNode*)fncall->fn)->exp), fnargs, fncall->parms->used, "");
 	}
 
-	// A function call may be to an internal op code, or to program-defined code
+	// A function call may be to an intrinsic, or to program-defined code
 	NameUseAstNode *fnuse = (NameUseAstNode *)fncall->fn;
 	switch (fnuse->dclnode->value? fnuse->dclnode->value->asttype : BlockNode) {
 	case BlockNode: {
 		return LLVMBuildCall(gen->builder, fnuse->dclnode->llvmvar, fnargs, fncall->parms->used, "");
 	}
-	case OpCodeNode: {
+	case IntrinsicNode: {
 		NbrAstNode *nbrtype = (NbrAstNode *)typeGetVtype(*nodesNodes(fncall->parms));
 		int16_t nbrasttype = nbrtype->asttype;
 
-		// Floating point op codes
+		// Floating point intrinsics
 		if (nbrasttype == FloatNbrType) {
-			switch (((OpCodeAstNode *)fnuse->dclnode->value)->opcode) {
-			case NegOpCode: return LLVMBuildFNeg(gen->builder, fnargs[0], "");
-			case AddOpCode: return LLVMBuildFAdd(gen->builder, fnargs[0], fnargs[1], "");
-			case SubOpCode: return LLVMBuildFSub(gen->builder, fnargs[0], fnargs[1], "");
-			case MulOpCode: return LLVMBuildFMul(gen->builder, fnargs[0], fnargs[1], "");
-			case DivOpCode: return LLVMBuildFDiv(gen->builder, fnargs[0], fnargs[1], "");
-			case RemOpCode: return LLVMBuildFRem(gen->builder, fnargs[0], fnargs[1], "");
+			switch (((IntrinsicAstNode *)fnuse->dclnode->value)->intrinsicFn) {
+			case NegIntrinsic: return LLVMBuildFNeg(gen->builder, fnargs[0], "");
+			case AddIntrinsic: return LLVMBuildFAdd(gen->builder, fnargs[0], fnargs[1], "");
+			case SubIntrinsic: return LLVMBuildFSub(gen->builder, fnargs[0], fnargs[1], "");
+			case MulIntrinsic: return LLVMBuildFMul(gen->builder, fnargs[0], fnargs[1], "");
+			case DivIntrinsic: return LLVMBuildFDiv(gen->builder, fnargs[0], fnargs[1], "");
+			case RemIntrinsic: return LLVMBuildFRem(gen->builder, fnargs[0], fnargs[1], "");
 			// Comparison
-			case EqOpCode: return LLVMBuildFCmp(gen->builder, LLVMRealOEQ, fnargs[0], fnargs[1], "");
-			case NeOpCode: return LLVMBuildFCmp(gen->builder, LLVMRealONE, fnargs[0], fnargs[1], "");
-			case LtOpCode: return LLVMBuildFCmp(gen->builder, LLVMRealOLT, fnargs[0], fnargs[1], "");
-			case LeOpCode: return LLVMBuildFCmp(gen->builder, LLVMRealOLE, fnargs[0], fnargs[1], "");
-			case GtOpCode: return LLVMBuildFCmp(gen->builder, LLVMRealOGT, fnargs[0], fnargs[1], "");
-			case GeOpCode: return LLVMBuildFCmp(gen->builder, LLVMRealOGE, fnargs[0], fnargs[1], "");
+			case EqIntrinsic: return LLVMBuildFCmp(gen->builder, LLVMRealOEQ, fnargs[0], fnargs[1], "");
+			case NeIntrinsic: return LLVMBuildFCmp(gen->builder, LLVMRealONE, fnargs[0], fnargs[1], "");
+			case LtIntrinsic: return LLVMBuildFCmp(gen->builder, LLVMRealOLT, fnargs[0], fnargs[1], "");
+			case LeIntrinsic: return LLVMBuildFCmp(gen->builder, LLVMRealOLE, fnargs[0], fnargs[1], "");
+			case GtIntrinsic: return LLVMBuildFCmp(gen->builder, LLVMRealOGT, fnargs[0], fnargs[1], "");
+			case GeIntrinsic: return LLVMBuildFCmp(gen->builder, LLVMRealOGE, fnargs[0], fnargs[1], "");
 			// Intrinsic functions
-			case SqrtOpCode: 
+			case SqrtIntrinsic: 
 			{
 				char *fnname = nbrtype->bits == 32 ? "llvm.sqrt.f32" : "llvm.sqrt.f64";
 				return LLVMBuildCall(gen->builder, genlGetIntrinsicFn(gen, fnname, fnuse), fnargs, fncall->parms->used, "");
 			}
 			}
 		}
-		// Integer op codes
+		// Integer intrinsics
 		else {
-			switch (((OpCodeAstNode *)fnuse->dclnode->value)->opcode) {
+			switch (((IntrinsicAstNode *)fnuse->dclnode->value)->intrinsicFn) {
 			
 			// Arithmetic
-			case NegOpCode: return LLVMBuildNeg(gen->builder, fnargs[0], "");
-			case AddOpCode: return LLVMBuildAdd(gen->builder, fnargs[0], fnargs[1], "");
-			case SubOpCode: return LLVMBuildSub(gen->builder, fnargs[0], fnargs[1], "");
-			case MulOpCode: return LLVMBuildMul(gen->builder, fnargs[0], fnargs[1], "");
-			case DivOpCode:
+			case NegIntrinsic: return LLVMBuildNeg(gen->builder, fnargs[0], "");
+			case AddIntrinsic: return LLVMBuildAdd(gen->builder, fnargs[0], fnargs[1], "");
+			case SubIntrinsic: return LLVMBuildSub(gen->builder, fnargs[0], fnargs[1], "");
+			case MulIntrinsic: return LLVMBuildMul(gen->builder, fnargs[0], fnargs[1], "");
+			case DivIntrinsic:
 				if (nbrasttype == IntNbrType)
 					return LLVMBuildSDiv(gen->builder, fnargs[0], fnargs[1], "");
 				else
 					return LLVMBuildUDiv(gen->builder, fnargs[0], fnargs[1], "");
-			case RemOpCode:
+			case RemIntrinsic:
 				if (nbrasttype == IntNbrType)
 					return LLVMBuildSRem(gen->builder, fnargs[0], fnargs[1], "");
 				else
 					return LLVMBuildURem(gen->builder, fnargs[0], fnargs[1], "");
 			
 			// Comparison
-			case EqOpCode: return LLVMBuildICmp(gen->builder, LLVMIntEQ, fnargs[0], fnargs[1], "");
-			case NeOpCode: return LLVMBuildICmp(gen->builder, LLVMIntNE, fnargs[0], fnargs[1], "");
-			case LtOpCode:
+			case EqIntrinsic: return LLVMBuildICmp(gen->builder, LLVMIntEQ, fnargs[0], fnargs[1], "");
+			case NeIntrinsic: return LLVMBuildICmp(gen->builder, LLVMIntNE, fnargs[0], fnargs[1], "");
+			case LtIntrinsic:
 				if (nbrasttype == IntNbrType)
 					return LLVMBuildICmp(gen->builder, LLVMIntSLT, fnargs[0], fnargs[1], "");
 				else
 					return LLVMBuildICmp(gen->builder, LLVMIntULT, fnargs[0], fnargs[1], "");
-			case LeOpCode:
+			case LeIntrinsic:
 				if (nbrasttype == IntNbrType)
 					return LLVMBuildICmp(gen->builder, LLVMIntSLE, fnargs[0], fnargs[1], "");
 				else
 					return LLVMBuildICmp(gen->builder, LLVMIntULE, fnargs[0], fnargs[1], "");
-			case GtOpCode:
+			case GtIntrinsic:
 				if (nbrasttype == IntNbrType)
 					return LLVMBuildICmp(gen->builder, LLVMIntSGT, fnargs[0], fnargs[1], "");
 				else
 					return LLVMBuildICmp(gen->builder, LLVMIntUGT, fnargs[0], fnargs[1], "");
-			case GeOpCode:
+			case GeIntrinsic:
 				if (nbrasttype == IntNbrType)
 					return LLVMBuildICmp(gen->builder, LLVMIntSGE, fnargs[0], fnargs[1], "");
 				else
 					return LLVMBuildICmp(gen->builder, LLVMIntUGE, fnargs[0], fnargs[1], "");
 
 			// Bitwise
-			case NotOpCode: return LLVMBuildNot(gen->builder, fnargs[0], "");
-			case AndOpCode: return LLVMBuildAnd(gen->builder, fnargs[0], fnargs[1], "");
-			case OrOpCode: return LLVMBuildOr(gen->builder, fnargs[0], fnargs[1], "");
-			case XorOpCode: return LLVMBuildXor(gen->builder, fnargs[0], fnargs[1], "");
-			case ShlOpCode: return LLVMBuildShl(gen->builder, fnargs[0], fnargs[1], "");
-			case ShrOpCode:
+			case NotIntrinsic: return LLVMBuildNot(gen->builder, fnargs[0], "");
+			case AndIntrinsic: return LLVMBuildAnd(gen->builder, fnargs[0], fnargs[1], "");
+			case OrIntrinsic: return LLVMBuildOr(gen->builder, fnargs[0], fnargs[1], "");
+			case XorIntrinsic: return LLVMBuildXor(gen->builder, fnargs[0], fnargs[1], "");
+			case ShlIntrinsic: return LLVMBuildShl(gen->builder, fnargs[0], fnargs[1], "");
+			case ShrIntrinsic:
 				if (nbrasttype == IntNbrType)
 					return LLVMBuildAShr(gen->builder, fnargs[0], fnargs[1], "");
 				else
