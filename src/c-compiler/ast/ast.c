@@ -88,8 +88,8 @@ void astPrintNode(AstNode *node) {
 		castPrint((CastAstNode *)node); break;
 	case DerefNode:
 		derefPrint((DerefAstNode *)node); break;
-	case ElementNode:
-		elementPrint((ElementAstNode *)node); break;
+	case DotOpNode:
+		dotOpPrint((DotOpAstNode *)node); break;
 	case AddrNode:
 		addrPrint((AddrAstNode *)node); break;
 	case NotLogicNode: case OrLogicNode: case AndLogicNode:
@@ -161,8 +161,8 @@ void astPass(PassState *pstate, AstNode *node) {
 		castPass(pstate, (CastAstNode *)node); break;
 	case DerefNode:
 		derefPass(pstate, (DerefAstNode *)node); break;
-	case ElementNode:
-		elementPass(pstate, (ElementAstNode *)node); break;
+	case DotOpNode:
+		dotOpPass(pstate, (DotOpAstNode *)node); break;
 	case AddrNode:
 		addrPass(pstate, (AddrAstNode *)node); break;
 	case NotLogicNode:

@@ -78,7 +78,7 @@ enum AstType {
 	CastNode,		// Cast exp to another type
 	AddrNode,		// & (address of) operator
 	DerefNode,		// * (pointed at) operator
-	ElementNode,	// owner.field or owner[index]
+	DotOpNode,	// owner.field or owner[index]
 	NotLogicNode,	// ! / not
 	OrLogicNode,	// || / or
 	AndLogicNode,	// && / and

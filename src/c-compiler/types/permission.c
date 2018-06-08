@@ -57,9 +57,9 @@ uint16_t permGetFlags(AstNode *node) {
 
 // Is Lval mutable
 int permIsMutable(AstNode *lval) {
-	if (lval->asttype == ElementNode) {
-		ElementAstNode *elem = (ElementAstNode *)lval;
-		return MayWrite & permGetFlags(elem->owner) & permGetFlags(elem->element);
+	if (lval->asttype == DotOpNode) {
+		DotOpAstNode *elem = (DotOpAstNode *)lval;
+		return MayWrite & permGetFlags(elem->instance) & permGetFlags(elem->field);
 	}
 	else
 		return MayWrite & permGetFlags(lval);

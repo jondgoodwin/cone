@@ -446,11 +446,11 @@ LLVMValueRef genlLval(GenState *gen, AstNode *lval) {
 		return ((VarDclAstNode*)((NameUseAstNode *)lval)->dclnode)->llvmvar;
 	case DerefNode:
 		return genlExpr(gen, ((DerefAstNode *)lval)->exp);
-	case ElementNode:
+	case DotOpNode:
 	{
-		ElementAstNode *elem = (ElementAstNode *)lval;
-		VarDclAstNode *flddcl = (VarDclAstNode*)((NameUseAstNode*)elem->element)->dclnode;
-		return LLVMBuildStructGEP(gen->builder, genlLval(gen, elem->owner), flddcl->index, &flddcl->namesym->namestr);
+		DotOpAstNode *elem = (DotOpAstNode *)lval;
+		VarDclAstNode *flddcl = (VarDclAstNode*)((NameUseAstNode*)elem->field)->dclnode;
+		return LLVMBuildStructGEP(gen->builder, genlLval(gen, elem->instance), flddcl->index, &flddcl->namesym->namestr);
 	}
 	}
 	return NULL;
@@ -505,11 +505,11 @@ LLVMValueRef genlExpr(GenState *gen, AstNode *termnode) {
 	}
 	case DerefNode:
 		return LLVMBuildLoad(gen->builder, genlExpr(gen, ((DerefAstNode*)termnode)->exp), "deref");
-	case ElementNode:
+	case DotOpNode:
 	{
-		ElementAstNode *elem = (ElementAstNode*)termnode;
-		VarDclAstNode *flddcl = (VarDclAstNode*)((NameUseAstNode*)elem->element)->dclnode;
-		return LLVMBuildExtractValue(gen->builder, genlExpr(gen, elem->owner), flddcl->index, &flddcl->namesym->namestr);
+		DotOpAstNode *elem = (DotOpAstNode*)termnode;
+		VarDclAstNode *flddcl = (VarDclAstNode*)((NameUseAstNode*)elem->field)->dclnode;
+		return LLVMBuildExtractValue(gen->builder, genlExpr(gen, elem->instance), flddcl->index, &flddcl->namesym->namestr);
 	}
 	case OrLogicNode: case AndLogicNode:
 		return genlLogic(gen, (LogicAstNode*)termnode);

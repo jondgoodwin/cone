@@ -163,9 +163,9 @@ AstNode *parsePostfix(ParseState *parse) {
 				node = (AstNode *)fncall;
 			}
 			else {
-				ElementAstNode *elem = newElementAstNode();
-				elem->owner = node;
-				elem->element = method;
+				DotOpAstNode *elem = newDotOpAstNode();
+				elem->instance = node;
+				elem->field = method;
 				node = (AstNode *)elem;
 			}
 		}

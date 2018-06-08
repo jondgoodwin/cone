@@ -41,7 +41,7 @@ int isLval(AstNode *node) {
 	switch (node->asttype) {
 	case NameUseNode:
 	case DerefNode:
-	case ElementNode:
+	case DotOpNode:
 		return 1;
 	// future:  [] indexing and .member
 	default: break;

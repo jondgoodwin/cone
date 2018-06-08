@@ -96,29 +96,29 @@ void derefAuto(AstNode **node) {
 }
 
 // Create a new element node
-ElementAstNode *newElementAstNode() {
-	ElementAstNode *node;
-	newAstNode(node, ElementAstNode, ElementNode);
+DotOpAstNode *newDotOpAstNode() {
+	DotOpAstNode *node;
+	newAstNode(node, DotOpAstNode, DotOpNode);
 	node->vtype = voidType;
 	return node;
 }
 
 // Serialize element
-void elementPrint(ElementAstNode *node) {
-	astPrintNode(node->owner);
+void dotOpPrint(DotOpAstNode *node) {
+	astPrintNode(node->instance);
 	astFprint(".");
-	astPrintNode(node->element);
+	astPrintNode(node->field);
 }
 
 // Analyze element node
-void elementPass(PassState *pstate, ElementAstNode *node) {
-	astPass(pstate, node->owner);
+void dotOpPass(PassState *pstate, DotOpAstNode *node) {
+	astPass(pstate, node->instance);
 	if (pstate->pass == TypeCheck) {
-		if (node->element->asttype == MemberUseNode) {
-			derefAuto(&node->owner);
-			AstNode *ownvtype = typeGetVtype(node->owner);
+		if (node->field->asttype == MemberUseNode) {
+			derefAuto(&node->instance);
+			AstNode *ownvtype = typeGetVtype(node->instance);
 			if (ownvtype->asttype == StructType) {
-				NameUseAstNode *fldname = (NameUseAstNode*)node->element;
+				NameUseAstNode *fldname = (NameUseAstNode*)node->field;
 				Name *fldsym = fldname->namesym;
 				SymNode *field = inodesFind(((StructAstNode *)ownvtype)->fields, fldsym);
 				if (field) {
@@ -130,7 +130,7 @@ void elementPass(PassState *pstate, ElementAstNode *node) {
 					errorMsgNode((AstNode*)node, ErrorNoMeth, "The field `%s` is not defined by the object's type.", &fldsym->namestr);
 			}
 			else
-				errorMsgNode(node->element, ErrorNoFlds, "Fields not supported by expression's type");
+				errorMsgNode(node->field, ErrorNoFlds, "Fields not supported by expression's type");
 		}
 	}
 }
