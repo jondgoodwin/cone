@@ -19,7 +19,7 @@ ModuleAstNode *newModuleNode() {
 	ModuleAstNode *mod;
 	newAstNode(mod, ModuleAstNode, ModuleNode);
 	mod->namesym = NULL;
-	mod->hooklinks = NULL;
+	mod->namespace.nameslink = NULL;
 	mod->hooklink = NULL;
 	mod->prevname = NULL;
 	mod->owner = NULL;
@@ -55,7 +55,7 @@ void modAddNamedNode(ModuleAstNode *mod, NamedAstNode *node, Name *alias) {
 	}
 	else {
 		inodesAdd(&mod->namednodes, name, (AstNode *)node);
-		nameHook((OwnerAstNode *)node->owner, node, name);
+		nameHook(&((ModuleAstNode *)node->owner)->namespace, node, name);
 	}
 
 }
@@ -64,9 +64,9 @@ void modAddNamedNode(ModuleAstNode *mod, NamedAstNode *node, Name *alias) {
 // (works equally well from parent to child or child to parent
 void modHook(ModuleAstNode *oldmod, ModuleAstNode *newmod) {
 	if (oldmod)
-		nameUnhookAll((OwnerAstNode *)oldmod);
+		nameUnhookAll(&oldmod->namespace);
 	if (newmod)
-		nameHookAll((OwnerAstNode*)newmod, newmod->namednodes);
+		nameHookAll(&newmod->namespace, newmod->namednodes);
 }
 
 // Check the module's AST

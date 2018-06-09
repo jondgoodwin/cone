@@ -15,7 +15,7 @@
 BlockAstNode *newBlockNode() {
 	BlockAstNode *blk;
 	newAstNode(blk, BlockAstNode, BlockNode);
-	blk->hooklinks = NULL;
+	blk->namespace.nameslink = NULL;
 	blk->vtype = voidType;
 	blk->stmts = newNodes(8);
 	return blk;
@@ -65,7 +65,7 @@ void blockPass(PassState *pstate, BlockAstNode *blk) {
 	switch (pstate->pass) {
 	case NameResolution:
 		// Unhook local variables from global name table that hooked themselves earlier
-		nameUnhookAll((OwnerAstNode*)blk); break;
+		nameUnhookAll(&blk->namespace); break;
 
 	case TypeCheck:
 		// When coerced by typeCoerces, vtype of the block will be specified

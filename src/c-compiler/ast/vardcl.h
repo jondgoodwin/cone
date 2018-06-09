@@ -13,6 +13,7 @@ typedef struct VarDclAstNode {
 	PermAstNode *perm;			// Permission type (often mut or imm)
 	AstNode *value;				// Starting value/declaration (NULL if not initialized)
 	LLVMValueRef llvmvar;		// LLVM's handle for a declared variable (for generation)
+	Namespace2 parmnamespace;	// EEK!
 	uint16_t scope;				// 0=global
 	uint16_t index;				// index within this scope (e.g., parameter number)
 } VarDclAstNode;

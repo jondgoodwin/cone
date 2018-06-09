@@ -144,24 +144,24 @@ void nameInit() {
 }
 
 // Hook a node into global name table, such that its owner can withdraw it later
-void nameHook(OwnerAstNode *owner, NamedAstNode *namenode, Name *name) {
-	namenode->hooklink = owner->hooklinks; // Add to owner's hook list
-	owner->hooklinks = (NamedAstNode*)namenode;
+void nameHook(Namespace2 *namespace, NamedAstNode *namenode, Name *name) {
+	namenode->hooklink = namespace->nameslink; // Add to owner's hook list
+	namespace->nameslink = (NamedAstNode*)namenode;
 	namenode->prevname = name->node; // Latent unhooker
 	name->node = (NamedAstNode*)namenode;
 }
 
 // Hook all names in inodes into global name table
-void nameHookAll(OwnerAstNode *owner, Inodes *inodes) {
+void nameHookAll(Namespace2 *namespace, Inodes *inodes) {
 	SymNode *nodesp;
 	uint32_t cnt;
 	for (inodesFor(inodes, cnt, nodesp))
-		nameHook(owner, nodesp->node, nodesp->name);
+		nameHook(namespace, nodesp->node, nodesp->name);
 }
 
 // Unhook all of an owner's names from global name table (LIFO)
-void nameUnhookAll(OwnerAstNode *owner) {
-	NamedAstNode *node = owner->hooklinks;
+void nameUnhookAll(Namespace2 *namespace) {
+	NamedAstNode *node = namespace->nameslink;
 	while (node) {
 		NamedAstNode *next = node->hooklink;
 		node->namesym->node = node->prevname;
@@ -169,5 +169,5 @@ void nameUnhookAll(OwnerAstNode *owner) {
 		node->hooklink = NULL;
 		node = next;
 	}
-	owner->hooklinks = NULL;
+	namespace->nameslink = NULL;
 }

@@ -12,6 +12,7 @@
 // Module
 typedef struct ModuleAstNode {
 	NamedAstHdr;
+	Namespace2 namespace;
 	Nodes *nodes;			// Global nodes defined as part of the module
 	Inodes *namednodes;		// Named global nodes whose names are visible to module (include 'use')
 } ModuleAstNode;

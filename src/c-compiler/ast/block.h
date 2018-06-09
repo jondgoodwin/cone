@@ -10,7 +10,8 @@
 
 // Block
 typedef struct BlockAstNode {
-	OwnerAstHdr;
+	TypedAstHdr;
+	Namespace2 namespace;
 	Nodes *stmts;
 	uint16_t scope;
 } BlockAstNode;

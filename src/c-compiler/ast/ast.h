@@ -149,16 +149,10 @@ typedef struct TypedAstNode {
 	TypedAstHdr;
 } TypedAstNode;
 
-// Namespace Owner Node header, for named declarations and blocks
-// - hooklinks starts linked list of all names in this name's namespace
-#define OwnerAstHdr \
-	TypedAstHdr; \
-	struct NamedAstNode *hooklinks
-
-// Castable structure for all owner nodes
-typedef struct OwnerAstNode {
-	OwnerAstHdr;
-} OwnerAstNode;
+// - nameslink starts linked list of all named nodes in this namespace
+typedef struct Namespace2 {
+	struct NamedAstNode *nameslink;
+} Namespace2;
 
 #define isNamedNode(node) ((node)->asttype == ModuleNode \
   || (node)->asttype == VtypeNameDclNode \
@@ -173,7 +167,7 @@ typedef struct OwnerAstNode {
 // - hooklink links this name as part of owner's hooklinks
 // - prevname points to named node this overrides in global name table
 #define NamedAstHdr \
-	OwnerAstHdr; \
+	TypedAstHdr; \
 	Name *namesym; \
 	struct NamedAstNode *owner; \
 	struct NamedAstNode *hooklink; \
