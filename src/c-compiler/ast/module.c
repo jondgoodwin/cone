@@ -64,9 +64,9 @@ void modAddNamedNode(ModuleAstNode *mod, NamedAstNode *node, Name *alias) {
 // (works equally well from parent to child or child to parent
 void modHook(ModuleAstNode *oldmod, ModuleAstNode *newmod) {
 	if (oldmod)
-		nameUnhook((OwnerAstNode *)oldmod);
+		nameUnhookAll((OwnerAstNode *)oldmod);
 	if (newmod)
-		inodesHook((OwnerAstNode*)newmod, newmod->namednodes);
+		nameHookAll((OwnerAstNode*)newmod, newmod->namednodes);
 }
 
 // Check the module's AST

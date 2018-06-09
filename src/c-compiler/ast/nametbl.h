@@ -39,6 +39,7 @@ size_t nameUnused();
 void nameInit();
 
 void nameHook(OwnerAstNode *owner, NamedAstNode *name, Name *namesym);
-void nameUnhook(OwnerAstNode *owner);
+void nameHookAll(OwnerAstNode *owner, Inodes *inodes);
+void nameUnhookAll(OwnerAstNode *owner);
 
 #endif

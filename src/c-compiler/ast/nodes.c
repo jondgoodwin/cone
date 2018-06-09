@@ -81,11 +81,3 @@ SymNode *inodesFind(Inodes *inodes, Name *name) {
 	}
 	return NULL;
 }
-
-// Hook names in inodes into global name table
-void inodesHook(OwnerAstNode *owner, Inodes *inodes) {
-	SymNode *nodesp;
-	uint32_t cnt;
-	for (inodesFor(inodes, cnt, nodesp))
-		nameHook(owner, nodesp->node, nodesp->name);
-}

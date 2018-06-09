@@ -70,9 +70,9 @@ void varDclFnNameResolve(PassState *pstate, VarDclAstNode *name) {
 	int16_t oldscope = pstate->scope;
 	pstate->scope = 1;
 	FnSigAstNode *fnsig = (FnSigAstNode*)name->vtype;
-	inodesHook((OwnerAstNode*)name, fnsig->parms);		// Load into global name table
+	nameHookAll((OwnerAstNode*)name, fnsig->parms);		// Load into global name table
 	astPass(pstate, name->value);
-	nameUnhook((OwnerAstNode*)name);		// Unhook from name table
+	nameUnhookAll((OwnerAstNode*)name);		// Unhook from name table
 	pstate->scope = oldscope;
 }
 
@@ -87,6 +87,7 @@ void varDclNameResolve(PassState *pstate, VarDclAstNode *name) {
 		}
 		else {
 			name->scope = pstate->scope;
+			// Add name to global name table (containing block will unhook it later)
 			nameHook((OwnerAstNode *)pstate->blk, (NamedAstNode*)name, name->namesym);
 		}
 	}
