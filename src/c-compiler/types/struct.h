@@ -8,7 +8,7 @@
 #ifndef struct_h
 #define struct_h
 
-// For pointers
+// 'struct' type
 typedef struct StructAstNode {
 	TypeAstHdr;
 	Inodes *fields;

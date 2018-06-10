@@ -69,6 +69,7 @@ enum AstType {
 	// Expression nodes (having value type - or sometimes nullType)
 	VarNameDclNode = (ExpGroup<<8),
 	MemberUseNode,	// Member of a type's namespace (field/method)
+	FnTupleNode,    // List of namespace's methods with same name
 	ULitNode,		// Integer literal
 	FLitNode,		// Float literal
 	SLitNode,		// String literal
@@ -78,7 +79,7 @@ enum AstType {
 	CastNode,		// Cast exp to another type
 	AddrNode,		// & (address of) operator
 	DerefNode,		// * (pointed at) operator
-	DotOpNode,	// owner.field or owner[index]
+	DotOpNode,	    // owner.field
 	NotLogicNode,	// ! / not
 	OrLogicNode,	// || / or
 	AndLogicNode,	// && / and
@@ -206,6 +207,7 @@ typedef struct TypeAstNode {
 #include "../ast/expr.h"
 #include "../ast/copyexpr.h"
 #include "../ast/vardcl.h"
+#include "../ast/fntuple.h"
 #include "../ast/nameuse.h"
 #include "../ast/literal.h"
 
