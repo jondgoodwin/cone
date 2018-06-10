@@ -29,8 +29,8 @@ void structPass(PassState *pstate, FieldsAstNode *node) {
 	SymNode *inodesp;
 	AstNode **nodesp;
 	uint32_t cnt;
-	for (inodesFor(node->fields, cnt, inodesp))
-		astPass(pstate, (AstNode*)inodesp->node);
+	for (nodesFor(node->fields, cnt, nodesp))
+		astPass(pstate, *nodesp);
 	for (nodesFor(node->methods, cnt, nodesp))
 		astPass(pstate, *nodesp);
 }

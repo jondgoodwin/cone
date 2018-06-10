@@ -75,11 +75,11 @@ LLVMTypeRef _genlType(GenState *gen, char *name, AstNode *typ) {
 		FieldsAstNode *strnode = (FieldsAstNode*)typ;
 		LLVMTypeRef *field_types = (LLVMTypeRef *)memAllocBlk(strnode->fields->used * sizeof(LLVMTypeRef));
 		LLVMTypeRef *field = field_types;
-		SymNode *nodesp;
+		AstNode **nodesp;
 		uint32_t cnt;
-		for (inodesFor(strnode->fields, cnt, nodesp)) {
-			assert(nodesp->node->asttype == VarNameDclNode);
-			*field++ = genlType(gen, ((TypedAstNode *)nodesp->node)->vtype);
+		for (nodesFor(strnode->fields, cnt, nodesp)) {
+			assert((*nodesp)->asttype == VarNameDclNode);
+			*field++ = genlType(gen, ((TypedAstNode *)*nodesp)->vtype);
 		}
 		LLVMTypeRef structype = LLVMStructCreateNamed(gen->context, name);
 		LLVMStructSetBody(structype, field_types, strnode->fields->used, 0);
