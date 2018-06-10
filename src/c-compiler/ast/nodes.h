@@ -27,6 +27,7 @@ typedef struct Nodes {
 // Helper Functions
 Nodes *newNodes(int size);
 void nodesAdd(Nodes **nodesp, AstNode *node);
+NamedAstNode *nodesFind(Nodes *nodes, Name *name);
 
 #define nodesNodes(nodes) ((AstNode**)((nodes)+1))
 #define nodesFor(nodes, cnt, nodesp) nodesp = (AstNode**)((nodes)+1), cnt = (nodes)->used; cnt; cnt--, nodesp++

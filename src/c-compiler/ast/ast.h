@@ -180,7 +180,7 @@ typedef struct NamedAstNode {
 } NamedAstNode;
 
 // Type Ast Node header for all type structures
-// - mbrs is the list of a type instance's methods and fields
+// - methods is the list of a type instance's methods
 // - subtypes is the list of traits, etc. the type implements
 #define TypeAstHdr \
 	TypedAstHdr; \

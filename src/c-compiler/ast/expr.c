@@ -120,10 +120,10 @@ void dotOpPass(PassState *pstate, DotOpAstNode *node) {
 			if (ownvtype->asttype == StructType) {
 				NameUseAstNode *fldname = (NameUseAstNode*)node->field;
 				Name *fldsym = fldname->namesym;
-				SymNode *field = inodesFind(((StructAstNode *)ownvtype)->fields, fldsym);
-				if (field) {
+				NamedAstNode *fieldnode = nodesFind(((FieldsAstNode *)ownvtype)->fields, fldsym);
+				if (fieldnode) {
 					fldname->asttype = NameUseNode;
-					fldname->dclnode = (NamedAstNode*)field->node;
+					fldname->dclnode = fieldnode;
 					node->vtype = fldname->vtype = fldname->dclnode->vtype;
 				}
 				else

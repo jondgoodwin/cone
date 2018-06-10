@@ -108,7 +108,7 @@ void astPrintNode(AstNode *node) {
 		ptrTypePrint((PtrAstNode *)node); break;
 	case StructType:
 	case AllocType:
-		structPrint((StructAstNode *)node); break;
+		structPrint((FieldsAstNode *)node); break;
 	case ArrayType:
 		arrayPrint((ArrayAstNode *)node); break;
 	case IntNbrType: case UintNbrType: case FloatNbrType:
@@ -179,7 +179,7 @@ void astPass(PassState *pstate, AstNode *node) {
 		ptrTypePass(pstate, (PtrAstNode *)node); break;
 	case StructType:
 	case AllocType:
-		structPass(pstate, (StructAstNode *)node); break;
+		structPass(pstate, (FieldsAstNode *)node); break;
 	case ArrayType:
 		arrayPass(pstate, (ArrayAstNode *)node); break;
 

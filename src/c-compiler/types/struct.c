@@ -11,21 +11,21 @@
 #include "../ast/nametbl.h"
 
 // Create a new struct type whose info will be filled in afterwards
-StructAstNode *newStructNode() {
-	StructAstNode *snode;
-	newAstNode(snode, StructAstNode, StructType);
+FieldsAstNode *newStructNode() {
+	FieldsAstNode *snode;
+	newAstNode(snode, FieldsAstNode, StructType);
 	snode->methods = newNodes(8);
-	snode->fields = newInodes(8);
+	snode->fields = newNodes(8);
 	return snode;
 }
 
 // Serialize a struct type
-void structPrint(StructAstNode *node) {
+void structPrint(FieldsAstNode *node) {
 	astFprint(node->asttype == StructType? "struct {}" : "alloc {}");
 }
 
 // Semantically analyze a struct type
-void structPass(PassState *pstate, StructAstNode *node) {
+void structPass(PassState *pstate, FieldsAstNode *node) {
 	SymNode *inodesp;
 	AstNode **nodesp;
 	uint32_t cnt;
@@ -36,12 +36,12 @@ void structPass(PassState *pstate, StructAstNode *node) {
 }
 
 // Compare two struct signatures to see if they are equivalent
-int structEqual(StructAstNode *node1, StructAstNode *node2) {
+int structEqual(FieldsAstNode *node1, FieldsAstNode *node2) {
 	// inodes must match exactly in order
 	return 1;
 }
 
 // Will from struct coerce to a to struct (we know they are not the same)
-int structCoerces(StructAstNode *to, StructAstNode *from) {
+int structCoerces(FieldsAstNode *to, FieldsAstNode *from) {
 	return 1;
 }

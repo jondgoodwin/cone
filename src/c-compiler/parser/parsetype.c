@@ -122,7 +122,7 @@ AstNode *parsePtrType(ParseState *parse) {
 AstNode *parseStruct(ParseState *parse) {
 	NamedAstNode *svowner = parse->owner;
 	TypeDclAstNode *strdclnode;
-	StructAstNode *strnode;
+	FieldsAstNode *strnode;
 	int16_t fieldnbr = 0;
 
 	strnode = newStructNode();
@@ -156,7 +156,7 @@ AstNode *parseStruct(ParseState *parse) {
 				VarDclAstNode *field = parseVarDcl(parse, mutPerm, ParseMayImpl | ParseMaySig);
 				field->scope = 1;
 				field->index = fieldnbr++;
-				inodesAdd(&strnode->fields, field->namesym, (AstNode*)field);
+				nodesAdd(&strnode->fields, (AstNode*)field);
 				if (!lexIsToken(SemiToken))
 					break;
 				lexNextToken();

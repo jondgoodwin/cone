@@ -41,6 +41,20 @@ void nodesAdd(Nodes **nodesp, AstNode *node) {
 	nodes->used++;
 }
 
+// Find the desired named node in an nodes list.
+// Return the node, if found or NULL if not found
+NamedAstNode *nodesFind(Nodes *nodes, Name *name) {
+	AstNode **nodesp;
+	uint32_t cnt;
+	for (nodesFor(nodes, cnt, nodesp)) {
+		if (isNamedNode(*nodesp)) {
+			if (((NamedAstNode*)*nodesp)->namesym == name)
+				return (NamedAstNode*)*nodesp;
+		}
+	}
+	return NULL;
+}
+
 // Allocate and initialize a new Inodes block
 Inodes *newInodes(int size) {
 	Inodes *nodes;

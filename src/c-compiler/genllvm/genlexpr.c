@@ -72,7 +72,7 @@ LLVMTypeRef _genlType(GenState *gen, char *name, AstNode *typ) {
 	case AllocType:
 	{
 		// Build typeref from struct
-		StructAstNode *strnode = (StructAstNode*)typ;
+		FieldsAstNode *strnode = (FieldsAstNode*)typ;
 		LLVMTypeRef *field_types = (LLVMTypeRef *)memAllocBlk(strnode->fields->used * sizeof(LLVMTypeRef));
 		LLVMTypeRef *field = field_types;
 		SymNode *nodesp;
