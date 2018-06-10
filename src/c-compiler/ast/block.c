@@ -65,7 +65,7 @@ void blockPass(PassState *pstate, BlockAstNode *blk) {
 	switch (pstate->pass) {
 	case NameResolution:
 		// Unhook local variables from global name table that hooked themselves earlier
-		nameUnhookAll(&blk->namespace); break;
+		nametblUnhookAll(&blk->namespace); break;
 
 	case TypeCheck:
 		// When coerced by typeCoerces, vtype of the block will be specified

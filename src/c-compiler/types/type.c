@@ -202,7 +202,7 @@ TypeDclAstNode *newTypeDclNode(Name *namesym, uint16_t asttype, AstNode *type, A
 // This gives a program's later NameUse nodes something to point to
 void newTypeDclNodeStr(char *namestr, uint16_t asttype, AstNode *type) {
     Name *sym;
-    sym = nameFind(namestr, strlen(namestr));
+    sym = nametblFind(namestr, strlen(namestr));
     sym->node = (NamedAstNode*)newTypeDclNode(sym, asttype, NULL, type);
 }
 

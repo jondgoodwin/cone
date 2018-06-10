@@ -19,7 +19,7 @@ void allocAllocate(AddrAstNode *anode, PtrAstNode *ptype) {
 	BlockAstNode *blknode = newBlockNode();
 
 	// Find 'allocate' method in alloc
-	Name *symalloc = nameFind("allocate", 8);
+	Name *symalloc = nametblFind("allocate", 8);
 	TypeAstNode *alloctype = (TypeAstNode*)ptype->alloc;
 	int32_t cnt;
 	AstNode **nodesp;
@@ -37,7 +37,7 @@ void allocAllocate(AddrAstNode *anode, PtrAstNode *ptype) {
 	}
 
 	// szvtype = sizeof(vtype)
-	Name *szvtsym = nameFind("szvtype", 7);
+	Name *szvtsym = nametblFind("szvtype", 7);
 	SizeofAstNode *szvtval = newSizeofAstNode();
 	szvtval->type = ptype->pvtype;
 	VarDclAstNode *szvtype = newVarDclNode(szvtsym, VarNameDclNode, (AstNode*)usizeType, immPerm, (AstNode*)szvtval);
@@ -56,7 +56,7 @@ void allocAllocate(AddrAstNode *anode, PtrAstNode *ptype) {
 	callalloc->vtype = allocmeth->vtype;
 	nodesAdd(&callalloc->parms, (AstNode*)szvtuse);
 	// ---
-	Name *pT = nameFind("pT", 2);
+	Name *pT = nametblFind("pT", 2);
 	CastAstNode *castvt = newCastAstNode((AstNode*)callalloc, (AstNode*)ptype);
 	VarDclAstNode *p1dcl = newVarDclNode(pT, VarNameDclNode, (AstNode*)ptype, immPerm, (AstNode*)castvt);
 	nodesAdd(&blknode->stmts, (AstNode*)p1dcl);

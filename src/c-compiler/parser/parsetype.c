@@ -61,7 +61,7 @@ VarDclAstNode *parseVarDcl(ParseState *parse, PermAstNode *defperm, int16_t flag
 	}
 	else {
 		errorMsgLex(ErrorNoIdent, "Expected variable name for declaration");
-		return newVarDclNode(nameFind("_",1), VarNameDclNode, voidType, perm, NULL);
+		return newVarDclNode(nametblFind("_",1), VarNameDclNode, voidType, perm, NULL);
 	}
 
 	// Get value type, if provided
@@ -175,7 +175,7 @@ AstNode *parseStruct(ParseState *parse) {
 
 void parseInjectSelf(FnSigAstNode *fnsig, Name *typename) {
 	NameUseAstNode *selftype = newNameUseNode(typename);
-	VarDclAstNode *selfparm = newVarDclNode(nameFind("self", 4), VarNameDclNode, (AstNode*)selftype, constPerm, NULL);
+	VarDclAstNode *selfparm = newVarDclNode(nametblFind("self", 4), VarNameDclNode, (AstNode*)selftype, constPerm, NULL);
 	selfparm->scope = 1;
 	selfparm->index = 0;
 	inodesAdd(&fnsig->parms, selfparm->namesym, (AstNode*)selfparm);
@@ -201,7 +201,7 @@ AstNode *parseFnSig(ParseState *parse) {
 			// Do special inference if function is a type's method
 			if (parse->owner->asttype == VtypeNameDclNode) {
 				// Create default self parm, if 'self' was not specified
-				if (parmnbr == 0 && parm->namesym != nameFind("self", 4)) {
+				if (parmnbr == 0 && parm->namesym != nametblFind("self", 4)) {
 					parseInjectSelf(fnsig, parse->owner->namesym);
 					++parmnbr;
 				}

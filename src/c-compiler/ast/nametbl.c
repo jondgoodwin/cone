@@ -23,12 +23,12 @@
 #include <string.h>
 
 // Public globals
-size_t gNames = 16384;	// Initial maximum number of unique names (must be power of 2)
-unsigned int gNameTblUtil = 80;	// % utilization that triggers doubling of table
+size_t gNameTblInitSize = 16384;	// Initial maximum number of unique names (must be power of 2)
+unsigned int gNameTblUtil = 80;		// % utilization that triggers doubling of table
 
 // Private globals
-Name **gNameTable = NULL;	// The name table array
-size_t gNameTblAvail = 0;	// Number of allocated name table slots (power of 2)
+Name **gNameTable = NULL;		// The name table array
+size_t gNameTblAvail = 0;		// Number of allocated name table slots (power of 2)
 size_t gNameTblCeil = 0;		// Ceiling that triggers table growth
 size_t gNameTblUsed = 0;		// Number of name table slots used
 
@@ -56,7 +56,7 @@ size_t gNameTblUsed = 0;		// Number of name table slots used
  * The table's slot at index is either empty or matches the provided name/hash
  * http://stackoverflow.com/questions/2348187/moving-from-linear-probing-to-quadratic-probing-hash-collisons/2349774#2349774
  */
-#define nameFindSlot(tblp, hash, strp, strl) \
+#define nametblFindSlot(tblp, hash, strp, strl) \
 { \
 	size_t tbli, step; \
 	for (tbli = nameHashMod(hash, gNameTblAvail), step = 1;; ++step) { \
@@ -70,7 +70,7 @@ size_t gNameTblUsed = 0;		// Number of name table slots used
 }
 
 /** Grow the name table, by either creating it or doubling its size */
-void nameGrow() {
+void nametblGrow() {
 	size_t oldTblAvail;
 	Name **oldTable;
 	size_t newTblMem;
@@ -81,7 +81,7 @@ void nameGrow() {
 	oldTblAvail = gNameTblAvail;
 
 	// Allocate and initialize new name table
-	gNameTblAvail = oldTblAvail==0? gNames : oldTblAvail<<1;
+	gNameTblAvail = oldTblAvail==0? gNameTblInitSize : oldTblAvail<<1;
 	gNameTblCeil = (gNameTblUtil * gNameTblAvail) / 100;
 	newTblMem = gNameTblAvail * sizeof(Name*);
 	gNameTable = (Name**) memAllocBlk(newTblMem);
@@ -98,7 +98,7 @@ void nameGrow() {
 			strp = &oldnamep->namestr;
 			strl = oldnamep->namesz;
 			hash = oldnamep->hash;
-			nameFindSlot(newslotp, hash, strp, strl);
+			nametblFindSlot(newslotp, hash, strp, strl);
 			*newslotp = *oldslotp;
 		}
 	}
@@ -107,20 +107,20 @@ void nameGrow() {
 
 /** Get pointer to SymId for the name's string. 
  * For unknown name, this allocates memory for the string (SymId) and adds it to name table. */
-Name *nameFind(char *strp, size_t strl) {
+Name *nametblFind(char *strp, size_t strl) {
 	size_t hash;
 	Name **slotp;
 
 	// Hash provide string into table
 	nameHashFn(hash, strp, strl);
-	nameFindSlot(slotp, hash, strp, strl);
+	nametblFindSlot(slotp, hash, strp, strl);
 
 	// If not already a name, allocate memory for string and add to table
 	if (*slotp == NULL) {
 		Name *newname;
 		// Double table if it has gotten too full
 		if (++gNameTblUsed >= gNameTblCeil)
-			nameGrow();
+			nametblGrow();
 
 		// Allocate and populate name info
 		*slotp = newname = memAllocBlk(sizeof(Name) + strl);
@@ -134,17 +134,17 @@ Name *nameFind(char *strp, size_t strl) {
 }
 
 // Return size of unused space for name table
-size_t nameUnused() {
+size_t nametblUnused() {
 	return (gNameTblAvail-gNameTblUsed)*sizeof(Name*);
 }
 
 // Initialize name table
-void nameInit() {
-	nameGrow();
+void nametblInit() {
+	nametblGrow();
 }
 
 // Hook a node into global name table, such that its owner can withdraw it later
-void nameHook(Namespace2 *namespace, NamedAstNode *namenode, Name *name) {
+void nametblHook(Namespace2 *namespace, NamedAstNode *namenode, Name *name) {
 	namenode->hooklink = namespace->nameslink; // Add to owner's hook list
 	namespace->nameslink = (NamedAstNode*)namenode;
 	namenode->prevname = name->node; // Latent unhooker
@@ -152,15 +152,15 @@ void nameHook(Namespace2 *namespace, NamedAstNode *namenode, Name *name) {
 }
 
 // Hook all names in inodes into global name table
-void nameHookAll(Namespace2 *namespace, Inodes *inodes) {
+void nametblHookAll(Namespace2 *namespace, Inodes *inodes) {
 	SymNode *nodesp;
 	uint32_t cnt;
 	for (inodesFor(inodes, cnt, nodesp))
-		nameHook(namespace, nodesp->node, nodesp->name);
+		nametblHook(namespace, nodesp->node, nodesp->name);
 }
 
 // Unhook all of an owner's names from global name table (LIFO)
-void nameUnhookAll(Namespace2 *namespace) {
+void nametblUnhookAll(Namespace2 *namespace) {
 	NamedAstNode *node = namespace->nameslink;
 	while (node) {
 		NamedAstNode *next = node->hooklink;

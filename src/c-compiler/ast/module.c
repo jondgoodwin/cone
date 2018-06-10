@@ -55,7 +55,7 @@ void modAddNamedNode(ModuleAstNode *mod, NamedAstNode *node, Name *alias) {
 	}
 	else {
 		inodesAdd(&mod->namednodes, name, (AstNode *)node);
-		nameHook(&((ModuleAstNode *)node->owner)->namespace, node, name);
+		nametblHook(&((ModuleAstNode *)node->owner)->namespace, node, name);
 	}
 
 }
@@ -64,9 +64,9 @@ void modAddNamedNode(ModuleAstNode *mod, NamedAstNode *node, Name *alias) {
 // (works equally well from parent to child or child to parent
 void modHook(ModuleAstNode *oldmod, ModuleAstNode *newmod) {
 	if (oldmod)
-		nameUnhookAll(&oldmod->namespace);
+		nametblUnhookAll(&oldmod->namespace);
 	if (newmod)
-		nameHookAll(&newmod->namespace, newmod->namednodes);
+		nametblHookAll(&newmod->namespace, newmod->namednodes);
 }
 
 // Check the module's AST

@@ -338,7 +338,7 @@ void lexScanIdent(char *srcp) {
 				AstNode *identNode;
 				// Find identifier token in name table and preserve info about it
 				// Substitute token type when identifier is a keyword
-				lex->val.ident = nameFind(srcbeg, srcp-srcbeg);
+				lex->val.ident = nametblFind(srcbeg, srcp-srcbeg);
 				identNode = (AstNode*)lex->val.ident->node;
 				if (identNode && identNode->asttype == KeywordNode)
 					lex->toktype = identNode->flags;
@@ -367,7 +367,7 @@ void lexScanTickedIdent(char *srcp) {
 	}
 
 	// Find identifier token in name table and preserve info about it
-	lex->val.ident = nameFind(srcbeg+1, srcp - srcbeg - 1);
+	lex->val.ident = nametblFind(srcbeg+1, srcp - srcbeg - 1);
 	lex->toktype = IdentToken;
 	lex->srcp = srcp+1;
 }

@@ -254,7 +254,7 @@ ModuleAstNode *parseModule(ParseState *parse) {
 	mod = newModuleNode();
 	mod->owner = svowner;
 	parse->owner = (NamedAstNode *)mod;
-	mod->namesym = nameFind(modname, strlen(modname));
+	mod->namesym = nametblFind(modname, strlen(modname));
 	if (lexIsToken(LCurlyToken)) {
 		lexNextToken();
 		parseModuleBlk(parse, mod);

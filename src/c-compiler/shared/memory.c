@@ -106,8 +106,8 @@ char *memAllocStr(char *str, size_t size) {
 	return (char*) strp;
 }
 
-size_t nameUnused();
+size_t nametblUnused();
 // Return how much memory actually needed for use
 size_t memUsed() {
-	return memAllocated - gMemBlkArenaLeft - gMemStrArenaLeft - nameUnused();
+	return memAllocated - gMemBlkArenaLeft - gMemStrArenaLeft - nametblUnused();
 }

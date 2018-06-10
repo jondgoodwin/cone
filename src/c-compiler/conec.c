@@ -39,7 +39,7 @@ int main(int argc, char **argv) {
 	srcfn = argv[1];
 
 	// Initialize name table and populate with std library names
-	nameInit();
+	nametblInit();
 	stdlibInit();
 
 	// Parse source file, do semantic analysis, and generate code
