@@ -26,7 +26,6 @@ void structPrint(FieldsAstNode *node) {
 
 // Semantically analyze a struct type
 void structPass(PassState *pstate, FieldsAstNode *node) {
-	SymNode *inodesp;
 	AstNode **nodesp;
 	uint32_t cnt;
 	for (nodesFor(node->fields, cnt, nodesp))

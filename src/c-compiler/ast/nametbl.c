@@ -105,8 +105,8 @@ void nametblGrow() {
 	// memFreeBlk(oldTable);
 }
 
-/** Get pointer to SymId for the name's string. 
- * For unknown name, this allocates memory for the string (SymId) and adds it to name table. */
+/** Get pointer to interned Name in Global Name Table matching string. 
+ * For unknown name, this allocates memory for the string and adds it to name table. */
 Name *nametblFind(char *strp, size_t strl) {
 	size_t hash;
 	Name **slotp;
@@ -170,4 +170,78 @@ void nametblUnhookAll(Namespace2 *namespace) {
 		node = next;
 	}
 	namespace->nameslink = NULL;
+}
+
+// ************************ Namespace *******************************
+
+// Find the NameNode slot owned by a name
+#define namespaceFindSlot(slot, ns, namep) \
+{ \
+	size_t tbli, step; \
+	for (tbli = nameHashMod((namep)->hash, (ns)->avail), step = 1;; ++step) { \
+		slot = &(ns)->namenodes[tbli]; \
+		if (slot->name == NULL || slot->name == (namep)) \
+			break; \
+		tbli = nameHashMod(tbli + step, (ns)->avail); \
+	} \
+}
+
+// Grow the namespace, by either creating it or doubling its size
+void namespaceGrow(Namespace *namespace) {
+	size_t oldTblAvail;
+	NameNode *oldTable;
+	size_t newTblMem;
+	size_t oldslot;
+
+	// Use avail for new table, otherwise double its size
+	if (namespace->used == 0) {
+		oldTblAvail = 0;
+	}
+	else {
+		oldTblAvail = namespace->avail;
+		namespace->avail <<= 1;
+	}
+
+	// Allocate and initialize new name table
+	oldTable = namespace->namenodes;
+	newTblMem = namespace->avail * sizeof(NameNode*);
+	namespace->namenodes = (NameNode*)memAllocBlk(newTblMem);
+	memset(namespace->namenodes, 0, newTblMem);
+
+	// Copy existing name slots to re-hashed positions in new table
+	for (oldslot = 0; oldslot < oldTblAvail; oldslot++) {
+		NameNode *oldslotp, *newslotp;
+		oldslotp = &oldTable[oldslot];
+		if (oldslotp->name) {
+			namespaceFindSlot(newslotp, namespace, oldslotp->name);
+			newslotp->name = oldslotp->name;
+			newslotp->node = oldslotp->node;
+		}
+	}
+	// memFreeBlk(oldTable);
+}
+
+// Initialize a namespace with a specific number of slots
+void namespaceInit(Namespace *ns, size_t avail) {
+	ns->used = 0;
+	ns->avail = avail;
+	ns->namenodes = NULL;
+	namespaceGrow(ns);
+}
+
+// Return the node for a name (or NULL if none)
+NamedAstNode *namespaceFind(Namespace *ns, Name *name) {
+	NameNode *slotp;
+	namespaceFindSlot(slotp, ns, name);
+	return slotp->node;
+}
+
+// Add or change the node a name maps to
+void namespaceSet(Namespace *ns, Name *name, NamedAstNode *node) {
+	if (ns->used > ns->avail * 80 / 100)
+		namespaceGrow(ns);
+	NameNode *slotp;
+	namespaceFindSlot(slotp, ns, name);
+	slotp->name = name;
+	slotp->node = node;
 }
