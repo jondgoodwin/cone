@@ -28,6 +28,36 @@ ModuleAstNode *newModuleNode() {
 	return mod;
 }
 
+// Add a newly parsed named node to the module:
+// - We preserve all nodes for later semantic pass and serialization iteration
+//     Name resolution will iterate over these even to pick up folder names/aliases
+// - We hook all names in global name table at parse time to check for name dupes and
+//     because permissions and allocators do not support forward references
+// - We remember all public names for later resolution of qualified names
+void modAddNode(ModuleAstNode *mod, AstNode *node) {
+
+    // Add to regular ordered node list
+    nodesAdd(mod->nodes, node);
+
+    // If it is a named node...
+    if (isNamedNode(node)) {
+        NamedAstNode *nnode = (NamedAstNode *)node;
+        Name *name = nnode->namesym;
+
+        // Hook into global name table (and add to namednodes), if not already there
+        if (name->node) {
+            errorMsgNode((AstNode *)node, ErrorDupName, "Global name is already defined. Duplicates not allowed.");
+            errorMsgNode((AstNode*)name->node, ErrorDupName, "This is the conflicting definition for that name.");
+        }
+        else {
+            nametblHook(&((ModuleAstNode *)nnode->owner)->namespace, nnode, name);
+            if (name->namestr != '_')
+                inodesAdd(&mod->namednodes, name, (AstNode *)node);
+        }
+    }
+
+}
+
 // Serialize the AST for a module
 void modPrint(ModuleAstNode *mod) {
 	AstNode **nodesp;
@@ -44,20 +74,6 @@ void modPrint(ModuleAstNode *mod) {
 		astPrintNL();
 	}
 	astPrintDecr();
-}
-
-void modAddNamedNode(ModuleAstNode *mod, NamedAstNode *node, Name *alias) {
-	Name *name = alias ? alias : node->namesym;
-
-	if (name->node) {
-		errorMsgNode((AstNode *)node, ErrorDupName, "Global name is already defined. Only one allowed.");
-		errorMsgNode((AstNode*)name->node, ErrorDupName, "This is the conflicting definition for that name.");
-	}
-	else {
-		inodesAdd(&mod->namednodes, name, (AstNode *)node);
-		nametblHook(&((ModuleAstNode *)node->owner)->namespace, node, name);
-	}
-
 }
 
 // Unhook old module's names, hook new module's names

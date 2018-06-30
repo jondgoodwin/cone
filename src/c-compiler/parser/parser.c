@@ -178,12 +178,10 @@ ModuleAstNode *parseModule(ParseState *parse);
 void parseStmts(ParseState *parse, ModuleAstNode *mod) {
 	Nodes **modnodes = &mod->nodes;
 	AstNode *node;
-	Name *alias;
 
 	// Create and populate a Module node for the program
 	while (!lexIsToken(EofToken) && !lexIsToken(RCurlyToken)) {
 		node = NULL;
-		alias = NULL;
 		switch (lex->toktype) {
 
 		case IncludeToken:
@@ -219,10 +217,7 @@ void parseStmts(ParseState *parse, ModuleAstNode *mod) {
 		// Add parsed node to module's nodes, module's namednodes and global name table
 		// Note: will generate an error if name is a duplicate
 		if (node != NULL) {
-			nodesAdd(modnodes, node);
-			if (isNamedNode(node)) {
-				modAddNamedNode(mod, (NamedAstNode*)node, alias);
-			}
+			modAddNode(mod, node);
 		}
 	}
 }
