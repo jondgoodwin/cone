@@ -37,7 +37,7 @@ ModuleAstNode *newModuleNode() {
 void modAddNode(ModuleAstNode *mod, AstNode *node) {
 
     // Add to regular ordered node list
-    nodesAdd(mod->nodes, node);
+    nodesAdd(&mod->nodes, node);
 
     // If it is a named node...
     if (isNamedNode(node)) {
@@ -51,6 +51,7 @@ void modAddNode(ModuleAstNode *mod, AstNode *node) {
         }
         else {
             nametblHook(&((ModuleAstNode *)nnode->owner)->namespace, nnode, name);
+            // Remember public names
             if (name->namestr != '_')
                 inodesAdd(&mod->namednodes, name, (AstNode *)node);
         }

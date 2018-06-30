@@ -8,12 +8,14 @@
 #ifndef block_h
 #define block_h
 
-// Block
+// Block is a ordered sequence of executable statements within a function.
+// It is also a local execution context/namespace owning local variables.
+// Local variables are uniquely named and cannot be forward referenced.
 typedef struct BlockAstNode {
 	TypedAstHdr;
-	Namespace2 namespace;
 	Nodes *stmts;
-	uint16_t scope;
+    Namespace2 namespace;
+    uint16_t scope;
 } BlockAstNode;
 
 // If statement
