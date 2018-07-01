@@ -143,6 +143,123 @@ void nametblInit() {
 	nametblGrow();
 }
 
+
+// ************************ Name table hook *******************************
+
+// Resolving name references to their scope-correct name definition can get complicated.
+// One approach involves the equivalent of a search path, walking backwards through
+// lexically-nested namespaces to find the first name that matches. This approach
+// can take time, as it may involve a fair amount of linear searching.
+//
+// Name hooking is a performant alternative to search paths. When a namespace
+// context comes into being, its names are "hooked" into the global symbol table,
+// replacing the appropriate IR node with the current one for that name.
+// Since all names are memoized symbols, there is no search (linear or otherwise).
+// The node you want is already attached to the name. When the scope ends,
+// the name's node is unhooked and replaced with the saved node for an earlier scope.
+//
+// Name hooking is particularly important for name resolution.
+// However, it is also used during parsing for modules, who need
+// to resolve permissions and allocators for correct syntactic decoding.
+//
+// Hooking uses a LIFO stack of hook tables that preserve the old name/node pairs
+// for later restoration when unhooking. Hook tables are reused and will grow as
+// needed, again for performance.
+
+// An entry for preserving the node that was in global name table for the name
+typedef struct {
+    NamedAstNode *node;       // The previous node to restore on pop
+    Name *name;          // The name the node was indexed as
+} HookTableEntry;
+
+typedef struct {
+    HookTableEntry *hooktbl;
+    uint32_t size;
+    uint32_t alloc;
+} HookTable;
+
+HookTable *gHookTables = NULL;
+int gHookTablePos = -1;
+int gHookTableSize = 0;
+
+// Create a new hooked context for name/node associations
+void nametblHookPush() {
+
+    ++gHookTablePos;
+
+    // Ensure we have a large enough area for HookTable pointers
+    if (gHookTableSize == 0) {
+        gHookTableSize = 32;
+        gHookTables = (HookTable*)memAllocBlk(gHookTableSize * sizeof(HookTable));
+        memset(gHookTables, 0, gHookTableSize * sizeof(HookTable));
+        gHookTablePos = 0;
+    }
+    else if (gHookTablePos >= gHookTableSize) {
+        // Double table size, copying over old data
+        HookTable *oldtable = gHookTables;
+        int oldsize = gHookTableSize;
+        gHookTableSize <<= 1;
+        gHookTables = (HookTable*)memAllocBlk(gHookTableSize * sizeof(HookTable));
+        memset(gHookTables, 0, gHookTableSize * sizeof(HookTable));
+        memcpy(gHookTables, oldtable, oldsize * sizeof(HookTable));
+    }
+
+    HookTable *table = &gHookTables[gHookTablePos];
+
+    // Allocate a new HookTable, if we don't have one allocated yet
+    if (table->alloc == 0) {
+        table->alloc = gHookTablePos == 0 ? 128 : 32;
+        table->hooktbl = (HookTableEntry *)memAllocBlk(table->alloc * sizeof(HookTableEntry));
+        memset(table->hooktbl, 0, table->alloc * sizeof(HookTableEntry));
+    }
+    // Let's re-use the one we have
+    else
+        table->size = 0;
+}
+
+// Double the size of the current hook table
+void nametblHookGrow() {
+    HookTable *tablemeta = &gHookTables[gHookTablePos];
+    HookTableEntry *oldtable = tablemeta->hooktbl;
+    int oldsize = tablemeta->alloc;
+    tablemeta->alloc <<= 1;
+    tablemeta->hooktbl = (HookTableEntry *)memAllocBlk(tablemeta->alloc * sizeof(HookTableEntry));
+    memset(tablemeta->hooktbl, 0, tablemeta->alloc * sizeof(HookTableEntry));
+    memcpy(tablemeta->hooktbl, oldtable, oldsize * sizeof(HookTableEntry));
+}
+
+// Hook the named node in the current hooktable
+void nametblHookNode(NamedAstNode *node) {
+    HookTable *tablemeta = &gHookTables[gHookTablePos];
+    if (tablemeta->size + 1 >= tablemeta->alloc)
+        nametblHookGrow();
+    HookTableEntry *entry = &tablemeta->hooktbl[tablemeta->size++];
+    entry->node = node;
+    entry->name = node->namesym;
+}
+
+// Hook the named node using an alias into the current hooktable
+void nametblHookAlias(Name *name, NamedAstNode *node) {
+    HookTable *tablemeta = &gHookTables[gHookTablePos];
+    if (tablemeta->size + 1 >= tablemeta->alloc)
+        nametblHookGrow();
+    HookTableEntry *entry = &tablemeta->hooktbl[tablemeta->size++];
+    entry->node = node;
+    entry->name = name;
+}
+
+// Unhook all names in current hooktable, then revert to the prior hooktable
+void nametblHookPop() {
+    HookTable *tablemeta = &gHookTables[gHookTablePos];
+    HookTableEntry *entry = tablemeta->hooktbl;
+    int cnt = tablemeta->size;
+    while (cnt--) {
+        entry->name->node = entry->node;
+        --entry;
+    }
+    --gHookTablePos;
+}
+
 // Hook a node into global name table, such that its owner can withdraw it later
 void nametblHook(Namespace2 *namespace, NamedAstNode *namenode, Name *name) {
 	namenode->hooklink = namespace->nameslink; // Add to owner's hook list
