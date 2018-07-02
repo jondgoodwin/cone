@@ -14,7 +14,6 @@
 typedef struct BlockAstNode {
 	TypedAstHdr;
 	Nodes *stmts;
-    Namespace2 namespace;
     uint16_t scope;
 } BlockAstNode;
 

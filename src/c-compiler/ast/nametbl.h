@@ -71,10 +71,6 @@ void nametblHookNode(NamedAstNode *node);
 void nametblHookAlias(Name *name, NamedAstNode *node);
 void nametblHookPop();
 
-void nametblHook(Namespace2 *namespace, NamedAstNode *name, Name *namesym);
-void nametblHookAll(Namespace2 *namespace, Inodes *inodes);
-void nametblUnhookAll(Namespace2 *namespace);
-
 void namespaceInit(Namespace *ns, size_t avail);
 NamedAstNode *namespaceFind(Namespace *ns, Name *name);
 void namespaceSet(Namespace *ns, Name *name, NamedAstNode *node);

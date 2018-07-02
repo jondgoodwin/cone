@@ -19,9 +19,6 @@ ModuleAstNode *newModuleNode() {
 	ModuleAstNode *mod;
 	newAstNode(mod, ModuleAstNode, ModuleNode);
 	mod->namesym = NULL;
-	mod->namespace.nameslink = NULL;
-	mod->hooklink = NULL;
-	mod->prevname = NULL;
 	mod->owner = NULL;
 	mod->nodes = newNodes(64);
 	mod->namednodes = newInodes(64);

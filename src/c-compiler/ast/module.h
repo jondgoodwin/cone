@@ -22,7 +22,6 @@ typedef struct ModuleAstNode {
 	NamedAstHdr;
     Nodes *nodes;			// All parsed nodes owned by the module
     Inodes *namednodes;		// The module's public, owned named nodes
-    Namespace2 namespace;   // The names & nodes that are hooked into the global name table
 } ModuleAstNode;
 
 ModuleAstNode *newModuleNode();

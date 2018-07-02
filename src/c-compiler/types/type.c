@@ -189,8 +189,6 @@ TypeDclAstNode *newTypeDclNode(Name *namesym, uint16_t asttype, AstNode *type, A
     name->vtype = type;
     name->owner = NULL;
     name->namesym = namesym;
-    name->hooklink = NULL;
-    name->prevname = NULL;
     name->value = val;
     name->scope = 0;
     name->index = 0;

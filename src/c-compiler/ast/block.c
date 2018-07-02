@@ -15,7 +15,6 @@
 BlockAstNode *newBlockNode() {
 	BlockAstNode *blk;
 	newAstNode(blk, BlockAstNode, BlockNode);
-	blk->namespace.nameslink = NULL;
 	blk->vtype = voidType;
 	blk->stmts = newNodes(8);
 	return blk;
@@ -44,6 +43,9 @@ void blockPass(PassState *pstate, BlockAstNode *blk) {
 	BlockAstNode *oldblk = pstate->blk;
 	pstate->blk = blk;
 
+    if (pstate->pass == NameResolution)
+        nametblHookPush();
+
 	// Traverse block info
 	AstNode **nodesp;
 	uint32_t cnt;
@@ -65,7 +67,7 @@ void blockPass(PassState *pstate, BlockAstNode *blk) {
 	switch (pstate->pass) {
 	case NameResolution:
 		// Unhook local variables from global name table that hooked themselves earlier
-		nametblUnhookAll(&blk->namespace); break;
+		nametblHookPop(); break;
 
 	case TypeCheck:
 		// When coerced by typeCoerces, vtype of the block will be specified

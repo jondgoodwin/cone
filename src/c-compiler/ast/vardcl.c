@@ -20,10 +20,7 @@ VarDclAstNode *newVarDclNode(Name *namesym, uint16_t asttype, AstNode *type, Per
 	newAstNode(name, VarDclAstNode, asttype);
 	name->vtype = type;
 	name->owner = NULL;
-	name->parmnamespace.nameslink = NULL;
 	name->namesym = namesym;
-	name->hooklink = NULL;
-	name->prevname = NULL;
 	name->perm = perm;
 	name->value = val;
 	name->scope = 0;
@@ -70,9 +67,13 @@ void varDclFnNameResolve(PassState *pstate, VarDclAstNode *name) {
 	int16_t oldscope = pstate->scope;
 	pstate->scope = 1;
 	FnSigAstNode *fnsig = (FnSigAstNode*)name->vtype;
-	nametblHookAll(&name->parmnamespace, fnsig->parms);		// Load into global name table
+    nametblHookPush();
+    SymNode *nodesp;
+    uint32_t cnt;
+    for (inodesFor(fnsig->parms, cnt, nodesp))
+        nametblHookNode((NamedAstNode*)nodesp->node);
 	astPass(pstate, name->value);
-	nametblUnhookAll(&name->parmnamespace);		// Unhook from name table
+	nametblHookPop();
 	pstate->scope = oldscope;
 }
 
@@ -88,7 +89,7 @@ void varDclNameResolve(PassState *pstate, VarDclAstNode *name) {
 		else {
 			name->scope = pstate->scope;
 			// Add name to global name table (containing block will unhook it later)
-			nametblHook(&pstate->blk->namespace, (NamedAstNode*)name, name->namesym);
+			nametblHookNode((NamedAstNode*)name);
 		}
 	}
 

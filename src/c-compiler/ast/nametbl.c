@@ -263,35 +263,6 @@ void nametblHookPop() {
     --gHookTablePos;
 }
 
-// Hook a node into global name table, such that its owner can withdraw it later
-void nametblHook(Namespace2 *namespace, NamedAstNode *namenode, Name *name) {
-	namenode->hooklink = namespace->nameslink; // Add to owner's hook list
-	namespace->nameslink = (NamedAstNode*)namenode;
-	namenode->prevname = name->node; // Latent unhooker
-	name->node = (NamedAstNode*)namenode;
-}
-
-// Hook all names in inodes into global name table
-void nametblHookAll(Namespace2 *namespace, Inodes *inodes) {
-	SymNode *nodesp;
-	uint32_t cnt;
-	for (inodesFor(inodes, cnt, nodesp))
-		nametblHook(namespace, nodesp->node, nodesp->name);
-}
-
-// Unhook all of an owner's names from global name table (LIFO)
-void nametblUnhookAll(Namespace2 *namespace) {
-	NamedAstNode *node = namespace->nameslink;
-	while (node) {
-		NamedAstNode *next = node->hooklink;
-		node->namesym->node = node->prevname;
-		node->prevname = NULL;
-		node->hooklink = NULL;
-		node = next;
-	}
-	namespace->nameslink = NULL;
-}
-
 // ************************ Namespace *******************************
 
 // Find the NameNode slot owned by a name
