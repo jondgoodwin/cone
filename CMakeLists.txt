@@ -30,6 +30,7 @@ add_executable(conec
 	src/c-compiler/ast/fntuple.c
 	src/c-compiler/ast/literal.c
 	src/c-compiler/ast/nodes.c
+	src/c-compiler/ast/namespace.c
 	src/c-compiler/ast/block.c
 	src/c-compiler/ast/expr.c
 	src/c-compiler/ast/copyexpr.c

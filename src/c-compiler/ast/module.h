@@ -21,7 +21,7 @@
 typedef struct ModuleAstNode {
 	NamedAstHdr;
     Nodes *nodes;			// All parsed nodes owned by the module
-    Inodes *namednodes;		// The module's public, owned named nodes
+    Namespace namednodes;   // The module's public, owned named nodes
 } ModuleAstNode;
 
 ModuleAstNode *newModuleNode();

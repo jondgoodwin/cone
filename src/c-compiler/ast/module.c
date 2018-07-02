@@ -21,7 +21,7 @@ ModuleAstNode *newModuleNode() {
 	mod->namesym = NULL;
 	mod->owner = NULL;
 	mod->nodes = newNodes(64);
-	mod->namednodes = newInodes(64);
+	namespaceInit(&mod->namednodes, 64);
 	return mod;
 }
 
@@ -42,18 +42,17 @@ void modAddNode(ModuleAstNode *mod, AstNode *node) {
         Name *name = nnode->namesym;
 
         // Hook into global name table (and add to namednodes), if not already there
-        if (name->node) {
-            errorMsgNode((AstNode *)node, ErrorDupName, "Global name is already defined. Duplicates not allowed.");
-            errorMsgNode((AstNode*)name->node, ErrorDupName, "This is the conflicting definition for that name.");
-        }
-        else {
+        if (!name->node) {
             nametblHookNode(nnode);
             // Remember public names
             if (name->namestr != '_')
-                inodesAdd(&mod->namednodes, name, (AstNode *)node);
+                namespaceSet(&mod->namednodes, name, nnode);
+        }
+        else {
+            errorMsgNode((AstNode *)node, ErrorDupName, "Global name is already defined. Duplicates not allowed.");
+            errorMsgNode((AstNode*)name->node, ErrorDupName, "This is the conflicting definition for that name.");
         }
     }
-
 }
 
 // Serialize the AST for a module

@@ -214,7 +214,7 @@ void parseStmts(ParseState *parse, ModuleAstNode *mod) {
 			continue; // restart loop for next statement
 		}
 
-		// Add parsed node to module's nodes, module's namednodes and global name table
+		// Add parsed node to module
 		// Note: will generate an error if name is a duplicate
 		if (node != NULL) {
 			modAddNode(mod, node);

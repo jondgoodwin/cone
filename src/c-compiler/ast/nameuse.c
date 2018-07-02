@@ -44,9 +44,9 @@ void nameUsePass(PassState *pstate, NameUseAstNode *name) {
 		if (name->mod==NULL || name->mod == pstate->mod)
 			name->dclnode = (NamedAstNode*)name->namesym->node;
 		else {
-			SymNode *symnode = inodesFind(name->mod->namednodes, name->namesym);
+			NamedAstNode *symnode = namespaceFind(&name->mod->namednodes, name->namesym);
 			if (symnode)
-				name->dclnode = (NamedAstNode*)symnode->node;
+				name->dclnode = symnode;
 		}
 		if (!name->dclnode)
 			errorMsgNode((AstNode*)name, ErrorUnkName, "The name %s does not refer to a declared name", &name->namesym->namestr);

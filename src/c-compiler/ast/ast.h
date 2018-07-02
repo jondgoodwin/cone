@@ -26,6 +26,7 @@
 
 #include "../shared/memory.h"
 #include "../ast/nodes.h"
+#include "../ast/namespace.h"
 typedef struct Name Name;		// ../ast/nametbl.h
 typedef struct Lexer Lexer;		// ../parser/lexer.h
 

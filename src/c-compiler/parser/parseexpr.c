@@ -21,7 +21,7 @@ AstNode *parseAddr(ParseState *parse);
 
 // Parse a name use, which may be prefixed with module paths
 AstNode *parseNameUse(ParseState *parse) {
-	SymNode *childmod;
+	NamedAstNode *childmod;
 
 	// Relative path default is current module
 	ModuleAstNode *mod = parse->mod;
@@ -33,10 +33,10 @@ AstNode *parseNameUse(ParseState *parse) {
 	}
 
 	// Walk down through module names
-	while (lexIsToken(IdentToken) && (childmod = inodesFind(mod->namednodes, lex->val.ident))) {
-		if (childmod->node->asttype != ModuleNode)
+	while (lexIsToken(IdentToken) && (childmod = namespaceFind(&mod->namednodes, lex->val.ident))) {
+		if (childmod->asttype != ModuleNode)
 			break;
-		mod = (ModuleAstNode*)childmod->node;
+		mod = (ModuleAstNode*)childmod;
 		lexNextToken();
 		if (!lexIsToken(DblColonToken)) {
 			errorMsgLex(ErrorNoDbl, "Missing '::' after module name qualifier");
