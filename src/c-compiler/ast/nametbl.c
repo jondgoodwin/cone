@@ -150,21 +150,22 @@ void nametblInit() {
 // One approach involves the equivalent of a search path, walking backwards through
 // lexically-nested namespaces to find the first name that matches. This approach
 // can take time, as it may involve a fair amount of linear searching.
+// Using tries can improve performance over linear searching, to some degree.
 //
-// Name hooking is a performant alternative to search paths. When a namespace
+// Name hooking is a performant alternative to tries or search paths. When a namespace
 // context comes into being, its names are "hooked" into the global symbol table,
 // replacing the appropriate IR node with the current one for that name.
 // Since all names are memoized symbols, there is no search (linear or otherwise).
 // The node you want is already attached to the name. When the scope ends,
-// the name's node is unhooked and replaced with the saved node for an earlier scope.
+// the name's node is unhooked and replaced with the saved node from an earlier scope.
 //
-// Name hooking is particularly important for name resolution.
+// Name hooking is particularly valuable for name resolution.
 // However, it is also used during parsing for modules, who need
 // to resolve permissions and allocators for correct syntactic decoding.
 //
 // Hooking uses a LIFO stack of hook tables that preserve the old name/node pairs
-// for later restoration when unhooking. Hook tables are reused and will grow as
-// needed, again for performance.
+// for later restoration when unhooking. Hook tables are reused (for performance)
+// and will grow as needed.
 
 // An entry for preserving the node that was in global name table for the name
 typedef struct {
@@ -234,8 +235,9 @@ void nametblHookNode(NamedAstNode *node) {
     if (tablemeta->size + 1 >= tablemeta->alloc)
         nametblHookGrow();
     HookTableEntry *entry = &tablemeta->hooktbl[tablemeta->size++];
-    entry->node = node;
+    entry->node = node->namesym->node; // Save previous node
     entry->name = node->namesym;
+    node->namesym->node = node; // Plug in new node
 }
 
 // Hook the named node using an alias into the current hooktable
@@ -244,8 +246,9 @@ void nametblHookAlias(Name *name, NamedAstNode *node) {
     if (tablemeta->size + 1 >= tablemeta->alloc)
         nametblHookGrow();
     HookTableEntry *entry = &tablemeta->hooktbl[tablemeta->size++];
-    entry->node = node;
+    entry->node = node->namesym->node; // Save previous node
     entry->name = name;
+    node->namesym->node = node; // Plug in new node
 }
 
 // Unhook all names in current hooktable, then revert to the prior hooktable
@@ -255,7 +258,7 @@ void nametblHookPop() {
     int cnt = tablemeta->size;
     while (cnt--) {
         entry->name->node = entry->node;
-        --entry;
+        ++entry;
     }
     --gHookTablePos;
 }

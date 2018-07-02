@@ -65,6 +65,12 @@ typedef struct Namespace {
 // Sometimes all of the namespace's names are added right away.
 // However, a block's local variables are added as encountered.
 // When the context ends, its names are unhooked, revealing the ones there before.
+void nametblHookPush();
+void nametblHookGrow();
+void nametblHookNode(NamedAstNode *node);
+void nametblHookAlias(Name *name, NamedAstNode *node);
+void nametblHookPop();
+
 void nametblHook(Namespace2 *namespace, NamedAstNode *name, Name *namesym);
 void nametblHookAll(Namespace2 *namespace, Inodes *inodes);
 void nametblUnhookAll(Namespace2 *namespace);

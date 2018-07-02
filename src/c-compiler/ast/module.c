@@ -50,7 +50,7 @@ void modAddNode(ModuleAstNode *mod, AstNode *node) {
             errorMsgNode((AstNode*)name->node, ErrorDupName, "This is the conflicting definition for that name.");
         }
         else {
-            nametblHook(&((ModuleAstNode *)nnode->owner)->namespace, nnode, name);
+            nametblHookNode(nnode);
             // Remember public names
             if (name->namestr != '_')
                 inodesAdd(&mod->namednodes, name, (AstNode *)node);
@@ -80,10 +80,17 @@ void modPrint(ModuleAstNode *mod) {
 // Unhook old module's names, hook new module's names
 // (works equally well from parent to child or child to parent
 void modHook(ModuleAstNode *oldmod, ModuleAstNode *newmod) {
-	if (oldmod)
-		nametblUnhookAll(&oldmod->namespace);
-	if (newmod)
-		nametblHookAll(&newmod->namespace, newmod->namednodes);
+    if (oldmod)
+        nametblHookPop();
+    if (newmod) {
+        AstNode **nodesp;
+        uint32_t cnt;
+        nametblHookPush();
+        for (nodesFor(newmod->nodes, cnt, nodesp)) {
+            if (isNamedNode(*nodesp))
+                nametblHookNode((NamedAstNode *)*nodesp);
+        }
+    }
 }
 
 // Check the module's AST
