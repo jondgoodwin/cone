@@ -68,10 +68,10 @@ void varDclFnNameResolve(PassState *pstate, VarDclAstNode *name) {
 	pstate->scope = 1;
 	FnSigAstNode *fnsig = (FnSigAstNode*)name->vtype;
     nametblHookPush();
-    SymNode *nodesp;
+    AstNode **nodesp;
     uint32_t cnt;
-    for (inodesFor(fnsig->parms, cnt, nodesp))
-        nametblHookNode((NamedAstNode*)nodesp->node);
+    for (nodesFor(fnsig->parms, cnt, nodesp))
+        nametblHookNode((NamedAstNode *)*nodesp);
 	astPass(pstate, name->value);
 	nametblHookPop();
 	pstate->scope = oldscope;

@@ -12,10 +12,10 @@ typedef struct FnCallAstNode FnCallAstNode;
 
 // Function signature is a type that defines the parameters and return type for a function.
 // A function signature is never named (although a ptr/ref to a fnsig may be named).
-// The parameter declaration list represents a local namespace of local variables.
+// The parameter declaration list represents a namespace of local variables.
 typedef struct FnSigAstNode {
 	TypeAstHdr;
-    Inodes *parms;			// Indexed collection mapping parm names to nodes
+    Nodes *parms;			// Declared parameter nodes w/ defaults (VarNameDclNode)
     AstNode *rettype;		// void, a single type or a type tuple
 } FnSigAstNode;
 

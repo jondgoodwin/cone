@@ -172,9 +172,9 @@ case TypeCheck:
 	// Type check that passed arguments match declared parameters
 	AstNode **argsp;
 	uint32_t cnt;
-	SymNode *parmp = (SymNode*)((((FnSigAstNode*)fnsig)->parms) + 1);
+	AstNode **parmp = &nodesGet(((FnSigAstNode*)fnsig)->parms, 0);
 	for (nodesFor(node->args, cnt, argsp)) {
-		if (!typeCoerces((AstNode*)parmp->node, argsp))
+		if (!typeCoerces(*parmp, argsp))
 			errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
 		else
 			handleCopy(pstate, *argsp);
@@ -183,11 +183,11 @@ case TypeCheck:
 
 	// If we have too few arguments, use default values, if provided
 	if (argsunder > 0) {
-		if (((VarDclAstNode*)parmp->node)->value == NULL)
+		if (((VarDclAstNode*)*parmp)->value == NULL)
 			errorMsgNode((AstNode*)node, ErrorFewArgs, "Function call requires more arguments than specified");
 		else {
 			while (argsunder--) {
-				nodesAdd(&node->args, ((VarDclAstNode*)parmp->node)->value);
+				nodesAdd(&node->args, ((VarDclAstNode*)*parmp)->value);
 				parmp++;
 			}
 		}

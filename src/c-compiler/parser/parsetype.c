@@ -178,7 +178,7 @@ void parseInjectSelf(FnSigAstNode *fnsig, Name *typename) {
 	VarDclAstNode *selfparm = newVarDclNode(nametblFind("self", 4), VarNameDclNode, (AstNode*)selftype, constPerm, NULL);
 	selfparm->scope = 1;
 	selfparm->index = 0;
-	inodesAdd(&fnsig->parms, selfparm->namesym, (AstNode*)selfparm);
+	nodesAdd(&fnsig->parms, (AstNode*)selfparm);
 }
 
 // Parse a function's type signature
@@ -221,7 +221,7 @@ AstNode *parseFnSig(ParseState *parse) {
 			parm->index = parmnbr++;
 			if (parm->value)
 				parseflags = ParseMayImpl; // force remaining parms to specify default
-			inodesAdd(&fnsig->parms, parm->namesym, (AstNode*)parm);
+			nodesAdd(&fnsig->parms, (AstNode*)parm);
 			if (!lexIsToken(CommaToken))
 				break;
 			lexNextToken();

@@ -16,7 +16,7 @@ FnSigAstNode *newFnSigNode() {
 	newAstNode(sig, FnSigAstNode, FnSig);
 	sig->methods = newNodes(1); // probably share these across all fnsigs
 	sig->subtypes = newNodes(1);    // ditto
-	sig->parms = newInodes(8);
+	sig->parms = newNodes(8);
 	sig->rettype = voidType;
 	sig->vtype = NULL;
 	return sig;
@@ -24,11 +24,11 @@ FnSigAstNode *newFnSigNode() {
 
 // Serialize the AST for a function signature
 void fnSigPrint(FnSigAstNode *sig) {
-	SymNode *nodesp;
+	AstNode **nodesp;
 	uint32_t cnt;
 	astFprint("fn(");
-	for (inodesFor(sig->parms, cnt, nodesp)) {
-		astPrintNode((AstNode*)nodesp->node);
+	for (nodesFor(sig->parms, cnt, nodesp)) {
+		astPrintNode(*nodesp);
 		if (cnt > 1)
 			astFprint(", ");
 	}
@@ -38,16 +38,16 @@ void fnSigPrint(FnSigAstNode *sig) {
 
 // Traverse the function signature tree
 void fnSigPass(PassState *pstate, FnSigAstNode *sig) {
-	SymNode *nodesp;
+	AstNode **nodesp;
 	uint32_t cnt;
-	for (inodesFor(sig->parms, cnt, nodesp))
-		astPass(pstate, (AstNode*)nodesp->node);
+	for (nodesFor(sig->parms, cnt, nodesp))
+		astPass(pstate, *nodesp);
 	astPass(pstate, sig->rettype);
 }
 
 // Compare two function signatures to see if they are equivalent
 int fnSigEqual(FnSigAstNode *node1, FnSigAstNode *node2) {
-	SymNode *nodes1p, *nodes2p;
+	AstNode **nodes1p, **nodes2p;
 	int16_t cnt;
 
 	// Return types and number of parameters must match
@@ -56,9 +56,9 @@ int fnSigEqual(FnSigAstNode *node1, FnSigAstNode *node2) {
 		return 0;
 
 	// Every parameter's type must also match
-	nodes2p = &inodesGet(node2->parms, 0);
-	for (inodesFor(node1->parms, cnt, nodes1p)) {
-		if (!typeIsSame((AstNode*)nodes1p->node, (AstNode*)nodes2p->node))
+	nodes2p = &nodesGet(node2->parms, 0);
+	for (nodesFor(node1->parms, cnt, nodes1p)) {
+		if (!typeIsSame(*nodes1p, *nodes2p))
 			return 0;
 		nodes2p++;
 	}
@@ -75,13 +75,13 @@ int fnSigMatchesCall(FnSigAstNode *to, FnCallAstNode *caller) {
 		return 0;
 
 	// Every parameter's type must also match
-	SymNode *tonodesp;
+	AstNode **tonodesp;
 	AstNode **callnodesp;
 	int16_t cnt;
-	tonodesp = &inodesGet(to->parms, 0);
+	tonodesp = &nodesGet(to->parms, 0);
 	for (nodesFor(caller->args, cnt, callnodesp)) {
 		int match;
-		switch (match = typeMatches(((TypedAstNode *)tonodesp->node)->vtype, ((TypedAstNode*)*callnodesp)->vtype)) {
+		switch (match = typeMatches(((TypedAstNode *)*tonodesp)->vtype, ((TypedAstNode*)*callnodesp)->vtype)) {
 		case 0: return 0;
 		case 1: break;
 		default: matchsum += match;

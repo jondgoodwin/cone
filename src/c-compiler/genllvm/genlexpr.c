@@ -59,11 +59,11 @@ LLVMTypeRef _genlType(GenState *gen, char *name, AstNode *typ) {
 		FnSigAstNode *fnsig = (FnSigAstNode*)typ;
 		LLVMTypeRef *param_types = (LLVMTypeRef *)memAllocBlk(fnsig->parms->used * sizeof(LLVMTypeRef));
 		LLVMTypeRef *parm = param_types;
-		SymNode *nodesp;
+		AstNode **nodesp;
 		uint32_t cnt;
-		for (inodesFor(fnsig->parms, cnt, nodesp)) {
-			assert(nodesp->node->asttype == VarNameDclNode);
-			*parm++ = genlType(gen, ((TypedAstNode *)nodesp->node)->vtype);
+		for (nodesFor(fnsig->parms, cnt, nodesp)) {
+			assert((*nodesp)->asttype == VarNameDclNode);
+			*parm++ = genlType(gen, ((TypedAstNode *)*nodesp)->vtype);
 		}
 		return LLVMFunctionType(genlType(gen, fnsig->rettype), param_types, fnsig->parms->used, 0);
 	}

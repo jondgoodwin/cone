@@ -59,9 +59,9 @@ void genlFn(GenState *gen, VarDclAstNode *fnnode) {
 
 	// Generate LLVMValueRef's for all parameters, so we can use them as local vars in code
 	uint32_t cnt;
-	SymNode *inodesp;
-	for (inodesFor(fnsig->parms, cnt, inodesp))
-		genlParmVar(gen, (VarDclAstNode*)inodesp->node);
+	AstNode **nodesp;
+	for (nodesFor(fnsig->parms, cnt, nodesp))
+		genlParmVar(gen, (VarDclAstNode*)*nodesp);
 
 	// Generate the function's code (always a block)
 	genlBlock(gen, (BlockAstNode *)fnnode->value);
@@ -98,10 +98,10 @@ char *genlGlobalName(NamedAstNode *name) {
 		FnSigAstNode *fnsig = (FnSigAstNode *)name->vtype;
 		char *bufp = workbuf + strlen(workbuf);
 		int16_t cnt;
-		SymNode *nodesp;
-		for (inodesFor(fnsig->parms, cnt, nodesp)) {
+		AstNode **nodesp;
+		for (nodesFor(fnsig->parms, cnt, nodesp)) {
 			*bufp++ = ':';
-			bufp = typeMangle(bufp, ((TypedAstNode *)nodesp->node)->vtype);
+			bufp = typeMangle(bufp, ((TypedAstNode *)*nodesp)->vtype);
 		}
 		*bufp = '\0';
 	}

@@ -53,15 +53,15 @@ NbrAstNode *newNbrTypeNode(uint16_t typ, char bits) {
 	FnSigAstNode *unarysig = newFnSigNode();
 	unarysig->rettype = (AstNode*)nbrtypenode;
 	Name *una1 = nametblFind("a", 1);
-	inodesAdd(&unarysig->parms, una1, (AstNode *)newVarDclNode(una1, VarNameDclNode, (AstNode*)nbrtypenode, immPerm, NULL));
+	nodesAdd(&unarysig->parms, (AstNode *)newVarDclNode(una1, VarNameDclNode, (AstNode*)nbrtypenode, immPerm, NULL));
 
 	// Create function signature for binary methods for this type
 	FnSigAstNode *binsig = newFnSigNode();
 	binsig->rettype = (AstNode*)nbrtypenode;
 	Name *parm1 = nametblFind("a", 1);
-	inodesAdd(&binsig->parms, parm1, (AstNode *)newVarDclNode(parm1, VarNameDclNode, (AstNode*)nbrtypenode, immPerm, NULL));
+	nodesAdd(&binsig->parms, (AstNode *)newVarDclNode(parm1, VarNameDclNode, (AstNode*)nbrtypenode, immPerm, NULL));
 	Name *parm2 = nametblFind("b", 1);
-	inodesAdd(&binsig->parms, parm2, (AstNode *)newVarDclNode(parm2, VarNameDclNode, (AstNode*)nbrtypenode, immPerm, NULL));
+	nodesAdd(&binsig->parms, (AstNode *)newVarDclNode(parm2, VarNameDclNode, (AstNode*)nbrtypenode, immPerm, NULL));
 
 	// Build method dictionary for the type, which ultimately point to intrinsics
 	nbrtypenode->methods = newNodes(16);
@@ -109,8 +109,8 @@ NbrAstNode *newNbrTypeNode(uint16_t typ, char bits) {
 	// Create function signature for comparison methods for this type
 	FnSigAstNode *cmpsig = newFnSigNode();
 	cmpsig->rettype = bits==1? (AstNode*)nbrtypenode : (AstNode*)boolType;
-	inodesAdd(&cmpsig->parms, parm1, (AstNode *)newVarDclNode(parm1, VarNameDclNode, (AstNode*)nbrtypenode, immPerm, NULL));
-	inodesAdd(&cmpsig->parms, parm2, (AstNode *)newVarDclNode(parm2, VarNameDclNode, (AstNode*)nbrtypenode, immPerm, NULL));
+	nodesAdd(&cmpsig->parms, (AstNode *)newVarDclNode(parm1, VarNameDclNode, (AstNode*)nbrtypenode, immPerm, NULL));
+	nodesAdd(&cmpsig->parms, (AstNode *)newVarDclNode(parm2, VarNameDclNode, (AstNode*)nbrtypenode, immPerm, NULL));
 
 	// Comparison operators
 	opsym = nametblFind("==", 2);
