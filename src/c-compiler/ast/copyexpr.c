@@ -74,7 +74,7 @@ FnCallAstNode *newFnCallAstNode(AstNode *fn, int nnodes) {
 	FnCallAstNode *node;
 	newAstNode(node, FnCallAstNode, FnCallNode);
 	node->fn = fn;
-	node->parms = newNodes(nnodes);
+	node->args = newNodes(nnodes);
 	return node;
 }
 
@@ -84,7 +84,7 @@ void fnCallPrint(FnCallAstNode *node) {
 	uint32_t cnt;
 	astPrintNode(node->fn);
 	astFprint("(");
-	for (nodesFor(node->parms, cnt, nodesp)) {
+	for (nodesFor(node->args, cnt, nodesp)) {
 		astPrintNode(*nodesp);
 		if (cnt > 1)
 			astFprint(", ");
@@ -94,7 +94,7 @@ void fnCallPrint(FnCallAstNode *node) {
 
 VarDclAstNode *fnCallFindMethod(FnCallAstNode *node, Name *methsym) {
 	// Get type of object call's object (first arg). Use value type of a ref
-	AstNode *objtype = typeGetVtype(*nodesNodes(node->parms));
+	AstNode *objtype = typeGetVtype(*nodesNodes(node->args));
 	if (objtype->asttype == RefType || objtype->asttype == PtrType)
 		objtype = typeGetVtype(((PtrAstNode *)objtype)->pvtype);
 
@@ -126,7 +126,7 @@ VarDclAstNode *fnCallFindMethod(FnCallAstNode *node, Name *methsym) {
 void fnCallPass(PassState *pstate, FnCallAstNode *node) {
 	AstNode **argsp;
 	uint32_t cnt;
-	for (nodesFor(node->parms, cnt, argsp))
+	for (nodesFor(node->args, cnt, argsp))
 astPass(pstate, *argsp);
 astPass(pstate, node->fn);
 
@@ -163,7 +163,7 @@ case TypeCheck:
 	}
 
 	// Error out if we have too many arguments
-	int argsunder = ((FnSigAstNode*)fnsig)->parms->used - node->parms->used;
+	int argsunder = ((FnSigAstNode*)fnsig)->parms->used - node->args->used;
 	if (argsunder < 0) {
 		errorMsgNode((AstNode*)node, ErrorManyArgs, "Too many arguments specified vs. function declaration");
 		return;
@@ -173,7 +173,7 @@ case TypeCheck:
 	AstNode **argsp;
 	uint32_t cnt;
 	SymNode *parmp = (SymNode*)((((FnSigAstNode*)fnsig)->parms) + 1);
-	for (nodesFor(node->parms, cnt, argsp)) {
+	for (nodesFor(node->args, cnt, argsp)) {
 		if (!typeCoerces((AstNode*)parmp->node, argsp))
 			errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
 		else
@@ -187,7 +187,7 @@ case TypeCheck:
 			errorMsgNode((AstNode*)node, ErrorFewArgs, "Function call requires more arguments than specified");
 		else {
 			while (argsunder--) {
-				nodesAdd(&node->parms, ((VarDclAstNode*)parmp->node)->value);
+				nodesAdd(&node->args, ((VarDclAstNode*)parmp->node)->value);
 				parmp++;
 			}
 		}

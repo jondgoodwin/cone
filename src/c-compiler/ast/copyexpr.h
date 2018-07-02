@@ -25,7 +25,7 @@ typedef struct AssignAstNode {
 typedef struct FnCallAstNode {
 	TypedAstHdr;
 	AstNode *fn;
-	Nodes *parms;
+	Nodes *args;
 } FnCallAstNode;
 
 typedef struct AddrAstNode {

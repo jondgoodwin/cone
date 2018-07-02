@@ -20,7 +20,7 @@ clock_t startTime;
 
 // Send an error message to stderr
 void errorExit(int exitcode, const char *msg, ...) {
-	// Do a formatted output, passing along all parms
+	// Do a formatted output, passing along all args
 	va_list argptr;
 	va_start(argptr, msg);
 	vfprintf(stderr, msg, argptr);
@@ -46,7 +46,7 @@ void errorOut(int code, const char *msg, va_list args) {
 		fprintf(stderr, "Warning %d: ", code);
 	}
 
-	// Do a formatted output of message, passing along all parms
+	// Do a formatted output of message, passing along all args
 	vfprintf(stderr, msg, args);
 	fputs("\n", stderr);
 }

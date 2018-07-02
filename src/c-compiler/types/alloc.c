@@ -54,7 +54,7 @@ void allocAllocate(AddrAstNode *anode, PtrAstNode *ptype) {
 	usealloc->vtype = allocmeth->vtype;
 	FnCallAstNode *callalloc = newFnCallAstNode((AstNode*)usealloc, 1);
 	callalloc->vtype = allocmeth->vtype;
-	nodesAdd(&callalloc->parms, (AstNode*)szvtuse);
+	nodesAdd(&callalloc->args, (AstNode*)szvtuse);
 	// ---
 	Name *pT = nametblFind("pT", 2);
 	CastAstNode *castvt = newCastAstNode((AstNode*)callalloc, (AstNode*)ptype);

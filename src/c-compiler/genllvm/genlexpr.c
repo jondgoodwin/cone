@@ -222,16 +222,16 @@ LLVMValueRef genlGetIntrinsicFn(GenState *gen, char *fnname, NameUseAstNode *fnu
 LLVMValueRef genlFnCall(GenState *gen, FnCallAstNode *fncall) {
 
 	// Get Valuerefs for all the parameters to pass to the function
-	LLVMValueRef *fnargs = (LLVMValueRef*)memAllocBlk(fncall->parms->used * sizeof(LLVMValueRef*));
+	LLVMValueRef *fnargs = (LLVMValueRef*)memAllocBlk(fncall->args->used * sizeof(LLVMValueRef*));
 	LLVMValueRef *fnarg = fnargs;
 	AstNode **nodesp;
 	uint32_t cnt;
-	for (nodesFor(fncall->parms, cnt, nodesp))
+	for (nodesFor(fncall->args, cnt, nodesp))
 		*fnarg++ = genlExpr(gen, *nodesp);
 
 	// Handle call when we have a pointer to a function
 	if (fncall->fn->asttype == DerefNode) {
-		return LLVMBuildCall(gen->builder, genlExpr(gen, ((DerefAstNode*)fncall->fn)->exp), fnargs, fncall->parms->used, "");
+		return LLVMBuildCall(gen->builder, genlExpr(gen, ((DerefAstNode*)fncall->fn)->exp), fnargs, fncall->args->used, "");
 	}
 
 	// A function call may be to an intrinsic, or to program-defined code
@@ -239,10 +239,10 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallAstNode *fncall) {
     VarDclAstNode *fndcl = (VarDclAstNode *)fnuse->dclnode;
 	switch (fndcl->value? fndcl->value->asttype : BlockNode) {
 	case BlockNode: {
-		return LLVMBuildCall(gen->builder, fndcl->llvmvar, fnargs, fncall->parms->used, "");
+		return LLVMBuildCall(gen->builder, fndcl->llvmvar, fnargs, fncall->args->used, "");
 	}
 	case IntrinsicNode: {
-		NbrAstNode *nbrtype = (NbrAstNode *)typeGetVtype(*nodesNodes(fncall->parms));
+		NbrAstNode *nbrtype = (NbrAstNode *)typeGetVtype(*nodesNodes(fncall->args));
 		int16_t nbrasttype = nbrtype->asttype;
 
 		// Floating point intrinsics
@@ -265,7 +265,7 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallAstNode *fncall) {
 			case SqrtIntrinsic: 
 			{
 				char *fnname = nbrtype->bits == 32 ? "llvm.sqrt.f32" : "llvm.sqrt.f64";
-				return LLVMBuildCall(gen->builder, genlGetIntrinsicFn(gen, fnname, fnuse), fnargs, fncall->parms->used, "");
+				return LLVMBuildCall(gen->builder, genlGetIntrinsicFn(gen, fnname, fnuse), fnargs, fncall->args->used, "");
 			}
 			}
 		}

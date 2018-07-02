@@ -71,7 +71,7 @@ int fnSigMatchesCall(FnSigAstNode *to, FnCallAstNode *caller) {
 	int matchsum = 1;
 
 	// Too many arguments is not a match
-	if (caller->parms->used > to->parms->used)
+	if (caller->args->used > to->parms->used)
 		return 0;
 
 	// Every parameter's type must also match
@@ -79,7 +79,7 @@ int fnSigMatchesCall(FnSigAstNode *to, FnCallAstNode *caller) {
 	AstNode **callnodesp;
 	int16_t cnt;
 	tonodesp = &inodesGet(to->parms, 0);
-	for (nodesFor(caller->parms, cnt, callnodesp)) {
+	for (nodesFor(caller->args, cnt, callnodesp)) {
 		int match;
 		switch (match = typeMatches(((TypedAstNode *)tonodesp->node)->vtype, ((TypedAstNode*)*callnodesp)->vtype)) {
 		case 0: return 0;
@@ -89,7 +89,7 @@ int fnSigMatchesCall(FnSigAstNode *to, FnCallAstNode *caller) {
 		tonodesp++;
 	}
 	// Match fails if not enough arguments & method has no default values on parms
-	if (caller->parms->used != to->parms->used 
+	if (caller->args->used != to->parms->used 
 		&& ((VarDclAstNode *)tonodesp)->value==NULL)
 		return 0;
 

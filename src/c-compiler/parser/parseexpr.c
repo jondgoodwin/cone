@@ -119,7 +119,7 @@ AstNode *parsePostfix(ParseState *parse) {
 			lexNextToken();
 			if (!lexIsToken(RParenToken))
 				while (1) {
-					nodesAdd(&fncall->parms, parseExpr(parse));
+					nodesAdd(&fncall->args, parseExpr(parse));
 					if (lexIsToken(CommaToken))
 						lexNextToken();
 					else
@@ -149,10 +149,10 @@ AstNode *parsePostfix(ParseState *parse) {
 			if (lexIsToken(LParenToken)) {
 				lexNextToken();
 				FnCallAstNode *fncall = newFnCallAstNode(method, 8);
-				nodesAdd(&fncall->parms, node); // treat object as first parameter (self)
+				nodesAdd(&fncall->args, node); // treat object as first parameter (self)
 				if (!lexIsToken(RParenToken)) {
 					while (1) {
-						nodesAdd(&fncall->parms, parseExpr(parse));
+						nodesAdd(&fncall->args, parseExpr(parse));
 						if (lexIsToken(CommaToken))
 							lexNextToken();
 						else
@@ -200,14 +200,14 @@ AstNode *parsePrefix(ParseState *parse) {
 	{
 		FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(nametblFind("neg", 3)), 1);
 		lexNextToken();
-		nodesAdd(&node->parms, parsePrefix(parse));
+		nodesAdd(&node->args, parsePrefix(parse));
 		return (AstNode *)node;
 	}
 	case TildeToken:
 	{
 		FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(nametblFind("~", 1)), 1);
 		lexNextToken();
-		nodesAdd(&node->parms, parsePrefix(parse));
+		nodesAdd(&node->args, parsePrefix(parse));
 		return (AstNode *)node;
 	}
 	case StarToken:
@@ -243,22 +243,22 @@ AstNode *parseMult(ParseState *parse) {
 		if (lexIsToken(StarToken)) {
 			FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(nametblFind("*", 1)), 2);
 			lexNextToken();
-			nodesAdd(&node->parms, lhnode);
-			nodesAdd(&node->parms, parseCast(parse));
+			nodesAdd(&node->args, lhnode);
+			nodesAdd(&node->args, parseCast(parse));
 			lhnode = (AstNode*)node;
 		}
 		else if (lexIsToken(SlashToken)) {
 			FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(nametblFind("/", 1)), 2);
 			lexNextToken();
-			nodesAdd(&node->parms, lhnode);
-			nodesAdd(&node->parms, parseCast(parse));
+			nodesAdd(&node->args, lhnode);
+			nodesAdd(&node->args, parseCast(parse));
 			lhnode = (AstNode*)node;
 		}
 		else if (lexIsToken(PercentToken)) {
 			FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(nametblFind("%", 1)), 2);
 			lexNextToken();
-			nodesAdd(&node->parms, lhnode);
-			nodesAdd(&node->parms, parseCast(parse));
+			nodesAdd(&node->args, lhnode);
+			nodesAdd(&node->args, parseCast(parse));
 			lhnode = (AstNode*)node;
 		}
 		else
@@ -273,15 +273,15 @@ AstNode *parseAdd(ParseState *parse) {
 		if (lexIsToken(PlusToken)) {
 			FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(nametblFind("+", 1)), 2);
 			lexNextToken();
-			nodesAdd(&node->parms, lhnode);
-			nodesAdd(&node->parms, parseMult(parse));
+			nodesAdd(&node->args, lhnode);
+			nodesAdd(&node->args, parseMult(parse));
 			lhnode = (AstNode*)node;
 		}
 		else if (lexIsToken(DashToken)) {
 			FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(nametblFind("-", 1)), 2);
 			lexNextToken();
-			nodesAdd(&node->parms, lhnode);
-			nodesAdd(&node->parms, parseMult(parse));
+			nodesAdd(&node->args, lhnode);
+			nodesAdd(&node->args, parseMult(parse));
 			lhnode = (AstNode*)node;
 		}
 		else
@@ -296,8 +296,8 @@ AstNode *parseAnd(ParseState *parse) {
 		if (lexIsToken(AmperToken)) {
 			FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(nametblFind("&", 1)), 2);
 			lexNextToken();
-			nodesAdd(&node->parms, lhnode);
-			nodesAdd(&node->parms, parseAdd(parse));
+			nodesAdd(&node->args, lhnode);
+			nodesAdd(&node->args, parseAdd(parse));
 			lhnode = (AstNode*)node;
 		}
 		else
@@ -312,8 +312,8 @@ AstNode *parseXor(ParseState *parse) {
 		if (lexIsToken(CaretToken)) {
 			FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(nametblFind("^", 1)), 2);
 			lexNextToken();
-			nodesAdd(&node->parms, lhnode);
-			nodesAdd(&node->parms, parseAnd(parse));
+			nodesAdd(&node->args, lhnode);
+			nodesAdd(&node->args, parseAnd(parse));
 			lhnode = (AstNode*)node;
 		}
 		else
@@ -328,8 +328,8 @@ AstNode *parseOr(ParseState *parse) {
 		if (lexIsToken(BarToken)) {
 			FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(nametblFind("|", 1)), 2);
 			lexNextToken();
-			nodesAdd(&node->parms, lhnode);
-			nodesAdd(&node->parms, parseXor(parse));
+			nodesAdd(&node->args, lhnode);
+			nodesAdd(&node->args, parseXor(parse));
 			lhnode = (AstNode*)node;
 		}
 		else
@@ -355,8 +355,8 @@ AstNode *parseCmp(ParseState *parse) {
 
 	FnCallAstNode *node = newFnCallAstNode((AstNode*)newMemberUseNode(nametblFind(cmpop, cmpsz)), 2);
 	lexNextToken();
-	nodesAdd(&node->parms, lhnode);
-	nodesAdd(&node->parms, parseOr(parse));
+	nodesAdd(&node->args, lhnode);
+	nodesAdd(&node->args, parseOr(parse));
 	return (AstNode*)node;
 }
 
