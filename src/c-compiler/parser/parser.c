@@ -128,7 +128,7 @@ char *parseFile() {
 	return filename;
 }
 
-void parseStmts(ParseState *parse, ModuleAstNode *mod);
+void parseGlobalStmts(ParseState *parse, ModuleAstNode *mod);
 
 // Parse include statement
 void parseInclude(ParseState *parse) {
@@ -138,7 +138,7 @@ void parseInclude(ParseState *parse) {
 	parseSemi();
 
 	lexInjectFile(filename);
-	parseStmts(parse, parse->mod);
+	parseGlobalStmts(parse, parse->mod);
 	if (lex->toktype != EofToken) {
 		errorMsgLex(ErrorNoEof, "Expected end-of-file");
 	}
@@ -175,49 +175,45 @@ AstNode *parseFnOrVar(ParseState *parse) {
 
 ModuleAstNode *parseModule(ParseState *parse);
 
-void parseStmts(ParseState *parse, ModuleAstNode *mod) {
-	Nodes **modnodes = &mod->nodes;
-	AstNode *node;
+// Parse a global area statement (within a module)
+// modAddNode adds node to module, as needed, including error message for dupes
+void parseGlobalStmts(ParseState *parse, ModuleAstNode *mod) {
+    AstNode *node;
 
 	// Create and populate a Module node for the program
 	while (!lexIsToken(EofToken) && !lexIsToken(RCurlyToken)) {
-		node = NULL;
 		switch (lex->toktype) {
 
 		case IncludeToken:
 			parseInclude(parse);
-			continue; // Does not generate a node
+			break;
 
 		case ModToken:
-			node = (AstNode*)parseModule(parse);
+            modAddNode(mod, (AstNode*)parseModule(parse));
 			break;
 
-		// 'struct' definition
+		// 'struct'-style type definition
 		case StructToken:
 		case AllocToken:
-			node = parseStruct(parse);
+            modAddNode(mod, parseStruct(parse));
 			break;
 
+        // Function or variable (including extern qualifier)
 		case ExternToken:
 		case FnToken:
 		case PermToken:
-			if (!(node = parseFnOrVar(parse))) {
+            if (node = parseFnOrVar(parse))
+                modAddNode(mod, node);
+            else {
 				errorMsgLex(ErrorBadGloStmt, "Invalid global area statement");
 				parseSkipToNextStmt();
-				continue; // restart loop for next statement
 			}
 			break;
 
 		default:
 			errorMsgLex(ErrorBadGloStmt, "Invalid global area statement");
 			parseSkipToNextStmt();
-			continue; // restart loop for next statement
-		}
-
-		// Add parsed node to module
-		// Note: will generate an error if name is a duplicate
-		if (node != NULL) {
-			modAddNode(mod, node);
+			break;
 		}
 	}
 }
@@ -226,7 +222,7 @@ void parseStmts(ParseState *parse, ModuleAstNode *mod) {
 ModuleAstNode *parseModuleBlk(ParseState *parse, ModuleAstNode *mod) {
 	parse->mod = mod;
 	modHook((ModuleAstNode*)mod->owner, mod);
-	parseStmts(parse, mod);
+	parseGlobalStmts(parse, mod);
 	modHook(mod, (ModuleAstNode*)mod->owner);
 	parse->mod = (ModuleAstNode*)mod->owner;
 	return mod;
