@@ -36,46 +36,55 @@ void blockPrint(BlockAstNode *blk) {
 	}
 }
 
+// Handle name resolution and control structure compliance for a block
+// - push and pop a namespace context for hooking local vars in global name table
+// - Ensure return/continue/break only appear as last statement in block
+void blockResolvePass(PassState *pstate, BlockAstNode *blk) {
+    int16_t oldscope = pstate->scope;
+    blk->scope = ++pstate->scope; // Increment scope counter
+
+    nametblHookPush(); // Ensure block's local variable declarations are hooked
+
+    AstNode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(blk->stmts, cnt, nodesp)) {
+        // Ensure 'return', 'break', 'continue' only appear as last statement in a block
+        if (cnt > 1) {
+            switch ((*nodesp)->asttype) {
+            case ReturnNode:
+                errorMsgNode(*nodesp, ErrorRetNotLast, "return may only appear as the last statement in a block"); break;
+            case BreakNode:
+                errorMsgNode(*nodesp, ErrorRetNotLast, "break may only appear as the last statement in a block"); break;
+            case ContinueNode:
+                errorMsgNode(*nodesp, ErrorRetNotLast, "continue may only appear as the last statement in a block"); break;
+            }
+        }
+        astPass(pstate, *nodesp);
+    }
+
+    nametblHookPop();  // Unhook local variables from global name table
+    pstate->scope = oldscope;
+}
+
+// Handle type-checking for a block. 
+// Mostly this is a pass-through to type-check the block's statements.
+// Note: When coerced by typeCoerces, vtype of the block will be specified
+void blockTypePass(PassState *pstate, BlockAstNode *blk) {
+    AstNode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(blk->stmts, cnt, nodesp)) {
+        astPass(pstate, *nodesp);
+    }
+}
+
 // Check the block's AST
 void blockPass(PassState *pstate, BlockAstNode *blk) {
-	int16_t oldscope = pstate->scope;
-	blk->scope = ++pstate->scope; // Increment scope counter
-	BlockAstNode *oldblk = pstate->blk;
-	pstate->blk = blk;
-
-    if (pstate->pass == NameResolution)
-        nametblHookPush();
-
-	// Traverse block info
-	AstNode **nodesp;
-	uint32_t cnt;
-	for (nodesFor(blk->stmts, cnt, nodesp)) {
-		// A return can only appear as the last statement in a block
-		if (pstate->pass == NameResolution && cnt > 1) {
-			switch ((*nodesp)->asttype) {
-			case ReturnNode:
-				errorMsgNode(*nodesp, ErrorRetNotLast, "return may only appear as the last statement in a block"); break;
-			case BreakNode:
-				errorMsgNode(*nodesp, ErrorRetNotLast, "break may only appear as the last statement in a block"); break;
-			case ContinueNode:
-				errorMsgNode(*nodesp, ErrorRetNotLast, "continue may only appear as the last statement in a block"); break;
-			}
-		}
-		astPass(pstate, *nodesp);
-	}
-
 	switch (pstate->pass) {
 	case NameResolution:
-		// Unhook local variables from global name table that hooked themselves earlier
-		nametblHookPop(); break;
-
+		blockResolvePass(pstate, blk); break;
 	case TypeCheck:
-		// When coerced by typeCoerces, vtype of the block will be specified
-		break;
+        blockTypePass(pstate, blk); break;
 	}
-
-	pstate->blk = oldblk;
-	pstate->scope = oldscope;
 }
 
 // Create a new If node

@@ -218,7 +218,6 @@ typedef struct PassState {
 	int pass;				// Passes
 	ModuleAstNode *mod;		// Current module
 	FnSigAstNode *fnsig;	// The type signature of the function we are within
-	BlockAstNode *blk;		// The current block we are within
 
 	int16_t scope;			// The current block scope (0=global, 1=fnsig, 2+=blocks)
 	uint16_t flags;
