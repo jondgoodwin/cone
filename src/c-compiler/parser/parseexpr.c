@@ -19,41 +19,39 @@
 
 AstNode *parseAddr(ParseState *parse);
 
-// Parse a name use, which may be prefixed with module paths
+// Parse a name use, which may be qualified with module names
 AstNode *parseNameUse(ParseState *parse) {
-	NamedAstNode *childmod;
+    NameUseAstNode *nameuse = newNameUseNode(NULL);
 
-	// Relative path default is current module
-	ModuleAstNode *mod = parse->mod;
-
-	// Absolute path starts with '::', referring to program's module
-	if (lexIsToken(DblColonToken)) {
-		mod = parse->pgmmod;
-		lexNextToken();
-	}
-
-	// Walk down through module names
-	while (lexIsToken(IdentToken) && (childmod = namespaceFind(&mod->namednodes, lex->val.ident))) {
-		if (childmod->asttype != ModuleNode)
-			break;
-		mod = (ModuleAstNode*)childmod;
-		lexNextToken();
-		if (!lexIsToken(DblColonToken)) {
-			errorMsgLex(ErrorNoDbl, "Missing '::' after module name qualifier");
-			return (AstNode*)mod;
-		}
-		lexNextToken();
-	}
-
-	// At last we get to the variable name
-	if (!lexIsToken(IdentToken)) {
-		errorMsgLex(ErrorNoVar, "Missing variable name after module path");
-		return (AstNode*)mod;
-	}
-	NameUseAstNode *nameuse = newNameUseNode(lex->val.ident);
-	nameuse->mod = mod;
-	lexNextToken();
-	return (AstNode *)nameuse;
+    int baseset = 0;
+    if (lexIsToken(DblColonToken)) {
+        nameUseBaseMod(nameuse, parse->pgmmod);
+        baseset = 1;
+    }
+    while (1) {
+        if (lexIsToken(IdentToken)) {
+            Name *name = lex->val.ident;
+            lexNextToken();
+            // Identifier is a module qualifier
+            if (lexIsToken(DblColonToken)) {
+                if (!baseset)
+                    nameUseBaseMod(nameuse, parse->mod); // relative to current module
+                nameUseAddQual(nameuse, name);
+                lexNextToken();
+            }
+            // Identifier is the actual name itself
+            else {
+                nameuse->namesym = name;
+                break;
+            }
+        }
+        // Can only get here if previous token was double quotes
+        else {
+            errorMsgLex(ErrorNoVar, "Missing variable name after module qualifiers");
+            break;
+        }
+    }
+    return (AstNode*)nameuse;
 }
 
 // Parse a term: literal, identifier, etc.

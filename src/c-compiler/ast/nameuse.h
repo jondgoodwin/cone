@@ -7,15 +7,19 @@
 #ifndef nameuse_h
 #define nameuse_h
 
+typedef struct NameList NameList;
+
 // Name use node - when populated, it refers to the applicable declaration for the name
 typedef struct NameUseAstNode {
 	TypedAstHdr;
 	Name *namesym;			// Pointer to the global name table entry
-	ModuleAstNode *mod;		// Module this name belongs to
-	NamedAstNode *dclnode;	// Declaration of this name (NULL until names are resolved)
+    NamedAstNode *dclnode;	// Node that declares this name (NULL until names are resolved)
+    NameList *qualNames;    // Pointer to list of module qualifiers (NULL if none)
 } NameUseAstNode;
 
-NameUseAstNode *newNameUseNode(Name *namesym);
+NameUseAstNode *newNameUseNode(Name *name);
+void nameUseBaseMod(NameUseAstNode *node, ModuleAstNode *basemod);
+void nameUseAddQual(NameUseAstNode *node, Name *name);
 NameUseAstNode *newMemberUseNode(Name *namesym);
 void nameUsePrint(NameUseAstNode *name);
 void nameUsePass(PassState *pstate, NameUseAstNode *name);
