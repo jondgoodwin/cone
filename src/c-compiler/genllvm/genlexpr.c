@@ -104,11 +104,11 @@ LLVMTypeRef genlType(GenState *gen, AstNode *typ) {
 	if (typ->asttype == TypeNameUseTag || typ->asttype == AllocNameDclNode) {
 		// with vtype name use, we can memoize type value and give it a name
 		TypeDclAstNode *dclnode = typ->asttype==AllocNameDclNode? (TypeDclAstNode*)typ : (TypeDclAstNode*)((NameUseAstNode*)typ)->dclnode;
-		if (dclnode->llvmvar)
-			return (LLVMTypeRef)dclnode->llvmvar;
+		if (dclnode->llvmtype)
+			return dclnode->llvmtype;
 
 		// Also process the type's methods
-		LLVMTypeRef typeref = (LLVMTypeRef)(dclnode->llvmvar = (LLVMValueRef)_genlType(gen, &dclnode->namesym->namestr, dclnode->value));
+		LLVMTypeRef typeref = dclnode->llvmtype = _genlType(gen, &dclnode->namesym->namestr, dclnode->value);
 		AstNode **nodesp;
 		uint32_t cnt;
 		TypeAstNode *tnode = (TypeAstNode*)dclnode->value;

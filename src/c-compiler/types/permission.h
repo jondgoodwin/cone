@@ -42,7 +42,6 @@ enum Perm {
 // If off, the permission's designated locking mechanism must be wrapped around all content access.
 #define IsLockless 0x40
 
-void permDclNames();
 PermAstNode *newPermNode(char ptyp, uint16_t flags, AstNode *locker);
 void permPrint(PermAstNode *node);
 uint16_t permGetFlags(AstNode *node);
