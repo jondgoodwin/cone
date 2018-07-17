@@ -140,7 +140,7 @@ AstNode *parsePostfix(ParseState *parse) {
 			}
 			AstNode *method = (AstNode*)newNameUseNode(lex->val.ident);
 			lexNextToken();
-			method->asttype = MemberUseNode;
+			method->asttype = MbrNameUseTag;
 			
 			// If parameters provided, make this a function call
 			// (where MemberUseNode signals it is an OO call)

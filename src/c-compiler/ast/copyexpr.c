@@ -39,7 +39,7 @@ void assignPrint(AssignAstNode *node) {
 // expression is valid lval expression
 int isLval(AstNode *node) {
 	switch (node->asttype) {
-	case NameUseNode:
+	case VarNameUseTag:
 	case DerefNode:
 	case DotOpNode:
 		return 1;
@@ -134,12 +134,12 @@ switch (pstate->pass) {
 case TypeCheck:
 {
 	// If this is an object call, resolve method name within first argument's type
-	if (node->fn->asttype == MemberUseNode) {
+	if (node->fn->asttype == MbrNameUseTag) {
 		NameUseAstNode *methname = (NameUseAstNode*)node->fn;
 		Name *methsym = methname->namesym;
 		VarDclAstNode *method;
 		if (method = fnCallFindMethod(node, methsym)) {
-			methname->asttype = NameUseNode;
+			methname->asttype = VarNameUseTag;
 			methname->dclnode = (NamedAstNode*)method;
 			methname->vtype = methname->dclnode->vtype;
 		}
@@ -216,7 +216,7 @@ void addrPrint(AddrAstNode *node) {
 // Type check borrowed reference creator
 void addrTypeCheckBorrow(AddrAstNode *node, PtrAstNode *ptype) {
 	AstNode *exp = node->exp;
-	if (exp->asttype != NameUseNode || ((NameUseAstNode*)exp)->dclnode->asttype != VarNameDclNode) {
+	if (exp->asttype != VarNameUseTag || ((NameUseAstNode*)exp)->dclnode->asttype != VarNameDclNode) {
 		errorMsgNode((AstNode*)node, ErrorNotLval, "May only borrow from lvals (e.g., variable)");
 		return;
 	}

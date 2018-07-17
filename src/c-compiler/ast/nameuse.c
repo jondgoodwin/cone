@@ -1,4 +1,4 @@
-/** AST handling for variable declaration nodes
+/** Name and Field Use nodes.
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -14,7 +14,7 @@
 #include <string.h>
 #include <assert.h>
 
-// A list of Module names
+// A list of module names (qualifiers)
 typedef struct NameList {
     uint16_t avail;     // Max. number of names allocated for
     uint16_t used;      // Number of names stored in list
@@ -25,7 +25,7 @@ typedef struct NameList {
 // Create a new name use node
 NameUseAstNode *newNameUseNode(Name *namesym) {
 	NameUseAstNode *name;
-	newAstNode(name, NameUseAstNode, NameUseNode);
+	newAstNode(name, NameUseAstNode, NameUseTag);
 	name->qualNames = NULL;
 	name->dclnode = NULL;
     name->namesym = namesym;
@@ -34,7 +34,7 @@ NameUseAstNode *newNameUseNode(Name *namesym) {
 
 NameUseAstNode *newMemberUseNode(Name *namesym) {
 	NameUseAstNode *name;
-	newAstNode(name, NameUseAstNode, MemberUseNode);
+	newAstNode(name, NameUseAstNode, MbrNameUseTag);
     name->qualNames = NULL;
     name->dclnode = NULL;
     name->namesym = namesym;
@@ -107,7 +107,13 @@ void nameUsePass(PassState *pstate, NameUseAstNode *name) {
             // For current module, should already be hooked in global name table
 			name->dclnode = (NamedAstNode*)name->namesym->node;
 
-		if (name->dclnode == NULL)
+        if (name->dclnode) {
+            if (name->dclnode->asttype == VarNameDclNode)
+                name->asttype = VarNameUseTag;
+            else
+                name->asttype = TypeNameUseTag;
+        }
+        else
 			errorMsgNode((AstNode*)name, ErrorUnkName, "The name %s does not refer to a declared name", &name->namesym->namestr);
 		break;
 	case TypeCheck:
@@ -115,4 +121,3 @@ void nameUsePass(PassState *pstate, NameUseAstNode *name) {
 		break;
 	}
 }
-

@@ -47,8 +47,7 @@ enum AstGroup {
 
 // Retrieve the group for an ast type
 #define astgroup(typ) ((typ)>>8)
-#define isExpNode(node) (astgroup(node->asttype)==ExpGroup \
-  || (node->asttype==NameUseNode && astgroup((((NameUseAstNode*)node)->dclnode)->asttype)==ExpGroup))
+#define isExpNode(node) (astgroup(node->asttype)==ExpGroup)
 
 // All the possible types for an AstNode
 enum AstType {
@@ -65,11 +64,12 @@ enum AstType {
 	ContinueNode,	// Continue node
 
 	// Name usage (we do not know what type of name it is until name resolution pass)
-	NameUseNode,	// Name use node
+	NameUseTag,  	// Name use node (pre-name resolution)
 
 	// Expression nodes (having value type - or sometimes nullType)
 	VarNameDclNode = (ExpGroup<<8),
-	MemberUseNode,	// Member of a type's namespace (field/method)
+    VarNameUseTag,  // Variable or Function name use node  
+	MbrNameUseTag,	// Member of a type's namespace (field/method)
 	FnTupleNode,    // List of namespace's methods with same name
 	ULitNode,		// Integer literal
 	FLitNode,		// Float literal
@@ -89,6 +89,7 @@ enum AstType {
 
 	// Value type AST nodes
 	VtypeNameDclNode = (VTypeGroup<<8),
+    TypeNameUseTag, // Type name use node
 	VoidType,	// representing no values, e.g., no return values on a fn
 	IntNbrType,	// Integer
 	UintNbrType,	// Unsigned integer

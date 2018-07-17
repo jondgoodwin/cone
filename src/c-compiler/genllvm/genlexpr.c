@@ -101,7 +101,7 @@ LLVMTypeRef _genlType(GenState *gen, char *name, AstNode *typ) {
 // Generate a type value
 LLVMTypeRef genlType(GenState *gen, AstNode *typ) {
 	char *name = "";
-	if (typ->asttype == NameUseNode || typ->asttype == AllocNameDclNode) {
+	if (typ->asttype == TypeNameUseTag || typ->asttype == AllocNameDclNode) {
 		// with vtype name use, we can memoize type value and give it a name
 		TypeDclAstNode *dclnode = typ->asttype==AllocNameDclNode? (TypeDclAstNode*)typ : (TypeDclAstNode*)((NameUseAstNode*)typ)->dclnode;
 		if (dclnode->llvmvar)
@@ -442,7 +442,7 @@ LLVMValueRef genlLocalVar(GenState *gen, VarDclAstNode *var) {
 // Generate an lval pointer
 LLVMValueRef genlLval(GenState *gen, AstNode *lval) {
 	switch (lval->asttype) {
-	case NameUseNode:
+	case VarNameUseTag:
 		return ((VarDclAstNode*)((NameUseAstNode *)lval)->dclnode)->llvmvar;
 	case DerefNode:
 		return genlExpr(gen, ((DerefAstNode *)lval)->exp);
@@ -473,7 +473,7 @@ LLVMValueRef genlExpr(GenState *gen, AstNode *termnode) {
 		LLVMSetInitializer(sglobal, LLVMConstStringInContext(gen->context, strlit, size, 1));
 		return LLVMBuildStructGEP(gen->builder, sglobal, 0, "");
 	}
-	case NameUseNode:
+	case VarNameUseTag:
 	{
 		VarDclAstNode *vardcl = (VarDclAstNode*)((NameUseAstNode *)termnode)->dclnode;
 		return LLVMBuildLoad(gen->builder, vardcl->llvmvar, &vardcl->namesym->namestr);
@@ -496,7 +496,7 @@ LLVMValueRef genlExpr(GenState *gen, AstNode *termnode) {
 		AddrAstNode *anode = (AddrAstNode*)termnode;
 		PtrAstNode *ptype = (PtrAstNode *)anode->vtype;
 		if (ptype->alloc == voidType) {
-			assert(anode->exp->asttype == NameUseNode);
+			assert(anode->exp->asttype == VarNameUseTag);
 			NameUseAstNode *var = (NameUseAstNode*)anode->exp;
 			return ((VarDclAstNode*)var->dclnode)->llvmvar;
 		}

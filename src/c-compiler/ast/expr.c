@@ -114,7 +114,7 @@ void dotOpPrint(DotOpAstNode *node) {
 void dotOpPass(PassState *pstate, DotOpAstNode *node) {
 	astPass(pstate, node->instance);
 	if (pstate->pass == TypeCheck) {
-		if (node->field->asttype == MemberUseNode) {
+		if (node->field->asttype == MbrNameUseTag) {
 			derefAuto(&node->instance);
 			AstNode *ownvtype = typeGetVtype(node->instance);
 			if (ownvtype->asttype == StructType) {
@@ -122,7 +122,7 @@ void dotOpPass(PassState *pstate, DotOpAstNode *node) {
 				Name *fldsym = fldname->namesym;
 				NamedAstNode *fieldnode = nodesFind(((FieldsAstNode *)ownvtype)->fields, fldsym);
 				if (fieldnode) {
-					fldname->asttype = NameUseNode;
+					fldname->asttype = VarNameUseTag;
 					fldname->dclnode = fieldnode;
 					node->vtype = fldname->vtype = fldname->dclnode->vtype;
 				}
