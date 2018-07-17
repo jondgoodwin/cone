@@ -21,7 +21,7 @@
 PermAstNode *parsePerm(PermAstNode *defperm) {
 	if (lexIsToken(PermToken)) {
 		PermAstNode *perm;
-		perm = (PermAstNode*)((TypeDclAstNode *)lex->val.ident->node)->value;
+		perm = (PermAstNode*)((TypeDclAstNode *)lex->val.ident->node)->typedefnode;
 		lexNextToken();
 		return perm;
 	}
@@ -33,7 +33,7 @@ PermAstNode *parsePerm(PermAstNode *defperm) {
 void parseAllocPerm(PtrAstNode *refnode) {
 	if (lexIsToken(IdentToken)
 		&& lex->val.ident->node && lex->val.ident->node->asttype == AllocNameDclNode) {
-		refnode->alloc = ((TypeDclAstNode *)lex->val.ident->node)->value;
+		refnode->alloc = ((TypeDclAstNode *)lex->val.ident->node)->typedefnode;
 		lexNextToken();
 		refnode->perm = parsePerm(uniPerm);
 	}

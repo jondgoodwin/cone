@@ -108,10 +108,10 @@ LLVMTypeRef genlType(GenState *gen, AstNode *typ) {
 			return dclnode->llvmtype;
 
 		// Also process the type's methods
-		LLVMTypeRef typeref = dclnode->llvmtype = _genlType(gen, &dclnode->namesym->namestr, dclnode->value);
+		LLVMTypeRef typeref = dclnode->llvmtype = _genlType(gen, &dclnode->namesym->namestr, dclnode->typedefnode);
 		AstNode **nodesp;
 		uint32_t cnt;
-		TypeAstNode *tnode = (TypeAstNode*)dclnode->value;
+		TypeAstNode *tnode = (TypeAstNode*)dclnode->typedefnode;
 		if (tnode->methods) {
 			// Declare just method names first, enabling forward references
 			for (nodesFor(tnode->methods, cnt, nodesp)) {

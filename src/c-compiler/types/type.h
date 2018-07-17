@@ -11,16 +11,53 @@
 #include <stdint.h>
 typedef struct Name Name;
 
+// Named type node header (most types are named)
+#define NamedTypeAstHdr \
+    NamedAstHdr; \
+    LLVMTypeRef llvmtype
+
+// Named type node interface (most types are named)
+// A named type needs to remember generated LLVM type ref for typenameuse nodes
+typedef struct NamedTypeAstNode {
+    NamedTypeAstHdr;
+} NamedTypeAstNode;
+
+// Named type that supports methods
+#define MethodTypeAstHdr \
+    NamedTypeAstHdr; \
+	Nodes *methods; \
+	Nodes *subtypes
+
+// Interface for a named type that supports methods
+// -> methods (Nodes) is the dictionary of named methods
+// -> subtypes (Nodes) is the list of trait/interface subtypes it implements
+typedef struct MethodTypeAstNode {
+    MethodTypeAstHdr;
+} MethodTypeAstNode;
+
+// Type Ast Node header for all type structures
+// - methods is the list of a type instance's methods
+// - subtypes is the list of traits, etc. the type implements
+#define TypeAstHdr \
+	TypedAstHdr; \
+	Nodes *methods; \
+	Nodes *subtypes
+
+// Castable structure for all type AST nodes
+typedef struct TypeAstNode {
+    TypeAstHdr;
+} TypeAstNode;
+
 // Named type declaration node
 typedef struct TypeDclAstNode {
     NamedAstHdr;				// 'vtype': type of this name's value
     LLVMTypeRef llvmtype;		// LLVM's handle for a declared type (for generation)
-    AstNode *value;				// Type's declaration node (NULL if not initialized)
+    AstNode *typedefnode;				// Type's declaration node (NULL if not initialized)
 } TypeDclAstNode;
 
 // Void type - e.g., for fn with no return value
 typedef struct VoidTypeAstNode {
-	TypeAstHdr;
+	BasicAstHdr;
 } VoidTypeAstNode;
 
 // For arrays

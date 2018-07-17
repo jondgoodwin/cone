@@ -17,7 +17,7 @@
 	if (isValueNode(node)) \
 		node = ((TypedAstNode *)node)->vtype; \
 	if (node->asttype == TypeNameUseTag) \
-		node = ((TypeDclAstNode*)((NameUseAstNode *)node)->dclnode)->value; \
+		node = ((TypeDclAstNode*)((NameUseAstNode *)node)->dclnode)->typedefnode; \
 }
 
 // Return value type
@@ -62,9 +62,9 @@ int typeIsSame(AstNode *node1, AstNode *node2) {
 int typeMatches(AstNode *totype, AstNode *fromtype) {
 	// Convert, if needed, from names to the type declaration
 	if (totype->asttype == TypeNameUseTag)
-		totype = ((TypeDclAstNode*)((NameUseAstNode *)totype)->dclnode)->value;
+		totype = ((TypeDclAstNode*)((NameUseAstNode *)totype)->dclnode)->typedefnode;
 	if (fromtype->asttype == TypeNameUseTag)
-		fromtype = ((TypeDclAstNode*)((NameUseAstNode *)fromtype)->dclnode)->value;
+		fromtype = ((TypeDclAstNode*)((NameUseAstNode *)fromtype)->dclnode)->typedefnode;
 
 	// If they are the same value type info, types match
 	if (totype == fromtype)
@@ -189,7 +189,7 @@ TypeDclAstNode *newTypeDclNode(Name *namesym, uint16_t asttype, AstNode *type, A
     name->vtype = type;
     name->owner = NULL;
     name->namesym = namesym;
-    name->value = val;
+    name->typedefnode = val;
     name->llvmtype = NULL;
     return name;
 }
@@ -204,17 +204,17 @@ void newTypeDclNodeStr(char *namestr, uint16_t asttype, AstNode *type) {
 
 // Check the value type declaration's AST
 void nameVtypeDclPass(PassState *pstate, TypeDclAstNode *name) {
-    astPass(pstate, name->value);
+    astPass(pstate, name->typedefnode);
 }
 
 // Serialize the AST for a type declaration
 void typeDclPrint(TypeDclAstNode *name) {
     astFprint("%s ", &name->namesym->namestr);
     astPrintNode(name->vtype);
-    if (name->value) {
+    if (name->typedefnode) {
         astFprint(" = ");
-        if (name->value->asttype == BlockNode)
+        if (name->typedefnode->asttype == BlockNode)
             astPrintNL();
-        astPrintNode(name->value);
+        astPrintNode(name->typedefnode);
     }
 }

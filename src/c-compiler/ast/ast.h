@@ -94,17 +94,16 @@ enum AstType {
     FnSig,		// Also method, closure, behavior, co-routine, thread, ...
     VoidType,	// representing no values, e.g., no return values on a fn
 
-    PermType,
-    AllocType,
+    RefType,	// Reference
+    PtrType,	// Pointer
+
     IntNbrType,	// Integer
     UintNbrType,	// Unsigned integer
     FloatNbrType,	// Floating point number
-    RefType,	// Reference
-    PtrType,	// Pointer
     StructType,	// Also interface, trait, tuple, actor, etc.
     ArrayType,	// Also dynamic arrays? SOA?
-    EnumType,	// Also sum type, etc.?
-    ModuleType,	// Modules, Generics ?
+    PermType,
+    AllocType,
 
     // Named type node
 	VtypeNameDclNode = TypeGroup + NamedNode,
@@ -166,22 +165,9 @@ typedef struct NamedAstNode {
 	NamedAstHdr;
 } NamedAstNode;
 
-// Type Ast Node header for all type structures
-// - methods is the list of a type instance's methods
-// - subtypes is the list of traits, etc. the type implements
-#define TypeAstHdr \
-	TypedAstHdr; \
-	Nodes *methods; \
-	Nodes *subtypes
 
-// Castable structure for all type AST nodes
-typedef struct TypeAstNode {
-	TypeAstHdr;
-} TypeAstNode;
-
-
-#include "../types/permission.h"
 #include "../types/type.h"
+#include "../types/permission.h"
 #include "../types/fnsig.h"
 #include "../types/number.h"
 #include "../types/pointer.h"
