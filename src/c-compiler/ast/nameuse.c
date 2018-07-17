@@ -97,7 +97,7 @@ void nameUsePass(PassState *pstate, NameUseAstNode *name) {
             while (cnt--) {
                 mod = (ModuleAstNode*)namespaceFind(&mod->namednodes, *namep++);
                 if (mod==NULL || mod->asttype!=ModuleNode) {
-                    errorMsgNode((AstNode*)name, ErrorUnkName, "Module %s does not exist", (*--namep)->namestr);
+                    errorMsgNode((AstNode*)name, ErrorUnkName, "Module %s does not exist", &(*--namep)->namestr);
                     return;
                 }
             }

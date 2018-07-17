@@ -228,7 +228,7 @@ void addrTypeCheckBorrow(AddrAstNode *node, PtrAstNode *ptype) {
 void addrPass(PassState *pstate, AddrAstNode *node) {
 	astPass(pstate, node->exp);
 	if (pstate->pass == TypeCheck) {
-		if (!isExpNode(node->exp)) {
+		if (!isValueNode(node->exp)) {
 			errorMsgNode(node->exp, ErrorBadTerm, "Needs to be an expression");
 			return;
 		}

@@ -243,7 +243,7 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallAstNode *fncall) {
 	}
 	case IntrinsicNode: {
 		NbrAstNode *nbrtype = (NbrAstNode *)typeGetVtype(*nodesNodes(fncall->args));
-		int16_t nbrasttype = nbrtype->asttype;
+		uint16_t nbrasttype = nbrtype->asttype;
 
 		// Floating point intrinsics
 		if (nbrasttype == FloatNbrType) {

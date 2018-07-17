@@ -36,29 +36,27 @@ typedef struct Lexer Lexer;		// ../parser/lexer.h
 
 typedef struct PassState PassState;
 
-// AST groupings - every node belongs to one of these groups
-enum AstGroup {
-	VoidGroup,	// Statements that return no value
-	ExpGroup,	// Nodes that return a value
-	VTypeGroup,	// Nodes that describe a value type
-	PermGroup,	// Nodes that describe a permission type
-	AllocGroup	// Nodes that describe an allocator type
-};
+// Flags found at the type of an AST tag
+#define VoidGroup  0x0000   // Statement nodes that return no value
+#define ValueGroup 0x4000   // Nodes that return a value
+#define TypeGroup  0x8000   // Nodes that define or refer to a type
+#define GroupMask  0xC000
+#define NamedNode  0x2000   // Node that defines a named item (not nameuse)
 
-// Retrieve the group for an ast type
-#define astgroup(typ) ((typ)>>8)
-#define isExpNode(node) (astgroup(node->asttype)==ExpGroup)
+// Easy checks on the kind of node it is based on high-level flags
+#define isValueNode(node) (((node)->asttype & GroupMask) == ValueGroup)
+#define isTypeNode(node) (((node)->asttype & GroupMask) == TypeGroup)
+#define isNamedNode(node) ((node)->asttype & NamedNode)
 
 // All the possible types for an AstNode
 enum AstType {
 	// Lexer-only nodes that are *never* found in a program's AST.
 	// KeywordNode exists for name table consistency
-	KeywordNode = (VoidGroup<<8),	// Keyword token (flags is the keyword's token type)
+	KeywordNode = VoidGroup,	// Keyword token (flags is the keyword's token type)
 
 	// Untyped (Basic) AST nodes
-	ModuleNode,		// Program (global area)
-	IntrinsicNode,		// Alternative to fndcl block for internal operations (e.g., add)
-	ReturnNode,		// Return node
+	IntrinsicNode,	// Alternative to fndcl block for internal operations (e.g., add)
+	ReturnNode,     // Return node
 	WhileNode,		// While node
 	BreakNode,		// Break node
 	ContinueNode,	// Continue node
@@ -66,9 +64,10 @@ enum AstType {
 	// Name usage (we do not know what type of name it is until name resolution pass)
 	NameUseTag,  	// Name use node (pre-name resolution)
 
-	// Expression nodes (having value type - or sometimes nullType)
-	VarNameDclNode = (ExpGroup<<8),
-    VarNameUseTag,  // Variable or Function name use node  
+    ModuleNode = VoidGroup + NamedNode,		// Program (global area)
+
+    // Expression nodes (having value type - or sometimes nullType)
+    VarNameUseTag = ValueGroup,  // Variable or Function name use node  
 	MbrNameUseTag,	// Member of a type's namespace (field/method)
 	FnTupleNode,    // List of namespace's methods with same name
 	ULitNode,		// Integer literal
@@ -87,28 +86,30 @@ enum AstType {
 	BlockNode,		// Block (list of statements)
 	IfNode,			// if .. elif .. else statement
 
-	// Value type AST nodes
-	VtypeNameDclNode = (VTypeGroup<<8),
-    TypeNameUseTag, // Type name use node
-	VoidType,	// representing no values, e.g., no return values on a fn
-	IntNbrType,	// Integer
-	UintNbrType,	// Unsigned integer
-	FloatNbrType,	// Floating point number
-	RefType,	// Reference
-	PtrType,	// Pointer
-	FnSig,		// Also method, closure, behavior, co-routine, thread, ...
-	StructType,	// Also interface, trait, tuple, actor, etc.
-	ArrayType,	// Also dynamic arrays? SOA?
-	EnumType,	// Also sum type, etc.?
-	ModuleType,	// Modules, Generics ?
+    // Named value node
+    VarNameDclNode = ValueGroup + NamedNode,
 
-	// Permission type nodes
-	PermNameDclNode = (PermGroup << 8),
-	PermType,
+    // Unnamed type node
+    TypeNameUseTag = TypeGroup, // Type name use node
+    FnSig,		// Also method, closure, behavior, co-routine, thread, ...
+    VoidType,	// representing no values, e.g., no return values on a fn
 
-	// Allocator type nodes
-	AllocNameDclNode = (AllocGroup<<8),
-	AllocType,
+    PermType,
+    AllocType,
+    IntNbrType,	// Integer
+    UintNbrType,	// Unsigned integer
+    FloatNbrType,	// Floating point number
+    RefType,	// Reference
+    PtrType,	// Pointer
+    StructType,	// Also interface, trait, tuple, actor, etc.
+    ArrayType,	// Also dynamic arrays? SOA?
+    EnumType,	// Also sum type, etc.?
+    ModuleType,	// Modules, Generics ?
+
+    // Named type node
+	VtypeNameDclNode = TypeGroup + NamedNode,
+	PermNameDclNode,
+	AllocNameDclNode,
 };
 
 // ******************************
@@ -151,13 +152,6 @@ typedef struct AstNode {
 typedef struct TypedAstNode {
 	TypedAstHdr;
 } TypedAstNode;
-
-#define isNamedNode(node) ((node)->asttype == ModuleNode \
-  || (node)->asttype == VtypeNameDclNode \
-  || (node)->asttype == VarNameDclNode \
-  || (node)->asttype == AllocNameDclNode \
-  || (node)->asttype == PermNameDclNode \
-)
 
 // Named Ast Node header, for variable and type declarations
 // - namesym points to the global name table entry (holds name string)

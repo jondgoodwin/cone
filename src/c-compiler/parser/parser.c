@@ -68,7 +68,7 @@ void parseRParen() {
 }
 
 // Parse a function block
-AstNode *parseFn(ParseState *parse, int16_t flags) {
+AstNode *parseFn(ParseState *parse, uint16_t flags) {
 	VarDclAstNode *fnnode;
 
 	fnnode = newVarDclNode(NULL, VarNameDclNode, NULL, immPerm, NULL);
@@ -149,7 +149,7 @@ void parseInclude(ParseState *parse) {
 // Return NULL if not either
 AstNode *parseFnOrVar(ParseState *parse) {
 	AstNode *node;
-	int16_t flags = 0;
+	uint16_t flags = 0;
 
 	// extern keyword
 	if (lexIsToken(ExternToken)) {

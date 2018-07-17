@@ -44,7 +44,7 @@ void parseAllocPerm(PtrAstNode *refnode) {
 }
 
 // Parse a variable declaration
-VarDclAstNode *parseVarDcl(ParseState *parse, PermAstNode *defperm, int16_t flags) {
+VarDclAstNode *parseVarDcl(ParseState *parse, PermAstNode *defperm, uint16_t flags) {
 	VarDclAstNode *varnode;
 	Name *namesym = NULL;
 	AstNode *vtype;
@@ -185,7 +185,7 @@ void parseInjectSelf(FnSigAstNode *fnsig, Name *typename) {
 AstNode *parseFnSig(ParseState *parse) {
 	FnSigAstNode *fnsig;
 	int16_t parmnbr = 0;
-	int16_t parseflags = ParseMaySig | ParseMayImpl;
+	uint16_t parseflags = ParseMaySig | ParseMayImpl;
 
 	// Set up memory block for the function's type signature
 	fnsig = newFnSigNode();

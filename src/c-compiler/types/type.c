@@ -14,7 +14,7 @@
 #include <assert.h>
 
 #define getVtype(node) {\
-	if (isExpNode(node)) \
+	if (isValueNode(node)) \
 		node = ((TypedAstNode *)node)->vtype; \
 	if (node->asttype == TypeNameUseTag) \
 		node = ((TypeDclAstNode*)((NameUseAstNode *)node)->dclnode)->value; \
@@ -22,7 +22,7 @@
 
 // Return value type
 AstNode *typeGetVtype(AstNode *node) {
-	getVtype(node);
+    getVtype(node);
 	return node;
 }
 
