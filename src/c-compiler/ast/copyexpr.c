@@ -102,12 +102,22 @@ VarDclAstNode *fnCallFindMethod(FnCallAstNode *node, Name *methsym) {
         return NULL;
     }
 
-	// Look for best-fit method among those defined for the type
-	int bestnbr = 0x7fffffff; // ridiculously high number
-	VarDclAstNode *bestmethod = NULL;
+    // Do lookup, then handle if it is just a single method
+    NamedAstNode *foundnode = namespaceFind(&((MethodTypeAstNode*)objtype)->methfields, methsym);
+    if (foundnode->asttype != FnTupleNode) {
+        VarDclAstNode *method = (VarDclAstNode*)foundnode;
+        switch (fnSigMatchesCall((FnSigAstNode *)method->vtype, node)) {
+        case 0: return NULL;    // Not an acceptable match
+        default: return method; // Perfect or good enough match
+        }
+    }
+
+	// Look for best-fit method among FnTuple list
+    VarDclAstNode *bestmethod = NULL;
+    int bestnbr = 0x7fffffff; // ridiculously high number
 	AstNode **nodesp;
 	uint32_t cnt;
-	for (nodesFor(((MethodTypeAstNode*)objtype)->methods, cnt, nodesp)) {
+	for (nodesFor(((FnTupleAstNode*)foundnode)->methods, cnt, nodesp)) {
 		VarDclAstNode *method = (VarDclAstNode*)*nodesp;
 		if (method->namesym == methsym) {
 			int match;

@@ -82,10 +82,13 @@ NamedAstNode *namespaceFind(Namespace *ns, Name *name) {
 
 // Add or change the node a name maps to
 void namespaceSet(Namespace *ns, Name *name, NamedAstNode *node) {
-	if (ns->used > ns->avail * 80 / 100)
+    size_t cap = (ns->avail * 100) >> 7;
+	if (ns->used > cap)
 		namespaceGrow(ns);
 	NameNode *slotp;
 	namespaceFindSlot(slotp, ns, name);
+    if (slotp->node == NULL)
+        ++ns->used;
 	slotp->name = name;
 	slotp->node = node;
 }
