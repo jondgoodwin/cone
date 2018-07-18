@@ -25,6 +25,7 @@ typedef struct NamedTypeAstNode {
 // Named type that supports methods
 #define MethodTypeAstHdr \
     NamedTypeAstHdr; \
+    Namespace methfields; \
 	Nodes *methods; \
 	Nodes *subtypes
 

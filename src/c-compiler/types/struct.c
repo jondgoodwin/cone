@@ -19,6 +19,7 @@ FieldsAstNode *newStructNode(Name *namesym) {
     snode->namesym = namesym;
     snode->llvmtype = NULL;
     snode->subtypes = newNodes(0);
+    namespaceInit(&snode->methfields, 8);
     snode->methods = newNodes(8);
 	snode->fields = newNodes(8);
 	return snode;

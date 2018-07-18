@@ -26,6 +26,9 @@ typedef struct Namespace {
 void namespaceInit(Namespace *ns, size_t avail);
 NamedAstNode *namespaceFind(Namespace *ns, Name *name);
 void namespaceSet(Namespace *ns, Name *name, NamedAstNode *node);
+// Add fn/method to namespace, where multiple allowed with same name
+// When multiple exist, they are mediated by a FnTupleAstNode
+void namespaceAddFnTuple(Namespace *ns, NamedAstNode *fn);
 
 #define namespaceFor(ns) for (size_t __i = 0; __i < (ns)->avail; ++__i)
 #define namespaceNextNode(ns, nodevar) \
