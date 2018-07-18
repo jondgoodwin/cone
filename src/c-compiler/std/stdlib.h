@@ -8,6 +8,9 @@
 #ifndef stdlib_h
 #define stdlib_h
 
+// The absence of a name
+Name *anonName;
+
 // Represents the absence of type information
 AstNode *voidType;
 

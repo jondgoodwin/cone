@@ -44,19 +44,28 @@ void keywordInit() {
 	keyAdd("false", falseToken);
 }
 
+PermAstNode *newPermNodeStr(char *name, char ptyp, uint16_t flags) {
+    Name *namesym = nametblFind(name, strlen(name));
+    PermAstNode *perm = newPermNode(namesym, ptyp, flags);
+    namesym->node = (NamedAstNode*)perm;
+    return perm;
+}
+
 // Declare built-in permission types and their names
 void stdPermInit() {
-	newTypeDclNodeStr("uni", PermNameDclNode, (AstNode*)(uniPerm = newPermNode(UniPerm, MayRead | MayWrite | RaceSafe | MayIntRefSum | IsLockless, NULL)));
-	newTypeDclNodeStr("mut", PermNameDclNode, (AstNode*)(mutPerm = newPermNode(MutPerm, MayRead | MayWrite | MayAlias | MayAliasWrite | IsLockless, NULL)));
-	newTypeDclNodeStr("imm", PermNameDclNode, (AstNode*)(immPerm = newPermNode(ImmPerm, MayRead | MayAlias | RaceSafe | MayIntRefSum | IsLockless, NULL)));
-	newTypeDclNodeStr("const", PermNameDclNode, (AstNode*)(constPerm = newPermNode(ConstPerm, MayRead | MayAlias | IsLockless, NULL)));
-	newTypeDclNodeStr("mutx", PermNameDclNode, (AstNode*)(mutxPerm = newPermNode(MutxPerm, MayRead | MayWrite | MayAlias | MayIntRefSum | IsLockless, NULL)));
-	newTypeDclNodeStr("id", PermNameDclNode, (AstNode*)(idPerm = newPermNode(IdPerm, MayAlias | RaceSafe | IsLockless, NULL)));
+	uniPerm = newPermNodeStr("uni", UniPerm, MayRead | MayWrite | RaceSafe | MayIntRefSum | IsLockless);
+	mutPerm = newPermNodeStr("mut", MutPerm, MayRead | MayWrite | MayAlias | MayAliasWrite | IsLockless);
+	immPerm = newPermNodeStr("imm", ImmPerm, MayRead | MayAlias | RaceSafe | MayIntRefSum | IsLockless);
+	constPerm = newPermNodeStr("const", ConstPerm, MayRead | MayAlias | IsLockless);
+	mutxPerm = newPermNodeStr("mutx", MutxPerm, MayRead | MayWrite | MayAlias | MayIntRefSum | IsLockless);
+	idPerm = newPermNodeStr("id", IdPerm, MayAlias | RaceSafe | IsLockless);
 }
 
 // Set up the standard library, whose names are always shared by all modules
 void stdlibInit() {
 	lexInject("std", "");
+
+    anonName = nametblFind("_", 1);
 
 	keywordInit();
 	stdPermInit();

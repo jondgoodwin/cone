@@ -10,7 +10,7 @@
 
 // Permission type info
 typedef struct PermAstNode {
-	TypeAstHdr;
+	MethodTypeAstHdr;
 	AstNode *locker;
 	uint8_t ptype;
 } PermAstNode;
@@ -42,7 +42,7 @@ enum Perm {
 // If off, the permission's designated locking mechanism must be wrapped around all content access.
 #define IsLockless 0x40
 
-PermAstNode *newPermNode(char ptyp, uint16_t flags, AstNode *locker);
+PermAstNode *newPermNode(Name *namesym, char ptyp, uint16_t flags);
 void permPrint(PermAstNode *node);
 uint16_t permGetFlags(AstNode *node);
 int permIsMutable(AstNode *lval);

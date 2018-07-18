@@ -42,11 +42,13 @@ typedef struct PassState PassState;
 #define TypeGroup  0x8000   // Nodes that define or refer to a type
 #define GroupMask  0xC000
 #define NamedNode  0x2000   // Node that defines a named item (not nameuse)
+#define MethodType 0x1000   // Type that supports methods
 
 // Easy checks on the kind of node it is based on high-level flags
 #define isValueNode(node) (((node)->asttype & GroupMask) == ValueGroup)
 #define isTypeNode(node) (((node)->asttype & GroupMask) == TypeGroup)
 #define isNamedNode(node) ((node)->asttype & NamedNode)
+#define isMethodType(node) (isTypeNode(node) && (node)->asttype & MethodType)
 
 // All the possible types for an AstNode
 enum AstType {
@@ -91,24 +93,19 @@ enum AstType {
 
     // Unnamed type node
     TypeNameUseTag = TypeGroup, // Type name use node
-    FnSig,		// Also method, closure, behavior, co-routine, thread, ...
+    FnSigType,	// Also method, closure, behavior, co-routine, thread, ...
     VoidType,	// representing no values, e.g., no return values on a fn
 
-    RefType,	// Reference
+    RefType = TypeGroup + NamedNode,	// Reference
     PtrType,	// Pointer
 
-    IntNbrType,	// Integer
+    IntNbrType = TypeGroup + NamedNode + MethodType,	// Integer
     UintNbrType,	// Unsigned integer
     FloatNbrType,	// Floating point number
     StructType,	// Also interface, trait, tuple, actor, etc.
     ArrayType,	// Also dynamic arrays? SOA?
     PermType,
     AllocType,
-
-    // Named type node
-	VtypeNameDclNode = TypeGroup + NamedNode,
-	PermNameDclNode,
-	AllocNameDclNode,
 };
 
 // ******************************

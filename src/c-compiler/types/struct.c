@@ -11,17 +11,22 @@
 #include "../ast/nametbl.h"
 
 // Create a new struct type whose info will be filled in afterwards
-FieldsAstNode *newStructNode() {
+FieldsAstNode *newStructNode(Name *namesym) {
 	FieldsAstNode *snode;
 	newAstNode(snode, FieldsAstNode, StructType);
-	snode->methods = newNodes(8);
+    snode->vtype = NULL;
+    snode->owner = NULL;
+    snode->namesym = namesym;
+    snode->llvmtype = NULL;
+    snode->subtypes = newNodes(0);
+    snode->methods = newNodes(8);
 	snode->fields = newNodes(8);
 	return snode;
 }
 
 // Serialize a struct type
 void structPrint(FieldsAstNode *node) {
-	astFprint(node->asttype == StructType? "struct {}" : "alloc {}");
+	astFprint(node->asttype == StructType? "struct %s {}" : "alloc %s {}", &node->namesym->namestr);
 }
 
 // Semantically analyze a struct type

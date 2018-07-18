@@ -14,7 +14,13 @@
 ArrayAstNode *newArrayNode() {
 	ArrayAstNode *anode;
 	newAstNode(anode, ArrayAstNode, ArrayType);
-	return anode;
+    anode->vtype = NULL;
+    anode->owner = NULL;
+    anode->namesym = anonName;
+    anode->llvmtype = NULL;
+    anode->methods = newNodes(0);
+    anode->subtypes = newNodes(0);
+    return anode;
 }
 
 // Serialize an array type

@@ -17,7 +17,7 @@
 	if (isValueNode(node)) \
 		node = ((TypedAstNode *)node)->vtype; \
 	if (node->asttype == TypeNameUseTag) \
-		node = ((TypeDclAstNode*)((NameUseAstNode *)node)->dclnode)->typedefnode; \
+		node = (AstNode*)((NameUseAstNode *)node)->dclnode; \
 }
 
 // Return value type
@@ -36,7 +36,7 @@ int typeEqual(AstNode *node1, AstNode *node2) {
 
 	// Otherwise use type-specific equality checks
 	switch (node1->asttype) {
-	case FnSig:
+	case FnSigType:
 		return fnSigEqual((FnSigAstNode*)node1, (FnSigAstNode*)node2);
 	case RefType: case PtrType:
 		return ptrTypeEqual((PtrAstNode*)node1, (PtrAstNode*)node2);
@@ -62,9 +62,9 @@ int typeIsSame(AstNode *node1, AstNode *node2) {
 int typeMatches(AstNode *totype, AstNode *fromtype) {
 	// Convert, if needed, from names to the type declaration
 	if (totype->asttype == TypeNameUseTag)
-		totype = ((TypeDclAstNode*)((NameUseAstNode *)totype)->dclnode)->typedefnode;
+		totype = (AstNode*)((NameUseAstNode *)totype)->dclnode;
 	if (fromtype->asttype == TypeNameUseTag)
-		fromtype = ((TypeDclAstNode*)((NameUseAstNode *)fromtype)->dclnode)->typedefnode;
+		fromtype = (AstNode*)((NameUseAstNode *)fromtype)->dclnode;
 
 	// If they are the same value type info, types match
 	if (totype == fromtype)
@@ -82,7 +82,7 @@ int typeMatches(AstNode *totype, AstNode *fromtype) {
 			return 0;
 		return arrayEqual((ArrayAstNode*)totype, (ArrayAstNode*)fromtype);
 
-	//case FnSig:
+	//case FnSigType:
 	//	return fnSigMatches((FnSigAstNode*)totype, (FnSigAstNode*)fromtype);
 
 	case UintNbrType:
@@ -182,39 +182,3 @@ void voidPrint(VoidTypeAstNode *voidnode) {
 	astFprint("void");
 }
 
-// Create a new name declaraction node
-TypeDclAstNode *newTypeDclNode(Name *namesym, uint16_t asttype, AstNode *type, AstNode *val) {
-    TypeDclAstNode *name;
-    newAstNode(name, TypeDclAstNode, asttype);
-    name->vtype = type;
-    name->owner = NULL;
-    name->namesym = namesym;
-    name->typedefnode = val;
-    name->llvmtype = NULL;
-    return name;
-}
-
-// Add a compiler built-in type to the global name table as immutable, declared type name
-// This gives a program's later NameUse nodes something to point to
-void newTypeDclNodeStr(char *namestr, uint16_t asttype, AstNode *type) {
-    Name *sym;
-    sym = nametblFind(namestr, strlen(namestr));
-    sym->node = (NamedAstNode*)newTypeDclNode(sym, asttype, NULL, type);
-}
-
-// Check the value type declaration's AST
-void nameVtypeDclPass(PassState *pstate, TypeDclAstNode *name) {
-    astPass(pstate, name->typedefnode);
-}
-
-// Serialize the AST for a type declaration
-void typeDclPrint(TypeDclAstNode *name) {
-    astFprint("%s ", &name->namesym->namestr);
-    astPrintNode(name->vtype);
-    if (name->typedefnode) {
-        astFprint(" = ");
-        if (name->typedefnode->asttype == BlockNode)
-            astPrintNL();
-        astPrintNode(name->typedefnode);
-    }
-}

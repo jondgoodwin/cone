@@ -53,7 +53,7 @@ LLVMTypeRef _genlType(GenState *gen, char *name, AstNode *typ) {
 		return LLVMPointerType(pvtype, 0);
 	}
 
-	case FnSig:
+	case FnSigType:
 	{
 		// Build typeref from function signature
 		FnSigAstNode *fnsig = (FnSigAstNode*)typ;
@@ -101,19 +101,19 @@ LLVMTypeRef _genlType(GenState *gen, char *name, AstNode *typ) {
 // Generate a type value
 LLVMTypeRef genlType(GenState *gen, AstNode *typ) {
 	char *name = "";
-	if (typ->asttype == TypeNameUseTag || typ->asttype == AllocNameDclNode) {
+	if (typ->asttype == TypeNameUseTag || typ->asttype == AllocType) {
 		// with vtype name use, we can memoize type value and give it a name
-		TypeDclAstNode *dclnode = typ->asttype==AllocNameDclNode? (TypeDclAstNode*)typ : (TypeDclAstNode*)((NameUseAstNode*)typ)->dclnode;
+		NamedTypeAstNode *dclnode = typ->asttype==AllocType? (NamedTypeAstNode*)typ : (NamedTypeAstNode*)((NameUseAstNode*)typ)->dclnode;
 		if (dclnode->llvmtype)
 			return dclnode->llvmtype;
 
 		// Also process the type's methods
-		LLVMTypeRef typeref = dclnode->llvmtype = _genlType(gen, &dclnode->namesym->namestr, dclnode->typedefnode);
-		AstNode **nodesp;
-		uint32_t cnt;
-		TypeAstNode *tnode = (TypeAstNode*)dclnode->typedefnode;
-		if (tnode->methods) {
-			// Declare just method names first, enabling forward references
+		LLVMTypeRef typeref = dclnode->llvmtype = _genlType(gen, &dclnode->namesym->namestr, (AstNode*)dclnode);
+		if (isMethodType(dclnode)) {
+            MethodTypeAstNode *tnode = (MethodTypeAstNode*)dclnode;
+            AstNode **nodesp;
+            uint32_t cnt;
+            // Declare just method names first, enabling forward references
 			for (nodesFor(tnode->methods, cnt, nodesp)) {
 				VarDclAstNode *fnnode = (VarDclAstNode*)(*nodesp);
 				assert(fnnode->asttype == VarNameDclNode);

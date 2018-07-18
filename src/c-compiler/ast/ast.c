@@ -68,8 +68,6 @@ void astPrintNode(AstNode *node) {
 		varDclPrint((VarDclAstNode *)node); break;
 	case FnTupleNode:
 		fnTuplePrint((FnTupleAstNode *)node); break;
-    case VtypeNameDclNode: case PermNameDclNode: case AllocNameDclNode:
-        typeDclPrint((TypeDclAstNode *)node); break;
     case BlockNode:
 		blockPrint((BlockAstNode *)node); break;
 	case IfNode:
@@ -104,7 +102,7 @@ void astPrintNode(AstNode *node) {
 		flitPrint((FLitAstNode *)node); break;
 	case SLitNode:
 		slitPrint((SLitAstNode *)node); break;
-	case FnSig:
+	case FnSigType:
 		fnSigPrint((FnSigAstNode *)node); break;
 	case RefType: case PtrType:
 		ptrTypePrint((PtrAstNode *)node); break;
@@ -141,9 +139,6 @@ void astPass(PassState *pstate, AstNode *node) {
 		varDclPass(pstate, (VarDclAstNode *)node); break;
 	case FnTupleNode:
 		fnTuplePass(pstate, (FnTupleAstNode *)node); break;
-	case VtypeNameDclNode:
-	case AllocNameDclNode:
-		nameVtypeDclPass(pstate, (TypeDclAstNode *)node); break;
     case NameUseTag:
     case VarNameUseTag:
     case TypeNameUseTag:
@@ -177,7 +172,7 @@ void astPass(PassState *pstate, AstNode *node) {
 		logicNotPass(pstate, (LogicAstNode *)node); break;
 	case OrLogicNode: case AndLogicNode:
 		logicPass(pstate, (LogicAstNode *)node); break;
-	case FnSig:
+	case FnSigType:
 		fnSigPass(pstate, (FnSigAstNode *)node); break;
 	case RefType: case PtrType:
 		ptrTypePass(pstate, (PtrAstNode *)node); break;

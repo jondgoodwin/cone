@@ -97,13 +97,17 @@ VarDclAstNode *fnCallFindMethod(FnCallAstNode *node, Name *methsym) {
 	AstNode *objtype = typeGetVtype(*nodesNodes(node->args));
 	if (objtype->asttype == RefType || objtype->asttype == PtrType)
 		objtype = typeGetVtype(((PtrAstNode *)objtype)->pvtype);
+    if (!isMethodType(objtype)) {
+        errorMsgNode((AstNode*)node, ErrorNoMeth, "Object's type does not support methods or fields.");
+        return NULL;
+    }
 
 	// Look for best-fit method among those defined for the type
 	int bestnbr = 0x7fffffff; // ridiculously high number
 	VarDclAstNode *bestmethod = NULL;
 	AstNode **nodesp;
 	uint32_t cnt;
-	for (nodesFor(((TypeAstNode*)objtype)->methods, cnt, nodesp)) {
+	for (nodesFor(((MethodTypeAstNode*)objtype)->methods, cnt, nodesp)) {
 		VarDclAstNode *method = (VarDclAstNode*)*nodesp;
 		if (method->namesym == methsym) {
 			int match;
@@ -127,74 +131,74 @@ void fnCallPass(PassState *pstate, FnCallAstNode *node) {
 	AstNode **argsp;
 	uint32_t cnt;
 	for (nodesFor(node->args, cnt, argsp))
-astPass(pstate, *argsp);
-astPass(pstate, node->fn);
+        astPass(pstate, *argsp);
+    astPass(pstate, node->fn);
 
-switch (pstate->pass) {
-case TypeCheck:
-{
-	// If this is an object call, resolve method name within first argument's type
-	if (node->fn->asttype == MbrNameUseTag) {
-		NameUseAstNode *methname = (NameUseAstNode*)node->fn;
-		Name *methsym = methname->namesym;
-		VarDclAstNode *method;
-		if (method = fnCallFindMethod(node, methsym)) {
-			methname->asttype = VarNameUseTag;
-			methname->dclnode = (NamedAstNode*)method;
-			methname->vtype = methname->dclnode->vtype;
-		}
-		else {
-			errorMsgNode((AstNode*)node, ErrorNoMeth, "The method `%s` is not defined by the object's type.", &methsym->namestr);
-			return;
-		}
-	}
+    switch (pstate->pass) {
+    case TypeCheck:
+    {
+	    // If this is an object call, resolve method name within first argument's type
+	    if (node->fn->asttype == MbrNameUseTag) {
+		    NameUseAstNode *methname = (NameUseAstNode*)node->fn;
+		    Name *methsym = methname->namesym;
+		    VarDclAstNode *method;
+		    if (method = fnCallFindMethod(node, methsym)) {
+			    methname->asttype = VarNameUseTag;
+			    methname->dclnode = (NamedAstNode*)method;
+			    methname->vtype = methname->dclnode->vtype;
+		    }
+		    else {
+			    errorMsgNode((AstNode*)node, ErrorNoMeth, "The method `%s` is not defined by the object's type.", &methsym->namestr);
+			    return;
+		    }
+	    }
 
-	// Automatically deref a reference to the function
-	else
-		derefAuto(&node->fn);
+	    // Automatically deref a reference to the function
+	    else
+		    derefAuto(&node->fn);
 
-	// Capture return vtype and ensure we are calling a function
-	AstNode *fnsig = typeGetVtype(node->fn);
-	if (fnsig->asttype == FnSig)
-		node->vtype = ((FnSigAstNode*)fnsig)->rettype;
-	else {
-		errorMsgNode(node->fn, ErrorNotFn, "Cannot call a value that is not a function");
-		return;
-	}
+	    // Capture return vtype and ensure we are calling a function
+	    AstNode *fnsig = typeGetVtype(node->fn);
+	    if (fnsig->asttype == FnSigType)
+		    node->vtype = ((FnSigAstNode*)fnsig)->rettype;
+	    else {
+		    errorMsgNode(node->fn, ErrorNotFn, "Cannot call a value that is not a function");
+		    return;
+	    }
 
-	// Error out if we have too many arguments
-	int argsunder = ((FnSigAstNode*)fnsig)->parms->used - node->args->used;
-	if (argsunder < 0) {
-		errorMsgNode((AstNode*)node, ErrorManyArgs, "Too many arguments specified vs. function declaration");
-		return;
-	}
+	    // Error out if we have too many arguments
+	    int argsunder = ((FnSigAstNode*)fnsig)->parms->used - node->args->used;
+	    if (argsunder < 0) {
+		    errorMsgNode((AstNode*)node, ErrorManyArgs, "Too many arguments specified vs. function declaration");
+		    return;
+	    }
 
-	// Type check that passed arguments match declared parameters
-	AstNode **argsp;
-	uint32_t cnt;
-	AstNode **parmp = &nodesGet(((FnSigAstNode*)fnsig)->parms, 0);
-	for (nodesFor(node->args, cnt, argsp)) {
-		if (!typeCoerces(*parmp, argsp))
-			errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
-		else
-			handleCopy(pstate, *argsp);
-		parmp++;
-	}
+	    // Type check that passed arguments match declared parameters
+	    AstNode **argsp;
+	    uint32_t cnt;
+	    AstNode **parmp = &nodesGet(((FnSigAstNode*)fnsig)->parms, 0);
+	    for (nodesFor(node->args, cnt, argsp)) {
+		    if (!typeCoerces(*parmp, argsp))
+			    errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
+		    else
+			    handleCopy(pstate, *argsp);
+		    parmp++;
+	    }
 
-	// If we have too few arguments, use default values, if provided
-	if (argsunder > 0) {
-		if (((VarDclAstNode*)*parmp)->value == NULL)
-			errorMsgNode((AstNode*)node, ErrorFewArgs, "Function call requires more arguments than specified");
-		else {
-			while (argsunder--) {
-				nodesAdd(&node->args, ((VarDclAstNode*)*parmp)->value);
-				parmp++;
-			}
-		}
-	}
-	break;
-}
-}
+	    // If we have too few arguments, use default values, if provided
+	    if (argsunder > 0) {
+		    if (((VarDclAstNode*)*parmp)->value == NULL)
+			    errorMsgNode((AstNode*)node, ErrorFewArgs, "Function call requires more arguments than specified");
+		    else {
+			    while (argsunder--) {
+				    nodesAdd(&node->args, ((VarDclAstNode*)*parmp)->value);
+				    parmp++;
+			    }
+		    }
+	    }
+	    break;
+    }
+    }
 }
 
 // Create a new addr node

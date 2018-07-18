@@ -13,12 +13,9 @@
 // Create a new function signature node
 FnSigAstNode *newFnSigNode() {
 	FnSigAstNode *sig;
-	newAstNode(sig, FnSigAstNode, FnSig);
-	sig->methods = newNodes(1); // probably share these across all fnsigs
-	sig->subtypes = newNodes(1);    // ditto
+	newAstNode(sig, FnSigAstNode, FnSigType);
 	sig->parms = newNodes(8);
 	sig->rettype = voidType;
-	sig->vtype = NULL;
 	return sig;
 }
 

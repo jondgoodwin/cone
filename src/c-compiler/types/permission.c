@@ -13,14 +13,17 @@
 #include <assert.h>
 
 // Create a new permission node
-PermAstNode *newPermNode(char ptyp, uint16_t flags, AstNode *locker) {
+PermAstNode *newPermNode(Name *namesym, char ptyp, uint16_t flags) {
 	PermAstNode *node;
 	newAstNode(node, PermAstNode, PermType);
-	node->methods = newNodes(1);	// May not need members for static types
+    node->vtype = NULL;
+    node->owner = NULL;
+    node->namesym = namesym;
+    node->llvmtype = NULL;
+    node->methods = newNodes(1);	// May not need members for static types
 	node->subtypes = newNodes(8);	// build appropriate list using the permission's flags
 	node->flags = flags;
 	node->ptype = ptyp;
-	node->locker = locker;
 	return node;
 }
 

@@ -10,7 +10,7 @@
 
 // For pointers
 typedef struct ArrayAstNode {
-	TypeAstHdr;
+	MethodTypeAstHdr;
 	uint32_t size;
 	AstNode *elemtype;
 } ArrayAstNode;

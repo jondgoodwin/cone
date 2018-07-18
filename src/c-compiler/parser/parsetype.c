@@ -21,7 +21,7 @@
 PermAstNode *parsePerm(PermAstNode *defperm) {
 	if (lexIsToken(PermToken)) {
 		PermAstNode *perm;
-		perm = (PermAstNode*)((TypeDclAstNode *)lex->val.ident->node)->typedefnode;
+		perm = (PermAstNode*)lex->val.ident->node;
 		lexNextToken();
 		return perm;
 	}
@@ -32,8 +32,8 @@ PermAstNode *parsePerm(PermAstNode *defperm) {
 // Parse an allocator + permission for a reference type
 void parseAllocPerm(PtrAstNode *refnode) {
 	if (lexIsToken(IdentToken)
-		&& lex->val.ident->node && lex->val.ident->node->asttype == AllocNameDclNode) {
-		refnode->alloc = ((TypeDclAstNode *)lex->val.ident->node)->typedefnode;
+		&& lex->val.ident->node && lex->val.ident->node->asttype == AllocType) {
+		refnode->alloc = (AstNode*)lex->val.ident->node;
 		lexNextToken();
 		refnode->perm = parsePerm(uniPerm);
 	}
@@ -121,27 +121,25 @@ AstNode *parsePtrType(ParseState *parse) {
 // Parse a struct
 AstNode *parseStruct(ParseState *parse) {
 	NamedAstNode *svowner = parse->owner;
-	TypeDclAstNode *strdclnode;
 	FieldsAstNode *strnode;
 	int16_t fieldnbr = 0;
 
-	strnode = newStructNode();
-	strdclnode = newTypeDclNode(NULL, VtypeNameDclNode, voidType, (AstNode*)strnode);
-	strdclnode->owner = parse->owner;
-	parse->owner = (NamedAstNode *)strdclnode;
-	if (lexIsToken(AllocToken)) {
-		strnode->asttype = AllocType;
-		strdclnode->asttype = AllocNameDclNode;
-	}
+    // Capture the kind of type, then get next token (name)
+    uint16_t tag = lexIsToken(AllocToken) ? AllocType : StructType;
+    lexNextToken();
 
-	// Skip past 'struct'/'alloc'
-	lexNextToken();
-
-	// Process struct type name, if provided
-	if (lexIsToken(IdentToken)) {
-		strdclnode->namesym = lex->val.ident;
-		lexNextToken();
-	}
+    // Process struct type name, if provided
+    if (lexIsToken(IdentToken)) {
+        strnode = newStructNode(lex->val.ident);
+        strnode->asttype = tag;
+        strnode->owner = parse->owner;
+        parse->owner = (NamedAstNode *)strnode;
+        lexNextToken();
+    }
+    else {
+        errorMsgLex(ErrorNoIdent, "Expected a name for the type");
+        return NULL;
+    }
 
 	// Process field or method definitions
 	if (lexIsToken(LCurlyToken)) {
@@ -170,7 +168,7 @@ AstNode *parseStruct(ParseState *parse) {
 		errorMsgLex(ErrorNoLCurly, "Expected left curly bracket enclosing fields or methods");
 
 	parse->owner = svowner;
-	return (AstNode*)strdclnode;
+	return (AstNode*)strnode;
 }
 
 void parseInjectSelf(FnSigAstNode *fnsig, Name *typename) {
@@ -194,12 +192,12 @@ AstNode *parseFnSig(ParseState *parse) {
 	if (lexIsToken(LParenToken)) {
 		lexNextToken();
 		// A type's method with no parameters should still define self
-		if (lexIsToken(RParenToken) && parse->owner->asttype == VtypeNameDclNode)
+		if (lexIsToken(RParenToken) && isTypeNode(parse->owner))
 			parseInjectSelf(fnsig, parse->owner->namesym);
 		while (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
 			VarDclAstNode *parm = parseVarDcl(parse, immPerm, parseflags);
 			// Do special inference if function is a type's method
-			if (parse->owner->asttype == VtypeNameDclNode) {
+			if (isTypeNode(parse->owner)) {
 				// Create default self parm, if 'self' was not specified
 				if (parmnbr == 0 && parm->namesym != nametblFind("self", 4)) {
 					parseInjectSelf(fnsig, parse->owner->namesym);

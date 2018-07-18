@@ -35,26 +35,6 @@ typedef struct MethodTypeAstNode {
     MethodTypeAstHdr;
 } MethodTypeAstNode;
 
-// Type Ast Node header for all type structures
-// - methods is the list of a type instance's methods
-// - subtypes is the list of traits, etc. the type implements
-#define TypeAstHdr \
-	TypedAstHdr; \
-	Nodes *methods; \
-	Nodes *subtypes
-
-// Castable structure for all type AST nodes
-typedef struct TypeAstNode {
-    TypeAstHdr;
-} TypeAstNode;
-
-// Named type declaration node
-typedef struct TypeDclAstNode {
-    NamedAstHdr;				// 'vtype': type of this name's value
-    LLVMTypeRef llvmtype;		// LLVM's handle for a declared type (for generation)
-    AstNode *typedefnode;				// Type's declaration node (NULL if not initialized)
-} TypeDclAstNode;
-
 // Void type - e.g., for fn with no return value
 typedef struct VoidTypeAstNode {
 	BasicAstHdr;
@@ -62,7 +42,7 @@ typedef struct VoidTypeAstNode {
 
 // For arrays
 typedef struct ArrTypeAstNode {
-	TypeAstHdr;
+	MethodTypeAstHdr;
 	uint32_t nbrelems;		// Number of elements
 	AstNode *elemtype;	// Type of array's elements
 } ArrTypeAstNode;
@@ -76,10 +56,5 @@ char *typeMangle(char *bufp, AstNode *vtype);
 
 VoidTypeAstNode *newVoidNode();
 void voidPrint(VoidTypeAstNode *voidnode);
-
-TypeDclAstNode *newTypeDclNode(Name *namesym, uint16_t asttype, AstNode *type, AstNode *val);
-void newTypeDclNodeStr(char *namestr, uint16_t asttype, AstNode *type);
-void nameVtypeDclPass(PassState *pstate, TypeDclAstNode *name);
-void typeDclPrint(TypeDclAstNode *name);
 
 #endif

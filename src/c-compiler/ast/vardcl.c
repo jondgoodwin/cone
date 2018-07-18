@@ -132,7 +132,7 @@ void varDclPass(PassState *pstate, VarDclAstNode *name) {
 		// (because those have already been hooked by module for forward references)
 		/*if (name->owner->asttype != ModuleNode)
 			namespaceHook((NamedAstNode*)name, name->namesym);*/
-		if (vtype->asttype == FnSig) {
+		if (vtype->asttype == FnSigType) {
 			if (name->value)
 				varDclFnNameResolve(pstate, name);
 		}
@@ -142,7 +142,7 @@ void varDclPass(PassState *pstate, VarDclAstNode *name) {
 
 	case TypeCheck:
 		if (name->value) {
-			if (vtype->asttype == FnSig) {
+			if (vtype->asttype == FnSigType) {
 				// Syntactic sugar: Turn implicit returns into explicit returns
 				fnImplicitReturn(((FnSigAstNode*)name->vtype)->rettype, (BlockAstNode *)name->value);
 				// Do type checking of function (with fnsig as context)

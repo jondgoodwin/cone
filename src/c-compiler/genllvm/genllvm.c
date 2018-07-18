@@ -112,7 +112,7 @@ char *genlGlobalName(NamedAstNode *name) {
 void genlGloVarName(GenState *gen, VarDclAstNode *glovar) {
 
 	// Handle when it is just a global variable
-	if (glovar->vtype->asttype != FnSig) {
+	if (glovar->vtype->asttype != FnSigType) {
 		glovar->llvmvar = LLVMAddGlobal(gen->module, genlType(gen, glovar->vtype), genlGlobalName((NamedAstNode*)glovar));
 		if (glovar->perm == immPerm)
 			LLVMSetGlobalConstant(glovar->llvmvar, 1);
@@ -142,19 +142,15 @@ void genlModule(GenState *gen, ModuleAstNode *mod) {
 		switch (nodep->asttype) {
 		case VarNameDclNode:
 			if (((VarDclAstNode*)nodep)->value) {
-				if (((VarDclAstNode*)nodep)->vtype->asttype == FnSig)
+				if (((VarDclAstNode*)nodep)->vtype->asttype == FnSigType)
 					genlFn(gen, (VarDclAstNode*)nodep);
 				else
 					genlGloVar(gen, (VarDclAstNode*)nodep);
 			}
 			break;
 
-		// No need to generate type declarations: type uses will do so
-		case VtypeNameDclNode:
-			break;
-
 		// Generate allocator definition
-		case AllocNameDclNode:
+		case AllocType:
 			genlType(gen, nodep);
 			break;
 
@@ -163,7 +159,10 @@ void genlModule(GenState *gen, ModuleAstNode *mod) {
 			break;
 
 		default:
-			assert(0 && "Invalid global area node");
+            // No need to generate type declarations: type uses will do so
+            if (isTypeNode(nodep))
+                break;
+            assert(0 && "Invalid global area node");
 		}
 	}
 }

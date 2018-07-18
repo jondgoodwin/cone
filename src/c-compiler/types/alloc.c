@@ -20,7 +20,7 @@ void allocAllocate(AddrAstNode *anode, PtrAstNode *ptype) {
 
 	// Find 'allocate' method in alloc
 	Name *symalloc = nametblFind("allocate", 8);
-	TypeAstNode *alloctype = (TypeAstNode*)ptype->alloc;
+	FieldsAstNode *alloctype = (FieldsAstNode*)ptype->alloc;
 	int32_t cnt;
 	AstNode **nodesp;
 	VarDclAstNode *allocmeth = NULL;

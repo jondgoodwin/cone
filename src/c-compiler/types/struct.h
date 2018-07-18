@@ -19,11 +19,11 @@
 //       with no duplicate names between them
 // - subtypes. An ordered list of nodes for its traits/interfaces
 typedef struct FieldsAstNode {
-	TypeAstHdr;
+	MethodTypeAstHdr;
 	Nodes *fields;
 } FieldsAstNode;
 
-FieldsAstNode *newStructNode();
+FieldsAstNode *newStructNode(Name *namesym);
 void structPrint(FieldsAstNode *node);
 void structPass(PassState *pstate, FieldsAstNode *name);
 int structEqual(FieldsAstNode *node1, FieldsAstNode *node2);

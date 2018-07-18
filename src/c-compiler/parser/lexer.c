@@ -342,7 +342,7 @@ void lexScanIdent(char *srcp) {
 				identNode = (AstNode*)lex->val.ident->node;
 				if (identNode && identNode->asttype == KeywordNode)
 					lex->toktype = identNode->flags;
-				else if (identNode && identNode->asttype == PermNameDclNode)
+				else if (identNode && identNode->asttype == PermType)
 					lex->toktype = PermToken;
 				else
 					lex->toktype = IdentToken;

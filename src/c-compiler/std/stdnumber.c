@@ -9,6 +9,7 @@
 #include "../shared/memory.h"
 #include "../parser/lexer.h"
 #include "../ast/nametbl.h"
+#include <string.h>
 
 Nodes *nbrsubtypes;
 
@@ -16,19 +17,19 @@ Nodes *nbrsubtypes;
 void stdNbrInit() {
 	nbrsubtypes = newNodes(8);	// Needs 'copy' etc.
 
-	newTypeDclNodeStr("Bool", VtypeNameDclNode, (AstNode*)(boolType = newNbrTypeNode(UintNbrType, 1)));
-	newTypeDclNodeStr("u8", VtypeNameDclNode, (AstNode*)(u8Type = newNbrTypeNode(UintNbrType, 8)));
-	newTypeDclNodeStr("u16", VtypeNameDclNode, (AstNode*)(u16Type = newNbrTypeNode(UintNbrType, 16)));
-	newTypeDclNodeStr("u32", VtypeNameDclNode, (AstNode*)(u32Type = newNbrTypeNode(UintNbrType, 32)));
-	newTypeDclNodeStr("u64", VtypeNameDclNode, (AstNode*)(u64Type = newNbrTypeNode(UintNbrType, 64)));
-	newTypeDclNodeStr("usize", VtypeNameDclNode, (AstNode*)(usizeType = newNbrTypeNode(UintNbrType, 0)));
-	newTypeDclNodeStr("i8", VtypeNameDclNode, (AstNode*)(i8Type = newNbrTypeNode(IntNbrType, 8)));
-	newTypeDclNodeStr("i16", VtypeNameDclNode, (AstNode*)(i16Type = newNbrTypeNode(IntNbrType, 16)));
-	newTypeDclNodeStr("i32", VtypeNameDclNode, (AstNode*)(i32Type = newNbrTypeNode(IntNbrType, 32)));
-	newTypeDclNodeStr("i64", VtypeNameDclNode, (AstNode*)(i64Type = newNbrTypeNode(IntNbrType, 64)));
-	newTypeDclNodeStr("isize", VtypeNameDclNode, (AstNode*)(isizeType = newNbrTypeNode(UintNbrType, 0)));
-	newTypeDclNodeStr("f32", VtypeNameDclNode, (AstNode*)(f32Type = newNbrTypeNode(FloatNbrType, 32)));
-	newTypeDclNodeStr("f64", VtypeNameDclNode, (AstNode*)(f64Type = newNbrTypeNode(FloatNbrType, 64)));
+	boolType = newNbrTypeNode("Bool", UintNbrType, 1);
+	u8Type = newNbrTypeNode("u8", UintNbrType, 8);
+	u16Type = newNbrTypeNode("u16", UintNbrType, 16);
+	u32Type = newNbrTypeNode("u32", UintNbrType, 32);
+	u64Type = newNbrTypeNode("u64", UintNbrType, 64);
+	usizeType = newNbrTypeNode("usize", UintNbrType, 0);
+	i8Type = newNbrTypeNode("i8", IntNbrType, 8);
+	i16Type = newNbrTypeNode("i16", IntNbrType, 16);
+	i32Type = newNbrTypeNode("i32", IntNbrType, 32);
+	i64Type = newNbrTypeNode("i64", IntNbrType, 64);
+	isizeType = newNbrTypeNode("isize", UintNbrType, 0);
+	f32Type = newNbrTypeNode("f32", FloatNbrType, 32);
+	f64Type = newNbrTypeNode("f64", FloatNbrType, 64);
 
 	// Reference to a literal string
 	ArrayAstNode *strArr = newArrayNode();
@@ -42,12 +43,20 @@ void stdNbrInit() {
 }
 
 // Create a new primitive number type node
-NbrAstNode *newNbrTypeNode(uint16_t typ, char bits) {
+NbrAstNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
+    Name *namesym = nametblFind(name, strlen(name));
+
 	// Start by creating the node for this number type
 	NbrAstNode *nbrtypenode;
 	newAstNode(nbrtypenode, NbrAstNode, typ);
-	nbrtypenode->subtypes = nbrsubtypes;
+    nbrtypenode->vtype = NULL;
+    nbrtypenode->owner = NULL;
+    nbrtypenode->namesym = namesym;
+    nbrtypenode->llvmtype = NULL;
+    nbrtypenode->subtypes = nbrsubtypes;
 	nbrtypenode->bits = bits;
+
+    namesym->node = (NamedAstNode*)nbrtypenode;
 
 	// Create function signature for unary methods for this type
 	FnSigAstNode *unarysig = newFnSigNode();

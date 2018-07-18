@@ -10,11 +10,11 @@
 
 // For primitives such as integer, unsigned integet, floats
 typedef struct NbrAstNode {
-	TypeAstHdr;
+	MethodTypeAstHdr;
 	unsigned char bits;	// e.g., int32 uses 32 bits
 } NbrAstNode;
 
-NbrAstNode *newNbrTypeNode(uint16_t typ, char bits);
+NbrAstNode *newNbrTypeNode(char *name, uint16_t typ, char bits);
 void nbrTypePrint(NbrAstNode *node);
 int isNbr(AstNode *node);
 

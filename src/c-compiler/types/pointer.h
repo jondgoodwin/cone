@@ -10,7 +10,7 @@
 
 // For pointers
 typedef struct PtrAstNode {
-	TypeAstHdr;
+	NamedTypeAstHdr;
 	AstNode *pvtype;	// Value type
 	PermAstNode *perm;	// Permission
 	AstNode *alloc;		// Allocator
