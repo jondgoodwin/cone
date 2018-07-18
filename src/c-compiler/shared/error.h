@@ -63,6 +63,7 @@ enum ErrorCode {
 	ErrorNoEof,		// Missing end-of-file
 	ErrorNoImpl,	// Function must be implemented
 	ErrorBadImpl,	// Function must not be implemented
+    ErrorNotPublic, // Method is not public
 
 	// Warnings
 	WarnCode = 3000,

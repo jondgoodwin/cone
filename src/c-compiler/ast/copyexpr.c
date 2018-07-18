@@ -152,7 +152,11 @@ void fnCallPass(PassState *pstate, FnCallAstNode *node) {
 		    NameUseAstNode *methname = (NameUseAstNode*)node->fn;
 		    Name *methsym = methname->namesym;
 		    VarDclAstNode *method;
-		    if (method = fnCallFindMethod(node, methsym)) {
+            if (methsym->namestr == '_') {
+                errorMsgNode((AstNode*)node, ErrorNotPublic, "The method `%s` is not public.", &methsym->namestr);
+                return;
+            }
+		    else if (method = fnCallFindMethod(node, methsym)) {
 			    methname->asttype = VarNameUseTag;
 			    methname->dclnode = (NamedAstNode*)method;
 			    methname->vtype = methname->dclnode->vtype;

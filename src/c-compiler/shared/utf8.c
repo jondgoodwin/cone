@@ -6,6 +6,7 @@
 */
 
 #include "utf8.h"
+#include <ctype.h>
 
 /** Return the current unicode character whose UTF-8 bytes start at lex->bytepos */
 uint32_t utf8GetCode(const char *src) {
@@ -30,5 +31,5 @@ uint32_t utf8GetCode(const char *src) {
 
 // Return true if unicode is a letter
 int utf8IsLetter(const char* srcp) {
-	return utf8IsMultibyte(srcp);	// TODO <---
+	return !utf8IsMultibyte(srcp) && isalpha(*srcp);
 }
