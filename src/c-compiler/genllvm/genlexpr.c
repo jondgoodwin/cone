@@ -111,20 +111,35 @@ LLVMTypeRef genlType(GenState *gen, AstNode *typ) {
 		LLVMTypeRef typeref = dclnode->llvmtype = _genlType(gen, &dclnode->namesym->namestr, (AstNode*)dclnode);
 		if (isMethodType(dclnode)) {
             MethodTypeAstNode *tnode = (MethodTypeAstNode*)dclnode;
+            NamedAstNode *nnode;
             AstNode **nodesp;
             uint32_t cnt;
             // Declare just method names first, enabling forward references
-			for (nodesFor(tnode->methods, cnt, nodesp)) {
-				VarDclAstNode *fnnode = (VarDclAstNode*)(*nodesp);
-				assert(fnnode->asttype == VarNameDclNode);
-				if (fnnode->value->asttype != IntrinsicNode)
-					genlGloVarName(gen, fnnode);
-			}
+            namespaceFor(&tnode->methfields) {
+                namespaceNextNode(&tnode->methfields, nnode);
+                if (nnode->asttype == FnTupleNode) {
+                    FnTupleAstNode *tuple = (FnTupleAstNode *)nnode;
+                    for (nodesFor(tuple->methods, cnt, nodesp)) {
+                        VarDclAstNode *fnnode = (VarDclAstNode*)(*nodesp);
+                        assert(fnnode->asttype == VarNameDclNode);
+                        genlGloVarName(gen, fnnode);
+                    }
+                }
+                else if (nnode->asttype == VarNameDclNode)
+                    genlGloVarName(gen, (VarDclAstNode*)nnode);
+            }
 			// Now generate the code for each method
-			for (nodesFor(tnode->methods, cnt, nodesp)) {
-				VarDclAstNode *fnnode = (VarDclAstNode*)(*nodesp);
-				if (fnnode->value->asttype != IntrinsicNode)
-					genlFn(gen, fnnode);
+            namespaceFor(&tnode->methfields) {
+                namespaceNextNode(&tnode->methfields, nnode);
+                if (nnode->asttype == FnTupleNode) {
+                    FnTupleAstNode *tuple = (FnTupleAstNode *)nnode;
+                    for (nodesFor(tuple->methods, cnt, nodesp)) {
+                        VarDclAstNode *fnnode = (VarDclAstNode*)(*nodesp);
+                        genlFn(gen, fnnode);
+                    }
+                }
+                else if (nnode->asttype == VarNameDclNode)
+                    genlFn(gen, (VarDclAstNode*)nnode);
 			}
 		}
 		return typeref;

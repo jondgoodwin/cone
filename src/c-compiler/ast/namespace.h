@@ -32,7 +32,7 @@ void namespaceAddFnTuple(Namespace *ns, NamedAstNode *fn);
 
 #define namespaceFor(ns) for (size_t __i = 0; __i < (ns)->avail; ++__i)
 #define namespaceNextNode(ns, nodevar) \
-  NamedAstNode *__namenodep = &(ns)->namenodes[__i]; \
+  NameNode *__namenodep = &(ns)->namenodes[__i]; \
   if (__namenodep->name == NULL) continue; \
   nodevar = __namenodep->node;
 

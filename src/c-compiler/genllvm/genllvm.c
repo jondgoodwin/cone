@@ -45,6 +45,9 @@ void genlParmVar(GenState *gen, VarDclAstNode *var) {
 
 // Generate a function
 void genlFn(GenState *gen, VarDclAstNode *fnnode) {
+    if (fnnode->value->asttype == IntrinsicNode)
+        return;
+
 	LLVMValueRef svfn = gen->fn;
 	LLVMBuilderRef svbuilder = gen->builder;
 	FnSigAstNode *fnsig = (FnSigAstNode*)fnnode->vtype;
@@ -120,7 +123,8 @@ void genlGloVarName(GenState *gen, VarDclAstNode *glovar) {
 	}
 
 	// Add function to the module
-	glovar->llvmvar = LLVMAddFunction(gen->module, genlGlobalName((NamedAstNode*)glovar), genlType(gen, glovar->vtype));
+    if (glovar->value == NULL || glovar->value->asttype != IntrinsicNode)
+	    glovar->llvmvar = LLVMAddFunction(gen->module, genlGlobalName((NamedAstNode*)glovar), genlType(gen, glovar->vtype));
 }
 
 // Generate module's nodes
