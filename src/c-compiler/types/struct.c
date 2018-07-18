@@ -20,7 +20,6 @@ FieldsAstNode *newStructNode(Name *namesym) {
     snode->llvmtype = NULL;
     snode->subtypes = newNodes(0);
     namespaceInit(&snode->methfields, 8);
-    snode->methods = newNodes(8);
 	snode->fields = newNodes(8);
 	return snode;
 }
@@ -32,12 +31,23 @@ void structPrint(FieldsAstNode *node) {
 
 // Semantically analyze a struct type
 void structPass(PassState *pstate, FieldsAstNode *node) {
+    NamedAstNode *nnode;
 	AstNode **nodesp;
 	uint32_t cnt;
 	for (nodesFor(node->fields, cnt, nodesp))
 		astPass(pstate, *nodesp);
-	for (nodesFor(node->methods, cnt, nodesp))
-		astPass(pstate, *nodesp);
+    namespaceFor(&node->methfields) {
+        namespaceNextNode(&node->methfields, nnode);
+        if (nnode->asttype == FnTupleNode) {
+            FnTupleAstNode *tuple = (FnTupleAstNode *)nnode;
+            for (nodesFor(tuple->methods, cnt, nodesp)) {
+                VarDclAstNode *fnnode = (VarDclAstNode*)(*nodesp);
+                astPass(pstate, *nodesp);
+            }
+        }
+        else if (nnode->asttype == VarNameDclNode)
+            astPass(pstate, (AstNode*)nnode);
+    }
 }
 
 // Compare two struct signatures to see if they are equivalent

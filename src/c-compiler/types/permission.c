@@ -20,7 +20,7 @@ PermAstNode *newPermNode(Name *namesym, char ptyp, uint16_t flags) {
     node->owner = NULL;
     node->namesym = namesym;
     node->llvmtype = NULL;
-    node->methods = newNodes(1);	// May not need members for static types
+    namespaceInit(&node->methfields, 1); // May not need members for static types
 	node->subtypes = newNodes(8);	// build appropriate list using the permission's flags
 	node->flags = flags;
 	node->ptype = ptyp;

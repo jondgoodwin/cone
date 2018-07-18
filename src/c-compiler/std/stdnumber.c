@@ -54,7 +54,6 @@ NbrAstNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
     nbrtypenode->namesym = namesym;
     nbrtypenode->llvmtype = NULL;
     namespaceInit(&nbrtypenode->methfields, 32);
-    nbrtypenode->methods = newNodes(16);
     nbrtypenode->subtypes = nbrsubtypes;
 	nbrtypenode->bits = bits;
 
