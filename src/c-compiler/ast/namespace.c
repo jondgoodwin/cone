@@ -103,7 +103,7 @@ void namespaceAddFnTuple(Namespace *ns, NamedAstNode *fn) {
         if (foundnode->asttype == FnTupleNode)
             tuple = (FnTupleAstNode *)foundnode;
         else {
-            tuple = newFnTupleNode();
+            tuple = newFnTupleNode(name);
             namespaceSet(ns, name, (NamedAstNode*)tuple);
             nodesAdd(&tuple->methods, (AstNode*)foundnode);
         }

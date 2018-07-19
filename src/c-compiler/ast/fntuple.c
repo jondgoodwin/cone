@@ -11,10 +11,11 @@
 #include "../ast/nametbl.h"
 
 // Create a new FnTuple whose info will be filled in afterwards
-FnTupleAstNode *newFnTupleNode() {
+FnTupleAstNode *newFnTupleNode(Name *name) {
 	FnTupleAstNode *node;
 	newAstNode(node, FnTupleAstNode, FnTupleNode);
 	node->methods = newNodes(8);
+    node->namesym = name;
 	return node;
 }
 

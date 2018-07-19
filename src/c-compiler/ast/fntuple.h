@@ -14,7 +14,7 @@ typedef struct FnTupleAstNode {
 	Nodes *methods;
 } FnTupleAstNode;
 
-FnTupleAstNode *newFnTupleNode();
+FnTupleAstNode *newFnTupleNode(Name *name);
 void fnTuplePrint(FnTupleAstNode *node);
 void fnTuplePass(PassState *pstate, FnTupleAstNode *name);
 

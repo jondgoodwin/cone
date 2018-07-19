@@ -31,8 +31,13 @@ void structPrint(FieldsAstNode *node) {
 
 // Semantically analyze a struct type
 void structPass(PassState *pstate, FieldsAstNode *node) {
+    nametblHookPush();
     NamedAstNode *nnode;
-	AstNode **nodesp;
+    namespaceFor(&node->methfields) {
+        namespaceNextNode(&node->methfields, nnode);
+        nametblHookNode(nnode);
+    }
+    AstNode **nodesp;
 	uint32_t cnt;
 	for (nodesFor(node->fields, cnt, nodesp))
 		astPass(pstate, *nodesp);
@@ -48,6 +53,7 @@ void structPass(PassState *pstate, FieldsAstNode *node) {
         else if (nnode->asttype == VarNameDclNode)
             astPass(pstate, (AstNode*)nnode);
     }
+    nametblHookPop();
 }
 
 // Compare two struct signatures to see if they are equivalent
