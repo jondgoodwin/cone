@@ -166,6 +166,7 @@ AstNode *parsePostfix(ParseState *parse) {
 				elem->field = method;
 				node = (AstNode *)elem;
 			}
+            break;
 		}
 
 		default:
