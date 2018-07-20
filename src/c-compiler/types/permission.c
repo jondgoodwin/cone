@@ -44,7 +44,7 @@ void permPrint(PermAstNode *node) {
 uint16_t permGetFlags(AstNode *node) {
 	switch (node->asttype) {
 	case VarNameUseTag:
-		return ((VarDclAstNode*)((NameUseAstNode*)node)->dclnode)->perm->flags;
+		return permGetFlags((AstNode*)((NameUseAstNode*)node)->dclnode);
 	case VarDclTag:
 		return ((VarDclAstNode*)node)->perm->flags;
     case FnDclTag:
