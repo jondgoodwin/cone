@@ -61,7 +61,7 @@ VarDclAstNode *parseVarDcl(ParseState *parse, PermAstNode *defperm, uint16_t fla
 	}
 	else {
 		errorMsgLex(ErrorNoIdent, "Expected variable name for declaration");
-		return newVarDclNode(nametblFind("_",1), VarNameDclNode, voidType, perm, NULL);
+		return newVarDclNode(nametblFind("_",1), VarDclTag, voidType, perm, NULL);
 	}
 
 	// Get value type, if provided
@@ -81,7 +81,7 @@ VarDclAstNode *parseVarDcl(ParseState *parse, PermAstNode *defperm, uint16_t fla
 		val = NULL;
 	}
 
-	varnode = newVarDclNode(namesym, VarNameDclNode, vtype, perm, val);
+	varnode = newVarDclNode(namesym, VarDclTag, vtype, perm, val);
 	varnode->owner = parse->owner;
 	return varnode;
 }
@@ -174,7 +174,7 @@ AstNode *parseStruct(ParseState *parse) {
 
 void parseInjectSelf(FnSigAstNode *fnsig, Name *typename) {
 	NameUseAstNode *selftype = newNameUseNode(typename);
-	VarDclAstNode *selfparm = newVarDclNode(nametblFind("self", 4), VarNameDclNode, (AstNode*)selftype, constPerm, NULL);
+	VarDclAstNode *selfparm = newVarDclNode(nametblFind("self", 4), VarDclTag, (AstNode*)selftype, constPerm, NULL);
 	selfparm->scope = 1;
 	selfparm->index = 0;
 	nodesAdd(&fnsig->parms, (AstNode*)selfparm);

@@ -89,7 +89,8 @@ enum AstType {
 	IfNode,			// if .. elif .. else statement
 
     // Named value node
-    VarNameDclNode = ValueGroup + NamedNode,
+    VarDclTag = ValueGroup + NamedNode,
+    FnDclTag,
 
     // Unnamed type node
     TypeNameUseTag = TypeGroup, // Type name use node
@@ -176,6 +177,7 @@ typedef struct NamedAstNode {
 #include "../ast/block.h"
 #include "../ast/expr.h"
 #include "../ast/copyexpr.h"
+#include "../ast/fndcl.h"
 #include "../ast/vardcl.h"
 #include "../ast/fntuple.h"
 #include "../ast/nameuse.h"

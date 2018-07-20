@@ -15,7 +15,7 @@ typedef struct FnCallAstNode FnCallAstNode;
 // The parameter declaration list represents a namespace of local variables.
 typedef struct FnSigAstNode {
 	BasicAstHdr;
-    Nodes *parms;			// Declared parameter nodes w/ defaults (VarNameDclNode)
+    Nodes *parms;			// Declared parameter nodes w/ defaults (VarDclTag)
     AstNode *rettype;		// void, a single type or a type tuple
 } FnSigAstNode;
 

@@ -69,9 +69,9 @@ void parseRParen() {
 
 // Parse a function block
 AstNode *parseFn(ParseState *parse, uint16_t flags) {
-	VarDclAstNode *fnnode;
+	FnDclAstNode *fnnode;
 
-	fnnode = newVarDclNode(NULL, VarNameDclNode, NULL, immPerm, NULL);
+	fnnode = newFnDclNode(NULL, FnDclTag, NULL, immPerm, NULL);
 	fnnode->owner = parse->owner;
 
 	// Skip past the 'fn'

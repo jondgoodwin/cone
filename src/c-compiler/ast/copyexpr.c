@@ -234,7 +234,9 @@ void addrPrint(AddrAstNode *node) {
 // Type check borrowed reference creator
 void addrTypeCheckBorrow(AddrAstNode *node, PtrAstNode *ptype) {
 	AstNode *exp = node->exp;
-	if (exp->asttype != VarNameUseTag || ((NameUseAstNode*)exp)->dclnode->asttype != VarNameDclNode) {
+	if (exp->asttype != VarNameUseTag
+        || (((NameUseAstNode*)exp)->dclnode->asttype != VarDclTag
+            && ((NameUseAstNode*)exp)->dclnode->asttype != FnDclTag)) {
 		errorMsgNode((AstNode*)node, ErrorNotLval, "May only borrow from lvals (e.g., variable)");
 		return;
 	}

@@ -62,7 +62,7 @@ LLVMTypeRef _genlType(GenState *gen, char *name, AstNode *typ) {
 		AstNode **nodesp;
 		uint32_t cnt;
 		for (nodesFor(fnsig->parms, cnt, nodesp)) {
-			assert((*nodesp)->asttype == VarNameDclNode);
+			assert((*nodesp)->asttype == VarDclTag);
 			*parm++ = genlType(gen, ((TypedAstNode *)*nodesp)->vtype);
 		}
 		return LLVMFunctionType(genlType(gen, fnsig->rettype), param_types, fnsig->parms->used, 0);
@@ -78,7 +78,7 @@ LLVMTypeRef _genlType(GenState *gen, char *name, AstNode *typ) {
 		AstNode **nodesp;
 		uint32_t cnt;
 		for (nodesFor(strnode->fields, cnt, nodesp)) {
-			assert((*nodesp)->asttype == VarNameDclNode);
+			assert((*nodesp)->asttype == VarDclTag);
 			*field++ = genlType(gen, ((TypedAstNode *)*nodesp)->vtype);
 		}
 		LLVMTypeRef structype = LLVMStructCreateNamed(gen->context, name);
@@ -120,13 +120,13 @@ LLVMTypeRef genlType(GenState *gen, AstNode *typ) {
                 if (nnode->asttype == FnTupleNode) {
                     FnTupleAstNode *tuple = (FnTupleAstNode *)nnode;
                     for (nodesFor(tuple->methods, cnt, nodesp)) {
-                        VarDclAstNode *fnnode = (VarDclAstNode*)(*nodesp);
-                        assert(fnnode->asttype == VarNameDclNode);
-                        genlGloVarName(gen, fnnode);
+                        FnDclAstNode *fnnode = (FnDclAstNode*)(*nodesp);
+                        assert(fnnode->asttype == FnDclTag);
+                        genlGloFnName(gen, fnnode);
                     }
                 }
-                else if (nnode->asttype == VarNameDclNode)
-                    genlGloVarName(gen, (VarDclAstNode*)nnode);
+                else if (nnode->asttype == FnDclTag)
+                    genlGloFnName(gen, (FnDclAstNode*)nnode);
             }
 			// Now generate the code for each method
             namespaceFor(&tnode->methfields) {
@@ -134,12 +134,12 @@ LLVMTypeRef genlType(GenState *gen, AstNode *typ) {
                 if (nnode->asttype == FnTupleNode) {
                     FnTupleAstNode *tuple = (FnTupleAstNode *)nnode;
                     for (nodesFor(tuple->methods, cnt, nodesp)) {
-                        VarDclAstNode *fnnode = (VarDclAstNode*)(*nodesp);
+                        FnDclAstNode *fnnode = (FnDclAstNode*)(*nodesp);
                         genlFn(gen, fnnode);
                     }
                 }
-                else if (nnode->asttype == VarNameDclNode)
-                    genlFn(gen, (VarDclAstNode*)nnode);
+                else if (nnode->asttype == FnDclTag)
+                    genlFn(gen, (FnDclAstNode*)nnode);
 			}
 		}
 		return typeref;
@@ -446,7 +446,7 @@ LLVMValueRef genlLogic(GenState *gen, LogicAstNode* node) {
 
 // Generate local variable
 LLVMValueRef genlLocalVar(GenState *gen, VarDclAstNode *var) {
-	assert(var->asttype == VarNameDclNode);
+	assert(var->asttype == VarDclTag);
 	LLVMValueRef val = NULL;
 	var->llvmvar = LLVMBuildAlloca(gen->builder, genlType(gen, var->vtype), &var->namesym->namestr);
 	if (var->value)
@@ -530,7 +530,7 @@ LLVMValueRef genlExpr(GenState *gen, AstNode *termnode) {
 		return genlLogic(gen, (LogicAstNode*)termnode);
 	case NotLogicNode:
 		return genlNot(gen, (LogicAstNode*)termnode);
-	case VarNameDclNode:
+	case VarDclTag:
 		return genlLocalVar(gen, (VarDclAstNode*)termnode); break;
 	case BlockNode:
 		return genlBlock(gen, (BlockAstNode*)termnode); break;

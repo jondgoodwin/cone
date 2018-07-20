@@ -37,14 +37,14 @@
 
 // Generate parameter variable
 void genlParmVar(GenState *gen, VarDclAstNode *var) {
-	assert(var->asttype == VarNameDclNode);
+	assert(var->asttype == VarDclTag);
 	// We always alloca in case variable is mutable or we want to take address of its value
 	var->llvmvar = LLVMBuildAlloca(gen->builder, genlType(gen, var->vtype), &var->namesym->namestr);
 	LLVMBuildStore(gen->builder, LLVMGetParam(gen->fn, var->index), var->llvmvar);
 }
 
 // Generate a function
-void genlFn(GenState *gen, VarDclAstNode *fnnode) {
+void genlFn(GenState *gen, FnDclAstNode *fnnode) {
     if (fnnode->value->asttype == IntrinsicNode)
         return;
 
@@ -111,20 +111,18 @@ char *genlGlobalName(NamedAstNode *name) {
 	return memAllocStr(workbuf, strlen(workbuf));
 }
 
-// Generate LLVMValueRef for a global variable or function
+// Generate LLVMValueRef for a global variable
 void genlGloVarName(GenState *gen, VarDclAstNode *glovar) {
+	glovar->llvmvar = LLVMAddGlobal(gen->module, genlType(gen, glovar->vtype), genlGlobalName((NamedAstNode*)glovar));
+	if (glovar->perm == immPerm)
+		LLVMSetGlobalConstant(glovar->llvmvar, 1);
+}
 
-	// Handle when it is just a global variable
-	if (glovar->vtype->asttype != FnSigType) {
-		glovar->llvmvar = LLVMAddGlobal(gen->module, genlType(gen, glovar->vtype), genlGlobalName((NamedAstNode*)glovar));
-		if (glovar->perm == immPerm)
-			LLVMSetGlobalConstant(glovar->llvmvar, 1);
-		return;
-	}
-
-	// Add function to the module
-    if (glovar->value == NULL || glovar->value->asttype != IntrinsicNode)
-	    glovar->llvmvar = LLVMAddFunction(gen->module, genlGlobalName((NamedAstNode*)glovar), genlType(gen, glovar->vtype));
+// Generate LLVMValueRef for a global function
+void genlGloFnName(GenState *gen, FnDclAstNode *glofn) {
+    // Add function to the module
+    if (glofn->value == NULL || glofn->value->asttype != IntrinsicNode)
+        glofn->llvmvar = LLVMAddFunction(gen->module, genlGlobalName((NamedAstNode*)glofn), genlType(gen, glofn->vtype));
 }
 
 // Generate module's nodes
@@ -136,20 +134,25 @@ void genlModule(GenState *gen, ModuleAstNode *mod) {
 	// This way forward references to global variables will work correctly
 	for (nodesFor(mod->nodes, cnt, nodesp)) {
 		AstNode *nodep = *nodesp;
-		if (nodep->asttype == VarNameDclNode)
-			genlGloVarName(gen, (VarDclAstNode *)nodep);
+        if (nodep->asttype == VarDclTag)
+            genlGloVarName(gen, (VarDclAstNode *)nodep);
+        else if (nodep->asttype == FnDclTag)
+            genlGloFnName(gen, (FnDclAstNode *)nodep);
 	}
 
 	// Generate the function's block or the variable's initialization value
 	for (nodesFor(mod->nodes, cnt, nodesp)) {
 		AstNode *nodep = *nodesp;
 		switch (nodep->asttype) {
-		case VarNameDclNode:
-			if (((VarDclAstNode*)nodep)->value) {
-				if (((VarDclAstNode*)nodep)->vtype->asttype == FnSigType)
-					genlFn(gen, (VarDclAstNode*)nodep);
-				else
-					genlGloVar(gen, (VarDclAstNode*)nodep);
+        case VarDclTag:
+            if (((VarDclAstNode*)nodep)->value) {
+                genlGloVar(gen, (VarDclAstNode*)nodep);
+            }
+            break;
+
+        case FnDclTag:
+			if (((FnDclAstNode*)nodep)->value) {
+        		genlFn(gen, (FnDclAstNode*)nodep);
 			}
 			break;
 

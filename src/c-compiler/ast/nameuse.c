@@ -108,7 +108,7 @@ void nameUsePass(PassState *pstate, NameUseAstNode *name) {
 			name->dclnode = (NamedAstNode*)name->namesym->node;
 
         if (name->dclnode) {
-            if (name->dclnode->asttype == VarNameDclNode)
+            if (name->dclnode->asttype == VarDclTag || name->dclnode->asttype == FnDclTag)
                 name->asttype = VarNameUseTag;
             else
                 name->asttype = TypeNameUseTag;

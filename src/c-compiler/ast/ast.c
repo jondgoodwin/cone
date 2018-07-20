@@ -64,9 +64,11 @@ void astPrintNode(AstNode *node) {
     case TypeNameUseTag:
 	case MbrNameUseTag:
 		nameUsePrint((NameUseAstNode *)node); break;
-	case VarNameDclNode:
+	case VarDclTag:
 		varDclPrint((VarDclAstNode *)node); break;
-	case FnTupleNode:
+    case FnDclTag:
+        fnDclPrint((FnDclAstNode *)node); break;
+    case FnTupleNode:
 		fnTuplePrint((FnTupleAstNode *)node); break;
     case BlockNode:
 		blockPrint((BlockAstNode *)node); break;
@@ -135,9 +137,11 @@ void astPass(PassState *pstate, AstNode *node) {
 	switch (node->asttype) {
 	case ModuleNode:
 		modPass(pstate, (ModuleAstNode*)node); break;
-	case VarNameDclNode:
+	case VarDclTag:
 		varDclPass(pstate, (VarDclAstNode *)node); break;
-	case FnTupleNode:
+    case FnDclTag:
+        fnDclPass(pstate, (FnDclAstNode *)node); break;
+    case FnTupleNode:
 		fnTuplePass(pstate, (FnTupleAstNode *)node); break;
     case NameUseTag:
     case VarNameUseTag:

@@ -42,41 +42,6 @@ void varDclPrint(VarDclAstNode *name) {
 	}
 }
 
-// Syntactic sugar: Turn last statement implicit returns into explicit returns
-void fnImplicitReturn(AstNode *rettype, BlockAstNode *blk) {
-	AstNode *laststmt;
-	laststmt = nodesLast(blk->stmts);
-	if (rettype == voidType) {
-		if (laststmt->asttype != ReturnNode)
-			nodesAdd(&blk->stmts, (AstNode*) newReturnNode());
-	}
-	else {
-		// Inject return in front of expression
-		if (isValueNode(laststmt)) {
-			ReturnAstNode *retnode = newReturnNode();
-			retnode->exp = laststmt;
-			nodesLast(blk->stmts) = (AstNode*)retnode;
-		}
-		else if (laststmt->asttype != ReturnNode)
-			errorMsgNode(laststmt, ErrorNoRet, "A return value is expected but this statement cannot give one.");
-	}
-}
-
-// Enable resolution of fn parameter references to parameters
-void varDclFnNameResolve(PassState *pstate, VarDclAstNode *name) {
-	int16_t oldscope = pstate->scope;
-	pstate->scope = 1;
-	FnSigAstNode *fnsig = (FnSigAstNode*)name->vtype;
-    nametblHookPush();
-    AstNode **nodesp;
-    uint32_t cnt;
-    for (nodesFor(fnsig->parms, cnt, nodesp))
-        nametblHookNode((NamedAstNode *)*nodesp);
-	astPass(pstate, name->value);
-	nametblHookPop();
-	pstate->scope = oldscope;
-}
-
 // Enable name resolution of local variables
 void varDclNameResolve(PassState *pstate, VarDclAstNode *name) {
 
@@ -95,14 +60,6 @@ void varDclNameResolve(PassState *pstate, VarDclAstNode *name) {
 
 	if (name->value)
 		astPass(pstate, name->value);
-}
-
-// Provide parameter and return type context for type checking function's logic
-void varDclFnTypeCheck(PassState *pstate, VarDclAstNode *varnode) {
-	FnSigAstNode *oldfnsig = pstate->fnsig;
-	pstate->fnsig = (FnSigAstNode*)varnode->vtype;
-	astPass(pstate, varnode->value);
-	pstate->fnsig = oldfnsig;
 }
 
 // Type check variable against its initial value
@@ -132,24 +89,12 @@ void varDclPass(PassState *pstate, VarDclAstNode *name) {
 		// (because those have already been hooked by module for forward references)
 		/*if (name->owner->asttype != ModuleNode)
 			namespaceHook((NamedAstNode*)name, name->namesym);*/
-		if (vtype->asttype == FnSigType) {
-			if (name->value)
-				varDclFnNameResolve(pstate, name);
-		}
-		else
-			varDclNameResolve(pstate, name);
+    	varDclNameResolve(pstate, name);
 		break;
 
 	case TypeCheck:
 		if (name->value) {
-			if (vtype->asttype == FnSigType) {
-				// Syntactic sugar: Turn implicit returns into explicit returns
-				fnImplicitReturn(((FnSigAstNode*)name->vtype)->rettype, (BlockAstNode *)name->value);
-				// Do type checking of function (with fnsig as context)
-				varDclFnTypeCheck(pstate, name);
-			}
-			else
-				varDclTypeCheck(pstate, name);
+			varDclTypeCheck(pstate, name);
 		}
 		else if (vtype == voidType)
 			errorMsgNode((AstNode*)name, ErrorNoType, "Name must specify a type");

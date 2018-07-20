@@ -102,11 +102,19 @@ void modPass(PassState *pstate, ModuleAstNode *mod) {
 
 	// For global variables and functions, handle all their type info first
 	for (nodesFor(mod->nodes, cnt, nodesp)) {
-		if ((*nodesp)->asttype == VarNameDclNode) {
-			VarDclAstNode *name = (VarDclAstNode*)*nodesp;
-			astPass(pstate, (AstNode*)name->perm);
-			astPass(pstate, name->vtype);
-		}
+        switch ((*nodesp)->asttype) {
+        case VarDclTag:
+        {
+            VarDclAstNode * varnode = (VarDclAstNode*)*nodesp;
+            astPass(pstate, (AstNode*)varnode->perm);
+            astPass(pstate, varnode->vtype);
+        }
+        case FnDclTag:
+        {
+            FnDclAstNode * varnode = (FnDclAstNode*)*nodesp;
+            astPass(pstate, varnode->vtype);
+        }
+        }
 	}
 
 	// Now we can process the full node info

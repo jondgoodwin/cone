@@ -50,7 +50,7 @@ void structPass(PassState *pstate, FieldsAstNode *node) {
                 astPass(pstate, *nodesp);
             }
         }
-        else if (nnode->asttype == VarNameDclNode)
+        else if (nnode->asttype == FnDclTag)
             astPass(pstate, (AstNode*)nnode);
     }
     nametblHookPop();
