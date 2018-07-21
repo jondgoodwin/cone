@@ -146,10 +146,9 @@ AstNode *parseStruct(ParseState *parse) {
 		lexNextToken();
 		while (1) {
 			if (lexIsToken(FnToken)) {
-				VarDclAstNode *fn = (VarDclAstNode *)parseFn(parse, ParseMayName | ParseMayImpl);
-				fn->flags |= FlagFnMethod;
+				FnDclAstNode *fn = (FnDclAstNode*)parseFn(parse, FlagFnMethod, ParseMayName | ParseMayImpl);
                 if (fn && isNamedNode(fn))
-                    namespaceAddFnTuple(&strnode->methfields, (NamedAstNode*)fn);
+                    methnodesAddFn(&strnode->methfields, fn);
 			}
 			else if (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
 				VarDclAstNode *field = parseVarDcl(parse, mutPerm, ParseMayImpl | ParseMaySig);

@@ -60,8 +60,10 @@ void methnodesAddFn(MethNodes *mnodes, FnDclAstNode *fnnode) {
         errorMsgNode((AstNode*)fnnode, ErrorDupName, "Duplicate name %s: Only methods can be overloaded.", &fnnode->namesym->namestr);
         return;
     }
-    while (lastmeth->nextnode)
-        lastmeth = lastmeth->nextnode;
-    lastmeth->nextnode = fnnode;
+    if (lastmeth) {
+        while (lastmeth->nextnode)
+            lastmeth = lastmeth->nextnode;
+        lastmeth->nextnode = fnnode;
+    }
     methnodesAdd(mnodes, (AstNode*)fnnode);
 }

@@ -107,39 +107,21 @@ LLVMTypeRef genlType(GenState *gen, AstNode *typ) {
 		if (dclnode->llvmtype)
 			return dclnode->llvmtype;
 
-		// Also process the type's methods
+		// Also process the type's methods and functions
 		LLVMTypeRef typeref = dclnode->llvmtype = _genlType(gen, &dclnode->namesym->namestr, (AstNode*)dclnode);
 		if (isMethodType(dclnode)) {
             MethodTypeAstNode *tnode = (MethodTypeAstNode*)dclnode;
-            NamedAstNode *nnode;
             AstNode **nodesp;
             uint32_t cnt;
             // Declare just method names first, enabling forward references
-            namespaceFor(&tnode->methfields) {
-                namespaceNextNode(&tnode->methfields, nnode);
-                if (nnode->asttype == FnTupleNode) {
-                    FnTupleAstNode *tuple = (FnTupleAstNode *)nnode;
-                    for (nodesFor(tuple->methods, cnt, nodesp)) {
-                        FnDclAstNode *fnnode = (FnDclAstNode*)(*nodesp);
-                        assert(fnnode->asttype == FnDclTag);
-                        genlGloFnName(gen, fnnode);
-                    }
-                }
-                else if (nnode->asttype == FnDclTag)
-                    genlGloFnName(gen, (FnDclAstNode*)nnode);
+            for (methnodesFor(&tnode->methfields, cnt, nodesp)) {
+                if ((*nodesp)->asttype == FnDclTag)
+                    genlGloFnName(gen, (FnDclAstNode*)*nodesp);
             }
 			// Now generate the code for each method
-            namespaceFor(&tnode->methfields) {
-                namespaceNextNode(&tnode->methfields, nnode);
-                if (nnode->asttype == FnTupleNode) {
-                    FnTupleAstNode *tuple = (FnTupleAstNode *)nnode;
-                    for (nodesFor(tuple->methods, cnt, nodesp)) {
-                        FnDclAstNode *fnnode = (FnDclAstNode*)(*nodesp);
-                        genlFn(gen, fnnode);
-                    }
-                }
-                else if (nnode->asttype == FnDclTag)
-                    genlFn(gen, (FnDclAstNode*)nnode);
+            for (methnodesFor(&tnode->methfields, cnt, nodesp)) {
+                if ((*nodesp)->asttype == FnDclTag)
+                    genlFn(gen, (FnDclAstNode*)*nodesp);
 			}
 		}
 		return typeref;

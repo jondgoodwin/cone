@@ -18,7 +18,7 @@ ArrayAstNode *newArrayNode() {
     anode->owner = NULL;
     anode->namesym = anonName;
     anode->llvmtype = NULL;
-    namespaceInit(&anode->methfields, 0);
+    methnodesInit(&anode->methfields, 0);
     anode->subtypes = newNodes(0);
     return anode;
 }

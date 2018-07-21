@@ -27,7 +27,7 @@ enum ParseFlags {
 // parser.c
 ModuleAstNode *parsePgm();
 ModuleAstNode *parseModuleBlk(ParseState *parse, ModuleAstNode *mod);
-AstNode *parseFn(ParseState *parse, uint16_t flags);
+AstNode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags);
 void parseSemi();
 void parseRCurly();
 void parseLCurly();

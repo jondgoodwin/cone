@@ -92,44 +92,37 @@ void fnCallPrint(FnCallAstNode *node) {
 	astFprint(")");
 }
 
-VarDclAstNode *fnCallFindMethod(FnCallAstNode *node, Name *methsym) {
+// Find best acceptable method (across overloaded methods) whose signature matches argument types
+FnDclAstNode *fnCallFindMethod(FnCallAstNode *callnode, Name *methsym) {
 	// Get type of object call's object (first arg). Use value type of a ref
-	AstNode *objtype = typeGetVtype(*nodesNodes(node->args));
+	AstNode *objtype = typeGetVtype(*nodesNodes(callnode->args));
 	if (objtype->asttype == RefType || objtype->asttype == PtrType)
 		objtype = typeGetVtype(((PtrAstNode *)objtype)->pvtype);
     if (!isMethodType(objtype)) {
-        errorMsgNode((AstNode*)node, ErrorNoMeth, "Object's type does not support methods or fields.");
+        errorMsgNode((AstNode*)callnode, ErrorNoMeth, "Object's type does not support methods or fields.");
         return NULL;
     }
 
     // Do lookup, then handle if it is just a single method
-    NamedAstNode *foundnode = namespaceFind(&((MethodTypeAstNode*)objtype)->methfields, methsym);
-    if (foundnode->asttype != FnTupleNode) {
-        VarDclAstNode *method = (VarDclAstNode*)foundnode;
-        switch (fnSigMatchesCall((FnSigAstNode *)method->vtype, node)) {
-        case 0: return NULL;    // Not an acceptable match
-        default: return method; // Perfect or good enough match
-        }
+    NamedAstNode *foundnode = methnodesFind(&((MethodTypeAstNode*)objtype)->methfields, methsym);
+    if (!foundnode || foundnode->asttype != FnDclTag || !(foundnode->flags & FlagFnMethod)) {
+        errorMsgNode((AstNode*)callnode, ErrorNoMeth, "Object's type does not support a method of this name.");
+        return NULL;
     }
 
 	// Look for best-fit method among FnTuple list
-    VarDclAstNode *bestmethod = NULL;
-    int bestnbr = 0x7fffffff; // ridiculously high number
-	AstNode **nodesp;
-	uint32_t cnt;
-	for (nodesFor(((FnTupleAstNode*)foundnode)->methods, cnt, nodesp)) {
-		VarDclAstNode *method = (VarDclAstNode*)*nodesp;
-		if (method->namesym == methsym) {
-			int match;
-			switch (match = fnSigMatchesCall((FnSigAstNode *)method->vtype, node)) {
-			case 0: continue;		// not an acceptable match
-			case 1: return method;	// perfect match!
-			default:				// imprecise match using conversions
-				if (match < bestnbr) {
-					// Remember this as best found so far
-					bestnbr = match;
-					bestmethod = method;
-				}
+    FnDclAstNode *bestmethod = NULL;
+    int bestnbr = 0x7fffffff; // ridiculously high number    
+    for (FnDclAstNode *methnode = (FnDclAstNode *)foundnode; methnode; methnode = methnode->nextnode) {
+		int match;
+		switch (match = fnSigMatchesCall((FnSigAstNode *)methnode->vtype, callnode)) {
+		case 0: continue;		// not an acceptable match
+		case 1: return methnode;	// perfect match!
+		default:				// imprecise match using conversions
+			if (match < bestnbr) {
+				// Remember this as best found so far
+				bestnbr = match;
+				bestmethod = methnode;
 			}
 		}
 	}
@@ -151,7 +144,7 @@ void fnCallPass(PassState *pstate, FnCallAstNode *node) {
 	    if (node->fn->asttype == MbrNameUseTag) {
 		    NameUseAstNode *methname = (NameUseAstNode*)node->fn;
 		    Name *methsym = methname->namesym;
-		    VarDclAstNode *method;
+		    FnDclAstNode *method;
             if (methsym->namestr == '_') {
                 errorMsgNode((AstNode*)node, ErrorNotPublic, "The method `%s` is not public.", &methsym->namestr);
                 return;

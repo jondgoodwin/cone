@@ -19,7 +19,7 @@ FieldsAstNode *newStructNode(Name *namesym) {
     snode->namesym = namesym;
     snode->llvmtype = NULL;
     snode->subtypes = newNodes(0);
-    namespaceInit(&snode->methfields, 8);
+    methnodesInit(&snode->methfields, 8);
 	snode->fields = newNodes(8);
 	return snode;
 }
@@ -32,26 +32,16 @@ void structPrint(FieldsAstNode *node) {
 // Semantically analyze a struct type
 void structPass(PassState *pstate, FieldsAstNode *node) {
     nametblHookPush();
-    NamedAstNode *nnode;
-    namespaceFor(&node->methfields) {
-        namespaceNextNode(&node->methfields, nnode);
-        nametblHookNode(nnode);
-    }
     AstNode **nodesp;
-	uint32_t cnt;
+    uint32_t cnt;
+    for (methnodesFor(&node->methfields, cnt, nodesp)) {
+        if (isNamedNode(*nodesp))
+            nametblHookNode((NamedAstNode*)*nodesp);
+    }
 	for (nodesFor(node->fields, cnt, nodesp))
 		astPass(pstate, *nodesp);
-    namespaceFor(&node->methfields) {
-        namespaceNextNode(&node->methfields, nnode);
-        if (nnode->asttype == FnTupleNode) {
-            FnTupleAstNode *tuple = (FnTupleAstNode *)nnode;
-            for (nodesFor(tuple->methods, cnt, nodesp)) {
-                VarDclAstNode *fnnode = (VarDclAstNode*)(*nodesp);
-                astPass(pstate, *nodesp);
-            }
-        }
-        else if (nnode->asttype == FnDclTag)
-            astPass(pstate, (AstNode*)nnode);
+    for (methnodesFor(&node->methfields, cnt, nodesp)) {
+        astPass(pstate, (AstNode*)*nodesp);
     }
     nametblHookPop();
 }

@@ -15,9 +15,10 @@
 #include <assert.h>
 
 // Create a new name declaraction node
-FnDclAstNode *newFnDclNode(Name *namesym, uint16_t asttype, AstNode *type, AstNode *val) {
+FnDclAstNode *newFnDclNode(Name *namesym, uint16_t flags, AstNode *type, AstNode *val) {
 	FnDclAstNode *name;
-	newAstNode(name, FnDclAstNode, asttype);
+	newAstNode(name, FnDclAstNode, FnDclTag);
+    name->flags = flags;
 	name->vtype = type;
 	name->owner = NULL;
 	name->namesym = namesym;
