@@ -68,8 +68,6 @@ void astPrintNode(AstNode *node) {
 		varDclPrint((VarDclAstNode *)node); break;
     case FnDclTag:
         fnDclPrint((FnDclAstNode *)node); break;
-    case FnTupleNode:
-		fnTuplePrint((FnTupleAstNode *)node); break;
     case BlockNode:
 		blockPrint((BlockAstNode *)node); break;
 	case IfNode:
@@ -141,8 +139,6 @@ void astPass(PassState *pstate, AstNode *node) {
 		varDclPass(pstate, (VarDclAstNode *)node); break;
     case FnDclTag:
         fnDclPass(pstate, (FnDclAstNode *)node); break;
-    case FnTupleNode:
-		fnTuplePass(pstate, (FnTupleAstNode *)node); break;
     case NameUseTag:
     case VarNameUseTag:
     case TypeNameUseTag:

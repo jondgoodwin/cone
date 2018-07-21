@@ -110,7 +110,7 @@ FnDclAstNode *fnCallFindMethod(FnCallAstNode *callnode, Name *methsym) {
         return NULL;
     }
 
-	// Look for best-fit method among FnTuple list
+	// Look for best-fit method
     FnDclAstNode *bestmethod = NULL;
     int bestnbr = 0x7fffffff; // ridiculously high number    
     for (FnDclAstNode *methnode = (FnDclAstNode *)foundnode; methnode; methnode = methnode->nextnode) {

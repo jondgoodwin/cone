@@ -71,7 +71,6 @@ enum AstType {
     // Expression nodes (having value type - or sometimes nullType)
     VarNameUseTag = ValueGroup,  // Variable or Function name use node  
 	MbrNameUseTag,	// Member of a type's namespace (field/method)
-	FnTupleNode,    // List of namespace's methods with same name
 	ULitNode,		// Integer literal
 	FLitNode,		// Float literal
 	SLitNode,		// String literal
@@ -180,7 +179,6 @@ typedef struct NamedAstNode {
 #include "../ast/copyexpr.h"
 #include "../ast/fndcl.h"
 #include "../ast/vardcl.h"
-#include "../ast/fntuple.h"
 #include "../ast/nameuse.h"
 #include "../ast/literal.h"
 

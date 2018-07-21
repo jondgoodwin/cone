@@ -92,24 +92,3 @@ void namespaceSet(Namespace *ns, Name *name, NamedAstNode *node) {
 	slotp->name = name;
 	slotp->node = node;
 }
-
-// Add fn/method to namespace, where multiple allowed with same name
-// When multiple exist, they are mediated by a FnTupleAstNode
-void namespaceAddFnTuple(Namespace *ns, NamedAstNode *fn) {
-    Name *name = fn->namesym;
-    NamedAstNode *foundnode = namespaceFind(ns, name);
-    if (foundnode) {
-        FnTupleAstNode *tuple;
-        if (foundnode->asttype == FnTupleNode)
-            tuple = (FnTupleAstNode *)foundnode;
-        else {
-            tuple = newFnTupleNode(name);
-            namespaceSet(ns, name, (NamedAstNode*)tuple);
-            nodesAdd(&tuple->methods, (AstNode*)foundnode);
-        }
-        nodesAdd(&tuple->methods, (AstNode*)fn);
-    }
-    else
-        namespaceSet(ns, name, (NamedAstNode*)fn);
-
-}
