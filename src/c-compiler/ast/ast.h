@@ -165,6 +165,7 @@ typedef struct NamedAstNode {
 
 
 #include "../types/type.h"
+#include "../types/methtype.h"
 #include "../types/permission.h"
 #include "../types/fnsig.h"
 #include "../types/number.h"

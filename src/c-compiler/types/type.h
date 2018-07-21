@@ -22,30 +22,10 @@ typedef struct NamedTypeAstNode {
     NamedTypeAstHdr;
 } NamedTypeAstNode;
 
-// Named type that supports methods
-#define MethodTypeAstHdr \
-    NamedTypeAstHdr; \
-    Namespace methfields; \
-	Nodes *subtypes
-
-// Interface for a named type that supports methods
-// -> methods (Nodes) is the dictionary of named methods
-// -> subtypes (Nodes) is the list of trait/interface subtypes it implements
-typedef struct MethodTypeAstNode {
-    MethodTypeAstHdr;
-} MethodTypeAstNode;
-
 // Void type - e.g., for fn with no return value
 typedef struct VoidTypeAstNode {
 	BasicAstHdr;
 } VoidTypeAstNode;
-
-// For arrays
-typedef struct ArrTypeAstNode {
-	MethodTypeAstHdr;
-	uint32_t nbrelems;		// Number of elements
-	AstNode *elemtype;	// Type of array's elements
-} ArrTypeAstNode;
 
 AstNode *typeGetVtype(AstNode *node);
 int typeIsSame(AstNode *node1, AstNode *node2);

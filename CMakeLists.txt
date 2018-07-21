@@ -40,6 +40,7 @@ add_executable(conec
 	src/c-compiler/std/stdnumber.c
 
 	src/c-compiler/types/type.c
+	src/c-compiler/types/methtype.c
 	src/c-compiler/types/fnsig.c
 	src/c-compiler/types/pointer.c
 	src/c-compiler/types/struct.c
