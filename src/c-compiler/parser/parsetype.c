@@ -154,7 +154,7 @@ AstNode *parseStruct(ParseState *parse) {
 				VarDclAstNode *field = parseVarDcl(parse, mutPerm, ParseMayImpl | ParseMaySig);
 				field->scope = 1;
 				field->index = fieldnbr++;
-				nodesAdd(&strnode->fields, (AstNode*)field);
+				methnodesAddField(&strnode->methfields, field);
 				if (!lexIsToken(SemiToken))
 					break;
 				lexNextToken();

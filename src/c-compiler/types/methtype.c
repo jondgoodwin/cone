@@ -67,3 +67,13 @@ void methnodesAddFn(MethNodes *mnodes, FnDclAstNode *fnnode) {
     }
     methnodesAdd(mnodes, (AstNode*)fnnode);
 }
+
+// Add a field
+void methnodesAddField(MethNodes *mnodes,  VarDclAstNode *varnode) {
+    FnDclAstNode *lastmeth = (FnDclAstNode *)methnodesFind(mnodes, varnode->namesym);
+    if (lastmeth && (lastmeth->asttype != VarDclTag)) {
+        errorMsgNode((AstNode*)varnode, ErrorDupName, "Duplicate name %s: Only methods can be overloaded.", &varnode->namesym->namestr);
+        return;
+    }
+    methnodesAdd(mnodes, (AstNode*)varnode);
+}

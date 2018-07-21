@@ -120,14 +120,19 @@ void dotOpPass(PassState *pstate, DotOpAstNode *node) {
 			if (ownvtype->asttype == StructType) {
 				NameUseAstNode *fldname = (NameUseAstNode*)node->field;
 				Name *fldsym = fldname->namesym;
-				NamedAstNode *fieldnode = nodesFind(((FieldsAstNode *)ownvtype)->fields, fldsym);
+				NamedAstNode *fieldnode = methnodesFind(&((FieldsAstNode *)ownvtype)->methfields, fldsym);
 				if (fieldnode) {
-					fldname->asttype = VarNameUseTag;
-					fldname->dclnode = fieldnode;
-					node->vtype = fldname->vtype = fldname->dclnode->vtype;
+                    if (fieldnode->asttype == VarDclTag) {
+                        fldname->asttype = VarNameUseTag;
+                        fldname->dclnode = fieldnode;
+                        node->vtype = fldname->vtype = fldname->dclnode->vtype;
+                    }
+                    else {
+                        errorMsgNode((AstNode*)node, ErrorNoMbr, "No field named `%s` is defined by the object's type.", &fldsym->namestr);
+                    }
 				}
 				else
-					errorMsgNode((AstNode*)node, ErrorNoMeth, "The field `%s` is not defined by the object's type.", &fldsym->namestr);
+					errorMsgNode((AstNode*)node, ErrorNoMbr, "No field named `%s` is defined by the object's type.", &fldsym->namestr);
 			}
 			else
 				errorMsgNode(node->field, ErrorNoFlds, "Fields not supported by expression's type");

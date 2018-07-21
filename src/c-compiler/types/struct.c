@@ -20,7 +20,6 @@ FieldsAstNode *newStructNode(Name *namesym) {
     snode->llvmtype = NULL;
     snode->subtypes = newNodes(0);
     methnodesInit(&snode->methfields, 8);
-	snode->fields = newNodes(8);
 	return snode;
 }
 
@@ -38,8 +37,6 @@ void structPass(PassState *pstate, FieldsAstNode *node) {
         if (isNamedNode(*nodesp))
             nametblHookNode((NamedAstNode*)*nodesp);
     }
-	for (nodesFor(node->fields, cnt, nodesp))
-		astPass(pstate, *nodesp);
     for (methnodesFor(&node->methfields, cnt, nodesp)) {
         astPass(pstate, (AstNode*)*nodesp);
     }

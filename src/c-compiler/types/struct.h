@@ -20,7 +20,6 @@
 // - subtypes. An ordered list of nodes for its traits/interfaces
 typedef struct FieldsAstNode {
 	MethodTypeAstHdr;
-	Nodes *fields;
 } FieldsAstNode;
 
 FieldsAstNode *newStructNode(Name *namesym);
