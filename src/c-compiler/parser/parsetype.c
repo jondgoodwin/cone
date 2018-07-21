@@ -147,7 +147,7 @@ AstNode *parseStruct(ParseState *parse) {
 		while (1) {
 			if (lexIsToken(FnToken)) {
 				VarDclAstNode *fn = (VarDclAstNode *)parseFn(parse, ParseMayName | ParseMayImpl);
-				fn->flags |= FlagMangleParms;
+				fn->flags |= FlagFnMethod;
                 if (fn && isNamedNode(fn))
                     namespaceAddFnTuple(&strnode->methfields, (NamedAstNode*)fn);
 			}

@@ -240,7 +240,9 @@ void addrTypeCheckBorrow(AddrAstNode *node, PtrAstNode *ptype) {
 		errorMsgNode((AstNode*)node, ErrorNotLval, "May only borrow from lvals (e.g., variable)");
 		return;
 	}
-	if (!permMatches(ptype->perm, ((VarDclAstNode*)((NameUseAstNode*)exp)->dclnode)->perm))
+    NamedAstNode *dclnode = ((NameUseAstNode*)exp)->dclnode;
+    PermAstNode *perm = (dclnode->asttype == VarDclTag) ? ((VarDclAstNode*)dclnode)->perm : immPerm;
+	if (!permMatches(ptype->perm, perm))
 		errorMsgNode((AstNode *)node, ErrorBadPerm, "Borrowed reference cannot obtain this permission");
 }
 

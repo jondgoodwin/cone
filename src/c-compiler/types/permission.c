@@ -48,7 +48,7 @@ uint16_t permGetFlags(AstNode *node) {
 	case VarDclTag:
 		return ((VarDclAstNode*)node)->perm->flags;
     case FnDclTag:
-        return ((FnDclAstNode*)node)->perm->flags;
+        return immPerm->flags;
     case DerefNode:
 	{
 		PtrAstNode *vtype = (PtrAstNode*)typeGetVtype(((DerefAstNode *)node)->exp);

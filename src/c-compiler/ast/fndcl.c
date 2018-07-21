@@ -15,27 +15,24 @@
 #include <assert.h>
 
 // Create a new name declaraction node
-FnDclAstNode *newFnDclNode(Name *namesym, uint16_t asttype, AstNode *type, PermAstNode *perm, AstNode *val) {
+FnDclAstNode *newFnDclNode(Name *namesym, uint16_t asttype, AstNode *type, AstNode *val) {
 	FnDclAstNode *name;
 	newAstNode(name, FnDclAstNode, asttype);
 	name->vtype = type;
 	name->owner = NULL;
 	name->namesym = namesym;
-	name->perm = perm;
 	name->value = val;
-	name->scope = 0;
-	name->index = 0;
 	name->llvmvar = NULL;
+    name->nextnode = NULL;
 	return name;
 }
 
 // Serialize the AST for a variable/function
 void fnDclPrint(FnDclAstNode *name) {
-	astPrintNode((AstNode*)name->perm);
-	astFprint("%s ", &name->namesym->namestr);
+	astFprint("fn %s ", &name->namesym->namestr);
 	astPrintNode(name->vtype);
 	if (name->value) {
-		astFprint(" = ");
+		astFprint(" {} ");
 		if (name->value->asttype == BlockNode)
 			astPrintNL();
 		astPrintNode(name->value);
@@ -87,7 +84,6 @@ void fnDclTypeCheck(PassState *pstate, FnDclAstNode *varnode) {
 
 // Check the function declaration's AST
 void fnDclPass(PassState *pstate, FnDclAstNode *name) {
-	astPass(pstate, (AstNode*)name->perm);
 	astPass(pstate, name->vtype);
 	AstNode *vtype = typeGetVtype(name->vtype);
 

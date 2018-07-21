@@ -90,14 +90,16 @@ void genlNamePrefix(NamedAstNode *name, char *workbuf) {
 
 // Create and return globally unique name, mangled as necessary
 char *genlGlobalName(NamedAstNode *name) {
-	// Is mangling necessary? Only if we need namespace qualifier or function might be overloaded
-	if ((name->flags & FlagExtern) || !(name->flags & FlagMangleParms) && !name->owner->namesym)
+	// Is mangling necessary? Only if we need namespace qualifier or method might be overloaded
+	if ((name->flags & FlagExtern) || !(name->asttype == FnDclTag && (name->flags & FlagFnMethod)) && !name->owner->namesym)
 		return &name->namesym->namestr;
 
 	char workbuf[2048] = { '\0' };
 	genlNamePrefix(name->owner, workbuf);
 	strcat(workbuf, &name->namesym->namestr);
-	if (name->flags & FlagMangleParms) {
+
+    // Mangle method name with parameter types so that overloaded methods have distinct names
+	if (name->flags & FlagFnMethod) {
 		FnSigAstNode *fnsig = (FnSigAstNode *)name->vtype;
 		char *bufp = workbuf + strlen(workbuf);
 		int16_t cnt;

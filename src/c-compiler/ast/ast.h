@@ -130,7 +130,7 @@ enum AstType {
 	uint16_t flags
 
 enum AstFlags {
-	FlagMangleParms = 0x0001,	// Should fn parm types be part of guname?
+	FlagFnMethod = 0x0001,	// FnDclTag: Function is a method
 	FlagExtern = 0x0002			// C ABI extern
 };
 

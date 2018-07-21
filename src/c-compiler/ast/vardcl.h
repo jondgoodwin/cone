@@ -10,10 +10,10 @@
 // Name declaration node (e.g., variable, fn implementation, or named type)
 typedef struct VarDclAstNode {
 	NamedAstHdr;				// 'vtype': type of this name's value
-	PermAstNode *perm;			// Permission type (often mut or imm)
 	AstNode *value;				// Starting value/declaration (NULL if not initialized)
 	LLVMValueRef llvmvar;		// LLVM's handle for a declared variable (for generation)
-	uint16_t scope;				// 0=global
+    PermAstNode *perm;			// Permission type (often mut or imm)
+    uint16_t scope;				// 0=global
 	uint16_t index;				// index within this scope (e.g., parameter number)
 } VarDclAstNode;
 

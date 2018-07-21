@@ -10,14 +10,12 @@
 // Name declaration node (e.g., variable, fn implementation, or named type)
 typedef struct FnDclAstNode {
 	NamedAstHdr;				// 'vtype': type of this name's value
-	PermAstNode *perm;			// Permission type (often mut or imm)
-	AstNode *value;				// Starting value/declaration (NULL if not initialized)
+	AstNode *value;				// Block or intrinsic code nodes (NULL if no code)
 	LLVMValueRef llvmvar;		// LLVM's handle for a declared variable (for generation)
-	uint16_t scope;				// 0=global
-	uint16_t index;				// index within this scope (e.g., parameter number)
+    struct FnDclAstNode *nextnode;     // Link to next overloaded method with the same name (or NULL)
 } FnDclAstNode;
 
-FnDclAstNode *newFnDclNode(Name *namesym, uint16_t asttype, AstNode *sig, PermAstNode *perm, AstNode *val);
+FnDclAstNode *newFnDclNode(Name *namesym, uint16_t asttype, AstNode *sig, AstNode *val);
 void fnDclPrint(FnDclAstNode *fn);
 void fnDclPass(PassState *pstate, FnDclAstNode *node);
 
