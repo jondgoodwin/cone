@@ -8,6 +8,7 @@
 #include "../ast/ast.h"
 #include "../ast/nametbl.h"
 #include "../parser/lexer.h"
+#include "../shared/error.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -29,13 +30,6 @@ void methnodesGrow(MethNodes *mnodes) {
     memcpy(mnodes->nodes, oldnodes, mnodes->used * sizeof(AstNode **));
 }
 
-// Add an AstNode to the end of a MethNodes, growing it if full (changing its memory location)
-void methnodesAdd(MethNodes *mnodes, AstNode *node) {
-    if (mnodes->used >= mnodes->avail)
-        methnodesGrow(mnodes);
-    mnodes->nodes[mnodes->used++] = node;
-}
-
 // Find the desired named node.
 // Return the node, if found or NULL if not found
 NamedAstNode *methnodesFind(MethNodes *mnodes, Name *name) {
@@ -48,4 +42,26 @@ NamedAstNode *methnodesFind(MethNodes *mnodes, Name *name) {
 		}
 	}
 	return NULL;
+}
+
+// Add an AstNode to the end of a MethNodes, growing it if full (changing its memory location)
+void methnodesAdd(MethNodes *mnodes, AstNode *node) {
+    if (mnodes->used >= mnodes->avail)
+        methnodesGrow(mnodes);
+    mnodes->nodes[mnodes->used++] = node;
+}
+
+// Add a function or potentially overloaded method
+// If method is overloaded, add it to the link chain of same named methods
+void methnodesAddFn(MethNodes *mnodes, FnDclAstNode *fnnode) {
+    FnDclAstNode *lastmeth = (FnDclAstNode *)methnodesFind(mnodes, fnnode->namesym);
+    if (lastmeth && (lastmeth->asttype != FnDclTag
+        || !(lastmeth->flags & FlagFnMethod) || !(fnnode->flags & FlagFnMethod))) {
+        errorMsgNode((AstNode*)fnnode, ErrorDupName, "Duplicate name %s: Only methods can be overloaded.", &fnnode->namesym->namestr);
+        return;
+    }
+    while (lastmeth->nextnode)
+        lastmeth = lastmeth->nextnode;
+    lastmeth->nextnode = fnnode;
+    methnodesAdd(mnodes, (AstNode*)fnnode);
 }

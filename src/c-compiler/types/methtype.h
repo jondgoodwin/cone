@@ -8,6 +8,8 @@
 #ifndef methtype_h
 #define methtype_h
 
+typedef struct FnDclAstNode FnDclAstNode;
+
 // Metadata describing a variable-sized structure holding an ordered list of AstNodes
 // These nodes are methods (potentially overloaded) or fields
 typedef struct MethNodes {
@@ -32,6 +34,7 @@ typedef struct MethodTypeAstNode {
 // Helper Functions
 void methnodesInit(MethNodes *mnodes, uint32_t size);
 void methnodesAdd(MethNodes *mnodes, AstNode *node);
+void methnodesAddFn(MethNodes *mnodes, FnDclAstNode *fnnode);
 NamedAstNode *methnodesFind(MethNodes *mnodes, Name *name);
 
 #define methnodesNodes(nodes) ((AstNode**)((nodes)+1))
