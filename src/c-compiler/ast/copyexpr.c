@@ -146,7 +146,7 @@ void fnCallPass(PassState *pstate, FnCallAstNode *node) {
 		    Name *methsym = methname->namesym;
 		    FnDclAstNode *method;
             if (methsym->namestr == '_') {
-                errorMsgNode((AstNode*)node, ErrorNotPublic, "The method `%s` is not public.", &methsym->namestr);
+                errorMsgNode((AstNode*)node, ErrorNotPublic, "May not access the private method `%s`.", &methsym->namestr);
                 return;
             }
 		    else if (method = fnCallFindMethod(node, methsym)) {

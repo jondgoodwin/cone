@@ -117,11 +117,14 @@ void dotOpPass(PassState *pstate, DotOpAstNode *node) {
 		if (node->field->asttype == MbrNameUseTag) {
 			derefAuto(&node->instance);
 			AstNode *ownvtype = typeGetVtype(node->instance);
-			if (ownvtype->asttype == StructType) {
+            if (isMethodType(ownvtype)) {
 				NameUseAstNode *fldname = (NameUseAstNode*)node->field;
 				Name *fldsym = fldname->namesym;
 				NamedAstNode *fieldnode = methnodesFind(&((FieldsAstNode *)ownvtype)->methfields, fldsym);
 				if (fieldnode) {
+                    if (fieldnode->namesym->namestr == '_') {
+                        errorMsgNode((AstNode*)node, ErrorNotPublic, "May not access the private `%s`.", &fieldnode->namesym->namestr);
+                    }
                     if (fieldnode->asttype == VarDclTag) {
                         fldname->asttype = VarNameUseTag;
                         fldname->dclnode = fieldnode;
