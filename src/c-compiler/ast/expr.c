@@ -123,7 +123,7 @@ void dotOpPass(PassState *pstate, DotOpAstNode *node) {
 				NamedAstNode *fieldnode = methnodesFind(&((FieldsAstNode *)ownvtype)->methfields, fldsym);
 				if (fieldnode) {
                     if (fieldnode->namesym->namestr == '_') {
-                        errorMsgNode((AstNode*)node, ErrorNotPublic, "May not access the private `%s`.", &fieldnode->namesym->namestr);
+                        errorMsgNode((AstNode*)node, ErrorNotPublic, "`%s` is private and may not be accessed.", &fieldnode->namesym->namestr);
                     }
                     if (fieldnode->asttype == VarDclTag) {
                         fldname->asttype = VarNameUseTag;

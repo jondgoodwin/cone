@@ -92,43 +92,6 @@ void fnCallPrint(FnCallAstNode *node) {
 	astFprint(")");
 }
 
-// Find best acceptable method (across overloaded methods) whose signature matches argument types
-FnDclAstNode *fnCallFindMethod(FnCallAstNode *callnode, Name *methsym) {
-	// Get type of object call's object (first arg). Use value type of a ref
-	AstNode *objtype = typeGetVtype(*nodesNodes(callnode->args));
-	if (objtype->asttype == RefType || objtype->asttype == PtrType)
-		objtype = typeGetVtype(((PtrAstNode *)objtype)->pvtype);
-    if (!isMethodType(objtype)) {
-        errorMsgNode((AstNode*)callnode, ErrorNoMeth, "Object's type does not support methods or fields.");
-        return NULL;
-    }
-
-    // Do lookup, then handle if it is just a single method
-    NamedAstNode *foundnode = methnodesFind(&((MethodTypeAstNode*)objtype)->methfields, methsym);
-    if (!foundnode || foundnode->asttype != FnDclTag || !(foundnode->flags & FlagFnMethod)) {
-        errorMsgNode((AstNode*)callnode, ErrorNoMeth, "Object's type does not support a method of this name.");
-        return NULL;
-    }
-
-	// Look for best-fit method
-    FnDclAstNode *bestmethod = NULL;
-    int bestnbr = 0x7fffffff; // ridiculously high number    
-    for (FnDclAstNode *methnode = (FnDclAstNode *)foundnode; methnode; methnode = methnode->nextnode) {
-		int match;
-		switch (match = fnSigMatchesCall((FnSigAstNode *)methnode->vtype, callnode)) {
-		case 0: continue;		// not an acceptable match
-		case 1: return methnode;	// perfect match!
-		default:				// imprecise match using conversions
-			if (match < bestnbr) {
-				// Remember this as best found so far
-				bestnbr = match;
-				bestmethod = methnode;
-			}
-		}
-	}
-	return bestmethod;
-}
-
 // Analyze function call node
 void fnCallPass(PassState *pstate, FnCallAstNode *node) {
 	AstNode **argsp;
@@ -149,7 +112,7 @@ void fnCallPass(PassState *pstate, FnCallAstNode *node) {
                 errorMsgNode((AstNode*)node, ErrorNotPublic, "May not access the private method `%s`.", &methsym->namestr);
                 return;
             }
-		    else if (method = fnCallFindMethod(node, methsym)) {
+		    else if (method = methtypeFindMethod(typeGetVtype(*nodesNodes(node->args)), methsym, node->args, (AstNode*)node)) {
 			    methname->asttype = VarNameUseTag;
 			    methname->dclnode = (NamedAstNode*)method;
 			    methname->vtype = methname->dclnode->vtype;

@@ -23,6 +23,6 @@ FnSigAstNode *newFnSigNode();
 void fnSigPrint(FnSigAstNode *node);
 void fnSigPass(PassState *pstate, FnSigAstNode *name);
 int fnSigEqual(FnSigAstNode *node1, FnSigAstNode *node2);
-int fnSigMatchesCall(FnSigAstNode *to, FnCallAstNode *from);
+int fnSigMatchesCall(FnSigAstNode *to, Nodes *args);
 
 #endif

@@ -77,3 +77,38 @@ void methnodesAddField(MethNodes *mnodes,  VarDclAstNode *varnode) {
     }
     methnodesAdd(mnodes, (AstNode*)varnode);
 }
+
+// Find best acceptable method (across overloaded methods) whose signature matches argument types
+FnDclAstNode *methtypeFindMethod(AstNode *objtype, Name *methsym, Nodes *args, AstNode *callnode) {
+    if (objtype->asttype == RefType || objtype->asttype == PtrType)
+        objtype = typeGetVtype(((PtrAstNode *)objtype)->pvtype);
+    if (!isMethodType(objtype)) {
+        errorMsgNode(callnode, ErrorNoMeth, "Object's type does not support methods or fields.");
+        return NULL;
+    }
+
+    // Do lookup, then handle if it is just a single method
+    NamedAstNode *foundnode = methnodesFind(&((MethodTypeAstNode*)objtype)->methfields, methsym);
+    if (!foundnode || foundnode->asttype != FnDclTag || !(foundnode->flags & FlagFnMethod)) {
+        errorMsgNode(callnode, ErrorNoMeth, "Object's type does not support a method of this name.");
+        return NULL;
+    }
+
+    // Look for best-fit method
+    FnDclAstNode *bestmethod = NULL;
+    int bestnbr = 0x7fffffff; // ridiculously high number    
+    for (FnDclAstNode *methnode = (FnDclAstNode *)foundnode; methnode; methnode = methnode->nextnode) {
+        int match;
+        switch (match = fnSigMatchesCall((FnSigAstNode *)methnode->vtype, args)) {
+        case 0: continue;		// not an acceptable match
+        case 1: return methnode;	// perfect match!
+        default:				// imprecise match using conversions
+            if (match < bestnbr) {
+                // Remember this as best found so far
+                bestnbr = match;
+                bestmethod = methnode;
+            }
+        }
+    }
+    return bestmethod;
+}
