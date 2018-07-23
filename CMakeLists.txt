@@ -27,6 +27,7 @@ add_executable(conec
 	src/c-compiler/ast/module.c
 	src/c-compiler/ast/nameuse.c
 	src/c-compiler/ast/vardcl.c
+	src/c-compiler/ast/fncall.c
 	src/c-compiler/ast/fndcl.c
 	src/c-compiler/ast/literal.c
 	src/c-compiler/ast/nodes.c

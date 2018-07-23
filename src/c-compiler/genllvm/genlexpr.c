@@ -232,12 +232,12 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallAstNode *fncall) {
 		*fnarg++ = genlExpr(gen, *nodesp);
 
 	// Handle call when we have a pointer to a function
-	if (fncall->fn->asttype == DerefNode) {
-		return LLVMBuildCall(gen->builder, genlExpr(gen, ((DerefAstNode*)fncall->fn)->exp), fnargs, fncall->args->used, "");
+	if (fncall->objfn->asttype == DerefNode) {
+		return LLVMBuildCall(gen->builder, genlExpr(gen, ((DerefAstNode*)fncall->objfn)->exp), fnargs, fncall->args->used, "");
 	}
 
 	// A function call may be to an intrinsic, or to program-defined code
-	NameUseAstNode *fnuse = (NameUseAstNode *)fncall->fn;
+	NameUseAstNode *fnuse = (NameUseAstNode *)fncall->objfn;
     VarDclAstNode *fndcl = (VarDclAstNode *)fnuse->dclnode;
 	switch (fndcl->value? fndcl->value->asttype : BlockNode) {
 	case BlockNode: {

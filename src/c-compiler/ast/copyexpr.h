@@ -21,25 +21,16 @@ typedef struct AssignAstNode {
 	int16_t assignType;
 } AssignAstNode;
 
-// Function call node
-typedef struct FnCallAstNode {
-	TypedAstHdr;
-	AstNode *fn;
-	Nodes *args;
-} FnCallAstNode;
-
 typedef struct AddrAstNode {
 	TypedAstHdr;
 	AstNode *exp;
 } AddrAstNode;
 
+void handleCopy(PassState *pstate, AstNode *node);
+
 AssignAstNode *newAssignAstNode(int16_t assigntype, AstNode *lval, AstNode *rval);
 void assignPrint(AssignAstNode *node);
 void assignPass(PassState *pstate, AssignAstNode *node);
-
-FnCallAstNode *newFnCallAstNode(AstNode *fn, int nnodes);
-void fnCallPrint(FnCallAstNode *node);
-void fnCallPass(PassState *pstate, FnCallAstNode *node);
 
 AddrAstNode *newAddrAstNode();
 void addrPrint(AddrAstNode *node);

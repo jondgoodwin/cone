@@ -177,6 +177,7 @@ typedef struct NamedAstNode {
 #include "../ast/block.h"
 #include "../ast/expr.h"
 #include "../ast/copyexpr.h"
+#include "../ast/fncall.h"
 #include "../ast/fndcl.h"
 #include "../ast/vardcl.h"
 #include "../ast/nameuse.h"
