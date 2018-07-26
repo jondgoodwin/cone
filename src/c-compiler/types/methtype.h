@@ -44,6 +44,6 @@ NamedAstNode *methnodesFind(MethNodes *mnodes, Name *name);
 #define methnodesGet(mnodes, index) (mnodes)->nodes[index]
 #define methnodesLast(mnodes) methnodesGet(mnodes, mnodes->used-1)
 
-FnDclAstNode *methtypeFindMethod(AstNode *objtype, Name *methsym, Nodes *args, AstNode *callnode);
+FnDclAstNode *methnodesFindBestMethod(FnDclAstNode *firstmethod, Nodes *args);
 
 #endif
