@@ -145,6 +145,47 @@ int typeCoerces(AstNode *to, AstNode **from) {
 	return 0;
 }
 
+// Return a CopyTrait indicating how to handle when a value is assigned to a variable or passed to a function.
+int typeCopyTrait(AstNode *typenode) {
+    getVtype(typenode);
+
+    // For an aggregate type, existence of a destructor or a non-CopyBitwise field is infectious
+    // If it has a .copy method, it is CopyMethod, or else it is CopyMove.
+    if (isMethodType(typenode)) {
+        int copytrait = CopyBitwise;
+        MethNodes *nodes = &((MethodTypeAstNode *)typenode)->methfields;
+        uint32_t cnt;
+        AstNode **nodesp;
+        for (methnodesFor(nodes, cnt, nodesp)) {
+            if (((*nodesp)->asttype == VarDclTag && CopyBitwise != typeCopyTrait(*nodesp))
+                /* || *nodesp points to a destructor */)
+                copytrait == CopyBitwise ? CopyMove : copytrait;
+            // else if (nodesp points to the .copy method)
+            //    return CopyMethod;
+        }
+        return copytrait;
+    }
+    // For references, a 'uni' reference is CopyMove and all others are CopyBitwise
+    else if (typenode->asttype == RefType) {
+        return (((PtrAstNode *)typenode)->perm->flags & MayAlias) ? CopyBitwise : CopyMove;
+    }
+    // All pointers are CopyMove (potentially unsafe to copy)
+    else if (typenode->asttype == PtrType)
+        return CopyMove;
+    // The default (e.g., numbers) is CopyBitwise
+    return CopyBitwise;
+}
+
+// Ensure implicit copies (e.g., assignment, function arguments) are done safely
+// using a move or the copy method as needed.
+void typeHandleCopy(AstNode **nodep) {
+    int copytrait = typeCopyTrait(*nodep);
+    if (copytrait != CopyBitwise)
+        errorMsgNode(*nodep, WarnCopy, "No current support for move. Be sure this is safe!");
+    // if CopyMethod - inject use of that method to create a safe clone that can be "moved"
+    // if CopyMove - turn off access to the source (via static (local var) or dynamic mechanism)
+}
+
 // Add type mangle info to buffer
 char *typeMangle(char *bufp, AstNode *vtype) {
 	switch (vtype->asttype) {

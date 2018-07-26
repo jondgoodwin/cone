@@ -162,7 +162,7 @@ void fnCallPass(PassState *pstate, FnCallAstNode *node) {
                 if (!typeCoerces(*parmp, argsp))
                     errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
                 else
-                    handleCopy(pstate, *argsp);
+                    typeHandleCopy(argsp);
                 parmp++;
             }
 

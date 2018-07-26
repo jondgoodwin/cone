@@ -26,8 +26,6 @@ typedef struct AddrAstNode {
 	AstNode *exp;
 } AddrAstNode;
 
-void handleCopy(PassState *pstate, AstNode *node);
-
 AssignAstNode *newAssignAstNode(int16_t assigntype, AstNode *lval, AstNode *rval);
 void assignPrint(AssignAstNode *node);
 void assignPass(PassState *pstate, AssignAstNode *node);

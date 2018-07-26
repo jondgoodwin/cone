@@ -69,6 +69,7 @@ enum ErrorCode {
 	WarnCode = 3000,
 	WarnName,		// Unnecessary name
 	WarnIndent,		// Inconsistent indent character
+    WarnCopy,       // Unsafe attempt to copy a CopyMethod or CopyMove typed value
 };
 
 int errors;

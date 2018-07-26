@@ -13,10 +13,6 @@
 
 #include <assert.h>
 
-void handleCopy(PassState *pstate, AstNode *node) {
-
-}
-
 // Create a new assignment node
 AssignAstNode *newAssignAstNode(int16_t assigntype, AstNode *lval, AstNode *rval) {
 	AssignAstNode *node;
@@ -64,7 +60,7 @@ void assignPass(PassState *pstate, AssignAstNode *node) {
 		else if (!permIsMutable(node->lval))
 			errorMsgNode(node->lval, ErrorNoMut, "You do not have permission to modify lval");
 		else
-			handleCopy(pstate, node->rval);
+			typeHandleCopy(&node->rval);
 		node->vtype = ((TypedAstNode*)node->rval)->vtype;
 	}
 }
