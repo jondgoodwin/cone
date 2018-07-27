@@ -95,54 +95,6 @@ void derefAuto(AstNode **node) {
 	*node = (AstNode*)deref;
 }
 
-// Create a new element node
-DotOpAstNode *newDotOpAstNode() {
-	DotOpAstNode *node;
-	newAstNode(node, DotOpAstNode, DotOpNode);
-	node->vtype = voidType;
-	return node;
-}
-
-// Serialize element
-void dotOpPrint(DotOpAstNode *node) {
-	astPrintNode(node->instance);
-	astFprint(".");
-	astPrintNode(node->field);
-}
-
-// Analyze element node
-void dotOpPass(PassState *pstate, DotOpAstNode *node) {
-	astPass(pstate, node->instance);
-	if (pstate->pass == TypeCheck) {
-		if (node->field->asttype == MbrNameUseTag) {
-			derefAuto(&node->instance);
-			AstNode *ownvtype = typeGetVtype(node->instance);
-            if (isMethodType(ownvtype)) {
-				NameUseAstNode *fldname = (NameUseAstNode*)node->field;
-				Name *fldsym = fldname->namesym;
-				NamedAstNode *fieldnode = methnodesFind(&((FieldsAstNode *)ownvtype)->methfields, fldsym);
-				if (fieldnode) {
-                    if (fieldnode->namesym->namestr == '_') {
-                        errorMsgNode((AstNode*)node, ErrorNotPublic, "`%s` is private and may not be accessed.", &fieldnode->namesym->namestr);
-                    }
-                    if (fieldnode->asttype == VarDclTag) {
-                        fldname->asttype = VarNameUseTag;
-                        fldname->dclnode = fieldnode;
-                        node->vtype = fldname->vtype = fldname->dclnode->vtype;
-                    }
-                    else {
-                        errorMsgNode((AstNode*)node, ErrorNoMbr, "No field named `%s` is defined by the object's type.", &fldsym->namestr);
-                    }
-				}
-				else
-					errorMsgNode((AstNode*)node, ErrorNoMbr, "No field named `%s` is defined by the object's type.", &fldsym->namestr);
-			}
-			else
-				errorMsgNode(node->field, ErrorNoFlds, "Fields not supported by expression's type");
-		}
-	}
-}
-
 // Create a new logic operator node
 LogicAstNode *newLogicAstNode(int16_t typ) {
 	LogicAstNode *node;

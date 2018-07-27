@@ -25,12 +25,6 @@ typedef struct DerefAstNode {
 	AstNode *exp;
 } DerefAstNode;
 
-typedef struct DotOpAstNode {
-	TypedAstHdr;
-	AstNode *instance;
-	AstNode *field;
-} DotOpAstNode;
-
 // Logic operator: not, or, and
 typedef struct LogicAstNode {
 	TypedAstHdr;
@@ -50,10 +44,6 @@ DerefAstNode *newDerefAstNode();
 void derefPrint(DerefAstNode *node);
 void derefPass(PassState *pstate, DerefAstNode *node);
 void derefAuto(AstNode **node);
-
-DotOpAstNode *newDotOpAstNode();
-void dotOpPrint(DotOpAstNode *node);
-void dotOpPass(PassState *pstate, DotOpAstNode *node);
 
 LogicAstNode *newLogicAstNode(int16_t typ);
 void logicPrint(LogicAstNode *node);

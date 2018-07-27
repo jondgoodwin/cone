@@ -101,7 +101,7 @@ void fnCallLowerMethod(FnCallAstNode *callnode) {
     NamedAstNode *foundnode = methnodesFind(&((MethodTypeAstNode*)objtype)->methfields, methsym);
     if (!foundnode
         || !(foundnode->asttype == FnDclTag || foundnode->asttype == VarDclTag)
-        || !(foundnode->flags & FlagFnMethod)) {
+        || !(foundnode->flags & FlagMethField)) {
         errorMsgNode((AstNode*)callnode, ErrorNoMeth, "Object's type has no method or field named %s.", &methsym->namestr);
         return;
     }

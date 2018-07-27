@@ -56,7 +56,7 @@ void methnodesAdd(MethNodes *mnodes, AstNode *node) {
 void methnodesAddFn(MethNodes *mnodes, FnDclAstNode *fnnode) {
     FnDclAstNode *lastmeth = (FnDclAstNode *)methnodesFind(mnodes, fnnode->namesym);
     if (lastmeth && (lastmeth->asttype != FnDclTag
-        || !(lastmeth->flags & FlagFnMethod) || !(fnnode->flags & FlagFnMethod))) {
+        || !(lastmeth->flags & FlagMethField) || !(fnnode->flags & FlagMethField))) {
         errorMsgNode((AstNode*)fnnode, ErrorDupName, "Duplicate name %s: Only methods can be overloaded.", &fnnode->namesym->namestr);
         return;
     }

@@ -75,12 +75,11 @@ enum AstType {
 	FLitNode,		// Float literal
 	SLitNode,		// String literal
 	AssignNode,		// Assignment expression
-	FnCallNode,		// Function call
+	FnCallNode,		// Function+method call + Field access
 	SizeofNode,		// Sizeof a type (usize)
 	CastNode,		// Cast exp to another type
 	AddrNode,		// & (address of) operator
 	DerefNode,		// * (pointed at) operator
-	DotOpNode,	    // owner.field
 	NotLogicNode,	// ! / not
 	OrLogicNode,	// || / or
 	AndLogicNode,	// && / and
@@ -129,8 +128,8 @@ enum AstType {
 	uint16_t flags
 
 enum AstFlags {
-	FlagFnMethod = 0x0001,	// FnDclTag: Function is a method
-	FlagExtern = 0x0002			// C ABI extern
+	FlagMethField = 0x0001,	    // VarDclTag/FnDclTag: Method or Field
+	FlagExtern    = 0x0002		// C ABI extern
 };
 
 // AstNode is a castable struct for all AST nodes.
