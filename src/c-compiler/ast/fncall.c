@@ -81,8 +81,8 @@ void fnCallFinalizeArgs(FnCallAstNode *node, int docheck) {
     }
 }
 
-// Find best method (across overloaded methods) or field whose type matches argument types
-// Then lower the node to a function call or field access accordingly
+// Find best field or method (across overloaded methods whose type matches argument types)
+// Then lower the node to a function call (objfn+args) or field access (objfn+methfield) accordingly
 void fnCallLowerMethod(FnCallAstNode *callnode) {
     AstNode *objtype = typeGetVtype(callnode->objfn);
     if (objtype->asttype == RefType || objtype->asttype == PtrType)
@@ -106,8 +106,16 @@ void fnCallLowerMethod(FnCallAstNode *callnode) {
         return;
     }
 
-    // TBD. If it is a field, fill in default args and handle any borrows/copy
-    // Fill in vtype, dclnode, etc. 
+    // Handle when methfield refers to a field
+    if (foundnode->asttype == VarDclTag) {
+        if (callnode->args != NULL)
+            errorMsgNode((AstNode*)callnode, ErrorManyArgs, "May not provide arguments for a field access");
+
+        callnode->methfield->asttype = VarNameUseTag;
+        callnode->methfield->dclnode = foundnode;
+        callnode->vtype = callnode->methfield->vtype = foundnode->vtype;
+        return;
+    }
 
     // For a method call, make sure object is specified as first argument
     if (callnode->args == NULL) {
@@ -154,6 +162,8 @@ void fnCallPass(PassState *pstate, FnCallAstNode *node) {
     switch (pstate->pass) {
     case TypeCheck:
     {
+        derefAuto(&node->objfn);
+
         // Step 1a: Inject '()' method call, when no method provided for an method-typed object
         // Step 1b: If objfn name resolved to a method (and we are "in" a method), 
         // move objfn to methfield and put resolved self in objfn
@@ -166,8 +176,6 @@ void fnCallPass(PassState *pstate, FnCallAstNode *node) {
         // Step 2b: For non-method function call, auto-deref as needed and match args to parms
         // Append default arguments and handle borrow/copy against all arguments
         else {
-            derefAuto(&node->objfn);
-
             // Capture return vtype and ensure we are calling a function
             AstNode *fnsig = typeGetVtype(node->objfn);
             if (fnsig->asttype == FnSigType)

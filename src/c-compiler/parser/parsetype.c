@@ -150,10 +150,11 @@ AstNode *parseStruct(ParseState *parse) {
                 if (fn && isNamedNode(fn))
                     methnodesAddFn(&strnode->methfields, fn);
 			}
-			else if (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
-				VarDclAstNode *field = parseVarDcl(parse, mutPerm, ParseMayImpl | ParseMaySig);
-				field->scope = 1;
-				field->index = fieldnbr++;
+            else if (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
+                VarDclAstNode *field = parseVarDcl(parse, mutPerm, ParseMayImpl | ParseMaySig);
+                field->scope = 1;
+                field->index = fieldnbr++;
+                field->flags |= FlagFnMethod;
 				methnodesAddField(&strnode->methfields, field);
 				if (!lexIsToken(SemiToken))
 					break;

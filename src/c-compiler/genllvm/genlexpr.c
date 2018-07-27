@@ -448,11 +448,11 @@ LLVMValueRef genlLval(GenState *gen, AstNode *lval) {
 		return ((VarDclAstNode*)((NameUseAstNode *)lval)->dclnode)->llvmvar;
 	case DerefNode:
 		return genlExpr(gen, ((DerefAstNode *)lval)->exp);
-	case DotOpNode:
+	case FnCallNode:
 	{
-		DotOpAstNode *elem = (DotOpAstNode *)lval;
-		VarDclAstNode *flddcl = (VarDclAstNode*)((NameUseAstNode*)elem->field)->dclnode;
-		return LLVMBuildStructGEP(gen->builder, genlLval(gen, elem->instance), flddcl->index, &flddcl->namesym->namestr);
+		FnCallAstNode *fncall = (FnCallAstNode *)lval;
+		VarDclAstNode *flddcl = (VarDclAstNode*)((NameUseAstNode*)fncall->methfield)->dclnode;
+		return LLVMBuildStructGEP(gen->builder, genlLval(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
 	}
 	}
 	return NULL;
@@ -460,28 +460,36 @@ LLVMValueRef genlLval(GenState *gen, AstNode *lval) {
 
 // Generate a term
 LLVMValueRef genlExpr(GenState *gen, AstNode *termnode) {
-	switch (termnode->asttype) {
-	case ULitNode:
-		return LLVMConstInt(genlType(gen, ((ULitAstNode*)termnode)->vtype), ((ULitAstNode*)termnode)->uintlit, 0);
-	case FLitNode:
-		return LLVMConstReal(genlType(gen, ((ULitAstNode*)termnode)->vtype), ((FLitAstNode*)termnode)->floatlit);
-	case SLitNode:
-	{
-		char *strlit = ((SLitAstNode *)termnode)->strlit;
-		uint32_t size = strlen(strlit)+1;
-		LLVMValueRef sglobal = LLVMAddGlobal(gen->module, LLVMArrayType(LLVMInt8TypeInContext(gen->context), size), "string");
-		LLVMSetLinkage(sglobal, LLVMInternalLinkage);
-		LLVMSetGlobalConstant(sglobal, 1);
-		LLVMSetInitializer(sglobal, LLVMConstStringInContext(gen->context, strlit, size, 1));
-		return LLVMBuildStructGEP(gen->builder, sglobal, 0, "");
-	}
-	case VarNameUseTag:
-	{
-		VarDclAstNode *vardcl = (VarDclAstNode*)((NameUseAstNode *)termnode)->dclnode;
-		return LLVMBuildLoad(gen->builder, vardcl->llvmvar, &vardcl->namesym->namestr);
-	}
-	case FnCallNode:
-		return genlFnCall(gen, (FnCallAstNode*)termnode);
+    switch (termnode->asttype) {
+    case ULitNode:
+        return LLVMConstInt(genlType(gen, ((ULitAstNode*)termnode)->vtype), ((ULitAstNode*)termnode)->uintlit, 0);
+    case FLitNode:
+        return LLVMConstReal(genlType(gen, ((ULitAstNode*)termnode)->vtype), ((FLitAstNode*)termnode)->floatlit);
+    case SLitNode:
+    {
+        char *strlit = ((SLitAstNode *)termnode)->strlit;
+        uint32_t size = strlen(strlit) + 1;
+        LLVMValueRef sglobal = LLVMAddGlobal(gen->module, LLVMArrayType(LLVMInt8TypeInContext(gen->context), size), "string");
+        LLVMSetLinkage(sglobal, LLVMInternalLinkage);
+        LLVMSetGlobalConstant(sglobal, 1);
+        LLVMSetInitializer(sglobal, LLVMConstStringInContext(gen->context, strlit, size, 1));
+        return LLVMBuildStructGEP(gen->builder, sglobal, 0, "");
+    }
+    case VarNameUseTag:
+    {
+        VarDclAstNode *vardcl = (VarDclAstNode*)((NameUseAstNode *)termnode)->dclnode;
+        return LLVMBuildLoad(gen->builder, vardcl->llvmvar, &vardcl->namesym->namestr);
+    }
+    case FnCallNode:
+    {
+        FnCallAstNode *fncall = (FnCallAstNode *)termnode;
+        if (fncall->methfield) {
+            VarDclAstNode *flddcl = (VarDclAstNode*)((NameUseAstNode*)fncall->methfield)->dclnode;
+            return LLVMBuildExtractValue(gen->builder, genlExpr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
+        }
+        else
+            return genlFnCall(gen, fncall);
+    }
 	case AssignNode:
 	{
 		LLVMValueRef val;
@@ -507,12 +515,6 @@ LLVMValueRef genlExpr(GenState *gen, AstNode *termnode) {
 	}
 	case DerefNode:
 		return LLVMBuildLoad(gen->builder, genlExpr(gen, ((DerefAstNode*)termnode)->exp), "deref");
-	case DotOpNode:
-	{
-		DotOpAstNode *elem = (DotOpAstNode*)termnode;
-		VarDclAstNode *flddcl = (VarDclAstNode*)((NameUseAstNode*)elem->field)->dclnode;
-		return LLVMBuildExtractValue(gen->builder, genlExpr(gen, elem->instance), flddcl->index, &flddcl->namesym->namestr);
-	}
 	case OrLogicNode: case AndLogicNode:
 		return genlLogic(gen, (LogicAstNode*)termnode);
 	case NotLogicNode:

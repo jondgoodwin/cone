@@ -37,7 +37,7 @@ int isLval(AstNode *node) {
 	switch (node->asttype) {
 	case VarNameUseTag:
 	case DerefNode:
-	case DotOpNode:
+	case FnCallNode:
 		return 1;
 	// future:  [] indexing and .member
 	default: break;

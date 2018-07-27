@@ -131,7 +131,9 @@ AstNode *parsePostfix(ParseState *parse) {
 		// Object call with possible parameters
 		case DotToken:
 		{
-			lexNextToken();
+            FnCallAstNode *fncall = newFnCallAstNode(node, 0);
+            lexNextToken();
+
 			// Get field/method name
 			if (!lexIsToken(IdentToken)) {
 				errorMsgLex(ErrorNoMbr, "This should be a named field/method");
@@ -139,16 +141,15 @@ AstNode *parsePostfix(ParseState *parse) {
 				break;
 			}
 			NameUseAstNode *method = newNameUseNode(lex->val.ident);
-			lexNextToken();
 			method->asttype = MbrNameUseTag;
-			
-			// If parameters provided, make this a function call
-			// (where MemberUseNode signals it is an OO call)
+            fncall->methfield = method;
+            lexNextToken();
+
+			// If parameters provided, capture them as part of method call
 			if (lexIsToken(LParenToken)) {
 				lexNextToken();
-				FnCallAstNode *fncall = newFnCallAstNode(node, 8);
-                fncall->methfield = method;
-				nodesAdd(&fncall->args, node); // treat object as first parameter (self)
+                fncall->args = newNodes(8);
+                nodesAdd(&fncall->args, node); // treat object as first parameter (self)
 				if (!lexIsToken(RParenToken)) {
 					while (1) {
 						nodesAdd(&fncall->args, parseExpr(parse));
@@ -159,14 +160,8 @@ AstNode *parsePostfix(ParseState *parse) {
 					}
 				}
 				parseRParen();
-				node = (AstNode *)fncall;
 			}
-			else {
-				DotOpAstNode *elem = newDotOpAstNode();
-				elem->instance = node;
-				elem->field = (AstNode*)method;
-				node = (AstNode *)elem;
-			}
+            node = (AstNode *)fncall;
             break;
 		}
 
