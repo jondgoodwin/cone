@@ -52,6 +52,35 @@ void fnCallPrint(FnCallAstNode *node) {
     }
 }
 
+// For all function calls, go through all arguments to verify correct types,
+// handle value copying, and fill in default arguments
+void fnCallFinalizeArgs(FnCallAstNode *node, int docheck) {
+    AstNode *fnsig = typeGetVtype(node->objfn);
+    AstNode **argsp;
+    uint32_t cnt;
+    AstNode **parmp = &nodesGet(((FnSigAstNode*)fnsig)->parms, 0);
+    for (nodesFor(node->args, cnt, argsp)) {
+        if (docheck && !typeCoerces(*parmp, argsp))
+            errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
+        else
+            typeHandleCopy(argsp);
+        parmp++;
+    }
+
+    // If we have too few arguments, use default values, if provided
+    int argsunder = ((FnSigAstNode*)fnsig)->parms->used - node->args->used;
+    if (argsunder > 0) {
+        if (docheck && ((VarDclAstNode*)*parmp)->value == NULL)
+            errorMsgNode((AstNode*)node, ErrorFewArgs, "Function call requires more arguments than specified");
+        else {
+            while (argsunder--) {
+                nodesAdd(&node->args, ((VarDclAstNode*)*parmp)->value);
+                parmp++;
+            }
+        }
+    }
+}
+
 // Find best method (across overloaded methods) or field whose type matches argument types
 // Then lower the node to a function call or field access accordingly
 void fnCallLowerMethod(FnCallAstNode *callnode) {
@@ -92,8 +121,6 @@ void fnCallLowerMethod(FnCallAstNode *callnode) {
         return;
     }
 
-    // TBD. Handle default arguments & copy/borrow
- 
     // Re-purpose the method ref node as a reference to the method function itself
     NameUseAstNode *methodrefnode = callnode->methfield;
     callnode->objfn = (AstNode*)methodrefnode;
@@ -102,6 +129,9 @@ void fnCallLowerMethod(FnCallAstNode *callnode) {
     methodrefnode->dclnode = (NamedAstNode*)bestmethod;
     methodrefnode->vtype = bestmethod->vtype;
     callnode->vtype = ((FnSigAstNode*)bestmethod->vtype)->rettype;
+
+    // Handle copying of value arguments and default arguments
+    fnCallFinalizeArgs(callnode, 0);
 }
 
 // Analyze function/method call node
@@ -154,29 +184,8 @@ void fnCallPass(PassState *pstate, FnCallAstNode *node) {
                 return;
             }
 
-            // Type check that passed arguments match declared parameters
-            AstNode **argsp;
-            uint32_t cnt;
-            AstNode **parmp = &nodesGet(((FnSigAstNode*)fnsig)->parms, 0);
-            for (nodesFor(node->args, cnt, argsp)) {
-                if (!typeCoerces(*parmp, argsp))
-                    errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
-                else
-                    typeHandleCopy(argsp);
-                parmp++;
-            }
-
-            // If we have too few arguments, use default values, if provided
-            if (argsunder > 0) {
-                if (((VarDclAstNode*)*parmp)->value == NULL)
-                    errorMsgNode((AstNode*)node, ErrorFewArgs, "Function call requires more arguments than specified");
-                else {
-                    while (argsunder--) {
-                        nodesAdd(&node->args, ((VarDclAstNode*)*parmp)->value);
-                        parmp++;
-                    }
-                }
-            }
+            // Type check arguments, handling copy and default arguments along the way
+            fnCallFinalizeArgs(node, 1);
         }
 	    break;
     }
