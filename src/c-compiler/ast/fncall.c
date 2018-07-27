@@ -165,13 +165,20 @@ void fnCallPass(PassState *pstate, FnCallAstNode *node) {
         derefAuto(&node->objfn);
 
         // Step 1a: Inject '()' method call, when no method provided for an method-typed object
+        if (isMethodType(typeGetVtype(node->objfn)) && node->methfield == NULL) {
+            node->methfield = newNameUseNode(nametblFind("()", 2));
+            nodesInsert(&node->args, node->objfn, 0); // for method call, args must start with self
+        }
+
         // Step 1b: If objfn name resolved to a method (and we are "in" a method), 
         // move objfn to methfield and put resolved self in objfn
+        else if (node->objfn->flags & FlagMethField) {
+        }
 
-	    // Step 2a: Lower to a field access or function call, if methfield is specified
-	    if (node->methfield) {
+        // Step 2a: Lower to a field access or function call, if methfield is specified
+        if (node->methfield) {
             fnCallLowerMethod(node);
-	    }
+        }
 
         // Step 2b: For non-method function call, auto-deref as needed and match args to parms
         // Append default arguments and handle borrow/copy against all arguments
@@ -195,7 +202,7 @@ void fnCallPass(PassState *pstate, FnCallAstNode *node) {
             // Type check arguments, handling copy and default arguments along the way
             fnCallFinalizeArgs(node, 1);
         }
-	    break;
+        break;
     }
     }
 }

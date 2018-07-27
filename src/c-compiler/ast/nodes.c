@@ -41,6 +41,28 @@ void nodesAdd(Nodes **nodesp, AstNode *node) {
 	nodes->used++;
 }
 
+// Insert an AstNode within a list of nodes, growing it if full (changing its memory location)
+// This assumes a Nodes can only have a single parent, whose address we point at
+void nodesInsert(Nodes **nodesp, AstNode *node, size_t index) {
+    Nodes *nodes = *nodesp;
+    AstNode **op, **np;
+    // If full, double its size
+    if (nodes->used >= nodes->avail) {
+        Nodes *oldnodes;
+        oldnodes = nodes;
+        nodes = newNodes(oldnodes->avail << 1);
+        op = (AstNode **)(oldnodes + 1);
+        np = (AstNode **)(nodes + 1);
+        memcpy(np, op, (nodes->used = oldnodes->used) * sizeof(AstNode*));
+        *nodesp = nodes;
+    }
+    op = (AstNode **)(nodes + 1) + index;
+    np = op + 1;
+    memmove(np, op, (nodes->used - index) * sizeof(AstNode*));
+    *op = node;
+    nodes->used++;
+}
+
 // Find the desired named node in an nodes list.
 // Return the node, if found or NULL if not found
 NamedAstNode *nodesFind(Nodes *nodes, Name *name) {
