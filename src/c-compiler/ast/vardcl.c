@@ -74,6 +74,7 @@ void varDclTypeCheck(PassState *pstate, VarDclAstNode *name) {
 	// Otherwise, verify that declared type and initial value type matches
 	else if (!typeCoerces(name->vtype, &name->value))
 		errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
+    typeHandleCopy(&name->value);
 }
 
 // Check the function or variable declaration's AST
