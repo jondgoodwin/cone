@@ -58,7 +58,14 @@ void nodesInsert(Nodes **nodesp, AstNode *node, size_t index) {
     }
     op = (AstNode **)(nodes + 1) + index;
     np = op + 1;
-    memmove(np, op, (nodes->used - index) * sizeof(AstNode*));
+    size_t tomove = nodes->used - index;
+    switch (tomove) {
+    case 1:
+        *np = *op;
+        break;
+    default:
+        memmove(np, op, tomove * sizeof(AstNode*));
+    }
     *op = node;
     nodes->used++;
 }
