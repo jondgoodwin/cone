@@ -111,6 +111,7 @@ void fnCallLowerMethod(FnCallAstNode *callnode) {
         if (callnode->args != NULL)
             errorMsgNode((AstNode*)callnode, ErrorManyArgs, "May not provide arguments for a field access");
 
+        derefAuto(&callnode->objfn);
         callnode->methfield->asttype = VarNameUseTag;
         callnode->methfield->dclnode = foundnode;
         callnode->vtype = callnode->methfield->vtype = foundnode->vtype;
@@ -162,38 +163,45 @@ void fnCallPass(PassState *pstate, FnCallAstNode *node) {
     switch (pstate->pass) {
     case TypeCheck:
     {
-        derefAuto(&node->objfn);
-
-        // Step 1a: Inject '()' method call, when no method provided for an method-typed object
-        if (isMethodType(typeGetVtype(node->objfn)) && node->methfield == NULL) {
-            node->methfield = newNameUseNode(nametblFind("()", 2));
-            nodesInsert(&node->args, node->objfn, 0); // for method call, args must start with self
+        // How to lower depends on the type of the objfn
+        if (!isValueNode(node)) {
+            errorMsgNode(node->objfn, ErrorNotTyped, "Expecting a typed node");
+            return;
         }
+        AstNode *objfntype = typeGetDerefType(node->objfn);
 
-        // Step 1b: If objfn name resolved to a method (and we are "in" a method), 
-        // move objfn to methfield and put resolved self in objfn
-        else if (node->objfn->flags & FlagMethField) {
-        }
+        // Objects (method types) are lowered to method calls via a name lookup
+        if (isMethodType(objfntype)) {
 
-        // Step 2a: Lower to a field access or function call, if methfield is specified
-        if (node->methfield) {
+            // Use '()' method call, when no method or property is specified
+            if (node->methfield == NULL) {
+                node->methfield = newNameUseNode(nametblFind("()", 2));
+                nodesInsert(&node->args, node->objfn, 0); // for method call, args must start with self
+            }
+
+            // Lower to a property access or function call
             fnCallLowerMethod(node);
         }
 
-        // Step 2b: For non-method function call, auto-deref as needed and match args to parms
-        // Append default arguments and handle borrow/copy against all arguments
+        else if (node->methfield)
+            errorMsgNode((AstNode *)node, ErrorBadMeth, "Cannot do method or property on a value of this type");
+
+        else if (objfntype->asttype != FnSigType)
+            errorMsgNode((AstNode *)node, ErrorNotFn, "Cannot apply arguments to a non-function");
+
+        // Handle a regular function call or implicit method call
         else {
-            // Capture return vtype and ensure we are calling a function
-            AstNode *fnsig = typeGetVtype(node->objfn);
-            if (fnsig->asttype == FnSigType)
-                node->vtype = ((FnSigAstNode*)fnsig)->rettype;
-            else {
-                errorMsgNode(node->objfn, ErrorNotFn, "Cannot call a value that is not a function");
-                return;
+            derefAuto(&node->objfn);
+
+            // If objfn is a method name with no qualifier (i.e. calling another method in same type)
+            if (node->objfn->flags & FlagMethField) {
             }
 
+            // Capture return vtype
+            node->vtype = ((FnSigAstNode*)objfntype)->rettype;
+
             // Error out if we have too many arguments
-            int argsunder = ((FnSigAstNode*)fnsig)->parms->used - node->args->used;
+            int argsunder = ((FnSigAstNode*)objfntype)->parms->used - node->args->used;
             if (argsunder < 0) {
                 errorMsgNode((AstNode*)node, ErrorManyArgs, "Too many arguments specified vs. function declaration");
                 return;

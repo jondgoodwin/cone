@@ -38,6 +38,7 @@ typedef struct VoidTypeAstNode {
 } VoidTypeAstNode;
 
 AstNode *typeGetVtype(AstNode *node);
+AstNode *typeGetDerefType(AstNode *node);
 int typeIsSame(AstNode *node1, AstNode *node2);
 int typeMatches(AstNode *totype, AstNode *fromtype);
 int typeCoerces(AstNode *to, AstNode **from);

@@ -64,6 +64,8 @@ enum ErrorCode {
 	ErrorNoImpl,	// Function must be implemented
 	ErrorBadImpl,	// Function must not be implemented
     ErrorNotPublic, // Method is not public
+    ErrorBadMeth,   // Methods/properties not supported
+    ErrorNotTyped,  // Expected a value that has a type
 
 	// Warnings
 	WarnCode = 3000,

@@ -26,6 +26,22 @@ AstNode *typeGetVtype(AstNode *node) {
 	return node;
 }
 
+// Return type (or de-referenced type if ptr/ref)
+AstNode *typeGetDerefType(AstNode *node) {
+    getVtype(node);
+    if (node->asttype == RefType) {
+        node = ((PtrAstNode*)node)->pvtype;
+        if (node->asttype == TypeNameUseTag)
+            node = (AstNode*)((NameUseAstNode *)node)->dclnode;
+    }
+    else if (node->asttype == PtrType) {
+        node = ((PtrAstNode*)node)->pvtype;
+        if (node->asttype == TypeNameUseTag)
+            node = (AstNode*)((NameUseAstNode *)node)->dclnode;
+    }
+    return node;
+}
+
 // Internal routine only - we know that node1 and node2 are both types
 int typeEqual(AstNode *node1, AstNode *node2) {
 	// If they are the same type name, types match
