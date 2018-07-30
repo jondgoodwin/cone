@@ -149,7 +149,6 @@ AstNode *parsePostfix(ParseState *parse) {
 			if (lexIsToken(LParenToken)) {
 				lexNextToken();
                 fncall->args = newNodes(8);
-                nodesAdd(&fncall->args, node); // treat object as first parameter (self)
 				if (!lexIsToken(RParenToken)) {
 					while (1) {
 						nodesAdd(&fncall->args, parseExpr(parse));

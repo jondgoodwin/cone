@@ -27,8 +27,6 @@ FnCallAstNode *newFnCallAstNode(AstNode *fn, int nnodes) {
 FnCallAstNode *newFnCallOp(AstNode *obj, char *op, int nnodes) {
     FnCallAstNode *node = newFnCallAstNode(obj, nnodes);
     node->methfield = newMemberUseNode(nametblFind(op, strlen(op)));
-    if (nnodes > 1)
-        nodesAdd(&node->args, obj);
     return node;
 }
 
@@ -54,13 +52,13 @@ void fnCallPrint(FnCallAstNode *node) {
 
 // For all function calls, go through all arguments to verify correct types,
 // handle value copying, and fill in default arguments
-void fnCallFinalizeArgs(FnCallAstNode *node, int docheck) {
+void fnCallFinalizeArgs(FnCallAstNode *node) {
     AstNode *fnsig = typeGetVtype(node->objfn);
     AstNode **argsp;
     uint32_t cnt;
     AstNode **parmp = &nodesGet(((FnSigAstNode*)fnsig)->parms, 0);
     for (nodesFor(node->args, cnt, argsp)) {
-        if (docheck && !typeCoerces(*parmp, argsp))
+        if (!typeCoerces(*parmp, argsp))
             errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
         else
             typeHandleCopy(argsp);
@@ -70,7 +68,7 @@ void fnCallFinalizeArgs(FnCallAstNode *node, int docheck) {
     // If we have too few arguments, use default values, if provided
     int argsunder = ((FnSigAstNode*)fnsig)->parms->used - node->args->used;
     if (argsunder > 0) {
-        if (docheck && ((VarDclAstNode*)*parmp)->value == NULL)
+        if (((VarDclAstNode*)*parmp)->value == NULL)
             errorMsgNode((AstNode*)node, ErrorFewArgs, "Function call requires more arguments than specified");
         else {
             while (argsunder--) {
@@ -121,8 +119,8 @@ void fnCallLowerMethod(FnCallAstNode *callnode) {
     // For a method call, make sure object is specified as first argument
     if (callnode->args == NULL) {
         callnode->args = newNodes(1);
-        nodesAdd(&callnode->args, callnode->objfn);
     }
+    nodesInsert(&callnode->args, callnode->objfn, 0);
 
     FnDclAstNode *bestmethod = methnodesFindBestMethod((FnDclAstNode *)foundnode, callnode->args);
     if (bestmethod == NULL) {
@@ -130,17 +128,18 @@ void fnCallLowerMethod(FnCallAstNode *callnode) {
         return;
     }
 
-    // Re-purpose the method ref node as a reference to the method function itself
+    // Re-purpose the method name use node as a reference to the method function itself
     NameUseAstNode *methodrefnode = callnode->methfield;
-    callnode->objfn = (AstNode*)methodrefnode;
-    callnode->methfield = NULL;
     methodrefnode->asttype = VarNameUseTag;
     methodrefnode->dclnode = (NamedAstNode*)bestmethod;
     methodrefnode->vtype = bestmethod->vtype;
+
+    callnode->objfn = (AstNode*)methodrefnode;
+    callnode->methfield = NULL;
     callnode->vtype = ((FnSigAstNode*)bestmethod->vtype)->rettype;
 
     // Handle copying of value arguments and default arguments
-    fnCallFinalizeArgs(callnode, 0);
+    fnCallFinalizeArgs(callnode);
 }
 
 // Analyze function/method call node
@@ -174,10 +173,8 @@ void fnCallPass(PassState *pstate, FnCallAstNode *node) {
         if (isMethodType(objfntype)) {
 
             // Use '()' method call, when no method or property is specified
-            if (node->methfield == NULL) {
+            if (node->methfield == NULL)
                 node->methfield = newNameUseNode(nametblFind("()", 2));
-                nodesInsert(&node->args, node->objfn, 0); // for method call, args must start with self
-            }
 
             // Lower to a property access or function call
             fnCallLowerMethod(node);
@@ -208,7 +205,7 @@ void fnCallPass(PassState *pstate, FnCallAstNode *node) {
             }
 
             // Type check arguments, handling copy and default arguments along the way
-            fnCallFinalizeArgs(node, 1);
+            fnCallFinalizeArgs(node);
         }
         break;
     }
