@@ -191,7 +191,14 @@ void fnCallPass(PassState *pstate, FnCallAstNode *node) {
             derefAuto(&node->objfn);
 
             // If objfn is a method name with no qualifier (i.e. calling another method in same type)
-            if (node->objfn->flags & FlagMethField) {
+            if (node->objfn->asttype == VarNameUseTag
+                && ((NameUseAstNode*)node->objfn)->dclnode->flags & FlagMethField
+                && ((NameUseAstNode*)node->objfn)->qualNames == NULL) {
+                NameUseAstNode *selfnode = newNameUseNode(nametblFind("self", 4));
+                selfnode->asttype = VarNameUseTag;
+                selfnode->dclnode = (NamedAstNode *)nodesGet(pstate->fnsig->parms, 0);
+                selfnode->vtype = selfnode->dclnode->vtype;
+                nodesInsert(&node->args, (AstNode*)selfnode, 0); // args will be non-NULL
             }
 
             // Capture return vtype
