@@ -1,4 +1,4 @@
-/** AST handling for record-based types with fields
+/** AST handling for record-based types with properties
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -8,24 +8,24 @@
 #ifndef struct_h
 #define struct_h
 
-// This is a reusable structure for named types having fields
+// This is a reusable structure for named types having properties
 // (e.g., struct, trait, interface, alloc, etc.)
 // It holds:
-// - fields. An ordered list of nodes for variable-like elements 
+// - properties. An ordered list of nodes for variable-like elements 
 //     that hold typed data. All/most nodes are named and findable.
 // - methods. A name-mapped node hash for methods.
 //     A method may be a FnTuple, a list of methods with same name.
-//     Note: the namespace is comprised of fields + methods
+//     Note: the namespace is comprised of properties + methods
 //       with no duplicate names between them
 // - subtypes. An ordered list of nodes for its traits/interfaces
-typedef struct FieldsAstNode {
+typedef struct StructAstNode {
 	MethodTypeAstHdr;
-} FieldsAstNode;
+} StructAstNode;
 
-FieldsAstNode *newStructNode(Name *namesym);
-void structPrint(FieldsAstNode *node);
-void structPass(PassState *pstate, FieldsAstNode *name);
-int structEqual(FieldsAstNode *node1, FieldsAstNode *node2);
-int structCoerces(FieldsAstNode *to, FieldsAstNode *from);
+StructAstNode *newStructNode(Name *namesym);
+void structPrint(StructAstNode *node);
+void structPass(PassState *pstate, StructAstNode *name);
+int structEqual(StructAstNode *node1, StructAstNode *node2);
+int structCoerces(StructAstNode *to, StructAstNode *from);
 
 #endif

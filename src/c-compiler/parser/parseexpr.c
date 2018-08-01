@@ -134,15 +134,15 @@ AstNode *parsePostfix(ParseState *parse) {
             FnCallAstNode *fncall = newFnCallAstNode(node, 0);
             lexNextToken();
 
-			// Get field/method name
+			// Get property/method name
 			if (!lexIsToken(IdentToken)) {
-				errorMsgLex(ErrorNoMbr, "This should be a named field/method");
+				errorMsgLex(ErrorNoMbr, "This should be a named property/method");
 				lexNextToken();
 				break;
 			}
 			NameUseAstNode *method = newNameUseNode(lex->val.ident);
 			method->asttype = MbrNameUseTag;
-            fncall->methfield = method;
+            fncall->methprop = method;
             lexNextToken();
 
 			// If parameters provided, capture them as part of method call

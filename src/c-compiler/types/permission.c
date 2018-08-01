@@ -20,7 +20,7 @@ PermAstNode *newPermNode(Name *namesym, char ptyp, uint16_t flags) {
     node->owner = NULL;
     node->namesym = namesym;
     node->llvmtype = NULL;
-    methnodesInit(&node->methfields, 1); // May not need members for static types
+    methnodesInit(&node->methprops, 1); // May not need members for static types
 	node->subtypes = newNodes(8);	// build appropriate list using the permission's flags
 	node->flags = flags;
 	node->ptype = ptyp;
@@ -64,8 +64,8 @@ uint16_t permGetFlags(AstNode *node) {
 int permIsMutable(AstNode *lval) {
 	if (lval->asttype == FnCallNode) {
 		FnCallAstNode *fncall = (FnCallAstNode *)lval;
-        if (fncall->methfield)
-            return MayWrite & permGetFlags(fncall->objfn) & permGetFlags((AstNode*)fncall->methfield);
+        if (fncall->methprop)
+            return MayWrite & permGetFlags(fncall->objfn) & permGetFlags((AstNode*)fncall->methprop);
         else
             return 0;
 	}

@@ -72,22 +72,22 @@ LLVMTypeRef _genlType(GenState *gen, char *name, AstNode *typ) {
 	case AllocType:
 	{
 		// Build typeref from struct
-		FieldsAstNode *strnode = (FieldsAstNode*)typ;
+		StructAstNode *strnode = (StructAstNode*)typ;
         AstNode **nodesp;
         uint32_t cnt;
-        uint32_t fieldcount = 0;
-        for (methnodesFor(&strnode->methfields, cnt, nodesp)) {
+        uint32_t propcount = 0;
+        for (methnodesFor(&strnode->methprops, cnt, nodesp)) {
             if ((*nodesp)->asttype == VarDclTag)
-                ++fieldcount;
+                ++propcount;
         }
-        LLVMTypeRef *field_types = (LLVMTypeRef *)memAllocBlk(fieldcount * sizeof(LLVMTypeRef));
-		LLVMTypeRef *field = field_types;
-		for (methnodesFor(&strnode->methfields, cnt, nodesp)) {
+        LLVMTypeRef *prop_types = (LLVMTypeRef *)memAllocBlk(propcount * sizeof(LLVMTypeRef));
+		LLVMTypeRef *property = prop_types;
+		for (methnodesFor(&strnode->methprops, cnt, nodesp)) {
 			if ((*nodesp)->asttype == VarDclTag)
-    			*field++ = genlType(gen, ((TypedAstNode *)*nodesp)->vtype);
+    			*property++ = genlType(gen, ((TypedAstNode *)*nodesp)->vtype);
 		}
 		LLVMTypeRef structype = LLVMStructCreateNamed(gen->context, name);
-		LLVMStructSetBody(structype, field_types, fieldcount, 0);
+		LLVMStructSetBody(structype, prop_types, propcount, 0);
 		return structype;
 	}
 
@@ -119,12 +119,12 @@ LLVMTypeRef genlType(GenState *gen, AstNode *typ) {
             AstNode **nodesp;
             uint32_t cnt;
             // Declare just method names first, enabling forward references
-            for (methnodesFor(&tnode->methfields, cnt, nodesp)) {
+            for (methnodesFor(&tnode->methprops, cnt, nodesp)) {
                 if ((*nodesp)->asttype == FnDclTag)
                     genlGloFnName(gen, (FnDclAstNode*)*nodesp);
             }
 			// Now generate the code for each method
-            for (methnodesFor(&tnode->methfields, cnt, nodesp)) {
+            for (methnodesFor(&tnode->methprops, cnt, nodesp)) {
                 if ((*nodesp)->asttype == FnDclTag)
                     genlFn(gen, (FnDclAstNode*)*nodesp);
 			}
@@ -451,7 +451,7 @@ LLVMValueRef genlLval(GenState *gen, AstNode *lval) {
 	case FnCallNode:
 	{
 		FnCallAstNode *fncall = (FnCallAstNode *)lval;
-		VarDclAstNode *flddcl = (VarDclAstNode*)((NameUseAstNode*)fncall->methfield)->dclnode;
+		VarDclAstNode *flddcl = (VarDclAstNode*)((NameUseAstNode*)fncall->methprop)->dclnode;
 		return LLVMBuildStructGEP(gen->builder, genlLval(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
 	}
 	}
@@ -483,8 +483,8 @@ LLVMValueRef genlExpr(GenState *gen, AstNode *termnode) {
     case FnCallNode:
     {
         FnCallAstNode *fncall = (FnCallAstNode *)termnode;
-        if (fncall->methfield) {
-            VarDclAstNode *flddcl = (VarDclAstNode*)((NameUseAstNode*)fncall->methfield)->dclnode;
+        if (fncall->methprop) {
+            VarDclAstNode *flddcl = (VarDclAstNode*)((NameUseAstNode*)fncall->methprop)->dclnode;
             return LLVMBuildExtractValue(gen->builder, genlExpr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
         }
         else

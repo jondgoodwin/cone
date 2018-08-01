@@ -56,7 +56,7 @@ void methnodesAdd(MethNodes *mnodes, AstNode *node) {
 void methnodesAddFn(MethNodes *mnodes, FnDclAstNode *fnnode) {
     FnDclAstNode *lastmeth = (FnDclAstNode *)methnodesFind(mnodes, fnnode->namesym);
     if (lastmeth && (lastmeth->asttype != FnDclTag
-        || !(lastmeth->flags & FlagMethField) || !(fnnode->flags & FlagMethField))) {
+        || !(lastmeth->flags & FlagMethProp) || !(fnnode->flags & FlagMethProp))) {
         errorMsgNode((AstNode*)fnnode, ErrorDupName, "Duplicate name %s: Only methods can be overloaded.", &fnnode->namesym->namestr);
         return;
     }
@@ -68,8 +68,8 @@ void methnodesAddFn(MethNodes *mnodes, FnDclAstNode *fnnode) {
     methnodesAdd(mnodes, (AstNode*)fnnode);
 }
 
-// Add a field
-void methnodesAddField(MethNodes *mnodes,  VarDclAstNode *varnode) {
+// Add a property
+void methnodesAddProp(MethNodes *mnodes,  VarDclAstNode *varnode) {
     FnDclAstNode *lastmeth = (FnDclAstNode *)methnodesFind(mnodes, varnode->namesym);
     if (lastmeth && (lastmeth->asttype != VarDclTag)) {
         errorMsgNode((AstNode*)varnode, ErrorDupName, "Duplicate name %s: Only methods can be overloaded.", &varnode->namesym->namestr);

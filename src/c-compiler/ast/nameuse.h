@@ -1,4 +1,4 @@
-/** Name and Field Use Nodes
+/** Name and Member Use Nodes
  *
  * This source file is part of the Cone Programming Language C compiler
  * See Copyright Notice in conec.h
@@ -14,7 +14,7 @@ typedef struct NameList NameList;
 // - NameUseTag. A name token prior to name resolution pass
 // - VarNameUseTag. A name use node resolved to a variable or function declaration
 // - TypeNameUseTag. A name use node resolved to a type declaration
-// - MbrNameUseTag. A method or field name being applied to some value
+// - MbrNameUseTag. A method or property name being applied to some value
 typedef struct NameUseAstNode {
 	TypedAstHdr;
 	Name *namesym;			// Pointer to the global name table entry

@@ -70,12 +70,12 @@ enum AstType {
 
     // Expression nodes (having value type - or sometimes nullType)
     VarNameUseTag = ValueGroup,  // Variable or Function name use node  
-	MbrNameUseTag,	// Member of a type's namespace (field/method)
+	MbrNameUseTag,	// Member of a type's namespace (property/method)
 	ULitNode,		// Integer literal
 	FLitNode,		// Float literal
 	SLitNode,		// String literal
 	AssignNode,		// Assignment expression
-	FnCallNode,		// Function+method call + Field access
+	FnCallNode,		// Function+method call or Property access
 	SizeofNode,		// Sizeof a type (usize)
 	CastNode,		// Cast exp to another type
 	AddrNode,		// & (address of) operator
@@ -128,7 +128,7 @@ enum AstType {
 	uint16_t flags
 
 enum AstFlags {
-	FlagMethField = 0x0001,	    // VarDclTag/FnDclTag: Method or Field
+	FlagMethProp  = 0x0001,	    // VarDclTag/FnDclTag: Method or Property
 	FlagExtern    = 0x0002		// C ABI extern
 };
 

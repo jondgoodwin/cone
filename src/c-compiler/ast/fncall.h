@@ -13,7 +13,7 @@
 typedef struct FnCallAstNode {
 	TypedAstHdr;
 	AstNode *objfn;        // Object (for method calls) or function to call
-    NameUseAstNode *methfield;    // Name of method/field (or NULL)
+    NameUseAstNode *methprop;    // Name of method/property (or NULL)
 	Nodes *args;           // List of function call arguments (or NULL)
 } FnCallAstNode;
 

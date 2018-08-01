@@ -18,7 +18,7 @@ ArrayAstNode *newArrayNode() {
     anode->owner = NULL;
     anode->namesym = anonName;
     anode->llvmtype = NULL;
-    methnodesInit(&anode->methfields, 0);
+    methnodesInit(&anode->methprops, 0);
     anode->subtypes = newNodes(0);
     return anode;
 }

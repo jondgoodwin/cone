@@ -165,11 +165,11 @@ int typeCoerces(AstNode *to, AstNode **from) {
 int typeCopyTrait(AstNode *typenode) {
     getVtype(typenode);
 
-    // For an aggregate type, existence of a destructor or a non-CopyBitwise field is infectious
+    // For an aggregate type, existence of a destructor or a non-CopyBitwise property is infectious
     // If it has a .copy method, it is CopyMethod, or else it is CopyMove.
     if (isMethodType(typenode)) {
         int copytrait = CopyBitwise;
-        MethNodes *nodes = &((MethodTypeAstNode *)typenode)->methfields;
+        MethNodes *nodes = &((MethodTypeAstNode *)typenode)->methprops;
         uint32_t cnt;
         AstNode **nodesp;
         for (methnodesFor(nodes, cnt, nodesp)) {

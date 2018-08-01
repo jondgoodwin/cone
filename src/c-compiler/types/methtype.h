@@ -12,17 +12,17 @@ typedef struct FnDclAstNode FnDclAstNode;
 typedef struct VarDclAstNode VarDclAstNode;
 
 // Metadata describing a variable-sized structure holding an ordered list of AstNodes
-// These nodes are methods (potentially overloaded) or fields
+// These nodes are methods (potentially overloaded) or properties
 typedef struct MethNodes {
 	uint32_t used;
 	uint32_t avail;
     AstNode **nodes;
 } MethNodes;
 
-// Named type that supports methods
+// Named type that supports methods (and properties)
 #define MethodTypeAstHdr \
     NamedTypeAstHdr; \
-    MethNodes methfields; \
+    MethNodes methprops; \
 	Nodes *subtypes
 
 // Interface for a named type that supports methods
@@ -36,7 +36,7 @@ typedef struct MethodTypeAstNode {
 void methnodesInit(MethNodes *mnodes, uint32_t size);
 void methnodesAdd(MethNodes *mnodes, AstNode *node);
 void methnodesAddFn(MethNodes *mnodes, FnDclAstNode *fnnode);
-void methnodesAddField(MethNodes *mnodes, VarDclAstNode *fnnode);
+void methnodesAddProp(MethNodes *mnodes, VarDclAstNode *fnnode);
 NamedAstNode *methnodesFind(MethNodes *mnodes, Name *name);
 
 #define methnodesNodes(nodes) ((AstNode**)((nodes)+1))

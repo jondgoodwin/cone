@@ -1,4 +1,4 @@
-/** Name and Field Use nodes.
+/** Name and Member Use nodes.
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -86,7 +86,7 @@ void nameUsePrint(NameUseAstNode *name) {
 
 // Check the name use's AST
 void nameUsePass(PassState *pstate, NameUseAstNode *name) {
-	// During name resolution, point to name declaration and copy over needed fields
+	// During name resolution, point to name declaration and copy over needed properties
 	switch (pstate->pass) {
 	case NameResolution:
         if (name->qualNames) {

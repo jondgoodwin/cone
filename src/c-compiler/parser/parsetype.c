@@ -121,8 +121,8 @@ AstNode *parsePtrType(ParseState *parse) {
 // Parse a struct
 AstNode *parseStruct(ParseState *parse) {
 	NamedAstNode *svowner = parse->owner;
-	FieldsAstNode *strnode;
-	int16_t fieldnbr = 0;
+	StructAstNode *strnode;
+	int16_t propertynbr = 0;
 
     // Capture the kind of type, then get next token (name)
     uint16_t tag = lexIsToken(AllocToken) ? AllocType : StructType;
@@ -141,21 +141,21 @@ AstNode *parseStruct(ParseState *parse) {
         return NULL;
     }
 
-	// Process field or method definitions
+	// Process property or method definitions
 	if (lexIsToken(LCurlyToken)) {
 		lexNextToken();
 		while (1) {
 			if (lexIsToken(FnToken)) {
-				FnDclAstNode *fn = (FnDclAstNode*)parseFn(parse, FlagMethField, ParseMayName | ParseMayImpl);
+				FnDclAstNode *fn = (FnDclAstNode*)parseFn(parse, FlagMethProp, ParseMayName | ParseMayImpl);
                 if (fn && isNamedNode(fn))
-                    methnodesAddFn(&strnode->methfields, fn);
+                    methnodesAddFn(&strnode->methprops, fn);
 			}
             else if (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
-                VarDclAstNode *field = parseVarDcl(parse, mutPerm, ParseMayImpl | ParseMaySig);
-                field->scope = 1;
-                field->index = fieldnbr++;
-                field->flags |= FlagMethField;
-				methnodesAddField(&strnode->methfields, field);
+                VarDclAstNode *property = parseVarDcl(parse, mutPerm, ParseMayImpl | ParseMaySig);
+                property->scope = 1;
+                property->index = propertynbr++;
+                property->flags |= FlagMethProp;
+				methnodesAddProp(&strnode->methprops, property);
 				if (!lexIsToken(SemiToken))
 					break;
 				lexNextToken();
@@ -166,7 +166,7 @@ AstNode *parseStruct(ParseState *parse) {
 		parseRCurly();
 	}
 	else
-		errorMsgLex(ErrorNoLCurly, "Expected left curly bracket enclosing fields or methods");
+		errorMsgLex(ErrorNoLCurly, "Expected left curly bracket enclosing properties or methods");
 
 	parse->owner = svowner;
 	return (AstNode*)strnode;
