@@ -84,8 +84,9 @@ void nameUsePrint(NameUseAstNode *name) {
 	astFprint("%s", &name->namesym->namestr);
 }
 
-// Check the name use's AST
-void nameUsePass(PassState *pstate, NameUseAstNode *name) {
+// Handle name resolution and type check for name use references
+void nameUseWalk(PassState *pstate, NameUseAstNode **namep) {
+    NameUseAstNode *name = *namep;
 	// During name resolution, point to name declaration and copy over needed properties
 	switch (pstate->pass) {
 	case NameResolution:
@@ -107,7 +108,19 @@ void nameUsePass(PassState *pstate, NameUseAstNode *name) {
             // For current module, should already be hooked in global name table
 			name->dclnode = (NamedAstNode*)name->namesym->node;
 
-        if (name->dclnode) {
+        // If variable is actually an instance property, rewrite it to 'self.property'
+        if (name->dclnode->flags & FlagMethProp) {
+            // Doing this rewrite ensures we reuse existing type check and gen code for
+            // properly handling property access
+            NameUseAstNode *selfnode = newNameUseNode(nametblFind("self", 4));
+            FnCallAstNode *fncall = newFnCallAstNode((AstNode *)selfnode, 0);
+            fncall->methprop = name;
+            copyNodeLex(fncall, name); // Copy lexer info into injected node in case it has errors
+            *((FnCallAstNode**)namep) = fncall;
+            nodeWalk(pstate, (AstNode **)namep);
+        }
+        // Make it easy to distinguish whether a name is for a variable/function name vs. type
+        else if (name->dclnode) {
             if (name->dclnode->asttype == VarDclTag || name->dclnode->asttype == FnDclTag)
                 name->asttype = VarNameUseTag;
             else

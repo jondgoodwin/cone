@@ -27,6 +27,6 @@ void nameUseBaseMod(NameUseAstNode *node, ModuleAstNode *basemod);
 void nameUseAddQual(NameUseAstNode *node, Name *name);
 NameUseAstNode *newMemberUseNode(Name *namesym);
 void nameUsePrint(NameUseAstNode *name);
-void nameUsePass(PassState *pstate, NameUseAstNode *name);
+void nameUseWalk(PassState *pstate, NameUseAstNode **name);
 
 #endif

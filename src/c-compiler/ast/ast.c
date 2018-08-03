@@ -141,7 +141,7 @@ void nodeWalk(PassState *pstate, AstNode **node) {
     case NameUseTag:
     case VarNameUseTag:
     case TypeNameUseTag:
-		nameUsePass(pstate, (NameUseAstNode *)*node); break;
+		nameUseWalk(pstate, (NameUseAstNode **)node); break;
 	case BlockNode:
 		blockPass(pstate, (BlockAstNode *)*node); break;
 	case IfNode:

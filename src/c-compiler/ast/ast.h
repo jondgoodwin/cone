@@ -215,6 +215,14 @@ typedef struct PassState {
 	node->linenbr = lex->linenbr; \
 }
 
+// Copy lexer info over to another node
+#define copyNodeLex(newnode, oldnode) { \
+    (newnode)->lexer = (oldnode)->lexer; \
+    (newnode)->srcp = (oldnode)->srcp; \
+    (newnode)->linep = (oldnode)->linep; \
+    (newnode)->linenbr = (oldnode)->linenbr; \
+}
+
 void astPrint(char *dir, char *srcfn, AstNode *pgm);
 void astPrintNode(AstNode *node);
 void astFprint(char *str, ...);
