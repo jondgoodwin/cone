@@ -82,7 +82,8 @@ void fnCallFinalizeArgs(FnCallAstNode *node) {
 // Find best property or method (across overloaded methods whose type matches argument types)
 // Then lower the node to a function call (objfn+args) or property access (objfn+methprop) accordingly
 void fnCallLowerMethod(FnCallAstNode *callnode) {
-    AstNode *objtype = typeGetVtype(callnode->objfn);
+    AstNode *obj = callnode->objfn;
+    AstNode *objtype = typeGetVtype(obj);
     if (objtype->asttype == RefType || objtype->asttype == PtrType)
         objtype = typeGetVtype(((PtrAstNode *)objtype)->pvtype);
     if (!isMethodType(objtype)) {
@@ -92,9 +93,9 @@ void fnCallLowerMethod(FnCallAstNode *callnode) {
 
     // Do lookup. If node found, it must be an instance's method or property
     Name *methsym = callnode->methprop->namesym;
-    if (methsym->namestr == '_') {
+    if (methsym->namestr == '_'
+        && !(obj->asttype==VarNameUseTag && ((NameUseAstNode*)obj)->dclnode->namesym == selfName)) {
         errorMsgNode((AstNode*)callnode, ErrorNotPublic, "May not access the private method/property `%s`.", &methsym->namestr);
-        return;
     }
     NamedAstNode *foundnode = methnodesFind(&((MethodTypeAstNode*)objtype)->methprops, methsym);
     if (!foundnode
@@ -162,6 +163,30 @@ void fnCallPass(PassState *pstate, FnCallAstNode *node) {
     switch (pstate->pass) {
     case TypeCheck:
     {
+        // If objfn is a method/property, rewrite it as self.method
+        if (node->objfn->asttype == VarNameUseTag
+            && ((NameUseAstNode*)node->objfn)->dclnode->flags & FlagMethProp
+            && ((NameUseAstNode*)node->objfn)->qualNames == NULL) {
+            // Build a resolved 'self' node
+            NameUseAstNode *selfnode = newNameUseNode(selfName);
+            selfnode->asttype = VarNameUseTag;
+            selfnode->dclnode = (NamedAstNode *)nodesGet(pstate->fnsig->parms, 0);
+            selfnode->vtype = selfnode->dclnode->vtype;
+            // Reuse existing fncallnode if we can
+            if (node->methprop == NULL) {
+                node->methprop = (NameUseAstNode *)node->objfn;
+                node->objfn = (AstNode*)selfnode;
+            }
+            else {
+                // Re-purpose objfn as self.method
+                FnCallAstNode *fncall = newFnCallAstNode((AstNode *)selfnode, 0);
+                fncall->methprop = (NameUseAstNode *)node->objfn;
+                copyNodeLex(fncall, node->objfn); // Copy lexer info into injected node in case it has errors
+                node->objfn = (AstNode*)fncall;
+                nodeWalk(pstate, &node->objfn);
+            }
+        }
+
         // How to lower depends on the type of the objfn
         if (!isValueNode(node)) {
             errorMsgNode(node->objfn, ErrorNotTyped, "Expecting a typed node");
@@ -189,17 +214,6 @@ void fnCallPass(PassState *pstate, FnCallAstNode *node) {
         // Handle a regular function call or implicit method call
         else {
             derefAuto(&node->objfn);
-
-            // If objfn is a method name with no qualifier (i.e. calling another method in same type)
-            if (node->objfn->asttype == VarNameUseTag
-                && ((NameUseAstNode*)node->objfn)->dclnode->flags & FlagMethProp
-                && ((NameUseAstNode*)node->objfn)->qualNames == NULL) {
-                NameUseAstNode *selfnode = newNameUseNode(nametblFind("self", 4));
-                selfnode->asttype = VarNameUseTag;
-                selfnode->dclnode = (NamedAstNode *)nodesGet(pstate->fnsig->parms, 0);
-                selfnode->vtype = selfnode->dclnode->vtype;
-                nodesInsert(&node->args, (AstNode*)selfnode, 0); // args will be non-NULL
-            }
 
             // Capture return vtype
             node->vtype = ((FnSigAstNode*)objfntype)->rettype;

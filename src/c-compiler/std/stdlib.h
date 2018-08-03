@@ -8,8 +8,10 @@
 #ifndef stdlib_h
 #define stdlib_h
 
-// The absence of a name
-Name *anonName;
+// Common symbols
+Name *anonName;  // "_" - the absence of a name
+Name *selfName;  // "self"
+Name *thisName;  // "this"
 
 // Represents the absence of type information
 AstNode *voidType;

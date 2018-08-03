@@ -66,6 +66,8 @@ void stdlibInit() {
 	lexInject("std", "");
 
     anonName = nametblFind("_", 1);
+    selfName = nametblFind("self", 4);
+    thisName = nametblFind("this", 4);
 
 	keywordInit();
 	stdPermInit();

@@ -112,7 +112,7 @@ void nameUseWalk(PassState *pstate, NameUseAstNode **namep) {
         if (name->dclnode->asttype == VarDclTag && name->dclnode->flags & FlagMethProp) {
             // Doing this rewrite ensures we reuse existing type check and gen code for
             // properly handling property access
-            NameUseAstNode *selfnode = newNameUseNode(nametblFind("self", 4));
+            NameUseAstNode *selfnode = newNameUseNode(selfName);
             FnCallAstNode *fncall = newFnCallAstNode((AstNode *)selfnode, 0);
             fncall->methprop = name;
             copyNodeLex(fncall, name); // Copy lexer info into injected node in case it has errors
