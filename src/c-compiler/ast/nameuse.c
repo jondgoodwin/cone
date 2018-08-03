@@ -109,7 +109,7 @@ void nameUseWalk(PassState *pstate, NameUseAstNode **namep) {
 			name->dclnode = (NamedAstNode*)name->namesym->node;
 
         // If variable is actually an instance property, rewrite it to 'self.property'
-        if (name->dclnode->flags & FlagMethProp) {
+        if (name->dclnode->asttype == VarDclTag && name->dclnode->flags & FlagMethProp) {
             // Doing this rewrite ensures we reuse existing type check and gen code for
             // properly handling property access
             NameUseAstNode *selfnode = newNameUseNode(nametblFind("self", 4));
