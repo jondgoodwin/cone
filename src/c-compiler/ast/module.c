@@ -106,13 +106,13 @@ void modPass(PassState *pstate, ModuleAstNode *mod) {
         case VarDclTag:
         {
             VarDclAstNode * varnode = (VarDclAstNode*)*nodesp;
-            astPass(pstate, (AstNode*)varnode->perm);
-            astPass(pstate, varnode->vtype);
+            nodeWalk(pstate, (AstNode**)&varnode->perm);
+            nodeWalk(pstate, &varnode->vtype);
         }
         case FnDclTag:
         {
             FnDclAstNode * varnode = (FnDclAstNode*)*nodesp;
-            astPass(pstate, varnode->vtype);
+            nodeWalk(pstate, &varnode->vtype);
         }
         }
 	}
@@ -120,7 +120,7 @@ void modPass(PassState *pstate, ModuleAstNode *mod) {
 	// Now we can process the full node info
 	if (errors == 0) {
 		for (nodesFor(mod->nodes, cnt, nodesp)) {
-			astPass(pstate, *nodesp);
+			nodeWalk(pstate, nodesp);
 		}
 	}
 

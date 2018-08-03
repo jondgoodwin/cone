@@ -155,9 +155,9 @@ void fnCallPass(PassState *pstate, FnCallAstNode *node) {
     // Note: Name resolution for .methprop happens in typecheck pass
     if (node->args) {
         for (nodesFor(node->args, cnt, argsp))
-            astPass(pstate, *argsp);
+            nodeWalk(pstate, argsp);
     }
-    astPass(pstate, node->objfn);
+    nodeWalk(pstate, &node->objfn);
 
     switch (pstate->pass) {
     case TypeCheck:

@@ -31,7 +31,7 @@ void arrayPrint(ArrayAstNode *node) {
 
 // Semantically analyze an array type
 void arrayPass(PassState *pstate, ArrayAstNode *node) {
-	astPass(pstate, node->elemtype);
+	nodeWalk(pstate, &node->elemtype);
 }
 
 // Compare two struct signatures to see if they are equivalent

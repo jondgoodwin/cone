@@ -38,7 +38,7 @@ void structPass(PassState *pstate, StructAstNode *node) {
             nametblHookNode((NamedAstNode*)*nodesp);
     }
     for (methnodesFor(&node->methprops, cnt, nodesp)) {
-        astPass(pstate, (AstNode*)*nodesp);
+        nodeWalk(pstate, (AstNode**)nodesp);
     }
     nametblHookPop();
 }

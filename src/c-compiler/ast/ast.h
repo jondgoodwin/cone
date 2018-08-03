@@ -223,7 +223,12 @@ void astPrintIndent();
 void astPrintIncr();
 void astPrintDecr();
 
-void astPasses(ModuleAstNode *pgm);
-void astPass(PassState *pstate, AstNode *pgm);
+// Run all semantic analysis passes against the AST/IR (after parse and before gen)
+void irSemanticPasses(ModuleAstNode **pgm);
+
+// Dispatch a node walk for the current semantic analysis pass
+// - pstate is helpful state info for node traversal
+// - node is a pointer to pointer so that a node can be replaced
+void nodeWalk(PassState *pstate, AstNode **pgm);
 
 #endif

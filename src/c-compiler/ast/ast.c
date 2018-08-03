@@ -127,56 +127,57 @@ void astPrint(char *dir, char *srcfn, AstNode *pgmast) {
 	fclose(astfile);
 }
 
-// Dispatch a pass to a node
-// Syntactic sugar, name resolution, type inference and type checking
-void astPass(PassState *pstate, AstNode *node) {
-	switch (node->asttype) {
+// Dispatch a node walk for the current semantic analysis pass
+// - pstate is helpful state info for node traversal
+// - node is a pointer to pointer so that a node can be replaced
+void nodeWalk(PassState *pstate, AstNode **node) {
+	switch ((*node)->asttype) {
 	case ModuleNode:
-		modPass(pstate, (ModuleAstNode*)node); break;
+		modPass(pstate, (ModuleAstNode*)*node); break;
 	case VarDclTag:
-		varDclPass(pstate, (VarDclAstNode *)node); break;
+		varDclPass(pstate, (VarDclAstNode *)*node); break;
     case FnDclTag:
-        fnDclPass(pstate, (FnDclAstNode *)node); break;
+        fnDclPass(pstate, (FnDclAstNode *)*node); break;
     case NameUseTag:
     case VarNameUseTag:
     case TypeNameUseTag:
-		nameUsePass(pstate, (NameUseAstNode *)node); break;
+		nameUsePass(pstate, (NameUseAstNode *)*node); break;
 	case BlockNode:
-		blockPass(pstate, (BlockAstNode *)node); break;
+		blockPass(pstate, (BlockAstNode *)*node); break;
 	case IfNode:
-		ifPass(pstate, (IfAstNode *)node); break;
+		ifPass(pstate, (IfAstNode *)*node); break;
 	case WhileNode:
-		whilePass(pstate, (WhileAstNode *)node); break;
+		whilePass(pstate, (WhileAstNode *)*node); break;
 	case BreakNode:
 	case ContinueNode:
-		breakPass(pstate, node); break;
+		breakPass(pstate, *node); break;
 	case ReturnNode:
-		returnPass(pstate, (ReturnAstNode *)node); break;
+		returnPass(pstate, (ReturnAstNode *)*node); break;
 	case AssignNode:
-		assignPass(pstate, (AssignAstNode *)node); break;
+		assignPass(pstate, (AssignAstNode *)*node); break;
 	case FnCallNode:
-		fnCallPass(pstate, (FnCallAstNode *)node); break;
+		fnCallPass(pstate, (FnCallAstNode *)*node); break;
 	case SizeofNode:
-		sizeofPass(pstate, (SizeofAstNode *)node); break;
+		sizeofPass(pstate, (SizeofAstNode *)*node); break;
 	case CastNode:
-		castPass(pstate, (CastAstNode *)node); break;
+		castPass(pstate, (CastAstNode *)*node); break;
 	case DerefNode:
-		derefPass(pstate, (DerefAstNode *)node); break;
+		derefPass(pstate, (DerefAstNode *)*node); break;
 	case AddrNode:
-		addrPass(pstate, (AddrAstNode *)node); break;
+		addrPass(pstate, (AddrAstNode *)*node); break;
 	case NotLogicNode:
-		logicNotPass(pstate, (LogicAstNode *)node); break;
+		logicNotPass(pstate, (LogicAstNode *)*node); break;
 	case OrLogicNode: case AndLogicNode:
-		logicPass(pstate, (LogicAstNode *)node); break;
+		logicPass(pstate, (LogicAstNode *)*node); break;
 	case FnSigType:
-		fnSigPass(pstate, (FnSigAstNode *)node); break;
+		fnSigPass(pstate, (FnSigAstNode *)*node); break;
 	case RefType: case PtrType:
-		ptrTypePass(pstate, (PtrAstNode *)node); break;
+		ptrTypePass(pstate, (PtrAstNode *)*node); break;
 	case StructType:
 	case AllocType:
-		structPass(pstate, (StructAstNode *)node); break;
+		structPass(pstate, (StructAstNode *)*node); break;
 	case ArrayType:
-		arrayPass(pstate, (ArrayAstNode *)node); break;
+		arrayPass(pstate, (ArrayAstNode *)*node); break;
 
 	case MbrNameUseTag:
 	case ULitNode:
@@ -191,21 +192,23 @@ void astPass(PassState *pstate, AstNode *node) {
 	}
 }
 
-// Run all passes against the AST (after parse and before gen)
-void astPasses(ModuleAstNode *mod) {
+// Run all semantic analysis passes against the AST/IR (after parse and before gen)
+void irSemanticPasses(ModuleAstNode **mod) {
 	PassState pstate;
-	pstate.mod = mod;
+	pstate.mod = *mod;
 	pstate.fnsig = NULL;
 	pstate.scope = 0;
 	pstate.flags = 0;
 
 	// Resolve all name uses to their appropriate declaration
+    // Note: Some nodes may be replaced (e.g., 'a' to 'self.a')
 	pstate.pass = NameResolution;
-	astPass(&pstate, (AstNode*) mod);
+	nodeWalk(&pstate, (AstNode**) mod);
 	if (errors)
 		return;
 
 	// Apply syntactic sugar, and perform type inference/check
+    // Note: Some nodes may be lowered, injected or replaced
 	pstate.pass = TypeCheck;
-	astPass(&pstate, (AstNode*)mod);
+	nodeWalk(&pstate, (AstNode**) mod);
 }

@@ -48,8 +48,8 @@ int isLval(AstNode *node) {
 
 // Analyze assignment node
 void assignPass(PassState *pstate, AssignAstNode *node) {
-	astPass(pstate, node->lval);
-	astPass(pstate, node->rval);
+	nodeWalk(pstate, &node->lval);
+	nodeWalk(pstate, &node->rval);
 
 	switch (pstate->pass) {
 	case TypeCheck:
@@ -98,7 +98,7 @@ void addrTypeCheckBorrow(AddrAstNode *node, PtrAstNode *ptype) {
 
 // Analyze addr node
 void addrPass(PassState *pstate, AddrAstNode *node) {
-	astPass(pstate, node->exp);
+	nodeWalk(pstate, &node->exp);
 	if (pstate->pass == TypeCheck) {
 		if (!isValueNode(node->exp)) {
 			errorMsgNode(node->exp, ErrorBadTerm, "Needs to be an expression");

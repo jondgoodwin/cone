@@ -46,7 +46,7 @@ int main(int argc, char **argv) {
 	lexInjectFile(srcfn);
 	modnode = parsePgm();
 	if (errors == 0) {
-		astPasses(modnode);
+		irSemanticPasses(&modnode);
 		if (errors == 0) {
 			if (coneopt.print_ast)
 				astPrint(coneopt.output, srcfn, (AstNode*)modnode);

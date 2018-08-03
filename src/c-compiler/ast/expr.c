@@ -30,7 +30,7 @@ void sizeofPrint(SizeofAstNode *node) {
 
 // Analyze sizeof node
 void sizeofPass(PassState *pstate, SizeofAstNode *node) {
-	astPass(pstate, node->type);
+	nodeWalk(pstate, &node->type);
 }
 
 // Create a new cast node
@@ -53,8 +53,8 @@ void castPrint(CastAstNode *node) {
 
 // Analyze cast node
 void castPass(PassState *pstate, CastAstNode *node) {
-	astPass(pstate, node->exp);
-	astPass(pstate, node->vtype);
+	nodeWalk(pstate, &node->exp);
+	nodeWalk(pstate, &node->vtype);
 	if (pstate->pass == TypeCheck && 0 == typeMatches(node->vtype, ((TypedAstNode *)node->exp)->vtype))
 		errorMsgNode(node->vtype, ErrorInvType, "expression may not be type cast to this type");
 }
@@ -75,7 +75,7 @@ void derefPrint(DerefAstNode *node) {
 
 // Analyze deref node
 void derefPass(PassState *pstate, DerefAstNode *node) {
-	astPass(pstate, node->exp);
+	nodeWalk(pstate, &node->exp);
 	if (pstate->pass == TypeCheck) {
 		PtrAstNode *ptype = (PtrAstNode*)((TypedAstNode *)node->exp)->vtype;
 		if (ptype->asttype == RefType || ptype->asttype == PtrType)
@@ -120,15 +120,15 @@ void logicPrint(LogicAstNode *node) {
 
 // Analyze not logic node
 void logicNotPass(PassState *pstate, LogicAstNode *node) {
-	astPass(pstate, node->lexp);
+	nodeWalk(pstate, &node->lexp);
 	if (pstate->pass == TypeCheck)
 		typeCoerces((AstNode*)boolType, &node->lexp);
 }
 
 // Analyze logic node
 void logicPass(PassState *pstate, LogicAstNode *node) {
-	astPass(pstate, node->lexp);
-	astPass(pstate, node->rexp);
+	nodeWalk(pstate, &node->lexp);
+	nodeWalk(pstate, &node->rexp);
 
 	if (pstate->pass == TypeCheck) {
 		typeCoerces((AstNode*)boolType, &node->lexp);

@@ -59,12 +59,12 @@ void varDclNameResolve(PassState *pstate, VarDclAstNode *name) {
 	}
 
 	if (name->value)
-		astPass(pstate, name->value);
+		nodeWalk(pstate, &name->value);
 }
 
 // Type check variable against its initial value
 void varDclTypeCheck(PassState *pstate, VarDclAstNode *name) {
-	astPass(pstate, name->value);
+	nodeWalk(pstate, &name->value);
 	// Global variables and function parameters require literal initializers
 	if (name->scope <= 1 && !litIsLiteral(name->value))
 		errorMsgNode(name->value, ErrorNotLit, "Variable may only be initialized with a literal.");
@@ -79,8 +79,8 @@ void varDclTypeCheck(PassState *pstate, VarDclAstNode *name) {
 
 // Check the function or variable declaration's AST
 void varDclPass(PassState *pstate, VarDclAstNode *name) {
-	astPass(pstate, (AstNode*)name->perm);
-	astPass(pstate, name->vtype);
+	nodeWalk(pstate, (AstNode**)&name->perm);
+	nodeWalk(pstate, &name->vtype);
 	AstNode *vtype = typeGetVtype(name->vtype);
 
 	// Process nodes in name's initial value/code block

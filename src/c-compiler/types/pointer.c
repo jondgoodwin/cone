@@ -30,9 +30,9 @@ void ptrTypePrint(PtrAstNode *node) {
 
 // Semantically analyze a pointer type
 void ptrTypePass(PassState *pstate, PtrAstNode *node) {
-	astPass(pstate, node->alloc);
-	astPass(pstate, (AstNode*)node->perm);
-	astPass(pstate, node->pvtype);
+	nodeWalk(pstate, &node->alloc);
+	nodeWalk(pstate, (AstNode**)&node->perm);
+	nodeWalk(pstate, &node->pvtype);
 }
 
 // Compare two pointer signatures to see if they are equivalent

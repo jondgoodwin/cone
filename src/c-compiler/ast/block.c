@@ -59,7 +59,7 @@ void blockResolvePass(PassState *pstate, BlockAstNode *blk) {
                 errorMsgNode(*nodesp, ErrorRetNotLast, "continue may only appear as the last statement in a block"); break;
             }
         }
-        astPass(pstate, *nodesp);
+        nodeWalk(pstate, nodesp);
     }
 
     nametblHookPop();  // Unhook local variables from global name table
@@ -73,7 +73,7 @@ void blockTypePass(PassState *pstate, BlockAstNode *blk) {
     AstNode **nodesp;
     uint32_t cnt;
     for (nodesFor(blk->stmts, cnt, nodesp)) {
-        astPass(pstate, *nodesp);
+        nodeWalk(pstate, nodesp);
     }
 }
 
@@ -143,7 +143,7 @@ void ifPass(PassState *pstate, IfAstNode *ifnode) {
 	AstNode **nodesp;
 	uint32_t cnt;
 	for (nodesFor(ifnode->condblk, cnt, nodesp)) {
-		astPass(pstate, *nodesp);
+		nodeWalk(pstate, nodesp);
 
 		// Type check the 'if':
 		// - conditional must be a Bool
@@ -176,8 +176,8 @@ void whilePass(PassState *pstate, WhileAstNode *node) {
 	uint16_t svflags = pstate->flags;
 	pstate->flags |= PassWithinWhile;
 
-	astPass(pstate, node->condexp);
-	astPass(pstate, node->blk);
+	nodeWalk(pstate, &node->condexp);
+	nodeWalk(pstate, &node->blk);
 
 	if (pstate->pass == TypeCheck)
 		typeCoerces((AstNode*)boolType, &node->condexp);
@@ -232,7 +232,7 @@ void returnPass(PassState *pstate, ReturnAstNode *node) {
 		ifRemoveReturns((IfAstNode*)(node->exp));
 
 	// Process the return's expression
-	astPass(pstate, node->exp);
+	nodeWalk(pstate, &node->exp);
 
 	// Ensure the vtype of the expression can be coerced to the function's declared return type
 	if (pstate->pass == TypeCheck) {

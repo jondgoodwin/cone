@@ -70,7 +70,7 @@ void fnDclNameResolve(PassState *pstate, FnDclAstNode *name) {
     uint32_t cnt;
     for (nodesFor(fnsig->parms, cnt, nodesp))
         nametblHookNode((NamedAstNode *)*nodesp);
-	astPass(pstate, name->value);
+	nodeWalk(pstate, &name->value);
 	nametblHookPop();
 	pstate->scope = oldscope;
 }
@@ -79,13 +79,13 @@ void fnDclNameResolve(PassState *pstate, FnDclAstNode *name) {
 void fnDclTypeCheck(PassState *pstate, FnDclAstNode *varnode) {
 	FnSigAstNode *oldfnsig = pstate->fnsig;
 	pstate->fnsig = (FnSigAstNode*)varnode->vtype;
-	astPass(pstate, varnode->value);
+	nodeWalk(pstate, &varnode->value);
 	pstate->fnsig = oldfnsig;
 }
 
 // Check the function declaration's AST
 void fnDclPass(PassState *pstate, FnDclAstNode *name) {
-	astPass(pstate, name->vtype);
+	nodeWalk(pstate, &name->vtype);
 	AstNode *vtype = typeGetVtype(name->vtype);
 
 	// Process nodes in name's initial value/code block

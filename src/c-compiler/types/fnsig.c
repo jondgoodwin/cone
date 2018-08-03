@@ -38,8 +38,8 @@ void fnSigPass(PassState *pstate, FnSigAstNode *sig) {
 	AstNode **nodesp;
 	uint32_t cnt;
 	for (nodesFor(sig->parms, cnt, nodesp))
-		astPass(pstate, *nodesp);
-	astPass(pstate, sig->rettype);
+		nodeWalk(pstate, nodesp);
+	nodeWalk(pstate, &sig->rettype);
 }
 
 // Compare two function signatures to see if they are equivalent
