@@ -12,13 +12,13 @@
 // The contents varies after parse vs. after type check due to lowering.
 typedef struct FnCallAstNode {
 	TypedAstHdr;
-	AstNode *objfn;        // Object (for method calls) or function to call
+	INode *objfn;        // Object (for method calls) or function to call
     NameUseAstNode *methprop;    // Name of method/property (or NULL)
 	Nodes *args;           // List of function call arguments (or NULL)
 } FnCallAstNode;
 
-FnCallAstNode *newFnCallAstNode(AstNode *objfn, int nnodes);
-FnCallAstNode *newFnCallOp(AstNode *obj, char *op, int nnodes);
+FnCallAstNode *newFnCallAstNode(INode *objfn, int nnodes);
+FnCallAstNode *newFnCallOp(INode *obj, char *op, int nnodes);
 void fnCallPrint(FnCallAstNode *node);
 void fnCallPass(PassState *pstate, FnCallAstNode *node);
 

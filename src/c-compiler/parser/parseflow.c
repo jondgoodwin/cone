@@ -17,25 +17,25 @@
 #include <stdio.h>
 
 // Parse control flow suffixes
-AstNode *parseSuffix(ParseState *parse, AstNode *node) {
+INode *parseSuffix(ParseState *parse, INode *node) {
 	while (lexIsToken(IfToken) || lexIsToken(WhileToken)) {
 		if (lexIsToken(IfToken)) {
 			BlockAstNode *blk;
 			IfAstNode *ifnode = newIfNode();
 			lexNextToken();
 			nodesAdd(&ifnode->condblk, parseExpr(parse));
-			nodesAdd(&ifnode->condblk, (AstNode*)(blk = newBlockNode()));
+			nodesAdd(&ifnode->condblk, (INode*)(blk = newBlockNode()));
 			nodesAdd(&blk->stmts, node);
-			node = (AstNode*)ifnode;
+			node = (INode*)ifnode;
 		}
 		else {
 			BlockAstNode *blk;
 			WhileAstNode *wnode = newWhileNode();
 			lexNextToken();
 			wnode->condexp = parseExpr(parse);
-			wnode->blk = (AstNode*)(blk = newBlockNode());
+			wnode->blk = (INode*)(blk = newBlockNode());
 			nodesAdd(&blk->stmts, node);
-			node = (AstNode*)wnode;
+			node = (INode*)wnode;
 		}
 	}
 	parseSemi();
@@ -43,21 +43,21 @@ AstNode *parseSuffix(ParseState *parse, AstNode *node) {
 }
 
 // Parse an expression statement within a function
-AstNode *parseExpStmt(ParseState *parse) {
-	return parseSuffix(parse, (AstNode *)parseExpr(parse));
+INode *parseExpStmt(ParseState *parse) {
+	return parseSuffix(parse, (INode *)parseExpr(parse));
 }
 
 // Parse a return statement
-AstNode *parseReturn(ParseState *parse) {
+INode *parseReturn(ParseState *parse) {
 	ReturnAstNode *stmtnode = newReturnNode();
 	lexNextToken(); // Skip past 'return'
 	if (!lexIsToken(SemiToken))
 		stmtnode->exp = parseExpr(parse);
-	return parseSuffix(parse, (AstNode*)stmtnode);
+	return parseSuffix(parse, (INode*)stmtnode);
 }
 
 // Parse if statement/expression
-AstNode *parseIf(ParseState *parse) {
+INode *parseIf(ParseState *parse) {
 	IfAstNode *ifnode = newIfNode();
 	lexNextToken();
 	nodesAdd(&ifnode->condblk, parseExpr(parse));
@@ -72,26 +72,26 @@ AstNode *parseIf(ParseState *parse) {
 		nodesAdd(&ifnode->condblk, voidType);
 		nodesAdd(&ifnode->condblk, parseBlock(parse));
 	}
-	return (AstNode *)ifnode;
+	return (INode *)ifnode;
 }
 
 // Parse while block
-AstNode *parseWhile(ParseState *parse) {
+INode *parseWhile(ParseState *parse) {
 	WhileAstNode *wnode = newWhileNode();
 	lexNextToken();
 	wnode->condexp = parseExpr(parse);
 	wnode->blk = parseBlock(parse);
-	return (AstNode *)wnode;
+	return (INode *)wnode;
 }
 
 // Parse a block of statements/expressions
-AstNode *parseBlock(ParseState *parse) {
+INode *parseBlock(ParseState *parse) {
 	BlockAstNode *blk = newBlockNode();
 
 	if (!lexIsToken(LCurlyToken))
 		parseLCurly();
 	if (!lexIsToken(LCurlyToken))
-		return (AstNode*)blk;
+		return (INode*)blk;
 	lexNextToken();
 
 	blk->stmts = newNodes(8);
@@ -115,8 +115,8 @@ AstNode *parseBlock(ParseState *parse) {
 
 		case BreakToken:
 		{
-			AstNode *node;
-			newAstNode(node, AstNode, BreakNode);
+			INode *node;
+			newNode(node, INode, BreakNode);
 			lexNextToken();
 			nodesAdd(&blk->stmts, parseSuffix(parse, node));
 			break;
@@ -124,8 +124,8 @@ AstNode *parseBlock(ParseState *parse) {
 
 		case ContinueToken:
 		{
-			AstNode *node;
-			newAstNode(node, AstNode, ContinueNode);
+			INode *node;
+			newNode(node, INode, ContinueNode);
 			lexNextToken();
 			nodesAdd(&blk->stmts, parseSuffix(parse, node));
 			break;
@@ -137,7 +137,7 @@ AstNode *parseBlock(ParseState *parse) {
 
 		// A local variable declaration, if it begins with a permission
 		case PermToken:
-			nodesAdd(&blk->stmts, (AstNode*)parseVarDcl(parse, immPerm, ParseMaySig|ParseMayImpl));
+			nodesAdd(&blk->stmts, (INode*)parseVarDcl(parse, immPerm, ParseMaySig|ParseMayImpl));
 			parseSemi();
 			break;
 
@@ -147,5 +147,5 @@ AstNode *parseBlock(ParseState *parse) {
 	}
 
 	parseRCurly();
-	return (AstNode*)blk;
+	return (INode*)blk;
 }

@@ -25,7 +25,7 @@ typedef struct NameList {
 // Create a new name use node
 NameUseAstNode *newNameUseNode(Name *namesym) {
 	NameUseAstNode *name;
-	newAstNode(name, NameUseAstNode, NameUseTag);
+	newNode(name, NameUseAstNode, NameUseTag);
 	name->qualNames = NULL;
 	name->dclnode = NULL;
     name->namesym = namesym;
@@ -34,7 +34,7 @@ NameUseAstNode *newNameUseNode(Name *namesym) {
 
 NameUseAstNode *newMemberUseNode(Name *namesym) {
 	NameUseAstNode *name;
-	newAstNode(name, NameUseAstNode, MbrNameUseTag);
+	newNode(name, NameUseAstNode, MbrNameUseTag);
     name->qualNames = NULL;
     name->dclnode = NULL;
     name->namesym = namesym;
@@ -75,13 +75,13 @@ void nameUseAddQual(NameUseAstNode *node, Name *name) {
 // Serialize the AST for a name use
 void nameUsePrint(NameUseAstNode *name) {
     if (name->qualNames) {
-        // if root: astFprint("::");
+        // if root: inodeFprint("::");
         int16_t cnt = name->qualNames->used;
         Name **namep = (Name**)(name->qualNames + 1);
         while (cnt--)
-            astFprint("%s::", &(*namep++)->namestr);
+            inodeFprint("%s::", &(*namep++)->namestr);
     }
-	astFprint("%s", &name->namesym->namestr);
+	inodeFprint("%s", &name->namesym->namestr);
 }
 
 // Handle name resolution and type check for name use references
@@ -98,7 +98,7 @@ void nameUseWalk(PassState *pstate, NameUseAstNode **namep) {
             while (cnt--) {
                 mod = (ModuleAstNode*)namespaceFind(&mod->namednodes, *namep++);
                 if (mod==NULL || mod->asttype!=ModuleNode) {
-                    errorMsgNode((AstNode*)name, ErrorUnkName, "Module %s does not exist", &(*--namep)->namestr);
+                    errorMsgNode((INode*)name, ErrorUnkName, "Module %s does not exist", &(*--namep)->namestr);
                     return;
                 }
             }
@@ -113,11 +113,11 @@ void nameUseWalk(PassState *pstate, NameUseAstNode **namep) {
             // Doing this rewrite ensures we reuse existing type check and gen code for
             // properly handling property access
             NameUseAstNode *selfnode = newNameUseNode(selfName);
-            FnCallAstNode *fncall = newFnCallAstNode((AstNode *)selfnode, 0);
+            FnCallAstNode *fncall = newFnCallAstNode((INode *)selfnode, 0);
             fncall->methprop = name;
             copyNodeLex(fncall, name); // Copy lexer info into injected node in case it has errors
             *((FnCallAstNode**)namep) = fncall;
-            nodeWalk(pstate, (AstNode **)namep);
+            inodeWalk(pstate, (INode **)namep);
         }
         // Make it easy to distinguish whether a name is for a variable/function name vs. type
         else if (name->dclnode) {
@@ -127,7 +127,7 @@ void nameUseWalk(PassState *pstate, NameUseAstNode **namep) {
                 name->asttype = TypeNameUseTag;
         }
         else
-			errorMsgNode((AstNode*)name, ErrorUnkName, "The name %s does not refer to a declared name", &name->namesym->namestr);
+			errorMsgNode((INode*)name, ErrorUnkName, "The name %s does not refer to a declared name", &name->namesym->namestr);
 		break;
 	case TypeCheck:
 		name->vtype = name->dclnode->vtype;

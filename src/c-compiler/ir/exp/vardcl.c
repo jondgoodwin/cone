@@ -15,9 +15,9 @@
 #include <assert.h>
 
 // Create a new name declaraction node
-VarDclAstNode *newVarDclNode(Name *namesym, uint16_t asttype, AstNode *type, PermAstNode *perm, AstNode *val) {
+VarDclAstNode *newVarDclNode(Name *namesym, uint16_t asttype, INode *type, PermAstNode *perm, INode *val) {
 	VarDclAstNode *name;
-	newAstNode(name, VarDclAstNode, asttype);
+	newNode(name, VarDclAstNode, asttype);
 	name->vtype = type;
 	name->owner = NULL;
 	name->namesym = namesym;
@@ -31,14 +31,14 @@ VarDclAstNode *newVarDclNode(Name *namesym, uint16_t asttype, AstNode *type, Per
 
 // Serialize the AST for a variable/function
 void varDclPrint(VarDclAstNode *name) {
-	astPrintNode((AstNode*)name->perm);
-	astFprint("%s ", &name->namesym->namestr);
-	astPrintNode(name->vtype);
+	inodePrintNode((INode*)name->perm);
+	inodeFprint("%s ", &name->namesym->namestr);
+	inodePrintNode(name->vtype);
 	if (name->value) {
-		astFprint(" = ");
+		inodeFprint(" = ");
 		if (name->value->asttype == BlockNode)
-			astPrintNL();
-		astPrintNode(name->value);
+			inodePrintNL();
+		inodePrintNode(name->value);
 	}
 }
 
@@ -48,8 +48,8 @@ void varDclNameResolve(PassState *pstate, VarDclAstNode *name) {
 	// Variable declaration within a block is a local variable
 	if (pstate->scope > 1) {
 		if (name->namesym->node && pstate->scope == ((VarDclAstNode*)name->namesym->node)->scope) {
-			errorMsgNode((AstNode *)name, ErrorDupName, "Name is already defined. Only one allowed.");
-			errorMsgNode((AstNode*)name->namesym->node, ErrorDupName, "This is the conflicting definition for that name.");
+			errorMsgNode((INode *)name, ErrorDupName, "Name is already defined. Only one allowed.");
+			errorMsgNode((INode*)name->namesym->node, ErrorDupName, "This is the conflicting definition for that name.");
 		}
 		else {
 			name->scope = pstate->scope;
@@ -59,12 +59,12 @@ void varDclNameResolve(PassState *pstate, VarDclAstNode *name) {
 	}
 
 	if (name->value)
-		nodeWalk(pstate, &name->value);
+		inodeWalk(pstate, &name->value);
 }
 
 // Type check variable against its initial value
 void varDclTypeCheck(PassState *pstate, VarDclAstNode *name) {
-	nodeWalk(pstate, &name->value);
+	inodeWalk(pstate, &name->value);
 	// Global variables and function parameters require literal initializers
 	if (name->scope <= 1 && !litIsLiteral(name->value))
 		errorMsgNode(name->value, ErrorNotLit, "Variable may only be initialized with a literal.");
@@ -79,9 +79,9 @@ void varDclTypeCheck(PassState *pstate, VarDclAstNode *name) {
 
 // Check the function or variable declaration's AST
 void varDclPass(PassState *pstate, VarDclAstNode *name) {
-	nodeWalk(pstate, (AstNode**)&name->perm);
-	nodeWalk(pstate, &name->vtype);
-	AstNode *vtype = typeGetVtype(name->vtype);
+	inodeWalk(pstate, (INode**)&name->perm);
+	inodeWalk(pstate, &name->vtype);
+	INode *vtype = typeGetVtype(name->vtype);
 
 	// Process nodes in name's initial value/code block
 	switch (pstate->pass) {
@@ -98,7 +98,7 @@ void varDclPass(PassState *pstate, VarDclAstNode *name) {
 			varDclTypeCheck(pstate, name);
 		}
 		else if (vtype == voidType)
-			errorMsgNode((AstNode*)name, ErrorNoType, "Name must specify a type");
+			errorMsgNode((INode*)name, ErrorNoType, "Name must specify a type");
 		break;
 	}
 }

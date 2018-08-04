@@ -67,7 +67,7 @@ void genlReturn(GenState *gen, ReturnAstNode *node) {
 
 // Generate a block's statements
 LLVMValueRef genlBlock(GenState *gen, BlockAstNode *blk) {
-	AstNode **nodesp;
+	INode **nodesp;
 	uint32_t cnt;
 	LLVMValueRef lastval = NULL; // Should never be used by caller
 	for (nodesFor(blk->stmts, cnt, nodesp)) {

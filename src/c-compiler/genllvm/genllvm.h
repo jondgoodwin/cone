@@ -36,7 +36,7 @@ LLVMBasicBlockRef genlInsertBlock(GenState *gen, char *name);
 LLVMValueRef genlBlock(GenState *gen, BlockAstNode *blk);
 
 // genlexpr.c
-LLVMTypeRef genlType(GenState *gen, AstNode *typ);
-LLVMValueRef genlExpr(GenState *gen, AstNode *termnode);
+LLVMTypeRef genlType(GenState *gen, INode *typ);
+LLVMValueRef genlExpr(GenState *gen, INode *termnode);
 
 #endif

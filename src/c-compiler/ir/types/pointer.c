@@ -13,26 +13,26 @@
 // Create a new pointer type whose info will be filled in afterwards
 PtrAstNode *newPtrTypeNode() {
 	PtrAstNode *ptrnode;
-	newAstNode(ptrnode, PtrAstNode, RefType);
+	newNode(ptrnode, PtrAstNode, RefType);
 	return ptrnode;
 }
 
 // Serialize a pointer type
 void ptrTypePrint(PtrAstNode *node) {
-	astFprint(node->asttype == RefType? "&(" : "*(");
-	astPrintNode(node->alloc);
-	astFprint(", ");
-	astPrintNode((AstNode*)node->perm);
-	astFprint(", ");
-	astPrintNode(node->pvtype);
-	astFprint(")");
+	inodeFprint(node->asttype == RefType? "&(" : "*(");
+	inodePrintNode(node->alloc);
+	inodeFprint(", ");
+	inodePrintNode((INode*)node->perm);
+	inodeFprint(", ");
+	inodePrintNode(node->pvtype);
+	inodeFprint(")");
 }
 
 // Semantically analyze a pointer type
 void ptrTypePass(PassState *pstate, PtrAstNode *node) {
-	nodeWalk(pstate, &node->alloc);
-	nodeWalk(pstate, (AstNode**)&node->perm);
-	nodeWalk(pstate, &node->pvtype);
+	inodeWalk(pstate, &node->alloc);
+	inodeWalk(pstate, (INode**)&node->perm);
+	inodeWalk(pstate, &node->pvtype);
 }
 
 // Compare two pointer signatures to see if they are equivalent

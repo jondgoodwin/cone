@@ -11,7 +11,7 @@
 // Permission type info
 typedef struct PermAstNode {
 	MethodTypeAstHdr;
-	AstNode *locker;
+	INode *locker;
 	uint8_t ptype;
 } PermAstNode;
 
@@ -44,8 +44,8 @@ enum Perm {
 
 PermAstNode *newPermNode(Name *namesym, char ptyp, uint16_t flags);
 void permPrint(PermAstNode *node);
-uint16_t permGetFlags(AstNode *node);
-int permIsMutable(AstNode *lval);
+uint16_t permGetFlags(INode *node);
+int permIsMutable(INode *lval);
 int permIsSame(PermAstNode *node1, PermAstNode *node2);
 int permMatches(PermAstNode *node1, PermAstNode *node2);
 

@@ -22,7 +22,7 @@ add_executable(conec
 	src/c-compiler/shared/options.c
 	src/c-compiler/shared/utf8.c
 
-	src/c-compiler/ir/ir.c
+	src/c-compiler/ir/inode.c
 	src/c-compiler/ir/namespace.c
 	src/c-compiler/ir/nametbl.c
 	src/c-compiler/ir/nodes.c

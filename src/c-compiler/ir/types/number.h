@@ -16,6 +16,6 @@ typedef struct NbrAstNode {
 
 NbrAstNode *newNbrTypeNode(char *name, uint16_t typ, char bits);
 void nbrTypePrint(NbrAstNode *node);
-int isNbr(AstNode *node);
+int isNbr(INode *node);
 
 #endif

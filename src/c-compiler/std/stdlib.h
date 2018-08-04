@@ -14,7 +14,7 @@ Name *selfName;  // "self"
 Name *thisName;  // "this"
 
 // Represents the absence of type information
-AstNode *voidType;
+INode *voidType;
 
 // Built-in permission types - for implicit (non-declared but known) permissions
 PermAstNode *uniPerm;

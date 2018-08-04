@@ -17,33 +17,33 @@
 	if (isValueNode(node)) \
 		node = ((TypedAstNode *)node)->vtype; \
 	if (node->asttype == TypeNameUseTag) \
-		node = (AstNode*)((NameUseAstNode *)node)->dclnode; \
+		node = (INode*)((NameUseAstNode *)node)->dclnode; \
 }
 
 // Return value type
-AstNode *typeGetVtype(AstNode *node) {
+INode *typeGetVtype(INode *node) {
     getVtype(node);
 	return node;
 }
 
 // Return type (or de-referenced type if ptr/ref)
-AstNode *typeGetDerefType(AstNode *node) {
+INode *typeGetDerefType(INode *node) {
     getVtype(node);
     if (node->asttype == RefType) {
         node = ((PtrAstNode*)node)->pvtype;
         if (node->asttype == TypeNameUseTag)
-            node = (AstNode*)((NameUseAstNode *)node)->dclnode;
+            node = (INode*)((NameUseAstNode *)node)->dclnode;
     }
     else if (node->asttype == PtrType) {
         node = ((PtrAstNode*)node)->pvtype;
         if (node->asttype == TypeNameUseTag)
-            node = (AstNode*)((NameUseAstNode *)node)->dclnode;
+            node = (INode*)((NameUseAstNode *)node)->dclnode;
     }
     return node;
 }
 
 // Internal routine only - we know that node1 and node2 are both types
-int typeEqual(AstNode *node1, AstNode *node2) {
+int typeEqual(INode *node1, INode *node2) {
 	// If they are the same type name, types match
 	if (node1 == node2)
 		return 1;
@@ -62,7 +62,7 @@ int typeEqual(AstNode *node1, AstNode *node2) {
 }
 
 // Return true if the types for both nodes are equivalent
-int typeIsSame(AstNode *node1, AstNode *node2) {
+int typeIsSame(INode *node1, INode *node2) {
 
 	// Convert nodes to their value types
 	getVtype(node1);
@@ -75,12 +75,12 @@ int typeIsSame(AstNode *node1, AstNode *node2) {
 // 0 - no
 // 1 - yes, without conversion
 // 2+ - requires increasingly lossy conversion/coercion
-int typeMatches(AstNode *totype, AstNode *fromtype) {
+int typeMatches(INode *totype, INode *fromtype) {
 	// Convert, if needed, from names to the type declaration
 	if (totype->asttype == TypeNameUseTag)
-		totype = (AstNode*)((NameUseAstNode *)totype)->dclnode;
+		totype = (INode*)((NameUseAstNode *)totype)->dclnode;
 	if (fromtype->asttype == TypeNameUseTag)
-		fromtype = (AstNode*)((NameUseAstNode *)fromtype)->dclnode;
+		fromtype = (INode*)((NameUseAstNode *)fromtype)->dclnode;
 
 	// If they are the same value type info, types match
 	if (totype == fromtype)
@@ -115,8 +115,8 @@ int typeMatches(AstNode *totype, AstNode *fromtype) {
 
 // can from's value be coerced to to's value type?
 // This might inject a 'cast' node in front of the 'from' node with non-matching numbers
-int typeCoerces(AstNode *to, AstNode **from) {
-	AstNode *fromtype = *from;
+int typeCoerces(INode *to, INode **from) {
+	INode *fromtype = *from;
 
 	// Convert nodes to their value types
 	getVtype(to);
@@ -130,14 +130,14 @@ int typeCoerces(AstNode *to, AstNode **from) {
 	// Coercing an 'if' requires we do so on all its paths
 	if ((*from)->asttype == IfNode) {
 		int16_t cnt;
-		AstNode **nodesp;
+		INode **nodesp;
 		IfAstNode *ifnode = (IfAstNode*)*from;
 		ifnode->vtype = to;
 		if (nodesGet(ifnode->condblk, ifnode->condblk->used - 2) != voidType)
-			errorMsgNode((AstNode*)ifnode, ErrorNoElse, "Missing else branch which needs to provide a value");
+			errorMsgNode((INode*)ifnode, ErrorNoElse, "Missing else branch which needs to provide a value");
 		for (nodesFor(ifnode->condblk, cnt, nodesp)) {
 			cnt--; nodesp++;
-			AstNode **lastnode = &nodesLast(((BlockAstNode*)*nodesp)->stmts);
+			INode **lastnode = &nodesLast(((BlockAstNode*)*nodesp)->stmts);
 			if (!typeCoerces(to, lastnode)) {
 				errorMsgNode(*lastnode, ErrorInvType, "expression type does not match expected type");
 			}
@@ -154,7 +154,7 @@ int typeCoerces(AstNode *to, AstNode **from) {
 
 	// Add coercion operation. When both are numbers - cast between them
 	if (isNbr(to)) {
-		*from = (AstNode*) newCastAstNode(*from, to);
+		*from = (INode*) newCastAstNode(*from, to);
 		return 1;
 	}
 
@@ -162,7 +162,7 @@ int typeCoerces(AstNode *to, AstNode **from) {
 }
 
 // Return a CopyTrait indicating how to handle when a value is assigned to a variable or passed to a function.
-int typeCopyTrait(AstNode *typenode) {
+int typeCopyTrait(INode *typenode) {
     getVtype(typenode);
 
     // For an aggregate type, existence of a destructor or a non-CopyBitwise property is infectious
@@ -171,7 +171,7 @@ int typeCopyTrait(AstNode *typenode) {
         int copytrait = CopyBitwise;
         MethNodes *nodes = &((MethodTypeAstNode *)typenode)->methprops;
         uint32_t cnt;
-        AstNode **nodesp;
+        INode **nodesp;
         for (methnodesFor(nodes, cnt, nodesp)) {
             if (((*nodesp)->asttype == VarDclTag && CopyBitwise != typeCopyTrait(*nodesp))
                 /* || *nodesp points to a destructor */)
@@ -194,7 +194,7 @@ int typeCopyTrait(AstNode *typenode) {
 
 // Ensure implicit copies (e.g., assignment, function arguments) are done safely
 // using a move or the copy method as needed.
-void typeHandleCopy(AstNode **nodep) {
+void typeHandleCopy(INode **nodep) {
     int copytrait = typeCopyTrait(*nodep);
     if (copytrait != CopyBitwise)
         errorMsgNode(*nodep, WarnCopy, "No current support for move. Be sure this is safe!");
@@ -203,7 +203,7 @@ void typeHandleCopy(AstNode **nodep) {
 }
 
 // Add type mangle info to buffer
-char *typeMangle(char *bufp, AstNode *vtype) {
+char *typeMangle(char *bufp, INode *vtype) {
 	switch (vtype->asttype) {
 	case TypeNameUseTag:
 	{
@@ -215,7 +215,7 @@ char *typeMangle(char *bufp, AstNode *vtype) {
 		PtrAstNode *pvtype = (PtrAstNode *)vtype;
 		*bufp++ = '&';
 		if (pvtype->perm != constPerm) {
-			bufp = typeMangle(bufp, (AstNode*)pvtype->perm);
+			bufp = typeMangle(bufp, (INode*)pvtype->perm);
 			*bufp++ = ' ';
 		}
 		bufp = typeMangle(bufp, pvtype->pvtype);
@@ -230,12 +230,12 @@ char *typeMangle(char *bufp, AstNode *vtype) {
 // Create a new Void type node
 VoidTypeAstNode *newVoidNode() {
 	VoidTypeAstNode *voidnode;
-	newAstNode(voidnode, VoidTypeAstNode, VoidType);
+	newNode(voidnode, VoidTypeAstNode, VoidType);
 	return voidnode;
 }
 
 // Serialize the void type node
 void voidPrint(VoidTypeAstNode *voidnode) {
-	astFprint("void");
+	inodeFprint("void");
 }
 

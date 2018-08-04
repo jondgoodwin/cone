@@ -16,17 +16,17 @@ enum AssignType {
 // Assignment node
 typedef struct AssignAstNode {
 	TypedAstHdr;
-	AstNode *lval;
-	AstNode *rval;
+	INode *lval;
+	INode *rval;
 	int16_t assignType;
 } AssignAstNode;
 
 typedef struct AddrAstNode {
 	TypedAstHdr;
-	AstNode *exp;
+	INode *exp;
 } AddrAstNode;
 
-AssignAstNode *newAssignAstNode(int16_t assigntype, AstNode *lval, AstNode *rval);
+AssignAstNode *newAssignAstNode(int16_t assigntype, INode *lval, INode *rval);
 void assignPrint(AssignAstNode *node);
 void assignPass(PassState *pstate, AssignAstNode *node);
 

@@ -75,7 +75,7 @@ void errorOutCode(char *tokp, uint32_t linenbr, char *linep, char *url, int code
 }
 
 // Send an error message to stderr
-void errorMsgNode(AstNode *node, int code, const char *msg, ...) {
+void errorMsgNode(INode *node, int code, const char *msg, ...) {
 	va_list argptr;
 	va_start(argptr, msg);
 	errorOutCode(node->srcp, node->linenbr, node->linep, node->lexer->url, code, msg, argptr);

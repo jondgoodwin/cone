@@ -27,25 +27,25 @@ enum ParseFlags {
 // parser.c
 ModuleAstNode *parsePgm();
 ModuleAstNode *parseModuleBlk(ParseState *parse, ModuleAstNode *mod);
-AstNode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags);
+INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags);
 void parseSemi();
 void parseRCurly();
 void parseLCurly();
 void parseRParen();
 
 // parseflow.c
-AstNode *parseIf(ParseState *parse);
-AstNode *parseBlock(ParseState *parse);
+INode *parseIf(ParseState *parse);
+INode *parseBlock(ParseState *parse);
 
 // parseexpr.c
-AstNode *parseExpr(ParseState *parse);
+INode *parseExpr(ParseState *parse);
 
 // parsetype.c
 PermAstNode *parsePerm(PermAstNode *defperm);
 void parseAllocPerm(PtrAstNode *refnode);
 VarDclAstNode *parseVarDcl(ParseState *parse, PermAstNode *defperm, uint16_t flags);
-AstNode *parseFnSig(ParseState *parse);
-AstNode *parseStruct(ParseState *parse);
-AstNode *parseVtype(ParseState *parse);
+INode *parseFnSig(ParseState *parse);
+INode *parseStruct(ParseState *parse);
+INode *parseVtype(ParseState *parse);
 
 #endif

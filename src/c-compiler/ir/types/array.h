@@ -12,7 +12,7 @@
 typedef struct ArrayAstNode {
 	MethodTypeAstHdr;
 	uint32_t size;
-	AstNode *elemtype;
+	INode *elemtype;
 } ArrayAstNode;
 
 ArrayAstNode *newArrayNode();

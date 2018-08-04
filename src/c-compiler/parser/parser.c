@@ -68,7 +68,7 @@ void parseRParen() {
 }
 
 // Parse a function block
-AstNode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags) {
+INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags) {
 	FnDclAstNode *fnnode;
 
 	fnnode = newFnDclNode(NULL, nodeflags, NULL, NULL);
@@ -106,7 +106,7 @@ AstNode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags) {
 		parseSemi();
 	}
 
-	return (AstNode*) fnnode;
+	return (INode*) fnnode;
 }
 
 // Parse source filename/path as identifier or string literal
@@ -147,8 +147,8 @@ void parseInclude(ParseState *parse) {
 
 // Parse function or variable, as it may be preceded by a qualifier
 // Return NULL if not either
-AstNode *parseFnOrVar(ParseState *parse) {
-	AstNode *node;
+INode *parseFnOrVar(ParseState *parse) {
+	INode *node;
 	uint16_t flags = 0;
 
 	// extern keyword
@@ -163,7 +163,7 @@ AstNode *parseFnOrVar(ParseState *parse) {
 
 	// A global variable declaration, if it begins with a permission
 	else if lexIsToken(PermToken) {
-		node = (AstNode*)parseVarDcl(parse, immPerm, (flags&FlagExtern) ? ParseMaySig : ParseMayImpl);
+		node = (INode*)parseVarDcl(parse, immPerm, (flags&FlagExtern) ? ParseMaySig : ParseMayImpl);
 		parseSemi();
 	}
 	else
@@ -178,7 +178,7 @@ ModuleAstNode *parseModule(ParseState *parse);
 // Parse a global area statement (within a module)
 // modAddNode adds node to module, as needed, including error message for dupes
 void parseGlobalStmts(ParseState *parse, ModuleAstNode *mod) {
-    AstNode *node;
+    INode *node;
 
 	// Create and populate a Module node for the program
 	while (!lexIsToken(EofToken) && !lexIsToken(RCurlyToken)) {
@@ -189,7 +189,7 @@ void parseGlobalStmts(ParseState *parse, ModuleAstNode *mod) {
 			break;
 
 		case ModToken:
-            modAddNode(mod, (AstNode*)parseModule(parse));
+            modAddNode(mod, (INode*)parseModule(parse));
 			break;
 
 		// 'struct'-style type definition

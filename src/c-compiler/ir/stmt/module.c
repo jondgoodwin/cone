@@ -17,7 +17,7 @@
 // Create a new Module node
 ModuleAstNode *newModuleNode() {
 	ModuleAstNode *mod;
-	newAstNode(mod, ModuleAstNode, ModuleNode);
+	newNode(mod, ModuleAstNode, ModuleNode);
 	mod->namesym = NULL;
 	mod->owner = NULL;
 	mod->nodes = newNodes(64);
@@ -31,7 +31,7 @@ ModuleAstNode *newModuleNode() {
 // - We hook all names in global name table at parse time to check for name dupes and
 //     because permissions and allocators do not support forward references
 // - We remember all public names for later resolution of qualified names
-void modAddNode(ModuleAstNode *mod, AstNode *node) {
+void modAddNode(ModuleAstNode *mod, INode *node) {
 
     // Add to regular ordered node list
     nodesAdd(&mod->nodes, node);
@@ -49,28 +49,28 @@ void modAddNode(ModuleAstNode *mod, AstNode *node) {
                 namespaceSet(&mod->namednodes, name, nnode);
         }
         else {
-            errorMsgNode((AstNode *)node, ErrorDupName, "Global name is already defined. Duplicates not allowed.");
-            errorMsgNode((AstNode*)name->node, ErrorDupName, "This is the conflicting definition for that name.");
+            errorMsgNode((INode *)node, ErrorDupName, "Global name is already defined. Duplicates not allowed.");
+            errorMsgNode((INode*)name->node, ErrorDupName, "This is the conflicting definition for that name.");
         }
     }
 }
 
 // Serialize the AST for a module
 void modPrint(ModuleAstNode *mod) {
-	AstNode **nodesp;
+	INode **nodesp;
 	uint32_t cnt;
 
 	if (mod->namesym)
-		astFprint("module %s\n", &mod->namesym->namestr);
+		inodeFprint("module %s\n", &mod->namesym->namestr);
 	else
-		astFprint("AST for program %s\n", mod->lexer->url);
-	astPrintIncr();
+		inodeFprint("AST for program %s\n", mod->lexer->url);
+	inodePrintIncr();
 	for (nodesFor(mod->nodes, cnt, nodesp)) {
-		astPrintIndent();
-		astPrintNode(*nodesp);
-		astPrintNL();
+		inodePrintIndent();
+		inodePrintNode(*nodesp);
+		inodePrintNL();
 	}
-	astPrintDecr();
+	inodePrintDecr();
 }
 
 // Unhook old module's names, hook new module's names
@@ -79,7 +79,7 @@ void modHook(ModuleAstNode *oldmod, ModuleAstNode *newmod) {
     if (oldmod)
         nametblHookPop();
     if (newmod) {
-        AstNode **nodesp;
+        INode **nodesp;
         uint32_t cnt;
         nametblHookPush();
         for (nodesFor(newmod->nodes, cnt, nodesp)) {
@@ -93,7 +93,7 @@ void modHook(ModuleAstNode *oldmod, ModuleAstNode *newmod) {
 void modPass(PassState *pstate, ModuleAstNode *mod) {
 	ModuleAstNode *svmod = pstate->mod;
 	pstate->mod = mod;
-	AstNode **nodesp;
+	INode **nodesp;
 	uint32_t cnt;
 
 	// Switch name table over to new mod for name resolution
@@ -106,13 +106,13 @@ void modPass(PassState *pstate, ModuleAstNode *mod) {
         case VarDclTag:
         {
             VarDclAstNode * varnode = (VarDclAstNode*)*nodesp;
-            nodeWalk(pstate, (AstNode**)&varnode->perm);
-            nodeWalk(pstate, &varnode->vtype);
+            inodeWalk(pstate, (INode**)&varnode->perm);
+            inodeWalk(pstate, &varnode->vtype);
         }
         case FnDclTag:
         {
             FnDclAstNode * varnode = (FnDclAstNode*)*nodesp;
-            nodeWalk(pstate, &varnode->vtype);
+            inodeWalk(pstate, &varnode->vtype);
         }
         }
 	}
@@ -120,7 +120,7 @@ void modPass(PassState *pstate, ModuleAstNode *mod) {
 	// Now we can process the full node info
 	if (errors == 0) {
 		for (nodesFor(mod->nodes, cnt, nodesp)) {
-			nodeWalk(pstate, nodesp);
+			inodeWalk(pstate, nodesp);
 		}
 	}
 

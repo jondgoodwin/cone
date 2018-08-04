@@ -26,15 +26,15 @@ typedef struct SLitAstNode {
 	char *strlit;
 } SLitAstNode;
 
-ULitAstNode *newULitNode(uint64_t nbr, AstNode *type);
+ULitAstNode *newULitNode(uint64_t nbr, INode *type);
 void ulitPrint(ULitAstNode *node);
 
-FLitAstNode *newFLitNode(double nbr, AstNode *type);
+FLitAstNode *newFLitNode(double nbr, INode *type);
 void flitPrint(FLitAstNode *node);
 
-SLitAstNode *newSLitNode(char *str, AstNode *type);
+SLitAstNode *newSLitNode(char *str, INode *type);
 void slitPrint(SLitAstNode *node);
 
-int litIsLiteral(AstNode* node);
+int litIsLiteral(INode* node);
 
 #endif

@@ -18,22 +18,22 @@
 void methnodesInit(MethNodes *mnodes, uint32_t size) {
     mnodes->avail = size;
     mnodes->used = 0;
-    mnodes->nodes = (AstNode **)memAllocBlk(size * sizeof(AstNode **));
+    mnodes->nodes = (INode **)memAllocBlk(size * sizeof(INode **));
 }
 
 // Double size, if full
 void methnodesGrow(MethNodes *mnodes) {
-    AstNode **oldnodes;
+    INode **oldnodes;
     oldnodes = mnodes->nodes;
     mnodes->avail <<= 1;
-    mnodes->nodes = (AstNode **)memAllocBlk(mnodes->avail * sizeof(AstNode **));
-    memcpy(mnodes->nodes, oldnodes, mnodes->used * sizeof(AstNode **));
+    mnodes->nodes = (INode **)memAllocBlk(mnodes->avail * sizeof(INode **));
+    memcpy(mnodes->nodes, oldnodes, mnodes->used * sizeof(INode **));
 }
 
 // Find the desired named node.
 // Return the node, if found or NULL if not found
 NamedAstNode *methnodesFind(MethNodes *mnodes, Name *name) {
-	AstNode **nodesp;
+	INode **nodesp;
 	uint32_t cnt;
 	for (methnodesFor(mnodes, cnt, nodesp)) {
 		if (isNamedNode(*nodesp)) {
@@ -44,8 +44,8 @@ NamedAstNode *methnodesFind(MethNodes *mnodes, Name *name) {
 	return NULL;
 }
 
-// Add an AstNode to the end of a MethNodes, growing it if full (changing its memory location)
-void methnodesAdd(MethNodes *mnodes, AstNode *node) {
+// Add an INode to the end of a MethNodes, growing it if full (changing its memory location)
+void methnodesAdd(MethNodes *mnodes, INode *node) {
     if (mnodes->used >= mnodes->avail)
         methnodesGrow(mnodes);
     mnodes->nodes[mnodes->used++] = node;
@@ -57,7 +57,7 @@ void methnodesAddFn(MethNodes *mnodes, FnDclAstNode *fnnode) {
     FnDclAstNode *lastmeth = (FnDclAstNode *)methnodesFind(mnodes, fnnode->namesym);
     if (lastmeth && (lastmeth->asttype != FnDclTag
         || !(lastmeth->flags & FlagMethProp) || !(fnnode->flags & FlagMethProp))) {
-        errorMsgNode((AstNode*)fnnode, ErrorDupName, "Duplicate name %s: Only methods can be overloaded.", &fnnode->namesym->namestr);
+        errorMsgNode((INode*)fnnode, ErrorDupName, "Duplicate name %s: Only methods can be overloaded.", &fnnode->namesym->namestr);
         return;
     }
     if (lastmeth) {
@@ -65,17 +65,17 @@ void methnodesAddFn(MethNodes *mnodes, FnDclAstNode *fnnode) {
             lastmeth = lastmeth->nextnode;
         lastmeth->nextnode = fnnode;
     }
-    methnodesAdd(mnodes, (AstNode*)fnnode);
+    methnodesAdd(mnodes, (INode*)fnnode);
 }
 
 // Add a property
 void methnodesAddProp(MethNodes *mnodes,  VarDclAstNode *varnode) {
     FnDclAstNode *lastmeth = (FnDclAstNode *)methnodesFind(mnodes, varnode->namesym);
     if (lastmeth && (lastmeth->asttype != VarDclTag)) {
-        errorMsgNode((AstNode*)varnode, ErrorDupName, "Duplicate name %s: Only methods can be overloaded.", &varnode->namesym->namestr);
+        errorMsgNode((INode*)varnode, ErrorDupName, "Duplicate name %s: Only methods can be overloaded.", &varnode->namesym->namestr);
         return;
     }
-    methnodesAdd(mnodes, (AstNode*)varnode);
+    methnodesAdd(mnodes, (INode*)varnode);
 }
 
 // Find method that best fits the passed arguments

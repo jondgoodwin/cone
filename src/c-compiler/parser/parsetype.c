@@ -33,7 +33,7 @@ PermAstNode *parsePerm(PermAstNode *defperm) {
 void parseAllocPerm(PtrAstNode *refnode) {
 	if (lexIsToken(IdentToken)
 		&& lex->val.ident->node && lex->val.ident->node->asttype == AllocType) {
-		refnode->alloc = (AstNode*)lex->val.ident->node;
+		refnode->alloc = (INode*)lex->val.ident->node;
 		lexNextToken();
 		refnode->perm = parsePerm(uniPerm);
 	}
@@ -47,9 +47,9 @@ void parseAllocPerm(PtrAstNode *refnode) {
 VarDclAstNode *parseVarDcl(ParseState *parse, PermAstNode *defperm, uint16_t flags) {
 	VarDclAstNode *varnode;
 	Name *namesym = NULL;
-	AstNode *vtype;
+	INode *vtype;
 	PermAstNode *perm;
-	AstNode *val;
+	INode *val;
 
 	// Grab the permission type
 	perm = parsePerm(defperm);
@@ -87,7 +87,7 @@ VarDclAstNode *parseVarDcl(ParseState *parse, PermAstNode *defperm, uint16_t fla
 }
 
 // Parse a pointer type
-AstNode *parsePtrType(ParseState *parse) {
+INode *parsePtrType(ParseState *parse) {
 	PtrAstNode *ptype = newPtrTypeNode();
 	if (lexIsToken(StarToken))
 		ptype->asttype = PtrType;
@@ -115,11 +115,11 @@ AstNode *parsePtrType(ParseState *parse) {
 		ptype->pvtype = voidType;
 	}
 
-	return (AstNode *)ptype;
+	return (INode *)ptype;
 }
 
 // Parse a struct
-AstNode *parseStruct(ParseState *parse) {
+INode *parseStruct(ParseState *parse) {
 	NamedAstNode *svowner = parse->owner;
 	StructAstNode *strnode;
 	int16_t propertynbr = 0;
@@ -169,19 +169,19 @@ AstNode *parseStruct(ParseState *parse) {
 		errorMsgLex(ErrorNoLCurly, "Expected left curly bracket enclosing properties or methods");
 
 	parse->owner = svowner;
-	return (AstNode*)strnode;
+	return (INode*)strnode;
 }
 
 void parseInjectSelf(FnSigAstNode *fnsig, Name *typename) {
 	NameUseAstNode *selftype = newNameUseNode(typename);
-	VarDclAstNode *selfparm = newVarDclNode(nametblFind("self", 4), VarDclTag, (AstNode*)selftype, constPerm, NULL);
+	VarDclAstNode *selfparm = newVarDclNode(nametblFind("self", 4), VarDclTag, (INode*)selftype, constPerm, NULL);
 	selfparm->scope = 1;
 	selfparm->index = 0;
-	nodesAdd(&fnsig->parms, (AstNode*)selfparm);
+	nodesAdd(&fnsig->parms, (INode*)selfparm);
 }
 
 // Parse a function's type signature
-AstNode *parseFnSig(ParseState *parse) {
+INode *parseFnSig(ParseState *parse) {
 	FnSigAstNode *fnsig;
 	int16_t parmnbr = 0;
 	uint16_t parseflags = ParseMaySig | ParseMayImpl;
@@ -206,12 +206,12 @@ AstNode *parseFnSig(ParseState *parse) {
 				}
 				// Infer value type of a parameter (or its reference) if unspecified
 				if (parm->vtype == voidType) {
-					parm->vtype = (AstNode*)newNameUseNode(parse->owner->namesym);
+					parm->vtype = (INode*)newNameUseNode(parse->owner->namesym);
 				}
 				else if (parm->vtype->asttype == RefType) {
 					PtrAstNode *refnode = (PtrAstNode *)parm->vtype;
 					if (refnode->pvtype == voidType) {
-						refnode->pvtype = (AstNode*)newNameUseNode(parse->owner->namesym);
+						refnode->pvtype = (INode*)newNameUseNode(parse->owner->namesym);
 					}
 				}
 			}
@@ -220,7 +220,7 @@ AstNode *parseFnSig(ParseState *parse) {
 			parm->index = parmnbr++;
 			if (parm->value)
 				parseflags = ParseMayImpl; // force remaining parms to specify default
-			nodesAdd(&fnsig->parms, (AstNode*)parm);
+			nodesAdd(&fnsig->parms, (INode*)parm);
 			if (!lexIsToken(CommaToken))
 				break;
 			lexNextToken();
@@ -235,11 +235,11 @@ AstNode *parseFnSig(ParseState *parse) {
 		fnsig->rettype = voidType;
 	}
 
-	return (AstNode*)fnsig;
+	return (INode*)fnsig;
 }
 
 // Parse an array type
-AstNode *parseArrayType(ParseState *parse) {
+INode *parseArrayType(ParseState *parse) {
 	ArrayAstNode *atype = newArrayNode();
 	lexNextToken();
 
@@ -251,19 +251,19 @@ AstNode *parseArrayType(ParseState *parse) {
 		atype->elemtype = voidType;
 	}
 
-	return (AstNode *)atype;
+	return (INode *)atype;
 }
 
 // Parse a value type signature. Return NULL if none found.
-AstNode* parseVtype(ParseState *parse) {
-	AstNode *vtype;
+INode* parseVtype(ParseState *parse) {
+	INode *vtype;
 	switch (lex->toktype) {
 	case AmperToken: case StarToken:
 		return parsePtrType(parse);
 	case LBracketToken:
 		return parseArrayType(parse);
 	case IdentToken:
-		vtype = (AstNode*)newNameUseNode(lex->val.ident);
+		vtype = (INode*)newNameUseNode(lex->val.ident);
 		lexNextToken();
 		return vtype;
 	default:

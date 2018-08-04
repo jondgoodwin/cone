@@ -14,9 +14,9 @@
 #include <assert.h>
 
 // Create a new assignment node
-AssignAstNode *newAssignAstNode(int16_t assigntype, AstNode *lval, AstNode *rval) {
+AssignAstNode *newAssignAstNode(int16_t assigntype, INode *lval, INode *rval) {
 	AssignAstNode *node;
-	newAstNode(node, AssignAstNode, AssignNode);
+	newNode(node, AssignAstNode, AssignNode);
 	node->assignType = assigntype;
 	node->lval = lval;
 	node->rval = rval;
@@ -25,15 +25,15 @@ AssignAstNode *newAssignAstNode(int16_t assigntype, AstNode *lval, AstNode *rval
 
 // Serialize assignment node
 void assignPrint(AssignAstNode *node) {
-	astFprint("(=, ");
-	astPrintNode(node->lval);
-	astFprint(", ");
-	astPrintNode(node->rval);
-	astFprint(")");
+	inodeFprint("(=, ");
+	inodePrintNode(node->lval);
+	inodeFprint(", ");
+	inodePrintNode(node->rval);
+	inodeFprint(")");
 }
 
 // expression is valid lval expression
-int isLval(AstNode *node) {
+int isLval(INode *node) {
 	switch (node->asttype) {
 	case VarNameUseTag:
 	case DerefNode:
@@ -48,8 +48,8 @@ int isLval(AstNode *node) {
 
 // Analyze assignment node
 void assignPass(PassState *pstate, AssignAstNode *node) {
-	nodeWalk(pstate, &node->lval);
-	nodeWalk(pstate, &node->rval);
+	inodeWalk(pstate, &node->lval);
+	inodeWalk(pstate, &node->rval);
 
 	switch (pstate->pass) {
 	case TypeCheck:
@@ -68,37 +68,37 @@ void assignPass(PassState *pstate, AssignAstNode *node) {
 // Create a new addr node
 AddrAstNode *newAddrAstNode() {
 	AddrAstNode *node;
-	newAstNode(node, AddrAstNode, AddrNode);
+	newNode(node, AddrAstNode, AddrNode);
 	return node;
 }
 
 // Serialize addr
 void addrPrint(AddrAstNode *node) {
-	astFprint("&(");
-	astPrintNode(node->vtype);
-	astFprint("->");
-	astPrintNode(node->exp);
-	astFprint(")");
+	inodeFprint("&(");
+	inodePrintNode(node->vtype);
+	inodeFprint("->");
+	inodePrintNode(node->exp);
+	inodeFprint(")");
 }
 
 // Type check borrowed reference creator
 void addrTypeCheckBorrow(AddrAstNode *node, PtrAstNode *ptype) {
-	AstNode *exp = node->exp;
+	INode *exp = node->exp;
 	if (exp->asttype != VarNameUseTag
         || (((NameUseAstNode*)exp)->dclnode->asttype != VarDclTag
             && ((NameUseAstNode*)exp)->dclnode->asttype != FnDclTag)) {
-		errorMsgNode((AstNode*)node, ErrorNotLval, "May only borrow from lvals (e.g., variable)");
+		errorMsgNode((INode*)node, ErrorNotLval, "May only borrow from lvals (e.g., variable)");
 		return;
 	}
     NamedAstNode *dclnode = ((NameUseAstNode*)exp)->dclnode;
     PermAstNode *perm = (dclnode->asttype == VarDclTag) ? ((VarDclAstNode*)dclnode)->perm : immPerm;
 	if (!permMatches(ptype->perm, perm))
-		errorMsgNode((AstNode *)node, ErrorBadPerm, "Borrowed reference cannot obtain this permission");
+		errorMsgNode((INode *)node, ErrorBadPerm, "Borrowed reference cannot obtain this permission");
 }
 
 // Analyze addr node
 void addrPass(PassState *pstate, AddrAstNode *node) {
-	nodeWalk(pstate, &node->exp);
+	inodeWalk(pstate, &node->exp);
 	if (pstate->pass == TypeCheck) {
 		if (!isValueNode(node->exp)) {
 			errorMsgNode(node->exp, ErrorBadTerm, "Needs to be an expression");

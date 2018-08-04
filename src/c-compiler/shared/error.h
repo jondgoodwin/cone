@@ -8,7 +8,7 @@
 #ifndef error_h
 #define error_h
 
-typedef struct AstNode AstNode;	// ../ast/ast.h
+typedef struct INode INode;	// ../ast/ast.h
 
 // Exit error codes
 enum ErrorCode {
@@ -78,7 +78,7 @@ int errors;
 
 // Send an error message to stderr
 void errorExit(int exitcode, const char *msg, ...);
-void errorMsgNode(AstNode *node, int code, const char *msg, ...);
+void errorMsgNode(INode *node, int code, const char *msg, ...);
 void errorMsgLex(int code, const char *msg, ...);
 void errorMsg(int code, const char *msg, ...);
 void errorSummary();

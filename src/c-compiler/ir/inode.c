@@ -15,13 +15,13 @@
 #include <stdarg.h>
 #include <assert.h>
 
-// State for astPrint
+// State for inodePrint
 FILE *astfile;
 int astIndent=0;
 int astisNL = 1;
 
 // Output a string to astfile
-void astFprint(char *str, ...) {
+void inodeFprint(char *str, ...) {
 	va_list argptr;
 	va_start(argptr, str);
 	vfprintf(astfile, str, argptr);
@@ -30,14 +30,14 @@ void astFprint(char *str, ...) {
 }
 
 // Print new line character
-void astPrintNL() {
+void inodePrintNL() {
 	if (!astisNL)
 		fputc('\n', astfile);
 	astisNL = 1;
 }
 
 // Output a line's beginning indentation
-void astPrintIndent() {
+void inodePrintIndent() {
 	int cnt;
 	for (cnt = 0; cnt<astIndent; cnt++)
 		fprintf(astfile, (cnt & 3) == 0 ? "| " : "  ");
@@ -45,17 +45,17 @@ void astPrintIndent() {
 }
 
 // Increment indentation
-void astPrintIncr() {
+void inodePrintIncr() {
 	astIndent++;
 }
 
 // Decrement indentation
-void astPrintDecr() {
+void inodePrintDecr() {
 	astIndent--;
 }
 
 // Serialize a specific AST node
-void astPrintNode(AstNode *node) {
+void inodePrintNode(INode *node) {
 	switch (node->asttype) {
 	case ModuleNode:
 		modPrint((ModuleAstNode *)node); break;
@@ -75,9 +75,9 @@ void astPrintNode(AstNode *node) {
 	case WhileNode:
 		whilePrint((WhileAstNode *)node); break;
 	case BreakNode:
-		astFprint("break"); break;
+		inodeFprint("break"); break;
 	case ContinueNode:
-		astFprint("continue"); break;
+		inodeFprint("continue"); break;
 	case ReturnNode:
 		returnPrint((ReturnAstNode *)node); break;
 	case AssignNode:
@@ -116,21 +116,21 @@ void astPrintNode(AstNode *node) {
 	case VoidType:
 		voidPrint((VoidTypeAstNode *)node); break;
 	default:
-		astFprint("**** UNKNOWN NODE ****");
+		inodeFprint("**** UNKNOWN NODE ****");
 	}
 }
 
 // Serialize the program's AST to dir+srcfn
-void astPrint(char *dir, char *srcfn, AstNode *pgmast) {
+void inodePrint(char *dir, char *srcfn, INode *pgmast) {
 	astfile = fopen(fileMakePath(dir, pgmast->lexer->fname, "ast"), "wb");
-	astPrintNode(pgmast);
+	inodePrintNode(pgmast);
 	fclose(astfile);
 }
 
 // Dispatch a node walk for the current semantic analysis pass
 // - pstate is helpful state info for node traversal
 // - node is a pointer to pointer so that a node can be replaced
-void nodeWalk(PassState *pstate, AstNode **node) {
+void inodeWalk(PassState *pstate, INode **node) {
 	switch ((*node)->asttype) {
 	case ModuleNode:
 		modPass(pstate, (ModuleAstNode*)*node); break;
@@ -190,25 +190,4 @@ void nodeWalk(PassState *pstate, AstNode **node) {
 	default:
 		assert(0 && "**** ERROR **** Attempting to check an unknown node");
 	}
-}
-
-// Run all semantic analysis passes against the AST/IR (after parse and before gen)
-void irSemanticPasses(ModuleAstNode **mod) {
-	PassState pstate;
-	pstate.mod = *mod;
-	pstate.fnsig = NULL;
-	pstate.scope = 0;
-	pstate.flags = 0;
-
-	// Resolve all name uses to their appropriate declaration
-    // Note: Some nodes may be replaced (e.g., 'a' to 'self.a')
-	pstate.pass = NameResolution;
-	nodeWalk(&pstate, (AstNode**) mod);
-	if (errors)
-		return;
-
-	// Apply syntactic sugar, and perform type inference/check
-    // Note: Some nodes may be lowered, injected or replaced
-	pstate.pass = TypeCheck;
-	nodeWalk(&pstate, (AstNode**) mod);
 }

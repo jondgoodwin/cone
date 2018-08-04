@@ -62,7 +62,7 @@ void genlFn(GenState *gen, FnDclAstNode *fnnode) {
 
 	// Generate LLVMValueRef's for all parameters, so we can use them as local vars in code
 	uint32_t cnt;
-	AstNode **nodesp;
+	INode **nodesp;
 	for (nodesFor(fnsig->parms, cnt, nodesp))
 		genlParmVar(gen, (VarDclAstNode*)*nodesp);
 
@@ -103,7 +103,7 @@ char *genlGlobalName(NamedAstNode *name) {
 		FnSigAstNode *fnsig = (FnSigAstNode *)name->vtype;
 		char *bufp = workbuf + strlen(workbuf);
 		int16_t cnt;
-		AstNode **nodesp;
+		INode **nodesp;
 		for (nodesFor(fnsig->parms, cnt, nodesp)) {
 			*bufp++ = ':';
 			bufp = typeMangle(bufp, ((TypedAstNode *)*nodesp)->vtype);
@@ -130,12 +130,12 @@ void genlGloFnName(GenState *gen, FnDclAstNode *glofn) {
 // Generate module's nodes
 void genlModule(GenState *gen, ModuleAstNode *mod) {
 	uint32_t cnt;
-	AstNode **nodesp;
+	INode **nodesp;
 
 	// First generate the global variable LLVMValueRef for every global variable
 	// This way forward references to global variables will work correctly
 	for (nodesFor(mod->nodes, cnt, nodesp)) {
-		AstNode *nodep = *nodesp;
+		INode *nodep = *nodesp;
         if (nodep->asttype == VarDclTag)
             genlGloVarName(gen, (VarDclAstNode *)nodep);
         else if (nodep->asttype == FnDclTag)
@@ -144,7 +144,7 @@ void genlModule(GenState *gen, ModuleAstNode *mod) {
 
 	// Generate the function's block or the variable's initialization value
 	for (nodesFor(mod->nodes, cnt, nodesp)) {
-		AstNode *nodep = *nodesp;
+		INode *nodep = *nodesp;
 		switch (nodep->asttype) {
         case VarDclTag:
             if (((VarDclAstNode*)nodep)->value) {

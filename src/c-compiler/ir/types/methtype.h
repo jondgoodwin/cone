@@ -16,7 +16,7 @@ typedef struct VarDclAstNode VarDclAstNode;
 typedef struct MethNodes {
 	uint32_t used;
 	uint32_t avail;
-    AstNode **nodes;
+    INode **nodes;
 } MethNodes;
 
 // Named type that supports methods (and properties)
@@ -34,12 +34,12 @@ typedef struct MethodTypeAstNode {
 
 // Helper Functions
 void methnodesInit(MethNodes *mnodes, uint32_t size);
-void methnodesAdd(MethNodes *mnodes, AstNode *node);
+void methnodesAdd(MethNodes *mnodes, INode *node);
 void methnodesAddFn(MethNodes *mnodes, FnDclAstNode *fnnode);
 void methnodesAddProp(MethNodes *mnodes, VarDclAstNode *fnnode);
 NamedAstNode *methnodesFind(MethNodes *mnodes, Name *name);
 
-#define methnodesNodes(nodes) ((AstNode**)((nodes)+1))
+#define methnodesNodes(nodes) ((INode**)((nodes)+1))
 #define methnodesFor(mnodes, cnt, nodesp) nodesp = (mnodes)->nodes, cnt = (mnodes)->used; cnt; cnt--, nodesp++
 #define methnodesGet(mnodes, index) (mnodes)->nodes[index]
 #define methnodesLast(mnodes) methnodesGet(mnodes, mnodes->used-1)

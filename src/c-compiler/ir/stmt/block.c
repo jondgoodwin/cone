@@ -14,7 +14,7 @@
 // Create a new block node
 BlockAstNode *newBlockNode() {
 	BlockAstNode *blk;
-	newAstNode(blk, BlockAstNode, BlockNode);
+	newNode(blk, BlockAstNode, BlockNode);
 	blk->vtype = voidType;
 	blk->stmts = newNodes(8);
 	return blk;
@@ -22,17 +22,17 @@ BlockAstNode *newBlockNode() {
 
 // Serialize the AST for a block
 void blockPrint(BlockAstNode *blk) {
-	AstNode **nodesp;
+	INode **nodesp;
 	uint32_t cnt;
 
 	if (blk->stmts) {
-		astPrintIncr();
+		inodePrintIncr();
 		for (nodesFor(blk->stmts, cnt, nodesp)) {
-			astPrintIndent();
-			astPrintNode(*nodesp);
-			astPrintNL();
+			inodePrintIndent();
+			inodePrintNode(*nodesp);
+			inodePrintNL();
 		}
-		astPrintDecr();
+		inodePrintDecr();
 	}
 }
 
@@ -45,7 +45,7 @@ void blockResolvePass(PassState *pstate, BlockAstNode *blk) {
 
     nametblHookPush(); // Ensure block's local variable declarations are hooked
 
-    AstNode **nodesp;
+    INode **nodesp;
     uint32_t cnt;
     for (nodesFor(blk->stmts, cnt, nodesp)) {
         // Ensure 'return', 'break', 'continue' only appear as last statement in a block
@@ -59,7 +59,7 @@ void blockResolvePass(PassState *pstate, BlockAstNode *blk) {
                 errorMsgNode(*nodesp, ErrorRetNotLast, "continue may only appear as the last statement in a block"); break;
             }
         }
-        nodeWalk(pstate, nodesp);
+        inodeWalk(pstate, nodesp);
     }
 
     nametblHookPop();  // Unhook local variables from global name table
@@ -70,10 +70,10 @@ void blockResolvePass(PassState *pstate, BlockAstNode *blk) {
 // Mostly this is a pass-through to type-check the block's statements.
 // Note: When coerced by typeCoerces, vtype of the block will be specified
 void blockTypePass(PassState *pstate, BlockAstNode *blk) {
-    AstNode **nodesp;
+    INode **nodesp;
     uint32_t cnt;
     for (nodesFor(blk->stmts, cnt, nodesp)) {
-        nodeWalk(pstate, nodesp);
+        inodeWalk(pstate, nodesp);
     }
 }
 
@@ -90,7 +90,7 @@ void blockPass(PassState *pstate, BlockAstNode *blk) {
 // Create a new If node
 IfAstNode *newIfNode() {
 	IfAstNode *ifnode;
-	newAstNode(ifnode, IfAstNode, IfNode);
+	newNode(ifnode, IfAstNode, IfNode);
 	ifnode->condblk = newNodes(4);
 	ifnode->vtype = voidType;
 	return ifnode;
@@ -98,37 +98,37 @@ IfAstNode *newIfNode() {
 
 // Serialize the AST for an if statement
 void ifPrint(IfAstNode *ifnode) {
-	AstNode **nodesp;
+	INode **nodesp;
 	uint32_t cnt;
 	int firstflag = 1;
 
 	for (nodesFor(ifnode->condblk, cnt, nodesp)) {
 		if (firstflag) {
-			astFprint("if ");
+			inodeFprint("if ");
 			firstflag = 0;
-			astPrintNode(*nodesp);
+			inodePrintNode(*nodesp);
 		}
 		else {
-			astPrintIndent();
+			inodePrintIndent();
 			if (*nodesp == voidType)
-				astFprint("else");
+				inodeFprint("else");
 			else {
-				astFprint("elif ");
-				astPrintNode(*nodesp);
+				inodeFprint("elif ");
+				inodePrintNode(*nodesp);
 			}
 		}
-		astPrintNL();
-		astPrintNode(*(++nodesp));
+		inodePrintNL();
+		inodePrintNode(*(++nodesp));
 		cnt--;
 	}
 }
 
 // Recursively strip 'returns' out of all block-ends in 'if' (see returnPass)
 void ifRemoveReturns(IfAstNode *ifnode) {
-	AstNode **nodesp;
+	INode **nodesp;
 	int16_t cnt;
 	for (nodesFor(ifnode->condblk, cnt, nodesp)) {
-		AstNode **laststmt;
+		INode **laststmt;
 		cnt--; nodesp++;
 		laststmt = &nodesLast(((BlockAstNode*)*nodesp)->stmts);
 		if ((*laststmt)->asttype == ReturnNode)
@@ -140,17 +140,17 @@ void ifRemoveReturns(IfAstNode *ifnode) {
 
 // Check the if statement's AST
 void ifPass(PassState *pstate, IfAstNode *ifnode) {
-	AstNode **nodesp;
+	INode **nodesp;
 	uint32_t cnt;
 	for (nodesFor(ifnode->condblk, cnt, nodesp)) {
-		nodeWalk(pstate, nodesp);
+		inodeWalk(pstate, nodesp);
 
 		// Type check the 'if':
 		// - conditional must be a Bool
 		// - if's vtype is specified/checked only when coerced by typeCoerces
 		if (pstate->pass == TypeCheck) {
 			if ((cnt & 1)==0 && *nodesp)
-				typeCoerces((AstNode*)boolType, nodesp); // Conditional exp
+				typeCoerces((INode*)boolType, nodesp); // Conditional exp
 		}
 	}
 }
@@ -158,17 +158,17 @@ void ifPass(PassState *pstate, IfAstNode *ifnode) {
 // Create a new While node
 WhileAstNode *newWhileNode() {
 	WhileAstNode *node;
-	newAstNode(node, WhileAstNode, WhileNode);
+	newNode(node, WhileAstNode, WhileNode);
 	node->blk = NULL;
 	return node;
 }
 
 // Serialize the AST for an while block
 void whilePrint(WhileAstNode *node) {
-	astFprint("while ");
-	astPrintNode(node->condexp);
-	astPrintNL();
-	astPrintNode(node->blk);
+	inodeFprint("while ");
+	inodePrintNode(node->condexp);
+	inodePrintNL();
+	inodePrintNode(node->blk);
 }
 
 // Semantic pass on the while block
@@ -176,17 +176,17 @@ void whilePass(PassState *pstate, WhileAstNode *node) {
 	uint16_t svflags = pstate->flags;
 	pstate->flags |= PassWithinWhile;
 
-	nodeWalk(pstate, &node->condexp);
-	nodeWalk(pstate, &node->blk);
+	inodeWalk(pstate, &node->condexp);
+	inodeWalk(pstate, &node->blk);
 
 	if (pstate->pass == TypeCheck)
-		typeCoerces((AstNode*)boolType, &node->condexp);
+		typeCoerces((INode*)boolType, &node->condexp);
 
 	pstate->flags = svflags;
 }
 
 // Semantic pass on break or continue
-void breakPass(PassState *pstate, AstNode *node) {
+void breakPass(PassState *pstate, INode *node) {
 	if (pstate->pass==NameResolution && !(pstate->flags & PassWithinWhile))
 		errorMsgNode(node, ErrorNoWhile, "break/continue may only be used within a while/each block");
 }
@@ -194,14 +194,14 @@ void breakPass(PassState *pstate, AstNode *node) {
 // Create a new intrinsic node
 IntrinsicAstNode *newIntrinsicNode(int16_t intrinsic) {
 	IntrinsicAstNode *intrinsicNode;
-	newAstNode(intrinsicNode, IntrinsicAstNode, IntrinsicNode);
+	newNode(intrinsicNode, IntrinsicAstNode, IntrinsicNode);
 	intrinsicNode->intrinsicFn = intrinsic;
 	return intrinsicNode;
 }
 
 // Serialize the AST for an intrinsic
 void intrinsicPrint(IntrinsicAstNode *intrinsicNode) {
-	astFprint("intrinsic function");
+	inodeFprint("intrinsic function");
 }
 
 // Check the intrinsic node's AST
@@ -211,15 +211,15 @@ void intrinsicPass(PassState *pstate, IntrinsicAstNode *intrinsicNode) {
 // Create a new return statement node
 ReturnAstNode *newReturnNode() {
 	ReturnAstNode *node;
-	newAstNode(node, ReturnAstNode, ReturnNode);
+	newNode(node, ReturnAstNode, ReturnNode);
 	node->exp = voidType;
 	return node;
 }
 
 // Serialize the AST for a return statement
 void returnPrint(ReturnAstNode *node) {
-	astFprint("return ");
-	astPrintNode(node->exp);
+	inodeFprint("return ");
+	inodePrintNode(node->exp);
 }
 
 // Semantic analysis for return statements
@@ -232,13 +232,13 @@ void returnPass(PassState *pstate, ReturnAstNode *node) {
 		ifRemoveReturns((IfAstNode*)(node->exp));
 
 	// Process the return's expression
-	nodeWalk(pstate, &node->exp);
+	inodeWalk(pstate, &node->exp);
 
 	// Ensure the vtype of the expression can be coerced to the function's declared return type
 	if (pstate->pass == TypeCheck) {
 		if (!typeCoerces(pstate->fnsig->rettype, &node->exp)) {
 			errorMsgNode(node->exp, ErrorInvType, "Return expression type does not match return type on function");
-			errorMsgNode((AstNode*)pstate->fnsig->rettype, ErrorInvType, "This is the declared function's return type");
+			errorMsgNode((INode*)pstate->fnsig->rettype, ErrorInvType, "This is the declared function's return type");
 		}
 	}
 }

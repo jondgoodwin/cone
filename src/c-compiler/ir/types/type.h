@@ -34,19 +34,19 @@ enum CopyTrait {
 
 // Void type - e.g., for fn with no return value
 typedef struct VoidTypeAstNode {
-	BasicAstHdr;
+	INodeHdr;
 } VoidTypeAstNode;
 
-AstNode *typeGetVtype(AstNode *node);
-AstNode *typeGetDerefType(AstNode *node);
-int typeIsSame(AstNode *node1, AstNode *node2);
-int typeMatches(AstNode *totype, AstNode *fromtype);
-int typeCoerces(AstNode *to, AstNode **from);
-int typeCopyTrait(AstNode *typenode);
-void typeHandleCopy(AstNode **nodep);
+INode *typeGetVtype(INode *node);
+INode *typeGetDerefType(INode *node);
+int typeIsSame(INode *node1, INode *node2);
+int typeMatches(INode *totype, INode *fromtype);
+int typeCoerces(INode *to, INode **from);
+int typeCopyTrait(INode *typenode);
+void typeHandleCopy(INode **nodep);
 
 
-char *typeMangle(char *bufp, AstNode *vtype);
+char *typeMangle(char *bufp, INode *vtype);
 
 VoidTypeAstNode *newVoidNode();
 void voidPrint(VoidTypeAstNode *voidnode);

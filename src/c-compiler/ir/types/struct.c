@@ -13,7 +13,7 @@
 // Create a new struct type whose info will be filled in afterwards
 StructAstNode *newStructNode(Name *namesym) {
 	StructAstNode *snode;
-	newAstNode(snode, StructAstNode, StructType);
+	newNode(snode, StructAstNode, StructType);
     snode->vtype = NULL;
     snode->owner = NULL;
     snode->namesym = namesym;
@@ -25,20 +25,20 @@ StructAstNode *newStructNode(Name *namesym) {
 
 // Serialize a struct type
 void structPrint(StructAstNode *node) {
-	astFprint(node->asttype == StructType? "struct %s {}" : "alloc %s {}", &node->namesym->namestr);
+	inodeFprint(node->asttype == StructType? "struct %s {}" : "alloc %s {}", &node->namesym->namestr);
 }
 
 // Semantically analyze a struct type
 void structPass(PassState *pstate, StructAstNode *node) {
     nametblHookPush();
-    AstNode **nodesp;
+    INode **nodesp;
     uint32_t cnt;
     for (methnodesFor(&node->methprops, cnt, nodesp)) {
         if (isNamedNode(*nodesp))
             nametblHookNode((NamedAstNode*)*nodesp);
     }
     for (methnodesFor(&node->methprops, cnt, nodesp)) {
-        nodeWalk(pstate, (AstNode**)nodesp);
+        inodeWalk(pstate, (INode**)nodesp);
     }
     nametblHookPop();
 }

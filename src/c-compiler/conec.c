@@ -21,6 +21,27 @@
 
 clock_t startTime;
 
+// Run all semantic analysis passes against the AST/IR (after parse and before gen)
+void doAnalysis(ModuleAstNode **mod) {
+    PassState pstate;
+    pstate.mod = *mod;
+    pstate.fnsig = NULL;
+    pstate.scope = 0;
+    pstate.flags = 0;
+
+    // Resolve all name uses to their appropriate declaration
+    // Note: Some nodes may be replaced (e.g., 'a' to 'self.a')
+    pstate.pass = NameResolution;
+    inodeWalk(&pstate, (INode**)mod);
+    if (errors)
+        return;
+
+    // Apply syntactic sugar, and perform type inference/check
+    // Note: Some nodes may be lowered, injected or replaced
+    pstate.pass = TypeCheck;
+    inodeWalk(&pstate, (INode**)mod);
+}
+
 int main(int argc, char **argv) {
 	ConeOptions coneopt;
 	ModuleAstNode *modnode;
@@ -46,10 +67,10 @@ int main(int argc, char **argv) {
 	lexInjectFile(srcfn);
 	modnode = parsePgm();
 	if (errors == 0) {
-		irSemanticPasses(&modnode);
+		doAnalysis(&modnode);
 		if (errors == 0) {
 			if (coneopt.print_ast)
-				astPrint(coneopt.output, srcfn, (AstNode*)modnode);
+				inodePrint(coneopt.output, srcfn, (INode*)modnode);
 			genllvm(&coneopt, modnode);
 		}
 	}

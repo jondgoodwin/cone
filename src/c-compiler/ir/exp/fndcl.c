@@ -15,9 +15,9 @@
 #include <assert.h>
 
 // Create a new name declaraction node
-FnDclAstNode *newFnDclNode(Name *namesym, uint16_t flags, AstNode *type, AstNode *val) {
+FnDclAstNode *newFnDclNode(Name *namesym, uint16_t flags, INode *type, INode *val) {
 	FnDclAstNode *name;
-	newAstNode(name, FnDclAstNode, FnDclTag);
+	newNode(name, FnDclAstNode, FnDclTag);
     name->flags = flags;
 	name->vtype = type;
 	name->owner = NULL;
@@ -30,30 +30,30 @@ FnDclAstNode *newFnDclNode(Name *namesym, uint16_t flags, AstNode *type, AstNode
 
 // Serialize the AST for a variable/function
 void fnDclPrint(FnDclAstNode *name) {
-	astFprint("fn %s ", &name->namesym->namestr);
-	astPrintNode(name->vtype);
+	inodeFprint("fn %s ", &name->namesym->namestr);
+	inodePrintNode(name->vtype);
 	if (name->value) {
-		astFprint(" {} ");
+		inodeFprint(" {} ");
 		if (name->value->asttype == BlockNode)
-			astPrintNL();
-		astPrintNode(name->value);
+			inodePrintNL();
+		inodePrintNode(name->value);
 	}
 }
 
 // Syntactic sugar: Turn last statement implicit returns into explicit returns
-void fnImplicitReturn(AstNode *rettype, BlockAstNode *blk) {
-	AstNode *laststmt;
+void fnImplicitReturn(INode *rettype, BlockAstNode *blk) {
+	INode *laststmt;
 	laststmt = nodesLast(blk->stmts);
 	if (rettype == voidType) {
 		if (laststmt->asttype != ReturnNode)
-			nodesAdd(&blk->stmts, (AstNode*) newReturnNode());
+			nodesAdd(&blk->stmts, (INode*) newReturnNode());
 	}
 	else {
 		// Inject return in front of expression
 		if (isValueNode(laststmt)) {
 			ReturnAstNode *retnode = newReturnNode();
 			retnode->exp = laststmt;
-			nodesLast(blk->stmts) = (AstNode*)retnode;
+			nodesLast(blk->stmts) = (INode*)retnode;
 		}
 		else if (laststmt->asttype != ReturnNode)
 			errorMsgNode(laststmt, ErrorNoRet, "A return value is expected but this statement cannot give one.");
@@ -66,11 +66,11 @@ void fnDclNameResolve(PassState *pstate, FnDclAstNode *name) {
 	pstate->scope = 1;
 	FnSigAstNode *fnsig = (FnSigAstNode*)name->vtype;
     nametblHookPush();
-    AstNode **nodesp;
+    INode **nodesp;
     uint32_t cnt;
     for (nodesFor(fnsig->parms, cnt, nodesp))
         nametblHookNode((NamedAstNode *)*nodesp);
-	nodeWalk(pstate, &name->value);
+	inodeWalk(pstate, &name->value);
 	nametblHookPop();
 	pstate->scope = oldscope;
 }
@@ -79,14 +79,14 @@ void fnDclNameResolve(PassState *pstate, FnDclAstNode *name) {
 void fnDclTypeCheck(PassState *pstate, FnDclAstNode *varnode) {
 	FnSigAstNode *oldfnsig = pstate->fnsig;
 	pstate->fnsig = (FnSigAstNode*)varnode->vtype;
-	nodeWalk(pstate, &varnode->value);
+	inodeWalk(pstate, &varnode->value);
 	pstate->fnsig = oldfnsig;
 }
 
 // Check the function declaration's AST
 void fnDclPass(PassState *pstate, FnDclAstNode *name) {
-	nodeWalk(pstate, &name->vtype);
-	AstNode *vtype = typeGetVtype(name->vtype);
+	inodeWalk(pstate, &name->vtype);
+	INode *vtype = typeGetVtype(name->vtype);
 
 	// Process nodes in name's initial value/code block
 	switch (pstate->pass) {
@@ -107,7 +107,7 @@ void fnDclPass(PassState *pstate, FnDclAstNode *name) {
 			fnDclTypeCheck(pstate, name);
 		}
 		else if (vtype == voidType)
-			errorMsgNode((AstNode*)name, ErrorNoType, "Name must specify a type");
+			errorMsgNode((INode*)name, ErrorNoType, "Name must specify a type");
 		break;
 	}
 }

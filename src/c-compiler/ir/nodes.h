@@ -8,7 +8,7 @@
 #ifndef nodes_h
 #define nodes_h
 
-typedef struct AstNode AstNode;
+typedef struct INode INode;
 typedef struct NamedAstNode NamedAstNode;
 typedef struct OwnerAstNode OwnerAstNode;
 typedef struct Name Name;
@@ -26,13 +26,13 @@ typedef struct Nodes {
 
 // Helper Functions
 Nodes *newNodes(int size);
-void nodesAdd(Nodes **nodesp, AstNode *node);
-void nodesInsert(Nodes **nodesp, AstNode *node, size_t index);
+void nodesAdd(Nodes **nodesp, INode *node);
+void nodesInsert(Nodes **nodesp, INode *node, size_t index);
     NamedAstNode *nodesFind(Nodes *nodes, Name *name);
 
-#define nodesNodes(nodes) ((AstNode**)((nodes)+1))
-#define nodesFor(nodes, cnt, nodesp) nodesp = (AstNode**)((nodes)+1), cnt = (nodes)->used; cnt; cnt--, nodesp++
-#define nodesGet(nodes, index) ((AstNode**)((nodes)+1))[index]
+#define nodesNodes(nodes) ((INode**)((nodes)+1))
+#define nodesFor(nodes, cnt, nodesp) nodesp = (INode**)((nodes)+1), cnt = (nodes)->used; cnt; cnt--, nodesp++
+#define nodesGet(nodes, index) ((INode**)((nodes)+1))[index]
 #define nodesLast(nodes) nodesGet(nodes, nodes->used-1)
 
 #endif

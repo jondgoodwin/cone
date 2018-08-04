@@ -13,7 +13,7 @@
 // Create a new array type whose info will be filled in afterwards
 ArrayAstNode *newArrayNode() {
 	ArrayAstNode *anode;
-	newAstNode(anode, ArrayAstNode, ArrayType);
+	newNode(anode, ArrayAstNode, ArrayType);
     anode->vtype = NULL;
     anode->owner = NULL;
     anode->namesym = anonName;
@@ -25,13 +25,13 @@ ArrayAstNode *newArrayNode() {
 
 // Serialize an array type
 void arrayPrint(ArrayAstNode *node) {
-	astFprint("[%d]", (int)node->size);
-	astPrintNode(node->elemtype);
+	inodeFprint("[%d]", (int)node->size);
+	inodePrintNode(node->elemtype);
 }
 
 // Semantically analyze an array type
 void arrayPass(PassState *pstate, ArrayAstNode *node) {
-	nodeWalk(pstate, &node->elemtype);
+	inodeWalk(pstate, &node->elemtype);
 }
 
 // Compare two struct signatures to see if they are equivalent

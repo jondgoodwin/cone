@@ -13,7 +13,7 @@
 // Create a new function signature node
 FnSigAstNode *newFnSigNode() {
 	FnSigAstNode *sig;
-	newAstNode(sig, FnSigAstNode, FnSigType);
+	newNode(sig, FnSigAstNode, FnSigType);
 	sig->parms = newNodes(8);
 	sig->rettype = voidType;
 	return sig;
@@ -21,30 +21,30 @@ FnSigAstNode *newFnSigNode() {
 
 // Serialize the AST for a function signature
 void fnSigPrint(FnSigAstNode *sig) {
-	AstNode **nodesp;
+	INode **nodesp;
 	uint32_t cnt;
-	astFprint("fn(");
+	inodeFprint("fn(");
 	for (nodesFor(sig->parms, cnt, nodesp)) {
-		astPrintNode(*nodesp);
+		inodePrintNode(*nodesp);
 		if (cnt > 1)
-			astFprint(", ");
+			inodeFprint(", ");
 	}
-	astFprint(") ");
-	astPrintNode(sig->rettype);
+	inodeFprint(") ");
+	inodePrintNode(sig->rettype);
 }
 
 // Traverse the function signature tree
 void fnSigPass(PassState *pstate, FnSigAstNode *sig) {
-	AstNode **nodesp;
+	INode **nodesp;
 	uint32_t cnt;
 	for (nodesFor(sig->parms, cnt, nodesp))
-		nodeWalk(pstate, nodesp);
-	nodeWalk(pstate, &sig->rettype);
+		inodeWalk(pstate, nodesp);
+	inodeWalk(pstate, &sig->rettype);
 }
 
 // Compare two function signatures to see if they are equivalent
 int fnSigEqual(FnSigAstNode *node1, FnSigAstNode *node2) {
-	AstNode **nodes1p, **nodes2p;
+	INode **nodes1p, **nodes2p;
 	int16_t cnt;
 
 	// Return types and number of parameters must match
@@ -72,8 +72,8 @@ int fnSigMatchesCall(FnSigAstNode *to, Nodes *args) {
 		return 0;
 
 	// Every parameter's type must also match
-	AstNode **tonodesp;
-	AstNode **callnodesp;
+	INode **tonodesp;
+	INode **callnodesp;
 	int16_t cnt;
 	tonodesp = &nodesGet(to->parms, 0);
 	for (nodesFor(args, cnt, callnodesp)) {

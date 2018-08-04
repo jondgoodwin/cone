@@ -11,39 +11,39 @@
 // Get size of a type
 typedef struct SizeofAstNode {
 	TypedAstHdr;
-	AstNode *type;
+	INode *type;
 } SizeofAstNode;
 
 // Cast to another type
 typedef struct CastAstNode {
 	TypedAstHdr;
-	AstNode *exp;
+	INode *exp;
 } CastAstNode;
 
 typedef struct DerefAstNode {
 	TypedAstHdr;
-	AstNode *exp;
+	INode *exp;
 } DerefAstNode;
 
 // Logic operator: not, or, and
 typedef struct LogicAstNode {
 	TypedAstHdr;
-	AstNode *lexp;
-	AstNode *rexp;
+	INode *lexp;
+	INode *rexp;
 } LogicAstNode;
 
 SizeofAstNode *newSizeofAstNode();
 void sizeofPrint(SizeofAstNode *node);
 void sizeofPass(PassState *pstate, SizeofAstNode *node);
 
-CastAstNode *newCastAstNode(AstNode *exp, AstNode *type);
+CastAstNode *newCastAstNode(INode *exp, INode *type);
 void castPrint(CastAstNode *node);
 void castPass(PassState *pstate, CastAstNode *node);
 
 DerefAstNode *newDerefAstNode();
 void derefPrint(DerefAstNode *node);
 void derefPass(PassState *pstate, DerefAstNode *node);
-void derefAuto(AstNode **node);
+void derefAuto(INode **node);
 
 LogicAstNode *newLogicAstNode(int16_t typ);
 void logicPrint(LogicAstNode *node);

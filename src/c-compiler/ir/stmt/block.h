@@ -25,15 +25,15 @@ typedef struct IfAstNode {
 
 // While statement
 typedef struct WhileAstNode {
-	BasicAstHdr;
-	AstNode *condexp;
-	AstNode *blk;
+	INodeHdr;
+	INode *condexp;
+	INode *blk;
 } WhileAstNode;
 
 // Return/yield statement
 typedef struct ReturnAstNode {
-	BasicAstHdr;
-	AstNode *exp;
+	INodeHdr;
+	INode *exp;
 } ReturnAstNode;
 
 // The various intrinsic functions supported by IntrinsicAstNode
@@ -69,7 +69,7 @@ enum IntrinsicFn {
 // An internal operation (e.g., add). 
 // Used as an alternative to FnDcl->value = Block within a function declaration.
 typedef struct IntrinsicAstNode {
-	BasicAstHdr;
+	INodeHdr;
 	int16_t intrinsicFn;
 } IntrinsicAstNode;
 
@@ -85,7 +85,7 @@ WhileAstNode *newWhileNode();
 void whilePrint(WhileAstNode *wnode);
 void whilePass(PassState *pstate, WhileAstNode *wnode);
 
-void breakPass(PassState *pstate, AstNode *node);
+void breakPass(PassState *pstate, INode *node);
 
 IntrinsicAstNode *newIntrinsicNode(int16_t intrinsicFn);
 

@@ -11,9 +11,9 @@
 // For pointers
 typedef struct PtrAstNode {
 	NamedTypeAstHdr;
-	AstNode *pvtype;	// Value type
+	INode *pvtype;	// Value type
 	PermAstNode *perm;	// Permission
-	AstNode *alloc;		// Allocator
+	INode *alloc;		// Allocator
 	int16_t scope;		// Lifetime
 } PtrAstNode;
 

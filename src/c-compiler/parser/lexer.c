@@ -136,7 +136,7 @@ void lexScanChar(char *srcp) {
 		srcp++;
 	else
 		errorMsgLex(ErrorBadTok, "Only one character allowed in character literal");
-	lex->langtype = (AstNode*)u32Type;
+	lex->langtype = (INode*)u32Type;
 	lex->toktype = IntLitToken;
 	lex->srcp = srcp;
 }
@@ -182,7 +182,7 @@ void lexScanString(char *srcp) {
 	*newp = '\0';
 	srcp++;
 
-	lex->langtype = (AstNode*)strType;
+	lex->langtype = (INode*)strType;
 	lex->toktype = StrLitToken;
 	lex->srcp = srcp;
 }
@@ -254,45 +254,45 @@ void lexScanNumber(char *srcp) {
 	if (*srcp=='d') {
 		isFloat = 'd';
 		srcp++;
-		lex->langtype = (AstNode*)f64Type;
+		lex->langtype = (INode*)f64Type;
 	} else if (*srcp=='f') {
 		isFloat = 'f';
-		lex->langtype = (AstNode*)f32Type;
+		lex->langtype = (INode*)f32Type;
 		if (*(++srcp)=='6' && *(srcp+1)=='4') {
-			lex->langtype = (AstNode*)f64Type;
+			lex->langtype = (INode*)f64Type;
 			srcp += 2;
 		}
 		else if (*srcp=='3' && *(srcp+1)=='2')
 			srcp += 2;
 	} else if (*srcp=='i') {
-		lex->langtype = (AstNode*)i32Type;
+		lex->langtype = (INode*)i32Type;
 		if (*(++srcp)=='8') {		
-			srcp++; lex->langtype = (AstNode*)i8Type;
+			srcp++; lex->langtype = (INode*)i8Type;
 		} else if (*srcp=='1' && *(srcp+1)=='6') {
-			srcp += 2; lex->langtype = (AstNode*)i16Type;
+			srcp += 2; lex->langtype = (INode*)i16Type;
 		} else if (*srcp=='3' && *(srcp+1)=='2') {
 			srcp += 2;
 		} else if (*srcp=='6' && *(srcp+1)=='4') {
-			srcp += 2; lex->langtype = (AstNode*)i64Type;
+			srcp += 2; lex->langtype = (INode*)i64Type;
 		} else if (strncmp(srcp, "size", 4)==0) {
-			srcp += 4; lex->langtype = (AstNode*)isizeType;
+			srcp += 4; lex->langtype = (INode*)isizeType;
 		}
 	} else if (*srcp=='u') {
-		lex->langtype = (AstNode*)u32Type;
+		lex->langtype = (INode*)u32Type;
 		if (*(++srcp)=='8') {		
-			srcp++; lex->langtype = (AstNode*)u8Type;
+			srcp++; lex->langtype = (INode*)u8Type;
 		} else if (*srcp=='1' && *(srcp+1)=='6') {
-			srcp += 2; lex->langtype = (AstNode*)u16Type;
+			srcp += 2; lex->langtype = (INode*)u16Type;
 		} else if (*srcp=='3' && *(srcp+1)=='2') {
 			srcp += 2;
 		} else if (*srcp=='6' && *(srcp+1)=='4') {
-			srcp += 2; lex->langtype = (AstNode*)u64Type;
+			srcp += 2; lex->langtype = (INode*)u64Type;
 		} else if (strncmp(srcp, "size", 4)==0) {
-			srcp += 4; lex->langtype = (AstNode*)usizeType;
+			srcp += 4; lex->langtype = (INode*)usizeType;
 		}
 	}
 	else
-		lex->langtype = (AstNode*)(isFloat ? f32Type : i32Type);
+		lex->langtype = (INode*)(isFloat ? f32Type : i32Type);
 
 	// Set value and type
 	if (isFloat) {
@@ -335,11 +335,11 @@ void lexScanIdent(char *srcp) {
 			if (utf8IsLetter(srcp))
 				srcp += utf8ByteSkip(srcp);
 			else {
-				AstNode *identNode;
+				INode *identNode;
 				// Find identifier token in name table and preserve info about it
 				// Substitute token type when identifier is a keyword
 				lex->val.ident = nametblFind(srcbeg, srcp-srcbeg);
-				identNode = (AstNode*)lex->val.ident->node;
+				identNode = (INode*)lex->val.ident->node;
 				if (identNode && identNode->asttype == KeywordNode)
 					lex->toktype = identNode->flags;
 				else if (identNode && identNode->asttype == PermType)

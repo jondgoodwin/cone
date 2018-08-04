@@ -8,7 +8,7 @@
 #ifndef lexer_h
 #define lexer_h
 
-typedef struct AstNode AstNode;	// ../ast/ast.h
+typedef struct INode INode;	// ../ast/ast.h
 typedef struct Name Name;	// ../ast/nametbl.h
 
 #include <stdint.h>
@@ -24,7 +24,7 @@ typedef struct Lexer {
 		char *strlit;
 		Name *ident;
 	} val;
-	AstNode *langtype;
+	INode *langtype;
 
 	// immutable info about source
 	char *url;		// The url where the source text came from

@@ -15,7 +15,7 @@ Name *keyAdd(char *keyword, uint16_t toktype) {
 	Name *sym;
 	NamedAstNode *node;
 	sym = nametblFind(keyword, strlen(keyword));
-	sym->node = node = (NamedAstNode*)memAllocBlk(sizeof(AstNode));
+	sym->node = node = (NamedAstNode*)memAllocBlk(sizeof(INode));
 	node->asttype = KeywordNode;
 	node->flags = toktype;
 	return sym;
@@ -73,5 +73,5 @@ void stdlibInit() {
 	stdPermInit();
 	stdNbrInit();
 
-	voidType = (AstNode*)newVoidNode();
+	voidType = (INode*)newVoidNode();
 }

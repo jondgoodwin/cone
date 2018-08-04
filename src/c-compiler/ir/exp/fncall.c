@@ -15,16 +15,16 @@
 #include <string.h>
 
 // Create a function call node
-FnCallAstNode *newFnCallAstNode(AstNode *fn, int nnodes) {
+FnCallAstNode *newFnCallAstNode(INode *fn, int nnodes) {
 	FnCallAstNode *node;
-	newAstNode(node, FnCallAstNode, FnCallNode);
+	newNode(node, FnCallAstNode, FnCallNode);
 	node->objfn = fn;
     node->methprop = NULL;
 	node->args = nnodes == 0? NULL : newNodes(nnodes);
 	return node;
 }
 
-FnCallAstNode *newFnCallOp(AstNode *obj, char *op, int nnodes) {
+FnCallAstNode *newFnCallOp(INode *obj, char *op, int nnodes) {
     FnCallAstNode *node = newFnCallAstNode(obj, nnodes);
     node->methprop = newMemberUseNode(nametblFind(op, strlen(op)));
     return node;
@@ -32,31 +32,31 @@ FnCallAstNode *newFnCallOp(AstNode *obj, char *op, int nnodes) {
 
 // Serialize function call node
 void fnCallPrint(FnCallAstNode *node) {
-    AstNode **nodesp;
+    INode **nodesp;
     uint32_t cnt;
-    astPrintNode(node->objfn);
+    inodePrintNode(node->objfn);
     if (node->methprop) {
-        astFprint(".");
-        astPrintNode((AstNode*)node->methprop);
+        inodeFprint(".");
+        inodePrintNode((INode*)node->methprop);
     }
     if (node->args) {
-        astFprint("(");
+        inodeFprint("(");
         for (nodesFor(node->args, cnt, nodesp)) {
-            astPrintNode(*nodesp);
+            inodePrintNode(*nodesp);
             if (cnt > 1)
-                astFprint(", ");
+                inodeFprint(", ");
         }
-        astFprint(")");
+        inodeFprint(")");
     }
 }
 
 // For all function calls, go through all arguments to verify correct types,
 // handle value copying, and fill in default arguments
 void fnCallFinalizeArgs(FnCallAstNode *node) {
-    AstNode *fnsig = typeGetVtype(node->objfn);
-    AstNode **argsp;
+    INode *fnsig = typeGetVtype(node->objfn);
+    INode **argsp;
     uint32_t cnt;
-    AstNode **parmp = &nodesGet(((FnSigAstNode*)fnsig)->parms, 0);
+    INode **parmp = &nodesGet(((FnSigAstNode*)fnsig)->parms, 0);
     for (nodesFor(node->args, cnt, argsp)) {
         if (!typeCoerces(*parmp, argsp))
             errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
@@ -69,7 +69,7 @@ void fnCallFinalizeArgs(FnCallAstNode *node) {
     int argsunder = ((FnSigAstNode*)fnsig)->parms->used - node->args->used;
     if (argsunder > 0) {
         if (((VarDclAstNode*)*parmp)->value == NULL)
-            errorMsgNode((AstNode*)node, ErrorFewArgs, "Function call requires more arguments than specified");
+            errorMsgNode((INode*)node, ErrorFewArgs, "Function call requires more arguments than specified");
         else {
             while (argsunder--) {
                 nodesAdd(&node->args, ((VarDclAstNode*)*parmp)->value);
@@ -82,12 +82,12 @@ void fnCallFinalizeArgs(FnCallAstNode *node) {
 // Find best property or method (across overloaded methods whose type matches argument types)
 // Then lower the node to a function call (objfn+args) or property access (objfn+methprop) accordingly
 void fnCallLowerMethod(FnCallAstNode *callnode) {
-    AstNode *obj = callnode->objfn;
-    AstNode *objtype = typeGetVtype(obj);
+    INode *obj = callnode->objfn;
+    INode *objtype = typeGetVtype(obj);
     if (objtype->asttype == RefType || objtype->asttype == PtrType)
         objtype = typeGetVtype(((PtrAstNode *)objtype)->pvtype);
     if (!isMethodType(objtype)) {
-        errorMsgNode((AstNode*)callnode, ErrorNoMeth, "Object's type does not support methods or properties.");
+        errorMsgNode((INode*)callnode, ErrorNoMeth, "Object's type does not support methods or properties.");
         return;
     }
 
@@ -95,20 +95,20 @@ void fnCallLowerMethod(FnCallAstNode *callnode) {
     Name *methsym = callnode->methprop->namesym;
     if (methsym->namestr == '_'
         && !(obj->asttype==VarNameUseTag && ((NameUseAstNode*)obj)->dclnode->namesym == selfName)) {
-        errorMsgNode((AstNode*)callnode, ErrorNotPublic, "May not access the private method/property `%s`.", &methsym->namestr);
+        errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/property `%s`.", &methsym->namestr);
     }
     NamedAstNode *foundnode = methnodesFind(&((MethodTypeAstNode*)objtype)->methprops, methsym);
     if (!foundnode
         || !(foundnode->asttype == FnDclTag || foundnode->asttype == VarDclTag)
         || !(foundnode->flags & FlagMethProp)) {
-        errorMsgNode((AstNode*)callnode, ErrorNoMeth, "Object's type has no method or property named %s.", &methsym->namestr);
+        errorMsgNode((INode*)callnode, ErrorNoMeth, "Object's type has no method or property named %s.", &methsym->namestr);
         return;
     }
 
     // Handle when methprop refers to a property
     if (foundnode->asttype == VarDclTag) {
         if (callnode->args != NULL)
-            errorMsgNode((AstNode*)callnode, ErrorManyArgs, "May not provide arguments for a property access");
+            errorMsgNode((INode*)callnode, ErrorManyArgs, "May not provide arguments for a property access");
 
         derefAuto(&callnode->objfn);
         callnode->methprop->asttype = VarNameUseTag;
@@ -125,7 +125,7 @@ void fnCallLowerMethod(FnCallAstNode *callnode) {
 
     FnDclAstNode *bestmethod = methnodesFindBestMethod((FnDclAstNode *)foundnode, callnode->args);
     if (bestmethod == NULL) {
-        errorMsgNode((AstNode*)callnode, ErrorNoMeth, "No method named %s matches the call's arguments.", &methsym->namestr);
+        errorMsgNode((INode*)callnode, ErrorNoMeth, "No method named %s matches the call's arguments.", &methsym->namestr);
         return;
     }
 
@@ -135,7 +135,7 @@ void fnCallLowerMethod(FnCallAstNode *callnode) {
     methodrefnode->dclnode = (NamedAstNode*)bestmethod;
     methodrefnode->vtype = bestmethod->vtype;
 
-    callnode->objfn = (AstNode*)methodrefnode;
+    callnode->objfn = (INode*)methodrefnode;
     callnode->methprop = NULL;
     callnode->vtype = ((FnSigAstNode*)bestmethod->vtype)->rettype;
 
@@ -149,16 +149,16 @@ void fnCallLowerMethod(FnCallAstNode *callnode) {
 // resolving syntactic sugar and resolving a method to a function.
 // It also distinguishes between methods and properties.
 void fnCallPass(PassState *pstate, FnCallAstNode *node) {
-	AstNode **argsp;
+	INode **argsp;
 	uint32_t cnt;
 
     // Traverse tree for all passes
     // Note: Name resolution for .methprop happens in typecheck pass
     if (node->args) {
         for (nodesFor(node->args, cnt, argsp))
-            nodeWalk(pstate, argsp);
+            inodeWalk(pstate, argsp);
     }
-    nodeWalk(pstate, &node->objfn);
+    inodeWalk(pstate, &node->objfn);
 
     switch (pstate->pass) {
     case TypeCheck:
@@ -175,15 +175,15 @@ void fnCallPass(PassState *pstate, FnCallAstNode *node) {
             // Reuse existing fncallnode if we can
             if (node->methprop == NULL) {
                 node->methprop = (NameUseAstNode *)node->objfn;
-                node->objfn = (AstNode*)selfnode;
+                node->objfn = (INode*)selfnode;
             }
             else {
                 // Re-purpose objfn as self.method
-                FnCallAstNode *fncall = newFnCallAstNode((AstNode *)selfnode, 0);
+                FnCallAstNode *fncall = newFnCallAstNode((INode *)selfnode, 0);
                 fncall->methprop = (NameUseAstNode *)node->objfn;
                 copyNodeLex(fncall, node->objfn); // Copy lexer info into injected node in case it has errors
-                node->objfn = (AstNode*)fncall;
-                nodeWalk(pstate, &node->objfn);
+                node->objfn = (INode*)fncall;
+                inodeWalk(pstate, &node->objfn);
             }
         }
 
@@ -192,7 +192,7 @@ void fnCallPass(PassState *pstate, FnCallAstNode *node) {
             errorMsgNode(node->objfn, ErrorNotTyped, "Expecting a typed node");
             return;
         }
-        AstNode *objfntype = typeGetDerefType(node->objfn);
+        INode *objfntype = typeGetDerefType(node->objfn);
 
         // Objects (method types) are lowered to method calls via a name lookup
         if (isMethodType(objfntype)) {
@@ -206,10 +206,10 @@ void fnCallPass(PassState *pstate, FnCallAstNode *node) {
         }
 
         else if (node->methprop)
-            errorMsgNode((AstNode *)node, ErrorBadMeth, "Cannot do method or property on a value of this type");
+            errorMsgNode((INode *)node, ErrorBadMeth, "Cannot do method or property on a value of this type");
 
         else if (objfntype->asttype != FnSigType)
-            errorMsgNode((AstNode *)node, ErrorNotFn, "Cannot apply arguments to a non-function");
+            errorMsgNode((INode *)node, ErrorNotFn, "Cannot apply arguments to a non-function");
 
         // Handle a regular function call or implicit method call
         else {
@@ -221,7 +221,7 @@ void fnCallPass(PassState *pstate, FnCallAstNode *node) {
             // Error out if we have too many arguments
             int argsunder = ((FnSigAstNode*)objfntype)->parms->used - node->args->used;
             if (argsunder < 0) {
-                errorMsgNode((AstNode*)node, ErrorManyArgs, "Too many arguments specified vs. function declaration");
+                errorMsgNode((INode*)node, ErrorManyArgs, "Too many arguments specified vs. function declaration");
                 return;
             }
 
