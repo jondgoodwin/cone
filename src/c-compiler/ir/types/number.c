@@ -5,10 +5,10 @@
  * See Copyright Notice in conec.h
 */
 
-#include "../ast/ast.h"
-#include "../shared/memory.h"
-#include "../parser/lexer.h"
-#include "../ast/nametbl.h"
+#include "../ir.h"
+#include "../../shared/memory.h"
+#include "../../parser/lexer.h"
+#include "../nametbl.h"
 
 // Serialize the AST for a numeric literal
 void nbrTypePrint(NbrAstNode *node) {

@@ -5,10 +5,10 @@
  * See Copyright Notice in conec.h
 */
 
-#include "../ast/ast.h"
-#include "../ast/nametbl.h"
-#include "../parser/lexer.h"
-#include "../shared/error.h"
+#include "../ir.h"
+#include "../nametbl.h"
+#include "../../parser/lexer.h"
+#include "../../shared/error.h"
 
 #include <stdio.h>
 #include <string.h>
