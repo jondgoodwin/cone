@@ -8,11 +8,11 @@
 */
 
 #include "parser.h"
-#include "../ast/ast.h"
+#include "../ir/ir.h"
 #include "../shared/memory.h"
 #include "../shared/error.h"
 #include "../shared/fileio.h"
-#include "../ast/nametbl.h"
+#include "../ir/nametbl.h"
 #include "lexer.h"
 
 #include <stdio.h>

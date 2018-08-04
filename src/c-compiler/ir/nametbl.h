@@ -8,7 +8,7 @@
 #ifndef nametbl_h
 #define nametbl_h
 
-#include "../ast/ast.h"
+#include "ir.h"
 
 #include <stdlib.h>
 #include <stddef.h>

@@ -5,7 +5,7 @@
  * See Copyright Notice in conec.h
 */
 
-#include "ast.h"
+#include "ir.h"
 #include "../parser/lexer.h"
 #include "../shared/fileio.h"
 #include "../shared/error.h"

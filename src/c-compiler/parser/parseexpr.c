@@ -8,8 +8,8 @@
 */
 
 #include "parser.h"
-#include "../ast/ast.h"
-#include "../ast/nametbl.h"
+#include "../ir/ir.h"
+#include "../ir/nametbl.h"
 #include "../shared/memory.h"
 #include "../shared/error.h"
 #include "lexer.h"

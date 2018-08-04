@@ -1,14 +1,14 @@
-/** AST structures and macros
+/** Intermediate Representation (IR) structures and macros
 *
-* The AST, together with the name table, is the skeleton of the compiler.
+* The IR, together with the name table, is the skeleton of the compiler.
 * It connects together every stage:
 *
-* - The parser transforms programs into AST
-* - The semantic analysis walks the AST over multiple passes
-* - Macro and template expansion happens via AST cloning
-* - Generation transforms AST into LLVM IR
+* - The parser transforms programs into IR
+* - The semantic analysis walks the IR nodes over multiple passes
+* - Macro and template expansion happens via IR cloning
+* - Generation transforms IR into LLVM IR
 *
-* The AST is comprised of heterogeneous nodes that share common BasicAstHdr info.
+* The IR is comprised of heterogeneous nodes that share common BasicAstHdr info.
 * In some cases, it is possible for several distinct node types to share an 
 * identical data structure (e.g., statement expression and return).
 *
@@ -21,12 +21,12 @@
  * See Copyright Notice in conec.h
 */
 
-#ifndef ast_h
-#define ast_h
+#ifndef ir_h
+#define ir_h
 
 #include "../shared/memory.h"
-#include "../ast/nodes.h"
-#include "../ast/namespace.h"
+#include "nodes.h"
+#include "namespace.h"
 typedef struct Name Name;		// ../ast/nametbl.h
 typedef struct Lexer Lexer;		// ../parser/lexer.h
 
@@ -162,25 +162,26 @@ typedef struct NamedAstNode {
 } NamedAstNode;
 
 
-#include "../types/type.h"
-#include "../types/methtype.h"
-#include "../types/permission.h"
-#include "../types/fnsig.h"
-#include "../types/number.h"
-#include "../types/pointer.h"
-#include "../types/struct.h"
-#include "../types/array.h"
-#include "../types/alloc.h"
+#include "types/type.h"
+#include "types/methtype.h"
+#include "types/permission.h"
+#include "types/fnsig.h"
+#include "types/number.h"
+#include "types/pointer.h"
+#include "types/struct.h"
+#include "types/array.h"
+#include "types/alloc.h"
 
-#include "../ast/module.h"
-#include "../ast/block.h"
-#include "../ast/nameuse.h"
-#include "../ast/expr.h"
-#include "../ast/copyexpr.h"
-#include "../ast/fncall.h"
-#include "../ast/fndcl.h"
-#include "../ast/vardcl.h"
-#include "../ast/literal.h"
+#include "stmt/module.h"
+#include "stmt/block.h"
+
+#include "exp/nameuse.h"
+#include "exp/expr.h"
+#include "exp/copyexpr.h"
+#include "exp/fncall.h"
+#include "exp/fndcl.h"
+#include "exp/vardcl.h"
+#include "exp/literal.h"
 
 #include "../std/stdlib.h"
 

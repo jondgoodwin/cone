@@ -5,11 +5,11 @@
  * See Copyright Notice in conec.h
 */
 
-#include "../ast/ast.h"
+#include "../ir/ir.h"
 #include "../parser/lexer.h"
 #include "../shared/error.h"
 #include "../coneopts.h"
-#include "../ast/nametbl.h"
+#include "../ir/nametbl.h"
 #include "../shared/fileio.h"
 #include "genllvm.h"
 

@@ -16,38 +16,40 @@ add_executable(conec
 	src/c-compiler/conec.c
 	src/c-compiler/coneopts.c
 
-	src/c-compiler/shared/options.c
 	src/c-compiler/shared/error.c
 	src/c-compiler/shared/fileio.c
 	src/c-compiler/shared/memory.c
+	src/c-compiler/shared/options.c
 	src/c-compiler/shared/utf8.c
 
-	src/c-compiler/ast/ast.c
-	src/c-compiler/ast/nametbl.c
-	src/c-compiler/ast/module.c
-	src/c-compiler/ast/nameuse.c
-	src/c-compiler/ast/vardcl.c
-	src/c-compiler/ast/fncall.c
-	src/c-compiler/ast/fndcl.c
-	src/c-compiler/ast/literal.c
-	src/c-compiler/ast/nodes.c
-	src/c-compiler/ast/namespace.c
-	src/c-compiler/ast/block.c
-	src/c-compiler/ast/expr.c
-	src/c-compiler/ast/copyexpr.c
+	src/c-compiler/ir/ir.c
+	src/c-compiler/ir/namespace.c
+	src/c-compiler/ir/nametbl.c
+	src/c-compiler/ir/nodes.c
+
+	src/c-compiler/ir/stmt/block.c
+	src/c-compiler/ir/stmt/module.c
+
+	src/c-compiler/ir/exp/copyexpr.c
+	src/c-compiler/ir/exp/expr.c
+	src/c-compiler/ir/exp/fncall.c
+	src/c-compiler/ir/exp/fndcl.c
+	src/c-compiler/ir/exp/literal.c
+	src/c-compiler/ir/exp/nameuse.c
+	src/c-compiler/ir/exp/vardcl.c
+
+	src/c-compiler/ir/types/alloc.c
+	src/c-compiler/ir/types/array.c
+	src/c-compiler/ir/types/fnsig.c
+	src/c-compiler/ir/types/methtype.c
+	src/c-compiler/ir/types/number.c
+	src/c-compiler/ir/types/permission.c
+	src/c-compiler/ir/types/pointer.c
+	src/c-compiler/ir/types/struct.c
+	src/c-compiler/ir/types/type.c
 
 	src/c-compiler/std/stdlib.c
 	src/c-compiler/std/stdnumber.c
-
-	src/c-compiler/types/type.c
-	src/c-compiler/types/methtype.c
-	src/c-compiler/types/fnsig.c
-	src/c-compiler/types/pointer.c
-	src/c-compiler/types/struct.c
-	src/c-compiler/types/array.c
-	src/c-compiler/types/number.c
-	src/c-compiler/types/permission.c
-	src/c-compiler/types/alloc.c
 
 	src/c-compiler/parser/lexer.c
 	src/c-compiler/parser/parser.c

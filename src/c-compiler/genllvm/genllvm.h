@@ -8,7 +8,7 @@
 #ifndef genllvm_h
 #define genllvm_h
 
-#include "../ast/ast.h"
+#include "../ir/ir.h"
 #include "../coneopts.h"
 
 #include <llvm-c/Core.h>

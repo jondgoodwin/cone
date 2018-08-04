@@ -8,7 +8,7 @@
 #ifndef parser_h
 #define parser_h
 
-#include "../ast/ast.h"
+#include "../ir/ir.h"
 
 typedef struct ParseState {
 	ModuleAstNode *pgmmod;	// Root module for program

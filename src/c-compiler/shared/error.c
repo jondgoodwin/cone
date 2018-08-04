@@ -7,7 +7,7 @@
 
 #include "error.h"
 #include "../parser/lexer.h"
-#include "../ast/ast.h"
+#include "../ir/ir.h"
 
 #include <stdio.h>
 #include <stdlib.h>

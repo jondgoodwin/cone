@@ -5,8 +5,8 @@
  * See Copyright Notice in conec.h
 */
 
-#include "../ast/ast.h"
-#include "../ast/nametbl.h"
+#include "../ir/ir.h"
+#include "../ir/nametbl.h"
 #include "../parser/lexer.h"
 
 #include <string.h>

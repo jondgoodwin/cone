@@ -5,10 +5,10 @@
  * See Copyright Notice in conec.h
 */
 
-#include "../ast/ast.h"
+#include "../ir/ir.h"
 #include "../shared/memory.h"
 #include "../parser/lexer.h"
-#include "../ast/nametbl.h"
+#include "../ir/nametbl.h"
 #include <string.h>
 
 Nodes *nbrsubtypes;
