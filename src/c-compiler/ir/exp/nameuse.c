@@ -97,7 +97,7 @@ void nameUseWalk(PassState *pstate, NameUseAstNode **namep) {
             Name **namep = (Name**)(name->qualNames + 1);
             while (cnt--) {
                 mod = (ModuleAstNode*)namespaceFind(&mod->namednodes, *namep++);
-                if (mod==NULL || mod->asttype!=ModuleNode) {
+                if (mod==NULL || mod->asttype!=ModuleTag) {
                     errorMsgNode((INode*)name, ErrorUnkName, "Module %s does not exist", &(*--namep)->namestr);
                     return;
                 }

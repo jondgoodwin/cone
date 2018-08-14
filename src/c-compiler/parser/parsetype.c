@@ -32,7 +32,7 @@ PermAstNode *parsePerm(PermAstNode *defperm) {
 // Parse an allocator + permission for a reference type
 void parseAllocPerm(PtrAstNode *refnode) {
 	if (lexIsToken(IdentToken)
-		&& lex->val.ident->node && lex->val.ident->node->asttype == AllocType) {
+		&& lex->val.ident->node && lex->val.ident->node->asttype == AllocTag) {
 		refnode->alloc = (INode*)lex->val.ident->node;
 		lexNextToken();
 		refnode->perm = parsePerm(uniPerm);
@@ -90,11 +90,11 @@ VarDclAstNode *parseVarDcl(ParseState *parse, PermAstNode *defperm, uint16_t fla
 INode *parsePtrType(ParseState *parse) {
 	PtrAstNode *ptype = newPtrTypeNode();
 	if (lexIsToken(StarToken))
-		ptype->asttype = PtrType;
+		ptype->asttype = PtrTag;
 	lexNextToken();
 
 	// Get allocator/permission for references
-	if (ptype->asttype == RefType)
+	if (ptype->asttype == RefTag)
 		parseAllocPerm(ptype);
 	else {
 		ptype->alloc = voidType;	// no allocator
@@ -125,7 +125,7 @@ INode *parseStruct(ParseState *parse) {
 	int16_t propertynbr = 0;
 
     // Capture the kind of type, then get next token (name)
-    uint16_t tag = lexIsToken(AllocToken) ? AllocType : StructType;
+    uint16_t tag = lexIsToken(AllocToken) ? AllocTag : StructTag;
     lexNextToken();
 
     // Process struct type name, if provided
@@ -208,7 +208,7 @@ INode *parseFnSig(ParseState *parse) {
 				if (parm->vtype == voidType) {
 					parm->vtype = (INode*)newNameUseNode(parse->owner->namesym);
 				}
-				else if (parm->vtype->asttype == RefType) {
+				else if (parm->vtype->asttype == RefTag) {
 					PtrAstNode *refnode = (PtrAstNode *)parm->vtype;
 					if (refnode->pvtype == voidType) {
 						refnode->pvtype = (INode*)newNameUseNode(parse->owner->namesym);

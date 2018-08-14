@@ -72,13 +72,13 @@ LLVMValueRef genlBlock(GenState *gen, BlockAstNode *blk) {
 	LLVMValueRef lastval = NULL; // Should never be used by caller
 	for (nodesFor(blk->stmts, cnt, nodesp)) {
 		switch ((*nodesp)->asttype) {
-		case WhileNode:
+		case WhileTag:
 			genlWhile(gen, (WhileAstNode *)*nodesp); break;
-		case BreakNode:
+		case BreakTag:
 			LLVMBuildBr(gen->builder, gen->whileend); break;
-		case ContinueNode:
+		case ContinueTag:
 			LLVMBuildBr(gen->builder, gen->whilebeg); break;
-		case ReturnNode:
+		case ReturnTag:
 			genlReturn(gen, (ReturnAstNode*)*nodesp); break;
 		default:
 			lastval = genlExpr(gen, *nodesp);

@@ -13,7 +13,7 @@
 // Create a new struct type whose info will be filled in afterwards
 StructAstNode *newStructNode(Name *namesym) {
 	StructAstNode *snode;
-	newNode(snode, StructAstNode, StructType);
+	newNode(snode, StructAstNode, StructTag);
     snode->vtype = NULL;
     snode->owner = NULL;
     snode->namesym = namesym;
@@ -25,7 +25,7 @@ StructAstNode *newStructNode(Name *namesym) {
 
 // Serialize a struct type
 void structPrint(StructAstNode *node) {
-	inodeFprint(node->asttype == StructType? "struct %s {}" : "alloc %s {}", &node->namesym->namestr);
+	inodeFprint(node->asttype == StructTag? "struct %s {}" : "alloc %s {}", &node->namesym->namestr);
 }
 
 // Semantically analyze a struct type

@@ -17,7 +17,7 @@
 // Create a function call node
 FnCallAstNode *newFnCallAstNode(INode *fn, int nnodes) {
 	FnCallAstNode *node;
-	newNode(node, FnCallAstNode, FnCallNode);
+	newNode(node, FnCallAstNode, FnCallTag);
 	node->objfn = fn;
     node->methprop = NULL;
 	node->args = nnodes == 0? NULL : newNodes(nnodes);
@@ -84,7 +84,7 @@ void fnCallFinalizeArgs(FnCallAstNode *node) {
 void fnCallLowerMethod(FnCallAstNode *callnode) {
     INode *obj = callnode->objfn;
     INode *objtype = typeGetVtype(obj);
-    if (objtype->asttype == RefType || objtype->asttype == PtrType)
+    if (objtype->asttype == RefTag || objtype->asttype == PtrTag)
         objtype = typeGetVtype(((PtrAstNode *)objtype)->pvtype);
     if (!isMethodType(objtype)) {
         errorMsgNode((INode*)callnode, ErrorNoMeth, "Object's type does not support methods or properties.");
@@ -188,7 +188,7 @@ void fnCallPass(PassState *pstate, FnCallAstNode *node) {
         }
 
         // How to lower depends on the type of the objfn
-        if (!isValueNode(node)) {
+        if (!isExpNode(node)) {
             errorMsgNode(node->objfn, ErrorNotTyped, "Expecting a typed node");
             return;
         }
@@ -208,7 +208,7 @@ void fnCallPass(PassState *pstate, FnCallAstNode *node) {
         else if (node->methprop)
             errorMsgNode((INode *)node, ErrorBadMeth, "Cannot do method or property on a value of this type");
 
-        else if (objfntype->asttype != FnSigType)
+        else if (objfntype->asttype != FnSigTag)
             errorMsgNode((INode *)node, ErrorNotFn, "Cannot apply arguments to a non-function");
 
         // Handle a regular function call or implicit method call

@@ -70,7 +70,7 @@ void nodesInsert(Nodes **nodesp, INode *node, size_t index) {
     nodes->used++;
 }
 
-// Find the desired named node in an nodes list.
+// Find the desired named node in a nodes list.
 // Return the node, if found or NULL if not found
 NamedAstNode *nodesFind(Nodes *nodes, Name *name) {
 	INode **nodesp;

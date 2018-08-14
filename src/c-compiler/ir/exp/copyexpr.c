@@ -16,7 +16,7 @@
 // Create a new assignment node
 AssignAstNode *newAssignAstNode(int16_t assigntype, INode *lval, INode *rval) {
 	AssignAstNode *node;
-	newNode(node, AssignAstNode, AssignNode);
+	newNode(node, AssignAstNode, AssignTag);
 	node->assignType = assigntype;
 	node->lval = lval;
 	node->rval = rval;
@@ -36,8 +36,8 @@ void assignPrint(AssignAstNode *node) {
 int isLval(INode *node) {
 	switch (node->asttype) {
 	case VarNameUseTag:
-	case DerefNode:
-	case FnCallNode:
+	case DerefTag:
+	case FnCallTag:
 		return 1;
 	// future:  [] indexing and .member
 	default: break;
@@ -68,7 +68,7 @@ void assignPass(PassState *pstate, AssignAstNode *node) {
 // Create a new addr node
 AddrAstNode *newAddrAstNode() {
 	AddrAstNode *node;
-	newNode(node, AddrAstNode, AddrNode);
+	newNode(node, AddrAstNode, AddrTag);
 	return node;
 }
 
@@ -100,7 +100,7 @@ void addrTypeCheckBorrow(AddrAstNode *node, PtrAstNode *ptype) {
 void addrPass(PassState *pstate, AddrAstNode *node) {
 	inodeWalk(pstate, &node->exp);
 	if (pstate->pass == TypeCheck) {
-		if (!isValueNode(node->exp)) {
+		if (!isExpNode(node->exp)) {
 			errorMsgNode(node->exp, ErrorBadTerm, "Needs to be an expression");
 			return;
 		}

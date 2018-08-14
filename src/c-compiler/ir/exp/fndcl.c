@@ -34,7 +34,7 @@ void fnDclPrint(FnDclAstNode *name) {
 	inodePrintNode(name->vtype);
 	if (name->value) {
 		inodeFprint(" {} ");
-		if (name->value->asttype == BlockNode)
+		if (name->value->asttype == BlockTag)
 			inodePrintNL();
 		inodePrintNode(name->value);
 	}
@@ -45,17 +45,17 @@ void fnImplicitReturn(INode *rettype, BlockAstNode *blk) {
 	INode *laststmt;
 	laststmt = nodesLast(blk->stmts);
 	if (rettype == voidType) {
-		if (laststmt->asttype != ReturnNode)
+		if (laststmt->asttype != ReturnTag)
 			nodesAdd(&blk->stmts, (INode*) newReturnNode());
 	}
 	else {
 		// Inject return in front of expression
-		if (isValueNode(laststmt)) {
+		if (isExpNode(laststmt)) {
 			ReturnAstNode *retnode = newReturnNode();
 			retnode->exp = laststmt;
 			nodesLast(blk->stmts) = (INode*)retnode;
 		}
-		else if (laststmt->asttype != ReturnNode)
+		else if (laststmt->asttype != ReturnTag)
 			errorMsgNode(laststmt, ErrorNoRet, "A return value is expected but this statement cannot give one.");
 	}
 }
@@ -93,7 +93,7 @@ void fnDclPass(PassState *pstate, FnDclAstNode *name) {
 	case NameResolution:
 		// Hook into global name table if not a global owner by module
 		// (because those have already been hooked by module for forward references)
-		/*if (name->owner->asttype != ModuleNode)
+		/*if (name->owner->asttype != ModuleTag)
 			namespaceHook((NamedAstNode*)name, name->namesym);*/
 		if (name->value)
 			fnDclNameResolve(pstate, name);

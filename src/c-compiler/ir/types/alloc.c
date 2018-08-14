@@ -60,7 +60,7 @@ void allocAllocate(AddrAstNode *anode, PtrAstNode *ptype) {
 	DerefAstNode *derefp1 = newDerefAstNode();
 	derefp1->exp = (INode*)p1use;
 	derefp1->vtype = ptype->pvtype;
-	AssignAstNode *copynode = newAssignAstNode(AssignNode, (INode*)derefp1, anode->exp);
+	AssignAstNode *copynode = newAssignAstNode(AssignTag, (INode*)derefp1, anode->exp);
 	nodesAdd(&blknode->stmts, (INode*)copynode);
 
 	// return p1

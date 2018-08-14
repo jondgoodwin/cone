@@ -17,7 +17,7 @@
 // Create a new Module node
 ModuleAstNode *newModuleNode() {
 	ModuleAstNode *mod;
-	newNode(mod, ModuleAstNode, ModuleNode);
+	newNode(mod, ModuleAstNode, ModuleTag);
 	mod->namesym = NULL;
 	mod->owner = NULL;
 	mod->nodes = newNodes(64);

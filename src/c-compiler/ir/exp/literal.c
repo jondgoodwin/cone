@@ -14,7 +14,7 @@
 // Create a new unsigned literal node
 ULitAstNode *newULitNode(uint64_t nbr, INode *type) {
 	ULitAstNode *lit;
-	newNode(lit, ULitAstNode, ULitNode);
+	newNode(lit, ULitAstNode, ULitTag);
 	lit->uintlit = nbr;
 	lit->vtype = type;
 	return lit;
@@ -33,7 +33,7 @@ void ulitPrint(ULitAstNode *lit) {
 // Create a new unsigned literal node
 FLitAstNode *newFLitNode(double nbr, INode *type) {
 	FLitAstNode *lit;
-	newNode(lit, FLitAstNode, FLitNode);
+	newNode(lit, FLitAstNode, FLitTag);
 	lit->floatlit = nbr;
 	lit->vtype = type;
 	return lit;
@@ -48,7 +48,7 @@ void flitPrint(FLitAstNode *lit) {
 // Create a new string literal node
 SLitAstNode *newSLitNode(char *str, INode *type) {
 	SLitAstNode *lit;
-	newNode(lit, SLitAstNode, SLitNode);
+	newNode(lit, SLitAstNode, StrLitTag);
 	lit->strlit = str;
 	lit->vtype = type;
 	return lit;
@@ -60,5 +60,5 @@ void slitPrint(SLitAstNode *lit) {
 }
 
 int litIsLiteral(INode* node) {
-	return (node->asttype == FLitNode || node->asttype == ULitNode);
+	return (node->asttype == FLitTag || node->asttype == ULitTag);
 }

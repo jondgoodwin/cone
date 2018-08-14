@@ -16,7 +16,7 @@
 // Create a new sizeof node
 SizeofAstNode *newSizeofAstNode() {
 	SizeofAstNode *node;
-	newNode(node, SizeofAstNode, SizeofNode);
+	newNode(node, SizeofAstNode, SizeofTag);
 	node->vtype = (INode*)usizeType;
 	return node;
 }
@@ -36,7 +36,7 @@ void sizeofPass(PassState *pstate, SizeofAstNode *node) {
 // Create a new cast node
 CastAstNode *newCastAstNode(INode *exp, INode *type) {
 	CastAstNode *node;
-	newNode(node, CastAstNode, CastNode);
+	newNode(node, CastAstNode, CastTag);
 	node->vtype = type;
 	node->exp = exp;
 	return node;
@@ -62,7 +62,7 @@ void castPass(PassState *pstate, CastAstNode *node) {
 // Create a new deref node
 DerefAstNode *newDerefAstNode() {
 	DerefAstNode *node;
-	newNode(node, DerefAstNode, DerefNode);
+	newNode(node, DerefAstNode, DerefTag);
 	node->vtype = voidType;
 	return node;
 }
@@ -78,7 +78,7 @@ void derefPass(PassState *pstate, DerefAstNode *node) {
 	inodeWalk(pstate, &node->exp);
 	if (pstate->pass == TypeCheck) {
 		PtrAstNode *ptype = (PtrAstNode*)((TypedAstNode *)node->exp)->vtype;
-		if (ptype->asttype == RefType || ptype->asttype == PtrType)
+		if (ptype->asttype == RefTag || ptype->asttype == PtrTag)
 			node->vtype = ptype->pvtype;
 		else
 			errorMsgNode((INode*)node, ErrorNotPtr, "Cannot de-reference a non-pointer value.");
@@ -87,7 +87,7 @@ void derefPass(PassState *pstate, DerefAstNode *node) {
 
 // Insert automatic deref, if node is a ref
 void derefAuto(INode **node) {
-	if (typeGetVtype(*node)->asttype != RefType)
+	if (typeGetVtype(*node)->asttype != RefTag)
 		return;
 	DerefAstNode *deref = newDerefAstNode();
 	deref->exp = *node;
@@ -105,12 +105,12 @@ LogicAstNode *newLogicAstNode(int16_t typ) {
 
 // Serialize logic node
 void logicPrint(LogicAstNode *node) {
-	if (node->asttype == NotLogicNode) {
+	if (node->asttype == NotLogicTag) {
 		inodeFprint("!");
 		inodePrintNode(node->lexp);
 	}
 	else {
-		inodeFprint(node->asttype == AndLogicNode? "(&&, " : "(||, ");
+		inodeFprint(node->asttype == AndLogicTag? "(&&, " : "(||, ");
 		inodePrintNode(node->lexp);
 		inodeFprint(", ");
 		inodePrintNode(node->rexp);

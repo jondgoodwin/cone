@@ -13,13 +13,13 @@
 // Create a new pointer type whose info will be filled in afterwards
 PtrAstNode *newPtrTypeNode() {
 	PtrAstNode *ptrnode;
-	newNode(ptrnode, PtrAstNode, RefType);
+	newNode(ptrnode, PtrAstNode, RefTag);
 	return ptrnode;
 }
 
 // Serialize a pointer type
 void ptrTypePrint(PtrAstNode *node) {
-	inodeFprint(node->asttype == RefType? "&(" : "*(");
+	inodeFprint(node->asttype == RefTag? "&(" : "*(");
 	inodePrintNode(node->alloc);
 	inodeFprint(", ");
 	inodePrintNode((INode*)node->perm);

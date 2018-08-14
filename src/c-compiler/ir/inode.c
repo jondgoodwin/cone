@@ -57,7 +57,7 @@ void inodePrintDecr() {
 // Serialize a specific AST node
 void inodePrintNode(INode *node) {
 	switch (node->asttype) {
-	case ModuleNode:
+	case ModuleTag:
 		modPrint((ModuleAstNode *)node); break;
 	case NameUseTag:
     case VarNameUseTag:
@@ -68,52 +68,52 @@ void inodePrintNode(INode *node) {
 		varDclPrint((VarDclAstNode *)node); break;
     case FnDclTag:
         fnDclPrint((FnDclAstNode *)node); break;
-    case BlockNode:
+    case BlockTag:
 		blockPrint((BlockAstNode *)node); break;
-	case IfNode:
+	case IfTag:
 		ifPrint((IfAstNode *)node); break;
-	case WhileNode:
+	case WhileTag:
 		whilePrint((WhileAstNode *)node); break;
-	case BreakNode:
+	case BreakTag:
 		inodeFprint("break"); break;
-	case ContinueNode:
+	case ContinueTag:
 		inodeFprint("continue"); break;
-	case ReturnNode:
+	case ReturnTag:
 		returnPrint((ReturnAstNode *)node); break;
-	case AssignNode:
+	case AssignTag:
 		assignPrint((AssignAstNode *)node); break;
-	case FnCallNode:
+	case FnCallTag:
 		fnCallPrint((FnCallAstNode *)node); break;
-	case SizeofNode:
+	case SizeofTag:
 		sizeofPrint((SizeofAstNode *)node); break;
-	case CastNode:
+	case CastTag:
 		castPrint((CastAstNode *)node); break;
-	case DerefNode:
+	case DerefTag:
 		derefPrint((DerefAstNode *)node); break;
-	case AddrNode:
+	case AddrTag:
 		addrPrint((AddrAstNode *)node); break;
-	case NotLogicNode: case OrLogicNode: case AndLogicNode:
+	case NotLogicTag: case OrLogicTag: case AndLogicTag:
 		logicPrint((LogicAstNode *)node); break;
-	case ULitNode:
+	case ULitTag:
 		ulitPrint((ULitAstNode *)node); break;
-	case FLitNode:
+	case FLitTag:
 		flitPrint((FLitAstNode *)node); break;
-	case SLitNode:
+	case StrLitTag:
 		slitPrint((SLitAstNode *)node); break;
-	case FnSigType:
+	case FnSigTag:
 		fnSigPrint((FnSigAstNode *)node); break;
-	case RefType: case PtrType:
+	case RefTag: case PtrTag:
 		ptrTypePrint((PtrAstNode *)node); break;
-	case StructType:
-	case AllocType:
+	case StructTag:
+	case AllocTag:
 		structPrint((StructAstNode *)node); break;
-	case ArrayType:
+	case ArrayTag:
 		arrayPrint((ArrayAstNode *)node); break;
-	case IntNbrType: case UintNbrType: case FloatNbrType:
+	case IntNbrTag: case UintNbrTag: case FloatNbrTag:
 		nbrTypePrint((NbrAstNode *)node); break;
-	case PermType:
+	case PermTag:
 		permPrint((PermAstNode *)node); break;
-	case VoidType:
+	case VoidTag:
 		voidPrint((VoidTypeAstNode *)node); break;
 	default:
 		inodeFprint("**** UNKNOWN NODE ****");
@@ -132,7 +132,7 @@ void inodePrint(char *dir, char *srcfn, INode *pgmast) {
 // - node is a pointer to pointer so that a node can be replaced
 void inodeWalk(PassState *pstate, INode **node) {
 	switch ((*node)->asttype) {
-	case ModuleNode:
+	case ModuleTag:
 		modPass(pstate, (ModuleAstNode*)*node); break;
 	case VarDclTag:
 		varDclPass(pstate, (VarDclAstNode *)*node); break;
@@ -142,50 +142,50 @@ void inodeWalk(PassState *pstate, INode **node) {
     case VarNameUseTag:
     case TypeNameUseTag:
 		nameUseWalk(pstate, (NameUseAstNode **)node); break;
-	case BlockNode:
+	case BlockTag:
 		blockPass(pstate, (BlockAstNode *)*node); break;
-	case IfNode:
+	case IfTag:
 		ifPass(pstate, (IfAstNode *)*node); break;
-	case WhileNode:
+	case WhileTag:
 		whilePass(pstate, (WhileAstNode *)*node); break;
-	case BreakNode:
-	case ContinueNode:
+	case BreakTag:
+	case ContinueTag:
 		breakPass(pstate, *node); break;
-	case ReturnNode:
+	case ReturnTag:
 		returnPass(pstate, (ReturnAstNode *)*node); break;
-	case AssignNode:
+	case AssignTag:
 		assignPass(pstate, (AssignAstNode *)*node); break;
-	case FnCallNode:
+	case FnCallTag:
 		fnCallPass(pstate, (FnCallAstNode *)*node); break;
-	case SizeofNode:
+	case SizeofTag:
 		sizeofPass(pstate, (SizeofAstNode *)*node); break;
-	case CastNode:
+	case CastTag:
 		castPass(pstate, (CastAstNode *)*node); break;
-	case DerefNode:
+	case DerefTag:
 		derefPass(pstate, (DerefAstNode *)*node); break;
-	case AddrNode:
+	case AddrTag:
 		addrPass(pstate, (AddrAstNode *)*node); break;
-	case NotLogicNode:
+	case NotLogicTag:
 		logicNotPass(pstate, (LogicAstNode *)*node); break;
-	case OrLogicNode: case AndLogicNode:
+	case OrLogicTag: case AndLogicTag:
 		logicPass(pstate, (LogicAstNode *)*node); break;
-	case FnSigType:
+	case FnSigTag:
 		fnSigPass(pstate, (FnSigAstNode *)*node); break;
-	case RefType: case PtrType:
+	case RefTag: case PtrTag:
 		ptrTypePass(pstate, (PtrAstNode *)*node); break;
-	case StructType:
-	case AllocType:
+	case StructTag:
+	case AllocTag:
 		structPass(pstate, (StructAstNode *)*node); break;
-	case ArrayType:
+	case ArrayTag:
 		arrayPass(pstate, (ArrayAstNode *)*node); break;
 
 	case MbrNameUseTag:
-	case ULitNode:
-	case FLitNode:
-	case SLitNode:
-	case IntNbrType: case UintNbrType: case FloatNbrType:
-	case PermType:
-	case VoidType:
+	case ULitTag:
+	case FLitTag:
+	case StrLitTag:
+	case IntNbrTag: case UintNbrTag: case FloatNbrTag:
+	case PermTag:
+	case VoidTag:
 		break;
 	default:
 		assert(0 && "**** ERROR **** Attempting to check an unknown node");

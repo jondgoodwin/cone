@@ -20,7 +20,7 @@
 
 // All IR nodes begin with this header, mostly containing lexer data describing
 // where in the source this structure came from (useful for error messages)
-// - asttype contains the NodeTypes code
+// - asttype contains the NodeTags code
 // - flags contains node-specific flags
 // - lexer contains -> url (filepath) and -> source
 // - srcp points to start of source token
@@ -39,75 +39,75 @@ typedef struct INode {
     INodeHdr;
 } INode;
 
-// Flags found at the top of an node's asttype
-#define VoidGroup  0x0000   // Statement nodes that return no value
-#define ValueGroup 0x4000   // Nodes that return a value
+// Flags found at the top of a node's tag
+#define StmtGroup  0x0000   // Statement nodes that return no value
+#define ExpGroup   0x4000   // Nodes that return a typed value
 #define TypeGroup  0x8000   // Nodes that define or refer to a type
 #define GroupMask  0xC000
 #define NamedNode  0x2000   // Node that defines a named item (not nameuse)
 #define MethodType 0x1000   // Type that supports methods
 
 // Easy checks on the kind of node it is based on high-level flags
-#define isValueNode(node) (((node)->asttype & GroupMask) == ValueGroup)
+#define isExpNode(node) (((node)->asttype & GroupMask) == ExpGroup)
 #define isTypeNode(node) (((node)->asttype & GroupMask) == TypeGroup)
 #define isNamedNode(node) ((node)->asttype & NamedNode)
 #define isMethodType(node) (isTypeNode(node) && (node)->asttype & MethodType)
 
-// All the possible types for an node
-enum NodeTypes {
+// All the possible tags for a node
+enum NodeTags {
 	// Lexer-only nodes that are *never* found in a program's IR.
-	// KeywordNode exists for name table consistency
-	KeywordNode = VoidGroup,	// Keyword token (flags is the keyword's token type)
+	// KeywordTag exists for name table consistency
+	KeywordTag = StmtGroup,	// Keyword token (flags is the keyword's token type)
 
 	// Untyped (Basic) nodes
-	IntrinsicNode,	// Alternative to fndcl block for internal operations (e.g., add)
-	ReturnNode,     // Return node
-	WhileNode,		// While node
-	BreakNode,		// Break node
-	ContinueNode,	// Continue node
+	IntrinsicTag,	// Alternative to fndcl block for internal operations (e.g., add)
+	ReturnTag,     // Return node
+	WhileTag,		// While node
+	BreakTag,		// Break node
+	ContinueTag,	// Continue node
 
 	// Name usage (we do not know what type of name it is until name resolution pass)
 	NameUseTag,  	// Name use node (pre-name resolution)
 
-    ModuleNode = VoidGroup + NamedNode,		// Program (global area)
+    ModuleTag = StmtGroup + NamedNode,		// Program (global area)
 
     // Expression nodes (having value type - or sometimes nullType)
-    VarNameUseTag = ValueGroup,  // Variable or Function name use node  
+    VarNameUseTag = ExpGroup,  // Variable or Function name use node  
 	MbrNameUseTag,	// Member of a type's namespace (property/method)
-	ULitNode,		// Integer literal
-	FLitNode,		// Float literal
-	SLitNode,		// String literal
-	AssignNode,		// Assignment expression
-	FnCallNode,		// Function+method call or Property access
-	SizeofNode,		// Sizeof a type (usize)
-	CastNode,		// Cast exp to another type
-	AddrNode,		// & (address of) operator
-	DerefNode,		// * (pointed at) operator
-	NotLogicNode,	// ! / not
-	OrLogicNode,	// || / or
-	AndLogicNode,	// && / and
-	BlockNode,		// Block (list of statements)
-	IfNode,			// if .. elif .. else statement
+	ULitTag,		// Integer literal
+	FLitTag,		// Float literal
+	StrLitTag,		// String literal
+	AssignTag,		// Assignment expression
+	FnCallTag,		// Function+method call or Property access
+	SizeofTag,		// Sizeof a type (usize)
+	CastTag,		// Cast exp to another type
+	AddrTag,		// & (address of) operator
+	DerefTag,		// * (pointed at) operator
+	NotLogicTag,	// ! / not
+	OrLogicTag,	// || / or
+	AndLogicTag,	// && / and
+	BlockTag,		// Block (list of statements)
+	IfTag,			// if .. elif .. else statement
 
     // Named value node
-    VarDclTag = ValueGroup + NamedNode,
+    VarDclTag = ExpGroup + NamedNode,
     FnDclTag,
 
     // Unnamed type node
     TypeNameUseTag = TypeGroup, // Type name use node
-    FnSigType,	// Also method, closure, behavior, co-routine, thread, ...
-    VoidType,	// representing no values, e.g., no return values on a fn
+    FnSigTag,	// Also method, closure, behavior, co-routine, thread, ...
+    VoidTag,	// representing no values, e.g., no return values on a fn
 
-    RefType = TypeGroup + NamedNode,	// Reference
-    PtrType,	// Pointer
+    RefTag = TypeGroup + NamedNode,	// Reference
+    PtrTag,	// Pointer
 
-    IntNbrType = TypeGroup + NamedNode + MethodType,	// Integer
-    UintNbrType,	// Unsigned integer
-    FloatNbrType,	// Floating point number
-    StructType,	// Also interface, trait, tuple, actor, etc.
-    ArrayType,	// Also dynamic arrays? SOA?
-    PermType,
-    AllocType,
+    IntNbrTag = TypeGroup + NamedNode + MethodType,	// Integer
+    UintNbrTag,	// Unsigned integer
+    FloatNbrTag,	// Floating point number
+    StructTag,	// Also interface, trait, tuple, actor, etc.
+    ArrayTag,	// Also dynamic arrays? SOA?
+    PermTag,
+    AllocTag,
 };
 
 // *****************

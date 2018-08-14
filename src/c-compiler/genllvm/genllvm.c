@@ -45,14 +45,14 @@ void genlParmVar(GenState *gen, VarDclAstNode *var) {
 
 // Generate a function
 void genlFn(GenState *gen, FnDclAstNode *fnnode) {
-    if (fnnode->value->asttype == IntrinsicNode)
+    if (fnnode->value->asttype == IntrinsicTag)
         return;
 
 	LLVMValueRef svfn = gen->fn;
 	LLVMBuilderRef svbuilder = gen->builder;
 	FnSigAstNode *fnsig = (FnSigAstNode*)fnnode->vtype;
 
-	assert(fnnode->value->asttype == BlockNode);
+	assert(fnnode->value->asttype == BlockTag);
 	gen->fn = fnnode->llvmvar;
 
 	// Attach block and builder to function
@@ -123,7 +123,7 @@ void genlGloVarName(GenState *gen, VarDclAstNode *glovar) {
 // Generate LLVMValueRef for a global function
 void genlGloFnName(GenState *gen, FnDclAstNode *glofn) {
     // Add function to the module
-    if (glofn->value == NULL || glofn->value->asttype != IntrinsicNode)
+    if (glofn->value == NULL || glofn->value->asttype != IntrinsicTag)
         glofn->llvmvar = LLVMAddFunction(gen->module, genlGlobalName((NamedAstNode*)glofn), genlType(gen, glofn->vtype));
 }
 
@@ -159,11 +159,11 @@ void genlModule(GenState *gen, ModuleAstNode *mod) {
 			break;
 
 		// Generate allocator definition
-		case AllocType:
+		case AllocTag:
 			genlType(gen, nodep);
 			break;
 
-		case ModuleNode:
+		case ModuleTag:
 			genlModule(gen, (ModuleAstNode*)nodep);
 			break;
 
@@ -179,7 +179,7 @@ void genlModule(GenState *gen, ModuleAstNode *mod) {
 void genlPackage(GenState *gen, ModuleAstNode *mod) {
 	char *error = NULL;
 
-	assert(mod->asttype == ModuleNode);
+	assert(mod->asttype == ModuleTag);
 	gen->module = LLVMModuleCreateWithNameInContext(gen->srcname, gen->context);
 	genlModule(gen, mod);
 	// Verify generated IR

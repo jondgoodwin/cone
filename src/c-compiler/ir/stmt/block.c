@@ -14,7 +14,7 @@
 // Create a new block node
 BlockAstNode *newBlockNode() {
 	BlockAstNode *blk;
-	newNode(blk, BlockAstNode, BlockNode);
+	newNode(blk, BlockAstNode, BlockTag);
 	blk->vtype = voidType;
 	blk->stmts = newNodes(8);
 	return blk;
@@ -51,11 +51,11 @@ void blockResolvePass(PassState *pstate, BlockAstNode *blk) {
         // Ensure 'return', 'break', 'continue' only appear as last statement in a block
         if (cnt > 1) {
             switch ((*nodesp)->asttype) {
-            case ReturnNode:
+            case ReturnTag:
                 errorMsgNode(*nodesp, ErrorRetNotLast, "return may only appear as the last statement in a block"); break;
-            case BreakNode:
+            case BreakTag:
                 errorMsgNode(*nodesp, ErrorRetNotLast, "break may only appear as the last statement in a block"); break;
-            case ContinueNode:
+            case ContinueTag:
                 errorMsgNode(*nodesp, ErrorRetNotLast, "continue may only appear as the last statement in a block"); break;
             }
         }
@@ -90,7 +90,7 @@ void blockPass(PassState *pstate, BlockAstNode *blk) {
 // Create a new If node
 IfAstNode *newIfNode() {
 	IfAstNode *ifnode;
-	newNode(ifnode, IfAstNode, IfNode);
+	newNode(ifnode, IfAstNode, IfTag);
 	ifnode->condblk = newNodes(4);
 	ifnode->vtype = voidType;
 	return ifnode;
@@ -131,9 +131,9 @@ void ifRemoveReturns(IfAstNode *ifnode) {
 		INode **laststmt;
 		cnt--; nodesp++;
 		laststmt = &nodesLast(((BlockAstNode*)*nodesp)->stmts);
-		if ((*laststmt)->asttype == ReturnNode)
+		if ((*laststmt)->asttype == ReturnTag)
 			*laststmt = ((ReturnAstNode*)*laststmt)->exp;
-		if ((*laststmt)->asttype == IfNode)
+		if ((*laststmt)->asttype == IfTag)
 			ifRemoveReturns((IfAstNode*)*laststmt);
 	}
 }
@@ -158,7 +158,7 @@ void ifPass(PassState *pstate, IfAstNode *ifnode) {
 // Create a new While node
 WhileAstNode *newWhileNode() {
 	WhileAstNode *node;
-	newNode(node, WhileAstNode, WhileNode);
+	newNode(node, WhileAstNode, WhileTag);
 	node->blk = NULL;
 	return node;
 }
@@ -194,7 +194,7 @@ void breakPass(PassState *pstate, INode *node) {
 // Create a new intrinsic node
 IntrinsicAstNode *newIntrinsicNode(int16_t intrinsic) {
 	IntrinsicAstNode *intrinsicNode;
-	newNode(intrinsicNode, IntrinsicAstNode, IntrinsicNode);
+	newNode(intrinsicNode, IntrinsicAstNode, IntrinsicTag);
 	intrinsicNode->intrinsicFn = intrinsic;
 	return intrinsicNode;
 }
@@ -211,7 +211,7 @@ void intrinsicPass(PassState *pstate, IntrinsicAstNode *intrinsicNode) {
 // Create a new return statement node
 ReturnAstNode *newReturnNode() {
 	ReturnAstNode *node;
-	newNode(node, ReturnAstNode, ReturnNode);
+	newNode(node, ReturnAstNode, ReturnTag);
 	node->exp = voidType;
 	return node;
 }
@@ -228,7 +228,7 @@ void returnPrint(ReturnAstNode *node) {
 // - NameDcl turns fn block's final expression into an implicit return
 void returnPass(PassState *pstate, ReturnAstNode *node) {
 	// If we are returning the value from an 'if', recursively strip out any of its path's redudant 'return's
-	if (pstate->pass == TypeCheck && node->exp->asttype == IfNode)
+	if (pstate->pass == TypeCheck && node->exp->asttype == IfTag)
 		ifRemoveReturns((IfAstNode*)(node->exp));
 
 	// Process the return's expression

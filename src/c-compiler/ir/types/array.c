@@ -13,7 +13,7 @@
 // Create a new array type whose info will be filled in afterwards
 ArrayAstNode *newArrayNode() {
 	ArrayAstNode *anode;
-	newNode(anode, ArrayAstNode, ArrayType);
+	newNode(anode, ArrayAstNode, ArrayTag);
     anode->vtype = NULL;
     anode->owner = NULL;
     anode->namesym = anonName;

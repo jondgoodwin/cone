@@ -36,7 +36,7 @@ void varDclPrint(VarDclAstNode *name) {
 	inodePrintNode(name->vtype);
 	if (name->value) {
 		inodeFprint(" = ");
-		if (name->value->asttype == BlockNode)
+		if (name->value->asttype == BlockTag)
 			inodePrintNL();
 		inodePrintNode(name->value);
 	}
@@ -88,7 +88,7 @@ void varDclPass(PassState *pstate, VarDclAstNode *name) {
 	case NameResolution:
 		// Hook into global name table if not a global owner by module
 		// (because those have already been hooked by module for forward references)
-		/*if (name->owner->asttype != ModuleNode)
+		/*if (name->owner->asttype != ModuleTag)
 			namespaceHook((NamedAstNode*)name, name->namesym);*/
     	varDclNameResolve(pstate, name);
 		break;

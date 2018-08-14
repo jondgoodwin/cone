@@ -15,7 +15,7 @@
 // Create a new permission node
 PermAstNode *newPermNode(Name *namesym, char ptyp, uint16_t flags) {
 	PermAstNode *node;
-	newNode(node, PermAstNode, PermType);
+	newNode(node, PermAstNode, PermTag);
     node->vtype = NULL;
     node->owner = NULL;
     node->namesym = namesym;
@@ -49,10 +49,10 @@ uint16_t permGetFlags(INode *node) {
 		return ((VarDclAstNode*)node)->perm->flags;
     case FnDclTag:
         return immPerm->flags;
-    case DerefNode:
+    case DerefTag:
 	{
 		PtrAstNode *vtype = (PtrAstNode*)typeGetVtype(((DerefAstNode *)node)->exp);
-		assert(vtype->asttype == RefType || vtype->asttype == PtrType);
+		assert(vtype->asttype == RefTag || vtype->asttype == PtrTag);
 		return vtype->perm->flags;
 	}
 	default:
@@ -62,7 +62,7 @@ uint16_t permGetFlags(INode *node) {
 
 // Is Lval mutable
 int permIsMutable(INode *lval) {
-	if (lval->asttype == FnCallNode) {
+	if (lval->asttype == FnCallTag) {
 		FnCallAstNode *fncall = (FnCallAstNode *)lval;
         if (fncall->methprop)
             return MayWrite & permGetFlags(fncall->objfn) & permGetFlags((INode*)fncall->methprop);

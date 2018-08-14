@@ -347,7 +347,7 @@ INode *parseCmp(ParseState *parse) {
 // Parse 'not' logical operator
 INode *parseNotLogic(ParseState *parse) {
 	if (lexIsToken(NotToken)) {
-		LogicAstNode *node = newLogicAstNode(NotLogicNode);
+		LogicAstNode *node = newLogicAstNode(NotLogicTag);
 		lexNextToken();
 		node->lexp = parseNotLogic(parse);
 		return (INode*)node;
@@ -359,7 +359,7 @@ INode *parseNotLogic(ParseState *parse) {
 INode *parseAndLogic(ParseState *parse) {
 	INode *lhnode = parseNotLogic(parse);
 	while (lexIsToken(AndToken)) {
-		LogicAstNode *node = newLogicAstNode(AndLogicNode);
+		LogicAstNode *node = newLogicAstNode(AndLogicTag);
 		lexNextToken();
 		node->lexp = lhnode;
 		node->rexp = parseNotLogic(parse);
@@ -372,7 +372,7 @@ INode *parseAndLogic(ParseState *parse) {
 INode *parseOrLogic(ParseState *parse) {
 	INode *lhnode = parseAndLogic(parse);
 	while (lexIsToken(OrToken)) {
-		LogicAstNode *node = newLogicAstNode(OrLogicNode);
+		LogicAstNode *node = newLogicAstNode(OrLogicTag);
 		lexNextToken();
 		node->lexp = lhnode;
 		node->rexp = parseAndLogic(parse);

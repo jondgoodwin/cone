@@ -17,19 +17,19 @@ Nodes *nbrsubtypes;
 void stdNbrInit() {
 	nbrsubtypes = newNodes(8);	// Needs 'copy' etc.
 
-	boolType = newNbrTypeNode("Bool", UintNbrType, 1);
-	u8Type = newNbrTypeNode("u8", UintNbrType, 8);
-	u16Type = newNbrTypeNode("u16", UintNbrType, 16);
-	u32Type = newNbrTypeNode("u32", UintNbrType, 32);
-	u64Type = newNbrTypeNode("u64", UintNbrType, 64);
-	usizeType = newNbrTypeNode("usize", UintNbrType, 0);
-	i8Type = newNbrTypeNode("i8", IntNbrType, 8);
-	i16Type = newNbrTypeNode("i16", IntNbrType, 16);
-	i32Type = newNbrTypeNode("i32", IntNbrType, 32);
-	i64Type = newNbrTypeNode("i64", IntNbrType, 64);
-	isizeType = newNbrTypeNode("isize", UintNbrType, 0);
-	f32Type = newNbrTypeNode("f32", FloatNbrType, 32);
-	f64Type = newNbrTypeNode("f64", FloatNbrType, 64);
+	boolType = newNbrTypeNode("Bool", UintNbrTag, 1);
+	u8Type = newNbrTypeNode("u8", UintNbrTag, 8);
+	u16Type = newNbrTypeNode("u16", UintNbrTag, 16);
+	u32Type = newNbrTypeNode("u32", UintNbrTag, 32);
+	u64Type = newNbrTypeNode("u64", UintNbrTag, 64);
+	usizeType = newNbrTypeNode("usize", UintNbrTag, 0);
+	i8Type = newNbrTypeNode("i8", IntNbrTag, 8);
+	i16Type = newNbrTypeNode("i16", IntNbrTag, 16);
+	i32Type = newNbrTypeNode("i32", IntNbrTag, 32);
+	i64Type = newNbrTypeNode("i64", IntNbrTag, 64);
+	isizeType = newNbrTypeNode("isize", UintNbrTag, 0);
+	f32Type = newNbrTypeNode("f32", FloatNbrTag, 32);
+	f64Type = newNbrTypeNode("f64", FloatNbrTag, 64);
 
 	// Reference to a literal string
 	ArrayAstNode *strArr = newArrayNode();
@@ -93,7 +93,7 @@ NbrAstNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
 	}
 
 	// Bitwise operators (integer only)
-	if (typ != FloatNbrType) {
+	if (typ != FloatNbrTag) {
 		opsym = nametblFind("~", 1);
 		methnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)unarysig, (INode *)newIntrinsicNode(NotIntrinsic)));
 		opsym = nametblFind("&", 1);

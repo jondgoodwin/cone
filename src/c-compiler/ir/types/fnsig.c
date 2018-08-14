@@ -13,7 +13,7 @@
 // Create a new function signature node
 FnSigAstNode *newFnSigNode() {
 	FnSigAstNode *sig;
-	newNode(sig, FnSigAstNode, FnSigType);
+	newNode(sig, FnSigAstNode, FnSigTag);
 	sig->parms = newNodes(8);
 	sig->rettype = voidType;
 	return sig;

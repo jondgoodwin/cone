@@ -38,5 +38,5 @@ void nbrTypePrint(NbrAstNode *node) {
 
 // Is a number-typed node
 int isNbr(INode *node) {
-	return (node->asttype == IntNbrType || node->asttype == UintNbrType || node->asttype == FloatNbrType);
+	return (node->asttype == IntNbrTag || node->asttype == UintNbrTag || node->asttype == FloatNbrTag);
 }
