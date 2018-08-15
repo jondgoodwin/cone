@@ -17,27 +17,27 @@ Name *thisName;  // "this"
 INode *voidType;
 
 // Built-in permission types - for implicit (non-declared but known) permissions
-PermAstNode *uniPerm;
-PermAstNode *mutPerm;
-PermAstNode *immPerm;
-PermAstNode *constPerm;
-PermAstNode *mutxPerm;
-PermAstNode *idPerm;
+PermNode *uniPerm;
+PermNode *mutPerm;
+PermNode *immPerm;
+PermNode *constPerm;
+PermNode *mutxPerm;
+PermNode *idPerm;
 
 // Primitive numeric types - for implicit (nondeclared but known) types
-NbrAstNode *boolType;	// i1
-NbrAstNode *i8Type;
-NbrAstNode *i16Type;
-NbrAstNode *i32Type;
-NbrAstNode *i64Type;
-NbrAstNode *isizeType;
-NbrAstNode *u8Type;
-NbrAstNode *u16Type;
-NbrAstNode *u32Type;
-NbrAstNode *u64Type;
-NbrAstNode *usizeType;
-NbrAstNode *f32Type;
-NbrAstNode *f64Type;
+NbrNode *boolType;	// i1
+NbrNode *i8Type;
+NbrNode *i16Type;
+NbrNode *i32Type;
+NbrNode *i64Type;
+NbrNode *isizeType;
+NbrNode *u8Type;
+NbrNode *u16Type;
+NbrNode *u32Type;
+NbrNode *u64Type;
+NbrNode *usizeType;
+NbrNode *f32Type;
+NbrNode *f64Type;
 
 void stdlibInit();
 void keywordInit();

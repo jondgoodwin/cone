@@ -13,9 +13,9 @@
 
 Name *keyAdd(char *keyword, uint16_t toktype) {
 	Name *sym;
-	NamedAstNode *node;
+	INamedNode *node;
 	sym = nametblFind(keyword, strlen(keyword));
-	sym->node = node = (NamedAstNode*)memAllocBlk(sizeof(INode));
+	sym->node = node = (INamedNode*)memAllocBlk(sizeof(INode));
 	node->asttype = KeywordTag;
 	node->flags = toktype;
 	return sym;
@@ -44,10 +44,10 @@ void keywordInit() {
 	keyAdd("false", falseToken);
 }
 
-PermAstNode *newPermNodeStr(char *name, char ptyp, uint16_t flags) {
+PermNode *newPermNodeStr(char *name, char ptyp, uint16_t flags) {
     Name *namesym = nametblFind(name, strlen(name));
-    PermAstNode *perm = newPermNode(namesym, ptyp, flags);
-    namesym->node = (NamedAstNode*)perm;
+    PermNode *perm = newPermNode(namesym, ptyp, flags);
+    namesym->node = (INamedNode*)perm;
     return perm;
 }
 

@@ -169,7 +169,7 @@ void nametblInit() {
 
 // An entry for preserving the node that was in global name table for the name
 typedef struct {
-    NamedAstNode *node;       // The previous node to restore on pop
+    INamedNode *node;       // The previous node to restore on pop
     Name *name;          // The name the node was indexed as
 } HookTableEntry;
 
@@ -230,7 +230,7 @@ void nametblHookGrow() {
 }
 
 // Hook the named node in the current hooktable
-void nametblHookNode(NamedAstNode *node) {
+void nametblHookNode(INamedNode *node) {
     HookTable *tablemeta = &gHookTables[gHookTablePos];
     if (tablemeta->size + 1 >= tablemeta->alloc)
         nametblHookGrow();
@@ -241,7 +241,7 @@ void nametblHookNode(NamedAstNode *node) {
 }
 
 // Hook the named node using an alias into the current hooktable
-void nametblHookAlias(Name *name, NamedAstNode *node) {
+void nametblHookAlias(Name *name, INamedNode *node) {
     HookTable *tablemeta = &gHookTables[gHookTablePos];
     if (tablemeta->size + 1 >= tablemeta->alloc)
         nametblHookGrow();

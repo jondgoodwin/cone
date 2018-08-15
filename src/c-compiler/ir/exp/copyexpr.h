@@ -14,24 +14,24 @@ enum AssignType {
 };
 
 // Assignment node
-typedef struct AssignAstNode {
-	TypedAstHdr;
+typedef struct AssignNode {
+	ITypedNodeHdr;
 	INode *lval;
 	INode *rval;
 	int16_t assignType;
-} AssignAstNode;
+} AssignNode;
 
-typedef struct AddrAstNode {
-	TypedAstHdr;
+typedef struct AddrNode {
+	ITypedNodeHdr;
 	INode *exp;
-} AddrAstNode;
+} AddrNode;
 
-AssignAstNode *newAssignAstNode(int16_t assigntype, INode *lval, INode *rval);
-void assignPrint(AssignAstNode *node);
-void assignPass(PassState *pstate, AssignAstNode *node);
+AssignNode *newAssignNode(int16_t assigntype, INode *lval, INode *rval);
+void assignPrint(AssignNode *node);
+void assignPass(PassState *pstate, AssignNode *node);
 
-AddrAstNode *newAddrAstNode();
-void addrPrint(AddrAstNode *node);
-void addrPass(PassState *pstate, AddrAstNode *node);
+AddrNode *newAddrNode();
+void addrPrint(AddrNode *node);
+void addrPass(PassState *pstate, AddrNode *node);
 
 #endif

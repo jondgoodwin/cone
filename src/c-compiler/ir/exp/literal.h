@@ -9,31 +9,31 @@
 #define literal_h
 
 // Unsigned integer literal
-typedef struct ULitAstNode {
-	TypedAstHdr;
+typedef struct ULitNode {
+	ITypedNodeHdr;
 	uint64_t uintlit;
-} ULitAstNode;
+} ULitNode;
 
 // Float literal
-typedef struct FLitAstNode {
-	TypedAstHdr;
+typedef struct FLitNode {
+	ITypedNodeHdr;
 	double floatlit;
-} FLitAstNode;
+} FLitNode;
 
 // String literal
-typedef struct SLitAstNode {
-	TypedAstHdr;
+typedef struct SLitNode {
+	ITypedNodeHdr;
 	char *strlit;
-} SLitAstNode;
+} SLitNode;
 
-ULitAstNode *newULitNode(uint64_t nbr, INode *type);
-void ulitPrint(ULitAstNode *node);
+ULitNode *newULitNode(uint64_t nbr, INode *type);
+void ulitPrint(ULitNode *node);
 
-FLitAstNode *newFLitNode(double nbr, INode *type);
-void flitPrint(FLitAstNode *node);
+FLitNode *newFLitNode(double nbr, INode *type);
+void flitPrint(FLitNode *node);
 
-SLitAstNode *newSLitNode(char *str, INode *type);
-void slitPrint(SLitAstNode *node);
+SLitNode *newSLitNode(char *str, INode *type);
+void slitPrint(SLitNode *node);
 
 int litIsLiteral(INode* node);
 

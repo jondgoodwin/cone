@@ -26,14 +26,14 @@ typedef struct GenState {
 	char *srcname;
 } GenState;
 
-void genllvm(ConeOptions *opt, ModuleAstNode *mod);
-void genlFn(GenState *gen, FnDclAstNode *fnnode);
-void genlGloVarName(GenState *gen, VarDclAstNode *glovar);
-void genlGloFnName(GenState *gen, FnDclAstNode *glofn);
+void genllvm(ConeOptions *opt, ModuleNode *mod);
+void genlFn(GenState *gen, FnDclNode *fnnode);
+void genlGloVarName(GenState *gen, VarDclNode *glovar);
+void genlGloFnName(GenState *gen, FnDclNode *glofn);
 
 // genlstmt.c
 LLVMBasicBlockRef genlInsertBlock(GenState *gen, char *name);
-LLVMValueRef genlBlock(GenState *gen, BlockAstNode *blk);
+LLVMValueRef genlBlock(GenState *gen, BlockNode *blk);
 
 // genlexpr.c
 LLVMTypeRef genlType(GenState *gen, INode *typ);

@@ -11,32 +11,32 @@
 // Block is a ordered sequence of executable statements within a function.
 // It is also a local execution context/namespace owning local variables.
 // Local variables are uniquely named and cannot be forward referenced.
-typedef struct BlockAstNode {
-	TypedAstHdr;
+typedef struct BlockNode {
+	ITypedNodeHdr;
 	Nodes *stmts;
     uint16_t scope;
-} BlockAstNode;
+} BlockNode;
 
 // If statement
-typedef struct IfAstNode {
-	TypedAstHdr;
+typedef struct IfNode {
+	ITypedNodeHdr;
 	Nodes *condblk;
-} IfAstNode;
+} IfNode;
 
 // While statement
-typedef struct WhileAstNode {
+typedef struct WhileNode {
 	INodeHdr;
 	INode *condexp;
 	INode *blk;
-} WhileAstNode;
+} WhileNode;
 
 // Return/yield statement
-typedef struct ReturnAstNode {
+typedef struct ReturnNode {
 	INodeHdr;
 	INode *exp;
-} ReturnAstNode;
+} ReturnNode;
 
-// The various intrinsic functions supported by IntrinsicAstNode
+// The various intrinsic functions supported by IntrinsicNode
 enum IntrinsicFn {
 	// Arithmetic
 	NegIntrinsic,
@@ -68,29 +68,29 @@ enum IntrinsicFn {
 
 // An internal operation (e.g., add). 
 // Used as an alternative to FnDcl->value = Block within a function declaration.
-typedef struct IntrinsicAstNode {
+typedef struct IntrinsicNode {
 	INodeHdr;
 	int16_t intrinsicFn;
-} IntrinsicAstNode;
+} IntrinsicNode;
 
-BlockAstNode *newBlockNode();
-void blockPrint(BlockAstNode *blk);
-void blockPass(PassState *pstate, BlockAstNode *node);
+BlockNode *newBlockNode();
+void blockPrint(BlockNode *blk);
+void blockPass(PassState *pstate, BlockNode *node);
 
-IfAstNode *newIfNode();
-void ifPrint(IfAstNode *ifnode);
-void ifPass(PassState *pstate, IfAstNode *ifnode);
+IfNode *newIfNode();
+void ifPrint(IfNode *ifnode);
+void ifPass(PassState *pstate, IfNode *ifnode);
 
-WhileAstNode *newWhileNode();
-void whilePrint(WhileAstNode *wnode);
-void whilePass(PassState *pstate, WhileAstNode *wnode);
+WhileNode *newWhileNode();
+void whilePrint(WhileNode *wnode);
+void whilePass(PassState *pstate, WhileNode *wnode);
 
 void breakPass(PassState *pstate, INode *node);
 
-IntrinsicAstNode *newIntrinsicNode(int16_t intrinsicFn);
+IntrinsicNode *newIntrinsicNode(int16_t intrinsicFn);
 
-ReturnAstNode *newReturnNode();
-void returnPrint(ReturnAstNode *node);
-void returnPass(PassState *pstate, ReturnAstNode *node);
+ReturnNode *newReturnNode();
+void returnPrint(ReturnNode *node);
+void returnPass(PassState *pstate, ReturnNode *node);
 
 #endif

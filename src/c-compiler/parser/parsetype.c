@@ -18,10 +18,10 @@
 #include <assert.h>
 
 // Parse a permission, return defperm if not found
-PermAstNode *parsePerm(PermAstNode *defperm) {
+PermNode *parsePerm(PermNode *defperm) {
 	if (lexIsToken(PermToken)) {
-		PermAstNode *perm;
-		perm = (PermAstNode*)lex->val.ident->node;
+		PermNode *perm;
+		perm = (PermNode*)lex->val.ident->node;
 		lexNextToken();
 		return perm;
 	}
@@ -30,7 +30,7 @@ PermAstNode *parsePerm(PermAstNode *defperm) {
 }
 
 // Parse an allocator + permission for a reference type
-void parseAllocPerm(PtrAstNode *refnode) {
+void parseAllocPerm(PtrNode *refnode) {
 	if (lexIsToken(IdentToken)
 		&& lex->val.ident->node && lex->val.ident->node->asttype == AllocTag) {
 		refnode->alloc = (INode*)lex->val.ident->node;
@@ -44,11 +44,11 @@ void parseAllocPerm(PtrAstNode *refnode) {
 }
 
 // Parse a variable declaration
-VarDclAstNode *parseVarDcl(ParseState *parse, PermAstNode *defperm, uint16_t flags) {
-	VarDclAstNode *varnode;
+VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
+	VarDclNode *varnode;
 	Name *namesym = NULL;
 	INode *vtype;
-	PermAstNode *perm;
+	PermNode *perm;
 	INode *val;
 
 	// Grab the permission type
@@ -88,7 +88,7 @@ VarDclAstNode *parseVarDcl(ParseState *parse, PermAstNode *defperm, uint16_t fla
 
 // Parse a pointer type
 INode *parsePtrType(ParseState *parse) {
-	PtrAstNode *ptype = newPtrTypeNode();
+	PtrNode *ptype = newPtrTypeNode();
 	if (lexIsToken(StarToken))
 		ptype->asttype = PtrTag;
 	lexNextToken();
@@ -120,8 +120,8 @@ INode *parsePtrType(ParseState *parse) {
 
 // Parse a struct
 INode *parseStruct(ParseState *parse) {
-	NamedAstNode *svowner = parse->owner;
-	StructAstNode *strnode;
+	INamedNode *svowner = parse->owner;
+	StructNode *strnode;
 	int16_t propertynbr = 0;
 
     // Capture the kind of type, then get next token (name)
@@ -133,7 +133,7 @@ INode *parseStruct(ParseState *parse) {
         strnode = newStructNode(lex->val.ident);
         strnode->asttype = tag;
         strnode->owner = parse->owner;
-        parse->owner = (NamedAstNode *)strnode;
+        parse->owner = (INamedNode *)strnode;
         lexNextToken();
     }
     else {
@@ -146,12 +146,12 @@ INode *parseStruct(ParseState *parse) {
 		lexNextToken();
 		while (1) {
 			if (lexIsToken(FnToken)) {
-				FnDclAstNode *fn = (FnDclAstNode*)parseFn(parse, FlagMethProp, ParseMayName | ParseMayImpl);
+				FnDclNode *fn = (FnDclNode*)parseFn(parse, FlagMethProp, ParseMayName | ParseMayImpl);
                 if (fn && isNamedNode(fn))
                     methnodesAddFn(&strnode->methprops, fn);
 			}
             else if (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
-                VarDclAstNode *property = parseVarDcl(parse, mutPerm, ParseMayImpl | ParseMaySig);
+                VarDclNode *property = parseVarDcl(parse, mutPerm, ParseMayImpl | ParseMaySig);
                 property->scope = 1;
                 property->index = propertynbr++;
                 property->flags |= FlagMethProp;
@@ -172,9 +172,9 @@ INode *parseStruct(ParseState *parse) {
 	return (INode*)strnode;
 }
 
-void parseInjectSelf(FnSigAstNode *fnsig, Name *typename) {
-	NameUseAstNode *selftype = newNameUseNode(typename);
-	VarDclAstNode *selfparm = newVarDclNode(nametblFind("self", 4), VarDclTag, (INode*)selftype, constPerm, NULL);
+void parseInjectSelf(FnSigNode *fnsig, Name *typename) {
+	NameUseNode *selftype = newNameUseNode(typename);
+	VarDclNode *selfparm = newVarDclNode(nametblFind("self", 4), VarDclTag, (INode*)selftype, constPerm, NULL);
 	selfparm->scope = 1;
 	selfparm->index = 0;
 	nodesAdd(&fnsig->parms, (INode*)selfparm);
@@ -182,7 +182,7 @@ void parseInjectSelf(FnSigAstNode *fnsig, Name *typename) {
 
 // Parse a function's type signature
 INode *parseFnSig(ParseState *parse) {
-	FnSigAstNode *fnsig;
+	FnSigNode *fnsig;
 	int16_t parmnbr = 0;
 	uint16_t parseflags = ParseMaySig | ParseMayImpl;
 
@@ -196,7 +196,7 @@ INode *parseFnSig(ParseState *parse) {
 		if (lexIsToken(RParenToken) && isTypeNode(parse->owner))
 			parseInjectSelf(fnsig, parse->owner->namesym);
 		while (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
-			VarDclAstNode *parm = parseVarDcl(parse, immPerm, parseflags);
+			VarDclNode *parm = parseVarDcl(parse, immPerm, parseflags);
 			// Do special inference if function is a type's method
 			if (isTypeNode(parse->owner)) {
 				// Create default self parm, if 'self' was not specified
@@ -209,7 +209,7 @@ INode *parseFnSig(ParseState *parse) {
 					parm->vtype = (INode*)newNameUseNode(parse->owner->namesym);
 				}
 				else if (parm->vtype->asttype == RefTag) {
-					PtrAstNode *refnode = (PtrAstNode *)parm->vtype;
+					PtrNode *refnode = (PtrNode *)parm->vtype;
 					if (refnode->pvtype == voidType) {
 						refnode->pvtype = (INode*)newNameUseNode(parse->owner->namesym);
 					}
@@ -240,7 +240,7 @@ INode *parseFnSig(ParseState *parse) {
 
 // Parse an array type
 INode *parseArrayType(ParseState *parse) {
-	ArrayAstNode *atype = newArrayNode();
+	ArrayNode *atype = newArrayNode();
 	lexNextToken();
 
 	atype->size = 0;

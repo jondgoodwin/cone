@@ -8,21 +8,21 @@
 #ifndef fnsig_h
 #define fnsig_h
 
-typedef struct FnCallAstNode FnCallAstNode;
+typedef struct FnCallNode FnCallNode;
 
 // Function signature is a type that defines the parameters and return type for a function.
 // A function signature is never named (although a ptr/ref to a fnsig may be named).
 // The parameter declaration list represents a namespace of local variables.
-typedef struct FnSigAstNode {
+typedef struct FnSigNode {
 	INodeHdr;
     Nodes *parms;			// Declared parameter nodes w/ defaults (VarDclTag)
     INode *rettype;		// void, a single type or a type tuple
-} FnSigAstNode;
+} FnSigNode;
 
-FnSigAstNode *newFnSigNode();
-void fnSigPrint(FnSigAstNode *node);
-void fnSigPass(PassState *pstate, FnSigAstNode *name);
-int fnSigEqual(FnSigAstNode *node1, FnSigAstNode *node2);
-int fnSigMatchesCall(FnSigAstNode *to, Nodes *args);
+FnSigNode *newFnSigNode();
+void fnSigPrint(FnSigNode *node);
+void fnSigPass(PassState *pstate, FnSigNode *name);
+int fnSigEqual(FnSigNode *node1, FnSigNode *node2);
+int fnSigMatchesCall(FnSigNode *to, Nodes *args);
 
 #endif

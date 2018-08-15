@@ -9,15 +9,15 @@
 #define nodes_h
 
 typedef struct INode INode;
-typedef struct NamedAstNode NamedAstNode;
-typedef struct OwnerAstNode OwnerAstNode;
+typedef struct INamedNode INamedNode;
+typedef struct OwnerNode OwnerNode;
 typedef struct Name Name;
 
 #include <stdint.h>
 
-// *** Nodes: Dynamically-sized array of AstNodes ***
+// *** Nodes: Dynamically-sized array of Nodes ***
 
-// Header for a variable-sized structure holding a list of AstNodes
+// Header for a variable-sized structure holding a list of Nodes
 // The nodes immediately follow the header
 typedef struct Nodes {
 	uint32_t used;
@@ -28,7 +28,7 @@ typedef struct Nodes {
 Nodes *newNodes(int size);
 void nodesAdd(Nodes **nodesp, INode *node);
 void nodesInsert(Nodes **nodesp, INode *node, size_t index);
-    NamedAstNode *nodesFind(Nodes *nodes, Name *name);
+    INamedNode *nodesFind(Nodes *nodes, Name *name);
 
 #define nodesNodes(nodes) ((INode**)((nodes)+1))
 #define nodesFor(nodes, cnt, nodesp) nodesp = (INode**)((nodes)+1), cnt = (nodes)->used; cnt; cnt--, nodesp++

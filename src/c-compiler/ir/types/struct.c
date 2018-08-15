@@ -11,9 +11,9 @@
 #include "../nametbl.h"
 
 // Create a new struct type whose info will be filled in afterwards
-StructAstNode *newStructNode(Name *namesym) {
-	StructAstNode *snode;
-	newNode(snode, StructAstNode, StructTag);
+StructNode *newStructNode(Name *namesym) {
+	StructNode *snode;
+	newNode(snode, StructNode, StructTag);
     snode->vtype = NULL;
     snode->owner = NULL;
     snode->namesym = namesym;
@@ -24,18 +24,18 @@ StructAstNode *newStructNode(Name *namesym) {
 }
 
 // Serialize a struct type
-void structPrint(StructAstNode *node) {
+void structPrint(StructNode *node) {
 	inodeFprint(node->asttype == StructTag? "struct %s {}" : "alloc %s {}", &node->namesym->namestr);
 }
 
 // Semantically analyze a struct type
-void structPass(PassState *pstate, StructAstNode *node) {
+void structPass(PassState *pstate, StructNode *node) {
     nametblHookPush();
     INode **nodesp;
     uint32_t cnt;
     for (methnodesFor(&node->methprops, cnt, nodesp)) {
         if (isNamedNode(*nodesp))
-            nametblHookNode((NamedAstNode*)*nodesp);
+            nametblHookNode((INamedNode*)*nodesp);
     }
     for (methnodesFor(&node->methprops, cnt, nodesp)) {
         inodeWalk(pstate, (INode**)nodesp);
@@ -44,12 +44,12 @@ void structPass(PassState *pstate, StructAstNode *node) {
 }
 
 // Compare two struct signatures to see if they are equivalent
-int structEqual(StructAstNode *node1, StructAstNode *node2) {
+int structEqual(StructNode *node1, StructNode *node2) {
 	// inodes must match exactly in order
 	return 1;
 }
 
 // Will from struct coerce to a to struct (we know they are not the same)
-int structCoerces(StructAstNode *to, StructAstNode *from) {
+int structCoerces(StructNode *to, StructNode *from) {
 	return 1;
 }

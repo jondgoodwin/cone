@@ -11,16 +11,16 @@
 #include "../nametbl.h"
 
 // Create a new function signature node
-FnSigAstNode *newFnSigNode() {
-	FnSigAstNode *sig;
-	newNode(sig, FnSigAstNode, FnSigTag);
+FnSigNode *newFnSigNode() {
+	FnSigNode *sig;
+	newNode(sig, FnSigNode, FnSigTag);
 	sig->parms = newNodes(8);
 	sig->rettype = voidType;
 	return sig;
 }
 
 // Serialize the AST for a function signature
-void fnSigPrint(FnSigAstNode *sig) {
+void fnSigPrint(FnSigNode *sig) {
 	INode **nodesp;
 	uint32_t cnt;
 	inodeFprint("fn(");
@@ -34,7 +34,7 @@ void fnSigPrint(FnSigAstNode *sig) {
 }
 
 // Traverse the function signature tree
-void fnSigPass(PassState *pstate, FnSigAstNode *sig) {
+void fnSigPass(PassState *pstate, FnSigNode *sig) {
 	INode **nodesp;
 	uint32_t cnt;
 	for (nodesFor(sig->parms, cnt, nodesp))
@@ -43,7 +43,7 @@ void fnSigPass(PassState *pstate, FnSigAstNode *sig) {
 }
 
 // Compare two function signatures to see if they are equivalent
-int fnSigEqual(FnSigAstNode *node1, FnSigAstNode *node2) {
+int fnSigEqual(FnSigNode *node1, FnSigNode *node2) {
 	INode **nodes1p, **nodes2p;
 	int16_t cnt;
 
@@ -64,7 +64,7 @@ int fnSigEqual(FnSigAstNode *node1, FnSigAstNode *node2) {
 
 // Will the function call (caller) be able to call the 'to' function
 // Return 0 if not. 1 if perfect match. 2+ for imperfect matches
-int fnSigMatchesCall(FnSigAstNode *to, Nodes *args) {
+int fnSigMatchesCall(FnSigNode *to, Nodes *args) {
 	int matchsum = 1;
 
 	// Too many arguments is not a match
@@ -78,7 +78,7 @@ int fnSigMatchesCall(FnSigAstNode *to, Nodes *args) {
 	tonodesp = &nodesGet(to->parms, 0);
 	for (nodesFor(args, cnt, callnodesp)) {
 		int match;
-		switch (match = typeMatches(((TypedAstNode *)*tonodesp)->vtype, ((TypedAstNode*)*callnodesp)->vtype)) {
+		switch (match = typeMatches(((ITypedNode *)*tonodesp)->vtype, ((ITypedNode*)*callnodesp)->vtype)) {
 		case 0: return 0;
 		case 1: break;
 		default: matchsum += match;
@@ -87,7 +87,7 @@ int fnSigMatchesCall(FnSigAstNode *to, Nodes *args) {
 	}
 	// Match fails if not enough arguments & method has no default values on parms
 	if (args->used != to->parms->used 
-		&& ((VarDclAstNode *)tonodesp)->value==NULL)
+		&& ((VarDclNode *)tonodesp)->value==NULL)
 		return 0;
 
 	// It is a match; return how perfect a match it is

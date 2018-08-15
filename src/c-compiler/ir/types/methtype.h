@@ -8,10 +8,10 @@
 #ifndef methtype_h
 #define methtype_h
 
-typedef struct FnDclAstNode FnDclAstNode;
-typedef struct VarDclAstNode VarDclAstNode;
+typedef struct FnDclNode FnDclNode;
+typedef struct VarDclNode VarDclNode;
 
-// Metadata describing a variable-sized structure holding an ordered list of AstNodes
+// Metadata describing a variable-sized structure holding an ordered list of Nodes
 // These nodes are methods (potentially overloaded) or properties
 typedef struct MethNodes {
 	uint32_t used;
@@ -20,30 +20,30 @@ typedef struct MethNodes {
 } MethNodes;
 
 // Named type that supports methods (and properties)
-#define MethodTypeAstHdr \
-    NamedTypeAstHdr; \
+#define IMethodNodeHdr \
+    INamedTypeNodeHdr; \
     MethNodes methprops; \
 	Nodes *subtypes
 
 // Interface for a named type that supports methods
 // -> methods (Nodes) is the dictionary of named methods
 // -> subtypes (Nodes) is the list of trait/interface subtypes it implements
-typedef struct MethodTypeAstNode {
-    MethodTypeAstHdr;
-} MethodTypeAstNode;
+typedef struct MethodTypeNode {
+    IMethodNodeHdr;
+} MethodTypeNode;
 
 // Helper Functions
 void methnodesInit(MethNodes *mnodes, uint32_t size);
 void methnodesAdd(MethNodes *mnodes, INode *node);
-void methnodesAddFn(MethNodes *mnodes, FnDclAstNode *fnnode);
-void methnodesAddProp(MethNodes *mnodes, VarDclAstNode *fnnode);
-NamedAstNode *methnodesFind(MethNodes *mnodes, Name *name);
+void methnodesAddFn(MethNodes *mnodes, FnDclNode *fnnode);
+void methnodesAddProp(MethNodes *mnodes, VarDclNode *fnnode);
+INamedNode *methnodesFind(MethNodes *mnodes, Name *name);
 
 #define methnodesNodes(nodes) ((INode**)((nodes)+1))
 #define methnodesFor(mnodes, cnt, nodesp) nodesp = (mnodes)->nodes, cnt = (mnodes)->used; cnt; cnt--, nodesp++
 #define methnodesGet(mnodes, index) (mnodes)->nodes[index]
 #define methnodesLast(mnodes) methnodesGet(mnodes, mnodes->used-1)
 
-FnDclAstNode *methnodesFindBestMethod(FnDclAstNode *firstmethod, Nodes *args);
+FnDclNode *methnodesFindBestMethod(FnDclNode *firstmethod, Nodes *args);
 
 #endif

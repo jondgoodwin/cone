@@ -17,7 +17,7 @@
 // A name can be hashed into the global name table or a particular node's namespace.
 // The struct for a name is an unmovable allocated block in memory
 typedef struct Name {
-	NamedAstNode *node;	    // AST node currently assigned to name
+	INamedNode *node;	    // AST node currently assigned to name
 	size_t hash;			// Name's computed hash
 	unsigned char namesz;	// Number of characters in the name (<=255)
 	char namestr;	        // First byte of name's string (the rest follows)
@@ -54,8 +54,8 @@ size_t nametblUnused();
 // When the context ends, its names are unhooked, revealing the ones there before.
 void nametblHookPush();
 void nametblHookGrow();
-void nametblHookNode(NamedAstNode *node);
-void nametblHookAlias(Name *name, NamedAstNode *node);
+void nametblHookNode(INamedNode *node);
+void nametblHookAlias(Name *name, INamedNode *node);
 void nametblHookPop();
 
 #endif

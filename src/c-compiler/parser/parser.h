@@ -11,9 +11,9 @@
 #include "../ir/ir.h"
 
 typedef struct ParseState {
-	ModuleAstNode *pgmmod;	// Root module for program
-	ModuleAstNode *mod;		// Current module
-	NamedAstNode *owner;	// Current namespace owning named nodes
+	ModuleNode *pgmmod;	// Root module for program
+	ModuleNode *mod;		// Current module
+	INamedNode *owner;	// Current namespace owning named nodes
 } ParseState;
 
 // When parsing a variable definition, what syntax is allowed?
@@ -25,8 +25,8 @@ enum ParseFlags {
 };
 
 // parser.c
-ModuleAstNode *parsePgm();
-ModuleAstNode *parseModuleBlk(ParseState *parse, ModuleAstNode *mod);
+ModuleNode *parsePgm();
+ModuleNode *parseModuleBlk(ParseState *parse, ModuleNode *mod);
 INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags);
 void parseSemi();
 void parseRCurly();
@@ -41,9 +41,9 @@ INode *parseBlock(ParseState *parse);
 INode *parseExpr(ParseState *parse);
 
 // parsetype.c
-PermAstNode *parsePerm(PermAstNode *defperm);
-void parseAllocPerm(PtrAstNode *refnode);
-VarDclAstNode *parseVarDcl(ParseState *parse, PermAstNode *defperm, uint16_t flags);
+PermNode *parsePerm(PermNode *defperm);
+void parseAllocPerm(PtrNode *refnode);
+VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags);
 INode *parseFnSig(ParseState *parse);
 INode *parseStruct(ParseState *parse);
 INode *parseVtype(ParseState *parse);

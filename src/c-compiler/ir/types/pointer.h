@@ -9,20 +9,20 @@
 #define pointer_h
 
 // For pointers
-typedef struct PtrAstNode {
-	NamedTypeAstHdr;
+typedef struct PtrNode {
+	INodeHdr;
 	INode *pvtype;	// Value type
-	PermAstNode *perm;	// Permission
+	PermNode *perm;	// Permission
 	INode *alloc;		// Allocator
 	int16_t scope;		// Lifetime
-} PtrAstNode;
+} PtrNode;
 
-PtrAstNode *strType;
+PtrNode *strType;
 
-PtrAstNode *newPtrTypeNode();
-void ptrTypePrint(PtrAstNode *node);
-void ptrTypePass(PassState *pstate, PtrAstNode *name);
-int ptrTypeEqual(PtrAstNode *node1, PtrAstNode *node2);
-int ptrTypeMatches(PtrAstNode *to, PtrAstNode *from);
+PtrNode *newPtrTypeNode();
+void ptrTypePrint(PtrNode *node);
+void ptrTypePass(PassState *pstate, PtrNode *name);
+int ptrTypeEqual(PtrNode *node1, PtrNode *node2);
+int ptrTypeMatches(PtrNode *to, PtrNode *from);
 
 #endif

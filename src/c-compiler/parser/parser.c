@@ -69,7 +69,7 @@ void parseRParen() {
 
 // Parse a function block
 INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags) {
-	FnDclAstNode *fnnode;
+	FnDclNode *fnnode;
 
 	fnnode = newFnDclNode(NULL, nodeflags, NULL, NULL);
 	fnnode->owner = parse->owner;
@@ -128,7 +128,7 @@ char *parseFile() {
 	return filename;
 }
 
-void parseGlobalStmts(ParseState *parse, ModuleAstNode *mod);
+void parseGlobalStmts(ParseState *parse, ModuleNode *mod);
 
 // Parse include statement
 void parseInclude(ParseState *parse) {
@@ -173,11 +173,11 @@ INode *parseFnOrVar(ParseState *parse) {
 	return node;
 }
 
-ModuleAstNode *parseModule(ParseState *parse);
+ModuleNode *parseModule(ParseState *parse);
 
 // Parse a global area statement (within a module)
 // modAddNode adds node to module, as needed, including error message for dupes
-void parseGlobalStmts(ParseState *parse, ModuleAstNode *mod) {
+void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
     INode *node;
 
 	// Create and populate a Module node for the program
@@ -219,19 +219,19 @@ void parseGlobalStmts(ParseState *parse, ModuleAstNode *mod) {
 }
 
 // Parse a module's global statement block
-ModuleAstNode *parseModuleBlk(ParseState *parse, ModuleAstNode *mod) {
+ModuleNode *parseModuleBlk(ParseState *parse, ModuleNode *mod) {
 	parse->mod = mod;
-	modHook((ModuleAstNode*)mod->owner, mod);
+	modHook((ModuleNode*)mod->owner, mod);
 	parseGlobalStmts(parse, mod);
-	modHook(mod, (ModuleAstNode*)mod->owner);
-	parse->mod = (ModuleAstNode*)mod->owner;
+	modHook(mod, (ModuleNode*)mod->owner);
+	parse->mod = (ModuleNode*)mod->owner;
 	return mod;
 }
 
 // Parse a submodule within a program
-ModuleAstNode *parseModule(ParseState *parse) {
-	NamedAstNode *svowner = parse->owner;
-	ModuleAstNode *mod;
+ModuleNode *parseModule(ParseState *parse) {
+	INamedNode *svowner = parse->owner;
+	ModuleNode *mod;
 	char *filename, *modname;
 
 	// Parse enough to know what we are dealing with
@@ -244,7 +244,7 @@ ModuleAstNode *parseModule(ParseState *parse) {
 	// This is a new module, build it
 	mod = newModuleNode();
 	mod->owner = svowner;
-	parse->owner = (NamedAstNode *)mod;
+	parse->owner = (INamedNode *)mod;
 	mod->namesym = nametblFind(modname, strlen(modname));
 	if (lexIsToken(LCurlyToken)) {
 		lexNextToken();
@@ -262,11 +262,11 @@ ModuleAstNode *parseModule(ParseState *parse) {
 }
 
 // Parse a program = the main module
-ModuleAstNode *parsePgm() {
+ModuleNode *parsePgm() {
 	ParseState parse;
-	ModuleAstNode *mod;
+	ModuleNode *mod;
 	mod = newModuleNode();
 	parse.pgmmod = mod;
-	parse.owner = (NamedAstNode *)mod;
+	parse.owner = (INamedNode *)mod;
 	return parseModuleBlk(&parse, mod);
 }

@@ -15,9 +15,9 @@
 
 #define getVtype(node) {\
 	if (isExpNode(node)) \
-		node = ((TypedAstNode *)node)->vtype; \
+		node = ((ITypedNode *)node)->vtype; \
 	if (node->asttype == TypeNameUseTag) \
-		node = (INode*)((NameUseAstNode *)node)->dclnode; \
+		node = (INode*)((NameUseNode *)node)->dclnode; \
 }
 
 // Return value type
@@ -30,14 +30,14 @@ INode *typeGetVtype(INode *node) {
 INode *typeGetDerefType(INode *node) {
     getVtype(node);
     if (node->asttype == RefTag) {
-        node = ((PtrAstNode*)node)->pvtype;
+        node = ((PtrNode*)node)->pvtype;
         if (node->asttype == TypeNameUseTag)
-            node = (INode*)((NameUseAstNode *)node)->dclnode;
+            node = (INode*)((NameUseNode *)node)->dclnode;
     }
     else if (node->asttype == PtrTag) {
-        node = ((PtrAstNode*)node)->pvtype;
+        node = ((PtrNode*)node)->pvtype;
         if (node->asttype == TypeNameUseTag)
-            node = (INode*)((NameUseAstNode *)node)->dclnode;
+            node = (INode*)((NameUseNode *)node)->dclnode;
     }
     return node;
 }
@@ -53,9 +53,9 @@ int typeEqual(INode *node1, INode *node2) {
 	// Otherwise use type-specific equality checks
 	switch (node1->asttype) {
 	case FnSigTag:
-		return fnSigEqual((FnSigAstNode*)node1, (FnSigAstNode*)node2);
+		return fnSigEqual((FnSigNode*)node1, (FnSigNode*)node2);
 	case RefTag: case PtrTag:
-		return ptrTypeEqual((PtrAstNode*)node1, (PtrAstNode*)node2);
+		return ptrTypeEqual((PtrNode*)node1, (PtrNode*)node2);
 	default:
 		return 0;
 	}
@@ -78,9 +78,9 @@ int typeIsSame(INode *node1, INode *node2) {
 int typeMatches(INode *totype, INode *fromtype) {
 	// Convert, if needed, from names to the type declaration
 	if (totype->asttype == TypeNameUseTag)
-		totype = (INode*)((NameUseAstNode *)totype)->dclnode;
+		totype = (INode*)((NameUseNode *)totype)->dclnode;
 	if (fromtype->asttype == TypeNameUseTag)
-		fromtype = (INode*)((NameUseAstNode *)fromtype)->dclnode;
+		fromtype = (INode*)((NameUseNode *)fromtype)->dclnode;
 
 	// If they are the same value type info, types match
 	if (totype == fromtype)
@@ -91,22 +91,22 @@ int typeMatches(INode *totype, INode *fromtype) {
 	case RefTag: case PtrTag:
 		if (fromtype->asttype != RefTag && fromtype->asttype != PtrTag)
 			return 0;
-		return ptrTypeMatches((PtrAstNode*)totype, (PtrAstNode*)fromtype);
+		return ptrTypeMatches((PtrNode*)totype, (PtrNode*)fromtype);
 
 	case ArrayTag:
 		if (totype->asttype != fromtype->asttype)
 			return 0;
-		return arrayEqual((ArrayAstNode*)totype, (ArrayAstNode*)fromtype);
+		return arrayEqual((ArrayNode*)totype, (ArrayNode*)fromtype);
 
 	//case FnSigTag:
-	//	return fnSigMatches((FnSigAstNode*)totype, (FnSigAstNode*)fromtype);
+	//	return fnSigMatches((FnSigNode*)totype, (FnSigNode*)fromtype);
 
 	case UintNbrTag:
 	case IntNbrTag:
 	case FloatNbrTag:
 		if (totype->asttype != fromtype->asttype)
 			return isNbr(totype) && isNbr(fromtype) ? 4 : 0;
-		return ((NbrAstNode *)totype)->bits > ((NbrAstNode *)fromtype)->bits ? 3 : 2;
+		return ((NbrNode *)totype)->bits > ((NbrNode *)fromtype)->bits ? 3 : 2;
 
 	default:
 		return typeEqual(totype, fromtype);
@@ -123,21 +123,21 @@ int typeCoerces(INode *to, INode **from) {
 
 	// When coercing a block, do so on its last expression
 	while ((*from)->asttype == BlockTag) {
-		((TypedAstNode*)*from)->vtype = to;
-		from = &nodesLast(((BlockAstNode*)*from)->stmts);
+		((ITypedNode*)*from)->vtype = to;
+		from = &nodesLast(((BlockNode*)*from)->stmts);
 	}
 
 	// Coercing an 'if' requires we do so on all its paths
 	if ((*from)->asttype == IfTag) {
 		int16_t cnt;
 		INode **nodesp;
-		IfAstNode *ifnode = (IfAstNode*)*from;
+		IfNode *ifnode = (IfNode*)*from;
 		ifnode->vtype = to;
 		if (nodesGet(ifnode->condblk, ifnode->condblk->used - 2) != voidType)
 			errorMsgNode((INode*)ifnode, ErrorNoElse, "Missing else branch which needs to provide a value");
 		for (nodesFor(ifnode->condblk, cnt, nodesp)) {
 			cnt--; nodesp++;
-			INode **lastnode = &nodesLast(((BlockAstNode*)*nodesp)->stmts);
+			INode **lastnode = &nodesLast(((BlockNode*)*nodesp)->stmts);
 			if (!typeCoerces(to, lastnode)) {
 				errorMsgNode(*lastnode, ErrorInvType, "expression type does not match expected type");
 			}
@@ -154,7 +154,7 @@ int typeCoerces(INode *to, INode **from) {
 
 	// Add coercion operation. When both are numbers - cast between them
 	if (isNbr(to)) {
-		*from = (INode*) newCastAstNode(*from, to);
+		*from = (INode*) newCastNode(*from, to);
 		return 1;
 	}
 
@@ -169,7 +169,7 @@ int typeCopyTrait(INode *typenode) {
     // If it has a .copy method, it is CopyMethod, or else it is CopyMove.
     if (isMethodType(typenode)) {
         int copytrait = CopyBitwise;
-        MethNodes *nodes = &((MethodTypeAstNode *)typenode)->methprops;
+        MethNodes *nodes = &((MethodTypeNode *)typenode)->methprops;
         uint32_t cnt;
         INode **nodesp;
         for (methnodesFor(nodes, cnt, nodesp)) {
@@ -183,7 +183,7 @@ int typeCopyTrait(INode *typenode) {
     }
     // For references, a 'uni' reference is CopyMove and all others are CopyBitwise
     else if (typenode->asttype == RefTag) {
-        return (((PtrAstNode *)typenode)->perm->flags & MayAlias) ? CopyBitwise : CopyMove;
+        return (((PtrNode *)typenode)->perm->flags & MayAlias) ? CopyBitwise : CopyMove;
     }
     // All pointers are CopyMove (potentially unsafe to copy)
     else if (typenode->asttype == PtrTag)
@@ -207,12 +207,12 @@ char *typeMangle(char *bufp, INode *vtype) {
 	switch (vtype->asttype) {
 	case TypeNameUseTag:
 	{
-		strcpy(bufp, &((NameUseAstNode *)vtype)->dclnode->namesym->namestr);
+		strcpy(bufp, &((NameUseNode *)vtype)->dclnode->namesym->namestr);
 		break;
 	}
 	case RefTag: case PtrTag:
 	{
-		PtrAstNode *pvtype = (PtrAstNode *)vtype;
+		PtrNode *pvtype = (PtrNode *)vtype;
 		*bufp++ = '&';
 		if (pvtype->perm != constPerm) {
 			bufp = typeMangle(bufp, (INode*)pvtype->perm);
@@ -228,14 +228,14 @@ char *typeMangle(char *bufp, INode *vtype) {
 }
 
 // Create a new Void type node
-VoidTypeAstNode *newVoidNode() {
-	VoidTypeAstNode *voidnode;
-	newNode(voidnode, VoidTypeAstNode, VoidTag);
+VoidTypeNode *newVoidNode() {
+	VoidTypeNode *voidnode;
+	newNode(voidnode, VoidTypeNode, VoidTag);
 	return voidnode;
 }
 
 // Serialize the void type node
-void voidPrint(VoidTypeAstNode *voidnode) {
+void voidPrint(VoidTypeNode *voidnode) {
 	inodeFprint("void");
 }
 

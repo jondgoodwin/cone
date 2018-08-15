@@ -9,11 +9,11 @@
 #define permission_h
 
 // Permission type info
-typedef struct PermAstNode {
-	MethodTypeAstHdr;
+typedef struct PermNode {
+	IMethodNodeHdr;
 	INode *locker;
 	uint8_t ptype;
-} PermAstNode;
+} PermNode;
 
 // Permission types
 enum Perm {
@@ -42,11 +42,11 @@ enum Perm {
 // If off, the permission's designated locking mechanism must be wrapped around all content access.
 #define IsLockless 0x40
 
-PermAstNode *newPermNode(Name *namesym, char ptyp, uint16_t flags);
-void permPrint(PermAstNode *node);
+PermNode *newPermNode(Name *namesym, char ptyp, uint16_t flags);
+void permPrint(PermNode *node);
 uint16_t permGetFlags(INode *node);
 int permIsMutable(INode *lval);
-int permIsSame(PermAstNode *node1, PermAstNode *node2);
-int permMatches(PermAstNode *node1, PermAstNode *node2);
+int permIsSame(PermNode *node1, PermNode *node2);
+int permMatches(PermNode *node1, PermNode *node2);
 
 #endif

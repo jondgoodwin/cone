@@ -15,9 +15,9 @@
 #include <assert.h>
 
 // Create a new Module node
-ModuleAstNode *newModuleNode() {
-	ModuleAstNode *mod;
-	newNode(mod, ModuleAstNode, ModuleTag);
+ModuleNode *newModuleNode() {
+	ModuleNode *mod;
+	newNode(mod, ModuleNode, ModuleTag);
 	mod->namesym = NULL;
 	mod->owner = NULL;
 	mod->nodes = newNodes(64);
@@ -31,14 +31,14 @@ ModuleAstNode *newModuleNode() {
 // - We hook all names in global name table at parse time to check for name dupes and
 //     because permissions and allocators do not support forward references
 // - We remember all public names for later resolution of qualified names
-void modAddNode(ModuleAstNode *mod, INode *node) {
+void modAddNode(ModuleNode *mod, INode *node) {
 
     // Add to regular ordered node list
     nodesAdd(&mod->nodes, node);
 
     // If it is a named node...
     if (isNamedNode(node)) {
-        NamedAstNode *nnode = (NamedAstNode *)node;
+        INamedNode *nnode = (INamedNode *)node;
         Name *name = nnode->namesym;
 
         // Hook into global name table (and add to namednodes), if not already there
@@ -56,7 +56,7 @@ void modAddNode(ModuleAstNode *mod, INode *node) {
 }
 
 // Serialize the AST for a module
-void modPrint(ModuleAstNode *mod) {
+void modPrint(ModuleNode *mod) {
 	INode **nodesp;
 	uint32_t cnt;
 
@@ -75,7 +75,7 @@ void modPrint(ModuleAstNode *mod) {
 
 // Unhook old module's names, hook new module's names
 // (works equally well from parent to child or child to parent
-void modHook(ModuleAstNode *oldmod, ModuleAstNode *newmod) {
+void modHook(ModuleNode *oldmod, ModuleNode *newmod) {
     if (oldmod)
         nametblHookPop();
     if (newmod) {
@@ -84,34 +84,34 @@ void modHook(ModuleAstNode *oldmod, ModuleAstNode *newmod) {
         nametblHookPush();
         for (nodesFor(newmod->nodes, cnt, nodesp)) {
             if (isNamedNode(*nodesp))
-                nametblHookNode((NamedAstNode *)*nodesp);
+                nametblHookNode((INamedNode *)*nodesp);
         }
     }
 }
 
 // Check the module's AST
-void modPass(PassState *pstate, ModuleAstNode *mod) {
-	ModuleAstNode *svmod = pstate->mod;
+void modPass(PassState *pstate, ModuleNode *mod) {
+	ModuleNode *svmod = pstate->mod;
 	pstate->mod = mod;
 	INode **nodesp;
 	uint32_t cnt;
 
 	// Switch name table over to new mod for name resolution
 	if (pstate->pass == NameResolution)
-		modHook((ModuleAstNode*)mod->owner, mod);
+		modHook((ModuleNode*)mod->owner, mod);
 
 	// For global variables and functions, handle all their type info first
 	for (nodesFor(mod->nodes, cnt, nodesp)) {
         switch ((*nodesp)->asttype) {
         case VarDclTag:
         {
-            VarDclAstNode * varnode = (VarDclAstNode*)*nodesp;
+            VarDclNode * varnode = (VarDclNode*)*nodesp;
             inodeWalk(pstate, (INode**)&varnode->perm);
             inodeWalk(pstate, &varnode->vtype);
         }
         case FnDclTag:
         {
-            FnDclAstNode * varnode = (FnDclAstNode*)*nodesp;
+            FnDclNode * varnode = (FnDclNode*)*nodesp;
             inodeWalk(pstate, &varnode->vtype);
         }
         }
@@ -126,7 +126,7 @@ void modPass(PassState *pstate, ModuleAstNode *mod) {
 
 	// Switch name table back to owner module
 	if (pstate->pass == NameResolution)
-		modHook(mod, (ModuleAstNode*)mod->owner);
+		modHook(mod, (ModuleNode*)mod->owner);
 
 	pstate->mod = svmod;
 }

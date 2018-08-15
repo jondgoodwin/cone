@@ -12,16 +12,16 @@
 #include "../../shared/error.h"
 
 // Create a new block node
-BlockAstNode *newBlockNode() {
-	BlockAstNode *blk;
-	newNode(blk, BlockAstNode, BlockTag);
+BlockNode *newBlockNode() {
+	BlockNode *blk;
+	newNode(blk, BlockNode, BlockTag);
 	blk->vtype = voidType;
 	blk->stmts = newNodes(8);
 	return blk;
 }
 
 // Serialize the AST for a block
-void blockPrint(BlockAstNode *blk) {
+void blockPrint(BlockNode *blk) {
 	INode **nodesp;
 	uint32_t cnt;
 
@@ -39,7 +39,7 @@ void blockPrint(BlockAstNode *blk) {
 // Handle name resolution and control structure compliance for a block
 // - push and pop a namespace context for hooking local vars in global name table
 // - Ensure return/continue/break only appear as last statement in block
-void blockResolvePass(PassState *pstate, BlockAstNode *blk) {
+void blockResolvePass(PassState *pstate, BlockNode *blk) {
     int16_t oldscope = pstate->scope;
     blk->scope = ++pstate->scope; // Increment scope counter
 
@@ -69,7 +69,7 @@ void blockResolvePass(PassState *pstate, BlockAstNode *blk) {
 // Handle type-checking for a block. 
 // Mostly this is a pass-through to type-check the block's statements.
 // Note: When coerced by typeCoerces, vtype of the block will be specified
-void blockTypePass(PassState *pstate, BlockAstNode *blk) {
+void blockTypePass(PassState *pstate, BlockNode *blk) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(blk->stmts, cnt, nodesp)) {
@@ -78,7 +78,7 @@ void blockTypePass(PassState *pstate, BlockAstNode *blk) {
 }
 
 // Check the block's AST
-void blockPass(PassState *pstate, BlockAstNode *blk) {
+void blockPass(PassState *pstate, BlockNode *blk) {
 	switch (pstate->pass) {
 	case NameResolution:
 		blockResolvePass(pstate, blk); break;
@@ -88,16 +88,16 @@ void blockPass(PassState *pstate, BlockAstNode *blk) {
 }
 
 // Create a new If node
-IfAstNode *newIfNode() {
-	IfAstNode *ifnode;
-	newNode(ifnode, IfAstNode, IfTag);
+IfNode *newIfNode() {
+	IfNode *ifnode;
+	newNode(ifnode, IfNode, IfTag);
 	ifnode->condblk = newNodes(4);
 	ifnode->vtype = voidType;
 	return ifnode;
 }
 
 // Serialize the AST for an if statement
-void ifPrint(IfAstNode *ifnode) {
+void ifPrint(IfNode *ifnode) {
 	INode **nodesp;
 	uint32_t cnt;
 	int firstflag = 1;
@@ -124,22 +124,22 @@ void ifPrint(IfAstNode *ifnode) {
 }
 
 // Recursively strip 'returns' out of all block-ends in 'if' (see returnPass)
-void ifRemoveReturns(IfAstNode *ifnode) {
+void ifRemoveReturns(IfNode *ifnode) {
 	INode **nodesp;
 	int16_t cnt;
 	for (nodesFor(ifnode->condblk, cnt, nodesp)) {
 		INode **laststmt;
 		cnt--; nodesp++;
-		laststmt = &nodesLast(((BlockAstNode*)*nodesp)->stmts);
+		laststmt = &nodesLast(((BlockNode*)*nodesp)->stmts);
 		if ((*laststmt)->asttype == ReturnTag)
-			*laststmt = ((ReturnAstNode*)*laststmt)->exp;
+			*laststmt = ((ReturnNode*)*laststmt)->exp;
 		if ((*laststmt)->asttype == IfTag)
-			ifRemoveReturns((IfAstNode*)*laststmt);
+			ifRemoveReturns((IfNode*)*laststmt);
 	}
 }
 
 // Check the if statement's AST
-void ifPass(PassState *pstate, IfAstNode *ifnode) {
+void ifPass(PassState *pstate, IfNode *ifnode) {
 	INode **nodesp;
 	uint32_t cnt;
 	for (nodesFor(ifnode->condblk, cnt, nodesp)) {
@@ -156,15 +156,15 @@ void ifPass(PassState *pstate, IfAstNode *ifnode) {
 }
 
 // Create a new While node
-WhileAstNode *newWhileNode() {
-	WhileAstNode *node;
-	newNode(node, WhileAstNode, WhileTag);
+WhileNode *newWhileNode() {
+	WhileNode *node;
+	newNode(node, WhileNode, WhileTag);
 	node->blk = NULL;
 	return node;
 }
 
 // Serialize the AST for an while block
-void whilePrint(WhileAstNode *node) {
+void whilePrint(WhileNode *node) {
 	inodeFprint("while ");
 	inodePrintNode(node->condexp);
 	inodePrintNL();
@@ -172,7 +172,7 @@ void whilePrint(WhileAstNode *node) {
 }
 
 // Semantic pass on the while block
-void whilePass(PassState *pstate, WhileAstNode *node) {
+void whilePass(PassState *pstate, WhileNode *node) {
 	uint16_t svflags = pstate->flags;
 	pstate->flags |= PassWithinWhile;
 
@@ -192,32 +192,32 @@ void breakPass(PassState *pstate, INode *node) {
 }
 
 // Create a new intrinsic node
-IntrinsicAstNode *newIntrinsicNode(int16_t intrinsic) {
-	IntrinsicAstNode *intrinsicNode;
-	newNode(intrinsicNode, IntrinsicAstNode, IntrinsicTag);
+IntrinsicNode *newIntrinsicNode(int16_t intrinsic) {
+	IntrinsicNode *intrinsicNode;
+	newNode(intrinsicNode, IntrinsicNode, IntrinsicTag);
 	intrinsicNode->intrinsicFn = intrinsic;
 	return intrinsicNode;
 }
 
 // Serialize the AST for an intrinsic
-void intrinsicPrint(IntrinsicAstNode *intrinsicNode) {
+void intrinsicPrint(IntrinsicNode *intrinsicNode) {
 	inodeFprint("intrinsic function");
 }
 
 // Check the intrinsic node's AST
-void intrinsicPass(PassState *pstate, IntrinsicAstNode *intrinsicNode) {
+void intrinsicPass(PassState *pstate, IntrinsicNode *intrinsicNode) {
 }
 
 // Create a new return statement node
-ReturnAstNode *newReturnNode() {
-	ReturnAstNode *node;
-	newNode(node, ReturnAstNode, ReturnTag);
+ReturnNode *newReturnNode() {
+	ReturnNode *node;
+	newNode(node, ReturnNode, ReturnTag);
 	node->exp = voidType;
 	return node;
 }
 
 // Serialize the AST for a return statement
-void returnPrint(ReturnAstNode *node) {
+void returnPrint(ReturnNode *node) {
 	inodeFprint("return ");
 	inodePrintNode(node->exp);
 }
@@ -226,10 +226,10 @@ void returnPrint(ReturnAstNode *node) {
 // Related analysis for return elsewhere:
 // - Block ensures that return can only appear at end of block
 // - NameDcl turns fn block's final expression into an implicit return
-void returnPass(PassState *pstate, ReturnAstNode *node) {
+void returnPass(PassState *pstate, ReturnNode *node) {
 	// If we are returning the value from an 'if', recursively strip out any of its path's redudant 'return's
 	if (pstate->pass == TypeCheck && node->exp->asttype == IfTag)
-		ifRemoveReturns((IfAstNode*)(node->exp));
+		ifRemoveReturns((IfNode*)(node->exp));
 
 	// Process the return's expression
 	inodeWalk(pstate, &node->exp);

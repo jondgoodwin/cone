@@ -9,45 +9,45 @@
 #define expr_h
 
 // Get size of a type
-typedef struct SizeofAstNode {
-	TypedAstHdr;
+typedef struct SizeofNode {
+	ITypedNodeHdr;
 	INode *type;
-} SizeofAstNode;
+} SizeofNode;
 
 // Cast to another type
-typedef struct CastAstNode {
-	TypedAstHdr;
+typedef struct CastNode {
+	ITypedNodeHdr;
 	INode *exp;
-} CastAstNode;
+} CastNode;
 
-typedef struct DerefAstNode {
-	TypedAstHdr;
+typedef struct DerefNode {
+	ITypedNodeHdr;
 	INode *exp;
-} DerefAstNode;
+} DerefNode;
 
 // Logic operator: not, or, and
-typedef struct LogicAstNode {
-	TypedAstHdr;
+typedef struct LogicNode {
+	ITypedNodeHdr;
 	INode *lexp;
 	INode *rexp;
-} LogicAstNode;
+} LogicNode;
 
-SizeofAstNode *newSizeofAstNode();
-void sizeofPrint(SizeofAstNode *node);
-void sizeofPass(PassState *pstate, SizeofAstNode *node);
+SizeofNode *newSizeofNode();
+void sizeofPrint(SizeofNode *node);
+void sizeofPass(PassState *pstate, SizeofNode *node);
 
-CastAstNode *newCastAstNode(INode *exp, INode *type);
-void castPrint(CastAstNode *node);
-void castPass(PassState *pstate, CastAstNode *node);
+CastNode *newCastNode(INode *exp, INode *type);
+void castPrint(CastNode *node);
+void castPass(PassState *pstate, CastNode *node);
 
-DerefAstNode *newDerefAstNode();
-void derefPrint(DerefAstNode *node);
-void derefPass(PassState *pstate, DerefAstNode *node);
+DerefNode *newDerefNode();
+void derefPrint(DerefNode *node);
+void derefPass(PassState *pstate, DerefNode *node);
 void derefAuto(INode **node);
 
-LogicAstNode *newLogicAstNode(int16_t typ);
-void logicPrint(LogicAstNode *node);
-void logicPass(PassState *pstate, LogicAstNode *node);
-void logicNotPass(PassState *pstate, LogicAstNode *node);
+LogicNode *newLogicNode(int16_t typ);
+void logicPrint(LogicNode *node);
+void logicPass(PassState *pstate, LogicNode *node);
+void logicNotPass(PassState *pstate, LogicNode *node);
 
 #endif

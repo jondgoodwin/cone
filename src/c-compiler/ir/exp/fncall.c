@@ -15,23 +15,23 @@
 #include <string.h>
 
 // Create a function call node
-FnCallAstNode *newFnCallAstNode(INode *fn, int nnodes) {
-	FnCallAstNode *node;
-	newNode(node, FnCallAstNode, FnCallTag);
+FnCallNode *newFnCallNode(INode *fn, int nnodes) {
+	FnCallNode *node;
+	newNode(node, FnCallNode, FnCallTag);
 	node->objfn = fn;
     node->methprop = NULL;
 	node->args = nnodes == 0? NULL : newNodes(nnodes);
 	return node;
 }
 
-FnCallAstNode *newFnCallOp(INode *obj, char *op, int nnodes) {
-    FnCallAstNode *node = newFnCallAstNode(obj, nnodes);
+FnCallNode *newFnCallOp(INode *obj, char *op, int nnodes) {
+    FnCallNode *node = newFnCallNode(obj, nnodes);
     node->methprop = newMemberUseNode(nametblFind(op, strlen(op)));
     return node;
 }
 
 // Serialize function call node
-void fnCallPrint(FnCallAstNode *node) {
+void fnCallPrint(FnCallNode *node) {
     INode **nodesp;
     uint32_t cnt;
     inodePrintNode(node->objfn);
@@ -52,11 +52,11 @@ void fnCallPrint(FnCallAstNode *node) {
 
 // For all function calls, go through all arguments to verify correct types,
 // handle value copying, and fill in default arguments
-void fnCallFinalizeArgs(FnCallAstNode *node) {
+void fnCallFinalizeArgs(FnCallNode *node) {
     INode *fnsig = typeGetVtype(node->objfn);
     INode **argsp;
     uint32_t cnt;
-    INode **parmp = &nodesGet(((FnSigAstNode*)fnsig)->parms, 0);
+    INode **parmp = &nodesGet(((FnSigNode*)fnsig)->parms, 0);
     for (nodesFor(node->args, cnt, argsp)) {
         if (!typeCoerces(*parmp, argsp))
             errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
@@ -66,13 +66,13 @@ void fnCallFinalizeArgs(FnCallAstNode *node) {
     }
 
     // If we have too few arguments, use default values, if provided
-    int argsunder = ((FnSigAstNode*)fnsig)->parms->used - node->args->used;
+    int argsunder = ((FnSigNode*)fnsig)->parms->used - node->args->used;
     if (argsunder > 0) {
-        if (((VarDclAstNode*)*parmp)->value == NULL)
+        if (((VarDclNode*)*parmp)->value == NULL)
             errorMsgNode((INode*)node, ErrorFewArgs, "Function call requires more arguments than specified");
         else {
             while (argsunder--) {
-                nodesAdd(&node->args, ((VarDclAstNode*)*parmp)->value);
+                nodesAdd(&node->args, ((VarDclNode*)*parmp)->value);
                 parmp++;
             }
         }
@@ -81,11 +81,11 @@ void fnCallFinalizeArgs(FnCallAstNode *node) {
 
 // Find best property or method (across overloaded methods whose type matches argument types)
 // Then lower the node to a function call (objfn+args) or property access (objfn+methprop) accordingly
-void fnCallLowerMethod(FnCallAstNode *callnode) {
+void fnCallLowerMethod(FnCallNode *callnode) {
     INode *obj = callnode->objfn;
     INode *objtype = typeGetVtype(obj);
     if (objtype->asttype == RefTag || objtype->asttype == PtrTag)
-        objtype = typeGetVtype(((PtrAstNode *)objtype)->pvtype);
+        objtype = typeGetVtype(((PtrNode *)objtype)->pvtype);
     if (!isMethodType(objtype)) {
         errorMsgNode((INode*)callnode, ErrorNoMeth, "Object's type does not support methods or properties.");
         return;
@@ -94,10 +94,10 @@ void fnCallLowerMethod(FnCallAstNode *callnode) {
     // Do lookup. If node found, it must be an instance's method or property
     Name *methsym = callnode->methprop->namesym;
     if (methsym->namestr == '_'
-        && !(obj->asttype==VarNameUseTag && ((NameUseAstNode*)obj)->dclnode->namesym == selfName)) {
+        && !(obj->asttype==VarNameUseTag && ((NameUseNode*)obj)->dclnode->namesym == selfName)) {
         errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/property `%s`.", &methsym->namestr);
     }
-    NamedAstNode *foundnode = methnodesFind(&((MethodTypeAstNode*)objtype)->methprops, methsym);
+    INamedNode *foundnode = methnodesFind(&((MethodTypeNode*)objtype)->methprops, methsym);
     if (!foundnode
         || !(foundnode->asttype == FnDclTag || foundnode->asttype == VarDclTag)
         || !(foundnode->flags & FlagMethProp)) {
@@ -123,21 +123,21 @@ void fnCallLowerMethod(FnCallAstNode *callnode) {
     }
     nodesInsert(&callnode->args, callnode->objfn, 0);
 
-    FnDclAstNode *bestmethod = methnodesFindBestMethod((FnDclAstNode *)foundnode, callnode->args);
+    FnDclNode *bestmethod = methnodesFindBestMethod((FnDclNode *)foundnode, callnode->args);
     if (bestmethod == NULL) {
         errorMsgNode((INode*)callnode, ErrorNoMeth, "No method named %s matches the call's arguments.", &methsym->namestr);
         return;
     }
 
     // Re-purpose the method name use node as a reference to the method function itself
-    NameUseAstNode *methodrefnode = callnode->methprop;
+    NameUseNode *methodrefnode = callnode->methprop;
     methodrefnode->asttype = VarNameUseTag;
-    methodrefnode->dclnode = (NamedAstNode*)bestmethod;
+    methodrefnode->dclnode = (INamedNode*)bestmethod;
     methodrefnode->vtype = bestmethod->vtype;
 
     callnode->objfn = (INode*)methodrefnode;
     callnode->methprop = NULL;
-    callnode->vtype = ((FnSigAstNode*)bestmethod->vtype)->rettype;
+    callnode->vtype = ((FnSigNode*)bestmethod->vtype)->rettype;
 
     // Handle copying of value arguments and default arguments
     fnCallFinalizeArgs(callnode);
@@ -148,7 +148,7 @@ void fnCallLowerMethod(FnCallAstNode *callnode) {
 // to a type-resolved structure suitable for generation. The lowering involves
 // resolving syntactic sugar and resolving a method to a function.
 // It also distinguishes between methods and properties.
-void fnCallPass(PassState *pstate, FnCallAstNode *node) {
+void fnCallPass(PassState *pstate, FnCallNode *node) {
 	INode **argsp;
 	uint32_t cnt;
 
@@ -165,22 +165,22 @@ void fnCallPass(PassState *pstate, FnCallAstNode *node) {
     {
         // If objfn is a method/property, rewrite it as self.method
         if (node->objfn->asttype == VarNameUseTag
-            && ((NameUseAstNode*)node->objfn)->dclnode->flags & FlagMethProp
-            && ((NameUseAstNode*)node->objfn)->qualNames == NULL) {
+            && ((NameUseNode*)node->objfn)->dclnode->flags & FlagMethProp
+            && ((NameUseNode*)node->objfn)->qualNames == NULL) {
             // Build a resolved 'self' node
-            NameUseAstNode *selfnode = newNameUseNode(selfName);
+            NameUseNode *selfnode = newNameUseNode(selfName);
             selfnode->asttype = VarNameUseTag;
-            selfnode->dclnode = (NamedAstNode *)nodesGet(pstate->fnsig->parms, 0);
+            selfnode->dclnode = (INamedNode *)nodesGet(pstate->fnsig->parms, 0);
             selfnode->vtype = selfnode->dclnode->vtype;
             // Reuse existing fncallnode if we can
             if (node->methprop == NULL) {
-                node->methprop = (NameUseAstNode *)node->objfn;
+                node->methprop = (NameUseNode *)node->objfn;
                 node->objfn = (INode*)selfnode;
             }
             else {
                 // Re-purpose objfn as self.method
-                FnCallAstNode *fncall = newFnCallAstNode((INode *)selfnode, 0);
-                fncall->methprop = (NameUseAstNode *)node->objfn;
+                FnCallNode *fncall = newFnCallNode((INode *)selfnode, 0);
+                fncall->methprop = (NameUseNode *)node->objfn;
                 copyNodeLex(fncall, node->objfn); // Copy lexer info into injected node in case it has errors
                 node->objfn = (INode*)fncall;
                 inodeWalk(pstate, &node->objfn);
@@ -216,10 +216,10 @@ void fnCallPass(PassState *pstate, FnCallAstNode *node) {
             derefAuto(&node->objfn);
 
             // Capture return vtype
-            node->vtype = ((FnSigAstNode*)objfntype)->rettype;
+            node->vtype = ((FnSigNode*)objfntype)->rettype;
 
             // Error out if we have too many arguments
-            int argsunder = ((FnSigAstNode*)objfntype)->parms->used - node->args->used;
+            int argsunder = ((FnSigNode*)objfntype)->parms->used - node->args->used;
             if (argsunder < 0) {
                 errorMsgNode((INode*)node, ErrorManyArgs, "Too many arguments specified vs. function declaration");
                 return;

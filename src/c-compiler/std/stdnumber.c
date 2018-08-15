@@ -32,7 +32,7 @@ void stdNbrInit() {
 	f64Type = newNbrTypeNode("f64", FloatNbrTag, 64);
 
 	// Reference to a literal string
-	ArrayAstNode *strArr = newArrayNode();
+	ArrayNode *strArr = newArrayNode();
 	strArr->size = 0;
 	strArr->elemtype = (INode*)u8Type;
 	strType = newPtrTypeNode();
@@ -43,12 +43,12 @@ void stdNbrInit() {
 }
 
 // Create a new primitive number type node
-NbrAstNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
+NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
     Name *namesym = nametblFind(name, strlen(name));
 
 	// Start by creating the node for this number type
-	NbrAstNode *nbrtypenode;
-	newNode(nbrtypenode, NbrAstNode, typ);
+	NbrNode *nbrtypenode;
+	newNode(nbrtypenode, NbrNode, typ);
     nbrtypenode->vtype = NULL;
     nbrtypenode->owner = NULL;
     nbrtypenode->namesym = namesym;
@@ -57,16 +57,16 @@ NbrAstNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
     nbrtypenode->subtypes = nbrsubtypes;
 	nbrtypenode->bits = bits;
 
-    namesym->node = (NamedAstNode*)nbrtypenode;
+    namesym->node = (INamedNode*)nbrtypenode;
 
 	// Create function signature for unary methods for this type
-	FnSigAstNode *unarysig = newFnSigNode();
+	FnSigNode *unarysig = newFnSigNode();
 	unarysig->rettype = (INode*)nbrtypenode;
 	Name *una1 = nametblFind("a", 1);
 	nodesAdd(&unarysig->parms, (INode *)newVarDclNode(una1, VarDclTag, (INode*)nbrtypenode, immPerm, NULL));
 
 	// Create function signature for binary methods for this type
-	FnSigAstNode *binsig = newFnSigNode();
+	FnSigNode *binsig = newFnSigNode();
 	binsig->rettype = (INode*)nbrtypenode;
 	Name *parm1 = nametblFind("a", 1);
 	nodesAdd(&binsig->parms, (INode *)newVarDclNode(parm1, VarDclTag, (INode*)nbrtypenode, immPerm, NULL));
@@ -116,7 +116,7 @@ NbrAstNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
 	}
 
 	// Create function signature for comparison methods for this type
-	FnSigAstNode *cmpsig = newFnSigNode();
+	FnSigNode *cmpsig = newFnSigNode();
 	cmpsig->rettype = bits==1? (INode*)nbrtypenode : (INode*)boolType;
 	nodesAdd(&cmpsig->parms, (INode *)newVarDclNode(parm1, VarDclTag, (INode*)nbrtypenode, immPerm, NULL));
 	nodesAdd(&cmpsig->parms, (INode *)newVarDclNode(parm2, VarDclTag, (INode*)nbrtypenode, immPerm, NULL));

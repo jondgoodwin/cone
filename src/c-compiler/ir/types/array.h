@@ -9,15 +9,15 @@
 #define array_h
 
 // For pointers
-typedef struct ArrayAstNode {
-	MethodTypeAstHdr;
+typedef struct ArrayNode {
+	IMethodNodeHdr;
 	uint32_t size;
 	INode *elemtype;
-} ArrayAstNode;
+} ArrayNode;
 
-ArrayAstNode *newArrayNode();
-void arrayPrint(ArrayAstNode *node);
-void arrayPass(PassState *pstate, ArrayAstNode *name);
-int arrayEqual(ArrayAstNode *node1, ArrayAstNode *node2);
+ArrayNode *newArrayNode();
+void arrayPrint(ArrayNode *node);
+void arrayPass(PassState *pstate, ArrayNode *name);
+int arrayEqual(ArrayNode *node1, ArrayNode *node2);
 
 #endif

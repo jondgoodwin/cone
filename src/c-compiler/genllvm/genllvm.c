@@ -36,7 +36,7 @@
 #endif
 
 // Generate parameter variable
-void genlParmVar(GenState *gen, VarDclAstNode *var) {
+void genlParmVar(GenState *gen, VarDclNode *var) {
 	assert(var->asttype == VarDclTag);
 	// We always alloca in case variable is mutable or we want to take address of its value
 	var->llvmvar = LLVMBuildAlloca(gen->builder, genlType(gen, var->vtype), &var->namesym->namestr);
@@ -44,13 +44,13 @@ void genlParmVar(GenState *gen, VarDclAstNode *var) {
 }
 
 // Generate a function
-void genlFn(GenState *gen, FnDclAstNode *fnnode) {
+void genlFn(GenState *gen, FnDclNode *fnnode) {
     if (fnnode->value->asttype == IntrinsicTag)
         return;
 
 	LLVMValueRef svfn = gen->fn;
 	LLVMBuilderRef svbuilder = gen->builder;
-	FnSigAstNode *fnsig = (FnSigAstNode*)fnnode->vtype;
+	FnSigNode *fnsig = (FnSigNode*)fnnode->vtype;
 
 	assert(fnnode->value->asttype == BlockTag);
 	gen->fn = fnnode->llvmvar;
@@ -64,10 +64,10 @@ void genlFn(GenState *gen, FnDclAstNode *fnnode) {
 	uint32_t cnt;
 	INode **nodesp;
 	for (nodesFor(fnsig->parms, cnt, nodesp))
-		genlParmVar(gen, (VarDclAstNode*)*nodesp);
+		genlParmVar(gen, (VarDclNode*)*nodesp);
 
 	// Generate the function's code (always a block)
-	genlBlock(gen, (BlockAstNode *)fnnode->value);
+	genlBlock(gen, (BlockNode *)fnnode->value);
 
 	LLVMDisposeBuilder(gen->builder);
 
@@ -76,11 +76,11 @@ void genlFn(GenState *gen, FnDclAstNode *fnnode) {
 }
 
 // Generate global variable
-void genlGloVar(GenState *gen, VarDclAstNode *varnode) {
+void genlGloVar(GenState *gen, VarDclNode *varnode) {
 	LLVMSetInitializer(varnode->llvmvar, genlExpr(gen, varnode->value));
 }
 
-void genlNamePrefix(NamedAstNode *name, char *workbuf) {
+void genlNamePrefix(INamedNode *name, char *workbuf) {
 	if (name->namesym==NULL)
 		return;
 	genlNamePrefix(name->owner, workbuf);
@@ -89,7 +89,7 @@ void genlNamePrefix(NamedAstNode *name, char *workbuf) {
 }
 
 // Create and return globally unique name, mangled as necessary
-char *genlGlobalName(NamedAstNode *name) {
+char *genlGlobalName(INamedNode *name) {
 	// Is mangling necessary? Only if we need namespace qualifier or method might be overloaded
 	if ((name->flags & FlagExtern) || !(name->asttype == FnDclTag && (name->flags & FlagMethProp)) && !name->owner->namesym)
 		return &name->namesym->namestr;
@@ -100,13 +100,13 @@ char *genlGlobalName(NamedAstNode *name) {
 
     // Mangle method name with parameter types so that overloaded methods have distinct names
 	if (name->flags & FlagMethProp) {
-		FnSigAstNode *fnsig = (FnSigAstNode *)name->vtype;
+		FnSigNode *fnsig = (FnSigNode *)name->vtype;
 		char *bufp = workbuf + strlen(workbuf);
 		int16_t cnt;
 		INode **nodesp;
 		for (nodesFor(fnsig->parms, cnt, nodesp)) {
 			*bufp++ = ':';
-			bufp = typeMangle(bufp, ((TypedAstNode *)*nodesp)->vtype);
+			bufp = typeMangle(bufp, ((ITypedNode *)*nodesp)->vtype);
 		}
 		*bufp = '\0';
 	}
@@ -114,21 +114,21 @@ char *genlGlobalName(NamedAstNode *name) {
 }
 
 // Generate LLVMValueRef for a global variable
-void genlGloVarName(GenState *gen, VarDclAstNode *glovar) {
-	glovar->llvmvar = LLVMAddGlobal(gen->module, genlType(gen, glovar->vtype), genlGlobalName((NamedAstNode*)glovar));
+void genlGloVarName(GenState *gen, VarDclNode *glovar) {
+	glovar->llvmvar = LLVMAddGlobal(gen->module, genlType(gen, glovar->vtype), genlGlobalName((INamedNode*)glovar));
 	if (glovar->perm == immPerm)
 		LLVMSetGlobalConstant(glovar->llvmvar, 1);
 }
 
 // Generate LLVMValueRef for a global function
-void genlGloFnName(GenState *gen, FnDclAstNode *glofn) {
+void genlGloFnName(GenState *gen, FnDclNode *glofn) {
     // Add function to the module
     if (glofn->value == NULL || glofn->value->asttype != IntrinsicTag)
-        glofn->llvmvar = LLVMAddFunction(gen->module, genlGlobalName((NamedAstNode*)glofn), genlType(gen, glofn->vtype));
+        glofn->llvmvar = LLVMAddFunction(gen->module, genlGlobalName((INamedNode*)glofn), genlType(gen, glofn->vtype));
 }
 
 // Generate module's nodes
-void genlModule(GenState *gen, ModuleAstNode *mod) {
+void genlModule(GenState *gen, ModuleNode *mod) {
 	uint32_t cnt;
 	INode **nodesp;
 
@@ -137,9 +137,9 @@ void genlModule(GenState *gen, ModuleAstNode *mod) {
 	for (nodesFor(mod->nodes, cnt, nodesp)) {
 		INode *nodep = *nodesp;
         if (nodep->asttype == VarDclTag)
-            genlGloVarName(gen, (VarDclAstNode *)nodep);
+            genlGloVarName(gen, (VarDclNode *)nodep);
         else if (nodep->asttype == FnDclTag)
-            genlGloFnName(gen, (FnDclAstNode *)nodep);
+            genlGloFnName(gen, (FnDclNode *)nodep);
 	}
 
 	// Generate the function's block or the variable's initialization value
@@ -147,14 +147,14 @@ void genlModule(GenState *gen, ModuleAstNode *mod) {
 		INode *nodep = *nodesp;
 		switch (nodep->asttype) {
         case VarDclTag:
-            if (((VarDclAstNode*)nodep)->value) {
-                genlGloVar(gen, (VarDclAstNode*)nodep);
+            if (((VarDclNode*)nodep)->value) {
+                genlGloVar(gen, (VarDclNode*)nodep);
             }
             break;
 
         case FnDclTag:
-			if (((FnDclAstNode*)nodep)->value) {
-        		genlFn(gen, (FnDclAstNode*)nodep);
+			if (((FnDclNode*)nodep)->value) {
+        		genlFn(gen, (FnDclNode*)nodep);
 			}
 			break;
 
@@ -164,7 +164,7 @@ void genlModule(GenState *gen, ModuleAstNode *mod) {
 			break;
 
 		case ModuleTag:
-			genlModule(gen, (ModuleAstNode*)nodep);
+			genlModule(gen, (ModuleNode*)nodep);
 			break;
 
 		default:
@@ -176,7 +176,7 @@ void genlModule(GenState *gen, ModuleAstNode *mod) {
 	}
 }
 
-void genlPackage(GenState *gen, ModuleAstNode *mod) {
+void genlPackage(GenState *gen, ModuleNode *mod) {
 	char *error = NULL;
 
 	assert(mod->asttype == ModuleTag);
@@ -255,7 +255,7 @@ void genlOut(char *objpath, char *asmpath, LLVMModuleRef mod, char *triple, LLVM
 }
 
 // Generate AST into LLVM IR using LLVM
-void genllvm(ConeOptions *opt, ModuleAstNode *mod) {
+void genllvm(ConeOptions *opt, ModuleNode *mod) {
 	char *err;
 	GenState gen;
 

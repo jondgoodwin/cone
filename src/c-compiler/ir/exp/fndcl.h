@@ -8,15 +8,15 @@
 #define fndcl_h
 
 // Name declaration node (e.g., variable, fn implementation, or named type)
-typedef struct FnDclAstNode {
-	NamedAstHdr;				// 'vtype': type of this name's value
+typedef struct FnDclNode {
+	INamedNodeHdr;				// 'vtype': type of this name's value
 	INode *value;				// Block or intrinsic code nodes (NULL if no code)
 	LLVMValueRef llvmvar;		// LLVM's handle for a declared variable (for generation)
-    struct FnDclAstNode *nextnode;     // Link to next overloaded method with the same name (or NULL)
-} FnDclAstNode;
+    struct FnDclNode *nextnode;     // Link to next overloaded method with the same name (or NULL)
+} FnDclNode;
 
-FnDclAstNode *newFnDclNode(Name *namesym, uint16_t asttype, INode *sig, INode *val);
-void fnDclPrint(FnDclAstNode *fn);
-void fnDclPass(PassState *pstate, FnDclAstNode *node);
+FnDclNode *newFnDclNode(Name *namesym, uint16_t asttype, INode *sig, INode *val);
+void fnDclPrint(FnDclNode *fn);
+void fnDclPass(PassState *pstate, FnDclNode *node);
 
 #endif

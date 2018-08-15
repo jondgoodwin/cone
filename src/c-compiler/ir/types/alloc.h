@@ -8,9 +8,9 @@
 #ifndef alloc_h
 #define alloc_h
 
-typedef struct AddrAstNode AddrAstNode;
-typedef struct PtrAstNode PtrAstNode;
+typedef struct AddrNode AddrNode;
+typedef struct PtrNode PtrNode;
 
-void allocAllocate(AddrAstNode *anode, PtrAstNode *ptype);
+void allocAllocate(AddrNode *anode, PtrNode *ptype);
 
 #endif

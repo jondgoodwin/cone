@@ -15,9 +15,9 @@
 #include <assert.h>
 
 // Create a new name declaraction node
-VarDclAstNode *newVarDclNode(Name *namesym, uint16_t asttype, INode *type, PermAstNode *perm, INode *val) {
-	VarDclAstNode *name;
-	newNode(name, VarDclAstNode, asttype);
+VarDclNode *newVarDclNode(Name *namesym, uint16_t asttype, INode *type, PermNode *perm, INode *val) {
+	VarDclNode *name;
+	newNode(name, VarDclNode, asttype);
 	name->vtype = type;
 	name->owner = NULL;
 	name->namesym = namesym;
@@ -30,7 +30,7 @@ VarDclAstNode *newVarDclNode(Name *namesym, uint16_t asttype, INode *type, PermA
 }
 
 // Serialize the AST for a variable/function
-void varDclPrint(VarDclAstNode *name) {
+void varDclPrint(VarDclNode *name) {
 	inodePrintNode((INode*)name->perm);
 	inodeFprint("%s ", &name->namesym->namestr);
 	inodePrintNode(name->vtype);
@@ -43,18 +43,18 @@ void varDclPrint(VarDclAstNode *name) {
 }
 
 // Enable name resolution of local variables
-void varDclNameResolve(PassState *pstate, VarDclAstNode *name) {
+void varDclNameResolve(PassState *pstate, VarDclNode *name) {
 
 	// Variable declaration within a block is a local variable
 	if (pstate->scope > 1) {
-		if (name->namesym->node && pstate->scope == ((VarDclAstNode*)name->namesym->node)->scope) {
+		if (name->namesym->node && pstate->scope == ((VarDclNode*)name->namesym->node)->scope) {
 			errorMsgNode((INode *)name, ErrorDupName, "Name is already defined. Only one allowed.");
 			errorMsgNode((INode*)name->namesym->node, ErrorDupName, "This is the conflicting definition for that name.");
 		}
 		else {
 			name->scope = pstate->scope;
 			// Add name to global name table (containing block will unhook it later)
-			nametblHookNode((NamedAstNode*)name);
+			nametblHookNode((INamedNode*)name);
 		}
 	}
 
@@ -63,14 +63,14 @@ void varDclNameResolve(PassState *pstate, VarDclAstNode *name) {
 }
 
 // Type check variable against its initial value
-void varDclTypeCheck(PassState *pstate, VarDclAstNode *name) {
+void varDclTypeCheck(PassState *pstate, VarDclNode *name) {
 	inodeWalk(pstate, &name->value);
 	// Global variables and function parameters require literal initializers
 	if (name->scope <= 1 && !litIsLiteral(name->value))
 		errorMsgNode(name->value, ErrorNotLit, "Variable may only be initialized with a literal.");
 	// Infer the var's vtype from its value, if not provided
 	if (name->vtype == voidType)
-		name->vtype = ((TypedAstNode *)name->value)->vtype;
+		name->vtype = ((ITypedNode *)name->value)->vtype;
 	// Otherwise, verify that declared type and initial value type matches
 	else if (!typeCoerces(name->vtype, &name->value))
 		errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
@@ -78,7 +78,7 @@ void varDclTypeCheck(PassState *pstate, VarDclAstNode *name) {
 }
 
 // Check the function or variable declaration's AST
-void varDclPass(PassState *pstate, VarDclAstNode *name) {
+void varDclPass(PassState *pstate, VarDclNode *name) {
 	inodeWalk(pstate, (INode**)&name->perm);
 	inodeWalk(pstate, &name->vtype);
 	INode *vtype = typeGetVtype(name->vtype);
@@ -89,7 +89,7 @@ void varDclPass(PassState *pstate, VarDclAstNode *name) {
 		// Hook into global name table if not a global owner by module
 		// (because those have already been hooked by module for forward references)
 		/*if (name->owner->asttype != ModuleTag)
-			namespaceHook((NamedAstNode*)name, name->namesym);*/
+			namespaceHook((INamedNode*)name, name->namesym);*/
     	varDclNameResolve(pstate, name);
 		break;
 

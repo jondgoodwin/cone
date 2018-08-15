@@ -15,18 +15,18 @@ typedef struct NameList NameList;
 // - VarNameUseTag. A name use node resolved to a variable or function declaration
 // - TypeNameUseTag. A name use node resolved to a type declaration
 // - MbrNameUseTag. A method or property name being applied to some value
-typedef struct NameUseAstNode {
-	TypedAstHdr;
+typedef struct NameUseNode {
+	ITypedNodeHdr;
 	Name *namesym;			// Pointer to the global name table entry
-    NamedAstNode *dclnode;	// Node that declares this name (NULL until names are resolved)
+    INamedNode *dclnode;	// Node that declares this name (NULL until names are resolved)
     NameList *qualNames;    // Pointer to list of module qualifiers (NULL if none)
-} NameUseAstNode;
+} NameUseNode;
 
-NameUseAstNode *newNameUseNode(Name *name);
-void nameUseBaseMod(NameUseAstNode *node, ModuleAstNode *basemod);
-void nameUseAddQual(NameUseAstNode *node, Name *name);
-NameUseAstNode *newMemberUseNode(Name *namesym);
-void nameUsePrint(NameUseAstNode *name);
-void nameUseWalk(PassState *pstate, NameUseAstNode **name);
+NameUseNode *newNameUseNode(Name *name);
+void nameUseBaseMod(NameUseNode *node, ModuleNode *basemod);
+void nameUseAddQual(NameUseNode *node, Name *name);
+NameUseNode *newMemberUseNode(Name *namesym);
+void nameUsePrint(NameUseNode *name);
+void nameUseWalk(PassState *pstate, NameUseNode **name);
 
 #endif

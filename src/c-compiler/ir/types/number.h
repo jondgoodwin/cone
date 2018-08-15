@@ -9,13 +9,13 @@
 #define number_h
 
 // For primitives such as integer, unsigned integet, floats
-typedef struct NbrAstNode {
-	MethodTypeAstHdr;
+typedef struct NbrNode {
+	IMethodNodeHdr;
 	unsigned char bits;	// e.g., int32 uses 32 bits
-} NbrAstNode;
+} NbrNode;
 
-NbrAstNode *newNbrTypeNode(char *name, uint16_t typ, char bits);
-void nbrTypePrint(NbrAstNode *node);
+NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits);
+void nbrTypePrint(NbrNode *node);
 int isNbr(INode *node);
 
 #endif

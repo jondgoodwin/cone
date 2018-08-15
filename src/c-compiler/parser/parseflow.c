@@ -20,8 +20,8 @@
 INode *parseSuffix(ParseState *parse, INode *node) {
 	while (lexIsToken(IfToken) || lexIsToken(WhileToken)) {
 		if (lexIsToken(IfToken)) {
-			BlockAstNode *blk;
-			IfAstNode *ifnode = newIfNode();
+			BlockNode *blk;
+			IfNode *ifnode = newIfNode();
 			lexNextToken();
 			nodesAdd(&ifnode->condblk, parseExpr(parse));
 			nodesAdd(&ifnode->condblk, (INode*)(blk = newBlockNode()));
@@ -29,8 +29,8 @@ INode *parseSuffix(ParseState *parse, INode *node) {
 			node = (INode*)ifnode;
 		}
 		else {
-			BlockAstNode *blk;
-			WhileAstNode *wnode = newWhileNode();
+			BlockNode *blk;
+			WhileNode *wnode = newWhileNode();
 			lexNextToken();
 			wnode->condexp = parseExpr(parse);
 			wnode->blk = (INode*)(blk = newBlockNode());
@@ -49,7 +49,7 @@ INode *parseExpStmt(ParseState *parse) {
 
 // Parse a return statement
 INode *parseReturn(ParseState *parse) {
-	ReturnAstNode *stmtnode = newReturnNode();
+	ReturnNode *stmtnode = newReturnNode();
 	lexNextToken(); // Skip past 'return'
 	if (!lexIsToken(SemiToken))
 		stmtnode->exp = parseExpr(parse);
@@ -58,7 +58,7 @@ INode *parseReturn(ParseState *parse) {
 
 // Parse if statement/expression
 INode *parseIf(ParseState *parse) {
-	IfAstNode *ifnode = newIfNode();
+	IfNode *ifnode = newIfNode();
 	lexNextToken();
 	nodesAdd(&ifnode->condblk, parseExpr(parse));
 	nodesAdd(&ifnode->condblk, parseBlock(parse));
@@ -77,7 +77,7 @@ INode *parseIf(ParseState *parse) {
 
 // Parse while block
 INode *parseWhile(ParseState *parse) {
-	WhileAstNode *wnode = newWhileNode();
+	WhileNode *wnode = newWhileNode();
 	lexNextToken();
 	wnode->condexp = parseExpr(parse);
 	wnode->blk = parseBlock(parse);
@@ -86,7 +86,7 @@ INode *parseWhile(ParseState *parse) {
 
 // Parse a block of statements/expressions
 INode *parseBlock(ParseState *parse) {
-	BlockAstNode *blk = newBlockNode();
+	BlockNode *blk = newBlockNode();
 
 	if (!lexIsToken(LCurlyToken))
 		parseLCurly();

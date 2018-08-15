@@ -32,13 +32,13 @@ void methnodesGrow(MethNodes *mnodes) {
 
 // Find the desired named node.
 // Return the node, if found or NULL if not found
-NamedAstNode *methnodesFind(MethNodes *mnodes, Name *name) {
+INamedNode *methnodesFind(MethNodes *mnodes, Name *name) {
 	INode **nodesp;
 	uint32_t cnt;
 	for (methnodesFor(mnodes, cnt, nodesp)) {
 		if (isNamedNode(*nodesp)) {
-			if (((NamedAstNode*)*nodesp)->namesym == name)
-				return (NamedAstNode*)*nodesp;
+			if (((INamedNode*)*nodesp)->namesym == name)
+				return (INamedNode*)*nodesp;
 		}
 	}
 	return NULL;
@@ -53,8 +53,8 @@ void methnodesAdd(MethNodes *mnodes, INode *node) {
 
 // Add a function or potentially overloaded method
 // If method is overloaded, add it to the link chain of same named methods
-void methnodesAddFn(MethNodes *mnodes, FnDclAstNode *fnnode) {
-    FnDclAstNode *lastmeth = (FnDclAstNode *)methnodesFind(mnodes, fnnode->namesym);
+void methnodesAddFn(MethNodes *mnodes, FnDclNode *fnnode) {
+    FnDclNode *lastmeth = (FnDclNode *)methnodesFind(mnodes, fnnode->namesym);
     if (lastmeth && (lastmeth->asttype != FnDclTag
         || !(lastmeth->flags & FlagMethProp) || !(fnnode->flags & FlagMethProp))) {
         errorMsgNode((INode*)fnnode, ErrorDupName, "Duplicate name %s: Only methods can be overloaded.", &fnnode->namesym->namestr);
@@ -69,8 +69,8 @@ void methnodesAddFn(MethNodes *mnodes, FnDclAstNode *fnnode) {
 }
 
 // Add a property
-void methnodesAddProp(MethNodes *mnodes,  VarDclAstNode *varnode) {
-    FnDclAstNode *lastmeth = (FnDclAstNode *)methnodesFind(mnodes, varnode->namesym);
+void methnodesAddProp(MethNodes *mnodes,  VarDclNode *varnode) {
+    FnDclNode *lastmeth = (FnDclNode *)methnodesFind(mnodes, varnode->namesym);
     if (lastmeth && (lastmeth->asttype != VarDclTag)) {
         errorMsgNode((INode*)varnode, ErrorDupName, "Duplicate name %s: Only methods can be overloaded.", &varnode->namesym->namestr);
         return;
@@ -79,13 +79,13 @@ void methnodesAddProp(MethNodes *mnodes,  VarDclAstNode *varnode) {
 }
 
 // Find method that best fits the passed arguments
-FnDclAstNode *methnodesFindBestMethod(FnDclAstNode *firstmethod, Nodes *args) {
+FnDclNode *methnodesFindBestMethod(FnDclNode *firstmethod, Nodes *args) {
     // Look for best-fit method
-    FnDclAstNode *bestmethod = NULL;
+    FnDclNode *bestmethod = NULL;
     int bestnbr = 0x7fffffff; // ridiculously high number    
-    for (FnDclAstNode *methnode = (FnDclAstNode *)firstmethod; methnode; methnode = methnode->nextnode) {
+    for (FnDclNode *methnode = (FnDclNode *)firstmethod; methnode; methnode = methnode->nextnode) {
         int match;
-        switch (match = fnSigMatchesCall((FnSigAstNode *)methnode->vtype, args)) {
+        switch (match = fnSigMatchesCall((FnSigNode *)methnode->vtype, args)) {
         case 0: continue;		// not an acceptable match
         case 1: return methnode;	// perfect match!
         default:				// imprecise match using conversions

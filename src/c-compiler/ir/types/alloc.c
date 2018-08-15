@@ -15,52 +15,52 @@
 
 // Type check and expand code for allocator reference creator
 // This actually generates additional code that replaces anode->exp
-void allocAllocate(AddrAstNode *anode, PtrAstNode *ptype) {
-	BlockAstNode *blknode = newBlockNode();
+void allocAllocate(AddrNode *anode, PtrNode *ptype) {
+	BlockNode *blknode = newBlockNode();
 
 	// Find 'allocate' method in alloc
 	Name *symalloc = nametblFind("allocate", 8);
-	StructAstNode *alloctype = (StructAstNode*)ptype->alloc;
-    VarDclAstNode *allocmeth = (VarDclAstNode*)methnodesFind(&alloctype->methprops, symalloc);
-	if (allocmeth == NULL || ((FnSigAstNode*)allocmeth->vtype)->parms->used != 1) {
+	StructNode *alloctype = (StructNode*)ptype->alloc;
+    VarDclNode *allocmeth = (VarDclNode*)methnodesFind(&alloctype->methprops, symalloc);
+	if (allocmeth == NULL || ((FnSigNode*)allocmeth->vtype)->parms->used != 1) {
 		errorMsgNode((INode*)ptype, ErrorBadAlloc, "Allocator is missing valid allocate method");
 		return;
 	}
 
 	// szvtype = sizeof(vtype)
 	Name *szvtsym = nametblFind("szvtype", 7);
-	SizeofAstNode *szvtval = newSizeofAstNode();
+	SizeofNode *szvtval = newSizeofNode();
 	szvtval->type = ptype->pvtype;
-	VarDclAstNode *szvtype = newVarDclNode(szvtsym, VarDclTag, (INode*)usizeType, immPerm, (INode*)szvtval);
+	VarDclNode *szvtype = newVarDclNode(szvtsym, VarDclTag, (INode*)usizeType, immPerm, (INode*)szvtval);
 	nodesAdd(&blknode->stmts, (INode*)szvtype);
-	NameUseAstNode *szvtuse = newNameUseNode(szvtsym);
+	NameUseNode *szvtuse = newNameUseNode(szvtsym);
 	szvtuse->asttype = VarNameUseTag;
-	szvtuse->dclnode = (NamedAstNode*)szvtype;
+	szvtuse->dclnode = (INamedNode*)szvtype;
 	szvtuse->vtype = szvtype->vtype;
 
 	// p1 = alloc.allocate(szvtype)
-	NameUseAstNode *usealloc = newNameUseNode(symalloc);
+	NameUseNode *usealloc = newNameUseNode(symalloc);
 	usealloc->asttype = TypeNameUseTag;
-	usealloc->dclnode = (NamedAstNode*)allocmeth;
+	usealloc->dclnode = (INamedNode*)allocmeth;
 	usealloc->vtype = allocmeth->vtype;
-	FnCallAstNode *callalloc = newFnCallAstNode((INode*)usealloc, 1);
+	FnCallNode *callalloc = newFnCallNode((INode*)usealloc, 1);
 	callalloc->vtype = allocmeth->vtype;
 	nodesAdd(&callalloc->args, (INode*)szvtuse);
 	// ---
 	Name *pT = nametblFind("pT", 2);
-	CastAstNode *castvt = newCastAstNode((INode*)callalloc, (INode*)ptype);
-	VarDclAstNode *p1dcl = newVarDclNode(pT, VarDclTag, (INode*)ptype, immPerm, (INode*)castvt);
+	CastNode *castvt = newCastNode((INode*)callalloc, (INode*)ptype);
+	VarDclNode *p1dcl = newVarDclNode(pT, VarDclTag, (INode*)ptype, immPerm, (INode*)castvt);
 	nodesAdd(&blknode->stmts, (INode*)p1dcl);
-	NameUseAstNode *p1use = newNameUseNode(pT);
+	NameUseNode *p1use = newNameUseNode(pT);
 	p1use->asttype = VarNameUseTag;
-	p1use->dclnode = (NamedAstNode*)p1dcl;
+	p1use->dclnode = (INamedNode*)p1dcl;
 	p1use->vtype = p1dcl->vtype;
 
 	// *p1 = value
-	DerefAstNode *derefp1 = newDerefAstNode();
+	DerefNode *derefp1 = newDerefNode();
 	derefp1->exp = (INode*)p1use;
 	derefp1->vtype = ptype->pvtype;
-	AssignAstNode *copynode = newAssignAstNode(AssignTag, (INode*)derefp1, anode->exp);
+	AssignNode *copynode = newAssignNode(AssignTag, (INode*)derefp1, anode->exp);
 	nodesAdd(&blknode->stmts, (INode*)copynode);
 
 	// return p1

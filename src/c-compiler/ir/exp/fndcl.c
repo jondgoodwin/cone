@@ -15,9 +15,9 @@
 #include <assert.h>
 
 // Create a new name declaraction node
-FnDclAstNode *newFnDclNode(Name *namesym, uint16_t flags, INode *type, INode *val) {
-	FnDclAstNode *name;
-	newNode(name, FnDclAstNode, FnDclTag);
+FnDclNode *newFnDclNode(Name *namesym, uint16_t flags, INode *type, INode *val) {
+	FnDclNode *name;
+	newNode(name, FnDclNode, FnDclTag);
     name->flags = flags;
 	name->vtype = type;
 	name->owner = NULL;
@@ -29,7 +29,7 @@ FnDclAstNode *newFnDclNode(Name *namesym, uint16_t flags, INode *type, INode *va
 }
 
 // Serialize the AST for a variable/function
-void fnDclPrint(FnDclAstNode *name) {
+void fnDclPrint(FnDclNode *name) {
 	inodeFprint("fn %s ", &name->namesym->namestr);
 	inodePrintNode(name->vtype);
 	if (name->value) {
@@ -41,7 +41,7 @@ void fnDclPrint(FnDclAstNode *name) {
 }
 
 // Syntactic sugar: Turn last statement implicit returns into explicit returns
-void fnImplicitReturn(INode *rettype, BlockAstNode *blk) {
+void fnImplicitReturn(INode *rettype, BlockNode *blk) {
 	INode *laststmt;
 	laststmt = nodesLast(blk->stmts);
 	if (rettype == voidType) {
@@ -51,7 +51,7 @@ void fnImplicitReturn(INode *rettype, BlockAstNode *blk) {
 	else {
 		// Inject return in front of expression
 		if (isExpNode(laststmt)) {
-			ReturnAstNode *retnode = newReturnNode();
+			ReturnNode *retnode = newReturnNode();
 			retnode->exp = laststmt;
 			nodesLast(blk->stmts) = (INode*)retnode;
 		}
@@ -61,30 +61,30 @@ void fnImplicitReturn(INode *rettype, BlockAstNode *blk) {
 }
 
 // Enable resolution of fn parameter references to parameters
-void fnDclNameResolve(PassState *pstate, FnDclAstNode *name) {
+void fnDclNameResolve(PassState *pstate, FnDclNode *name) {
 	int16_t oldscope = pstate->scope;
 	pstate->scope = 1;
-	FnSigAstNode *fnsig = (FnSigAstNode*)name->vtype;
+	FnSigNode *fnsig = (FnSigNode*)name->vtype;
     nametblHookPush();
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(fnsig->parms, cnt, nodesp))
-        nametblHookNode((NamedAstNode *)*nodesp);
+        nametblHookNode((INamedNode *)*nodesp);
 	inodeWalk(pstate, &name->value);
 	nametblHookPop();
 	pstate->scope = oldscope;
 }
 
 // Provide parameter and return type context for type checking function's logic
-void fnDclTypeCheck(PassState *pstate, FnDclAstNode *varnode) {
-	FnSigAstNode *oldfnsig = pstate->fnsig;
-	pstate->fnsig = (FnSigAstNode*)varnode->vtype;
+void fnDclTypeCheck(PassState *pstate, FnDclNode *varnode) {
+	FnSigNode *oldfnsig = pstate->fnsig;
+	pstate->fnsig = (FnSigNode*)varnode->vtype;
 	inodeWalk(pstate, &varnode->value);
 	pstate->fnsig = oldfnsig;
 }
 
 // Check the function declaration's AST
-void fnDclPass(PassState *pstate, FnDclAstNode *name) {
+void fnDclPass(PassState *pstate, FnDclNode *name) {
 	inodeWalk(pstate, &name->vtype);
 	INode *vtype = typeGetVtype(name->vtype);
 
@@ -94,7 +94,7 @@ void fnDclPass(PassState *pstate, FnDclAstNode *name) {
 		// Hook into global name table if not a global owner by module
 		// (because those have already been hooked by module for forward references)
 		/*if (name->owner->asttype != ModuleTag)
-			namespaceHook((NamedAstNode*)name, name->namesym);*/
+			namespaceHook((INamedNode*)name, name->namesym);*/
 		if (name->value)
 			fnDclNameResolve(pstate, name);
 		break;
@@ -102,7 +102,7 @@ void fnDclPass(PassState *pstate, FnDclAstNode *name) {
 	case TypeCheck:
 		if (name->value) {
 			// Syntactic sugar: Turn implicit returns into explicit returns
-			fnImplicitReturn(((FnSigAstNode*)name->vtype)->rettype, (BlockAstNode *)name->value);
+			fnImplicitReturn(((FnSigNode*)name->vtype)->rettype, (BlockNode *)name->value);
 			// Do type checking of function (with fnsig as context)
 			fnDclTypeCheck(pstate, name);
 		}

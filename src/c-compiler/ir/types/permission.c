@@ -13,9 +13,9 @@
 #include <assert.h>
 
 // Create a new permission node
-PermAstNode *newPermNode(Name *namesym, char ptyp, uint16_t flags) {
-	PermAstNode *node;
-	newNode(node, PermAstNode, PermTag);
+PermNode *newPermNode(Name *namesym, char ptyp, uint16_t flags) {
+	PermNode *node;
+	newNode(node, PermNode, PermTag);
     node->vtype = NULL;
     node->owner = NULL;
     node->namesym = namesym;
@@ -28,7 +28,7 @@ PermAstNode *newPermNode(Name *namesym, char ptyp, uint16_t flags) {
 }
 
 // Serialize the AST for a permission
-void permPrint(PermAstNode *node) {
+void permPrint(PermNode *node) {
 	switch (node->ptype) {
 	case UniPerm: inodeFprint("uni "); break;
 	case MutPerm: inodeFprint("mut "); break;
@@ -44,14 +44,14 @@ void permPrint(PermAstNode *node) {
 uint16_t permGetFlags(INode *node) {
 	switch (node->asttype) {
 	case VarNameUseTag:
-		return permGetFlags((INode*)((NameUseAstNode*)node)->dclnode);
+		return permGetFlags((INode*)((NameUseNode*)node)->dclnode);
 	case VarDclTag:
-		return ((VarDclAstNode*)node)->perm->flags;
+		return ((VarDclNode*)node)->perm->flags;
     case FnDclTag:
         return immPerm->flags;
     case DerefTag:
 	{
-		PtrAstNode *vtype = (PtrAstNode*)typeGetVtype(((DerefAstNode *)node)->exp);
+		PtrNode *vtype = (PtrNode*)typeGetVtype(((DerefNode *)node)->exp);
 		assert(vtype->asttype == RefTag || vtype->asttype == PtrTag);
 		return vtype->perm->flags;
 	}
@@ -63,7 +63,7 @@ uint16_t permGetFlags(INode *node) {
 // Is Lval mutable
 int permIsMutable(INode *lval) {
 	if (lval->asttype == FnCallTag) {
-		FnCallAstNode *fncall = (FnCallAstNode *)lval;
+		FnCallNode *fncall = (FnCallNode *)lval;
         if (fncall->methprop)
             return MayWrite & permGetFlags(fncall->objfn) & permGetFlags((INode*)fncall->methprop);
         else
@@ -74,12 +74,12 @@ int permIsMutable(INode *lval) {
 }
 
 // Are the permissions the same?
-int permIsSame(PermAstNode *node1, PermAstNode *node2) {
+int permIsSame(PermNode *node1, PermNode *node2) {
 	return node1 == node2;
 }
 
 // Will 'from' permission coerce to the target?
-int permMatches(PermAstNode *to, PermAstNode *from) {
+int permMatches(PermNode *to, PermNode *from) {
 	if (permIsSame(to, from) || to==idPerm)
 		return 1;
 	if (from == uniPerm &&

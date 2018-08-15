@@ -12,15 +12,15 @@
 typedef struct Name Name;
 
 // Named type node header (most types are named)
-#define NamedTypeAstHdr \
-    NamedAstHdr; \
+#define INamedTypeNodeHdr \
+    INamedNodeHdr; \
     LLVMTypeRef llvmtype
 
 // Named type node interface (most types are named)
 // A named type needs to remember generated LLVM type ref for typenameuse nodes
-typedef struct NamedTypeAstNode {
-    NamedTypeAstHdr;
-} NamedTypeAstNode;
+typedef struct NamedTypeNode {
+    INamedTypeNodeHdr;
+} NamedTypeNode;
 
 // All types get a copy trait indicating how to handle when a value of that type
 // is assigned to a variable or passed as an argument to a function.
@@ -33,9 +33,9 @@ enum CopyTrait {
 };
 
 // Void type - e.g., for fn with no return value
-typedef struct VoidTypeAstNode {
+typedef struct VoidTypeNode {
 	INodeHdr;
-} VoidTypeAstNode;
+} VoidTypeNode;
 
 INode *typeGetVtype(INode *node);
 INode *typeGetDerefType(INode *node);
@@ -48,7 +48,7 @@ void typeHandleCopy(INode **nodep);
 
 char *typeMangle(char *bufp, INode *vtype);
 
-VoidTypeAstNode *newVoidNode();
-void voidPrint(VoidTypeAstNode *voidnode);
+VoidTypeNode *newVoidNode();
+void voidPrint(VoidTypeNode *voidnode);
 
 #endif

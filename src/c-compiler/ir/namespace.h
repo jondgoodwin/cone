@@ -13,7 +13,7 @@ typedef struct Name Name;
 // A namespace entry
 typedef struct NameNode {
 	Name *name;
-	NamedAstNode *node;
+	INamedNode *node;
 } NameNode;
 
 // Namespace metadata
@@ -24,11 +24,11 @@ typedef struct Namespace {
 } Namespace;
 
 void namespaceInit(Namespace *ns, size_t avail);
-NamedAstNode *namespaceFind(Namespace *ns, Name *name);
-void namespaceSet(Namespace *ns, Name *name, NamedAstNode *node);
+INamedNode *namespaceFind(Namespace *ns, Name *name);
+void namespaceSet(Namespace *ns, Name *name, INamedNode *node);
 // Add fn/method to namespace, where multiple allowed with same name
-// When multiple exist, they are mediated by a FnTupleAstNode
-void namespaceAddFnTuple(Namespace *ns, NamedAstNode *fn);
+// When multiple exist, they are mediated by a FnTupleNode
+void namespaceAddFnTuple(Namespace *ns, INamedNode *fn);
 
 #define namespaceFor(ns) for (size_t __i = 0; __i < (ns)->avail; ++__i)
 #define namespaceNextNode(ns, nodevar) \

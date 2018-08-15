@@ -11,7 +11,7 @@
 #include "../nametbl.h"
 
 // Serialize the AST for a numeric literal
-void nbrTypePrint(NbrAstNode *node) {
+void nbrTypePrint(NbrNode *node) {
 	if (node == i8Type)
 		inodeFprint("i8");
 	else if (node == i16Type)

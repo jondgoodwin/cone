@@ -38,29 +38,29 @@ typedef struct PassState PassState;
 // Interfaces & headers shared across nodes
 #include "inode.h"
 
-// Typed Ast Node header, offering access to the node's type info
+// Typed Node header, offering access to the node's type info
 // - vtype is the value type for an expression (e.g., 'i32')
-#define TypedAstHdr \
+#define ITypedNodeHdr \
 	INodeHdr; \
 	INode *vtype
 
-// Castable structure for all typed AST nodes
-typedef struct TypedAstNode {
-	TypedAstHdr;
-} TypedAstNode;
+// Castable structure for all typed nodes
+typedef struct ITypedNode {
+	ITypedNodeHdr;
+} ITypedNode;
 
-// Named Ast Node header, for variable and type declarations
+// Named Node header, for variable and type declarations
 // - namesym points to the global name table entry (holds name string)
 // - owner is the namespace node this name belongs to
-#define NamedAstHdr \
-	TypedAstHdr; \
+#define INamedNodeHdr \
+	ITypedNodeHdr; \
 	Name *namesym; \
-	struct NamedAstNode *owner
+	struct INamedNode *owner
 
-// Castable structure for all named AST nodes
-typedef struct NamedAstNode {
-	NamedAstHdr;
-} NamedAstNode;
+// Castable structure for all named nodes
+typedef struct INamedNode {
+	INamedNodeHdr;
+} INamedNode;
 
 
 #include "types/type.h"
@@ -97,8 +97,8 @@ enum Passes {
 // Context used across all AST semantic analysis passes
 typedef struct PassState {
 	int pass;				// Passes
-	ModuleAstNode *mod;		// Current module
-	FnSigAstNode *fnsig;	// The type signature of the function we are within
+	ModuleNode *mod;		// Current module
+	FnSigNode *fnsig;	// The type signature of the function we are within
 
 	int16_t scope;			// The current block scope (0=global, 1=fnsig, 2+=blocks)
 	uint16_t flags;

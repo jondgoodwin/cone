@@ -18,14 +18,14 @@
 //     Note: the namespace is comprised of properties + methods
 //       with no duplicate names between them
 // - subtypes. An ordered list of nodes for its traits/interfaces
-typedef struct StructAstNode {
-	MethodTypeAstHdr;
-} StructAstNode;
+typedef struct StructNode {
+	IMethodNodeHdr;
+} StructNode;
 
-StructAstNode *newStructNode(Name *namesym);
-void structPrint(StructAstNode *node);
-void structPass(PassState *pstate, StructAstNode *name);
-int structEqual(StructAstNode *node1, StructAstNode *node2);
-int structCoerces(StructAstNode *to, StructAstNode *from);
+StructNode *newStructNode(Name *namesym);
+void structPrint(StructNode *node);
+void structPass(PassState *pstate, StructNode *name);
+int structEqual(StructNode *node1, StructNode *node2);
+int structCoerces(StructNode *to, StructNode *from);
 
 #endif

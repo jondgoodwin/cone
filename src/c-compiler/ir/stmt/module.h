@@ -18,16 +18,16 @@
 //
 // A module supports forward referencing of its names (except permissions and allocators).
 // It also supports name resolution of namespace qualified, public names.
-typedef struct ModuleAstNode {
-	NamedAstHdr;
+typedef struct ModuleNode {
+	INamedNodeHdr;
     Nodes *nodes;			// All parsed nodes owned by the module
     Namespace namednodes;   // The module's public, owned named nodes
-} ModuleAstNode;
+} ModuleNode;
 
-ModuleAstNode *newModuleNode();
-void modPrint(ModuleAstNode *mod);
-void modAddNode(ModuleAstNode *mod, INode *node);
-void modHook(ModuleAstNode *oldmod, ModuleAstNode *newmod);
-void modPass(PassState *pstate, ModuleAstNode *mod);
+ModuleNode *newModuleNode();
+void modPrint(ModuleNode *mod);
+void modAddNode(ModuleNode *mod, INode *node);
+void modHook(ModuleNode *oldmod, ModuleNode *newmod);
+void modPass(PassState *pstate, ModuleNode *mod);
 
 #endif

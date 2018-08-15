@@ -33,7 +33,7 @@ LLVMBasicBlockRef genlInsertBlock(GenState *gen, char *name) {
 }
 
 // Generate a while block
-void genlWhile(GenState *gen, WhileAstNode *wnode) {
+void genlWhile(GenState *gen, WhileNode *wnode) {
 	LLVMBasicBlockRef whilebeg, whileblk, whileend;
 	LLVMBasicBlockRef svwhilebeg, svwhileend;
 
@@ -49,7 +49,7 @@ void genlWhile(GenState *gen, WhileAstNode *wnode) {
 	LLVMPositionBuilderAtEnd(gen->builder, whilebeg);
 	LLVMBuildCondBr(gen->builder, genlExpr(gen, wnode->condexp), whileblk, whileend);
 	LLVMPositionBuilderAtEnd(gen->builder, whileblk);
-	genlBlock(gen, (BlockAstNode*)wnode->blk);
+	genlBlock(gen, (BlockNode*)wnode->blk);
 	LLVMBuildBr(gen->builder, whilebeg);
 	LLVMPositionBuilderAtEnd(gen->builder, whileend);
 
@@ -58,7 +58,7 @@ void genlWhile(GenState *gen, WhileAstNode *wnode) {
 }
 
 // Generate a return statement
-void genlReturn(GenState *gen, ReturnAstNode *node) {
+void genlReturn(GenState *gen, ReturnNode *node) {
 	if (node->exp != voidType)
 		LLVMBuildRet(gen->builder, genlExpr(gen, node->exp));
 	else
@@ -66,20 +66,20 @@ void genlReturn(GenState *gen, ReturnAstNode *node) {
 }
 
 // Generate a block's statements
-LLVMValueRef genlBlock(GenState *gen, BlockAstNode *blk) {
+LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
 	INode **nodesp;
 	uint32_t cnt;
 	LLVMValueRef lastval = NULL; // Should never be used by caller
 	for (nodesFor(blk->stmts, cnt, nodesp)) {
 		switch ((*nodesp)->asttype) {
 		case WhileTag:
-			genlWhile(gen, (WhileAstNode *)*nodesp); break;
+			genlWhile(gen, (WhileNode *)*nodesp); break;
 		case BreakTag:
 			LLVMBuildBr(gen->builder, gen->whileend); break;
 		case ContinueTag:
 			LLVMBuildBr(gen->builder, gen->whilebeg); break;
 		case ReturnTag:
-			genlReturn(gen, (ReturnAstNode*)*nodesp); break;
+			genlReturn(gen, (ReturnNode*)*nodesp); break;
 		default:
 			lastval = genlExpr(gen, *nodesp);
 		}

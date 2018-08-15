@@ -18,33 +18,33 @@
 typedef struct NameList {
     uint16_t avail;     // Max. number of names allocated for
     uint16_t used;      // Number of names stored in list
-    ModuleAstNode *basemod;  // base module (root or current) holding qualifiers
+    ModuleNode *basemod;  // base module (root or current) holding qualifiers
     // Name* pointers for qualifiers follow, starting here
 } NameList;
 
 // Create a new name use node
-NameUseAstNode *newNameUseNode(Name *namesym) {
-	NameUseAstNode *name;
-	newNode(name, NameUseAstNode, NameUseTag);
+NameUseNode *newNameUseNode(Name *namesym) {
+	NameUseNode *name;
+	newNode(name, NameUseNode, NameUseTag);
 	name->qualNames = NULL;
 	name->dclnode = NULL;
     name->namesym = namesym;
 	return name;
 }
 
-NameUseAstNode *newMemberUseNode(Name *namesym) {
-	NameUseAstNode *name;
-	newNode(name, NameUseAstNode, MbrNameUseTag);
+NameUseNode *newMemberUseNode(Name *namesym) {
+	NameUseNode *name;
+	newNode(name, NameUseNode, MbrNameUseTag);
     name->qualNames = NULL;
     name->dclnode = NULL;
     name->namesym = namesym;
 	return name;
 }
 
-// If a NameUseAstNode has module name qualifiers, it will first set basemod
+// If a NameUseNode has module name qualifiers, it will first set basemod
 // (either root module or the current module scope). This allocates an area
 // for qualifiers to be added.
-void nameUseBaseMod(NameUseAstNode *node, ModuleAstNode *basemod) {
+void nameUseBaseMod(NameUseNode *node, ModuleNode *basemod) {
     node->qualNames = (NameList *)memAllocBlk(sizeof(NameList) + 4 * sizeof(Name*));
     node->qualNames->avail = 4;
     node->qualNames->used = 0;
@@ -52,7 +52,7 @@ void nameUseBaseMod(NameUseAstNode *node, ModuleAstNode *basemod) {
 }
 
 // Add a module name qualifier to the end of the list
-void nameUseAddQual(NameUseAstNode *node, Name *name) {
+void nameUseAddQual(NameUseNode *node, Name *name) {
     int16_t used = node->qualNames->used;
     if (used + 1 >= node->qualNames->avail) {
         NameList *oldlist = node->qualNames;
@@ -73,7 +73,7 @@ void nameUseAddQual(NameUseAstNode *node, Name *name) {
 }
 
 // Serialize the AST for a name use
-void nameUsePrint(NameUseAstNode *name) {
+void nameUsePrint(NameUseNode *name) {
     if (name->qualNames) {
         // if root: inodeFprint("::");
         int16_t cnt = name->qualNames->used;
@@ -85,18 +85,18 @@ void nameUsePrint(NameUseAstNode *name) {
 }
 
 // Handle name resolution and type check for name use references
-void nameUseWalk(PassState *pstate, NameUseAstNode **namep) {
-    NameUseAstNode *name = *namep;
+void nameUseWalk(PassState *pstate, NameUseNode **namep) {
+    NameUseNode *name = *namep;
 	// During name resolution, point to name declaration and copy over needed properties
 	switch (pstate->pass) {
 	case NameResolution:
         if (name->qualNames) {
             // Do iterative look ups of module qualifiers beginning with basemod
-            ModuleAstNode *mod = name->qualNames->basemod;
+            ModuleNode *mod = name->qualNames->basemod;
             int16_t cnt = name->qualNames->used;
             Name **namep = (Name**)(name->qualNames + 1);
             while (cnt--) {
-                mod = (ModuleAstNode*)namespaceFind(&mod->namednodes, *namep++);
+                mod = (ModuleNode*)namespaceFind(&mod->namednodes, *namep++);
                 if (mod==NULL || mod->asttype!=ModuleTag) {
                     errorMsgNode((INode*)name, ErrorUnkName, "Module %s does not exist", &(*--namep)->namestr);
                     return;
@@ -106,17 +106,17 @@ void nameUseWalk(PassState *pstate, NameUseAstNode **namep) {
         }
         else
             // For current module, should already be hooked in global name table
-			name->dclnode = (NamedAstNode*)name->namesym->node;
+			name->dclnode = (INamedNode*)name->namesym->node;
 
         // If variable is actually an instance property, rewrite it to 'self.property'
         if (name->dclnode->asttype == VarDclTag && name->dclnode->flags & FlagMethProp) {
             // Doing this rewrite ensures we reuse existing type check and gen code for
             // properly handling property access
-            NameUseAstNode *selfnode = newNameUseNode(selfName);
-            FnCallAstNode *fncall = newFnCallAstNode((INode *)selfnode, 0);
+            NameUseNode *selfnode = newNameUseNode(selfName);
+            FnCallNode *fncall = newFnCallNode((INode *)selfnode, 0);
             fncall->methprop = name;
             copyNodeLex(fncall, name); // Copy lexer info into injected node in case it has errors
-            *((FnCallAstNode**)namep) = fncall;
+            *((FnCallNode**)namep) = fncall;
             inodeWalk(pstate, (INode **)namep);
         }
         // Make it easy to distinguish whether a name is for a variable/function name vs. type

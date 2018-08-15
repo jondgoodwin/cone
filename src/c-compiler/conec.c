@@ -22,7 +22,7 @@
 clock_t startTime;
 
 // Run all semantic analysis passes against the AST/IR (after parse and before gen)
-void doAnalysis(ModuleAstNode **mod) {
+void doAnalysis(ModuleNode **mod) {
     PassState pstate;
     pstate.mod = *mod;
     pstate.fnsig = NULL;
@@ -44,7 +44,7 @@ void doAnalysis(ModuleAstNode **mod) {
 
 int main(int argc, char **argv) {
 	ConeOptions coneopt;
-	ModuleAstNode *modnode;
+	ModuleNode *modnode;
 	int ok;
 	char *srcfn;
 

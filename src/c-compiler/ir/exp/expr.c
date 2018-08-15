@@ -14,36 +14,36 @@
 #include <assert.h>
 
 // Create a new sizeof node
-SizeofAstNode *newSizeofAstNode() {
-	SizeofAstNode *node;
-	newNode(node, SizeofAstNode, SizeofTag);
+SizeofNode *newSizeofNode() {
+	SizeofNode *node;
+	newNode(node, SizeofNode, SizeofTag);
 	node->vtype = (INode*)usizeType;
 	return node;
 }
 
 // Serialize sizeof
-void sizeofPrint(SizeofAstNode *node) {
+void sizeofPrint(SizeofNode *node) {
 	inodeFprint("(sizeof, ");
 	inodePrintNode(node->type);
 	inodeFprint(")");
 }
 
 // Analyze sizeof node
-void sizeofPass(PassState *pstate, SizeofAstNode *node) {
+void sizeofPass(PassState *pstate, SizeofNode *node) {
 	inodeWalk(pstate, &node->type);
 }
 
 // Create a new cast node
-CastAstNode *newCastAstNode(INode *exp, INode *type) {
-	CastAstNode *node;
-	newNode(node, CastAstNode, CastTag);
+CastNode *newCastNode(INode *exp, INode *type) {
+	CastNode *node;
+	newNode(node, CastNode, CastTag);
 	node->vtype = type;
 	node->exp = exp;
 	return node;
 }
 
 // Serialize cast
-void castPrint(CastAstNode *node) {
+void castPrint(CastNode *node) {
 	inodeFprint("(cast, ");
 	inodePrintNode(node->vtype);
 	inodeFprint(", ");
@@ -52,32 +52,32 @@ void castPrint(CastAstNode *node) {
 }
 
 // Analyze cast node
-void castPass(PassState *pstate, CastAstNode *node) {
+void castPass(PassState *pstate, CastNode *node) {
 	inodeWalk(pstate, &node->exp);
 	inodeWalk(pstate, &node->vtype);
-	if (pstate->pass == TypeCheck && 0 == typeMatches(node->vtype, ((TypedAstNode *)node->exp)->vtype))
+	if (pstate->pass == TypeCheck && 0 == typeMatches(node->vtype, ((ITypedNode *)node->exp)->vtype))
 		errorMsgNode(node->vtype, ErrorInvType, "expression may not be type cast to this type");
 }
 
 // Create a new deref node
-DerefAstNode *newDerefAstNode() {
-	DerefAstNode *node;
-	newNode(node, DerefAstNode, DerefTag);
+DerefNode *newDerefNode() {
+	DerefNode *node;
+	newNode(node, DerefNode, DerefTag);
 	node->vtype = voidType;
 	return node;
 }
 
 // Serialize deref
-void derefPrint(DerefAstNode *node) {
+void derefPrint(DerefNode *node) {
 	inodeFprint("*");
 	inodePrintNode(node->exp);
 }
 
 // Analyze deref node
-void derefPass(PassState *pstate, DerefAstNode *node) {
+void derefPass(PassState *pstate, DerefNode *node) {
 	inodeWalk(pstate, &node->exp);
 	if (pstate->pass == TypeCheck) {
-		PtrAstNode *ptype = (PtrAstNode*)((TypedAstNode *)node->exp)->vtype;
+		PtrNode *ptype = (PtrNode*)((ITypedNode *)node->exp)->vtype;
 		if (ptype->asttype == RefTag || ptype->asttype == PtrTag)
 			node->vtype = ptype->pvtype;
 		else
@@ -89,22 +89,22 @@ void derefPass(PassState *pstate, DerefAstNode *node) {
 void derefAuto(INode **node) {
 	if (typeGetVtype(*node)->asttype != RefTag)
 		return;
-	DerefAstNode *deref = newDerefAstNode();
+	DerefNode *deref = newDerefNode();
 	deref->exp = *node;
-	deref->vtype = ((PtrAstNode*)((TypedAstNode *)*node)->vtype)->pvtype;
+	deref->vtype = ((PtrNode*)((ITypedNode *)*node)->vtype)->pvtype;
 	*node = (INode*)deref;
 }
 
 // Create a new logic operator node
-LogicAstNode *newLogicAstNode(int16_t typ) {
-	LogicAstNode *node;
-	newNode(node, LogicAstNode, typ);
+LogicNode *newLogicNode(int16_t typ) {
+	LogicNode *node;
+	newNode(node, LogicNode, typ);
 	node->vtype = (INode*)boolType;
 	return node;
 }
 
 // Serialize logic node
-void logicPrint(LogicAstNode *node) {
+void logicPrint(LogicNode *node) {
 	if (node->asttype == NotLogicTag) {
 		inodeFprint("!");
 		inodePrintNode(node->lexp);
@@ -119,14 +119,14 @@ void logicPrint(LogicAstNode *node) {
 }
 
 // Analyze not logic node
-void logicNotPass(PassState *pstate, LogicAstNode *node) {
+void logicNotPass(PassState *pstate, LogicNode *node) {
 	inodeWalk(pstate, &node->lexp);
 	if (pstate->pass == TypeCheck)
 		typeCoerces((INode*)boolType, &node->lexp);
 }
 
 // Analyze logic node
-void logicPass(PassState *pstate, LogicAstNode *node) {
+void logicPass(PassState *pstate, LogicNode *node) {
 	inodeWalk(pstate, &node->lexp);
 	inodeWalk(pstate, &node->rexp);
 
