@@ -27,13 +27,18 @@ add_executable(conec
 	src/c-compiler/ir/nametbl.c
 	src/c-compiler/ir/nodes.c
 
-	src/c-compiler/ir/stmt/block.c
+	src/c-compiler/ir/stmt/break.c
+	src/c-compiler/ir/stmt/intrinsic.c
 	src/c-compiler/ir/stmt/module.c
+	src/c-compiler/ir/stmt/return.c
+	src/c-compiler/ir/stmt/while.c
 
+	src/c-compiler/ir/exp/block.c
 	src/c-compiler/ir/exp/copyexpr.c
 	src/c-compiler/ir/exp/expr.c
 	src/c-compiler/ir/exp/fncall.c
 	src/c-compiler/ir/exp/fndcl.c
+	src/c-compiler/ir/exp/if.c
 	src/c-compiler/ir/exp/literal.c
 	src/c-compiler/ir/exp/nameuse.c
 	src/c-compiler/ir/exp/vardcl.c

@@ -74,9 +74,14 @@ typedef struct INamedNode {
 #include "types/alloc.h"
 
 #include "stmt/module.h"
-#include "stmt/block.h"
+#include "stmt/while.h"
+#include "stmt/break.h"
+#include "stmt/return.h"
+#include "stmt/intrinsic.h"
 
 #include "exp/nameuse.h"
+#include "exp/block.h"
+#include "exp/if.h"
 #include "exp/expr.h"
 #include "exp/copyexpr.h"
 #include "exp/fncall.h"
