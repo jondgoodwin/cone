@@ -1,4 +1,4 @@
-/** AST handling for function/method declaration nodes
+/** Handling for function/method declaration nodes
  *
  * This source file is part of the Cone Programming Language C compiler
  * See Copyright Notice in conec.h
@@ -15,7 +15,7 @@ typedef struct FnDclNode {
     struct FnDclNode *nextnode;     // Link to next overloaded method with the same name (or NULL)
 } FnDclNode;
 
-FnDclNode *newFnDclNode(Name *namesym, uint16_t asttype, INode *sig, INode *val);
+FnDclNode *newFnDclNode(Name *namesym, uint16_t tag, INode *sig, INode *val);
 void fnDclPrint(FnDclNode *fn);
 void fnDclPass(PassState *pstate, FnDclNode *node);
 

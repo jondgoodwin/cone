@@ -1,4 +1,4 @@
-/** AST handling for expression nodes that might do copy/move
+/** Handling for expression nodes that might do copy/move
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler

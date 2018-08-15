@@ -1,4 +1,4 @@
-/** AST handling for primitive numbers
+/** Handling for primitive numbers
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -10,7 +10,7 @@
 #include "../../parser/lexer.h"
 #include "../nametbl.h"
 
-// Serialize the AST for a numeric literal
+// Serialize a numeric literal node
 void nbrTypePrint(NbrNode *node) {
 	if (node == i8Type)
 		inodeFprint("i8");
@@ -38,5 +38,5 @@ void nbrTypePrint(NbrNode *node) {
 
 // Is a number-typed node
 int isNbr(INode *node) {
-	return (node->asttype == IntNbrTag || node->asttype == UintNbrTag || node->asttype == FloatNbrTag);
+	return (node->tag == IntNbrTag || node->tag == UintNbrTag || node->tag == FloatNbrTag);
 }

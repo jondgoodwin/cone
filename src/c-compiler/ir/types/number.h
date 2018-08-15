@@ -1,4 +1,4 @@
-/** AST handling for primitive numbers
+/** Handling for primitive numbers
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler

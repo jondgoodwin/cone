@@ -86,7 +86,7 @@ typedef struct INamedNode {
 
 #include "../std/stdlib.h"
 
-// The AST analytical passes performed in between parse and generation
+// The semantic analysis passes performed in between parse and generation
 enum Passes {
 	// Scope all declared names and resolve all name uses accordingly
 	NameResolution,
@@ -94,7 +94,7 @@ enum Passes {
 	TypeCheck
 };
 
-// Context used across all AST semantic analysis passes
+// Context used across all semantic analysis passes
 typedef struct PassState {
 	int pass;				// Passes
 	ModuleNode *mod;		// Current module

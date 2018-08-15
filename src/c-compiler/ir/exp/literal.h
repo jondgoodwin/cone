@@ -1,4 +1,4 @@
-/** AST handling for literals
+/** Handling for literals
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler

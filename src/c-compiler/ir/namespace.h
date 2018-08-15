@@ -1,4 +1,4 @@
-/** Hashed named astnodes
+/** Hashed named nodes
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler

@@ -25,7 +25,7 @@
 
 // Generate a LLVMTypeRef from a basic type definition node
 LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
-	switch (typ->asttype) {
+	switch (typ->tag) {
 	case IntNbrTag: case UintNbrTag:
 	{
 		switch (((NbrNode*)typ)->bits) {
@@ -62,7 +62,7 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
 		INode **nodesp;
 		uint32_t cnt;
 		for (nodesFor(fnsig->parms, cnt, nodesp)) {
-			assert((*nodesp)->asttype == VarDclTag);
+			assert((*nodesp)->tag == VarDclTag);
 			*parm++ = genlType(gen, ((ITypedNode *)*nodesp)->vtype);
 		}
 		return LLVMFunctionType(genlType(gen, fnsig->rettype), param_types, fnsig->parms->used, 0);
@@ -77,13 +77,13 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
         uint32_t cnt;
         uint32_t propcount = 0;
         for (methnodesFor(&strnode->methprops, cnt, nodesp)) {
-            if ((*nodesp)->asttype == VarDclTag)
+            if ((*nodesp)->tag == VarDclTag)
                 ++propcount;
         }
         LLVMTypeRef *prop_types = (LLVMTypeRef *)memAllocBlk(propcount * sizeof(LLVMTypeRef));
 		LLVMTypeRef *property = prop_types;
 		for (methnodesFor(&strnode->methprops, cnt, nodesp)) {
-			if ((*nodesp)->asttype == VarDclTag)
+			if ((*nodesp)->tag == VarDclTag)
     			*property++ = genlType(gen, ((ITypedNode *)*nodesp)->vtype);
 		}
 		LLVMTypeRef structype = LLVMStructCreateNamed(gen->context, name);
@@ -106,9 +106,9 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
 // Generate a type value
 LLVMTypeRef genlType(GenState *gen, INode *typ) {
 	char *name = "";
-	if (typ->asttype == TypeNameUseTag || typ->asttype == AllocTag) {
+	if (typ->tag == TypeNameUseTag || typ->tag == AllocTag) {
 		// with vtype name use, we can memoize type value and give it a name
-		NamedTypeNode *dclnode = typ->asttype==AllocTag? (NamedTypeNode*)typ : (NamedTypeNode*)((NameUseNode*)typ)->dclnode;
+		NamedTypeNode *dclnode = typ->tag==AllocTag? (NamedTypeNode*)typ : (NamedTypeNode*)((NameUseNode*)typ)->dclnode;
 		if (dclnode->llvmtype)
 			return dclnode->llvmtype;
 
@@ -120,12 +120,12 @@ LLVMTypeRef genlType(GenState *gen, INode *typ) {
             uint32_t cnt;
             // Declare just method names first, enabling forward references
             for (methnodesFor(&tnode->methprops, cnt, nodesp)) {
-                if ((*nodesp)->asttype == FnDclTag)
+                if ((*nodesp)->tag == FnDclTag)
                     genlGloFnName(gen, (FnDclNode*)*nodesp);
             }
 			// Now generate the code for each method
             for (methnodesFor(&tnode->methprops, cnt, nodesp)) {
-                if ((*nodesp)->asttype == FnDclTag)
+                if ((*nodesp)->tag == FnDclTag)
                     genlFn(gen, (FnDclNode*)*nodesp);
 			}
 		}
@@ -137,7 +137,7 @@ LLVMTypeRef genlType(GenState *gen, INode *typ) {
 
 LLVMValueRef genlSizeof(GenState *gen, INode *vtype) {
 	unsigned long long size = LLVMABISizeOfType(gen->datalayout, genlType(gen, vtype));
-	if (vtype->asttype == AllocTag) {
+	if (vtype->tag == AllocTag) {
 		if (LLVMPointerSize(gen->datalayout) == 32)
 			size = (size + 3) & 0xFFFFFFFC;
 		else
@@ -188,7 +188,7 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
 
 		// Generate this condition's code block, along with jump to endif if block does not end with a return
 		LLVMValueRef blkval = genlBlock(gen, (BlockNode*)*(nodesp + 1));
-		int16_t lastStmttype = nodesLast(((BlockNode*)*(nodesp + 1))->stmts)->asttype;
+		int16_t lastStmttype = nodesLast(((BlockNode*)*(nodesp + 1))->stmts)->tag;
 		if (lastStmttype != ReturnTag && lastStmttype != BreakTag && lastStmttype != ContinueTag) {
 			LLVMBuildBr(gen->builder, endif);
 			// Remember value and block if needed for phi merge
@@ -232,23 +232,23 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
 		*fnarg++ = genlExpr(gen, *nodesp);
 
 	// Handle call when we have a pointer to a function
-	if (fncall->objfn->asttype == DerefTag) {
+	if (fncall->objfn->tag == DerefTag) {
 		return LLVMBuildCall(gen->builder, genlExpr(gen, ((DerefNode*)fncall->objfn)->exp), fnargs, fncall->args->used, "");
 	}
 
 	// A function call may be to an intrinsic, or to program-defined code
 	NameUseNode *fnuse = (NameUseNode *)fncall->objfn;
     VarDclNode *fndcl = (VarDclNode *)fnuse->dclnode;
-	switch (fndcl->value? fndcl->value->asttype : BlockTag) {
+	switch (fndcl->value? fndcl->value->tag : BlockTag) {
 	case BlockTag: {
 		return LLVMBuildCall(gen->builder, fndcl->llvmvar, fnargs, fncall->args->used, "");
 	}
 	case IntrinsicTag: {
 		NbrNode *nbrtype = (NbrNode *)typeGetVtype(*nodesNodes(fncall->args));
-		uint16_t nbrasttype = nbrtype->asttype;
+		uint16_t nbrtag = nbrtype->tag;
 
 		// Floating point intrinsics
-		if (nbrasttype == FloatNbrTag) {
+		if (nbrtag == FloatNbrTag) {
 			switch (((IntrinsicNode *)fndcl->value)->intrinsicFn) {
 			case NegIntrinsic: return LLVMBuildFNeg(gen->builder, fnargs[0], "");
 			case AddIntrinsic: return LLVMBuildFAdd(gen->builder, fnargs[0], fnargs[1], "");
@@ -281,12 +281,12 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
 			case SubIntrinsic: return LLVMBuildSub(gen->builder, fnargs[0], fnargs[1], "");
 			case MulIntrinsic: return LLVMBuildMul(gen->builder, fnargs[0], fnargs[1], "");
 			case DivIntrinsic:
-				if (nbrasttype == IntNbrTag)
+				if (nbrtag == IntNbrTag)
 					return LLVMBuildSDiv(gen->builder, fnargs[0], fnargs[1], "");
 				else
 					return LLVMBuildUDiv(gen->builder, fnargs[0], fnargs[1], "");
 			case RemIntrinsic:
-				if (nbrasttype == IntNbrTag)
+				if (nbrtag == IntNbrTag)
 					return LLVMBuildSRem(gen->builder, fnargs[0], fnargs[1], "");
 				else
 					return LLVMBuildURem(gen->builder, fnargs[0], fnargs[1], "");
@@ -295,22 +295,22 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
 			case EqIntrinsic: return LLVMBuildICmp(gen->builder, LLVMIntEQ, fnargs[0], fnargs[1], "");
 			case NeIntrinsic: return LLVMBuildICmp(gen->builder, LLVMIntNE, fnargs[0], fnargs[1], "");
 			case LtIntrinsic:
-				if (nbrasttype == IntNbrTag)
+				if (nbrtag == IntNbrTag)
 					return LLVMBuildICmp(gen->builder, LLVMIntSLT, fnargs[0], fnargs[1], "");
 				else
 					return LLVMBuildICmp(gen->builder, LLVMIntULT, fnargs[0], fnargs[1], "");
 			case LeIntrinsic:
-				if (nbrasttype == IntNbrTag)
+				if (nbrtag == IntNbrTag)
 					return LLVMBuildICmp(gen->builder, LLVMIntSLE, fnargs[0], fnargs[1], "");
 				else
 					return LLVMBuildICmp(gen->builder, LLVMIntULE, fnargs[0], fnargs[1], "");
 			case GtIntrinsic:
-				if (nbrasttype == IntNbrTag)
+				if (nbrtag == IntNbrTag)
 					return LLVMBuildICmp(gen->builder, LLVMIntSGT, fnargs[0], fnargs[1], "");
 				else
 					return LLVMBuildICmp(gen->builder, LLVMIntUGT, fnargs[0], fnargs[1], "");
 			case GeIntrinsic:
-				if (nbrasttype == IntNbrTag)
+				if (nbrtag == IntNbrTag)
 					return LLVMBuildICmp(gen->builder, LLVMIntSGE, fnargs[0], fnargs[1], "");
 				else
 					return LLVMBuildICmp(gen->builder, LLVMIntUGE, fnargs[0], fnargs[1], "");
@@ -322,7 +322,7 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
 			case XorIntrinsic: return LLVMBuildXor(gen->builder, fnargs[0], fnargs[1], "");
 			case ShlIntrinsic: return LLVMBuildShl(gen->builder, fnargs[0], fnargs[1], "");
 			case ShrIntrinsic:
-				if (nbrasttype == IntNbrTag)
+				if (nbrtag == IntNbrTag)
 					return LLVMBuildAShr(gen->builder, fnargs[0], fnargs[1], "");
 				else
 					return LLVMBuildLShr(gen->builder, fnargs[0], fnargs[1], "");
@@ -343,17 +343,17 @@ LLVMValueRef genlCast(GenState *gen, CastNode* node) {
 	// Casting a number to Bool means false if zero and true otherwise
 	if (totype == boolType) {
 		INode *vtype = typeGetVtype(node->exp);
-		if (fromtype->asttype == FloatNbrTag)
+		if (fromtype->tag == FloatNbrTag)
 			return LLVMBuildFCmp(gen->builder, LLVMRealONE, genlExpr(gen, node->exp), LLVMConstNull(genlType(gen, vtype)), "");
 		else
 			return LLVMBuildICmp(gen->builder, LLVMIntNE, genlExpr(gen, node->exp), LLVMConstNull(genlType(gen, vtype)), "");
 	}
 
 	// Handle number to number casts, depending on relative size and encoding format
-	switch (totype->asttype) {
+	switch (totype->tag) {
 
 	case UintNbrTag:
-		if (fromtype->asttype == FloatNbrTag)
+		if (fromtype->tag == FloatNbrTag)
 			return LLVMBuildFPToUI(gen->builder, genlExpr(gen, node->exp), genlType(gen, (INode*)totype), "");
 		else if (totype->bits < fromtype->bits)
 			return LLVMBuildTrunc(gen->builder, genlExpr(gen, node->exp), genlType(gen, (INode*)totype), "");
@@ -363,12 +363,12 @@ LLVMValueRef genlCast(GenState *gen, CastNode* node) {
 			return LLVMBuildBitCast(gen->builder, genlExpr(gen, node->exp), genlType(gen, (INode*)totype), "");
 
 	case IntNbrTag:
-		if (fromtype->asttype == FloatNbrTag)
+		if (fromtype->tag == FloatNbrTag)
 			return LLVMBuildFPToSI(gen->builder, genlExpr(gen, node->exp), genlType(gen, (INode*)totype), "");
 		else if (totype->bits < fromtype->bits)
 			return LLVMBuildTrunc(gen->builder, genlExpr(gen, node->exp), genlType(gen, (INode*)totype), "");
 		else if (totype->bits > fromtype->bits) {
-			if (fromtype->asttype == IntNbrTag)
+			if (fromtype->tag == IntNbrTag)
 				return LLVMBuildSExt(gen->builder, genlExpr(gen, node->exp), genlType(gen, (INode*)totype), "");
 			else
 				return LLVMBuildZExt(gen->builder, genlExpr(gen, node->exp), genlType(gen, (INode*)totype), "");
@@ -377,9 +377,9 @@ LLVMValueRef genlCast(GenState *gen, CastNode* node) {
 			return LLVMBuildBitCast(gen->builder, genlExpr(gen, node->exp), genlType(gen, (INode*)totype), "");
 
 	case FloatNbrTag:
-		if (fromtype->asttype == IntNbrTag)
+		if (fromtype->tag == IntNbrTag)
 			return LLVMBuildSIToFP(gen->builder, genlExpr(gen, node->exp), genlType(gen, (INode*)totype), "");
-		else if (fromtype->asttype == UintNbrTag)
+		else if (fromtype->tag == UintNbrTag)
 			return LLVMBuildUIToFP(gen->builder, genlExpr(gen, node->exp), genlType(gen, (INode*)totype), "");
 		else if (totype->bits < fromtype->bits)
 			return LLVMBuildFPTrunc(gen->builder, genlExpr(gen, node->exp), genlType(gen, (INode*)totype), "");
@@ -409,12 +409,12 @@ LLVMValueRef genlLogic(GenState *gen, LogicNode* node) {
 
 	// Set up basic blocks
 	logicblks[0] = LLVMGetInsertBlock(gen->builder);
-	logicphi = genlInsertBlock(gen, node->asttype==AndLogicTag? "andphi" : "orphi");
-	logicblks[1] = genlInsertBlock(gen, node->asttype==AndLogicTag? "andrhs" : "orrhs");
+	logicphi = genlInsertBlock(gen, node->tag==AndLogicTag? "andphi" : "orphi");
+	logicblks[1] = genlInsertBlock(gen, node->tag==AndLogicTag? "andrhs" : "orrhs");
 
 	// Generate left-hand condition and conditional branch
 	logicvals[0] = genlExpr(gen, node->lexp);
-	if (node->asttype==OrLogicTag)
+	if (node->tag==OrLogicTag)
 		LLVMBuildCondBr(gen->builder, logicvals[0], logicphi, logicblks[1]);
 	else
 		LLVMBuildCondBr(gen->builder, logicvals[0], logicblks[1], logicphi);
@@ -433,7 +433,7 @@ LLVMValueRef genlLogic(GenState *gen, LogicNode* node) {
 
 // Generate local variable
 LLVMValueRef genlLocalVar(GenState *gen, VarDclNode *var) {
-	assert(var->asttype == VarDclTag);
+	assert(var->tag == VarDclTag);
 	LLVMValueRef val = NULL;
 	var->llvmvar = LLVMBuildAlloca(gen->builder, genlType(gen, var->vtype), &var->namesym->namestr);
 	if (var->value)
@@ -443,7 +443,7 @@ LLVMValueRef genlLocalVar(GenState *gen, VarDclNode *var) {
 
 // Generate an lval pointer
 LLVMValueRef genlLval(GenState *gen, INode *lval) {
-	switch (lval->asttype) {
+	switch (lval->tag) {
 	case VarNameUseTag:
 		return ((VarDclNode*)((NameUseNode *)lval)->dclnode)->llvmvar;
 	case DerefTag:
@@ -460,7 +460,7 @@ LLVMValueRef genlLval(GenState *gen, INode *lval) {
 
 // Generate a term
 LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
-    switch (termnode->asttype) {
+    switch (termnode->tag) {
     case ULitTag:
         return LLVMConstInt(genlType(gen, ((ULitNode*)termnode)->vtype), ((ULitNode*)termnode)->uintlit, 0);
     case FLitTag:
@@ -506,7 +506,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
 		AddrNode *anode = (AddrNode*)termnode;
 		PtrNode *ptype = (PtrNode *)anode->vtype;
 		if (ptype->alloc == voidType) {
-			assert(anode->exp->asttype == VarNameUseTag);
+			assert(anode->exp->tag == VarNameUseTag);
 			NameUseNode *var = (NameUseNode*)anode->exp;
 			return ((VarDclNode*)var->dclnode)->llvmvar;
 		}
@@ -526,7 +526,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
 	case IfTag:
 		return genlIf(gen, (IfNode*)termnode); break;
 	default:
-		printf("Unknown AST node to genlExpr!");
+		printf("Unknown node to genlExpr!");
 		return NULL;
 	}
 }

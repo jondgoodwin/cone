@@ -1,4 +1,4 @@
-/** AST structure handlers
+/** Generic node handling
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -16,47 +16,47 @@
 #include <assert.h>
 
 // State for inodePrint
-FILE *astfile;
-int astIndent=0;
-int astisNL = 1;
+FILE *irfile;
+int irIndent=0;
+int irIsNL = 1;
 
-// Output a string to astfile
+// Output a string to irfile
 void inodeFprint(char *str, ...) {
 	va_list argptr;
 	va_start(argptr, str);
-	vfprintf(astfile, str, argptr);
+	vfprintf(irfile, str, argptr);
 	va_end(argptr);
-	astisNL = 0;
+	irIsNL = 0;
 }
 
 // Print new line character
 void inodePrintNL() {
-	if (!astisNL)
-		fputc('\n', astfile);
-	astisNL = 1;
+	if (!irIsNL)
+		fputc('\n', irfile);
+	irIsNL = 1;
 }
 
 // Output a line's beginning indentation
 void inodePrintIndent() {
 	int cnt;
-	for (cnt = 0; cnt<astIndent; cnt++)
-		fprintf(astfile, (cnt & 3) == 0 ? "| " : "  ");
-	astisNL = 0;
+	for (cnt = 0; cnt<irIndent; cnt++)
+		fprintf(irfile, (cnt & 3) == 0 ? "| " : "  ");
+	irIsNL = 0;
 }
 
 // Increment indentation
 void inodePrintIncr() {
-	astIndent++;
+	irIndent++;
 }
 
 // Decrement indentation
 void inodePrintDecr() {
-	astIndent--;
+	irIndent--;
 }
 
-// Serialize a specific AST node
+// Serialize a specific node
 void inodePrintNode(INode *node) {
-	switch (node->asttype) {
+	switch (node->tag) {
 	case ModuleTag:
 		modPrint((ModuleNode *)node); break;
 	case NameUseTag:
@@ -120,18 +120,18 @@ void inodePrintNode(INode *node) {
 	}
 }
 
-// Serialize the program's AST to dir+srcfn
-void inodePrint(char *dir, char *srcfn, INode *pgmast) {
-	astfile = fopen(fileMakePath(dir, pgmast->lexer->fname, "ast"), "wb");
-	inodePrintNode(pgmast);
-	fclose(astfile);
+// Serialize the program's IR to dir+srcfn
+void inodePrint(char *dir, char *srcfn, INode *pgmnode) {
+	irfile = fopen(fileMakePath(dir, pgmnode->lexer->fname, "ast"), "wb");
+	inodePrintNode(pgmnode);
+	fclose(irfile);
 }
 
 // Dispatch a node walk for the current semantic analysis pass
 // - pstate is helpful state info for node traversal
 // - node is a pointer to pointer so that a node can be replaced
 void inodeWalk(PassState *pstate, INode **node) {
-	switch ((*node)->asttype) {
+	switch ((*node)->tag) {
 	case ModuleTag:
 		modPass(pstate, (ModuleNode*)*node); break;
 	case VarDclTag:

@@ -1,4 +1,4 @@
-/** AST handling for structs
+/** Handling for structs
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -25,7 +25,7 @@ StructNode *newStructNode(Name *namesym) {
 
 // Serialize a struct type
 void structPrint(StructNode *node) {
-	inodeFprint(node->asttype == StructTag? "struct %s {}" : "alloc %s {}", &node->namesym->namestr);
+	inodeFprint(node->tag == StructTag? "struct %s {}" : "alloc %s {}", &node->namesym->namestr);
 }
 
 // Semantically analyze a struct type

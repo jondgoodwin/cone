@@ -40,7 +40,7 @@ enum
 	OPT_LINKER,
 
 	OPT_VERBOSE,
-	OPT_AST,
+	OPT_IR,
 	OPT_ASM,
 	OPT_LLVMIR,
 	OPT_TRACE,
@@ -84,7 +84,7 @@ static opt_arg_t args[] =
 	{ "linker", '\0', OPT_ARG_REQUIRED, OPT_LINKER },
 
 	{ "verbose", 'V', OPT_ARG_REQUIRED, OPT_VERBOSE },
-	{ "ast", 'a', OPT_ARG_NONE, OPT_AST },
+	{ "ir", '\0', OPT_ARG_NONE, OPT_IR },
 	{ "asm", '\0', OPT_ARG_NONE, OPT_ASM },
 	{ "llvmir", '\0', OPT_ARG_NONE, OPT_LLVMIR },
 	{ "trace", 't', OPT_ARG_NONE, OPT_TRACE },
@@ -149,14 +149,14 @@ static void usage()
 		"    =2            More detailed compilation information.\n"
 		"    =3            External tool command lines.\n"
 		"    =4            Very low-level detail.\n"
-		"  --ast, -a       Output an abstract syntax tree for the whole program.\n"
+		"  --ir            Output an IR tree for the whole program.\n"
 		"  --asm           Output an assembly file.\n"
 		"  --llvmir        Output an LLVM IR file.\n"
 		"  --trace, -t     Enable parse trace.\n"
-		"  --width, -w     Width to target when printing the AST.\n"
+		"  --width, -w     Width to target when printing the IR.\n"
 		"    =columns      Defaults to the terminal width.\n"
 		"  --immerr        Report errors immediately rather than deferring.\n"
-		"  --checktree     Verify AST well-formedness.\n"
+		"  --checktree     Verify IR well-formedness.\n"
 		"  --verify        Verify LLVM IR.\n"
 		"  --extfun        Set function default linkage to external.\n"
 		"  --simplebuiltin Use a minimal builtin package.\n"
@@ -232,11 +232,11 @@ int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
 		case OPT_LINK_ARCH: opt->link_arch = s.arg_val; break;
 		case OPT_LINKER: opt->linker = s.arg_val; break;
 
-		case OPT_AST: opt->print_ast = 1; break;
+		case OPT_IR: opt->print_ir = 1; break;
 		case OPT_ASM: opt->print_asm = 1; break;
 		case OPT_LLVMIR: opt->print_llvmir = 1; break;
 		case OPT_TRACE: opt->parse_trace = 1; break;
-		case OPT_WIDTH: opt->ast_print_width = atoi(s.arg_val); break;
+		case OPT_WIDTH: opt->ir_print_width = atoi(s.arg_val); break;
 			// case OPT_IMMERR: errors_set_immediate(opt.check.errors, 1); break;
 		case OPT_VERIFY: opt->verify = 1; break;
 		case OPT_EXTFUN: opt->extfun = 1; break;

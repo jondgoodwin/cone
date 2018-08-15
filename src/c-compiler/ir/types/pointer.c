@@ -1,4 +1,4 @@
-/** AST handling for references and pointers
+/** Handling for references and pointers
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -19,7 +19,7 @@ PtrNode *newPtrTypeNode() {
 
 // Serialize a pointer type
 void ptrTypePrint(PtrNode *node) {
-	inodeFprint(node->asttype == RefTag? "&(" : "*(");
+	inodeFprint(node->tag == RefTag? "&(" : "*(");
 	inodePrintNode(node->alloc);
 	inodeFprint(", ");
 	inodePrintNode((INode*)node->perm);

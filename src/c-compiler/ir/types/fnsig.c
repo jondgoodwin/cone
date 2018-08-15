@@ -1,4 +1,4 @@
-/** AST handling for expression nodes: Literals, Variables, etc.
+/** Handling for expression nodes: Literals, Variables, etc.
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -19,7 +19,7 @@ FnSigNode *newFnSigNode() {
 	return sig;
 }
 
-// Serialize the AST for a function signature
+// Serialize a function signature node
 void fnSigPrint(FnSigNode *sig) {
 	INode **nodesp;
 	uint32_t cnt;

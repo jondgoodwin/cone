@@ -1,7 +1,7 @@
 /** Parse expressions
  * @file
  *
- * The parser translates the lexer's tokens into AST nodes
+ * The parser translates the lexer's tokens into IR nodes
  *
  * This source file is part of the Cone Programming Language C compiler
  * See Copyright Notice in conec.h
@@ -141,7 +141,7 @@ INode *parsePostfix(ParseState *parse) {
 				break;
 			}
 			NameUseNode *method = newNameUseNode(lex->val.ident);
-			method->asttype = MbrNameUseTag;
+			method->tag = MbrNameUseTag;
             fncall->methprop = method;
             lexNextToken();
 

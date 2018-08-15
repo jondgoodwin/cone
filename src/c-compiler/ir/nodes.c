@@ -1,4 +1,4 @@
-/** AST node list
+/** Node list
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler

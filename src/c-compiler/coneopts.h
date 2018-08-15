@@ -44,17 +44,17 @@ typedef struct ConeOptions {
 	int simple_builtin;	// Use a minimal builtin package
 	int strip_debug;	// Strip debug info
 	int print_filenames;	// Print source file names as each is processed
-	int print_ast;		// Print out AST
+	int print_ir;		// Print out IR
 	int print_asm;		// Print out assembly file
 	int print_llvmir;	// Print out LLVM IR
-	int check_tree;		// Verify AST well-formedness
+	int check_tree;		// Verify IR well-formedness
 	int lint_llvm;		// Run the LLVM linting pass on generated IR
 	int docs;			// Generate code documentation
 	int docs_private;	// Generate code docs for private
 
 	// verbosity_level verbosity;
 
-	size_t ast_print_width;
+	size_t ir_print_width;
 	int allow_test_symbols;
 	int parse_trace;
 } ConeOptions;

@@ -340,9 +340,9 @@ void lexScanIdent(char *srcp) {
 				// Substitute token type when identifier is a keyword
 				lex->val.ident = nametblFind(srcbeg, srcp-srcbeg);
 				identNode = (INode*)lex->val.ident->node;
-				if (identNode && identNode->asttype == KeywordTag)
+				if (identNode && identNode->tag == KeywordTag)
 					lex->toktype = identNode->flags;
-				else if (identNode && identNode->asttype == PermTag)
+				else if (identNode && identNode->tag == PermTag)
 					lex->toktype = PermToken;
 				else
 					lex->toktype = IdentToken;

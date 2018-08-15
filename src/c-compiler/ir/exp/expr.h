@@ -1,4 +1,4 @@
-/** AST handling for expression nodes
+/** Handling for expression nodes
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler

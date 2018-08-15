@@ -1,4 +1,4 @@
-/** AST handling for pointer types
+/** Handling for pointer types
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler

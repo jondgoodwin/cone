@@ -1,4 +1,4 @@
-/** AST handling for expression nodes that might do value copies/moves
+/** Handling for expression nodes that might do value copies/moves
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -34,7 +34,7 @@ void assignPrint(AssignNode *node) {
 
 // expression is valid lval expression
 int isLval(INode *node) {
-	switch (node->asttype) {
+	switch (node->tag) {
 	case VarNameUseTag:
 	case DerefTag:
 	case FnCallTag:
@@ -84,14 +84,14 @@ void addrPrint(AddrNode *node) {
 // Type check borrowed reference creator
 void addrTypeCheckBorrow(AddrNode *node, PtrNode *ptype) {
 	INode *exp = node->exp;
-	if (exp->asttype != VarNameUseTag
-        || (((NameUseNode*)exp)->dclnode->asttype != VarDclTag
-            && ((NameUseNode*)exp)->dclnode->asttype != FnDclTag)) {
+	if (exp->tag != VarNameUseTag
+        || (((NameUseNode*)exp)->dclnode->tag != VarDclTag
+            && ((NameUseNode*)exp)->dclnode->tag != FnDclTag)) {
 		errorMsgNode((INode*)node, ErrorNotLval, "May only borrow from lvals (e.g., variable)");
 		return;
 	}
     INamedNode *dclnode = ((NameUseNode*)exp)->dclnode;
-    PermNode *perm = (dclnode->asttype == VarDclTag) ? ((VarDclNode*)dclnode)->perm : immPerm;
+    PermNode *perm = (dclnode->tag == VarDclTag) ? ((VarDclNode*)dclnode)->perm : immPerm;
 	if (!permMatches(ptype->perm, perm))
 		errorMsgNode((INode *)node, ErrorBadPerm, "Borrowed reference cannot obtain this permission");
 }

@@ -16,7 +16,7 @@
 #define getVtype(node) {\
 	if (isExpNode(node)) \
 		node = ((ITypedNode *)node)->vtype; \
-	if (node->asttype == TypeNameUseTag) \
+	if (node->tag == TypeNameUseTag) \
 		node = (INode*)((NameUseNode *)node)->dclnode; \
 }
 
@@ -29,14 +29,14 @@ INode *typeGetVtype(INode *node) {
 // Return type (or de-referenced type if ptr/ref)
 INode *typeGetDerefType(INode *node) {
     getVtype(node);
-    if (node->asttype == RefTag) {
+    if (node->tag == RefTag) {
         node = ((PtrNode*)node)->pvtype;
-        if (node->asttype == TypeNameUseTag)
+        if (node->tag == TypeNameUseTag)
             node = (INode*)((NameUseNode *)node)->dclnode;
     }
-    else if (node->asttype == PtrTag) {
+    else if (node->tag == PtrTag) {
         node = ((PtrNode*)node)->pvtype;
-        if (node->asttype == TypeNameUseTag)
+        if (node->tag == TypeNameUseTag)
             node = (INode*)((NameUseNode *)node)->dclnode;
     }
     return node;
@@ -47,11 +47,11 @@ int typeEqual(INode *node1, INode *node2) {
 	// If they are the same type name, types match
 	if (node1 == node2)
 		return 1;
-	if (node1->asttype != node2->asttype)
+	if (node1->tag != node2->tag)
 		return 0;
 
 	// Otherwise use type-specific equality checks
-	switch (node1->asttype) {
+	switch (node1->tag) {
 	case FnSigTag:
 		return fnSigEqual((FnSigNode*)node1, (FnSigNode*)node2);
 	case RefTag: case PtrTag:
@@ -77,9 +77,9 @@ int typeIsSame(INode *node1, INode *node2) {
 // 2+ - requires increasingly lossy conversion/coercion
 int typeMatches(INode *totype, INode *fromtype) {
 	// Convert, if needed, from names to the type declaration
-	if (totype->asttype == TypeNameUseTag)
+	if (totype->tag == TypeNameUseTag)
 		totype = (INode*)((NameUseNode *)totype)->dclnode;
-	if (fromtype->asttype == TypeNameUseTag)
+	if (fromtype->tag == TypeNameUseTag)
 		fromtype = (INode*)((NameUseNode *)fromtype)->dclnode;
 
 	// If they are the same value type info, types match
@@ -87,14 +87,14 @@ int typeMatches(INode *totype, INode *fromtype) {
 		return 1;
 
 	// Type-specific matching logic
-	switch (totype->asttype) {
+	switch (totype->tag) {
 	case RefTag: case PtrTag:
-		if (fromtype->asttype != RefTag && fromtype->asttype != PtrTag)
+		if (fromtype->tag != RefTag && fromtype->tag != PtrTag)
 			return 0;
 		return ptrTypeMatches((PtrNode*)totype, (PtrNode*)fromtype);
 
 	case ArrayTag:
-		if (totype->asttype != fromtype->asttype)
+		if (totype->tag != fromtype->tag)
 			return 0;
 		return arrayEqual((ArrayNode*)totype, (ArrayNode*)fromtype);
 
@@ -104,7 +104,7 @@ int typeMatches(INode *totype, INode *fromtype) {
 	case UintNbrTag:
 	case IntNbrTag:
 	case FloatNbrTag:
-		if (totype->asttype != fromtype->asttype)
+		if (totype->tag != fromtype->tag)
 			return isNbr(totype) && isNbr(fromtype) ? 4 : 0;
 		return ((NbrNode *)totype)->bits > ((NbrNode *)fromtype)->bits ? 3 : 2;
 
@@ -122,13 +122,13 @@ int typeCoerces(INode *to, INode **from) {
 	getVtype(to);
 
 	// When coercing a block, do so on its last expression
-	while ((*from)->asttype == BlockTag) {
+	while ((*from)->tag == BlockTag) {
 		((ITypedNode*)*from)->vtype = to;
 		from = &nodesLast(((BlockNode*)*from)->stmts);
 	}
 
 	// Coercing an 'if' requires we do so on all its paths
-	if ((*from)->asttype == IfTag) {
+	if ((*from)->tag == IfTag) {
 		int16_t cnt;
 		INode **nodesp;
 		IfNode *ifnode = (IfNode*)*from;
@@ -173,7 +173,7 @@ int typeCopyTrait(INode *typenode) {
         uint32_t cnt;
         INode **nodesp;
         for (methnodesFor(nodes, cnt, nodesp)) {
-            if (((*nodesp)->asttype == VarDclTag && CopyBitwise != typeCopyTrait(*nodesp))
+            if (((*nodesp)->tag == VarDclTag && CopyBitwise != typeCopyTrait(*nodesp))
                 /* || *nodesp points to a destructor */)
                 copytrait == CopyBitwise ? CopyMove : copytrait;
             // else if (nodesp points to the .copy method)
@@ -182,11 +182,11 @@ int typeCopyTrait(INode *typenode) {
         return copytrait;
     }
     // For references, a 'uni' reference is CopyMove and all others are CopyBitwise
-    else if (typenode->asttype == RefTag) {
+    else if (typenode->tag == RefTag) {
         return (((PtrNode *)typenode)->perm->flags & MayAlias) ? CopyBitwise : CopyMove;
     }
     // All pointers are CopyMove (potentially unsafe to copy)
-    else if (typenode->asttype == PtrTag)
+    else if (typenode->tag == PtrTag)
         return CopyMove;
     // The default (e.g., numbers) is CopyBitwise
     return CopyBitwise;
@@ -204,7 +204,7 @@ void typeHandleCopy(INode **nodep) {
 
 // Add type mangle info to buffer
 char *typeMangle(char *bufp, INode *vtype) {
-	switch (vtype->asttype) {
+	switch (vtype->tag) {
 	case TypeNameUseTag:
 	{
 		strcpy(bufp, &((NameUseNode *)vtype)->dclnode->namesym->namestr);

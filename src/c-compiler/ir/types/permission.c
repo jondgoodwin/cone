@@ -27,7 +27,7 @@ PermNode *newPermNode(Name *namesym, char ptyp, uint16_t flags) {
 	return node;
 }
 
-// Serialize the AST for a permission
+// Serialize a permission node
 void permPrint(PermNode *node) {
 	switch (node->ptype) {
 	case UniPerm: inodeFprint("uni "); break;
@@ -42,7 +42,7 @@ void permPrint(PermNode *node) {
 
 // Retrieve the permission flags for the node
 uint16_t permGetFlags(INode *node) {
-	switch (node->asttype) {
+	switch (node->tag) {
 	case VarNameUseTag:
 		return permGetFlags((INode*)((NameUseNode*)node)->dclnode);
 	case VarDclTag:
@@ -52,7 +52,7 @@ uint16_t permGetFlags(INode *node) {
     case DerefTag:
 	{
 		PtrNode *vtype = (PtrNode*)typeGetVtype(((DerefNode *)node)->exp);
-		assert(vtype->asttype == RefTag || vtype->asttype == PtrTag);
+		assert(vtype->tag == RefTag || vtype->tag == PtrTag);
 		return vtype->perm->flags;
 	}
 	default:
@@ -62,7 +62,7 @@ uint16_t permGetFlags(INode *node) {
 
 // Is Lval mutable
 int permIsMutable(INode *lval) {
-	if (lval->asttype == FnCallTag) {
+	if (lval->tag == FnCallTag) {
 		FnCallNode *fncall = (FnCallNode *)lval;
         if (fncall->methprop)
             return MayWrite & permGetFlags(fncall->objfn) & permGetFlags((INode*)fncall->methprop);

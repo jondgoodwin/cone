@@ -1,4 +1,4 @@
-/** AST handling for function signature
+/** Handling for function signature
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler

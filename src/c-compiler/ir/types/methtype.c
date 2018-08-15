@@ -55,7 +55,7 @@ void methnodesAdd(MethNodes *mnodes, INode *node) {
 // If method is overloaded, add it to the link chain of same named methods
 void methnodesAddFn(MethNodes *mnodes, FnDclNode *fnnode) {
     FnDclNode *lastmeth = (FnDclNode *)methnodesFind(mnodes, fnnode->namesym);
-    if (lastmeth && (lastmeth->asttype != FnDclTag
+    if (lastmeth && (lastmeth->tag != FnDclTag
         || !(lastmeth->flags & FlagMethProp) || !(fnnode->flags & FlagMethProp))) {
         errorMsgNode((INode*)fnnode, ErrorDupName, "Duplicate name %s: Only methods can be overloaded.", &fnnode->namesym->namestr);
         return;
@@ -71,7 +71,7 @@ void methnodesAddFn(MethNodes *mnodes, FnDclNode *fnnode) {
 // Add a property
 void methnodesAddProp(MethNodes *mnodes,  VarDclNode *varnode) {
     FnDclNode *lastmeth = (FnDclNode *)methnodesFind(mnodes, varnode->namesym);
-    if (lastmeth && (lastmeth->asttype != VarDclTag)) {
+    if (lastmeth && (lastmeth->tag != VarDclTag)) {
         errorMsgNode((INode*)varnode, ErrorDupName, "Duplicate name %s: Only methods can be overloaded.", &varnode->namesym->namestr);
         return;
     }

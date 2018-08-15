@@ -71,7 +71,7 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
 	uint32_t cnt;
 	LLVMValueRef lastval = NULL; // Should never be used by caller
 	for (nodesFor(blk->stmts, cnt, nodesp)) {
-		switch ((*nodesp)->asttype) {
+		switch ((*nodesp)->tag) {
 		case WhileTag:
 			genlWhile(gen, (WhileNode *)*nodesp); break;
 		case BreakTag:

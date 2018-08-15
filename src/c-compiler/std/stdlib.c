@@ -16,7 +16,7 @@ Name *keyAdd(char *keyword, uint16_t toktype) {
 	INamedNode *node;
 	sym = nametblFind(keyword, strlen(keyword));
 	sym->node = node = (INamedNode*)memAllocBlk(sizeof(INode));
-	node->asttype = KeywordTag;
+	node->tag = KeywordTag;
 	node->flags = toktype;
 	return sym;
 }

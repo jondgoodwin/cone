@@ -1,4 +1,4 @@
-/** AST handling for structs
+/** Handling for structs
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler

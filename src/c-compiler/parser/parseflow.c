@@ -1,7 +1,7 @@
 /** Parse executable statements and blocks
  * @file
  *
- * The parser translates the lexer's tokens into AST nodes
+ * The parser translates the lexer's tokens into IR nodes
  *
  * This source file is part of the Cone Programming Language C compiler
  * See Copyright Notice in conec.h

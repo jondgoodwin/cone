@@ -1,7 +1,7 @@
 /** Parse type signatures
  * @file
  *
- * The parser translates the lexer's tokens into AST nodes
+ * The parser translates the lexer's tokens into IR nodes
  *
  * This source file is part of the Cone Programming Language C compiler
  * See Copyright Notice in conec.h
@@ -32,7 +32,7 @@ PermNode *parsePerm(PermNode *defperm) {
 // Parse an allocator + permission for a reference type
 void parseAllocPerm(PtrNode *refnode) {
 	if (lexIsToken(IdentToken)
-		&& lex->val.ident->node && lex->val.ident->node->asttype == AllocTag) {
+		&& lex->val.ident->node && lex->val.ident->node->tag == AllocTag) {
 		refnode->alloc = (INode*)lex->val.ident->node;
 		lexNextToken();
 		refnode->perm = parsePerm(uniPerm);
@@ -90,11 +90,11 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
 INode *parsePtrType(ParseState *parse) {
 	PtrNode *ptype = newPtrTypeNode();
 	if (lexIsToken(StarToken))
-		ptype->asttype = PtrTag;
+		ptype->tag = PtrTag;
 	lexNextToken();
 
 	// Get allocator/permission for references
-	if (ptype->asttype == RefTag)
+	if (ptype->tag == RefTag)
 		parseAllocPerm(ptype);
 	else {
 		ptype->alloc = voidType;	// no allocator
@@ -131,7 +131,7 @@ INode *parseStruct(ParseState *parse) {
     // Process struct type name, if provided
     if (lexIsToken(IdentToken)) {
         strnode = newStructNode(lex->val.ident);
-        strnode->asttype = tag;
+        strnode->tag = tag;
         strnode->owner = parse->owner;
         parse->owner = (INamedNode *)strnode;
         lexNextToken();
@@ -208,7 +208,7 @@ INode *parseFnSig(ParseState *parse) {
 				if (parm->vtype == voidType) {
 					parm->vtype = (INode*)newNameUseNode(parse->owner->namesym);
 				}
-				else if (parm->vtype->asttype == RefTag) {
+				else if (parm->vtype->tag == RefTag) {
 					PtrNode *refnode = (PtrNode *)parm->vtype;
 					if (refnode->pvtype == voidType) {
 						refnode->pvtype = (INode*)newNameUseNode(parse->owner->namesym);

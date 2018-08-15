@@ -1,4 +1,4 @@
-/** AST handling for variable declaration nodes
+/** Handling for variable declaration nodes
  *
  * This source file is part of the Cone Programming Language C compiler
  * See Copyright Notice in conec.h
@@ -17,7 +17,7 @@ typedef struct VarDclNode {
 	uint16_t index;				// index within this scope (e.g., parameter number)
 } VarDclNode;
 
-VarDclNode *newVarDclNode(Name *namesym, uint16_t asttype, INode *sig, PermNode *perm, INode *val);
+VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *sig, PermNode *perm, INode *val);
 void varDclPrint(VarDclNode *fn);
 void varDclPass(PassState *pstate, VarDclNode *node);
 

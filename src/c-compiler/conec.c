@@ -69,7 +69,7 @@ int main(int argc, char **argv) {
 	if (errors == 0) {
 		doAnalysis(&modnode);
 		if (errors == 0) {
-			if (coneopt.print_ast)
+			if (coneopt.print_ir)
 				inodePrint(coneopt.output, srcfn, (INode*)modnode);
 			genllvm(&coneopt, modnode);
 		}

@@ -1,4 +1,4 @@
-/** AST handling for function/method declaration nodes
+/** Handling for function/method declaration nodes
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -28,13 +28,13 @@ FnDclNode *newFnDclNode(Name *namesym, uint16_t flags, INode *type, INode *val) 
 	return name;
 }
 
-// Serialize the AST for a variable/function
+// Serialize a function node
 void fnDclPrint(FnDclNode *name) {
 	inodeFprint("fn %s ", &name->namesym->namestr);
 	inodePrintNode(name->vtype);
 	if (name->value) {
 		inodeFprint(" {} ");
-		if (name->value->asttype == BlockTag)
+		if (name->value->tag == BlockTag)
 			inodePrintNL();
 		inodePrintNode(name->value);
 	}
@@ -45,7 +45,7 @@ void fnImplicitReturn(INode *rettype, BlockNode *blk) {
 	INode *laststmt;
 	laststmt = nodesLast(blk->stmts);
 	if (rettype == voidType) {
-		if (laststmt->asttype != ReturnTag)
+		if (laststmt->tag != ReturnTag)
 			nodesAdd(&blk->stmts, (INode*) newReturnNode());
 	}
 	else {
@@ -55,7 +55,7 @@ void fnImplicitReturn(INode *rettype, BlockNode *blk) {
 			retnode->exp = laststmt;
 			nodesLast(blk->stmts) = (INode*)retnode;
 		}
-		else if (laststmt->asttype != ReturnTag)
+		else if (laststmt->tag != ReturnTag)
 			errorMsgNode(laststmt, ErrorNoRet, "A return value is expected but this statement cannot give one.");
 	}
 }
@@ -83,7 +83,7 @@ void fnDclTypeCheck(PassState *pstate, FnDclNode *varnode) {
 	pstate->fnsig = oldfnsig;
 }
 
-// Check the function declaration's AST
+// Check the function declaration node
 void fnDclPass(PassState *pstate, FnDclNode *name) {
 	inodeWalk(pstate, &name->vtype);
 	INode *vtype = typeGetVtype(name->vtype);
@@ -93,7 +93,7 @@ void fnDclPass(PassState *pstate, FnDclNode *name) {
 	case NameResolution:
 		// Hook into global name table if not a global owner by module
 		// (because those have already been hooked by module for forward references)
-		/*if (name->owner->asttype != ModuleTag)
+		/*if (name->owner->tag != ModuleTag)
 			namespaceHook((INamedNode*)name, name->namesym);*/
 		if (name->value)
 			fnDclNameResolve(pstate, name);

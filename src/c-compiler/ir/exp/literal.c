@@ -1,4 +1,4 @@
-/** AST handling for literals
+/** Handling for literals
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -20,7 +20,7 @@ ULitNode *newULitNode(uint64_t nbr, INode *type) {
 	return lit;
 }
 
-// Serialize the AST for a Unsigned literal
+// Serialize an Unsigned literal
 void ulitPrint(ULitNode *lit) {
 	if (((NbrNode*)lit->vtype)->bits == 1)
 		inodeFprint(lit->uintlit == 1 ? "true" : "false");
@@ -39,7 +39,7 @@ FLitNode *newFLitNode(double nbr, INode *type) {
 	return lit;
 }
 
-// Serialize the AST for a Unsigned literal
+// Serialize a Float literal
 void flitPrint(FLitNode *lit) {
 	inodeFprint("%g", lit->floatlit);
 	inodePrintNode(lit->vtype);
@@ -54,11 +54,11 @@ SLitNode *newSLitNode(char *str, INode *type) {
 	return lit;
 }
 
-// Serialize the AST for a string
+// Serialize a string literal
 void slitPrint(SLitNode *lit) {
 	inodeFprint("\"%s\"", lit->strlit);
 }
 
 int litIsLiteral(INode* node) {
-	return (node->asttype == FLitTag || node->asttype == ULitTag);
+	return (node->tag == FLitTag || node->tag == ULitTag);
 }

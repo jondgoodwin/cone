@@ -1,4 +1,4 @@
-/** AST handling for record-based types with properties
+/** Handling for record-based types with properties
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler

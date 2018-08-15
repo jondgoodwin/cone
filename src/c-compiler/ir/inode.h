@@ -20,7 +20,7 @@
 
 // All IR nodes begin with this header, mostly containing lexer data describing
 // where in the source this structure came from (useful for error messages)
-// - asttype contains the NodeTags code
+// - tag contains the NodeTags code
 // - flags contains node-specific flags
 // - lexer contains -> url (filepath) and -> source
 // - srcp points to start of source token
@@ -31,7 +31,7 @@
 	char *srcp; \
 	char *linep; \
 	uint32_t linenbr; \
-	uint16_t asttype; \
+	uint16_t tag; \
 	uint16_t flags
 
 // INode is a castable struct for all IR nodes.
@@ -48,10 +48,10 @@ typedef struct INode {
 #define MethodType 0x1000   // Type that supports methods
 
 // Easy checks on the kind of node it is based on high-level flags
-#define isExpNode(node) (((node)->asttype & GroupMask) == ExpGroup)
-#define isTypeNode(node) (((node)->asttype & GroupMask) == TypeGroup)
-#define isNamedNode(node) ((node)->asttype & NamedNode)
-#define isMethodType(node) (isTypeNode(node) && (node)->asttype & MethodType)
+#define isExpNode(node) (((node)->tag & GroupMask) == ExpGroup)
+#define isTypeNode(node) (((node)->tag & GroupMask) == TypeGroup)
+#define isNamedNode(node) ((node)->tag & NamedNode)
+#define isMethodType(node) (isTypeNode(node) && (node)->tag & MethodType)
 
 // All the possible tags for a node
 enum NodeTags {
@@ -122,7 +122,7 @@ enum NodeTags {
 // Allocate and initialize the INode portion of a new node
 #define newNode(node, nodestruct, nodetype) {\
 	node = (nodestruct*) memAllocBlk(sizeof(nodestruct)); \
-	node->asttype = nodetype; \
+	node->tag = nodetype; \
 	node->flags = 0; \
 	node->lexer = lex; \
 	node->srcp = lex->tokp; \

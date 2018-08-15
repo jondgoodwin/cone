@@ -1,4 +1,4 @@
-/** AST handling for expression nodes that do not do value copy/move
+/** Handling for expression nodes that do not do value copy/move
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -78,7 +78,7 @@ void derefPass(PassState *pstate, DerefNode *node) {
 	inodeWalk(pstate, &node->exp);
 	if (pstate->pass == TypeCheck) {
 		PtrNode *ptype = (PtrNode*)((ITypedNode *)node->exp)->vtype;
-		if (ptype->asttype == RefTag || ptype->asttype == PtrTag)
+		if (ptype->tag == RefTag || ptype->tag == PtrTag)
 			node->vtype = ptype->pvtype;
 		else
 			errorMsgNode((INode*)node, ErrorNotPtr, "Cannot de-reference a non-pointer value.");
@@ -87,7 +87,7 @@ void derefPass(PassState *pstate, DerefNode *node) {
 
 // Insert automatic deref, if node is a ref
 void derefAuto(INode **node) {
-	if (typeGetVtype(*node)->asttype != RefTag)
+	if (typeGetVtype(*node)->tag != RefTag)
 		return;
 	DerefNode *deref = newDerefNode();
 	deref->exp = *node;
@@ -105,12 +105,12 @@ LogicNode *newLogicNode(int16_t typ) {
 
 // Serialize logic node
 void logicPrint(LogicNode *node) {
-	if (node->asttype == NotLogicTag) {
+	if (node->tag == NotLogicTag) {
 		inodeFprint("!");
 		inodePrintNode(node->lexp);
 	}
 	else {
-		inodeFprint(node->asttype == AndLogicTag? "(&&, " : "(||, ");
+		inodeFprint(node->tag == AndLogicTag? "(&&, " : "(||, ");
 		inodePrintNode(node->lexp);
 		inodeFprint(", ");
 		inodePrintNode(node->rexp);

@@ -17,7 +17,7 @@
 // A name can be hashed into the global name table or a particular node's namespace.
 // The struct for a name is an unmovable allocated block in memory
 typedef struct Name {
-	INamedNode *node;	    // AST node currently assigned to name
+	INamedNode *node;	    // Node currently assigned to name
 	size_t hash;			// Name's computed hash
 	unsigned char namesz;	// Number of characters in the name (<=255)
 	char namestr;	        // First byte of name's string (the rest follows)

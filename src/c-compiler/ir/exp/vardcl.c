@@ -1,4 +1,4 @@
-/** AST handling for variable declaration nodes
+/** Handling for variable declaration nodes
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -15,9 +15,9 @@
 #include <assert.h>
 
 // Create a new name declaraction node
-VarDclNode *newVarDclNode(Name *namesym, uint16_t asttype, INode *type, PermNode *perm, INode *val) {
+VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *type, PermNode *perm, INode *val) {
 	VarDclNode *name;
-	newNode(name, VarDclNode, asttype);
+	newNode(name, VarDclNode, tag);
 	name->vtype = type;
 	name->owner = NULL;
 	name->namesym = namesym;
@@ -29,14 +29,14 @@ VarDclNode *newVarDclNode(Name *namesym, uint16_t asttype, INode *type, PermNode
 	return name;
 }
 
-// Serialize the AST for a variable/function
+// Serialize a variable node
 void varDclPrint(VarDclNode *name) {
 	inodePrintNode((INode*)name->perm);
 	inodeFprint("%s ", &name->namesym->namestr);
 	inodePrintNode(name->vtype);
 	if (name->value) {
 		inodeFprint(" = ");
-		if (name->value->asttype == BlockTag)
+		if (name->value->tag == BlockTag)
 			inodePrintNL();
 		inodePrintNode(name->value);
 	}
@@ -77,7 +77,7 @@ void varDclTypeCheck(PassState *pstate, VarDclNode *name) {
     typeHandleCopy(&name->value);
 }
 
-// Check the function or variable declaration's AST
+// Check the variable declaration node
 void varDclPass(PassState *pstate, VarDclNode *name) {
 	inodeWalk(pstate, (INode**)&name->perm);
 	inodeWalk(pstate, &name->vtype);
@@ -88,7 +88,7 @@ void varDclPass(PassState *pstate, VarDclNode *name) {
 	case NameResolution:
 		// Hook into global name table if not a global owner by module
 		// (because those have already been hooked by module for forward references)
-		/*if (name->owner->asttype != ModuleTag)
+		/*if (name->owner->tag != ModuleTag)
 			namespaceHook((INamedNode*)name, name->namesym);*/
     	varDclNameResolve(pstate, name);
 		break;

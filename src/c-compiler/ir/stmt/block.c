@@ -1,4 +1,4 @@
-/** AST handling for block nodes: Program, Block, etc.
+/** Handling for block nodes: Program, Block, etc.
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -20,7 +20,7 @@ BlockNode *newBlockNode() {
 	return blk;
 }
 
-// Serialize the AST for a block
+// Serialize a block node
 void blockPrint(BlockNode *blk) {
 	INode **nodesp;
 	uint32_t cnt;
@@ -50,7 +50,7 @@ void blockResolvePass(PassState *pstate, BlockNode *blk) {
     for (nodesFor(blk->stmts, cnt, nodesp)) {
         // Ensure 'return', 'break', 'continue' only appear as last statement in a block
         if (cnt > 1) {
-            switch ((*nodesp)->asttype) {
+            switch ((*nodesp)->tag) {
             case ReturnTag:
                 errorMsgNode(*nodesp, ErrorRetNotLast, "return may only appear as the last statement in a block"); break;
             case BreakTag:
@@ -77,7 +77,7 @@ void blockTypePass(PassState *pstate, BlockNode *blk) {
     }
 }
 
-// Check the block's AST
+// Check the block node
 void blockPass(PassState *pstate, BlockNode *blk) {
 	switch (pstate->pass) {
 	case NameResolution:
@@ -96,7 +96,7 @@ IfNode *newIfNode() {
 	return ifnode;
 }
 
-// Serialize the AST for an if statement
+// Serialize an if statement
 void ifPrint(IfNode *ifnode) {
 	INode **nodesp;
 	uint32_t cnt;
@@ -131,14 +131,14 @@ void ifRemoveReturns(IfNode *ifnode) {
 		INode **laststmt;
 		cnt--; nodesp++;
 		laststmt = &nodesLast(((BlockNode*)*nodesp)->stmts);
-		if ((*laststmt)->asttype == ReturnTag)
+		if ((*laststmt)->tag == ReturnTag)
 			*laststmt = ((ReturnNode*)*laststmt)->exp;
-		if ((*laststmt)->asttype == IfTag)
+		if ((*laststmt)->tag == IfTag)
 			ifRemoveReturns((IfNode*)*laststmt);
 	}
 }
 
-// Check the if statement's AST
+// Check the if statement node
 void ifPass(PassState *pstate, IfNode *ifnode) {
 	INode **nodesp;
 	uint32_t cnt;
@@ -163,7 +163,7 @@ WhileNode *newWhileNode() {
 	return node;
 }
 
-// Serialize the AST for an while block
+// Serialize a while node
 void whilePrint(WhileNode *node) {
 	inodeFprint("while ");
 	inodePrintNode(node->condexp);
@@ -199,12 +199,12 @@ IntrinsicNode *newIntrinsicNode(int16_t intrinsic) {
 	return intrinsicNode;
 }
 
-// Serialize the AST for an intrinsic
+// Serialize an intrinsic node
 void intrinsicPrint(IntrinsicNode *intrinsicNode) {
 	inodeFprint("intrinsic function");
 }
 
-// Check the intrinsic node's AST
+// Check the intrinsic node
 void intrinsicPass(PassState *pstate, IntrinsicNode *intrinsicNode) {
 }
 
@@ -216,7 +216,7 @@ ReturnNode *newReturnNode() {
 	return node;
 }
 
-// Serialize the AST for a return statement
+// Serialize a return statement
 void returnPrint(ReturnNode *node) {
 	inodeFprint("return ");
 	inodePrintNode(node->exp);
@@ -228,7 +228,7 @@ void returnPrint(ReturnNode *node) {
 // - NameDcl turns fn block's final expression into an implicit return
 void returnPass(PassState *pstate, ReturnNode *node) {
 	// If we are returning the value from an 'if', recursively strip out any of its path's redudant 'return's
-	if (pstate->pass == TypeCheck && node->exp->asttype == IfTag)
+	if (pstate->pass == TypeCheck && node->exp->tag == IfTag)
 		ifRemoveReturns((IfNode*)(node->exp));
 
 	// Process the return's expression

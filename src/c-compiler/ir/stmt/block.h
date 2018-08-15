@@ -1,4 +1,4 @@
-/** AST handling for block nodes: Program, FnImpl, Block, etc.
+/** Handling for block nodes: Program, FnImpl, Block, etc.
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler

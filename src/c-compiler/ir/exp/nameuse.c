@@ -72,7 +72,7 @@ void nameUseAddQual(NameUseNode *node, Name *name) {
     ++node->qualNames->used;
 }
 
-// Serialize the AST for a name use
+// Serialize a name use node
 void nameUsePrint(NameUseNode *name) {
     if (name->qualNames) {
         // if root: inodeFprint("::");
@@ -97,7 +97,7 @@ void nameUseWalk(PassState *pstate, NameUseNode **namep) {
             Name **namep = (Name**)(name->qualNames + 1);
             while (cnt--) {
                 mod = (ModuleNode*)namespaceFind(&mod->namednodes, *namep++);
-                if (mod==NULL || mod->asttype!=ModuleTag) {
+                if (mod==NULL || mod->tag!=ModuleTag) {
                     errorMsgNode((INode*)name, ErrorUnkName, "Module %s does not exist", &(*--namep)->namestr);
                     return;
                 }
@@ -109,7 +109,7 @@ void nameUseWalk(PassState *pstate, NameUseNode **namep) {
 			name->dclnode = (INamedNode*)name->namesym->node;
 
         // If variable is actually an instance property, rewrite it to 'self.property'
-        if (name->dclnode->asttype == VarDclTag && name->dclnode->flags & FlagMethProp) {
+        if (name->dclnode->tag == VarDclTag && name->dclnode->flags & FlagMethProp) {
             // Doing this rewrite ensures we reuse existing type check and gen code for
             // properly handling property access
             NameUseNode *selfnode = newNameUseNode(selfName);
@@ -121,10 +121,10 @@ void nameUseWalk(PassState *pstate, NameUseNode **namep) {
         }
         // Make it easy to distinguish whether a name is for a variable/function name vs. type
         else if (name->dclnode) {
-            if (name->dclnode->asttype == VarDclTag || name->dclnode->asttype == FnDclTag)
-                name->asttype = VarNameUseTag;
+            if (name->dclnode->tag == VarDclTag || name->dclnode->tag == FnDclTag)
+                name->tag = VarNameUseTag;
             else
-                name->asttype = TypeNameUseTag;
+                name->tag = TypeNameUseTag;
         }
         else
 			errorMsgNode((INode*)name, ErrorUnkName, "The name %s does not refer to a declared name", &name->namesym->namestr);

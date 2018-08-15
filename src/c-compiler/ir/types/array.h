@@ -1,4 +1,4 @@
-/** AST handling for array types
+/** Handling for array types
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler

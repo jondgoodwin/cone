@@ -55,7 +55,7 @@ void modAddNode(ModuleNode *mod, INode *node) {
     }
 }
 
-// Serialize the AST for a module
+// Serialize a module node
 void modPrint(ModuleNode *mod) {
 	INode **nodesp;
 	uint32_t cnt;
@@ -63,7 +63,7 @@ void modPrint(ModuleNode *mod) {
 	if (mod->namesym)
 		inodeFprint("module %s\n", &mod->namesym->namestr);
 	else
-		inodeFprint("AST for program %s\n", mod->lexer->url);
+		inodeFprint("IR for program %s\n", mod->lexer->url);
 	inodePrintIncr();
 	for (nodesFor(mod->nodes, cnt, nodesp)) {
 		inodePrintIndent();
@@ -89,7 +89,7 @@ void modHook(ModuleNode *oldmod, ModuleNode *newmod) {
     }
 }
 
-// Check the module's AST
+// Check the module node
 void modPass(PassState *pstate, ModuleNode *mod) {
 	ModuleNode *svmod = pstate->mod;
 	pstate->mod = mod;
@@ -102,7 +102,7 @@ void modPass(PassState *pstate, ModuleNode *mod) {
 
 	// For global variables and functions, handle all their type info first
 	for (nodesFor(mod->nodes, cnt, nodesp)) {
-        switch ((*nodesp)->asttype) {
+        switch ((*nodesp)->tag) {
         case VarDclTag:
         {
             VarDclNode * varnode = (VarDclNode*)*nodesp;

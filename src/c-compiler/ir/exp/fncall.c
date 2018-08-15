@@ -1,4 +1,4 @@
-/** AST handling for function/method calls
+/** Handling for function/method calls
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -84,7 +84,7 @@ void fnCallFinalizeArgs(FnCallNode *node) {
 void fnCallLowerMethod(FnCallNode *callnode) {
     INode *obj = callnode->objfn;
     INode *objtype = typeGetVtype(obj);
-    if (objtype->asttype == RefTag || objtype->asttype == PtrTag)
+    if (objtype->tag == RefTag || objtype->tag == PtrTag)
         objtype = typeGetVtype(((PtrNode *)objtype)->pvtype);
     if (!isMethodType(objtype)) {
         errorMsgNode((INode*)callnode, ErrorNoMeth, "Object's type does not support methods or properties.");
@@ -94,24 +94,24 @@ void fnCallLowerMethod(FnCallNode *callnode) {
     // Do lookup. If node found, it must be an instance's method or property
     Name *methsym = callnode->methprop->namesym;
     if (methsym->namestr == '_'
-        && !(obj->asttype==VarNameUseTag && ((NameUseNode*)obj)->dclnode->namesym == selfName)) {
+        && !(obj->tag==VarNameUseTag && ((NameUseNode*)obj)->dclnode->namesym == selfName)) {
         errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/property `%s`.", &methsym->namestr);
     }
     INamedNode *foundnode = methnodesFind(&((MethodTypeNode*)objtype)->methprops, methsym);
     if (!foundnode
-        || !(foundnode->asttype == FnDclTag || foundnode->asttype == VarDclTag)
+        || !(foundnode->tag == FnDclTag || foundnode->tag == VarDclTag)
         || !(foundnode->flags & FlagMethProp)) {
         errorMsgNode((INode*)callnode, ErrorNoMeth, "Object's type has no method or property named %s.", &methsym->namestr);
         return;
     }
 
     // Handle when methprop refers to a property
-    if (foundnode->asttype == VarDclTag) {
+    if (foundnode->tag == VarDclTag) {
         if (callnode->args != NULL)
             errorMsgNode((INode*)callnode, ErrorManyArgs, "May not provide arguments for a property access");
 
         derefAuto(&callnode->objfn);
-        callnode->methprop->asttype = VarNameUseTag;
+        callnode->methprop->tag = VarNameUseTag;
         callnode->methprop->dclnode = foundnode;
         callnode->vtype = callnode->methprop->vtype = foundnode->vtype;
         return;
@@ -131,7 +131,7 @@ void fnCallLowerMethod(FnCallNode *callnode) {
 
     // Re-purpose the method name use node as a reference to the method function itself
     NameUseNode *methodrefnode = callnode->methprop;
-    methodrefnode->asttype = VarNameUseTag;
+    methodrefnode->tag = VarNameUseTag;
     methodrefnode->dclnode = (INamedNode*)bestmethod;
     methodrefnode->vtype = bestmethod->vtype;
 
@@ -164,12 +164,12 @@ void fnCallPass(PassState *pstate, FnCallNode *node) {
     case TypeCheck:
     {
         // If objfn is a method/property, rewrite it as self.method
-        if (node->objfn->asttype == VarNameUseTag
+        if (node->objfn->tag == VarNameUseTag
             && ((NameUseNode*)node->objfn)->dclnode->flags & FlagMethProp
             && ((NameUseNode*)node->objfn)->qualNames == NULL) {
             // Build a resolved 'self' node
             NameUseNode *selfnode = newNameUseNode(selfName);
-            selfnode->asttype = VarNameUseTag;
+            selfnode->tag = VarNameUseTag;
             selfnode->dclnode = (INamedNode *)nodesGet(pstate->fnsig->parms, 0);
             selfnode->vtype = selfnode->dclnode->vtype;
             // Reuse existing fncallnode if we can
@@ -208,7 +208,7 @@ void fnCallPass(PassState *pstate, FnCallNode *node) {
         else if (node->methprop)
             errorMsgNode((INode *)node, ErrorBadMeth, "Cannot do method or property on a value of this type");
 
-        else if (objfntype->asttype != FnSigTag)
+        else if (objfntype->tag != FnSigTag)
             errorMsgNode((INode *)node, ErrorNotFn, "Cannot apply arguments to a non-function");
 
         // Handle a regular function call or implicit method call
