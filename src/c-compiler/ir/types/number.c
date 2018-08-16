@@ -6,9 +6,6 @@
 */
 
 #include "../ir.h"
-#include "../../shared/memory.h"
-#include "../../parser/lexer.h"
-#include "../nametbl.h"
 
 // Serialize a numeric literal node
 void nbrTypePrint(NbrNode *node) {

@@ -6,9 +6,6 @@
 */
 
 #include "../ir.h"
-#include "../../shared/memory.h"
-#include "../../parser/lexer.h"
-#include "../nametbl.h"
 
 // Create a new pointer type whose info will be filled in afterwards
 PtrNode *newPtrTypeNode() {

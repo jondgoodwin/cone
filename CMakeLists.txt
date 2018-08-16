@@ -23,6 +23,8 @@ add_executable(conec
 	src/c-compiler/shared/utf8.c
 
 	src/c-compiler/ir/inode.c
+	src/c-compiler/ir/imethod.c
+	src/c-compiler/ir/itype.c
 	src/c-compiler/ir/namespace.c
 	src/c-compiler/ir/nametbl.c
 	src/c-compiler/ir/nodes.c
@@ -46,12 +48,10 @@ add_executable(conec
 	src/c-compiler/ir/types/alloc.c
 	src/c-compiler/ir/types/array.c
 	src/c-compiler/ir/types/fnsig.c
-	src/c-compiler/ir/types/methtype.c
 	src/c-compiler/ir/types/number.c
 	src/c-compiler/ir/types/permission.c
 	src/c-compiler/ir/types/pointer.c
 	src/c-compiler/ir/types/struct.c
-	src/c-compiler/ir/types/type.c
 
 	src/c-compiler/std/stdlib.c
 	src/c-compiler/std/stdnumber.c

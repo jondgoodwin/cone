@@ -63,8 +63,15 @@ typedef struct INamedNode {
 } INamedNode;
 
 
-#include "types/type.h"
-#include "types/methtype.h"
+#include "itype.h"
+#include "imethod.h"
+
+// These includes are needed by all node handling
+#include "../parser/lexer.h"
+#include "../shared/error.h"
+#include "nametbl.h"
+#include "../shared/memory.h"
+
 #include "types/permission.h"
 #include "types/fnsig.h"
 #include "types/number.h"

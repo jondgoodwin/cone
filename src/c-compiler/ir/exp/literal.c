@@ -6,10 +6,6 @@
 */
 
 #include "../ir.h"
-#include "../../shared/memory.h"
-#include "../../parser/lexer.h"
-#include "../nametbl.h"
-#include "../../shared/error.h"
 
 // Create a new unsigned literal node
 ULitNode *newULitNode(uint64_t nbr, INode *type) {

@@ -6,10 +6,6 @@
 */
 
 #include "../ir.h"
-#include "../../shared/memory.h"
-#include "../../parser/lexer.h"
-#include "../nametbl.h"
-#include "../../shared/error.h"
 
 #include <assert.h>
 
