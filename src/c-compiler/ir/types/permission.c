@@ -17,7 +17,7 @@ PermNode *newPermNode(Name *namesym, char ptyp, uint16_t flags) {
     node->owner = NULL;
     node->namesym = namesym;
     node->llvmtype = NULL;
-    methnodesInit(&node->methprops, 1); // May not need members for static types
+    imethnodesInit(&node->methprops, 1); // May not need members for static types
 	node->subtypes = newNodes(8);	// build appropriate list using the permission's flags
 	node->flags = flags;
 	node->ptype = ptyp;

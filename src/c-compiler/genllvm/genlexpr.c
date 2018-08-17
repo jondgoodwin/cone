@@ -76,13 +76,13 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
         INode **nodesp;
         uint32_t cnt;
         uint32_t propcount = 0;
-        for (methnodesFor(&strnode->methprops, cnt, nodesp)) {
+        for (imethnodesFor(&strnode->methprops, cnt, nodesp)) {
             if ((*nodesp)->tag == VarDclTag)
                 ++propcount;
         }
         LLVMTypeRef *prop_types = (LLVMTypeRef *)memAllocBlk(propcount * sizeof(LLVMTypeRef));
 		LLVMTypeRef *property = prop_types;
-		for (methnodesFor(&strnode->methprops, cnt, nodesp)) {
+		for (imethnodesFor(&strnode->methprops, cnt, nodesp)) {
 			if ((*nodesp)->tag == VarDclTag)
     			*property++ = genlType(gen, ((ITypedNode *)*nodesp)->vtype);
 		}
@@ -115,16 +115,16 @@ LLVMTypeRef genlType(GenState *gen, INode *typ) {
 		// Also process the type's methods and functions
 		LLVMTypeRef typeref = dclnode->llvmtype = _genlType(gen, &dclnode->namesym->namestr, (INode*)dclnode);
 		if (isMethodType(dclnode)) {
-            MethodTypeNode *tnode = (MethodTypeNode*)dclnode;
+            IMethodNode *tnode = (IMethodNode*)dclnode;
             INode **nodesp;
             uint32_t cnt;
             // Declare just method names first, enabling forward references
-            for (methnodesFor(&tnode->methprops, cnt, nodesp)) {
+            for (imethnodesFor(&tnode->methprops, cnt, nodesp)) {
                 if ((*nodesp)->tag == FnDclTag)
                     genlGloFnName(gen, (FnDclNode*)*nodesp);
             }
 			// Now generate the code for each method
-            for (methnodesFor(&tnode->methprops, cnt, nodesp)) {
+            for (imethnodesFor(&tnode->methprops, cnt, nodesp)) {
                 if ((*nodesp)->tag == FnDclTag)
                     genlFn(gen, (FnDclNode*)*nodesp);
 			}

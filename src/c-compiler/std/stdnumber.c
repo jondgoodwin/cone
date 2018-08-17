@@ -53,7 +53,7 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
     nbrtypenode->owner = NULL;
     nbrtypenode->namesym = namesym;
     nbrtypenode->llvmtype = NULL;
-    methnodesInit(&nbrtypenode->methprops, 32);
+    imethnodesInit(&nbrtypenode->methprops, 32);
     nbrtypenode->subtypes = nbrsubtypes;
 	nbrtypenode->bits = bits;
 
@@ -79,40 +79,40 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
 	// Arithmetic operators (not applicable to boolean)
 	if (bits > 1) {
 		opsym = nametblFind("neg", 3);
-		methnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)unarysig, (INode *)newIntrinsicNode(NegIntrinsic)));
+		imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)unarysig, (INode *)newIntrinsicNode(NegIntrinsic)));
 		opsym = nametblFind("+", 1);
-        methnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(AddIntrinsic)));
+        imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(AddIntrinsic)));
 		opsym = nametblFind("-", 1);
-        methnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(SubIntrinsic)));
+        imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(SubIntrinsic)));
 		opsym = nametblFind("*", 1);
-        methnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(MulIntrinsic)));
+        imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(MulIntrinsic)));
 		opsym = nametblFind("/", 1);
-		methnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(DivIntrinsic)));
+		imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(DivIntrinsic)));
 		opsym = nametblFind("%", 1);
-		methnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(RemIntrinsic)));
+		imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(RemIntrinsic)));
 	}
 
 	// Bitwise operators (integer only)
 	if (typ != FloatNbrTag) {
 		opsym = nametblFind("~", 1);
-		methnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)unarysig, (INode *)newIntrinsicNode(NotIntrinsic)));
+		imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)unarysig, (INode *)newIntrinsicNode(NotIntrinsic)));
 		opsym = nametblFind("&", 1);
-		methnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(AndIntrinsic)));
+		imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(AndIntrinsic)));
 		opsym = nametblFind("|", 1);
-		methnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(OrIntrinsic)));
+		imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(OrIntrinsic)));
 		opsym = nametblFind("^", 1);
-		methnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(XorIntrinsic)));
+		imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(XorIntrinsic)));
 		if (bits > 1) {
 			opsym = nametblFind("shl", 3);
-			methnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(ShlIntrinsic)));
+			imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(ShlIntrinsic)));
 			opsym = nametblFind("shr", 3);
-			methnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(ShrIntrinsic)));
+			imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(ShrIntrinsic)));
 		}
 	}
 	// Floating point functions (intrinsics)
 	else {
 		opsym = nametblFind("sqrt", 4);
-		methnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)unarysig, (INode *)newIntrinsicNode(SqrtIntrinsic)));
+		imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)unarysig, (INode *)newIntrinsicNode(SqrtIntrinsic)));
 	}
 
 	// Create function signature for comparison methods for this type
@@ -123,17 +123,17 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
 
 	// Comparison operators
 	opsym = nametblFind("==", 2);
-	methnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(EqIntrinsic)));
+	imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(EqIntrinsic)));
 	opsym = nametblFind("!=", 2);
-	methnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(NeIntrinsic)));
+	imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(NeIntrinsic)));
 	opsym = nametblFind("<", 1);
-	methnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(LtIntrinsic)));
+	imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(LtIntrinsic)));
 	opsym = nametblFind("<=", 2);
-	methnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(LeIntrinsic)));
+	imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(LeIntrinsic)));
 	opsym = nametblFind(">", 1);
-	methnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(GtIntrinsic)));
+	imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(GtIntrinsic)));
 	opsym = nametblFind(">=", 2);
-	methnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(GeIntrinsic)));
+	imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(GeIntrinsic)));
 
 	return nbrtypenode;
 }

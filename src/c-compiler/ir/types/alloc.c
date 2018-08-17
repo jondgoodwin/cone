@@ -17,7 +17,7 @@ void allocAllocate(AddrNode *anode, PtrNode *ptype) {
 	// Find 'allocate' method in alloc
 	Name *symalloc = nametblFind("allocate", 8);
 	StructNode *alloctype = (StructNode*)ptype->alloc;
-    VarDclNode *allocmeth = (VarDclNode*)methnodesFind(&alloctype->methprops, symalloc);
+    VarDclNode *allocmeth = (VarDclNode*)imethnodesFind(&alloctype->methprops, symalloc);
 	if (allocmeth == NULL || ((FnSigNode*)allocmeth->vtype)->parms->used != 1) {
 		errorMsgNode((INode*)ptype, ErrorBadAlloc, "Allocator is missing valid allocate method");
 		return;

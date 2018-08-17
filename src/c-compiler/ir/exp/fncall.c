@@ -93,7 +93,7 @@ void fnCallLowerMethod(FnCallNode *callnode) {
         && !(obj->tag==VarNameUseTag && ((NameUseNode*)obj)->dclnode->namesym == selfName)) {
         errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/property `%s`.", &methsym->namestr);
     }
-    INamedNode *foundnode = methnodesFind(&((MethodTypeNode*)objtype)->methprops, methsym);
+    INamedNode *foundnode = imethnodesFind(&((IMethodNode*)objtype)->methprops, methsym);
     if (!foundnode
         || !(foundnode->tag == FnDclTag || foundnode->tag == VarDclTag)
         || !(foundnode->flags & FlagMethProp)) {
@@ -119,7 +119,7 @@ void fnCallLowerMethod(FnCallNode *callnode) {
     }
     nodesInsert(&callnode->args, callnode->objfn, 0);
 
-    FnDclNode *bestmethod = methnodesFindBestMethod((FnDclNode *)foundnode, callnode->args);
+    FnDclNode *bestmethod = imethnodesFindBestMethod((FnDclNode *)foundnode, callnode->args);
     if (bestmethod == NULL) {
         errorMsgNode((INode*)callnode, ErrorNoMeth, "No method named %s matches the call's arguments.", &methsym->namestr);
         return;

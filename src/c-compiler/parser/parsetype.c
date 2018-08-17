@@ -148,14 +148,14 @@ INode *parseStruct(ParseState *parse) {
 			if (lexIsToken(FnToken)) {
 				FnDclNode *fn = (FnDclNode*)parseFn(parse, FlagMethProp, ParseMayName | ParseMayImpl);
                 if (fn && isNamedNode(fn))
-                    methnodesAddFn(&strnode->methprops, fn);
+                    imethnodesAddFn(&strnode->methprops, fn);
 			}
             else if (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
                 VarDclNode *property = parseVarDcl(parse, mutPerm, ParseMayImpl | ParseMaySig);
                 property->scope = 1;
                 property->index = propertynbr++;
                 property->flags |= FlagMethProp;
-				methnodesAddProp(&strnode->methprops, property);
+				imethnodesAddProp(&strnode->methprops, property);
 				if (!lexIsToken(SemiToken))
 					break;
 				lexNextToken();
