@@ -32,7 +32,7 @@ void whilePass(PassState *pstate, WhileNode *node) {
 	inodeWalk(pstate, &node->blk);
 
 	if (pstate->pass == TypeCheck)
-		typeCoerces((INode*)boolType, &node->condexp);
+		iexpCoerces((INode*)boolType, &node->condexp);
 
 	pstate->flags = svflags;
 }

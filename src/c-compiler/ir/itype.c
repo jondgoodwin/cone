@@ -1,4 +1,4 @@
-/** Compiler Types
+/** Generic Type node handling
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -10,44 +10,23 @@
 #include <string.h>
 #include <assert.h>
 
-#define getVtype(node) {\
-	if (isExpNode(node)) \
-		node = ((ITypedNode *)node)->vtype; \
-	if (node->tag == TypeNameUseTag) \
-		node = (INode*)((NameUseNode *)node)->dclnode; \
-}
+// Return 1 if nominally (or structurally) identical, 0 otherwise
+// Nodes must both be types, but may be name use or declare nodes
+int itypeIsSame(INode *node1, INode *node2) {
 
-// Return value type
-INode *typeGetVtype(INode *node) {
-    getVtype(node);
-	return node;
-}
+    if (node1->tag == TypeNameUseTag)
+        node1 = (INode*)((NameUseNode *)node1)->dclnode;
+    if (node2->tag == TypeNameUseTag)
+        node2 = (INode*)((NameUseNode *)node2)->dclnode;
 
-// Return type (or de-referenced type if ptr/ref)
-INode *typeGetDerefType(INode *node) {
-    getVtype(node);
-    if (node->tag == RefTag) {
-        node = ((PtrNode*)node)->pvtype;
-        if (node->tag == TypeNameUseTag)
-            node = (INode*)((NameUseNode *)node)->dclnode;
-    }
-    else if (node->tag == PtrTag) {
-        node = ((PtrNode*)node)->pvtype;
-        if (node->tag == TypeNameUseTag)
-            node = (INode*)((NameUseNode *)node)->dclnode;
-    }
-    return node;
-}
-
-// Internal routine only - we know that node1 and node2 are both types
-int typeEqual(INode *node1, INode *node2) {
-	// If they are the same type name, types match
+    // If they are the same type name, types match
 	if (node1 == node2)
 		return 1;
 	if (node1->tag != node2->tag)
 		return 0;
 
-	// Otherwise use type-specific equality checks
+    // For non-named types, equality is determined structurally
+    // because they specify the same typed parts
 	switch (node1->tag) {
 	case FnSigTag:
 		return fnSigEqual((FnSigNode*)node1, (FnSigNode*)node2);
@@ -58,21 +37,11 @@ int typeEqual(INode *node1, INode *node2) {
 	}
 }
 
-// Return true if the types for both nodes are equivalent
-int typeIsSame(INode *node1, INode *node2) {
-
-	// Convert nodes to their value types
-	getVtype(node1);
-	getVtype(node2);
-
-	return typeEqual(node1, node2);
-}
-
 // Is totype equivalent or a non-changing subtype of fromtype
 // 0 - no
 // 1 - yes, without conversion
 // 2+ - requires increasingly lossy conversion/coercion
-int typeMatches(INode *totype, INode *fromtype) {
+int itypeMatches(INode *totype, INode *fromtype) {
 	// Convert, if needed, from names to the type declaration
 	if (totype->tag == TypeNameUseTag)
 		totype = (INode*)((NameUseNode *)totype)->dclnode;
@@ -106,61 +75,14 @@ int typeMatches(INode *totype, INode *fromtype) {
 		return ((NbrNode *)totype)->bits > ((NbrNode *)fromtype)->bits ? 3 : 2;
 
 	default:
-		return typeEqual(totype, fromtype);
+		return itypeIsSame(totype, fromtype);
 	}
-}
-
-// can from's value be coerced to to's value type?
-// This might inject a 'cast' node in front of the 'from' node with non-matching numbers
-int typeCoerces(INode *to, INode **from) {
-	INode *fromtype = *from;
-
-	// Convert nodes to their value types
-	getVtype(to);
-
-	// When coercing a block, do so on its last expression
-	while ((*from)->tag == BlockTag) {
-		((ITypedNode*)*from)->vtype = to;
-		from = &nodesLast(((BlockNode*)*from)->stmts);
-	}
-
-	// Coercing an 'if' requires we do so on all its paths
-	if ((*from)->tag == IfTag) {
-		int16_t cnt;
-		INode **nodesp;
-		IfNode *ifnode = (IfNode*)*from;
-		ifnode->vtype = to;
-		if (nodesGet(ifnode->condblk, ifnode->condblk->used - 2) != voidType)
-			errorMsgNode((INode*)ifnode, ErrorNoElse, "Missing else branch which needs to provide a value");
-		for (nodesFor(ifnode->condblk, cnt, nodesp)) {
-			cnt--; nodesp++;
-			INode **lastnode = &nodesLast(((BlockNode*)*nodesp)->stmts);
-			if (!typeCoerces(to, lastnode)) {
-				errorMsgNode(*lastnode, ErrorInvType, "expression type does not match expected type");
-			}
-		}
-		return 1;
-	}
-
-	getVtype(fromtype);
-
-	// Are types equivalent, or is 'to' a subtype of fromtype?
-	int match = typeMatches(to, fromtype);
-	if (match <= 1)
-		return match; // return fail or non-changing matches. Fall through to perform any coercion
-
-	// Add coercion operation. When both are numbers - cast between them
-	if (isNbr(to)) {
-		*from = (INode*) newCastNode(*from, to);
-		return 1;
-	}
-
-	return 0;
 }
 
 // Return a CopyTrait indicating how to handle when a value is assigned to a variable or passed to a function.
-int typeCopyTrait(INode *typenode) {
-    getVtype(typenode);
+int itypeCopyTrait(INode *typenode) {
+    if (typenode->tag == TypeNameUseTag)
+        typenode = (INode*)((NameUseNode *)typenode)->dclnode;
 
     // For an aggregate type, existence of a destructor or a non-CopyBitwise property is infectious
     // If it has a .copy method, it is CopyMethod, or else it is CopyMove.
@@ -170,7 +92,7 @@ int typeCopyTrait(INode *typenode) {
         uint32_t cnt;
         INode **nodesp;
         for (imethnodesFor(nodes, cnt, nodesp)) {
-            if (((*nodesp)->tag == VarDclTag && CopyBitwise != typeCopyTrait(*nodesp))
+            if (((*nodesp)->tag == VarDclTag && CopyBitwise != itypeCopyTrait(*nodesp))
                 /* || *nodesp points to a destructor */)
                 copytrait == CopyBitwise ? CopyMove : copytrait;
             // else if (nodesp points to the .copy method)
@@ -189,18 +111,8 @@ int typeCopyTrait(INode *typenode) {
     return CopyBitwise;
 }
 
-// Ensure implicit copies (e.g., assignment, function arguments) are done safely
-// using a move or the copy method as needed.
-void typeHandleCopy(INode **nodep) {
-    int copytrait = typeCopyTrait(*nodep);
-    if (copytrait != CopyBitwise)
-        errorMsgNode(*nodep, WarnCopy, "No current support for move. Be sure this is safe!");
-    // if CopyMethod - inject use of that method to create a safe clone that can be "moved"
-    // if CopyMove - turn off access to the source (via static (local var) or dynamic mechanism)
-}
-
 // Add type mangle info to buffer
-char *typeMangle(char *bufp, INode *vtype) {
+char *itypeMangle(char *bufp, INode *vtype) {
 	switch (vtype->tag) {
 	case TypeNameUseTag:
 	{
@@ -212,10 +124,10 @@ char *typeMangle(char *bufp, INode *vtype) {
 		PtrNode *pvtype = (PtrNode *)vtype;
 		*bufp++ = '&';
 		if (pvtype->perm != constPerm) {
-			bufp = typeMangle(bufp, (INode*)pvtype->perm);
+			bufp = itypeMangle(bufp, (INode*)pvtype->perm);
 			*bufp++ = ' ';
 		}
-		bufp = typeMangle(bufp, pvtype->pvtype);
+		bufp = itypeMangle(bufp, pvtype->pvtype);
 		break;
 	}
 	default:
@@ -223,16 +135,3 @@ char *typeMangle(char *bufp, INode *vtype) {
 	}
 	return bufp + strlen(bufp);
 }
-
-// Create a new Void type node
-VoidTypeNode *newVoidNode() {
-	VoidTypeNode *voidnode;
-	newNode(voidnode, VoidTypeNode, VoidTag);
-	return voidnode;
-}
-
-// Serialize the void type node
-void voidPrint(VoidTypeNode *voidnode) {
-	inodeFprint("void");
-}
-

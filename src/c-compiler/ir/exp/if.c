@@ -67,10 +67,10 @@ void ifPass(PassState *pstate, IfNode *ifnode) {
 
 		// Type check the 'if':
 		// - conditional must be a Bool
-		// - if's vtype is specified/checked only when coerced by typeCoerces
+		// - if's vtype is specified/checked only when coerced by iexpCoerces
 		if (pstate->pass == TypeCheck) {
 			if ((cnt & 1)==0 && *nodesp)
-				typeCoerces((INode*)boolType, nodesp); // Conditional exp
+				iexpCoerces((INode*)boolType, nodesp); // Conditional exp
 		}
 	}
 }

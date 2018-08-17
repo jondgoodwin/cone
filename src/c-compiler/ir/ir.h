@@ -37,17 +37,7 @@ typedef struct PassState PassState;
 
 // Interfaces & headers shared across nodes
 #include "inode.h"
-
-// Typed Node header, offering access to the node's type info
-// - vtype is the value type for an expression (e.g., 'i32')
-#define ITypedNodeHdr \
-	INodeHdr; \
-	INode *vtype
-
-// Castable structure for all typed nodes
-typedef struct ITypedNode {
-	ITypedNodeHdr;
-} ITypedNode;
+#include "iexp.h"
 
 // Named Node header, for variable and type declarations
 // - namesym points to the global name table entry (holds name string)
@@ -79,6 +69,7 @@ typedef struct INamedNode {
 #include "types/struct.h"
 #include "types/array.h"
 #include "types/alloc.h"
+#include "types/void.h"
 
 #include "stmt/module.h"
 #include "stmt/while.h"

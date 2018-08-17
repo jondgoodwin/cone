@@ -48,7 +48,7 @@ uint16_t permGetFlags(INode *node) {
         return immPerm->flags;
     case DerefTag:
 	{
-		PtrNode *vtype = (PtrNode*)typeGetVtype(((DerefNode *)node)->exp);
+		PtrNode *vtype = (PtrNode*)iexpGetTypeDcl(((DerefNode *)node)->exp);
 		assert(vtype->tag == RefTag || vtype->tag == PtrTag);
 		return vtype->perm->flags;
 	}

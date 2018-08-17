@@ -24,6 +24,7 @@ add_executable(conec
 
 	src/c-compiler/ir/inode.c
 	src/c-compiler/ir/imethod.c
+	src/c-compiler/ir/iexp.c
 	src/c-compiler/ir/itype.c
 	src/c-compiler/ir/namespace.c
 	src/c-compiler/ir/nametbl.c
@@ -52,6 +53,7 @@ add_executable(conec
 	src/c-compiler/ir/types/permission.c
 	src/c-compiler/ir/types/pointer.c
 	src/c-compiler/ir/types/struct.c
+	src/c-compiler/ir/types/void.c
 
 	src/c-compiler/std/stdlib.c
 	src/c-compiler/std/stdnumber.c

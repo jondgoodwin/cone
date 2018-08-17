@@ -68,16 +68,16 @@ void varDclTypeCheck(PassState *pstate, VarDclNode *name) {
 	if (name->vtype == voidType)
 		name->vtype = ((ITypedNode *)name->value)->vtype;
 	// Otherwise, verify that declared type and initial value type matches
-	else if (!typeCoerces(name->vtype, &name->value))
+	else if (!iexpCoerces(name->vtype, &name->value))
 		errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
-    typeHandleCopy(&name->value);
+    iexpHandleCopy(&name->value);
 }
 
 // Check the variable declaration node
 void varDclPass(PassState *pstate, VarDclNode *name) {
 	inodeWalk(pstate, (INode**)&name->perm);
 	inodeWalk(pstate, &name->vtype);
-	INode *vtype = typeGetVtype(name->vtype);
+	INode *vtype = iexpGetTypeDcl(name->vtype);
 
 	// Process nodes in name's initial value/code block
 	switch (pstate->pass) {

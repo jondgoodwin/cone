@@ -51,7 +51,7 @@ void castPrint(CastNode *node) {
 void castPass(PassState *pstate, CastNode *node) {
 	inodeWalk(pstate, &node->exp);
 	inodeWalk(pstate, &node->vtype);
-	if (pstate->pass == TypeCheck && 0 == typeMatches(node->vtype, ((ITypedNode *)node->exp)->vtype))
+	if (pstate->pass == TypeCheck && 0 == itypeMatches(node->vtype, ((ITypedNode *)node->exp)->vtype))
 		errorMsgNode(node->vtype, ErrorInvType, "expression may not be type cast to this type");
 }
 
@@ -83,7 +83,7 @@ void derefPass(PassState *pstate, DerefNode *node) {
 
 // Insert automatic deref, if node is a ref
 void derefAuto(INode **node) {
-	if (typeGetVtype(*node)->tag != RefTag)
+	if (iexpGetTypeDcl(*node)->tag != RefTag)
 		return;
 	DerefNode *deref = newDerefNode();
 	deref->exp = *node;
@@ -118,7 +118,7 @@ void logicPrint(LogicNode *node) {
 void logicNotPass(PassState *pstate, LogicNode *node) {
 	inodeWalk(pstate, &node->lexp);
 	if (pstate->pass == TypeCheck)
-		typeCoerces((INode*)boolType, &node->lexp);
+		iexpCoerces((INode*)boolType, &node->lexp);
 }
 
 // Analyze logic node
@@ -127,7 +127,7 @@ void logicPass(PassState *pstate, LogicNode *node) {
 	inodeWalk(pstate, &node->rexp);
 
 	if (pstate->pass == TypeCheck) {
-		typeCoerces((INode*)boolType, &node->lexp);
-		typeCoerces((INode*)boolType, &node->rexp);
+		iexpCoerces((INode*)boolType, &node->lexp);
+		iexpCoerces((INode*)boolType, &node->rexp);
 	}
 }

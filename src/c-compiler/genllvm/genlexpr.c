@@ -158,7 +158,7 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
 	uint32_t cnt;
 
 	// If we are returning a value in each block, set up space for phi info
-	vtype = typeGetVtype(ifnode->vtype);
+	vtype = iexpGetTypeDcl(ifnode->vtype);
 	count = ifnode->condblk->used / 2;
 	i = phicnt = 0;
 	if (vtype != voidType) {
@@ -216,7 +216,7 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
 LLVMValueRef genlGetIntrinsicFn(GenState *gen, char *fnname, NameUseNode *fnuse) {
 	LLVMValueRef fn = LLVMGetNamedFunction(gen->module, fnname);
 	if (!fn)
-		fn = LLVMAddFunction(gen->module, fnname, genlType(gen, typeGetVtype((INode*)fnuse->dclnode)));
+		fn = LLVMAddFunction(gen->module, fnname, genlType(gen, iexpGetTypeDcl((INode*)fnuse->dclnode)));
 	return fn;
 }
 
@@ -244,7 +244,7 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
 		return LLVMBuildCall(gen->builder, fndcl->llvmvar, fnargs, fncall->args->used, "");
 	}
 	case IntrinsicTag: {
-		NbrNode *nbrtype = (NbrNode *)typeGetVtype(*nodesNodes(fncall->args));
+		NbrNode *nbrtype = (NbrNode *)iexpGetTypeDcl(*nodesNodes(fncall->args));
 		uint16_t nbrtag = nbrtype->tag;
 
 		// Floating point intrinsics
@@ -337,12 +337,12 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
 
 // Generate a cast (value conversion)
 LLVMValueRef genlCast(GenState *gen, CastNode* node) {
-	NbrNode *fromtype = (NbrNode *)typeGetVtype(node->exp);
-	NbrNode *totype = (NbrNode *)typeGetVtype(node->vtype);
+	NbrNode *fromtype = (NbrNode *)iexpGetTypeDcl(node->exp);
+	NbrNode *totype = (NbrNode *)iexpGetTypeDcl(node->vtype);
 
 	// Casting a number to Bool means false if zero and true otherwise
 	if (totype == boolType) {
-		INode *vtype = typeGetVtype(node->exp);
+		INode *vtype = iexpGetTypeDcl(node->exp);
 		if (fromtype->tag == FloatNbrTag)
 			return LLVMBuildFCmp(gen->builder, LLVMRealONE, genlExpr(gen, node->exp), LLVMConstNull(genlType(gen, vtype)), "");
 		else

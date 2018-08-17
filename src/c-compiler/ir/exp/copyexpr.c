@@ -51,12 +51,12 @@ void assignPass(PassState *pstate, AssignNode *node) {
 	case TypeCheck:
 		if (!isLval(node->lval))
 			errorMsgNode(node->lval, ErrorBadLval, "Expression to left of assignment must be lval");
-		else if (!typeCoerces(node->lval, &node->rval))
+		else if (!iexpCoerces(node->lval, &node->rval))
 			errorMsgNode(node->rval, ErrorInvType, "Expression's type does not match lval's type");
 		else if (!permIsMutable(node->lval))
 			errorMsgNode(node->lval, ErrorNoMut, "You do not have permission to modify lval");
 		else
-			typeHandleCopy(&node->rval);
+			iexpHandleCopy(&node->rval);
 		node->vtype = ((ITypedNode*)node->rval)->vtype;
 	}
 }

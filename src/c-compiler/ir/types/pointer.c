@@ -34,7 +34,7 @@ void ptrTypePass(PassState *pstate, PtrNode *node) {
 
 // Compare two pointer signatures to see if they are equivalent
 int ptrTypeEqual(PtrNode *node1, PtrNode *node2) {
-	return typeIsSame(node1->pvtype,node2->pvtype) 
+	return itypeIsSame(node1->pvtype,node2->pvtype) 
 		&& permIsSame(node1->perm, node2->perm)
 		&& node1->alloc == node2->alloc;
 }
@@ -44,5 +44,5 @@ int ptrTypeMatches(PtrNode *to, PtrNode *from) {
 	if (0 == permMatches(to->perm, from->perm)
 		|| (to->alloc != from->alloc && to->alloc != voidType))
 		return 0;
-	return typeMatches(to->pvtype, from->pvtype) == 1 ? 1 : 2;
+	return itypeMatches(to->pvtype, from->pvtype) == 1 ? 1 : 2;
 }

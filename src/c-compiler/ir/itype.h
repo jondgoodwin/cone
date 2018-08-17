@@ -1,14 +1,13 @@
-/** Compiler types
+/** Generic Type node handling
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
  * See Copyright Notice in conec.h
 */
 
-#ifndef type_h
-#define type_h
+#ifndef itype_h
+#define itype_h
 
-#include <stdint.h>
 typedef struct Name Name;
 
 // Named type node header (most types are named)
@@ -32,23 +31,20 @@ enum CopyTrait {
     CopyMove       // A value can only be moved (bitwise copy and then deactivate the source)
 };
 
-// Void type - e.g., for fn with no return value
-typedef struct VoidTypeNode {
-	INodeHdr;
-} VoidTypeNode;
+// Return 1 if nominally (or structurally) identical, 0 otherwise.
+// Nodes must both be types, but may be name use or declare nodes.
+int itypeIsSame(INode *node1, INode *node2);
 
-INode *typeGetVtype(INode *node);
-INode *typeGetDerefType(INode *node);
-int typeIsSame(INode *node1, INode *node2);
-int typeMatches(INode *totype, INode *fromtype);
-int typeCoerces(INode *to, INode **from);
-int typeCopyTrait(INode *typenode);
-void typeHandleCopy(INode **nodep);
+// Is totype equivalent or a non-coerced subtype of fromtype
+// 0 - no
+// 1 - yes, without conversion
+// 2+ - requires increasingly lossy conversion/coercion
+int itypeMatches(INode *totype, INode *fromtype);
 
+// Return a CopyTrait indicating how to handle when a value is assigned to a variable or passed to a function.
+int itypeCopyTrait(INode *typenode);
 
-char *typeMangle(char *bufp, INode *vtype);
-
-VoidTypeNode *newVoidNode();
-void voidPrint(VoidTypeNode *voidnode);
+// Add type mangle info to buffer
+char *itypeMangle(char *bufp, INode *vtype);
 
 #endif

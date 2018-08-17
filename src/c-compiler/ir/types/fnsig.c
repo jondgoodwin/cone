@@ -45,14 +45,14 @@ int fnSigEqual(FnSigNode *node1, FnSigNode *node2) {
 	int16_t cnt;
 
 	// Return types and number of parameters must match
-	if (!typeIsSame(node1->rettype, node2->rettype)
+	if (!itypeIsSame(node1->rettype, node2->rettype)
 		|| node1->parms->used != node2->parms->used)
 		return 0;
 
 	// Every parameter's type must also match
 	nodes2p = &nodesGet(node2->parms, 0);
 	for (nodesFor(node1->parms, cnt, nodes1p)) {
-		if (!typeIsSame(*nodes1p, *nodes2p))
+		if (!itypeIsSame(*nodes1p, *nodes2p))
 			return 0;
 		nodes2p++;
 	}
@@ -75,7 +75,7 @@ int fnSigMatchesCall(FnSigNode *to, Nodes *args) {
 	tonodesp = &nodesGet(to->parms, 0);
 	for (nodesFor(args, cnt, callnodesp)) {
 		int match;
-		switch (match = typeMatches(((ITypedNode *)*tonodesp)->vtype, ((ITypedNode*)*callnodesp)->vtype)) {
+		switch (match = itypeMatches(((ITypedNode *)*tonodesp)->vtype, ((ITypedNode*)*callnodesp)->vtype)) {
 		case 0: return 0;
 		case 1: break;
 		default: matchsum += match;

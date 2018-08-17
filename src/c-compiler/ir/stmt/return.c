@@ -35,7 +35,7 @@ void returnPass(PassState *pstate, ReturnNode *node) {
 
 	// Ensure the vtype of the expression can be coerced to the function's declared return type
 	if (pstate->pass == TypeCheck) {
-		if (!typeCoerces(pstate->fnsig->rettype, &node->exp)) {
+		if (!iexpCoerces(pstate->fnsig->rettype, &node->exp)) {
 			errorMsgNode(node->exp, ErrorInvType, "Return expression type does not match return type on function");
 			errorMsgNode((INode*)pstate->fnsig->rettype, ErrorInvType, "This is the declared function's return type");
 		}

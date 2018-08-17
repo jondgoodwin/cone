@@ -106,7 +106,7 @@ char *genlGlobalName(INamedNode *name) {
 		INode **nodesp;
 		for (nodesFor(fnsig->parms, cnt, nodesp)) {
 			*bufp++ = ':';
-			bufp = typeMangle(bufp, ((ITypedNode *)*nodesp)->vtype);
+			bufp = itypeMangle(bufp, ((ITypedNode *)*nodesp)->vtype);
 		}
 		*bufp = '\0';
 	}

@@ -82,7 +82,7 @@ void fnDclTypeCheck(PassState *pstate, FnDclNode *varnode) {
 // Check the function declaration node
 void fnDclPass(PassState *pstate, FnDclNode *name) {
 	inodeWalk(pstate, &name->vtype);
-	INode *vtype = typeGetVtype(name->vtype);
+	INode *vtype = iexpGetTypeDcl(name->vtype);
 
 	// Process nodes in name's initial value/code block
 	switch (pstate->pass) {

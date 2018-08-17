@@ -49,15 +49,15 @@ void fnCallPrint(FnCallNode *node) {
 // For all function calls, go through all arguments to verify correct types,
 // handle value copying, and fill in default arguments
 void fnCallFinalizeArgs(FnCallNode *node) {
-    INode *fnsig = typeGetVtype(node->objfn);
+    INode *fnsig = iexpGetTypeDcl(node->objfn);
     INode **argsp;
     uint32_t cnt;
     INode **parmp = &nodesGet(((FnSigNode*)fnsig)->parms, 0);
     for (nodesFor(node->args, cnt, argsp)) {
-        if (!typeCoerces(*parmp, argsp))
+        if (!iexpCoerces(*parmp, argsp))
             errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
         else
-            typeHandleCopy(argsp);
+            iexpHandleCopy(argsp);
         parmp++;
     }
 
@@ -79,9 +79,9 @@ void fnCallFinalizeArgs(FnCallNode *node) {
 // Then lower the node to a function call (objfn+args) or property access (objfn+methprop) accordingly
 void fnCallLowerMethod(FnCallNode *callnode) {
     INode *obj = callnode->objfn;
-    INode *objtype = typeGetVtype(obj);
+    INode *objtype = iexpGetTypeDcl(obj);
     if (objtype->tag == RefTag || objtype->tag == PtrTag)
-        objtype = typeGetVtype(((PtrNode *)objtype)->pvtype);
+        objtype = iexpGetTypeDcl(((PtrNode *)objtype)->pvtype);
     if (!isMethodType(objtype)) {
         errorMsgNode((INode*)callnode, ErrorNoMeth, "Object's type does not support methods or properties.");
         return;
@@ -188,7 +188,7 @@ void fnCallPass(PassState *pstate, FnCallNode *node) {
             errorMsgNode(node->objfn, ErrorNotTyped, "Expecting a typed node");
             return;
         }
-        INode *objfntype = typeGetDerefType(node->objfn);
+        INode *objfntype = iexpGetDerefTypeDcl(node->objfn);
 
         // Objects (method types) are lowered to method calls via a name lookup
         if (isMethodType(objfntype)) {

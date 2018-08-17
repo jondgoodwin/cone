@@ -64,7 +64,7 @@ void blockResolvePass(PassState *pstate, BlockNode *blk) {
 
 // Handle type-checking for a block. 
 // Mostly this is a pass-through to type-check the block's statements.
-// Note: When coerced by typeCoerces, vtype of the block will be specified
+// Note: When coerced by iexpCoerces, vtype of the block will be specified
 void blockTypePass(PassState *pstate, BlockNode *blk) {
     INode **nodesp;
     uint32_t cnt;
