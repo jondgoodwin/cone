@@ -65,14 +65,17 @@ typedef struct PassState PassState;
 
 #include "exp/addr.h"
 #include "exp/assign.h"
+#include "exp/cast.h"
+#include "exp/deref.h"
 #include "exp/nameuse.h"
 #include "exp/block.h"
-#include "exp/if.h"
-#include "exp/expr.h"
 #include "exp/fncall.h"
 #include "exp/fndcl.h"
-#include "exp/vardcl.h"
+#include "exp/if.h"
 #include "exp/literal.h"
+#include "exp/logic.h"
+#include "exp/sizeof.h"
+#include "exp/vardcl.h"
 
 #include "../std/stdlib.h"
 
