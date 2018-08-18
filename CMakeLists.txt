@@ -39,12 +39,15 @@ add_executable(conec
 	src/c-compiler/ir/exp/addr.c
 	src/c-compiler/ir/exp/assign.c
 	src/c-compiler/ir/exp/block.c
-	src/c-compiler/ir/exp/expr.c
+	src/c-compiler/ir/exp/cast.c
+	src/c-compiler/ir/exp/deref.c
 	src/c-compiler/ir/exp/fncall.c
 	src/c-compiler/ir/exp/fndcl.c
 	src/c-compiler/ir/exp/if.c
 	src/c-compiler/ir/exp/literal.c
+	src/c-compiler/ir/exp/logic.c
 	src/c-compiler/ir/exp/nameuse.c
+	src/c-compiler/ir/exp/sizeof.c
 	src/c-compiler/ir/exp/vardcl.c
 
 	src/c-compiler/ir/types/alloc.c
