@@ -10,18 +10,7 @@
 
 #include "ir.h"
 
-#include <stdlib.h>
 #include <stddef.h>
-
-// Name is an interned symbol, unique by its collection of characters (<=255)
-// A name can be hashed into the global name table or a particular node's namespace.
-// The struct for a name is an unmovable allocated block in memory
-typedef struct Name {
-	INamedNode *node;	    // Node currently assigned to name
-	size_t hash;			// Name's computed hash
-	unsigned char namesz;	// Number of characters in the name (<=255)
-	char namestr;	        // First byte of name's string (the rest follows)
-} Name;
 
 // The Global Name Table holds a context-spacific collection of names.
 // - Parse uses it to resolve:

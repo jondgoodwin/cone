@@ -38,21 +38,7 @@ typedef struct PassState PassState;
 // Interfaces & headers shared across nodes
 #include "inode.h"
 #include "iexp.h"
-
-// Named Node header, for variable and type declarations
-// - namesym points to the global name table entry (holds name string)
-// - owner is the namespace node this name belongs to
-#define INamedNodeHdr \
-	ITypedNodeHdr; \
-	Name *namesym; \
-	struct INamedNode *owner
-
-// Castable structure for all named nodes
-typedef struct INamedNode {
-	INamedNodeHdr;
-} INamedNode;
-
-
+#include "inamed.h"
 #include "itype.h"
 #include "imethod.h"
 
