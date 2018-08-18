@@ -36,8 +36,9 @@ add_executable(conec
 	src/c-compiler/ir/stmt/return.c
 	src/c-compiler/ir/stmt/while.c
 
+	src/c-compiler/ir/exp/addr.c
+	src/c-compiler/ir/exp/assign.c
 	src/c-compiler/ir/exp/block.c
-	src/c-compiler/ir/exp/copyexpr.c
 	src/c-compiler/ir/exp/expr.c
 	src/c-compiler/ir/exp/fncall.c
 	src/c-compiler/ir/exp/fndcl.c

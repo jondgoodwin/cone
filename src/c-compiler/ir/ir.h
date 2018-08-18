@@ -63,11 +63,12 @@ typedef struct PassState PassState;
 #include "stmt/return.h"
 #include "stmt/intrinsic.h"
 
+#include "exp/addr.h"
+#include "exp/assign.h"
 #include "exp/nameuse.h"
 #include "exp/block.h"
 #include "exp/if.h"
 #include "exp/expr.h"
-#include "exp/copyexpr.h"
 #include "exp/fncall.h"
 #include "exp/fndcl.h"
 #include "exp/vardcl.h"
