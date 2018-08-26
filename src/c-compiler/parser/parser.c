@@ -147,15 +147,8 @@ void parseInclude(ParseState *parse) {
 
 // Parse function or variable, as it may be preceded by a qualifier
 // Return NULL if not either
-INode *parseFnOrVar(ParseState *parse) {
+INode *parseFnOrVar(ParseState *parse, uint16_t flags) {
 	INode *node;
-	uint16_t flags = 0;
-
-	// extern keyword
-	if (lexIsToken(ExternToken)) {
-		flags |= FlagExtern;
-		lexNextToken();
-	}
 
 	if (lexIsToken(FnToken)) {
 		node = parseFn(parse, 0, (flags&FlagExtern)? (ParseMayName | ParseMaySig) : (ParseMayName | ParseMayImpl));
@@ -166,8 +159,11 @@ INode *parseFnOrVar(ParseState *parse) {
 		node = (INode*)parseVarDcl(parse, immPerm, (flags&FlagExtern) ? ParseMaySig : ParseMayImpl);
 		parseSemi();
 	}
-	else
-		return NULL;
+    else {
+        errorMsgLex(ErrorBadGloStmt, "Expected function or variable declaration");
+        parseSkipToNextStmt();
+        return NULL;
+    }
 
 	node->flags |= flags;
 	return node;
@@ -198,16 +194,27 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
             modAddNode(mod, parseStruct(parse));
 			break;
 
-        // Function or variable (including extern qualifier)
+        // 'extern' qualifier in front of fn or var (block)
 		case ExternToken:
-		case FnToken:
+            lexNextToken();
+            if (lexIsToken(LCurlyToken)) {
+                lexNextToken();
+                while (lexIsToken(FnToken) || lexIsToken(PermToken)) {
+                    if (node = parseFnOrVar(parse, FlagExtern))
+                        modAddNode(mod, node);
+                }
+                parseRCurly();
+            }
+            else
+                if (node = parseFnOrVar(parse, FlagExtern))
+                    modAddNode(mod, node);
+            break;
+
+        // Function or variable
+        case FnToken:
 		case PermToken:
-            if (node = parseFnOrVar(parse))
+            if (node = parseFnOrVar(parse, 0))
                 modAddNode(mod, node);
-            else {
-				errorMsgLex(ErrorBadGloStmt, "Invalid global area statement");
-				parseSkipToNextStmt();
-			}
 			break;
 
 		default:
