@@ -103,6 +103,7 @@ enum TokenTypes {
 	IncludeToken,	// 'include'
 	ModToken,		// 'mod'
 	ExternToken,	// 'extern'
+    SetToken,       // 'set'
 	FnToken,		// 'fn'
 	StructToken,	// 'struct'
 	AllocToken,		// 'alloc'

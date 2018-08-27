@@ -145,7 +145,19 @@ INode *parseStruct(ParseState *parse) {
 	if (lexIsToken(LCurlyToken)) {
 		lexNextToken();
 		while (1) {
-			if (lexIsToken(FnToken)) {
+            if (lexIsToken(SetToken)) {
+                lexNextToken();
+                if (!lexIsToken(FnToken))
+                    errorMsgLex(ErrorNotFn, "Expected fn declaration");
+                else {
+                    FnDclNode *fn = (FnDclNode*)parseFn(parse, FlagMethProp, ParseMayName | ParseMayImpl);
+                    if (fn && isNamedNode(fn)) {
+                        fn->flags |= FlagSetMethod;
+                        imethnodesAddFn(&strnode->methprops, fn);
+                    }
+                }
+            }
+            if (lexIsToken(FnToken)) {
 				FnDclNode *fn = (FnDclNode*)parseFn(parse, FlagMethProp, ParseMayName | ParseMayImpl);
                 if (fn && isNamedNode(fn))
                     imethnodesAddFn(&strnode->methprops, fn);
