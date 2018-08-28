@@ -17,16 +17,15 @@
 #include <stdio.h>
 #include <assert.h>
 
-// Parse a permission, return defperm if not found
-PermNode *parsePerm(PermNode *defperm) {
+// Parse a permission, return reference to defperm if not found
+INode *parsePerm(PermNode *defperm) {
 	if (lexIsToken(PermToken)) {
-		PermNode *perm;
-		perm = (PermNode*)lex->val.ident->node;
+        INode *perm = newPermUseNode(lex->val.ident->node);
 		lexNextToken();
 		return perm;
 	}
 	else
-		return defperm;
+		return (INode*)newPermUseNode((INamedNode*)defperm);
 }
 
 // Parse an allocator + permission for a reference type
@@ -48,7 +47,7 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
 	VarDclNode *varnode;
 	Name *namesym = NULL;
 	INode *vtype;
-	PermNode *perm;
+	INode *perm;
 	INode *val;
 
 	// Grab the permission type
@@ -186,7 +185,7 @@ INode *parseStruct(ParseState *parse) {
 
 void parseInjectSelf(FnSigNode *fnsig, Name *typename) {
 	NameUseNode *selftype = newNameUseNode(typename);
-	VarDclNode *selfparm = newVarDclNode(nametblFind("self", 4), VarDclTag, (INode*)selftype, constPerm, NULL);
+	VarDclNode *selfparm = newVarDclNode(nametblFind("self", 4), VarDclTag, (INode*)selftype, newPermUseNode((INamedNode*)constPerm), NULL);
 	selfparm->scope = 1;
 	selfparm->index = 0;
 	nodesAdd(&fnsig->parms, (INode*)selfparm);

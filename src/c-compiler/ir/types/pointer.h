@@ -12,7 +12,7 @@
 typedef struct PtrNode {
 	INodeHdr;
 	INode *pvtype;	// Value type
-	PermNode *perm;	// Permission
+	INode *perm;	// Permission
 	INode *alloc;		// Allocator
 	int16_t scope;		// Lifetime
 } PtrNode;

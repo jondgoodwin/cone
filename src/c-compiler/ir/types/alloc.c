@@ -27,7 +27,7 @@ void allocAllocate(AddrNode *anode, PtrNode *ptype) {
 	Name *szvtsym = nametblFind("szvtype", 7);
 	SizeofNode *szvtval = newSizeofNode();
 	szvtval->type = ptype->pvtype;
-	VarDclNode *szvtype = newVarDclNode(szvtsym, VarDclTag, (INode*)usizeType, immPerm, (INode*)szvtval);
+	VarDclNode *szvtype = newVarDclNode(szvtsym, VarDclTag, (INode*)usizeType, newPermUseNode((INamedNode*)immPerm), (INode*)szvtval);
 	nodesAdd(&blknode->stmts, (INode*)szvtype);
 	NameUseNode *szvtuse = newNameUseNode(szvtsym);
 	szvtuse->tag = VarNameUseTag;
@@ -45,7 +45,7 @@ void allocAllocate(AddrNode *anode, PtrNode *ptype) {
 	// ---
 	Name *pT = nametblFind("pT", 2);
 	CastNode *castvt = newCastNode((INode*)callalloc, (INode*)ptype);
-	VarDclNode *p1dcl = newVarDclNode(pT, VarDclTag, (INode*)ptype, immPerm, (INode*)castvt);
+	VarDclNode *p1dcl = newVarDclNode(pT, VarDclTag, (INode*)ptype, newPermUseNode((INamedNode*)immPerm), (INode*)castvt);
 	nodesAdd(&blknode->stmts, (INode*)p1dcl);
 	NameUseNode *p1use = newNameUseNode(pT);
 	p1use->tag = VarNameUseTag;

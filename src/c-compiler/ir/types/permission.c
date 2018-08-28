@@ -9,8 +9,8 @@
 
 #include <assert.h>
 
-// Create a new permission node
-PermNode *newPermNode(Name *namesym, char ptyp, uint16_t flags) {
+// Create a new permission declaration node
+PermNode *newPermDclNode(Name *namesym, uint16_t flags) {
 	PermNode *node;
 	newNode(node, PermNode, PermTag);
     node->vtype = NULL;
@@ -20,64 +20,49 @@ PermNode *newPermNode(Name *namesym, char ptyp, uint16_t flags) {
     imethnodesInit(&node->methprops, 1); // May not need members for static types
 	node->subtypes = newNodes(8);	// build appropriate list using the permission's flags
 	node->flags = flags;
-	node->ptype = ptyp;
 	return node;
+}
+
+// Create a new permission use node
+INode *newPermUseNode(INamedNode *permdcl) {
+    NameUseNode *perm;
+    newNode(perm, NameUseNode, TypeNameUseTag);
+    perm->vtype = NULL;
+    perm->namesym = permdcl->namesym;
+    perm->dclnode = permdcl;
+    perm->qualNames = NULL;
+    return (INode*)perm;
 }
 
 // Serialize a permission node
 void permPrint(PermNode *node) {
-	switch (node->ptype) {
-	case UniPerm: inodeFprint("uni "); break;
-	case MutPerm: inodeFprint("mut "); break;
-	case ImmPerm: inodeFprint("imm "); break;
-	case ConstPerm: inodeFprint("const "); break;
-	case MutxPerm: inodeFprint("mutx "); break;
-	case IdPerm: inodeFprint("id "); break;
-	default: inodeFprint("lock "); break;
-	}
+    inodeFprint("%s ", &node->namesym->namestr);
 }
 
-// Retrieve the permission flags for the node
-uint16_t permGetFlags(INode *node) {
-	switch (node->tag) {
-	case VarNameUseTag:
-		return permGetFlags((INode*)((NameUseNode*)node)->dclnode);
-	case VarDclTag:
-		return ((VarDclNode*)node)->perm->flags;
-    case FnDclTag:
-        return immPerm->flags;
-    case DerefTag:
-	{
-		PtrNode *vtype = (PtrNode*)iexpGetTypeDcl(((DerefNode *)node)->exp);
-		assert(vtype->tag == RefTag || vtype->tag == PtrTag);
-		return vtype->perm->flags;
-	}
-	default:
-		return 0;
-	}
-}
-
-// Is Lval mutable
-int permIsMutable(INode *lval) {
-	if (lval->tag == FnCallTag) {
-		FnCallNode *fncall = (FnCallNode *)lval;
-        if (fncall->methprop)
-            return MayWrite & permGetFlags(fncall->objfn) & permGetFlags((INode*)fncall->methprop);
-        else
-            return 0;
-	}
-	else
-		return MayWrite & permGetFlags(lval);
+// Get permission's flags
+int permGetFlags(INode *perm) {
+    if (perm->tag == TypeNameUseTag)
+        perm = (INode*)((NameUseNode*)perm)->dclnode;
+    assert(perm->tag == PermTag);
+    return ((PermNode *)perm)->flags;
 }
 
 // Are the permissions the same?
-int permIsSame(PermNode *node1, PermNode *node2) {
-	return node1 == node2;
+int permIsSame(INode *node1, INode *node2) {
+    if (node1->tag == TypeNameUseTag)
+        node1 = (INode*)((NameUseNode*)node1)->dclnode;
+    if (node2->tag == TypeNameUseTag)
+        node2 = (INode*)((NameUseNode*)node2)->dclnode;
+    assert(node1->tag == PermTag && node2->tag == PermTag);
+    return node1 == node2;
 }
 
 // Will 'from' permission coerce to the target?
-int permMatches(PermNode *to, PermNode *from) {
-	if (permIsSame(to, from) || to==idPerm)
+int permMatches(INode *ito, INode *ifrom) {
+    PermNode *from = (PermNode *)((ifrom->tag == TypeNameUseTag)? (INode*)((NameUseNode*)ifrom)->dclnode : ifrom);
+    PermNode *to = (PermNode *)((ito->tag == TypeNameUseTag)? (INode*)((NameUseNode*)ito)->dclnode : ito);
+    assert(from->tag == PermTag && to->tag == PermTag);
+    if (to==from || to==idPerm)
 		return 1;
 	if (from == uniPerm &&
 		(to == constPerm || to == mutPerm || to == immPerm || to == mutxPerm))

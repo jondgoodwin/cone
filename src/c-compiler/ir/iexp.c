@@ -97,3 +97,36 @@ void iexpHandleCopy(INode **nodep) {
     // if CopyMethod - inject use of that method to create a safe clone that can be "moved"
     // if CopyMove - turn off access to the source (via static (local var) or dynamic mechanism)
 }
+
+// Retrieve the permission flags for the node
+uint16_t iexpGetPermFlags(INode *node) {
+    switch (node->tag) {
+    case VarNameUseTag:
+        return iexpGetPermFlags((INode*)((NameUseNode*)node)->dclnode);
+    case VarDclTag:
+        return permGetFlags(((VarDclNode*)node)->perm);
+    case FnDclTag:
+        return permGetFlags((INode*)immPerm);
+    case DerefTag:
+    {
+        PtrNode *vtype = (PtrNode*)iexpGetTypeDcl(((DerefNode *)node)->exp);
+        assert(vtype->tag == RefTag || vtype->tag == PtrTag);
+        return permGetFlags(vtype->perm);
+    }
+    default:
+        return 0;
+    }
+}
+
+// Is Lval mutable
+int iexpIsLvalMutable(INode *lval) {
+    if (lval->tag == FnCallTag) {
+        FnCallNode *fncall = (FnCallNode *)lval;
+        if (fncall->methprop)
+            return MayWrite & iexpGetPermFlags(fncall->objfn) & iexpGetPermFlags((INode*)fncall->methprop);
+        else
+            return 0;
+    }
+    else
+        return MayWrite & iexpGetPermFlags(lval);
+}

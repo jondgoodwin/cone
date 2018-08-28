@@ -102,7 +102,7 @@ int itypeCopyTrait(INode *typenode) {
     }
     // For references, a 'uni' reference is CopyMove and all others are CopyBitwise
     else if (typenode->tag == RefTag) {
-        return (((PtrNode *)typenode)->perm->flags & MayAlias) ? CopyBitwise : CopyMove;
+        return (permGetFlags(((PtrNode *)typenode)->perm) & MayAlias) ? CopyBitwise : CopyMove;
     }
     // All pointers are CopyMove (potentially unsafe to copy)
     else if (typenode->tag == PtrTag)
@@ -123,8 +123,8 @@ char *itypeMangle(char *bufp, INode *vtype) {
 	{
 		PtrNode *pvtype = (PtrNode *)vtype;
 		*bufp++ = '&';
-		if (pvtype->perm != constPerm) {
-			bufp = itypeMangle(bufp, (INode*)pvtype->perm);
+		if (permIsSame(pvtype->perm, (INode*) constPerm)) {
+			bufp = itypeMangle(bufp, pvtype->perm);
 			*bufp++ = ' ';
 		}
 		bufp = itypeMangle(bufp, pvtype->pvtype);

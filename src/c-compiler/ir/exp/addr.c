@@ -35,7 +35,7 @@ void addrTypeCheckBorrow(AddrNode *node, PtrNode *ptype) {
 		return;
 	}
     INamedNode *dclnode = ((NameUseNode*)exp)->dclnode;
-    PermNode *perm = (dclnode->tag == VarDclTag) ? ((VarDclNode*)dclnode)->perm : immPerm;
+    INode *perm = (dclnode->tag == VarDclTag) ? ((VarDclNode*)dclnode)->perm : (INode*)immPerm;
 	if (!permMatches(ptype->perm, perm))
 		errorMsgNode((INode *)node, ErrorBadPerm, "Borrowed reference cannot obtain this permission");
 }

@@ -53,7 +53,7 @@ void assignPass(PassState *pstate, AssignNode *node) {
 			errorMsgNode(node->lval, ErrorBadLval, "Expression to left of assignment must be lval");
 		else if (!iexpCoerces(node->lval, &node->rval))
 			errorMsgNode(node->rval, ErrorInvType, "Expression's type does not match lval's type");
-		else if (!permIsMutable(node->lval))
+		else if (!iexpIsLvalMutable(node->lval))
 			errorMsgNode(node->lval, ErrorNoMut, "You do not have permission to modify lval");
 		else
 			iexpHandleCopy(&node->rval);

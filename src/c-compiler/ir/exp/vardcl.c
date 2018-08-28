@@ -11,7 +11,7 @@
 #include <assert.h>
 
 // Create a new name declaraction node
-VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *type, PermNode *perm, INode *val) {
+VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *type, INode *perm, INode *val) {
 	VarDclNode *name;
 	newNode(name, VarDclNode, tag);
 	name->vtype = type;

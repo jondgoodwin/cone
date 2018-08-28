@@ -45,21 +45,21 @@ void keywordInit() {
 	keyAdd("false", falseToken);
 }
 
-PermNode *newPermNodeStr(char *name, char ptyp, uint16_t flags) {
+PermNode *newPermNodeStr(char *name, uint16_t flags) {
     Name *namesym = nametblFind(name, strlen(name));
-    PermNode *perm = newPermNode(namesym, ptyp, flags);
+    PermNode *perm = newPermDclNode(namesym, flags);
     namesym->node = (INamedNode*)perm;
     return perm;
 }
 
 // Declare built-in permission types and their names
 void stdPermInit() {
-	uniPerm = newPermNodeStr("uni", UniPerm, MayRead | MayWrite | RaceSafe | MayIntRefSum | IsLockless);
-	mutPerm = newPermNodeStr("mut", MutPerm, MayRead | MayWrite | MayAlias | MayAliasWrite | IsLockless);
-	immPerm = newPermNodeStr("imm", ImmPerm, MayRead | MayAlias | RaceSafe | MayIntRefSum | IsLockless);
-	constPerm = newPermNodeStr("const", ConstPerm, MayRead | MayAlias | IsLockless);
-	mutxPerm = newPermNodeStr("mutx", MutxPerm, MayRead | MayWrite | MayAlias | MayIntRefSum | IsLockless);
-	idPerm = newPermNodeStr("id", IdPerm, MayAlias | RaceSafe | IsLockless);
+	uniPerm = newPermNodeStr("uni", MayRead | MayWrite | RaceSafe | MayIntRefSum | IsLockless);
+	mutPerm = newPermNodeStr("mut", MayRead | MayWrite | MayAlias | MayAliasWrite | IsLockless);
+	immPerm = newPermNodeStr("imm", MayRead | MayAlias | RaceSafe | MayIntRefSum | IsLockless);
+	constPerm = newPermNodeStr("const", MayRead | MayAlias | IsLockless);
+	mutxPerm = newPermNodeStr("mutx", MayRead | MayWrite | MayAlias | MayIntRefSum | IsLockless);
+	idPerm = newPermNodeStr("id", MayAlias | RaceSafe | IsLockless);
 }
 
 // Set up the standard library, whose names are always shared by all modules

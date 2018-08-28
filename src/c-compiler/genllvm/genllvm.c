@@ -116,7 +116,7 @@ char *genlGlobalName(INamedNode *name) {
 // Generate LLVMValueRef for a global variable
 void genlGloVarName(GenState *gen, VarDclNode *glovar) {
 	glovar->llvmvar = LLVMAddGlobal(gen->module, genlType(gen, glovar->vtype), genlGlobalName((INamedNode*)glovar));
-	if (glovar->perm == immPerm)
+	if (permIsSame(glovar->perm, (INode*) immPerm))
 		LLVMSetGlobalConstant(glovar->llvmvar, 1);
 }
 

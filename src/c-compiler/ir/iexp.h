@@ -36,4 +36,10 @@ int iexpCoerces(INode *to, INode **from);
 // using a move or the copy method as needed.
 void iexpHandleCopy(INode **nodep);
 
+// Retrieve the permission flags for the node
+uint16_t iexpGetPermFlags(INode *node);
+
+// Is Lval mutable
+int iexpIsLvalMutable(INode *lval);
+
 #endif

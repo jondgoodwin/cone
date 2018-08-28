@@ -8,23 +8,12 @@
 #ifndef permission_h
 #define permission_h
 
+typedef struct NameUseNode NameUseNode;
+
 // Permission type info
 typedef struct PermNode {
 	IMethodNodeHdr;
-	INode *locker;
-	uint8_t ptype;
 } PermNode;
-
-// Permission types
-enum Perm {
-	UniPerm,
-	MutPerm,
-	ImmPerm,
-	ConstPerm,
-	MutxPerm,
-	IdPerm,
-	LockPerm
-};
 
 // Permission type flags
 // - Each true flag indicates a helpful capability the permission makes possible
@@ -42,11 +31,22 @@ enum Perm {
 // If off, the permission's designated locking mechanism must be wrapped around all content access.
 #define IsLockless 0x40
 
-PermNode *newPermNode(Name *namesym, char ptyp, uint16_t flags);
+// Create a new permission declaration node
+PermNode *newPermDclNode(Name *namesym, uint16_t flags);
+
+// Create a new permission use node
+INode *newPermUseNode(INamedNode *permdcl);
+
+// Serialize a permission node
 void permPrint(PermNode *node);
-uint16_t permGetFlags(INode *node);
-int permIsMutable(INode *lval);
-int permIsSame(PermNode *node1, PermNode *node2);
-int permMatches(PermNode *node1, PermNode *node2);
+
+// Get permission's flags
+int permGetFlags(INode *perm);
+   
+// Are the permissions the same?
+int permIsSame(INode *node1, INode *node2);
+
+// Will 'from' permission coerce to the target?
+int permMatches(INode *to, INode *from);
 
 #endif
