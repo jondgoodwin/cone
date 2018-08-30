@@ -26,7 +26,7 @@ void addrPrint(AddrNode *node) {
 }
 
 // Type check borrowed reference creator
-void addrTypeCheckBorrow(AddrNode *node, PtrNode *ptype) {
+void addrTypeCheckBorrow(AddrNode *node, RefNode *reftype) {
 	INode *exp = node->exp;
 	if (exp->tag != VarNameUseTag
         || (((NameUseNode*)exp)->dclnode->tag != VarDclTag
@@ -36,7 +36,7 @@ void addrTypeCheckBorrow(AddrNode *node, PtrNode *ptype) {
 	}
     INamedNode *dclnode = ((NameUseNode*)exp)->dclnode;
     INode *perm = (dclnode->tag == VarDclTag) ? ((VarDclNode*)dclnode)->perm : (INode*)immPerm;
-	if (!permMatches(ptype->perm, perm))
+	if (!permMatches(reftype->perm, perm))
 		errorMsgNode((INode *)node, ErrorBadPerm, "Borrowed reference cannot obtain this permission");
 }
 
@@ -48,12 +48,12 @@ void addrPass(PassState *pstate, AddrNode *node) {
 			errorMsgNode(node->exp, ErrorBadTerm, "Needs to be an expression");
 			return;
 		}
-		PtrNode *ptype = (PtrNode *)node->vtype;
-		if (ptype->pvtype == NULL)
-			ptype->pvtype = ((ITypedNode *)node->exp)->vtype; // inferred
-		if (ptype->alloc == voidType)
-			addrTypeCheckBorrow(node, ptype);
+		RefNode *reftype = (RefNode *)node->vtype;
+		if (reftype->pvtype == NULL)
+			reftype->pvtype = ((ITypedNode *)node->exp)->vtype; // inferred
+		if (reftype->alloc == voidType)
+			addrTypeCheckBorrow(node, reftype);
 		else
-			allocAllocate(node, ptype);
+			allocAllocate(node, reftype);
 	}
 }

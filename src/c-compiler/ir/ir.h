@@ -51,6 +51,7 @@ typedef struct PassState PassState;
 #include "types/permission.h"
 #include "types/fnsig.h"
 #include "types/number.h"
+#include "types/reference.h"
 #include "types/pointer.h"
 #include "types/struct.h"
 #include "types/array.h"

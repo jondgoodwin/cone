@@ -109,9 +109,12 @@ uint16_t iexpGetPermFlags(INode *node) {
         return permGetFlags((INode*)immPerm);
     case DerefTag:
     {
-        PtrNode *vtype = (PtrNode*)iexpGetTypeDcl(((DerefNode *)node)->exp);
-        assert(vtype->tag == RefTag || vtype->tag == PtrTag);
-        return permGetFlags(vtype->perm);
+        RefNode *vtype = (RefNode*)iexpGetTypeDcl(((DerefNode *)node)->exp);
+        if (vtype->tag == RefTag)
+            return permGetFlags(vtype->perm);
+        else if (vtype->tag == PtrTag)
+            return 0xFFFF;  // <-- In a trust block?
+        assert(0 && "Should be ref or ptr");
     }
     default:
         return 0;

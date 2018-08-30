@@ -12,17 +12,23 @@
 typedef struct PtrNode {
 	INodeHdr;
 	INode *pvtype;	// Value type
-	INode *perm;	// Permission
-	INode *alloc;		// Allocator
-	int16_t scope;		// Lifetime
 } PtrNode;
 
 PtrNode *strType;
 
-PtrNode *newPtrTypeNode();
-void ptrTypePrint(PtrNode *node);
-void ptrTypePass(PassState *pstate, PtrNode *name);
-int ptrTypeEqual(PtrNode *node1, PtrNode *node2);
-int ptrTypeMatches(PtrNode *to, PtrNode *from);
+// Create a new pointer type whose info will be filled in afterwards
+PtrNode *newPtrNode();
+
+// Serialize a pointer type
+void ptrPrint(PtrNode *node);
+
+// Semantically analyze a pointer type
+void ptrPass(PassState *pstate, PtrNode *name);
+
+// Compare two pointer signatures to see if they are equivalent
+int ptrEqual(PtrNode *node1, PtrNode *node2);
+
+// Will from pointer coerce to a to pointer (we know they are not the same)
+int ptrMatches(PtrNode *to, PtrNode *from);
 
 #endif

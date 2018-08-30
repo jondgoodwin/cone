@@ -11,22 +11,22 @@
 
 // Type check and expand code for allocator reference creator
 // This actually generates additional code that replaces anode->exp
-void allocAllocate(AddrNode *anode, PtrNode *ptype) {
+void allocAllocate(AddrNode *anode, RefNode *reftype) {
 	BlockNode *blknode = newBlockNode();
 
 	// Find 'allocate' method in alloc
 	Name *symalloc = nametblFind("allocate", 8);
-	StructNode *alloctype = (StructNode*)ptype->alloc;
+	StructNode *alloctype = (StructNode*)reftype->alloc;
     VarDclNode *allocmeth = (VarDclNode*)imethnodesFind(&alloctype->methprops, symalloc);
 	if (allocmeth == NULL || ((FnSigNode*)allocmeth->vtype)->parms->used != 1) {
-		errorMsgNode((INode*)ptype, ErrorBadAlloc, "Allocator is missing valid allocate method");
+		errorMsgNode((INode*)reftype, ErrorBadAlloc, "Allocator is missing valid allocate method");
 		return;
 	}
 
 	// szvtype = sizeof(vtype)
 	Name *szvtsym = nametblFind("szvtype", 7);
 	SizeofNode *szvtval = newSizeofNode();
-	szvtval->type = ptype->pvtype;
+	szvtval->type = reftype->pvtype;
 	VarDclNode *szvtype = newVarDclNode(szvtsym, VarDclTag, (INode*)usizeType, newPermUseNode((INamedNode*)immPerm), (INode*)szvtval);
 	nodesAdd(&blknode->stmts, (INode*)szvtype);
 	NameUseNode *szvtuse = newNameUseNode(szvtsym);
@@ -44,8 +44,8 @@ void allocAllocate(AddrNode *anode, PtrNode *ptype) {
 	nodesAdd(&callalloc->args, (INode*)szvtuse);
 	// ---
 	Name *pT = nametblFind("pT", 2);
-	CastNode *castvt = newCastNode((INode*)callalloc, (INode*)ptype);
-	VarDclNode *p1dcl = newVarDclNode(pT, VarDclTag, (INode*)ptype, newPermUseNode((INamedNode*)immPerm), (INode*)castvt);
+	CastNode *castvt = newCastNode((INode*)callalloc, (INode*)reftype);
+	VarDclNode *p1dcl = newVarDclNode(pT, VarDclTag, (INode*)reftype, newPermUseNode((INamedNode*)immPerm), (INode*)castvt);
 	nodesAdd(&blknode->stmts, (INode*)p1dcl);
 	NameUseNode *p1use = newNameUseNode(pT);
 	p1use->tag = VarNameUseTag;
@@ -55,7 +55,7 @@ void allocAllocate(AddrNode *anode, PtrNode *ptype) {
 	// *p1 = value
 	DerefNode *derefp1 = newDerefNode();
 	derefp1->exp = (INode*)p1use;
-	derefp1->vtype = ptype->pvtype;
+	derefp1->vtype = reftype->pvtype;
 	AssignNode *copynode = newAssignNode(AssignTag, (INode*)derefp1, anode->exp);
 	nodesAdd(&blknode->stmts, (INode*)copynode);
 

@@ -102,8 +102,10 @@ void inodePrintNode(INode *node) {
 		slitPrint((SLitNode *)node); break;
 	case FnSigTag:
 		fnSigPrint((FnSigNode *)node); break;
-	case RefTag: case PtrTag:
-		ptrTypePrint((PtrNode *)node); break;
+    case RefTag:
+        refPrint((RefNode *)node); break;
+    case PtrTag:
+		ptrPrint((PtrNode *)node); break;
 	case StructTag:
 	case AllocTag:
 		structPrint((StructNode *)node); break;
@@ -171,8 +173,10 @@ void inodeWalk(PassState *pstate, INode **node) {
 		logicPass(pstate, (LogicNode *)*node); break;
 	case FnSigTag:
 		fnSigPass(pstate, (FnSigNode *)*node); break;
-	case RefTag: case PtrTag:
-		ptrTypePass(pstate, (PtrNode *)*node); break;
+    case RefTag:
+        refPass(pstate, (RefNode *)*node); break;
+    case PtrTag:
+		ptrPass(pstate, (PtrNode *)*node); break;
 	case StructTag:
 	case AllocTag:
 		structPass(pstate, (StructNode *)*node); break;

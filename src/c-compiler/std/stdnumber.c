@@ -35,11 +35,8 @@ void stdNbrInit() {
 	ArrayNode *strArr = newArrayNode();
 	strArr->size = 0;
 	strArr->elemtype = (INode*)u8Type;
-	strType = newPtrTypeNode();
+	strType = newPtrNode();
 	strType->pvtype = (INode*)/*strArr*/u8Type;
-	strType->perm = newPermUseNode((INamedNode*)immPerm);
-	strType->alloc = NULL;
-	strType->scope = 0;
 }
 
 // Create a new primitive number type node

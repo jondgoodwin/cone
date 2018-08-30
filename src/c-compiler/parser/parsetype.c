@@ -29,7 +29,7 @@ INode *parsePerm(PermNode *defperm) {
 }
 
 // Parse an allocator + permission for a reference type
-void parseAllocPerm(PtrNode *refnode) {
+void parseAllocPerm(RefNode *refnode) {
 	if (lexIsToken(IdentToken)
 		&& lex->val.ident->node && lex->val.ident->node->tag == AllocTag) {
 		refnode->alloc = (INode*)lex->val.ident->node;
@@ -87,18 +87,32 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
 
 // Parse a pointer type
 INode *parsePtrType(ParseState *parse) {
-	PtrNode *ptype = newPtrTypeNode();
-	if (lexIsToken(StarToken))
-		ptype->tag = PtrTag;
+    PtrNode *ptype = newPtrNode();
+    lexNextToken();
+
+    // Get value type, if provided
+    if (lexIsToken(FnToken)) {
+        lexNextToken();
+        if (lexIsToken(IdentToken)) {
+            errorMsgLex(WarnName, "Unnecessary name is ignored");
+            lexNextToken();
+        }
+        ptype->pvtype = parseFnSig(parse);
+    }
+    else if ((ptype->pvtype = parseVtype(parse)) == NULL) {
+        errorMsgLex(ErrorNoVtype, "Missing value type for the pointer");
+        ptype->pvtype = voidType;
+    }
+
+    return (INode *)ptype;
+}
+
+// Parse a reference type
+INode *parseRefType(ParseState *parse) {
+	RefNode *reftype = newRefNode();
 	lexNextToken();
 
-	// Get allocator/permission for references
-	if (ptype->tag == RefTag)
-		parseAllocPerm(ptype);
-	else {
-		ptype->alloc = voidType;	// no allocator
-		ptype->perm = parsePerm(constPerm);
-	}
+	parseAllocPerm(reftype);
 
 	// Get value type, if provided
 	if (lexIsToken(FnToken)) {
@@ -107,14 +121,14 @@ INode *parsePtrType(ParseState *parse) {
 			errorMsgLex(WarnName, "Unnecessary name is ignored");
 			lexNextToken();
 		}
-		ptype->pvtype = parseFnSig(parse);
+		reftype->pvtype = parseFnSig(parse);
 	}
-	else if ((ptype->pvtype = parseVtype(parse)) == NULL) {
+	else if ((reftype->pvtype = parseVtype(parse)) == NULL) {
 		errorMsgLex(ErrorNoVtype, "Missing value type for the pointer");
-		ptype->pvtype = voidType;
+		reftype->pvtype = voidType;
 	}
 
-	return (INode *)ptype;
+	return (INode *)reftype;
 }
 
 // Parse a struct
@@ -269,9 +283,11 @@ INode *parseArrayType(ParseState *parse) {
 INode* parseVtype(ParseState *parse) {
 	INode *vtype;
 	switch (lex->toktype) {
-	case AmperToken: case StarToken:
-		return parsePtrType(parse);
-	case LBracketToken:
+	case AmperToken:
+		return parseRefType(parse);
+    case StarToken:
+        return parsePtrType(parse);
+    case LBracketToken:
 		return parseArrayType(parse);
 	case IdentToken:
 		vtype = (INode*)newNameUseNode(lex->val.ident);

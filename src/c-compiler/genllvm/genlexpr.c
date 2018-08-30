@@ -504,8 +504,8 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
 	case AddrTag:
 	{
 		AddrNode *anode = (AddrNode*)termnode;
-		PtrNode *ptype = (PtrNode *)anode->vtype;
-		if (ptype->alloc == voidType) {
+		RefNode *reftype = (RefNode *)anode->vtype;
+		if (reftype->alloc == voidType) {
 			assert(anode->exp->tag == VarNameUseTag);
 			NameUseNode *var = (NameUseNode*)anode->exp;
 			return ((VarDclNode*)var->dclnode)->llvmvar;

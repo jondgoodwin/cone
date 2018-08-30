@@ -30,8 +30,10 @@ int itypeIsSame(INode *node1, INode *node2) {
 	switch (node1->tag) {
 	case FnSigTag:
 		return fnSigEqual((FnSigNode*)node1, (FnSigNode*)node2);
-	case RefTag: case PtrTag:
-		return ptrTypeEqual((PtrNode*)node1, (PtrNode*)node2);
+	case RefTag: 
+        return refEqual((RefNode*)node1, (RefNode*)node2);
+    case PtrTag:
+		return ptrEqual((PtrNode*)node1, (PtrNode*)node2);
 	default:
 		return 0;
 	}
@@ -54,10 +56,15 @@ int itypeMatches(INode *totype, INode *fromtype) {
 
 	// Type-specific matching logic
 	switch (totype->tag) {
-	case RefTag: case PtrTag:
-		if (fromtype->tag != RefTag && fromtype->tag != PtrTag)
-			return 0;
-		return ptrTypeMatches((PtrNode*)totype, (PtrNode*)fromtype);
+	case RefTag:
+        if (fromtype->tag != RefTag)
+            return 0;
+        return refMatches((RefNode*)totype, (RefNode*)fromtype);
+
+    case PtrTag:
+        if (fromtype->tag != PtrTag)
+            return 0;
+        return ptrMatches((PtrNode*)totype, (PtrNode*)fromtype);
 
 	case ArrayTag:
 		if (totype->tag != fromtype->tag)
@@ -102,11 +109,11 @@ int itypeCopyTrait(INode *typenode) {
     }
     // For references, a 'uni' reference is CopyMove and all others are CopyBitwise
     else if (typenode->tag == RefTag) {
-        return (permGetFlags(((PtrNode *)typenode)->perm) & MayAlias) ? CopyBitwise : CopyMove;
+        return (permGetFlags(((RefNode *)typenode)->perm) & MayAlias) ? CopyBitwise : CopyMove;
     }
     // All pointers are CopyMove (potentially unsafe to copy)
     else if (typenode->tag == PtrTag)
-        return CopyMove;
+        return CopyBitwise;  // Should be CopyMove?
     // The default (e.g., numbers) is CopyBitwise
     return CopyBitwise;
 }
@@ -119,14 +126,21 @@ char *itypeMangle(char *bufp, INode *vtype) {
 		strcpy(bufp, &((NameUseNode *)vtype)->dclnode->namesym->namestr);
 		break;
 	}
-	case RefTag: case PtrTag:
+    case RefTag:
+    {
+        RefNode *reftype = (RefNode *)vtype;
+        *bufp++ = '&';
+        if (permIsSame(reftype->perm, (INode*)constPerm)) {
+            bufp = itypeMangle(bufp, reftype->perm);
+            *bufp++ = ' ';
+        }
+        bufp = itypeMangle(bufp, reftype->pvtype);
+        break;
+    }
+    case PtrTag:
 	{
 		PtrNode *pvtype = (PtrNode *)vtype;
-		*bufp++ = '&';
-		if (permIsSame(pvtype->perm, (INode*) constPerm)) {
-			bufp = itypeMangle(bufp, pvtype->perm);
-			*bufp++ = ' ';
-		}
+		*bufp++ = '*';
 		bufp = itypeMangle(bufp, pvtype->pvtype);
 		break;
 	}

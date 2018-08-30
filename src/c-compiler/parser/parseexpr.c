@@ -175,11 +175,11 @@ INode *parseAddr(ParseState *parse) {
 	AddrNode *anode = newAddrNode();
 	lexNextToken();
 
-	// Address node's value type is a partially populated pointer type
-	PtrNode *ptype = newPtrTypeNode();
-	ptype->pvtype = NULL;     // Type inference will correct this
-	parseAllocPerm(ptype);
-	anode->vtype = (INode *)ptype;
+	// Address node's value type is a partially populated reference type
+	RefNode *reftype = newRefNode();
+	reftype->pvtype = NULL;     // Type inference will correct this
+	parseAllocPerm(reftype);
+	anode->vtype = (INode *)reftype;
 
 	// A value or constructor
 	anode->exp = parseTerm(parse);

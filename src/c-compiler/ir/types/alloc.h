@@ -11,6 +11,6 @@
 typedef struct AddrNode AddrNode;
 typedef struct PtrNode PtrNode;
 
-void allocAllocate(AddrNode *anode, PtrNode *ptype);
+void allocAllocate(AddrNode *anode, RefNode *reftype);
 
 #endif
