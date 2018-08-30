@@ -55,6 +55,7 @@ add_executable(conec
 	src/c-compiler/ir/types/fnsig.c
 	src/c-compiler/ir/types/number.c
 	src/c-compiler/ir/types/permission.c
+	src/c-compiler/ir/types/reference.c
 	src/c-compiler/ir/types/pointer.c
 	src/c-compiler/ir/types/struct.c
 	src/c-compiler/ir/types/void.c
