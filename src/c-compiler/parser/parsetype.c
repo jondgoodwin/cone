@@ -268,9 +268,22 @@ INode *parseArrayType(ParseState *parse) {
 	ArrayNode *atype = newArrayNode();
 	lexNextToken();
 
-	atype->size = 0;
-	lexNextToken(); // closing bracket - assume no size for now
+    // Obtain size as either blank or as an unsigned integer literal
+    if (lexIsToken(IntLitToken)) {
+        atype->size = (uint32_t) lex->val.uintlit;
+        lexNextToken();
+    }
+    else {
+        atype->size = 0;
+        atype->flags |= FlagArrNoSize;
+    }
+    if (lexIsToken(RBracketToken))
+	    lexNextToken();
+    else {
+        errorMsgLex(ErrorBadTok, "Expected closing ssquare bracket");
+    }
 
+    // Obtain array's element type
 	if ((atype->elemtype = parseVtype(parse)) == NULL) {
 		errorMsgLex(ErrorNoVtype, "Missing value type for the array element");
 		atype->elemtype = voidType;

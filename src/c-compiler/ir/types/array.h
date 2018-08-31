@@ -8,10 +8,12 @@
 #ifndef array_h
 #define array_h
 
+#define FlagArrNoSize 0x0001
+
 // For pointers
 typedef struct ArrayNode {
 	IMethodNodeHdr;
-	uint32_t size;
+	uint32_t size;    // LLVM 5 C-interface is restricted to 32-bits
 	INode *elemtype;
 } ArrayNode;
 
