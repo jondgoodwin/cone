@@ -28,15 +28,21 @@ void assignPrint(AssignNode *node) {
 	inodeFprint(")");
 }
 
-// expression is valid lval expression
+// expression is valid lval expression: we can get its address and assign it a value
 int isLval(INode *node) {
 	switch (node->tag) {
-	case VarNameUseTag:
+
+    // Variable names and dereferences (*) are always lvals
+    case VarNameUseTag:
 	case DerefTag:
+        return 1;
+
+    // A FnCall node is only an lval if it is *not* a function call
+    // (i.e., it is a property access or array index/slice)
 	case FnCallTag:
-		return 1;
-	// future:  [] indexing and .member
-	default: break;
+        return ((ITypedNode*)((FnCallNode*)node)->objfn)->vtype->tag != FnSigTag;
+
+    default: break;
 	}
 
 	return 0;

@@ -116,6 +116,19 @@ uint16_t iexpGetPermFlags(INode *node) {
             return 0xFFFF;  // <-- In a trust block?
         assert(0 && "Should be ref or ptr");
     }
+    case FnCallTag:
+    {
+        FnCallNode *fncall = (FnCallNode *)node;
+        // Property access. Permission is the conjunction of structure and property permissions.
+        if (fncall->methprop)
+            return iexpGetPermFlags(fncall->objfn) & iexpGetPermFlags((INode*)fncall->methprop);
+        // True function call. Has no permissions.
+        else if (((ITypedNode*)fncall->objfn)->vtype->tag == FnSigTag)
+            return 0;
+        // Array index/slice. Permission based on array's permission
+        else
+            return iexpGetPermFlags(fncall->objfn);
+    }
     default:
         return 0;
     }
@@ -123,13 +136,5 @@ uint16_t iexpGetPermFlags(INode *node) {
 
 // Is Lval mutable
 int iexpIsLvalMutable(INode *lval) {
-    if (lval->tag == FnCallTag) {
-        FnCallNode *fncall = (FnCallNode *)lval;
-        if (fncall->methprop)
-            return MayWrite & iexpGetPermFlags(fncall->objfn) & iexpGetPermFlags((INode*)fncall->methprop);
-        else
-            return 0;
-    }
-    else
-        return MayWrite & iexpGetPermFlags(lval);
+    return MayWrite & iexpGetPermFlags(lval);
 }
