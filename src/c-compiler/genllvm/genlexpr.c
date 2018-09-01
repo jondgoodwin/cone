@@ -441,8 +441,8 @@ LLVMValueRef genlLocalVar(GenState *gen, VarDclNode *var) {
 	return val;
 }
 
-// Generate an lval pointer
-LLVMValueRef genlLval(GenState *gen, INode *lval) {
+// Generate an lval-ish pointer to the value (vs. load)
+LLVMValueRef genlAddr(GenState *gen, INode *lval) {
 	switch (lval->tag) {
 	case VarNameUseTag:
 		return ((VarDclNode*)((NameUseNode *)lval)->dclnode)->llvmvar;
@@ -450,10 +450,24 @@ LLVMValueRef genlLval(GenState *gen, INode *lval) {
 		return genlExpr(gen, ((DerefNode *)lval)->exp);
 	case FnCallTag:
 	{
-		FnCallNode *fncall = (FnCallNode *)lval;
-		VarDclNode *flddcl = (VarDclNode*)((NameUseNode*)fncall->methprop)->dclnode;
-		return LLVMBuildStructGEP(gen->builder, genlLval(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
-	}
+        FnCallNode *fncall = (FnCallNode *)lval;
+        // Property access (no arguments will be present)
+        if (fncall->methprop) {
+            VarDclNode *flddcl = (VarDclNode*)((NameUseNode*)fncall->methprop)->dclnode;
+            return LLVMBuildStructGEP(gen->builder, genlAddr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
+        }
+        else {
+            INode *objtype = ((ITypedNode *)fncall->objfn)->vtype;
+            if (objtype->tag == ArrayTag) {
+                LLVMValueRef indexes[2];
+                indexes[0] = LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0);
+                indexes[1] = genlExpr(gen, nodesGet(fncall->args, 0));
+                return LLVMBuildGEP(gen->builder, genlAddr(gen, fncall->objfn), indexes, 2, "");
+            }
+            else
+                assert(0 && "Unknown type of fncall node");
+        }
+    }
 	}
 	return NULL;
 }
@@ -493,12 +507,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
             if (objtype->tag == FnSigTag)
                 return genlFnCall(gen, fncall);
             else if (objtype->tag == ArrayTag) {
-                LLVMValueRef indexes[2];
-                indexes[0] = LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0);
-                indexes[1] = genlExpr(gen, nodesGet(fncall->args,0));
-                LLVMValueRef arrayptr = ((VarDclNode*)((NameUseNode *)fncall->objfn)->dclnode)->llvmvar; // assume nameuse!
-                LLVMValueRef gep = LLVMBuildGEP(gen->builder, arrayptr, indexes, 2, "");
-                return LLVMBuildLoad(gen->builder, gep, "");
+                return LLVMBuildLoad(gen->builder, genlAddr(gen, termnode), "");
             }
             else
                 assert(0 && "Unknown type of fncall node");
@@ -508,7 +517,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
 	{
 		LLVMValueRef val;
 		AssignNode *node = (AssignNode*)termnode;
-		LLVMBuildStore(gen->builder, (val = genlExpr(gen, node->rval)), genlLval(gen, node->lval));
+		LLVMBuildStore(gen->builder, (val = genlExpr(gen, node->rval)), genlAddr(gen, node->lval));
 		return val;
 	}
 	case SizeofTag:
