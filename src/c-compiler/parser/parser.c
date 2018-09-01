@@ -55,11 +55,11 @@ void parseLCurly() {
 	}
 }
 
-// Expect right parenthesis. If not found, search for it or '}' or ';'
-void parseRParen() {
-	if (!lexIsToken(RParenToken))
+// Expect closing token (e.g., right parenthesis). If not found, search for it or '}' or ';'
+void parseCloseTok(uint16_t closetok) {
+	if (!lexIsToken(closetok))
 		errorMsgLex(ErrorNoRParen, "Expected right parenthesis - skipping forward to find it");
-	while (!lexIsToken(RParenToken)) {
+	while (!lexIsToken(closetok)) {
 		if (lexIsToken(EofToken) || lexIsToken(SemiToken) || lexIsToken(RCurlyToken))
 			return;
 		lexNextToken();

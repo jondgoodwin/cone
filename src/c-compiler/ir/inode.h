@@ -118,6 +118,8 @@ enum NodeTags {
 #define FlagExtern    0x0002		// FnDcl, VarDcl: C ABI extern (no value, no mangle)
 #define FlagSetMethod 0x0004        // FnDcl: "set" method
 
+#define FlagIndex     0x0001        // FnCall: arguments are an index in []
+
 
 // Allocate and initialize the INode portion of a new node
 #define newNode(node, nodestruct, nodetype) {\

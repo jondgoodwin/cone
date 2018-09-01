@@ -95,7 +95,7 @@ INode *parseTerm(ParseState *parse) {
 			INode *node;
 			lexNextToken();
 			node = parseExpr(parse);
-			parseRParen();
+			parseCloseTok(RParenToken);
 			return node;
 		}
 	default:
@@ -104,7 +104,7 @@ INode *parseTerm(ParseState *parse) {
 	}
 }
 
-// Parse the postfix operators: '.', '::', '()'
+// Parse the postfix operators: '.', '::', '()', '[]'
 INode *parsePostfix(ParseState *parse) {
 	INode *node = parseTerm(parse);
 	while (1) {
@@ -112,10 +112,14 @@ INode *parsePostfix(ParseState *parse) {
 
 		// Function call with possible parameters
 		case LParenToken:
+        case LBracketToken:
 		{
+            int closetok = lex->toktype == LBracketToken? RBracketToken : RParenToken;
 			FnCallNode *fncall = newFnCallNode(node, 8);
+            if (closetok == RBracketToken)
+                fncall->flags |= FlagIndex;
 			lexNextToken();
-			if (!lexIsToken(RParenToken))
+			if (!lexIsToken(closetok))
 				while (1) {
 					nodesAdd(&fncall->args, parseExpr(parse));
 					if (lexIsToken(CommaToken))
@@ -123,7 +127,7 @@ INode *parsePostfix(ParseState *parse) {
 					else
 						break;
 				}
-			parseRParen();
+			parseCloseTok(closetok);
 			node = (INode *)fncall;
 			break;
 		}
@@ -158,7 +162,7 @@ INode *parsePostfix(ParseState *parse) {
 							break;
 					}
 				}
-				parseRParen();
+				parseCloseTok(RParenToken);
 			}
             node = (INode *)fncall;
             break;

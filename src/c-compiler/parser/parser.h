@@ -31,7 +31,9 @@ INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags);
 void parseSemi();
 void parseRCurly();
 void parseLCurly();
-void parseRParen();
+
+// Expect closing token (e.g., right parenthesis). If not found, search for it or '}' or ';'
+void parseCloseTok(uint16_t closetok);
 
 // parseflow.c
 INode *parseIf(ParseState *parse);

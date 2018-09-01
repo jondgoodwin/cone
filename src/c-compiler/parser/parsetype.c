@@ -250,7 +250,7 @@ INode *parseFnSig(ParseState *parse) {
 				break;
 			lexNextToken();
 		}
-		parseRParen();
+		parseCloseTok(RParenToken);
 	}
 	else
 		errorMsgLex(ErrorNoLParen, "Expected left parenthesis for parameter declarations");
