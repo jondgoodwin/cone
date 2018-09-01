@@ -96,16 +96,15 @@ enum NodeTags {
     // Unnamed type node
     TypeNameUseTag = TypeGroup, // Type name use node
     FnSigTag,	// Also method, closure, behavior, co-routine, thread, ...
+    ArrayTag,	// Also dynamic arrays? SOA?
+    RefTag,	    // Reference
+    PtrTag,     // Pointer
     VoidTag,	// representing no values, e.g., no return values on a fn
 
-    RefTag = TypeGroup + NamedNode,	// Reference
-    PtrTag,	// Pointer
-
     IntNbrTag = TypeGroup + NamedNode + MethodType,	// Integer
-    UintNbrTag,	// Unsigned integer
-    FloatNbrTag,	// Floating point number
-    StructTag,	// Also interface, trait, tuple, actor, etc.
-    ArrayTag,	// Also dynamic arrays? SOA?
+    UintNbrTag,	 // Unsigned integer
+    FloatNbrTag, // Floating point number
+    StructTag,	 // Also interface, trait, tuple, actor, etc.
     PermTag,
     AllocTag,
 };

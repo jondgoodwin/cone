@@ -483,12 +483,26 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     case FnCallTag:
     {
         FnCallNode *fncall = (FnCallNode *)termnode;
+        // Property access (no arguments will be present)
         if (fncall->methprop) {
             VarDclNode *flddcl = (VarDclNode*)((NameUseNode*)fncall->methprop)->dclnode;
             return LLVMBuildExtractValue(gen->builder, genlExpr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
         }
-        else
-            return genlFnCall(gen, fncall);
+        else {
+            INode *objtype = ((ITypedNode *)fncall->objfn)->vtype;
+            if (objtype->tag == FnSigTag)
+                return genlFnCall(gen, fncall);
+            else if (objtype->tag == ArrayTag) {
+                LLVMValueRef indexes[2];
+                indexes[0] = LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0);
+                indexes[1] = genlExpr(gen, nodesGet(fncall->args,0));
+                LLVMValueRef arrayptr = ((VarDclNode*)((NameUseNode *)fncall->objfn)->dclnode)->llvmvar; // assume nameuse!
+                LLVMValueRef gep = LLVMBuildGEP(gen->builder, arrayptr, indexes, 2, "");
+                return LLVMBuildLoad(gen->builder, gep, "");
+            }
+            else
+                assert(0 && "Unknown type of fncall node");
+        }
     }
 	case AssignTag:
 	{

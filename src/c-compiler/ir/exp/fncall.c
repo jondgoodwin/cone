@@ -185,7 +185,7 @@ void fnCallPass(PassState *pstate, FnCallNode *node) {
 
         // How to lower depends on the type of the objfn
         if (!isExpNode(node)) {
-            errorMsgNode(node->objfn, ErrorNotTyped, "Expecting a typed node");
+            errorMsgNode(node->objfn, ErrorNotTyped, "Expecting a typed value or expression");
             return;
         }
         INode *objfntype = iexpGetDerefTypeDcl(node->objfn);
@@ -204,11 +204,8 @@ void fnCallPass(PassState *pstate, FnCallNode *node) {
         else if (node->methprop)
             errorMsgNode((INode *)node, ErrorBadMeth, "Cannot do method or property on a value of this type");
 
-        else if (objfntype->tag != FnSigTag)
-            errorMsgNode((INode *)node, ErrorNotFn, "Cannot apply arguments to a non-function");
-
         // Handle a regular function call or implicit method call
-        else {
+        else if (objfntype->tag == FnSigTag) {
             derefAuto(&node->objfn);
 
             // Capture return vtype
@@ -224,6 +221,24 @@ void fnCallPass(PassState *pstate, FnCallNode *node) {
             // Type check arguments, handling copy and default arguments along the way
             fnCallFinalizeArgs(node);
         }
+
+        // Handle index/slice arguments on an array or array reference
+        else if (objfntype->tag == ArrayTag) {
+            ArrayNode *arraytype = (ArrayNode*)objfntype;
+            uint32_t nargs = node->args->used;
+            if (nargs == 1) {
+                ITypedNode *index = (ITypedNode*)nodesGet(node->args, 0);
+                if (index->tag != ULitTag && index->vtype->tag != UintNbrTag)
+                    errorMsgNode((INode *)node, ErrorBadIndex, "Array index must be an unsigned integer");
+                node->vtype = arraytype->elemtype;
+            }
+            else
+                errorMsgNode((INode *)node, ErrorBadIndex, "Array indexing/slicing supports only 1-2 arguments");
+        }
+
+        else
+            errorMsgNode((INode *)node, ErrorNotFn, "May not apply arguments to a value of this type");
+
         break;
     }
     }
