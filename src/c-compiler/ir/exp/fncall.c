@@ -193,9 +193,9 @@ void fnCallPass(PassState *pstate, FnCallNode *node) {
         // Objects (method types) are lowered to method calls via a name lookup
         if (isMethodType(objfntype)) {
 
-            // Use '()' method call, when no method or property is specified
+            // Use '()' or '[]' method call, when no method or property is specified
             if (node->methprop == NULL)
-                node->methprop = newNameUseNode(nametblFind("()", 2));
+                node->methprop = newNameUseNode(nametblFind(node->flags & FlagIndex? "[]" : "()", 2));
 
             // Lower to a property access or function call
             fnCallLowerMethod(node);
