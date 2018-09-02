@@ -20,6 +20,12 @@ typedef struct FLitNode {
 	double floatlit;
 } FLitNode;
 
+// Array literal
+typedef struct ArrLitNode {
+    ITypedNodeHdr;
+    Nodes *elements;
+} ArrLitNode;
+
 // String literal
 typedef struct SLitNode {
 	ITypedNodeHdr;
@@ -31,6 +37,13 @@ void ulitPrint(ULitNode *node);
 
 FLitNode *newFLitNode(double nbr, INode *type);
 void flitPrint(FLitNode *node);
+
+// Create a new array literal
+ArrLitNode *newArrLitNode();
+// Serialize an array literal
+void arrLitPrint(ArrLitNode *node);
+// Check the array literal node
+void arrLitWalk(PassState *pstate, ArrLitNode *blk);
 
 SLitNode *newSLitNode(char *str, INode *type);
 void slitPrint(SLitNode *node);

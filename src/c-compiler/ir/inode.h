@@ -76,6 +76,7 @@ enum NodeTags {
 	MbrNameUseTag,	// Member of a type's namespace (property/method)
 	ULitTag,		// Integer literal
 	FLitTag,		// Float literal
+    ArrLitTag,      // Array literal
 	StrLitTag,		// String literal
 	AssignTag,		// Assignment expression
 	FnCallTag,		// Function+method call or Property access

@@ -98,7 +98,9 @@ void inodePrintNode(INode *node) {
 		ulitPrint((ULitNode *)node); break;
 	case FLitTag:
 		flitPrint((FLitNode *)node); break;
-	case StrLitTag:
+    case ArrLitTag:
+        arrLitPrint((ArrLitNode *)node); break;
+    case StrLitTag:
 		slitPrint((SLitNode *)node); break;
 	case FnSigTag:
 		fnSigPrint((FnSigNode *)node); break;
@@ -144,6 +146,8 @@ void inodeWalk(PassState *pstate, INode **node) {
     case VarNameUseTag:
     case TypeNameUseTag:
 		nameUseWalk(pstate, (NameUseNode **)node); break;
+    case ArrLitTag:
+        arrLitWalk(pstate, (ArrLitNode *)*node); break;
 	case BlockTag:
 		blockPass(pstate, (BlockNode *)*node); break;
 	case IfTag:
