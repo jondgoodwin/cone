@@ -98,6 +98,24 @@ INode *parseTerm(ParseState *parse) {
 			parseCloseTok(RParenToken);
 			return node;
 		}
+    case LBracketToken:
+    {
+        ArrLitNode *arrlit = newArrLitNode();
+        ArrayNode *arrtype = newArrayNode();
+        arrlit->vtype = (INode*)arrtype;
+        lexNextToken();
+        if (!lexIsToken(RBracketToken)) {
+            while (1) {
+                nodesAdd(&arrlit->elements, parseExpr(parse));
+                if (!lexIsToken(CommaToken))
+                    break;
+                lexNextToken();
+            };
+        }
+        arrtype->size = arrlit->elements->used;
+        parseCloseTok(RBracketToken);
+        return (INode*)arrlit;
+    }
 	default:
 		errorMsgLex(ErrorBadTerm, "Invalid term value: expected variable, literal, etc.");
 		return NULL;

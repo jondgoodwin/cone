@@ -67,6 +67,7 @@ enum ErrorCode {
     ErrorBadMeth,   // Methods/properties not supported
     ErrorNotTyped,  // Expected a value that has a type
     ErrorBadIndex,  // Bad index/slice on array/ref
+    ErrorBadArray,  // Bad array
 
 	// Warnings
 	WarnCode = 3000,

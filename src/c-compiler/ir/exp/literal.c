@@ -67,14 +67,36 @@ void arrLitPrint(ArrLitNode *node) {
 void arrLitWalk(PassState *pstate, ArrLitNode *arrlit) {
     INode **nodesp;
     uint32_t cnt;
-    if (pstate->pass == TypeCheck) {
-        // Ensure size is not zero
-        // Ensure first element is a typed
-        INode *firsttype = ((ITypedNode*)nodesGet(arrlit->elements, 0))->vtype;
-        // Make type of array literal [size]firsttype
-        // Ensure all elements are number literals and correctly typed
-        for (nodesFor(arrlit->elements, cnt, nodesp)) {
+    for (nodesFor(arrlit->elements, cnt, nodesp))
+        inodeWalk(pstate, nodesp);
+
+    switch (pstate->pass) {
+    case NameResolution:
+        break;
+    case TypeCheck:
+    {
+        if (arrlit->elements->used == 0) {
+            errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal may not be empty");
+            return;
         }
+
+        // Get element type from first element
+        INode *first = nodesGet(arrlit->elements, 0);
+        if (!isExpNode(first)) {
+            errorMsgNode((INode*)first, ErrorBadArray, "Array literal element must be a typed value");
+            return;
+        }
+        INode *firsttype = ((ITypedNode*)first)->vtype;
+        ((ArrayNode*)arrlit->vtype)->elemtype = firsttype;
+
+        // Ensure all elements are number literals and consistently typed
+        for (nodesFor(arrlit->elements, cnt, nodesp)) {
+            if (!itypeIsSame(((ITypedNode*)*nodesp)->vtype, firsttype))
+                errorMsgNode((INode*)*nodesp, ErrorBadArray, "Inconsistent type of array literal value");
+            if (!litIsLiteral(*nodesp))
+                errorMsgNode((INode*)*nodesp, ErrorBadArray, "Array literal element must be literal");
+        }
+    }
     }
 }
 
@@ -93,5 +115,5 @@ void slitPrint(SLitNode *lit) {
 }
 
 int litIsLiteral(INode* node) {
-	return (node->tag == FLitTag || node->tag == ULitTag);
+    return (node->tag == FLitTag || node->tag == ULitTag || node->tag == ArrLitTag);
 }

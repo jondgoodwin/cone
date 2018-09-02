@@ -479,6 +479,18 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         return LLVMConstInt(genlType(gen, ((ULitNode*)termnode)->vtype), ((ULitNode*)termnode)->uintlit, 0);
     case FLitTag:
         return LLVMConstReal(genlType(gen, ((ULitNode*)termnode)->vtype), ((FLitNode*)termnode)->floatlit);
+    case ArrLitTag:
+    {
+        ArrLitNode *arrlit = (ArrLitNode *)termnode;
+        uint32_t size = arrlit->elements->used;
+        LLVMValueRef *values = (LLVMValueRef *)memAllocBlk(size * sizeof(LLVMValueRef *));
+        LLVMValueRef *valuep = values;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(arrlit->elements, cnt, nodesp))
+            *valuep++ = genlExpr(gen, *nodesp);
+        return LLVMConstArray(genlType(gen, ((ArrayNode *)arrlit->vtype)->elemtype), values, size);
+    }
     case StrLitTag:
     {
         char *strlit = ((SLitNode *)termnode)->strlit;
