@@ -47,6 +47,7 @@ add_executable(conec
 	src/c-compiler/ir/exp/literal.c
 	src/c-compiler/ir/exp/logic.c
 	src/c-compiler/ir/exp/nameuse.c
+	src/c-compiler/ir/exp/vtuple.c
 	src/c-compiler/ir/exp/sizeof.c
 	src/c-compiler/ir/exp/vardcl.c
 
@@ -59,6 +60,7 @@ add_executable(conec
 	src/c-compiler/ir/types/pointer.c
 	src/c-compiler/ir/types/struct.c
 	src/c-compiler/ir/types/void.c
+	src/c-compiler/ir/types/ttuple.c
 
 	src/c-compiler/std/stdlib.c
 	src/c-compiler/std/stdnumber.c

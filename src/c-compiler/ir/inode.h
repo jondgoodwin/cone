@@ -78,6 +78,7 @@ enum NodeTags {
 	FLitTag,		// Float literal
     ArrLitTag,      // Array literal
 	StrLitTag,		// String literal
+    VTupleTag,      // Value tuple (comma-separated values)
 	AssignTag,		// Assignment expression
 	FnCallTag,		// Function+method call or Property access
 	SizeofTag,		// Sizeof a type (usize)
@@ -100,6 +101,7 @@ enum NodeTags {
     ArrayTag,	// Also dynamic arrays? SOA?
     RefTag,	    // Reference
     PtrTag,     // Pointer
+    TTupleTag,  // Type tuple
     VoidTag,	// representing no values, e.g., no return values on a fn
 
     IntNbrTag = TypeGroup + NamedNode + MethodType,	// Integer

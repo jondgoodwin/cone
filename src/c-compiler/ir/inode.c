@@ -82,6 +82,8 @@ void inodePrintNode(INode *node) {
 		returnPrint((ReturnNode *)node); break;
 	case AssignTag:
 		assignPrint((AssignNode *)node); break;
+    case VTupleTag:
+        vtuplePrint((VTupleNode *)node); break;
 	case FnCallTag:
 		fnCallPrint((FnCallNode *)node); break;
 	case SizeofTag:
@@ -117,6 +119,8 @@ void inodePrintNode(INode *node) {
 		nbrTypePrint((NbrNode *)node); break;
 	case PermTag:
 		permPrint((PermNode *)node); break;
+    case TTupleTag:
+        ttuplePrint((TTupleNode *)node); break;
 	case VoidTag:
 		voidPrint((VoidTypeNode *)node); break;
 	default:
@@ -161,6 +165,8 @@ void inodeWalk(PassState *pstate, INode **node) {
 		returnPass(pstate, (ReturnNode *)*node); break;
 	case AssignTag:
 		assignPass(pstate, (AssignNode *)*node); break;
+    case VTupleTag:
+        vtupleWalk(pstate, (VTupleNode *)*node); break;
 	case FnCallTag:
 		fnCallPass(pstate, (FnCallNode *)*node); break;
 	case SizeofTag:
@@ -186,6 +192,8 @@ void inodeWalk(PassState *pstate, INode **node) {
 		structPass(pstate, (StructNode *)*node); break;
 	case ArrayTag:
 		arrayPass(pstate, (ArrayNode *)*node); break;
+    case TTupleTag:
+        ttupleWalk(pstate, (TTupleNode *)*node); break;
 
 	case MbrNameUseTag:
 	case ULitTag:

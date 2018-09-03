@@ -56,6 +56,7 @@ typedef struct PassState PassState;
 #include "types/struct.h"
 #include "types/array.h"
 #include "types/alloc.h"
+#include "types/ttuple.h"
 #include "types/void.h"
 
 #include "stmt/module.h"
@@ -77,6 +78,7 @@ typedef struct PassState PassState;
 #include "exp/logic.h"
 #include "exp/sizeof.h"
 #include "exp/vardcl.h"
+#include "exp/vtuple.h"
 
 #include "../std/stdlib.h"
 
