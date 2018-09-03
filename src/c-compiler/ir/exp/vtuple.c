@@ -11,7 +11,7 @@
 VTupleNode *newVTupleNode() {
 	VTupleNode *tuple;
 	newNode(tuple, VTupleNode, VTupleTag);
-	tuple->vtype = voidType;
+	tuple->vtype = NULL;
 	tuple->values = newNodes(4);
 	return tuple;
 }
@@ -30,10 +30,21 @@ void vtuplePrint(VTupleNode *tuple) {
 
 // Check the value tuple node
 void vtupleWalk(PassState *pstate, VTupleNode *tuple) {
-	switch (pstate->pass) {
-	case NameResolution:
-		; break;
-	case TypeCheck:
-        ; break;
+    if (pstate->pass == NameResolution) {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(tuple->values, cnt, nodesp))
+            inodeWalk(pstate, nodesp);
+    }
+	else if (pstate->pass == TypeCheck) {
+        // Build ad hoc type tuple that accumulates types of vtuple's values
+        TTupleNode *ttuple = newTTupleNode(tuple->values->used);
+        tuple->vtype = (INode *)ttuple;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(tuple->values, cnt, nodesp)) {
+            inodeWalk(pstate, nodesp);
+            nodesAdd(&ttuple->types, ((ITypedNode *)*nodesp)->vtype);
+        }
 	}
 }

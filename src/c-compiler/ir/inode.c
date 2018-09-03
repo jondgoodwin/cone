@@ -195,9 +195,12 @@ void inodeWalk(PassState *pstate, INode **node) {
     case TTupleTag:
         ttupleWalk(pstate, (TTupleNode *)*node); break;
 
-	case MbrNameUseTag:
-	case ULitTag:
-	case FLitTag:
+    case ULitTag:
+    case FLitTag:
+        inodeWalk(pstate, &((ITypedNode*)*node)->vtype);
+        break;
+
+    case MbrNameUseTag:
 	case StrLitTag:
 	case IntNbrTag: case UintNbrTag: case FloatNbrTag:
 	case PermTag:

@@ -17,7 +17,7 @@ typedef struct TTupleNode {
 } TTupleNode;
 
 // Create a new type tuple node
-TTupleNode *newTTupleNode();
+TTupleNode *newTTupleNode(int cnt);
 
 // Serialize a type tuple node
 void ttuplePrint(TTupleNode *tuple);

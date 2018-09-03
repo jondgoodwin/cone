@@ -91,7 +91,22 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
 		return structype;
 	}
 
-	case ArrayTag:
+    case TTupleTag:
+    {
+        // Build struct typeref
+        TTupleNode *tuple = (TTupleNode*)typ;
+        INode **nodesp;
+        uint32_t cnt;
+        uint32_t propcount = tuple->types->used;
+        LLVMTypeRef *typerefs = (LLVMTypeRef *)memAllocBlk(propcount * sizeof(LLVMTypeRef));
+        LLVMTypeRef *typerefp = typerefs;
+        for (nodesFor(tuple->types, cnt, nodesp)) {
+            *typerefp++ = genlType(gen, *nodesp);
+        }
+        return LLVMStructTypeInContext(gen->context, typerefs, propcount, 0);
+    }
+
+    case ArrayTag:
 	{
 		ArrayNode *anode = (ArrayNode*)typ;
 		return LLVMArrayType(genlType(gen, anode->elemtype), anode->size);
@@ -525,13 +540,26 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
                 assert(0 && "Unknown type of fncall node");
         }
     }
-	case AssignTag:
-	{
-		LLVMValueRef val;
-		AssignNode *node = (AssignNode*)termnode;
-		LLVMBuildStore(gen->builder, (val = genlExpr(gen, node->rval)), genlAddr(gen, node->lval));
-		return val;
-	}
+    case AssignTag:
+    {
+        LLVMValueRef val;
+        AssignNode *node = (AssignNode*)termnode;
+        LLVMBuildStore(gen->builder, (val = genlExpr(gen, node->rval)), genlAddr(gen, node->lval));
+        return val;
+    }
+    case VTupleTag:
+    {
+        VTupleNode *tuple = (VTupleNode *)termnode;
+        LLVMValueRef tupleref = LLVMBuildAlloca(gen->builder, genlType(gen, tuple->vtype), "tupleref");
+        LLVMValueRef tupleval = LLVMBuildLoad(gen->builder, tupleref, "tuple");
+        INode **nodesp;
+        uint32_t cnt;
+        unsigned int pos = 0;
+        for (nodesFor(tuple->values, cnt, nodesp)) {
+            LLVMBuildInsertValue(gen->builder, tupleval, genlExpr(gen, *nodesp), pos++, "");
+        }
+        return tupleval;
+    }
 	case SizeofTag:
 		return genlSizeof(gen, ((SizeofNode*)termnode)->type);
 	case CastTag:

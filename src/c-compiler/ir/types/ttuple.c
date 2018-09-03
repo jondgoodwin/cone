@@ -8,11 +8,11 @@
 #include "../ir.h"
 
 // Create a new type tuple node
-TTupleNode *newTTupleNode() {
+TTupleNode *newTTupleNode(int cnt) {
 	TTupleNode *tuple;
 	newNode(tuple, TTupleNode, TTupleTag);
 	tuple->vtype = voidType;
-	tuple->types = newNodes(4);
+	tuple->types = newNodes(cnt);
 	return tuple;
 }
 
@@ -30,10 +30,8 @@ void ttuplePrint(TTupleNode *tuple) {
 
 // Check the type tuple node
 void ttupleWalk(PassState *pstate, TTupleNode *tuple) {
-	switch (pstate->pass) {
-	case NameResolution:
-		; break;
-	case TypeCheck:
-        ; break;
-	}
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(tuple->types, cnt, nodesp))
+        inodeWalk(pstate, nodesp);
 }

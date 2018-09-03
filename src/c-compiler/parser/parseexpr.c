@@ -18,6 +18,7 @@
 #include <assert.h>
 
 INode *parseAddr(ParseState *parse);
+INode *parseOrLogic(ParseState *parse);
 
 // Parse a name use, which may be qualified with module names
 INode *parseNameUse(ParseState *parse) {
@@ -106,7 +107,7 @@ INode *parseTerm(ParseState *parse) {
         lexNextToken();
         if (!lexIsToken(RBracketToken)) {
             while (1) {
-                nodesAdd(&arrlit->elements, parseExpr(parse));
+                nodesAdd(&arrlit->elements, parseOrLogic(parse));
                 if (!lexIsToken(CommaToken))
                     break;
                 lexNextToken();
@@ -139,7 +140,7 @@ INode *parsePostfix(ParseState *parse) {
 			lexNextToken();
 			if (!lexIsToken(closetok))
 				while (1) {
-					nodesAdd(&fncall->args, parseExpr(parse));
+					nodesAdd(&fncall->args, parseOrLogic(parse));
 					if (lexIsToken(CommaToken))
 						lexNextToken();
 					else
@@ -173,7 +174,7 @@ INode *parsePostfix(ParseState *parse) {
                 fncall->args = newNodes(8);
 				if (!lexIsToken(RParenToken)) {
 					while (1) {
-						nodesAdd(&fncall->args, parseExpr(parse));
+						nodesAdd(&fncall->args, parseOrLogic(parse));
 						if (lexIsToken(CommaToken))
 							lexNextToken();
 						else
@@ -403,9 +404,25 @@ INode *parseOrLogic(ParseState *parse) {
 	return lhnode;
 }
 
+// Parse a comma-separated expression tuple
+INode *parseTuple(ParseState *parse) {
+    INode *exp = parseOrLogic(parse);
+    if (lexIsToken(CommaToken)) {
+        VTupleNode *tuple = newVTupleNode();
+        nodesAdd(&tuple->values, exp);
+        while (lexIsToken(CommaToken)) {
+            lexNextToken();
+            nodesAdd(&tuple->values, parseOrLogic(parse));
+        }
+        return (INode*)tuple;
+    }
+    else
+        return exp;
+}
+
 // Parse an assignment expression
 INode *parseAssign(ParseState *parse) {
-	INode *lval = parseOrLogic(parse);
+	INode *lval = parseTuple(parse);
 	if (lexIsToken(AssgnToken)) {
 		lexNextToken();
 		INode *rval = parseExpr(parse);
