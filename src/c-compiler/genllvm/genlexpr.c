@@ -487,6 +487,12 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
 	return NULL;
 }
 
+void genlStore(GenState *gen, INode *lval, LLVMValueRef rval) {
+    if (lval->tag == VarNameUseTag && ((NameUseNode*)lval)->namesym == anonName)
+        return;
+    LLVMBuildStore(gen->builder, rval, genlAddr(gen, lval));
+}
+
 // Generate a term
 LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     switch (termnode->tag) {
@@ -542,23 +548,46 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     }
     case AssignTag:
     {
-        LLVMValueRef val;
         AssignNode *node = (AssignNode*)termnode;
-        LLVMBuildStore(gen->builder, (val = genlExpr(gen, node->rval)), genlAddr(gen, node->lval));
-        return val;
+        INode *lval = node->lval;
+        INode *rval = node->rval;
+        LLVMValueRef valueref = genlExpr(gen, rval);
+        if (lval->tag != VTupleTag) {
+            if (rval->tag != VTupleTag)
+                genlStore(gen, lval, valueref); // simple assignment
+            else {
+                // Assign lval to first value in tuple struct
+                genlStore(gen, lval, LLVMBuildExtractValue(gen->builder, valueref, 0, ""));
+            }
+        }
+        else {
+            // Parallel assignment: each lval to value in tuple struct
+            VTupleNode *ltuple = (VTupleNode *)lval;
+            INode **nodesp;
+            uint32_t cnt;
+            int index = 0;
+            for (nodesFor(ltuple->values, cnt, nodesp)) {
+                genlStore(gen, *nodesp, LLVMBuildExtractValue(gen->builder, valueref, index++, ""));
+            }
+        }
+        return valueref;
     }
     case VTupleTag:
     {
+        // Load only: Creates an ad hoc struct to hold the tuple's values
         VTupleNode *tuple = (VTupleNode *)termnode;
         LLVMValueRef tupleref = LLVMBuildAlloca(gen->builder, genlType(gen, tuple->vtype), "tupleref");
-        LLVMValueRef tupleval = LLVMBuildLoad(gen->builder, tupleref, "tuple");
         INode **nodesp;
         uint32_t cnt;
         unsigned int pos = 0;
+        LLVMValueRef indices[2];
+        indices[0] = LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0);
         for (nodesFor(tuple->values, cnt, nodesp)) {
-            LLVMBuildInsertValue(gen->builder, tupleval, genlExpr(gen, *nodesp), pos++, "");
+            indices[1] = LLVMConstInt(LLVMInt32TypeInContext(gen->context), pos++, 0);
+            LLVMValueRef tuplep = LLVMBuildGEP(gen->builder, tupleref, indices, 2, "");
+            LLVMBuildStore(gen->builder, genlExpr(gen, *nodesp), tuplep);
         }
-        return tupleval;
+        return LLVMBuildLoad(gen->builder, tupleref, "tuple");
     }
 	case SizeofTag:
 		return genlSizeof(gen, ((SizeofNode*)termnode)->type);
