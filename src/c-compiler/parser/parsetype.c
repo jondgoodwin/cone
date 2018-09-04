@@ -256,7 +256,19 @@ INode *parseFnSig(ParseState *parse) {
 		errorMsgLex(ErrorNoLParen, "Expected left parenthesis for parameter declarations");
 
 	// Parse return type info - turn into void if none specified
-	if ((fnsig->rettype = parseVtype(parse))==NULL) {
+    if ((fnsig->rettype = parseVtype(parse))) {
+        // Handle multiple return types
+        if (lexIsToken(CommaToken)) {
+            TTupleNode *rettype = newTTupleNode(4);
+            nodesAdd(&rettype->types, fnsig->rettype);
+            while (lexIsToken(CommaToken)) {
+                lexNextToken();
+                nodesAdd(&rettype->types, parseVtype(parse));
+            }
+            fnsig->rettype = (INode*)rettype;
+        }
+    }
+    else {
 		fnsig->rettype = voidType;
 	}
 

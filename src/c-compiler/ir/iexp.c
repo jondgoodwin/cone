@@ -71,6 +71,24 @@ int iexpCoerces(INode *to, INode **from) {
 		return 1;
 	}
 
+    // Handle coercion of return value tuple to type tuple
+    if ((*from)->tag == VTupleTag) {
+        if (to->tag != TTupleTag)
+            return 0;
+        Nodes *values = ((VTupleNode *)*from)->values;
+        Nodes *types = ((TTupleNode *)to)->types;
+        if (values->used != types->used)
+            return 0;
+        int16_t cnt;
+        INode **nodesp;
+        INode **typep = &nodesGet(types, 0);
+        for (nodesFor(values, cnt, nodesp)) {
+            if (iexpCoerces(*nodesp, typep++)==0)
+                return 0;
+        }
+        return 1;
+    }
+
     INode *fromtype = *from;
     iexpToTypeDcl(fromtype);
 
