@@ -71,22 +71,40 @@ int iexpCoerces(INode *to, INode **from) {
 		return 1;
 	}
 
-    // Handle coercion of return value tuple to type tuple
-    if ((*from)->tag == VTupleTag) {
-        if (to->tag != TTupleTag)
-            return 0;
-        Nodes *values = ((VTupleNode *)*from)->values;
-        Nodes *types = ((TTupleNode *)to)->types;
-        if (values->used != types->used)
-            return 0;
-        int16_t cnt;
-        INode **nodesp;
-        INode **typep = &nodesGet(types, 0);
-        for (nodesFor(values, cnt, nodesp)) {
-            if (iexpCoerces(*nodesp, typep++)==0)
+    // Handle coercion to a type tuple
+    if (to->tag == TTupleTag) {
+        Nodes *totypes = ((TTupleNode *)to)->types;
+        // When it is from a value tuple, we can coerce each value
+        if ((*from)->tag == VTupleTag) {
+            Nodes *values = ((VTupleNode *)*from)->values;
+            if (values->used < totypes->used)
                 return 0;
+            int16_t cnt;
+            INode **nodesp;
+            INode **typep = &nodesGet(totypes, 0);
+            for (nodesFor(values, cnt, nodesp)) {
+                if (iexpCoerces(*nodesp, typep++) == 0)
+                    return 0;
+            }
+            return 1;
         }
-        return 1;
+
+        // When it is from a single node returning a type tuple, require exact type match
+        INode *fromtype = ((ITypedNode*)(*from))->vtype;
+        if (fromtype->tag == TTupleTag) {
+            Nodes *fromtypes = ((TTupleNode *)fromtype)->types;
+            if (fromtypes->used < totypes->used)
+                return 0;
+            int16_t cnt;
+            INode **nodesp;
+            INode **typep = &nodesGet(totypes, 0);
+            for (nodesFor(fromtypes, cnt, nodesp)) {   
+                if (itypeIsSame(*nodesp, *typep++) == 0)
+                    return 0;
+            }
+            return 1;
+        }
+        return 0;
     }
 
     INode *fromtype = *from;
