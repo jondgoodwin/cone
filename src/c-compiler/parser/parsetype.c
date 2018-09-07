@@ -85,52 +85,6 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
 	return varnode;
 }
 
-// Parse a pointer type
-INode *parsePtrType(ParseState *parse) {
-    PtrNode *ptype = newPtrNode();
-    lexNextToken();
-
-    // Get value type, if provided
-    if (lexIsToken(FnToken)) {
-        lexNextToken();
-        if (lexIsToken(IdentToken)) {
-            errorMsgLex(WarnName, "Unnecessary name is ignored");
-            lexNextToken();
-        }
-        ptype->pvtype = parseFnSig(parse);
-    }
-    else if ((ptype->pvtype = parseVtype(parse)) == NULL) {
-        errorMsgLex(ErrorNoVtype, "Missing value type for the pointer");
-        ptype->pvtype = voidType;
-    }
-
-    return (INode *)ptype;
-}
-
-// Parse a reference type
-INode *parseRefType(ParseState *parse) {
-	RefNode *reftype = newRefNode();
-	lexNextToken();
-
-	parseAllocPerm(reftype);
-
-	// Get value type, if provided
-	if (lexIsToken(FnToken)) {
-		lexNextToken();
-		if (lexIsToken(IdentToken)) {
-			errorMsgLex(WarnName, "Unnecessary name is ignored");
-			lexNextToken();
-		}
-		reftype->pvtype = parseFnSig(parse);
-	}
-	else if ((reftype->pvtype = parseVtype(parse)) == NULL) {
-		errorMsgLex(ErrorNoVtype, "Missing value type for the pointer");
-		reftype->pvtype = voidType;
-	}
-
-	return (INode *)reftype;
-}
-
 // Parse a struct
 INode *parseStruct(ParseState *parse) {
 	INamedNode *svowner = parse->owner;
@@ -278,30 +232,73 @@ INode *parseFnSig(ParseState *parse) {
 // Parse an array type
 INode *parseArrayType(ParseState *parse) {
 	ArrayNode *atype = newArrayNode();
-	lexNextToken();
 
-    // Obtain size as either blank or as an unsigned integer literal
+    // Obtain size as an unsigned integer literal
     if (lexIsToken(IntLitToken)) {
         atype->size = (uint32_t) lex->val.uintlit;
         lexNextToken();
     }
-    else {
-        atype->size = 0;
-        atype->flags |= FlagArrNoSize;
-    }
+    else
+        errorMsgLex(ErrorBadTok, "Expected integer literal for array size");
+
     if (lexIsToken(RBracketToken))
 	    lexNextToken();
-    else {
-        errorMsgLex(ErrorBadTok, "Expected closing ssquare bracket");
-    }
+    else
+        errorMsgLex(ErrorBadTok, "Expected closing square bracket");
 
     // Obtain array's element type
 	if ((atype->elemtype = parseVtype(parse)) == NULL) {
-		errorMsgLex(ErrorNoVtype, "Missing value type for the array element");
+		errorMsgLex(ErrorNoVtype, "Missing array element type");
 		atype->elemtype = voidType;
 	}
 
 	return (INode *)atype;
+}
+
+// Parse a pointer type
+INode *parsePtrType(ParseState *parse) {
+    PtrNode *ptype = newPtrNode();
+    lexNextToken();
+
+    // Get value type, if provided
+    if (lexIsToken(FnToken)) {
+        lexNextToken();
+        if (lexIsToken(IdentToken)) {
+            errorMsgLex(WarnName, "Unnecessary name is ignored");
+            lexNextToken();
+        }
+        ptype->pvtype = parseFnSig(parse);
+    }
+    else if ((ptype->pvtype = parseVtype(parse)) == NULL) {
+        errorMsgLex(ErrorNoVtype, "Missing value type for the pointer");
+        ptype->pvtype = voidType;
+    }
+
+    return (INode *)ptype;
+}
+
+// Parse a reference type
+INode *parseRefType(ParseState *parse) {
+    RefNode *reftype = newRefNode();
+    lexNextToken();
+
+    parseAllocPerm(reftype);
+
+    // Get value type, if provided
+    if (lexIsToken(FnToken)) {
+        lexNextToken();
+        if (lexIsToken(IdentToken)) {
+            errorMsgLex(WarnName, "Unnecessary name is ignored");
+            lexNextToken();
+        }
+        reftype->pvtype = parseFnSig(parse);
+    }
+    else if ((reftype->pvtype = parseVtype(parse)) == NULL) {
+        errorMsgLex(ErrorNoVtype, "Missing value type for the pointer");
+        reftype->pvtype = voidType;
+    }
+
+    return (INode *)reftype;
 }
 
 // Parse a value type signature. Return NULL if none found.
@@ -313,6 +310,7 @@ INode* parseVtype(ParseState *parse) {
     case StarToken:
         return parsePtrType(parse);
     case LBracketToken:
+        lexNextToken();
 		return parseArrayType(parse);
 	case IdentToken:
 		vtype = (INode*)newNameUseNode(lex->val.ident);
