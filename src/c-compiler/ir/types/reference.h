@@ -8,13 +8,15 @@
 #ifndef reference_h
 #define reference_h
 
-// For pointers
+#define FlagArrRef 0x0001
+
+// Reference node
 typedef struct RefNode {
 	INodeHdr;
 	INode *pvtype;	// Value type
 	INode *perm;	// Permission
-	INode *alloc;		// Allocator
-	int16_t scope;		// Lifetime
+	INode *alloc;	// Allocator
+	int16_t scope;	// Lifetime
 } RefNode;
 
 // Create a new reference type whose info will be filled in afterwards

@@ -280,6 +280,7 @@ INode *parsePtrType(ParseState *parse) {
 // Parse a reference type
 INode *parseRefType(ParseState *parse) {
     RefNode *reftype = newRefNode();
+    reftype->pvtype = voidType;
     lexNextToken();
 
     parseAllocPerm(reftype);
@@ -293,9 +294,18 @@ INode *parseRefType(ParseState *parse) {
         }
         reftype->pvtype = parseFnSig(parse);
     }
+    else if (lexIsToken(LBracketToken)) {
+        lexNextToken();
+        if (lexIsToken(RBracketToken)) {
+            lexNextToken();
+            reftype->flags |= FlagArrRef;
+            reftype->pvtype = parseVtype(parse);
+        }
+        else
+            reftype->pvtype = parseArrayType(parse);
+    }
     else if ((reftype->pvtype = parseVtype(parse)) == NULL) {
         errorMsgLex(ErrorNoVtype, "Missing value type for the pointer");
-        reftype->pvtype = voidType;
     }
 
     return (INode *)reftype;
