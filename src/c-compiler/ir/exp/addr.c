@@ -59,7 +59,10 @@ void addrPass(PassState *pstate, AddrNode *node) {
             else
                 reftype->pvtype = exptype;
         }
-		if (reftype->alloc == voidType)
+
+        inodeWalk(pstate, &node->vtype); // Type check the reference type
+
+        if (reftype->alloc == voidType)
 			addrTypeCheckBorrow(node, reftype);
 		else
 			allocAllocate(node, reftype);

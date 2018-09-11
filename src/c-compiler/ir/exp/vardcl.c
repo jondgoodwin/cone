@@ -28,7 +28,7 @@ VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *type, INode *perm,
 // Serialize a variable node
 void varDclPrint(VarDclNode *name) {
 	inodePrintNode((INode*)name->perm);
-	inodeFprint("%s ", &name->namesym->namestr);
+	inodeFprint(" %s ", &name->namesym->namestr);
 	inodePrintNode(name->vtype);
 	if (name->value) {
 		inodeFprint(" = ");

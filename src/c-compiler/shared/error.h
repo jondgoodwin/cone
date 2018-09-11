@@ -68,6 +68,7 @@ enum ErrorCode {
     ErrorNotTyped,  // Expected a value that has a type
     ErrorBadIndex,  // Bad index/slice on array/ref
     ErrorBadArray,  // Bad array
+    ErrorBadSlice,  // Bad slice type
 
 	// Warnings
 	WarnCode = 3000,
