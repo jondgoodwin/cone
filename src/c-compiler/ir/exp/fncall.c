@@ -188,7 +188,10 @@ void fnCallPass(PassState *pstate, FnCallNode *node) {
             errorMsgNode(node->objfn, ErrorNotTyped, "Expecting a typed value or expression");
             return;
         }
-        INode *objfntype = node->flags & FlagIndex? iexpGetTypeDcl(node->objfn) : iexpGetDerefTypeDcl(node->objfn);
+        INode *objfntype = iexpGetTypeDcl(node->objfn);
+        if (!((node->flags & FlagIndex)
+            && (objfntype->tag == PtrTag || (objfntype->tag == RefTag && (objfntype->flags & FlagArrSlice)))))
+            objfntype = iexpGetDerefTypeDcl(node->objfn); // Deref if not applying [] to ptr or slice
 
         // Objects (method types) are lowered to method calls via a name lookup
         if (isMethodType(objfntype)) {
