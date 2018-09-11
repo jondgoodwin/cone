@@ -11,6 +11,7 @@
 RefNode *newRefNode() {
 	RefNode *refnode;
 	newNode(refnode, RefNode, RefTag);
+    refnode->tuptype = NULL;
 	return refnode;
 }
 
@@ -18,9 +19,11 @@ RefNode *newRefNode() {
 void refPrint(RefNode *node) {
 	inodeFprint("&(");
 	inodePrintNode(node->alloc);
-	inodeFprint(", ");
+	inodeFprint(" ");
 	inodePrintNode((INode*)node->perm);
-	inodeFprint(", ");
+	inodeFprint(" ");
+    if (node->flags & FlagArrSlice)
+        inodeFprint("[]");
 	inodePrintNode(node->pvtype);
 	inodeFprint(")");
 }
@@ -30,6 +33,8 @@ void refPass(PassState *pstate, RefNode *node) {
 	inodeWalk(pstate, &node->alloc);
 	inodeWalk(pstate, (INode**)&node->perm);
 	inodeWalk(pstate, &node->pvtype);
+    if (node->flags & FlagArrSlice)
+        inodeWalk(pstate, (INode**)&node->tuptype);
 }
 
 // Compare two reference signatures to see if they are equivalent

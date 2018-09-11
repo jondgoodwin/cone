@@ -283,9 +283,9 @@ INode *parseRefType(ParseState *parse) {
     reftype->pvtype = voidType;
     lexNextToken();
 
-    parseAllocPerm(reftype);
+    parseAllocPerm(reftype); // Get allocator and permission, if provided
 
-    // Get value type, if provided
+    // Get value type for reference to a function
     if (lexIsToken(FnToken)) {
         lexNextToken();
         if (lexIsToken(IdentToken)) {
@@ -294,12 +294,23 @@ INode *parseRefType(ParseState *parse) {
         }
         reftype->pvtype = parseFnSig(parse);
     }
+    // Get value type for ref to array or slice
     else if (lexIsToken(LBracketToken)) {
         lexNextToken();
         if (lexIsToken(RBracketToken)) {
             lexNextToken();
-            reftype->flags |= FlagArrRef;
+            reftype->flags |= FlagArrSlice;
             reftype->pvtype = parseVtype(parse);
+
+            // Define fat pointer type tuple for slice: {*T, usize}
+            PtrNode *refptr = newPtrNode();
+            refptr->pvtype = reftype->pvtype;
+            NameUseNode *size = newNameUseNode(nametblFind("usize",5));
+            TTupleNode *fatptr = newTTupleNode(2);
+            INode **tuptypes = &nodesGet(fatptr->types, 0);
+            *tuptypes++ = (INode*)refptr;
+            *tuptypes = (INode*)size;
+            reftype->tuptype = fatptr;
         }
         else
             reftype->pvtype = parseArrayType(parse);

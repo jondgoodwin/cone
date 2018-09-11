@@ -8,7 +8,7 @@
 #ifndef reference_h
 #define reference_h
 
-#define FlagArrRef 0x0001
+#define FlagArrSlice 0x0001
 
 // Reference node
 typedef struct RefNode {
@@ -16,6 +16,7 @@ typedef struct RefNode {
 	INode *pvtype;	// Value type
 	INode *perm;	// Permission
 	INode *alloc;	// Allocator
+    TTupleNode *tuptype; // Reference's generated representation (NULL = just a pointer)
 	int16_t scope;	// Lifetime
 } RefNode;
 

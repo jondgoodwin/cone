@@ -48,6 +48,7 @@ typedef struct PassState PassState;
 #include "nametbl.h"
 #include "../shared/memory.h"
 
+#include "types/ttuple.h"
 #include "types/permission.h"
 #include "types/fnsig.h"
 #include "types/number.h"
@@ -56,7 +57,6 @@ typedef struct PassState PassState;
 #include "types/struct.h"
 #include "types/array.h"
 #include "types/alloc.h"
-#include "types/ttuple.h"
 #include "types/void.h"
 
 #include "stmt/module.h"
