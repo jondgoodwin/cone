@@ -15,6 +15,24 @@ RefNode *newRefNode() {
 	return refnode;
 }
 
+// Define fat pointer type tuple for slice: {*T, usize}
+void refSliceFatPtr(RefNode *reftype) {
+    reftype->flags |= FlagArrSlice;
+    PtrNode *refptr = newPtrNode();
+    refptr->pvtype = reftype->pvtype;
+
+    // Name-resolved usize type
+    NameUseNode *size = newNameUseNode(nametblFind("usize", 5));
+    size->tag = TypeNameUseTag;
+    size->dclnode = (INamedNode*)usizeType;
+    size->vtype = usizeType->vtype;
+
+    TTupleNode *fatptr = newTTupleNode(2);
+    nodesAdd(&fatptr->types, (INode*)refptr);
+    nodesAdd(&fatptr->types, (INode*)size);
+    reftype->tuptype = fatptr;
+}
+
 // Serialize a pointer type
 void refPrint(RefNode *node) {
 	inodeFprint("&(");

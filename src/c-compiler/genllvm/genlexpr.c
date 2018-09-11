@@ -605,9 +605,18 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
 		AddrNode *anode = (AddrNode*)termnode;
 		RefNode *reftype = (RefNode *)anode->vtype;
 		if (reftype->alloc == voidType) {
-			assert(anode->exp->tag == VarNameUseTag);
-			NameUseNode *var = (NameUseNode*)anode->exp;
-			return ((VarDclNode*)var->dclnode)->llvmvar;
+            if (reftype->flags & FlagArrSlice) {
+                LLVMValueRef tupleval = LLVMGetUndef(genlType(gen, (INode*)reftype->tuptype));
+                LLVMTypeRef ptrtype = genlType(gen, nodesGet(reftype->tuptype->types, 0));
+                LLVMValueRef ptr = LLVMBuildBitCast(gen->builder, genlAddr(gen, anode->exp), ptrtype, "fatptr");
+                tupleval = LLVMBuildInsertValue(gen->builder, tupleval, ptr, 0, "fatptr");
+                INode *arraytype = itypeGetTypeDcl(((ITypedNode*)anode->exp)->vtype);
+                assert(arraytype->tag == ArrayTag);
+                LLVMValueRef size = LLVMConstInt(genlType(gen, (INode*)usizeType), ((ArrayNode*)arraytype)->size, 0);
+                return LLVMBuildInsertValue(gen->builder, tupleval, size, 1, "fatsize");
+            }
+            else
+                return genlAddr(gen, anode->exp);
 		}
 		else
 			return genlExpr(gen, anode->exp);

@@ -49,8 +49,16 @@ void addrPass(PassState *pstate, AddrNode *node) {
 			return;
 		}
 		RefNode *reftype = (RefNode *)node->vtype;
-		if (reftype->pvtype == NULL)
-			reftype->pvtype = ((ITypedNode *)node->exp)->vtype; // inferred
+        if (reftype->pvtype == NULL) {
+            // Infer reference's value type
+            INode *exptype = ((ITypedNode*)node->exp)->vtype;
+            if (exptype->tag == ArrayTag) {
+                reftype->pvtype = ((ArrayNode*)exptype)->elemtype;
+                refSliceFatPtr(reftype);
+            }
+            else
+                reftype->pvtype = exptype;
+        }
 		if (reftype->alloc == voidType)
 			addrTypeCheckBorrow(node, reftype);
 		else

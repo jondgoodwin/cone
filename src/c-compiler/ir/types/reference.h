@@ -23,6 +23,9 @@ typedef struct RefNode {
 // Create a new reference type whose info will be filled in afterwards
 RefNode *newRefNode();
 
+// Define fat pointer type tuple for slice: {*T, usize}
+void refSliceFatPtr(RefNode *reftype);
+
 // Serialize a pointer type
 void refPrint(RefNode *node);
 

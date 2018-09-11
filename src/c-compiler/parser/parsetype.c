@@ -299,17 +299,8 @@ INode *parseRefType(ParseState *parse) {
         lexNextToken();
         if (lexIsToken(RBracketToken)) {
             lexNextToken();
-            reftype->flags |= FlagArrSlice;
             reftype->pvtype = parseVtype(parse);
-
-            // Define fat pointer type tuple for slice: {*T, usize}
-            PtrNode *refptr = newPtrNode();
-            refptr->pvtype = reftype->pvtype;
-            NameUseNode *size = newNameUseNode(nametblFind("usize",5));
-            TTupleNode *fatptr = newTTupleNode(2);
-            nodesAdd(&fatptr->types, (INode*)refptr);
-            nodesAdd(&fatptr->types, (INode*)size);
-            reftype->tuptype = fatptr;
+            refSliceFatPtr(reftype);
         }
         else
             reftype->pvtype = parseArrayType(parse);

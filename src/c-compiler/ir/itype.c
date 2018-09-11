@@ -10,6 +10,14 @@
 #include <string.h>
 #include <assert.h>
 
+// Return node's type's declaration node
+// (Note: only use after it has been type-checked)
+INode *itypeGetTypeDcl(INode *node) {
+    if (node->tag == TypeNameUseTag)
+        return (INode*)((NameUseNode *)node)->dclnode;
+    return node;
+}
+
 // Return 1 if nominally (or structurally) identical, 0 otherwise
 // Nodes must both be types, but may be name use or declare nodes
 int itypeIsSame(INode *node1, INode *node2) {
