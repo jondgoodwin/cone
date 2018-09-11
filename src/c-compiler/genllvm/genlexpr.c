@@ -467,6 +467,14 @@ LLVMValueRef genlLocalVar(GenState *gen, VarDclNode *var) {
 	return val;
 }
 
+// Generate an index into an array based on a pointer
+LLVMValueRef genlIndex(GenState *gen, LLVMValueRef ptr, INode *index) {
+    LLVMValueRef indexes[2];
+    indexes[0] = LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0);
+    indexes[1] = genlExpr(gen, index);
+    return LLVMBuildGEP(gen->builder, ptr, indexes, 2, "");
+}
+
 // Generate an lval-ish pointer to the value (vs. load)
 LLVMValueRef genlAddr(GenState *gen, INode *lval) {
 	switch (lval->tag) {
@@ -482,16 +490,24 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
             VarDclNode *flddcl = (VarDclNode*)((NameUseNode*)fncall->methprop)->dclnode;
             return LLVMBuildStructGEP(gen->builder, genlAddr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
         }
+        // Array indexing
         else {
             INode *objtype = ((ITypedNode *)fncall->objfn)->vtype;
-            if (objtype->tag == ArrayTag) {
-                LLVMValueRef indexes[2];
-                indexes[0] = LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0);
-                indexes[1] = genlExpr(gen, nodesGet(fncall->args, 0));
-                return LLVMBuildGEP(gen->builder, genlAddr(gen, fncall->objfn), indexes, 2, "");
+            switch (objtype->tag) {
+            case ArrayTag:
+                return genlIndex(gen, genlAddr(gen, fncall->objfn), nodesGet(fncall->args, 0));
+            case PtrTag:
+                return genlIndex(gen, genlExpr(gen, fncall->objfn), nodesGet(fncall->args, 0));
+            case RefTag:
+                if (objtype->flags & FlagArrSlice) {
+                    LLVMValueRef sliceptr = LLVMBuildExtractValue(gen->builder, genlExpr(gen, fncall->objfn), 0, "sliceptr");
+                    LLVMValueRef indexes[1];
+                    indexes[0] = genlExpr(gen, nodesGet(fncall->args, 0));
+                    return LLVMBuildGEP(gen->builder, sliceptr, indexes, 1, "");
+                }
+            default:
+                assert(0 && "Unknown type of fncall array indexing node");
             }
-            else
-                assert(0 && "Unknown type of fncall node");
         }
     }
 	}
@@ -550,7 +566,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
             INode *objtype = ((ITypedNode *)fncall->objfn)->vtype;
             if (objtype->tag == FnSigTag)
                 return genlFnCall(gen, fncall);
-            else if (objtype->tag == ArrayTag) {
+            else if (objtype->tag == ArrayTag || objtype->tag == RefTag || objtype->tag == PtrTag) {
                 return LLVMBuildLoad(gen->builder, genlAddr(gen, termnode), "");
             }
             else

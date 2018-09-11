@@ -51,7 +51,7 @@ typedef struct INode {
 #define isExpNode(node) (((node)->tag & GroupMask) == ExpGroup)
 #define isTypeNode(node) (((node)->tag & GroupMask) == TypeGroup)
 #define isNamedNode(node) ((node)->tag & NamedNode)
-#define isMethodType(node) (isTypeNode(node) && (node)->tag & MethodType)
+#define isMethodType(node) (isTypeNode(node) && ((node)->tag & MethodType))
 
 // All the possible tags for a node
 enum NodeTags {

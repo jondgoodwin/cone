@@ -188,7 +188,7 @@ void fnCallPass(PassState *pstate, FnCallNode *node) {
             errorMsgNode(node->objfn, ErrorNotTyped, "Expecting a typed value or expression");
             return;
         }
-        INode *objfntype = iexpGetDerefTypeDcl(node->objfn);
+        INode *objfntype = node->flags & FlagIndex? iexpGetTypeDcl(node->objfn) : iexpGetDerefTypeDcl(node->objfn);
 
         // Objects (method types) are lowered to method calls via a name lookup
         if (isMethodType(objfntype)) {
@@ -223,14 +223,25 @@ void fnCallPass(PassState *pstate, FnCallNode *node) {
         }
 
         // Handle index/slice arguments on an array or array reference
-        else if (objfntype->tag == ArrayTag) {
-            ArrayNode *arraytype = (ArrayNode*)objfntype;
+        else if (objfntype->tag == ArrayTag || objfntype->tag == RefTag || objfntype->tag == PtrTag) {
             uint32_t nargs = node->args->used;
             if (nargs == 1) {
                 ITypedNode *index = (ITypedNode*)nodesGet(node->args, 0);
                 if (index->tag != ULitTag && index->vtype->tag != UintNbrTag)
                     errorMsgNode((INode *)node, ErrorBadIndex, "Array index must be an unsigned integer");
-                node->vtype = arraytype->elemtype;
+                switch (objfntype->tag) {
+                case ArrayTag:
+                    node->vtype = ((ArrayNode*)objfntype)->elemtype;
+                    break;
+                case RefTag:
+                    node->vtype = ((RefNode*)objfntype)->pvtype;
+                    break;
+                case PtrTag:
+                    node->vtype = ((PtrNode*)objfntype)->pvtype;
+                    break;
+                default:
+                    assert(0 && "Invalid type for indexing");
+                }   
             }
             else
                 errorMsgNode((INode *)node, ErrorBadIndex, "Array indexing/slicing supports only 1-2 arguments");
