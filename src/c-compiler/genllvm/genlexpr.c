@@ -47,10 +47,21 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
 	case VoidTag:
 		return LLVMVoidTypeInContext(gen->context);
 
-	case RefTag: case PtrTag:
+    case PtrTag:
+    {
+        LLVMTypeRef pvtype = genlType(gen, ((PtrNode *)typ)->pvtype);
+        return LLVMPointerType(pvtype, 0);
+    }
+
+    case RefTag:
 	{
-		LLVMTypeRef pvtype = genlType(gen, ((PtrNode *)typ)->pvtype);
-		return LLVMPointerType(pvtype, 0);
+        RefNode *refnode = (RefNode*)typ;
+        if (refnode->tuptype)
+            return genlType(gen, (INode*)refnode->tuptype);
+        else {
+            LLVMTypeRef pvtype = genlType(gen, refnode->pvtype);
+            return LLVMPointerType(pvtype, 0);
+        }
 	}
 
 	case FnSigTag:

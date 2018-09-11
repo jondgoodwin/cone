@@ -307,9 +307,8 @@ INode *parseRefType(ParseState *parse) {
             refptr->pvtype = reftype->pvtype;
             NameUseNode *size = newNameUseNode(nametblFind("usize",5));
             TTupleNode *fatptr = newTTupleNode(2);
-            INode **tuptypes = &nodesGet(fatptr->types, 0);
-            *tuptypes++ = (INode*)refptr;
-            *tuptypes = (INode*)size;
+            nodesAdd(&fatptr->types, (INode*)refptr);
+            nodesAdd(&fatptr->types, (INode*)size);
             reftype->tuptype = fatptr;
         }
         else
