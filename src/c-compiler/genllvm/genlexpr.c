@@ -467,12 +467,19 @@ LLVMValueRef genlLocalVar(GenState *gen, VarDclNode *var) {
 	return val;
 }
 
-// Generate an index into an array based on a pointer
-LLVMValueRef genlIndex(GenState *gen, LLVMValueRef ptr, INode *index) {
+// Generate address of indexed element from a pointer to an array
+LLVMValueRef genlArrIndex(GenState *gen, LLVMValueRef ptr, INode *index) {
     LLVMValueRef indexes[2];
     indexes[0] = LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0);
     indexes[1] = genlExpr(gen, index);
     return LLVMBuildGEP(gen->builder, ptr, indexes, 2, "");
+}
+
+// Generate address of indexed element from a pointer to an element
+LLVMValueRef genlPtrIndex(GenState *gen, LLVMValueRef ptr, INode *index) {
+    LLVMValueRef indexes[1];
+    indexes[0] = genlExpr(gen, index);
+    return LLVMBuildGEP(gen->builder, ptr, indexes, 1, "");
 }
 
 // Generate an lval-ish pointer to the value (vs. load)
@@ -495,18 +502,16 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
             INode *objtype = ((ITypedNode *)fncall->objfn)->vtype;
             switch (objtype->tag) {
             case ArrayTag:
-                return genlIndex(gen, genlAddr(gen, fncall->objfn), nodesGet(fncall->args, 0));
+                return genlArrIndex(gen, genlAddr(gen, fncall->objfn), nodesGet(fncall->args, 0));
             case PtrTag:
-                return genlIndex(gen, genlExpr(gen, fncall->objfn), nodesGet(fncall->args, 0));
+                return genlPtrIndex(gen, genlExpr(gen, fncall->objfn), nodesGet(fncall->args, 0));
             case RefTag:
                 if (objtype->flags & FlagArrSlice) {
                     LLVMValueRef sliceptr = LLVMBuildExtractValue(gen->builder, genlExpr(gen, fncall->objfn), 0, "sliceptr");
-                    LLVMValueRef indexes[1];
-                    indexes[0] = genlExpr(gen, nodesGet(fncall->args, 0));
-                    return LLVMBuildGEP(gen->builder, sliceptr, indexes, 1, "");
+                    return genlPtrIndex(gen, sliceptr, nodesGet(fncall->args, 0));
                 }
             default:
-                assert(0 && "Unknown type of fncall array indexing node");
+                assert(0 && "Unknown type of fncall element indexing node");
             }
         }
     }

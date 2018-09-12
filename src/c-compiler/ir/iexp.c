@@ -28,7 +28,7 @@ INode *iexpGetTypeDcl(INode *node) {
 INode *iexpGetDerefTypeDcl(INode *node) {
     iexpToTypeDcl(node);
     if (node->tag == RefTag) {
-        node = ((PtrNode*)node)->pvtype;
+        node = ((RefNode*)node)->pvtype;
         if (node->tag == TypeNameUseTag)
             node = (INode*)((NameUseNode *)node)->dclnode;
     }
