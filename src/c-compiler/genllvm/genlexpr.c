@@ -560,7 +560,10 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         LLVMSetLinkage(sglobal, LLVMInternalLinkage);
         LLVMSetGlobalConstant(sglobal, 1);
         LLVMSetInitializer(sglobal, LLVMConstStringInContext(gen->context, strlit, size, 1));
-        return LLVMBuildStructGEP(gen->builder, sglobal, 0, "");
+        LLVMValueRef tupleval = LLVMGetUndef(genlType(gen, (INode*)((RefNode*)iexpGetTypeDcl(termnode))->tuptype));
+        tupleval = LLVMBuildInsertValue(gen->builder, tupleval, LLVMBuildStructGEP(gen->builder, sglobal, 0, ""), 0, "strptr");
+        LLVMValueRef sizeval = LLVMConstInt(genlType(gen, (INode*)usizeType), size-1, 0);
+        return LLVMBuildInsertValue(gen->builder, tupleval, sizeval, 1, "strsize");
     }
     case VarNameUseTag:
     {

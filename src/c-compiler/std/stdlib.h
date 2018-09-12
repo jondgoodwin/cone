@@ -39,6 +39,8 @@ NbrNode *usizeType;
 NbrNode *f32Type;
 NbrNode *f64Type;
 
+RefNode *strType;
+
 void stdlibInit();
 void keywordInit();
 void stdNbrInit();

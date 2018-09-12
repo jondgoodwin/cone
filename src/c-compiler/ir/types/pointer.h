@@ -14,8 +14,6 @@ typedef struct PtrNode {
 	INode *pvtype;	// Value type
 } PtrNode;
 
-PtrNode *strType;
-
 // Create a new pointer type whose info will be filled in afterwards
 PtrNode *newPtrNode();
 
