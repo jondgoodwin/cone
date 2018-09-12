@@ -379,7 +379,9 @@ LLVMValueRef genlCast(GenState *gen, CastNode* node) {
 	switch (totype->tag) {
 
 	case UintNbrTag:
-		if (fromtype->tag == FloatNbrTag)
+        if (fromtype->tag == RefTag && (fromtype->flags & FlagArrSlice))
+            return LLVMBuildExtractValue(gen->builder, genlExpr(gen, node->exp), 1, "sliceptr");
+        else if (fromtype->tag == FloatNbrTag)
 			return LLVMBuildFPToUI(gen->builder, genlExpr(gen, node->exp), genlType(gen, (INode*)totype), "");
 		else if (totype->bits < fromtype->bits)
 			return LLVMBuildTrunc(gen->builder, genlExpr(gen, node->exp), genlType(gen, (INode*)totype), "");
@@ -414,10 +416,16 @@ LLVMValueRef genlCast(GenState *gen, CastNode* node) {
 		else
 			return genlExpr(gen, node->exp);
 
-	case RefTag: case PtrTag:
+	case RefTag:
 		return LLVMBuildBitCast(gen->builder, genlExpr(gen, node->exp), genlType(gen, (INode*)totype), "");
 
-	default:
+    case PtrTag:
+        if (fromtype->tag == RefTag && (fromtype->flags & FlagArrSlice))
+            return LLVMBuildExtractValue(gen->builder, genlExpr(gen, node->exp), 0, "sliceptr");
+        else
+            return LLVMBuildBitCast(gen->builder, genlExpr(gen, node->exp), genlType(gen, (INode*)totype), "");
+
+    default:
 		assert(0 && "Unknown type to cast to");
 		return NULL;
 	}

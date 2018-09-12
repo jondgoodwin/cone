@@ -229,8 +229,9 @@ void fnCallPass(PassState *pstate, FnCallNode *node) {
         else if (objfntype->tag == ArrayTag || objfntype->tag == RefTag || objfntype->tag == PtrTag) {
             uint32_t nargs = node->args->used;
             if (nargs == 1) {
-                ITypedNode *index = (ITypedNode*)nodesGet(node->args, 0);
-                if (index->tag != ULitTag && index->vtype->tag != UintNbrTag)
+                INode *index = nodesGet(node->args, 0);
+                INode *indextype = iexpGetTypeDcl(index);
+                if (indextype->tag != UintNbrTag && index->tag != ULitTag)
                     errorMsgNode((INode *)node, ErrorBadIndex, "Array index must be an unsigned integer");
                 switch (objfntype->tag) {
                 case ArrayTag:

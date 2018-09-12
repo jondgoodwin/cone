@@ -115,13 +115,9 @@ int iexpCoerces(INode *to, INode **from) {
 	if (match <= 1)
 		return match; // return fail or non-changing matches. Fall through to perform any coercion
 
-	// Add coercion operation. When both are numbers - cast between them
-	if (isNbr(to)) {
-		*from = (INode*) newCastNode(*from, to);
-		return 1;
-	}
-
-	return 0;
+	// Add coercion node
+	*from = (INode*) newCastNode(*from, to);
+	return 1;
 }
 
 // Ensure implicit copies (e.g., assignment, function arguments) are done safely

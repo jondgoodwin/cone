@@ -70,6 +70,8 @@ int itypeMatches(INode *totype, INode *fromtype) {
         return refMatches((RefNode*)totype, (RefNode*)fromtype);
 
     case PtrTag:
+        if (fromtype->tag == RefTag)
+            return itypeIsSame(((RefNode*)fromtype)->pvtype, ((PtrNode*)totype)->pvtype)? 2 : 0;
         if (fromtype->tag != PtrTag)
             return 0;
         return ptrMatches((PtrNode*)totype, (PtrNode*)fromtype);
@@ -83,6 +85,9 @@ int itypeMatches(INode *totype, INode *fromtype) {
 	//	return fnSigMatches((FnSigNode*)totype, (FnSigNode*)fromtype);
 
 	case UintNbrTag:
+        if (totype == (INode*)usizeType && fromtype->tag == RefTag && (fromtype->flags & FlagArrSlice))
+            return 2;
+        // Fall through is intentional here...
 	case IntNbrTag:
 	case FloatNbrTag:
 		if (totype->tag != fromtype->tag)
