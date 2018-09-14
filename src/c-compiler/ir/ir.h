@@ -62,8 +62,10 @@ typedef struct PassState PassState;
 #include "stmt/module.h"
 #include "stmt/while.h"
 #include "stmt/break.h"
+#include "stmt/fndcl.h"
 #include "stmt/return.h"
 #include "stmt/intrinsic.h"
+#include "stmt/vardcl.h"
 
 #include "exp/addr.h"
 #include "exp/assign.h"
@@ -72,12 +74,10 @@ typedef struct PassState PassState;
 #include "exp/nameuse.h"
 #include "exp/block.h"
 #include "exp/fncall.h"
-#include "exp/fndcl.h"
 #include "exp/if.h"
 #include "exp/literal.h"
 #include "exp/logic.h"
 #include "exp/sizeof.h"
-#include "exp/vardcl.h"
 #include "exp/vtuple.h"
 
 #include "../std/stdlib.h"

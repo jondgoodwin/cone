@@ -31,9 +31,11 @@ add_executable(conec
 	src/c-compiler/ir/nodes.c
 
 	src/c-compiler/ir/stmt/break.c
+	src/c-compiler/ir/stmt/fndcl.c
 	src/c-compiler/ir/stmt/intrinsic.c
 	src/c-compiler/ir/stmt/module.c
 	src/c-compiler/ir/stmt/return.c
+	src/c-compiler/ir/stmt/vardcl.c
 	src/c-compiler/ir/stmt/while.c
 
 	src/c-compiler/ir/exp/addr.c
@@ -42,14 +44,12 @@ add_executable(conec
 	src/c-compiler/ir/exp/cast.c
 	src/c-compiler/ir/exp/deref.c
 	src/c-compiler/ir/exp/fncall.c
-	src/c-compiler/ir/exp/fndcl.c
 	src/c-compiler/ir/exp/if.c
 	src/c-compiler/ir/exp/literal.c
 	src/c-compiler/ir/exp/logic.c
 	src/c-compiler/ir/exp/nameuse.c
 	src/c-compiler/ir/exp/vtuple.c
 	src/c-compiler/ir/exp/sizeof.c
-	src/c-compiler/ir/exp/vardcl.c
 
 	src/c-compiler/ir/types/alloc.c
 	src/c-compiler/ir/types/array.c

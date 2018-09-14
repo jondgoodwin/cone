@@ -69,7 +69,9 @@ enum NodeTags {
 	// Name usage (we do not know what type of name it is until name resolution pass)
 	NameUseTag,  	// Name use node (pre-name resolution)
 
-    ModuleTag = StmtGroup + NamedNode,		// Program (global area)
+    ModuleTag = StmtGroup + NamedNode,		// Module namespace
+    VarDclTag,      // Variable/parm/property declaration
+    FnDclTag,       // Function/method declaration
 
     // Expression nodes (having value type - or sometimes nullType)
     VarNameUseTag = ExpGroup,  // Variable or Function name use node  
@@ -86,14 +88,10 @@ enum NodeTags {
 	AddrTag,		// & (address of) operator
 	DerefTag,		// * (pointed at) operator
 	NotLogicTag,	// ! / not
-	OrLogicTag,	// || / or
+	OrLogicTag,     // || / or
 	AndLogicTag,	// && / and
 	BlockTag,		// Block (list of statements)
 	IfTag,			// if .. elif .. else statement
-
-    // Named value node
-    VarDclTag = ExpGroup + NamedNode,
-    FnDclTag,
 
     // Unnamed type node
     TypeNameUseTag = TypeGroup, // Type name use node
