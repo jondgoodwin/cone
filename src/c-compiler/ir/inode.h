@@ -117,7 +117,8 @@ enum NodeTags {
 // VarDclTag and FnDclTag flags
 #define	FlagMethProp  0x0001	    // FnDcl, VarDcl: Method or Property (vs. static)
 #define FlagExtern    0x0002		// FnDcl, VarDcl: C ABI extern (no value, no mangle)
-#define FlagSetMethod 0x0004        // FnDcl: "set" method
+#define FlagSystem    0x0004        // FnDcl: imported system call (+stdcall on Winx86)
+#define FlagSetMethod 0x0008        // FnDcl: "set" method
 
 #define FlagIndex     0x0001        // FnCall: arguments are an index in []
 

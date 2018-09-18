@@ -196,18 +196,26 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
 
         // 'extern' qualifier in front of fn or var (block)
 		case ExternToken:
+        {
             lexNextToken();
+            int16_t extflag = FlagExtern;
+            if (lexIsToken(IdentToken)) {
+                if (strcmp(&lex->val.ident->namestr, "system")==0)
+                    extflag |= FlagSystem;
+                lexNextToken();
+            }
             if (lexIsToken(LCurlyToken)) {
                 lexNextToken();
                 while (lexIsToken(FnToken) || lexIsToken(PermToken)) {
-                    if (node = parseFnOrVar(parse, FlagExtern))
+                    if (node = parseFnOrVar(parse, extflag))
                         modAddNode(mod, node);
                 }
                 parseRCurly();
             }
             else
-                if (node = parseFnOrVar(parse, FlagExtern))
+                if (node = parseFnOrVar(parse, extflag))
                     modAddNode(mod, node);
+        }
             break;
 
         // Function or variable

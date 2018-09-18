@@ -123,8 +123,13 @@ void genlGloVarName(GenState *gen, VarDclNode *glovar) {
 // Generate LLVMValueRef for a global function
 void genlGloFnName(GenState *gen, FnDclNode *glofn) {
     // Add function to the module
-    if (glofn->value == NULL || glofn->value->tag != IntrinsicTag)
+    if (glofn->value == NULL || glofn->value->tag != IntrinsicTag) {
         glofn->llvmvar = LLVMAddFunction(gen->module, genlGlobalName((INamedNode*)glofn), genlType(gen, glofn->vtype));
+        if (glofn->flags & FlagSystem) {
+            LLVMSetFunctionCallConv(glofn->llvmvar, LLVMX86StdcallCallConv);
+            LLVMSetDLLStorageClass(glofn->llvmvar, LLVMDLLImportStorageClass);
+        }
+    }
 }
 
 // Generate module's nodes
