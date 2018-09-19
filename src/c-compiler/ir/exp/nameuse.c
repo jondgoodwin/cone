@@ -105,22 +105,24 @@ void nameUseWalk(PassState *pstate, NameUseNode **namep) {
 			name->dclnode = (INamedNode*)name->namesym->node;
 
         // If variable is actually an instance property, rewrite it to 'self.property'
-        if (name->dclnode->tag == VarDclTag && name->dclnode->flags & FlagMethProp) {
-            // Doing this rewrite ensures we reuse existing type check and gen code for
-            // properly handling property access
-            NameUseNode *selfnode = newNameUseNode(selfName);
-            FnCallNode *fncall = newFnCallNode((INode *)selfnode, 0);
-            fncall->methprop = name;
-            copyNodeLex(fncall, name); // Copy lexer info into injected node in case it has errors
-            *((FnCallNode**)namep) = fncall;
-            inodeWalk(pstate, (INode **)namep);
-        }
-        // Make it easy to distinguish whether a name is for a variable/function name vs. type
-        else if (name->dclnode) {
-            if (name->dclnode->tag == VarDclTag || name->dclnode->tag == FnDclTag)
-                name->tag = VarNameUseTag;
-            else
-                name->tag = TypeNameUseTag;
+        if (name->dclnode) {
+            if (name->dclnode->tag == VarDclTag && name->dclnode->flags & FlagMethProp) {
+                // Doing this rewrite ensures we reuse existing type check and gen code for
+                // properly handling property access
+                NameUseNode *selfnode = newNameUseNode(selfName);
+                FnCallNode *fncall = newFnCallNode((INode *)selfnode, 0);
+                fncall->methprop = name;
+                copyNodeLex(fncall, name); // Copy lexer info into injected node in case it has errors
+                *((FnCallNode**)namep) = fncall;
+                inodeWalk(pstate, (INode **)namep);
+            }
+            // Make it easy to distinguish whether a name is for a variable/function name vs. type
+            else {
+                if (name->dclnode->tag == VarDclTag || name->dclnode->tag == FnDclTag)
+                    name->tag = VarNameUseTag;
+                else
+                    name->tag = TypeNameUseTag;
+            }
         }
         else
 			errorMsgNode((INode*)name, ErrorUnkName, "The name %s does not refer to a declared name", &name->namesym->namestr);
