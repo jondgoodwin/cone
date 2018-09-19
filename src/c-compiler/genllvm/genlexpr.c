@@ -264,10 +264,14 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
 
 	// A function call may be to an intrinsic, or to program-defined code
 	NameUseNode *fnuse = (NameUseNode *)fncall->objfn;
-    VarDclNode *fndcl = (VarDclNode *)fnuse->dclnode;
+    FnDclNode *fndcl = (FnDclNode *)fnuse->dclnode;
 	switch (fndcl->value? fndcl->value->tag : BlockTag) {
 	case BlockTag: {
-		return LLVMBuildCall(gen->builder, fndcl->llvmvar, fnargs, fncall->args->used, "");
+		LLVMValueRef fncallval = LLVMBuildCall(gen->builder, fndcl->llvmvar, fnargs, fncall->args->used, "");
+        if (fndcl->flags & FlagSystem) {
+            LLVMSetInstructionCallConv(fncallval, LLVMX86StdcallCallConv);
+        }
+        return fncallval;
 	}
 	case IntrinsicTag: {
 		NbrNode *nbrtype = (NbrNode *)iexpGetTypeDcl(*nodesNodes(fncall->args));
