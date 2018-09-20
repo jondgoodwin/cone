@@ -25,6 +25,52 @@ void addrPrint(AddrNode *node) {
 	inodeFprint(")");
 }
 
+// Extract lval variable and overall permission from lval
+INamedNode *addrGetVarPerm(INode *lval, INode **lvalperm) {
+    switch (lval->tag) {
+
+    // A variable or named function node
+    case VarNameUseTag:
+    {
+        INamedNode *lvalvar = ((NameUseNode *)lval)->dclnode;
+        if (lvalvar->tag == VarDclTag)
+            *lvalperm = ((VarDclNode *)lvalvar)->perm;
+        else
+            *lvalperm = (INode*)idPerm; // Function
+        return lvalvar;
+    }
+
+    // An array element (obj[2]) or property access (obj.prop)
+    case FnCallTag:
+    {
+        FnCallNode *element = (FnCallNode *)lval;
+        if (element->flags & FlagIndex || element->methprop) {
+            INamedNode *lvalvar = addrGetVarPerm(element->objfn, lvalperm);
+            if (lvalvar == NULL)
+                return NULL;
+            /*
+            if (lvalperm = permIsLocked(*lvalperm) && var_is_not_unlocked) {
+                errorMsgNode(lval, ErrorNotLval, "Cannot borrow a subtructure reference from a locked variable");
+                return NULL
+            } */
+            if (element->methprop) {
+                PermNode *methperm = (PermNode *)((VarDclNode*)((NameUseNode *)element->methprop)->dclnode)->perm;
+                // Downgrade overall static permission if property is immutable
+                if (methperm == immPerm)
+                    *lvalperm = (INode*)constPerm;
+            }
+            return lvalvar;
+        }
+    }
+    // Fall through to error message is intentional here for real function call
+
+    // One cannot borrow a reference from any other node
+    default:
+        errorMsgNode(lval, ErrorNotLval, "You can only borrow a reference from a named variable or function");
+        return NULL;
+    }
+}
+
 // Type check borrowed reference creator
 void addrTypeCheckBorrow(AddrNode *node, RefNode *reftype) {
 
@@ -42,20 +88,27 @@ void addrTypeCheckBorrow(AddrNode *node, RefNode *reftype) {
     else
         reftype->pvtype = lvaltype;
 
-    // Obtain variable we are borrowing from and actual permission
-    if (!iexpIsLval(lval)) {
-		errorMsgNode((INode*)node, ErrorNotLval, "May only borrow from lvals (e.g., variable)");
-		return;
-	}
-    INamedNode *dclnode = ((NameUseNode*)lval)->dclnode;
-    INode *permlval = (dclnode->tag == VarDclTag) ? ((VarDclNode*)dclnode)->perm : (INode*)immPerm;
+    // Obtain variable we are borrowing from and actual/calculated permission
+    INode *lvalperm = NULL;
+    INamedNode *lvalvar = addrGetVarPerm(lval, &lvalperm);
+    if (lvalvar == NULL)
+        return;
 
-    // Ensure actual permission matches requested permission
-	if (!permMatches(reftype->perm, permlval))
-		errorMsgNode((INode *)node, ErrorBadPerm, "Borrowed reference cannot obtain this permission");
+    // Ensure lval's permission matches requested permission
+    if (reftype->perm) {
+        if (!permMatches(reftype->perm, lvalperm))
+            errorMsgNode((INode *)node, ErrorBadPerm, "Borrowed reference cannot obtain this permission");
+    }
+    else
+        reftype->perm = lvalperm;
 
     // Set lifetime of reference to borrowed variable's lifetime
-    // Perform borrow logic on variable we are borrowing from
+    if (lvalvar->tag == VarDclTag) {
+        reftype->scope = ((VarDclNode*)lvalvar)->scope;
+        // Perform borrow logic on variable we are borrowing from
+    }
+    else
+        reftype->scope = 0;  // Function's scope is global
 }
 
 // Type check allocator reference creator

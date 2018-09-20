@@ -19,13 +19,15 @@
 
 // Parse a permission, return reference to defperm if not found
 INode *parsePerm(PermNode *defperm) {
-	if (lexIsToken(PermToken)) {
+    if (lexIsToken(PermToken)) {
         INode *perm = newPermUseNode(lex->val.ident->node);
-		lexNextToken();
-		return perm;
-	}
-	else
-		return (INode*)newPermUseNode((INamedNode*)defperm);
+        lexNextToken();
+        return perm;
+    }
+    else if (defperm)
+        return (INode*)newPermUseNode((INamedNode*)defperm);
+    else
+        return (INode*)defperm;
 }
 
 // Parse an allocator + permission for a reference type

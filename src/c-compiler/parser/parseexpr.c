@@ -201,7 +201,16 @@ INode *parseAddr(ParseState *parse) {
 	// Address node's value type is a partially populated reference type
 	RefNode *reftype = newRefNode();
 	reftype->pvtype = NULL;     // Type inference will correct this
-	parseAllocPerm(reftype);
+    if (lexIsToken(IdentToken)
+        && lex->val.ident->node && lex->val.ident->node->tag == AllocTag) {
+        reftype->alloc = (INode*)lex->val.ident->node;
+        lexNextToken();
+        reftype->perm = parsePerm(uniPerm);
+    }
+    else {
+        reftype->alloc = voidType;
+        reftype->perm = parsePerm(NULL);
+    }
 	anode->vtype = (INode *)reftype;
 
 	// A value or constructor
