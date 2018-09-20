@@ -39,7 +39,16 @@ void iexpHandleCopy(INode **nodep);
 // Retrieve the permission flags for the node
 uint16_t iexpGetPermFlags(INode *node);
 
+// expression is valid lval expression: we can get its address and assign it a value
+int iexpIsLval(INode *node);
+
 // Is Lval mutable
 int iexpIsLvalMutable(INode *lval);
+
+// Verify that all lval expressions are valid lvals and are mutable
+void iexpLvalCheck(INode *lval);
+
+// Ensure we can read and copy/move all rvals
+void iexpRvalCheck(INode **rvalp);
 
 #endif

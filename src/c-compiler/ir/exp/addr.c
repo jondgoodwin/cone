@@ -28,15 +28,13 @@ void addrPrint(AddrNode *node) {
 // Type check borrowed reference creator
 void addrTypeCheckBorrow(AddrNode *node, RefNode *reftype) {
 	INode *exp = node->exp;
-	if (exp->tag != VarNameUseTag
-        || (((NameUseNode*)exp)->dclnode->tag != VarDclTag
-            && ((NameUseNode*)exp)->dclnode->tag != FnDclTag)) {
+	if (!iexpIsLval(exp)) {
 		errorMsgNode((INode*)node, ErrorNotLval, "May only borrow from lvals (e.g., variable)");
 		return;
 	}
     INamedNode *dclnode = ((NameUseNode*)exp)->dclnode;
-    INode *perm = (dclnode->tag == VarDclTag) ? ((VarDclNode*)dclnode)->perm : (INode*)immPerm;
-	if (!permMatches(reftype->perm, perm))
+    INode *permlval = (dclnode->tag == VarDclTag) ? ((VarDclNode*)dclnode)->perm : (INode*)immPerm;
+	if (!permMatches(reftype->perm, permlval))
 		errorMsgNode((INode *)node, ErrorBadPerm, "Borrowed reference cannot obtain this permission");
 }
 
