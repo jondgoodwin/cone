@@ -75,7 +75,12 @@ INamedNode *addrGetVarPerm(INode *lval, INode **lvalperm) {
 void addrTypeCheckBorrow(AddrNode *node, RefNode *reftype) {
 
     // lval is the variable or variable sub-structure we want to get a reference to
+    // From it, obtain variable we are borrowing from and actual/calculated permission
     INode *lval = node->exp;
+    INode *lvalperm = NULL;
+    INamedNode *lvalvar = addrGetVarPerm(lval, &lvalperm);
+    if (lvalvar == NULL)
+        return;
     INode *lvaltype = ((ITypedNode*)lval)->vtype;
 
     // The reference's value type is unknown (NULL).
@@ -87,12 +92,6 @@ void addrTypeCheckBorrow(AddrNode *node, RefNode *reftype) {
     }
     else
         reftype->pvtype = lvaltype;
-
-    // Obtain variable we are borrowing from and actual/calculated permission
-    INode *lvalperm = NULL;
-    INamedNode *lvalvar = addrGetVarPerm(lval, &lvalperm);
-    if (lvalvar == NULL)
-        return;
 
     // Ensure lval's permission matches requested permission
     if (reftype->perm) {
@@ -113,24 +112,18 @@ void addrTypeCheckBorrow(AddrNode *node, RefNode *reftype) {
 
 // Type check allocator reference creator
 void addrTypeCheckAlloc(AddrNode *node, RefNode *reftype) {
-    // Type check an allocated reference
-    if (!isExpNode(node->exp)) {
-        errorMsgNode(node->exp, ErrorBadTerm, "Needs to be an expression");
+
+    // expression must be a value usable for initializing allocated reference
+    INode *initval = node->exp;
+    if (!isExpNode(initval)) {
+        errorMsgNode(initval, ErrorBadTerm, "Needs to be a value");
         return;
     }
-    if (reftype->pvtype == NULL) {
-        // Infer reference's value type
-        INode *exptype = ((ITypedNode*)node->exp)->vtype;
-        if (exptype->tag == ArrayTag) {
-            reftype->pvtype = ((ArrayNode*)exptype)->elemtype;
-            refSliceFatPtr(reftype);
-        }
-        else
-            reftype->pvtype = exptype;
-    }
 
-    // inodeWalk(pstate, &node->vtype); // Type check the reference type
+    // Infer reference's value type based on initial value
+    reftype->pvtype = ((ITypedNode*)initval)->vtype;
 
+    // Replaces node->exp with nodes that allocate, initialize, and return a reference
     allocAllocate(node, reftype);
 }
 
