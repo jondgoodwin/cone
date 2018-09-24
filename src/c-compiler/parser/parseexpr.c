@@ -224,7 +224,7 @@ INode *parsePrefix(ParseState *parse) {
 	switch (lex->toktype) {
 	case DashToken:
 	{
-		FnCallNode *node = newFnCallOp(NULL, "neg", 0);
+		FnCallNode *node = newFnCallOp(NULL, "-", 0);
 		lexNextToken();
 		node->objfn = parsePrefix(parse);
 		return (INode *)node;

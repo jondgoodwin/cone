@@ -81,7 +81,7 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
 
 	// Arithmetic operators (not applicable to boolean)
 	if (bits > 1) {
-		opsym = nametblFind("neg", 3);
+		opsym = nametblFind("-", 1);
 		imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)unarysig, (INode *)newIntrinsicNode(NegIntrinsic)));
 		opsym = nametblFind("+", 1);
         imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(AddIntrinsic)));
