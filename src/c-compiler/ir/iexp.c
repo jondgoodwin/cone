@@ -71,42 +71,6 @@ int iexpCoerces(INode *to, INode **from) {
 		return 1;
 	}
 
-    // Handle coercion to a type tuple
-    if (to->tag == TTupleTag) {
-        Nodes *totypes = ((TTupleNode *)to)->types;
-        // When it is from a value tuple, we can coerce each value
-        if ((*from)->tag == VTupleTag) {
-            Nodes *values = ((VTupleNode *)*from)->values;
-            if (values->used < totypes->used)
-                return 0;
-            int16_t cnt;
-            INode **nodesp;
-            INode **typep = &nodesGet(totypes, 0);
-            for (nodesFor(values, cnt, nodesp)) {
-                if (iexpCoerces(*nodesp, typep++) == 0)
-                    return 0;
-            }
-            return 1;
-        }
-
-        // When it is from a single node returning a type tuple, require exact type match
-        INode *fromtype = ((ITypedNode*)(*from))->vtype;
-        if (fromtype->tag == TTupleTag) {
-            Nodes *fromtypes = ((TTupleNode *)fromtype)->types;
-            if (fromtypes->used < totypes->used)
-                return 0;
-            int16_t cnt;
-            INode **nodesp;
-            INode **typep = &nodesGet(totypes, 0);
-            for (nodesFor(fromtypes, cnt, nodesp)) {   
-                if (itypeIsSame(*nodesp, *typep++) == 0)
-                    return 0;
-            }
-            return 1;
-        }
-        return 0;
-    }
-
     INode *fromtype = *from;
     iexpToTypeDcl(fromtype);
 
@@ -168,7 +132,7 @@ uint16_t iexpGetPermFlags(INode *node) {
 
 // Ensure we can read and copy/move all rvals
 void iexpRvalCheck(INode **rvalp) {
-    // Check each lval separately in a value tuple of lvals
+    // Check each value separately in a value tuple
     if ((*rvalp)->tag == VTupleTag) {
         INode **nodesp;
         uint32_t cnt;

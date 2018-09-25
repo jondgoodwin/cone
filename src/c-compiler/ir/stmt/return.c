@@ -35,9 +35,31 @@ void returnPass(PassState *pstate, ReturnNode *node) {
 
 	// Ensure the vtype of the expression can be coerced to the function's declared return type
 	if (pstate->pass == TypeCheck) {
-		if (!iexpCoerces(pstate->fnsig->rettype, &node->exp)) {
-			errorMsgNode(node->exp, ErrorInvType, "Return expression type does not match return type on function");
-			errorMsgNode((INode*)pstate->fnsig->rettype, ErrorInvType, "This is the declared function's return type");
-		}
+        if (pstate->fnsig->rettype->tag == TTupleTag) {
+            if (node->exp->tag != VTupleTag) {
+                errorMsgNode(node->exp, ErrorBadTerm, "Not enough return values");
+                return;
+            }
+            Nodes *retnodes = ((VTupleNode*)node->exp)->values;
+            Nodes *rettypes = ((TTupleNode*)pstate->fnsig->rettype)->types;
+            if (rettypes->used > retnodes->used) {
+                errorMsgNode(node->exp, ErrorBadTerm, "Not enough return values");
+                return;
+            }
+            int16_t retcnt;
+            INode **rettypesp;
+            INode **retnodesp = &nodesGet(retnodes, 0);
+            for (nodesFor(rettypes, retcnt, rettypesp)) {
+                if (iexpCoerces(*rettypesp, retnodesp++) == 0)
+                    errorMsgNode(*(retnodesp-1), ErrorInvType, "Return value's type does not match fn return type");
+            }
+
+        }
+        else {
+            if (!iexpCoerces(pstate->fnsig->rettype, &node->exp)) {
+                errorMsgNode(node->exp, ErrorInvType, "Return expression type does not match return type on function");
+                errorMsgNode((INode*)pstate->fnsig->rettype, ErrorInvType, "This is the declared function's return type");
+            }
+        }
 	}
 }
