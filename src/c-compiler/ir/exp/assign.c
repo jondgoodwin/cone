@@ -28,38 +28,56 @@ void assignPrint(AssignNode *node) {
 	inodeFprint(")");
 }
 
-// expression is valid lval expression: we can get its address and assign it a value
-int assignIsLval(INode *node) {
-    switch (node->tag) {
+// Extract lval variable, scope and overall permission from lval
+INamedNode *assignLvalInfo(INode *lval, INode **lvalperm, int16_t *scope) {
+    switch (lval->tag) {
 
-        // Variable names and dereferences (*) are always lvals
+    // A variable or named function node
     case VarNameUseTag:
-    case DerefTag:
-        return 1;
-
-        // A FnCall node is only an lval if it is *not* a function call
-        // (i.e., it is a property access or array index/slice)
-    case FnCallTag:
-        return ((ITypedNode*)((FnCallNode*)node)->objfn)->vtype->tag != FnSigTag;
-
-    default: break;
+    {
+        INamedNode *lvalvar = ((NameUseNode *)lval)->dclnode;
+        if (lvalvar->tag == VarDclTag) {
+            *lvalperm = ((VarDclNode *)lvalvar)->perm;
+            *scope = ((VarDclNode *)lvalvar)->scope;
+            return lvalvar;
+        }
+        else
+            return NULL; // A function name cannot be an lval
     }
 
-    return 0;
-}
+    case DerefTag:
+    {
+        INamedNode *lvalvar = assignLvalInfo(((DerefNode *)lval)->exp, lvalperm, scope);
+        RefNode *vtype = (RefNode*)iexpGetTypeDcl(((DerefNode *)lval)->exp);
+        if (vtype->tag == RefTag)
+            *lvalperm = vtype->perm;
+        else if (vtype->tag == PtrTag)
+            *lvalperm = (INode*)mutPerm;
+        return lvalvar;
+    }
 
-// Is Lval mutable
-int assignIsLvalMutable(INode *lval) {
-    return MayWrite & iexpGetPermFlags(lval);
-}
+    // An array element (obj[2]) or property access (obj.prop)
+    case FnCallTag:
+    {
+        FnCallNode *element = (FnCallNode *)lval;
+        if (((ITypedNode*)element->objfn)->vtype->tag == FnSigTag)
+            return NULL; // function calls are not lvals
+        INamedNode *lvalvar = assignLvalInfo(element->objfn, lvalperm, scope);
+        if (lvalvar == NULL)
+            return NULL;
+        if (element->methprop) {
+            PermNode *methperm = (PermNode *)((VarDclNode*)((NameUseNode *)element->methprop)->dclnode)->perm;
+            // Downgrade overall static permission if property is immutable
+            if (methperm == immPerm)
+                *lvalperm = (INode*)constPerm;
+        }
+        return lvalvar;
+    }
 
-// Verify that all lval expressions are valid lvals and are mutable
-void assignLvalCheck(INode *lval) {
-    // lval must be an lval and mutable
-    if (!assignIsLval(lval))
-        errorMsgNode(lval, ErrorBadLval, "Expression to left of assignment must be lval");
-    else if (!assignIsLvalMutable(lval))
-        errorMsgNode(lval, ErrorNoMut, "You do not have permission to modify lval");
+    // No other node is an lval
+    default:
+        return NULL;
+    }
 }
 
 void assignSingleCheck(INode *lval, INode **rval) {
@@ -67,9 +85,31 @@ void assignSingleCheck(INode *lval, INode **rval) {
     // '_' named lval need not be checked. It is a placeholder that just swallows a value
     if (lval->tag == VarNameUseTag && ((NameUseNode*)lval)->namesym == anonName)
         return;
-    assignLvalCheck(lval);
-    if (iexpCoerces(((ITypedNode*)lval)->vtype, rval) == 0)
+
+    int16_t lvalscope;
+    INode *lvalperm;
+    INamedNode *lvalvar = assignLvalInfo(lval, &lvalperm, &lvalscope);
+    if (lvalvar == NULL) {
+        errorMsgNode(lval, ErrorBadLval, "Expression must be lval");
+        return;
+    }
+    if (!(MayWrite & permGetFlags(lvalperm))) {
+        errorMsgNode(lval, ErrorNoMut, "You do not have permission to modify lval");
+        return;
+    }
+
+    if (iexpCoerces(((ITypedNode*)lval)->vtype, rval) == 0) {
         errorMsgNode(*rval, ErrorInvType, "Expression's type does not match lval's type");
+        return;
+    }
+    RefNode* rvaltype = (RefNode *)((ITypedNode*)*rval)->vtype;
+    RefNode* lvaltype = (RefNode *)((ITypedNode*)lval)->vtype;
+    if (rvaltype->tag == RefTag && lvaltype->tag == RefTag && lvaltype->alloc == voidType) {
+        if (lvalscope < rvaltype->scope) {
+            errorMsgNode(*rval, ErrorInvType, "This reference's value does not outlive lval");
+            return;
+        }
+    }
 }
 
 // Handle parallel assignment (multiple values on both sides)
