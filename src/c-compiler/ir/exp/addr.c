@@ -122,9 +122,6 @@ void addrTypeCheckAlloc(AddrNode *node, RefNode *reftype) {
 
     // Infer reference's value type based on initial value
     reftype->pvtype = ((ITypedNode*)initval)->vtype;
-
-    // Replaces node->exp with nodes that allocate, initialize, and return a reference
-    allocAllocate(node, reftype);
 }
 
 // Analyze addr node

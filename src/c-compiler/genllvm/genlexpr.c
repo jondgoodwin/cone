@@ -164,12 +164,33 @@ LLVMTypeRef genlType(GenState *gen, INode *typ) {
 LLVMValueRef genlSizeof(GenState *gen, INode *vtype) {
 	unsigned long long size = LLVMABISizeOfType(gen->datalayout, genlType(gen, vtype));
 	if (vtype->tag == AllocTag) {
-		if (LLVMPointerSize(gen->datalayout) == 32)
+		if (LLVMPointerSize(gen->datalayout) == 4)
 			size = (size + 3) & 0xFFFFFFFC;
 		else
 			size = (size + 7) & 0xFFFFFFFFFFFFFFF8;
 	}
 	return LLVMConstInt(genlType(gen, (INode*)usizeType), size, 0);
+}
+
+LLVMValueRef genlmallocval = NULL;
+LLVMValueRef genlmalloc(GenState *gen, LLVMValueRef sizeval, INode *totype) {
+    // Declare malloc() external function
+    if (genlmallocval == NULL) {
+        LLVMTypeRef parmtype = (LLVMPointerSize(gen->datalayout) == 4) ? LLVMInt32TypeInContext(gen->context) : LLVMInt64TypeInContext(gen->context);
+        LLVMTypeRef rettype = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
+        LLVMTypeRef fnsig = LLVMFunctionType(rettype, &parmtype, 1, 0);
+        genlmallocval = LLVMAddFunction(gen->module, "malloc", fnsig);
+    }
+    // Call malloc
+    LLVMValueRef malloc = LLVMBuildCall(gen->builder, genlmallocval, &sizeval, 1, "");
+    return LLVMBuildBitCast(gen->builder, malloc, genlType(gen, totype), "");
+}
+
+LLVMValueRef genlallocref(GenState *gen, AddrNode *addrnode) {
+    RefNode *reftype = (RefNode*)addrnode->vtype;
+    LLVMValueRef malloc = genlmalloc(gen, genlSizeof(gen, reftype->pvtype), addrnode->vtype);
+    LLVMBuildStore(gen->builder, genlExpr(gen, addrnode->exp), malloc);
+    return malloc;
 }
 
 // Generate an if statement
@@ -640,7 +661,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
 	{
 		AddrNode *anode = (AddrNode*)termnode;
 		RefNode *reftype = (RefNode *)anode->vtype;
-		if (reftype->alloc == voidType) {
+        if (reftype->alloc == voidType) {
             if (reftype->flags & FlagArrSlice) {
                 LLVMValueRef tupleval = LLVMGetUndef(genlType(gen, (INode*)reftype->tuptype));
                 LLVMTypeRef ptrtype = genlType(gen, nodesGet(reftype->tuptype->types, 0));
@@ -653,9 +674,9 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
             }
             else
                 return genlAddr(gen, anode->exp);
-		}
-		else
-			return genlExpr(gen, anode->exp);
+        }
+        else
+            return genlallocref(gen, anode);
 	}
 	case DerefTag:
 		return LLVMBuildLoad(gen->builder, genlExpr(gen, ((DerefNode*)termnode)->exp), "deref");

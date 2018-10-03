@@ -51,7 +51,6 @@ add_executable(conec
 	src/c-compiler/ir/exp/vtuple.c
 	src/c-compiler/ir/exp/sizeof.c
 
-	src/c-compiler/ir/types/alloc.c
 	src/c-compiler/ir/types/array.c
 	src/c-compiler/ir/types/fnsig.c
 	src/c-compiler/ir/types/number.c

@@ -56,7 +56,6 @@ typedef struct PassState PassState;
 #include "types/pointer.h"
 #include "types/struct.h"
 #include "types/array.h"
-#include "types/alloc.h"
 #include "types/void.h"
 
 #include "stmt/module.h"
