@@ -62,6 +62,20 @@ void stdPermInit() {
 	idPerm = newPermNodeStr("id", MayAlias | RaceSafe | IsLockless);
 }
 
+AllocNode *newAllocNodeStr(char *name) {
+    AllocNode *allocnode;
+    newNode(allocnode, AllocNode, AllocTag);
+    Name *namesym = nametblFind(name, strlen(name));
+    allocnode->namesym = namesym;
+    namesym->node = (INamedNode*)allocnode;
+    return allocnode;
+}
+
+void stdAllocInit() {
+    lexAlloc = newAllocNodeStr("lex");
+    rcAlloc = newAllocNodeStr("rc");
+}
+
 // Set up the standard library, whose names are always shared by all modules
 void stdlibInit() {
 	lexInject("std", "");
@@ -72,6 +86,7 @@ void stdlibInit() {
 
 	keywordInit();
 	stdPermInit();
+    stdAllocInit();
 	stdNbrInit();
 
 	voidType = (INode*)newVoidNode();

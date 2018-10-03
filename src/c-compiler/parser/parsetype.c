@@ -94,7 +94,7 @@ INode *parseStruct(ParseState *parse) {
 	int16_t propertynbr = 0;
 
     // Capture the kind of type, then get next token (name)
-    uint16_t tag = lexIsToken(AllocToken) ? AllocTag : StructTag;
+    uint16_t tag = StructTag;
     lexNextToken();
 
     // Process struct type name, if provided

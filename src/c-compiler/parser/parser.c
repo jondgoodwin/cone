@@ -190,7 +190,6 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
 
 		// 'struct'-style type definition
 		case StructToken:
-		case AllocToken:
             modAddNode(mod, parseStruct(parse));
 			break;
 

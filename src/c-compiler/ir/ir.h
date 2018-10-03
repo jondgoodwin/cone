@@ -57,6 +57,9 @@ typedef struct PassState PassState;
 #include "types/struct.h"
 #include "types/array.h"
 #include "types/void.h"
+typedef struct AllocNode {
+    INamedNodeHdr;
+} AllocNode;
 
 #include "stmt/module.h"
 #include "stmt/while.h"
