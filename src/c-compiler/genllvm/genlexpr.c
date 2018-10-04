@@ -173,7 +173,7 @@ LLVMValueRef genlSizeof(GenState *gen, INode *vtype) {
 }
 
 LLVMValueRef genlmallocval = NULL;
-LLVMValueRef genlmalloc(GenState *gen, LLVMValueRef sizeval, INode *totype) {
+LLVMValueRef genlmalloc(GenState *gen, long long size) {
     // Declare malloc() external function
     if (genlmallocval == NULL) {
         LLVMTypeRef parmtype = (LLVMPointerSize(gen->datalayout) == 4) ? LLVMInt32TypeInContext(gen->context) : LLVMInt64TypeInContext(gen->context);
@@ -182,15 +182,27 @@ LLVMValueRef genlmalloc(GenState *gen, LLVMValueRef sizeval, INode *totype) {
         genlmallocval = LLVMAddFunction(gen->module, "malloc", fnsig);
     }
     // Call malloc
-    LLVMValueRef malloc = LLVMBuildCall(gen->builder, genlmallocval, &sizeval, 1, "");
-    return LLVMBuildBitCast(gen->builder, malloc, genlType(gen, totype), "");
+    LLVMValueRef sizeval = LLVMConstInt(genlType(gen, (INode*)usizeType), size, 0);
+    return LLVMBuildCall(gen->builder, genlmallocval, &sizeval, 1, "");
 }
 
 LLVMValueRef genlallocref(GenState *gen, AddrNode *addrnode) {
     RefNode *reftype = (RefNode*)addrnode->vtype;
-    LLVMValueRef malloc = genlmalloc(gen, genlSizeof(gen, reftype->pvtype), addrnode->vtype);
-    LLVMBuildStore(gen->builder, genlExpr(gen, addrnode->exp), malloc);
-    return malloc;
+    long long valsize = LLVMABISizeOfType(gen->datalayout, genlType(gen, reftype->pvtype));
+    long long allocsize = 0;
+    if (reftype->alloc == (INode*)rcAlloc)
+        allocsize = LLVMABISizeOfType(gen->datalayout, genlType(gen, (INode*)usizeType));
+    LLVMValueRef malloc = genlmalloc(gen, allocsize + valsize);
+    if (reftype->alloc == (INode*)rcAlloc) {
+        LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), 1, 0);
+        LLVMTypeRef ptrusize = LLVMPointerType(genlType(gen, (INode*)usizeType), 0);
+        LLVMValueRef counterptr = LLVMBuildBitCast(gen->builder, malloc, ptrusize, "");
+        LLVMBuildStore(gen->builder, constone, counterptr); // Store 1 into refcounter
+        malloc = LLVMBuildGEP(gen->builder, malloc, &constone, 1, ""); // Point to value
+    }
+    LLVMValueRef valcast = LLVMBuildBitCast(gen->builder, malloc, genlType(gen, addrnode->vtype), "");
+    LLVMBuildStore(gen->builder, genlExpr(gen, addrnode->exp), valcast);
+    return valcast;
 }
 
 // Generate an if statement
