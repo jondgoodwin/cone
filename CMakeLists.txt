@@ -22,6 +22,7 @@ add_executable(conec
 	src/c-compiler/shared/options.c
 	src/c-compiler/shared/utf8.c
 
+	src/c-compiler/ir/flow.c
 	src/c-compiler/ir/inode.c
 	src/c-compiler/ir/imethod.c
 	src/c-compiler/ir/iexp.c

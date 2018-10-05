@@ -79,6 +79,13 @@ void fnDclTypeCheck(PassState *pstate, FnDclNode *varnode) {
 	pstate->fnsig = oldfnsig;
 }
 
+// Begin the processing of the data flow pass for this function
+void fnDclFlow(FnDclNode *fnnode) {
+    FlowState fstate;
+    fstate.fnsig = (FnSigNode *)fnnode->vtype;
+    flowWalk(&fstate, &fnnode->value);
+}
+
 // Check the function declaration node
 void fnDclPass(PassState *pstate, FnDclNode *name) {
 	inodeWalk(pstate, &name->vtype);
@@ -101,6 +108,7 @@ void fnDclPass(PassState *pstate, FnDclNode *name) {
 			fnImplicitReturn(((FnSigNode*)name->vtype)->rettype, (BlockNode *)name->value);
 			// Do type checking of function (with fnsig as context)
 			fnDclTypeCheck(pstate, name);
+            fnDclFlow(name);
 		}
 		else if (vtype == voidType)
 			errorMsgNode((INode*)name, ErrorNoType, "Name must specify a type");

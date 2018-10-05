@@ -82,6 +82,8 @@ typedef struct AllocNode {
 #include "exp/sizeof.h"
 #include "exp/vtuple.h"
 
+#include "flow.h"
+
 #include "../std/stdlib.h"
 
 // The semantic analysis passes performed in between parse and generation
