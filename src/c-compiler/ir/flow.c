@@ -113,9 +113,9 @@ void flowAddVar(VarDclNode *varnode) {
             memcpy(gVarFlowStackp, oldtable, oldsize * sizeof(VarFlowInfo));
         }
     }
-    gVarFlowStackp->node = varnode;
-    gVarFlowStackp->flags = 0;
-    gVarFlowStackp++;
+    VarFlowInfo *stackp = &gVarFlowStackp[gVarFlowStackPos++];
+    stackp->node = varnode;
+    stackp->flags = 0;
 }
 
 // Start a new scope
@@ -124,6 +124,18 @@ size_t flowScopePush() {
 }
 
 // Back out of current scope
-void flowScopePop(size_t pos) {
+void flowScopePop(size_t startpos, INode *node) {
+    Nodes **varlist = &((ReturnNode *)node)->dealias;
+    size_t pos = gVarFlowStackPos;
+    while (pos > startpos) {
+        VarFlowInfo *avar = &gVarFlowStackp[--pos];
+        RefNode *reftype = (RefNode*)avar->node->vtype;
+        if (reftype->tag == RefTag && reftype->alloc != voidType) {
+            if (*varlist == NULL)
+                *varlist = newNodes(4);
+            nodesAdd(varlist, (INode*)avar->node);
+        }
+    }
+
     gVarFlowStackPos = pos;
 }

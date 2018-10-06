@@ -172,7 +172,11 @@ LLVMValueRef genlSizeof(GenState *gen, INode *vtype) {
 	return LLVMConstInt(genlType(gen, (INode*)usizeType), size, 0);
 }
 
+// Function declarations for malloc() and free()
 LLVMValueRef genlmallocval = NULL;
+LLVMValueRef genlfreeval = NULL;
+
+// Call malloc() (and generate declaration if needed)
 LLVMValueRef genlmalloc(GenState *gen, long long size) {
     // Declare malloc() external function
     if (genlmallocval == NULL) {
@@ -186,6 +190,21 @@ LLVMValueRef genlmalloc(GenState *gen, long long size) {
     return LLVMBuildCall(gen->builder, genlmallocval, &sizeval, 1, "");
 }
 
+// Call free() (and generate declaration if needed)
+LLVMValueRef genlFree(GenState *gen, LLVMValueRef ref) {
+    LLVMTypeRef parmtype = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
+    // Declare free() external function
+    if (genlfreeval == NULL) {
+        LLVMTypeRef rettype = LLVMVoidTypeInContext(gen->context);
+        LLVMTypeRef fnsig = LLVMFunctionType(rettype, &parmtype, 1, 0);
+        genlfreeval = LLVMAddFunction(gen->module, "free", fnsig);
+    }
+    // Cast ref to *u8 and then call free()
+    LLVMValueRef refcast = LLVMBuildBitCast(gen->builder, ref, parmtype, "");
+    return LLVMBuildCall(gen->builder, genlfreeval, &refcast, 1, "");
+}
+
+// Generate code that creates an allocated ref by allocating and initializing
 LLVMValueRef genlallocref(GenState *gen, AddrNode *addrnode) {
     RefNode *reftype = (RefNode*)addrnode->vtype;
     long long valsize = LLVMABISizeOfType(gen->datalayout, genlType(gen, reftype->pvtype));
@@ -203,6 +222,27 @@ LLVMValueRef genlallocref(GenState *gen, AddrNode *addrnode) {
     LLVMValueRef valcast = LLVMBuildBitCast(gen->builder, malloc, genlType(gen, addrnode->vtype), "");
     LLVMBuildStore(gen->builder, genlExpr(gen, addrnode->exp), valcast);
     return valcast;
+}
+
+// Dealias a variable holding an allocated reference
+void genlDealiasRef(GenState *gen, VarDclNode *var) {
+    RefNode *reftype = (RefNode *)var->vtype;
+    if (reftype->alloc == (INode*)lexAlloc) {
+        genlFree(gen, LLVMBuildLoad(gen->builder, var->llvmvar, ""));
+    }
+}
+
+// Progressively dealias or drop all declared variables in nodes list
+void genlDealiasNodes(GenState *gen, Nodes *nodes) {
+    if (nodes == NULL)
+        return;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(nodes, cnt, nodesp)) {
+        VarDclNode *var = (VarDclNode *)*nodesp;
+        if (var->vtype->tag == RefTag)
+            genlDealiasRef(gen, var);
+    }
 }
 
 // Generate an if statement

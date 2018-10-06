@@ -92,5 +92,5 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
     for (nodesFor(blk->stmts, cnt, nodesp)) {
         flowWalk(fstate, nodesp);
     }
-    flowScopePop(svpos);
+    flowScopePop(svpos, nodesGet(blk->stmts, blk->stmts->used - 1));
 }

@@ -11,6 +11,7 @@
 // Return/yield statement
 typedef struct ReturnNode {
 	INodeHdr;
+    Nodes *dealias;
 	INode *exp;
 } ReturnNode;
 

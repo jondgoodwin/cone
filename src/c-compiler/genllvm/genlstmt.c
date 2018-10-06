@@ -59,10 +59,15 @@ void genlWhile(GenState *gen, WhileNode *wnode) {
 
 // Generate a return statement
 void genlReturn(GenState *gen, ReturnNode *node) {
-	if (node->exp != voidType)
-		LLVMBuildRet(gen->builder, genlExpr(gen, node->exp));
-	else
-		LLVMBuildRetVoid(gen->builder);
+    if (node->exp != voidType) {
+        LLVMValueRef retval = genlExpr(gen, node->exp);
+        genlDealiasNodes(gen, node->dealias);
+        LLVMBuildRet(gen->builder, retval);
+    }
+    else {
+        genlDealiasNodes(gen, node->dealias);
+        LLVMBuildRetVoid(gen->builder);
+    }
 }
 
 // Generate a block's statements

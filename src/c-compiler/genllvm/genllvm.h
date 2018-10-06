@@ -38,5 +38,7 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk);
 // genlexpr.c
 LLVMTypeRef genlType(GenState *gen, INode *typ);
 LLVMValueRef genlExpr(GenState *gen, INode *termnode);
+// Progressively dealias or drop all declared variables in nodes list
+void genlDealiasNodes(GenState *gen, Nodes *nodes);
 
 #endif

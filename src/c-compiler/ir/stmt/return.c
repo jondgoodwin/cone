@@ -12,6 +12,7 @@ ReturnNode *newReturnNode() {
 	ReturnNode *node;
 	newNode(node, ReturnNode, ReturnTag);
 	node->exp = voidType;
+    node->dealias = NULL;
 	return node;
 }
 
