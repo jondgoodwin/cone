@@ -41,6 +41,7 @@ typedef struct PassState PassState;
 #include "inamed.h"
 #include "itype.h"
 #include "imethod.h"
+#include "flow.h"
 
 // These includes are needed by all node handling
 #include "../parser/lexer.h"
@@ -81,8 +82,6 @@ typedef struct AllocNode {
 #include "exp/logic.h"
 #include "exp/sizeof.h"
 #include "exp/vtuple.h"
-
-#include "flow.h"
 
 #include "../std/stdlib.h"
 

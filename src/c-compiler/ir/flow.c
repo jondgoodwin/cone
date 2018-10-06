@@ -8,6 +8,7 @@
 #include "ir.h"
 
 #include <assert.h>
+#include <memory.h>
 
 // Dispatch a node walk for the data flow pass
 // - fstate is helpful state info for node traversal
@@ -15,9 +16,9 @@
 void flowWalk(FlowState *fstate, INode **node) {
 	switch ((*node)->tag) {
     case BlockTag:
-        // blockFlow(fstate, (BlockNode *)*node); break;
+        blockFlow(fstate, (BlockNode **)node); break;
     case VarDclTag:
-        // varDclFlow(fstate, (VarDclNode *)*node); break;
+        varDclFlow(fstate, (VarDclNode **)node); break;
     case FnDclTag:
        //  fnDclFlow(fstate, (FnDclNode *)*node); break;
     case NameUseTag:
@@ -80,4 +81,49 @@ void flowWalk(FlowState *fstate, INode **node) {
 	default:
 		assert(0 && "**** ERROR **** Attempting to check an unknown node");
 	}
+}
+
+// An entry for a local declared name, in which we preserve its flow flags
+typedef struct {
+    VarDclNode *node;    // The variable declaration node
+    int16_t flags;       // The preserved flow flags
+} VarFlowInfo;
+
+VarFlowInfo *gVarFlowStackp = NULL;
+size_t gVarFlowStackSz = 0;
+size_t gVarFlowStackPos = 0;
+
+// Add a just declared variable to the data flow stack
+void flowAddVar(VarDclNode *varnode) {
+    // Ensure we have room for another variable
+    if (gVarFlowStackPos >= gVarFlowStackSz) {
+        if (gVarFlowStackSz == 0) {
+            gVarFlowStackSz = 1024;
+            gVarFlowStackp = (VarFlowInfo*)memAllocBlk(gVarFlowStackSz * sizeof(VarFlowInfo));
+            memset(gVarFlowStackp, 0, gVarFlowStackSz * sizeof(VarFlowInfo));
+            gVarFlowStackPos = 0;
+        }
+        else {
+            // Double table size, copying over old data
+            VarFlowInfo *oldtable = gVarFlowStackp;
+            int oldsize = gVarFlowStackSz;
+            gVarFlowStackSz <<= 1;
+            gVarFlowStackp = (VarFlowInfo*)memAllocBlk(gVarFlowStackSz * sizeof(VarFlowInfo));
+            memset(gVarFlowStackp, 0, gVarFlowStackSz * sizeof(VarFlowInfo));
+            memcpy(gVarFlowStackp, oldtable, oldsize * sizeof(VarFlowInfo));
+        }
+    }
+    gVarFlowStackp->node = varnode;
+    gVarFlowStackp->flags = 0;
+    gVarFlowStackp++;
+}
+
+// Start a new scope
+size_t flowScopePush() {
+    return gVarFlowStackPos;
+}
+
+// Back out of current scope
+void flowScopePop(size_t pos) {
+    gVarFlowStackPos = pos;
 }

@@ -98,3 +98,8 @@ void varDclPass(PassState *pstate, VarDclNode *name) {
 		break;
 	}
 }
+
+// Perform data flow analysis
+void varDclFlow(FlowState *fstate, VarDclNode **vardclnode) {
+    flowAddVar(*vardclnode);
+}

@@ -21,4 +21,7 @@ VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *sig, INode *perm, 
 void varDclPrint(VarDclNode *fn);
 void varDclPass(PassState *pstate, VarDclNode *node);
 
+// Perform data flow analysis
+void varDclFlow(FlowState *fstate, VarDclNode **vardclnode);
+
 #endif

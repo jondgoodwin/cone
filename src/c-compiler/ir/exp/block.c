@@ -82,3 +82,15 @@ void blockPass(PassState *pstate, BlockNode *blk) {
         blockTypePass(pstate, blk); break;
 	}
 }
+
+// Perform data flow analysis on a block
+void blockFlow(FlowState *fstate, BlockNode **blknode) {
+    BlockNode *blk = *blknode;
+    size_t svpos = flowScopePush();
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(blk->stmts, cnt, nodesp)) {
+        flowWalk(fstate, nodesp);
+    }
+    flowScopePop(svpos);
+}

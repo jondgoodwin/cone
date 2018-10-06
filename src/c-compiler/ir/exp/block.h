@@ -21,4 +21,7 @@ BlockNode *newBlockNode();
 void blockPrint(BlockNode *blk);
 void blockPass(PassState *pstate, BlockNode *node);
 
+// Perform data flow analysis
+void blockFlow(FlowState *fstate, BlockNode **blknode);
+
 #endif
