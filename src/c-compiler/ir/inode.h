@@ -61,7 +61,8 @@ enum NodeTags {
 
 	// Untyped (Basic) nodes
 	IntrinsicTag,	// Alternative to fndcl block for internal operations (e.g., add)
-	ReturnTag,     // Return node
+	ReturnTag,      // Return node
+    BlockRetTag,    // Block "return" node. Injected by flow pass for de-aliasing.
 	WhileTag,		// While node
 	BreakTag,		// Break node
 	ContinueTag,	// Continue node

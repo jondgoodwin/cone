@@ -92,5 +92,25 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
     for (nodesFor(blk->stmts, cnt, nodesp)) {
         flowWalk(fstate, nodesp);
     }
-    flowScopePop(svpos, nodesGet(blk->stmts, blk->stmts->used - 1));
+
+    // Capture any scope-ending dealiasing in block's last node
+    // That last node must now be a return, break, continue or an injected "block return"
+    INode **lastnode = &nodesGet(blk->stmts, blk->stmts->used - 1);
+    Nodes **varlist;
+    switch ((*lastnode)->tag) {
+    case ReturnTag:
+        varlist = &((ReturnNode *)*lastnode)->dealias; break;
+    case BreakTag:
+    case ContinueTag:
+        varlist = &((BreakNode *)*lastnode)->dealias; break;
+    default:
+    {
+        // Inject block return able to capture variable dealiases
+        ReturnNode *blkret = newReturnNode();
+        blkret->exp = *lastnode;
+        *lastnode = (INode*)blkret;
+        varlist = &blkret->dealias;
+    }
+    }
+    flowScopePop(svpos, varlist);
 }

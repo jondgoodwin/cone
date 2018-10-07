@@ -115,8 +115,7 @@ INode *parseBlock(ParseState *parse) {
 
 		case BreakToken:
 		{
-			INode *node;
-			newNode(node, INode, BreakTag);
+			INode *node = (INode*)newBreakNode(BreakTag);
 			lexNextToken();
 			nodesAdd(&blk->stmts, parseSuffix(parse, node));
 			break;
@@ -124,8 +123,7 @@ INode *parseBlock(ParseState *parse) {
 
 		case ContinueToken:
 		{
-			INode *node;
-			newNode(node, INode, ContinueTag);
+            INode *node = (INode*)newBreakNode(ContinueTag);
 			lexNextToken();
 			nodesAdd(&blk->stmts, parseSuffix(parse, node));
 			break;

@@ -70,6 +70,10 @@ void genlReturn(GenState *gen, ReturnNode *node) {
     }
 }
 
+// Generate a block "return" node
+void genlBlockRet(GenState *gen, ReturnNode *node) {
+}
+
 // Generate a block's statements
 LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
 	INode **nodesp;
@@ -80,11 +84,20 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
 		case WhileTag:
 			genlWhile(gen, (WhileNode *)*nodesp); break;
 		case BreakTag:
-			LLVMBuildBr(gen->builder, gen->whileend); break;
+            genlDealiasNodes(gen, ((BreakNode*)*nodesp)->dealias);
+            LLVMBuildBr(gen->builder, gen->whileend); break;
 		case ContinueTag:
-			LLVMBuildBr(gen->builder, gen->whilebeg); break;
+            genlDealiasNodes(gen, ((BreakNode*)*nodesp)->dealias);
+            LLVMBuildBr(gen->builder, gen->whilebeg); break;
 		case ReturnTag:
 			genlReturn(gen, (ReturnNode*)*nodesp); break;
+        case BlockRetTag:
+        {
+            ReturnNode *node = (ReturnNode*)*nodesp;
+            if (isExpNode(node->exp))
+                lastval = genlExpr(gen, node->exp);
+            genlDealiasNodes(gen, node->dealias);
+        }
 		default:
 			lastval = genlExpr(gen, *nodesp);
 		}

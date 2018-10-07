@@ -31,7 +31,7 @@ void flowAddVar(VarDclNode *varnode);
 size_t flowScopePush();
 
 // Back out of current scope
-void flowScopePop(size_t pos, INode *node);
+void flowScopePop(size_t pos, Nodes **varlist);
 
 
 #endif

@@ -8,7 +8,7 @@
 #ifndef return_h
 #define return_h
 
-// Return/yield statement
+// Return/blockret/yield expression node
 typedef struct ReturnNode {
 	INodeHdr;
     Nodes *dealias;

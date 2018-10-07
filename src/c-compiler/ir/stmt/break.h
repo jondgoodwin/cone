@@ -8,6 +8,13 @@
 #ifndef break_h
 #define break_h
 
+// break/continue statement
+typedef struct BreakNode {
+    INodeHdr;
+    Nodes *dealias;
+} BreakNode;
+
+BreakNode *newBreakNode(int16_t tag);
 void breakPass(PassState *pstate, INode *node);
 
 #endif

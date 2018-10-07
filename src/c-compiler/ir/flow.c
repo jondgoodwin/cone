@@ -124,8 +124,7 @@ size_t flowScopePush() {
 }
 
 // Back out of current scope
-void flowScopePop(size_t startpos, INode *node) {
-    Nodes **varlist = &((ReturnNode *)node)->dealias;
+void flowScopePop(size_t startpos, Nodes **varlist) {
     size_t pos = gVarFlowStackPos;
     while (pos > startpos) {
         VarFlowInfo *avar = &gVarFlowStackp[--pos];

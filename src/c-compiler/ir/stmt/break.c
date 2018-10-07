@@ -7,6 +7,14 @@
 
 #include "../ir.h"
 
+// Create a new break/continue node
+BreakNode *newBreakNode(int16_t tag) {
+    BreakNode *node;
+    newNode(node, BreakNode, tag);
+    node->dealias = NULL;
+    return node;
+}
+
 // Semantic pass on break or continue
 void breakPass(PassState *pstate, INode *node) {
 	if (pstate->pass==NameResolution && !(pstate->flags & PassWithinWhile))
