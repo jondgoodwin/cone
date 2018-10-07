@@ -36,3 +36,10 @@ void whilePass(PassState *pstate, WhileNode *node) {
 
 	pstate->flags = svflags;
 }
+
+// Perform data flow analysis on an while statement
+void whileFlow(FlowState *fstate, WhileNode **nodep) {
+    WhileNode *node = *nodep;
+    //flowWalk(pstate, &node->condexp);
+    flowWalk(fstate, &node->blk);
+}

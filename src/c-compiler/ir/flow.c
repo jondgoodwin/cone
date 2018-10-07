@@ -17,6 +17,10 @@ void flowWalk(FlowState *fstate, INode **node) {
 	switch ((*node)->tag) {
     case BlockTag:
         blockFlow(fstate, (BlockNode **)node); break;
+    case IfTag:
+        ifFlow(fstate, (IfNode **)node); break;
+    case WhileTag:
+        whileFlow(fstate, (WhileNode **)node); break;
     case VarDclTag:
         varDclFlow(fstate, (VarDclNode **)node); break;
     case FnDclTag:
@@ -27,10 +31,6 @@ void flowWalk(FlowState *fstate, INode **node) {
         // nameUseFlow(fstate, (NameUseNode **)node); break;
     case ArrLitTag:
         // arrLitFlow(fstate, (ArrLitNode *)*node); break;
-    case IfTag:
-        // ifFlow(fstate, (IfNode *)*node); break;
-    case WhileTag:
-        // whileFlow(fstate, (WhileNode *)*node); break;
     case BreakTag:
     case ContinueTag:
         // breakFlow(fstate, *node); break;

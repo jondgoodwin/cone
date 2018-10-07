@@ -107,6 +107,7 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
     {
         // Inject block return able to capture variable dealiases
         ReturnNode *blkret = newReturnNode();
+        blkret->tag = BlockRetTag;
         blkret->exp = *lastnode;
         *lastnode = (INode*)blkret;
         varlist = &blkret->dealias;

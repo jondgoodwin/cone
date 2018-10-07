@@ -19,4 +19,7 @@ WhileNode *newWhileNode();
 void whilePrint(WhileNode *wnode);
 void whilePass(PassState *pstate, WhileNode *wnode);
 
+// Perform data flow analysis on an while statement
+void whileFlow(FlowState *fstate, WhileNode **nodep);
+
 #endif

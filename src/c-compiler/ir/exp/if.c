@@ -74,3 +74,16 @@ void ifPass(PassState *pstate, IfNode *ifnode) {
 		}
 	}
 }
+
+// Perform data flow analysis on an if expression
+void ifFlow(FlowState *fstate, IfNode **ifnodep) {
+    IfNode *ifnode = *ifnodep;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(ifnode->condblk, cnt, nodesp)) {
+        // Ignore condition for now
+        nodesp++;
+        cnt--;
+        flowWalk(fstate, nodesp);
+    }
+}

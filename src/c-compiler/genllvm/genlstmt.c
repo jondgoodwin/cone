@@ -97,6 +97,7 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
             if (isExpNode(node->exp))
                 lastval = genlExpr(gen, node->exp);
             genlDealiasNodes(gen, node->dealias);
+            break;
         }
 		default:
 			lastval = genlExpr(gen, *nodesp);
