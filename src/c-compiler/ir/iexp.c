@@ -112,18 +112,16 @@ uint16_t iexpGetPermFlags(INode *node) {
             return 0xFFFF;  // <-- In a trust block?
         assert(0 && "Should be ref or ptr");
     }
-    case FnCallTag:
+    case ArrIndexTag:
+    {
+        FnCallNode *fncall = (FnCallNode *)node;
+        return iexpGetPermFlags(fncall->objfn);
+    }
+    case StrFieldTag:
     {
         FnCallNode *fncall = (FnCallNode *)node;
         // Property access. Permission is the conjunction of structure and property permissions.
-        if (fncall->methprop)
-            return iexpGetPermFlags(fncall->objfn) & iexpGetPermFlags((INode*)fncall->methprop);
-        // True function call. Has no permissions.
-        else if (((ITypedNode*)fncall->objfn)->vtype->tag == FnSigTag)
-            return 0;
-        // Array index/slice. Permission based on array's permission
-        else
-            return iexpGetPermFlags(fncall->objfn);
+        return iexpGetPermFlags(fncall->objfn) & iexpGetPermFlags((INode*)fncall->methprop);
     }
     default:
         return 0;

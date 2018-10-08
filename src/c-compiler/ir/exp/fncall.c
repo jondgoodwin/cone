@@ -110,6 +110,7 @@ void fnCallLowerMethod(FnCallNode *callnode) {
         callnode->methprop->tag = VarNameUseTag;
         callnode->methprop->dclnode = foundnode;
         callnode->vtype = callnode->methprop->vtype = foundnode->vtype;
+        callnode->tag = StrFieldTag;
         return;
     }
 
@@ -246,6 +247,7 @@ void fnCallPass(PassState *pstate, FnCallNode *node) {
                 default:
                     assert(0 && "Invalid type for indexing");
                 }   
+                node->tag = ArrIndexTag;
             }
             else
                 errorMsgNode((INode *)node, ErrorBadIndex, "Array indexing/slicing supports only 1-2 arguments");

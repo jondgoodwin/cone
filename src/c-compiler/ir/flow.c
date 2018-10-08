@@ -42,6 +42,10 @@ void flowWalk(FlowState *fstate, INode **node) {
         // vtupleFlow(fstate, (VTupleNode *)*node); break;
     case FnCallTag:
         // fnCallFlow(fstate, (FnCallNode *)*node); break;
+    case ArrIndexTag:
+        // fnCallFlow(fstate, (FnCallNode *)*node); break;
+    case StrFieldTag:
+        // fnCallFlow(fstate, (FnCallNode *)*node); break;
     case SizeofTag:
         // sizeofFlow(fstate, (SizeofNode *)*node); break;
     case CastTag:

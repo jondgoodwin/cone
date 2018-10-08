@@ -8,8 +8,9 @@
 #ifndef fncall_h
 #define fncall_h
 
-// Function or method call node
-// The contents varies after parse vs. after type check due to lowering.
+// Function or method call node. Also used for array indexing and field access.
+// The parsed contents is lowered during type checking, potentially turning
+// it into an ArrIndexTag or StrFieldTag node
 typedef struct FnCallNode {
 	ITypedNodeHdr;
 	INode *objfn;        // Object (for method calls) or function to call

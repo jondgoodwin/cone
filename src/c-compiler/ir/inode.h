@@ -84,6 +84,8 @@ enum NodeTags {
     VTupleTag,      // Value tuple (comma-separated values)
 	AssignTag,		// Assignment expression
 	FnCallTag,		// Function+method call or Property access
+    ArrIndexTag,    // Array index (FnCallNode)
+    StrFieldTag,    // struct field (FnCallNode)
 	SizeofTag,		// Sizeof a type (usize)
 	CastTag,		// Cast exp to another type
 	AddrTag,		// & (address of) operator

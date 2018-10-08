@@ -1,8 +1,14 @@
-/** The Data Flow analysis pass which handles:
- * - Escape analysis of stack and heap-allocated values, including conditional moves
- * - Determining when to de-alias references, including drop & free logic
- * - Checking lifetimes of borrowed references
- * - Checking that various mechanics are allowed by reference permissions
+/** The Data Flow analysis pass whose purpose is to:
+
+ * - Drop and free (or de-alias) variables at the end of their declared scope.
+ * - Allow unique references to (conditionally) "escape" their current scope,
+     thereby delaying when to drop and free/de-alias them.
+ * - Track when copies (aliases) are made of a reference
+ * - Ensure that lifetime-constrained borrowed references always outlive their containers.
+ * - Deactivate variable bindings as a result of "move" semantics or
+ *   for the lifetime of their borrowed references.
+ * - Enforce reference (and variable) mutability and aliasing permissions
+ * - Track whether every variable has been initialized and used
  *
  * @file
  *

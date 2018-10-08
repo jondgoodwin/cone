@@ -569,38 +569,36 @@ LLVMValueRef genlPtrIndex(GenState *gen, LLVMValueRef ptr, INode *index) {
 
 // Generate an lval-ish pointer to the value (vs. load)
 LLVMValueRef genlAddr(GenState *gen, INode *lval) {
-	switch (lval->tag) {
-	case VarNameUseTag:
-		return ((VarDclNode*)((NameUseNode *)lval)->dclnode)->llvmvar;
-	case DerefTag:
-		return genlExpr(gen, ((DerefNode *)lval)->exp);
-	case FnCallTag:
-	{
+    switch (lval->tag) {
+    case VarNameUseTag:
+        return ((VarDclNode*)((NameUseNode *)lval)->dclnode)->llvmvar;
+    case DerefTag:
+        return genlExpr(gen, ((DerefNode *)lval)->exp);
+    case ArrIndexTag:
+    {
         FnCallNode *fncall = (FnCallNode *)lval;
-        // Property access (no arguments will be present)
-        if (fncall->methprop) {
-            VarDclNode *flddcl = (VarDclNode*)((NameUseNode*)fncall->methprop)->dclnode;
-            return LLVMBuildStructGEP(gen->builder, genlAddr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
-        }
-        // Array indexing
-        else {
-            INode *objtype = ((ITypedNode *)fncall->objfn)->vtype;
-            switch (objtype->tag) {
-            case ArrayTag:
-                return genlArrIndex(gen, genlAddr(gen, fncall->objfn), nodesGet(fncall->args, 0));
-            case PtrTag:
-                return genlPtrIndex(gen, genlExpr(gen, fncall->objfn), nodesGet(fncall->args, 0));
-            case RefTag:
-                if (objtype->flags & FlagArrSlice) {
-                    LLVMValueRef sliceptr = LLVMBuildExtractValue(gen->builder, genlExpr(gen, fncall->objfn), 0, "sliceptr");
-                    return genlPtrIndex(gen, sliceptr, nodesGet(fncall->args, 0));
-                }
-            default:
-                assert(0 && "Unknown type of fncall element indexing node");
+        INode *objtype = ((ITypedNode *)fncall->objfn)->vtype;
+        switch (objtype->tag) {
+        case ArrayTag:
+            return genlArrIndex(gen, genlAddr(gen, fncall->objfn), nodesGet(fncall->args, 0));
+        case PtrTag:
+            return genlPtrIndex(gen, genlExpr(gen, fncall->objfn), nodesGet(fncall->args, 0));
+        case RefTag:
+            if (objtype->flags & FlagArrSlice) {
+                LLVMValueRef sliceptr = LLVMBuildExtractValue(gen->builder, genlExpr(gen, fncall->objfn), 0, "sliceptr");
+                return genlPtrIndex(gen, sliceptr, nodesGet(fncall->args, 0));
             }
+        default:
+            assert(0 && "Unknown type of arrindex element indexing node");
         }
     }
-	}
+    case StrFieldTag:
+    {
+        FnCallNode *fncall = (FnCallNode *)lval;
+        VarDclNode *flddcl = (VarDclNode*)((NameUseNode*)fncall->methprop)->dclnode;
+        return LLVMBuildStructGEP(gen->builder, genlAddr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
+    }
+    }
 	return NULL;
 }
 
@@ -648,23 +646,14 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         return LLVMBuildLoad(gen->builder, vardcl->llvmvar, &vardcl->namesym->namestr);
     }
     case FnCallTag:
+        return genlFnCall(gen, (FnCallNode *)termnode);
+    case ArrIndexTag:
+        return LLVMBuildLoad(gen->builder, genlAddr(gen, termnode), "");
+    case StrFieldTag:
     {
         FnCallNode *fncall = (FnCallNode *)termnode;
-        // Property access (no arguments will be present)
-        if (fncall->methprop) {
-            VarDclNode *flddcl = (VarDclNode*)((NameUseNode*)fncall->methprop)->dclnode;
-            return LLVMBuildExtractValue(gen->builder, genlExpr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
-        }
-        else {
-            INode *objtype = ((ITypedNode *)fncall->objfn)->vtype;
-            if (objtype->tag == FnSigTag)
-                return genlFnCall(gen, fncall);
-            else if (objtype->tag == ArrayTag || objtype->tag == RefTag || objtype->tag == PtrTag) {
-                return LLVMBuildLoad(gen->builder, genlAddr(gen, termnode), "");
-            }
-            else
-                assert(0 && "Unknown type of fncall node");
-        }
+        VarDclNode *flddcl = (VarDclNode*)((NameUseNode*)fncall->methprop)->dclnode;
+        return LLVMBuildExtractValue(gen->builder, genlExpr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
     }
     case AssignTag:
     {

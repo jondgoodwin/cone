@@ -56,21 +56,27 @@ INamedNode *assignLvalInfo(INode *lval, INode **lvalperm, int16_t *scope) {
         return lvalvar;
     }
 
-    // An array element (obj[2]) or property access (obj.prop)
-    case FnCallTag:
+    // Array element (obj[2])
+    case ArrIndexTag:
     {
         FnCallNode *element = (FnCallNode *)lval;
-        if (((ITypedNode*)element->objfn)->vtype->tag == FnSigTag)
-            return NULL; // function calls are not lvals
         INamedNode *lvalvar = assignLvalInfo(element->objfn, lvalperm, scope);
         if (lvalvar == NULL)
             return NULL;
-        if (element->methprop) {
-            PermNode *methperm = (PermNode *)((VarDclNode*)((NameUseNode *)element->methprop)->dclnode)->perm;
-            // Downgrade overall static permission if property is immutable
-            if (methperm == immPerm)
-                *lvalperm = (INode*)constPerm;
-        }
+        return lvalvar;
+    }
+
+    // Field access (obj.prop)
+    case StrFieldTag:
+    {
+        FnCallNode *element = (FnCallNode *)lval;
+        INamedNode *lvalvar = assignLvalInfo(element->objfn, lvalperm, scope);
+        if (lvalvar == NULL)
+            return NULL;
+        PermNode *methperm = (PermNode *)((VarDclNode*)((NameUseNode *)element->methprop)->dclnode)->perm;
+        // Downgrade overall static permission if property is immutable
+        if (methperm == immPerm)
+            *lvalperm = (INode*)constPerm;
         return lvalvar;
     }
 
