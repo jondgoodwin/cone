@@ -81,9 +81,9 @@ void ifFlow(FlowState *fstate, IfNode **ifnodep) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
-        // Ignore condition for now
-        nodesp++;
-        cnt--;
+        if (*nodesp != voidType)
+            flowWalk(fstate, nodesp);
+        nodesp++; cnt--;
         flowWalk(fstate, nodesp);
     }
 }

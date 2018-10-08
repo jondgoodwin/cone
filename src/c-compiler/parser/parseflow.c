@@ -62,16 +62,25 @@ INode *parseIf(ParseState *parse) {
 	lexNextToken();
 	nodesAdd(&ifnode->condblk, parseExpr(parse));
 	nodesAdd(&ifnode->condblk, parseBlock(parse));
-	while (lexIsToken(ElifToken)) {
-		lexNextToken();
-		nodesAdd(&ifnode->condblk, parseExpr(parse));
-		nodesAdd(&ifnode->condblk, parseBlock(parse));
-	}
-	if (lexIsToken(ElseToken)) {
-		lexNextToken();
-		nodesAdd(&ifnode->condblk, voidType);
-		nodesAdd(&ifnode->condblk, parseBlock(parse));
-	}
+    while (1) {
+        // Process final else clause and break loop
+        // Note: this code makes "else if" equivalent to "elif"
+        if (lexIsToken(ElseToken)) {
+            lexNextToken();
+            if (!lexIsToken(IfToken)) {
+                nodesAdd(&ifnode->condblk, voidType); // else distinguished by a 'void' condition
+                nodesAdd(&ifnode->condblk, parseBlock(parse));
+                break;
+            }
+        }
+        else if (!lexIsToken(ElifToken))
+            break;
+
+        // Elif processing
+        lexNextToken();
+        nodesAdd(&ifnode->condblk, parseExpr(parse));
+        nodesAdd(&ifnode->condblk, parseBlock(parse));
+    }
 	return (INode *)ifnode;
 }
 

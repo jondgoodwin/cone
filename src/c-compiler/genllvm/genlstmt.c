@@ -94,8 +94,7 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
         case BlockRetTag:
         {
             ReturnNode *node = (ReturnNode*)*nodesp;
-            if (isExpNode(node->exp))
-                lastval = genlExpr(gen, node->exp);
+            lastval = genlExpr(gen, node->exp);
             genlDealiasNodes(gen, node->dealias);
             break;
         }
