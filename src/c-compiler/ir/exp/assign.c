@@ -28,11 +28,115 @@ void assignPrint(AssignNode *node) {
 	inodeFprint(")");
 }
 
+// Is it a valid lval?
+int assignIsLval(INode *lval) {
+    switch (lval->tag) {
+    case VarNameUseTag:
+    case DerefTag:
+    case ArrIndexTag:
+    case StrFieldTag:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+// Type check a single matched assignment between lval and rval
+// - lval must be a lval
+// - rval's type must coerce to lval's type
+void assignSingleCheck(INode *lval, INode **rval) {
+    // '_' named lval need not be checked. It is a placeholder that just swallows a value
+    if (lval->tag == VarNameUseTag && ((NameUseNode*)lval)->namesym == anonName)
+        return;
+
+    if (!assignIsLval(lval)) {
+        errorMsgNode(lval, ErrorBadLval, "Expression must be lval");
+        return;
+    }
+    if (iexpCoerces(((ITypedNode*)lval)->vtype, rval) == 0) {
+        errorMsgNode(*rval, ErrorInvType, "Expression's type does not match lval's type");
+        return;
+    }
+}
+
+// Handle parallel assignment (multiple values on both sides)
+void assignParaCheck(VTupleNode *lval, VTupleNode *rval) {
+    Nodes *lnodes = lval->values;
+    Nodes *rnodes = rval->values;
+    if (lnodes->used > rnodes->used) {
+        errorMsgNode((INode*)rval, ErrorBadTerm, "Not enough tuple values given to lvals");
+        return;
+    }
+    int16_t lcnt;
+    INode **lnodesp;
+    INode **rnodesp = &nodesGet(rnodes, 0);
+    int16_t rcnt = rnodes->used;
+    for (nodesFor(lnodes, lcnt, lnodesp)) {
+        assignSingleCheck(*lnodesp, rnodesp++);
+        rcnt--;
+    }
+}
+
+// Handle when single function/expression returns to multiple lval
+void assignMultRetCheck(VTupleNode *lval, INode **rval) {
+    Nodes *lnodes = lval->values;
+    INode *rtype = ((ITypedNode *)*rval)->vtype;
+    if (rtype->tag != TTupleTag) {
+        errorMsgNode(*rval, ErrorBadTerm, "Not enough values for lvals");
+        return;
+    }
+    Nodes *rtypes = ((TTupleNode*)((ITypedNode *)*rval)->vtype)->types;
+    if (lnodes->used > rtypes->used) {
+        errorMsgNode(*rval, ErrorBadTerm, "Not enough return values for lvals");
+        return;
+    }
+    int16_t lcnt;
+    INode **lnodesp;
+    INode **rtypep = &nodesGet(rtypes, 0);
+    for (nodesFor(lnodes, lcnt, lnodesp)) {
+        if (itypeIsSame(((ITypedNode *)*lnodesp)->vtype, *rtypep++) == 0)
+            errorMsgNode(*lnodesp, ErrorInvType, "Return value's type does not match lval's type");
+    }
+}
+
+// Handle when multiple expressions assigned to single lval
+void assignToOneCheck(INode *lval, VTupleNode *rval) {
+    Nodes *rnodes = rval->values;
+    INode **rnodesp = &nodesGet(rnodes, 0);
+    int16_t rcnt = rnodes->used;
+    assignSingleCheck(lval, rnodesp++);
+}
+
+// Name resolution and type checking for assignment node
+void assignPass(PassState *pstate, AssignNode *node) {
+	inodeWalk(pstate, &node->lval);
+	inodeWalk(pstate, &node->rval);
+    INode *lval = node->lval;
+
+	switch (pstate->pass) {
+	case TypeCheck:
+        // Handle tuple decomposition for parallel assignment
+        if (lval->tag == VTupleTag) {
+            if (node->rval->tag == VTupleTag)
+                assignParaCheck((VTupleNode*)node->lval, (VTupleNode*)node->rval);
+            else
+                assignMultRetCheck((VTupleNode*)node->lval, &node->rval);
+        }
+        else {
+            if (node->rval->tag == VTupleTag)
+                assignToOneCheck(node->lval, (VTupleNode*)node->rval);
+            else
+                assignSingleCheck(node->lval, &node->rval);
+        }
+        node->vtype = ((ITypedNode*)node->rval)->vtype;
+    }
+}
+
 // Extract lval variable, scope and overall permission from lval
 INamedNode *assignLvalInfo(INode *lval, INode **lvalperm, int16_t *scope) {
     switch (lval->tag) {
 
-    // A variable or named function node
+        // A variable or named function node
     case VarNameUseTag:
     {
         INamedNode *lvalvar = ((NameUseNode *)lval)->dclnode;
@@ -86,7 +190,10 @@ INamedNode *assignLvalInfo(INode *lval, INode **lvalperm, int16_t *scope) {
     }
 }
 
-void assignSingleCheck(INode *lval, INode **rval) {
+// Perform data flow analysis between two single assignment nodes:
+// - Lval is mutable
+// - Borrowed reference lifetime is greater than its container
+void assignSingleFlow(INode *lval, INode **rval) {
     iexpRvalCheck(rval);
     // '_' named lval need not be checked. It is a placeholder that just swallows a value
     if (lval->tag == VarNameUseTag && ((NameUseNode*)lval)->namesym == anonName)
@@ -95,43 +202,31 @@ void assignSingleCheck(INode *lval, INode **rval) {
     int16_t lvalscope;
     INode *lvalperm;
     INamedNode *lvalvar = assignLvalInfo(lval, &lvalperm, &lvalscope);
-    if (lvalvar == NULL) {
-        errorMsgNode(lval, ErrorBadLval, "Expression must be lval");
-        return;
-    }
     if (!(MayWrite & permGetFlags(lvalperm))) {
         errorMsgNode(lval, ErrorNoMut, "You do not have permission to modify lval");
         return;
     }
 
-    if (iexpCoerces(((ITypedNode*)lval)->vtype, rval) == 0) {
-        errorMsgNode(*rval, ErrorInvType, "Expression's type does not match lval's type");
-        return;
-    }
     RefNode* rvaltype = (RefNode *)((ITypedNode*)*rval)->vtype;
     RefNode* lvaltype = (RefNode *)((ITypedNode*)lval)->vtype;
     if (rvaltype->tag == RefTag && lvaltype->tag == RefTag && lvaltype->alloc == voidType) {
         if (lvalscope < rvaltype->scope) {
-            errorMsgNode(*rval, ErrorInvType, "This reference's value does not outlive lval");
+            errorMsgNode(lval, ErrorInvType, "lval outlives the borrowed reference you are storing");
             return;
         }
     }
 }
 
 // Handle parallel assignment (multiple values on both sides)
-void assignParaCheck(VTupleNode *lval, VTupleNode *rval) {
+void assignParaFlow(VTupleNode *lval, VTupleNode *rval) {
     Nodes *lnodes = lval->values;
     Nodes *rnodes = rval->values;
-    if (lnodes->used > rnodes->used) {
-        errorMsgNode((INode*)rval, ErrorBadTerm, "Not enough tuple values given to lvals");
-        return;
-    }
     int16_t lcnt;
     INode **lnodesp;
     INode **rnodesp = &nodesGet(rnodes, 0);
     int16_t rcnt = rnodes->used;
     for (nodesFor(lnodes, lcnt, lnodesp)) {
-        assignSingleCheck(*lnodesp, rnodesp++);
+        assignSingleFlow(*lnodesp, rnodesp++);
         rcnt--;
     }
     while (rcnt--)
@@ -139,59 +234,48 @@ void assignParaCheck(VTupleNode *lval, VTupleNode *rval) {
 }
 
 // Handle when single function/expression returns to multiple lval
-void assignMultRetCheck(VTupleNode *lval, INode **rval) {
+void assignMultRetFlow(VTupleNode *lval, INode **rval) {
     Nodes *lnodes = lval->values;
     INode *rtype = ((ITypedNode *)*rval)->vtype;
-    if (rtype->tag != TTupleTag) {
-        errorMsgNode(*rval, ErrorBadTerm, "Not enough values for lvals");
-        return;
-    }
     Nodes *rtypes = ((TTupleNode*)((ITypedNode *)*rval)->vtype)->types;
-    if (lnodes->used > rtypes->used) {
-        errorMsgNode(*rval, ErrorBadTerm, "Not enough return values for lvals");
-        return;
-    }
     int16_t lcnt;
     INode **lnodesp;
     INode **rtypep = &nodesGet(rtypes, 0);
     for (nodesFor(lnodes, lcnt, lnodesp)) {
-        if (itypeIsSame(((ITypedNode *)*lnodesp)->vtype, *rtypep++) == 0)
-            errorMsgNode(*lnodesp, ErrorInvType, "Return value's type does not match lval's type");
+        // Need mutability check and borrowed lifetime check
     }
     iexpRvalCheck(rval);
 }
 
 // Handle when multiple expressions assigned to single lval
-void assignToOneCheck(INode *lval, VTupleNode *rval) {
+void assignToOneFlow(INode *lval, VTupleNode *rval) {
     Nodes *rnodes = rval->values;
     INode **rnodesp = &nodesGet(rnodes, 0);
     int16_t rcnt = rnodes->used;
-    assignSingleCheck(lval, rnodesp++);
+    assignSingleFlow(lval, rnodesp++);
     while (--rcnt)
         iexpRvalCheck(rnodesp++);
 }
 
-// Analyze assignment node
-void assignPass(PassState *pstate, AssignNode *node) {
-	inodeWalk(pstate, &node->lval);
-	inodeWalk(pstate, &node->rval);
-    INode *lval = node->lval;
+// Perform data flow analysis on assignment node
+// - lval needs to be mutable.
+// - borrowed reference lifetimes must exceed lifetime of lval
+void assignFlow(FlowState *fstate, AssignNode **nodep) {
+    AssignNode *node = *nodep;
+    flowWalk(fstate, &node->rval);
 
-	switch (pstate->pass) {
-	case TypeCheck:
-        // Handle tuple decomposition for parallel assignment
-        if (lval->tag == VTupleTag) {
-            if (node->rval->tag == VTupleTag)
-                assignParaCheck((VTupleNode*)node->lval, (VTupleNode*)node->rval);
-            else
-                assignMultRetCheck((VTupleNode*)node->lval, &node->rval);
-        }
-        else {
-            if (node->rval->tag == VTupleTag)
-                assignToOneCheck(node->lval, (VTupleNode*)node->rval);
-            else
-                assignSingleCheck(node->lval, &node->rval);
-        }
-        node->vtype = ((ITypedNode*)node->rval)->vtype;
+    // Handle tuple decomposition for parallel assignment
+    INode *lval = node->lval;
+    if (lval->tag == VTupleTag) {
+        if (node->rval->tag == VTupleTag)
+            assignParaFlow((VTupleNode*)node->lval, (VTupleNode*)node->rval);
+        else
+            assignMultRetFlow((VTupleNode*)node->lval, &node->rval);
+    }
+    else {
+        if (node->rval->tag == VTupleTag)
+            assignToOneFlow(node->lval, (VTupleNode*)node->rval);
+        else
+            assignSingleFlow(node->lval, &node->rval);
     }
 }

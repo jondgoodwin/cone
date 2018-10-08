@@ -21,6 +21,8 @@ void flowWalk(FlowState *fstate, INode **node) {
         ifFlow(fstate, (IfNode **)node); break;
     case WhileTag:
         whileFlow(fstate, (WhileNode **)node); break;
+    case AssignTag:
+        assignFlow(fstate, (AssignNode **)node); break;
     case VarDclTag:
         varDclFlow(fstate, (VarDclNode **)node); break;
     case FnDclTag:
@@ -36,8 +38,6 @@ void flowWalk(FlowState *fstate, INode **node) {
         // breakFlow(fstate, *node); break;
     case ReturnTag:
         // returnFlow(fstate, (ReturnNode *)*node); break;
-    case AssignTag:
-        // assignFlow(fstate, (AssignNode *)*node); break;
     case VTupleTag:
         // vtupleFlow(fstate, (VTupleNode *)*node); break;
     case FnCallTag:

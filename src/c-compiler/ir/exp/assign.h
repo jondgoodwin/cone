@@ -25,4 +25,7 @@ AssignNode *newAssignNode(int16_t assigntype, INode *lval, INode *rval);
 void assignPrint(AssignNode *node);
 void assignPass(PassState *pstate, AssignNode *node);
 
+// Perform data flow analysis on assignment node
+void assignFlow(FlowState *fstate, AssignNode **node);
+
 #endif
