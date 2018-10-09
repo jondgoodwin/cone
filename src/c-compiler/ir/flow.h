@@ -30,6 +30,11 @@ typedef struct FlowState {
 // Dispatch a node walk for the data flow pass
 void flowWalk(FlowState *fstate, INode **node);
 
+// Perform data flow analysis on a node whose value we want to copy or move
+// Does it have a valid value? Is it loadable (e.g., readable from a reference)?
+// Is it copyable?  If not, can we deactivate its source?
+void flowCopyValue(FlowState *fstate, INode **nodep);
+
 // Add a just declared variable to the data flow stack
 void flowAddVar(VarDclNode *varnode);
 

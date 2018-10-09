@@ -135,6 +135,18 @@ void addrPass(PassState *pstate, AddrNode *node) {
             addrTypeCheckBorrow(node, reftype);
         else
             addrTypeCheckAlloc(node, reftype);
-
 	}
+}
+
+// Perform data flow analysis on addr node
+void addrFlow(FlowState *fstate, AddrNode **nodep) {
+    AddrNode *node = *nodep;
+    RefNode *reftype = (RefNode *)node->vtype;
+    if (reftype->alloc != voidType) {
+        // For an allocated reference, we need to handle the copied value
+        flowCopyValue(fstate, &node->exp);
+    }
+    else {
+        // Borrowed reference:  Deactivate source variable if necessary
+    }
 }

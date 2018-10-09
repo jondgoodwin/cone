@@ -23,6 +23,8 @@ void flowWalk(FlowState *fstate, INode **node) {
         whileFlow(fstate, (WhileNode **)node); break;
     case AssignTag:
         assignFlow(fstate, (AssignNode **)node); break;
+    case AddrTag:
+        addrFlow(fstate, (AddrNode **)node); break;
     case VarDclTag:
         varDclFlow(fstate, (VarDclNode **)node); break;
     case FnDclTag:
@@ -52,8 +54,6 @@ void flowWalk(FlowState *fstate, INode **node) {
         // castFlow(fstate, (CastNode *)*node); break;
     case DerefTag:
         // derefFlow(fstate, (DerefNode *)*node); break;
-    case AddrTag:
-        // addrFlow(fstate, (AddrNode *)*node); break;
     case NotLogicTag:
         // logicNotFlow(fstate, (LogicNode *)*node); break;
     case OrLogicTag: case AndLogicTag:
@@ -85,6 +85,22 @@ void flowWalk(FlowState *fstate, INode **node) {
 	default:
 		assert(0 && "**** ERROR **** Attempting to check an unknown node");
 	}
+}
+
+// Perform data flow analysis on a node whose value we want to copy or move
+// Does it have a valid value? Is it loadable (e.g., readable from a reference)?
+// Is it copyable?  If only movable, can we deactivate its source?
+void flowCopyValue(FlowState *fstate, INode **nodep) {
+    // Handle specific nodes here - lvals (read check) + literals + fncall
+    // fncall + literals? do not need copy check - it can return
+
+    int copytrait = itypeCopyTrait(((ITypedNode *)*nodep)->vtype);
+    if (copytrait != CopyBitwise)
+        errorMsgNode(*nodep, WarnCopy, "No current support for move. Be sure this is safe!");
+    // if CopyMethod - inject use of that method to create a safe clone that can be "moved"
+    // if CopyMove - turn off access to the source (via static (local var) or dynamic mechanism)
+
+    flowWalk(fstate, nodep); // << To do
 }
 
 // An entry for a local declared name, in which we preserve its flow flags
