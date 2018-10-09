@@ -84,16 +84,6 @@ int iexpCoerces(INode *to, INode **from) {
 	return 1;
 }
 
-// Ensure implicit copies (e.g., assignment, function arguments) are done safely
-// using a move or the copy method as needed.
-void iexpHandleCopy(INode **nodep) {
-    int copytrait = itypeCopyTrait(((ITypedNode *)*nodep)->vtype);
-    if (copytrait != CopyBitwise)
-        errorMsgNode(*nodep, WarnCopy, "No current support for move. Be sure this is safe!");
-    // if CopyMethod - inject use of that method to create a safe clone that can be "moved"
-    // if CopyMove - turn off access to the source (via static (local var) or dynamic mechanism)
-}
-
 // Retrieve the permission flags for the node
 uint16_t iexpGetPermFlags(INode *node) {
     switch (node->tag) {
@@ -126,18 +116,4 @@ uint16_t iexpGetPermFlags(INode *node) {
     default:
         return 0;
     }
-}
-
-// Ensure we can read and copy/move all rvals
-void iexpRvalCheck(INode **rvalp) {
-    // Check each value separately in a value tuple
-    if ((*rvalp)->tag == VTupleTag) {
-        INode **nodesp;
-        uint32_t cnt;
-        for (nodesFor(((VTupleNode *)*rvalp)->values, cnt, nodesp))
-            iexpRvalCheck(nodesp);
-        return;
-    }
-
-    iexpHandleCopy(rvalp);  // Move semantics, etc.
 }

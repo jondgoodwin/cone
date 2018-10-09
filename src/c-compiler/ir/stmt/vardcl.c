@@ -70,7 +70,6 @@ void varDclTypeCheck(PassState *pstate, VarDclNode *name) {
 	// Otherwise, verify that declared type and initial value type matches
 	else if (!iexpCoerces(name->vtype, &name->value))
 		errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
-    iexpHandleCopy(&name->value);
 }
 
 // Check the variable declaration node
@@ -102,4 +101,6 @@ void varDclPass(PassState *pstate, VarDclNode *name) {
 // Perform data flow analysis
 void varDclFlow(FlowState *fstate, VarDclNode **vardclnode) {
     flowAddVar(*vardclnode);
+    if ((*vardclnode)->value)
+        flowLoadValue(fstate, &((*vardclnode)->value), 1);
 }

@@ -32,6 +32,9 @@ void flowLoadValue(FlowState *fstate, INode **nodep, int copyflag) {
         ifFlow(fstate, (IfNode **)nodep, copyflag); break;
     case AssignTag:
         assignFlow(fstate, (AssignNode **)nodep); break;
+    case FnCallTag:
+        fnCallFlow(fstate, (FnCallNode**)nodep);
+        break;
     case AddrTag:
         addrFlow(fstate, (AddrNode **)nodep); break;
     case VTupleTag:
@@ -64,7 +67,6 @@ void flowLoadValue(FlowState *fstate, INode **nodep, int copyflag) {
         break;
     }
 
-    case FnCallTag:
     case ULitTag:
     case FLitTag:
     case StrLitTag:

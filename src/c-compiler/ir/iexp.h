@@ -32,14 +32,7 @@ INode *iexpGetDerefTypeDcl(INode *node);
 // This might inject a 'cast' node in front of the 'from' node with non-matching numbers
 int iexpCoerces(INode *to, INode **from);
 
-// Ensure implicit copies (e.g., assignment, function arguments) are done safely
-// using a move or the copy method as needed.
-void iexpHandleCopy(INode **nodep);
-
 // Retrieve the permission flags for the node
 uint16_t iexpGetPermFlags(INode *node);
-
-// Ensure we can read and copy/move all rvals
-void iexpRvalCheck(INode **rvalp);
 
 #endif

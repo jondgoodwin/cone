@@ -81,6 +81,8 @@ void fnDclTypeCheck(PassState *pstate, FnDclNode *varnode) {
 
 // Begin the processing of the data flow pass for this function
 void fnDclFlow(FnDclNode *fnnode) {
+    if (errors)
+        return;
     FlowState fstate;
     fstate.fnsig = (FnSigNode *)fnnode->vtype;
     blockFlow(&fstate, (BlockNode **)&fnnode->value, 0);

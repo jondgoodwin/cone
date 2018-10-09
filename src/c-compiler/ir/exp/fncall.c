@@ -56,8 +56,6 @@ void fnCallFinalizeArgs(FnCallNode *node) {
     for (nodesFor(node->args, cnt, argsp)) {
         if (!iexpCoerces(*parmp, argsp))
             errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
-        else
-            iexpHandleCopy(argsp);
         parmp++;
     }
 
@@ -258,5 +256,15 @@ void fnCallPass(PassState *pstate, FnCallNode *node) {
 
         break;
     }
+    }
+}
+
+// Do data flow analysis for fncall node (only real function calls)
+void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor(node->args, cnt, argsp)) {
+        flowLoadValue(fstate, argsp, 1);
     }
 }

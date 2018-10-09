@@ -164,6 +164,7 @@ INamedNode *assignLvalInfo(INode *lval, INode **lvalperm, int16_t *scope) {
     case ArrIndexTag:
     {
         FnCallNode *element = (FnCallNode *)lval;
+        // flowLoadValue(fstate, nodesFind(element->args, 0), 0);
         INamedNode *lvalvar = assignLvalInfo(element->objfn, lvalperm, scope);
         if (lvalvar == NULL)
             return NULL;
@@ -194,7 +195,6 @@ INamedNode *assignLvalInfo(INode *lval, INode **lvalperm, int16_t *scope) {
 // - Lval is mutable
 // - Borrowed reference lifetime is greater than its container
 void assignSingleFlow(INode *lval, INode **rval) {
-    iexpRvalCheck(rval);
     // '_' named lval need not be checked. It is a placeholder that just swallows a value
     if (lval->tag == VarNameUseTag && ((NameUseNode*)lval)->namesym == anonName)
         return;
@@ -229,8 +229,6 @@ void assignParaFlow(VTupleNode *lval, VTupleNode *rval) {
         assignSingleFlow(*lnodesp, rnodesp++);
         rcnt--;
     }
-    while (rcnt--)
-        iexpRvalCheck(rnodesp++);
 }
 
 // Handle when single function/expression returns to multiple lval
@@ -244,7 +242,6 @@ void assignMultRetFlow(VTupleNode *lval, INode **rval) {
     for (nodesFor(lnodes, lcnt, lnodesp)) {
         // Need mutability check and borrowed lifetime check
     }
-    iexpRvalCheck(rval);
 }
 
 // Handle when multiple expressions assigned to single lval
@@ -253,8 +250,6 @@ void assignToOneFlow(INode *lval, VTupleNode *rval) {
     INode **rnodesp = &nodesGet(rnodes, 0);
     int16_t rcnt = rnodes->used;
     assignSingleFlow(lval, rnodesp++);
-    while (--rcnt)
-        iexpRvalCheck(rnodesp++);
 }
 
 // Perform data flow analysis on assignment node
