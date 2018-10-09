@@ -20,6 +20,6 @@ void ifPass(PassState *pstate, IfNode *ifnode);
 void ifRemoveReturns(IfNode *ifnode);
 
 // Perform data flow analysis on an if expression
-void ifFlow(FlowState *fstate, IfNode **ifnodep);
+void ifFlow(FlowState *fstate, IfNode **ifnodep, int copyflag);
 
 #endif

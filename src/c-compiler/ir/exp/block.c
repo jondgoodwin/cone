@@ -84,34 +84,71 @@ void blockPass(PassState *pstate, BlockNode *blk) {
 }
 
 // Perform data flow analysis on a block
-void blockFlow(FlowState *fstate, BlockNode **blknode) {
+void blockFlow(FlowState *fstate, BlockNode **blknode, int copyflag) {
     BlockNode *blk = *blknode;
     size_t svpos = flowScopePush();
+
+    // Ensure last node is return, blockret, break or continue
+    // Inject blockret, if not present
+    INode **lastnodep = &nodesLast(blk->stmts);
+    switch ((*lastnodep)->tag) {
+    case ReturnTag:
+    case BreakTag:
+    case ContinueTag:
+        break;
+    default:
+    {
+        // Inject blockret node
+        ReturnNode *blkret = newReturnNode();
+        blkret->tag = BlockRetTag;
+        if (isExpNode(*lastnodep)) {
+            blkret->exp = *lastnodep;
+            *lastnodep = (INode*)blkret;
+        }
+        else {
+            blkret->exp = voidType;
+            nodesAdd(&blk->stmts, (INode*)blkret);
+        }
+    }
+    }
+
+    // Except for last node, handle all other nodes as if they throw away returned value
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(blk->stmts, cnt, nodesp)) {
-        flowWalk(fstate, nodesp);
+        // Handle last node differently, below
+        if (cnt <= 1)
+            break;
+        switch ((*nodesp)->tag) {
+        case VarDclTag:
+            varDclFlow(fstate, (VarDclNode**)nodesp);
+            break;
+        case WhileTag:
+            whileFlow(fstate, (WhileNode **)nodesp);
+            break;
+        default:
+            // An expression as statement throws out its value
+            if (isExpNode(*nodesp))
+                flowLoadValue(fstate, nodesp, 0);
+        }
     }
 
     // Capture any scope-ending dealiasing in block's last node
     // That last node must now be a return, break, continue or an injected "block return"
-    INode **lastnode = &nodesGet(blk->stmts, blk->stmts->used - 1);
-    Nodes **varlist;
-    switch ((*lastnode)->tag) {
+    Nodes **varlistp = NULL;
+    switch ((*nodesp)->tag) {
     case ReturnTag:
-        varlist = &((ReturnNode *)*lastnode)->dealias; break;
+    case BlockRetTag:
+    {
+        INode **retexp = &((ReturnNode *)*nodesp)->exp;
+        if (*retexp != voidType)
+            flowLoadValue(fstate, retexp, 1);
+        varlistp = &((ReturnNode *)*nodesp)->dealias;
+        break;
+    }
     case BreakTag:
     case ContinueTag:
-        varlist = &((BreakNode *)*lastnode)->dealias; break;
-    default:
-    {
-        // Inject block return able to capture variable dealiases
-        ReturnNode *blkret = newReturnNode();
-        blkret->tag = BlockRetTag;
-        blkret->exp = *lastnode;
-        *lastnode = (INode*)blkret;
-        varlist = &blkret->dealias;
+        varlistp = &((BreakNode *)*nodesp)->dealias; break;
     }
-    }
-    flowScopePop(svpos, varlist);
+    flowScopePop(svpos, varlistp);
 }

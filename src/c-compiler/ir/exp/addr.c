@@ -144,7 +144,7 @@ void addrFlow(FlowState *fstate, AddrNode **nodep) {
     RefNode *reftype = (RefNode *)node->vtype;
     if (reftype->alloc != voidType) {
         // For an allocated reference, we need to handle the copied value
-        flowCopyValue(fstate, &node->exp);
+        flowLoadValue(fstate, &node->exp, 1);
     }
     else {
         // Borrowed reference:  Deactivate source variable if necessary

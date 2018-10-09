@@ -262,7 +262,7 @@ void assignToOneFlow(INode *lval, VTupleNode *rval) {
 // - borrowed reference lifetimes must exceed lifetime of lval
 void assignFlow(FlowState *fstate, AssignNode **nodep) {
     AssignNode *node = *nodep;
-    flowWalk(fstate, &node->rval);
+    flowLoadValue(fstate, &node->rval, 1);
 
     // Handle tuple decomposition for parallel assignment
     INode *lval = node->lval;

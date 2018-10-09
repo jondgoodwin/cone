@@ -10,97 +10,70 @@
 #include <assert.h>
 #include <memory.h>
 
-// Dispatch a node walk for the data flow pass
-// - fstate is helpful state info for node traversal
-// - node is a pointer to pointer so that a node can be replaced
-void flowWalk(FlowState *fstate, INode **node) {
-	switch ((*node)->tag) {
-    case BlockTag:
-        blockFlow(fstate, (BlockNode **)node); break;
-    case IfTag:
-        ifFlow(fstate, (IfNode **)node); break;
-    case WhileTag:
-        whileFlow(fstate, (WhileNode **)node); break;
-    case AssignTag:
-        assignFlow(fstate, (AssignNode **)node); break;
-    case AddrTag:
-        addrFlow(fstate, (AddrNode **)node); break;
-    case VarDclTag:
-        varDclFlow(fstate, (VarDclNode **)node); break;
-    case FnDclTag:
-       //  fnDclFlow(fstate, (FnDclNode *)*node); break;
-    case NameUseTag:
-    case VarNameUseTag:
-    case TypeNameUseTag:
-        // nameUseFlow(fstate, (NameUseNode **)node); break;
-    case ArrLitTag:
-        // arrLitFlow(fstate, (ArrLitNode *)*node); break;
-    case BreakTag:
-    case ContinueTag:
-        // breakFlow(fstate, *node); break;
-    case ReturnTag:
-        // returnFlow(fstate, (ReturnNode *)*node); break;
-    case VTupleTag:
-        // vtupleFlow(fstate, (VTupleNode *)*node); break;
-    case FnCallTag:
-        // fnCallFlow(fstate, (FnCallNode *)*node); break;
-    case ArrIndexTag:
-        // fnCallFlow(fstate, (FnCallNode *)*node); break;
-    case StrFieldTag:
-        // fnCallFlow(fstate, (FnCallNode *)*node); break;
-    case SizeofTag:
-        // sizeofFlow(fstate, (SizeofNode *)*node); break;
-    case CastTag:
-        // castFlow(fstate, (CastNode *)*node); break;
-    case DerefTag:
-        // derefFlow(fstate, (DerefNode *)*node); break;
-    case NotLogicTag:
-        // logicNotFlow(fstate, (LogicNode *)*node); break;
-    case OrLogicTag: case AndLogicTag:
-        // logicFlow(fstate, (LogicNode *)*node); break;
-    case FnSigTag:
-        // fnSigFlow(fstate, (FnSigNode *)*node); break;
-    case RefTag:
-        // refFlow(fstate, (RefNode *)*node); break;
-    case PtrTag:
-        // ptrFlow(fstate, (PtrNode *)*node); break;
-    case StructTag:
-    case AllocTag:
-        // structFlow(fstate, (StructNode *)*node); break;
-    case ArrayTag:
-        // arrayFlow(fstate, (ArrayNode *)*node); break;
-    case TTupleTag:
-        // ttupleFlow(fstate, (TTupleNode *)*node); break;
-
-    case ULitTag:
-    case FLitTag:
-        // inodeFlow(fstate, &((ITypedNode*)*node)->vtype); break;
-
-    case MbrNameUseTag:
-    case StrLitTag:
-    case IntNbrTag: case UintNbrTag: case FloatNbrTag:
-    case PermTag:
-    case VoidTag:
-        return;
-	default:
-		assert(0 && "**** ERROR **** Attempting to check an unknown node");
-	}
-}
-
-// Perform data flow analysis on a node whose value we want to copy or move
-// Does it have a valid value? Is it loadable (e.g., readable from a reference)?
-// Is it copyable?  If only movable, can we deactivate its source?
-void flowCopyValue(FlowState *fstate, INode **nodep) {
-    // Handle specific nodes here - lvals (read check) + literals + fncall
-    // fncall + literals? do not need copy check - it can return
-
-    int copytrait = itypeCopyTrait(((ITypedNode *)*nodep)->vtype);
+void flowHandleMove(INode *node) {
+    int copytrait = itypeCopyTrait(((ITypedNode *)node)->vtype);
     if (copytrait != CopyBitwise)
-        errorMsgNode(*nodep, WarnCopy, "No current support for move. Be sure this is safe!");
+        errorMsgNode(node, WarnCopy, "No current support for move. Be sure this is safe!");
     // if CopyMethod - inject use of that method to create a safe clone that can be "moved"
     // if CopyMove - turn off access to the source (via static (local var) or dynamic mechanism)
+}
 
-    flowWalk(fstate, nodep); // << To do
+// Perform data flow analysis on a node whose value we intend to load
+// At minimum, we check that it is a valid, readable value
+// copyflag indicates whether value is to be copied or moved
+// If copied, we may need to alias it. If moved, we may have to deactivate its source.
+void flowLoadValue(FlowState *fstate, INode **nodep, int copyflag) {
+    // Handle specific nodes here - lvals (read check) + literals + fncall
+    // fncall + literals? do not need copy check - it can return
+    switch ((*nodep)->tag) {
+    case BlockTag:
+        blockFlow(fstate, (BlockNode **)nodep, copyflag); break;
+    case IfTag:
+        ifFlow(fstate, (IfNode **)nodep, copyflag); break;
+    case AssignTag:
+        assignFlow(fstate, (AssignNode **)nodep); break;
+    case AddrTag:
+        addrFlow(fstate, (AddrNode **)nodep); break;
+    case VTupleTag:
+    {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((VTupleNode *)*nodep)->values, cnt, nodesp))
+            flowLoadValue(fstate, nodesp, copyflag);
+        break;
+    }
+    case VarNameUseTag:
+    case DerefTag:
+    case ArrIndexTag:
+    case StrFieldTag:
+        if (copyflag) {
+            flowHandleMove(*nodep);
+        }
+        break;
+    case CastTag:
+        flowLoadValue(fstate, &((CastNode *)*nodep)->exp, copyflag);
+        break;
+    case NotLogicTag:
+        flowLoadValue(fstate, &((LogicNode *)*nodep)->lexp, 0);
+        break;
+    case OrLogicTag: case AndLogicTag:
+    {
+        LogicNode *lnode = (LogicNode*)*nodep;
+        flowLoadValue(fstate, &lnode->lexp, 0);
+        flowLoadValue(fstate, &lnode->rexp, 0);
+        break;
+    }
+
+    case FnCallTag:
+    case ULitTag:
+    case FLitTag:
+    case StrLitTag:
+    case ArrLitTag:
+        break;
+    default:
+        assert(0);
+    }
+
 }
 
 // An entry for a local declared name, in which we preserve its flow flags

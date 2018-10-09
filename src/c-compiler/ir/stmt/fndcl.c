@@ -83,7 +83,7 @@ void fnDclTypeCheck(PassState *pstate, FnDclNode *varnode) {
 void fnDclFlow(FnDclNode *fnnode) {
     FlowState fstate;
     fstate.fnsig = (FnSigNode *)fnnode->vtype;
-    flowWalk(&fstate, &fnnode->value);
+    blockFlow(&fstate, (BlockNode **)&fnnode->value, 0);
 }
 
 // Check the function declaration node
