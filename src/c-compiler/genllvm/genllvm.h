@@ -36,9 +36,18 @@ LLVMBasicBlockRef genlInsertBlock(GenState *gen, char *name);
 LLVMValueRef genlBlock(GenState *gen, BlockNode *blk);
 
 // genlexpr.c
-LLVMTypeRef genlType(GenState *gen, INode *typ);
 LLVMValueRef genlExpr(GenState *gen, INode *termnode);
+
+// genlalloc.c
+// Generate code that creates an allocated ref by allocating and initializing
+LLVMValueRef genlallocref(GenState *gen, AddrNode *addrnode);
 // Progressively dealias or drop all declared variables in nodes list
 void genlDealiasNodes(GenState *gen, Nodes *nodes);
+
+// genltype.c
+// Generate a type value
+LLVMTypeRef genlType(GenState *gen, INode *typ);
+// Generate LLVM value corresponding to the size of a type
+LLVMValueRef genlSizeof(GenState *gen, INode *vtype);
 
 #endif

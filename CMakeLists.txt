@@ -74,6 +74,8 @@ add_executable(conec
 	src/c-compiler/genllvm/genllvm.c
 	src/c-compiler/genllvm/genlstmt.c
 	src/c-compiler/genllvm/genlexpr.c
+	src/c-compiler/genllvm/genlalloc.c
+	src/c-compiler/genllvm/genltype.c
 )
 
 target_link_libraries(conec "${LLVM_LIB}")
