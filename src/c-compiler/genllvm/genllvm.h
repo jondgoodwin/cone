@@ -43,6 +43,12 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode);
 LLVMValueRef genlallocref(GenState *gen, AddrNode *addrnode);
 // Progressively dealias or drop all declared variables in nodes list
 void genlDealiasNodes(GenState *gen, Nodes *nodes);
+// Dealias an rc allocated reference
+void genlDealiasRc(GenState *gen, LLVMValueRef ref);
+// Alias an rc allocated reference
+void genlAliasRc(GenState *gen, LLVMValueRef ref);
+// Is value's type an Rc allocated ref we might copy (and increment refcount)?
+int genlDoAliasRc(INode *rval);
 
 // genltype.c
 // Generate a type value

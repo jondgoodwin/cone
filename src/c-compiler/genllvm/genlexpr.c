@@ -105,8 +105,12 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
 	LLVMValueRef *fnarg = fnargs;
 	INode **nodesp;
 	uint32_t cnt;
-	for (nodesFor(fncall->args, cnt, nodesp))
-		*fnarg++ = genlExpr(gen, *nodesp);
+    for (nodesFor(fncall->args, cnt, nodesp)) {
+        LLVMValueRef argval = genlExpr(gen, *nodesp);
+        if (genlDoAliasRc(*nodesp) == 1)
+            genlAliasRc(gen, argval);
+        *fnarg++ = argval;
+    }
 
 	// Handle call when we have a pointer to a function
 	if (fncall->objfn->tag == DerefTag) {
@@ -380,10 +384,17 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
 	return NULL;
 }
 
-void genlStore(GenState *gen, INode *lval, LLVMValueRef rval) {
+void genlStore(GenState *gen, INode *lval, LLVMValueRef rval, int aliasflag) {
     if (lval->tag == VarNameUseTag && ((NameUseNode*)lval)->namesym == anonName)
         return;
-    LLVMBuildStore(gen->builder, rval, genlAddr(gen, lval));
+    LLVMValueRef lvalptr = genlAddr(gen, lval);
+    RefNode *reftype = (RefNode *)((ITypedNode*)lval)->vtype;
+    if (reftype->tag == RefTag && reftype->alloc == (INode*)rcAlloc) {
+        if (aliasflag == 1)
+            genlAliasRc(gen, rval);
+        genlDealiasRc(gen, LLVMBuildLoad(gen->builder, lvalptr, "dealiasref"));
+    }
+    LLVMBuildStore(gen->builder, rval, lvalptr);
 }
 
 // Generate a term
@@ -441,10 +452,10 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         LLVMValueRef valueref = genlExpr(gen, rval);
         if (lval->tag != VTupleTag) {
             if (rval->tag != VTupleTag)
-                genlStore(gen, lval, valueref); // simple assignment
+                genlStore(gen, lval, valueref, genlDoAliasRc(rval)); // simple assignment
             else {
                 // Assign lval to first value in tuple struct
-                genlStore(gen, lval, LLVMBuildExtractValue(gen->builder, valueref, 0, ""));
+                genlStore(gen, lval, LLVMBuildExtractValue(gen->builder, valueref, 0, ""), 0);
             }
         }
         else {
@@ -454,7 +465,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
             uint32_t cnt;
             int index = 0;
             for (nodesFor(ltuple->values, cnt, nodesp)) {
-                genlStore(gen, *nodesp, LLVMBuildExtractValue(gen->builder, valueref, index++, ""));
+                genlStore(gen, *nodesp, LLVMBuildExtractValue(gen->builder, valueref, index++, ""), 0);
             }
         }
         return valueref;
