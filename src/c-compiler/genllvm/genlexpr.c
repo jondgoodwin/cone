@@ -329,8 +329,12 @@ LLVMValueRef genlLocalVar(GenState *gen, VarDclNode *var) {
 	assert(var->tag == VarDclTag);
 	LLVMValueRef val = NULL;
 	var->llvmvar = LLVMBuildAlloca(gen->builder, genlType(gen, var->vtype), &var->namesym->namestr);
-	if (var->value)
-		LLVMBuildStore(gen->builder, (val = genlExpr(gen, var->value)), var->llvmvar);
+    if (var->value) {
+        val = genlExpr(gen, var->value);
+        if (genlDoAliasRc(var->value) == 1)
+            genlAliasRc(gen, val);
+        LLVMBuildStore(gen->builder, val, var->llvmvar);
+    }
 	return val;
 }
 

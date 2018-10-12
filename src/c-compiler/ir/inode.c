@@ -188,12 +188,13 @@ void inodeWalk(PassState *pstate, INode **node) {
     case PtrTag:
 		ptrPass(pstate, (PtrNode *)*node); break;
 	case StructTag:
-	case AllocTag:
 		structPass(pstate, (StructNode *)*node); break;
 	case ArrayTag:
 		arrayPass(pstate, (ArrayNode *)*node); break;
     case TTupleTag:
         ttupleWalk(pstate, (TTupleNode *)*node); break;
+    case AllocTag:
+        break;
 
     case ULitTag:
     case FLitTag:
