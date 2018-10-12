@@ -85,6 +85,7 @@ void fnDclFlow(FnDclNode *fnnode) {
         return;
     FlowState fstate;
     fstate.fnsig = (FnSigNode *)fnnode->vtype;
+    fstate.scope = 1;
     blockFlow(&fstate, (BlockNode **)&fnnode->value, 0);
 }
 

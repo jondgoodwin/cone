@@ -25,6 +25,7 @@ typedef struct FnSigNode FnSigNode;
 // Context used across the data flow pass for a specific function/method
 typedef struct FlowState {
     FnSigNode *fnsig;	// The type signature of the function we are within
+    int16_t scope;      // Current block scope (2 = main block)
 } FlowState;
 
 // Perform data flow analysis on a node whose value we intend to load

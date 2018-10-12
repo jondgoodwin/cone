@@ -88,6 +88,14 @@ void blockFlow(FlowState *fstate, BlockNode **blknode, int copyflag) {
     BlockNode *blk = *blknode;
     size_t svpos = flowScopePush();
 
+    // If this is function's main block, include parameters in flow analysis
+    if (++fstate->scope == 2) {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(fstate->fnsig->parms, cnt, nodesp))
+            flowAddVar((VarDclNode*)*nodesp);
+    }
+
     // Ensure last node is return, blockret, break or continue
     // Inject blockret, if not present
     INode **lastnodep = &nodesLast(blk->stmts);
@@ -150,5 +158,7 @@ void blockFlow(FlowState *fstate, BlockNode **blknode, int copyflag) {
     case ContinueTag:
         varlistp = &((BreakNode *)*nodesp)->dealias; break;
     }
+
+    --fstate->scope;
     flowScopePop(svpos, varlistp);
 }

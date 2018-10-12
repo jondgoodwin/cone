@@ -40,13 +40,13 @@ When this work is done, the compiler will:
 
 This table illustrates the current status of Cone's key features:
 
-| Area | Implemented | Future |
+| Feature | Implemented | Planned |
 | --- | --- | --- |
 | **Control Flow** | Functions | Anon. functions, closures |
-| | Methods on types | Constructors, finalizers, set methods |
+| | Methods for types | Constructors, finalizers, set methods |
 | | Return (+implicit) | do, this & build blocks |
-| | if & block (expressions) | each & match |
-| | while, break, continue | |
+| | if & block (expressions) | match |
+| | while, break, continue | each |
 | **Names** | Global, local, extern variables | |
 | | Module & type namespaces | |
 | | include | import |
@@ -58,7 +58,7 @@ This table illustrates the current status of Cone's key features:
 | | and, or, not/! | |
 | **Types** | u8, u16, u32, u64, i8, i16, i32, i64 | |
 | | f32, f64 | |
-| | bool, true, false | |
+| | Bool: true, false | |
 | | struct and tuples | struct literals |
 | | array, array refs | slices, collections |
 | | | variant types |
@@ -66,6 +66,6 @@ This table illustrates the current status of Cone's key features:
 | | lex, rc, borrowed | gc, arena, pool |
 | | static permissions | runtime permissions |
 | | pointers | trust block |
-| ** Polymorphism ** | | Interfaces, Traits |
+| **Polymorphism** | | Interfaces, Traits |
 | | | Generics |
 | | | Macros, CTE |
