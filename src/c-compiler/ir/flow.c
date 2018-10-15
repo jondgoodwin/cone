@@ -78,6 +78,14 @@ void flowLoadValue(FlowState *fstate, INode **nodep, int copyflag) {
 
 }
 
+// *********************
+// Variable Info stack for data flow analysis
+//
+// As we traverse the IR nodes, this tracks what we know about a variable in each block:
+// - Has it been initialized (and used)?
+// - Has it been moved and has it not been moved?
+// *********************
+
 // An entry for a local declared name, in which we preserve its flow flags
 typedef struct {
     VarDclNode *node;    // The variable declaration node
@@ -132,4 +140,89 @@ void flowScopePop(size_t startpos, Nodes **varlist) {
     }
 
     gVarFlowStackPos = pos;
+}
+
+// *********************
+// Aliasing stack for data flow analysis
+//
+// As we traverse the IR nodes, this tracks expression "aliasing" in each block.
+// Aliasing is when we copy a value. This matters with RC and LEX references.
+// *********************
+
+int16_t *gFlowAliasStackp = NULL;
+size_t gFlowAliasStackSz = 0;
+size_t gFlowAliasStackPos = 0;
+
+// Ensure enough room for alias stack
+void flowAliasRoom(size_t highpos) {
+    if (highpos >= gFlowAliasStackSz) {
+        if (gFlowAliasStackSz == 0) {
+            gFlowAliasStackSz = 1024;
+            gFlowAliasStackp = (int16_t*)memAllocBlk(gFlowAliasStackSz * sizeof(int16_t));
+            memset(gFlowAliasStackp, 0, gFlowAliasStackSz * sizeof(int16_t));
+            gFlowAliasStackPos = 0;
+        }
+        else {
+            // Double table size, copying over old data
+            int16_t *oldtable = gFlowAliasStackp;
+            int oldsize = gFlowAliasStackSz;
+            gFlowAliasStackSz <<= 1;
+            gFlowAliasStackp = (int16_t*)memAllocBlk(gFlowAliasStackSz * sizeof(int16_t));
+            memset(gFlowAliasStackp, 0, gFlowAliasStackSz * sizeof(int16_t));
+            memcpy(gFlowAliasStackp, oldtable, oldsize * sizeof(int16_t));
+        }
+    }
+}
+
+// Initialize a function's alias stack
+void flowAliasInit() {
+    flowAliasRoom(3);
+    gFlowAliasStackp[0] = 1;  // current frame's # of aliasing values
+    gFlowAliasStackp[1] = 0;  // current frame's start aliasing count
+    gFlowAliasStackp[2] = 0;  // Alias count of first value
+}
+
+// Start a new frame on alias stack
+size_t flowAliasPushNew(int16_t init) {
+    size_t svpos = gFlowAliasStackPos;
+    int16_t oldstacksz = gFlowAliasStackp[svpos];
+    flowAliasRoom(5 + oldstacksz);
+    gFlowAliasStackPos += 2 + oldstacksz;
+    gFlowAliasStackp[gFlowAliasStackPos] = 1;       // current frame's # of aliasing values
+    gFlowAliasStackp[gFlowAliasStackPos+1] = init;  // current frame's start aliasing count
+    gFlowAliasStackp[gFlowAliasStackPos + 2] = init; // First value's alias count
+    return svpos;
+}
+
+// Restore previous stack
+void flowAliasPop(size_t oldpos) {
+    gFlowAliasStackPos = oldpos;
+}
+
+// Reset current frame (to one value initialized to init value)
+void flowAliasReset() {
+    int16_t stacksz = gFlowAliasStackp[gFlowAliasStackPos];
+    gFlowAliasStackp[stacksz] = 1;
+    gFlowAliasStackp[stacksz + 2] = gFlowAliasStackp[stacksz + 1];
+}
+
+// Ensure frame has enough initialized alias counts for 'size' values
+void flowAliasSize(int16_t size) {
+    int16_t stacksz = gFlowAliasStackp[gFlowAliasStackPos];
+    if (stacksz >= size)
+        return;
+    int16_t init = gFlowAliasStackp[gFlowAliasStackPos + 1];
+    while (stacksz < size)
+        gFlowAliasStackp[gFlowAliasStackPos + 2 + stacksz++] = init;
+    gFlowAliasStackp[gFlowAliasStackPos] = size;
+}
+
+// Increment aliasing count at frame's position
+void flowAliasIncr(int16_t pos) {
+    ++gFlowAliasStackp[gFlowAliasStackPos + 2 + pos];
+}
+
+// Get aliasing count at frame's position
+int16_t flowAliasGet(size_t pos) {
+    return gFlowAliasStackp[gFlowAliasStackPos + 2 + pos];
 }
