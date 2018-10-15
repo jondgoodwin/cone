@@ -108,7 +108,7 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
     for (nodesFor(fncall->args, cnt, nodesp)) {
         LLVMValueRef argval = genlExpr(gen, *nodesp);
         if (genlDoAliasRc(*nodesp) == 1)
-            genlAliasRc(gen, argval);
+            genlRcCounter(gen, argval, 1);
         *fnarg++ = argval;
     }
 
@@ -332,7 +332,7 @@ LLVMValueRef genlLocalVar(GenState *gen, VarDclNode *var) {
     if (var->value) {
         val = genlExpr(gen, var->value);
         if (genlDoAliasRc(var->value) == 1)
-            genlAliasRc(gen, val);
+            genlRcCounter(gen, val, 1);
         LLVMBuildStore(gen->builder, val, var->llvmvar);
     }
 	return val;
@@ -395,8 +395,8 @@ void genlStore(GenState *gen, INode *lval, LLVMValueRef rval, int aliasflag) {
     RefNode *reftype = (RefNode *)((ITypedNode*)lval)->vtype;
     if (reftype->tag == RefTag && reftype->alloc == (INode*)rcAlloc) {
         if (aliasflag == 1)
-            genlAliasRc(gen, rval);
-        genlDealiasRc(gen, LLVMBuildLoad(gen->builder, lvalptr, "dealiasref"));
+            genlRcCounter(gen, rval, 1);
+        genlRcCounter(gen, LLVMBuildLoad(gen->builder, lvalptr, "dealiasref"), -1);
     }
     LLVMBuildStore(gen->builder, rval, lvalptr);
 }

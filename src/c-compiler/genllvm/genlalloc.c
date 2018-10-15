@@ -80,31 +80,6 @@ void genlDealiasLex(GenState *gen, LLVMValueRef ref) {
     genlFree(gen, ref);
 }
 
-// Dealias an rc allocated reference
-void genlDealiasRc(GenState *gen, LLVMValueRef ref) {
-    // Point backwards to ref counter
-    LLVMTypeRef usize = genlType(gen, (INode*)usizeType);
-    LLVMValueRef intptr = LLVMBuildPtrToInt(gen->builder, ref, usize, "");
-    LLVMValueRef cntintptr = LLVMBuildSub(gen->builder, intptr, genlSizeof(gen, (INode*)usizeType), "");
-    LLVMTypeRef ptrusize = LLVMPointerType(genlType(gen, (INode*)usizeType), 0);
-    LLVMValueRef cntptr = LLVMBuildIntToPtr(gen->builder, cntintptr, ptrusize, "refcount");
-
-    // Decrement ref counter
-    LLVMValueRef cnt = LLVMBuildLoad(gen->builder, cntptr, "");
-    LLVMValueRef newcnt = LLVMBuildSub(gen->builder, cnt, LLVMConstInt(usize, 1, 0), "");
-    LLVMBuildStore(gen->builder, newcnt, cntptr);
-
-    // Free if zero. Otherwise, don't
-    LLVMBasicBlockRef nofree = genlInsertBlock(gen, "nofree");
-    LLVMBasicBlockRef dofree = genlInsertBlock(gen, "free");
-    LLVMValueRef test = LLVMBuildICmp(gen->builder, LLVMIntEQ, newcnt, LLVMConstInt(usize, 0, 0), "iszero");
-    LLVMBuildCondBr(gen->builder, test, dofree, nofree);
-    LLVMPositionBuilderAtEnd(gen->builder, dofree);
-    genlFree(gen, cntptr);
-    LLVMBuildBr(gen->builder, nofree);
-    LLVMPositionBuilderAtEnd(gen->builder, nofree);
-}
-
 // Is value's type an Rc allocated ref we might copy (and increment refcount)?
 int genlDoAliasRc(INode *rval) {
     RefNode *reftype = (RefNode *)iexpGetTypeDcl(rval);
@@ -135,8 +110,8 @@ int genlDoAliasRc(INode *rval) {
     return 0;
 }
 
-// Alias an rc allocated reference
-void genlAliasRc(GenState *gen, LLVMValueRef ref) {
+// Add to the counter of an rc allocated reference
+void genlRcCounter(GenState *gen, LLVMValueRef ref, long long amount) {
     // Point backwards to ref counter
     LLVMTypeRef usize = genlType(gen, (INode*)usizeType);
     LLVMValueRef intptr = LLVMBuildPtrToInt(gen->builder, ref, usize, "");
@@ -146,8 +121,20 @@ void genlAliasRc(GenState *gen, LLVMValueRef ref) {
 
     // Increment ref counter
     LLVMValueRef cnt = LLVMBuildLoad(gen->builder, cntptr, "");
-    LLVMValueRef newcnt = LLVMBuildAdd(gen->builder, cnt, LLVMConstInt(usize, 1, 0), "");
+    LLVMValueRef newcnt = LLVMBuildAdd(gen->builder, cnt, LLVMConstInt(usize, amount, 0), "");
     LLVMBuildStore(gen->builder, newcnt, cntptr);
+
+    // Free if zero. Otherwise, don't
+    if (amount < 0) {
+        LLVMBasicBlockRef nofree = genlInsertBlock(gen, "nofree");
+        LLVMBasicBlockRef dofree = genlInsertBlock(gen, "free");
+        LLVMValueRef test = LLVMBuildICmp(gen->builder, LLVMIntEQ, newcnt, LLVMConstInt(usize, 0, 0), "iszero");
+        LLVMBuildCondBr(gen->builder, test, dofree, nofree);
+        LLVMPositionBuilderAtEnd(gen->builder, dofree);
+        genlFree(gen, cntptr);
+        LLVMBuildBr(gen->builder, nofree);
+        LLVMPositionBuilderAtEnd(gen->builder, nofree);
+    }
 }
 
 // Progressively dealias or drop all declared variables in nodes list
@@ -165,7 +152,7 @@ void genlDealiasNodes(GenState *gen, Nodes *nodes) {
                 genlDealiasLex(gen, ref);
             }
             else if (reftype->alloc == (INode*)rcAlloc) {
-                genlDealiasRc(gen, ref);
+                genlRcCounter(gen, ref, -1);
             }
         }
     }
