@@ -121,6 +121,7 @@ void blockFlow(FlowState *fstate, BlockNode **blknode, int copyflag) {
     }
 
     // Except for last node, handle all other nodes as if they throw away returned value
+    size_t svAliasPos = flowAliasPushNew(0);
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(blk->stmts, cnt, nodesp)) {
@@ -139,18 +140,30 @@ void blockFlow(FlowState *fstate, BlockNode **blknode, int copyflag) {
             if (isExpNode(*nodesp))
                 flowLoadValue(fstate, nodesp, 0);
         }
+        flowAliasReset();
     }
+    flowAliasPop(svAliasPos);
 
     // Capture any scope-ending dealiasing in block's last node
     // That last node must now be a return, break, continue or an injected "block return"
     Nodes **varlistp = NULL;
     switch ((*nodesp)->tag) {
     case ReturnTag:
+    {
+        INode **retexp = &((ReturnNode *)*nodesp)->exp;
+        if (*retexp != voidType) {
+            size_t svAliasPos = flowAliasPushNew(1);
+            flowLoadValue(fstate, retexp, 1);
+            flowAliasPop(svAliasPos);
+        }
+        varlistp = &((ReturnNode *)*nodesp)->dealias;
+        break;
+    }
     case BlockRetTag:
     {
         INode **retexp = &((ReturnNode *)*nodesp)->exp;
         if (*retexp != voidType)
-            flowLoadValue(fstate, retexp, 1);
+            flowLoadValue(fstate, retexp, copyflag);
         varlistp = &((ReturnNode *)*nodesp)->dealias;
         break;
     }

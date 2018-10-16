@@ -95,6 +95,7 @@ enum NodeTags {
 	AndLogicTag,	// && / and
 	BlockTag,		// Block (list of statements)
 	IfTag,			// if .. elif .. else statement
+    AliasTag,       // (injected) alias count tag
 
     // Unnamed type node
     TypeNameUseTag = TypeGroup, // Type name use node

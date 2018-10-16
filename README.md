@@ -21,6 +21,7 @@ The current status and next steps are documented in [PLAN.md][plan].
    - [Calculating pi][pi]
    - [Permissions][perm]
    - [Structs][struct]
+- [Development blog](http://pling.jondgoodwin.com)
 
 Note: Cone resembles its dynamically-typed cousin [Acorn][acorn],
 which has its own [reference documentation][acornref].

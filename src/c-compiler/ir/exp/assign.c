@@ -270,7 +270,14 @@ void assignFlow(FlowState *fstate, AssignNode **nodep) {
     else {
         if (node->rval->tag == VTupleTag)
             assignToOneFlow(node->lval, (VTupleNode*)node->rval);
-        else
+        else {
+            // Non-anonymous lval increments alias counter
+            if (node->lval->tag != NameUseTag || ((NameUseNode*)node->lval)->namesym != anonName)
+                flowAliasIncr(0);
+            // else if (flowAliasGet(0) > 0 && lex reference)
+            //    "Cannot use as expression after moving value to trashcan"
+
             assignSingleFlow(node->lval, &node->rval);
+        }
     }
 }

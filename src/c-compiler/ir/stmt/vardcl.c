@@ -101,6 +101,9 @@ void varDclPass(PassState *pstate, VarDclNode *name) {
 // Perform data flow analysis
 void varDclFlow(FlowState *fstate, VarDclNode **vardclnode) {
     flowAddVar(*vardclnode);
-    if ((*vardclnode)->value)
+    if ((*vardclnode)->value) {
+        size_t svAliasPos = flowAliasPushNew(1);
         flowLoadValue(fstate, &((*vardclnode)->value), 1);
+        flowAliasPop(svAliasPos);
+    }
 }

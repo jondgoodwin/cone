@@ -261,10 +261,13 @@ void fnCallPass(PassState *pstate, FnCallNode *node) {
 
 // Do data flow analysis for fncall node (only real function calls)
 void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
+    size_t svAliasPos = flowAliasPushNew(1); // Alias arguments by default
     FnCallNode *node = *nodep;
     INode **argsp;
     uint32_t cnt;
     for (nodesFor(node->args, cnt, argsp)) {
         flowLoadValue(fstate, argsp, 1);
+        flowAliasReset();
     }
+    flowAliasPop(svAliasPos);
 }

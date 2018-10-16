@@ -83,6 +83,7 @@ void fnDclTypeCheck(PassState *pstate, FnDclNode *varnode) {
 void fnDclFlow(FnDclNode *fnnode) {
     if (errors)
         return;
+    flowAliasInit();
     FlowState fstate;
     fstate.fnsig = (FnSigNode *)fnnode->vtype;
     fstate.scope = 1;

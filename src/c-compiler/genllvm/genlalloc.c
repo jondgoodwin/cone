@@ -80,36 +80,6 @@ void genlDealiasLex(GenState *gen, LLVMValueRef ref) {
     genlFree(gen, ref);
 }
 
-// Is value's type an Rc allocated ref we might copy (and increment refcount)?
-int genlDoAliasRc(INode *rval) {
-    RefNode *reftype = (RefNode *)iexpGetTypeDcl(rval);
-    if (reftype->tag != RefTag || reftype->alloc != (INode*)rcAlloc)
-        return 0;
-
-    switch (rval->tag) {
-    // Assignment/fncall copies increment counter on refs from these nodes
-    case AssignTag:
-    case DerefTag:
-    case VarNameUseTag:
-    case StrFieldTag:
-    case ArrIndexTag:
-        return 1;
-
-    // Decrement counter on these nodes when block throws out the value
-    // (Copies don't increment, because counter is already +1)
-    case AddrTag:
-    case FnCallTag:
-    case BlockTag:
-    case IfTag:
-        return -1;
-
-    // Don't allow vtuple to get here!
-    default:
-        assert(0 && "Invalid tag");
-    }
-    return 0;
-}
-
 // Add to the counter of an rc allocated reference
 void genlRcCounter(GenState *gen, LLVMValueRef ref, long long amount) {
     // Point backwards to ref counter

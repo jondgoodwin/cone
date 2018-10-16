@@ -107,8 +107,6 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
 	uint32_t cnt;
     for (nodesFor(fncall->args, cnt, nodesp)) {
         LLVMValueRef argval = genlExpr(gen, *nodesp);
-        if (genlDoAliasRc(*nodesp) == 1)
-            genlRcCounter(gen, argval, 1);
         *fnarg++ = argval;
     }
 
@@ -331,8 +329,6 @@ LLVMValueRef genlLocalVar(GenState *gen, VarDclNode *var) {
 	var->llvmvar = LLVMBuildAlloca(gen->builder, genlType(gen, var->vtype), &var->namesym->namestr);
     if (var->value) {
         val = genlExpr(gen, var->value);
-        if (genlDoAliasRc(var->value) == 1)
-            genlRcCounter(gen, val, 1);
         LLVMBuildStore(gen->builder, val, var->llvmvar);
     }
 	return val;
@@ -388,16 +384,13 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
 	return NULL;
 }
 
-void genlStore(GenState *gen, INode *lval, LLVMValueRef rval, int aliasflag) {
+void genlStore(GenState *gen, INode *lval, LLVMValueRef rval) {
     if (lval->tag == VarNameUseTag && ((NameUseNode*)lval)->namesym == anonName)
         return;
     LLVMValueRef lvalptr = genlAddr(gen, lval);
     RefNode *reftype = (RefNode *)((ITypedNode*)lval)->vtype;
-    if (reftype->tag == RefTag && reftype->alloc == (INode*)rcAlloc) {
-        if (aliasflag == 1)
-            genlRcCounter(gen, rval, 1);
+    if (reftype->tag == RefTag && reftype->alloc == (INode*)rcAlloc)
         genlRcCounter(gen, LLVMBuildLoad(gen->builder, lvalptr, "dealiasref"), -1);
-    }
     LLVMBuildStore(gen->builder, rval, lvalptr);
 }
 
@@ -438,6 +431,13 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         VarDclNode *vardcl = (VarDclNode*)((NameUseNode *)termnode)->dclnode;
         return LLVMBuildLoad(gen->builder, vardcl->llvmvar, &vardcl->namesym->namestr);
     }
+    case AliasTag:
+    {
+        AliasNode *anode = (AliasNode*)termnode;
+        LLVMValueRef val = genlExpr(gen, anode->exp);
+        genlRcCounter(gen, val, anode->aliasamt);
+        return val;
+    }
     case FnCallTag:
         return genlFnCall(gen, (FnCallNode *)termnode);
     case ArrIndexTag:
@@ -456,10 +456,10 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         LLVMValueRef valueref = genlExpr(gen, rval);
         if (lval->tag != VTupleTag) {
             if (rval->tag != VTupleTag)
-                genlStore(gen, lval, valueref, genlDoAliasRc(rval)); // simple assignment
+                genlStore(gen, lval, valueref); // simple assignment
             else {
                 // Assign lval to first value in tuple struct
-                genlStore(gen, lval, LLVMBuildExtractValue(gen->builder, valueref, 0, ""), 0);
+                genlStore(gen, lval, LLVMBuildExtractValue(gen->builder, valueref, 0, ""));
             }
         }
         else {
@@ -469,7 +469,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
             uint32_t cnt;
             int index = 0;
             for (nodesFor(ltuple->values, cnt, nodesp)) {
-                genlStore(gen, *nodesp, LLVMBuildExtractValue(gen->builder, valueref, index++, ""), 0);
+                genlStore(gen, *nodesp, LLVMBuildExtractValue(gen->builder, valueref, index++, ""));
             }
         }
         return valueref;
@@ -525,7 +525,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
 	case IfTag:
 		return genlIf(gen, (IfNode*)termnode); break;
 	default:
-		printf("Unknown node to genlExpr!");
+		assert(0 && "Unknown node to genlExpr!");
 		return NULL;
 	}
 }

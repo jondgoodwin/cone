@@ -44,4 +44,31 @@ size_t flowScopePush();
 void flowScopePop(size_t pos, Nodes **varlist);
 
 
+typedef struct {
+    ITypedNodeHdr;
+    INode *exp;
+    int16_t aliasamt;
+} AliasNode;
+
+// Initialize a function's alias stack
+void flowAliasInit();
+
+// Start a new frame on alias stack
+size_t flowAliasPushNew(int16_t init);
+
+// Restore previous stack
+void flowAliasPop(size_t oldpos);
+
+// Reset current frame (to one value initialized to init value)
+void flowAliasReset();
+
+// Ensure frame has enough initialized alias counts for 'size' values
+void flowAliasSize(int16_t size);
+
+// Increment aliasing count at frame's position
+void flowAliasIncr(int16_t pos);
+
+// Get aliasing count at frame's position
+int16_t flowAliasGet(size_t pos);
+
 #endif

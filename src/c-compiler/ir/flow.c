@@ -18,6 +18,26 @@ void flowHandleMove(INode *node) {
     // if CopyMove - turn off access to the source (via static (local var) or dynamic mechanism)
 }
 
+// If needed, inject an alias node for rc/lex references
+void flowInjectAliasNode(INode **nodep, int16_t rvalcount) {
+    // No need for injected node if we are not dealing with rc/lex references and if alias calc = 0
+    RefNode *reftype = (RefNode *)itypeGetTypeDcl(((ITypedNode*)*nodep)->vtype);
+    if (reftype->tag != RefTag || !(reftype->alloc == (INode*)rcAlloc || reftype->alloc == (INode*)lexAlloc))
+        return;
+    int16_t count = flowAliasGet(0) + rvalcount;
+    if (count == 0 || (reftype->alloc == (INode*)lexAlloc && count > 0))
+        return;
+
+    // Inject alias count node
+    AliasNode *aliasnode;
+    newNode(aliasnode, AliasNode, AliasTag);
+    aliasnode->exp = *nodep;
+    aliasnode->vtype = ((ITypedNode *)*nodep)->vtype;
+    aliasnode->aliasamt = count;
+    *nodep = (INode*)aliasnode;
+}
+
+
 // Perform data flow analysis on a node whose value we intend to load
 // At minimum, we check that it is a valid, readable value
 // copyflag indicates whether value is to be copied or moved
@@ -33,10 +53,13 @@ void flowLoadValue(FlowState *fstate, INode **nodep, int copyflag) {
     case AssignTag:
         assignFlow(fstate, (AssignNode **)nodep); break;
     case FnCallTag:
+        flowInjectAliasNode(nodep, -1);
         fnCallFlow(fstate, (FnCallNode**)nodep);
         break;
     case AddrTag:
-        addrFlow(fstate, (AddrNode **)nodep); break;
+        flowInjectAliasNode(nodep, -1);
+        addrFlow(fstate, (AddrNode **)nodep);
+        break;
     case VTupleTag:
     {
         INode **nodesp;
@@ -49,6 +72,7 @@ void flowLoadValue(FlowState *fstate, INode **nodep, int copyflag) {
     case DerefTag:
     case ArrIndexTag:
     case StrFieldTag:
+        flowInjectAliasNode(nodep, 0);
         if (copyflag) {
             flowHandleMove(*nodep);
         }
@@ -75,7 +99,6 @@ void flowLoadValue(FlowState *fstate, INode **nodep, int copyflag) {
     default:
         assert(0);
     }
-
 }
 
 // *********************
