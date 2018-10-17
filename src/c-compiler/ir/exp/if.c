@@ -85,5 +85,6 @@ void ifFlow(FlowState *fstate, IfNode **ifnodep, int copyflag) {
             flowLoadValue(fstate, nodesp, 0);
         nodesp++; cnt--;
         blockFlow(fstate, (BlockNode**)nodesp, copyflag);
+        flowAliasReset();
     }
 }

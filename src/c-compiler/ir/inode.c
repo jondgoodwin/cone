@@ -78,6 +78,7 @@ void inodePrintNode(INode *node) {
 		inodeFprint("break"); break;
 	case ContinueTag:
 		inodeFprint("continue"); break;
+    case BlockRetTag:
 	case ReturnTag:
 		returnPrint((ReturnNode *)node); break;
 	case AssignTag:
@@ -123,6 +124,14 @@ void inodePrintNode(INode *node) {
         ttuplePrint((TTupleNode *)node); break;
 	case VoidTag:
 		voidPrint((VoidTypeNode *)node); break;
+    case AliasTag:
+    {
+        AliasNode *anode = (AliasNode *)node;
+        inodeFprint("(alias %d ", (int)anode->aliasamt);
+        inodePrintNode(anode->exp);
+        inodeFprint(")");
+        break;
+    }
 	default:
 		inodeFprint("**** UNKNOWN NODE ****");
 	}

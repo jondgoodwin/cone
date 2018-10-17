@@ -257,7 +257,6 @@ void assignToOneFlow(INode *lval, VTupleNode *rval) {
 // - borrowed reference lifetimes must exceed lifetime of lval
 void assignFlow(FlowState *fstate, AssignNode **nodep) {
     AssignNode *node = *nodep;
-    flowLoadValue(fstate, &node->rval, 1);
 
     // Handle tuple decomposition for parallel assignment
     INode *lval = node->lval;
@@ -272,12 +271,18 @@ void assignFlow(FlowState *fstate, AssignNode **nodep) {
             assignToOneFlow(node->lval, (VTupleNode*)node->rval);
         else {
             // Non-anonymous lval increments alias counter
-            if (node->lval->tag != NameUseTag || ((NameUseNode*)node->lval)->namesym != anonName)
+            if (node->lval->tag != NameUseTag || ((NameUseNode*)node->lval)->namesym != anonName) {
+                int16_t cnt1 = flowAliasGet(0);
                 flowAliasIncr(0);
+                int16_t cnt2 = flowAliasGet(0);
+                int16_t cnt3 = flowAliasGet(0);
+            }
             // else if (flowAliasGet(0) > 0 && lex reference)
             //    "Cannot use as expression after moving value to trashcan"
 
             assignSingleFlow(node->lval, &node->rval);
         }
     }
+
+    flowLoadValue(fstate, &node->rval, 1);
 }

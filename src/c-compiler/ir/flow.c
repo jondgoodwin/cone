@@ -53,8 +53,8 @@ void flowLoadValue(FlowState *fstate, INode **nodep, int copyflag) {
     case AssignTag:
         assignFlow(fstate, (AssignNode **)nodep); break;
     case FnCallTag:
-        flowInjectAliasNode(nodep, -1);
         fnCallFlow(fstate, (FnCallNode**)nodep);
+        flowInjectAliasNode(nodep, -1);
         break;
     case AddrTag:
         flowInjectAliasNode(nodep, -1);
@@ -224,9 +224,8 @@ void flowAliasPop(size_t oldpos) {
 
 // Reset current frame (to one value initialized to init value)
 void flowAliasReset() {
-    int16_t stacksz = gFlowAliasStackp[gFlowAliasStackPos];
-    gFlowAliasStackp[stacksz] = 1;
-    gFlowAliasStackp[stacksz + 2] = gFlowAliasStackp[stacksz + 1];
+    gFlowAliasStackp[gFlowAliasStackPos] = 1;
+    gFlowAliasStackp[gFlowAliasStackPos + 2] = gFlowAliasStackp[gFlowAliasStackPos + 1];
 }
 
 // Ensure frame has enough initialized alias counts for 'size' values

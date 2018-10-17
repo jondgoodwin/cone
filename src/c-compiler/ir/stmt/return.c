@@ -18,7 +18,7 @@ ReturnNode *newReturnNode() {
 
 // Serialize a return statement
 void returnPrint(ReturnNode *node) {
-	inodeFprint("return ");
+	inodeFprint(node->tag == BlockRetTag? "blockret " : "return ");
 	inodePrintNode(node->exp);
 }
 
