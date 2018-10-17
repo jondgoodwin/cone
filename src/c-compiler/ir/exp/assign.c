@@ -284,5 +284,5 @@ void assignFlow(FlowState *fstate, AssignNode **nodep) {
         }
     }
 
-    flowLoadValue(fstate, &node->rval, 1);
+    flowLoadValue(fstate, &node->rval);
 }

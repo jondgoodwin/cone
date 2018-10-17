@@ -84,7 +84,7 @@ void blockPass(PassState *pstate, BlockNode *blk) {
 }
 
 // Perform data flow analysis on a block
-void blockFlow(FlowState *fstate, BlockNode **blknode, int copyflag) {
+void blockFlow(FlowState *fstate, BlockNode **blknode) {
     BlockNode *blk = *blknode;
     size_t svpos = flowScopePush();
 
@@ -138,7 +138,7 @@ void blockFlow(FlowState *fstate, BlockNode **blknode, int copyflag) {
         default:
             // An expression as statement throws out its value
             if (isExpNode(*nodesp))
-                flowLoadValue(fstate, nodesp, 0);
+                flowLoadValue(fstate, nodesp);
         }
         flowAliasReset();
     }
@@ -153,7 +153,7 @@ void blockFlow(FlowState *fstate, BlockNode **blknode, int copyflag) {
         INode **retexp = &((ReturnNode *)*nodesp)->exp;
         if (*retexp != voidType) {
             size_t svAliasPos = flowAliasPushNew(1);
-            flowLoadValue(fstate, retexp, 1);
+            flowLoadValue(fstate, retexp);
             flowAliasPop(svAliasPos);
         }
         varlistp = &((ReturnNode *)*nodesp)->dealias;
@@ -163,7 +163,7 @@ void blockFlow(FlowState *fstate, BlockNode **blknode, int copyflag) {
     {
         INode **retexp = &((ReturnNode *)*nodesp)->exp;
         if (*retexp != voidType)
-            flowLoadValue(fstate, retexp, copyflag);
+            flowLoadValue(fstate, retexp);
         varlistp = &((ReturnNode *)*nodesp)->dealias;
         break;
     }

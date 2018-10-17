@@ -87,7 +87,7 @@ void fnDclFlow(FnDclNode *fnnode) {
     FlowState fstate;
     fstate.fnsig = (FnSigNode *)fnnode->vtype;
     fstate.scope = 1;
-    blockFlow(&fstate, (BlockNode **)&fnnode->value, 0);
+    blockFlow(&fstate, (BlockNode **)&fnnode->value);
 }
 
 // Check the function declaration node

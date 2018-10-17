@@ -40,6 +40,6 @@ void whilePass(PassState *pstate, WhileNode *node) {
 // Perform data flow analysis on an while statement
 void whileFlow(FlowState *fstate, WhileNode **nodep) {
     WhileNode *node = *nodep;
-    flowLoadValue(fstate, &node->condexp, 0);
-    blockFlow(fstate, (BlockNode**)&node->blk, 0);
+    flowLoadValue(fstate, &node->condexp);
+    blockFlow(fstate, (BlockNode**)&node->blk);
 }

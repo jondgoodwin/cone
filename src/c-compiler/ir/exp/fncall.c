@@ -266,7 +266,7 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     INode **argsp;
     uint32_t cnt;
     for (nodesFor(node->args, cnt, argsp)) {
-        flowLoadValue(fstate, argsp, 1);
+        flowLoadValue(fstate, argsp);
         flowAliasReset();
     }
     flowAliasPop(svAliasPos);

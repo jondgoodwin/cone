@@ -76,15 +76,15 @@ void ifPass(PassState *pstate, IfNode *ifnode) {
 }
 
 // Perform data flow analysis on an if expression
-void ifFlow(FlowState *fstate, IfNode **ifnodep, int copyflag) {
+void ifFlow(FlowState *fstate, IfNode **ifnodep) {
     IfNode *ifnode = *ifnodep;
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
         if (*nodesp != voidType)
-            flowLoadValue(fstate, nodesp, 0);
+            flowLoadValue(fstate, nodesp);
         nodesp++; cnt--;
-        blockFlow(fstate, (BlockNode**)nodesp, copyflag);
+        blockFlow(fstate, (BlockNode**)nodesp);
         flowAliasReset();
     }
 }

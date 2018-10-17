@@ -32,7 +32,7 @@ typedef struct FlowState {
 // At minimum, we check that it is a valid, readable value
 // copyflag indicates whether value is to be copied or moved
 // If copied, we may need to alias it. If moved, we may have to deactivate its source.
-void flowLoadValue(FlowState *fstate, INode **nodep, int copyflag);
+void flowLoadValue(FlowState *fstate, INode **nodep);
 
 // Add a just declared variable to the data flow stack
 void flowAddVar(VarDclNode *varnode);

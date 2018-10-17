@@ -40,16 +40,14 @@ void flowInjectAliasNode(INode **nodep, int16_t rvalcount) {
 
 // Perform data flow analysis on a node whose value we intend to load
 // At minimum, we check that it is a valid, readable value
-// copyflag indicates whether value is to be copied or moved
-// If copied, we may need to alias it. If moved, we may have to deactivate its source.
-void flowLoadValue(FlowState *fstate, INode **nodep, int copyflag) {
+void flowLoadValue(FlowState *fstate, INode **nodep) {
     // Handle specific nodes here - lvals (read check) + literals + fncall
     // fncall + literals? do not need copy check - it can return
     switch ((*nodep)->tag) {
     case BlockTag:
-        blockFlow(fstate, (BlockNode **)nodep, copyflag); break;
+        blockFlow(fstate, (BlockNode **)nodep); break;
     case IfTag:
-        ifFlow(fstate, (IfNode **)nodep, copyflag); break;
+        ifFlow(fstate, (IfNode **)nodep); break;
     case AssignTag:
         assignFlow(fstate, (AssignNode **)nodep); break;
     case FnCallTag:
@@ -65,7 +63,7 @@ void flowLoadValue(FlowState *fstate, INode **nodep, int copyflag) {
         INode **nodesp;
         uint32_t cnt;
         for (nodesFor(((VTupleNode *)*nodep)->values, cnt, nodesp))
-            flowLoadValue(fstate, nodesp, copyflag);
+            flowLoadValue(fstate, nodesp);
         break;
     }
     case VarNameUseTag:
@@ -73,21 +71,21 @@ void flowLoadValue(FlowState *fstate, INode **nodep, int copyflag) {
     case ArrIndexTag:
     case StrFieldTag:
         flowInjectAliasNode(nodep, 0);
-        if (copyflag) {
+        if (flowAliasGet(0) > 0) {
             flowHandleMove(*nodep);
         }
         break;
     case CastTag:
-        flowLoadValue(fstate, &((CastNode *)*nodep)->exp, copyflag);
+        flowLoadValue(fstate, &((CastNode *)*nodep)->exp);
         break;
     case NotLogicTag:
-        flowLoadValue(fstate, &((LogicNode *)*nodep)->lexp, 0);
+        flowLoadValue(fstate, &((LogicNode *)*nodep)->lexp);
         break;
     case OrLogicTag: case AndLogicTag:
     {
         LogicNode *lnode = (LogicNode*)*nodep;
-        flowLoadValue(fstate, &lnode->lexp, 0);
-        flowLoadValue(fstate, &lnode->rexp, 0);
+        flowLoadValue(fstate, &lnode->lexp);
+        flowLoadValue(fstate, &lnode->rexp);
         break;
     }
 

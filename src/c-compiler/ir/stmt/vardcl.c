@@ -103,7 +103,7 @@ void varDclFlow(FlowState *fstate, VarDclNode **vardclnode) {
     flowAddVar(*vardclnode);
     if ((*vardclnode)->value) {
         size_t svAliasPos = flowAliasPushNew(1);
-        flowLoadValue(fstate, &((*vardclnode)->value), 1);
+        flowLoadValue(fstate, &((*vardclnode)->value));
         flowAliasPop(svAliasPos);
     }
 }
