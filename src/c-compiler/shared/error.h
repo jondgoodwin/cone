@@ -69,6 +69,7 @@ enum ErrorCode {
     ErrorBadIndex,  // Bad index/slice on array/ref
     ErrorBadArray,  // Bad array
     ErrorBadSlice,  // Bad slice type
+    ErrorMove,      // Move error of some kind
 
 	// Warnings
 	WarnCode = 3000,

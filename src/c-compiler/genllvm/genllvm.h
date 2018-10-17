@@ -47,6 +47,8 @@ void genlDealiasNodes(GenState *gen, Nodes *nodes);
 void genlRcCounter(GenState *gen, LLVMValueRef ref, long long amount);
 // Is value's type an Rc allocated ref we might copy (and increment refcount)?
 int genlDoAliasRc(INode *rval);
+// Dealias a lex allocated reference
+void genlDealiasLex(GenState *gen, LLVMValueRef ref);
 
 // genltype.c
 // Generate a type value

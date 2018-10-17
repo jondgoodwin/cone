@@ -55,8 +55,8 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         flowInjectAliasNode(nodep, -1);
         break;
     case AddrTag:
-        flowInjectAliasNode(nodep, -1);
         addrFlow(fstate, (AddrNode **)nodep);
+        flowInjectAliasNode(nodep, -1);
         break;
     case VTupleTag:
     {

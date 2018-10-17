@@ -272,12 +272,15 @@ void assignFlow(FlowState *fstate, AssignNode **nodep) {
         else {
             // Non-anonymous lval increments alias counter
             if (node->lval->tag != NameUseTag || ((NameUseNode*)node->lval)->namesym != anonName) {
-                int16_t cnt1 = flowAliasGet(0);
                 flowAliasIncr(0);
-                int16_t cnt2 = flowAliasGet(0);
-                int16_t cnt3 = flowAliasGet(0);
             }
-            // else if (flowAliasGet(0) > 0 && lex reference)
+            // When lval = '_' and this is a lex reference, we may have a problem
+            // If this assignment is supposed to return a reference, it cannot
+            else if (flowAliasGet(0) > 0) {
+                RefNode *reftype = (RefNode *)((ITypedNode*)node->rval)->vtype;
+                if (reftype->tag == RefTag && reftype->alloc == (INode*)lexAlloc)
+                    errorMsgNode((INode*)node, ErrorMove, "This frees lex reference. The reference is inaccessible for use.");
+            }
             //    "Cannot use as expression after moving value to trashcan"
 
             assignSingleFlow(node->lval, &node->rval);

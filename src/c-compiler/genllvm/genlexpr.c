@@ -435,7 +435,11 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     {
         AliasNode *anode = (AliasNode*)termnode;
         LLVMValueRef val = genlExpr(gen, anode->exp);
-        genlRcCounter(gen, val, anode->aliasamt);
+        RefNode *reftype = (RefNode*)((ITypedNode*)anode->exp)->vtype;
+        if (reftype->alloc == (INode*)lexAlloc)
+            genlDealiasLex(gen, val);
+        else
+            genlRcCounter(gen, val, anode->aliasamt);
         return val;
     }
     case FnCallTag:
