@@ -390,7 +390,7 @@ void genlStore(GenState *gen, INode *lval, LLVMValueRef rval) {
     LLVMValueRef lvalptr = genlAddr(gen, lval);
     RefNode *reftype = (RefNode *)((ITypedNode*)lval)->vtype;
     if (reftype->tag == RefTag && reftype->alloc == (INode*)rcAlloc)
-        genlRcCounter(gen, LLVMBuildLoad(gen->builder, lvalptr, "dealiasref"), -1);
+        genlRcCounter(gen, LLVMBuildLoad(gen->builder, lvalptr, "dealiasref"), -1, reftype);
     LLVMBuildStore(gen->builder, rval, lvalptr);
 }
 
@@ -437,9 +437,9 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         LLVMValueRef val = genlExpr(gen, anode->exp);
         RefNode *reftype = (RefNode*)((ITypedNode*)anode->exp)->vtype;
         if (reftype->alloc == (INode*)lexAlloc)
-            genlDealiasLex(gen, val);
+            genlDealiasLex(gen, val, reftype);
         else
-            genlRcCounter(gen, val, anode->aliasamt);
+            genlRcCounter(gen, val, anode->aliasamt, reftype);
         return val;
     }
     case FnCallTag:

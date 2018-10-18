@@ -44,11 +44,9 @@ LLVMValueRef genlallocref(GenState *gen, AddrNode *addrnode);
 // Progressively dealias or drop all declared variables in nodes list
 void genlDealiasNodes(GenState *gen, Nodes *nodes);
 // Add to the counter of an rc allocated reference
-void genlRcCounter(GenState *gen, LLVMValueRef ref, long long amount);
-// Is value's type an Rc allocated ref we might copy (and increment refcount)?
-int genlDoAliasRc(INode *rval);
+void genlRcCounter(GenState *gen, LLVMValueRef ref, long long amount, RefNode *refnode);
 // Dealias a lex allocated reference
-void genlDealiasLex(GenState *gen, LLVMValueRef ref);
+void genlDealiasLex(GenState *gen, LLVMValueRef ref, RefNode *refnode);
 
 // genltype.c
 // Generate a type value

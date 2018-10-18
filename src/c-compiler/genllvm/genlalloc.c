@@ -41,6 +41,28 @@ LLVMValueRef genlmalloc(GenState *gen, long long size) {
     return LLVMBuildCall(gen->builder, genlmallocval, &sizeval, 1, "");
 }
 
+// If ref type is struct, dealias any fields holding rc/lex references
+void genlDealiasFlds(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
+    StructNode *strnode = (StructNode*)itypeGetTypeDcl(refnode->pvtype);
+    if (strnode->tag != StructTag)
+        return;
+    INode **nodesp;
+    uint32_t cnt;
+    for (imethnodesFor(&strnode->methprops, cnt, nodesp)) {
+        VarDclNode *field = (VarDclNode *)*nodesp;
+        if (field->tag != VarDclTag)
+            continue;
+        RefNode *vartype = (RefNode *)field->vtype;
+        if (vartype->tag != RefTag || !(vartype->alloc == (INode*)rcAlloc || vartype->alloc == (INode*)lexAlloc))
+            continue;
+        LLVMValueRef fldref = LLVMBuildStructGEP(gen->builder, ref, field->index, &field->namesym->namestr);
+        if (vartype->alloc == (INode*)lexAlloc)
+            genlDealiasLex(gen, fldref, vartype);
+        else
+            genlRcCounter(gen, fldref, -1, vartype);
+    }
+}
+
 // Call free() (and generate declaration if needed)
 LLVMValueRef genlFree(GenState *gen, LLVMValueRef ref) {
     LLVMTypeRef parmtype = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
@@ -76,12 +98,13 @@ LLVMValueRef genlallocref(GenState *gen, AddrNode *addrnode) {
 }
 
 // Dealias a lex allocated reference
-void genlDealiasLex(GenState *gen, LLVMValueRef ref) {
+void genlDealiasLex(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
+    genlDealiasFlds(gen, ref, refnode);
     genlFree(gen, ref);
 }
 
 // Add to the counter of an rc allocated reference
-void genlRcCounter(GenState *gen, LLVMValueRef ref, long long amount) {
+void genlRcCounter(GenState *gen, LLVMValueRef ref, long long amount, RefNode *refnode) {
     // Point backwards to ref counter
     LLVMTypeRef usize = genlType(gen, (INode*)usizeType);
     LLVMValueRef intptr = LLVMBuildPtrToInt(gen->builder, ref, usize, "");
@@ -101,6 +124,7 @@ void genlRcCounter(GenState *gen, LLVMValueRef ref, long long amount) {
         LLVMValueRef test = LLVMBuildICmp(gen->builder, LLVMIntEQ, newcnt, LLVMConstInt(usize, 0, 0), "iszero");
         LLVMBuildCondBr(gen->builder, test, dofree, nofree);
         LLVMPositionBuilderAtEnd(gen->builder, dofree);
+        genlDealiasFlds(gen, ref, refnode);
         genlFree(gen, cntptr);
         LLVMBuildBr(gen->builder, nofree);
         LLVMPositionBuilderAtEnd(gen->builder, nofree);
@@ -119,10 +143,10 @@ void genlDealiasNodes(GenState *gen, Nodes *nodes) {
         if (reftype->tag == RefTag) {
             LLVMValueRef ref = LLVMBuildLoad(gen->builder, var->llvmvar, "allocref");
             if (reftype->alloc == (INode*)lexAlloc) {
-                genlDealiasLex(gen, ref);
+                genlDealiasLex(gen, ref, reftype);
             }
             else if (reftype->alloc == (INode*)rcAlloc) {
-                genlRcCounter(gen, ref, -1);
+                genlRcCounter(gen, ref, -1, reftype);
             }
         }
     }
