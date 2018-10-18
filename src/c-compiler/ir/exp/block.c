@@ -146,32 +146,32 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
 
     // Capture any scope-ending dealiasing in block's last node
     // That last node must now be a return, break, continue or an injected "block return"
-    Nodes **varlistp = NULL;
     switch ((*nodesp)->tag) {
     case ReturnTag:
     {
         INode **retexp = &((ReturnNode *)*nodesp)->exp;
-        if (*retexp != voidType) {
+        int doalias = flowScopeDealias(0, &((ReturnNode *)*nodesp)->dealias, *retexp);
+        if (*retexp != voidType && doalias) {
             size_t svAliasPos = flowAliasPushNew(1);
             flowLoadValue(fstate, retexp);
             flowAliasPop(svAliasPos);
         }
-        varlistp = &((ReturnNode *)*nodesp)->dealias;
         break;
     }
     case BlockRetTag:
     {
         INode **retexp = &((ReturnNode *)*nodesp)->exp;
-        if (*retexp != voidType)
+        int doalias = flowScopeDealias(svpos, &((ReturnNode *)*nodesp)->dealias, *retexp);
+        if (*retexp != voidType && doalias)
             flowLoadValue(fstate, retexp);
-        varlistp = &((ReturnNode *)*nodesp)->dealias;
         break;
     }
     case BreakTag:
     case ContinueTag:
-        varlistp = &((BreakNode *)*nodesp)->dealias; break;
+        flowScopeDealias(svpos, &((BreakNode *)*nodesp)->dealias, voidType);
+        break;
     }
 
     --fstate->scope;
-    flowScopePop(svpos, varlistp);
+    flowScopePop(svpos);
 }

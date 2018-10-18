@@ -147,20 +147,30 @@ size_t flowScopePush() {
     return gVarFlowStackPos;
 }
 
-// Back out of current scope
-void flowScopePop(size_t startpos, Nodes **varlist) {
+// Create de-alias list of all lex/rc reference variables (except single retexp name)
+// As a simple optimization: returns 0 if retexp name was not de-aliased
+int flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp) {
+    int doalias = 1;
     size_t pos = gVarFlowStackPos;
     while (pos > startpos) {
         VarFlowInfo *avar = &gVarFlowStackp[--pos];
         RefNode *reftype = (RefNode*)avar->node->vtype;
-        if (reftype->tag == RefTag && reftype->alloc != voidType) {
-            if (*varlist == NULL)
-                *varlist = newNodes(4);
-            nodesAdd(varlist, (INode*)avar->node);
+        if (reftype->tag == RefTag && (reftype->alloc == (INode*)rcAlloc || reftype->alloc == (INode*)lexAlloc)) {
+            if (retexp->tag != VarNameUseTag || ((NameUseNode *)retexp)->namesym != avar->node->namesym) {
+                if (*varlist == NULL)
+                    *varlist = newNodes(4);
+                nodesAdd(varlist, (INode*)avar->node);
+            }
+            else
+                doalias = 0;
         }
     }
+    return doalias;
+}
 
-    gVarFlowStackPos = pos;
+// Back out of current scope
+void flowScopePop(size_t startpos) {
+    gVarFlowStackPos = startpos;
 }
 
 // *********************
