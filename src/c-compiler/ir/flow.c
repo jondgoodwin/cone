@@ -62,8 +62,14 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
     {
         INode **nodesp;
         uint32_t cnt;
-        for (nodesFor(((VTupleNode *)*nodep)->values, cnt, nodesp))
+        uint32_t index = 0;
+        flowAliasSize(((VTupleNode *)*nodep)->values->used);
+        for (nodesFor(((VTupleNode *)*nodep)->values, cnt, nodesp)) {
+            // pull out specific alias counter for resolution
+            size_t svAliasPos = flowAliasPushNew(flowAliasGet(index++));
             flowLoadValue(fstate, nodesp);
+            flowAliasPop(svAliasPos);
+        }
         break;
     }
     case VarNameUseTag:

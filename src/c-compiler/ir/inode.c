@@ -86,6 +86,8 @@ void inodePrintNode(INode *node) {
     case VTupleTag:
         vtuplePrint((VTupleNode *)node); break;
 	case FnCallTag:
+    case StrFieldTag:
+    case ArrIndexTag:
 		fnCallPrint((FnCallNode *)node); break;
 	case SizeofTag:
 		sizeofPrint((SizeofNode *)node); break;

@@ -36,13 +36,13 @@ void fnCallPrint(FnCallNode *node) {
         inodePrintNode((INode*)node->methprop);
     }
     if (node->args) {
-        inodeFprint("(");
+        inodeFprint(node->tag==ArrIndexTag? "[" : "(");
         for (nodesFor(node->args, cnt, nodesp)) {
             inodePrintNode(*nodesp);
             if (cnt > 1)
                 inodeFprint(", ");
         }
-        inodeFprint(")");
+        inodeFprint(node->tag == ArrIndexTag ? "]" : ")");
     }
 }
 

@@ -195,9 +195,19 @@ INamedNode *assignLvalInfo(INode *lval, INode **lvalperm, int16_t *scope) {
 // - Lval is mutable
 // - Borrowed reference lifetime is greater than its container
 void assignSingleFlow(INode *lval, INode **rval) {
-    // '_' named lval need not be checked. It is a placeholder that just swallows a value
-    if (lval->tag == VarNameUseTag && ((NameUseNode*)lval)->namesym == anonName)
-        return;
+    // '_' named lval is a placeholder that swallows (maybe drops) a value
+    if (lval->tag == VarNameUseTag && ((NameUseNode*)lval)->namesym == anonName) {
+        // When lval = '_' and this is a lex reference, we may have a problem
+        // If this assignment is supposed to return a reference, it cannot
+        if (flowAliasGet(0) > 0) {
+            RefNode *reftype = (RefNode *)((ITypedNode*)*rval)->vtype;
+            if (reftype->tag == RefTag && reftype->alloc == (INode*)lexAlloc)
+                errorMsgNode((INode*)lval, ErrorMove, "This frees lex reference. The reference is inaccessible for use.");
+        }
+    }
+
+    // Non-anonymous lval increments alias counter
+    flowAliasIncr(0);
 
     int16_t lvalscope;
     INode *lvalperm;
@@ -270,19 +280,6 @@ void assignFlow(FlowState *fstate, AssignNode **nodep) {
         if (node->rval->tag == VTupleTag)
             assignToOneFlow(node->lval, (VTupleNode*)node->rval);
         else {
-            // Non-anonymous lval increments alias counter
-            if (node->lval->tag != NameUseTag || ((NameUseNode*)node->lval)->namesym != anonName) {
-                flowAliasIncr(0);
-            }
-            // When lval = '_' and this is a lex reference, we may have a problem
-            // If this assignment is supposed to return a reference, it cannot
-            else if (flowAliasGet(0) > 0) {
-                RefNode *reftype = (RefNode *)((ITypedNode*)node->rval)->vtype;
-                if (reftype->tag == RefTag && reftype->alloc == (INode*)lexAlloc)
-                    errorMsgNode((INode*)node, ErrorMove, "This frees lex reference. The reference is inaccessible for use.");
-            }
-            //    "Cannot use as expression after moving value to trashcan"
-
             assignSingleFlow(node->lval, &node->rval);
         }
     }
