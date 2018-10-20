@@ -207,7 +207,7 @@ void assignSingleFlow(INode *lval, INode **rval) {
     }
 
     // Non-anonymous lval increments alias counter
-    flowAliasIncr(0);
+    flowAliasIncr();
 
     int16_t lvalscope;
     INode *lvalperm;
@@ -235,7 +235,10 @@ void assignParaFlow(VTupleNode *lval, VTupleNode *rval) {
     INode **lnodesp;
     INode **rnodesp = &nodesGet(rnodes, 0);
     int16_t rcnt = rnodes->used;
+    int16_t aliasfocus = 0;
+    flowAliasSize(lnodes->used);
     for (nodesFor(lnodes, lcnt, lnodesp)) {
+        flowAliasFocus(aliasfocus++);
         assignSingleFlow(*lnodesp, rnodesp++);
         rcnt--;
     }

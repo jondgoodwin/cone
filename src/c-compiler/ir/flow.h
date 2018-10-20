@@ -68,8 +68,11 @@ void flowAliasReset();
 // Ensure frame has enough initialized alias counts for 'size' values
 void flowAliasSize(int16_t size);
 
+// Set the focus position for lval aliasing
+void flowAliasFocus(int16_t pos);
+
 // Increment aliasing count at frame's position
-void flowAliasIncr(int16_t pos);
+void flowAliasIncr();
 
 // Get aliasing count at frame's position
 int16_t flowAliasGet(size_t pos);

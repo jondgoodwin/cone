@@ -189,6 +189,7 @@ void flowScopePop(size_t startpos) {
 int16_t *gFlowAliasStackp = NULL;
 size_t gFlowAliasStackSz = 0;
 size_t gFlowAliasStackPos = 0;
+int16_t gFlowAliasFocusPos = 0;
 
 // Ensure enough room for alias stack
 void flowAliasRoom(size_t highpos) {
@@ -234,6 +235,7 @@ size_t flowAliasPushNew(int16_t init) {
 // Restore previous stack
 void flowAliasPop(size_t oldpos) {
     gFlowAliasStackPos = oldpos;
+    gFlowAliasFocusPos = 0;
 }
 
 // Reset current frame (to one value initialized to init value)
@@ -253,9 +255,14 @@ void flowAliasSize(int16_t size) {
     gFlowAliasStackp[gFlowAliasStackPos] = size;
 }
 
+// Set the focus position for lval aliasing
+void flowAliasFocus(int16_t pos) {
+    gFlowAliasFocusPos = pos;
+}
+
 // Increment aliasing count at frame's position
-void flowAliasIncr(int16_t pos) {
-    ++gFlowAliasStackp[gFlowAliasStackPos + 2 + pos];
+void flowAliasIncr() {
+    ++gFlowAliasStackp[gFlowAliasStackPos + 2 + gFlowAliasFocusPos];
 }
 
 // Get aliasing count at frame's position
