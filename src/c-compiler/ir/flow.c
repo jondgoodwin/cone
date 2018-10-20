@@ -20,20 +20,58 @@ void flowHandleMove(INode *node) {
 
 // If needed, inject an alias node for rc/lex references
 void flowInjectAliasNode(INode **nodep, int16_t rvalcount) {
-    // No need for injected node if we are not dealing with rc/lex references and if alias calc = 0
-    RefNode *reftype = (RefNode *)itypeGetTypeDcl(((ITypedNode*)*nodep)->vtype);
-    if (reftype->tag != RefTag || !(reftype->alloc == (INode*)rcAlloc || reftype->alloc == (INode*)lexAlloc))
-        return;
-    int16_t count = flowAliasGet(0) + rvalcount;
-    if (count == 0 || (reftype->alloc == (INode*)lexAlloc && count > 0))
-        return;
+    int16_t count;
+    int16_t *counts = NULL;
+    INode *vtype = ((ITypedNode*)*nodep)->vtype;
+    if (vtype->tag != TTupleTag) {
+        // No need for injected node if we are not dealing with rc/lex references and if alias calc = 0
+        RefNode *reftype = (RefNode *)itypeGetTypeDcl(vtype);
+        if (reftype->tag != RefTag || !(reftype->alloc == (INode*)rcAlloc || reftype->alloc == (INode*)lexAlloc))
+            return;
+        count = flowAliasGet(0) + rvalcount;
+        if (count == 0 || (reftype->alloc == (INode*)lexAlloc && count > 0))
+            return;
+    }
+    else {
+        // First, decide if we need an alias node.
+        // It is needed only if any returned value in tuple is rc/lex with non-zero alias count
+        // Note: aliasing count values are updated in case we want them
+        TTupleNode *tuple = (TTupleNode *)vtype;
+        int needaliasnode = 0;
+        INode **nodesp;
+        uint32_t cnt;
+        size_t index = 0;
+        flowAliasSize(count = tuple->types->used);
+        for (nodesFor(tuple->types, cnt, nodesp)) {
+            RefNode *reftype = (RefNode *)iexpGetTypeDcl(*nodesp);
+            if (reftype->tag != RefTag || !(reftype->alloc == (INode*)rcAlloc || reftype->alloc == (INode*)lexAlloc)) {
+                flowAliasPut(index++, 0);
+                continue;
+            }
+            int16_t tcount = flowAliasGet(index) + rvalcount;
+            if (reftype->alloc == (INode*)lexAlloc && tcount > 0)
+                tcount = 0;
+            flowAliasPut(index++, tcount);
+            if (tcount != 0)
+                needaliasnode = 1;
+        }
+        if (!needaliasnode)
+            return;
+
+        // Allocate and fill memory segment containing alias counters
+        int16_t *countp = counts = (int16_t *)memAllocBlk(count * sizeof(int16_t));
+        int16_t pos = 0;
+        while (pos < count)
+            *countp++ = flowAliasGet(pos++);
+    }
 
     // Inject alias count node
     AliasNode *aliasnode;
     newNode(aliasnode, AliasNode, AliasTag);
     aliasnode->exp = *nodep;
-    aliasnode->vtype = ((ITypedNode *)*nodep)->vtype;
+    aliasnode->vtype = vtype;
     aliasnode->aliasamt = count;
+    aliasnode->counts = counts;
     *nodep = (INode*)aliasnode;
 }
 
@@ -268,4 +306,9 @@ void flowAliasIncr() {
 // Get aliasing count at frame's position
 int16_t flowAliasGet(size_t pos) {
     return gFlowAliasStackp[gFlowAliasStackPos + 2 + pos];
+}
+
+// Store an aliasing count at frame's position
+void flowAliasPut(size_t pos, int16_t count) {
+    gFlowAliasStackp[gFlowAliasStackPos + 2 + pos] = count;
 }

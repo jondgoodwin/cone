@@ -129,7 +129,15 @@ void inodePrintNode(INode *node) {
     case AliasTag:
     {
         AliasNode *anode = (AliasNode *)node;
-        inodeFprint("(alias %d ", (int)anode->aliasamt);
+        inodeFprint("(alias ");
+        if (anode->counts == NULL)
+            inodeFprint("%d ", (int)anode->aliasamt);
+        else {
+            int16_t count = anode->aliasamt;
+            int16_t *countp = anode->counts;
+            while (count--)
+                inodeFprint("%d ", (int)*countp++);
+        }
         inodePrintNode(anode->exp);
         inodeFprint(")");
         break;

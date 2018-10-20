@@ -46,11 +46,12 @@ int flowScopeDealias(size_t pos, Nodes **varlist, INode *retexp);
 // Back out of current scope
 void flowScopePop(size_t pos);
 
-
+// Alias Node structure
 typedef struct {
     ITypedNodeHdr;
     INode *exp;
-    int16_t aliasamt;
+    int16_t *counts;   // points to array of counts. NULL if not tuple
+    int16_t aliasamt;  // count nbr if not a tuple, # of counts if tuple
 } AliasNode;
 
 // Initialize a function's alias stack
@@ -76,5 +77,8 @@ void flowAliasIncr();
 
 // Get aliasing count at frame's position
 int16_t flowAliasGet(size_t pos);
+
+// Store an aliasing count at frame's position
+void flowAliasPut(size_t pos, int16_t count);
 
 #endif

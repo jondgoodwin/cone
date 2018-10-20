@@ -436,10 +436,30 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         AliasNode *anode = (AliasNode*)termnode;
         LLVMValueRef val = genlExpr(gen, anode->exp);
         RefNode *reftype = (RefNode*)((ITypedNode*)anode->exp)->vtype;
-        if (reftype->alloc == (INode*)lexAlloc)
-            genlDealiasLex(gen, val, reftype);
-        else
-            genlRcCounter(gen, val, anode->aliasamt, reftype);
+        if (reftype->tag == RefTag) {
+            if (reftype->alloc == (INode*)lexAlloc)
+                genlDealiasLex(gen, val, reftype);
+            else
+                genlRcCounter(gen, val, anode->aliasamt, reftype);
+        }
+        else if (reftype->tag == TTupleTag) {
+            TTupleNode *tuple = (TTupleNode*)reftype;
+            INode **nodesp;
+            uint32_t cnt;
+            size_t index = 0;
+            int16_t *countp = anode->counts;
+            for (nodesFor(tuple->types, cnt, nodesp)) {
+                if (*countp != 0) {
+                    reftype = (RefNode *)*nodesp;
+                    LLVMValueRef strval = LLVMBuildExtractValue(gen->builder, val, index, "");
+                    if (reftype->alloc == (INode*)lexAlloc)
+                        genlDealiasLex(gen, strval, reftype);
+                    else
+                        genlRcCounter(gen, strval, *countp, reftype);
+                }
+                ++index; ++countp;
+            }
+        }
         return val;
     }
     case FnCallTag:
