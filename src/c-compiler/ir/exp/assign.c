@@ -197,12 +197,12 @@ INamedNode *assignLvalInfo(INode *lval, INode **lvalperm, int16_t *scope) {
 void assignSingleFlow(INode *lval, INode **rval) {
     // '_' named lval is a placeholder that swallows (maybe drops) a value
     if (lval->tag == VarNameUseTag && ((NameUseNode*)lval)->namesym == anonName) {
-        // When lval = '_' and this is a lex reference, we may have a problem
+        // When lval = '_' and this is an own reference, we may have a problem
         // If this assignment is supposed to return a reference, it cannot
         if (flowAliasGet(0) > 0) {
             RefNode *reftype = (RefNode *)((ITypedNode*)*rval)->vtype;
-            if (reftype->tag == RefTag && reftype->alloc == (INode*)lexAlloc)
-                errorMsgNode((INode*)lval, ErrorMove, "This frees lex reference. The reference is inaccessible for use.");
+            if (reftype->tag == RefTag && reftype->alloc == (INode*)ownAlloc)
+                errorMsgNode((INode*)lval, ErrorMove, "This frees reference. The reference is inaccessible for use.");
         }
     }
 

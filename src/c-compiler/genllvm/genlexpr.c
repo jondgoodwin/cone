@@ -437,8 +437,8 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         LLVMValueRef val = genlExpr(gen, anode->exp);
         RefNode *reftype = (RefNode*)((ITypedNode*)anode->exp)->vtype;
         if (reftype->tag == RefTag) {
-            if (reftype->alloc == (INode*)lexAlloc)
-                genlDealiasLex(gen, val, reftype);
+            if (reftype->alloc == (INode*)ownAlloc)
+                genlDealiasOwn(gen, val, reftype);
             else
                 genlRcCounter(gen, val, anode->aliasamt, reftype);
         }
@@ -452,8 +452,8 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
                 if (*countp != 0) {
                     reftype = (RefNode *)*nodesp;
                     LLVMValueRef strval = LLVMBuildExtractValue(gen->builder, val, index, "");
-                    if (reftype->alloc == (INode*)lexAlloc)
-                        genlDealiasLex(gen, strval, reftype);
+                    if (reftype->alloc == (INode*)ownAlloc)
+                        genlDealiasOwn(gen, strval, reftype);
                     else
                         genlRcCounter(gen, strval, *countp, reftype);
                 }

@@ -40,7 +40,7 @@ void flowAddVar(VarDclNode *varnode);
 // Start a new scope
 size_t flowScopePush();
 
-// Create de-alias list of all lex/rc reference variables, except var found in retexp 
+// Create de-alias list of all own/rc reference variables, except var found in retexp 
 // As a simple optimization: returns 1 if retexp name was not de-aliased
 int flowScopeDealias(size_t pos, Nodes **varlist, INode *retexp);
 // Back out of current scope

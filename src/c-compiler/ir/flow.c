@@ -18,23 +18,23 @@ void flowHandleMove(INode *node) {
     // if CopyMove - turn off access to the source (via static (local var) or dynamic mechanism)
 }
 
-// If needed, inject an alias node for rc/lex references
+// If needed, inject an alias node for rc/own references
 void flowInjectAliasNode(INode **nodep, int16_t rvalcount) {
     int16_t count;
     int16_t *counts = NULL;
     INode *vtype = ((ITypedNode*)*nodep)->vtype;
     if (vtype->tag != TTupleTag) {
-        // No need for injected node if we are not dealing with rc/lex references and if alias calc = 0
+        // No need for injected node if we are not dealing with rc/own references and if alias calc = 0
         RefNode *reftype = (RefNode *)itypeGetTypeDcl(vtype);
-        if (reftype->tag != RefTag || !(reftype->alloc == (INode*)rcAlloc || reftype->alloc == (INode*)lexAlloc))
+        if (reftype->tag != RefTag || !(reftype->alloc == (INode*)rcAlloc || reftype->alloc == (INode*)ownAlloc))
             return;
         count = flowAliasGet(0) + rvalcount;
-        if (count == 0 || (reftype->alloc == (INode*)lexAlloc && count > 0))
+        if (count == 0 || (reftype->alloc == (INode*)ownAlloc && count > 0))
             return;
     }
     else {
         // First, decide if we need an alias node.
-        // It is needed only if any returned value in tuple is rc/lex with non-zero alias count
+        // It is needed only if any returned value in tuple is rc/own with non-zero alias count
         // Note: aliasing count values are updated in case we want them
         TTupleNode *tuple = (TTupleNode *)vtype;
         int needaliasnode = 0;
@@ -44,12 +44,12 @@ void flowInjectAliasNode(INode **nodep, int16_t rvalcount) {
         flowAliasSize(count = tuple->types->used);
         for (nodesFor(tuple->types, cnt, nodesp)) {
             RefNode *reftype = (RefNode *)iexpGetTypeDcl(*nodesp);
-            if (reftype->tag != RefTag || !(reftype->alloc == (INode*)rcAlloc || reftype->alloc == (INode*)lexAlloc)) {
+            if (reftype->tag != RefTag || !(reftype->alloc == (INode*)rcAlloc || reftype->alloc == (INode*)ownAlloc)) {
                 flowAliasPut(index++, 0);
                 continue;
             }
             int16_t tcount = flowAliasGet(index) + rvalcount;
-            if (reftype->alloc == (INode*)lexAlloc && tcount > 0)
+            if (reftype->alloc == (INode*)ownAlloc && tcount > 0)
                 tcount = 0;
             flowAliasPut(index++, tcount);
             if (tcount != 0)
@@ -191,7 +191,7 @@ size_t flowScopePush() {
     return gVarFlowStackPos;
 }
 
-// Create de-alias list of all lex/rc reference variables (except single retexp name)
+// Create de-alias list of all own/rc reference variables (except single retexp name)
 // As a simple optimization: returns 0 if retexp name was not de-aliased
 int flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp) {
     int doalias = 1;
@@ -199,7 +199,7 @@ int flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp) {
     while (pos > startpos) {
         VarFlowInfo *avar = &gVarFlowStackp[--pos];
         RefNode *reftype = (RefNode*)avar->node->vtype;
-        if (reftype->tag == RefTag && (reftype->alloc == (INode*)rcAlloc || reftype->alloc == (INode*)lexAlloc)) {
+        if (reftype->tag == RefTag && (reftype->alloc == (INode*)rcAlloc || reftype->alloc == (INode*)ownAlloc)) {
             if (retexp->tag != VarNameUseTag || ((NameUseNode *)retexp)->namesym != avar->node->namesym) {
                 if (*varlist == NULL)
                     *varlist = newNodes(4);
@@ -221,7 +221,7 @@ void flowScopePop(size_t startpos) {
 // Aliasing stack for data flow analysis
 //
 // As we traverse the IR nodes, this tracks expression "aliasing" in each block.
-// Aliasing is when we copy a value. This matters with RC and LEX references.
+// Aliasing is when we copy a value. This matters with rc and own references.
 // *********************
 
 int16_t *gFlowAliasStackp = NULL;

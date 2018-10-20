@@ -25,7 +25,7 @@ PermNode *mutxPerm;
 PermNode *idPerm;
 
 // Built-in allocator types
-AllocNode *lexAlloc;
+AllocNode *ownAlloc;
 AllocNode *rcAlloc;
 
 // Primitive numeric types - for implicit (nondeclared but known) types

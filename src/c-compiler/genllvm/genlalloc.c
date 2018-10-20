@@ -41,7 +41,7 @@ LLVMValueRef genlmalloc(GenState *gen, long long size) {
     return LLVMBuildCall(gen->builder, genlmallocval, &sizeval, 1, "");
 }
 
-// If ref type is struct, dealias any fields holding rc/lex references
+// If ref type is struct, dealias any fields holding rc/own references
 void genlDealiasFlds(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
     StructNode *strnode = (StructNode*)itypeGetTypeDcl(refnode->pvtype);
     if (strnode->tag != StructTag)
@@ -53,11 +53,11 @@ void genlDealiasFlds(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
         if (field->tag != VarDclTag)
             continue;
         RefNode *vartype = (RefNode *)field->vtype;
-        if (vartype->tag != RefTag || !(vartype->alloc == (INode*)rcAlloc || vartype->alloc == (INode*)lexAlloc))
+        if (vartype->tag != RefTag || !(vartype->alloc == (INode*)rcAlloc || vartype->alloc == (INode*)ownAlloc))
             continue;
         LLVMValueRef fldref = LLVMBuildStructGEP(gen->builder, ref, field->index, &field->namesym->namestr);
-        if (vartype->alloc == (INode*)lexAlloc)
-            genlDealiasLex(gen, fldref, vartype);
+        if (vartype->alloc == (INode*)ownAlloc)
+            genlDealiasOwn(gen, fldref, vartype);
         else
             genlRcCounter(gen, fldref, -1, vartype);
     }
@@ -97,8 +97,8 @@ LLVMValueRef genlallocref(GenState *gen, AddrNode *addrnode) {
     return valcast;
 }
 
-// Dealias a lex allocated reference
-void genlDealiasLex(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
+// Dealias an own allocated reference
+void genlDealiasOwn(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
     genlDealiasFlds(gen, ref, refnode);
     genlFree(gen, ref);
 }
@@ -142,8 +142,8 @@ void genlDealiasNodes(GenState *gen, Nodes *nodes) {
         RefNode *reftype = (RefNode *)var->vtype;
         if (reftype->tag == RefTag) {
             LLVMValueRef ref = LLVMBuildLoad(gen->builder, var->llvmvar, "allocref");
-            if (reftype->alloc == (INode*)lexAlloc) {
-                genlDealiasLex(gen, ref, reftype);
+            if (reftype->alloc == (INode*)ownAlloc) {
+                genlDealiasOwn(gen, ref, reftype);
             }
             else if (reftype->alloc == (INode*)rcAlloc) {
                 genlRcCounter(gen, ref, -1, reftype);

@@ -45,8 +45,8 @@ LLVMValueRef genlallocref(GenState *gen, AddrNode *addrnode);
 void genlDealiasNodes(GenState *gen, Nodes *nodes);
 // Add to the counter of an rc allocated reference
 void genlRcCounter(GenState *gen, LLVMValueRef ref, long long amount, RefNode *refnode);
-// Dealias a lex allocated reference
-void genlDealiasLex(GenState *gen, LLVMValueRef ref, RefNode *refnode);
+// Dealias an own allocated reference
+void genlDealiasOwn(GenState *gen, LLVMValueRef ref, RefNode *refnode);
 
 // genltype.c
 // Generate a type value
