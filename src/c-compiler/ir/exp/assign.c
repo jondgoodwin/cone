@@ -143,6 +143,7 @@ INamedNode *assignLvalInfo(INode *lval, INode **lvalperm, int16_t *scope) {
         if (lvalvar->tag == VarDclTag) {
             *lvalperm = ((VarDclNode *)lvalvar)->perm;
             *scope = ((VarDclNode *)lvalvar)->scope;
+            ((VarDclNode*)lvalvar)->flowtempflags |= VarInitialized;
             return lvalvar;
         }
         else

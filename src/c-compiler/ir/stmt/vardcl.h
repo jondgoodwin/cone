@@ -15,7 +15,13 @@ typedef struct VarDclNode {
     INode *perm;			// Permission type (often mut or imm)
     uint16_t scope;				// 0=global
 	uint16_t index;				// index within this scope (e.g., parameter number)
+    uint16_t flowflags;         // Data flow pass permanent flags
+    uint16_t flowtempflags;     // Data flow pass temporary flags
 } VarDclNode;
+
+enum VarFlowTemp {
+    VarInitialized = 0x0001     // Variable has been initialized
+};
 
 VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *sig, INode *perm, INode *val);
 void varDclPrint(VarDclNode *fn);

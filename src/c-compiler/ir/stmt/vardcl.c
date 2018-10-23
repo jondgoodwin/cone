@@ -22,6 +22,8 @@ VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *type, INode *perm,
 	name->scope = 0;
 	name->index = 0;
 	name->llvmvar = NULL;
+    name->flowflags = 0;
+    name->flowtempflags = 0;
 	return name;
 }
 
@@ -105,5 +107,6 @@ void varDclFlow(FlowState *fstate, VarDclNode **vardclnode) {
         size_t svAliasPos = flowAliasPushNew(1);
         flowLoadValue(fstate, &((*vardclnode)->value));
         flowAliasPop(svAliasPos);
+        (*vardclnode)->flowtempflags |= VarInitialized;
     }
 }
