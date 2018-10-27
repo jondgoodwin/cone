@@ -37,15 +37,6 @@ if len(sys.argv) > 1:
 else:
   config = 'release'
 
-
-def link():
-  obj = builddir + "/main.obj"
-  ourlib = "../../packages/conert/release/conert.lib"
-  tolink = [mstoolbin+"link", msucrtlib, msvclib, msumlib, obj, ourlib, "/LTCG", "/OUT:"+exename]
-  # + "msvcrt.lib oldnames.lib kernel32.lib vcruntime.lib"
-  call(tolink)
-
-
 # Establish build directory and ensure it exists
 if config == 'release':
   builddir = 'release'
@@ -58,10 +49,9 @@ else:
   exit(1)
 if not os.path.exists(builddir):
   os.mkdir(builddir)
+objlist = []
 
 pgm = 'main'
-exename = os.path.join(builddir, project + exeext)
-objlist = []
 
 # Compile Cone program
 if config == 'release':
@@ -72,12 +62,28 @@ elif config == 'web':
   compopt = "--wasm"
 call("conec " + compopt + " -o"+builddir + " "+pgm)
 objlist.append(os.path.join(builddir, pgm + objext))
-print(objlist)
+pkg = 'conert'
+pkgpath = os.path.join(os.path.join(conehome, "packages"), pkg)
+if osname == 'win':
+  libname = pkg+'.lib'
+else:
+  libname = 'lib'+pkg+'.a'
+objlist.append(os.path.join(os.path.join(pkgpath, config), libname))
 
-if not config == 'web':
-  link()
+# Linkedit everything
+if config != 'web':
+  exename = os.path.join(builddir, project + exeext)
+  if osname == 'win':
+	  tolink = [mstoolbin+"link", msucrtlib, msvclib, msumlib, "/LTCG", "/NOLOGO", "/OUT:"+exename]
+	  # /MANIFEST /ManifestFile:"Debug\ConeTest.exe.intermediate.manifest" /MANIFESTUAC:"level='asInvoker' uiAccess='false'"
+	  # /DEBUG:FASTLINK /PDB:"D:\sol\Cone\Debug\ConeTest.pdb" 
+	  # it will include: "msvcrt.lib oldnames.lib kernel32.lib vcruntime.lib"
+  else:
+    tolink = ['gcc','-o',exename]
+    os.environ['PATH'] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  tolink.extend(objlist)
+  call(tolink)
 
 # Compile C
 # clang-cl /c /W3 /analyze- /Gy /O2 /sdl /Zc:inline /D "_MBCS" /WX- /Zc:forScope /Gd /Oy- /Oi /MD /FC /Fa"Release\\" /EHsc /nologo /Fo"public\\" /diagnostics:classic \cone\packages\conert\main.c
 # llvm-lib main.obj  (llvm-ar rc main.a main.o)
-# link /MANIFEST /NXCOMPAT /PDB:"D:\sol\Cone\Debug\ConeTest.pdb" /DYNAMICBASE "D:\sol\Cone\Debug\Conestd.lib" "D:\sol\Cone\Debug\test.obj" "kernel32.lib" "user32.lib" "gdi32.lib" "winspool.lib" "comdlg32.lib" "advapi32.lib" "shell32.lib" "ole32.lib" "oleaut32.lib" "uuid.lib" "odbc32.lib" "odbccp32.lib" /DEBUG:FASTLINK /MACHINE:X86 /INCREMENTAL /PGD:"D:\sol\Cone\Debug\ConeTest.pgd" /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /ManifestFile:"Debug\ConeTest.exe.intermediate.manifest" /ERRORREPORT:PROMPT /NOLOGO /TLBID:1 
