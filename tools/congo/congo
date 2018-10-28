@@ -24,6 +24,8 @@ elif sys.platform.startswith('win'):
   # Should be retrieved from registry
   # https://github.com/ponylang/ponyc/blob/master/src/libponyc/platform/vcvars.c
   mstoolbin = 'C:\\Program Files (x86)\\Microsoft Visual Studio\\2017\\Community\\VC\\Tools\\MSVC\\14.14.26428\\bin\\Hostx86\\x86\\'
+  msvcincl = 'C:\\Program Files (x86)\\Microsoft Visual Studio\\2017\\Community\\VC\\Tools\\MSVC\\14.14.26428\\include'
+  msucrtinc = 'C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.17134.0\\ucrt'
   msucrtlib = 'C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\10.0.17134.0\\ucrt\\x86\\ucrt.lib'
   msvclib = '/LIBPATH:C:\\Program Files (x86)\\Microsoft Visual Studio\\2017\\Community\\VC\\Tools\\MSVC\\14.14.26428\\lib\\x86\\'
   msumlib = '/LIBPATH:C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\10.0.17134.0\\um\\x86\\'
@@ -55,26 +57,41 @@ if not os.path.exists(builddir):
   os.mkdir(builddir)
 objlist = []
 
-pgm = 'main'
-
 # Compile Cone program
-if config == 'release':
-  compopt = []
-elif config == 'debug':
-  compopt = ['-d', '--ir', '--asm', '--llvmir']
-elif config == 'web':
-  compopt = ['--wasm']
-rc = call(["conec"] + compopt + ["-o"+builddir, pgm])
-if rc != 0:
-  sys.exit(rc)
-objlist.append(os.path.join(builddir, pgm + objext))
-pkg = 'conert'
-pkgpath = os.path.join(os.path.join(conehome, "packages"), pkg)
-if osname == 'win':
-  libname = pkg+'.lib'
-else:
-  libname = 'lib'+pkg+'.a'
-objlist.append(os.path.join(os.path.join(pkgpath, config), libname))
+if os.path.exists('main.cone'):
+	pgm = 'main'
+	if config == 'release':
+	  compopt = []
+	elif config == 'debug':
+	  compopt = ['-d', '--ir', '--asm', '--llvmir']
+	elif config == 'web':
+	  compopt = ['--wasm']
+	rc = call(["conec"] + compopt + ["-o"+builddir, pgm])
+	if rc != 0:
+	  sys.exit(rc)
+	objlist.append(os.path.join(builddir, pgm + objext))
+	pkg = 'conert'
+	pkgpath = os.path.join(os.path.join(conehome, "packages"), pkg)
+	if osname == 'win':
+	  libname = pkg+'.lib'
+	else:
+	  libname = 'lib'+pkg+'.a'
+	objlist.append(os.path.join(os.path.join(pkgpath, config), libname))
+
+elif os.path.exists('main.c'):
+	pgm = 'main'
+	if osname == 'win':
+		ccomp = [mstoolbin+"cl", '/I'+msvcincl, '/I'+msucrtinc, '/Fo'+builddir+'\\', '/c', '/W3', '/analyze-', '/sdl', '/Zc:inline', '/FC', '/nologo', '/EHsc']
+		if config == 'release':
+		  ccomp = ccomp + ['/Gy','/O2', '/Oi', '/MD']
+		elif config == 'debug':
+		  ccomp = ccomp + ['/MDd', '/Od']
+	print(ccomp)
+	rc = call(ccomp + [pgm+'.c'])
+	if rc != 0:
+	  sys.exit(rc)
+	objlist.append(os.path.join(builddir, pgm + objext))
+	sys.exit(0)
 
 # Linkedit everything
 if config != 'web':
@@ -93,5 +110,4 @@ if config != 'web':
     sys.exit(rc)
 
 # Compile C
-# clang-cl /c /W3 /analyze- /Gy /O2 /sdl /Zc:inline /D "_MBCS" /WX- /Zc:forScope /Gd /Oy- /Oi /MD /FC /Fa"Release\\" /EHsc /nologo /Fo"public\\" /diagnostics:classic \cone\packages\conert\main.c
 # llvm-lib main.obj  (llvm-ar rc main.a main.o)
