@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 # Build tool for a Cone program
+# (Future Direction is an executable program.
+#  see https://github.com/ponylang/ponyc/blob/master/src/libponyc/codegen/genexe.c#L404
 
 import os
 import sys
@@ -19,13 +21,15 @@ elif sys.platform.startswith('win'):
   cpu = 'x86'
   objext = '.obj'
   exeext = '.exe'
+  # Should be retrieved from registry
+  # https://github.com/ponylang/ponyc/blob/master/src/libponyc/platform/vcvars.c
   mstoolbin = 'C:\\Program Files (x86)\\Microsoft Visual Studio\\2017\\Community\\VC\\Tools\\MSVC\\14.14.26428\\bin\\Hostx86\\x86\\'
   msucrtlib = 'C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\10.0.17134.0\\ucrt\\x86\\ucrt.lib'
   msvclib = '/LIBPATH:C:\\Program Files (x86)\\Microsoft Visual Studio\\2017\\Community\\VC\\Tools\\MSVC\\14.14.26428\\lib\\x86\\'
   msumlib = '/LIBPATH:C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\10.0.17134.0\\um\\x86\\'
 else:
    print("Unsupported operating system")
-   exit(1)
+   sys.exit(1)
 
 # Obtain project name
 sep = '\\' if osname == 'win' else '/'
@@ -46,7 +50,7 @@ elif config == 'web':
   builddir = 'public'
 else:
   print("Unknown configuration: " + config)
-  exit(1)
+  sys.exit(1)
 if not os.path.exists(builddir):
   os.mkdir(builddir)
 objlist = []
@@ -55,12 +59,14 @@ pgm = 'main'
 
 # Compile Cone program
 if config == 'release':
-  compopt = ""
+  compopt = []
 elif config == 'debug':
-  compopt = "-d --ir --asm --llvmir"
+  compopt = ['-d', '--ir', '--asm', '--llvmir']
 elif config == 'web':
-  compopt = "--wasm"
-call("conec " + compopt + " -o"+builddir + " "+pgm)
+  compopt = ['--wasm']
+rc = call(["conec"] + compopt + ["-o"+builddir, pgm])
+if rc != 0:
+  sys.exit(rc)
 objlist.append(os.path.join(builddir, pgm + objext))
 pkg = 'conert'
 pkgpath = os.path.join(os.path.join(conehome, "packages"), pkg)
@@ -82,7 +88,9 @@ if config != 'web':
     tolink = ['gcc','-o',exename]
     os.environ['PATH'] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
   tolink.extend(objlist)
-  call(tolink)
+  rc = call(tolink)
+  if rc != 0:
+    sys.exit(rc)
 
 # Compile C
 # clang-cl /c /W3 /analyze- /Gy /O2 /sdl /Zc:inline /D "_MBCS" /WX- /Zc:forScope /Gd /Oy- /Oi /MD /FC /Fa"Release\\" /EHsc /nologo /Fo"public\\" /diagnostics:classic \cone\packages\conert\main.c
