@@ -60,6 +60,7 @@ objlist = []
 # Compile Cone program
 if os.path.exists('main.cone'):
 	pgm = 'main'
+	target = 'exe'
 	if config == 'release':
 	  compopt = []
 	elif config == 'debug':
@@ -80,34 +81,55 @@ if os.path.exists('main.cone'):
 
 elif os.path.exists('main.c'):
 	pgm = 'main'
+	target = 'lib'
 	if osname == 'win':
 		ccomp = [mstoolbin+"cl", '/I'+msvcincl, '/I'+msucrtinc, '/Fo'+builddir+'\\', '/c', '/W3', '/analyze-', '/sdl', '/Zc:inline', '/FC', '/nologo', '/EHsc']
 		if config == 'release':
 		  ccomp = ccomp + ['/Gy','/O2', '/Oi', '/MD']
 		elif config == 'debug':
 		  ccomp = ccomp + ['/MDd', '/Od']
-	print(ccomp)
+	else:
+		ccomp = ["gcc", '-c', '-Wall', '-o', os.path.join(builddir, pgm + objext)]
+		if config == 'release':
+		  ccomp = ccomp + ['-O2']
+		elif config == 'debug':
+		  ccomp = ccomp + ['-g', '-Og']
 	rc = call(ccomp + [pgm+'.c'])
 	if rc != 0:
 	  sys.exit(rc)
 	objlist.append(os.path.join(builddir, pgm + objext))
-	sys.exit(0)
 
-# Linkedit everything
+# Package everything
 if config != 'web':
-  exename = os.path.join(builddir, project + exeext)
-  if osname == 'win':
-	  tolink = [mstoolbin+"link", msucrtlib, msvclib, msumlib, "/LTCG", "/NOLOGO", "/OUT:"+exename]
-	  # /MANIFEST /ManifestFile:"Debug\ConeTest.exe.intermediate.manifest" /MANIFESTUAC:"level='asInvoker' uiAccess='false'"
-	  # /DEBUG:FASTLINK /PDB:"D:\sol\Cone\Debug\ConeTest.pdb" 
-	  # it will include: "msvcrt.lib oldnames.lib kernel32.lib vcruntime.lib"
-  else:
-    tolink = ['gcc','-o',exename]
-    os.environ['PATH'] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-  tolink.extend(objlist)
-  rc = call(tolink)
-  if rc != 0:
-    sys.exit(rc)
+  if target == 'exe':
+	  # Create executable program
+	  exename = os.path.join(builddir, project + exeext)
+	  if osname == 'win':
+		  tolink = [mstoolbin+"link", msucrtlib, msvclib, msumlib, "/NOLOGO", "/OUT:"+exename]
+		  if config == 'release':
+		    tolink.extend("/LTCG")
+		  # /MANIFEST /ManifestFile:"Debug\ConeTest.exe.intermediate.manifest" /MANIFESTUAC:"level='asInvoker' uiAccess='false'"
+		  # /DEBUG:FASTLINK /PDB:"D:\sol\Cone\Debug\ConeTest.pdb" 
+		  # it will include: "msvcrt.lib oldnames.lib kernel32.lib vcruntime.lib"
+	  else:
+	    tolink = ['gcc','-o',exename]
+	    os.environ['PATH'] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	  tolink.extend(objlist)
+	  rc = call(tolink)
+	  if rc != 0:
+	    sys.exit(rc)
+  elif target == 'lib':
+	  # Create library
+	  if osname == 'win':
+	    libname = os.path.join(builddir, project + '.lib')
+	    tolib = [mstoolbin+"lib", "/NOLOGO", "/OUT:"+libname]
+	  else:
+	    libname = os.path.join(builddir, 'lib'+project+'.a')
+	    tolib = ['ar','rcs',libname]
+	  tolib.extend(objlist)
+	  rc = call(tolib)
+	  if rc != 0:
+	    sys.exit(rc)
 
 # Compile C
 # llvm-lib main.obj  (llvm-ar rc main.a main.o)
