@@ -79,6 +79,7 @@ enum NodeTags {
 	MbrNameUseTag,	// Member of a type's namespace (property/method)
 	ULitTag,		// Integer literal
 	FLitTag,		// Float literal
+    NullTag,        // Null literal
     ArrLitTag,      // Array literal
 	StrLitTag,		// String literal
     VTupleTag,      // Value tuple (comma-separated values)

@@ -43,6 +43,7 @@ void keywordInit() {
 
 	keyAdd("true", trueToken);
 	keyAdd("false", falseToken);
+    keyAdd("null", nullToken);
 }
 
 PermNode *newPermNodeStr(char *name, uint16_t flags) {

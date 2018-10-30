@@ -32,11 +32,18 @@ typedef struct SLitNode {
 	char *strlit;
 } SLitNode;
 
+// The null literal
+typedef struct NullNode {
+    ITypedNodeHdr;
+} NullNode;
+
 ULitNode *newULitNode(uint64_t nbr, INode *type);
 void ulitPrint(ULitNode *node);
 
 FLitNode *newFLitNode(double nbr, INode *type);
 void flitPrint(FLitNode *node);
+
+NullNode *newNullNode();
 
 // Create a new array literal
 ArrLitNode *newArrLitNode();

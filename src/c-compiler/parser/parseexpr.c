@@ -70,6 +70,12 @@ INode *parseTerm(ParseState *parse) {
 		lexNextToken();
 		return (INode *)node;
 	}
+    case nullToken:
+    {
+        NullNode *node = newNullNode();
+        lexNextToken();
+        return (INode *)node;
+    }
 	case IntLitToken:
 		{
 			ULitNode *node = newULitNode(lex->val.uintlit, lex->langtype);

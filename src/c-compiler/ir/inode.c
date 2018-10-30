@@ -142,6 +142,9 @@ void inodePrintNode(INode *node) {
         inodeFprint(")");
         break;
     }
+    case NullTag:
+        inodeFprint("null");
+        break;
 	default:
 		inodeFprint("**** UNKNOWN NODE ****");
 	}
@@ -225,6 +228,7 @@ void inodeWalk(PassState *pstate, INode **node) {
 	case IntNbrTag: case UintNbrTag: case FloatNbrTag:
 	case PermTag:
 	case VoidTag:
+    case NullTag:
 		break;
 	default:
 		assert(0 && "**** ERROR **** Attempting to check an unknown node");

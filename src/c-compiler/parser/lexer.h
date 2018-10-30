@@ -117,6 +117,7 @@ enum TokenTypes {
 	AsToken,		// 'as'
 	trueToken,		// 'true'
 	falseToken,		// 'false'
+    nullToken,      // 'null'
 
 	NbrTokens
 };

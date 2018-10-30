@@ -41,6 +41,13 @@ void flitPrint(FLitNode *lit) {
 	inodePrintNode(lit->vtype);
 }
 
+NullNode *newNullNode() {
+    NullNode *node;
+    newNode(node, NullNode, NullTag);
+    node->vtype = NULL;
+    return node;
+}
+
 // Create a new array literal
 ArrLitNode *newArrLitNode() {
     ArrLitNode *lit;
