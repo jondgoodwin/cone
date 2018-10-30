@@ -15,6 +15,12 @@ RefNode *newRefNode() {
 	return refnode;
 }
 
+// Is type a nullable reference?
+int refIsNullable(INode *typenode) {
+    RefNode *ref = (RefNode*)typenode;
+    return ref->tag == RefTag && (ref->flags & FlagRefNull);
+}
+
 // Define fat pointer type tuple for slice: {*T, usize}
 void refSliceFatPtr(RefNode *reftype) {
     reftype->flags |= FlagArrSlice;

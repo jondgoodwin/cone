@@ -44,6 +44,14 @@ INode *iexpGetDerefTypeDcl(INode *node) {
 // This might inject a 'cast' node in front of the 'from' node with non-matching numbers
 int iexpCoerces(INode *to, INode **from) {
 
+    // Re-type a null literal node to match the expected ref/ptr type
+    if ((*from)->tag == NullTag) {
+        if (!refIsNullable(to) && to->tag != PtrTag)
+            return 0;
+        ((NullNode*)(*from))->vtype = to;
+        return 1;
+    }
+
 	// Convert to pointer from iexp to type dcl
 	iexpToTypeDcl(to);
 

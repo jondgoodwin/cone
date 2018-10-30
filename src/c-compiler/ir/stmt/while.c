@@ -32,7 +32,8 @@ void whilePass(PassState *pstate, WhileNode *node) {
 	inodeWalk(pstate, &node->blk);
 
 	if (pstate->pass == TypeCheck)
-		iexpCoerces((INode*)boolType, &node->condexp);
+		if (0==iexpCoerces((INode*)boolType, &node->condexp))
+            errorMsgNode(node->condexp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
 
 	pstate->flags = svflags;
 }

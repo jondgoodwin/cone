@@ -285,6 +285,12 @@ INode *parseRefType(ParseState *parse) {
     reftype->pvtype = voidType;
     lexNextToken();
 
+    // Handle indicator for nullable references
+    if (lexIsToken(QuesToken)) {
+        reftype->flags |= FlagRefNull;
+        lexNextToken();
+    }
+
     parseAllocPerm(reftype); // Get allocator and permission, if provided
 
     // Get value type for reference to a function

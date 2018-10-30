@@ -238,6 +238,8 @@ LLVMValueRef genlCast(GenState *gen, CastNode* node) {
 	case UintNbrTag:
         if (fromtype->tag == RefTag && (fromtype->flags & FlagArrSlice))
             return LLVMBuildExtractValue(gen->builder, genlExpr(gen, node->exp), 1, "sliceptr");
+        else if ((fromtype->tag == RefTag || fromtype->tag == PtrTag) && totype->bits == 1)
+            return LLVMBuildIsNotNull(gen->builder, genlExpr(gen, node->exp), "isnotnull");
         else if (fromtype->tag == FloatNbrTag)
 			return LLVMBuildFPToUI(gen->builder, genlExpr(gen, node->exp), genlType(gen, (INode*)totype), "");
 		else if (totype->bits < fromtype->bits)

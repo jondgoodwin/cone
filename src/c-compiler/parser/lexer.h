@@ -89,6 +89,7 @@ enum TokenTypes {
 	OrToken,			// 'or'
 	CaretToken,			// '^'
 	NotToken,			// '!'
+    QuesToken,          // '?'
 	TildeToken,			// '~'
 	UnderscoreToken,	// '_'
 	AssgnToken,			// '='

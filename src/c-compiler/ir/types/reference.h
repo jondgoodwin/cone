@@ -9,6 +9,7 @@
 #define reference_h
 
 #define FlagArrSlice 0x0001
+#define FlagRefNull  0x0002
 
 // Reference node
 typedef struct RefNode {
@@ -22,6 +23,9 @@ typedef struct RefNode {
 
 // Create a new reference type whose info will be filled in afterwards
 RefNode *newRefNode();
+
+// Is type a nullable reference?
+int refIsNullable(INode *typenode);
 
 // Define fat pointer type tuple for slice: {*T, usize}
 void refSliceFatPtr(RefNode *reftype);

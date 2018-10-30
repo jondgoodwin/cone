@@ -550,7 +550,8 @@ void lexNextToken() {
 				lexReturnPuncTok(GtToken, 1);
 			}
 
-		case '[': lexReturnPuncTok(LBracketToken, 1);
+        case '?': lexReturnPuncTok(QuesToken, 1);
+        case '[': lexReturnPuncTok(LBracketToken, 1);
 		case ']': lexReturnPuncTok(RBracketToken, 1);
 		case '(': lexReturnPuncTok(LParenToken, 1);
 		case ')': lexReturnPuncTok(RParenToken, 1);

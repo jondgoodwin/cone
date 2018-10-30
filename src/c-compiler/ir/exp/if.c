@@ -69,8 +69,9 @@ void ifPass(PassState *pstate, IfNode *ifnode) {
 		// - conditional must be a Bool
 		// - if's vtype is specified/checked only when coerced by iexpCoerces
 		if (pstate->pass == TypeCheck) {
-			if ((cnt & 1)==0 && *nodesp)
-				iexpCoerces((INode*)boolType, nodesp); // Conditional exp
+			if ((cnt & 1)==0 && *nodesp != voidType)
+				if (0==iexpCoerces((INode*)boolType, nodesp))
+                    errorMsgNode(*nodesp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
 		}
 	}
 }

@@ -85,6 +85,8 @@ int itypeMatches(INode *totype, INode *fromtype) {
 	//	return fnSigMatches((FnSigNode*)totype, (FnSigNode*)fromtype);
 
 	case UintNbrTag:
+        if ((fromtype->tag == RefTag || fromtype->tag == PtrTag) && totype == (INode*)boolType)
+            return 2;
         if (totype == (INode*)usizeType && fromtype->tag == RefTag && (fromtype->flags & FlagArrSlice))
             return 2;
         // Fall through is intentional here...
