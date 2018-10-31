@@ -285,8 +285,7 @@ LLVMValueRef genlCast(GenState *gen, CastNode* node) {
             return LLVMBuildBitCast(gen->builder, genlExpr(gen, node->exp), genlType(gen, (INode*)totype), "");
 
     default:
-		assert(0 && "Unknown type to cast to");
-		return NULL;
+        return LLVMBuildBitCast(gen->builder, genlExpr(gen, node->exp), genlType(gen, (INode*)totype), "");
 	}
 }
 

@@ -98,7 +98,8 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
     			*property++ = genlType(gen, ((ITypedNode *)*nodesp)->vtype);
 		}
 		LLVMTypeRef structype = LLVMStructCreateNamed(gen->context, name);
-		LLVMStructSetBody(structype, prop_types, propcount, 0);
+        if (propcount > 0)
+		    LLVMStructSetBody(structype, prop_types, propcount, 0);
 		return structype;
 	}
 

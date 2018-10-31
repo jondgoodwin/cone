@@ -183,6 +183,7 @@ int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
 #if CONE_DEFAULT_PIC
 	opt.pic = 1;
 #endif
+    opt->release = 1;
 
 	while ((id = optNext(&s)) != -1) {
 		switch (id) {

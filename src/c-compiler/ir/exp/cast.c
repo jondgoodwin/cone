@@ -29,6 +29,8 @@ void castPrint(CastNode *node) {
 void castPass(PassState *pstate, CastNode *node) {
 	inodeWalk(pstate, &node->exp);
 	inodeWalk(pstate, &node->vtype);
-	if (pstate->pass == TypeCheck && 0 == itypeMatches(node->vtype, ((ITypedNode *)node->exp)->vtype))
-		errorMsgNode(node->vtype, ErrorInvType, "expression may not be type cast to this type");
+    if (pstate->pass == TypeCheck && 0 == itypeMatches(node->vtype, ((ITypedNode *)node->exp)->vtype)) {
+        // Ignore failure to match for now. In future, only allow inside trust block?
+        // errorMsgNode(node->vtype, ErrorInvType, "expression may not be type cast to this type");
+    }
 }

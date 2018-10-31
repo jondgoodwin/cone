@@ -292,7 +292,8 @@ void genllvm(ConeOptions *opt, ModuleNode *mod) {
 	LLVMAddReassociatePass(passmgr);				// Reassociate expressions.
 	LLVMAddGVNPass(passmgr);						// Eliminate common subexpressions.
 	LLVMAddCFGSimplificationPass(passmgr);			// Simplify the control flow graph
-	LLVMAddFunctionInliningPass(passmgr);			// Function inlining
+    if (opt->release)
+	    LLVMAddFunctionInliningPass(passmgr);		// Function inlining
 	LLVMRunPassManager(passmgr, gen.module);
 	LLVMDisposePassManager(passmgr);
 

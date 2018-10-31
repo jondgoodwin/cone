@@ -111,9 +111,9 @@ INode *parseStruct(ParseState *parse) {
     }
 
 	// Process property or method definitions
-	if (lexIsToken(LCurlyToken)) {
-		lexNextToken();
-		while (1) {
+    if (lexIsToken(LCurlyToken)) {
+        lexNextToken();
+        while (1) {
             if (lexIsToken(SetToken)) {
                 lexNextToken();
                 if (!lexIsToken(FnToken))
@@ -127,25 +127,28 @@ INode *parseStruct(ParseState *parse) {
                 }
             }
             if (lexIsToken(FnToken)) {
-				FnDclNode *fn = (FnDclNode*)parseFn(parse, FlagMethProp, ParseMayName | ParseMayImpl);
+                FnDclNode *fn = (FnDclNode*)parseFn(parse, FlagMethProp, ParseMayName | ParseMayImpl);
                 if (fn && isNamedNode(fn))
                     imethnodesAddFn(&strnode->methprops, fn);
-			}
+            }
             else if (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
                 VarDclNode *property = parseVarDcl(parse, mutPerm, ParseMayImpl | ParseMaySig);
                 property->scope = 1;
                 property->index = propertynbr++;
                 property->flags |= FlagMethProp;
-				imethnodesAddProp(&strnode->methprops, property);
-				if (!lexIsToken(SemiToken))
-					break;
-				lexNextToken();
-			}
-			else
-				break;
-		}
-		parseRCurly();
-	}
+                imethnodesAddProp(&strnode->methprops, property);
+                if (!lexIsToken(SemiToken))
+                    break;
+                lexNextToken();
+            }
+            else
+                break;
+        }
+        parseRCurly();
+    }
+    // Opaque struct
+    else if (lexIsToken(SemiToken))
+        lexNextToken();
 	else
 		errorMsgLex(ErrorNoLCurly, "Expected left curly bracket enclosing properties or methods");
 
