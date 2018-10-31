@@ -1,7 +1,7 @@
 
 extern fn print(str *u8)
 
-extern system
+extern
     fn SDL_GetError() &u8
     fn SDL_ClearError()
     fn SDL_Init(flags u32) i32
@@ -22,7 +22,25 @@ struct SDL_GLContext
     nothing u8
 
 struct SDL_Event
-    nothing u8
+    type u32
+    timestamp u32   // In milliseconds
+    buffer [248]u8
+
+struct SDL_KeyboardEvent
+    type u32        // ::SDL_KEYDOWN or ::SDL_KEYUP
+    timestamp u32   // In milliseconds, populated using SDL_GetTicks()
+    windowID u32    // The window with keyboard focus, if any
+    state u8        // ::SDL_PRESSED or ::SDL_RELEASED
+    repeat u8       // Non-zero if this is a key repeat
+    padding2 u8
+    padding3 u8
+    keysym SDL_Keysym  // The key that was pressed or released
+
+struct SDL_Keysym
+    scancode u32        // SDL_Scancode SDL physical key code - see ::SDL_Scancode for details
+    sym u32             // SDL_Keycode SDL virtual key code - see ::SDL_Keycode for details
+    modifier u16       // current key modifiers
+    unused u32
 
 imm SDL_INIT_VIDEO = 0x20u32
 imm SDL_WINDOW_OPENGL = 2
@@ -34,8 +52,8 @@ imm SDL_GL_CONTEXT_PROFILE_CORE = 1
 imm SDL_QUIT = 256
 imm SDL_KEYDOWN = 768
 
-mut mainWindow &SDL_Window = null
-mut mainContext &SDL_GLContext = null
+mut mainWindow &?SDL_Window = null
+mut mainContext &?SDL_GLContext = null
 
 fn CheckSDLError()
     imm error = SDL_GetError()
@@ -52,10 +70,10 @@ fn init() Bool
         return false
 
     // Create our window centered at 512x512 resolution
-    mainWindow = SDL_CreateWindow("OpenGL/SDL window", 0, 0, 512, 512, SDL_WINDOW_OPENGL);
+    mainWindow = SDL_CreateWindow("OpenGL/SDL window", 0x2FFF0000u, 0x2FFF0000u, 512, 512, SDL_WINDOW_OPENGL);
 
     // Check that everything worked out okay
-    if false // mainWindow == null
+    if !mainWindow
         print("Unable to create window\n")
         CheckSDLError()
         return false
@@ -102,8 +120,9 @@ fn doEvent()
     while SDL_PollEvent(&event)
         if event.type == SDL_QUIT
             stopWorld()
-        if (event.type == SDL_KEYDOWN)
-            handleKey(event.key.keysym.sym)
+        if event.type == SDL_KEYDOWN
+            imm keyevent = &event as &SDL_KeyboardEvent
+            handleKey(keyevent.keysym.sym)
 
 fn main() i32
     if !init()
