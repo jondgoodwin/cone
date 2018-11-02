@@ -34,7 +34,8 @@ void logicPrint(LogicNode *node) {
 void logicNotPass(PassState *pstate, LogicNode *node) {
 	inodeWalk(pstate, &node->lexp);
 	if (pstate->pass == TypeCheck)
-		iexpCoerces((INode*)boolType, &node->lexp);
+        if (0 == iexpCoerces((INode*)boolType, &node->lexp))
+            errorMsgNode(node->lexp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
 }
 
 // Analyze logic node
@@ -43,7 +44,9 @@ void logicPass(PassState *pstate, LogicNode *node) {
 	inodeWalk(pstate, &node->rexp);
 
 	if (pstate->pass == TypeCheck) {
-		iexpCoerces((INode*)boolType, &node->lexp);
-		iexpCoerces((INode*)boolType, &node->rexp);
-	}
+        if (0 == iexpCoerces((INode*)boolType, &node->lexp))
+            errorMsgNode(node->lexp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
+        if (0 == iexpCoerces((INode*)boolType, &node->rexp))
+            errorMsgNode(node->rexp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
+    }
 }

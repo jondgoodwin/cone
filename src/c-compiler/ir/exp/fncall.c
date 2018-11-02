@@ -54,6 +54,19 @@ void fnCallFinalizeArgs(FnCallNode *node) {
     uint32_t cnt;
     INode **parmp = &nodesGet(((FnSigNode*)fnsig)->parms, 0);
     for (nodesFor(node->args, cnt, argsp)) {
+        // Auto-convert string literal to borrowed reference
+        INode *parmtype = iexpGetTypeDcl(*parmp);
+        if ((*argsp)->tag == StrLitTag && (parmtype->tag == RefTag || parmtype->tag == PtrTag)) {
+            RefNode *addrtype = newRefNode();
+            addrtype->perm = (INode*)immPerm;
+            addrtype->alloc = voidType;
+            addrtype->pvtype = (INode*)u8Type;
+            AddrNode *addrnode = newAddrNode();
+            addrnode->vtype = (INode*)addrtype;
+            addrnode->exp = *argsp;
+            *argsp = (INode*)addrnode;
+        }
+
         if (!iexpCoerces(*parmp, argsp))
             errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
         parmp++;

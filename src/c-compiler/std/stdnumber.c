@@ -30,19 +30,6 @@ void stdNbrInit() {
 	isizeType = newNbrTypeNode("isize", UintNbrTag, 0);
 	f32Type = newNbrTypeNode("f32", FloatNbrTag, 32);
 	f64Type = newNbrTypeNode("f64", FloatNbrTag, 64);
-
-	// Array reference to a literal string
-	strType = newRefNode();
-    strType->flags |= FlagArrSlice;
-	strType->pvtype = (INode*)u8Type;
-    strType->alloc = voidType;
-    strType->perm = (INode*)immPerm;
-    PtrNode *strptr = newPtrNode();
-    strptr->pvtype = (INode*)u8Type;
-    TTupleNode *strtuple = newTTupleNode(2);
-    nodesAdd(&strtuple->types, (INode*)strptr);
-    nodesAdd(&strtuple->types, (INode*)usizeType);
-    strType->tuptype = strtuple;
 }
 
 // Create a new primitive number type node

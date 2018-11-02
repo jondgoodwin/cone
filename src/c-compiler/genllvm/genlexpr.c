@@ -226,7 +226,9 @@ LLVMValueRef genlCast(GenState *gen, CastNode* node) {
 	// Casting a number to Bool means false if zero and true otherwise
 	if (totype == boolType) {
 		INode *vtype = iexpGetTypeDcl(node->exp);
-		if (fromtype->tag == FloatNbrTag)
+        if (fromtype->tag == RefTag || fromtype->tag == PtrTag)
+            return LLVMBuildIsNotNull(gen->builder, genlExpr(gen, node->exp), "isnotnull");
+        else if (fromtype->tag == FloatNbrTag)
 			return LLVMBuildFCmp(gen->builder, LLVMRealONE, genlExpr(gen, node->exp), LLVMConstNull(genlType(gen, vtype)), "");
 		else
 			return LLVMBuildICmp(gen->builder, LLVMIntNE, genlExpr(gen, node->exp), LLVMConstNull(genlType(gen, vtype)), "");
@@ -238,8 +240,6 @@ LLVMValueRef genlCast(GenState *gen, CastNode* node) {
 	case UintNbrTag:
         if (fromtype->tag == RefTag && (fromtype->flags & FlagArrSlice))
             return LLVMBuildExtractValue(gen->builder, genlExpr(gen, node->exp), 1, "sliceptr");
-        else if ((fromtype->tag == RefTag || fromtype->tag == PtrTag) && totype->bits == 1)
-            return LLVMBuildIsNotNull(gen->builder, genlExpr(gen, node->exp), "isnotnull");
         else if (fromtype->tag == FloatNbrTag)
 			return LLVMBuildFPToUI(gen->builder, genlExpr(gen, node->exp), genlType(gen, (INode*)totype), "");
 		else if (totype->bits < fromtype->bits)
@@ -276,7 +276,7 @@ LLVMValueRef genlCast(GenState *gen, CastNode* node) {
 			return genlExpr(gen, node->exp);
 
 	case RefTag:
-		return LLVMBuildBitCast(gen->builder, genlExpr(gen, node->exp), genlType(gen, (INode*)totype), "");
+        return LLVMBuildBitCast(gen->builder, genlExpr(gen, node->exp), genlType(gen, (INode*)totype), "");
 
     case PtrTag:
         if (fromtype->tag == RefTag && (fromtype->flags & FlagArrSlice))
@@ -381,6 +381,16 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         VarDclNode *flddcl = (VarDclNode*)((NameUseNode*)fncall->methprop)->dclnode;
         return LLVMBuildStructGEP(gen->builder, genlAddr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
     }
+    case StrLitTag:
+    {
+        SLitNode *strnode = (SLitNode *)lval;
+        ArrayNode *anode = (ArrayNode*)strnode->vtype;
+        LLVMValueRef sglobal = LLVMAddGlobal(gen->module, genlType(gen, strnode->vtype), "string");
+        LLVMSetLinkage(sglobal, LLVMInternalLinkage);
+        LLVMSetGlobalConstant(sglobal, 1);
+        LLVMSetInitializer(sglobal, LLVMConstStringInContext(gen->context, strnode->strlit, anode->size, 1));
+        return sglobal;
+    }
     }
 	return NULL;
 }
@@ -421,16 +431,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     }
     case StrLitTag:
     {
-        char *strlit = ((SLitNode *)termnode)->strlit;
-        uint32_t size = strlen(strlit) + 1;
-        LLVMValueRef sglobal = LLVMAddGlobal(gen->module, LLVMArrayType(LLVMInt8TypeInContext(gen->context), size), "string");
-        LLVMSetLinkage(sglobal, LLVMInternalLinkage);
-        LLVMSetGlobalConstant(sglobal, 1);
-        LLVMSetInitializer(sglobal, LLVMConstStringInContext(gen->context, strlit, size, 1));
-        LLVMValueRef tupleval = LLVMGetUndef(genlType(gen, (INode*)((RefNode*)iexpGetTypeDcl(termnode))->tuptype));
-        tupleval = LLVMBuildInsertValue(gen->builder, tupleval, LLVMBuildStructGEP(gen->builder, sglobal, 0, ""), 0, "strptr");
-        LLVMValueRef sizeval = LLVMConstInt(genlType(gen, (INode*)usizeType), size-1, 0);
-        return LLVMBuildInsertValue(gen->builder, tupleval, sizeval, 1, "strsize");
+        return LLVMBuildLoad(gen->builder, genlAddr(gen, termnode), "");
     }
     case VarNameUseTag:
     {

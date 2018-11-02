@@ -66,7 +66,7 @@ INamedNode *addrGetVarPerm(INode *lval, INode **lvalperm) {
 
     // One cannot borrow a reference from any other node
     default:
-        errorMsgNode(lval, ErrorNotLval, "You can only borrow a reference from a named variable or function");
+        errorMsgNode(lval, ErrorNotLval, "You can only borrow a reference from a variable, function, field, array element or array");
         return NULL;
     }
 }
@@ -74,13 +74,21 @@ INamedNode *addrGetVarPerm(INode *lval, INode **lvalperm) {
 // Type check borrowed reference creator
 void addrTypeCheckBorrow(AddrNode *node, RefNode *reftype) {
 
-    // lval is the variable or variable sub-structure we want to get a reference to
-    // From it, obtain variable we are borrowing from and actual/calculated permission
+    reftype->scope = 0;  // Presume lifetime scope is global
+
     INode *lval = node->exp;
-    INode *lvalperm = NULL;
-    INamedNode *lvalvar = addrGetVarPerm(lval, &lvalperm);
-    if (lvalvar == NULL)
-        return;
+    INode *lvalperm = (INode*)immPerm;
+    if (lval->tag != StrLitTag) {
+        // lval is the variable or variable sub-structure we want to get a reference to
+        // From it, obtain variable we are borrowing from and actual/calculated permission
+        INamedNode *lvalvar = addrGetVarPerm(lval, &lvalperm);
+        if (lvalvar == NULL)
+            return;
+        // Set lifetime of reference to borrowed variable's lifetime
+        if (lvalvar->tag == VarDclTag) {
+            reftype->scope = ((VarDclNode*)lvalvar)->scope;
+        }
+    }
     INode *lvaltype = ((ITypedNode*)lval)->vtype;
 
     // The reference's value type is unknown (NULL).
@@ -100,14 +108,6 @@ void addrTypeCheckBorrow(AddrNode *node, RefNode *reftype) {
     }
     else
         reftype->perm = lvalperm;
-
-    // Set lifetime of reference to borrowed variable's lifetime
-    if (lvalvar->tag == VarDclTag) {
-        reftype->scope = ((VarDclNode*)lvalvar)->scope;
-        // Perform borrow logic on variable we are borrowing from
-    }
-    else
-        reftype->scope = 0;  // Function's scope is global
 }
 
 // Type check allocator reference creator

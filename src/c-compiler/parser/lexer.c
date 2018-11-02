@@ -147,13 +147,18 @@ void lexScanString(char *srcp) {
 
 	// Conservatively count the size of the string
 	uint32_t srclen = 0;
-	while (*srcp != '"') {
+	while (*srcp && *srcp != '"') {
 		srclen++;
 		srcp++;
+        if (*srcp == '\\' && *(srcp + 1) == '"') {
+            srclen++;
+            srcp += 2;
+        }
 	}
 
 	// Build string literal
 	char *newp = memAllocStr(NULL, srclen);
+    srclen = 0;
 	lex->val.strlit = newp;
 	srcp = lex->tokp+1;
 	while (*srcp != '"') {
@@ -161,28 +166,34 @@ void lexScanString(char *srcp) {
 			srcp = lexScanEscape(srcp, &uchar);
 		else
 			uchar = *srcp++;
-		if (uchar<0x80)
-			*newp++ = (unsigned char)uchar;
+        if (uchar < 0x80) {
+            *newp++ = (unsigned char)uchar;
+            srclen++;
+        }
 		else if (uchar<0x800) {
 			*newp++ = 0xC0 | (unsigned char)(uchar >> 6);
 			*newp++ = 0x80 | (uchar & 0x3f);
-		}
+            srclen+=2;
+        }
 		else if (uchar<0x10000) {
 			*newp++ = 0xE0 | (unsigned char)(uchar >> 12);
 			*newp++ = 0x80 | ((uchar >> 6) & 0x3F);
 			*newp++ = 0x80 | (uchar & 0x3f);
-		}
+            srclen+=3;
+        }
 		else if (uchar<0x110000) {
 			*newp++ = 0xF0 | (unsigned char)(uchar >> 18);
 			*newp++ = 0x80 | ((uchar >> 12) & 0x3F);
 			*newp++ = 0x80 | ((uchar >> 6) & 0x3F);
 			*newp++ = 0x80 | (uchar & 0x3f);
-		}
+            srclen+=4;
+        }
 	}
 	*newp = '\0';
 	srcp++;
+    srclen++;
 
-	lex->langtype = (INode*)strType;
+	lex->langtype = (INode*)newArrayNodeTyped(srclen, (INode*)u8Type);
 	lex->toktype = StrLitToken;
 	lex->srcp = srcp;
 }

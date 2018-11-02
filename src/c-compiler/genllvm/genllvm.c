@@ -77,7 +77,13 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
 
 // Generate global variable
 void genlGloVar(GenState *gen, VarDclNode *varnode) {
-	LLVMSetInitializer(varnode->llvmvar, genlExpr(gen, varnode->value));
+    if (varnode->value->tag == StrLitTag) {
+        SLitNode *strnode = (SLitNode*)varnode->value;
+        ArrayNode *anode = (ArrayNode*)strnode->vtype;
+        LLVMSetInitializer(varnode->llvmvar, LLVMConstStringInContext(gen->context, strnode->strlit, anode->size, 1));
+    }
+    else
+	    LLVMSetInitializer(varnode->llvmvar, genlExpr(gen, varnode->value));
 }
 
 void genlNamePrefix(INamedNode *name, char *workbuf) {

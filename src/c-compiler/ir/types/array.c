@@ -20,6 +20,14 @@ ArrayNode *newArrayNode() {
     return anode;
 }
 
+// Create a new array type of a specified size and element type
+ArrayNode *newArrayNodeTyped(size_t size, INode *elemtype) {
+    ArrayNode *anode = newArrayNode();
+    anode->size = size;
+    anode->elemtype = elemtype;
+    return anode;
+}
+
 // Serialize an array type
 void arrayPrint(ArrayNode *node) {
 	inodeFprint("[%d]", (int)node->size);

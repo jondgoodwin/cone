@@ -16,6 +16,8 @@ typedef struct ArrayNode {
 } ArrayNode;
 
 ArrayNode *newArrayNode();
+// Create a new array type of a specified size and element type
+ArrayNode *newArrayNodeTyped(size_t size, INode *elemtype);
 void arrayPrint(ArrayNode *node);
 void arrayPass(PassState *pstate, ArrayNode *name);
 int arrayEqual(ArrayNode *node1, ArrayNode *node2);
