@@ -454,7 +454,7 @@ INode *parseExpBlock(ParseState *parse) {
 	case LCurlyToken:
 		return parseBlock(parse);
 	default:
-		return parseAssign(parse);
+        return parseAssign(parse);
 	}
 }
 

@@ -18,6 +18,13 @@
 
 // Parse control flow suffixes
 INode *parseSuffix(ParseState *parse, INode *node) {
+    // Translate 'this' block sugar to declaring 'this' at start of block
+    if (lexIsToken(LCurlyToken)) {
+        INode *var = (INode*)newVarDclNode(thisName, VarDclTag, voidType, (INode*)immPerm, node);
+        BlockNode *blk = (BlockNode*)parseBlock(parse);
+        nodesInsert(&blk->stmts, var, 0);
+        return (INode *)blk;
+    }
 	while (lexIsToken(IfToken) || lexIsToken(WhileToken)) {
 		if (lexIsToken(IfToken)) {
 			BlockNode *blk;
