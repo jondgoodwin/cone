@@ -109,6 +109,7 @@ enum TokenTypes {
 	StructToken,	// 'struct'
 	AllocToken,		// 'alloc'
 	RetToken,		// 'return'
+    DoToken,        // 'do'
 	IfToken,		// 'if'
 	ElifToken,		// 'elif'
 	ElseToken,		// 'else'

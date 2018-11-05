@@ -145,6 +145,11 @@ INode *parseBlock(ParseState *parse) {
 			break;
 		}
 
+        case DoToken:
+            lexNextToken();
+            nodesAdd(&blk->stmts, parseBlock(parse));
+            break;
+
 		case LCurlyToken:
 			nodesAdd(&blk->stmts, parseBlock(parse));
 			break;

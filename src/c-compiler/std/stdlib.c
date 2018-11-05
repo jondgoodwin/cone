@@ -30,6 +30,7 @@ void keywordInit() {
 	keyAdd("struct", StructToken);
 	keyAdd("alloc", AllocToken);
 	keyAdd("return", RetToken);
+    keyAdd("do", DoToken);
 	keyAdd("if", IfToken);
 	keyAdd("elif", ElifToken);
 	keyAdd("else", ElseToken);

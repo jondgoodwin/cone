@@ -451,6 +451,9 @@ INode *parseExpBlock(ParseState *parse) {
 	switch (lex->toktype) {
 	case IfToken:
 		return parseIf(parse);
+    case DoToken:
+        lexNextToken();
+        return parseBlock(parse);
 	case LCurlyToken:
 		return parseBlock(parse);
 	default:
