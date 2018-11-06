@@ -444,6 +444,15 @@ INode *parseAssign(ParseState *parse) {
 		INode *rval = parseExpr(parse);
 		return (INode*) newAssignNode(NormalAssign, lval, rval);
 	}
+    // sym:rval => this.sym = rval
+    else if (lexIsToken(ColonToken)) {
+        lexNextToken();
+        INode *rval = parseExpr(parse);
+        NameUseNode *thisnode = newNameUseNode(thisName);
+        FnCallNode *propnode = newFnCallNode(thisnode, 0);
+        propnode->methprop = lval;
+        return (INode*)newAssignNode(NormalAssign, (INode*)propnode, rval);
+    }
 	else
 		return lval;
 }
