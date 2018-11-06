@@ -131,7 +131,8 @@ INode *parseTerm(ParseState *parse) {
 
 // Parse the postfix operators: '.', '::', '()', '[]'
 INode *parsePostfix(ParseState *parse) {
-	INode *node = parseTerm(parse);
+    INode *node = lexIsToken(DotToken)? (INode*)newNameUseNode(thisName) : parseTerm(parse);
+
 	while (1) {
 		switch (lex->toktype) {
 
