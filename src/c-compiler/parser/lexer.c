@@ -562,10 +562,18 @@ void lexNextToken() {
 			}
 
         case '?': lexReturnPuncTok(QuesToken, 1);
-        case '[': lexReturnPuncTok(LBracketToken, 1);
-		case ']': lexReturnPuncTok(RBracketToken, 1);
-		case '(': lexReturnPuncTok(LParenToken, 1);
-		case ')': lexReturnPuncTok(RParenToken, 1);
+        case '[': 
+            lex->nbrcurly++;
+            lexReturnPuncTok(LBracketToken, 1);
+		case ']': 
+            if (lex->nbrcurly > 0) --lex->nbrcurly;
+            lexReturnPuncTok(RBracketToken, 1);
+		case '(': 
+            lex->nbrcurly++;
+            lexReturnPuncTok(LParenToken, 1);
+		case ')': 
+            if (lex->nbrcurly > 0) --lex->nbrcurly;
+            lexReturnPuncTok(RParenToken, 1);
 
 		// ':' and '::'
 		case ':':
