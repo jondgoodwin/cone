@@ -99,6 +99,7 @@ enum TokenTypes {
 	LeToken,			// '<='
 	GtToken,			// '>'
 	GeToken,			// '>='
+    LtltToken,          // '<<'
 
 	// Keywords
 	IncludeToken,	// 'include'

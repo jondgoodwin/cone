@@ -438,7 +438,16 @@ INode *parseTuple(ParseState *parse) {
 
 // Parse an assignment expression
 INode *parseAssign(ParseState *parse) {
-	INode *lval = parseTuple(parse);
+    // Prefix '<<' implies 'this' as lval
+    if (lexIsToken(LtltToken)) {
+        NameUseNode *thisvar = newNameUseNode(thisName);
+        FnCallNode *node = newFnCallOp((INode*)thisvar, "<<", 2);
+        lexNextToken();
+        nodesAdd(&node->args, parseExpr(parse));
+        return (INode*)node;
+    }
+
+    INode *lval = parseTuple(parse);
 	if (lexIsToken(AssgnToken)) {
 		lexNextToken();
 		INode *rval = parseExpr(parse);
@@ -449,9 +458,17 @@ INode *parseAssign(ParseState *parse) {
         lexNextToken();
         INode *rval = parseExpr(parse);
         NameUseNode *thisnode = newNameUseNode(thisName);
-        FnCallNode *propnode = newFnCallNode(thisnode, 0);
-        propnode->methprop = lval;
+        FnCallNode *propnode = newFnCallNode((INode*)thisnode, 0);
+        if (lval->tag != NameUseTag)
+            errorMsgNode(lval, ErrorNoMbr, "A name must be specified before the ':'");
+        propnode->methprop = (NameUseNode*)lval;
         return (INode*)newAssignNode(NormalAssign, (INode*)propnode, rval);
+    }
+    else if (lexIsToken(LtltToken)) {
+        FnCallNode *node = newFnCallOp(lval, "<<", 2);
+        lexNextToken();
+        nodesAdd(&node->args, parseExpr(parse));
+        return (INode*)node;
     }
 	else
 		return lval;

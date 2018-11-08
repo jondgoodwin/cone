@@ -548,6 +548,9 @@ void lexNextToken() {
 			if (*(srcp + 1) == '=') {
 				lexReturnPuncTok(LeToken, 2);
 			}
+            else if (*(srcp + 1) == '<') {
+                lexReturnPuncTok(LtltToken, 2);
+            }
 			else {
 				lexReturnPuncTok(LtToken, 1);
 			}
