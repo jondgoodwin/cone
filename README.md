@@ -9,22 +9,19 @@ It features:
 - Memory, thread & type safe
 - Extensive code reuse features
 
-The Cone compiler is currently under development and in very early stages.
+The Cone compiler is currently under development.
 The current status and next steps are documented in [PLAN.md][plan].
 
-## Documentation and Examples
+## Documentation and Other Resources
 
- - [Cone Language Reference][coneref]
- - [Showcase][showcase]
- - [Web-based playground][playground], using pre-built gists:
-   - [Hello, world!][hello]
-   - [Calculating pi][pi]
-   - [Permissions][perm]
-   - [Structs][struct]
-- [Development blog](http://pling.jondgoodwin.com)
-
-Note: Cone resembles its dynamically-typed cousin [Acorn][acorn],
-which has its own [reference documentation][acornref].
+ - [Cone web site](http://cone.jondgoodwin.com)
+ - [Web-based playground][playground], offering pre-built examples in a drop-down
+ - [Cone Language Reference][coneref] documentation
+ - [Programming Linguistics blog](http://pling.jondgoodwin.com)
+ 
+The [Cone home repository](https://github.com/jondgoodwin/conehome)
+offers a rudimentary build environment for Cone programs,
+including the Congo build tool.
 
 ## Language Features
 
