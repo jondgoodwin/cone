@@ -21,8 +21,8 @@ PermNode *uniPerm;
 PermNode *mutPerm;
 PermNode *immPerm;
 PermNode *constPerm;
-PermNode *mutxPerm;
-PermNode *idPerm;
+PermNode *mut1Perm;
+PermNode *egoPerm;
 
 // Built-in allocator types
 AllocNode *ownAlloc;

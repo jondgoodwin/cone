@@ -62,13 +62,13 @@ int permMatches(INode *ito, INode *ifrom) {
     PermNode *from = (PermNode *)((ifrom->tag == TypeNameUseTag)? (INode*)((NameUseNode*)ifrom)->dclnode : ifrom);
     PermNode *to = (PermNode *)((ito->tag == TypeNameUseTag)? (INode*)((NameUseNode*)ito)->dclnode : ito);
     assert(from->tag == PermTag && to->tag == PermTag);
-    if (to==from || to==idPerm)
+    if (to==from || to==egoPerm)
 		return 1;
 	if (from == uniPerm &&
-		(to == constPerm || to == mutPerm || to == immPerm || to == mutxPerm))
+		(to == constPerm || to == mutPerm || to == immPerm || to == mut1Perm))
 		return 1;
 	if (to == constPerm &&
-		(from == mutPerm || from == immPerm || from == mutxPerm))
+		(from == mutPerm || from == immPerm || from == mut1Perm))
 		return 1;
 	return 0;
 }
