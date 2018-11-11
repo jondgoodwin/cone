@@ -11,7 +11,13 @@ However, it does support methods, namespaces, tuples, permissions, and forward r
 The [Cone Playground](http://cone.jondgoodwin.com/play/index.html)
 demonstrates the language's currently supported features.
 
-## Current Focus: References
+## Current Focus (Sept-Dec): Control structures & References
+
+Adding additional control structure capabilities:
+
+- [DONE] this blocks & this operators
+- each blocks
+- match blocks and matching operator
 
 Enriching the language's reference support is a key focus over the next few months.
 Cone's reference capabilities are mostly designed and
@@ -28,9 +34,10 @@ The [data flow analysis pass](http://pling.jondgoodwin.com/post/data-flow-analys
 is being built to close this gap.
 When this work is done, the compiler will:
 
-- Drop and free (or de-alias) variables at the end of their declared scope.
+- [DONE] Drop and free (or de-alias) variables at the end of their declared scope.
+- Initializers and finalizers (including struct/type literals)
 - Allow unique references to (conditionally) “escape” their current scope, thereby delaying when to drop and free/de-alias them.
-- Track when copies (aliases) are made of a reference
+- [DONE] Track when copies (aliases) are made of a reference
 - Ensure that lifetime-constrained borrowed references always outlive their containers.
 - Deactivate variable bindings as a result of “move” semantics or for the lifetime of their borrowed references.
 - Enforce reference (and variable) mutability and aliasing permissions
@@ -45,7 +52,7 @@ This table illustrates the current status of Cone's key features:
 | **Control Flow** | Functions | Anon. functions, closures |
 | | Methods for types | Constructors, finalizers, set methods |
 | | Return (+implicit) | |
-| } do, this blocks. 'this' operators | build blocks |
+| | do, this blocks. 'this' operators | build blocks |
 | | if & block (expressions) | match |
 | | while, break, continue | each |
 | **Names** | Global, local, extern variables | |
