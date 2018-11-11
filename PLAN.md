@@ -1,4 +1,4 @@
-# Cone - 0.1.0 -> 0.2.0 Project Plan (as of October 12, 2018)
+# Cone - 0.1.0 -> 0.2.0 Project Plan (as of November 11, 2018)
 
 ## Current Capability
 
@@ -44,7 +44,8 @@ This table illustrates the current status of Cone's key features:
 | --- | --- | --- |
 | **Control Flow** | Functions | Anon. functions, closures |
 | | Methods for types | Constructors, finalizers, set methods |
-| | Return (+implicit) | do, this & build blocks |
+| | Return (+implicit) | |
+| } do, this blocks. 'this' operators | build blocks |
 | | if & block (expressions) | match |
 | | while, break, continue | each |
 | **Names** | Global, local, extern variables | |
@@ -52,7 +53,7 @@ This table illustrates the current status of Cone's key features:
 | | include | import |
 | **Operators** | +, -, *, /, % | |
 | | == < <= > >= | ~~ |
-| | = | +=, *=, etc. |
+| | = : << | +=, *=, etc. |
 | | . () [] * & | |
 | | & \| ^ ~ | |
 | | and, or, not/! | |
@@ -62,8 +63,9 @@ This table illustrates the current status of Cone's key features:
 | | struct and tuples | struct literals |
 | | array, array refs | slices, collections |
 | | | variant types |
-| | references | safety, nullable refs |
-| | lex, rc, borrowed | gc, arena, pool |
+| | references (incl. nullable) | safety guards |
+| | lex, rc, borrowed | move/borrow semantics |
+| | | gc, arena, pool |
 | | static permissions | runtime permissions |
 | | pointers | trust block |
 | **Polymorphism** | | Interfaces, Traits |
