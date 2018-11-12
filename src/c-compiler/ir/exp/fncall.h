@@ -21,7 +21,7 @@ typedef struct FnCallNode {
 FnCallNode *newFnCallNode(INode *objfn, int nnodes);
 FnCallNode *newFnCallOp(INode *obj, char *op, int nnodes);
 void fnCallPrint(FnCallNode *node);
-void fnCallPass(PassState *pstate, FnCallNode *node);
+void fnCallPass(PassState *pstate, FnCallNode **node);
 
 // Do data flow analysis for fncall node (only real function calls)
 void fnCallFlow(FlowState *fstate, FnCallNode **nodep);

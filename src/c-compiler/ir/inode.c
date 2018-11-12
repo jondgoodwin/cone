@@ -190,7 +190,7 @@ void inodeWalk(PassState *pstate, INode **node) {
     case VTupleTag:
         vtupleWalk(pstate, (VTupleNode *)*node); break;
 	case FnCallTag:
-		fnCallPass(pstate, (FnCallNode *)*node); break;
+		fnCallPass(pstate, (FnCallNode **)node); break;
 	case SizeofTag:
 		sizeofPass(pstate, (SizeofNode *)*node); break;
 	case CastTag:
