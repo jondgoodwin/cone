@@ -233,7 +233,16 @@ INode *parsePrefix(ParseState *parse) {
 	{
 		FnCallNode *node = newFnCallOp(NULL, "-", 0);
 		lexNextToken();
-		node->objfn = parsePrefix(parse);
+		INode *argnode = parsePrefix(parse);
+        if (argnode->tag == ULitTag) {
+            ((ULitNode*)argnode)->uintlit = (uint64_t)-((int64_t)((ULitNode*)argnode)->uintlit);
+            return argnode;
+        }
+        else if (argnode->tag == FLitTag) {
+            ((FLitNode*)argnode)->floatlit = -((FLitNode*)argnode)->floatlit;
+            return argnode;
+        }
+        node->objfn = argnode;
 		return (INode *)node;
 	}
 	case TildeToken:
