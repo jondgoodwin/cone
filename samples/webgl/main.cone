@@ -1,0 +1,194 @@
+include webgl
+include mat4
+include shader
+
+mut shader ColoredPointShader
+mut pyrPosBuffer VertexBuffer
+mut pyrColorBuffer VertexBuffer
+mut cubePosBuffer VertexBuffer
+mut cubeColorBuffer VertexBuffer
+mut cubeIndexBuffer IndexBuffer
+
+struct VertexBuffer
+	uid u32
+	itemsize u32
+	
+	fn init(self &mut, itemsz usize, array &[]f32)
+		itemsize = itemsz
+		uid = glCreateBuffer()
+		glBindBuffer(glARRAY_BUFFER, uid)
+		imm arr *f32 = array
+		glBufferData(glARRAY_BUFFER, arr, itemsz, glSTATIC_DRAW)
+
+	fn bind(self &, attrId u32)
+		glBindBuffer(glARRAY_BUFFER, uid)
+		glVertexAttribPointer(attrId, itemsize, glFLOAT, false, 0, 0)
+
+struct IndexBuffer
+	uid u32
+	itemsize u32
+	
+	fn init(self &mut, itemsz usize, array &[]u16)
+		itemsize = itemsz
+		uid = glCreateBuffer()
+		glBindBuffer(glELEMENT_ARRAY_BUFFER, uid)
+		imm arr *u16 = array
+		glBufferData(glELEMENT_ARRAY_BUFFER, arr, itemsz, glSTATIC_DRAW)
+
+
+fn initScene()
+	(&mut shader).init()
+
+	imm pvertices = [
+		// Front face
+		0.0,  1.0,  0.0,
+		-1.0, -1.0,  1.0,
+		1.0, -1.0,  1.0,
+
+		// Right face
+		0.0,  1.0,  0.0,
+		1.0, -1.0,  1.0,
+		1.0, -1.0, -1.0,
+
+		// Back face
+		0.0,  1.0,  0.0,
+		1.0, -1.0, -1.0,
+		-1.0, -1.0, -1.0,
+
+		// Left face
+		0.0,  1.0,  0.0,
+		-1.0, -1.0, -1.0,
+		-1.0, -1.0,  1.0
+	]
+	(&mut pyrPosBuffer).init(3, &pvertices)
+
+	imm pcolors = [
+		// Front face
+		1.0, 0.0, 0.0, 1.0,
+		0.0, 1.0, 0.0, 1.0,
+		0.0, 0.0, 1.0, 1.0,
+
+		// Right face
+		1.0, 0.0, 0.0, 1.0,
+		0.0, 0.0, 1.0, 1.0,
+		0.0, 1.0, 0.0, 1.0,
+
+		// Back face
+		1.0, 0.0, 0.0, 1.0,
+		0.0, 1.0, 0.0, 1.0,
+		0.0, 0.0, 1.0, 1.0,
+
+		// Left face
+		1.0, 0.0, 0.0, 1.0,
+		0.0, 0.0, 1.0, 1.0,
+		0.0, 1.0, 0.0, 1.0
+	]
+	(&mut pyrColorBuffer).init(4, &pcolors)
+
+	imm cvertices = [
+		// Front face
+		-1.0, -1.0,  1.0,
+		 1.0, -1.0,  1.0,
+		 1.0,  1.0,  1.0,
+		-1.0,  1.0,  1.0,
+
+		// Back face
+		-1.0, -1.0, -1.0,
+		-1.0,  1.0, -1.0,
+		 1.0,  1.0, -1.0,
+		 1.0, -1.0, -1.0,
+
+		// Top face
+		-1.0,  1.0, -1.0,
+		-1.0,  1.0,  1.0,
+		 1.0,  1.0,  1.0,
+		 1.0,  1.0, -1.0,
+
+		// Bottom face
+		-1.0, -1.0, -1.0,
+		 1.0, -1.0, -1.0,
+		 1.0, -1.0,  1.0,
+		-1.0, -1.0,  1.0,
+
+		// Right face
+		 1.0, -1.0, -1.0,
+		 1.0,  1.0, -1.0,
+		 1.0,  1.0,  1.0,
+		 1.0, -1.0,  1.0,
+
+		// Left face
+		-1.0, -1.0, -1.0,
+		-1.0, -1.0,  1.0,
+		-1.0,  1.0,  1.0,
+		-1.0,  1.0, -1.0
+	];
+	(&mut cubePosBuffer).init(3, &cvertices)
+
+	imm ccolors = [
+		1.0, 0.0, 0.0, 1.0, // Front face
+		1.0, 0.0, 0.0, 1.0,
+		1.0, 0.0, 0.0, 1.0,
+		1.0, 0.0, 0.0, 1.0,
+		1.0, 1.0, 0.0, 1.0, // Back face
+		1.0, 1.0, 0.0, 1.0,
+		1.0, 1.0, 0.0, 1.0,
+		1.0, 1.0, 0.0, 1.0,
+		0.0, 1.0, 0.0, 1.0, // Top face
+		0.0, 1.0, 0.0, 1.0,
+		0.0, 1.0, 0.0, 1.0,
+		0.0, 1.0, 0.0, 1.0,
+		1.0, 0.5, 0.5, 1.0, // Bottom face
+		1.0, 0.5, 0.5, 1.0,
+		1.0, 0.5, 0.5, 1.0,
+		1.0, 0.5, 0.5, 1.0,
+		1.0, 0.0, 1.0, 1.0, // Right face
+		1.0, 0.0, 1.0, 1.0,
+		1.0, 0.0, 1.0, 1.0,
+		1.0, 0.0, 1.0, 1.0,
+		0.0, 0.0, 1.0, 1.0,  // Left face
+		0.0, 0.0, 1.0, 1.0, 
+		0.0, 0.0, 1.0, 1.0,
+		0.0, 0.0, 1.0, 1.0 
+	]
+	(&mut cubeColorBuffer).init(4, &ccolors)
+
+	imm cubeVertexIndices = [
+		0u16, 1u16, 2u16,      0u16, 2u16, 3u16,    // Front face
+		4u16, 5u16, 6u16,      4u16, 6u16, 7u16,    // Back face
+		8u16, 9u16, 10u16,     8u16, 10u16, 11u16,  // Top face
+		12u16, 13u16, 14u16,   12u16, 14u16, 15u16, // Bottom face
+		16u16, 17u16, 18u16,   16u16, 18u16, 19u16, // Right face
+		20u16, 21u16, 22u16,   20u16, 22u16, 23u16  // Left face
+	]
+	(&mut cubeIndexBuffer).init(1, &cubeVertexIndices)
+
+fn degToRad(degrees f32) f32
+	degrees * 3.1416926535 / 180.
+
+// rotation angles in degrees
+mut rPyramid = 0.
+mut rCube = 0.
+mut mvMatrix Mat4
+mut pMatrix Mat4
+
+fn drawScene()
+	//glViewport(0, 0, gl.viewportWidth, gl.viewportHeight)
+	glClear(glCOLOR_BUFFER_BIT | glDEPTH_BUFFER_BIT)
+	
+	(&mut pMatrix).perspective(45, 1./*gl.viewportWidth / gl.viewportHeight*/, 0.1, 100.0)
+	
+	(&mut mvMatrix).identity
+	(&mut mvMatrix).translate(-1.5, 0.0, -8.)
+	(&mut mvMatrix).rotate(degToRad(rPyramid), 0., 1., 0.)
+	shader.bind(&pMatrix, &mvMatrix, &pyrPosBuffer, &pyrColorBuffer)
+	glDrawArrays(glTRIANGLES, 0, 12)
+
+	(&mut mvMatrix).identity
+	(&mut mvMatrix).translate(1.5, 0.0, -8.0)
+	(&mut mvMatrix).rotate(degToRad(rCube), 1., 1., 1.)
+	shader.bind(&pMatrix, &mvMatrix, &cubePosBuffer, &cubeColorBuffer)
+	glDrawElements(glTRIANGLES, 36, glUNSIGNED_SHORT, 0)
+
+fn updateScene(elapsed f32)
+	rPyramid = rPyramid + (90. * elapsed) / 1000.0
+	rCube = rCube - (75. * elapsed) / 1000.0

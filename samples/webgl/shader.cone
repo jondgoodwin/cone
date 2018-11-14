@@ -1,0 +1,82 @@
+// Vertex shader
+imm vsSrc = \
+"attribute vec3 aVertexPosition;
+attribute vec4 aVertexColor;
+
+uniform mat4 uMVMatrix;
+uniform mat4 uPMatrix;
+
+varying vec4 vColor;
+
+void main(void) {
+	gl_Position = uPMatrix * uMVMatrix * vec4(aVertexPosition, 1.0);
+	vColor = aVertexColor;
+}"
+
+// Fragment shader
+imm fsSrc = \
+"precision mediump float;
+
+varying vec4 vColor;
+
+void main(void) {
+	gl_FragColor = vColor;
+}"
+
+struct ColoredPointShader
+	pgm u32
+	posAttr u32
+	colorAttr u32
+	pmatUnif u32
+	mvmatUnif u32
+
+	fn init(self &mut)
+		pgm = makeShader(&vsSrc, &fsSrc)
+		posAttr = getAttrib(pgm, "aVertexPosition")
+		colorAttr = getAttrib(pgm, "aVertexColor")
+		pmatUnif = glGetUniformLocation(pgm, "uPMatrix")
+		mvmatUnif = glGetUniformLocation(pgm, "uMVMatrix")
+
+	fn bind(self, pMatrix &Mat4, mvMatrix &Mat4, posBuffer &VertexBuffer, colorBuffer &VertexBuffer)
+		glUniformMatrix4fv(pmatUnif, false, pMatrix)
+		glUniformMatrix4fv(mvmatUnif, false, mvMatrix)
+
+		posBuffer.bind(posAttr)
+		colorBuffer.bind(colorAttr)
+	
+	fn final(self &)
+		glDeleteProgram(pgm)
+		
+
+fn getAttrib(pgm u32, name *u8) u32
+	imm attrib = glGetAttribLocation(pgm, name)
+	glEnableVertexAttribArray(attrib)
+	attrib
+
+fn makeShader(vssrc &[]u8, fssrc &[]u8) u32
+	imm shaderProgram = glCreateProgram()
+	imm vshader = compileShader(glVERTEX_SHADER, vssrc)
+	glAttachShader(shaderProgram, vshader)
+	imm fshader = compileShader(glFRAGMENT_SHADER, fssrc)
+	glAttachShader(shaderProgram, fshader)
+	glLinkProgram(shaderProgram)
+
+	if !glGetProgramParameter(shaderProgram, glLINK_STATUS)
+		alert("Could not initialize shaders")
+		return 0
+
+	glDeleteShader(vshader)
+	glDeleteShader(fshader)
+	glUseProgram(shaderProgram)
+	shaderProgram
+
+fn compileShader(type u32, src &[]u8) u32
+	imm shader = glCreateShader(type)
+	glShaderSource(shader, src)
+	glCompileShader(shader)
+	if glGetShaderParameter(shader, glCOMPILE_STATUS)
+		alert(glGetShaderInfoLog(shader))
+		return 0
+	shader
+
+		
