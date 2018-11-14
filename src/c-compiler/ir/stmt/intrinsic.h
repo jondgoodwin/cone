@@ -35,7 +35,9 @@ enum IntrinsicFn {
 	ShrIntrinsic,
 
 	// Intrinsic functions
-	SqrtIntrinsic
+	SqrtIntrinsic,
+    SinIntrinsic,
+    CosIntrinsic
 };
 
 // An internal operation (e.g., add). 

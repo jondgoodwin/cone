@@ -152,7 +152,17 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
 				char *fnname = nbrtype->bits == 32 ? "llvm.sqrt.f32" : "llvm.sqrt.f64";
 				return LLVMBuildCall(gen->builder, genlGetIntrinsicFn(gen, fnname, fnuse), fnargs, fncall->args->used, "");
 			}
-			}
+            case SinIntrinsic:
+            {
+                char *fnname = nbrtype->bits == 32 ? "llvm.sin.f32" : "llvm.sin.f64";
+                return LLVMBuildCall(gen->builder, genlGetIntrinsicFn(gen, fnname, fnuse), fnargs, fncall->args->used, "");
+            }
+            case CosIntrinsic:
+            {
+                char *fnname = nbrtype->bits == 32 ? "llvm.cos.f32" : "llvm.cos.f64";
+                return LLVMBuildCall(gen->builder, genlGetIntrinsicFn(gen, fnname, fnuse), fnargs, fncall->args->used, "");
+            }
+            }
 		}
 		// Integer intrinsics
 		else {

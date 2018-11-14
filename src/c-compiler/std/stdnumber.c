@@ -103,7 +103,11 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
 	else {
 		opsym = nametblFind("sqrt", 4);
 		imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)unarysig, (INode *)newIntrinsicNode(SqrtIntrinsic)));
-	}
+        opsym = nametblFind("sin", 3);
+        imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)unarysig, (INode *)newIntrinsicNode(SinIntrinsic)));
+        opsym = nametblFind("cos", 3);
+        imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)unarysig, (INode *)newIntrinsicNode(CosIntrinsic)));
+    }
 
 	// Create function signature for comparison methods for this type
 	FnSigNode *cmpsig = newFnSigNode();
