@@ -20,7 +20,7 @@
 #include <llvm-c/Transforms/Scalar.h>
 #include <llvm-c/Transforms/IPO.h>
 #if LLVM_VERSION_MAJOR >= 7
-#include "llvm/Transforms/Utils.h"
+#include "llvm-c/Transforms/Utils.h"
 #endif
 
 #include <stdio.h>
@@ -293,7 +293,7 @@ void genllvm(ConeOptions *opt, ModuleNode *mod) {
 
 	// Optimize the generated LLVM IR
 	LLVMPassManagerRef passmgr = LLVMCreatePassManager();
-	LLVMAddPromoteMemoryToRegisterPass(passmgr);	// Promote allocas to registers.
+	LLVMAddDemoteMemoryToRegisterPass(passmgr);	// Promote allocas to registers.
 	LLVMAddInstructionCombiningPass(passmgr);		// Do simple "peephole" and bit-twiddling optimizations
 	LLVMAddReassociatePass(passmgr);				// Reassociate expressions.
 	LLVMAddGVNPass(passmgr);						// Eliminate common subexpressions.
