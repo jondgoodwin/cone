@@ -130,10 +130,20 @@ void genlGloVarName(GenState *gen, VarDclNode *glovar) {
 void genlGloFnName(GenState *gen, FnDclNode *glofn) {
     // Add function to the module
     if (glofn->value == NULL || glofn->value->tag != IntrinsicTag) {
-        glofn->llvmvar = LLVMAddFunction(gen->module, genlGlobalName((INamedNode*)glofn), genlType(gen, glofn->vtype));
+        char *manglednm = genlGlobalName((INamedNode*)glofn);
+        glofn->llvmvar = LLVMAddFunction(gen->module, manglednm, genlType(gen, glofn->vtype));
         if (glofn->flags & FlagSystem) {
             LLVMSetFunctionCallConv(glofn->llvmvar, LLVMX86StdcallCallConv);
             LLVMSetDLLStorageClass(glofn->llvmvar, LLVMDLLImportStorageClass);
+        }
+        char *fnname = &glofn->namesym->namestr;
+        if (gen->debug && glofn->value) {
+            LLVMMetadataRef fntype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder,
+                gen->difile, NULL, 0, 0);
+            LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, gen->difile,
+                fnname, strlen(fnname), manglednm, strlen(manglednm),
+                gen->difile, glofn->linenbr, fntype, 0, 1, glofn->linenbr, LLVMDIFlagPublic, 0);
+            LLVMSetSubprogram(glofn->llvmvar, sp);
         }
     }
 }
@@ -192,8 +202,17 @@ void genlPackage(GenState *gen, ModuleNode *mod) {
 
 	assert(mod->tag == ModuleTag);
 	gen->module = LLVMModuleCreateWithNameInContext(gen->srcname, gen->context);
+    if (gen->debug) {
+        gen->dibuilder = LLVMCreateDIBuilder(gen->module);
+        gen->difile = LLVMDIBuilderCreateFile(gen->dibuilder, "main.cone", 9, ".", 1);
+        gen->compileUnit = LLVMDIBuilderCreateCompileUnit(gen->dibuilder, LLVMDWARFSourceLanguageC,
+            gen->difile, "Cone compiler", 13, 0, "", 0, 0, "", 0, LLVMDWARFEmissionFull, 0, 0, 0);
+    }
 	genlModule(gen, mod);
-	// Verify generated IR
+    if (gen->debug)
+        LLVMDIBuilderFinalize(gen->dibuilder);
+
+    // Verify generated IR
 	LLVMVerifyModule(gen->module, LLVMReturnStatusAction, &error);
 	if (error) {
 		if (*error)
@@ -281,6 +300,8 @@ void genllvm(ConeOptions *opt, ModuleNode *mod) {
 
 	gen.srcname = mod->lexer->fname;
 	gen.context = LLVMGetGlobalContext(); // LLVM inlining bugs prevent use of LLVMContextCreate();
+    gen.debug = !opt->release;
+    gen.fn = NULL;
 
 	// Generate IR to LLVM IR
 	genlPackage(&gen, mod);
@@ -293,7 +314,7 @@ void genllvm(ConeOptions *opt, ModuleNode *mod) {
 
 	// Optimize the generated LLVM IR
 	LLVMPassManagerRef passmgr = LLVMCreatePassManager();
-	LLVMAddDemoteMemoryToRegisterPass(passmgr);	// Promote allocas to registers.
+	LLVMAddDemoteMemoryToRegisterPass(passmgr);	    // Demote allocas to registers.
 	LLVMAddInstructionCombiningPass(passmgr);		// Do simple "peephole" and bit-twiddling optimizations
 	LLVMAddReassociatePass(passmgr);				// Reassociate expressions.
 	LLVMAddGVNPass(passmgr);						// Eliminate common subexpressions.

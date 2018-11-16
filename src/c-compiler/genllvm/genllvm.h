@@ -12,6 +12,7 @@
 #include "../coneopts.h"
 
 #include <llvm-c/Core.h>
+#include <llvm-c/DebugInfo.h>
 #include <llvm-c/ExecutionEngine.h>
 
 typedef struct GenState {
@@ -23,7 +24,12 @@ typedef struct GenState {
 	LLVMBasicBlockRef whilebeg;
 	LLVMBasicBlockRef whileend;
 
-	char *srcname;
+    LLVMDIBuilderRef dibuilder;
+    LLVMMetadataRef compileUnit;
+    LLVMMetadataRef difile;
+
+    char *srcname;
+    int debug;
 } GenState;
 
 void genllvm(ConeOptions *opt, ModuleNode *mod);
