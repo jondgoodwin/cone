@@ -224,14 +224,20 @@ window.onload = async function() {
     glResize();
     window.addEventListener( "resize", glResize );
 
-    imports.memory = new WebAssembly.Memory({'initial':32});
-    wmemory = new Uint8Array(imports.memory.buffer);
-    WebAssembly.instantiateStreaming(fetch('cone.wasm'), {"js": imports})
+    imports.__linear_memory = new WebAssembly.Memory({'initial':32});
+    wmemory = new Uint8Array(imports.__linear_memory.buffer);
+	imports.__indirect_function_table = new WebAssembly.Table({"initial":1024, "element":"anyfunc"});
+    WebAssembly.instantiateStreaming(fetch('main.wasm'), {"env": imports})
     .then(mod => {
         degToRad = mod.instance.exports.degreeToRadians;
+		initScene = mod.instance.exports.initScene;
+		drawScene = mod.instance.exports.drawScene;
+		updateScene = mod.instance.exports.updateScene;
         initScene();
         glRenderLoop();
-    });
+    }, value => {
+		console.log(value);
+	});
 }
 
 // When window is resized, recalculate webgl context dimensions
