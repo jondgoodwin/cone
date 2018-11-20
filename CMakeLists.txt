@@ -49,6 +49,7 @@ add_executable(conec
 	src/c-compiler/ir/exp/literal.c
 	src/c-compiler/ir/exp/logic.c
 	src/c-compiler/ir/exp/nameuse.c
+	src/c-compiler/ir/exp/typelit.c
 	src/c-compiler/ir/exp/vtuple.c
 	src/c-compiler/ir/exp/sizeof.c
 

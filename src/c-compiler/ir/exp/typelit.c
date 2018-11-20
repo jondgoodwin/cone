@@ -7,22 +7,12 @@
 
 #include "../ir.h"
 
-// Create a new list node
-ListNode *newListNode() {
-    ListNode *lit;
-    newNode(lit, ListNode, ListTag);
-    lit->type = NULL;
-    lit->elements = newNodes(8);
-    lit->vtype = NULL;
-    return lit;
-}
-
 // Serialize a list node
-void listPrint(ListNode *node) {
+void typeLitPrint(FnCallNode *node) {
     INode **nodesp;
     uint32_t cnt;
     inodeFprint("[");
-    for (nodesFor(node->elements, cnt, nodesp)) {
+    for (nodesFor(node->args, cnt, nodesp)) {
         inodePrintNode(*nodesp);
         if (cnt)
             inodeFprint(",");
@@ -31,10 +21,10 @@ void listPrint(ListNode *node) {
 }
 
 // Check the list node
-void listWalk(PassState *pstate, ListNode *arrlit) {
+void typeLitWalk(PassState *pstate, FnCallNode *arrlit) {
     INode **nodesp;
     uint32_t cnt;
-    for (nodesFor(arrlit->elements, cnt, nodesp))
+    for (nodesFor(arrlit->args, cnt, nodesp))
         inodeWalk(pstate, nodesp);
 
     switch (pstate->pass) {
@@ -42,13 +32,13 @@ void listWalk(PassState *pstate, ListNode *arrlit) {
         break;
     case TypeCheck:
     {
-        if (arrlit->elements->used == 0) {
+        if (arrlit->args->used == 0) {
             errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal may not be empty");
             return;
         }
 
         // Get element type from first element
-        INode *first = nodesGet(arrlit->elements, 0);
+        INode *first = nodesGet(arrlit->args, 0);
         if (!isExpNode(first)) {
             errorMsgNode((INode*)first, ErrorBadArray, "Array literal element must be a typed value");
             return;
@@ -57,7 +47,7 @@ void listWalk(PassState *pstate, ListNode *arrlit) {
         ((ArrayNode*)arrlit->vtype)->elemtype = firsttype;
 
         // Ensure all elements are number literals and consistently typed
-        for (nodesFor(arrlit->elements, cnt, nodesp)) {
+        for (nodesFor(arrlit->args, cnt, nodesp)) {
             if (!itypeIsSame(((ITypedNode*)*nodesp)->vtype, firsttype))
                 errorMsgNode((INode*)*nodesp, ErrorBadArray, "Inconsistent type of array literal value");
             if (!litIsLiteral(*nodesp))

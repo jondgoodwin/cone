@@ -433,15 +433,15 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         INode *ptrtype = ((ULitNode*)termnode)->vtype;
         return LLVMConstNull(ptrtype? genlType(gen, ptrtype) : LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0));
     }
-    case ListTag:
+    case TypeLitTag:
     {
-        ListNode *arrlit = (ListNode *)termnode;
-        uint32_t size = arrlit->elements->used;
+        FnCallNode *arrlit = (FnCallNode *)termnode;
+        uint32_t size = arrlit->args->used;
         LLVMValueRef *values = (LLVMValueRef *)memAllocBlk(size * sizeof(LLVMValueRef *));
         LLVMValueRef *valuep = values;
         INode **nodesp;
         uint32_t cnt;
-        for (nodesFor(arrlit->elements, cnt, nodesp))
+        for (nodesFor(arrlit->args, cnt, nodesp))
             *valuep++ = genlExpr(gen, *nodesp);
         return LLVMConstArray(genlType(gen, ((ArrayNode *)arrlit->vtype)->elemtype), values, size);
     }

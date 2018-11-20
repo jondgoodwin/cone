@@ -81,7 +81,7 @@ enum NodeTags {
 	FLitTag,		// Float literal
     NullTag,        // Null literal
 	StrLitTag,		// String literal
-    ListTag,        // List (e.g., type literal)
+    TypeLitTag,        // List (e.g., type literal)
     VTupleTag,      // Value tuple (comma-separated values)
 	AssignTag,		// Assignment expression
 	FnCallTag,		// Function+method call or Property access
