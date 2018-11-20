@@ -131,12 +131,16 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
     // Add function to the module
     if (glofn->value == NULL || glofn->value->tag != IntrinsicTag) {
         char *manglednm = genlGlobalName((INamedNode*)glofn);
+        char *fnname = &glofn->namesym->namestr;
         glofn->llvmvar = LLVMAddFunction(gen->module, manglednm, genlType(gen, glofn->vtype));
         if (glofn->flags & FlagSystem) {
             LLVMSetFunctionCallConv(glofn->llvmvar, LLVMX86StdcallCallConv);
             LLVMSetDLLStorageClass(glofn->llvmvar, LLVMDLLImportStorageClass);
         }
-        char *fnname = &glofn->namesym->namestr;
+        else if (fnname[0] != '_') {
+            //LLVMSetDLLStorageClass(glofn->llvmvar, LLVMDLLExportStorageClass);
+            LLVMSetVisibility(glofn->llvmvar, LLVMDefaultVisibility);
+        }
         if (gen->debug && glofn->value) {
             LLVMMetadataRef fntype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder,
                 gen->difile, NULL, 0, 0);

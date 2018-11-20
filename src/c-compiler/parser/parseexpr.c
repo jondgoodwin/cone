@@ -107,7 +107,7 @@ INode *parseTerm(ParseState *parse) {
 		}
     case LBracketToken:
     {
-        ArrLitNode *arrlit = newArrLitNode();
+        ListNode *arrlit = newListNode();
         ArrayNode *arrtype = newArrayNode();
         arrlit->vtype = (INode*)arrtype;
         lexNextToken();

@@ -48,65 +48,6 @@ NullNode *newNullNode() {
     return node;
 }
 
-// Create a new array literal
-ArrLitNode *newArrLitNode() {
-    ArrLitNode *lit;
-    newNode(lit, ArrLitNode, ArrLitTag);
-    lit->elements = newNodes(8);
-    lit->vtype = NULL;
-    return lit;
-}
-
-// Serialize an array literal
-void arrLitPrint(ArrLitNode *node) {
-    INode **nodesp;
-    uint32_t cnt;
-    inodeFprint("[");
-    for (nodesFor(node->elements, cnt, nodesp)) {
-        inodePrintNode(*nodesp);
-        if (cnt)
-            inodeFprint(",");
-    }
-    inodeFprint("]");
-}
-
-// Check the array literal node
-void arrLitWalk(PassState *pstate, ArrLitNode *arrlit) {
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodesFor(arrlit->elements, cnt, nodesp))
-        inodeWalk(pstate, nodesp);
-
-    switch (pstate->pass) {
-    case NameResolution:
-        break;
-    case TypeCheck:
-    {
-        if (arrlit->elements->used == 0) {
-            errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal may not be empty");
-            return;
-        }
-
-        // Get element type from first element
-        INode *first = nodesGet(arrlit->elements, 0);
-        if (!isExpNode(first)) {
-            errorMsgNode((INode*)first, ErrorBadArray, "Array literal element must be a typed value");
-            return;
-        }
-        INode *firsttype = ((ITypedNode*)first)->vtype;
-        ((ArrayNode*)arrlit->vtype)->elemtype = firsttype;
-
-        // Ensure all elements are number literals and consistently typed
-        for (nodesFor(arrlit->elements, cnt, nodesp)) {
-            if (!itypeIsSame(((ITypedNode*)*nodesp)->vtype, firsttype))
-                errorMsgNode((INode*)*nodesp, ErrorBadArray, "Inconsistent type of array literal value");
-            if (!litIsLiteral(*nodesp))
-                errorMsgNode((INode*)*nodesp, ErrorBadArray, "Array literal element must be literal");
-        }
-    }
-    }
-}
-
 // Create a new string literal node
 SLitNode *newSLitNode(char *str, INode *type) {
 	SLitNode *lit;

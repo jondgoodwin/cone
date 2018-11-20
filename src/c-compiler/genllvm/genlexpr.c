@@ -435,7 +435,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     }
     case ArrLitTag:
     {
-        ArrLitNode *arrlit = (ArrLitNode *)termnode;
+        ListNode *arrlit = (ListNode *)termnode;
         uint32_t size = arrlit->elements->used;
         LLVMValueRef *values = (LLVMValueRef *)memAllocBlk(size * sizeof(LLVMValueRef *));
         LLVMValueRef *valuep = values;
