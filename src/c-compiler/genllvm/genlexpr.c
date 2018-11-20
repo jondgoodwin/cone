@@ -433,7 +433,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         INode *ptrtype = ((ULitNode*)termnode)->vtype;
         return LLVMConstNull(ptrtype? genlType(gen, ptrtype) : LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0));
     }
-    case ArrLitTag:
+    case ListTag:
     {
         ListNode *arrlit = (ListNode *)termnode;
         uint32_t size = arrlit->elements->used;

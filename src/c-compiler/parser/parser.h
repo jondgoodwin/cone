@@ -40,7 +40,8 @@ INode *parseIf(ParseState *parse);
 INode *parseBlock(ParseState *parse);
 
 // parseexpr.c
-INode *parseExpr(ParseState *parse);
+INode *parseSimpleExpr(ParseState *parse);
+INode *parseAnyExpr(ParseState *parse);
 
 // parsetype.c
 INode *parsePerm(PermNode *defperm);

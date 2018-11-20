@@ -74,7 +74,7 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
 		if (!(flags&ParseMayImpl))
 			errorMsgLex(ErrorBadImpl, "A default/initial value may not be specified here.");
 		lexNextToken();
-		val = parseExpr(parse);
+		val = parseAnyExpr(parse);
 	}
 	else {
 		if (!(flags&ParseMaySig))

@@ -30,7 +30,7 @@ INode *parseSuffix(ParseState *parse, INode *node) {
 			BlockNode *blk;
 			IfNode *ifnode = newIfNode();
 			lexNextToken();
-			nodesAdd(&ifnode->condblk, parseExpr(parse));
+			nodesAdd(&ifnode->condblk, parseAnyExpr(parse));
 			nodesAdd(&ifnode->condblk, (INode*)(blk = newBlockNode()));
 			nodesAdd(&blk->stmts, node);
 			node = (INode*)ifnode;
@@ -39,7 +39,7 @@ INode *parseSuffix(ParseState *parse, INode *node) {
 			BlockNode *blk;
 			WhileNode *wnode = newWhileNode();
 			lexNextToken();
-			wnode->condexp = parseExpr(parse);
+			wnode->condexp = parseAnyExpr(parse);
 			wnode->blk = (INode*)(blk = newBlockNode());
 			nodesAdd(&blk->stmts, node);
 			node = (INode*)wnode;
@@ -51,7 +51,7 @@ INode *parseSuffix(ParseState *parse, INode *node) {
 
 // Parse an expression statement within a function
 INode *parseExpStmt(ParseState *parse) {
-	return parseSuffix(parse, (INode *)parseExpr(parse));
+	return parseSuffix(parse, (INode *)parseAnyExpr(parse));
 }
 
 // Parse a return statement
@@ -59,7 +59,7 @@ INode *parseReturn(ParseState *parse) {
 	ReturnNode *stmtnode = newReturnNode();
 	lexNextToken(); // Skip past 'return'
 	if (!lexIsToken(SemiToken))
-		stmtnode->exp = parseExpr(parse);
+		stmtnode->exp = parseAnyExpr(parse);
 	return parseSuffix(parse, (INode*)stmtnode);
 }
 
@@ -67,7 +67,7 @@ INode *parseReturn(ParseState *parse) {
 INode *parseIf(ParseState *parse) {
 	IfNode *ifnode = newIfNode();
 	lexNextToken();
-	nodesAdd(&ifnode->condblk, parseExpr(parse));
+	nodesAdd(&ifnode->condblk, parseSimpleExpr(parse));
 	nodesAdd(&ifnode->condblk, parseBlock(parse));
     while (1) {
         // Process final else clause and break loop
@@ -85,7 +85,7 @@ INode *parseIf(ParseState *parse) {
 
         // Elif processing
         lexNextToken();
-        nodesAdd(&ifnode->condblk, parseExpr(parse));
+        nodesAdd(&ifnode->condblk, parseSimpleExpr(parse));
         nodesAdd(&ifnode->condblk, parseBlock(parse));
     }
 	return (INode *)ifnode;
@@ -95,7 +95,7 @@ INode *parseIf(ParseState *parse) {
 INode *parseWhile(ParseState *parse) {
 	WhileNode *wnode = newWhileNode();
 	lexNextToken();
-	wnode->condexp = parseExpr(parse);
+	wnode->condexp = parseSimpleExpr(parse);
 	wnode->blk = parseBlock(parse);
 	return (INode *)wnode;
 }

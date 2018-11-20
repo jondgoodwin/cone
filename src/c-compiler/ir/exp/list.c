@@ -10,7 +10,7 @@
 // Create a new list node
 ListNode *newListNode() {
     ListNode *lit;
-    newNode(lit, ListNode, ArrLitTag);
+    newNode(lit, ListNode, ListTag);
     lit->type = NULL;
     lit->elements = newNodes(8);
     lit->vtype = NULL;

@@ -18,7 +18,7 @@
 #include <assert.h>
 
 INode *parseAddr(ParseState *parse);
-INode *parseOrLogic(ParseState *parse);
+INode *parseList(ParseState *parse, INode *typenode);
 
 // Parse a name use, which may be qualified with module names
 INode *parseNameUse(ParseState *parse) {
@@ -101,28 +101,12 @@ INode *parseTerm(ParseState *parse) {
 		{
 			INode *node;
 			lexNextToken();
-			node = parseExpr(parse);
+			node = parseAnyExpr(parse);
 			parseCloseTok(RParenToken);
 			return node;
 		}
     case LBracketToken:
-    {
-        ListNode *arrlit = newListNode();
-        ArrayNode *arrtype = newArrayNode();
-        arrlit->vtype = (INode*)arrtype;
-        lexNextToken();
-        if (!lexIsToken(RBracketToken)) {
-            while (1) {
-                nodesAdd(&arrlit->elements, parseOrLogic(parse));
-                if (!lexIsToken(CommaToken))
-                    break;
-                lexNextToken();
-            };
-        }
-        arrtype->size = arrlit->elements->used;
-        parseCloseTok(RBracketToken);
-        return (INode*)arrlit;
-    }
+        return parseList(parse, NULL);
 	default:
 		errorMsgLex(ErrorBadTerm, "Invalid term value: expected variable, literal, etc.");
 		return NULL;
@@ -147,7 +131,7 @@ INode *parsePostfix(ParseState *parse) {
 			lexNextToken();
 			if (!lexIsToken(closetok))
 				while (1) {
-					nodesAdd(&fncall->args, parseOrLogic(parse));
+					nodesAdd(&fncall->args, parseSimpleExpr(parse));
 					if (lexIsToken(CommaToken))
 						lexNextToken();
 					else
@@ -181,7 +165,7 @@ INode *parsePostfix(ParseState *parse) {
                 fncall->args = newNodes(8);
 				if (!lexIsToken(RParenToken)) {
 					while (1) {
-						nodesAdd(&fncall->args, parseOrLogic(parse));
+						nodesAdd(&fncall->args, parseSimpleExpr(parse));
 						if (lexIsToken(CommaToken))
 							lexNextToken();
 						else
@@ -417,7 +401,7 @@ INode *parseAndLogic(ParseState *parse) {
 }
 
 // Parse 'or' logical operator
-INode *parseOrLogic(ParseState *parse) {
+INode *parseSimpleExpr(ParseState *parse) {
 	INode *lhnode = parseAndLogic(parse);
 	while (lexIsToken(OrToken)) {
 		LogicNode *node = newLogicNode(OrLogicTag);
@@ -431,13 +415,13 @@ INode *parseOrLogic(ParseState *parse) {
 
 // Parse a comma-separated expression tuple
 INode *parseTuple(ParseState *parse) {
-    INode *exp = parseOrLogic(parse);
+    INode *exp = parseSimpleExpr(parse);
     if (lexIsToken(CommaToken)) {
         VTupleNode *tuple = newVTupleNode();
         nodesAdd(&tuple->values, exp);
         while (lexIsToken(CommaToken)) {
             lexNextToken();
-            nodesAdd(&tuple->values, parseOrLogic(parse));
+            nodesAdd(&tuple->values, parseSimpleExpr(parse));
         }
         return (INode*)tuple;
     }
@@ -452,20 +436,20 @@ INode *parseAssign(ParseState *parse) {
         NameUseNode *thisvar = newNameUseNode(thisName);
         FnCallNode *node = newFnCallOp((INode*)thisvar, "<<", 2);
         lexNextToken();
-        nodesAdd(&node->args, parseExpr(parse));
+        nodesAdd(&node->args, parseAnyExpr(parse));
         return (INode*)node;
     }
 
     INode *lval = parseTuple(parse);
 	if (lexIsToken(AssgnToken)) {
 		lexNextToken();
-		INode *rval = parseExpr(parse);
+		INode *rval = parseAnyExpr(parse);
 		return (INode*) newAssignNode(NormalAssign, lval, rval);
 	}
     // sym:rval => this.sym = rval
     else if (lexIsToken(ColonToken)) {
         lexNextToken();
-        INode *rval = parseExpr(parse);
+        INode *rval = parseAnyExpr(parse);
         NameUseNode *thisnode = newNameUseNode(thisName);
         FnCallNode *propnode = newFnCallNode((INode*)thisnode, 0);
         if (lval->tag != NameUseTag)
@@ -476,14 +460,34 @@ INode *parseAssign(ParseState *parse) {
     else if (lexIsToken(LtltToken)) {
         FnCallNode *node = newFnCallOp(lval, "<<", 2);
         lexNextToken();
-        nodesAdd(&node->args, parseExpr(parse));
+        nodesAdd(&node->args, parseAnyExpr(parse));
         return (INode*)node;
     }
 	else
 		return lval;
 }
 
-INode *parseExpBlock(ParseState *parse) {
+INode *parseList(ParseState *parse, INode *typenode) {
+    ListNode *list = newListNode();
+    ArrayNode *arrtype = newArrayNode();
+    list->type = typenode;
+    list->vtype = (INode*)arrtype;
+    lexNextToken();
+    if (!lexIsToken(RBracketToken)) {
+        while (1) {
+            nodesAdd(&list->elements, parseSimpleExpr(parse));
+            if (!lexIsToken(CommaToken))
+                break;
+            lexNextToken();
+        };
+    }
+    arrtype->size = list->elements->used;
+    parseCloseTok(RBracketToken);
+    return (INode*)list;
+}
+
+// This parses any kind of expression, including blocks, asssignment or tuple
+INode *parseAnyExpr(ParseState *parse) {
 	switch (lex->toktype) {
 	case IfToken:
 		return parseIf(parse);
@@ -495,9 +499,4 @@ INode *parseExpBlock(ParseState *parse) {
 	default:
         return parseAssign(parse);
 	}
-}
-
-// Parse an expression
-INode *parseExpr(ParseState *parse) {
-	return parseExpBlock(parse);
 }
