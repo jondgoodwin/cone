@@ -163,9 +163,14 @@ void fnCallNameCheck(PassState *pstate, FnCallNode **nodep) {
 
     // TBD: objfn is a macro
 
-    // objfn is a type (TBD a constructor)
-    if (node->objfn->tag == TypeNameUseTag) {
-        errorMsgNode(node->objfn, ErrorBadTerm, "Currently no support for typed calls of initializer");
+    // If objfn is a type, handle it as a type literal
+    if (isTypeNode(node->objfn)) {
+        if (!node->flags & FlagArrSlice) {
+            errorMsgNode(node->objfn, ErrorBadTerm, "May not do a function call on a type");
+            return;
+        }
+        node->tag = TypeLitTag;
+        node->vtype = node->objfn;
     }
 
     // Name resolve arguments/statements

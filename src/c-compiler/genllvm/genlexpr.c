@@ -435,15 +435,29 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     }
     case TypeLitTag:
     {
-        FnCallNode *arrlit = (FnCallNode *)termnode;
-        uint32_t size = arrlit->args->used;
-        LLVMValueRef *values = (LLVMValueRef *)memAllocBlk(size * sizeof(LLVMValueRef *));
-        LLVMValueRef *valuep = values;
+        FnCallNode *lit = (FnCallNode *)termnode;
+        INode *littype = iexpGetTypeDcl(lit->vtype);
+        uint32_t size = lit->args->used;
         INode **nodesp;
         uint32_t cnt;
-        for (nodesFor(arrlit->args, cnt, nodesp))
-            *valuep++ = genlExpr(gen, *nodesp);
-        return LLVMConstArray(genlType(gen, ((ArrayNode *)arrlit->vtype)->elemtype), values, size);
+        if (littype->tag == ArrayTag) {
+            LLVMValueRef *values = (LLVMValueRef *)memAllocBlk(size * sizeof(LLVMValueRef *));
+            LLVMValueRef *valuep = values;
+            for (nodesFor(lit->args, cnt, nodesp))
+                *valuep++ = genlExpr(gen, *nodesp);
+            return LLVMConstArray(genlType(gen, ((ArrayNode *)lit->vtype)->elemtype), values, size);
+        }
+        else if (littype->tag == StructTag) {
+            LLVMValueRef strval = LLVMGetUndef(genlType(gen, littype));
+            unsigned int pos = 0;
+            for (nodesFor(lit->args, cnt, nodesp))
+                strval = LLVMBuildInsertValue(gen->builder, strval, genlExpr(gen, *nodesp), pos++, "literal");
+            return strval;
+        }
+        else {
+            errorMsgNode((INode*)lit, ErrorBadTerm, "Unknown literal type to generate");
+            return NULL;
+        }
     }
     case StrLitTag:
     {

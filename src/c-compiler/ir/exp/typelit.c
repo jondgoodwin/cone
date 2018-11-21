@@ -37,6 +37,10 @@ void typeLitWalk(PassState *pstate, FnCallNode *arrlit) {
             return;
         }
 
+        INode *littype = iexpGetTypeDcl(arrlit->vtype);
+        if (littype->tag != ArrayTag)
+            return;
+
         // Get element type from first element
         INode *first = nodesGet(arrlit->args, 0);
         if (!isExpNode(first)) {

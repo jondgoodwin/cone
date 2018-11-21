@@ -133,9 +133,10 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
 // Generate a type value
 LLVMTypeRef genlType(GenState *gen, INode *typ) {
 	char *name = "";
-	if (typ->tag == TypeNameUseTag || typ->tag == AllocTag) {
+    INode *dcltype = itypeGetTypeDcl(typ);
+    if (isNamedNode(dcltype)) {
 		// with vtype name use, we can memoize type value and give it a name
-		NamedTypeNode *dclnode = typ->tag==AllocTag? (NamedTypeNode*)typ : (NamedTypeNode*)((NameUseNode*)typ)->dclnode;
+        NamedTypeNode *dclnode = (NamedTypeNode*)dcltype;
 		if (dclnode->llvmtype)
 			return dclnode->llvmtype;
 
