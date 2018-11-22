@@ -164,3 +164,11 @@ char *itypeMangle(char *bufp, INode *vtype) {
 	}
 	return bufp + strlen(bufp);
 }
+
+// Return true is type has a defined size. Opaque structs, traits/interfaces will be false.
+int itypeHasSize(INode *type) {
+    INode *dcltype = itypeGetTypeDcl(type);
+    if (dcltype->tag == StructTag)
+        return !(dcltype->flags & FlagStructOpaque);
+    return 1;
+}

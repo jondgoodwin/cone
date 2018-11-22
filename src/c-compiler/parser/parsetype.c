@@ -152,6 +152,10 @@ INode *parseStruct(ParseState *parse) {
 	else
 		errorMsgLex(ErrorNoLCurly, "Expected left curly bracket enclosing properties or methods");
 
+    // A 0-size (no field) struct is opaque. Cannot be intantiated.
+    if (propertynbr == 0)
+        strnode->flags |= FlagStructOpaque;
+
 	parse->owner = svowner;
 	return (INode*)strnode;
 }

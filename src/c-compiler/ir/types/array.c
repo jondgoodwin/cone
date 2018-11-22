@@ -37,6 +37,8 @@ void arrayPrint(ArrayNode *node) {
 // Semantically analyze an array type
 void arrayPass(PassState *pstate, ArrayNode *node) {
 	inodeWalk(pstate, &node->elemtype);
+    if (pstate->pass == TypeCheck && !itypeHasSize(node->elemtype))
+        errorMsgNode(node->elemtype, ErrorInvType, "Type must have a defined size.");
 }
 
 // Compare two struct signatures to see if they are equivalent

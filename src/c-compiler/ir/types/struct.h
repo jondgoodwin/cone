@@ -22,6 +22,9 @@ typedef struct StructNode {
 	IMethodNodeHdr;
 } StructNode;
 
+#define FlagStructOpaque   0x8000  // Has no fields
+#define FlagStructNoCopy   0x4000  // Only supports move semantics
+
 StructNode *newStructNode(Name *namesym);
 void structPrint(StructNode *node);
 void structPass(PassState *pstate, StructNode *name);

@@ -100,7 +100,9 @@ void varDclPass(PassState *pstate, VarDclNode *name) {
 		}
 		else if (vtype == voidType)
 			errorMsgNode((INode*)name, ErrorNoType, "Name must specify a type");
-		break;
+        if (!itypeHasSize(name->vtype))
+            errorMsgNode(name->vtype, ErrorInvType, "Type must have a defined size.");
+        break;
 	}
 }
 

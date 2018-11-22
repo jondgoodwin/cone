@@ -104,11 +104,13 @@ void modPass(PassState *pstate, ModuleNode *mod) {
             VarDclNode * varnode = (VarDclNode*)*nodesp;
             inodeWalk(pstate, (INode**)&varnode->perm);
             inodeWalk(pstate, &varnode->vtype);
+            break;
         }
         case FnDclTag:
         {
             FnDclNode * varnode = (FnDclNode*)*nodesp;
             inodeWalk(pstate, &varnode->vtype);
+            break;
         }
         }
 	}
