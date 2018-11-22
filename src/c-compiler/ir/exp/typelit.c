@@ -56,29 +56,34 @@ void typeLitArrayCheck(PassState *pstate, FnCallNode *arrlit) {
 }
 
 // Type check a struct literal
+// Verify correct name/type of each literal element against struct's properties
 void typeLitStructCheck(PassState *pstate, FnCallNode *arrlit, StructNode *strnode) {
-    // Ensure number of literal values match number of struct fields
     INode **nodesp;
     uint32_t cnt;
-    uint32_t propcount = 0;
-    for (imethnodesFor(&strnode->methprops, cnt, nodesp)) {
-        if ((*nodesp)->tag == VarDclTag)
-            ++propcount; // Count number of fields
-    }
-    if (propcount != arrlit->args->used) {
-        errorMsgNode((INode*)arrlit, ErrorBadArray, "Incorrect number of expected literal values");
-        return;
-    }
-
-    // Correct type of each item vs. field
-    INode **litval = &nodesGet(arrlit->args, 0);
+    uint32_t argi = 0;
     for (imethnodesFor(&strnode->methprops, cnt, nodesp)) {
         if ((*nodesp)->tag != VarDclTag)
             break;
-        if (!iexpCoerces(*nodesp, litval))
-            errorMsgNode((INode*)*litval, ErrorBadArray, "Literal value's type does not match expected field's type");
-        ++litval;
+        VarDclNode *prop = (VarDclNode *)*nodesp;
+
+        // If element has been specified, be sure it is the right type
+        if (argi < arrlit->args->used) {
+            INode **litval = &nodesGet(arrlit->args, argi);
+            if (!iexpCoerces(*nodesp, litval))
+                errorMsgNode((INode*)*litval, ErrorBadArray, "Literal value's type does not match expected field's type");
+        }
+        // Append default value if no value specified
+        else if (prop->value) {
+            nodesAdd(&arrlit->args, prop->value);
+        }
+        else {
+            errorMsgNode((INode*)arrlit, ErrorBadArray, "Not enough values specified on struct literal");
+            break;
+        }
+        ++argi;
     }
+    if (argi < arrlit->args->used)
+        errorMsgNode((INode*)arrlit, ErrorBadArray, "Too many values specified on struct literal");
 }
 
 // Check the list node

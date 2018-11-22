@@ -137,8 +137,8 @@ INode *parseStruct(ParseState *parse) {
                 property->index = propertynbr++;
                 property->flags |= FlagMethProp;
                 imethnodesAddProp(&strnode->methprops, property);
-                if (property->namesym->namestr == '_')
-                    strnode->flags |= FlagStructPrivate;
+                if (property->namesym->namestr == '_' && !property->value)
+                    strnode->flags |= FlagStructPrivate; // has a private property without a default value
                 if (!lexIsToken(SemiToken))
                     break;
                 lexNextToken();
