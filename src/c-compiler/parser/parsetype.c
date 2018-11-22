@@ -137,6 +137,8 @@ INode *parseStruct(ParseState *parse) {
                 property->index = propertynbr++;
                 property->flags |= FlagMethProp;
                 imethnodesAddProp(&strnode->methprops, property);
+                if (property->namesym->namestr == '_')
+                    strnode->flags |= FlagStructPrivate;
                 if (!lexIsToken(SemiToken))
                     break;
                 lexNextToken();

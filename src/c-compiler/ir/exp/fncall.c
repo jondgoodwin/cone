@@ -171,6 +171,11 @@ void fnCallNameCheck(PassState *pstate, FnCallNode **nodep) {
         }
         node->tag = TypeLitTag;
         node->vtype = node->objfn;
+
+        INode *typdcl = itypeGetTypeDcl(node->objfn);
+        if (typdcl->tag == StructTag && (typdcl->flags & FlagStructPrivate) && typdcl != pstate->typenode) {
+            errorMsgNode(node->objfn, ErrorNotTyped, "For types with private fields, literal can only be used by type's methods");
+        }
     }
 
     // Name resolve arguments/statements

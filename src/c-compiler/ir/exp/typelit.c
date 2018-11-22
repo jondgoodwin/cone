@@ -22,6 +22,17 @@ void typeLitPrint(FnCallNode *node) {
     inodeFprint("]");
 }
 
+// Is the type literal actually a literal?
+int typeLitIsLiteral(FnCallNode *node) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(node->args, cnt, nodesp)) {
+        if (!litIsLiteral(*nodesp))
+            return 0;
+    }
+    return 1;
+}
+
 // Type check an array literal
 void typeLitArrayCheck(PassState *pstate, FnCallNode *arrlit) {
 
@@ -41,8 +52,6 @@ void typeLitArrayCheck(PassState *pstate, FnCallNode *arrlit) {
     for (nodesFor(arrlit->args, cnt, nodesp)) {
         if (!itypeIsSame(((ITypedNode*)*nodesp)->vtype, firsttype))
             errorMsgNode((INode*)*nodesp, ErrorBadArray, "Inconsistent type of array literal value");
-        if (!litIsLiteral(*nodesp))
-            errorMsgNode((INode*)*nodesp, ErrorBadArray, "Array literal element must be literal");
     }
 }
 

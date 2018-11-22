@@ -24,6 +24,7 @@ typedef struct StructNode {
 
 #define FlagStructOpaque   0x8000  // Has no fields
 #define FlagStructNoCopy   0x4000  // Only supports move semantics
+#define FlagStructPrivate  0x2000  // Has private fields
 
 StructNode *newStructNode(Name *namesym);
 void structPrint(StructNode *node);

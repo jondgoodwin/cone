@@ -63,5 +63,6 @@ void slitPrint(SLitNode *lit) {
 }
 
 int litIsLiteral(INode* node) {
-    return (node->tag == FLitTag || node->tag == ULitTag || node->tag == NullTag || node->tag == TypeLitTag || node->tag == StrLitTag);
+    return (node->tag == FLitTag || node->tag == ULitTag || node->tag == NullTag || node->tag == StrLitTag
+        || (node->tag == TypeLitTag && typeLitIsLiteral((FnCallNode*)node)));
 }

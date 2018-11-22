@@ -25,6 +25,7 @@ clock_t startTime;
 void doAnalysis(ModuleNode **mod) {
     PassState pstate;
     pstate.mod = *mod;
+    pstate.typenode = NULL;
     pstate.fnsig = NULL;
     pstate.scope = 0;
     pstate.flags = 0;

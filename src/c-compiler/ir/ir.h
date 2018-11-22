@@ -98,7 +98,8 @@ enum Passes {
 typedef struct PassState {
 	int pass;				// Passes
 	ModuleNode *mod;		// Current module
-	FnSigNode *fnsig;	// The type signature of the function we are within
+    INode *typenode;        // Current type (e.g., struct)
+	FnSigNode *fnsig;	    // The type signature of the function we are within
 
 	int16_t scope;			// The current block scope (0=global, 1=fnsig, 2+=blocks)
 	uint16_t flags;

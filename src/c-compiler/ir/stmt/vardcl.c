@@ -65,7 +65,7 @@ void varDclTypeCheck(PassState *pstate, VarDclNode *name) {
 	inodeWalk(pstate, &name->value);
 	// Global variables and function parameters require literal initializers
 	if (name->scope <= 1 && !litIsLiteral(name->value))
-		errorMsgNode(name->value, ErrorNotLit, "Variable may only be initialized with a literal.");
+		errorMsgNode(name->value, ErrorNotLit, "Variable may only be initialized with a literal value.");
 	// Infer the var's vtype from its value, if not provided
     if (name->vtype == voidType) {
         if (name->value && ((ITypedNode *)name->value)->vtype)

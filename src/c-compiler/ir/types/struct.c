@@ -27,6 +27,8 @@ void structPrint(StructNode *node) {
 
 // Semantically analyze a struct type
 void structPass(PassState *pstate, StructNode *node) {
+    INode *svtypenode = pstate->typenode;
+    pstate->typenode = (INode*)node;
     nametblHookPush();
     INode **nodesp;
     uint32_t cnt;
@@ -38,6 +40,7 @@ void structPass(PassState *pstate, StructNode *node) {
         inodeWalk(pstate, (INode**)nodesp);
     }
     nametblHookPop();
+    pstate->typenode = svtypenode;
 }
 
 // Compare two struct signatures to see if they are equivalent
