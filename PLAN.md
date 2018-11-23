@@ -1,4 +1,4 @@
-# Cone - 0.1.0 -> 0.2.0 Project Plan (as of November 11, 2018)
+# Cone - 0.1.0 -> 0.2.0 Project Plan (as of November 23, 2018)
 
 ## Current Capability
 
@@ -11,15 +11,16 @@ However, it does support methods, namespaces, tuples, permissions, and forward r
 The [Cone Playground](http://cone.jondgoodwin.com/play/index.html)
 demonstrates the language's currently supported features.
 
-## Current Focus (Sept-Dec): Control structures & References
+## Current Focus: Control structures & References
 
-Adding additional control structure capabilities:
+Add more control and data structures:
 
 - [DONE] this blocks & this operators
+- [DONE] struct literals
 - each blocks
 - match blocks and matching operator
 
-Enriching the language's reference support is a key focus over the next few months.
+Enriching the language's reference support is also a key focus.
 Cone's reference capabilities are mostly designed and
 [documented](http://cone.jondgoodwin.com/coneref/refrefs.html).
 
@@ -67,11 +68,11 @@ This table illustrates the current status of Cone's key features:
 | **Types** | u8, u16, u32, u64, i8, i16, i32, i64 | |
 | | f32, f64 | |
 | | Bool: true, false | |
-| | struct and tuples | struct literals |
+| | struct and tuples | |
 | | array, array refs | slices, collections |
 | | | variant types |
 | | references (incl. nullable) | safety guards |
-| | lex, rc, borrowed | move/borrow semantics |
+| | own, rc, borrowed | move/borrow semantics |
 | | | gc, arena, pool |
 | | static permissions | runtime permissions |
 | | pointers | trust block |

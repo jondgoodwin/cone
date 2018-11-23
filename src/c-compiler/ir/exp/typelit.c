@@ -39,6 +39,11 @@ int typeLitIsLiteral(FnCallNode *node) {
 // Type check an array literal
 void typeLitArrayCheck(PassState *pstate, FnCallNode *arrlit) {
 
+    if (arrlit->args->used == 0) {
+        errorMsgNode((INode*)arrlit, ErrorBadArray, "Literal list may not be empty");
+        return;
+    }
+
     // Get element type from first element
     // Type of array literal is: array of elements whose type matches first value
     INode *first = nodesGet(arrlit->args, 0);
@@ -58,6 +63,20 @@ void typeLitArrayCheck(PassState *pstate, FnCallNode *arrlit) {
     }
 }
 
+// Return true if desired named property is found and swapped into place
+int typeLitGetName(Nodes *args, uint32_t argi, Name *name) {
+    uint32_t nargs = args->used;
+    uint32_t i = argi;
+    for (; i < nargs; i++) {
+        NamedValNode *node = (NamedValNode*)nodesGet(args, i);
+        if (node->tag == NamedValTag && ((NameUseNode*)node->name)->namesym == name) {
+            nodesMove(args, argi, i);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 // Type check a struct literal
 // Verify correct name/type of each literal element against struct's properties
 void typeLitStructCheck(PassState *pstate, FnCallNode *arrlit, StructNode *strnode) {
@@ -66,13 +85,18 @@ void typeLitStructCheck(PassState *pstate, FnCallNode *arrlit, StructNode *strno
     uint32_t argi = 0;
     for (imethnodesFor(&strnode->methprops, cnt, nodesp)) {
         if ((*nodesp)->tag != VarDclTag)
-            break;
+            continue;
         VarDclNode *prop = (VarDclNode *)*nodesp;
 
-        // If element has been specified, be sure it is the right type
+        // If element has been specified, be sure it matches both name & type
         if (argi < arrlit->args->used) {
             INode **litval = &nodesGet(arrlit->args, argi);
-            if (!iexpCoerces(*nodesp, litval))
+            if ((*litval)->tag == NamedValTag && !typeLitGetName(arrlit->args, argi, prop->namesym)) {
+                errorMsgNode((INode*)*litval, ErrorBadArray, "Cannot find struct property matching this name");
+                ++argi;
+                continue;
+            }
+            if (!iexpSameType(*nodesp, litval))
                 errorMsgNode((INode*)*litval, ErrorBadArray, "Literal value's type does not match expected field's type");
         }
         // Append default value if no value specified
@@ -101,11 +125,6 @@ void typeLitWalk(PassState *pstate, FnCallNode *arrlit) {
         break;
     case TypeCheck:
     {
-        if (arrlit->args->used == 0) {
-            errorMsgNode((INode*)arrlit, ErrorBadArray, "Literal list may not be empty");
-            return;
-        }
-
         INode *littype = itypeGetTypeDcl(arrlit->vtype);
         if (littype->tag == ArrayTag)
             typeLitArrayCheck(pstate, arrlit);
@@ -113,7 +132,6 @@ void typeLitWalk(PassState *pstate, FnCallNode *arrlit) {
             typeLitStructCheck(pstate, arrlit, (StructNode*)littype);
         else
             errorMsgNode((INode*)arrlit, ErrorBadArray, "Unknown type literal type for type checking");
-
     }
     }
 }

@@ -131,7 +131,15 @@ INode *parsePostfix(ParseState *parse) {
 			lexNextToken();
 			if (!lexIsToken(closetok))
 				while (1) {
-					nodesAdd(&fncall->args, parseSimpleExpr(parse));
+                    INode *arg = parseSimpleExpr(parse);
+                    if (lexIsToken(ColonToken)) {
+                        if (arg->tag != NameUseTag)
+                            errorMsgNode((INode*)arg, ErrorNoName, "Expected a named identifier");
+                        arg = (INode*)newNamedValNode(arg);
+                        lexNextToken();
+                        ((NamedValNode *)arg)->val = parseSimpleExpr(parse);
+                    }
+					nodesAdd(&fncall->args, arg);
 					if (lexIsToken(CommaToken))
 						lexNextToken();
 					else

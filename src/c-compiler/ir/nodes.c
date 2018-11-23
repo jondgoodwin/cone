@@ -75,11 +75,11 @@ void nodesMove(Nodes *nodes, size_t to, size_t from) {
     INode *movenode = nodesGet(nodes, from);
     if (from > to) {
         INode **moveto = &nodesGet(nodes, to);
-        memmove(moveto + 1, moveto, (to - from - 1) * sizeof(Nodes));
+        memmove(moveto + 1, moveto, (from - to) * sizeof(Nodes));
     }
     else if (to > from) {
         INode **moveto = &nodesGet(nodes, from);
-        memmove(moveto, moveto + 1, (from - to - 1) * sizeof(Nodes));
+        memmove(moveto, moveto + 1, (to - from) * sizeof(Nodes));
     }
     *(&nodesGet(nodes, to)) = movenode;
 }

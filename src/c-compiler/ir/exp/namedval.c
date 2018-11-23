@@ -8,7 +8,7 @@
 #include "../ir.h"
 
 // Create a new named value node
-NamedValNode *newNameValNode(INode *name) {
+NamedValNode *newNamedValNode(INode *name) {
 	NamedValNode *node;
 	newNode(node, NamedValNode, NamedValTag);
 	node->vtype = NULL;

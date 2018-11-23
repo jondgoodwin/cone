@@ -92,6 +92,14 @@ int iexpCoerces(INode *to, INode **from) {
 	return 1;
 }
 
+// Are types the same (no coercion)
+int iexpSameType(INode *to, INode **from) {
+    iexpToTypeDcl(to);
+    INode *fromtype = *from;
+    iexpToTypeDcl(fromtype);
+    return itypeMatches(to, fromtype) == 1;
+}
+
 // Retrieve the permission flags for the node
 uint16_t iexpGetPermFlags(INode *node) {
     switch (node->tag) {

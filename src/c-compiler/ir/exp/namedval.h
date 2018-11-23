@@ -15,7 +15,7 @@ typedef struct NamedValNode {
 	INode *val;
 } NamedValNode;
 
-CastNode *newNamedValNode(INode *name);
+NamedValNode *newNamedValNode(INode *name);
 void namedValPrint(NamedValNode *node);
 void namedValWalk(PassState *pstate, NamedValNode *node);
 
