@@ -459,6 +459,8 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
             return NULL;
         }
     }
+    case NamedValTag:
+        return genlExpr(gen, ((NamedValNode*)termnode)->val);
     case StrLitTag:
     {
         return LLVMBuildLoad(gen->builder, genlAddr(gen, termnode), "");

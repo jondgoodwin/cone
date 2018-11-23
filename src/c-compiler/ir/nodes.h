@@ -28,7 +28,9 @@ typedef struct Nodes {
 Nodes *newNodes(int size);
 void nodesAdd(Nodes **nodesp, INode *node);
 void nodesInsert(Nodes **nodesp, INode *node, size_t index);
-    INamedNode *nodesFind(Nodes *nodes, Name *name);
+// Move an element at index 'to' to index 'from', shifting nodes in between
+void nodesMove(Nodes *nodes, size_t to, size_t from);
+INamedNode *nodesFind(Nodes *nodes, Name *name);
 
 #define nodesNodes(nodes) ((INode**)((nodes)+1))
 #define nodesFor(nodes, cnt, nodesp) nodesp = (INode**)((nodes)+1), cnt = (nodes)->used; cnt; cnt--, nodesp++

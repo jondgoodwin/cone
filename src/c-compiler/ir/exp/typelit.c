@@ -27,7 +27,10 @@ int typeLitIsLiteral(FnCallNode *node) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(node->args, cnt, nodesp)) {
-        if (!litIsLiteral(*nodesp))
+        INode *arg = *nodesp;
+        if (arg->tag == NamedValTag)
+            arg = ((NamedValNode*)arg)->val;
+        if (!litIsLiteral(arg))
             return 0;
     }
     return 1;

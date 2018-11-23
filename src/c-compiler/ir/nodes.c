@@ -70,6 +70,20 @@ void nodesInsert(Nodes **nodesp, INode *node, size_t index) {
     nodes->used++;
 }
 
+// Move an element at index 'to' to index 'from', shifting nodes in between
+void nodesMove(Nodes *nodes, size_t to, size_t from) {
+    INode *movenode = nodesGet(nodes, from);
+    if (from > to) {
+        INode **moveto = &nodesGet(nodes, to);
+        memmove(moveto + 1, moveto, (to - from - 1) * sizeof(Nodes));
+    }
+    else if (to > from) {
+        INode **moveto = &nodesGet(nodes, from);
+        memmove(moveto, moveto + 1, (from - to - 1) * sizeof(Nodes));
+    }
+    *(&nodesGet(nodes, to)) = movenode;
+}
+
 // Find the desired named node in a nodes list.
 // Return the node, if found or NULL if not found
 INamedNode *nodesFind(Nodes *nodes, Name *name) {

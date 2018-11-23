@@ -126,6 +126,8 @@ void inodePrintNode(INode *node) {
         ttuplePrint((TTupleNode *)node); break;
 	case VoidTag:
 		voidPrint((VoidTypeNode *)node); break;
+    case NamedValTag:
+        namedValPrint((NamedValNode *)node); break;
     case AliasTag:
     {
         AliasNode *anode = (AliasNode *)node;
@@ -215,6 +217,8 @@ void inodeWalk(PassState *pstate, INode **node) {
 		arrayPass(pstate, (ArrayNode *)*node); break;
     case TTupleTag:
         ttupleWalk(pstate, (TTupleNode *)*node); break;
+    case NamedValTag:
+        namedValWalk(pstate, (NamedValNode *)*node); break;
     case AllocTag:
         break;
 
