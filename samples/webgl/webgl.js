@@ -55,6 +55,9 @@ imports.glBufferData = function(target, data, length, usage) {
 imports.glClearBuffer = function(buffer, drawbuffer, r, g, b, a) {
     gl.clearBufferfv(buffer, drawbuffer, new Float32Array([r, g, b, a]));
 }
+imports.glClear = function(mask) {
+	gl.clear(mask);
+}
 //imports.glColorMask
 imports.glCompileShader = function(shader_id){
     gl.compileShader(wasmObjs[shader_id]);
@@ -104,7 +107,9 @@ imports.glDetachShader = function( program_id, shader_id ) {
 imports.glDisable = function( cap ) {
     gl.disable( cap );
 }
-//imports.glDrawArrays
+imports.glDrawArrays = function (mode, first, count) {
+	gl.drawArrays(mode, first, count);
+}
 //imports.glDrawBuffer
 imports.glDrawElements = function( mode, count, type, offset ) {
     gl.drawElements( mode, count, type, offset );
@@ -124,7 +129,10 @@ imports.glEnableVertexAttribArray = function( index ) {
 imports.glCreateTexture = function() {
     return wasmNewObj( gl.createTexture() );
 }
-//imports.glGet
+imports.glGetAttribLocation = function( program_id, name_ptr, name_len ) {
+    let name = utf8decoder.decode( wmemory.subarray( name_ptr, name_ptr+name_len ) );
+    return gl.getAttribLocation( wasmObjs[program_id], name );
+}
 imports.glGetProgramParameter = function( program_id, param ) {
     return gl.getProgramParameter( wasmObjs[program_id], param );
 }
@@ -138,7 +146,7 @@ imports.glGenerateMipmap = function( target ){
 }
 //imports.glGetString
 imports.glGetUniformLocation = function( program_id, name_ptr, name_len ) {
-    let name = utf8decoder.decode( wmemory.subarray( name_ptr, name_ptr+name_len ) );
+    let name = utf8decoder.decode( wmemory.subarray( name_ptr, name_ptr+name_len-1 ) );
     return wasmNewObj( gl.getUniformLocation( wasmObjs[program_id], name ) );
 }
 imports.glLinkProgram = function( program_id ) {
@@ -168,6 +176,7 @@ imports.glUniform3fv = function( location_id, x, y, z ) {
     gl.uniform3fv( wasmObjs[location_id], [x, y, z] );
 }
 imports.glUniformMatrix4fv = function( location_id, data ) {
+	let nn = new Float32Array( wmemory.slice( data, data+4*16 ).buffer );
     gl.uniformMatrix4fv( wasmObjs[location_id], false, new Float32Array( wmemory.slice( data, data+4*16 ).buffer ) );
 }
 imports.glUseProgram = function( program_id ) {
@@ -194,8 +203,64 @@ imports.util_buffer_get = function( id, buf ) {
     return true;
 }
 
+glcompile_shader = function ( type, src ) {
+	let shader = gl.createShader(type);
+	gl.shaderSource(shader, src);
+	gl.compileShader(shader);
+	if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+		alert(gl.getShaderInfoLog(shader));
+		return 0;
+	}
+	return shader;
+}
+
+let utf8decoder = new TextDecoder( "utf-8" );
+imports.glMakeShader = function ( vssrcpos, vssrclen, fssrcpos, fssrclen ) {
+	let shaderProgram = gl.createProgram();
+	let vssrc = utf8decoder.decode(wmemory.subarray(vssrcpos, vssrcpos+vssrclen-1));
+	let vshader = glcompile_shader(gl.VERTEX_SHADER, vssrc);
+	gl.attachShader(shaderProgram, vshader);
+	let fssrc = utf8decoder.decode(wmemory.subarray(fssrcpos, fssrcpos+fssrclen-1));
+	let fshader = glcompile_shader(gl.FRAGMENT_SHADER, fssrc);
+	gl.attachShader(shaderProgram, fshader);
+	gl.linkProgram(shaderProgram);
+
+	if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+		alert("Could not initialize shaders");
+		return 0;
+	}
+
+	gl.deleteShader(vshader);
+	gl.deleteShader(fshader);
+	gl.useProgram(shaderProgram);
+	return wasmNewObj(shaderProgram);
+}
+
+imports.glGetAttrib = function(pgm, namepos, namelen) {
+	let name = utf8decoder.decode(wmemory.subarray(namepos, namepos+namelen-1));
+	let attrib = gl.getAttribLocation(wasmObjs[pgm], name);
+	gl.enableVertexAttribArray(attrib);
+	return attrib;
+}
+
+imports.glGetAspectRatio = function() {
+	return gl.canvas.clientWidth / gl.canvas.clientHeight;
+}
+
 imports.date_now = function() {
     return Date.now() * 0.001;
+}
+
+imports.sinf = function(nbr) {
+	return Math.sin(nbr);
+}
+
+imports.cosf = function(nbr) {
+	return Math.cos(nbr);
+}
+
+imports.sqrt = function(nbr) {
+	return Math.sqrt(nbr);
 }
 
 // -- Window functions --
@@ -224,8 +289,8 @@ window.onload = async function() {
     glResize();
     window.addEventListener( "resize", glResize );
 
-    imports.__linear_memory = new WebAssembly.Memory({'initial':32});
-    wmemory = new Uint8Array(imports.__linear_memory.buffer);
+    imports.memory = new WebAssembly.Memory({'initial':32});
+    wmemory = new Uint8Array(imports.memory.buffer);
 	imports.__indirect_function_table = new WebAssembly.Table({"initial":1024, "element":"anyfunc"});
     WebAssembly.instantiateStreaming(fetch('main.wasm'), {"env": imports})
     .then(mod => {
@@ -252,9 +317,7 @@ function glResize(){
         gl.canvas.width = owner.offsetWidth;
         gl.canvas.height = owner.offsetHeight;
     }
-    // exports['engine_window_resize']( gl.canvas.width, gl.canvas.height );
-    gl.viewportWidth = gl.canvas.width;
-    gl.viewportHeight = gl.canvas.height;
+	gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
 }
 
 // Call drawScene and updateScene 60fps
@@ -267,34 +330,4 @@ function glRenderLoop() {
         updateScene(timeNow - lastTime);
     }
     lastTime = timeNow;
-}
-
-function getShader(type, src) {
-    let shader = gl.createShader(type);
-    gl.shaderSource(shader, src);
-    gl.compileShader(shader);
-
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-        alert(gl.getShaderInfoLog(shader));
-        return null;
-    }
-
-    return shader;
-}
-
-function initShader(vssrc, fssrc) {
-    let vertexShader = getShader(gl.VERTEX_SHADER, vssrc);
-    let fragmentShader = getShader(gl.FRAGMENT_SHADER, fssrc);
-
-    shaderProgram = gl.createProgram();
-    gl.attachShader(shaderProgram, vertexShader);
-    gl.attachShader(shaderProgram, fragmentShader);
-    gl.linkProgram(shaderProgram);
-
-    if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
-        alert("Could not initialise shaders");
-    }
-
-    gl.useProgram(shaderProgram);
-    return shaderProgram;
 }
