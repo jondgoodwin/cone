@@ -222,7 +222,7 @@ void lexScanNumber(char *srcp) {
 		// Just scan for valid characters in floating point number
 		if (isFloat) {
 			// Only one exponent allowed
-			if (isFloat!='e' && (*srcp=='e' || *srcp=='E')) {
+			if (isFloat!='e' && (*srcp=='e' || *srcp=='E' || *srcp=='p' || *srcp=='P')) {
 				isFloat = 'e';
 				if (*++srcp=='-')
 					srcp++;
