@@ -156,7 +156,7 @@ INode *parseBlock(ParseState *parse) {
 
 		// A local variable declaration, if it begins with a permission
 		case PermToken:
-			nodesAdd(&blk->stmts, (INode*)parseVarDcl(parse, immPerm, ParseMaySig|ParseMayImpl));
+			nodesAdd(&blk->stmts, (INode*)parseVarDcl(parse, immPerm, ParseMayConst|ParseMaySig|ParseMayImpl));
 			parseSemi();
 			break;
 

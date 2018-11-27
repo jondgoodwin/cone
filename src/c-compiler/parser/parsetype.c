@@ -54,6 +54,10 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
 
 	// Grab the permission type
 	perm = parsePerm(defperm);
+    INode *permdcl = itypeGetTypeDcl(perm);
+    if (permdcl == (INode*)mut1Perm || permdcl == (INode*)uniPerm || permdcl == (INode*)egoPerm
+        || (permdcl == (INode*)constPerm && !(flags & ParseMayConst)))
+        errorMsgNode(perm, ErrorInvType, "Permission not valid for variable/property declaration");
 
 	// Obtain variable's name
 	if (lexIsToken(IdentToken)) {

@@ -156,7 +156,7 @@ INode *parseFnOrVar(ParseState *parse, uint16_t flags) {
 
 	// A global variable declaration, if it begins with a permission
 	else if lexIsToken(PermToken) {
-		node = (INode*)parseVarDcl(parse, immPerm, (flags&FlagExtern) ? ParseMaySig : ParseMayImpl | ParseMaySig);
+		node = (INode*)parseVarDcl(parse, immPerm, ParseMayConst | ((flags&FlagExtern) ? ParseMaySig : ParseMayImpl | ParseMaySig));
 		parseSemi();
 	}
     else {
