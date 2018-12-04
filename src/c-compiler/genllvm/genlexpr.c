@@ -299,6 +299,56 @@ LLVMValueRef genlCast(GenState *gen, CastNode* node) {
 	}
 }
 
+// Generate a number conversion
+LLVMValueRef genlConvert(GenState *gen, FnCallNode* node) {
+    NbrNode *totype = (NbrNode *)iexpGetTypeDcl(node->objfn);
+    ITypedNode *valnode = (ITypedNode*)nodesGet(node->args, 0);
+    NbrNode *fromtype = (NbrNode *)iexpGetTypeDcl(valnode->vtype);
+    LLVMValueRef value = genlExpr(gen, (INode*)valnode);
+
+    // Handle number to number casts, depending on relative size and encoding format
+    switch (totype->tag) {
+
+    case UintNbrTag:
+        if (fromtype->tag == FloatNbrTag)
+            return LLVMBuildFPToUI(gen->builder, value, genlType(gen, (INode*)totype), "");
+        else if (totype->bits < fromtype->bits)
+            return LLVMBuildTrunc(gen->builder, value, genlType(gen, (INode*)totype), "");
+        else if (totype->bits > fromtype->bits)
+            return LLVMBuildZExt(gen->builder, value, genlType(gen, (INode*)totype), "");
+        else
+            return LLVMBuildBitCast(gen->builder, value, genlType(gen, (INode*)totype), "");
+
+    case IntNbrTag:
+        if (fromtype->tag == FloatNbrTag)
+            return LLVMBuildFPToSI(gen->builder, value, genlType(gen, (INode*)totype), "");
+        else if (totype->bits < fromtype->bits)
+            return LLVMBuildTrunc(gen->builder, value, genlType(gen, (INode*)totype), "");
+        else if (totype->bits > fromtype->bits) {
+            if (fromtype->tag == IntNbrTag)
+                return LLVMBuildSExt(gen->builder, value, genlType(gen, (INode*)totype), "");
+            else
+                return LLVMBuildZExt(gen->builder, value, genlType(gen, (INode*)totype), "");
+        }
+        else
+            return LLVMBuildBitCast(gen->builder, value, genlType(gen, (INode*)totype), "");
+
+    case FloatNbrTag:
+        if (fromtype->tag == IntNbrTag)
+            return LLVMBuildSIToFP(gen->builder, value, genlType(gen, (INode*)totype), "");
+        else if (fromtype->tag == UintNbrTag)
+            return LLVMBuildUIToFP(gen->builder, value, genlType(gen, (INode*)totype), "");
+        else if (totype->bits < fromtype->bits)
+            return LLVMBuildFPTrunc(gen->builder, value, genlType(gen, (INode*)totype), "");
+        else if (totype->bits > fromtype->bits)
+            return LLVMBuildFPExt(gen->builder, value, genlType(gen, (INode*)totype), "");
+        else
+            return value;
+    default:
+        return LLVMBuildBitCast(gen->builder, value, genlType(gen, (INode*)totype), "");
+    }
+}
+
 // Generate not
 LLVMValueRef genlNot(GenState *gen, LogicNode* node) {
 	return LLVMBuildXor(gen->builder, genlExpr(gen, node->lexp), LLVMConstInt(LLVMInt1TypeInContext(gen->context), 1, 0), "not");
@@ -453,6 +503,9 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
             for (nodesFor(lit->args, cnt, nodesp))
                 strval = LLVMBuildInsertValue(gen->builder, strval, genlExpr(gen, *nodesp), pos++, "literal");
             return strval;
+        }
+        else if (littype->tag == IntNbrTag || littype->tag == UintNbrTag || littype->tag == FloatNbrTag) {
+            return genlConvert(gen, lit);
         }
         else {
             errorMsgNode((INode*)lit, ErrorBadTerm, "Unknown literal type to generate");

@@ -36,6 +36,24 @@ int typeLitIsLiteral(FnCallNode *node) {
     return 1;
 }
 
+// Type check a number literal
+void typeLitNbrCheck(PassState *pstate, FnCallNode *nbrlit, INode *type) {
+
+    if (nbrlit->args->used != 1) {
+        errorMsgNode((INode*)nbrlit, ErrorBadArray, "Number literal requires one value");
+        return;
+    }
+
+    INode *first = nodesGet(nbrlit->args, 0);
+    if (!isExpNode(first)) {
+        errorMsgNode((INode*)first, ErrorBadArray, "Literal value must be typed");
+        return;
+    }
+    INode *firsttype = itypeGetTypeDcl(((ITypedNode*)first)->vtype);
+    if (firsttype->tag != IntNbrTag && firsttype->tag != UintNbrTag && firsttype->tag != FloatNbrTag) 
+        errorMsgNode((INode*)first, ErrorBadArray, "May only create number literal from another number");
+}
+
 // Type check an array literal
 void typeLitArrayCheck(PassState *pstate, FnCallNode *arrlit) {
 
@@ -130,6 +148,8 @@ void typeLitWalk(PassState *pstate, FnCallNode *arrlit) {
             typeLitArrayCheck(pstate, arrlit);
         else if (littype->tag == StructTag)
             typeLitStructCheck(pstate, arrlit, (StructNode*)littype);
+        else if (littype->tag == IntNbrTag || littype->tag == UintNbrTag || littype->tag == FloatNbrTag)
+            typeLitNbrCheck(pstate, arrlit, littype);
         else
             errorMsgNode((INode*)arrlit, ErrorBadArray, "Unknown type literal type for type checking");
     }
