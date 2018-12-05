@@ -88,8 +88,22 @@ int iexpCoerces(INode *to, INode **from) {
 		return match; // return fail or non-changing matches. Fall through to perform any coercion
 
 	// Add coercion node
-	*from = (INode*) newCastNode(*from, to);
-	return 1;
+    if (match == 2) {
+        *from = (INode*)newCastNode(*from, to);
+        return 1;
+    }
+
+    // If not an integer literal, don't convert
+    if ((*from)->tag != ULitTag)
+        return 0;
+    // If it is an integer literal, convert it to correct type/value in place
+    ULitNode *lit = (ULitNode*)(*from);
+    lit->vtype = to;
+    if (fromtype->tag == FloatNbrTag) {
+        lit->tag = FLitTag;
+        ((FLitNode*)lit)->floatlit = (double)lit->uintlit;
+    }
+    return 1;
 }
 
 // Are types the same (no coercion)

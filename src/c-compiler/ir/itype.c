@@ -50,7 +50,8 @@ int itypeIsSame(INode *node1, INode *node2) {
 // Is totype equivalent or a non-changing subtype of fromtype
 // 0 - no
 // 1 - yes, without conversion
-// 2+ - requires increasingly lossy conversion/coercion
+// 2 - requires casting/coercion (non-lossy)
+// 3+ - requires increasingly lossy number conversion (literal only)
 int itypeMatches(INode *totype, INode *fromtype) {
 	// Convert, if needed, from names to the type declaration
 	if (totype->tag == TypeNameUseTag)

@@ -134,6 +134,7 @@ void fnCallLowerMethod(FnCallNode *callnode) {
     FnDclNode *bestmethod = imethnodesFindBestMethod((FnDclNode *)foundnode, callnode->args);
     if (bestmethod == NULL) {
         errorMsgNode((INode*)callnode, ErrorNoMeth, "No method named %s matches the call's arguments.", &methsym->namestr);
+        callnode->vtype = ((ITypedNode*)obj)->vtype; // make up a vtype
         return;
     }
 

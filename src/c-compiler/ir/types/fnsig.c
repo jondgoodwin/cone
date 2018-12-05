@@ -78,7 +78,10 @@ int fnSigMatchesCall(FnSigNode *to, Nodes *args) {
 		switch (match = itypeMatches(((ITypedNode *)*tonodesp)->vtype, ((ITypedNode*)*callnodesp)->vtype)) {
 		case 0: return 0;
 		case 1: break;
-		default: matchsum += match;
+        case 2: matchsum += match; break;
+		default:
+            if ((*callnodesp)->tag != ULitTag)
+                return 0;
 		}
 		tonodesp++;
 	}
