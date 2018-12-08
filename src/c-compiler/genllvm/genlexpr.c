@@ -257,24 +257,20 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
 			return LLVMBuildFPToUI(gen->builder, genexp, genlType(gen, totype), "");
 		else if (((NbrNode*)totype)->bits < ((NbrNode*)fromtype)->bits)
 			return LLVMBuildTrunc(gen->builder, genexp, genlType(gen, totype), "");
-		else if (((NbrNode*)totype)->bits >((NbrNode*)fromtype)->bits)
+		else /* if (((NbrNode*)totype)->bits >((NbrNode*)fromtype)->bits) */
 			return LLVMBuildZExt(gen->builder, genexp, genlType(gen, totype), "");
-		else
-			return LLVMBuildBitCast(gen->builder, genexp, genlType(gen, totype), "");
 
 	case IntNbrTag:
 		if (fromtype->tag == FloatNbrTag)
 			return LLVMBuildFPToSI(gen->builder, genexp, genlType(gen, totype), "");
 		else if (((NbrNode*)totype)->bits < ((NbrNode*)fromtype)->bits)
 			return LLVMBuildTrunc(gen->builder, genexp, genlType(gen, totype), "");
-		else if (((NbrNode*)totype)->bits >((NbrNode*)fromtype)->bits) {
-			if (fromtype->tag == IntNbrTag)
-				return LLVMBuildSExt(gen->builder, genexp, genlType(gen, totype), "");
-			else
-				return LLVMBuildZExt(gen->builder, genexp, genlType(gen, totype), "");
-		}
-		else
-			return LLVMBuildBitCast(gen->builder, genexp, genlType(gen, totype), "");
+        else /*if (((NbrNode*)totype)->bits >((NbrNode*)fromtype)->bits) */ {
+            if (fromtype->tag == IntNbrTag)
+                return LLVMBuildSExt(gen->builder, genexp, genlType(gen, totype), "");
+            else
+                return LLVMBuildZExt(gen->builder, genexp, genlType(gen, totype), "");
+        }
 
 	case FloatNbrTag:
 		if (fromtype->tag == IntNbrTag)
@@ -287,9 +283,6 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
 			return LLVMBuildFPExt(gen->builder, genexp, genlType(gen, totype), "");
 		else
 			return genexp;
-
-	case RefTag:
-        return LLVMBuildBitCast(gen->builder, genexp, genlType(gen, totype), "");
 
     case PtrTag:
         if (fromtype->tag == RefTag && (fromtype->flags & FlagArrSlice))

@@ -25,12 +25,65 @@ void castPrint(CastNode *node) {
 	inodeFprint(")");
 }
 
+#define ptrsize 10000
+// Give a rough idea of comparable type size for use with type checking reinterpretation casts
+uint32_t castBitsize(INode *type) {
+    if (type->tag == UintNbrTag || type->tag == IntNbrTag || type->tag == FloatNbrTag) {
+        if (type == (INode*)usizeType)
+            return ptrsize;
+        return ((NbrNode *)type)->bits;
+    }
+    if (type->tag == PtrTag)
+        return ptrsize;
+    if (type->tag == RefTag)
+        return type->flags & FlagArrSlice ? 2 * ptrsize : ptrsize;
+    return 0;
+}
+
 // Analyze cast node
 void castPass(PassState *pstate, CastNode *node) {
 	inodeWalk(pstate, &node->exp);
 	inodeWalk(pstate, &node->vtype);
-    if (pstate->pass == TypeCheck && 0 == itypeMatches(node->vtype, ((ITypedNode *)node->exp)->vtype)) {
-        // Ignore failure to match for now. In future, only allow inside trust block?
-        // errorMsgNode(node->vtype, ErrorInvType, "expression may not be type cast to this type");
+    if (pstate->pass == TypeCheck) {
+        INode *totype = itypeGetTypeDcl(node->vtype);
+        INode *fromtype = iexpGetTypeDcl(node->exp);
+
+        // Handle reinterpret casts, which must be same size
+        if (node->flags & FlagAsIf) {
+            uint32_t tosize = castBitsize(totype);
+            if (tosize == 0 || tosize != castBitsize(fromtype))
+                errorMsgNode(node->exp, ErrorInvType, "May only reinterpret value to the same sized primitive type");
+            return;
+        }
+
+        // Handle conversion to bool
+        if (totype == (INode*)boolType) {
+            switch (fromtype->tag) {
+            case UintNbrTag:
+            case IntNbrTag:
+            case FloatNbrTag:
+            case RefTag:
+            case PtrTag:
+                break;
+            default:
+                errorMsgNode(node->exp, ErrorInvType, "Only numbers and ref/ptr may convert to Bool");
+            }
+            return;
+        }
+        switch (totype->tag) {
+        case UintNbrTag:
+            if (fromtype->tag == RefTag && fromtype->flags & FlagArrSlice)
+                return;
+            // Fall-through expected here
+        case IntNbrTag:
+        case FloatNbrTag:
+            if (fromtype->tag == UintNbrTag || fromtype->tag == IntNbrTag || fromtype->tag == FloatNbrTag)
+                return;
+            break;
+        case PtrTag:
+            if (fromtype->tag == RefTag || fromtype->tag == PtrTag)
+                return;
+        }
+        errorMsgNode(node->vtype, ErrorInvType, "Unsupported built-in type conversion");
     }
 }
