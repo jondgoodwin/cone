@@ -566,7 +566,12 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
 	case SizeofTag:
 		return genlSizeof(gen, ((SizeofNode*)termnode)->type);
 	case CastTag:
-		return genlConvert(gen, ((CastNode*)termnode)->exp, ((CastNode*)termnode)->vtype);
+    {
+        CastNode *node = (CastNode*)termnode;
+        if (node->flags & FlagAsIf)
+            return genlReinterpret(gen, node->exp, node->vtype);
+        return genlConvert(gen, node->exp, node->vtype);
+    }
 	case AddrTag:
 	{
 		AddrNode *anode = (AddrNode*)termnode;

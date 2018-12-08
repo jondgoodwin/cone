@@ -118,6 +118,7 @@ enum TokenTypes {
 	BreakToken,		// 'break'
 	ContinueToken,	// 'continue'
 	AsToken,		// 'as'
+    IntoToken,      // 'into'
 	trueToken,		// 'true'
 	falseToken,		// 'false'
     nullToken,      // 'null'

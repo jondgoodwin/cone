@@ -14,6 +14,8 @@ typedef struct CastNode {
 	INode *exp;
 } CastNode;
 
+#define FlagAsIf 0x8000
+
 CastNode *newCastNode(INode *exp, INode *type);
 void castPrint(CastNode *node);
 void castPass(PassState *pstate, CastNode *node);
