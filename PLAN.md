@@ -1,48 +1,27 @@
-# Cone - 0.1.0 -> 0.2.0 Project Plan (as of November 23, 2018)
+# Cone - 0.1.0 -> 0.2.0 Project Plan (as of December 8, 2018)
 
 ## Current Capability
 
-The compiler works:
-It compiles Cone programs to native or WebAssembly object files.
+The Cone compiler supports a decent core set of language features.
+Enough that it is now possible to write programs that render 3D objects
+as OpenGL-based native executables
+or [WebGL-based WebAssembly modules](http://cone.jondgoodwin.com/example/index.html).
 
-Cone's implemented features are now comparable to C (see below).
+Cone's implemented features (see below) are roughly comparable to C.
 It is missing macros, conditional compilation, switch, enums and unions.
 However, it does support methods, namespaces, tuples, permissions, and forward references.
 The [Cone Playground](http://cone.jondgoodwin.com/play/index.html)
-demonstrates the language's currently supported features.
+examples demonstrate some of the language's currently supported features.
 
-## Current Focus: Control structures & References
+## Current Focus: Add more core features
 
-Add more control and data structures:
+In order to support more complex 3D programs, we need:
 
-- [DONE] this blocks & this operators
-- [DONE] struct literals
+- const variables
+- import packages
 - each blocks
-- match blocks and matching operator
-
-Enriching the language's reference support is also a key focus.
-Cone's reference capabilities are mostly designed and
-[documented](http://cone.jondgoodwin.com/coneref/refrefs.html).
-
-References are Cone's most unique feature,
-They make it possible for a single program
-to use and safely integrate multiple memory management strategies:
-Rust-like single owner (RAII with escape analysis), reference counting,
-tracing garbage collection, arenas and pools.
-
-References are usable today, but safety is not yet enforced.
-The [data flow analysis pass](http://pling.jondgoodwin.com/post/data-flow-analysis/)
-is being built to close this gap.
-When this work is done, the compiler will:
-
-- [DONE] Drop and free (or de-alias) variables at the end of their declared scope.
-- Initializers and finalizers (including struct/type literals)
-- Allow unique references to (conditionally) “escape” their current scope, thereby delaying when to drop and free/de-alias them.
-- [DONE] Track when copies (aliases) are made of a reference
-- Ensure that lifetime-constrained borrowed references always outlive their containers.
-- Deactivate variable bindings as a result of “move” semantics or for the lifetime of their borrowed references.
-- Enforce reference (and variable) mutability and aliasing permissions
-- Track whether every variable has been initialized and used
+- initializer and finalizer methods
+- builder blocks
 
 ## Feature Status
 
