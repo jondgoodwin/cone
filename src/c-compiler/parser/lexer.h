@@ -100,6 +100,7 @@ enum TokenTypes {
 	GtToken,			// '>'
 	GeToken,			// '>='
     LtltToken,          // '<<'
+    GtgtToken,          // '>>'
 
 	// Keywords
 	IncludeToken,	// 'include'

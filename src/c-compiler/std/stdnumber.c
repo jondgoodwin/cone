@@ -93,9 +93,9 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
 		opsym = nametblFind("^", 1);
 		imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(XorIntrinsic)));
 		if (bits > 1) {
-			opsym = nametblFind("shl", 3);
+			opsym = nametblFind("<<", 2);
 			imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(ShlIntrinsic)));
-			opsym = nametblFind("shr", 3);
+			opsym = nametblFind(">>", 2);
 			imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(ShrIntrinsic)));
 		}
 	}

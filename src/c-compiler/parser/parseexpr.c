@@ -320,14 +320,40 @@ INode *parseAdd(ParseState *parse) {
 	}
 }
 
+// Parse << and >> operators
+INode *parseShift(ParseState *parse) {
+    INode *lhnode;
+    // Prefix '<<' or '>>' implies 'this'
+    if (lexIsToken(LtltToken) || lexIsToken(GtgtToken))
+        lhnode = (INode *)newNameUseNode(thisName);
+    else
+        lhnode = parseAdd(parse);
+    while (1) {
+        if (lexIsToken(LtltToken)) {
+            FnCallNode *node = newFnCallOp(lhnode, "<<", 2);
+            lexNextToken();
+            nodesAdd(&node->args, parseAdd(parse));
+            lhnode = (INode*)node;
+        }
+        else if (lexIsToken(GtgtToken)) {
+            FnCallNode *node = newFnCallOp(lhnode, ">>", 2);
+            lexNextToken();
+            nodesAdd(&node->args, parseAdd(parse));
+            lhnode = (INode*)node;
+        }
+        else
+            return lhnode;
+    }
+}
+
 // Parse bitwise And
 INode *parseAnd(ParseState *parse) {
-	INode *lhnode = parseAdd(parse);
+	INode *lhnode = parseShift(parse);
 	while (1) {
 		if (lexIsToken(AmperToken)) {
 			FnCallNode *node = newFnCallOp(lhnode, "&", 2);
 			lexNextToken();
-			nodesAdd(&node->args, parseAdd(parse));
+			nodesAdd(&node->args, parseShift(parse));
 			lhnode = (INode*)node;
 		}
 		else
@@ -441,15 +467,6 @@ INode *parseTuple(ParseState *parse) {
 
 // Parse an assignment expression
 INode *parseAssign(ParseState *parse) {
-    // Prefix '<<' implies 'this' as lval
-    if (lexIsToken(LtltToken)) {
-        NameUseNode *thisvar = newNameUseNode(thisName);
-        FnCallNode *node = newFnCallOp((INode*)thisvar, "<<", 2);
-        lexNextToken();
-        nodesAdd(&node->args, parseAnyExpr(parse));
-        return (INode*)node;
-    }
-
     INode *lval = parseTuple(parse);
 	if (lexIsToken(AssgnToken)) {
 		lexNextToken();
@@ -466,12 +483,6 @@ INode *parseAssign(ParseState *parse) {
             errorMsgNode(lval, ErrorNoMbr, "A name must be specified before the ':'");
         propnode->methprop = (NameUseNode*)lval;
         return (INode*)newAssignNode(NormalAssign, (INode*)propnode, rval);
-    }
-    else if (lexIsToken(LtltToken)) {
-        FnCallNode *node = newFnCallOp(lval, "<<", 2);
-        lexNextToken();
-        nodesAdd(&node->args, parseAnyExpr(parse));
-        return (INode*)node;
     }
 	else
 		return lval;

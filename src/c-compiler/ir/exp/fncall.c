@@ -109,6 +109,7 @@ void fnCallLowerMethod(FnCallNode *callnode) {
         || !(foundnode->tag == FnDclTag || foundnode->tag == VarDclTag)
         || !(foundnode->flags & FlagMethProp)) {
         errorMsgNode((INode*)callnode, ErrorNoMeth, "Object's type has no method or property named %s.", &methsym->namestr);
+        callnode->vtype = objtype; // Pretend on a vtype
         return;
     }
 
