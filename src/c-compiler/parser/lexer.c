@@ -560,7 +560,10 @@ void lexNextToken() {
 			if (*(srcp + 1) == '=') {
 				lexReturnPuncTok(GeToken, 2);
 			}
-			else {
+            else if (*(srcp + 1) == '>') {
+                lexReturnPuncTok(GtgtToken, 2);
+            }
+            else {
 				lexReturnPuncTok(GtToken, 1);
 			}
 
