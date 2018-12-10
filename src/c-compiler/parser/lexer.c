@@ -219,46 +219,38 @@ void lexScanNumber(char *srcp) {
 	isFloat = '\0';
 	intval = 0;
 	while (1) {
-		// Just scan for valid characters in floating point number
-		if (isFloat) {
-			// Only one exponent allowed
-			if (isFloat!='e' && (*srcp=='e' || *srcp=='E' || *srcp=='p' || *srcp=='P')) {
-				isFloat = 'e';
-				if (*++srcp=='-')
-					srcp++;
-				continue;
-			}
-			if ((*srcp<'0' || *srcp>'9') && *srcp!='_')
-				break;
-			srcp++;
+		// Only one exponent allowed
+		if (isFloat!='e' && (*srcp=='e' || *srcp=='E' || *srcp=='p' || *srcp=='P')) {
+			isFloat = 'e';
+			if (*++srcp=='-')
+				srcp++;
+			continue;
 		}
 		// Handle characters in a suspected integer
-		else {
-			// Decimal point means it is floating point after all
-			if (*srcp=='.') {
-				// However, double periods is not floating point, but that subsequent token is range op
-				if (*(srcp+1)=='.')
-					break;
-				srcp++;
-				isFloat = '.';
-				continue;
-			}
-			// Extract a number digit value from the character
-			if (*srcp>='0' && *srcp<='9')
-				intval = intval*base + *srcp++ - '0';
-			else if (*srcp=='_')
-				srcp++;
-			else if (base==16) {
-				if (*srcp>='A' && *srcp<='F')
-					intval = (intval<<4) + *srcp++ - 'A'+10;
-				else if (*srcp>='a' && *srcp<='f')
-					intval = (intval<<4) + *srcp++ - 'a'+10;
-				else
-					break;
-			}
+		// Decimal point means it is floating point after all
+		if (*srcp=='.') {
+			// However, double periods is not floating point, but that subsequent token is range op
+			if (*(srcp+1)=='.')
+				break;
+			srcp++;
+			isFloat = '.';
+			continue;
+		}
+		// Extract a number digit value from the character
+		if (*srcp>='0' && *srcp<='9')
+			intval = intval*base + *srcp++ - '0';
+		else if (*srcp=='_')
+			srcp++;
+		else if (base==16) {
+			if (*srcp>='A' && *srcp<='F')
+				intval = (intval<<4) + *srcp++ - 'A'+10;
+			else if (*srcp>='a' && *srcp<='f')
+				intval = (intval<<4) + *srcp++ - 'a'+10;
 			else
 				break;
 		}
+		else
+			break;
 	}
 
 	// Process number's explicit type as part of the token
