@@ -69,8 +69,10 @@ void errorOutCode(char *tokp, uint32_t linenbr, char *linep, char *url, int code
 	// Depict where error message applies along with source file/pos info
 	fprintf(stderr, "     ");
 	pos = (spaces = tokp - linep) + 1;
-	while (spaces--)
-		fputc(' ', stderr);
+    srcp = linep;
+    while (spaces--) {
+        fputc(*srcp++ == '\t'? '\t' : ' ', stderr);
+    }
 	fprintf(stderr, "^--- %s:%d:%d\n", url, linenbr, pos);
 }
 
