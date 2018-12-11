@@ -53,15 +53,15 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
 	FnSigNode *unarysig = newFnSigNode();
 	unarysig->rettype = (INode*)nbrtypenode;
 	Name *una1 = nametblFind("a", 1);
-	nodesAdd(&unarysig->parms, (INode *)newVarDclNode(una1, VarDclTag, (INode*)nbrtypenode, newPermUseNode((INamedNode*)immPerm), NULL));
+	nodesAdd(&unarysig->parms, (INode *)newVarDclFull(una1, VarDclTag, (INode*)nbrtypenode, newPermUseNode((INamedNode*)immPerm), NULL));
 
 	// Create function signature for binary methods for this type
 	FnSigNode *binsig = newFnSigNode();
 	binsig->rettype = (INode*)nbrtypenode;
 	Name *parm1 = nametblFind("a", 1);
-	nodesAdd(&binsig->parms, (INode *)newVarDclNode(parm1, VarDclTag, (INode*)nbrtypenode, newPermUseNode((INamedNode*)immPerm), NULL));
+	nodesAdd(&binsig->parms, (INode *)newVarDclFull(parm1, VarDclTag, (INode*)nbrtypenode, newPermUseNode((INamedNode*)immPerm), NULL));
 	Name *parm2 = nametblFind("b", 1);
-	nodesAdd(&binsig->parms, (INode *)newVarDclNode(parm2, VarDclTag, (INode*)nbrtypenode, newPermUseNode((INamedNode*)immPerm), NULL));
+	nodesAdd(&binsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)nbrtypenode, newPermUseNode((INamedNode*)immPerm), NULL));
 
 	// Build method dictionary for the type, which ultimately point to intrinsics
 	Name *opsym;
@@ -112,8 +112,8 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
 	// Create function signature for comparison methods for this type
 	FnSigNode *cmpsig = newFnSigNode();
 	cmpsig->rettype = bits==1? (INode*)nbrtypenode : (INode*)boolType;
-	nodesAdd(&cmpsig->parms, (INode *)newVarDclNode(parm1, VarDclTag, (INode*)nbrtypenode, newPermUseNode((INamedNode*)immPerm), NULL));
-	nodesAdd(&cmpsig->parms, (INode *)newVarDclNode(parm2, VarDclTag, (INode*)nbrtypenode, newPermUseNode((INamedNode*)immPerm), NULL));
+	nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(parm1, VarDclTag, (INode*)nbrtypenode, newPermUseNode((INamedNode*)immPerm), NULL));
+	nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)nbrtypenode, newPermUseNode((INamedNode*)immPerm), NULL));
 
 	// Comparison operators
 	opsym = nametblFind("==", 2);

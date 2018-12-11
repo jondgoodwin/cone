@@ -23,7 +23,8 @@ enum VarFlowTemp {
     VarInitialized = 0x0001     // Variable has been initialized
 };
 
-VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *sig, INode *perm, INode *val);
+VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *perm);
+VarDclNode *newVarDclFull(Name *namesym, uint16_t tag, INode *sig, INode *perm, INode *val);
 void varDclPrint(VarDclNode *fn);
 void varDclPass(PassState *pstate, VarDclNode *node);
 

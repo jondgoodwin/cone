@@ -47,10 +47,8 @@ void parseAllocPerm(RefNode *refnode) {
 // Parse a variable declaration
 VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
 	VarDclNode *varnode;
-	Name *namesym = NULL;
 	INode *vtype;
 	INode *perm;
-	INode *val;
 
 	// Grab the permission type
 	perm = parsePerm(defperm);
@@ -60,33 +58,29 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
         errorMsgNode(perm, ErrorInvType, "Permission not valid for variable/property declaration");
 
 	// Obtain variable's name
-	if (lexIsToken(IdentToken)) {
-		namesym = lex->val.ident;
-		lexNextToken();
-	}
-	else {
-		errorMsgLex(ErrorNoIdent, "Expected variable name for declaration");
-		return newVarDclNode(nametblFind("_",1), VarDclTag, voidType, perm, NULL);
-	}
+	if (!lexIsToken(IdentToken)) {
+        errorMsgLex(ErrorNoIdent, "Expected variable name for declaration");
+        return newVarDclFull(nametblFind("_", 1), VarDclTag, voidType, perm, NULL);
+    }
+    varnode = newVarDclNode(lex->val.ident, VarDclTag, perm);
+	lexNextToken();
 
 	// Get value type, if provided
-	if ((vtype = parseVtype(parse)) == NULL)
-		vtype = voidType;
+	if ((vtype = parseVtype(parse)))
+		varnode->vtype = vtype;
 
 	// Get initialization value after '=', if provided
 	if (lexIsToken(AssgnToken)) {
 		if (!(flags&ParseMayImpl))
 			errorMsgLex(ErrorBadImpl, "A default/initial value may not be specified here.");
 		lexNextToken();
-		val = parseAnyExpr(parse);
+		varnode->value = parseAnyExpr(parse);
 	}
 	else {
 		if (!(flags&ParseMaySig))
 			errorMsgLex(ErrorNoInit, "Must specify default/initial value.");
-		val = NULL;
 	}
 
-	varnode = newVarDclNode(namesym, VarDclTag, vtype, perm, val);
 	varnode->owner = parse->owner;
 	return varnode;
 }
@@ -168,7 +162,7 @@ INode *parseStruct(ParseState *parse) {
 
 void parseInjectSelf(FnSigNode *fnsig, Name *typename) {
 	NameUseNode *selftype = newNameUseNode(typename);
-	VarDclNode *selfparm = newVarDclNode(nametblFind("self", 4), VarDclTag, (INode*)selftype, newPermUseNode((INamedNode*)constPerm), NULL);
+	VarDclNode *selfparm = newVarDclFull(nametblFind("self", 4), VarDclTag, (INode*)selftype, newPermUseNode((INamedNode*)constPerm), NULL);
 	selfparm->scope = 1;
 	selfparm->index = 0;
 	nodesAdd(&fnsig->parms, (INode*)selfparm);

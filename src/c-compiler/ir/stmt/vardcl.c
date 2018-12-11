@@ -11,20 +11,37 @@
 #include <assert.h>
 
 // Create a new name declaraction node
-VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *type, INode *perm, INode *val) {
+VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *perm) {
 	VarDclNode *name;
 	newNode(name, VarDclNode, tag);
-	name->vtype = type;
+	name->vtype = voidType;
 	name->owner = NULL;
 	name->namesym = namesym;
 	name->perm = perm;
-	name->value = val;
+	name->value = NULL;
 	name->scope = 0;
 	name->index = 0;
 	name->llvmvar = NULL;
     name->flowflags = 0;
     name->flowtempflags = 0;
 	return name;
+}
+
+// Create a new name declaraction node
+VarDclNode *newVarDclFull(Name *namesym, uint16_t tag, INode *type, INode *perm, INode *val) {
+    VarDclNode *name;
+    newNode(name, VarDclNode, tag);
+    name->vtype = type;
+    name->owner = NULL;
+    name->namesym = namesym;
+    name->perm = perm;
+    name->value = val;
+    name->scope = 0;
+    name->index = 0;
+    name->llvmvar = NULL;
+    name->flowflags = 0;
+    name->flowtempflags = 0;
+    return name;
 }
 
 // Serialize a variable node
@@ -99,7 +116,7 @@ void varDclPass(PassState *pstate, VarDclNode *name) {
 			varDclTypeCheck(pstate, name);
 		}
 		else if (vtype == voidType)
-			errorMsgNode((INode*)name, ErrorNoType, "Name must specify a type");
+			errorMsgNode((INode*)name, ErrorNoType, "Declared name must specify a type or value");
         if (!itypeHasSize(name->vtype))
             errorMsgNode(name->vtype, ErrorInvType, "Type must have a defined size.");
         break;
