@@ -36,7 +36,7 @@ INamedNode *addrGetVarPerm(INode *lval, INode **lvalperm) {
         if (lvalvar->tag == VarDclTag)
             *lvalperm = ((VarDclNode *)lvalvar)->perm;
         else
-            *lvalperm = (INode*)egoPerm; // Function
+            *lvalperm = (INode*)opaqPerm; // Function
         return lvalvar;
     }
 

@@ -122,7 +122,7 @@ uint16_t iexpGetPermFlags(INode *node) {
     case VarDclTag:
         return permGetFlags(((VarDclNode*)node)->perm);
     case FnDclTag:
-        return permGetFlags((INode*)egoPerm);
+        return permGetFlags((INode*)opaqPerm);
     case DerefTag:
     {
         RefNode *vtype = (RefNode*)iexpGetTypeDcl(((DerefNode *)node)->exp);

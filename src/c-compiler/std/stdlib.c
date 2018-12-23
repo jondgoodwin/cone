@@ -61,8 +61,8 @@ void stdPermInit() {
 	mutPerm = newPermNodeStr("mut", MayRead | MayWrite | MayAlias | MayAliasWrite | IsLockless);
 	immPerm = newPermNodeStr("imm", MayRead | MayAlias | RaceSafe | MayIntRefSum | IsLockless);
 	constPerm = newPermNodeStr("const", MayRead | MayAlias | IsLockless);
-	mut1Perm = newPermNodeStr("mutx", MayRead | MayWrite | MayAlias | MayIntRefSum | IsLockless);
-	egoPerm = newPermNodeStr("id", MayAlias | RaceSafe | IsLockless);
+	mut1Perm = newPermNodeStr("mut1", MayRead | MayWrite | MayAlias | MayIntRefSum | IsLockless);
+	opaqPerm = newPermNodeStr("opaq", MayAlias | RaceSafe | IsLockless);
 }
 
 AllocNode *newAllocNodeStr(char *name) {
