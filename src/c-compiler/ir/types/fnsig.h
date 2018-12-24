@@ -24,5 +24,8 @@ void fnSigPrint(FnSigNode *node);
 void fnSigPass(PassState *pstate, FnSigNode *name);
 int fnSigEqual(FnSigNode *node1, FnSigNode *node2);
 int fnSigMatchesCall(FnSigNode *to, Nodes *args);
+// Will the method call (caller) be able to call the 'to' function
+// Return 0 if not. 1 if perfect match. 2+ for imperfect matches
+int fnSigMatchMethCall(FnSigNode *to, Nodes *args);
 
 #endif

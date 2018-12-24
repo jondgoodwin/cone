@@ -93,3 +93,46 @@ int fnSigMatchesCall(FnSigNode *to, Nodes *args) {
 	// It is a match; return how perfect a match it is
 	return matchsum;
 }
+
+
+// Will the method call (caller) be able to call the 'to' function
+// Return 0 if not. 1 if perfect match. 2+ for imperfect matches
+int fnSigMatchMethCall(FnSigNode *to, Nodes *args) {
+
+    // Too many arguments is not a match
+    if (args->used > to->parms->used)
+        return 0;
+
+    // Every parameter's type must also match
+    int first = 1;
+    int matchsum = 1;
+    INode **tonodesp;
+    INode **callnodesp;
+    int16_t cnt;
+    tonodesp = &nodesGet(to->parms, 0);
+    for (nodesFor(args, cnt, callnodesp)) {
+        int match;
+        switch (match = itypeMatches(((ITypedNode *)*tonodesp)->vtype, ((ITypedNode*)*callnodesp)->vtype)) {
+        case 0:
+            if (!first)
+                return 0;
+            // For self parm, we might autoref/autoderef, but only if necessary
+            matchsum = 100;
+            break;
+        case 1: break;
+        case 2: matchsum += match; break;
+        default:
+            if ((*callnodesp)->tag != ULitTag)
+                return 0;
+        }
+        first = 0;
+        tonodesp++;
+    }
+    // Match fails if not enough arguments & method has no default values on parms
+    if (args->used != to->parms->used
+        && ((VarDclNode *)tonodesp)->value == NULL)
+        return 0;
+
+    // It is a match; return how perfect a match it is
+    return matchsum;
+}

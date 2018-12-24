@@ -83,3 +83,25 @@ int refMatches(RefNode *to, RefNode *from) {
 		return 0;
 	return itypeMatches(to->pvtype, from->pvtype) == 1 ? 1 : 2;
 }
+
+// Auto-ref or auto-deref self node, if it is legal
+void refAutoRef(INode **selfnodep, INode *totype) {
+    INode *selftype = iexpGetTypeDcl(*selfnodep);
+    totype = itypeGetTypeDcl(totype);
+
+    int match = itypeMatches(totype, selftype);
+    if (match == 1 || match == 2)
+        return;
+
+    // Auto-deref, if we have a ref but we need a value
+    if (selftype->tag == RefTag && totype->tag != RefTag) {
+        match = itypeMatches(totype, ((RefNode*)selftype)->pvtype);
+        if (match == 0 || match > 1) {
+            errorMsgNode(*selfnodep, ErrorNoMeth, "Cannot auto-deref self as method requires.");
+            return;
+        }
+        derefAuto(selfnodep);
+        return;
+    }
+    errorMsgNode(*selfnodep, ErrorNoMeth, "self is not correctly typed as method requires.");
+}

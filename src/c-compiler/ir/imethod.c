@@ -82,7 +82,7 @@ FnDclNode *imethnodesFindBestMethod(FnDclNode *firstmethod, Nodes *args) {
     int bestnbr = 0x7fffffff; // ridiculously high number    
     for (FnDclNode *methnode = (FnDclNode *)firstmethod; methnode; methnode = methnode->nextnode) {
         int match;
-        switch (match = fnSigMatchesCall((FnSigNode *)methnode->vtype, args)) {
+        switch (match = fnSigMatchMethCall((FnSigNode *)methnode->vtype, args)) {
         case 0: continue;		// not an acceptable match
         case 1: return methnode;	// perfect match!
         default:				// imprecise match using conversions

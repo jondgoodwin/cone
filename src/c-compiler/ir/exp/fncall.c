@@ -90,10 +90,10 @@ void fnCallFinalizeArgs(FnCallNode *node) {
 // Then lower the node to a function call (objfn+args) or property access (objfn+methprop) accordingly
 void fnCallLowerMethod(FnCallNode *callnode) {
     INode *obj = callnode->objfn;
-    INode *objtype = iexpGetTypeDcl(obj);
-    if (objtype->tag == RefTag || objtype->tag == PtrTag)
-        objtype = iexpGetTypeDcl(((PtrNode *)objtype)->pvtype);
-    if (!isMethodType(objtype)) {
+    INode *methtype = iexpGetTypeDcl(obj);
+    if (methtype->tag == RefTag || methtype->tag == PtrTag)
+        methtype = iexpGetTypeDcl(((PtrNode *)methtype)->pvtype);
+    if (!isMethodType(methtype)) {
         errorMsgNode((INode*)callnode, ErrorNoMeth, "Object's type does not support methods or properties.");
         return;
     }
@@ -104,12 +104,12 @@ void fnCallLowerMethod(FnCallNode *callnode) {
         && !(obj->tag==VarNameUseTag && ((NameUseNode*)obj)->dclnode->namesym == selfName)) {
         errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/property `%s`.", &methsym->namestr);
     }
-    INamedNode *foundnode = imethnodesFind(&((IMethodNode*)objtype)->methprops, methsym);
+    INamedNode *foundnode = imethnodesFind(&((IMethodNode*)methtype)->methprops, methsym);
     if (!foundnode
         || !(foundnode->tag == FnDclTag || foundnode->tag == VarDclTag)
         || !(foundnode->flags & FlagMethProp)) {
         errorMsgNode((INode*)callnode, ErrorNoMeth, "Object's type has no method or property named %s.", &methsym->namestr);
-        callnode->vtype = objtype; // Pretend on a vtype
+        callnode->vtype = methtype; // Pretend on a vtype
         return;
     }
 
@@ -139,7 +139,10 @@ void fnCallLowerMethod(FnCallNode *callnode) {
         return;
     }
 
-    // Re-purpose the method name use node as a reference to the method function itself
+    // Do autoref or autoderef self, as necessary
+    refAutoRef(&nodesGet(callnode->args, 0), ((ITypedNode*)nodesGet(((FnSigNode*)bestmethod->vtype)->parms, 0))->vtype);
+
+    // Re-purpose method's name use node into objfn, so name refers to found method
     NameUseNode *methodrefnode = callnode->methprop;
     methodrefnode->tag = VarNameUseTag;
     methodrefnode->dclnode = (INamedNode*)bestmethod;
