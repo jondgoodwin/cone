@@ -20,4 +20,7 @@ void addrPass(PassState *pstate, AddrNode *node);
 // Perform data flow analysis on addr node
 void addrFlow(FlowState *fstate, AddrNode **nodep);
 
+// Insert automatic ref, if node is a variable
+void addrAuto(INode **node, INode* reftype);
+
 #endif

@@ -42,6 +42,9 @@ int refEqual(RefNode *node1, RefNode *node2);
 // Will from reference coerce to a to reference (we know they are not the same)
 int refMatches(RefNode *to, RefNode *from);
 
+// If self needs to auto-ref or auto-deref, make sure it legally can
+int refAutoRefCheck(INode *selfnode, INode *totype);
+
 // Auto-ref or auto-deref self node, if it is legal
 void refAutoRef(INode **selfnode, INode *totype);
 

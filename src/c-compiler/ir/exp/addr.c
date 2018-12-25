@@ -150,3 +150,11 @@ void addrFlow(FlowState *fstate, AddrNode **nodep) {
         // Borrowed reference:  Deactivate source variable if necessary
     }
 }
+
+// Insert automatic ref, if node is a variable
+void addrAuto(INode **node, INode* reftype) {
+    AddrNode *refnode = newAddrNode();
+    refnode->exp = *node;
+    refnode->vtype = reftype;
+    *node = (INode*)refnode;
+}

@@ -84,7 +84,28 @@ int refMatches(RefNode *to, RefNode *from) {
 	return itypeMatches(to->pvtype, from->pvtype) == 1 ? 1 : 2;
 }
 
-// Auto-ref or auto-deref self node, if it is legal
+// If self needs to auto-ref or auto-deref, make sure it legally can
+int refAutoRefCheck(INode *selfnode, INode *totype) {
+    INode *selftype = iexpGetTypeDcl(selfnode);
+    totype = itypeGetTypeDcl(totype);
+
+    // Auto-deref, if we have a ref but we need a value
+    if (selftype->tag == RefTag && totype->tag != RefTag) {
+        int match = itypeMatches(totype, ((RefNode*)selftype)->pvtype);
+        if (match == 1 || match == 2)
+            return 1;
+    }
+    // Auto-ref, if we have a value but need a ref
+    else if (selftype->tag != RefTag && totype->tag == RefTag && ((RefNode*)totype)->alloc == voidType) {
+        int match = itypeMatches(((RefNode*)totype)->pvtype, selftype);
+        if (selfnode->tag != VarNameUseTag || match == 0 || match > 2)
+            return 0;
+        return permMatches(((RefNode*)totype)->perm, ((VarDclNode*)((NameUseNode*)selfnode)->dclnode)->perm);
+    }
+    return 0;
+}
+
+// Auto-ref or auto-deref self node (we already know it is legal)
 void refAutoRef(INode **selfnodep, INode *totype) {
     INode *selftype = iexpGetTypeDcl(*selfnodep);
     totype = itypeGetTypeDcl(totype);
@@ -95,13 +116,13 @@ void refAutoRef(INode **selfnodep, INode *totype) {
 
     // Auto-deref, if we have a ref but we need a value
     if (selftype->tag == RefTag && totype->tag != RefTag) {
-        match = itypeMatches(totype, ((RefNode*)selftype)->pvtype);
-        if (match == 0 || match > 1) {
-            errorMsgNode(*selfnodep, ErrorNoMeth, "Cannot auto-deref self as method requires.");
-            return;
-        }
         derefAuto(selfnodep);
         return;
     }
-    errorMsgNode(*selfnodep, ErrorNoMeth, "self is not correctly typed as method requires.");
+
+    // Auto-ref, if we have a value (as variable), but we need a ref
+    if (selftype->tag != RefTag && totype->tag == RefTag) {
+        addrAuto(selfnodep, totype);
+        return;
+    }
 }
