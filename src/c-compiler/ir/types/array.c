@@ -1,4 +1,4 @@
-/** Handling for structs
+/** Handling for array types
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
