@@ -99,7 +99,7 @@ int iexpCoerces(INode *to, INode **from) {
     // If it is an integer literal, convert it to correct type/value in place
     ULitNode *lit = (ULitNode*)(*from);
     lit->vtype = to;
-    if (fromtype->tag == FloatNbrTag) {
+    if (to->tag == FloatNbrTag) {
         lit->tag = FLitTag;
         ((FLitNode*)lit)->floatlit = (double)lit->uintlit;
     }

@@ -430,7 +430,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     case ULitTag:
         return LLVMConstInt(genlType(gen, ((ULitNode*)termnode)->vtype), ((ULitNode*)termnode)->uintlit, 0);
     case FLitTag:
-        return LLVMConstReal(genlType(gen, ((ULitNode*)termnode)->vtype), ((FLitNode*)termnode)->floatlit);
+        return LLVMConstReal(genlType(gen, ((FLitNode*)termnode)->vtype), ((FLitNode*)termnode)->floatlit);
     case NullTag:
     {
         INode *ptrtype = ((ULitNode*)termnode)->vtype;
