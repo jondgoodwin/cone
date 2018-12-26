@@ -23,6 +23,8 @@
 #include <string.h>
 #include <assert.h>
 
+LLVMValueRef genlAddr(GenState *gen, INode *lval);
+
 // Generate an if statement
 LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
 	LLVMBasicBlockRef endif;
@@ -101,13 +103,21 @@ LLVMValueRef genlGetIntrinsicFn(GenState *gen, char *fnname, NameUseNode *fnuse)
 LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
 
 	// Get Valuerefs for all the parameters to pass to the function
+    LLVMValueRef fncallret = NULL;
 	LLVMValueRef *fnargs = (LLVMValueRef*)memAllocBlk(fncall->args->used * sizeof(LLVMValueRef*));
 	LLVMValueRef *fnarg = fnargs;
 	INode **nodesp;
 	uint32_t cnt;
+    int getselfaddr = fncall->flags & FlagLvalOp;
+    LLVMValueRef selfaddr;
     for (nodesFor(fncall->args, cnt, nodesp)) {
-        LLVMValueRef argval = genlExpr(gen, *nodesp);
-        *fnarg++ = argval;
+        // For += operators, we need lval addr, and then load its contents
+        if (getselfaddr) {
+            getselfaddr = 0;
+            selfaddr = genlAddr(gen, *nodesp);
+            *fnarg++ = LLVMBuildLoad(gen->builder, selfaddr, "");
+        }
+        *fnarg++ = genlExpr(gen, *nodesp);
     }
 
 	// Handle call when we have a pointer to a function
@@ -120,11 +130,11 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
     FnDclNode *fndcl = (FnDclNode *)fnuse->dclnode;
 	switch (fndcl->value? fndcl->value->tag : BlockTag) {
 	case BlockTag: {
-        LLVMValueRef fncallval = LLVMBuildCall(gen->builder, fndcl->llvmvar, fnargs, fncall->args->used, "");
+        fncallret = LLVMBuildCall(gen->builder, fndcl->llvmvar, fnargs, fncall->args->used, "");
         if (fndcl->flags & FlagSystem) {
-            LLVMSetInstructionCallConv(fncallval, LLVMX86StdcallCallConv);
+            LLVMSetInstructionCallConv(fncallret, LLVMX86StdcallCallConv);
         }
-        return fncallval;
+        break;
 	}
 	case IntrinsicTag: {
 		NbrNode *nbrtype = (NbrNode *)iexpGetTypeDcl(*nodesNodes(fncall->args));
@@ -133,99 +143,122 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
 		// Floating point intrinsics
 		if (nbrtag == FloatNbrTag) {
 			switch (((IntrinsicNode *)fndcl->value)->intrinsicFn) {
-			case NegIntrinsic: return LLVMBuildFNeg(gen->builder, fnargs[0], "");
-			case AddIntrinsic: return LLVMBuildFAdd(gen->builder, fnargs[0], fnargs[1], "");
-			case SubIntrinsic: return LLVMBuildFSub(gen->builder, fnargs[0], fnargs[1], "");
-			case MulIntrinsic: return LLVMBuildFMul(gen->builder, fnargs[0], fnargs[1], "");
-			case DivIntrinsic: return LLVMBuildFDiv(gen->builder, fnargs[0], fnargs[1], "");
-			case RemIntrinsic: return LLVMBuildFRem(gen->builder, fnargs[0], fnargs[1], "");
+			case NegIntrinsic: fncallret = LLVMBuildFNeg(gen->builder, fnargs[0], ""); break;
+			case AddIntrinsic: fncallret = LLVMBuildFAdd(gen->builder, fnargs[0], fnargs[1], ""); break;
+			case SubIntrinsic: fncallret = LLVMBuildFSub(gen->builder, fnargs[0], fnargs[1], ""); break;
+			case MulIntrinsic: fncallret = LLVMBuildFMul(gen->builder, fnargs[0], fnargs[1], ""); break;
+			case DivIntrinsic: fncallret = LLVMBuildFDiv(gen->builder, fnargs[0], fnargs[1], ""); break;
+			case RemIntrinsic: fncallret = LLVMBuildFRem(gen->builder, fnargs[0], fnargs[1], ""); break;
 			// Comparison
-			case EqIntrinsic: return LLVMBuildFCmp(gen->builder, LLVMRealOEQ, fnargs[0], fnargs[1], "");
-			case NeIntrinsic: return LLVMBuildFCmp(gen->builder, LLVMRealONE, fnargs[0], fnargs[1], "");
-			case LtIntrinsic: return LLVMBuildFCmp(gen->builder, LLVMRealOLT, fnargs[0], fnargs[1], "");
-			case LeIntrinsic: return LLVMBuildFCmp(gen->builder, LLVMRealOLE, fnargs[0], fnargs[1], "");
-			case GtIntrinsic: return LLVMBuildFCmp(gen->builder, LLVMRealOGT, fnargs[0], fnargs[1], "");
-			case GeIntrinsic: return LLVMBuildFCmp(gen->builder, LLVMRealOGE, fnargs[0], fnargs[1], "");
+			case EqIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealOEQ, fnargs[0], fnargs[1], ""); break;
+			case NeIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealONE, fnargs[0], fnargs[1], ""); break;
+			case LtIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealOLT, fnargs[0], fnargs[1], ""); break;
+			case LeIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealOLE, fnargs[0], fnargs[1], ""); break;
+			case GtIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealOGT, fnargs[0], fnargs[1], ""); break;
+			case GeIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealOGE, fnargs[0], fnargs[1], ""); break;
 			// Intrinsic functions
 			case SqrtIntrinsic: 
 			{
 				char *fnname = nbrtype->bits == 32 ? "llvm.sqrt.f32" : "llvm.sqrt.f64";
-				return LLVMBuildCall(gen->builder, genlGetIntrinsicFn(gen, fnname, fnuse), fnargs, fncall->args->used, "");
+                fncallret = LLVMBuildCall(gen->builder, genlGetIntrinsicFn(gen, fnname, fnuse), fnargs, fncall->args->used, "");
+                break;
 			}
             case SinIntrinsic:
             {
                 char *fnname = nbrtype->bits == 32 ? "llvm.sin.f32" : "llvm.sin.f64";
-                return LLVMBuildCall(gen->builder, genlGetIntrinsicFn(gen, fnname, fnuse), fnargs, fncall->args->used, "");
+                fncallret = LLVMBuildCall(gen->builder, genlGetIntrinsicFn(gen, fnname, fnuse), fnargs, fncall->args->used, "");
+                break;
             }
             case CosIntrinsic:
             {
                 char *fnname = nbrtype->bits == 32 ? "llvm.cos.f32" : "llvm.cos.f64";
-                return LLVMBuildCall(gen->builder, genlGetIntrinsicFn(gen, fnname, fnuse), fnargs, fncall->args->used, "");
+                fncallret = LLVMBuildCall(gen->builder, genlGetIntrinsicFn(gen, fnname, fnuse), fnargs, fncall->args->used, "");
+                break;
             }
             }
+            break;
 		}
 		// Integer intrinsics
 		else {
-			switch (((IntrinsicNode *)fndcl->value)->intrinsicFn) {
-			
-			// Arithmetic
-			case NegIntrinsic: return LLVMBuildNeg(gen->builder, fnargs[0], "");
-			case AddIntrinsic: return LLVMBuildAdd(gen->builder, fnargs[0], fnargs[1], "");
-			case SubIntrinsic: return LLVMBuildSub(gen->builder, fnargs[0], fnargs[1], "");
-			case MulIntrinsic: return LLVMBuildMul(gen->builder, fnargs[0], fnargs[1], "");
-			case DivIntrinsic:
-				if (nbrtag == IntNbrTag)
-					return LLVMBuildSDiv(gen->builder, fnargs[0], fnargs[1], "");
-				else
-					return LLVMBuildUDiv(gen->builder, fnargs[0], fnargs[1], "");
-			case RemIntrinsic:
-				if (nbrtag == IntNbrTag)
-					return LLVMBuildSRem(gen->builder, fnargs[0], fnargs[1], "");
-				else
-					return LLVMBuildURem(gen->builder, fnargs[0], fnargs[1], "");
-			
-			// Comparison
-			case EqIntrinsic: return LLVMBuildICmp(gen->builder, LLVMIntEQ, fnargs[0], fnargs[1], "");
-			case NeIntrinsic: return LLVMBuildICmp(gen->builder, LLVMIntNE, fnargs[0], fnargs[1], "");
-			case LtIntrinsic:
-				if (nbrtag == IntNbrTag)
-					return LLVMBuildICmp(gen->builder, LLVMIntSLT, fnargs[0], fnargs[1], "");
-				else
-					return LLVMBuildICmp(gen->builder, LLVMIntULT, fnargs[0], fnargs[1], "");
-			case LeIntrinsic:
-				if (nbrtag == IntNbrTag)
-					return LLVMBuildICmp(gen->builder, LLVMIntSLE, fnargs[0], fnargs[1], "");
-				else
-					return LLVMBuildICmp(gen->builder, LLVMIntULE, fnargs[0], fnargs[1], "");
-			case GtIntrinsic:
-				if (nbrtag == IntNbrTag)
-					return LLVMBuildICmp(gen->builder, LLVMIntSGT, fnargs[0], fnargs[1], "");
-				else
-					return LLVMBuildICmp(gen->builder, LLVMIntUGT, fnargs[0], fnargs[1], "");
-			case GeIntrinsic:
-				if (nbrtag == IntNbrTag)
-					return LLVMBuildICmp(gen->builder, LLVMIntSGE, fnargs[0], fnargs[1], "");
-				else
-					return LLVMBuildICmp(gen->builder, LLVMIntUGE, fnargs[0], fnargs[1], "");
+            switch (((IntrinsicNode *)fndcl->value)->intrinsicFn) {
+
+                // Arithmetic
+            case NegIntrinsic: fncallret = LLVMBuildNeg(gen->builder, fnargs[0], ""); break;
+            case AddIntrinsic: fncallret = LLVMBuildAdd(gen->builder, fnargs[0], fnargs[1], ""); break;
+            case SubIntrinsic: fncallret = LLVMBuildSub(gen->builder, fnargs[0], fnargs[1], ""); break;
+            case MulIntrinsic: fncallret = LLVMBuildMul(gen->builder, fnargs[0], fnargs[1], ""); break;
+            case DivIntrinsic:
+                if (nbrtag == IntNbrTag) {
+                    fncallret = LLVMBuildSDiv(gen->builder, fnargs[0], fnargs[1], ""); break;
+                }
+                else {
+                    fncallret = LLVMBuildUDiv(gen->builder, fnargs[0], fnargs[1], ""); break;
+                }
+            case RemIntrinsic:
+                if (nbrtag == IntNbrTag) {
+                    fncallret = LLVMBuildSRem(gen->builder, fnargs[0], fnargs[1], ""); break;
+                }
+                else {
+                    fncallret = LLVMBuildURem(gen->builder, fnargs[0], fnargs[1], ""); break;
+                }
+
+                // Comparison
+            case EqIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntEQ, fnargs[0], fnargs[1], ""); break;
+            case NeIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntNE, fnargs[0], fnargs[1], ""); break;
+            case LtIntrinsic:
+                if (nbrtag == IntNbrTag) {
+                    fncallret = LLVMBuildICmp(gen->builder, LLVMIntSLT, fnargs[0], fnargs[1], ""); break;
+                }
+                else {
+                    fncallret = LLVMBuildICmp(gen->builder, LLVMIntULT, fnargs[0], fnargs[1], ""); break;
+                }
+            case LeIntrinsic:
+                if (nbrtag == IntNbrTag) {
+                    fncallret = LLVMBuildICmp(gen->builder, LLVMIntSLE, fnargs[0], fnargs[1], ""); break;
+                }
+                else {
+                    fncallret = LLVMBuildICmp(gen->builder, LLVMIntULE, fnargs[0], fnargs[1], ""); break;
+                }
+            case GtIntrinsic:
+                if (nbrtag == IntNbrTag) {
+                    fncallret = LLVMBuildICmp(gen->builder, LLVMIntSGT, fnargs[0], fnargs[1], ""); break;
+                }
+                else {
+                    fncallret = LLVMBuildICmp(gen->builder, LLVMIntUGT, fnargs[0], fnargs[1], ""); break;
+                }
+            case GeIntrinsic:
+                if (nbrtag == IntNbrTag) {
+                    fncallret = LLVMBuildICmp(gen->builder, LLVMIntSGE, fnargs[0], fnargs[1], ""); break;
+                }
+                else {
+                    fncallret = LLVMBuildICmp(gen->builder, LLVMIntUGE, fnargs[0], fnargs[1], ""); break;
+                }
 
 			// Bitwise
-			case NotIntrinsic: return LLVMBuildNot(gen->builder, fnargs[0], "");
-			case AndIntrinsic: return LLVMBuildAnd(gen->builder, fnargs[0], fnargs[1], "");
-			case OrIntrinsic: return LLVMBuildOr(gen->builder, fnargs[0], fnargs[1], "");
-			case XorIntrinsic: return LLVMBuildXor(gen->builder, fnargs[0], fnargs[1], "");
-			case ShlIntrinsic: return LLVMBuildShl(gen->builder, fnargs[0], fnargs[1], "");
+			case NotIntrinsic: fncallret = LLVMBuildNot(gen->builder, fnargs[0], ""); break;
+			case AndIntrinsic: fncallret = LLVMBuildAnd(gen->builder, fnargs[0], fnargs[1], ""); break;
+			case OrIntrinsic: fncallret = LLVMBuildOr(gen->builder, fnargs[0], fnargs[1], ""); break;
+			case XorIntrinsic: fncallret = LLVMBuildXor(gen->builder, fnargs[0], fnargs[1], ""); break;
+			case ShlIntrinsic: fncallret = LLVMBuildShl(gen->builder, fnargs[0], fnargs[1], ""); break;
 			case ShrIntrinsic:
-				if (nbrtag == IntNbrTag)
-					return LLVMBuildAShr(gen->builder, fnargs[0], fnargs[1], "");
-				else
-					return LLVMBuildLShr(gen->builder, fnargs[0], fnargs[1], "");
+                if (nbrtag == IntNbrTag) {
+                    fncallret = LLVMBuildAShr(gen->builder, fnargs[0], fnargs[1], ""); break;
+                }
+                else {
+                    fncallret = LLVMBuildLShr(gen->builder, fnargs[0], fnargs[1], ""); break;
+                }
 			}
+            break;
 		}
 	}
 	default:
 		assert(0 && "invalid type of function call");
-		return NULL;
 	}
+
+    // For += operators, store value in lval
+    if (fncall->flags & FlagLvalOp)
+        LLVMBuildStore(gen->builder, fncallret, selfaddr);
+    return fncallret;
 }
 
 // Generate a value converted to another type

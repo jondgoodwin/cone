@@ -127,6 +127,7 @@ enum NodeTags {
 #define FlagSetMethod 0x0008        // FnDcl: "set" method
 
 #define FlagIndex     0x0001        // FnCall: arguments are an index in []
+#define FlagLvalOp    0x0002        // FnCall: method is an operator assignment (e.g., +=)
 
 
 // Allocate and initialize the INode portion of a new node
