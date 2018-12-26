@@ -117,7 +117,8 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
             selfaddr = genlAddr(gen, *nodesp);
             *fnarg++ = LLVMBuildLoad(gen->builder, selfaddr, "");
         }
-        *fnarg++ = genlExpr(gen, *nodesp);
+        else
+            *fnarg++ = genlExpr(gen, *nodesp);
     }
 
 	// Handle call when we have a pointer to a function

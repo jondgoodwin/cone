@@ -93,6 +93,20 @@ void fnCallFinalizeArgs(FnCallNode *node) {
     }
 }
 
+Name *fnCallOpEqMethod(Name *opeqname) {
+    if (opeqname == plusEqName) return plusName;
+    if (opeqname == minusEqName) return minusName;
+    if (opeqname == multEqName) return multName;
+    if (opeqname == divEqName) return divName;
+    if (opeqname == remEqName) return remName;
+    if (opeqname == orEqName) return orName;
+    if (opeqname == andEqName) return andName;
+    if (opeqname == xorEqName) return xorName;
+    if (opeqname == shlEqName) return shlName;
+    if (opeqname == shrEqName) return shrName;
+    return NULL;
+}
+
 // Find best property or method (across overloaded methods whose type matches argument types)
 // Then lower the node to a function call (objfn+args) or property access (objfn+methprop) accordingly
 void fnCallLowerMethod(FnCallNode *callnode) {
@@ -112,6 +126,12 @@ void fnCallLowerMethod(FnCallNode *callnode) {
         errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/property `%s`.", &methsym->namestr);
     }
     INamedNode *foundnode = imethnodesFind(&((IMethodNode*)methtype)->methprops, methsym);
+    if (callnode->flags & FlagLvalOp) {
+        if (foundnode)
+            callnode->flags ^= FlagLvalOp;  // Turn off flag: found method handles the rest of it just fine
+        else
+            foundnode = imethnodesFind(&((IMethodNode*)methtype)->methprops, fnCallOpEqMethod(methsym));
+    }
     if (!foundnode
         || !(foundnode->tag == FnDclTag || foundnode->tag == VarDclTag)
         || !(foundnode->flags & FlagMethProp)) {

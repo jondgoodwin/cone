@@ -468,7 +468,7 @@ INode *parseTuple(ParseState *parse) {
 // Parse an operator assignment
 INode *parseOpEq(ParseState *parse, INode *lval, Name *opeqname) {
     FnCallNode *node = newFnCallOpname(lval, opeqname, 2);
-    // node->flags |= FlagLvalOp;
+    node->flags |= FlagLvalOp;
     lexNextToken();
     nodesAdd(&node->args, parseAnyExpr(parse));
     return (INode*)node;
