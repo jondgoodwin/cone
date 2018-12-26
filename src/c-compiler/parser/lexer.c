@@ -510,6 +510,9 @@ void lexNextToken() {
             if (*(srcp + 1) == '=') {
                 lexReturnPuncTok(PlusEqToken, 2);
             }
+            else if (*(srcp + 1) == '+') {
+                lexReturnPuncTok(IncrToken, 2);
+            }
             else {
                 lexReturnPuncTok(PlusToken, 1);
             }
@@ -517,6 +520,9 @@ void lexNextToken() {
         case '-': 
             if (*(srcp + 1) == '=') {
                 lexReturnPuncTok(MinusEqToken, 2);
+            }
+            else if (*(srcp + 1) == '-') {
+                lexReturnPuncTok(DecrToken, 2);
             }
             else {
                 lexReturnPuncTok(DashToken, 1);

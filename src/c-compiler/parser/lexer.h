@@ -111,6 +111,8 @@ enum TokenTypes {
     XorEqToken,         // '^='
     ShlEqToken,         // '<<='
     ShrEqToken,         // '>>='
+    IncrToken,          // '++'
+    DecrToken,          // '--'
 
 	// Keywords
 	IncludeToken,	// 'include'

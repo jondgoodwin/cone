@@ -109,6 +109,9 @@ void stdlibInit() {
     shlName = nametblFind("<<", 2);
     shrName = nametblFind(">>", 2);
 
+    incrName = nametblFind("++", 2);
+    decrName = nametblFind("--", 2);
+
     keywordInit();
 	stdPermInit();
     stdAllocInit();

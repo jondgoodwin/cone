@@ -35,6 +35,9 @@ Name *xorName;      // "^"
 Name *shlName;      // "<<"
 Name *shrName;      // ">>"
 
+Name *incrName;     // "++"
+Name *decrName;     // "--"
+
 // Represents the absence of type information
 INode *voidType;
 
