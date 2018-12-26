@@ -20,6 +20,13 @@ FnCallNode *newFnCallNode(INode *fn, int nnodes) {
 	return node;
 }
 
+// Create new fncall node, prefilling method, self, and creating room for nnodes args
+FnCallNode *newFnCallOpname(INode *obj, Name *opname, int nnodes) {
+    FnCallNode *node = newFnCallNode(obj, nnodes);
+    node->methprop = newMemberUseNode(opname);
+    return node;
+}
+
 FnCallNode *newFnCallOp(INode *obj, char *op, int nnodes) {
     FnCallNode *node = newFnCallNode(obj, nnodes);
     node->methprop = newMemberUseNode(nametblFind(op, strlen(op)));

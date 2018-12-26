@@ -19,6 +19,8 @@ typedef struct FnCallNode {
 } FnCallNode;
 
 FnCallNode *newFnCallNode(INode *objfn, int nnodes);
+// Create new fncall node, prefilling method, self, and creating room for nnodes args
+FnCallNode *newFnCallOpname(INode *obj, Name *opname, int nnodes);
 FnCallNode *newFnCallOp(INode *obj, char *op, int nnodes);
 void fnCallPrint(FnCallNode *node);
 void fnCallPass(PassState *pstate, FnCallNode **node);

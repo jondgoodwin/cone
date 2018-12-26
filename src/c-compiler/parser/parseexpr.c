@@ -223,7 +223,7 @@ INode *parsePrefix(ParseState *parse) {
 	switch (lex->toktype) {
 	case DashToken:
 	{
-		FnCallNode *node = newFnCallOp(NULL, "-", 0);
+		FnCallNode *node = newFnCallOpname(NULL, minusName, 0);
 		lexNextToken();
 		INode *argnode = parsePrefix(parse);
         if (argnode->tag == ULitTag) {
@@ -277,19 +277,19 @@ INode *parseMult(ParseState *parse) {
 	INode *lhnode = parseCast(parse);
 	while (1) {
 		if (lexIsToken(StarToken)) {
-			FnCallNode *node = newFnCallOp(lhnode, "*", 2);
+			FnCallNode *node = newFnCallOpname(lhnode, multName, 2);
 			lexNextToken();
 			nodesAdd(&node->args, parseCast(parse));
 			lhnode = (INode*)node;
 		}
 		else if (lexIsToken(SlashToken)) {
-			FnCallNode *node = newFnCallOp(lhnode, "/", 2);
+			FnCallNode *node = newFnCallOpname(lhnode, divName, 2);
 			lexNextToken();
 			nodesAdd(&node->args, parseCast(parse));
 			lhnode = (INode*)node;
 		}
 		else if (lexIsToken(PercentToken)) {
-			FnCallNode *node = newFnCallOp(lhnode, "%", 2);
+			FnCallNode *node = newFnCallOpname(lhnode, remName, 2);
 			lexNextToken();
 			nodesAdd(&node->args, parseCast(parse));
 			lhnode = (INode*)node;
@@ -304,13 +304,13 @@ INode *parseAdd(ParseState *parse) {
 	INode *lhnode = parseMult(parse);
 	while (1) {
 		if (lexIsToken(PlusToken)) {
-			FnCallNode *node = newFnCallOp(lhnode, "+", 2);
+			FnCallNode *node = newFnCallOpname(lhnode, plusName, 2);
 			lexNextToken();
 			nodesAdd(&node->args, parseMult(parse));
 			lhnode = (INode*)node;
 		}
 		else if (lexIsToken(DashToken)) {
-			FnCallNode *node = newFnCallOp(lhnode, "-", 2);
+			FnCallNode *node = newFnCallOpname(lhnode, minusName, 2);
 			lexNextToken();
 			nodesAdd(&node->args, parseMult(parse));
 			lhnode = (INode*)node;
@@ -330,13 +330,13 @@ INode *parseShift(ParseState *parse) {
         lhnode = parseAdd(parse);
     while (1) {
         if (lexIsToken(LtltToken)) {
-            FnCallNode *node = newFnCallOp(lhnode, "<<", 2);
+            FnCallNode *node = newFnCallOpname(lhnode, shlName, 2);
             lexNextToken();
             nodesAdd(&node->args, parseAdd(parse));
             lhnode = (INode*)node;
         }
         else if (lexIsToken(GtgtToken)) {
-            FnCallNode *node = newFnCallOp(lhnode, ">>", 2);
+            FnCallNode *node = newFnCallOpname(lhnode, shrName, 2);
             lexNextToken();
             nodesAdd(&node->args, parseAdd(parse));
             lhnode = (INode*)node;
@@ -351,7 +351,7 @@ INode *parseAnd(ParseState *parse) {
 	INode *lhnode = parseShift(parse);
 	while (1) {
 		if (lexIsToken(AmperToken)) {
-			FnCallNode *node = newFnCallOp(lhnode, "&", 2);
+			FnCallNode *node = newFnCallOpname(lhnode, andName, 2);
 			lexNextToken();
 			nodesAdd(&node->args, parseShift(parse));
 			lhnode = (INode*)node;
@@ -366,7 +366,7 @@ INode *parseXor(ParseState *parse) {
 	INode *lhnode = parseAnd(parse);
 	while (1) {
 		if (lexIsToken(CaretToken)) {
-			FnCallNode *node = newFnCallOp(lhnode, "^", 2);
+			FnCallNode *node = newFnCallOpname(lhnode, xorName, 2);
 			lexNextToken();
 			nodesAdd(&node->args, parseAnd(parse));
 			lhnode = (INode*)node;
@@ -381,7 +381,7 @@ INode *parseOr(ParseState *parse) {
 	INode *lhnode = parseXor(parse);
 	while (1) {
 		if (lexIsToken(BarToken)) {
-			FnCallNode *node = newFnCallOp(lhnode, "|", 2);
+			FnCallNode *node = newFnCallOpname(lhnode, orName, 2);
 			lexNextToken();
 			nodesAdd(&node->args, parseXor(parse));
 			lhnode = (INode*)node;

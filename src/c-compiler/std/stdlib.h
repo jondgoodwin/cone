@@ -13,6 +13,28 @@ Name *anonName;  // "_" - the absence of a name
 Name *selfName;  // "self"
 Name *thisName;  // "this"
 
+Name *plusEqName;   // "+="
+Name *minusEqName;  // "-="
+Name *multEqName;   // "*="
+Name *divEqName;    // "/="
+Name *remEqName;    // "%="
+Name *orEqName;     // "|="
+Name *andEqName;    // "&="
+Name *xorEqName;    // "^="
+Name *shlEqName;    // "<<="
+Name *shrEqName;    // ">>="
+
+Name *plusName;     // "+"
+Name *minusName;    // "-"
+Name *multName;     // "*"
+Name *divName;      // "/"
+Name *remName;      // "%"
+Name *orName;       // "|"
+Name *andName;      // "&"
+Name *xorName;      // "^"
+Name *shlName;      // "<<"
+Name *shrName;      // ">>"
+
 // Represents the absence of type information
 INode *voidType;
 

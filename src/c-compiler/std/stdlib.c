@@ -87,7 +87,29 @@ void stdlibInit() {
     selfName = nametblFind("self", 4);
     thisName = nametblFind("this", 4);
 
-	keywordInit();
+    plusEqName = nametblFind("+=", 2);
+    minusEqName = nametblFind("-=", 2);
+    multEqName = nametblFind("*=", 2);
+    divEqName = nametblFind("/=", 2);
+    remEqName = nametblFind("%=", 2);
+    orEqName = nametblFind("|=", 2);
+    andEqName = nametblFind("&=", 2);
+    xorEqName = nametblFind("^=", 2);
+    shlEqName = nametblFind("<<=", 3);
+    shrEqName = nametblFind(">>=", 3);
+
+    plusName = nametblFind("+", 1);
+    minusName = nametblFind("-", 1);
+    multName = nametblFind("*", 1);
+    divName = nametblFind("/", 1);
+    remName = nametblFind("%", 1);
+    orName = nametblFind("|", 1);
+    andName = nametblFind("&", 1);
+    xorName = nametblFind("^", 1);
+    shlName = nametblFind("<<", 2);
+    shrName = nametblFind(">>", 2);
+
+    keywordInit();
 	stdPermInit();
     stdAllocInit();
 	stdNbrInit();
