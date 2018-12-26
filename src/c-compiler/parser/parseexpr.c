@@ -465,16 +465,28 @@ INode *parseTuple(ParseState *parse) {
         return exp;
 }
 
+// Parse an operator assignment
+INode *parseOpEq(ParseState *parse, INode *lval, Name *opeqname) {
+    FnCallNode *node = newFnCallOpname(lval, opeqname, 2);
+    lexNextToken();
+    nodesAdd(&node->args, parseAnyExpr(parse));
+    return (INode*)node;
+}
+
 // Parse an assignment expression
 INode *parseAssign(ParseState *parse) {
     INode *lval = parseTuple(parse);
-	if (lexIsToken(AssgnToken)) {
-		lexNextToken();
-		INode *rval = parseAnyExpr(parse);
-		return (INode*) newAssignNode(NormalAssign, lval, rval);
-	}
+    switch (lex->toktype) {
+    case AssgnToken:
+    {
+        lexNextToken();
+        INode *rval = parseAnyExpr(parse);
+        return (INode*)newAssignNode(NormalAssign, lval, rval);
+    }
+
     // sym:rval => this.sym = rval
-    else if (lexIsToken(ColonToken)) {
+    case ColonToken:
+    {
         lexNextToken();
         INode *rval = parseAnyExpr(parse);
         NameUseNode *thisnode = newNameUseNode(thisName);
@@ -484,8 +496,30 @@ INode *parseAssign(ParseState *parse) {
         propnode->methprop = (NameUseNode*)lval;
         return (INode*)newAssignNode(NormalAssign, (INode*)propnode, rval);
     }
-	else
-		return lval;
+
+    case PlusEqToken:
+        return parseOpEq(parse, lval, plusEqName);
+    case MinusEqToken:
+        return parseOpEq(parse, lval, minusEqName);
+    case MultEqToken:
+        return parseOpEq(parse, lval, multEqName);
+    case DivEqToken:
+        return parseOpEq(parse, lval, divEqName);
+    case RemEqToken:
+        return parseOpEq(parse, lval, remEqName);
+    case OrEqToken:
+        return parseOpEq(parse, lval, orEqName);
+    case AndEqToken:
+        return parseOpEq(parse, lval, andEqName);
+    case XorEqToken:
+        return parseOpEq(parse, lval, xorEqName);
+    case ShlEqToken:
+        return parseOpEq(parse, lval, shlEqName);
+    case ShrEqToken:
+        return parseOpEq(parse, lval, shrEqName);
+    default:
+        return lval;
+    }
 }
 
 INode *parseList(ParseState *parse, INode *typenode) {
