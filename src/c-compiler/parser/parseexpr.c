@@ -324,18 +324,18 @@ INode *parseAdd(ParseState *parse) {
 INode *parseShift(ParseState *parse) {
     INode *lhnode;
     // Prefix '<<' or '>>' implies 'this'
-    if (lexIsToken(LtltToken) || lexIsToken(GtgtToken))
+    if (lexIsToken(ShlToken) || lexIsToken(ShrToken))
         lhnode = (INode *)newNameUseNode(thisName);
     else
         lhnode = parseAdd(parse);
     while (1) {
-        if (lexIsToken(LtltToken)) {
+        if (lexIsToken(ShlToken)) {
             FnCallNode *node = newFnCallOpname(lhnode, shlName, 2);
             lexNextToken();
             nodesAdd(&node->args, parseAdd(parse));
             lhnode = (INode*)node;
         }
-        else if (lexIsToken(GtgtToken)) {
+        else if (lexIsToken(ShrToken)) {
             FnCallNode *node = newFnCallOpname(lhnode, shrName, 2);
             lexNextToken();
             nodesAdd(&node->args, parseAdd(parse));

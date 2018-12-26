@@ -410,7 +410,7 @@ char *lexBlockComment(char *srcp) {
 #define lexReturnPuncTok(tok, skip) { \
 	lex->toktype = tok; \
 	lex->tokp = srcp; \
-	lex->srcp = srcp + skip; \
+	lex->srcp = srcp + (skip); \
 	return; \
 }
 
@@ -504,18 +504,63 @@ void lexNextToken() {
 
 		case '.': lexReturnPuncTok(DotToken, 1);
 		case ',': lexReturnPuncTok(CommaToken, 1);
-		case '-': lexReturnPuncTok(DashToken, 1);
-		case '*': lexReturnPuncTok(StarToken, 1);
-		case '+': lexReturnPuncTok(PlusToken, 1);
-		case '%': lexReturnPuncTok(PercentToken, 1);
-		case '~': lexReturnPuncTok(TildeToken, 1);
-		case '^': lexReturnPuncTok(CaretToken, 1);
+        case '~': lexReturnPuncTok(TildeToken, 1);
+
+        case '+': 
+            if (*(srcp + 1) == '=') {
+                lexReturnPuncTok(PlusEqToken, 2);
+            }
+            else {
+                lexReturnPuncTok(PlusToken, 1);
+            }
+
+        case '-': 
+            if (*(srcp + 1) == '=') {
+                lexReturnPuncTok(MinusEqToken, 2);
+            }
+            else {
+                lexReturnPuncTok(DashToken, 1);
+            }
+
+		case '*': 
+            if (*(srcp + 1) == '=') {
+                lexReturnPuncTok(MultEqToken, 2);
+            }
+            else {
+                lexReturnPuncTok(StarToken, 1);
+            }
+
+		case '%': 
+            if (*(srcp + 1) == '=') {
+                lexReturnPuncTok(RemEqToken, 2);
+            }
+            else {
+                lexReturnPuncTok(PercentToken, 1);
+            }
+
+		case '^': 
+            if (*(srcp + 1) == '=') {
+                lexReturnPuncTok(XorEqToken, 2);
+            }
+            else {
+                lexReturnPuncTok(CaretToken, 1);
+            }
 
 		case '&': 
-			lexReturnPuncTok(AmperToken, 1);
+            if (*(srcp + 1) == '=') {
+                lexReturnPuncTok(AndEqToken, 2);
+            }
+            else {
+                lexReturnPuncTok(AmperToken, 1);
+            }
 
 		case '|': 
-			lexReturnPuncTok(BarToken, 1);
+            if (*(srcp + 1) == '=') {
+                lexReturnPuncTok(OrEqToken, 2);
+            }
+            else {
+                lexReturnPuncTok(BarToken, 1);
+            }
 
 		// '=' and '=='
 		case '=':
@@ -541,7 +586,12 @@ void lexNextToken() {
 				lexReturnPuncTok(LeToken, 2);
 			}
             else if (*(srcp + 1) == '<') {
-                lexReturnPuncTok(LtltToken, 2);
+                if (*(srcp + 2) == '=') {
+                    lexReturnPuncTok(ShlEqToken, 3);
+                }
+                else {
+                    lexReturnPuncTok(ShlToken, 2);
+                }
             }
 			else {
 				lexReturnPuncTok(LtToken, 1);
@@ -553,7 +603,12 @@ void lexNextToken() {
 				lexReturnPuncTok(GeToken, 2);
 			}
             else if (*(srcp + 1) == '>') {
-                lexReturnPuncTok(GtgtToken, 2);
+                if (*(srcp + 1) == '=') {
+                    lexReturnPuncTok(ShrEqToken, 3);
+                }
+                else {
+                    lexReturnPuncTok(ShrToken, 2);
+                }
             }
             else {
 				lexReturnPuncTok(GtToken, 1);
@@ -608,7 +663,10 @@ void lexNextToken() {
 				srcp = lexBlockComment(srcp+2);
 			}
 			// '/' operator (e.g., division)
-			else
+            else if (*(srcp + 1) == '=') {
+                lexReturnPuncTok(DivEqToken, 2);
+            }
+            else
 				lexReturnPuncTok(SlashToken, 1);
 			break;
 
