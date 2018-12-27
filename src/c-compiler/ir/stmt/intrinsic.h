@@ -17,6 +17,10 @@ enum IntrinsicFn {
 	MulIntrinsic,
 	DivIntrinsic,
 	RemIntrinsic,
+    IncrIntrinsic,
+    DecrIntrinsic,
+    IncrPostIntrinsic,
+    DecrPostIntrinsic,
 
 	// Comparison
 	EqIntrinsic,

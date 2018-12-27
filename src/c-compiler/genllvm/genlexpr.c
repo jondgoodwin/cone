@@ -150,7 +150,31 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
 			case MulIntrinsic: fncallret = LLVMBuildFMul(gen->builder, fnargs[0], fnargs[1], ""); break;
 			case DivIntrinsic: fncallret = LLVMBuildFDiv(gen->builder, fnargs[0], fnargs[1], ""); break;
 			case RemIntrinsic: fncallret = LLVMBuildFRem(gen->builder, fnargs[0], fnargs[1], ""); break;
-			// Comparison
+            case IncrIntrinsic: // ++x
+            {
+                LLVMTypeRef selftype = genlType(gen, ((ITypedNode*)nodesGet(fncall->args, 0))->vtype);
+                fncallret = LLVMBuildFAdd(gen->builder, fnargs[0], LLVMConstReal(selftype, 1.), "");
+            }
+            case IncrPostIntrinsic: // x++
+            {
+                LLVMTypeRef selftype = genlType(gen, ((ITypedNode*)nodesGet(fncall->args, 0))->vtype);
+                LLVMValueRef val = LLVMBuildFAdd(gen->builder, fnargs[0], LLVMConstReal(selftype, 1.), "");
+                LLVMBuildStore(gen->builder, val, selfaddr);
+                return fnargs[0];
+            }
+            case DecrIntrinsic: // --x
+            {
+                LLVMTypeRef selftype = genlType(gen, ((ITypedNode*)nodesGet(fncall->args, 0))->vtype);
+                fncallret = LLVMBuildFSub(gen->builder, fnargs[0], LLVMConstReal(selftype, 1.), "");
+            }
+            case DecrPostIntrinsic: // x--
+            {
+                LLVMTypeRef selftype = genlType(gen, ((ITypedNode*)nodesGet(fncall->args, 0))->vtype);
+                LLVMValueRef val = LLVMBuildFSub(gen->builder, fnargs[0], LLVMConstReal(selftype, 1.), "");
+                LLVMBuildStore(gen->builder, val, selfaddr);
+                return fnargs[0];
+            }
+            // Comparison
 			case EqIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealOEQ, fnargs[0], fnargs[1], ""); break;
 			case NeIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealONE, fnargs[0], fnargs[1], ""); break;
 			case LtIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealOLT, fnargs[0], fnargs[1], ""); break;
@@ -202,6 +226,30 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
                 else {
                     fncallret = LLVMBuildURem(gen->builder, fnargs[0], fnargs[1], ""); break;
                 }
+            case IncrIntrinsic: // ++x
+            {
+                LLVMTypeRef selftype = genlType(gen, ((ITypedNode*)nodesGet(fncall->args, 0))->vtype);
+                fncallret = LLVMBuildAdd(gen->builder, fnargs[0], LLVMConstInt(selftype, 1, 0), "");
+            }
+            case IncrPostIntrinsic: // x++
+            {
+                LLVMTypeRef selftype = genlType(gen, ((ITypedNode*)nodesGet(fncall->args, 0))->vtype);
+                LLVMValueRef val = LLVMBuildAdd(gen->builder, fnargs[0], LLVMConstInt(selftype, 1, 0), "");
+                LLVMBuildStore(gen->builder, val, selfaddr);
+                return fnargs[0];
+            }
+            case DecrIntrinsic: // --x
+            {
+                LLVMTypeRef selftype = genlType(gen, ((ITypedNode*)nodesGet(fncall->args, 0))->vtype);
+                fncallret = LLVMBuildSub(gen->builder, fnargs[0], LLVMConstInt(selftype, 1, 0), "");
+            }
+            case DecrPostIntrinsic: // x--
+            {
+                LLVMTypeRef selftype = genlType(gen, ((ITypedNode*)nodesGet(fncall->args, 0))->vtype);
+                LLVMValueRef val = LLVMBuildSub(gen->builder, fnargs[0], LLVMConstInt(selftype, 1, 0), "");
+                LLVMBuildStore(gen->builder, val, selfaddr);
+                return fnargs[0];
+            }
 
                 // Comparison
             case EqIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntEQ, fnargs[0], fnargs[1], ""); break;
