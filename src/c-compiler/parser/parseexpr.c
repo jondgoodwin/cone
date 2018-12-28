@@ -186,7 +186,19 @@ INode *parsePostfix(ParseState *parse) {
             break;
 		}
 
-		default:
+        case IncrToken:
+        {
+            node = (INode*)newFnCallOpname(node, incrPostName, 0);
+            lexNextToken();
+            break;
+        }
+        case DecrToken:
+        {
+            node = (INode*)newFnCallOpname(node, decrPostName, 0);
+            lexNextToken();
+            break;
+        }
+        default:
 			return node;
 		}
 	}
@@ -244,7 +256,21 @@ INode *parsePrefix(ParseState *parse) {
 		node->objfn = parsePrefix(parse);
 		return (INode *)node;
 	}
-	case StarToken:
+    case IncrToken:
+    {
+        FnCallNode *node = newFnCallOpname(NULL, incrName, 0);
+        lexNextToken();
+        node->objfn = parsePrefix(parse);
+        return (INode *)node;
+    }
+    case DecrToken:
+    {
+        FnCallNode *node = newFnCallOpname(NULL, decrName, 0);
+        lexNextToken();
+        node->objfn = parsePrefix(parse);
+        return (INode *)node;
+    }
+    case StarToken:
 	{
 		DerefNode *node = newDerefNode();
 		lexNextToken();

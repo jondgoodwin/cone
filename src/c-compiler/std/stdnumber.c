@@ -55,7 +55,16 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
 	Name *una1 = nametblFind("a", 1);
 	nodesAdd(&unarysig->parms, (INode *)newVarDclFull(una1, VarDclTag, (INode*)nbrtypenode, newPermUseNode((INamedNode*)immPerm), NULL));
 
-	// Create function signature for binary methods for this type
+    // Create function signature for unary ref methods for this type
+    FnSigNode *mutrefsig = newFnSigNode();
+    mutrefsig->rettype = (INode*)nbrtypenode;
+    RefNode *mutref = newRefNode();
+    mutref->pvtype = (INode*)nbrtypenode;
+    mutref->alloc = voidType;
+    mutref->perm = newPermUseNode((INamedNode*)mutPerm);
+    nodesAdd(&mutrefsig->parms, (INode *)newVarDclFull(una1, VarDclTag, (INode*)mutref, newPermUseNode((INamedNode*)immPerm), NULL));
+
+    // Create function signature for binary methods for this type
 	FnSigNode *binsig = newFnSigNode();
 	binsig->rettype = (INode*)nbrtypenode;
 	Name *parm1 = nametblFind("a", 1);
@@ -69,6 +78,10 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
 	// Arithmetic operators (not applicable to boolean)
 	if (bits > 1) {
 		imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(minusName, FlagMethProp, (INode *)unarysig, (INode *)newIntrinsicNode(NegIntrinsic)));
+        imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(incrName, FlagMethProp, (INode *)mutrefsig, (INode *)newIntrinsicNode(IncrIntrinsic)));
+        imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(decrName, FlagMethProp, (INode *)mutrefsig, (INode *)newIntrinsicNode(DecrIntrinsic)));
+        imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(incrPostName, FlagMethProp, (INode *)mutrefsig, (INode *)newIntrinsicNode(IncrPostIntrinsic)));
+        imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(incrPostName, FlagMethProp, (INode *)mutrefsig, (INode *)newIntrinsicNode(DecrPostIntrinsic)));
         imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(plusName, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(AddIntrinsic)));
         imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(minusName, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(SubIntrinsic)));
         imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(multName, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(MulIntrinsic)));

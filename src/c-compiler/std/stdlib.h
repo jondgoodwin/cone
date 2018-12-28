@@ -37,6 +37,8 @@ Name *shrName;      // ">>"
 
 Name *incrName;     // "++"
 Name *decrName;     // "--"
+Name *incrPostName; // "_++"
+Name *decrPostName; // "_--"
 
 // Represents the absence of type information
 INode *voidType;

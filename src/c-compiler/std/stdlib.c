@@ -111,11 +111,13 @@ void stdlibInit() {
 
     incrName = nametblFind("++", 2);
     decrName = nametblFind("--", 2);
+    incrPostName = nametblFind("+++", 3);
+    decrPostName = nametblFind("---", 3);
+
+    voidType = (INode*)newVoidNode();
 
     keywordInit();
 	stdPermInit();
     stdAllocInit();
 	stdNbrInit();
-
-	voidType = (INode*)newVoidNode();
 }
