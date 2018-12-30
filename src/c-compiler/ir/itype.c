@@ -93,6 +93,8 @@ int itypeMatches(INode *totype, INode *fromtype) {
         // Fall through is intentional here...
 	case IntNbrTag:
 	case FloatNbrTag:
+        if (totype == (INode*)boolType)
+            return 2;
 		if (totype->tag != fromtype->tag)
 			return isNbr(totype) && isNbr(fromtype) ? 4 : 0;
 		return ((NbrNode *)totype)->bits > ((NbrNode *)fromtype)->bits ? 2 : 3;
