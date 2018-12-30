@@ -4,8 +4,8 @@ set(CMAKE_BINARY_DIR ${CMAKE_SOURCE_DIR}/bin)
 set(EXECUTABLE_OUTPUT_PATH ${CMAKE_SOURCE_DIR})
 set(LIBRARY_OUTPUT_PATH ${CMAKE_BINARY_DIR})
 
-SET (LLVM_INCLUDE "/usr/lib/llvm-5.0/include")
-SET (LLVM_LIB     "/usr/lib/llvm-5.0/lib/libLLVM-5.0.so")
+SET (LLVM_INCLUDE "/usr/lib/llvm-7/include")
+SET (LLVM_LIB     "/usr/lib/llvm-7/lib/libLLVM.so")
 
 include_directories(
     "${CMAKE_SOURCE_DIR}/src/c-compiler/"
