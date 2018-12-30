@@ -95,7 +95,7 @@ int itypeMatches(INode *totype, INode *fromtype) {
 	case FloatNbrTag:
 		if (totype->tag != fromtype->tag)
 			return isNbr(totype) && isNbr(fromtype) ? 4 : 0;
-		return ((NbrNode *)totype)->bits > ((NbrNode *)fromtype)->bits ? 3 : 2;
+		return ((NbrNode *)totype)->bits > ((NbrNode *)fromtype)->bits ? 2 : 3;
 
 	default:
 		return itypeIsSame(totype, fromtype);
