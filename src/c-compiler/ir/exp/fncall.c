@@ -129,8 +129,14 @@ void fnCallLowerMethod(FnCallNode *callnode) {
     if (callnode->flags & FlagLvalOp) {
         if (foundnode)
             callnode->flags ^= FlagLvalOp;  // Turn off flag: found method handles the rest of it just fine
-        else
+        else {
             foundnode = imethnodesFind(&((IMethodNode*)methtype)->methprops, fnCallOpEqMethod(methsym));
+            // + cannot substitute for += unless it returns same type it takes
+            FnSigNode *methsig = (FnSigNode *)foundnode->vtype;
+            if (!itypeMatches(methsig->rettype, ((ITypedNode*)nodesGet(methsig->parms, 0))->vtype)) {
+                errorMsgNode((INode*)callnode, ErrorNoMeth, "Cannot find valid operator method that returns same type that it takes.");
+            }
+        }
     }
     if (!foundnode
         || !(foundnode->tag == FnDclTag || foundnode->tag == VarDclTag)
@@ -340,6 +346,17 @@ void fnCallPass(PassState *pstate, FnCallNode **nodep) {
 
 // Do data flow analysis for fncall node (only real function calls)
 void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
+    // For += implemented via +, ensure self is a mutable lval
+    if ((*nodep)->flags & FlagLvalOp) {
+        int16_t scope;
+        INode *perm;
+        INamedNode *lval = assignLvalInfo(nodesGet((*nodep)->args, 0), &perm, &scope);
+        if (!lval || (MayWrite & permGetFlags(perm))) {
+            errorMsgNode((INode*)*nodep, ErrorNoMut, "Can only operate on a valid and mutable lval to the left.");
+        }
+    }
+
+    // Handle function call aliasing
     size_t svAliasPos = flowAliasPushNew(1); // Alias reference arguments
     FnCallNode *node = *nodep;
     INode **argsp;
