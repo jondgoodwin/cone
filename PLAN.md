@@ -1,4 +1,4 @@
-# Cone - 0.1.0 -> 0.2.0 Project Plan (as of December 8, 2018)
+# Cone - 0.1.0 -> 0.2.0 Project Plan (as of January 1, 2019)
 
 ## Current Capability
 
@@ -15,10 +15,8 @@ examples demonstrate some of the language's currently supported features.
 
 ## Current Focus: Add more core features
 
-In order to support more complex 3D programs, we need:
+In order to support more complex 3D programs, additionally basic language features are being added next:
 
-- const variables
-- import packages
 - each blocks
 - initializer and finalizer methods
 - builder blocks
@@ -40,7 +38,8 @@ This table illustrates the current status of Cone's key features:
 | | include | import |
 | **Operators** | +, -, *, /, % | |
 | | == < <= > >= | ~~ |
-| | = : << | +=, *=, etc. |
+| | = : << | |
+| | ++, --, +=, *=, etc. | |
 | | . () [] * & | |
 | | & \| ^ ~ | |
 | | and, or, not/! | |
