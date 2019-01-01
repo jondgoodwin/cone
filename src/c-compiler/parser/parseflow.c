@@ -100,6 +100,15 @@ INode *parseWhile(ParseState *parse) {
 	return (INode *)wnode;
 }
 
+// Parse each block
+INode *parseEach(ParseState *parse) {
+    WhileNode *wnode = newWhileNode();
+    lexNextToken();
+    wnode->condexp = parseSimpleExpr(parse);
+    wnode->blk = parseBlock(parse);
+    return (INode *)wnode;
+}
+
 // Parse a block of statements/expressions
 INode *parseBlock(ParseState *parse) {
 	BlockNode *blk = newBlockNode();
@@ -129,7 +138,11 @@ INode *parseBlock(ParseState *parse) {
 			nodesAdd(&blk->stmts, parseWhile(parse));
 			break;
 
-		case BreakToken:
+        case EachToken:
+            nodesAdd(&blk->stmts, parseEach(parse));
+            break;
+
+        case BreakToken:
 		{
 			INode *node = (INode*)newBreakNode(BreakTag);
 			lexNextToken();

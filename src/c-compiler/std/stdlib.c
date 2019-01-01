@@ -35,6 +35,7 @@ void keywordInit() {
 	keyAdd("elif", ElifToken);
 	keyAdd("else", ElseToken);
 	keyAdd("while", WhileToken);
+    keyAdd("each", EachToken);
 	keyAdd("break", BreakToken);
 	keyAdd("continue", ContinueToken);
 	keyAdd("not", NotToken);
