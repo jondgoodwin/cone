@@ -129,6 +129,7 @@ enum TokenTypes {
 	ElseToken,		// 'else'
 	WhileToken,		// 'while'
     EachToken,      // 'each'
+    InToken,        // 'in'
 	BreakToken,		// 'break'
 	ContinueToken,	// 'continue'
 	AsToken,		// 'as'

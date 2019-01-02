@@ -102,11 +102,37 @@ INode *parseWhile(ParseState *parse) {
 
 // Parse each block
 INode *parseEach(ParseState *parse) {
+    BlockNode *bnode = newBlockNode();
     WhileNode *wnode = newWhileNode();
+
+    // Obtain all the parsed pieces
     lexNextToken();
-    wnode->condexp = parseSimpleExpr(parse);
+    if (!lexIsToken(IdentToken)) {
+        errorMsgLex(ErrorNoVar, "Missing variable name");
+        return (INode *)bnode;
+    }
+    Name* elemname = lex->val.ident;
+    lexNextToken();
+    if (!lexIsToken(InToken)) {
+        errorMsgLex(ErrorBadTok, "Missing 'in'");
+        return (INode *)bnode;
+    }
+    lexNextToken();
+    INode *iter = parseSimpleExpr(parse);
     wnode->blk = parseBlock(parse);
-    return (INode *)wnode;
+
+    // Assemble logic for a range
+    if (iter->tag != FnCallTag) {
+        ;
+    }
+    FnCallNode *itercmp = (FnCallNode *)iter;
+    VarDclNode *elemdcl = newVarDclNode(elemname, VarDclTag, (INode*)mutPerm);
+    elemdcl->value = itercmp->objfn;
+    nodesAdd(&((BlockNode*)bnode)->stmts, (INode*)elemdcl);
+    itercmp->objfn = (INode *)newFnCallOpname((INode *)newNameUseNode(elemname), incrPostName, 0);
+    wnode->condexp = iter;
+    nodesAdd(&bnode->stmts, (INode*)wnode);
+    return (INode *)bnode;
 }
 
 // Parse a block of statements/expressions
