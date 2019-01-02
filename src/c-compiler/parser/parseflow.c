@@ -119,19 +119,40 @@ INode *parseEach(ParseState *parse) {
     }
     lexNextToken();
     INode *iter = parseSimpleExpr(parse);
+    INode *step = NULL;
+    int isrange = 0;
+    if (iter->tag == FnCallTag && ((FnCallNode*)iter)->methprop) {
+        Name *methodnm = ((NameUseNode*)((FnCallNode*)iter)->methprop)->namesym;
+        if (methodnm == leName || methodnm == ltName)
+            isrange = 1;
+        else if (methodnm == geName || methodnm == gtName)
+            isrange = -1;
+    }
+    if (isrange && lexIsToken(StepToken)) {
+        lexNextToken();
+        step = parseSimpleExpr(parse);
+    }
     wnode->blk = parseBlock(parse);
 
-    // Assemble logic for a range
-    if (iter->tag != FnCallTag) {
-        ;
+    // Assemble logic for a range (with optional step), e.g.:
+    // { mut elemname = initial; while elemname <= iterend { ... ; elemname += step}}
+    if (isrange) {
+        FnCallNode *itercmp = (FnCallNode *)iter;
+        VarDclNode *elemdcl = newVarDclNode(elemname, VarDclTag, (INode*)mutPerm);
+        elemdcl->value = itercmp->objfn;
+        nodesAdd(&((BlockNode*)bnode)->stmts, (INode*)elemdcl);
+        if (step) {
+            itercmp->objfn = (INode*)newNameUseNode(elemname);
+            FnCallNode *pluseq = newFnCallOpname((INode*)newNameUseNode(elemname), plusEqName, 1);
+            pluseq->flags |= FlagLvalOp;
+            nodesAdd(&pluseq->args, step);
+            nodesAdd(&((BlockNode*)wnode->blk)->stmts, (INode*)pluseq);
+        }
+        else 
+            itercmp->objfn = (INode *)newFnCallOpname((INode *)newNameUseNode(elemname), isrange > 0? incrPostName : decrPostName, 0);
+        wnode->condexp = iter;
+        nodesAdd(&bnode->stmts, (INode*)wnode);
     }
-    FnCallNode *itercmp = (FnCallNode *)iter;
-    VarDclNode *elemdcl = newVarDclNode(elemname, VarDclTag, (INode*)mutPerm);
-    elemdcl->value = itercmp->objfn;
-    nodesAdd(&((BlockNode*)bnode)->stmts, (INode*)elemdcl);
-    itercmp->objfn = (INode *)newFnCallOpname((INode *)newNameUseNode(elemname), incrPostName, 0);
-    wnode->condexp = iter;
-    nodesAdd(&bnode->stmts, (INode*)wnode);
     return (INode *)bnode;
 }
 

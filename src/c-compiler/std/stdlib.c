@@ -37,6 +37,7 @@ void keywordInit() {
 	keyAdd("while", WhileToken);
     keyAdd("each", EachToken);
     keyAdd("in", InToken);
+    keyAdd("step", StepToken);
 	keyAdd("break", BreakToken);
 	keyAdd("continue", ContinueToken);
 	keyAdd("not", NotToken);
@@ -115,6 +116,11 @@ void stdlibInit() {
     decrName = nametblFind("--", 2);
     incrPostName = nametblFind("+++", 3);
     decrPostName = nametblFind("---", 3);
+
+    leName = nametblFind("<=", 2);
+    ltName = nametblFind("<", 1);
+    geName = nametblFind(">=", 2);
+    gtName = nametblFind(">", 1);
 
     voidType = (INode*)newVoidNode();
 

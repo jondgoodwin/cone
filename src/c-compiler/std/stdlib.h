@@ -40,6 +40,11 @@ Name *decrName;     // "--"
 Name *incrPostName; // "_++"
 Name *decrPostName; // "_--"
 
+Name *leName;       // "<="
+Name *ltName;       // "<"
+Name *geName;       // ">="
+Name *gtName;       // ">"
+
 // Represents the absence of type information
 INode *voidType;
 
