@@ -37,7 +37,7 @@ void keywordInit() {
 	keyAdd("while", WhileToken);
     keyAdd("each", EachToken);
     keyAdd("in", InToken);
-    keyAdd("step", StepToken);
+    keyAdd("by", ByToken);
 	keyAdd("break", BreakToken);
 	keyAdd("continue", ContinueToken);
 	keyAdd("not", NotToken);

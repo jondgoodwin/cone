@@ -130,7 +130,7 @@ enum TokenTypes {
 	WhileToken,		// 'while'
     EachToken,      // 'each'
     InToken,        // 'in'
-    StepToken,      // 'step'
+    ByToken,      // 'step'
 	BreakToken,		// 'break'
 	ContinueToken,	// 'continue'
 	AsToken,		// 'as'

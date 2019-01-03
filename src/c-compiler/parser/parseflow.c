@@ -16,6 +16,8 @@
 
 #include <stdio.h>
 
+INode *parseEach(ParseState *parse, INode *blk);
+
 // Parse control flow suffixes
 INode *parseSuffix(ParseState *parse, INode *node) {
     // Translate 'this' block sugar to declaring 'this' at start of block
@@ -25,7 +27,7 @@ INode *parseSuffix(ParseState *parse, INode *node) {
         nodesInsert(&blk->stmts, var, 0);
         return (INode *)blk;
     }
-	while (lexIsToken(IfToken) || lexIsToken(WhileToken)) {
+	while (lexIsToken(IfToken) || lexIsToken(WhileToken) || lexIsToken(EachToken)) {
 		if (lexIsToken(IfToken)) {
 			BlockNode *blk;
 			IfNode *ifnode = newIfNode();
@@ -35,7 +37,7 @@ INode *parseSuffix(ParseState *parse, INode *node) {
 			nodesAdd(&blk->stmts, node);
 			node = (INode*)ifnode;
 		}
-		else {
+		else if (lexIsToken(WhileToken)) {
 			BlockNode *blk;
 			WhileNode *wnode = newWhileNode();
 			lexNextToken();
@@ -44,6 +46,11 @@ INode *parseSuffix(ParseState *parse, INode *node) {
 			nodesAdd(&blk->stmts, node);
 			node = (INode*)wnode;
 		}
+        else if (lexIsToken(EachToken)) {
+            BlockNode *blk = newBlockNode();
+            nodesAdd(&blk->stmts, node);
+            node = parseEach(parse, (INode *)blk);
+        }
 	}
 	parseSemi();
 	return node;
@@ -101,7 +108,7 @@ INode *parseWhile(ParseState *parse) {
 }
 
 // Parse each block
-INode *parseEach(ParseState *parse) {
+INode *parseEach(ParseState *parse, INode *blk) {
     BlockNode *bnode = newBlockNode();
     WhileNode *wnode = newWhileNode();
 
@@ -128,11 +135,13 @@ INode *parseEach(ParseState *parse) {
         else if (methodnm == geName || methodnm == gtName)
             isrange = -1;
     }
-    if (isrange && lexIsToken(StepToken)) {
+    if (isrange && lexIsToken(ByToken)) {
         lexNextToken();
         step = parseSimpleExpr(parse);
     }
-    wnode->blk = parseBlock(parse);
+    if (blk == NULL)
+        blk = parseBlock(parse);
+    wnode->blk = blk;
 
     // Assemble logic for a range (with optional step), e.g.:
     // { mut elemname = initial; while elemname <= iterend { ... ; elemname += step}}
@@ -186,7 +195,7 @@ INode *parseBlock(ParseState *parse) {
 			break;
 
         case EachToken:
-            nodesAdd(&blk->stmts, parseEach(parse));
+            nodesAdd(&blk->stmts, parseEach(parse, NULL));
             break;
 
         case BreakToken:
