@@ -26,7 +26,10 @@ FnDclNode *newFnDclNode(Name *namesym, uint16_t flags, INode *type, INode *val) 
 
 // Serialize a function node
 void fnDclPrint(FnDclNode *name) {
-	inodeFprint("fn %s ", &name->namesym->namestr);
+    if (name->namesym)
+        inodeFprint("fn %s", &name->namesym->namestr);
+    else
+        inodeFprint("fn");
 	inodePrintNode(name->vtype);
 	if (name->value) {
 		inodeFprint(" {} ");

@@ -464,6 +464,10 @@ LLVMValueRef genlPtrIndex(GenState *gen, LLVMValueRef ptr, INode *index) {
 // Generate an lval-ish pointer to the value (vs. load)
 LLVMValueRef genlAddr(GenState *gen, INode *lval) {
     switch (lval->tag) {
+    case FnDclTag:
+        genlGloFnName(gen, (FnDclNode *)lval);
+        genlFn(gen, (FnDclNode*)lval);
+        return ((FnDclNode*)lval)->llvmvar;
     case VarNameUseTag:
         return ((VarDclNode*)((NameUseNode *)lval)->dclnode)->llvmvar;
     case DerefTag:

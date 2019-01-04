@@ -31,13 +31,15 @@ INamedNode *addrGetVarPerm(INode *lval, INode **lvalperm) {
 
     // A variable or named function node
     case VarNameUseTag:
+        lval = (INode *)((NameUseNode *)lval)->dclnode;
+        // Fallthrough is expected here
+    case FnDclTag:
     {
-        INamedNode *lvalvar = ((NameUseNode *)lval)->dclnode;
-        if (lvalvar->tag == VarDclTag)
-            *lvalperm = ((VarDclNode *)lvalvar)->perm;
+        if (lval->tag == VarDclTag)
+            *lvalperm = ((VarDclNode *)lval)->perm;
         else
             *lvalperm = (INode*)opaqPerm; // Function
-        return lvalvar;
+        return (INamedNode *)lval;
     }
 
     // An array element (obj[2]) or property access (obj.prop)
@@ -82,8 +84,10 @@ void addrTypeCheckBorrow(AddrNode *node, RefNode *reftype) {
         // lval is the variable or variable sub-structure we want to get a reference to
         // From it, obtain variable we are borrowing from and actual/calculated permission
         INamedNode *lvalvar = addrGetVarPerm(lval, &lvalperm);
-        if (lvalvar == NULL)
+        if (lvalvar == NULL) {
+            reftype->pvtype = (INode*)voidType;  // Just to avoid a compiler crash later
             return;
+        }
         // Set lifetime of reference to borrowed variable's lifetime
         if (lvalvar->tag == VarDclTag) {
             reftype->scope = ((VarDclNode*)lvalvar)->scope;

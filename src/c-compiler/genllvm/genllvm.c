@@ -97,6 +97,8 @@ void genlNamePrefix(INamedNode *name, char *workbuf) {
 // Create and return globally unique name, mangled as necessary
 char *genlGlobalName(INamedNode *name) {
 	// Is mangling necessary? Only if we need namespace qualifier or method might be overloaded
+    if (name->namesym == NULL)
+        return "";
 	if ((name->flags & FlagExtern) || !(name->tag == FnDclTag && (name->flags & FlagMethProp)) && !name->owner->namesym)
 		return &name->namesym->namestr;
 
@@ -131,7 +133,7 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
     // Add function to the module
     if (glofn->value == NULL || glofn->value->tag != IntrinsicTag) {
         char *manglednm = genlGlobalName((INamedNode*)glofn);
-        char *fnname = &glofn->namesym->namestr;
+        char *fnname = glofn->namesym? &glofn->namesym->namestr : "";
         glofn->llvmvar = LLVMAddFunction(gen->module, manglednm, genlType(gen, glofn->vtype));
         if (glofn->flags & FlagSystem) {
             LLVMSetFunctionCallConv(glofn->llvmvar, LLVMX86StdcallCallConv);

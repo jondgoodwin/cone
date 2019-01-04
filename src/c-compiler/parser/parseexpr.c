@@ -207,25 +207,33 @@ INode *parsePostfix(ParseState *parse) {
 // Parse an address term - current token is '&'
 INode *parseAddr(ParseState *parse) {
 	AddrNode *anode = newAddrNode();
-	lexNextToken();
+    RefNode *reftype = newRefNode();  // Type for address node
+    anode->vtype = (INode *)reftype;
+    reftype->pvtype = NULL;     // Type inference will correct this
+    reftype->alloc = voidType;
 
-	// Address node's value type is a partially populated reference type
-	RefNode *reftype = newRefNode();
-	reftype->pvtype = NULL;     // Type inference will correct this
-    if (lexIsToken(IdentToken)
-        && lex->val.ident->node && lex->val.ident->node->tag == AllocTag) {
-        reftype->alloc = (INode*)lex->val.ident->node;
-        lexNextToken();
-        reftype->perm = parsePerm(uniPerm);
+    lexNextToken();
+    if (lexIsToken(FnToken)) {
+        // Address to anonymous function/closure
+        anode->exp = parseFn(parse, 0, ParseMayAnon | ParseMayImpl);
+        reftype->perm = (INode*)opaqPerm;
     }
     else {
-        reftype->alloc = voidType;
-        reftype->perm = parsePerm(NULL);
-    }
-	anode->vtype = (INode *)reftype;
+        // Allocated reference
+        if (lexIsToken(IdentToken)
+            && lex->val.ident->node && lex->val.ident->node->tag == AllocTag) {
+            reftype->alloc = (INode*)lex->val.ident->node;
+            lexNextToken();
+            reftype->perm = parsePerm(uniPerm);
+        }
+        // Borrowed reference
+        else {
+            reftype->perm = parsePerm(NULL);
+        }
 
-	// A value or constructor
-	anode->exp = parseTerm(parse);
+	    // A value or constructor
+	    anode->exp = parseTerm(parse);
+    }
 
 	return (INode *)anode;
 }
