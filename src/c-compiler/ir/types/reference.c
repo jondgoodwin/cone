@@ -81,7 +81,9 @@ int refMatches(RefNode *to, RefNode *from) {
 	if (0 == permMatches(to->perm, from->perm)
 		|| (to->alloc != from->alloc && to->alloc != voidType))
 		return 0;
-	return itypeMatches(to->pvtype, from->pvtype) == 1 ? 1 : 2;
+    if ((to->flags & FlagArrSlice) != (from->flags & FlagArrSlice))
+        return 0;
+    return itypeMatches(to->pvtype, from->pvtype) == 1 ? 1 : 2;
 }
 
 // If self needs to auto-ref or auto-deref, make sure it legally can

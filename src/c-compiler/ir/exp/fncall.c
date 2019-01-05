@@ -63,7 +63,8 @@ void fnCallFinalizeArgs(FnCallNode *node) {
     for (nodesFor(node->args, cnt, argsp)) {
         // Auto-convert string literal to borrowed reference
         INode *parmtype = iexpGetTypeDcl(*parmp);
-        if ((*argsp)->tag == StrLitTag && (parmtype->tag == RefTag || parmtype->tag == PtrTag)) {
+        if ((*argsp)->tag == StrLitTag 
+            && ((parmtype->tag == RefTag && parmtype->flags & FlagArrSlice) || parmtype->tag == PtrTag)) {
             RefNode *addrtype = newRefNode();
             addrtype->perm = (INode*)immPerm;
             addrtype->alloc = voidType;

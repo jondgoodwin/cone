@@ -42,6 +42,8 @@ void fnDclPrint(FnDclNode *name) {
 // Syntactic sugar: Turn last statement implicit returns into explicit returns
 void fnImplicitReturn(INode *rettype, BlockNode *blk) {
 	INode *laststmt;
+    if (blk->stmts->used == 0)
+        nodesAdd(&blk->stmts, (INode*)newReturnNode());
 	laststmt = nodesLast(blk->stmts);
 	if (rettype == voidType) {
 		if (laststmt->tag != ReturnTag)
