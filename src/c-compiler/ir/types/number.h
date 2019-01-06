@@ -14,7 +14,6 @@ typedef struct NbrNode {
 	unsigned char bits;	// e.g., int32 uses 32 bits
 } NbrNode;
 
-NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits);
 void nbrTypePrint(NbrNode *node);
 int isNbr(INode *node);
 

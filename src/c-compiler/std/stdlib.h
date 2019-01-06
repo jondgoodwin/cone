@@ -40,6 +40,8 @@ Name *decrName;     // "--"
 Name *incrPostName; // "_++"
 Name *decrPostName; // "_--"
 
+Name *eqName;       // "=="
+Name *neName;       // "!="
 Name *leName;       // "<="
 Name *ltName;       // "<"
 Name *geName;       // ">="
@@ -74,6 +76,8 @@ NbrNode *u64Type;
 NbrNode *usizeType;
 NbrNode *f32Type;
 NbrNode *f64Type;
+
+IMethodNode *ptrType;
 
 void stdlibInit();
 void keywordInit();

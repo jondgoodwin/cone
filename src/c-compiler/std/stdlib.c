@@ -117,6 +117,8 @@ void stdlibInit() {
     incrPostName = nametblFind("+++", 3);
     decrPostName = nametblFind("---", 3);
 
+    eqName = nametblFind("==", 2);
+    neName = nametblFind("!=", 2);
     leName = nametblFind("<=", 2);
     ltName = nametblFind("<", 1);
     geName = nametblFind(">=", 2);

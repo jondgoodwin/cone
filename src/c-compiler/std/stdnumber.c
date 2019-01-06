@@ -13,25 +13,6 @@
 
 Nodes *nbrsubtypes;
 
-// Declare built-in number types and their names
-void stdNbrInit() {
-	nbrsubtypes = newNodes(8);	// Needs 'copy' etc.
-
-	boolType = newNbrTypeNode("Bool", UintNbrTag, 1);
-	u8Type = newNbrTypeNode("u8", UintNbrTag, 8);
-	u16Type = newNbrTypeNode("u16", UintNbrTag, 16);
-	u32Type = newNbrTypeNode("u32", UintNbrTag, 32);
-	u64Type = newNbrTypeNode("u64", UintNbrTag, 64);
-	usizeType = newNbrTypeNode("usize", UintNbrTag, 0);
-	i8Type = newNbrTypeNode("i8", IntNbrTag, 8);
-	i16Type = newNbrTypeNode("i16", IntNbrTag, 16);
-	i32Type = newNbrTypeNode("i32", IntNbrTag, 32);
-	i64Type = newNbrTypeNode("i64", IntNbrTag, 64);
-	isizeType = newNbrTypeNode("isize", UintNbrTag, 0);
-	f32Type = newNbrTypeNode("f32", FloatNbrTag, 32);
-	f64Type = newNbrTypeNode("f64", FloatNbrTag, 64);
-}
-
 // Create a new primitive number type node
 NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
     Name *namesym = nametblFind(name, strlen(name));
@@ -132,4 +113,71 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
 	imethnodesAddFn(&nbrtypenode->methprops, newFnDclNode(opsym, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(GeIntrinsic)));
 
 	return nbrtypenode;
+}
+
+// Create a ptr type for holding valid pointer methods
+IMethodNode *newPtrTypeMethods() {
+
+    // Create the node for this pointer type
+    IMethodNode *ptrtypenode;
+    newNode(ptrtypenode, IMethodNode, PtrTag);
+    ptrtypenode->vtype = NULL;
+    ptrtypenode->owner = NULL;
+    ptrtypenode->namesym = NULL;
+    ptrtypenode->llvmtype = NULL;
+    imethnodesInit(&ptrtypenode->methprops, 16);
+    ptrtypenode->subtypes = nbrsubtypes;
+
+    PtrNode *voidptr = newPtrNode();
+    voidptr->pvtype = voidType;
+
+    // Create function signature for unary methods for this type
+    FnSigNode *unarysig = newFnSigNode();
+    unarysig->rettype = (INode*)voidptr;
+    Name *self = nametblFind("self", 4);
+    nodesAdd(&unarysig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidptr, newPermUseNode((INamedNode*)immPerm), NULL));
+
+    // Create function signature for binary methods for this type
+    FnSigNode *binsig = newFnSigNode();
+    binsig->rettype = (INode*)voidptr;
+    nodesAdd(&binsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidptr, newPermUseNode((INamedNode*)immPerm), NULL));
+    Name *parm2 = nametblFind("b", 1);
+    nodesAdd(&binsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)voidptr, newPermUseNode((INamedNode*)immPerm), NULL));
+
+    // Create function signature for comparison methods for this type
+    FnSigNode *cmpsig = newFnSigNode();
+    cmpsig->rettype = (INode*)boolType;
+    nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidptr, newPermUseNode((INamedNode*)immPerm), NULL));
+    nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)voidptr, newPermUseNode((INamedNode*)immPerm), NULL));
+
+    // Comparison operators
+    imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(eqName, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(EqIntrinsic)));
+    imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(neName, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(NeIntrinsic)));
+    imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(ltName, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(LtIntrinsic)));
+    imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(leName, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(LeIntrinsic)));
+    imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(gtName, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(GtIntrinsic)));
+    imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(geName, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(GeIntrinsic)));
+
+    return ptrtypenode;
+}
+
+// Declare built-in number types and their names
+void stdNbrInit() {
+    nbrsubtypes = newNodes(8);	// Needs 'copy' etc.
+
+    boolType = newNbrTypeNode("Bool", UintNbrTag, 1);
+    u8Type = newNbrTypeNode("u8", UintNbrTag, 8);
+    u16Type = newNbrTypeNode("u16", UintNbrTag, 16);
+    u32Type = newNbrTypeNode("u32", UintNbrTag, 32);
+    u64Type = newNbrTypeNode("u64", UintNbrTag, 64);
+    usizeType = newNbrTypeNode("usize", UintNbrTag, 0);
+    i8Type = newNbrTypeNode("i8", IntNbrTag, 8);
+    i16Type = newNbrTypeNode("i16", IntNbrTag, 16);
+    i32Type = newNbrTypeNode("i32", IntNbrTag, 32);
+    i64Type = newNbrTypeNode("i64", IntNbrTag, 64);
+    isizeType = newNbrTypeNode("isize", UintNbrTag, 0);
+    f32Type = newNbrTypeNode("f32", FloatNbrTag, 32);
+    f64Type = newNbrTypeNode("f64", FloatNbrTag, 64);
+
+    ptrType = newPtrTypeMethods();
 }
