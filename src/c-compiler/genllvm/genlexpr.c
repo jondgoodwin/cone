@@ -139,10 +139,22 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
 	}
 	case IntrinsicTag: {
 		NbrNode *nbrtype = (NbrNode *)iexpGetTypeDcl(*nodesNodes(fncall->args));
-		uint16_t nbrtag = nbrtype->tag;
+		uint16_t typetag = nbrtype->tag;
 
+        // Pointer intrinsics
+        if (typetag == PtrTag) {
+            switch (((IntrinsicNode *)fndcl->value)->intrinsicFn) {
+                // Comparison
+            case EqIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntEQ, fnargs[0], fnargs[1], ""); break;
+            case NeIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntNE, fnargs[0], fnargs[1], ""); break;
+            case LtIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntULT, fnargs[0], fnargs[1], ""); break;
+            case LeIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntULE, fnargs[0], fnargs[1], ""); break;
+            case GtIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntUGT, fnargs[0], fnargs[1], ""); break;
+            case GeIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntUGE, fnargs[0], fnargs[1], ""); break;
+            }
+        }
 		// Floating point intrinsics
-		if (nbrtag == FloatNbrTag) {
+		else if (typetag == FloatNbrTag) {
 			switch (((IntrinsicNode *)fndcl->value)->intrinsicFn) {
 			case NegIntrinsic: fncallret = LLVMBuildFNeg(gen->builder, fnargs[0], ""); break;
 			case AddIntrinsic: fncallret = LLVMBuildFAdd(gen->builder, fnargs[0], fnargs[1], ""); break;
@@ -211,7 +223,7 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
             }
             break;
 		}
-		// Integer intrinsics
+		// Signed and Unsigned Integer intrinsics
 		else {
             switch (((IntrinsicNode *)fndcl->value)->intrinsicFn) {
 
@@ -221,14 +233,14 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
             case SubIntrinsic: fncallret = LLVMBuildSub(gen->builder, fnargs[0], fnargs[1], ""); break;
             case MulIntrinsic: fncallret = LLVMBuildMul(gen->builder, fnargs[0], fnargs[1], ""); break;
             case DivIntrinsic:
-                if (nbrtag == IntNbrTag) {
+                if (typetag == IntNbrTag) {
                     fncallret = LLVMBuildSDiv(gen->builder, fnargs[0], fnargs[1], ""); break;
                 }
                 else {
                     fncallret = LLVMBuildUDiv(gen->builder, fnargs[0], fnargs[1], ""); break;
                 }
             case RemIntrinsic:
-                if (nbrtag == IntNbrTag) {
+                if (typetag == IntNbrTag) {
                     fncallret = LLVMBuildSRem(gen->builder, fnargs[0], fnargs[1], ""); break;
                 }
                 else {
@@ -271,28 +283,28 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
             case EqIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntEQ, fnargs[0], fnargs[1], ""); break;
             case NeIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntNE, fnargs[0], fnargs[1], ""); break;
             case LtIntrinsic:
-                if (nbrtag == IntNbrTag) {
+                if (typetag == IntNbrTag) {
                     fncallret = LLVMBuildICmp(gen->builder, LLVMIntSLT, fnargs[0], fnargs[1], ""); break;
                 }
                 else {
                     fncallret = LLVMBuildICmp(gen->builder, LLVMIntULT, fnargs[0], fnargs[1], ""); break;
                 }
             case LeIntrinsic:
-                if (nbrtag == IntNbrTag) {
+                if (typetag == IntNbrTag) {
                     fncallret = LLVMBuildICmp(gen->builder, LLVMIntSLE, fnargs[0], fnargs[1], ""); break;
                 }
                 else {
                     fncallret = LLVMBuildICmp(gen->builder, LLVMIntULE, fnargs[0], fnargs[1], ""); break;
                 }
             case GtIntrinsic:
-                if (nbrtag == IntNbrTag) {
+                if (typetag == IntNbrTag) {
                     fncallret = LLVMBuildICmp(gen->builder, LLVMIntSGT, fnargs[0], fnargs[1], ""); break;
                 }
                 else {
                     fncallret = LLVMBuildICmp(gen->builder, LLVMIntUGT, fnargs[0], fnargs[1], ""); break;
                 }
             case GeIntrinsic:
-                if (nbrtag == IntNbrTag) {
+                if (typetag == IntNbrTag) {
                     fncallret = LLVMBuildICmp(gen->builder, LLVMIntSGE, fnargs[0], fnargs[1], ""); break;
                 }
                 else {
@@ -306,7 +318,7 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
 			case XorIntrinsic: fncallret = LLVMBuildXor(gen->builder, fnargs[0], fnargs[1], ""); break;
 			case ShlIntrinsic: fncallret = LLVMBuildShl(gen->builder, fnargs[0], fnargs[1], ""); break;
 			case ShrIntrinsic:
-                if (nbrtag == IntNbrTag) {
+                if (typetag == IntNbrTag) {
                     fncallret = LLVMBuildAShr(gen->builder, fnargs[0], fnargs[1], ""); break;
                 }
                 else {
