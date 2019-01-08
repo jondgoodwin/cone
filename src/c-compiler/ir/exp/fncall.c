@@ -108,12 +108,79 @@ Name *fnCallOpEqMethod(Name *opeqname) {
     return NULL;
 }
 
+// Find matching pointer method (pointer arithmetic or comparison)
+// Lower the node to a function call (objfn+args)
+void fnCallLowerPtrMethod(FnCallNode *callnode) {
+    INode *obj = callnode->objfn;
+    IMethodNode *methtype = ptrType;
+    Name *methsym = callnode->methprop->namesym;
+    INamedNode *foundnode = imethnodesFind(&methtype->methprops, methsym);
+    if (!foundnode) { // It can only be a method
+        errorMsgNode((INode*)callnode, ErrorNoMeth, "Object's type has no method named %s.", &methsym->namestr);
+        callnode->vtype = methtype; // Pretend on a vtype
+        return;
+    }
+
+    // For a method call, make sure object is specified as first argument
+    if (callnode->args == NULL) {
+        callnode->args = newNodes(1);
+    }
+    nodesInsert(&callnode->args, callnode->objfn, 0);
+
+    FnDclNode *bestmethod = NULL;
+    Nodes *args = callnode->args;
+    for (FnDclNode *methnode = (FnDclNode *)foundnode; methnode; methnode = methnode->nextnode) {
+        Nodes *parms = ((FnSigNode *)methnode->vtype)->parms;
+        if (parms->used != args->used)
+            continue;
+        // Unary method is an instant match
+        // Binary methods need to ensure acceptable second argument
+        if (args->used > 1) {
+            INode *parm1type = iexpGetTypeDcl(nodesGet(parms, 1));
+            INode *arg1type = iexpGetTypeDcl(nodesGet(args, 1));
+            if (parm1type->tag == PtrTag) {
+                // When pointers are involved, we want to ensure they are the same type
+                if (1 != itypeMatches(arg1type, iexpGetTypeDcl(nodesGet(args, 0))))
+                    continue;
+            }
+            else {
+                if (!iexpCoerces(parm1type, &nodesGet(args, 1)))
+                    continue;
+            }
+        }
+        bestmethod = methnode;
+        break;
+    }
+    if (bestmethod == NULL) {
+        errorMsgNode((INode*)callnode, ErrorNoMeth, "No method's parameter types match the call's arguments.");
+        callnode->vtype = ((ITypedNode*)obj)->vtype; // make up a vtype
+        return;
+    }
+
+    // Do autoref or autoderef self, as necessary
+    refAutoRef(&nodesGet(callnode->args, 0), ((ITypedNode*)nodesGet(((FnSigNode*)bestmethod->vtype)->parms, 0))->vtype);
+
+    // Re-purpose method's name use node into objfn, so name refers to found method
+    NameUseNode *methodrefnode = callnode->methprop;
+    methodrefnode->tag = VarNameUseTag;
+    methodrefnode->dclnode = (INamedNode*)bestmethod;
+    methodrefnode->vtype = bestmethod->vtype;
+
+    callnode->objfn = (INode*)methodrefnode;
+    callnode->methprop = NULL;
+    callnode->vtype = ((FnSigNode*)bestmethod->vtype)->rettype;
+}
+
 // Find best property or method (across overloaded methods whose type matches argument types)
 // Then lower the node to a function call (objfn+args) or property access (objfn+methprop) accordingly
 void fnCallLowerMethod(FnCallNode *callnode) {
     INode *obj = callnode->objfn;
     INode *methtype = iexpGetTypeDcl(obj);
-    if (methtype->tag == RefTag || methtype->tag == PtrTag)
+    if (methtype->tag == PtrTag) {
+        fnCallLowerPtrMethod(callnode);
+        return;
+    }
+    if (methtype->tag == RefTag)
         methtype = iexpGetTypeDcl(((PtrNode *)methtype)->pvtype);
     if (!isMethodType(methtype)) {
         errorMsgNode((INode*)callnode, ErrorNoMeth, "Object's type does not support methods or properties.");

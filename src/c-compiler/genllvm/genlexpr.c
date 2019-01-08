@@ -221,7 +221,6 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
                 break;
             }
             }
-            break;
 		}
 		// Signed and Unsigned Integer intrinsics
 		else {
@@ -325,8 +324,8 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
                     fncallret = LLVMBuildLShr(gen->builder, fnargs[0], fnargs[1], ""); break;
                 }
 			}
-            break;
 		}
+        break;
 	}
 	default:
 		assert(0 && "invalid type of function call");
