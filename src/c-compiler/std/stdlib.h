@@ -78,6 +78,7 @@ NbrNode *f32Type;
 NbrNode *f64Type;
 
 IMethodNode *ptrType;
+IMethodNode *refType;
 
 void stdlibInit();
 void keywordInit();

@@ -161,6 +161,54 @@ IMethodNode *newPtrTypeMethods() {
     return ptrtypenode;
 }
 
+// Create a ptr type for holding valid pointer methods
+IMethodNode *newRefTypeMethods() {
+
+    // Create the node for this pointer type
+    IMethodNode *reftypenode;
+    newNode(reftypenode, IMethodNode, RefTag);
+    reftypenode->vtype = NULL;
+    reftypenode->owner = NULL;
+    reftypenode->namesym = NULL;
+    reftypenode->llvmtype = NULL;
+    imethnodesInit(&reftypenode->methprops, 8);
+    reftypenode->subtypes = nbrsubtypes;
+
+    RefNode *voidref = newRefNode();
+    voidref->alloc = voidType;
+    voidref->perm = (INode*)constPerm;
+    voidref->pvtype = voidType;
+
+    // Create function signature for unary methods for this type
+    FnSigNode *unarysig = newFnSigNode();
+    unarysig->rettype = (INode*)voidref;
+    Name *self = nametblFind("self", 4);
+    nodesAdd(&unarysig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidref, newPermUseNode((INamedNode*)immPerm), NULL));
+
+    // Create function signature for binary methods for this type
+    FnSigNode *binsig = newFnSigNode();
+    binsig->rettype = (INode*)voidref;
+    nodesAdd(&binsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidref, newPermUseNode((INamedNode*)immPerm), NULL));
+    Name *parm2 = nametblFind("b", 1);
+    nodesAdd(&binsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)voidref, newPermUseNode((INamedNode*)immPerm), NULL));
+
+    // Create function signature for comparison methods for this type
+    FnSigNode *cmpsig = newFnSigNode();
+    cmpsig->rettype = (INode*)boolType;
+    nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidref, newPermUseNode((INamedNode*)immPerm), NULL));
+    nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)voidref, newPermUseNode((INamedNode*)immPerm), NULL));
+
+    // Comparison operators
+    imethnodesAddFn(&reftypenode->methprops, newFnDclNode(eqName, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(EqIntrinsic)));
+    imethnodesAddFn(&reftypenode->methprops, newFnDclNode(neName, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(NeIntrinsic)));
+    imethnodesAddFn(&reftypenode->methprops, newFnDclNode(ltName, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(LtIntrinsic)));
+    imethnodesAddFn(&reftypenode->methprops, newFnDclNode(leName, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(LeIntrinsic)));
+    imethnodesAddFn(&reftypenode->methprops, newFnDclNode(gtName, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(GtIntrinsic)));
+    imethnodesAddFn(&reftypenode->methprops, newFnDclNode(geName, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(GeIntrinsic)));
+
+    return reftypenode;
+}
+
 // Declare built-in number types and their names
 void stdNbrInit() {
     nbrsubtypes = newNodes(8);	// Needs 'copy' etc.
@@ -180,4 +228,5 @@ void stdNbrInit() {
     f64Type = newNbrTypeNode("f64", FloatNbrTag, 64);
 
     ptrType = newPtrTypeMethods();
+    refType = newRefTypeMethods();
 }
