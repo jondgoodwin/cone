@@ -156,7 +156,11 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
             {
                 LLVMValueRef val = LLVMBuildLoad(gen->builder, fnargs[0], "");
                 LLVMTypeRef selftype = genlType(gen, pvtype);
-                if (pvtype->tag == FloatNbrTag)
+                if (pvtype->tag == PtrTag || pvtype->tag == RefTag) {
+                    LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), 1, 0);
+                    fncallret = LLVMBuildGEP(gen->builder, val, &constone, 1, "");
+                }
+                else if (pvtype->tag == FloatNbrTag)
                     fncallret = LLVMBuildFAdd(gen->builder, val, LLVMConstReal(selftype, 1.), "");
                 else
                     fncallret = LLVMBuildAdd(gen->builder, val, LLVMConstInt(selftype, 1, 0), "");
@@ -167,7 +171,11 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
             {
                 LLVMValueRef val = LLVMBuildLoad(gen->builder, fnargs[0], "");
                 LLVMTypeRef selftype = genlType(gen, pvtype);
-                if (pvtype->tag == FloatNbrTag)
+                if (pvtype->tag == PtrTag || pvtype->tag == RefTag) {
+                    LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), -1, 1);
+                    fncallret = LLVMBuildGEP(gen->builder, val, &constone, 1, "");
+                }
+                else if (pvtype->tag == FloatNbrTag)
                     fncallret = LLVMBuildFSub(gen->builder, val, LLVMConstReal(selftype, 1.), "");
                 else
                     fncallret = LLVMBuildSub(gen->builder, val, LLVMConstInt(selftype, 1, 0), "");
@@ -179,7 +187,11 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
                 fncallret = LLVMBuildLoad(gen->builder, fnargs[0], "");
                 LLVMTypeRef selftype = genlType(gen, pvtype);
                 LLVMValueRef val;
-                if (pvtype->tag == FloatNbrTag)
+                if (pvtype->tag == PtrTag || pvtype->tag == RefTag) {
+                    LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), 1, 0);
+                    val = LLVMBuildGEP(gen->builder, fncallret, &constone, 1, "");
+                }
+                else if (pvtype->tag == FloatNbrTag)
                     val = LLVMBuildFAdd(gen->builder, fncallret, LLVMConstReal(selftype, 1.), "");
                 else
                     val = LLVMBuildAdd(gen->builder, fncallret, LLVMConstInt(selftype, 1, 0), "");
@@ -191,7 +203,11 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
                 fncallret = LLVMBuildLoad(gen->builder, fnargs[0], "");
                 LLVMTypeRef selftype = genlType(gen, pvtype);
                 LLVMValueRef val;
-                if (pvtype->tag == FloatNbrTag)
+                if (pvtype->tag == PtrTag || pvtype->tag == RefTag) {
+                    LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), -1, 1);
+                    val = LLVMBuildGEP(gen->builder, fncallret, &constone, 1, "");
+                }
+                else if (pvtype->tag == FloatNbrTag)
                     val = LLVMBuildFSub(gen->builder, fncallret, LLVMConstReal(selftype, 1.), "");
                 else
                     val = LLVMBuildSub(gen->builder, fncallret, LLVMConstInt(selftype, 1, 0), "");

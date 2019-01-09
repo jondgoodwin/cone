@@ -112,7 +112,7 @@ Name *fnCallOpEqMethod(Name *opeqname) {
 // Lower the node to a function call (objfn+args)
 int fnCallLowerPtrMethod(FnCallNode *callnode) {
     INode *obj = callnode->objfn;
-    IMethodNode *methtype = iexpGetTypeDcl(obj)->tag == PtrTag? ptrType : refType;
+    IMethodNode *methtype = iexpGetTypeDcl(obj)->tag == PtrTag ? ptrType : refType;
     Name *methsym = callnode->methprop->namesym;
     INamedNode *foundnode = imethnodesFind(&methtype->methprops, methsym);
     if (!foundnode) { // It can only be a method
@@ -159,8 +159,17 @@ int fnCallLowerPtrMethod(FnCallNode *callnode) {
         return 1;
     }
 
-    // Do autoref or autoderef self, as necessary
-    refAutoRef(&nodesGet(callnode->args, 0), ((ITypedNode*)nodesGet(((FnSigNode*)bestmethod->vtype)->parms, 0))->vtype);
+    // Autoref self, as necessary
+    INode **selfp = &nodesGet(callnode->args, 0);
+    INode *selftype = iexpGetTypeDcl(*selfp);
+    INode *totype = itypeGetTypeDcl(((ITypedNode*)nodesGet(((FnSigNode*)bestmethod->vtype)->parms, 0))->vtype);
+    if (selftype->tag != RefTag && totype->tag == RefTag) {
+        RefNode *selfref = newRefNode();
+        selfref->pvtype = selftype;
+        selfref->alloc = voidType;
+        selfref->perm = newPermUseNode((INamedNode*)mutPerm);
+        addrAuto(selfp, (INode *)selfref);
+    }
 
     // Re-purpose method's name use node into objfn, so name refers to found method
     NameUseNode *methodrefnode = callnode->methprop;

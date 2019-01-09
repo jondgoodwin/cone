@@ -158,6 +158,21 @@ IMethodNode *newPtrTypeMethods() {
     imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(gtName, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(GtIntrinsic)));
     imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(geName, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(GeIntrinsic)));
 
+    // Create function signature for unary ref methods for ++, --
+    FnSigNode *mutrefsig = newFnSigNode();
+    mutrefsig->rettype = (INode*)voidptr;
+    RefNode *mutref = newRefNode();
+    mutref->pvtype = (INode*)voidptr;
+    mutref->alloc = voidType;
+    mutref->perm = newPermUseNode((INamedNode*)mutPerm);
+    Name *una1 = nametblFind("a", 1);
+    nodesAdd(&mutrefsig->parms, (INode *)newVarDclFull(una1, VarDclTag, (INode*)mutref, newPermUseNode((INamedNode*)immPerm), NULL));
+
+    imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(incrName, FlagMethProp, (INode *)mutrefsig, (INode *)newIntrinsicNode(IncrIntrinsic)));
+    imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(decrName, FlagMethProp, (INode *)mutrefsig, (INode *)newIntrinsicNode(DecrIntrinsic)));
+    imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(incrPostName, FlagMethProp, (INode *)mutrefsig, (INode *)newIntrinsicNode(IncrPostIntrinsic)));
+    imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(decrPostName, FlagMethProp, (INode *)mutrefsig, (INode *)newIntrinsicNode(DecrPostIntrinsic)));
+
     return ptrtypenode;
 }
 
