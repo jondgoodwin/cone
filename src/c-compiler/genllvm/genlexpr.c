@@ -214,6 +214,34 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
                 LLVMBuildStore(gen->builder, val, fnargs[0]);
                 break;
             }
+            case AddIntrinsic: fncallret = LLVMBuildGEP(gen->builder, fnargs[0], &fnargs[1], 1, ""); break;
+            case SubIntrinsic: {
+                LLVMValueRef negval = LLVMBuildNeg(gen->builder, fnargs[1], "");
+                fncallret = LLVMBuildGEP(gen->builder, fnargs[0], &negval, 1, ""); 
+                break;
+            }
+            case DiffIntrinsic: {
+                LLVMTypeRef usize = genlType(gen, (INode*)usizeType);
+                LLVMValueRef selfint = LLVMBuildPtrToInt(gen->builder, fnargs[0], usize, "");
+                LLVMValueRef argint = LLVMBuildPtrToInt(gen->builder, fnargs[1], usize, "");
+                fncallret = LLVMBuildSub(gen->builder, selfint, argint, "");
+                break;
+            }
+            case AddEqIntrinsic: {
+                LLVMValueRef val = LLVMBuildLoad(gen->builder, fnargs[0], "");
+                fncallret = LLVMBuildGEP(gen->builder, val, &fnargs[1], 1, "");
+                LLVMBuildStore(gen->builder, fncallret, fnargs[0]);
+                break;
+
+            }
+            case SubEqIntrinsic: {
+                LLVMValueRef val = LLVMBuildLoad(gen->builder, fnargs[0], "");
+                LLVMValueRef negval = LLVMBuildNeg(gen->builder, fnargs[1], "");
+                fncallret = LLVMBuildGEP(gen->builder, val, &negval, 1, "");
+                LLVMBuildStore(gen->builder, fncallret, fnargs[0]);
+                break;
+
+            }
             }
         }
 		// Floating point intrinsics

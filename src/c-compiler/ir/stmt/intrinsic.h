@@ -21,6 +21,9 @@ enum IntrinsicFn {
     DecrIntrinsic,
     IncrPostIntrinsic,
     DecrPostIntrinsic,
+    DiffIntrinsic,  // subtract two pointers
+    AddEqIntrinsic,
+    SubEqIntrinsic,
 
 	// Comparison
 	EqIntrinsic,

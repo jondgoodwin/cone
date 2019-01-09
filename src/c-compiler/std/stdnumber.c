@@ -137,17 +137,11 @@ IMethodNode *newPtrTypeMethods() {
     Name *self = nametblFind("self", 4);
     nodesAdd(&unarysig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidptr, newPermUseNode((INamedNode*)immPerm), NULL));
 
-    // Create function signature for binary methods for this type
-    FnSigNode *binsig = newFnSigNode();
-    binsig->rettype = (INode*)voidptr;
-    nodesAdd(&binsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidptr, newPermUseNode((INamedNode*)immPerm), NULL));
-    Name *parm2 = nametblFind("b", 1);
-    nodesAdd(&binsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)voidptr, newPermUseNode((INamedNode*)immPerm), NULL));
-
     // Create function signature for comparison methods for this type
     FnSigNode *cmpsig = newFnSigNode();
     cmpsig->rettype = (INode*)boolType;
     nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidptr, newPermUseNode((INamedNode*)immPerm), NULL));
+    Name *parm2 = nametblFind("b", 1);
     nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)voidptr, newPermUseNode((INamedNode*)immPerm), NULL));
 
     // Comparison operators
@@ -165,13 +159,38 @@ IMethodNode *newPtrTypeMethods() {
     mutref->pvtype = (INode*)voidptr;
     mutref->alloc = voidType;
     mutref->perm = newPermUseNode((INamedNode*)mutPerm);
-    Name *una1 = nametblFind("a", 1);
-    nodesAdd(&mutrefsig->parms, (INode *)newVarDclFull(una1, VarDclTag, (INode*)mutref, newPermUseNode((INamedNode*)immPerm), NULL));
+    nodesAdd(&mutrefsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)mutref, newPermUseNode((INamedNode*)immPerm), NULL));
 
     imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(incrName, FlagMethProp, (INode *)mutrefsig, (INode *)newIntrinsicNode(IncrIntrinsic)));
     imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(decrName, FlagMethProp, (INode *)mutrefsig, (INode *)newIntrinsicNode(DecrIntrinsic)));
     imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(incrPostName, FlagMethProp, (INode *)mutrefsig, (INode *)newIntrinsicNode(IncrPostIntrinsic)));
     imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(decrPostName, FlagMethProp, (INode *)mutrefsig, (INode *)newIntrinsicNode(DecrPostIntrinsic)));
+
+    // Create function signature for + - binary methods for this type
+    FnSigNode *binsig = newFnSigNode();
+    binsig->rettype = (INode*)voidptr;
+    nodesAdd(&binsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidptr, newPermUseNode((INamedNode*)immPerm), NULL));
+    nodesAdd(&binsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)usizeType, newPermUseNode((INamedNode*)immPerm), NULL));
+
+    imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(plusName, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(AddIntrinsic)));
+    imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(minusName, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(SubIntrinsic)));
+
+    // Create function signature for difference between two pointers
+    FnSigNode *diffsig = newFnSigNode();
+    diffsig->rettype = (INode*)usizeType;
+    nodesAdd(&diffsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidptr, newPermUseNode((INamedNode*)immPerm), NULL));
+    nodesAdd(&diffsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)voidptr, newPermUseNode((INamedNode*)immPerm), NULL));
+
+    imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(minusName, FlagMethProp, (INode *)diffsig, (INode *)newIntrinsicNode(DiffIntrinsic)));
+
+    // Create function signature for binary methods for this type
+    FnSigNode *bineqsig = newFnSigNode();
+    bineqsig->rettype = (INode*)voidptr;
+    nodesAdd(&bineqsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)mutref, newPermUseNode((INamedNode*)immPerm), NULL));
+    nodesAdd(&bineqsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)usizeType, newPermUseNode((INamedNode*)immPerm), NULL));
+
+    imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(plusEqName, FlagMethProp, (INode *)bineqsig, (INode *)newIntrinsicNode(AddEqIntrinsic)));
+    imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(minusEqName, FlagMethProp, (INode *)bineqsig, (INode *)newIntrinsicNode(SubEqIntrinsic)));
 
     return ptrtypenode;
 }

@@ -159,6 +159,8 @@ int fnCallLowerPtrMethod(FnCallNode *callnode) {
         return 1;
     }
 
+    callnode->flags &= (uint16_t)0xFFFF - FlagLvalOp; // Ptrs implement +=,-=
+
     // Autoref self, as necessary
     INode **selfp = &nodesGet(callnode->args, 0);
     INode *selftype = iexpGetTypeDcl(*selfp);
