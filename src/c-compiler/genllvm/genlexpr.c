@@ -224,7 +224,9 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
                 LLVMTypeRef usize = genlType(gen, (INode*)usizeType);
                 LLVMValueRef selfint = LLVMBuildPtrToInt(gen->builder, fnargs[0], usize, "");
                 LLVMValueRef argint = LLVMBuildPtrToInt(gen->builder, fnargs[1], usize, "");
-                fncallret = LLVMBuildSub(gen->builder, selfint, argint, "");
+                LLVMValueRef diff = LLVMBuildSub(gen->builder, selfint, argint, "");
+                long long valsize = LLVMABISizeOfType(gen->datalayout, genlType(gen, ((PtrNode*)nbrtype)->pvtype));
+                fncallret = LLVMBuildSDiv(gen->builder, diff, LLVMConstInt(genlType(gen, (INode*)usizeType), valsize, 1), "");
                 break;
             }
             case AddEqIntrinsic: {
