@@ -183,7 +183,7 @@ int fnCallLowerPtrMethod(FnCallNode *callnode) {
     callnode->methprop = NULL;
     callnode->vtype = ((FnSigNode*)bestmethod->vtype)->rettype;
     if (callnode->vtype->tag == PtrTag)
-        callnode->vtype = ((ITypedNode*)*selfp)->vtype;  // Generic substitution for T
+        callnode->vtype = selftype;  // Generic substitution for T
     return 1;
 }
 
