@@ -106,14 +106,14 @@ void genlDealiasOwn(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
 // Add to the counter of an rc allocated reference
 void genlRcCounter(GenState *gen, LLVMValueRef ref, long long amount, RefNode *refnode) {
     // Point backwards to ref counter
-    LLVMTypeRef usize = genlType(gen, (INode*)usizeType);
-    LLVMValueRef intptr = LLVMBuildPtrToInt(gen->builder, ref, usize, "");
-    LLVMValueRef cntintptr = LLVMBuildSub(gen->builder, intptr, genlSizeof(gen, (INode*)usizeType), "");
     LLVMTypeRef ptrusize = LLVMPointerType(genlType(gen, (INode*)usizeType), 0);
-    LLVMValueRef cntptr = LLVMBuildIntToPtr(gen->builder, cntintptr, ptrusize, "refcount");
+    LLVMValueRef refcast = LLVMBuildBitCast(gen->builder, ref, ptrusize, "");
+    LLVMValueRef minusone = LLVMConstInt(genlType(gen, (INode*)usizeType), -1, 1);
+    LLVMValueRef cntptr = LLVMBuildGEP(gen->builder, refcast, &minusone, 1, "");
 
     // Increment ref counter
     LLVMValueRef cnt = LLVMBuildLoad(gen->builder, cntptr, "");
+    LLVMTypeRef usize = genlType(gen, (INode*)usizeType);
     LLVMValueRef newcnt = LLVMBuildAdd(gen->builder, cnt, LLVMConstInt(usize, amount, 0), "");
     LLVMBuildStore(gen->builder, newcnt, cntptr);
 
