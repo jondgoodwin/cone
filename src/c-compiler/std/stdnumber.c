@@ -131,15 +131,10 @@ IMethodNode *newPtrTypeMethods() {
     PtrNode *voidptr = newPtrNode();
     voidptr->pvtype = voidType;
 
-    // Create function signature for unary methods for this type
-    FnSigNode *unarysig = newFnSigNode();
-    unarysig->rettype = (INode*)voidptr;
-    Name *self = nametblFind("self", 4);
-    nodesAdd(&unarysig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidptr, newPermUseNode((INamedNode*)immPerm), NULL));
-
-    // Create function signature for comparison methods for this type
+    // Create function signature for comparison methods
     FnSigNode *cmpsig = newFnSigNode();
     cmpsig->rettype = (INode*)boolType;
+    Name *self = nametblFind("self", 4);
     nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidptr, newPermUseNode((INamedNode*)immPerm), NULL));
     Name *parm2 = nametblFind("b", 1);
     nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)voidptr, newPermUseNode((INamedNode*)immPerm), NULL));
@@ -166,7 +161,7 @@ IMethodNode *newPtrTypeMethods() {
     imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(incrPostName, FlagMethProp, (INode *)mutrefsig, (INode *)newIntrinsicNode(IncrPostIntrinsic)));
     imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(decrPostName, FlagMethProp, (INode *)mutrefsig, (INode *)newIntrinsicNode(DecrPostIntrinsic)));
 
-    // Create function signature for + - binary methods for this type
+    // Create function signature for + - binary methods
     FnSigNode *binsig = newFnSigNode();
     binsig->rettype = (INode*)voidptr;
     nodesAdd(&binsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidptr, newPermUseNode((INamedNode*)immPerm), NULL));
@@ -183,7 +178,7 @@ IMethodNode *newPtrTypeMethods() {
 
     imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(minusName, FlagMethProp, (INode *)diffsig, (INode *)newIntrinsicNode(DiffIntrinsic)));
 
-    // Create function signature for binary methods for this type
+    // Create function signature for += and -= methods
     FnSigNode *bineqsig = newFnSigNode();
     bineqsig->rettype = (INode*)voidptr;
     nodesAdd(&bineqsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)mutref, newPermUseNode((INamedNode*)immPerm), NULL));
