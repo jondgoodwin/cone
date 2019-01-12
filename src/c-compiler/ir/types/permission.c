@@ -11,16 +11,16 @@
 
 // Create a new permission declaration node
 PermNode *newPermDclNode(Name *namesym, uint16_t flags) {
-	PermNode *node;
-	newNode(node, PermNode, PermTag);
+    PermNode *node;
+    newNode(node, PermNode, PermTag);
     node->vtype = NULL;
     node->owner = NULL;
     node->namesym = namesym;
     node->llvmtype = NULL;
     imethnodesInit(&node->methprops, 1); // May not need members for static types
-	node->subtypes = newNodes(8);	// build appropriate list using the permission's flags
-	node->flags = flags;
-	return node;
+    node->subtypes = newNodes(8);    // build appropriate list using the permission's flags
+    node->flags = flags;
+    return node;
 }
 
 // Create a new permission use node
@@ -63,12 +63,12 @@ int permMatches(INode *ito, INode *ifrom) {
     PermNode *to = (PermNode *)((ito->tag == TypeNameUseTag)? (INode*)((NameUseNode*)ito)->dclnode : ito);
     assert(from->tag == PermTag && to->tag == PermTag);
     if (to==from || to==opaqPerm)
-		return 1;
-	if (from == uniPerm &&
-		(to == constPerm || to == mutPerm || to == immPerm || to == mut1Perm))
-		return 1;
-	if (to == constPerm &&
-		(from == mutPerm || from == immPerm || from == mut1Perm))
-		return 1;
-	return 0;
+        return 1;
+    if (from == uniPerm &&
+        (to == constPerm || to == mutPerm || to == immPerm || to == mut1Perm))
+        return 1;
+    if (to == constPerm &&
+        (from == mutPerm || from == immPerm || from == mut1Perm))
+        return 1;
+    return 0;
 }

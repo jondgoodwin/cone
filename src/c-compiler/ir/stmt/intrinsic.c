@@ -9,15 +9,15 @@
 
 // Create a new intrinsic node
 IntrinsicNode *newIntrinsicNode(int16_t intrinsic) {
-	IntrinsicNode *intrinsicNode;
-	newNode(intrinsicNode, IntrinsicNode, IntrinsicTag);
-	intrinsicNode->intrinsicFn = intrinsic;
-	return intrinsicNode;
+    IntrinsicNode *intrinsicNode;
+    newNode(intrinsicNode, IntrinsicNode, IntrinsicTag);
+    intrinsicNode->intrinsicFn = intrinsic;
+    return intrinsicNode;
 }
 
 // Serialize an intrinsic node
 void intrinsicPrint(IntrinsicNode *intrinsicNode) {
-	inodeFprint("intrinsic function");
+    inodeFprint("intrinsic function");
 }
 
 // Check the intrinsic node

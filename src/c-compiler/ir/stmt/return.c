@@ -9,17 +9,17 @@
 
 // Create a new return statement node
 ReturnNode *newReturnNode() {
-	ReturnNode *node;
-	newNode(node, ReturnNode, ReturnTag);
-	node->exp = voidType;
+    ReturnNode *node;
+    newNode(node, ReturnNode, ReturnTag);
+    node->exp = voidType;
     node->dealias = NULL;
-	return node;
+    return node;
 }
 
 // Serialize a return statement
 void returnPrint(ReturnNode *node) {
-	inodeFprint(node->tag == BlockRetTag? "blockret " : "return ");
-	inodePrintNode(node->exp);
+    inodeFprint(node->tag == BlockRetTag? "blockret " : "return ");
+    inodePrintNode(node->exp);
 }
 
 // Semantic analysis for return statements
@@ -27,15 +27,15 @@ void returnPrint(ReturnNode *node) {
 // - Block ensures that return can only appear at end of block
 // - NameDcl turns fn block's final expression into an implicit return
 void returnPass(PassState *pstate, ReturnNode *node) {
-	// If we are returning the value from an 'if', recursively strip out any of its path's redudant 'return's
-	if (pstate->pass == TypeCheck && node->exp->tag == IfTag)
-		ifRemoveReturns((IfNode*)(node->exp));
+    // If we are returning the value from an 'if', recursively strip out any of its path's redudant 'return's
+    if (pstate->pass == TypeCheck && node->exp->tag == IfTag)
+        ifRemoveReturns((IfNode*)(node->exp));
 
-	// Process the return's expression
-	inodeWalk(pstate, &node->exp);
+    // Process the return's expression
+    inodeWalk(pstate, &node->exp);
 
-	// Ensure the vtype of the expression can be coerced to the function's declared return type
-	if (pstate->pass == TypeCheck) {
+    // Ensure the vtype of the expression can be coerced to the function's declared return type
+    if (pstate->pass == TypeCheck) {
         if (pstate->fnsig->rettype->tag == TTupleTag) {
             if (node->exp->tag != VTupleTag) {
                 errorMsgNode(node->exp, ErrorBadTerm, "Not enough return values");
@@ -62,5 +62,5 @@ void returnPass(PassState *pstate, ReturnNode *node) {
                 errorMsgNode((INode*)pstate->fnsig->rettype, ErrorInvType, "This is the declared function's return type");
             }
         }
-	}
+    }
 }

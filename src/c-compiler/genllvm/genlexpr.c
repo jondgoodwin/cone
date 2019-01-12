@@ -27,87 +27,87 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval);
 
 // Generate an if statement
 LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
-	LLVMBasicBlockRef endif;
-	LLVMBasicBlockRef nextif;
-	INode *vtype;
-	int i, phicnt, count;
-	LLVMValueRef *blkvals;
-	LLVMBasicBlockRef *blks;
-	INode **nodesp;
-	uint32_t cnt;
+    LLVMBasicBlockRef endif;
+    LLVMBasicBlockRef nextif;
+    INode *vtype;
+    int i, phicnt, count;
+    LLVMValueRef *blkvals;
+    LLVMBasicBlockRef *blks;
+    INode **nodesp;
+    uint32_t cnt;
 
-	// If we are returning a value in each block, set up space for phi info
-	vtype = iexpGetTypeDcl(ifnode->vtype);
-	count = ifnode->condblk->used / 2;
-	i = phicnt = 0;
-	if (vtype != voidType) {
-		blkvals = memAllocBlk(count * sizeof(LLVMValueRef));
-		blks = memAllocBlk(count * sizeof(LLVMBasicBlockRef));
-	}
+    // If we are returning a value in each block, set up space for phi info
+    vtype = iexpGetTypeDcl(ifnode->vtype);
+    count = ifnode->condblk->used / 2;
+    i = phicnt = 0;
+    if (vtype != voidType) {
+        blkvals = memAllocBlk(count * sizeof(LLVMValueRef));
+        blks = memAllocBlk(count * sizeof(LLVMBasicBlockRef));
+    }
 
-	endif = genlInsertBlock(gen, "endif");
-	LLVMBasicBlockRef nextMemBlk;
-	for (nodesFor(ifnode->condblk, cnt, nodesp)) {
+    endif = genlInsertBlock(gen, "endif");
+    LLVMBasicBlockRef nextMemBlk;
+    for (nodesFor(ifnode->condblk, cnt, nodesp)) {
 
-		// Set up block for next condition (or endif if this is last condition)
-		if (i + 1 < count)
-			nextif = nextMemBlk = LLVMInsertBasicBlockInContext(gen->context, endif, "ifnext");
-		else
-			nextif = endif;
+        // Set up block for next condition (or endif if this is last condition)
+        if (i + 1 < count)
+            nextif = nextMemBlk = LLVMInsertBasicBlockInContext(gen->context, endif, "ifnext");
+        else
+            nextif = endif;
 
-		// Set up this condition's statement block and then conditionally jump to it or next condition
-		LLVMBasicBlockRef ablk;
-		if (*nodesp != voidType) {
-			ablk = LLVMInsertBasicBlockInContext(gen->context, nextif, "ifblk");
-			LLVMBuildCondBr(gen->builder, genlExpr(gen, *nodesp), ablk, nextif);
-			LLVMPositionBuilderAtEnd(gen->builder, ablk);
-		}
-		else
-			ablk = nextMemBlk;
+        // Set up this condition's statement block and then conditionally jump to it or next condition
+        LLVMBasicBlockRef ablk;
+        if (*nodesp != voidType) {
+            ablk = LLVMInsertBasicBlockInContext(gen->context, nextif, "ifblk");
+            LLVMBuildCondBr(gen->builder, genlExpr(gen, *nodesp), ablk, nextif);
+            LLVMPositionBuilderAtEnd(gen->builder, ablk);
+        }
+        else
+            ablk = nextMemBlk;
 
-		// Generate this condition's code block, along with jump to endif if block does not end with a return
-		LLVMValueRef blkval = genlBlock(gen, (BlockNode*)*(nodesp + 1));
-		int16_t lastStmttype = nodesLast(((BlockNode*)*(nodesp + 1))->stmts)->tag;
-		if (lastStmttype != ReturnTag && lastStmttype != BreakTag && lastStmttype != ContinueTag) {
-			LLVMBuildBr(gen->builder, endif);
-			// Remember value and block if needed for phi merge
-			if (vtype != voidType) {
-				blkvals[phicnt] = blkval;
-				blks[phicnt++] = ablk;
-			}
-		}
+        // Generate this condition's code block, along with jump to endif if block does not end with a return
+        LLVMValueRef blkval = genlBlock(gen, (BlockNode*)*(nodesp + 1));
+        int16_t lastStmttype = nodesLast(((BlockNode*)*(nodesp + 1))->stmts)->tag;
+        if (lastStmttype != ReturnTag && lastStmttype != BreakTag && lastStmttype != ContinueTag) {
+            LLVMBuildBr(gen->builder, endif);
+            // Remember value and block if needed for phi merge
+            if (vtype != voidType) {
+                blkvals[phicnt] = blkval;
+                blks[phicnt++] = ablk;
+            }
+        }
 
-		LLVMPositionBuilderAtEnd(gen->builder, nextif);
-		cnt--; nodesp++; i++;
-	}
+        LLVMPositionBuilderAtEnd(gen->builder, nextif);
+        cnt--; nodesp++; i++;
+    }
 
-	// Merge point at end of if. Create merged phi value if needed.
-	if (phicnt) {
-		LLVMValueRef phi = LLVMBuildPhi(gen->builder, genlType(gen, vtype), "ifval");
-		LLVMAddIncoming(phi, blkvals, blks, phicnt);
-		return phi;
-	}
+    // Merge point at end of if. Create merged phi value if needed.
+    if (phicnt) {
+        LLVMValueRef phi = LLVMBuildPhi(gen->builder, genlType(gen, vtype), "ifval");
+        LLVMAddIncoming(phi, blkvals, blks, phicnt);
+        return phi;
+    }
 
-	return NULL;
+    return NULL;
 }
 
 // Obtain value ref for a specific named intrinsic function
 LLVMValueRef genlGetIntrinsicFn(GenState *gen, char *fnname, NameUseNode *fnuse) {
-	LLVMValueRef fn = LLVMGetNamedFunction(gen->module, fnname);
-	if (!fn)
-		fn = LLVMAddFunction(gen->module, fnname, genlType(gen, iexpGetTypeDcl((INode*)fnuse->dclnode)));
-	return fn;
+    LLVMValueRef fn = LLVMGetNamedFunction(gen->module, fnname);
+    if (!fn)
+        fn = LLVMAddFunction(gen->module, fnname, genlType(gen, iexpGetTypeDcl((INode*)fnuse->dclnode)));
+    return fn;
 }
 
 // Generate a function call, including special intrinsics
 LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
 
-	// Get Valuerefs for all the parameters to pass to the function
+    // Get Valuerefs for all the parameters to pass to the function
     LLVMValueRef fncallret = NULL;
-	LLVMValueRef *fnargs = (LLVMValueRef*)memAllocBlk(fncall->args->used * sizeof(LLVMValueRef*));
-	LLVMValueRef *fnarg = fnargs;
-	INode **nodesp;
-	uint32_t cnt;
+    LLVMValueRef *fnargs = (LLVMValueRef*)memAllocBlk(fncall->args->used * sizeof(LLVMValueRef*));
+    LLVMValueRef *fnarg = fnargs;
+    INode **nodesp;
+    uint32_t cnt;
     int getselfaddr = fncall->flags & FlagLvalOp;
     LLVMValueRef selfaddr;
     for (nodesFor(fncall->args, cnt, nodesp)) {
@@ -121,25 +121,25 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
             *fnarg++ = genlExpr(gen, *nodesp);
     }
 
-	// Handle call when we have a pointer to a function
-	if (fncall->objfn->tag == DerefTag) {
-		return LLVMBuildCall(gen->builder, genlExpr(gen, ((DerefNode*)fncall->objfn)->exp), fnargs, fncall->args->used, "");
-	}
+    // Handle call when we have a pointer to a function
+    if (fncall->objfn->tag == DerefTag) {
+        return LLVMBuildCall(gen->builder, genlExpr(gen, ((DerefNode*)fncall->objfn)->exp), fnargs, fncall->args->used, "");
+    }
 
-	// A function call may be to an intrinsic, or to program-defined code
-	NameUseNode *fnuse = (NameUseNode *)fncall->objfn;
+    // A function call may be to an intrinsic, or to program-defined code
+    NameUseNode *fnuse = (NameUseNode *)fncall->objfn;
     FnDclNode *fndcl = (FnDclNode *)fnuse->dclnode;
-	switch (fndcl->value? fndcl->value->tag : BlockTag) {
-	case BlockTag: {
+    switch (fndcl->value? fndcl->value->tag : BlockTag) {
+    case BlockTag: {
         fncallret = LLVMBuildCall(gen->builder, fndcl->llvmvar, fnargs, fncall->args->used, "");
         if (fndcl->flags & FlagSystem) {
             LLVMSetInstructionCallConv(fncallret, LLVMX86StdcallCallConv);
         }
         break;
-	}
-	case IntrinsicTag: {
-		NbrNode *nbrtype = (NbrNode *)iexpGetTypeDcl(*nodesNodes(fncall->args));
-		uint16_t typetag = nbrtype->tag;
+    }
+    case IntrinsicTag: {
+        NbrNode *nbrtype = (NbrNode *)iexpGetTypeDcl(*nodesNodes(fncall->args));
+        uint16_t typetag = nbrtype->tag;
 
         // Pointer intrinsics
         if (typetag == PtrTag || typetag == RefTag) {
@@ -246,29 +246,29 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
             }
             }
         }
-		// Floating point intrinsics
-		else if (typetag == FloatNbrTag) {
-			switch (((IntrinsicNode *)fndcl->value)->intrinsicFn) {
-			case NegIntrinsic: fncallret = LLVMBuildFNeg(gen->builder, fnargs[0], ""); break;
-			case AddIntrinsic: fncallret = LLVMBuildFAdd(gen->builder, fnargs[0], fnargs[1], ""); break;
-			case SubIntrinsic: fncallret = LLVMBuildFSub(gen->builder, fnargs[0], fnargs[1], ""); break;
-			case MulIntrinsic: fncallret = LLVMBuildFMul(gen->builder, fnargs[0], fnargs[1], ""); break;
-			case DivIntrinsic: fncallret = LLVMBuildFDiv(gen->builder, fnargs[0], fnargs[1], ""); break;
-			case RemIntrinsic: fncallret = LLVMBuildFRem(gen->builder, fnargs[0], fnargs[1], ""); break;
+        // Floating point intrinsics
+        else if (typetag == FloatNbrTag) {
+            switch (((IntrinsicNode *)fndcl->value)->intrinsicFn) {
+            case NegIntrinsic: fncallret = LLVMBuildFNeg(gen->builder, fnargs[0], ""); break;
+            case AddIntrinsic: fncallret = LLVMBuildFAdd(gen->builder, fnargs[0], fnargs[1], ""); break;
+            case SubIntrinsic: fncallret = LLVMBuildFSub(gen->builder, fnargs[0], fnargs[1], ""); break;
+            case MulIntrinsic: fncallret = LLVMBuildFMul(gen->builder, fnargs[0], fnargs[1], ""); break;
+            case DivIntrinsic: fncallret = LLVMBuildFDiv(gen->builder, fnargs[0], fnargs[1], ""); break;
+            case RemIntrinsic: fncallret = LLVMBuildFRem(gen->builder, fnargs[0], fnargs[1], ""); break;
             // Comparison
-			case EqIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealOEQ, fnargs[0], fnargs[1], ""); break;
-			case NeIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealONE, fnargs[0], fnargs[1], ""); break;
-			case LtIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealOLT, fnargs[0], fnargs[1], ""); break;
-			case LeIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealOLE, fnargs[0], fnargs[1], ""); break;
-			case GtIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealOGT, fnargs[0], fnargs[1], ""); break;
-			case GeIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealOGE, fnargs[0], fnargs[1], ""); break;
-			// Intrinsic functions
-			case SqrtIntrinsic: 
-			{
-				char *fnname = nbrtype->bits == 32 ? "llvm.sqrt.f32" : "llvm.sqrt.f64";
+            case EqIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealOEQ, fnargs[0], fnargs[1], ""); break;
+            case NeIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealONE, fnargs[0], fnargs[1], ""); break;
+            case LtIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealOLT, fnargs[0], fnargs[1], ""); break;
+            case LeIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealOLE, fnargs[0], fnargs[1], ""); break;
+            case GtIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealOGT, fnargs[0], fnargs[1], ""); break;
+            case GeIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealOGE, fnargs[0], fnargs[1], ""); break;
+            // Intrinsic functions
+            case SqrtIntrinsic: 
+            {
+                char *fnname = nbrtype->bits == 32 ? "llvm.sqrt.f32" : "llvm.sqrt.f64";
                 fncallret = LLVMBuildCall(gen->builder, genlGetIntrinsicFn(gen, fnname, fnuse), fnargs, fncall->args->used, "");
                 break;
-			}
+            }
             case SinIntrinsic:
             {
                 char *fnname = nbrtype->bits == 32 ? "llvm.sin.f32" : "llvm.sin.f64";
@@ -282,9 +282,9 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
                 break;
             }
             }
-		}
-		// Signed and Unsigned Integer intrinsics
-		else {
+        }
+        // Signed and Unsigned Integer intrinsics
+        else {
             switch (((IntrinsicNode *)fndcl->value)->intrinsicFn) {
 
                 // Arithmetic
@@ -339,26 +339,26 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
                     fncallret = LLVMBuildICmp(gen->builder, LLVMIntUGE, fnargs[0], fnargs[1], ""); break;
                 }
 
-			// Bitwise
-			case NotIntrinsic: fncallret = LLVMBuildNot(gen->builder, fnargs[0], ""); break;
-			case AndIntrinsic: fncallret = LLVMBuildAnd(gen->builder, fnargs[0], fnargs[1], ""); break;
-			case OrIntrinsic: fncallret = LLVMBuildOr(gen->builder, fnargs[0], fnargs[1], ""); break;
-			case XorIntrinsic: fncallret = LLVMBuildXor(gen->builder, fnargs[0], fnargs[1], ""); break;
-			case ShlIntrinsic: fncallret = LLVMBuildShl(gen->builder, fnargs[0], fnargs[1], ""); break;
-			case ShrIntrinsic:
+            // Bitwise
+            case NotIntrinsic: fncallret = LLVMBuildNot(gen->builder, fnargs[0], ""); break;
+            case AndIntrinsic: fncallret = LLVMBuildAnd(gen->builder, fnargs[0], fnargs[1], ""); break;
+            case OrIntrinsic: fncallret = LLVMBuildOr(gen->builder, fnargs[0], fnargs[1], ""); break;
+            case XorIntrinsic: fncallret = LLVMBuildXor(gen->builder, fnargs[0], fnargs[1], ""); break;
+            case ShlIntrinsic: fncallret = LLVMBuildShl(gen->builder, fnargs[0], fnargs[1], ""); break;
+            case ShrIntrinsic:
                 if (typetag == IntNbrTag) {
                     fncallret = LLVMBuildAShr(gen->builder, fnargs[0], fnargs[1], ""); break;
                 }
                 else {
                     fncallret = LLVMBuildLShr(gen->builder, fnargs[0], fnargs[1], ""); break;
                 }
-			}
-		}
+            }
+        }
         break;
-	}
-	default:
-		assert(0 && "invalid type of function call");
-	}
+    }
+    default:
+        assert(0 && "invalid type of function call");
+    }
 
     // For += operators, store value in lval
     if (fncall->flags & FlagLvalOp)
@@ -371,38 +371,38 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
 // - Number or ref/ptr to true/false
 // - Array ref to ptr or size
 LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
-	INode *fromtype = iexpGetTypeDcl(exp);
-	INode *totype = iexpGetTypeDcl(to);
+    INode *fromtype = iexpGetTypeDcl(exp);
+    INode *totype = iexpGetTypeDcl(to);
     LLVMValueRef genexp = genlExpr(gen, exp);
 
-	// Casting a number to Bool means false if zero and true otherwise
-	if (totype == (INode*)boolType) {
+    // Casting a number to Bool means false if zero and true otherwise
+    if (totype == (INode*)boolType) {
         if (fromtype->tag == RefTag || fromtype->tag == PtrTag)
             return LLVMBuildIsNotNull(gen->builder, genexp, "isnotnull");
         else if (fromtype->tag == FloatNbrTag)
-			return LLVMBuildFCmp(gen->builder, LLVMRealONE, genexp, LLVMConstNull(genlType(gen, fromtype)), "");
-		else
-			return LLVMBuildICmp(gen->builder, LLVMIntNE, genexp, LLVMConstNull(genlType(gen, fromtype)), "");
-	}
+            return LLVMBuildFCmp(gen->builder, LLVMRealONE, genexp, LLVMConstNull(genlType(gen, fromtype)), "");
+        else
+            return LLVMBuildICmp(gen->builder, LLVMIntNE, genexp, LLVMConstNull(genlType(gen, fromtype)), "");
+    }
 
-	// Handle number to number casts, depending on relative size and encoding format
-	switch (totype->tag) {
+    // Handle number to number casts, depending on relative size and encoding format
+    switch (totype->tag) {
 
-	case UintNbrTag:
+    case UintNbrTag:
         if (fromtype->tag == RefTag && (fromtype->flags & FlagArrSlice))
             return LLVMBuildExtractValue(gen->builder, genexp, 1, "sliceptr");
         else if (fromtype->tag == FloatNbrTag)
-			return LLVMBuildFPToUI(gen->builder, genexp, genlType(gen, totype), "");
-		else if (((NbrNode*)totype)->bits < ((NbrNode*)fromtype)->bits)
-			return LLVMBuildTrunc(gen->builder, genexp, genlType(gen, totype), "");
-		else /* if (((NbrNode*)totype)->bits >((NbrNode*)fromtype)->bits) */
-			return LLVMBuildZExt(gen->builder, genexp, genlType(gen, totype), "");
+            return LLVMBuildFPToUI(gen->builder, genexp, genlType(gen, totype), "");
+        else if (((NbrNode*)totype)->bits < ((NbrNode*)fromtype)->bits)
+            return LLVMBuildTrunc(gen->builder, genexp, genlType(gen, totype), "");
+        else /* if (((NbrNode*)totype)->bits >((NbrNode*)fromtype)->bits) */
+            return LLVMBuildZExt(gen->builder, genexp, genlType(gen, totype), "");
 
-	case IntNbrTag:
-		if (fromtype->tag == FloatNbrTag)
-			return LLVMBuildFPToSI(gen->builder, genexp, genlType(gen, totype), "");
-		else if (((NbrNode*)totype)->bits < ((NbrNode*)fromtype)->bits)
-			return LLVMBuildTrunc(gen->builder, genexp, genlType(gen, totype), "");
+    case IntNbrTag:
+        if (fromtype->tag == FloatNbrTag)
+            return LLVMBuildFPToSI(gen->builder, genexp, genlType(gen, totype), "");
+        else if (((NbrNode*)totype)->bits < ((NbrNode*)fromtype)->bits)
+            return LLVMBuildTrunc(gen->builder, genexp, genlType(gen, totype), "");
         else /*if (((NbrNode*)totype)->bits >((NbrNode*)fromtype)->bits) */ {
             if (fromtype->tag == IntNbrTag)
                 return LLVMBuildSExt(gen->builder, genexp, genlType(gen, totype), "");
@@ -410,17 +410,17 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
                 return LLVMBuildZExt(gen->builder, genexp, genlType(gen, totype), "");
         }
 
-	case FloatNbrTag:
-		if (fromtype->tag == IntNbrTag)
-			return LLVMBuildSIToFP(gen->builder, genexp, genlType(gen, totype), "");
-		else if (fromtype->tag == UintNbrTag)
-			return LLVMBuildUIToFP(gen->builder, genexp, genlType(gen, totype), "");
-		else if (((NbrNode*)totype)->bits < ((NbrNode*)fromtype)->bits)
-			return LLVMBuildFPTrunc(gen->builder, genexp, genlType(gen, totype), "");
-		else if (((NbrNode*)totype)->bits >((NbrNode*)fromtype)->bits)
-			return LLVMBuildFPExt(gen->builder, genexp, genlType(gen, totype), "");
-		else
-			return genexp;
+    case FloatNbrTag:
+        if (fromtype->tag == IntNbrTag)
+            return LLVMBuildSIToFP(gen->builder, genexp, genlType(gen, totype), "");
+        else if (fromtype->tag == UintNbrTag)
+            return LLVMBuildUIToFP(gen->builder, genexp, genlType(gen, totype), "");
+        else if (((NbrNode*)totype)->bits < ((NbrNode*)fromtype)->bits)
+            return LLVMBuildFPTrunc(gen->builder, genexp, genlType(gen, totype), "");
+        else if (((NbrNode*)totype)->bits >((NbrNode*)fromtype)->bits)
+            return LLVMBuildFPExt(gen->builder, genexp, genlType(gen, totype), "");
+        else
+            return genexp;
 
     case PtrTag:
         if (fromtype->tag == RefTag && (fromtype->flags & FlagArrSlice))
@@ -430,7 +430,7 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
 
     default:
         return LLVMBuildBitCast(gen->builder, genexp, genlType(gen, totype), "");
-	}
+    }
 }
 
 // Reinterpret a value as if it were another type
@@ -442,48 +442,48 @@ LLVMValueRef genlReinterpret(GenState *gen, INode* exp, INode* to) {
 
 // Generate not
 LLVMValueRef genlNot(GenState *gen, LogicNode* node) {
-	return LLVMBuildXor(gen->builder, genlExpr(gen, node->lexp), LLVMConstInt(LLVMInt1TypeInContext(gen->context), 1, 0), "not");
+    return LLVMBuildXor(gen->builder, genlExpr(gen, node->lexp), LLVMConstInt(LLVMInt1TypeInContext(gen->context), 1, 0), "not");
 }
 
 // Generate and, or
 LLVMValueRef genlLogic(GenState *gen, LogicNode* node) {
-	LLVMBasicBlockRef logicblks[2], logicphi;
-	LLVMValueRef logicvals[2];
+    LLVMBasicBlockRef logicblks[2], logicphi;
+    LLVMValueRef logicvals[2];
 
-	// Set up basic blocks
-	logicblks[0] = LLVMGetInsertBlock(gen->builder);
-	logicphi = genlInsertBlock(gen, node->tag==AndLogicTag? "andphi" : "orphi");
-	logicblks[1] = genlInsertBlock(gen, node->tag==AndLogicTag? "andrhs" : "orrhs");
+    // Set up basic blocks
+    logicblks[0] = LLVMGetInsertBlock(gen->builder);
+    logicphi = genlInsertBlock(gen, node->tag==AndLogicTag? "andphi" : "orphi");
+    logicblks[1] = genlInsertBlock(gen, node->tag==AndLogicTag? "andrhs" : "orrhs");
 
-	// Generate left-hand condition and conditional branch
-	logicvals[0] = genlExpr(gen, node->lexp);
-	if (node->tag==OrLogicTag)
-		LLVMBuildCondBr(gen->builder, logicvals[0], logicphi, logicblks[1]);
-	else
-		LLVMBuildCondBr(gen->builder, logicvals[0], logicblks[1], logicphi);
+    // Generate left-hand condition and conditional branch
+    logicvals[0] = genlExpr(gen, node->lexp);
+    if (node->tag==OrLogicTag)
+        LLVMBuildCondBr(gen->builder, logicvals[0], logicphi, logicblks[1]);
+    else
+        LLVMBuildCondBr(gen->builder, logicvals[0], logicblks[1], logicphi);
 
-	// Generate right-hand condition and branch to phi
-	LLVMPositionBuilderAtEnd(gen->builder, logicblks[1]);
-	logicvals[1] = genlExpr(gen, node->rexp);
-	LLVMBuildBr(gen->builder, logicphi);
+    // Generate right-hand condition and branch to phi
+    LLVMPositionBuilderAtEnd(gen->builder, logicblks[1]);
+    logicvals[1] = genlExpr(gen, node->rexp);
+    LLVMBuildBr(gen->builder, logicphi);
 
-	// Generate phi
-	LLVMPositionBuilderAtEnd(gen->builder, logicphi);
-	LLVMValueRef phi = LLVMBuildPhi(gen->builder, genlType(gen, (INode*)boolType), "logicval");
-	LLVMAddIncoming(phi, logicvals, logicblks, 2);
-	return phi;
+    // Generate phi
+    LLVMPositionBuilderAtEnd(gen->builder, logicphi);
+    LLVMValueRef phi = LLVMBuildPhi(gen->builder, genlType(gen, (INode*)boolType), "logicval");
+    LLVMAddIncoming(phi, logicvals, logicblks, 2);
+    return phi;
 }
 
 // Generate local variable
 LLVMValueRef genlLocalVar(GenState *gen, VarDclNode *var) {
-	assert(var->tag == VarDclTag);
-	LLVMValueRef val = NULL;
-	var->llvmvar = LLVMBuildAlloca(gen->builder, genlType(gen, var->vtype), &var->namesym->namestr);
+    assert(var->tag == VarDclTag);
+    LLVMValueRef val = NULL;
+    var->llvmvar = LLVMBuildAlloca(gen->builder, genlType(gen, var->vtype), &var->namesym->namestr);
     if (var->value) {
         val = genlExpr(gen, var->value);
         LLVMBuildStore(gen->builder, val, var->llvmvar);
     }
-	return val;
+    return val;
 }
 
 // Generate address of indexed element from a pointer to an array
@@ -547,7 +547,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         return sglobal;
     }
     }
-	return NULL;
+    return NULL;
 }
 
 void genlStore(GenState *gen, INode *lval, LLVMValueRef rval) {
@@ -698,19 +698,19 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         }
         return tupleval;
     }
-	case SizeofTag:
-		return genlSizeof(gen, ((SizeofNode*)termnode)->type);
-	case CastTag:
+    case SizeofTag:
+        return genlSizeof(gen, ((SizeofNode*)termnode)->type);
+    case CastTag:
     {
         CastNode *node = (CastNode*)termnode;
         if (node->flags & FlagAsIf)
             return genlReinterpret(gen, node->exp, node->vtype);
         return genlConvert(gen, node->exp, node->vtype);
     }
-	case AddrTag:
-	{
-		AddrNode *anode = (AddrNode*)termnode;
-		RefNode *reftype = (RefNode *)anode->vtype;
+    case AddrTag:
+    {
+        AddrNode *anode = (AddrNode*)termnode;
+        RefNode *reftype = (RefNode *)anode->vtype;
         if (reftype->alloc == voidType) {
             if (reftype->flags & FlagArrSlice) {
                 LLVMValueRef tupleval = LLVMGetUndef(genlType(gen, (INode*)reftype->tuptype));
@@ -727,21 +727,21 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         }
         else
             return genlallocref(gen, anode);
-	}
-	case DerefTag:
-		return LLVMBuildLoad(gen->builder, genlExpr(gen, ((DerefNode*)termnode)->exp), "deref");
-	case OrLogicTag: case AndLogicTag:
-		return genlLogic(gen, (LogicNode*)termnode);
-	case NotLogicTag:
-		return genlNot(gen, (LogicNode*)termnode);
-	case VarDclTag:
-		return genlLocalVar(gen, (VarDclNode*)termnode); break;
-	case BlockTag:
-		return genlBlock(gen, (BlockNode*)termnode); break;
-	case IfTag:
-		return genlIf(gen, (IfNode*)termnode); break;
-	default:
-		assert(0 && "Unknown node to genlExpr!");
-		return NULL;
-	}
+    }
+    case DerefTag:
+        return LLVMBuildLoad(gen->builder, genlExpr(gen, ((DerefNode*)termnode)->exp), "deref");
+    case OrLogicTag: case AndLogicTag:
+        return genlLogic(gen, (LogicNode*)termnode);
+    case NotLogicTag:
+        return genlNot(gen, (LogicNode*)termnode);
+    case VarDclTag:
+        return genlLocalVar(gen, (VarDclNode*)termnode); break;
+    case BlockTag:
+        return genlBlock(gen, (BlockNode*)termnode); break;
+    case IfTag:
+        return genlIf(gen, (IfNode*)termnode); break;
+    default:
+        assert(0 && "Unknown node to genlExpr!");
+        return NULL;
+    }
 }

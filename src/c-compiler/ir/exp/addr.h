@@ -9,8 +9,8 @@
 #define addr_h
 
 typedef struct AddrNode {
-	ITypedNodeHdr;
-	INode *exp;
+    ITypedNodeHdr;
+    INode *exp;
 } AddrNode;
 
 AddrNode *newAddrNode();

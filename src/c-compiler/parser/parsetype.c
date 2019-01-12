@@ -32,64 +32,64 @@ INode *parsePerm(PermNode *defperm) {
 
 // Parse an allocator + permission for a reference type
 void parseAllocPerm(RefNode *refnode) {
-	if (lexIsToken(IdentToken)
-		&& lex->val.ident->node && lex->val.ident->node->tag == AllocTag) {
-		refnode->alloc = (INode*)lex->val.ident->node;
-		lexNextToken();
-		refnode->perm = parsePerm(uniPerm);
-	}
-	else {
-		refnode->alloc = voidType;
-		refnode->perm = parsePerm(constPerm);
-	}
+    if (lexIsToken(IdentToken)
+        && lex->val.ident->node && lex->val.ident->node->tag == AllocTag) {
+        refnode->alloc = (INode*)lex->val.ident->node;
+        lexNextToken();
+        refnode->perm = parsePerm(uniPerm);
+    }
+    else {
+        refnode->alloc = voidType;
+        refnode->perm = parsePerm(constPerm);
+    }
 }
 
 // Parse a variable declaration
 VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
-	VarDclNode *varnode;
-	INode *vtype;
-	INode *perm;
+    VarDclNode *varnode;
+    INode *vtype;
+    INode *perm;
 
-	// Grab the permission type
-	perm = parsePerm(defperm);
+    // Grab the permission type
+    perm = parsePerm(defperm);
     INode *permdcl = itypeGetTypeDcl(perm);
     if (permdcl == (INode*)mut1Perm || permdcl == (INode*)uniPerm || permdcl == (INode*)opaqPerm
         || (permdcl == (INode*)constPerm && !(flags & ParseMayConst)))
         errorMsgNode(perm, ErrorInvType, "Permission not valid for variable/property declaration");
 
-	// Obtain variable's name
-	if (!lexIsToken(IdentToken)) {
+    // Obtain variable's name
+    if (!lexIsToken(IdentToken)) {
         errorMsgLex(ErrorNoIdent, "Expected variable name for declaration");
         return newVarDclFull(nametblFind("_", 1), VarDclTag, voidType, perm, NULL);
     }
     varnode = newVarDclNode(lex->val.ident, VarDclTag, perm);
-	lexNextToken();
+    lexNextToken();
 
-	// Get value type, if provided
-	if ((vtype = parseVtype(parse)))
-		varnode->vtype = vtype;
+    // Get value type, if provided
+    if ((vtype = parseVtype(parse)))
+        varnode->vtype = vtype;
 
-	// Get initialization value after '=', if provided
-	if (lexIsToken(AssgnToken)) {
-		if (!(flags&ParseMayImpl))
-			errorMsgLex(ErrorBadImpl, "A default/initial value may not be specified here.");
-		lexNextToken();
-		varnode->value = parseAnyExpr(parse);
-	}
-	else {
-		if (!(flags&ParseMaySig))
-			errorMsgLex(ErrorNoInit, "Must specify default/initial value.");
-	}
+    // Get initialization value after '=', if provided
+    if (lexIsToken(AssgnToken)) {
+        if (!(flags&ParseMayImpl))
+            errorMsgLex(ErrorBadImpl, "A default/initial value may not be specified here.");
+        lexNextToken();
+        varnode->value = parseAnyExpr(parse);
+    }
+    else {
+        if (!(flags&ParseMaySig))
+            errorMsgLex(ErrorNoInit, "Must specify default/initial value.");
+    }
 
-	varnode->owner = parse->owner;
-	return varnode;
+    varnode->owner = parse->owner;
+    return varnode;
 }
 
 // Parse a struct
 INode *parseStruct(ParseState *parse) {
-	INamedNode *svowner = parse->owner;
-	StructNode *strnode;
-	int16_t propertynbr = 0;
+    INamedNode *svowner = parse->owner;
+    StructNode *strnode;
+    int16_t propertynbr = 0;
 
     // Capture the kind of type, then get next token (name)
     uint16_t tag = StructTag;
@@ -108,7 +108,7 @@ INode *parseStruct(ParseState *parse) {
         return NULL;
     }
 
-	// Process property or method definitions
+    // Process property or method definitions
     if (lexIsToken(LCurlyToken)) {
         lexNextToken();
         while (1) {
@@ -149,76 +149,76 @@ INode *parseStruct(ParseState *parse) {
     // Opaque struct
     else if (lexIsToken(SemiToken))
         lexNextToken();
-	else
-		errorMsgLex(ErrorNoLCurly, "Expected left curly bracket enclosing properties or methods");
+    else
+        errorMsgLex(ErrorNoLCurly, "Expected left curly bracket enclosing properties or methods");
 
     // A 0-size (no field) struct is opaque. Cannot be intantiated.
     if (propertynbr == 0)
         strnode->flags |= FlagStructOpaque;
 
-	parse->owner = svowner;
-	return (INode*)strnode;
+    parse->owner = svowner;
+    return (INode*)strnode;
 }
 
 void parseInjectSelf(FnSigNode *fnsig, Name *typename) {
-	NameUseNode *selftype = newNameUseNode(typename);
-	VarDclNode *selfparm = newVarDclFull(nametblFind("self", 4), VarDclTag, (INode*)selftype, newPermUseNode((INamedNode*)constPerm), NULL);
-	selfparm->scope = 1;
-	selfparm->index = 0;
-	nodesAdd(&fnsig->parms, (INode*)selfparm);
+    NameUseNode *selftype = newNameUseNode(typename);
+    VarDclNode *selfparm = newVarDclFull(nametblFind("self", 4), VarDclTag, (INode*)selftype, newPermUseNode((INamedNode*)constPerm), NULL);
+    selfparm->scope = 1;
+    selfparm->index = 0;
+    nodesAdd(&fnsig->parms, (INode*)selfparm);
 }
 
 // Parse a function's type signature
 INode *parseFnSig(ParseState *parse) {
-	FnSigNode *fnsig;
-	int16_t parmnbr = 0;
-	uint16_t parseflags = ParseMaySig | ParseMayImpl;
+    FnSigNode *fnsig;
+    int16_t parmnbr = 0;
+    uint16_t parseflags = ParseMaySig | ParseMayImpl;
 
-	// Set up memory block for the function's type signature
-	fnsig = newFnSigNode();
+    // Set up memory block for the function's type signature
+    fnsig = newFnSigNode();
 
-	// Process parameter declarations
-	if (lexIsToken(LParenToken)) {
-		lexNextToken();
-		// A type's method with no parameters should still define self
-		if (lexIsToken(RParenToken) && isTypeNode(parse->owner))
-			parseInjectSelf(fnsig, parse->owner->namesym);
-		while (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
-			VarDclNode *parm = parseVarDcl(parse, immPerm, parseflags);
-			// Do special inference if function is a type's method
-			if (isTypeNode(parse->owner)) {
-				// Create default self parm, if 'self' was not specified
-				if (parmnbr == 0 && parm->namesym != nametblFind("self", 4)) {
-					parseInjectSelf(fnsig, parse->owner->namesym);
-					++parmnbr;
-				}
-				// Infer value type of a parameter (or its reference) if unspecified
-				if (parm->vtype == voidType) {
-					parm->vtype = (INode*)newNameUseNode(parse->owner->namesym);
-				}
-				else if (parm->vtype->tag == RefTag) {
-					PtrNode *refnode = (PtrNode *)parm->vtype;
-					if (refnode->pvtype == voidType) {
-						refnode->pvtype = (INode*)newNameUseNode(parse->owner->namesym);
-					}
-				}
-			}
-			// Add parameter to function's parm list
-			parm->scope = 1;
-			parm->index = parmnbr++;
-			if (parm->value)
-				parseflags = ParseMayImpl; // force remaining parms to specify default
-			nodesAdd(&fnsig->parms, (INode*)parm);
-			if (!lexIsToken(CommaToken))
-				break;
-			lexNextToken();
-		}
-		parseCloseTok(RParenToken);
-	}
-	else
-		errorMsgLex(ErrorNoLParen, "Expected left parenthesis for parameter declarations");
+    // Process parameter declarations
+    if (lexIsToken(LParenToken)) {
+        lexNextToken();
+        // A type's method with no parameters should still define self
+        if (lexIsToken(RParenToken) && isTypeNode(parse->owner))
+            parseInjectSelf(fnsig, parse->owner->namesym);
+        while (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
+            VarDclNode *parm = parseVarDcl(parse, immPerm, parseflags);
+            // Do special inference if function is a type's method
+            if (isTypeNode(parse->owner)) {
+                // Create default self parm, if 'self' was not specified
+                if (parmnbr == 0 && parm->namesym != nametblFind("self", 4)) {
+                    parseInjectSelf(fnsig, parse->owner->namesym);
+                    ++parmnbr;
+                }
+                // Infer value type of a parameter (or its reference) if unspecified
+                if (parm->vtype == voidType) {
+                    parm->vtype = (INode*)newNameUseNode(parse->owner->namesym);
+                }
+                else if (parm->vtype->tag == RefTag) {
+                    PtrNode *refnode = (PtrNode *)parm->vtype;
+                    if (refnode->pvtype == voidType) {
+                        refnode->pvtype = (INode*)newNameUseNode(parse->owner->namesym);
+                    }
+                }
+            }
+            // Add parameter to function's parm list
+            parm->scope = 1;
+            parm->index = parmnbr++;
+            if (parm->value)
+                parseflags = ParseMayImpl; // force remaining parms to specify default
+            nodesAdd(&fnsig->parms, (INode*)parm);
+            if (!lexIsToken(CommaToken))
+                break;
+            lexNextToken();
+        }
+        parseCloseTok(RParenToken);
+    }
+    else
+        errorMsgLex(ErrorNoLParen, "Expected left parenthesis for parameter declarations");
 
-	// Parse return type info - turn into void if none specified
+    // Parse return type info - turn into void if none specified
     if ((fnsig->rettype = parseVtype(parse))) {
         // Handle multiple return types
         if (lexIsToken(CommaToken)) {
@@ -232,15 +232,15 @@ INode *parseFnSig(ParseState *parse) {
         }
     }
     else {
-		fnsig->rettype = voidType;
-	}
+        fnsig->rettype = voidType;
+    }
 
-	return (INode*)fnsig;
+    return (INode*)fnsig;
 }
 
 // Parse an array type
 INode *parseArrayType(ParseState *parse) {
-	ArrayNode *atype = newArrayNode();
+    ArrayNode *atype = newArrayNode();
 
     // Obtain size as an unsigned integer literal
     if (lexIsToken(IntLitToken)) {
@@ -251,17 +251,17 @@ INode *parseArrayType(ParseState *parse) {
         errorMsgLex(ErrorBadTok, "Expected integer literal for array size");
 
     if (lexIsToken(RBracketToken))
-	    lexNextToken();
+        lexNextToken();
     else
         errorMsgLex(ErrorBadTok, "Expected closing square bracket");
 
     // Obtain array's element type
-	if ((atype->elemtype = parseVtype(parse)) == NULL) {
-		errorMsgLex(ErrorNoVtype, "Missing array element type");
-		atype->elemtype = voidType;
-	}
+    if ((atype->elemtype = parseVtype(parse)) == NULL) {
+        errorMsgLex(ErrorNoVtype, "Missing array element type");
+        atype->elemtype = voidType;
+    }
 
-	return (INode *)atype;
+    return (INode *)atype;
 }
 
 // Parse a pointer type
@@ -329,20 +329,20 @@ INode *parseRefType(ParseState *parse) {
 
 // Parse a value type signature. Return NULL if none found.
 INode* parseVtype(ParseState *parse) {
-	INode *vtype;
-	switch (lex->toktype) {
-	case AmperToken:
-		return parseRefType(parse);
+    INode *vtype;
+    switch (lex->toktype) {
+    case AmperToken:
+        return parseRefType(parse);
     case StarToken:
         return parsePtrType(parse);
     case LBracketToken:
         lexNextToken();
-		return parseArrayType(parse);
-	case IdentToken:
-		vtype = (INode*)newNameUseNode(lex->val.ident);
-		lexNextToken();
-		return vtype;
-	default:
-		return voidType;
-	}
+        return parseArrayType(parse);
+    case IdentToken:
+        vtype = (INode*)newNameUseNode(lex->val.ident);
+        lexNextToken();
+        return vtype;
+    default:
+        return voidType;
+    }
 }

@@ -12,13 +12,13 @@
 
 // Create a new Module node
 ModuleNode *newModuleNode() {
-	ModuleNode *mod;
-	newNode(mod, ModuleNode, ModuleTag);
-	mod->namesym = NULL;
-	mod->owner = NULL;
-	mod->nodes = newNodes(64);
-	namespaceInit(&mod->namednodes, 64);
-	return mod;
+    ModuleNode *mod;
+    newNode(mod, ModuleNode, ModuleTag);
+    mod->namesym = NULL;
+    mod->owner = NULL;
+    mod->nodes = newNodes(64);
+    namespaceInit(&mod->namednodes, 64);
+    return mod;
 }
 
 // Add a newly parsed named node to the module:
@@ -53,20 +53,20 @@ void modAddNode(ModuleNode *mod, INode *node) {
 
 // Serialize a module node
 void modPrint(ModuleNode *mod) {
-	INode **nodesp;
-	uint32_t cnt;
+    INode **nodesp;
+    uint32_t cnt;
 
-	if (mod->namesym)
-		inodeFprint("module %s\n", &mod->namesym->namestr);
-	else
-		inodeFprint("IR for program %s\n", mod->lexer->url);
-	inodePrintIncr();
-	for (nodesFor(mod->nodes, cnt, nodesp)) {
-		inodePrintIndent();
-		inodePrintNode(*nodesp);
-		inodePrintNL();
-	}
-	inodePrintDecr();
+    if (mod->namesym)
+        inodeFprint("module %s\n", &mod->namesym->namestr);
+    else
+        inodeFprint("IR for program %s\n", mod->lexer->url);
+    inodePrintIncr();
+    for (nodesFor(mod->nodes, cnt, nodesp)) {
+        inodePrintIndent();
+        inodePrintNode(*nodesp);
+        inodePrintNL();
+    }
+    inodePrintDecr();
 }
 
 // Unhook old module's names, hook new module's names
@@ -87,17 +87,17 @@ void modHook(ModuleNode *oldmod, ModuleNode *newmod) {
 
 // Check the module node
 void modPass(PassState *pstate, ModuleNode *mod) {
-	ModuleNode *svmod = pstate->mod;
-	pstate->mod = mod;
-	INode **nodesp;
-	uint32_t cnt;
+    ModuleNode *svmod = pstate->mod;
+    pstate->mod = mod;
+    INode **nodesp;
+    uint32_t cnt;
 
-	// Switch name table over to new mod for name resolution
-	if (pstate->pass == NameResolution)
-		modHook((ModuleNode*)mod->owner, mod);
+    // Switch name table over to new mod for name resolution
+    if (pstate->pass == NameResolution)
+        modHook((ModuleNode*)mod->owner, mod);
 
-	// For global variables and functions, handle all their type info first
-	for (nodesFor(mod->nodes, cnt, nodesp)) {
+    // For global variables and functions, handle all their type info first
+    for (nodesFor(mod->nodes, cnt, nodesp)) {
         switch ((*nodesp)->tag) {
         case VarDclTag:
         {
@@ -113,18 +113,18 @@ void modPass(PassState *pstate, ModuleNode *mod) {
             break;
         }
         }
-	}
+    }
 
-	// Now we can process the full node info
-	if (errors == 0) {
-		for (nodesFor(mod->nodes, cnt, nodesp)) {
-			inodeWalk(pstate, nodesp);
-		}
-	}
+    // Now we can process the full node info
+    if (errors == 0) {
+        for (nodesFor(mod->nodes, cnt, nodesp)) {
+            inodeWalk(pstate, nodesp);
+        }
+    }
 
-	// Switch name table back to owner module
-	if (pstate->pass == NameResolution)
-		modHook(mod, (ModuleNode*)mod->owner);
+    // Switch name table back to owner module
+    if (pstate->pass == NameResolution)
+        modHook(mod, (ModuleNode*)mod->owner);
 
-	pstate->mod = svmod;
+    pstate->mod = svmod;
 }

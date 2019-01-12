@@ -27,12 +27,12 @@
 // - linep points to start of line that token begins on
 // - linenbr is the source file's line number, starting with 1
 #define INodeHdr \
-	Lexer *lexer; \
-	char *srcp; \
-	char *linep; \
-	uint32_t linenbr; \
-	uint16_t tag; \
-	uint16_t flags
+    Lexer *lexer; \
+    char *srcp; \
+    char *linep; \
+    uint32_t linenbr; \
+    uint16_t tag; \
+    uint16_t flags
 
 // INode is a castable struct for all IR nodes.
 typedef struct INode {
@@ -55,63 +55,63 @@ typedef struct INode {
 
 // All the possible tags for a node
 enum NodeTags {
-	// Lexer-only nodes that are *never* found in a program's IR.
-	// KeywordTag exists for name table consistency
-	KeywordTag = StmtGroup,	// Keyword token (flags is the keyword's token type)
+    // Lexer-only nodes that are *never* found in a program's IR.
+    // KeywordTag exists for name table consistency
+    KeywordTag = StmtGroup,    // Keyword token (flags is the keyword's token type)
 
-	// Untyped (Basic) nodes
-	IntrinsicTag,	// Alternative to fndcl block for internal operations (e.g., add)
-	ReturnTag,      // Return node
+    // Untyped (Basic) nodes
+    IntrinsicTag,   // Alternative to fndcl block for internal operations (e.g., add)
+    ReturnTag,      // Return node
     BlockRetTag,    // Block "return" node. Injected by flow pass for de-aliasing.
-	WhileTag,		// While node
-	BreakTag,		// Break node
-	ContinueTag,	// Continue node
+    WhileTag,       // While node
+    BreakTag,       // Break node
+    ContinueTag,    // Continue node
 
-	// Name usage (we do not know what type of name it is until name resolution pass)
-	NameUseTag,  	// Name use node (pre-name resolution)
+    // Name usage (we do not know what type of name it is until name resolution pass)
+    NameUseTag,     // Name use node (pre-name resolution)
 
-    ModuleTag = StmtGroup + NamedNode,		// Module namespace
+    ModuleTag = StmtGroup + NamedNode,        // Module namespace
     VarDclTag,      // Variable/parm/property declaration
     FnDclTag,       // Function/method declaration
 
     // Expression nodes (having value type - or sometimes nullType)
     VarNameUseTag = ExpGroup,  // Variable or Function name use node  
-	MbrNameUseTag,	// Member of a type's namespace (property/method)
-	ULitTag,		// Integer literal
-	FLitTag,		// Float literal
+    MbrNameUseTag,  // Member of a type's namespace (property/method)
+    ULitTag,        // Integer literal
+    FLitTag,        // Float literal
     NullTag,        // Null literal
-	StrLitTag,		// String literal
-    TypeLitTag,        // List (e.g., type literal)
+    StrLitTag,      // String literal
+    TypeLitTag,     // List (e.g., type literal)
     VTupleTag,      // Value tuple (comma-separated values)
-	AssignTag,		// Assignment expression
-	FnCallTag,		// Function+method call or Property access
+    AssignTag,      // Assignment expression
+    FnCallTag,      // Function+method call or Property access
     ArrIndexTag,    // Array index (FnCallNode)
     StrFieldTag,    // struct field (FnCallNode)
-	SizeofTag,		// Sizeof a type (usize)
-	CastTag,		// Cast exp to another type
-	AddrTag,		// & (address of) operator
-	DerefTag,		// * (pointed at) operator
-	NotLogicTag,	// ! / not
-	OrLogicTag,     // || / or
-	AndLogicTag,	// && / and
-	BlockTag,		// Block (list of statements)
-	IfTag,			// if .. elif .. else statement
+    SizeofTag,      // Sizeof a type (usize)
+    CastTag,        // Cast exp to another type
+    AddrTag,        // & (address of) operator
+    DerefTag,       // * (pointed at) operator
+    NotLogicTag,    // ! / not
+    OrLogicTag,     // || / or
+    AndLogicTag,    // && / and
+    BlockTag,       // Block (list of statements)
+    IfTag,          // if .. elif .. else statement
     AliasTag,       // (injected) alias count tag
     NamedValTag,    // Named value (e.g., for a struct literal)
 
     // Unnamed type node
     TypeNameUseTag = TypeGroup, // Type name use node
-    FnSigTag,	// Also method, closure, behavior, co-routine, thread, ...
-    ArrayTag,	// Also dynamic arrays? SOA?
-    RefTag,	    // Reference
-    PtrTag,     // Pointer
-    TTupleTag,  // Type tuple
-    VoidTag,	// representing no values, e.g., no return values on a fn
+    FnSigTag,       // Also method, closure, behavior, co-routine, thread, ...
+    ArrayTag,       // Also dynamic arrays? SOA?
+    RefTag,         // Reference
+    PtrTag,         // Pointer
+    TTupleTag,      // Type tuple
+    VoidTag,        // representing no values, e.g., no return values on a fn
 
-    IntNbrTag = TypeGroup + NamedNode + MethodType,	// Integer
-    UintNbrTag,	 // Unsigned integer
-    FloatNbrTag, // Floating point number
-    StructTag,	 // Also interface, trait, tuple, actor, etc.
+    IntNbrTag = TypeGroup + NamedNode + MethodType,    // Integer
+    UintNbrTag,     // Unsigned integer
+    FloatNbrTag,    // Floating point number
+    StructTag,      // Also interface, trait, actor, etc.
     PermTag,
     AllocTag,
 };
@@ -121,8 +121,8 @@ enum NodeTags {
 // *****************
 
 // VarDclTag and FnDclTag flags
-#define	FlagMethProp  0x0001	    // FnDcl, VarDcl: Method or Property (vs. static)
-#define FlagExtern    0x0002		// FnDcl, VarDcl: C ABI extern (no value, no mangle)
+#define FlagMethProp  0x0001        // FnDcl, VarDcl: Method or Property (vs. static)
+#define FlagExtern    0x0002        // FnDcl, VarDcl: C ABI extern (no value, no mangle)
 #define FlagSystem    0x0004        // FnDcl: imported system call (+stdcall on Winx86)
 #define FlagSetMethod 0x0008        // FnDcl: "set" method
 
@@ -132,13 +132,13 @@ enum NodeTags {
 
 // Allocate and initialize the INode portion of a new node
 #define newNode(node, nodestruct, nodetype) {\
-	node = (nodestruct*) memAllocBlk(sizeof(nodestruct)); \
-	node->tag = nodetype; \
-	node->flags = 0; \
-	node->lexer = lex; \
-	node->srcp = lex->tokp; \
-	node->linep = lex->linep; \
-	node->linenbr = lex->linenbr; \
+    node = (nodestruct*) memAllocBlk(sizeof(nodestruct)); \
+    node->tag = nodetype; \
+    node->flags = 0; \
+    node->lexer = lex; \
+    node->srcp = lex->tokp; \
+    node->linep = lex->linep; \
+    node->linenbr = lex->linenbr; \
 }
 
 // Copy lexer info over to another node

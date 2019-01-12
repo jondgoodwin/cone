@@ -10,20 +10,20 @@
 
 // Unsigned integer literal
 typedef struct ULitNode {
-	ITypedNodeHdr;
-	uint64_t uintlit;
+    ITypedNodeHdr;
+    uint64_t uintlit;
 } ULitNode;
 
 // Float literal
 typedef struct FLitNode {
-	ITypedNodeHdr;
-	double floatlit;
+    ITypedNodeHdr;
+    double floatlit;
 } FLitNode;
 
 // String literal
 typedef struct SLitNode {
-	ITypedNodeHdr;
-	char *strlit;
+    ITypedNodeHdr;
+    char *strlit;
 } SLitNode;
 
 // The null literal

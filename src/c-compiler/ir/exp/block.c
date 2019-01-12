@@ -9,27 +9,27 @@
 
 // Create a new block node
 BlockNode *newBlockNode() {
-	BlockNode *blk;
-	newNode(blk, BlockNode, BlockTag);
-	blk->vtype = voidType;
-	blk->stmts = newNodes(8);
-	return blk;
+    BlockNode *blk;
+    newNode(blk, BlockNode, BlockTag);
+    blk->vtype = voidType;
+    blk->stmts = newNodes(8);
+    return blk;
 }
 
 // Serialize a block node
 void blockPrint(BlockNode *blk) {
-	INode **nodesp;
-	uint32_t cnt;
+    INode **nodesp;
+    uint32_t cnt;
 
-	if (blk->stmts) {
-		inodePrintIncr();
-		for (nodesFor(blk->stmts, cnt, nodesp)) {
-			inodePrintIndent();
-			inodePrintNode(*nodesp);
-			inodePrintNL();
-		}
-		inodePrintDecr();
-	}
+    if (blk->stmts) {
+        inodePrintIncr();
+        for (nodesFor(blk->stmts, cnt, nodesp)) {
+            inodePrintIndent();
+            inodePrintNode(*nodesp);
+            inodePrintNL();
+        }
+        inodePrintDecr();
+    }
 }
 
 // Handle name resolution and control structure compliance for a block
@@ -75,12 +75,12 @@ void blockTypePass(PassState *pstate, BlockNode *blk) {
 
 // Check the block node
 void blockPass(PassState *pstate, BlockNode *blk) {
-	switch (pstate->pass) {
-	case NameResolution:
-		blockResolvePass(pstate, blk); break;
-	case TypeCheck:
+    switch (pstate->pass) {
+    case NameResolution:
+        blockResolvePass(pstate, blk); break;
+    case TypeCheck:
         blockTypePass(pstate, blk); break;
-	}
+    }
 }
 
 // Perform data flow analysis on a block

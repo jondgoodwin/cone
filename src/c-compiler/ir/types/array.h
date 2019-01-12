@@ -10,9 +10,9 @@
 
 // Array node
 typedef struct ArrayNode {
-	IMethodNodeHdr;
-	uint32_t size;    // LLVM 5 C-interface is restricted to 32-bits
-	INode *elemtype;
+    IMethodNodeHdr;
+    uint32_t size;    // LLVM 5 C-interface is restricted to 32-bits
+    INode *elemtype;
 } ArrayNode;
 
 ArrayNode *newArrayNode();

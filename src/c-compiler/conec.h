@@ -32,13 +32,13 @@
 #ifndef conec_h
 #define conec_h
 
-#define CONE_VERSION_MAJOR	"0"
-#define CONE_VERSION_MINOR	"1"
-#define CONE_VERSION_NUM		1
-#define CONE_VERSION_RELEASE	"0"
+#define CONE_VERSION_MAJOR    "0"
+#define CONE_VERSION_MINOR    "1"
+#define CONE_VERSION_NUM        1
+#define CONE_VERSION_RELEASE    "0"
 
-#define CONE_VERSION	"Cone Compiler " CONE_VERSION_MAJOR "." CONE_VERSION_MINOR
-#define CONE_RELEASE	CONE_VERSION "." CONE_VERSION_RELEASE
-#define CONE_COPYRIGHT	CONE_RELEASE "  Copyright (C) 2017-2018 Jonathan Goodwin"
+#define CONE_VERSION    "Cone Compiler " CONE_VERSION_MAJOR "." CONE_VERSION_MINOR
+#define CONE_RELEASE    CONE_VERSION "." CONE_VERSION_RELEASE
+#define CONE_COPYRIGHT    CONE_RELEASE "  Copyright (C) 2017-2018 Jonathan Goodwin"
 
 #endif

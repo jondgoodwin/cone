@@ -9,8 +9,8 @@
 
 // Create a new array type whose info will be filled in afterwards
 ArrayNode *newArrayNode() {
-	ArrayNode *anode;
-	newNode(anode, ArrayNode, ArrayTag);
+    ArrayNode *anode;
+    newNode(anode, ArrayNode, ArrayTag);
     anode->vtype = NULL;
     anode->owner = NULL;
     anode->namesym = anonName;
@@ -30,19 +30,19 @@ ArrayNode *newArrayNodeTyped(size_t size, INode *elemtype) {
 
 // Serialize an array type
 void arrayPrint(ArrayNode *node) {
-	inodeFprint("[%d]", (int)node->size);
-	inodePrintNode(node->elemtype);
+    inodeFprint("[%d]", (int)node->size);
+    inodePrintNode(node->elemtype);
 }
 
 // Semantically analyze an array type
 void arrayPass(PassState *pstate, ArrayNode *node) {
-	inodeWalk(pstate, &node->elemtype);
+    inodeWalk(pstate, &node->elemtype);
     if (pstate->pass == TypeCheck && !itypeHasSize(node->elemtype))
         errorMsgNode(node->elemtype, ErrorInvType, "Type must have a defined size.");
 }
 
 // Compare two struct signatures to see if they are equivalent
 int arrayEqual(ArrayNode *node1, ArrayNode *node2) {
-	return (node1->size == node2->size
-		/* && itypeIsSame(node1->elemtype, node2->elemtype*/);
+    return (node1->size == node2->size
+        /* && itypeIsSame(node1->elemtype, node2->elemtype*/);
 }

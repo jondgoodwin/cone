@@ -12,16 +12,16 @@
 
 // Macro that changes iexp pointer to type dcl pointer
 #define iexpToTypeDcl(node) {\
-	if (isExpNode(node) || (node)->tag == VarDclTag || (node)->tag == FnDclTag) \
-		node = ((ITypedNode *)node)->vtype; \
-	if (node->tag == TypeNameUseTag) \
-		node = (INode*)((NameUseNode *)node)->dclnode; \
+    if (isExpNode(node) || (node)->tag == VarDclTag || (node)->tag == FnDclTag) \
+        node = ((ITypedNode *)node)->vtype; \
+    if (node->tag == TypeNameUseTag) \
+        node = (INode*)((NameUseNode *)node)->dclnode; \
 }
 
 // Return value type
 INode *iexpGetTypeDcl(INode *node) {
     iexpToTypeDcl(node);
-	return node;
+    return node;
 }
 
 // Return type (or de-referenced type if ptr/ref)
@@ -52,42 +52,42 @@ int iexpCoerces(INode *to, INode **from) {
         return 1;
     }
 
-	// Convert to pointer from iexp to type dcl
-	iexpToTypeDcl(to);
+    // Convert to pointer from iexp to type dcl
+    iexpToTypeDcl(to);
 
-	// When coercing a block, do so on its last expression
-	while ((*from)->tag == BlockTag) {
-		((ITypedNode*)*from)->vtype = to;
-		from = &nodesLast(((BlockNode*)*from)->stmts);
-	}
+    // When coercing a block, do so on its last expression
+    while ((*from)->tag == BlockTag) {
+        ((ITypedNode*)*from)->vtype = to;
+        from = &nodesLast(((BlockNode*)*from)->stmts);
+    }
 
-	// Coercing an 'if' requires we do so on all its paths
-	if ((*from)->tag == IfTag) {
-		int16_t cnt;
-		INode **nodesp;
-		IfNode *ifnode = (IfNode*)*from;
-		ifnode->vtype = to;
-		if (nodesGet(ifnode->condblk, ifnode->condblk->used - 2) != voidType)
-			errorMsgNode((INode*)ifnode, ErrorNoElse, "Missing else branch which needs to provide a value");
-		for (nodesFor(ifnode->condblk, cnt, nodesp)) {
-			cnt--; nodesp++;
-			INode **lastnode = &nodesLast(((BlockNode*)*nodesp)->stmts);
-			if (!iexpCoerces(to, lastnode)) {
-				errorMsgNode(*lastnode, ErrorInvType, "expression type does not match expected type");
-			}
-		}
-		return 1;
-	}
+    // Coercing an 'if' requires we do so on all its paths
+    if ((*from)->tag == IfTag) {
+        int16_t cnt;
+        INode **nodesp;
+        IfNode *ifnode = (IfNode*)*from;
+        ifnode->vtype = to;
+        if (nodesGet(ifnode->condblk, ifnode->condblk->used - 2) != voidType)
+            errorMsgNode((INode*)ifnode, ErrorNoElse, "Missing else branch which needs to provide a value");
+        for (nodesFor(ifnode->condblk, cnt, nodesp)) {
+            cnt--; nodesp++;
+            INode **lastnode = &nodesLast(((BlockNode*)*nodesp)->stmts);
+            if (!iexpCoerces(to, lastnode)) {
+                errorMsgNode(*lastnode, ErrorInvType, "expression type does not match expected type");
+            }
+        }
+        return 1;
+    }
 
     INode *fromtype = *from;
     iexpToTypeDcl(fromtype);
 
-	// Are types equivalent, or is 'to' a subtype of fromtype?
-	int match = itypeMatches(to, fromtype);
-	if (match <= 1)
-		return match; // return fail or non-changing matches. Fall through to perform any coercion
+    // Are types equivalent, or is 'to' a subtype of fromtype?
+    int match = itypeMatches(to, fromtype);
+    if (match <= 1)
+        return match; // return fail or non-changing matches. Fall through to perform any coercion
 
-	// Add coercion node
+    // Add coercion node
     if (match == 2) {
         *from = (INode*)newCastNode(*from, to);
         return 1;

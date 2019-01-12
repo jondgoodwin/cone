@@ -44,41 +44,41 @@ void doAnalysis(ModuleNode **mod) {
 }
 
 int main(int argc, char **argv) {
-	ConeOptions coneopt;
-	ModuleNode *modnode;
-	int ok;
-	char *srcfn;
+    ConeOptions coneopt;
+    ModuleNode *modnode;
+    int ok;
+    char *srcfn;
 
-	// Start measuring processing time for compilation
-	startTime = clock();
+    // Start measuring processing time for compilation
+    startTime = clock();
 
-	// Get compiler's options from passed arguments
-	ok = coneOptSet(&coneopt, &argc, argv);
-	if (ok <= 0)
-		exit(ok == 0 ? 0 : ExitOpts);
-	if (argc < 2)
-		errorExit(ExitOpts, "Specify a Cone program to compile.");
-	srcfn = argv[1];
+    // Get compiler's options from passed arguments
+    ok = coneOptSet(&coneopt, &argc, argv);
+    if (ok <= 0)
+        exit(ok == 0 ? 0 : ExitOpts);
+    if (argc < 2)
+        errorExit(ExitOpts, "Specify a Cone program to compile.");
+    srcfn = argv[1];
 
-	// Initialize name table and populate with std library names
-	nametblInit();
-	stdlibInit();
+    // Initialize name table and populate with std library names
+    nametblInit();
+    stdlibInit();
 
-	// Parse source file, do semantic analysis, and generate code
-	lexInjectFile(srcfn);
-	modnode = parsePgm();
-	if (errors == 0) {
-		doAnalysis(&modnode);
-		if (errors == 0) {
-			if (coneopt.print_ir)
-				inodePrint(coneopt.output, srcfn, (INode*)modnode);
-			genllvm(&coneopt, modnode);
-		}
-	}
+    // Parse source file, do semantic analysis, and generate code
+    lexInjectFile(srcfn);
+    modnode = parsePgm();
+    if (errors == 0) {
+        doAnalysis(&modnode);
+        if (errors == 0) {
+            if (coneopt.print_ir)
+                inodePrint(coneopt.output, srcfn, (INode*)modnode);
+            genllvm(&coneopt, modnode);
+        }
+    }
 
-	// Close up everything necessary
-	errorSummary();
+    // Close up everything necessary
+    errorSummary();
 #ifdef _DEBUG
-	getchar();	// Hack for VS debugging
+    getchar();    // Hack for VS debugging
 #endif
 }

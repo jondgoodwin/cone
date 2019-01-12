@@ -18,10 +18,10 @@
 // Structure for a describing an option argument
 typedef struct opt_arg_t
 {
-	char *long_opt;
-	char short_opt;
-	uint32_t flag;
-	uint32_t id;
+    char *long_opt;
+    char short_opt;
+    uint32_t flag;
+    uint32_t id;
 } opt_arg_t;
 
 // Place this at end of option argument definition list
@@ -30,18 +30,18 @@ typedef struct opt_arg_t
 // State of the option decoder
 typedef struct opt_state_t
 {
-	opt_arg_t* args;
+    opt_arg_t* args;
 
-	int *argc;
-	char **argv;
-	char *arg_val;
+    int *argc;
+    char **argv;
+    char *arg_val;
 
-	// working state
-	char *opt_start;
-	char *opt_end;
-	int match_type;
-	int idx;
-	int remove;
+    // working state
+    char *opt_start;
+    char *opt_end;
+    int match_type;
+    int idx;
+    int remove;
 } opt_state_t;
 
 // Initialize the option handling state

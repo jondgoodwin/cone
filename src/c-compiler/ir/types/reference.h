@@ -13,12 +13,12 @@
 
 // Reference node
 typedef struct RefNode {
-	INodeHdr;
-	INode *pvtype;	// Value type
-	INode *perm;	// Permission
-	INode *alloc;	// Allocator
+    INodeHdr;
+    INode *pvtype;    // Value type
+    INode *perm;    // Permission
+    INode *alloc;    // Allocator
     TTupleNode *tuptype; // Reference's generated representation (NULL = just a pointer)
-	int16_t scope;	// Lifetime
+    int16_t scope;    // Lifetime
 } RefNode;
 
 // Create a new reference type whose info will be filled in afterwards

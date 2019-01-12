@@ -14,9 +14,9 @@ typedef struct FnCallNode FnCallNode;
 // A function signature is never named (although a ptr/ref to a fnsig may be named).
 // The parameter declaration list represents a namespace of local variables.
 typedef struct FnSigNode {
-	INodeHdr;
-    Nodes *parms;			// Declared parameter nodes w/ defaults (VarDclTag)
-    INode *rettype;		// void, a single type or a type tuple
+    INodeHdr;
+    Nodes *parms;            // Declared parameter nodes w/ defaults (VarDclTag)
+    INode *rettype;        // void, a single type or a type tuple
 } FnSigNode;
 
 FnSigNode *newFnSigNode();

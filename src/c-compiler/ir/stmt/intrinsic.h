@@ -10,13 +10,13 @@
 
 // The various intrinsic functions supported by IntrinsicNode
 enum IntrinsicFn {
-	// Arithmetic
-	NegIntrinsic,
-	AddIntrinsic,
-	SubIntrinsic,
-	MulIntrinsic,
-	DivIntrinsic,
-	RemIntrinsic,
+    // Arithmetic
+    NegIntrinsic,
+    AddIntrinsic,
+    SubIntrinsic,
+    MulIntrinsic,
+    DivIntrinsic,
+    RemIntrinsic,
     IncrIntrinsic,
     DecrIntrinsic,
     IncrPostIntrinsic,
@@ -25,24 +25,24 @@ enum IntrinsicFn {
     AddEqIntrinsic,
     SubEqIntrinsic,
 
-	// Comparison
-	EqIntrinsic,
-	NeIntrinsic,
-	LtIntrinsic,
-	LeIntrinsic,
-	GtIntrinsic,
-	GeIntrinsic,
+    // Comparison
+    EqIntrinsic,
+    NeIntrinsic,
+    LtIntrinsic,
+    LeIntrinsic,
+    GtIntrinsic,
+    GeIntrinsic,
 
-	// Bitwise
-	NotIntrinsic,
-	AndIntrinsic,
-	OrIntrinsic,
-	XorIntrinsic,
-	ShlIntrinsic,
-	ShrIntrinsic,
+    // Bitwise
+    NotIntrinsic,
+    AndIntrinsic,
+    OrIntrinsic,
+    XorIntrinsic,
+    ShlIntrinsic,
+    ShrIntrinsic,
 
-	// Intrinsic functions
-	SqrtIntrinsic,
+    // Intrinsic functions
+    SqrtIntrinsic,
     SinIntrinsic,
     CosIntrinsic
 };
@@ -50,8 +50,8 @@ enum IntrinsicFn {
 // An internal operation (e.g., add). 
 // Used as an alternative to FnDcl->value = Block within a function declaration.
 typedef struct IntrinsicNode {
-	INodeHdr;
-	int16_t intrinsicFn;
+    INodeHdr;
+    int16_t intrinsicFn;
 } IntrinsicNode;
 
 IntrinsicNode *newIntrinsicNode(int16_t intrinsicFn);

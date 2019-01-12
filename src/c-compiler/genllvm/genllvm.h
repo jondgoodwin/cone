@@ -16,13 +16,13 @@
 #include <llvm-c/ExecutionEngine.h>
 
 typedef struct GenState {
-	LLVMTargetDataRef datalayout;
-	LLVMContextRef context;
-	LLVMModuleRef module;
-	LLVMValueRef fn;
-	LLVMBuilderRef builder;
-	LLVMBasicBlockRef whilebeg;
-	LLVMBasicBlockRef whileend;
+    LLVMTargetDataRef datalayout;
+    LLVMContextRef context;
+    LLVMModuleRef module;
+    LLVMValueRef fn;
+    LLVMBuilderRef builder;
+    LLVMBasicBlockRef whilebeg;
+    LLVMBasicBlockRef whileend;
 
     LLVMDIBuilderRef dibuilder;
     LLVMMetadataRef compileUnit;

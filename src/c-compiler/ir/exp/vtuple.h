@@ -12,8 +12,8 @@
 // It acts like an ad hoc struct, briefly binding together values often
 // for a parallel assignment or multiple return values
 typedef struct VTupleNode {
-	ITypedNodeHdr;
-	Nodes *values;
+    ITypedNodeHdr;
+    Nodes *values;
 } VTupleNode;
 
 // Create a new value tuple node

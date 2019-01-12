@@ -9,20 +9,20 @@
 
 // Create a new sizeof node
 SizeofNode *newSizeofNode() {
-	SizeofNode *node;
-	newNode(node, SizeofNode, SizeofTag);
-	node->vtype = (INode*)usizeType;
-	return node;
+    SizeofNode *node;
+    newNode(node, SizeofNode, SizeofTag);
+    node->vtype = (INode*)usizeType;
+    return node;
 }
 
 // Serialize sizeof
 void sizeofPrint(SizeofNode *node) {
-	inodeFprint("(sizeof, ");
-	inodePrintNode(node->type);
-	inodeFprint(")");
+    inodeFprint("(sizeof, ");
+    inodePrintNode(node->type);
+    inodeFprint(")");
 }
 
 // Analyze sizeof node
 void sizeofPass(PassState *pstate, SizeofNode *node) {
-	inodeWalk(pstate, &node->type);
+    inodeWalk(pstate, &node->type);
 }

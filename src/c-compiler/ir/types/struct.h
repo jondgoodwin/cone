@@ -19,7 +19,7 @@
 //       with no duplicate names between them
 // - subtypes. An ordered list of nodes for its traits/interfaces
 typedef struct StructNode {
-	IMethodNodeHdr;
+    IMethodNodeHdr;
 } StructNode;
 
 #define FlagStructOpaque   0x8000  // Has no fields

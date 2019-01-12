@@ -15,30 +15,30 @@
 
 // Allocate and initialize a new nodes block
 Nodes *newNodes(int size) {
-	Nodes *nodes;
-	nodes = (Nodes*) memAllocBlk(sizeof(Nodes) + size*sizeof(INode*));
-	nodes->avail = size;
-	nodes->used = 0;
-	return nodes;
+    Nodes *nodes;
+    nodes = (Nodes*) memAllocBlk(sizeof(Nodes) + size*sizeof(INode*));
+    nodes->avail = size;
+    nodes->used = 0;
+    return nodes;
 }
 
 // Add an INode to the end of a Nodes, growing it if full (changing its memory location)
 // This assumes a nodes can only have a single parent, whose address we point at
 void nodesAdd(Nodes **nodesp, INode *node) {
-	Nodes *nodes = *nodesp;
-	// If full, double its size
-	if (nodes->used >= nodes->avail) {
-		Nodes *oldnodes;
-		INode **op, **np;
-		oldnodes = nodes;
-		nodes = newNodes(oldnodes->avail << 1);
-		op = (INode **)(oldnodes+1);
-		np = (INode **)(nodes+1);
-		memcpy(np, op, (nodes->used = oldnodes->used) * sizeof(INode*));
-		*nodesp = nodes;
-	}
-	*((INode**)(nodes+1)+nodes->used) = node;
-	nodes->used++;
+    Nodes *nodes = *nodesp;
+    // If full, double its size
+    if (nodes->used >= nodes->avail) {
+        Nodes *oldnodes;
+        INode **op, **np;
+        oldnodes = nodes;
+        nodes = newNodes(oldnodes->avail << 1);
+        op = (INode **)(oldnodes+1);
+        np = (INode **)(nodes+1);
+        memcpy(np, op, (nodes->used = oldnodes->used) * sizeof(INode*));
+        *nodesp = nodes;
+    }
+    *((INode**)(nodes+1)+nodes->used) = node;
+    nodes->used++;
 }
 
 // Insert an INode within a list of nodes, growing it if full (changing its memory location)
@@ -87,13 +87,13 @@ void nodesMove(Nodes *nodes, size_t to, size_t from) {
 // Find the desired named node in a nodes list.
 // Return the node, if found or NULL if not found
 INamedNode *nodesFind(Nodes *nodes, Name *name) {
-	INode **nodesp;
-	uint32_t cnt;
-	for (nodesFor(nodes, cnt, nodesp)) {
-		if (isNamedNode(*nodesp)) {
-			if (((INamedNode*)*nodesp)->namesym == name)
-				return (INamedNode*)*nodesp;
-		}
-	}
-	return NULL;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(nodes, cnt, nodesp)) {
+        if (isNamedNode(*nodesp)) {
+            if (((INamedNode*)*nodesp)->namesym == name)
+                return (INamedNode*)*nodesp;
+        }
+    }
+    return NULL;
 }

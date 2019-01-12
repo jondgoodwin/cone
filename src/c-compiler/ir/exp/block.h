@@ -12,8 +12,8 @@
 // It is also a local execution context/namespace owning local variables.
 // Local variables are uniquely named and cannot be forward referenced.
 typedef struct BlockNode {
-	ITypedNodeHdr;
-	Nodes *stmts;
+    ITypedNodeHdr;
+    Nodes *stmts;
     uint16_t scope;
 } BlockNode;
 

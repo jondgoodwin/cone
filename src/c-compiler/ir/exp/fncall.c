@@ -12,12 +12,12 @@
 
 // Create a function call node
 FnCallNode *newFnCallNode(INode *fn, int nnodes) {
-	FnCallNode *node;
-	newNode(node, FnCallNode, FnCallTag);
-	node->objfn = fn;
+    FnCallNode *node;
+    newNode(node, FnCallNode, FnCallTag);
+    node->objfn = fn;
     node->methprop = NULL;
-	node->args = nnodes == 0? NULL : newNodes(nnodes);
-	return node;
+    node->args = nnodes == 0? NULL : newNodes(nnodes);
+    return node;
 }
 
 // Create new fncall node, prefilling method, self, and creating room for nnodes args

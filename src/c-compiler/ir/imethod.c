@@ -30,15 +30,15 @@ void methnodesGrow(IMethNodes *mnodes) {
 // Find the desired named node.
 // Return the node, if found or NULL if not found
 INamedNode *imethnodesFind(IMethNodes *mnodes, Name *name) {
-	INode **nodesp;
-	uint32_t cnt;
-	for (imethnodesFor(mnodes, cnt, nodesp)) {
-		if (isNamedNode(*nodesp)) {
-			if (((INamedNode*)*nodesp)->namesym == name)
-				return (INamedNode*)*nodesp;
-		}
-	}
-	return NULL;
+    INode **nodesp;
+    uint32_t cnt;
+    for (imethnodesFor(mnodes, cnt, nodesp)) {
+        if (isNamedNode(*nodesp)) {
+            if (((INamedNode*)*nodesp)->namesym == name)
+                return (INamedNode*)*nodesp;
+        }
+    }
+    return NULL;
 }
 
 // Add an INode to the end of a IMethNodes, growing it if full (changing its memory location)
@@ -83,9 +83,9 @@ FnDclNode *imethnodesFindBestMethod(FnDclNode *firstmethod, Nodes *args) {
     for (FnDclNode *methnode = (FnDclNode *)firstmethod; methnode; methnode = methnode->nextnode) {
         int match;
         switch (match = fnSigMatchMethCall((FnSigNode *)methnode->vtype, args)) {
-        case 0: continue;		// not an acceptable match
-        case 1: return methnode;	// perfect match!
-        default:				// imprecise match using conversions
+        case 0: continue;        // not an acceptable match
+        case 1: return methnode;    // perfect match!
+        default:                // imprecise match using conversions
             // If this will auto-ref, make sure the ref perm will match
             if (match >= 100 && 
                 !refAutoRefCheck(nodesGet(args, 0), ((ITypedNode*)nodesGet(((FnSigNode*)methnode->vtype)->parms, 0))->vtype))

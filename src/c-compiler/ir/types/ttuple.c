@@ -9,23 +9,23 @@
 
 // Create a new type tuple node
 TTupleNode *newTTupleNode(int cnt) {
-	TTupleNode *tuple;
-	newNode(tuple, TTupleNode, TTupleTag);
-	tuple->vtype = voidType;
-	tuple->types = newNodes(cnt);
-	return tuple;
+    TTupleNode *tuple;
+    newNode(tuple, TTupleNode, TTupleTag);
+    tuple->vtype = voidType;
+    tuple->types = newNodes(cnt);
+    return tuple;
 }
 
 // Serialize a type tuple node
 void ttuplePrint(TTupleNode *tuple) {
-	INode **nodesp;
-	uint32_t cnt;
+    INode **nodesp;
+    uint32_t cnt;
 
-	for (nodesFor(tuple->types, cnt, nodesp)) {
-		inodePrintNode(*nodesp);
+    for (nodesFor(tuple->types, cnt, nodesp)) {
+        inodePrintNode(*nodesp);
         if (cnt)
-		    inodeFprint(",");
-	}
+            inodeFprint(",");
+    }
 }
 
 // Check the type tuple node

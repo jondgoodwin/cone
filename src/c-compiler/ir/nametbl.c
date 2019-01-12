@@ -23,14 +23,14 @@
 #include <string.h>
 
 // Public globals
-size_t gNameTblInitSize = 16384;	// Initial maximum number of unique names (must be power of 2)
-unsigned int gNameTblUtil = 80;		// % utilization that triggers doubling of table
+size_t gNameTblInitSize = 16384;    // Initial maximum number of unique names (must be power of 2)
+unsigned int gNameTblUtil = 80;        // % utilization that triggers doubling of table
 
 // Private globals
-Name **gNameTable = NULL;		// The name table array
-size_t gNameTblAvail = 0;		// Number of allocated name table slots (power of 2)
-size_t gNameTblCeil = 0;		// Ceiling that triggers table growth
-size_t gNameTblUsed = 0;		// Number of name table slots used
+Name **gNameTable = NULL;        // The name table array
+size_t gNameTblAvail = 0;        // Number of allocated name table slots (power of 2)
+size_t gNameTblCeil = 0;        // Ceiling that triggers table growth
+size_t gNameTblUsed = 0;        // Number of name table slots used
 
 /** String hash function (djb: Dan Bernstein)
  * Ref: http://www.cse.yorku.ca/~oz/hash.html
@@ -39,18 +39,18 @@ size_t gNameTblUsed = 0;		// Number of name table slots used
  */
 #define nameHashFn(hash, strp, strl) \
 { \
-	char *p; \
-	size_t len = strl; \
-	p = strp; \
-	hash = 5381; \
-	while (len--) \
-		hash = ((hash << 5) + hash) ^ ((size_t)*p++); \
+    char *p; \
+    size_t len = strl; \
+    p = strp; \
+    hash = 5381; \
+    while (len--) \
+        hash = ((hash << 5) + hash) ^ ((size_t)*p++); \
 }
 
 /** Modulo operation that calculates primary table entry from name's hash.
  * 'size' is always a power of 2 */
 #define nameHashMod(hash, size) \
-	(assert(((size)&((size)-1))==0), (size_t) ((hash) & ((size)-1)) )
+    (assert(((size)&((size)-1))==0), (size_t) ((hash) & ((size)-1)) )
 
 /** Calculate index into name table for a name using quadratic probing
  * The table's slot at index is either empty or matches the provided name/hash
@@ -58,89 +58,89 @@ size_t gNameTblUsed = 0;		// Number of name table slots used
  */
 #define nametblFindSlot(tblp, hash, strp, strl) \
 { \
-	size_t tbli, step; \
-	for (tbli = nameHashMod(hash, gNameTblAvail), step = 1;; ++step) { \
-		Name *slot; \
-		slot = gNameTable[tbli]; \
-		if (slot==NULL || (slot->hash == hash && slot->namesz == strl && strncmp(strp, &slot->namestr, strl)==0)) \
-			break; \
-		tbli = nameHashMod(tbli + step, gNameTblAvail); \
-	} \
-	tblp = &gNameTable[tbli]; \
+    size_t tbli, step; \
+    for (tbli = nameHashMod(hash, gNameTblAvail), step = 1;; ++step) { \
+        Name *slot; \
+        slot = gNameTable[tbli]; \
+        if (slot==NULL || (slot->hash == hash && slot->namesz == strl && strncmp(strp, &slot->namestr, strl)==0)) \
+            break; \
+        tbli = nameHashMod(tbli + step, gNameTblAvail); \
+    } \
+    tblp = &gNameTable[tbli]; \
 }
 
 /** Grow the name table, by either creating it or doubling its size */
 void nametblGrow() {
-	size_t oldTblAvail;
-	Name **oldTable;
-	size_t newTblMem;
-	size_t oldslot;
+    size_t oldTblAvail;
+    Name **oldTable;
+    size_t newTblMem;
+    size_t oldslot;
 
-	// Preserve old table info
-	oldTable = gNameTable;
-	oldTblAvail = gNameTblAvail;
+    // Preserve old table info
+    oldTable = gNameTable;
+    oldTblAvail = gNameTblAvail;
 
-	// Allocate and initialize new name table
-	gNameTblAvail = oldTblAvail==0? gNameTblInitSize : oldTblAvail<<1;
-	gNameTblCeil = (gNameTblUtil * gNameTblAvail) / 100;
-	newTblMem = gNameTblAvail * sizeof(Name*);
-	gNameTable = (Name**) memAllocBlk(newTblMem);
-	memset(gNameTable, 0, newTblMem); // Fill with NULL pointers & 0s
+    // Allocate and initialize new name table
+    gNameTblAvail = oldTblAvail==0? gNameTblInitSize : oldTblAvail<<1;
+    gNameTblCeil = (gNameTblUtil * gNameTblAvail) / 100;
+    newTblMem = gNameTblAvail * sizeof(Name*);
+    gNameTable = (Name**) memAllocBlk(newTblMem);
+    memset(gNameTable, 0, newTblMem); // Fill with NULL pointers & 0s
 
-	// Copy existing name slots to re-hashed positions in new table
-	for (oldslot=0; oldslot < oldTblAvail; oldslot++) {
-		Name **oldslotp, **newslotp;
-		oldslotp = &oldTable[oldslot];
-		if (*oldslotp) {
-			char *strp;
-			size_t strl, hash;
-			Name *oldnamep = *oldslotp;
-			strp = &oldnamep->namestr;
-			strl = oldnamep->namesz;
-			hash = oldnamep->hash;
-			nametblFindSlot(newslotp, hash, strp, strl);
-			*newslotp = *oldslotp;
-		}
-	}
-	// memFreeBlk(oldTable);
+    // Copy existing name slots to re-hashed positions in new table
+    for (oldslot=0; oldslot < oldTblAvail; oldslot++) {
+        Name **oldslotp, **newslotp;
+        oldslotp = &oldTable[oldslot];
+        if (*oldslotp) {
+            char *strp;
+            size_t strl, hash;
+            Name *oldnamep = *oldslotp;
+            strp = &oldnamep->namestr;
+            strl = oldnamep->namesz;
+            hash = oldnamep->hash;
+            nametblFindSlot(newslotp, hash, strp, strl);
+            *newslotp = *oldslotp;
+        }
+    }
+    // memFreeBlk(oldTable);
 }
 
 /** Get pointer to interned Name in Global Name Table matching string. 
  * For unknown name, this allocates memory for the string and adds it to name table. */
 Name *nametblFind(char *strp, size_t strl) {
-	size_t hash;
-	Name **slotp;
+    size_t hash;
+    Name **slotp;
 
-	// Hash provide string into table
-	nameHashFn(hash, strp, strl);
-	nametblFindSlot(slotp, hash, strp, strl);
+    // Hash provide string into table
+    nameHashFn(hash, strp, strl);
+    nametblFindSlot(slotp, hash, strp, strl);
 
-	// If not already a name, allocate memory for string and add to table
-	if (*slotp == NULL) {
-		Name *newname;
-		// Double table if it has gotten too full
-		if (++gNameTblUsed >= gNameTblCeil)
-			nametblGrow();
+    // If not already a name, allocate memory for string and add to table
+    if (*slotp == NULL) {
+        Name *newname;
+        // Double table if it has gotten too full
+        if (++gNameTblUsed >= gNameTblCeil)
+            nametblGrow();
 
-		// Allocate and populate name info
-		*slotp = newname = memAllocBlk(sizeof(Name) + strl);
-		memcpy(&newname->namestr, strp, strl);
-		(&newname->namestr)[strl] = '\0';
-		newname->hash = hash;
-		newname->namesz = (unsigned char)strl;
-		newname->node = NULL;		// Node not yet known
-	}
-	return *slotp;
+        // Allocate and populate name info
+        *slotp = newname = memAllocBlk(sizeof(Name) + strl);
+        memcpy(&newname->namestr, strp, strl);
+        (&newname->namestr)[strl] = '\0';
+        newname->hash = hash;
+        newname->namesz = (unsigned char)strl;
+        newname->node = NULL;        // Node not yet known
+    }
+    return *slotp;
 }
 
 // Return size of unused space for name table
 size_t nametblUnused() {
-	return (gNameTblAvail-gNameTblUsed)*sizeof(Name*);
+    return (gNameTblAvail-gNameTblUsed)*sizeof(Name*);
 }
 
 // Initialize name table
 void nametblInit() {
-	nametblGrow();
+    nametblGrow();
 }
 
 

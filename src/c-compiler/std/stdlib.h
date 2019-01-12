@@ -63,7 +63,7 @@ AllocNode *ownAlloc;
 AllocNode *rcAlloc;
 
 // Primitive numeric types - for implicit (nondeclared but known) types
-NbrNode *boolType;	// i1
+NbrNode *boolType;    // i1
 NbrNode *i8Type;
 NbrNode *i16Type;
 NbrNode *i32Type;

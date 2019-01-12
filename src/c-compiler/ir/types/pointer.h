@@ -10,8 +10,8 @@
 
 // For pointers
 typedef struct PtrNode {
-	INodeHdr;
-	INode *pvtype;	// Value type
+    INodeHdr;
+    INode *pvtype;    // Value type
 } PtrNode;
 
 // Create a new pointer type whose info will be filled in afterwards

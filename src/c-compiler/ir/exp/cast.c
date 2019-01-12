@@ -9,20 +9,20 @@
 
 // Create a new cast node
 CastNode *newCastNode(INode *exp, INode *type) {
-	CastNode *node;
-	newNode(node, CastNode, CastTag);
-	node->vtype = type;
-	node->exp = exp;
-	return node;
+    CastNode *node;
+    newNode(node, CastNode, CastTag);
+    node->vtype = type;
+    node->exp = exp;
+    return node;
 }
 
 // Serialize cast
 void castPrint(CastNode *node) {
-	inodeFprint("(cast, ");
-	inodePrintNode(node->vtype);
-	inodeFprint(", ");
-	inodePrintNode(node->exp);
-	inodeFprint(")");
+    inodeFprint("(cast, ");
+    inodePrintNode(node->vtype);
+    inodeFprint(", ");
+    inodePrintNode(node->exp);
+    inodeFprint(")");
 }
 
 #define ptrsize 10000
@@ -42,8 +42,8 @@ uint32_t castBitsize(INode *type) {
 
 // Analyze cast node
 void castPass(PassState *pstate, CastNode *node) {
-	inodeWalk(pstate, &node->exp);
-	inodeWalk(pstate, &node->vtype);
+    inodeWalk(pstate, &node->exp);
+    inodeWalk(pstate, &node->vtype);
     if (pstate->pass == TypeCheck) {
         INode *totype = itypeGetTypeDcl(node->vtype);
         INode *fromtype = iexpGetTypeDcl(node->exp);

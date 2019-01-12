@@ -24,37 +24,37 @@
 
 // Create a new basic block after the current one
 LLVMBasicBlockRef genlInsertBlock(GenState *gen, char *name) {
-	LLVMBasicBlockRef nextblock = LLVMGetNextBasicBlock(LLVMGetInsertBlock(gen->builder));
-	if (nextblock)
-		return LLVMInsertBasicBlockInContext(gen->context, nextblock, name);
-	else
-		return LLVMAppendBasicBlockInContext(gen->context, gen->fn, name);
+    LLVMBasicBlockRef nextblock = LLVMGetNextBasicBlock(LLVMGetInsertBlock(gen->builder));
+    if (nextblock)
+        return LLVMInsertBasicBlockInContext(gen->context, nextblock, name);
+    else
+        return LLVMAppendBasicBlockInContext(gen->context, gen->fn, name);
 
 }
 
 // Generate a while block
 void genlWhile(GenState *gen, WhileNode *wnode) {
-	LLVMBasicBlockRef whilebeg, whileblk, whileend;
-	LLVMBasicBlockRef svwhilebeg, svwhileend;
+    LLVMBasicBlockRef whilebeg, whileblk, whileend;
+    LLVMBasicBlockRef svwhilebeg, svwhileend;
 
-	// Push and pop for break and continue statements
-	svwhilebeg = gen->whilebeg;
-	svwhileend = gen->whileend;
+    // Push and pop for break and continue statements
+    svwhilebeg = gen->whilebeg;
+    svwhileend = gen->whileend;
 
-	gen->whileend = whileend = genlInsertBlock(gen, "whileend");
-	whileblk = genlInsertBlock(gen, "whileblk");
-	gen->whilebeg = whilebeg = genlInsertBlock(gen, "whilebeg");
+    gen->whileend = whileend = genlInsertBlock(gen, "whileend");
+    whileblk = genlInsertBlock(gen, "whileblk");
+    gen->whilebeg = whilebeg = genlInsertBlock(gen, "whilebeg");
 
-	LLVMBuildBr(gen->builder, whilebeg);
-	LLVMPositionBuilderAtEnd(gen->builder, whilebeg);
-	LLVMBuildCondBr(gen->builder, genlExpr(gen, wnode->condexp), whileblk, whileend);
-	LLVMPositionBuilderAtEnd(gen->builder, whileblk);
-	genlBlock(gen, (BlockNode*)wnode->blk);
-	LLVMBuildBr(gen->builder, whilebeg);
-	LLVMPositionBuilderAtEnd(gen->builder, whileend);
+    LLVMBuildBr(gen->builder, whilebeg);
+    LLVMPositionBuilderAtEnd(gen->builder, whilebeg);
+    LLVMBuildCondBr(gen->builder, genlExpr(gen, wnode->condexp), whileblk, whileend);
+    LLVMPositionBuilderAtEnd(gen->builder, whileblk);
+    genlBlock(gen, (BlockNode*)wnode->blk);
+    LLVMBuildBr(gen->builder, whilebeg);
+    LLVMPositionBuilderAtEnd(gen->builder, whileend);
 
-	gen->whilebeg = svwhilebeg;
-	gen->whileend = svwhileend;
+    gen->whilebeg = svwhilebeg;
+    gen->whileend = svwhileend;
 }
 
 // Generate a return statement
@@ -76,21 +76,21 @@ void genlBlockRet(GenState *gen, ReturnNode *node) {
 
 // Generate a block's statements
 LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
-	INode **nodesp;
-	uint32_t cnt;
-	LLVMValueRef lastval = NULL; // Should never be used by caller
-	for (nodesFor(blk->stmts, cnt, nodesp)) {
-		switch ((*nodesp)->tag) {
-		case WhileTag:
-			genlWhile(gen, (WhileNode *)*nodesp); break;
-		case BreakTag:
+    INode **nodesp;
+    uint32_t cnt;
+    LLVMValueRef lastval = NULL; // Should never be used by caller
+    for (nodesFor(blk->stmts, cnt, nodesp)) {
+        switch ((*nodesp)->tag) {
+        case WhileTag:
+            genlWhile(gen, (WhileNode *)*nodesp); break;
+        case BreakTag:
             genlDealiasNodes(gen, ((BreakNode*)*nodesp)->dealias);
             LLVMBuildBr(gen->builder, gen->whileend); break;
-		case ContinueTag:
+        case ContinueTag:
             genlDealiasNodes(gen, ((BreakNode*)*nodesp)->dealias);
             LLVMBuildBr(gen->builder, gen->whilebeg); break;
-		case ReturnTag:
-			genlReturn(gen, (ReturnNode*)*nodesp); break;
+        case ReturnTag:
+            genlReturn(gen, (ReturnNode*)*nodesp); break;
         case BlockRetTag:
         {
             ReturnNode *node = (ReturnNode*)*nodesp;
@@ -99,9 +99,9 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
             genlDealiasNodes(gen, node->dealias);
             break;
         }
-		default:
-			lastval = genlExpr(gen, *nodesp);
-		}
-	}
-	return lastval;
+        default:
+            lastval = genlExpr(gen, *nodesp);
+        }
+    }
+    return lastval;
 }

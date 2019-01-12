@@ -10,9 +10,9 @@
 
 // Logic operator: not, or, and
 typedef struct LogicNode {
-	ITypedNodeHdr;
-	INode *lexp;
-	INode *rexp;
+    ITypedNodeHdr;
+    INode *lexp;
+    INode *rexp;
 } LogicNode;
 
 LogicNode *newLogicNode(int16_t typ);

@@ -12,15 +12,15 @@ typedef struct Name Name;
 
 // A namespace entry
 typedef struct NameNode {
-	Name *name;
-	INamedNode *node;
+    Name *name;
+    INamedNode *node;
 } NameNode;
 
 // Namespace metadata
 typedef struct Namespace {
-	size_t avail;
-	size_t used;
-	NameNode *namenodes;
+    size_t avail;
+    size_t used;
+    NameNode *namenodes;
 } Namespace;
 
 void namespaceInit(Namespace *ns, size_t avail);

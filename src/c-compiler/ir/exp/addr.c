@@ -11,18 +11,18 @@
 
 // Create a new addr node
 AddrNode *newAddrNode() {
-	AddrNode *node;
-	newNode(node, AddrNode, AddrTag);
-	return node;
+    AddrNode *node;
+    newNode(node, AddrNode, AddrTag);
+    return node;
 }
 
 // Serialize addr
 void addrPrint(AddrNode *node) {
-	inodeFprint("&(");
-	inodePrintNode(node->vtype);
-	inodeFprint("->");
-	inodePrintNode(node->exp);
-	inodeFprint(")");
+    inodeFprint("&(");
+    inodePrintNode(node->vtype);
+    inodeFprint("->");
+    inodePrintNode(node->exp);
+    inodeFprint(")");
 }
 
 // Extract lval variable and overall permission from lval
@@ -130,16 +130,16 @@ void addrTypeCheckAlloc(AddrNode *node, RefNode *reftype) {
 
 // Analyze addr node
 void addrPass(PassState *pstate, AddrNode *node) {
-	inodeWalk(pstate, &node->exp);
+    inodeWalk(pstate, &node->exp);
 
-	if (pstate->pass == TypeCheck) {
+    if (pstate->pass == TypeCheck) {
         // Type check a borrowed reference
         RefNode *reftype = (RefNode *)node->vtype;
         if (reftype->alloc == voidType)
             addrTypeCheckBorrow(node, reftype);
         else
             addrTypeCheckAlloc(node, reftype);
-	}
+    }
 }
 
 // Perform data flow analysis on addr node

@@ -20,8 +20,8 @@ typedef struct Name Name;
 // Header for a variable-sized structure holding a list of Nodes
 // The nodes immediately follow the header
 typedef struct Nodes {
-	uint32_t used;
-	uint32_t avail;
+    uint32_t used;
+    uint32_t avail;
 } Nodes;
 
 // Helper Functions

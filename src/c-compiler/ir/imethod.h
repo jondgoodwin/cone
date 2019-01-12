@@ -11,8 +11,8 @@
 // Variable-sized structure holding an ordered list of Nodes
 // These nodes are methods (potentially overloaded) or properties
 typedef struct IMethNodes {
-	uint32_t used;
-	uint32_t avail;
+    uint32_t used;
+    uint32_t avail;
     INode **nodes;
 } IMethNodes;
 
@@ -20,7 +20,7 @@ typedef struct IMethNodes {
 #define IMethodNodeHdr \
     INamedTypeNodeHdr; \
     IMethNodes methprops; \
-	Nodes *subtypes
+    Nodes *subtypes
 
 // Interface for a named type that supports methods
 // -> methprops (IMethNodes) is the dictionary of named methods

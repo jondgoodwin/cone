@@ -12,42 +12,42 @@
 #include <string.h>
 
 Name *keyAdd(char *keyword, uint16_t toktype) {
-	Name *sym;
-	INamedNode *node;
-	sym = nametblFind(keyword, strlen(keyword));
-	sym->node = node = (INamedNode*)memAllocBlk(sizeof(INode));
-	node->tag = KeywordTag;
-	node->flags = toktype;
-	return sym;
+    Name *sym;
+    INamedNode *node;
+    sym = nametblFind(keyword, strlen(keyword));
+    sym->node = node = (INamedNode*)memAllocBlk(sizeof(INode));
+    node->tag = KeywordTag;
+    node->flags = toktype;
+    return sym;
 }
 
 void keywordInit() {
-	keyAdd("include", IncludeToken);
-	keyAdd("mod", ModToken);
-	keyAdd("extern", ExternToken);
+    keyAdd("include", IncludeToken);
+    keyAdd("mod", ModToken);
+    keyAdd("extern", ExternToken);
     keyAdd("set", SetToken);
-	keyAdd("fn", FnToken);
-	keyAdd("struct", StructToken);
-	keyAdd("alloc", AllocToken);
-	keyAdd("return", RetToken);
+    keyAdd("fn", FnToken);
+    keyAdd("struct", StructToken);
+    keyAdd("alloc", AllocToken);
+    keyAdd("return", RetToken);
     keyAdd("do", DoToken);
-	keyAdd("if", IfToken);
-	keyAdd("elif", ElifToken);
-	keyAdd("else", ElseToken);
-	keyAdd("while", WhileToken);
+    keyAdd("if", IfToken);
+    keyAdd("elif", ElifToken);
+    keyAdd("else", ElseToken);
+    keyAdd("while", WhileToken);
     keyAdd("each", EachToken);
     keyAdd("in", InToken);
     keyAdd("by", ByToken);
-	keyAdd("break", BreakToken);
-	keyAdd("continue", ContinueToken);
-	keyAdd("not", NotToken);
-	keyAdd("or", OrToken);
-	keyAdd("and", AndToken);
-	keyAdd("as", AsToken);
+    keyAdd("break", BreakToken);
+    keyAdd("continue", ContinueToken);
+    keyAdd("not", NotToken);
+    keyAdd("or", OrToken);
+    keyAdd("and", AndToken);
+    keyAdd("as", AsToken);
     keyAdd("into", IntoToken);
 
-	keyAdd("true", trueToken);
-	keyAdd("false", falseToken);
+    keyAdd("true", trueToken);
+    keyAdd("false", falseToken);
     keyAdd("null", nullToken);
 }
 
@@ -60,12 +60,12 @@ PermNode *newPermNodeStr(char *name, uint16_t flags) {
 
 // Declare built-in permission types and their names
 void stdPermInit() {
-	uniPerm = newPermNodeStr("uni", MayRead | MayWrite | RaceSafe | MayIntRefSum | IsLockless);
-	mutPerm = newPermNodeStr("mut", MayRead | MayWrite | MayAlias | MayAliasWrite | IsLockless);
-	immPerm = newPermNodeStr("imm", MayRead | MayAlias | RaceSafe | MayIntRefSum | IsLockless);
-	constPerm = newPermNodeStr("const", MayRead | MayAlias | IsLockless);
-	mut1Perm = newPermNodeStr("mut1", MayRead | MayWrite | MayAlias | MayIntRefSum | IsLockless);
-	opaqPerm = newPermNodeStr("opaq", MayAlias | RaceSafe | IsLockless);
+    uniPerm = newPermNodeStr("uni", MayRead | MayWrite | RaceSafe | MayIntRefSum | IsLockless);
+    mutPerm = newPermNodeStr("mut", MayRead | MayWrite | MayAlias | MayAliasWrite | IsLockless);
+    immPerm = newPermNodeStr("imm", MayRead | MayAlias | RaceSafe | MayIntRefSum | IsLockless);
+    constPerm = newPermNodeStr("const", MayRead | MayAlias | IsLockless);
+    mut1Perm = newPermNodeStr("mut1", MayRead | MayWrite | MayAlias | MayIntRefSum | IsLockless);
+    opaqPerm = newPermNodeStr("opaq", MayAlias | RaceSafe | IsLockless);
 }
 
 AllocNode *newAllocNodeStr(char *name) {
@@ -84,7 +84,7 @@ void stdAllocInit() {
 
 // Set up the standard library, whose names are always shared by all modules
 void stdlibInit() {
-	lexInject("std", "");
+    lexInject("std", "");
 
     anonName = nametblFind("_", 1);
     selfName = nametblFind("self", 4);
@@ -127,7 +127,7 @@ void stdlibInit() {
     voidType = (INode*)newVoidNode();
 
     keywordInit();
-	stdPermInit();
+    stdPermInit();
     stdAllocInit();
-	stdNbrInit();
+    stdNbrInit();
 }

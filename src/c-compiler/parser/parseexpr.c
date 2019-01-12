@@ -57,80 +57,80 @@ INode *parseNameUse(ParseState *parse) {
 
 // Parse a term: literal, identifier, etc.
 INode *parseTerm(ParseState *parse) {
-	switch (lex->toktype) {
-	case trueToken:
-	{
-		ULitNode *node = newULitNode(1, (INode*)boolType);
-		lexNextToken();
-		return (INode *)node;
-	}
-	case falseToken:
-	{
-		ULitNode *node = newULitNode(0, (INode*)boolType);
-		lexNextToken();
-		return (INode *)node;
-	}
+    switch (lex->toktype) {
+    case trueToken:
+    {
+        ULitNode *node = newULitNode(1, (INode*)boolType);
+        lexNextToken();
+        return (INode *)node;
+    }
+    case falseToken:
+    {
+        ULitNode *node = newULitNode(0, (INode*)boolType);
+        lexNextToken();
+        return (INode *)node;
+    }
     case nullToken:
     {
         NullNode *node = newNullNode();
         lexNextToken();
         return (INode *)node;
     }
-	case IntLitToken:
-		{
-			ULitNode *node = newULitNode(lex->val.uintlit, lex->langtype);
-			lexNextToken();
-			return (INode *)node;
-		}
-	case FloatLitToken:
-		{
-			FLitNode *node = newFLitNode(lex->val.floatlit, lex->langtype);
-			lexNextToken();
-			return (INode *)node;
-		}
-	case StrLitToken:
-		{
-			SLitNode *node = newSLitNode(lex->val.strlit, lex->langtype);
-			lexNextToken();
-			return (INode *)node;
-		}
-	case IdentToken:
-	case DblColonToken:
-		return (INode*)parseNameUse(parse);
-	case LParenToken:
-		{
-			INode *node;
-			lexNextToken();
-			node = parseAnyExpr(parse);
-			parseCloseTok(RParenToken);
-			return node;
-		}
+    case IntLitToken:
+        {
+            ULitNode *node = newULitNode(lex->val.uintlit, lex->langtype);
+            lexNextToken();
+            return (INode *)node;
+        }
+    case FloatLitToken:
+        {
+            FLitNode *node = newFLitNode(lex->val.floatlit, lex->langtype);
+            lexNextToken();
+            return (INode *)node;
+        }
+    case StrLitToken:
+        {
+            SLitNode *node = newSLitNode(lex->val.strlit, lex->langtype);
+            lexNextToken();
+            return (INode *)node;
+        }
+    case IdentToken:
+    case DblColonToken:
+        return (INode*)parseNameUse(parse);
+    case LParenToken:
+        {
+            INode *node;
+            lexNextToken();
+            node = parseAnyExpr(parse);
+            parseCloseTok(RParenToken);
+            return node;
+        }
     case LBracketToken:
         return parseList(parse, NULL);
-	default:
-		errorMsgLex(ErrorBadTerm, "Invalid term value: expected variable, literal, etc.");
-		return NULL;
-	}
+    default:
+        errorMsgLex(ErrorBadTerm, "Invalid term value: expected variable, literal, etc.");
+        return NULL;
+    }
 }
 
 // Parse the postfix operators: '.', '::', '()', '[]'
 INode *parsePostfix(ParseState *parse) {
     INode *node = lexIsToken(DotToken)? (INode*)newNameUseNode(thisName) : parseTerm(parse);
 
-	while (1) {
-		switch (lex->toktype) {
+    while (1) {
+        switch (lex->toktype) {
 
-		// Function call with possible parameters
-		case LParenToken:
+        // Function call with possible parameters
+        case LParenToken:
         case LBracketToken:
-		{
+        {
             int closetok = lex->toktype == LBracketToken? RBracketToken : RParenToken;
-			FnCallNode *fncall = newFnCallNode(node, 8);
+            FnCallNode *fncall = newFnCallNode(node, 8);
             if (closetok == RBracketToken)
                 fncall->flags |= FlagIndex;
-			lexNextToken();
-			if (!lexIsToken(closetok))
-				while (1) {
+            lexNextToken();
+            if (!lexIsToken(closetok))
+                while (1) {
                     INode *arg = parseSimpleExpr(parse);
                     if (lexIsToken(ColonToken)) {
                         if (arg->tag != NameUseTag)
@@ -139,52 +139,52 @@ INode *parsePostfix(ParseState *parse) {
                         lexNextToken();
                         ((NamedValNode *)arg)->val = parseSimpleExpr(parse);
                     }
-					nodesAdd(&fncall->args, arg);
-					if (lexIsToken(CommaToken))
-						lexNextToken();
-					else
-						break;
-				}
-			parseCloseTok(closetok);
-			node = (INode *)fncall;
-			break;
-		}
+                    nodesAdd(&fncall->args, arg);
+                    if (lexIsToken(CommaToken))
+                        lexNextToken();
+                    else
+                        break;
+                }
+            parseCloseTok(closetok);
+            node = (INode *)fncall;
+            break;
+        }
 
-		// Object call with possible parameters
-		case DotToken:
-		{
+        // Object call with possible parameters
+        case DotToken:
+        {
             FnCallNode *fncall = newFnCallNode(node, 0);
             lexNextToken();
 
-			// Get property/method name
-			if (!lexIsToken(IdentToken)) {
-				errorMsgLex(ErrorNoMbr, "This should be a named property/method");
-				lexNextToken();
-				break;
-			}
-			NameUseNode *method = newNameUseNode(lex->val.ident);
-			method->tag = MbrNameUseTag;
+            // Get property/method name
+            if (!lexIsToken(IdentToken)) {
+                errorMsgLex(ErrorNoMbr, "This should be a named property/method");
+                lexNextToken();
+                break;
+            }
+            NameUseNode *method = newNameUseNode(lex->val.ident);
+            method->tag = MbrNameUseTag;
             fncall->methprop = method;
             lexNextToken();
 
-			// If parameters provided, capture them as part of method call
-			if (lexIsToken(LParenToken)) {
-				lexNextToken();
+            // If parameters provided, capture them as part of method call
+            if (lexIsToken(LParenToken)) {
+                lexNextToken();
                 fncall->args = newNodes(8);
-				if (!lexIsToken(RParenToken)) {
-					while (1) {
-						nodesAdd(&fncall->args, parseSimpleExpr(parse));
-						if (lexIsToken(CommaToken))
-							lexNextToken();
-						else
-							break;
-					}
-				}
-				parseCloseTok(RParenToken);
-			}
+                if (!lexIsToken(RParenToken)) {
+                    while (1) {
+                        nodesAdd(&fncall->args, parseSimpleExpr(parse));
+                        if (lexIsToken(CommaToken))
+                            lexNextToken();
+                        else
+                            break;
+                    }
+                }
+                parseCloseTok(RParenToken);
+            }
             node = (INode *)fncall;
             break;
-		}
+        }
 
         case IncrToken:
         {
@@ -199,14 +199,14 @@ INode *parsePostfix(ParseState *parse) {
             break;
         }
         default:
-			return node;
-		}
-	}
+            return node;
+        }
+    }
 }
 
 // Parse an address term - current token is '&'
 INode *parseAddr(ParseState *parse) {
-	AddrNode *anode = newAddrNode();
+    AddrNode *anode = newAddrNode();
     RefNode *reftype = newRefNode();  // Type for address node
     anode->vtype = (INode *)reftype;
     reftype->pvtype = NULL;     // Type inference will correct this
@@ -231,21 +231,21 @@ INode *parseAddr(ParseState *parse) {
             reftype->perm = parsePerm(NULL);
         }
 
-	    // A value or constructor
-	    anode->exp = parseTerm(parse);
+        // A value or constructor
+        anode->exp = parseTerm(parse);
     }
 
-	return (INode *)anode;
+    return (INode *)anode;
 }
 
 // Parse a prefix operator, e.g.: -
 INode *parsePrefix(ParseState *parse) {
-	switch (lex->toktype) {
-	case DashToken:
-	{
-		FnCallNode *node = newFnCallOpname(NULL, minusName, 0);
-		lexNextToken();
-		INode *argnode = parsePrefix(parse);
+    switch (lex->toktype) {
+    case DashToken:
+    {
+        FnCallNode *node = newFnCallOpname(NULL, minusName, 0);
+        lexNextToken();
+        INode *argnode = parsePrefix(parse);
         if (argnode->tag == ULitTag) {
             ((ULitNode*)argnode)->uintlit = (uint64_t)-((int64_t)((ULitNode*)argnode)->uintlit);
             return argnode;
@@ -255,15 +255,15 @@ INode *parsePrefix(ParseState *parse) {
             return argnode;
         }
         node->objfn = argnode;
-		return (INode *)node;
-	}
-	case TildeToken:
-	{
-		FnCallNode *node = newFnCallOp(NULL, "~", 0);
-		lexNextToken();
-		node->objfn = parsePrefix(parse);
-		return (INode *)node;
-	}
+        return (INode *)node;
+    }
+    case TildeToken:
+    {
+        FnCallNode *node = newFnCallOp(NULL, "~", 0);
+        lexNextToken();
+        node->objfn = parsePrefix(parse);
+        return (INode *)node;
+    }
     case IncrToken:
     {
         FnCallNode *node = newFnCallOpname(NULL, incrName, 0);
@@ -279,79 +279,79 @@ INode *parsePrefix(ParseState *parse) {
         return (INode *)node;
     }
     case StarToken:
-	{
-		DerefNode *node = newDerefNode();
-		lexNextToken();
-		node->exp = parsePrefix(parse);
-		return (INode *)node;
-	}
-	case AmperToken:
-		return parseAddr(parse);
-	default:
-		return parsePostfix(parse);
-	}
+    {
+        DerefNode *node = newDerefNode();
+        lexNextToken();
+        node->exp = parsePrefix(parse);
+        return (INode *)node;
+    }
+    case AmperToken:
+        return parseAddr(parse);
+    default:
+        return parsePostfix(parse);
+    }
 }
 
 // Parse type cast
 INode *parseCast(ParseState *parse) {
-	INode *lhnode = parsePrefix(parse);
-	if (lexIsToken(AsToken) || lexIsToken(IntoToken)) {
-		CastNode *node = newCastNode(lhnode, NULL);
+    INode *lhnode = parsePrefix(parse);
+    if (lexIsToken(AsToken) || lexIsToken(IntoToken)) {
+        CastNode *node = newCastNode(lhnode, NULL);
         if (lexIsToken(AsToken))
             node->flags |= FlagAsIf;
-		lexNextToken();
-		node->vtype = parseVtype(parse);
-		return (INode*)node;
-	}
-	return lhnode;
+        lexNextToken();
+        node->vtype = parseVtype(parse);
+        return (INode*)node;
+    }
+    return lhnode;
 }
 
 // Parse binary multiply, divide, rem operator
 INode *parseMult(ParseState *parse) {
-	INode *lhnode = parseCast(parse);
-	while (1) {
-		if (lexIsToken(StarToken)) {
-			FnCallNode *node = newFnCallOpname(lhnode, multName, 2);
-			lexNextToken();
-			nodesAdd(&node->args, parseCast(parse));
-			lhnode = (INode*)node;
-		}
-		else if (lexIsToken(SlashToken)) {
-			FnCallNode *node = newFnCallOpname(lhnode, divName, 2);
-			lexNextToken();
-			nodesAdd(&node->args, parseCast(parse));
-			lhnode = (INode*)node;
-		}
-		else if (lexIsToken(PercentToken)) {
-			FnCallNode *node = newFnCallOpname(lhnode, remName, 2);
-			lexNextToken();
-			nodesAdd(&node->args, parseCast(parse));
-			lhnode = (INode*)node;
-		}
-		else
-			return lhnode;
-	}
+    INode *lhnode = parseCast(parse);
+    while (1) {
+        if (lexIsToken(StarToken)) {
+            FnCallNode *node = newFnCallOpname(lhnode, multName, 2);
+            lexNextToken();
+            nodesAdd(&node->args, parseCast(parse));
+            lhnode = (INode*)node;
+        }
+        else if (lexIsToken(SlashToken)) {
+            FnCallNode *node = newFnCallOpname(lhnode, divName, 2);
+            lexNextToken();
+            nodesAdd(&node->args, parseCast(parse));
+            lhnode = (INode*)node;
+        }
+        else if (lexIsToken(PercentToken)) {
+            FnCallNode *node = newFnCallOpname(lhnode, remName, 2);
+            lexNextToken();
+            nodesAdd(&node->args, parseCast(parse));
+            lhnode = (INode*)node;
+        }
+        else
+            return lhnode;
+    }
 }
 
 // Parse binary add, subtract operator
 INode *parseAdd(ParseState *parse) {
-	INode *lhnode = parseMult(parse);
-	while (1) {
-		if (lexIsToken(PlusToken)) {
-			FnCallNode *node = newFnCallOpname(lhnode, plusName, 2);
-			lexNextToken();
-			nodesAdd(&node->args, parseMult(parse));
-			lhnode = (INode*)node;
-		}
-		else if (lexIsToken(DashToken)) {
-			FnCallNode *node = newFnCallOpname(lhnode, minusName, 2);
-			lexNextToken();
-			nodesAdd(&node->args, parseMult(parse));
-			lhnode = (INode*)node;
-		}
-		else
-			return lhnode;
-	}
+    INode *lhnode = parseMult(parse);
+    while (1) {
+        if (lexIsToken(PlusToken)) {
+            FnCallNode *node = newFnCallOpname(lhnode, plusName, 2);
+            lexNextToken();
+            nodesAdd(&node->args, parseMult(parse));
+            lhnode = (INode*)node;
+        }
+        else if (lexIsToken(DashToken)) {
+            FnCallNode *node = newFnCallOpname(lhnode, minusName, 2);
+            lexNextToken();
+            nodesAdd(&node->args, parseMult(parse));
+            lhnode = (INode*)node;
+        }
+        else
+            return lhnode;
+    }
 }
 
 // Parse << and >> operators
@@ -382,105 +382,105 @@ INode *parseShift(ParseState *parse) {
 
 // Parse bitwise And
 INode *parseAnd(ParseState *parse) {
-	INode *lhnode = parseShift(parse);
-	while (1) {
-		if (lexIsToken(AmperToken)) {
-			FnCallNode *node = newFnCallOpname(lhnode, andName, 2);
-			lexNextToken();
-			nodesAdd(&node->args, parseShift(parse));
-			lhnode = (INode*)node;
-		}
-		else
-			return lhnode;
-	}
+    INode *lhnode = parseShift(parse);
+    while (1) {
+        if (lexIsToken(AmperToken)) {
+            FnCallNode *node = newFnCallOpname(lhnode, andName, 2);
+            lexNextToken();
+            nodesAdd(&node->args, parseShift(parse));
+            lhnode = (INode*)node;
+        }
+        else
+            return lhnode;
+    }
 }
 
 // Parse bitwise Xor
 INode *parseXor(ParseState *parse) {
-	INode *lhnode = parseAnd(parse);
-	while (1) {
-		if (lexIsToken(CaretToken)) {
-			FnCallNode *node = newFnCallOpname(lhnode, xorName, 2);
-			lexNextToken();
-			nodesAdd(&node->args, parseAnd(parse));
-			lhnode = (INode*)node;
-		}
-		else
-			return lhnode;
-	}
+    INode *lhnode = parseAnd(parse);
+    while (1) {
+        if (lexIsToken(CaretToken)) {
+            FnCallNode *node = newFnCallOpname(lhnode, xorName, 2);
+            lexNextToken();
+            nodesAdd(&node->args, parseAnd(parse));
+            lhnode = (INode*)node;
+        }
+        else
+            return lhnode;
+    }
 }
 
 // Parse bitwise or
 INode *parseOr(ParseState *parse) {
-	INode *lhnode = parseXor(parse);
-	while (1) {
-		if (lexIsToken(BarToken)) {
-			FnCallNode *node = newFnCallOpname(lhnode, orName, 2);
-			lexNextToken();
-			nodesAdd(&node->args, parseXor(parse));
-			lhnode = (INode*)node;
-		}
-		else
-			return lhnode;
-	}
+    INode *lhnode = parseXor(parse);
+    while (1) {
+        if (lexIsToken(BarToken)) {
+            FnCallNode *node = newFnCallOpname(lhnode, orName, 2);
+            lexNextToken();
+            nodesAdd(&node->args, parseXor(parse));
+            lhnode = (INode*)node;
+        }
+        else
+            return lhnode;
+    }
 }
 
 // Parse comparison operator
 INode *parseCmp(ParseState *parse) {
-	INode *lhnode = parseOr(parse);
-	char *cmpop;
+    INode *lhnode = parseOr(parse);
+    char *cmpop;
 
-	switch (lex->toktype) {
-	case EqToken:  cmpop = "=="; break;
-	case NeToken:  cmpop = "!="; break;
-	case LtToken:  cmpop = "<"; break;
-	case LeToken:  cmpop = "<="; break;
-	case GtToken:  cmpop = ">"; break;
-	case GeToken:  cmpop = ">="; break;
-	default: return lhnode;
-	}
+    switch (lex->toktype) {
+    case EqToken:  cmpop = "=="; break;
+    case NeToken:  cmpop = "!="; break;
+    case LtToken:  cmpop = "<"; break;
+    case LeToken:  cmpop = "<="; break;
+    case GtToken:  cmpop = ">"; break;
+    case GeToken:  cmpop = ">="; break;
+    default: return lhnode;
+    }
 
-	FnCallNode *node = newFnCallOp(lhnode, cmpop, 2);
-	lexNextToken();
-	nodesAdd(&node->args, parseOr(parse));
-	return (INode*)node;
+    FnCallNode *node = newFnCallOp(lhnode, cmpop, 2);
+    lexNextToken();
+    nodesAdd(&node->args, parseOr(parse));
+    return (INode*)node;
 }
 
 // Parse 'not' logical operator
 INode *parseNotLogic(ParseState *parse) {
-	if (lexIsToken(NotToken)) {
-		LogicNode *node = newLogicNode(NotLogicTag);
-		lexNextToken();
-		node->lexp = parseNotLogic(parse);
-		return (INode*)node;
-	}
-	return parseCmp(parse);
+    if (lexIsToken(NotToken)) {
+        LogicNode *node = newLogicNode(NotLogicTag);
+        lexNextToken();
+        node->lexp = parseNotLogic(parse);
+        return (INode*)node;
+    }
+    return parseCmp(parse);
 }
 
 // Parse 'and' logical operator
 INode *parseAndLogic(ParseState *parse) {
-	INode *lhnode = parseNotLogic(parse);
-	while (lexIsToken(AndToken)) {
-		LogicNode *node = newLogicNode(AndLogicTag);
-		lexNextToken();
-		node->lexp = lhnode;
-		node->rexp = parseNotLogic(parse);
-		lhnode = (INode*)node;
-	}
-	return lhnode;
+    INode *lhnode = parseNotLogic(parse);
+    while (lexIsToken(AndToken)) {
+        LogicNode *node = newLogicNode(AndLogicTag);
+        lexNextToken();
+        node->lexp = lhnode;
+        node->rexp = parseNotLogic(parse);
+        lhnode = (INode*)node;
+    }
+    return lhnode;
 }
 
 // Parse 'or' logical operator
 INode *parseSimpleExpr(ParseState *parse) {
-	INode *lhnode = parseAndLogic(parse);
-	while (lexIsToken(OrToken)) {
-		LogicNode *node = newLogicNode(OrLogicTag);
-		lexNextToken();
-		node->lexp = lhnode;
-		node->rexp = parseAndLogic(parse);
-		lhnode = (INode*)node;
-	}
-	return lhnode;
+    INode *lhnode = parseAndLogic(parse);
+    while (lexIsToken(OrToken)) {
+        LogicNode *node = newLogicNode(OrLogicTag);
+        lexNextToken();
+        node->lexp = lhnode;
+        node->rexp = parseAndLogic(parse);
+        lhnode = (INode*)node;
+    }
+    return lhnode;
 }
 
 // Parse a comma-separated expression tuple
@@ -579,15 +579,15 @@ INode *parseList(ParseState *parse, INode *typenode) {
 
 // This parses any kind of expression, including blocks, asssignment or tuple
 INode *parseAnyExpr(ParseState *parse) {
-	switch (lex->toktype) {
-	case IfToken:
-		return parseIf(parse);
+    switch (lex->toktype) {
+    case IfToken:
+        return parseIf(parse);
     case DoToken:
         lexNextToken();
         return parseBlock(parse);
-	case LCurlyToken:
-		return parseBlock(parse);
-	default:
+    case LCurlyToken:
+        return parseBlock(parse);
+    default:
         return parseAssign(parse);
-	}
+    }
 }

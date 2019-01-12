@@ -11,21 +11,21 @@
 
 // Create a new assignment node
 AssignNode *newAssignNode(int16_t assigntype, INode *lval, INode *rval) {
-	AssignNode *node;
-	newNode(node, AssignNode, AssignTag);
-	node->assignType = assigntype;
-	node->lval = lval;
-	node->rval = rval;
-	return node;
+    AssignNode *node;
+    newNode(node, AssignNode, AssignTag);
+    node->assignType = assigntype;
+    node->lval = lval;
+    node->rval = rval;
+    return node;
 }
 
 // Serialize assignment node
 void assignPrint(AssignNode *node) {
-	inodeFprint("(=, ");
-	inodePrintNode(node->lval);
-	inodeFprint(", ");
-	inodePrintNode(node->rval);
-	inodeFprint(")");
+    inodeFprint("(=, ");
+    inodePrintNode(node->lval);
+    inodeFprint(", ");
+    inodePrintNode(node->rval);
+    inodeFprint(")");
 }
 
 // Is it a valid lval?
@@ -109,12 +109,12 @@ void assignToOneCheck(INode *lval, VTupleNode *rval) {
 
 // Name resolution and type checking for assignment node
 void assignPass(PassState *pstate, AssignNode *node) {
-	inodeWalk(pstate, &node->lval);
-	inodeWalk(pstate, &node->rval);
+    inodeWalk(pstate, &node->lval);
+    inodeWalk(pstate, &node->rval);
     INode *lval = node->lval;
 
-	switch (pstate->pass) {
-	case TypeCheck:
+    switch (pstate->pass) {
+    case TypeCheck:
         // Handle tuple decomposition for parallel assignment
         if (lval->tag == VTupleTag) {
             if (node->rval->tag == VTupleTag)

@@ -10,8 +10,8 @@
 
 // Cast to another type
 typedef struct CastNode {
-	ITypedNodeHdr;
-	INode *exp;
+    ITypedNodeHdr;
+    INode *exp;
 } CastNode;
 
 #define FlagAsIf 0x8000

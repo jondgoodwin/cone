@@ -9,20 +9,20 @@
 
 // Create a new struct type whose info will be filled in afterwards
 StructNode *newStructNode(Name *namesym) {
-	StructNode *snode;
-	newNode(snode, StructNode, StructTag);
+    StructNode *snode;
+    newNode(snode, StructNode, StructTag);
     snode->vtype = NULL;
     snode->owner = NULL;
     snode->namesym = namesym;
     snode->llvmtype = NULL;
     snode->subtypes = newNodes(0);
     imethnodesInit(&snode->methprops, 8);
-	return snode;
+    return snode;
 }
 
 // Serialize a struct type
 void structPrint(StructNode *node) {
-	inodeFprint(node->tag == StructTag? "struct %s {}" : "alloc %s {}", &node->namesym->namestr);
+    inodeFprint(node->tag == StructTag? "struct %s {}" : "alloc %s {}", &node->namesym->namestr);
 }
 
 // Semantically analyze a struct type
@@ -45,11 +45,11 @@ void structPass(PassState *pstate, StructNode *node) {
 
 // Compare two struct signatures to see if they are equivalent
 int structEqual(StructNode *node1, StructNode *node2) {
-	// inodes must match exactly in order
-	return 1;
+    // inodes must match exactly in order
+    return 1;
 }
 
 // Will from struct coerce to a to struct (we know they are not the same)
 int structCoerces(StructNode *to, StructNode *from) {
-	return 1;
+    return 1;
 }

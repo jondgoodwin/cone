@@ -10,9 +10,9 @@
 
 // Cast to another type
 typedef struct NamedValNode {
-	ITypedNodeHdr;
+    ITypedNodeHdr;
     INode *name;
-	INode *val;
+    INode *val;
 } NamedValNode;
 
 NamedValNode *newNamedValNode(INode *name);

@@ -10,15 +10,15 @@
 
 // Variations on assignment
 enum AssignType {
-	NormalAssign
+    NormalAssign
 };
 
 // Assignment node
 typedef struct AssignNode {
-	ITypedNodeHdr;
-	INode *lval;
-	INode *rval;
-	int16_t assignType;
+    ITypedNodeHdr;
+    INode *lval;
+    INode *rval;
+    int16_t assignType;
 } AssignNode;
 
 AssignNode *newAssignNode(int16_t assigntype, INode *lval, INode *rval);

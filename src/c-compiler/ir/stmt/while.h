@@ -10,9 +10,9 @@
 
 // While statement
 typedef struct WhileNode {
-	INodeHdr;
-	INode *condexp;
-	INode *blk;
+    INodeHdr;
+    INode *condexp;
+    INode *blk;
 } WhileNode;
 
 WhileNode *newWhileNode();

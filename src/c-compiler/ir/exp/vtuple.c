@@ -9,23 +9,23 @@
 
 // Create a new value tuple node
 VTupleNode *newVTupleNode() {
-	VTupleNode *tuple;
-	newNode(tuple, VTupleNode, VTupleTag);
-	tuple->vtype = NULL;
-	tuple->values = newNodes(4);
-	return tuple;
+    VTupleNode *tuple;
+    newNode(tuple, VTupleNode, VTupleTag);
+    tuple->vtype = NULL;
+    tuple->values = newNodes(4);
+    return tuple;
 }
 
 // Serialize a value tuple node
 void vtuplePrint(VTupleNode *tuple) {
-	INode **nodesp;
-	uint32_t cnt;
+    INode **nodesp;
+    uint32_t cnt;
 
-	for (nodesFor(tuple->values, cnt, nodesp)) {
-		inodePrintNode(*nodesp);
+    for (nodesFor(tuple->values, cnt, nodesp)) {
+        inodePrintNode(*nodesp);
         if (cnt)
-		    inodeFprint(",");
-	}
+            inodeFprint(",");
+    }
 }
 
 // Check the value tuple node
@@ -36,7 +36,7 @@ void vtupleWalk(PassState *pstate, VTupleNode *tuple) {
         for (nodesFor(tuple->values, cnt, nodesp))
             inodeWalk(pstate, nodesp);
     }
-	else if (pstate->pass == TypeCheck) {
+    else if (pstate->pass == TypeCheck) {
         // Build ad hoc type tuple that accumulates types of vtuple's values
         TTupleNode *ttuple = newTTupleNode(tuple->values->used);
         tuple->vtype = (INode *)ttuple;
@@ -46,5 +46,5 @@ void vtupleWalk(PassState *pstate, VTupleNode *tuple) {
             inodeWalk(pstate, nodesp);
             nodesAdd(&ttuple->types, ((ITypedNode *)*nodesp)->vtype);
         }
-	}
+    }
 }

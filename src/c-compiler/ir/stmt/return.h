@@ -10,9 +10,9 @@
 
 // Return/blockret/yield expression node
 typedef struct ReturnNode {
-	INodeHdr;
+    INodeHdr;
     Nodes *dealias;
-	INode *exp;
+    INode *exp;
 } ReturnNode;
 
 ReturnNode *newReturnNode();

@@ -31,8 +31,8 @@
 #include "../shared/memory.h"
 #include "nodes.h"
 #include "namespace.h"
-typedef struct Name Name;		// ../nametbl.h
-typedef struct Lexer Lexer;		// ../../parser/lexer.h
+typedef struct Name Name;        // ../nametbl.h
+typedef struct Lexer Lexer;        // ../../parser/lexer.h
 typedef struct PassState PassState;
 
 // Interfaces & headers shared across nodes
@@ -89,21 +89,21 @@ typedef struct AllocNode {
 
 // The semantic analysis passes performed in between parse and generation
 enum Passes {
-	// Scope all declared names and resolve all name uses accordingly
-	NameResolution,
-	// Do return inference and type inference/checks.
-	TypeCheck
+    // Scope all declared names and resolve all name uses accordingly
+    NameResolution,
+    // Do return inference and type inference/checks.
+    TypeCheck
 };
 
 // Context used across all semantic analysis passes
 typedef struct PassState {
-	int pass;				// Passes
-	ModuleNode *mod;		// Current module
+    int pass;                // Passes
+    ModuleNode *mod;        // Current module
     INode *typenode;        // Current type (e.g., struct)
-	FnSigNode *fnsig;	    // The type signature of the function we are within
+    FnSigNode *fnsig;        // The type signature of the function we are within
 
-	int16_t scope;			// The current block scope (0=global, 1=fnsig, 2+=blocks)
-	uint16_t flags;
+    int16_t scope;            // The current block scope (0=global, 1=fnsig, 2+=blocks)
+    uint16_t flags;
 } PassState;
 
 #define PassWithinWhile 0x0001

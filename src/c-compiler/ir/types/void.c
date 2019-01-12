@@ -9,12 +9,12 @@
 
 // Create a new Void type node
 VoidTypeNode *newVoidNode() {
-	VoidTypeNode *voidnode;
-	newNode(voidnode, VoidTypeNode, VoidTag);
-	return voidnode;
+    VoidTypeNode *voidnode;
+    newNode(voidnode, VoidTypeNode, VoidTag);
+    return voidnode;
 }
 
 // Serialize the void type node
 void voidPrint(VoidTypeNode *voidnode) {
-	inodeFprint("void");
+    inodeFprint("void");
 }

@@ -20,21 +20,21 @@ typedef struct NameList {
 
 // Create a new name use node
 NameUseNode *newNameUseNode(Name *namesym) {
-	NameUseNode *name;
-	newNode(name, NameUseNode, NameUseTag);
-	name->qualNames = NULL;
-	name->dclnode = NULL;
-    name->namesym = namesym;
-	return name;
-}
-
-NameUseNode *newMemberUseNode(Name *namesym) {
-	NameUseNode *name;
-	newNode(name, NameUseNode, MbrNameUseTag);
+    NameUseNode *name;
+    newNode(name, NameUseNode, NameUseTag);
     name->qualNames = NULL;
     name->dclnode = NULL;
     name->namesym = namesym;
-	return name;
+    return name;
+}
+
+NameUseNode *newMemberUseNode(Name *namesym) {
+    NameUseNode *name;
+    newNode(name, NameUseNode, MbrNameUseTag);
+    name->qualNames = NULL;
+    name->dclnode = NULL;
+    name->namesym = namesym;
+    return name;
 }
 
 // If a NameUseNode has module name qualifiers, it will first set basemod
@@ -77,15 +77,15 @@ void nameUsePrint(NameUseNode *name) {
         while (cnt--)
             inodeFprint("%s::", &(*namep++)->namestr);
     }
-	inodeFprint("%s", &name->namesym->namestr);
+    inodeFprint("%s", &name->namesym->namestr);
 }
 
 // Handle name resolution and type check for name use references
 void nameUseWalk(PassState *pstate, NameUseNode **namep) {
     NameUseNode *name = *namep;
-	// During name resolution, point to name declaration and copy over needed properties
-	switch (pstate->pass) {
-	case NameResolution:
+    // During name resolution, point to name declaration and copy over needed properties
+    switch (pstate->pass) {
+    case NameResolution:
         if (name->qualNames) {
             // Do iterative look ups of module qualifiers beginning with basemod
             ModuleNode *mod = name->qualNames->basemod;
@@ -102,7 +102,7 @@ void nameUseWalk(PassState *pstate, NameUseNode **namep) {
         }
         else
             // For current module, should already be hooked in global name table
-			name->dclnode = (INamedNode*)name->namesym->node;
+            name->dclnode = (INamedNode*)name->namesym->node;
 
         // If variable is actually an instance property, rewrite it to 'self.property'
         if (name->dclnode) {
@@ -125,10 +125,10 @@ void nameUseWalk(PassState *pstate, NameUseNode **namep) {
             }
         }
         else
-			errorMsgNode((INode*)name, ErrorUnkName, "The name %s does not refer to a declared name", &name->namesym->namestr);
-		break;
-	case TypeCheck:
-		name->vtype = name->dclnode->vtype;
-		break;
-	}
+            errorMsgNode((INode*)name, ErrorUnkName, "The name %s does not refer to a declared name", &name->namesym->namestr);
+        break;
+    case TypeCheck:
+        name->vtype = name->dclnode->vtype;
+        break;
+    }
 }

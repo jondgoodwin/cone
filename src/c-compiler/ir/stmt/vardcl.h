@@ -9,12 +9,12 @@
 
 // Name declaration node (e.g., variable, fn implementation, or named type)
 typedef struct VarDclNode {
-	INamedNodeHdr;				// 'vtype': type of this name's value
-	INode *value;				// Starting value/declaration (NULL if not initialized)
-	LLVMValueRef llvmvar;		// LLVM's handle for a declared variable (for generation)
-    INode *perm;			// Permission type (often mut or imm)
-    uint16_t scope;				// 0=global
-	uint16_t index;				// index within this scope (e.g., parameter number)
+    INamedNodeHdr;                // 'vtype': type of this name's value
+    INode *value;                // Starting value/declaration (NULL if not initialized)
+    LLVMValueRef llvmvar;        // LLVM's handle for a declared variable (for generation)
+    INode *perm;            // Permission type (often mut or imm)
+    uint16_t scope;                // 0=global
+    uint16_t index;                // index within this scope (e.g., parameter number)
     uint16_t flowflags;         // Data flow pass permanent flags
     uint16_t flowtempflags;     // Data flow pass temporary flags
 } VarDclNode;

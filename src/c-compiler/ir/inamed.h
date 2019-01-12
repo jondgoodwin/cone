@@ -20,23 +20,23 @@ typedef struct INamedNode INamedNode;
 // A name can be hashed into the global name table or a particular node's namespace.
 // The struct for a name is an unmovable allocated block in memory
 typedef struct Name {
-    INamedNode *node;	    // Node currently assigned to name
-    size_t hash;			// Name's computed hash
-    unsigned char namesz;	// Number of characters in the name (<=255)
-    char namestr;	        // First byte of name's string (the rest follows)
+    INamedNode *node;        // Node currently assigned to name
+    size_t hash;            // Name's computed hash
+    unsigned char namesz;    // Number of characters in the name (<=255)
+    char namestr;            // First byte of name's string (the rest follows)
 } Name;
 
 // Named Node header, for variable and type declarations
 // - namesym points to the global name table entry (holds name string)
 // - owner is the namespace node this name belongs to
 #define INamedNodeHdr \
-	ITypedNodeHdr; \
-	Name *namesym; \
-	struct INamedNode *owner
+    ITypedNodeHdr; \
+    Name *namesym; \
+    struct INamedNode *owner
 
 // Castable structure for all named nodes
 typedef struct INamedNode {
-	INamedNodeHdr;
+    INamedNodeHdr;
 } INamedNode;
 
 #endif

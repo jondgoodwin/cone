@@ -11,17 +11,17 @@
 #include "../ir/ir.h"
 
 typedef struct ParseState {
-	ModuleNode *pgmmod;	// Root module for program
-	ModuleNode *mod;		// Current module
-	INamedNode *owner;	// Current namespace owning named nodes
+    ModuleNode *pgmmod;    // Root module for program
+    ModuleNode *mod;        // Current module
+    INamedNode *owner;    // Current namespace owning named nodes
 } ParseState;
 
 // When parsing a variable definition, what syntax is allowed?
 enum ParseFlags {
-	ParseMayName = 0x8000,		// The variable may be named
-	ParseMayAnon = 0x4000,		// The variable may be anonymous
-	ParseMaySig  = 0x2000,		// The variable may be signature only
-	ParseMayImpl = 0x1000,		// The variable may implement a code block
+    ParseMayName = 0x8000,        // The variable may be named
+    ParseMayAnon = 0x4000,        // The variable may be anonymous
+    ParseMaySig  = 0x2000,        // The variable may be signature only
+    ParseMayImpl = 0x1000,        // The variable may implement a code block
     ParseMayConst = 0x0800      // const allowed for variable declaration
 };
 
