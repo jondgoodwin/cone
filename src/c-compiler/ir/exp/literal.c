@@ -44,7 +44,9 @@ void flitPrint(FLitNode *lit) {
 NullNode *newNullNode() {
     NullNode *node;
     newNode(node, NullNode, NullTag);
-    node->vtype = NULL;
+    PtrNode *ptrtype = newPtrNode();
+    ptrtype->pvtype = voidType;
+    node->vtype = (INode*)ptrtype;
     return node;
 }
 

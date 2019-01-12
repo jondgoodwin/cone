@@ -141,8 +141,10 @@ int fnCallLowerPtrMethod(FnCallNode *callnode) {
             INode *parm1type = iexpGetTypeDcl(nodesGet(parms, 1));
             INode *arg1type = iexpGetTypeDcl(nodesGet(args, 1));
             if (parm1type->tag == PtrTag || parm1type->tag == RefTag) {
+                if (nodesGet(args, 1)->tag == NullTag && (methsym == eqName || methsym == neName))
+                    ((ITypedNode*)nodesGet(args, 1))->vtype = ((ITypedNode*)nodesGet(args, 0))->vtype;
                 // When pointers are involved, we want to ensure they are the same type
-                if (1 != itypeMatches(arg1type, iexpGetTypeDcl(nodesGet(args, 0))))
+                else if (1 != itypeMatches(arg1type, iexpGetTypeDcl(nodesGet(args, 0))))
                     continue;
             }
             else {
@@ -191,6 +193,20 @@ int fnCallLowerPtrMethod(FnCallNode *callnode) {
 // Then lower the node to a function call (objfn+args) or property access (objfn+methprop) accordingly
 void fnCallLowerMethod(FnCallNode *callnode) {
     INode *obj = callnode->objfn;
+    Name *methsym = callnode->methprop->namesym;
+
+    // if 'self' is 'null', swap self and first argument (order is irrelevant for ==/!-)
+    if (obj->tag == NullTag && callnode->args->used == 1) {
+        if (methsym != eqName && methsym != neName) {
+            errorMsgNode((INode*)callnode, ErrorNoMeth, "Method not supported for null, only equivalence.");
+            callnode->vtype = (INode*)voidType; // make up a vtype
+            return;
+        }
+        callnode->objfn = nodesGet(callnode->args, 0);
+        nodesGet(callnode->args, 0) = obj;
+        obj = callnode->objfn;
+    }
+
     INode *methtype = iexpGetTypeDcl(obj);
     if (methtype->tag == PtrTag || methtype->tag == RefTag) {
         if (fnCallLowerPtrMethod(callnode))
@@ -204,7 +220,6 @@ void fnCallLowerMethod(FnCallNode *callnode) {
     }
 
     // Do lookup. If node found, it must be an instance's method or property
-    Name *methsym = callnode->methprop->namesym;
     if (methsym->namestr == '_'
         && !(obj->tag==VarNameUseTag && ((NameUseNode*)obj)->dclnode->namesym == selfName)) {
         errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/property `%s`.", &methsym->namestr);
