@@ -167,6 +167,9 @@ INamedNode *assignLvalInfo(INode *lval, INode **lvalperm, int16_t *scope) {
         FnCallNode *element = (FnCallNode *)lval;
         // flowLoadValue(fstate, nodesFind(element->args, 0), 0);
         INamedNode *lvalvar = assignLvalInfo(element->objfn, lvalperm, scope);
+        INode *objtype = iexpGetTypeDcl(element->objfn);
+        if (objtype->tag == PtrTag)
+            *lvalperm = (INode*)mutPerm;
         if (lvalvar == NULL)
             return NULL;
         return lvalvar;
