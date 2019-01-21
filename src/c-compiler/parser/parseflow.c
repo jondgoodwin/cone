@@ -150,15 +150,17 @@ INode *parseEach(ParseState *parse, INode *blk) {
         VarDclNode *elemdcl = newVarDclNode(elemname, VarDclTag, (INode*)mutPerm);
         elemdcl->value = itercmp->objfn;
         nodesAdd(&((BlockNode*)bnode)->stmts, (INode*)elemdcl);
+        itercmp->objfn = (INode*)newNameUseNode(elemname);
         if (step) {
-            itercmp->objfn = (INode*)newNameUseNode(elemname);
             FnCallNode *pluseq = newFnCallOpname((INode*)newNameUseNode(elemname), plusEqName, 1);
             pluseq->flags |= FlagLvalOp;
             nodesAdd(&pluseq->args, step);
             nodesAdd(&((BlockNode*)wnode->blk)->stmts, (INode*)pluseq);
         }
-        else 
-            itercmp->objfn = (INode *)newFnCallOpname((INode *)newNameUseNode(elemname), isrange > 0? incrPostName : decrPostName, 0);
+        else {
+            INode *incr = (INode *)newFnCallOpname((INode *)newNameUseNode(elemname), isrange > 0 ? incrPostName : decrPostName, 0);
+            nodesAdd(&((BlockNode*)wnode->blk)->stmts, incr);
+        }
         wnode->condexp = iter;
         nodesAdd(&bnode->stmts, (INode*)wnode);
     }
