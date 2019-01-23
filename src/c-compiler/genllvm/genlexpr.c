@@ -494,11 +494,30 @@ LLVMValueRef genlArrIndex(GenState *gen, LLVMValueRef ptr, INode *index) {
     return LLVMBuildGEP(gen->builder, ptr, indexes, 2, "");
 }
 
-// Generate address of indexed element from a pointer to an element
-LLVMValueRef genlPtrIndex(GenState *gen, LLVMValueRef ptr, INode *index) {
-    LLVMValueRef indexes[1];
-    indexes[0] = genlExpr(gen, index);
-    return LLVMBuildGEP(gen->builder, ptr, indexes, 1, "");
+// Generate a panic
+void genlPanic(GenState *gen) {
+    // Declare trap() external function
+    char *fnname = "llvm.trap";
+    LLVMValueRef fn = LLVMGetNamedFunction(gen->module, fnname);
+    if (!fn) {
+        LLVMTypeRef parmtype = (LLVMPointerSize(gen->datalayout) == 4) ? LLVMInt32TypeInContext(gen->context) : LLVMInt64TypeInContext(gen->context);
+        LLVMTypeRef rettype = LLVMVoidTypeInContext(gen->context);
+        LLVMTypeRef fnsig = LLVMFunctionType(rettype, NULL, 0, 0);
+        fn = LLVMAddFunction(gen->module, fnname, fnsig);
+    }
+    LLVMBuildCall(gen->builder, fn, NULL, 0, "");
+}
+
+void genlBoundsCheck(GenState *gen, LLVMValueRef index, LLVMValueRef count) {
+    // Do runtime bounds check and panic
+    LLVMBasicBlockRef panicblk = genlInsertBlock(gen, "panic");
+    LLVMBasicBlockRef boundsblk = genlInsertBlock(gen, "boundsok");
+    LLVMValueRef compare = LLVMBuildICmp(gen->builder, LLVMIntULT, index, count, "");
+    LLVMBuildCondBr(gen->builder, compare, boundsblk, panicblk);
+    LLVMPositionBuilderAtEnd(gen->builder, panicblk);
+    genlPanic(gen);
+    LLVMBuildBr(gen->builder, boundsblk);
+    LLVMPositionBuilderAtEnd(gen->builder, boundsblk);
 }
 
 // Generate an lval-ish pointer to the value (vs. load)
@@ -515,17 +534,30 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
     case ArrIndexTag:
     {
         FnCallNode *fncall = (FnCallNode *)lval;
-        INode *objtype = ((ITypedNode *)fncall->objfn)->vtype;
+        INode *objtype = iexpGetTypeDcl(fncall->objfn);
         switch (objtype->tag) {
-        case ArrayTag:
-            return genlArrIndex(gen, genlAddr(gen, fncall->objfn), nodesGet(fncall->args, 0));
-        case PtrTag:
-            return genlPtrIndex(gen, genlExpr(gen, fncall->objfn), nodesGet(fncall->args, 0));
+        case ArrayTag: {
+            LLVMValueRef count = LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, ((ArrayNode*)objtype)->size);
+            LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
+            genlBoundsCheck(gen, index, count);
+            LLVMValueRef indexes[2];
+            indexes[0] = LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0);
+            indexes[1] = index;
+            return LLVMBuildGEP(gen->builder, genlAddr(gen, fncall->objfn), indexes, 2, "");
+        }
         case RefTag:
             if (objtype->flags & FlagArrSlice) {
-                LLVMValueRef sliceptr = LLVMBuildExtractValue(gen->builder, genlExpr(gen, fncall->objfn), 0, "sliceptr");
-                return genlPtrIndex(gen, sliceptr, nodesGet(fncall->args, 0));
+                LLVMValueRef arrref = genlExpr(gen, fncall->objfn);
+                LLVMValueRef count = LLVMBuildExtractValue(gen->builder, arrref, 1, "count");
+                LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
+                genlBoundsCheck(gen, index, count);
+                LLVMValueRef sliceptr = LLVMBuildExtractValue(gen->builder, arrref, 0, "sliceptr");
+                return LLVMBuildGEP(gen->builder, sliceptr, &index, 1, "");
             }
+        case PtrTag: {
+            LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
+            return LLVMBuildGEP(gen->builder, genlExpr(gen, fncall->objfn), &index, 1, "");
+        }
         default:
             assert(0 && "Unknown type of arrindex element indexing node");
         }
