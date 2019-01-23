@@ -59,5 +59,8 @@ void genlDealiasOwn(GenState *gen, LLVMValueRef ref, RefNode *refnode);
 LLVMTypeRef genlType(GenState *gen, INode *typ);
 // Generate LLVM value corresponding to the size of a type
 LLVMValueRef genlSizeof(GenState *gen, INode *vtype);
+// Generate unsigned integer whose bits are same size as a pointer
+LLVMTypeRef genlUsize(GenState *gen);
+
 
 #endif

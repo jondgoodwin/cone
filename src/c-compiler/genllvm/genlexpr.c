@@ -500,7 +500,6 @@ void genlPanic(GenState *gen) {
     char *fnname = "llvm.trap";
     LLVMValueRef fn = LLVMGetNamedFunction(gen->module, fnname);
     if (!fn) {
-        LLVMTypeRef parmtype = (LLVMPointerSize(gen->datalayout) == 4) ? LLVMInt32TypeInContext(gen->context) : LLVMInt64TypeInContext(gen->context);
         LLVMTypeRef rettype = LLVMVoidTypeInContext(gen->context);
         LLVMTypeRef fnsig = LLVMFunctionType(rettype, NULL, 0, 0);
         fn = LLVMAddFunction(gen->module, fnname, fnsig);
@@ -537,11 +536,11 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         INode *objtype = iexpGetTypeDcl(fncall->objfn);
         switch (objtype->tag) {
         case ArrayTag: {
-            LLVMValueRef count = LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, ((ArrayNode*)objtype)->size);
+            LLVMValueRef count = LLVMConstInt(genlUsize(gen), 0, ((ArrayNode*)objtype)->size);
             LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
             genlBoundsCheck(gen, index, count);
             LLVMValueRef indexes[2];
-            indexes[0] = LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0);
+            indexes[0] = LLVMConstInt(genlUsize(gen), 0, 0);
             indexes[1] = index;
             return LLVMBuildGEP(gen->builder, genlAddr(gen, fncall->objfn), indexes, 2, "");
         }

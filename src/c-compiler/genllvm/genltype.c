@@ -174,3 +174,8 @@ LLVMValueRef genlSizeof(GenState *gen, INode *vtype) {
     }
     return LLVMConstInt(genlType(gen, (INode*)usizeType), size, 0);
 }
+
+// Generate unsigned integer whose bits are same size as a pointer
+LLVMTypeRef genlUsize(GenState *gen) {
+    return (LLVMPointerSize(gen->datalayout) == 4) ? LLVMInt32TypeInContext(gen->context) : LLVMInt64TypeInContext(gen->context);
+}
