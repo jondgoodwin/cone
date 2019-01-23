@@ -31,7 +31,7 @@ LLVMValueRef genlfreeval = NULL;
 LLVMValueRef genlmalloc(GenState *gen, long long size) {
     // Declare malloc() external function
     if (genlmallocval == NULL) {
-        LLVMTypeRef parmtype = (LLVMPointerSize(gen->datalayout) == 4) ? LLVMInt32TypeInContext(gen->context) : LLVMInt64TypeInContext(gen->context);
+        LLVMTypeRef parmtype = genlUsize(gen);
         LLVMTypeRef rettype = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
         LLVMTypeRef fnsig = LLVMFunctionType(rettype, &parmtype, 1, 0);
         genlmallocval = LLVMAddFunction(gen->module, "malloc", fnsig);

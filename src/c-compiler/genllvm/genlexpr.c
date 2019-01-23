@@ -486,14 +486,6 @@ LLVMValueRef genlLocalVar(GenState *gen, VarDclNode *var) {
     return val;
 }
 
-// Generate address of indexed element from a pointer to an array
-LLVMValueRef genlArrIndex(GenState *gen, LLVMValueRef ptr, INode *index) {
-    LLVMValueRef indexes[2];
-    indexes[0] = LLVMConstInt(LLVMInt32TypeInContext(gen->context), 0, 0);
-    indexes[1] = genlExpr(gen, index);
-    return LLVMBuildGEP(gen->builder, ptr, indexes, 2, "");
-}
-
 // Generate a panic
 void genlPanic(GenState *gen) {
     // Declare trap() external function
@@ -536,7 +528,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         INode *objtype = iexpGetTypeDcl(fncall->objfn);
         switch (objtype->tag) {
         case ArrayTag: {
-            LLVMValueRef count = LLVMConstInt(genlUsize(gen), 0, ((ArrayNode*)objtype)->size);
+            LLVMValueRef count = LLVMConstInt(genlUsize(gen), ((ArrayNode*)objtype)->size, 0);
             LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
             genlBoundsCheck(gen, index, count);
             LLVMValueRef indexes[2];
