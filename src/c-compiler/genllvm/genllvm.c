@@ -291,29 +291,14 @@ void genlOut(char *objpath, char *asmpath, LLVMModuleRef mod, char *triple, LLVM
 }
 
 // Generate IR nodes into LLVM IR using LLVM
-void genllvm(ConeOptions *opt, ModuleNode *mod) {
+void genmod(GenState *gen, ModuleNode *mod) {
     char *err;
-    GenState gen;
-
-    LLVMTargetMachineRef machine = genlCreateMachine(opt);
-    if (!machine)
-        exit(ExitOpts);
-
-    // Obtain data layout info, particularly pointer sizes
-    gen.datalayout = LLVMCreateTargetDataLayout(machine);
-    opt->ptrsize = LLVMPointerSize(gen.datalayout) << 3;
-    usizeType->bits = isizeType->bits = opt->ptrsize;
-
-    gen.srcname = mod->lexer->fname;
-    gen.context = LLVMGetGlobalContext(); // LLVM inlining bugs prevent use of LLVMContextCreate();
-    gen.debug = !opt->release;
-    gen.fn = NULL;
 
     // Generate IR to LLVM IR
-    genlPackage(&gen, mod);
+    genlPackage(gen, mod);
 
     // Serialize the LLVM IR, if requested
-    if (opt->print_llvmir && LLVMPrintModuleToFile(gen.module, fileMakePath(opt->output, mod->lexer->fname, "preir"), &err) != 0) {
+    if (gen->print_llvmir && LLVMPrintModuleToFile(gen->module, fileMakePath(gen->output, mod->lexer->fname, "preir"), &err) != 0) {
         errorMsg(ErrorGenErr, "Could not emit pre-ir file: %s", err);
         LLVMDisposeMessage(err);
     }
@@ -325,24 +310,51 @@ void genllvm(ConeOptions *opt, ModuleNode *mod) {
     LLVMAddReassociatePass(passmgr);                // Reassociate expressions.
     LLVMAddGVNPass(passmgr);                        // Eliminate common subexpressions.
     LLVMAddCFGSimplificationPass(passmgr);            // Simplify the control flow graph
-    if (opt->release)
+    if (gen->release)
         LLVMAddFunctionInliningPass(passmgr);        // Function inlining
-    LLVMRunPassManager(passmgr, gen.module);
+    LLVMRunPassManager(passmgr, gen->module);
     LLVMDisposePassManager(passmgr);
 
     // Serialize the LLVM IR, if requested
-    if (opt->print_llvmir && LLVMPrintModuleToFile(gen.module, fileMakePath(opt->output, mod->lexer->fname, "ir"), &err) != 0) {
+    if (gen->print_llvmir && LLVMPrintModuleToFile(gen->module, fileMakePath(gen->output, mod->lexer->fname, "ir"), &err) != 0) {
         errorMsg(ErrorGenErr, "Could not emit ir file: %s", err);
         LLVMDisposeMessage(err);
     }
 
     // Transform IR to target's ASM and OBJ
-    if (machine)
-        genlOut(fileMakePath(opt->output, mod->lexer->fname, opt->wasm? "wasm" : objext),
-            opt->print_asm? fileMakePath(opt->output, mod->lexer->fname, opt->wasm? "wat" : asmext) : NULL,
-            gen.module, opt->triple, machine);
+    if (gen->machine)
+        genlOut(fileMakePath(gen->output, mod->lexer->fname, gen->wasm? "wasm" : objext),
+            gen->print_asm? fileMakePath(gen->output, mod->lexer->fname, gen->wasm? "wat" : asmext) : NULL,
+            gen->module, gen->triple, gen->machine);
 
-    LLVMDisposeModule(gen.module);
+    LLVMDisposeModule(gen->module);
     // LLVMContextDispose(gen.context);  // Only need if we created a new context
-    LLVMDisposeTargetMachine(machine);
+}
+
+// Setup LLVM generation, ensuring we know intended target
+void genSetup(GenState *gen, ConeOptions *opt, char *srcname) {
+    LLVMTargetMachineRef machine = genlCreateMachine(opt);
+    if (!machine)
+        exit(ExitOpts);
+
+    // Obtain data layout info, particularly pointer sizes
+    gen->machine = machine;
+    gen->datalayout = LLVMCreateTargetDataLayout(machine);
+    opt->ptrsize = LLVMPointerSize(gen->datalayout) << 3;
+    usizeType->bits = isizeType->bits = opt->ptrsize;
+
+    gen->srcname = srcname;
+    gen->context = LLVMGetGlobalContext(); // LLVM inlining bugs prevent use of LLVMContextCreate();
+    gen->fn = NULL;
+    gen->print_llvmir = opt->print_llvmir;
+    gen->output = opt->output;
+    gen->debug = !opt->release;
+    gen->release = opt->release;
+    gen->wasm = opt->wasm;
+    gen->print_asm = opt->print_asm;
+    gen->triple = opt->triple;
+}
+
+void genClose(GenState *gen) {
+    LLVMDisposeTargetMachine(gen->machine);
 }

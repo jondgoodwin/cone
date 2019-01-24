@@ -97,6 +97,8 @@ int itypeMatches(INode *totype, INode *fromtype) {
             return 2;
         if (totype->tag != fromtype->tag)
             return isNbr(totype) && isNbr(fromtype) ? 4 : 0;
+        if (((NbrNode *)totype)->bits == ((NbrNode *)fromtype)->bits)
+            return 1;
         return ((NbrNode *)totype)->bits > ((NbrNode *)fromtype)->bits ? 2 : 3;
 
     default:

@@ -16,6 +16,7 @@
 #include <llvm-c/ExecutionEngine.h>
 
 typedef struct GenState {
+    LLVMTargetMachineRef machine;
     LLVMTargetDataRef datalayout;
     LLVMContextRef context;
     LLVMModuleRef module;
@@ -29,10 +30,20 @@ typedef struct GenState {
     LLVMMetadataRef difile;
 
     char *srcname;
+    char *output;
+    char *triple;
+
+    int release;
     int debug;
+    int wasm;
+    int print_llvmir;
+    int print_asm;
 } GenState;
 
-void genllvm(ConeOptions *opt, ModuleNode *mod);
+// Setup LLVM generation, ensuring we know intended target
+void genSetup(GenState *gen, ConeOptions *opt, char *srcname);
+void genClose(GenState *gen);
+void genmod(GenState *gen, ModuleNode *mod);
 void genlFn(GenState *gen, FnDclNode *fnnode);
 void genlGloVarName(GenState *gen, VarDclNode *glovar);
 void genlGloFnName(GenState *gen, FnDclNode *glofn);

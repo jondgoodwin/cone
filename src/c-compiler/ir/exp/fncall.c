@@ -419,17 +419,19 @@ void fnCallPass(PassState *pstate, FnCallNode **nodep) {
             INode **indexp = &nodesGet(node->args, 0);
             INode *indextype = iexpGetTypeDcl(*indexp);
             if (objdereftype->tag == PtrTag) {
+                int match = 0;
                 if (indextype->tag == UintNbrTag)
-                    iexpCoerces((INode*)isizeType, indexp);
+                    match = iexpCoerces((INode*)isizeType, indexp);
                 else if (indextype->tag == IntNbrTag)
-                    iexpCoerces((INode*)usizeType, indexp);
-                else 
+                    match = iexpCoerces((INode*)usizeType, indexp);
+                if (!match)
                     errorMsgNode((INode *)node, ErrorBadIndex, "Pointer index must be an integer");
             }
             else {
+                int match = 0;
                 if (indextype->tag == UintNbrTag || (*indexp)->tag == ULitTag)
-                    iexpCoerces((INode*)usizeType, indexp);
-                else
+                    match = iexpCoerces((INode*)usizeType, indexp);
+                if (!match)
                     errorMsgNode((INode *)node, ErrorBadIndex, "Array index must be an unsigned integer");
             }
             switch (objdereftype->tag) {

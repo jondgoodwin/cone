@@ -45,6 +45,7 @@ void doAnalysis(ModuleNode **mod) {
 
 int main(int argc, char **argv) {
     ConeOptions coneopt;
+    GenState gen;
     ModuleNode *modnode;
     int ok;
     char *srcfn;
@@ -63,16 +64,18 @@ int main(int argc, char **argv) {
     // Initialize name table and populate with std library names
     nametblInit();
     stdlibInit();
+    lexInjectFile(srcfn);
+    genSetup(&gen, &coneopt, lex->fname);
 
     // Parse source file, do semantic analysis, and generate code
-    lexInjectFile(srcfn);
     modnode = parsePgm();
     if (errors == 0) {
         doAnalysis(&modnode);
         if (errors == 0) {
             if (coneopt.print_ir)
                 inodePrint(coneopt.output, srcfn, (INode*)modnode);
-            genllvm(&coneopt, modnode);
+            genmod(&gen, modnode);
+            genClose(&gen);
         }
     }
 
