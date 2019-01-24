@@ -416,10 +416,22 @@ void fnCallPass(PassState *pstate, FnCallNode **nodep) {
     else if (objdereftype->tag == ArrayTag || objdereftype->tag == RefTag || objdereftype->tag == PtrTag) {
         uint32_t nargs = node->args->used;
         if (nargs == 1) {
-            INode *index = nodesGet(node->args, 0);
-            INode *indextype = iexpGetTypeDcl(index);
-            if (indextype->tag != UintNbrTag && index->tag != ULitTag)
-                errorMsgNode((INode *)node, ErrorBadIndex, "Array index must be an unsigned integer");
+            INode **indexp = &nodesGet(node->args, 0);
+            INode *indextype = iexpGetTypeDcl(*indexp);
+            if (objdereftype->tag == PtrTag) {
+                if (indextype->tag == UintNbrTag)
+                    iexpCoerces((INode*)isizeType, indexp);
+                else if (indextype->tag == IntNbrTag)
+                    iexpCoerces((INode*)usizeType, indexp);
+                else 
+                    errorMsgNode((INode *)node, ErrorBadIndex, "Pointer index must be an integer");
+            }
+            else {
+                if (indextype->tag == UintNbrTag || (*indexp)->tag == ULitTag)
+                    iexpCoerces((INode*)usizeType, indexp);
+                else
+                    errorMsgNode((INode *)node, ErrorBadIndex, "Array index must be an unsigned integer");
+            }
             switch (objdereftype->tag) {
             case ArrayTag:
                 node->vtype = ((ArrayNode*)objdereftype)->elemtype;
