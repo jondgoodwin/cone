@@ -252,7 +252,7 @@ void stdNbrInit(int ptrsize) {
     i16Type = newNbrTypeNode("i16", IntNbrTag, 16);
     i32Type = newNbrTypeNode("i32", IntNbrTag, 32);
     i64Type = newNbrTypeNode("i64", IntNbrTag, 64);
-    isizeType = newNbrTypeNode("isize", UintNbrTag, ptrsize);
+    isizeType = newNbrTypeNode("isize", IntNbrTag, ptrsize);
     f32Type = newNbrTypeNode("f32", FloatNbrTag, 32);
     f64Type = newNbrTypeNode("f64", FloatNbrTag, 64);
 

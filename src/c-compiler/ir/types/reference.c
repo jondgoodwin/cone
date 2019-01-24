@@ -59,14 +59,6 @@ void refPass(PassState *pstate, RefNode *node) {
     inodeWalk(pstate, &node->pvtype);
     if (node->flags & FlagArrSlice)
         inodeWalk(pstate, (INode**)&node->tuptype);
-
-    if (pstate->pass == TypeCheck) {
-        if (node->flags & FlagArrSlice) {
-            INode *perm = iexpGetTypeDcl(node->perm);
-            if (perm != (INode*)immPerm && perm != (INode*)uniPerm && perm != (INode*)constPerm)
-                errorMsgNode(node->perm, ErrorBadSlice, "Unsafe permission for slice");
-        }
-    }
 }
 
 // Compare two reference signatures to see if they are equivalent
