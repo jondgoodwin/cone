@@ -239,7 +239,7 @@ IMethodNode *newRefTypeMethods() {
 }
 
 // Declare built-in number types and their names
-void stdNbrInit() {
+void stdNbrInit(int ptrsize) {
     nbrsubtypes = newNodes(8);    // Needs 'copy' etc.
 
     boolType = newNbrTypeNode("Bool", UintNbrTag, 1);
@@ -247,12 +247,12 @@ void stdNbrInit() {
     u16Type = newNbrTypeNode("u16", UintNbrTag, 16);
     u32Type = newNbrTypeNode("u32", UintNbrTag, 32);
     u64Type = newNbrTypeNode("u64", UintNbrTag, 64);
-    usizeType = newNbrTypeNode("usize", UintNbrTag, 0); // <== fixed by genSetup
+    usizeType = newNbrTypeNode("usize", UintNbrTag, ptrsize);
     i8Type = newNbrTypeNode("i8", IntNbrTag, 8);
     i16Type = newNbrTypeNode("i16", IntNbrTag, 16);
     i32Type = newNbrTypeNode("i32", IntNbrTag, 32);
     i64Type = newNbrTypeNode("i64", IntNbrTag, 64);
-    isizeType = newNbrTypeNode("isize", UintNbrTag, 0); // <== fixed by genSetup
+    isizeType = newNbrTypeNode("isize", UintNbrTag, ptrsize);
     f32Type = newNbrTypeNode("f32", FloatNbrTag, 32);
     f64Type = newNbrTypeNode("f64", FloatNbrTag, 64);
 

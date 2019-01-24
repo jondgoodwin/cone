@@ -80,8 +80,8 @@ NbrNode *f64Type;
 IMethodNode *ptrType;
 IMethodNode *refType;
 
-void stdlibInit();
+void stdlibInit(int ptrsize);
 void keywordInit();
-void stdNbrInit();
+void stdNbrInit(int ptrsize);
 
 #endif

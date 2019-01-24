@@ -18,6 +18,9 @@ typedef struct ConeOptions {
     char **safe_packages;
     // magic_package_t* magic_packages;
 
+    char* srcpath;    // Full path
+    char* srcname;    // Just the filename
+
     char* output;
     char* link_arch;
     char* linker;

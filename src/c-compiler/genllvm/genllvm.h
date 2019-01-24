@@ -29,19 +29,11 @@ typedef struct GenState {
     LLVMMetadataRef compileUnit;
     LLVMMetadataRef difile;
 
-    char *srcname;
-    char *output;
-    char *triple;
-
-    int release;
-    int debug;
-    int wasm;
-    int print_llvmir;
-    int print_asm;
+    ConeOptions *opt;
 } GenState;
 
 // Setup LLVM generation, ensuring we know intended target
-void genSetup(GenState *gen, ConeOptions *opt, char *srcname);
+void genSetup(GenState *gen, ConeOptions *opt);
 void genClose(GenState *gen);
 void genmod(GenState *gen, ModuleNode *mod);
 void genlFn(GenState *gen, FnDclNode *fnnode);

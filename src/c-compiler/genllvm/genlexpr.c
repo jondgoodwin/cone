@@ -585,7 +585,7 @@ void genlStore(GenState *gen, INode *lval, LLVMValueRef rval) {
 
 // Generate a term
 LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
-    if (gen->debug && gen->fn) {
+    if (!gen->opt->release && gen->fn) {
         LLVMMetadataRef loc = LLVMDIBuilderCreateDebugLocation(gen->context, 
             termnode->linenbr, termnode->srcp-termnode->linep, LLVMGetSubprogram(gen->fn), NULL);
         LLVMValueRef val = LLVMMetadataAsValue(gen->context, loc);

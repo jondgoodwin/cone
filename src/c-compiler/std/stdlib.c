@@ -83,7 +83,7 @@ void stdAllocInit() {
 }
 
 // Set up the standard library, whose names are always shared by all modules
-void stdlibInit() {
+void stdlibInit(int ptrsize) {
     lexInject("std", "");
 
     anonName = nametblFind("_", 1);
@@ -129,5 +129,5 @@ void stdlibInit() {
     keywordInit();
     stdPermInit();
     stdAllocInit();
-    stdNbrInit();
+    stdNbrInit(ptrsize);
 }

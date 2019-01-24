@@ -13,6 +13,7 @@
 #include "../shared/error.h"
 #include "../shared/fileio.h"
 #include "../ir/nametbl.h"
+#include "../coneopts.h"
 #include "lexer.h"
 
 #include <stdio.h>
@@ -276,7 +277,12 @@ ModuleNode *parseModule(ParseState *parse) {
 }
 
 // Parse a program = the main module
-ModuleNode *parsePgm() {
+ModuleNode *parsePgm(ConeOptions *opt) {
+    // Initialize name table and populate with std library names
+    nametblInit();
+    stdlibInit(opt->ptrsize);
+    lexInjectFile(opt->srcpath);
+
     ParseState parse;
     ModuleNode *mod;
     mod = newModuleNode();

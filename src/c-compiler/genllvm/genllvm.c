@@ -143,7 +143,7 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
             //LLVMSetDLLStorageClass(glofn->llvmvar, LLVMDLLExportStorageClass);
             LLVMSetVisibility(glofn->llvmvar, LLVMDefaultVisibility);
         }
-        if (gen->debug && glofn->value) {
+        if (!gen->opt->release && glofn->value) {
             LLVMMetadataRef fntype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder,
                 gen->difile, NULL, 0, 0);
             LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, gen->difile,
@@ -207,15 +207,15 @@ void genlPackage(GenState *gen, ModuleNode *mod) {
     char *error = NULL;
 
     assert(mod->tag == ModuleTag);
-    gen->module = LLVMModuleCreateWithNameInContext(gen->srcname, gen->context);
-    if (gen->debug) {
+    gen->module = LLVMModuleCreateWithNameInContext(gen->opt->srcname, gen->context);
+    if (!gen->opt->release) {
         gen->dibuilder = LLVMCreateDIBuilder(gen->module);
         gen->difile = LLVMDIBuilderCreateFile(gen->dibuilder, "main.cone", 9, ".", 1);
         gen->compileUnit = LLVMDIBuilderCreateCompileUnit(gen->dibuilder, LLVMDWARFSourceLanguageC,
             gen->difile, "Cone compiler", 13, 0, "", 0, 0, "", 0, LLVMDWARFEmissionFull, 0, 0, 0);
     }
     genlModule(gen, mod);
-    if (gen->debug)
+    if (!gen->opt->release)
         LLVMDIBuilderFinalize(gen->dibuilder);
 
     // Verify generated IR
@@ -298,7 +298,7 @@ void genmod(GenState *gen, ModuleNode *mod) {
     genlPackage(gen, mod);
 
     // Serialize the LLVM IR, if requested
-    if (gen->print_llvmir && LLVMPrintModuleToFile(gen->module, fileMakePath(gen->output, mod->lexer->fname, "preir"), &err) != 0) {
+    if (gen->opt->print_llvmir && LLVMPrintModuleToFile(gen->module, fileMakePath(gen->opt->output, mod->lexer->fname, "preir"), &err) != 0) {
         errorMsg(ErrorGenErr, "Could not emit pre-ir file: %s", err);
         LLVMDisposeMessage(err);
     }
@@ -310,29 +310,31 @@ void genmod(GenState *gen, ModuleNode *mod) {
     LLVMAddReassociatePass(passmgr);                // Reassociate expressions.
     LLVMAddGVNPass(passmgr);                        // Eliminate common subexpressions.
     LLVMAddCFGSimplificationPass(passmgr);            // Simplify the control flow graph
-    if (gen->release)
+    if (gen->opt->release)
         LLVMAddFunctionInliningPass(passmgr);        // Function inlining
     LLVMRunPassManager(passmgr, gen->module);
     LLVMDisposePassManager(passmgr);
 
     // Serialize the LLVM IR, if requested
-    if (gen->print_llvmir && LLVMPrintModuleToFile(gen->module, fileMakePath(gen->output, mod->lexer->fname, "ir"), &err) != 0) {
+    if (gen->opt->print_llvmir && LLVMPrintModuleToFile(gen->module, fileMakePath(gen->opt->output, mod->lexer->fname, "ir"), &err) != 0) {
         errorMsg(ErrorGenErr, "Could not emit ir file: %s", err);
         LLVMDisposeMessage(err);
     }
 
     // Transform IR to target's ASM and OBJ
     if (gen->machine)
-        genlOut(fileMakePath(gen->output, mod->lexer->fname, gen->wasm? "wasm" : objext),
-            gen->print_asm? fileMakePath(gen->output, mod->lexer->fname, gen->wasm? "wat" : asmext) : NULL,
-            gen->module, gen->triple, gen->machine);
+        genlOut(fileMakePath(gen->opt->output, mod->lexer->fname, gen->opt->wasm? "wasm" : objext),
+            gen->opt->print_asm? fileMakePath(gen->opt->output, mod->lexer->fname, gen->opt->wasm? "wat" : asmext) : NULL,
+            gen->module, gen->opt->triple, gen->machine);
 
     LLVMDisposeModule(gen->module);
     // LLVMContextDispose(gen.context);  // Only need if we created a new context
 }
 
 // Setup LLVM generation, ensuring we know intended target
-void genSetup(GenState *gen, ConeOptions *opt, char *srcname) {
+void genSetup(GenState *gen, ConeOptions *opt) {
+    gen->opt = opt;
+
     LLVMTargetMachineRef machine = genlCreateMachine(opt);
     if (!machine)
         exit(ExitOpts);
@@ -341,18 +343,9 @@ void genSetup(GenState *gen, ConeOptions *opt, char *srcname) {
     gen->machine = machine;
     gen->datalayout = LLVMCreateTargetDataLayout(machine);
     opt->ptrsize = LLVMPointerSize(gen->datalayout) << 3;
-    usizeType->bits = isizeType->bits = opt->ptrsize;
 
-    gen->srcname = srcname;
     gen->context = LLVMGetGlobalContext(); // LLVM inlining bugs prevent use of LLVMContextCreate();
     gen->fn = NULL;
-    gen->print_llvmir = opt->print_llvmir;
-    gen->output = opt->output;
-    gen->debug = !opt->release;
-    gen->release = opt->release;
-    gen->wasm = opt->wasm;
-    gen->print_asm = opt->print_asm;
-    gen->triple = opt->triple;
 }
 
 void genClose(GenState *gen) {

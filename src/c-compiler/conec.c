@@ -48,7 +48,6 @@ int main(int argc, char **argv) {
     GenState gen;
     ModuleNode *modnode;
     int ok;
-    char *srcfn;
 
     // Start measuring processing time for compilation
     startTime = clock();
@@ -59,21 +58,19 @@ int main(int argc, char **argv) {
         exit(ok == 0 ? 0 : ExitOpts);
     if (argc < 2)
         errorExit(ExitOpts, "Specify a Cone program to compile.");
-    srcfn = argv[1];
+    coneopt.srcpath = argv[1];
+    coneopt.srcname = fileName(coneopt.srcpath);
 
-    // Initialize name table and populate with std library names
-    nametblInit();
-    stdlibInit();
-    lexInjectFile(srcfn);
-    genSetup(&gen, &coneopt, lex->fname);
+    // We set up generation early because we need target info, e.g.: pointer size
+    genSetup(&gen, &coneopt);
 
     // Parse source file, do semantic analysis, and generate code
-    modnode = parsePgm();
+    modnode = parsePgm(&coneopt);
     if (errors == 0) {
         doAnalysis(&modnode);
         if (errors == 0) {
             if (coneopt.print_ir)
-                inodePrint(coneopt.output, srcfn, (INode*)modnode);
+                inodePrint(coneopt.output, coneopt.srcpath, (INode*)modnode);
             genmod(&gen, modnode);
             genClose(&gen);
         }
