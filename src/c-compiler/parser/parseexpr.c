@@ -232,7 +232,7 @@ INode *parseAddr(ParseState *parse) {
         }
 
         // A value or constructor
-        anode->exp = parseTerm(parse);
+        anode->exp = parsePostfix(parse);
     }
 
     return (INode *)anode;

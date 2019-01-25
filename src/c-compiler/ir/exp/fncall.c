@@ -421,9 +421,9 @@ void fnCallPass(PassState *pstate, FnCallNode **nodep) {
             if (objdereftype->tag == PtrTag) {
                 int match = 0;
                 if (indextype->tag == UintNbrTag)
-                    match = iexpCoerces((INode*)isizeType, indexp);
-                else if (indextype->tag == IntNbrTag)
                     match = iexpCoerces((INode*)usizeType, indexp);
+                else if (indextype->tag == IntNbrTag)
+                    match = iexpCoerces((INode*)isizeType, indexp);
                 if (!match)
                     errorMsgNode((INode *)node, ErrorBadIndex, "Pointer index must be an integer");
             }
