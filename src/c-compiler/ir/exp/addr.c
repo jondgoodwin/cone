@@ -43,28 +43,26 @@ INamedNode *addrGetVarPerm(INode *lval, INode **lvalperm) {
     }
 
     // An array element (obj[2]) or property access (obj.prop)
-    case FnCallTag:
+    case ArrIndexTag:
+    case StrFieldTag:
     {
         FnCallNode *element = (FnCallNode *)lval;
-        if (element->flags & FlagIndex || element->methprop) {
-            INamedNode *lvalvar = addrGetVarPerm(element->objfn, lvalperm);
-            if (lvalvar == NULL)
-                return NULL;
-            /*
-            if (lvalperm = permIsLocked(*lvalperm) && var_is_not_unlocked) {
-                errorMsgNode(lval, ErrorNotLval, "Cannot borrow a subtructure reference from a locked variable");
-                return NULL
-            } */
-            if (element->methprop) {
-                PermNode *methperm = (PermNode *)((VarDclNode*)((NameUseNode *)element->methprop)->dclnode)->perm;
-                // Downgrade overall static permission if property is immutable
-                if (methperm == immPerm)
-                    *lvalperm = (INode*)constPerm;
-            }
-            return lvalvar;
+        INamedNode *lvalvar = addrGetVarPerm(element->objfn, lvalperm);
+        if (lvalvar == NULL)
+            return NULL;
+        /*
+        if (lvalperm = permIsLocked(*lvalperm) && var_is_not_unlocked) {
+            errorMsgNode(lval, ErrorNotLval, "Cannot borrow a substructure reference from a locked variable");
+            return NULL
+        } */
+        if (element->methprop) {
+            PermNode *methperm = (PermNode *)((VarDclNode*)((NameUseNode *)element->methprop)->dclnode)->perm;
+            // Downgrade overall static permission if property is immutable
+            if (methperm == immPerm)
+                *lvalperm = (INode*)constPerm;
         }
+        return lvalvar;
     }
-    // Fall through to error message is intentional here for real function call
 
     // One cannot borrow a reference from any other node
     default:
