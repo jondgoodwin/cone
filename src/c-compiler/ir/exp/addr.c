@@ -50,6 +50,10 @@ INamedNode *addrGetVarPerm(INode *lval, INode **lvalperm) {
         INamedNode *lvalvar = addrGetVarPerm(element->objfn, lvalperm);
         if (lvalvar == NULL)
             return NULL;
+        INode *lvaltype = iexpGetTypeDcl((INode*)lvalvar);
+        if (lvaltype->tag == RefTag) {
+            *lvalperm = ((RefNode*)lvaltype)->perm; // implicit deref 
+        }
         /*
         if (lvalperm = permIsLocked(*lvalperm) && var_is_not_unlocked) {
             errorMsgNode(lval, ErrorNotLval, "Cannot borrow a substructure reference from a locked variable");
