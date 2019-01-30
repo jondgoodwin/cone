@@ -200,7 +200,7 @@ void inodeWalk(PassState *pstate, INode **node) {
     case DerefTag:
         derefPass(pstate, (DerefNode *)*node); break;
     case AddrTag:
-        addrPass(pstate, (AddrNode *)*node); break;
+        addrPass(pstate, (AddrNode **)node); break;
     case NotLogicTag:
         logicNotPass(pstate, (LogicNode *)*node); break;
     case OrLogicTag: case AndLogicTag:

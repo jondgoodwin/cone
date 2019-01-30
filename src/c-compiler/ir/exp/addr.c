@@ -42,6 +42,12 @@ INamedNode *addrGetVarPerm(INode *lval, INode **lvalperm) {
         return (INamedNode *)lval;
     }
 
+    case DerefTag:
+    {
+        DerefNode *deref = (DerefNode*)lval;
+        return addrGetVarPerm(deref->exp, lvalperm);
+    }
+
     // An array element (obj[2]) or property access (obj.prop)
     case ArrIndexTag:
     case StrFieldTag:
@@ -131,17 +137,37 @@ void addrTypeCheckAlloc(AddrNode *node, RefNode *reftype) {
 }
 
 // Analyze addr node
-void addrPass(PassState *pstate, AddrNode *node) {
-    inodeWalk(pstate, &node->exp);
-
-    if (pstate->pass == TypeCheck) {
-        // Type check a borrowed reference
-        RefNode *reftype = (RefNode *)node->vtype;
-        if (reftype->alloc == voidType)
-            addrTypeCheckBorrow(node, reftype);
-        else
-            addrTypeCheckAlloc(node, reftype);
+void addrPass(PassState *pstate, AddrNode **nodep) {
+    AddrNode *node = *nodep;
+    if (pstate->pass == NameResolution) {
+        inodeWalk(pstate, &node->exp);
+        return;
     }
+
+    RefNode *reftype = (RefNode *)node->vtype;
+
+    /*
+    // If we are borrowing a ref from indexing into a method-typed object
+    // rewrite it as: (&obj).`&[]`()
+    FnCallNode *index = (FnCallNode *)node->exp;
+    if (index->tag == FnCallTag && (index->flags & FlagArrSlice) && reftype->alloc == voidType) {
+        inodeWalk(pstate, &index->objfn);  // Unfortunately, we need to do this to infer type
+        if (isMethodType(iexpGetTypeDcl(index->objfn))) {
+            node->exp = index->objfn;
+            index->objfn = (INode*)node;
+            *nodep = (AddrNode*)node->exp;
+            index->methprop->namesym = refIndexName;
+            inodeWalk(pstate, &node->exp);
+            return;
+        }
+    } */
+
+    // Type check a borrowed or allocated reference
+    inodeWalk(pstate, &node->exp);
+    if (reftype->alloc == voidType)
+        addrTypeCheckBorrow(node, reftype);
+    else
+        addrTypeCheckAlloc(node, reftype);
 }
 
 // Perform data flow analysis on addr node

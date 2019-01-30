@@ -47,6 +47,8 @@ Name *ltName;       // "<"
 Name *geName;       // ">="
 Name *gtName;       // ">"
 
+Name *refIndexName; // "&[]"
+
 // Represents the absence of type information
 INode *voidType;
 

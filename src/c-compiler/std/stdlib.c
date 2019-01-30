@@ -124,6 +124,8 @@ void stdlibInit(int ptrsize) {
     geName = nametblFind(">=", 2);
     gtName = nametblFind(">", 1);
 
+    refIndexName = nametblFind("&[]", 3);
+
     voidType = (INode*)newVoidNode();
 
     keywordInit();

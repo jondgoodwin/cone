@@ -15,7 +15,7 @@ typedef struct AddrNode {
 
 AddrNode *newAddrNode();
 void addrPrint(AddrNode *node);
-void addrPass(PassState *pstate, AddrNode *node);
+void addrPass(PassState *pstate, AddrNode **node);
 
 // Perform data flow analysis on addr node
 void addrFlow(FlowState *fstate, AddrNode **nodep);
