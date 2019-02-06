@@ -113,6 +113,19 @@ INode *parseTerm(ParseState *parse) {
     }
 }
 
+// Parse a function/method call argument
+INode *parseArg(ParseState *parse) {
+    INode *arg = parseSimpleExpr(parse);
+    if (lexIsToken(ColonToken)) {
+        if (arg->tag != NameUseTag)
+            errorMsgNode((INode*)arg, ErrorNoName, "Expected a named identifier");
+        arg = (INode*)newNamedValNode(arg);
+        lexNextToken();
+        ((NamedValNode *)arg)->val = parseSimpleExpr(parse);
+    }
+    return arg;
+}
+
 // Parse the postfix operators: '.', '::', '()', '[]'
 INode *parsePostfix(ParseState *parse) {
     INode *node = lexIsToken(DotToken)? (INode*)newNameUseNode(thisName) : parseTerm(parse);
@@ -129,22 +142,13 @@ INode *parsePostfix(ParseState *parse) {
             if (closetok == RBracketToken)
                 fncall->flags |= FlagIndex;
             lexNextToken();
-            if (!lexIsToken(closetok))
-                while (1) {
-                    INode *arg = parseSimpleExpr(parse);
-                    if (lexIsToken(ColonToken)) {
-                        if (arg->tag != NameUseTag)
-                            errorMsgNode((INode*)arg, ErrorNoName, "Expected a named identifier");
-                        arg = (INode*)newNamedValNode(arg);
-                        lexNextToken();
-                        ((NamedValNode *)arg)->val = parseSimpleExpr(parse);
-                    }
-                    nodesAdd(&fncall->args, arg);
-                    if (lexIsToken(CommaToken))
-                        lexNextToken();
-                    else
-                        break;
+            if (!lexIsToken(closetok)) {
+                nodesAdd(&fncall->args, parseArg(parse));
+                while (lexIsToken(CommaToken)) {
+                    lexNextToken();
+                    nodesAdd(&fncall->args, parseArg(parse));
                 }
+            }
             parseCloseTok(closetok);
             node = (INode *)fncall;
             break;

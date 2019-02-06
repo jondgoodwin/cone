@@ -136,7 +136,12 @@ void lexScanChar(char *srcp) {
         srcp++;
     else
         errorMsgLex(ErrorBadTok, "Only one character allowed in character literal");
-    lex->langtype = (INode*)u32Type;
+    if (*srcp == 'u') {
+        lex->langtype = (INode*)u32Type;
+        srcp++;
+    }
+    else
+        lex->langtype = lex->val.uintlit >= 0x100? (INode*)u32Type : (INode*)u8Type;
     lex->toktype = IntLitToken;
     lex->srcp = srcp;
 }
