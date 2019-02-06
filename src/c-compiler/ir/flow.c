@@ -94,6 +94,9 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         break;
     case AddrTag:
         addrFlow(fstate, (AddrNode **)nodep);
+        break;
+    case AllocateTag:
+        allocateFlow(fstate, (AllocateNode **)nodep);
         flowInjectAliasNode(nodep, -1);
         break;
     case VTupleTag:

@@ -78,8 +78,8 @@ LLVMValueRef genlFree(GenState *gen, LLVMValueRef ref) {
 }
 
 // Generate code that creates an allocated ref by allocating and initializing
-LLVMValueRef genlallocref(GenState *gen, AddrNode *addrnode) {
-    RefNode *reftype = (RefNode*)addrnode->vtype;
+LLVMValueRef genlallocref(GenState *gen, AllocateNode *allocatenode) {
+    RefNode *reftype = (RefNode*)allocatenode->vtype;
     long long valsize = LLVMABISizeOfType(gen->datalayout, genlType(gen, reftype->pvtype));
     long long allocsize = 0;
     if (reftype->alloc == (INode*)rcAlloc)
@@ -92,8 +92,8 @@ LLVMValueRef genlallocref(GenState *gen, AddrNode *addrnode) {
         LLVMBuildStore(gen->builder, constone, counterptr); // Store 1 into refcounter
         malloc = LLVMBuildGEP(gen->builder, malloc, &constone, 1, ""); // Point to value
     }
-    LLVMValueRef valcast = LLVMBuildBitCast(gen->builder, malloc, genlType(gen, addrnode->vtype), "");
-    LLVMBuildStore(gen->builder, genlExpr(gen, addrnode->exp), valcast);
+    LLVMValueRef valcast = LLVMBuildBitCast(gen->builder, malloc, genlType(gen, allocatenode->vtype), "");
+    LLVMBuildStore(gen->builder, genlExpr(gen, allocatenode->exp), valcast);
     return valcast;
 }
 

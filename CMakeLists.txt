@@ -40,6 +40,7 @@ add_executable(conec
 	src/c-compiler/ir/stmt/while.c
 
 	src/c-compiler/ir/exp/addr.c
+	src/c-compiler/ir/exp/allocate.c
 	src/c-compiler/ir/exp/assign.c
 	src/c-compiler/ir/exp/block.c
 	src/c-compiler/ir/exp/cast.c

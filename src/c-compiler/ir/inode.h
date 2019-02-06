@@ -90,6 +90,7 @@ enum NodeTags {
     SizeofTag,      // Sizeof a type (usize)
     CastTag,        // Cast exp to another type
     AddrTag,        // & (address of) operator
+    AllocateTag,    // & allocated ref allocation
     DerefTag,       // * (pointed at) operator
     NotLogicTag,    // ! / not
     OrLogicTag,     // || / or

@@ -97,6 +97,8 @@ void inodePrintNode(INode *node) {
         derefPrint((DerefNode *)node); break;
     case AddrTag:
         addrPrint((AddrNode *)node); break;
+    case AllocateTag:
+        allocatePrint((AllocateNode *)node); break;
     case NotLogicTag: case OrLogicTag: case AndLogicTag:
         logicPrint((LogicNode *)node); break;
     case ULitTag:
@@ -201,6 +203,8 @@ void inodeWalk(PassState *pstate, INode **node) {
         derefPass(pstate, (DerefNode *)*node); break;
     case AddrTag:
         addrPass(pstate, (AddrNode **)node); break;
+    case AllocateTag:
+        allocatePass(pstate, (AllocateNode **)node); break;
     case NotLogicTag:
         logicNotPass(pstate, (LogicNode *)*node); break;
     case OrLogicTag: case AndLogicTag:

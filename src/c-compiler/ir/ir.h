@@ -71,6 +71,7 @@ typedef struct AllocNode {
 #include "stmt/vardcl.h"
 
 #include "exp/addr.h"
+#include "exp/allocate.h"
 #include "exp/assign.h"
 #include "exp/cast.h"
 #include "exp/deref.h"

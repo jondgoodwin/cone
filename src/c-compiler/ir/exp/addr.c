@@ -81,9 +81,34 @@ INamedNode *addrGetVarPerm(INode *lval, INode **lvalperm) {
     }
 }
 
-// Type check borrowed reference creator
-void addrTypeCheckBorrow(AddrNode *node, RefNode *reftype) {
+// Analyze addr node
+void addrPass(PassState *pstate, AddrNode **nodep) {
+    AddrNode *node = *nodep;
+    if (pstate->pass == NameResolution) {
+        inodeWalk(pstate, &node->exp);
+        return;
+    }
 
+    RefNode *reftype = (RefNode *)node->vtype;
+
+    /*
+    // If we are borrowing a ref from indexing into a method-typed object
+    // rewrite it as: (&obj).`&[]`()
+    FnCallNode *index = (FnCallNode *)node->exp;
+    if (index->tag == FnCallTag && (index->flags & FlagArrSlice) && reftype->alloc == voidType) {
+        inodeWalk(pstate, &index->objfn);  // Unfortunately, we need to do this to infer type
+        if (isMethodType(iexpGetTypeDcl(index->objfn))) {
+            node->exp = index->objfn;
+            index->objfn = (INode*)node;
+            *nodep = (AddrNode*)node->exp;
+            index->methprop->namesym = refIndexName;
+            inodeWalk(pstate, &node->exp);
+            return;
+        }
+    } */
+
+    // Type check a borrowed reference
+    inodeWalk(pstate, &node->exp);
     reftype->scope = 0;  // Presume lifetime scope is global
 
     INode *lval = node->exp;
@@ -122,65 +147,11 @@ void addrTypeCheckBorrow(AddrNode *node, RefNode *reftype) {
         reftype->perm = lvalperm;
 }
 
-// Type check allocator reference creator
-void addrTypeCheckAlloc(AddrNode *node, RefNode *reftype) {
-
-    // expression must be a value usable for initializing allocated reference
-    INode *initval = node->exp;
-    if (!isExpNode(initval)) {
-        errorMsgNode(initval, ErrorBadTerm, "Needs to be a value");
-        return;
-    }
-
-    // Infer reference's value type based on initial value
-    reftype->pvtype = ((ITypedNode*)initval)->vtype;
-}
-
-// Analyze addr node
-void addrPass(PassState *pstate, AddrNode **nodep) {
-    AddrNode *node = *nodep;
-    if (pstate->pass == NameResolution) {
-        inodeWalk(pstate, &node->exp);
-        return;
-    }
-
-    RefNode *reftype = (RefNode *)node->vtype;
-
-    /*
-    // If we are borrowing a ref from indexing into a method-typed object
-    // rewrite it as: (&obj).`&[]`()
-    FnCallNode *index = (FnCallNode *)node->exp;
-    if (index->tag == FnCallTag && (index->flags & FlagArrSlice) && reftype->alloc == voidType) {
-        inodeWalk(pstate, &index->objfn);  // Unfortunately, we need to do this to infer type
-        if (isMethodType(iexpGetTypeDcl(index->objfn))) {
-            node->exp = index->objfn;
-            index->objfn = (INode*)node;
-            *nodep = (AddrNode*)node->exp;
-            index->methprop->namesym = refIndexName;
-            inodeWalk(pstate, &node->exp);
-            return;
-        }
-    } */
-
-    // Type check a borrowed or allocated reference
-    inodeWalk(pstate, &node->exp);
-    if (reftype->alloc == voidType)
-        addrTypeCheckBorrow(node, reftype);
-    else
-        addrTypeCheckAlloc(node, reftype);
-}
-
 // Perform data flow analysis on addr node
 void addrFlow(FlowState *fstate, AddrNode **nodep) {
     AddrNode *node = *nodep;
     RefNode *reftype = (RefNode *)node->vtype;
-    if (reftype->alloc != voidType) {
-        // For an allocated reference, we need to handle the copied value
-        flowLoadValue(fstate, &node->exp);
-    }
-    else {
-        // Borrowed reference:  Deactivate source variable if necessary
-    }
+    // Borrowed reference:  Deactivate source variable if necessary
 }
 
 // Insert automatic ref, if node is a variable

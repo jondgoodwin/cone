@@ -210,36 +210,40 @@ INode *parsePostfix(ParseState *parse) {
 
 // Parse an address term - current token is '&'
 INode *parseAddr(ParseState *parse) {
-    AddrNode *anode = newAddrNode();
     RefNode *reftype = newRefNode();  // Type for address node
-    anode->vtype = (INode *)reftype;
     reftype->pvtype = NULL;     // Type inference will correct this
     reftype->alloc = voidType;
 
     lexNextToken();
     if (lexIsToken(FnToken)) {
         // Address to anonymous function/closure
+        AddrNode *anode = newAddrNode();
+        anode->vtype = (INode *)reftype;
         anode->exp = parseFn(parse, 0, ParseMayAnon | ParseMayImpl);
         reftype->perm = (INode*)opaqPerm;
+        return (INode *)anode;
     }
     else {
         // Allocated reference
         if (lexIsToken(IdentToken)
             && lex->val.ident->node && lex->val.ident->node->tag == AllocTag) {
             reftype->alloc = (INode*)lex->val.ident->node;
+            AllocateNode *anode = newAllocateNode();
+            anode->vtype = (INode *)reftype;
             lexNextToken();
             reftype->perm = parsePerm(uniPerm);
+            anode->exp = parsePostfix(parse);
+            return (INode *)anode;
         }
         // Borrowed reference
         else {
             reftype->perm = parsePerm(NULL);
+            AddrNode *anode = newAddrNode();
+            anode->vtype = (INode *)reftype;
+            anode->exp = parsePostfix(parse);
+            return (INode *)anode;
         }
-
-        // A value or constructor
-        anode->exp = parsePostfix(parse);
     }
-
-    return (INode *)anode;
 }
 
 // Parse a prefix operator, e.g.: -
