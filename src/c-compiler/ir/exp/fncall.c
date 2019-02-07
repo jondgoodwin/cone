@@ -69,10 +69,10 @@ void fnCallFinalizeArgs(FnCallNode *node) {
             addrtype->perm = (INode*)immPerm;
             addrtype->alloc = voidType;
             addrtype->pvtype = (INode*)u8Type;
-            AddrNode *addrnode = newAddrNode();
-            addrnode->vtype = (INode*)addrtype;
-            addrnode->exp = *argsp;
-            *argsp = (INode*)addrnode;
+            BorrowNode *borrownode = newBorrowNode();
+            borrownode->vtype = (INode*)addrtype;
+            borrownode->exp = *argsp;
+            *argsp = (INode*)borrownode;
         }
 
         if (!iexpCoerces(*parmp, argsp))
@@ -172,7 +172,7 @@ int fnCallLowerPtrMethod(FnCallNode *callnode) {
         selfref->pvtype = selftype;
         selfref->alloc = voidType;
         selfref->perm = newPermUseNode((INamedNode*)mutPerm);
-        addrAuto(selfp, (INode *)selfref);
+        borrowAuto(selfp, (INode *)selfref);
     }
 
     // Re-purpose method's name use node into objfn, so name refers to found method

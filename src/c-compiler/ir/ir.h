@@ -70,7 +70,7 @@ typedef struct AllocNode {
 #include "stmt/intrinsic.h"
 #include "stmt/vardcl.h"
 
-#include "exp/addr.h"
+#include "exp/borrow.h"
 #include "exp/allocate.h"
 #include "exp/assign.h"
 #include "exp/cast.h"

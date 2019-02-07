@@ -92,8 +92,8 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         fnCallFlow(fstate, (FnCallNode**)nodep);
         flowInjectAliasNode(nodep, -1);
         break;
-    case AddrTag:
-        addrFlow(fstate, (AddrNode **)nodep);
+    case BorrowTag:
+        borrowFlow(fstate, (BorrowNode **)nodep);
         break;
     case AllocateTag:
         allocateFlow(fstate, (AllocateNode **)nodep);

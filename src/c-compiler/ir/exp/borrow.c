@@ -1,4 +1,4 @@
-/** Handling for address-of expression nodes
+/** Handling for borrow expression nodes
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -9,15 +9,15 @@
 
 #include <assert.h>
 
-// Create a new addr node
-AddrNode *newAddrNode() {
-    AddrNode *node;
-    newNode(node, AddrNode, AddrTag);
+// Create a new borrow node
+BorrowNode *newBorrowNode() {
+    BorrowNode *node;
+    newNode(node, BorrowNode, BorrowTag);
     return node;
 }
 
-// Serialize addr
-void addrPrint(AddrNode *node) {
+// Serialize borrow node
+void borrowPrint(BorrowNode *node) {
     inodeFprint("&(");
     inodePrintNode(node->vtype);
     inodeFprint("->");
@@ -26,7 +26,7 @@ void addrPrint(AddrNode *node) {
 }
 
 // Extract lval variable and overall permission from lval
-INamedNode *addrGetVarPerm(INode *lval, INode **lvalperm) {
+INamedNode *borrowGetVarPerm(INode *lval, INode **lvalperm) {
     switch (lval->tag) {
 
     // A variable or named function node
@@ -45,7 +45,7 @@ INamedNode *addrGetVarPerm(INode *lval, INode **lvalperm) {
     case DerefTag:
     {
         DerefNode *deref = (DerefNode*)lval;
-        return addrGetVarPerm(deref->exp, lvalperm);
+        return borrowGetVarPerm(deref->exp, lvalperm);
     }
 
     // An array element (obj[2]) or property access (obj.prop)
@@ -53,7 +53,7 @@ INamedNode *addrGetVarPerm(INode *lval, INode **lvalperm) {
     case StrFieldTag:
     {
         FnCallNode *element = (FnCallNode *)lval;
-        INamedNode *lvalvar = addrGetVarPerm(element->objfn, lvalperm);
+        INamedNode *lvalvar = borrowGetVarPerm(element->objfn, lvalperm);
         if (lvalvar == NULL)
             return NULL;
         INode *lvaltype = iexpGetTypeDcl((INode*)lvalvar);
@@ -81,9 +81,9 @@ INamedNode *addrGetVarPerm(INode *lval, INode **lvalperm) {
     }
 }
 
-// Analyze addr node
-void addrPass(PassState *pstate, AddrNode **nodep) {
-    AddrNode *node = *nodep;
+// Analyze borrow node
+void borrowPass(PassState *pstate, BorrowNode **nodep) {
+    BorrowNode *node = *nodep;
     if (pstate->pass == NameResolution) {
         inodeWalk(pstate, &node->exp);
         return;
@@ -100,7 +100,7 @@ void addrPass(PassState *pstate, AddrNode **nodep) {
         if (isMethodType(iexpGetTypeDcl(index->objfn))) {
             node->exp = index->objfn;
             index->objfn = (INode*)node;
-            *nodep = (AddrNode*)node->exp;
+            *nodep = (BorrowNode*)node->exp;
             index->methprop->namesym = refIndexName;
             inodeWalk(pstate, &node->exp);
             return;
@@ -116,7 +116,7 @@ void addrPass(PassState *pstate, AddrNode **nodep) {
     if (lval->tag != StrLitTag) {
         // lval is the variable or variable sub-structure we want to get a reference to
         // From it, obtain variable we are borrowing from and actual/calculated permission
-        INamedNode *lvalvar = addrGetVarPerm(lval, &lvalperm);
+        INamedNode *lvalvar = borrowGetVarPerm(lval, &lvalperm);
         if (lvalvar == NULL) {
             reftype->pvtype = (INode*)voidType;  // Just to avoid a compiler crash later
             return;
@@ -148,16 +148,16 @@ void addrPass(PassState *pstate, AddrNode **nodep) {
 }
 
 // Perform data flow analysis on addr node
-void addrFlow(FlowState *fstate, AddrNode **nodep) {
-    AddrNode *node = *nodep;
+void borrowFlow(FlowState *fstate, BorrowNode **nodep) {
+    BorrowNode *node = *nodep;
     RefNode *reftype = (RefNode *)node->vtype;
     // Borrowed reference:  Deactivate source variable if necessary
 }
 
 // Insert automatic ref, if node is a variable
-void addrAuto(INode **node, INode* reftype) {
-    AddrNode *addrnode = newAddrNode();
-    addrnode->exp = *node;
-    addrnode->vtype = reftype;
-    *node = (INode*)addrnode;
+void borrowAuto(INode **node, INode* reftype) {
+    BorrowNode *borrownode = newBorrowNode();
+    borrownode->exp = *node;
+    borrownode->vtype = reftype;
+    *node = (INode*)borrownode;
 }

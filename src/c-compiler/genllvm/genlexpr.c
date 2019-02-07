@@ -730,9 +730,9 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
             return genlReinterpret(gen, node->exp, node->vtype);
         return genlConvert(gen, node->exp, node->vtype);
     }
-    case AddrTag:
+    case BorrowTag:
     {
-        AddrNode *anode = (AddrNode*)termnode;
+        BorrowNode *anode = (BorrowNode*)termnode;
         RefNode *reftype = (RefNode *)anode->vtype;
         if (reftype->flags & FlagArrSlice) {
             LLVMValueRef tupleval = LLVMGetUndef(genlType(gen, (INode*)reftype->tuptype));

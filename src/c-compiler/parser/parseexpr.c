@@ -217,7 +217,7 @@ INode *parseAddr(ParseState *parse) {
     lexNextToken();
     if (lexIsToken(FnToken)) {
         // Address to anonymous function/closure
-        AddrNode *anode = newAddrNode();
+        BorrowNode *anode = newBorrowNode();
         anode->vtype = (INode *)reftype;
         anode->exp = parseFn(parse, 0, ParseMayAnon | ParseMayImpl);
         reftype->perm = (INode*)opaqPerm;
@@ -238,7 +238,7 @@ INode *parseAddr(ParseState *parse) {
         // Borrowed reference
         else {
             reftype->perm = parsePerm(NULL);
-            AddrNode *anode = newAddrNode();
+            BorrowNode *anode = newBorrowNode();
             anode->vtype = (INode *)reftype;
             anode->exp = parsePostfix(parse);
             return (INode *)anode;
