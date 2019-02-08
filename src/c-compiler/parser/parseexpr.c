@@ -126,10 +126,9 @@ INode *parseArg(ParseState *parse) {
     return arg;
 }
 
-// Parse the postfix operators: '.', '::', '()', '[]'
-INode *parsePostfix(ParseState *parse) {
-    INode *node = lexIsToken(DotToken)? (INode*)newNameUseNode(thisName) : parseTerm(parse);
-
+// Parse the postfix operators: '.', '()', '[]', ++, --
+// Flags may be FlagBorrow
+INode *parseSuffix(ParseState *parse, INode *node, uint16_t flags) {
     while (1) {
         switch (lex->toktype) {
 
@@ -139,8 +138,7 @@ INode *parsePostfix(ParseState *parse) {
         {
             int closetok = lex->toktype == LBracketToken? RBracketToken : RParenToken;
             FnCallNode *fncall = newFnCallNode(node, 8);
-            if (closetok == RBracketToken)
-                fncall->flags |= FlagIndex;
+            fncall->flags |= flags | (closetok == RBracketToken ? FlagIndex : 0);
             lexNextToken();
             if (!lexIsToken(closetok)) {
                 nodesAdd(&fncall->args, parseArg(parse));
@@ -158,6 +156,7 @@ INode *parsePostfix(ParseState *parse) {
         case DotToken:
         {
             FnCallNode *fncall = newFnCallNode(node, 0);
+            fncall->flags |= flags;
             lexNextToken();
 
             // Get property/method name
@@ -208,6 +207,12 @@ INode *parsePostfix(ParseState *parse) {
     }
 }
 
+// Parse the postfix operators: '.', '()', '[]', ++, --
+INode *parsePostfix(ParseState *parse) {
+    INode *node = lexIsToken(DotToken) ? (INode*)newNameUseNode(thisName) : parseTerm(parse);
+    return parseSuffix(parse, node, 0);
+}
+
 // Parse an address term - current token is '&'
 INode *parseAddr(ParseState *parse) {
     RefNode *reftype = newRefNode();  // Type for address node
@@ -215,35 +220,48 @@ INode *parseAddr(ParseState *parse) {
     reftype->alloc = voidType;
 
     lexNextToken();
+
+    // Borrowed reference to anonymous function/closure
     if (lexIsToken(FnToken)) {
-        // Address to anonymous function/closure
         BorrowNode *anode = newBorrowNode();
         anode->vtype = (INode *)reftype;
         anode->exp = parseFn(parse, 0, ParseMayAnon | ParseMayImpl);
         reftype->perm = (INode*)opaqPerm;
         return (INode *)anode;
     }
-    else {
-        // Allocated reference
-        if (lexIsToken(IdentToken)
-            && lex->val.ident->node && lex->val.ident->node->tag == AllocTag) {
-            reftype->alloc = (INode*)lex->val.ident->node;
-            AllocateNode *anode = newAllocateNode();
-            anode->vtype = (INode *)reftype;
-            lexNextToken();
-            reftype->perm = parsePerm(uniPerm);
-            anode->exp = parsePostfix(parse);
-            return (INode *)anode;
-        }
-        // Borrowed reference
-        else {
-            reftype->perm = parsePerm(NULL);
-            BorrowNode *anode = newBorrowNode();
-            anode->vtype = (INode *)reftype;
-            anode->exp = parsePostfix(parse);
-            return (INode *)anode;
-        }
+
+    // Allocated reference
+    if (lexIsToken(IdentToken)
+        && lex->val.ident->node && lex->val.ident->node->tag == AllocTag) {
+        reftype->alloc = (INode*)lex->val.ident->node;
+        AllocateNode *anode = newAllocateNode();
+        anode->vtype = (INode *)reftype;
+        lexNextToken();
+        reftype->perm = parsePerm(uniPerm);
+        anode->exp = parsePostfix(parse);
+        return (INode *)anode;
     }
+
+    // Borrowed reference
+    BorrowNode *anode = newBorrowNode();
+    reftype->perm = parsePerm(NULL);
+    anode->vtype = (INode *)reftype;
+
+    // Get the term we are borrowing from (which might be a de-referenced reference)
+    if (lexIsToken(StarToken)) {
+        DerefNode *derefnode = newDerefNode();
+        lexNextToken();
+        derefnode->exp = lexIsToken(DotToken) ? (INode*)newNameUseNode(thisName) : parseTerm(parse);
+        anode->exp = (INode*)derefnode;
+    }
+    else
+        anode->exp = lexIsToken(DotToken) ? (INode*)newNameUseNode(thisName) : parseTerm(parse);
+
+    // Process borrow chain suffixes, and set flag to show if we had some
+    INode* node = parseSuffix(parse, (INode*)anode, FlagBorrow);
+    if (node != (INode*)anode)
+        anode->flags |= FlagSuffix;
+    return node;
 }
 
 // Parse a prefix operator, e.g.: -

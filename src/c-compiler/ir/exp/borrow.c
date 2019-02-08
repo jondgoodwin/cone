@@ -76,7 +76,7 @@ INamedNode *borrowGetVarPerm(INode *lval, INode **lvalperm) {
 
     // One cannot borrow a reference from any other node
     default:
-        errorMsgNode(lval, ErrorNotLval, "You can only borrow a reference from a variable, function, field, array element or array");
+        errorMsgNode(lval, ErrorNotLval, "You can only borrow a reference from a variable, function, or dereference");
         return NULL;
     }
 }
@@ -89,30 +89,25 @@ void borrowPass(PassState *pstate, BorrowNode **nodep) {
         return;
     }
 
-    RefNode *reftype = (RefNode *)node->vtype;
-
-    /*
-    // If we are borrowing a ref from indexing into a method-typed object
-    // rewrite it as: (&obj).`&[]`()
-    FnCallNode *index = (FnCallNode *)node->exp;
-    if (index->tag == FnCallTag && (index->flags & FlagArrSlice) && reftype->alloc == voidType) {
-        inodeWalk(pstate, &index->objfn);  // Unfortunately, we need to do this to infer type
-        if (isMethodType(iexpGetTypeDcl(index->objfn))) {
-            node->exp = index->objfn;
-            index->objfn = (INode*)node;
-            *nodep = (BorrowNode*)node->exp;
-            index->methprop->namesym = refIndexName;
-            inodeWalk(pstate, &node->exp);
-            return;
-        }
-    } */
-
     // Type check a borrowed reference
     inodeWalk(pstate, &node->exp);
-    reftype->scope = 0;  // Presume lifetime scope is global
 
+    // If we are calculating an internal reference (e.g., index) for a reference, 
+    // auto-deref that reference
+    INode *exptype = iexpGetTypeDcl(node->exp);
+    if ((node->flags & FlagSuffix) && (exptype->tag == RefTag || exptype->tag == PtrTag)) {
+        DerefNode *deref = newDerefNode();
+        deref->exp = node->exp;
+        deref->vtype = ((RefNode*)exptype)->pvtype;  // assumes PtrNode has field in same place
+        *nodep = (BorrowNode*)deref;
+    }
+
+    // Setup lval, perm and scope as if we were borrowing from a string,
+    // If not, then we can extract this info from expression nodes
+    RefNode *reftype = (RefNode *)node->vtype;
     INode *lval = node->exp;
     INode *lvalperm = (INode*)immPerm;
+    reftype->scope = 0;  // Global
     if (lval->tag != StrLitTag) {
         // lval is the variable or variable sub-structure we want to get a reference to
         // From it, obtain variable we are borrowing from and actual/calculated permission
@@ -122,9 +117,8 @@ void borrowPass(PassState *pstate, BorrowNode **nodep) {
             return;
         }
         // Set lifetime of reference to borrowed variable's lifetime
-        if (lvalvar->tag == VarDclTag) {
+        if (lvalvar->tag == VarDclTag)
             reftype->scope = ((VarDclNode*)lvalvar)->scope;
-        }
     }
     INode *lvaltype = ((ITypedNode*)lval)->vtype;
 

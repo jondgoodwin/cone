@@ -47,6 +47,8 @@ Name *ltName;       // "<"
 Name *geName;       // ">="
 Name *gtName;       // ">"
 
+Name *parensName;   // "()"
+Name *indexName;    // "[]"
 Name *refIndexName; // "&[]"
 
 // Represents the absence of type information

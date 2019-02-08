@@ -381,7 +381,8 @@ void fnCallPass(PassState *pstate, FnCallNode **nodep) {
         objdereftype = iexpGetDerefTypeDcl(node->objfn); // Deref if not applying [] to ptr or slice
 
     if (isMethodType(objdereftype) && node->methprop == NULL)
-        node->methprop = newNameUseNode(nametblFind(node->flags & FlagIndex ? "[]" : "()", 2));
+        node->methprop = newNameUseNode(
+            node->flags & FlagIndex ? (node->flags & FlagBorrow ? refIndexName : indexName) : parensName);
 
     // Objects (method types) are lowered to method calls via a name lookup
     if (node->methprop) {
@@ -446,7 +447,16 @@ void fnCallPass(PassState *pstate, FnCallNode **nodep) {
                 break;
             default:
                 assert(0 && "Invalid type for indexing");
-            }   
+            }
+            if (node->flags & FlagBorrow) {
+                RefNode *refnode = newRefNode();
+                refnode->alloc = (INode*)voidType;
+                refnode->pvtype = node->vtype;
+                INode *objtype = iexpGetTypeDcl(node->objfn);
+                assert(objtype->tag == RefTag);
+                refnode->perm = ((RefNode*)objtype)->perm;
+                node->vtype = (INode*)refnode;
+            }
             node->tag = ArrIndexTag;
         }
         else

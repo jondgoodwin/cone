@@ -19,7 +19,7 @@
 INode *parseEach(ParseState *parse, INode *blk);
 
 // Parse control flow suffixes
-INode *parseSuffix(ParseState *parse, INode *node) {
+INode *parseFlowSuffix(ParseState *parse, INode *node) {
     // Translate 'this' block sugar to declaring 'this' at start of block
     if (lexIsToken(LCurlyToken)) {
         INode *var = (INode*)newVarDclFull(thisName, VarDclTag, voidType, (INode*)immPerm, node);
@@ -58,7 +58,7 @@ INode *parseSuffix(ParseState *parse, INode *node) {
 
 // Parse an expression statement within a function
 INode *parseExpStmt(ParseState *parse) {
-    return parseSuffix(parse, (INode *)parseAnyExpr(parse));
+    return parseFlowSuffix(parse, (INode *)parseAnyExpr(parse));
 }
 
 // Parse a return statement
@@ -67,7 +67,7 @@ INode *parseReturn(ParseState *parse) {
     lexNextToken(); // Skip past 'return'
     if (!lexIsToken(SemiToken))
         stmtnode->exp = parseAnyExpr(parse);
-    return parseSuffix(parse, (INode*)stmtnode);
+    return parseFlowSuffix(parse, (INode*)stmtnode);
 }
 
 // Parse if statement/expression
@@ -204,7 +204,7 @@ INode *parseBlock(ParseState *parse) {
         {
             INode *node = (INode*)newBreakNode(BreakTag);
             lexNextToken();
-            nodesAdd(&blk->stmts, parseSuffix(parse, node));
+            nodesAdd(&blk->stmts, parseFlowSuffix(parse, node));
             break;
         }
 
@@ -212,7 +212,7 @@ INode *parseBlock(ParseState *parse) {
         {
             INode *node = (INode*)newBreakNode(ContinueTag);
             lexNextToken();
-            nodesAdd(&blk->stmts, parseSuffix(parse, node));
+            nodesAdd(&blk->stmts, parseFlowSuffix(parse, node));
             break;
         }
 
