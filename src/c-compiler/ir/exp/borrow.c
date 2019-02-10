@@ -45,7 +45,11 @@ INamedNode *borrowGetVarPerm(INode *lval, INode **lvalperm) {
     case DerefTag:
     {
         DerefNode *deref = (DerefNode*)lval;
-        return borrowGetVarPerm(deref->exp, lvalperm);
+        INamedNode *lvalret = borrowGetVarPerm(deref->exp, lvalperm);
+        INode *typ = iexpGetTypeDcl(deref->exp);
+        assert(typ->tag == RefTag);
+        *lvalperm = ((RefNode*)typ)->perm;
+        return lvalret;
     }
 
     // An array element (obj[2]) or property access (obj.prop)
@@ -99,7 +103,7 @@ void borrowPass(PassState *pstate, BorrowNode **nodep) {
         DerefNode *deref = newDerefNode();
         deref->exp = node->exp;
         deref->vtype = ((RefNode*)exptype)->pvtype;  // assumes PtrNode has field in same place
-        *nodep = (BorrowNode*)deref;
+        node->exp = (INode*)deref;
     }
 
     // Setup lval, perm and scope as if we were borrowing from a string,

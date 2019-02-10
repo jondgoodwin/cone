@@ -376,7 +376,7 @@ void fnCallPass(PassState *pstate, FnCallNode **nodep) {
     }
     INode *objfntype = iexpGetTypeDcl(node->objfn);
     INode *objdereftype = objfntype;
-    if (!((node->flags & FlagIndex)
+    if (!(node->flags & FlagBorrow) && !((node->flags & FlagIndex)
         && (objfntype->tag == PtrTag || (objfntype->tag == RefTag && (objfntype->flags & FlagArrSlice)))))
         objdereftype = iexpGetDerefTypeDcl(node->objfn); // Deref if not applying [] to ptr or slice
 

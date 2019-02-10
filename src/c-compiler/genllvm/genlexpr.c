@@ -697,6 +697,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
                     LLVMValueRef sliceptr = LLVMBuildExtractValue(gen->builder, arrref, 0, "sliceptr");
                     return LLVMBuildGEP(gen->builder, sliceptr, &index, 1, "");
                 }
+                assert(0 && "Should be indexing into a slice here");
             case PtrTag: {
                 LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
                 return LLVMBuildGEP(gen->builder, genlExpr(gen, fncall->objfn), &index, 1, "");
