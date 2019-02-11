@@ -9,6 +9,7 @@
 #define parser_h
 
 #include "../ir/ir.h"
+typedef struct ConeOptions ConeOptions;
 
 typedef struct ParseState {
     ModuleNode *pgmmod;    // Root module for program
@@ -26,6 +27,7 @@ enum ParseFlags {
 };
 
 // parser.c
+ModuleNode *parsePgm(ConeOptions *opt);
 ModuleNode *parseModuleBlk(ParseState *parse, ModuleNode *mod);
 INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags);
 void parseSemi();
