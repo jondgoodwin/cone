@@ -44,5 +44,5 @@ void arrayPass(PassState *pstate, ArrayNode *node) {
 // Compare two struct signatures to see if they are equivalent
 int arrayEqual(ArrayNode *node1, ArrayNode *node2) {
     return (node1->size == node2->size
-        /* && itypeIsSame(node1->elemtype, node2->elemtype*/);
+        && itypeIsSame(node1->elemtype, node2->elemtype));
 }

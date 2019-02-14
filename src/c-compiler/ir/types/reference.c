@@ -65,13 +65,15 @@ void refPass(PassState *pstate, RefNode *node) {
 int refEqual(RefNode *node1, RefNode *node2) {
     return itypeIsSame(node1->pvtype,node2->pvtype) 
         && permIsSame(node1->perm, node2->perm)
-        && node1->alloc == node2->alloc;
+        && node1->alloc == node2->alloc
+        && (node1->flags & FlagRefNull) == (node2->flags & FlagRefNull);
 }
 
 // Will from reference coerce to a to reference (we know they are not the same)
 int refMatches(RefNode *to, RefNode *from) {
     if (0 == permMatches(to->perm, from->perm)
-        || (to->alloc != from->alloc && to->alloc != voidType))
+        || (to->alloc != from->alloc && to->alloc != voidType)
+        || ((from->flags & FlagRefNull) && !(to->flags & FlagRefNull)))
         return 0;
     if ((to->flags & FlagArrSlice) != (from->flags & FlagArrSlice))
         return 0;

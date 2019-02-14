@@ -8,8 +8,8 @@
 #ifndef reference_h
 #define reference_h
 
-#define FlagArrSlice 0x0001
-#define FlagRefNull  0x0002
+#define FlagRefNull  0x0001
+#define FlagArrSlice 0x0002
 
 // Reference node
 typedef struct RefNode {
