@@ -113,6 +113,8 @@ void inodePrintNode(INode *node) {
         fnSigPrint((FnSigNode *)node); break;
     case RefTag:
         refPrint((RefNode *)node); break;
+    case ArrayRefTag:
+        arrayRefPrint((ArrayRefNode *)node); break;
     case PtrTag:
         ptrPrint((PtrNode *)node); break;
     case StructTag:
@@ -213,6 +215,8 @@ void inodeWalk(PassState *pstate, INode **node) {
         fnSigPass(pstate, (FnSigNode *)*node); break;
     case RefTag:
         refPass(pstate, (RefNode *)*node); break;
+    case ArrayRefTag:
+        arrayRefPass(pstate, (ArrayRefNode *)*node); break;
     case PtrTag:
         ptrPass(pstate, (PtrNode *)*node); break;
     case StructTag:
