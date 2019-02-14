@@ -40,6 +40,8 @@ int itypeIsSame(INode *node1, INode *node2) {
         return fnSigEqual((FnSigNode*)node1, (FnSigNode*)node2);
     case RefTag: 
         return refEqual((RefNode*)node1, (RefNode*)node2);
+    case ArrayRefTag:
+        return arrayRefEqual((RefNode*)node1, (RefNode*)node2);
     case PtrTag:
         return ptrEqual((PtrNode*)node1, (PtrNode*)node2);
     default:
@@ -70,8 +72,13 @@ int itypeMatches(INode *totype, INode *fromtype) {
             return 0;
         return refMatches((RefNode*)totype, (RefNode*)fromtype);
 
+    case ArrayRefTag:
+        if (fromtype->tag != ArrayRefTag)
+            return 0;
+        return arrayRefMatches((RefNode*)totype, (RefNode*)fromtype);
+
     case PtrTag:
-        if (fromtype->tag == RefTag)
+        if (fromtype->tag == RefTag || fromtype->tag == ArrayRefTag)
             return itypeIsSame(((RefNode*)fromtype)->pvtype, ((PtrNode*)totype)->pvtype)? 2 : 0;
         if (fromtype->tag != PtrTag)
             return 0;
@@ -88,7 +95,7 @@ int itypeMatches(INode *totype, INode *fromtype) {
     case UintNbrTag:
         if ((fromtype->tag == RefTag || fromtype->tag == PtrTag) && totype == (INode*)boolType)
             return 2;
-        if (totype == (INode*)usizeType && fromtype->tag == RefTag && (fromtype->flags & FlagArrSlice))
+        if (totype == (INode*)usizeType && fromtype->tag == ArrayRefTag)
             return 2;
         // Fall through is intentional here...
     case IntNbrTag:

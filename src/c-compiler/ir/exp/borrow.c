@@ -131,7 +131,7 @@ void borrowPass(PassState *pstate, BorrowNode **nodep) {
     if (lvaltype->tag == ArrayTag) {
         // Borrowing from a fixed size array creates an array reference
         reftype->pvtype = ((ArrayNode*)lvaltype)->elemtype;
-        refSliceFatPtr(reftype);
+        reftype->tag = ArrayRefTag;
     }
     else
         reftype->pvtype = lvaltype;

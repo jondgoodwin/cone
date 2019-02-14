@@ -11,7 +11,6 @@
 RefNode *newRefNode() {
     RefNode *refnode;
     newNode(refnode, RefNode, RefTag);
-    refnode->tuptype = NULL;
     return refnode;
 }
 
@@ -21,24 +20,6 @@ int refIsNullable(INode *typenode) {
     return ref->tag == RefTag && (ref->flags & FlagRefNull);
 }
 
-// Define fat pointer type tuple for slice: {*T, usize}
-void refSliceFatPtr(RefNode *reftype) {
-    reftype->flags |= FlagArrSlice;
-    PtrNode *refptr = newPtrNode();
-    refptr->pvtype = reftype->pvtype;
-
-    // Name-resolved usize type
-    NameUseNode *size = newNameUseNode(nametblFind("usize", 5));
-    size->tag = TypeNameUseTag;
-    size->dclnode = (INamedNode*)usizeType;
-    size->vtype = usizeType->vtype;
-
-    TTupleNode *fatptr = newTTupleNode(2);
-    nodesAdd(&fatptr->types, (INode*)refptr);
-    nodesAdd(&fatptr->types, (INode*)size);
-    reftype->tuptype = fatptr;
-}
-
 // Serialize a pointer type
 void refPrint(RefNode *node) {
     inodeFprint("&(");
@@ -46,8 +27,6 @@ void refPrint(RefNode *node) {
     inodeFprint(" ");
     inodePrintNode((INode*)node->perm);
     inodeFprint(" ");
-    if (node->flags & FlagArrSlice)
-        inodeFprint("[]");
     inodePrintNode(node->pvtype);
     inodeFprint(")");
 }
@@ -57,8 +36,6 @@ void refPass(PassState *pstate, RefNode *node) {
     inodeWalk(pstate, &node->alloc);
     inodeWalk(pstate, (INode**)&node->perm);
     inodeWalk(pstate, &node->pvtype);
-    if (node->flags & FlagArrSlice)
-        inodeWalk(pstate, (INode**)&node->tuptype);
 }
 
 // Compare two reference signatures to see if they are equivalent
@@ -74,8 +51,6 @@ int refMatches(RefNode *to, RefNode *from) {
     if (0 == permMatches(to->perm, from->perm)
         || (to->alloc != from->alloc && to->alloc != voidType)
         || ((from->flags & FlagRefNull) && !(to->flags & FlagRefNull)))
-        return 0;
-    if ((to->flags & FlagArrSlice) != (from->flags & FlagArrSlice))
         return 0;
     return itypeMatches(to->pvtype, from->pvtype) == 1 ? 1 : 2;
 }

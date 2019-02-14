@@ -8,33 +8,16 @@
 #ifndef arrayref_h
 #define arrayref_h
 
-// #define FlagRefNull  0x0001
-
-// Reference node
-typedef struct ArrayRefNode {
-    INodeHdr;
-    INode *pvtype;    // Value type of each slice's element
-    INode *perm;      // Permission
-    INode *alloc;     // Allocator
-    int16_t scope;    // Lifetime
-} ArrayRefNode;
-
-// Create a new array reference type whose info will be filled in afterwards
-ArrayRefNode *newArrayRefNode();
-
-// Is type a nullable array reference?
-int arrayRefIsNullable(INode *typenode);
-
 // Serialize a pointer type
-void arrayRefPrint(ArrayRefNode *node);
+void arrayRefPrint(RefNode *node);
 
 // Semantically analyze a reference node
-void arrayRefPass(PassState *pstate, ArrayRefNode *name);
+void arrayRefPass(PassState *pstate, RefNode *name);
 
 // Compare two reference signatures to see if they are equivalent
-int arrayRefEqual(ArrayRefNode *node1, ArrayRefNode *node2);
+int arrayRefEqual(RefNode *node1, RefNode *node2);
 
 // Will from reference coerce to a to reference (we know they are not the same)
-int arrayRefMatches(ArrayRefNode *to, ArrayRefNode *from);
+int arrayRefMatches(RefNode *to, RefNode *from);
 
 #endif

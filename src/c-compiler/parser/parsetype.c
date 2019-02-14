@@ -311,11 +311,11 @@ INode *parseRefType(ParseState *parse) {
     }
     // Get value type for ref to array or slice
     else if (lexIsToken(LBracketToken)) {
+        reftype->tag = ArrayRefTag;
         lexNextToken();
         if (lexIsToken(RBracketToken)) {
             lexNextToken();
             reftype->pvtype = parseVtype(parse);
-            refSliceFatPtr(reftype);
         }
         else
             reftype->pvtype = parseArrayType(parse);

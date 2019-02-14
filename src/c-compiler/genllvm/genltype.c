@@ -56,12 +56,18 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
     case RefTag:
     {
         RefNode *refnode = (RefNode*)typ;
-        if (refnode->tuptype)
-            return genlType(gen, (INode*)refnode->tuptype);
-        else {
-            LLVMTypeRef pvtype = genlType(gen, refnode->pvtype);
-            return LLVMPointerType(pvtype, 0);
-        }
+        LLVMTypeRef pvtype = genlType(gen, refnode->pvtype);
+        return LLVMPointerType(pvtype, 0);
+    }
+
+    case ArrayRefTag:
+    {
+        RefNode *refnode = (RefNode*)typ;
+        LLVMTypeRef elemtypes[2];
+        LLVMTypeRef pvtype = genlType(gen, refnode->pvtype);
+        elemtypes[0] = LLVMPointerType(pvtype, 0);
+        elemtypes[1] = _genlType(gen, "", (INode*)usizeType);
+        return LLVMStructTypeInContext(gen->context, elemtypes, 2, 0);
     }
 
     case FnSigTag:

@@ -114,7 +114,7 @@ void inodePrintNode(INode *node) {
     case RefTag:
         refPrint((RefNode *)node); break;
     case ArrayRefTag:
-        arrayRefPrint((ArrayRefNode *)node); break;
+        arrayRefPrint((RefNode *)node); break;
     case PtrTag:
         ptrPrint((PtrNode *)node); break;
     case StructTag:
@@ -216,7 +216,7 @@ void inodeWalk(PassState *pstate, INode **node) {
     case RefTag:
         refPass(pstate, (RefNode *)*node); break;
     case ArrayRefTag:
-        arrayRefPass(pstate, (ArrayRefNode *)*node); break;
+        arrayRefPass(pstate, (RefNode *)*node); break;
     case PtrTag:
         ptrPass(pstate, (PtrNode *)*node); break;
     case StructTag:

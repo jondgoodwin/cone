@@ -9,7 +9,6 @@
 #define reference_h
 
 #define FlagRefNull  0x0001
-#define FlagArrSlice 0x0002
 
 // Reference node
 typedef struct RefNode {
@@ -17,7 +16,6 @@ typedef struct RefNode {
     INode *pvtype;    // Value type
     INode *perm;    // Permission
     INode *alloc;    // Allocator
-    TTupleNode *tuptype; // Reference's generated representation (NULL = just a pointer)
     int16_t scope;    // Lifetime
 } RefNode;
 
@@ -26,9 +24,6 @@ RefNode *newRefNode();
 
 // Is type a nullable reference?
 int refIsNullable(INode *typenode);
-
-// Define fat pointer type tuple for slice: {*T, usize}
-void refSliceFatPtr(RefNode *reftype);
 
 // Serialize a pointer type
 void refPrint(RefNode *node);

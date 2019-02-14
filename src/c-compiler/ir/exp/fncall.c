@@ -64,7 +64,7 @@ void fnCallFinalizeArgs(FnCallNode *node) {
         // Auto-convert string literal to borrowed reference
         INode *parmtype = iexpGetTypeDcl(*parmp);
         if ((*argsp)->tag == StrLitTag 
-            && ((parmtype->tag == RefTag && parmtype->flags & FlagArrSlice) || parmtype->tag == PtrTag)) {
+            && (parmtype->tag == ArrayRefTag || parmtype->tag == PtrTag)) {
             RefNode *addrtype = newRefNode();
             addrtype->perm = (INode*)immPerm;
             addrtype->alloc = voidType;
@@ -302,7 +302,7 @@ void fnCallNameCheck(PassState *pstate, FnCallNode **nodep) {
 
     // If objfn is a type, handle it as a type literal
     if (isTypeNode(node->objfn)) {
-        if (!node->flags & FlagArrSlice) {
+        if (!node->flags & FlagIndex) {
             errorMsgNode(node->objfn, ErrorBadTerm, "May not do a function call on a type");
             return;
         }
@@ -377,7 +377,7 @@ void fnCallPass(PassState *pstate, FnCallNode **nodep) {
     INode *objfntype = iexpGetTypeDcl(node->objfn);
     INode *objdereftype = objfntype;
     if (!(node->flags & FlagBorrow) && !((node->flags & FlagIndex)
-        && (objfntype->tag == PtrTag || (objfntype->tag == RefTag && (objfntype->flags & FlagArrSlice)))))
+        && (objfntype->tag == PtrTag || objfntype->tag == ArrayRefTag)))
         objdereftype = iexpGetDerefTypeDcl(node->objfn); // Deref if not applying [] to ptr or slice
 
     if (isMethodType(objdereftype) && node->methprop == NULL)
@@ -414,7 +414,8 @@ void fnCallPass(PassState *pstate, FnCallNode **nodep) {
     }
 
     // Handle index/slice arguments on an array or array reference
-    else if (objdereftype->tag == ArrayTag || objdereftype->tag == RefTag || objdereftype->tag == PtrTag) {
+    else if (objdereftype->tag == ArrayTag || objdereftype->tag == RefTag 
+            || objdereftype->tag == ArrayRefTag || objdereftype->tag == PtrTag) {
         uint32_t nargs = node->args->used;
         if (nargs == 1) {
             INode **indexp = &nodesGet(node->args, 0);
@@ -440,6 +441,7 @@ void fnCallPass(PassState *pstate, FnCallNode **nodep) {
                 node->vtype = ((ArrayNode*)objdereftype)->elemtype;
                 break;
             case RefTag:
+            case ArrayRefTag:
                 node->vtype = ((RefNode*)objdereftype)->pvtype;
                 break;
             case PtrTag:
@@ -453,7 +455,7 @@ void fnCallPass(PassState *pstate, FnCallNode **nodep) {
                 refnode->alloc = (INode*)voidType;
                 refnode->pvtype = node->vtype;
                 INode *objtype = iexpGetTypeDcl(node->objfn);
-                assert(objtype->tag == RefTag);
+                assert(objtype->tag == RefTag || objtype->tag == ArrayRefTag);
                 refnode->perm = ((RefNode*)objtype)->perm;
                 node->vtype = (INode*)refnode;
             }

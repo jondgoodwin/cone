@@ -33,11 +33,15 @@ uint32_t castBitsize(INode *type) {
             return ptrsize;
         return ((NbrNode *)type)->bits;
     }
-    if (type->tag == PtrTag)
+    switch (type->tag) {
+    case PtrTag:
+    case RefTag:
         return ptrsize;
-    if (type->tag == RefTag)
-        return type->flags & FlagArrSlice ? 2 * ptrsize : ptrsize;
-    return 0;
+    case ArrayRefTag:
+        return ptrsize << 1;
+    default:
+        return 0;
+    }
 }
 
 // Analyze cast node
@@ -72,7 +76,7 @@ void castPass(PassState *pstate, CastNode *node) {
         }
         switch (totype->tag) {
         case UintNbrTag:
-            if (fromtype->tag == RefTag && fromtype->flags & FlagArrSlice)
+            if (fromtype->tag == ArrayRefTag)
                 return;
             // Fall-through expected here
         case IntNbrTag:
