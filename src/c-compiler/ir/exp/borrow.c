@@ -47,7 +47,7 @@ INamedNode *borrowGetVarPerm(INode *lval, INode **lvalperm) {
         DerefNode *deref = (DerefNode*)lval;
         INamedNode *lvalret = borrowGetVarPerm(deref->exp, lvalperm);
         INode *typ = iexpGetTypeDcl(deref->exp);
-        assert(typ->tag == RefTag);
+        assert(typ->tag == RefTag || typ->tag == ArrayRefTag);
         *lvalperm = ((RefNode*)typ)->perm;
         return lvalret;
     }
@@ -61,7 +61,7 @@ INamedNode *borrowGetVarPerm(INode *lval, INode **lvalperm) {
         if (lvalvar == NULL)
             return NULL;
         INode *lvaltype = iexpGetTypeDcl((INode*)lvalvar);
-        if (lvaltype->tag == RefTag) {
+        if (lvaltype->tag == RefTag || lvaltype->tag == ArrayRefTag) {
             *lvalperm = ((RefNode*)lvaltype)->perm; // implicit deref 
         }
         /*
@@ -99,10 +99,13 @@ void borrowPass(PassState *pstate, BorrowNode **nodep) {
     // If we are calculating an internal reference (e.g., index) for a reference, 
     // auto-deref that reference
     INode *exptype = iexpGetTypeDcl(node->exp);
-    if ((node->flags & FlagSuffix) && (exptype->tag == RefTag || exptype->tag == PtrTag)) {
+    if ((node->flags & FlagSuffix) && (exptype->tag == RefTag || exptype->tag == PtrTag || exptype->tag == ArrayRefTag)) {
         DerefNode *deref = newDerefNode();
         deref->exp = node->exp;
-        deref->vtype = ((RefNode*)exptype)->pvtype;  // assumes PtrNode has field in same place
+        if (exptype->tag == ArrayRefTag)
+            deref->vtype = (INode*)newArrayDerefNodeFrom((RefNode*)exptype);
+        else
+            deref->vtype = ((RefNode*)exptype)->pvtype;  // assumes PtrNode has field in same place
         node->exp = (INode*)deref;
     }
 
@@ -131,6 +134,10 @@ void borrowPass(PassState *pstate, BorrowNode **nodep) {
     if (lvaltype->tag == ArrayTag) {
         // Borrowing from a fixed size array creates an array reference
         reftype->pvtype = ((ArrayNode*)lvaltype)->elemtype;
+        reftype->tag = ArrayRefTag;
+    }
+    else if (lvaltype->tag == ArrayDerefTag) {
+        reftype->pvtype = ((RefNode*)lvaltype)->pvtype;
         reftype->tag = ArrayRefTag;
     }
     else

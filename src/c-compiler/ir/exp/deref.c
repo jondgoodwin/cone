@@ -39,6 +39,6 @@ void derefAuto(INode **node) {
         return;
     DerefNode *deref = newDerefNode();
     deref->exp = *node;
-    deref->vtype = ((PtrNode*)((ITypedNode *)*node)->vtype)->pvtype;
+    deref->vtype = ((RefNode*)((ITypedNode *)*node)->vtype)->pvtype;
     *node = (INode*)deref;
 }

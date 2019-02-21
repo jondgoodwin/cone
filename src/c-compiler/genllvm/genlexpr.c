@@ -687,6 +687,16 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
                 indexes[1] = index;
                 return LLVMBuildGEP(gen->builder, genlAddr(gen, fncall->objfn), indexes, 2, "");
             }
+            case ArrayDerefTag: {
+                DerefNode *deref = (DerefNode *)fncall->objfn;
+                assert(deref->tag == DerefTag);
+                LLVMValueRef arrref = genlExpr(gen, deref->exp);
+                LLVMValueRef count = LLVMBuildExtractValue(gen->builder, arrref, 1, "count");
+                LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
+                genlBoundsCheck(gen, index, count);
+                LLVMValueRef sliceptr = LLVMBuildExtractValue(gen->builder, arrref, 0, "sliceptr");
+                return LLVMBuildGEP(gen->builder, sliceptr, &index, 1, "");
+            }
             case ArrayRefTag: {
                 LLVMValueRef arrref = genlExpr(gen, fncall->objfn);
                 LLVMValueRef count = LLVMBuildExtractValue(gen->builder, arrref, 1, "count");
@@ -771,14 +781,18 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         BorrowNode *anode = (BorrowNode*)termnode;
         RefNode *reftype = (RefNode *)anode->vtype;
         if (reftype->tag == ArrayRefTag) {
-            LLVMValueRef tupleval = LLVMGetUndef(genlType(gen, (INode*)reftype));
-            LLVMTypeRef ptrtype = LLVMPointerType(genlType(gen, reftype->pvtype), 0);
-            LLVMValueRef ptr = LLVMBuildBitCast(gen->builder, genlAddr(gen, anode->exp), ptrtype, "fatptr");
-            tupleval = LLVMBuildInsertValue(gen->builder, tupleval, ptr, 0, "fatptr");
             INode *arraytype = itypeGetTypeDcl(((ITypedNode*)anode->exp)->vtype);
-            assert(arraytype->tag == ArrayTag);
-            LLVMValueRef size = LLVMConstInt(genlType(gen, (INode*)usizeType), ((ArrayNode*)arraytype)->size, 0);
-            return LLVMBuildInsertValue(gen->builder, tupleval, size, 1, "fatsize");
+            if (arraytype->tag == ArrayTag) {
+                LLVMValueRef tupleval = LLVMGetUndef(genlType(gen, (INode*)reftype));
+                LLVMTypeRef ptrtype = LLVMPointerType(genlType(gen, reftype->pvtype), 0);
+                LLVMValueRef ptr = LLVMBuildBitCast(gen->builder, genlAddr(gen, anode->exp), ptrtype, "fatptr");
+                tupleval = LLVMBuildInsertValue(gen->builder, tupleval, ptr, 0, "fatptr");
+                LLVMValueRef size = LLVMConstInt(genlType(gen, (INode*)usizeType), ((ArrayNode*)arraytype)->size, 0);
+                return LLVMBuildInsertValue(gen->builder, tupleval, size, 1, "fatsize");
+            }
+            else if (arraytype->tag == ArrayDerefTag) {
+                return genlExpr(gen, ((DerefNode*)anode->exp)->exp);
+            }
         }
         else
             return genlAddr(gen, anode->exp);

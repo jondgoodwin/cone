@@ -22,6 +22,9 @@ typedef struct RefNode {
 // Create a new reference type whose info will be filled in afterwards
 RefNode *newRefNode();
 
+// Create a new ArrayDerefNode from an ArrayRefNode
+RefNode *newArrayDerefNodeFrom(RefNode *refnode);
+
 // Is type a nullable reference?
 int refIsNullable(INode *typenode);
 

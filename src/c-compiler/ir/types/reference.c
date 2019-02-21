@@ -14,6 +14,16 @@ RefNode *newRefNode() {
     return refnode;
 }
 
+// Create a new ArrayDerefNode from an ArrayRefNode
+RefNode *newArrayDerefNodeFrom(RefNode *refnode) {
+    RefNode *dereftype = newRefNode();
+    dereftype->tag = ArrayDerefTag;
+    dereftype->alloc = refnode->alloc;
+    dereftype->perm = refnode->perm;
+    dereftype->pvtype = refnode->pvtype;
+    return dereftype;
+}
+
 // Is type a nullable reference?
 int refIsNullable(INode *typenode) {
     RefNode *ref = (RefNode*)typenode;

@@ -154,7 +154,7 @@ INamedNode *assignLvalInfo(INode *lval, INode **lvalperm, int16_t *scope) {
     {
         INamedNode *lvalvar = assignLvalInfo(((DerefNode *)lval)->exp, lvalperm, scope);
         RefNode *vtype = (RefNode*)iexpGetTypeDcl(((DerefNode *)lval)->exp);
-        if (vtype->tag == RefTag)
+        if (vtype->tag == RefTag || vtype->tag == ArrayRefTag)
             *lvalperm = vtype->perm;
         else if (vtype->tag == PtrTag)
             *lvalperm = (INode*)mutPerm;
@@ -168,6 +168,8 @@ INamedNode *assignLvalInfo(INode *lval, INode **lvalperm, int16_t *scope) {
         // flowLoadValue(fstate, nodesFind(element->args, 0), 0);
         INamedNode *lvalvar = assignLvalInfo(element->objfn, lvalperm, scope);
         INode *objtype = iexpGetTypeDcl(element->objfn);
+        if (objtype->tag == ArrayRefTag)
+            *lvalperm = ((RefNode*)objtype)->perm;
         if (objtype->tag == PtrTag)
             *lvalperm = (INode*)mutPerm;
         if (lvalvar == NULL)

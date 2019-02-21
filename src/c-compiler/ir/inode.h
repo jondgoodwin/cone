@@ -105,7 +105,8 @@ enum NodeTags {
     FnSigTag,       // Also method, closure, behavior, co-routine, thread, ...
     ArrayTag,       // Also dynamic arrays? SOA?
     RefTag,         // Reference
-    ArrayRefTag,    // Array reference (slice)
+    ArrayRefTag,    // Array reference (slice ref)
+    ArrayDerefTag,  // De-referenced array reference (the slice itself)
     PtrTag,         // Pointer
     TTupleTag,      // Type tuple
     VoidTag,        // representing no values, e.g., no return values on a fn
