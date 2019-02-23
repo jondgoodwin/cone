@@ -115,7 +115,7 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
     return nbrtypenode;
 }
 
-// Create a ptr type for holding valid pointer methods
+// Create a generic ptr type for holding valid pointer methods
 IMethodNode *newPtrTypeMethods() {
 
     // Create the node for this pointer type
@@ -190,10 +190,10 @@ IMethodNode *newPtrTypeMethods() {
     return ptrtypenode;
 }
 
-// Create a ptr type for holding valid pointer methods
+// Create a generic reference type for holding valid reference methods
 IMethodNode *newRefTypeMethods() {
 
-    // Create the node for this pointer type
+    // Create the node for this reference type
     IMethodNode *reftypenode;
     newNode(reftypenode, IMethodNode, RefTag);
     reftypenode->vtype = NULL;
@@ -238,6 +238,46 @@ IMethodNode *newRefTypeMethods() {
     return reftypenode;
 }
 
+// Create a generic array reference type for holding valid array reference methods
+IMethodNode *newArrayRefTypeMethods() {
+
+    // Create the node for this array reference type
+    IMethodNode *reftypenode;
+    newNode(reftypenode, IMethodNode, ArrayRefTag);
+    reftypenode->vtype = NULL;
+    reftypenode->owner = NULL;
+    reftypenode->namesym = NULL;
+    reftypenode->llvmtype = NULL;
+    imethnodesInit(&reftypenode->methprops, 8);
+    reftypenode->subtypes = nbrsubtypes;
+
+    RefNode *voidref = newRefNode();
+    voidref->tag = ArrayRefTag;
+    voidref->alloc = voidType;
+    voidref->perm = (INode*)constPerm;
+    voidref->pvtype = voidType;
+
+    // '.count' operator
+    FnSigNode *countsig = newFnSigNode();
+    countsig->rettype = (INode*)usizeType;
+    Name *self = nametblFind("self", 4);
+    nodesAdd(&countsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidref, newPermUseNode((INamedNode*)immPerm), NULL));
+    imethnodesAddFn(&reftypenode->methprops, newFnDclNode(nametblFind("count", 5), FlagMethProp, (INode *)countsig, (INode *)newIntrinsicNode(EqIntrinsic)));
+
+    // Create function signature for comparison methods for this type
+    Name *parm2 = nametblFind("b", 1);
+    FnSigNode *cmpsig = newFnSigNode();
+    cmpsig->rettype = (INode*)boolType;
+    nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidref, newPermUseNode((INamedNode*)immPerm), NULL));
+    nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)voidref, newPermUseNode((INamedNode*)immPerm), NULL));
+
+    // Comparison operators
+    imethnodesAddFn(&reftypenode->methprops, newFnDclNode(eqName, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(EqIntrinsic)));
+    imethnodesAddFn(&reftypenode->methprops, newFnDclNode(neName, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(NeIntrinsic)));
+
+    return reftypenode;
+}
+
 // Declare built-in number types and their names
 void stdNbrInit(int ptrsize) {
     nbrsubtypes = newNodes(8);    // Needs 'copy' etc.
@@ -258,4 +298,5 @@ void stdNbrInit(int ptrsize) {
 
     ptrType = newPtrTypeMethods();
     refType = newRefTypeMethods();
+    arrayRefType = newArrayRefTypeMethods();
 }

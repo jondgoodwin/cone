@@ -83,6 +83,7 @@ NbrNode *f64Type;
 
 IMethodNode *ptrType;
 IMethodNode *refType;
+IMethodNode *arrayRefType;
 
 void stdlibInit(int ptrsize);
 void keywordInit();
