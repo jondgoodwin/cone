@@ -195,6 +195,7 @@ void fnCallLowerMethod(FnCallNode *callnode) {
 // Lower the node to a function call (objfn+args)
 void fnCallLowerPtrMethod(FnCallNode *callnode) {
     INode *obj = callnode->objfn;
+    INode *objtype = iexpGetTypeDcl(obj);
     Name *methsym = callnode->methprop->namesym;
 
     // if 'self' is 'null', swap self and first argument (order is irrelevant for ==/!-)
@@ -209,10 +210,18 @@ void fnCallLowerPtrMethod(FnCallNode *callnode) {
         obj = callnode->objfn;
     }
 
-    IMethodNode *methtype = iexpGetTypeDcl(obj)->tag == PtrTag ? ptrType : refType;
+    // Obtain the list of methods for the reference type
+    IMethodNode *methtype;
+    switch (objtype->tag) {
+    case PtrTag: methtype = ptrType; break;
+    case RefTag: methtype = refType; break;
+    case ArrayRefTag: methtype = arrayRefType; break;
+    default: assert(0 && "Unknown reference type");
+    }
+
     INamedNode *foundnode = imethnodesFind(&methtype->methprops, methsym);
     if (!foundnode) { // It can only be a method
-        if (methtype != ptrType) {
+        if (objtype->tag == RefTag) {
             // Give references another crack at method via deref type's methods
             fnCallLowerMethod(callnode);
             return;
@@ -389,7 +398,7 @@ void fnCallPass(PassState *pstate, FnCallNode **nodep) {
 
     // a) If method/property specified, handle it via name lookup in type and lower method call to function call
     if (node->methprop) {
-        if (objfntype->tag == RefTag || objfntype->tag == PtrTag)
+        if (objfntype->tag == RefTag || objfntype->tag == PtrTag || objfntype->tag == ArrayRefTag)
             fnCallLowerPtrMethod(node); // Try ref/ptr specific methods first, otherwise will fallback to deref-ed method call
         else if (isMethodType(objdereftype))
             fnCallLowerMethod(node); // Lower to a property access or function call
