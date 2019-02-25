@@ -246,6 +246,18 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
             }
             }
         }
+
+        // Array reference intrinsics
+        else if (typetag == ArrayRefTag) {
+            INode *pvtype = itypeGetTypeDcl(typetag == PtrTag ? ((PtrNode*)nbrtype)->pvtype : ((RefNode*)nbrtype)->pvtype);
+            switch (((IntrinsicNode *)fndcl->value)->intrinsicFn) {
+            case CountIntrinsic: fncallret = LLVMBuildExtractValue(gen->builder, fnargs[0], 1, "slicecount"); break;
+            // Comparison
+            case EqIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntEQ, fnargs[0], fnargs[1], ""); break;
+            case NeIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntNE, fnargs[0], fnargs[1], ""); break;
+            }
+        }
+
         // Floating point intrinsics
         else if (typetag == FloatNbrTag) {
             switch (((IntrinsicNode *)fndcl->value)->intrinsicFn) {
@@ -389,9 +401,7 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
     switch (totype->tag) {
 
     case UintNbrTag:
-        if (fromtype->tag == ArrayRefTag)
-            return LLVMBuildExtractValue(gen->builder, genexp, 1, "sliceptr");
-        else if (fromtype->tag == FloatNbrTag)
+        if (fromtype->tag == FloatNbrTag)
             return LLVMBuildFPToUI(gen->builder, genexp, genlType(gen, totype), "");
         else if (((NbrNode*)totype)->bits < ((NbrNode*)fromtype)->bits)
             return LLVMBuildTrunc(gen->builder, genexp, genlType(gen, totype), "");

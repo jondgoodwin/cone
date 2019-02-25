@@ -95,8 +95,6 @@ int itypeMatches(INode *totype, INode *fromtype) {
     case UintNbrTag:
         if ((fromtype->tag == RefTag || fromtype->tag == PtrTag) && totype == (INode*)boolType)
             return 2;
-        if (totype == (INode*)usizeType && fromtype->tag == ArrayRefTag)
-            return 2;
         // Fall through is intentional here...
     case IntNbrTag:
     case FloatNbrTag:

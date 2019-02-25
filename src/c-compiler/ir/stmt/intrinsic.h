@@ -41,6 +41,9 @@ enum IntrinsicFn {
     ShlIntrinsic,
     ShrIntrinsic,
 
+    // Reference methods
+    CountIntrinsic,
+
     // Intrinsic functions
     SqrtIntrinsic,
     SinIntrinsic,
