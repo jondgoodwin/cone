@@ -262,7 +262,8 @@ IMethodNode *newArrayRefTypeMethods() {
     countsig->rettype = (INode*)usizeType;
     Name *self = nametblFind("self", 4);
     nodesAdd(&countsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidref, newPermUseNode((INamedNode*)immPerm), NULL));
-    imethnodesAddFn(&reftypenode->methprops, newFnDclNode(nametblFind("count", 5), FlagMethProp, (INode *)countsig, (INode *)newIntrinsicNode(CountIntrinsic)));
+    imethnodesAddFn(&reftypenode->methprops, newFnDclNode(nametblFind("len", 3), FlagMethProp, (INode *)countsig, (INode *)newIntrinsicNode(CountIntrinsic)));
+    imethnodesAddFn(&reftypenode->methprops, newFnDclNode(nametblFind("maxlen", 6), FlagMethProp, (INode *)countsig, (INode *)newIntrinsicNode(CountIntrinsic)));
 
     // Create function signature for comparison methods for this type
     Name *parm2 = nametblFind("b", 1);
