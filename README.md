@@ -68,13 +68,13 @@ When finished, Cone will support these features:
 
 A Visual Studio C++ solution can be created using the Cone.vcxproj project file.
 The generated object and executable files are created relative to the location of the 
-solutions file. The build depends on [LLVM 5][llvm] being installed and available at $(LLVMDIR).
+solutions file. The build depends on [LLVM 7][llvm] being installed and available at $(LLVMDIR).
 
 ## Building (Linux)
 
 To build on Linux:
 
-	sudo apt-get install llvm-5.0-dev
+	sudo apt-get install llvm-7.0-dev
 	cmake .
 	make
 
@@ -101,7 +101,7 @@ To build on Mac OS:
 	llvm-config --bindir
 
 Modify CMakeLists.txt so that LLVM_HOME points to LLVM's path
-(e.g., "/usr/local/Cellar/llvm/5.0.1" without the /bin) and 
+(e.g., "/usr/local/Cellar/llvm/7.0.1" without the /bin) and 
 modify LLVM_LIB to "libLLVM.dylib".
 
 	cmake .
