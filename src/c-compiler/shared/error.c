@@ -6,17 +6,16 @@
 */
 
 #include "error.h"
+#include "timer.h"
 #include "../parser/lexer.h"
 #include "../ir/ir.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
-#include <time.h>
 
 int errors = 0;
 int warnings = 0;
-clock_t startTime;
 
 // Send an error message to stderr
 void errorExit(int exitcode, const char *msg, ...) {
@@ -102,9 +101,7 @@ void errorMsg(int code, const char *msg, ...) {
 
 // Generate final message for a compile
 void errorSummary() {
-    float dur;
     if (errors > 0)
         errorExit(ExitError, "Unsuccessful compile: %d errors, %d warnings", errors, warnings);
-    dur = (float)(clock()-startTime)/CLOCKS_PER_SEC;
-    fprintf(stderr, "Compile finished in %f sec (%lu kb). %d warnings detected\n", dur, memUsed()/1024, warnings);
+    fprintf(stderr, "Compile finished in %.6g sec (%lu kb). %d warnings detected\n", timerSummary(), memUsed()/1024, warnings);
 }

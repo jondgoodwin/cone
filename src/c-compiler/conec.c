@@ -5,8 +5,6 @@
  * See Copyright Notice in conec.h
 */
 
-#include "windows.h"
-
 #include "conec.h"
 #include "coneopts.h"
 #include "shared/fileio.h"
@@ -19,10 +17,7 @@
 #include "genllvm/genllvm.h"
 
 #include <stdio.h>
-#include <time.h>
 #include <assert.h>
-
-clock_t startTime;
 
 // Run all semantic analysis passes against the AST/IR (after parse and before gen)
 void doAnalysis(ModuleNode **mod) {
@@ -51,9 +46,6 @@ int main(int argc, char **argv) {
     GenState gen;
     ModuleNode *modnode;
     int ok;
-
-    // Start measuring processing time for compilation
-    startTime = clock();
 
     // Get compiler's options from passed arguments
     ok = coneOptSet(&coneopt, &argc, argv);

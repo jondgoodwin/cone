@@ -8,6 +8,8 @@
 #ifndef timer_h
 #define timer_h
 
+#include <stdint.h>
+
 enum Timers {
     LoadTimer,
     LexTimer,
