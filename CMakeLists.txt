@@ -20,6 +20,7 @@ add_executable(conec
 	src/c-compiler/shared/fileio.c
 	src/c-compiler/shared/memory.c
 	src/c-compiler/shared/options.c
+	src/c-compiler/shared/timer.c
 	src/c-compiler/shared/utf8.c
 
 	src/c-compiler/ir/flow.c
