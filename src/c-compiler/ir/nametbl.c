@@ -24,13 +24,13 @@
 
 // Public globals
 size_t gNameTblInitSize = 16384;    // Initial maximum number of unique names (must be power of 2)
-unsigned int gNameTblUtil = 80;        // % utilization that triggers doubling of table
+unsigned int gNameTblUtil = 50;     // % utilization that triggers doubling of table
 
 // Private globals
-Name **gNameTable = NULL;        // The name table array
-size_t gNameTblAvail = 0;        // Number of allocated name table slots (power of 2)
-size_t gNameTblCeil = 0;        // Ceiling that triggers table growth
-size_t gNameTblUsed = 0;        // Number of name table slots used
+Name **gNameTable = NULL;           // The name table array
+size_t gNameTblAvail = 0;           // Number of allocated name table slots (power of 2)
+size_t gNameTblCeil = 0;            // Ceiling that triggers table growth
+size_t gNameTblUsed = 0;            // Number of name table slots used
 
 /** String hash function (djb: Dan Bernstein)
  * Ref: http://www.cse.yorku.ca/~oz/hash.html
@@ -52,19 +52,18 @@ size_t gNameTblUsed = 0;        // Number of name table slots used
 #define nameHashMod(hash, size) \
     (assert(((size)&((size)-1))==0), (size_t) ((hash) & ((size)-1)) )
 
-/** Calculate index into name table for a name using quadratic probing
+/** Calculate index into name table for a name using linear probing
  * The table's slot at index is either empty or matches the provided name/hash
- * http://stackoverflow.com/questions/2348187/moving-from-linear-probing-to-quadratic-probing-hash-collisons/2349774#2349774
  */
 #define nametblFindSlot(tblp, hash, strp, strl) \
 { \
-    size_t tbli, step; \
-    for (tbli = nameHashMod(hash, gNameTblAvail), step = 1;; ++step) { \
+    size_t tbli; \
+    for (tbli = nameHashMod(hash, gNameTblAvail);;) { \
         Name *slot; \
         slot = gNameTable[tbli]; \
         if (slot==NULL || (slot->hash == hash && slot->namesz == strl && strncmp(strp, &slot->namestr, strl)==0)) \
             break; \
-        tbli = nameHashMod(tbli + step, gNameTblAvail); \
+        tbli = nameHashMod(tbli + 1, gNameTblAvail); \
     } \
     tblp = &gNameTable[tbli]; \
 }
@@ -119,8 +118,10 @@ Name *nametblFind(char *strp, size_t strl) {
     if (*slotp == NULL) {
         Name *newname;
         // Double table if it has gotten too full
-        if (++gNameTblUsed >= gNameTblCeil)
+        if (++gNameTblUsed >= gNameTblCeil) {
             nametblGrow();
+            nametblFindSlot(slotp, hash, strp, strl);
+        }
 
         // Allocate and populate name info
         *slotp = newname = memAllocBlk(sizeof(Name) + strl);
