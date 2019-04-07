@@ -30,7 +30,7 @@ uint64_t timerTick() {
 uint64_t timerGet() {
     struct timespec tp;
     clock_gettime(CLOCK_REALTIME, &tp);
-    return (unit64_t)tp.tv_nsec;
+    return (uint64_t)tp.tv_nsec;
 }
 uint64_t timerTick() {
     return 1000000000;
