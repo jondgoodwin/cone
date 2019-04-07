@@ -9,6 +9,7 @@
 #define timer_h
 
 #include <stdint.h>
+#include <stddef.h>
 
 enum Timers {
     LoadTimer,
