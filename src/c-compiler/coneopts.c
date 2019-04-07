@@ -140,7 +140,7 @@ static void usage()
         "  --link-arch     Set the linking architecture.\n"
         "    =name         Default is the host architecture.\n"
         "  --linker        Set the linker command to use.\n"
-        "    =name         Default is the compiler used to compile ponyc.\n"
+        "    =name         Default is the compiler.\n"
         ,
         "Debugging options:\n"
         "  --verbose, -V   Verbosity level.\n"
@@ -175,8 +175,8 @@ int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
     int i;
 
     memset(opt, 0, sizeof(ConeOptions));
+    opt->verbosity = 0;
     // options->limit = PASS_ALL;
-    // options->verbosity = VERBOSITY_INFO;
     // options->check.errors = errors_alloc();
 
     optInit(args, &s, argc, argv);
@@ -247,13 +247,12 @@ int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
         case OPT_LINT_LLVM: opt->lint_llvm = 1; break;
 
         case OPT_VERBOSE:
-        {/*
-         int v = atoi(s.arg_val);
-         if (v >= 0 && v <= 4) {
-         opt->verbosity = (verbosity_level)v;
-         } else {
-         ok = 0;
-         }*/
+        {
+            int v = atoi(s.arg_val);
+            if (v >= 0 && v <= 4)
+                opt->verbosity = v;
+            else
+                ok = 0;
         }
         break;
 

@@ -5,12 +5,15 @@
  * See Copyright Notice in conec.h
 */
 
+#include "windows.h"
+
 #include "conec.h"
 #include "coneopts.h"
 #include "shared/fileio.h"
 #include "ir/nametbl.h"
 #include "ir/ir.h"
 #include "shared/error.h"
+#include "shared/timer.h"
 #include "parser/lexer.h"
 #include "parser/parser.h"
 #include "genllvm/genllvm.h"
@@ -62,21 +65,28 @@ int main(int argc, char **argv) {
     coneopt.srcname = fileName(coneopt.srcpath);
 
     // We set up generation early because we need target info, e.g.: pointer size
+    timerBegin(SetupTimer);
     genSetup(&gen, &coneopt);
 
     // Parse source file, do semantic analysis, and generate code
+    timerBegin(ParseTimer);
     modnode = parsePgm(&coneopt);
     if (errors == 0) {
+        timerBegin(SemTimer);
         doAnalysis(&modnode);
         if (errors == 0) {
+            timerBegin(GenTimer);
             if (coneopt.print_ir)
                 inodePrint(coneopt.output, coneopt.srcpath, (INode*)modnode);
             genmod(&gen, modnode);
             genClose(&gen);
         }
     }
+    timerBegin(TimerCount);
 
     // Close up everything necessary
+    if (coneopt.verbosity > 0)
+        timerPrint();
     errorSummary();
 #ifdef _DEBUG
     getchar();    // Hack for VS debugging

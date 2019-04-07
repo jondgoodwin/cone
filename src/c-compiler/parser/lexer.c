@@ -8,16 +8,21 @@
  * See Copyright Notice in conec.h
 */
 
+#include "windows.h"
+
 #include "lexer.h"
 #include "../ir/ir.h"
 #include "../ir/nametbl.h"
-#include "../shared/memory.h"
 #include "../shared/error.h"
-#include "../shared/utf8.h"
 #include "../shared/fileio.h"
+#include "../shared/memory.h"
+#include "../shared/timer.h"
+#include "../shared/utf8.h"
 
 #include <string.h>
 #include <stdlib.h>
+
+#include <stdio.h>
 
 // Global lexer state
 Lexer *lex = NULL;        // Current lexer
@@ -68,11 +73,13 @@ void lexInject(char *url, char *src) {
 void lexInjectFile(char *url) {
     char *src;
     char *fn;
+    timerBegin(LoadTimer);
     // Load specified source file
     src = fileLoadSrc(lex? lex->url : NULL, url, &fn);
     if (!src)
         errorExit(ExitNF, "Cannot find or read source file %s", url);
 
+    timerBegin(ParseTimer);
     lexInject(fn, src);
 }
 
@@ -450,7 +457,7 @@ int lexInjectToken() {
 }
 
 // Decode next token from the source into new lex->token
-void lexNextToken() {
+void lexNextTokenx() {
     // Inject tokens, if needed based on current line's indentation
     if (lex->inject && lexInjectToken())
         return;
@@ -766,4 +773,10 @@ void lexNextToken() {
             }
         }
     }
+}
+
+void lexNextToken() {
+    timerBegin(LexTimer);
+    lexNextTokenx();
+    timerBegin(ParseTimer);
 }

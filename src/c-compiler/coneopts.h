@@ -54,6 +54,7 @@ typedef struct ConeOptions {
     int lint_llvm;        // Run the LLVM linting pass on generated IR
     int docs;            // Generate code documentation
     int docs_private;    // Generate code docs for private
+    int verbosity;       // 0 - 4 (0 = default)
 
     // verbosity_level verbosity;
 
