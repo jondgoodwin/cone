@@ -8,8 +8,6 @@
  * See Copyright Notice in conec.h
 */
 
-#include "windows.h"
-
 #include "lexer.h"
 #include "../ir/ir.h"
 #include "../ir/nametbl.h"
