@@ -21,12 +21,12 @@
 // Find the NameNode slot owned by a name
 #define namespaceFindSlot(slot, ns, namep) \
 { \
-    size_t tbli, step; \
-    for (tbli = nameHashMod((namep)->hash, (ns)->avail), step = 1;; ++step) { \
+    size_t tbli; \
+    for (tbli = nameHashMod((namep)->hash, (ns)->avail);;) { \
         slot = &(ns)->namenodes[tbli]; \
         if (slot->name == NULL || slot->name == (namep)) \
             break; \
-        tbli = nameHashMod(tbli + step, (ns)->avail); \
+        tbli = nameHashMod(tbli + 1, (ns)->avail); \
     } \
 }
 
