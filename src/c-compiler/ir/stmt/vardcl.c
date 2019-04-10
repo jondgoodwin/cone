@@ -58,7 +58,9 @@ void varDclPrint(VarDclNode *name) {
 }
 
 // Enable name resolution of local variables
-void varDclNameResolve(PassState *pstate, VarDclNode *name) {
+void varDclNameRes(PassState *pstate, VarDclNode *name) {
+    inodeWalk(pstate, (INode**)&name->perm);
+    inodeWalk(pstate, &name->vtype);
 
     // Variable declaration within a block is a local variable
     if (pstate->scope > 1) {
@@ -79,46 +81,51 @@ void varDclNameResolve(PassState *pstate, VarDclNode *name) {
 
 // Type check variable against its initial value
 void varDclTypeCheck(PassState *pstate, VarDclNode *name) {
-    inodeWalk(pstate, &name->value);
-    // Global variables and function parameters require literal initializers
-    if (name->scope <= 1 && !litIsLiteral(name->value))
-        errorMsgNode(name->value, ErrorNotLit, "Variable may only be initialized with a literal value.");
-    // Infer the var's vtype from its value, if not provided
-    if (name->vtype == voidType) {
-        if (name->value && ((ITypedNode *)name->value)->vtype)
-            name->vtype = ((ITypedNode *)name->value)->vtype;
-        else
-            errorMsgNode(name->value, ErrorInvType, "Type must be specified, as it cannot be inferred.");
+    inodeWalk(pstate, (INode**)&name->perm);
+    inodeWalk(pstate, &name->vtype);
+
+    // An initializer need not be specified, but if not, it must have a declared type
+    if (!name->value) {
+        if (name->vtype == voidType)
+            errorMsgNode((INode*)name, ErrorNoType, "Declared name must specify a type or value");
+        return;
     }
-    // Otherwise, verify that declared type and initial value type matches
-    else if (!iexpCoerces(name->vtype, &name->value))
-        errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
+    // Type check the initialization value
+    else {
+        inodeWalk(pstate, &name->value);
+        // Global variables and function parameters require literal initializers
+        if (name->scope <= 1 && !litIsLiteral(name->value))
+            errorMsgNode(name->value, ErrorNotLit, "Variable may only be initialized with a literal value.");
+        // Infer the var's vtype from its value, if not provided
+        if (name->vtype == voidType) {
+            if (name->value && ((ITypedNode *)name->value)->vtype)
+                name->vtype = ((ITypedNode *)name->value)->vtype;
+            else {
+                errorMsgNode(name->value, ErrorInvType, "Type must be specified, as it cannot be inferred.");
+                return;
+            }
+        }
+        // Otherwise, verify that declared type and initial value type matches
+        else if (!iexpCoerces(name->vtype, &name->value))
+            errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
+    }
+
+    // Variables cannot hold a void or opaque struct value
+    if (!itypeHasSize(name->vtype))
+        errorMsgNode(name->vtype, ErrorInvType, "Type must have a defined size.");
 }
 
 // Check the variable declaration node
 void varDclPass(PassState *pstate, VarDclNode *name) {
-    inodeWalk(pstate, (INode**)&name->perm);
-    inodeWalk(pstate, &name->vtype);
-    INode *vtype = iexpGetTypeDcl(name->vtype);
 
     // Process nodes in name's initial value/code block
     switch (pstate->pass) {
     case NameResolution:
-        // Hook into global name table if not a global owner by module
-        // (because those have already been hooked by module for forward references)
-        /*if (name->owner->tag != ModuleTag)
-            namespaceHook((INamedNode*)name, name->namesym);*/
-        varDclNameResolve(pstate, name);
+        varDclNameRes(pstate, name);
         break;
 
     case TypeCheck:
-        if (name->value) {
-            varDclTypeCheck(pstate, name);
-        }
-        else if (vtype == voidType)
-            errorMsgNode((INode*)name, ErrorNoType, "Declared name must specify a type or value");
-        if (!itypeHasSize(name->vtype))
-            errorMsgNode(name->vtype, ErrorInvType, "Type must have a defined size.");
+        varDclTypeCheck(pstate, name);
         break;
     }
 }

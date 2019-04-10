@@ -100,7 +100,6 @@ enum Passes {
 // Context used across all semantic analysis passes
 typedef struct PassState {
     int pass;                // Passes
-    ModuleNode *mod;        // Current module
     INode *typenode;        // Current type (e.g., struct)
     FnSigNode *fnsig;        // The type signature of the function we are within
 

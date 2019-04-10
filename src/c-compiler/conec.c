@@ -22,7 +22,6 @@
 // Run all semantic analysis passes against the AST/IR (after parse and before gen)
 void doAnalysis(ModuleNode **mod) {
     PassState pstate;
-    pstate.mod = *mod;
     pstate.typenode = NULL;
     pstate.fnsig = NULL;
     pstate.scope = 0;

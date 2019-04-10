@@ -169,7 +169,7 @@ void inodePrint(char *dir, char *srcfn, INode *pgmnode) {
 void inodeWalk(PassState *pstate, INode **node) {
     switch ((*node)->tag) {
     case ModuleTag:
-        modPass(pstate, (ModuleNode*)*node); break;
+        modTypeCheck(pstate, (ModuleNode*)*node); break;
     case VarDclTag:
         varDclPass(pstate, (VarDclNode *)*node); break;
     case FnDclTag:
