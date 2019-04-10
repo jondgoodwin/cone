@@ -1,4 +1,11 @@
 /** Hashed named nodes
+ *
+ * The module node is a namespace, as it contains an unordered collection
+ * of potentially many named nodes: functions, variables, types, sub-modules, etc.
+ *
+ * These functions support managing a module's named nodes as a hash table
+ * for high-performing lookup access to a specific name.
+ *
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -7,8 +14,6 @@
 
 #ifndef namespace_h
 #define namespace_h
-
-typedef struct Name Name;
 
 // A namespace entry
 typedef struct NameNode {
@@ -23,17 +28,16 @@ typedef struct Namespace {
     NameNode *namenodes;
 } Namespace;
 
+// Initialize a module's namespace with a specific number of slots
 void namespaceInit(Namespace *ns, size_t avail);
-INamedNode *namespaceFind(Namespace *ns, Name *name);
-void namespaceSet(Namespace *ns, Name *name, INamedNode *node);
-// Add fn/method to namespace, where multiple allowed with same name
-// When multiple exist, they are mediated by a FnTupleNode
-void namespaceAddFnTuple(Namespace *ns, INamedNode *fn);
 
+// Return the module's node for a name (or NULL if none)
+INamedNode *namespaceFind(Namespace *ns, Name *name);
+
+// Add or change the node a modue's name maps to
+void namespaceSet(Namespace *ns, Name *name, INamedNode *node);
+
+// Iterate through a module's namespace
 #define namespaceFor(ns) for (size_t __i = 0; __i < (ns)->avail; ++__i)
-#define namespaceNextNode(ns, nodevar) \
-  NameNode *__namenodep = &(ns)->namenodes[__i]; \
-  if (__namenodep->name == NULL) continue; \
-  nodevar = __namenodep->node;
 
 #endif

@@ -1,4 +1,4 @@
-/** Hashed named nodes.
+/** Hashed named nodes (see namespace.h)
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
