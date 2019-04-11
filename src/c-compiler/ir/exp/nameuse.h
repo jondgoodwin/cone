@@ -27,6 +27,11 @@ void nameUseBaseMod(NameUseNode *node, ModuleNode *basemod);
 void nameUseAddQual(NameUseNode *node, Name *name);
 NameUseNode *newMemberUseNode(Name *namesym);
 void nameUsePrint(NameUseNode *name);
+// Handle name resolution for name use references
+// - Point to name declaration in other module or this one
+// - If name is for a method or field, rewrite node as 'self.property'
+// - If not method/field, re-tag it as either TypeNameUse or VarNameUse
+void nameUseNameRes(PassState *pstate, NameUseNode **namep);
 void nameUseWalk(PassState *pstate, NameUseNode **name);
 
 #endif

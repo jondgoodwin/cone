@@ -80,52 +80,64 @@ void nameUsePrint(NameUseNode *name) {
     inodeFprint("%s", &name->namesym->namestr);
 }
 
-// Handle name resolution and type check for name use references
+// Handle name resolution for name use references
+// - Point to name declaration in other module or this one
+// - If name is for a method or field, rewrite node as 'self.property'
+// - If not method/field, re-tag it as either TypeNameUse or VarNameUse
+void nameUseNameRes(PassState *pstate, NameUseNode **namep) {
+    NameUseNode *name = *namep;
+
+    // For module-qualified names, look up name in that module
+    if (name->qualNames) {
+        // Do iterative look ups of module qualifiers beginning with basemod
+        ModuleNode *mod = name->qualNames->basemod;
+        int16_t cnt = name->qualNames->used;
+        Name **namep = (Name**)(name->qualNames + 1);
+        while (cnt--) {
+            mod = (ModuleNode*)namespaceFind(&mod->namednodes, *namep++);
+            if (mod == NULL || mod->tag != ModuleTag) {
+                errorMsgNode((INode*)name, ErrorUnkName, "Module %s does not exist", &(*--namep)->namestr);
+                return;
+            }
+        }
+        name->dclnode = namespaceFind(&mod->namednodes, name->namesym);
+    }
+    else
+        // For non-qualified names (current module), should already be hooked in global name table
+        name->dclnode = (INamedNode*)name->namesym->node;
+
+    if (!name->dclnode) {
+        errorMsgNode((INode*)name, ErrorUnkName, "The name %s does not refer to a declared name", &name->namesym->namestr);
+        return;
+    }
+
+    // If name is for a method or field, rewrite node as 'self.property'
+    if (name->dclnode->tag == VarDclTag && name->dclnode->flags & FlagMethProp) {
+        // Doing this rewrite ensures we reuse existing type check and gen code for
+        // properly handling property access
+        NameUseNode *selfnode = newNameUseNode(selfName);
+        FnCallNode *fncall = newFnCallNode((INode *)selfnode, 0);
+        fncall->methprop = name;
+        copyNodeLex(fncall, name); // Copy lexer info into injected node in case it has errors
+        *((FnCallNode**)namep) = fncall;
+        inodeWalk(pstate, (INode **)namep);
+        return;
+    }
+
+    // Distinguish whether a name is for a variable/function name vs. type
+    if (name->dclnode->tag == VarDclTag || name->dclnode->tag == FnDclTag)
+        name->tag = VarNameUseTag;
+    else
+        name->tag = TypeNameUseTag;
+}
+
+// Handle type check for name use references
 void nameUseWalk(PassState *pstate, NameUseNode **namep) {
     NameUseNode *name = *namep;
     // During name resolution, point to name declaration and copy over needed properties
     switch (pstate->pass) {
     case NameResolution:
-        if (name->qualNames) {
-            // Do iterative look ups of module qualifiers beginning with basemod
-            ModuleNode *mod = name->qualNames->basemod;
-            int16_t cnt = name->qualNames->used;
-            Name **namep = (Name**)(name->qualNames + 1);
-            while (cnt--) {
-                mod = (ModuleNode*)namespaceFind(&mod->namednodes, *namep++);
-                if (mod==NULL || mod->tag!=ModuleTag) {
-                    errorMsgNode((INode*)name, ErrorUnkName, "Module %s does not exist", &(*--namep)->namestr);
-                    return;
-                }
-            }
-            name->dclnode = namespaceFind(&mod->namednodes, name->namesym);
-        }
-        else
-            // For current module, should already be hooked in global name table
-            name->dclnode = (INamedNode*)name->namesym->node;
-
-        // If variable is actually an instance property, rewrite it to 'self.property'
-        if (name->dclnode) {
-            if (name->dclnode->tag == VarDclTag && name->dclnode->flags & FlagMethProp) {
-                // Doing this rewrite ensures we reuse existing type check and gen code for
-                // properly handling property access
-                NameUseNode *selfnode = newNameUseNode(selfName);
-                FnCallNode *fncall = newFnCallNode((INode *)selfnode, 0);
-                fncall->methprop = name;
-                copyNodeLex(fncall, name); // Copy lexer info into injected node in case it has errors
-                *((FnCallNode**)namep) = fncall;
-                inodeWalk(pstate, (INode **)namep);
-            }
-            // Make it easy to distinguish whether a name is for a variable/function name vs. type
-            else {
-                if (name->dclnode->tag == VarDclTag || name->dclnode->tag == FnDclTag)
-                    name->tag = VarNameUseTag;
-                else
-                    name->tag = TypeNameUseTag;
-            }
-        }
-        else
-            errorMsgNode((INode*)name, ErrorUnkName, "The name %s does not refer to a declared name", &name->namesym->namestr);
+        nameUseNameRes(pstate, namep);
         break;
     case TypeCheck:
         name->vtype = name->dclnode->vtype;

@@ -19,6 +19,15 @@ typedef struct BlockNode {
 
 BlockNode *newBlockNode();
 void blockPrint(BlockNode *blk);
+
+// Handle name resolution and control structure compliance for a block
+// - push and pop a namespace context for hooking local vars in global name table
+// - Ensure return/continue/break only appear as last statement in block
+void blockNameRes(PassState *pstate, BlockNode *blk);
+
+// Handle type-checking for a block's statements. 
+// Note: When coerced by iexpCoerces, vtype of the block will be specified
+void blockTypeCheck(PassState *pstate, BlockNode *blk);
 void blockPass(PassState *pstate, BlockNode *node);
 
 // Perform data flow analysis
