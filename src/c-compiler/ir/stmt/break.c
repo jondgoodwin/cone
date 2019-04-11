@@ -15,8 +15,15 @@ BreakNode *newBreakNode(int16_t tag) {
     return node;
 }
 
-// Semantic pass on break or continue
-void breakPass(PassState *pstate, INode *node) {
-    if (pstate->pass==NameResolution && !(pstate->flags & PassWithinWhile))
+// Name resolution for break/continue
+// - Ensure it is only used within a while/each block
+void breakNameRes(PassState *pstate, INode *node) {
+    if (!(pstate->flags & PassWithinWhile))
         errorMsgNode(node, ErrorNoWhile, "break/continue may only be used within a while/each block");
+}
+
+// There is no type check!
+void breakPass(PassState *pstate, INode *node) {
+    if (pstate->pass == NameResolution)
+        breakNameRes(pstate, node);
 }

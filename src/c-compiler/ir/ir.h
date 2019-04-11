@@ -104,7 +104,7 @@ typedef struct PassState {
     FnSigNode *fnsig;        // The type signature of the function we are within
 
     int16_t scope;            // nameres: The current block scope (0=global, 1=fnsig, 2+=blocks)
-    uint16_t flags;
+    uint16_t flags;         // nameres: PassWithinWhile
 } PassState;
 
 #define PassWithinWhile 0x0001
