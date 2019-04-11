@@ -15,6 +15,11 @@ typedef struct AllocateNode {
 
 AllocateNode *newAllocateNode();
 void allocatePrint(AllocateNode *node);
+
+// Name resolution of allocate node
+void allocateNameRes(PassState *pstate, AllocateNode **nodep);
+
+// Type check allocate node
 void allocatePass(PassState *pstate, AllocateNode **node);
 
 // Perform data flow analysis on addr node

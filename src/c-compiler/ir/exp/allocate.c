@@ -25,7 +25,13 @@ void allocatePrint(AllocateNode *node) {
     inodeFprint(")");
 }
 
-// Analyze allocate node
+// Name resolution of allocate node
+void allocateNameRes(PassState *pstate, AllocateNode **nodep) {
+    AllocateNode *node = *nodep;
+    inodeWalk(pstate, &node->exp);
+}
+
+// Type check allocate node
 void allocatePass(PassState *pstate, AllocateNode **nodep) {
     AllocateNode *node = *nodep;
     if (pstate->pass == NameResolution) {

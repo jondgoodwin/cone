@@ -25,6 +25,12 @@ void borrowPrint(BorrowNode *node) {
     inodeFprint(")");
 }
 
+// Name resolution of borrow node
+void borrowNameRes(PassState *pstate, BorrowNode **nodep) {
+    BorrowNode *node = *nodep;
+    inodeWalk(pstate, &node->exp);
+}
+
 // Extract lval variable and overall permission from lval
 INamedNode *borrowGetVarPerm(INode *lval, INode **lvalperm) {
     switch (lval->tag) {

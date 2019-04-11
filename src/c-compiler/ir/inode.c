@@ -211,6 +211,10 @@ void inodeWalk(PassState *pstate, INode **node) {
         logicNotPass(pstate, (LogicNode *)*node); break;
     case OrLogicTag: case AndLogicTag:
         logicPass(pstate, (LogicNode *)*node); break;
+    case ULitTag:
+    case FLitTag:
+        litTypeCheck(pstate, (ITypedNode*)*node); break;
+
     case FnSigTag:
         fnSigPass(pstate, (FnSigNode *)*node); break;
     case RefTag:
@@ -228,11 +232,6 @@ void inodeWalk(PassState *pstate, INode **node) {
     case NamedValTag:
         namedValWalk(pstate, (NamedValNode *)*node); break;
     case AllocTag:
-        break;
-
-    case ULitTag:
-    case FLitTag:
-        inodeWalk(pstate, &((ITypedNode*)*node)->vtype);
         break;
 
     case MbrNameUseTag:
