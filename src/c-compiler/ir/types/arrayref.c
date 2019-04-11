@@ -7,7 +7,7 @@
 
 #include "../ir.h"
 
-// Serialize a pointer type
+// Serialize an array reference type
 void arrayRefPrint(RefNode *node) {
     inodeFprint("&(");
     inodePrintNode(node->alloc);
@@ -18,7 +18,14 @@ void arrayRefPrint(RefNode *node) {
     inodeFprint(")");
 }
 
-// Semantically analyze a reference node
+// Name resolution of an array reference node
+void arrayRefNameRes(PassState *pstate, RefNode *node) {
+    inodeWalk(pstate, &node->alloc);
+    inodeWalk(pstate, (INode**)&node->perm);
+    inodeWalk(pstate, &node->pvtype);
+}
+
+// Type check an array reference node
 void arrayRefPass(PassState *pstate, RefNode *node) {
     inodeWalk(pstate, &node->alloc);
     inodeWalk(pstate, (INode**)&node->perm);

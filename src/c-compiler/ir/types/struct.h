@@ -28,7 +28,13 @@ typedef struct StructNode {
 
 StructNode *newStructNode(Name *namesym);
 void structPrint(StructNode *node);
+
+// Name resolution of a struct type
+void structNameRes(PassState *pstate, StructNode *node);
+
+// Type check a struct type
 void structPass(PassState *pstate, StructNode *name);
+
 int structEqual(StructNode *node1, StructNode *node2);
 int structCoerces(StructNode *to, StructNode *from);
 

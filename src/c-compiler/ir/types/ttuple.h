@@ -22,7 +22,10 @@ TTupleNode *newTTupleNode(int cnt);
 // Serialize a type tuple node
 void ttuplePrint(TTupleNode *tuple);
 
-// Semantic analysis of type tuple node
+// Name resolution of type tuple node
+void ttupleNameRes(PassState *pstate, TTupleNode *node);
+
+// Type check type tuple node
 void ttupleWalk(PassState *pstate, TTupleNode *node);
 
 #endif

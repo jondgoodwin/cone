@@ -21,6 +21,8 @@ typedef struct FnSigNode {
 
 FnSigNode *newFnSigNode();
 void fnSigPrint(FnSigNode *node);
+// Name resolution of the function signature
+void fnSigNameRes(PassState *pstate, FnSigNode *sig);
 void fnSigPass(PassState *pstate, FnSigNode *name);
 int fnSigEqual(FnSigNode *node1, FnSigNode *node2);
 int fnSigMatchesCall(FnSigNode *to, Nodes *args);

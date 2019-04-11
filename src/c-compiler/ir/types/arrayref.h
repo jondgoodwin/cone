@@ -8,10 +8,13 @@
 #ifndef arrayref_h
 #define arrayref_h
 
-// Serialize a pointer type
+// Serialize an array reference type
 void arrayRefPrint(RefNode *node);
 
-// Semantically analyze a reference node
+// Name resolution of an array reference node
+void arrayRefNameRes(PassState *pstate, RefNode *node);
+
+// Semantically analyze an array reference node
 void arrayRefPass(PassState *pstate, RefNode *name);
 
 // Compare two reference signatures to see if they are equivalent

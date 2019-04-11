@@ -30,7 +30,16 @@ void fnSigPrint(FnSigNode *sig) {
     inodePrintNode(sig->rettype);
 }
 
-// Traverse the function signature tree
+// Name resolution of the function signature
+void fnSigNameRes(PassState *pstate, FnSigNode *sig) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(sig->parms, cnt, nodesp))
+        inodeWalk(pstate, nodesp);
+    inodeWalk(pstate, &sig->rettype);
+}
+
+// Type check the function signature
 void fnSigPass(PassState *pstate, FnSigNode *sig) {
     INode **nodesp;
     uint32_t cnt;

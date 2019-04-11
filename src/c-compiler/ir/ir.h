@@ -100,7 +100,7 @@ enum Passes {
 // Context used across all semantic analysis passes
 typedef struct PassState {
     int pass;                // Passes
-    INode *typenode;        // Current type (e.g., struct)
+    INode *typenode;        // nameres: Current type (e.g., struct)
     FnSigNode *fnsig;        // The type signature of the function we are within
 
     int16_t scope;            // nameres: The current block scope (0=global, 1=fnsig, 2+=blocks)

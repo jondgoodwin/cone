@@ -41,7 +41,14 @@ void refPrint(RefNode *node) {
     inodeFprint(")");
 }
 
-// Semantically analyze a reference node
+// Name resolution of a reference node
+void refNameRes(PassState *pstate, RefNode *node) {
+    inodeWalk(pstate, &node->alloc);
+    inodeWalk(pstate, (INode**)&node->perm);
+    inodeWalk(pstate, &node->pvtype);
+}
+
+// Type check a reference node
 void refPass(PassState *pstate, RefNode *node) {
     inodeWalk(pstate, &node->alloc);
     inodeWalk(pstate, (INode**)&node->perm);

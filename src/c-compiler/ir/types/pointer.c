@@ -20,7 +20,12 @@ void ptrPrint(PtrNode *node) {
     inodePrintNode(node->pvtype);
 }
 
-// Semantically analyze a pointer type
+// Name resolution of a pointer type
+void ptrNameRes(PassState *pstate, PtrNode *node) {
+    inodeWalk(pstate, &node->pvtype);
+}
+
+// Type check a pointer type
 void ptrPass(PassState *pstate, PtrNode *node) {
     inodeWalk(pstate, &node->pvtype);
 }

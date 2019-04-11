@@ -211,6 +211,8 @@ void inodeWalk(PassState *pstate, INode **node) {
         logicNotPass(pstate, (LogicNode *)*node); break;
     case OrLogicTag: case AndLogicTag:
         logicPass(pstate, (LogicNode *)*node); break;
+    case NamedValTag:
+        namedValWalk(pstate, (NamedValNode *)*node); break;
     case ULitTag:
     case FLitTag:
         litTypeCheck(pstate, (ITypedNode*)*node); break;
@@ -229,8 +231,6 @@ void inodeWalk(PassState *pstate, INode **node) {
         arrayPass(pstate, (ArrayNode *)*node); break;
     case TTupleTag:
         ttupleWalk(pstate, (TTupleNode *)*node); break;
-    case NamedValTag:
-        namedValWalk(pstate, (NamedValNode *)*node); break;
     case AllocTag:
         break;
 
