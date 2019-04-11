@@ -28,6 +28,12 @@ void assignPrint(AssignNode *node) {
     inodeFprint(")");
 }
 
+// Name resolution for assignment node
+void assignNameRes(PassState *pstate, AssignNode *node) {
+    inodeWalk(pstate, &node->lval);
+    inodeWalk(pstate, &node->rval);
+}
+
 // Is it a valid lval?
 int assignIsLval(INode *lval) {
     switch (lval->tag) {
@@ -107,29 +113,31 @@ void assignToOneCheck(INode *lval, VTupleNode *rval) {
     assignSingleCheck(lval, rnodesp++);
 }
 
-// Name resolution and type checking for assignment node
+// Type checking for assignment node
 void assignPass(PassState *pstate, AssignNode *node) {
+    if (pstate->pass == NameResolution) {
+        assignNameRes(pstate, node);
+        return;
+    }
+
     inodeWalk(pstate, &node->lval);
     inodeWalk(pstate, &node->rval);
-    INode *lval = node->lval;
 
-    switch (pstate->pass) {
-    case TypeCheck:
-        // Handle tuple decomposition for parallel assignment
-        if (lval->tag == VTupleTag) {
-            if (node->rval->tag == VTupleTag)
-                assignParaCheck((VTupleNode*)node->lval, (VTupleNode*)node->rval);
-            else
-                assignMultRetCheck((VTupleNode*)node->lval, &node->rval);
-        }
-        else {
-            if (node->rval->tag == VTupleTag)
-                assignToOneCheck(node->lval, (VTupleNode*)node->rval);
-            else
-                assignSingleCheck(node->lval, &node->rval);
-        }
-        node->vtype = ((ITypedNode*)node->rval)->vtype;
+    // Handle tuple decomposition for parallel assignment
+    INode *lval = node->lval;
+    if (lval->tag == VTupleTag) {
+        if (node->rval->tag == VTupleTag)
+            assignParaCheck((VTupleNode*)node->lval, (VTupleNode*)node->rval);
+        else
+            assignMultRetCheck((VTupleNode*)node->lval, &node->rval);
     }
+    else {
+        if (node->rval->tag == VTupleTag)
+            assignToOneCheck(node->lval, (VTupleNode*)node->rval);
+        else
+            assignSingleCheck(node->lval, &node->rval);
+    }
+    node->vtype = ((ITypedNode*)node->rval)->vtype;
 }
 
 // Extract lval variable, scope and overall permission from lval

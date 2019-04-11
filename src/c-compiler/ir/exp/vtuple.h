@@ -22,7 +22,11 @@ VTupleNode *newVTupleNode();
 // Serialize a value tuple node
 void vtuplePrint(VTupleNode *tuple);
 
-// Semantic analysis of value tuple node
+// Name resolution for vtuple
+void vtupleNameRes(PassState *pstate, VTupleNode *tuple);
+
+// Type check the value tuple node
+// - Infer type tuple from types of vtuple's values
 void vtupleWalk(PassState *pstate, VTupleNode *node);
 
 #endif

@@ -23,6 +23,11 @@ typedef struct AssignNode {
 
 AssignNode *newAssignNode(int16_t assigntype, INode *lval, INode *rval);
 void assignPrint(AssignNode *node);
+
+// Name resolution for assignment node
+void assignNameRes(PassState *pstate, AssignNode *node);
+
+// Type check for assignment node
 void assignPass(PassState *pstate, AssignNode *node);
 
 // Extract lval variable, scope and overall permission from lval
