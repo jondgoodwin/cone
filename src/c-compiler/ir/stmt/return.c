@@ -23,26 +23,21 @@ void returnPrint(ReturnNode *node) {
 }
 
 // Name resolution for return
-void returnNameRes(PassState *pstate, ReturnNode *node) {
-    inodeWalk(pstate, &node->exp);
+void returnNameRes(NameResState *pstate, ReturnNode *node) {
+    inodeNameRes(pstate, &node->exp);
 }
 
 // Type check for return statement
 // Related analysis for return elsewhere:
 // - Block ensures that return can only appear at end of block
 // - NameDcl turns fn block's final expression into an implicit return
-void returnPass(PassState *pstate, ReturnNode *node) {
-    if (pstate->pass == NameResolution) {
-        returnNameRes(pstate, node);
-        return;
-    }
-
+void returnTypeCheck(TypeCheckState *pstate, ReturnNode *node) {
     // If we are returning the value from an 'if', recursively strip out any of its path's redundant 'return's
     if (node->exp->tag == IfTag)
         ifRemoveReturns((IfNode*)(node->exp));
 
     // Process the return's expression
-    inodeWalk(pstate, &node->exp);
+    inodeTypeCheck(pstate, &node->exp);
 
     // Ensure the vtype of the expression can be coerced to the function's declared return type
     if (pstate->fnsig->rettype->tag == TTupleTag) {

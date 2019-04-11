@@ -31,7 +31,7 @@ void nameUsePrint(NameUseNode *name);
 // - Point to name declaration in other module or this one
 // - If name is for a method or field, rewrite node as 'self.property'
 // - If not method/field, re-tag it as either TypeNameUse or VarNameUse
-void nameUseNameRes(PassState *pstate, NameUseNode **namep);
-void nameUseWalk(PassState *pstate, NameUseNode **name);
+void nameUseNameRes(NameResState *pstate, NameUseNode **namep);
+void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **name);
 
 #endif

@@ -19,13 +19,12 @@ FnDclNode *newFnDclNode(Name *namesym, uint16_t tag, INode *sig, INode *val);
 void fnDclPrint(FnDclNode *fn);
 
 /// Resolve all names in a function
-void fnDclNameResolve(PassState *pstate, FnDclNode *name);
+void fnDclNameRes(NameResState *pstate, FnDclNode *name);
 
 // Type checking a function's logic, does more than you might think:
 // - Turn implicit returns into explicit returns
 // - Perform type checking for all statements
 // - Perform data flow analysis on variables and references
-void fnDclTypeCheck(PassState *pstate, FnDclNode *fnnode);
-void fnDclPass(PassState *pstate, FnDclNode *node);
+void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode);
 
 #endif

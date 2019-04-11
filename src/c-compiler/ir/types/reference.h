@@ -32,10 +32,10 @@ int refIsNullable(INode *typenode);
 void refPrint(RefNode *node);
 
 // Name resolution of a reference node
-void refNameRes(PassState *pstate, RefNode *node);
+void refNameRes(NameResState *pstate, RefNode *node);
 
 // Type check a reference node
-void refPass(PassState *pstate, RefNode *name);
+void refTypeCheck(TypeCheckState *pstate, RefNode *name);
 
 // Compare two reference signatures to see if they are equivalent
 int refEqual(RefNode *node1, RefNode *node2);

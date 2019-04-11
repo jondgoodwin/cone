@@ -21,10 +21,10 @@ PtrNode *newPtrNode();
 void ptrPrint(PtrNode *node);
 
 // Name resolution of a pointer type
-void ptrNameRes(PassState *pstate, PtrNode *node);
+void ptrNameRes(NameResState *pstate, PtrNode *node);
 
 // Type check a pointer type
-void ptrPass(PassState *pstate, PtrNode *name);
+void ptrTypeCheck(TypeCheckState *pstate, PtrNode *name);
 
 // Compare two pointer signatures to see if they are equivalent
 int ptrEqual(PtrNode *node1, PtrNode *node2);

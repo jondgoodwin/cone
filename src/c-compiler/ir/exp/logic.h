@@ -19,15 +19,15 @@ LogicNode *newLogicNode(int16_t typ);
 void logicPrint(LogicNode *node);
 
 // Name resolution of not logic node
-void logicNotNameRes(PassState *pstate, LogicNode *node);
+void logicNotNameRes(NameResState *pstate, LogicNode *node);
 
 // Type check not logic node
-void logicNotPass(PassState *pstate, LogicNode *node);
+void logicNotTypeCheck(TypeCheckState *pstate, LogicNode *node);
 
 // Name resolution of logic node
-void logicNameRes(PassState *pstate, LogicNode *node);
+void logicNameRes(NameResState *pstate, LogicNode *node);
 
 // Type check logic node
-void logicPass(PassState *pstate, LogicNode *node);
+void logicTypeCheck(TypeCheckState *pstate, LogicNode *node);
 
 #endif

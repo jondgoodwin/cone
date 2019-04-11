@@ -25,10 +25,10 @@ AssignNode *newAssignNode(int16_t assigntype, INode *lval, INode *rval);
 void assignPrint(AssignNode *node);
 
 // Name resolution for assignment node
-void assignNameRes(PassState *pstate, AssignNode *node);
+void assignNameRes(NameResState *pstate, AssignNode *node);
 
 // Type check for assignment node
-void assignPass(PassState *pstate, AssignNode *node);
+void assignTypeCheck(TypeCheckState *pstate, AssignNode *node);
 
 // Extract lval variable, scope and overall permission from lval
 INamedNode *assignLvalInfo(INode *lval, INode **lvalperm, int16_t *scope);

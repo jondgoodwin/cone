@@ -22,18 +22,13 @@ void derefPrint(DerefNode *node) {
 }
 
 // Name resolution of deref node
-void derefNameRes(PassState *pstate, DerefNode *node) {
-    inodeWalk(pstate, &node->exp);
+void derefNameRes(NameResState *pstate, DerefNode *node) {
+    inodeNameRes(pstate, &node->exp);
 }
 
 // Type check deref node
-void derefPass(PassState *pstate, DerefNode *node) {
-    if (pstate->pass == NameResolution) {
-        derefNameRes(pstate, node);
-        return;
-    }
-
-    inodeWalk(pstate, &node->exp);
+void derefTypeCheck(TypeCheckState *pstate, DerefNode *node) {
+    inodeTypeCheck(pstate, &node->exp);
     PtrNode *ptype = (PtrNode*)((ITypedNode *)node->exp)->vtype;
     if (ptype->tag == RefTag || ptype->tag == PtrTag)
         node->vtype = ptype->pvtype;

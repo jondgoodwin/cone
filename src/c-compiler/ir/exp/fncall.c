@@ -56,13 +56,13 @@ void fnCallPrint(FnCallNode *node) {
 // Name resolution on 'fncall'
 // - If node is indexing on a type, retag node as a typelit
 // Note: this never name resolves .methprop, which is handled in type checking
-void fnCallNameRes(PassState *pstate, FnCallNode **nodep) {
+void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
     INode **argsp;
     uint32_t cnt;
 
     // Name resolve objfn so we know what it is to vary subsequent processing
-    inodeWalk(pstate, &node->objfn);
+    inodeNameRes(pstate, &node->objfn);
 
     // TBD: objfn is a macro
 
@@ -84,7 +84,7 @@ void fnCallNameRes(PassState *pstate, FnCallNode **nodep) {
     // Name resolve arguments/statements
     if (node->args) {
         for (nodesFor(node->args, cnt, argsp))
-            inodeWalk(pstate, argsp);
+            inodeNameRes(pstate, argsp);
     }
 }
 
@@ -337,23 +337,17 @@ void fnCallLowerPtrMethod(FnCallNode *callnode) {
 // to a type-resolved structure suitable for generation. The lowering involves
 // resolving syntactic sugar and resolving a method to a function.
 // It also distinguishes between methods and properties.
-void fnCallPass(PassState *pstate, FnCallNode **nodep) {
+void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
-
-    // Name resolution
-    if (pstate->pass == NameResolution) {
-        fnCallNameRes(pstate, nodep);
-        return;
-    }
 
     // Type check all of tree except methprop for now
     INode **argsp;
     uint32_t cnt;
     if (node->args) {
         for (nodesFor(node->args, cnt, argsp))
-            inodeWalk(pstate, argsp);
+            inodeTypeCheck(pstate, argsp);
     }
-    inodeWalk(pstate, &node->objfn);
+    inodeTypeCheck(pstate, &node->objfn);
 
     // If objfn is a method/property, rewrite it as self.method
     if (node->objfn->tag == VarNameUseTag
@@ -375,7 +369,7 @@ void fnCallPass(PassState *pstate, FnCallNode **nodep) {
             fncall->methprop = (NameUseNode *)node->objfn;
             copyNodeLex(fncall, node->objfn); // Copy lexer info into injected node in case it has errors
             node->objfn = (INode*)fncall;
-            inodeWalk(pstate, &node->objfn);
+            inodeTypeCheck(pstate, &node->objfn);
         }
     }
 

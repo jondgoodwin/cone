@@ -26,7 +26,7 @@ void structPrint(StructNode *node) {
 }
 
 // Name resolution of a struct type
-void structNameRes(PassState *pstate, StructNode *node) {
+void structNameRes(NameResState *pstate, StructNode *node) {
     INode *svtypenode = pstate->typenode;
     pstate->typenode = (INode*)node;
     nametblHookPush();
@@ -37,23 +37,18 @@ void structNameRes(PassState *pstate, StructNode *node) {
             nametblHookNode((INamedNode*)*nodesp);
     }
     for (imethnodesFor(&node->methprops, cnt, nodesp)) {
-        inodeWalk(pstate, (INode**)nodesp);
+        inodeNameRes(pstate, (INode**)nodesp);
     }
     nametblHookPop();
     pstate->typenode = svtypenode;
 }
 
 // Type check a struct type
-void structPass(PassState *pstate, StructNode *node) {
-    if (pstate->pass == NameResolution) {
-        structNameRes(pstate, node);
-        return;
-    }
-
+void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     INode **nodesp;
     uint32_t cnt;
     for (imethnodesFor(&node->methprops, cnt, nodesp)) {
-        inodeWalk(pstate, (INode**)nodesp);
+        inodeTypeCheck(pstate, (INode**)nodesp);
     }
 }
 

@@ -23,11 +23,11 @@ void sizeofPrint(SizeofNode *node) {
 }
 
 // Name resolution of sizeof node
-void sizeofNameRes(PassState *pstate, SizeofNode *node) {
-    inodeWalk(pstate, &node->type);
+void sizeofNameRes(NameResState *pstate, SizeofNode *node) {
+    inodeNameRes(pstate, &node->type);
 }
 
 // Type check sizeof node
-void sizeofPass(PassState *pstate, SizeofNode *node) {
-    inodeWalk(pstate, &node->type);
+void sizeofTypeCheck(TypeCheckState *pstate, SizeofNode *node) {
+    inodeTypeCheck(pstate, &node->type);
 }

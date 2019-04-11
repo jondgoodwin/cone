@@ -19,17 +19,17 @@ void arrayRefPrint(RefNode *node) {
 }
 
 // Name resolution of an array reference node
-void arrayRefNameRes(PassState *pstate, RefNode *node) {
-    inodeWalk(pstate, &node->alloc);
-    inodeWalk(pstate, (INode**)&node->perm);
-    inodeWalk(pstate, &node->pvtype);
+void arrayRefNameRes(NameResState *pstate, RefNode *node) {
+    inodeNameRes(pstate, &node->alloc);
+    inodeNameRes(pstate, (INode**)&node->perm);
+    inodeNameRes(pstate, &node->pvtype);
 }
 
 // Type check an array reference node
-void arrayRefPass(PassState *pstate, RefNode *node) {
-    inodeWalk(pstate, &node->alloc);
-    inodeWalk(pstate, (INode**)&node->perm);
-    inodeWalk(pstate, &node->pvtype);
+void arrayRefTypeCheck(TypeCheckState *pstate, RefNode *node) {
+    inodeTypeCheck(pstate, &node->alloc);
+    inodeTypeCheck(pstate, (INode**)&node->perm);
+    inodeTypeCheck(pstate, &node->pvtype);
 }
 
 // Compare two reference signatures to see if they are equivalent

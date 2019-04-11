@@ -26,9 +26,9 @@ void castPrint(CastNode *node) {
 }
 
 // Name resolution of cast node
-void castNameRes(PassState *pstate, CastNode *node) {
-    inodeWalk(pstate, &node->exp);
-    inodeWalk(pstate, &node->vtype);
+void castNameRes(NameResState *pstate, CastNode *node) {
+    inodeNameRes(pstate, &node->exp);
+    inodeNameRes(pstate, &node->vtype);
 }
 
 #define ptrsize 10000
@@ -53,14 +53,9 @@ uint32_t castBitsize(INode *type) {
 // Type check cast node:
 // - reinterpret cast types must be same size
 // - Ensure type can be safely converted to target type
-void castPass(PassState *pstate, CastNode *node) {
-    if (pstate->pass == NameResolution) {
-        castNameRes(pstate, node);
-        return;
-    }
-
-    inodeWalk(pstate, &node->exp);
-    inodeWalk(pstate, &node->vtype);
+void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
+    inodeTypeCheck(pstate, &node->exp);
+    inodeTypeCheck(pstate, &node->vtype);
     INode *totype = itypeGetTypeDcl(node->vtype);
     INode *fromtype = iexpGetTypeDcl(node->exp);
 

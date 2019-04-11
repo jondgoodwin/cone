@@ -31,21 +31,21 @@ void fnSigPrint(FnSigNode *sig) {
 }
 
 // Name resolution of the function signature
-void fnSigNameRes(PassState *pstate, FnSigNode *sig) {
+void fnSigNameRes(NameResState *pstate, FnSigNode *sig) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(sig->parms, cnt, nodesp))
-        inodeWalk(pstate, nodesp);
-    inodeWalk(pstate, &sig->rettype);
+        inodeNameRes(pstate, nodesp);
+    inodeNameRes(pstate, &sig->rettype);
 }
 
 // Type check the function signature
-void fnSigPass(PassState *pstate, FnSigNode *sig) {
+void fnSigTypeCheck(TypeCheckState *pstate, FnSigNode *sig) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(sig->parms, cnt, nodesp))
-        inodeWalk(pstate, nodesp);
-    inodeWalk(pstate, &sig->rettype);
+        inodeTypeCheck(pstate, nodesp);
+    inodeTypeCheck(pstate, &sig->rettype);
 }
 
 // Compare two function signatures to see if they are equivalent

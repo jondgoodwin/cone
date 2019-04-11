@@ -35,7 +35,7 @@ void blockPrint(BlockNode *blk) {
 // Handle name resolution and control structure compliance for a block
 // - push and pop a namespace context for hooking local vars in global name table
 // - Ensure return/continue/break only appear as last statement in block
-void blockNameRes(PassState *pstate, BlockNode *blk) {
+void blockNameRes(NameResState *pstate, BlockNode *blk) {
     int16_t oldscope = pstate->scope;
     blk->scope = ++pstate->scope; // Increment scope counter
 
@@ -55,7 +55,7 @@ void blockNameRes(PassState *pstate, BlockNode *blk) {
                 errorMsgNode(*nodesp, ErrorRetNotLast, "continue may only appear as the last statement in a block"); break;
             }
         }
-        inodeWalk(pstate, nodesp);
+        inodeNameRes(pstate, nodesp);
     }
 
     nametblHookPop();  // Unhook local variables from global name table
@@ -65,21 +65,11 @@ void blockNameRes(PassState *pstate, BlockNode *blk) {
 // Handle type-checking for a block. 
 // Mostly this is a pass-through to type-check the block's statements.
 // Note: When coerced by iexpCoerces, vtype of the block will be specified
-void blockTypeCheck(PassState *pstate, BlockNode *blk) {
+void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(blk->stmts, cnt, nodesp)) {
-        inodeWalk(pstate, nodesp);
-    }
-}
-
-// Check the block node
-void blockPass(PassState *pstate, BlockNode *blk) {
-    switch (pstate->pass) {
-    case NameResolution:
-        blockNameRes(pstate, blk); break;
-    case TypeCheck:
-        blockTypeCheck(pstate, blk); break;
+        inodeTypeCheck(pstate, nodesp);
     }
 }
 

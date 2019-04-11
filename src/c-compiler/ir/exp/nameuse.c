@@ -84,7 +84,7 @@ void nameUsePrint(NameUseNode *name) {
 // - Point to name declaration in other module or this one
 // - If name is for a method or field, rewrite node as 'self.property'
 // - If not method/field, re-tag it as either TypeNameUse or VarNameUse
-void nameUseNameRes(PassState *pstate, NameUseNode **namep) {
+void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
     NameUseNode *name = *namep;
 
     // For module-qualified names, look up name in that module
@@ -120,7 +120,7 @@ void nameUseNameRes(PassState *pstate, NameUseNode **namep) {
         fncall->methprop = name;
         copyNodeLex(fncall, name); // Copy lexer info into injected node in case it has errors
         *((FnCallNode**)namep) = fncall;
-        inodeWalk(pstate, (INode **)namep);
+        inodeNameRes(pstate, (INode **)namep);
         return;
     }
 
@@ -132,15 +132,7 @@ void nameUseNameRes(PassState *pstate, NameUseNode **namep) {
 }
 
 // Handle type check for name use references
-void nameUseWalk(PassState *pstate, NameUseNode **namep) {
+void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
     NameUseNode *name = *namep;
-    // During name resolution, point to name declaration and copy over needed properties
-    switch (pstate->pass) {
-    case NameResolution:
-        nameUseNameRes(pstate, namep);
-        break;
-    case TypeCheck:
-        name->vtype = name->dclnode->vtype;
-        break;
-    }
+    name->vtype = name->dclnode->vtype;
 }

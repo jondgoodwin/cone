@@ -40,8 +40,8 @@ void fnDclPrint(FnDclNode *name) {
 }
 
 // Resolve all names in a function
-void fnDclNameResolve(PassState *pstate, FnDclNode *name) {
-    inodeWalk(pstate, &name->vtype);
+void fnDclNameRes(NameResState *pstate, FnDclNode *name) {
+    inodeNameRes(pstate, &name->vtype);
     if (!name->value)
         return;
 
@@ -57,7 +57,7 @@ void fnDclNameResolve(PassState *pstate, FnDclNode *name) {
     for (nodesFor(fnsig->parms, cnt, nodesp))
         nametblHookNode((INamedNode *)*nodesp);
 
-    inodeWalk(pstate, &name->value);
+    inodeNameRes(pstate, &name->value);
 
     nametblHookPop();
     pstate->scope = oldscope;
@@ -89,8 +89,8 @@ void fnImplicitReturn(INode *rettype, BlockNode *blk) {
 // - Turn implicit returns into explicit returns
 // - Perform type checking for all statements
 // - Perform data flow analysis on variables and references
-void fnDclTypeCheck(PassState *pstate, FnDclNode *fnnode) {
-    inodeWalk(pstate, &fnnode->vtype);
+void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
+    inodeTypeCheck(pstate, &fnnode->vtype);
     if (!fnnode->value)
         return;
 
@@ -100,7 +100,7 @@ void fnDclTypeCheck(PassState *pstate, FnDclNode *fnnode) {
     // Type check/inference of the function's logic
     FnSigNode *oldfnsig = pstate->fnsig;
     pstate->fnsig = (FnSigNode*)fnnode->vtype;   // needed for return type check
-    inodeWalk(pstate, &fnnode->value);
+    inodeTypeCheck(pstate, &fnnode->value);
     pstate->fnsig = oldfnsig;
 
     // Immediately perform the data flow pass for this function
@@ -112,20 +112,4 @@ void fnDclTypeCheck(PassState *pstate, FnDclNode *fnnode) {
     fstate.fnsig = (FnSigNode *)fnnode->vtype;
     fstate.scope = 1;
     blockFlow(&fstate, (BlockNode **)&fnnode->value);
-}
-
-// Check the function declaration node
-void fnDclPass(PassState *pstate, FnDclNode *name) {
-    INode *vtype = iexpGetTypeDcl(name->vtype);
-
-    // Process nodes in name's initial value/code block
-    switch (pstate->pass) {
-    case NameResolution:
-        fnDclNameResolve(pstate, name);
-        break;
-
-    case TypeCheck:
-        fnDclTypeCheck(pstate, name);
-        break;
-    }
 }

@@ -17,10 +17,10 @@ BorrowNode *newBorrowNode();
 void borrowPrint(BorrowNode *node);
 
 // Name resolution of borrow node
-void borrowNameRes(PassState *pstate, BorrowNode **nodep);
+void borrowNameRes(NameResState *pstate, BorrowNode **nodep);
 
 // Type check borrow node
-void borrowPass(PassState *pstate, BorrowNode **node);
+void borrowTypeCheck(TypeCheckState *pstate, BorrowNode **node);
 
 // Perform data flow analysis on addr node
 void borrowFlow(FlowState *fstate, BorrowNode **nodep);

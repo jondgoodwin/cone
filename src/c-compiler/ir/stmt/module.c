@@ -85,8 +85,8 @@ void modHook(ModuleNode *oldmod, ModuleNode *newmod) {
     }
 }
 
-// Check the module node
-void modNameRes(PassState *pstate, ModuleNode *mod) {
+// Name resolution of the module node
+void modNameRes(NameResState *pstate, ModuleNode *mod) {
 
     // Switch name table over to new module
     modHook((ModuleNode*)mod->owner, mod);
@@ -95,24 +95,19 @@ void modNameRes(PassState *pstate, ModuleNode *mod) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(mod->nodes, cnt, nodesp)) {
-        inodeWalk(pstate, nodesp);
+        inodeNameRes(pstate, nodesp);
     }
 
     // Switch name table back to owner module
     modHook(mod, (ModuleNode*)mod->owner);
 }
 
-// Check the module node
-void modTypeCheck(PassState *pstate, ModuleNode *mod) {
-    if (pstate->pass == NameResolution) {
-        modNameRes(pstate, mod);
-        return;
-    }
-
+// Type check the module node
+void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod) {
     // Process all nodes
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(mod->nodes, cnt, nodesp)) {
-        inodeWalk(pstate, nodesp);
+        inodeTypeCheck(pstate, nodesp);
     }
 }

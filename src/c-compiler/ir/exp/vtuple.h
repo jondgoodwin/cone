@@ -23,10 +23,10 @@ VTupleNode *newVTupleNode();
 void vtuplePrint(VTupleNode *tuple);
 
 // Name resolution for vtuple
-void vtupleNameRes(PassState *pstate, VTupleNode *tuple);
+void vtupleNameRes(NameResState *pstate, VTupleNode *tuple);
 
 // Type check the value tuple node
 // - Infer type tuple from types of vtuple's values
-void vtupleWalk(PassState *pstate, VTupleNode *node);
+void vtupleTypeCheck(TypeCheckState *pstate, VTupleNode *node);
 
 #endif

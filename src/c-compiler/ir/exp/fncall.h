@@ -27,9 +27,10 @@ void fnCallPrint(FnCallNode *node);
 // Name resolution on 'fncall'
 // - If node is indexing on a type, retag node as a typelit
 // Note: this never name resolves .methprop, which is handled in type checking
-void fnCallNameRes(PassState *pstate, FnCallNode **nodep);
+void fnCallNameRes(NameResState *pstate, FnCallNode **nodep);
 
-void fnCallPass(PassState *pstate, FnCallNode **node);
+// Type check on fncall
+void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **node);
 
 // Do data flow analysis for fncall node (only real function calls)
 void fnCallFlow(FlowState *fstate, FnCallNode **nodep);

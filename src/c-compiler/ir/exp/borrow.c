@@ -26,9 +26,9 @@ void borrowPrint(BorrowNode *node) {
 }
 
 // Name resolution of borrow node
-void borrowNameRes(PassState *pstate, BorrowNode **nodep) {
+void borrowNameRes(NameResState *pstate, BorrowNode **nodep) {
     BorrowNode *node = *nodep;
-    inodeWalk(pstate, &node->exp);
+    inodeNameRes(pstate, &node->exp);
 }
 
 // Extract lval variable and overall permission from lval
@@ -92,15 +92,9 @@ INamedNode *borrowGetVarPerm(INode *lval, INode **lvalperm) {
 }
 
 // Analyze borrow node
-void borrowPass(PassState *pstate, BorrowNode **nodep) {
+void borrowTypeCheck(TypeCheckState *pstate, BorrowNode **nodep) {
     BorrowNode *node = *nodep;
-    if (pstate->pass == NameResolution) {
-        inodeWalk(pstate, &node->exp);
-        return;
-    }
-
-    // Type check a borrowed reference
-    inodeWalk(pstate, &node->exp);
+    inodeTypeCheck(pstate, &node->exp);
 
     // If we are calculating an internal reference (e.g., index) for a reference, 
     // auto-deref that reference

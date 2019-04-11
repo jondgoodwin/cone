@@ -166,71 +166,153 @@ void inodePrint(char *dir, char *srcfn, INode *pgmnode) {
 // Dispatch a node walk for the current semantic analysis pass
 // - pstate is helpful state info for node traversal
 // - node is a pointer to pointer so that a node can be replaced
-void inodeWalk(PassState *pstate, INode **node) {
+void inodeNameRes(NameResState *pstate, INode **node) {
+    switch ((*node)->tag) {
+    case ModuleTag:
+        modNameRes(pstate, (ModuleNode*)*node); break;
+    case VarDclTag:
+        varDclNameRes(pstate, (VarDclNode *)*node); break;
+    case FnDclTag:
+        fnDclNameRes(pstate, (FnDclNode *)*node); break;
+    case NameUseTag:
+    case VarNameUseTag:
+    case TypeNameUseTag:
+        nameUseNameRes(pstate, (NameUseNode **)node); break;
+    case TypeLitTag:
+        typeLitNameRes(pstate, (FnCallNode *)*node); break;
+    case BlockTag:
+        blockNameRes(pstate, (BlockNode *)*node); break;
+    case IfTag:
+        ifNameRes(pstate, (IfNode *)*node); break;
+    case WhileTag:
+        whileNameRes(pstate, (WhileNode *)*node); break;
+    case BreakTag:
+    case ContinueTag:
+        breakNameRes(pstate, *node); break;
+    case ReturnTag:
+        returnNameRes(pstate, (ReturnNode *)*node); break;
+    case AssignTag:
+        assignNameRes(pstate, (AssignNode *)*node); break;
+    case VTupleTag:
+        vtupleNameRes(pstate, (VTupleNode *)*node); break;
+    case FnCallTag:
+        fnCallNameRes(pstate, (FnCallNode **)node); break;
+    case SizeofTag:
+        sizeofNameRes(pstate, (SizeofNode *)*node); break;
+    case CastTag:
+        castNameRes(pstate, (CastNode *)*node); break;
+    case DerefTag:
+        derefNameRes(pstate, (DerefNode *)*node); break;
+    case BorrowTag:
+        borrowNameRes(pstate, (BorrowNode **)node); break;
+    case AllocateTag:
+        allocateNameRes(pstate, (AllocateNode **)node); break;
+    case NotLogicTag:
+        logicNotNameRes(pstate, (LogicNode *)*node); break;
+    case OrLogicTag: case AndLogicTag:
+        logicNameRes(pstate, (LogicNode *)*node); break;
+    case NamedValTag:
+        namedValNameRes(pstate, (NamedValNode *)*node); break;
+
+    case FnSigTag:
+        fnSigNameRes(pstate, (FnSigNode *)*node); break;
+    case RefTag:
+        refNameRes(pstate, (RefNode *)*node); break;
+    case ArrayRefTag:
+        arrayRefNameRes(pstate, (RefNode *)*node); break;
+    case PtrTag:
+        ptrNameRes(pstate, (PtrNode *)*node); break;
+    case StructTag:
+        structNameRes(pstate, (StructNode *)*node); break;
+    case ArrayTag:
+        arrayNameRes(pstate, (ArrayNode *)*node); break;
+    case TTupleTag:
+        ttupleNameRes(pstate, (TTupleNode *)*node); break;
+    case AllocTag:
+        break;
+
+    case MbrNameUseTag:
+    case ULitTag:
+    case FLitTag:
+    case StrLitTag:
+    case IntNbrTag: case UintNbrTag: case FloatNbrTag:
+    case PermTag:
+    case VoidTag:
+    case NullTag:
+        break;
+    default:
+        assert(0 && "**** ERROR **** Attempting to check an unknown node");
+    }
+}
+
+// Dispatch a node walk for the current semantic analysis pass
+// - pstate is helpful state info for node traversal
+// - node is a pointer to pointer so that a node can be replaced
+void inodeTypeCheck(TypeCheckState *pstate, INode **node) {
     switch ((*node)->tag) {
     case ModuleTag:
         modTypeCheck(pstate, (ModuleNode*)*node); break;
     case VarDclTag:
-        varDclPass(pstate, (VarDclNode *)*node); break;
+        varDclTypeCheck(pstate, (VarDclNode *)*node); break;
     case FnDclTag:
-        fnDclPass(pstate, (FnDclNode *)*node); break;
+        fnDclTypeCheck(pstate, (FnDclNode *)*node); break;
     case NameUseTag:
     case VarNameUseTag:
     case TypeNameUseTag:
-        nameUseWalk(pstate, (NameUseNode **)node); break;
+        nameUseTypeCheck(pstate, (NameUseNode **)node); break;
     case TypeLitTag:
-        typeLitWalk(pstate, (FnCallNode *)*node); break;
+        typeLitTypeCheck(pstate, (FnCallNode *)*node); break;
     case BlockTag:
-        blockPass(pstate, (BlockNode *)*node); break;
+        blockTypeCheck(pstate, (BlockNode *)*node); break;
     case IfTag:
-        ifPass(pstate, (IfNode *)*node); break;
+        ifTypeCheck(pstate, (IfNode *)*node); break;
     case WhileTag:
-        whilePass(pstate, (WhileNode *)*node); break;
+        whileTypeCheck(pstate, (WhileNode *)*node); break;
     case BreakTag:
     case ContinueTag:
-        breakPass(pstate, *node); break;
+        break;
     case ReturnTag:
-        returnPass(pstate, (ReturnNode *)*node); break;
+        returnTypeCheck(pstate, (ReturnNode *)*node); break;
     case AssignTag:
-        assignPass(pstate, (AssignNode *)*node); break;
+        assignTypeCheck(pstate, (AssignNode *)*node); break;
     case VTupleTag:
-        vtupleWalk(pstate, (VTupleNode *)*node); break;
+        vtupleTypeCheck(pstate, (VTupleNode *)*node); break;
     case FnCallTag:
-        fnCallPass(pstate, (FnCallNode **)node); break;
+        fnCallTypeCheck(pstate, (FnCallNode **)node); break;
     case SizeofTag:
-        sizeofPass(pstate, (SizeofNode *)*node); break;
+        sizeofTypeCheck(pstate, (SizeofNode *)*node); break;
     case CastTag:
-        castPass(pstate, (CastNode *)*node); break;
+        castTypeCheck(pstate, (CastNode *)*node); break;
     case DerefTag:
-        derefPass(pstate, (DerefNode *)*node); break;
+        derefTypeCheck(pstate, (DerefNode *)*node); break;
     case BorrowTag:
-        borrowPass(pstate, (BorrowNode **)node); break;
+        borrowTypeCheck(pstate, (BorrowNode **)node); break;
     case AllocateTag:
-        allocatePass(pstate, (AllocateNode **)node); break;
+        allocateTypeCheck(pstate, (AllocateNode **)node); break;
     case NotLogicTag:
-        logicNotPass(pstate, (LogicNode *)*node); break;
+        logicNotTypeCheck(pstate, (LogicNode *)*node); break;
     case OrLogicTag: case AndLogicTag:
-        logicPass(pstate, (LogicNode *)*node); break;
+        logicTypeCheck(pstate, (LogicNode *)*node); break;
     case NamedValTag:
-        namedValWalk(pstate, (NamedValNode *)*node); break;
+        namedValTypeCheck(pstate, (NamedValNode *)*node); break;
     case ULitTag:
     case FLitTag:
         litTypeCheck(pstate, (ITypedNode*)*node); break;
 
     case FnSigTag:
-        fnSigPass(pstate, (FnSigNode *)*node); break;
+        fnSigTypeCheck(pstate, (FnSigNode *)*node); break;
     case RefTag:
-        refPass(pstate, (RefNode *)*node); break;
+        refTypeCheck(pstate, (RefNode *)*node); break;
     case ArrayRefTag:
-        arrayRefPass(pstate, (RefNode *)*node); break;
+        arrayRefTypeCheck(pstate, (RefNode *)*node); break;
     case PtrTag:
-        ptrPass(pstate, (PtrNode *)*node); break;
+        ptrTypeCheck(pstate, (PtrNode *)*node); break;
     case StructTag:
-        structPass(pstate, (StructNode *)*node); break;
+        structTypeCheck(pstate, (StructNode *)*node); break;
     case ArrayTag:
-        arrayPass(pstate, (ArrayNode *)*node); break;
+        arrayTypeCheck(pstate, (ArrayNode *)*node); break;
     case TTupleTag:
-        ttupleWalk(pstate, (TTupleNode *)*node); break;
+        ttupleTypeCheck(pstate, (TTupleNode *)*node); break;
     case AllocTag:
         break;
 

@@ -23,9 +23,9 @@ TTupleNode *newTTupleNode(int cnt);
 void ttuplePrint(TTupleNode *tuple);
 
 // Name resolution of type tuple node
-void ttupleNameRes(PassState *pstate, TTupleNode *node);
+void ttupleNameRes(NameResState *pstate, TTupleNode *node);
 
 // Type check type tuple node
-void ttupleWalk(PassState *pstate, TTupleNode *node);
+void ttupleTypeCheck(TypeCheckState *pstate, TTupleNode *node);
 
 #endif

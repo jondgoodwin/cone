@@ -22,6 +22,14 @@ void typeLitPrint(FnCallNode *node) {
     inodeFprint("]");
 }
 
+// Check the type literal node (actually done by fncall)
+void typeLitNameRes(NameResState *pstate, FnCallNode *arrlit) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(arrlit->args, cnt, nodesp))
+        inodeNameRes(pstate, nodesp);
+}
+
 // Is the type literal actually a literal?
 int typeLitIsLiteral(FnCallNode *node) {
     INode **nodesp;
@@ -37,7 +45,7 @@ int typeLitIsLiteral(FnCallNode *node) {
 }
 
 // Type check a number literal
-void typeLitNbrCheck(PassState *pstate, FnCallNode *nbrlit, INode *type) {
+void typeLitNbrCheck(TypeCheckState *pstate, FnCallNode *nbrlit, INode *type) {
 
     if (nbrlit->args->used != 1) {
         errorMsgNode((INode*)nbrlit, ErrorBadArray, "Number literal requires one value");
@@ -55,7 +63,7 @@ void typeLitNbrCheck(PassState *pstate, FnCallNode *nbrlit, INode *type) {
 }
 
 // Type check an array literal
-void typeLitArrayCheck(PassState *pstate, FnCallNode *arrlit) {
+void typeLitArrayCheck(TypeCheckState *pstate, FnCallNode *arrlit) {
 
     if (arrlit->args->used == 0) {
         errorMsgNode((INode*)arrlit, ErrorBadArray, "Literal list may not be empty");
@@ -97,7 +105,7 @@ int typeLitGetName(Nodes *args, uint32_t argi, Name *name) {
 
 // Type check a struct literal
 // Verify correct name/type of each literal element against struct's properties
-void typeLitStructCheck(PassState *pstate, FnCallNode *arrlit, StructNode *strnode) {
+void typeLitStructCheck(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *strnode) {
     INode **nodesp;
     uint32_t cnt;
     uint32_t argi = 0;
@@ -132,26 +140,19 @@ void typeLitStructCheck(PassState *pstate, FnCallNode *arrlit, StructNode *strno
 }
 
 // Check the list node
-void typeLitWalk(PassState *pstate, FnCallNode *arrlit) {
+void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *arrlit) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(arrlit->args, cnt, nodesp))
-        inodeWalk(pstate, nodesp);
+        inodeTypeCheck(pstate, nodesp);
 
-    switch (pstate->pass) {
-    case NameResolution:
-        break;
-    case TypeCheck:
-    {
-        INode *littype = itypeGetTypeDcl(arrlit->vtype);
-        if (littype->tag == ArrayTag)
-            typeLitArrayCheck(pstate, arrlit);
-        else if (littype->tag == StructTag)
-            typeLitStructCheck(pstate, arrlit, (StructNode*)littype);
-        else if (littype->tag == IntNbrTag || littype->tag == UintNbrTag || littype->tag == FloatNbrTag)
-            typeLitNbrCheck(pstate, arrlit, littype);
-        else
-            errorMsgNode((INode*)arrlit, ErrorBadArray, "Unknown type literal type for type checking");
-    }
-    }
+    INode *littype = itypeGetTypeDcl(arrlit->vtype);
+    if (littype->tag == ArrayTag)
+        typeLitArrayCheck(pstate, arrlit);
+    else if (littype->tag == StructTag)
+        typeLitStructCheck(pstate, arrlit, (StructNode*)littype);
+    else if (littype->tag == IntNbrTag || littype->tag == UintNbrTag || littype->tag == FloatNbrTag)
+        typeLitNbrCheck(pstate, arrlit, littype);
+    else
+        errorMsgNode((INode*)arrlit, ErrorBadArray, "Unknown type literal type for type checking");
 }

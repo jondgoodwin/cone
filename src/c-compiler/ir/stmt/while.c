@@ -24,25 +24,20 @@ void whilePrint(WhileNode *node) {
 }
 
 // while block name resolution
-void whileNameRes(PassState *pstate, WhileNode *node) {
+void whileNameRes(NameResState *pstate, WhileNode *node) {
     uint16_t svflags = pstate->flags;
     pstate->flags |= PassWithinWhile;
 
-    inodeWalk(pstate, &node->condexp);
-    inodeWalk(pstate, &node->blk);
+    inodeNameRes(pstate, &node->condexp);
+    inodeNameRes(pstate, &node->blk);
 
     pstate->flags = svflags;
 }
 
 // Type check the while block (conditional expression must be coercible to bool)
-void whilePass(PassState *pstate, WhileNode *node) {
-    if (pstate->pass == NameResolution) {
-        whileNameRes(pstate, node);
-        return;
-    }
-
-    inodeWalk(pstate, &node->condexp);
-    inodeWalk(pstate, &node->blk);
+void whileTypeCheck(TypeCheckState *pstate, WhileNode *node) {
+    inodeTypeCheck(pstate, &node->condexp);
+    inodeTypeCheck(pstate, &node->blk);
     if (0 == iexpCoerces((INode*)boolType, &node->condexp))
         errorMsgNode(node->condexp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
 }

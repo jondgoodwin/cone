@@ -19,10 +19,10 @@ WhileNode *newWhileNode();
 void whilePrint(WhileNode *wnode);
 
 // while block name resolution
-void whileNameRes(PassState *pstate, WhileNode *node);
+void whileNameRes(NameResState *pstate, WhileNode *node);
 
 // Type check the while block (conditional expression must be coercible to bool)
-void whilePass(PassState *pstate, WhileNode *wnode);
+void whileTypeCheck(TypeCheckState *pstate, WhileNode *wnode);
 
 // Perform data flow analysis on an while statement
 void whileFlow(FlowState *fstate, WhileNode **nodep);

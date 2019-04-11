@@ -59,27 +59,22 @@ void ifRemoveReturns(IfNode *ifnode) {
 }
 
 // if node name resolution
-void ifNameRes(PassState *pstate, IfNode *ifnode) {
+void ifNameRes(NameResState *pstate, IfNode *ifnode) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
-        inodeWalk(pstate, nodesp);
+        inodeNameRes(pstate, nodesp);
     }
 }
 
 // Type check the if statement node
 // - Every conditional expression must be a bool
 // - if's vtype is specified/checked only when coerced by iexpCoerces
-void ifPass(PassState *pstate, IfNode *ifnode) {
-    if (pstate->pass == NameResolution) {
-        ifNameRes(pstate, ifnode);
-        return;
-    }
-
+void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
-        inodeWalk(pstate, nodesp);
+        inodeTypeCheck(pstate, nodesp);
 
         // - conditional must be a Bool
         if ((cnt & 1)==0 && *nodesp != voidType)

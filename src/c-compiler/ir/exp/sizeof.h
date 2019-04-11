@@ -18,9 +18,9 @@ SizeofNode *newSizeofNode();
 void sizeofPrint(SizeofNode *node);
 
 // Name resolution of sizeof node
-void sizeofNameRes(PassState *pstate, SizeofNode *node);
+void sizeofNameRes(NameResState *pstate, SizeofNode *node);
 
 // Type check sizeof node
-void sizeofPass(PassState *pstate, SizeofNode *node);
+void sizeofTypeCheck(TypeCheckState *pstate, SizeofNode *node);
 
 #endif

@@ -17,13 +17,7 @@ BreakNode *newBreakNode(int16_t tag) {
 
 // Name resolution for break/continue
 // - Ensure it is only used within a while/each block
-void breakNameRes(PassState *pstate, INode *node) {
+void breakNameRes(NameResState *pstate, INode *node) {
     if (!(pstate->flags & PassWithinWhile))
         errorMsgNode(node, ErrorNoWhile, "break/continue may only be used within a while/each block");
-}
-
-// There is no type check!
-void breakPass(PassState *pstate, INode *node) {
-    if (pstate->pass == NameResolution)
-        breakNameRes(pstate, node);
 }

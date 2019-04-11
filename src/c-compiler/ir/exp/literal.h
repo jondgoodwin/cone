@@ -38,10 +38,10 @@ FLitNode *newFLitNode(double nbr, INode *type);
 void flitPrint(FLitNode *node);
 
 // Name resolution of lit node
-void litNameRes(PassState* pstate, ITypedNode *node);
+void litNameRes(NameResState* pstate, ITypedNode *node);
 
 // Type check lit node
-void litTypeCheck(PassState* pstate, ITypedNode *node);
+void litTypeCheck(TypeCheckState* pstate, ITypedNode *node);
 
 NullNode *newNullNode();
 

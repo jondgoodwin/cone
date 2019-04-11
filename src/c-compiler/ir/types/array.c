@@ -35,18 +35,13 @@ void arrayPrint(ArrayNode *node) {
 }
 
 // Name resolution of an array type
-void arrayNameRes(PassState *pstate, ArrayNode *node) {
-    inodeWalk(pstate, &node->elemtype);
+void arrayNameRes(NameResState *pstate, ArrayNode *node) {
+    inodeNameRes(pstate, &node->elemtype);
 }
 
 // Type check an array type
-void arrayPass(PassState *pstate, ArrayNode *node) {
-    if (pstate->pass == NameResolution) {
-        arrayNameRes(pstate, node);
-        return;
-    }
-
-    inodeWalk(pstate, &node->elemtype);
+void arrayTypeCheck(TypeCheckState *pstate, ArrayNode *node) {
+    inodeTypeCheck(pstate, &node->elemtype);
     if (!itypeHasSize(node->elemtype))
         errorMsgNode(node->elemtype, ErrorInvType, "Type must have a defined size.");
 }

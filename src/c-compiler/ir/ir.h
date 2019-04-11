@@ -33,7 +33,8 @@
 #include "namespace.h"
 typedef struct Name Name;        // ../nametbl.h
 typedef struct Lexer Lexer;        // ../../parser/lexer.h
-typedef struct PassState PassState;
+typedef struct NameResState NameResState;
+typedef struct TypeCheckState TypeCheckState;
 
 // Interfaces & headers shared across nodes
 #include "inode.h"
@@ -89,24 +90,18 @@ typedef struct AllocNode {
 
 #include "../std/stdlib.h"
 
-// The semantic analysis passes performed in between parse and generation
-enum Passes {
-    // Scope all declared names and resolve all name uses accordingly
-    NameResolution,
-    // Do return inference and type inference/checks.
-    TypeCheck
-};
-
-// Context used across all semantic analysis passes
-typedef struct PassState {
-    int pass;                // Passes
-    INode *typenode;        // nameres: Current type (e.g., struct)
-    FnSigNode *fnsig;        // The type signature of the function we are within
-
-    int16_t scope;            // nameres: The current block scope (0=global, 1=fnsig, 2+=blocks)
-    uint16_t flags;         // nameres: PassWithinWhile
-} PassState;
+// Context used for name resolution pass
+typedef struct NameResState {
+    INode *typenode;        // Current type (e.g., struct)
+    int16_t scope;          // The current block scope (0=global, 1=fnsig, 2+=blocks)
+    uint16_t flags;         // e.g., PassWithinWhile
+} NameResState;
 
 #define PassWithinWhile 0x0001
+
+// Context used for type check pass
+typedef struct TypeCheckState {
+    FnSigNode *fnsig;        // The type signature of the function we are within
+} TypeCheckState;
 
 #endif

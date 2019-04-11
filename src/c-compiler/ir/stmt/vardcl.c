@@ -58,9 +58,9 @@ void varDclPrint(VarDclNode *name) {
 }
 
 // Enable name resolution of local variables
-void varDclNameRes(PassState *pstate, VarDclNode *name) {
-    inodeWalk(pstate, (INode**)&name->perm);
-    inodeWalk(pstate, &name->vtype);
+void varDclNameRes(NameResState *pstate, VarDclNode *name) {
+    inodeNameRes(pstate, (INode**)&name->perm);
+    inodeNameRes(pstate, &name->vtype);
 
     // Variable declaration within a block is a local variable
     if (pstate->scope > 1) {
@@ -76,13 +76,13 @@ void varDclNameRes(PassState *pstate, VarDclNode *name) {
     }
 
     if (name->value)
-        inodeWalk(pstate, &name->value);
+        inodeNameRes(pstate, &name->value);
 }
 
 // Type check variable against its initial value
-void varDclTypeCheck(PassState *pstate, VarDclNode *name) {
-    inodeWalk(pstate, (INode**)&name->perm);
-    inodeWalk(pstate, &name->vtype);
+void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
+    inodeTypeCheck(pstate, (INode**)&name->perm);
+    inodeTypeCheck(pstate, &name->vtype);
 
     // An initializer need not be specified, but if not, it must have a declared type
     if (!name->value) {
@@ -92,7 +92,7 @@ void varDclTypeCheck(PassState *pstate, VarDclNode *name) {
     }
     // Type check the initialization value
     else {
-        inodeWalk(pstate, &name->value);
+        inodeTypeCheck(pstate, &name->value);
         // Global variables and function parameters require literal initializers
         if (name->scope <= 1 && !litIsLiteral(name->value))
             errorMsgNode(name->value, ErrorNotLit, "Variable may only be initialized with a literal value.");
@@ -113,21 +113,6 @@ void varDclTypeCheck(PassState *pstate, VarDclNode *name) {
     // Variables cannot hold a void or opaque struct value
     if (!itypeHasSize(name->vtype))
         errorMsgNode(name->vtype, ErrorInvType, "Type must have a defined size.");
-}
-
-// Check the variable declaration node
-void varDclPass(PassState *pstate, VarDclNode *name) {
-
-    // Process nodes in name's initial value/code block
-    switch (pstate->pass) {
-    case NameResolution:
-        varDclNameRes(pstate, name);
-        break;
-
-    case TypeCheck:
-        varDclTypeCheck(pstate, name);
-        break;
-    }
 }
 
 // Perform data flow analysis

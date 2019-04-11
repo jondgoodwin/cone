@@ -10,8 +10,10 @@
 
 // Serialize a type literal
 void typeLitPrint(FnCallNode *node);
+// Name resolution of the literal node
+void typeLitNameRes(NameResState *pstate, FnCallNode *lit);
 // Check the type literal node
-void typeLitWalk(PassState *pstate, FnCallNode *blk);
+void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *lit);
 // Is the type literal actually a literal?
 int typeLitIsLiteral(FnCallNode *node);
 

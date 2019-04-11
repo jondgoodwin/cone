@@ -21,10 +21,10 @@ ArrayNode *newArrayNodeTyped(size_t size, INode *elemtype);
 void arrayPrint(ArrayNode *node);
 
 // Name resolution of an array type
-void arrayNameRes(PassState *pstate, ArrayNode *node);
+void arrayNameRes(NameResState *pstate, ArrayNode *node);
 
 // Type check an array type
-void arrayPass(PassState *pstate, ArrayNode *name);
+void arrayTypeCheck(TypeCheckState *pstate, ArrayNode *name);
 
 int arrayEqual(ArrayNode *node1, ArrayNode *node2);
 

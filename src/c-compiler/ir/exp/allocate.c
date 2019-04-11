@@ -26,22 +26,16 @@ void allocatePrint(AllocateNode *node) {
 }
 
 // Name resolution of allocate node
-void allocateNameRes(PassState *pstate, AllocateNode **nodep) {
+void allocateNameRes(NameResState *pstate, AllocateNode **nodep) {
     AllocateNode *node = *nodep;
-    inodeWalk(pstate, &node->exp);
+    inodeNameRes(pstate, &node->exp);
 }
 
 // Type check allocate node
-void allocatePass(PassState *pstate, AllocateNode **nodep) {
+void allocateTypeCheck(TypeCheckState *pstate, AllocateNode **nodep) {
     AllocateNode *node = *nodep;
-    if (pstate->pass == NameResolution) {
-        inodeWalk(pstate, &node->exp);
-        return;
-    }
-
-    // Type check a borrowed or allocated reference
     RefNode *reftype = (RefNode *)node->vtype;
-    inodeWalk(pstate, &node->exp);
+    inodeTypeCheck(pstate, &node->exp);
 
     // expression must be a value usable for initializing allocated reference
     INode *initval = node->exp;

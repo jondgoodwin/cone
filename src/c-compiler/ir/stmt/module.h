@@ -28,7 +28,7 @@ ModuleNode *newModuleNode();
 void modPrint(ModuleNode *mod);
 void modAddNode(ModuleNode *mod, INode *node);
 void modHook(ModuleNode *oldmod, ModuleNode *newmod);
-void modNameRes(PassState *pstate, ModuleNode *mod);
-void modTypeCheck(PassState *pstate, ModuleNode *mod);
+void modNameRes(NameResState *pstate, ModuleNode *mod);
+void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod);
 
 #endif

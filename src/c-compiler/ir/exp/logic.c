@@ -31,37 +31,27 @@ void logicPrint(LogicNode *node) {
 }
 
 // Name resolution of not logic node
-void logicNotNameRes(PassState *pstate, LogicNode *node) {
-    inodeWalk(pstate, &node->lexp);
+void logicNotNameRes(NameResState *pstate, LogicNode *node) {
+    inodeNameRes(pstate, &node->lexp);
 }
 
 // Type check not logic node
-void logicNotPass(PassState *pstate, LogicNode *node) {
-    if (pstate->pass == NameResolution) {
-        inodeWalk(pstate, &node->lexp);
-        return;
-    }
-
-    inodeWalk(pstate, &node->lexp);
+void logicNotTypeCheck(TypeCheckState *pstate, LogicNode *node) {
+    inodeTypeCheck(pstate, &node->lexp);
     if (0 == iexpCoerces((INode*)boolType, &node->lexp))
         errorMsgNode(node->lexp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
 }
 
 // Name resolution of logic node
-void logicNameRes(PassState *pstate, LogicNode *node) {
-    inodeWalk(pstate, &node->lexp);
-    inodeWalk(pstate, &node->rexp);
+void logicNameRes(NameResState *pstate, LogicNode *node) {
+    inodeNameRes(pstate, &node->lexp);
+    inodeNameRes(pstate, &node->rexp);
 }
 
 // Analyze logic node
-void logicPass(PassState *pstate, LogicNode *node) {
-    if (pstate->pass == NameResolution) {
-        logicNameRes(pstate, node);
-        return;
-    }
-
-    inodeWalk(pstate, &node->lexp);
-    inodeWalk(pstate, &node->rexp);
+void logicTypeCheck(TypeCheckState *pstate, LogicNode *node) {
+    inodeTypeCheck(pstate, &node->lexp);
+    inodeTypeCheck(pstate, &node->rexp);
 
     if (0 == iexpCoerces((INode*)boolType, &node->lexp))
         errorMsgNode(node->lexp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
