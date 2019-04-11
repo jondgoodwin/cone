@@ -103,7 +103,7 @@ typedef struct PassState {
     INode *typenode;        // Current type (e.g., struct)
     FnSigNode *fnsig;        // The type signature of the function we are within
 
-    int16_t scope;            // The current block scope (0=global, 1=fnsig, 2+=blocks)
+    int16_t scope;            // nameres: The current block scope (0=global, 1=fnsig, 2+=blocks)
     uint16_t flags;
 } PassState;
 

@@ -39,6 +39,30 @@ void fnDclPrint(FnDclNode *name) {
     }
 }
 
+// Resolve all names in a function
+void fnDclNameResolve(PassState *pstate, FnDclNode *name) {
+    inodeWalk(pstate, &name->vtype);
+    if (!name->value)
+        return;
+
+    int16_t oldscope = pstate->scope;
+    pstate->scope = 1;
+
+    // Hook function's parameters into global name table
+    // so that when we walk the function's logic, parameter names are resolved
+    FnSigNode *fnsig = (FnSigNode*)name->vtype;
+    nametblHookPush();
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(fnsig->parms, cnt, nodesp))
+        nametblHookNode((INamedNode *)*nodesp);
+
+    inodeWalk(pstate, &name->value);
+
+    nametblHookPop();
+    pstate->scope = oldscope;
+}
+
 // Syntactic sugar: Turn last statement implicit returns into explicit returns
 void fnImplicitReturn(INode *rettype, BlockNode *blk) {
     INode *laststmt;
@@ -47,7 +71,7 @@ void fnImplicitReturn(INode *rettype, BlockNode *blk) {
     laststmt = nodesLast(blk->stmts);
     if (rettype == voidType) {
         if (laststmt->tag != ReturnTag)
-            nodesAdd(&blk->stmts, (INode*) newReturnNode());
+            nodesAdd(&blk->stmts, (INode*)newReturnNode());
     }
     else {
         // Inject return in front of expression
@@ -61,31 +85,26 @@ void fnImplicitReturn(INode *rettype, BlockNode *blk) {
     }
 }
 
-// Enable resolution of fn parameter references to parameters
-void fnDclNameResolve(PassState *pstate, FnDclNode *name) {
-    int16_t oldscope = pstate->scope;
-    pstate->scope = 1;
-    FnSigNode *fnsig = (FnSigNode*)name->vtype;
-    nametblHookPush();
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodesFor(fnsig->parms, cnt, nodesp))
-        nametblHookNode((INamedNode *)*nodesp);
-    inodeWalk(pstate, &name->value);
-    nametblHookPop();
-    pstate->scope = oldscope;
-}
+// Type checking a function's logic does more than you might think:
+// - Turn implicit returns into explicit returns
+// - Perform type checking for all statements
+// - Perform data flow analysis on variables and references
+void fnDclTypeCheck(PassState *pstate, FnDclNode *fnnode) {
+    inodeWalk(pstate, &fnnode->vtype);
+    if (!fnnode->value)
+        return;
 
-// Provide parameter and return type context for type checking function's logic
-void fnDclTypeCheck(PassState *pstate, FnDclNode *varnode) {
+    // Syntactic sugar: Turn implicit returns into explicit returns
+    fnImplicitReturn(((FnSigNode*)fnnode->vtype)->rettype, (BlockNode *)fnnode->value);
+
+    // Type check/inference of the function's logic
     FnSigNode *oldfnsig = pstate->fnsig;
-    pstate->fnsig = (FnSigNode*)varnode->vtype;
-    inodeWalk(pstate, &varnode->value);
+    pstate->fnsig = (FnSigNode*)fnnode->vtype;   // needed for return type check
+    inodeWalk(pstate, &fnnode->value);
     pstate->fnsig = oldfnsig;
-}
 
-// Begin the processing of the data flow pass for this function
-void fnDclFlow(FnDclNode *fnnode) {
+    // Immediately perform the data flow pass for this function
+    // We run data flow separately as it requires type info which is inferred bottoms-up
     if (errors)
         return;
     flowAliasInit();
@@ -97,30 +116,16 @@ void fnDclFlow(FnDclNode *fnnode) {
 
 // Check the function declaration node
 void fnDclPass(PassState *pstate, FnDclNode *name) {
-    inodeWalk(pstate, &name->vtype);
     INode *vtype = iexpGetTypeDcl(name->vtype);
 
     // Process nodes in name's initial value/code block
     switch (pstate->pass) {
     case NameResolution:
-        // Hook into global name table if not a global owner by module
-        // (because those have already been hooked by module for forward references)
-        /*if (name->owner->tag != ModuleTag)
-            namespaceHook((INamedNode*)name, name->namesym);*/
-        if (name->value)
-            fnDclNameResolve(pstate, name);
+        fnDclNameResolve(pstate, name);
         break;
 
     case TypeCheck:
-        if (name->value) {
-            // Syntactic sugar: Turn implicit returns into explicit returns
-            fnImplicitReturn(((FnSigNode*)name->vtype)->rettype, (BlockNode *)name->value);
-            // Do type checking of function (with fnsig as context)
-            fnDclTypeCheck(pstate, name);
-            fnDclFlow(name);
-        }
-        else if (vtype == voidType)
-            errorMsgNode((INode*)name, ErrorNoType, "Name must specify a type");
+        fnDclTypeCheck(pstate, name);
         break;
     }
 }
