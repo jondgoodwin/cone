@@ -21,16 +21,24 @@ void derefPrint(DerefNode *node) {
     inodePrintNode(node->exp);
 }
 
-// Analyze deref node
-void derefPass(PassState *pstate, DerefNode *node) {
+// Name resolution of deref node
+void derefNameRes(PassState *pstate, DerefNode *node) {
     inodeWalk(pstate, &node->exp);
-    if (pstate->pass == TypeCheck) {
-        PtrNode *ptype = (PtrNode*)((ITypedNode *)node->exp)->vtype;
-        if (ptype->tag == RefTag || ptype->tag == PtrTag)
-            node->vtype = ptype->pvtype;
-        else
-            errorMsgNode((INode*)node, ErrorNotPtr, "Cannot de-reference a non-pointer value.");
+}
+
+// Type check deref node
+void derefPass(PassState *pstate, DerefNode *node) {
+    if (pstate->pass == NameResolution) {
+        derefNameRes(pstate, node);
+        return;
     }
+
+    inodeWalk(pstate, &node->exp);
+    PtrNode *ptype = (PtrNode*)((ITypedNode *)node->exp)->vtype;
+    if (ptype->tag == RefTag || ptype->tag == PtrTag)
+        node->vtype = ptype->pvtype;
+    else
+        errorMsgNode((INode*)node, ErrorNotPtr, "Cannot de-reference a non-pointer value.");
 }
 
 // Insert automatic deref, if node is a ref

@@ -23,6 +23,12 @@ FnCallNode *newFnCallNode(INode *objfn, int nnodes);
 FnCallNode *newFnCallOpname(INode *obj, Name *opname, int nnodes);
 FnCallNode *newFnCallOp(INode *obj, char *op, int nnodes);
 void fnCallPrint(FnCallNode *node);
+
+// Name resolution on 'fncall'
+// - If node is indexing on a type, retag node as a typelit
+// Note: this never name resolves .methprop, which is handled in type checking
+void fnCallNameRes(PassState *pstate, FnCallNode **nodep);
+
 void fnCallPass(PassState *pstate, FnCallNode **node);
 
 // Do data flow analysis for fncall node (only real function calls)

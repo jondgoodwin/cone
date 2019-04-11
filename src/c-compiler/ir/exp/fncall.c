@@ -53,6 +53,41 @@ void fnCallPrint(FnCallNode *node) {
     }
 }
 
+// Name resolution on 'fncall'
+// - If node is indexing on a type, retag node as a typelit
+// Note: this never name resolves .methprop, which is handled in type checking
+void fnCallNameRes(PassState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+    INode **argsp;
+    uint32_t cnt;
+
+    // Name resolve objfn so we know what it is to vary subsequent processing
+    inodeWalk(pstate, &node->objfn);
+
+    // TBD: objfn is a macro
+
+    // If objfn is a type, handle it as a type literal
+    if (isTypeNode(node->objfn)) {
+        if (!node->flags & FlagIndex) {
+            errorMsgNode(node->objfn, ErrorBadTerm, "May not do a function call on a type");
+            return;
+        }
+        node->tag = TypeLitTag;
+        node->vtype = node->objfn;
+
+        INode *typdcl = itypeGetTypeDcl(node->objfn);
+        if (typdcl->tag == StructTag && (typdcl->flags & FlagStructPrivate) && typdcl != pstate->typenode) {
+            errorMsgNode(node->objfn, ErrorNotTyped, "For types with private fields, literal can only be used by type's methods");
+        }
+    }
+
+    // Name resolve arguments/statements
+    if (node->args) {
+        for (nodesFor(node->args, cnt, argsp))
+            inodeWalk(pstate, argsp);
+    }
+}
+
 // For all function calls, go through all arguments to verify correct types,
 // handle value copying, and fill in default arguments
 void fnCallFinalizeArgs(FnCallNode *node) {
@@ -297,40 +332,6 @@ void fnCallLowerPtrMethod(FnCallNode *callnode) {
     return;
 }
 
-// Name resolution on 'fncall' node of all varieties
-// Note: this never name resolves .methprop, which is handled in type checking
-void fnCallNameCheck(PassState *pstate, FnCallNode **nodep) {
-    FnCallNode *node = *nodep;
-    INode **argsp;
-    uint32_t cnt;
-
-    // Name resolve objfn so we know what it is to vary subsequent processing
-    inodeWalk(pstate, &node->objfn);
-
-    // TBD: objfn is a macro
-
-    // If objfn is a type, handle it as a type literal
-    if (isTypeNode(node->objfn)) {
-        if (!node->flags & FlagIndex) {
-            errorMsgNode(node->objfn, ErrorBadTerm, "May not do a function call on a type");
-            return;
-        }
-        node->tag = TypeLitTag;
-        node->vtype = node->objfn;
-
-        INode *typdcl = itypeGetTypeDcl(node->objfn);
-        if (typdcl->tag == StructTag && (typdcl->flags & FlagStructPrivate) && typdcl != pstate->typenode) {
-            errorMsgNode(node->objfn, ErrorNotTyped, "For types with private fields, literal can only be used by type's methods");
-        }
-    }
-
-    // Name resolve arguments/statements
-    if (node->args) {
-        for (nodesFor(node->args, cnt, argsp))
-            inodeWalk(pstate, argsp);
-    }
-}
-
 // Analyze function/method call node
 // Type check significantly lowers the node's contents from its parsed structure
 // to a type-resolved structure suitable for generation. The lowering involves
@@ -341,7 +342,7 @@ void fnCallPass(PassState *pstate, FnCallNode **nodep) {
 
     // Name resolution
     if (pstate->pass == NameResolution) {
-        fnCallNameCheck(pstate, nodep);
+        fnCallNameRes(pstate, nodep);
         return;
     }
 

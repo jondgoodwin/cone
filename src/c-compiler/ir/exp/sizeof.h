@@ -16,6 +16,11 @@ typedef struct SizeofNode {
 
 SizeofNode *newSizeofNode();
 void sizeofPrint(SizeofNode *node);
+
+// Name resolution of sizeof node
+void sizeofNameRes(PassState *pstate, SizeofNode *node);
+
+// Type check sizeof node
 void sizeofPass(PassState *pstate, SizeofNode *node);
 
 #endif

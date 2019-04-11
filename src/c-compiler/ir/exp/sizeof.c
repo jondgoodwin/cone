@@ -22,7 +22,12 @@ void sizeofPrint(SizeofNode *node) {
     inodeFprint(")");
 }
 
-// Analyze sizeof node
+// Name resolution of sizeof node
+void sizeofNameRes(PassState *pstate, SizeofNode *node) {
+    inodeWalk(pstate, &node->type);
+}
+
+// Type check sizeof node
 void sizeofPass(PassState *pstate, SizeofNode *node) {
     inodeWalk(pstate, &node->type);
 }

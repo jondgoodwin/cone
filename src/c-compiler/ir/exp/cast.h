@@ -18,6 +18,13 @@ typedef struct CastNode {
 
 CastNode *newCastNode(INode *exp, INode *type);
 void castPrint(CastNode *node);
+
+// Name resolution of cast node
+void castNameRes(PassState *pstate, CastNode *node);
+
+// Type check cast node:
+// - reinterpret cast types must be same size
+// - Ensure type can be safely converted to target type
 void castPass(PassState *pstate, CastNode *node);
 
 #endif
