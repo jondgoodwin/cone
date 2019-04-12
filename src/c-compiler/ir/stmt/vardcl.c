@@ -97,14 +97,8 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
         if (name->scope <= 1 && !litIsLiteral(name->value))
             errorMsgNode(name->value, ErrorNotLit, "Variable may only be initialized with a literal value.");
         // Infer the var's vtype from its value, if not provided
-        if (name->vtype == voidType) {
-            if (name->value && ((ITypedNode *)name->value)->vtype)
-                name->vtype = ((ITypedNode *)name->value)->vtype;
-            else {
-                errorMsgNode(name->value, ErrorInvType, "Type must be specified, as it cannot be inferred.");
-                return;
-            }
-        }
+        if (name->vtype == voidType)
+            name->vtype = ((ITypedNode *)name->value)->vtype;
         // Otherwise, verify that declared type and initial value type matches
         else if (!iexpCoerces(name->vtype, &name->value))
             errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");

@@ -104,10 +104,34 @@ void modNameRes(NameResState *pstate, ModuleNode *mod) {
 
 // Type check the module node
 void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod) {
-    // Process all nodes
+
+    // Process only types for all global functions/variables first
+    // This ensures we can handle forward references to type info
+    // (e.g., function parms) that must have been inferred from the value
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(mod->nodes, cnt, nodesp)) {
-        inodeTypeCheck(pstate, nodesp);
+        switch ((*nodesp)->tag) {
+        case VarDclTag:
+        {
+            VarDclNode * varnode = (VarDclNode*)*nodesp;
+            inodeTypeCheck(pstate, (INode**)&varnode->perm);
+            inodeTypeCheck(pstate, &varnode->vtype);
+            break;
+        }
+        case FnDclTag:
+        {
+            FnDclNode * varnode = (FnDclNode*)*nodesp;
+            inodeTypeCheck(pstate, &varnode->vtype);
+            break;
+        }
+        }
+    }
+
+    // Now we can process the full node info
+    if (errors == 0) {
+        for (nodesFor(mod->nodes, cnt, nodesp)) {
+            inodeTypeCheck(pstate, nodesp);
+        }
     }
 }
