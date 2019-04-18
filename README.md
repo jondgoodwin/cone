@@ -64,6 +64,12 @@ When finished, Cone will support these features:
 - Unicode-aware (UTF8) text strings and variable names
 - Fast compilation and convenient packaging
 
+## Building (Debug/Developer)
+Cone uses the CMake build system, as a reminder if you are not familiar and want to contribute: You can make a 
+debug build by building with `cmake -DCMAKE_BUILD_TYPE=Debug .` as an additional parameter.
+If you have installed your llvm libraries in a custom location, set the paths inside the CMakeLists.txt or you can 
+also pass them via `-DLLVM_INCLUDE=/my/path/to/llvm-7/include` and `-DLLVM_LIB=/my/path/to/llvm-7/lib/libLLVM.so`
+
 ## Building (Windows)
 
 A Visual Studio C++ solution can be created using the Cone.vcxproj project file.
