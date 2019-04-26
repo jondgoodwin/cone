@@ -152,9 +152,10 @@ char *itypeMangle(char *bufp, INode *vtype) {
         break;
     }
     case RefTag:
+    case ArrayRefTag:
     {
         RefNode *reftype = (RefNode *)vtype;
-        *bufp++ = '&';
+        *bufp++ = vtype->tag==ArrayRefTag? '&[]' : '&';
         if (permIsSame(reftype->perm, (INode*)constPerm)) {
             bufp = itypeMangle(bufp, reftype->perm);
             *bufp++ = ' ';
