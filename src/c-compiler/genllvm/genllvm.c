@@ -127,6 +127,8 @@ void genlGloVarName(GenState *gen, VarDclNode *glovar) {
     glovar->llvmvar = LLVMAddGlobal(gen->module, genlType(gen, glovar->vtype), genlGlobalName((INamedNode*)glovar));
     if (permIsSame(glovar->perm, (INode*) immPerm))
         LLVMSetGlobalConstant(glovar->llvmvar, 1);
+    if (glovar->namesym && glovar->namesym->namestr == '_')
+        LLVMSetVisibility(glovar->llvmvar, LLVMHiddenVisibility);
 }
 
 // Generate LLVMValueRef for a global function
@@ -136,14 +138,21 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
         char *manglednm = genlGlobalName((INamedNode*)glofn);
         char *fnname = glofn->namesym? &glofn->namesym->namestr : "";
         glofn->llvmvar = LLVMAddFunction(gen->module, manglednm, genlType(gen, glofn->vtype));
+
+        // Specify appropriate storage class, visibility and call convention
+        // extern functions (linkedited in separately):
         if (glofn->flags & FlagSystem) {
             LLVMSetFunctionCallConv(glofn->llvmvar, LLVMX86StdcallCallConv);
             LLVMSetDLLStorageClass(glofn->llvmvar, LLVMDLLImportStorageClass);
         }
-        else if (fnname[0] != '_') {
-            //LLVMSetDLLStorageClass(glofn->llvmvar, LLVMDLLExportStorageClass);
-            LLVMSetVisibility(glofn->llvmvar, LLVMDefaultVisibility);
+        // else if glofn-flags involve dynamic library export:
+        //    LLVMSetDLLStorageClass(glofn->llvmvar, LLVMDLLExportStorageClass); 
+        else if (fnname[0] == '_') {
+            // Private globals should be hidden. (public globals have DefaultVisibility)            
+            LLVMSetVisibility(glofn->llvmvar, LLVMHiddenVisibility);
         }
+
+        // Add metadata on implemented functions (debug mode only)
         if (!gen->opt->release && glofn->value) {
             LLVMMetadataRef fntype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder,
                 gen->difile, NULL, 0, 0);
