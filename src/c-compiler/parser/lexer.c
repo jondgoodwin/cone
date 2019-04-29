@@ -691,7 +691,7 @@ void lexNextTokenx() {
             srcp++;
             break;
 
-        // Ignore carrier return
+        // Ignore carriage return
         case '\r':
             srcp++;
             break;
@@ -729,7 +729,10 @@ void lexNextTokenx() {
                             lex->indentch = *srcp;
                         if (*srcp != lex->indentch) {
                             lex->tokp = lex->srcp = srcp;
-                            errorMsgLex(WarnIndent, "Inconsistent line indentation character (tab vs. space)");
+                            if (*srcp == ' ')
+                                errorMsgLex(WarnIndent, "Inconsistent indentation - using space where tab is expected.");
+                            else
+                                errorMsgLex(WarnIndent, "Inconsistent indentation - using tab where space is expected.");
                         }
                         srcp++;
                         lex->curindent++;
