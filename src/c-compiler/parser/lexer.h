@@ -64,6 +64,7 @@ enum TokenTypes {
     FloatLitToken,    // Float literal
     StrLitToken,    // String literal
     IdentToken,        // Identifier
+    LifetimeToken,    // Lifetime variable ('a)
     PermToken,        // Permission identifier
 
     // Punctuation tokens

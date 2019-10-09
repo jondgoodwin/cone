@@ -19,7 +19,7 @@
 
 #include <string.h>
 #include <stdlib.h>
-
+#include <ctype.h>
 #include <stdio.h>
 
 // Global lexer state
@@ -130,23 +130,57 @@ char *lexScanEscape(char *srcp, uint64_t *charval) {
     }
 }
 
-/** Tokenize a character */
+/** Tokenize a lifetime annotation or character literal */
 void lexScanChar(char *srcp) {
+    char *srcbeg = srcp;
     lex->tokp = srcp++;
+
+    // Assume we have a lifetime variable if it starts with a letter, not followed by close single quote
+    if (isalpha(*srcp) && *(srcp+1)!='\'') {
+        while (isalnum(*srcp))
+            ++srcp;
+        // Accept it if next char is non-single quote punctuation
+        if (*srcp != '\'' && !(*srcp & 0x80)) {
+            lex->val.ident = nametblFind(srcbeg, srcp - srcbeg);
+            lex->toktype = LifetimeToken;
+            lex->srcp = srcp;
+            return;
+        }
+        // This is not a lifetime variable. Reset to try it as a character literal
+        srcp = lex->tokp;
+    }
+
+    // Obtain a single character/unicode (possibly escaped)
     if (*srcp == '\\')
         srcp = lexScanEscape(srcp, &lex->val.uintlit);
     else
         lex->val.uintlit = *srcp++;
+
+    // If following character is end quote, return as integer literal
     if (*srcp == '\'')
+    {
         srcp++;
-    else
-        errorMsgLex(ErrorBadTok, "Only one character allowed in character literal");
-    if (*srcp == 'u') {
-        lex->langtype = (INode*)u32Type;
-        srcp++;
+        if (*srcp == 'u') {
+            lex->langtype = (INode*)u32Type;
+            srcp++;
+        }
+        else
+            lex->langtype = lex->val.uintlit >= 0x100 ? (INode*)u32Type : (INode*)u8Type;
+        lex->toktype = IntLitToken;
+        lex->srcp = srcp;
+        return;
     }
-    else
-        lex->langtype = lex->val.uintlit >= 0x100? (INode*)u32Type : (INode*)u8Type;
+
+    // Not a recognizable token. Skip forward, error and pretend we have a char literal anyway
+    while (*srcp && *srcp != '\n') {
+        if (*srcp == '\'') {
+            ++srcp;
+            break;
+        }
+        ++srcp;
+    }
+    errorMsgLex(ErrorBadTok, "Invalid lifetime or too-long character literal");
+    lex->langtype = (INode*)u8Type;
     lex->toktype = IntLitToken;
     lex->srcp = srcp;
 }
