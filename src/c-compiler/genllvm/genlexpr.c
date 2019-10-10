@@ -821,6 +821,8 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         return genlBlock(gen, (BlockNode*)termnode); break;
     case IfTag:
         return genlIf(gen, (IfNode*)termnode); break;
+    case LoopTag:
+        return genlLoop(gen, (LoopNode*)termnode); break;
     default:
         assert(0 && "Unknown node to genlExpr!");
         return NULL;

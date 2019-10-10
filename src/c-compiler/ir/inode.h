@@ -97,6 +97,7 @@ enum NodeTags {
     AndLogicTag,    // && / and
     BlockTag,       // Block (list of statements)
     IfTag,          // if .. elif .. else statement
+    LoopTag,        // Loop node
     AliasTag,       // (injected) alias count tag
     NamedValTag,    // Named value (e.g., for a struct literal)
 

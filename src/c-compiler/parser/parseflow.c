@@ -98,6 +98,14 @@ INode *parseIf(ParseState *parse) {
     return (INode *)ifnode;
 }
 
+// Parse loop block
+INode *parseLoop(ParseState *parse) {
+    LoopNode *wnode = newLoopNode();
+    lexNextToken();
+    wnode->blk = parseBlock(parse);
+    return (INode *)wnode;
+}
+
 // Parse while block
 INode *parseWhile(ParseState *parse) {
     WhileNode *wnode = newWhileNode();
@@ -190,6 +198,10 @@ INode *parseBlock(ParseState *parse) {
 
         case IfToken:
             nodesAdd(&blk->stmts, parseIf(parse));
+            break;
+
+        case LoopToken:
+            nodesAdd(&blk->stmts, parseLoop(parse));
             break;
 
         case WhileToken:

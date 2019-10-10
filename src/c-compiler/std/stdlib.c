@@ -34,6 +34,7 @@ void keywordInit() {
     keyAdd("if", IfToken);
     keyAdd("elif", ElifToken);
     keyAdd("else", ElseToken);
+    keyAdd("loop", LoopToken);
     keyAdd("while", WhileToken);
     keyAdd("each", EachToken);
     keyAdd("in", InToken);

@@ -39,6 +39,7 @@ void parseCloseTok(uint16_t closetok);
 
 // parseflow.c
 INode *parseIf(ParseState *parse);
+INode *parseLoop(ParseState *parse);
 INode *parseBlock(ParseState *parse);
 
 // parseexpr.c

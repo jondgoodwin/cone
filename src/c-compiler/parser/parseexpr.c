@@ -608,6 +608,8 @@ INode *parseAnyExpr(ParseState *parse) {
     switch (lex->toktype) {
     case IfToken:
         return parseIf(parse);
+    case LoopToken:
+        return parseLoop(parse);
     case DoToken:
         lexNextToken();
         return parseBlock(parse);

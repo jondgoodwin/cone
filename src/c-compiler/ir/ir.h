@@ -82,6 +82,7 @@ typedef struct AllocNode {
 #include "exp/fncall.h"
 #include "exp/if.h"
 #include "exp/literal.h"
+#include "exp/loop.h"
 #include "exp/namedval.h"
 #include "exp/typelit.h"
 #include "exp/logic.h"
