@@ -10,7 +10,7 @@
 
 // Loop expression node
 typedef struct LoopNode {
-    INodeHdr;
+    ITypedNodeHdr;
     INode *blk;
 } LoopNode;
 

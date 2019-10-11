@@ -62,6 +62,9 @@ PermNode *constPerm;
 PermNode *mut1Perm;
 PermNode *opaqPerm;
 
+// Built-in lifetimes
+LifetimeNode *staticLifetimeNode;
+
 // Built-in allocator types
 AllocNode *ownAlloc;
 AllocNode *rcAlloc;

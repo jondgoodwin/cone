@@ -116,6 +116,7 @@ enum NodeTags {
     UintNbrTag,     // Unsigned integer
     FloatNbrTag,    // Floating point number
     StructTag,      // Also interface, trait, actor, etc.
+    LifetimeTag,
     PermTag,
     AllocTag,
 };

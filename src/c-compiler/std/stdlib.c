@@ -132,6 +132,7 @@ void stdlibInit(int ptrsize) {
     voidType = (INode*)newVoidNode();
 
     keywordInit();
+    staticLifetimeNode = newLifetimeDclNode(nametblFind("'static", 7), 0);
     stdPermInit();
     stdAllocInit();
     stdNbrInit(ptrsize);

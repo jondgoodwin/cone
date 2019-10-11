@@ -128,6 +128,8 @@ void inodePrintNode(INode *node) {
         nbrTypePrint((NbrNode *)node); break;
     case PermTag:
         permPrint((PermNode *)node); break;
+    case LifetimeTag:
+        lifePrint((LifetimeNode *)node); break;
     case TTupleTag:
         ttuplePrint((TTupleNode *)node); break;
     case VoidTag:
