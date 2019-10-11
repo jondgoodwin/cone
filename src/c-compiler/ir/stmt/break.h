@@ -11,10 +11,12 @@
 // break/continue statement
 typedef struct BreakNode {
     INodeHdr;
+    LifetimeNode *life;  // nullable
+    INode *exp;          // nullable
     Nodes *dealias;
 } BreakNode;
 
-BreakNode *newBreakNode(int16_t tag);
+BreakNode *newBreakNode();
 
 // Name resolution for break/continue
 // - Ensure it is only used within a while/each block

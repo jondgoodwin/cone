@@ -7,17 +7,19 @@
 
 #include "../ir.h"
 
-// Create a new break/continue node
-BreakNode *newBreakNode(int16_t tag) {
+// Create a new break node
+BreakNode *newBreakNode() {
     BreakNode *node;
-    newNode(node, BreakNode, tag);
+    newNode(node, BreakNode, BreakTag);
+    node->life = NULL;
+    node->exp = NULL;
     node->dealias = NULL;
     return node;
 }
 
-// Name resolution for break/continue
-// - Ensure it is only used within a while/each block
+// Name resolution for break
+// - Ensure it is only used within a while/each/loop block
 void breakNameRes(NameResState *pstate, INode *node) {
     if (!(pstate->flags & PassWithinWhile))
-        errorMsgNode(node, ErrorNoWhile, "break/continue may only be used within a while/each block");
+        errorMsgNode(node, ErrorNoWhile, "break may only be used within a while/each/loop block");
 }

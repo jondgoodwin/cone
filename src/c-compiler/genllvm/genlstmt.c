@@ -110,7 +110,7 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
             genlDealiasNodes(gen, ((BreakNode*)*nodesp)->dealias);
             LLVMBuildBr(gen->builder, gen->loopend); break;
         case ContinueTag:
-            genlDealiasNodes(gen, ((BreakNode*)*nodesp)->dealias);
+            genlDealiasNodes(gen, ((ContinueNode*)*nodesp)->dealias);
             LLVMBuildBr(gen->builder, gen->loopbeg); break;
         case ReturnTag:
             genlReturn(gen, (ReturnNode*)*nodesp); break;

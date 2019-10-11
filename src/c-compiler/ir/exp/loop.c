@@ -12,6 +12,7 @@ LoopNode *newLoopNode() {
     LoopNode *node;
     newNode(node, LoopNode, LoopTag);
     node->blk = NULL;
+    node->life = NULL;
     return node;
 }
 
@@ -22,7 +23,7 @@ void loopPrint(LoopNode *node) {
     inodePrintNode(node->blk);
 }
 
-// while block name resolution
+// loop block name resolution
 void loopNameRes(NameResState *pstate, LoopNode *node) {
     uint16_t svflags = pstate->flags;
     pstate->flags |= PassWithinWhile;
@@ -32,7 +33,7 @@ void loopNameRes(NameResState *pstate, LoopNode *node) {
     pstate->flags = svflags;
 }
 
-// Type check the while block (conditional expression must be coercible to bool)
+// Type check the loop block (conditional expression must be coercible to bool)
 void loopTypeCheck(TypeCheckState *pstate, LoopNode *node) {
     inodeTypeCheck(pstate, &node->blk);
 }

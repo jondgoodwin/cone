@@ -12,6 +12,7 @@
 typedef struct LoopNode {
     ITypedNodeHdr;
     INode *blk;
+    LifetimeNode *life;   // nullable
 } LoopNode;
 
 LoopNode *newLoopNode();
