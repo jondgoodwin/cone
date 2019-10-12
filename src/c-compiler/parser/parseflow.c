@@ -18,6 +18,19 @@
 
 INode *parseEach(ParseState *parse, INode *blk);
 
+// This helper routine inserts 'break if !condexp' at beginning of block
+void parseInsertWhileBreak(INode *blk, INode *condexp) {
+    INode *breaknode = (INode*)newBreakNode();
+    BlockNode *ifblk = newBlockNode();
+    nodesAdd(&ifblk->stmts, breaknode);
+    LogicNode *notiter = newLogicNode(NotLogicTag);
+    notiter->lexp = condexp;
+    IfNode *ifnode = newIfNode();
+    nodesAdd(&ifnode->condblk, (INode *)notiter);
+    nodesAdd(&ifnode->condblk, (INode *)ifblk);
+    nodesInsert(&((BlockNode*)blk)->stmts, (INode*)ifnode, 0);
+}
+
 // Parse control flow suffixes
 INode *parseFlowSuffix(ParseState *parse, INode *node) {
     // Translate 'this' block sugar to declaring 'this' at start of block
@@ -38,13 +51,13 @@ INode *parseFlowSuffix(ParseState *parse, INode *node) {
             node = (INode*)ifnode;
         }
         else if (lexIsToken(WhileToken)) {
-            BlockNode *blk;
-            WhileNode *wnode = newWhileNode();
+            LoopNode *loopnode = newLoopNode();
+            BlockNode *blk = newBlockNode();
+            loopnode->blk = (INode*)blk;
             lexNextToken();
-            wnode->condexp = parseAnyExpr(parse);
-            wnode->blk = (INode*)(blk = newBlockNode());
+            parseInsertWhileBreak((INode*)blk, parseAnyExpr(parse));
             nodesAdd(&blk->stmts, node);
-            node = (INode*)wnode;
+            node = (INode*)loopnode;
         }
         else if (lexIsToken(EachToken)) {
             BlockNode *blk = newBlockNode();
@@ -108,11 +121,12 @@ INode *parseLoop(ParseState *parse) {
 
 // Parse while block
 INode *parseWhile(ParseState *parse) {
-    WhileNode *wnode = newWhileNode();
+    LoopNode *loopnode = newLoopNode();
     lexNextToken();
-    wnode->condexp = parseSimpleExpr(parse);
-    wnode->blk = parseBlock(parse);
-    return (INode *)wnode;
+    INode *condexp = parseSimpleExpr(parse);
+    INode *blk = loopnode->blk = parseBlock(parse);
+    parseInsertWhileBreak(blk, condexp);
+    return (INode *)loopnode;
 }
 
 // Parse each block
@@ -169,18 +183,7 @@ INode *parseEach(ParseState *parse, INode *innerblk) {
             INode *incr = (INode *)newFnCallOpname((INode *)newNameUseNode(elemname), isrange > 0 ? incrPostName : decrPostName, 0);
             nodesAdd(&((BlockNode*)loopnode->blk)->stmts, incr);
         }
-
-        // Build:  "break if (!iter)" and insert at beginning of innerblk
-        INode *breaknode = (INode*)newBreakNode();
-        BlockNode *ifblk = newBlockNode();
-        nodesAdd(&ifblk->stmts, breaknode);
-        LogicNode *notiter = newLogicNode(NotLogicTag);
-        notiter->lexp = iter;
-        IfNode *ifnode = newIfNode();
-        nodesAdd(&ifnode->condblk, (INode *)notiter);
-        nodesAdd(&ifnode->condblk, (INode *)ifblk);
-        nodesInsert(&((BlockNode*)innerblk)->stmts, (INode*)ifnode, 0);
-
+        parseInsertWhileBreak(innerblk, iter);
         nodesAdd(&outerblk->stmts, (INode*)loopnode);
     }
     return (INode *)outerblk;
