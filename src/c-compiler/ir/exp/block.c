@@ -122,8 +122,8 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
         case VarDclTag:
             varDclFlow(fstate, (VarDclNode**)nodesp);
             break;
-        case WhileTag:
-            whileFlow(fstate, (WhileNode **)nodesp);
+        case LoopTag:
+            loopFlow(fstate, (LoopNode **)nodesp);
             break;
         default:
             // An expression as statement throws out its value

@@ -66,7 +66,6 @@ typedef struct AllocNode {
 } AllocNode;
 
 #include "stmt/module.h"
-#include "stmt/while.h"
 #include "stmt/break.h"
 #include "stmt/continue.h"
 #include "stmt/fndcl.h"

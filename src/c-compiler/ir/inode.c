@@ -72,8 +72,6 @@ void inodePrintNode(INode *node) {
         blockPrint((BlockNode *)node); break;
     case IfTag:
         ifPrint((IfNode *)node); break;
-    case WhileTag:
-        whilePrint((WhileNode *)node); break;
     case LoopTag:
         loopPrint((LoopNode *)node); break;
     case BreakTag:
@@ -188,8 +186,6 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         blockNameRes(pstate, (BlockNode *)*node); break;
     case IfTag:
         ifNameRes(pstate, (IfNode *)*node); break;
-    case WhileTag:
-        whileNameRes(pstate, (WhileNode *)*node); break;
     case LoopTag:
         loopNameRes(pstate, (LoopNode *)*node); break;
     case BreakTag:
@@ -273,8 +269,6 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node) {
         blockTypeCheck(pstate, (BlockNode *)*node); break;
     case IfTag:
         ifTypeCheck(pstate, (IfNode *)*node); break;
-    case WhileTag:
-        whileTypeCheck(pstate, (WhileNode *)*node); break;
     case LoopTag:
         loopTypeCheck(pstate, (LoopNode *)*node); break;
     case BreakTag:
