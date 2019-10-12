@@ -100,7 +100,7 @@ typedef struct NameResState {
     uint16_t flags;         // e.g., PassWithinWhile
 } NameResState;
 
-#define PassWithinWhile 0x0001
+#define PassWithinLoop 0x0001
 
 // Context used for type check pass
 typedef struct TypeCheckState {

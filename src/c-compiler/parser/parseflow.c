@@ -116,21 +116,21 @@ INode *parseWhile(ParseState *parse) {
 }
 
 // Parse each block
-INode *parseEach(ParseState *parse, INode *blk) {
-    BlockNode *bnode = newBlockNode();
-    WhileNode *wnode = newWhileNode();
+INode *parseEach(ParseState *parse, INode *innerblk) {
+    BlockNode *outerblk = newBlockNode();   // surrounding block scope for isolating 'each' vars
+    LoopNode *loopnode = newLoopNode();
 
     // Obtain all the parsed pieces
     lexNextToken();
     if (!lexIsToken(IdentToken)) {
         errorMsgLex(ErrorNoVar, "Missing variable name");
-        return (INode *)bnode;
+        return (INode *)outerblk;
     }
     Name* elemname = lex->val.ident;
     lexNextToken();
     if (!lexIsToken(InToken)) {
         errorMsgLex(ErrorBadTok, "Missing 'in'");
-        return (INode *)bnode;
+        return (INode *)outerblk;
     }
     lexNextToken();
     INode *iter = parseSimpleExpr(parse);
@@ -147,9 +147,9 @@ INode *parseEach(ParseState *parse, INode *blk) {
         lexNextToken();
         step = parseSimpleExpr(parse);
     }
-    if (blk == NULL)
-        blk = parseBlock(parse);
-    wnode->blk = blk;
+    if (innerblk == NULL)
+        innerblk = parseBlock(parse);
+    loopnode->blk = innerblk;
 
     // Assemble logic for a range (with optional step), e.g.:
     // { mut elemname = initial; while elemname <= iterend { ... ; elemname += step}}
@@ -157,22 +157,33 @@ INode *parseEach(ParseState *parse, INode *blk) {
         FnCallNode *itercmp = (FnCallNode *)iter;
         VarDclNode *elemdcl = newVarDclNode(elemname, VarDclTag, (INode*)mutPerm);
         elemdcl->value = itercmp->objfn;
-        nodesAdd(&((BlockNode*)bnode)->stmts, (INode*)elemdcl);
+        nodesAdd(&((BlockNode*)outerblk)->stmts, (INode*)elemdcl);
         itercmp->objfn = (INode*)newNameUseNode(elemname);
         if (step) {
             FnCallNode *pluseq = newFnCallOpname((INode*)newNameUseNode(elemname), plusEqName, 1);
             pluseq->flags |= FlagLvalOp;
             nodesAdd(&pluseq->args, step);
-            nodesAdd(&((BlockNode*)wnode->blk)->stmts, (INode*)pluseq);
+            nodesAdd(&((BlockNode*)loopnode->blk)->stmts, (INode*)pluseq);
         }
         else {
             INode *incr = (INode *)newFnCallOpname((INode *)newNameUseNode(elemname), isrange > 0 ? incrPostName : decrPostName, 0);
-            nodesAdd(&((BlockNode*)wnode->blk)->stmts, incr);
+            nodesAdd(&((BlockNode*)loopnode->blk)->stmts, incr);
         }
-        wnode->condexp = iter;
-        nodesAdd(&bnode->stmts, (INode*)wnode);
+
+        // Build:  "break if (!iter)" and insert at beginning of innerblk
+        INode *breaknode = (INode*)newBreakNode();
+        BlockNode *ifblk = newBlockNode();
+        nodesAdd(&ifblk->stmts, breaknode);
+        LogicNode *notiter = newLogicNode(NotLogicTag);
+        notiter->lexp = iter;
+        IfNode *ifnode = newIfNode();
+        nodesAdd(&ifnode->condblk, (INode *)notiter);
+        nodesAdd(&ifnode->condblk, (INode *)ifblk);
+        nodesInsert(&((BlockNode*)innerblk)->stmts, (INode*)ifnode, 0);
+
+        nodesAdd(&outerblk->stmts, (INode*)loopnode);
     }
-    return (INode *)bnode;
+    return (INode *)outerblk;
 }
 
 // Parse a block of statements/expressions

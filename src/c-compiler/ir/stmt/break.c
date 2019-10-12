@@ -20,6 +20,6 @@ BreakNode *newBreakNode() {
 // Name resolution for break
 // - Ensure it is only used within a while/each/loop block
 void breakNameRes(NameResState *pstate, INode *node) {
-    if (!(pstate->flags & PassWithinWhile))
+    if (!(pstate->flags & PassWithinLoop))
         errorMsgNode(node, ErrorNoWhile, "break may only be used within a while/each/loop block");
 }

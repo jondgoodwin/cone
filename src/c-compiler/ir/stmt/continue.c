@@ -19,6 +19,6 @@ ContinueNode *newContinueNode() {
 // Name resolution for continue
 // - Ensure it is only used within a while/each/loop block
 void continueNameRes(NameResState *pstate, INode *node) {
-    if (!(pstate->flags & PassWithinWhile))
+    if (!(pstate->flags & PassWithinLoop))
         errorMsgNode(node, ErrorNoWhile, "continue may only be used within a while/each/loop block");
 }

@@ -26,7 +26,7 @@ void whilePrint(WhileNode *node) {
 // while block name resolution
 void whileNameRes(NameResState *pstate, WhileNode *node) {
     uint16_t svflags = pstate->flags;
-    pstate->flags |= PassWithinWhile;
+    pstate->flags |= PassWithinLoop;
 
     inodeNameRes(pstate, &node->condexp);
     inodeNameRes(pstate, &node->blk);

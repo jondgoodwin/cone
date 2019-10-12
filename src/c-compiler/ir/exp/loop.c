@@ -26,7 +26,7 @@ void loopPrint(LoopNode *node) {
 // loop block name resolution
 void loopNameRes(NameResState *pstate, LoopNode *node) {
     uint16_t svflags = pstate->flags;
-    pstate->flags |= PassWithinWhile;
+    pstate->flags |= PassWithinLoop;
 
     inodeNameRes(pstate, &node->blk);
 

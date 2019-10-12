@@ -8,7 +8,7 @@
 #ifndef continue_h
 #define continue_h
 
-// break/continue statement
+// continue statement
 typedef struct ContinueNode {
     INodeHdr;
     LifetimeNode *life;   // nullable
