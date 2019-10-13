@@ -16,7 +16,7 @@
 
 #include <stdio.h>
 
-INode *parseEach(ParseState *parse, INode *blk);
+INode *parseEach(ParseState *parse, INode *blk, LifetimeNode *life);
 
 // This helper routine inserts 'break if !condexp' at beginning of block
 void parseInsertWhileBreak(INode *blk, INode *condexp) {
@@ -62,7 +62,7 @@ INode *parseFlowSuffix(ParseState *parse, INode *node) {
         else if (lexIsToken(EachToken)) {
             BlockNode *blk = newBlockNode();
             nodesAdd(&blk->stmts, node);
-            node = parseEach(parse, (INode *)blk);
+            node = parseEach(parse, (INode *)blk, NULL);
         }
     }
     parseSemi();
@@ -112,16 +112,18 @@ INode *parseIf(ParseState *parse) {
 }
 
 // Parse loop block
-INode *parseLoop(ParseState *parse) {
-    LoopNode *wnode = newLoopNode();
+INode *parseLoop(ParseState *parse, LifetimeNode *life) {
+    LoopNode *loopnode = newLoopNode();
+    loopnode->life = life;
     lexNextToken();
-    wnode->blk = parseBlock(parse);
-    return (INode *)wnode;
+    loopnode->blk = parseBlock(parse);
+    return (INode *)loopnode;
 }
 
 // Parse while block
-INode *parseWhile(ParseState *parse) {
+INode *parseWhile(ParseState *parse, LifetimeNode *life) {
     LoopNode *loopnode = newLoopNode();
+    loopnode->life = life;
     lexNextToken();
     INode *condexp = parseSimpleExpr(parse);
     INode *blk = loopnode->blk = parseBlock(parse);
@@ -130,9 +132,10 @@ INode *parseWhile(ParseState *parse) {
 }
 
 // Parse each block
-INode *parseEach(ParseState *parse, INode *innerblk) {
+INode *parseEach(ParseState *parse, INode *innerblk, LifetimeNode *life) {
     BlockNode *outerblk = newBlockNode();   // surrounding block scope for isolating 'each' vars
     LoopNode *loopnode = newLoopNode();
+    loopnode->life = life;
 
     // Obtain all the parsed pieces
     lexNextToken();
@@ -189,6 +192,28 @@ INode *parseEach(ParseState *parse, INode *innerblk) {
     return (INode *)outerblk;
 }
 
+// Parse a lifetime variable, followed by colon and then a loop
+// 'stmtflag' indicates it is a statement vs. an expression (loop)
+INode *parseLifetime(ParseState *parse, int stmtflag) {
+    Lifetime *life = newLifetimeDclNode(lex->val.ident, 0);
+    lexNextToken();
+    if (lexIsToken(ColonToken))
+        lexNextToken();
+    else
+        errorMsgLex(ErrorBadTok, "Missing ':' after lifetime");
+
+    if (lexIsToken(LoopToken))
+        return parseLoop(parse, life);
+    if (stmtflag) {
+        if (lexIsToken(WhileToken))
+            return parseWhile(parse, life);
+        else if (lexIsToken(EachToken))
+            return parseEach(parse, NULL, life);
+    }
+    errorMsgLex(ErrorBadTok, "A lifetime may only be followed by a loop/while/each");
+    return NULL;
+}
+
 // Parse a block of statements/expressions
 INode *parseBlock(ParseState *parse) {
     BlockNode *blk = newBlockNode();
@@ -215,15 +240,19 @@ INode *parseBlock(ParseState *parse) {
             break;
 
         case LoopToken:
-            nodesAdd(&blk->stmts, parseLoop(parse));
+            nodesAdd(&blk->stmts, parseLoop(parse, NULL));
             break;
 
         case WhileToken:
-            nodesAdd(&blk->stmts, parseWhile(parse));
+            nodesAdd(&blk->stmts, parseWhile(parse, NULL));
             break;
 
         case EachToken:
-            nodesAdd(&blk->stmts, parseEach(parse, NULL));
+            nodesAdd(&blk->stmts, parseEach(parse, NULL, NULL));
+            break;
+
+        case LifetimeToken:
+            nodesAdd(&blk->stmts, parseLifetime(parse, 1));
             break;
 
         case BreakToken:

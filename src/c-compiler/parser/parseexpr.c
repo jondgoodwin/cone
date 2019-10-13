@@ -609,7 +609,9 @@ INode *parseAnyExpr(ParseState *parse) {
     case IfToken:
         return parseIf(parse);
     case LoopToken:
-        return parseLoop(parse);
+        return parseLoop(parse, NULL);
+    case LifetimeToken:
+        return parseLifetime(parse, 0);
     case DoToken:
         lexNextToken();
         return parseBlock(parse);

@@ -13,6 +13,7 @@ LoopNode *newLoopNode() {
     newNode(node, LoopNode, LoopTag);
     node->blk = NULL;
     node->life = NULL;
+    node->nbreaks = 0;
     return node;
 }
 

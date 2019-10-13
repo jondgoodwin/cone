@@ -13,6 +13,7 @@ typedef struct LoopNode {
     ITypedNodeHdr;
     INode *blk;
     LifetimeNode *life;   // nullable
+    int16_t nbreaks;      // Number of breaks out of this loop
 } LoopNode;
 
 LoopNode *newLoopNode();
