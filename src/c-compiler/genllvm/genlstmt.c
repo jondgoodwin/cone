@@ -35,14 +35,20 @@ LLVMBasicBlockRef genlInsertBlock(GenState *gen, char *name) {
 // Generate a loop block
 LLVMValueRef genlLoop(GenState *gen, LoopNode *wnode) {
     LLVMBasicBlockRef loopbeg, loopend;
-    LLVMBasicBlockRef svloopbeg, svloopend;
 
-    // Push and pop for break and continue statements
-    svloopbeg = gen->loopbeg;
-    svloopend = gen->loopend;
+    loopend = genlInsertBlock(gen, "loopend");
+    loopbeg = genlInsertBlock(gen, "loopbeg");
 
-    gen->loopend = loopend = genlInsertBlock(gen, "loopend");
-    gen->loopbeg = loopbeg = genlInsertBlock(gen, "loopbeg");
+    // Push loop state info on loop stack
+    if (gen->loopstackcnt >= GenLoopMax) {
+        errorMsgNode((INode*)wnode, ErrorBadArray, "Overflowing fixed-size loop stack.");
+        errorExit(100, "Unrecoverable error!");
+    }
+    GenLoopState *loopstate = &gen->loopstack[gen->loopstackcnt];
+    loopstate->loop = wnode;
+    loopstate->loopbeg = loopbeg;
+    loopstate->loopend = loopend;
+    ++gen->loopstackcnt;
 
     LLVMBuildBr(gen->builder, loopbeg);
     LLVMPositionBuilderAtEnd(gen->builder, loopbeg);
@@ -50,8 +56,7 @@ LLVMValueRef genlLoop(GenState *gen, LoopNode *wnode) {
     LLVMBuildBr(gen->builder, loopbeg);
     LLVMPositionBuilderAtEnd(gen->builder, loopend);
 
-    gen->loopbeg = svloopbeg;
-    gen->loopend = svloopend;
+    --gen->loopstackcnt;
     return NULL;
 }
 
@@ -72,6 +77,18 @@ void genlReturn(GenState *gen, ReturnNode *node) {
 void genlBlockRet(GenState *gen, ReturnNode *node) {
 }
 
+// Find the loop state in loop stack whose lifetime matches
+GenLoopState *genFindLoopState(GenState *gen, INode *life) {
+    uint32_t cnt = gen->loopstackcnt;
+    if (!life)
+        return &gen->loopstack[cnt - 1]; // use most recent, when no lifetime
+    LifetimeNode *lifeDclNode = (LifetimeNode *)((NameUseNode *)life)->dclnode;
+    while (cnt--) {
+        if (gen->loopstack[cnt].loop->life == lifeDclNode)
+            return &gen->loopstack[cnt];
+    }
+}
+
 // Generate a block's statements
 LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
     INode **nodesp;
@@ -81,10 +98,10 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
         switch ((*nodesp)->tag) {
         case BreakTag:
             genlDealiasNodes(gen, ((BreakNode*)*nodesp)->dealias);
-            LLVMBuildBr(gen->builder, gen->loopend); break;
+            LLVMBuildBr(gen->builder, genFindLoopState(gen, ((BreakNode*)*nodesp)->life)->loopend); break;
         case ContinueTag:
             genlDealiasNodes(gen, ((ContinueNode*)*nodesp)->dealias);
-            LLVMBuildBr(gen->builder, gen->loopbeg); break;
+            LLVMBuildBr(gen->builder, genFindLoopState(gen, ((BreakNode*)*nodesp)->life)->loopbeg); break;
         case ReturnTag:
             genlReturn(gen, (ReturnNode*)*nodesp); break;
         case BlockRetTag:

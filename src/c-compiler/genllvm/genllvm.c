@@ -361,6 +361,8 @@ void genSetup(GenState *gen, ConeOptions *opt) {
 
     gen->context = LLVMGetGlobalContext(); // LLVM inlining bugs prevent use of LLVMContextCreate();
     gen->fn = NULL;
+    gen->loopstack = memAllocBlk(sizeof(GenLoopState)*GenLoopMax);
+    gen->loopstackcnt = 0;
 }
 
 void genClose(GenState *gen) {
