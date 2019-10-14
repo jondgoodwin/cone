@@ -11,7 +11,7 @@
 // continue statement
 typedef struct ContinueNode {
     INodeHdr;
-    LifetimeNode *life;   // nullable
+    INode *life;       // nullable
     Nodes *dealias;
 } ContinueNode;
 

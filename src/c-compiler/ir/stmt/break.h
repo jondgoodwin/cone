@@ -11,7 +11,7 @@
 // break/continue statement
 typedef struct BreakNode {
     INodeHdr;
-    LifetimeNode *life;  // nullable
+    INode *life;         // nullable
     INode *exp;          // nullable
     Nodes *dealias;
 } BreakNode;

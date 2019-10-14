@@ -195,7 +195,7 @@ INode *parseEach(ParseState *parse, INode *innerblk, LifetimeNode *life) {
 // Parse a lifetime variable, followed by colon and then a loop
 // 'stmtflag' indicates it is a statement vs. an expression (loop)
 INode *parseLifetime(ParseState *parse, int stmtflag) {
-    Lifetime *life = newLifetimeDclNode(lex->val.ident, 0);
+    LifetimeNode *life = newLifetimeDclNode(lex->val.ident, 0);
     lexNextToken();
     if (lexIsToken(ColonToken))
         lexNextToken();
@@ -257,17 +257,29 @@ INode *parseBlock(ParseState *parse) {
 
         case BreakToken:
         {
-            INode *node = (INode*)newBreakNode();
+            BreakNode *node = newBreakNode();
             lexNextToken();
-            nodesAdd(&blk->stmts, parseFlowSuffix(parse, node));
+            if (lexIsToken(LifetimeToken)) {
+                node->life = (INode*)newNameUseNode(lex->val.ident);
+                lexNextToken();
+            }
+            if (!(lexIsToken(SemiToken) || lexIsToken(IfToken))) {
+                node->exp = parseAnyExpr(parse);
+                lexNextToken();
+            }
+            nodesAdd(&blk->stmts, parseFlowSuffix(parse, (INode*)node));
             break;
         }
 
         case ContinueToken:
         {
-            INode *node = (INode*)newContinueNode();
+            ContinueNode *node = newContinueNode();
             lexNextToken();
-            nodesAdd(&blk->stmts, parseFlowSuffix(parse, node));
+            if (lexIsToken(LifetimeToken)) {
+                node->life = (INode*)newNameUseNode(lex->val.ident);
+                lexNextToken();
+            }
+            nodesAdd(&blk->stmts, parseFlowSuffix(parse, (INode*)node));
             break;
         }
 

@@ -41,6 +41,7 @@ void parseCloseTok(uint16_t closetok);
 INode *parseIf(ParseState *parse);
 INode *parseLoop(ParseState *parse, LifetimeNode *life);
 INode *parseBlock(ParseState *parse);
+INode *parseLifetime(ParseState *parse, int stmtflag);
 
 // parseexpr.c
 INode *parseSimpleExpr(ParseState *parse);
