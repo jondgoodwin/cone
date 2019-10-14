@@ -19,7 +19,12 @@ BreakNode *newBreakNode() {
 
 // Name resolution for break
 // - Ensure it is only used within a while/each/loop block
-void breakNameRes(NameResState *pstate, INode *node) {
+// - Resolve any lifetime or exp names
+void breakNameRes(NameResState *pstate, BreakNode *node) {
     if (!(pstate->flags & PassWithinLoop))
-        errorMsgNode(node, ErrorNoWhile, "break may only be used within a while/each/loop block");
+        errorMsgNode((INode*)node, ErrorNoWhile, "break may only be used within a while/each/loop block");
+    if (node->life)
+        inodeNameRes(pstate, &node->life);
+    if (node->exp)
+        inodeNameRes(pstate, &node->exp);
 }

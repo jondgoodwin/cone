@@ -18,7 +18,6 @@ typedef struct ContinueNode {
 ContinueNode *newContinueNode();
 
 // Name resolution for continue
-// - Ensure it is only used within a while/each/loop block
-void continueNameRes(NameResState *pstate, INode *node);
+void continueNameRes(NameResState *pstate, ContinueNode *node);
 
 #endif

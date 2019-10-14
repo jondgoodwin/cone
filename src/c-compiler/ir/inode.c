@@ -189,9 +189,9 @@ void inodeNameRes(NameResState *pstate, INode **node) {
     case LoopTag:
         loopNameRes(pstate, (LoopNode *)*node); break;
     case BreakTag:
-        breakNameRes(pstate, *node); break;
+        breakNameRes(pstate, (BreakNode *)*node); break;
     case ContinueTag:
-        continueNameRes(pstate, *node); break;
+        continueNameRes(pstate, (ContinueNode *)*node); break;
     case ReturnTag:
         returnNameRes(pstate, (ReturnNode *)*node); break;
     case AssignTag:

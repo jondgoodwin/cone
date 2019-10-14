@@ -18,8 +18,7 @@ typedef struct BreakNode {
 
 BreakNode *newBreakNode();
 
-// Name resolution for break/continue
-// - Ensure it is only used within a while/each block
-void breakNameRes(NameResState *pstate, INode *node);
+// Name resolution for break
+void breakNameRes(NameResState *pstate, BreakNode *node);
 
 #endif

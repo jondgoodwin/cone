@@ -29,6 +29,19 @@ void loopNameRes(NameResState *pstate, LoopNode *node) {
     uint16_t svflags = pstate->flags;
     pstate->flags |= PassWithinLoop;
 
+    // If loop declares a lifetime declaration, hook into name table for name res
+    LifetimeNode *lifenode = node->life;
+    if (pstate->scope > 1 && lifenode) {
+        if (lifenode->namesym->node) {
+            errorMsgNode((INode *)lifenode, ErrorDupName, "Lifetime is already defined. Only one allowed.");
+            errorMsgNode((INode*)lifenode->namesym->node, ErrorDupName, "This is the conflicting definition for that name.");
+        }
+        else {
+            lifenode->life = pstate->scope;
+            // Add name to global name table (containing block will unhook it later)
+            nametblHookNode((INamedNode*)lifenode);
+        }
+    }
     inodeNameRes(pstate, &node->blk);
 
     pstate->flags = svflags;
