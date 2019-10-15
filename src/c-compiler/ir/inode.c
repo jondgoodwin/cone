@@ -272,9 +272,9 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node) {
     case LoopTag:
         loopTypeCheck(pstate, (LoopNode *)*node); break;
     case BreakTag:
-        break;
+        breakTypeCheck(pstate, (BreakNode *)*node); break;
     case ContinueTag:
-        break;
+        continueTypeCheck(pstate, (ContinueNode *)*node); break;
     case ReturnTag:
         returnTypeCheck(pstate, (ReturnNode *)*node); break;
     case AssignTag:

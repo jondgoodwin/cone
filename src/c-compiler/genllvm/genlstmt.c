@@ -33,7 +33,7 @@ LLVMBasicBlockRef genlInsertBlock(GenState *gen, char *name) {
 }
 
 // Generate a loop block
-LLVMValueRef genlLoop(GenState *gen, LoopNode *wnode) {
+LLVMValueRef genlLoop(GenState *gen, LoopNode *loopnode) {
     LLVMBasicBlockRef loopbeg, loopend;
 
     loopend = genlInsertBlock(gen, "loopend");
@@ -41,18 +41,18 @@ LLVMValueRef genlLoop(GenState *gen, LoopNode *wnode) {
 
     // Push loop state info on loop stack
     if (gen->loopstackcnt >= GenLoopMax) {
-        errorMsgNode((INode*)wnode, ErrorBadArray, "Overflowing fixed-size loop stack.");
+        errorMsgNode((INode*)loopnode, ErrorBadArray, "Overflowing fixed-size loop stack.");
         errorExit(100, "Unrecoverable error!");
     }
     GenLoopState *loopstate = &gen->loopstack[gen->loopstackcnt];
-    loopstate->loop = wnode;
+    loopstate->loop = loopnode;
     loopstate->loopbeg = loopbeg;
     loopstate->loopend = loopend;
     ++gen->loopstackcnt;
 
     LLVMBuildBr(gen->builder, loopbeg);
     LLVMPositionBuilderAtEnd(gen->builder, loopbeg);
-    genlBlock(gen, (BlockNode*)wnode->blk);
+    genlBlock(gen, (BlockNode*)loopnode->blk);
     LLVMBuildBr(gen->builder, loopbeg);
     LLVMPositionBuilderAtEnd(gen->builder, loopend);
 
@@ -87,6 +87,7 @@ GenLoopState *genFindLoopState(GenState *gen, INode *life) {
         if (gen->loopstack[cnt].loop->life == lifeDclNode)
             return &gen->loopstack[cnt];
     }
+    return NULL;  // Should never get here
 }
 
 // Generate a block's statements

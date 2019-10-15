@@ -263,10 +263,8 @@ INode *parseBlock(ParseState *parse) {
                 node->life = (INode*)newNameUseNode(lex->val.ident);
                 lexNextToken();
             }
-            if (!(lexIsToken(SemiToken) || lexIsToken(IfToken))) {
+            if (!(lexIsToken(SemiToken) || lexIsToken(IfToken)))
                 node->exp = parseAnyExpr(parse);
-                lexNextToken();
-            }
             nodesAdd(&blk->stmts, parseFlowSuffix(parse, (INode*)node));
             break;
         }

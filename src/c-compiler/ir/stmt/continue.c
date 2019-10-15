@@ -17,11 +17,17 @@ ContinueNode *newContinueNode() {
 }
 
 // Name resolution for continue
-// - Ensure it is only used within a while/each/loop block
 // - Resolve any lifetime name
 void continueNameRes(NameResState *pstate, ContinueNode *node) {
-    if (!(pstate->flags & PassWithinLoop))
-        errorMsgNode((INode*)node, ErrorNoWhile, "continue may only be used within a while/each/loop block");
     if (node->life)
         inodeNameRes(pstate, &node->life);
+}
+
+// Type check the continue expression, ensuring it lies within a loop
+void continueTypeCheck(TypeCheckState *pstate, ContinueNode *node) {
+    if (pstate->loopcnt == 0)
+        errorMsgNode((INode*)node, ErrorNoLoop, "continue may only be used within a while/each/loop block");
+    LoopNode *loopnode = breakFindLoopNode(pstate, node->life);
+    if (!loopnode)
+        errorMsgNode((INode*)node, ErrorNoLoop, "continue's lifetime does not match a current loop");
 }

@@ -99,11 +99,13 @@ typedef struct NameResState {
     uint16_t flags;         // e.g., PassWithinWhile
 } NameResState;
 
-#define PassWithinLoop 0x0001
+#define TypeCheckLoopMax 256
 
 // Context used for type check pass
 typedef struct TypeCheckState {
     FnSigNode *fnsig;        // The type signature of the function we are within
+    LoopNode **loopstack;     // Stack of active loops
+    uint32_t loopcnt;        // How many currently in the loop stack
 } TypeCheckState;
 
 #endif

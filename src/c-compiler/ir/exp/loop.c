@@ -26,9 +26,6 @@ void loopPrint(LoopNode *node) {
 
 // loop block name resolution
 void loopNameRes(NameResState *pstate, LoopNode *node) {
-    uint16_t svflags = pstate->flags;
-    pstate->flags |= PassWithinLoop;
-
     // If loop declares a lifetime declaration, hook into name table for name res
     LifetimeNode *lifenode = node->life;
     if (pstate->scope > 1 && lifenode) {
@@ -43,13 +40,23 @@ void loopNameRes(NameResState *pstate, LoopNode *node) {
         }
     }
     inodeNameRes(pstate, &node->blk);
-
-    pstate->flags = svflags;
 }
 
-// Type check the loop block (conditional expression must be coercible to bool)
+// Type check the loop block, and set up for type check of breaks
 void loopTypeCheck(TypeCheckState *pstate, LoopNode *node) {
+
+    // Push loop node on loop stack for use by break type check
+    if (pstate->loopcnt >= TypeCheckLoopMax) {
+        errorMsgNode((INode*)node, ErrorBadArray, "Overflowing fixed-size loop stack.");
+        errorExit(100, "Unrecoverable error!");
+    }
+    pstate->loopstack[pstate->loopcnt++] = node;
+
     inodeTypeCheck(pstate, &node->blk);
+
+    if (node->nbreaks == 0)
+        errorMsgNode((INode*)node, WarnLoop, "Loop may never stop without a break.");
+    --pstate->loopcnt;
 }
 
 // Perform data flow analysis on a loop expression

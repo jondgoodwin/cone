@@ -19,5 +19,6 @@ ContinueNode *newContinueNode();
 
 // Name resolution for continue
 void continueNameRes(NameResState *pstate, ContinueNode *node);
+void continueTypeCheck(TypeCheckState *pstate, ContinueNode *node);
 
 #endif

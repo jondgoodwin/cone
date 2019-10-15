@@ -50,7 +50,7 @@ enum ErrorCode {
     ErrorRetNotLast, // Return was found not at the end of the block
     ErrorNoRet,        // Return value expected but not given
     ErrorNoElse,    // Missing 'else' branch
-    ErrorNoWhile,    // 'break' or 'continue' allowed only in while/each loop
+    ErrorNoLoop,    // 'break' or 'continue' allowed only in while/each loop
     ErrorNoVtype,    // Missing value type
     ErrorNotPtr,    // Not a pointer
     ErrorNotLval,    // Not an lval
@@ -76,6 +76,7 @@ enum ErrorCode {
     WarnName,        // Unnecessary name
     WarnIndent,        // Inconsistent indent character
     WarnCopy,       // Unsafe attempt to copy a CopyMethod or CopyMove typed value
+    WarnLoop,       // Infinite loop with no break
 };
 
 int errors;

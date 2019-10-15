@@ -36,6 +36,8 @@ void doAnalysis(ModuleNode **mod) {
     // Note: Some nodes may be lowered, injected or replaced
     TypeCheckState tstate;
     tstate.fnsig = NULL;
+    tstate.loopcnt = 0;
+    tstate.loopstack = memAllocBlk(sizeof(LoopNode*) * TypeCheckLoopMax);
     inodeTypeCheck(&tstate, (INode**)mod);
 }
 

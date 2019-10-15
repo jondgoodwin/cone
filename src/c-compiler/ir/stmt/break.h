@@ -20,5 +20,9 @@ BreakNode *newBreakNode();
 
 // Name resolution for break
 void breakNameRes(NameResState *pstate, BreakNode *node);
+void breakTypeCheck(TypeCheckState *pstate, BreakNode *node);
+
+typedef struct LoopNode LoopNode;
+LoopNode *breakFindLoopNode(TypeCheckState *pstate, INode *life);
 
 #endif
