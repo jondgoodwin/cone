@@ -39,7 +39,7 @@ LLVMValueRef genlLoop(GenState *gen, LoopNode *loopnode) {
     loopend = genlInsertBlock(gen, "loopend");
     loopbeg = genlInsertBlock(gen, "loopbeg");
 
-    // Push loop state info on loop stack
+    // Push loop state info on loop stack for break & continue to use
     if (gen->loopstackcnt >= GenLoopMax) {
         errorMsgNode((INode*)loopnode, ErrorBadArray, "Overflowing fixed-size loop stack.");
         errorExit(100, "Unrecoverable error!");
@@ -48,6 +48,11 @@ LLVMValueRef genlLoop(GenState *gen, LoopNode *loopnode) {
     loopstate->loop = loopnode;
     loopstate->loopbeg = loopbeg;
     loopstate->loopend = loopend;
+    if (loopnode->vtype != voidType) {
+        loopstate->loopPhis = (LLVMValueRef*)memAllocBlk(sizeof(LLVMValueRef) * loopnode->nbreaks);
+        loopstate->loopBlks = (LLVMBasicBlockRef*)memAllocBlk(sizeof(LLVMBasicBlockRef) * loopnode->nbreaks);
+        loopstate->loopPhiCnt = 0;
+    }
     ++gen->loopstackcnt;
 
     LLVMBuildBr(gen->builder, loopbeg);
@@ -57,6 +62,11 @@ LLVMValueRef genlLoop(GenState *gen, LoopNode *loopnode) {
     LLVMPositionBuilderAtEnd(gen->builder, loopend);
 
     --gen->loopstackcnt;
+    if (loopnode->vtype != voidType) {
+        LLVMValueRef phi = LLVMBuildPhi(gen->builder, genlType(gen, loopnode->vtype), "loopval");
+        LLVMAddIncoming(phi, loopstate->loopPhis, loopstate->loopBlks, loopstate->loopPhiCnt);
+        return phi;
+    }
     return NULL;
 }
 
@@ -97,9 +107,17 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
     LLVMValueRef lastval = NULL; // Should never be used by caller
     for (nodesFor(blk->stmts, cnt, nodesp)) {
         switch ((*nodesp)->tag) {
-        case BreakTag:
-            genlDealiasNodes(gen, ((BreakNode*)*nodesp)->dealias);
-            LLVMBuildBr(gen->builder, genFindLoopState(gen, ((BreakNode*)*nodesp)->life)->loopend); break;
+        case BreakTag: {
+            BreakNode *brknode = (BreakNode*)*nodesp;
+            GenLoopState *loopstate = genFindLoopState(gen, brknode->life);
+            genlDealiasNodes(gen, brknode->dealias);
+            if (brknode->exp) {
+                loopstate->loopPhis[loopstate->loopPhiCnt] = genlExpr(gen, brknode->exp);
+                loopstate->loopBlks[loopstate->loopPhiCnt++] = LLVMGetInsertBlock(gen->builder);
+            }
+            LLVMBuildBr(gen->builder, loopstate->loopend);
+            break;
+        }
         case ContinueTag:
             genlDealiasNodes(gen, ((ContinueNode*)*nodesp)->dealias);
             LLVMBuildBr(gen->builder, genFindLoopState(gen, ((BreakNode*)*nodesp)->life)->loopbeg); break;

@@ -21,6 +21,9 @@ typedef struct {
     LoopNode *loop;
     LLVMBasicBlockRef loopbeg;
     LLVMBasicBlockRef loopend;
+    LLVMValueRef *loopPhis;
+    LLVMBasicBlockRef *loopBlks;
+    uint32_t loopPhiCnt;
 } GenLoopState;
 
 typedef struct GenState {
@@ -30,6 +33,7 @@ typedef struct GenState {
     LLVMModuleRef module;
     LLVMValueRef fn;
     LLVMBuilderRef builder;
+    LLVMBasicBlockRef block;
 
     LLVMDIBuilderRef dibuilder;
     LLVMMetadataRef compileUnit;
