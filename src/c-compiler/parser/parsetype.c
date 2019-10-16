@@ -124,7 +124,7 @@ INode *parseStruct(ParseState *parse) {
                     }
                 }
             }
-            if (lexIsToken(FnToken)) {
+            else if (lexIsToken(FnToken)) {
                 FnDclNode *fn = (FnDclNode*)parseFn(parse, FlagMethProp, ParseMayName | ParseMayImpl);
                 if (fn && isNamedNode(fn))
                     imethnodesAddFn(&strnode->methprops, fn);
@@ -137,9 +137,7 @@ INode *parseStruct(ParseState *parse) {
                 imethnodesAddProp(&strnode->methprops, property);
                 if (property->namesym->namestr == '_' && !property->value)
                     strnode->flags |= FlagStructPrivate; // has a private property without a default value
-                if (!lexIsToken(SemiToken))
-                    break;
-                lexNextToken();
+                parseEndOfStatement();
             }
             else
                 break;

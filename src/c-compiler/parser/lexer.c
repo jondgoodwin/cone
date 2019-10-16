@@ -57,6 +57,7 @@ void lexInject(char *url, char *src) {
     lex->flags = 0;
     lex->nbrcurly = 0;
     lex->nbrtoks = 0;
+    lex->newline = 0;
     lex->indentch = '\0';
     lex->inject = 0;
     lex->curindent = 0;
@@ -488,6 +489,12 @@ int lexInjectToken() {
     return 0;
 }
 
+// End of statement is either a semicolon or new line before current token
+int lexIsEndOfStatement() {
+    return lex->toktype == SemiToken || lex->toktype == RCurlyToken 
+        || lex->toktype == EofToken || lex->newline;
+}
+
 // Decode next token from the source into new lex->token
 void lexNextTokenx() {
     // Inject tokens, if needed based on current line's indentation
@@ -496,6 +503,7 @@ void lexNextTokenx() {
 
     char *srcp;
     srcp = lex->srcp;
+    lex->newline = (lex->nbrtoks==0);
     lex->nbrtoks++;
     while (1) {
         switch (*srcp) {
@@ -775,8 +783,9 @@ void lexNextTokenx() {
                         break;
                 }
                 // If line continuation, skip over and don't inject
-                if (*srcp == '\\')
+                if (*srcp == '\\') {
                     ++srcp;
+                }
                 // For non-blank, non-comment line in off-side mode, inject token if needed
                 else if (*srcp != '\n' && !(*srcp == '/' && *(srcp + 1) == '/')) {
                     lex->inject = 1;

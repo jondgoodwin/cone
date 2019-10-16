@@ -30,7 +30,7 @@ enum ParseFlags {
 ModuleNode *parsePgm(ConeOptions *opt);
 ModuleNode *parseModuleBlk(ParseState *parse, ModuleNode *mod);
 INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags);
-void parseSemi();
+void parseEndOfStatement();
 void parseRCurly();
 void parseLCurly();
 

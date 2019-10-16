@@ -53,6 +53,7 @@ typedef struct Lexer {
     int16_t indentlvl;    // Current index in indents[]
     char indentch;        // Are we using spaces or tabs?
     char inject;        // non-zero if we need to inject tokens
+    char newline;       // non-zero if \n detected before current unconsumed token
 } Lexer;
 
 // All the possible types for a token
@@ -154,5 +155,6 @@ void lexInjectFile(char *url);
 void lexInject(char *url, char *src);
 void lexPop();
 void lexNextToken();
+int lexIsEndOfStatement();
 
 #endif

@@ -65,7 +65,7 @@ INode *parseFlowSuffix(ParseState *parse, INode *node) {
             node = parseEach(parse, (INode *)blk, NULL);
         }
     }
-    parseSemi();
+    parseEndOfStatement();
     return node;
 }
 
@@ -78,7 +78,7 @@ INode *parseExpStmt(ParseState *parse) {
 INode *parseReturn(ParseState *parse) {
     ReturnNode *stmtnode = newReturnNode();
     lexNextToken(); // Skip past 'return'
-    if (!lexIsToken(SemiToken))
+    if (!lexIsEndOfStatement())
         stmtnode->exp = parseAnyExpr(parse);
     return parseFlowSuffix(parse, (INode*)stmtnode);
 }
@@ -263,7 +263,7 @@ INode *parseBlock(ParseState *parse) {
                 node->life = (INode*)newNameUseNode(lex->val.ident);
                 lexNextToken();
             }
-            if (!(lexIsToken(SemiToken) || lexIsToken(IfToken)))
+            if (!(lexIsEndOfStatement() || lexIsToken(IfToken)))
                 node->exp = parseAnyExpr(parse);
             nodesAdd(&blk->stmts, parseFlowSuffix(parse, (INode*)node));
             break;
@@ -293,7 +293,7 @@ INode *parseBlock(ParseState *parse) {
         // A local variable declaration, if it begins with a permission
         case PermToken:
             nodesAdd(&blk->stmts, (INode*)parseVarDcl(parse, immPerm, ParseMayConst|ParseMaySig|ParseMayImpl));
-            parseSemi();
+            parseEndOfStatement();
             break;
 
         default:

@@ -21,18 +21,19 @@
 
 // Skip to next statement
 void parseSkipToNextStmt() {
-    while (!lexIsToken(SemiToken)) {
+    while (!lexIsEndOfStatement()) {
         if (lexIsToken(EofToken) || lexIsToken(RCurlyToken))
             return;
         lexNextToken();
     }
-    lexNextToken();
+    if (lexIsToken(SemiToken))
+        lexNextToken();
 }
 
 // We expect semicolon since statement has run its course
-void parseSemi() {
-    if (!lexIsToken(SemiToken))
-        errorMsgLex(ErrorNoSemi, "Expected semicolon - skipping forward to find it");
+void parseEndOfStatement() {
+    if (!lexIsEndOfStatement())
+        errorMsgLex(ErrorNoSemi, "Expected semicolon or end of line - skipping forward to find it");
     parseSkipToNextStmt();
 }
 
@@ -40,7 +41,7 @@ void parseSemi() {
 void parseRCurly() {
     if (!lexIsToken(RCurlyToken))
         errorMsgLex(ErrorNoRCurly, "Expected closing brace '}' - skipping forward to find it");
-    while (! lexIsToken(RCurlyToken) && ! lexIsToken(SemiToken)) {
+    while (! lexIsToken(RCurlyToken)) {
         if (lexIsToken(EofToken))
             return;
         lexNextToken();
@@ -104,7 +105,7 @@ INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags) {
     else {
         if (!(mayflags&ParseMaySig))
             errorMsgLex(ErrorNoImpl, "Function must be implemented.");
-        parseSemi();
+        parseEndOfStatement();
     }
 
     return (INode*) fnnode;
@@ -136,7 +137,7 @@ void parseInclude(ParseState *parse) {
     char *filename;
     lexNextToken();
     filename = parseFile();
-    parseSemi();
+    parseEndOfStatement();
 
     lexInjectFile(filename);
     parseGlobalStmts(parse, parse->mod);
@@ -158,7 +159,7 @@ INode *parseFnOrVar(ParseState *parse, uint16_t flags) {
     // A global variable declaration, if it begins with a permission
     else if lexIsToken(PermToken) {
         node = (INode*)parseVarDcl(parse, immPerm, ParseMayConst | ((flags&FlagExtern) ? ParseMaySig : ParseMayImpl | ParseMaySig));
-        parseSemi();
+        parseEndOfStatement();
     }
     else {
         errorMsgLex(ErrorBadGloStmt, "Expected function or variable declaration");
@@ -267,7 +268,7 @@ ModuleNode *parseModule(ParseState *parse) {
         parseRCurly();
     }
     else {
-        parseSemi();
+        parseEndOfStatement();
         lexInjectFile(filename);
         parseModuleBlk(parse, mod);
         lexPop();
