@@ -102,6 +102,14 @@ void modNameRes(NameResState *pstate, ModuleNode *mod) {
     modHook(mod, (ModuleNode*)mod->owner);
 }
 
+// Check all type declarations in the module
+void modTypePass(TypePass *pstate, ModuleNode *mod) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(mod->nodes, cnt, nodesp))
+        typePass(pstate, *nodesp);
+}
+
 // Type check the module node
 void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod) {
 

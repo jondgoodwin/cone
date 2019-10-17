@@ -42,6 +42,7 @@ typedef struct TypeCheckState TypeCheckState;
 #include "inamed.h"
 #include "itype.h"
 #include "imethod.h"
+#include "typepass.h"
 #include "flow.h"
 
 // These includes are needed by all node handling

@@ -31,6 +31,7 @@ void structPrint(StructNode *node);
 
 // Name resolution of a struct type
 void structNameRes(NameResState *pstate, StructNode *node);
+void structTypePass(TypePass *pstate, StructNode *node);
 
 // Type check a struct type
 void structTypeCheck(TypeCheckState *pstate, StructNode *name);

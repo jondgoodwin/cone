@@ -32,6 +32,11 @@ void doAnalysis(ModuleNode **mod) {
     if (errors)
         return;
 
+    // Pass over all type declarations
+    doTypePass(*mod);
+    if (errors)
+        return;
+
     // Apply syntactic sugar, and perform type inference/check
     // Note: Some nodes may be lowered, injected or replaced
     TypeCheckState tstate;
