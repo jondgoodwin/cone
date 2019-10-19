@@ -1,4 +1,4 @@
-# Cone - 0.1.0 -> 0.2.0 Project Plan (as of January 1, 2019)
+# Cone - Next Steps (as of October 20, 2019)
 
 ## Current Capability
 
@@ -13,13 +13,18 @@ However, it does support methods, namespaces, tuples, permissions, and forward r
 The [Cone Playground](http://cone.jondgoodwin.com/play/index.html)
 examples demonstrate some of the language's currently supported features.
 
-## Current Focus: Add more core features
+The language documentation is quite robust, describing both current and planned features.
+Headers on documentation pages highlight what is not yet implemented.
 
-In order to support more complex 3D programs, additionally basic language features are being added next:
+## Current Focus: Enrich type system with inheritance, variants and generics
 
-- each blocks
-- initializer and finalizer methods
-- builder blocks
+- Refactor the IR design for named node handling, and eliminate INamedNode
+- Enrich common info for all type dcl nodes and lower/verify during Type pass
+- Implement type inheritance
+- Implement traits, including fixed-size and enum field
+- Handle upcasting and (pattern-matched) downcasting
+- Implement virtual references
+- Add generics
 
 ## Feature Status
 
