@@ -36,7 +36,7 @@ void loopNameRes(NameResState *pstate, LoopNode *node) {
         else {
             lifenode->life = pstate->scope;
             // Add name to global name table (containing block will unhook it later)
-            nametblHookNode((INamedNode*)lifenode);
+            nametblHookNode(lifenode->namesym, (INode*)lifenode);
         }
     }
     inodeNameRes(pstate, &node->blk);

@@ -55,7 +55,7 @@ void fnDclNameRes(NameResState *pstate, FnDclNode *name) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(fnsig->parms, cnt, nodesp))
-        nametblHookNode((INamedNode *)*nodesp);
+        nametblHookNode(((VarDclNode *)*nodesp)->namesym, *nodesp);
 
     inodeNameRes(pstate, &name->value);
 

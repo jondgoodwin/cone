@@ -39,7 +39,7 @@ void modAddNode(ModuleNode *mod, INode *node) {
 
         // Hook into global name table (and add to namednodes), if not already there
         if (!name->node) {
-            nametblHookNode(nnode);
+            nametblHookNode(nnode->namesym, (INode*)nnode);
             // Remember public names
             if (name->namestr != '_')
                 namespaceSet(&mod->namednodes, name, nnode);
@@ -80,7 +80,7 @@ void modHook(ModuleNode *oldmod, ModuleNode *newmod) {
         nametblHookPush();
         for (nodesFor(newmod->nodes, cnt, nodesp)) {
             if (isNamedNode(*nodesp))
-                nametblHookNode((INamedNode *)*nodesp);
+                nametblHookNode(((INamedNode *)*nodesp)->namesym, *nodesp);
         }
     }
 }

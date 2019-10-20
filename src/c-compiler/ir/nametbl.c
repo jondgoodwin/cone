@@ -170,7 +170,7 @@ void nametblInit() {
 
 // An entry for preserving the node that was in global name table for the name
 typedef struct {
-    INamedNode *node;       // The previous node to restore on pop
+    INode *node;         // The previous node to restore on pop
     Name *name;          // The name the node was indexed as
 } HookTableEntry;
 
@@ -230,26 +230,15 @@ void nametblHookGrow() {
     memcpy(tablemeta->hooktbl, oldtable, oldsize * sizeof(HookTableEntry));
 }
 
-// Hook the named node in the current hooktable
-void nametblHookNode(INamedNode *node) {
+// Hook a name + node in the current hooktable
+void nametblHookNode(Name *name, INode *node) {
     HookTable *tablemeta = &gHookTables[gHookTablePos];
     if (tablemeta->size + 1 >= tablemeta->alloc)
         nametblHookGrow();
     HookTableEntry *entry = &tablemeta->hooktbl[tablemeta->size++];
-    entry->node = node->namesym->node; // Save previous node
-    entry->name = node->namesym;
-    node->namesym->node = node; // Plug in new node
-}
-
-// Hook the named node using an alias into the current hooktable
-void nametblHookAlias(Name *name, INamedNode *node) {
-    HookTable *tablemeta = &gHookTables[gHookTablePos];
-    if (tablemeta->size + 1 >= tablemeta->alloc)
-        nametblHookGrow();
-    HookTableEntry *entry = &tablemeta->hooktbl[tablemeta->size++];
-    entry->node = node->namesym->node; // Save previous node
+    entry->node = (INode*)name->node; // Save previous node
     entry->name = name;
-    node->namesym->node = node; // Plug in new node
+    name->node = (INamedNode*)node; // Plug in new node
 }
 
 // Unhook all names in current hooktable, then revert to the prior hooktable
@@ -258,7 +247,7 @@ void nametblHookPop() {
     HookTableEntry *entry = tablemeta->hooktbl;
     int cnt = tablemeta->size;
     while (cnt--) {
-        entry->name->node = entry->node;
+        entry->name->node = (INamedNode*)entry->node;
         ++entry;
     }
     --gHookTablePos;

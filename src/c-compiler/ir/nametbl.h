@@ -43,8 +43,7 @@ size_t nametblUnused();
 // When the context ends, its names are unhooked, revealing the ones there before.
 void nametblHookPush();
 void nametblHookGrow();
-void nametblHookNode(INamedNode *node);
-void nametblHookAlias(Name *name, INamedNode *node);
+void nametblHookNode(Name *name, INode *node);
 void nametblHookPop();
 
 #endif

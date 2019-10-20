@@ -71,7 +71,7 @@ void varDclNameRes(NameResState *pstate, VarDclNode *name) {
         else {
             name->scope = pstate->scope;
             // Add name to global name table (containing block will unhook it later)
-            nametblHookNode((INamedNode*)name);
+            nametblHookNode(name->namesym, (INode*)name);
         }
     }
 

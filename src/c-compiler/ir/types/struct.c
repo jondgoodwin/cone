@@ -34,7 +34,7 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     uint32_t cnt;
     for (imethnodesFor(&node->methprops, cnt, nodesp)) {
         if (isNamedNode(*nodesp))
-            nametblHookNode((INamedNode*)*nodesp);
+            nametblHookNode(((INamedNode*)*nodesp)->namesym, *nodesp);
     }
     for (imethnodesFor(&node->methprops, cnt, nodesp)) {
         inodeNameRes(pstate, (INode**)nodesp);
