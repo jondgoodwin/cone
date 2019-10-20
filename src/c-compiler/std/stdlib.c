@@ -13,9 +13,9 @@
 
 Name *keyAdd(char *keyword, uint16_t toktype) {
     Name *sym;
-    INamedNode *node;
+    INode *node;
     sym = nametblFind(keyword, strlen(keyword));
-    sym->node = node = (INamedNode*)memAllocBlk(sizeof(INode));
+    sym->node = node = (INode*)memAllocBlk(sizeof(INode));
     node->tag = KeywordTag;
     node->flags = toktype;
     return sym;
@@ -55,7 +55,7 @@ void keywordInit() {
 PermNode *newPermNodeStr(char *name, uint16_t flags) {
     Name *namesym = nametblFind(name, strlen(name));
     PermNode *perm = newPermDclNode(namesym, flags);
-    namesym->node = (INamedNode*)perm;
+    namesym->node = (INode*)perm;
     return perm;
 }
 
@@ -74,7 +74,7 @@ AllocNode *newAllocNodeStr(char *name) {
     newNode(allocnode, AllocNode, AllocTag);
     Name *namesym = nametblFind(name, strlen(name));
     allocnode->namesym = namesym;
-    namesym->node = (INamedNode*)allocnode;
+    namesym->node = (INode*)allocnode;
     return allocnode;
 }
 

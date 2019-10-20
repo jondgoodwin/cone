@@ -18,7 +18,7 @@
 // A namespace entry
 typedef struct NameNode {
     Name *name;
-    INamedNode *node;
+    INode *node;
 } NameNode;
 
 // Namespace metadata
@@ -32,10 +32,10 @@ typedef struct Namespace {
 void namespaceInit(Namespace *ns, size_t avail);
 
 // Return the module's node for a name (or NULL if none)
-INamedNode *namespaceFind(Namespace *ns, Name *name);
+INode *namespaceFind(Namespace *ns, Name *name);
 
 // Add or change the node a modue's name maps to
-void namespaceSet(Namespace *ns, Name *name, INamedNode *node);
+void namespaceSet(Namespace *ns, Name *name, INode *node);
 
 // Iterate through a module's namespace
 #define namespaceFor(ns) for (size_t __i = 0; __i < (ns)->avail; ++__i)

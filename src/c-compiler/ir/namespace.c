@@ -74,14 +74,14 @@ void namespaceInit(Namespace *ns, size_t avail) {
 }
 
 // Return the node for a name (or NULL if none)
-INamedNode *namespaceFind(Namespace *ns, Name *name) {
+INode *namespaceFind(Namespace *ns, Name *name) {
     NameNode *slotp;
     namespaceFindSlot(slotp, ns, name);
     return slotp->node;
 }
 
 // Add or change the node a name maps to
-void namespaceSet(Namespace *ns, Name *name, INamedNode *node) {
+void namespaceSet(Namespace *ns, Name *name, INode *node) {
     size_t cap = (ns->avail * 100) >> 7;
     if (ns->used > cap)
         namespaceGrow(ns);

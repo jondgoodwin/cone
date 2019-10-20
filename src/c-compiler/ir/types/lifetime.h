@@ -27,7 +27,7 @@ typedef struct LifetimeNode {
 LifetimeNode *newLifetimeDclNode(Name *namesym, Lifetime life);
 
 // Create a new lifetime use node
-INode *newLifetimeUseNode(INamedNode *lifedcl);
+INode *newLifetimeUseNode(LifetimeNode *lifedcl);
 
 // Serialize a lifetime node
 void lifePrint(LifetimeNode *node);

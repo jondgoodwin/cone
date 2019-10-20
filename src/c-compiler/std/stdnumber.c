@@ -28,13 +28,13 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
     nbrtypenode->subtypes = nbrsubtypes;
     nbrtypenode->bits = bits;
 
-    namesym->node = (INamedNode*)nbrtypenode;
+    namesym->node = (INode*)nbrtypenode;
 
     // Create function signature for unary methods for this type
     FnSigNode *unarysig = newFnSigNode();
     unarysig->rettype = (INode*)nbrtypenode;
     Name *una1 = nametblFind("a", 1);
-    nodesAdd(&unarysig->parms, (INode *)newVarDclFull(una1, VarDclTag, (INode*)nbrtypenode, newPermUseNode((INamedNode*)immPerm), NULL));
+    nodesAdd(&unarysig->parms, (INode *)newVarDclFull(una1, VarDclTag, (INode*)nbrtypenode, newPermUseNode(immPerm), NULL));
 
     // Create function signature for unary ref methods for this type
     FnSigNode *mutrefsig = newFnSigNode();
@@ -42,16 +42,16 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
     RefNode *mutref = newRefNode();
     mutref->pvtype = (INode*)nbrtypenode;
     mutref->alloc = voidType;
-    mutref->perm = newPermUseNode((INamedNode*)mutPerm);
-    nodesAdd(&mutrefsig->parms, (INode *)newVarDclFull(una1, VarDclTag, (INode*)mutref, newPermUseNode((INamedNode*)immPerm), NULL));
+    mutref->perm = newPermUseNode(mutPerm);
+    nodesAdd(&mutrefsig->parms, (INode *)newVarDclFull(una1, VarDclTag, (INode*)mutref, newPermUseNode(immPerm), NULL));
 
     // Create function signature for binary methods for this type
     FnSigNode *binsig = newFnSigNode();
     binsig->rettype = (INode*)nbrtypenode;
     Name *parm1 = nametblFind("a", 1);
-    nodesAdd(&binsig->parms, (INode *)newVarDclFull(parm1, VarDclTag, (INode*)nbrtypenode, newPermUseNode((INamedNode*)immPerm), NULL));
+    nodesAdd(&binsig->parms, (INode *)newVarDclFull(parm1, VarDclTag, (INode*)nbrtypenode, newPermUseNode(immPerm), NULL));
     Name *parm2 = nametblFind("b", 1);
-    nodesAdd(&binsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)nbrtypenode, newPermUseNode((INamedNode*)immPerm), NULL));
+    nodesAdd(&binsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)nbrtypenode, newPermUseNode(immPerm), NULL));
 
     // Build method dictionary for the type, which ultimately point to intrinsics
     Name *opsym;
@@ -95,8 +95,8 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
     // Create function signature for comparison methods for this type
     FnSigNode *cmpsig = newFnSigNode();
     cmpsig->rettype = bits==1? (INode*)nbrtypenode : (INode*)boolType;
-    nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(parm1, VarDclTag, (INode*)nbrtypenode, newPermUseNode((INamedNode*)immPerm), NULL));
-    nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)nbrtypenode, newPermUseNode((INamedNode*)immPerm), NULL));
+    nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(parm1, VarDclTag, (INode*)nbrtypenode, newPermUseNode(immPerm), NULL));
+    nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)nbrtypenode, newPermUseNode(immPerm), NULL));
 
     // Comparison operators
     opsym = nametblFind("==", 2);
@@ -135,9 +135,9 @@ IMethodNode *newPtrTypeMethods() {
     FnSigNode *cmpsig = newFnSigNode();
     cmpsig->rettype = (INode*)boolType;
     Name *self = nametblFind("self", 4);
-    nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidptr, newPermUseNode((INamedNode*)immPerm), NULL));
+    nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidptr, newPermUseNode(immPerm), NULL));
     Name *parm2 = nametblFind("b", 1);
-    nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)voidptr, newPermUseNode((INamedNode*)immPerm), NULL));
+    nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)voidptr, newPermUseNode(immPerm), NULL));
 
     // Comparison operators
     imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(eqName, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(EqIntrinsic)));
@@ -153,8 +153,8 @@ IMethodNode *newPtrTypeMethods() {
     RefNode *mutref = newRefNode();
     mutref->pvtype = (INode*)voidptr;
     mutref->alloc = voidType;
-    mutref->perm = newPermUseNode((INamedNode*)mutPerm);
-    nodesAdd(&mutrefsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)mutref, newPermUseNode((INamedNode*)immPerm), NULL));
+    mutref->perm = newPermUseNode(mutPerm);
+    nodesAdd(&mutrefsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)mutref, newPermUseNode(immPerm), NULL));
 
     imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(incrName, FlagMethProp, (INode *)mutrefsig, (INode *)newIntrinsicNode(IncrIntrinsic)));
     imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(decrName, FlagMethProp, (INode *)mutrefsig, (INode *)newIntrinsicNode(DecrIntrinsic)));
@@ -164,8 +164,8 @@ IMethodNode *newPtrTypeMethods() {
     // Create function signature for + - binary methods
     FnSigNode *binsig = newFnSigNode();
     binsig->rettype = (INode*)voidptr;
-    nodesAdd(&binsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidptr, newPermUseNode((INamedNode*)immPerm), NULL));
-    nodesAdd(&binsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)usizeType, newPermUseNode((INamedNode*)immPerm), NULL));
+    nodesAdd(&binsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidptr, newPermUseNode(immPerm), NULL));
+    nodesAdd(&binsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)usizeType, newPermUseNode(immPerm), NULL));
 
     imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(plusName, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(AddIntrinsic)));
     imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(minusName, FlagMethProp, (INode *)binsig, (INode *)newIntrinsicNode(SubIntrinsic)));
@@ -173,16 +173,16 @@ IMethodNode *newPtrTypeMethods() {
     // Create function signature for difference between two pointers
     FnSigNode *diffsig = newFnSigNode();
     diffsig->rettype = (INode*)usizeType;
-    nodesAdd(&diffsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidptr, newPermUseNode((INamedNode*)immPerm), NULL));
-    nodesAdd(&diffsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)voidptr, newPermUseNode((INamedNode*)immPerm), NULL));
+    nodesAdd(&diffsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidptr, newPermUseNode(immPerm), NULL));
+    nodesAdd(&diffsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)voidptr, newPermUseNode(immPerm), NULL));
 
     imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(minusName, FlagMethProp, (INode *)diffsig, (INode *)newIntrinsicNode(DiffIntrinsic)));
 
     // Create function signature for += and -= methods
     FnSigNode *bineqsig = newFnSigNode();
     bineqsig->rettype = (INode*)voidptr;
-    nodesAdd(&bineqsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)mutref, newPermUseNode((INamedNode*)immPerm), NULL));
-    nodesAdd(&bineqsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)usizeType, newPermUseNode((INamedNode*)immPerm), NULL));
+    nodesAdd(&bineqsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)mutref, newPermUseNode(immPerm), NULL));
+    nodesAdd(&bineqsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)usizeType, newPermUseNode(immPerm), NULL));
 
     imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(plusEqName, FlagMethProp, (INode *)bineqsig, (INode *)newIntrinsicNode(AddEqIntrinsic)));
     imethnodesAddFn(&ptrtypenode->methprops, newFnDclNode(minusEqName, FlagMethProp, (INode *)bineqsig, (INode *)newIntrinsicNode(SubEqIntrinsic)));
@@ -212,20 +212,20 @@ IMethodNode *newRefTypeMethods() {
     FnSigNode *unarysig = newFnSigNode();
     unarysig->rettype = (INode*)voidref;
     Name *self = nametblFind("self", 4);
-    nodesAdd(&unarysig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidref, newPermUseNode((INamedNode*)immPerm), NULL));
+    nodesAdd(&unarysig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidref, newPermUseNode(immPerm), NULL));
 
     // Create function signature for binary methods for this type
     FnSigNode *binsig = newFnSigNode();
     binsig->rettype = (INode*)voidref;
-    nodesAdd(&binsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidref, newPermUseNode((INamedNode*)immPerm), NULL));
+    nodesAdd(&binsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidref, newPermUseNode(immPerm), NULL));
     Name *parm2 = nametblFind("b", 1);
-    nodesAdd(&binsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)voidref, newPermUseNode((INamedNode*)immPerm), NULL));
+    nodesAdd(&binsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)voidref, newPermUseNode(immPerm), NULL));
 
     // Create function signature for comparison methods for this type
     FnSigNode *cmpsig = newFnSigNode();
     cmpsig->rettype = (INode*)boolType;
-    nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidref, newPermUseNode((INamedNode*)immPerm), NULL));
-    nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)voidref, newPermUseNode((INamedNode*)immPerm), NULL));
+    nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidref, newPermUseNode(immPerm), NULL));
+    nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)voidref, newPermUseNode(immPerm), NULL));
 
     // Comparison operators
     imethnodesAddFn(&reftypenode->methprops, newFnDclNode(eqName, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(EqIntrinsic)));
@@ -261,7 +261,7 @@ IMethodNode *newArrayRefTypeMethods() {
     FnSigNode *countsig = newFnSigNode();
     countsig->rettype = (INode*)usizeType;
     Name *self = nametblFind("self", 4);
-    nodesAdd(&countsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidref, newPermUseNode((INamedNode*)immPerm), NULL));
+    nodesAdd(&countsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidref, newPermUseNode(immPerm), NULL));
     imethnodesAddFn(&reftypenode->methprops, newFnDclNode(nametblFind("len", 3), FlagMethProp, (INode *)countsig, (INode *)newIntrinsicNode(CountIntrinsic)));
     imethnodesAddFn(&reftypenode->methprops, newFnDclNode(nametblFind("maxlen", 6), FlagMethProp, (INode *)countsig, (INode *)newIntrinsicNode(CountIntrinsic)));
 
@@ -269,8 +269,8 @@ IMethodNode *newArrayRefTypeMethods() {
     Name *parm2 = nametblFind("b", 1);
     FnSigNode *cmpsig = newFnSigNode();
     cmpsig->rettype = (INode*)boolType;
-    nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidref, newPermUseNode((INamedNode*)immPerm), NULL));
-    nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)voidref, newPermUseNode((INamedNode*)immPerm), NULL));
+    nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidref, newPermUseNode(immPerm), NULL));
+    nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)voidref, newPermUseNode(immPerm), NULL));
 
     // Comparison operators
     imethnodesAddFn(&reftypenode->methprops, newFnDclNode(eqName, FlagMethProp, (INode *)cmpsig, (INode *)newIntrinsicNode(EqIntrinsic)));

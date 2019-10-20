@@ -42,7 +42,7 @@ void modAddNode(ModuleNode *mod, INode *node) {
             nametblHookNode(nnode->namesym, (INode*)nnode);
             // Remember public names
             if (name->namestr != '_')
-                namespaceSet(&mod->namednodes, name, nnode);
+                namespaceSet(&mod->namednodes, name, (INode*)nnode);
         }
         else {
             errorMsgNode((INode *)node, ErrorDupName, "Global name is already defined. Duplicates not allowed.");

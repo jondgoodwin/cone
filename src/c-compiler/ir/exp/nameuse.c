@@ -104,7 +104,7 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
     }
     else
         // For non-qualified names (current module), should already be hooked in global name table
-        name->dclnode = (INamedNode*)name->namesym->node;
+        name->dclnode = name->namesym->node;
 
     if (!name->dclnode) {
         errorMsgNode((INode*)name, ErrorUnkName, "The name %s does not refer to a declared name", &name->namesym->namestr);
@@ -134,5 +134,5 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
 // Handle type check for name use references
 void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
     NameUseNode *name = *namep;
-    name->vtype = name->dclnode->vtype;
+    name->vtype = ((INamedNode*)name->dclnode)->vtype;
 }

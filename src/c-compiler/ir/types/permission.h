@@ -35,7 +35,7 @@ typedef struct PermNode {
 PermNode *newPermDclNode(Name *namesym, uint16_t flags);
 
 // Create a new permission use node
-INode *newPermUseNode(INamedNode *permdcl);
+INode *newPermUseNode(PermNode *permdcl);
 
 // Serialize a permission node
 void permPrint(PermNode *node);

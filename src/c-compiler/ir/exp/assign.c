@@ -136,13 +136,13 @@ void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
 }
 
 // Extract lval variable, scope and overall permission from lval
-INamedNode *assignLvalInfo(INode *lval, INode **lvalperm, int16_t *scope) {
+INode *assignLvalInfo(INode *lval, INode **lvalperm, int16_t *scope) {
     switch (lval->tag) {
 
         // A variable or named function node
     case VarNameUseTag:
     {
-        INamedNode *lvalvar = ((NameUseNode *)lval)->dclnode;
+        INode *lvalvar = ((NameUseNode *)lval)->dclnode;
         if (lvalvar->tag == VarDclTag) {
             *lvalperm = ((VarDclNode *)lvalvar)->perm;
             *scope = ((VarDclNode *)lvalvar)->scope;
@@ -155,7 +155,7 @@ INamedNode *assignLvalInfo(INode *lval, INode **lvalperm, int16_t *scope) {
 
     case DerefTag:
     {
-        INamedNode *lvalvar = assignLvalInfo(((DerefNode *)lval)->exp, lvalperm, scope);
+        INode *lvalvar = assignLvalInfo(((DerefNode *)lval)->exp, lvalperm, scope);
         RefNode *vtype = (RefNode*)iexpGetTypeDcl(((DerefNode *)lval)->exp);
         if (vtype->tag == RefTag || vtype->tag == ArrayRefTag)
             *lvalperm = vtype->perm;
@@ -169,7 +169,7 @@ INamedNode *assignLvalInfo(INode *lval, INode **lvalperm, int16_t *scope) {
     {
         FnCallNode *element = (FnCallNode *)lval;
         // flowLoadValue(fstate, nodesFind(element->args, 0), 0);
-        INamedNode *lvalvar = assignLvalInfo(element->objfn, lvalperm, scope);
+        INode *lvalvar = assignLvalInfo(element->objfn, lvalperm, scope);
         INode *objtype = iexpGetTypeDcl(element->objfn);
         if (objtype->tag == ArrayRefTag)
             *lvalperm = ((RefNode*)objtype)->perm;
@@ -184,7 +184,7 @@ INamedNode *assignLvalInfo(INode *lval, INode **lvalperm, int16_t *scope) {
     case StrFieldTag:
     {
         FnCallNode *element = (FnCallNode *)lval;
-        INamedNode *lvalvar = assignLvalInfo(element->objfn, lvalperm, scope);
+        INode *lvalvar = assignLvalInfo(element->objfn, lvalperm, scope);
         if (lvalvar == NULL)
             return NULL;
         PermNode *methperm = (PermNode *)((VarDclNode*)((NameUseNode *)element->methprop)->dclnode)->perm;
@@ -220,7 +220,7 @@ void assignSingleFlow(INode *lval, INode **rval) {
 
     int16_t lvalscope;
     INode *lvalperm;
-    INamedNode *lvalvar = assignLvalInfo(lval, &lvalperm, &lvalscope);
+    INode *lvalvar = assignLvalInfo(lval, &lvalperm, &lvalscope);
     if (!(MayWrite & permGetFlags(lvalperm))) {
         errorMsgNode(lval, ErrorNoMut, "You do not have permission to modify lval");
         return;

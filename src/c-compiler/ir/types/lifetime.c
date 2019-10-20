@@ -22,12 +22,12 @@ LifetimeNode *newLifetimeDclNode(Name *namesym, Lifetime life) {
 }
 
 // Create a new lifetime use node
-INode *newLifetimeUseNode(INamedNode *lifedcl) {
+INode *newLifetimeUseNode(LifetimeNode *lifedcl) {
     NameUseNode *life;
     newNode(life, NameUseNode, TypeNameUseTag);
     life->vtype = NULL;
     life->namesym = lifedcl->namesym;
-    life->dclnode = lifedcl;
+    life->dclnode = (INode*)lifedcl;
     life->qualNames = NULL;
     return (INode*)life;
 }

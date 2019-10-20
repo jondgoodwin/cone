@@ -17,8 +17,8 @@ typedef struct NameList NameList;
 // - MbrNameUseTag. A method or property name being applied to some value
 typedef struct NameUseNode {
     ITypedNodeHdr;
-    Name *namesym;            // Pointer to the global name table entry
-    INamedNode *dclnode;    // Node that declares this name (NULL until names are resolved)
+    Name *namesym;          // Pointer to the global name table entry
+    INode *dclnode;         // Node that declares this name (NULL until names are resolved)
     NameList *qualNames;    // Pointer to list of module qualifiers (NULL if none)
 } NameUseNode;
 

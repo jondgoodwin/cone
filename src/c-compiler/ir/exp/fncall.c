@@ -159,7 +159,7 @@ void fnCallLowerMethod(FnCallNode *callnode) {
 
     // Do lookup. If node found, it must be an instance's method or property
     if (methsym->namestr == '_'
-        && !(obj->tag==VarNameUseTag && ((NameUseNode*)obj)->dclnode->namesym == selfName)) {
+        && !(obj->tag==VarNameUseTag && ((VarDclNode*)((NameUseNode*)obj)->dclnode)->namesym == selfName)) {
         errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/property `%s`.", &methsym->namestr);
     }
     INamedNode *foundnode = imethnodesFind(&((IMethodNode*)methtype)->methprops, methsym);
@@ -190,7 +190,7 @@ void fnCallLowerMethod(FnCallNode *callnode) {
 
         derefAuto(&callnode->objfn);
         callnode->methprop->tag = VarNameUseTag;
-        callnode->methprop->dclnode = foundnode;
+        callnode->methprop->dclnode = (INode*)foundnode;
         callnode->vtype = callnode->methprop->vtype = foundnode->vtype;
         callnode->tag = StrFieldTag;
         return;
@@ -215,7 +215,7 @@ void fnCallLowerMethod(FnCallNode *callnode) {
     // Re-purpose method's name use node into objfn, so name refers to found method
     NameUseNode *methodrefnode = callnode->methprop;
     methodrefnode->tag = VarNameUseTag;
-    methodrefnode->dclnode = (INamedNode*)bestmethod;
+    methodrefnode->dclnode = (INode*)bestmethod;
     methodrefnode->vtype = bestmethod->vtype;
 
     callnode->objfn = (INode*)methodrefnode;
@@ -314,14 +314,14 @@ void fnCallLowerPtrMethod(FnCallNode *callnode) {
         RefNode *selfref = newRefNode();
         selfref->pvtype = selftype;
         selfref->alloc = voidType;
-        selfref->perm = newPermUseNode((INamedNode*)mutPerm);
+        selfref->perm = newPermUseNode(mutPerm);
         borrowAuto(selfp, (INode *)selfref);
     }
 
     // Re-purpose method's name use node into objfn, so name refers to found method
     NameUseNode *methodrefnode = callnode->methprop;
     methodrefnode->tag = VarNameUseTag;
-    methodrefnode->dclnode = (INamedNode*)bestmethod;
+    methodrefnode->dclnode = (INode*)bestmethod;
     methodrefnode->vtype = bestmethod->vtype;
 
     callnode->objfn = (INode*)methodrefnode;
@@ -356,8 +356,8 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         // Build a resolved 'self' node
         NameUseNode *selfnode = newNameUseNode(selfName);
         selfnode->tag = VarNameUseTag;
-        selfnode->dclnode = (INamedNode *)nodesGet(pstate->fnsig->parms, 0);
-        selfnode->vtype = selfnode->dclnode->vtype;
+        selfnode->dclnode = nodesGet(pstate->fnsig->parms, 0);
+        selfnode->vtype = ((VarDclNode*)selfnode->dclnode)->vtype;
         // Reuse existing fncallnode if we can
         if (node->methprop == NULL) {
             node->methprop = (NameUseNode *)node->objfn;
@@ -483,7 +483,7 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     if ((*nodep)->flags & FlagLvalOp) {
         int16_t scope;
         INode *perm;
-        INamedNode *lval = assignLvalInfo(nodesGet((*nodep)->args, 0), &perm, &scope);
+        INode *lval = assignLvalInfo(nodesGet((*nodep)->args, 0), &perm, &scope);
         if (!lval || !(MayWrite & permGetFlags(perm))) {
             errorMsgNode((INode*)*nodep, ErrorNoMut, "Can only operate on a valid and mutable lval to the left.");
         }

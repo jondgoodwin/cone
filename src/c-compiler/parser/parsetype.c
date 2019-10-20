@@ -20,12 +20,12 @@
 // Parse a permission, return reference to defperm if not found
 INode *parsePerm(PermNode *defperm) {
     if (lexIsToken(PermToken)) {
-        INode *perm = newPermUseNode(lex->val.ident->node);
+        INode *perm = newPermUseNode((PermNode*)lex->val.ident->node);
         lexNextToken();
         return perm;
     }
     else if (defperm)
-        return (INode*)newPermUseNode((INamedNode*)defperm);
+        return (INode*)newPermUseNode(defperm);
     else
         return (INode*)defperm;
 }
@@ -160,7 +160,7 @@ INode *parseStruct(ParseState *parse) {
 
 void parseInjectSelf(FnSigNode *fnsig, Name *typename) {
     NameUseNode *selftype = newNameUseNode(typename);
-    VarDclNode *selfparm = newVarDclFull(nametblFind("self", 4), VarDclTag, (INode*)selftype, newPermUseNode((INamedNode*)constPerm), NULL);
+    VarDclNode *selfparm = newVarDclFull(nametblFind("self", 4), VarDclTag, (INode*)selftype, newPermUseNode(constPerm), NULL);
     selfparm->scope = 1;
     selfparm->index = 0;
     nodesAdd(&fnsig->parms, (INode*)selfparm);

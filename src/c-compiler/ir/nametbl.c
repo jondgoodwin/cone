@@ -236,9 +236,9 @@ void nametblHookNode(Name *name, INode *node) {
     if (tablemeta->size + 1 >= tablemeta->alloc)
         nametblHookGrow();
     HookTableEntry *entry = &tablemeta->hooktbl[tablemeta->size++];
-    entry->node = (INode*)name->node; // Save previous node
+    entry->node = name->node; // Save previous node
     entry->name = name;
-    name->node = (INamedNode*)node; // Plug in new node
+    name->node = node; // Plug in new node
 }
 
 // Unhook all names in current hooktable, then revert to the prior hooktable
@@ -247,7 +247,7 @@ void nametblHookPop() {
     HookTableEntry *entry = tablemeta->hooktbl;
     int cnt = tablemeta->size;
     while (cnt--) {
-        entry->name->node = (INamedNode*)entry->node;
+        entry->name->node = entry->node;
         ++entry;
     }
     --gHookTablePos;
