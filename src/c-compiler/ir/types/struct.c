@@ -15,7 +15,7 @@ StructNode *newStructNode(Name *namesym) {
     snode->namesym = namesym;
     snode->llvmtype = NULL;
     snode->subtypes = newNodes(0);
-    nodelistInit(&snode->nodelist, 8);
+    iNsTypeInit((INsTypeNode*)snode, 8);
     return snode;
 }
 

@@ -121,7 +121,7 @@ INode *parseStruct(ParseState *parse) {
                     if (fn && isNamedNode(fn)) {
                         fn->flags |= FlagSetMethod;
                         nameGenFnName(fn, parse->gennamePrefix);
-                        iNsTypeAddFn(&strnode->nodelist, fn);
+                        iNsTypeAddFn((INsTypeNode*)strnode, fn);
                     }
                 }
             }
@@ -129,7 +129,7 @@ INode *parseStruct(ParseState *parse) {
                 FnDclNode *fn = (FnDclNode*)parseFn(parse, FlagMethProp, ParseMayName | ParseMayImpl);
                 if (fn && isNamedNode(fn)) {
                     nameGenFnName(fn, parse->gennamePrefix);
-                    iNsTypeAddFn(&strnode->nodelist, fn);
+                    iNsTypeAddFn((INsTypeNode*)strnode, fn);
                 }
             }
             else if (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
@@ -137,7 +137,7 @@ INode *parseStruct(ParseState *parse) {
                 property->scope = 1;
                 property->index = propertynbr++;
                 property->flags |= FlagMethProp;
-                iNsTypeAddProp(&strnode->nodelist, property);
+                iNsTypeAddProp((INsTypeNode*)strnode, property);
                 if (property->namesym->namestr == '_' && !property->value)
                     strnode->flags |= FlagStructPrivate; // has a private property without a default value
                 parseEndOfStatement();

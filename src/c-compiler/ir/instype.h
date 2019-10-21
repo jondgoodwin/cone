@@ -27,12 +27,15 @@ typedef struct INsTypeNode {
 typedef struct FnDclNode FnDclNode;
 typedef struct VarDclNode VarDclNode;
 
+// Initialize common fields
+void iNsTypeInit(INsTypeNode *type, int nodecnt);
+
 // Add a static function or potentially overloaded method
 // If method is overloaded, add it to the link chain of same named methods
-void iNsTypeAddFn(NodeList *mnodes, FnDclNode *fnnode);
+void iNsTypeAddFn(INsTypeNode *type, FnDclNode *fnnode);
 
 // Add a property node to a method type
-void iNsTypeAddProp(NodeList *mnodes, VarDclNode *fnnode);
+void iNsTypeAddProp(INsTypeNode *type, VarDclNode *fnnode);
 
 // Find the desired named node (could be method or property)
 // Return the node, if found or NULL if not found

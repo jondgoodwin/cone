@@ -11,9 +11,17 @@
 #include <string.h>
 #include <stdarg.h>
 
+// Initialize common fields
+void iNsTypeInit(INsTypeNode *type, int nodecnt) {
+    nodelistInit(&type->nodelist, nodecnt);
+    namespaceInit(&type->namespace, nodecnt);
+    // type->subtypes = newNodes(0);
+}
+
 // Add a function or potentially overloaded method
 // If method is overloaded, add it to the link chain of same named methods
-void iNsTypeAddFn(NodeList *mnodes, FnDclNode *fnnode) {
+void iNsTypeAddFn(INsTypeNode *type, FnDclNode *fnnode) {
+    NodeList *mnodes = &type->nodelist;
     FnDclNode *lastmeth = (FnDclNode *)iNsTypeNodeFind(mnodes, fnnode->namesym);
     if (lastmeth && (lastmeth->tag != FnDclTag
         || !(lastmeth->flags & FlagMethProp) || !(fnnode->flags & FlagMethProp))) {
@@ -29,7 +37,8 @@ void iNsTypeAddFn(NodeList *mnodes, FnDclNode *fnnode) {
 }
 
 // Add a property
-void iNsTypeAddProp(NodeList *mnodes,  VarDclNode *varnode) {
+void iNsTypeAddProp(INsTypeNode *type,  VarDclNode *varnode) {
+    NodeList *mnodes = &type->nodelist;
     FnDclNode *lastmeth = (FnDclNode *)iNsTypeNodeFind(mnodes, varnode->namesym);
     if (lastmeth && (lastmeth->tag != VarDclTag)) {
         errorMsgNode((INode*)varnode, ErrorDupName, "Duplicate name %s: Only methods can be overloaded.", &varnode->namesym->namestr);

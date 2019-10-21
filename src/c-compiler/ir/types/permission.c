@@ -16,8 +16,7 @@ PermNode *newPermDclNode(Name *namesym, uint16_t flags) {
     node->vtype = NULL;
     node->namesym = namesym;
     node->llvmtype = NULL;
-    nodelistInit(&node->nodelist, 1); // May not need members for static types
-    node->subtypes = newNodes(8);    // build appropriate list using the permission's flags
+    iNsTypeInit((INsTypeNode*)node, 1); // May not need members for static types
     node->flags = flags;
     return node;
 }

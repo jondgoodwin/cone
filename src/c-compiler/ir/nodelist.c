@@ -19,7 +19,7 @@ void nodelistInit(NodeList *mnodes, uint32_t size) {
 }
 
 // Double size, if full
-void iNsTypeNodesGrow(NodeList *mnodes) {
+void nodelistGrow(NodeList *mnodes) {
     INode **oldnodes;
     oldnodes = mnodes->nodes;
     mnodes->avail <<= 1;
@@ -44,6 +44,6 @@ INamedNode *iNsTypeNodeFind(NodeList *mnodes, Name *name) {
 // Add an INode to the end of a NodeList, growing it if full (changing its memory location)
 void nodelistAdd(NodeList *mnodes, INode *node) {
     if (mnodes->used >= mnodes->avail)
-        iNsTypeNodesGrow(mnodes);
+        nodelistGrow(mnodes);
     mnodes->nodes[mnodes->used++] = node;
 }
