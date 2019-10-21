@@ -241,6 +241,16 @@ void nametblHookNode(Name *name, INode *node) {
     name->node = node; // Plug in new node
 }
 
+// Hook all of a namespace's names and nodes in the current hooktable
+void nametblHookNamespace(Namespace *ns) {
+    namespaceFor(ns) {
+        NameNode *nn = &ns->namenodes[__i];
+        if (nn->name == NULL)
+            continue;
+        nametblHookNode(nn->name, nn->node);
+    }
+}
+
 // Unhook all names in current hooktable, then revert to the prior hooktable
 void nametblHookPop() {
     HookTable *tablemeta = &gHookTables[gHookTablePos];

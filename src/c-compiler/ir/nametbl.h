@@ -44,6 +44,8 @@ size_t nametblUnused();
 void nametblHookPush();
 void nametblHookGrow();
 void nametblHookNode(Name *name, INode *node);
+// Hook all of a namespace's names and nodes in the current hooktable
+void nametblHookNamespace(Namespace *ns);
 void nametblHookPop();
 
 #endif

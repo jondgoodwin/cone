@@ -32,7 +32,7 @@ void borrowNameRes(NameResState *pstate, BorrowNode **nodep) {
 }
 
 // Extract lval variable and overall permission from lval
-INamedNode *borrowGetVarPerm(INode *lval, INode **lvalperm) {
+INode *borrowGetVarPerm(INode *lval, INode **lvalperm) {
     switch (lval->tag) {
 
     // A variable or named function node
@@ -45,13 +45,13 @@ INamedNode *borrowGetVarPerm(INode *lval, INode **lvalperm) {
             *lvalperm = ((VarDclNode *)lval)->perm;
         else
             *lvalperm = (INode*)opaqPerm; // Function
-        return (INamedNode *)lval;
+        return lval;
     }
 
     case DerefTag:
     {
         DerefNode *deref = (DerefNode*)lval;
-        INamedNode *lvalret = borrowGetVarPerm(deref->exp, lvalperm);
+        INode *lvalret = borrowGetVarPerm(deref->exp, lvalperm);
         INode *typ = iexpGetTypeDcl(deref->exp);
         assert(typ->tag == RefTag || typ->tag == ArrayRefTag);
         *lvalperm = ((RefNode*)typ)->perm;
@@ -63,7 +63,7 @@ INamedNode *borrowGetVarPerm(INode *lval, INode **lvalperm) {
     case StrFieldTag:
     {
         FnCallNode *element = (FnCallNode *)lval;
-        INamedNode *lvalvar = borrowGetVarPerm(element->objfn, lvalperm);
+        INode *lvalvar = borrowGetVarPerm(element->objfn, lvalperm);
         if (lvalvar == NULL)
             return NULL;
         INode *lvaltype = iexpGetTypeDcl((INode*)lvalvar);
@@ -118,7 +118,7 @@ void borrowTypeCheck(TypeCheckState *pstate, BorrowNode **nodep) {
     if (lval->tag != StrLitTag) {
         // lval is the variable or variable sub-structure we want to get a reference to
         // From it, obtain variable we are borrowing from and actual/calculated permission
-        INamedNode *lvalvar = borrowGetVarPerm(lval, &lvalperm);
+        INode *lvalvar = borrowGetVarPerm(lval, &lvalperm);
         if (lvalvar == NULL) {
             reftype->pvtype = (INode*)voidType;  // Just to avoid a compiler crash later
             return;

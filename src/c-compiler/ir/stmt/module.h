@@ -21,12 +21,13 @@
 typedef struct ModuleNode {
     INamedNodeHdr;
     Nodes *nodes;            // All parsed nodes owned by the module
-    Namespace namednodes;   // The module's public, owned named nodes
+    Namespace namednodes;   // The module's named nodes, owned or "used"
 } ModuleNode;
 
 ModuleNode *newModuleNode();
 void modPrint(ModuleNode *mod);
-void modAddNode(ModuleNode *mod, INode *node);
+void modAddNode(ModuleNode *mod, Name *name, INode *node);
+void modAddNamedNode(ModuleNode *mod, Name *name, INode *node);
 void modHook(ModuleNode *oldmod, ModuleNode *newmod);
 void modNameRes(NameResState *pstate, ModuleNode *mod);
 void modTypePass(TypePass *pstate, ModuleNode *mod);

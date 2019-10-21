@@ -149,26 +149,29 @@ void parseInclude(ParseState *parse) {
 
 // Parse function or variable, as it may be preceded by a qualifier
 // Return NULL if not either
-INode *parseFnOrVar(ParseState *parse, uint16_t flags) {
-    INode *node;
+void parseFnOrVar(ParseState *parse, uint16_t flags) {
 
     if (lexIsToken(FnToken)) {
-        node = parseFn(parse, 0, (flags&FlagExtern)? (ParseMayName | ParseMaySig) : (ParseMayName | ParseMayImpl));
+        FnDclNode *node = (FnDclNode*)parseFn(parse, 0, (flags&FlagExtern)? (ParseMayName | ParseMaySig) : (ParseMayName | ParseMayImpl));
+        node->flags |= flags;
+        nameGenVarName((VarDclNode *)node, parse->gennamePrefix);
+        modAddNode(parse->mod, node->namesym, (INode*)node);
+        return;
     }
 
     // A global variable declaration, if it begins with a permission
     else if lexIsToken(PermToken) {
-        node = (INode*)parseVarDcl(parse, immPerm, ParseMayConst | ((flags&FlagExtern) ? ParseMaySig : ParseMayImpl | ParseMaySig));
+        VarDclNode *node = parseVarDcl(parse, immPerm, ParseMayConst | ((flags&FlagExtern) ? ParseMaySig : ParseMayImpl | ParseMaySig));
+        node->flags |= flags;
         parseEndOfStatement();
+        nameGenVarName((VarDclNode *)node, parse->gennamePrefix);
+        modAddNode(parse->mod, node->namesym, (INode*)node);
     }
     else {
         errorMsgLex(ErrorBadGloStmt, "Expected function or variable declaration");
         parseSkipToNextStmt();
-        return NULL;
+        return;
     }
-
-    node->flags |= flags;
-    return node;
 }
 
 ModuleNode *parseModule(ParseState *parse);
@@ -176,8 +179,6 @@ ModuleNode *parseModule(ParseState *parse);
 // Parse a global area statement (within a module)
 // modAddNode adds node to module, as needed, including error message for dupes
 void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
-    INode *node;
-
     // Create and populate a Module node for the program
     while (!lexIsToken(EofToken) && !lexIsToken(RCurlyToken)) {
         switch (lex->toktype) {
@@ -186,14 +187,18 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
             parseInclude(parse);
             break;
 
-        case ModToken:
-            modAddNode(mod, (INode*)parseModule(parse));
+        case ModToken: {
+            ModuleNode *newmod = parseModule(parse);
+            modAddNode(mod, newmod->namesym, (INode*)newmod);
             break;
+        }
 
         // 'struct'-style type definition
-        case StructToken:
-            modAddNode(mod, parseStruct(parse));
+        case StructToken: {
+            StructNode *strnode = (StructNode*)parseStruct(parse);
+            modAddNode(mod, strnode->namesym, (INode*)strnode);
             break;
+        }
 
         // 'extern' qualifier in front of fn or var (block)
         case ExternToken:
@@ -208,27 +213,19 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
             if (lexIsToken(LCurlyToken)) {
                 lexNextToken();
                 while (lexIsToken(FnToken) || lexIsToken(PermToken)) {
-                    if (node = parseFnOrVar(parse, extflag))
-                        modAddNode(mod, node);
+                    parseFnOrVar(parse, extflag);
                 }
                 parseRCurly();
             }
             else
-                if (node = parseFnOrVar(parse, extflag))
-                    modAddNode(mod, node);
+                parseFnOrVar(parse, extflag);
         }
             break;
 
         // Function or variable
         case FnToken:
         case PermToken:
-            if (node = parseFnOrVar(parse, 0)) {
-                modAddNode(mod, node);
-                if (node->tag == VarDclTag)
-                    nameGenVarName((VarDclNode *)node, parse->gennamePrefix);
-                else
-                    nameGenFnName((FnDclNode *)node, parse->gennamePrefix);
-            }
+            parseFnOrVar(parse, 0);
             break;
 
         default:
