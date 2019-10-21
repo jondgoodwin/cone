@@ -92,3 +92,24 @@ void namespaceSet(Namespace *ns, Name *name, INode *node) {
     slotp->name = name;
     slotp->node = node;
 }
+
+// Add the node a name maps to if no conflict and return NULL.
+// Otherwise, return the node already there
+INode *namespaceAdd(Namespace *ns, Name *name, INode *node) {
+    // If a node found there, return it
+    NameNode *slotp;
+    namespaceFindSlot(slotp, ns, name);
+    if (slotp->node != NULL)
+        return slotp->node;
+
+    // Add node, if none found
+    ++ns->used;
+    slotp->name = name;
+    slotp->node = node;
+
+    // Grow if required, and return NULL
+    size_t cap = (ns->avail * 100) >> 7;
+    if (ns->used > cap)
+        namespaceGrow(ns);
+    return NULL;
+}

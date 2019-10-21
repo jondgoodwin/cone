@@ -22,29 +22,29 @@ void iNsTypeInit(INsTypeNode *type, int nodecnt) {
 // If method is overloaded, add it to the link chain of same named methods
 void iNsTypeAddFn(INsTypeNode *type, FnDclNode *fnnode) {
     NodeList *mnodes = &type->nodelist;
-    FnDclNode *lastmeth = (FnDclNode *)iNsTypeNodeFind(mnodes, fnnode->namesym);
-    if (lastmeth && (lastmeth->tag != FnDclTag
-        || !(lastmeth->flags & FlagMethProp) || !(fnnode->flags & FlagMethProp))) {
-        errorMsgNode((INode*)fnnode, ErrorDupName, "Duplicate name %s: Only methods can be overloaded.", &fnnode->namesym->namestr);
-        return;
-    }
-    if (lastmeth) {
-        while (lastmeth->nextnode)
-            lastmeth = lastmeth->nextnode;
-        lastmeth->nextnode = fnnode;
+    FnDclNode *foundnode = (FnDclNode*)namespaceAdd(&type->namespace, fnnode->namesym, (INode*)fnnode);
+    if (foundnode) {
+        if (foundnode->tag != FnDclTag
+            || !(foundnode->flags & FlagMethProp) || !(fnnode->flags & FlagMethProp)) {
+            errorMsgNode((INode*)fnnode, ErrorDupName, "Duplicate name %s: Only methods can be overloaded.", &fnnode->namesym->namestr);
+            return;
+        }
+        // Append to end of linked method list
+        while (foundnode->nextnode)
+            foundnode = foundnode->nextnode;
+        foundnode->nextnode = fnnode;
     }
     nodelistAdd(mnodes, (INode*)fnnode);
 }
 
 // Add a property
 void iNsTypeAddProp(INsTypeNode *type,  VarDclNode *varnode) {
-    NodeList *mnodes = &type->nodelist;
-    FnDclNode *lastmeth = (FnDclNode *)iNsTypeNodeFind(mnodes, varnode->namesym);
-    if (lastmeth && (lastmeth->tag != VarDclTag)) {
+    INode *foundnode = namespaceAdd(&type->namespace, varnode->namesym, (INode*)varnode);
+    if (foundnode) {
         errorMsgNode((INode*)varnode, ErrorDupName, "Duplicate name %s: Only methods can be overloaded.", &varnode->namesym->namestr);
         return;
     }
-    nodelistAdd(mnodes, (INode*)varnode);
+    nodelistAdd(&type->nodelist, (INode*)varnode);
 }
 
 // Find method that best fits the passed arguments

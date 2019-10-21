@@ -37,6 +37,10 @@ INode *namespaceFind(Namespace *ns, Name *name);
 // Add or change the node a modue's name maps to
 void namespaceSet(Namespace *ns, Name *name, INode *node);
 
+// Add the node a name maps to if no conflict and return NULL.
+// Otherwise, return the node already there
+INode *namespaceAdd(Namespace *ns, Name *name, INode *node);
+
 // Iterate through a module's namespace
 #define namespaceFor(ns) for (size_t __i = 0; __i < (ns)->avail; ++__i)
 
