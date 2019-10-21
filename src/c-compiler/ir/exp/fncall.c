@@ -162,12 +162,12 @@ void fnCallLowerMethod(FnCallNode *callnode) {
         && !(obj->tag==VarNameUseTag && ((VarDclNode*)((NameUseNode*)obj)->dclnode)->namesym == selfName)) {
         errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/property `%s`.", &methsym->namestr);
     }
-    INamedNode *foundnode = iNsTypeNodeFind(&((INsTypeNode*)methtype)->nodelist, methsym);
+    IExpNode *foundnode = (IExpNode*)iNsTypeFindFnField((INsTypeNode*)methtype, methsym);
     if (callnode->flags & FlagLvalOp) {
         if (foundnode)
             callnode->flags ^= FlagLvalOp;  // Turn off flag: found method handles the rest of it just fine
         else {
-            foundnode = iNsTypeNodeFind(&((INsTypeNode*)methtype)->nodelist, fnCallOpEqMethod(methsym));
+            foundnode = (IExpNode*)iNsTypeFindFnField((INsTypeNode*)methtype, fnCallOpEqMethod(methsym));
             // + cannot substitute for += unless it returns same type it takes
             FnSigNode *methsig = (FnSigNode *)foundnode->vtype;
             if (!itypeMatches(methsig->rettype, ((IExpNode*)nodesGet(methsig->parms, 0))->vtype)) {
@@ -254,7 +254,7 @@ void fnCallLowerPtrMethod(FnCallNode *callnode) {
     default: assert(0 && "Unknown reference type");
     }
 
-    INamedNode *foundnode = iNsTypeNodeFind(&methtype->nodelist, methsym);
+    INode *foundnode = iNsTypeFindFnField(methtype, methsym);
     if (!foundnode) { // It can only be a method
         if (objtype->tag == RefTag) {
             // Give references another crack at method via deref type's methods

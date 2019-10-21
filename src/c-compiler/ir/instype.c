@@ -47,6 +47,12 @@ void iNsTypeAddProp(INsTypeNode *type,  VarDclNode *varnode) {
     nodelistAdd(&type->nodelist, (INode*)varnode);
 }
 
+// Find the named node (could be method or field)
+// Return the node, if found or NULL if not found
+INode *iNsTypeFindFnField(INsTypeNode *type, Name *name) {
+    return namespaceFind(&type->namespace, name);
+}
+
 // Find method that best fits the passed arguments
 FnDclNode *iNsTypeFindBestMethod(FnDclNode *firstmethod, Nodes *args) {
     // Look for best-fit method

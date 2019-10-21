@@ -27,20 +27,6 @@ void nodelistGrow(NodeList *mnodes) {
     memcpy(mnodes->nodes, oldnodes, mnodes->used * sizeof(INode **));
 }
 
-// Find the desired named node.
-// Return the node, if found or NULL if not found
-INamedNode *iNsTypeNodeFind(NodeList *mnodes, Name *name) {
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodelistFor(mnodes, cnt, nodesp)) {
-        if (isNamedNode(*nodesp)) {
-            if (((INamedNode*)*nodesp)->namesym == name)
-                return (INamedNode*)*nodesp;
-        }
-    }
-    return NULL;
-}
-
 // Add an INode to the end of a NodeList, growing it if full (changing its memory location)
 void nodelistAdd(NodeList *mnodes, INode *node) {
     if (mnodes->used >= mnodes->avail)

@@ -37,9 +37,9 @@ void iNsTypeAddFn(INsTypeNode *type, FnDclNode *fnnode);
 // Add a property node to a method type
 void iNsTypeAddProp(INsTypeNode *type, VarDclNode *fnnode);
 
-// Find the desired named node (could be method or property)
+// Find the named node (could be method or field)
 // Return the node, if found or NULL if not found
-INamedNode *iNsTypeNodeFind(NodeList *mnodes, Name *name);
+INode *iNsTypeFindFnField(INsTypeNode *type, Name *name);
 
 // Find method that best fits the passed arguments
 // 'firstmethod' is the first method that matches the name
