@@ -94,13 +94,13 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
         int16_t cnt = name->qualNames->used;
         Name **namep = (Name**)(name->qualNames + 1);
         while (cnt--) {
-            mod = (ModuleNode*)namespaceFind(&mod->namednodes, *namep++);
+            mod = (ModuleNode*)namespaceFind(&mod->namespace, *namep++);
             if (mod == NULL || mod->tag != ModuleTag) {
                 errorMsgNode((INode*)name, ErrorUnkName, "Module %s does not exist", &(*--namep)->namestr);
                 return;
             }
         }
-        name->dclnode = namespaceFind(&mod->namednodes, name->namesym);
+        name->dclnode = namespaceFind(&mod->namespace, name->namesym);
     }
     else
         // For non-qualified names (current module), should already be hooked in global name table

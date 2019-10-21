@@ -10,7 +10,7 @@
 
 // For primitives such as integer, unsigned integet, floats
 typedef struct NbrNode {
-    IMethodNodeHdr;
+    INsTypeNodeHdr;
     unsigned char bits;    // e.g., int32 uses 32 bits
 } NbrNode;
 

@@ -120,7 +120,7 @@ int itypeCopyTrait(INode *typenode) {
     // If it has a .copy method, it is CopyMethod, or else it is CopyMove.
     if (isMethodType(typenode)) {
         int copytrait = CopyBitwise;
-        IMethNodes *nodes = &((IMethodNode *)typenode)->methprops;
+        IMethNodes *nodes = &((INsTypeNode *)typenode)->methprops;
         uint32_t cnt;
         INode **nodesp;
         for (imethnodesFor(nodes, cnt, nodesp)) {
@@ -149,7 +149,7 @@ char *itypeMangle(char *bufp, INode *vtype) {
     case NameUseTag:
     case TypeNameUseTag:
     {
-        strcpy(bufp, &((IMethodNode*)((NameUseNode *)vtype)->dclnode)->namesym->namestr);
+        strcpy(bufp, &((INsTypeNode*)((NameUseNode *)vtype)->dclnode)->namesym->namestr);
         break;
     }
     case RefTag:

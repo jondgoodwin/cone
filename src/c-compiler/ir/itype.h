@@ -11,15 +11,15 @@
 typedef struct Name Name;
 
 // Named type node header (most types are named)
-#define INamedTypeNodeHdr \
+#define ITypeNodeHdr \
     INamedNodeHdr; \
     LLVMTypeRef llvmtype
 
 // Named type node interface (most types are named)
 // A named type needs to remember generated LLVM type ref for typenameuse nodes
-typedef struct NamedTypeNode {
-    INamedTypeNodeHdr;
-} NamedTypeNode;
+typedef struct ITypeNode {
+    ITypeNodeHdr;
+} ITypeNode;
 
 // All types get a copy trait indicating how to handle when a value of that type
 // is assigned to a variable or passed as an argument to a function.

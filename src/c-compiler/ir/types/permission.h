@@ -12,7 +12,7 @@ typedef struct NameUseNode NameUseNode;
 
 // Permission type info
 typedef struct PermNode {
-    IMethodNodeHdr;
+    INsTypeNodeHdr;
 } PermNode;
 
 // Permission type flags

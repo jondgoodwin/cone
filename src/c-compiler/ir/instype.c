@@ -1,4 +1,4 @@
-/** Shared logic for method-based types
+/** Shared logic for namespace-based types
  * @file
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -12,14 +12,14 @@
 #include <stdarg.h>
 
 // Initialize methnodes metadata
-void imethnodesInit(IMethNodes *mnodes, uint32_t size) {
+void iNsTypeInit(IMethNodes *mnodes, uint32_t size) {
     mnodes->avail = size;
     mnodes->used = 0;
     mnodes->nodes = (INode **)memAllocBlk(size * sizeof(INode **));
 }
 
 // Double size, if full
-void methnodesGrow(IMethNodes *mnodes) {
+void iNsTypeNodesGrow(IMethNodes *mnodes) {
     INode **oldnodes;
     oldnodes = mnodes->nodes;
     mnodes->avail <<= 1;
@@ -29,7 +29,7 @@ void methnodesGrow(IMethNodes *mnodes) {
 
 // Find the desired named node.
 // Return the node, if found or NULL if not found
-INamedNode *imethnodesFind(IMethNodes *mnodes, Name *name) {
+INamedNode *iNsTypeNodeFind(IMethNodes *mnodes, Name *name) {
     INode **nodesp;
     uint32_t cnt;
     for (imethnodesFor(mnodes, cnt, nodesp)) {
@@ -42,16 +42,16 @@ INamedNode *imethnodesFind(IMethNodes *mnodes, Name *name) {
 }
 
 // Add an INode to the end of a IMethNodes, growing it if full (changing its memory location)
-void imethnodesAdd(IMethNodes *mnodes, INode *node) {
+void iNsTypeNodeAdd(IMethNodes *mnodes, INode *node) {
     if (mnodes->used >= mnodes->avail)
-        methnodesGrow(mnodes);
+        iNsTypeNodesGrow(mnodes);
     mnodes->nodes[mnodes->used++] = node;
 }
 
 // Add a function or potentially overloaded method
 // If method is overloaded, add it to the link chain of same named methods
-void imethnodesAddFn(IMethNodes *mnodes, FnDclNode *fnnode) {
-    FnDclNode *lastmeth = (FnDclNode *)imethnodesFind(mnodes, fnnode->namesym);
+void iNsTypeAddFn(IMethNodes *mnodes, FnDclNode *fnnode) {
+    FnDclNode *lastmeth = (FnDclNode *)iNsTypeNodeFind(mnodes, fnnode->namesym);
     if (lastmeth && (lastmeth->tag != FnDclTag
         || !(lastmeth->flags & FlagMethProp) || !(fnnode->flags & FlagMethProp))) {
         errorMsgNode((INode*)fnnode, ErrorDupName, "Duplicate name %s: Only methods can be overloaded.", &fnnode->namesym->namestr);
@@ -62,21 +62,21 @@ void imethnodesAddFn(IMethNodes *mnodes, FnDclNode *fnnode) {
             lastmeth = lastmeth->nextnode;
         lastmeth->nextnode = fnnode;
     }
-    imethnodesAdd(mnodes, (INode*)fnnode);
+    iNsTypeNodeAdd(mnodes, (INode*)fnnode);
 }
 
 // Add a property
-void imethnodesAddProp(IMethNodes *mnodes,  VarDclNode *varnode) {
-    FnDclNode *lastmeth = (FnDclNode *)imethnodesFind(mnodes, varnode->namesym);
+void iNsTypeAddProp(IMethNodes *mnodes,  VarDclNode *varnode) {
+    FnDclNode *lastmeth = (FnDclNode *)iNsTypeNodeFind(mnodes, varnode->namesym);
     if (lastmeth && (lastmeth->tag != VarDclTag)) {
         errorMsgNode((INode*)varnode, ErrorDupName, "Duplicate name %s: Only methods can be overloaded.", &varnode->namesym->namestr);
         return;
     }
-    imethnodesAdd(mnodes, (INode*)varnode);
+    iNsTypeNodeAdd(mnodes, (INode*)varnode);
 }
 
 // Find method that best fits the passed arguments
-FnDclNode *imethnodesFindBestMethod(FnDclNode *firstmethod, Nodes *args) {
+FnDclNode *iNsTypeFindBestMethod(FnDclNode *firstmethod, Nodes *args) {
     // Look for best-fit method
     FnDclNode *bestmethod = NULL;
     int bestnbr = 0x7fffffff; // ridiculously high number    

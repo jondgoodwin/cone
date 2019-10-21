@@ -19,7 +19,7 @@ typedef int16_t Lifetime;
 
 // Lifetime type info
 typedef struct LifetimeNode {
-    IMethodNodeHdr;
+    INsTypeNodeHdr;
     Lifetime life;
 } LifetimeNode;
 

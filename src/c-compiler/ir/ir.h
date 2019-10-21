@@ -41,7 +41,7 @@ typedef struct TypeCheckState TypeCheckState;
 #include "iexp.h"
 #include "name.h"
 #include "itype.h"
-#include "imethod.h"
+#include "instype.h"
 #include "typepass.h"
 #include "flow.h"
 

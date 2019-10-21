@@ -16,7 +16,7 @@ ModuleNode *newModuleNode() {
     newNode(mod, ModuleNode, ModuleTag);
     mod->namesym = NULL;
     mod->nodes = newNodes(64);
-    namespaceInit(&mod->namednodes, 64);
+    namespaceInit(&mod->namespace, 64);
     return mod;
 }
 
@@ -29,7 +29,7 @@ void modAddNamedNode(ModuleNode *mod, Name *name, INode *node) {
     // Hook into global name table (and add to namednodes), if not already there
     if (!name->node) {
         nametblHookNode(name, (INode*)node);
-        namespaceSet(&mod->namednodes, name, node);
+        namespaceSet(&mod->namespace, name, node);
     }
     else {
         errorMsgNode((INode *)node, ErrorDupName, "Global name is already defined. Duplicates not allowed.");
@@ -76,7 +76,7 @@ void modHook(ModuleNode *oldmod, ModuleNode *newmod) {
         nametblHookPop();
     if (newmod) {
         nametblHookPush();
-        nametblHookNamespace(&newmod->namednodes);
+        nametblHookNamespace(&newmod->namespace);
     }
 }
 

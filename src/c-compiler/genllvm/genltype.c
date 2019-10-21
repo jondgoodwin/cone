@@ -142,14 +142,14 @@ LLVMTypeRef genlType(GenState *gen, INode *typ) {
     INode *dcltype = itypeGetTypeDcl(typ);
     if (isNamedNode(dcltype)) {
         // with vtype name use, we can memoize type value and give it a name
-        NamedTypeNode *dclnode = (NamedTypeNode*)dcltype;
+        ITypeNode *dclnode = (ITypeNode*)dcltype;
         if (dclnode->llvmtype)
             return dclnode->llvmtype;
 
         // Also process the type's methods and functions
         LLVMTypeRef typeref = dclnode->llvmtype = _genlType(gen, &dclnode->namesym->namestr, (INode*)dclnode);
         if (isMethodType(dclnode)) {
-            IMethodNode *tnode = (IMethodNode*)dclnode;
+            INsTypeNode *tnode = (INsTypeNode*)dclnode;
             INode **nodesp;
             uint32_t cnt;
             // Declare just method names first, enabling forward references

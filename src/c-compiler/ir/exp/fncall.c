@@ -162,12 +162,12 @@ void fnCallLowerMethod(FnCallNode *callnode) {
         && !(obj->tag==VarNameUseTag && ((VarDclNode*)((NameUseNode*)obj)->dclnode)->namesym == selfName)) {
         errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/property `%s`.", &methsym->namestr);
     }
-    INamedNode *foundnode = imethnodesFind(&((IMethodNode*)methtype)->methprops, methsym);
+    INamedNode *foundnode = iNsTypeNodeFind(&((INsTypeNode*)methtype)->methprops, methsym);
     if (callnode->flags & FlagLvalOp) {
         if (foundnode)
             callnode->flags ^= FlagLvalOp;  // Turn off flag: found method handles the rest of it just fine
         else {
-            foundnode = imethnodesFind(&((IMethodNode*)methtype)->methprops, fnCallOpEqMethod(methsym));
+            foundnode = iNsTypeNodeFind(&((INsTypeNode*)methtype)->methprops, fnCallOpEqMethod(methsym));
             // + cannot substitute for += unless it returns same type it takes
             FnSigNode *methsig = (FnSigNode *)foundnode->vtype;
             if (!itypeMatches(methsig->rettype, ((IExpNode*)nodesGet(methsig->parms, 0))->vtype)) {
@@ -202,7 +202,7 @@ void fnCallLowerMethod(FnCallNode *callnode) {
     }
     nodesInsert(&callnode->args, callnode->objfn, 0);
 
-    FnDclNode *bestmethod = imethnodesFindBestMethod((FnDclNode *)foundnode, callnode->args);
+    FnDclNode *bestmethod = iNsTypeFindBestMethod((FnDclNode *)foundnode, callnode->args);
     if (bestmethod == NULL) {
         errorMsgNode((INode*)callnode, ErrorNoMeth, "No method named %s matches the call's arguments.", &methsym->namestr);
         callnode->vtype = ((IExpNode*)obj)->vtype; // make up a vtype
@@ -246,7 +246,7 @@ void fnCallLowerPtrMethod(FnCallNode *callnode) {
     }
 
     // Obtain the list of methods for the reference type
-    IMethodNode *methtype;
+    INsTypeNode *methtype;
     switch (objtype->tag) {
     case PtrTag: methtype = ptrType; break;
     case RefTag: methtype = refType; break;
@@ -254,7 +254,7 @@ void fnCallLowerPtrMethod(FnCallNode *callnode) {
     default: assert(0 && "Unknown reference type");
     }
 
-    INamedNode *foundnode = imethnodesFind(&methtype->methprops, methsym);
+    INamedNode *foundnode = iNsTypeNodeFind(&methtype->methprops, methsym);
     if (!foundnode) { // It can only be a method
         if (objtype->tag == RefTag) {
             // Give references another crack at method via deref type's methods

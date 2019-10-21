@@ -21,7 +21,7 @@
 typedef struct ModuleNode {
     INamedNodeHdr;
     Nodes *nodes;            // All parsed nodes owned by the module
-    Namespace namednodes;   // The module's named nodes, owned or "used"
+    Namespace namespace;     // The module's named nodes, owned or "used"
 } ModuleNode;
 
 ModuleNode *newModuleNode();
