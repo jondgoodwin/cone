@@ -11,7 +11,7 @@
 #include <memory.h>
 
 void flowHandleMove(INode *node) {
-    int copytrait = itypeCopyTrait(((ITypedNode *)node)->vtype);
+    int copytrait = itypeCopyTrait(((IExpNode *)node)->vtype);
     if (copytrait != CopyBitwise)
         errorMsgNode(node, WarnCopy, "No current support for move. Be sure this is safe!");
     // if CopyMethod - inject use of that method to create a safe clone that can be "moved"
@@ -22,7 +22,7 @@ void flowHandleMove(INode *node) {
 void flowInjectAliasNode(INode **nodep, int16_t rvalcount) {
     int16_t count;
     int16_t *counts = NULL;
-    INode *vtype = ((ITypedNode*)*nodep)->vtype;
+    INode *vtype = ((IExpNode*)*nodep)->vtype;
     if (vtype->tag != TTupleTag) {
         // No need for injected node if we are not dealing with rc/own references and if alias calc = 0
         RefNode *reftype = (RefNode *)itypeGetTypeDcl(vtype);

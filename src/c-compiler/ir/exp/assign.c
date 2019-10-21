@@ -59,7 +59,7 @@ void assignSingleCheck(INode *lval, INode **rval) {
         errorMsgNode(lval, ErrorBadLval, "Expression must be lval");
         return;
     }
-    if (iexpCoerces(((ITypedNode*)lval)->vtype, rval) == 0) {
+    if (iexpCoerces(((IExpNode*)lval)->vtype, rval) == 0) {
         errorMsgNode(*rval, ErrorInvType, "Expression's type does not match lval's type");
         return;
     }
@@ -86,12 +86,12 @@ void assignParaCheck(VTupleNode *lval, VTupleNode *rval) {
 // Handle when single function/expression returns to multiple lval
 void assignMultRetCheck(VTupleNode *lval, INode **rval) {
     Nodes *lnodes = lval->values;
-    INode *rtype = ((ITypedNode *)*rval)->vtype;
+    INode *rtype = ((IExpNode *)*rval)->vtype;
     if (rtype->tag != TTupleTag) {
         errorMsgNode(*rval, ErrorBadTerm, "Not enough values for lvals");
         return;
     }
-    Nodes *rtypes = ((TTupleNode*)((ITypedNode *)*rval)->vtype)->types;
+    Nodes *rtypes = ((TTupleNode*)((IExpNode *)*rval)->vtype)->types;
     if (lnodes->used > rtypes->used) {
         errorMsgNode(*rval, ErrorBadTerm, "Not enough return values for lvals");
         return;
@@ -100,7 +100,7 @@ void assignMultRetCheck(VTupleNode *lval, INode **rval) {
     INode **lnodesp;
     INode **rtypep = &nodesGet(rtypes, 0);
     for (nodesFor(lnodes, lcnt, lnodesp)) {
-        if (itypeIsSame(((ITypedNode *)*lnodesp)->vtype, *rtypep++) == 0)
+        if (itypeIsSame(((IExpNode *)*lnodesp)->vtype, *rtypep++) == 0)
             errorMsgNode(*lnodesp, ErrorInvType, "Return value's type does not match lval's type");
     }
 }
@@ -132,7 +132,7 @@ void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
         else
             assignSingleCheck(node->lval, &node->rval);
     }
-    node->vtype = ((ITypedNode*)node->rval)->vtype;
+    node->vtype = ((IExpNode*)node->rval)->vtype;
 }
 
 // Extract lval variable, scope and overall permission from lval
@@ -209,7 +209,7 @@ void assignSingleFlow(INode *lval, INode **rval) {
         // When lval = '_' and this is an own reference, we may have a problem
         // If this assignment is supposed to return a reference, it cannot
         if (flowAliasGet(0) > 0) {
-            RefNode *reftype = (RefNode *)((ITypedNode*)*rval)->vtype;
+            RefNode *reftype = (RefNode *)((IExpNode*)*rval)->vtype;
             if (reftype->tag == RefTag && reftype->alloc == (INode*)ownAlloc)
                 errorMsgNode((INode*)lval, ErrorMove, "This frees reference. The reference is inaccessible for use.");
         }
@@ -226,8 +226,8 @@ void assignSingleFlow(INode *lval, INode **rval) {
         return;
     }
 
-    RefNode* rvaltype = (RefNode *)((ITypedNode*)*rval)->vtype;
-    RefNode* lvaltype = (RefNode *)((ITypedNode*)lval)->vtype;
+    RefNode* rvaltype = (RefNode *)((IExpNode*)*rval)->vtype;
+    RefNode* lvaltype = (RefNode *)((IExpNode*)lval)->vtype;
     if (rvaltype->tag == RefTag && lvaltype->tag == RefTag && lvaltype->alloc == voidType) {
         if (lvalscope < rvaltype->scope) {
             errorMsgNode(lval, ErrorInvType, "lval outlives the borrowed reference you are storing");
@@ -256,8 +256,8 @@ void assignParaFlow(VTupleNode *lval, VTupleNode *rval) {
 // Handle when single function/expression returns to multiple lval
 void assignMultRetFlow(VTupleNode *lval, INode **rval) {
     Nodes *lnodes = lval->values;
-    INode *rtype = ((ITypedNode *)*rval)->vtype;
-    Nodes *rtypes = ((TTupleNode*)((ITypedNode *)*rval)->vtype)->types;
+    INode *rtype = ((IExpNode *)*rval)->vtype;
+    Nodes *rtypes = ((TTupleNode*)((IExpNode *)*rval)->vtype)->types;
     int16_t lcnt;
     INode **lnodesp;
     INode **rtypep = &nodesGet(rtypes, 0);

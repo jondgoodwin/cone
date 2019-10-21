@@ -10,7 +10,7 @@
 
 // If statement
 typedef struct IfNode {
-    ITypedNodeHdr;
+    IExpNodeHdr;
     Nodes *condblk;
 } IfNode;
 

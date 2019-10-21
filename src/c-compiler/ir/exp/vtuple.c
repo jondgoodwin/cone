@@ -46,6 +46,6 @@ void vtupleTypeCheck(TypeCheckState *pstate, VTupleNode *tuple) {
     uint32_t cnt;
     for (nodesFor(tuple->values, cnt, nodesp)) {
         inodeTypeCheck(pstate, nodesp);
-        nodesAdd(&ttuple->types, ((ITypedNode *)*nodesp)->vtype);
+        nodesAdd(&ttuple->types, ((IExpNode *)*nodesp)->vtype);
     }
 }

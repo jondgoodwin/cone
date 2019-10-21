@@ -31,5 +31,5 @@ void namedValNameRes(NameResState *pstate, NamedValNode *node) {
 // Type check named value node
 void namedValTypeCheck(TypeCheckState *pstate, NamedValNode *node) {
     inodeTypeCheck(pstate, &node->val);
-    node->vtype = ((ITypedNode*)node->val)->vtype;
+    node->vtype = ((IExpNode*)node->val)->vtype;
 }

@@ -9,7 +9,7 @@
 #define borrow_h
 
 typedef struct BorrowNode {
-    ITypedNodeHdr;
+    IExpNodeHdr;
     INode *exp;
 } BorrowNode;
 

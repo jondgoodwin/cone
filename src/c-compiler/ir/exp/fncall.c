@@ -170,7 +170,7 @@ void fnCallLowerMethod(FnCallNode *callnode) {
             foundnode = imethnodesFind(&((IMethodNode*)methtype)->methprops, fnCallOpEqMethod(methsym));
             // + cannot substitute for += unless it returns same type it takes
             FnSigNode *methsig = (FnSigNode *)foundnode->vtype;
-            if (!itypeMatches(methsig->rettype, ((ITypedNode*)nodesGet(methsig->parms, 0))->vtype)) {
+            if (!itypeMatches(methsig->rettype, ((IExpNode*)nodesGet(methsig->parms, 0))->vtype)) {
                 errorMsgNode((INode*)callnode, ErrorNoMeth, "Cannot find valid operator method that returns same type that it takes.");
             }
         }
@@ -205,12 +205,12 @@ void fnCallLowerMethod(FnCallNode *callnode) {
     FnDclNode *bestmethod = imethnodesFindBestMethod((FnDclNode *)foundnode, callnode->args);
     if (bestmethod == NULL) {
         errorMsgNode((INode*)callnode, ErrorNoMeth, "No method named %s matches the call's arguments.", &methsym->namestr);
-        callnode->vtype = ((ITypedNode*)obj)->vtype; // make up a vtype
+        callnode->vtype = ((IExpNode*)obj)->vtype; // make up a vtype
         return;
     }
 
     // Do autoref or autoderef self, as necessary
-    refAutoRef(&nodesGet(callnode->args, 0), ((ITypedNode*)nodesGet(((FnSigNode*)bestmethod->vtype)->parms, 0))->vtype);
+    refAutoRef(&nodesGet(callnode->args, 0), ((IExpNode*)nodesGet(((FnSigNode*)bestmethod->vtype)->parms, 0))->vtype);
 
     // Re-purpose method's name use node into objfn, so name refers to found method
     NameUseNode *methodrefnode = callnode->methprop;
@@ -285,7 +285,7 @@ void fnCallLowerPtrMethod(FnCallNode *callnode) {
             INode *arg1type = iexpGetTypeDcl(nodesGet(args, 1));
             if (parm1type->tag == PtrTag || parm1type->tag == RefTag) {
                 if (nodesGet(args, 1)->tag == NullTag && (methsym == eqName || methsym == neName))
-                    ((ITypedNode*)nodesGet(args, 1))->vtype = ((ITypedNode*)nodesGet(args, 0))->vtype;
+                    ((IExpNode*)nodesGet(args, 1))->vtype = ((IExpNode*)nodesGet(args, 0))->vtype;
                 // When pointers are involved, we want to ensure they are the same type
                 else if (1 != itypeMatches(arg1type, iexpGetTypeDcl(nodesGet(args, 0))))
                     continue;
@@ -300,7 +300,7 @@ void fnCallLowerPtrMethod(FnCallNode *callnode) {
     }
     if (bestmethod == NULL) {
         errorMsgNode((INode*)callnode, ErrorNoMeth, "No method's parameter types match the call's arguments.");
-        callnode->vtype = ((ITypedNode*)obj)->vtype; // make up a vtype
+        callnode->vtype = ((IExpNode*)obj)->vtype; // make up a vtype
         return;
     }
 
@@ -309,7 +309,7 @@ void fnCallLowerPtrMethod(FnCallNode *callnode) {
     // Autoref self, as necessary
     INode **selfp = &nodesGet(callnode->args, 0);
     INode *selftype = iexpGetTypeDcl(*selfp);
-    INode *totype = itypeGetTypeDcl(((ITypedNode*)nodesGet(((FnSigNode*)bestmethod->vtype)->parms, 0))->vtype);
+    INode *totype = itypeGetTypeDcl(((IExpNode*)nodesGet(((FnSigNode*)bestmethod->vtype)->parms, 0))->vtype);
     if (selftype->tag != RefTag && totype->tag == RefTag) {
         RefNode *selfref = newRefNode();
         selfref->pvtype = selftype;

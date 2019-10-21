@@ -48,7 +48,7 @@ void flowScopePop(size_t pos);
 
 // Alias Node structure
 typedef struct {
-    ITypedNodeHdr;
+    IExpNodeHdr;
     INode *exp;
     int16_t *counts;   // points to array of counts. NULL if not tuple
     int16_t aliasamt;  // count nbr if not a tuple, # of counts if tuple

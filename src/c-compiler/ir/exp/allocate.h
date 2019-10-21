@@ -9,7 +9,7 @@
 #define allocate_h
 
 typedef struct AllocateNode {
-    ITypedNodeHdr;
+    IExpNodeHdr;
     INode *exp;
 } AllocateNode;
 

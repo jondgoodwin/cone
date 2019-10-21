@@ -15,7 +15,7 @@ enum AssignType {
 
 // Assignment node
 typedef struct AssignNode {
-    ITypedNodeHdr;
+    IExpNodeHdr;
     INode *lval;
     INode *rval;
     int16_t assignType;

@@ -48,7 +48,7 @@ void breakTypeCheck(TypeCheckState *pstate, BreakNode *node) {
     INode *vtype = voidType;
     if (node->exp) {
         inodeTypeCheck(pstate, &node->exp);
-        vtype = ((ITypedNode *)node->exp)->vtype;
+        vtype = ((IExpNode *)node->exp)->vtype;
     }
 
     // Coordinate break's vtype with the vtype of the corresponding loop

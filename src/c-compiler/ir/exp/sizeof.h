@@ -10,7 +10,7 @@
 
 // Get size of a type
 typedef struct SizeofNode {
-    ITypedNodeHdr;
+    IExpNodeHdr;
     INode *type;
 } SizeofNode;
 

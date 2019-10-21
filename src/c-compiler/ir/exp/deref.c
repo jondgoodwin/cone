@@ -29,7 +29,7 @@ void derefNameRes(NameResState *pstate, DerefNode *node) {
 // Type check deref node
 void derefTypeCheck(TypeCheckState *pstate, DerefNode *node) {
     inodeTypeCheck(pstate, &node->exp);
-    PtrNode *ptype = (PtrNode*)((ITypedNode *)node->exp)->vtype;
+    PtrNode *ptype = (PtrNode*)((IExpNode *)node->exp)->vtype;
     if (ptype->tag == RefTag || ptype->tag == PtrTag)
         node->vtype = ptype->pvtype;
     else
@@ -42,6 +42,6 @@ void derefAuto(INode **node) {
         return;
     DerefNode *deref = newDerefNode();
     deref->exp = *node;
-    deref->vtype = ((RefNode*)((ITypedNode *)*node)->vtype)->pvtype;
+    deref->vtype = ((RefNode*)((IExpNode *)*node)->vtype)->pvtype;
     *node = (INode*)deref;
 }

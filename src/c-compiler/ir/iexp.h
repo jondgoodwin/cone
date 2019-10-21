@@ -10,14 +10,14 @@
 
 // Typed Node header, offering access to the node's type info
 // - vtype is the value type for an expression (e.g., 'i32')
-#define ITypedNodeHdr \
+#define IExpNodeHdr \
     INodeHdr; \
     INode *vtype
 
 // Castable structure for all typed nodes
-typedef struct ITypedNode {
-    ITypedNodeHdr;
-} ITypedNode;
+typedef struct IExpNode {
+    IExpNodeHdr;
+} IExpNode;
 
 // Return node's type's declaration node
 // (Note: only use after it has been type-checked)

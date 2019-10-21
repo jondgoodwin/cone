@@ -97,7 +97,7 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
             errorMsgNode(name->value, ErrorNotLit, "Variable may only be initialized with a literal value.");
         // Infer the var's vtype from its value, if not provided
         if (name->vtype == voidType)
-            name->vtype = ((ITypedNode *)name->value)->vtype;
+            name->vtype = ((IExpNode *)name->value)->vtype;
         // Otherwise, verify that declared type and initial value type matches
         else if (!iexpCoerces(name->vtype, &name->value))
             errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");

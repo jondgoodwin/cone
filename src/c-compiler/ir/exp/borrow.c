@@ -127,7 +127,7 @@ void borrowTypeCheck(TypeCheckState *pstate, BorrowNode **nodep) {
         if (lvalvar->tag == VarDclTag)
             reftype->scope = ((VarDclNode*)lvalvar)->scope;
     }
-    INode *lvaltype = ((ITypedNode*)lval)->vtype;
+    INode *lvaltype = ((IExpNode*)lval)->vtype;
 
     // The reference's value type is unknown (NULL).
     // Let's infer type from the lval we are borrowing from

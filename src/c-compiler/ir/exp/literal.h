@@ -10,25 +10,25 @@
 
 // Unsigned integer literal
 typedef struct ULitNode {
-    ITypedNodeHdr;
+    IExpNodeHdr;
     uint64_t uintlit;
 } ULitNode;
 
 // Float literal
 typedef struct FLitNode {
-    ITypedNodeHdr;
+    IExpNodeHdr;
     double floatlit;
 } FLitNode;
 
 // String literal
 typedef struct SLitNode {
-    ITypedNodeHdr;
+    IExpNodeHdr;
     char *strlit;
 } SLitNode;
 
 // The null literal
 typedef struct NullNode {
-    ITypedNodeHdr;
+    IExpNodeHdr;
 } NullNode;
 
 ULitNode *newULitNode(uint64_t nbr, INode *type);
@@ -38,10 +38,10 @@ FLitNode *newFLitNode(double nbr, INode *type);
 void flitPrint(FLitNode *node);
 
 // Name resolution of lit node
-void litNameRes(NameResState* pstate, ITypedNode *node);
+void litNameRes(NameResState* pstate, IExpNode *node);
 
 // Type check lit node
-void litTypeCheck(TypeCheckState* pstate, ITypedNode *node);
+void litTypeCheck(TypeCheckState* pstate, IExpNode *node);
 
 NullNode *newNullNode();
 

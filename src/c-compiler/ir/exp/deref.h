@@ -9,7 +9,7 @@
 #define deref_h
 
 typedef struct DerefNode {
-    ITypedNodeHdr;
+    IExpNodeHdr;
     INode *exp;
 } DerefNode;
 

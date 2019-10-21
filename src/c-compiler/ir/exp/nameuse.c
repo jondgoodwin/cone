@@ -134,5 +134,5 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
 // Handle type check for name use references
 void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
     NameUseNode *name = *namep;
-    name->vtype = ((ITypedNode*)name->dclnode)->vtype;
+    name->vtype = ((IExpNode*)name->dclnode)->vtype;
 }

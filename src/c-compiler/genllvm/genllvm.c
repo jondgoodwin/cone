@@ -110,7 +110,7 @@ char *genlMangleMethName(char *workbuf, FnDclNode *node) {
     INode **nodesp;
     for (nodesFor(fnsig->parms, cnt, nodesp)) {
         *bufp++ = ':';
-        bufp = itypeMangle(bufp, ((ITypedNode *)*nodesp)->vtype);
+        bufp = itypeMangle(bufp, ((IExpNode *)*nodesp)->vtype);
     }
     *bufp = '\0';
 

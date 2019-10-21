@@ -25,7 +25,7 @@ typedef struct Name {
 // - namesym points to the global name table entry (holds name string)
 // - owner is the namespace node this name belongs to
 #define INamedNodeHdr \
-    ITypedNodeHdr; \
+    IExpNodeHdr; \
     Name *namesym
 
 // Castable structure for all named nodes

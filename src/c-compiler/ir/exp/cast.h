@@ -10,7 +10,7 @@
 
 // Cast to another type
 typedef struct CastNode {
-    ITypedNodeHdr;
+    IExpNodeHdr;
     INode *exp;
 } CastNode;
 

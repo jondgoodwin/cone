@@ -10,7 +10,7 @@
 
 // Loop expression node
 typedef struct LoopNode {
-    ITypedNodeHdr;
+    IExpNodeHdr;
     INode *blk;
     LifetimeNode *life;   // nullable
     int16_t nbreaks;      // Number of breaks out of this loop

@@ -88,7 +88,7 @@ FnDclNode *imethnodesFindBestMethod(FnDclNode *firstmethod, Nodes *args) {
         default:                // imprecise match using conversions
             // If this will auto-ref, make sure the ref perm will match
             if (match >= 100 && 
-                !refAutoRefCheck(nodesGet(args, 0), ((ITypedNode*)nodesGet(((FnSigNode*)methnode->vtype)->parms, 0))->vtype))
+                !refAutoRefCheck(nodesGet(args, 0), ((IExpNode*)nodesGet(((FnSigNode*)methnode->vtype)->parms, 0))->vtype))
                 continue;
             if (match < bestnbr) {
                 // Remember this as best found so far

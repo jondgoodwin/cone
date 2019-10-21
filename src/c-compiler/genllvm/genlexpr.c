@@ -586,7 +586,7 @@ void genlStore(GenState *gen, INode *lval, LLVMValueRef rval) {
     if (lval->tag == VarNameUseTag && ((NameUseNode*)lval)->namesym == anonName)
         return;
     LLVMValueRef lvalptr = genlAddr(gen, lval);
-    RefNode *reftype = (RefNode *)((ITypedNode*)lval)->vtype;
+    RefNode *reftype = (RefNode *)((IExpNode*)lval)->vtype;
     if (reftype->tag == RefTag && reftype->alloc == (INode*)rcAlloc)
         genlRcCounter(gen, LLVMBuildLoad(gen->builder, lvalptr, "dealiasref"), -1, reftype);
     LLVMBuildStore(gen->builder, rval, lvalptr);
@@ -654,7 +654,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     {
         AliasNode *anode = (AliasNode*)termnode;
         LLVMValueRef val = genlExpr(gen, anode->exp);
-        RefNode *reftype = (RefNode*)((ITypedNode*)anode->exp)->vtype;
+        RefNode *reftype = (RefNode*)((IExpNode*)anode->exp)->vtype;
         if (reftype->tag == RefTag) {
             if (reftype->alloc == (INode*)ownAlloc)
                 genlDealiasOwn(gen, val, reftype);
@@ -791,7 +791,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         BorrowNode *anode = (BorrowNode*)termnode;
         RefNode *reftype = (RefNode *)anode->vtype;
         if (reftype->tag == ArrayRefTag) {
-            INode *arraytype = itypeGetTypeDcl(((ITypedNode*)anode->exp)->vtype);
+            INode *arraytype = itypeGetTypeDcl(((IExpNode*)anode->exp)->vtype);
             if (arraytype->tag == ArrayTag) {
                 LLVMValueRef tupleval = LLVMGetUndef(genlType(gen, (INode*)reftype));
                 LLVMTypeRef ptrtype = LLVMPointerType(genlType(gen, reftype->pvtype), 0);

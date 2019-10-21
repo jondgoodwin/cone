@@ -80,7 +80,7 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
         uint32_t cnt;
         for (nodesFor(fnsig->parms, cnt, nodesp)) {
             assert((*nodesp)->tag == VarDclTag);
-            *parm++ = genlType(gen, ((ITypedNode *)*nodesp)->vtype);
+            *parm++ = genlType(gen, ((IExpNode *)*nodesp)->vtype);
         }
         return LLVMFunctionType(genlType(gen, fnsig->rettype), param_types, fnsig->parms->used, 0);
     }
@@ -101,7 +101,7 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
         LLVMTypeRef *property = prop_types;
         for (imethnodesFor(&strnode->methprops, cnt, nodesp)) {
             if ((*nodesp)->tag == VarDclTag)
-                *property++ = genlType(gen, ((ITypedNode *)*nodesp)->vtype);
+                *property++ = genlType(gen, ((IExpNode *)*nodesp)->vtype);
         }
         LLVMTypeRef structype = LLVMStructCreateNamed(gen->context, name);
         if (propcount > 0)

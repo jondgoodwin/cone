@@ -13,7 +13,7 @@
 // Macro that changes iexp pointer to type dcl pointer
 #define iexpToTypeDcl(node) {\
     if (isExpNode(node) || (node)->tag == VarDclTag || (node)->tag == FnDclTag) \
-        node = ((ITypedNode *)node)->vtype; \
+        node = ((IExpNode *)node)->vtype; \
     if (node->tag == TypeNameUseTag) \
         node = (INode*)((NameUseNode *)node)->dclnode; \
 }
@@ -57,7 +57,7 @@ int iexpCoerces(INode *to, INode **from) {
 
     // When coercing a block, do so on its last expression
     while ((*from)->tag == BlockTag) {
-        ((ITypedNode*)*from)->vtype = to;
+        ((IExpNode*)*from)->vtype = to;
         from = &nodesLast(((BlockNode*)*from)->stmts);
     }
 

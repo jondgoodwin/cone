@@ -57,7 +57,7 @@ void typeLitNbrCheck(TypeCheckState *pstate, FnCallNode *nbrlit, INode *type) {
         errorMsgNode((INode*)first, ErrorBadArray, "Literal value must be typed");
         return;
     }
-    INode *firsttype = itypeGetTypeDcl(((ITypedNode*)first)->vtype);
+    INode *firsttype = itypeGetTypeDcl(((IExpNode*)first)->vtype);
     if (firsttype->tag != IntNbrTag && firsttype->tag != UintNbrTag && firsttype->tag != FloatNbrTag) 
         errorMsgNode((INode*)first, ErrorBadArray, "May only create number literal from another number");
 }
@@ -77,14 +77,14 @@ void typeLitArrayCheck(TypeCheckState *pstate, FnCallNode *arrlit) {
         errorMsgNode((INode*)first, ErrorBadArray, "Array literal element must be a typed value");
         return;
     }
-    INode *firsttype = ((ITypedNode*)first)->vtype;
+    INode *firsttype = ((IExpNode*)first)->vtype;
     ((ArrayNode*)arrlit->vtype)->elemtype = firsttype;
 
     // Ensure all elements are consistently typed (matching first element's type)
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(arrlit->args, cnt, nodesp)) {
-        if (!itypeIsSame(((ITypedNode*)*nodesp)->vtype, firsttype))
+        if (!itypeIsSame(((IExpNode*)*nodesp)->vtype, firsttype))
             errorMsgNode((INode*)*nodesp, ErrorBadArray, "Inconsistent type of array literal value");
     }
 }

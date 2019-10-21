@@ -84,7 +84,7 @@ int fnSigMatchesCall(FnSigNode *to, Nodes *args) {
     tonodesp = &nodesGet(to->parms, 0);
     for (nodesFor(args, cnt, callnodesp)) {
         int match;
-        switch (match = itypeMatches(((ITypedNode *)*tonodesp)->vtype, ((ITypedNode*)*callnodesp)->vtype)) {
+        switch (match = itypeMatches(((IExpNode *)*tonodesp)->vtype, ((IExpNode*)*callnodesp)->vtype)) {
         case 0: return 0;
         case 1: break;
         case 2: matchsum += match; break;
@@ -121,7 +121,7 @@ int fnSigMatchMethCall(FnSigNode *to, Nodes *args) {
     tonodesp = &nodesGet(to->parms, 0);
     for (nodesFor(args, cnt, callnodesp)) {
         int match;
-        switch (match = itypeMatches(((ITypedNode *)*tonodesp)->vtype, ((ITypedNode*)*callnodesp)->vtype)) {
+        switch (match = itypeMatches(((IExpNode *)*tonodesp)->vtype, ((IExpNode*)*callnodesp)->vtype)) {
         case 0:
             if (!first)
                 return 0;

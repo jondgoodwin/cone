@@ -12,7 +12,7 @@
 // It acts like an ad hoc struct, briefly binding together types
 // for a parallel assignment or multiple return values
 typedef struct TTupleNode {
-    ITypedNodeHdr;
+    IExpNodeHdr;
     Nodes *types;
 } TTupleNode;
 
