@@ -48,7 +48,7 @@ void genlDealiasFlds(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
         return;
     INode **nodesp;
     uint32_t cnt;
-    for (imethnodesFor(&strnode->methprops, cnt, nodesp)) {
+    for (nodelistFor(&strnode->nodelist, cnt, nodesp)) {
         VarDclNode *field = (VarDclNode *)*nodesp;
         if (field->tag != VarDclTag)
             continue;

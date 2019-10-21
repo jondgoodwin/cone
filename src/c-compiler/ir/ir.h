@@ -30,6 +30,7 @@
 
 #include "../shared/memory.h"
 #include "nodes.h"
+#include "nodelist.h"
 #include "namespace.h"
 typedef struct Name Name;        // ../nametbl.h
 typedef struct Lexer Lexer;        // ../../parser/lexer.h

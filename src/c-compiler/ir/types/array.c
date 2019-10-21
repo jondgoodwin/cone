@@ -14,7 +14,7 @@ ArrayNode *newArrayNode() {
     anode->vtype = NULL;
     anode->namesym = anonName;
     anode->llvmtype = NULL;
-    iNsTypeInit(&anode->methprops, 0);
+    nodelistInit(&anode->nodelist, 0);
     anode->subtypes = newNodes(0);
     return anode;
 }

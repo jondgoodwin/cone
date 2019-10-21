@@ -120,10 +120,10 @@ int itypeCopyTrait(INode *typenode) {
     // If it has a .copy method, it is CopyMethod, or else it is CopyMove.
     if (isMethodType(typenode)) {
         int copytrait = CopyBitwise;
-        IMethNodes *nodes = &((INsTypeNode *)typenode)->methprops;
+        NodeList *nodes = &((INsTypeNode *)typenode)->nodelist;
         uint32_t cnt;
         INode **nodesp;
-        for (imethnodesFor(nodes, cnt, nodesp)) {
+        for (nodelistFor(nodes, cnt, nodesp)) {
             if (((*nodesp)->tag == VarDclTag && CopyBitwise != itypeCopyTrait(*nodesp))
                 /* || *nodesp points to a destructor */)
                 copytrait == CopyBitwise ? CopyMove : copytrait;

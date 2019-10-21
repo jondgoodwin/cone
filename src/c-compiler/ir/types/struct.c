@@ -15,7 +15,7 @@ StructNode *newStructNode(Name *namesym) {
     snode->namesym = namesym;
     snode->llvmtype = NULL;
     snode->subtypes = newNodes(0);
-    iNsTypeInit(&snode->methprops, 8);
+    nodelistInit(&snode->nodelist, 8);
     return snode;
 }
 
@@ -31,11 +31,11 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     nametblHookPush();
     INode **nodesp;
     uint32_t cnt;
-    for (imethnodesFor(&node->methprops, cnt, nodesp)) {
+    for (nodelistFor(&node->nodelist, cnt, nodesp)) {
         if (isNamedNode(*nodesp))
             nametblHookNode(((INamedNode*)*nodesp)->namesym, *nodesp);
     }
-    for (imethnodesFor(&node->methprops, cnt, nodesp)) {
+    for (nodelistFor(&node->nodelist, cnt, nodesp)) {
         inodeNameRes(pstate, (INode**)nodesp);
     }
     nametblHookPop();
@@ -50,7 +50,7 @@ void structTypePass(TypePass *pstate, StructNode *node) {
 void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     INode **nodesp;
     uint32_t cnt;
-    for (imethnodesFor(&node->methprops, cnt, nodesp)) {
+    for (nodelistFor(&node->nodelist, cnt, nodesp)) {
         inodeTypeCheck(pstate, (INode**)nodesp);
     }
 }

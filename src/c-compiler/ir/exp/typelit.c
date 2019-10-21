@@ -109,7 +109,7 @@ void typeLitStructCheck(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *
     INode **nodesp;
     uint32_t cnt;
     uint32_t argi = 0;
-    for (imethnodesFor(&strnode->methprops, cnt, nodesp)) {
+    for (nodelistFor(&strnode->nodelist, cnt, nodesp)) {
         if ((*nodesp)->tag != VarDclTag)
             continue;
         VarDclNode *prop = (VarDclNode *)*nodesp;

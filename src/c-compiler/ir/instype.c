@@ -11,46 +11,9 @@
 #include <string.h>
 #include <stdarg.h>
 
-// Initialize methnodes metadata
-void iNsTypeInit(IMethNodes *mnodes, uint32_t size) {
-    mnodes->avail = size;
-    mnodes->used = 0;
-    mnodes->nodes = (INode **)memAllocBlk(size * sizeof(INode **));
-}
-
-// Double size, if full
-void iNsTypeNodesGrow(IMethNodes *mnodes) {
-    INode **oldnodes;
-    oldnodes = mnodes->nodes;
-    mnodes->avail <<= 1;
-    mnodes->nodes = (INode **)memAllocBlk(mnodes->avail * sizeof(INode **));
-    memcpy(mnodes->nodes, oldnodes, mnodes->used * sizeof(INode **));
-}
-
-// Find the desired named node.
-// Return the node, if found or NULL if not found
-INamedNode *iNsTypeNodeFind(IMethNodes *mnodes, Name *name) {
-    INode **nodesp;
-    uint32_t cnt;
-    for (imethnodesFor(mnodes, cnt, nodesp)) {
-        if (isNamedNode(*nodesp)) {
-            if (((INamedNode*)*nodesp)->namesym == name)
-                return (INamedNode*)*nodesp;
-        }
-    }
-    return NULL;
-}
-
-// Add an INode to the end of a IMethNodes, growing it if full (changing its memory location)
-void iNsTypeNodeAdd(IMethNodes *mnodes, INode *node) {
-    if (mnodes->used >= mnodes->avail)
-        iNsTypeNodesGrow(mnodes);
-    mnodes->nodes[mnodes->used++] = node;
-}
-
 // Add a function or potentially overloaded method
 // If method is overloaded, add it to the link chain of same named methods
-void iNsTypeAddFn(IMethNodes *mnodes, FnDclNode *fnnode) {
+void iNsTypeAddFn(NodeList *mnodes, FnDclNode *fnnode) {
     FnDclNode *lastmeth = (FnDclNode *)iNsTypeNodeFind(mnodes, fnnode->namesym);
     if (lastmeth && (lastmeth->tag != FnDclTag
         || !(lastmeth->flags & FlagMethProp) || !(fnnode->flags & FlagMethProp))) {
@@ -62,17 +25,17 @@ void iNsTypeAddFn(IMethNodes *mnodes, FnDclNode *fnnode) {
             lastmeth = lastmeth->nextnode;
         lastmeth->nextnode = fnnode;
     }
-    iNsTypeNodeAdd(mnodes, (INode*)fnnode);
+    nodelistAdd(mnodes, (INode*)fnnode);
 }
 
 // Add a property
-void iNsTypeAddProp(IMethNodes *mnodes,  VarDclNode *varnode) {
+void iNsTypeAddProp(NodeList *mnodes,  VarDclNode *varnode) {
     FnDclNode *lastmeth = (FnDclNode *)iNsTypeNodeFind(mnodes, varnode->namesym);
     if (lastmeth && (lastmeth->tag != VarDclTag)) {
         errorMsgNode((INode*)varnode, ErrorDupName, "Duplicate name %s: Only methods can be overloaded.", &varnode->namesym->namestr);
         return;
     }
-    iNsTypeNodeAdd(mnodes, (INode*)varnode);
+    nodelistAdd(mnodes, (INode*)varnode);
 }
 
 // Find method that best fits the passed arguments
