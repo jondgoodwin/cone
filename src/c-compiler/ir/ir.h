@@ -39,7 +39,7 @@ typedef struct TypeCheckState TypeCheckState;
 // Interfaces & headers shared across nodes
 #include "inode.h"
 #include "iexp.h"
-#include "inamed.h"
+#include "name.h"
 #include "itype.h"
 #include "imethod.h"
 #include "typepass.h"
@@ -95,6 +95,7 @@ typedef struct AllocNode {
 
 // Context used for name resolution pass
 typedef struct NameResState {
+    ModuleNode *mod;        // Current module
     INode *typenode;        // Current type (e.g., struct)
     int16_t scope;          // The current block scope (0=global, 1=fnsig, 2+=blocks)
     uint16_t flags;         // e.g., PassWithinWhile

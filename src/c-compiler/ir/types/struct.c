@@ -12,7 +12,6 @@ StructNode *newStructNode(Name *namesym) {
     StructNode *snode;
     newNode(snode, StructNode, StructTag);
     snode->vtype = NULL;
-    snode->owner = NULL;
     snode->namesym = namesym;
     snode->llvmtype = NULL;
     snode->subtypes = newNodes(0);

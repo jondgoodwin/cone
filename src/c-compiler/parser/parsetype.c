@@ -81,13 +81,13 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
             errorMsgLex(ErrorNoInit, "Must specify default/initial value.");
     }
 
-    varnode->owner = parse->owner;
     return varnode;
 }
 
 // Parse a struct
 INode *parseStruct(ParseState *parse) {
-    INamedNode *svowner = parse->owner;
+    char *svprefix = parse->gennamePrefix;
+    IMethodNode *svtype = parse->typenode;
     StructNode *strnode;
     int16_t propertynbr = 0;
 
@@ -99,8 +99,8 @@ INode *parseStruct(ParseState *parse) {
     if (lexIsToken(IdentToken)) {
         strnode = newStructNode(lex->val.ident);
         strnode->tag = tag;
-        strnode->owner = parse->owner;
-        parse->owner = (INamedNode *)strnode;
+        nameConcatPrefix(&parse->gennamePrefix, &strnode->namesym->namestr);
+        parse->typenode = (IMethodNode *)strnode;
         lexNextToken();
     }
     else {
@@ -120,14 +120,17 @@ INode *parseStruct(ParseState *parse) {
                     FnDclNode *fn = (FnDclNode*)parseFn(parse, FlagMethProp, ParseMayName | ParseMayImpl);
                     if (fn && isNamedNode(fn)) {
                         fn->flags |= FlagSetMethod;
+                        nameGenFnName(fn, parse->gennamePrefix);
                         imethnodesAddFn(&strnode->methprops, fn);
                     }
                 }
             }
             else if (lexIsToken(FnToken)) {
                 FnDclNode *fn = (FnDclNode*)parseFn(parse, FlagMethProp, ParseMayName | ParseMayImpl);
-                if (fn && isNamedNode(fn))
+                if (fn && isNamedNode(fn)) {
+                    nameGenFnName(fn, parse->gennamePrefix);
                     imethnodesAddFn(&strnode->methprops, fn);
+                }
             }
             else if (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
                 VarDclNode *property = parseVarDcl(parse, mutPerm, ParseMayImpl | ParseMaySig);
@@ -154,7 +157,8 @@ INode *parseStruct(ParseState *parse) {
     if (propertynbr == 0)
         strnode->flags |= FlagStructOpaque;
 
-    parse->owner = svowner;
+    parse->typenode = svtype;
+    parse->gennamePrefix = svprefix;
     return (INode*)strnode;
 }
 
@@ -179,25 +183,25 @@ INode *parseFnSig(ParseState *parse) {
     if (lexIsToken(LParenToken)) {
         lexNextToken();
         // A type's method with no parameters should still define self
-        if (lexIsToken(RParenToken) && isTypeNode(parse->owner))
-            parseInjectSelf(fnsig, parse->owner->namesym);
+        if (lexIsToken(RParenToken) && parse->typenode)
+            parseInjectSelf(fnsig, parse->typenode->namesym);
         while (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
             VarDclNode *parm = parseVarDcl(parse, immPerm, parseflags);
             // Do special inference if function is a type's method
-            if (isTypeNode(parse->owner)) {
+            if (parse->typenode) {
                 // Create default self parm, if 'self' was not specified
-                if (parmnbr == 0 && parm->namesym != nametblFind("self", 4)) {
-                    parseInjectSelf(fnsig, parse->owner->namesym);
+                if (parmnbr == 0 && parm->namesym != selfName) {
+                    parseInjectSelf(fnsig, parse->typenode->namesym);
                     ++parmnbr;
                 }
                 // Infer value type of a parameter (or its reference) if unspecified
                 if (parm->vtype == voidType) {
-                    parm->vtype = (INode*)newNameUseNode(parse->owner->namesym);
+                    parm->vtype = (INode*)newNameUseNode(parse->typenode->namesym);
                 }
                 else if (parm->vtype->tag == RefTag) {
                     PtrNode *refnode = (PtrNode *)parm->vtype;
                     if (refnode->pvtype == voidType) {
-                        refnode->pvtype = (INode*)newNameUseNode(parse->owner->namesym);
+                        refnode->pvtype = (INode*)newNameUseNode(parse->typenode->namesym);
                     }
                 }
             }

@@ -16,10 +16,10 @@ FnDclNode *newFnDclNode(Name *namesym, uint16_t flags, INode *type, INode *val) 
     newNode(name, FnDclNode, FnDclTag);
     name->flags = flags;
     name->vtype = type;
-    name->owner = NULL;
     name->namesym = namesym;
     name->value = val;
     name->llvmvar = NULL;
+    name->genname = namesym? &namesym->namestr : "";
     name->nextnode = NULL;
     return name;
 }

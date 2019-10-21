@@ -146,6 +146,7 @@ int itypeCopyTrait(INode *typenode) {
 // Add type mangle info to buffer
 char *itypeMangle(char *bufp, INode *vtype) {
     switch (vtype->tag) {
+    case NameUseTag:
     case TypeNameUseTag:
     {
         strcpy(bufp, &((IMethodNode*)((NameUseNode *)vtype)->dclnode)->namesym->namestr);

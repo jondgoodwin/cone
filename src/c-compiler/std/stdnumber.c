@@ -21,7 +21,6 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
     NbrNode *nbrtypenode;
     newNode(nbrtypenode, NbrNode, typ);
     nbrtypenode->vtype = NULL;
-    nbrtypenode->owner = NULL;
     nbrtypenode->namesym = namesym;
     nbrtypenode->llvmtype = NULL;
     imethnodesInit(&nbrtypenode->methprops, 32);
@@ -122,7 +121,6 @@ IMethodNode *newPtrTypeMethods() {
     IMethodNode *ptrtypenode;
     newNode(ptrtypenode, IMethodNode, PtrTag);
     ptrtypenode->vtype = NULL;
-    ptrtypenode->owner = NULL;
     ptrtypenode->namesym = NULL;
     ptrtypenode->llvmtype = NULL;
     imethnodesInit(&ptrtypenode->methprops, 16);
@@ -197,7 +195,6 @@ IMethodNode *newRefTypeMethods() {
     IMethodNode *reftypenode;
     newNode(reftypenode, IMethodNode, RefTag);
     reftypenode->vtype = NULL;
-    reftypenode->owner = NULL;
     reftypenode->namesym = NULL;
     reftypenode->llvmtype = NULL;
     imethnodesInit(&reftypenode->methprops, 8);
@@ -245,7 +242,6 @@ IMethodNode *newArrayRefTypeMethods() {
     IMethodNode *reftypenode;
     newNode(reftypenode, IMethodNode, ArrayRefTag);
     reftypenode->vtype = NULL;
-    reftypenode->owner = NULL;
     reftypenode->namesym = NULL;
     reftypenode->llvmtype = NULL;
     imethnodesInit(&reftypenode->methprops, 8);

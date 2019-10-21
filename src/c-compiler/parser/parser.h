@@ -12,9 +12,10 @@
 typedef struct ConeOptions ConeOptions;
 
 typedef struct ParseState {
-    ModuleNode *pgmmod;    // Root module for program
+    ModuleNode *pgmmod;     // Root module for program
     ModuleNode *mod;        // Current module
-    INamedNode *owner;    // Current namespace owning named nodes
+    IMethodNode *typenode;  // Current type
+    char *gennamePrefix;    // Module or type prefix for unique linker names
 } ParseState;
 
 // When parsing a variable definition, what syntax is allowed?

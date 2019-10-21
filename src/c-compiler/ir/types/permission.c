@@ -14,7 +14,6 @@ PermNode *newPermDclNode(Name *namesym, uint16_t flags) {
     PermNode *node;
     newNode(node, PermNode, PermTag);
     node->vtype = NULL;
-    node->owner = NULL;
     node->namesym = namesym;
     node->llvmtype = NULL;
     imethnodesInit(&node->methprops, 1); // May not need members for static types

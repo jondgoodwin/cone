@@ -87,55 +87,42 @@ void genlGloVar(GenState *gen, VarDclNode *varnode) {
         LLVMSetInitializer(varnode->llvmvar, genlExpr(gen, varnode->value));
 }
 
-void genlNamePrefix(INamedNode *name, char *workbuf) {
-    if (name->namesym==NULL)
-        return;
-    genlNamePrefix(name->owner, workbuf);
-    strcat(workbuf, &name->namesym->namestr);
-    strcat(workbuf, ":");
-}
-
-// Create and return globally unique name, mangled as necessary
-char *genlGlobalName(INamedNode *name) {
-    // Is mangling necessary? Only if we need namespace qualifier or method might be overloaded
-    if (name->namesym == NULL)
-        return "";
-    if ((name->flags & FlagExtern) || !(name->tag == FnDclTag && (name->flags & FlagMethProp)) && !name->owner->namesym)
-        return &name->namesym->namestr;
-
-    char workbuf[2048] = { '\0' };
-    genlNamePrefix(name->owner, workbuf);
-    strcat(workbuf, &name->namesym->namestr);
-
-    // Mangle method name with parameter types so that overloaded methods have distinct names
-    if (name->flags & FlagMethProp) {
-        FnSigNode *fnsig = (FnSigNode *)name->vtype;
-        char *bufp = workbuf + strlen(workbuf);
-        int16_t cnt;
-        INode **nodesp;
-        for (nodesFor(fnsig->parms, cnt, nodesp)) {
-            *bufp++ = ':';
-            bufp = itypeMangle(bufp, ((ITypedNode *)*nodesp)->vtype);
-        }
-        *bufp = '\0';
-    }
-    return memAllocStr(workbuf, strlen(workbuf));
-}
-
 // Generate LLVMValueRef for a global variable
 void genlGloVarName(GenState *gen, VarDclNode *glovar) {
-    glovar->llvmvar = LLVMAddGlobal(gen->module, genlType(gen, glovar->vtype), genlGlobalName((INamedNode*)glovar));
+    glovar->llvmvar = LLVMAddGlobal(gen->module, genlType(gen, glovar->vtype), glovar->genname);
     if (permIsSame(glovar->perm, (INode*) immPerm))
         LLVMSetGlobalConstant(glovar->llvmvar, 1);
     if (glovar->namesym && glovar->namesym->namestr == '_')
         LLVMSetVisibility(glovar->llvmvar, LLVMHiddenVisibility);
 }
 
+// Create mangled function name for overloaded function
+char *genlMangleMethName(char *workbuf, FnDclNode *node) {
+    // Use genned name if not an overloadable method
+    if (!(node->flags & FlagMethProp))
+        return node->genname;
+
+    strcat(workbuf, node->genname);
+    char *bufp = workbuf + strlen(workbuf);
+
+    FnSigNode *fnsig = (FnSigNode *)node->vtype;
+    int16_t cnt;
+    INode **nodesp;
+    for (nodesFor(fnsig->parms, cnt, nodesp)) {
+        *bufp++ = ':';
+        bufp = itypeMangle(bufp, ((ITypedNode *)*nodesp)->vtype);
+    }
+    *bufp = '\0';
+
+    return workbuf;
+}
+
 // Generate LLVMValueRef for a global function
 void genlGloFnName(GenState *gen, FnDclNode *glofn) {
     // Add function to the module
     if (glofn->value == NULL || glofn->value->tag != IntrinsicTag) {
-        char *manglednm = genlGlobalName((INamedNode*)glofn);
+        char workbuf[2048] = { '\0' };
+        char *manglednm = genlMangleMethName(workbuf, glofn);
         char *fnname = glofn->namesym? &glofn->namesym->namestr : "";
         glofn->llvmvar = LLVMAddFunction(gen->module, manglednm, genlType(gen, glofn->vtype));
 

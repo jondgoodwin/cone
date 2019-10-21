@@ -15,7 +15,6 @@ ModuleNode *newModuleNode() {
     ModuleNode *mod;
     newNode(mod, ModuleNode, ModuleTag);
     mod->namesym = NULL;
-    mod->owner = NULL;
     mod->nodes = newNodes(64);
     namespaceInit(&mod->namednodes, 64);
     return mod;
@@ -87,9 +86,10 @@ void modHook(ModuleNode *oldmod, ModuleNode *newmod) {
 
 // Name resolution of the module node
 void modNameRes(NameResState *pstate, ModuleNode *mod) {
+    ModuleNode *owningmod = pstate->mod;
 
     // Switch name table over to new module
-    modHook((ModuleNode*)mod->owner, mod);
+    modHook(owningmod, mod);
 
     // Process all nodes
     INode **nodesp;
@@ -99,7 +99,8 @@ void modNameRes(NameResState *pstate, ModuleNode *mod) {
     }
 
     // Switch name table back to owner module
-    modHook(mod, (ModuleNode*)mod->owner);
+    modHook(mod, owningmod);
+    pstate->mod = owningmod;
 }
 
 // Check all type declarations in the module

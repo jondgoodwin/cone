@@ -74,7 +74,6 @@ INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags) {
     FnDclNode *fnnode;
 
     fnnode = newFnDclNode(NULL, nodeflags, NULL, NULL);
-    fnnode->owner = parse->owner;
 
     // Skip past the 'fn'
     lexNextToken();
@@ -84,6 +83,7 @@ INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags) {
         if (!(mayflags&ParseMayName))
             errorMsgLex(WarnName, "Unnecessary function name is ignored");
         fnnode->namesym = lex->val.ident;
+        fnnode->genname = &fnnode->namesym->namestr;
         lexNextToken();
     }
     else {
@@ -222,8 +222,13 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
         // Function or variable
         case FnToken:
         case PermToken:
-            if (node = parseFnOrVar(parse, 0))
+            if (node = parseFnOrVar(parse, 0)) {
                 modAddNode(mod, node);
+                if (node->tag == VarDclTag)
+                    nameGenVarName((VarDclNode *)node, parse->gennamePrefix);
+                else
+                    nameGenFnName((FnDclNode *)node, parse->gennamePrefix);
+            }
             break;
 
         default:
@@ -236,17 +241,18 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
 
 // Parse a module's global statement block
 ModuleNode *parseModuleBlk(ParseState *parse, ModuleNode *mod) {
+    ModuleNode *oldmod = parse->mod;
     parse->mod = mod;
-    modHook((ModuleNode*)mod->owner, mod);
+    modHook(oldmod, mod);
     parseGlobalStmts(parse, mod);
-    modHook(mod, (ModuleNode*)mod->owner);
-    parse->mod = (ModuleNode*)mod->owner;
+    modHook(mod, oldmod);
+    parse->mod = oldmod;
     return mod;
 }
 
 // Parse a submodule within a program
 ModuleNode *parseModule(ParseState *parse) {
-    INamedNode *svowner = parse->owner;
+    char *svprefix = parse->gennamePrefix;
     ModuleNode *mod;
     char *filename, *modname;
 
@@ -259,8 +265,7 @@ ModuleNode *parseModule(ParseState *parse) {
 
     // This is a new module, build it
     mod = newModuleNode();
-    mod->owner = svowner;
-    parse->owner = (INamedNode *)mod;
+    nameConcatPrefix(&parse->gennamePrefix, modname);
     mod->namesym = nametblFind(modname, strlen(modname));
     if (lexIsToken(LCurlyToken)) {
         lexNextToken();
@@ -273,7 +278,7 @@ ModuleNode *parseModule(ParseState *parse) {
         parseModuleBlk(parse, mod);
         lexPop();
     }
-    parse->owner = svowner;
+    parse->gennamePrefix = svprefix;
     return mod;
 }
 
@@ -288,6 +293,8 @@ ModuleNode *parsePgm(ConeOptions *opt) {
     ModuleNode *mod;
     mod = newModuleNode();
     parse.pgmmod = mod;
-    parse.owner = (INamedNode *)mod;
+    parse.mod = NULL;
+    parse.typenode = NULL;
+    parse.gennamePrefix = "";
     return parseModuleBlk(&parse, mod);
 }

@@ -15,13 +15,13 @@ VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *perm) {
     VarDclNode *name;
     newNode(name, VarDclNode, tag);
     name->vtype = voidType;
-    name->owner = NULL;
     name->namesym = namesym;
     name->perm = perm;
     name->value = NULL;
     name->scope = 0;
     name->index = 0;
     name->llvmvar = NULL;
+    name->genname = &namesym->namestr;
     name->flowflags = 0;
     name->flowtempflags = 0;
     return name;
@@ -32,7 +32,6 @@ VarDclNode *newVarDclFull(Name *namesym, uint16_t tag, INode *type, INode *perm,
     VarDclNode *name;
     newNode(name, VarDclNode, tag);
     name->vtype = type;
-    name->owner = NULL;
     name->namesym = namesym;
     name->perm = perm;
     name->value = val;

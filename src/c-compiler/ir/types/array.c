@@ -12,7 +12,6 @@ ArrayNode *newArrayNode() {
     ArrayNode *anode;
     newNode(anode, ArrayNode, ArrayTag);
     anode->vtype = NULL;
-    anode->owner = NULL;
     anode->namesym = anonName;
     anode->llvmtype = NULL;
     imethnodesInit(&anode->methprops, 0);

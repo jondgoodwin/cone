@@ -1,7 +1,4 @@
-/** Header and structure for inamednodes
- *
- * Largely, the functions that work with named nodes are distributed
- * across the various namespaces:  nametbl, namespace, nodes, methnodes
+/** Name handling - general purpose
  *
  * @file
  *
@@ -9,12 +6,10 @@
  * See Copyright Notice in conec.h
 */
 
-#ifndef inamed_h
-#define inamed_h
+#ifndef name_h
+#define name_h
 
 #include <stdlib.h>
-
-typedef struct INamedNode INamedNode;
 
 // Name is an interned symbol, unique by its collection of characters (<=255)
 // A name can be hashed into the global name table or a particular node's namespace.
@@ -31,12 +26,22 @@ typedef struct Name {
 // - owner is the namespace node this name belongs to
 #define INamedNodeHdr \
     ITypedNodeHdr; \
-    Name *namesym; \
-    struct INamedNode *owner
+    Name *namesym
 
 // Castable structure for all named nodes
 typedef struct INamedNode {
     INamedNodeHdr;
 } INamedNode;
+
+typedef struct VarDclNode VarDclNode;
+typedef struct FnDclNode FnDclNode;
+
+// Create new prefix that concatenates a new name to the old prefix, followed by _
+void nameConcatPrefix(char **prefix, char *name);
+// Create globally unique variable name, prefixed by module/type name
+void nameGenVarName(VarDclNode *node, char *prefix);
+// Create globally unique mangled function name, prefixed by module/type name
+void nameGenFnName(FnDclNode *node, char *prefix);
+
 
 #endif

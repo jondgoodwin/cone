@@ -25,6 +25,7 @@ void doAnalysis(ModuleNode **mod) {
     // Resolve all name uses to their appropriate declaration
     // Note: Some nodes may be replaced (e.g., 'a' to 'self.a')
     NameResState nstate;
+    nstate.mod = NULL;
     nstate.typenode = NULL;
     nstate.scope = 0;
     nstate.flags = 0;
