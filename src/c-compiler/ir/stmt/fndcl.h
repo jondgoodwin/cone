@@ -9,7 +9,8 @@
 
 // Name declaration node (e.g., variable, fn implementation, or named type)
 typedef struct FnDclNode {
-    INamedNodeHdr;                // 'vtype': type of this name's value
+    IExpNodeHdr;                // 'vtype': type of this name's value
+    Name *namesym;
     INode *value;                 // Block or intrinsic code nodes (NULL if no code)
     LLVMValueRef llvmvar;         // LLVM's handle for a declared variable (for generation)
     char *genname;                // Name of the function as known to the linker

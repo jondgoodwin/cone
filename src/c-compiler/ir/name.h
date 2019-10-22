@@ -21,18 +21,6 @@ typedef struct Name {
     char namestr;            // First byte of name's string (the rest follows)
 } Name;
 
-// Named Node header, for variable and type declarations
-// - namesym points to the global name table entry (holds name string)
-// - owner is the namespace node this name belongs to
-#define INamedNodeHdr \
-    IExpNodeHdr; \
-    Name *namesym
-
-// Castable structure for all named nodes
-typedef struct INamedNode {
-    INamedNodeHdr;
-} INamedNode;
-
 typedef struct VarDclNode VarDclNode;
 typedef struct FnDclNode FnDclNode;
 

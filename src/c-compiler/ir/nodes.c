@@ -83,17 +83,3 @@ void nodesMove(Nodes *nodes, size_t to, size_t from) {
     }
     *(&nodesGet(nodes, to)) = movenode;
 }
-
-// Find the desired named node in a nodes list.
-// Return the node, if found or NULL if not found
-INamedNode *nodesFind(Nodes *nodes, Name *name) {
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodesFor(nodes, cnt, nodesp)) {
-        if (isNamedNode(*nodesp)) {
-            if (((INamedNode*)*nodesp)->namesym == name)
-                return (INamedNode*)*nodesp;
-        }
-    }
-    return NULL;
-}

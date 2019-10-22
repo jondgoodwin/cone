@@ -11,7 +11,6 @@
 ArrayNode *newArrayNode() {
     ArrayNode *anode;
     newNode(anode, ArrayNode, ArrayTag);
-    anode->vtype = NULL;
     anode->namesym = anonName;
     anode->llvmtype = NULL;
     iNsTypeInit((INsTypeNode*)anode, 0);

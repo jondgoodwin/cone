@@ -18,7 +18,6 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
     // Start by creating the node for this number type
     NbrNode *nbrtypenode;
     newNode(nbrtypenode, NbrNode, typ);
-    nbrtypenode->vtype = NULL;
     nbrtypenode->namesym = namesym;
     nbrtypenode->llvmtype = NULL;
     iNsTypeInit((INsTypeNode*)nbrtypenode, 32);
@@ -117,7 +116,6 @@ INsTypeNode *newPtrTypeMethods() {
     // Create the node for this pointer type
     INsTypeNode *ptrtypenode;
     newNode(ptrtypenode, INsTypeNode, PtrTag);
-    ptrtypenode->vtype = NULL;
     ptrtypenode->namesym = NULL;
     ptrtypenode->llvmtype = NULL;
     iNsTypeInit((INsTypeNode*)ptrtypenode, 16);
@@ -190,7 +188,6 @@ INsTypeNode *newRefTypeMethods() {
     // Create the node for this reference type
     INsTypeNode *reftypenode;
     newNode(reftypenode, INsTypeNode, RefTag);
-    reftypenode->vtype = NULL;
     reftypenode->namesym = NULL;
     reftypenode->llvmtype = NULL;
     iNsTypeInit((INsTypeNode*)reftypenode, 8);
@@ -236,7 +233,6 @@ INsTypeNode *newArrayRefTypeMethods() {
     // Create the node for this array reference type
     INsTypeNode *reftypenode;
     newNode(reftypenode, INsTypeNode, ArrayRefTag);
-    reftypenode->vtype = NULL;
     reftypenode->namesym = NULL;
     reftypenode->llvmtype = NULL;
     iNsTypeInit((INsTypeNode*)reftypenode, 8);

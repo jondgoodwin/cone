@@ -142,7 +142,7 @@ LLVMTypeRef genlType(GenState *gen, INode *typ) {
     INode *dcltype = itypeGetTypeDcl(typ);
     if (isNamedNode(dcltype)) {
         // with vtype name use, we can memoize type value and give it a name
-        ITypeNode *dclnode = (ITypeNode*)dcltype;
+        INsTypeNode *dclnode = (INsTypeNode*)dcltype;
         if (dclnode->llvmtype)
             return dclnode->llvmtype;
 

@@ -13,7 +13,6 @@
 LifetimeNode *newLifetimeDclNode(Name *namesym, Lifetime life) {
     LifetimeNode *node;
     newNode(node, LifetimeNode, LifetimeTag);
-    node->vtype = NULL;
     node->namesym = namesym;
     node->llvmtype = NULL;
     node->life = life;

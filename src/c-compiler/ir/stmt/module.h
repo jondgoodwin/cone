@@ -19,7 +19,8 @@
 // A module supports forward referencing of its names (except permissions and allocators).
 // It also supports name resolution of namespace qualified, public names.
 typedef struct ModuleNode {
-    INamedNodeHdr;
+    IExpNodeHdr;
+    Name *namesym;
     Nodes *nodes;            // All parsed nodes owned by the module
     Namespace namespace;     // The module's named nodes, owned or "used"
 } ModuleNode;

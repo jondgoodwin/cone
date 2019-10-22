@@ -9,7 +9,6 @@
 #define nodes_h
 
 typedef struct INode INode;
-typedef struct INamedNode INamedNode;
 typedef struct OwnerNode OwnerNode;
 typedef struct Name Name;
 
@@ -30,7 +29,6 @@ void nodesAdd(Nodes **nodesp, INode *node);
 void nodesInsert(Nodes **nodesp, INode *node, size_t index);
 // Move an element at index 'to' to index 'from', shifting nodes in between
 void nodesMove(Nodes *nodes, size_t to, size_t from);
-INamedNode *nodesFind(Nodes *nodes, Name *name);
 
 #define nodesNodes(nodes) ((INode**)((nodes)+1))
 #define nodesFor(nodes, cnt, nodesp) nodesp = (INode**)((nodes)+1), cnt = (nodes)->used; cnt; cnt--, nodesp++

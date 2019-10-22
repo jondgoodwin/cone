@@ -11,6 +11,7 @@
 // Namespaced type that supports methods, properties and traits
 #define INsTypeNodeHdr \
     ITypeNodeHdr; \
+    Name *namesym; \
     NodeList nodelist; \
     Namespace namespace; \
     Nodes *subtypes

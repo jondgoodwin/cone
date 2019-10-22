@@ -64,7 +64,7 @@ typedef struct TypeCheckState TypeCheckState;
 #include "types/array.h"
 #include "types/void.h"
 typedef struct AllocNode {
-    INamedNodeHdr;
+    INsTypeNodeHdr;
 } AllocNode;
 
 #include "stmt/module.h"

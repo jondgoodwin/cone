@@ -13,7 +13,6 @@
 PermNode *newPermDclNode(Name *namesym, uint16_t flags) {
     PermNode *node;
     newNode(node, PermNode, PermTag);
-    node->vtype = NULL;
     node->namesym = namesym;
     node->llvmtype = NULL;
     iNsTypeInit((INsTypeNode*)node, 1); // May not need members for static types

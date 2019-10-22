@@ -11,7 +11,6 @@
 StructNode *newStructNode(Name *namesym) {
     StructNode *snode;
     newNode(snode, StructNode, StructTag);
-    snode->vtype = NULL;
     snode->namesym = namesym;
     snode->llvmtype = NULL;
     snode->subtypes = newNodes(0);
@@ -29,12 +28,9 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     INode *svtypenode = pstate->typenode;
     pstate->typenode = (INode*)node;
     nametblHookPush();
+    nametblHookNamespace(&node->namespace);
     INode **nodesp;
     uint32_t cnt;
-    for (nodelistFor(&node->nodelist, cnt, nodesp)) {
-        if (isNamedNode(*nodesp))
-            nametblHookNode(((INamedNode*)*nodesp)->namesym, *nodesp);
-    }
     for (nodelistFor(&node->nodelist, cnt, nodesp)) {
         inodeNameRes(pstate, (INode**)nodesp);
     }

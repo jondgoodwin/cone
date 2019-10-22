@@ -12,7 +12,7 @@ typedef struct Name Name;
 
 // Named type node header (most types are named)
 #define ITypeNodeHdr \
-    INamedNodeHdr; \
+    INodeHdr; \
     LLVMTypeRef llvmtype
 
 // Named type node interface (most types are named)

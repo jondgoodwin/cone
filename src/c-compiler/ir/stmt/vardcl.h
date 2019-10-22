@@ -9,7 +9,8 @@
 
 // Name declaration node (e.g., variable, fn implementation, or named type)
 typedef struct VarDclNode {
-    INamedNodeHdr;             // 'vtype': type of this name's value
+    IExpNodeHdr;             // 'vtype': type of this name's value
+    Name *namesym;
     INode *value;              // Starting value/declaration (NULL if not initialized)
     LLVMValueRef llvmvar;      // LLVM's handle for a declared variable (for generation)
     char *genname;             // Name of variable as known to the linker
