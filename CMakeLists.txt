@@ -24,21 +24,24 @@ add_executable(conec
 	src/c-compiler/shared/utf8.c
 
 	src/c-compiler/ir/flow.c
-	src/c-compiler/ir/inode.c
-	src/c-compiler/ir/imethod.c
 	src/c-compiler/ir/iexp.c
+	src/c-compiler/ir/inode.c
+	src/c-compiler/ir/instype.c
 	src/c-compiler/ir/itype.c
+	src/c-compiler/ir/name.c
 	src/c-compiler/ir/namespace.c
 	src/c-compiler/ir/nametbl.c
+	src/c-compiler/ir/nodelist.c
 	src/c-compiler/ir/nodes.c
+	src/c-compiler/ir/typepass.c
 
 	src/c-compiler/ir/stmt/break.c
+	src/c-compiler/ir/stmt/continue.c
 	src/c-compiler/ir/stmt/fndcl.c
 	src/c-compiler/ir/stmt/intrinsic.c
 	src/c-compiler/ir/stmt/module.c
 	src/c-compiler/ir/stmt/return.c
 	src/c-compiler/ir/stmt/vardcl.c
-	src/c-compiler/ir/stmt/while.c
 
 	src/c-compiler/ir/exp/allocate.c
 	src/c-compiler/ir/exp/assign.c
@@ -50,22 +53,24 @@ add_executable(conec
 	src/c-compiler/ir/exp/if.c
 	src/c-compiler/ir/exp/literal.c
 	src/c-compiler/ir/exp/logic.c
+	src/c-compiler/ir/exp/loop.c
 	src/c-compiler/ir/exp/namedval.c
 	src/c-compiler/ir/exp/nameuse.c
+	src/c-compiler/ir/exp/sizeof.c
 	src/c-compiler/ir/exp/typelit.c
 	src/c-compiler/ir/exp/vtuple.c
-	src/c-compiler/ir/exp/sizeof.c
 
 	src/c-compiler/ir/types/array.c
 	src/c-compiler/ir/types/arrayref.c
 	src/c-compiler/ir/types/fnsig.c
+	src/c-compiler/ir/types/lifetime.c
 	src/c-compiler/ir/types/number.c
 	src/c-compiler/ir/types/permission.c
-	src/c-compiler/ir/types/reference.c
 	src/c-compiler/ir/types/pointer.c
+	src/c-compiler/ir/types/reference.c
 	src/c-compiler/ir/types/struct.c
-	src/c-compiler/ir/types/void.c
 	src/c-compiler/ir/types/ttuple.c
+	src/c-compiler/ir/types/void.c
 
 	src/c-compiler/std/stdlib.c
 	src/c-compiler/std/stdnumber.c

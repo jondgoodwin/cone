@@ -37,16 +37,6 @@ void iNsTypeAddFn(INsTypeNode *type, FnDclNode *fnnode) {
     nodelistAdd(mnodes, (INode*)fnnode);
 }
 
-// Add a property
-void iNsTypeAddProp(INsTypeNode *type,  VarDclNode *varnode) {
-    INode *foundnode = namespaceAdd(&type->namespace, varnode->namesym, (INode*)varnode);
-    if (foundnode) {
-        errorMsgNode((INode*)varnode, ErrorDupName, "Duplicate name %s: Only methods can be overloaded.", &varnode->namesym->namestr);
-        return;
-    }
-    nodelistAdd(&type->nodelist, (INode*)varnode);
-}
-
 // Find the named node (could be method or field)
 // Return the node, if found or NULL if not found
 INode *iNsTypeFindFnField(INsTypeNode *type, Name *name) {

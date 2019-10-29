@@ -15,7 +15,18 @@ StructNode *newStructNode(Name *namesym) {
     snode->llvmtype = NULL;
     snode->subtypes = newNodes(0);
     iNsTypeInit((INsTypeNode*)snode, 8);
+    nodelistInit(&snode->fields, 8);
     return snode;
+}
+
+// Add a field
+void structAddField(StructNode *type, VarDclNode *varnode) {
+    INode *foundnode = namespaceAdd(&type->namespace, varnode->namesym, (INode*)varnode);
+    if (foundnode) {
+        errorMsgNode((INode*)varnode, ErrorDupName, "Duplicate name %s: Only methods can be overloaded.", &varnode->namesym->namestr);
+        return;
+    }
+    nodelistAdd(&type->fields, (INode*)varnode);
 }
 
 // Serialize a struct type
@@ -31,6 +42,9 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     nametblHookNamespace(&node->namespace);
     INode **nodesp;
     uint32_t cnt;
+    for (nodelistFor(&node->fields, cnt, nodesp)) {
+        inodeNameRes(pstate, (INode**)nodesp);
+    }
     for (nodelistFor(&node->nodelist, cnt, nodesp)) {
         inodeNameRes(pstate, (INode**)nodesp);
     }
@@ -46,6 +60,9 @@ void structTypePass(TypePass *pstate, StructNode *node) {
 void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     INode **nodesp;
     uint32_t cnt;
+    for (nodelistFor(&node->fields, cnt, nodesp)) {
+        inodeTypeCheck(pstate, (INode**)nodesp);
+    }
     for (nodelistFor(&node->nodelist, cnt, nodesp)) {
         inodeTypeCheck(pstate, (INode**)nodesp);
     }

@@ -109,9 +109,7 @@ void typeLitStructCheck(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *
     INode **nodesp;
     uint32_t cnt;
     uint32_t argi = 0;
-    for (nodelistFor(&strnode->nodelist, cnt, nodesp)) {
-        if ((*nodesp)->tag != VarDclTag)
-            continue;
+    for (nodelistFor(&strnode->fields, cnt, nodesp)) {
         VarDclNode *prop = (VarDclNode *)*nodesp;
 
         // If element has been specified, be sure it matches both name & type

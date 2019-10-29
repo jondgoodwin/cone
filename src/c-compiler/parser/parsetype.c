@@ -108,7 +108,7 @@ INode *parseStruct(ParseState *parse) {
         return NULL;
     }
 
-    // Process property or method definitions
+    // Process field or method definitions
     if (lexIsToken(LCurlyToken)) {
         lexNextToken();
         while (1) {
@@ -133,13 +133,13 @@ INode *parseStruct(ParseState *parse) {
                 }
             }
             else if (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
-                VarDclNode *property = parseVarDcl(parse, mutPerm, ParseMayImpl | ParseMaySig);
-                property->scope = 1;
-                property->index = propertynbr++;
-                property->flags |= FlagMethProp;
-                iNsTypeAddProp((INsTypeNode*)strnode, property);
-                if (property->namesym->namestr == '_' && !property->value)
-                    strnode->flags |= FlagStructPrivate; // has a private property without a default value
+                VarDclNode *field = parseVarDcl(parse, mutPerm, ParseMayImpl | ParseMaySig);
+                field->scope = 1;
+                field->index = propertynbr++;
+                field->flags |= FlagMethProp;
+                structAddField(strnode, field);
+                if (field->namesym->namestr == '_' && !field->value)
+                    strnode->flags |= FlagStructPrivate; // has a private field without a default value
                 parseEndOfStatement();
             }
             else
@@ -153,7 +153,7 @@ INode *parseStruct(ParseState *parse) {
     else
         errorMsgLex(ErrorNoLCurly, "Expected left curly bracket enclosing properties or methods");
 
-    // A 0-size (no field) struct is opaque. Cannot be intantiated.
+    // A 0-size (no field) struct is opaque. Cannot be instantiated.
     if (propertynbr == 0)
         strnode->flags |= FlagStructOpaque;
 

@@ -92,20 +92,15 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
         StructNode *strnode = (StructNode*)typ;
         INode **nodesp;
         uint32_t cnt;
-        uint32_t propcount = 0;
-        for (nodelistFor(&strnode->nodelist, cnt, nodesp)) {
-            if ((*nodesp)->tag == VarDclTag)
-                ++propcount;
-        }
-        LLVMTypeRef *prop_types = (LLVMTypeRef *)memAllocBlk(propcount * sizeof(LLVMTypeRef));
-        LLVMTypeRef *property = prop_types;
-        for (nodelistFor(&strnode->nodelist, cnt, nodesp)) {
-            if ((*nodesp)->tag == VarDclTag)
-                *property++ = genlType(gen, ((IExpNode *)*nodesp)->vtype);
+        uint32_t fieldcnt = strnode->fields.used;
+        LLVMTypeRef *field_types = (LLVMTypeRef *)memAllocBlk(fieldcnt * sizeof(LLVMTypeRef));
+        LLVMTypeRef *field_type_ptr = field_types;
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            *field_type_ptr++ = genlType(gen, ((IExpNode *)*nodesp)->vtype);
         }
         LLVMTypeRef structype = LLVMStructCreateNamed(gen->context, name);
-        if (propcount > 0)
-            LLVMStructSetBody(structype, prop_types, propcount, 0);
+        if (fieldcnt > 0)
+            LLVMStructSetBody(structype, field_types, fieldcnt, 0);
         return structype;
     }
 

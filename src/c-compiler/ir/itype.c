@@ -118,9 +118,11 @@ int itypeCopyTrait(INode *typenode) {
 
     // For an aggregate type, existence of a destructor or a non-CopyBitwise property is infectious
     // If it has a .copy method, it is CopyMethod, or else it is CopyMove.
+    if (typenode->tag == FloatNbrTag || typenode->tag == UintNbrTag || typenode->tag == IntNbrTag)
+        return CopyBitwise;
     if (isMethodType(typenode)) {
         int copytrait = CopyBitwise;
-        NodeList *nodes = &((INsTypeNode *)typenode)->nodelist;
+        NodeList *nodes = &((StructNode *)typenode)->fields;
         uint32_t cnt;
         INode **nodesp;
         for (nodelistFor(nodes, cnt, nodesp)) {
@@ -156,7 +158,7 @@ char *itypeMangle(char *bufp, INode *vtype) {
     case ArrayRefTag:
     {
         RefNode *reftype = (RefNode *)vtype;
-        *bufp++ = vtype->tag==ArrayRefTag? '&[]' : '&';
+        *bufp++ = vtype->tag==ArrayRefTag? '+' : '&';
         if (permIsSame(reftype->perm, (INode*)constPerm)) {
             bufp = itypeMangle(bufp, reftype->perm);
             *bufp++ = ' ';

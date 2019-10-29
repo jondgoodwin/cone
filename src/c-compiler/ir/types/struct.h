@@ -8,18 +8,13 @@
 #ifndef struct_h
 #define struct_h
 
-// This is a reusable structure for named types having properties
-// (e.g., struct, trait, interface, alloc, etc.)
-// It holds:
-// - properties. An ordered list of nodes for variable-like elements 
-//     that hold typed data. All/most nodes are named and findable.
-// - methods. A name-mapped node hash for methods.
-//     A method may be a FnTuple, a list of methods with same name.
-//     Note: the namespace is comprised of properties + methods
-//       with no duplicate names between them
-// - subtypes. An ordered list of nodes for its traits/interfaces
+// This is for named types that have fields (e.g., struct, trait, etc.)
+// - fields holds all owned and trait-inherited fields
+// - nodelist holds owned methods and static functions and variables
+// - namespace is the dictionary of all owned and inherited named nodes
 typedef struct StructNode {
     INsTypeNodeHdr;
+    NodeList fields;
 } StructNode;
 
 #define FlagStructOpaque   0x8000  // Has no fields
@@ -27,6 +22,10 @@ typedef struct StructNode {
 #define FlagStructPrivate  0x2000  // Has private fields
 
 StructNode *newStructNode(Name *namesym);
+
+// Add a field node to a struct type
+void structAddField(StructNode *type, VarDclNode *fnnode);
+
 void structPrint(StructNode *node);
 
 // Name resolution of a struct type

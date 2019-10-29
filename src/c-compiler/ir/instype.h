@@ -35,9 +35,6 @@ void iNsTypeInit(INsTypeNode *type, int nodecnt);
 // If method is overloaded, add it to the link chain of same named methods
 void iNsTypeAddFn(INsTypeNode *type, FnDclNode *fnnode);
 
-// Add a property node to a method type
-void iNsTypeAddProp(INsTypeNode *type, VarDclNode *fnnode);
-
 // Find the named node (could be method or field)
 // Return the node, if found or NULL if not found
 INode *iNsTypeFindFnField(INsTypeNode *type, Name *name);
