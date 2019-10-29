@@ -143,8 +143,8 @@ Name *fnCallOpEqMethod(Name *opeqname) {
     return NULL;
 }
 
-// Find best property or method (across overloaded methods whose type matches argument types)
-// Then lower the node to a function call (objfn+args) or property access (objfn+methprop) accordingly
+// Find best field or method (across overloaded methods whose type matches argument types)
+// Then lower the node to a function call (objfn+args) or field access (objfn+methprop) accordingly
 void fnCallLowerMethod(FnCallNode *callnode) {
     INode *obj = callnode->objfn;
     Name *methsym = callnode->methprop->namesym;
@@ -153,14 +153,14 @@ void fnCallLowerMethod(FnCallNode *callnode) {
     if (methtype->tag == RefTag)
         methtype = iexpGetTypeDcl(((PtrNode *)methtype)->pvtype);
     if (!isMethodType(methtype)) {
-        errorMsgNode((INode*)callnode, ErrorNoMeth, "Object's type does not support methods or properties.");
+        errorMsgNode((INode*)callnode, ErrorNoMeth, "Object's type does not support methods or fields.");
         return;
     }
 
-    // Do lookup. If node found, it must be an instance's method or property
+    // Do lookup. If node found, it must be an instance's method or field
     if (methsym->namestr == '_'
         && !(obj->tag==VarNameUseTag && ((VarDclNode*)((NameUseNode*)obj)->dclnode)->namesym == selfName)) {
-        errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/property `%s`.", &methsym->namestr);
+        errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/field `%s`.", &methsym->namestr);
     }
     IExpNode *foundnode = (IExpNode*)iNsTypeFindFnField((INsTypeNode*)methtype, methsym);
     if (callnode->flags & FlagLvalOp) {
@@ -176,17 +176,17 @@ void fnCallLowerMethod(FnCallNode *callnode) {
         }
     }
     if (!foundnode
-        || !(foundnode->tag == FnDclTag || foundnode->tag == VarDclTag)
+        || !(foundnode->tag == FnDclTag || foundnode->tag == FieldDclTag)
         || !(foundnode->flags & FlagMethProp)) {
-        errorMsgNode((INode*)callnode, ErrorNoMeth, "Object's type has no method or property named %s.", &methsym->namestr);
+        errorMsgNode((INode*)callnode, ErrorNoMeth, "Object's type has no method or field named %s.", &methsym->namestr);
         callnode->vtype = methtype; // Pretend on a vtype
         return;
     }
 
-    // Handle when methprop refers to a property
-    if (foundnode->tag == VarDclTag) {
+    // Handle when methprop refers to a field
+    if (foundnode->tag == FieldDclTag) {
         if (callnode->args != NULL)
-            errorMsgNode((INode*)callnode, ErrorManyArgs, "May not provide arguments for a property access");
+            errorMsgNode((INode*)callnode, ErrorManyArgs, "May not provide arguments for a field access");
 
         derefAuto(&callnode->objfn);
         callnode->methprop->tag = VarNameUseTag;
@@ -336,7 +336,7 @@ void fnCallLowerPtrMethod(FnCallNode *callnode) {
 // Type check significantly lowers the node's contents from its parsed structure
 // to a type-resolved structure suitable for generation. The lowering involves
 // resolving syntactic sugar and resolving a method to a function.
-// It also distinguishes between methods and properties.
+// It also distinguishes between methods and fields.
 void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
 
@@ -349,7 +349,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     }
     inodeTypeCheck(pstate, &node->objfn);
 
-    // If objfn is a method/property, rewrite it as self.method
+    // If objfn is a method/field, rewrite it as self.method
     if (node->objfn->tag == VarNameUseTag
         && ((NameUseNode*)node->objfn)->dclnode->flags & FlagMethProp
         && ((NameUseNode*)node->objfn)->qualNames == NULL) {
@@ -391,14 +391,14 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         node->methprop = newNameUseNode(
             node->flags & FlagIndex ? (node->flags & FlagBorrow ? refIndexName : indexName) : parensName);
 
-    // a) If method/property specified, handle it via name lookup in type and lower method call to function call
+    // a) If method/field specified, handle it via name lookup in type and lower method call to function call
     if (node->methprop) {
         if (objfntype->tag == RefTag || objfntype->tag == PtrTag || objfntype->tag == ArrayRefTag)
             fnCallLowerPtrMethod(node); // Try ref/ptr specific methods first, otherwise will fallback to deref-ed method call
         else if (isMethodType(objdereftype))
-            fnCallLowerMethod(node); // Lower to a property access or function call
+            fnCallLowerMethod(node); // Lower to a field access or function call
         else {
-            errorMsgNode((INode *)node, ErrorBadMeth, "Cannot do method or property on a value of this type");
+            errorMsgNode((INode *)node, ErrorBadMeth, "Cannot do method or field on a value of this type");
         }
     }
 

@@ -70,6 +70,7 @@ typedef struct AllocNode {
 #include "stmt/module.h"
 #include "stmt/break.h"
 #include "stmt/continue.h"
+#include "stmt/fielddcl.h"
 #include "stmt/fndcl.h"
 #include "stmt/return.h"
 #include "stmt/intrinsic.h"

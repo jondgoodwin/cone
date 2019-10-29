@@ -64,10 +64,12 @@ void inodePrintNode(INode *node) {
     case TypeNameUseTag:
     case MbrNameUseTag:
         nameUsePrint((NameUseNode *)node); break;
-    case VarDclTag:
-        varDclPrint((VarDclNode *)node); break;
     case FnDclTag:
         fnDclPrint((FnDclNode *)node); break;
+    case VarDclTag:
+        varDclPrint((VarDclNode *)node); break;
+    case FieldDclTag:
+        fieldDclPrint((FieldDclNode *)node); break;
     case BlockTag:
         blockPrint((BlockNode *)node); break;
     case IfTag:
@@ -172,10 +174,12 @@ void inodeNameRes(NameResState *pstate, INode **node) {
     switch ((*node)->tag) {
     case ModuleTag:
         modNameRes(pstate, (ModuleNode*)*node); break;
-    case VarDclTag:
-        varDclNameRes(pstate, (VarDclNode *)*node); break;
     case FnDclTag:
         fnDclNameRes(pstate, (FnDclNode *)*node); break;
+    case VarDclTag:
+        varDclNameRes(pstate, (VarDclNode *)*node); break;
+    case FieldDclTag:
+        fieldDclNameRes(pstate, (FieldDclNode *)*node); break;
     case NameUseTag:
     case VarNameUseTag:
     case TypeNameUseTag:
@@ -255,10 +259,12 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node) {
     switch ((*node)->tag) {
     case ModuleTag:
         modTypeCheck(pstate, (ModuleNode*)*node); break;
-    case VarDclTag:
-        varDclTypeCheck(pstate, (VarDclNode *)*node); break;
     case FnDclTag:
         fnDclTypeCheck(pstate, (FnDclNode *)*node); break;
+    case VarDclTag:
+        varDclTypeCheck(pstate, (VarDclNode *)*node); break;
+    case FieldDclTag:
+        fieldDclTypeCheck(pstate, (FieldDclNode *)*node); break;
     case NameUseTag:
     case VarNameUseTag:
     case TypeNameUseTag:

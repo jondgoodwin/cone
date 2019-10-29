@@ -70,8 +70,9 @@ enum NodeTags {
     NameUseTag,     // Name use node (pre-name resolution)
 
     ModuleTag = StmtGroup + NamedNode,        // Module namespace
-    VarDclTag,      // Variable/parm/property declaration
     FnDclTag,       // Function/method declaration
+    VarDclTag,      // Variable declaration (global, local, parm)
+    FieldDclTag,    // Field declaration in a struct, etc.
 
     // Expression nodes (having value type - or sometimes nullType)
     VarNameUseTag = ExpGroup,  // Variable or Function name use node  

@@ -8,7 +8,7 @@
 #ifndef struct_h
 #define struct_h
 
-// This is for named types that have fields (e.g., struct, trait, etc.)
+// Field-containing types (e.g., struct, trait, etc.)
 // - fields holds all owned and trait-inherited fields
 // - nodelist holds owned methods and static functions and variables
 // - namespace is the dictionary of all owned and inherited named nodes
@@ -17,6 +17,8 @@ typedef struct StructNode {
     NodeList fields;
 } StructNode;
 
+typedef struct FieldDclNode FieldDclNode;
+
 #define FlagStructOpaque   0x8000  // Has no fields
 #define FlagStructNoCopy   0x4000  // Only supports move semantics
 #define FlagStructPrivate  0x2000  // Has private fields
@@ -24,7 +26,7 @@ typedef struct StructNode {
 StructNode *newStructNode(Name *namesym);
 
 // Add a field node to a struct type
-void structAddField(StructNode *type, VarDclNode *fnnode);
+void structAddField(StructNode *type, FieldDclNode *node);
 
 void structPrint(StructNode *node);
 

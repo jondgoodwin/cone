@@ -89,7 +89,7 @@ void typeLitArrayCheck(TypeCheckState *pstate, FnCallNode *arrlit) {
     }
 }
 
-// Return true if desired named property is found and swapped into place
+// Return true if desired named field is found and swapped into place
 int typeLitGetName(Nodes *args, uint32_t argi, Name *name) {
     uint32_t nargs = args->used;
     uint32_t i = argi;
@@ -110,13 +110,13 @@ void typeLitStructCheck(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *
     uint32_t cnt;
     uint32_t argi = 0;
     for (nodelistFor(&strnode->fields, cnt, nodesp)) {
-        VarDclNode *prop = (VarDclNode *)*nodesp;
+        FieldDclNode *field = (FieldDclNode *)*nodesp;
 
         // If element has been specified, be sure it matches both name & type
         if (argi < arrlit->args->used) {
             INode **litval = &nodesGet(arrlit->args, argi);
-            if ((*litval)->tag == NamedValTag && !typeLitGetName(arrlit->args, argi, prop->namesym)) {
-                errorMsgNode((INode*)*litval, ErrorBadArray, "Cannot find struct property matching this name");
+            if ((*litval)->tag == NamedValTag && !typeLitGetName(arrlit->args, argi, field->namesym)) {
+                errorMsgNode((INode*)*litval, ErrorBadArray, "Cannot find struct field matching this name");
                 ++argi;
                 continue;
             }
@@ -124,8 +124,8 @@ void typeLitStructCheck(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *
                 errorMsgNode((INode*)*litval, ErrorBadArray, "Literal value's type does not match expected field's type");
         }
         // Append default value if no value specified
-        else if (prop->value) {
-            nodesAdd(&arrlit->args, prop->value);
+        else if (field->value) {
+            nodesAdd(&arrlit->args, field->value);
         }
         else {
             errorMsgNode((INode*)arrlit, ErrorBadArray, "Not enough values specified on struct literal");

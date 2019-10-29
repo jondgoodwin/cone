@@ -49,7 +49,7 @@ void genlDealiasFlds(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
     INode **nodesp;
     uint32_t cnt;
     for (nodelistFor(&strnode->fields, cnt, nodesp)) {
-        VarDclNode *field = (VarDclNode *)*nodesp;
+        FieldDclNode *field = (FieldDclNode *)*nodesp;
         RefNode *vartype = (RefNode *)field->vtype;
         if (vartype->tag != RefTag || !(vartype->alloc == (INode*)rcAlloc || vartype->alloc == (INode*)ownAlloc))
             continue;

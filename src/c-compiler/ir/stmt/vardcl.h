@@ -7,7 +7,7 @@
 #ifndef vardcl_h
 #define vardcl_h
 
-// Name declaration node (e.g., variable, fn implementation, or named type)
+// Variable declaration node (global, local, parm)
 typedef struct VarDclNode {
     IExpNodeHdr;             // 'vtype': type of this name's value
     Name *namesym;

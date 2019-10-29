@@ -82,7 +82,7 @@ void nameUsePrint(NameUseNode *name) {
 
 // Handle name resolution for name use references
 // - Point to name declaration in other module or this one
-// - If name is for a method or field, rewrite node as 'self.property'
+// - If name is for a method or field, rewrite node as 'self.field'
 // - If not method/field, re-tag it as either TypeNameUse or VarNameUse
 void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
     NameUseNode *name = *namep;
@@ -112,9 +112,9 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
     }
 
     // If name is for a method or field, rewrite node as 'self.property'
-    if (name->dclnode->tag == VarDclTag && name->dclnode->flags & FlagMethProp) {
+    if (name->dclnode->tag == FieldDclTag && name->dclnode->flags & FlagMethProp) {
         // Doing this rewrite ensures we reuse existing type check and gen code for
-        // properly handling property access
+        // properly handling field access
         NameUseNode *selfnode = newNameUseNode(selfName);
         FnCallNode *fncall = newFnCallNode((INode *)selfnode, 0);
         fncall->methprop = name;

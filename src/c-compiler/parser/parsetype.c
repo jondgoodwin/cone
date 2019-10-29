@@ -84,6 +84,39 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     return varnode;
 }
 
+// Parse a variable declaration
+FieldDclNode *parseFieldDcl(ParseState *parse, PermNode *defperm) {
+    FieldDclNode *fldnode;
+    INode *vtype;
+    INode *perm;
+
+    // Grab the permission type
+    perm = parsePerm(defperm);
+    INode *permdcl = itypeGetTypeDcl(perm);
+    if (permdcl != (INode*)mutPerm && permdcl == (INode*)immPerm)
+        errorMsgNode(perm, ErrorInvType, "Permission not valid for field declaration");
+
+    // Obtain variable's name
+    if (!lexIsToken(IdentToken)) {
+        errorMsgLex(ErrorNoIdent, "Expected variable name for declaration");
+        return newFieldDclNode(nametblFind("_", 1), perm);
+    }
+    fldnode = newFieldDclNode(lex->val.ident, perm);
+    lexNextToken();
+
+    // Get value type, if provided
+    if ((vtype = parseVtype(parse)))
+        fldnode->vtype = vtype;
+
+    // Get initialization value after '=', if provided
+    if (lexIsToken(AssgnToken)) {
+        lexNextToken();
+        fldnode->value = parseAnyExpr(parse);
+    }
+
+    return fldnode;
+}
+
 // Parse a struct
 INode *parseStruct(ParseState *parse) {
     char *svprefix = parse->gennamePrefix;
@@ -133,8 +166,7 @@ INode *parseStruct(ParseState *parse) {
                 }
             }
             else if (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
-                VarDclNode *field = parseVarDcl(parse, mutPerm, ParseMayImpl | ParseMaySig);
-                field->scope = 1;
+                FieldDclNode *field = parseFieldDcl(parse, mutPerm);
                 field->index = propertynbr++;
                 field->flags |= FlagMethProp;
                 structAddField(strnode, field);

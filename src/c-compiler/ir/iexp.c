@@ -12,7 +12,7 @@
 
 // Macro that changes iexp pointer to type dcl pointer
 #define iexpToTypeDcl(node) {\
-    if (isExpNode(node) || (node)->tag == VarDclTag || (node)->tag == FnDclTag) \
+    if (isExpNode(node) || (node)->tag == VarDclTag || (node)->tag == FnDclTag || (node)->tag == FieldDclTag) \
         node = ((IExpNode *)node)->vtype; \
     if (node->tag == TypeNameUseTag) \
         node = (INode*)((NameUseNode *)node)->dclnode; \

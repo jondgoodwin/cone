@@ -96,7 +96,7 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
         LLVMTypeRef *field_types = (LLVMTypeRef *)memAllocBlk(fieldcnt * sizeof(LLVMTypeRef));
         LLVMTypeRef *field_type_ptr = field_types;
         for (nodelistFor(&strnode->fields, cnt, nodesp)) {
-            *field_type_ptr++ = genlType(gen, ((IExpNode *)*nodesp)->vtype);
+            *field_type_ptr++ = genlType(gen, ((FieldDclNode *)*nodesp)->vtype);
         }
         LLVMTypeRef structype = LLVMStructCreateNamed(gen->context, name);
         if (fieldcnt > 0)

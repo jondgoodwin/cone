@@ -20,13 +20,13 @@ StructNode *newStructNode(Name *namesym) {
 }
 
 // Add a field
-void structAddField(StructNode *type, VarDclNode *varnode) {
-    INode *foundnode = namespaceAdd(&type->namespace, varnode->namesym, (INode*)varnode);
+void structAddField(StructNode *type, FieldDclNode *fnode) {
+    INode *foundnode = namespaceAdd(&type->namespace, fnode->namesym, (INode*)fnode);
     if (foundnode) {
-        errorMsgNode((INode*)varnode, ErrorDupName, "Duplicate name %s: Only methods can be overloaded.", &varnode->namesym->namestr);
+        errorMsgNode((INode*)fnode, ErrorDupName, "Duplicate name %s: Only methods can be overloaded.", &fnode->namesym->namestr);
         return;
     }
-    nodelistAdd(&type->fields, (INode*)varnode);
+    nodelistAdd(&type->fields, (INode*)fnode);
 }
 
 // Serialize a struct type

@@ -126,7 +126,7 @@ int itypeCopyTrait(INode *typenode) {
         uint32_t cnt;
         INode **nodesp;
         for (nodelistFor(nodes, cnt, nodesp)) {
-            if (((*nodesp)->tag == VarDclTag && CopyBitwise != itypeCopyTrait(*nodesp))
+            if (((*nodesp)->tag == FieldDclTag && CopyBitwise != itypeCopyTrait(*nodesp))
                 /* || *nodesp points to a destructor */)
                 copytrait == CopyBitwise ? CopyMove : copytrait;
             // else if (nodesp points to the .copy method)
