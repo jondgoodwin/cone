@@ -13,6 +13,7 @@ typedef struct NameUseNode NameUseNode;
 // Permission type info
 typedef struct PermNode {
     INsTypeNodeHdr;
+    uint16_t permflags;
 } PermNode;
 
 // Permission type flags

@@ -16,7 +16,7 @@ PermNode *newPermDclNode(Name *namesym, uint16_t flags) {
     node->namesym = namesym;
     node->llvmtype = NULL;
     iNsTypeInit((INsTypeNode*)node, 1); // May not need members for static types
-    node->flags = flags;
+    node->permflags = flags;
     return node;
 }
 
@@ -41,7 +41,7 @@ int permGetFlags(INode *perm) {
     if (perm->tag == TypeNameUseTag)
         perm = (INode*)((NameUseNode*)perm)->dclnode;
     assert(perm->tag == PermTag);
-    return ((PermNode *)perm)->flags;
+    return ((PermNode *)perm)->permflags;
 }
 
 // Are the permissions the same?
