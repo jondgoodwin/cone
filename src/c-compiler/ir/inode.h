@@ -137,6 +137,8 @@ enum NodeTags {
 
 #define FlagSuffix    0x0001        // Borrow: part of a borrow chain
 
+#define FlagStructOpaque   0x8000  // Has no fields
+#define FlagStructNoCopy   0x4000  // Only supports move semantics
 
 // Allocate and initialize the INode portion of a new node
 #define newNode(node, nodestruct, nodetype) {\

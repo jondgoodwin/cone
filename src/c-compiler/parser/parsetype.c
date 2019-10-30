@@ -170,8 +170,6 @@ INode *parseStruct(ParseState *parse) {
                 field->index = propertynbr++;
                 field->flags |= FlagMethProp;
                 structAddField(strnode, field);
-                if (field->namesym->namestr == '_' && !field->value)
-                    strnode->flags |= FlagStructPrivate; // has a private field without a default value
                 parseEndOfStatement();
             }
             else

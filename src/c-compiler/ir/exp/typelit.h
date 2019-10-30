@@ -12,6 +12,9 @@
 void typeLitPrint(FnCallNode *node);
 // Name resolution of the literal node
 void typeLitNameRes(NameResState *pstate, FnCallNode *lit);
+// Reorder the literal's field values to the same order as the type's fields
+// Also prevent the specification of a value for a private field outside the type's methods
+void typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private);
 // Check the type literal node
 void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *lit);
 // Is the type literal actually a literal?

@@ -103,38 +103,60 @@ int typeLitGetName(Nodes *args, uint32_t argi, Name *name) {
     return 0;
 }
 
-// Type check a struct literal
-// Verify correct name/type of each literal element against struct's properties
-void typeLitStructCheck(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *strnode) {
+// Reorder the literal's field values to the same order as the type's fields
+// Also prevent the specification of a value for a private field outside the type's methods
+void typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private) {
     INode **nodesp;
     uint32_t cnt;
     uint32_t argi = 0;
     for (nodelistFor(&strnode->fields, cnt, nodesp)) {
         FieldDclNode *field = (FieldDclNode *)*nodesp;
 
-        // If element has been specified, be sure it matches both name & type
+        // A field value has been specified...
         if (argi < arrlit->args->used) {
+            // If we have a named value, insert the proper named value here where it belongs
             INode **litval = &nodesGet(arrlit->args, argi);
             if ((*litval)->tag == NamedValTag && !typeLitGetName(arrlit->args, argi, field->namesym)) {
-                errorMsgNode((INode*)*litval, ErrorBadArray, "Cannot find struct field matching this name");
-                ++argi;
-                continue;
+                // Use default value for unmatched field, if the type defined one
+                if (field->value)
+                    nodesInsert(&arrlit->args, field->value, argi);
+                else {
+                    errorMsgNode((INode*)arrlit, ErrorBadArray, "Cannot find named value matching the field %s", &field->namesym->namestr);
+                    ++argi;
+                    continue;
+                }
             }
-            if (!iexpSameType(*nodesp, litval))
-                errorMsgNode((INode*)*litval, ErrorBadArray, "Literal value's type does not match expected field's type");
+            // Don't allow a value to be given for a private field outside of the type's methods
+            if (!private && field->namesym->namestr == '_')
+                errorMsgNode(*litval, ErrorNotTyped, "Only a method in the type may specify a value for the private field %s.", &field->namesym->namestr);
         }
         // Append default value if no value specified
         else if (field->value) {
             nodesAdd(&arrlit->args, field->value);
         }
         else {
-            errorMsgNode((INode*)arrlit, ErrorBadArray, "Not enough values specified on struct literal");
+            errorMsgNode((INode*)arrlit, ErrorBadArray, "Not enough values specified on type literal");
             break;
         }
         ++argi;
     }
     if (argi < arrlit->args->used)
-        errorMsgNode((INode*)arrlit, ErrorBadArray, "Too many values specified on struct literal");
+        errorMsgNode((INode*)arrlit, ErrorBadArray, "Too many values specified on type literal");
+}
+
+// Type check a struct literal
+// Note: We already know the literal's values are in the right order and the right number
+void typeLitStructCheck(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *strnode) {
+    INode **nodesp;
+    uint32_t cnt;
+    uint32_t argi = 0;
+    for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+        FieldDclNode *field = (FieldDclNode *)*nodesp;
+        INode **litval = &nodesGet(arrlit->args, argi);
+        if (!iexpSameType(*nodesp, litval))
+            errorMsgNode((INode*)*litval, ErrorBadArray, "Literal value's type does not match expected field's type");
+        ++argi;
+    }
 }
 
 // Check the list node

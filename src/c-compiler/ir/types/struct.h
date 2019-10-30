@@ -19,10 +19,6 @@ typedef struct StructNode {
 
 typedef struct FieldDclNode FieldDclNode;
 
-#define FlagStructOpaque   0x8000  // Has no fields
-#define FlagStructNoCopy   0x4000  // Only supports move semantics
-#define FlagStructPrivate  0x2000  // Has private fields
-
 StructNode *newStructNode(Name *namesym);
 
 // Add a field node to a struct type

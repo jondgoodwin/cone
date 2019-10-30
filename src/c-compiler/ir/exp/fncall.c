@@ -75,10 +75,10 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
         node->tag = TypeLitTag;
         node->vtype = node->objfn;
 
+        // For a struct-based type, reorder the literal's arguments to match the type's field order
         INode *typdcl = itypeGetTypeDcl(node->objfn);
-        if (typdcl->tag == StructTag && (typdcl->flags & FlagStructPrivate) && typdcl != pstate->typenode) {
-            errorMsgNode(node->objfn, ErrorNotTyped, "For types with private fields, literal can only be used by type's methods");
-        }
+        if (typdcl->tag == StructTag)
+            typeLitStructReorder(node, (StructNode*)typdcl, typdcl == pstate->typenode);
     }
 
     // Name resolve arguments/statements
