@@ -32,6 +32,11 @@ void nameUsePrint(NameUseNode *name);
 // - If name is for a method or field, rewrite node as 'self.property'
 // - If not method/field, re-tag it as either TypeNameUse or VarNameUse
 void nameUseNameRes(NameResState *pstate, NameUseNode **namep);
+
+// Handle type check for variable/function name use references
 void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **name);
+
+// Handle type check for type name use references
+void nameUseTypeCheckType(TypeCheckState *pstate, NameUseNode **name);
 
 #endif

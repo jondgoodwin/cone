@@ -256,6 +256,22 @@ void inodeNameRes(NameResState *pstate, INode **node) {
 // - pstate is helpful state info for node traversal
 // - node is a pointer to pointer so that a node can be replaced
 void inodeTypeCheck(TypeCheckState *pstate, INode **node) {
+
+    // Type nodes are fully checked the first time they are referenced,
+    // so that we know everything we need to know about correctly managing their values
+    // (because of needing to infer infectious type constraints based on their composed fields).
+    // However, type checking of a type node should only be done once
+    if (isTypeNode(*node)) {
+        if ((*node)->flags & TypeChecked)
+            return;
+        if ((*node)->flags & TypeChecking) {
+            errorMsgNode(*node, ErrorRecurse, "Recursive types are not supported for now.");
+            return;
+        }
+        else
+            (*node)->flags |= TypeChecking;
+    }
+
     switch ((*node)->tag) {
     case ModuleTag:
         modTypeCheck(pstate, (ModuleNode*)*node); break;
@@ -265,9 +281,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node) {
         varDclTypeCheck(pstate, (VarDclNode *)*node); break;
     case FieldDclTag:
         fieldDclTypeCheck(pstate, (FieldDclNode *)*node); break;
-    case NameUseTag:
     case VarNameUseTag:
-    case TypeNameUseTag:
         nameUseTypeCheck(pstate, (NameUseNode **)node); break;
     case TypeLitTag:
         typeLitTypeCheck(pstate, (FnCallNode *)*node); break;
@@ -309,6 +323,8 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node) {
     case FLitTag:
         litTypeCheck(pstate, (IExpNode*)*node); break;
 
+    case TypeNameUseTag:
+        nameUseTypeCheckType(pstate, (NameUseNode **)node); break;
     case FnSigTag:
         fnSigTypeCheck(pstate, (FnSigNode *)*node); break;
     case RefTag:
@@ -324,16 +340,21 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node) {
     case TTupleTag:
         ttupleTypeCheck(pstate, (TTupleNode *)*node); break;
     case AllocTag:
+    case PermTag:
         break;
 
     case MbrNameUseTag:
     case StrLitTag:
     case IntNbrTag: case UintNbrTag: case FloatNbrTag:
-    case PermTag:
     case VoidTag:
     case NullTag:
         break;
     default:
         assert(0 && "**** ERROR **** Attempting to check an unknown node");
+    }
+
+    // Confirm when a type node has been checked
+    if (isTypeNode(*node)) {
+        (*node)->flags |= TypeChecked;
     }
 }

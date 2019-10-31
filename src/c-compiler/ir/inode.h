@@ -142,6 +142,9 @@ enum NodeTags {
 #define ThreadBound        0x0002  // Type's value copies must stay in the same thread (vs. sendable)
 #define FlagStructOpaque   0x0004  // Has no fields
 
+#define TypeChecked        0x8000  // Type has been type-checked
+#define TypeChecking       0x4000  // Type is in process of being type-checked
+
 // Allocate and initialize the INode portion of a new node
 #define newNode(node, nodestruct, nodetype) {\
     node = (nodestruct*) memAllocBlk(sizeof(nodestruct)); \

@@ -131,8 +131,22 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
         name->tag = TypeNameUseTag;
 }
 
-// Handle type check for name use references
+// Handle type check for variable/function name use references
 void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
     NameUseNode *name = *namep;
     name->vtype = ((IExpNode*)name->dclnode)->vtype;
+}
+
+// Handle type check for type name use references
+void nameUseTypeCheckType(TypeCheckState *pstate, NameUseNode **namep) {
+    // Do type check on the type declaration this refers to,
+    // to ensure it is correct and knows about its infectious constraints
+    // Guards are in place to ensure this only will be done once, as early as possible.
+    INode **dclnode = &(*namep)->dclnode;
+    if (((*dclnode)->flags & TypeChecking) && !((*dclnode)->flags & TypeChecked)) {
+        errorMsgNode((INode*)*namep, ErrorRecurse, "Recursive types are not supported for now.");
+        return;
+    }
+    else
+        inodeTypeCheck(pstate, dclnode);
 }

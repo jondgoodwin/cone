@@ -70,6 +70,7 @@ enum ErrorCode {
     ErrorBadArray,  // Bad array
     ErrorBadSlice,  // Bad slice type
     ErrorMove,      // Move error of some kind
+    ErrorRecurse,   // Recursive type error
 
     // Warnings
     WarnCode = 3000,

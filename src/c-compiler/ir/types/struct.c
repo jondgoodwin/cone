@@ -63,6 +63,11 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     for (nodelistFor(&node->fields, cnt, nodesp)) {
         inodeTypeCheck(pstate, (INode**)nodesp);
     }
+
+    // We can say we know enough about the type at this point to
+    // declare it fully checked, so as to not trigger type recursion warnings.
+    node->flags |= TypeChecked;
+
     for (nodelistFor(&node->nodelist, cnt, nodesp)) {
         inodeTypeCheck(pstate, (INode**)nodesp);
     }
