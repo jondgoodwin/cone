@@ -14,6 +14,30 @@ RefNode *newRefNode() {
     return refnode;
 }
 
+// Set type infection flags based on the reference's type parameters
+void refAdoptInfections(RefNode *refnode) {
+    if (!(permGetFlags(refnode->perm) & MayAlias) || refnode->alloc == (INode*)ownAlloc)
+        refnode->flags |= MoveType;
+    if (refnode->perm == (INode*)uniPerm || (refnode->pvtype->flags & ThreadBound))
+        refnode->flags |= ThreadBound;
+}
+
+// Create a reference node based on fully-known type parameters
+RefNode *newRefNodeFull(INode *alloc, INode *perm, INode *vtype) {
+    RefNode *refnode = newRefNode();
+    refnode->alloc = alloc;
+    refnode->perm = perm;
+    refnode->pvtype = vtype;
+    refAdoptInfections(refnode);
+    return refnode;
+}
+
+// Set the inferred value type of a reference
+void refSetVtype(RefNode *refnode, INode *vtype) {
+    refnode->pvtype = vtype;
+    refAdoptInfections(refnode);
+}
+
 // Create a new ArrayDerefNode from an ArrayRefNode
 RefNode *newArrayDerefNodeFrom(RefNode *refnode) {
     RefNode *dereftype = newRefNode();
@@ -53,6 +77,7 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
     inodeTypeCheck(pstate, &node->alloc);
     inodeTypeCheck(pstate, (INode**)&node->perm);
     inodeTypeCheck(pstate, &node->pvtype);
+    refAdoptInfections(node);
 }
 
 // Compare two reference signatures to see if they are equivalent

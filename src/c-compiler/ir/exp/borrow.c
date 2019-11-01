@@ -129,20 +129,6 @@ void borrowTypeCheck(TypeCheckState *pstate, BorrowNode **nodep) {
     }
     INode *lvaltype = ((IExpNode*)lval)->vtype;
 
-    // The reference's value type is unknown (NULL).
-    // Let's infer type from the lval we are borrowing from
-    if (lvaltype->tag == ArrayTag) {
-        // Borrowing from a fixed size array creates an array reference
-        reftype->pvtype = ((ArrayNode*)lvaltype)->elemtype;
-        reftype->tag = ArrayRefTag;
-    }
-    else if (lvaltype->tag == ArrayDerefTag) {
-        reftype->pvtype = ((RefNode*)lvaltype)->pvtype;
-        reftype->tag = ArrayRefTag;
-    }
-    else
-        reftype->pvtype = lvaltype;
-
     // Ensure lval's permission matches requested permission
     if (reftype->perm) {
         if (!permMatches(reftype->perm, lvalperm))
@@ -150,6 +136,20 @@ void borrowTypeCheck(TypeCheckState *pstate, BorrowNode **nodep) {
     }
     else
         reftype->perm = lvalperm;
+
+    // The reference's value type is unknown (NULL).
+    // Let's infer type from the lval we are borrowing from
+    if (lvaltype->tag == ArrayTag) {
+        // Borrowing from a fixed size array creates an array reference
+        refSetVtype(reftype, ((ArrayNode*)lvaltype)->elemtype);
+        reftype->tag = ArrayRefTag;
+    }
+    else if (lvaltype->tag == ArrayDerefTag) {
+        refSetVtype(reftype, ((RefNode*)lvaltype)->pvtype);
+        reftype->tag = ArrayRefTag;
+    }
+    else
+        refSetVtype(reftype, lvaltype);
 }
 
 // Perform data flow analysis on addr node

@@ -22,6 +22,12 @@ typedef struct RefNode {
 // Create a new reference type whose info will be filled in afterwards
 RefNode *newRefNode();
 
+// Create a new reference type whose info is known and analyzeable
+RefNode *newRefNodeFull(INode *alloc, INode *perm, INode *vtype);
+
+// Set the inferred value type of a reference
+void refSetVtype(RefNode *refnode, INode *vtype);
+
 // Create a new ArrayDerefNode from an ArrayRefNode
 RefNode *newArrayDerefNodeFrom(RefNode *refnode);
 

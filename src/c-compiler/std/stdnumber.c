@@ -34,10 +34,7 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
     // Create function signature for unary ref methods for this type
     FnSigNode *mutrefsig = newFnSigNode();
     mutrefsig->rettype = (INode*)nbrtypenode;
-    RefNode *mutref = newRefNode();
-    mutref->pvtype = (INode*)nbrtypenode;
-    mutref->alloc = voidType;
-    mutref->perm = newPermUseNode(mutPerm);
+    RefNode *mutref = newRefNodeFull(voidType, newPermUseNode(mutPerm), (INode*)nbrtypenode);
     nodesAdd(&mutrefsig->parms, (INode *)newVarDclFull(una1, VarDclTag, (INode*)mutref, newPermUseNode(immPerm), NULL));
 
     // Create function signature for binary methods for this type
@@ -142,10 +139,7 @@ INsTypeNode *newPtrTypeMethods() {
     // Create function signature for unary ref methods for ++, --
     FnSigNode *mutrefsig = newFnSigNode();
     mutrefsig->rettype = (INode*)voidptr;
-    RefNode *mutref = newRefNode();
-    mutref->pvtype = (INode*)voidptr;
-    mutref->alloc = voidType;
-    mutref->perm = newPermUseNode(mutPerm);
+    RefNode *mutref = newRefNodeFull(voidType, newPermUseNode(mutPerm), (INode*)voidptr);
     nodesAdd(&mutrefsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)mutref, newPermUseNode(immPerm), NULL));
 
     iNsTypeAddFn((INsTypeNode*)ptrtypenode, newFnDclNode(incrName, FlagMethProp, (INode *)mutrefsig, (INode *)newIntrinsicNode(IncrIntrinsic)));
@@ -192,10 +186,7 @@ INsTypeNode *newRefTypeMethods() {
     reftypenode->llvmtype = NULL;
     iNsTypeInit((INsTypeNode*)reftypenode, 8);
 
-    RefNode *voidref = newRefNode();
-    voidref->alloc = voidType;
-    voidref->perm = (INode*)constPerm;
-    voidref->pvtype = voidType;
+    RefNode *voidref = newRefNodeFull(voidType, newPermUseNode(mutPerm), voidType);
 
     // Create function signature for unary methods for this type
     FnSigNode *unarysig = newFnSigNode();
@@ -237,11 +228,8 @@ INsTypeNode *newArrayRefTypeMethods() {
     reftypenode->llvmtype = NULL;
     iNsTypeInit((INsTypeNode*)reftypenode, 8);
 
-    RefNode *voidref = newRefNode();
+    RefNode *voidref = newRefNodeFull(voidType, newPermUseNode(constPerm), voidType);
     voidref->tag = ArrayRefTag;
-    voidref->alloc = voidType;
-    voidref->perm = (INode*)constPerm;
-    voidref->pvtype = voidType;
 
     // '.count' operator
     FnSigNode *countsig = newFnSigNode();

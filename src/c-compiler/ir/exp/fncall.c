@@ -100,10 +100,7 @@ void fnCallFinalizeArgs(FnCallNode *node) {
         INode *parmtype = iexpGetTypeDcl(*parmp);
         if ((*argsp)->tag == StrLitTag 
             && (parmtype->tag == ArrayRefTag || parmtype->tag == PtrTag)) {
-            RefNode *addrtype = newRefNode();
-            addrtype->perm = (INode*)immPerm;
-            addrtype->alloc = voidType;
-            addrtype->pvtype = (INode*)u8Type;
+            RefNode *addrtype = newRefNodeFull(voidType, newPermUseNode(immPerm), (INode*)u8Type);
             BorrowNode *borrownode = newBorrowNode();
             borrownode->vtype = (INode*)addrtype;
             borrownode->exp = *argsp;
@@ -311,10 +308,7 @@ void fnCallLowerPtrMethod(FnCallNode *callnode) {
     INode *selftype = iexpGetTypeDcl(*selfp);
     INode *totype = itypeGetTypeDcl(((IExpNode*)nodesGet(((FnSigNode*)bestmethod->vtype)->parms, 0))->vtype);
     if (selftype->tag != RefTag && totype->tag == RefTag) {
-        RefNode *selfref = newRefNode();
-        selfref->pvtype = selftype;
-        selfref->alloc = voidType;
-        selfref->perm = newPermUseNode(mutPerm);
+        RefNode *selfref = newRefNodeFull(voidType, newPermUseNode(mutPerm), selftype);
         borrowAuto(selfp, (INode *)selfref);
     }
 
@@ -458,12 +452,9 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
                 assert(0 && "Invalid type for indexing");
             }
             if (node->flags & FlagBorrow) {
-                RefNode *refnode = newRefNode();
-                refnode->alloc = (INode*)voidType;
-                refnode->pvtype = node->vtype;
                 INode *objtype = iexpGetTypeDcl(node->objfn);
                 assert(objtype->tag == RefTag || objtype->tag == ArrayRefTag);
-                refnode->perm = ((RefNode*)objtype)->perm;
+                RefNode *refnode = newRefNodeFull(voidType, ((RefNode*)objtype)->perm, node->vtype);
                 node->vtype = (INode*)refnode;
             }
             node->tag = ArrIndexTag;

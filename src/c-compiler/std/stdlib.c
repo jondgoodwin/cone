@@ -79,7 +79,7 @@ AllocNode *newAllocNodeStr(char *name) {
 }
 
 void stdAllocInit() {
-    ownAlloc = newAllocNodeStr("own");
+    ownAlloc = newAllocNodeStr("so");
     rcAlloc = newAllocNodeStr("rc");
 }
 

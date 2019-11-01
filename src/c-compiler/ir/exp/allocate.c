@@ -45,7 +45,7 @@ void allocateTypeCheck(TypeCheckState *pstate, AllocateNode **nodep) {
     }
 
     // Infer reference's value type based on initial value
-    reftype->pvtype = ((IExpNode*)initval)->vtype;
+    refSetVtype(reftype, ((IExpNode*)initval)->vtype);
 }
 
 // Perform data flow analysis on allocate node
