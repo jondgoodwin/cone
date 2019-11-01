@@ -76,7 +76,7 @@ enum NodeTags {
 
     // Expression nodes (having value type - or sometimes nullType)
     VarNameUseTag = ExpGroup,  // Variable or Function name use node  
-    MbrNameUseTag,  // Member of a type's namespace (property/method)
+    MbrNameUseTag,  // Member of a type's namespace (field/method)
     ULitTag,        // Integer literal
     FLitTag,        // Float literal
     NullTag,        // Null literal
@@ -84,7 +84,7 @@ enum NodeTags {
     TypeLitTag,     // List (e.g., type literal)
     VTupleTag,      // Value tuple (comma-separated values)
     AssignTag,      // Assignment expression
-    FnCallTag,      // Function+method call or Property access
+    FnCallTag,      // Function+method call or field access
     ArrIndexTag,    // Array index (FnCallNode)
     StrFieldTag,    // struct field (FnCallNode)
     SizeofTag,      // Sizeof a type (usize)
@@ -126,7 +126,7 @@ enum NodeTags {
 // *****************
 
 // VarDclTag and FnDclTag flags
-#define FlagMethProp  0x0001        // FnDcl, VarDcl: Method or Property (vs. static)
+#define FlagMethFld   0x0001        // FnDcl, VarDcl: Method or field (vs. static)
 #define FlagExtern    0x0002        // FnDcl, VarDcl: C ABI extern (no value, no mangle)
 #define FlagSystem    0x0004        // FnDcl: imported system call (+stdcall on Winx86)
 #define FlagSetMethod 0x0008        // FnDcl: "set" method

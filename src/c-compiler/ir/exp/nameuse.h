@@ -14,7 +14,7 @@ typedef struct NameList NameList;
 // - NameUseTag. A name token prior to name resolution pass
 // - VarNameUseTag. A name use node resolved to a variable or function declaration
 // - TypeNameUseTag. A name use node resolved to a type declaration
-// - MbrNameUseTag. A method or property name being applied to some value
+// - MbrNameUseTag. A method or field name being applied to some value
 typedef struct NameUseNode {
     IExpNodeHdr;
     Name *namesym;          // Pointer to the global name table entry
@@ -29,7 +29,7 @@ NameUseNode *newMemberUseNode(Name *namesym);
 void nameUsePrint(NameUseNode *name);
 // Handle name resolution for name use references
 // - Point to name declaration in other module or this one
-// - If name is for a method or field, rewrite node as 'self.property'
+// - If name is for a method or field, rewrite node as 'self.field'
 // - If not method/field, re-tag it as either TypeNameUse or VarNameUse
 void nameUseNameRes(NameResState *pstate, NameUseNode **namep);
 

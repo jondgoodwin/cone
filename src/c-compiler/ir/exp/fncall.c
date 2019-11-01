@@ -15,7 +15,7 @@ FnCallNode *newFnCallNode(INode *fn, int nnodes) {
     FnCallNode *node;
     newNode(node, FnCallNode, FnCallTag);
     node->objfn = fn;
-    node->methprop = NULL;
+    node->methfld = NULL;
     node->args = nnodes == 0? NULL : newNodes(nnodes);
     return node;
 }
@@ -23,13 +23,13 @@ FnCallNode *newFnCallNode(INode *fn, int nnodes) {
 // Create new fncall node, prefilling method, self, and creating room for nnodes args
 FnCallNode *newFnCallOpname(INode *obj, Name *opname, int nnodes) {
     FnCallNode *node = newFnCallNode(obj, nnodes);
-    node->methprop = newMemberUseNode(opname);
+    node->methfld = newMemberUseNode(opname);
     return node;
 }
 
 FnCallNode *newFnCallOp(INode *obj, char *op, int nnodes) {
     FnCallNode *node = newFnCallNode(obj, nnodes);
-    node->methprop = newMemberUseNode(nametblFind(op, strlen(op)));
+    node->methfld = newMemberUseNode(nametblFind(op, strlen(op)));
     return node;
 }
 
@@ -38,9 +38,9 @@ void fnCallPrint(FnCallNode *node) {
     INode **nodesp;
     uint32_t cnt;
     inodePrintNode(node->objfn);
-    if (node->methprop) {
+    if (node->methfld) {
         inodeFprint(".");
-        inodePrintNode((INode*)node->methprop);
+        inodePrintNode((INode*)node->methfld);
     }
     if (node->args) {
         inodeFprint(node->tag==ArrIndexTag? "[" : "(");
@@ -55,7 +55,7 @@ void fnCallPrint(FnCallNode *node) {
 
 // Name resolution on 'fncall'
 // - If node is indexing on a type, retag node as a typelit
-// Note: this never name resolves .methprop, which is handled in type checking
+// Note: this never name resolves .methfld, which is handled in type checking
 void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
     INode **argsp;
@@ -141,10 +141,10 @@ Name *fnCallOpEqMethod(Name *opeqname) {
 }
 
 // Find best field or method (across overloaded methods whose type matches argument types)
-// Then lower the node to a function call (objfn+args) or field access (objfn+methprop) accordingly
+// Then lower the node to a function call (objfn+args) or field access (objfn+methfld) accordingly
 void fnCallLowerMethod(FnCallNode *callnode) {
     INode *obj = callnode->objfn;
-    Name *methsym = callnode->methprop->namesym;
+    Name *methsym = callnode->methfld->namesym;
 
     INode *methtype = iexpGetTypeDcl(obj);
     if (methtype->tag == RefTag)
@@ -174,21 +174,21 @@ void fnCallLowerMethod(FnCallNode *callnode) {
     }
     if (!foundnode
         || !(foundnode->tag == FnDclTag || foundnode->tag == FieldDclTag)
-        || !(foundnode->flags & FlagMethProp)) {
+        || !(foundnode->flags & FlagMethFld)) {
         errorMsgNode((INode*)callnode, ErrorNoMeth, "Object's type has no method or field named %s.", &methsym->namestr);
         callnode->vtype = methtype; // Pretend on a vtype
         return;
     }
 
-    // Handle when methprop refers to a field
+    // Handle when methfld refers to a field
     if (foundnode->tag == FieldDclTag) {
         if (callnode->args != NULL)
             errorMsgNode((INode*)callnode, ErrorManyArgs, "May not provide arguments for a field access");
 
         derefAuto(&callnode->objfn);
-        callnode->methprop->tag = VarNameUseTag;
-        callnode->methprop->dclnode = (INode*)foundnode;
-        callnode->vtype = callnode->methprop->vtype = foundnode->vtype;
+        callnode->methfld->tag = VarNameUseTag;
+        callnode->methfld->dclnode = (INode*)foundnode;
+        callnode->vtype = callnode->methfld->vtype = foundnode->vtype;
         callnode->tag = StrFieldTag;
         return;
     }
@@ -210,13 +210,13 @@ void fnCallLowerMethod(FnCallNode *callnode) {
     refAutoRef(&nodesGet(callnode->args, 0), ((IExpNode*)nodesGet(((FnSigNode*)bestmethod->vtype)->parms, 0))->vtype);
 
     // Re-purpose method's name use node into objfn, so name refers to found method
-    NameUseNode *methodrefnode = callnode->methprop;
+    NameUseNode *methodrefnode = callnode->methfld;
     methodrefnode->tag = VarNameUseTag;
     methodrefnode->dclnode = (INode*)bestmethod;
     methodrefnode->vtype = bestmethod->vtype;
 
     callnode->objfn = (INode*)methodrefnode;
-    callnode->methprop = NULL;
+    callnode->methfld = NULL;
     callnode->vtype = ((FnSigNode*)bestmethod->vtype)->rettype;
 
     // Handle copying of value arguments and default arguments
@@ -228,7 +228,7 @@ void fnCallLowerMethod(FnCallNode *callnode) {
 void fnCallLowerPtrMethod(FnCallNode *callnode) {
     INode *obj = callnode->objfn;
     INode *objtype = iexpGetTypeDcl(obj);
-    Name *methsym = callnode->methprop->namesym;
+    Name *methsym = callnode->methfld->namesym;
 
     // if 'self' is 'null', swap self and first argument (order is irrelevant for ==/!-)
     if (obj->tag == NullTag && callnode->args->used == 1) {
@@ -313,13 +313,13 @@ void fnCallLowerPtrMethod(FnCallNode *callnode) {
     }
 
     // Re-purpose method's name use node into objfn, so name refers to found method
-    NameUseNode *methodrefnode = callnode->methprop;
+    NameUseNode *methodrefnode = callnode->methfld;
     methodrefnode->tag = VarNameUseTag;
     methodrefnode->dclnode = (INode*)bestmethod;
     methodrefnode->vtype = bestmethod->vtype;
 
     callnode->objfn = (INode*)methodrefnode;
-    callnode->methprop = NULL;
+    callnode->methfld = NULL;
     callnode->vtype = ((FnSigNode*)bestmethod->vtype)->rettype;
     if (callnode->vtype->tag == PtrTag)
         callnode->vtype = selftype;  // Generic substitution for T
@@ -334,7 +334,7 @@ void fnCallLowerPtrMethod(FnCallNode *callnode) {
 void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
 
-    // Type check all of tree except methprop for now
+    // Type check all of tree except methfld for now
     INode **argsp;
     uint32_t cnt;
     if (node->args) {
@@ -345,7 +345,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 
     // If objfn is a method/field, rewrite it as self.method
     if (node->objfn->tag == VarNameUseTag
-        && ((NameUseNode*)node->objfn)->dclnode->flags & FlagMethProp
+        && ((NameUseNode*)node->objfn)->dclnode->flags & FlagMethFld
         && ((NameUseNode*)node->objfn)->qualNames == NULL) {
         // Build a resolved 'self' node
         NameUseNode *selfnode = newNameUseNode(selfName);
@@ -353,21 +353,21 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         selfnode->dclnode = nodesGet(pstate->fnsig->parms, 0);
         selfnode->vtype = ((VarDclNode*)selfnode->dclnode)->vtype;
         // Reuse existing fncallnode if we can
-        if (node->methprop == NULL) {
-            node->methprop = (NameUseNode *)node->objfn;
+        if (node->methfld == NULL) {
+            node->methfld = (NameUseNode *)node->objfn;
             node->objfn = (INode*)selfnode;
         }
         else {
             // Re-purpose objfn as self.method
             FnCallNode *fncall = newFnCallNode((INode *)selfnode, 0);
-            fncall->methprop = (NameUseNode *)node->objfn;
+            fncall->methfld = (NameUseNode *)node->objfn;
             copyNodeLex(fncall, node->objfn); // Copy lexer info into injected node in case it has errors
             node->objfn = (INode*)fncall;
             inodeTypeCheck(pstate, &node->objfn);
         }
     }
 
-    // How to lower depends on the type of the objfn and whether methprop is specified
+    // How to lower depends on the type of the objfn and whether methfld is specified
     if (!isExpNode(node->objfn)) {
         errorMsgNode(node->objfn, ErrorNotTyped, "Expecting a typed value or expression");
         return;
@@ -381,12 +381,12 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         objdereftype = iexpGetDerefTypeDcl(node->objfn);
 
     // If object's deref-ed type supports methods, fill in a default method if unspecified: '()', '[]' or '&[]'
-    if (isMethodType(objdereftype) && node->methprop == NULL)
-        node->methprop = newNameUseNode(
+    if (isMethodType(objdereftype) && node->methfld == NULL)
+        node->methfld = newNameUseNode(
             node->flags & FlagIndex ? (node->flags & FlagBorrow ? refIndexName : indexName) : parensName);
 
     // a) If method/field specified, handle it via name lookup in type and lower method call to function call
-    if (node->methprop) {
+    if (node->methfld) {
         if (objfntype->tag == RefTag || objfntype->tag == PtrTag || objfntype->tag == ArrayRefTag)
             fnCallLowerPtrMethod(node); // Try ref/ptr specific methods first, otherwise will fallback to deref-ed method call
         else if (isMethodType(objdereftype))

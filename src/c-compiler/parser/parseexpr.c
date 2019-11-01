@@ -159,15 +159,15 @@ INode *parseSuffix(ParseState *parse, INode *node, uint16_t flags) {
             fncall->flags |= flags;
             lexNextToken();
 
-            // Get property/method name
+            // Get field/method name
             if (!lexIsToken(IdentToken)) {
-                errorMsgLex(ErrorNoMbr, "This should be a named property/method");
+                errorMsgLex(ErrorNoMbr, "This should be a named field/method");
                 lexNextToken();
                 break;
             }
             NameUseNode *method = newNameUseNode(lex->val.ident);
             method->tag = MbrNameUseTag;
-            fncall->methprop = method;
+            fncall->methfld = method;
             lexNextToken();
 
             // If parameters provided, capture them as part of method call
@@ -554,7 +554,7 @@ INode *parseAssign(ParseState *parse) {
         FnCallNode *propnode = newFnCallNode((INode*)thisnode, 0);
         if (lval->tag != NameUseTag)
             errorMsgNode(lval, ErrorNoMbr, "A name must be specified before the ':'");
-        propnode->methprop = (NameUseNode*)lval;
+        propnode->methfld = (NameUseNode*)lval;
         return (INode*)newAssignNode(NormalAssign, (INode*)propnode, rval);
     }
 

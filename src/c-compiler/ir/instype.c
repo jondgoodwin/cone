@@ -25,7 +25,7 @@ void iNsTypeAddFn(INsTypeNode *type, FnDclNode *fnnode) {
     FnDclNode *foundnode = (FnDclNode*)namespaceAdd(&type->namespace, fnnode->namesym, (INode*)fnnode);
     if (foundnode) {
         if (foundnode->tag != FnDclTag
-            || !(foundnode->flags & FlagMethProp) || !(fnnode->flags & FlagMethProp)) {
+            || !(foundnode->flags & FlagMethFld) || !(fnnode->flags & FlagMethFld)) {
             errorMsgNode((INode*)fnnode, ErrorDupName, "Duplicate name %s: Only methods can be overloaded.", &fnnode->namesym->namestr);
             return;
         }

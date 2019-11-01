@@ -153,8 +153,8 @@ INode *parseEach(ParseState *parse, INode *innerblk, LifetimeNode *life) {
     INode *iter = parseSimpleExpr(parse);
     INode *step = NULL;
     int isrange = 0;
-    if (iter->tag == FnCallTag && ((FnCallNode*)iter)->methprop) {
-        Name *methodnm = ((NameUseNode*)((FnCallNode*)iter)->methprop)->namesym;
+    if (iter->tag == FnCallTag && ((FnCallNode*)iter)->methfld) {
+        Name *methodnm = ((NameUseNode*)((FnCallNode*)iter)->methfld)->namesym;
         if (methodnm == leName || methodnm == ltName)
             isrange = 1;
         else if (methodnm == geName || methodnm == gtName)

@@ -116,7 +116,7 @@ int itypeCopyTrait(INode *typenode) {
     if (typenode->tag == TypeNameUseTag)
         typenode = (INode*)((NameUseNode *)typenode)->dclnode;
 
-    // For an aggregate type, existence of a destructor or a non-CopyBitwise property is infectious
+    // For an aggregate type, existence of a destructor or a non-CopyBitwise field is infectious
     // If it has a .copy method, it is CopyMethod, or else it is CopyMove.
     if (typenode->tag == FloatNbrTag || typenode->tag == UintNbrTag || typenode->tag == IntNbrTag)
         return CopyBitwise;

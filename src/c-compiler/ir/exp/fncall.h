@@ -13,8 +13,8 @@
 // it into an ArrIndexTag or StrFieldTag node
 typedef struct FnCallNode {
     IExpNodeHdr;
-    INode *objfn;        // Object (for method calls) or function to call
-    NameUseNode *methprop;    // Name of method/property (or NULL)
+    INode *objfn;          // Object (for method calls) or function to call
+    NameUseNode *methfld;  // Name of method/field (or NULL)
     Nodes *args;           // List of function call arguments (or NULL)
 } FnCallNode;
 
@@ -26,7 +26,7 @@ void fnCallPrint(FnCallNode *node);
 
 // Name resolution on 'fncall'
 // - If node is indexing on a type, retag node as a typelit
-// Note: this never name resolves .methprop, which is handled in type checking
+// Note: this never name resolves .methfld, which is handled in type checking
 void fnCallNameRes(NameResState *pstate, FnCallNode **nodep);
 
 // Type check on fncall

@@ -55,7 +55,7 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     INode *permdcl = itypeGetTypeDcl(perm);
     if (permdcl == (INode*)mut1Perm || permdcl == (INode*)uniPerm || permdcl == (INode*)opaqPerm
         || (permdcl == (INode*)constPerm && !(flags & ParseMayConst)))
-        errorMsgNode(perm, ErrorInvType, "Permission not valid for variable/property declaration");
+        errorMsgNode(perm, ErrorInvType, "Permission not valid for variable/field declaration");
 
     // Obtain variable's name
     if (!lexIsToken(IdentToken)) {
@@ -122,7 +122,7 @@ INode *parseStruct(ParseState *parse) {
     char *svprefix = parse->gennamePrefix;
     INsTypeNode *svtype = parse->typenode;
     StructNode *strnode;
-    int16_t propertynbr = 0;
+    int16_t fieldnbr = 0;
 
     // Capture the kind of type, then get next token (name)
     uint16_t tag = StructTag;
@@ -150,7 +150,7 @@ INode *parseStruct(ParseState *parse) {
                 if (!lexIsToken(FnToken))
                     errorMsgLex(ErrorNotFn, "Expected fn declaration");
                 else {
-                    FnDclNode *fn = (FnDclNode*)parseFn(parse, FlagMethProp, ParseMayName | ParseMayImpl);
+                    FnDclNode *fn = (FnDclNode*)parseFn(parse, FlagMethFld, ParseMayName | ParseMayImpl);
                     if (fn && isNamedNode(fn)) {
                         fn->flags |= FlagSetMethod;
                         nameGenFnName(fn, parse->gennamePrefix);
@@ -159,7 +159,7 @@ INode *parseStruct(ParseState *parse) {
                 }
             }
             else if (lexIsToken(FnToken)) {
-                FnDclNode *fn = (FnDclNode*)parseFn(parse, FlagMethProp, ParseMayName | ParseMayImpl);
+                FnDclNode *fn = (FnDclNode*)parseFn(parse, FlagMethFld, ParseMayName | ParseMayImpl);
                 if (fn && isNamedNode(fn)) {
                     nameGenFnName(fn, parse->gennamePrefix);
                     iNsTypeAddFn((INsTypeNode*)strnode, fn);
@@ -167,8 +167,8 @@ INode *parseStruct(ParseState *parse) {
             }
             else if (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
                 FieldDclNode *field = parseFieldDcl(parse, mutPerm);
-                field->index = propertynbr++;
-                field->flags |= FlagMethProp;
+                field->index = fieldnbr++;
+                field->flags |= FlagMethFld;
                 structAddField(strnode, field);
                 parseEndOfStatement();
             }
@@ -181,10 +181,10 @@ INode *parseStruct(ParseState *parse) {
     else if (lexIsToken(SemiToken))
         lexNextToken();
     else
-        errorMsgLex(ErrorNoLCurly, "Expected left curly bracket enclosing properties or methods");
+        errorMsgLex(ErrorNoLCurly, "Expected left curly bracket enclosing fields or methods");
 
     // A 0-size (no field) struct is opaque. Cannot be instantiated.
-    if (propertynbr == 0)
+    if (fieldnbr == 0)
         strnode->flags |= FlagStructOpaque;
 
     parse->typenode = svtype;

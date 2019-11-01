@@ -8,7 +8,7 @@
 #ifndef instype_h
 #define instype_h
 
-// Namespaced type that supports methods, properties and traits
+// Namespaced type that supports named nodes (e.g., methods) and traits
 #define INsTypeNodeHdr \
     ITypeNodeHdr; \
     Name *namesym; \
@@ -18,7 +18,7 @@
 
 // Interface for a namespaced type
 // -> nodes (NodeList) is the list of nodes
-// -> namespace is the dictionary of names (methods, properties)
+// -> namespace is the dictionary of names (methods, fields)
 // -> subtypes (Nodes) is the list of trait/interface subtypes it implements
 typedef struct INsTypeNode {
     INsTypeNodeHdr;

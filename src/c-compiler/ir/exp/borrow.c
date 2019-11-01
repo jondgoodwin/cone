@@ -58,7 +58,7 @@ INode *borrowGetVarPerm(INode *lval, INode **lvalperm) {
         return lvalret;
     }
 
-    // An array element (obj[2]) or property access (obj.prop)
+    // An array element (obj[2]) or field access (obj.prop)
     case ArrIndexTag:
     case StrFieldTag:
     {
@@ -75,9 +75,9 @@ INode *borrowGetVarPerm(INode *lval, INode **lvalperm) {
             errorMsgNode(lval, ErrorNotLval, "Cannot borrow a substructure reference from a locked variable");
             return NULL
         } */
-        if (element->methprop) {
-            PermNode *methperm = (PermNode *)((VarDclNode*)((NameUseNode *)element->methprop)->dclnode)->perm;
-            // Downgrade overall static permission if property is immutable
+        if (element->methfld) {
+            PermNode *methperm = (PermNode *)((VarDclNode*)((NameUseNode *)element->methfld)->dclnode)->perm;
+            // Downgrade overall static permission if field is immutable
             if (methperm == immPerm)
                 *lvalperm = (INode*)constPerm;
         }

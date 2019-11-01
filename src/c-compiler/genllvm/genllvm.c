@@ -99,7 +99,7 @@ void genlGloVarName(GenState *gen, VarDclNode *glovar) {
 // Create mangled function name for overloaded function
 char *genlMangleMethName(char *workbuf, FnDclNode *node) {
     // Use genned name if not an overloadable method
-    if (!(node->flags & FlagMethProp))
+    if (!(node->flags & FlagMethFld))
         return node->genname;
 
     strcat(workbuf, node->genname);

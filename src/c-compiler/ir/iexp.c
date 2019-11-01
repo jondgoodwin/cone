@@ -140,8 +140,8 @@ uint16_t iexpGetPermFlags(INode *node) {
     case StrFieldTag:
     {
         FnCallNode *fncall = (FnCallNode *)node;
-        // Property access. Permission is the conjunction of structure and property permissions.
-        return iexpGetPermFlags(fncall->objfn) & iexpGetPermFlags((INode*)fncall->methprop);
+        // Field access. Permission is the conjunction of structure and field permissions.
+        return iexpGetPermFlags(fncall->objfn) & iexpGetPermFlags((INode*)fncall->methfld);
     }
     default:
         return 0;

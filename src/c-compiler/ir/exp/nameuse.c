@@ -111,13 +111,13 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
         return;
     }
 
-    // If name is for a method or field, rewrite node as 'self.property'
-    if (name->dclnode->tag == FieldDclTag && name->dclnode->flags & FlagMethProp) {
+    // If name is for a method or field, rewrite node as 'self.field'
+    if (name->dclnode->tag == FieldDclTag && name->dclnode->flags & FlagMethFld) {
         // Doing this rewrite ensures we reuse existing type check and gen code for
         // properly handling field access
         NameUseNode *selfnode = newNameUseNode(selfName);
         FnCallNode *fncall = newFnCallNode((INode *)selfnode, 0);
-        fncall->methprop = name;
+        fncall->methfld = name;
         copyNodeLex(fncall, name); // Copy lexer info into injected node in case it has errors
         *((FnCallNode**)namep) = fncall;
         inodeNameRes(pstate, (INode **)namep);

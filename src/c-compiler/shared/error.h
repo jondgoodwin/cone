@@ -45,7 +45,7 @@ enum ErrorCode {
     ErrorNoInit,    // Parm didn't specify required default value
     ErrorFewArgs,    // Too few arguments specified
     ErrorManyArgs,    // Too many arguments specified
-    ErrorNoMbr,        // Method/property not specified
+    ErrorNoMbr,        // Method/field not specified
     ErrorNoMeth,    // No such method defined by the object's type
     ErrorRetNotLast, // Return was found not at the end of the block
     ErrorNoRet,        // Return value expected but not given
@@ -56,7 +56,7 @@ enum ErrorCode {
     ErrorNotLval,    // Not an lval
     ErrorAddr,        // Invalid expr to get an addr (&) of
     ErrorBadPerm,    // Permission not allowed
-    ErrorNoFlds,    // Expression's type does not support properties
+    ErrorNoFlds,    // Expression's type does not support fields
     ErrorBadAlloc,  // Missing valid alloc methods
     ErrorNoDbl,        // Missing '::'
     ErrorNoVar,        // Missing variable name
@@ -64,7 +64,7 @@ enum ErrorCode {
     ErrorNoImpl,    // Function must be implemented
     ErrorBadImpl,    // Function must not be implemented
     ErrorNotPublic, // Method is not public
-    ErrorBadMeth,   // Methods/properties not supported
+    ErrorBadMeth,   // Methods/fields not supported
     ErrorNotTyped,  // Expected a value that has a type
     ErrorBadIndex,  // Bad index/slice on array/ref
     ErrorBadArray,  // Bad array

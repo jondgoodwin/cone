@@ -565,7 +565,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
     case StrFieldTag:
     {
         FnCallNode *fncall = (FnCallNode *)lval;
-        FieldDclNode *flddcl = (FieldDclNode*)((NameUseNode*)fncall->methprop)->dclnode;
+        FieldDclNode *flddcl = (FieldDclNode*)((NameUseNode*)fncall->methfld)->dclnode;
         return LLVMBuildStructGEP(gen->builder, genlAddr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
     }
     case StrLitTag:
@@ -729,12 +729,12 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     {
         if (termnode->flags & FlagBorrow) {
             FnCallNode *fncall = (FnCallNode *)termnode;
-            VarDclNode *flddcl = (VarDclNode*)((NameUseNode*)fncall->methprop)->dclnode;
+            VarDclNode *flddcl = (VarDclNode*)((NameUseNode*)fncall->methfld)->dclnode;
             return LLVMBuildStructGEP(gen->builder, genlAddr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
         }
         else {
             FnCallNode *fncall = (FnCallNode *)termnode;
-            FieldDclNode *flddcl = (FieldDclNode*)((NameUseNode*)fncall->methprop)->dclnode;
+            FieldDclNode *flddcl = (FieldDclNode*)((NameUseNode*)fncall->methfld)->dclnode;
             return LLVMBuildExtractValue(gen->builder, genlExpr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
         }
     }
