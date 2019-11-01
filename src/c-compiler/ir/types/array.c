@@ -39,8 +39,8 @@ void arrayNameRes(NameResState *pstate, ArrayNode *node) {
 // Type check an array type
 void arrayTypeCheck(TypeCheckState *pstate, ArrayNode *node) {
     inodeTypeCheck(pstate, &node->elemtype);
-    if (!itypeHasSize(node->elemtype))
-        errorMsgNode(node->elemtype, ErrorInvType, "Type must have a defined size.");
+    if (!itypeIsConcrete(node->elemtype))
+        errorMsgNode(node->elemtype, ErrorInvType, "Element's type must be concrete and instantiable.");
 }
 
 // Compare two struct signatures to see if they are equivalent

@@ -140,7 +140,7 @@ enum NodeTags {
 // Flags used across all types
 #define MoveType           0x0001  // Type's values impose move semantics (vs. copy)
 #define ThreadBound        0x0002  // Type's value copies must stay in the same thread (vs. sendable)
-#define FlagStructOpaque   0x0004  // Has no fields
+#define OpaqueType         0x0004  // Type cannot be instantiated as a value (empty struct, fn, abstract trait, void)
 
 #define TypeChecked        0x8000  // Type has been type-checked
 #define TypeChecking       0x4000  // Type is in process of being type-checked

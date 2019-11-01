@@ -11,6 +11,7 @@
 VoidTypeNode *newVoidNode() {
     VoidTypeNode *voidnode;
     newNode(voidnode, VoidTypeNode, VoidTag);
+    voidnode->flags |= OpaqueType;
     return voidnode;
 }
 

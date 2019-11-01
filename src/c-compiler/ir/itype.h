@@ -51,7 +51,8 @@ int itypeCopyTrait(INode *typenode);
 // Add type mangle info to buffer
 char *itypeMangle(char *bufp, INode *vtype);
 
-// Return true is type has a defined size. Opaque structs, traits/interfaces will be false.
-int itypeHasSize(INode *type);
+// Return true if type has a concrete and instantiable. 
+// Opaque (field-less) structs, traits, functions, void will be false.
+int itypeIsConcrete(INode *type);
 
 #endif

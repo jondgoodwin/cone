@@ -64,6 +64,10 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
         inodeTypeCheck(pstate, (INode**)nodesp);
     }
 
+    // A 0-size (no field) struct is opaque. Cannot be instantiated.
+    if (node->fields.used == 0)
+        node->flags |= OpaqueType;
+
     // We can say we know enough about the type at this point to
     // declare it fully checked, so as to not trigger type recursion warnings.
     node->flags |= TypeChecked;

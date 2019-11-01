@@ -183,10 +183,6 @@ INode *parseStruct(ParseState *parse) {
     else
         errorMsgLex(ErrorNoLCurly, "Expected left curly bracket enclosing fields or methods");
 
-    // A 0-size (no field) struct is opaque. Cannot be instantiated.
-    if (fieldnbr == 0)
-        strnode->flags |= FlagStructOpaque;
-
     parse->typenode = svtype;
     parse->gennamePrefix = svprefix;
     return (INode*)strnode;

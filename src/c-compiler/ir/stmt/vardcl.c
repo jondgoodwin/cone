@@ -104,8 +104,8 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
     }
 
     // Variables cannot hold a void or opaque struct value
-    if (!itypeHasSize(name->vtype))
-        errorMsgNode(name->vtype, ErrorInvType, "Type must have a defined size.");
+    if (!itypeIsConcrete(name->vtype))
+        errorMsgNode(name->vtype, ErrorInvType, "Variable's type must be concrete and instantiable.");
 }
 
 // Perform data flow analysis
