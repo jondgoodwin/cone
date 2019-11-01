@@ -40,7 +40,7 @@ void arrayNameRes(NameResState *pstate, ArrayNode *node) {
 void arrayTypeCheck(TypeCheckState *pstate, ArrayNode *node) {
     inodeTypeCheck(pstate, &node->elemtype);
     if (!itypeIsConcrete(node->elemtype))
-        errorMsgNode(node->elemtype, ErrorInvType, "Element's type must be concrete and instantiable.");
+        errorMsgNode((INode*)node, ErrorInvType, "Element's type must be concrete and instantiable.");
 }
 
 // Compare two struct signatures to see if they are equivalent

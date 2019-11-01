@@ -85,9 +85,10 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
 
     // An initializer need not be specified, but if not, it must have a declared type
     if (!name->value) {
-        if (name->vtype == voidType)
+        if (name->vtype == voidType) {
             errorMsgNode((INode*)name, ErrorNoType, "Declared name must specify a type or value");
-        return;
+            return;
+        }
     }
     // Type check the initialization value
     else {
@@ -105,7 +106,7 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
 
     // Variables cannot hold a void or opaque struct value
     if (!itypeIsConcrete(name->vtype))
-        errorMsgNode(name->vtype, ErrorInvType, "Variable's type must be concrete and instantiable.");
+        errorMsgNode((INode*)name, ErrorInvType, "Variable's type must be concrete and instantiable.");
 }
 
 // Perform data flow analysis
