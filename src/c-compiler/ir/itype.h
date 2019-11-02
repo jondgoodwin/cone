@@ -21,16 +21,6 @@ typedef struct ITypeNode {
     ITypeNodeHdr;
 } ITypeNode;
 
-// All types get a copy trait indicating how to handle when a value of that type
-// is assigned to a variable or passed as an argument to a function.
-// This is because a bitwise copy of certain values (e.g., pointers, unique reference,
-// or destructible resources) can be potentially unsafe.
-enum CopyTrait {
-    CopyBitwise,   // A value can be safely copied using bitwise memcpy
-    CopyMethod,    // A value can be safely copied using the type's .copy method (semantic copy)
-    CopyMove       // A value can only be moved (bitwise copy and then deactivate the source)
-};
-
 // Return node's type's declaration node
 // (Note: only use after it has been type-checked)
 INode *itypeGetTypeDcl(INode *node);
@@ -44,9 +34,6 @@ int itypeIsSame(INode *node1, INode *node2);
 // 1 - yes, without conversion
 // 2+ - requires increasingly lossy conversion/coercion
 int itypeMatches(INode *totype, INode *fromtype);
-
-// Return a CopyTrait indicating how to handle when a value is assigned to a variable or passed to a function.
-int itypeCopyTrait(INode *typenode);
 
 // Add type mangle info to buffer
 char *itypeMangle(char *bufp, INode *vtype);

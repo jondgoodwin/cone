@@ -111,40 +111,6 @@ int itypeMatches(INode *totype, INode *fromtype) {
     }
 }
 
-// Return a CopyTrait indicating how to handle when a value is assigned to a variable or passed to a function.
-int itypeCopyTrait(INode *typenode) {
-    if (typenode->tag == TypeNameUseTag)
-        typenode = (INode*)((NameUseNode *)typenode)->dclnode;
-
-    // For an aggregate type, existence of a destructor or a non-CopyBitwise field is infectious
-    // If it has a .copy method, it is CopyMethod, or else it is CopyMove.
-    if (typenode->tag == FloatNbrTag || typenode->tag == UintNbrTag || typenode->tag == IntNbrTag)
-        return CopyBitwise;
-    if (isMethodType(typenode)) {
-        int copytrait = CopyBitwise;
-        NodeList *nodes = &((StructNode *)typenode)->fields;
-        uint32_t cnt;
-        INode **nodesp;
-        for (nodelistFor(nodes, cnt, nodesp)) {
-            if (((*nodesp)->tag == FieldDclTag && CopyBitwise != itypeCopyTrait(*nodesp))
-                /* || *nodesp points to a destructor */)
-                copytrait == CopyBitwise ? CopyMove : copytrait;
-            // else if (nodesp points to the .copy method)
-            //    return CopyMethod;
-        }
-        return copytrait;
-    }
-    // For references, a 'uni' reference is CopyMove and all others are CopyBitwise
-    else if (typenode->tag == RefTag) {
-        return (permGetFlags(((RefNode *)typenode)->perm) & MayAlias) ? CopyBitwise : CopyMove;
-    }
-    // All pointers are CopyMove (potentially unsafe to copy)
-    else if (typenode->tag == PtrTag)
-        return CopyBitwise;  // Should be CopyMove?
-    // The default (e.g., numbers) is CopyBitwise
-    return CopyBitwise;
-}
-
 // Add type mangle info to buffer
 char *itypeMangle(char *bufp, INode *vtype) {
     switch (vtype->tag) {

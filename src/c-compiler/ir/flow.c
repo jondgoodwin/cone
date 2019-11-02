@@ -11,11 +11,9 @@
 #include <memory.h>
 
 void flowHandleMove(INode *node) {
-    int copytrait = itypeCopyTrait(((IExpNode *)node)->vtype);
-    if (copytrait != CopyBitwise)
+    int16_t moveflag = itypeGetTypeDcl(((IExpNode *)node)->vtype)->flags & MoveType;
+    if (moveflag)
         errorMsgNode(node, WarnCopy, "No current support for move. Be sure this is safe!");
-    // if CopyMethod - inject use of that method to create a safe clone that can be "moved"
-    // if CopyMove - turn off access to the source (via static (local var) or dynamic mechanism)
 }
 
 // If needed, inject an alias node for rc/own references
