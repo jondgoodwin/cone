@@ -33,7 +33,6 @@ add_executable(conec
 	src/c-compiler/ir/nametbl.c
 	src/c-compiler/ir/nodelist.c
 	src/c-compiler/ir/nodes.c
-	src/c-compiler/ir/typepass.c
 
 	src/c-compiler/ir/stmt/break.c
 	src/c-compiler/ir/stmt/continue.c

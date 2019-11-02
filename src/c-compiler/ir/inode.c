@@ -252,7 +252,7 @@ void inodeNameRes(NameResState *pstate, INode **node) {
     }
 }
 
-// Dispatch a node walk for the current semantic analysis pass
+// Dispatch a node walk for the type check pass
 // - pstate is helpful state info for node traversal
 // - node is a pointer to pointer so that a node can be replaced
 void inodeTypeCheck(TypeCheckState *pstate, INode **node) {

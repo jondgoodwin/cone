@@ -52,10 +52,6 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     pstate->typenode = svtypenode;
 }
 
-void structTypePass(TypePass *pstate, StructNode *node) {
-
-}
-
 // Type check a struct type
 void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     INode **nodesp;

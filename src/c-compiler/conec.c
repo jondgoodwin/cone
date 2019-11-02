@@ -33,13 +33,15 @@ void doAnalysis(ModuleNode **mod) {
     if (errors)
         return;
 
-    // Pass over all type declarations
-    doTypePass(*mod);
-    if (errors)
-        return;
-
     // Apply syntactic sugar, and perform type inference/check
     // Note: Some nodes may be lowered, injected or replaced
+    // Type checking of type nodes will go depth first (recursively) from a nameuse reference to the type's dcl
+    // in order to infectiously fill in information about these types:
+    // - A type may not be composed of a zero - size type
+    // - Pointers allow for recursive types, but otherwise, types must form a directed acyclic graph
+    // - Infectiousness of types is handled (move semantics, lifetimes, thread-bound, etc.)
+    // - Subtype and inheritance relationships are filled out
+    // - The binary encoding is sorted (e.g., ensuring variant types are same size)
     TypeCheckState tstate;
     tstate.fnsig = NULL;
     tstate.loopcnt = 0;
