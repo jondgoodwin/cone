@@ -12,6 +12,8 @@
 Name *anonName;  // "_" - the absence of a name
 Name *selfName;  // "self"
 Name *thisName;  // "this"
+Name *cloneName; // "clone" method
+Name *finalName; // "final" method
 
 Name *plusEqName;   // "+="
 Name *minusEqName;  // "-="

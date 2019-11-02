@@ -39,8 +39,12 @@ void arrayNameRes(NameResState *pstate, ArrayNode *node) {
 // Type check an array type
 void arrayTypeCheck(TypeCheckState *pstate, ArrayNode *node) {
     inodeTypeCheck(pstate, &node->elemtype);
-    if (!itypeIsConcrete(node->elemtype))
+    if (!itypeIsConcrete(node->elemtype)) {
         errorMsgNode((INode*)node, ErrorInvType, "Element's type must be concrete and instantiable.");
+    }
+    // If the element's type if ThreadBound or Move, so is the array's type
+    ITypeNode *elemtype = (ITypeNode*)itypeGetTypeDcl(node->elemtype);
+    node->flags |= elemtype->flags & (ThreadBound | MoveType);
 }
 
 // Compare two struct signatures to see if they are equivalent

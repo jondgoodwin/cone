@@ -54,11 +54,22 @@ void structNameRes(NameResState *pstate, StructNode *node) {
 
 // Type check a struct type
 void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
+    int16_t infectFlag = 0;
     INode **nodesp;
     uint32_t cnt;
     for (nodelistFor(&node->fields, cnt, nodesp)) {
         inodeTypeCheck(pstate, (INode**)nodesp);
+        // Notice if a field's threadbound or movetype infects the struct
+        ITypeNode *fldtype = (ITypeNode*)itypeGetTypeDcl(((IExpNode*)(*nodesp))->vtype);
+        infectFlag |= fldtype->flags & (ThreadBound | MoveType);
     }
+    // Use inference rules to decide if struct is ThreadBound or a MoveType
+    // based on whether its fields are, and whether it supports the .final or .clone method
+    if (namespaceFind(&node->namespace, finalName))
+        infectFlag |= MoveType;           // Let's not make copies of finalized objects
+    if (namespaceFind(&node->namespace, cloneName))
+        infectFlag &= 0xFFFF - MoveType;  // 'clone' means we can make copies anyway
+    node->flags |= infectFlag;
 
     // A 0-size (no field) struct is opaque. Cannot be instantiated.
     if (node->fields.used == 0)

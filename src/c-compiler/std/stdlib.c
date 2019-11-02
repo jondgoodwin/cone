@@ -90,6 +90,8 @@ void stdlibInit(int ptrsize) {
     anonName = nametblFind("_", 1);
     selfName = nametblFind("self", 4);
     thisName = nametblFind("this", 4);
+    cloneName = nametblFind("clone", 5);
+    finalName = nametblFind("final", 5);
 
     plusEqName = nametblFind("+=", 2);
     minusEqName = nametblFind("-=", 2);

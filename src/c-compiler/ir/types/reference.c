@@ -20,7 +20,8 @@ void refAdoptInfections(RefNode *refnode) {
         return;  // Wait until we have this info
     if (!(permGetFlags(refnode->perm) & MayAlias) || refnode->alloc == (INode*)ownAlloc)
         refnode->flags |= MoveType;
-    if (refnode->perm == (INode*)uniPerm || (refnode->pvtype->flags & ThreadBound))
+    if (refnode->perm == (INode*)mutPerm || refnode->perm == (INode*)constPerm 
+        || (refnode->pvtype->flags & ThreadBound))
         refnode->flags |= ThreadBound;
 }
 
