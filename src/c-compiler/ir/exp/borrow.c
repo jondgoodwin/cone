@@ -96,8 +96,7 @@ void borrowTypeCheck(TypeCheckState *pstate, BorrowNode **nodep) {
     BorrowNode *node = *nodep;
     inodeTypeCheck(pstate, &node->exp);
 
-    // If we are calculating an internal reference (e.g., index) for a reference, 
-    // auto-deref that reference
+    // Auto-deref the exp, if we are borrowing a reference to a reference's field or indexed value
     INode *exptype = iexpGetTypeDcl(node->exp);
     if ((node->flags & FlagSuffix) && (exptype->tag == RefTag || exptype->tag == PtrTag || exptype->tag == ArrayRefTag)) {
         DerefNode *deref = newDerefNode();
@@ -109,8 +108,8 @@ void borrowTypeCheck(TypeCheckState *pstate, BorrowNode **nodep) {
         node->exp = (INode*)deref;
     }
 
-    // Setup lval, perm and scope as if we were borrowing from a string,
-    // If not, then we can extract this info from expression nodes
+    // Setup lval, perm and scope info as if we were borrowing from a global constant literal.
+    // If not, extract this info from expression nodes
     RefNode *reftype = (RefNode *)node->vtype;
     INode *lval = node->exp;
     INode *lvalperm = (INode*)immPerm;
@@ -129,27 +128,29 @@ void borrowTypeCheck(TypeCheckState *pstate, BorrowNode **nodep) {
     }
     INode *lvaltype = ((IExpNode*)lval)->vtype;
 
-    // Ensure lval's permission matches requested permission
-    if (reftype->perm) {
-        if (!permMatches(reftype->perm, lvalperm))
-            errorMsgNode((INode *)node, ErrorBadPerm, "Borrowed reference cannot obtain this permission");
-    }
-    else
-        reftype->perm = lvalperm;
-
-    // The reference's value type is unknown (NULL).
-    // Let's infer type from the lval we are borrowing from
+    // The reference's value type is currently unknown (NULL).
+    // Let's infer this value type from the lval we are borrowing from
+    INode *refvtype;
     if (lvaltype->tag == ArrayTag) {
         // Borrowing from a fixed size array creates an array reference
-        refSetVtype(reftype, ((ArrayNode*)lvaltype)->elemtype);
         reftype->tag = ArrayRefTag;
+        refvtype = ((ArrayNode*)lvaltype)->elemtype;
     }
     else if (lvaltype->tag == ArrayDerefTag) {
-        refSetVtype(reftype, ((RefNode*)lvaltype)->pvtype);
         reftype->tag = ArrayRefTag;
+        refvtype = ((RefNode*)lvaltype)->pvtype;
     }
     else
-        refSetVtype(reftype, lvaltype);
+        refvtype = lvaltype;
+
+    // Ensure requested/inferred permission matches lval's permission
+    INode *refperm = reftype->perm;
+    if (refperm == NULL)
+        refperm = itypeIsConcrete(refvtype) ? (INode*)constPerm : (INode*)opaqPerm;
+    if (!permMatches(refperm, lvalperm))
+        errorMsgNode((INode *)node, ErrorBadPerm, "Borrowed reference cannot obtain this permission");
+
+    refSetPermVtype(reftype, refperm, refvtype);
 }
 
 // Perform data flow analysis on addr node

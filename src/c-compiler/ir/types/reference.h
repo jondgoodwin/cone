@@ -26,7 +26,7 @@ RefNode *newRefNode();
 RefNode *newRefNodeFull(INode *alloc, INode *perm, INode *vtype);
 
 // Set the inferred value type of a reference
-void refSetVtype(RefNode *refnode, INode *vtype);
+void refSetPermVtype(RefNode *refnode, INode *perm, INode *vtype);
 
 // Create a new ArrayDerefNode from an ArrayRefNode
 RefNode *newArrayDerefNodeFrom(RefNode *refnode);

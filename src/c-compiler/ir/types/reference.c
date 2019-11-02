@@ -16,6 +16,8 @@ RefNode *newRefNode() {
 
 // Set type infection flags based on the reference's type parameters
 void refAdoptInfections(RefNode *refnode) {
+    if (refnode->perm == NULL || refnode->pvtype == NULL)
+        return;  // Wait until we have this info
     if (!(permGetFlags(refnode->perm) & MayAlias) || refnode->alloc == (INode*)ownAlloc)
         refnode->flags |= MoveType;
     if (refnode->perm == (INode*)uniPerm || (refnode->pvtype->flags & ThreadBound))
@@ -33,7 +35,8 @@ RefNode *newRefNodeFull(INode *alloc, INode *perm, INode *vtype) {
 }
 
 // Set the inferred value type of a reference
-void refSetVtype(RefNode *refnode, INode *vtype) {
+void refSetPermVtype(RefNode *refnode, INode *perm, INode *vtype) {
+    refnode->perm = perm;
     refnode->pvtype = vtype;
     refAdoptInfections(refnode);
 }

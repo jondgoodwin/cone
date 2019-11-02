@@ -34,10 +34,9 @@ void allocateNameRes(NameResState *pstate, AllocateNode **nodep) {
 // Type check allocate node
 void allocateTypeCheck(TypeCheckState *pstate, AllocateNode **nodep) {
     AllocateNode *node = *nodep;
-    RefNode *reftype = (RefNode *)node->vtype;
-    inodeTypeCheck(pstate, &node->exp);
 
-    // expression must be a value usable for initializing allocated reference
+    // expression must be a value usable for initializing allocated memory
+    inodeTypeCheck(pstate, &node->exp);
     INode *initval = node->exp;
     if (!isExpNode(initval)) {
         errorMsgNode(initval, ErrorBadTerm, "Needs to be a value");
@@ -45,7 +44,8 @@ void allocateTypeCheck(TypeCheckState *pstate, AllocateNode **nodep) {
     }
 
     // Infer reference's value type based on initial value
-    refSetVtype(reftype, ((IExpNode*)initval)->vtype);
+    RefNode *reftype = (RefNode *)node->vtype;
+    refSetPermVtype(reftype, reftype->perm, ((IExpNode*)initval)->vtype);
 }
 
 // Perform data flow analysis on allocate node

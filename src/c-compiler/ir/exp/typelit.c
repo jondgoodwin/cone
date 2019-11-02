@@ -167,7 +167,9 @@ void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *arrlit) {
         inodeTypeCheck(pstate, nodesp);
 
     INode *littype = itypeGetTypeDcl(arrlit->vtype);
-    if (littype->tag == ArrayTag)
+    if (!itypeIsConcrete(arrlit->vtype))
+        errorMsgNode((INode*)arrlit, ErrorInvType, "Type must be concrete and instantiable.");
+    else if (littype->tag == ArrayTag)
         typeLitArrayCheck(pstate, arrlit);
     else if (littype->tag == StructTag)
         typeLitStructCheck(pstate, arrlit, (StructNode*)littype);
