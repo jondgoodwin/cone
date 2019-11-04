@@ -28,6 +28,8 @@ void keywordInit() {
     keyAdd("set", SetToken);
     keyAdd("fn", FnToken);
     keyAdd("struct", StructToken);
+    keyAdd("trait", TraitToken);
+    keyAdd("enumtrait", EnumTraitToken);
     keyAdd("alloc", AllocToken);
     keyAdd("return", RetToken);
     keyAdd("do", DoToken);

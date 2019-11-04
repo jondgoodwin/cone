@@ -200,6 +200,22 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
             break;
         }
 
+        // 'trait' type definition
+        case TraitToken: {
+            StructNode *strnode = (StructNode*)parseStruct(parse);
+            strnode->flags |= OpaqueType;
+            modAddNode(mod, strnode->namesym, (INode*)strnode);
+            break;
+        }
+
+        // 'enumtrait' type definition
+        case EnumTraitToken: {
+            StructNode *strnode = (StructNode*)parseStruct(parse);
+            strnode->flags |= EnumTrait;
+            modAddNode(mod, strnode->namesym, (INode*)strnode);
+            break;
+        }
+
         // 'extern' qualifier in front of fn or var (block)
         case ExternToken:
         {

@@ -132,6 +132,7 @@ INode *parseStruct(ParseState *parse) {
     if (lexIsToken(IdentToken)) {
         strnode = newStructNode(lex->val.ident);
         strnode->tag = tag;
+        strnode->mod = parse->mod;
         nameConcatPrefix(&parse->gennamePrefix, &strnode->namesym->namestr);
         parse->typenode = (INsTypeNode *)strnode;
         lexNextToken();

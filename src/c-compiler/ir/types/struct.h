@@ -8,12 +8,15 @@
 #ifndef struct_h
 #define struct_h
 
+typedef struct ModuleNode ModuleNode;
+
 // Field-containing types (e.g., struct, trait, etc.)
 // - fields holds all owned and trait-inherited fields
 // - nodelist holds owned methods and static functions and variables
 // - namespace is the dictionary of all owned and inherited named nodes
 typedef struct StructNode {
     INsTypeNodeHdr;
+    ModuleNode *mod;        // Owning module, to check if struct defined in same mod as trait
     NodeList fields;
 } StructNode;
 
