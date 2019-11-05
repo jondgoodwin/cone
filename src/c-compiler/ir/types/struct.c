@@ -18,6 +18,7 @@ StructNode *newStructNode(Name *namesym) {
     nodelistInit(&snode->fields, 8);
     snode->mod = NULL;
     snode->basetrait = NULL;
+    snode->derived = NULL;
     return snode;
 }
 
@@ -56,6 +57,13 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     pstate->typenode = svtypenode;
 }
 
+// Get bottom-most base trait for some trait/struct, or NULL if there is not one
+StructNode *structGetBaseTrait(StructNode *node) {
+    if (node->basetrait == NULL)
+        return (node->flags & TraitType) ? node : NULL;
+    return structGetBaseTrait((StructNode*)itypeGetTypeDcl(node->basetrait));
+}
+
 // Type check a struct type
 void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     INode *svtypenode = pstate->typenode;
@@ -75,6 +83,14 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
                 node->flags |= isClosedFlags;  // mark derived types with these flags
                 if (basenode->mod != node->mod)
                     errorMsgNode((INode*)node, ErrorInvType, "This type must be declared in the same module as the trait");
+                else {
+                    // Remember every struct variant derived from a closed trait
+                    if (!(node->flags & TraitType)) {
+                        StructNode *basesttrait = structGetBaseTrait(node);
+                        if (basesttrait)
+                            nodesAdd(&basesttrait->derived, (INode*)node);
+                    }
+                }
             }
 
             // Insert basetrait's fields ahead of this type's fields

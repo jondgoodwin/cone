@@ -204,6 +204,8 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
         case TraitToken: {
             StructNode *strnode = (StructNode*)parseStruct(parse);
             strnode->flags |= TraitType | OpaqueType;
+            if (strnode->flags & HasTagField)
+                strnode->derived = newNodes(4);
             modAddNode(mod, strnode->namesym, (INode*)strnode);
             break;
         }
@@ -212,6 +214,7 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
         case EnumTraitToken: {
             StructNode *strnode = (StructNode*)parseStruct(parse);
             strnode->flags |= TraitType | SameSize;
+            strnode->derived = newNodes(4);
             modAddNode(mod, strnode->namesym, (INode*)strnode);
             break;
         }
