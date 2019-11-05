@@ -33,3 +33,13 @@ void nodelistAdd(NodeList *mnodes, INode *node) {
         nodelistGrow(mnodes);
     mnodes->nodes[mnodes->used++] = node;
 }
+
+// Insert some list into another list, beginning at index
+void nodeListInsertList(NodeList *mnodes, NodeList *fromnodes, uint32_t index) {
+    while (mnodes->used + fromnodes->used >= mnodes->avail)
+        nodelistGrow(mnodes);
+    uint32_t amt = fromnodes->used;
+    memmove(&mnodes->nodes[amt + index], &mnodes->nodes[index], (mnodes->used-index) * sizeof(INode **));
+    memcpy(&mnodes->nodes[index], fromnodes->nodes, amt * sizeof(INode **));
+    mnodes->used += fromnodes->used;
+}

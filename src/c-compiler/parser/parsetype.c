@@ -142,6 +142,18 @@ INode *parseStruct(ParseState *parse) {
         return NULL;
     }
 
+    // Obtain base trait, if specified
+    if (lexIsToken(ColonToken)) {
+        lexNextToken();
+        if (lexIsToken(IdentToken)) {
+            strnode->basetrait = (INode*)newNameUseNode(lex->val.ident);
+            lexNextToken();
+        }
+        else {
+            errorMsgLex(ErrorNoIdent, "Expected the name for the base trait");
+        }
+    }
+
     // Process field or method definitions
     if (lexIsToken(LCurlyToken)) {
         lexNextToken();

@@ -17,6 +17,7 @@ typedef struct ModuleNode ModuleNode;
 typedef struct StructNode {
     INsTypeNodeHdr;
     ModuleNode *mod;        // Owning module, to check if struct defined in same mod as trait
+    INode *basetrait;       // What trait does this trait/struct extend
     NodeList fields;
 } StructNode;
 

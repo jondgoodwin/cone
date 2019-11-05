@@ -145,9 +145,15 @@ void typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private) 
 }
 
 // Type check a struct literal
-// Note: We already know the literal's values are in the right order and the right number
 void typeLitStructCheck(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *strnode) {
     INode **nodesp;
+
+    // Ensure type has been type-checked, in case any rewriting/semantic analysis was needed
+    inodeTypeCheck(pstate, &arrlit->vtype);
+
+    // Reorder the literal's arguments to match the type's field order
+    typeLitStructReorder(arrlit, strnode, (INode*)strnode == pstate->typenode);
+
     uint32_t cnt;
     uint32_t argi = 0;
     for (nodelistFor(&strnode->fields, cnt, nodesp)) {

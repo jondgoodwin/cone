@@ -30,4 +30,8 @@ void nodelistInit(NodeList *mnodes, uint32_t size);
 // Add an INode to the end of a NodeList, growing it if full (changing its memory location)
 void nodelistAdd(NodeList *mnodes, INode *node);
 
+// Insert some list into another list, beginning at index
+void nodeListInsertList(NodeList *mnodes, NodeList *fromnodes, uint32_t index);
+
+
 #endif

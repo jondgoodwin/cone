@@ -44,6 +44,7 @@ void doAnalysis(ModuleNode **mod) {
     // - The binary encoding is sorted (e.g., ensuring variant types are same size)
     TypeCheckState tstate;
     tstate.fnsig = NULL;
+    tstate.typenode = NULL;
     tstate.loopcnt = 0;
     tstate.loopstack = memAllocBlk(sizeof(LoopNode*) * TypeCheckLoopMax);
     inodeTypeCheck(&tstate, (INode**)mod);

@@ -16,6 +16,8 @@ StructNode *newStructNode(Name *namesym) {
     snode->subtypes = newNodes(0);
     iNsTypeInit((INsTypeNode*)snode, 8);
     nodelistInit(&snode->fields, 8);
+    snode->mod = NULL;
+    snode->basetrait = NULL;
     return snode;
 }
 
@@ -40,6 +42,8 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     pstate->typenode = (INode*)node;
     nametblHookPush();
     nametblHookNamespace(&node->namespace);
+    if (node->basetrait)
+        inodeNameRes(pstate, &node->basetrait);
     INode **nodesp;
     uint32_t cnt;
     for (nodelistFor(&node->fields, cnt, nodesp)) {
@@ -54,6 +58,40 @@ void structNameRes(NameResState *pstate, StructNode *node) {
 
 // Type check a struct type
 void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
+    INode *svtypenode = pstate->typenode;
+    pstate->typenode = (INode*)node;
+
+    // If a base trait is specified, inherit its fields and methods
+    if (node->basetrait) {
+        inodeTypeCheck(pstate, &node->basetrait);
+        StructNode *basenode = (StructNode*)itypeGetTypeDcl(node->basetrait);
+        if (basenode->tag == StructTag && (basenode->flags & TraitType)) {
+            INode **nodesp;
+            uint32_t cnt;
+
+            // Insert basetrait's fields ahead of this type's fields
+            nodeListInsertList(&node->fields, &basenode->fields, 0);
+            for (nodelistFor(&basenode->fields, cnt, nodesp)) {
+                FieldDclNode *fld = (FieldDclNode*)*nodesp;
+                INode *errfld;
+                if (errfld = namespaceAdd(&node->namespace, fld->namesym, *nodesp)) {
+                    errorMsgNode(errfld, ErrorDupName, "Duplicate field name with inherited trait field");
+                }
+            }
+
+            // Renumber field indexes to reflect their altered position
+            // Note: Since we are inserting at zero, the basetrait's indexes remain unchanged!
+            uint16_t index = 0;
+            for (nodelistFor(&node->fields, cnt, nodesp)) {
+                ((FieldDclNode*)*nodesp)->index = index++;
+            }
+        }
+        else {
+            errorMsgNode(node->basetrait, ErrorInvType, "Expected a trait name.");
+        }
+    }
+
+    // Type check all fields and calculate infection flags for ThreadBound/MoveType
     int16_t infectFlag = 0;
     INode **nodesp;
     uint32_t cnt;
@@ -79,9 +117,12 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     // declare it fully checked, so as to not trigger type recursion warnings.
     node->flags |= TypeChecked;
 
+    // Type check all methods, etc.
     for (nodelistFor(&node->nodelist, cnt, nodesp)) {
         inodeTypeCheck(pstate, (INode**)nodesp);
     }
+
+    pstate->typenode = svtypenode;
 }
 
 // Compare two struct signatures to see if they are equivalent
