@@ -47,6 +47,8 @@ INode *parseLifetime(ParseState *parse, int stmtflag);
 // parseexpr.c
 INode *parseSimpleExpr(ParseState *parse);
 INode *parseAnyExpr(ParseState *parse);
+// Parse a term: literal, identifier, etc.
+INode *parseTerm(ParseState *parse);
 
 // parsetype.c
 INode *parsePerm(PermNode *defperm);

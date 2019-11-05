@@ -69,6 +69,14 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
             INode **nodesp;
             uint32_t cnt;
 
+            // Handle when base trait has a closed number of variants
+            int16_t isClosedFlags = basenode->flags & (SameSize | HasTagField);
+            if (isClosedFlags) {
+                node->flags |= isClosedFlags;  // mark derived types with these flags
+                if (basenode->mod != node->mod)
+                    errorMsgNode((INode*)node, ErrorInvType, "This type must be declared in the same module as the trait");
+            }
+
             // Insert basetrait's fields ahead of this type's fields
             nodeListInsertList(&node->fields, &basenode->fields, 0);
             for (nodelistFor(&basenode->fields, cnt, nodesp)) {

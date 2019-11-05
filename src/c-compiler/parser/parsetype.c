@@ -145,13 +145,7 @@ INode *parseStruct(ParseState *parse) {
     // Obtain base trait, if specified
     if (lexIsToken(ColonToken)) {
         lexNextToken();
-        if (lexIsToken(IdentToken)) {
-            strnode->basetrait = (INode*)newNameUseNode(lex->val.ident);
-            lexNextToken();
-        }
-        else {
-            errorMsgLex(ErrorNoIdent, "Expected the name for the base trait");
-        }
+        strnode->basetrait = parseTerm(parse);  // Type could be a qualified name or generic
     }
 
     // Process field or method definitions
