@@ -23,6 +23,61 @@
 #include <string.h>
 #include <assert.h>
 
+// Generate a LLVMTypeRef for a struct, based on its fields and alignment
+LLVMTypeRef _genlStructType(GenState *gen, char *name, StructNode *strnode) {
+    // Build typeref from struct
+    INode **nodesp;
+    uint32_t cnt;
+    uint32_t fieldcnt = strnode->fields.used;
+    LLVMTypeRef *field_types = (LLVMTypeRef *)memAllocBlk(fieldcnt * sizeof(LLVMTypeRef));
+    LLVMTypeRef *field_type_ptr = field_types;
+    for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+        *field_type_ptr++ = genlType(gen, ((FieldDclNode *)*nodesp)->vtype);
+    }
+    LLVMTypeRef structype = LLVMStructCreateNamed(gen->context, name);
+    if (fieldcnt > 0)
+        LLVMStructSetBody(structype, field_types, fieldcnt, 0);
+    return structype;
+}
+
+// Calculate max size and TypeRef for all types derived from this base
+// to ensure they are all the same size
+void genlSameSizeTrait(GenState *gen, StructNode *base) {
+
+    // Calculate the largest size of the struct variants
+    LLVMTypeRef baseTypeRef;
+    INode **nodesp;
+    uint32_t cnt;
+    unsigned long long maxsize = 0;
+    for (nodesFor(base->derived, cnt, nodesp)) {
+        StructNode *strnode = (StructNode *)*nodesp;
+        strnode->llvmtype = _genlStructType(gen, "SameSizeTemp", strnode);
+        unsigned long long size = LLVMStoreSizeOfType(gen->datalayout, strnode->llvmtype);
+        if (size > maxsize) {
+            maxsize = size;
+            baseTypeRef = strnode->llvmtype;
+        }
+    }
+
+    // Now pad all variants, as needed, so all end up the same max size
+    for (nodesFor(base->derived, cnt, nodesp)) {
+        StructNode *strnode = (StructNode *)*nodesp;
+        unsigned long long size = LLVMStoreSizeOfType(gen->datalayout, strnode->llvmtype);
+        if (maxsize > size) {
+            // Append a padding field of the excess number of bytes
+            ArrayNode *padtyp = newArrayNode();
+            padtyp->size = (uint32_t)(maxsize - size);
+            padtyp->elemtype = (INode*)i8Type;
+            FieldDclNode *padfld = newFieldDclNode(anonName, (INode*)immPerm);
+            padfld->vtype = (INode*)padtyp;
+            nodelistAdd(&strnode->fields, (INode*)padfld);
+        }
+        strnode->llvmtype = NULL;
+    }
+
+    base->llvmtype = baseTypeRef;
+}
+
 // Generate a LLVMTypeRef from a basic type definition node
 LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
     switch (typ->tag) {
@@ -88,20 +143,17 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
     case StructTag:
     case AllocTag:
     {
-        // Build typeref from struct
-        StructNode *strnode = (StructNode*)typ;
-        INode **nodesp;
-        uint32_t cnt;
-        uint32_t fieldcnt = strnode->fields.used;
-        LLVMTypeRef *field_types = (LLVMTypeRef *)memAllocBlk(fieldcnt * sizeof(LLVMTypeRef));
-        LLVMTypeRef *field_type_ptr = field_types;
-        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
-            *field_type_ptr++ = genlType(gen, ((FieldDclNode *)*nodesp)->vtype);
+        // When dealing with same-sized structs based on a trait,
+        // we need to prep them to all be the same maxed size
+        if (typ->flags & SameSize) {
+            StructNode *base = structGetBaseTrait((StructNode*)typ);
+            if (!base->llvmtype)
+                genlSameSizeTrait(gen, base);
+            // For any arbitrary trait in the inheritance hierarchy, use any arbitrary struct type
+            if (typ->flags & TraitType)
+                return base->llvmtype;
         }
-        LLVMTypeRef structype = LLVMStructCreateNamed(gen->context, name);
-        if (fieldcnt > 0)
-            LLVMStructSetBody(structype, field_types, fieldcnt, 0);
-        return structype;
+        return _genlStructType(gen, name, (StructNode*)typ);
     }
 
     case TTupleTag:
