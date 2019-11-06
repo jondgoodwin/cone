@@ -53,6 +53,7 @@ typedef struct TypeCheckState TypeCheckState;
 
 #include "types/ttuple.h"
 #include "types/permission.h"
+#include "types/enum.h"
 #include "types/lifetime.h"
 #include "types/fnsig.h"
 #include "types/number.h"

@@ -156,6 +156,16 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
         return _genlStructType(gen, name, (StructNode*)typ);
     }
 
+    case EnumTag:
+    {
+        switch (((EnumNode*)typ)->bytes) {
+        case 1: return LLVMInt8TypeInContext(gen->context);
+        case 2: return LLVMInt16TypeInContext(gen->context);
+        case 4: return LLVMInt32TypeInContext(gen->context);
+        case 8: return LLVMInt64TypeInContext(gen->context);
+        }
+    }
+
     case TTupleTag:
     {
         // Build struct typeref

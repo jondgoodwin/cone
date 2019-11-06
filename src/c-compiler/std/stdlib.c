@@ -30,6 +30,7 @@ void keywordInit() {
     keyAdd("struct", StructToken);
     keyAdd("trait", TraitToken);
     keyAdd("enumtrait", EnumTraitToken);
+    keyAdd("enum", EnumToken);
     keyAdd("alloc", AllocToken);
     keyAdd("return", RetToken);
     keyAdd("do", DoToken);

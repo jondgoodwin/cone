@@ -115,7 +115,8 @@ enum NodeTags {
     IntNbrTag = TypeGroup + NamedNode + MethodType,    // Integer
     UintNbrTag,     // Unsigned integer
     FloatNbrTag,    // Floating point number
-    StructTag,      // Also interface, trait, actor, etc.
+    StructTag,      // struct or trait
+    EnumTag,        // Enumerated value/type
     LifetimeTag,
     PermTag,
     AllocTag,

@@ -362,6 +362,13 @@ INode *parseRefType(ParseState *parse) {
     return (INode *)reftype;
 }
 
+// Parse an enum type
+INode* parseEnum(ParseState *parse) {
+    EnumNode *node = newEnumNode();
+    lexNextToken();
+    return (INode*)node;
+}
+
 // Parse a value type signature. Return NULL if none found.
 INode* parseVtype(ParseState *parse) {
     INode *vtype;
@@ -373,6 +380,8 @@ INode* parseVtype(ParseState *parse) {
     case LBracketToken:
         lexNextToken();
         return parseArrayType(parse);
+    case EnumToken:
+        return parseEnum(parse);
     case IdentToken:
         vtype = (INode*)newNameUseNode(lex->val.ident);
         lexNextToken();

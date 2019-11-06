@@ -122,6 +122,8 @@ void inodePrintNode(INode *node) {
     case StructTag:
     case AllocTag:
         structPrint((StructNode *)node); break;
+    case EnumTag:
+        enumPrint((EnumNode *)node); break;
     case ArrayTag:
         arrayPrint((ArrayNode *)node); break;
     case IntNbrTag: case UintNbrTag: case FloatNbrTag:
@@ -231,6 +233,8 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         ptrNameRes(pstate, (PtrNode *)*node); break;
     case StructTag:
         structNameRes(pstate, (StructNode *)*node); break;
+    case EnumTag:
+        enumNameRes(pstate, (EnumNode *)*node); break;
     case ArrayTag:
         arrayNameRes(pstate, (ArrayNode *)*node); break;
     case TTupleTag:
@@ -335,6 +339,8 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node) {
         ptrTypeCheck(pstate, (PtrNode *)*node); break;
     case StructTag:
         structTypeCheck(pstate, (StructNode *)*node); break;
+    case EnumTag:
+        enumTypeCheck(pstate, (EnumNode *)*node); break;
     case ArrayTag:
         arrayTypeCheck(pstate, (ArrayNode *)*node); break;
     case TTupleTag:

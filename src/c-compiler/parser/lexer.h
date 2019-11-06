@@ -124,6 +124,7 @@ enum TokenTypes {
     StructToken,    // 'struct'
     TraitToken,     // 'trait'
     EnumTraitToken, // 'enumtrait'
+    EnumToken,      // 'enum'
     AllocToken,        // 'alloc'
     RetToken,        // 'return'
     DoToken,        // 'do'
