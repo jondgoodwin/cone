@@ -145,7 +145,16 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
         infectFlag |= MoveType;           // Let's not make copies of finalized objects
     if (namespaceFind(&node->namespace, cloneName))
         infectFlag &= 0xFFFF - MoveType;  // 'clone' means we can make copies anyway
-    node->flags |= infectFlag;
+
+    // Populate infection flags in this struct/trait, and recursively to all inherited traits
+    if (infectFlag) {
+        node->flags |= infectFlag;
+        StructNode *trait = (StructNode *)node->basetrait;
+        while (trait) {
+            trait->flags |= infectFlag;
+            trait = (StructNode *)node->basetrait;
+        }
+    }
 
     // A 0-size (no field) struct is opaque. Cannot be instantiated.
     if (node->fields.used == 0)
