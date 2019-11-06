@@ -19,6 +19,7 @@ StructNode *newStructNode(Name *namesym) {
     snode->mod = NULL;
     snode->basetrait = NULL;
     snode->derived = NULL;
+    snode->tagnbr = 0;
     return snode;
 }
 
@@ -69,7 +70,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     INode *svtypenode = pstate->typenode;
     pstate->typenode = (INode*)node;
 
-    // If a base trait is specified, inherit its fields and methods
+    // If a base trait is specified, inject (inherit) its fields and methods
     if (node->basetrait) {
         inodeTypeCheck(pstate, &node->basetrait);
         StructNode *basenode = (StructNode*)itypeGetTypeDcl(node->basetrait);
@@ -85,15 +86,18 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
                     errorMsgNode((INode*)node, ErrorInvType, "This type must be declared in the same module as the trait");
                 else {
                     // Remember every struct variant derived from a closed trait
+                    // and capture struct's tag number
                     if (!(node->flags & TraitType)) {
                         StructNode *basesttrait = structGetBaseTrait(node);
-                        if (basesttrait)
+                        if (basesttrait) {
+                            node->tagnbr = basesttrait->derived->used;
                             nodesAdd(&basesttrait->derived, (INode*)node);
+                        }
                     }
                 }
             }
 
-            // Insert basetrait's fields ahead of this type's fields
+            // Insert basetrait's fields ahead of this type's fields and in namespace
             nodeListInsertList(&node->fields, &basenode->fields, 0);
             for (nodelistFor(&basenode->fields, cnt, nodesp)) {
                 FieldDclNode *fld = (FieldDclNode*)*nodesp;
@@ -124,6 +128,16 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
         // Notice if a field's threadbound or movetype infects the struct
         ITypeNode *fldtype = (ITypeNode*)itypeGetTypeDcl(((IExpNode*)(*nodesp))->vtype);
         infectFlag |= fldtype->flags & (ThreadBound | MoveType);
+
+        if (fldtype->tag == EnumTag && !((*nodesp)->flags & IsTagField)) {
+            if ((node->flags & TraitType) && !(node->flags & HasTagField) && node->basetrait == NULL) {
+                node->flags |= HasTagField;
+                (*nodesp)->flags |= IsTagField;
+            }
+            else {
+                errorMsgNode(*nodesp, ErrorInvType, "Empty enum type only allowed once in a base trait");
+            }
+        }
     }
     // Use inference rules to decide if struct is ThreadBound or a MoveType
     // based on whether its fields are, and whether it supports the .final or .clone method

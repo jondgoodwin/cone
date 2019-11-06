@@ -150,6 +150,8 @@ enum NodeTags {
 #define TypeChecked        0x8000  // Type has been type-checked
 #define TypeChecking       0x4000  // Type is in process of being type-checked
 
+#define IsTagField         0x0020  // FieldNode: This field is the trait's discriminant tag
+
 // Allocate and initialize the INode portion of a new node
 #define newNode(node, nodestruct, nodetype) {\
     node = (nodestruct*) memAllocBlk(sizeof(nodestruct)); \

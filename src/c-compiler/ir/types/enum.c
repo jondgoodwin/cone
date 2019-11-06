@@ -12,6 +12,10 @@ EnumNode *newEnumNode() {
     EnumNode *node;
     newNode(node, EnumNode, EnumTag);
     node->bytes = 1;
+    node->namesym = anonName;
+    node->llvmtype = NULL;
+    node->subtypes = newNodes(0);
+    iNsTypeInit((INsTypeNode*)node, 8);
     return node;
 }
 

@@ -143,8 +143,28 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
     case StructTag:
     case AllocTag:
     {
+        // When dealing with a tagged struct, 
+        // ensure tag field is large enough to handle number of variants
+        if (typ->flags & HasTagField) {
+            StructNode *base = structGetBaseTrait((StructNode*)typ);
+            if (!base->llvmtype && base->derived->used > 0x100) {
+                INode **nodesp;
+                uint32_t cnt;
+                for (nodelistFor(&base->fields, cnt, nodesp)) {
+                    if ((*nodesp)->flags & IsTagField) {
+                        EnumNode *enumnode = (EnumNode *)itypeGetTypeDcl(*nodesp);
+                        if (base->derived->used > 0x1000000)
+                            enumnode->bytes = 4;
+                        else if (base->derived->used > 0x10000)
+                            enumnode->bytes = 3;
+                        else if (base->derived->used > 0x100)
+                            enumnode->bytes = 2;
+                    }
+                }
+            }
+        }
         // When dealing with same-sized structs based on a trait,
-        // we need to prep them to all be the same maxed size
+        // prep them to all be the same maxed size
         if (typ->flags & SameSize) {
             StructNode *base = structGetBaseTrait((StructNode*)typ);
             if (!base->llvmtype)

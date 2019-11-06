@@ -112,6 +112,13 @@ void typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private) 
     for (nodelistFor(&strnode->fields, cnt, nodesp)) {
         FieldDclNode *field = (FieldDclNode *)*nodesp;
 
+        // If field represents a discriminated tag, inject struct's discriminant nbr
+        if (field->flags & IsTagField) {
+            ULitNode *tagnbrnode = newULitNode(strnode->tagnbr, field->vtype);
+            nodesInsert(&arrlit->args, (INode*)tagnbrnode, argi++);
+            continue;
+        }
+
         // A field value has been specified...
         if (argi < arrlit->args->used) {
             // If we have a named value, insert the proper named value here where it belongs
