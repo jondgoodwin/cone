@@ -98,7 +98,8 @@ int refMatches(RefNode *to, RefNode *from) {
         || (to->alloc != from->alloc && to->alloc != voidType)
         || ((from->flags & FlagRefNull) && !(to->flags & FlagRefNull)))
         return 0;
-    return itypeMatches(to->pvtype, from->pvtype) == 1 ? 1 : 2;
+    int match = itypeMatches(to->pvtype, from->pvtype);
+    return match > 2 ? 0 : match;
 }
 
 // If self needs to auto-ref or auto-deref, make sure it legally can

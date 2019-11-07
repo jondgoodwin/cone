@@ -179,6 +179,15 @@ int structEqual(StructNode *node1, StructNode *node2) {
 }
 
 // Will from struct coerce to a to struct (we know they are not the same)
-int structCoerces(StructNode *to, StructNode *from) {
-    return 1;
+int structMatches(StructNode *to, StructNode *from) {
+    if (!(to->flags & TraitType))
+        return 0;
+    StructNode *base = (StructNode*)itypeGetTypeDcl(from->basetrait);
+    while (base) {
+        // If it is a valid supertype trait, indicate that it requires coercion
+        if (to == base)
+            return 2;
+        base = (StructNode*)itypeGetTypeDcl(base->basetrait);
+    }
+    return 0;
 }

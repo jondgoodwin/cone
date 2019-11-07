@@ -42,6 +42,6 @@ StructNode *structGetBaseTrait(StructNode *node);
 void structTypeCheck(TypeCheckState *pstate, StructNode *name);
 
 int structEqual(StructNode *node1, StructNode *node2);
-int structCoerces(StructNode *to, StructNode *from);
+int structMatches(StructNode *to, StructNode *from);
 
 #endif

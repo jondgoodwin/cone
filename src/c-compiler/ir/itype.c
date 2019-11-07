@@ -67,6 +67,9 @@ int itypeMatches(INode *totype, INode *fromtype) {
 
     // Type-specific matching logic
     switch (totype->tag) {
+    case StructTag:
+        return structMatches((StructNode*)totype, (StructNode*)fromtype);
+
     case RefTag:
         if (fromtype->tag != RefTag)
             return 0;
