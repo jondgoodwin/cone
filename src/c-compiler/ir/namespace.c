@@ -96,6 +96,10 @@ void namespaceSet(Namespace *ns, Name *name, INode *node) {
 // Add the node a name maps to if no conflict and return NULL.
 // Otherwise, return the node already there
 INode *namespaceAdd(Namespace *ns, Name *name, INode *node) {
+    // Don't add '_' (anonymous named) nodes, but report success
+    if (name == anonName)
+        return NULL;
+
     // If a node found there, return it
     NameNode *slotp;
     namespaceFindSlot(slotp, ns, name);

@@ -533,18 +533,8 @@ void lexNextTokenx() {
         case 'K': case 'L': case 'M': case 'N': case 'O':
         case 'P': case 'Q': case 'R': case 'S': case 'T':
         case 'U': case 'V': case 'W': case 'X': case 'Y': case 'Z':
-        case '$':
+        case '$': case '_':
             lexScanIdent(srcp);
-            return;
-
-        // '_' or identifier that starts with underscore
-        case '_':
-            if (utf8IsLetter(srcp+1) || *(srcp + 1) == '_' || *(srcp + 1) == '$' || (*(srcp+1)>='0' && *(srcp+1)<='9'))
-                lexScanIdent(srcp);
-            else {
-                lex->toktype = UnderscoreToken;
-                lex->srcp = ++srcp;
-            }
             return;
 
         // backtick enclosed identifiers

@@ -60,7 +60,7 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     // Obtain variable's name
     if (!lexIsToken(IdentToken)) {
         errorMsgLex(ErrorNoIdent, "Expected variable name for declaration");
-        return newVarDclFull(nametblFind("_", 1), VarDclTag, voidType, perm, NULL);
+        return newVarDclFull(anonName, VarDclTag, voidType, perm, NULL);
     }
     varnode = newVarDclNode(lex->val.ident, VarDclTag, perm);
     lexNextToken();
@@ -84,7 +84,7 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     return varnode;
 }
 
-// Parse a variable declaration
+// Parse a field declaration
 FieldDclNode *parseFieldDcl(ParseState *parse, PermNode *defperm) {
     FieldDclNode *fldnode;
     INode *vtype;
@@ -98,8 +98,8 @@ FieldDclNode *parseFieldDcl(ParseState *parse, PermNode *defperm) {
 
     // Obtain variable's name
     if (!lexIsToken(IdentToken)) {
-        errorMsgLex(ErrorNoIdent, "Expected variable name for declaration");
-        return newFieldDclNode(nametblFind("_", 1), perm);
+        errorMsgLex(ErrorNoIdent, "Expected field name for declaration");
+        return newFieldDclNode(anonName, perm);
     }
     fldnode = newFieldDclNode(lex->val.ident, perm);
     lexNextToken();

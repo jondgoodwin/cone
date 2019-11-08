@@ -139,6 +139,8 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
             else {
                 errorMsgNode(*nodesp, ErrorInvType, "Empty enum type only allowed once in a base trait");
             }
+            if (((FieldDclNode*)(*nodesp))->namesym != anonName)
+                errorMsgNode(*nodesp, ErrorInvType, "The tag discriminant field name should be '_'");
         }
     }
     // Use inference rules to decide if struct is ThreadBound or a MoveType

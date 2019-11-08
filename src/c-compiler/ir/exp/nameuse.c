@@ -87,6 +87,11 @@ void nameUsePrint(NameUseNode *name) {
 void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
     NameUseNode *name = *namep;
 
+    // If name is already "resolved", we are done.
+    // This will happen with de-sugaring logic that creates pre-resolved phantom variables
+    if (name->dclnode)
+        return;
+
     // For module-qualified names, look up name in that module
     if (name->qualNames) {
         // Do iterative look ups of module qualifiers beginning with basemod
