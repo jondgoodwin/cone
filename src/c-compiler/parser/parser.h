@@ -40,6 +40,7 @@ void parseCloseTok(uint16_t closetok);
 
 // parseflow.c
 INode *parseIf(ParseState *parse);
+INode *parseMatch(ParseState *parse);
 INode *parseLoop(ParseState *parse, LifetimeNode *life);
 INode *parseBlock(ParseState *parse);
 INode *parseLifetime(ParseState *parse, int stmtflag);

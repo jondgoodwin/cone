@@ -74,6 +74,17 @@ INode *parseExpStmt(ParseState *parse) {
     return parseFlowSuffix(parse, (INode *)parseAnyExpr(parse));
 }
 
+// Parse a block or an expression statement followed by semicolon
+INode *parseBlockOrStmt(ParseState *parse) {
+    if (lexIsToken(RCurlyToken)) {
+        return parseBlock(parse);
+    }
+    BlockNode *blk = newBlockNode();
+    nodesAdd(&blk->stmts, parseExpStmt(parse));
+    parseEndOfStatement();
+    return (INode*)blk;
+}
+
 // Parse a return statement
 INode *parseReturn(ParseState *parse) {
     ReturnNode *stmtnode = newReturnNode();
@@ -88,7 +99,7 @@ INode *parseIf(ParseState *parse) {
     IfNode *ifnode = newIfNode();
     lexNextToken();
     nodesAdd(&ifnode->condblk, parseSimpleExpr(parse));
-    nodesAdd(&ifnode->condblk, parseBlock(parse));
+    nodesAdd(&ifnode->condblk, parseBlockOrStmt(parse));
     while (1) {
         // Process final else clause and break loop
         // Note: this code makes "else if" equivalent to "elif"
@@ -96,7 +107,7 @@ INode *parseIf(ParseState *parse) {
             lexNextToken();
             if (!lexIsToken(IfToken)) {
                 nodesAdd(&ifnode->condblk, voidType); // else distinguished by a 'void' condition
-                nodesAdd(&ifnode->condblk, parseBlock(parse));
+                nodesAdd(&ifnode->condblk, parseBlockOrStmt(parse));
                 break;
             }
         }
@@ -106,9 +117,45 @@ INode *parseIf(ParseState *parse) {
         // Elif processing
         lexNextToken();
         nodesAdd(&ifnode->condblk, parseSimpleExpr(parse));
-        nodesAdd(&ifnode->condblk, parseBlock(parse));
+        nodesAdd(&ifnode->condblk, parseBlockOrStmt(parse));
     }
     return (INode *)ifnode;
+}
+
+// Parse match expression, which is sugar translated to an 'if' block
+INode *parseMatch(ParseState *parse) {
+    // 'match' is de-sugared into a block:
+    // - vardcl that capture the expression in a variable
+    // - if .. elif .. else sequence for all the match cases
+    BlockNode *blknode = newBlockNode();
+    IfNode *ifnode = newIfNode();
+    nodesAdd(&blknode->stmts, (INode*)ifnode);
+
+    lexNextToken();
+    if (!lexIsToken(LCurlyToken)) {
+        errorMsgLex(ErrorBadTok, "Expected opening block brace '{' after match expression");
+        return (INode*)blknode;
+    }
+    lexNextToken();
+
+    while (!lexIsToken(RCurlyToken)) {
+        switch (lex->toktype) {
+        case ElseToken:
+            lexNextToken();
+            nodesAdd(&ifnode->condblk, voidType); // else distinguished by a 'void' condition
+            nodesAdd(&ifnode->condblk, parseBlockOrStmt(parse));
+            break;
+
+        default:
+            nodesAdd(&ifnode->condblk, parseSimpleExpr(parse));
+            if (lexIsToken(ColonToken))
+                lexNextToken();
+            nodesAdd(&ifnode->condblk, parseBlockOrStmt(parse));
+        }
+    }
+    parseRCurly();
+
+    return (INode *)blknode;
 }
 
 // Parse loop block
@@ -237,6 +284,10 @@ INode *parseBlock(ParseState *parse) {
 
         case IfToken:
             nodesAdd(&blk->stmts, parseIf(parse));
+            break;
+
+        case MatchToken:
+            nodesAdd(&blk->stmts, parseMatch(parse));
             break;
 
         case LoopToken:

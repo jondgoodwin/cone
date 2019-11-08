@@ -131,6 +131,7 @@ enum TokenTypes {
     IfToken,        // 'if'
     ElifToken,        // 'elif'
     ElseToken,        // 'else'
+    MatchToken,       // 'match'
     LoopToken,        // 'loop'
     WhileToken,        // 'while'
     EachToken,      // 'each'
