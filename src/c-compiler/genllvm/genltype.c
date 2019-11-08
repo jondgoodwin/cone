@@ -51,7 +51,7 @@ void genlSameSizeTrait(GenState *gen, StructNode *base) {
     unsigned long long maxsize = 0;
     for (nodesFor(base->derived, cnt, nodesp)) {
         StructNode *strnode = (StructNode *)*nodesp;
-        strnode->llvmtype = _genlStructType(gen, "SameSizeTemp", strnode);
+        strnode->llvmtype = _genlStructType(gen, &base->namesym->namestr, strnode);
         unsigned long long size = LLVMStoreSizeOfType(gen->datalayout, strnode->llvmtype);
         if (size > maxsize) {
             maxsize = size;

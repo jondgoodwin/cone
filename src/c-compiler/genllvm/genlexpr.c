@@ -439,6 +439,13 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
             return LLVMBuildBitCast(gen->builder, genexp, genlType(gen, totype), "");
 
     default:
+        if (totype->tag == StructTag) {
+            // LLVM does not bitcast structs, so this store/load hack gets around that problem
+            LLVMValueRef tempspaceptr = LLVMBuildAlloca(gen->builder, genlType(gen, fromtype), "");
+            LLVMValueRef store = LLVMBuildStore(gen->builder, genexp, tempspaceptr);
+            LLVMValueRef castptr = LLVMBuildBitCast(gen->builder, tempspaceptr, LLVMPointerType(genlType(gen, totype),0), "");
+            return LLVMBuildLoad(gen->builder, castptr, "");
+        }
         return LLVMBuildBitCast(gen->builder, genexp, genlType(gen, totype), "");
     }
 }
