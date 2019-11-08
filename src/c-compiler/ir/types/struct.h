@@ -42,6 +42,14 @@ StructNode *structGetBaseTrait(StructNode *node);
 void structTypeCheck(TypeCheckState *pstate, StructNode *name);
 
 int structEqual(StructNode *node1, StructNode *node2);
+
+// Will from struct coerce to a to struct (we know they are not the same)
+// We can only do this for a same-sized trait supertype
 int structMatches(StructNode *to, StructNode *from);
+
+// Will from struct coerce to a to struct (we know they are not the same)
+// This works for references which have more relaxed subtyping rules
+// because matching on size is not necessary
+int structRefMatches(StructNode *to, StructNode *from);
 
 #endif

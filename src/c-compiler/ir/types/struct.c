@@ -90,6 +90,8 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
                     if (!(node->flags & TraitType)) {
                         StructNode *basesttrait = structGetBaseTrait(node);
                         if (basesttrait) {
+                            if (basesttrait->derived == NULL)
+                                basesttrait->derived = newNodes(4);
                             node->tagnbr = basesttrait->derived->used;
                             nodesAdd(&basesttrait->derived, (INode*)node);
                         }
@@ -179,7 +181,25 @@ int structEqual(StructNode *node1, StructNode *node2) {
 }
 
 // Will from struct coerce to a to struct (we know they are not the same)
+// We can only do this for a same-sized trait supertype
 int structMatches(StructNode *to, StructNode *from) {
+    // Only matches if we coerce to a same-sized, nominally declared base trait
+    if (!(to->flags & TraitType) || !(to->flags & SameSize))
+        return 0;
+    StructNode *base = (StructNode*)itypeGetTypeDcl(from->basetrait);
+    while (base) {
+        // If it is a valid supertype trait, indicate that it requires coercion
+        if (to == base)
+            return 2;
+        base = (StructNode*)itypeGetTypeDcl(base->basetrait);
+    }
+    return 0;
+}
+
+// Will from struct coerce to a to struct (we know they are not the same)
+// This works for references which have more relaxed subtyping rules
+// because matching on size is not necessary
+int structRefMatches(StructNode *to, StructNode *from) {
     if (!(to->flags & TraitType))
         return 0;
     StructNode *base = (StructNode*)itypeGetTypeDcl(from->basetrait);
