@@ -129,17 +129,34 @@ INode *parseMatch(ParseState *parse) {
     // - if .. elif .. else sequence for all the match cases
     BlockNode *blknode = newBlockNode();
     IfNode *ifnode = newIfNode();
-    nodesAdd(&blknode->stmts, (INode*)ifnode);
 
+    // Pick up the expression in a variable, then start the block
     lexNextToken();
+    VarDclNode *expdclnode = newVarDclNode(anonName, VarDclTag, (INode*)immPerm);
+    NameUseNode *expnamenode = newNameUseNode(anonName);
+    expnamenode->tag = VarNameUseTag;
+    expnamenode->dclnode = (INode*)expdclnode;
+    expdclnode->value = parseSimpleExpr(parse);
     if (!lexIsToken(LCurlyToken)) {
         errorMsgLex(ErrorBadTok, "Expected opening block brace '{' after match expression");
         return (INode*)blknode;
     }
     lexNextToken();
 
+    // Parse all cases
     while (!lexIsToken(RCurlyToken)) {
         switch (lex->toktype) {
+        case EqToken: {
+            FnCallNode *callnode = newFnCallOp((INode*)expnamenode, "==", 2);
+            lexNextToken();
+            nodesAdd(&callnode->args, parseSimpleExpr(parse));
+            nodesAdd(&ifnode->condblk, (INode*)callnode);
+            if (lexIsToken(ColonToken))
+                lexNextToken();
+            nodesAdd(&ifnode->condblk, parseBlockOrStmt(parse));
+            break;
+        }
+
         case ElseToken:
             lexNextToken();
             nodesAdd(&ifnode->condblk, voidType); // else distinguished by a 'void' condition
@@ -155,6 +172,8 @@ INode *parseMatch(ParseState *parse) {
     }
     parseRCurly();
 
+    nodesAdd(&blknode->stmts, (INode*)expdclnode);
+    nodesAdd(&blknode->stmts, (INode*)ifnode);
     return (INode *)blknode;
 }
 

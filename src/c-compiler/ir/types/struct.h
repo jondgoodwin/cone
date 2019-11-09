@@ -17,7 +17,7 @@ typedef struct ModuleNode ModuleNode;
 typedef struct StructNode {
     INsTypeNodeHdr;
     ModuleNode *mod;        // Owning module, to check if struct defined in same mod as trait
-    INode *basetrait;       // What trait does this trait/struct extend
+    INode *basetrait;       // Which trait has fields embedded at start of this trait/struct
     Nodes *derived;         // If a closed, base trait, this lists all structs derived from it
     NodeList fields;        // Ordered list of all fields
     uint32_t tagnbr;        // If a tagged struct, this is the number in the tag field
