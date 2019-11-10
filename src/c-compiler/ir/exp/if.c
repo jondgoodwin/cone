@@ -77,9 +77,15 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode) {
         inodeTypeCheck(pstate, nodesp);
 
         // - conditional must be a Bool
-        if ((cnt & 1)==0 && *nodesp != voidType)
-            if (0==iexpCoerces((INode*)boolType, nodesp))
-                errorMsgNode(*nodesp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
+        if ((cnt & 1) == 0) {
+            if (*nodesp != voidType) {
+                if (0 == iexpCoerces((INode*)boolType, nodesp))
+                    errorMsgNode(*nodesp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
+            }
+            else if (cnt > 2) {
+                errorMsgNode(*(nodesp+1), ErrorInvType, "match on everything should be last.");
+            }
+        }
     }
 }
 
