@@ -108,7 +108,8 @@ INode *parseTerm(ParseState *parse) {
     case LBracketToken:
         return parseList(parse, NULL);
     default:
-        errorMsgLex(ErrorBadTerm, "Invalid term value: expected variable, literal, etc.");
+        errorMsgLex(ErrorBadTerm, "Invalid term: expected name, literal, etc.");
+        lexNextToken(); // Avoid infinite loop
         return NULL;
     }
 }

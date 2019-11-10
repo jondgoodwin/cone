@@ -76,7 +76,7 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode) {
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
         inodeTypeCheck(pstate, nodesp);
 
-        // - conditional must be a Bool
+        // Validate that conditional node is correct
         if ((cnt & 1) == 0) {
             if (*nodesp != voidType) {
                 if (0 == iexpCoerces((INode*)boolType, nodesp))

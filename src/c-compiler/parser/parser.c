@@ -246,6 +246,7 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
 
         default:
             errorMsgLex(ErrorBadGloStmt, "Invalid global area statement");
+            lexNextToken();
             parseSkipToNextStmt();
             break;
         }
