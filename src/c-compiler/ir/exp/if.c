@@ -79,7 +79,7 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode) {
 
         // Validate that conditional node is correct
         if (*nodesp != voidType) {
-            if (0 == iexpTypeCheckAndMatch(pstate, &(INode*)boolType, nodesp))
+            if (0 == iexpTypeCheckAndMatch(pstate, (INode**)&boolType, nodesp))
                 errorMsgNode(*nodesp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
         }
         else if (cnt > 2) {
