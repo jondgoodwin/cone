@@ -28,6 +28,15 @@ INode *iexpGetTypeDcl(INode *node);
 // (Note: only use after it has been type-checked)
 INode *iexpGetDerefTypeDcl(INode *node);
 
+// Bidirectional type checking between 'from' and 'to' nodes
+// Evaluate whether the 'from' node will type check to 'to' node's type
+// - If 'to' type is unspecified, infer it from 'from' type
+// - If 'from' node is 'if', 'block', 'loop', set it to 'to' node's type
+// - Otherwise, check that types match.
+//   If match requires a coercion, a 'cast' node will be inject ahead of the 'from' node
+// return 1 for success, 0 for fail
+int iexpChkType(TypeCheckState *pstate, INode **to, INode **from);
+
 // Can from's value be coerced to to's value type?
 // This might inject a 'cast' node in front of the 'from' node with non-matching numbers
 int iexpCoerces(INode *to, INode **from);

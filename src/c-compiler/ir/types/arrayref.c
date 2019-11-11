@@ -22,14 +22,16 @@ void arrayRefPrint(RefNode *node) {
 void arrayRefNameRes(NameResState *pstate, RefNode *node) {
     inodeNameRes(pstate, &node->alloc);
     inodeNameRes(pstate, (INode**)&node->perm);
-    inodeNameRes(pstate, &node->pvtype);
+    if (node->pvtype)
+        inodeNameRes(pstate, &node->pvtype);
 }
 
 // Type check an array reference node
 void arrayRefTypeCheck(TypeCheckState *pstate, RefNode *node) {
     inodeTypeCheck(pstate, &node->alloc);
     inodeTypeCheck(pstate, (INode**)&node->perm);
-    inodeTypeCheck(pstate, &node->pvtype);
+    if (node->pvtype)
+        inodeTypeCheck(pstate, &node->pvtype);
 }
 
 // Compare two reference signatures to see if they are equivalent
@@ -46,5 +48,7 @@ int arrayRefMatches(RefNode *to, RefNode *from) {
         || (to->alloc != from->alloc && to->alloc != voidType)
         || ((from->flags & FlagRefNull) && !(to->flags & FlagRefNull)))
         return 0;
-    return itypeMatches(to->pvtype, from->pvtype) == 1 ? 1 : 2;
+    if (to->pvtype && from->pvtype)
+        return itypeMatches(to->pvtype, from->pvtype) == 1 ? 1 : 2;
+    return 0;
 }

@@ -67,7 +67,7 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
 
     // Get value type, if provided
     if ((vtype = parseVtype(parse)))
-        varnode->vtype = vtype;
+        varnode->vtype = vtype==voidType? NULL : vtype;
 
     // Get initialization value after '=', if provided
     if (lexIsToken(AssgnToken)) {
@@ -228,7 +228,7 @@ INode *parseFnSig(ParseState *parse) {
                     ++parmnbr;
                 }
                 // Infer value type of a parameter (or its reference) if unspecified
-                if (parm->vtype == voidType) {
+                if (parm->vtype == NULL) {
                     parm->vtype = (INode*)newNameUseNode(parse->typenode->namesym);
                 }
                 else if (parm->vtype->tag == RefTag) {

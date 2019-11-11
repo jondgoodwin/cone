@@ -113,7 +113,8 @@ void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod) {
         {
             VarDclNode * varnode = (VarDclNode*)*nodesp;
             inodeTypeCheck(pstate, (INode**)&varnode->perm);
-            inodeTypeCheck(pstate, &varnode->vtype);
+            if (varnode->vtype)
+                inodeTypeCheck(pstate, &varnode->vtype);
             break;
         }
         case FnDclTag:

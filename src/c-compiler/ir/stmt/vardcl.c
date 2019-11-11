@@ -14,7 +14,7 @@
 VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *perm) {
     VarDclNode *name;
     newNode(name, VarDclNode, tag);
-    name->vtype = voidType;
+    name->vtype = NULL;
     name->namesym = namesym;
     name->perm = perm;
     name->value = NULL;
@@ -59,7 +59,8 @@ void varDclPrint(VarDclNode *name) {
 // Enable name resolution of local variables
 void varDclNameRes(NameResState *pstate, VarDclNode *name) {
     inodeNameRes(pstate, (INode**)&name->perm);
-    inodeNameRes(pstate, &name->vtype);
+    if (name->vtype)
+        inodeNameRes(pstate, &name->vtype);
 
     // Variable declaration within a block is a local variable
     if (pstate->scope > 1) {
@@ -81,26 +82,23 @@ void varDclNameRes(NameResState *pstate, VarDclNode *name) {
 // Type check variable against its initial value
 void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
     inodeTypeCheck(pstate, (INode**)&name->perm);
-    inodeTypeCheck(pstate, &name->vtype);
+    if (name->vtype)
+        inodeTypeCheck(pstate, &name->vtype);
 
     // An initializer need not be specified, but if not, it must have a declared type
     if (!name->value) {
-        if (name->vtype == voidType) {
+        if (name->vtype == NULL) {
             errorMsgNode((INode*)name, ErrorNoType, "Declared name must specify a type or value");
             return;
         }
     }
     // Type check the initialization value
     else {
-        inodeTypeCheck(pstate, &name->value);
         // Global variables and function parameters require literal initializers
         if (name->scope <= 1 && !litIsLiteral(name->value))
             errorMsgNode(name->value, ErrorNotLit, "Variable may only be initialized with a literal value.");
-        // Infer the var's vtype from its value, if not provided
-        if (name->vtype == voidType)
-            name->vtype = ((IExpNode *)name->value)->vtype;
-        // Otherwise, verify that declared type and initial value type matches
-        else if (!iexpCoerces(name->vtype, &name->value))
+        // Verify that declared type and initial value type match
+        else if (!iexpChkType(pstate, &name->vtype, &name->value))
             errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
     }
 
