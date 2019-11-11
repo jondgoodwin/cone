@@ -29,6 +29,10 @@ void blockNameRes(NameResState *pstate, BlockNode *blk);
 // Note: When coerced by iexpCoerces, vtype of the block will be specified
 void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk);
 
+// Special type-checking for iexpChkType, where blk->vtype sets type expectations
+// Mostly this is a pass-through to type-check the block's statements.
+void blockChkType(TypeCheckState *pstate, BlockNode *blk);
+
 // Perform data flow analysis
 void blockFlow(FlowState *fstate, BlockNode **blknode);
 

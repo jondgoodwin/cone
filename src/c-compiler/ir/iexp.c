@@ -40,46 +40,45 @@ INode *iexpGetDerefTypeDcl(INode *node) {
     return node;
 }
 
-// Handle type-checking for a block. 
-// Mostly this is a pass-through to type-check the block's statements.
-void blockTypeCheck2(TypeCheckState *pstate, BlockNode *blk) {
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodesFor(blk->stmts, cnt, nodesp)) {
-        if (cnt > 1)
-            // All stmts except last throw out their value
-            inodeTypeCheck(pstate, nodesp);
-        else
-            // Value of block is value of last statement
-            // Ensure its type matches expected type for block
-            if (!iexpChkType(pstate, &blk->vtype, nodesp))
-                errorMsgNode(*nodesp, ErrorInvType, "expression type does not match expected type");
+// Both 'from' and 'to' specify a type. Do they match?
+// This may involve injecting a 'cast' node in front of 'from'
+int iexpDoCoerce(INode *totypep, INode **from) {
+    if (totypep == voidType)
+        return 1;
+
+    // Re-type a null literal node to match the expected ref/ptr type
+    if ((*from)->tag == NullTag) {
+        if (!refIsNullable(totypep) && totypep->tag != PtrTag)
+            return 0;
+        ((IExpNode*)(*from))->vtype = totypep;
+        return 1;
     }
-}
 
-// Type check the if statement node
-// - Every conditional expression must be a bool
-// - Type of every branch's value must match expected type and each other
-void ifTypeCheck2(TypeCheckState *pstate, IfNode *ifnode) {
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodesFor(ifnode->condblk, cnt, nodesp)) {
+    INode *totypedcl = iexpGetTypeDcl(totypep);
+    INode *fromtypedcl = iexpGetTypeDcl(*from);
 
-        // Validate that conditional node is correct
-        inodeTypeCheck(pstate, nodesp);
-        if (*nodesp != voidType) {
-            if (0 == iexpCoerces((INode*)boolType, nodesp))
-                errorMsgNode(*nodesp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
-        }
-        else if (cnt > 2) {
-            errorMsgNode(*(nodesp + 1), ErrorInvType, "match on everything should be last.");
-        }
+    // Are types equivalent, or is 'to' a subtype of fromtypedcl?
+    int match = itypeMatches(totypedcl, fromtypedcl);
+    if (match <= 1)
+        return match; // return fail or non-changing matches. Fall through to perform any coercion
 
-        // Validate that all branches have matching types
-        ++nodesp; --cnt;
-        if (!iexpChkType(pstate, &ifnode->vtype, nodesp))
-            errorMsgNode(*nodesp, ErrorInvType, "expression type does not match expected type");
+    // Add coercion node
+    if (match == 2) {
+        *from = (INode*)newCastNode(*from, totypedcl);
+        return 1;
     }
+
+    // If not an integer literal, don't convert
+    if ((*from)->tag != ULitTag)
+        return 0;
+    // If it is an integer literal, convert it to correct type/value in place
+    ULitNode *lit = (ULitNode*)(*from);
+    lit->vtype = totypedcl;
+    if (totypedcl->tag == FloatNbrTag) {
+        lit->tag = FLitTag;
+        ((FLitNode*)lit)->floatlit = (double)lit->uintlit;
+    }
+    return 1;
 }
 
 // Bidirectional type checking between 'from' exp and 'to' type
@@ -110,12 +109,12 @@ int iexpChkType(TypeCheckState *pstate, INode **totypep, INode **from) {
     // This ensures multi-branch specialized values all upcast to same expected supertype
     if (fromnode->tag == IfTag) {
         fromnode->vtype = *totypep;
-        ifTypeCheck2(pstate, (IfNode*)*from);
+        IfChkType(pstate, (IfNode*)*from);
         return 1;
     }
     if (fromnode->tag == BlockTag) {
         fromnode->vtype = *totypep;
-        blockTypeCheck2(pstate, (BlockNode*)*from);
+        blockChkType(pstate, (BlockNode*)*from);
         return 1;
     }
     if (fromnode->tag == LoopTag) {
@@ -127,42 +126,7 @@ int iexpChkType(TypeCheckState *pstate, INode **totypep, INode **from) {
     // Both 'from' and 'to' specify a type. Do they match?
     // (this may involve injecting a 'cast' node in front of 'from'
     inodeTypeCheck(pstate, from);
-    if (*totypep == voidType)
-        return 1;
-
-    // Re-type a null literal node to match the expected ref/ptr type
-    if (fromnode->tag == NullTag) {
-        if (!refIsNullable(*totypep) && (*totypep)->tag != PtrTag)
-            return 0;
-        fromnode->vtype = *totypep;
-        return 1;
-    }
-
-    INode *totypedcl = iexpGetTypeDcl(*totypep);
-    INode *fromtypedcl = iexpGetTypeDcl(*from);
-
-    // Are types equivalent, or is 'to' a subtype of fromtypedcl?
-    int match = itypeMatches(totypedcl, fromtypedcl);
-    if (match <= 1)
-        return match; // return fail or non-changing matches. Fall through to perform any coercion
-
-    // Add coercion node
-    if (match == 2) {
-        *from = (INode*)newCastNode(*from, totypedcl);
-        return 1;
-    }
-
-    // If not an integer literal, don't convert
-    if ((*from)->tag != ULitTag)
-        return 0;
-    // If it is an integer literal, convert it to correct type/value in place
-    ULitNode *lit = (ULitNode*)(*from);
-    lit->vtype = totypedcl;
-    if (totypedcl->tag == FloatNbrTag) {
-        lit->tag = FLitTag;
-        ((FLitNode*)lit)->floatlit = (double)lit->uintlit;
-    }
-    return 1;
+    return iexpDoCoerce(*totypep, from);
 }
 
 // can from's value be coerced to to's value type?
@@ -204,31 +168,7 @@ int iexpCoerces(INode *to, INode **from) {
         return 1;
     }
 
-    INode *fromtype = *from;
-    iexpToTypeDcl(fromtype);
-
-    // Are types equivalent, or is 'to' a subtype of fromtypedcl?
-    int match = itypeMatches(to, fromtype);
-    if (match <= 1)
-        return match; // return fail or non-changing matches. Fall through to perform any coercion
-
-    // Add coercion node
-    if (match == 2) {
-        *from = (INode*)newCastNode(*from, to);
-        return 1;
-    }
-
-    // If not an integer literal, don't convert
-    if ((*from)->tag != ULitTag)
-        return 0;
-    // If it is an integer literal, convert it to correct type/value in place
-    ULitNode *lit = (ULitNode*)(*from);
-    lit->vtype = to;
-    if (to->tag == FloatNbrTag) {
-        lit->tag = FLitTag;
-        ((FLitNode*)lit)->floatlit = (double)lit->uintlit;
-    }
-    return 1;
+    return iexpDoCoerce(to, from);
 }
 
 // Are types the same (no coercion)

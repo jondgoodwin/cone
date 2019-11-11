@@ -25,6 +25,11 @@ void ifNameRes(NameResState *pstate, IfNode *ifnode);
 // - if's vtype is specified/checked only when coerced by iexpCoerces
 void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode);
 
+// Special type-checking for iexpChkType, where blk->vtype sets type expectations
+// - Every conditional expression must be a bool
+// - Type of every branch's value must match expected type and each other
+void IfChkType(TypeCheckState *pstate, IfNode *ifnode);
+
 void ifRemoveReturns(IfNode *ifnode);
 
 // Perform data flow analysis on an if expression

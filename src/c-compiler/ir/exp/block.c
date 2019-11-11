@@ -73,6 +73,23 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk) {
     }
 }
 
+// Special type-checking for iexpChkType, where blk->vtype sets type expectations
+// Mostly this is a pass-through to type-check the block's statements.
+void blockChkType(TypeCheckState *pstate, BlockNode *blk) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(blk->stmts, cnt, nodesp)) {
+        if (cnt > 1)
+            // All stmts except last discard their value
+            inodeTypeCheck(pstate, nodesp);
+        else
+            // Value of block is value of last statement
+            // Ensure its type matches expected type for block
+            if (!iexpChkType(pstate, &blk->vtype, nodesp))
+                errorMsgNode(*nodesp, ErrorInvType, "expression type does not match expected type");
+    }
+}
+
 // Perform data flow analysis on a block
 void blockFlow(FlowState *fstate, BlockNode **blknode) {
     BlockNode *blk = *blknode;

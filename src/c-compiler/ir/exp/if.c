@@ -74,18 +74,44 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
-        inodeTypeCheck(pstate, nodesp);
 
         // Validate that conditional node is correct
-        if ((cnt & 1) == 0) {
-            if (*nodesp != voidType) {
-                if (0 == iexpCoerces((INode*)boolType, nodesp))
-                    errorMsgNode(*nodesp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
-            }
-            else if (cnt > 2) {
-                errorMsgNode(*(nodesp+1), ErrorInvType, "match on everything should be last.");
-            }
+        inodeTypeCheck(pstate, nodesp);
+        if (*nodesp != voidType) {
+            if (0 == iexpCoerces((INode*)boolType, nodesp))
+                errorMsgNode(*nodesp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
         }
+        else if (cnt > 2) {
+            errorMsgNode(*(nodesp+1), ErrorInvType, "match on everything should be last.");
+        }
+
+        ++nodesp; --cnt;
+        inodeTypeCheck(pstate, nodesp);
+    }
+}
+
+// Special type-checking for iexpChkType, where blk->vtype sets type expectations
+// - Every conditional expression must be a bool
+// - Type of every branch's value must match expected type and each other
+void IfChkType(TypeCheckState *pstate, IfNode *ifnode) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(ifnode->condblk, cnt, nodesp)) {
+
+        // Validate that conditional node is correct
+        inodeTypeCheck(pstate, nodesp);
+        if (*nodesp != voidType) {
+            if (0 == iexpCoerces((INode*)boolType, nodesp))
+                errorMsgNode(*nodesp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
+        }
+        else if (cnt > 2) {
+            errorMsgNode(*(nodesp + 1), ErrorInvType, "match on everything should be last.");
+        }
+
+        // Validate that all branches have matching types
+        ++nodesp; --cnt;
+        if (!iexpChkType(pstate, &ifnode->vtype, nodesp))
+            errorMsgNode(*nodesp, ErrorInvType, "expression type does not match expected type");
     }
 }
 
