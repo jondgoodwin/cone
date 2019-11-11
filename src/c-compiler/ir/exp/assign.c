@@ -50,7 +50,7 @@ int assignIsLval(INode *lval) {
 // Type check a single matched assignment between lval and rval
 // - lval must be a lval
 // - rval's type must coerce to lval's type
-void assignSingleCheck(INode *lval, INode **rval) {
+void assignSingleCheck(TypeCheckState *pstate, INode *lval, INode **rval) {
     // '_' named lval need not be checked. It is a placeholder that just swallows a value
     if (lval->tag == VarNameUseTag && ((NameUseNode*)lval)->namesym == anonName)
         return;
@@ -59,14 +59,14 @@ void assignSingleCheck(INode *lval, INode **rval) {
         errorMsgNode(lval, ErrorBadLval, "Expression must be lval");
         return;
     }
-    if (iexpCoerces(((IExpNode*)lval)->vtype, rval) == 0) {
+    if (iexpChkType(pstate, &((IExpNode*)lval)->vtype, rval) == 0) {
         errorMsgNode(*rval, ErrorInvType, "Expression's type does not match lval's type");
         return;
     }
 }
 
 // Handle parallel assignment (multiple values on both sides)
-void assignParaCheck(VTupleNode *lval, VTupleNode *rval) {
+void assignParaCheck(TypeCheckState *pstate, VTupleNode *lval, VTupleNode *rval) {
     Nodes *lnodes = lval->values;
     Nodes *rnodes = rval->values;
     if (lnodes->used > rnodes->used) {
@@ -78,14 +78,16 @@ void assignParaCheck(VTupleNode *lval, VTupleNode *rval) {
     INode **rnodesp = &nodesGet(rnodes, 0);
     int16_t rcnt = rnodes->used;
     for (nodesFor(lnodes, lcnt, lnodesp)) {
-        assignSingleCheck(*lnodesp, rnodesp++);
+        assignSingleCheck(pstate, *lnodesp, rnodesp++);
         rcnt--;
     }
+    rval->vtype = lval->vtype;
 }
 
 // Handle when single function/expression returns to multiple lval
-void assignMultRetCheck(VTupleNode *lval, INode **rval) {
+void assignMultRetCheck(TypeCheckState *pstate, VTupleNode *lval, INode **rval) {
     Nodes *lnodes = lval->values;
+    inodeTypeCheck(pstate, rval);
     INode *rtype = ((IExpNode *)*rval)->vtype;
     if (rtype->tag != TTupleTag) {
         errorMsgNode(*rval, ErrorBadTerm, "Not enough values for lvals");
@@ -93,7 +95,7 @@ void assignMultRetCheck(VTupleNode *lval, INode **rval) {
     }
     Nodes *rtypes = ((TTupleNode*)((IExpNode *)*rval)->vtype)->types;
     if (lnodes->used > rtypes->used) {
-        errorMsgNode(*rval, ErrorBadTerm, "Not enough return values for lvals");
+        errorMsgNode(*rval, ErrorBadTerm, "Not enough tuple values for lvals");
         return;
     }
     int16_t lcnt;
@@ -106,31 +108,30 @@ void assignMultRetCheck(VTupleNode *lval, INode **rval) {
 }
 
 // Handle when multiple expressions assigned to single lval
-void assignToOneCheck(INode *lval, VTupleNode *rval) {
+void assignToOneCheck(TypeCheckState *pstate, INode *lval, VTupleNode *rval) {
     Nodes *rnodes = rval->values;
     INode **rnodesp = &nodesGet(rnodes, 0);
     int16_t rcnt = rnodes->used;
-    assignSingleCheck(lval, rnodesp++);
+    assignSingleCheck(pstate, lval, rnodesp++);
 }
 
 // Type checking for assignment node
 void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
     inodeTypeCheck(pstate, &node->lval);
-    inodeTypeCheck(pstate, &node->rval);
 
     // Handle tuple decomposition for parallel assignment
     INode *lval = node->lval;
     if (lval->tag == VTupleTag) {
         if (node->rval->tag == VTupleTag)
-            assignParaCheck((VTupleNode*)node->lval, (VTupleNode*)node->rval);
+            assignParaCheck(pstate, (VTupleNode*)node->lval, (VTupleNode*)node->rval);
         else
-            assignMultRetCheck((VTupleNode*)node->lval, &node->rval);
+            assignMultRetCheck(pstate, (VTupleNode*)node->lval, &node->rval);
     }
     else {
         if (node->rval->tag == VTupleTag)
-            assignToOneCheck(node->lval, (VTupleNode*)node->rval);
+            assignToOneCheck(pstate, node->lval, (VTupleNode*)node->rval);
         else
-            assignSingleCheck(node->lval, &node->rval);
+            assignSingleCheck(pstate, node->lval, &node->rval);
     }
     node->vtype = ((IExpNode*)node->rval)->vtype;
 }
