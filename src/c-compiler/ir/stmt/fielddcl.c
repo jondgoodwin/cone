@@ -62,7 +62,7 @@ void fieldDclTypeCheck(TypeCheckState *pstate, FieldDclNode *name) {
         if (!litIsLiteral(name->value))
             errorMsgNode(name->value, ErrorNotLit, "Field default must be a literal value.");
         // Otherwise, verify that declared type and initial value type matches
-        else if (!iexpChkType(pstate, &name->vtype, &name->value))
+        else if (!iexpTypeCheckAndMatch(pstate, &name->vtype, &name->value))
             errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
     }
 

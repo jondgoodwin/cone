@@ -59,7 +59,7 @@ void assignSingleCheck(TypeCheckState *pstate, INode *lval, INode **rval) {
         errorMsgNode(lval, ErrorBadLval, "Expression must be lval");
         return;
     }
-    if (iexpChkType(pstate, &((IExpNode*)lval)->vtype, rval) == 0) {
+    if (iexpTypeCheckAndMatch(pstate, &((IExpNode*)lval)->vtype, rval) == 0) {
         errorMsgNode(*rval, ErrorInvType, "Expression's type does not match lval's type");
         return;
     }

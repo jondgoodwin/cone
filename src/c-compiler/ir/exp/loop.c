@@ -11,10 +11,10 @@
 LoopNode *newLoopNode() {
     LoopNode *node;
     newNode(node, LoopNode, LoopTag);
-    node->vtype = NULL;
+    node->vtype = voidType;  // This will be overridden with loop-as-expr
     node->blk = NULL;
     node->life = NULL;
-    node->nbreaks = 0;
+    node->breaks = newNodes(2);
     return node;
 }
 
@@ -53,14 +53,36 @@ void loopTypeCheck(TypeCheckState *pstate, LoopNode *node) {
     }
     pstate->loopstack[pstate->loopcnt++] = node;
 
+    // This will ensure that every break is registered to the loop
     inodeTypeCheck(pstate, &node->blk);
-
-    if (node->vtype == NULL)
-        node->vtype = voidType;
-
-    if (node->nbreaks == 0)
+    if (node->breaks->used == 0)
         errorMsgNode((INode*)node, WarnLoop, "Loop may never stop without a break.");
+
     --pstate->loopcnt;
+}
+
+// Bidirectional type inference
+void loopBiTypeInfer(INode **totypep, LoopNode *loopnode) {
+
+    // Type check all breaks to this loop
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(loopnode->breaks, cnt, nodesp)) {
+        BreakNode *brknode = (BreakNode*)*nodesp;
+        if (brknode->exp == NULL) {
+            if (*totypep)
+                errorMsgNode((INode*)brknode, ErrorInvType, "this break must specify a value matching loop's type");
+        }
+        // If this break returns an expression, ensure it matches expected/previous types
+        else {
+            if (*totypep == NULL && cnt != loopnode->breaks->used)
+                errorMsgNode((INode*)brknode, ErrorInvType, "If this break specifies a value, earlier breaks must too");
+            else if (!iexpBiTypeInfer(totypep, &brknode->exp))
+                errorMsgNode((INode*)brknode, ErrorInvType, "break expression's type does not match other breaks");
+        }
+    }
+
+    loopnode->vtype = *totypep;
 }
 
 // Perform data flow analysis on a loop expression

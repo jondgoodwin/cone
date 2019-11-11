@@ -46,21 +46,12 @@ void breakTypeCheck(TypeCheckState *pstate, BreakNode *node) {
         return;
     }
 
-    // Coordinate break's vtype with the vtype of the corresponding loop
+    // Register the break with its specified loop
+    // Note:  we don't do any type checking of the break to the loop
+    // That is done later by the loop during bidirectional type inference
     LoopNode *loopnode = breakFindLoopNode(pstate, node->life);
     if (loopnode) {
-        if (node->exp == NULL) {
-            if (loopnode->vtype)
-                errorMsgNode((INode*)node, ErrorInvType, "this break must specify a value matching loop's type");
-        }
-        // If this break returns an expression, ensure it matches expected/previous types
-        else {
-            if (loopnode->vtype == NULL && loopnode->nbreaks > 0)
-                errorMsgNode((INode*)node, ErrorInvType, "If this break specifies a value, earlier breaks must too");
-            else if (!iexpChkType(pstate, &loopnode->vtype, &node->exp))
-                errorMsgNode((INode*)node, ErrorInvType, "break expression's type does not match other breaks");
-        }
-        ++loopnode->nbreaks;
+        nodesAdd(&loopnode->breaks, (INode*)node);
     }
     else
         errorMsgNode((INode*)node, ErrorNoLoop, "break's lifetime does not match a current loop");

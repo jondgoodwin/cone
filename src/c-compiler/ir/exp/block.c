@@ -64,7 +64,8 @@ void blockNameRes(NameResState *pstate, BlockNode *blk) {
 
 // Handle type-checking for a block. 
 // Mostly this is a pass-through to type-check the block's statements.
-// Note: When coerced by iexpCoerces, vtype of the block will be specified
+// Note: we do not check here whether if-as-expr has consistent/expected types
+// that happens afterwards done by ifBiTypeInfer
 void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk) {
     INode **nodesp;
     uint32_t cnt;
@@ -73,21 +74,14 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk) {
     }
 }
 
-// Special type-checking for iexpChkType, where blk->vtype sets type expectations
-// Mostly this is a pass-through to type-check the block's statements.
-void blockChkType(TypeCheckState *pstate, BlockNode *blk) {
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodesFor(blk->stmts, cnt, nodesp)) {
-        if (cnt > 1)
-            // All stmts except last discard their value
-            inodeTypeCheck(pstate, nodesp);
-        else
-            // Value of block is value of last statement
-            // Ensure its type matches expected type for block
-            if (!iexpChkType(pstate, &blk->vtype, nodesp))
-                errorMsgNode(*nodesp, ErrorInvType, "expression type does not match expected type");
-    }
+// Bidirectional type inference
+void blockBiTypeInfer(INode **totypep, BlockNode *blk) {
+    // Value of block is value of last statement
+    // Ensure its type matches expected type for block
+    INode **nodesp = &nodesLast(blk->stmts);
+    if (!iexpBiTypeInfer(totypep, nodesp))
+        errorMsgNode(*nodesp, ErrorInvType, "expression type does not match expected type");
+    blk->vtype = *totypep;
 }
 
 // Perform data flow analysis on a block

@@ -88,45 +88,52 @@ int iexpDoCoerce(INode *totypep, INode **from) {
 // - Otherwise, check that types match.
 //   If match requires a coercion, a 'cast' node will be inject ahead of the 'from' node
 // return 1 for success, 0 for fail
-int iexpChkType(TypeCheckState *pstate, INode **totypep, INode **from) {
-    // Both nodes need to be typed expression nodes
-    if (!isExpNode(*from)) {
-        errorMsgNode(*from, ErrorNotTyped, "Expected a typed expression.");
-        return 0;
-    }
-
-    // If 'to' type is unspecified, do type check on 'from' and then copy into 'to'
+int iexpBiTypeInfer(INode **totypep, INode **from) {
     IExpNode *fromnode = (IExpNode *)*from;
-    if (*totypep == NULL) {
-        inodeTypeCheck(pstate, from);
-        *totypep = fromnode->vtype;
-        return 1;
-    }
 
     // If 'from' node is 'if', 'block', 'loop', set it to 'to' node's type
     // These 'from' nodes are just passing through a value, not calculating it
     // We want to push expected type as low down in nodes before forcing any coercion
     // This ensures multi-branch specialized values all upcast to same expected supertype
     if (fromnode->tag == IfTag) {
-        fromnode->vtype = *totypep;
-        IfChkType(pstate, (IfNode*)*from);
+        IfBiTypeInfer(totypep, (IfNode*)*from);
         return 1;
     }
     if (fromnode->tag == BlockTag) {
-        fromnode->vtype = *totypep;
-        blockChkType(pstate, (BlockNode*)*from);
+        blockBiTypeInfer(totypep, (BlockNode*)*from);
         return 1;
     }
     if (fromnode->tag == LoopTag) {
-        fromnode->vtype = *totypep;
-        inodeTypeCheck(pstate, from);
+        loopBiTypeInfer(totypep, (LoopNode*)*from);
+        return 1;
+    }
+
+    // If 'to' type is unspecified, do type check on 'from' and then copy into 'to'
+    if (*totypep == NULL) {
+        *totypep = fromnode->vtype;
         return 1;
     }
 
     // Both 'from' and 'to' specify a type. Do they match?
     // (this may involve injecting a 'cast' node in front of 'from'
-    inodeTypeCheck(pstate, from);
     return iexpDoCoerce(*totypep, from);
+}
+
+// Perform basic typecheck followed by bi-directional type checking that
+// evaluates whether the 'from' node will type check to 'to' type
+// - If 'to' type is unspecified, infer it from 'from' type
+// - If 'from' node is 'if', 'block', 'loop', set it to 'to' type
+// - Otherwise, check that types match.
+//   If match requires a coercion, a 'cast' node will be inject ahead of the 'from' node
+// return 1 for success, 0 for fail
+int iexpTypeCheckAndMatch(TypeCheckState *pstate, INode **totypep, INode **from) {
+    // From should be a typed expression node
+    if (!isExpNode(*from)) {
+        errorMsgNode(*from, ErrorNotTyped, "Expected a typed expression.");
+        return 0;
+    }
+    inodeTypeCheck(pstate, from);
+    return iexpBiTypeInfer(totypep, from);
 }
 
 // can from's value be coerced to to's value type?

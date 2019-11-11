@@ -49,8 +49,8 @@ LLVMValueRef genlLoop(GenState *gen, LoopNode *loopnode) {
     loopstate->loopbeg = loopbeg;
     loopstate->loopend = loopend;
     if (loopnode->vtype != voidType) {
-        loopstate->loopPhis = (LLVMValueRef*)memAllocBlk(sizeof(LLVMValueRef) * loopnode->nbreaks);
-        loopstate->loopBlks = (LLVMBasicBlockRef*)memAllocBlk(sizeof(LLVMBasicBlockRef) * loopnode->nbreaks);
+        loopstate->loopPhis = (LLVMValueRef*)memAllocBlk(sizeof(LLVMValueRef) * loopnode->breaks->used);
+        loopstate->loopBlks = (LLVMBasicBlockRef*)memAllocBlk(sizeof(LLVMBasicBlockRef) * loopnode->breaks->used);
         loopstate->loopPhiCnt = 0;
     }
     ++gen->loopstackcnt;

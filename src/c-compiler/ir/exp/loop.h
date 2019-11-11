@@ -13,7 +13,7 @@ typedef struct LoopNode {
     IExpNodeHdr;
     INode *blk;
     LifetimeNode *life;   // nullable
-    int16_t nbreaks;      // Number of breaks out of this loop
+    Nodes *breaks;
 } LoopNode;
 
 LoopNode *newLoopNode();
@@ -22,8 +22,11 @@ void loopPrint(LoopNode *wnode);
 // while block name resolution
 void loopNameRes(NameResState *pstate, LoopNode *node);
 
-// Type check the while block (conditional expression must be coercible to bool)
+// Type check the while block
 void loopTypeCheck(TypeCheckState *pstate, LoopNode *wnode);
+
+// Bidirectional type inference
+void loopBiTypeInfer(INode **totypep, LoopNode *loopnode);
 
 // Perform data flow analysis on an while statement
 void loopFlow(FlowState *fstate, LoopNode **nodep);

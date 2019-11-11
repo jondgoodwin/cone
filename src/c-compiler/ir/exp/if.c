@@ -69,16 +69,17 @@ void ifNameRes(NameResState *pstate, IfNode *ifnode) {
 
 // Type check the if statement node
 // - Every conditional expression must be a bool
-// - if's vtype is specified/checked only when coerced by iexpCoerces
+// - else can only be last
+// Note: we do not check here whether if-as-expr has consistent/expected types
+// that happens afterwards done by ifBiTypeInfer
 void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
 
         // Validate that conditional node is correct
-        inodeTypeCheck(pstate, nodesp);
         if (*nodesp != voidType) {
-            if (0 == iexpCoerces((INode*)boolType, nodesp))
+            if (0 == iexpTypeCheckAndMatch(pstate, &(INode*)boolType, nodesp))
                 errorMsgNode(*nodesp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
         }
         else if (cnt > 2) {
@@ -90,29 +91,19 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode) {
     }
 }
 
-// Special type-checking for iexpChkType, where blk->vtype sets type expectations
-// - Every conditional expression must be a bool
-// - Type of every branch's value must match expected type and each other
-void IfChkType(TypeCheckState *pstate, IfNode *ifnode) {
+// Bidirectional type inference
+void IfBiTypeInfer(INode **totypep, IfNode *ifnode) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
 
-        // Validate that conditional node is correct
-        inodeTypeCheck(pstate, nodesp);
-        if (*nodesp != voidType) {
-            if (0 == iexpCoerces((INode*)boolType, nodesp))
-                errorMsgNode(*nodesp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
-        }
-        else if (cnt > 2) {
-            errorMsgNode(*(nodesp + 1), ErrorInvType, "match on everything should be last.");
-        }
+        ++nodesp; --cnt; // We don't need to look at conditionals, just blocks
 
         // Validate that all branches have matching types
-        ++nodesp; --cnt;
-        if (!iexpChkType(pstate, &ifnode->vtype, nodesp))
+        if (!iexpBiTypeInfer(totypep, nodesp))
             errorMsgNode(*nodesp, ErrorInvType, "expression type does not match expected type");
     }
+    ifnode->vtype = *totypep;
 }
 
 // Perform data flow analysis on an if expression

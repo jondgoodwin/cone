@@ -86,7 +86,7 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
         inodeTypeCheck(pstate, &name->vtype);
 
     // An initializer need not be specified, but if not, it must have a declared type
-    if (!name->value) {
+    if (name->value == NULL) {
         if (name->vtype == NULL) {
             errorMsgNode((INode*)name, ErrorNoType, "Declared name must specify a type or value");
             return;
@@ -98,7 +98,7 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
         if (name->scope <= 1 && !litIsLiteral(name->value))
             errorMsgNode(name->value, ErrorNotLit, "Variable may only be initialized with a literal value.");
         // Verify that declared type and initial value type match
-        else if (!iexpChkType(pstate, &name->vtype, &name->value))
+        if (!iexpTypeCheckAndMatch(pstate, &name->vtype, &name->value))
             errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
     }
 
