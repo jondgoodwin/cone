@@ -14,7 +14,7 @@
 FieldDclNode *newFieldDclNode(Name *namesym, INode *perm) {
     FieldDclNode *fldnode;
     newNode(fldnode, FieldDclNode, FieldDclTag);
-    fldnode->vtype = voidType;
+    fldnode->vtype = NULL;
     fldnode->namesym = namesym;
     fldnode->perm = perm;
     fldnode->value = NULL;
@@ -58,15 +58,11 @@ void fieldDclTypeCheck(TypeCheckState *pstate, FieldDclNode *name) {
     }
     // Type check the initialization value
     else {
-        inodeTypeCheck(pstate, &name->value);
         // Fields require literal default values
         if (!litIsLiteral(name->value))
             errorMsgNode(name->value, ErrorNotLit, "Field default must be a literal value.");
-        // Infer the var's vtype from its value, if not provided
-        if (name->vtype == voidType)
-            name->vtype = ((IExpNode *)name->value)->vtype;
         // Otherwise, verify that declared type and initial value type matches
-        else if (!iexpCoerces(name->vtype, &name->value))
+        else if (!iexpChkType(pstate, &name->vtype, &name->value))
             errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
     }
 
