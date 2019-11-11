@@ -120,7 +120,7 @@ int iexpChkType(TypeCheckState *pstate, INode **totypep, INode **from) {
     }
     if (fromnode->tag == LoopTag) {
         fromnode->vtype = *totypep;
-        // ifTypeCheck2(pstate, from);
+        inodeTypeCheck(pstate, from);
         return 1;
     }
 

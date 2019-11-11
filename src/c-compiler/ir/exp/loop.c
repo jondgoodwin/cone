@@ -11,6 +11,7 @@
 LoopNode *newLoopNode() {
     LoopNode *node;
     newNode(node, LoopNode, LoopTag);
+    node->vtype = NULL;
     node->blk = NULL;
     node->life = NULL;
     node->nbreaks = 0;
@@ -53,6 +54,9 @@ void loopTypeCheck(TypeCheckState *pstate, LoopNode *node) {
     pstate->loopstack[pstate->loopcnt++] = node;
 
     inodeTypeCheck(pstate, &node->blk);
+
+    if (node->vtype == NULL)
+        node->vtype = voidType;
 
     if (node->nbreaks == 0)
         errorMsgNode((INode*)node, WarnLoop, "Loop may never stop without a break.");

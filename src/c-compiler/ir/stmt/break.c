@@ -41,24 +41,25 @@ LoopNode *breakFindLoopNode(TypeCheckState *pstate, INode *life) {
 
 // Type check the break expression, ensure it matches loop's type
 void breakTypeCheck(TypeCheckState *pstate, BreakNode *node) {
-    if (pstate->loopcnt == 0)
+    if (pstate->loopcnt == 0) {
         errorMsgNode((INode*)node, ErrorNoLoop, "break may only be used within a while/each/loop block");
-
-    // Determine the vtype of the break's expression
-    INode *vtype = voidType;
-    if (node->exp) {
-        inodeTypeCheck(pstate, &node->exp);
-        vtype = ((IExpNode *)node->exp)->vtype;
+        return;
     }
 
     // Coordinate break's vtype with the vtype of the corresponding loop
     LoopNode *loopnode = breakFindLoopNode(pstate, node->life);
     if (loopnode) {
-        // Ensure all breaks return an expression of the same type
-        if (loopnode->nbreaks == 0)
-            loopnode->vtype = vtype;
-        else if (!iexpSameType(loopnode->vtype, &vtype))
-            errorMsgNode((INode*)node, ErrorInvType, "break expression's type does not match other breaks");
+        if (node->exp == NULL) {
+            if (loopnode->vtype)
+                errorMsgNode((INode*)node, ErrorInvType, "this break must specify a value matching loop's type");
+        }
+        // If this break returns an expression, ensure it matches expected/previous types
+        else {
+            if (loopnode->vtype == NULL && loopnode->nbreaks > 0)
+                errorMsgNode((INode*)node, ErrorInvType, "If this break specifies a value, earlier breaks must too");
+            else if (!iexpChkType(pstate, &loopnode->vtype, &node->exp))
+                errorMsgNode((INode*)node, ErrorInvType, "break expression's type does not match other breaks");
+        }
         ++loopnode->nbreaks;
     }
     else
