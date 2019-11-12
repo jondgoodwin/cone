@@ -795,7 +795,30 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     }
     case IsTag:
     {
-        return LLVMConstInt(LLVMInt1TypeInContext(gen->context), 1, 0);
+        // Pattern match whether termnode's tag matches desired concrete struct type
+        CastNode *isnode = (CastNode*)termnode;
+        LLVMValueRef val = genlExpr(gen, isnode->exp);
+        INode *istype = itypeGetTypeDcl(isnode->typ);
+        StructNode *structtype = (StructNode*)(istype->tag == RefTag ? itypeGetTypeDcl(((RefNode*)istype)->pvtype) : istype);
+
+        // Find and extract tag field from val, then compare with to-type's tag number
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&structtype->fields, cnt, nodesp)) {
+            if ((*nodesp)->flags & IsTagField) {
+                FieldDclNode *tagnode = (FieldDclNode*)*nodesp;
+                if (istype->tag == RefTag) {
+                    val = LLVMBuildStructGEP(gen->builder, val, tagnode->index, "tagref");
+                    val = LLVMBuildLoad(gen->builder, val, "tag");
+                }
+                else
+                    val = LLVMBuildExtractValue(gen->builder, val, tagnode->index, "tag");
+                LLVMValueRef tagval = LLVMConstInt(genlType(gen, tagnode->vtype), structtype->tagnbr, 0);
+                return LLVMBuildICmp(gen->builder, LLVMIntEQ, val, tagval, "istag");
+            }
+        }
+        assert(0 && "Should not reach here, because type check ensures type has a tag field");
+        return NULL;
     }
     case BorrowTag:
     {
