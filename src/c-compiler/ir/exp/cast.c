@@ -11,15 +11,24 @@
 CastNode *newCastNode(INode *exp, INode *type) {
     CastNode *node;
     newNode(node, CastNode, CastTag);
-    node->vtype = type;
+    node->typ = node->vtype = type;
+    node->exp = exp;
+    return node;
+}
+
+// Create a new cast node
+CastNode *newIsNode(INode *exp, INode *type) {
+    CastNode *node;
+    newNode(node, CastNode, IsTag);
+    node->typ = type;
     node->exp = exp;
     return node;
 }
 
 // Serialize cast
 void castPrint(CastNode *node) {
-    inodeFprint("(cast, ");
-    inodePrintNode(node->vtype);
+    inodeFprint(node->tag==CastTag? "(cast, " : "(is, ");
+    inodePrintNode(node->typ);
     inodeFprint(", ");
     inodePrintNode(node->exp);
     inodeFprint(")");
@@ -28,7 +37,7 @@ void castPrint(CastNode *node) {
 // Name resolution of cast node
 void castNameRes(NameResState *pstate, CastNode *node) {
     inodeNameRes(pstate, &node->exp);
-    inodeNameRes(pstate, &node->vtype);
+    inodeNameRes(pstate, &node->typ);
 }
 
 #define ptrsize 10000
@@ -54,6 +63,7 @@ uint32_t castBitsize(INode *type) {
 // - reinterpret cast types must be same size
 // - Ensure type can be safely converted to target type
 void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
+    node->vtype = node->typ;
     inodeTypeCheck(pstate, &node->exp);
     inodeTypeCheck(pstate, &node->vtype);
     INode *totype = itypeGetTypeDcl(node->vtype);
@@ -96,4 +106,36 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
             return;
     }
     errorMsgNode(node->vtype, ErrorInvType, "Unsupported built-in type conversion");
+}
+
+// Analyze type comparison (is) node
+void castIsTypeCheck(TypeCheckState *pstate, CastNode *node) {
+    node->vtype = (INode*)boolType;
+    inodeTypeCheck(pstate, &node->exp);
+    inodeTypeCheck(pstate, &node->typ);
+    if (!isExpNode(node->exp)) {
+        errorMsgNode(node->exp, ErrorInvType, "'is' requires a typed expression to the left");
+        return;
+    }
+    if (!isTypeNode(node->typ)) {
+        errorMsgNode(node->typ, ErrorInvType, "'is' requires a type to the right");
+        return;
+    }
+
+    // Make sure the checked type is a subtype of the value
+    INode *needtypedcl = itypeGetTypeDcl(node->typ);
+    INode *havetypedcl = itypeGetTypeDcl(((IExpNode*)node->exp)->vtype);
+    if (0 == itypeMatches(havetypedcl, needtypedcl)) {
+        errorMsgNode((INode*)node, ErrorInvType, "Types are not compatible for this specialization");
+        return;
+    }
+
+    // Make sure we have a mechanism to check the specialization at runtime
+    INode *basetypedcl = needtypedcl;
+    if (needtypedcl->tag == RefTag)
+        basetypedcl = itypeGetTypeDcl(((RefNode*)needtypedcl)->pvtype);
+    if (basetypedcl->tag != StructTag || (basetypedcl->flags & TraitType) || !(basetypedcl->flags & HasTagField)) {
+        errorMsgNode((INode*)node, ErrorInvType, "No mechanism exists to check this specialization");
+        return;
+    }
 }

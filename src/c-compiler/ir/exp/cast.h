@@ -12,11 +12,16 @@
 typedef struct CastNode {
     IExpNodeHdr;
     INode *exp;
+    INode *typ;
 } CastNode;
 
 #define FlagAsIf 0x8000
 
 CastNode *newCastNode(INode *exp, INode *type);
+
+// Create a new cast node
+CastNode *newIsNode(INode *exp, INode *type);
+
 void castPrint(CastNode *node);
 
 // Name resolution of cast node
@@ -26,5 +31,8 @@ void castNameRes(NameResState *pstate, CastNode *node);
 // - reinterpret cast types must be same size
 // - Ensure type can be safely converted to target type
 void castTypeCheck(TypeCheckState *pstate, CastNode *node);
+
+// Analyze type comparison (is) node
+void castIsTypeCheck(TypeCheckState *pstate, CastNode *node);
 
 #endif

@@ -93,7 +93,7 @@ void inodePrintNode(INode *node) {
         fnCallPrint((FnCallNode *)node); break;
     case SizeofTag:
         sizeofPrint((SizeofNode *)node); break;
-    case CastTag:
+    case CastTag:  case IsTag:
         castPrint((CastNode *)node); break;
     case DerefTag:
         derefPrint((DerefNode *)node); break;
@@ -208,7 +208,7 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         fnCallNameRes(pstate, (FnCallNode **)node); break;
     case SizeofTag:
         sizeofNameRes(pstate, (SizeofNode *)*node); break;
-    case CastTag:
+    case CastTag:  case IsTag:
         castNameRes(pstate, (CastNode *)*node); break;
     case DerefTag:
         derefNameRes(pstate, (DerefNode *)*node); break;
@@ -321,6 +321,8 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node) {
         logicNotTypeCheck(pstate, (LogicNode *)*node); break;
     case OrLogicTag: case AndLogicTag:
         logicTypeCheck(pstate, (LogicNode *)*node); break;
+    case IsTag:
+        castIsTypeCheck(pstate, (CastNode *)*node); break;
     case NamedValTag:
         namedValTypeCheck(pstate, (NamedValNode *)*node); break;
     case ULitTag:

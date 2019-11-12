@@ -122,7 +122,7 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
             flowHandleMove(*nodep);
         }
         break;
-    case CastTag:
+    case CastTag: case IsTag:
         flowLoadValue(fstate, &((CastNode *)*nodep)->exp);
         break;
     case NotLogicTag:

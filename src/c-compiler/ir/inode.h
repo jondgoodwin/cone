@@ -93,8 +93,9 @@ enum NodeTags {
     AllocateTag,    // & allocated ref allocation
     DerefTag,       // * (pointed at) operator
     NotLogicTag,    // ! / not
-    OrLogicTag,     // || / or
-    AndLogicTag,    // && / and
+    OrLogicTag,     // or
+    AndLogicTag,    // and
+    IsTag,  // ~~
     BlockTag,       // Block (list of statements)
     IfTag,          // if .. elif .. else statement
     LoopTag,        // Loop node

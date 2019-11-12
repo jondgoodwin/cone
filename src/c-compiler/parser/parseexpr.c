@@ -327,7 +327,7 @@ INode *parseCast(ParseState *parse) {
         if (lexIsToken(AsToken))
             node->flags |= FlagAsIf;
         lexNextToken();
-        node->vtype = parseVtype(parse);
+        node->typ = parseVtype(parse);
         return (INode*)node;
     }
     return lhnode;
@@ -464,6 +464,12 @@ INode *parseCmp(ParseState *parse) {
     case LeToken:  cmpop = "<="; break;
     case GtToken:  cmpop = ">"; break;
     case GeToken:  cmpop = ">="; break;
+    case IsToken: {
+        CastNode *node = newIsNode(lhnode, NULL);
+        lexNextToken();
+        node->typ = parseVtype(parse);
+        return (INode*)node;
+    }
     default: return lhnode;
     }
 

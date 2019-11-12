@@ -793,6 +793,10 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
             return genlReinterpret(gen, node->exp, node->vtype);
         return genlConvert(gen, node->exp, node->vtype);
     }
+    case IsTag:
+    {
+        return LLVMConstInt(LLVMInt1TypeInContext(gen->context), 1, 0);
+    }
     case BorrowTag:
     {
         BorrowNode *anode = (BorrowNode*)termnode;

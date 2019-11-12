@@ -49,6 +49,7 @@ void keywordInit() {
     keyAdd("or", OrToken);
     keyAdd("and", AndToken);
     keyAdd("as", AsToken);
+    keyAdd("is", IsToken);
     keyAdd("into", IntoToken);
 
     keyAdd("true", trueToken);

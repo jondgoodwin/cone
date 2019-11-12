@@ -93,6 +93,7 @@ enum TokenTypes {
     QuesToken,          // '?'
     TildeToken,            // '~'
     AssgnToken,            // '='
+    IsToken,            // 'is'
     EqToken,            // '=='
     NeToken,            // '!='
     LtToken,            // '<'
