@@ -46,10 +46,6 @@ int iexpBiTypeInfer(INode **totypep, INode **from);
 // return 1 for success, 0 for fail
 int iexpTypeCheckAndMatch(TypeCheckState *pstate, INode **to, INode **from);
 
-// Can from's value be coerced to to's value type?
-// This might inject a 'cast' node in front of the 'from' node with non-matching numbers
-int iexpCoerces(INode *to, INode **from);
-
 // Are types the same (no coercion)
 int iexpSameType(INode *to, INode **from);
 

@@ -102,7 +102,7 @@ void fnCallFinalizeArgs(FnCallNode *node) {
             *argsp = (INode*)borrownode;
         }
 
-        if (!iexpCoerces(*parmp, argsp))
+        if (!iexpBiTypeInfer(&((IExpNode*)*parmp)->vtype, argsp))
             errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
         parmp++;
     }
@@ -283,7 +283,7 @@ void fnCallLowerPtrMethod(FnCallNode *callnode) {
                     continue;
             }
             else {
-                if (!iexpCoerces(parm1type, &nodesGet(args, 1)))
+                if (!iexpBiTypeInfer(&parm1type, &nodesGet(args, 1)))
                     continue;
             }
         }
@@ -419,16 +419,16 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             if (objdereftype->tag == PtrTag) {
                 int match = 0;
                 if (indextype->tag == UintNbrTag)
-                    match = iexpCoerces((INode*)usizeType, indexp);
+                    match = iexpBiTypeInfer((INode**)&usizeType, indexp);
                 else if (indextype->tag == IntNbrTag)
-                    match = iexpCoerces((INode*)isizeType, indexp);
+                    match = iexpBiTypeInfer((INode**)&isizeType, indexp);
                 if (!match)
                     errorMsgNode((INode *)node, ErrorBadIndex, "Pointer index must be an integer");
             }
             else {
                 int match = 0;
                 if (indextype->tag == UintNbrTag || (*indexp)->tag == ULitTag)
-                    match = iexpCoerces((INode*)usizeType, indexp);
+                    match = iexpBiTypeInfer((INode**)&usizeType, indexp);
                 if (!match)
                     errorMsgNode((INode *)node, ErrorBadIndex, "Array index must be an unsigned integer");
             }

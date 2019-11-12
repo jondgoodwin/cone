@@ -40,21 +40,66 @@ INode *iexpGetDerefTypeDcl(INode *node) {
     return node;
 }
 
-// Both 'from' and 'to' specify a type. Do they match?
-// This may involve injecting a 'cast' node in front of 'from'
-int iexpDoCoerce(INode *totypep, INode **from) {
-    if (totypep == voidType)
+// Bidirectional type checking between 'from' exp and 'to' type
+// Evaluate whether the 'from' node will type check to 'to' type
+// - If 'to' type is unspecified, infer it from 'from' type
+// - If 'from' node is 'if', 'block', 'loop', set it to 'to' type
+// - Otherwise, check that types match.
+//   If match requires a coercion, a 'cast' node will be inject ahead of the 'from' node
+// return 1 for success, 0 for fail
+//
+// Note: We need this to be a distinct process from normal TypeCheck
+// because how we must do type checking on function call arguments.
+// 1) Every node should have TypeCheck done only once because it may mutate (lower)
+// 2) Since methods may be overloaded, We non-destructively use type matches to help decide
+// 3) Once the best match is decided, we need to perform this step because we need
+//    to inject re-casts as low as possible (underneath control flow) on special-typed nodes
+int iexpBiTypeInfer(INode **totypep, INode **from) {
+    // From should be a typed expression node
+    if (!isExpNode(*from)) {
+        errorMsgNode(*from, ErrorNotTyped, "Expected a typed expression.");
+        return 1;
+    }
+    IExpNode *fromnode = (IExpNode *)*from;
+
+    // We need special handling for control flow nodes (if, loop, block)
+    // as they may be conduits for multiple branches of values, all of which need to type match.
+    // They need to delegate downwards, until we hit a node with a known vtype.
+    // We want to push expected type as low down in nodes before forcing any coercion
+    // This ensures multi-branch specialized values all upcast to same expected supertype
+    switch (fromnode->tag) {
+    case IfTag:
+        IfBiTypeInfer(totypep, (IfNode*)*from);
+        return 1;
+    case BlockTag:
+        blockBiTypeInfer(totypep, (BlockNode*)*from);
+        return 1;
+    case LoopTag:
+        loopBiTypeInfer(totypep, (LoopNode*)*from);
+        return 1;
+    }
+
+    // If 'to' type is unspecified, just use 'from's type
+    if (*totypep == NULL) {
+        *totypep = fromnode->vtype;
+        return 1;
+    }
+
+    // Both 'from' and 'to' specify a type. Do they match?
+    // (this may involve injecting a 'cast' node in front of 'from'
+    INode *totype = *totypep;
+    if (totype == voidType)
         return 1;
 
     // Re-type a null literal node to match the expected ref/ptr type
     if ((*from)->tag == NullTag) {
-        if (!refIsNullable(totypep) && totypep->tag != PtrTag)
+        if (!refIsNullable(totype) && totype->tag != PtrTag)
             return 0;
-        ((IExpNode*)(*from))->vtype = totypep;
+        ((IExpNode*)(*from))->vtype = totype;
         return 1;
     }
 
-    INode *totypedcl = iexpGetTypeDcl(totypep);
+    INode *totypedcl = iexpGetTypeDcl(totype);
     INode *fromtypedcl = iexpGetTypeDcl(*from);
 
     // Are types equivalent, or is 'to' a subtype of fromtypedcl?
@@ -81,44 +126,6 @@ int iexpDoCoerce(INode *totypep, INode **from) {
     return 1;
 }
 
-// Bidirectional type checking between 'from' exp and 'to' type
-// Evaluate whether the 'from' node will type check to 'to' type
-// - If 'to' type is unspecified, infer it from 'from' type
-// - If 'from' node is 'if', 'block', 'loop', set it to 'to' type
-// - Otherwise, check that types match.
-//   If match requires a coercion, a 'cast' node will be inject ahead of the 'from' node
-// return 1 for success, 0 for fail
-int iexpBiTypeInfer(INode **totypep, INode **from) {
-    IExpNode *fromnode = (IExpNode *)*from;
-
-    // If 'from' node is 'if', 'block', 'loop', set it to 'to' node's type
-    // These 'from' nodes are just passing through a value, not calculating it
-    // We want to push expected type as low down in nodes before forcing any coercion
-    // This ensures multi-branch specialized values all upcast to same expected supertype
-    if (fromnode->tag == IfTag) {
-        IfBiTypeInfer(totypep, (IfNode*)*from);
-        return 1;
-    }
-    if (fromnode->tag == BlockTag) {
-        blockBiTypeInfer(totypep, (BlockNode*)*from);
-        return 1;
-    }
-    if (fromnode->tag == LoopTag) {
-        loopBiTypeInfer(totypep, (LoopNode*)*from);
-        return 1;
-    }
-
-    // If 'to' type is unspecified, do type check on 'from' and then copy into 'to'
-    if (*totypep == NULL) {
-        *totypep = fromnode->vtype;
-        return 1;
-    }
-
-    // Both 'from' and 'to' specify a type. Do they match?
-    // (this may involve injecting a 'cast' node in front of 'from'
-    return iexpDoCoerce(*totypep, from);
-}
-
 // Perform basic typecheck followed by bi-directional type checking that
 // evaluates whether the 'from' node will type check to 'to' type
 // - If 'to' type is unspecified, infer it from 'from' type
@@ -127,55 +134,8 @@ int iexpBiTypeInfer(INode **totypep, INode **from) {
 //   If match requires a coercion, a 'cast' node will be inject ahead of the 'from' node
 // return 1 for success, 0 for fail
 int iexpTypeCheckAndMatch(TypeCheckState *pstate, INode **totypep, INode **from) {
-    // From should be a typed expression node
-    if (!isExpNode(*from)) {
-        errorMsgNode(*from, ErrorNotTyped, "Expected a typed expression.");
-        return 0;
-    }
     inodeTypeCheck(pstate, from);
     return iexpBiTypeInfer(totypep, from);
-}
-
-// can from's value be coerced to to's value type?
-// This might inject a 'cast' node in front of the 'from' node with non-matching numbers
-int iexpCoerces(INode *to, INode **from) {
-
-    // Re-type a null literal node to match the expected ref/ptr type
-    if ((*from)->tag == NullTag) {
-        if (!refIsNullable(to) && to->tag != PtrTag)
-            return 0;
-        ((NullNode*)(*from))->vtype = to;
-        return 1;
-    }
-
-    // Convert to pointer from iexp to type dcl
-    iexpToTypeDcl(to);
-
-    // When coercing a block, do so on its last expression
-    while ((*from)->tag == BlockTag) {
-        ((IExpNode*)*from)->vtype = to;
-        from = &nodesLast(((BlockNode*)*from)->stmts);
-    }
-
-    // Coercing an 'if' requires we do so on all its paths
-    if ((*from)->tag == IfTag) {
-        int16_t cnt;
-        INode **nodesp;
-        IfNode *ifnode = (IfNode*)*from;
-        ifnode->vtype = to;
-        if (nodesGet(ifnode->condblk, ifnode->condblk->used - 2) != voidType)
-            errorMsgNode((INode*)ifnode, ErrorNoElse, "Missing else branch which needs to provide a value");
-        for (nodesFor(ifnode->condblk, cnt, nodesp)) {
-            cnt--; nodesp++;
-            INode **lastnode = &nodesLast(((BlockNode*)*nodesp)->stmts);
-            if (!iexpCoerces(to, lastnode)) {
-                errorMsgNode(*lastnode, ErrorInvType, "expression type does not match expected type");
-            }
-        }
-        return 1;
-    }
-
-    return iexpDoCoerce(to, from);
 }
 
 // Are types the same (no coercion)
