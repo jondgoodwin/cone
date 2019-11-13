@@ -101,6 +101,7 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
         if (fromtype->tag == UintNbrTag || fromtype->tag == IntNbrTag || fromtype->tag == FloatNbrTag)
             return;
         break;
+    case RefTag:
     case PtrTag:
         if (fromtype->tag == RefTag || fromtype->tag == PtrTag)
             return;

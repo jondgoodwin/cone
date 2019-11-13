@@ -122,6 +122,53 @@ INode *parseIf(ParseState *parse) {
     return (INode *)ifnode;
 }
 
+VarDclNode *parseBindVarDcl(ParseState *parse) {
+    INode *perm = parsePerm(NULL);
+    INode *permdcl = itypeGetTypeDcl(perm);
+    if (permdcl != (INode*)mutPerm && permdcl != (INode*)immPerm)
+        errorMsgNode(perm, ErrorInvType, "Permission not valid for pattern match binding");
+
+    // Obtain variable's name
+    if (!lexIsToken(IdentToken)) {
+        errorMsgLex(ErrorNoIdent, "Expected variable name for declaration");
+        return newVarDclFull(anonName, VarDclTag, voidType, perm, NULL);
+    }
+    VarDclNode *varnode = newVarDclNode(lex->val.ident, VarDclTag, perm);
+    lexNextToken();
+
+    // Get type
+    INode *vtype;
+    if ((vtype = parseVtype(parse)))
+        varnode->vtype = vtype == voidType ? NULL : vtype;
+    else {
+        errorMsgLex(ErrorInvType, "Expected type specification for pattern match binding");
+        varnode->vtype = voidType;
+    }
+
+    return varnode;
+}
+
+// De-sugar a variable bound pattern match
+void parseBoundMatch(ParseState *parse, IfNode *ifnode, NameUseNode *expnamenode) {
+    // We will desugar a variable declaration into using a pattern match and re-cast
+    CastNode *isnode = newIsNode((INode*)expnamenode, NULL);
+    CastNode *castnode = newCastNode((INode*)expnamenode, NULL);
+
+    // Parse the variable-bind into a vardcl,
+    // then preserve its desired type into both the 'is' and 'cast' nodes
+    VarDclNode *varnode = parseBindVarDcl(parse);
+    isnode->typ = castnode->typ = castnode->vtype = varnode->vtype;
+    varnode->value = (INode *)castnode;
+    nodesAdd(&ifnode->condblk, (INode*)isnode);
+
+    // Create and-then block, with vardcl injected at start
+    if (lexIsToken(ColonToken))
+        lexNextToken();
+    BlockNode *blknode = (BlockNode*)parseBlockOrStmt(parse);
+    nodesInsert(&blknode->stmts, (INode*)varnode, 0); // Inject vardcl at start of block
+    nodesAdd(&ifnode->condblk, (INode*) blknode);
+}
+
 // Parse match expression, which is sugar translated to an 'if' block
 INode *parseMatch(ParseState *parse) {
     // 'match' is de-sugared into a block:
@@ -146,6 +193,9 @@ INode *parseMatch(ParseState *parse) {
     // Parse all cases
     while (!lexIsToken(RCurlyToken)) {
         switch (lex->toktype) {
+        case PermToken:
+            parseBoundMatch(parse, ifnode, expnamenode);
+            break;
         case IsToken: {
             CastNode *isnode = newIsNode((INode*)expnamenode, NULL);
             lexNextToken();
