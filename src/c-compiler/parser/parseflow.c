@@ -146,6 +146,17 @@ INode *parseMatch(ParseState *parse) {
     // Parse all cases
     while (!lexIsToken(RCurlyToken)) {
         switch (lex->toktype) {
+        case IsToken: {
+            CastNode *isnode = newIsNode((INode*)expnamenode, NULL);
+            lexNextToken();
+            isnode->typ = parseVtype(parse);
+            nodesAdd(&ifnode->condblk, (INode*)isnode);
+            if (lexIsToken(ColonToken))
+                lexNextToken();
+            nodesAdd(&ifnode->condblk, parseBlockOrStmt(parse));
+            break;
+        }
+
         case EqToken: {
             FnCallNode *callnode = newFnCallOp((INode*)expnamenode, "==", 2);
             lexNextToken();
