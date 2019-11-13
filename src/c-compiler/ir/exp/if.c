@@ -70,9 +70,11 @@ void ifNameRes(NameResState *pstate, IfNode *ifnode) {
 // Type check the if statement node
 // - Every conditional expression must be a bool
 // - else can only be last
-// Note: we do not check here whether if-as-expr has consistent/expected types
-// that happens afterwards done by ifBiTypeInfer
+// Note: vtype is set to something other than voidType if all branches have the same type
+// If they are different, bidirectional type inference will resolve this later
 void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode) {
+    INode *sametype = NULL;
+    int hasElse = 0;
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
@@ -82,13 +84,22 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode) {
             if (0 == iexpTypeCheckAndMatch(pstate, (INode**)&boolType, nodesp))
                 errorMsgNode(*nodesp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
         }
-        else if (cnt > 2) {
-            errorMsgNode(*(nodesp+1), ErrorInvType, "match on everything should be last.");
+        else {
+            hasElse = 1;
+            if (cnt > 2) {
+                errorMsgNode(*(nodesp + 1), ErrorInvType, "match on everything should be last.");
+            }
         }
 
         ++nodesp; --cnt;
         inodeTypeCheck(pstate, nodesp);
+        iexpFindSameType(&sametype, *nodesp);
     }
+
+    // Remember consistently-found type, so long as if-block included an 'else' clause
+    // Without an 'else' clause, it won't have returned a value on every path
+    if (hasElse)
+        ifnode->vtype = sametype;
 }
 
 // Bidirectional type inference

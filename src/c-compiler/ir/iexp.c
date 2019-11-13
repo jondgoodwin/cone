@@ -40,6 +40,17 @@ INode *iexpGetDerefTypeDcl(INode *node) {
     return node;
 }
 
+// After multiple uses, answer (which starts off NULL)
+// will be set to some type if all the nodes agree on it.
+// Otherwise, it will be set to void.
+void iexpFindSameType(INode **answer, INode *node) {
+    INode *nodetype = node && isExpNode(node) ? ((IExpNode*)node)->vtype : voidType;
+    if (*answer == NULL)
+        *answer = nodetype;
+    else if (!itypeIsSame(*answer, nodetype))
+        *answer = voidType;
+}
+
 // Bidirectional type checking between 'from' exp and 'to' type
 // Evaluate whether the 'from' node will type check to 'to' type
 // - If 'to' type is unspecified, infer it from 'from' type
@@ -62,21 +73,24 @@ int iexpBiTypeInfer(INode **totypep, INode **from) {
     }
     IExpNode *fromnode = (IExpNode *)*from;
 
-    // We need special handling for control flow nodes (if, loop, block)
+    // We need special handling for control flow nodes (if, loop, block),
+    // if they might have values of inconsistent types,
     // as they may be conduits for multiple branches of values, all of which need to type match.
     // They need to delegate downwards, until we hit a node with a known vtype.
     // We want to push expected type as low down in nodes before forcing any coercion
     // This ensures multi-branch specialized values all upcast to same expected supertype
-    switch (fromnode->tag) {
-    case IfTag:
-        IfBiTypeInfer(totypep, (IfNode*)*from);
-        return 1;
-    case BlockTag:
-        blockBiTypeInfer(totypep, (BlockNode*)*from);
-        return 1;
-    case LoopTag:
-        loopBiTypeInfer(totypep, (LoopNode*)*from);
-        return 1;
+    if (fromnode->vtype == voidType) {
+        switch (fromnode->tag) {
+        case IfTag:
+            IfBiTypeInfer(totypep, (IfNode*)*from);
+            return 1;
+        case BlockTag:
+            blockBiTypeInfer(totypep, (BlockNode*)*from);
+            return 1;
+        case LoopTag:
+            loopBiTypeInfer(totypep, (LoopNode*)*from);
+            return 1;
+        }
     }
 
     // If 'to' type is unspecified, just use 'from's type

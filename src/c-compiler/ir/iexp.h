@@ -28,6 +28,11 @@ INode *iexpGetTypeDcl(INode *node);
 // (Note: only use after it has been type-checked)
 INode *iexpGetDerefTypeDcl(INode *node);
 
+// After multiple uses, answer (which starts off NULL)
+// will be set to some type if all the nodes agree on it.
+// Otherwise, it will be set to void.
+void iexpFindSameType(INode **answer, INode *node);
+
 // Bidirectional type checking between 'from' exp and 'to' type
 // Evaluate whether the 'from' node will type check to 'to' type
 // - If 'to' type is unspecified, infer it from 'from' type

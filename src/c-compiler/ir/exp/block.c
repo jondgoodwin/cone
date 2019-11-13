@@ -64,13 +64,18 @@ void blockNameRes(NameResState *pstate, BlockNode *blk) {
 
 // Handle type-checking for a block. 
 // Mostly this is a pass-through to type-check the block's statements.
-// Note: we do not check here whether if-as-expr has consistent/expected types
-// that happens afterwards done by ifBiTypeInfer
+// Note: By default, we set the block's type to that of the last statement
+// Bidirectional type inference may later change this
 void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(blk->stmts, cnt, nodesp)) {
         inodeTypeCheck(pstate, nodesp);
+    }
+    if (blk->stmts->used > 0) {
+        IExpNode *laststmt = (IExpNode *)nodesLast(blk->stmts);
+        if (isExpNode(laststmt))
+            blk->vtype = laststmt->vtype;
     }
 }
 

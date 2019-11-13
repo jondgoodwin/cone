@@ -44,7 +44,10 @@ void loopNameRes(NameResState *pstate, LoopNode *node) {
 }
 
 // Type check the loop block, and set up for type check of breaks
+// Note: vtype is set to something other than voidType if all branches have the same type
+// If they are different, bidirectional type inference will resolve this later
 void loopTypeCheck(TypeCheckState *pstate, LoopNode *node) {
+    INode *sametype = NULL;
 
     // Push loop node on loop stack for use by break type check
     if (pstate->loopcnt >= TypeCheckLoopMax) {
@@ -57,6 +60,15 @@ void loopTypeCheck(TypeCheckState *pstate, LoopNode *node) {
     inodeTypeCheck(pstate, &node->blk);
     if (node->breaks->used == 0)
         errorMsgNode((INode*)node, WarnLoop, "Loop may never stop without a break.");
+
+    // Attempt to determine the vtype, assuming all breaks return the same type
+    // Otherwise, we will fix this during bidirectional type inference
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(node->breaks, cnt, nodesp)) {
+        iexpFindSameType(&sametype, ((BreakNode*)*nodesp)->exp);
+    }
+    node->vtype = sametype;
 
     --pstate->loopcnt;
 }
