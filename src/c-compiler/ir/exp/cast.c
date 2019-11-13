@@ -71,9 +71,11 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
 
     // Handle reinterpret casts, which must be same size
     if (node->flags & FlagAsIf) {
-        uint32_t tosize = castBitsize(totype);
-        if (tosize == 0 || tosize != castBitsize(fromtype))
-            errorMsgNode(node->exp, ErrorInvType, "May only reinterpret value to the same sized primitive type");
+        if (totype->tag != StructTag) {
+            uint32_t tosize = castBitsize(totype);
+            if (tosize == 0 || tosize != castBitsize(fromtype))
+                errorMsgNode(node->exp, ErrorInvType, "May only reinterpret value to the same sized primitive type");
+        }
         return;
     }
 
@@ -104,6 +106,9 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
     case RefTag:
     case PtrTag:
         if (fromtype->tag == RefTag || fromtype->tag == PtrTag)
+            return;
+    case StructTag:
+        if (fromtype->tag == StructTag && (fromtype->flags & SameSize))
             return;
     }
     errorMsgNode(node->vtype, ErrorInvType, "Unsupported built-in type conversion");
