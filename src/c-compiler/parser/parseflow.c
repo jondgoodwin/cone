@@ -94,34 +94,8 @@ INode *parseReturn(ParseState *parse) {
     return parseFlowSuffix(parse, (INode*)stmtnode);
 }
 
-// Parse if statement/expression
-INode *parseIf(ParseState *parse) {
-    IfNode *ifnode = newIfNode();
-    lexNextToken();
-    nodesAdd(&ifnode->condblk, parseSimpleExpr(parse));
-    nodesAdd(&ifnode->condblk, parseBlockOrStmt(parse));
-    while (1) {
-        // Process final else clause and break loop
-        // Note: this code makes "else if" equivalent to "elif"
-        if (lexIsToken(ElseToken)) {
-            lexNextToken();
-            if (!lexIsToken(IfToken)) {
-                nodesAdd(&ifnode->condblk, voidType); // else distinguished by a 'void' condition
-                nodesAdd(&ifnode->condblk, parseBlockOrStmt(parse));
-                break;
-            }
-        }
-        else if (!lexIsToken(ElifToken))
-            break;
-
-        // Elif processing
-        lexNextToken();
-        nodesAdd(&ifnode->condblk, parseSimpleExpr(parse));
-        nodesAdd(&ifnode->condblk, parseBlockOrStmt(parse));
-    }
-    return (INode *)ifnode;
-}
-
+// Parses a variable bound to a pattern match on a value
+// (it looks like, and is returned as, a variable declaration)
 VarDclNode *parseBindVarDcl(ParseState *parse) {
     INode *perm = parsePerm(NULL);
     INode *permdcl = itypeGetTypeDcl(perm);
@@ -149,7 +123,7 @@ VarDclNode *parseBindVarDcl(ParseState *parse) {
 }
 
 // De-sugar a variable bound pattern match
-void parseBoundMatch(ParseState *parse, IfNode *ifnode, NameUseNode *expnamenode) {
+void parseBoundMatch(ParseState *parse, IfNode *ifnode, NameUseNode *expnamenode, VarDclNode *valnode) {
     // We will desugar a variable declaration into using a pattern match and re-cast
     CastNode *isnode = newIsNode((INode*)expnamenode, NULL);
     CastNode *castnode = newCastNode((INode*)expnamenode, NULL);
@@ -161,12 +135,89 @@ void parseBoundMatch(ParseState *parse, IfNode *ifnode, NameUseNode *expnamenode
     varnode->value = (INode *)castnode;
     nodesAdd(&ifnode->condblk, (INode*)isnode);
 
+    // If value expression is needed, obtain it also
+    if (valnode != NULL) {
+        if (lexIsToken(AssgnToken))
+            lexNextToken();
+        else {
+            errorMsgLex(ErrorInvType, "Expected '=' followed by value to match against");
+        }
+        valnode->value = parseSimpleExpr(parse);
+    }
+    else {
+        if (lexIsToken(ColonToken))
+            lexNextToken();
+    }
+
     // Create and-then block, with vardcl injected at start
-    if (lexIsToken(ColonToken))
-        lexNextToken();
     BlockNode *blknode = (BlockNode*)parseBlockOrStmt(parse);
     nodesInsert(&blknode->stmts, (INode*)varnode, 0); // Inject vardcl at start of block
-    nodesAdd(&ifnode->condblk, (INode*) blknode);
+    nodesAdd(&ifnode->condblk, (INode*)blknode);
+}
+
+// Parse if statement/expression
+INode *parseIf(ParseState *parse) {
+    IfNode *ifnode = newIfNode();
+    INode *retnode = (INode*)ifnode;
+    lexNextToken();
+    // To handle bound pattern match, we need to de-sugar:
+    // - 'if' is wrapped in a block, where we first capture the value in a variable
+    // - The conditional turns into an 'is' check
+    // - The first statement in the block actually binds the var to the re-cast value
+    if (lexIsToken(PermToken)) {
+        BlockNode *blknode = newBlockNode();
+        VarDclNode *valnode = newVarDclFull(anonName, VarDclTag, NULL, (INode*)immPerm, NULL);
+        NameUseNode *valnamenode = newNameUseNode(anonName);
+        valnamenode->tag = VarNameUseTag;
+        valnamenode->dclnode = (INode*)valnode;
+        nodesAdd(&blknode->stmts, (INode*)valnode);
+        nodesAdd(&blknode->stmts, (INode*)ifnode);
+        retnode = (INode*)blknode; // return block instead of 'if'!
+        parseBoundMatch(parse, ifnode, valnamenode, valnode);
+    }
+    else {
+        nodesAdd(&ifnode->condblk, parseSimpleExpr(parse));
+        nodesAdd(&ifnode->condblk, parseBlockOrStmt(parse));
+    }
+    while (1) {
+        // Process final else clause and break loop
+        // Note: this code makes "else if" equivalent to "elif"
+        if (lexIsToken(ElseToken)) {
+            lexNextToken();
+            if (!lexIsToken(IfToken)) {
+                nodesAdd(&ifnode->condblk, voidType); // else distinguished by a 'void' condition
+                nodesAdd(&ifnode->condblk, parseBlockOrStmt(parse));
+                break;
+            }
+        }
+        else if (!lexIsToken(ElifToken))
+            break;
+
+        // Elif processing
+        lexNextToken();
+        // To handle bound pattern match, we need to de-sugar:
+        // - 'if' is wrapped in a block, where we first capture the value in a variable
+        // - The conditional turns into an 'is' check
+        // - The first statement in the block actually binds the var to the re-cast value
+        if (lexIsToken(PermToken)) {
+            BlockNode *blknode = newBlockNode();
+            nodesAdd(&ifnode->condblk, voidType);
+            nodesAdd(&ifnode->condblk, (INode*)blknode);
+            VarDclNode *valnode = newVarDclFull(anonName, VarDclTag, NULL, (INode*)immPerm, NULL);
+            NameUseNode *valnamenode = newNameUseNode(anonName);
+            valnamenode->tag = VarNameUseTag;
+            valnamenode->dclnode = (INode*)valnode;
+            nodesAdd(&blknode->stmts, (INode*)valnode);
+            ifnode = newIfNode();
+            nodesAdd(&blknode->stmts, (INode*)ifnode);
+            parseBoundMatch(parse, ifnode, valnamenode, valnode);
+        }
+        else {
+            nodesAdd(&ifnode->condblk, parseSimpleExpr(parse));
+            nodesAdd(&ifnode->condblk, parseBlockOrStmt(parse));
+        }
+    }
+    return retnode;
 }
 
 // Parse match expression, which is sugar translated to an 'if' block
@@ -194,7 +245,7 @@ INode *parseMatch(ParseState *parse) {
     while (!lexIsToken(RCurlyToken)) {
         switch (lex->toktype) {
         case PermToken:
-            parseBoundMatch(parse, ifnode, expnamenode);
+            parseBoundMatch(parse, ifnode, expnamenode, NULL);
             break;
         case IsToken: {
             CastNode *isnode = newIsNode((INode*)expnamenode, NULL);
