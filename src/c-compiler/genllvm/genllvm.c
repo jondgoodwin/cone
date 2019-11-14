@@ -204,6 +204,8 @@ void genlPackage(GenState *gen, ModuleNode *mod) {
 
     assert(mod->tag == ModuleTag);
     gen->module = LLVMModuleCreateWithNameInContext(gen->opt->srcname, gen->context);
+    LLVMSetSourceFileName(gen->module, gen->opt->srcname, strlen(gen->opt->srcname));
+    LLVMSetTarget(gen->module, gen->opt->triple);
     if (!gen->opt->release) {
         gen->dibuilder = LLVMCreateDIBuilder(gen->module);
         gen->difile = LLVMDIBuilderCreateFile(gen->dibuilder, "main.cone", 9, ".", 1);

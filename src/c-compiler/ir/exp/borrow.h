@@ -5,7 +5,7 @@
  * See Copyright Notice in conec.h
 */
 
-#ifndef borrrw_h
+#ifndef borrow_h
 #define borrow_h
 
 typedef struct BorrowNode {
