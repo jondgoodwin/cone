@@ -6,6 +6,7 @@
 */
 
 #include "../ir.h"
+#include <string.h>
 
 // Create a new struct type whose info will be filled in afterwards
 StructNode *newStructNode(Name *namesym) {
@@ -19,6 +20,7 @@ StructNode *newStructNode(Name *namesym) {
     snode->mod = NULL;
     snode->basetrait = NULL;
     snode->derived = NULL;
+    snode->vtable = NULL;
     snode->tagnbr = 0;
     return snode;
 }
@@ -174,6 +176,36 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     }
 
     pstate->typenode = svtypenode;
+}
+
+// Populate the vtable for this struct
+void structMakeVtable(StructNode *node) {
+    if (node->vtable)
+        return;
+    Vtable *vtable = memAllocBlk(sizeof(Vtable));
+    vtable->llvmreftype = NULL;
+    vtable->impl = newNodes(4);
+
+    vtable->name = memAllocStr(&node->namesym->namestr, node->namesym->namesz + 8);
+    strcat(vtable->name, ":Vtable");
+
+    // Populate interface with all public methods and then fields in trait
+    vtable->interface = newNodes(node->fields.used + node->nodelist.used);
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&node->nodelist, cnt, nodesp)) {
+        FnDclNode *meth = (FnDclNode *)*nodesp;
+        if (meth->namesym->namestr != '_')
+            nodesAdd(&vtable->interface, *nodesp);
+    }
+    for (nodelistFor(&node->fields, cnt, nodesp)) {
+        FieldDclNode *field = (FieldDclNode *)*nodesp;
+        INode *fieldtyp = itypeGetTypeDcl(field->vtype);
+        if (field->namesym->namestr != '_' && fieldtyp->tag != EnumTag)
+            nodesAdd(&vtable->interface, *nodesp);
+    }
+
+    node->vtable = vtable;
 }
 
 // Compare two struct signatures to see if they are equivalent

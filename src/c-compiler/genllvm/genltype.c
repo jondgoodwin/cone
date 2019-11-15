@@ -24,33 +24,34 @@
 #include <assert.h>
 
 // Generate a vtable type
-LLVMTypeRef genlVtable(GenState *gen, StructNode *strnode, char *name) {
-    uint32_t fieldcnt = strnode->fields.used + strnode->nodelist.used;
+void genlVtable(GenState *gen, Vtable *vtable) {
+    uint32_t fieldcnt = vtable->interface->used;
     LLVMTypeRef *field_types = (LLVMTypeRef *)memAllocBlk(fieldcnt * sizeof(LLVMTypeRef));
     LLVMTypeRef *field_type_ptr = field_types;
-    fieldcnt = 0;
 
     INode **nodesp;
     uint32_t cnt;
-    for (nodelistFor(&strnode->fields, cnt, nodesp)) {
-        // All virtual fields are 32-bit offsets into the object
-        *field_type_ptr++ = LLVMInt32TypeInContext(gen->context);
-        ++fieldcnt;
+    for (nodesFor(vtable->interface, cnt, nodesp)) {
+        if ((*nodesp)->tag == FnDclTag)
+            *field_type_ptr++ = NULL;
+        else
+            // All virtual fields are 32-bit offsets into the object
+            *field_type_ptr++ = LLVMInt32TypeInContext(gen->context);
     }
 
-    LLVMTypeRef vtable = LLVMStructCreateNamed(gen->context, name);
+    LLVMTypeRef vtableRef = LLVMStructCreateNamed(gen->context, vtable->name);
     if (fieldcnt > 0)
-        LLVMStructSetBody(vtable, field_types, fieldcnt, 0);
+        LLVMStructSetBody(vtableRef, field_types, fieldcnt, 0);
 
     // A virtual reference is a fat pointer:
     // - a pointer to the object (for now *u8 - which we will recast later)
     // - a pointer to the vtable
     LLVMTypeRef vreffields[2];
     vreffields[0] = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
-    vreffields[1] = LLVMPointerType(vtable, 0);
-    LLVMTypeRef virtref = LLVMStructCreateNamed(gen->context, name);
+    vreffields[1] = LLVMPointerType(vtableRef, 0);
+    LLVMTypeRef virtref = LLVMStructCreateNamed(gen->context, vtable->name);
     LLVMStructSetBody(virtref, vreffields, 2, 0);
-    return virtref;
+    vtable->llvmreftype = virtref;
 }
 
 // Generate a LLVMTypeRef for a struct, based on its fields and alignment
@@ -149,10 +150,10 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
     case VirtRefTag:
     {
         RefNode *refnode = (RefNode*)typ;
-        StructNode *pvtype = (StructNode*)itypeGetTypeDcl(refnode->pvtype);
-        if (pvtype->llvmreftype == NULL)
-            genlType(gen, refnode->pvtype);
-        return pvtype->llvmreftype;
+        StructNode *trait = (StructNode*)itypeGetTypeDcl(refnode->pvtype);
+        if (trait->vtable->llvmreftype == NULL)
+            genlType(gen, (INode*)trait);
+        return trait->vtable->llvmreftype;
     }
 
     case ArrayRefTag:
@@ -216,8 +217,8 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
                 strnode->llvmtype = base->llvmtype;
         }
 
-        if (strnode->derived)
-            strnode->llvmreftype = genlVtable(gen, strnode, name);
+        if (strnode->vtable)
+            genlVtable(gen, strnode->vtable);
 
         return strnode->llvmtype? strnode->llvmtype : genlStructType(gen, name, (StructNode*)typ);
     }

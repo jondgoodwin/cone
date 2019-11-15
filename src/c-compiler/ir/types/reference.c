@@ -84,6 +84,23 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
     refAdoptInfections(node);
 }
 
+// Type check a virtual reference node
+void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
+    inodeTypeCheck(pstate, &node->alloc);
+    inodeTypeCheck(pstate, (INode**)&node->perm);
+    inodeTypeCheck(pstate, &node->pvtype);
+    refAdoptInfections(node);
+
+    StructNode *trait = (StructNode*)itypeGetTypeDcl(node->pvtype);
+    if (trait->tag != StructTag) {
+        errorMsgNode((INode*)node, ErrorInvType, "A virtual reference must be to a struct or trait.");
+        return;
+    }
+
+    // Build the Vtable info
+    structMakeVtable(trait);
+}
+
 // Compare two reference signatures to see if they are equivalent
 int refEqual(RefNode *node1, RefNode *node2) {
     return itypeIsSame(node1->pvtype,node2->pvtype) 

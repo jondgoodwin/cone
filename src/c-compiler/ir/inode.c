@@ -333,8 +333,10 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node) {
         nameUseTypeCheckType(pstate, (NameUseNode **)node); break;
     case FnSigTag:
         fnSigTypeCheck(pstate, (FnSigNode *)*node); break;
-    case RefTag: case VirtRefTag:
+    case RefTag:
         refTypeCheck(pstate, (RefNode *)*node); break;
+    case VirtRefTag:
+        refvirtTypeCheck(pstate, (RefNode *)*node); break;
     case ArrayRefTag:
         arrayRefTypeCheck(pstate, (RefNode *)*node); break;
     case PtrTag:

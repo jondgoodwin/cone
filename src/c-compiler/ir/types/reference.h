@@ -43,6 +43,9 @@ void refNameRes(NameResState *pstate, RefNode *node);
 // Type check a reference node
 void refTypeCheck(TypeCheckState *pstate, RefNode *name);
 
+// Type check a virtual reference node
+void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node);
+
 // Compare two reference signatures to see if they are equivalent
 int refEqual(RefNode *node1, RefNode *node2);
 

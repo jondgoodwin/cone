@@ -10,17 +10,33 @@
 
 typedef struct ModuleNode ModuleNode;
 
+// Describes how some struct implements a virtual reference's vtable
+typedef struct {
+    INode *structdcl;          // struct that implements
+    Nodes *impl;               // specific methods and fields in same order as vtable
+    char *name;                // generated name for the implemented vtable
+    LLVMValueRef vtablep;      // generates a pointer to the implemented vtable
+} VtableImpl;
+
+// Describes the virtual interface supported by some trait/struct
+typedef struct {
+    Nodes *interface;          // list of public methods and then fields
+    Nodes *impl;               // list of VtableImpl, for structs using this virtref
+    char *name;                // generated name for the vtable type
+    LLVMTypeRef llvmreftype;   // For the virtual reference, not the vtable
+} Vtable;
+
 // Field-containing types (e.g., struct, trait, etc.)
 // - fields holds all owned and trait-inherited fields
 // - nodelist holds owned methods and static functions and variables
 // - namespace is the dictionary of all owned and inherited named nodes
 typedef struct StructNode {
     INsTypeNodeHdr;
-    LLVMTypeRef llvmreftype; // Virtual ref type for LLVM
     ModuleNode *mod;        // Owning module, to check if struct defined in same mod as trait
     INode *basetrait;       // Which trait has fields embedded at start of this trait/struct
     Nodes *derived;         // If a closed, base trait, this lists all structs derived from it
     NodeList fields;        // Ordered list of all fields
+    Vtable *vtable;         // Pointer to vtable info (may be NULL)
     uint32_t tagnbr;        // If a tagged struct, this is the number in the tag field
 } StructNode;
 
@@ -41,6 +57,9 @@ StructNode *structGetBaseTrait(StructNode *node);
 
 // Type check a struct type
 void structTypeCheck(TypeCheckState *pstate, StructNode *name);
+
+// Populate the vtable for this struct
+void structMakeVtable(StructNode *node);
 
 int structEqual(StructNode *node1, StructNode *node2);
 
