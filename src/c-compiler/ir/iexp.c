@@ -27,17 +27,7 @@ INode *iexpGetTypeDcl(INode *node) {
 // Return type (or de-referenced type if ptr/ref)
 INode *iexpGetDerefTypeDcl(INode *node) {
     iexpToTypeDcl(node);
-    if (node->tag == RefTag) {
-        node = ((RefNode*)node)->pvtype;
-        if (node->tag == TypeNameUseTag)
-            node = (INode*)((NameUseNode *)node)->dclnode;
-    }
-    else if (node->tag == PtrTag) {
-        node = ((PtrNode*)node)->pvtype;
-        if (node->tag == TypeNameUseTag)
-            node = (INode*)((NameUseNode *)node)->dclnode;
-    }
-    return node;
+    return itypeGetDerefTypeDcl(node);
 }
 
 // After multiple uses, answer (which starts off NULL)

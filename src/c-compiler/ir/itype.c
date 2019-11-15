@@ -18,6 +18,16 @@ INode *itypeGetTypeDcl(INode *node) {
     return node;
 }
 
+// Return node's type's declaration node (or pvtype if a ref or ptr)
+INode *itypeGetDerefTypeDcl(INode *node) {
+    INode *typnode = itypeGetTypeDcl(node);
+    if (typnode->tag == RefTag)
+        return itypeGetTypeDcl(((RefNode*)node)->pvtype);
+    else if (node->tag == PtrTag)
+        return itypeGetTypeDcl(((PtrNode*)node)->pvtype);
+    return typnode;
+}
+
 // Return 1 if nominally (or structurally) identical, 0 otherwise
 // Nodes must both be types, but may be name use or declare nodes
 int itypeIsSame(INode *node1, INode *node2) {

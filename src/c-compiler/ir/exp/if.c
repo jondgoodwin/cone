@@ -67,6 +67,44 @@ void ifNameRes(NameResState *pstate, IfNode *ifnode) {
     }
 }
 
+// Detect when all closed variants are matched, and turn last match into 'else'
+// We know the condition is an 'is' node
+void ifExhaustCheck(IfNode *ifnode, CastNode *condition) {
+    StructNode *strnode = (StructNode*)iexpGetDerefTypeDcl(condition->exp);
+
+    // Exhaustiveness check only on closed variants against a base trait
+    if (strnode->tag != StructTag || !(strnode->flags & TraitType) ||
+        strnode->basetrait != NULL || 0 == (strnode->flags & (HasTagField | SameSize)))
+        return;
+
+    // We need to detect that all possible variants are accounted for
+    uint32_t lowestcnt = ifnode->condblk->used;
+    INode **varnodesp;
+    uint32_t varcnt;
+    for (nodesFor(strnode->derived, varcnt, varnodesp)) {
+        // Look for 'is' check on same value against *varnodesp
+        int found = 0;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(ifnode->condblk, cnt, nodesp)) {
+            if ((*nodesp)->tag == IsTag) {
+                CastNode *isnode = (CastNode*)*nodesp;
+                if (isnode->exp == condition->exp && itypeGetDerefTypeDcl(isnode->typ) == *varnodesp) {
+                    found = 1;
+                    if (cnt < lowestcnt)
+                        lowestcnt = cnt;
+                    break;
+                }
+            }
+            ++nodesp; --cnt;
+        }
+        if (found == 0)
+            return;
+    }
+    // Turn last 'is' condition into 'else'
+    nodesGet(ifnode->condblk, ifnode->condblk->used - lowestcnt) = voidType;
+}
+
 // Type check the if statement node
 // - Every conditional expression must be a bool
 // - else can only be last
@@ -78,9 +116,14 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode) {
     uint32_t cnt;
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
 
-        // Validate that conditional node is correct
+        // Validate conditional node
+        inodeTypeCheck(pstate, nodesp);
+        // Detect when all closed variants are matched, and turn last match into 'else'
+        if ((*nodesp)->tag == IsTag)
+            ifExhaustCheck(ifnode, (CastNode*)*nodesp);
+
         if (*nodesp != voidType) {
-            if (0 == iexpTypeCheckAndMatch(pstate, (INode**)&boolType, nodesp))
+            if (0 == iexpBiTypeInfer((INode**)&boolType, nodesp))
                 errorMsgNode(*nodesp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
         }
         else {
@@ -106,7 +149,7 @@ void ifBiTypeInfer(INode **totypep, IfNode *ifnode) {
 
     // All paths must return a typed value. Absence of an 'else' clause makes that impossible
     if (!(ifnode->flags & IfHasElse)) {
-        errorMsgNode((INode*)ifnode, ErrorInvType, "if requires an 'else' clause to return a value");
+        errorMsgNode((INode*)ifnode, ErrorInvType, "if requires an 'else' clause (or exhaustive matches) to return a value");
         return;
     }
 

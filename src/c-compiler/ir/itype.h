@@ -25,6 +25,9 @@ typedef struct ITypeNode {
 // (Note: only use after it has been type-checked)
 INode *itypeGetTypeDcl(INode *node);
 
+// Return node's type's declaration node (or pvtype if a ref or ptr)
+INode *itypeGetDerefTypeDcl(INode *node);
+
 // Return 1 if nominally (or structurally) identical, 0 otherwise.
 // Nodes must both be types, but may be name use or declare nodes.
 int itypeIsSame(INode *node1, INode *node2);
