@@ -16,6 +16,7 @@ typedef struct ModuleNode ModuleNode;
 // - namespace is the dictionary of all owned and inherited named nodes
 typedef struct StructNode {
     INsTypeNodeHdr;
+    LLVMTypeRef llvmreftype; // Virtual ref type for LLVM
     ModuleNode *mod;        // Owning module, to check if struct defined in same mod as trait
     INode *basetrait;       // Which trait has fields embedded at start of this trait/struct
     Nodes *derived;         // If a closed, base trait, this lists all structs derived from it

@@ -113,7 +113,7 @@ void inodePrintNode(INode *node) {
         slitPrint((SLitNode *)node); break;
     case FnSigTag:
         fnSigPrint((FnSigNode *)node); break;
-    case RefTag:
+    case RefTag: case VirtRefTag:
         refPrint((RefNode *)node); break;
     case ArrayRefTag:
         arrayRefPrint((RefNode *)node); break;
@@ -225,7 +225,7 @@ void inodeNameRes(NameResState *pstate, INode **node) {
 
     case FnSigTag:
         fnSigNameRes(pstate, (FnSigNode *)*node); break;
-    case RefTag:
+    case RefTag: case VirtRefTag:
         refNameRes(pstate, (RefNode *)*node); break;
     case ArrayRefTag:
         arrayRefNameRes(pstate, (RefNode *)*node); break;
@@ -333,7 +333,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node) {
         nameUseTypeCheckType(pstate, (NameUseNode **)node); break;
     case FnSigTag:
         fnSigTypeCheck(pstate, (FnSigNode *)*node); break;
-    case RefTag:
+    case RefTag: case VirtRefTag:
         refTypeCheck(pstate, (RefNode *)*node); break;
     case ArrayRefTag:
         arrayRefTypeCheck(pstate, (RefNode *)*node); break;

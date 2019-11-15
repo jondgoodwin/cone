@@ -23,8 +23,38 @@
 #include <string.h>
 #include <assert.h>
 
+// Generate a vtable type
+LLVMTypeRef genlVtable(GenState *gen, StructNode *strnode, char *name) {
+    uint32_t fieldcnt = strnode->fields.used + strnode->nodelist.used;
+    LLVMTypeRef *field_types = (LLVMTypeRef *)memAllocBlk(fieldcnt * sizeof(LLVMTypeRef));
+    LLVMTypeRef *field_type_ptr = field_types;
+    fieldcnt = 0;
+
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+        // All virtual fields are 32-bit offsets into the object
+        *field_type_ptr++ = LLVMInt32TypeInContext(gen->context);
+        ++fieldcnt;
+    }
+
+    LLVMTypeRef vtable = LLVMStructCreateNamed(gen->context, name);
+    if (fieldcnt > 0)
+        LLVMStructSetBody(vtable, field_types, fieldcnt, 0);
+
+    // A virtual reference is a fat pointer:
+    // - a pointer to the object (for now *u8 - which we will recast later)
+    // - a pointer to the vtable
+    LLVMTypeRef vreffields[2];
+    vreffields[0] = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
+    vreffields[1] = LLVMPointerType(vtable, 0);
+    LLVMTypeRef virtref = LLVMStructCreateNamed(gen->context, name);
+    LLVMStructSetBody(virtref, vreffields, 2, 0);
+    return virtref;
+}
+
 // Generate a LLVMTypeRef for a struct, based on its fields and alignment
-LLVMTypeRef _genlStructType(GenState *gen, char *name, StructNode *strnode) {
+LLVMTypeRef genlStructType(GenState *gen, char *name, StructNode *strnode) {
     // Build typeref from struct
     INode **nodesp;
     uint32_t cnt;
@@ -37,6 +67,7 @@ LLVMTypeRef _genlStructType(GenState *gen, char *name, StructNode *strnode) {
     LLVMTypeRef structype = LLVMStructCreateNamed(gen->context, name);
     if (fieldcnt > 0)
         LLVMStructSetBody(structype, field_types, fieldcnt, 0);
+
     return structype;
 }
 
@@ -51,7 +82,7 @@ void genlSameSizeTrait(GenState *gen, StructNode *base) {
     unsigned long long maxsize = 0;
     for (nodesFor(base->derived, cnt, nodesp)) {
         StructNode *strnode = (StructNode *)*nodesp;
-        strnode->llvmtype = _genlStructType(gen, &base->namesym->namestr, strnode);
+        strnode->llvmtype = genlStructType(gen, &base->namesym->namestr, strnode);
         unsigned long long size = LLVMStoreSizeOfType(gen->datalayout, strnode->llvmtype);
         if (size > maxsize) {
             maxsize = size;
@@ -115,6 +146,15 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
         return LLVMPointerType(pvtype, 0);
     }
 
+    case VirtRefTag:
+    {
+        RefNode *refnode = (RefNode*)typ;
+        StructNode *pvtype = (StructNode*)itypeGetTypeDcl(refnode->pvtype);
+        if (pvtype->llvmreftype == NULL)
+            genlType(gen, refnode->pvtype);
+        return pvtype->llvmreftype;
+    }
+
     case ArrayRefTag:
     {
         RefNode *refnode = (RefNode*)typ;
@@ -145,6 +185,7 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
     {
         // When dealing with a tagged struct, 
         // ensure tag field is large enough to handle number of variants
+        StructNode *strnode = (StructNode *)typ;
         if (typ->flags & HasTagField) {
             StructNode *base = structGetBaseTrait((StructNode*)typ);
             if (!base->llvmtype && base->derived->used > 0x100) {
@@ -169,11 +210,16 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
             StructNode *base = structGetBaseTrait((StructNode*)typ);
             if (!base->llvmtype)
                 genlSameSizeTrait(gen, base);
+
             // For any arbitrary trait in the inheritance hierarchy, use any arbitrary struct type
             if (typ->flags & TraitType)
-                return base->llvmtype;
+                strnode->llvmtype = base->llvmtype;
         }
-        return _genlStructType(gen, name, (StructNode*)typ);
+
+        if (strnode->derived)
+            strnode->llvmreftype = genlVtable(gen, strnode, name);
+
+        return strnode->llvmtype? strnode->llvmtype : genlStructType(gen, name, (StructNode*)typ);
     }
 
     case EnumTag:

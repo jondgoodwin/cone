@@ -108,6 +108,7 @@ enum NodeTags {
     ArrayTag,       // Also dynamic arrays? SOA?
     RefTag,         // Reference
     ArrayRefTag,    // Array reference (slice ref)
+    VirtRefTag,     // Virtual reference
     ArrayDerefTag,  // De-referenced array reference (the slice itself)
     PtrTag,         // Pointer
     TTupleTag,      // Type tuple

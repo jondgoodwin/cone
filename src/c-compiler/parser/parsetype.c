@@ -327,6 +327,12 @@ INode *parseRefType(ParseState *parse) {
     reftype->pvtype = voidType;
     lexNextToken();
 
+    // Notice whether it is a virtual reference
+    if (lexIsToken(LtToken)) {
+        reftype->tag = VirtRefTag;
+        lexNextToken();
+    }
+
     // Handle indicator for nullable references
     if (lexIsToken(QuesToken)) {
         reftype->flags |= FlagRefNull;
@@ -356,7 +362,7 @@ INode *parseRefType(ParseState *parse) {
             reftype->pvtype = parseArrayType(parse);
     }
     else if ((reftype->pvtype = parseVtype(parse)) == NULL) {
-        errorMsgLex(ErrorNoVtype, "Missing value type for the pointer");
+        errorMsgLex(ErrorNoVtype, "Missing value type for the reference");
     }
 
     return (INode *)reftype;
