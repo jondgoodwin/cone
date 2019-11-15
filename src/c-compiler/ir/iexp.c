@@ -82,14 +82,14 @@ int iexpBiTypeInfer(INode **totypep, INode **from) {
     if (fromnode->vtype == voidType) {
         switch (fromnode->tag) {
         case IfTag:
-            IfBiTypeInfer(totypep, (IfNode*)*from);
-            return 1;
+            ifBiTypeInfer(totypep, (IfNode*)*from);
+            break;
         case BlockTag:
             blockBiTypeInfer(totypep, (BlockNode*)*from);
-            return 1;
+            break;
         case LoopTag:
             loopBiTypeInfer(totypep, (LoopNode*)*from);
-            return 1;
+            break;
         }
     }
 

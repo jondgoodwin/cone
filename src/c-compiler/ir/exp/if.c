@@ -74,7 +74,6 @@ void ifNameRes(NameResState *pstate, IfNode *ifnode) {
 // If they are different, bidirectional type inference will resolve this later
 void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode) {
     INode *sametype = NULL;
-    int hasElse = 0;
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
@@ -85,7 +84,7 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode) {
                 errorMsgNode(*nodesp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
         }
         else {
-            hasElse = 1;
+            ifnode->flags |= IfHasElse;
             if (cnt > 2) {
                 errorMsgNode(*(nodesp + 1), ErrorInvType, "match on everything should be last.");
             }
@@ -98,12 +97,19 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode) {
 
     // Remember consistently-found type, so long as if-block included an 'else' clause
     // Without an 'else' clause, it won't have returned a value on every path
-    if (hasElse)
+    if (ifnode->flags & IfHasElse)
         ifnode->vtype = sametype;
 }
 
 // Bidirectional type inference
-void IfBiTypeInfer(INode **totypep, IfNode *ifnode) {
+void ifBiTypeInfer(INode **totypep, IfNode *ifnode) {
+
+    // All paths must return a typed value. Absence of an 'else' clause makes that impossible
+    if (!(ifnode->flags & IfHasElse)) {
+        errorMsgNode((INode*)ifnode, ErrorInvType, "if requires an 'else' clause to return a value");
+        return;
+    }
+
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {

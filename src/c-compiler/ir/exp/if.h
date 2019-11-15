@@ -28,7 +28,7 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode);
 // Special type-checking for iexpTypeCheckAndMatch, where blk->vtype sets type expectations
 // - Every conditional expression must be a bool
 // - Type of every branch's value must match expected type and each other
-void IfBiTypeInfer(INode **totypep, IfNode *ifnode);
+void ifBiTypeInfer(INode **totypep, IfNode *ifnode);
 
 void ifRemoveReturns(IfNode *ifnode);
 

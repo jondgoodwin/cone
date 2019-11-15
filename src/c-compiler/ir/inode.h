@@ -133,11 +133,15 @@ enum NodeTags {
 #define FlagSystem    0x0004        // FnDcl: imported system call (+stdcall on Winx86)
 #define FlagSetMethod 0x0008        // FnDcl: "set" method
 
+#define IsTagField    0x0010        // FieldNode: This field is the trait's discriminant tag
+
 #define FlagIndex     0x0001        // FnCall: arguments are an index in []
 #define FlagLvalOp    0x0002        // FnCall: method is an operator assignment (e.g., +=)
 #define FlagBorrow    0x0004        // FnCall: part of a borrow chain
 
 #define FlagSuffix    0x0001        // Borrow: part of a borrow chain
+
+#define IfHasElse     0x0001        // IfNode: This node has an 'else' clause
 
 // Flags used across all types
 #define MoveType           0x0001  // Type's values impose move semantics (vs. copy)
@@ -150,8 +154,6 @@ enum NodeTags {
 
 #define TypeChecked        0x8000  // Type has been type-checked
 #define TypeChecking       0x4000  // Type is in process of being type-checked
-
-#define IsTagField         0x0020  // FieldNode: This field is the trait's discriminant tag
 
 // Allocate and initialize the INode portion of a new node
 #define newNode(node, nodestruct, nodetype) {\
