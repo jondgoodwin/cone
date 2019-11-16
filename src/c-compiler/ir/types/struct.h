@@ -13,14 +13,14 @@ typedef struct ModuleNode ModuleNode;
 // Describes how some struct implements a virtual reference's vtable
 typedef struct {
     INode *structdcl;          // struct that implements
-    Nodes *impl;               // specific methods and fields in same order as vtable
+    Nodes *methfld;            // specific methods and fields in same order as vtable
     char *name;                // generated name for the implemented vtable
-    LLVMValueRef vtablep;      // generates a pointer to the implemented vtable
+    LLVMValueRef llvmvtablep;  // generates a pointer to the implemented vtable
 } VtableImpl;
 
 // Describes the virtual interface supported by some trait/struct
 typedef struct {
-    Nodes *interface;          // list of public methods and then fields
+    Nodes *methfld;            // list of public methods and then fields
     Nodes *impl;               // list of VtableImpl, for structs using this virtref
     char *name;                // generated name for the vtable type
     LLVMTypeRef llvmreftype;   // For the virtual reference, not the vtable
@@ -60,6 +60,9 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *name);
 
 // Populate the vtable for this struct
 void structMakeVtable(StructNode *node);
+
+// Populate the vtable implementation info for a struct ref being coerced to some trait
+void structMakeVtableImpl(StructNode *trait, StructNode *strnode, INode *errnode);
 
 int structEqual(StructNode *node1, StructNode *node2);
 

@@ -23,15 +23,47 @@
 #include <string.h>
 #include <assert.h>
 
+// Generate a specific vtable value for some struct
+void genlVtableImpl(GenState *gen, VtableImpl *impl, LLVMTypeRef vtableRef) {
+    // Ensure the struct has been "built", as we need to point to its fields and methods
+    LLVMTypeRef structRef = genlType(gen, impl->structdcl);
+
+    // Build structure containing vtable info
+    LLVMValueRef implRef = LLVMGetUndef(vtableRef);
+    INode **nodesp;
+    uint32_t cnt;
+    unsigned int pos = 0;
+    for (nodesFor(impl->methfld, cnt, nodesp)) {
+        LLVMValueRef val;
+        if ((*nodesp)->tag == FieldDclTag) {
+            FieldDclNode *fld = (FieldDclNode *)*nodesp;
+            unsigned long long offset = LLVMOffsetOfElement(gen->datalayout, structRef, fld->index);
+            val = LLVMConstInt(LLVMInt32TypeInContext(gen->context), offset, 0);
+        }
+        else {
+            FnDclNode *meth = (FnDclNode *)*nodesp;
+            val = meth->llvmvar;
+        }
+        implRef = LLVMBuildInsertValue(gen->builder, implRef, val, pos++, "vtable");
+    }
+
+    // Create and initialize global variable to hold vtable info
+    impl->llvmvtablep = LLVMAddGlobal(gen->module, vtableRef, impl->name);
+    LLVMSetGlobalConstant(impl->llvmvtablep, 1);
+    LLVMSetLinkage(impl->llvmvtablep, LLVMLinkOnceAnyLinkage);
+    LLVMSetInitializer(impl->llvmvtablep, implRef);
+}
+
 // Generate a vtable type
 void genlVtable(GenState *gen, Vtable *vtable) {
-    uint32_t fieldcnt = vtable->interface->used;
+    uint32_t fieldcnt = vtable->methfld->used;
     LLVMTypeRef *field_types = (LLVMTypeRef *)memAllocBlk(fieldcnt * sizeof(LLVMTypeRef));
     LLVMTypeRef *field_type_ptr = field_types;
 
+    // Declare vtable's fields
     INode **nodesp;
     uint32_t cnt;
-    for (nodesFor(vtable->interface, cnt, nodesp)) {
+    for (nodesFor(vtable->methfld, cnt, nodesp)) {
         if ((*nodesp)->tag == FnDclTag) {
             // Generate a pointer to function signature
             // Note: parm types are not specified to avoid LLVM type check errors on self parm
@@ -44,11 +76,17 @@ void genlVtable(GenState *gen, Vtable *vtable) {
             *field_type_ptr++ = LLVMInt32TypeInContext(gen->context);
     }
 
+    // Declare the vtable type itself
     LLVMTypeRef vtableRef = LLVMStructCreateNamed(gen->context, vtable->name);
     if (fieldcnt > 0)
         LLVMStructSetBody(vtableRef, field_types, fieldcnt, 0);
 
-    // A virtual reference is a fat pointer:
+    // Build all the vtable globals that implement the vtable
+    for (nodesFor(vtable->impl, cnt, nodesp)) {
+        genlVtableImpl(gen, (VtableImpl*)*nodesp, vtableRef);
+    }
+
+    // Build the virtual reference type for this vtable. It is a fat pointer:
     // - a pointer to the object (for now *u8 - which we will recast later)
     // - a pointer to the vtable
     LLVMTypeRef vreffields[2];
