@@ -118,7 +118,7 @@ FieldDclNode *parseFieldDcl(ParseState *parse, PermNode *defperm) {
 }
 
 // Parse a struct
-INode *parseStruct(ParseState *parse) {
+INode *parseStruct(ParseState *parse, uint16_t strflags) {
     char *svprefix = parse->gennamePrefix;
     INsTypeNode *svtype = parse->typenode;
     StructNode *strnode;
@@ -132,6 +132,7 @@ INode *parseStruct(ParseState *parse) {
     if (lexIsToken(IdentToken)) {
         strnode = newStructNode(lex->val.ident);
         strnode->tag = tag;
+        strnode->flags |= strflags;
         strnode->mod = parse->mod;
         nameConcatPrefix(&parse->gennamePrefix, &strnode->namesym->namestr);
         parse->typenode = (INsTypeNode *)strnode;
@@ -141,6 +142,10 @@ INode *parseStruct(ParseState *parse) {
         errorMsgLex(ErrorNoIdent, "Expected a name for the type");
         return NULL;
     }
+
+    uint16_t methflags = ParseMayName | ParseMayImpl;
+    if ((strnode->flags & TraitType) && (strnode->flags & OpaqueType))
+        methflags |= ParseMaySig;
 
     // Obtain base trait, if specified
     if (lexIsToken(ColonToken)) {
@@ -157,7 +162,7 @@ INode *parseStruct(ParseState *parse) {
                 if (!lexIsToken(FnToken))
                     errorMsgLex(ErrorNotFn, "Expected fn declaration");
                 else {
-                    FnDclNode *fn = (FnDclNode*)parseFn(parse, FlagMethFld, ParseMayName | ParseMayImpl);
+                    FnDclNode *fn = (FnDclNode*)parseFn(parse, FlagMethFld, methflags);
                     if (fn && isNamedNode(fn)) {
                         fn->flags |= FlagSetMethod;
                         nameGenFnName(fn, parse->gennamePrefix);
@@ -166,7 +171,7 @@ INode *parseStruct(ParseState *parse) {
                 }
             }
             else if (lexIsToken(FnToken)) {
-                FnDclNode *fn = (FnDclNode*)parseFn(parse, FlagMethFld, ParseMayName | ParseMayImpl);
+                FnDclNode *fn = (FnDclNode*)parseFn(parse, FlagMethFld, methflags);
                 if (fn && isNamedNode(fn)) {
                     nameGenFnName(fn, parse->gennamePrefix);
                     iNsTypeAddFn((INsTypeNode*)strnode, fn);

@@ -99,12 +99,12 @@ INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags) {
         parseLCurly();
     if (lexIsToken(LCurlyToken)) {
         if (!(mayflags&ParseMayImpl))
-            errorMsgLex(ErrorBadImpl, "Function implementation is not allowed here.");
+            errorMsgNode((INode*)fnnode, ErrorBadImpl, "Function/method implementation is not allowed here.");
         fnnode->value = parseBlock(parse);
     }
     else {
         if (!(mayflags&ParseMaySig))
-            errorMsgLex(ErrorNoImpl, "Function must be implemented.");
+            errorMsgNode((INode*)fnnode, ErrorNoImpl, "Function/method must be implemented.");
         parseEndOfStatement();
     }
 
@@ -195,23 +195,21 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
 
         // 'struct'-style type definition
         case StructToken: {
-            StructNode *strnode = (StructNode*)parseStruct(parse);
+            StructNode *strnode = (StructNode*)parseStruct(parse, 0);
             modAddNode(mod, strnode->namesym, (INode*)strnode);
             break;
         }
 
         // 'trait' type definition
         case TraitToken: {
-            StructNode *strnode = (StructNode*)parseStruct(parse);
-            strnode->flags |= TraitType | OpaqueType;
+            StructNode *strnode = (StructNode*)parseStruct(parse, TraitType | OpaqueType);
             modAddNode(mod, strnode->namesym, (INode*)strnode);
             break;
         }
 
         // 'enumtrait' type definition
         case EnumTraitToken: {
-            StructNode *strnode = (StructNode*)parseStruct(parse);
-            strnode->flags |= TraitType | SameSize;
+            StructNode *strnode = (StructNode*)parseStruct(parse, TraitType | SameSize);
             modAddNode(mod, strnode->namesym, (INode*)strnode);
             break;
         }

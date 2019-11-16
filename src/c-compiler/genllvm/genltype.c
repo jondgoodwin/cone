@@ -32,8 +32,13 @@ void genlVtable(GenState *gen, Vtable *vtable) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(vtable->interface, cnt, nodesp)) {
-        if ((*nodesp)->tag == FnDclTag)
-            *field_type_ptr++ = NULL;
+        if ((*nodesp)->tag == FnDclTag) {
+            // Generate a pointer to function signature
+            // Note: parm types are not specified to avoid LLVM type check errors on self parm
+            FnSigNode *fnsig = (FnSigNode*)itypeGetTypeDcl(((FnDclNode *)*nodesp)->vtype);
+            LLVMTypeRef fnsigref = LLVMFunctionType(genlType(gen, fnsig->rettype), NULL, 0, 0);
+            *field_type_ptr++ = LLVMPointerType(fnsigref, 0);
+        }
         else
             // All virtual fields are 32-bit offsets into the object
             *field_type_ptr++ = LLVMInt32TypeInContext(gen->context);
@@ -272,7 +277,7 @@ LLVMTypeRef genlType(GenState *gen, INode *typ) {
 
         // Also process the type's methods and functions
         LLVMTypeRef typeref = dclnode->llvmtype = _genlType(gen, &dclnode->namesym->namestr, (INode*)dclnode);
-        if (isMethodType(dclnode)) {
+        if (isMethodType(dclnode) && !(dcltype->tag == StructTag && (dcltype->flags & TraitType))) {
             INsTypeNode *tnode = (INsTypeNode*)dclnode;
             INode **nodesp;
             uint32_t cnt;
