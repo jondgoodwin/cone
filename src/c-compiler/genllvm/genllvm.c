@@ -40,7 +40,7 @@
 void genlParmVar(GenState *gen, VarDclNode *var) {
     assert(var->tag == VarDclTag);
     // We always alloca in case variable is mutable or we want to take address of its value
-    var->llvmvar = LLVMBuildAlloca(gen->builder, genlType(gen, var->vtype), &var->namesym->namestr);
+    var->llvmvar = genlAlloca(gen, genlType(gen, var->vtype), &var->namesym->namestr);
     LLVMBuildStore(gen->builder, LLVMGetParam(gen->fn, var->index), var->llvmvar);
 }
 
@@ -51,8 +51,9 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
 
     LLVMValueRef svfn = gen->fn;
     LLVMBuilderRef svbuilder = gen->builder;
-    FnSigNode *fnsig = (FnSigNode*)fnnode->vtype;
+	LLVMValueRef svallocaPoint = gen->allocaPoint;
 
+	FnSigNode *fnsig = (FnSigNode*)fnnode->vtype;
     assert(fnnode->value->tag == BlockTag);
     gen->fn = fnnode->llvmvar;
 
@@ -61,7 +62,12 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     gen->builder = LLVMCreateBuilder();
     LLVMPositionBuilderAtEnd(gen->builder, entry);
 
-    // Generate LLVMValueRef's for all parameters, so we can use them as local vars in code
+	// Create our alloca insert point by generating a dummy instruction.
+	// It will be erased at the end.
+	LLVMValueRef allocaPoint = LLVMBuildAlloca(gen->builder, LLVMInt32TypeInContext(gen->context), "alloca_point");
+	gen->allocaPoint = allocaPoint;
+
+	// Generate LLVMValueRef's for all parameters, so we can use them as local vars in code
     uint32_t cnt;
     INode **nodesp;
     for (nodesFor(fnsig->parms, cnt, nodesp))
@@ -70,10 +76,17 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     // Generate the function's code (always a block)
     genlBlock(gen, (BlockNode *)fnnode->value);
 
+	// erase alloca point
+	if (LLVMGetInstructionParent(allocaPoint))
+	{
+		LLVMInstructionEraseFromParent(allocaPoint);
+	}
+
     LLVMDisposeBuilder(gen->builder);
 
     gen->builder = svbuilder;
     gen->fn = svfn;
+    gen->allocaPoint = svallocaPoint;
 }
 
 // Generate global variable
@@ -348,6 +361,7 @@ void genSetup(GenState *gen, ConeOptions *opt) {
 
     gen->context = LLVMGetGlobalContext(); // LLVM inlining bugs prevent use of LLVMContextCreate();
     gen->fn = NULL;
+    gen->allocaPoint = NULL;
     gen->block = NULL;
     gen->loopstack = memAllocBlk(sizeof(GenLoopState)*GenLoopMax);
     gen->loopstackcnt = 0;
