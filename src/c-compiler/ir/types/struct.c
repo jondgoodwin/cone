@@ -209,7 +209,7 @@ void structMakeVtable(StructNode *node) {
 }
 
 // Populate the vtable implementation info for a struct ref being coerced to some trait
-void structMakeVtableImpl(StructNode *trait, StructNode *strnode, INode *errnode) {
+int structVirtRefMatches(StructNode *trait, StructNode *strnode) {
 
     if (trait->vtable == NULL)
         structMakeVtable(trait);
@@ -222,7 +222,7 @@ void structMakeVtableImpl(StructNode *trait, StructNode *strnode, INode *errnode
     for (nodesFor(vtable->impl, cnt, nodesp)) {
         VtableImpl *impl = (VtableImpl*)*nodesp;
         if (impl->structdcl == (INode*)strnode)
-            return;
+            return 2;
     }
 
     // Create Vtable impl data structure and populate
@@ -245,9 +245,9 @@ void structMakeVtableImpl(StructNode *trait, StructNode *strnode, INode *errnode
             FnDclNode *meth = (FnDclNode *)*nodesp;
             FnDclNode *strmeth = (FnDclNode *)namespaceFind(&strnode->namespace, meth->namesym);
             if (strmeth == NULL || strmeth->tag != FnDclTag) {
-                errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to a %s virtual reference. Missing method %s.",
-                    &strnode->namesym->namestr, &trait->namesym->namestr, &meth->namesym->namestr);
-                return;
+                //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to a %s virtual reference. Missing method %s.",
+                //    &strnode->namesym->namestr, &trait->namesym->namestr, &meth->namesym->namestr);
+                return 0;
             }
             // Look through all overloaded methods for a match
             while (strmeth) {
@@ -256,9 +256,9 @@ void structMakeVtableImpl(StructNode *trait, StructNode *strnode, INode *errnode
                 strmeth = strmeth->nextnode;
             }
             if (strmeth == NULL) {
-                errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to a %s virtual reference. Incompatible type for method %s.",
-                    &strnode->namesym->namestr, &trait->namesym->namestr, &meth->namesym->namestr);
-                return;
+                //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to a %s virtual reference. Incompatible type for method %s.",
+                //    &strnode->namesym->namestr, &trait->namesym->namestr, &meth->namesym->namestr);
+                return 0;
             }
             // it matches, add the method to the implementation
             nodesAdd(&impl->methfld, (INode*)strmeth);
@@ -268,14 +268,14 @@ void structMakeVtableImpl(StructNode *trait, StructNode *strnode, INode *errnode
             FieldDclNode *fld = (FieldDclNode *)*nodesp;
             INode *strfld = namespaceFind(&strnode->namespace, fld->namesym);
             if (strfld == NULL || strfld->tag != FieldDclTag) {
-                errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to a %s virtual reference. Missing field %s.",
-                    &strnode->namesym->namestr, &trait->namesym->namestr, &fld->namesym->namestr);
-                return;
+                //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to a %s virtual reference. Missing field %s.",
+                //    &strnode->namesym->namestr, &trait->namesym->namestr, &fld->namesym->namestr);
+                return 0;
             }
             if (!itypeIsSame(((FieldDclNode*)strfld)->vtype, fld->vtype)) {
-                errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to a %s virtual reference. Incompatible type for field %s.",
-                    &strnode->namesym->namestr, &trait->namesym->namestr, &fld->namesym->namestr);
-                return;
+                //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to a %s virtual reference. Incompatible type for field %s.",
+                //    &strnode->namesym->namestr, &trait->namesym->namestr, &fld->namesym->namestr);
+                return 0;
             }
             // it matches, add the corresponding field to the implementation
             nodesAdd(&impl->methfld, (INode*)strfld);
@@ -284,6 +284,7 @@ void structMakeVtableImpl(StructNode *trait, StructNode *strnode, INode *errnode
 
     // We accomplished a successful mapping - add it
     nodesAdd(&vtable->impl, (INode*)impl);
+    return 2;
 }
 
 // Compare two struct signatures to see if they are equivalent

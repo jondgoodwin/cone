@@ -432,6 +432,49 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
         else
             return genexp;
 
+    case StructTag:
+    {
+        // LLVM does not bitcast structs, so this store/load hack gets around that problem
+        LLVMValueRef tempspaceptr = LLVMBuildAlloca(gen->builder, genlType(gen, fromtype), "");
+        LLVMValueRef store = LLVMBuildStore(gen->builder, genexp, tempspaceptr);
+        LLVMValueRef castptr = LLVMBuildBitCast(gen->builder, tempspaceptr, LLVMPointerType(genlType(gen, totype), 0), "");
+        return LLVMBuildLoad(gen->builder, castptr, "");
+    }
+
+    case RefTag:
+    {
+        // extract object pointer from fat pointer
+        if (fromtype->tag == VirtRefTag)
+            return LLVMBuildExtractValue(gen->builder, genexp, 0, "ref");
+        else if (fromtype->tag == RefTag)
+            return LLVMBuildBitCast(gen->builder, genexp, genlType(gen, totype), "");
+        else
+            assert(0 && "Unknown type to convert to reference");
+    }
+
+    case VirtRefTag:
+    {
+        // Build a fat ptr whose vtable maps the fromtype struct to the totype trait
+        assert(fromtype->tag == RefTag);
+        StructNode *trait = (StructNode*)itypeGetTypeDcl(((RefNode*)totype)->pvtype);
+        StructNode *strnode = (StructNode*)itypeGetTypeDcl(((RefNode*)fromtype)->pvtype);
+        Vtable *vtable = ((StructNode*)trait)->vtable;
+        VtableImpl *impl;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(vtable->impl, cnt, nodesp)) {
+            impl = (VtableImpl*)*nodesp;
+            if (impl->structdcl == (INode*)strnode)
+                break;
+        }
+        LLVMValueRef vref = LLVMGetUndef(genlType(gen, totype));
+        LLVMTypeRef vptr = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
+        LLVMValueRef ptr = LLVMBuildBitCast(gen->builder, genexp, vptr, "");
+        vref = LLVMBuildInsertValue(gen->builder, vref, ptr, 0, "vptr");
+        vref = LLVMBuildInsertValue(gen->builder, vref, impl->llvmvtablep, 1, "vptr");
+        return vref;
+    }
+
     case PtrTag:
         if (fromtype->tag == ArrayRefTag)
             return LLVMBuildExtractValue(gen->builder, genexp, 0, "sliceptr");
@@ -439,13 +482,6 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
             return LLVMBuildBitCast(gen->builder, genexp, genlType(gen, totype), "");
 
     default:
-        if (totype->tag == StructTag) {
-            // LLVM does not bitcast structs, so this store/load hack gets around that problem
-            LLVMValueRef tempspaceptr = LLVMBuildAlloca(gen->builder, genlType(gen, fromtype), "");
-            LLVMValueRef store = LLVMBuildStore(gen->builder, genexp, tempspaceptr);
-            LLVMValueRef castptr = LLVMBuildBitCast(gen->builder, tempspaceptr, LLVMPointerType(genlType(gen, totype),0), "");
-            return LLVMBuildLoad(gen->builder, castptr, "");
-        }
         return LLVMBuildBitCast(gen->builder, genexp, genlType(gen, totype), "");
     }
 }

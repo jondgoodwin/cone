@@ -62,7 +62,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *name);
 void structMakeVtable(StructNode *node);
 
 // Populate the vtable implementation info for a struct ref being coerced to some trait
-void structMakeVtableImpl(StructNode *trait, StructNode *strnode, INode *errnode);
+int structVirtRefMatches(StructNode *trait, StructNode *strnode);
 
 int structEqual(StructNode *node1, StructNode *node2);
 

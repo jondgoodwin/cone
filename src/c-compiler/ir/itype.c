@@ -52,6 +52,8 @@ int itypeIsSame(INode *node1, INode *node2) {
         return refEqual((RefNode*)node1, (RefNode*)node2);
     case ArrayRefTag:
         return arrayRefEqual((RefNode*)node1, (RefNode*)node2);
+    case VirtRefTag:
+        return refEqual((RefNode*)node1, (RefNode*)node2);
     case PtrTag:
         return ptrEqual((PtrNode*)node1, (PtrNode*)node2);
     default:
@@ -84,6 +86,11 @@ int itypeMatches(INode *totype, INode *fromtype) {
         if (fromtype->tag != RefTag)
             return 0;
         return refMatches((RefNode*)totype, (RefNode*)fromtype);
+
+    case VirtRefTag:
+        if (fromtype->tag != VirtRefTag && fromtype->tag != RefTag)
+            return 0;
+        return refvirtMatches((RefNode*)totype, (RefNode*)fromtype);
 
     case ArrayRefTag:
         if (fromtype->tag != ArrayRefTag)
@@ -135,9 +142,10 @@ char *itypeMangle(char *bufp, INode *vtype) {
     }
     case RefTag:
     case ArrayRefTag:
+    case VirtRefTag:
     {
         RefNode *reftype = (RefNode *)vtype;
-        *bufp++ = vtype->tag==ArrayRefTag? '+' : '&';
+        *bufp++ = vtype->tag==VirtRefTag? '<' : ArrayRefTag? '+' : '&';
         if (permIsSame(reftype->perm, (INode*)constPerm)) {
             bufp = itypeMangle(bufp, reftype->perm);
             *bufp++ = ' ';
