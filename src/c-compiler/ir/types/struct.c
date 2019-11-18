@@ -184,6 +184,7 @@ void structMakeVtable(StructNode *node) {
         return;
     Vtable *vtable = memAllocBlk(sizeof(Vtable));
     vtable->llvmreftype = NULL;
+    vtable->llvmvtable = NULL;
     vtable->impl = newNodes(4);
 
     vtable->name = memAllocStr(&node->namesym->namestr, node->namesym->namesz + 8);

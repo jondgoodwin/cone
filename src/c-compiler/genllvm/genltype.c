@@ -36,15 +36,17 @@ void genlVtableImpl(GenState *gen, VtableImpl *impl, LLVMTypeRef vtableRef) {
     for (nodesFor(impl->methfld, cnt, nodesp)) {
         LLVMValueRef val;
         if ((*nodesp)->tag == FieldDclTag) {
+            // Calculate byte offset of the field
             FieldDclNode *fld = (FieldDclNode *)*nodesp;
             unsigned long long offset = LLVMOffsetOfElement(gen->datalayout, structRef, fld->index);
             val = LLVMConstInt(LLVMInt32TypeInContext(gen->context), offset, 0);
         }
         else {
-            FnDclNode *meth = (FnDclNode *)*nodesp;
-            val = meth->llvmvar;
+            // Pointer to method. Recast so parameter types match later on
+            LLVMTypeRef newfntyp = LLVMStructGetTypeAtIndex(vtableRef, pos);
+            val = LLVMBuildBitCast(gen->builder, ((FnDclNode *)*nodesp)->llvmvar, newfntyp, "");
         }
-        implRef = LLVMBuildInsertValue(gen->builder, implRef, val, pos++, "vtable");
+        implRef = LLVMBuildInsertValue(gen->builder, implRef, val, pos++, "vtable entry");
     }
 
     // Create and initialize global variable to hold vtable info
@@ -94,6 +96,7 @@ void genlVtable(GenState *gen, Vtable *vtable) {
     vreffields[1] = LLVMPointerType(vtableRef, 0);
     LLVMTypeRef virtref = LLVMStructCreateNamed(gen->context, vtable->name);
     LLVMStructSetBody(virtref, vreffields, 2, 0);
+    vtable->llvmvtable = vtableRef;
     vtable->llvmreftype = virtref;
 }
 

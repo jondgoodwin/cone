@@ -23,6 +23,7 @@ typedef struct {
     Nodes *methfld;            // list of public methods and then fields
     Nodes *impl;               // list of VtableImpl, for structs using this virtref
     char *name;                // generated name for the vtable type
+    LLVMTypeRef llvmvtable;    // for the vtable
     LLVMTypeRef llvmreftype;   // For the virtual reference, not the vtable
 } Vtable;
 
