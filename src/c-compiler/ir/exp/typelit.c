@@ -143,7 +143,9 @@ void typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private) 
         }
         else {
             errorMsgNode((INode*)arrlit, ErrorBadArray, "Not enough values specified on type literal");
-            break;
+            while (cnt--)
+                nodesAdd(&arrlit->args, (INode*)newULitNode(0,field->vtype));  // Put in fake nodes to pretend we are ok
+            return;
         }
         ++argi;
     }
