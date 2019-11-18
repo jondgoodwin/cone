@@ -33,13 +33,6 @@ void parseInsertWhileBreak(INode *blk, INode *condexp) {
 
 // Parse control flow suffixes
 INode *parseFlowSuffix(ParseState *parse, INode *node) {
-    // Translate 'this' block sugar to declaring 'this' at start of block
-    if (lexIsToken(LCurlyToken)) {
-        INode *var = (INode*)newVarDclFull(thisName, VarDclTag, NULL, (INode*)immPerm, node);
-        BlockNode *blk = (BlockNode*)parseBlock(parse);
-        nodesInsert(&blk->stmts, var, 0);
-        return (INode *)blk;
-    }
     while (lexIsToken(IfToken) || lexIsToken(WhileToken) || lexIsToken(EachToken)) {
         if (lexIsToken(IfToken)) {
             BlockNode *blk;
@@ -392,6 +385,16 @@ INode *parseLifetime(ParseState *parse, int stmtflag) {
     return NULL;
 }
 
+// Parse a 'with' block, setting 'this' to the expression at start of block
+INode *parseWith(ParseState *parse) {
+    lexNextToken();
+    VarDclNode *this = newVarDclFull(thisName, VarDclTag, NULL, (INode*)immPerm, NULL);
+    this->value = parseSimpleExpr(parse);
+    BlockNode *blk = (BlockNode*)parseBlock(parse);
+    nodesInsert(&blk->stmts, (INode*)this, 0);
+    return (INode *)blk;
+}
+
 // Parse a block of statements/expressions
 INode *parseBlock(ParseState *parse) {
     BlockNode *blk = newBlockNode();
@@ -411,6 +414,10 @@ INode *parseBlock(ParseState *parse) {
 
         case RetToken:
             nodesAdd(&blk->stmts, parseReturn(parse));
+            break;
+
+        case WithToken:
+            nodesAdd(&blk->stmts, parseWith(parse));
             break;
 
         case IfToken:

@@ -128,6 +128,7 @@ enum TokenTypes {
     AllocToken,        // 'alloc'
     RetToken,        // 'return'
     DoToken,        // 'do'
+    WithToken,      // 'with'
     IfToken,        // 'if'
     ElifToken,        // 'elif'
     ElseToken,        // 'else'
