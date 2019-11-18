@@ -841,8 +841,26 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         // Pattern match whether termnode's tag matches desired concrete struct type
         CastNode *isnode = (CastNode*)termnode;
         LLVMValueRef val = genlExpr(gen, isnode->exp);
+        INode *exptype = iexpGetTypeDcl(isnode->exp);
         INode *istype = itypeGetTypeDcl(isnode->typ);
         StructNode *structtype = (StructNode*)(istype->tag == RefTag ? itypeGetTypeDcl(((RefNode*)istype)->pvtype) : istype);
+
+        // To pattern match a virtual reference, compare vtable pointers
+        if (exptype->tag == VirtRefTag) {
+            LLVMValueRef vtablep = LLVMBuildExtractValue(gen->builder, val, 1, "");
+            Vtable *vtable = structGetBaseTrait(structtype)->vtable;
+            INode **nodesp;
+            uint32_t cnt;
+            for (nodesFor(vtable->impl, cnt, nodesp)) {
+                VtableImpl *impl = (VtableImpl*)*nodesp;
+                if (impl->structdcl == (INode*)structtype) {
+                    LLVMValueRef diff = LLVMBuildPtrDiff(gen->builder, vtablep, impl->llvmvtablep, "");
+                    LLVMValueRef zero = LLVMConstInt(LLVMInt64TypeInContext(gen->context), 0, 0);
+                    return LLVMBuildICmp(gen->builder, LLVMIntEQ, diff, zero, "isvtable");
+                }
+            }
+            assert(0 && "Could not find specialized type's vtable");
+        }
 
         // Find and extract tag field from val, then compare with to-type's tag number
         INode **nodesp;

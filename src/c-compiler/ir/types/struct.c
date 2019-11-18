@@ -216,7 +216,6 @@ int structVirtRefMatches(StructNode *trait, StructNode *strnode) {
         structMakeVtable(trait);
     Vtable *vtable = trait->vtable;
 
-
     // No need to build VtableImpl for this struct if it has already been done earlier
     INode **nodesp;
     uint32_t cnt;
