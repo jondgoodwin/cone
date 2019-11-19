@@ -444,8 +444,10 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
     case RefTag:
     {
         // extract object pointer from fat pointer
-        if (fromtype->tag == VirtRefTag)
-            return LLVMBuildExtractValue(gen->builder, genexp, 0, "ref");
+        if (fromtype->tag == VirtRefTag) {
+            LLVMValueRef ptr = LLVMBuildExtractValue(gen->builder, genexp, 0, "ref");
+            return LLVMBuildBitCast(gen->builder, ptr, genlType(gen, totype), "");
+        }
         else if (fromtype->tag == RefTag)
             return LLVMBuildBitCast(gen->builder, genexp, genlType(gen, totype), "");
         else

@@ -104,6 +104,9 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
             return;
         break;
     case RefTag:
+        if (fromtype->tag == VirtRefTag)
+            return;
+        // Deliberate fall-through here
     case PtrTag:
         if (fromtype->tag == RefTag || fromtype->tag == PtrTag)
             return;
