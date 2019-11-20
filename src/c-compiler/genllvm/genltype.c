@@ -70,7 +70,19 @@ void genlVtable(GenState *gen, Vtable *vtable) {
             // Generate a pointer to function signature
             // Note: parm types are not specified to avoid LLVM type check errors on self parm
             FnSigNode *fnsig = (FnSigNode*)itypeGetTypeDcl(((FnDclNode *)*nodesp)->vtype);
-            LLVMTypeRef fnsigref = LLVMFunctionType(genlType(gen, fnsig->rettype), NULL, 0, 0);
+            LLVMTypeRef *param_types = (LLVMTypeRef *)memAllocBlk(fnsig->parms->used * sizeof(LLVMTypeRef));
+            LLVMTypeRef *parm = param_types;
+            INode **nodesp;
+            uint32_t cnt;
+            for (nodesFor(fnsig->parms, cnt, nodesp)) {
+                assert((*nodesp)->tag == VarDclTag);
+                if (cnt == fnsig->parms->used && iexpGetTypeDcl(*nodesp)->tag == RefTag)
+                    // Self parameter ref is re-cast into *u8
+                    *parm++ = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
+                else
+                    *parm++ = genlType(gen, ((IExpNode *)*nodesp)->vtype);
+            }
+            LLVMTypeRef fnsigref = LLVMFunctionType(genlType(gen, fnsig->rettype), param_types, fnsig->parms->used, 0);
             *field_type_ptr++ = LLVMPointerType(fnsigref, 0);
         }
         else

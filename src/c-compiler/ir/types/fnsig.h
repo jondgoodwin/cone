@@ -25,6 +25,12 @@ void fnSigPrint(FnSigNode *node);
 void fnSigNameRes(NameResState *pstate, FnSigNode *sig);
 void fnSigTypeCheck(TypeCheckState *pstate, FnSigNode *name);
 int fnSigEqual(FnSigNode *node1, FnSigNode *node2);
+
+// For virtual reference structural matches on two methods,
+// compare two function signatures to see if they are equivalent,
+// ignoring the first 'self' parameter (we know their types differ)
+int fnSigVrefEqual(FnSigNode *node1, FnSigNode *node2);
+
 int fnSigMatchesCall(FnSigNode *to, Nodes *args);
 // Will the method call (caller) be able to call the 'to' function
 // Return 0 if not. 1 if perfect match. 2+ for imperfect matches

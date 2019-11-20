@@ -251,7 +251,7 @@ int structVirtRefMatches(StructNode *trait, StructNode *strnode) {
             }
             // Look through all overloaded methods for a match
             while (strmeth) {
-                if (!itypeIsSame(strmeth->vtype, meth->vtype))
+                if (!fnSigVrefEqual((FnSigNode*)strmeth->vtype, (FnSigNode*)meth->vtype))
                     break;
                 strmeth = strmeth->nextnode;
             }

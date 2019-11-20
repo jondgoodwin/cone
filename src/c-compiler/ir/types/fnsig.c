@@ -52,7 +52,7 @@ void fnSigTypeCheck(TypeCheckState *pstate, FnSigNode *sig) {
 // Compare two function signatures to see if they are equivalent
 int fnSigEqual(FnSigNode *node1, FnSigNode *node2) {
     INode **nodes1p, **nodes2p;
-    int16_t cnt;
+    uint32_t cnt;
 
     // Return types and number of parameters must match
     if (!itypeIsSame(node1->rettype, node2->rettype)
@@ -63,6 +63,28 @@ int fnSigEqual(FnSigNode *node1, FnSigNode *node2) {
     nodes2p = &nodesGet(node2->parms, 0);
     for (nodesFor(node1->parms, cnt, nodes1p)) {
         if (!itypeIsSame(*nodes1p, *nodes2p))
+            return 0;
+        nodes2p++;
+    }
+    return 1;
+}
+
+// For virtual reference structural matches on two methods,
+// compare two function signatures to see if they are equivalent,
+// ignoring the first 'self' parameter (we know their types differ)
+int fnSigVrefEqual(FnSigNode *node1, FnSigNode *node2) {
+    INode **nodes1p, **nodes2p;
+    uint32_t cnt;
+
+    // Return types and number of parameters must match
+    if (!itypeIsSame(node1->rettype, node2->rettype)
+        || node1->parms->used != node2->parms->used)
+        return 0;
+
+    // Every parameter's type must also match
+    nodes2p = &nodesGet(node2->parms, 0);
+    for (nodesFor(node1->parms, cnt, nodes1p)) {
+        if (cnt < node1->parms->used && !itypeIsSame(*nodes1p, *nodes2p))
             return 0;
         nodes2p++;
     }
