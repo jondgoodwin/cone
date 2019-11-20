@@ -69,7 +69,7 @@ INode *parseExpStmt(ParseState *parse) {
 
 // Parse a block or an expression statement followed by semicolon
 INode *parseBlockOrStmt(ParseState *parse) {
-    if (lexIsToken(RCurlyToken)) {
+    if (lexIsToken(LCurlyToken)) {
         return parseBlock(parse);
     }
     BlockNode *blk = newBlockNode();
