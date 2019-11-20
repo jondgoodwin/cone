@@ -623,7 +623,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
             LLVMValueRef objVRef = genlExpr(gen, fncall->objfn);
             LLVMValueRef objpRef = LLVMBuildExtractValue(gen->builder, objVRef, 0, ""); // *u8
             LLVMValueRef vtable = LLVMBuildExtractValue(gen->builder, objVRef, 1, "");
-            LLVMValueRef vtblfldp = LLVMBuildStructGEP(gen->builder, vtable, flddcl->index, &flddcl->namesym->namestr); // *u32
+            LLVMValueRef vtblfldp = LLVMBuildStructGEP(gen->builder, vtable, flddcl->vtblidx, &flddcl->namesym->namestr); // *u32
             LLVMValueRef vtblfld = LLVMBuildLoad(gen->builder, vtblfldp, "");
             LLVMValueRef fldpRef = LLVMBuildGEP(gen->builder, objpRef, &vtblfld, 1, "");
             return LLVMBuildBitCast(gen->builder, fldpRef, LLVMPointerType(genlType(gen, flddcl->vtype), 0), "");

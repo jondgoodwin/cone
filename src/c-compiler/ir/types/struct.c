@@ -192,18 +192,23 @@ void structMakeVtable(StructNode *node) {
 
     // Populate methfld with all public methods and then fields in trait
     vtable->methfld = newNodes(node->fields.used + node->nodelist.used);
+    uint32_t vtblidx = 0;  // track the index position for each added vtable field
     INode **nodesp;
     uint32_t cnt;
     for (nodelistFor(&node->nodelist, cnt, nodesp)) {
         FnDclNode *meth = (FnDclNode *)*nodesp;
-        if (meth->namesym->namestr != '_')
+        if (meth->namesym->namestr != '_') {
+            meth->vtblidx = vtblidx++;
             nodesAdd(&vtable->methfld, *nodesp);
+        }
     }
     for (nodelistFor(&node->fields, cnt, nodesp)) {
         FieldDclNode *field = (FieldDclNode *)*nodesp;
         INode *fieldtyp = itypeGetTypeDcl(field->vtype);
-        if (field->namesym->namestr != '_' && fieldtyp->tag != EnumTag)
+        if (field->namesym->namestr != '_' && fieldtyp->tag != EnumTag) {
+            field->vtblidx = vtblidx++;
             nodesAdd(&vtable->methfld, *nodesp);
+        }
     }
 
     node->vtable = vtable;

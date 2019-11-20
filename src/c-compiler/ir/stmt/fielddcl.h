@@ -14,6 +14,7 @@ typedef struct FieldDclNode {
     INode *value;              // Default value (NULL if not initialized)
     INode *perm;               // Permission type (often mut or imm)
     uint16_t index;            // field's index within the type
+    uint16_t vtblidx;          // field's index within the type's vtable
 } FieldDclNode;
 
 
