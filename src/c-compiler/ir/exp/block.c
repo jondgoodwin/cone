@@ -71,11 +71,25 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk) {
     uint32_t cnt;
     for (nodesFor(blk->stmts, cnt, nodesp)) {
         inodeTypeCheck(pstate, nodesp);
+        if (cnt > 1 && ((*nodesp)->tag == BreakTag || (*nodesp)->tag == ContinueTag))
+            errorMsgNode(*nodesp, ErrorBadStmt, "break/continue may only be the last statement in the block");
+        if ((*nodesp)->tag == BlockTag)
+            blockNoBreak((BlockNode*)*nodesp);
     }
     if (blk->stmts->used > 0) {
         IExpNode *laststmt = (IExpNode *)nodesLast(blk->stmts);
         if (isExpNode(laststmt))
             blk->vtype = laststmt->vtype;
+    }
+}
+
+// Ensure this particular block does not end with break/continue
+// Used by regular and loop blocks, but not by 'if' based blocks
+void blockNoBreak(BlockNode *blk) {
+    if (blk->stmts->used > 0) {
+        INode *laststmt = nodesLast(blk->stmts);
+        if (laststmt->tag == BreakTag || laststmt->tag == ContinueTag)
+            errorMsgNode(laststmt, ErrorBadStmt, "break/continue may only finish a conditional block");
     }
 }
 
