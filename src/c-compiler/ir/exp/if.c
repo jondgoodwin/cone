@@ -46,7 +46,7 @@ void ifPrint(IfNode *ifnode) {
 // Recursively strip 'returns' out of all block-ends in 'if' (see returnPass)
 void ifRemoveReturns(IfNode *ifnode) {
     INode **nodesp;
-    int16_t cnt;
+    uint32_t cnt;
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
         INode **laststmt;
         cnt--; nodesp++;

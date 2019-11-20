@@ -467,7 +467,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     // For += implemented via +, ensure self is a mutable lval
     if ((*nodep)->flags & FlagLvalOp) {
-        int16_t scope;
+        uint16_t scope;
         INode *perm;
         INode *lval = assignLvalInfo(nodesGet((*nodep)->args, 0), &perm, &scope);
         if (!lval || !(MayWrite & permGetFlags(perm))) {

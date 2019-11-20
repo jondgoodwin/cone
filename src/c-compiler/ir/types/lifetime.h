@@ -15,7 +15,7 @@ typedef struct NameUseNode NameUseNode;
 //     A new group is assigned for each implicit/explicit lifetime annotation on a generic
 //     'static and local scopes have a group of 0.
 // - Scope. A higher number is a subtype of a lower number. 0='static, 16+=local scopes
-typedef int16_t Lifetime;
+typedef uint16_t Lifetime;
 
 // Lifetime type info
 typedef struct LifetimeNode {

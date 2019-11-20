@@ -45,7 +45,7 @@ void fnDclNameRes(NameResState *pstate, FnDclNode *name) {
     if (!name->value)
         return;
 
-    int16_t oldscope = pstate->scope;
+    uint16_t oldscope = pstate->scope;
     pstate->scope = 1;
 
     // Hook function's parameters into global name table

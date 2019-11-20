@@ -11,7 +11,7 @@
 #include <memory.h>
 
 void flowHandleMove(INode *node) {
-    int16_t moveflag = itypeGetTypeDcl(((IExpNode *)node)->vtype)->flags & MoveType;
+    uint16_t moveflag = itypeGetTypeDcl(((IExpNode *)node)->vtype)->flags & MoveType;
     if (moveflag)
         errorMsgNode(node, WarnCopy, "No current support for move. Be sure this is safe!");
 }

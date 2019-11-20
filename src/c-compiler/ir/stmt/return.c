@@ -49,7 +49,7 @@ void returnTypeCheck(TypeCheckState *pstate, ReturnNode *node) {
             errorMsgNode(node->exp, ErrorBadTerm, "Not enough return values");
             return;
         }
-        int16_t retcnt;
+        uint32_t retcnt;
         INode **rettypesp;
         INode **retnodesp = &nodesGet(retnodes, 0);
         for (nodesFor(rettypes, retcnt, rettypesp)) {

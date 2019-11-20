@@ -55,10 +55,10 @@ int lifeMatches(INode *ito, INode *ifrom) {
     if (to->life == 0)
         return 1;
 
-    int16_t fromgrp = from->life >> 8;
-    int16_t fromscope = from->life & 0xff;
-    int16_t togrp = to->life >> 8;
-    int16_t toscope = to->life & 0xff;
+    uint16_t fromgrp = from->life >> 8;
+    uint16_t fromscope = from->life & 0xff;
+    uint16_t togrp = to->life >> 8;
+    uint16_t toscope = to->life & 0xff;
 
     return (fromscope >= toscope && (fromgrp == 0 || fromgrp == togrp)) ? 1 : 0;
 }

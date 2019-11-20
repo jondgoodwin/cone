@@ -81,7 +81,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
             uint32_t cnt;
 
             // Handle when base trait has a closed number of variants
-            int16_t isClosedFlags = basenode->flags & (SameSize | HasTagField);
+            uint16_t isClosedFlags = basenode->flags & (SameSize | HasTagField);
             if (isClosedFlags) {
                 node->flags |= isClosedFlags;  // mark derived types with these flags
                 if (basenode->mod != node->mod)
@@ -124,7 +124,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     }
 
     // Type check all fields and calculate infection flags for ThreadBound/MoveType
-    int16_t infectFlag = 0;
+    uint16_t infectFlag = 0;
     INode **nodesp;
     uint32_t cnt;
     for (nodelistFor(&node->fields, cnt, nodesp)) {

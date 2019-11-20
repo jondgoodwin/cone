@@ -218,7 +218,7 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
         case ExternToken:
         {
             lexNextToken();
-            int16_t extflag = FlagExtern;
+            uint16_t extflag = FlagExtern;
             if (lexIsToken(IdentToken)) {
                 if (strcmp(&lex->val.ident->namestr, "system")==0)
                     extflag |= FlagSystem;

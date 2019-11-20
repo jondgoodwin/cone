@@ -36,7 +36,7 @@ void blockPrint(BlockNode *blk) {
 // - push and pop a namespace context for hooking local vars in global name table
 // - Ensure return/continue/break only appear as last statement in block
 void blockNameRes(NameResState *pstate, BlockNode *blk) {
-    int16_t oldscope = pstate->scope;
+    uint16_t oldscope = pstate->scope;
     blk->scope = ++pstate->scope; // Increment scope counter
 
     nametblHookPush(); // Ensure block's local variable declarations are hooked

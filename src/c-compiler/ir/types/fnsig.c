@@ -103,7 +103,7 @@ int fnSigMatchesCall(FnSigNode *to, Nodes *args) {
     // Every parameter's type must also match
     INode **tonodesp;
     INode **callnodesp;
-    int16_t cnt;
+    uint32_t cnt;
     tonodesp = &nodesGet(to->parms, 0);
     for (nodesFor(args, cnt, callnodesp)) {
         int match;
@@ -140,7 +140,7 @@ int fnSigMatchMethCall(FnSigNode *to, Nodes *args) {
     int matchsum = 1;
     INode **tonodesp;
     INode **callnodesp;
-    int16_t cnt;
+    uint32_t cnt;
     tonodesp = &nodesGet(to->parms, 0);
     for (nodesFor(args, cnt, callnodesp)) {
         int match;

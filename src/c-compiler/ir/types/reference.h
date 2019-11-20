@@ -14,9 +14,9 @@
 typedef struct RefNode {
     INodeHdr;
     INode *pvtype;    // Value type
-    INode *perm;    // Permission
-    INode *alloc;    // Allocator
-    int16_t scope;    // Lifetime
+    INode *perm;      // Permission
+    INode *alloc;     // Allocator
+    uint16_t scope;   // Lifetime
 } RefNode;
 
 // Create a new reference type whose info will be filled in afterwards

@@ -122,7 +122,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     char *svprefix = parse->gennamePrefix;
     INsTypeNode *svtype = parse->typenode;
     StructNode *strnode;
-    int16_t fieldnbr = 0;
+    uint16_t fieldnbr = 0;
 
     // Capture the kind of type, then get next token (name)
     uint16_t tag = StructTag;
@@ -211,7 +211,7 @@ void parseInjectSelf(FnSigNode *fnsig, Name *typename) {
 // Parse a function's type signature
 INode *parseFnSig(ParseState *parse) {
     FnSigNode *fnsig;
-    int16_t parmnbr = 0;
+    uint16_t parmnbr = 0;
     uint16_t parseflags = ParseMaySig | ParseMayImpl;
 
     // Set up memory block for the function's type signature

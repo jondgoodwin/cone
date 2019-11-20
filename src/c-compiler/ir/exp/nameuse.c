@@ -49,7 +49,7 @@ void nameUseBaseMod(NameUseNode *node, ModuleNode *basemod) {
 
 // Add a module name qualifier to the end of the list
 void nameUseAddQual(NameUseNode *node, Name *name) {
-    int16_t used = node->qualNames->used;
+    uint16_t used = node->qualNames->used;
     if (used + 1 >= node->qualNames->avail) {
         NameList *oldlist = node->qualNames;
         uint16_t newavail = oldlist->avail << 1;
@@ -59,7 +59,7 @@ void nameUseAddQual(NameUseNode *node, Name *name) {
         node->qualNames->basemod = oldlist->basemod;
         Name **oldp = (Name**)(oldlist + 1);
         Name **newp = (Name**)(node->qualNames + 1);
-        int16_t cnt = used;
+        uint16_t cnt = used;
         while (cnt--)
             *newp++ = *oldp++;
     }
@@ -72,7 +72,7 @@ void nameUseAddQual(NameUseNode *node, Name *name) {
 void nameUsePrint(NameUseNode *name) {
     if (name->qualNames) {
         // if root: inodeFprint("::");
-        int16_t cnt = name->qualNames->used;
+        uint16_t cnt = name->qualNames->used;
         Name **namep = (Name**)(name->qualNames + 1);
         while (cnt--)
             inodeFprint("%s::", &(*namep++)->namestr);
@@ -96,7 +96,7 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
     if (name->qualNames) {
         // Do iterative look ups of module qualifiers beginning with basemod
         ModuleNode *mod = name->qualNames->basemod;
-        int16_t cnt = name->qualNames->used;
+        uint16_t cnt = name->qualNames->used;
         Name **namep = (Name**)(name->qualNames + 1);
         while (cnt--) {
             mod = (ModuleNode*)namespaceFind(&mod->namespace, *namep++);
