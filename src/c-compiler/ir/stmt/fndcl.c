@@ -94,6 +94,13 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     if (!fnnode->value)
         return;
 
+    // Ensure self parameter on a method is (reference to) its enclosing type
+    if (fnnode->flags & FlagMethFld) {
+        INode *selfparm = nodesGet(((FnSigNode *)(fnnode->vtype))->parms, 0);
+        if (iexpGetDerefTypeDcl(selfparm) != pstate->typenode)
+            errorMsgNode((INode*)fnnode, ErrorInvType, "self parameter for a method must match, or be a reference to, its type");
+    }
+
     // Syntactic sugar: Turn implicit returns into explicit returns
     fnImplicitReturn(((FnSigNode*)fnnode->vtype)->rettype, (BlockNode *)fnnode->value);
 

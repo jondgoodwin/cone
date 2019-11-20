@@ -21,7 +21,7 @@ INode *itypeGetTypeDcl(INode *node) {
 // Return node's type's declaration node (or pvtype if a ref or ptr)
 INode *itypeGetDerefTypeDcl(INode *node) {
     INode *typnode = itypeGetTypeDcl(node);
-    if (typnode->tag == RefTag)
+    if (typnode->tag == RefTag || typnode->tag == VirtRefTag)
         return itypeGetTypeDcl(((RefNode*)node)->pvtype);
     else if (node->tag == PtrTag)
         return itypeGetTypeDcl(((PtrNode*)node)->pvtype);
