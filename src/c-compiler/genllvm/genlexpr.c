@@ -618,6 +618,16 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
     {
         FnCallNode *fncall = (FnCallNode *)lval;
         FieldDclNode *flddcl = (FieldDclNode*)((NameUseNode*)fncall->methfld)->dclnode;
+        if (iexpGetTypeDcl(fncall->objfn)->tag == VirtRefTag) {
+            // Calculate address of virtual field pointed to by a virtual reference using vtable
+            LLVMValueRef objVRef = genlExpr(gen, fncall->objfn);
+            LLVMValueRef objpRef = LLVMBuildExtractValue(gen->builder, objVRef, 0, ""); // *u8
+            LLVMValueRef vtable = LLVMBuildExtractValue(gen->builder, objVRef, 1, "");
+            LLVMValueRef vtblfldp = LLVMBuildStructGEP(gen->builder, vtable, flddcl->index, &flddcl->namesym->namestr); // *u32
+            LLVMValueRef vtblfld = LLVMBuildLoad(gen->builder, vtblfldp, "");
+            LLVMValueRef fldpRef = LLVMBuildGEP(gen->builder, objpRef, &vtblfld, 1, "");
+            return LLVMBuildBitCast(gen->builder, fldpRef, LLVMPointerType(genlType(gen, flddcl->vtype), 0), "");
+        }
         return LLVMBuildStructGEP(gen->builder, genlAddr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
     }
     case StrLitTag:
@@ -779,14 +789,17 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
             return LLVMBuildLoad(gen->builder, genlAddr(gen, termnode), "");
     case StrFieldTag:
     {
-        if (termnode->flags & FlagBorrow) {
-            FnCallNode *fncall = (FnCallNode *)termnode;
-            VarDclNode *flddcl = (VarDclNode*)((NameUseNode*)fncall->methfld)->dclnode;
+        FnCallNode *fncall = (FnCallNode *)termnode;
+        FieldDclNode *flddcl = (FieldDclNode*)((NameUseNode*)fncall->methfld)->dclnode;
+        INode *objtyp = iexpGetTypeDcl(fncall->objfn);
+        if (objtyp->tag == VirtRefTag) {
+            LLVMValueRef fldpRef = genlAddr(gen, termnode);
+            return (termnode->flags & FlagBorrow)? fldpRef : LLVMBuildLoad(gen->builder, fldpRef, "");
+        }
+        else if (termnode->flags & FlagBorrow) {
             return LLVMBuildStructGEP(gen->builder, genlAddr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
         }
         else {
-            FnCallNode *fncall = (FnCallNode *)termnode;
-            FieldDclNode *flddcl = (FieldDclNode*)((NameUseNode*)fncall->methfld)->dclnode;
             return LLVMBuildExtractValue(gen->builder, genlExpr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
         }
     }

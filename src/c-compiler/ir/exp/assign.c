@@ -188,10 +188,15 @@ INode *assignLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
         INode *lvalvar = assignLvalInfo(element->objfn, lvalperm, scope);
         if (lvalvar == NULL)
             return NULL;
-        PermNode *methperm = (PermNode *)((VarDclNode*)((NameUseNode *)element->methfld)->dclnode)->perm;
-        // Downgrade overall static permission if field is immutable
-        if (methperm == immPerm)
-            *lvalperm = (INode*)constPerm;
+        RefNode *vtype = (RefNode*)iexpGetTypeDcl(((DerefNode *)lval)->exp);
+        if (vtype->tag == VirtRefTag)
+            *lvalperm = vtype->perm;
+        else {
+            PermNode *methperm = (PermNode *)((VarDclNode*)((NameUseNode *)element->methfld)->dclnode)->perm;
+            // Downgrade overall static permission if field is immutable
+            if (methperm == immPerm)
+                *lvalperm = (INode*)constPerm;
+        }
         return lvalvar;
     }
 
