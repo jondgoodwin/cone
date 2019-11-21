@@ -109,10 +109,18 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
     INode **nodesp;
     uint32_t cnt;
     int getselfaddr = fncall->flags & FlagLvalOp;
+    int vdispatch = fncall->flags & FlagVDisp;
+    LLVMValueRef vref;
     LLVMValueRef selfaddr;
     for (nodesFor(fncall->args, cnt, nodesp)) {
+        // For virtual reference, extract the object's regular reference
+        if (vdispatch) {
+            vdispatch = 0;
+            vref = genlExpr(gen, *nodesp);
+            *fnarg++ = LLVMBuildExtractValue(gen->builder, vref, 0, "");
+        }
         // For += operators, we need lval addr, and then load its contents
-        if (getselfaddr) {
+        else if (getselfaddr) {
             getselfaddr = 0;
             selfaddr = genlAddr(gen, *nodesp);
             *fnarg++ = LLVMBuildLoad(gen->builder, selfaddr, "");
@@ -124,6 +132,13 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
     // Handle call when we have a pointer to a function
     if (fncall->objfn->tag == DerefTag) {
         return LLVMBuildCall(gen->builder, genlExpr(gen, ((DerefNode*)fncall->objfn)->exp), fnargs, fncall->args->used, "");
+    }
+    else if (fncall->flags & FlagVDisp) {
+        FnDclNode *methdcl = (FnDclNode*)((NameUseNode *)fncall->objfn)->dclnode;
+        LLVMValueRef vtable = LLVMBuildExtractValue(gen->builder, vref, 1, "");
+        LLVMValueRef vtblmethp = LLVMBuildStructGEP(gen->builder, vtable, methdcl->vtblidx, &methdcl->namesym->namestr); // **fn
+        LLVMValueRef vtblmeth = LLVMBuildLoad(gen->builder, vtblmethp, "");
+        return LLVMBuildCall(gen->builder, vtblmeth, fnargs, fncall->args->used, "");
     }
 
     // A function call may be to an intrinsic, or to program-defined code

@@ -129,7 +129,7 @@ int fnSigMatchesCall(FnSigNode *to, Nodes *args) {
 
 // Will the method call (caller) be able to call the 'to' function
 // Return 0 if not. 1 if perfect match. 2+ for imperfect matches
-int fnSigMatchMethCall(FnSigNode *to, Nodes *args) {
+int fnSigMatchMethCall(FnSigNode *to, Nodes *args, int skipfirst) {
 
     // Too many arguments is not a match
     if (args->used > to->parms->used)
@@ -143,19 +143,27 @@ int fnSigMatchMethCall(FnSigNode *to, Nodes *args) {
     uint32_t cnt;
     tonodesp = &nodesGet(to->parms, 0);
     for (nodesFor(args, cnt, callnodesp)) {
-        int match;
-        switch (match = itypeMatches(((IExpNode *)*tonodesp)->vtype, ((IExpNode*)*callnodesp)->vtype)) {
-        case 0:
-            if (!first)
+        if (skipfirst && first) {
+            // For a virtual reference, the first argument need not be type-checked
+            // other than ensuring the found method expects a reference
+            if (((IExpNode*)*tonodesp)->vtype->tag != RefTag)
                 return 0;
-            // For self parm, we might autoref/autoderef, but only if necessary
-            matchsum = 100;
-            break;
-        case 1: break;
-        case 2: matchsum += match; break;
-        default:
-            if ((*callnodesp)->tag != ULitTag)
-                return 0;
+        }
+        else {
+            int match;
+            switch (match = itypeMatches(((IExpNode *)*tonodesp)->vtype, ((IExpNode*)*callnodesp)->vtype)) {
+            case 0:
+                if (!first)
+                    return 0;
+                // For self parm, we might autoref/autoderef, but only if necessary
+                matchsum = 100;
+                break;
+            case 1: break;
+            case 2: matchsum += match; break;
+            default:
+                if ((*callnodesp)->tag != ULitTag)
+                    return 0;
+            }
         }
         first = 0;
         tonodesp++;

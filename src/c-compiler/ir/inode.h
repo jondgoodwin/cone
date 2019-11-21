@@ -139,6 +139,7 @@ enum NodeTags {
 #define FlagIndex     0x0001        // FnCall: arguments are an index in []
 #define FlagLvalOp    0x0002        // FnCall: method is an operator assignment (e.g., +=)
 #define FlagBorrow    0x0004        // FnCall: part of a borrow chain
+#define FlagVDisp     0x0008        // FnCall: a virtual dispatch function call
 
 #define FlagSuffix    0x0001        // Borrow: part of a borrow chain
 

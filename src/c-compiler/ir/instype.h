@@ -42,6 +42,7 @@ INode *iNsTypeFindFnField(INsTypeNode *type, Name *name);
 // Find method that best fits the passed arguments
 // 'firstmethod' is the first method that matches the name
 // We follow its forward links to find one whose parameter types best match args types
-FnDclNode *iNsTypeFindBestMethod(FnDclNode *firstmethod, Nodes *args);
+// isvref skips type checking of the 'self' parameter for virtual references
+FnDclNode *iNsTypeFindBestMethod(FnDclNode *firstmethod, Nodes *args, int isvref);
 
 #endif
