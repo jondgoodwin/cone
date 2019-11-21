@@ -144,7 +144,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     }
 
     uint16_t methflags = ParseMayName | ParseMayImpl;
-    if ((strnode->flags & TraitType) && (strnode->flags & OpaqueType))
+    if (strnode->flags & TraitType)
         methflags |= ParseMaySig;
 
     // Obtain base trait, if specified
