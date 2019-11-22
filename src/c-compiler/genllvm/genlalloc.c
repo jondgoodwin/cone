@@ -27,15 +27,6 @@
 LLVMValueRef genlmallocval = NULL;
 LLVMValueRef genlfreeval = NULL;
 
-// Insert the alloca before the allocaPoint instruction.
-LLVMValueRef genlAlloca(GenState *gen, LLVMTypeRef type, const char *name) {
-	LLVMBasicBlockRef current_block = LLVMGetInsertBlock(gen->builder);
-	LLVMPositionBuilderBefore(gen->builder, gen->allocaPoint);
-	LLVMValueRef alloca = LLVMBuildAlloca(gen->builder, type, name);
-	LLVMPositionBuilderAtEnd(gen->builder, current_block);
-	return alloca;
-}
-
 // Call malloc() (and generate declaration if needed)
 LLVMValueRef genlmalloc(GenState *gen, long long size) {
     // Declare malloc() external function

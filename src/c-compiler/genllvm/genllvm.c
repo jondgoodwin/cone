@@ -51,9 +51,9 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
 
     LLVMValueRef svfn = gen->fn;
     LLVMBuilderRef svbuilder = gen->builder;
-	LLVMValueRef svallocaPoint = gen->allocaPoint;
+    LLVMValueRef svallocaPoint = gen->allocaPoint;
 
-	FnSigNode *fnsig = (FnSigNode*)fnnode->vtype;
+    FnSigNode *fnsig = (FnSigNode*)fnnode->vtype;
     assert(fnnode->value->tag == BlockTag);
     gen->fn = fnnode->llvmvar;
 
@@ -62,10 +62,10 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     gen->builder = LLVMCreateBuilder();
     LLVMPositionBuilderAtEnd(gen->builder, entry);
 
-	// Create our alloca insert point by generating a dummy instruction.
-	// It will be erased at the end.
-	LLVMValueRef allocaPoint = LLVMBuildAlloca(gen->builder, LLVMInt32TypeInContext(gen->context), "alloca_point");
-	gen->allocaPoint = allocaPoint;
+    // Create our alloca insert point by generating a dummy instruction.
+    // It will be erased after generating all LLVM IR code for the function
+    LLVMValueRef allocaPoint = LLVMBuildAlloca(gen->builder, LLVMInt32TypeInContext(gen->context), "alloca_point");
+    gen->allocaPoint = allocaPoint;
 
 	// Generate LLVMValueRef's for all parameters, so we can use them as local vars in code
     uint32_t cnt;
@@ -76,17 +76,26 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     // Generate the function's code (always a block)
     genlBlock(gen, (BlockNode *)fnnode->value);
 
-	// erase alloca point
-	if (LLVMGetInstructionParent(allocaPoint))
-	{
-		LLVMInstructionEraseFromParent(allocaPoint);
-	}
+	// erase temporary dummy alloca inserted earlier
+    if (LLVMGetInstructionParent(allocaPoint))
+        LLVMInstructionEraseFromParent(allocaPoint);
 
     LLVMDisposeBuilder(gen->builder);
 
     gen->builder = svbuilder;
     gen->fn = svfn;
     gen->allocaPoint = svallocaPoint;
+}
+
+// Insert every alloca before the allocaPoint in the function's entry block.
+// Why? To improve LLVM optimization of SRoA and mem2reg, all allocas
+// should be located in the function's entry block before the first call.
+LLVMValueRef genlAlloca(GenState *gen, LLVMTypeRef type, const char *name) {
+    LLVMBasicBlockRef current_block = LLVMGetInsertBlock(gen->builder);
+    LLVMPositionBuilderBefore(gen->builder, gen->allocaPoint);
+    LLVMValueRef alloca = LLVMBuildAlloca(gen->builder, type, name);
+    LLVMPositionBuilderAtEnd(gen->builder, current_block);
+    return alloca;
 }
 
 // Generate global variable
