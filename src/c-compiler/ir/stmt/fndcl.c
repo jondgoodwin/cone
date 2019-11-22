@@ -45,7 +45,7 @@ void fnDclNameRes(NameResState *pstate, FnDclNode *name) {
     if (!name->value)
         return;
 
-    int16_t oldscope = pstate->scope;
+    uint16_t oldscope = pstate->scope;
     pstate->scope = 1;
 
     // Hook function's parameters into global name table
@@ -93,6 +93,13 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     inodeTypeCheck(pstate, &fnnode->vtype);
     if (!fnnode->value)
         return;
+
+    // Ensure self parameter on a method is (reference to) its enclosing type
+    if (fnnode->flags & FlagMethFld) {
+        INode *selfparm = nodesGet(((FnSigNode *)(fnnode->vtype))->parms, 0);
+        if (iexpGetDerefTypeDcl(selfparm) != pstate->typenode)
+            errorMsgNode((INode*)fnnode, ErrorInvType, "self parameter for a method must match, or be a reference to, its type");
+    }
 
     // Syntactic sugar: Turn implicit returns into explicit returns
     fnImplicitReturn(((FnSigNode*)fnnode->vtype)->rettype, (BlockNode *)fnnode->value);

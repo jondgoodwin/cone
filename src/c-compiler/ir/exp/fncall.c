@@ -14,6 +14,7 @@
 FnCallNode *newFnCallNode(INode *fn, int nnodes) {
     FnCallNode *node;
     newNode(node, FnCallNode, FnCallTag);
+    node->vtype = voidType;  // Will be overridden by return type
     node->objfn = fn;
     node->methfld = NULL;
     node->args = nnodes == 0? NULL : newNodes(nnodes);
@@ -102,7 +103,10 @@ void fnCallFinalizeArgs(FnCallNode *node) {
             *argsp = (INode*)borrownode;
         }
 
-        if (!iexpBiTypeInfer(&((IExpNode*)*parmp)->vtype, argsp))
+        // Make sure the type matches (and coerce as needed)
+        // (but not for vref as self)
+        if (!iexpBiTypeInfer(&((IExpNode*)*parmp)->vtype, argsp) 
+            && !(cnt == node->args->used && (node->flags & FlagVDisp)))
             errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
         parmp++;
     }
@@ -141,9 +145,7 @@ void fnCallLowerMethod(FnCallNode *callnode) {
     INode *obj = callnode->objfn;
     Name *methsym = callnode->methfld->namesym;
 
-    INode *methtype = iexpGetTypeDcl(obj);
-    if (methtype->tag == RefTag)
-        methtype = iexpGetTypeDcl(((PtrNode *)methtype)->pvtype);
+    INode *methtype = iexpGetDerefTypeDcl(obj);
     if (!isMethodType(methtype)) {
         errorMsgNode((INode*)callnode, ErrorNoMeth, "Object's type does not support methods or fields.");
         return;
@@ -194,7 +196,7 @@ void fnCallLowerMethod(FnCallNode *callnode) {
     }
     nodesInsert(&callnode->args, callnode->objfn, 0);
 
-    FnDclNode *bestmethod = iNsTypeFindBestMethod((FnDclNode *)foundnode, callnode->args);
+    FnDclNode *bestmethod = iNsTypeFindBestMethod((FnDclNode *)foundnode, callnode->args, callnode->flags & FlagVDisp);
     if (bestmethod == NULL) {
         errorMsgNode((INode*)callnode, ErrorNoMeth, "No method named %s matches the call's arguments.", &methsym->namestr);
         callnode->vtype = ((IExpNode*)obj)->vtype; // make up a vtype
@@ -242,14 +244,17 @@ void fnCallLowerPtrMethod(FnCallNode *callnode) {
     switch (objtype->tag) {
     case PtrTag: methtype = ptrType; break;
     case RefTag: methtype = refType; break;
+    case VirtRefTag: methtype = refType; break;
     case ArrayRefTag: methtype = arrayRefType; break;
     default: assert(0 && "Unknown reference type");
     }
 
     INode *foundnode = iNsTypeFindFnField(methtype, methsym);
     if (!foundnode) { // It can only be a method
-        if (objtype->tag == RefTag) {
+        if (objtype->tag == RefTag || objtype->tag == VirtRefTag) {
             // Give references another crack at method via deref type's methods
+            if (objtype->tag == VirtRefTag)
+                callnode->flags |= FlagVDisp;
             fnCallLowerMethod(callnode);
             return;
         }
@@ -382,7 +387,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 
     // a) If method/field specified, handle it via name lookup in type and lower method call to function call
     if (node->methfld) {
-        if (objfntype->tag == RefTag || objfntype->tag == PtrTag || objfntype->tag == ArrayRefTag)
+        if (objfntype->tag == RefTag || objfntype->tag == VirtRefTag || objfntype->tag == PtrTag || objfntype->tag == ArrayRefTag)
             fnCallLowerPtrMethod(node); // Try ref/ptr specific methods first, otherwise will fallback to deref-ed method call
         else if (isMethodType(objdereftype))
             fnCallLowerMethod(node); // Lower to a field access or function call
@@ -467,7 +472,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     // For += implemented via +, ensure self is a mutable lval
     if ((*nodep)->flags & FlagLvalOp) {
-        int16_t scope;
+        uint16_t scope;
         INode *perm;
         INode *lval = assignLvalInfo(nodesGet((*nodep)->args, 0), &perm, &scope);
         if (!lval || !(MayWrite & permGetFlags(perm))) {

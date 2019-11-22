@@ -73,10 +73,10 @@ void assignParaCheck(TypeCheckState *pstate, VTupleNode *lval, VTupleNode *rval)
         errorMsgNode((INode*)rval, ErrorBadTerm, "Not enough tuple values given to lvals");
         return;
     }
-    int16_t lcnt;
+    uint32_t lcnt;
     INode **lnodesp;
     INode **rnodesp = &nodesGet(rnodes, 0);
-    int16_t rcnt = rnodes->used;
+    uint32_t rcnt = rnodes->used;
     for (nodesFor(lnodes, lcnt, lnodesp)) {
         assignSingleCheck(pstate, *lnodesp, rnodesp++);
         rcnt--;
@@ -98,7 +98,7 @@ void assignMultRetCheck(TypeCheckState *pstate, VTupleNode *lval, INode **rval) 
         errorMsgNode(*rval, ErrorBadTerm, "Not enough tuple values for lvals");
         return;
     }
-    int16_t lcnt;
+    uint32_t lcnt;
     INode **lnodesp;
     INode **rtypep = &nodesGet(rtypes, 0);
     for (nodesFor(lnodes, lcnt, lnodesp)) {
@@ -111,7 +111,7 @@ void assignMultRetCheck(TypeCheckState *pstate, VTupleNode *lval, INode **rval) 
 void assignToOneCheck(TypeCheckState *pstate, INode *lval, VTupleNode *rval) {
     Nodes *rnodes = rval->values;
     INode **rnodesp = &nodesGet(rnodes, 0);
-    int16_t rcnt = rnodes->used;
+    uint32_t rcnt = rnodes->used;
     assignSingleCheck(pstate, lval, rnodesp++);
 }
 
@@ -137,7 +137,7 @@ void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
 }
 
 // Extract lval variable, scope and overall permission from lval
-INode *assignLvalInfo(INode *lval, INode **lvalperm, int16_t *scope) {
+INode *assignLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
     switch (lval->tag) {
 
         // A variable or named function node
@@ -188,10 +188,15 @@ INode *assignLvalInfo(INode *lval, INode **lvalperm, int16_t *scope) {
         INode *lvalvar = assignLvalInfo(element->objfn, lvalperm, scope);
         if (lvalvar == NULL)
             return NULL;
-        PermNode *methperm = (PermNode *)((VarDclNode*)((NameUseNode *)element->methfld)->dclnode)->perm;
-        // Downgrade overall static permission if field is immutable
-        if (methperm == immPerm)
-            *lvalperm = (INode*)constPerm;
+        RefNode *vtype = (RefNode*)iexpGetTypeDcl(((DerefNode *)lval)->exp);
+        if (vtype->tag == VirtRefTag)
+            *lvalperm = vtype->perm;
+        else {
+            PermNode *methperm = (PermNode *)((VarDclNode*)((NameUseNode *)element->methfld)->dclnode)->perm;
+            // Downgrade overall static permission if field is immutable
+            if (methperm == immPerm)
+                *lvalperm = (INode*)constPerm;
+        }
         return lvalvar;
     }
 
@@ -219,7 +224,7 @@ void assignSingleFlow(INode *lval, INode **rval) {
     // Non-anonymous lval increments alias counter
     flowAliasIncr();
 
-    int16_t lvalscope;
+    uint16_t lvalscope;
     INode *lvalperm;
     INode *lvalvar = assignLvalInfo(lval, &lvalperm, &lvalscope);
     if (!(MayWrite & permGetFlags(lvalperm))) {
@@ -241,10 +246,10 @@ void assignSingleFlow(INode *lval, INode **rval) {
 void assignParaFlow(VTupleNode *lval, VTupleNode *rval) {
     Nodes *lnodes = lval->values;
     Nodes *rnodes = rval->values;
-    int16_t lcnt;
+    uint32_t lcnt;
     INode **lnodesp;
     INode **rnodesp = &nodesGet(rnodes, 0);
-    int16_t rcnt = rnodes->used;
+    uint32_t rcnt = rnodes->used;
     int16_t aliasfocus = 0;
     flowAliasSize(lnodes->used);
     for (nodesFor(lnodes, lcnt, lnodesp)) {
@@ -259,7 +264,7 @@ void assignMultRetFlow(VTupleNode *lval, INode **rval) {
     Nodes *lnodes = lval->values;
     INode *rtype = ((IExpNode *)*rval)->vtype;
     Nodes *rtypes = ((TTupleNode*)((IExpNode *)*rval)->vtype)->types;
-    int16_t lcnt;
+    uint32_t lcnt;
     INode **lnodesp;
     INode **rtypep = &nodesGet(rtypes, 0);
     for (nodesFor(lnodes, lcnt, lnodesp)) {
@@ -271,7 +276,7 @@ void assignMultRetFlow(VTupleNode *lval, INode **rval) {
 void assignToOneFlow(INode *lval, VTupleNode *rval) {
     Nodes *rnodes = rval->values;
     INode **rnodesp = &nodesGet(rnodes, 0);
-    int16_t rcnt = rnodes->used;
+    uint32_t rcnt = rnodes->used;
     assignSingleFlow(lval, rnodesp++);
 }
 

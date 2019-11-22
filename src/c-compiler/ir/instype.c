@@ -44,13 +44,13 @@ INode *iNsTypeFindFnField(INsTypeNode *type, Name *name) {
 }
 
 // Find method that best fits the passed arguments
-FnDclNode *iNsTypeFindBestMethod(FnDclNode *firstmethod, Nodes *args) {
+FnDclNode *iNsTypeFindBestMethod(FnDclNode *firstmethod, Nodes *args, int isvref) {
     // Look for best-fit method
     FnDclNode *bestmethod = NULL;
     int bestnbr = 0x7fffffff; // ridiculously high number    
     for (FnDclNode *methnode = (FnDclNode *)firstmethod; methnode; methnode = methnode->nextnode) {
         int match;
-        switch (match = fnSigMatchMethCall((FnSigNode *)methnode->vtype, args)) {
+        switch (match = fnSigMatchMethCall((FnSigNode *)methnode->vtype, args, isvref)) {
         case 0: continue;        // not an acceptable match
         case 1: return methnode;    // perfect match!
         default:                // imprecise match using conversions

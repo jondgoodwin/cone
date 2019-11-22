@@ -52,7 +52,7 @@ void fnSigTypeCheck(TypeCheckState *pstate, FnSigNode *sig) {
 // Compare two function signatures to see if they are equivalent
 int fnSigEqual(FnSigNode *node1, FnSigNode *node2) {
     INode **nodes1p, **nodes2p;
-    int16_t cnt;
+    uint32_t cnt;
 
     // Return types and number of parameters must match
     if (!itypeIsSame(node1->rettype, node2->rettype)
@@ -63,6 +63,28 @@ int fnSigEqual(FnSigNode *node1, FnSigNode *node2) {
     nodes2p = &nodesGet(node2->parms, 0);
     for (nodesFor(node1->parms, cnt, nodes1p)) {
         if (!itypeIsSame(*nodes1p, *nodes2p))
+            return 0;
+        nodes2p++;
+    }
+    return 1;
+}
+
+// For virtual reference structural matches on two methods,
+// compare two function signatures to see if they are equivalent,
+// ignoring the first 'self' parameter (we know their types differ)
+int fnSigVrefEqual(FnSigNode *node1, FnSigNode *node2) {
+    INode **nodes1p, **nodes2p;
+    uint32_t cnt;
+
+    // Return types and number of parameters must match
+    if (!itypeIsSame(node1->rettype, node2->rettype)
+        || node1->parms->used != node2->parms->used)
+        return 0;
+
+    // Every parameter's type must also match
+    nodes2p = &nodesGet(node2->parms, 0);
+    for (nodesFor(node1->parms, cnt, nodes1p)) {
+        if (cnt < node1->parms->used && !itypeIsSame(*nodes1p, *nodes2p))
             return 0;
         nodes2p++;
     }
@@ -81,7 +103,7 @@ int fnSigMatchesCall(FnSigNode *to, Nodes *args) {
     // Every parameter's type must also match
     INode **tonodesp;
     INode **callnodesp;
-    int16_t cnt;
+    uint32_t cnt;
     tonodesp = &nodesGet(to->parms, 0);
     for (nodesFor(args, cnt, callnodesp)) {
         int match;
@@ -107,7 +129,7 @@ int fnSigMatchesCall(FnSigNode *to, Nodes *args) {
 
 // Will the method call (caller) be able to call the 'to' function
 // Return 0 if not. 1 if perfect match. 2+ for imperfect matches
-int fnSigMatchMethCall(FnSigNode *to, Nodes *args) {
+int fnSigMatchMethCall(FnSigNode *to, Nodes *args, int skipfirst) {
 
     // Too many arguments is not a match
     if (args->used > to->parms->used)
@@ -118,22 +140,30 @@ int fnSigMatchMethCall(FnSigNode *to, Nodes *args) {
     int matchsum = 1;
     INode **tonodesp;
     INode **callnodesp;
-    int16_t cnt;
+    uint32_t cnt;
     tonodesp = &nodesGet(to->parms, 0);
     for (nodesFor(args, cnt, callnodesp)) {
-        int match;
-        switch (match = itypeMatches(((IExpNode *)*tonodesp)->vtype, ((IExpNode*)*callnodesp)->vtype)) {
-        case 0:
-            if (!first)
+        if (skipfirst && first) {
+            // For a virtual reference, the first argument need not be type-checked
+            // other than ensuring the found method expects a reference
+            if (((IExpNode*)*tonodesp)->vtype->tag != RefTag)
                 return 0;
-            // For self parm, we might autoref/autoderef, but only if necessary
-            matchsum = 100;
-            break;
-        case 1: break;
-        case 2: matchsum += match; break;
-        default:
-            if ((*callnodesp)->tag != ULitTag)
-                return 0;
+        }
+        else {
+            int match;
+            switch (match = itypeMatches(((IExpNode *)*tonodesp)->vtype, ((IExpNode*)*callnodesp)->vtype)) {
+            case 0:
+                if (!first)
+                    return 0;
+                // For self parm, we might autoref/autoderef, but only if necessary
+                matchsum = 100;
+                break;
+            case 1: break;
+            case 2: matchsum += match; break;
+            default:
+                if ((*callnodesp)->tag != ULitTag)
+                    return 0;
+            }
         }
         first = 0;
         tonodesp++;

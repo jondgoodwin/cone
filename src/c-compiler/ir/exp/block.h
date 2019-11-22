@@ -29,6 +29,10 @@ void blockNameRes(NameResState *pstate, BlockNode *blk);
 // Note: When coerced by iexpCoerces, vtype of the block will be specified
 void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk);
 
+// Ensure this particular block does not end with break/continue
+// Used by regular and loop blocks, but not by 'if' based blocks
+void blockNoBreak(BlockNode *blk);
+
 // Bidirectional type inference
 void blockBiTypeInfer(INode **totypep, BlockNode *blk);
 

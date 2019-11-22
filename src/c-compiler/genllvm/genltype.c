@@ -23,20 +23,66 @@
 #include <string.h>
 #include <assert.h>
 
+// Generate a specific vtable value for some struct
+void genlVtableImpl(GenState *gen, VtableImpl *impl, LLVMTypeRef vtableRef) {
+    // Ensure the struct has been "built", as we need to point to its fields and methods
+    LLVMTypeRef structRef = genlType(gen, impl->structdcl);
+
+    // Build structure containing vtable info
+    LLVMValueRef implRef = LLVMGetUndef(vtableRef);
+    INode **nodesp;
+    uint32_t cnt;
+    unsigned int pos = 0;
+    for (nodesFor(impl->methfld, cnt, nodesp)) {
+        LLVMValueRef val;
+        if ((*nodesp)->tag == FieldDclTag) {
+            // Calculate byte offset of the field
+            FieldDclNode *fld = (FieldDclNode *)*nodesp;
+            unsigned long long offset = LLVMOffsetOfElement(gen->datalayout, structRef, fld->index);
+            val = LLVMConstInt(LLVMInt32TypeInContext(gen->context), offset, 0);
+        }
+        else {
+            // Pointer to method. Recast so parameter types match later on
+            LLVMTypeRef newfntyp = LLVMStructGetTypeAtIndex(vtableRef, pos);
+            val = LLVMBuildBitCast(gen->builder, ((FnDclNode *)*nodesp)->llvmvar, newfntyp, "");
+        }
+        implRef = LLVMBuildInsertValue(gen->builder, implRef, val, pos++, "vtable entry");
+    }
+
+    // Create and initialize global variable to hold vtable info
+    impl->llvmvtablep = LLVMAddGlobal(gen->module, vtableRef, impl->name);
+    LLVMSetGlobalConstant(impl->llvmvtablep, 1);
+    LLVMSetLinkage(impl->llvmvtablep, LLVMLinkOnceAnyLinkage);
+    LLVMSetInitializer(impl->llvmvtablep, implRef);
+}
+
 // Generate a vtable type
 void genlVtable(GenState *gen, Vtable *vtable) {
-    uint32_t fieldcnt = vtable->interface->used;
+    uint32_t fieldcnt = vtable->methfld->used;
     LLVMTypeRef *field_types = (LLVMTypeRef *)memAllocBlk(fieldcnt * sizeof(LLVMTypeRef));
     LLVMTypeRef *field_type_ptr = field_types;
 
+    // Declare vtable's fields
     INode **nodesp;
     uint32_t cnt;
-    for (nodesFor(vtable->interface, cnt, nodesp)) {
+    for (nodesFor(vtable->methfld, cnt, nodesp)) {
         if ((*nodesp)->tag == FnDclTag) {
             // Generate a pointer to function signature
             // Note: parm types are not specified to avoid LLVM type check errors on self parm
             FnSigNode *fnsig = (FnSigNode*)itypeGetTypeDcl(((FnDclNode *)*nodesp)->vtype);
-            LLVMTypeRef fnsigref = LLVMFunctionType(genlType(gen, fnsig->rettype), NULL, 0, 0);
+            LLVMTypeRef *param_types = (LLVMTypeRef *)memAllocBlk(fnsig->parms->used * sizeof(LLVMTypeRef));
+            LLVMTypeRef *parm = param_types;
+            INode **nodesp;
+            uint32_t cnt;
+            for (nodesFor(fnsig->parms, cnt, nodesp)) {
+                assert((*nodesp)->tag == VarDclTag);
+                if (cnt == fnsig->parms->used && iexpGetTypeDcl(*nodesp)->tag == RefTag)
+                    // Self parameter ref is re-cast into *u8
+                    *parm++ = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
+                else
+                    *parm++ = genlType(gen, ((IExpNode *)*nodesp)->vtype);
+            }
+            LLVMTypeRef fnsigref = LLVMFunctionType(genlType(gen, fnsig->rettype), param_types, fnsig->parms->used, 0);
             *field_type_ptr++ = LLVMPointerType(fnsigref, 0);
         }
         else
@@ -44,11 +90,17 @@ void genlVtable(GenState *gen, Vtable *vtable) {
             *field_type_ptr++ = LLVMInt32TypeInContext(gen->context);
     }
 
+    // Declare the vtable type itself
     LLVMTypeRef vtableRef = LLVMStructCreateNamed(gen->context, vtable->name);
     if (fieldcnt > 0)
         LLVMStructSetBody(vtableRef, field_types, fieldcnt, 0);
 
-    // A virtual reference is a fat pointer:
+    // Build all the vtable globals that implement the vtable
+    for (nodesFor(vtable->impl, cnt, nodesp)) {
+        genlVtableImpl(gen, (VtableImpl*)*nodesp, vtableRef);
+    }
+
+    // Build the virtual reference type for this vtable. It is a fat pointer:
     // - a pointer to the object (for now *u8 - which we will recast later)
     // - a pointer to the vtable
     LLVMTypeRef vreffields[2];
@@ -56,6 +108,7 @@ void genlVtable(GenState *gen, Vtable *vtable) {
     vreffields[1] = LLVMPointerType(vtableRef, 0);
     LLVMTypeRef virtref = LLVMStructCreateNamed(gen->context, vtable->name);
     LLVMStructSetBody(virtref, vreffields, 2, 0);
+    vtable->llvmvtable = vtableRef;
     vtable->llvmreftype = virtref;
 }
 

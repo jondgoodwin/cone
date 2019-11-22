@@ -81,7 +81,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
             uint32_t cnt;
 
             // Handle when base trait has a closed number of variants
-            int16_t isClosedFlags = basenode->flags & (SameSize | HasTagField);
+            uint16_t isClosedFlags = basenode->flags & (SameSize | HasTagField);
             if (isClosedFlags) {
                 node->flags |= isClosedFlags;  // mark derived types with these flags
                 if (basenode->mod != node->mod)
@@ -124,7 +124,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     }
 
     // Type check all fields and calculate infection flags for ThreadBound/MoveType
-    int16_t infectFlag = 0;
+    uint16_t infectFlag = 0;
     INode **nodesp;
     uint32_t cnt;
     for (nodelistFor(&node->fields, cnt, nodesp)) {
@@ -184,28 +184,112 @@ void structMakeVtable(StructNode *node) {
         return;
     Vtable *vtable = memAllocBlk(sizeof(Vtable));
     vtable->llvmreftype = NULL;
+    vtable->llvmvtable = NULL;
     vtable->impl = newNodes(4);
 
     vtable->name = memAllocStr(&node->namesym->namestr, node->namesym->namesz + 8);
     strcat(vtable->name, ":Vtable");
 
-    // Populate interface with all public methods and then fields in trait
-    vtable->interface = newNodes(node->fields.used + node->nodelist.used);
+    // Populate methfld with all public methods and then fields in trait
+    vtable->methfld = newNodes(node->fields.used + node->nodelist.used);
+    uint32_t vtblidx = 0;  // track the index position for each added vtable field
     INode **nodesp;
     uint32_t cnt;
     for (nodelistFor(&node->nodelist, cnt, nodesp)) {
         FnDclNode *meth = (FnDclNode *)*nodesp;
-        if (meth->namesym->namestr != '_')
-            nodesAdd(&vtable->interface, *nodesp);
+        if (meth->namesym->namestr != '_') {
+            meth->vtblidx = vtblidx++;
+            nodesAdd(&vtable->methfld, *nodesp);
+        }
     }
     for (nodelistFor(&node->fields, cnt, nodesp)) {
         FieldDclNode *field = (FieldDclNode *)*nodesp;
         INode *fieldtyp = itypeGetTypeDcl(field->vtype);
-        if (field->namesym->namestr != '_' && fieldtyp->tag != EnumTag)
-            nodesAdd(&vtable->interface, *nodesp);
+        if (field->namesym->namestr != '_' && fieldtyp->tag != EnumTag) {
+            field->vtblidx = vtblidx++;
+            nodesAdd(&vtable->methfld, *nodesp);
+        }
     }
 
     node->vtable = vtable;
+}
+
+// Populate the vtable implementation info for a struct ref being coerced to some trait
+int structVirtRefMatches(StructNode *trait, StructNode *strnode) {
+
+    if (trait->vtable == NULL)
+        structMakeVtable(trait);
+    Vtable *vtable = trait->vtable;
+
+    // No need to build VtableImpl for this struct if it has already been done earlier
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(vtable->impl, cnt, nodesp)) {
+        VtableImpl *impl = (VtableImpl*)*nodesp;
+        if (impl->structdcl == (INode*)strnode)
+            return 2;
+    }
+
+    // Create Vtable impl data structure and populate
+    VtableImpl *impl = memAllocBlk(sizeof(VtableImpl));
+    impl->llvmvtablep = NULL;
+    impl->structdcl = (INode*)strnode;
+
+    // Construct a global name for this vtable implementation
+    size_t strsize = strnode->namesym->namesz + strlen(vtable->name) + 3;
+    impl->name = memAllocStr(&strnode->namesym->namestr, strsize);
+    strcat(impl->name, "->");
+    strcat(impl->name, vtable->name);
+
+    // For every field/method in the vtable, find its matching one in strnode
+    impl->methfld = newNodes(vtable->methfld->used);
+    for (nodesFor(vtable->methfld, cnt, nodesp)) {
+        if ((*nodesp)->tag == FnDclTag) {
+            // Locate the corresponding method with matching name and vtype
+            // Note, we need to be flexible in matching the self parameter
+            FnDclNode *meth = (FnDclNode *)*nodesp;
+            FnDclNode *strmeth = (FnDclNode *)namespaceFind(&strnode->namespace, meth->namesym);
+            if (strmeth == NULL || strmeth->tag != FnDclTag) {
+                //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to a %s virtual reference. Missing method %s.",
+                //    &strnode->namesym->namestr, &trait->namesym->namestr, &meth->namesym->namestr);
+                return 0;
+            }
+            // Look through all overloaded methods for a match
+            while (strmeth) {
+                if (fnSigVrefEqual((FnSigNode*)strmeth->vtype, (FnSigNode*)meth->vtype))
+                    break;
+                strmeth = strmeth->nextnode;
+            }
+            if (strmeth == NULL) {
+                //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to a %s virtual reference. Incompatible type for method %s.",
+                //    &strnode->namesym->namestr, &trait->namesym->namestr, &meth->namesym->namestr);
+                return 0;
+            }
+            // it matches, add the method to the implementation
+            nodesAdd(&impl->methfld, (INode*)strmeth);
+        }
+        else {
+            // Find the corresponding field with matching name and vtype
+            FieldDclNode *fld = (FieldDclNode *)*nodesp;
+            INode *strfld = namespaceFind(&strnode->namespace, fld->namesym);
+            if (strfld == NULL || strfld->tag != FieldDclTag) {
+                //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to a %s virtual reference. Missing field %s.",
+                //    &strnode->namesym->namestr, &trait->namesym->namestr, &fld->namesym->namestr);
+                return 0;
+            }
+            if (!itypeIsSame(((FieldDclNode*)strfld)->vtype, fld->vtype)) {
+                //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to a %s virtual reference. Incompatible type for field %s.",
+                //    &strnode->namesym->namestr, &trait->namesym->namestr, &fld->namesym->namestr);
+                return 0;
+            }
+            // it matches, add the corresponding field to the implementation
+            nodesAdd(&impl->methfld, (INode*)strfld);
+        }
+    }
+
+    // We accomplished a successful mapping - add it
+    nodesAdd(&vtable->impl, (INode*)impl);
+    return 2;
 }
 
 // Compare two struct signatures to see if they are equivalent

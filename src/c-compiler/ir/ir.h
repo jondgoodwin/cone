@@ -99,7 +99,7 @@ typedef struct AllocNode {
 typedef struct NameResState {
     ModuleNode *mod;        // Current module
     INode *typenode;        // Current type (e.g., struct)
-    int16_t scope;          // The current block scope (0=global, 1=fnsig, 2+=blocks)
+    uint16_t scope;         // The current block scope (0=global, 1=fnsig, 2+=blocks)
     uint16_t flags;         // e.g., PassWithinWhile
 } NameResState;
 

@@ -34,6 +34,7 @@ void keywordInit() {
     keyAdd("alloc", AllocToken);
     keyAdd("return", RetToken);
     keyAdd("do", DoToken);
+    keyAdd("with", WithToken);
     keyAdd("if", IfToken);
     keyAdd("elif", ElifToken);
     keyAdd("else", ElseToken);

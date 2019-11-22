@@ -129,6 +129,26 @@ int refMatches(RefNode *to, RefNode *from) {
     return match > 2 ? 0 : match;
 }
 
+// Will from reference coerce to a virtual reference (we know they are not the same)
+int refvirtMatches(RefNode *to, RefNode *from) {
+    if (0 == permMatches(to->perm, from->perm)
+        || (to->alloc != from->alloc && to->alloc != voidType)
+        || ((from->flags & FlagRefNull) && !(to->flags & FlagRefNull)))
+        return 0;
+
+    // Match on ref's vtype as well.
+    // If vtype is a struct, use a more relaxed subtype match appropriate to refs
+    INode *tovtypedcl = itypeGetTypeDcl(to->pvtype);
+    INode *fromvtypedcl = itypeGetTypeDcl(from->pvtype);
+    if (tovtypedcl->tag == StructTag && fromvtypedcl->tag == StructTag) {
+        if (tovtypedcl == fromvtypedcl)
+            return 1;
+        return structVirtRefMatches((StructNode*)tovtypedcl, (StructNode*)fromvtypedcl);
+    }
+    int match = itypeMatches(tovtypedcl, fromvtypedcl);
+    return match > 2 ? 0 : match;
+}
+
 // If self needs to auto-ref or auto-deref, make sure it legally can
 int refAutoRefCheck(INode *selfnode, INode *totype) {
     INode *selftype = iexpGetTypeDcl(selfnode);
@@ -166,7 +186,7 @@ void refAutoRef(INode **selfnodep, INode *totype) {
     }
 
     // Auto-ref, if we have a value (as variable), but we need a ref
-    if (selftype->tag != RefTag && totype->tag == RefTag) {
+    if ((selftype->tag != RefTag && selftype->tag != VirtRefTag) && totype->tag == RefTag) {
         borrowAuto(selfnodep, totype);
         return;
     }

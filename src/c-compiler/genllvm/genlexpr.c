@@ -67,7 +67,7 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
 
         // Generate this condition's code block, along with jump to endif if block does not end with a return
         LLVMValueRef blkval = genlBlock(gen, (BlockNode*)*(nodesp + 1));
-        int16_t lastStmttype = nodesLast(((BlockNode*)*(nodesp + 1))->stmts)->tag;
+        uint16_t lastStmttype = nodesLast(((BlockNode*)*(nodesp + 1))->stmts)->tag;
         if (lastStmttype != ReturnTag && lastStmttype != BreakTag && lastStmttype != ContinueTag) {
             LLVMBuildBr(gen->builder, endif);
             // Remember value and block if needed for phi merge
@@ -109,10 +109,18 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
     INode **nodesp;
     uint32_t cnt;
     int getselfaddr = fncall->flags & FlagLvalOp;
+    int vdispatch = fncall->flags & FlagVDisp;
+    LLVMValueRef vref;
     LLVMValueRef selfaddr;
     for (nodesFor(fncall->args, cnt, nodesp)) {
+        // For virtual reference, extract the object's regular reference
+        if (vdispatch) {
+            vdispatch = 0;
+            vref = genlExpr(gen, *nodesp);
+            *fnarg++ = LLVMBuildExtractValue(gen->builder, vref, 0, "");
+        }
         // For += operators, we need lval addr, and then load its contents
-        if (getselfaddr) {
+        else if (getselfaddr) {
             getselfaddr = 0;
             selfaddr = genlAddr(gen, *nodesp);
             *fnarg++ = LLVMBuildLoad(gen->builder, selfaddr, "");
@@ -124,6 +132,13 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
     // Handle call when we have a pointer to a function
     if (fncall->objfn->tag == DerefTag) {
         return LLVMBuildCall(gen->builder, genlExpr(gen, ((DerefNode*)fncall->objfn)->exp), fnargs, fncall->args->used, "");
+    }
+    else if (fncall->flags & FlagVDisp) {
+        FnDclNode *methdcl = (FnDclNode*)((NameUseNode *)fncall->objfn)->dclnode;
+        LLVMValueRef vtable = LLVMBuildExtractValue(gen->builder, vref, 1, "");
+        LLVMValueRef vtblmethp = LLVMBuildStructGEP(gen->builder, vtable, methdcl->vtblidx, &methdcl->namesym->namestr); // **fn
+        LLVMValueRef vtblmeth = LLVMBuildLoad(gen->builder, vtblmethp, "");
+        return LLVMBuildCall(gen->builder, vtblmeth, fnargs, fncall->args->used, "");
     }
 
     // A function call may be to an intrinsic, or to program-defined code
@@ -432,6 +447,51 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
         else
             return genexp;
 
+    case StructTag:
+    {
+        // LLVM does not bitcast structs, so this store/load hack gets around that problem
+        LLVMValueRef tempspaceptr = LLVMBuildAlloca(gen->builder, genlType(gen, fromtype), "");
+        LLVMValueRef store = LLVMBuildStore(gen->builder, genexp, tempspaceptr);
+        LLVMValueRef castptr = LLVMBuildBitCast(gen->builder, tempspaceptr, LLVMPointerType(genlType(gen, totype), 0), "");
+        return LLVMBuildLoad(gen->builder, castptr, "");
+    }
+
+    case RefTag:
+    {
+        // extract object pointer from fat pointer
+        if (fromtype->tag == VirtRefTag) {
+            LLVMValueRef ptr = LLVMBuildExtractValue(gen->builder, genexp, 0, "ref");
+            return LLVMBuildBitCast(gen->builder, ptr, genlType(gen, totype), "");
+        }
+        else if (fromtype->tag == RefTag)
+            return LLVMBuildBitCast(gen->builder, genexp, genlType(gen, totype), "");
+        else
+            assert(0 && "Unknown type to convert to reference");
+    }
+
+    case VirtRefTag:
+    {
+        // Build a fat ptr whose vtable maps the fromtype struct to the totype trait
+        assert(fromtype->tag == RefTag);
+        StructNode *trait = (StructNode*)itypeGetTypeDcl(((RefNode*)totype)->pvtype);
+        StructNode *strnode = (StructNode*)itypeGetTypeDcl(((RefNode*)fromtype)->pvtype);
+        Vtable *vtable = ((StructNode*)trait)->vtable;
+        VtableImpl *impl;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(vtable->impl, cnt, nodesp)) {
+            impl = (VtableImpl*)*nodesp;
+            if (impl->structdcl == (INode*)strnode)
+                break;
+        }
+        LLVMValueRef vref = LLVMGetUndef(genlType(gen, totype));
+        LLVMTypeRef vptr = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
+        LLVMValueRef ptr = LLVMBuildBitCast(gen->builder, genexp, vptr, "");
+        vref = LLVMBuildInsertValue(gen->builder, vref, ptr, 0, "vptr");
+        vref = LLVMBuildInsertValue(gen->builder, vref, impl->llvmvtablep, 1, "vptr");
+        return vref;
+    }
+
     case PtrTag:
         if (fromtype->tag == ArrayRefTag)
             return LLVMBuildExtractValue(gen->builder, genexp, 0, "sliceptr");
@@ -580,6 +640,16 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
     {
         FnCallNode *fncall = (FnCallNode *)lval;
         FieldDclNode *flddcl = (FieldDclNode*)((NameUseNode*)fncall->methfld)->dclnode;
+        if (iexpGetTypeDcl(fncall->objfn)->tag == VirtRefTag) {
+            // Calculate address of virtual field pointed to by a virtual reference using vtable
+            LLVMValueRef objVRef = genlExpr(gen, fncall->objfn);
+            LLVMValueRef objpRef = LLVMBuildExtractValue(gen->builder, objVRef, 0, ""); // *u8
+            LLVMValueRef vtable = LLVMBuildExtractValue(gen->builder, objVRef, 1, "");
+            LLVMValueRef vtblfldp = LLVMBuildStructGEP(gen->builder, vtable, flddcl->vtblidx, &flddcl->namesym->namestr); // *u32
+            LLVMValueRef vtblfld = LLVMBuildLoad(gen->builder, vtblfldp, "");
+            LLVMValueRef fldpRef = LLVMBuildGEP(gen->builder, objpRef, &vtblfld, 1, "");
+            return LLVMBuildBitCast(gen->builder, fldpRef, LLVMPointerType(genlType(gen, flddcl->vtype), 0), "");
+        }
         return LLVMBuildStructGEP(gen->builder, genlAddr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
     }
     case StrLitTag:
@@ -741,14 +811,17 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
             return LLVMBuildLoad(gen->builder, genlAddr(gen, termnode), "");
     case StrFieldTag:
     {
-        if (termnode->flags & FlagBorrow) {
-            FnCallNode *fncall = (FnCallNode *)termnode;
-            VarDclNode *flddcl = (VarDclNode*)((NameUseNode*)fncall->methfld)->dclnode;
+        FnCallNode *fncall = (FnCallNode *)termnode;
+        FieldDclNode *flddcl = (FieldDclNode*)((NameUseNode*)fncall->methfld)->dclnode;
+        INode *objtyp = iexpGetTypeDcl(fncall->objfn);
+        if (objtyp->tag == VirtRefTag) {
+            LLVMValueRef fldpRef = genlAddr(gen, termnode);
+            return (termnode->flags & FlagBorrow)? fldpRef : LLVMBuildLoad(gen->builder, fldpRef, "");
+        }
+        else if (termnode->flags & FlagBorrow) {
             return LLVMBuildStructGEP(gen->builder, genlAddr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
         }
         else {
-            FnCallNode *fncall = (FnCallNode *)termnode;
-            FieldDclNode *flddcl = (FieldDclNode*)((NameUseNode*)fncall->methfld)->dclnode;
             return LLVMBuildExtractValue(gen->builder, genlExpr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
         }
     }
@@ -805,8 +878,26 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         // Pattern match whether termnode's tag matches desired concrete struct type
         CastNode *isnode = (CastNode*)termnode;
         LLVMValueRef val = genlExpr(gen, isnode->exp);
+        INode *exptype = iexpGetTypeDcl(isnode->exp);
         INode *istype = itypeGetTypeDcl(isnode->typ);
         StructNode *structtype = (StructNode*)(istype->tag == RefTag ? itypeGetTypeDcl(((RefNode*)istype)->pvtype) : istype);
+
+        // To pattern match a virtual reference, compare vtable pointers
+        if (exptype->tag == VirtRefTag) {
+            LLVMValueRef vtablep = LLVMBuildExtractValue(gen->builder, val, 1, "");
+            Vtable *vtable = structGetBaseTrait(structtype)->vtable;
+            INode **nodesp;
+            uint32_t cnt;
+            for (nodesFor(vtable->impl, cnt, nodesp)) {
+                VtableImpl *impl = (VtableImpl*)*nodesp;
+                if (impl->structdcl == (INode*)structtype) {
+                    LLVMValueRef diff = LLVMBuildPtrDiff(gen->builder, vtablep, impl->llvmvtablep, "");
+                    LLVMValueRef zero = LLVMConstInt(LLVMInt64TypeInContext(gen->context), 0, 0);
+                    return LLVMBuildICmp(gen->builder, LLVMIntEQ, diff, zero, "isvtable");
+                }
+            }
+            assert(0 && "Could not find specialized type's vtable");
+        }
 
         // Find and extract tag field from val, then compare with to-type's tag number
         INode **nodesp;

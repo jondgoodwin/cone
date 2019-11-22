@@ -7,7 +7,7 @@
 #ifndef fndcl_h
 #define fndcl_h
 
-// Name declaration node (e.g., variable, fn implementation, or named type)
+// Function/method declaration node
 typedef struct FnDclNode {
     IExpNodeHdr;                // 'vtype': type of this name's value
     Name *namesym;
@@ -15,6 +15,7 @@ typedef struct FnDclNode {
     LLVMValueRef llvmvar;         // LLVM's handle for a declared variable (for generation)
     char *genname;                // Name of the function as known to the linker
     struct FnDclNode *nextnode;   // Link to next overloaded method with the same name (or NULL)
+    uint16_t vtblidx;             // Method ptr's index in the type's vtable
 } FnDclNode;
 
 FnDclNode *newFnDclNode(Name *namesym, uint16_t tag, INode *sig, INode *val);

@@ -104,12 +104,19 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
             return;
         break;
     case RefTag:
+        if (fromtype->tag == VirtRefTag)
+            return;
+        // Deliberate fall-through here
     case PtrTag:
         if (fromtype->tag == RefTag || fromtype->tag == PtrTag)
             return;
+        break;
+    case VirtRefTag:
+        break;
     case StructTag:
         if (fromtype->tag == StructTag && (fromtype->flags & SameSize))
             return;
+        break;
     }
     errorMsgNode(node->vtype, ErrorInvType, "Unsupported built-in type conversion");
 }
@@ -126,6 +133,20 @@ void castIsTypeCheck(TypeCheckState *pstate, CastNode *node) {
     if (!isTypeNode(node->typ)) {
         errorMsgNode(node->typ, ErrorInvType, "'is' requires a type to the right");
         return;
+    }
+    INode *totype = itypeGetTypeDcl(node->typ);
+    INode *fromtype = iexpGetTypeDcl(node->exp);
+
+    // Handle the specialization check of a virtual reference
+    if (fromtype->tag == VirtRefTag) {
+        if (totype->tag == RefTag) {
+            StructNode *strnode = (StructNode*)itypeGetTypeDcl(((RefNode*)totype)->pvtype);
+            if (strnode->tag == StructTag) {
+                if (structVirtRefMatches((StructNode*)itypeGetTypeDcl(((RefNode*)fromtype)->pvtype), strnode))
+                    return;
+            }
+        }
+        errorMsgNode((INode*)node, ErrorInvType, "Types are not compatible for this specialization");
     }
 
     // Make sure the checked type is a subtype of the value
@@ -144,4 +165,5 @@ void castIsTypeCheck(TypeCheckState *pstate, CastNode *node) {
         errorMsgNode((INode*)node, ErrorInvType, "No mechanism exists to check this specialization");
         return;
     }
+
 }

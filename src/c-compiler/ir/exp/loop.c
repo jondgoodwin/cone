@@ -60,6 +60,7 @@ void loopTypeCheck(TypeCheckState *pstate, LoopNode *node) {
     inodeTypeCheck(pstate, &node->blk);
     if (node->breaks->used == 0)
         errorMsgNode((INode*)node, WarnLoop, "Loop may never stop without a break.");
+    blockNoBreak((BlockNode*)node->blk);
 
     // Attempt to determine the vtype, assuming all breaks return the same type
     // Otherwise, we will fix this during bidirectional type inference

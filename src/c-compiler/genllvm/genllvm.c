@@ -119,7 +119,7 @@ char *genlMangleMethName(char *workbuf, FnDclNode *node) {
     char *bufp = workbuf + strlen(workbuf);
 
     FnSigNode *fnsig = (FnSigNode *)node->vtype;
-    int16_t cnt;
+    uint32_t cnt;
     INode **nodesp;
     for (nodesFor(fnsig->parms, cnt, nodesp)) {
         *bufp++ = ':';

@@ -14,9 +14,9 @@
 typedef struct RefNode {
     INodeHdr;
     INode *pvtype;    // Value type
-    INode *perm;    // Permission
-    INode *alloc;    // Allocator
-    int16_t scope;    // Lifetime
+    INode *perm;      // Permission
+    INode *alloc;     // Allocator
+    uint16_t scope;   // Lifetime
 } RefNode;
 
 // Create a new reference type whose info will be filled in afterwards
@@ -51,6 +51,9 @@ int refEqual(RefNode *node1, RefNode *node2);
 
 // Will from reference coerce to a to reference (we know they are not the same)
 int refMatches(RefNode *to, RefNode *from);
+
+// Will from reference coerce to a virtual reference (we know they are not the same)
+int refvirtMatches(RefNode *to, RefNode *from);
 
 // If self needs to auto-ref or auto-deref, make sure it legally can
 int refAutoRefCheck(INode *selfnode, INode *totype);

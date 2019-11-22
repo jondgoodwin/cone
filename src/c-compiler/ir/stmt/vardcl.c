@@ -62,6 +62,10 @@ void varDclNameRes(NameResState *pstate, VarDclNode *name) {
     if (name->vtype)
         inodeNameRes(pstate, &name->vtype);
 
+    // Name resolve value before hooking the variable name (so it cannot point to itself)
+    if (name->value)
+        inodeNameRes(pstate, &name->value);
+
     // Variable declaration within a block is a local variable
     if (pstate->scope > 1) {
         if (name->namesym->node && pstate->scope == ((VarDclNode*)name->namesym->node)->scope) {
@@ -74,9 +78,6 @@ void varDclNameRes(NameResState *pstate, VarDclNode *name) {
             nametblHookNode(name->namesym, (INode*)name);
         }
     }
-
-    if (name->value)
-        inodeNameRes(pstate, &name->value);
 }
 
 // Type check variable against its initial value
