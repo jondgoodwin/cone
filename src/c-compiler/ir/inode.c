@@ -15,6 +15,14 @@
 #include <stdarg.h>
 #include <assert.h>
 
+// Copy lexer info over
+void inodeLexCopy(INode *new, INode *old) {
+    new->lexer = old->lexer;
+    new->linenbr = old->linenbr;
+    new->linep = old->linep;
+    new->srcp = old->srcp;
+}
+
 // State for inodePrint
 FILE *irfile;
 int irIndent=0;

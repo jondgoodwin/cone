@@ -28,4 +28,7 @@ void borrowFlow(FlowState *fstate, BorrowNode **nodep);
 // Insert automatic ref, if node is a variable
 void borrowAuto(INode **node, INode* reftype);
 
+// Inject a borrow mutable node on some node (expected to be an lval)
+void borrowMutRef(INode **node, INode* type);
+
 #endif

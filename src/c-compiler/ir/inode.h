@@ -176,6 +176,9 @@ enum NodeTags {
     (newnode)->linenbr = (oldnode)->linenbr; \
 }
 
+// Copy lexer info over
+void inodeLexCopy(INode *new, INode *old);
+
 // Helper functions for serializing a node
 void inodePrint(char *dir, char *srcfn, INode *pgm);
 void inodePrintNode(INode *node);
