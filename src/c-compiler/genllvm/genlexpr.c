@@ -499,6 +499,13 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
             return LLVMBuildBitCast(gen->builder, genexp, genlType(gen, totype), "");
 
     default:
+        if (totype->tag == StructTag) {
+            // LLVM does not bitcast structs, so this store/load hack gets around that problem
+            LLVMValueRef tempspaceptr = genlAlloca(gen, genlType(gen, fromtype), "");
+            LLVMValueRef store = LLVMBuildStore(gen->builder, genexp, tempspaceptr);
+            LLVMValueRef castptr = LLVMBuildBitCast(gen->builder, tempspaceptr, LLVMPointerType(genlType(gen, totype),0), "");
+            return LLVMBuildLoad(gen->builder, castptr, "");
+        }
         return LLVMBuildBitCast(gen->builder, genexp, genlType(gen, totype), "");
     }
 }
@@ -509,7 +516,7 @@ LLVMValueRef genlReinterpret(GenState *gen, INode* exp, INode* to) {
     LLVMValueRef genexp = genlExpr(gen, exp);
     if (totype->tag == StructTag) {
         // LLVM does not bitcast structs, so this store/load hack gets around that problem
-        LLVMValueRef tempspaceptr = LLVMBuildAlloca(gen->builder, genlType(gen, ((IExpNode*)exp)->vtype), "");
+        LLVMValueRef tempspaceptr = genlAlloca(gen, genlType(gen, ((IExpNode*)exp)->vtype), "");
         LLVMValueRef store = LLVMBuildStore(gen->builder, genexp, tempspaceptr);
         LLVMValueRef castptr = LLVMBuildBitCast(gen->builder, tempspaceptr, LLVMPointerType(genlType(gen, totype), 0), "");
         return LLVMBuildLoad(gen->builder, castptr, "");
@@ -555,7 +562,7 @@ LLVMValueRef genlLogic(GenState *gen, LogicNode* node) {
 LLVMValueRef genlLocalVar(GenState *gen, VarDclNode *var) {
     assert(var->tag == VarDclTag);
     LLVMValueRef val = NULL;
-    var->llvmvar = LLVMBuildAlloca(gen->builder, genlType(gen, var->vtype), &var->namesym->namestr);
+    var->llvmvar = genlAlloca(gen, genlType(gen, var->vtype), &var->namesym->namestr);
     if (var->value) {
         val = genlExpr(gen, var->value);
         LLVMBuildStore(gen->builder, val, var->llvmvar);

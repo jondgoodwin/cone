@@ -32,6 +32,7 @@ typedef struct GenState {
     LLVMContextRef context;
     LLVMModuleRef module;
     LLVMValueRef fn;
+    LLVMValueRef allocaPoint;
     LLVMBuilderRef builder;
     LLVMBasicBlockRef block;
 
@@ -69,6 +70,8 @@ void genlDealiasNodes(GenState *gen, Nodes *nodes);
 void genlRcCounter(GenState *gen, LLVMValueRef ref, long long amount, RefNode *refnode);
 // Dealias an own allocated reference
 void genlDealiasOwn(GenState *gen, LLVMValueRef ref, RefNode *refnode);
+// Create an alloca (will be pushed to the entry point of the function.
+LLVMValueRef genlAlloca(GenState *gen, LLVMTypeRef type, const char *name);
 
 // genltype.c
 // Generate a type value
