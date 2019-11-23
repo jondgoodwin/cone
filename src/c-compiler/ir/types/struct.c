@@ -67,43 +67,57 @@ StructNode *structGetBaseTrait(StructNode *node) {
     return structGetBaseTrait((StructNode*)itypeGetTypeDcl(node->basetrait));
 }
 
+// Type check when a type specifies a base trait that has a closed number of variants
+void structTypeCheckBaseTrait(StructNode *node) {
+    // Get bottom-most base trait
+    StructNode *basetrait = structGetBaseTrait(node);
+
+    // We only need special handling when base trait has a closed number of variants
+    // i.e., it uses a tag or is fixed-size
+    uint16_t isClosedFlags = basetrait->flags & (SameSize | HasTagField);
+    if (isClosedFlags == 0)
+        return;
+    node->flags |= isClosedFlags;  // mark this derived type as having these closed properties
+
+    // A derived type of a closed trait must be declared in the same module
+    if (basetrait->mod != node->mod) {
+        errorMsgNode((INode*)node, ErrorInvType, "This type must be declared in the same module as the trait");
+        return;
+    }
+
+    // If a derived type is a struct, capture its tag number 
+    // and add it to the bottom-most trait's list of derived structs
+    if (!(node->flags & TraitType)) {
+        if (basetrait->derived == NULL)
+            basetrait->derived = newNodes(4);
+        node->tagnbr = basetrait->derived->used;
+        nodesAdd(&basetrait->derived, (INode*)node);
+    }
+}
+
 // Type check a struct type
 void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     INode *svtypenode = pstate->typenode;
     pstate->typenode = (INode*)node;
 
-    // If a base trait is specified, inject (inherit) its fields and methods
+    INode **nodesp;
+    uint32_t cnt;
+
+    // Handle when a base trait is specified
     if (node->basetrait) {
         inodeTypeCheck(pstate, &node->basetrait);
-        StructNode *basenode = (StructNode*)itypeGetTypeDcl(node->basetrait);
-        if (basenode->tag == StructTag && (basenode->flags & TraitType)) {
-            INode **nodesp;
-            uint32_t cnt;
+        StructNode *basetrait = (StructNode*)itypeGetTypeDcl(node->basetrait);
+        if (basetrait->tag != StructTag || !(basetrait->flags & TraitType)) {
+            errorMsgNode(node->basetrait, ErrorInvType, "Base trait must be a trait");
+        }
+        else {
+            // Do type-check with bottom-most trait
+            // For closed types, the trait and derived node need info from each other
+            structTypeCheckBaseTrait(node);
 
-            // Handle when base trait has a closed number of variants
-            uint16_t isClosedFlags = basenode->flags & (SameSize | HasTagField);
-            if (isClosedFlags) {
-                node->flags |= isClosedFlags;  // mark derived types with these flags
-                if (basenode->mod != node->mod)
-                    errorMsgNode((INode*)node, ErrorInvType, "This type must be declared in the same module as the trait");
-                else {
-                    // Remember every struct variant derived from a closed trait
-                    // and capture struct's tag number
-                    if (!(node->flags & TraitType)) {
-                        StructNode *basesttrait = structGetBaseTrait(node);
-                        if (basesttrait) {
-                            if (basesttrait->derived == NULL)
-                                basesttrait->derived = newNodes(4);
-                            node->tagnbr = basesttrait->derived->used;
-                            nodesAdd(&basesttrait->derived, (INode*)node);
-                        }
-                    }
-                }
-            }
-
-            // Insert basetrait's fields ahead of this type's fields and in namespace
-            nodeListInsertList(&node->fields, &basenode->fields, 0);
-            for (nodelistFor(&basenode->fields, cnt, nodesp)) {
+            // Insert base trait's fields ahead of this type's fields and in namespace
+            nodeListInsertList(&node->fields, &basetrait->fields, 0);
+            for (nodelistFor(&basetrait->fields, cnt, nodesp)) {
                 FieldDclNode *fld = (FieldDclNode*)*nodesp;
                 INode *errfld;
                 if (errfld = namespaceAdd(&node->namespace, fld->namesym, *nodesp)) {
@@ -118,15 +132,10 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
                 ((FieldDclNode*)*nodesp)->index = index++;
             }
         }
-        else {
-            errorMsgNode(node->basetrait, ErrorInvType, "Expected a trait name.");
-        }
     }
 
     // Type check all fields and calculate infection flags for ThreadBound/MoveType
     uint16_t infectFlag = 0;
-    INode **nodesp;
-    uint32_t cnt;
     for (nodelistFor(&node->fields, cnt, nodesp)) {
         inodeTypeCheck(pstate, (INode**)nodesp);
         // Notice if a field's threadbound or movetype infects the struct
