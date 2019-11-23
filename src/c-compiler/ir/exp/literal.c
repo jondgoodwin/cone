@@ -63,7 +63,7 @@ NullNode *newNullNode() {
 // Create a new string literal node
 SLitNode *newSLitNode(char *str, INode *type) {
     SLitNode *lit;
-    newNode(lit, SLitNode, StrLitTag);
+    newNode(lit, SLitNode, StringLitTag);
     lit->strlit = str;
     lit->vtype = type;
     return lit;
@@ -75,6 +75,6 @@ void slitPrint(SLitNode *lit) {
 }
 
 int litIsLiteral(INode* node) {
-    return (node->tag == FLitTag || node->tag == ULitTag || node->tag == NullTag || node->tag == StrLitTag
+    return (node->tag == FLitTag || node->tag == ULitTag || node->tag == NullTag || node->tag == StringLitTag
         || (node->tag == TypeLitTag && typeLitIsLiteral((FnCallNode*)node)));
 }

@@ -60,7 +60,7 @@ INode *borrowGetVarPerm(INode *lval, INode **lvalperm) {
 
     // An array element (obj[2]) or field access (obj.prop)
     case ArrIndexTag:
-    case StrFieldTag:
+    case FldAccessTag:
     {
         FnCallNode *element = (FnCallNode *)lval;
         INode *lvalvar = borrowGetVarPerm(element->objfn, lvalperm);
@@ -114,7 +114,7 @@ void borrowTypeCheck(TypeCheckState *pstate, BorrowNode **nodep) {
     INode *lval = node->exp;
     INode *lvalperm = (INode*)immPerm;
     reftype->scope = 0;  // Global
-    if (lval->tag != StrLitTag) {
+    if (lval->tag != StringLitTag) {
         // lval is the variable or variable sub-structure we want to get a reference to
         // From it, obtain variable we are borrowing from and actual/calculated permission
         INode *lvalvar = borrowGetVarPerm(lval, &lvalperm);

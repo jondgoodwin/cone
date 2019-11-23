@@ -88,7 +88,7 @@ INode *parseTerm(ParseState *parse) {
             lexNextToken();
             return (INode *)node;
         }
-    case StrLitToken:
+    case StringLitToken:
         {
             SLitNode *node = newSLitNode(lex->val.strlit, lex->langtype);
             lexNextToken();

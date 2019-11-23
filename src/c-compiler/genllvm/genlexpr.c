@@ -636,7 +636,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
             assert(0 && "Unknown type of arrindex element indexing node");
         }
     }
-    case StrFieldTag:
+    case FldAccessTag:
     {
         FnCallNode *fncall = (FnCallNode *)lval;
         FieldDclNode *flddcl = (FieldDclNode*)((NameUseNode*)fncall->methfld)->dclnode;
@@ -652,7 +652,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         }
         return LLVMBuildStructGEP(gen->builder, genlAddr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
     }
-    case StrLitTag:
+    case StringLitTag:
     {
         SLitNode *strnode = (SLitNode *)lval;
         ArrayNode *anode = (ArrayNode*)strnode->vtype;
@@ -725,7 +725,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     }
     case NamedValTag:
         return genlExpr(gen, ((NamedValNode*)termnode)->val);
-    case StrLitTag:
+    case StringLitTag:
     {
         return LLVMBuildLoad(gen->builder, genlAddr(gen, termnode), "");
     }
@@ -809,7 +809,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         }
         else
             return LLVMBuildLoad(gen->builder, genlAddr(gen, termnode), "");
-    case StrFieldTag:
+    case FldAccessTag:
     {
         FnCallNode *fncall = (FnCallNode *)termnode;
         FieldDclNode *flddcl = (FieldDclNode*)((NameUseNode*)fncall->methfld)->dclnode;

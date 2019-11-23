@@ -40,7 +40,7 @@ int assignIsLval(INode *lval) {
     case VarNameUseTag:
     case DerefTag:
     case ArrIndexTag:
-    case StrFieldTag:
+    case FldAccessTag:
         return 1;
     default:
         return 0;
@@ -182,7 +182,7 @@ INode *assignLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
     }
 
     // Field access (obj.prop)
-    case StrFieldTag:
+    case FldAccessTag:
     {
         FnCallNode *element = (FnCallNode *)lval;
         INode *lvalvar = assignLvalInfo(element->objfn, lvalperm, scope);

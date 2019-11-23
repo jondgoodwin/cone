@@ -96,7 +96,7 @@ void inodePrintNode(INode *node) {
     case VTupleTag:
         vtuplePrint((VTupleNode *)node); break;
     case FnCallTag:
-    case StrFieldTag:
+    case FldAccessTag:
     case ArrIndexTag:
         fnCallPrint((FnCallNode *)node); break;
     case SizeofTag:
@@ -117,7 +117,7 @@ void inodePrintNode(INode *node) {
         flitPrint((FLitNode *)node); break;
     case TypeLitTag:
         typeLitPrint((FnCallNode *)node); break;
-    case StrLitTag:
+    case StringLitTag:
         slitPrint((SLitNode *)node); break;
     case FnSigTag:
         fnSigPrint((FnSigNode *)node); break;
@@ -253,7 +253,7 @@ void inodeNameRes(NameResState *pstate, INode **node) {
     case MbrNameUseTag:
     case ULitTag:
     case FLitTag:
-    case StrLitTag:
+    case StringLitTag:
     case IntNbrTag: case UintNbrTag: case FloatNbrTag:
     case PermTag:
     case VoidTag:
@@ -362,7 +362,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node) {
         break;
 
     case MbrNameUseTag:
-    case StrLitTag:
+    case StringLitTag:
     case IntNbrTag: case UintNbrTag: case FloatNbrTag:
     case VoidTag:
     case NullTag:

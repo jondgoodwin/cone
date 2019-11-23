@@ -10,7 +10,7 @@
 
 // Function or method call node. Also used for array indexing and field access.
 // The parsed contents is lowered during type checking, potentially turning
-// it into an ArrIndexTag or StrFieldTag node
+// it into an ArrIndexTag or FldAccessTag node
 typedef struct FnCallNode {
     IExpNodeHdr;
     INode *objfn;          // Object (for method calls) or function to call

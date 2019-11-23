@@ -94,7 +94,7 @@ void fnCallFinalizeArgs(FnCallNode *node) {
     for (nodesFor(node->args, cnt, argsp)) {
         // Auto-convert string literal to borrowed reference
         INode *parmtype = iexpGetTypeDcl(*parmp);
-        if ((*argsp)->tag == StrLitTag 
+        if ((*argsp)->tag == StringLitTag 
             && (parmtype->tag == ArrayRefTag || parmtype->tag == PtrTag)) {
             RefNode *addrtype = newRefNodeFull(voidType, newPermUseNode(immPerm), (INode*)u8Type);
             BorrowNode *borrownode = newBorrowNode();
@@ -186,7 +186,7 @@ void fnCallLowerMethod(FnCallNode *callnode) {
         callnode->methfld->tag = VarNameUseTag;
         callnode->methfld->dclnode = (INode*)foundnode;
         callnode->vtype = callnode->methfld->vtype = foundnode->vtype;
-        callnode->tag = StrFieldTag;
+        callnode->tag = FldAccessTag;
         return;
     }
 

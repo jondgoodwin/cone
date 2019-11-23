@@ -116,7 +116,7 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
     case VarNameUseTag:
     case DerefTag:
     case ArrIndexTag:
-    case StrFieldTag:
+    case FldAccessTag:
         flowInjectAliasNode(nodep, 0);
         if (flowAliasGet(0) > 0) {
             flowHandleMove(*nodep);
@@ -139,7 +139,7 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
     case ULitTag:
     case FLitTag:
     case NullTag:
-    case StrLitTag:
+    case StringLitTag:
     case TypeLitTag:
         break;
     default:

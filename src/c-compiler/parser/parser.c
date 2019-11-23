@@ -119,7 +119,7 @@ char *parseFile() {
         filename = &lex->val.ident->namestr;
         lexNextToken();
         break;
-    case StrLitToken:
+    case StringLitToken:
         filename = lex->val.strlit;
         lexNextToken();
         break;

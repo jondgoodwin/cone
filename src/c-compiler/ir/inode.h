@@ -80,13 +80,13 @@ enum NodeTags {
     ULitTag,        // Integer literal
     FLitTag,        // Float literal
     NullTag,        // Null literal
-    StrLitTag,      // String literal
+    StringLitTag,      // String literal
     TypeLitTag,     // List (e.g., type literal)
     VTupleTag,      // Value tuple (comma-separated values)
     AssignTag,      // Assignment expression
     FnCallTag,      // Function+method call or field access
     ArrIndexTag,    // Array index (FnCallNode)
-    StrFieldTag,    // struct field (FnCallNode)
+    FldAccessTag,    // struct field (FnCallNode)
     SizeofTag,      // Sizeof a type (usize)
     CastTag,        // Cast exp to another type
     BorrowTag,        // & (address of) operator
