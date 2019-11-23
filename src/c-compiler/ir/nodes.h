@@ -30,6 +30,10 @@ void nodesInsert(Nodes **nodesp, INode *node, size_t index);
 // Move an element at index 'to' to index 'from', shifting nodes in between
 void nodesMove(Nodes *nodes, size_t to, size_t from);
 
+// Open up space for amt new nodes beginning at pos.
+// If amt is negative, delete that number of nodes
+void nodesMakeSpace(Nodes **nodesp, size_t pos, int32_t amt);
+
 #define nodesNodes(nodes) ((INode**)((nodes)+1))
 #define nodesFor(nodes, cnt, nodesp) nodesp = (INode**)((nodes)+1), cnt = (nodes)->used; cnt; cnt--, nodesp++
 #define nodesGet(nodes, index) ((INode**)((nodes)+1))[index]

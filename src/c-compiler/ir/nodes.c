@@ -75,11 +75,41 @@ void nodesMove(Nodes *nodes, size_t to, size_t from) {
     INode *movenode = nodesGet(nodes, from);
     if (from > to) {
         INode **moveto = &nodesGet(nodes, to);
-        memmove(moveto + 1, moveto, (from - to) * sizeof(Nodes));
+        memmove(moveto + 1, moveto, (from - to) * sizeof(INode*));
     }
     else if (to > from) {
         INode **moveto = &nodesGet(nodes, from);
-        memmove(moveto, moveto + 1, (to - from) * sizeof(Nodes));
+        memmove(moveto, moveto + 1, (to - from) * sizeof(INode*));
     }
     *(&nodesGet(nodes, to)) = movenode;
+}
+
+// Open up space for amt new nodes beginning at pos.
+// If amt is negative, delete that number of nodes
+void nodesMakeSpace(Nodes **nodesp, size_t pos, int32_t amt) {
+    if (amt == 0)
+        return;
+    Nodes *nodes = *nodesp;
+    INode **op, **np;
+    // If full, double its size as needed
+    if (nodes->used + amt >= nodes->avail) {
+        uint32_t newsize = nodes->avail << 1;
+        while (nodes->used + amt >= newsize)
+            newsize <<= 1;
+        Nodes *oldnodes;
+        oldnodes = nodes;
+        nodes = newNodes(newsize);
+        op = (INode **)(oldnodes + 1);
+        np = (INode **)(nodes + 1);
+        memcpy(np, op, (nodes->used = oldnodes->used) * sizeof(INode*));
+        *nodesp = nodes;
+    }
+
+    // Move nodes after pos up or down accordingly
+    INode **posp = &nodesGet(*nodesp, pos);
+    if (amt > 0)
+        memmove(posp + amt, posp, (nodes->used - pos) * sizeof(INode*));
+    else
+        memmove(posp, posp - amt, (nodes->used - pos + amt) * sizeof(INode*));
+    nodes->used += amt;
 }

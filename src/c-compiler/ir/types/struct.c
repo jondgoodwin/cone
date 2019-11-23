@@ -124,20 +124,16 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
                     errorMsgNode(errfld, ErrorDupName, "Duplicate field name with inherited trait field");
                 }
             }
-
-            // Renumber field indexes to reflect their altered position
-            // Note: Since we are inserting at zero, the basetrait's indexes remain unchanged!
-            uint16_t index = 0;
-            for (nodelistFor(&node->fields, cnt, nodesp)) {
-                ((FieldDclNode*)*nodesp)->index = index++;
-            }
         }
     }
 
-    // Type check all fields and calculate infection flags for ThreadBound/MoveType
+    // Go through all fields to index them and calculate infection flags for ThreadBound/MoveType
     uint16_t infectFlag = 0;
+    uint16_t index = 0;
     for (nodelistFor(&node->fields, cnt, nodesp)) {
         inodeTypeCheck(pstate, (INode**)nodesp);
+        // Number field indexes to reflect their possibly altered position
+        ((FieldDclNode*)*nodesp)->index = index++;
         // Notice if a field's threadbound or movetype infects the struct
         ITypeNode *fldtype = (ITypeNode*)itypeGetTypeDcl(((IExpNode*)(*nodesp))->vtype);
         infectFlag |= fldtype->flags & (ThreadBound | MoveType);

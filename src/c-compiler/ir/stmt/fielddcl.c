@@ -22,6 +22,13 @@ FieldDclNode *newFieldDclNode(Name *namesym, INode *perm) {
     return fldnode;
 }
 
+// Create a new field node that is a copy of an existing one
+FieldDclNode *copyFieldDclNode(INode *node) {
+    FieldDclNode *newnode = memAllocBlk(sizeof(FieldDclNode));
+    memcpy(newnode, node, sizeof(FieldDclNode));
+    return newnode;
+}
+
 // Serialize a field declaration node
 void fieldDclPrint(FieldDclNode *name) {
     inodePrintNode((INode*)name->perm);

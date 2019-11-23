@@ -20,6 +20,9 @@ typedef struct FieldDclNode {
 
 FieldDclNode *newFieldDclNode(Name *namesym, INode *perm);
 
+// Create a new field node that is a copy of an existing one
+FieldDclNode *copyFieldDclNode(INode *node);
+
 void fieldDclPrint(FieldDclNode *fn);
 
 // Name resolution of field declaration
