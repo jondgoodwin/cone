@@ -177,6 +177,17 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                     iNsTypeAddFn((INsTypeNode*)strnode, fn);
                 }
             }
+            else if (lexIsToken(MixinToken)) {
+                // Handle a trait mixin, capturing it in a field-like node
+                FieldDclNode *field = newFieldDclNode(anonName, (INode*)immPerm);
+                field->flags |= IsMixin | FlagMethFld;
+                lexNextToken();
+                INode *vtype;
+                if ((vtype = parseVtype(parse)))
+                    field->vtype = vtype;
+                structAddField(strnode, field);
+                parseEndOfStatement();
+            }
             else if (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
                 FieldDclNode *field = parseFieldDcl(parse, mutPerm);
                 field->index = fieldnbr++;

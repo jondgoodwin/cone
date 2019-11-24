@@ -123,6 +123,7 @@ enum TokenTypes {
     FnToken,        // 'fn'
     StructToken,    // 'struct'
     TraitToken,     // 'trait'
+    MixinToken,     // 'mixin'
     EnumTraitToken, // 'enumtrait'
     EnumToken,      // 'enum'
     AllocToken,        // 'alloc'

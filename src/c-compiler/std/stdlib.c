@@ -29,6 +29,7 @@ void keywordInit() {
     keyAdd("fn", FnToken);
     keyAdd("struct", StructToken);
     keyAdd("trait", TraitToken);
+    keyAdd("mixin", MixinToken);
     keyAdd("enumtrait", EnumTraitToken);
     keyAdd("enum", EnumToken);
     keyAdd("alloc", AllocToken);

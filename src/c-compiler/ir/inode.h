@@ -135,6 +135,7 @@ enum NodeTags {
 #define FlagSetMethod 0x0008        // FnDcl: "set" method
 
 #define IsTagField    0x0010        // FieldNode: This field is the trait's discriminant tag
+#define IsMixin       0x0020        // FieldNode: Is a trait mixin, vs. an instantiated field
 
 #define FlagIndex     0x0001        // FnCall: arguments are an index in []
 #define FlagLvalOp    0x0002        // FnCall: method is an operator assignment (e.g., +=)
