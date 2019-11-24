@@ -115,23 +115,53 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
             // For closed types, the trait and derived node need info from each other
             structTypeCheckBaseTrait(node);
 
-            // Insert base trait's fields ahead of this type's fields and in namespace
-            nodeListInsertList(&node->fields, &basetrait->fields, 0);
-            for (nodelistFor(&basetrait->fields, cnt, nodesp)) {
-                FieldDclNode *fld = (FieldDclNode*)*nodesp;
-                INode *errfld;
-                if (errfld = namespaceAdd(&node->namespace, fld->namesym, *nodesp)) {
-                    errorMsgNode(errfld, ErrorDupName, "Duplicate field name with inherited trait field");
+            // Insert "mixin" field for basetrait at start, to trigger mixin logic below
+            FieldDclNode *mixin = newFieldDclNode(basetrait->namesym, (INode*)immPerm);
+            mixin->flags |= IsMixin;
+            mixin->vtype = node->basetrait;
+            nodelistInsert(&node->fields, 0, (INode*)mixin);
+        }
+    }
+
+    // Iterate backwards through all fields to type check and handle trait/field inheritance
+    // We go backwards to prevent index invalidation and to ensure method inheritance stays in correct order.
+    // When done, all trait mixins are replaced with the trait's fields
+    // And trait/field inheritance are appropriately added to the dictionary in the correct order
+    int32_t fldpos = node->fields.used - 1;
+    INode **fldnodesp = &nodelistGet(&node->fields, fldpos);
+    while (fldpos >= 0) {
+        FieldDclNode *field = (FieldDclNode*)*fldnodesp;
+        if (field->flags & IsMixin) {
+            inodeTypeCheck(pstate, &field->vtype);
+            // A dummy mixin field requesting we mixin its fields and methods
+            StructNode *trait = (StructNode*)itypeGetTypeDcl(field->vtype);
+            if (trait->tag != StructTag || !(trait->flags & TraitType)) {
+                errorMsgNode(field->vtype, ErrorInvType, "mixin must be a trait");
+            }
+            else {
+                // Replace the "mixin" field with all the trait's fields
+                nodelistMakeSpace(&node->fields, fldpos, trait->fields.used - 1);
+                INode **insertp = fldnodesp;
+                for (nodelistFor(&trait->fields, cnt, nodesp)) {
+                    FieldDclNode *newfld = copyFieldDclNode(*nodesp);
+                    *insertp++ = (INode *)newfld;
+                    if (namespaceAdd(&node->namespace, newfld->namesym, (INode*)newfld)) {
+                        errorMsgNode((INode*)newfld, ErrorDupName, "Trait may not mix in a duplicate field name");
+                    }
                 }
             }
         }
+        // Type check a normal field
+        else
+            inodeTypeCheck(pstate, fldnodesp);
+
+        --fldpos; --fldnodesp;
     }
 
     // Go through all fields to index them and calculate infection flags for ThreadBound/MoveType
     uint16_t infectFlag = 0;
     uint16_t index = 0;
     for (nodelistFor(&node->fields, cnt, nodesp)) {
-        inodeTypeCheck(pstate, (INode**)nodesp);
         // Number field indexes to reflect their possibly altered position
         ((FieldDclNode*)*nodesp)->index = index++;
         // Notice if a field's threadbound or movetype infects the struct

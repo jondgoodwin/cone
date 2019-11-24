@@ -30,8 +30,15 @@ void nodelistInit(NodeList *mnodes, uint32_t size);
 // Add an INode to the end of a NodeList, growing it if full (changing its memory location)
 void nodelistAdd(NodeList *mnodes, INode *node);
 
+// Insert a node into a nodelist at pos
+void nodelistInsert(NodeList *mnodes, uint32_t pos, INode *node);
+
 // Insert some list into another list, beginning at index
-void nodeListInsertList(NodeList *mnodes, NodeList *fromnodes, uint32_t index);
+void nodelistInsertList(NodeList *mnodes, NodeList *fromnodes, uint32_t index);
+
+// Open up space for amt new nodes beginning at pos.
+// If amt is negative, delete that number of nodes
+void nodelistMakeSpace(NodeList *nodes, size_t pos, int32_t amt);
 
 
 #endif
