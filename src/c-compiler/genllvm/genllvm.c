@@ -328,11 +328,11 @@ void genmod(GenState *gen, ModuleNode *mod) {
     // Optimize the generated LLVM IR
     timerBegin(OptTimer);
     LLVMPassManagerRef passmgr = LLVMCreatePassManager();
-    LLVMAddDemoteMemoryToRegisterPass(passmgr);        // Demote allocas to registers.
+    LLVMAddPromoteMemoryToRegisterPass(passmgr);     // Demote allocas to registers.
     LLVMAddInstructionCombiningPass(passmgr);        // Do simple "peephole" and bit-twiddling optimizations
-    LLVMAddReassociatePass(passmgr);                // Reassociate expressions.
-    LLVMAddGVNPass(passmgr);                        // Eliminate common subexpressions.
-    LLVMAddCFGSimplificationPass(passmgr);            // Simplify the control flow graph
+    LLVMAddReassociatePass(passmgr);                 // Reassociate expressions.
+    LLVMAddGVNPass(passmgr);                         // Eliminate common subexpressions.
+    LLVMAddCFGSimplificationPass(passmgr);           // Simplify the control flow graph
     if (gen->opt->release)
         LLVMAddFunctionInliningPass(passmgr);        // Function inlining
     LLVMRunPassManager(passmgr, gen->module);
