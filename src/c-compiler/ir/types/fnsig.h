@@ -20,6 +20,10 @@ typedef struct FnSigNode {
 } FnSigNode;
 
 FnSigNode *newFnSigNode();
+
+// Create a new function signature node that is a copy of an existing one
+FnSigNode *copyFnSigNode(FnSigNode *node, INode *selftype);
+
 void fnSigPrint(FnSigNode *node);
 // Name resolution of the function signature
 void fnSigNameRes(NameResState *pstate, FnSigNode *sig);

@@ -31,8 +31,11 @@ typedef struct VarDclNode VarDclNode;
 // Initialize common fields
 void iNsTypeInit(INsTypeNode *type, int nodecnt);
 
-// Add a static function or potentially overloaded method
+// Add a static function or potentially overloaded method to dictionary
 // If method is overloaded, add it to the link chain of same named methods
+void iNsTypeAddFnDict(INsTypeNode *type, FnDclNode *fnnode);
+
+// Add a function/method to type's dictionary and owned list
 void iNsTypeAddFn(INsTypeNode *type, FnDclNode *fnnode);
 
 // Find the named node (could be method or field)
@@ -44,5 +47,9 @@ INode *iNsTypeFindFnField(INsTypeNode *type, Name *name);
 // We follow its forward links to find one whose parameter types best match args types
 // isvref skips type checking of the 'self' parameter for virtual references
 FnDclNode *iNsTypeFindBestMethod(FnDclNode *firstmethod, Nodes *args, int isvref);
+
+// Find method whose method signature matches exactly (except for self)
+// return NULL if none
+FnDclNode *iNsTypeFindVrefMethod(FnDclNode *firstmeth, FnDclNode *matchmeth);
 
 #endif

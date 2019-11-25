@@ -18,7 +18,12 @@ typedef struct FnDclNode {
     uint16_t vtblidx;             // Method ptr's index in the type's vtable
 } FnDclNode;
 
+// Create a new function declaraction node
 FnDclNode *newFnDclNode(Name *namesym, uint16_t tag, INode *sig, INode *val);
+
+// Return a copy of a method declaration, adjusting self's type to type
+FnDclNode *copyFnDclNode(FnDclNode *oldfn, INode *type);
+
 void fnDclPrint(FnDclNode *fn);
 
 /// Resolve all names in a function

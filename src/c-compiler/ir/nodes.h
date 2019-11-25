@@ -25,6 +25,10 @@ typedef struct Nodes {
 
 // Helper Functions
 Nodes *newNodes(int size);
+
+// Make a copy of a Nodes structure
+Nodes *nodesCopy(Nodes *oldnodes);
+
 void nodesAdd(Nodes **nodesp, INode *node);
 void nodesInsert(Nodes **nodesp, INode *node, size_t index);
 // Move an element at index 'to' to index 'from', shifting nodes in between

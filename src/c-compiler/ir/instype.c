@@ -18,10 +18,9 @@ void iNsTypeInit(INsTypeNode *type, int nodecnt) {
     // type->subtypes = newNodes(0);
 }
 
-// Add a function or potentially overloaded method
+// Add a function or potentially overloaded method to dictionary
 // If method is overloaded, add it to the link chain of same named methods
-void iNsTypeAddFn(INsTypeNode *type, FnDclNode *fnnode) {
-    NodeList *mnodes = &type->nodelist;
+void iNsTypeAddFnDict(INsTypeNode *type, FnDclNode *fnnode) {
     FnDclNode *foundnode = (FnDclNode*)namespaceAdd(&type->namespace, fnnode->namesym, (INode*)fnnode);
     if (foundnode) {
         if (foundnode->tag != FnDclTag
@@ -34,7 +33,13 @@ void iNsTypeAddFn(INsTypeNode *type, FnDclNode *fnnode) {
             foundnode = foundnode->nextnode;
         foundnode->nextnode = fnnode;
     }
+}
+
+// Add a function/method to type's dictionary and owned list
+void iNsTypeAddFn(INsTypeNode *type, FnDclNode *fnnode) {
+    NodeList *mnodes = &type->nodelist;
     nodelistAdd(mnodes, (INode*)fnnode);
+    iNsTypeAddFnDict(type, fnnode);
 }
 
 // Find the named node (could be method or field)
@@ -66,4 +71,25 @@ FnDclNode *iNsTypeFindBestMethod(FnDclNode *firstmethod, Nodes *args, int isvref
         }
     }
     return bestmethod;
+}
+
+// Find method whose method signature matches exactly (except for self)
+FnDclNode *iNsTypeFindVrefMethod(FnDclNode *firstmeth, FnDclNode *matchmeth) {
+    if (firstmeth == NULL || firstmeth->tag != FnDclTag) {
+        //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to a %s virtual reference. Missing method %s.",
+        //    &strnode->namesym->namestr, &trait->namesym->namestr, &meth->namesym->namestr);
+        return 0;
+    }
+    // Look through all overloaded methods for a match
+    while (firstmeth) {
+        if (fnSigVrefEqual((FnSigNode*)firstmeth->vtype, (FnSigNode*)matchmeth->vtype))
+            break;
+        firstmeth = firstmeth->nextnode;
+    }
+    if (firstmeth == NULL) {
+        //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to a %s virtual reference. Incompatible type for method %s.",
+        //    &strnode->namesym->namestr, &trait->namesym->namestr, &meth->namesym->namestr);
+        return 0;
+    }
+    return firstmeth;
 }

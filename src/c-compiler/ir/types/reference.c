@@ -6,12 +6,20 @@
 */
 
 #include "../ir.h"
+#include <memory.h>
 
 // Create a new reference type whose info will be filled in afterwards
 RefNode *newRefNode() {
     RefNode *refnode;
     newNode(refnode, RefNode, RefTag);
     return refnode;
+}
+
+// Create a new reference node that is a copy of an existing one
+RefNode *copyRefNode(RefNode *node) {
+    RefNode *newnode = memAllocBlk(sizeof(RefNode));
+    memcpy(newnode, node, sizeof(RefNode));
+    return newnode;
 }
 
 // Set type infection flags based on the reference's type parameters

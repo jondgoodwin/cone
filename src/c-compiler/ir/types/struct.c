@@ -95,6 +95,16 @@ void structTypeCheckBaseTrait(StructNode *node) {
     }
 }
 
+// Add method at end of strnode's method chain for this name
+void structInheritMethod(StructNode *strnode, FnDclNode *traitmeth, StructNode *trait) {
+    // Add default method, so long as it implements logic
+    if (traitmeth->value == NULL) {
+        errorMsgNode((INode*)strnode, ErrorInvType, "Type must implement %s method, as required by %s",
+            traitmeth->namesym->namestr, trait->namesym->namestr);
+    }
+    iNsTypeAddFn((INsTypeNode *)strnode, copyFnDclNode(traitmeth, (INode*)strnode));
+}
+
 // Type check a struct type
 void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     INode *svtypenode = pstate->typenode;
@@ -147,6 +157,21 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
                     *insertp++ = (INode *)newfld;
                     if (namespaceAdd(&node->namespace, newfld->namesym, (INode*)newfld)) {
                         errorMsgNode((INode*)newfld, ErrorDupName, "Trait may not mix in a duplicate field name");
+                    }
+                }
+                // Fold in trait's default methods
+                for (nodelistFor(&trait->nodelist, cnt, nodesp)) {
+                    if ((*nodesp)->tag != FnDclTag)
+                        continue;
+                    FnDclNode *traitmeth = (FnDclNode*)*nodesp;
+                    FnDclNode *structmeth = (FnDclNode*)iNsTypeFindFnField((INsTypeNode *)node, traitmeth->namesym);
+                    if (structmeth == NULL)
+                        // Inherit default method
+                        structInheritMethod(node, traitmeth, trait);
+                    else {
+                        // If no exact match, add it
+                        if (iNsTypeFindVrefMethod(structmeth, traitmeth) == NULL)
+                            structInheritMethod(node, traitmeth, trait);
                     }
                 }
             }
@@ -284,22 +309,8 @@ int structVirtRefMatches(StructNode *trait, StructNode *strnode) {
             // Note, we need to be flexible in matching the self parameter
             FnDclNode *meth = (FnDclNode *)*nodesp;
             FnDclNode *strmeth = (FnDclNode *)namespaceFind(&strnode->namespace, meth->namesym);
-            if (strmeth == NULL || strmeth->tag != FnDclTag) {
-                //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to a %s virtual reference. Missing method %s.",
-                //    &strnode->namesym->namestr, &trait->namesym->namestr, &meth->namesym->namestr);
+            if ((strmeth = iNsTypeFindVrefMethod(strmeth, meth)) == NULL)
                 return 0;
-            }
-            // Look through all overloaded methods for a match
-            while (strmeth) {
-                if (fnSigVrefEqual((FnSigNode*)strmeth->vtype, (FnSigNode*)meth->vtype))
-                    break;
-                strmeth = strmeth->nextnode;
-            }
-            if (strmeth == NULL) {
-                //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to a %s virtual reference. Incompatible type for method %s.",
-                //    &strnode->namesym->namestr, &trait->namesym->namestr, &meth->namesym->namestr);
-                return 0;
-            }
             // it matches, add the method to the implementation
             nodesAdd(&impl->methfld, (INode*)strmeth);
         }

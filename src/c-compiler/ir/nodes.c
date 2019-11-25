@@ -22,6 +22,14 @@ Nodes *newNodes(int size) {
     return nodes;
 }
 
+// Make a copy of a Nodes structure
+Nodes *nodesCopy(Nodes *oldnodes) {
+    Nodes *newnodes = newNodes(oldnodes->avail);
+    newnodes->used = oldnodes->used;
+    memcpy(newnodes + 1, oldnodes + 1, (oldnodes->used) * sizeof(INode*));
+    return newnodes;
+}
+
 // Add an INode to the end of a Nodes, growing it if full (changing its memory location)
 // This assumes a nodes can only have a single parent, whose address we point at
 void nodesAdd(Nodes **nodesp, INode *node) {

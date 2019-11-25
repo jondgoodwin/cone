@@ -43,6 +43,13 @@ VarDclNode *newVarDclFull(Name *namesym, uint16_t tag, INode *type, INode *perm,
     return name;
 }
 
+// Create a new var declaration node that is a copy of an existing one
+VarDclNode *copyVarDclNode(VarDclNode *node) {
+    VarDclNode *newnode = memAllocBlk(sizeof(VarDclNode));
+    memcpy(newnode, node, sizeof(VarDclNode));
+    return newnode;
+}
+
 // Serialize a variable node
 void varDclPrint(VarDclNode *name) {
     inodePrintNode((INode*)name->perm);

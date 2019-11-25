@@ -6,12 +6,20 @@
 */
 
 #include "../ir.h"
+#include <memory.h>
 
 // Create a new pointer type whose info will be filled in afterwards
 PtrNode *newPtrNode() {
     PtrNode *ptrnode;
     newNode(ptrnode, PtrNode, PtrTag);
     return ptrnode;
+}
+
+// Create a new pointer node that is a copy of an existing one
+PtrNode *copyPtrNode(PtrNode *node) {
+    PtrNode *newnode = memAllocBlk(sizeof(PtrNode));
+    memcpy(newnode, node, sizeof(PtrNode));
+    return newnode;
 }
 
 // Serialize a pointer type

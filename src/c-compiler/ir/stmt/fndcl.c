@@ -10,7 +10,7 @@
 #include <string.h>
 #include <assert.h>
 
-// Create a new name declaraction node
+// Create a new function declaraction node
 FnDclNode *newFnDclNode(Name *namesym, uint16_t flags, INode *type, INode *val) {
     FnDclNode *name;
     newNode(name, FnDclNode, FnDclTag);
@@ -22,6 +22,17 @@ FnDclNode *newFnDclNode(Name *namesym, uint16_t flags, INode *type, INode *val) 
     name->genname = namesym? &namesym->namestr : "";
     name->nextnode = NULL;
     return name;
+}
+
+// Return a copy of a method declaration, adjusting self's type to type
+FnDclNode *copyFnDclNode(FnDclNode *oldfn, INode *selftype) {
+    FnDclNode *newnode = memAllocBlk(sizeof(FnDclNode));
+    memcpy(newnode, oldfn, sizeof(FnDclNode));
+    newnode->nextnode = NULL; // clear out linkages
+    // Alter method signature's self parm to use type
+    FnSigNode *newsig = copyFnSigNode((FnSigNode*)oldfn->vtype, selftype);
+    newnode->vtype = (INode*)newsig;
+    return newnode;
 }
 
 // Serialize a function node
