@@ -79,6 +79,9 @@ enum ErrorCode {
     WarnIndent,        // Inconsistent indent character
     WarnCopy,       // Unsafe attempt to copy a CopyMethod or CopyMove typed value
     WarnLoop,       // Infinite loop with no break
+
+    // Uncounted
+    Uncounted = 9000,
 };
 
 int errors;

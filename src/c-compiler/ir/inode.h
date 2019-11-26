@@ -22,11 +22,13 @@
 // where in the source this structure came from (useful for error messages)
 // - tag contains the NodeTags code
 // - flags contains node-specific flags
+// - instnode points to what triggered instancing, if not NULL
 // - lexer contains -> url (filepath) and -> source
 // - srcp points to start of source token
 // - linep points to start of line that token begins on
 // - linenbr is the source file's line number, starting with 1
 #define INodeHdr \
+    INode *instnode; \
     Lexer *lexer; \
     char *srcp; \
     char *linep; \
@@ -163,6 +165,7 @@ enum NodeTags {
     node = (nodestruct*) memAllocBlk(sizeof(nodestruct)); \
     node->tag = nodetype; \
     node->flags = 0; \
+    node->instnode = NULL; \
     node->lexer = lex; \
     node->srcp = lex->tokp; \
     node->linep = lex->linep; \

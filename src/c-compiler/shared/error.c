@@ -36,11 +36,11 @@ void errorExit(int exitcode, const char *msg, ...) {
 // Send an error message to stderr
 void errorOut(int code, const char *msg, va_list args) {
     // Prefix for error message
-    if (code<WarnCode) {
+    if (code < WarnCode) {
         errors++;
         fprintf(stderr, "Error %d: ", code);
     }
-    else {
+    else if (code < Uncounted) {
         warnings++;
         fprintf(stderr, "Warning %d: ", code);
     }
@@ -81,6 +81,8 @@ void errorMsgNode(INode *node, int code, const char *msg, ...) {
     va_start(argptr, msg);
     errorOutCode(node->srcp, node->linenbr, node->linep, node->lexer->url, code, msg, argptr);
     va_end(argptr);
+    if (node->instnode)
+        errorMsgNode(node->instnode, Uncounted, "... as instantiated by this part of the source code");
 }
 
 // Send an error message to stderr
