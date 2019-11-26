@@ -22,7 +22,10 @@ void macroDclPrint(MacroDclNode *fn);
 // Name resolution
 void macroDclNameRes(NameResState *pstate, MacroDclNode *node);
 
-// Type check
+// Type check macro declaration
 void macroDclTypeCheck(TypeCheckState *pstate, MacroDclNode *node);
+
+// Type check macro name use
+void macroNameTypeCheck(TypeCheckState *pstate, NameUseNode **macro);
 
 #endif

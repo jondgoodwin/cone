@@ -16,6 +16,14 @@ ULitNode *newULitNode(uint64_t nbr, INode *type) {
     return lit;
 }
 
+// Clone literal
+INode *cloneULitNode(ULitNode *lit) {
+    ULitNode *newlit;
+    newlit = memAllocBlk(sizeof(ULitNode));
+    memcpy(newlit, lit, sizeof(ULitNode));
+    return (INode *)newlit;
+}
+
 // Serialize an Unsigned literal
 void ulitPrint(ULitNode *lit) {
     if (((NbrNode*)lit->vtype)->bits == 1)

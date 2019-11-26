@@ -18,6 +18,8 @@
 #ifndef inode_h
 #define inode_h
 
+#include "memory.h"
+
 // All IR nodes begin with this header, mostly containing lexer data describing
 // where in the source this structure came from (useful for error messages)
 // - tag contains the NodeTags code
@@ -70,6 +72,7 @@ enum NodeTags {
 
     // Name usage (we do not know what type of name it is until name resolution pass)
     NameUseTag,     // Name use node (pre-name resolution)
+    MacroNameTag,   // Macro name use node
 
     ModuleTag = StmtGroup + NamedNode,        // Module namespace
     FnDclTag,       // Function/method declaration

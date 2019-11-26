@@ -14,6 +14,9 @@ typedef struct ULitNode {
     uint64_t uintlit;
 } ULitNode;
 
+// Clone literal
+INode *cloneULitNode(ULitNode *lit);
+
 // Float literal
 typedef struct FLitNode {
     IExpNodeHdr;

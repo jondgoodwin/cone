@@ -366,6 +366,8 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node) {
 
     case MacroDclTag:
         macroDclTypeCheck(pstate, (MacroDclNode *)*node); break;
+    case MacroNameTag:
+        macroNameTypeCheck(pstate, (NameUseNode **)node); break;
 
     case MbrNameUseTag:
     case StringLitTag:

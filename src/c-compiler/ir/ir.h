@@ -94,6 +94,8 @@ typedef struct AllocNode {
 #include "exp/sizeof.h"
 #include "exp/vtuple.h"
 
+#include "clone.h"
+
 #include "../std/stdlib.h"
 
 // Context used for name resolution pass
