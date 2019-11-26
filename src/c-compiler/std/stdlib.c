@@ -26,6 +26,7 @@ void keywordInit() {
     keyAdd("mod", ModToken);
     keyAdd("extern", ExternToken);
     keyAdd("set", SetToken);
+    keyAdd("macro", MacroToken);
     keyAdd("fn", FnToken);
     keyAdd("struct", StructToken);
     keyAdd("trait", TraitToken);

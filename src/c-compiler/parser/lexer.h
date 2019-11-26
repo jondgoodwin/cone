@@ -120,6 +120,7 @@ enum TokenTypes {
     ModToken,        // 'mod'
     ExternToken,    // 'extern'
     SetToken,       // 'set'
+    MacroToken,     // 'macro'
     FnToken,        // 'fn'
     StructToken,    // 'struct'
     TraitToken,     // 'trait'

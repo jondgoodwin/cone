@@ -250,6 +250,9 @@ void inodeNameRes(NameResState *pstate, INode **node) {
     case AllocTag:
         break;
 
+    case MacroDclTag:
+        macroDclNameRes(pstate, (MacroDclNode *)*node); break;
+
     case MbrNameUseTag:
     case ULitTag:
     case FLitTag:
@@ -360,6 +363,9 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node) {
     case AllocTag:
     case PermTag:
         break;
+
+    case MacroDclTag:
+        macroDclTypeCheck(pstate, (MacroDclNode *)*node); break;
 
     case MbrNameUseTag:
     case StringLitTag:

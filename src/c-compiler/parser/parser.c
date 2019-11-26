@@ -174,6 +174,20 @@ void parseFnOrVar(ParseState *parse, uint16_t flags) {
     }
 }
 
+// Parse a macro declaration
+MacroDclNode *parseMacro(ParseState *parse) {
+    lexNextToken();
+    if (!lexIsToken(IdentToken)) {
+        errorMsgLex(ErrorBadTok, "Expected a macro name");
+        return newMacroDclNode(anonName);
+    }
+    MacroDclNode *macro = newMacroDclNode(lex->val.ident);
+    lexNextToken();
+    macro->body = parseSimpleExpr(parse);
+    parseEndOfStatement();
+    return macro;
+}
+
 ModuleNode *parseModule(ParseState *parse);
 
 // Parse a global area statement (within a module)
@@ -211,6 +225,13 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
         case EnumTraitToken: {
             StructNode *strnode = (StructNode*)parseStruct(parse, TraitType | SameSize);
             modAddNode(mod, strnode->namesym, (INode*)strnode);
+            break;
+        }
+
+        // 'macro'
+        case MacroToken: {
+            MacroDclNode *macro = parseMacro(parse);
+            modAddNode(mod, macro->namesym, (INode*)macro);
             break;
         }
 

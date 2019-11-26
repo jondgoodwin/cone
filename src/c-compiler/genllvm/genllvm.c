@@ -213,6 +213,9 @@ void genlModule(GenState *gen, ModuleNode *mod) {
             genlModule(gen, (ModuleNode*)nodep);
             break;
 
+        case MacroDclTag:
+            break;
+
         default:
             // No need to generate type declarations: type uses will do so
             if (isTypeNode(nodep))
