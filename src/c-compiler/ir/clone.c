@@ -19,6 +19,14 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         node = cloneAssignNode(cstate, (AssignNode *)nodep); break;
     case BlockTag:
         node = cloneBlockNode(cstate, (BlockNode *)nodep); break;
+    case BorrowTag:
+        node = cloneBorrowNode(cstate, (BorrowNode *)nodep); break;
+    case CastTag:
+        node = cloneCastNode(cstate, (CastNode *)nodep); break;
+    case DerefTag:
+        node = cloneDerefNode(cstate, (DerefNode *)nodep); break;
+    case FnCallTag:
+        node = cloneFnCallNode(cstate, (FnCallNode *)nodep); break;
     case ULitTag:
         node = cloneULitNode((ULitNode *)nodep); break;
     case FLitTag:

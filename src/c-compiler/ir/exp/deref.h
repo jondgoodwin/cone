@@ -14,6 +14,10 @@ typedef struct DerefNode {
 } DerefNode;
 
 DerefNode *newDerefNode();
+
+// Clone deref
+INode *cloneDerefNode(CloneState *cstate, DerefNode *node);
+
 void derefPrint(DerefNode *node);
 // Name resolution of deref node
 void derefNameRes(NameResState *pstate, DerefNode *node);

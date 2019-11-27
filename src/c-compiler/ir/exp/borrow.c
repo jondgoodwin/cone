@@ -16,6 +16,15 @@ BorrowNode *newBorrowNode() {
     return node;
 }
 
+// Clone borrow
+INode *cloneBorrowNode(CloneState *cstate, BorrowNode *node) {
+    BorrowNode *newnode;
+    newnode = memAllocBlk(sizeof(BorrowNode));
+    memcpy(newnode, node, sizeof(BorrowNode));
+    newnode->exp = cloneNode(cstate, node->exp);
+    return (INode *)newnode;
+}
+
 // Serialize borrow node
 void borrowPrint(BorrowNode *node) {
     inodeFprint("&(");

@@ -16,6 +16,16 @@ CastNode *newCastNode(INode *exp, INode *type) {
     return node;
 }
 
+// Clone cast
+INode *cloneCastNode(CloneState *cstate, CastNode *node) {
+    CastNode *newnode;
+    newnode = memAllocBlk(sizeof(CastNode));
+    memcpy(newnode, node, sizeof(CastNode));
+    newnode->exp = cloneNode(cstate, node->exp);
+    newnode->typ = cloneNode(cstate, node->typ);
+    return (INode *)newnode;
+}
+
 // Create a new cast node
 CastNode *newIsNode(INode *exp, INode *type) {
     CastNode *node;

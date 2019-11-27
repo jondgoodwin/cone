@@ -19,6 +19,9 @@ typedef struct CastNode {
 
 CastNode *newCastNode(INode *exp, INode *type);
 
+// Clone cast
+INode *cloneCastNode(CloneState *cstate, CastNode *node);
+
 // Create a new cast node
 CastNode *newIsNode(INode *exp, INode *type);
 

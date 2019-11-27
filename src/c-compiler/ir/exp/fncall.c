@@ -34,6 +34,17 @@ FnCallNode *newFnCallOp(INode *obj, char *op, int nnodes) {
     return node;
 }
 
+// Clone fncall
+INode *cloneFnCallNode(CloneState *cstate, FnCallNode *node) {
+    FnCallNode *newnode;
+    newnode = memAllocBlk(sizeof(FnCallNode));
+    memcpy(newnode, node, sizeof(FnCallNode));
+    newnode->objfn = cloneNode(cstate, node->objfn);
+    newnode->args = cloneNodes(cstate, node->args);
+    newnode->methfld = (NameUseNode*)cloneNode(cstate, (INode*)node->methfld);
+    return (INode *)newnode;
+}
+
 // Serialize function call node
 void fnCallPrint(FnCallNode *node) {
     INode **nodesp;

@@ -14,6 +14,10 @@ typedef struct BorrowNode {
 } BorrowNode;
 
 BorrowNode *newBorrowNode();
+
+// Clone borrow
+INode *cloneBorrowNode(CloneState *cstate, BorrowNode *node);
+
 void borrowPrint(BorrowNode *node);
 
 // Name resolution of borrow node

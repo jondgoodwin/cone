@@ -15,6 +15,15 @@ DerefNode *newDerefNode() {
     return node;
 }
 
+// Clone deref
+INode *cloneDerefNode(CloneState *cstate, DerefNode *node) {
+    DerefNode *newnode;
+    newnode = memAllocBlk(sizeof(DerefNode));
+    memcpy(newnode, node, sizeof(DerefNode));
+    newnode->exp = cloneNode(cstate, node->exp);
+    return (INode *)newnode;
+}
+
 // Serialize deref
 void derefPrint(DerefNode *node) {
     inodeFprint("*");
