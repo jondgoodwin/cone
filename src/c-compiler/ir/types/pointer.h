@@ -17,8 +17,8 @@ typedef struct PtrNode {
 // Create a new pointer type whose info will be filled in afterwards
 PtrNode *newPtrNode();
 
-// Create a new pointer node that is a copy of an existing one
-PtrNode *copyPtrNode(PtrNode *node);
+// Clone pointer
+INode *clonePtrNode(CloneState *cstate, PtrNode *node);
 
 // Serialize a pointer type
 void ptrPrint(PtrNode *node);

@@ -16,6 +16,10 @@ typedef struct ArrayNode {
 } ArrayNode;
 
 ArrayNode *newArrayNode();
+
+// Clone array
+INode *cloneArrayNode(CloneState *cstate, ArrayNode *node);
+
 // Create a new array type of a specified size and element type
 ArrayNode *newArrayNodeTyped(size_t size, INode *elemtype);
 void arrayPrint(ArrayNode *node);

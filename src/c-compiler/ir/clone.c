@@ -70,6 +70,22 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     case VarDclTag:
         node = cloneVarDclNode(cstate, (VarDclNode *)nodep); break;
 
+    case ArrayTag:
+        node = cloneArrayNode(cstate, (ArrayNode *)nodep); break;
+    case FnSigTag:
+        node = cloneFnSigNode(cstate, (FnSigNode *)nodep); break;
+    case PtrTag:
+        node = clonePtrNode(cstate, (PtrNode *)nodep); break;
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag:
+        node = cloneRefNode(cstate, (RefNode *)nodep); break;
+    case VoidTag:
+        node = cloneVoidNode(cstate, (VoidTypeNode *)nodep); break;
+
+    case EnumTag:
+        node = nodep; break;
+
     default:
         assert(0 && "Do not know how to clone a node of this type");
     }

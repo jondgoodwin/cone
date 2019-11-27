@@ -22,8 +22,8 @@ typedef struct RefNode {
 // Create a new reference type whose info will be filled in afterwards
 RefNode *newRefNode();
 
-// Create a new reference node that is a copy of an existing one
-RefNode *copyRefNode(RefNode *node);
+// Clone reference
+INode *cloneRefNode(CloneState *cstate, RefNode *node);
 
 // Create a new reference type whose info is known and analyzeable
 RefNode *newRefNodeFull(INode *alloc, INode *perm, INode *vtype);

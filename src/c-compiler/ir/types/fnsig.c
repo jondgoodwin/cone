@@ -18,11 +18,13 @@ FnSigNode *newFnSigNode() {
     return sig;
 }
 
-// Create a new function signature node that is a copy of an existing one
-FnSigNode *copyFnSigNode(FnSigNode *node, INode *newselftype) {
-    FnSigNode *newsig = memAllocBlk(sizeof(FnSigNode));
-    memcpy(newsig, node, sizeof(FnSigNode));
-    return newsig;
+// Clone function signature
+INode *cloneFnSigNode(CloneState *cstate, FnSigNode *node) {
+    FnSigNode *newnode = memAllocBlk(sizeof(FnSigNode));
+    memcpy(newnode, node, sizeof(FnSigNode));
+    newnode->parms = cloneNodes(cstate, node->parms);
+    newnode->rettype = cloneNode(cstate, node->rettype);
+    return (INode *)newnode;
 }
 
 // Serialize a function signature node

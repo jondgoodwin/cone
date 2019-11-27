@@ -15,11 +15,14 @@ RefNode *newRefNode() {
     return refnode;
 }
 
-// Create a new reference node that is a copy of an existing one
-RefNode *copyRefNode(RefNode *node) {
+// Clone reference
+INode *cloneRefNode(CloneState *cstate, RefNode *node) {
     RefNode *newnode = memAllocBlk(sizeof(RefNode));
     memcpy(newnode, node, sizeof(RefNode));
-    return newnode;
+    newnode->alloc = cloneNode(cstate, node->alloc);
+    newnode->perm = cloneNode(cstate, node->perm);
+    newnode->pvtype = cloneNode(cstate, node->pvtype);
+    return (INode *)newnode;
 }
 
 // Set type infection flags based on the reference's type parameters

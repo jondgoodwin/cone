@@ -18,8 +18,7 @@ AllocateNode *newAllocateNode() {
 
 // Clone allocate
 INode *cloneAllocateNode(CloneState *cstate, AllocateNode *node) {
-    AllocateNode *newnode;
-    newnode = memAllocBlk(sizeof(AllocateNode));
+    AllocateNode *newnode = memAllocBlk(sizeof(AllocateNode));
     memcpy(newnode, node, sizeof(AllocateNode));
     newnode->exp = cloneNode(cstate, node->exp);
     return (INode *)newnode;

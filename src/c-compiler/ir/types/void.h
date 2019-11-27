@@ -14,6 +14,10 @@ typedef struct VoidTypeNode {
 } VoidTypeNode;
 
 VoidTypeNode *newVoidNode();
+
+// Clone void
+INode *cloneVoidNode(CloneState *cstate, VoidTypeNode *node);
+
 void voidPrint(VoidTypeNode *voidnode);
 
 #endif

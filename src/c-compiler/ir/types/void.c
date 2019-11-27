@@ -15,6 +15,13 @@ VoidTypeNode *newVoidNode() {
     return voidnode;
 }
 
+// Clone void
+INode *cloneVoidNode(CloneState *cstate, VoidTypeNode *node) {
+    PtrNode *newnode = memAllocBlk(sizeof(VoidTypeNode));
+    memcpy(newnode, node, sizeof(VoidTypeNode));
+    return (INode *)newnode;
+}
+
 // Serialize the void type node
 void voidPrint(VoidTypeNode *voidnode) {
     inodeFprint("void");

@@ -26,9 +26,6 @@ typedef struct Nodes {
 // Helper Functions
 Nodes *newNodes(int size);
 
-// Make a copy of a Nodes structure
-Nodes *nodesCopy(Nodes *oldnodes);
-
 // Make a deep clone of a Nodes structure
 typedef struct CloneState CloneState;
 Nodes *cloneNodes(CloneState *cstate, Nodes *oldnodes);

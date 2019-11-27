@@ -25,6 +25,14 @@ ArrayNode *newArrayNodeTyped(size_t size, INode *elemtype) {
     return anode;
 }
 
+// Clone array
+INode *cloneArrayNode(CloneState *cstate, ArrayNode *node) {
+    ArrayNode *newnode = memAllocBlk(sizeof(ArrayNode));
+    memcpy(newnode, node, sizeof(ArrayNode));
+    newnode->elemtype = cloneNode(cstate, node->elemtype);
+    return (INode *)newnode;
+}
+
 // Serialize an array type
 void arrayPrint(ArrayNode *node) {
     inodeFprint("[%d]", (int)node->size);

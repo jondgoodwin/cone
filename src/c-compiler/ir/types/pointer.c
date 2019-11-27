@@ -15,11 +15,12 @@ PtrNode *newPtrNode() {
     return ptrnode;
 }
 
-// Create a new pointer node that is a copy of an existing one
-PtrNode *copyPtrNode(PtrNode *node) {
+// Clone pointer
+INode *clonePtrNode(CloneState *cstate, PtrNode *node) {
     PtrNode *newnode = memAllocBlk(sizeof(PtrNode));
     memcpy(newnode, node, sizeof(PtrNode));
-    return newnode;
+    newnode->pvtype = cloneNode(cstate, node->pvtype);
+    return (INode *)newnode;
 }
 
 // Serialize a pointer type
