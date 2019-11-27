@@ -21,8 +21,8 @@ typedef struct FnDclNode {
 // Create a new function declaraction node
 FnDclNode *newFnDclNode(Name *namesym, uint16_t tag, INode *sig, INode *val);
 
-// Return a copy of a method declaration, adjusting self's type to type
-FnDclNode *copyFnDclNode(FnDclNode *oldfn, INode *type);
+// Return a clone of a function/method declaration
+INode *cloneFnDclNode(CloneState *cstate, FnDclNode *oldfn);
 
 void fnDclPrint(FnDclNode *fn);
 

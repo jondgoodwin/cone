@@ -56,6 +56,20 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         node = cloneFLitNode((FLitNode *)nodep); break;
     case StringLitTag:
         node = cloneSLitNode((SLitNode *)nodep); break;
+
+    case BreakTag:
+        node = cloneBreakNode(cstate, (BreakNode *)nodep); break;
+    case ContinueTag:
+        node = cloneContinueNode(cstate, (ContinueNode *)nodep); break;
+    case FieldDclTag:
+        node = cloneFieldDclNode(cstate, (FieldDclNode *)nodep); break;
+    case FnDclTag:
+        node = cloneFnDclNode(cstate, (FnDclNode *)nodep); break;
+    case ReturnTag:
+        node = cloneReturnNode(cstate, (ReturnNode *)nodep); break;
+    case VarDclTag:
+        node = cloneVarDclNode(cstate, (VarDclNode *)nodep); break;
+
     default:
         assert(0 && "Do not know how to clone a node of this type");
     }

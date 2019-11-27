@@ -22,30 +22,6 @@ FnSigNode *newFnSigNode() {
 FnSigNode *copyFnSigNode(FnSigNode *node, INode *newselftype) {
     FnSigNode *newsig = memAllocBlk(sizeof(FnSigNode));
     memcpy(newsig, node, sizeof(FnSigNode));
-
-    // Change self parameter to use selftype
-    newsig->parms = nodesCopy(node->parms);
-    VarDclNode *self = copyVarDclNode((VarDclNode*)nodesGet(newsig->parms, 0));
-    INode* selftype = iexpGetTypeDcl((INode*)self);
-    switch (selftype->tag) {
-    case RefTag:
-    case VirtRefTag:
-    {
-        RefNode *newref = copyRefNode((RefNode*)selftype);
-        newref->pvtype = newselftype;
-        self->vtype = (INode*)newref;
-        break;
-    }
-    case PtrTag:
-    {
-        PtrNode *newptr = copyPtrNode((PtrNode*)selftype);
-        newptr->pvtype = newselftype;
-        self->vtype = (INode*)newptr;
-        break;
-    }
-    default:
-        self->vtype = newselftype;
-    }
     return newsig;
 }
 

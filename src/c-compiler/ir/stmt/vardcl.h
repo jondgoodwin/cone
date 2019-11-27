@@ -28,8 +28,8 @@ enum VarFlowTemp {
 VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *perm);
 VarDclNode *newVarDclFull(Name *namesym, uint16_t tag, INode *sig, INode *perm, INode *val);
 
-// Create a new var declaration node that is a copy of an existing one
-VarDclNode *copyVarDclNode(VarDclNode *node);
+// Create a new variable dcl node that is a copy of an existing one
+INode *cloneVarDclNode(CloneState *cstate, VarDclNode *node);
 
 void varDclPrint(VarDclNode *fn);
 

@@ -96,13 +96,13 @@ void structTypeCheckBaseTrait(StructNode *node) {
 }
 
 // Add method at end of strnode's method chain for this name
-void structInheritMethod(StructNode *strnode, FnDclNode *traitmeth, StructNode *trait) {
+void structInheritMethod(StructNode *strnode, FnDclNode *traitmeth, StructNode *trait, CloneState *cstate) {
     // Add default method, so long as it implements logic
     if (traitmeth->value == NULL) {
         errorMsgNode((INode*)strnode, ErrorInvType, "Type must implement %s method, as required by %s",
             traitmeth->namesym->namestr, trait->namesym->namestr);
     }
-    iNsTypeAddFn((INsTypeNode *)strnode, copyFnDclNode(traitmeth, (INode*)strnode));
+    iNsTypeAddFn((INsTypeNode *)strnode, (FnDclNode*)cloneNode(cstate, (INode*)traitmeth));
 }
 
 // Type check a struct type
@@ -137,6 +137,9 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     // We go backwards to prevent index invalidation and to ensure method inheritance stays in correct order.
     // When done, all trait mixins are replaced with the trait's fields
     // And trait/field inheritance are appropriately added to the dictionary in the correct order
+    CloneState cstate;
+    cstate.instnode = (INode*)node;
+    cstate.scope = 0;
     int32_t fldpos = node->fields.used - 1;
     INode **fldnodesp = &nodelistGet(&node->fields, fldpos);
     while (fldpos >= 0) {
@@ -153,7 +156,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
                 nodelistMakeSpace(&node->fields, fldpos, trait->fields.used - 1);
                 INode **insertp = fldnodesp;
                 for (nodelistFor(&trait->fields, cnt, nodesp)) {
-                    FieldDclNode *newfld = copyFieldDclNode(*nodesp);
+                    FieldDclNode *newfld = (FieldDclNode*)cloneNode(&cstate, *nodesp);
                     *insertp++ = (INode *)newfld;
                     if (namespaceAdd(&node->namespace, newfld->namesym, (INode*)newfld)) {
                         errorMsgNode((INode*)newfld, ErrorDupName, "Trait may not mix in a duplicate field name");
@@ -167,11 +170,11 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
                     FnDclNode *structmeth = (FnDclNode*)iNsTypeFindFnField((INsTypeNode *)node, traitmeth->namesym);
                     if (structmeth == NULL)
                         // Inherit default method
-                        structInheritMethod(node, traitmeth, trait);
+                        structInheritMethod(node, traitmeth, trait, &cstate);
                     else {
                         // If no exact match, add it
                         if (iNsTypeFindVrefMethod(structmeth, traitmeth) == NULL)
-                            structInheritMethod(node, traitmeth, trait);
+                            structInheritMethod(node, traitmeth, trait, &cstate);
                     }
                 }
             }

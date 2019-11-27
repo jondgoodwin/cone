@@ -17,6 +17,15 @@ BreakNode *newBreakNode() {
     return node;
 }
 
+// Clone break
+INode *cloneBreakNode(CloneState *cstate, BreakNode *node) {
+    BreakNode *newnode;
+    newnode = memAllocBlk(sizeof(BreakNode));
+    memcpy(newnode, node, sizeof(BreakNode));
+    newnode->exp = cloneNode(cstate, node->exp);
+    return (INode *)newnode;
+}
+
 // Name resolution for break
 // - Resolve any lifetime or expression names
 void breakNameRes(NameResState *pstate, BreakNode *node) {

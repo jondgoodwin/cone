@@ -20,6 +20,10 @@ BreakNode *newBreakNode();
 
 // Name resolution for break
 void breakNameRes(NameResState *pstate, BreakNode *node);
+
+// Clone break
+INode *cloneBreakNode(CloneState *cstate, BreakNode *node);
+
 void breakTypeCheck(TypeCheckState *pstate, BreakNode *node);
 
 typedef struct LoopNode LoopNode;

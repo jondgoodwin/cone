@@ -17,6 +17,9 @@ typedef struct ContinueNode {
 
 ContinueNode *newContinueNode();
 
+// Clone continue
+INode *cloneContinueNode(CloneState *cstate, ContinueNode *node);
+
 // Name resolution for continue
 void continueNameRes(NameResState *pstate, ContinueNode *node);
 void continueTypeCheck(TypeCheckState *pstate, ContinueNode *node);

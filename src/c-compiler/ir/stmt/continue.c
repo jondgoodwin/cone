@@ -16,6 +16,14 @@ ContinueNode *newContinueNode() {
     return node;
 }
 
+// Clone continue
+INode *cloneContinueNode(CloneState *cstate, ContinueNode *node) {
+    ContinueNode *newnode;
+    newnode = memAllocBlk(sizeof(ContinueNode));
+    memcpy(newnode, node, sizeof(ContinueNode));
+    return (INode *)newnode;
+}
+
 // Name resolution for continue
 // - Resolve any lifetime name
 void continueNameRes(NameResState *pstate, ContinueNode *node) {

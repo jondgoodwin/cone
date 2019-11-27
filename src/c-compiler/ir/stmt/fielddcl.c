@@ -23,10 +23,12 @@ FieldDclNode *newFieldDclNode(Name *namesym, INode *perm) {
 }
 
 // Create a new field node that is a copy of an existing one
-FieldDclNode *copyFieldDclNode(INode *node) {
+INode *cloneFieldDclNode(CloneState *cstate, FieldDclNode *node) {
     FieldDclNode *newnode = memAllocBlk(sizeof(FieldDclNode));
     memcpy(newnode, node, sizeof(FieldDclNode));
-    return newnode;
+    newnode->vtype = cloneNode(cstate, node->vtype);
+    newnode->value = cloneNode(cstate, node->value);
+    return (INode*)newnode;
 }
 
 // Serialize a field declaration node

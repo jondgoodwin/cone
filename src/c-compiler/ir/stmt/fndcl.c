@@ -24,15 +24,14 @@ FnDclNode *newFnDclNode(Name *namesym, uint16_t flags, INode *type, INode *val) 
     return name;
 }
 
-// Return a copy of a method declaration, adjusting self's type to type
-FnDclNode *copyFnDclNode(FnDclNode *oldfn, INode *selftype) {
+// Return a clone of a function/method declaration
+INode *cloneFnDclNode(CloneState *cstate, FnDclNode *oldfn) {
     FnDclNode *newnode = memAllocBlk(sizeof(FnDclNode));
     memcpy(newnode, oldfn, sizeof(FnDclNode));
     newnode->nextnode = NULL; // clear out linkages
-    // Alter method signature's self parm to use type
-    FnSigNode *newsig = copyFnSigNode((FnSigNode*)oldfn->vtype, selftype);
-    newnode->vtype = (INode*)newsig;
-    return newnode;
+    newnode->vtype = cloneNode(cstate, oldfn->vtype);
+    newnode->vtype = cloneNode(cstate, oldfn->value);
+    return (INode*)newnode;
 }
 
 // Serialize a function node

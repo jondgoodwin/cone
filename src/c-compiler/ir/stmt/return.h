@@ -16,6 +16,10 @@ typedef struct ReturnNode {
 } ReturnNode;
 
 ReturnNode *newReturnNode();
+
+// Clone return
+INode *cloneReturnNode(CloneState *cstate, ReturnNode *node);
+
 void returnPrint(ReturnNode *node);
 // Name resolution for return
 void returnNameRes(NameResState *pstate, ReturnNode *node);

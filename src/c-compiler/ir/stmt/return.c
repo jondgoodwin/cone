@@ -16,6 +16,15 @@ ReturnNode *newReturnNode() {
     return node;
 }
 
+// Clone return
+INode *cloneReturnNode(CloneState *cstate, ReturnNode *node) {
+    ReturnNode *newnode;
+    newnode = memAllocBlk(sizeof(ReturnNode));
+    memcpy(newnode, node, sizeof(ReturnNode));
+    newnode->exp = cloneNode(cstate, node->exp);
+    return (INode *)newnode;
+}
+
 // Serialize a return statement
 void returnPrint(ReturnNode *node) {
     inodeFprint(node->tag == BlockRetTag? "blockret " : "return ");
