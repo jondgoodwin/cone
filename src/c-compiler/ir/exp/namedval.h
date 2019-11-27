@@ -16,6 +16,10 @@ typedef struct NamedValNode {
 } NamedValNode;
 
 NamedValNode *newNamedValNode(INode *name);
+
+// Clone namedval
+INode *cloneNamedValNode(CloneState *cstate, NamedValNode *node);
+
 void namedValPrint(NamedValNode *node);
 
 // Name resolution of named value node

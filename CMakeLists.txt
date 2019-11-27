@@ -23,6 +23,7 @@ add_executable(conec
 	src/c-compiler/shared/timer.c
 	src/c-compiler/shared/utf8.c
 
+	src/c-compiler/ir/clone.c
 	src/c-compiler/ir/flow.c
 	src/c-compiler/ir/iexp.c
 	src/c-compiler/ir/inode.c
@@ -39,6 +40,7 @@ add_executable(conec
 	src/c-compiler/ir/stmt/fielddcl.c
 	src/c-compiler/ir/stmt/fndcl.c
 	src/c-compiler/ir/stmt/intrinsic.c
+	src/c-compiler/ir/stmt/macro.c
 	src/c-compiler/ir/stmt/module.c
 	src/c-compiler/ir/stmt/return.c
 	src/c-compiler/ir/stmt/vardcl.c

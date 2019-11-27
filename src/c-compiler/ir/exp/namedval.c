@@ -16,6 +16,16 @@ NamedValNode *newNamedValNode(INode *name) {
     return node;
 }
 
+// Clone namedval
+INode *cloneNamedValNode(CloneState *cstate, NamedValNode *node) {
+    NamedValNode *newnode;
+    newnode = memAllocBlk(sizeof(NamedValNode));
+    memcpy(newnode, node, sizeof(NamedValNode));
+    newnode->name = cloneNode(cstate, node->name);
+    newnode->val = cloneNode(cstate, node->val);
+    return (INode *)newnode;
+}
+
 // Serialize named value node
 void namedValPrint(NamedValNode *node) {
     inodePrintNode(node->name);

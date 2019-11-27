@@ -18,6 +18,16 @@ LoopNode *newLoopNode() {
     return node;
 }
 
+// Clone loop
+INode *cloneLoopNode(CloneState *cstate, LoopNode *node) {
+    LoopNode *newnode;
+    newnode = memAllocBlk(sizeof(LoopNode));
+    memcpy(newnode, node, sizeof(LoopNode));
+    newnode->blk = cloneNode(cstate, node->blk);
+    newnode->breaks = cloneNodes(cstate, node->breaks);
+    return (INode *)newnode;
+}
+
 // Serialize a loop node
 void loopPrint(LoopNode *node) {
     inodeFprint("loop");

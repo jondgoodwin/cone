@@ -15,6 +15,10 @@ typedef struct IfNode {
 } IfNode;
 
 IfNode *newIfNode();
+
+// Clone if
+INode *cloneIfNode(CloneState *cstate, IfNode *node);
+
 void ifPrint(IfNode *ifnode);
 
 // if node name resolution

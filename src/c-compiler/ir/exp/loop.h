@@ -17,6 +17,10 @@ typedef struct LoopNode {
 } LoopNode;
 
 LoopNode *newLoopNode();
+
+// Clone loop
+INode *cloneLoopNode(CloneState *cstate, LoopNode *node);
+
 void loopPrint(LoopNode *wnode);
 
 // while block name resolution

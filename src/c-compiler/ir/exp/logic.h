@@ -16,6 +16,10 @@ typedef struct LogicNode {
 } LogicNode;
 
 LogicNode *newLogicNode(int16_t typ);
+
+// Clone logic node
+INode *cloneLogicNode(CloneState *cstate, LogicNode *node);
+
 void logicPrint(LogicNode *node);
 
 // Name resolution of not logic node

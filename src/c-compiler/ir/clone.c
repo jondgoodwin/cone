@@ -27,6 +27,16 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         node = cloneDerefNode(cstate, (DerefNode *)nodep); break;
     case FnCallTag:
         node = cloneFnCallNode(cstate, (FnCallNode *)nodep); break;
+    case IfTag:
+        node = cloneIfNode(cstate, (IfNode *)nodep); break;
+    case NotLogicTag:
+    case OrLogicTag:
+    case AndLogicTag:
+        node = cloneLogicNode(cstate, (LogicNode *)nodep); break;
+    case LoopTag:
+        node = cloneLoopNode(cstate, (LoopNode *)nodep); break;
+    case NamedValTag:
+        node = cloneNamedValNode(cstate, (NamedValNode *)nodep); break;
     case ULitTag:
         node = cloneULitNode((ULitNode *)nodep); break;
     case FLitTag:

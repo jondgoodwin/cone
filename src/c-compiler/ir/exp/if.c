@@ -16,6 +16,15 @@ IfNode *newIfNode() {
     return ifnode;
 }
 
+// Clone if
+INode *cloneIfNode(CloneState *cstate, IfNode *node) {
+    IfNode *newnode;
+    newnode = memAllocBlk(sizeof(IfNode));
+    memcpy(newnode, node, sizeof(IfNode));
+    newnode->condblk = cloneNodes(cstate, node->condblk);
+    return (INode *)newnode;
+}
+
 // Serialize an if statement
 void ifPrint(IfNode *ifnode) {
     INode **nodesp;

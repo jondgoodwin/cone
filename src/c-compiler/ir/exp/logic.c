@@ -15,6 +15,16 @@ LogicNode *newLogicNode(int16_t typ) {
     return node;
 }
 
+// Clone logic node
+INode *cloneLogicNode(CloneState *cstate, LogicNode *node) {
+    LogicNode *newnode;
+    newnode = memAllocBlk(sizeof(LogicNode));
+    memcpy(newnode, node, sizeof(LogicNode));
+    newnode->lexp = cloneNode(cstate, node->lexp);
+    newnode->rexp = cloneNode(cstate, node->rexp);
+    return (INode *)newnode;
+}
+
 // Serialize logic node
 void logicPrint(LogicNode *node) {
     if (node->tag == NotLogicTag) {
