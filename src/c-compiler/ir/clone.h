@@ -14,10 +14,11 @@
 
 // Context used across the cloning pass
 typedef struct CloneState {
-    INode *instnode;
+    INode *instnode;     // The node provoking instantiation (for error messages)
+    uint16_t scope;      // Current block level
 } CloneState;
 
 // Perform a deep clone of specified node
-INode *cloneNode(CloneState *fstate, INode **nodep);
+INode *cloneNode(CloneState *fstate, INode *nodep);
 
 #endif

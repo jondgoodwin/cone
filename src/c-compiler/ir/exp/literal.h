@@ -14,9 +14,6 @@ typedef struct ULitNode {
     uint64_t uintlit;
 } ULitNode;
 
-// Clone literal
-INode *cloneULitNode(ULitNode *lit);
-
 // Float literal
 typedef struct FLitNode {
     IExpNodeHdr;
@@ -35,10 +32,17 @@ typedef struct NullNode {
 } NullNode;
 
 ULitNode *newULitNode(uint64_t nbr, INode *type);
+
+// Clone literal
+INode *cloneULitNode(ULitNode *lit);
+
 void ulitPrint(ULitNode *node);
 
 FLitNode *newFLitNode(double nbr, INode *type);
 void flitPrint(FLitNode *node);
+
+// Clone literal
+INode *cloneFLitNode(FLitNode *lit);
 
 // Name resolution of lit node
 void litNameRes(NameResState* pstate, IExpNode *node);
@@ -49,6 +53,10 @@ void litTypeCheck(TypeCheckState* pstate, IExpNode *node);
 NullNode *newNullNode();
 
 SLitNode *newSLitNode(char *str, INode *type);
+
+// Clone literal
+INode *cloneSLitNode(SLitNode *lit);
+
 void slitPrint(SLitNode *node);
 
 int litIsLiteral(INode* node);

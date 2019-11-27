@@ -43,6 +43,7 @@ typedef struct TypeCheckState TypeCheckState;
 #include "name.h"
 #include "itype.h"
 #include "instype.h"
+#include "clone.h"
 #include "flow.h"
 
 // These includes are needed by all node handling
@@ -94,8 +95,6 @@ typedef struct AllocNode {
 #include "exp/sizeof.h"
 #include "exp/vtuple.h"
 
-#include "clone.h"
-
 #include "../std/stdlib.h"
 
 // Context used for name resolution pass
@@ -114,6 +113,7 @@ typedef struct TypeCheckState {
     INode *typenode;          // Current type (e.g., struct)
     LoopNode **loopstack;     // Stack of active loops
     uint32_t loopcnt;         // How many currently in the loop stack
+    uint16_t scope;           // Current block scope level
 } TypeCheckState;
 
 #endif

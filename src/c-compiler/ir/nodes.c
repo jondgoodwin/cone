@@ -22,6 +22,19 @@ Nodes *newNodes(int size) {
     return nodes;
 }
 
+// Make a deep clone of a Nodes structure
+Nodes *cloneNodes(CloneState *cstate, Nodes *oldnodes) {
+    Nodes *newnodes = newNodes(oldnodes->avail);
+    newnodes->used = oldnodes->used;
+    INode **nodesp;
+    uint32_t cnt;
+    INode **newnodesp = &nodesGet(newnodes, 0);
+    for (nodesFor(oldnodes, cnt, nodesp))
+        *newnodesp++ = cloneNode(cstate, *nodesp);
+    memcpy(newnodes + 1, oldnodes + 1, (oldnodes->used) * sizeof(INode*));
+    return newnodes;
+}
+
 // Make a copy of a Nodes structure
 Nodes *nodesCopy(Nodes *oldnodes) {
     Nodes *newnodes = newNodes(oldnodes->avail);

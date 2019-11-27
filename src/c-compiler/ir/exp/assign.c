@@ -19,6 +19,16 @@ AssignNode *newAssignNode(int16_t assigntype, INode *lval, INode *rval) {
     return node;
 }
 
+// Clone assign
+INode *cloneAssignNode(CloneState *cstate, AssignNode *node) {
+    AssignNode *newnode;
+    newnode = memAllocBlk(sizeof(AssignNode));
+    memcpy(newnode, node, sizeof(AssignNode));
+    newnode->lval = cloneNode(cstate, node->lval);
+    newnode->rval = cloneNode(cstate, node->rval);
+    return (INode *)newnode;
+}
+
 // Serialize assignment node
 void assignPrint(AssignNode *node) {
     inodeFprint("(=, ");

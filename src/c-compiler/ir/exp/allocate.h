@@ -14,6 +14,10 @@ typedef struct AllocateNode {
 } AllocateNode;
 
 AllocateNode *newAllocateNode();
+
+// Clone allocate
+INode *cloneAllocateNode(CloneState *cstate, AllocateNode *node);
+
 void allocatePrint(AllocateNode *node);
 
 // Name resolution of allocate node

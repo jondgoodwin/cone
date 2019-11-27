@@ -18,6 +18,10 @@ typedef struct BlockNode {
 } BlockNode;
 
 BlockNode *newBlockNode();
+
+// Clone block
+INode *cloneBlockNode(CloneState *cstate, BlockNode *node);
+
 void blockPrint(BlockNode *blk);
 
 // Handle name resolution and control structure compliance for a block

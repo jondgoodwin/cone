@@ -62,12 +62,13 @@ void macroNameTypeCheck(TypeCheckState *pstate, NameUseNode **macro) {
     // Set up clone state
     CloneState cstate;
     cstate.instnode = (INode*)*macro;
+    cstate.scope = pstate->scope;
 
     // Obtain macro to expand
     MacroDclNode *macrodcl = (MacroDclNode*)(*macro)->dclnode;
 
     // Instantiate macro, replacing macro name
-    *((INode**)macro) = cloneNode(&cstate, &macrodcl->body);
+    *((INode**)macro) = cloneNode(&cstate, macrodcl->body);
 
     // Now type check the instantiated nodes
     inodeTypeCheck(pstate, (INode**)macro);

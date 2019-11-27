@@ -16,6 +16,15 @@ AllocateNode *newAllocateNode() {
     return node;
 }
 
+// Clone allocate
+INode *cloneAllocateNode(CloneState *cstate, AllocateNode *node) {
+    AllocateNode *newnode;
+    newnode = memAllocBlk(sizeof(AllocateNode));
+    memcpy(newnode, node, sizeof(AllocateNode));
+    newnode->exp = cloneNode(cstate, node->exp);
+    return (INode *)newnode;
+}
+
 // Serialize allocate
 void allocatePrint(AllocateNode *node) {
     inodeFprint("&(");

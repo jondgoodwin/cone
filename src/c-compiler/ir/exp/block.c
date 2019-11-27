@@ -16,6 +16,16 @@ BlockNode *newBlockNode() {
     return blk;
 }
 
+// Clone block
+INode *cloneBlockNode(CloneState *cstate, BlockNode *node) {
+    BlockNode *newnode;
+    newnode = memAllocBlk(sizeof(BlockNode));
+    memcpy(newnode, node, sizeof(BlockNode));
+    newnode->stmts = cloneNodes(cstate, node->stmts);
+    newnode->scope = ++cstate->scope;
+    return (INode *)newnode;
+}
+
 // Serialize a block node
 void blockPrint(BlockNode *blk) {
     INode **nodesp;
@@ -67,6 +77,7 @@ void blockNameRes(NameResState *pstate, BlockNode *blk) {
 // Note: By default, we set the block's type to that of the last statement
 // Bidirectional type inference may later change this
 void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk) {
+    pstate->scope = blk->scope;
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(blk->stmts, cnt, nodesp)) {
@@ -81,6 +92,7 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk) {
         if (isExpNode(laststmt))
             blk->vtype = laststmt->vtype;
     }
+    --pstate->scope;
 }
 
 // Ensure this particular block does not end with break/continue

@@ -10,12 +10,21 @@
 #include <assert.h>
 
 // Deep copy a node
-INode *cloneNode(CloneState *cstate, INode **nodep) {
+INode *cloneNode(CloneState *cstate, INode *nodep) {
     INode *node;
-    switch ((*nodep)->tag) {
+    switch (nodep->tag) {
+    case AllocateTag:
+        node = cloneAllocateNode(cstate, (AllocateNode *)nodep); break;
+    case AssignTag:
+        node = cloneAssignNode(cstate, (AssignNode *)nodep); break;
+    case BlockTag:
+        node = cloneBlockNode(cstate, (BlockNode *)nodep); break;
     case ULitTag:
-        node = cloneULitNode((ULitNode *)*nodep);
-        break;
+        node = cloneULitNode((ULitNode *)nodep); break;
+    case FLitTag:
+        node = cloneFLitNode((FLitNode *)nodep); break;
+    case StringLitTag:
+        node = cloneSLitNode((SLitNode *)nodep); break;
     default:
         assert(0 && "Do not know how to clone a node of this type");
     }

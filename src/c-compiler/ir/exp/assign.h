@@ -22,6 +22,10 @@ typedef struct AssignNode {
 } AssignNode;
 
 AssignNode *newAssignNode(int16_t assigntype, INode *lval, INode *rval);
+
+// Clone assign
+INode *cloneAssignNode(CloneState *cstate, AssignNode *node);
+
 void assignPrint(AssignNode *node);
 
 // Name resolution for assignment node

@@ -43,6 +43,14 @@ FLitNode *newFLitNode(double nbr, INode *type) {
     return lit;
 }
 
+// Clone literal
+INode *cloneFLitNode(FLitNode *lit) {
+    FLitNode *newlit;
+    newlit = memAllocBlk(sizeof(FLitNode));
+    memcpy(newlit, lit, sizeof(FLitNode));
+    return (INode *)newlit;
+}
+
 // Serialize a Float literal
 void flitPrint(FLitNode *lit) {
     inodeFprint("%g", lit->floatlit);
@@ -75,6 +83,14 @@ SLitNode *newSLitNode(char *str, INode *type) {
     lit->strlit = str;
     lit->vtype = type;
     return lit;
+}
+
+// Clone literal
+INode *cloneSLitNode(SLitNode *lit) {
+    SLitNode *newlit;
+    newlit = memAllocBlk(sizeof(SLitNode));
+    memcpy(newlit, lit, sizeof(SLitNode));
+    return (INode *)newlit;
 }
 
 // Serialize a string literal
