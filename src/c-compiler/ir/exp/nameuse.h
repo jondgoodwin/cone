@@ -23,6 +23,10 @@ typedef struct NameUseNode {
 } NameUseNode;
 
 NameUseNode *newNameUseNode(Name *name);
+
+// Clone NameUse
+INode *cloneNameUseNode(CloneState *cstate, NameUseNode *node);
+
 void nameUseBaseMod(NameUseNode *node, ModuleNode *basemod);
 void nameUseAddQual(NameUseNode *node, Name *name);
 NameUseNode *newMemberUseNode(Name *namesym);

@@ -16,6 +16,15 @@ VTupleNode *newVTupleNode() {
     return tuple;
 }
 
+// Clone value tuple
+INode *cloneVTupleNode(CloneState *cstate, VTupleNode *node) {
+    VTupleNode *newnode;
+    newnode = memAllocBlk(sizeof(VTupleNode));
+    memcpy(newnode, node, sizeof(VTupleNode));
+    newnode->values = cloneNodes(cstate, node->values);
+    return (INode *)newnode;
+}
+
 // Serialize a value tuple node
 void vtuplePrint(VTupleNode *tuple) {
     INode **nodesp;

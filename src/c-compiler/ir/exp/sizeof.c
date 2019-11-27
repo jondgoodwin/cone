@@ -15,6 +15,15 @@ SizeofNode *newSizeofNode() {
     return node;
 }
 
+// Clone sizeof
+INode *cloneSizeofNode(CloneState *cstate, SizeofNode *node) {
+    SizeofNode *newnode;
+    newnode = memAllocBlk(sizeof(SizeofNode));
+    memcpy(newnode, node, sizeof(SizeofNode));
+    newnode->type = cloneNode(cstate, node->type);
+    return (INode *)newnode;
+}
+
 // Serialize sizeof
 void sizeofPrint(SizeofNode *node) {
     inodeFprint("(sizeof, ");

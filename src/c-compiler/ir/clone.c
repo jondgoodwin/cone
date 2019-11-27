@@ -11,6 +11,9 @@
 
 // Deep copy a node
 INode *cloneNode(CloneState *cstate, INode *nodep) {
+    if (nodep == NULL)
+        return NULL;
+
     INode *node;
     switch (nodep->tag) {
     case AllocateTag:
@@ -26,6 +29,9 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     case DerefTag:
         node = cloneDerefNode(cstate, (DerefNode *)nodep); break;
     case FnCallTag:
+    case ArrIndexTag:
+    case FldAccessTag:
+    case TypeLitTag:
         node = cloneFnCallNode(cstate, (FnCallNode *)nodep); break;
     case IfTag:
         node = cloneIfNode(cstate, (IfNode *)nodep); break;
@@ -37,6 +43,13 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         node = cloneLoopNode(cstate, (LoopNode *)nodep); break;
     case NamedValTag:
         node = cloneNamedValNode(cstate, (NamedValNode *)nodep); break;
+    case VarNameUseTag:
+    case TypeNameUseTag:
+        node = cloneNameUseNode(cstate, (NameUseNode *)nodep); break;
+    case SizeofTag:
+        node = cloneSizeofNode(cstate, (SizeofNode *)nodep); break;
+    case VTupleTag:
+        node = cloneVTupleNode(cstate, (VTupleNode *)nodep); break;
     case ULitTag:
         node = cloneULitNode((ULitNode *)nodep); break;
     case FLitTag:

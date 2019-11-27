@@ -15,6 +15,10 @@ typedef struct SizeofNode {
 } SizeofNode;
 
 SizeofNode *newSizeofNode();
+
+// Clone sizeof
+INode *cloneSizeofNode(CloneState *cstate, SizeofNode *node);
+
 void sizeofPrint(SizeofNode *node);
 
 // Name resolution of sizeof node

@@ -19,6 +19,9 @@ typedef struct VTupleNode {
 // Create a new value tuple node
 VTupleNode *newVTupleNode();
 
+// Clone value tuple
+INode *cloneVTupleNode(CloneState *cstate, VTupleNode *node);
+
 // Serialize a value tuple node
 void vtuplePrint(VTupleNode *tuple);
 

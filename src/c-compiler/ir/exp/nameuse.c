@@ -37,6 +37,14 @@ NameUseNode *newMemberUseNode(Name *namesym) {
     return name;
 }
 
+// Clone NameUse
+INode *cloneNameUseNode(CloneState *cstate, NameUseNode *node) {
+    NameUseNode *newnode;
+    newnode = memAllocBlk(sizeof(NameUseNode));
+    memcpy(newnode, node, sizeof(NameUseNode));
+    return (INode *)newnode;
+}
+
 // If a NameUseNode has module name qualifiers, it will first set basemod
 // (either root module or the current module scope). This allocates an area
 // for qualifiers to be added.
