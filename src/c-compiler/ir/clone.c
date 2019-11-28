@@ -82,7 +82,8 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     case VirtRefTag:
         node = cloneRefNode(cstate, (RefNode *)nodep); break;
     case VoidTag:
-        node = cloneVoidNode(cstate, (VoidTypeNode *)nodep); break;
+        node = nodep; break;
+        //node = cloneVoidNode(cstate, (VoidTypeNode *)nodep); break;
 
     case EnumTag:
         node = nodep; break;

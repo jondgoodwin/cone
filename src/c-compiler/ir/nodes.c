@@ -31,7 +31,6 @@ Nodes *cloneNodes(CloneState *cstate, Nodes *oldnodes) {
     INode **newnodesp = &nodesGet(newnodes, 0);
     for (nodesFor(oldnodes, cnt, nodesp))
         *newnodesp++ = cloneNode(cstate, *nodesp);
-    memcpy(newnodes + 1, oldnodes + 1, (oldnodes->used) * sizeof(INode*));
     return newnodes;
 }
 

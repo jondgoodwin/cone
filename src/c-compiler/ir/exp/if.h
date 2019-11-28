@@ -14,6 +14,8 @@ typedef struct IfNode {
     Nodes *condblk;
 } IfNode;
 
+#define isElse(node) ((node) == voidType)
+
 IfNode *newIfNode();
 
 // Clone if
