@@ -183,7 +183,7 @@ MacroDclNode *parseMacro(ParseState *parse) {
     }
     MacroDclNode *macro = newMacroDclNode(lex->val.ident);
     lexNextToken();
-    macro->body = parseSimpleExpr(parse);
+    macro->body = parseAnyExpr(parse);
     parseEndOfStatement();
     return macro;
 }

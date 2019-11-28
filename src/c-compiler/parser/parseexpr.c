@@ -610,7 +610,7 @@ INode *parseList(ParseState *parse, INode *typenode) {
     return (INode*)list;
 }
 
-// This parses any kind of expression, including blocks, asssignment or tuple
+// This parses any kind of expression, including blocks, assignment or tuple
 INode *parseAnyExpr(ParseState *parse) {
     switch (lex->toktype) {
     case IfToken:
