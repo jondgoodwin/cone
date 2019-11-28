@@ -95,6 +95,25 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
     }
 }
 
+void fnCallMacroTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
+    MacroDclNode *macrodcl = (MacroDclNode*)((NameUseNode*)(*nodep)->objfn)->dclnode;
+    if ((*nodep)->args->used != macrodcl->parms->used) {
+        errorMsgNode((INode*)*nodep, ErrorManyArgs, "Incorrect number of arguments for macro call");
+        return;
+    }
+
+    // Set up clone state
+    CloneState cstate;
+    cstate.instnode = (INode*)*nodep;
+    cstate.scope = pstate->scope;
+
+    // Instantiate macro, replacing macro name
+    *((INode **)nodep) = cloneNode(&cstate, macrodcl->body);
+
+    // Now type check the instantiated nodes
+    inodeTypeCheck(pstate, (INode **)nodep);
+}
+
 // For all function calls, go through all arguments to verify correct types,
 // handle value copying, and fill in default arguments
 void fnCallFinalizeArgs(FnCallNode *node) {
@@ -351,6 +370,12 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     if (node->args) {
         for (nodesFor(node->args, cnt, argsp))
             inodeTypeCheck(pstate, argsp);
+    }
+
+    // Handle macro/generic instantiation, otherwise type check objfn
+    if (node->objfn->tag == MacroNameTag) {
+        fnCallMacroTypeCheck(pstate, nodep);
+        return;
     }
     inodeTypeCheck(pstate, &node->objfn);
 

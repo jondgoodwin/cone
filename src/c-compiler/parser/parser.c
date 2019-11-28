@@ -183,6 +183,20 @@ MacroDclNode *parseMacro(ParseState *parse) {
     }
     MacroDclNode *macro = newMacroDclNode(lex->val.ident);
     lexNextToken();
+    if (lexIsToken(LBracketToken)) {
+        lexNextToken();
+        while (lexIsToken(IdentToken)) {
+            GenVarDclNode *parm = newGVarDclNode(lex->val.ident);
+            nodesAdd(&macro->parms, (INode*)parm);
+            lexNextToken();
+            if (lexIsToken(CommaToken))
+                lexNextToken();
+        }
+        if (lexIsToken(RBracketToken))
+            lexNextToken();
+        else
+            errorMsgLex(ErrorBadTok, "Expected list of macro parameter names ending with square bracket.");
+    }
     macro->body = parseAnyExpr(parse);
     parseEndOfStatement();
     return macro;
