@@ -42,6 +42,7 @@ INode *cloneNameUseNode(CloneState *cstate, NameUseNode *node) {
     NameUseNode *newnode;
     newnode = memAllocBlk(sizeof(NameUseNode));
     memcpy(newnode, node, sizeof(NameUseNode));
+    newnode->dclnode = cloneDclFix(node->dclnode);
     return (INode *)newnode;
 }
 

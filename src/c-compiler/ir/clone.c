@@ -94,3 +94,46 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     node->instnode = cstate->instnode;
     return node;
 }
+
+CloneDclMap *cloneDclMap = NULL;
+uint32_t cloneDclPos = 0;
+uint32_t cloneDclSize = 0;
+
+// Preserve high-water position in the dcl stack
+uint32_t cloneDclPush() {
+    return cloneDclPos;
+}
+
+// Restore high-water position in the dcl stack
+void cloneDclPop(uint32_t pos) {
+    cloneDclPos = pos;
+}
+
+// Remember a mapping of a declaration node between the original and a copy
+void cloneDclSetMap(INode *orig, INode *clone) {
+    if (cloneDclSize <= cloneDclPos) {
+        if (cloneDclSize == 0) {
+            cloneDclSize = 1024;
+            cloneDclMap = memAllocBlk(cloneDclSize * sizeof(CloneDclMap));
+        }
+        else {
+            cloneDclSize <<= 1;
+            CloneDclMap *oldmap = cloneDclMap;
+            cloneDclMap = memAllocBlk(cloneDclSize * sizeof(CloneDclMap));
+            memcpy(cloneDclMap, oldmap, cloneDclPos * sizeof(CloneDclMap));
+        }
+    }
+    CloneDclMap *map = &cloneDclMap[cloneDclPos++];
+    map->original = orig;
+    map->clone = clone;
+}
+
+// Return the new pointer to the dcl node, given the original pointer
+INode *cloneDclFix(INode *orig) {
+    for (uint32_t pos = 0; pos < cloneDclPos; ++pos) {
+        CloneDclMap *map = &cloneDclMap[pos];
+        if (map->original == orig)
+            return map->clone;
+    }
+    return orig;
+}

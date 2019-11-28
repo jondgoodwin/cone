@@ -49,6 +49,7 @@ INode *cloneVarDclNode(CloneState *cstate, VarDclNode *node) {
     memcpy(newnode, node, sizeof(VarDclNode));
     newnode->vtype = cloneNode(cstate, node->vtype);
     newnode->value = cloneNode(cstate, node->value);
+    cloneDclSetMap((INode*)node, (INode*)newnode);
     return (INode*)newnode;
 }
 
@@ -76,7 +77,7 @@ void varDclNameRes(NameResState *pstate, VarDclNode *name) {
         inodeNameRes(pstate, &name->value);
 
     // Variable declaration within a block is a local variable
-    if (pstate->scope > 1) {
+    if (pstate->scope > 0) {
         if (name->namesym->node && pstate->scope == ((VarDclNode*)name->namesym->node)->scope) {
             errorMsgNode((INode *)name, ErrorDupName, "Name is already defined. Only one allowed.");
             errorMsgNode((INode*)name->namesym->node, ErrorDupName, "This is the conflicting definition for that name.");

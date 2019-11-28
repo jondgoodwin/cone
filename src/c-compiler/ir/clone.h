@@ -18,7 +18,25 @@ typedef struct CloneState {
     uint16_t scope;      // Current block level
 } CloneState;
 
+// Data structures used for fixing dcl pointers
+typedef struct CloneDclMap {
+    INode *original;
+    INode *clone;
+} CloneDclMap;
+
 // Perform a deep clone of specified node
 INode *cloneNode(CloneState *fstate, INode *nodep);
+
+// Preserve high-water position in the dcl stack
+uint32_t cloneDclPush();
+
+// Restore high-water position in the dcl stack
+void cloneDclPop(uint32_t pos);
+
+// Remember a mapping of a declaration node between the original and a copy
+void cloneDclSetMap(INode *orig, INode *clone);
+
+// Return the new pointer to the dcl node, given the original pointer
+INode *cloneDclFix(INode *orig);
 
 #endif

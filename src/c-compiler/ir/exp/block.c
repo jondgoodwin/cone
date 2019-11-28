@@ -9,10 +9,12 @@
 
 // Create a new block node
 BlockNode *newBlockNode() {
+    uint32_t dclpos = cloneDclPush();
     BlockNode *blk;
     newNode(blk, BlockNode, BlockTag);
     blk->vtype = voidType;
     blk->stmts = newNodes(8);
+    cloneDclPop(dclpos);
     return blk;
 }
 

@@ -37,6 +37,9 @@ void macroDclPrint(MacroDclNode *name) {
 
 // Perform name resolution
 void macroDclNameRes(NameResState *pstate, MacroDclNode *macro) {
+    uint16_t oldscope = pstate->scope;
+    pstate->scope = 1;
+
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(macro->parms, cnt, nodesp))
@@ -51,6 +54,7 @@ void macroDclNameRes(NameResState *pstate, MacroDclNode *macro) {
     inodeNameRes(pstate, (INode**)&macro->body);
 
     nametblHookPop();
+    pstate->scope = oldscope;
 }
 
 // Type check 
