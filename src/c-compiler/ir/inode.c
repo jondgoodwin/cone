@@ -165,6 +165,12 @@ void inodePrintNode(INode *node) {
     case NullTag:
         inodeFprint("null");
         break;
+
+    case MacroDclTag:
+        macroDclPrint((MacroDclNode *)node); break;
+    case GenVarDclTag:
+        gVarDclPrint((GenVarDclNode *)node); break;
+
     default:
         inodeFprint("**** UNKNOWN NODE ****");
     }
@@ -252,6 +258,8 @@ void inodeNameRes(NameResState *pstate, INode **node) {
 
     case MacroDclTag:
         macroDclNameRes(pstate, (MacroDclNode *)*node); break;
+    case GenVarDclTag:
+        gVarDclNameRes(pstate, (GenVarDclNode *)*node); break;
 
     case MbrNameUseTag:
     case ULitTag:
@@ -368,6 +376,8 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node) {
         macroDclTypeCheck(pstate, (MacroDclNode *)*node); break;
     case MacroNameTag:
         macroNameTypeCheck(pstate, (NameUseNode **)node); break;
+    case GenVarDclTag:
+        gVarDclTypeCheck(pstate, (GenVarDclNode *)*node); break;
 
     case MbrNameUseTag:
     case StringLitTag:
