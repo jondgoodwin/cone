@@ -79,7 +79,8 @@ enum NodeTags {
     VarDclTag,      // Variable declaration (global, local, parm)
     FieldDclTag,    // Field declaration in a struct, etc.
     MacroDclTag,    // Macro declaration
-    GenVarDclTag,  // Generic parameter declaration
+    GenVarDclTag,   // Generic variable declaration
+    GenVarUseTag,   // Generic variable name use
 
     // Expression nodes (having value type - or sometimes nullType)
     VarNameUseTag = ExpGroup,  // Variable or Function name use node  
@@ -87,22 +88,22 @@ enum NodeTags {
     ULitTag,        // Integer literal
     FLitTag,        // Float literal
     NullTag,        // Null literal
-    StringLitTag,      // String literal
+    StringLitTag,   // String literal
     TypeLitTag,     // List (e.g., type literal)
     VTupleTag,      // Value tuple (comma-separated values)
     AssignTag,      // Assignment expression
     FnCallTag,      // Function+method call or field access
     ArrIndexTag,    // Array index (FnCallNode)
-    FldAccessTag,    // struct field (FnCallNode)
+    FldAccessTag,   // struct field (FnCallNode)
     SizeofTag,      // Sizeof a type (usize)
     CastTag,        // Cast exp to another type
-    BorrowTag,        // & (address of) operator
+    BorrowTag,      // & (address of) operator
     AllocateTag,    // & allocated ref allocation
     DerefTag,       // * (pointed at) operator
     NotLogicTag,    // ! / not
     OrLogicTag,     // or
     AndLogicTag,    // and
-    IsTag,  // ~~
+    IsTag,          // ~~
     BlockTag,       // Block (list of statements)
     IfTag,          // if .. elif .. else statement
     LoopTag,        // Loop node

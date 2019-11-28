@@ -28,4 +28,7 @@ void macroDclTypeCheck(TypeCheckState *pstate, MacroDclNode *node);
 // Type check macro name use
 void macroNameTypeCheck(TypeCheckState *pstate, NameUseNode **macro);
 
+// Instantiate a macro using passed arguments
+void macroCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep);
+
 #endif

@@ -77,3 +77,32 @@ void macroNameTypeCheck(TypeCheckState *pstate, NameUseNode **macro) {
     // Now type check the instantiated nodes
     inodeTypeCheck(pstate, (INode**)macro);
 }
+
+// Instantiate a macro using passed arguments
+void macroCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
+    MacroDclNode *macrodcl = (MacroDclNode*)((NameUseNode*)(*nodep)->objfn)->dclnode;
+    if ((*nodep)->args->used != macrodcl->parms->used) {
+        errorMsgNode((INode*)*nodep, ErrorManyArgs, "Incorrect number of arguments for macro call");
+        return;
+    }
+
+    // Set up clone state
+    CloneState cstate;
+    cstate.instnode = (INode*)*nodep;
+    cstate.scope = pstate->scope;
+
+    // Hook in named arguments for parms, then instantiate macro , replacing fncall node
+    nametblHookPush();
+    INode **parmp = &nodesGet(macrodcl->parms, 0);
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor((*nodep)->args, cnt, argsp)) {
+        nametblHookNode(((GenVarDclNode *)*parmp++)->namesym, (INode*)*argsp);
+    }
+    *((INode **)nodep) = cloneNode(&cstate, macrodcl->body);
+    nametblHookPop();
+
+    // Now type check the instantiated nodes
+    inodeTypeCheck(pstate, (INode **)nodep);
+}
+

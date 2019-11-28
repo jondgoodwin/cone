@@ -81,6 +81,11 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     case ArrayRefTag:
     case VirtRefTag:
         node = cloneRefNode(cstate, (RefNode *)nodep); break;
+
+    case GenVarUseTag:
+        node = ((GenVarDclNode*)nodep)->namesym->node;
+        return node;
+
     case VoidTag:
         node = nodep; break;
         //node = cloneVoidNode(cstate, (VoidTypeNode *)nodep); break;
