@@ -9,22 +9,22 @@
 
 // Create a new block node
 BlockNode *newBlockNode() {
-    uint32_t dclpos = cloneDclPush();
     BlockNode *blk;
     newNode(blk, BlockNode, BlockTag);
     blk->vtype = voidType;
     blk->stmts = newNodes(8);
-    cloneDclPop(dclpos);
     return blk;
 }
 
 // Clone block
 INode *cloneBlockNode(CloneState *cstate, BlockNode *node) {
+    uint32_t dclpos = cloneDclPush();
     BlockNode *newnode;
     newnode = memAllocBlk(sizeof(BlockNode));
     memcpy(newnode, node, sizeof(BlockNode));
     newnode->stmts = cloneNodes(cstate, node->stmts);
     newnode->scope = ++cstate->scope;
+    cloneDclPop(dclpos);
     return (INode *)newnode;
 }
 
