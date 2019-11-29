@@ -20,11 +20,14 @@ LoopNode *newLoopNode() {
 
 // Clone loop
 INode *cloneLoopNode(CloneState *cstate, LoopNode *node) {
+    uint32_t dclpos = cloneDclPush();
     LoopNode *newnode;
     newnode = memAllocBlk(sizeof(LoopNode));
     memcpy(newnode, node, sizeof(LoopNode));
-    newnode->blk = cloneNode(cstate, node->blk);
     newnode->breaks = cloneNodes(cstate, node->breaks);
+    newnode->life = (LifetimeNode*)cloneNode(cstate, (INode*)node->life);
+    newnode->blk = cloneNode(cstate, node->blk);
+    cloneDclPop(dclpos);
     return (INode *)newnode;
 }
 

@@ -19,6 +19,15 @@ LifetimeNode *newLifetimeDclNode(Name *namesym, Lifetime life) {
     return node;
 }
 
+// Create a copy of lifetime dcl
+INode *cloneLifetimeDclNode(CloneState *cstate, LifetimeNode *node) {
+    LifetimeNode *newnode = memAllocBlk(sizeof(LifetimeNode));
+    memcpy(newnode, node, sizeof(LifetimeNode));
+    newnode->life = cstate->scope;
+    cloneDclSetMap((INode*)node, (INode*)newnode);
+    return (INode*)newnode;
+}
+
 // Create a new lifetime use node
 INode *newLifetimeUseNode(LifetimeNode *lifedcl) {
     NameUseNode *life;

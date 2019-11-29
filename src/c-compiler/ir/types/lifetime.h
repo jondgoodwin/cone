@@ -26,6 +26,9 @@ typedef struct LifetimeNode {
 // Create a new lifetime declaration node
 LifetimeNode *newLifetimeDclNode(Name *namesym, Lifetime life);
 
+// Create a copy of lifetime dcl
+INode *cloneLifetimeDclNode(CloneState *cstate, LifetimeNode *node);
+
 // Create a new lifetime use node
 INode *newLifetimeUseNode(LifetimeNode *lifedcl);
 
