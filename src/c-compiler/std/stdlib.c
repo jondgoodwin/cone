@@ -28,6 +28,7 @@ void keywordInit() {
     keyAdd("set", SetToken);
     keyAdd("macro", MacroToken);
     keyAdd("fn", FnToken);
+    keyAdd("typedef", TypedefToken),
     keyAdd("struct", StructToken);
     keyAdd("trait", TraitToken);
     keyAdd("mixin", MixinToken);

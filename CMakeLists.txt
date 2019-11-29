@@ -74,6 +74,7 @@ add_executable(conec
 	src/c-compiler/ir/types/reference.c
 	src/c-compiler/ir/types/struct.c
 	src/c-compiler/ir/types/ttuple.c
+	src/c-compiler/ir/types/typedef.c
 	src/c-compiler/ir/types/void.c
 
 	src/c-compiler/std/stdlib.c

@@ -112,6 +112,7 @@ enum NodeTags {
 
     // Unnamed type node
     TypeNameUseTag = TypeGroup, // Type name use node
+    TypedefTag,     // A type name alias (structural)
     FnSigTag,       // Also method, closure, behavior, co-routine, thread, ...
     ArrayTag,       // Also dynamic arrays? SOA?
     RefTag,         // Reference

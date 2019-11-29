@@ -52,6 +52,7 @@ typedef struct TypeCheckState TypeCheckState;
 #include "nametbl.h"
 #include "../shared/memory.h"
 
+#include "types/typedef.h"
 #include "types/ttuple.h"
 #include "types/permission.h"
 #include "types/enum.h"
