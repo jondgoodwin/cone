@@ -63,16 +63,16 @@ void macroDclTypeCheck(TypeCheckState *pstate, MacroDclNode *macro) {
 
 // Type check macro name use
 void macroNameTypeCheck(TypeCheckState *pstate, NameUseNode **macro) {
-    // Set up clone state
-    CloneState cstate;
-    cstate.instnode = (INode*)*macro;
-    cstate.scope = pstate->scope;
-
     // Obtain macro to expand
     MacroDclNode *macrodcl = (MacroDclNode*)(*macro)->dclnode;
+    uint32_t expected = macrodcl->parms ? macrodcl->parms->used : 0;
+    if (expected > 0) {
+        errorMsgNode((INode*)*macro, ErrorManyArgs, "Macro expects arguments to be provided");
+        return;
+    }
 
     // Instantiate macro, replacing macro name
-    *((INode**)macro) = cloneNode(&cstate, macrodcl->body);
+    *((INode**)macro) = cloneTree(macrodcl->body, (INode*)*macro, NULL, pstate->scope);
 
     // Now type check the instantiated nodes
     inodeTypeCheck(pstate, (INode**)macro);
@@ -81,26 +81,15 @@ void macroNameTypeCheck(TypeCheckState *pstate, NameUseNode **macro) {
 // Instantiate a macro using passed arguments
 void macroCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     MacroDclNode *macrodcl = (MacroDclNode*)((NameUseNode*)(*nodep)->objfn)->dclnode;
-    if ((*nodep)->args->used != macrodcl->parms->used) {
+
+    uint32_t expected = macrodcl->parms ? macrodcl->parms->used : 0;
+    if ((*nodep)->args->used != expected) {
         errorMsgNode((INode*)*nodep, ErrorManyArgs, "Incorrect number of arguments for macro call");
         return;
     }
 
-    // Set up clone state
-    CloneState cstate;
-    cstate.instnode = (INode*)*nodep;
-    cstate.scope = pstate->scope;
-
-    // Hook in named arguments for parms, then instantiate macro , replacing fncall node
-    nametblHookPush();
-    INode **parmp = &nodesGet(macrodcl->parms, 0);
-    INode **argsp;
-    uint32_t cnt;
-    for (nodesFor((*nodep)->args, cnt, argsp)) {
-        nametblHookNode(((GenVarDclNode *)*parmp++)->namesym, (INode*)*argsp);
-    }
-    *((INode **)nodep) = cloneNode(&cstate, macrodcl->body);
-    nametblHookPop();
+    // Replace macro call with instantiated body, substituting parameters
+    *((INode **)nodep) = cloneTreeParms(macrodcl->body, macrodcl->parms, (*nodep)->args, (INode*)*nodep, NULL, pstate->scope);
 
     // Now type check the instantiated nodes
     inodeTypeCheck(pstate, (INode **)nodep);

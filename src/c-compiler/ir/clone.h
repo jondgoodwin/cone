@@ -15,6 +15,7 @@
 // Context used across the cloning pass
 typedef struct CloneState {
     INode *instnode;     // The node provoking instantiation (for error messages)
+    INode *selftype;     // Self type (might be NULL)
     uint16_t scope;      // Current block level
 } CloneState;
 
@@ -26,6 +27,12 @@ typedef struct CloneDclMap {
 
 // Perform a deep clone of specified node
 INode *cloneNode(CloneState *fstate, INode *nodep);
+
+// Instantiate a clone of some tree
+INode *cloneTree(INode *tree, INode *instnode, INode *selftype, uint32_t scope);
+
+// Instantiate a clone of some tree, substituting args for parameters
+INode *cloneTreeParms(INode *tree, Nodes *parms, Nodes *args, INode *instnode, INode *selftype, uint32_t scope);
 
 // Preserve high-water position in the dcl stack
 uint32_t cloneDclPush();

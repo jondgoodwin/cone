@@ -83,7 +83,7 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         node = cloneRefNode(cstate, (RefNode *)nodep); break;
 
     case GenVarUseTag:
-        node = ((GenVarDclNode*)nodep)->namesym->node;
+        node = cloneNode(cstate, ((GenVarDclNode*)nodep)->namesym->node);
         return node;
 
     case VoidTag:
@@ -98,6 +98,35 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     }
     node->instnode = cstate->instnode;
     return node;
+}
+
+// Instantiate a clone of some tree
+INode *cloneTree(INode *tree, INode *instnode, INode *selftype, uint32_t scope) {
+    // Set up clone state
+    CloneState cstate;
+    cstate.instnode = instnode;
+    cstate.selftype = selftype;
+    cstate.scope = scope;
+
+    return cloneNode(&cstate, tree);
+}
+
+// Return the instantiated clone of some tree, substituting args for parameters
+INode *cloneTreeParms(INode *tree, Nodes *parms, Nodes *args, INode *instnode, INode *selftype, uint32_t scope) {
+    nametblHookPush();
+    if (parms) {
+        // Hook in named arguments for parms
+        INode **parmp = &nodesGet(parms, 0);
+        INode **argsp;
+        uint32_t cnt;
+        for (nodesFor(args, cnt, argsp)) {
+            nametblHookNode(((GenVarDclNode *)*parmp++)->namesym, (INode*)*argsp);
+        }
+    }
+    // Instantiate a copy
+    INode *clone = cloneTree(tree, instnode, selftype, scope);
+    nametblHookPop();
+    return clone;
 }
 
 CloneDclMap *cloneDclMap = NULL;
