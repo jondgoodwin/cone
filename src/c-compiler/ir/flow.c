@@ -41,7 +41,7 @@ void flowInjectAliasNode(INode **nodep, int16_t rvalcount) {
         size_t index = 0;
         flowAliasSize(count = tuple->types->used);
         for (nodesFor(tuple->types, cnt, nodesp)) {
-            RefNode *reftype = (RefNode *)iexpGetTypeDcl(*nodesp);
+            RefNode *reftype = (RefNode *)itypeGetTypeDcl(*nodesp);
             if (reftype->tag != RefTag || !(reftype->alloc == (INode*)rcAlloc || reftype->alloc == (INode*)ownAlloc)) {
                 flowAliasPut(index++, 0);
                 continue;

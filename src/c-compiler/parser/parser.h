@@ -58,5 +58,6 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags);
 INode *parseFnSig(ParseState *parse);
 INode *parseStruct(ParseState *parse, uint16_t flags);
 INode *parseVtype(ParseState *parse);
+TypedefNode *parseTypedef(ParseState *parse);
 
 #endif

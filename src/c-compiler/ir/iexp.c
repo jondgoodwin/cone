@@ -10,24 +10,22 @@
 #include <string.h>
 #include <assert.h>
 
-// Macro that changes iexp pointer to type dcl pointer
-#define iexpToTypeDcl(node) {\
-    if (isExpNode(node) || (node)->tag == VarDclTag || (node)->tag == FnDclTag || (node)->tag == FieldDclTag) \
-        node = ((IExpNode *)node)->vtype; \
-    if (node->tag == TypeNameUseTag) \
-        node = (INode*)((NameUseNode *)node)->dclnode; \
-}
-
-// Return value type
+// Return expression node's "declared" type
 INode *iexpGetTypeDcl(INode *node) {
-    iexpToTypeDcl(node);
-    return node;
+    if (isExpNode(node) || (node)->tag == VarDclTag || (node)->tag == FnDclTag || (node)->tag == FieldDclTag) {
+        return itypeGetTypeDcl(((IExpNode *)node)->vtype);
+    }
+    else {
+        //if (isTypeNode(node)) // caller should be using itypeGetTypeDcl()
+        //    return node;
+        assert(0 && "Cannot obtain a type from this non-expression node");
+        return voidType;
+    }
 }
 
 // Return type (or de-referenced type if ptr/ref)
 INode *iexpGetDerefTypeDcl(INode *node) {
-    iexpToTypeDcl(node);
-    return itypeGetDerefTypeDcl(node);
+    return itypeGetDerefTypeDcl(iexpGetTypeDcl(node));
 }
 
 // After multiple uses, answer (which starts off NULL)
@@ -103,7 +101,7 @@ int iexpBiTypeInfer(INode **totypep, INode **from) {
         return 1;
     }
 
-    INode *totypedcl = iexpGetTypeDcl(totype);
+    INode *totypedcl = itypeGetTypeDcl(totype);
     INode *fromtypedcl = iexpGetTypeDcl(*from);
 
     // Are types equivalent, or is 'to' a subtype of fromtypedcl?
@@ -144,10 +142,7 @@ int iexpTypeCheckAndMatch(TypeCheckState *pstate, INode **totypep, INode **from)
 
 // Are types the same (no coercion)
 int iexpSameType(INode *to, INode **from) {
-    iexpToTypeDcl(to);
-    INode *fromtype = *from;
-    iexpToTypeDcl(fromtype);
-    return itypeMatches(to, fromtype) == 1;
+    return itypeMatches(iexpGetTypeDcl(to), iexpGetTypeDcl(*from)) == 1;
 }
 
 // Retrieve the permission flags for the node

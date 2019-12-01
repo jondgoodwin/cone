@@ -312,6 +312,9 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
         return LLVMArrayType(genlType(gen, anode->elemtype), anode->size);
     }
 
+    case TypedefTag:
+        return genlType(gen, ((TypedefNode *)typ)->typeval);
+
     default:
         assert(0 && "Invalid vtype to generate");
         return NULL;
@@ -348,7 +351,7 @@ LLVMTypeRef genlType(GenState *gen, INode *typ) {
         return typeref;
     }
     else
-        return _genlType(gen, "", typ);
+        return _genlType(gen, "", dcltype);
 }
 
 // Generate LLVM value corresponding to the size of a type

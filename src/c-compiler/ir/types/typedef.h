@@ -9,7 +9,7 @@
 
 // Generic variable declaration node
 typedef struct TypedefNode {
-    INodeHdr;
+    ITypeNodeHdr;
     Name *namesym;
     INode *typeval;
 } TypedefNode;

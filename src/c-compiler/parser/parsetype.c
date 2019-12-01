@@ -391,6 +391,21 @@ INode* parseEnum(ParseState *parse) {
     return (INode*)node;
 }
 
+// Parse a typedef statement
+TypedefNode *parseTypedef(ParseState *parse) {
+    lexNextToken();
+    // Process struct type name, if provided
+    if (!lexIsToken(IdentToken)) {
+        errorMsgLex(ErrorNoIdent, "Expected a name for the type");
+        return NULL;
+    }
+    TypedefNode *newnode = newTypedefNode(lex->val.ident);
+    lexNextToken();
+    newnode->typeval = parseVtype(parse);
+    parseEndOfStatement();
+    return newnode;
+}
+
 // Parse a value type signature. Return NULL if none found.
 INode* parseVtype(ParseState *parse) {
     INode *vtype;

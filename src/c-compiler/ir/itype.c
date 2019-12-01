@@ -12,10 +12,18 @@
 
 // Return node's type's declaration node
 // (Note: only use after it has been type-checked)
-INode *itypeGetTypeDcl(INode *node) {
-    if (node->tag == TypeNameUseTag)
-        return (INode*)((NameUseNode *)node)->dclnode;
-    return node;
+INode *itypeGetTypeDcl(INode *type) {
+    while (1) {
+        switch (type->tag) {
+        case TypeNameUseTag:
+            type = ((NameUseNode *)type)->dclnode;
+            break;
+        case TypedefTag:
+            type = ((TypedefNode *)type)->typeval;
+        default:
+            return type;
+        }
+    }
 }
 
 // Return node's type's declaration node (or pvtype if a ref or ptr)

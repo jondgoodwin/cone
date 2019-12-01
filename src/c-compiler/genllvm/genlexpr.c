@@ -37,7 +37,7 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
     uint32_t cnt;
 
     // If we are returning a value in each block, set up space for phi info
-    vtype = iexpGetTypeDcl(ifnode->vtype);
+    vtype = itypeGetTypeDcl(ifnode->vtype);
     count = ifnode->condblk->used / 2;
     i = phicnt = 0;
     if (vtype != voidType) {
@@ -399,7 +399,7 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
 // - Array ref to ptr or size
 LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
     INode *fromtype = iexpGetTypeDcl(exp);
-    INode *totype = iexpGetTypeDcl(to);
+    INode *totype = itypeGetTypeDcl(to);
     LLVMValueRef genexp = genlExpr(gen, exp);
 
     // Casting a number to Bool means false if zero and true otherwise
@@ -697,7 +697,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     case TypeLitTag:
     {
         FnCallNode *lit = (FnCallNode *)termnode;
-        INode *littype = iexpGetTypeDcl(lit->vtype);
+        INode *littype = itypeGetTypeDcl(lit->vtype);
         uint32_t size = lit->args->used;
         INode **nodesp;
         uint32_t cnt;
@@ -738,7 +738,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     {
         AliasNode *anode = (AliasNode*)termnode;
         LLVMValueRef val = genlExpr(gen, anode->exp);
-        RefNode *reftype = (RefNode*)((IExpNode*)anode->exp)->vtype;
+        RefNode *reftype = (RefNode*)iexpGetTypeDcl(anode);
         if (reftype->tag == RefTag) {
             if (reftype->alloc == (INode*)ownAlloc)
                 genlDealiasOwn(gen, val, reftype);
@@ -753,7 +753,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
             int16_t *countp = anode->counts;
             for (nodesFor(tuple->types, cnt, nodesp)) {
                 if (*countp != 0) {
-                    reftype = (RefNode *)*nodesp;
+                    reftype = (RefNode *)itypeGetTypeDcl(*nodesp);
                     LLVMValueRef strval = LLVMBuildExtractValue(gen->builder, val, index, "");
                     if (reftype->alloc == (INode*)ownAlloc)
                         genlDealiasOwn(gen, strval, reftype);

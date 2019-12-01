@@ -221,6 +221,12 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
             break;
         }
 
+        case TypedefToken: {
+            TypedefNode *newnode = parseTypedef(parse);
+            modAddNode(mod, newnode->namesym, (INode*)newnode);
+            break;
+        }
+
         // 'struct'-style type definition
         case StructToken: {
             StructNode *strnode = (StructNode*)parseStruct(parse, 0);

@@ -240,7 +240,7 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         namedValNameRes(pstate, (NamedValNode *)*node); break;
 
     case TypedefTag:
-        typedefNameRes(pstate, (TypedefNode *)node); break;
+        typedefNameRes(pstate, (TypedefNode *)*node); break;
     case FnSigTag:
         fnSigNameRes(pstate, (FnSigNode *)*node); break;
     case RefTag: case VirtRefTag:
@@ -355,7 +355,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node) {
     case TypeNameUseTag:
         nameUseTypeCheckType(pstate, (NameUseNode **)node); break;
     case TypedefTag:
-        typedefTypeCheck(pstate, (TypedefNode *)node); break;
+        typedefTypeCheck(pstate, (TypedefNode *)*node); break;
     case FnSigTag:
         fnSigTypeCheck(pstate, (FnSigNode *)*node); break;
     case RefTag:
