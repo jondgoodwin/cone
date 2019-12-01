@@ -28,11 +28,11 @@ typedef struct CloneDclMap {
 // Perform a deep clone of specified node
 INode *cloneNode(CloneState *fstate, INode *nodep);
 
-// Instantiate a clone of some tree
-INode *cloneTree(INode *tree, INode *instnode, INode *selftype, uint32_t scope);
+// Set the state needed for deep cloning some node
+void clonePushState(CloneState *cstate, INode *instnode, INode *selftype, uint32_t scope, Nodes *parms, Nodes *args);
 
-// Instantiate a clone of some tree, substituting args for parameters
-INode *cloneTreeParms(INode *tree, Nodes *parms, Nodes *args, INode *instnode, INode *selftype, uint32_t scope);
+// Release the acquired state
+void clonePopState();
 
 // Preserve high-water position in the dcl stack
 uint32_t cloneDclPush();

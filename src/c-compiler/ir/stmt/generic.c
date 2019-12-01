@@ -63,7 +63,7 @@ void genericTypeCheck(TypeCheckState *pstate, GenericNode *gennode) {
 
 // Type check generic name use
 void genericNameTypeCheck(TypeCheckState *pstate, NameUseNode **gennode) {
-    // Obtain gennode to expand
+    // Obtain macro to expand
     GenericNode *macrodcl = (GenericNode*)(*gennode)->dclnode;
     uint32_t expected = macrodcl->parms ? macrodcl->parms->used : 0;
     if (expected > 0) {
@@ -71,8 +71,11 @@ void genericNameTypeCheck(TypeCheckState *pstate, NameUseNode **gennode) {
         return;
     }
 
-    // Instantiate gennode, replacing gennode name
-    *((INode**)gennode) = cloneTree(macrodcl->body, (INode*)*gennode, NULL, pstate->scope);
+    // Instantiate macro, replacing gennode
+    CloneState cstate;
+    clonePushState(&cstate, (INode*)*gennode, NULL, pstate->scope, NULL, NULL);
+    *((INode**)gennode) = cloneNode(&cstate, macrodcl->body);
+    clonePopState();
 
     // Now type check the instantiated nodes
     inodeTypeCheck(pstate, (INode**)gennode);
@@ -89,7 +92,10 @@ void genericCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     }
 
     // Replace gennode call with instantiated body, substituting parameters
-    *((INode **)nodep) = cloneTreeParms(genericnode->body, genericnode->parms, (*nodep)->args, (INode*)*nodep, NULL, pstate->scope);
+    CloneState cstate;
+    clonePushState(&cstate, (INode*)*nodep, NULL, pstate->scope, genericnode->parms, (*nodep)->args);
+    *((INode**)nodep) = cloneNode(&cstate, genericnode->body);
+    clonePopState();
 
     // Now type check the instantiated nodes
     inodeTypeCheck(pstate, (INode **)nodep);

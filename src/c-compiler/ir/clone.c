@@ -102,20 +102,13 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     return node;
 }
 
-// Instantiate a clone of some tree
-INode *cloneTree(INode *tree, INode *instnode, INode *selftype, uint32_t scope) {
-    // Set up clone state
-    CloneState cstate;
-    cstate.instnode = instnode;
-    cstate.selftype = selftype;
-    cstate.scope = scope;
-
-    return cloneNode(&cstate, tree);
-}
-
-// Return the instantiated clone of some tree, substituting args for parameters
-INode *cloneTreeParms(INode *tree, Nodes *parms, Nodes *args, INode *instnode, INode *selftype, uint32_t scope) {
+// Set the state needed for deep cloning some node
+void clonePushState(CloneState *cstate, INode *instnode, INode *selftype, uint32_t scope, Nodes *parms, Nodes *args) {
+    cstate->instnode = instnode;
+    cstate->selftype = selftype;
+    cstate->scope = scope;
     nametblHookPush();
+
     if (parms) {
         // Hook in named arguments for parms
         INode **parmp = &nodesGet(parms, 0);
@@ -125,10 +118,11 @@ INode *cloneTreeParms(INode *tree, Nodes *parms, Nodes *args, INode *instnode, I
             nametblHookNode(((GenVarDclNode *)*parmp++)->namesym, (INode*)*argsp);
         }
     }
-    // Instantiate a copy
-    INode *clone = cloneTree(tree, instnode, selftype, scope);
+}
+
+// Release the acquired state
+void clonePopState() {
     nametblHookPop();
-    return clone;
 }
 
 CloneDclMap *cloneDclMap = NULL;
