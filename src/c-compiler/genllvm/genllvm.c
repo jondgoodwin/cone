@@ -213,7 +213,7 @@ void genlModule(GenState *gen, ModuleNode *mod) {
             genlModule(gen, (ModuleNode*)nodep);
             break;
 
-        case MacroDclTag:
+        case GenericTag:
             break;
 
         default:

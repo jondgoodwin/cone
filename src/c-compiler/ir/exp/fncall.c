@@ -347,7 +347,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 
     // Handle macro/generic instantiation, otherwise type check objfn
     if (node->objfn->tag == MacroNameTag) {
-        macroCallTypeCheck(pstate, nodep);
+        genericCallTypeCheck(pstate, nodep);
         return;
     }
 

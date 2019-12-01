@@ -168,8 +168,8 @@ void inodePrintNode(INode *node) {
         inodeFprint("null");
         break;
 
-    case MacroDclTag:
-        macroDclPrint((MacroDclNode *)node); break;
+    case GenericTag:
+        genericPrint((GenericNode *)node); break;
     case GenVarDclTag:
         gVarDclPrint((GenVarDclNode *)node); break;
 
@@ -260,8 +260,8 @@ void inodeNameRes(NameResState *pstate, INode **node) {
     case AllocTag:
         break;
 
-    case MacroDclTag:
-        macroDclNameRes(pstate, (MacroDclNode *)*node); break;
+    case GenericTag:
+        genericNameRes(pstate, (GenericNode *)*node); break;
     case GenVarDclTag:
         gVarDclNameRes(pstate, (GenVarDclNode *)*node); break;
 
@@ -378,10 +378,10 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node) {
     case PermTag:
         break;
 
-    case MacroDclTag:
-        macroDclTypeCheck(pstate, (MacroDclNode *)*node); break;
+    case GenericTag:
+        genericTypeCheck(pstate, (GenericNode *)*node); break;
     case MacroNameTag:
-        macroNameTypeCheck(pstate, (NameUseNode **)node); break;
+        genericNameTypeCheck(pstate, (NameUseNode **)node); break;
     case GenVarDclTag:
         gVarDclTypeCheck(pstate, (GenVarDclNode *)*node); break;
 

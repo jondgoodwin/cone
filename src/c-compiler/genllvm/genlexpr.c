@@ -738,7 +738,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     {
         AliasNode *anode = (AliasNode*)termnode;
         LLVMValueRef val = genlExpr(gen, anode->exp);
-        RefNode *reftype = (RefNode*)iexpGetTypeDcl(anode);
+        RefNode *reftype = (RefNode*)iexpGetTypeDcl(termnode);
         if (reftype->tag == RefTag) {
             if (reftype->alloc == (INode*)ownAlloc)
                 genlDealiasOwn(gen, val, reftype);

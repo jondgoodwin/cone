@@ -78,7 +78,7 @@ enum NodeTags {
     FnDclTag,       // Function/method declaration
     VarDclTag,      // Variable declaration (global, local, parm)
     FieldDclTag,    // Field declaration in a struct, etc.
-    MacroDclTag,    // Macro declaration
+    GenericTag,     // Generic declaration
     GenVarDclTag,   // Generic variable declaration
     GenVarUseTag,   // Generic variable name use
 

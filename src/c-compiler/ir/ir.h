@@ -75,7 +75,7 @@ typedef struct AllocNode {
 #include "stmt/fielddcl.h"
 #include "stmt/fndcl.h"
 #include "stmt/genvardcl.h"
-#include "stmt/macrodcl.h"
+#include "stmt/generic.h"
 #include "stmt/return.h"
 #include "stmt/intrinsic.h"
 #include "stmt/vardcl.h"

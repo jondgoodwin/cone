@@ -175,13 +175,13 @@ void parseFnOrVar(ParseState *parse, uint16_t flags) {
 }
 
 // Parse a macro declaration
-MacroDclNode *parseMacro(ParseState *parse) {
+GenericNode *parseMacro(ParseState *parse) {
     lexNextToken();
     if (!lexIsToken(IdentToken)) {
         errorMsgLex(ErrorBadTok, "Expected a macro name");
-        return newMacroDclNode(anonName);
+        return newGenericNode(anonName);
     }
-    MacroDclNode *macro = newMacroDclNode(lex->val.ident);
+    GenericNode *macro = newGenericNode(lex->val.ident);
     lexNextToken();
     if (lexIsToken(LBracketToken)) {
         lexNextToken();
@@ -250,7 +250,7 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
 
         // 'macro'
         case MacroToken: {
-            MacroDclNode *macro = parseMacro(parse);
+            GenericNode *macro = parseMacro(parse);
             modAddNode(mod, macro->namesym, (INode*)macro);
             break;
         }
