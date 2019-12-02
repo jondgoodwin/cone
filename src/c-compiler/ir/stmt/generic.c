@@ -58,7 +58,7 @@ void genericNameRes(NameResState *pstate, GenericNode *gennode) {
     pstate->scope = oldscope;
 }
 
-// Type check 
+// Type check a generic declaration
 void genericTypeCheck(TypeCheckState *pstate, GenericNode *gennode) {
 }
 
@@ -82,21 +82,88 @@ void genericNameTypeCheck(TypeCheckState *pstate, NameUseNode **gennode) {
     inodeTypeCheck(pstate, (INode**)gennode);
 }
 
+// Verify arguments are types, check if instantiated, instantiate if needed and return ptr to it
+INode *genericMemoize(TypeCheckState *pstate, FnCallNode *fncall) {
+    GenericNode *genericnode = (GenericNode*)((NameUseNode*)fncall->objfn)->dclnode;
+
+    // Verify all arguments are types
+    INode **nodesp;
+    uint32_t cnt;
+    int badargs = 0;
+    for (nodesFor(fncall->args, cnt, nodesp)) {
+        if (!isTypeNode(*nodesp)) {
+            errorMsgNode((INode*)*nodesp, ErrorManyArgs, "Expected a type for a generic parameter");
+            badargs = 1;
+        }
+    }
+    if (badargs)
+        return NULL;
+
+    // Check whether these types have already been instantiated for this generic
+    // memonodes holds pairs of nodes: an FnCallNode and what it instantiated
+    // A match is the first FnCallNode whose types match what we want
+    for (nodesFor(genericnode->memonodes, cnt, nodesp)) {
+        FnCallNode *fncallprior = (FnCallNode *)*nodesp;
+        nodesp++; cnt--; // skip to instance node
+        int match = 1;
+        INode **priornodesp;
+        uint32_t priorcnt;
+        INode **nownodesp = &nodesGet(fncall->args, 0);
+        for (nodesFor(fncallprior->args, priorcnt, priornodesp)) {
+            if (!itypeIsSame(*priornodesp, *nownodesp)) {
+                match = 0;
+                break;
+            }
+            nownodesp++;
+        }
+        if (match) {
+            // Return a namenode pointing to dcl instance
+            NameUseNode *fnuse = newNameUseNode(genericnode->namesym);
+            fnuse->tag = isTypeNode(*nownodesp)? TypeNameUseTag : VarNameUseTag;
+            fnuse->dclnode = *nownodesp;
+            return (INode *)fnuse;
+        }
+    }
+
+    // No match found, instantiate the dcl generic
+    CloneState cstate;
+    clonePushState(&cstate, (INode*)fncall, NULL, pstate->scope, genericnode->parms, fncall->args);
+    INode *instance = cloneNode(&cstate, genericnode->body);
+    clonePopState();
+
+    // Type check the instanced declaration
+    inodeTypeCheck(pstate, &instance);
+
+    // Remember instantiation for the future
+    nodesAdd(&genericnode->memonodes, (INode*)fncall);
+    nodesAdd(&genericnode->memonodes, instance);
+
+    // Return a namenode pointing to fndcl instance
+    NameUseNode *fnuse = newNameUseNode(genericnode->namesym);
+    fnuse->tag = isTypeNode(instance) ? TypeNameUseTag : VarNameUseTag;
+    fnuse->dclnode = instance;
+    return (INode *)fnuse;
+}
+
 // Instantiate a generic using passed arguments
 void genericCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     GenericNode *genericnode = (GenericNode*)((NameUseNode*)(*nodep)->objfn)->dclnode;
 
     uint32_t expected = genericnode->parms ? genericnode->parms->used : 0;
     if ((*nodep)->args->used != expected) {
-        errorMsgNode((INode*)*nodep, ErrorManyArgs, "Incorrect number of arguments for macro call");
+        errorMsgNode((INode*)*nodep, ErrorManyArgs, "Incorrect number of arguments vs. parameters expected");
         return;
     }
 
     // Replace gennode call with instantiated body, substituting parameters
-    CloneState cstate;
-    clonePushState(&cstate, (INode*)*nodep, NULL, pstate->scope, genericnode->parms, (*nodep)->args);
-    *((INode**)nodep) = cloneNode(&cstate, genericnode->body);
-    clonePopState();
+    if (genericnode->flags & GenericMemoize)
+        *((INode**)nodep) = genericMemoize(pstate, *nodep);
+    else {
+        CloneState cstate;
+        clonePushState(&cstate, (INode*)*nodep, NULL, pstate->scope, genericnode->parms, (*nodep)->args);
+        *((INode**)nodep) = cloneNode(&cstate, genericnode->body);
+        clonePopState();
+    }
 
     // Now type check the instantiated nodes
     inodeTypeCheck(pstate, (INode **)nodep);

@@ -174,7 +174,7 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
 }
 
 // Generate all instantiations of generic functions
-void genlGeneric(GenState *gen, GenericNode *gennode) {
+void genlGeneric(GenState *gen, GenericNode *gennode, int dobody) {
     if (gennode->body->tag != FnDclTag)
         return;
 
@@ -182,7 +182,10 @@ void genlGeneric(GenState *gen, GenericNode *gennode) {
     INode **nodesp;
     for (nodesFor(gennode->memonodes, cnt, nodesp)) {
         ++nodesp; --cnt;
-        genlFn(gen, (FnDclNode*)*nodesp);
+        if (dobody)
+            genlFn(gen, (FnDclNode*)*nodesp);
+        else
+            genlGloFnName(gen, (FnDclNode *)*nodesp);
     }
 }
 
@@ -199,6 +202,8 @@ void genlModule(GenState *gen, ModuleNode *mod) {
             genlGloVarName(gen, (VarDclNode *)nodep);
         else if (nodep->tag == FnDclTag)
             genlGloFnName(gen, (FnDclNode *)nodep);
+        else if (nodep->tag == GenericTag)
+            genlGeneric(gen, (GenericNode *)nodep, 0);
     }
 
     // Generate the function's block or the variable's initialization value
@@ -218,7 +223,7 @@ void genlModule(GenState *gen, ModuleNode *mod) {
             break;
 
         case GenericTag:
-            genlGeneric(gen, (GenericNode*)nodep);
+            genlGeneric(gen, (GenericNode*)nodep, 1);
             break;
 
         // Generate allocator definition
