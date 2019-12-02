@@ -13,6 +13,7 @@ typedef struct GenericNode {
     Name *namesym;
     Nodes *parms;            // Declared parameter nodes w/ defaults (GenVarTag)
     INode *body;             // The body of the generic
+    Nodes *memonodes;        // Pairs of memoized generic calls and cloned bodies
 } GenericNode;
 
 GenericNode *newGenericNode(Name *namesym);

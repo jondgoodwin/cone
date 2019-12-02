@@ -173,6 +173,19 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
     }
 }
 
+// Generate all instantiations of generic functions
+void genlGeneric(GenState *gen, GenericNode *gennode) {
+    if (gennode->body->tag != FnDclTag)
+        return;
+
+    uint32_t cnt;
+    INode **nodesp;
+    for (nodesFor(gennode->memonodes, cnt, nodesp)) {
+        ++nodesp; --cnt;
+        genlFn(gen, (FnDclNode*)*nodesp);
+    }
+}
+
 // Generate module's nodes
 void genlModule(GenState *gen, ModuleNode *mod) {
     uint32_t cnt;
@@ -204,6 +217,10 @@ void genlModule(GenState *gen, ModuleNode *mod) {
             }
             break;
 
+        case GenericTag:
+            genlGeneric(gen, (GenericNode*)nodep);
+            break;
+
         // Generate allocator definition
         case AllocTag:
             genlType(gen, nodep);
@@ -211,9 +228,6 @@ void genlModule(GenState *gen, ModuleNode *mod) {
 
         case ModuleTag:
             genlModule(gen, (ModuleNode*)nodep);
-            break;
-
-        case GenericTag:
             break;
 
         default:

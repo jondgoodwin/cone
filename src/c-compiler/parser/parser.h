@@ -34,6 +34,8 @@ INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags);
 void parseEndOfStatement();
 void parseRCurly();
 void parseLCurly();
+// Parse a list of generic variables and add to the genericnode
+parseGenericVars(ParseState *parse, GenericNode *genericnode);
 
 // Expect closing token (e.g., right parenthesis). If not found, search for it or '}' or ';'
 void parseCloseTok(uint16_t closetok);

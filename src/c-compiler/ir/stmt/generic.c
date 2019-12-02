@@ -18,6 +18,7 @@ GenericNode *newGenericNode(Name *namesym) {
     gennode->namesym = namesym;
     gennode->parms = newNodes(4);
     gennode->body = NULL;
+    gennode->memonodes = newNodes(4);
     return gennode;
 }
 
