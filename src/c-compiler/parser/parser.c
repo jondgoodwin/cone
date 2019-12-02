@@ -180,7 +180,7 @@ void parseFnOrVar(ParseState *parse, uint16_t flags) {
 }
 
 // Parse a list of generic variables and add to the genericnode
-parseGenericVars(ParseState *parse, GenericNode *genericnode) {
+void parseGenericVars(ParseState *parse, GenericNode *genericnode) {
     lexNextToken(); // Go past left square bracket
     while (lexIsToken(IdentToken)) {
         GenVarDclNode *parm = newGVarDclNode(lex->val.ident);
