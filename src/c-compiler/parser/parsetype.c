@@ -211,8 +211,8 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     return (INode*)strnode;
 }
 
-void parseInjectSelf(FnSigNode *fnsig, Name *typename) {
-    NameUseNode *selftype = newNameUseNode(typename);
+void parseInjectSelf(FnSigNode *fnsig) {
+    NameUseNode *selftype = newNameUseNode(selfTypeName);
     VarDclNode *selfparm = newVarDclFull(nametblFind("self", 4), VarDclTag, (INode*)selftype, newPermUseNode(constPerm), NULL);
     selfparm->scope = 1;
     selfparm->index = 0;
@@ -233,24 +233,24 @@ INode *parseFnSig(ParseState *parse) {
         lexNextToken();
         // A type's method with no parameters should still define self
         if (lexIsToken(RParenToken) && parse->typenode)
-            parseInjectSelf(fnsig, parse->typenode->namesym);
+            parseInjectSelf(fnsig);
         while (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
             VarDclNode *parm = parseVarDcl(parse, immPerm, parseflags);
             // Do special inference if function is a type's method
             if (parse->typenode) {
                 // Create default self parm, if 'self' was not specified
                 if (parmnbr == 0 && parm->namesym != selfName) {
-                    parseInjectSelf(fnsig, parse->typenode->namesym);
+                    parseInjectSelf(fnsig);
                     ++parmnbr;
                 }
                 // Infer value type of a parameter (or its reference) if unspecified
                 if (parm->vtype == NULL) {
-                    parm->vtype = (INode*)newNameUseNode(parse->typenode->namesym);
+                    parm->vtype = (INode*)newNameUseNode(selfTypeName);
                 }
                 else if (parm->vtype->tag == RefTag) {
                     PtrNode *refnode = (PtrNode *)parm->vtype;
                     if (refnode->pvtype == voidType) {
-                        refnode->pvtype = (INode*)newNameUseNode(parse->typenode->namesym);
+                        refnode->pvtype = (INode*)newNameUseNode(selfTypeName);
                     }
                 }
             }

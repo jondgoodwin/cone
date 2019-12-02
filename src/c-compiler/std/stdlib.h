@@ -11,6 +11,7 @@
 // Common symbols
 Name *anonName;  // "_" - the absence of a name
 Name *selfName;  // "self"
+Name *selfTypeName; // "Self"
 Name *thisName;  // "this"
 Name *cloneName; // "clone" method
 Name *finalName; // "final" method

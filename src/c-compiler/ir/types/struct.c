@@ -45,6 +45,7 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     INode *svtypenode = pstate->typenode;
     pstate->typenode = (INode*)node;
     nametblHookPush();
+    namespaceAdd(&node->namespace, selfTypeName, (INode*)node);
     nametblHookNamespace(&node->namespace);
     if (node->basetrait)
         inodeNameRes(pstate, &node->basetrait);
