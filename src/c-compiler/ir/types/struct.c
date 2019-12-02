@@ -139,8 +139,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     // When done, all trait mixins are replaced with the trait's fields
     // And trait/field inheritance are appropriately added to the dictionary in the correct order
     CloneState cstate;
-    cstate.instnode = (INode*)node;
-    cstate.scope = 0;
+    clonePushState(&cstate, (INode*)node, (INode*)node, 0, NULL, NULL);
     int32_t fldpos = node->fields.used - 1;
     INode **fldnodesp = &nodelistGet(&node->fields, fldpos);
     while (fldpos >= 0) {
@@ -186,6 +185,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
 
         --fldpos; --fldnodesp;
     }
+    clonePopState();
 
     // Go through all fields to index them and calculate infection flags for ThreadBound/MoveType
     uint16_t infectFlag = 0;

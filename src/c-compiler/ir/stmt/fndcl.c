@@ -30,7 +30,7 @@ INode *cloneFnDclNode(CloneState *cstate, FnDclNode *oldfn) {
     memcpy(newnode, oldfn, sizeof(FnDclNode));
     newnode->nextnode = NULL; // clear out linkages
     newnode->vtype = cloneNode(cstate, oldfn->vtype);
-    newnode->vtype = cloneNode(cstate, oldfn->value);
+    newnode->value = cloneNode(cstate, oldfn->value);
     return (INode*)newnode;
 }
 
@@ -101,7 +101,9 @@ void fnImplicitReturn(INode *rettype, BlockNode *blk) {
 // - Perform data flow analysis on variables and references
 void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     inodeTypeCheck(pstate, &fnnode->vtype);
-    if (!fnnode->value)
+    // No need to type check function body if no body or is a default method of a trait
+    if (!fnnode->value 
+        || ((fnnode->flags & FlagMethFld) && pstate->typenode->tag == StructTag && (pstate->typenode->flags & TraitType)))
         return;
 
     // Ensure self parameter on a method is (reference to) its enclosing type

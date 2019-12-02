@@ -40,7 +40,8 @@ INode *cloneFnCallNode(CloneState *cstate, FnCallNode *node) {
     newnode = memAllocBlk(sizeof(FnCallNode));
     memcpy(newnode, node, sizeof(FnCallNode));
     newnode->objfn = cloneNode(cstate, node->objfn);
-    newnode->args = cloneNodes(cstate, node->args);
+    if (node->args)
+        newnode->args = cloneNodes(cstate, node->args);
     newnode->methfld = (NameUseNode*)cloneNode(cstate, (INode*)node->methfld);
     return (INode *)newnode;
 }

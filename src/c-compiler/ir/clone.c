@@ -43,10 +43,16 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         node = cloneLoopNode(cstate, (LoopNode *)nodep); break;
     case NamedValTag:
         node = cloneNamedValNode(cstate, (NamedValNode *)nodep); break;
+    case NameUseTag:
     case VarNameUseTag:
     case MbrNameUseTag:
-    case TypeNameUseTag:
-        node = cloneNameUseNode(cstate, (NameUseNode *)nodep); break;
+    case TypeNameUseTag: {
+        node = cloneNameUseNode(cstate, (NameUseNode *)nodep);
+        // For traits as mixins, repoint 'Self' to the struct node
+        if (cstate->selftype && ((NameUseNode*)node)->namesym == selfTypeName)
+            ((NameUseNode*)node)->dclnode = cstate->selftype;
+        break;
+    }
     case SizeofTag:
         node = cloneSizeofNode(cstate, (SizeofNode *)nodep); break;
     case VTupleTag:
