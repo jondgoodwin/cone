@@ -119,8 +119,8 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *fncall) {
         if (match) {
             // Return a namenode pointing to dcl instance
             NameUseNode *fnuse = newNameUseNode(genericnode->namesym);
-            fnuse->tag = isTypeNode(*nownodesp)? TypeNameUseTag : VarNameUseTag;
-            fnuse->dclnode = *nownodesp;
+            fnuse->tag = isTypeNode(*nodesp)? TypeNameUseTag : VarNameUseTag;
+            fnuse->dclnode = *nodesp;
             return (INode *)fnuse;
         }
     }
