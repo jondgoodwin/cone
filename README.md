@@ -2,12 +2,12 @@
 Cone is a fast, fit, friendly, and safe systems programming language.
 It features:
 
-- [3d web][3dweb] support
-- Concise, readable syntax
-- Lean, native runtime
-- Custom allocators
+- Do-it-your-way memory management
+- Versatile type system (incl. variant types and slices)
 - Memory, thread & type safe
 - Extensive code reuse features
+- Lean, native runtime
+- Concise, readable syntax
 
 The Cone compiler is currently under development.
 The current status and next steps are documented in [PLAN.md][plan].
@@ -21,7 +21,7 @@ The current status and next steps are documented in [PLAN.md][plan].
  
 The [Cone home repository](https://github.com/jondgoodwin/conehome)
 offers a rudimentary build environment for Cone programs,
-including the Congo build tool.
+including the Congo build tool and additional example Cone programs.
 
 ## Language Features
 
