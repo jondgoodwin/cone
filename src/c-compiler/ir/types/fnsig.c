@@ -24,6 +24,12 @@ INode *cloneFnSigNode(CloneState *cstate, FnSigNode *node) {
     memcpy(newnode, node, sizeof(FnSigNode));
     newnode->parms = cloneNodes(cstate, node->parms);
     newnode->rettype = cloneNode(cstate, node->rettype);
+    INode **origp = &nodesGet(node->parms, 0);
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(newnode->parms, cnt, nodesp)) {
+        cloneDclSetMap(*origp++, *nodesp);
+    }
     return (INode *)newnode;
 }
 

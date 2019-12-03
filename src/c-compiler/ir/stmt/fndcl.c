@@ -26,11 +26,13 @@ FnDclNode *newFnDclNode(Name *namesym, uint16_t flags, INode *type, INode *val) 
 
 // Return a clone of a function/method declaration
 INode *cloneFnDclNode(CloneState *cstate, FnDclNode *oldfn) {
+    uint32_t dclpos = cloneDclPush();
     FnDclNode *newnode = memAllocBlk(sizeof(FnDclNode));
     memcpy(newnode, oldfn, sizeof(FnDclNode));
     newnode->nextnode = NULL; // clear out linkages
     newnode->vtype = cloneNode(cstate, oldfn->vtype);
     newnode->value = cloneNode(cstate, oldfn->value);
+    cloneDclPop(dclpos);
     return (INode*)newnode;
 }
 
