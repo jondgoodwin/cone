@@ -50,6 +50,8 @@ INode *parseLifetime(ParseState *parse, int stmtflag);
 // parseexpr.c
 INode *parseSimpleExpr(ParseState *parse);
 INode *parseAnyExpr(ParseState *parse);
+// Parse a name use, which may be qualified with module names
+INode *parseNameUse(ParseState *parse);
 // Parse a term: literal, identifier, etc.
 INode *parseTerm(ParseState *parse);
 

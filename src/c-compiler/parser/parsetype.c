@@ -84,6 +84,25 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     return varnode;
 }
 
+INode *parseTypeName(ParseState *parse) {
+    INode *node = parseNameUse(parse);
+    if (lexIsToken(LBracketToken)) {
+        FnCallNode *fncall = newFnCallNode(node, 8);
+        fncall->flags |= FlagIndex;
+        lexNextToken();
+        if (!lexIsToken(RBracketToken)) {
+            nodesAdd(&fncall->args, parseVtype(parse));
+            while (lexIsToken(CommaToken)) {
+                lexNextToken();
+                nodesAdd(&fncall->args, parseVtype(parse));
+            }
+        }
+        parseCloseTok(RBracketToken);
+        node = (INode *)fncall;
+    }
+    return node;
+}
+
 // Parse a field declaration
 FieldDclNode *parseFieldDcl(ParseState *parse, PermNode *defperm) {
     FieldDclNode *fldnode;
@@ -159,7 +178,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     // Obtain base trait, if specified
     if (lexIsToken(ColonToken)) {
         lexNextToken();
-        strnode->basetrait = parseTerm(parse);  // Type could be a qualified name or generic
+        strnode->basetrait = parseTypeName(parse);  // Type could be a qualified name or generic
     }
 
     // Process field or method definitions
@@ -417,7 +436,6 @@ TypedefNode *parseTypedef(ParseState *parse) {
 
 // Parse a value type signature. Return NULL if none found.
 INode* parseVtype(ParseState *parse) {
-    INode *vtype;
     switch (lex->toktype) {
     case AmperToken:
         return parseRefType(parse);
@@ -429,9 +447,7 @@ INode* parseVtype(ParseState *parse) {
     case EnumToken:
         return parseEnum(parse);
     case IdentToken:
-        vtype = (INode*)newNameUseNode(lex->val.ident);
-        lexNextToken();
-        return vtype;
+        return parseTypeName(parse);
     default:
         return voidType;
     }

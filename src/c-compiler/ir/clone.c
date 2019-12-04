@@ -44,6 +44,7 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     case NamedValTag:
         node = cloneNamedValNode(cstate, (NamedValNode *)nodep); break;
     case NameUseTag:
+    case MacroNameTag:
     case VarNameUseTag:
     case MbrNameUseTag:
     case TypeNameUseTag: {
