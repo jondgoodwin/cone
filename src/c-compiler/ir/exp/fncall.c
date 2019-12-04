@@ -77,18 +77,6 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
     // Name resolve objfn so we know what it is to vary subsequent processing
     inodeNameRes(pstate, &node->objfn);
 
-    // TBD: objfn is a macro
-
-    // If objfn is a type, handle it as a type literal
-    if (isTypeNode(node->objfn)) {
-        if (!node->flags & FlagIndex) {
-            errorMsgNode(node->objfn, ErrorBadTerm, "May not do a function call on a type");
-            return;
-        }
-        node->tag = TypeLitTag;
-        node->vtype = node->objfn;
-    }
-
     // Name resolve arguments/statements
     if (node->args) {
         for (nodesFor(node->args, cnt, argsp))
@@ -351,15 +339,27 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         genericCallTypeCheck(pstate, nodep);
         return;
     }
+    inodeTypeCheck(pstate, &node->objfn);
 
-    // Type check all of tree except methfld for now
+    // If objfn is a type, handle it as a type literal
+    if (isTypeNode(node->objfn)) {
+        if (!node->flags & FlagIndex) {
+            errorMsgNode(node->objfn, ErrorBadTerm, "May not do a function call on a type");
+            return;
+        }
+        node->tag = TypeLitTag;
+        node->vtype = node->objfn;
+        typeLitTypeCheck(pstate, *nodep);
+        return;
+    }
+
+    // Type check arguments (but not methfld for now)
     INode **argsp;
     uint32_t cnt;
     if (node->args) {
         for (nodesFor(node->args, cnt, argsp))
             inodeTypeCheck(pstate, argsp);
     }
-    inodeTypeCheck(pstate, &node->objfn);
 
     // If objfn is a method/field, rewrite it as self.method
     if (node->objfn->tag == VarNameUseTag

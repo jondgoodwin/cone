@@ -105,12 +105,12 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
     }
     // Type check the initialization value
     else {
-        // Global variables and function parameters require literal initializers
-        if (name->scope <= 1 && !litIsLiteral(name->value))
-            errorMsgNode(name->value, ErrorNotLit, "Variable may only be initialized with a literal value.");
         // Verify that declared type and initial value type match
         if (!iexpTypeCheckAndMatch(pstate, &name->vtype, &name->value))
             errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
+        // Global variables and function parameters require literal initializers
+        if (name->scope <= 1 && !litIsLiteral(name->value))
+            errorMsgNode(name->value, ErrorNotLit, "Variable may only be initialized with a literal value.");
     }
 
     // Variables cannot hold a void or opaque struct value

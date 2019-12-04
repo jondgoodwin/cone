@@ -174,7 +174,7 @@ void typeLitStructCheck(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *
     }
 }
 
-// Check the list node
+// Check the list node (for everything but Arrays, we get here from fncall)
 void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *arrlit) {
     INode **nodesp;
     uint32_t cnt;
