@@ -26,7 +26,7 @@ typedef struct CloneDclMap {
 } CloneDclMap;
 
 // Perform a deep clone of specified node
-INode *cloneNode(CloneState *fstate, INode *nodep);
+INode *cloneNode(CloneState *cstate, INode *nodep);
 
 // Set the state needed for deep cloning some node
 void clonePushState(CloneState *cstate, INode *instnode, INode *selftype, uint32_t scope, Nodes *parms, Nodes *args);

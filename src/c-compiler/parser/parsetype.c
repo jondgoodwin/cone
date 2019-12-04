@@ -121,6 +121,7 @@ FieldDclNode *parseFieldDcl(ParseState *parse, PermNode *defperm) {
 INode *parseStruct(ParseState *parse, uint16_t strflags) {
     char *svprefix = parse->gennamePrefix;
     INsTypeNode *svtype = parse->typenode;
+    GenericNode *genericnode = NULL;
     StructNode *strnode;
     uint16_t fieldnbr = 0;
 
@@ -146,6 +147,14 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     uint16_t methflags = ParseMayName | ParseMayImpl;
     if (strnode->flags & TraitType)
         methflags |= ParseMaySig;
+
+    // Handle if generic parameters are found
+    if (lexIsToken(LBracketToken)) {
+        genericnode = newGenericNode(strnode->namesym);
+        genericnode->flags |= GenericMemoize;
+        parseGenericVars(parse, genericnode);
+        genericnode->body = (INode*)strnode;
+    }
 
     // Obtain base trait, if specified
     if (lexIsToken(ColonToken)) {
@@ -208,7 +217,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
 
     parse->typenode = svtype;
     parse->gennamePrefix = svprefix;
-    return (INode*)strnode;
+    return genericnode? (INode*)genericnode : (INode*)strnode;
 }
 
 void parseInjectSelf(FnSigNode *fnsig) {

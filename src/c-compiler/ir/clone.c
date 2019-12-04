@@ -77,6 +77,8 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     case VarDclTag:
         node = cloneVarDclNode(cstate, (VarDclNode *)nodep); break;
 
+    case StructTag:
+        node = cloneStructNode(cstate, (StructNode *)nodep); break;
     case ArrayTag:
         node = cloneArrayNode(cstate, (ArrayNode *)nodep); break;
     case FnSigTag:

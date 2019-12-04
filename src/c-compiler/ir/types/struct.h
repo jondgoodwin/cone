@@ -45,6 +45,9 @@ typedef struct FieldDclNode FieldDclNode;
 
 StructNode *newStructNode(Name *namesym);
 
+// Clone struct
+INode *cloneStructNode(CloneState *cstate, StructNode *node);
+
 // Add a field node to a struct type
 void structAddField(StructNode *type, FieldDclNode *node);
 
