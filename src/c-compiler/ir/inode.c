@@ -201,6 +201,7 @@ void inodeNameRes(NameResState *pstate, INode **node) {
     case NameUseTag:
     case VarNameUseTag:
     case TypeNameUseTag:
+    case MacroNameTag:
         nameUseNameRes(pstate, (NameUseNode **)node); break;
     case TypeLitTag:
         typeLitNameRes(pstate, (FnCallNode *)*node); break;
