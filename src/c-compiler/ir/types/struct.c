@@ -14,7 +14,6 @@ StructNode *newStructNode(Name *namesym) {
     newNode(snode, StructNode, StructTag);
     snode->namesym = namesym;
     snode->llvmtype = NULL;
-    snode->subtypes = newNodes(0);
     iNsTypeInit((INsTypeNode*)snode, 8);
     nodelistInit(&snode->fields, 8);
     snode->mod = NULL;
@@ -23,6 +22,36 @@ StructNode *newStructNode(Name *namesym) {
     snode->vtable = NULL;
     snode->tagnbr = 0;
     return snode;
+}
+
+// Clone struct
+INode *cloneStructNode(CloneState *cstate, StructNode *node) {
+    StructNode *newnode = memAllocBlk(sizeof(StructNode));
+    memcpy(newnode, node, sizeof(StructNode));
+    newnode->basetrait = cloneNode(cstate, node->basetrait);
+    // Fields like derived, vtable, tagnbr do not yet have useful data to clone
+
+    // Recreate clones of fields/mixins and methods, sequentially and in namespace dictionary
+    namespaceInit(&newnode->namespace, node->namespace.avail);
+    INode **newnodesp = (INode**)memAllocBlk(node->fields.avail * sizeof(INode *));
+    newnode->fields.nodes = newnodesp;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&node->fields, cnt, nodesp)) {
+        *newnodesp = cloneNode(cstate, *nodesp);
+        if ((*newnodesp)->tag == FieldDclTag) {
+            FieldDclNode *newfld = (FieldDclNode*)*newnodesp;
+            namespaceAdd(&newnode->namespace, newfld->namesym, (INode*)newfld);
+        }
+        ++newnodesp;
+    }
+    newnodesp = (INode**)memAllocBlk(node->nodelist.avail * sizeof(INode *));
+    newnode->nodelist.nodes = newnodesp;
+    for (nodelistFor(&node->nodelist, cnt, nodesp)) {
+        iNsTypeAddFn((INsTypeNode*)newnode, (FnDclNode*)(*newnodesp++ = cloneNode(cstate, *nodesp)));
+    }
+
+    return (INode *)newnode;
 }
 
 // Add a field

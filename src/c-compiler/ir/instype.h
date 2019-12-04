@@ -13,8 +13,7 @@
     ITypeNodeHdr; \
     Name *namesym; \
     NodeList nodelist; \
-    Namespace namespace; \
-    Nodes *subtypes
+    Namespace namespace
 
 // Interface for a namespaced type
 // -> nodes (NodeList) is the list of nodes
