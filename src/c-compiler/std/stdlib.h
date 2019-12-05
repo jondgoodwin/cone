@@ -55,7 +55,8 @@ Name *indexName;    // "[]"
 Name *refIndexName; // "&[]"
 
 // Represents the absence of type information
-INode *voidType;
+INode *voidType;   // Unknown/unspecified type
+INode *elseCond;   // node representing the 'else' condition for an 'if' node
 
 // Built-in permission types - for implicit (non-declared but known) permissions
 PermNode *uniPerm;

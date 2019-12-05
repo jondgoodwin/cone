@@ -39,7 +39,7 @@ void ifPrint(IfNode *ifnode) {
         }
         else {
             inodePrintIndent();
-            if (isElse(*nodesp))
+            if (*nodesp == elseCond)
                 inodeFprint("else");
             else {
                 inodeFprint("elif ");
@@ -111,7 +111,7 @@ void ifExhaustCheck(IfNode *ifnode, CastNode *condition) {
             return;
     }
     // Turn last 'is' condition into 'else'
-    nodesGet(ifnode->condblk, ifnode->condblk->used - lowestcnt) = voidType;
+    nodesGet(ifnode->condblk, ifnode->condblk->used - lowestcnt) = elseCond;
 }
 
 // Type check the if statement node
@@ -131,7 +131,7 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode) {
         if ((*nodesp)->tag == IsTag)
             ifExhaustCheck(ifnode, (CastNode*)*nodesp);
 
-        if (!isElse(*nodesp)) {
+        if (*nodesp != elseCond) {
             if (0 == iexpBiTypeInfer((INode**)&boolType, nodesp))
                 errorMsgNode(*nodesp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
         }
@@ -181,7 +181,7 @@ void ifFlow(FlowState *fstate, IfNode **ifnodep) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
-        if (!isElse(*nodesp))
+        if (*nodesp != elseCond)
             flowLoadValue(fstate, nodesp);
         nodesp++; cnt--;
         blockFlow(fstate, (BlockNode**)nodesp);

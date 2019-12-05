@@ -142,6 +142,7 @@ void stdlibInit(int ptrsize) {
     refIndexName = nametblFind("&[]", 3);
 
     voidType = (INode*)newVoidNode();
+    elseCond = (INode*)newVoidNode();
 
     keywordInit();
     staticLifetimeNode = newLifetimeDclNode(nametblFind("'static", 7), 0);

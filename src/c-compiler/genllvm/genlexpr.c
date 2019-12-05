@@ -57,7 +57,7 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
 
         // Set up this condition's statement block and then conditionally jump to it or next condition
         LLVMBasicBlockRef ablk;
-        if (!isElse(*nodesp)) {
+        if (*nodesp != elseCond) {
             ablk = LLVMInsertBasicBlockInContext(gen->context, nextif, "ifblk");
             LLVMBuildCondBr(gen->builder, genlExpr(gen, *nodesp), ablk, nextif);
             LLVMPositionBuilderAtEnd(gen->builder, ablk);

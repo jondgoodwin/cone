@@ -178,7 +178,7 @@ INode *parseIf(ParseState *parse) {
         if (lexIsToken(ElseToken)) {
             lexNextToken();
             if (!lexIsToken(IfToken)) {
-                nodesAdd(&ifnode->condblk, voidType); // else distinguished by a 'void' condition
+                nodesAdd(&ifnode->condblk, elseCond); // else distinguished by a elseCond
                 nodesAdd(&ifnode->condblk, parseBlockOrStmt(parse));
                 break;
             }
@@ -194,7 +194,7 @@ INode *parseIf(ParseState *parse) {
         // - The first statement in the block actually binds the var to the re-cast value
         if (lexIsToken(PermToken)) {
             BlockNode *blknode = newBlockNode();
-            nodesAdd(&ifnode->condblk, voidType);
+            nodesAdd(&ifnode->condblk, elseCond);
             nodesAdd(&ifnode->condblk, (INode*)blknode);
             VarDclNode *valnode = newVarDclFull(anonName, VarDclTag, NULL, (INode*)immPerm, NULL);
             NameUseNode *valnamenode = newNameUseNode(anonName);
@@ -264,7 +264,7 @@ INode *parseMatch(ParseState *parse) {
 
         case ElseToken:
             lexNextToken();
-            nodesAdd(&ifnode->condblk, voidType); // else distinguished by a 'void' condition
+            nodesAdd(&ifnode->condblk, elseCond); // else distinguished by a elseCond condition
             nodesAdd(&ifnode->condblk, parseBlockOrStmt(parse));
             break;
 
