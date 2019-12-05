@@ -24,10 +24,10 @@ void flowInjectAliasNode(INode **nodep, int16_t rvalcount) {
     if (vtype->tag != TTupleTag) {
         // No need for injected node if we are not dealing with rc/own references and if alias calc = 0
         RefNode *reftype = (RefNode *)itypeGetTypeDcl(vtype);
-        if (reftype->tag != RefTag || !(reftype->alloc == (INode*)rcAlloc || reftype->alloc == (INode*)ownAlloc))
+        if (reftype->tag != RefTag || !(reftype->region == (INode*)rcRegion || reftype->region == (INode*)soRegion))
             return;
         count = flowAliasGet(0) + rvalcount;
-        if (count == 0 || (reftype->alloc == (INode*)ownAlloc && count > 0))
+        if (count == 0 || (reftype->region == (INode*)soRegion && count > 0))
             return;
     }
     else {
@@ -42,12 +42,12 @@ void flowInjectAliasNode(INode **nodep, int16_t rvalcount) {
         flowAliasSize(count = tuple->types->used);
         for (nodesFor(tuple->types, cnt, nodesp)) {
             RefNode *reftype = (RefNode *)itypeGetTypeDcl(*nodesp);
-            if (reftype->tag != RefTag || !(reftype->alloc == (INode*)rcAlloc || reftype->alloc == (INode*)ownAlloc)) {
+            if (reftype->tag != RefTag || !(reftype->region == (INode*)rcRegion || reftype->region == (INode*)soRegion)) {
                 flowAliasPut(index++, 0);
                 continue;
             }
             int16_t tcount = flowAliasGet(index) + rvalcount;
-            if (reftype->alloc == (INode*)ownAlloc && tcount > 0)
+            if (reftype->region == (INode*)soRegion && tcount > 0)
                 tcount = 0;
             flowAliasPut(index++, tcount);
             if (tcount != 0)
@@ -203,7 +203,7 @@ int flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp) {
     while (pos > startpos) {
         VarFlowInfo *avar = &gVarFlowStackp[--pos];
         RefNode *reftype = (RefNode*)avar->node->vtype;
-        if (reftype->tag == RefTag && (reftype->alloc == (INode*)rcAlloc || reftype->alloc == (INode*)ownAlloc)) {
+        if (reftype->tag == RefTag && (reftype->region == (INode*)rcRegion || reftype->region == (INode*)soRegion)) {
             if (retexp->tag != VarNameUseTag || ((NameUseNode *)retexp)->namesym != avar->node->namesym) {
                 if (*varlist == NULL)
                     *varlist = newNodes(4);

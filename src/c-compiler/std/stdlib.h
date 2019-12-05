@@ -70,8 +70,8 @@ PermNode *opaqPerm;
 LifetimeNode *staticLifetimeNode;
 
 // Built-in allocator types
-AllocNode *ownAlloc;
-AllocNode *rcAlloc;
+AllocNode *soRegion;
+AllocNode *rcRegion;
 
 // Primitive numeric types - for implicit (nondeclared but known) types
 NbrNode *boolType;    // i1

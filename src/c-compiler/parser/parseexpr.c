@@ -218,7 +218,7 @@ INode *parsePostfix(ParseState *parse) {
 INode *parseAddr(ParseState *parse) {
     RefNode *reftype = newRefNode();  // Type for address node
     reftype->pvtype = NULL;     // Type inference will correct this
-    reftype->alloc = voidType;
+    reftype->region = voidType;
 
     lexNextToken();
 
@@ -234,7 +234,7 @@ INode *parseAddr(ParseState *parse) {
     // Allocated reference
     if (lexIsToken(IdentToken)
         && lex->val.ident->node && lex->val.ident->node->tag == AllocTag) {
-        reftype->alloc = (INode*)lex->val.ident->node;
+        reftype->region = (INode*)lex->val.ident->node;
         AllocateNode *anode = newAllocateNode();
         anode->vtype = (INode *)reftype;
         lexNextToken();

@@ -19,7 +19,7 @@ RefNode *newRefNode() {
 INode *cloneRefNode(CloneState *cstate, RefNode *node) {
     RefNode *newnode = memAllocBlk(sizeof(RefNode));
     memcpy(newnode, node, sizeof(RefNode));
-    newnode->alloc = cloneNode(cstate, node->alloc);
+    newnode->region = cloneNode(cstate, node->region);
     newnode->perm = cloneNode(cstate, node->perm);
     newnode->pvtype = cloneNode(cstate, node->pvtype);
     return (INode *)newnode;
@@ -29,7 +29,7 @@ INode *cloneRefNode(CloneState *cstate, RefNode *node) {
 void refAdoptInfections(RefNode *refnode) {
     if (refnode->perm == NULL || refnode->pvtype == NULL)
         return;  // Wait until we have this info
-    if (!(permGetFlags(refnode->perm) & MayAlias) || refnode->alloc == (INode*)ownAlloc)
+    if (!(permGetFlags(refnode->perm) & MayAlias) || refnode->region == (INode*)soRegion)
         refnode->flags |= MoveType;
     if (refnode->perm == (INode*)mutPerm || refnode->perm == (INode*)constPerm 
         || (refnode->pvtype->flags & ThreadBound))
@@ -37,9 +37,9 @@ void refAdoptInfections(RefNode *refnode) {
 }
 
 // Create a reference node based on fully-known type parameters
-RefNode *newRefNodeFull(INode *alloc, INode *perm, INode *vtype) {
+RefNode *newRefNodeFull(INode *region, INode *perm, INode *vtype) {
     RefNode *refnode = newRefNode();
-    refnode->alloc = alloc;
+    refnode->region = region;
     refnode->perm = perm;
     refnode->pvtype = vtype;
     refAdoptInfections(refnode);
@@ -57,7 +57,7 @@ void refSetPermVtype(RefNode *refnode, INode *perm, INode *vtype) {
 RefNode *newArrayDerefNodeFrom(RefNode *refnode) {
     RefNode *dereftype = newRefNode();
     dereftype->tag = ArrayDerefTag;
-    dereftype->alloc = refnode->alloc;
+    dereftype->region = refnode->region;
     dereftype->perm = refnode->perm;
     dereftype->pvtype = refnode->pvtype;
     return dereftype;
@@ -72,7 +72,7 @@ int refIsNullable(INode *typenode) {
 // Serialize a pointer type
 void refPrint(RefNode *node) {
     inodeFprint("&(");
-    inodePrintNode(node->alloc);
+    inodePrintNode(node->region);
     inodeFprint(" ");
     inodePrintNode((INode*)node->perm);
     inodeFprint(" ");
@@ -82,14 +82,14 @@ void refPrint(RefNode *node) {
 
 // Name resolution of a reference node
 void refNameRes(NameResState *pstate, RefNode *node) {
-    inodeNameRes(pstate, &node->alloc);
+    inodeNameRes(pstate, &node->region);
     inodeNameRes(pstate, (INode**)&node->perm);
     inodeNameRes(pstate, &node->pvtype);
 }
 
 // Type check a reference node
 void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
-    inodeTypeCheck(pstate, &node->alloc);
+    inodeTypeCheck(pstate, &node->region);
     inodeTypeCheck(pstate, (INode**)&node->perm);
     inodeTypeCheck(pstate, &node->pvtype);
     refAdoptInfections(node);
@@ -97,7 +97,7 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
 
 // Type check a virtual reference node
 void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
-    inodeTypeCheck(pstate, &node->alloc);
+    inodeTypeCheck(pstate, &node->region);
     inodeTypeCheck(pstate, (INode**)&node->perm);
     inodeTypeCheck(pstate, &node->pvtype);
     refAdoptInfections(node);
@@ -116,14 +116,14 @@ void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
 int refEqual(RefNode *node1, RefNode *node2) {
     return itypeIsSame(node1->pvtype,node2->pvtype) 
         && permIsSame(node1->perm, node2->perm)
-        && node1->alloc == node2->alloc
+        && node1->region == node2->region
         && (node1->flags & FlagRefNull) == (node2->flags & FlagRefNull);
 }
 
 // Will from reference coerce to a to reference (we know they are not the same)
 int refMatches(RefNode *to, RefNode *from) {
     if (0 == permMatches(to->perm, from->perm)
-        || (to->alloc != from->alloc && to->alloc != voidType)
+        || (to->region != from->region && to->region != voidType)
         || ((from->flags & FlagRefNull) && !(to->flags & FlagRefNull)))
         return 0;
 
@@ -143,7 +143,7 @@ int refMatches(RefNode *to, RefNode *from) {
 // Will from reference coerce to a virtual reference (we know they are not the same)
 int refvirtMatches(RefNode *to, RefNode *from) {
     if (0 == permMatches(to->perm, from->perm)
-        || (to->alloc != from->alloc && to->alloc != voidType)
+        || (to->region != from->region && to->region != voidType)
         || ((from->flags & FlagRefNull) && !(to->flags & FlagRefNull)))
         return 0;
 
@@ -172,7 +172,7 @@ int refAutoRefCheck(INode *selfnode, INode *totype) {
             return 1;
     }
     // Auto-ref, if we have a value but need a ref
-    else if (selftype->tag != RefTag && totype->tag == RefTag && ((RefNode*)totype)->alloc == voidType) {
+    else if (selftype->tag != RefTag && totype->tag == RefTag && ((RefNode*)totype)->region == voidType) {
         int match = itypeMatches(((RefNode*)totype)->pvtype, selftype);
         if (selfnode->tag != VarNameUseTag || match == 0 || match > 2)
             return 0;

@@ -51,10 +51,10 @@ void genlDealiasFlds(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
     for (nodelistFor(&strnode->fields, cnt, nodesp)) {
         FieldDclNode *field = (FieldDclNode *)*nodesp;
         RefNode *vartype = (RefNode *)field->vtype;
-        if (vartype->tag != RefTag || !(vartype->alloc == (INode*)rcAlloc || vartype->alloc == (INode*)ownAlloc))
+        if (vartype->tag != RefTag || !(vartype->region == (INode*)rcRegion || vartype->region == (INode*)soRegion))
             continue;
         LLVMValueRef fldref = LLVMBuildStructGEP(gen->builder, ref, field->index, &field->namesym->namestr);
-        if (vartype->alloc == (INode*)ownAlloc)
+        if (vartype->region == (INode*)soRegion)
             genlDealiasOwn(gen, fldref, vartype);
         else
             genlRcCounter(gen, fldref, -1, vartype);
@@ -80,10 +80,10 @@ LLVMValueRef genlallocref(GenState *gen, AllocateNode *allocatenode) {
     RefNode *reftype = (RefNode*)allocatenode->vtype;
     long long valsize = LLVMABISizeOfType(gen->datalayout, genlType(gen, reftype->pvtype));
     long long allocsize = 0;
-    if (reftype->alloc == (INode*)rcAlloc)
+    if (reftype->region == (INode*)rcRegion)
         allocsize = LLVMABISizeOfType(gen->datalayout, genlType(gen, (INode*)usizeType));
     LLVMValueRef malloc = genlmalloc(gen, allocsize + valsize);
-    if (reftype->alloc == (INode*)rcAlloc) {
+    if (reftype->region == (INode*)rcRegion) {
         LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), 1, 0);
         LLVMTypeRef ptrusize = LLVMPointerType(genlType(gen, (INode*)usizeType), 0);
         LLVMValueRef counterptr = LLVMBuildBitCast(gen->builder, malloc, ptrusize, "");
@@ -140,10 +140,10 @@ void genlDealiasNodes(GenState *gen, Nodes *nodes) {
         RefNode *reftype = (RefNode *)var->vtype;
         if (reftype->tag == RefTag) {
             LLVMValueRef ref = LLVMBuildLoad(gen->builder, var->llvmvar, "allocref");
-            if (reftype->alloc == (INode*)ownAlloc) {
+            if (reftype->region == (INode*)soRegion) {
                 genlDealiasOwn(gen, ref, reftype);
             }
-            else if (reftype->alloc == (INode*)rcAlloc) {
+            else if (reftype->region == (INode*)rcRegion) {
                 genlRcCounter(gen, ref, -1, reftype);
             }
         }

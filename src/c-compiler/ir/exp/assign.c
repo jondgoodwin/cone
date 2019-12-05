@@ -226,7 +226,7 @@ void assignSingleFlow(INode *lval, INode **rval) {
         // If this assignment is supposed to return a reference, it cannot
         if (flowAliasGet(0) > 0) {
             RefNode *reftype = (RefNode *)((IExpNode*)*rval)->vtype;
-            if (reftype->tag == RefTag && reftype->alloc == (INode*)ownAlloc)
+            if (reftype->tag == RefTag && reftype->region == (INode*)soRegion)
                 errorMsgNode((INode*)lval, ErrorMove, "This frees reference. The reference is inaccessible for use.");
         }
     }
@@ -244,7 +244,7 @@ void assignSingleFlow(INode *lval, INode **rval) {
 
     RefNode* rvaltype = (RefNode *)((IExpNode*)*rval)->vtype;
     RefNode* lvaltype = (RefNode *)((IExpNode*)lval)->vtype;
-    if (rvaltype->tag == RefTag && lvaltype->tag == RefTag && lvaltype->alloc == voidType) {
+    if (rvaltype->tag == RefTag && lvaltype->tag == RefTag && lvaltype->region == voidType) {
         if (lvalscope < rvaltype->scope) {
             errorMsgNode(lval, ErrorInvType, "lval outlives the borrowed reference you are storing");
             return;

@@ -34,12 +34,12 @@ INode *parsePerm(PermNode *defperm) {
 void parseAllocPerm(RefNode *refnode) {
     if (lexIsToken(IdentToken)
         && lex->val.ident->node && lex->val.ident->node->tag == AllocTag) {
-        refnode->alloc = (INode*)lex->val.ident->node;
+        refnode->region = (INode*)lex->val.ident->node;
         lexNextToken();
         refnode->perm = parsePerm(uniPerm);
     }
     else {
-        refnode->alloc = voidType;
+        refnode->region = voidType;
         refnode->perm = parsePerm(constPerm);
     }
 }

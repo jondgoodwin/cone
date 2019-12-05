@@ -128,7 +128,7 @@ enum TokenTypes {
     MixinToken,     // 'mixin'
     EnumTraitToken, // 'enumtrait'
     EnumToken,      // 'enum'
-    AllocToken,     // 'alloc'
+    RegionToken,    // 'region'
     RetToken,       // 'return'
     DoToken,        // 'do'
     WithToken,      // 'with'

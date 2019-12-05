@@ -34,7 +34,7 @@ void keywordInit() {
     keyAdd("mixin", MixinToken);
     keyAdd("enumtrait", EnumTraitToken);
     keyAdd("enum", EnumToken);
-    keyAdd("alloc", AllocToken);
+    keyAdd("region", RegionToken);
     keyAdd("return", RetToken);
     keyAdd("do", DoToken);
     keyAdd("with", WithToken);
@@ -88,8 +88,8 @@ AllocNode *newAllocNodeStr(char *name) {
 }
 
 void stdAllocInit() {
-    ownAlloc = newAllocNodeStr("so");
-    rcAlloc = newAllocNodeStr("rc");
+    soRegion = newAllocNodeStr("so");
+    rcRegion = newAllocNodeStr("rc");
 }
 
 // Set up the standard library, whose names are always shared by all modules

@@ -15,7 +15,7 @@ typedef struct RefNode {
     INodeHdr;
     INode *pvtype;    // Value type
     INode *perm;      // Permission
-    INode *alloc;     // Allocator
+    INode *region;    // Region
     uint16_t scope;   // Lifetime
 } RefNode;
 
@@ -26,7 +26,7 @@ RefNode *newRefNode();
 INode *cloneRefNode(CloneState *cstate, RefNode *node);
 
 // Create a new reference type whose info is known and analyzeable
-RefNode *newRefNodeFull(INode *alloc, INode *perm, INode *vtype);
+RefNode *newRefNodeFull(INode *region, INode *perm, INode *vtype);
 
 // Set the inferred value type of a reference
 void refSetPermVtype(RefNode *refnode, INode *perm, INode *vtype);
