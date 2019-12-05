@@ -244,7 +244,7 @@ void assignSingleFlow(INode *lval, INode **rval) {
 
     RefNode* rvaltype = (RefNode *)((IExpNode*)*rval)->vtype;
     RefNode* lvaltype = (RefNode *)((IExpNode*)lval)->vtype;
-    if (rvaltype->tag == RefTag && lvaltype->tag == RefTag && lvaltype->region == voidType) {
+    if (rvaltype->tag == RefTag && lvaltype->tag == RefTag && lvaltype->region == borrowRef) {
         if (lvalscope < rvaltype->scope) {
             errorMsgNode(lval, ErrorInvType, "lval outlives the borrowed reference you are storing");
             return;

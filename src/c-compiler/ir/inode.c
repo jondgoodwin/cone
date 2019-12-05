@@ -130,7 +130,7 @@ void inodePrintNode(INode *node) {
     case PtrTag:
         ptrPrint((PtrNode *)node); break;
     case StructTag:
-    case AllocTag:
+    case RegionTag:
         structPrint((StructNode *)node); break;
     case EnumTag:
         enumPrint((EnumNode *)node); break;
@@ -258,7 +258,7 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         arrayNameRes(pstate, (ArrayNode *)*node); break;
     case TTupleTag:
         ttupleNameRes(pstate, (TTupleNode *)*node); break;
-    case AllocTag:
+    case RegionTag:
         break;
 
     case GenericTag:
@@ -375,7 +375,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node) {
         arrayTypeCheck(pstate, (ArrayNode *)*node); break;
     case TTupleTag:
         ttupleTypeCheck(pstate, (TTupleNode *)*node); break;
-    case AllocTag:
+    case RegionTag:
     case PermTag:
         break;
 

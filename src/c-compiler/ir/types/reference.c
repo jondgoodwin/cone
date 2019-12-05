@@ -123,7 +123,7 @@ int refEqual(RefNode *node1, RefNode *node2) {
 // Will from reference coerce to a to reference (we know they are not the same)
 int refMatches(RefNode *to, RefNode *from) {
     if (0 == permMatches(to->perm, from->perm)
-        || (to->region != from->region && to->region != voidType)
+        || (to->region != from->region && to->region != borrowRef)
         || ((from->flags & FlagRefNull) && !(to->flags & FlagRefNull)))
         return 0;
 
@@ -143,7 +143,7 @@ int refMatches(RefNode *to, RefNode *from) {
 // Will from reference coerce to a virtual reference (we know they are not the same)
 int refvirtMatches(RefNode *to, RefNode *from) {
     if (0 == permMatches(to->perm, from->perm)
-        || (to->region != from->region && to->region != voidType)
+        || (to->region != from->region && to->region != borrowRef)
         || ((from->flags & FlagRefNull) && !(to->flags & FlagRefNull)))
         return 0;
 
@@ -172,7 +172,7 @@ int refAutoRefCheck(INode *selfnode, INode *totype) {
             return 1;
     }
     // Auto-ref, if we have a value but need a ref
-    else if (selftype->tag != RefTag && totype->tag == RefTag && ((RefNode*)totype)->region == voidType) {
+    else if (selftype->tag != RefTag && totype->tag == RefTag && ((RefNode*)totype)->region == borrowRef) {
         int match = itypeMatches(((RefNode*)totype)->pvtype, selftype);
         if (selfnode->tag != VarNameUseTag || match == 0 || match > 2)
             return 0;

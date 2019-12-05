@@ -130,7 +130,7 @@ enum NodeTags {
     EnumTag,        // Enumerated value/type
     LifetimeTag,
     PermTag,
-    AllocTag,
+    RegionTag,
 };
 
 // *****************

@@ -227,7 +227,7 @@ void genlModule(GenState *gen, ModuleNode *mod) {
             break;
 
         // Generate allocator definition
-        case AllocTag:
+        case RegionTag:
             genlType(gen, nodep);
             break;
 

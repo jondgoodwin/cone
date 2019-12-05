@@ -45,7 +45,7 @@ int arrayRefEqual(RefNode *node1, RefNode *node2) {
 // Will from reference coerce to a to reference (we know they are not the same)
 int arrayRefMatches(RefNode *to, RefNode *from) {
     if (0 == permMatches(to->perm, from->perm)
-        || (to->region != from->region && to->region != voidType)
+        || (to->region != from->region && to->region != borrowRef)
         || ((from->flags & FlagRefNull) && !(to->flags & FlagRefNull)))
         return 0;
     if (to->pvtype && from->pvtype)

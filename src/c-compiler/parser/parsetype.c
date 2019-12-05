@@ -33,13 +33,13 @@ INode *parsePerm(PermNode *defperm) {
 // Parse an allocator + permission for a reference type
 void parseAllocPerm(RefNode *refnode) {
     if (lexIsToken(IdentToken)
-        && lex->val.ident->node && lex->val.ident->node->tag == AllocTag) {
+        && lex->val.ident->node && lex->val.ident->node->tag == RegionTag) {
         refnode->region = (INode*)lex->val.ident->node;
         lexNextToken();
         refnode->perm = parsePerm(uniPerm);
     }
     else {
-        refnode->region = voidType;
+        refnode->region = borrowRef;
         refnode->perm = parsePerm(constPerm);
     }
 }

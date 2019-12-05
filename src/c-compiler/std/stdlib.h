@@ -57,6 +57,7 @@ Name *refIndexName; // "&[]"
 // Represents the absence of type information
 INode *voidType;   // Unknown/unspecified type
 INode *elseCond;   // node representing the 'else' condition for an 'if' node
+INode *borrowRef;  // When a reference's region is unspecified, as it is borrowed
 
 // Built-in permission types - for implicit (non-declared but known) permissions
 PermNode *uniPerm;

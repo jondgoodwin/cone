@@ -34,7 +34,7 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
     // Create function signature for unary ref methods for this type
     FnSigNode *mutrefsig = newFnSigNode();
     mutrefsig->rettype = (INode*)nbrtypenode;
-    RefNode *mutref = newRefNodeFull(voidType, newPermUseNode(mutPerm), (INode*)nbrtypenode);
+    RefNode *mutref = newRefNodeFull(borrowRef, newPermUseNode(mutPerm), (INode*)nbrtypenode);
     nodesAdd(&mutrefsig->parms, (INode *)newVarDclFull(una1, VarDclTag, (INode*)mutref, newPermUseNode(immPerm), NULL));
 
     // Create function signature for binary methods for this type
@@ -139,7 +139,7 @@ INsTypeNode *newPtrTypeMethods() {
     // Create function signature for unary ref methods for ++, --
     FnSigNode *mutrefsig = newFnSigNode();
     mutrefsig->rettype = (INode*)voidptr;
-    RefNode *mutref = newRefNodeFull(voidType, newPermUseNode(mutPerm), (INode*)voidptr);
+    RefNode *mutref = newRefNodeFull(borrowRef, newPermUseNode(mutPerm), (INode*)voidptr);
     nodesAdd(&mutrefsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)mutref, newPermUseNode(immPerm), NULL));
 
     iNsTypeAddFn((INsTypeNode*)ptrtypenode, newFnDclNode(incrName, FlagMethFld, (INode *)mutrefsig, (INode *)newIntrinsicNode(IncrIntrinsic)));
@@ -186,7 +186,7 @@ INsTypeNode *newRefTypeMethods() {
     reftypenode->llvmtype = NULL;
     iNsTypeInit((INsTypeNode*)reftypenode, 8);
 
-    RefNode *voidref = newRefNodeFull(voidType, newPermUseNode(mutPerm), voidType);
+    RefNode *voidref = newRefNodeFull(borrowRef, newPermUseNode(mutPerm), voidType);
 
     // Create function signature for unary methods for this type
     FnSigNode *unarysig = newFnSigNode();

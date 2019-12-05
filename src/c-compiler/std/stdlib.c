@@ -80,7 +80,7 @@ void stdPermInit() {
 
 AllocNode *newAllocNodeStr(char *name) {
     AllocNode *allocnode;
-    newNode(allocnode, AllocNode, AllocTag);
+    newNode(allocnode, AllocNode, RegionTag);
     Name *namesym = nametblFind(name, strlen(name));
     allocnode->namesym = namesym;
     namesym->node = (INode*)allocnode;
@@ -143,6 +143,7 @@ void stdlibInit(int ptrsize) {
 
     voidType = (INode*)newVoidNode();
     elseCond = (INode*)newVoidNode();
+    borrowRef = (INode*)newVoidNode();
 
     keywordInit();
     staticLifetimeNode = newLifetimeDclNode(nametblFind("'static", 7), 0);

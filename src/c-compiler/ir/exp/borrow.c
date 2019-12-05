@@ -185,7 +185,7 @@ void borrowMutRef(INode **node, INode* type) {
         *node = derefnode->exp;
         return;
     }
-    RefNode *refnode = newRefNodeFull(voidType, newPermUseNode(mutPerm), type);
+    RefNode *refnode = newRefNodeFull(borrowRef, newPermUseNode(mutPerm), type);
     inodeLexCopy((INode*)refnode, *node);
     BorrowNode *borrownode = newBorrowNode();
     inodeLexCopy((INode*)borrownode, *node);
