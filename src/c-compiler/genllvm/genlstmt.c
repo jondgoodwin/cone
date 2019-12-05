@@ -72,7 +72,7 @@ LLVMValueRef genlLoop(GenState *gen, LoopNode *loopnode) {
 
 // Generate a return statement
 void genlReturn(GenState *gen, ReturnNode *node) {
-    if (node->exp != voidType) {
+    if (node->exp != noValue) {
         LLVMValueRef retval = genlExpr(gen, node->exp);
         genlDealiasNodes(gen, node->dealias);
         LLVMBuildRet(gen->builder, retval);
@@ -111,7 +111,7 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
             BreakNode *brknode = (BreakNode*)*nodesp;
             GenLoopState *loopstate = genFindLoopState(gen, brknode->life);
             genlDealiasNodes(gen, brknode->dealias);
-            if (brknode->exp) {
+            if (brknode->exp != noValue) {
                 loopstate->loopPhis[loopstate->loopPhiCnt] = genlExpr(gen, brknode->exp);
                 loopstate->loopBlks[loopstate->loopPhiCnt++] = LLVMGetInsertBlock(gen->builder);
             }
@@ -126,7 +126,7 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
         case BlockRetTag:
         {
             ReturnNode *node = (ReturnNode*)*nodesp;
-            if (node->exp != voidType)
+            if (node->exp != noValue)
                 lastval = genlExpr(gen, node->exp);
             genlDealiasNodes(gen, node->dealias);
             break;

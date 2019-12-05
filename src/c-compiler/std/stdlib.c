@@ -144,6 +144,7 @@ void stdlibInit(int ptrsize) {
     voidType = (INode*)newVoidNode();
     elseCond = (INode*)newVoidNode();
     borrowRef = (INode*)newVoidNode();
+    noValue = (INode*)newVoidNode();
 
     keywordInit();
     staticLifetimeNode = newLifetimeDclNode(nametblFind("'static", 7), 0);

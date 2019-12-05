@@ -148,7 +148,7 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
             *lastnodep = (INode*)blkret;
         }
         else {
-            blkret->exp = voidType;
+            blkret->exp = noValue;
             nodesAdd(&blk->stmts, (INode*)blkret);
         }
     }
@@ -196,13 +196,19 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
     {
         INode **retexp = &((ReturnNode *)*nodesp)->exp;
         int doalias = flowScopeDealias(svpos, &((ReturnNode *)*nodesp)->dealias, *retexp);
-        if (*retexp != voidType && doalias)
+        if (*retexp != noValue && doalias)
             flowLoadValue(fstate, retexp);
         break;
     }
-    case BreakTag:
+    case BreakTag: {
+        INode **brkexp = &((BreakNode *)*nodesp)->exp;
+        int doalias = flowScopeDealias(svpos, &((ReturnNode *)*nodesp)->dealias, *brkexp);
+        if (*brkexp != noValue && doalias)
+            flowLoadValue(fstate, brkexp);
+        break;
+    }
     case ContinueTag:
-        flowScopeDealias(svpos, &((BreakNode *)*nodesp)->dealias, voidType);
+        flowScopeDealias(svpos, &((ContinueNode *)*nodesp)->dealias, noValue);
         break;
     }
 

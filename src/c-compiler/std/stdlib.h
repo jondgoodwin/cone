@@ -54,10 +54,11 @@ Name *parensName;   // "()"
 Name *indexName;    // "[]"
 Name *refIndexName; // "&[]"
 
-// Represents the absence of type information
+// Unique (unclonable) nodes representing the absence of value or type
 INode *voidType;   // Unknown/unspecified type
 INode *elseCond;   // node representing the 'else' condition for an 'if' node
 INode *borrowRef;  // When a reference's region is unspecified, as it is borrowed
+INode *noValue;    // For return and break nodes that do not "return" a value
 
 // Built-in permission types - for implicit (non-declared but known) permissions
 PermNode *uniPerm;

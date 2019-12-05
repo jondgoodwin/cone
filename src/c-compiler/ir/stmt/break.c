@@ -12,7 +12,7 @@ BreakNode *newBreakNode() {
     BreakNode *node;
     newNode(node, BreakNode, BreakTag);
     node->life = NULL;
-    node->exp = NULL;
+    node->exp = noValue;
     node->dealias = NULL;
     return node;
 }
@@ -32,8 +32,7 @@ INode *cloneBreakNode(CloneState *cstate, BreakNode *node) {
 void breakNameRes(NameResState *pstate, BreakNode *node) {
     if (node->life)
         inodeNameRes(pstate, &node->life);
-    if (node->exp)
-        inodeNameRes(pstate, &node->exp);
+    inodeNameRes(pstate, &node->exp);
 }
 
 // Find the loop node in stack that matches the lifetime
