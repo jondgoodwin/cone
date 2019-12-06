@@ -130,7 +130,7 @@ void structInheritMethod(StructNode *strnode, FnDclNode *traitmeth, StructNode *
     // Add default method, so long as it implements logic
     if (traitmeth->value == NULL) {
         errorMsgNode((INode*)strnode, ErrorInvType, "Type must implement %s method, as required by %s",
-            traitmeth->namesym->namestr, trait->namesym->namestr);
+            &traitmeth->namesym->namestr, &trait->namesym->namestr);
     }
     iNsTypeAddFn((INsTypeNode *)strnode, (FnDclNode*)cloneNode(cstate, (INode*)traitmeth));
 }

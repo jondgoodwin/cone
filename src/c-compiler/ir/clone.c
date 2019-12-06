@@ -98,8 +98,10 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         return node;
 
     case AbsenceTag:
-        node = nodep; break;
-        //node = cloneVoidNode(cstate, (VoidTypeNode *)nodep); break;
+        node = nodep; break; // Don't clone unclonable node
+
+    case VoidTag:
+        node = cloneVoidNode(cstate, (VoidTypeNode *)nodep); break;
 
     case EnumTag:
         node = nodep; break;

@@ -64,6 +64,8 @@ int itypeIsSame(INode *node1, INode *node2) {
         return refEqual((RefNode*)node1, (RefNode*)node2);
     case PtrTag:
         return ptrEqual((PtrNode*)node1, (PtrNode*)node2);
+    case VoidTag:
+        return 1;
     default:
         return 0;
     }
@@ -134,6 +136,8 @@ int itypeMatches(INode *totype, INode *fromtype) {
             return 1;
         return ((NbrNode *)totype)->bits > ((NbrNode *)fromtype)->bits ? 2 : 3;
 
+    case VoidTag:
+        return 1;
     default:
         return itypeIsSame(totype, fromtype);
     }

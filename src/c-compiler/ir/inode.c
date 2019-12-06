@@ -145,6 +145,7 @@ void inodePrintNode(INode *node) {
     case TTupleTag:
         ttuplePrint((TTupleNode *)node); break;
     case AbsenceTag:
+    case VoidTag:
         voidPrint((VoidTypeNode *)node); break;
     case NamedValTag:
         namedValPrint((NamedValNode *)node); break;
@@ -273,6 +274,7 @@ void inodeNameRes(NameResState *pstate, INode **node) {
     case IntNbrTag: case UintNbrTag: case FloatNbrTag:
     case PermTag:
     case AbsenceTag:
+    case VoidTag:
     case NullTag:
         break;
     default:
@@ -390,6 +392,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node) {
     case StringLitTag:
     case IntNbrTag: case UintNbrTag: case FloatNbrTag:
     case AbsenceTag:
+    case VoidTag:
     case NullTag:
         break;
     default:
