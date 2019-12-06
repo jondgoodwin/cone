@@ -13,9 +13,9 @@ typedef struct VoidTypeNode {
     INodeHdr;
 } VoidTypeNode;
 
-// Unique, unclonable nodes that mark the absence of something
+// Unique, unclonable node that marks the absence of something
 typedef struct AbsenceNode {
-    INodeHdr;
+    IExpNodeHdr;
 } AbsenceNode;
 
 VoidTypeNode *newVoidNode();

@@ -109,6 +109,7 @@ enum NodeTags {
     LoopTag,        // Loop node
     AliasTag,       // (injected) alias count tag
     NamedValTag,    // Named value (e.g., for a struct literal)
+    AbsenceTag,     // unique, unclonable node for absence of info
 
     // Unnamed type node
     TypeNameUseTag = TypeGroup, // Type name use node
@@ -121,8 +122,8 @@ enum NodeTags {
     ArrayDerefTag,  // De-referenced array reference (the slice itself)
     PtrTag,         // Pointer
     TTupleTag,      // Type tuple
-    AbsenceTag,     // unique, unclonable node for absence of info
     VoidTag,        // a type for "no value", such as not return values for a fn
+    UnknownTag,     // unknown type - must be resolved before gen
 
     IntNbrTag = TypeGroup + NamedNode + MethodType,    // Integer
     UintNbrTag,     // Unsigned integer

@@ -142,6 +142,7 @@ void stdlibInit(int ptrsize) {
     refIndexName = nametblFind("&[]", 3);
 
     unknownType = (INode*)newAbsenceNode();
+    unknownType->tag = UnknownTag;
     elseCond = (INode*)newAbsenceNode();
     borrowRef = (INode*)newAbsenceNode();
     noValue = (INode*)newAbsenceNode();

@@ -98,6 +98,7 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         return node;
 
     case AbsenceTag:
+    case UnknownTag:
         node = nodep; break; // Don't clone unclonable node
 
     case VoidTag:

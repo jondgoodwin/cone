@@ -142,6 +142,7 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
     case StringLitTag:
     case TypeLitTag:
     case AbsenceTag:
+    case UnknownTag:
         break;
     default:
         assert(0);

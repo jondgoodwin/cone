@@ -24,9 +24,10 @@ INode *cloneVoidNode(CloneState *cstate, VoidTypeNode *node) {
 
 // Create a new Absence node
 AbsenceNode *newAbsenceNode() {
-    AbsenceNode *voidnode;
-    newNode(voidnode, AbsenceNode, AbsenceTag);
-    return voidnode;
+    AbsenceNode *node;
+    newNode(node, AbsenceNode, AbsenceTag);
+    node->vtype = (INode*)newVoidNode();
+    return node;
 }
 
 // Serialize the void type node
