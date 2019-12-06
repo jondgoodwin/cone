@@ -2,7 +2,7 @@
  * @file
  *
  * This source file is part of Cone Programming Language C compiler.
- * Copyright (C) 2017-2018  Jonathan Goodwin
+ * Copyright (C) 2017-2020  Jonathan Goodwin
  *
  * Permission is hereby granted, free of charge, to any
  * person obtaining a copy of this software and associated
