@@ -14,7 +14,7 @@ FnSigNode *newFnSigNode() {
     newNode(sig, FnSigNode, FnSigTag);
     sig->flags |= OpaqueType;
     sig->parms = newNodes(8);
-    sig->rettype = voidType;
+    sig->rettype = unknownType;
     return sig;
 }
 

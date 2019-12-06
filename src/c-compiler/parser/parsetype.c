@@ -60,14 +60,14 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     // Obtain variable's name
     if (!lexIsToken(IdentToken)) {
         errorMsgLex(ErrorNoIdent, "Expected variable name for declaration");
-        return newVarDclFull(anonName, VarDclTag, voidType, perm, NULL);
+        return newVarDclFull(anonName, VarDclTag, unknownType, perm, NULL);
     }
     varnode = newVarDclNode(lex->val.ident, VarDclTag, perm);
     lexNextToken();
 
     // Get value type, if provided
     if ((vtype = parseVtype(parse)))
-        varnode->vtype = vtype==voidType? NULL : vtype;
+        varnode->vtype = vtype==unknownType? NULL : vtype;
 
     // Get initialization value after '=', if provided
     if (lexIsToken(AssgnToken)) {
@@ -277,7 +277,7 @@ INode *parseFnSig(ParseState *parse) {
                 }
                 else if (parm->vtype->tag == RefTag) {
                     PtrNode *refnode = (PtrNode *)parm->vtype;
-                    if (refnode->pvtype == voidType) {
+                    if (refnode->pvtype == unknownType) {
                         refnode->pvtype = (INode*)newNameUseNode(selfTypeName);
                     }
                 }
@@ -311,7 +311,7 @@ INode *parseFnSig(ParseState *parse) {
         }
     }
     else {
-        fnsig->rettype = voidType;
+        fnsig->rettype = unknownType;
     }
 
     return (INode*)fnsig;
@@ -337,7 +337,7 @@ INode *parseArrayType(ParseState *parse) {
     // Obtain array's element type
     if ((atype->elemtype = parseVtype(parse)) == NULL) {
         errorMsgLex(ErrorNoVtype, "Missing array element type");
-        atype->elemtype = voidType;
+        atype->elemtype = unknownType;
     }
 
     return (INode *)atype;
@@ -359,7 +359,7 @@ INode *parsePtrType(ParseState *parse) {
     }
     else if ((ptype->pvtype = parseVtype(parse)) == NULL) {
         errorMsgLex(ErrorNoVtype, "Missing value type for the pointer");
-        ptype->pvtype = voidType;
+        ptype->pvtype = unknownType;
     }
 
     return (INode *)ptype;
@@ -368,7 +368,7 @@ INode *parsePtrType(ParseState *parse) {
 // Parse a reference type
 INode *parseRefType(ParseState *parse) {
     RefNode *reftype = newRefNode();
-    reftype->pvtype = voidType;
+    reftype->pvtype = unknownType;
     lexNextToken();
 
     // Notice whether it is a virtual reference
@@ -449,6 +449,6 @@ INode* parseVtype(ParseState *parse) {
     case IdentToken:
         return parseTypeName(parse);
     default:
-        return voidType;
+        return unknownType;
     }
 }

@@ -128,7 +128,7 @@ void borrowTypeCheck(TypeCheckState *pstate, BorrowNode **nodep) {
         // From it, obtain variable we are borrowing from and actual/calculated permission
         INode *lvalvar = borrowGetVarPerm(lval, &lvalperm);
         if (lvalvar == NULL) {
-            reftype->pvtype = (INode*)voidType;  // Just to avoid a compiler crash later
+            reftype->pvtype = (INode*)unknownType;  // Just to avoid a compiler crash later
             return;
         }
         // Set lifetime of reference to borrowed variable's lifetime

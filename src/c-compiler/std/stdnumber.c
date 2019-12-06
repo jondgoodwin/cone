@@ -118,7 +118,7 @@ INsTypeNode *newPtrTypeMethods() {
     iNsTypeInit((INsTypeNode*)ptrtypenode, 16);
 
     PtrNode *voidptr = newPtrNode();
-    voidptr->pvtype = voidType;
+    voidptr->pvtype = unknownType;
 
     // Create function signature for comparison methods
     FnSigNode *cmpsig = newFnSigNode();
@@ -186,7 +186,7 @@ INsTypeNode *newRefTypeMethods() {
     reftypenode->llvmtype = NULL;
     iNsTypeInit((INsTypeNode*)reftypenode, 8);
 
-    RefNode *voidref = newRefNodeFull(borrowRef, newPermUseNode(mutPerm), voidType);
+    RefNode *voidref = newRefNodeFull(borrowRef, newPermUseNode(mutPerm), unknownType);
 
     // Create function signature for unary methods for this type
     FnSigNode *unarysig = newFnSigNode();
@@ -228,7 +228,7 @@ INsTypeNode *newArrayRefTypeMethods() {
     reftypenode->llvmtype = NULL;
     iNsTypeInit((INsTypeNode*)reftypenode, 8);
 
-    RefNode *voidref = newRefNodeFull(voidType, newPermUseNode(constPerm), voidType);
+    RefNode *voidref = newRefNodeFull(unknownType, newPermUseNode(constPerm), unknownType);
     voidref->tag = ArrayRefTag;
 
     // '.count' operator

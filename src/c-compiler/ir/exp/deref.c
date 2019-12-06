@@ -11,7 +11,7 @@
 DerefNode *newDerefNode() {
     DerefNode *node;
     newNode(node, DerefNode, DerefTag);
-    node->vtype = voidType;
+    node->vtype = unknownType;
     return node;
 }
 

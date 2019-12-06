@@ -97,7 +97,7 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         node = cloneNode(cstate, ((GenVarDclNode*)nodep)->namesym->node);
         return node;
 
-    case VoidTag:
+    case AbsenceTag:
         node = nodep; break;
         //node = cloneVoidNode(cstate, (VoidTypeNode *)nodep); break;
 

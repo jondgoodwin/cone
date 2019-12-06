@@ -19,7 +19,7 @@ INode *iexpGetTypeDcl(INode *node) {
         //if (isTypeNode(node)) // caller should be using itypeGetTypeDcl()
         //    return node;
         assert(0 && "Cannot obtain a type from this non-expression node");
-        return voidType;
+        return unknownType;
     }
 }
 
@@ -32,11 +32,11 @@ INode *iexpGetDerefTypeDcl(INode *node) {
 // will be set to some type if all the nodes agree on it.
 // Otherwise, it will be set to void.
 void iexpFindSameType(INode **answer, INode *node) {
-    INode *nodetype = node && isExpNode(node) ? ((IExpNode*)node)->vtype : voidType;
+    INode *nodetype = node && isExpNode(node) ? ((IExpNode*)node)->vtype : unknownType;
     if (*answer == NULL)
         *answer = nodetype;
     else if (!itypeIsSame(*answer, nodetype))
-        *answer = voidType;
+        *answer = unknownType;
 }
 
 // Bidirectional type checking between 'from' exp and 'to' type
@@ -67,7 +67,7 @@ int iexpBiTypeInfer(INode **totypep, INode **from) {
     // They need to delegate downwards, until we hit a node with a known vtype.
     // We want to push expected type as low down in nodes before forcing any coercion
     // This ensures multi-branch specialized values all upcast to same expected supertype
-    if (fromnode->vtype == voidType) {
+    if (fromnode->vtype == unknownType) {
         switch (fromnode->tag) {
         case IfTag:
             ifBiTypeInfer(totypep, (IfNode*)*from);
@@ -90,7 +90,7 @@ int iexpBiTypeInfer(INode **totypep, INode **from) {
     // Both 'from' and 'to' specify a type. Do they match?
     // (this may involve injecting a 'cast' node in front of 'from'
     INode *totype = *totypep;
-    if (totype == voidType)
+    if (totype == unknownType)
         return 1;
 
     // Re-type a null literal node to match the expected ref/ptr type

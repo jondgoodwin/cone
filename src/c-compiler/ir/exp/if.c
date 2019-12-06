@@ -12,7 +12,7 @@ IfNode *newIfNode() {
     IfNode *ifnode;
     newNode(ifnode, IfNode, IfTag);
     ifnode->condblk = newNodes(4);
-    ifnode->vtype = voidType;
+    ifnode->vtype = unknownType;
     return ifnode;
 }
 
@@ -117,7 +117,7 @@ void ifExhaustCheck(IfNode *ifnode, CastNode *condition) {
 // Type check the if statement node
 // - Every conditional expression must be a bool
 // - else can only be last
-// Note: vtype is set to something other than voidType if all branches have the same type
+// Note: vtype is set to something other than unknownType if all branches have the same type
 // If they are different, bidirectional type inference will resolve this later
 void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode) {
     INode *sametype = NULL;

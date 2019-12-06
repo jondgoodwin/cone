@@ -81,7 +81,7 @@ void fnImplicitReturn(INode *rettype, BlockNode *blk) {
     if (blk->stmts->used == 0)
         nodesAdd(&blk->stmts, (INode*)newReturnNode());
     laststmt = nodesLast(blk->stmts);
-    if (rettype == voidType) {
+    if (rettype == unknownType) {
         if (laststmt->tag != ReturnTag)
             nodesAdd(&blk->stmts, (INode*)newReturnNode());
     }

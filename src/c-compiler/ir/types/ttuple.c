@@ -11,7 +11,7 @@
 TTupleNode *newTTupleNode(int cnt) {
     TTupleNode *tuple;
     newNode(tuple, TTupleNode, TTupleTag);
-    tuple->vtype = voidType;
+    tuple->vtype = unknownType;
     tuple->types = newNodes(cnt);
     return tuple;
 }

@@ -121,7 +121,8 @@ enum NodeTags {
     ArrayDerefTag,  // De-referenced array reference (the slice itself)
     PtrTag,         // Pointer
     TTupleTag,      // Type tuple
-    VoidTag,        // representing no values, e.g., no return values on a fn
+    AbsenceTag,     // unique, unclonable node for absence of info
+    VoidTag,        // a type for "no value", such as not return values for a fn
 
     IntNbrTag = TypeGroup + NamedNode + MethodType,    // Integer
     UintNbrTag,     // Unsigned integer

@@ -11,7 +11,7 @@
 LoopNode *newLoopNode() {
     LoopNode *node;
     newNode(node, LoopNode, LoopTag);
-    node->vtype = voidType;  // This will be overridden with loop-as-expr
+    node->vtype = unknownType;  // This will be overridden with loop-as-expr
     node->blk = NULL;
     node->life = NULL;
     node->breaks = newNodes(2);
@@ -57,7 +57,7 @@ void loopNameRes(NameResState *pstate, LoopNode *node) {
 }
 
 // Type check the loop block, and set up for type check of breaks
-// Note: vtype is set to something other than voidType if all branches have the same type
+// Note: vtype is set to something other than unknownType if all branches have the same type
 // If they are different, bidirectional type inference will resolve this later
 void loopTypeCheck(TypeCheckState *pstate, LoopNode *node) {
     INode *sametype = NULL;

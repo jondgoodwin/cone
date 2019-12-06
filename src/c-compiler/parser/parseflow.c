@@ -98,7 +98,7 @@ VarDclNode *parseBindVarDcl(ParseState *parse) {
     // Obtain variable's name
     if (!lexIsToken(IdentToken)) {
         errorMsgLex(ErrorNoIdent, "Expected variable name for declaration");
-        return newVarDclFull(anonName, VarDclTag, voidType, perm, NULL);
+        return newVarDclFull(anonName, VarDclTag, unknownType, perm, NULL);
     }
     VarDclNode *varnode = newVarDclNode(lex->val.ident, VarDclTag, perm);
     lexNextToken();
@@ -106,10 +106,10 @@ VarDclNode *parseBindVarDcl(ParseState *parse) {
     // Get type
     INode *vtype;
     if ((vtype = parseVtype(parse)))
-        varnode->vtype = vtype == voidType ? NULL : vtype;
+        varnode->vtype = vtype == unknownType ? NULL : vtype;
     else {
         errorMsgLex(ErrorInvType, "Expected type specification for pattern match binding");
-        varnode->vtype = voidType;
+        varnode->vtype = unknownType;
     }
 
     return varnode;

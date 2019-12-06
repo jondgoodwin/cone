@@ -14,7 +14,7 @@
 FnCallNode *newFnCallNode(INode *fn, int nnodes) {
     FnCallNode *node;
     newNode(node, FnCallNode, FnCallTag);
-    node->vtype = voidType;  // Will be overridden by return type
+    node->vtype = unknownType;  // Will be overridden by return type
     node->objfn = fn;
     node->methfld = NULL;
     node->args = nnodes == 0? NULL : newNodes(nnodes);
@@ -231,7 +231,7 @@ void fnCallLowerPtrMethod(FnCallNode *callnode) {
     if (obj->tag == NullTag && callnode->args->used == 1) {
         if (methsym != eqName && methsym != neName) {
             errorMsgNode((INode*)callnode, ErrorNoMeth, "Method not supported for null, only equivalence.");
-            callnode->vtype = (INode*)voidType; // make up a vtype
+            callnode->vtype = (INode*)unknownType; // make up a vtype
             return;
         }
         callnode->objfn = nodesGet(callnode->args, 0);

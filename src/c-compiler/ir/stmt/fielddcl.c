@@ -60,7 +60,7 @@ void fieldDclTypeCheck(TypeCheckState *pstate, FieldDclNode *name) {
 
     // An initializer need not be specified, but if not, it must have a declared type
     if (!name->value) {
-        if (name->vtype == voidType) {
+        if (name->vtype == unknownType) {
             errorMsgNode((INode*)name, ErrorNoType, "Declared field must specify a type or value");
             return;
         }

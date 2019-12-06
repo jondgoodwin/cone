@@ -13,11 +13,19 @@ typedef struct VoidTypeNode {
     INodeHdr;
 } VoidTypeNode;
 
+// Unique, unclonable nodes that mark the absence of something
+typedef struct AbsenceNode {
+    INodeHdr;
+} AbsenceNode;
+
 VoidTypeNode *newVoidNode();
 
 // Clone void
 INode *cloneVoidNode(CloneState *cstate, VoidTypeNode *node);
 
 void voidPrint(VoidTypeNode *voidnode);
+
+// Create a new Absence node
+AbsenceNode *newAbsenceNode();
 
 #endif

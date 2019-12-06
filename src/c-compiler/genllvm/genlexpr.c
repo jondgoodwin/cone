@@ -40,7 +40,7 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
     vtype = itypeGetTypeDcl(ifnode->vtype);
     count = ifnode->condblk->used / 2;
     i = phicnt = 0;
-    if (vtype != voidType) {
+    if (vtype != unknownType) {
         blkvals = memAllocBlk(count * sizeof(LLVMValueRef));
         blks = memAllocBlk(count * sizeof(LLVMBasicBlockRef));
     }
@@ -71,7 +71,7 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
         if (lastStmttype != ReturnTag && lastStmttype != BreakTag && lastStmttype != ContinueTag) {
             LLVMBuildBr(gen->builder, endif);
             // Remember value and block if needed for phi merge
-            if (vtype != voidType) {
+            if (vtype != unknownType) {
                 blkvals[phicnt] = blkval;
                 blks[phicnt++] = ablk;
             }

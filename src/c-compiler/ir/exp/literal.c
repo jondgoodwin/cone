@@ -71,7 +71,7 @@ NullNode *newNullNode() {
     NullNode *node;
     newNode(node, NullNode, NullTag);
     PtrNode *ptrtype = newPtrNode();
-    ptrtype->pvtype = voidType;
+    ptrtype->pvtype = unknownType;
     node->vtype = (INode*)ptrtype;
     return node;
 }

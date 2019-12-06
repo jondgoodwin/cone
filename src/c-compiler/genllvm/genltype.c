@@ -189,7 +189,7 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
         }
     }
 
-    case VoidTag:
+    case AbsenceTag:
         return LLVMVoidTypeInContext(gen->context);
 
     case PtrTag:

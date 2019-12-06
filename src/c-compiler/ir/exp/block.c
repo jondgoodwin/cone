@@ -11,7 +11,7 @@
 BlockNode *newBlockNode() {
     BlockNode *blk;
     newNode(blk, BlockNode, BlockTag);
-    blk->vtype = voidType;
+    blk->vtype = unknownType;
     blk->stmts = newNodes(8);
     return blk;
 }
@@ -185,7 +185,7 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
     {
         INode **retexp = &((ReturnNode *)*nodesp)->exp;
         int doalias = flowScopeDealias(0, &((ReturnNode *)*nodesp)->dealias, *retexp);
-        if (*retexp != voidType && doalias) {
+        if (*retexp != unknownType && doalias) {
             size_t svAliasPos = flowAliasPushNew(1);
             flowLoadValue(fstate, retexp);
             flowAliasPop(svAliasPos);
