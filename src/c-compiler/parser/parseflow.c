@@ -118,8 +118,8 @@ VarDclNode *parseBindVarDcl(ParseState *parse) {
 // De-sugar a variable bound pattern match
 void parseBoundMatch(ParseState *parse, IfNode *ifnode, NameUseNode *expnamenode, VarDclNode *valnode) {
     // We will desugar a variable declaration into using a pattern match and re-cast
-    CastNode *isnode = newIsNode((INode*)expnamenode, NULL);
-    CastNode *castnode = newCastNode((INode*)expnamenode, NULL);
+    CastNode *isnode = newIsNode((INode*)expnamenode, unknownType);
+    CastNode *castnode = newCastNode((INode*)expnamenode, unknownType);
 
     // Parse the variable-bind into a vardcl,
     // then preserve its desired type into both the 'is' and 'cast' nodes
@@ -241,7 +241,7 @@ INode *parseMatch(ParseState *parse) {
             parseBoundMatch(parse, ifnode, expnamenode, NULL);
             break;
         case IsToken: {
-            CastNode *isnode = newIsNode((INode*)expnamenode, NULL);
+            CastNode *isnode = newIsNode((INode*)expnamenode, unknownType);
             lexNextToken();
             isnode->typ = parseVtype(parse);
             nodesAdd(&ifnode->condblk, (INode*)isnode);

@@ -42,6 +42,9 @@ void iexpFindSameType(INode **answer, INode *node);
 // return 1 for success, 0 for fail
 int iexpBiTypeInfer(INode **totypep, INode **from);
 
+// Type check node we expect to be an expression. Return 0 if not.
+int iexpTypeCheck(TypeCheckState *pstate, INode **from);
+
 // Perform basic typecheck followed by bi-directional type checking that
 // evaluates whether the 'from' node will type check to 'to' type
 // - If 'to' type is unspecified, infer it from 'from' type

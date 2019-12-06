@@ -28,6 +28,9 @@ INode *itypeGetTypeDcl(INode *node);
 // Return node's type's declaration node (or pvtype if a ref or ptr)
 INode *itypeGetDerefTypeDcl(INode *node);
 
+// Type check node, expecting it to be a type. Give error and return 0, if not.
+int itypeTypeCheck(TypeCheckState *pstate, INode **node);
+
 // Return 1 if nominally (or structurally) identical, 0 otherwise.
 // Nodes must both be types, but may be name use or declare nodes.
 int itypeIsSame(INode *node1, INode *node2);

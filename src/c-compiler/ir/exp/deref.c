@@ -37,7 +37,9 @@ void derefNameRes(NameResState *pstate, DerefNode *node) {
 
 // Type check deref node
 void derefTypeCheck(TypeCheckState *pstate, DerefNode *node) {
-    inodeTypeCheck(pstate, &node->exp);
+    if (iexpTypeCheck(pstate, &node->exp) == 0)
+        return;
+
     PtrNode *ptype = (PtrNode*)((IExpNode *)node->exp)->vtype;
     if (ptype->tag != RefTag && ptype->tag != PtrTag)
         errorMsgNode((INode*)node, ErrorNotPtr, "May only de-reference a simple reference or pointer.");

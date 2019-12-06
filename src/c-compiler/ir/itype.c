@@ -36,6 +36,16 @@ INode *itypeGetDerefTypeDcl(INode *node) {
     return typnode;
 }
 
+// Type check node, expecting it to be a type. Give error and return 0, if not.
+int itypeTypeCheck(TypeCheckState *pstate, INode **node) {
+    if (!isTypeNode(*node)) {
+        errorMsgNode(*node, ErrorNotTyped, "Expected a type.");
+        return 0;
+    }
+    inodeTypeCheck(pstate, node);
+    return 1;
+}
+
 // Return 1 if nominally (or structurally) identical, 0 otherwise
 // Nodes must both be types, but may be name use or declare nodes
 int itypeIsSame(INode *node1, INode *node2) {

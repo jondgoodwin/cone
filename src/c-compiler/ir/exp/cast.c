@@ -73,11 +73,14 @@ uint32_t castBitsize(INode *type) {
 // - reinterpret cast types must be same size
 // - Ensure type can be safely converted to target type
 void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
+    if (iexpTypeCheck(pstate, &node->exp) == 0)
+        return;
+    if (itypeTypeCheck(pstate, &node->typ) == 0)
+        return;
+
     node->vtype = node->typ;
-    inodeTypeCheck(pstate, &node->exp);
-    inodeTypeCheck(pstate, &node->vtype);
-    INode *totype = itypeGetTypeDcl(node->vtype);
     INode *fromtype = iexpGetTypeDcl(node->exp);
+    INode *totype = itypeGetTypeDcl(node->vtype);
 
     // Handle reinterpret casts, which must be same size
     if (node->flags & FlagAsIf) {

@@ -64,7 +64,7 @@ void litNameRes(NameResState* pstate, IExpNode *node) {
 
 // Type check lit node
 void litTypeCheck(TypeCheckState* pstate, IExpNode *node) {
-    inodeTypeCheck(pstate, &node->vtype);
+    itypeTypeCheck(pstate, &node->vtype);
 }
 
 NullNode *newNullNode() {

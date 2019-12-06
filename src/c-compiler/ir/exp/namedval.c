@@ -11,7 +11,7 @@
 NamedValNode *newNamedValNode(INode *name) {
     NamedValNode *node;
     newNode(node, NamedValNode, NamedValTag);
-    node->vtype = NULL;
+    node->vtype = unknownType;
     node->name = name;
     return node;
 }
@@ -40,6 +40,7 @@ void namedValNameRes(NameResState *pstate, NamedValNode *node) {
 
 // Type check named value node
 void namedValTypeCheck(TypeCheckState *pstate, NamedValNode *node) {
-    inodeTypeCheck(pstate, &node->val);
+    if (iexpTypeCheck(pstate, &node->val) == 0)
+        return;
     node->vtype = ((IExpNode*)node->val)->vtype;
 }
