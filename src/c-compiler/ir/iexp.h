@@ -54,6 +54,9 @@ int iexpTypeCheck(TypeCheckState *pstate, INode **from);
 // return 1 for success, 0 for fail
 int iexpTypeCheckAndMatch(TypeCheckState *pstate, INode **to, INode **from);
 
+// Ensure it is a lval, return error and 0 if not.
+int iexpIsLval(INode *lval);
+
 // Are types the same (no coercion)
 int iexpSameType(INode *to, INode **from);
 

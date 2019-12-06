@@ -152,6 +152,22 @@ int iexpTypeCheckAndMatch(TypeCheckState *pstate, INode **totypep, INode **from)
     return 1; // pretend we match to not provoke additional errors
 }
 
+// Ensure it is a lval, return error and 0 if not.
+int iexpIsLval(INode *lval) {
+    switch (lval->tag) {
+    case VarNameUseTag:
+    case DerefTag:
+        return 1;
+    case ArrIndexTag:
+        return iexpIsLval(((FnCallNode *)lval)->objfn);
+    case FldAccessTag:
+        return iexpIsLval(((FnCallNode *)lval)->objfn);
+    default:
+        errorMsgNode(lval, ErrorBadLval, "Expression must be lval");
+        return 0;
+    }
+}
+
 // Are types the same (no coercion)
 int iexpSameType(INode *to, INode **from) {
     return itypeMatches(iexpGetTypeDcl(to), iexpGetTypeDcl(*from)) == 1;

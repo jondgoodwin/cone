@@ -44,19 +44,6 @@ void assignNameRes(NameResState *pstate, AssignNode *node) {
     inodeNameRes(pstate, &node->rval);
 }
 
-// Is it a valid lval?
-int assignIsLval(INode *lval) {
-    switch (lval->tag) {
-    case VarNameUseTag:
-    case DerefTag:
-    case ArrIndexTag:
-    case FldAccessTag:
-        return 1;
-    default:
-        return 0;
-    }
-}
-
 // Type check a single matched assignment between lval and rval
 // - lval must be a lval
 // - rval's type must coerce to lval's type
@@ -65,8 +52,7 @@ void assignSingleCheck(TypeCheckState *pstate, INode *lval, INode **rval) {
     if (lval->tag == VarNameUseTag && ((NameUseNode*)lval)->namesym == anonName)
         return;
 
-    if (!assignIsLval(lval)) {
-        errorMsgNode(lval, ErrorBadLval, "Expression must be lval");
+    if (iexpIsLval(lval) == 0) {
         return;
     }
     if (iexpTypeCheckAndMatch(pstate, &((IExpNode*)lval)->vtype, rval) == 0) {
@@ -96,13 +82,14 @@ void assignParaCheck(TypeCheckState *pstate, VTupleNode *lval, VTupleNode *rval)
 
 // Handle when single function/expression returns to multiple lval
 void assignMultRetCheck(TypeCheckState *pstate, VTupleNode *lval, INode **rval) {
-    Nodes *lnodes = lval->values;
-    inodeTypeCheck(pstate, rval);
+    if (iexpTypeCheck(pstate, rval) == 0)
+        return;;
     INode *rtype = ((IExpNode *)*rval)->vtype;
     if (rtype->tag != TTupleTag) {
         errorMsgNode(*rval, ErrorBadTerm, "Not enough values for lvals");
         return;
     }
+    Nodes *lnodes = lval->values;
     Nodes *rtypes = ((TTupleNode*)((IExpNode *)*rval)->vtype)->types;
     if (lnodes->used > rtypes->used) {
         errorMsgNode(*rval, ErrorBadTerm, "Not enough tuple values for lvals");
@@ -112,6 +99,8 @@ void assignMultRetCheck(TypeCheckState *pstate, VTupleNode *lval, INode **rval) 
     INode **lnodesp;
     INode **rtypep = &nodesGet(rtypes, 0);
     for (nodesFor(lnodes, lcnt, lnodesp)) {
+        if (iexpIsLval(*lnodesp) == 0)
+            continue;
         if (itypeIsSame(((IExpNode *)*lnodesp)->vtype, *rtypep++) == 0)
             errorMsgNode(*lnodesp, ErrorInvType, "Return value's type does not match lval's type");
     }
@@ -127,7 +116,8 @@ void assignToOneCheck(TypeCheckState *pstate, INode *lval, VTupleNode *rval) {
 
 // Type checking for assignment node
 void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
-    inodeTypeCheck(pstate, &node->lval);
+    if (iexpTypeCheck(pstate, &node->lval) == 0)
+        return;
 
     // Handle tuple decomposition for parallel assignment
     INode *lval = node->lval;

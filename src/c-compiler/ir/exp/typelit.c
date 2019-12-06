@@ -53,10 +53,6 @@ void typeLitNbrCheck(TypeCheckState *pstate, FnCallNode *nbrlit, INode *type) {
     }
 
     INode *first = nodesGet(nbrlit->args, 0);
-    if (!isExpNode(first)) {
-        errorMsgNode((INode*)first, ErrorBadArray, "Literal value must be typed");
-        return;
-    }
     INode *firsttype = itypeGetTypeDcl(((IExpNode*)first)->vtype);
     if (firsttype->tag != IntNbrTag && firsttype->tag != UintNbrTag && firsttype->tag != FloatNbrTag) 
         errorMsgNode((INode*)first, ErrorBadArray, "May only create number literal from another number");
@@ -73,10 +69,6 @@ void typeLitArrayCheck(TypeCheckState *pstate, FnCallNode *arrlit) {
     // Get element type from first element
     // Type of array literal is: array of elements whose type matches first value
     INode *first = nodesGet(arrlit->args, 0);
-    if (!isExpNode(first)) {
-        errorMsgNode((INode*)first, ErrorBadArray, "Array literal element must be a typed value");
-        return;
-    }
     INode *firsttype = ((IExpNode*)first)->vtype;
     ((ArrayNode*)arrlit->vtype)->elemtype = firsttype;
 
@@ -176,10 +168,15 @@ void typeLitStructCheck(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *
 
 // Check the list node (for everything but Arrays, we get here from fncall)
 void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *arrlit) {
+    int badargs = 0;
     INode **nodesp;
     uint32_t cnt;
-    for (nodesFor(arrlit->args, cnt, nodesp))
-        inodeTypeCheck(pstate, nodesp);
+    for (nodesFor(arrlit->args, cnt, nodesp)) {
+        if (iexpTypeCheck(pstate, nodesp) == 0)
+            badargs = 1;
+    }
+    if (badargs)
+        return;
 
     INode *littype = itypeGetTypeDcl(arrlit->vtype);
     if (!itypeIsConcrete(arrlit->vtype))
