@@ -312,6 +312,7 @@ INode *parseFnSig(ParseState *parse) {
     }
     else {
         fnsig->rettype = (INode*)newVoidNode();
+        inodeLexCopy(fnsig->rettype, (INode*)fnsig);  // Make invisible void show up in error msg
     }
 
     return (INode*)fnsig;

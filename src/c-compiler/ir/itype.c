@@ -137,7 +137,7 @@ int itypeMatches(INode *totype, INode *fromtype) {
         return ((NbrNode *)totype)->bits > ((NbrNode *)fromtype)->bits ? 2 : 3;
 
     case VoidTag:
-        return 1;
+        return fromtype->tag == VoidTag? 1 : 0;
     default:
         return itypeIsSame(totype, fromtype);
     }
