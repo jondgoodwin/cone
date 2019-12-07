@@ -93,8 +93,8 @@ void varDclNameRes(NameResState *pstate, VarDclNode *name) {
 // Type check variable against its initial value
 void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
     inodeTypeCheck(pstate, (INode**)&name->perm);
-    if (name->vtype)
-        inodeTypeCheck(pstate, &name->vtype);
+    if (name->vtype!=NULL && itypeTypeCheck(pstate, &name->vtype) == 0)
+        return;
 
     // An initializer need not be specified, but if not, it must have a declared type
     if (name->value == NULL) {

@@ -41,5 +41,5 @@ void ttupleTypeCheck(TypeCheckState *pstate, TTupleNode *tuple) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(tuple->types, cnt, nodesp))
-        inodeTypeCheck(pstate, nodesp);
+        itypeTypeCheck(pstate, nodesp);
 }

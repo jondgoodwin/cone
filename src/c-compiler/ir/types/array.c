@@ -46,7 +46,8 @@ void arrayNameRes(NameResState *pstate, ArrayNode *node) {
 
 // Type check an array type
 void arrayTypeCheck(TypeCheckState *pstate, ArrayNode *node) {
-    inodeTypeCheck(pstate, &node->elemtype);
+    if (itypeTypeCheck(pstate, &node->elemtype) == 0)
+        return;
     if (!itypeIsConcrete(node->elemtype)) {
         errorMsgNode((INode*)node, ErrorInvType, "Element's type must be concrete and instantiable.");
     }

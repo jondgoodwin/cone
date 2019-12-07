@@ -95,7 +95,7 @@ void loopBiTypeInfer(INode **totypep, LoopNode *loopnode) {
     uint32_t cnt;
     for (nodesFor(loopnode->breaks, cnt, nodesp)) {
         BreakNode *brknode = (BreakNode*)*nodesp;
-        if (brknode->exp == NULL) {
+        if (brknode->exp == noValue) {
             if (*totypep)
                 errorMsgNode((INode*)brknode, ErrorInvType, "this break must specify a value matching loop's type");
         }

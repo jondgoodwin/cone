@@ -36,7 +36,8 @@ void ptrNameRes(NameResState *pstate, PtrNode *node) {
 
 // Type check a pointer type
 void ptrTypeCheck(TypeCheckState *pstate, PtrNode *node) {
-    inodeTypeCheck(pstate, &node->pvtype);
+    if (itypeTypeCheck(pstate, &node->pvtype) == 0)
+        return;
 }
 
 // Compare two pointer signatures to see if they are equivalent

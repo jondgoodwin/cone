@@ -145,7 +145,8 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
 
     // Handle when a base trait is specified
     if (node->basetrait) {
-        inodeTypeCheck(pstate, &node->basetrait);
+        if (itypeTypeCheck(pstate, &node->basetrait) == 0)
+            return;
         StructNode *basetrait = (StructNode*)itypeGetTypeDcl(node->basetrait);
         if (basetrait->tag != StructTag || !(basetrait->flags & TraitType)) {
             errorMsgNode(node->basetrait, ErrorInvType, "Base trait must be a trait");
@@ -174,7 +175,8 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     while (fldpos >= 0) {
         FieldDclNode *field = (FieldDclNode*)*fldnodesp;
         if (field->flags & IsMixin) {
-            inodeTypeCheck(pstate, &field->vtype);
+            if (itypeTypeCheck(pstate, &field->vtype) == 0)
+                return;
             // A dummy mixin field requesting we mixin its fields and methods
             StructNode *trait = (StructNode*)itypeGetTypeDcl(field->vtype);
             if (trait->tag != StructTag || !(trait->flags & TraitType)) {
