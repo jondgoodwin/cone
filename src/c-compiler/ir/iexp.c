@@ -130,12 +130,12 @@ int iexpBiTypeInfer(INode **totypep, INode **from) {
 
 // Type check node we expect to be an expression. Return 0 if not.
 int iexpTypeCheck(TypeCheckState *pstate, INode **from) {
+    inodeTypeCheck(pstate, from);
     // From should be a typed expression node
     if (!isExpNode(*from)) {
         errorMsgNode(*from, ErrorNotTyped, "Expected a typed expression.");
         return 0;
     }
-    inodeTypeCheck(pstate, from);
     return 1;
 }
 

@@ -38,11 +38,11 @@ INode *itypeGetDerefTypeDcl(INode *node) {
 
 // Type check node, expecting it to be a type. Give error and return 0, if not.
 int itypeTypeCheck(TypeCheckState *pstate, INode **node) {
+    inodeTypeCheck(pstate, node);
     if (!isTypeNode(*node)) {
         errorMsgNode(*node, ErrorNotTyped, "Expected a type.");
         return 0;
     }
-    inodeTypeCheck(pstate, node);
     return 1;
 }
 
