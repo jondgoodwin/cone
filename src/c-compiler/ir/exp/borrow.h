@@ -13,7 +13,14 @@ typedef struct BorrowNode {
     INode *exp;
 } BorrowNode;
 
+// Create new borrow node
 BorrowNode *newBorrowNode();
+
+// Insert automatic ref, if node is a variable
+void borrowAuto(INode **node, INode* reftype);
+
+// Inject a borrow mutable node on some node (expected to be an lval)
+void borrowMutRef(INode **node, INode* type);
 
 // Clone borrow
 INode *cloneBorrowNode(CloneState *cstate, BorrowNode *node);
@@ -28,11 +35,5 @@ void borrowTypeCheck(TypeCheckState *pstate, BorrowNode **node);
 
 // Perform data flow analysis on addr node
 void borrowFlow(FlowState *fstate, BorrowNode **nodep);
-
-// Insert automatic ref, if node is a variable
-void borrowAuto(INode **node, INode* reftype);
-
-// Inject a borrow mutable node on some node (expected to be an lval)
-void borrowMutRef(INode **node, INode* type);
 
 #endif

@@ -34,9 +34,6 @@ void assignNameRes(NameResState *pstate, AssignNode *node);
 // Type check for assignment node
 void assignTypeCheck(TypeCheckState *pstate, AssignNode *node);
 
-// Extract lval variable, scope and overall permission from lval
-INode *assignLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope);
-
 // Perform data flow analysis on assignment node
 void assignFlow(FlowState *fstate, AssignNode **node);
 

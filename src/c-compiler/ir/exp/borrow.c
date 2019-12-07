@@ -16,6 +16,31 @@ BorrowNode *newBorrowNode() {
     return node;
 }
 
+// Insert automatic ref, if node is a variable
+void borrowAuto(INode **node, INode* reftype) {
+    BorrowNode *borrownode = newBorrowNode();
+    borrownode->exp = *node;
+    borrownode->vtype = reftype;
+    *node = (INode*)borrownode;
+}
+
+// Inject a borrow mutable node on some node (expected to be an lval)
+void borrowMutRef(INode **node, INode* type) {
+    // Rather than borrow from a deref, just return the ptr node we are de-reffing
+    if ((*node)->tag == DerefTag) {
+        DerefNode *derefnode = (DerefNode *)*node;
+        *node = derefnode->exp;
+        return;
+    }
+    RefNode *refnode = newRefNodeFull(borrowRef, newPermUseNode(mutPerm), type);
+    inodeLexCopy((INode*)refnode, *node);
+    BorrowNode *borrownode = newBorrowNode();
+    inodeLexCopy((INode*)borrownode, *node);
+    borrownode->exp = *node;
+    borrownode->vtype = (INode*)refnode;
+    *node = (INode*)borrownode;
+}
+
 // Clone borrow
 INode *cloneBorrowNode(CloneState *cstate, BorrowNode *node) {
     BorrowNode *newnode;
@@ -167,29 +192,4 @@ void borrowFlow(FlowState *fstate, BorrowNode **nodep) {
     BorrowNode *node = *nodep;
     RefNode *reftype = (RefNode *)node->vtype;
     // Borrowed reference:  Deactivate source variable if necessary
-}
-
-// Insert automatic ref, if node is a variable
-void borrowAuto(INode **node, INode* reftype) {
-    BorrowNode *borrownode = newBorrowNode();
-    borrownode->exp = *node;
-    borrownode->vtype = reftype;
-    *node = (INode*)borrownode;
-}
-
-// Inject a borrow mutable node on some node (expected to be an lval)
-void borrowMutRef(INode **node, INode* type) {
-    // Rather than borrow from a deref, just return the ptr node we are de-reffing
-    if ((*node)->tag == DerefTag) {
-        DerefNode *derefnode = (DerefNode *)*node;
-        *node = derefnode->exp;
-        return;
-    }
-    RefNode *refnode = newRefNodeFull(borrowRef, newPermUseNode(mutPerm), type);
-    inodeLexCopy((INode*)refnode, *node);
-    BorrowNode *borrownode = newBorrowNode();
-    inodeLexCopy((INode*)borrownode, *node);
-    borrownode->exp = *node;
-    borrownode->vtype = (INode*)refnode;
-    *node = (INode*)borrownode;
 }
