@@ -65,70 +65,11 @@ void borrowNameRes(NameResState *pstate, BorrowNode **nodep) {
     inodeNameRes(pstate, &node->exp);
 }
 
-// Extract lval variable and overall permission from lval
-INode *borrowGetVarPerm(INode *lval, INode **lvalperm) {
-    switch (lval->tag) {
-
-    // A variable or named function node
-    case VarNameUseTag:
-        lval = (INode *)((NameUseNode *)lval)->dclnode;
-        // Fallthrough is expected here
-    case FnDclTag:
-    {
-        if (lval->tag == VarDclTag)
-            *lvalperm = ((VarDclNode *)lval)->perm;
-        else
-            *lvalperm = (INode*)opaqPerm; // Function
-        return lval;
-    }
-
-    case DerefTag:
-    {
-        DerefNode *deref = (DerefNode*)lval;
-        INode *lvalret = borrowGetVarPerm(deref->exp, lvalperm);
-        INode *typ = iexpGetTypeDcl(deref->exp);
-        assert(typ->tag == RefTag || typ->tag == ArrayRefTag);
-        *lvalperm = ((RefNode*)typ)->perm;
-        return lvalret;
-    }
-
-    // An array element (obj[2]) or field access (obj.prop)
-    case ArrIndexTag:
-    case FldAccessTag:
-    {
-        FnCallNode *element = (FnCallNode *)lval;
-        INode *lvalvar = borrowGetVarPerm(element->objfn, lvalperm);
-        if (lvalvar == NULL)
-            return NULL;
-        INode *lvaltype = iexpGetTypeDcl((INode*)lvalvar);
-        if (lvaltype->tag == RefTag || lvaltype->tag == ArrayRefTag) {
-            *lvalperm = ((RefNode*)lvaltype)->perm; // implicit deref 
-        }
-        /*
-        if (lvalperm = permIsLocked(*lvalperm) && var_is_not_unlocked) {
-            errorMsgNode(lval, ErrorNotLval, "Cannot borrow a substructure reference from a locked variable");
-            return NULL
-        } */
-        if (element->methfld) {
-            PermNode *methperm = (PermNode *)((VarDclNode*)((NameUseNode *)element->methfld)->dclnode)->perm;
-            // Downgrade overall static permission if field is immutable
-            if (methperm == immPerm)
-                *lvalperm = (INode*)constPerm;
-        }
-        return lvalvar;
-    }
-
-    // One cannot borrow a reference from any other node
-    default:
-        errorMsgNode(lval, ErrorNotLval, "You can only borrow a reference from a variable, function, or dereference");
-        return NULL;
-    }
-}
-
 // Analyze borrow node
 void borrowTypeCheck(TypeCheckState *pstate, BorrowNode **nodep) {
     BorrowNode *node = *nodep;
-    inodeTypeCheck(pstate, &node->exp);
+    if (iexpTypeCheck(pstate, &node->exp) == 0 || iexpIsLval(node->exp) == 0)
+        return;
 
     // Auto-deref the exp, if we are borrowing a reference to a reference's field or indexed value
     INode *exptype = iexpGetTypeDcl(node->exp);
@@ -151,7 +92,7 @@ void borrowTypeCheck(TypeCheckState *pstate, BorrowNode **nodep) {
     if (lval->tag != StringLitTag) {
         // lval is the variable or variable sub-structure we want to get a reference to
         // From it, obtain variable we are borrowing from and actual/calculated permission
-        INode *lvalvar = borrowGetVarPerm(lval, &lvalperm);
+        INode *lvalvar = flowLvalInfo(lval, &lvalperm, &reftype->scope);
         if (lvalvar == NULL) {
             reftype->pvtype = (INode*)unknownType;  // Just to avoid a compiler crash later
             return;

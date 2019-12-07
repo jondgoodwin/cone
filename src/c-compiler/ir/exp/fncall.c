@@ -352,14 +352,22 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         typeLitTypeCheck(pstate, *nodep);
         return;
     }
+    else if (!isExpNode(node->objfn)) {
+        errorMsgNode(node->objfn, ErrorNotTyped, "Expected a typed expression.");
+        return;
+    }
 
     // Type check arguments (but not methfld for now)
+    int badarg = 0;
     INode **argsp;
     uint32_t cnt;
     if (node->args) {
         for (nodesFor(node->args, cnt, argsp))
-            inodeTypeCheck(pstate, argsp);
+            if (iexpTypeCheck(pstate, argsp) == 0)
+                badarg = 1;
     }
+    if (badarg)
+        return;
 
     // If objfn is a method/field, rewrite it as self.method
     if (node->objfn->tag == VarNameUseTag

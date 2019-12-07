@@ -226,7 +226,13 @@ INode *parseAddr(ParseState *parse) {
     if (lexIsToken(FnToken)) {
         BorrowNode *anode = newBorrowNode();
         anode->vtype = (INode *)reftype;
-        anode->exp = parseFn(parse, 0, ParseMayAnon | ParseMayImpl);
+        INode *fndcl = parseFn(parse, 0, ParseMayAnon | ParseMayImpl);
+        nodesAdd(&parse->mod->nodes, fndcl);
+        NameUseNode *fnname = newNameUseNode(anonName);
+        fnname->tag = VarNameUseTag;
+        fnname->dclnode = fndcl;
+        fnname->vtype = ((FnDclNode *)fndcl)->vtype;
+        anode->exp = (INode*)fnname;
         reftype->perm = (INode*)opaqPerm;
         return (INode *)anode;
     }
