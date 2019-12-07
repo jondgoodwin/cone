@@ -156,7 +156,7 @@ void assignSingleFlow(INode *lval, INode **rval) {
 
     uint16_t lvalscope;
     INode *lvalperm;
-    INode *lvalvar = flowLvalInfo(lval, &lvalperm, &lvalscope);
+    INode *lvalvar = iexpGetLvalInfo(lval, &lvalperm, &lvalscope);
     if (lval->tag == NameUseTag)
         ((VarDclNode*)lvalvar)->flowtempflags |= VarInitialized;
     if (!(MayWrite & permGetFlags(lvalperm))) {

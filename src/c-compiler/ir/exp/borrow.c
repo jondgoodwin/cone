@@ -92,7 +92,7 @@ void borrowTypeCheck(TypeCheckState *pstate, BorrowNode **nodep) {
     if (lval->tag != StringLitTag) {
         // lval is the variable or variable sub-structure we want to get a reference to
         // From it, obtain variable we are borrowing from and actual/calculated permission
-        INode *lvalvar = flowLvalInfo(lval, &lvalperm, &reftype->scope);
+        INode *lvalvar = iexpGetLvalInfo(lval, &lvalperm, &reftype->scope);
         if (lvalvar == NULL) {
             reftype->pvtype = (INode*)unknownType;  // Just to avoid a compiler crash later
             return;

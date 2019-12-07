@@ -500,7 +500,7 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     if ((*nodep)->flags & FlagLvalOp) {
         uint16_t scope;
         INode *perm;
-        INode *lval = flowLvalInfo(nodesGet((*nodep)->args, 0), &perm, &scope);
+        INode *lval = iexpGetLvalInfo(nodesGet((*nodep)->args, 0), &perm, &scope);
         if (!lval || !(MayWrite & permGetFlags(perm))) {
             errorMsgNode((INode*)*nodep, ErrorNoMut, "Can only operate on a valid and mutable lval to the left.");
         }

@@ -168,6 +168,75 @@ int iexpIsLval(INode *lval) {
     }
 }
 
+// Extract lval variable, scope and overall permission from lval
+INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
+    switch (lval->tag) {
+
+        // A variable or named function node
+    case VarNameUseTag:
+    {
+        INode *lvalvar = ((NameUseNode *)lval)->dclnode;
+        if (lvalvar->tag == VarDclTag) {
+            *lvalperm = ((VarDclNode *)lvalvar)->perm;
+            *scope = ((VarDclNode *)lvalvar)->scope;
+        }
+        else {
+            *lvalperm = (INode*)opaqPerm; // Function
+            *scope = 0;
+        }
+        return lvalvar;
+    }
+
+    case DerefTag:
+    {
+        INode *lvalvar = iexpGetLvalInfo(((DerefNode *)lval)->exp, lvalperm, scope);
+        RefNode *vtype = (RefNode*)iexpGetTypeDcl(((DerefNode *)lval)->exp);
+        if (vtype->tag == RefTag || vtype->tag == ArrayRefTag)
+            *lvalperm = vtype->perm;
+        else if (vtype->tag == PtrTag)
+            *lvalperm = (INode*)mutPerm;
+        return lvalvar;
+    }
+
+    // Array element (obj[2])
+    case ArrIndexTag:
+    {
+        FnCallNode *element = (FnCallNode *)lval;
+        // flowLoadValue(fstate, nodesFind(element->args, 0), 0);
+        INode *lvalvar = iexpGetLvalInfo(element->objfn, lvalperm, scope);
+        INode *objtype = iexpGetTypeDcl(element->objfn);
+        if (objtype->tag == ArrayRefTag)
+            *lvalperm = ((RefNode*)objtype)->perm;
+        else if (objtype->tag == PtrTag)
+            *lvalperm = (INode*)mutPerm;
+        return lvalvar;
+    }
+
+    // Field access (obj.prop)
+    case FldAccessTag:
+    {
+        FnCallNode *element = (FnCallNode *)lval;
+        INode *lvalvar = iexpGetLvalInfo(element->objfn, lvalperm, scope);
+        if (lvalvar == NULL)
+            return NULL;
+        RefNode *vtype = (RefNode*)iexpGetTypeDcl(((DerefNode *)lval)->exp);
+        if (vtype->tag == VirtRefTag)
+            *lvalperm = vtype->perm;
+        else {
+            PermNode *methperm = (PermNode *)((VarDclNode*)((NameUseNode *)element->methfld)->dclnode)->perm;
+            // Downgrade overall static permission if field is immutable
+            if (methperm == immPerm)
+                *lvalperm = (INode*)constPerm;
+        }
+        return lvalvar;
+    }
+
+    // No other node is an lval
+    default:
+        return NULL;
+    }
+}
+
 // Are types the same (no coercion)
 int iexpSameType(INode *to, INode **from) {
     return itypeMatches(iexpGetTypeDcl(to), iexpGetTypeDcl(*from)) == 1;

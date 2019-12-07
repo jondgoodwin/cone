@@ -57,6 +57,9 @@ int iexpTypeCheckAndMatch(TypeCheckState *pstate, INode **to, INode **from);
 // Ensure it is a lval, return error and 0 if not.
 int iexpIsLval(INode *lval);
 
+// Extract lval variable, scope and overall permission from lval
+INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope);
+
 // Are types the same (no coercion)
 int iexpSameType(INode *to, INode **from);
 

@@ -37,9 +37,6 @@ void flowLoadValue(FlowState *fstate, INode **nodep);
 // Add a just declared variable to the data flow stack
 void flowAddVar(VarDclNode *varnode);
 
-// Extract lval variable, scope and overall permission from lval
-INode *flowLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope);
-
 // Start a new scope
 size_t flowScopePush();
 
