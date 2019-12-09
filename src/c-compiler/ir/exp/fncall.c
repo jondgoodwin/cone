@@ -313,9 +313,10 @@ void fnCallLowerMethod(FnCallNode *callnode) {
     fnCallFinalizeArgs(callnode);
 }
 
-// Find matching pointer or reference method (comparison or arithmetic)
-// Lower the node to a function call (objfn+args)
-void fnCallLowerPtrMethod(FnCallNode *callnode) {
+// We have a reference or pointer, and a method to find (comparison or arithmetic)
+// If found, lower the node to a function call (objfn+args)
+// Otherwise try again against the type it points to
+int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
     INode *obj = callnode->objfn;
     INode *objtype = iexpGetTypeDcl(obj);
     Name *methsym = callnode->methfld->namesym;
@@ -325,36 +326,16 @@ void fnCallLowerPtrMethod(FnCallNode *callnode) {
         if (methsym != eqName && methsym != neName) {
             errorMsgNode((INode*)callnode, ErrorNoMeth, "Method not supported for null, only equivalence.");
             callnode->vtype = (INode*)unknownType; // make up a vtype
-            return;
+            return 1;
         }
         callnode->objfn = nodesGet(callnode->args, 0);
         nodesGet(callnode->args, 0) = obj;
         obj = callnode->objfn;
     }
 
-    // Obtain the list of methods for the reference type
-    INsTypeNode *methtype;
-    switch (objtype->tag) {
-    case PtrTag: methtype = ptrType; break;
-    case RefTag: methtype = refType; break;
-    case VirtRefTag: methtype = refType; break;
-    case ArrayRefTag: methtype = arrayRefType; break;
-    default: assert(0 && "Unknown reference type");
-    }
-
     INode *foundnode = iNsTypeFindFnField(methtype, methsym);
-    if (!foundnode) { // It can only be a method
-        if (objtype->tag == RefTag || objtype->tag == VirtRefTag) {
-            // Give references another crack at method via deref type's methods
-            if (objtype->tag == VirtRefTag)
-                callnode->flags |= FlagVDisp;
-            fnCallLowerMethod(callnode);
-            return;
-        }
-        errorMsgNode((INode*)callnode, ErrorNoMeth, "Object's type has no method named %s.", &methsym->namestr);
-        callnode->vtype = (INode *)methtype; // Pretend on a vtype
-        return;
-    }
+    if (!foundnode)
+        return 0;
 
     // For a method call, make sure object is specified as first argument
     if (callnode->args == NULL) {
@@ -391,7 +372,7 @@ void fnCallLowerPtrMethod(FnCallNode *callnode) {
     if (bestmethod == NULL) {
         errorMsgNode((INode*)callnode, ErrorNoMeth, "No method's parameter types match the call's arguments.");
         callnode->vtype = ((IExpNode*)obj)->vtype; // make up a vtype
-        return;
+        return 1;
     }
 
     callnode->flags &= (uint16_t)0xFFFF - FlagLvalOp; // Ptrs implement +=,-=
@@ -416,94 +397,7 @@ void fnCallLowerPtrMethod(FnCallNode *callnode) {
     callnode->vtype = ((FnSigNode*)bestmethod->vtype)->rettype;
     if (callnode->vtype->tag == PtrTag)
         callnode->vtype = selftype;  // Generic substitution for T
-    return;
-}
-
-// Temporary logic while we re-factor fncall
-void fnCallTempTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
-    FnCallNode *node = *nodep;
-
-    INode *objfntype = iexpGetTypeDcl(node->objfn);
-    // Since fncall supports auto-deref of objfn, let's get underlying type under a pointer or normal reference
-    // (but not if fncall is part of a borrow or not indexing a pointer or slice)
-    INode *objdereftype = objfntype;
-    if (!(node->flags & FlagBorrow)
-        && !((node->flags & FlagIndex) && objfntype->tag == PtrTag))
-        objdereftype = iexpGetDerefTypeDcl(node->objfn);
-
-    // If object's deref-ed type supports methods, fill in a default method if unspecified: '()', '[]' or '&[]'
-    if (isMethodType(objdereftype) && node->methfld == NULL)
-        node->methfld = newNameUseNode(
-            node->flags & FlagIndex ? (node->flags & FlagBorrow ? refIndexName : indexName) : parensName);
-
-    // a) If method/field specified, handle it via name lookup in type and lower method call to function call
-    if (node->methfld) {
-        if (objfntype->tag == RefTag || objfntype->tag == VirtRefTag || objfntype->tag == PtrTag || objfntype->tag == ArrayRefTag)
-            fnCallLowerPtrMethod(node); // Try ref/ptr specific methods first, otherwise will fallback to deref-ed method call
-        else if (isMethodType(objdereftype))
-            fnCallLowerMethod(node); // Lower to a field access or function call
-        else {
-            errorMsgNode((INode *)node, ErrorBadMeth, "Cannot do method or field on a value of this type");
-        }
-    }
-
-    // b) Handle a regular function call
-    else if (objdereftype->tag == FnSigTag) {
-        fnCallFnSigTypeCheck(pstate, node);
-    }
-
-    // c) Handle index/slice arguments on an array or array reference
-    else if (objdereftype->tag == ArrayTag || objdereftype->tag == RefTag
-        || objdereftype->tag == ArrayRefTag || objdereftype->tag == PtrTag) {
-        uint32_t nargs = node->args->used;
-        if (nargs == 1) {
-            INode **indexp = &nodesGet(node->args, 0);
-            INode *indextype = iexpGetTypeDcl(*indexp);
-            if (objdereftype->tag == PtrTag) {
-                int match = 0;
-                if (indextype->tag == UintNbrTag)
-                    match = iexpBiTypeInfer((INode**)&usizeType, indexp);
-                else if (indextype->tag == IntNbrTag)
-                    match = iexpBiTypeInfer((INode**)&isizeType, indexp);
-                if (!match)
-                    errorMsgNode((INode *)node, ErrorBadIndex, "Pointer index must be an integer");
-            }
-            else {
-                int match = 0;
-                if (indextype->tag == UintNbrTag || (*indexp)->tag == ULitTag)
-                    match = iexpBiTypeInfer((INode**)&usizeType, indexp);
-                if (!match)
-                    errorMsgNode((INode *)node, ErrorBadIndex, "Array index must be an unsigned integer");
-            }
-            switch (objdereftype->tag) {
-            case ArrayTag:
-                node->vtype = ((ArrayNode*)objdereftype)->elemtype;
-                break;
-            case RefTag:
-            case ArrayRefTag:
-                node->vtype = ((RefNode*)objdereftype)->pvtype;
-                break;
-            case PtrTag:
-                node->vtype = ((PtrNode*)objdereftype)->pvtype;
-                break;
-            default:
-                assert(0 && "Invalid type for indexing");
-            }
-            if (node->flags & FlagBorrow) {
-                INode *objtype = iexpGetTypeDcl(node->objfn);
-                assert(objtype->tag == RefTag || objtype->tag == ArrayRefTag);
-                RefNode *refnode = newRefNodeFull(borrowRef, ((RefNode*)objtype)->perm, node->vtype);
-                node->vtype = (INode*)refnode;
-            }
-            node->tag = ArrIndexTag;
-        }
-        else
-            errorMsgNode((INode *)node, ErrorBadIndex, "Array indexing/slicing supports only 1-2 arguments");
-    }
-
-    else
-        errorMsgNode((INode *)node, ErrorNotFn, "May not apply arguments to a value of this type");
-
+    return 1;
 }
 
 // Perform type check on function/method call node
@@ -576,6 +470,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         }
     }
 
+    // Dispatch for correct handling based on the type of the object
     INode *objtype = iexpGetTypeDcl(node->objfn);
     switch (objtype->tag) {
     // Pure function call
@@ -594,20 +489,69 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         fnCallLowerMethod(node); // Lower to a field access or function call
         break;
 
-    // Array types that support (borrowed ref) indexing
+    // Array type
     case ArrayTag:
-    case ArrayRefTag:
-        if (node->methfld)
-            fnCallLowerPtrMethod(node); // Try type-specific method
+        if (node->flags & FlagIndex)
+            fnCallArrIndex(node);  // indexing or borrowed ref to index
         else
-            fnCallArrIndex(node);
+            errorMsgNode((INode*)node, ErrorNoMeth, "Invalid operation on an array.");
         break;
 
-    case RefTag:
-    case VirtRefTag:
-    case PtrTag:
-        fnCallTempTypeCheck(pstate, nodep);
+    // Array reference
+    case ArrayRefTag:
+        if (node->flags & FlagIndex)
+            fnCallArrIndex(node);
+        else if (node->methfld && fnCallLowerPtrMethod(node, arrayRefType))
+            ;
+        else
+            errorMsgNode((INode*)node, ErrorNoMeth, "Invalid operation on an array ref.");
         break;
+
+    // Regular reference
+    case RefTag: {
+        INode *objdereftype = ((RefNode *)objtype)->pvtype;
+        if ((node->flags & FlagIndex) && objdereftype->tag == ArrayTag)
+            fnCallArrIndex(node);
+        else if (node->methfld) {
+            if (fnCallLowerPtrMethod(node, refType) == 0)
+                fnCallLowerMethod(node);
+        }
+        else if (objdereftype->tag == FnSigTag)
+            fnCallFnSigTypeCheck(pstate, node);
+        else
+            errorMsgNode((INode*)node, ErrorNoMeth, "Invalid operation on a reference.");
+        break;
+    }
+
+    // Virtual reference
+    case VirtRefTag: {
+        if (node->methfld) {
+            if (fnCallLowerPtrMethod(node, refType) == 0) {
+                node->flags |= FlagVDisp;
+                fnCallLowerMethod(node);
+            }
+        }
+        else
+            errorMsgNode((INode*)node, ErrorNoMeth, "Invalid operation on a virtual reference.");
+        break;
+    }
+
+    // Pointer type
+    case PtrTag: {
+        INode *objdereftype = ((PtrNode *)objtype)->pvtype;
+        if (node->flags & FlagIndex)
+            fnCallArrIndex(node);
+        else if (node->methfld) {
+            if (fnCallLowerPtrMethod(node, ptrType) == 0)
+                fnCallLowerMethod(node);
+        }
+        else if (objdereftype->tag == FnSigTag)
+            fnCallFnSigTypeCheck(pstate, node);
+        else
+            errorMsgNode((INode*)node, ErrorNoMeth, "Invalid operation on a pointer.");
+        break;
+    }
+
     default:
         errorMsgNode((INode*)node->objfn, ErrorNoMeth, "This type does not support calls or field access.");
     }
