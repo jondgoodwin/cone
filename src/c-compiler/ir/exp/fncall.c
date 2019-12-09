@@ -141,6 +141,15 @@ void fnCallFinalizeArgs(FnCallNode *node) {
     }
 }
 
+// objfn is a function or a pointer to one. Make sure it is called correctly.
+void fnCallFnSigTypeCheck(TypeCheckState *pstate, FnCallNode *node) {
+    if ((node->flags & FlagIndex) || node->methfld != NULL) {
+        errorMsgNode((INode*)node->objfn, ErrorNoMeth, "A function may not be called using indexing or a method.");
+        return;
+    }
+    fnCallFinalizeArgs(node);
+}
+
 Name *fnCallOpEqMethod(Name *opeqname) {
     if (opeqname == plusEqName) return plusName;
     if (opeqname == minusEqName) return minusName;
@@ -342,86 +351,15 @@ void fnCallLowerPtrMethod(FnCallNode *callnode) {
     return;
 }
 
-// Perform type check on function/method call node
-// This should only be run once on a node, as it mutably lowers the node to another form:
-// - If a generic/macro, it instantiates, then type checks instantiated nodes
-// - If a type literal, it dispatches it to typelit for handlings
-// - If a field access, it turns it into a FldAccess node
-// - If an array index, it turns it into an ArrIndex node
-// - A method call is resolved by lookup and lowered to a function call
-// - A function call coerces and injects arguments as needed
-void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
+// Temporary logic while we re-factor fncall
+void fnCallTempTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
 
-    // Handle macro/generic instantiation, otherwise type check objfn
-    if (node->objfn->tag == MacroNameTag) {
-        genericCallTypeCheck(pstate, nodep);
-        return;
-    }
-    inodeTypeCheck(pstate, &node->objfn);
-
-    // If objfn is a type, handle it as a type literal
-    if (isTypeNode(node->objfn)) {
-        if (!node->flags & FlagIndex) {
-            errorMsgNode(node->objfn, ErrorBadTerm, "May not do a function call on a type");
-            return;
-        }
-        node->tag = TypeLitTag;
-        node->vtype = node->objfn;
-        typeLitTypeCheck(pstate, *nodep);
-        return;
-    }
-    else if (!isExpNode(node->objfn)) {
-        errorMsgNode(node->objfn, ErrorNotTyped, "Expected a typed expression.");
-        return;
-    }
-
-    // Type check arguments (but not methfld for now)
-    int badarg = 0;
-    INode **argsp;
-    uint32_t cnt;
-    if (node->args) {
-        for (nodesFor(node->args, cnt, argsp))
-            if (iexpTypeCheck(pstate, argsp) == 0)
-                badarg = 1;
-    }
-    if (badarg)
-        return;
-
-    // If objfn is a method/field, rewrite it as self.method
-    if (node->objfn->tag == VarNameUseTag
-        && ((NameUseNode*)node->objfn)->dclnode->flags & FlagMethFld
-        && ((NameUseNode*)node->objfn)->qualNames == NULL) {
-        // Build a resolved 'self' node
-        NameUseNode *selfnode = newNameUseNode(selfName);
-        selfnode->tag = VarNameUseTag;
-        selfnode->dclnode = nodesGet(pstate->fnsig->parms, 0);
-        selfnode->vtype = ((VarDclNode*)selfnode->dclnode)->vtype;
-        // Reuse existing fncallnode if we can
-        if (node->methfld == NULL) {
-            node->methfld = (NameUseNode *)node->objfn;
-            node->objfn = (INode*)selfnode;
-        }
-        else {
-            // Re-purpose objfn as self.method
-            FnCallNode *fncall = newFnCallNode((INode *)selfnode, 0);
-            fncall->methfld = (NameUseNode *)node->objfn;
-            copyNodeLex(fncall, node->objfn); // Copy lexer info into injected node in case it has errors
-            node->objfn = (INode*)fncall;
-            inodeTypeCheck(pstate, &node->objfn);
-        }
-    }
-
-    // How to lower depends on the type of the objfn and whether methfld is specified
-    if (!isExpNode(node->objfn)) {
-        errorMsgNode(node->objfn, ErrorNotTyped, "Expecting a typed value or expression");
-        return;
-    }
     INode *objfntype = iexpGetTypeDcl(node->objfn);
     // Since fncall supports auto-deref of objfn, let's get underlying type under a pointer or normal reference
     // (but not if fncall is part of a borrow or not indexing a pointer or slice)
     INode *objdereftype = objfntype;
-    if (!(node->flags & FlagBorrow) 
+    if (!(node->flags & FlagBorrow)
         && !((node->flags & FlagIndex) && objfntype->tag == PtrTag))
         objdereftype = iexpGetDerefTypeDcl(node->objfn);
 
@@ -447,8 +385,8 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     }
 
     // c) Handle index/slice arguments on an array or array reference
-    else if (objdereftype->tag == ArrayTag || objdereftype->tag == RefTag 
-            || objdereftype->tag == ArrayRefTag || objdereftype->tag == PtrTag) {
+    else if (objdereftype->tag == ArrayTag || objdereftype->tag == RefTag
+        || objdereftype->tag == ArrayRefTag || objdereftype->tag == PtrTag) {
         uint32_t nargs = node->args->used;
         if (nargs == 1) {
             INode **indexp = &nodesGet(node->args, 0);
@@ -498,6 +436,96 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     else
         errorMsgNode((INode *)node, ErrorNotFn, "May not apply arguments to a value of this type");
 
+}
+
+// Perform type check on function/method call node
+// This should only be run once on a node, as it mutably lowers the node to another form:
+// - If a generic/macro, it instantiates, then type checks instantiated nodes
+// - If a type literal, it dispatches it to typelit for handlings
+// - If a field access, it turns it into a FldAccess node
+// - If an array index, it turns it into an ArrIndex node
+// - A method call is resolved by lookup and lowered to a function call
+// - A function call coerces and injects arguments as needed
+void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+
+    // Handle macro/generic instantiation, otherwise type check objfn
+    if (node->objfn->tag == MacroNameTag) {
+        genericCallTypeCheck(pstate, nodep);
+        return;
+    }
+    inodeTypeCheck(pstate, &node->objfn);
+
+    // If objfn is a type, handle it as a type literal
+    if (isTypeNode(node->objfn)) {
+        if (!node->flags & FlagIndex) {
+            errorMsgNode(node->objfn, ErrorBadTerm, "May not do a function call on a type");
+            return;
+        }
+        node->tag = TypeLitTag;
+        node->vtype = node->objfn;
+        typeLitTypeCheck(pstate, *nodep);
+        return;
+    }
+    else if (!isExpNode(node->objfn)) {
+        errorMsgNode(node->objfn, ErrorNotTyped, "Expected a typed expression.");
+        return;
+    }
+
+    // Type check arguments (but not methfld for now)
+    int badarg = 0;
+    INode **argsp;
+    uint32_t cnt;
+    if (node->args) {
+        for (nodesFor(node->args, cnt, argsp))
+            if (iexpTypeCheck(pstate, argsp) == 0)
+                badarg = 1;
+    }
+    if (badarg)
+        return;
+
+    // If objfn is the name of a method/field, rewrite to: self.method
+    if (node->objfn->tag == VarNameUseTag
+        && ((NameUseNode*)node->objfn)->dclnode->flags & FlagMethFld
+        && ((NameUseNode*)node->objfn)->qualNames == NULL) {
+        // Build a resolved 'self' node
+        NameUseNode *selfnode = newNameUseNode(selfName);
+        selfnode->tag = VarNameUseTag;
+        selfnode->dclnode = nodesGet(pstate->fnsig->parms, 0);
+        selfnode->vtype = ((VarDclNode*)selfnode->dclnode)->vtype;
+        // Reuse existing fncallnode if we can
+        if (node->methfld == NULL) {
+            node->methfld = (NameUseNode *)node->objfn;
+            node->objfn = (INode*)selfnode;
+        }
+        else {
+            // Re-purpose objfn as self.method
+            FnCallNode *fncall = newFnCallNode((INode *)selfnode, 0);
+            fncall->methfld = (NameUseNode *)node->objfn;
+            copyNodeLex(fncall, node->objfn); // Copy lexer info into injected node in case it has errors
+            node->objfn = (INode*)fncall;
+            inodeTypeCheck(pstate, &node->objfn);
+        }
+    }
+
+    INode *objtype = iexpGetTypeDcl(node->objfn);
+    switch (objtype->tag) {
+    case FnSigTag:
+        fnCallFnSigTypeCheck(pstate, node); break;
+    case StructTag:
+    case IntNbrTag:
+    case UintNbrTag:
+    case FloatNbrTag:
+    case ArrayTag:
+    case ArrayRefTag:
+    case RefTag:
+    case VirtRefTag:
+    case PtrTag:
+        fnCallTempTypeCheck(pstate, nodep);
+        break;
+    default:
+        errorMsgNode((INode*)node->objfn, ErrorNoMeth, "This type does not support calls or field access.");
+    }
 }
 
 // Do data flow analysis for fncall node (only real function calls)
