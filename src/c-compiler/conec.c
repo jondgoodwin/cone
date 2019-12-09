@@ -33,8 +33,14 @@ void doAnalysis(ModuleNode **mod) {
     if (errors)
         return;
 
-    // Apply syntactic sugar, and perform type inference/check
-    // Note: Some nodes may be lowered, injected or replaced
+    // Apply syntactic sugar, and perform type inference/check:
+    // 1. Modules will do all its variables/function sigs first, before values/bodies
+    // 2. Type checking pass will first substitute macros/generics 
+    // 3. A node will first type check all its subnodes, before checking types and other rules
+    // 4. Type checking and inference are performed bidirectionally, expecting agreement
+    // 5. When a function body has been type checked, data flow analysis is then performed on it
+    // Note: Some nodes may be lowered, injected or replaced (particularly fncall)
+    //
     // Type checking of type nodes will go depth first (recursively) from a nameuse reference to the type's dcl
     // in order to infectiously fill in information about these types:
     // - A type may not be composed of a zero - size type

@@ -129,11 +129,19 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
             *fnarg++ = genlExpr(gen, *nodesp);
     }
 
-    // Handle call when we have a pointer to a function
+    // Handle call when we have a derefed pointer to a function
     if (fncall->objfn->tag == DerefTag) {
         return LLVMBuildCall(gen->builder, genlExpr(gen, ((DerefNode*)fncall->objfn)->exp), fnargs, fncall->args->used, "");
     }
-    else if (fncall->flags & FlagVDisp) {
+    // Handle call when we have a ref or pointer to a function
+    INode *fntype = iexpGetTypeDcl(fncall->objfn);
+    if (fntype->tag != FnSigTag) {
+        assert(fntype->tag == RefTag || fntype->tag == PtrTag);
+        return LLVMBuildCall(gen->builder, genlExpr(gen, fncall->objfn), fnargs, fncall->args->used, "");
+    }
+    // We know at this point that fncall->objfn refers to some "named" function
+    // Handle call when first argument (object) is a virtual reference
+    if (fncall->flags & FlagVDisp) {
         FnDclNode *methdcl = (FnDclNode*)((NameUseNode *)fncall->objfn)->dclnode;
         LLVMValueRef vtable = LLVMBuildExtractValue(gen->builder, vref, 1, "");
         LLVMValueRef vtblmethp = LLVMBuildStructGEP(gen->builder, vtable, methdcl->vtblidx, &methdcl->namesym->namestr); // **fn

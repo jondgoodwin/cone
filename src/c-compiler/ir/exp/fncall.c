@@ -84,13 +84,30 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
     }
 }
 
-// For all function calls, go through all arguments to verify correct types,
-// handle value copying, and fill in default arguments
+// At this point, we have a properly-lowered function call. objfn could be:
+// - nameuse to a function dcl
+// - an indirect ref/ptr to a function
+// - a de-reffed ref/ptr to a function
+// From the function's signature, we want to pick up the return type
+// and ensure that all arguments are specified and coerced to the right types
 void fnCallFinalizeArgs(FnCallNode *node) {
-    INode *fnsig = iexpGetTypeDcl(node->objfn);
+    FnSigNode *fnsig = (FnSigNode*)iexpGetDerefTypeDcl(node->objfn);
+    assert(fnsig->tag == FnSigTag);
+
+    // Establish the return type of the function call
+    node->vtype = fnsig->rettype;
+
+    // Ensure we have enough arguments, based on how many expected
+    int argsunder = fnsig->parms->used - node->args->used;
+    if (argsunder < 0) {
+        errorMsgNode((INode*)node, ErrorManyArgs, "Too many arguments specified vs. function declaration");
+        return;
+    }
+
+    // Coerce provided arguments to expected types
     INode **argsp;
     uint32_t cnt;
-    INode **parmp = &nodesGet(((FnSigNode*)fnsig)->parms, 0);
+    INode **parmp = &nodesGet(fnsig->parms, 0);
     for (nodesFor(node->args, cnt, argsp)) {
         // Auto-convert string literal to borrowed reference
         INode *parmtype = iexpGetTypeDcl(*parmp);
@@ -112,7 +129,6 @@ void fnCallFinalizeArgs(FnCallNode *node) {
     }
 
     // If we have too few arguments, use default values, if provided
-    int argsunder = ((FnSigNode*)fnsig)->parms->used - node->args->used;
     if (argsunder > 0) {
         if (((VarDclNode*)*parmp)->value == NULL)
             errorMsgNode((INode*)node, ErrorFewArgs, "Function call requires more arguments than specified");
@@ -326,11 +342,14 @@ void fnCallLowerPtrMethod(FnCallNode *callnode) {
     return;
 }
 
-// Analyze function/method call node
-// Type check significantly lowers the node's contents from its parsed structure
-// to a type-resolved structure suitable for generation. The lowering involves
-// resolving syntactic sugar and resolving a method to a function.
-// It also distinguishes between methods and fields.
+// Perform type check on function/method call node
+// This should only be run once on a node, as it mutably lowers the node to another form:
+// - If a generic/macro, it instantiates, then type checks instantiated nodes
+// - If a type literal, it dispatches it to typelit for handlings
+// - If a field access, it turns it into a FldAccess node
+// - If an array index, it turns it into an ArrIndex node
+// - A method call is resolved by lookup and lowered to a function call
+// - A function call coerces and injects arguments as needed
 void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
 
@@ -424,19 +443,6 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 
     // b) Handle a regular function call
     else if (objdereftype->tag == FnSigTag) {
-        derefAuto(&node->objfn);
-
-        // Capture return vtype
-        node->vtype = ((FnSigNode*)objdereftype)->rettype;
-
-        // Error out if we have too many arguments
-        int argsunder = ((FnSigNode*)objdereftype)->parms->used - node->args->used;
-        if (argsunder < 0) {
-            errorMsgNode((INode*)node, ErrorManyArgs, "Too many arguments specified vs. function declaration");
-            return;
-        }
-
-        // Type check arguments, handling copy and default arguments along the way
         fnCallFinalizeArgs(node);
     }
 
