@@ -125,12 +125,13 @@ enum NodeTags {
     VoidTag,        // a type for "no value", such as not return values for a fn
     UnknownTag,     // unknown type - must be resolved before gen
 
+    EnumTag = TypeGroup + NamedNode,    // Enumerated value
+    LifetimeTag,
+
     IntNbrTag = TypeGroup + NamedNode + MethodType,    // Integer
     UintNbrTag,     // Unsigned integer
     FloatNbrTag,    // Floating point number
     StructTag,      // struct or trait
-    EnumTag,        // Enumerated value/type
-    LifetimeTag,
     PermTag,
     RegionTag,
 };

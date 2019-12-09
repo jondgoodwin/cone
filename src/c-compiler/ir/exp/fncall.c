@@ -84,6 +84,74 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
     }
 }
 
+// We have an object that is an array, arrayref, ptr, or reference to an array
+// We won't arrive here if a method or field was specified
+// We can indexing into array or borrow reference to the indexed element
+void fnCallArrIndex(FnCallNode *node) {
+    uint32_t nargs = node->args? node->args->used : 0;
+    if (nargs != 1) {
+        errorMsgNode((INode *)node, ErrorBadIndex, "Array indexing/slicing supports only 1-2 arguments");
+        return;
+    }
+    if (!(node->flags & FlagIndex)) {
+        errorMsgNode((INode *)node, ErrorBadIndex, "Unsupported operation on a value of this type.");
+        return;
+    }
+
+    INode *objtype = iexpGetTypeDcl(node->objfn);
+
+    // Ensure index is an integer
+    INode **indexp = &nodesGet(node->args, 0);
+    INode *indextype = iexpGetTypeDcl(*indexp);
+    if (objtype->tag == PtrTag) {
+        // Pointer supports signed or unsigned integer index
+        int match = 0;
+        if (indextype->tag == UintNbrTag)
+            match = iexpBiTypeInfer((INode**)&usizeType, indexp);
+        else if (indextype->tag == IntNbrTag)
+            match = iexpBiTypeInfer((INode**)&isizeType, indexp);
+        if (!match)
+            errorMsgNode((INode *)node, ErrorBadIndex, "Pointer index must be an integer");
+    }
+    else {
+        // All other array types only support unsigned (positive) integer indexing
+        int match = 0;
+        if (indextype->tag == UintNbrTag || (*indexp)->tag == ULitTag)
+            match = iexpBiTypeInfer((INode**)&usizeType, indexp);
+        if (!match)
+            errorMsgNode((INode *)node, ErrorBadIndex, "Array index must be an unsigned integer");
+    }
+
+    // Capture the element type returned
+    switch (objtype->tag) {
+    case ArrayTag:
+        node->vtype = ((ArrayNode*)objtype)->elemtype;
+        break;
+    case RefTag: {
+        INode *vtype = ((RefNode *)objtype)->pvtype;
+        assert(vtype->tag == ArrayTag);
+        node->vtype = ((ArrayNode *)vtype)->elemtype;
+        break;
+    }
+    case ArrayRefTag:
+        node->vtype = ((RefNode*)objtype)->pvtype;
+        break;
+    case PtrTag:
+        node->vtype = ((PtrNode*)objtype)->pvtype;
+        break;
+    default:
+        assert(0 && "Invalid type for indexing");
+    }
+
+    // If we are borrowing a reference to indexed element, fix up type
+    if (node->flags & FlagBorrow) {
+        assert(objtype->tag == RefTag || objtype->tag == ArrayRefTag);
+        RefNode *refnode = newRefNodeFull(borrowRef, ((RefNode*)objtype)->perm, node->vtype);
+        node->vtype = (INode*)refnode;
+    }
+    node->tag = ArrIndexTag;
+}
+
 // At this point, we have a properly-lowered function call. objfn could be:
 // - nameuse to a function dcl
 // - an indirect ref/ptr to a function
@@ -170,8 +238,8 @@ void fnCallLowerMethod(FnCallNode *callnode) {
     INode *obj = callnode->objfn;
     Name *methsym = callnode->methfld->namesym;
 
-    INode *methtype = iexpGetDerefTypeDcl(obj);
-    if (!isMethodType(methtype)) {
+    INode *objdereftype = iexpGetDerefTypeDcl(obj);
+    if (!isMethodType(objdereftype)) {
         errorMsgNode((INode*)callnode, ErrorNoMeth, "Object's type does not support methods or fields.");
         return;
     }
@@ -181,12 +249,12 @@ void fnCallLowerMethod(FnCallNode *callnode) {
         && !(obj->tag==VarNameUseTag && ((VarDclNode*)((NameUseNode*)obj)->dclnode)->namesym == selfName)) {
         errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/field `%s`.", &methsym->namestr);
     }
-    IExpNode *foundnode = (IExpNode*)iNsTypeFindFnField((INsTypeNode*)methtype, methsym);
+    IExpNode *foundnode = (IExpNode*)iNsTypeFindFnField((INsTypeNode*)objdereftype, methsym);
     if (callnode->flags & FlagLvalOp) {
         if (foundnode)
             callnode->flags ^= FlagLvalOp;  // Turn off flag: found method handles the rest of it just fine
         else {
-            foundnode = (IExpNode*)iNsTypeFindFnField((INsTypeNode*)methtype, fnCallOpEqMethod(methsym));
+            foundnode = (IExpNode*)iNsTypeFindFnField((INsTypeNode*)objdereftype, fnCallOpEqMethod(methsym));
             // + cannot substitute for += unless it returns same type it takes
             FnSigNode *methsig = (FnSigNode *)foundnode->vtype;
             if (!itypeMatches(methsig->rettype, ((IExpNode*)nodesGet(methsig->parms, 0))->vtype)) {
@@ -198,7 +266,7 @@ void fnCallLowerMethod(FnCallNode *callnode) {
         || !(foundnode->tag == FnDclTag || foundnode->tag == FieldDclTag)
         || !(foundnode->flags & FlagMethFld)) {
         errorMsgNode((INode*)callnode, ErrorNoMeth, "Object's type has no method or field named %s.", &methsym->namestr);
-        callnode->vtype = methtype; // Pretend on a vtype
+        callnode->vtype = objdereftype; // Pretend on a vtype
         return;
     }
 
@@ -381,7 +449,7 @@ void fnCallTempTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 
     // b) Handle a regular function call
     else if (objdereftype->tag == FnSigTag) {
-        fnCallFinalizeArgs(node);
+        fnCallFnSigTypeCheck(pstate, node);
     }
 
     // c) Handle index/slice arguments on an array or array reference
@@ -510,14 +578,31 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 
     INode *objtype = iexpGetTypeDcl(node->objfn);
     switch (objtype->tag) {
+    // Pure function call
     case FnSigTag:
         fnCallFnSigTypeCheck(pstate, node); break;
+
+    // Types expecting method call or field access
     case StructTag:
     case IntNbrTag:
     case UintNbrTag:
     case FloatNbrTag:
+        // Fill in empty methfld with '()', '[]' or '&[]' based on parser flags
+        if (node->methfld == NULL)
+            node->methfld = newNameUseNode(
+                node->flags & FlagIndex ? (node->flags & FlagBorrow ? refIndexName : indexName) : parensName);
+        fnCallLowerMethod(node); // Lower to a field access or function call
+        break;
+
+    // Array types that support (borrowed ref) indexing
     case ArrayTag:
     case ArrayRefTag:
+        if (node->methfld)
+            fnCallLowerPtrMethod(node); // Try type-specific method
+        else
+            fnCallArrIndex(node);
+        break;
+
     case RefTag:
     case VirtRefTag:
     case PtrTag:
