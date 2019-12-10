@@ -108,7 +108,7 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
     LLVMValueRef *fnarg = fnargs;
     INode **nodesp;
     uint32_t cnt;
-    int getselfaddr = fncall->flags & FlagLvalOp;
+    int getselfaddr = fncall->flags & FlagOpAssgn;
     int vdispatch = fncall->flags & FlagVDisp;
     LLVMValueRef vref;
     LLVMValueRef selfaddr;
@@ -396,7 +396,7 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
     }
 
     // For += operators, store value in lval
-    if (fncall->flags & FlagLvalOp)
+    if (fncall->flags & FlagOpAssgn)
         LLVMBuildStore(gen->builder, fncallret, selfaddr);
     return fncallret;
 }

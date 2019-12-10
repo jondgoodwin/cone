@@ -193,12 +193,14 @@ INode *parseSuffix(ParseState *parse, INode *node, uint16_t flags) {
         case IncrToken:
         {
             node = (INode*)newFnCallOpname(node, incrPostName, 0);
+            node->flags |= FlagLvalOp;
             lexNextToken();
             break;
         }
         case DecrToken:
         {
             node = (INode*)newFnCallOpname(node, decrPostName, 0);
+            node->flags |= FlagLvalOp;
             lexNextToken();
             break;
         }
@@ -300,6 +302,7 @@ INode *parsePrefix(ParseState *parse) {
     case IncrToken:
     {
         FnCallNode *node = newFnCallOpname(NULL, incrName, 0);
+        node->flags |= FlagLvalOp;
         lexNextToken();
         node->objfn = parsePrefix(parse);
         return (INode *)node;
@@ -307,6 +310,7 @@ INode *parsePrefix(ParseState *parse) {
     case DecrToken:
     {
         FnCallNode *node = newFnCallOpname(NULL, decrName, 0);
+        node->flags |= FlagLvalOp;
         lexNextToken();
         node->objfn = parsePrefix(parse);
         return (INode *)node;
@@ -541,7 +545,7 @@ INode *parseTuple(ParseState *parse) {
 // Parse an operator assignment
 INode *parseOpEq(ParseState *parse, INode *lval, Name *opeqname) {
     FnCallNode *node = newFnCallOpname(lval, opeqname, 2);
-    node->flags |= FlagLvalOp;
+    node->flags |= FlagOpAssgn;
     lexNextToken();
     nodesAdd(&node->args, parseAnyExpr(parse));
     return (INode*)node;

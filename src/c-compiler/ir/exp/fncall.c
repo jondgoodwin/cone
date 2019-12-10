@@ -250,9 +250,9 @@ void fnCallLowerMethod(FnCallNode *callnode) {
         errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/field `%s`.", &methsym->namestr);
     }
     IExpNode *foundnode = (IExpNode*)iNsTypeFindFnField((INsTypeNode*)objdereftype, methsym);
-    if (callnode->flags & FlagLvalOp) {
+    if (callnode->flags & FlagOpAssgn) {
         if (foundnode)
-            callnode->flags ^= FlagLvalOp;  // Turn off flag: found method handles the rest of it just fine
+            callnode->flags ^= FlagOpAssgn;  // Turn off flag: found method handles the rest of it just fine
         else {
             foundnode = (IExpNode*)iNsTypeFindFnField((INsTypeNode*)objdereftype, fnCallOpEqMethod(methsym));
             // + cannot substitute for += unless it returns same type it takes
@@ -375,7 +375,7 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
         return 1;
     }
 
-    callnode->flags &= (uint16_t)0xFFFF - FlagLvalOp; // Ptrs implement +=,-=
+    callnode->flags &= (uint16_t)0xFFFF - FlagOpAssgn; // Ptrs implement +=,-=
 
     // Autoref self, as necessary
     INode **selfp = &nodesGet(callnode->args, 0);
@@ -470,8 +470,25 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         }
     }
 
-    // Dispatch for correct handling based on the type of the object
+    // Handle when operand requires an lval (mutable ref)
     INode *objtype = iexpGetTypeDcl(node->objfn);
+    if (node->flags & FlagLvalOp) {
+        // Lval Ops require a (mutable) reference.
+        if (objtype->tag != RefTag) {
+            // Ensure we have an lval expression
+            if (iexpIsLval(node->objfn) == 0) {
+                errorMsgNode(node->objfn, ErrorInvType, "Operation requires an lval");
+                return;
+            }
+            // Obtain a borrowed, mutable reference to it
+            //objtype = (INode*)newRefNodeFull(borrowRef, (INode*)mutPerm, objtype);
+            //borrowMutRef(&node->objfn, objtype);
+        }
+        // Make sure opassign method (+=) exists
+        // If not, rewrite to: {imm l = lval; *l = *l + expr}
+    }
+
+    // Dispatch for correct handling based on the type of the object
     switch (objtype->tag) {
     // Pure function call
     case FnSigTag:
@@ -560,7 +577,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 // Do data flow analysis for fncall node (only real function calls)
 void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     // For += implemented via +, ensure self is a mutable lval
-    if ((*nodep)->flags & FlagLvalOp) {
+    if ((*nodep)->flags & FlagOpAssgn) {
         uint16_t scope;
         INode *perm;
         INode *lval = iexpGetLvalInfo(nodesGet((*nodep)->args, 0), &perm, &scope);

@@ -150,9 +150,10 @@ enum NodeTags {
 #define IsMixin       0x0020        // FieldNode: Is a trait mixin, vs. an instantiated field
 
 #define FlagIndex     0x0001        // FnCall: arguments are an index in []
-#define FlagLvalOp    0x0002        // FnCall: method is an operator assignment (e.g., +=)
-#define FlagBorrow    0x0004        // FnCall: part of a borrow chain
-#define FlagVDisp     0x0008        // FnCall: a virtual dispatch function call
+#define FlagBorrow    0x0002        // FnCall: part of a borrow chain
+#define FlagVDisp     0x0004        // FnCall: a virtual dispatch function call
+#define FlagLvalOp    0x0008        // FnCall: op requires an lval as object (a mutable ref)
+#define FlagOpAssgn   0x0010        // FnCall: method is an operator assignment (e.g., +=)
 
 #define FlagSuffix    0x0001        // Borrow: part of a borrow chain
 
