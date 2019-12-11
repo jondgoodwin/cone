@@ -349,7 +349,7 @@ INode *parseEach(ParseState *parse, INode *innerblk, LifetimeNode *life) {
         itercmp->objfn = (INode*)newNameUseNode(elemname);
         if (step) {
             FnCallNode *pluseq = newFnCallOpname((INode*)newNameUseNode(elemname), plusEqName, 1);
-            pluseq->flags |= FlagOpAssgn;
+            pluseq->flags |= FlagOpAssgn | FlagLvalOp;
             nodesAdd(&pluseq->args, step);
             nodesAdd(&((BlockNode*)loopnode->blk)->stmts, (INode*)pluseq);
         }

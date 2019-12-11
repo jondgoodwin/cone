@@ -232,6 +232,41 @@ Name *fnCallOpEqMethod(Name *opeqname) {
     return NULL;
 }
 
+// Make sure opassign method (+=) exists. Rewrite it, if not.
+void fnCallOpAssgn(FnCallNode **nodep) {
+    // Check if opassign method (+=) exists
+    FnCallNode *callnode = *nodep;
+    Name *methsym = callnode->methfld->namesym;
+    INode *objdereftype = iexpGetDerefTypeDcl(callnode->objfn);
+    if (!isMethodType(objdereftype) || iNsTypeFindFnField((INsTypeNode*)objdereftype, methsym))
+        return;
+
+    /*
+    foundnode = (IExpNode*)iNsTypeFindFnField((INsTypeNode*)objdereftype, fnCallOpEqMethod(methsym));
+    // + cannot substitute for += unless it returns same type it takes
+    FnSigNode *methsig = (FnSigNode *)foundnode->vtype;
+    if (!itypeMatches(methsig->rettype, ((IExpNode*)nodesGet(methsig->parms, 0))->vtype)) {
+        errorMsgNode((INode*)callnode, ErrorNoMeth, "Cannot find valid operator method that returns same type that it takes.");
+    }*/
+
+    // If not, rewrite to: {imm tmp = lval; *tmp = *tmp + expr}
+    VarDclNode *tmpvar = newVarDclFull(anonName, VarDclTag, ((IExpNode*)callnode->objfn)->vtype, (INode*)immPerm, callnode->objfn);
+    NameUseNode *tmpname = newNameUseNode(anonName);
+    tmpname->vtype = tmpvar->vtype;
+    tmpname->tag = VarNameUseTag;
+    tmpname->dclnode = (INode *)tmpvar;
+    DerefNode *derefvar = newDerefNode();
+    derefvar->exp = (INode *)tmpname;
+    derefvar->vtype = iexpGetDerefTypeDcl(callnode->objfn);
+    callnode->objfn = (INode *)derefvar;
+    callnode->methfld->namesym = fnCallOpEqMethod(methsym);
+    AssignNode *tmpassgn = newAssignNode(NormalAssign, (INode*)derefvar, (INode*)callnode);
+    BlockNode *blk = newBlockNode();
+    nodesAdd(&blk->stmts, (INode*)tmpvar);
+    nodesAdd(&blk->stmts, (INode*)tmpassgn);
+    *((INode**)nodep) = (INode*)blk;
+}
+
 // Find best field or method (across overloaded methods whose type matches argument types)
 // Then lower the node to a function call (objfn+args) or field access (objfn+methfld) accordingly
 void fnCallLowerMethod(FnCallNode *callnode) {
@@ -250,18 +285,6 @@ void fnCallLowerMethod(FnCallNode *callnode) {
         errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/field `%s`.", &methsym->namestr);
     }
     IExpNode *foundnode = (IExpNode*)iNsTypeFindFnField((INsTypeNode*)objdereftype, methsym);
-    if (callnode->flags & FlagOpAssgn) {
-        if (foundnode)
-            callnode->flags ^= FlagOpAssgn;  // Turn off flag: found method handles the rest of it just fine
-        else {
-            foundnode = (IExpNode*)iNsTypeFindFnField((INsTypeNode*)objdereftype, fnCallOpEqMethod(methsym));
-            // + cannot substitute for += unless it returns same type it takes
-            FnSigNode *methsig = (FnSigNode *)foundnode->vtype;
-            if (!itypeMatches(methsig->rettype, ((IExpNode*)nodesGet(methsig->parms, 0))->vtype)) {
-                errorMsgNode((INode*)callnode, ErrorNoMeth, "Cannot find valid operator method that returns same type that it takes.");
-            }
-        }
-    }
     if (!foundnode
         || !(foundnode->tag == FnDclTag || foundnode->tag == FieldDclTag)
         || !(foundnode->flags & FlagMethFld)) {
@@ -376,19 +399,9 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
     }
 
 
-    // Autoref self, as necessary
+    // Re-purpose method's name use node into objfn, so name refers to found method
     INode **selfp = &nodesGet(callnode->args, 0);
     INode *selftype = iexpGetTypeDcl(*selfp);
-    if (callnode->flags & FlagOpAssgn) {
-        INode *totype = itypeGetTypeDcl(((IExpNode*)nodesGet(((FnSigNode*)bestmethod->vtype)->parms, 0))->vtype);
-        if (selftype->tag != RefTag && totype->tag == RefTag) {
-            RefNode *selfref = newRefNodeFull(borrowRef, newPermUseNode(mutPerm), selftype);
-            borrowAuto(selfp, (INode *)selfref);
-        }
-        callnode->flags &= (uint16_t)0xFFFF - FlagOpAssgn; // Ptrs implement +=,-=
-    }
-
-    // Re-purpose method's name use node into objfn, so name refers to found method
     NameUseNode *methodrefnode = callnode->methfld;
     methodrefnode->tag = VarNameUseTag;
     methodrefnode->dclnode = (INode*)bestmethod;
@@ -485,9 +498,12 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             }
             // Obtain a borrowed, mutable reference to it
             borrowMutRef(&node->objfn, objtype);
+            objtype = iexpGetTypeDcl(node->objfn);
         }
         // Make sure opassign method (+=) exists
         // If not, rewrite to: {imm l = lval; *l = *l + expr}
+        if (node->flags & FlagOpAssgn)
+            fnCallOpAssgn(nodep);
     }
 
     // Dispatch for correct handling based on the type of the object
@@ -582,16 +598,6 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 
 // Do data flow analysis for fncall node (only real function calls)
 void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
-    // For += implemented via +, ensure self is a mutable lval
-    if ((*nodep)->flags & FlagOpAssgn) {
-        uint16_t scope;
-        INode *perm;
-        INode *lval = iexpGetLvalInfo(nodesGet((*nodep)->args, 0), &perm, &scope);
-        if (!lval || !(MayWrite & permGetFlags(perm))) {
-            errorMsgNode((INode*)*nodep, ErrorNoMut, "Can only operate on a valid and mutable lval to the left.");
-        }
-    }
-
     // Handle function call aliasing
     size_t svAliasPos = flowAliasPushNew(1); // Alias reference arguments
     FnCallNode *node = *nodep;

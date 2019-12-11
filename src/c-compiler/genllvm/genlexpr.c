@@ -108,22 +108,14 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
     LLVMValueRef *fnarg = fnargs;
     INode **nodesp;
     uint32_t cnt;
-    int getselfaddr = fncall->flags & FlagOpAssgn;
     int vdispatch = fncall->flags & FlagVDisp;
     LLVMValueRef vref;
-    LLVMValueRef selfaddr;
     for (nodesFor(fncall->args, cnt, nodesp)) {
         // For virtual reference, extract the object's regular reference
         if (vdispatch) {
             vdispatch = 0;
             vref = genlExpr(gen, *nodesp);
             *fnarg++ = LLVMBuildExtractValue(gen->builder, vref, 0, "");
-        }
-        // For += operators, we need lval addr, and then load its contents
-        else if (getselfaddr) {
-            getselfaddr = 0;
-            selfaddr = genlAddr(gen, *nodesp);
-            *fnarg++ = LLVMBuildLoad(gen->builder, selfaddr, "");
         }
         else
             *fnarg++ = genlExpr(gen, *nodesp);
@@ -395,9 +387,6 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
         assert(0 && "invalid type of function call");
     }
 
-    // For += operators, store value in lval
-    if (fncall->flags & FlagOpAssgn)
-        LLVMBuildStore(gen->builder, fncallret, selfaddr);
     return fncallret;
 }
 
