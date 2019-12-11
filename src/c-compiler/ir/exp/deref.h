@@ -24,6 +24,9 @@ void derefNameRes(NameResState *pstate, DerefNode *node);
 
 // Type check deref node
 void derefTypeCheck(TypeCheckState *pstate, DerefNode *node);
-void derefAuto(INode **node);
+
+// Inject automatic deref node, if node's type is a ref or ptr. Return 1 if dereffed.
+int derefAuto(INode **node);
+
 
 #endif

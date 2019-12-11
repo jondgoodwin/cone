@@ -46,12 +46,17 @@ void derefTypeCheck(TypeCheckState *pstate, DerefNode *node) {
     node->vtype = ptype->pvtype;
 }
 
-// Insert automatic deref, if node is a ref
-void derefAuto(INode **node) {
-    if (iexpGetTypeDcl(*node)->tag != RefTag)
-        return;
+// Inject automatic deref node, if node's type is a ref or ptr. Return 1 if dereffed.
+int derefAuto(INode **node) {
+    INode *nodetype = iexpGetTypeDcl(*node);
+    if (nodetype->tag != RefTag && nodetype->tag != PtrTag)
+        return 0;
     DerefNode *deref = newDerefNode();
     deref->exp = *node;
-    deref->vtype = ((RefNode*)((IExpNode *)*node)->vtype)->pvtype;
+    if (nodetype->tag == PtrTag)
+        deref->vtype = ((PtrNode*)((IExpNode *)*node)->vtype)->pvtype;
+    else
+        deref->vtype = ((RefNode*)((IExpNode *)*node)->vtype)->pvtype;
     *node = (INode*)deref;
+    return 1;
 }

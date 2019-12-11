@@ -197,10 +197,4 @@ void refAutoRef(INode **selfnodep, INode *totype) {
         derefAuto(selfnodep);
         return;
     }
-
-    // Auto-ref, if we have a value (as variable), but we need a ref
-    if ((selftype->tag != RefTag && selftype->tag != VirtRefTag) && totype->tag == RefTag) {
-        borrowAuto(selfnodep, totype);
-        return;
-    }
 }

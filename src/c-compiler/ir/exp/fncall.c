@@ -250,19 +250,18 @@ void fnCallOpAssgn(FnCallNode **nodep) {
     tmpname->vtype = tmpvar->vtype;
     tmpname->tag = VarNameUseTag;
     tmpname->dclnode = (INode *)tmpvar;
-    DerefNode *derefvar = newDerefNode();
-    derefvar->exp = (INode *)tmpname;
-    derefvar->vtype = iexpGetDerefTypeDcl(callnode->objfn);
-    callnode->objfn = (INode *)derefvar;
+    INode *derefvar = (INode *)tmpname;
+    derefAuto(&derefvar);
+    callnode->objfn = derefvar;
     callnode->methfld->namesym = fnCallOpEqMethod(methsym);
-    AssignNode *tmpassgn = newAssignNode(NormalAssign, (INode*)derefvar, (INode*)callnode);
+    AssignNode *tmpassgn = newAssignNode(NormalAssign, derefvar, (INode*)callnode);
     BlockNode *blk = newBlockNode();
     nodesAdd(&blk->stmts, (INode*)tmpvar);
     nodesAdd(&blk->stmts, (INode*)tmpassgn);
     *((INode**)nodep) = (INode*)blk;
 
     // Indicate, for FinalizeArgs, that we expect method to return this type
-    callnode->vtype = derefvar->vtype;
+    callnode->vtype = ((IExpNode*)derefvar)->vtype;
 }
 
 // Find best field or method (across overloaded methods whose type matches argument types)
@@ -296,8 +295,8 @@ void fnCallLowerMethod(FnCallNode *callnode) {
         if (callnode->args != NULL)
             errorMsgNode((INode*)callnode, ErrorManyArgs, "May not provide arguments for a field access");
 
-        derefAuto(&callnode->objfn);
-        callnode->methfld->tag = VarNameUseTag;
+        derefAuto(&callnode->objfn);  // automatically deref any reference/ptr, if needed
+        callnode->methfld->tag = MbrNameUseTag;
         callnode->methfld->dclnode = (INode*)foundnode;
         callnode->vtype = callnode->methfld->vtype = foundnode->vtype;
         callnode->tag = FldAccessTag;
