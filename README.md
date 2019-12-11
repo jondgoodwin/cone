@@ -100,9 +100,7 @@ To build on Mac OS:
 	brew install --with-toolchain llvm
 	llvm-config --bindir
 
-Modify CMakeLists.txt so that LLVM_HOME points to LLVM's path
-(e.g., "/usr/local/Cellar/llvm/7.0.1" without the /bin) and 
-modify LLVM_LIB to "libLLVM.dylib".
+CMake will auto-detect LLVM, so all you should need to do:
 
 	cmake .
 	make

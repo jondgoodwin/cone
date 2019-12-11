@@ -1,16 +1,113 @@
 cmake_minimum_required(VERSION 2.8)
 project(conec)
-set(CMAKE_BINARY_DIR ${CMAKE_SOURCE_DIR}/bin)
-set(EXECUTABLE_OUTPUT_PATH ${CMAKE_SOURCE_DIR})
-set(LIBRARY_OUTPUT_PATH ${CMAKE_BINARY_DIR})
 
-SET (LLVM_INCLUDE "/usr/lib/llvm-7/include")
-SET (LLVM_LIB     "/usr/lib/llvm-7/lib/libLLVM.so")
+find_package(LLVM 7 REQUIRED CONFIG)
+
+message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
+message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
+
+include_directories(${LLVM_INCLUDE_DIRS})
+add_definitions(${LLVM_DEFINITIONS})
 
 include_directories(
     "${CMAKE_SOURCE_DIR}/src/c-compiler/"
-    "${LLVM_INCLUDE}"
 )
+
+set(LLVM_LINK_COMPONENTS
+		Analysis
+		BitReader
+		Core
+		ExecutionEngine
+		InstCombine
+		Interpreter
+		MC
+		MCDisassembler
+		MCJIT
+		Object
+		OrcJIT
+		RuntimeDyld
+		ScalarOpts
+		Support
+		Target
+		TransformUtils
+		native
+		nativecodegen
+		AsmPrinter
+		AArch64Info
+		AArch64Desc
+		AArch64AsmParser
+		AArch64Disassembler
+		AArch64CodeGen
+		ARMInfo
+		ARMDesc
+		ARMAsmParser
+		ARMDisassembler
+		ARMCodeGen
+		AMDGPUInfo
+		AMDGPUAsmParser
+		AMDGPUCodeGen
+		AVRAsmParser
+		AVRInfo
+		AVRDesc
+		AVRCodeGen
+		BPFInfo
+		BPFAsmParser
+		BPFDisassembler
+		BPFCodeGen
+		HexagonInfo
+		HexagonDesc
+		HexagonAsmParser
+		HexagonDisassembler
+		HexagonCodeGen
+		LanaiInfo
+		LanaiDesc
+		LanaiAsmParser
+		LanaiDisassembler
+		LanaiCodeGen
+		MSP430Info
+		MSP430Desc
+		MSP430CodeGen
+		MipsInfo
+		MipsDesc
+		MipsAsmParser
+		MipsDisassembler
+		MipsCodeGen
+		NVPTXInfo
+		NVPTXCodeGen
+		PowerPCInfo
+		PowerPCDesc
+		PowerPCAsmParser
+		PowerPCDisassembler
+		PowerPCCodeGen
+		SparcInfo
+		SparcDesc
+		SparcAsmParser
+		SparcDisassembler
+		SparcCodeGen
+		SystemZInfo
+		SystemZDesc
+		SystemZAsmParser
+		SystemZDisassembler
+		SystemZCodeGen
+		WebAssemblyInfo
+		WebAssemblyDesc
+		WebAssemblyAsmParser
+		WebAssemblyDisassembler
+		WebAssemblyCodeGen
+		X86Info
+		X86Desc
+		X86AsmParser
+		X86Disassembler
+		X86CodeGen
+		X86Utils
+		XCoreInfo
+		XCoreDesc
+		XCoreDisassembler
+		XCoreCodeGen
+		)
+
+llvm_map_components_to_libnames(llvm_libs support core irreader ${LLVM_LINK_COMPONENTS})
+
 
 add_executable(conec 
 	src/c-compiler/conec.c
@@ -93,7 +190,7 @@ add_executable(conec
 	src/c-compiler/genllvm/genltype.c
 )
 
-target_link_libraries(conec "${LLVM_LIB}")
+target_link_libraries(conec ${llvm_libs})
 
 add_library(conestd
 	src/conestd/stdio.c
