@@ -355,6 +355,7 @@ INode *parseEach(ParseState *parse, INode *innerblk, LifetimeNode *life) {
         }
         else {
             INode *incr = (INode *)newFnCallOpname((INode *)newNameUseNode(elemname), isrange > 0 ? incrPostName : decrPostName, 0);
+            incr->flags |= FlagLvalOp;
             nodesAdd(&((BlockNode*)loopnode->blk)->stmts, incr);
         }
         parseInsertWhileBreak(innerblk, iter);
