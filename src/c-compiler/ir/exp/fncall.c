@@ -375,15 +375,17 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
         return 1;
     }
 
-    callnode->flags &= (uint16_t)0xFFFF - FlagOpAssgn; // Ptrs implement +=,-=
 
     // Autoref self, as necessary
     INode **selfp = &nodesGet(callnode->args, 0);
     INode *selftype = iexpGetTypeDcl(*selfp);
-    INode *totype = itypeGetTypeDcl(((IExpNode*)nodesGet(((FnSigNode*)bestmethod->vtype)->parms, 0))->vtype);
-    if (selftype->tag != RefTag && totype->tag == RefTag) {
-        RefNode *selfref = newRefNodeFull(borrowRef, newPermUseNode(mutPerm), selftype);
-        borrowAuto(selfp, (INode *)selfref);
+    if (callnode->flags & FlagOpAssgn) {
+        INode *totype = itypeGetTypeDcl(((IExpNode*)nodesGet(((FnSigNode*)bestmethod->vtype)->parms, 0))->vtype);
+        if (selftype->tag != RefTag && totype->tag == RefTag) {
+            RefNode *selfref = newRefNodeFull(borrowRef, newPermUseNode(mutPerm), selftype);
+            borrowAuto(selfp, (INode *)selfref);
+        }
+        callnode->flags &= (uint16_t)0xFFFF - FlagOpAssgn; // Ptrs implement +=,-=
     }
 
     // Re-purpose method's name use node into objfn, so name refers to found method
@@ -391,12 +393,13 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
     methodrefnode->tag = VarNameUseTag;
     methodrefnode->dclnode = (INode*)bestmethod;
     methodrefnode->vtype = bestmethod->vtype;
-
     callnode->objfn = (INode*)methodrefnode;
     callnode->methfld = NULL;
     callnode->vtype = ((FnSigNode*)bestmethod->vtype)->rettype;
-    if (callnode->vtype->tag == PtrTag)
-        callnode->vtype = selftype;  // Generic substitution for T
+    if (callnode->vtype->tag == PtrTag) {
+        INode *t_type = selftype->tag == RefTag? ((RefNode *)selftype)->pvtype : selftype;
+        callnode->vtype = t_type;  // Generic substitution for T
+    }
     return 1;
 }
 
@@ -481,8 +484,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
                 return;
             }
             // Obtain a borrowed, mutable reference to it
-            //objtype = (INode*)newRefNodeFull(borrowRef, (INode*)mutPerm, objtype);
-            //borrowMutRef(&node->objfn, objtype);
+            borrowMutRef(&node->objfn, objtype);
         }
         // Make sure opassign method (+=) exists
         // If not, rewrite to: {imm l = lval; *l = *l + expr}
@@ -526,12 +528,16 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 
     // Regular reference
     case RefTag: {
-        INode *objdereftype = ((RefNode *)objtype)->pvtype;
+        INode *objdereftype = itypeGetTypeDcl(((RefNode *)objtype)->pvtype);
         if ((node->flags & FlagIndex) && objdereftype->tag == ArrayTag)
             fnCallArrIndex(node);
         else if (node->methfld) {
-            if (fnCallLowerPtrMethod(node, refType) == 0)
-                fnCallLowerMethod(node);
+            if (fnCallLowerPtrMethod(node, refType) == 0) {
+                if (isMethodType(objdereftype))
+                    fnCallLowerMethod(node);
+                else if (objdereftype->tag == PtrTag)
+                    fnCallLowerPtrMethod(node, ptrType);
+            }
         }
         else if (objdereftype->tag == FnSigTag)
             fnCallFnSigTypeCheck(pstate, node);
