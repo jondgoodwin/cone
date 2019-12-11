@@ -162,7 +162,10 @@ void fnCallFinalizeArgs(FnCallNode *node) {
     FnSigNode *fnsig = (FnSigNode*)iexpGetDerefTypeDcl(node->objfn);
     assert(fnsig->tag == FnSigTag);
 
-    // Establish the return type of the function call
+    // Establish the return type of the function call (or error if not what was expected)
+    if (node->vtype != unknownType && !itypeMatches(fnsig->rettype, node->vtype)) {
+        errorMsgNode((INode*)node, ErrorNoMeth, "Cannot find valid `%s` method that returns same type that it takes.", &node->methfld->namesym);
+    }
     node->vtype = fnsig->rettype;
 
     // Ensure we have enough arguments, based on how many expected
@@ -241,14 +244,6 @@ void fnCallOpAssgn(FnCallNode **nodep) {
     if (!isMethodType(objdereftype) || iNsTypeFindFnField((INsTypeNode*)objdereftype, methsym))
         return;
 
-    /*
-    foundnode = (IExpNode*)iNsTypeFindFnField((INsTypeNode*)objdereftype, fnCallOpEqMethod(methsym));
-    // + cannot substitute for += unless it returns same type it takes
-    FnSigNode *methsig = (FnSigNode *)foundnode->vtype;
-    if (!itypeMatches(methsig->rettype, ((IExpNode*)nodesGet(methsig->parms, 0))->vtype)) {
-        errorMsgNode((INode*)callnode, ErrorNoMeth, "Cannot find valid operator method that returns same type that it takes.");
-    }*/
-
     // If not, rewrite to: {imm tmp = lval; *tmp = *tmp + expr}
     VarDclNode *tmpvar = newVarDclFull(anonName, VarDclTag, ((IExpNode*)callnode->objfn)->vtype, (INode*)immPerm, callnode->objfn);
     NameUseNode *tmpname = newNameUseNode(anonName);
@@ -265,6 +260,9 @@ void fnCallOpAssgn(FnCallNode **nodep) {
     nodesAdd(&blk->stmts, (INode*)tmpvar);
     nodesAdd(&blk->stmts, (INode*)tmpassgn);
     *((INode**)nodep) = (INode*)blk;
+
+    // Indicate, for FinalizeArgs, that we expect method to return this type
+    callnode->vtype = derefvar->vtype;
 }
 
 // Find best field or method (across overloaded methods whose type matches argument types)
