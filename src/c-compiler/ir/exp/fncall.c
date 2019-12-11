@@ -266,14 +266,13 @@ void fnCallOpAssgn(FnCallNode **nodep) {
 
 // Find best field or method (across overloaded methods whose type matches argument types)
 // Then lower the node to a function call (objfn+args) or field access (objfn+methfld) accordingly
-void fnCallLowerMethod(FnCallNode *callnode) {
+int fnCallLowerMethod(FnCallNode *callnode) {
     INode *obj = callnode->objfn;
     Name *methsym = callnode->methfld->namesym;
 
     INode *objdereftype = iexpGetDerefTypeDcl(obj);
     if (!isMethodType(objdereftype)) {
-        errorMsgNode((INode*)callnode, ErrorNoMeth, "Object's type does not support methods or fields.");
-        return;
+        return 0;
     }
 
     // Do lookup. If node found, it must be an instance's method or field
@@ -285,9 +284,7 @@ void fnCallLowerMethod(FnCallNode *callnode) {
     if (!foundnode
         || !(foundnode->tag == FnDclTag || foundnode->tag == FieldDclTag)
         || !(foundnode->flags & FlagMethFld)) {
-        errorMsgNode((INode*)callnode, ErrorNoMeth, "Object's type has no method or field named %s.", &methsym->namestr);
-        callnode->vtype = objdereftype; // Pretend on a vtype
-        return;
+        return 0;
     }
 
     // Handle when methfld refers to a field
@@ -300,7 +297,12 @@ void fnCallLowerMethod(FnCallNode *callnode) {
         callnode->methfld->dclnode = (INode*)foundnode;
         callnode->vtype = callnode->methfld->vtype = foundnode->vtype;
         callnode->tag = FldAccessTag;
-        return;
+        return 1;
+    }
+
+    FnDclNode *bestmethod = iNsTypeFindBestMethod((FnDclNode *)foundnode, callnode->objfn, callnode->args);
+    if (bestmethod == NULL) {
+        return 0;
     }
 
     // For a method call, make sure object is specified as first argument
@@ -308,16 +310,6 @@ void fnCallLowerMethod(FnCallNode *callnode) {
         callnode->args = newNodes(1);
     }
     nodesInsert(&callnode->args, callnode->objfn, 0);
-
-    FnDclNode *bestmethod = iNsTypeFindBestMethod((FnDclNode *)foundnode, callnode->args, callnode->flags & FlagVDisp);
-    if (bestmethod == NULL) {
-        errorMsgNode((INode*)callnode, ErrorNoMeth, "No method named %s matches the call's arguments.", &methsym->namestr);
-        callnode->vtype = ((IExpNode*)obj)->vtype; // make up a vtype
-        return;
-    }
-
-    // Do autoref or autoderef self, as necessary
-    refAutoRef(&nodesGet(callnode->args, 0), ((IExpNode*)nodesGet(((FnSigNode*)bestmethod->vtype)->parms, 0))->vtype);
 
     // Re-purpose method's name use node into objfn, so name refers to found method
     NameUseNode *methodrefnode = callnode->methfld;
@@ -331,6 +323,7 @@ void fnCallLowerMethod(FnCallNode *callnode) {
 
     // Handle copying of value arguments and default arguments
     fnCallFinalizeArgs(callnode);
+    return 1;
 }
 
 // We have a reference or pointer, and a method to find (comparison or arithmetic)
@@ -546,8 +539,15 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             fnCallArrIndex(node);
         else if (node->methfld) {
             if (fnCallLowerPtrMethod(node, refType) == 0) {
-                if (isMethodType(objdereftype))
-                    fnCallLowerMethod(node);
+                if (isMethodType(objdereftype)) {
+                    // Try to lower method or field, and if failing, deref and try again
+                    if (fnCallLowerMethod(node) == 0) {
+                        if (derefAuto(&node->objfn) == 0 || fnCallLowerMethod(node) == 0)
+                            errorMsgNode((INode*)node, ErrorNoMeth, 
+                                "No method/field named %s found that matches the call's arguments.", 
+                                &node->methfld->namesym->namestr);
+                    }
+                }
                 else if (objdereftype->tag == PtrTag)
                     fnCallLowerPtrMethod(node, ptrType);
             }
