@@ -14,7 +14,7 @@
 VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *perm) {
     VarDclNode *name;
     newNode(name, VarDclNode, tag);
-    name->vtype = NULL;
+    name->vtype = unknownType;
     name->namesym = namesym;
     name->perm = perm;
     name->value = NULL;
@@ -93,12 +93,12 @@ void varDclNameRes(NameResState *pstate, VarDclNode *name) {
 // Type check variable against its initial value
 void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
     inodeTypeCheck(pstate, (INode**)&name->perm);
-    if (name->vtype!=NULL && itypeTypeCheck(pstate, &name->vtype) == 0)
+    if (itypeTypeCheck(pstate, &name->vtype) == 0)
         return;
 
     // An initializer need not be specified, but if not, it must have a declared type
     if (name->value == NULL) {
-        if (name->vtype == NULL) {
+        if (name->vtype == unknownType) {
             errorMsgNode((INode*)name, ErrorNoType, "Declared name must specify a type or value");
             return;
         }

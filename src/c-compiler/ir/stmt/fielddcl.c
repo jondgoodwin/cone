@@ -14,7 +14,7 @@
 FieldDclNode *newFieldDclNode(Name *namesym, INode *perm) {
     FieldDclNode *fldnode;
     newNode(fldnode, FieldDclNode, FieldDclTag);
-    fldnode->vtype = NULL;
+    fldnode->vtype = unknownType;
     fldnode->namesym = namesym;
     fldnode->perm = perm;
     fldnode->value = NULL;

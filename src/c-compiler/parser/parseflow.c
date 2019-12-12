@@ -105,8 +105,8 @@ VarDclNode *parseBindVarDcl(ParseState *parse) {
 
     // Get type
     INode *vtype;
-    if ((vtype = parseVtype(parse)))
-        varnode->vtype = vtype == unknownType ? NULL : vtype;
+    if ((vtype = parseVtype(parse)) != unknownType)
+        varnode->vtype = vtype;
     else {
         errorMsgLex(ErrorInvType, "Expected type specification for pattern match binding");
         varnode->vtype = unknownType;
@@ -159,7 +159,7 @@ INode *parseIf(ParseState *parse) {
     // - The first statement in the block actually binds the var to the re-cast value
     if (lexIsToken(PermToken)) {
         BlockNode *blknode = newBlockNode();
-        VarDclNode *valnode = newVarDclFull(anonName, VarDclTag, NULL, (INode*)immPerm, NULL);
+        VarDclNode *valnode = newVarDclFull(anonName, VarDclTag, unknownType, (INode*)immPerm, NULL);
         NameUseNode *valnamenode = newNameUseNode(anonName);
         valnamenode->tag = VarNameUseTag;
         valnamenode->dclnode = (INode*)valnode;
@@ -196,7 +196,7 @@ INode *parseIf(ParseState *parse) {
             BlockNode *blknode = newBlockNode();
             nodesAdd(&ifnode->condblk, elseCond);
             nodesAdd(&ifnode->condblk, (INode*)blknode);
-            VarDclNode *valnode = newVarDclFull(anonName, VarDclTag, NULL, (INode*)immPerm, NULL);
+            VarDclNode *valnode = newVarDclFull(anonName, VarDclTag, unknownType, (INode*)immPerm, NULL);
             NameUseNode *valnamenode = newNameUseNode(anonName);
             valnamenode->tag = VarNameUseTag;
             valnamenode->dclnode = (INode*)valnode;
@@ -389,7 +389,7 @@ INode *parseLifetime(ParseState *parse, int stmtflag) {
 // Parse a 'with' block, setting 'this' to the expression at start of block
 INode *parseWith(ParseState *parse) {
     lexNextToken();
-    VarDclNode *this = newVarDclFull(thisName, VarDclTag, NULL, (INode*)immPerm, NULL);
+    VarDclNode *this = newVarDclFull(thisName, VarDclTag, unknownType, (INode*)immPerm, NULL);
     this->value = parseSimpleExpr(parse);
     BlockNode *blk = (BlockNode*)parseBlock(parse);
     nodesInsert(&blk->stmts, (INode*)this, 0);

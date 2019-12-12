@@ -82,7 +82,7 @@ int iexpBiTypeInfer(INode **totypep, INode **from) {
     }
 
     // If 'to' type is unspecified, just use 'from's type
-    if (*totypep == NULL) {
+    if (*totypep == unknownType) {
         *totypep = fromnode->vtype;
         return 1;
     }
