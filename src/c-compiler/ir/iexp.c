@@ -105,27 +105,28 @@ int iexpBiTypeInfer(INode **totypep, INode **from) {
     INode *fromtypedcl = iexpGetTypeDcl(*from);
 
     // Are types equivalent, or is 'to' a subtype of fromtypedcl?
-    int match = itypeMatches(totypedcl, fromtypedcl);
-    if (match <= 1)
-        return match; // return fail or non-changing matches. Fall through to perform any coercion
-
-    // Add coercion node
-    if (match == 2) {
+    switch (itypeMatches(totypedcl, fromtypedcl)) {
+    case NoMatch:
+        return 0;
+    case EqMatch:
+        return 1;
+    case CoerceMatch:
         *from = (INode*)newCastNode(*from, totypedcl);
         return 1;
+    default: {
+        // If not an integer literal, don't convert
+        if ((*from)->tag != ULitTag)
+            return 0;
+        // If it is an integer literal, convert it to correct type/value in place
+        ULitNode *lit = (ULitNode*)(*from);
+        lit->vtype = totypedcl;
+        if (totypedcl->tag == FloatNbrTag) {
+            lit->tag = FLitTag;
+            ((FLitNode*)lit)->floatlit = (double)lit->uintlit;
+        }
+        return 1;
     }
-
-    // If not an integer literal, don't convert
-    if ((*from)->tag != ULitTag)
-        return 0;
-    // If it is an integer literal, convert it to correct type/value in place
-    ULitNode *lit = (ULitNode*)(*from);
-    lit->vtype = totypedcl;
-    if (totypedcl->tag == FloatNbrTag) {
-        lit->tag = FLitTag;
-        ((FLitNode*)lit)->floatlit = (double)lit->uintlit;
     }
-    return 1;
 }
 
 // Type check node we expect to be an expression. Return 0 if not.
@@ -239,7 +240,7 @@ INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
 
 // Are types the same (no coercion)
 int iexpSameType(INode *to, INode **from) {
-    return itypeMatches(iexpGetTypeDcl(to), iexpGetTypeDcl(*from)) == 1;
+    return itypeMatches(iexpGetTypeDcl(to), iexpGetTypeDcl(*from)) == EqMatch;
 }
 
 // Retrieve the permission flags for the node

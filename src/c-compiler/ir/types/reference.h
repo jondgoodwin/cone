@@ -58,10 +58,4 @@ int refMatches(RefNode *to, RefNode *from);
 // Will from reference coerce to a virtual reference (we know they are not the same)
 int refvirtMatches(RefNode *to, RefNode *from);
 
-// If self needs to auto-ref or auto-deref, make sure it legally can
-int refAutoRefCheck(INode *selfnode, INode *totype);
-
-// Auto-ref or auto-deref self node, if it is legal
-void refAutoRef(INode **selfnode, INode *totype);
-
 #endif

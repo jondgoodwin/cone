@@ -124,9 +124,9 @@ int fnSigMatchesCall(FnSigNode *to, Nodes *args) {
     for (nodesFor(args, cnt, callnodesp)) {
         int match;
         switch (match = itypeMatches(((IExpNode *)*tonodesp)->vtype, ((IExpNode*)*callnodesp)->vtype)) {
-        case 0: return 0;
-        case 1: break;
-        case 2: matchsum += match; break;
+        case NoMatch: return 0;
+        case EqMatch: break;
+        case CoerceMatch: matchsum += match; break;
         default:
             if ((*callnodesp)->tag != ULitTag)
                 return 0;
@@ -158,10 +158,10 @@ int fnSigMatchMethCall(FnSigNode *to, INode *self, Nodes *args) {
     int match;
     if (selftype->tag != VirtRefTag) {
         switch (match = itypeMatches(iexpGetTypeDcl(*tonodesp), selftype)) {
-        case 0:
+        case NoMatch:
             return 0;
-        case 1: break;
-        case 2: matchsum += match; break;
+        case EqMatch: break;
+        case CoerceMatch: matchsum += match; break;
         default:
             return 0;
         }
@@ -181,10 +181,10 @@ int fnSigMatchMethCall(FnSigNode *to, INode *self, Nodes *args) {
     uint32_t cnt;
     for (nodesFor(args, cnt, callnodesp)) {
         switch (match = itypeMatches(((IExpNode *)*tonodesp)->vtype, ((IExpNode*)*callnodesp)->vtype)) {
-        case 0:
+        case NoMatch:
             return 0;
-        case 1: break;
-        case 2: matchsum += match; break;
+        case EqMatch: break;
+        case CoerceMatch: matchsum += match; break;
         default:
             if ((*callnodesp)->tag != ULitTag)
                 return 0;

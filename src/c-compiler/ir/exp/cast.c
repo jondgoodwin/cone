@@ -165,7 +165,7 @@ void castIsTypeCheck(TypeCheckState *pstate, CastNode *node) {
     // Make sure the checked type is a subtype of the value
     INode *needtypedcl = itypeGetTypeDcl(node->typ);
     INode *havetypedcl = itypeGetTypeDcl(((IExpNode*)node->exp)->vtype);
-    if (0 == itypeMatches(havetypedcl, needtypedcl)) {
+    if (NoMatch == itypeMatches(havetypedcl, needtypedcl)) {
         errorMsgNode((INode*)node, ErrorInvType, "Types are not compatible for this specialization");
         return;
     }

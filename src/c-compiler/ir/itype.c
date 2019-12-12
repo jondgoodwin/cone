@@ -82,20 +82,14 @@ int itypeIsSame(INode *node1, INode *node2) {
 }
 
 // Is totype equivalent or a non-changing subtype of fromtype
-// 0 - no
-// 1 - yes, without conversion
-// 2 - requires casting/coercion (non-lossy)
-// 3+ - requires increasingly lossy number conversion (literal only)
+// Returns some MatchCode value
 int itypeMatches(INode *totype, INode *fromtype) {
-    // Convert, if needed, from names to the type declaration
-    if (totype->tag == TypeNameUseTag)
-        totype = (INode*)((NameUseNode *)totype)->dclnode;
-    if (fromtype->tag == TypeNameUseTag)
-        fromtype = (INode*)((NameUseNode *)fromtype)->dclnode;
+    totype = itypeGetTypeDcl(totype);
+    fromtype = itypeGetTypeDcl(fromtype);
 
     // If they are the same value type info, types match
     if (totype == fromtype)
-        return 1;
+        return EqMatch;
 
     // Type-specific matching logic
     switch (totype->tag) {
@@ -104,29 +98,29 @@ int itypeMatches(INode *totype, INode *fromtype) {
 
     case RefTag:
         if (fromtype->tag != RefTag)
-            return 0;
+            return NoMatch;
         return refMatches((RefNode*)totype, (RefNode*)fromtype);
 
     case VirtRefTag:
         if (fromtype->tag != VirtRefTag && fromtype->tag != RefTag)
-            return 0;
+            return NoMatch;
         return refvirtMatches((RefNode*)totype, (RefNode*)fromtype);
 
     case ArrayRefTag:
         if (fromtype->tag != ArrayRefTag)
-            return 0;
+            return NoMatch;
         return arrayRefMatches((RefNode*)totype, (RefNode*)fromtype);
 
     case PtrTag:
         if (fromtype->tag == RefTag || fromtype->tag == ArrayRefTag)
-            return itypeIsSame(((RefNode*)fromtype)->pvtype, ((PtrNode*)totype)->pvtype)? 2 : 0;
+            return itypeIsSame(((RefNode*)fromtype)->pvtype, ((PtrNode*)totype)->pvtype)? CoerceMatch : NoMatch;
         if (fromtype->tag != PtrTag)
-            return 0;
+            return NoMatch;
         return ptrMatches((PtrNode*)totype, (PtrNode*)fromtype);
 
     case ArrayTag:
         if (totype->tag != fromtype->tag)
-            return 0;
+            return NoMatch;
         return arrayEqual((ArrayNode*)totype, (ArrayNode*)fromtype);
 
     //case FnSigTag:
@@ -134,22 +128,22 @@ int itypeMatches(INode *totype, INode *fromtype) {
 
     case UintNbrTag:
         if ((fromtype->tag == RefTag || fromtype->tag == PtrTag) && totype == (INode*)boolType)
-            return 2;
+            return CoerceMatch;
         // Fall through is intentional here...
     case IntNbrTag:
     case FloatNbrTag:
         if (totype == (INode*)boolType)
-            return 2;
+            return CoerceMatch;
         if (totype->tag != fromtype->tag)
-            return isNbr(totype) && isNbr(fromtype) ? 4 : 0;
+            return isNbr(totype) && isNbr(fromtype) ? NbrConvMatch : NoMatch;
         if (((NbrNode *)totype)->bits == ((NbrNode *)fromtype)->bits)
-            return 1;
-        return ((NbrNode *)totype)->bits > ((NbrNode *)fromtype)->bits ? 2 : 3;
+            return EqMatch;
+        return ((NbrNode *)totype)->bits > ((NbrNode *)fromtype)->bits ? CoerceMatch : NbrShrinkMatch;
 
     case VoidTag:
-        return fromtype->tag == VoidTag? 1 : 0;
+        return fromtype->tag == VoidTag? EqMatch : NoMatch;
     default:
-        return itypeIsSame(totype, fromtype);
+        return itypeIsSame(totype, fromtype)? EqMatch : NoMatch;
     }
 }
 

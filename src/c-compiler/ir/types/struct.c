@@ -322,7 +322,7 @@ int structVirtRefMatches(StructNode *trait, StructNode *strnode) {
     for (nodesFor(vtable->impl, cnt, nodesp)) {
         VtableImpl *impl = (VtableImpl*)*nodesp;
         if (impl->structdcl == (INode*)strnode)
-            return 2;
+            return CoerceMatch;
     }
 
     // Create Vtable impl data structure and populate
@@ -345,7 +345,7 @@ int structVirtRefMatches(StructNode *trait, StructNode *strnode) {
             FnDclNode *meth = (FnDclNode *)*nodesp;
             FnDclNode *strmeth = (FnDclNode *)namespaceFind(&strnode->namespace, meth->namesym);
             if ((strmeth = iNsTypeFindVrefMethod(strmeth, meth)) == NULL)
-                return 0;
+                return NoMatch;
             // it matches, add the method to the implementation
             nodesAdd(&impl->methfld, (INode*)strmeth);
         }
@@ -356,12 +356,12 @@ int structVirtRefMatches(StructNode *trait, StructNode *strnode) {
             if (strfld == NULL || strfld->tag != FieldDclTag) {
                 //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to a %s virtual reference. Missing field %s.",
                 //    &strnode->namesym->namestr, &trait->namesym->namestr, &fld->namesym->namestr);
-                return 0;
+                return NoMatch;
             }
             if (!itypeIsSame(((FieldDclNode*)strfld)->vtype, fld->vtype)) {
                 //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to a %s virtual reference. Incompatible type for field %s.",
                 //    &strnode->namesym->namestr, &trait->namesym->namestr, &fld->namesym->namestr);
-                return 0;
+                return NoMatch;
             }
             // it matches, add the corresponding field to the implementation
             nodesAdd(&impl->methfld, (INode*)strfld);
@@ -370,7 +370,7 @@ int structVirtRefMatches(StructNode *trait, StructNode *strnode) {
 
     // We accomplished a successful mapping - add it
     nodesAdd(&vtable->impl, (INode*)impl);
-    return 2;
+    return CoerceMatch;
 }
 
 // Compare two struct signatures to see if they are equivalent
@@ -384,15 +384,15 @@ int structEqual(StructNode *node1, StructNode *node2) {
 int structMatches(StructNode *to, StructNode *from) {
     // Only matches if we coerce to a same-sized, nominally declared base trait
     if (!(to->flags & TraitType) || !(to->flags & SameSize))
-        return 0;
+        return NoMatch;
     StructNode *base = (StructNode*)itypeGetTypeDcl(from->basetrait);
     while (base) {
         // If it is a valid supertype trait, indicate that it requires coercion
         if (to == base)
-            return 2;
+            return CoerceMatch;
         base = (StructNode*)itypeGetTypeDcl(base->basetrait);
     }
-    return 0;
+    return NoMatch;
 }
 
 // Will from struct coerce to a to struct (we know they are not the same)
@@ -400,13 +400,13 @@ int structMatches(StructNode *to, StructNode *from) {
 // because matching on size is not necessary
 int structRefMatches(StructNode *to, StructNode *from) {
     if (!(to->flags & TraitType))
-        return 0;
+        return NoMatch;
     StructNode *base = (StructNode*)itypeGetTypeDcl(from->basetrait);
     while (base) {
         // If it is a valid supertype trait, indicate that it requires coercion
         if (to == base)
-            return 2;
+            return CoerceMatch;
         base = (StructNode*)itypeGetTypeDcl(base->basetrait);
     }
-    return 0;
+    return NoMatch;
 }

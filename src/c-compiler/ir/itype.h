@@ -8,6 +8,14 @@
 #ifndef itype_h
 #define itype_h
 
+enum MatchCode {
+    NoMatch,           // Types are incompatible
+    EqMatch,           // Types are the same (equivalent)
+    CoerceMatch,       // From type can be coerced to 'to' type (upcast)
+    NbrShrinkMatch,    // From type is same number type but loses bits
+    NbrConvMatch,      // Both types are numbers, but different kinds
+};
+
 typedef struct Name Name;
 
 // Named type node header (most types are named)

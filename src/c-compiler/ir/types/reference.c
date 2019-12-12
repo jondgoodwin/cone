@@ -124,10 +124,10 @@ int refEqual(RefNode *node1, RefNode *node2) {
 
 // Will from reference coerce to a to reference (we know they are not the same)
 int refMatches(RefNode *to, RefNode *from) {
-    if (0 == permMatches(to->perm, from->perm)
+    if (NoMatch == permMatches(to->perm, from->perm)
         || (to->region != from->region && to->region != borrowRef)
         || ((from->flags & FlagRefNull) && !(to->flags & FlagRefNull)))
-        return 0;
+        return NoMatch;
 
     // Match on ref's vtype as well.
     // If vtype is a struct, use a more relaxed subtype match appropriate to refs
@@ -135,19 +135,28 @@ int refMatches(RefNode *to, RefNode *from) {
     INode *fromvtypedcl = itypeGetTypeDcl(from->pvtype);
     if (tovtypedcl->tag == StructTag && fromvtypedcl->tag == StructTag) {
         if (tovtypedcl == fromvtypedcl)
-            return 1;
+            return EqMatch;
         return structRefMatches((StructNode*)tovtypedcl, (StructNode*)fromvtypedcl);
     }
-    int match = itypeMatches(tovtypedcl, fromvtypedcl);
-    return match > 2 ? 0 : match;
+
+    switch (itypeMatches(tovtypedcl, fromvtypedcl)) {
+    case NoMatch:
+        return NoMatch;
+    case EqMatch:
+        return EqMatch;
+    case CoerceMatch:
+        return CoerceMatch;
+    default:
+        return NoMatch;
+    }
 }
 
 // Will from reference coerce to a virtual reference (we know they are not the same)
 int refvirtMatches(RefNode *to, RefNode *from) {
-    if (0 == permMatches(to->perm, from->perm)
+    if (NoMatch == permMatches(to->perm, from->perm)
         || (to->region != from->region && to->region != borrowRef)
         || ((from->flags & FlagRefNull) && !(to->flags & FlagRefNull)))
-        return 0;
+        return NoMatch;
 
     // Match on ref's vtype as well.
     // If vtype is a struct, use a more relaxed subtype match appropriate to refs
@@ -155,46 +164,18 @@ int refvirtMatches(RefNode *to, RefNode *from) {
     INode *fromvtypedcl = itypeGetTypeDcl(from->pvtype);
     if (tovtypedcl->tag == StructTag && fromvtypedcl->tag == StructTag) {
         if (tovtypedcl == fromvtypedcl)
-            return 1;
+            return EqMatch;
         return structVirtRefMatches((StructNode*)tovtypedcl, (StructNode*)fromvtypedcl);
     }
-    int match = itypeMatches(tovtypedcl, fromvtypedcl);
-    return match > 2 ? 0 : match;
-}
 
-// If self needs to auto-ref or auto-deref, make sure it legally can
-int refAutoRefCheck(INode *selfnode, INode *totype) {
-    INode *selftype = iexpGetTypeDcl(selfnode);
-    totype = itypeGetTypeDcl(totype);
-
-    // Auto-deref, if we have a ref but we need a value
-    if (selftype->tag == RefTag && totype->tag != RefTag) {
-        int match = itypeMatches(totype, ((RefNode*)selftype)->pvtype);
-        if (match == 1 || match == 2)
-            return 1;
-    }
-    // Auto-ref, if we have a value but need a ref
-    else if (selftype->tag != RefTag && totype->tag == RefTag && ((RefNode*)totype)->region == borrowRef) {
-        int match = itypeMatches(((RefNode*)totype)->pvtype, selftype);
-        if (selfnode->tag != VarNameUseTag || match == 0 || match > 2)
-            return 0;
-        return permMatches(((RefNode*)totype)->perm, ((VarDclNode*)((NameUseNode*)selfnode)->dclnode)->perm);
-    }
-    return 0;
-}
-
-// Auto-ref or auto-deref self node (we already know it is legal)
-void refAutoRef(INode **selfnodep, INode *totype) {
-    INode *selftype = iexpGetTypeDcl(*selfnodep);
-    totype = itypeGetTypeDcl(totype);
-
-    int match = itypeMatches(totype, selftype);
-    if (match == 1 || match == 2)
-        return;
-
-    // Auto-deref, if we have a ref but we need a value
-    if (selftype->tag == RefTag && totype->tag != RefTag) {
-        derefAuto(selfnodep);
-        return;
+    switch (itypeMatches(tovtypedcl, fromvtypedcl)) {
+    case NoMatch:
+        return NoMatch;
+    case EqMatch:
+        return EqMatch;
+    case CoerceMatch:
+        return CoerceMatch;
+    default:
+        return NoMatch;
     }
 }

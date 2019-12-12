@@ -163,7 +163,7 @@ void fnCallFinalizeArgs(FnCallNode *node) {
     assert(fnsig->tag == FnSigTag);
 
     // Establish the return type of the function call (or error if not what was expected)
-    if (node->vtype != unknownType && !itypeMatches(fnsig->rettype, node->vtype)) {
+    if (node->vtype != unknownType && !itypeIsSame(fnsig->rettype, node->vtype)) {
         errorMsgNode((INode*)node, ErrorNoMeth, "Cannot find valid `%s` method that returns same type that it takes.", &node->methfld->namesym);
     }
     node->vtype = fnsig->rettype;
@@ -371,7 +371,7 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
                 if (nodesGet(args, 1)->tag == NullTag && (methsym == eqName || methsym == neName))
                     ((IExpNode*)nodesGet(args, 1))->vtype = ((IExpNode*)nodesGet(args, 0))->vtype;
                 // When pointers are involved, we want to ensure they are the same type
-                else if (1 != itypeMatches(arg1type, iexpGetTypeDcl(nodesGet(args, 0))))
+                else if (!itypeIsSame(arg1type, iexpGetTypeDcl(nodesGet(args, 0))))
                     continue;
             }
             else {
