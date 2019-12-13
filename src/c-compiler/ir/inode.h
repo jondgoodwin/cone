@@ -123,6 +123,7 @@ enum NodeTags {
     PtrTag,         // Pointer
     TTupleTag,      // Type tuple
     VoidTag,        // a type for "no value", such as not return values for a fn
+    BorrowRegTag,   // Borrowed region
     UnknownTag,     // unknown type - must be resolved before gen
 
     EnumTag = TypeGroup + NamedNode,    // Enumerated value

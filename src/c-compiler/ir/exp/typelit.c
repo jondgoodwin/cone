@@ -150,7 +150,7 @@ void typeLitStructCheck(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *
     INode **nodesp;
 
     // Ensure type has been type-checked, in case any rewriting/semantic analysis was needed
-    inodeTypeCheck(pstate, &arrlit->vtype);
+    itypeTypeCheck(pstate, &arrlit->vtype);
 
     // Reorder the literal's arguments to match the type's field order
     typeLitStructReorder(arrlit, strnode, (INode*)strnode == pstate->typenode);

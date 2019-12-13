@@ -102,7 +102,7 @@ void fnImplicitReturn(INode *rettype, BlockNode *blk) {
 // - Perform type checking for all statements
 // - Perform data flow analysis on variables and references
 void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
-    inodeTypeCheck(pstate, &fnnode->vtype);
+    itypeTypeCheck(pstate, &fnnode->vtype);
     // No need to type check function body if no body or is a default method of a trait
     if (!fnnode->value 
         || ((fnnode->flags & FlagMethFld) && pstate->typenode->tag == StructTag && (pstate->typenode->flags & TraitType)))

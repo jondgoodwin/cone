@@ -92,7 +92,7 @@ void varDclNameRes(NameResState *pstate, VarDclNode *name) {
 
 // Type check variable against its initial value
 void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
-    inodeTypeCheck(pstate, (INode**)&name->perm);
+    itypeTypeCheck(pstate, (INode**)&name->perm);
     if (itypeTypeCheck(pstate, &name->vtype) == 0)
         return;
 

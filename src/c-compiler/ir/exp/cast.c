@@ -137,8 +137,8 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
 // Analyze type comparison (is) node
 void castIsTypeCheck(TypeCheckState *pstate, CastNode *node) {
     node->vtype = (INode*)boolType;
-    inodeTypeCheck(pstate, &node->exp);
-    inodeTypeCheck(pstate, &node->typ);
+    iexpTypeCheck(pstate, &node->exp);
+    itypeTypeCheck(pstate, &node->typ);
     if (!isExpNode(node->exp)) {
         errorMsgNode(node->exp, ErrorInvType, "'is' requires a typed expression to the left");
         return;

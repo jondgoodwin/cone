@@ -15,6 +15,21 @@ DerefNode *newDerefNode() {
     return node;
 }
 
+// Inject automatic deref node, if node's type is a ref or ptr. Return 1 if dereffed.
+int derefInject(INode **node) {
+    INode *nodetype = iexpGetTypeDcl(*node);
+    if (nodetype->tag != RefTag && nodetype->tag != PtrTag)
+        return 0;
+    DerefNode *deref = newDerefNode();
+    deref->exp = *node;
+    if (nodetype->tag == PtrTag)
+        deref->vtype = ((PtrNode*)((IExpNode *)*node)->vtype)->pvtype;
+    else
+        deref->vtype = ((RefNode*)((IExpNode *)*node)->vtype)->pvtype;
+    *node = (INode*)deref;
+    return 1;
+}
+
 // Clone deref
 INode *cloneDerefNode(CloneState *cstate, DerefNode *node) {
     DerefNode *newnode;
@@ -44,19 +59,4 @@ void derefTypeCheck(TypeCheckState *pstate, DerefNode *node) {
     if (ptype->tag != RefTag && ptype->tag != PtrTag)
         errorMsgNode((INode*)node, ErrorNotPtr, "May only de-reference a simple reference or pointer.");
     node->vtype = ptype->pvtype;
-}
-
-// Inject automatic deref node, if node's type is a ref or ptr. Return 1 if dereffed.
-int derefAuto(INode **node) {
-    INode *nodetype = iexpGetTypeDcl(*node);
-    if (nodetype->tag != RefTag && nodetype->tag != PtrTag)
-        return 0;
-    DerefNode *deref = newDerefNode();
-    deref->exp = *node;
-    if (nodetype->tag == PtrTag)
-        deref->vtype = ((PtrNode*)((IExpNode *)*node)->vtype)->pvtype;
-    else
-        deref->vtype = ((RefNode*)((IExpNode *)*node)->vtype)->pvtype;
-    *node = (INode*)deref;
-    return 1;
 }

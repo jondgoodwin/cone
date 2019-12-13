@@ -89,8 +89,8 @@ void refNameRes(NameResState *pstate, RefNode *node) {
 
 // Type check a reference node
 void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
-    inodeTypeCheck(pstate, &node->region);
-    inodeTypeCheck(pstate, (INode**)&node->perm);
+    itypeTypeCheck(pstate, &node->region);
+    itypeTypeCheck(pstate, (INode**)&node->perm);
     if (itypeTypeCheck(pstate, &node->pvtype) == 0)
         return;
     refAdoptInfections(node);
@@ -98,8 +98,8 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
 
 // Type check a virtual reference node
 void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
-    inodeTypeCheck(pstate, &node->region);
-    inodeTypeCheck(pstate, (INode**)&node->perm);
+    itypeTypeCheck(pstate, &node->region);
+    itypeTypeCheck(pstate, (INode**)&node->perm);
     if (itypeTypeCheck(pstate, &node->pvtype) == 0)
         return;
     refAdoptInfections(node);

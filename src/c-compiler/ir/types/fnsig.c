@@ -62,7 +62,7 @@ void fnSigTypeCheck(TypeCheckState *pstate, FnSigNode *sig) {
     uint32_t cnt;
     for (nodesFor(sig->parms, cnt, nodesp))
         inodeTypeCheck(pstate, nodesp);
-    inodeTypeCheck(pstate, &sig->rettype);
+    itypeTypeCheck(pstate, &sig->rettype);
 }
 
 // Compare two function signatures to see if they are equivalent

@@ -28,10 +28,10 @@ void arrayRefNameRes(NameResState *pstate, RefNode *node) {
 
 // Type check an array reference node
 void arrayRefTypeCheck(TypeCheckState *pstate, RefNode *node) {
-    inodeTypeCheck(pstate, &node->region);
-    inodeTypeCheck(pstate, (INode**)&node->perm);
+    itypeTypeCheck(pstate, &node->region);
+    itypeTypeCheck(pstate, (INode**)&node->perm);
     if (node->pvtype)
-        inodeTypeCheck(pstate, &node->pvtype);
+        itypeTypeCheck(pstate, &node->pvtype);
 }
 
 // Compare two reference signatures to see if they are equivalent

@@ -251,7 +251,7 @@ void fnCallOpAssgn(FnCallNode **nodep) {
     tmpname->tag = VarNameUseTag;
     tmpname->dclnode = (INode *)tmpvar;
     INode *derefvar = (INode *)tmpname;
-    derefAuto(&derefvar);
+    derefInject(&derefvar);
     callnode->objfn = derefvar;
     callnode->methfld->namesym = fnCallOpEqMethod(methsym);
     AssignNode *tmpassgn = newAssignNode(NormalAssign, derefvar, (INode*)callnode);
@@ -292,7 +292,7 @@ int fnCallLowerMethod(FnCallNode *callnode) {
         if (callnode->args != NULL)
             errorMsgNode((INode*)callnode, ErrorManyArgs, "May not provide arguments for a field access");
 
-        derefAuto(&callnode->objfn);  // automatically deref any reference/ptr, if needed
+        derefInject(&callnode->objfn);  // automatically deref any reference/ptr, if needed
         callnode->methfld->tag = MbrNameUseTag;
         callnode->methfld->dclnode = (INode*)foundnode;
         callnode->vtype = callnode->methfld->vtype = foundnode->vtype;
@@ -542,7 +542,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
                 if (isMethodType(objdereftype)) {
                     // Try to lower method or field, and if failing, deref and try again
                     if (fnCallLowerMethod(node) == 0) {
-                        if (derefAuto(&node->objfn) == 0 || fnCallLowerMethod(node) == 0)
+                        if (derefInject(&node->objfn) == 0 || fnCallLowerMethod(node) == 0)
                             errorMsgNode((INode*)node, ErrorNoMeth, 
                                 "No method/field named %s found that matches the call's arguments.", 
                                 &node->methfld->namesym->namestr);

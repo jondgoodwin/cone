@@ -260,6 +260,7 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         arrayNameRes(pstate, (ArrayNode *)*node); break;
     case TTupleTag:
         ttupleNameRes(pstate, (TTupleNode *)*node); break;
+    case BorrowRegTag:
     case RegionTag:
         break;
 
@@ -379,6 +380,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node) {
         arrayTypeCheck(pstate, (ArrayNode *)*node); break;
     case TTupleTag:
         ttupleTypeCheck(pstate, (TTupleNode *)*node); break;
+    case BorrowRegTag:
     case RegionTag:
     case PermTag:
         break;

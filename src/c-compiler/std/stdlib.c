@@ -145,6 +145,7 @@ void stdlibInit(int ptrsize) {
     unknownType->tag = UnknownTag;
     elseCond = (INode*)newAbsenceNode();
     borrowRef = (INode*)newAbsenceNode();
+    borrowRef->tag = BorrowRegTag;
     noValue = (INode*)newAbsenceNode();
 
     keywordInit();
