@@ -219,7 +219,7 @@ INode *parsePostfix(ParseState *parse) {
 // Parse an address term - current token is '&'
 INode *parseAddr(ParseState *parse) {
     RefNode *reftype = newRefNode();  // Type for address node
-    reftype->pvtype = NULL;     // Type inference will correct this
+    reftype->pvtype = unknownType;    // Type inference will correct this
     reftype->region = borrowRef;
 
     lexNextToken();

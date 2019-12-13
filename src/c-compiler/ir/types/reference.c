@@ -27,7 +27,7 @@ INode *cloneRefNode(CloneState *cstate, RefNode *node) {
 
 // Set type infection flags based on the reference's type parameters
 void refAdoptInfections(RefNode *refnode) {
-    if (refnode->perm == NULL || refnode->pvtype == NULL)
+    if (refnode->perm == NULL || refnode->pvtype == unknownType)
         return;  // Wait until we have this info
     if (!(permGetFlags(refnode->perm) & MayAlias) || refnode->region == (INode*)soRegion)
         refnode->flags |= MoveType;

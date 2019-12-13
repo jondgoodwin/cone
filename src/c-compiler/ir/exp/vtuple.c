@@ -11,7 +11,7 @@
 VTupleNode *newVTupleNode() {
     VTupleNode *tuple;
     newNode(tuple, VTupleNode, VTupleTag);
-    tuple->vtype = NULL;
+    tuple->vtype = unknownType;
     tuple->values = newNodes(4);
     return tuple;
 }
