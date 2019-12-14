@@ -131,7 +131,7 @@ int iexpBiTypeInfer(INode **totypep, INode **from) {
 
 // Type check node we expect to be an expression. Return 0 if not.
 int iexpTypeCheck(TypeCheckState *pstate, INode **from) {
-    inodeTypeCheck(pstate, from);
+    inodeTypeCheckAny(pstate, from);
     // From should be a typed expression node
     if (!isExpNode(*from)) {
         errorMsgNode(*from, ErrorNotTyped, "Expected a typed expression.");
@@ -148,9 +148,12 @@ int iexpTypeCheck(TypeCheckState *pstate, INode **from) {
 //   If match requires a coercion, a 'cast' node will be inject ahead of the 'from' node
 // return 1 for success, 0 for fail
 int iexpTypeCheckAndMatch(TypeCheckState *pstate, INode **totypep, INode **from) {
-    if (iexpTypeCheck(pstate, from) == 1)
-        return iexpBiTypeInfer(totypep, from);
-    return 1; // pretend we match to not provoke additional errors
+    inodeTypeCheck(pstate, from, *totypep);
+    if (!isExpNode(*from)) {
+        errorMsgNode(*from, ErrorNotTyped, "Expected a typed expression.");
+        return 1; // pretend we match to not provoke additional errors
+    }
+    return iexpBiTypeInfer(totypep, from);
 }
 
 // Ensure it is a lval, return error and 0 if not.

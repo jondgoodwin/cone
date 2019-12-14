@@ -212,7 +212,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
         }
         // Type check a normal field
         else
-            inodeTypeCheck(pstate, fldnodesp);
+            inodeTypeCheckAny(pstate, fldnodesp);
 
         --fldpos; --fldnodesp;
     }
@@ -267,7 +267,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
 
     // Type check all methods, etc.
     for (nodelistFor(&node->nodelist, cnt, nodesp)) {
-        inodeTypeCheck(pstate, (INode**)nodesp);
+        inodeTypeCheckAny(pstate, (INode**)nodesp);
     }
 
     pstate->typenode = svtypenode;

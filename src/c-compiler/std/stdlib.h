@@ -56,6 +56,7 @@ Name *refIndexName; // "&[]"
 
 // Unique (unclonable) nodes representing the absence of value or type
 INode *unknownType;   // Unknown/unspecified type
+INode *noCareType;    // When the receiver does not care what type is returned
 INode *elseCond;   // node representing the 'else' condition for an 'if' node
 INode *borrowRef;  // When a reference's region is unspecified, as it is borrowed
 INode *noValue;    // For return and break nodes that do not "return" a value

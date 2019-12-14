@@ -422,7 +422,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         genericCallTypeCheck(pstate, nodep);
         return;
     }
-    inodeTypeCheck(pstate, &node->objfn);
+    inodeTypeCheckAny(pstate, &node->objfn);
 
     // If objfn is a type, handle it as a type literal
     if (isTypeNode(node->objfn)) {
@@ -472,7 +472,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             fncall->methfld = (NameUseNode *)node->objfn;
             copyNodeLex(fncall, node->objfn); // Copy lexer info into injected node in case it has errors
             node->objfn = (INode*)fncall;
-            inodeTypeCheck(pstate, &node->objfn);
+            inodeTypeCheckAny(pstate, &node->objfn);
         }
     }
 

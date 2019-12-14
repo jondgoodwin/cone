@@ -79,7 +79,7 @@ void genericNameTypeCheck(TypeCheckState *pstate, NameUseNode **gennode) {
     clonePopState();
 
     // Now type check the instantiated nodes
-    inodeTypeCheck(pstate, (INode**)gennode);
+    inodeTypeCheckAny(pstate, (INode**)gennode);
 }
 
 // Verify arguments are types, check if instantiated, instantiate if needed and return ptr to it
@@ -132,7 +132,7 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *fncall) {
     clonePopState();
 
     // Type check the instanced declaration
-    inodeTypeCheck(pstate, &instance);
+    inodeTypeCheckAny(pstate, &instance);
 
     // Remember instantiation for the future
     nodesAdd(&genericnode->memonodes, (INode*)fncall);
@@ -166,6 +166,6 @@ void genericCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     }
 
     // Now type check the instantiated nodes
-    inodeTypeCheck(pstate, (INode **)nodep);
+    inodeTypeCheckAny(pstate, (INode **)nodep);
 }
 

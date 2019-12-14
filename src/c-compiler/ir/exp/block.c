@@ -83,7 +83,7 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(blk->stmts, cnt, nodesp)) {
-        inodeTypeCheck(pstate, nodesp);
+        inodeTypeCheckAny(pstate, nodesp);
         if (cnt > 1 && ((*nodesp)->tag == BreakTag || (*nodesp)->tag == ContinueTag))
             errorMsgNode(*nodesp, ErrorBadStmt, "break/continue may only be the last statement in the block");
         if ((*nodesp)->tag == BlockTag)

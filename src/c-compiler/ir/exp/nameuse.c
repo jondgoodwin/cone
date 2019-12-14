@@ -166,5 +166,5 @@ void nameUseTypeCheckType(TypeCheckState *pstate, NameUseNode **namep) {
         return;
     }
     else
-        inodeTypeCheck(pstate, dclnode);
+        inodeTypeCheckAny(pstate, dclnode);
 }

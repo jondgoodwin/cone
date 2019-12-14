@@ -143,6 +143,8 @@ void stdlibInit(int ptrsize) {
 
     unknownType = (INode*)newAbsenceNode();
     unknownType->tag = UnknownTag;
+    noCareType = (INode*)newAbsenceNode();
+    noCareType->tag = UnknownTag;
     elseCond = (INode*)newAbsenceNode();
     borrowRef = (INode*)newAbsenceNode();
     borrowRef->tag = BorrowRegTag;

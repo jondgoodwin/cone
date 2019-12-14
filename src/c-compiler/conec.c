@@ -53,7 +53,7 @@ void doAnalysis(ModuleNode **mod) {
     tstate.typenode = NULL;
     tstate.loopcnt = 0;
     tstate.loopstack = memAllocBlk(sizeof(LoopNode*) * TypeCheckLoopMax);
-    inodeTypeCheck(&tstate, (INode**)mod);
+    inodeTypeCheckAny(&tstate, (INode**)mod);
 }
 
 int main(int argc, char **argv) {

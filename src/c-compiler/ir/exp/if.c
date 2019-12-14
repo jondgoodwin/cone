@@ -126,7 +126,7 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode) {
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
 
         // Validate conditional node
-        inodeTypeCheck(pstate, nodesp);
+        inodeTypeCheckAny(pstate, nodesp);
         // Detect when all closed variants are matched, and turn last match into 'else'
         if ((*nodesp)->tag == IsTag)
             ifExhaustCheck(ifnode, (CastNode*)*nodesp);
@@ -143,7 +143,7 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode) {
         }
 
         ++nodesp; --cnt;
-        inodeTypeCheck(pstate, nodesp);
+        inodeTypeCheckAny(pstate, nodesp);
         iexpFindSameType(&sametype, *nodesp);
     }
 

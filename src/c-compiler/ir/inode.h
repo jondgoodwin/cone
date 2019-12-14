@@ -214,7 +214,13 @@ void inodeNameRes(NameResState *pstate, INode **pgm);
 // Dispatch a node walk for the current semantic analysis pass
 // - pstate is helpful state info for node traversal
 // - node is a pointer to pointer so that a node can be replaced
+// - expectType is the type expected of an expression node (or unknownType)
 // See conec.c for high-level info about the type checking pass
-void inodeTypeCheck(TypeCheckState *pstate, INode **pgm);
+void inodeTypeCheck(TypeCheckState *pstate, INode **pgm, INode *expectType);
+
+// Perform a node walk for the current semantic analysis pass (w/ no type expected)
+// - pstate is helpful state info for node traversal
+// - node is a pointer to pointer so that a node can be replaced
+void inodeTypeCheckAny(TypeCheckState *pstate, INode **pgm);
 
 #endif

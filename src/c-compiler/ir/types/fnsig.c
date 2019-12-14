@@ -61,7 +61,7 @@ void fnSigTypeCheck(TypeCheckState *pstate, FnSigNode *sig) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(sig->parms, cnt, nodesp))
-        inodeTypeCheck(pstate, nodesp);
+        inodeTypeCheckAny(pstate, nodesp);
     itypeTypeCheck(pstate, &sig->rettype);
 }
 

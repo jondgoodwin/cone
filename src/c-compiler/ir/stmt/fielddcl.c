@@ -55,7 +55,7 @@ void fieldDclNameRes(NameResState *pstate, FieldDclNode *name) {
 
 // Type check field declaration against its initial value
 void fieldDclTypeCheck(TypeCheckState *pstate, FieldDclNode *name) {
-    inodeTypeCheck(pstate, (INode**)&name->perm);
+    inodeTypeCheckAny(pstate, (INode**)&name->perm);
     if (itypeTypeCheck(pstate, &name->vtype) == 0)
         return;
 

@@ -70,7 +70,7 @@ void loopTypeCheck(TypeCheckState *pstate, LoopNode *node) {
     pstate->loopstack[pstate->loopcnt++] = node;
 
     // This will ensure that every break is registered to the loop
-    inodeTypeCheck(pstate, &node->blk);
+    inodeTypeCheckAny(pstate, &node->blk);
     if (node->breaks->used == 0)
         errorMsgNode((INode*)node, WarnLoop, "Loop may never stop without a break.");
     blockNoBreak((BlockNode*)node->blk);

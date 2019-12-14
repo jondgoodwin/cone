@@ -288,7 +288,8 @@ void inodeNameRes(NameResState *pstate, INode **node) {
 // Dispatch a node walk for the type check pass
 // - pstate is helpful state info for node traversal
 // - node is a pointer to pointer so that a node can be replaced
-void inodeTypeCheck(TypeCheckState *pstate, INode **node) {
+// - expectType is the type expected of an expression node (or unknownType/noCareType)
+void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
 
     // Type nodes are fully checked the first time they are referenced,
     // so that we know everything we need to know about correctly managing their values
@@ -408,4 +409,12 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node) {
     if (isTypeNode(*node)) {
         (*node)->flags |= TypeChecked;
     }
+}
+
+
+// Perform a node walk for the current semantic analysis pass (w/ no type expected)
+// - pstate is helpful state info for node traversal
+// - node is a pointer to pointer so that a node can be replaced
+void inodeTypeCheckAny(TypeCheckState *pstate, INode **pgm) {
+    inodeTypeCheck(pstate, pgm, unknownType);
 }

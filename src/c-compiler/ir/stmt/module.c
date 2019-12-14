@@ -112,15 +112,15 @@ void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod) {
         case VarDclTag:
         {
             VarDclNode * varnode = (VarDclNode*)*nodesp;
-            inodeTypeCheck(pstate, (INode**)&varnode->perm);
+            inodeTypeCheckAny(pstate, (INode**)&varnode->perm);
             if (varnode->vtype)
-                inodeTypeCheck(pstate, &varnode->vtype);
+                inodeTypeCheckAny(pstate, &varnode->vtype);
             break;
         }
         case FnDclTag:
         {
             FnDclNode * varnode = (FnDclNode*)*nodesp;
-            inodeTypeCheck(pstate, &varnode->vtype);
+            inodeTypeCheckAny(pstate, &varnode->vtype);
             break;
         }
         }
@@ -129,7 +129,7 @@ void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod) {
     // Now we can process the full node info
     if (errors == 0) {
         for (nodesFor(mod->nodes, cnt, nodesp)) {
-            inodeTypeCheck(pstate, nodesp);
+            inodeTypeCheckAny(pstate, nodesp);
         }
     }
 }
