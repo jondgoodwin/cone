@@ -78,7 +78,7 @@ void blockNameRes(NameResState *pstate, BlockNode *blk) {
 // Mostly this is a pass-through to type-check the block's statements.
 // Note: By default, we set the block's type to that of the last statement
 // Bidirectional type inference may later change this
-void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk) {
+void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
     pstate->scope = blk->scope;
     INode **nodesp;
     uint32_t cnt;
@@ -112,7 +112,7 @@ void blockBiTypeInfer(INode **totypep, BlockNode *blk) {
     // Value of block is value of last statement
     // Ensure its type matches expected type for block
     INode **nodesp = &nodesLast(blk->stmts);
-    if (!iexpBiTypeInfer(totypep, nodesp))
+    if (!iexpTypeExpect(totypep, nodesp))
         errorMsgNode(*nodesp, ErrorInvType, "expression type does not match expected type");
     blk->vtype = *totypep;
 }

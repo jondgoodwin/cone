@@ -40,10 +40,10 @@ void iexpFindSameType(INode **answer, INode *node);
 // - Otherwise, check that types match.
 //   If match requires a coercion, a 'cast' node will be inject ahead of the 'from' node
 // return 1 for success, 0 for fail
-int iexpBiTypeInfer(INode **totypep, INode **from);
+int iexpTypeExpect(INode **totypep, INode **from);
 
 // Type check node we expect to be an expression. Return 0 if not.
-int iexpTypeCheck(TypeCheckState *pstate, INode **from);
+int iexpTypeCheckAny(TypeCheckState *pstate, INode **from);
 
 // Perform basic typecheck followed by bi-directional type checking that
 // evaluates whether the 'from' node will type check to 'to' type
@@ -52,7 +52,7 @@ int iexpTypeCheck(TypeCheckState *pstate, INode **from);
 // - Otherwise, check that types match.
 //   If match requires a coercion, a 'cast' node will be inject ahead of the 'from' node
 // return 1 for success, 0 for fail
-int iexpTypeCheckAndMatch(TypeCheckState *pstate, INode **to, INode **from);
+int iexpTypeCheckExpect(TypeCheckState *pstate, INode **to, INode **from);
 
 // Ensure it is a lval, return error and 0 if not.
 int iexpIsLval(INode *lval);

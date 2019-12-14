@@ -55,7 +55,7 @@ void breakTypeCheck(TypeCheckState *pstate, BreakNode *node) {
         return;
     }
 
-    if (node->exp != noValue && iexpTypeCheck(pstate, &node->exp) == 0)
+    if (node->exp != noValue && iexpTypeCheckAny(pstate, &node->exp) == 0)
         return;
 
     // Register the break with its specified loop

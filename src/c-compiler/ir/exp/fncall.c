@@ -107,9 +107,9 @@ void fnCallArrIndex(FnCallNode *node) {
         // Pointer supports signed or unsigned integer index
         int match = 0;
         if (indextype->tag == UintNbrTag)
-            match = iexpBiTypeInfer((INode**)&usizeType, indexp);
+            match = iexpTypeExpect((INode**)&usizeType, indexp);
         else if (indextype->tag == IntNbrTag)
-            match = iexpBiTypeInfer((INode**)&isizeType, indexp);
+            match = iexpTypeExpect((INode**)&isizeType, indexp);
         if (!match)
             errorMsgNode((INode *)node, ErrorBadIndex, "Pointer index must be an integer");
     }
@@ -117,7 +117,7 @@ void fnCallArrIndex(FnCallNode *node) {
         // All other array types only support unsigned (positive) integer indexing
         int match = 0;
         if (indextype->tag == UintNbrTag || (*indexp)->tag == ULitTag)
-            match = iexpBiTypeInfer((INode**)&usizeType, indexp);
+            match = iexpTypeExpect((INode**)&usizeType, indexp);
         if (!match)
             errorMsgNode((INode *)node, ErrorBadIndex, "Array index must be an unsigned integer");
     }
@@ -193,7 +193,7 @@ void fnCallFinalizeArgs(FnCallNode *node) {
 
         // Make sure the type matches (and coerce as needed)
         // (but not for vref as self)
-        if (!iexpBiTypeInfer(&((IExpNode*)*parmp)->vtype, argsp) 
+        if (!iexpTypeExpect(&((IExpNode*)*parmp)->vtype, argsp) 
             && !(cnt == node->args->used && (node->flags & FlagVDisp)))
             errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
         parmp++;
@@ -375,7 +375,7 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
                     continue;
             }
             else {
-                if (!iexpBiTypeInfer(&parm1type, &nodesGet(args, 1)))
+                if (!iexpTypeExpect(&parm1type, &nodesGet(args, 1)))
                     continue;
             }
         }
@@ -446,7 +446,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     uint32_t cnt;
     if (node->args) {
         for (nodesFor(node->args, cnt, argsp))
-            if (iexpTypeCheck(pstate, argsp) == 0)
+            if (iexpTypeCheckAny(pstate, argsp) == 0)
                 badarg = 1;
     }
     if (badarg)

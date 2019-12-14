@@ -59,7 +59,7 @@ void loopNameRes(NameResState *pstate, LoopNode *node) {
 // Type check the loop block, and set up for type check of breaks
 // Note: vtype is set to something other than unknownType if all branches have the same type
 // If they are different, bidirectional type inference will resolve this later
-void loopTypeCheck(TypeCheckState *pstate, LoopNode *node) {
+void loopTypeCheck(TypeCheckState *pstate, LoopNode *node, INode *expectType) {
     INode *sametype = NULL;
 
     // Push loop node on loop stack for use by break type check
@@ -103,7 +103,7 @@ void loopBiTypeInfer(INode **totypep, LoopNode *loopnode) {
         else {
             if (*totypep == NULL && cnt != loopnode->breaks->used)
                 errorMsgNode((INode*)brknode, ErrorInvType, "If this break specifies a value, earlier breaks must too");
-            else if (!iexpBiTypeInfer(totypep, &brknode->exp))
+            else if (!iexpTypeExpect(totypep, &brknode->exp))
                 errorMsgNode((INode*)brknode, ErrorInvType, "break expression's type does not match other breaks");
         }
     }

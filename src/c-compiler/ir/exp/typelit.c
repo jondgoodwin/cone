@@ -172,7 +172,7 @@ void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *arrlit) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(arrlit->args, cnt, nodesp)) {
-        if (iexpTypeCheck(pstate, nodesp) == 0)
+        if (iexpTypeCheckAny(pstate, nodesp) == 0)
             badargs = 1;
     }
     if (badargs)

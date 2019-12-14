@@ -27,9 +27,9 @@ void ifNameRes(NameResState *pstate, IfNode *ifnode);
 // Type check the if statement node
 // - Every conditional expression must be a bool
 // - if's vtype is specified/checked only when coerced by iexpCoerces
-void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode);
+void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType);
 
-// Special type-checking for iexpTypeCheckAndMatch, where blk->vtype sets type expectations
+// Special type-checking for iexpTypeCheckExpect, where blk->vtype sets type expectations
 // - Every conditional expression must be a bool
 // - Type of every branch's value must match expected type and each other
 void ifBiTypeInfer(INode **totypep, IfNode *ifnode);

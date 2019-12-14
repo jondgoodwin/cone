@@ -55,7 +55,7 @@ void assignSingleCheck(TypeCheckState *pstate, INode *lval, INode **rval) {
     if (iexpIsLval(lval) == 0) {
         return;
     }
-    if (iexpTypeCheckAndMatch(pstate, &((IExpNode*)lval)->vtype, rval) == 0) {
+    if (iexpTypeCheckExpect(pstate, &((IExpNode*)lval)->vtype, rval) == 0) {
         errorMsgNode(*rval, ErrorInvType, "Expression's type does not match lval's type");
         return;
     }
@@ -82,7 +82,7 @@ void assignParaCheck(TypeCheckState *pstate, VTupleNode *lval, VTupleNode *rval)
 
 // Handle when single function/expression returns to multiple lval
 void assignMultRetCheck(TypeCheckState *pstate, VTupleNode *lval, INode **rval) {
-    if (iexpTypeCheck(pstate, rval) == 0)
+    if (iexpTypeCheckAny(pstate, rval) == 0)
         return;;
     INode *rtype = ((IExpNode *)*rval)->vtype;
     if (rtype->tag != TTupleTag) {
@@ -116,7 +116,7 @@ void assignToOneCheck(TypeCheckState *pstate, INode *lval, VTupleNode *rval) {
 
 // Type checking for assignment node
 void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
-    if (iexpTypeCheck(pstate, &node->lval) == 0)
+    if (iexpTypeCheckAny(pstate, &node->lval) == 0)
         return;
 
     // Handle tuple decomposition for parallel assignment

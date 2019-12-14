@@ -62,13 +62,13 @@ void returnTypeCheck(TypeCheckState *pstate, ReturnNode *node) {
         INode **rettypesp;
         INode **retnodesp = &nodesGet(retnodes, 0);
         for (nodesFor(rettypes, retcnt, rettypesp)) {
-            if (!iexpTypeCheckAndMatch(pstate, rettypesp, retnodesp++))
+            if (!iexpTypeCheckExpect(pstate, rettypesp, retnodesp++))
                 errorMsgNode(*(retnodesp-1), ErrorInvType, "Return value's type does not match fn return type");
         }
         // Establish the type of the tuple (from the expected return value types)
         ((VTupleNode *)node->exp)->vtype = pstate->fnsig->rettype;
     }
-    else if (!iexpTypeCheckAndMatch(pstate, &pstate->fnsig->rettype, &node->exp)) {
+    else if (!iexpTypeCheckExpect(pstate, &pstate->fnsig->rettype, &node->exp)) {
         errorMsgNode((INode*)node, ErrorInvType, "Return expression type does not match return type on function");
         errorMsgNode((INode*)pstate->fnsig->rettype, ErrorInvType, "This is the declared function's return type");
     }

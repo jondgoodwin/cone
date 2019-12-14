@@ -73,7 +73,7 @@ uint32_t castBitsize(INode *type) {
 // - reinterpret cast types must be same size
 // - Ensure type can be safely converted to target type
 void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
-    if (iexpTypeCheck(pstate, &node->exp) == 0)
+    if (iexpTypeCheckAny(pstate, &node->exp) == 0)
         return;
     if (itypeTypeCheck(pstate, &node->typ) == 0)
         return;
@@ -137,7 +137,7 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
 // Analyze type comparison (is) node
 void castIsTypeCheck(TypeCheckState *pstate, CastNode *node) {
     node->vtype = (INode*)boolType;
-    iexpTypeCheck(pstate, &node->exp);
+    iexpTypeCheckAny(pstate, &node->exp);
     itypeTypeCheck(pstate, &node->typ);
     if (!isExpNode(node->exp)) {
         errorMsgNode(node->exp, ErrorInvType, "'is' requires a typed expression to the left");

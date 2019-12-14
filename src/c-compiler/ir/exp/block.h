@@ -31,7 +31,7 @@ void blockNameRes(NameResState *pstate, BlockNode *blk);
 
 // Handle type-checking for a block's statements. 
 // Note: When coerced by iexpCoerces, vtype of the block will be specified
-void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk);
+void blockTypeCheck(TypeCheckState *pstate, BlockNode *blkvz, INode *expectType);
 
 // Ensure this particular block does not end with break/continue
 // Used by regular and loop blocks, but not by 'if' based blocks

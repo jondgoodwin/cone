@@ -320,11 +320,11 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     case TypeLitTag:
         typeLitTypeCheck(pstate, (FnCallNode *)*node); break;
     case BlockTag:
-        blockTypeCheck(pstate, (BlockNode *)*node); break;
+        blockTypeCheck(pstate, (BlockNode *)*node, expectType); break;
     case IfTag:
-        ifTypeCheck(pstate, (IfNode *)*node); break;
+        ifTypeCheck(pstate, (IfNode *)*node, expectType); break;
     case LoopTag:
-        loopTypeCheck(pstate, (LoopNode *)*node); break;
+        loopTypeCheck(pstate, (LoopNode *)*node, expectType); break;
     case BreakTag:
         breakTypeCheck(pstate, (BreakNode *)*node); break;
     case ContinueTag:

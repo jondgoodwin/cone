@@ -68,7 +68,7 @@ void borrowNameRes(NameResState *pstate, BorrowNode **nodep) {
 // Analyze borrow node
 void borrowTypeCheck(TypeCheckState *pstate, BorrowNode **nodep) {
     BorrowNode *node = *nodep;
-    if (iexpTypeCheck(pstate, &node->exp) == 0 || iexpIsLval(node->exp) == 0)
+    if (iexpTypeCheckAny(pstate, &node->exp) == 0 || iexpIsLval(node->exp) == 0)
         return;
 
     // Auto-deref the exp, if we are borrowing a reference to a reference's field or indexed value

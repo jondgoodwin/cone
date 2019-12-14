@@ -119,7 +119,7 @@ void ifExhaustCheck(IfNode *ifnode, CastNode *condition) {
 // - else can only be last
 // Note: vtype is set to something other than unknownType if all branches have the same type
 // If they are different, bidirectional type inference will resolve this later
-void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode) {
+void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
     INode *sametype = NULL;
     INode **nodesp;
     uint32_t cnt;
@@ -132,7 +132,7 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode) {
             ifExhaustCheck(ifnode, (CastNode*)*nodesp);
 
         if (*nodesp != elseCond) {
-            if (0 == iexpBiTypeInfer((INode**)&boolType, nodesp))
+            if (0 == iexpTypeExpect((INode**)&boolType, nodesp))
                 errorMsgNode(*nodesp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
         }
         else {
@@ -169,7 +169,7 @@ void ifBiTypeInfer(INode **totypep, IfNode *ifnode) {
         ++nodesp; --cnt; // We don't need to look at conditionals, just blocks
 
         // Validate that all branches have matching types
-        if (!iexpBiTypeInfer(totypep, nodesp))
+        if (!iexpTypeExpect(totypep, nodesp))
             errorMsgNode(*nodesp, ErrorInvType, "expression type does not match expected type");
     }
     ifnode->vtype = *totypep;

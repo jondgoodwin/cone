@@ -52,7 +52,7 @@ void derefNameRes(NameResState *pstate, DerefNode *node) {
 
 // Type check deref node
 void derefTypeCheck(TypeCheckState *pstate, DerefNode *node) {
-    if (iexpTypeCheck(pstate, &node->exp) == 0)
+    if (iexpTypeCheckAny(pstate, &node->exp) == 0)
         return;
 
     PtrNode *ptype = (PtrNode*)((IExpNode *)node->exp)->vtype;

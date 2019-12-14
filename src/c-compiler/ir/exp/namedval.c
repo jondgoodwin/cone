@@ -40,7 +40,7 @@ void namedValNameRes(NameResState *pstate, NamedValNode *node) {
 
 // Type check named value node
 void namedValTypeCheck(TypeCheckState *pstate, NamedValNode *node) {
-    if (iexpTypeCheck(pstate, &node->val) == 0)
+    if (iexpTypeCheckAny(pstate, &node->val) == 0)
         return;
     node->vtype = ((IExpNode*)node->val)->vtype;
 }

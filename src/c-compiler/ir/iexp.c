@@ -39,6 +39,17 @@ void iexpFindSameType(INode **answer, INode *node) {
         *answer = unknownType;
 }
 
+// Type check node we expect to be an expression. Return 0 if not.
+int iexpTypeCheckAny(TypeCheckState *pstate, INode **from) {
+    inodeTypeCheckAny(pstate, from);
+    // From should be a typed expression node
+    if (!isExpNode(*from)) {
+        errorMsgNode(*from, ErrorNotTyped, "Expected a typed expression.");
+        return 0;
+    }
+    return 1;
+}
+
 // Bidirectional type checking between 'from' exp and 'to' type
 // Evaluate whether the 'from' node will type check to 'to' type
 // - If 'to' type is unspecified, infer it from 'from' type
@@ -53,12 +64,9 @@ void iexpFindSameType(INode **answer, INode *node) {
 // 2) Since methods may be overloaded, We non-destructively use type matches to help decide
 // 3) Once the best match is decided, we need to perform this step because we need
 //    to inject re-casts as low as possible (underneath control flow) on special-typed nodes
-int iexpBiTypeInfer(INode **totypep, INode **from) {
+int iexpTypeExpect(INode **totypep, INode **from) {
     // From should be a typed expression node
-    if (!isExpNode(*from)) {
-        errorMsgNode(*from, ErrorNotTyped, "Expected a typed expression.");
-        return 1;
-    }
+    assert(isExpNode(*from));
     IExpNode *fromnode = (IExpNode *)*from;
 
     // We need special handling for control flow nodes (if, loop, block),
@@ -90,8 +98,6 @@ int iexpBiTypeInfer(INode **totypep, INode **from) {
     // Both 'from' and 'to' specify a type. Do they match?
     // (this may involve injecting a 'cast' node in front of 'from'
     INode *totype = *totypep;
-    if (totype == unknownType)
-        return 1;
 
     // Re-type a null literal node to match the expected ref/ptr type
     if ((*from)->tag == NullTag) {
@@ -129,31 +135,20 @@ int iexpBiTypeInfer(INode **totypep, INode **from) {
     }
 }
 
-// Type check node we expect to be an expression. Return 0 if not.
-int iexpTypeCheck(TypeCheckState *pstate, INode **from) {
-    inodeTypeCheckAny(pstate, from);
-    // From should be a typed expression node
-    if (!isExpNode(*from)) {
-        errorMsgNode(*from, ErrorNotTyped, "Expected a typed expression.");
-        return 0;
-    }
-    return 1;
-}
-
 // Perform basic typecheck followed by bi-directional type checking that
 // evaluates whether the 'from' node will type check to 'to' type
-// - If 'to' type is unspecified, infer it from 'from' type
+// - If 'to' type is unknownType, infer it from 'from' type
 // - If 'from' node is 'if', 'block', 'loop', set it to 'to' type
 // - Otherwise, check that types match.
 //   If match requires a coercion, a 'cast' node will be inject ahead of the 'from' node
 // return 1 for success, 0 for fail
-int iexpTypeCheckAndMatch(TypeCheckState *pstate, INode **totypep, INode **from) {
+int iexpTypeCheckExpect(TypeCheckState *pstate, INode **totypep, INode **from) {
     inodeTypeCheck(pstate, from, *totypep);
     if (!isExpNode(*from)) {
         errorMsgNode(*from, ErrorNotTyped, "Expected a typed expression.");
         return 1; // pretend we match to not provoke additional errors
     }
-    return iexpBiTypeInfer(totypep, from);
+    return iexpTypeExpect(totypep, from);
 }
 
 // Ensure it is a lval, return error and 0 if not.

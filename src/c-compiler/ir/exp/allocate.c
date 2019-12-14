@@ -44,7 +44,7 @@ void allocateTypeCheck(TypeCheckState *pstate, AllocateNode **nodep) {
     AllocateNode *node = *nodep;
 
     // Ensure expression is a value usable for initializing allocated memory
-    if (iexpTypeCheck(pstate, &node->exp) == 0)
+    if (iexpTypeCheckAny(pstate, &node->exp) == 0)
         return;
 
     // Infer reference's value type based on initial value
