@@ -151,6 +151,52 @@ int iexpTypeCheckExpect(TypeCheckState *pstate, INode **totypep, INode **from) {
     return iexpTypeExpect(totypep, from);
 }
 
+// Used by 'if' and 'loop' to infer the type in common across all branches,
+// one branch at a time. Errors on bad type match and returns Match condition.
+// - expectType is the final type expected by receiver
+// - maybeType is the inferred type in common
+// - from is the current branch whose type is being examined
+int iexpMultiInfer(INode *expectType, INode **maybeType, INode **from) {
+    INode *fromType = iexpGetTypeDcl(*from);
+    // If the type does not matter, we are good with anything
+    if (expectType == noCareType)
+        return EqMatch;
+
+    // when we need a specific type, but don't care which one,
+    // we need to find the type in common between this and previous branches
+    if (expectType == unknownType) {
+        if ((*maybeType) == unknownType) {
+            *maybeType = fromType;  // First branch
+            return EqMatch;
+        }
+        else {
+            if (itypeIsSame(*maybeType, fromType))
+                return EqMatch;
+            else {
+                errorMsgNode(*from, ErrorInvType, "Branch's expression type inconsistent with other branches.");
+                return NoMatch;
+            }
+        }
+    }
+
+    // When we have an expected type, ensure this branch matches
+    int match = itypeMatches(expectType, fromType);
+    if (match != EqMatch || match != CoerceMatch) {
+        errorMsgNode(*from, ErrorInvType, "Expression type does not match expected type.");
+        return NoMatch;
+    }
+    // Still figure out the type in common among branches
+    if ((*maybeType) == unknownType) {
+        *maybeType = fromType;  // First branch
+        return match;
+    }
+    else {
+        if (!itypeIsSame(*maybeType, fromType))
+            *maybeType = expectType; // Set type-in-common as expected supertype
+        return match;
+    }
+}
+
 // Ensure it is a lval, return error and 0 if not.
 int iexpIsLval(INode *lval) {
     switch (lval->tag) {
