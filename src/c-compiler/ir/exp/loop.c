@@ -57,10 +57,9 @@ void loopNameRes(NameResState *pstate, LoopNode *node) {
 }
 
 // Type check the loop block, and set up for type check of breaks
-// Note: vtype is set to something other than unknownType if all branches have the same type
-// If they are different, bidirectional type inference will resolve this later
+// All breaks must resolve to either the expected type or the same inferred supertype
+// Coercion is performed on breaks as needed to accomplish this, or errors result
 void loopTypeCheck(TypeCheckState *pstate, LoopNode *node, INode *expectType) {
-    INode *sametype = NULL;
 
     // Push loop node on loop stack for use by break type check
     if (pstate->loopcnt >= TypeCheckLoopMax) {
@@ -70,47 +69,67 @@ void loopTypeCheck(TypeCheckState *pstate, LoopNode *node, INode *expectType) {
     pstate->loopstack[pstate->loopcnt++] = node;
 
     // This will ensure that every break is registered to the loop
-    inodeTypeCheckAny(pstate, &node->blk);
+    inodeTypeCheck(pstate, &node->blk, noCareType);
     if (node->breaks->used == 0)
         errorMsgNode((INode*)node, WarnLoop, "Loop may never stop without a break.");
-    blockNoBreak((BlockNode*)node->blk);
+    if (node->blk->tag == BlockTag)
+        blockNoBreak((BlockNode*)node->blk);
 
-    // Attempt to determine the vtype, assuming all breaks return the same type
-    // Otherwise, we will fix this during bidirectional type inference
+    --pstate->loopcnt;
+
+    // Do inference on all registered breaks to ensure they all return the expected type
+
+    INode *maybeType = unknownType;
+    int match = EqMatch;
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(node->breaks, cnt, nodesp)) {
-        iexpFindSameType(&sametype, ((BreakNode*)*nodesp)->exp);
-    }
-    node->vtype = sametype;
+        INode **breakexp = &((BreakNode *)*nodesp)->exp;
+        if (*breakexp == noValue && expectType != noCareType) {
+            errorMsgNode(*nodesp, ErrorInvType, "Loop expected a typed expression");
+            match = NoMatch;
+            continue;
+        }
+        if (iexpTypeCheckCoerce(pstate, expectType, breakexp) && isExpNode(*breakexp)) {
+            switch (iexpMultiInfer(expectType, &maybeType, breakexp)) {
+            case NoMatch:
+                match = NoMatch;
+                break;
+            case CoerceMatch:
+                if (match != NoMatch)
+                    match = CoerceMatch;
+                break;
+            default:
+                break;
+            }
+        }
+        else
+            match = NoMatch;
 
-    --pstate->loopcnt;
+    }
+
+    if (expectType == noCareType)
+        return;
+
+    // When expectType specified, all branches have been coerced (or not w/ errors)
+    if (expectType != unknownType) {
+        node->vtype = expectType;
+        return;
+    }
+
+    // If expected type is unknown, set the inferred type
+    node->vtype = maybeType;
+
+    //  If coercion is needed for some blocks, perform them as needed
+    if (match == CoerceMatch) {
+        for (nodesFor(node->breaks, cnt, nodesp)) {
+            INode **breakexp = &((BreakNode *)*nodesp)->exp;
+            iexpCoerce(maybeType, breakexp);
+        }
+    }
 }
 
 // Bidirectional type inference
-void loopBiTypeInfer(INode **totypep, LoopNode *loopnode) {
-
-    // Type check all breaks to this loop
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodesFor(loopnode->breaks, cnt, nodesp)) {
-        BreakNode *brknode = (BreakNode*)*nodesp;
-        if (brknode->exp == noValue) {
-            if (*totypep)
-                errorMsgNode((INode*)brknode, ErrorInvType, "this break must specify a value matching loop's type");
-        }
-        // If this break returns an expression, ensure it matches expected/previous types
-        else {
-            if (*totypep == NULL && cnt != loopnode->breaks->used)
-                errorMsgNode((INode*)brknode, ErrorInvType, "If this break specifies a value, earlier breaks must too");
-            else if (!iexpTypeExpect(totypep, &brknode->exp))
-                errorMsgNode((INode*)brknode, ErrorInvType, "break expression's type does not match other breaks");
-        }
-    }
-
-    loopnode->vtype = *totypep;
-}
-
 // Perform data flow analysis on a loop expression
 void loopFlow(FlowState *fstate, LoopNode **nodep) {
     LoopNode *node = *nodep;

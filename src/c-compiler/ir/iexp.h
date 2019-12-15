@@ -28,31 +28,24 @@ INode *iexpGetTypeDcl(INode *node);
 // (Note: only use after it has been type-checked)
 INode *iexpGetDerefTypeDcl(INode *node);
 
-// After multiple uses, answer (which starts off NULL)
-// will be set to some type if all the nodes agree on it.
-// Otherwise, it will be set to void.
-void iexpFindSameType(INode **answer, INode *node);
-
-// Bidirectional type checking between 'from' exp and 'to' type
-// Evaluate whether the 'from' node will type check to 'to' type
-// - If 'to' type is unspecified, infer it from 'from' type
-// - If 'from' node is 'if', 'block', 'loop', set it to 'to' type
-// - Otherwise, check that types match.
-//   If match requires a coercion, a 'cast' node will be inject ahead of the 'from' node
-// return 1 for success, 0 for fail
-int iexpTypeExpect(INode **totypep, INode **from);
-
 // Type check node we expect to be an expression. Return 0 if not.
 int iexpTypeCheckAny(TypeCheckState *pstate, INode **from);
 
-// Perform basic typecheck followed by bi-directional type checking that
-// evaluates whether the 'from' node will type check to 'to' type
-// - If 'to' type is unspecified, infer it from 'from' type
-// - If 'from' node is 'if', 'block', 'loop', set it to 'to' type
-// - Otherwise, check that types match.
-//   If match requires a coercion, a 'cast' node will be inject ahead of the 'from' node
-// return 1 for success, 0 for fail
-int iexpTypeCheckExpect(TypeCheckState *pstate, INode **to, INode **from);
+// Coerce from-node's type to 'to' expected type, if needed
+// Return 1 if type "matches", 0 otherwise
+int iexpCoerce(INode *totypep, INode **from);
+
+// Perform full type check on from-node and ensure it is an expression.
+// Then coerce from-node's type to 'to' expected type, if needed
+// Return 1 if type "matches", 0 otherwise
+int iexpTypeCheckCoerce(TypeCheckState *pstate, INode *to, INode **from);
+
+// Used by 'if' and 'loop' to infer the type in common across all branches,
+// one branch at a time. Errors on bad type match and returns Match condition.
+// - expectType is the final type expected by receiver
+// - maybeType is the inferred type in common
+// - from is the current branch whose type is being examined
+int iexpMultiInfer(INode *expectType, INode **maybeType, INode **from);
 
 // Ensure it is a lval, return error and 0 if not.
 int iexpIsLval(INode *lval);

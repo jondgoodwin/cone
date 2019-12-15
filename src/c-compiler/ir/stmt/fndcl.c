@@ -121,7 +121,7 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     // Type check/inference of the function's logic
     FnSigNode *oldfnsig = pstate->fnsig;
     pstate->fnsig = (FnSigNode*)fnnode->vtype;   // needed for return type check
-    inodeTypeCheckAny(pstate, &fnnode->value);
+    inodeTypeCheck(pstate, &fnnode->value, noCareType);
     pstate->fnsig = oldfnsig;
 
     // Immediately perform the data flow pass for this function

@@ -28,17 +28,6 @@ INode *iexpGetDerefTypeDcl(INode *node) {
     return itypeGetDerefTypeDcl(iexpGetTypeDcl(node));
 }
 
-// After multiple uses, answer (which starts off NULL)
-// will be set to some type if all the nodes agree on it.
-// Otherwise, it will be set to void.
-void iexpFindSameType(INode **answer, INode *node) {
-    INode *nodetype = node && isExpNode(node) ? ((IExpNode*)node)->vtype : unknownType;
-    if (*answer == NULL)
-        *answer = nodetype;
-    else if (!itypeIsSame(*answer, nodetype))
-        *answer = unknownType;
-}
-
 // Type check node we expect to be an expression. Return 0 if not.
 int iexpTypeCheckAny(TypeCheckState *pstate, INode **from) {
     inodeTypeCheckAny(pstate, from);
@@ -50,56 +39,18 @@ int iexpTypeCheckAny(TypeCheckState *pstate, INode **from) {
     return 1;
 }
 
-// Bidirectional type checking between 'from' exp and 'to' type
-// Evaluate whether the 'from' node will type check to 'to' type
-// - If 'to' type is unspecified, infer it from 'from' type
-// - If 'from' node is 'if', 'block', 'loop', set it to 'to' type
-// - Otherwise, check that types match.
-//   If match requires a coercion, a 'cast' node will be inject ahead of the 'from' node
-// return 1 for success, 0 for fail
-//
-// Note: We need this to be a distinct process from normal TypeCheck
-// because how we must do type checking on function call arguments.
-// 1) Every node should have TypeCheck done only once because it may mutate (lower)
-// 2) Since methods may be overloaded, We non-destructively use type matches to help decide
-// 3) Once the best match is decided, we need to perform this step because we need
-//    to inject re-casts as low as possible (underneath control flow) on special-typed nodes
-int iexpTypeExpect(INode **totypep, INode **from) {
+// Coerce from-node's type to 'to' expected type, if needed
+// Return 1 if type "matches", 0 otherwise
+int iexpCoerce(INode *totype, INode **from) {
     // From should be a typed expression node
     assert(isExpNode(*from));
     IExpNode *fromnode = (IExpNode *)*from;
 
-    // We need special handling for control flow nodes (if, loop, block),
-    // if they might have values of inconsistent types,
-    // as they may be conduits for multiple branches of values, all of which need to type match.
-    // They need to delegate downwards, until we hit a node with a known vtype.
-    // We want to push expected type as low down in nodes before forcing any coercion
-    // This ensures multi-branch specialized values all upcast to same expected supertype
-    if (fromnode->vtype == unknownType) {
-        switch (fromnode->tag) {
-        case IfTag:
-            ifBiTypeInfer(totypep, (IfNode*)*from);
-            break;
-        case BlockTag:
-            blockBiTypeInfer(totypep, (BlockNode*)*from);
-            break;
-        case LoopTag:
-            loopBiTypeInfer(totypep, (LoopNode*)*from);
-            break;
-        }
-    }
-
-    // If 'to' type is unspecified, just use 'from's type
-    if (*totypep == unknownType) {
-        *totypep = fromnode->vtype;
+    // No need to do coercion, if no expected type
+    if (totype == unknownType || totype == noCareType)
         return 1;
-    }
 
-    // Both 'from' and 'to' specify a type. Do they match?
-    // (this may involve injecting a 'cast' node in front of 'from'
-    INode *totype = *totypep;
-
-    // Re-type a null literal node to match the expected ref/ptr type
+    // Re-type a null pointer literal to match the expected ref/ptr type
     if ((*from)->tag == NullTag) {
         if (!refIsNullable(totype) && totype->tag != PtrTag)
             return 0;
@@ -107,10 +58,9 @@ int iexpTypeExpect(INode **totypep, INode **from) {
         return 1;
     }
 
+    // Are types equivalent, or is 'to' a subtype of fromtypedcl?
     INode *totypedcl = itypeGetTypeDcl(totype);
     INode *fromtypedcl = iexpGetTypeDcl(*from);
-
-    // Are types equivalent, or is 'to' a subtype of fromtypedcl?
     switch (itypeMatches(totypedcl, fromtypedcl)) {
     case NoMatch:
         return 0;
@@ -135,23 +85,21 @@ int iexpTypeExpect(INode **totypep, INode **from) {
     }
 }
 
-// Perform basic typecheck followed by bi-directional type checking that
-// evaluates whether the 'from' node will type check to 'to' type
-// - If 'to' type is unknownType, infer it from 'from' type
-// - If 'from' node is 'if', 'block', 'loop', set it to 'to' type
-// - Otherwise, check that types match.
-//   If match requires a coercion, a 'cast' node will be inject ahead of the 'from' node
-// return 1 for success, 0 for fail
-int iexpTypeCheckExpect(TypeCheckState *pstate, INode **totypep, INode **from) {
-    inodeTypeCheck(pstate, from, *totypep);
+// Perform full type check on from-node and ensure it is an expression.
+// Then coerce from-node's type to 'to' expected type, if needed
+// Return 1 if type "matches", 0 otherwise
+int iexpTypeCheckCoerce(TypeCheckState *pstate, INode *totype, INode **from) {
+    inodeTypeCheck(pstate, from, totype);
+    if (totype == noCareType)
+        return 1;
     if (!isExpNode(*from)) {
         errorMsgNode(*from, ErrorNotTyped, "Expected a typed expression.");
         return 1; // pretend we match to not provoke additional errors
     }
-    return iexpTypeExpect(totypep, from);
+    return iexpCoerce(totype, from);
 }
 
-// Used by 'if' and 'loop' to infer the type in common across all branches,
+// Used by 'if' and 'loop'/break to infer the type in common across all branches,
 // one branch at a time. Errors on bad type match and returns Match condition.
 // - expectType is the final type expected by receiver
 // - maybeType is the inferred type in common
@@ -181,7 +129,7 @@ int iexpMultiInfer(INode *expectType, INode **maybeType, INode **from) {
 
     // When we have an expected type, ensure this branch matches
     int match = itypeMatches(expectType, fromType);
-    if (match != EqMatch || match != CoerceMatch) {
+    if (match != EqMatch && match != CoerceMatch) {
         errorMsgNode(*from, ErrorInvType, "Expression type does not match expected type.");
         return NoMatch;
     }

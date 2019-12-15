@@ -79,20 +79,33 @@ void blockNameRes(NameResState *pstate, BlockNode *blk) {
 // Note: By default, we set the block's type to that of the last statement
 // Bidirectional type inference may later change this
 void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
+    if (blk->stmts->used == 0)
+        return;
+
     pstate->scope = blk->scope;
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(blk->stmts, cnt, nodesp)) {
-        inodeTypeCheckAny(pstate, nodesp);
-        if (cnt > 1 && ((*nodesp)->tag == BreakTag || (*nodesp)->tag == ContinueTag))
-            errorMsgNode(*nodesp, ErrorBadStmt, "break/continue may only be the last statement in the block");
+        // Ensure any subblock within this block does not end with break or continue
+        // as it makes no sense
         if ((*nodesp)->tag == BlockTag)
             blockNoBreak((BlockNode*)*nodesp);
-    }
-    if (blk->stmts->used > 0) {
-        IExpNode *laststmt = (IExpNode *)nodesLast(blk->stmts);
-        if (isExpNode(laststmt))
-            blk->vtype = laststmt->vtype;
+
+        // Handle statement differently depending on whether it is last one
+        if (cnt > 1) {
+            // All stmt nodes except the last one
+            inodeTypeCheck(pstate, nodesp, noCareType); // we don't care about the type
+            if (((*nodesp)->tag == BreakTag || (*nodesp)->tag == ContinueTag))
+                errorMsgNode(*nodesp, ErrorBadStmt, "break/continue may only be the last statement in the block");
+        }
+        else {
+            // Last statement might need to deliver a value of some expected type
+            iexpTypeCheckCoerce(pstate, expectType, nodesp);
+
+            // Capture last statement's type
+            if (isExpNode(*nodesp))
+                blk->vtype = ((IExpNode *)*nodesp)->vtype;
+        }
     }
     --pstate->scope;
 }
@@ -105,16 +118,6 @@ void blockNoBreak(BlockNode *blk) {
         if (laststmt->tag == BreakTag || laststmt->tag == ContinueTag)
             errorMsgNode(laststmt, ErrorBadStmt, "break/continue may only finish a conditional block");
     }
-}
-
-// Bidirectional type inference
-void blockBiTypeInfer(INode **totypep, BlockNode *blk) {
-    // Value of block is value of last statement
-    // Ensure its type matches expected type for block
-    INode **nodesp = &nodesLast(blk->stmts);
-    if (!iexpTypeExpect(totypep, nodesp))
-        errorMsgNode(*nodesp, ErrorInvType, "expression type does not match expected type");
-    blk->vtype = *totypep;
 }
 
 // Perform data flow analysis on a block

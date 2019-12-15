@@ -47,7 +47,7 @@ void logicNotNameRes(NameResState *pstate, LogicNode *node) {
 
 // Type check not logic node
 void logicNotTypeCheck(TypeCheckState *pstate, LogicNode *node) {
-    if (0 == iexpTypeCheckExpect(pstate, (INode**)&boolType, &node->lexp))
+    if (0 == iexpTypeCheckCoerce(pstate, (INode*)boolType, &node->lexp))
         errorMsgNode(node->lexp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
 }
 
@@ -59,8 +59,8 @@ void logicNameRes(NameResState *pstate, LogicNode *node) {
 
 // Analyze logic node
 void logicTypeCheck(TypeCheckState *pstate, LogicNode *node) {
-    if (0 == iexpTypeCheckExpect(pstate, (INode**)&boolType, &node->lexp))
+    if (0 == iexpTypeCheckCoerce(pstate, (INode*)boolType, &node->lexp))
         errorMsgNode(node->lexp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
-    if (0 == iexpTypeCheckExpect(pstate, (INode**)&boolType, &node->rexp))
+    if (0 == iexpTypeCheckCoerce(pstate, (INode*)boolType, &node->rexp))
         errorMsgNode(node->rexp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
 }

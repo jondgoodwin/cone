@@ -158,8 +158,6 @@ enum NodeTags {
 
 #define FlagSuffix    0x0001        // Borrow: part of a borrow chain
 
-#define IfHasElse     0x0001        // IfNode: This node has an 'else' clause
-
 // Flags used across all types
 #define MoveType           0x0001  // Type's values impose move semantics (vs. copy)
 #define ThreadBound        0x0002  // Type's value copies must stay in the same thread (vs. sendable)

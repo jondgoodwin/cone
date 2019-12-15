@@ -117,10 +117,12 @@ void ifExhaustCheck(IfNode *ifnode, CastNode *condition) {
 // Type check the if statement node
 // - Every conditional expression must be a bool
 // - else can only be last
-// Note: vtype is set to something other than unknownType if all branches have the same type
-// If they are different, bidirectional type inference will resolve this later
+// All branches must resolve to either the expected type or the same inferred supertype
+// Coercion is performed on branches as needed to accomplish this, or errors result
 void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
-    INode *sametype = NULL;
+    int hasElse = 0;
+    int match = EqMatch;
+    INode *maybeType = unknownType;
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
@@ -132,47 +134,60 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
             ifExhaustCheck(ifnode, (CastNode*)*nodesp);
 
         if (*nodesp != elseCond) {
-            if (0 == iexpTypeExpect((INode**)&boolType, nodesp))
+            if (0 == iexpCoerce((INode*)boolType, nodesp))
                 errorMsgNode(*nodesp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
         }
         else {
-            ifnode->flags |= IfHasElse;
+            hasElse = 1;
             if (cnt > 2) {
                 errorMsgNode(*(nodesp + 1), ErrorInvType, "match on everything should be last.");
             }
         }
 
+        // Validate the node performed when previous condition is true
         ++nodesp; --cnt;
-        inodeTypeCheckAny(pstate, nodesp);
-        iexpFindSameType(&sametype, *nodesp);
+        if (iexpTypeCheckCoerce(pstate, expectType, nodesp) && isExpNode(*nodesp)) {
+            switch (iexpMultiInfer(expectType, &maybeType, nodesp)) {
+            case NoMatch:
+                match = NoMatch;
+                break;
+            case CoerceMatch:
+                if (match != NoMatch)
+                    match = CoerceMatch;
+                break;
+            default:
+                break;
+            }
+        }
+        else
+            match = NoMatch;
     }
 
-    // Remember consistently-found type, so long as if-block included an 'else' clause
-    // Without an 'else' clause, it won't have returned a value on every path
-    if (ifnode->flags & IfHasElse)
-        ifnode->vtype = sametype;
-}
-
-// Bidirectional type inference
-void ifBiTypeInfer(INode **totypep, IfNode *ifnode) {
+    if (expectType == noCareType)
+        return;
 
     // All paths must return a typed value. Absence of an 'else' clause makes that impossible
-    if (!(ifnode->flags & IfHasElse)) {
+    if (!hasElse) {
         errorMsgNode((INode*)ifnode, ErrorInvType, "if requires an 'else' clause (or exhaustive matches) to return a value");
         return;
     }
 
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodesFor(ifnode->condblk, cnt, nodesp)) {
-
-        ++nodesp; --cnt; // We don't need to look at conditionals, just blocks
-
-        // Validate that all branches have matching types
-        if (!iexpTypeExpect(totypep, nodesp))
-            errorMsgNode(*nodesp, ErrorInvType, "expression type does not match expected type");
+    // When expectType specified, all branches have been coerced (or not w/ errors)
+    if (expectType != unknownType) {
+        ifnode->vtype = expectType;
+        return;
     }
-    ifnode->vtype = *totypep;
+
+    // If expected type is unknown, set the inferred type
+    ifnode->vtype = maybeType;
+
+    //  If coercion is needed for some blocks, perform them as needed
+    if (match == CoerceMatch) {
+        for (nodesFor(ifnode->condblk, cnt, nodesp)) {
+            ++nodesp; --cnt;
+            iexpCoerce(maybeType, nodesp);
+        }
+    }
 }
 
 // Perform data flow analysis on an if expression

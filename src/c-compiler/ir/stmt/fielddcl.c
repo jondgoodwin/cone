@@ -72,8 +72,10 @@ void fieldDclTypeCheck(TypeCheckState *pstate, FieldDclNode *name) {
         if (!litIsLiteral(name->value))
             errorMsgNode(name->value, ErrorNotLit, "Field default must be a literal value.");
         // Otherwise, verify that declared type and initial value type matches
-        else if (!iexpTypeCheckExpect(pstate, &name->vtype, &name->value))
+        else if (!iexpTypeCheckCoerce(pstate, name->vtype, &name->value))
             errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
+        else if (name->vtype == unknownType)
+            name->vtype = ((IExpNode *)name->value)->vtype;
     }
 
     // Fields cannot hold a void or opaque struct value

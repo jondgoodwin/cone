@@ -55,12 +55,9 @@ void breakTypeCheck(TypeCheckState *pstate, BreakNode *node) {
         return;
     }
 
-    if (node->exp != noValue && iexpTypeCheckAny(pstate, &node->exp) == 0)
-        return;
-
     // Register the break with its specified loop
-    // Note:  we don't do any type checking of the break to the loop
-    // That is done later by the loop during bidirectional type inference
+    // Note:  we don't do any type checking of the break expression to the loop
+    // That is done later by the loop
     LoopNode *loopnode = breakFindLoopNode(pstate, node->life);
     if (loopnode) {
         nodesAdd(&loopnode->breaks, (INode*)node);

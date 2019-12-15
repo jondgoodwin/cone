@@ -62,7 +62,7 @@ LLVMValueRef genlLoop(GenState *gen, LoopNode *loopnode) {
     LLVMPositionBuilderAtEnd(gen->builder, loopend);
 
     --gen->loopstackcnt;
-    if (loopnode->vtype->tag != VoidTag) {
+    if (loopnode->vtype->tag != UnknownTag) {
         LLVMValueRef phi = LLVMBuildPhi(gen->builder, genlType(gen, loopnode->vtype), "loopval");
         LLVMAddIncoming(phi, loopstate->loopPhis, loopstate->loopBlks, loopstate->loopPhiCnt);
         return phi;

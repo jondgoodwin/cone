@@ -106,8 +106,10 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
     // Type check the initialization value
     else {
         // Verify that declared type and initial value type match
-        if (!iexpTypeCheckExpect(pstate, &name->vtype, &name->value))
+        if (!iexpTypeCheckCoerce(pstate, name->vtype, &name->value))
             errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
+        else if (name->vtype == unknownType)
+            name->vtype = ((IExpNode *)name->value)->vtype;
         // Global variables and function parameters require literal initializers
         if (name->scope <= 1 && !litIsLiteral(name->value))
             errorMsgNode(name->value, ErrorNotLit, "Variable may only be initialized with a literal value.");

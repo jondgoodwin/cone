@@ -29,9 +29,6 @@ void loopNameRes(NameResState *pstate, LoopNode *node);
 // Type check the while block
 void loopTypeCheck(TypeCheckState *pstate, LoopNode *wnode, INode *expectType);
 
-// Bidirectional type inference
-void loopBiTypeInfer(INode **totypep, LoopNode *loopnode);
-
 // Perform data flow analysis on an while statement
 void loopFlow(FlowState *fstate, LoopNode **nodep);
 
