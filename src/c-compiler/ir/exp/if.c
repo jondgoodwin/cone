@@ -146,7 +146,14 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
 
         // Validate the node performed when previous condition is true
         ++nodesp; --cnt;
-        if (iexpTypeCheckCoerce(pstate, expectType, nodesp) && isExpNode(*nodesp)) {
+        if (!iexpTypeCheckCoerce(pstate, expectType, nodesp)) {
+            errorMsgNode(*nodesp, ErrorInvType, "Expression does not match expected type.");
+            match = NoMatch;
+        }
+        else if (!isExpNode(*nodesp)) {
+            match = NoMatch;
+        }
+        else {
             switch (iexpMultiInfer(expectType, &maybeType, nodesp)) {
             case NoMatch:
                 match = NoMatch;
@@ -159,8 +166,6 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
                 break;
             }
         }
-        else
-            match = NoMatch;
     }
 
     if (expectType == noCareType)

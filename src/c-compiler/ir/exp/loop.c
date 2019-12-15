@@ -90,7 +90,14 @@ void loopTypeCheck(TypeCheckState *pstate, LoopNode *node, INode *expectType) {
             match = NoMatch;
             continue;
         }
-        if (iexpTypeCheckCoerce(pstate, expectType, breakexp) && isExpNode(*breakexp)) {
+        if (!iexpTypeCheckCoerce(pstate, expectType, breakexp)) {
+            errorMsgNode(*breakexp, ErrorInvType, "Expression does not match expected type.");
+            match = NoMatch;
+        }
+        else if (!isExpNode(*breakexp)) {
+            match = NoMatch;
+        }
+        else {
             switch (iexpMultiInfer(expectType, &maybeType, breakexp)) {
             case NoMatch:
                 match = NoMatch;
@@ -103,9 +110,6 @@ void loopTypeCheck(TypeCheckState *pstate, LoopNode *node, INode *expectType) {
                 break;
             }
         }
-        else
-            match = NoMatch;
-
     }
 
     if (expectType == noCareType)
