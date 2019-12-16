@@ -410,3 +410,16 @@ int structRefMatches(StructNode *to, StructNode *from) {
     }
     return NoMatch;
 }
+
+// Return a type that is the supertype of both type nodes, or NULL if none found
+INode *structFindSuper(INode *type1, INode *type2) {
+    StructNode *typ1 = (StructNode *)itypeGetTypeDcl(type1);
+    StructNode *typ2 = (StructNode *)itypeGetTypeDcl(type2);
+
+    // The only supertype supported with structs is they both use the same, same-sized base trait
+    if (typ1->basetrait && typ2->basetrait 
+        && structGetBaseTrait((StructNode*)itypeGetTypeDcl(typ1->basetrait)) == structGetBaseTrait((StructNode*)itypeGetTypeDcl(typ2->basetrait))
+        && (typ1->flags & SameSize))
+        return typ1->basetrait;
+    return NULL;
+}

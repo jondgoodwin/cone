@@ -161,6 +161,10 @@ INode *itypeFindSuper(INode *type1, INode *type2) {
     case IntNbrTag:
     case FloatNbrTag:
         return nbrFindSuper(type1, type2);
+
+    case StructTag:
+        return structFindSuper(type1, type2);
+
     default:
         return NULL;
     }

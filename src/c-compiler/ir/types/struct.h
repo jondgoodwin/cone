@@ -79,4 +79,7 @@ int structMatches(StructNode *to, StructNode *from);
 // because matching on size is not necessary
 int structRefMatches(StructNode *to, StructNode *from);
 
+// Return a type that is the supertype of both type nodes, or NULL if none found
+INode *structFindSuper(INode *type1, INode *type2);
+
 #endif
