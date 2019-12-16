@@ -514,7 +514,7 @@ INode *parseAndLogic(ParseState *parse) {
 }
 
 // Parse 'or' logical operator
-INode *parseSimpleExpr(ParseState *parse) {
+INode *parseOrExpr(ParseState *parse) {
     INode *lhnode = parseAndLogic(parse);
     while (lexIsToken(OrToken)) {
         LogicNode *node = newLogicNode(OrLogicTag);
@@ -524,6 +524,27 @@ INode *parseSimpleExpr(ParseState *parse) {
         lhnode = (INode*)node;
     }
     return lhnode;
+}
+
+// This parses any kind of expression, including blocks, assignment or tuple
+INode *parseSimpleExpr(ParseState *parse) {
+    switch (lex->toktype) {
+    case IfToken:
+        return parseIf(parse);
+    case MatchToken:
+        return parseMatch(parse);
+    case LoopToken:
+        return parseLoop(parse, NULL);
+    case LifetimeToken:
+        return parseLifetime(parse, 0);
+    case DoToken:
+        lexNextToken();
+        return parseBlock(parse);
+    case LCurlyToken:
+        return parseBlock(parse);
+    default:
+        return parseOrExpr(parse);
+    }
 }
 
 // Parse a comma-separated expression tuple
@@ -622,21 +643,5 @@ INode *parseList(ParseState *parse, INode *typenode) {
 
 // This parses any kind of expression, including blocks, assignment or tuple
 INode *parseAnyExpr(ParseState *parse) {
-    switch (lex->toktype) {
-    case IfToken:
-        return parseIf(parse);
-    case MatchToken:
-        return parseMatch(parse);
-    case LoopToken:
-        return parseLoop(parse, NULL);
-    case LifetimeToken:
-        return parseLifetime(parse, 0);
-    case DoToken:
-        lexNextToken();
-        return parseBlock(parse);
-    case LCurlyToken:
-        return parseBlock(parse);
-    default:
-        return parseAssign(parse);
-    }
+    return parseAssign(parse);
 }
