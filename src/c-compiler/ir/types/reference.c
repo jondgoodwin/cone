@@ -179,3 +179,19 @@ int refvirtMatches(RefNode *to, RefNode *from) {
         return NoMatch;
     }
 }
+
+// Return a type that is the supertype of both type nodes, or NULL if none found
+INode *refFindSuper(INode *type1, INode *type2) {
+    RefNode *typ1 = (RefNode *)itypeGetTypeDcl(type1);
+    RefNode *typ2 = (RefNode *)itypeGetTypeDcl(type2);
+
+    if (itypeGetTypeDcl(typ1->region) != itypeGetTypeDcl(typ2->region)
+        || itypeGetTypeDcl(typ1->perm) != itypeGetTypeDcl(typ2->perm))
+        return NULL;
+
+    INode *pvtype = structRefFindSuper(typ1->pvtype, typ2->pvtype);
+    if (pvtype == NULL)
+        return NULL;
+
+    return (INode*)newRefNodeFull(typ1->region, typ1->perm, pvtype);
+}

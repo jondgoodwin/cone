@@ -165,6 +165,10 @@ INode *itypeFindSuper(INode *type1, INode *type2) {
     case StructTag:
         return structFindSuper(type1, type2);
 
+    case RefTag:
+    case VirtRefTag:
+        return refFindSuper(type1, type2);
+
     default:
         return NULL;
     }
