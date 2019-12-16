@@ -49,6 +49,9 @@ int itypeIsSame(INode *node1, INode *node2);
 // 2+ - requires increasingly lossy conversion/coercion
 int itypeMatches(INode *totype, INode *fromtype);
 
+// Return a type that is the supertype of both type nodes, or NULL if none found
+INode *itypeFindSuper(INode *type1, INode *type2);
+
 // Add type mangle info to buffer
 char *itypeMangle(char *bufp, INode *vtype);
 

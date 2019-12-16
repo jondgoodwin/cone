@@ -147,6 +147,25 @@ int itypeMatches(INode *totype, INode *fromtype) {
     }
 }
 
+// Return a type that is the supertype of both type nodes, or NULL if none found
+INode *itypeFindSuper(INode *type1, INode *type2) {
+    INode *typ1 = itypeGetTypeDcl(type1);
+    INode *typ2 = itypeGetTypeDcl(type2);
+
+    if (typ1->tag != typ2->tag)
+        return NULL;
+    if (itypeIsSame(typ1, typ2))
+        return type1;
+    switch (typ1->tag) {
+    case UintNbrTag:
+    case IntNbrTag:
+    case FloatNbrTag:
+        return nbrFindSuper(type1, type2);
+    default:
+        return NULL;
+    }
+}
+
 // Add type mangle info to buffer
 char *itypeMangle(char *bufp, INode *vtype) {
     switch (vtype->tag) {

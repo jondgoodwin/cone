@@ -120,6 +120,12 @@ int iexpMultiInfer(INode *expectType, INode **maybeType, INode **from) {
         else {
             if (itypeIsSame(*maybeType, fromType))
                 return EqMatch;
+            // Try to find some supertype exists between the two types
+            INode *superType = itypeFindSuper(*maybeType, fromType);
+            if (superType) {
+                *maybeType = superType;
+                return CoerceMatch;
+            }
             else {
                 errorMsgNode(*from, ErrorInvType, "Branch's expression type inconsistent with other branches.");
                 return NoMatch;

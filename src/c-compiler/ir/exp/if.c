@@ -190,7 +190,10 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
     if (match == CoerceMatch) {
         for (nodesFor(ifnode->condblk, cnt, nodesp)) {
             ++nodesp; --cnt;
-            iexpCoerce(maybeType, nodesp);
+            // Since generation requires this node to be a block,
+            // perform coercion on the last statement
+            BlockNode *blk = (BlockNode *)*nodesp;
+            iexpCoerce(maybeType, &nodesLast(blk->stmts));
         }
     }
 }

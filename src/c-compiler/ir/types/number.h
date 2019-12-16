@@ -17,4 +17,7 @@ typedef struct NbrNode {
 void nbrTypePrint(NbrNode *node);
 int isNbr(INode *node);
 
+// Return a type that is the supertype of both type nodes, or NULL if none found
+INode *nbrFindSuper(INode *type1, INode *type2);
+
 #endif
