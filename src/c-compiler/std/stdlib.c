@@ -98,6 +98,7 @@ void stdOption() {
     optionName = nametblFind("Option", 6);
     Name *TName = nametblFind("T", 1);
     FieldDclNode *tag = newFieldDclNode(anonName, (INode*)immPerm);
+    tag->flags |= FlagMethFld;
     tag->vtype = (INode*)newEnumNode();
     StructNode *option = newStructNode(optionName);
     option->flags |= TraitType | SameSize;
@@ -115,6 +116,7 @@ void stdOption() {
     tnameuse->tag = GenVarUseTag;
     tnameuse->dclnode = (INode *)tparm;
     FieldDclNode *fld = newFieldDclNode(nametblFind("some",4), (INode*)immPerm);
+    fld->flags |= FlagMethFld;
     fld->vtype = (INode*)tnameuse;
     tnameuse = newNameUseNode(TName);
     tnameuse->tag = GenVarUseTag;
