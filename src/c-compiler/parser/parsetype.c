@@ -435,9 +435,20 @@ TypedefNode *parseTypedef(ParseState *parse) {
     return newnode;
 }
 
+// Parse initial '?' as sugar for Option type
+INode *parseOption(ParseState *parse) {
+    NameUseNode *option = newNameUseNode(optionName);
+    FnCallNode *opttype = newFnCallNode((INode*)option, 1);
+    lexNextToken();
+    nodesAdd(&opttype->args, parseVtype(parse));
+    return (INode*)opttype;
+}
+
 // Parse a value type signature. Return NULL if none found.
 INode* parseVtype(ParseState *parse) {
     switch (lex->toktype) {
+    case QuesToken:
+        return parseOption(parse);
     case AmperToken:
         return parseRefType(parse);
     case StarToken:

@@ -54,6 +54,8 @@ Name *parensName;   // "()"
 Name *indexName;    // "[]"
 Name *refIndexName; // "&[]"
 
+Name *optionName;   // "Option"
+
 // Unique (unclonable) nodes representing the absence of value or type
 INode *unknownType;   // Unknown/unspecified type
 INode *noCareType;    // When the receiver does not care what type is returned

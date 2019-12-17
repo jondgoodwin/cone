@@ -385,12 +385,13 @@ int structMatches(StructNode *to, StructNode *from) {
     // Only matches if we coerce to a same-sized, nominally declared base trait
     if (!(to->flags & TraitType) || !(to->flags & SameSize))
         return NoMatch;
-    StructNode *base = (StructNode*)itypeGetTypeDcl(from->basetrait);
-    while (base) {
+    StructNode *super = from;
+    while (super->basetrait) {
+        StructNode *base = (StructNode*)itypeGetTypeDcl(from->basetrait);
         // If it is a valid supertype trait, indicate that it requires coercion
         if (to == base)
             return CoerceMatch;
-        base = (StructNode*)itypeGetTypeDcl(base->basetrait);
+        super = base;
     }
     return NoMatch;
 }

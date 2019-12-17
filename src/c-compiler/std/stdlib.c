@@ -95,7 +95,7 @@ void stdAllocInit() {
 // Set up the Option types
 void stdOption() {
     // build: enumtrait Option[T] {_ enum}
-    Name *optionName = nametblFind("Option", 6);
+    optionName = nametblFind("Option", 6);
     Name *TName = nametblFind("T", 1);
     FieldDclNode *tag = newFieldDclNode(anonName, (INode*)immPerm);
     tag->vtype = (INode*)newEnumNode();
