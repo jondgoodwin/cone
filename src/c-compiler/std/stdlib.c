@@ -116,6 +116,9 @@ void stdOption() {
     tnameuse->dclnode = (INode *)tparm;
     FieldDclNode *fld = newFieldDclNode(nametblFind("some",4), (INode*)immPerm);
     fld->vtype = (INode*)tnameuse;
+    tnameuse = newNameUseNode(TName);
+    tnameuse->tag = GenVarUseTag;
+    tnameuse->dclnode = (INode *)tparm;
     NameUseNode *basename = newNameUseNode(optionName);
     basename->tag = MacroNameTag;
     basename->dclnode = (INode*)optgen;
