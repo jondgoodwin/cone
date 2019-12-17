@@ -535,6 +535,10 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     // Regular reference
     case RefTag: {
         INode *objdereftype = itypeGetTypeDcl(((RefNode *)objtype)->pvtype);
+        // Fill in empty methfld with '()', '[]' or '&[]' based on parser flags
+        if (node->methfld == NULL)
+            node->methfld = newNameUseNode(
+                node->flags & FlagIndex ? (node->flags & FlagBorrow ? refIndexName : indexName) : parensName);
         if ((node->flags & FlagIndex) && objdereftype->tag == ArrayTag)
             fnCallArrIndex(node);
         else if (node->methfld) {
