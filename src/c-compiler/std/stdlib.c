@@ -92,6 +92,67 @@ void stdAllocInit() {
     rcRegion = newAllocNodeStr("rc");
 }
 
+// Set up the Option types
+void stdOption() {
+    // build: enumtrait Option[T] {_ enum}
+    Name *optionName = nametblFind("Option", 6);
+    Name *TName = nametblFind("T", 1);
+    FieldDclNode *tag = newFieldDclNode(anonName, (INode*)immPerm);
+    tag->vtype = (INode*)newEnumNode();
+    StructNode *option = newStructNode(optionName);
+    option->flags |= TraitType | SameSize;
+    nodelistAdd(&option->fields, (INode*)tag);
+    GenVarDclNode *tparm = newGVarDclNode(TName);
+    GenericNode *optgen = newGenericNode(optionName);
+    optgen->flags |= GenericMemoize;
+    nodesAdd(&optgen->parms, (INode*)tparm);
+    optgen->body = (INode*)option;
+    optionName->node = (INode*)optgen;
+
+    // build: struct Some[T] : Option[T] {some T}
+    tparm = newGVarDclNode(TName);
+    NameUseNode *tnameuse = newNameUseNode(TName);
+    tnameuse->tag = GenVarUseTag;
+    tnameuse->dclnode = (INode *)tparm;
+    FieldDclNode *fld = newFieldDclNode(nametblFind("some",4), (INode*)immPerm);
+    fld->vtype = (INode*)tnameuse;
+    NameUseNode *basename = newNameUseNode(optionName);
+    basename->tag = MacroNameTag;
+    basename->dclnode = (INode*)optgen;
+    FnCallNode *basegen = newFnCallNode((INode*)basename, 1);
+    basegen->flags = FlagIndex;
+    nodesAdd(&basegen->args, (INode*)tnameuse);
+    Name *someName = nametblFind("Some", 4);
+    StructNode *some = newStructNode(someName);
+    some->basetrait = (INode*)basegen;
+    nodelistAdd(&some->fields, (INode*)fld);
+    GenericNode *somegen = newGenericNode(optionName);
+    somegen->flags |= GenericMemoize;
+    nodesAdd(&somegen->parms, (INode*)tparm);
+    somegen->body = (INode*)some;
+    someName->node = (INode*)somegen;
+
+    // build: struct None[T] : Option[T] {}
+    tparm = newGVarDclNode(TName);
+    tnameuse = newNameUseNode(TName);
+    tnameuse->tag = GenVarUseTag;
+    tnameuse->dclnode = (INode *)tparm;
+    basename = newNameUseNode(optionName);
+    basename->tag = MacroNameTag;
+    basename->dclnode = (INode*)optgen;
+    basegen = newFnCallNode((INode*)basename, 1);
+    basegen->flags = FlagIndex;
+    nodesAdd(&basegen->args, (INode*)tnameuse);
+    Name *noneName = nametblFind("None", 4);
+    StructNode *none = newStructNode(noneName);
+    none->basetrait = (INode*)basegen;
+    GenericNode *nonegen = newGenericNode(optionName);
+    nonegen->flags |= GenericMemoize;
+    nodesAdd(&nonegen->parms, (INode*)tparm);
+    nonegen->body = (INode*)none;
+    noneName->node = (INode*)nonegen;
+}
+
 // Set up the standard library, whose names are always shared by all modules
 void stdlibInit(int ptrsize) {
     lexInject("std", "");
@@ -155,4 +216,5 @@ void stdlibInit(int ptrsize) {
     stdPermInit();
     stdAllocInit();
     stdNbrInit(ptrsize);
+    stdOption();
 }
