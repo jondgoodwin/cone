@@ -33,8 +33,11 @@ typedef struct NullNode {
 
 ULitNode *newULitNode(uint64_t nbr, INode *type);
 
+// Create a new unsigned literal node (after name resolution)
+ULitNode *newULitNodeTC(uint64_t nbr, INode *type);
+
 // Clone literal
-INode *cloneULitNode(ULitNode *lit);
+INode *cloneULitNode(CloneState *cstate, ULitNode *lit);
 
 void ulitPrint(ULitNode *node);
 
@@ -42,7 +45,7 @@ FLitNode *newFLitNode(double nbr, INode *type);
 void flitPrint(FLitNode *node);
 
 // Clone literal
-INode *cloneFLitNode(FLitNode *lit);
+INode *cloneFLitNode(CloneState *cstate, FLitNode *lit);
 
 // Name resolution of lit node
 void litNameRes(NameResState* pstate, IExpNode *node);

@@ -106,7 +106,7 @@ void typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private) 
 
         // If field represents a discriminated tag, inject struct's discriminant nbr
         if (field->flags & IsTagField) {
-            ULitNode *tagnbrnode = newULitNode(strnode->tagnbr, field->vtype);
+            ULitNode *tagnbrnode = newULitNodeTC(strnode->tagnbr, field->vtype);
             nodesInsert(&arrlit->args, (INode*)tagnbrnode, argi++);
             continue;
         }
@@ -136,7 +136,7 @@ void typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private) 
         else {
             errorMsgNode((INode*)arrlit, ErrorBadArray, "Not enough values specified on type literal");
             while (cnt--)
-                nodesAdd(&arrlit->args, (INode*)newULitNode(0,field->vtype));  // Put in fake nodes to pretend we are ok
+                nodesAdd(&arrlit->args, (INode*)newULitNodeTC(0,field->vtype));  // Put in fake nodes to pretend we are ok
             return;
         }
         ++argi;
@@ -160,8 +160,9 @@ void typeLitStructCheck(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *
     for (nodelistFor(&strnode->fields, cnt, nodesp)) {
         FieldDclNode *field = (FieldDclNode *)*nodesp;
         INode **litval = &nodesGet(arrlit->args, argi);
-        if (!iexpSameType(*nodesp, litval))
+        if (!iexpSameType(*nodesp, litval)) {
             errorMsgNode((INode*)*litval, ErrorBadArray, "Literal value's type does not match expected field's type");
+        }
         ++argi;
     }
 }

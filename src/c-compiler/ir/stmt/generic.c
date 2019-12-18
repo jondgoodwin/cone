@@ -169,18 +169,19 @@ int genericFnInferVars(GenericNode *genericnode, FnCallNode **nodep) {
     INode **parmp = &nodesGet(fnsig->parms, 0);
     for (nodesFor(node->args, cnt, argsp)) {
         INode *parmtype = ((VarDclNode *)(*parmp))->vtype;
+        INode *argtype = ((IExpNode *)*argsp)->vtype;
         // If type of expected parm is a generic variable, capture type of corresponding argument
         if (parmtype->tag == GenVarUseTag) {
             INode **genvarp;
             uint32_t genvarcnt;
-            INode **genargp = &nodesGet(&gencall->args, 0);
+            INode **genargp = &nodesGet(gencall->args, 0);
             for (nodesFor(genericnode->parms, genvarcnt, genvarp)) {
                 Name *genvarname = ((GenVarDclNode *)(*genvarp))->namesym;
                 // Found parameter with corresponding name? Capture/check type
                 if (genvarname == ((NameUseNode*)parmtype)->namesym) {
                     if (*genargp == NULL)
-                        *genargp = parmtype;
-                    else if (!itypeIsSame(*genargp, parmtype)) {
+                        *genargp = argtype;
+                    else if (!itypeIsSame(*genargp, argtype)) {
                         errorMsgNode(*argsp, ErrorInvType, "Inconsistent type for generic function");
                         badargs = 1;
                     }
@@ -207,14 +208,18 @@ int genericFnInferVars(GenericNode *genericnode, FnCallNode **nodep) {
 
 // Instantiate a generic using passed arguments
 void genericCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
+    FnCallNode **orignodep = nodep;
     GenericNode *genericnode = (GenericNode*)((NameUseNode*)(*nodep)->objfn)->dclnode;
     int isGeneric = genericnode->flags & GenericMemoize; // vs. macro
 
     // If first argument is an expression, assume we need to infer generic variables
-    if (isGeneric && (*nodep)->args->used > 0 && isExpNode(nodesGet(&(*nodep)->args, 0))) {
-        if (genericnode->body->tag == FnDclTag)
+    if (isGeneric && (*nodep)->args->used > 0 && isExpNode(nodesGet((*nodep)->args, 0))) {
+        if (genericnode->body->tag == FnDclTag) {
             if (genericFnInferVars(genericnode, nodep) == 0)
                 return;
+            nodep = (FnCallNode **)&(*nodep)->objfn;
+            genericnode = (GenericNode*)((NameUseNode*)(*nodep)->objfn)->dclnode;
+        }
     }
 
     uint32_t expected = genericnode->parms ? genericnode->parms->used : 0;
@@ -234,6 +239,6 @@ void genericCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     }
 
     // Now type check the instantiated nodes
-    inodeTypeCheckAny(pstate, (INode **)nodep);
+    inodeTypeCheckAny(pstate, (INode **)orignodep);
 }
 

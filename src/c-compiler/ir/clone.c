@@ -59,9 +59,9 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     case VTupleTag:
         node = cloneVTupleNode(cstate, (VTupleNode *)nodep); break;
     case ULitTag:
-        node = cloneULitNode((ULitNode *)nodep); break;
+        node = cloneULitNode(cstate, (ULitNode *)nodep); break;
     case FLitTag:
-        node = cloneFLitNode((FLitNode *)nodep); break;
+        node = cloneFLitNode(cstate, (FLitNode *)nodep); break;
     case StringLitTag:
         node = cloneSLitNode((SLitNode *)nodep); break;
 
@@ -92,6 +92,10 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         node = cloneRefNode(cstate, (RefNode *)nodep); break;
     case LifetimeTag:
         node = cloneLifetimeDclNode(cstate, (LifetimeNode *)nodep); break;
+    case UintNbrTag:
+    case IntNbrTag:
+    case FloatNbrTag:
+        node = cloneNbrNode(cstate, (NbrNode *)nodep);  break; // Don't clone for now
 
     case GenVarUseTag:
         node = cloneNode(cstate, ((GenVarDclNode*)nodep)->namesym->node);

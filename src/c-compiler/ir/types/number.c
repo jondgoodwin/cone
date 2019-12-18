@@ -7,6 +7,13 @@
 
 #include "../ir.h"
 
+// Clone number node
+INode *cloneNbrNode(CloneState *cstate, NbrNode *node) {
+    NbrNode *newnode = memAllocBlk(sizeof(NbrNode));
+    memcpy(newnode, node, sizeof(NbrNode));
+    return (INode *)newnode;
+}
+
 // Serialize a numeric literal node
 void nbrTypePrint(NbrNode *node) {
     if (node == i8Type)

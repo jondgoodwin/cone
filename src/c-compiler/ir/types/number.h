@@ -14,6 +14,9 @@ typedef struct NbrNode {
     unsigned char bits;    // e.g., int32 uses 32 bits
 } NbrNode;
 
+// Clone number node
+INode *cloneNbrNode(CloneState *cstate, NbrNode *node);
+
 void nbrTypePrint(NbrNode *node);
 int isNbr(INode *node);
 

@@ -10,17 +10,31 @@
 // Create a new unsigned literal node
 ULitNode *newULitNode(uint64_t nbr, INode *type) {
     ULitNode *lit;
+    NameUseNode *typename = newNameUseNode(((NbrNode*)type)->namesym);
     newNode(lit, ULitNode, ULitTag);
     lit->uintlit = nbr;
-    lit->vtype = type;
+    lit->vtype = (INode*)typename;
+    return lit;
+}
+
+// Create a new unsigned literal node (after name resolution)
+ULitNode *newULitNodeTC(uint64_t nbr, INode *type) {
+    ULitNode *lit;
+    NameUseNode *typename = newNameUseNode(((NbrNode*)type)->namesym);
+    typename->tag = TypeNameUseTag;
+    typename->dclnode = type;
+    newNode(lit, ULitNode, ULitTag);
+    lit->uintlit = nbr;
+    lit->vtype = (INode*)typename;
     return lit;
 }
 
 // Clone literal
-INode *cloneULitNode(ULitNode *lit) {
+INode *cloneULitNode(CloneState *cstate, ULitNode *lit) {
     ULitNode *newlit;
     newlit = memAllocBlk(sizeof(ULitNode));
     memcpy(newlit, lit, sizeof(ULitNode));
+    newlit->vtype = cloneNode(cstate, lit->vtype);
     return (INode *)newlit;
 }
 
@@ -37,17 +51,19 @@ void ulitPrint(ULitNode *lit) {
 // Create a new unsigned literal node
 FLitNode *newFLitNode(double nbr, INode *type) {
     FLitNode *lit;
+    NameUseNode *typename = newNameUseNode(((NbrNode*)type)->namesym);
     newNode(lit, FLitNode, FLitTag);
     lit->floatlit = nbr;
-    lit->vtype = type;
+    lit->vtype = (INode*)typename;
     return lit;
 }
 
 // Clone literal
-INode *cloneFLitNode(FLitNode *lit) {
+INode *cloneFLitNode(CloneState *cstate, FLitNode *lit) {
     FLitNode *newlit;
     newlit = memAllocBlk(sizeof(FLitNode));
     memcpy(newlit, lit, sizeof(FLitNode));
+    newlit->vtype = cloneNode(cstate, lit->vtype);
     return (INode *)newlit;
 }
 

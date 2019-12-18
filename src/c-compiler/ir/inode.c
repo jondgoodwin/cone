@@ -241,6 +241,10 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         logicNameRes(pstate, (LogicNode *)*node); break;
     case NamedValTag:
         namedValNameRes(pstate, (NamedValNode *)*node); break;
+    case ULitTag:
+    case FLitTag:
+    case StringLitTag:
+        litNameRes(pstate, (IExpNode *)*node); break;
 
     case TypedefTag:
         typedefNameRes(pstate, (TypedefNode *)*node); break;
@@ -270,9 +274,6 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         gVarDclNameRes(pstate, (GenVarDclNode *)*node); break;
 
     case MbrNameUseTag:
-    case ULitTag:
-    case FLitTag:
-    case StringLitTag:
     case IntNbrTag: case UintNbrTag: case FloatNbrTag:
     case PermTag:
     case AbsenceTag:

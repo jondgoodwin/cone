@@ -203,6 +203,13 @@ char *itypeMangle(char *bufp, INode *vtype) {
         bufp = itypeMangle(bufp, pvtype->pvtype);
         break;
     }
+    case UintNbrTag:
+        *bufp++ = 'u'; break;
+    case IntNbrTag:
+        *bufp++ = 'i'; break;
+    case FloatNbrTag:
+        *bufp++ = 'f'; break;
+
     default:
         assert(0 && "unknown type for parameter type mangling");
     }
