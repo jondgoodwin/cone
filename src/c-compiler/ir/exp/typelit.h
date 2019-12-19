@@ -15,8 +15,13 @@ void typeLitNameRes(NameResState *pstate, FnCallNode *lit);
 // Reorder the literal's field values to the same order as the type's fields
 // Also prevent the specification of a value for a private field outside the type's methods
 void typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private);
+
+// Type check an array literal
+void typeLitArrayCheck(TypeCheckState *pstate, FnCallNode *arrlit);
+
 // Check the type literal node
 void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *lit);
+
 // Is the type literal actually a literal?
 int typeLitIsLiteral(FnCallNode *node);
 

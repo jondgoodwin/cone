@@ -66,17 +66,19 @@ void typeLitArrayCheck(TypeCheckState *pstate, FnCallNode *arrlit) {
         return;
     }
 
-    // Get element type from first element
-    // Type of array literal is: array of elements whose type matches first value
-    INode *first = nodesGet(arrlit->args, 0);
-    INode *firsttype = ((IExpNode*)first)->vtype;
-    ((ArrayNode*)arrlit->vtype)->elemtype = firsttype;
-
     // Ensure all elements are consistently typed (matching first element's type)
+    INode *matchtype = NULL;
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(arrlit->args, cnt, nodesp)) {
-        if (!itypeIsSame(((IExpNode*)*nodesp)->vtype, firsttype))
+        if (iexpTypeCheckAny(pstate, nodesp) == 0)
+            continue;
+        if (matchtype == NULL) {
+            // Get element type from first element
+            // Type of array literal is: array of elements whose type matches first value
+            ((ArrayNode*)arrlit->vtype)->elemtype = matchtype = ((IExpNode*)*nodesp)->vtype;
+        }
+        else if (!itypeIsSame(((IExpNode*)*nodesp)->vtype, matchtype))
             errorMsgNode((INode*)*nodesp, ErrorBadArray, "Inconsistent type of array literal value");
     }
 }
@@ -182,12 +184,10 @@ void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *arrlit) {
     INode *littype = itypeGetTypeDcl(arrlit->vtype);
     if (!itypeIsConcrete(arrlit->vtype))
         errorMsgNode((INode*)arrlit, ErrorInvType, "Type must be concrete and instantiable.");
-    else if (littype->tag == ArrayTag)
-        typeLitArrayCheck(pstate, arrlit);
     else if (littype->tag == StructTag)
         typeLitStructCheck(pstate, arrlit, (StructNode*)littype);
     else if (littype->tag == IntNbrTag || littype->tag == UintNbrTag || littype->tag == FloatNbrTag)
         typeLitNbrCheck(pstate, arrlit, littype);
-    else
+    else  // ArrayTag is dispatched in a different way and should never get here
         errorMsgNode((INode*)arrlit, ErrorBadArray, "Unknown type literal type for type checking");
 }
