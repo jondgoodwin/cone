@@ -169,17 +169,9 @@ void typeLitStructCheck(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *
     }
 }
 
-// Check the list node (for everything but Arrays, we get here from fncall)
+// Check the list node
+// Note:  We get here from FnCallTypeCheck, which has already checked that all arguments are expressions
 void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *arrlit) {
-    int badargs = 0;
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodesFor(arrlit->args, cnt, nodesp)) {
-        if (iexpTypeCheckAny(pstate, nodesp) == 0)
-            badargs = 1;
-    }
-    if (badargs)
-        return;
 
     INode *littype = itypeGetTypeDcl(arrlit->vtype);
     if (!itypeIsConcrete(arrlit->vtype))

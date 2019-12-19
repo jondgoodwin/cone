@@ -417,12 +417,45 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
 void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
 
-    // Handle macro/generic instantiation, otherwise type check objfn
+    // If we have a true macro, go handle it elsewhere
+    // Note: Macros don't want us to type check arguments until after substitution
+    if (node->objfn->tag == MacroNameTag
+        && !(((GenericNode *)((NameUseNode*)(node->objfn))->dclnode)->flags & GenericMemoize)) {
+        genericCallTypeCheck(pstate, nodep);
+        return;
+    }
+
+    // Type check arguments (methfld is handled later)
+    int usesTypeArgs = 0;
+    INode **argsp;
+    uint32_t cnt;
+    if (node->args) {
+        for (nodesFor(node->args, cnt, argsp)) {
+            inodeTypeCheckAny(pstate, argsp);
+            if (isTypeNode(*argsp))
+                usesTypeArgs = 1;
+        }
+    }
+
+    // Handle generic inference/instantiation, otherwise type check objfn
     if (node->objfn->tag == MacroNameTag) {
         genericCallTypeCheck(pstate, nodep);
         return;
     }
-    inodeTypeCheckAny(pstate, &node->objfn);
+    else
+        inodeTypeCheckAny(pstate, &node->objfn);
+
+    // All arguments must now be expressions
+    int badarg = 0;
+    if (node->args) {
+        for (nodesFor(node->args, cnt, argsp))
+            if (!isExpNode(*argsp)) {
+                errorMsgNode(*argsp, ErrorNotTyped, "Expected a typed expression.");
+                badarg = 1;
+            }
+    }
+    if (badarg)
+        return;
 
     // If objfn is a type, handle it as a type literal
     if (isTypeNode(node->objfn)) {
@@ -439,18 +472,6 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         errorMsgNode(node->objfn, ErrorNotTyped, "Expected a typed expression.");
         return;
     }
-
-    // Type check arguments (but not methfld for now)
-    int badarg = 0;
-    INode **argsp;
-    uint32_t cnt;
-    if (node->args) {
-        for (nodesFor(node->args, cnt, argsp))
-            if (iexpTypeCheckAny(pstate, argsp) == 0)
-                badarg = 1;
-    }
-    if (badarg)
-        return;
 
     // If objfn is the name of a method/field, rewrite to: self.method
     if (node->objfn->tag == VarNameUseTag
