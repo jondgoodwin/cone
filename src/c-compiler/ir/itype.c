@@ -50,10 +50,8 @@ int itypeTypeCheck(TypeCheckState *pstate, INode **node) {
 // Nodes must both be types, but may be name use or declare nodes
 int itypeIsSame(INode *node1, INode *node2) {
 
-    if (node1->tag == TypeNameUseTag)
-        node1 = (INode*)((NameUseNode *)node1)->dclnode;
-    if (node2->tag == TypeNameUseTag)
-        node2 = (INode*)((NameUseNode *)node2)->dclnode;
+    node1 = itypeGetTypeDcl(node1);
+    node2 = itypeGetTypeDcl(node2);
 
     // If they are the same type name, types match
     if (node1 == node2)
@@ -74,6 +72,8 @@ int itypeIsSame(INode *node1, INode *node2) {
         return refEqual((RefNode*)node1, (RefNode*)node2);
     case PtrTag:
         return ptrEqual((PtrNode*)node1, (PtrNode*)node2);
+    case ArrayTag:
+        return arrayEqual((ArrayNode*)node1, (ArrayNode*)node2);
     case VoidTag:
         return 1;
     default:

@@ -193,8 +193,6 @@ int genericCaptureType(FnCallNode *gencall, GenericNode *genericnode, INode *par
 // Infer generic type parameters from the function call arguments
 int genericStructInferVars(TypeCheckState *pstate, GenericNode *genericnode, FnCallNode *node, FnCallNode *gencall) {
     StructNode *strsig = (StructNode*)itypeGetTypeDcl(genericnode->body);
-    // Ensure type has been type-checked, in case any rewriting/semantic analysis was needed
-    itypeTypeCheck(pstate, &gencall->vtype);
 
     // Reorder the literal's arguments to match the type's field order
     if (typeLitStructReorder(node, strsig, (INode*)strsig == pstate->typenode) == 0)

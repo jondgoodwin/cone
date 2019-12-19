@@ -238,7 +238,7 @@ INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
 
 // Are types the same (no coercion)
 int iexpSameType(INode *to, INode **from) {
-    return itypeMatches(iexpGetTypeDcl(to), iexpGetTypeDcl(*from)) == EqMatch;
+    return itypeIsSame(iexpGetTypeDcl(to), iexpGetTypeDcl(*from));
 }
 
 // Retrieve the permission flags for the node

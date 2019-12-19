@@ -100,6 +100,7 @@ int typeLitGetName(Nodes *args, uint32_t argi, Name *name) {
 // Reorder the literal's field values to the same order as the type's fields
 // Also prevent the specification of a value for a private field outside the type's methods
 int typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private) {
+
     int retcode = 1;
     INode **nodesp;
     uint32_t cnt;
