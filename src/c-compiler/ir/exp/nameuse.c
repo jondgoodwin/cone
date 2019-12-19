@@ -141,8 +141,10 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
     // Distinguish whether a name is for a variable/function name vs. type
     if (name->dclnode->tag == VarDclTag || name->dclnode->tag == FnDclTag)
         name->tag = VarNameUseTag;
-    else if (name->dclnode->tag == GenericTag)
+    else if (name->dclnode->tag == MacroDclTag)
         name->tag = MacroNameTag;
+    else if (name->dclnode->tag == GenericDclTag)
+        name->tag = GenericNameTag;
     else if (name->dclnode->tag == GenVarDclTag)
         name->tag = GenVarUseTag;
     else

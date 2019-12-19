@@ -11,14 +11,21 @@
 #include <assert.h>
 
 // Create a new generic declaraction node
-GenericNode *newGenericNode(Name *namesym) {
+GenericNode *newMacroDclNode(Name *namesym) {
     GenericNode *gennode;
-    newNode(gennode, GenericNode, GenericTag);
+    newNode(gennode, GenericNode, MacroDclTag);
     gennode->vtype = NULL;
     gennode->namesym = namesym;
     gennode->parms = newNodes(4);
     gennode->body = NULL;
     gennode->memonodes = newNodes(4);
+    return gennode;
+}
+
+// Create a new generic declaraction node
+GenericNode *newGenericDclNode(Name *namesym) {
+    GenericNode *gennode = newMacroDclNode(namesym);
+    gennode->tag = GenericDclTag;
     return gennode;
 }
 
@@ -147,7 +154,7 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *fncall) {
 // Instantiate a generic using passed arguments
 void genericCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     GenericNode *genericnode = (GenericNode*)((NameUseNode*)(*nodep)->objfn)->dclnode;
-    int isGeneric = genericnode->flags & GenericMemoize; // vs. macro
+    int isGeneric = genericnode->tag == GenericDclTag; // vs. macro
 
     uint32_t expected = genericnode->parms ? genericnode->parms->used : 0;
     if ((*nodep)->args->used != expected) {

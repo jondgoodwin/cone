@@ -169,8 +169,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
 
     // Handle if generic parameters are found
     if (lexIsToken(LBracketToken)) {
-        genericnode = newGenericNode(strnode->namesym);
-        genericnode->flags |= GenericMemoize;
+        genericnode = newGenericDclNode(strnode->namesym);
         parseGenericVars(parse, genericnode);
         genericnode->body = (INode*)strnode;
     }

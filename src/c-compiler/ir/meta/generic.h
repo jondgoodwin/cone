@@ -16,7 +16,11 @@ typedef struct GenericNode {
     Nodes *memonodes;        // Pairs of memoized generic calls and cloned bodies
 } GenericNode;
 
-GenericNode *newGenericNode(Name *namesym);
+// Create a new macro declaraction node
+GenericNode *newMacroDclNode(Name *namesym);
+
+// Create a new generic declaration node
+GenericNode *newGenericDclNode(Name *namesym);
 
 void genericPrint(GenericNode *fn);
 

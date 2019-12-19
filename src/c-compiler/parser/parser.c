@@ -85,8 +85,7 @@ INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags) {
         fnnode->genname = &fnnode->namesym->namestr;
         lexNextToken();
         if (lexIsToken(LBracketToken)) {
-            genericnode = newGenericNode(fnnode->namesym);
-            genericnode->flags |= GenericMemoize;
+            genericnode = newGenericDclNode(fnnode->namesym);
             parseGenericVars(parse, genericnode);
             genericnode->body = (INode*)fnnode;
         }
@@ -200,9 +199,9 @@ GenericNode *parseMacro(ParseState *parse) {
     lexNextToken();
     if (!lexIsToken(IdentToken)) {
         errorMsgLex(ErrorBadTok, "Expected a macro name");
-        return newGenericNode(anonName);
+        return newMacroDclNode(anonName);
     }
-    GenericNode *macro = newGenericNode(lex->val.ident);
+    GenericNode *macro = newMacroDclNode(lex->val.ident);
     lexNextToken();
     if (lexIsToken(LBracketToken)) {
         parseGenericVars(parse, macro);

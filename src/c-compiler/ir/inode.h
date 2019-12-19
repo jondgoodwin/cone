@@ -136,9 +136,11 @@ enum NodeTags {
 
     // Meta group names
     MacroNameTag = MetaGroup,   // Macro name use node
+    GenericNameTag,             // Generic name use node
     GenVarUseTag,               // Generic variable name use
 
-    GenericTag = MetaGroup + NamedNode,     // Generic declaration
+    MacroDclTag = MetaGroup + NamedNode,     // Macro declaration
+    GenericDclTag,              // Generic declaration
     GenVarDclTag,               // Generic variable declaration
 
 };
@@ -175,8 +177,6 @@ enum NodeTags {
 
 #define TypeChecked        0x8000  // Type has been type-checked
 #define TypeChecking       0x4000  // Type is in process of being type-checked
-
-#define GenericMemoize     0x0100  // Generic node memoizes its instances
 
 // Allocate and initialize the INode portion of a new node
 #define newNode(node, nodestruct, nodetype) {\

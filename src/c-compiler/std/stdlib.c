@@ -104,8 +104,7 @@ void stdOption() {
     option->flags |= TraitType | SameSize;
     nodelistAdd(&option->fields, (INode*)tag);
     GenVarDclNode *tparm = newGVarDclNode(TName);
-    GenericNode *optgen = newGenericNode(optionName);
-    optgen->flags |= GenericMemoize;
+    GenericNode *optgen = newGenericDclNode(optionName);
     nodesAdd(&optgen->parms, (INode*)tparm);
     optgen->body = (INode*)option;
     optionName->node = (INode*)optgen;
@@ -122,7 +121,7 @@ void stdOption() {
     tnameuse->tag = GenVarUseTag;
     tnameuse->dclnode = (INode *)tparm;
     NameUseNode *basename = newNameUseNode(optionName);
-    basename->tag = MacroNameTag;
+    basename->tag = GenericNameTag;
     basename->dclnode = (INode*)optgen;
     FnCallNode *basegen = newFnCallNode((INode*)basename, 1);
     basegen->flags = FlagIndex;
@@ -131,8 +130,7 @@ void stdOption() {
     StructNode *some = newStructNode(someName);
     some->basetrait = (INode*)basegen;
     nodelistAdd(&some->fields, (INode*)fld);
-    GenericNode *somegen = newGenericNode(optionName);
-    somegen->flags |= GenericMemoize;
+    GenericNode *somegen = newGenericDclNode(optionName);
     nodesAdd(&somegen->parms, (INode*)tparm);
     somegen->body = (INode*)some;
     someName->node = (INode*)somegen;
@@ -143,7 +141,7 @@ void stdOption() {
     tnameuse->tag = GenVarUseTag;
     tnameuse->dclnode = (INode *)tparm;
     basename = newNameUseNode(optionName);
-    basename->tag = MacroNameTag;
+    basename->tag = GenericNameTag;
     basename->dclnode = (INode*)optgen;
     basegen = newFnCallNode((INode*)basename, 1);
     basegen->flags = FlagIndex;
@@ -151,8 +149,7 @@ void stdOption() {
     Name *noneName = nametblFind("None", 4);
     StructNode *none = newStructNode(noneName);
     none->basetrait = (INode*)basegen;
-    GenericNode *nonegen = newGenericNode(optionName);
-    nonegen->flags |= GenericMemoize;
+    GenericNode *nonegen = newGenericDclNode(optionName);
     nodesAdd(&nonegen->parms, (INode*)tparm);
     nonegen->body = (INode*)none;
     noneName->node = (INode*)nonegen;

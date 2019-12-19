@@ -202,7 +202,7 @@ void genlModule(GenState *gen, ModuleNode *mod) {
             genlGloVarName(gen, (VarDclNode *)nodep);
         else if (nodep->tag == FnDclTag)
             genlGloFnName(gen, (FnDclNode *)nodep);
-        else if (nodep->tag == GenericTag)
+        else if (nodep->tag == GenericDclTag)
             genlGeneric(gen, (GenericNode *)nodep, 0);
     }
 
@@ -222,7 +222,8 @@ void genlModule(GenState *gen, ModuleNode *mod) {
             }
             break;
 
-        case GenericTag:
+        case MacroDclTag:
+        case GenericDclTag:
             genlGeneric(gen, (GenericNode*)nodep, 1);
             break;
 
