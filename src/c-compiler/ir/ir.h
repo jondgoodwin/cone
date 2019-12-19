@@ -74,8 +74,6 @@ typedef struct AllocNode {
 #include "stmt/continue.h"
 #include "stmt/fielddcl.h"
 #include "stmt/fndcl.h"
-#include "stmt/genvardcl.h"
-#include "stmt/generic.h"
 #include "stmt/return.h"
 #include "stmt/intrinsic.h"
 #include "stmt/vardcl.h"
@@ -96,6 +94,9 @@ typedef struct AllocNode {
 #include "exp/logic.h"
 #include "exp/sizeof.h"
 #include "exp/vtuple.h"
+
+#include "meta/genvardcl.h"
+#include "meta/generic.h"
 
 #include "../std/stdlib.h"
 

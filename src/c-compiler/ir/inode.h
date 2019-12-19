@@ -47,6 +47,7 @@ typedef struct INode {
 #define StmtGroup  0x0000   // Statement nodes that return no value
 #define ExpGroup   0x4000   // Nodes that return a typed value
 #define TypeGroup  0x8000   // Nodes that define or refer to a type
+#define MetaGroup  0xC000   // Generic, macro, metaconditional nodes
 #define GroupMask  0xC000
 #define NamedNode  0x2000   // Node that defines a named item (not nameuse)
 #define MethodType 0x1000   // Type that supports methods
@@ -54,6 +55,7 @@ typedef struct INode {
 // Easy checks on the kind of node it is based on high-level flags
 #define isExpNode(node) (((node)->tag & GroupMask) == ExpGroup)
 #define isTypeNode(node) (((node)->tag & GroupMask) == TypeGroup)
+#define isMetaNode(node) (((node)->tag & GroupMask) == MetaGroup)
 #define isNamedNode(node) ((node)->tag & NamedNode)
 #define isMethodType(node) (isTypeNode(node) && ((node)->tag & MethodType))
 
@@ -72,15 +74,11 @@ enum NodeTags {
 
     // Name usage (we do not know what type of name it is until name resolution pass)
     NameUseTag,     // Name use node (pre-name resolution)
-    MacroNameTag,   // Macro name use node
 
     ModuleTag = StmtGroup + NamedNode,        // Module namespace
     FnDclTag,       // Function/method declaration
     VarDclTag,      // Variable declaration (global, local, parm)
     FieldDclTag,    // Field declaration in a struct, etc.
-    GenericTag,     // Generic declaration
-    GenVarDclTag,   // Generic variable declaration
-    GenVarUseTag,   // Generic variable name use
 
     // Expression nodes (having value type - or sometimes nullType)
     VarNameUseTag = ExpGroup,  // Variable or Function name use node  
@@ -135,6 +133,14 @@ enum NodeTags {
     StructTag,      // struct or trait
     PermTag,
     RegionTag,
+
+    // Meta group names
+    MacroNameTag = MetaGroup,   // Macro name use node
+    GenVarUseTag,               // Generic variable name use
+
+    GenericTag = MetaGroup + NamedNode,     // Generic declaration
+    GenVarDclTag,               // Generic variable declaration
+
 };
 
 // *****************

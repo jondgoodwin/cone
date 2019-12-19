@@ -190,7 +190,7 @@ int genericCaptureType(FnCallNode *gencall, GenericNode *genericnode, INode *par
     return 1;
 }
 
-// Infer generic type parameters from the function call arguments
+// Infer generic type parameters from the type literal arguments
 int genericStructInferVars(TypeCheckState *pstate, GenericNode *genericnode, FnCallNode *node, FnCallNode *gencall) {
     StructNode *strsig = (StructNode*)itypeGetTypeDcl(genericnode->body);
 
@@ -209,7 +209,7 @@ int genericStructInferVars(TypeCheckState *pstate, GenericNode *genericnode, FnC
         // If type of expected parm is a generic variable, capture type of corresponding argument
         if (parmtype->tag == GenVarUseTag
             && genericCaptureType(gencall, genericnode, parmtype, argtype) == 0) {
-            errorMsgNode(*argsp, ErrorInvType, "Inconsistent type for generic function");
+            errorMsgNode(*argsp, ErrorInvType, "Inconsistent type for generic type");
             retcode = 0;
         }
         ++parmp;
