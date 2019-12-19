@@ -173,7 +173,7 @@ add_executable(conec
 	src/c-compiler/ir/types/void.c
 
 	src/c-compiler/ir/meta/genvardcl.c
-	src/c-compiler/ir/metaa/generic.c
+	src/c-compiler/ir/meta/generic.c
 
 	src/c-compiler/std/stdlib.c
 	src/c-compiler/std/stdnumber.c
