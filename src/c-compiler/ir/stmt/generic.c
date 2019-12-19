@@ -145,8 +145,9 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *fncall) {
     return (INode *)fnuse;
 }
 
-// For a generic function, create a generic call node whose parameters are inferred from the function call arguments
-int genericFnInferVars(GenericNode *genericnode, FnCallNode **nodep) {
+// Instantiate a generic function node whose type parameters are inferred from the function call arguments
+// We know arguments have been type checked
+int genericFnInferVars(TypeCheckState *pstate, GenericNode *genericnode, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
 
     // Inject empty generic call node
@@ -203,24 +204,16 @@ int genericFnInferVars(GenericNode *genericnode, FnCallNode **nodep) {
         }
     }
 
+    // Now let's instantiate generic "call", substituting instantiated node in objfn
+    genericCallTypeCheck(pstate, (FnCallNode**)&node->objfn);
+
     return 1;
 }
 
 // Instantiate a generic using passed arguments
 void genericCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
-    FnCallNode **orignodep = nodep;
     GenericNode *genericnode = (GenericNode*)((NameUseNode*)(*nodep)->objfn)->dclnode;
     int isGeneric = genericnode->flags & GenericMemoize; // vs. macro
-
-    // If first argument is an expression, assume we need to infer generic variables
-    if (isGeneric && (*nodep)->args->used > 0 && isExpNode(nodesGet((*nodep)->args, 0))) {
-        if (genericnode->body->tag == FnDclTag) {
-            if (genericFnInferVars(genericnode, nodep) == 0)
-                return;
-            nodep = (FnCallNode **)&(*nodep)->objfn;
-            genericnode = (GenericNode*)((NameUseNode*)(*nodep)->objfn)->dclnode;
-        }
-    }
 
     uint32_t expected = genericnode->parms ? genericnode->parms->used : 0;
     if ((*nodep)->args->used != expected) {
@@ -239,6 +232,6 @@ void genericCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     }
 
     // Now type check the instantiated nodes
-    inodeTypeCheckAny(pstate, (INode **)orignodep);
+    inodeTypeCheckAny(pstate, (INode **)nodep);
 }
 

@@ -439,8 +439,24 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 
     // Handle generic inference/instantiation, otherwise type check objfn
     if (node->objfn->tag == MacroNameTag) {
-        genericCallTypeCheck(pstate, nodep);
-        return;
+        GenericNode *genericnode = (GenericNode*)((NameUseNode*)(*nodep)->objfn)->dclnode;
+        if (usesTypeArgs) {
+            // No inference required, just instantiate and we are done.
+            genericCallTypeCheck(pstate, nodep);
+            return;
+        }
+        // We need to infer correct generic from arguments, if we can, then instantiate
+        switch (genericnode->body->tag) {
+        case FnDclTag:
+            if (genericFnInferVars(pstate, genericnode, nodep) == 0)
+                return;
+            break;
+        case StructTag:
+            genericCallTypeCheck(pstate, nodep); 
+            break;
+        default:
+            assert(0 && "Illegal generic type.");
+        }
     }
     else
         inodeTypeCheckAny(pstate, &node->objfn);
