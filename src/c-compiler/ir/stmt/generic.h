@@ -29,10 +29,10 @@ void genericTypeCheck(TypeCheckState *pstate, GenericNode *node);
 // Type check generic name use
 void genericNameTypeCheck(TypeCheckState *pstate, NameUseNode **macro);
 
-// Instantiate a generic function node whose type parameters are inferred from the function call arguments
-int genericFnInferVars(TypeCheckState *pstate, GenericNode *genericnode, FnCallNode **nodep);
-
 // Instantiate a generic using passed arguments
 void genericCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep);
+
+// Instantiate a generic function node whose type parameters are inferred from the function call arguments
+int genericInferVars(TypeCheckState *pstate, FnCallNode **nodep);
 
 #endif

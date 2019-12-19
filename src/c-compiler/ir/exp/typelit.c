@@ -99,7 +99,8 @@ int typeLitGetName(Nodes *args, uint32_t argi, Name *name) {
 
 // Reorder the literal's field values to the same order as the type's fields
 // Also prevent the specification of a value for a private field outside the type's methods
-void typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private) {
+int typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private) {
+    int retcode = 1;
     INode **nodesp;
     uint32_t cnt;
     uint32_t argi = 0;
@@ -124,12 +125,15 @@ void typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private) 
                 else {
                     errorMsgNode((INode*)arrlit, ErrorBadArray, "Cannot find named value matching the field %s", &field->namesym->namestr);
                     ++argi;
+                    retcode = 0;
                     continue;
                 }
             }
             // Don't allow a value to be given for a private field outside of the type's methods
-            if (!private && field->namesym->namestr == '_')
+            if (!private && field->namesym->namestr == '_') {
                 errorMsgNode(*litval, ErrorNotTyped, "Only a method in the type may specify a value for the private field %s.", &field->namesym->namestr);
+                retcode = 0;
+            }
         }
         // Append default value if no value specified
         else if (field->value) {
@@ -139,25 +143,29 @@ void typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private) 
             errorMsgNode((INode*)arrlit, ErrorBadArray, "Not enough values specified on type literal");
             while (cnt--)
                 nodesAdd(&arrlit->args, (INode*)newULitNodeTC(0,field->vtype));  // Put in fake nodes to pretend we are ok
-            return;
+            return 0;
         }
         ++argi;
     }
-    if (argi < arrlit->args->used)
+    if (argi < arrlit->args->used) {
         errorMsgNode((INode*)arrlit, ErrorBadArray, "Too many values specified on type literal");
+        retcode = 0;
+    }
+    return retcode;
 }
 
 // Type check a struct literal
 void typeLitStructCheck(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *strnode) {
-    INode **nodesp;
 
     // Ensure type has been type-checked, in case any rewriting/semantic analysis was needed
     itypeTypeCheck(pstate, &arrlit->vtype);
 
     // Reorder the literal's arguments to match the type's field order
-    typeLitStructReorder(arrlit, strnode, (INode*)strnode == pstate->typenode);
+    if (typeLitStructReorder(arrlit, strnode, (INode*)strnode == pstate->typenode) == 0)
+        return;
 
     uint32_t cnt;
+    INode **nodesp;
     uint32_t argi = 0;
     for (nodelistFor(&strnode->fields, cnt, nodesp)) {
         FieldDclNode *field = (FieldDclNode *)*nodesp;

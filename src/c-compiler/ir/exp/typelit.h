@@ -10,11 +10,13 @@
 
 // Serialize a type literal
 void typeLitPrint(FnCallNode *node);
+
 // Name resolution of the literal node
 void typeLitNameRes(NameResState *pstate, FnCallNode *lit);
+
 // Reorder the literal's field values to the same order as the type's fields
 // Also prevent the specification of a value for a private field outside the type's methods
-void typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private);
+int typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private);
 
 // Type check an array literal
 void typeLitArrayCheck(TypeCheckState *pstate, FnCallNode *arrlit);

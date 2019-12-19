@@ -144,72 +144,6 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *fncall) {
     fnuse->dclnode = instance;
     return (INode *)fnuse;
 }
-
-// Instantiate a generic function node whose type parameters are inferred from the function call arguments
-// We know arguments have been type checked
-int genericFnInferVars(TypeCheckState *pstate, GenericNode *genericnode, FnCallNode **nodep) {
-    FnCallNode *node = *nodep;
-
-    // Inject empty generic call node
-    uint32_t nparms = genericnode->parms->used;
-    FnCallNode *gencall = newFnCallNode((*nodep)->objfn, nparms);
-    node->objfn = (INode*)gencall;
-    while (nparms--)
-        nodesAdd(&gencall->args, (INode*)NULL);
-    
-    FnSigNode *fnsig = (FnSigNode*)itypeGetTypeDcl(((FnDclNode *)genericnode->body)->vtype);
-    if (node->args->used > fnsig->parms->used) {
-        errorMsgNode((INode*)node, ErrorFewArgs, "Too many arguments provided for generic function.");
-        return 0;
-    }
-
-    // Iterate through arguments and expected parms
-    int badargs = 0;
-    INode **argsp;
-    uint32_t cnt;
-    INode **parmp = &nodesGet(fnsig->parms, 0);
-    for (nodesFor(node->args, cnt, argsp)) {
-        INode *parmtype = ((VarDclNode *)(*parmp))->vtype;
-        INode *argtype = ((IExpNode *)*argsp)->vtype;
-        // If type of expected parm is a generic variable, capture type of corresponding argument
-        if (parmtype->tag == GenVarUseTag) {
-            INode **genvarp;
-            uint32_t genvarcnt;
-            INode **genargp = &nodesGet(gencall->args, 0);
-            for (nodesFor(genericnode->parms, genvarcnt, genvarp)) {
-                Name *genvarname = ((GenVarDclNode *)(*genvarp))->namesym;
-                // Found parameter with corresponding name? Capture/check type
-                if (genvarname == ((NameUseNode*)parmtype)->namesym) {
-                    if (*genargp == NULL)
-                        *genargp = argtype;
-                    else if (!itypeIsSame(*genargp, argtype)) {
-                        errorMsgNode(*argsp, ErrorInvType, "Inconsistent type for generic function");
-                        badargs = 1;
-                    }
-                    break;
-                }
-                ++genargp;
-            }
-        }
-        ++parmp;
-    }
-    if (badargs)
-        return 0;
-
-    // Be sure all expected generic parameters were inferred
-    for (nodesFor(gencall->args, cnt, argsp)) {
-        if (*argsp == NULL) {
-            errorMsgNode(*argsp, ErrorInvType, "Could not infer all of generic function's type parameters.");
-            return 0;
-        }
-    }
-
-    // Now let's instantiate generic "call", substituting instantiated node in objfn
-    genericCallTypeCheck(pstate, (FnCallNode**)&node->objfn);
-
-    return 1;
-}
-
 // Instantiate a generic using passed arguments
 void genericCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     GenericNode *genericnode = (GenericNode*)((NameUseNode*)(*nodep)->objfn)->dclnode;
@@ -235,3 +169,124 @@ void genericCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     inodeTypeCheckAny(pstate, (INode **)nodep);
 }
 
+// Inference found an argtype that maps to a generic parmtype
+// Capture it, and return 0 if it does not match what we already thought it was
+int genericCaptureType(FnCallNode *gencall, GenericNode *genericnode, INode *parmtype, INode *argtype) {
+    INode **genvarp;
+    uint32_t genvarcnt;
+    INode **genargp = &nodesGet(gencall->args, 0);
+    for (nodesFor(genericnode->parms, genvarcnt, genvarp)) {
+        Name *genvarname = ((GenVarDclNode *)(*genvarp))->namesym;
+        // Found parameter with corresponding name? Capture/check type
+        if (genvarname == ((NameUseNode*)parmtype)->namesym) {
+            if (*genargp == NULL)
+                *genargp = argtype;
+            else if (!itypeIsSame(*genargp, argtype))
+                return 0;
+            break;
+        }
+        ++genargp;
+    }
+    return 1;
+}
+
+// Infer generic type parameters from the function call arguments
+int genericStructInferVars(TypeCheckState *pstate, GenericNode *genericnode, FnCallNode *node, FnCallNode *gencall) {
+    StructNode *strsig = (StructNode*)itypeGetTypeDcl(genericnode->body);
+    // Ensure type has been type-checked, in case any rewriting/semantic analysis was needed
+    itypeTypeCheck(pstate, &gencall->vtype);
+
+    // Reorder the literal's arguments to match the type's field order
+    if (typeLitStructReorder(node, strsig, (INode*)strsig == pstate->typenode) == 0)
+        return 0;
+
+    // Iterate through arguments and expected parms
+    int retcode = 1;
+    uint32_t cnt;
+    INode **argsp;
+    INode **parmp = &nodelistGet(&strsig->fields, 0);
+    for (nodesFor(node->args, cnt, argsp)) {
+        INode *parmtype = ((VarDclNode *)(*parmp))->vtype;
+        INode *argtype = ((FieldDclNode *)*argsp)->vtype;
+        // If type of expected parm is a generic variable, capture type of corresponding argument
+        if (parmtype->tag == GenVarUseTag
+            && genericCaptureType(gencall, genericnode, parmtype, argtype) == 0) {
+            errorMsgNode(*argsp, ErrorInvType, "Inconsistent type for generic function");
+            retcode = 0;
+        }
+        ++parmp;
+    }
+    return retcode;
+}
+
+// Infer generic type parameters from the function call arguments
+int genericFnInferVars(TypeCheckState *pstate, GenericNode *genericnode, FnCallNode *node, FnCallNode *gencall) {
+    FnSigNode *fnsig = (FnSigNode*)itypeGetTypeDcl(((FnDclNode *)genericnode->body)->vtype);
+    if (node->args->used > fnsig->parms->used) {
+        errorMsgNode((INode*)node, ErrorFewArgs, "Too many arguments provided for generic function.");
+        return 0;
+    }
+
+    // Iterate through arguments and expected parms
+    int retcode = 1;
+    INode **argsp;
+    uint32_t cnt;
+    INode **parmp = &nodesGet(fnsig->parms, 0);
+    for (nodesFor(node->args, cnt, argsp)) {
+        INode *parmtype = ((VarDclNode *)(*parmp))->vtype;
+        INode *argtype = ((IExpNode *)*argsp)->vtype;
+        // If type of expected parm is a generic variable, capture type of corresponding argument
+        if (parmtype->tag == GenVarUseTag
+            && genericCaptureType(gencall, genericnode, parmtype, argtype) == 0) {
+            errorMsgNode(*argsp, ErrorInvType, "Inconsistent type for generic function");
+            retcode = 0;
+        }
+        ++parmp;
+    }
+    return retcode;
+}
+
+// Instantiate a generic function node whose type parameters are inferred from the arguments
+// We know arguments have been type checked
+int genericInferVars(TypeCheckState *pstate, FnCallNode **nodep) {
+    GenericNode *genericnode = (GenericNode*)((NameUseNode*)(*nodep)->objfn)->dclnode;
+    FnCallNode *node = *nodep;
+
+    // Inject empty generic call node
+    uint32_t nparms = genericnode->parms->used;
+    FnCallNode *gencall = newFnCallNode((*nodep)->objfn, nparms);
+    node->objfn = (INode*)gencall;
+    while (nparms--)
+        nodesAdd(&gencall->args, (INode*)NULL);
+
+    // Inference varies depending on the kind of generic
+    switch (genericnode->body->tag) {
+    case FnDclTag:
+        // Infer based on function call arguments
+        if (genericFnInferVars(pstate, genericnode, *nodep, gencall) == 0)
+            return 0;
+        break;
+    case StructTag:
+        // Infer based on type constructor arguments
+        if (genericStructInferVars(pstate, genericnode, *nodep, gencall) == 0)
+            return 0;
+        break;
+    default:
+        assert(0 && "Illegal generic type.");
+    }
+
+    // Be sure all expected generic parameters were inferred
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor(gencall->args, cnt, argsp)) {
+        if (*argsp == NULL) {
+            errorMsgNode((INode*)*nodep, ErrorInvType, "Could not infer all of generic's type parameters.");
+            return 0;
+        }
+    }
+
+    // Now let's instantiate generic "call", substituting instantiated node in objfn
+    genericCallTypeCheck(pstate, (FnCallNode**)&node->objfn);
+
+    return 1;
+}
