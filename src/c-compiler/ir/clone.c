@@ -104,6 +104,7 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
 
     case AbsenceTag:
     case UnknownTag:
+    case BorrowRegTag:
         node = nodep; break; // Don't clone unclonable node
 
     case VoidTag:

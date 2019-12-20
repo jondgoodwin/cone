@@ -174,6 +174,7 @@ enum NodeTags {
 #define TraitType          0x0008  // Is a trait (vs. struct)
 #define SameSize           0x0010  // An enumtrait, where all implementations are padded to same size
 #define HasTagField        0x0020  // A trait/struct has an enumerated field identifying the variant type
+#define NullablePtr        0x0040  // trait/struct has nullable pointer, generating optimized data
 
 #define TypeChecked        0x8000  // Type has been type-checked
 #define TypeChecking       0x4000  // Type is in process of being type-checked

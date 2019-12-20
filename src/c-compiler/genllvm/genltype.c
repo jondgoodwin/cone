@@ -130,9 +130,69 @@ LLVMTypeRef genlStructType(GenState *gen, char *name, StructNode *strnode) {
     return structype;
 }
 
-// Calculate max size and TypeRef for all types derived from this base
-// to ensure they are all the same size
-void genlSameSizeTrait(GenState *gen, StructNode *base) {
+// Do the advanced processing needed on same-size or tagged base traits
+void genlBaseTrait(GenState *gen, StructNode *base) {
+    // Only do it once
+    if (base->llvmtype || base->derived->used == 0)
+        return;
+
+    // Preprocess when base trait has a discriminant/tag field
+    if ((base->flags & HasTagField)) {
+        // Ensure tag field is large enough to handle number of variants
+        if (base->derived->used > 0x100) {
+            INode **nodesp;
+            uint32_t cnt;
+            for (nodelistFor(&base->fields, cnt, nodesp)) {
+                if ((*nodesp)->flags & IsTagField) {
+                    EnumNode *enumnode = (EnumNode *)itypeGetTypeDcl(*nodesp);
+                    if (base->derived->used > 0x1000000)
+                        enumnode->bytes = 4;
+                    else if (base->derived->used > 0x10000)
+                        enumnode->bytes = 3;
+                    else if (base->derived->used > 0x100)
+                        enumnode->bytes = 2;
+                }
+            }
+        }
+
+        // Set optimization flag if we have a nullable pointer variant types
+        if (base->flags & SameSize && base->derived->used == 2) {
+            // Look for 2 variants, one with one field (enum) and one with two
+            StructNode *nonenode = (StructNode*)nodesGet(base->derived, 0);
+            StructNode *somenode = (StructNode*)nodesGet(base->derived, 1);
+            if (nonenode->fields.used == 2 && somenode->fields.used == 1) {
+                StructNode *tempnode = nonenode;
+                nonenode = somenode;
+                somenode = tempnode;
+            }
+            else if (!(nonenode->fields.used == 1 && somenode->fields.used == 2))
+                nonenode = NULL;
+
+            // If some derived node's second field is a pointer, mark trait and derived's
+            // with optimization flag
+            if (nonenode) {
+                FieldDclNode *fld = (FieldDclNode*)nodelistGet(&somenode->fields, 1);
+                INode *fldtype = itypeGetTypeDcl(fld->vtype);
+                if (fldtype->tag == PtrTag || fldtype->tag == RefTag
+                    || fldtype->tag == VirtRefTag || fldtype->tag == ArrayRefTag) {
+
+                    // Yes, we have a nullable pointer, set flags to say so on trait & derived structs
+                    base->flags |= NullablePtr;
+                    INode **nodesp;
+                    uint32_t cnt;
+                    unsigned long long maxsize = 0;
+                    for (nodesFor(base->derived, cnt, nodesp)) {
+                        (*nodesp)->flags |= NullablePtr;
+                    }
+                }
+            }
+        }
+    }
+
+    // When dealing with same-sized structs based on a trait,
+    // prep them to all be the same maxed size.
+    if (!(base->flags & SameSize))
+        return;
 
     // Calculate the largest size of the struct variants
     LLVMTypeRef baseTypeRef;
@@ -242,36 +302,14 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
     case StructTag:
     case RegionTag:
     {
-        // When dealing with a tagged struct, 
-        // ensure tag field is large enough to handle number of variants
         StructNode *strnode = (StructNode *)typ;
-        if (typ->flags & HasTagField) {
+        // Handle base trait preprocessing for sealed variants
+        if ((typ->flags & HasTagField) || (typ->flags & SameSize)) {
             StructNode *base = structGetBaseTrait((StructNode*)typ);
-            if (!base->llvmtype && base->derived->used > 0x100) {
-                INode **nodesp;
-                uint32_t cnt;
-                for (nodelistFor(&base->fields, cnt, nodesp)) {
-                    if ((*nodesp)->flags & IsTagField) {
-                        EnumNode *enumnode = (EnumNode *)itypeGetTypeDcl(*nodesp);
-                        if (base->derived->used > 0x1000000)
-                            enumnode->bytes = 4;
-                        else if (base->derived->used > 0x10000)
-                            enumnode->bytes = 3;
-                        else if (base->derived->used > 0x100)
-                            enumnode->bytes = 2;
-                    }
-                }
-            }
-        }
-        // When dealing with same-sized structs based on a trait,
-        // prep them to all be the same maxed size
-        if (typ->flags & SameSize) {
-            StructNode *base = structGetBaseTrait((StructNode*)typ);
-            if (!base->llvmtype)
-                genlSameSizeTrait(gen, base);
+            genlBaseTrait(gen, base);
 
             // For any arbitrary trait in the inheritance hierarchy, use any arbitrary struct type
-            if (typ->flags & TraitType)
+            if (!base->llvmtype && (typ->flags & TraitType))
                 strnode->llvmtype = base->llvmtype;
         }
 

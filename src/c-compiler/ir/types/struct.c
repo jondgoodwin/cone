@@ -143,6 +143,10 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     INode **nodesp;
     uint32_t cnt;
 
+    // Ensure traits keep a list of derived structs/traits
+    if ((node->flags & TraitType) && node->derived == NULL)
+        node->derived = newNodes(2);
+
     // Handle when a base trait is specified
     if (node->basetrait) {
         if (itypeTypeCheck(pstate, &node->basetrait) == 0)
