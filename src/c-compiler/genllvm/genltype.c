@@ -181,9 +181,12 @@ void genlBaseTrait(GenState *gen, StructNode *base) {
                     INode **nodesp;
                     uint32_t cnt;
                     unsigned long long maxsize = 0;
+                    base->llvmtype = genlType(gen, fldtype);
                     for (nodesFor(base->derived, cnt, nodesp)) {
                         (*nodesp)->flags |= NullablePtr;
+                        ((StructNode*)*nodesp)->llvmtype = base->llvmtype;
                     }
+                    return;
                 }
             }
         }

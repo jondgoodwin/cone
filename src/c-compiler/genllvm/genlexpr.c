@@ -591,6 +591,16 @@ LLVMValueRef genlIsType(GenState *gen, CastNode *isnode) {
         assert(0 && "Could not find specialized type's vtable");
     }
 
+    // Special handling for nullable pointers
+    if (structtype->flags & NullablePtr) {
+        LLVMTypeRef ptrtype = structtype->llvmtype;
+        if (LLVMGetTypeKind(ptrtype) != LLVMPointerTypeKind)
+            val = LLVMBuildExtractValue(gen->builder, val, 0, "ptr"); // VirtRef & ArrayRef
+        LLVMValueRef nullptr = LLVMConstPointerNull(ptrtype);
+        LLVMIntPredicate cmpop = structtype->fields.used == 1 ? LLVMIntEQ : LLVMIntNE;
+        return LLVMBuildICmp(gen->builder, cmpop, val, nullptr, "isnull");
+    }
+
     // Pattern match whether termnode's tag matches desired concrete struct type
     // Find and extract tag field from val, then compare with to-type's tag number
     INode **nodesp;
@@ -751,11 +761,28 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
             return LLVMConstArray(genlType(gen, ((ArrayNode *)lit->vtype)->elemtype), values, size);
         }
         else if (littype->tag == StructTag) {
-            LLVMValueRef strval = LLVMGetUndef(genlType(gen, littype));
-            unsigned int pos = 0;
-            for (nodesFor(lit->args, cnt, nodesp))
-                strval = LLVMBuildInsertValue(gen->builder, strval, genlExpr(gen, *nodesp), pos++, "literal");
-            return strval;
+            if (littype->flags & NullablePtr) {
+                // Special optimized logic for creating nullable ref/ptr value
+                StructNode *strnode = (StructNode *)littype;
+                LLVMTypeRef ptrtype = strnode->llvmtype;
+                if (lit->args->used == 1) {
+                    if (LLVMGetTypeKind(ptrtype) != LLVMPointerTypeKind) {
+                        LLVMValueRef strval = LLVMGetUndef(ptrtype);
+                        LLVMValueRef null = LLVMConstPointerNull(LLVMStructGetTypeAtIndex(ptrtype, 0));
+                        return LLVMBuildInsertValue(gen->builder, strval, null, 0, "null");
+                    }
+                    return LLVMConstPointerNull(ptrtype);
+                }
+                else
+                    return genlExpr(gen, nodesGet(lit->args, 1));
+            }
+            else {
+                LLVMValueRef strval = LLVMGetUndef(genlType(gen, littype));
+                unsigned int pos = 0;
+                for (nodesFor(lit->args, cnt, nodesp))
+                    strval = LLVMBuildInsertValue(gen->builder, strval, genlExpr(gen, *nodesp), pos++, "literal");
+                return strval;
+            }
         }
         else if (littype->tag == IntNbrTag || littype->tag == UintNbrTag || littype->tag == FloatNbrTag) {
             return genlConvert(gen, nodesGet(lit->args, 0), lit->objfn);
