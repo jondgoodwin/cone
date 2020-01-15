@@ -567,6 +567,51 @@ LLVMValueRef genlLocalVar(GenState *gen, VarDclNode *var) {
     return val;
 }
 
+// Returns a boolean indicating whether some value may be downcast to the specialized type
+LLVMValueRef genlIsType(GenState *gen, CastNode *isnode) {
+    LLVMValueRef val = genlExpr(gen, isnode->exp);
+    INode *exptype = iexpGetTypeDcl(isnode->exp);
+    INode *istype = itypeGetTypeDcl(isnode->typ);
+    StructNode *structtype = (StructNode*)(istype->tag == RefTag ? itypeGetTypeDcl(((RefNode*)istype)->pvtype) : istype);
+
+    // If pattern matching a virtual reference, compare vtable pointers
+    if (exptype->tag == VirtRefTag) {
+        LLVMValueRef vtablep = LLVMBuildExtractValue(gen->builder, val, 1, "");
+        Vtable *vtable = structGetBaseTrait(structtype)->vtable;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(vtable->impl, cnt, nodesp)) {
+            VtableImpl *impl = (VtableImpl*)*nodesp;
+            if (impl->structdcl == (INode*)structtype) {
+                LLVMValueRef diff = LLVMBuildPtrDiff(gen->builder, vtablep, impl->llvmvtablep, "");
+                LLVMValueRef zero = LLVMConstInt(LLVMInt64TypeInContext(gen->context), 0, 0);
+                return LLVMBuildICmp(gen->builder, LLVMIntEQ, diff, zero, "isvtable");
+            }
+        }
+        assert(0 && "Could not find specialized type's vtable");
+    }
+
+    // Pattern match whether termnode's tag matches desired concrete struct type
+    // Find and extract tag field from val, then compare with to-type's tag number
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&structtype->fields, cnt, nodesp)) {
+        if ((*nodesp)->flags & IsTagField) {
+            FieldDclNode *tagnode = (FieldDclNode*)*nodesp;
+            if (istype->tag == RefTag) {
+                val = LLVMBuildStructGEP(gen->builder, val, tagnode->index, "tagref");
+                val = LLVMBuildLoad(gen->builder, val, "tag");
+            }
+            else
+                val = LLVMBuildExtractValue(gen->builder, val, tagnode->index, "tag");
+            LLVMValueRef tagval = LLVMConstInt(genlType(gen, tagnode->vtype), structtype->tagnbr, 0);
+            return LLVMBuildICmp(gen->builder, LLVMIntEQ, val, tagval, "istag");
+        }
+    }
+    assert(0 && "Should not reach here, because type check ensures type has a tag field");
+    return NULL;
+}
+
 // Generate a panic
 void genlPanic(GenState *gen) {
     // Declare trap() external function
@@ -872,48 +917,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     }
     case IsTag:
     {
-        // Pattern match whether termnode's tag matches desired concrete struct type
-        CastNode *isnode = (CastNode*)termnode;
-        LLVMValueRef val = genlExpr(gen, isnode->exp);
-        INode *exptype = iexpGetTypeDcl(isnode->exp);
-        INode *istype = itypeGetTypeDcl(isnode->typ);
-        StructNode *structtype = (StructNode*)(istype->tag == RefTag ? itypeGetTypeDcl(((RefNode*)istype)->pvtype) : istype);
-
-        // To pattern match a virtual reference, compare vtable pointers
-        if (exptype->tag == VirtRefTag) {
-            LLVMValueRef vtablep = LLVMBuildExtractValue(gen->builder, val, 1, "");
-            Vtable *vtable = structGetBaseTrait(structtype)->vtable;
-            INode **nodesp;
-            uint32_t cnt;
-            for (nodesFor(vtable->impl, cnt, nodesp)) {
-                VtableImpl *impl = (VtableImpl*)*nodesp;
-                if (impl->structdcl == (INode*)structtype) {
-                    LLVMValueRef diff = LLVMBuildPtrDiff(gen->builder, vtablep, impl->llvmvtablep, "");
-                    LLVMValueRef zero = LLVMConstInt(LLVMInt64TypeInContext(gen->context), 0, 0);
-                    return LLVMBuildICmp(gen->builder, LLVMIntEQ, diff, zero, "isvtable");
-                }
-            }
-            assert(0 && "Could not find specialized type's vtable");
-        }
-
-        // Find and extract tag field from val, then compare with to-type's tag number
-        INode **nodesp;
-        uint32_t cnt;
-        for (nodelistFor(&structtype->fields, cnt, nodesp)) {
-            if ((*nodesp)->flags & IsTagField) {
-                FieldDclNode *tagnode = (FieldDclNode*)*nodesp;
-                if (istype->tag == RefTag) {
-                    val = LLVMBuildStructGEP(gen->builder, val, tagnode->index, "tagref");
-                    val = LLVMBuildLoad(gen->builder, val, "tag");
-                }
-                else
-                    val = LLVMBuildExtractValue(gen->builder, val, tagnode->index, "tag");
-                LLVMValueRef tagval = LLVMConstInt(genlType(gen, tagnode->vtype), structtype->tagnbr, 0);
-                return LLVMBuildICmp(gen->builder, LLVMIntEQ, val, tagval, "istag");
-            }
-        }
-        assert(0 && "Should not reach here, because type check ensures type has a tag field");
-        return NULL;
+        return genlIsType(gen, (CastNode *)termnode);
     }
     case BorrowTag:
     {
