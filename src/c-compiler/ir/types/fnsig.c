@@ -107,6 +107,19 @@ int fnSigVrefEqual(FnSigNode *node1, FnSigNode *node2) {
     return 1;
 }
 
+// Return MatchCode indicating whether from type matches the function signature
+int fnSigMatches(FnSigNode *to, INode *fromdcl) {
+    // They only match if both are structurally identical function signatures
+    if (fromdcl->tag != FnSigTag)
+        return NoMatch;
+    return fnSigEqual(to, (FnSigNode*)fromdcl) ? EqMatch : NoMatch;
+}
+
+// Return true if type of from-exp matches totype
+int fnSigCoerce(FnSigNode *totype, INode **fromexp) {
+    return fnSigMatches(totype, iexpGetTypeDcl(*fromexp)) == EqMatch;
+}
+
 // Will the function call (caller) be able to call the 'to' function
 // Return 0 if not. 1 if perfect match. 2+ for imperfect matches
 int fnSigMatchesCall(FnSigNode *to, Nodes *args) {

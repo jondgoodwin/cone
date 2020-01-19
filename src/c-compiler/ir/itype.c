@@ -123,8 +123,8 @@ int itypeMatches(INode *totype, INode *fromtype) {
             return NoMatch;
         return arrayEqual((ArrayNode*)totype, (ArrayNode*)fromtype);
 
-    //case FnSigTag:
-    //    return fnSigMatches((FnSigNode*)totype, (FnSigNode*)fromtype);
+    case FnSigTag:
+        return fnSigMatches((FnSigNode*)totype, fromtype);
 
     case UintNbrTag:
         if ((fromtype->tag == RefTag || fromtype->tag == PtrTag) && totype == (INode*)boolType)
