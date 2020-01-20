@@ -68,16 +68,17 @@ void structMakeVtable(StructNode *node);
 // Populate the vtable implementation info for a struct ref being coerced to some trait
 int structVirtRefMatches(StructNode *trait, StructNode *strnode);
 
-int structEqual(StructNode *node1, StructNode *node2);
-
-// Will from struct coerce to a to struct (we know they are not the same)
+// Will from-type coerce to to-struct (we know they are not the same)
 // We can only do this for a same-sized trait supertype
-int structMatches(StructNode *to, StructNode *from);
+int structMatches(StructNode *to, INode *fromdcl);
 
 // Will from struct coerce to a to struct (we know they are not the same)
 // This works for references which have more relaxed subtyping rules
 // because matching on size is not necessary
 int structRefMatches(StructNode *to, StructNode *from);
+
+// Return true if type of from-exp matches totype. Inject coercion, if needed
+int structCoerce(StructNode *totype, INode **fromexp);
 
 // Return a type that is the supertype of both type nodes, or NULL if none found
 INode *structFindSuper(INode *type1, INode *type2);
