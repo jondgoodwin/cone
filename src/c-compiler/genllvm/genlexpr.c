@@ -473,19 +473,41 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
         StructNode *trait = (StructNode*)itypeGetTypeDcl(((RefNode*)totype)->pvtype);
         StructNode *strnode = (StructNode*)itypeGetTypeDcl(((RefNode*)fromtype)->pvtype);
         Vtable *vtable = ((StructNode*)trait)->vtable;
-        VtableImpl *impl;
-        INode **nodesp;
-        uint32_t cnt;
-        for (nodesFor(vtable->impl, cnt, nodesp)) {
-            impl = (VtableImpl*)*nodesp;
-            if (impl->structdcl == (INode*)strnode)
-                break;
+        LLVMValueRef vtablep;
+        if (!(strnode->flags & TraitType)) {
+            VtableImpl *impl;
+            INode **nodesp;
+            uint32_t cnt;
+            for (nodesFor(vtable->impl, cnt, nodesp)) {
+                impl = (VtableImpl*)*nodesp;
+                if (impl->structdcl == (INode*)strnode) {
+                    vtablep = impl->llvmvtablep;
+                    break;
+                }
+            }
+        }
+        else {
+            // Use tag field to lookup correct vtable
+            INode **nodesp;
+            uint32_t cnt;
+            for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+                if ((*nodesp)->flags & IsTagField) {
+                    FieldDclNode *tagnode = (FieldDclNode*)*nodesp;
+                    LLVMValueRef val = LLVMBuildStructGEP(gen->builder, genexp, tagnode->index, "tagref");
+                    val = LLVMBuildLoad(gen->builder, val, "tag");
+                    LLVMValueRef indexes[2];
+                    indexes[0] = LLVMConstInt(genlUsize(gen), 0, 0);
+                    indexes[1] = val;
+                    vtablep = LLVMBuildGEP(gen->builder, vtable->llvmvtables, &indexes, 2, "");
+                    vtablep = LLVMBuildLoad(gen->builder, vtablep, "");
+                }
+            }
         }
         LLVMValueRef vref = LLVMGetUndef(genlType(gen, totype));
         LLVMTypeRef vptr = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
         LLVMValueRef ptr = LLVMBuildBitCast(gen->builder, genexp, vptr, "");
         vref = LLVMBuildInsertValue(gen->builder, vref, ptr, 0, "vptr");
-        vref = LLVMBuildInsertValue(gen->builder, vref, impl->llvmvtablep, 1, "vptr");
+        vref = LLVMBuildInsertValue(gen->builder, vref, vtablep, 1, "vptr");
         return vref;
     }
 

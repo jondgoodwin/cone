@@ -25,6 +25,7 @@ typedef struct {
     char *name;                // generated name for the vtable type
     LLVMTypeRef llvmvtable;    // for the vtable
     LLVMTypeRef llvmreftype;   // For the virtual reference, not the vtable
+    LLVMValueRef llvmvtables;  // List of vtables
 } Vtable;
 
 // Field-containing types (e.g., struct, trait, etc.)

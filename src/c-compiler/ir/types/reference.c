@@ -163,8 +163,9 @@ int refvirtMatches(RefNode *to, RefNode *from) {
     INode *tovtypedcl = itypeGetTypeDcl(to->pvtype);
     INode *fromvtypedcl = itypeGetTypeDcl(from->pvtype);
     if (tovtypedcl->tag == StructTag && fromvtypedcl->tag == StructTag) {
-        if (tovtypedcl == fromvtypedcl)
-            return EqMatch;
+        if (from->tag == RefTag && tovtypedcl == fromvtypedcl) {
+            return (fromvtypedcl->flags & HasTagField) ? CoerceMatch : NoMatch;
+        }
         return structVirtRefMatches((StructNode*)tovtypedcl, (StructNode*)fromvtypedcl);
     }
 

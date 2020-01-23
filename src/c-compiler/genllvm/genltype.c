@@ -96,9 +96,18 @@ void genlVtable(GenState *gen, Vtable *vtable) {
         LLVMStructSetBody(vtableRef, field_types, fieldcnt, 0);
 
     // Build all the vtable globals that implement the vtable
+    // as well as an array pointing to all these vtables
+    LLVMValueRef *vtables = (LLVMValueRef *)memAllocBlk(vtable->impl->used * sizeof(LLVMValueRef *));
+    LLVMValueRef *vtablesp = vtables;
     for (nodesFor(vtable->impl, cnt, nodesp)) {
         genlVtableImpl(gen, (VtableImpl*)*nodesp, vtableRef);
+        *vtablesp++ = ((VtableImpl*)*nodesp)->llvmvtablep;
     }
+    LLVMValueRef vtablelist = LLVMConstArray(LLVMPointerType(vtableRef, 0), vtables, vtable->impl->used);
+    vtable->llvmvtables = LLVMAddGlobal(gen->module, LLVMTypeOf(vtablelist), "vtable-list");
+    LLVMSetGlobalConstant(vtable->llvmvtables, 1);
+    LLVMSetLinkage(vtable->llvmvtables, LLVMLinkOnceAnyLinkage);
+    LLVMSetInitializer(vtable->llvmvtables, vtablelist);
 
     // Build the virtual reference type for this vtable. It is a fat pointer:
     // - a pointer to the object (for now *u8 - which we will recast later)
