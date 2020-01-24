@@ -277,11 +277,67 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     pstate->typenode = svtypenode;
 }
 
+// Add a vtable implementation to a base struct's vtable
+// Return 1 if it successfully type matches, 0 if not
+int structAddVtableImpl(StructNode *basenode, StructNode *strnode) {
+    Vtable *vtable = basenode->vtable;
+
+    // Create Vtable impl data structure and populate
+    VtableImpl *impl = memAllocBlk(sizeof(VtableImpl));
+    impl->llvmvtablep = NULL;
+    impl->structdcl = (INode*)strnode;
+
+    // Construct a global name for this vtable implementation
+    size_t strsize = strnode->namesym->namesz + strlen(vtable->name) + 3;
+    impl->name = memAllocStr(&strnode->namesym->namestr, strsize);
+    strcat(impl->name, "->");
+    strcat(impl->name, vtable->name);
+
+    // For every field/method in the vtable, find its matching one in strnode
+    impl->methfld = newNodes(vtable->methfld->used);
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(vtable->methfld, cnt, nodesp)) {
+        if ((*nodesp)->tag == FnDclTag) {
+            // Locate the corresponding method with matching name and vtype
+            // Note, we need to be flexible in matching the self parameter
+            FnDclNode *meth = (FnDclNode *)*nodesp;
+            FnDclNode *strmeth = (FnDclNode *)namespaceFind(&strnode->namespace, meth->namesym);
+            if ((strmeth = iNsTypeFindVrefMethod(strmeth, meth)) == NULL)
+                return 0;
+            // it matches, add the method to the implementation
+            nodesAdd(&impl->methfld, (INode*)strmeth);
+        }
+        else {
+            // Find the corresponding field with matching name and vtype
+            FieldDclNode *fld = (FieldDclNode *)*nodesp;
+            INode *strfld = namespaceFind(&strnode->namespace, fld->namesym);
+            if (strfld == NULL || strfld->tag != FieldDclTag) {
+                //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to a %s virtual reference. Missing field %s.",
+                //    &strnode->namesym->namestr, &trait->namesym->namestr, &fld->namesym->namestr);
+                return 0;
+            }
+            if (!itypeIsSame(((FieldDclNode*)strfld)->vtype, fld->vtype)) {
+                //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to a %s virtual reference. Incompatible type for field %s.",
+                //    &strnode->namesym->namestr, &trait->namesym->namestr, &fld->namesym->namestr);
+                return 0;
+            }
+            // it matches, add the corresponding field to the implementation
+            nodesAdd(&impl->methfld, (INode*)strfld);
+        }
+    }
+
+    // We accomplished a successful mapping - add it
+    nodesAdd(&vtable->impl, (INode*)impl);
+    return 1;
+}
+
 // Populate the vtable for this struct
 void structMakeVtable(StructNode *node) {
     if (node->vtable)
         return;
     Vtable *vtable = memAllocBlk(sizeof(Vtable));
+    node->vtable = vtable;
     vtable->llvmreftype = NULL;
     vtable->llvmvtable = NULL;
     vtable->impl = newNodes(4);
@@ -309,8 +365,14 @@ void structMakeVtable(StructNode *node) {
             nodesAdd(&vtable->methfld, *nodesp);
         }
     }
-
-    node->vtable = vtable;
+    
+    // Prewire the implementation of any known derived structs.
+    // This is particularly important for keeping tag order correctness
+    // when building a virtual ref out of a regular ref to the trait
+    // as it uses the tag value to index into a list of vtables
+    for (nodesFor(node->derived, cnt, nodesp)) {
+        structAddVtableImpl(node, (StructNode *)*nodesp);
+    }
 }
 
 // Populate the vtable implementation info for a struct ref being coerced to some trait
@@ -329,52 +391,7 @@ int structVirtRefMatches(StructNode *trait, StructNode *strnode) {
             return CoerceMatch;
     }
 
-    // Create Vtable impl data structure and populate
-    VtableImpl *impl = memAllocBlk(sizeof(VtableImpl));
-    impl->llvmvtablep = NULL;
-    impl->structdcl = (INode*)strnode;
-
-    // Construct a global name for this vtable implementation
-    size_t strsize = strnode->namesym->namesz + strlen(vtable->name) + 3;
-    impl->name = memAllocStr(&strnode->namesym->namestr, strsize);
-    strcat(impl->name, "->");
-    strcat(impl->name, vtable->name);
-
-    // For every field/method in the vtable, find its matching one in strnode
-    impl->methfld = newNodes(vtable->methfld->used);
-    for (nodesFor(vtable->methfld, cnt, nodesp)) {
-        if ((*nodesp)->tag == FnDclTag) {
-            // Locate the corresponding method with matching name and vtype
-            // Note, we need to be flexible in matching the self parameter
-            FnDclNode *meth = (FnDclNode *)*nodesp;
-            FnDclNode *strmeth = (FnDclNode *)namespaceFind(&strnode->namespace, meth->namesym);
-            if ((strmeth = iNsTypeFindVrefMethod(strmeth, meth)) == NULL)
-                return NoMatch;
-            // it matches, add the method to the implementation
-            nodesAdd(&impl->methfld, (INode*)strmeth);
-        }
-        else {
-            // Find the corresponding field with matching name and vtype
-            FieldDclNode *fld = (FieldDclNode *)*nodesp;
-            INode *strfld = namespaceFind(&strnode->namespace, fld->namesym);
-            if (strfld == NULL || strfld->tag != FieldDclTag) {
-                //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to a %s virtual reference. Missing field %s.",
-                //    &strnode->namesym->namestr, &trait->namesym->namestr, &fld->namesym->namestr);
-                return NoMatch;
-            }
-            if (!itypeIsSame(((FieldDclNode*)strfld)->vtype, fld->vtype)) {
-                //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to a %s virtual reference. Incompatible type for field %s.",
-                //    &strnode->namesym->namestr, &trait->namesym->namestr, &fld->namesym->namestr);
-                return NoMatch;
-            }
-            // it matches, add the corresponding field to the implementation
-            nodesAdd(&impl->methfld, (INode*)strfld);
-        }
-    }
-
-    // We accomplished a successful mapping - add it
-    nodesAdd(&vtable->impl, (INode*)impl);
-    return CoerceMatch;
+    return structAddVtableImpl(trait, strnode)? CoerceMatch : NoMatch;
 }
 
 // Will from-type coerce to to-struct (we know they are not the same)
