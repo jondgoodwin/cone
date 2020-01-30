@@ -49,7 +49,7 @@ INode *iNsTypeFindFnField(INsTypeNode *type, Name *name) {
 }
 
 // Find method that best fits the passed arguments
-FnDclNode *iNsTypeFindBestMethod(FnDclNode *firstmethod, INode *self, Nodes *args) {
+FnDclNode *iNsTypeFindBestMethod(FnDclNode *firstmethod, INode **self, Nodes *args) {
     // Look for best-fit method
     FnDclNode *bestmethod = NULL;
     int bestnbr = 0x7fffffff; // ridiculously high number    

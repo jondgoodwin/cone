@@ -39,6 +39,72 @@ int iexpTypeCheckAny(TypeCheckState *pstate, INode **from) {
     return 1;
 }
 
+// Is totype equivalent or a non-changing subtype of fromtype
+// Returns some MatchCode value
+int iexpMatches(INode **from, INode *totype, int coerceflag) {
+    totype = itypeGetTypeDcl(totype);
+    INode *fromtype = iexpGetTypeDcl(*from);
+
+    // If they are the same value type info, types match
+    if (totype == fromtype)
+        return EqMatch;
+
+    // Type-specific matching logic
+    switch (totype->tag) {
+    case StructTag:
+        return structMatches((StructNode*)totype, fromtype, coerceflag);
+
+    case RefTag:
+        if (fromtype->tag != RefTag)
+            return NoMatch;
+        return refMatches((RefNode*)totype, (RefNode*)fromtype);
+
+    case VirtRefTag:
+        if (fromtype->tag != VirtRefTag && fromtype->tag != RefTag)
+            return NoMatch;
+        return refvirtMatches((RefNode*)totype, (RefNode*)fromtype);
+
+    case ArrayRefTag:
+        if (fromtype->tag != ArrayRefTag)
+            return NoMatch;
+        return arrayRefMatches((RefNode*)totype, (RefNode*)fromtype);
+
+    case PtrTag:
+        if (fromtype->tag == RefTag || fromtype->tag == ArrayRefTag)
+            return itypeIsSame(((RefNode*)fromtype)->pvtype, ((PtrNode*)totype)->pvtype) ? CoerceMatch : NoMatch;
+        if (fromtype->tag != PtrTag)
+            return NoMatch;
+        return ptrMatches((PtrNode*)totype, (PtrNode*)fromtype);
+
+    case ArrayTag:
+        if (totype->tag != fromtype->tag)
+            return NoMatch;
+        return arrayEqual((ArrayNode*)totype, (ArrayNode*)fromtype);
+
+    case FnSigTag:
+        return fnSigMatches((FnSigNode*)totype, fromtype);
+
+    case UintNbrTag:
+        if ((fromtype->tag == RefTag || fromtype->tag == PtrTag) && totype == (INode*)boolType)
+            return CoerceMatch;
+        // Fall through is intentional here...
+    case IntNbrTag:
+    case FloatNbrTag:
+        if (totype == (INode*)boolType)
+            return CoerceMatch;
+        if (totype->tag != fromtype->tag)
+            return isNbr(totype) && isNbr(fromtype) ? NbrConvMatch : NoMatch;
+        if (((NbrNode *)totype)->bits == ((NbrNode *)fromtype)->bits)
+            return EqMatch;
+        return ((NbrNode *)totype)->bits > ((NbrNode *)fromtype)->bits ? CoerceMatch : NbrShrinkMatch;
+
+    case VoidTag:
+        return fromtype->tag == VoidTag ? EqMatch : NoMatch;
+    default:
+        return itypeIsSame(totype, fromtype) ? EqMatch : NoMatch;
+    }
+}
+
 // Coerce from-node's type to 'to' expected type, if needed
 // Return 1 if type "matches", 0 otherwise
 int iexpCoerce(INode **from, INode *totype) {
@@ -60,8 +126,7 @@ int iexpCoerce(INode **from, INode *totype) {
 
     // Are types equivalent, or is 'to' a subtype of fromtypedcl?
     INode *totypedcl = itypeGetTypeDcl(totype);
-    INode *fromtypedcl = iexpGetTypeDcl(*from);
-    switch (itypeMatches(totypedcl, fromtypedcl)) {
+    switch (iexpMatches(from, totypedcl, NoCoerce)) {
     case NoMatch:
         return 0;
     case EqMatch:
@@ -134,7 +199,7 @@ int iexpMultiInfer(INode *expectType, INode **maybeType, INode **from) {
     }
 
     // When we have an expected type, ensure this branch matches
-    int match = itypeMatches(expectType, fromType);
+    int match = iexpMatches(from, expectType, NoCoerce);
     if (match == NoMatch || match == NbrConvMatch) {
         errorMsgNode(*from, ErrorInvType, "Expression type does not match expected type.");
         return NoMatch;

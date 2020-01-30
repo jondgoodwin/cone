@@ -300,7 +300,7 @@ int fnCallLowerMethod(FnCallNode *callnode) {
         return 1;
     }
 
-    FnDclNode *bestmethod = iNsTypeFindBestMethod((FnDclNode *)foundnode, callnode->objfn, callnode->args);
+    FnDclNode *bestmethod = iNsTypeFindBestMethod((FnDclNode *)foundnode, &callnode->objfn, callnode->args);
     if (bestmethod == NULL) {
         return 0;
     }

@@ -136,7 +136,7 @@ int fnSigMatchesCall(FnSigNode *to, Nodes *args) {
     tonodesp = &nodesGet(to->parms, 0);
     for (nodesFor(args, cnt, callnodesp)) {
         int match;
-        switch (match = itypeMatches(((IExpNode *)*tonodesp)->vtype, ((IExpNode*)*callnodesp)->vtype)) {
+        switch (match = iexpMatches(callnodesp, ((IExpNode *)*tonodesp)->vtype, NoCoerce)) {
         case NoMatch: return 0;
         case EqMatch: break;
         case CoerceMatch: matchsum += match; break;
@@ -157,7 +157,7 @@ int fnSigMatchesCall(FnSigNode *to, Nodes *args) {
 
 // Will the method call (caller) be able to call the 'to' function
 // Return 0 if not. 1 if perfect match. 2+ for imperfect matches
-int fnSigMatchMethCall(FnSigNode *to, INode *self, Nodes *args) {
+int fnSigMatchMethCall(FnSigNode *to, INode **self, Nodes *args) {
     uint32_t argcnt = args ? args->used + 1 : 1;
 
     // Too many arguments is not a match
@@ -166,11 +166,11 @@ int fnSigMatchMethCall(FnSigNode *to, INode *self, Nodes *args) {
 
     // Compare self's type to expected self parameter type
     INode **tonodesp = &nodesGet(to->parms, 0);
-    INode *selftype = iexpGetTypeDcl(self);
+    INode *selftype = iexpGetTypeDcl(*self);
     int matchsum = 1;
     int match;
     if (selftype->tag != VirtRefTag) {
-        switch (match = itypeMatches(iexpGetTypeDcl(*tonodesp), selftype)) {
+        switch (match = iexpMatches(self, iexpGetTypeDcl(*tonodesp), NoCoerce)) {
         case NoMatch:
             return 0;
         case EqMatch: break;
@@ -193,7 +193,7 @@ int fnSigMatchMethCall(FnSigNode *to, INode *self, Nodes *args) {
     INode **callnodesp;
     uint32_t cnt;
     for (nodesFor(args, cnt, callnodesp)) {
-        switch (match = itypeMatches(((IExpNode *)*tonodesp)->vtype, ((IExpNode*)*callnodesp)->vtype)) {
+        switch (match = iexpMatches(callnodesp, ((IExpNode *)*tonodesp)->vtype, NoCoerce)) {
         case NoMatch:
             return 0;
         case EqMatch: break;

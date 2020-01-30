@@ -46,6 +46,6 @@ int fnSigMatchesCall(FnSigNode *to, Nodes *args);
 // Will the method call (caller) be able to call the 'to' function
 // Return 0 if not. 1 if perfect match. 2+ for imperfect matches
 // if skipfirst is on, don't type check first argument for a vref
-int fnSigMatchMethCall(FnSigNode *to, INode *self, Nodes *args);
+int fnSigMatchMethCall(FnSigNode *to, INode **self, Nodes *args);
 
 #endif
