@@ -498,7 +498,7 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
                     LLVMValueRef indexes[2];
                     indexes[0] = LLVMConstInt(genlUsize(gen), 0, 0);
                     indexes[1] = val;
-                    vtablep = LLVMBuildGEP(gen->builder, vtable->llvmvtables, &indexes, 2, "");
+                    vtablep = LLVMBuildGEP(gen->builder, vtable->llvmvtables, indexes, 2, "");
                     vtablep = LLVMBuildLoad(gen->builder, vtablep, "");
                 }
             }

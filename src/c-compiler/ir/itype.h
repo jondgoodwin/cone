@@ -16,6 +16,11 @@ enum MatchCode {
     NbrConvMatch,      // Both types are numbers, but different kinds
 };
 
+enum CoerceFlag {
+    NoCoerce,
+    DoCoerce,
+};
+
 typedef struct Name Name;
 
 // Named type node header (most types are named)

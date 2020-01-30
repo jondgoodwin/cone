@@ -135,7 +135,7 @@ int iexpMultiInfer(INode *expectType, INode **maybeType, INode **from) {
 
     // When we have an expected type, ensure this branch matches
     int match = itypeMatches(expectType, fromType);
-    if (match != EqMatch && match != CoerceMatch) {
+    if (match == NoMatch || match == NbrConvMatch) {
         errorMsgNode(*from, ErrorInvType, "Expression type does not match expected type.");
         return NoMatch;
     }

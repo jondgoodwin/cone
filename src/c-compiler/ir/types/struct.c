@@ -396,7 +396,7 @@ int structVirtRefMatches(StructNode *trait, StructNode *strnode) {
 
 // Will from-type coerce to to-struct (we know they are not the same)
 // We can only do this for a same-sized trait supertype
-int structMatches(StructNode *to, INode *fromdcl) {
+int structMatches(StructNode *to, INode *fromdcl, int coerceflag) {
     if ((StructNode*)fromdcl == to)
         return EqMatch;
 
@@ -406,8 +406,12 @@ int structMatches(StructNode *to, INode *fromdcl) {
         while (super->basetrait) {
             StructNode *base = (StructNode*)itypeGetTypeDcl(super->basetrait);
             // If it is a valid supertype trait, indicate that it requires coercion
-            if (to == base)
+            if (to == base) {
+                if (coerceflag)
+                    // *fromexp = (INode*)newCastNode(*fromexp, (INode*)to)
+                    ;
                 return CoerceMatch;
+            }
             super = base;
         }
     }
@@ -428,15 +432,6 @@ int structRefMatches(StructNode *to, StructNode *from) {
         }
     }
     return NoMatch;
-}
-
-// Return true if type of from-exp matches totype. Inject coercion, if needed
-int structCoerce(StructNode *totype, INode **fromexp) {
-    int match = structMatches(totype, iexpGetTypeDcl(*fromexp));
-    if (match == CoerceMatch) {
-        *fromexp = (INode*)newCastNode(*fromexp, (INode*)totype);
-    }
-    return match != NoMatch;
 }
 
 // Return a type that is the supertype of both type nodes, or NULL if none found
