@@ -41,7 +41,7 @@ int iexpTypeCheckAny(TypeCheckState *pstate, INode **from) {
 
 // Coerce from-node's type to 'to' expected type, if needed
 // Return 1 if type "matches", 0 otherwise
-int iexpCoerce(INode *totype, INode **from) {
+int iexpCoerce(INode **from, INode *totype) {
     // From should be a typed expression node
     assert(isExpNode(*from));
     IExpNode *fromnode = (IExpNode *)*from;
@@ -96,7 +96,7 @@ int iexpTypeCheckCoerce(TypeCheckState *pstate, INode *totype, INode **from) {
         errorMsgNode(*from, ErrorNotTyped, "Expected a typed expression.");
         return 1; // pretend we match to not provoke additional errors
     }
-    return iexpCoerce(totype, from);
+    return iexpCoerce(from, totype);
 }
 
 // Used by 'if' and 'loop'/break to infer the type in common across all branches,

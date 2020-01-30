@@ -128,7 +128,7 @@ void loopTypeCheck(TypeCheckState *pstate, LoopNode *node, INode *expectType) {
     if (match == CoerceMatch) {
         for (nodesFor(node->breaks, cnt, nodesp)) {
             INode **breakexp = &((BreakNode *)*nodesp)->exp;
-            iexpCoerce(maybeType, breakexp);
+            iexpCoerce(breakexp, maybeType);
         }
     }
 }

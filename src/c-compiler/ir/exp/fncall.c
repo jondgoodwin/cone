@@ -107,9 +107,9 @@ void fnCallArrIndex(FnCallNode *node) {
         // Pointer supports signed or unsigned integer index
         int match = 0;
         if (indextype->tag == UintNbrTag)
-            match = iexpCoerce((INode*)usizeType, indexp);
+            match = iexpCoerce(indexp, (INode*)usizeType);
         else if (indextype->tag == IntNbrTag)
-            match = iexpCoerce((INode*)isizeType, indexp);
+            match = iexpCoerce(indexp, (INode*)isizeType);
         if (!match)
             errorMsgNode((INode *)node, ErrorBadIndex, "Pointer index must be an integer");
     }
@@ -117,7 +117,7 @@ void fnCallArrIndex(FnCallNode *node) {
         // All other array types only support unsigned (positive) integer indexing
         int match = 0;
         if (indextype->tag == UintNbrTag || (*indexp)->tag == ULitTag)
-            match = iexpCoerce((INode*)usizeType, indexp);
+            match = iexpCoerce(indexp, (INode*)usizeType);
         if (!match)
             errorMsgNode((INode *)node, ErrorBadIndex, "Array index must be an unsigned integer");
     }
@@ -193,7 +193,7 @@ void fnCallFinalizeArgs(FnCallNode *node) {
 
         // Make sure the type matches (and coerce as needed)
         // (but not for vref as self)
-        if (!iexpCoerce(((IExpNode*)*parmp)->vtype, argsp) 
+        if (!iexpCoerce(argsp, ((IExpNode*)*parmp)->vtype) 
             && !(cnt == node->args->used && (node->flags & FlagVDisp)))
             errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
         parmp++;
@@ -375,7 +375,7 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
                     continue;
             }
             else {
-                if (!iexpCoerce(parm1type, &nodesGet(args, 1)))
+                if (!iexpCoerce(&nodesGet(args, 1), parm1type))
                     continue;
             }
         }

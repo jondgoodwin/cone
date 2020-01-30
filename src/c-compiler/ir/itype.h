@@ -54,6 +54,12 @@ int itypeIsSame(INode *node1, INode *node2);
 // 2+ - requires increasingly lossy conversion/coercion
 int itypeMatches(INode *totype, INode *fromtype);
 
+// Is totype equivalent or a non-coerced subtype of fromtype
+// 0 - no
+// 1 - yes, without conversion
+// 2+ - requires increasingly lossy conversion/coercion
+int itypeRefMatches(INode *totype, INode *fromtype);
+
 // Return a type that is the supertype of both type nodes, or NULL if none found
 INode *itypeFindSuper(INode *type1, INode *type2);
 

@@ -49,6 +49,6 @@ int arrayRefMatches(RefNode *to, RefNode *from) {
         || ((from->flags & FlagRefNull) && !(to->flags & FlagRefNull)))
         return NoMatch;
     if (to->pvtype && from->pvtype)
-        return itypeMatches(to->pvtype, from->pvtype) == EqMatch ? EqMatch : CoerceMatch;
+        return itypeRefMatches(to->pvtype, from->pvtype) == EqMatch ? EqMatch : CoerceMatch;
     return NoMatch;
 }

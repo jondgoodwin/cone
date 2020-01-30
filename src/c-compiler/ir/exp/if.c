@@ -134,7 +134,7 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
             ifExhaustCheck(ifnode, (CastNode*)*nodesp);
 
         if (*nodesp != elseCond) {
-            if (0 == iexpCoerce((INode*)boolType, nodesp))
+            if (0 == iexpCoerce(nodesp, (INode*)boolType))
                 errorMsgNode(*nodesp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
         }
         else {
@@ -193,7 +193,7 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
             // Since generation requires this node to be a block,
             // perform coercion on the last statement
             BlockNode *blk = (BlockNode *)*nodesp;
-            iexpCoerce(maybeType, &nodesLast(blk->stmts));
+            iexpCoerce(&nodesLast(blk->stmts), maybeType);
         }
     }
 }

@@ -147,6 +147,72 @@ int itypeMatches(INode *totype, INode *fromtype) {
     }
 }
 
+// Is totype equivalent or a non-changing subtype of fromtype
+// Returns some MatchCode value
+int itypeRefMatches(INode *totype, INode *fromtype) {
+    totype = itypeGetTypeDcl(totype);
+    fromtype = itypeGetTypeDcl(fromtype);
+
+    // If they are the same value type info, types match
+    if (totype == fromtype)
+        return EqMatch;
+
+    // Type-specific matching logic
+    switch (totype->tag) {
+    case StructTag:
+        return structMatches((StructNode*)totype, fromtype, NoCoerce);
+
+    case RefTag:
+        if (fromtype->tag != RefTag)
+            return NoMatch;
+        return refMatches((RefNode*)totype, (RefNode*)fromtype);
+
+    case VirtRefTag:
+        if (fromtype->tag != VirtRefTag && fromtype->tag != RefTag)
+            return NoMatch;
+        return refvirtMatches((RefNode*)totype, (RefNode*)fromtype);
+
+    case ArrayRefTag:
+        if (fromtype->tag != ArrayRefTag)
+            return NoMatch;
+        return arrayRefMatches((RefNode*)totype, (RefNode*)fromtype);
+
+    case PtrTag:
+        if (fromtype->tag == RefTag || fromtype->tag == ArrayRefTag)
+            return itypeIsSame(((RefNode*)fromtype)->pvtype, ((PtrNode*)totype)->pvtype) ? CoerceMatch : NoMatch;
+        if (fromtype->tag != PtrTag)
+            return NoMatch;
+        return ptrMatches((PtrNode*)totype, (PtrNode*)fromtype);
+
+    case ArrayTag:
+        if (totype->tag != fromtype->tag)
+            return NoMatch;
+        return arrayEqual((ArrayNode*)totype, (ArrayNode*)fromtype);
+
+    case FnSigTag:
+        return fnSigMatches((FnSigNode*)totype, fromtype);
+
+    case UintNbrTag:
+        if ((fromtype->tag == RefTag || fromtype->tag == PtrTag) && totype == (INode*)boolType)
+            return CoerceMatch;
+        // Fall through is intentional here...
+    case IntNbrTag:
+    case FloatNbrTag:
+        if (totype == (INode*)boolType)
+            return CoerceMatch;
+        if (totype->tag != fromtype->tag)
+            return isNbr(totype) && isNbr(fromtype) ? NbrConvMatch : NoMatch;
+        if (((NbrNode *)totype)->bits == ((NbrNode *)fromtype)->bits)
+            return EqMatch;
+        return ((NbrNode *)totype)->bits > ((NbrNode *)fromtype)->bits ? CoerceMatch : NbrShrinkMatch;
+
+    case VoidTag:
+        return fromtype->tag == VoidTag ? EqMatch : NoMatch;
+    default:
+        return itypeIsSame(totype, fromtype) ? EqMatch : NoMatch;
+    }
+}
+
 // Return a type that is the supertype of both type nodes, or NULL if none found
 INode *itypeFindSuper(INode *type1, INode *type2) {
     INode *typ1 = itypeGetTypeDcl(type1);

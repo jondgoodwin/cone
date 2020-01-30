@@ -33,7 +33,7 @@ int iexpTypeCheckAny(TypeCheckState *pstate, INode **from);
 
 // Coerce from-node's type to 'to' expected type, if needed
 // Return 1 if type "matches", 0 otherwise
-int iexpCoerce(INode *totypep, INode **from);
+int iexpCoerce(INode **from, INode *totypep);
 
 // Perform full type check on from-node and ensure it is an expression.
 // Then coerce from-node's type to 'to' expected type, if needed

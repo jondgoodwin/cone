@@ -139,7 +139,7 @@ int refMatches(RefNode *to, RefNode *from) {
         return structRefMatches((StructNode*)tovtypedcl, (StructNode*)fromvtypedcl);
     }
 
-    switch (itypeMatches(tovtypedcl, fromvtypedcl)) {
+    switch (itypeRefMatches(tovtypedcl, fromvtypedcl)) {
     case NoMatch:
         return NoMatch;
     case EqMatch:
@@ -169,7 +169,7 @@ int refvirtMatches(RefNode *to, RefNode *from) {
         return structVirtRefMatches((StructNode*)tovtypedcl, (StructNode*)fromvtypedcl);
     }
 
-    switch (itypeMatches(tovtypedcl, fromvtypedcl)) {
+    switch (itypeRefMatches(tovtypedcl, fromvtypedcl)) {
     case NoMatch:
         return NoMatch;
     case EqMatch:
