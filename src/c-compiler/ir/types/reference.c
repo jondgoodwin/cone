@@ -129,6 +129,10 @@ int refMatches(RefNode *to, RefNode *from) {
         || ((from->flags & FlagRefNull) && !(to->flags & FlagRefNull)))
         return NoMatch;
 
+    // If to-reference is an alias that might write to value, we must do invariant type check instead
+    if ((permGetFlags(to->perm) & MayWrite) && from->perm != (INode *)uniPerm)
+        return itypeIsSame(to->pvtype, from->pvtype) ? EqMatch : NoMatch;
+
     // Match on ref's vtype as well, using special subtype matching for references
     INode *tovtypedcl = itypeGetTypeDcl(to->pvtype);
     INode *fromvtypedcl = itypeGetTypeDcl(from->pvtype);
@@ -150,6 +154,8 @@ int refvirtMatches(RefNode *to, RefNode *from) {
         || (to->region != from->region && to->region != borrowRef)
         || ((from->flags & FlagRefNull) && !(to->flags & FlagRefNull)))
         return NoMatch;
+
+    // We don't check for mutability invariance here, because virtual reference cannot change shape
 
     // Match on ref's vtype as well.
     // If vtype is a struct, use a more relaxed subtype match appropriate to refs
