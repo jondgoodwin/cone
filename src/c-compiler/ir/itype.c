@@ -160,7 +160,10 @@ int itypeRefMatches(INode *totype, INode *fromtype) {
     // Type-specific matching logic
     switch (totype->tag) {
     case StructTag:
-        return structMatches((StructNode*)totype, fromtype, NoCoerce);
+        if (fromtype->tag != StructTag)
+            return NoMatch;
+        // struct subtype matching is a bit different when coming from a reference
+        return structRefMatches((StructNode*)totype, (StructNode*)fromtype);
 
     case RefTag:
         if (fromtype->tag != RefTag)
@@ -193,18 +196,9 @@ int itypeRefMatches(INode *totype, INode *fromtype) {
         return fnSigMatches((FnSigNode*)totype, fromtype);
 
     case UintNbrTag:
-        if ((fromtype->tag == RefTag || fromtype->tag == PtrTag) && totype == (INode*)boolType)
-            return CoerceMatch;
-        // Fall through is intentional here...
     case IntNbrTag:
     case FloatNbrTag:
-        if (totype == (INode*)boolType)
-            return CoerceMatch;
-        if (totype->tag != fromtype->tag)
-            return isNbr(totype) && isNbr(fromtype) ? NbrConvMatch : NoMatch;
-        if (((NbrNode *)totype)->bits == ((NbrNode *)fromtype)->bits)
-            return EqMatch;
-        return ((NbrNode *)totype)->bits > ((NbrNode *)fromtype)->bits ? CoerceMatch : NbrShrinkMatch;
+        return NoMatch;
 
     case VoidTag:
         return fromtype->tag == VoidTag ? EqMatch : NoMatch;

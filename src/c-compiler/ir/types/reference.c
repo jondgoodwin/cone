@@ -129,16 +129,9 @@ int refMatches(RefNode *to, RefNode *from) {
         || ((from->flags & FlagRefNull) && !(to->flags & FlagRefNull)))
         return NoMatch;
 
-    // Match on ref's vtype as well.
-    // If vtype is a struct, use a more relaxed subtype match appropriate to refs
+    // Match on ref's vtype as well, using special subtype matching for references
     INode *tovtypedcl = itypeGetTypeDcl(to->pvtype);
     INode *fromvtypedcl = itypeGetTypeDcl(from->pvtype);
-    if (tovtypedcl->tag == StructTag && fromvtypedcl->tag == StructTag) {
-        if (tovtypedcl == fromvtypedcl)
-            return EqMatch;
-        return structRefMatches((StructNode*)tovtypedcl, (StructNode*)fromvtypedcl);
-    }
-
     switch (itypeRefMatches(tovtypedcl, fromvtypedcl)) {
     case NoMatch:
         return NoMatch;
