@@ -52,7 +52,7 @@ int itypeIsSame(INode *node1, INode *node2);
 // 0 - no
 // 1 - yes, without conversion
 // 2+ - requires increasingly lossy conversion/coercion
-int itypeMatches(INode *totype, INode *fromtype);
+int itypeIsMatches(INode *totype, INode *fromtype);
 
 // Is totype equivalent or a non-coerced subtype of fromtype
 // 0 - no

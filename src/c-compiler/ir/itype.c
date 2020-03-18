@@ -81,9 +81,10 @@ int itypeIsSame(INode *node1, INode *node2) {
     }
 }
 
-// Is totype equivalent or a non-changing subtype of fromtype
+// Can fromtype be safely downcast to the more specialized totype?
+// This is used on behalf of the 'is' operator, sometimes recursively.
 // Returns some MatchCode value
-int itypeMatches(INode *totype, INode *fromtype) {
+int itypeIsMatches(INode *totype, INode *fromtype) {
     totype = itypeGetTypeDcl(totype);
     fromtype = itypeGetTypeDcl(fromtype);
 
@@ -106,42 +107,6 @@ int itypeMatches(INode *totype, INode *fromtype) {
             return NoMatch;
         return refvirtMatches((RefNode*)totype, (RefNode*)fromtype);
 
-    case ArrayRefTag:
-        if (fromtype->tag != ArrayRefTag)
-            return NoMatch;
-        return arrayRefMatches((RefNode*)totype, (RefNode*)fromtype);
-
-    case PtrTag:
-        if (fromtype->tag == RefTag || fromtype->tag == ArrayRefTag)
-            return itypeIsSame(((RefNode*)fromtype)->pvtype, ((PtrNode*)totype)->pvtype)? CoerceMatch : NoMatch;
-        if (fromtype->tag != PtrTag)
-            return NoMatch;
-        return ptrMatches((PtrNode*)totype, (PtrNode*)fromtype);
-
-    case ArrayTag:
-        if (totype->tag != fromtype->tag)
-            return NoMatch;
-        return arrayEqual((ArrayNode*)totype, (ArrayNode*)fromtype);
-
-    case FnSigTag:
-        return fnSigMatches((FnSigNode*)totype, fromtype);
-
-    case UintNbrTag:
-        if ((fromtype->tag == RefTag || fromtype->tag == PtrTag) && totype == (INode*)boolType)
-            return CoerceMatch;
-        // Fall through is intentional here...
-    case IntNbrTag:
-    case FloatNbrTag:
-        if (totype == (INode*)boolType)
-            return CoerceMatch;
-        if (totype->tag != fromtype->tag)
-            return isNbr(totype) && isNbr(fromtype) ? NbrConvMatch : NoMatch;
-        if (((NbrNode *)totype)->bits == ((NbrNode *)fromtype)->bits)
-            return EqMatch;
-        return ((NbrNode *)totype)->bits > ((NbrNode *)fromtype)->bits ? CoerceMatch : NbrShrinkMatch;
-
-    case VoidTag:
-        return fromtype->tag == VoidTag? EqMatch : NoMatch;
     default:
         return itypeIsSame(totype, fromtype)? EqMatch : NoMatch;
     }
