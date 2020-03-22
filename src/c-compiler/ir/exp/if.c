@@ -158,6 +158,10 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
             case NoMatch:
                 match = NoMatch;
                 break;
+            case CastMatch:
+                if (match != NoMatch)
+                    match = CastMatch;
+                break;
             case CoerceMatch:
                 if (match != NoMatch)
                     match = CoerceMatch;
@@ -187,7 +191,7 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
     ifnode->vtype = maybeType;
 
     //  If coercion is needed for some blocks, perform them as needed
-    if (match == CoerceMatch) {
+    if (match == CoerceMatch || match == CastMatch) {
         for (nodesFor(ifnode->condblk, cnt, nodesp)) {
             ++nodesp; --cnt;
             // Since generation requires this node to be a block,

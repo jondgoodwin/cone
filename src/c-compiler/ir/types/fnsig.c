@@ -107,7 +107,7 @@ int fnSigVrefEqual(FnSigNode *node1, FnSigNode *node2) {
     return 1;
 }
 
-// Return MatchCode indicating whether from type matches the function signature
+// Return SubtypeCompare indicating whether from type matches the function signature
 int fnSigMatches(FnSigNode *to, INode *fromdcl) {
     // They only match if both are structurally identical function signatures
     if (fromdcl->tag != FnSigTag)
@@ -139,7 +139,9 @@ int fnSigMatchesCall(FnSigNode *to, Nodes *args) {
         switch (match = iexpMatches(callnodesp, ((IExpNode *)*tonodesp)->vtype, NoCoerce)) {
         case NoMatch: return 0;
         case EqMatch: break;
-        case CoerceMatch: matchsum += match; break;
+        case CastMatch:
+        case CoerceMatch: 
+            matchsum += match; break;
         default:
             if ((*callnodesp)->tag != ULitTag)
                 return 0;
@@ -174,7 +176,9 @@ int fnSigMatchMethCall(FnSigNode *to, INode **self, Nodes *args) {
         case NoMatch:
             return 0;
         case EqMatch: break;
-        case CoerceMatch: matchsum += match; break;
+        case CastMatch:
+        case CoerceMatch: 
+            matchsum += match; break;
         default:
             return 0;
         }
@@ -197,7 +201,9 @@ int fnSigMatchMethCall(FnSigNode *to, INode **self, Nodes *args) {
         case NoMatch:
             return 0;
         case EqMatch: break;
-        case CoerceMatch: matchsum += match; break;
+        case CastMatch:
+        case CoerceMatch:
+            matchsum += match; break;
         default:
             if ((*callnodesp)->tag != ULitTag)
                 return 0;

@@ -102,6 +102,10 @@ void loopTypeCheck(TypeCheckState *pstate, LoopNode *node, INode *expectType) {
             case NoMatch:
                 match = NoMatch;
                 break;
+            case CastMatch:
+                if (match != NoMatch)
+                    match = CastMatch;
+                break;
             case CoerceMatch:
                 if (match != NoMatch)
                     match = CoerceMatch;
@@ -125,7 +129,7 @@ void loopTypeCheck(TypeCheckState *pstate, LoopNode *node, INode *expectType) {
     node->vtype = maybeType;
 
     //  If coercion is needed for some blocks, perform them as needed
-    if (match == CoerceMatch) {
+    if (match == CoerceMatch || match == CastMatch) {
         for (nodesFor(node->breaks, cnt, nodesp)) {
             INode **breakexp = &((BreakNode *)*nodesp)->exp;
             iexpCoerce(breakexp, maybeType);

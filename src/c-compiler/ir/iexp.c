@@ -40,7 +40,7 @@ int iexpTypeCheckAny(TypeCheckState *pstate, INode **from) {
 }
 
 // Is totype equivalent or a non-changing subtype of fromtype
-// Returns some MatchCode value
+// Returns some SubtypeCompare value
 int iexpMatches(INode **from, INode *totype, int coerceflag) {
     totype = itypeGetTypeDcl(totype);
     INode *fromtype = iexpGetTypeDcl(*from);
@@ -131,6 +131,7 @@ int iexpCoerce(INode **from, INode *totype) {
         return 0;
     case EqMatch:
         return 1;
+    case CastMatch:
     case CoerceMatch:
         *from = (INode*)newCastNode(*from, totypedcl);
         return 1;

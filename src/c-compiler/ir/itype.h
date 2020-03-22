@@ -8,10 +8,12 @@
 #ifndef itype_h
 #define itype_h
 
-enum MatchCode {
+// Result from comparing subtype relationship between two types
+enum SubtypeCompare {
     NoMatch,           // Types are incompatible
     EqMatch,           // Types are the same (equivalent)
-    CoerceMatch,       // From type can be coerced to 'to' type (upcast)
+    CastMatch,         // From type can be recast to 'to' type (compile-time upcast)
+    CoerceMatch,       // From type can be converted to 'to' type (runtime upcast)
     NbrShrinkMatch,    // From type is same number type but loses bits
     NbrConvMatch,      // Both types are numbers, but different kinds
 };

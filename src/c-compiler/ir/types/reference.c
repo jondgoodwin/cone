@@ -141,6 +141,8 @@ int refMatches(RefNode *to, RefNode *from) {
         return NoMatch;
     case EqMatch:
         return EqMatch;
+    case CastMatch:
+        return CastMatch;
     case CoerceMatch:
         return CoerceMatch;
     default:
@@ -173,6 +175,8 @@ int refvirtMatches(RefNode *to, RefNode *from) {
         return NoMatch;
     case EqMatch:
         return EqMatch;
+    case CastMatch:
+        return CastMatch;
     case CoerceMatch:
         return CoerceMatch;
     default:
