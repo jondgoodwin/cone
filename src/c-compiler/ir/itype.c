@@ -83,7 +83,7 @@ int itypeIsSame(INode *node1, INode *node2) {
 
 // Can fromtype be safely downcast to the more specialized totype?
 // This is used on behalf of the 'is' operator, sometimes recursively.
-// Returns some SubtypeCompare value
+// Returns some TypeCompare value
 int itypeIsMatches(INode *totype, INode *fromtype) {
     totype = itypeGetTypeDcl(totype);
     fromtype = itypeGetTypeDcl(fromtype);
@@ -95,7 +95,7 @@ int itypeIsMatches(INode *totype, INode *fromtype) {
     // Type-specific matching logic
     switch (totype->tag) {
     case StructTag:
-        return structMatches((StructNode*)totype, fromtype, NoCoerce);
+        return structMatches((StructNode*)totype, fromtype, Coercion);
 
     case RefTag:
         if (fromtype->tag != RefTag)
@@ -113,7 +113,7 @@ int itypeIsMatches(INode *totype, INode *fromtype) {
 }
 
 // Is totype equivalent or a non-changing subtype of fromtype
-// Returns some SubtypeCompare value
+// Returns some TypeCompare value
 int itypeRefMatches(INode *totype, INode *fromtype) {
     totype = itypeGetTypeDcl(totype);
     fromtype = itypeGetTypeDcl(fromtype);
@@ -147,7 +147,7 @@ int itypeRefMatches(INode *totype, INode *fromtype) {
 
     case PtrTag:
         if (fromtype->tag == RefTag || fromtype->tag == ArrayRefTag)
-            return itypeIsSame(((RefNode*)fromtype)->pvtype, ((PtrNode*)totype)->pvtype) ? CoerceMatch : NoMatch;
+            return itypeIsSame(((RefNode*)fromtype)->pvtype, ((PtrNode*)totype)->pvtype) ? ConvSubtype : NoMatch;
         if (fromtype->tag != PtrTag)
             return NoMatch;
         return ptrMatches((PtrNode*)totype, (PtrNode*)fromtype);

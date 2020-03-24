@@ -141,10 +141,10 @@ int refMatches(RefNode *to, RefNode *from) {
         return NoMatch;
     case EqMatch:
         return EqMatch;
-    case CastMatch:
-        return CastMatch;
-    case CoerceMatch:
-        return CoerceMatch;
+    case CastSubtype:
+        return CastSubtype;
+    case ConvSubtype:
+        return ConvSubtype;
     default:
         return NoMatch;
     }
@@ -165,7 +165,7 @@ int refvirtMatches(RefNode *to, RefNode *from) {
     INode *fromvtypedcl = itypeGetTypeDcl(from->pvtype);
     if (tovtypedcl->tag == StructTag && fromvtypedcl->tag == StructTag) {
         if (from->tag == RefTag && tovtypedcl == fromvtypedcl) {
-            return (fromvtypedcl->flags & HasTagField) ? CoerceMatch : NoMatch;
+            return (fromvtypedcl->flags & HasTagField) ? ConvSubtype : NoMatch;
         }
         return structVirtRefMatches((StructNode*)tovtypedcl, (StructNode*)fromvtypedcl);
     }
@@ -175,10 +175,10 @@ int refvirtMatches(RefNode *to, RefNode *from) {
         return NoMatch;
     case EqMatch:
         return EqMatch;
-    case CastMatch:
-        return CastMatch;
-    case CoerceMatch:
-        return CoerceMatch;
+    case CastSubtype:
+        return CastSubtype;
+    case ConvSubtype:
+        return ConvSubtype;
     default:
         return NoMatch;
     }

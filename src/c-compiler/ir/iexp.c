@@ -40,7 +40,7 @@ int iexpTypeCheckAny(TypeCheckState *pstate, INode **from) {
 }
 
 // Is totype equivalent or a non-changing subtype of fromtype
-// Returns some SubtypeCompare value
+// Returns some TypeCompare value
 int iexpMatches(INode **from, INode *totype, int coerceflag) {
     totype = itypeGetTypeDcl(totype);
     INode *fromtype = iexpGetTypeDcl(*from);
@@ -52,7 +52,7 @@ int iexpMatches(INode **from, INode *totype, int coerceflag) {
     // Type-specific matching logic
     switch (totype->tag) {
     case StructTag:
-        return structMatches((StructNode*)totype, fromtype, coerceflag);
+        return structMatches((StructNode*)totype, fromtype, Coercion);
 
     case RefTag:
         if (fromtype->tag != RefTag)
@@ -71,7 +71,7 @@ int iexpMatches(INode **from, INode *totype, int coerceflag) {
 
     case PtrTag:
         if (fromtype->tag == RefTag || fromtype->tag == ArrayRefTag)
-            return itypeIsSame(((RefNode*)fromtype)->pvtype, ((PtrNode*)totype)->pvtype) ? CoerceMatch : NoMatch;
+            return itypeIsSame(((RefNode*)fromtype)->pvtype, ((PtrNode*)totype)->pvtype) ? ConvSubtype : NoMatch;
         if (fromtype->tag != PtrTag)
             return NoMatch;
         return ptrMatches((PtrNode*)totype, (PtrNode*)fromtype);
@@ -86,17 +86,17 @@ int iexpMatches(INode **from, INode *totype, int coerceflag) {
 
     case UintNbrTag:
         if ((fromtype->tag == RefTag || fromtype->tag == PtrTag) && totype == (INode*)boolType)
-            return CoerceMatch;
+            return ConvSubtype;
         // Fall through is intentional here...
     case IntNbrTag:
     case FloatNbrTag:
         if (totype == (INode*)boolType)
-            return CoerceMatch;
+            return ConvSubtype;
         if (totype->tag != fromtype->tag)
             return isNbr(totype) && isNbr(fromtype) ? NbrConvMatch : NoMatch;
         if (((NbrNode *)totype)->bits == ((NbrNode *)fromtype)->bits)
             return EqMatch;
-        return ((NbrNode *)totype)->bits > ((NbrNode *)fromtype)->bits ? CoerceMatch : NbrShrinkMatch;
+        return ((NbrNode *)totype)->bits > ((NbrNode *)fromtype)->bits ? ConvSubtype : NbrShrinkMatch;
 
     case VoidTag:
         return fromtype->tag == VoidTag ? EqMatch : NoMatch;
@@ -131,8 +131,8 @@ int iexpCoerce(INode **from, INode *totype) {
         return 0;
     case EqMatch:
         return 1;
-    case CastMatch:
-    case CoerceMatch:
+    case CastSubtype:
+    case ConvSubtype:
         *from = (INode*)newCastNode(*from, totypedcl);
         return 1;
     default: {
@@ -190,7 +190,7 @@ int iexpMultiInfer(INode *expectType, INode **maybeType, INode **from) {
             INode *superType = itypeFindSuper(*maybeType, fromType);
             if (superType) {
                 *maybeType = superType;
-                return CoerceMatch;
+                return ConvSubtype;
             }
             else {
                 errorMsgNode(*from, ErrorInvType, "Branch's expression type inconsistent with other branches.");

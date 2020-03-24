@@ -7,6 +7,7 @@
 
 #include "../ir.h"
 #include <string.h>
+#include <assert.h>
 
 // Create a new struct type whose info will be filled in afterwards
 StructNode *newStructNode(Name *namesym) {
@@ -388,33 +389,39 @@ int structVirtRefMatches(StructNode *trait, StructNode *strnode) {
     for (nodesFor(vtable->impl, cnt, nodesp)) {
         VtableImpl *impl = (VtableImpl*)*nodesp;
         if (impl->structdcl == (INode*)strnode)
-            return CoerceMatch;
+            return ConvSubtype;
     }
 
-    return structAddVtableImpl(trait, strnode)? CoerceMatch : NoMatch;
+    return structAddVtableImpl(trait, strnode)? ConvSubtype : NoMatch;
 }
 
-// Will from-type coerce to to-struct (we know they are not the same)
-// We can only do this for a same-sized trait supertype
-int structMatches(StructNode *to, INode *fromdcl, int coerceflag) {
-    if ((StructNode*)fromdcl == to)
-        return EqMatch;
+// Is from-type a subtype of to-struct (we know they are not the same)
+// Subtyping is complex on structs for coercions, because we want to avoid the memory management
+// messiness of converting struct values from one type to another.
+TypeCompare structMatches(StructNode *to, INode *fromdcl, SubtypeConstraint constraint) {
+    assert((StructNode*)fromdcl != to);  // We know the types are not equivalent
 
-    // Check whether struct can coerce to a same-sized, nominally declared base trait
-    if ((to->flags & TraitType) && (to->flags & SameSize) && fromdcl->tag == StructTag) {
+    // Only a struct may be a subtype of a struct supertype
+    if (fromdcl->tag != StructTag)
+        return NoMatch;
+    StructNode *from = (StructNode*)fromdcl;
+
+    // Do the easier check first: Is to-type a base trait of from-type?
+    // If so, we know from-type has to-type at its start, making it a great subtype nearly always
+    if ((to->flags & TraitType) && (to->flags & SameSize)) {
         StructNode *super = (StructNode *)fromdcl;
         while (super->basetrait) {
             StructNode *base = (StructNode*)itypeGetTypeDcl(super->basetrait);
             // If it is a valid supertype trait, indicate that it requires coercion
             if (to == base) {
-                if (coerceflag)
-                    // *fromexp = (INode*)newCastNode(*fromexp, (INode*)to)
-                    ;
-                return CoerceMatch;
+                // With most constraints, a found base trait means we have a valid subtype.
+                // However, a non-reference (struct) coercion requires subtype & supertype be the same size
+                return constraint == Coercion && !(to->flags & SameSize) ? NoMatch : CastSubtype;
             }
             super = base;
         }
     }
+
     return NoMatch;
 }
 
@@ -428,7 +435,7 @@ int structRefMatches(StructNode *to, StructNode *from) {
             base = (StructNode*)itypeGetTypeDcl(base->basetrait);
             // If it is a valid supertype trait, indicate that it requires coercion
             if (to == base)
-                return CoerceMatch;
+                return ConvSubtype;
         }
     }
     return NoMatch;

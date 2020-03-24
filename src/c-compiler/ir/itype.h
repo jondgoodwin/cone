@@ -9,19 +9,30 @@
 #define itype_h
 
 // Result from comparing subtype relationship between two types
-enum SubtypeCompare {
+typedef enum {
     NoMatch,           // Types are incompatible
     EqMatch,           // Types are the same (equivalent)
-    CastMatch,         // From type can be recast to 'to' type (compile-time upcast)
-    CoerceMatch,       // From type can be converted to 'to' type (runtime upcast)
+    CastSubtype,       // Subtype: From type can be recast to 'to' type (compile-time upcast)
+    ConvSubtype,       // Subtype: From type can be converted to 'to' type (runtime upcast)
     NbrShrinkMatch,    // From type is same number type but loses bits
     NbrConvMatch,      // Both types are numbers, but different kinds
-};
+} TypeCompare;
 
-enum CoerceFlag {
-    NoCoerce,
-    DoCoerce,
-};
+// The constraint context for comparing a subtyping relationship
+// This determines the severity of extra constraints,
+// due to the absence of some coercion conversions
+typedef enum {
+    Monomorph,          // Monomorphization - no constraints
+    Virtref,            // Virtual reference - relaxed
+    Regref,             // Regular reference - ordered prefix
+    Coercion,           // Most restrictive: no complex conversions
+} SubtypeConstraint;
+
+// Flag to indicate whether type match should inject coercion node
+typedef enum {
+    NoCoerce,           // Do not inject coercion node
+    DoCoerce,           // Inject coercion node if type matches
+} CoerceFlag;
 
 typedef struct Name Name;
 
