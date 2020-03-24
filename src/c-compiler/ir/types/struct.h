@@ -73,11 +73,6 @@ int structVirtRefMatches(StructNode *trait, StructNode *strnode);
 // We can only do this for a same-sized trait supertype
 TypeCompare structMatches(StructNode *to, INode *fromdcl, SubtypeConstraint constraint);
 
-// Will from struct coerce to a to struct (we know they are not the same)
-// This works for references which have more relaxed subtyping rules
-// because matching on size is not necessary
-int structRefMatches(StructNode *to, StructNode *from);
-
 // Return true if type of from-exp matches totype. Inject coercion, if needed
 int structCoerce(StructNode *totype, INode **fromexp);
 

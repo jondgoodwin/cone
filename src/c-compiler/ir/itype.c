@@ -125,10 +125,8 @@ int itypeRefMatches(INode *totype, INode *fromtype) {
     // Type-specific matching logic
     switch (totype->tag) {
     case StructTag:
-        if (fromtype->tag != StructTag)
-            return NoMatch;
-        // struct subtype matching is a bit different when coming from a reference
-        return structRefMatches((StructNode*)totype, (StructNode*)fromtype);
+        // struct subtype matching is more relaxed when coming from a reference
+        return structMatches((StructNode*)totype, fromtype, Regref);
 
     case RefTag:
         if (fromtype->tag != RefTag)

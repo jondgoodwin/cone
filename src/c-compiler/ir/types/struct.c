@@ -397,7 +397,13 @@ int structVirtRefMatches(StructNode *trait, StructNode *strnode) {
 
 // Is from-type a subtype of to-struct (we know they are not the same)
 // Subtyping is complex on structs for coercions, because we want to avoid the memory management
-// messiness of converting struct values from one type to another.
+// messiness of converting struct values from one type to another due to depth/width polymorphism.
+//
+// The passed constraint establishes the additional subtyping constraints between structs
+// - Monomorph accepts any valid subtype, since monomorphization performs no value conversions
+// - VirtRef demands that no field require a runtime conversion
+// - RegRef demands that supertype's fields appear at start of subtype in order, with no conversion
+// - Coercion demands all of the above, plus no added fields
 TypeCompare structMatches(StructNode *to, INode *fromdcl, SubtypeConstraint constraint) {
     assert((StructNode*)fromdcl != to);  // We know the types are not equivalent
 
@@ -421,23 +427,10 @@ TypeCompare structMatches(StructNode *to, INode *fromdcl, SubtypeConstraint cons
             super = base;
         }
     }
+    // If the above test fails, non-ref coercion is not valid
+    if (constraint == Coercion)
+        return NoMatch;
 
-    return NoMatch;
-}
-
-// Will from struct coerce to a to struct (we know they are not the same)
-// This works for references which have more relaxed subtyping rules
-// because matching on size is not necessary
-int structRefMatches(StructNode *to, StructNode *from) {
-    if ((to->flags & TraitType)) {
-        StructNode *base = from;
-        while (base->basetrait) {
-            base = (StructNode*)itypeGetTypeDcl(base->basetrait);
-            // If it is a valid supertype trait, indicate that it requires coercion
-            if (to == base)
-                return ConvSubtype;
-        }
-    }
     return NoMatch;
 }
 
