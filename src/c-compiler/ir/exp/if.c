@@ -121,7 +121,7 @@ void ifExhaustCheck(IfNode *ifnode, CastNode *condition) {
 // Coercion is performed on branches as needed to accomplish this, or errors result
 void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
     int hasElse = 0;
-    int match = EqMatch;
+    TypeCompare match = EqMatch;
     INode *maybeType = unknownType;
     INode **nodesp;
     uint32_t cnt;

@@ -80,7 +80,7 @@ void loopTypeCheck(TypeCheckState *pstate, LoopNode *node, INode *expectType) {
     // Do inference on all registered breaks to ensure they all return the expected type
 
     INode *maybeType = unknownType;
-    int match = EqMatch;
+    TypeCompare match = EqMatch;
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(node->breaks, cnt, nodesp)) {

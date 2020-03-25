@@ -39,9 +39,9 @@ typedef struct TypeCheckState TypeCheckState;
 
 // Interfaces & headers shared across nodes
 #include "inode.h"
-#include "iexp.h"
 #include "name.h"
 #include "itype.h"
+#include "iexp.h"
 #include "instype.h"
 #include "clone.h"
 #include "flow.h"

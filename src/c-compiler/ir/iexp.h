@@ -32,10 +32,7 @@ INode *iexpGetDerefTypeDcl(INode *node);
 int iexpTypeCheckAny(TypeCheckState *pstate, INode **from);
 
 // Is totype equivalent or a non-coerced subtype of from's type
-// 0 - no
-// 1 - yes, without conversion
-// 2+ - requires increasingly lossy conversion/coercion
-int iexpMatches(INode **from, INode *totype, int coerceflag);
+TypeCompare iexpMatches(INode **from, INode *totype, int coerceflag);
 
 // Coerce from-node's type to 'to' expected type, if needed
 // Return 1 if type "matches", 0 otherwise

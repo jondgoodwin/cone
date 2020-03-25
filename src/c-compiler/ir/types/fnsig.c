@@ -108,7 +108,7 @@ int fnSigVrefEqual(FnSigNode *node1, FnSigNode *node2) {
 }
 
 // Return TypeCompare indicating whether from type matches the function signature
-int fnSigMatches(FnSigNode *to, INode *fromdcl) {
+TypeCompare fnSigMatches(FnSigNode *to, INode *fromdcl) {
     // They only match if both are structurally identical function signatures
     if (fromdcl->tag != FnSigTag)
         return NoMatch;
@@ -135,7 +135,7 @@ int fnSigMatchesCall(FnSigNode *to, Nodes *args) {
     uint32_t cnt;
     tonodesp = &nodesGet(to->parms, 0);
     for (nodesFor(args, cnt, callnodesp)) {
-        int match;
+        TypeCompare match;
         switch (match = iexpMatches(callnodesp, ((IExpNode *)*tonodesp)->vtype, NoCoerce)) {
         case NoMatch: return 0;
         case EqMatch: break;
@@ -170,7 +170,7 @@ int fnSigMatchMethCall(FnSigNode *to, INode **self, Nodes *args) {
     INode **tonodesp = &nodesGet(to->parms, 0);
     INode *selftype = iexpGetTypeDcl(*self);
     int matchsum = 1;
-    int match;
+    TypeCompare match;
     if (selftype->tag != VirtRefTag) {
         switch (match = iexpMatches(self, iexpGetTypeDcl(*tonodesp), NoCoerce)) {
         case NoMatch:

@@ -84,7 +84,7 @@ int itypeIsSame(INode *node1, INode *node2) {
 // Can fromtype be safely downcast to the more specialized totype?
 // This is used on behalf of the 'is' operator, sometimes recursively.
 // Returns some TypeCompare value
-int itypeIsMatches(INode *totype, INode *fromtype) {
+TypeCompare itypeIsMatches(INode *totype, INode *fromtype) {
     totype = itypeGetTypeDcl(totype);
     fromtype = itypeGetTypeDcl(fromtype);
 
@@ -114,7 +114,7 @@ int itypeIsMatches(INode *totype, INode *fromtype) {
 
 // Is totype equivalent or a non-changing subtype of fromtype
 // Returns some TypeCompare value
-int itypeRefMatches(INode *totype, INode *fromtype) {
+TypeCompare itypeRefMatches(INode *totype, INode *fromtype) {
     totype = itypeGetTypeDcl(totype);
     fromtype = itypeGetTypeDcl(fromtype);
 
@@ -153,7 +153,7 @@ int itypeRefMatches(INode *totype, INode *fromtype) {
     case ArrayTag:
         if (totype->tag != fromtype->tag)
             return NoMatch;
-        return arrayEqual((ArrayNode*)totype, (ArrayNode*)fromtype);
+        return arrayEqual((ArrayNode*)totype, (ArrayNode*)fromtype)? EqMatch : NoMatch;
 
     case FnSigTag:
         return fnSigMatches((FnSigNode*)totype, fromtype);

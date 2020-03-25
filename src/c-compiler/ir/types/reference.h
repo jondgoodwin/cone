@@ -53,10 +53,10 @@ void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node);
 int refEqual(RefNode *node1, RefNode *node2);
 
 // Will from reference coerce to a to reference (we know they are not the same)
-int refMatches(RefNode *to, RefNode *from);
+TypeCompare refMatches(RefNode *to, RefNode *from);
 
 // Will from reference coerce to a virtual reference (we know they are not the same)
-int refvirtMatches(RefNode *to, RefNode *from);
+TypeCompare refvirtMatches(RefNode *to, RefNode *from);
 
 // Return a type that is the supertype of both type nodes, or NULL if none found
 INode *refFindSuper(INode *type1, INode *type2);

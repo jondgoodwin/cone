@@ -377,7 +377,7 @@ void structMakeVtable(StructNode *node) {
 }
 
 // Populate the vtable implementation info for a struct ref being coerced to some trait
-int structVirtRefMatches(StructNode *trait, StructNode *strnode) {
+TypeCompare structVirtRefMatches(StructNode *trait, StructNode *strnode) {
 
     if (trait->vtable == NULL)
         structMakeVtable(trait);
@@ -411,6 +411,13 @@ TypeCompare structMatches(StructNode *to, INode *fromdcl, SubtypeConstraint cons
     if (fromdcl->tag != StructTag)
         return NoMatch;
     StructNode *from = (StructNode*)fromdcl;
+
+    // The virtual reference compare has extra logic for building vtables info
+    // So, we just handle it separately
+    /*
+    if (constraint == Virtref)
+        return structVirtRefMatches(to, from);
+    */
 
     // Do the easier check first: Is to-type a base trait of from-type?
     // If so, we know from-type has to-type at its start, making it a great subtype nearly always

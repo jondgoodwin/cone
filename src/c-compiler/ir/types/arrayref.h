@@ -21,6 +21,6 @@ void arrayRefTypeCheck(TypeCheckState *pstate, RefNode *name);
 int arrayRefEqual(RefNode *node1, RefNode *node2);
 
 // Will from reference coerce to a to reference (we know they are not the same)
-int arrayRefMatches(RefNode *to, RefNode *from);
+TypeCompare arrayRefMatches(RefNode *to, RefNode *from);
 
 #endif
