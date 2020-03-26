@@ -318,7 +318,8 @@ int structAddVtableImpl(StructNode *basenode, StructNode *strnode) {
                 //    &strnode->namesym->namestr, &trait->namesym->namestr, &fld->namesym->namestr);
                 return 0;
             }
-            if (!itypeIsSame(((FieldDclNode*)strfld)->vtype, fld->vtype)) {
+            TypeCompare match = iexpMatches(&strfld, fld->vtype, NoCoerce);
+            if (match != EqMatch && match != CastSubtype) {
                 //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to a %s virtual reference. Incompatible type for field %s.",
                 //    &strnode->namesym->namestr, &trait->namesym->namestr, &fld->namesym->namestr);
                 return 0;
@@ -407,8 +408,8 @@ TypeCompare structVirtRefMatches(StructNode *trait, StructNode *strnode) {
 TypeCompare structMatches(StructNode *to, INode *fromdcl, SubtypeConstraint constraint) {
     assert((StructNode*)fromdcl != to);  // We know the types are not equivalent
 
-    // Only a struct may be a subtype of a struct supertype
-    if (fromdcl->tag != StructTag)
+    // Only a struct may be a subtype of a trait supertype
+    if (fromdcl->tag != StructTag || !(to->flags & TraitType))
         return NoMatch;
     StructNode *from = (StructNode*)fromdcl;
 
@@ -421,7 +422,7 @@ TypeCompare structMatches(StructNode *to, INode *fromdcl, SubtypeConstraint cons
 
     // Do the easier check first: Is to-type a base trait of from-type?
     // If so, we know from-type has to-type at its start, making it a great subtype nearly always
-    if ((to->flags & TraitType) && (to->flags & SameSize)) {
+    if (to->flags & SameSize) {
         StructNode *super = (StructNode *)fromdcl;
         while (super->basetrait) {
             StructNode *base = (StructNode*)itypeGetTypeDcl(super->basetrait);
@@ -438,7 +439,63 @@ TypeCompare structMatches(StructNode *to, INode *fromdcl, SubtypeConstraint cons
     if (constraint == Coercion)
         return NoMatch;
 
-    return NoMatch;
+    // For the Monomorphization & RegRef, we try the slower test
+    // of ensuring all methods and fields in supertype are also in subtype
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&to->nodelist, cnt, nodesp)) {
+        // Locate the corresponding method with matching name and vtype
+        // Note, we need to be flexible in matching the self parameter
+        FnDclNode *meth = (FnDclNode *)*nodesp;
+        FnDclNode *strmeth = (FnDclNode *)namespaceFind(&from->namespace, meth->namesym);
+        if ((strmeth = iNsTypeFindVrefMethod(strmeth, meth)) == NULL)
+            return NoMatch;
+    }
+    // Technique for comparing fields varies ...
+    if (constraint == Monomorph) {
+        // Monomorphization: Field order is irrelevant. Depth and width subtyping are ok
+        for (nodelistFor(&to->fields, cnt, nodesp)) {
+            // Find the corresponding field with matching name and vtype
+            FieldDclNode *fld = (FieldDclNode *)*nodesp;
+            INode *strfld = namespaceFind(&from->namespace, fld->namesym);
+            if (strfld == NULL || strfld->tag != FieldDclTag) {
+                //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to %s. Missing field %s.",
+                //    &to->namesym->namestr, &to->namesym->namestr, &fld->namesym->namestr);
+                return NoMatch;
+            }
+            TypeCompare match = iexpMatches(&strfld, fld->vtype, NoCoerce);
+            if (match != EqMatch && match != ConvSubtype && match != CastSubtype) {
+                //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to %s. Incompatible type for field %s.",
+                //    &to->namesym->namestr, &to->namesym->namestr, &fld->namesym->namestr);
+                return NoMatch;
+            }
+        }
+    }
+    else {
+        // Regular reference: we need all supertype fields at start of subtype.
+        // Width subtyping ok. Depth subtyping only if no field conversions required.
+        if (to->fields.used > from->fields.used)
+            return NoMatch;
+        INode **frmnodesp = &nodelistGet(&to->fields, 0);
+        for (nodelistFor(&to->fields, cnt, nodesp)) {
+            // Find the corresponding field with matching name and vtype
+            FieldDclNode *fld = (FieldDclNode *)*nodesp;
+            INode *strfld = *frmnodesp++;
+            if (strfld == NULL || strfld->tag != FieldDclTag) {
+                //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to %s. Missing field %s.",
+                //    &to->namesym->namestr, &to->namesym->namestr, &fld->namesym->namestr);
+                return NoMatch;
+            }
+            TypeCompare match = iexpMatches(&strfld, fld->vtype, NoCoerce);
+            if (match != EqMatch && match != CastSubtype) {
+                //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to %s. Incompatible type for field %s.",
+                //    &to->namesym->namestr, &to->namesym->namestr, &fld->namesym->namestr);
+                return NoMatch;
+            }
+        }
+    }
+
+    return CastSubtype;
 }
 
 // Return a type that is the supertype of both type nodes, or NULL if none found
