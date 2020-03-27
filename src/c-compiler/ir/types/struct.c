@@ -318,7 +318,7 @@ int structAddVtableImpl(StructNode *basenode, StructNode *strnode) {
                 //    &strnode->namesym->namestr, &trait->namesym->namestr, &fld->namesym->namestr);
                 return 0;
             }
-            TypeCompare match = iexpMatches(&strfld, fld->vtype, NoCoerce);
+            TypeCompare match = iexpMatches(&strfld, fld->vtype, Coercion);
             if (match != EqMatch && match != CastSubtype) {
                 //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to a %s virtual reference. Incompatible type for field %s.",
                 //    &strnode->namesym->namestr, &trait->namesym->namestr, &fld->namesym->namestr);
@@ -463,7 +463,7 @@ TypeCompare structMatches(StructNode *to, INode *fromdcl, SubtypeConstraint cons
                 //    &to->namesym->namestr, &to->namesym->namestr, &fld->namesym->namestr);
                 return NoMatch;
             }
-            TypeCompare match = iexpMatches(&fromfld, tofld->vtype, NoCoerce);
+            TypeCompare match = iexpMatches(&fromfld, tofld->vtype, Monomorph);
             if (match != EqMatch && match != ConvSubtype && match != CastSubtype) {
                 //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to %s. Incompatible type for field %s.",
                 //    &to->namesym->namestr, &to->namesym->namestr, &fld->namesym->namestr);
@@ -486,7 +486,7 @@ TypeCompare structMatches(StructNode *to, INode *fromdcl, SubtypeConstraint cons
                 //    &to->namesym->namestr, &to->namesym->namestr, &fld->namesym->namestr);
                 return NoMatch;
             }
-            TypeCompare match = iexpMatches(&fromfld, tofld->vtype, NoCoerce);
+            TypeCompare match = iexpMatches(&fromfld, tofld->vtype, Coercion);
             if (match != EqMatch && match != CastSubtype) {
                 //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to %s. Incompatible type for field %s.",
                 //    &to->namesym->namestr, &to->namesym->namestr, &fld->namesym->namestr);

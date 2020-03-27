@@ -41,7 +41,7 @@ int iexpTypeCheckAny(TypeCheckState *pstate, INode **from) {
 
 // Is totype equivalent or a non-changing subtype of fromtype
 // Returns some TypeCompare value
-TypeCompare iexpMatches(INode **from, INode *totype, int coerceflag) {
+TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constraint) {
     totype = itypeGetTypeDcl(totype);
     INode *fromtype = iexpGetTypeDcl(*from);
 
@@ -126,7 +126,7 @@ int iexpCoerce(INode **from, INode *totype) {
 
     // Are types equivalent, or is 'to' a subtype of fromtypedcl?
     INode *totypedcl = itypeGetTypeDcl(totype);
-    switch (iexpMatches(from, totypedcl, NoCoerce)) {
+    switch (iexpMatches(from, totypedcl, Coercion)) {
     case NoMatch:
         return 0;
     case EqMatch:
@@ -200,7 +200,7 @@ int iexpMultiInfer(INode *expectType, INode **maybeType, INode **from) {
     }
 
     // When we have an expected type, ensure this branch matches
-    TypeCompare match = iexpMatches(from, expectType, NoCoerce);
+    TypeCompare match = iexpMatches(from, expectType, Coercion);
     if (match == NoMatch || match == NbrConvMatch) {
         errorMsgNode(*from, ErrorInvType, "Expression type does not match expected type.");
         return NoMatch;
