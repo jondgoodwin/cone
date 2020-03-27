@@ -456,14 +456,14 @@ TypeCompare structMatches(StructNode *to, INode *fromdcl, SubtypeConstraint cons
         // Monomorphization: Field order is irrelevant. Depth and width subtyping are ok
         for (nodelistFor(&to->fields, cnt, nodesp)) {
             // Find the corresponding field with matching name and vtype
-            FieldDclNode *fld = (FieldDclNode *)*nodesp;
-            INode *strfld = namespaceFind(&from->namespace, fld->namesym);
-            if (strfld == NULL || strfld->tag != FieldDclTag) {
+            FieldDclNode *tofld = (FieldDclNode *)*nodesp;
+            INode *fromfld = namespaceFind(&from->namespace, tofld->namesym);
+            if (fromfld == NULL || fromfld->tag != FieldDclTag) {
                 //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to %s. Missing field %s.",
                 //    &to->namesym->namestr, &to->namesym->namestr, &fld->namesym->namestr);
                 return NoMatch;
             }
-            TypeCompare match = iexpMatches(&strfld, fld->vtype, NoCoerce);
+            TypeCompare match = iexpMatches(&fromfld, tofld->vtype, NoCoerce);
             if (match != EqMatch && match != ConvSubtype && match != CastSubtype) {
                 //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to %s. Incompatible type for field %s.",
                 //    &to->namesym->namestr, &to->namesym->namestr, &fld->namesym->namestr);
@@ -476,17 +476,17 @@ TypeCompare structMatches(StructNode *to, INode *fromdcl, SubtypeConstraint cons
         // Width subtyping ok. Depth subtyping only if no field conversions required.
         if (to->fields.used > from->fields.used)
             return NoMatch;
-        INode **frmnodesp = &nodelistGet(&to->fields, 0);
+        INode **frmnodesp = &nodelistGet(&from->fields, 0);
         for (nodelistFor(&to->fields, cnt, nodesp)) {
-            // Find the corresponding field with matching name and vtype
-            FieldDclNode *fld = (FieldDclNode *)*nodesp;
-            INode *strfld = *frmnodesp++;
-            if (strfld == NULL || strfld->tag != FieldDclTag) {
+            // Each field of from/to should match (in order) name and vtype
+            FieldDclNode *tofld = (FieldDclNode *)*nodesp;
+            INode *fromfld = *frmnodesp++;
+            if (fromfld == NULL || fromfld->tag != FieldDclTag || ((FieldDclNode*)fromfld)->namesym != tofld->namesym) {
                 //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to %s. Missing field %s.",
                 //    &to->namesym->namestr, &to->namesym->namestr, &fld->namesym->namestr);
                 return NoMatch;
             }
-            TypeCompare match = iexpMatches(&strfld, fld->vtype, NoCoerce);
+            TypeCompare match = iexpMatches(&fromfld, tofld->vtype, NoCoerce);
             if (match != EqMatch && match != CastSubtype) {
                 //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to %s. Incompatible type for field %s.",
                 //    &to->namesym->namestr, &to->namesym->namestr, &fld->namesym->namestr);
