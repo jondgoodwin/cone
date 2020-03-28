@@ -83,6 +83,7 @@ int itypeIsSame(INode *node1, INode *node2) {
 
 // Is totype equivalent or a subtype of fromtype
 TypeCompare itypeMatches(INode *fromtype, INode *totype, SubtypeConstraint constraint) {
+    fromtype = itypeGetTypeDcl(fromtype);
     totype = itypeGetTypeDcl(totype);
 
     // If they are the same value type info, types match
@@ -142,37 +143,6 @@ TypeCompare itypeMatches(INode *fromtype, INode *totype, SubtypeConstraint const
         return fromtype->tag == VoidTag ? EqMatch : NoMatch;
     default:
         return itypeIsSame(totype, fromtype) ? EqMatch : NoMatch;
-    }
-}
-
-// Can fromtype be safely downcast to the more specialized totype?
-// This is used on behalf of the 'is' operator, sometimes recursively.
-// Returns some TypeCompare value
-TypeCompare itypeIsMatches(INode *totype, INode *fromtype) {
-    totype = itypeGetTypeDcl(totype);
-    fromtype = itypeGetTypeDcl(fromtype);
-
-    // If they are the same value type info, types match
-    if (totype == fromtype)
-        return EqMatch;
-
-    // Type-specific matching logic
-    switch (totype->tag) {
-    case StructTag:
-        return structMatches((StructNode*)totype, fromtype, Coercion);
-
-    case RefTag:
-        if (fromtype->tag != RefTag)
-            return NoMatch;
-        return refMatches((RefNode*)totype, (RefNode*)fromtype);
-
-    case VirtRefTag:
-        if (fromtype->tag != VirtRefTag && fromtype->tag != RefTag)
-            return NoMatch;
-        return refvirtMatches((RefNode*)totype, (RefNode*)fromtype);
-
-    default:
-        return itypeIsSame(totype, fromtype)? EqMatch : NoMatch;
     }
 }
 
