@@ -332,10 +332,14 @@ INode *parsePrefix(ParseState *parse) {
 // Parse type cast
 INode *parseCast(ParseState *parse) {
     INode *lhnode = parsePrefix(parse);
-    if (lexIsToken(AsToken) || lexIsToken(IntoToken)) {
-        CastNode *node = newCastNode(lhnode, unknownType);
-        if (lexIsToken(AsToken))
-            node->flags |= FlagAsIf;
+    if (lexIsToken(AsToken)) {
+        CastNode *node = newRecastNode(lhnode, unknownType);
+        lexNextToken();
+        node->typ = parseVtype(parse);
+        return (INode*)node;
+    }
+    else if (lexIsToken(IntoToken)) {
+        CastNode *node = newConvCastNode(lhnode, unknownType);
         lexNextToken();
         node->typ = parseVtype(parse);
         return (INode*)node;

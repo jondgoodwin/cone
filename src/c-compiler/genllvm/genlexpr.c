@@ -530,8 +530,8 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
 }
 
 // Reinterpret a value as if it were another type
-LLVMValueRef genlReinterpret(GenState *gen, INode* exp, INode* to) {
-    INode *totype = iexpGetTypeDcl(to);
+LLVMValueRef genlRecast(GenState *gen, INode* exp, INode* to) {
+    INode *totype = itypeGetTypeDcl(to);
     LLVMValueRef genexp = genlExpr(gen, exp);
     if (totype->tag == StructTag) {
         // LLVM does not bitcast structs, so this store/load hack gets around that problem
@@ -960,8 +960,8 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     case CastTag:
     {
         CastNode *node = (CastNode*)termnode;
-        if (node->flags & FlagAsIf)
-            return genlReinterpret(gen, node->exp, node->vtype);
+        if (node->flags & FlagRecast)
+            return genlRecast(gen, node->exp, node->vtype);
         return genlConvert(gen, node->exp, node->vtype);
     }
     case IsTag:

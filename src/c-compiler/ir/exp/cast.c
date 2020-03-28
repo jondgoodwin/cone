@@ -7,8 +7,18 @@
 
 #include "../ir.h"
 
-// Create a new cast node
-CastNode *newCastNode(INode *exp, INode *type) {
+// Create node for recasting to a new type without conversion
+CastNode *newRecastNode(INode *exp, INode *type) {
+    CastNode *node;
+    newNode(node, CastNode, CastTag);
+    node->flags |= FlagRecast;
+    node->typ = node->vtype = type;
+    node->exp = exp;
+    return node;
+}
+
+// Create node for converting exp to a new type
+CastNode *newConvCastNode(INode *exp, INode *type) {
     CastNode *node;
     newNode(node, CastNode, CastTag);
     node->typ = node->vtype = type;
@@ -83,7 +93,7 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
     INode *totype = itypeGetTypeDcl(node->vtype);
 
     // Handle reinterpret casts, which must be same size
-    if (node->flags & FlagAsIf) {
+    if (node->flags & FlagRecast) {
         if (totype->tag != StructTag) {
             uint32_t tosize = castBitsize(totype);
             if (tosize == 0 || tosize != castBitsize(fromtype))

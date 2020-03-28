@@ -119,7 +119,7 @@ VarDclNode *parseBindVarDcl(ParseState *parse) {
 void parseBoundMatch(ParseState *parse, IfNode *ifnode, NameUseNode *expnamenode, VarDclNode *valnode) {
     // We will desugar a variable declaration into using a pattern match and re-cast
     CastNode *isnode = newIsNode((INode*)expnamenode, unknownType);
-    CastNode *castnode = newCastNode((INode*)expnamenode, unknownType);
+    CastNode *castnode = newConvCastNode((INode*)expnamenode, unknownType);
 
     // Parse the variable-bind into a vardcl,
     // then preserve its desired type into both the 'is' and 'cast' nodes

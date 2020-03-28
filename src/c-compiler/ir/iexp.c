@@ -132,8 +132,10 @@ int iexpCoerce(INode **from, INode *totype) {
     case EqMatch:
         return 1;
     case CastSubtype:
+        *from = (INode*)newRecastNode(*from, totypedcl);
+        return 1;
     case ConvSubtype:
-        *from = (INode*)newCastNode(*from, totypedcl);
+        *from = (INode*)newConvCastNode(*from, totypedcl);
         return 1;
     default: {
         // If not an integer literal, don't convert

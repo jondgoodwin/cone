@@ -15,9 +15,13 @@ typedef struct CastNode {
     INode *typ;
 } CastNode;
 
-#define FlagAsIf 0x8000
+#define FlagRecast 0x8000
 
-CastNode *newCastNode(INode *exp, INode *type);
+// Create node for recasting to a new type without conversion
+CastNode *newRecastNode(INode *exp, INode *type);
+
+// Create node for converting exp to a new type
+CastNode *newConvCastNode(INode *exp, INode *type);
 
 // Clone cast
 INode *cloneCastNode(CloneState *cstate, CastNode *node);

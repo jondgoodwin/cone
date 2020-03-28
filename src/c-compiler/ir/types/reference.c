@@ -167,7 +167,8 @@ TypeCompare refvirtMatches(RefNode *to, RefNode *from) {
         if (from->tag == RefTag && tovtypedcl == fromvtypedcl) {
             return (fromvtypedcl->flags & HasTagField) ? ConvSubtype : NoMatch;
         }
-        return structVirtRefMatches((StructNode*)tovtypedcl, (StructNode*)fromvtypedcl);
+        TypeCompare match = structVirtRefMatches((StructNode*)tovtypedcl, (StructNode*)fromvtypedcl);
+        return match == CastSubtype ? ConvSubtype : match;
     }
 
     switch (itypeRefMatches(tovtypedcl, fromvtypedcl)) {
