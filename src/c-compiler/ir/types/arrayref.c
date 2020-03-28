@@ -43,12 +43,12 @@ int arrayRefEqual(RefNode *node1, RefNode *node2) {
 }
 
 // Will from reference coerce to a to reference (we know they are not the same)
-TypeCompare arrayRefMatches(RefNode *to, RefNode *from) {
+TypeCompare arrayRefMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint) {
     if (NoMatch == permMatches(to->perm, from->perm)
         || (to->region != from->region && to->region != borrowRef)
         || ((from->flags & FlagRefNull) && !(to->flags & FlagRefNull)))
         return NoMatch;
     if (to->pvtype && from->pvtype)
-        return itypeRefMatches(to->pvtype, from->pvtype) == EqMatch ? EqMatch : ConvSubtype;
+        return itypeMatches(to->pvtype, from->pvtype, Regref) == EqMatch ? EqMatch : ConvSubtype;
     return NoMatch;
 }

@@ -123,7 +123,7 @@ int refEqual(RefNode *node1, RefNode *node2) {
 }
 
 // Will from reference coerce to a to reference (we know they are not the same)
-TypeCompare refMatches(RefNode *to, RefNode *from) {
+TypeCompare refMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint) {
     if (NoMatch == permMatches(to->perm, from->perm)
         || (to->region != from->region && to->region != borrowRef)
         || ((from->flags & FlagRefNull) && !(to->flags & FlagRefNull)))
@@ -136,7 +136,7 @@ TypeCompare refMatches(RefNode *to, RefNode *from) {
     // Match on ref's vtype as well, using special subtype matching for references
     INode *tovtypedcl = itypeGetTypeDcl(to->pvtype);
     INode *fromvtypedcl = itypeGetTypeDcl(from->pvtype);
-    switch (itypeRefMatches(tovtypedcl, fromvtypedcl)) {
+    switch (itypeMatches(tovtypedcl, fromvtypedcl, Regref)) {
     case NoMatch:
         return NoMatch;
     case EqMatch:
@@ -151,7 +151,7 @@ TypeCompare refMatches(RefNode *to, RefNode *from) {
 }
 
 // Will from reference coerce to a virtual reference (we know they are not the same)
-TypeCompare refvirtMatches(RefNode *to, RefNode *from) {
+TypeCompare refvirtMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint) {
     if (NoMatch == permMatches(to->perm, from->perm)
         || (to->region != from->region && to->region != borrowRef)
         || ((from->flags & FlagRefNull) && !(to->flags & FlagRefNull)))
@@ -171,7 +171,7 @@ TypeCompare refvirtMatches(RefNode *to, RefNode *from) {
         return match == CastSubtype ? ConvSubtype : match;
     }
 
-    switch (itypeRefMatches(tovtypedcl, fromvtypedcl)) {
+    switch (itypeMatches(tovtypedcl, fromvtypedcl, Virtref)) {
     case NoMatch:
         return NoMatch;
     case EqMatch:

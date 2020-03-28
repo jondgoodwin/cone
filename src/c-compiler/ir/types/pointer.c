@@ -46,6 +46,6 @@ int ptrEqual(PtrNode *node1, PtrNode *node2) {
 }
 
 // Will from pointer coerce to a to pointer (we know they are not the same)
-TypeCompare ptrMatches(PtrNode *to, PtrNode *from) {
-    return itypeRefMatches(to->pvtype, from->pvtype) == EqMatch ? EqMatch : ConvSubtype;
+TypeCompare ptrMatches(PtrNode *to, PtrNode *from, SubtypeConstraint constraint) {
+    return itypeMatches(to->pvtype, from->pvtype, Regref) == EqMatch ? EqMatch : ConvSubtype;
 }

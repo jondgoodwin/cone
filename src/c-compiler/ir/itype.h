@@ -62,10 +62,7 @@ int itypeTypeCheck(TypeCheckState *pstate, INode **node);
 int itypeIsSame(INode *node1, INode *node2);
 
 // Is totype equivalent or a subtype of fromtype
-TypeCompare itypeMatches(INode *fromtype, INode *totype, SubtypeConstraint constraint);
-
-// Is totype equivalent or a non-coerced subtype of fromtype
-TypeCompare itypeRefMatches(INode *totype, INode *fromtype);
+TypeCompare itypeMatches(INode *totype, INode *fromtype, SubtypeConstraint constraint);
 
 // Return a type that is the supertype of both type nodes, or NULL if none found
 INode *itypeFindSuper(INode *type1, INode *type2);

@@ -41,7 +41,7 @@ int iexpTypeCheckAny(TypeCheckState *pstate, INode **from) {
 
 // Is totype equivalent or a non-changing subtype of from's type
 TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constraint) {
-    return itypeMatches(iexpGetTypeDcl(*from), totype, constraint);
+    return itypeMatches(totype, iexpGetTypeDcl(*from), constraint);
 }
 
 // Coerce from-node's type to 'to' expected type, if needed

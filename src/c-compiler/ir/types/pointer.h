@@ -33,6 +33,6 @@ void ptrTypeCheck(TypeCheckState *pstate, PtrNode *name);
 int ptrEqual(PtrNode *node1, PtrNode *node2);
 
 // Will from pointer coerce to a to pointer (we know they are not the same)
-TypeCompare ptrMatches(PtrNode *to, PtrNode *from);
+TypeCompare ptrMatches(PtrNode *to, PtrNode *from, SubtypeConstraint constraint);
 
 #endif
