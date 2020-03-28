@@ -61,6 +61,9 @@ int itypeTypeCheck(TypeCheckState *pstate, INode **node);
 // Nodes must both be types, but may be name use or declare nodes.
 int itypeIsSame(INode *node1, INode *node2);
 
+// Is totype equivalent or a subtype of fromtype
+TypeCompare itypeMatches(INode *fromtype, INode *totype, SubtypeConstraint constraint);
+
 // Is totype equivalent or a non-coerced subtype of fromtype
 TypeCompare itypeIsMatches(INode *totype, INode *fromtype);
 

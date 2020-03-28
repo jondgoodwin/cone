@@ -39,70 +39,9 @@ int iexpTypeCheckAny(TypeCheckState *pstate, INode **from) {
     return 1;
 }
 
-// Is totype equivalent or a non-changing subtype of fromtype
-// Returns some TypeCompare value
+// Is totype equivalent or a non-changing subtype of from's type
 TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constraint) {
-    totype = itypeGetTypeDcl(totype);
-    INode *fromtype = iexpGetTypeDcl(*from);
-
-    // If they are the same value type info, types match
-    if (totype == fromtype)
-        return EqMatch;
-
-    // Type-specific matching logic
-    switch (totype->tag) {
-    case StructTag:
-        return structMatches((StructNode*)totype, fromtype, Coercion);
-
-    case RefTag:
-        if (fromtype->tag != RefTag)
-            return NoMatch;
-        return refMatches((RefNode*)totype, (RefNode*)fromtype);
-
-    case VirtRefTag:
-        if (fromtype->tag != VirtRefTag && fromtype->tag != RefTag)
-            return NoMatch;
-        return refvirtMatches((RefNode*)totype, (RefNode*)fromtype);
-
-    case ArrayRefTag:
-        if (fromtype->tag != ArrayRefTag)
-            return NoMatch;
-        return arrayRefMatches((RefNode*)totype, (RefNode*)fromtype);
-
-    case PtrTag:
-        if (fromtype->tag == RefTag || fromtype->tag == ArrayRefTag)
-            return itypeIsSame(((RefNode*)fromtype)->pvtype, ((PtrNode*)totype)->pvtype) ? ConvSubtype : NoMatch;
-        if (fromtype->tag != PtrTag)
-            return NoMatch;
-        return ptrMatches((PtrNode*)totype, (PtrNode*)fromtype);
-
-    case ArrayTag:
-        if (totype->tag != fromtype->tag)
-            return NoMatch;
-        return arrayEqual((ArrayNode*)totype, (ArrayNode*)fromtype);
-
-    case FnSigTag:
-        return fnSigMatches((FnSigNode*)totype, fromtype);
-
-    case UintNbrTag:
-        if ((fromtype->tag == RefTag || fromtype->tag == PtrTag) && totype == (INode*)boolType)
-            return ConvSubtype;
-        // Fall through is intentional here...
-    case IntNbrTag:
-    case FloatNbrTag:
-        if (totype == (INode*)boolType)
-            return ConvSubtype;
-        if (totype->tag != fromtype->tag)
-            return isNbr(totype) && isNbr(fromtype) ? NbrConvMatch : NoMatch;
-        if (((NbrNode *)totype)->bits == ((NbrNode *)fromtype)->bits)
-            return EqMatch;
-        return ((NbrNode *)totype)->bits > ((NbrNode *)fromtype)->bits ? ConvSubtype : NbrShrinkMatch;
-
-    case VoidTag:
-        return fromtype->tag == VoidTag ? EqMatch : NoMatch;
-    default:
-        return itypeIsSame(totype, fromtype) ? EqMatch : NoMatch;
-    }
+    return itypeMatches(iexpGetTypeDcl(*from), totype, constraint);
 }
 
 // Coerce from-node's type to 'to' expected type, if needed
