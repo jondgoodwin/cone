@@ -23,4 +23,7 @@ int isNbr(INode *node);
 // Return a type that is the supertype of both type nodes, or NULL if none found
 INode *nbrFindSuper(INode *type1, INode *type2);
 
+// Is from-type a subtype of to-struct (we know they are not the same)
+TypeCompare nbrMatches(INode *totype, INode *fromtype, SubtypeConstraint constraint);
+
 #endif

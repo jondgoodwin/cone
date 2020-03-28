@@ -52,3 +52,24 @@ INode *nbrFindSuper(INode *type1, INode *type2) {
 
     return typ1->bits >= typ2->bits ? type1 : type2;
 }
+
+// Is from-type a subtype of to-struct (we know they are not the same)
+TypeCompare nbrMatches(INode *totype, INode *fromtype, SubtypeConstraint constraint) {
+    // If coming from a ref, we cannot support type conversion
+    if (constraint != Monomorph && constraint != Coercion)
+        return NoMatch;
+
+    // Null check for a reference or pointer
+    if (totype == (INode*)boolType && (fromtype->tag == RefTag || fromtype->tag == PtrTag))
+        return ConvSubtype;
+
+    // Zero comparison
+    if (totype == (INode*)boolType && (fromtype->tag == UintNbrTag || fromtype->tag == IntNbrTag || fromtype->tag == FloatNbrTag))
+        return ConvSubtype;
+
+    if (totype->tag != fromtype->tag)
+        return isNbr(fromtype) ? NbrConvMatch : NoMatch;
+    if (((NbrNode *)totype)->bits == ((NbrNode *)fromtype)->bits)
+        return EqMatch;
+    return ((NbrNode *)totype)->bits > ((NbrNode *)fromtype)->bits ? ConvSubtype : NbrShrinkMatch;
+}

@@ -126,18 +126,9 @@ TypeCompare itypeMatches(INode *fromtype, INode *totype, SubtypeConstraint const
         return fnSigMatches((FnSigNode*)totype, fromtype);
 
     case UintNbrTag:
-        if ((fromtype->tag == RefTag || fromtype->tag == PtrTag) && totype == (INode*)boolType)
-            return ConvSubtype;
-        // Fall through is intentional here...
     case IntNbrTag:
     case FloatNbrTag:
-        if (totype == (INode*)boolType)
-            return ConvSubtype;
-        if (totype->tag != fromtype->tag)
-            return isNbr(totype) && isNbr(fromtype) ? NbrConvMatch : NoMatch;
-        if (((NbrNode *)totype)->bits == ((NbrNode *)fromtype)->bits)
-            return EqMatch;
-        return ((NbrNode *)totype)->bits > ((NbrNode *)fromtype)->bits ? ConvSubtype : NbrShrinkMatch;
+        return nbrMatches(totype, fromtype, constraint);
 
     case VoidTag:
         return fromtype->tag == VoidTag ? EqMatch : NoMatch;
