@@ -122,29 +122,55 @@ int refEqual(RefNode *node1, RefNode *node2) {
         && (node1->flags & FlagRefNull) == (node2->flags & FlagRefNull);
 }
 
-// Will from reference coerce to a to reference (we know they are not the same)
-TypeCompare refMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint) {
-    if (NoMatch == permMatches(to->perm, from->perm)
-        || (to->region != from->region && to->region != borrowRef)
-        || ((from->flags & FlagRefNull) && !(to->flags & FlagRefNull)))
-        return NoMatch;
-
-    // If to-reference is an alias that might write to value, we must do invariant type check instead
-    if ((permGetFlags(to->perm) & MayWrite) && from->perm != (INode *)uniPerm)
-        return itypeIsSame(to->pvtype, from->pvtype) ? EqMatch : NoMatch;
-
-    // Match on ref's vtype as well, using special subtype matching for references
-    INode *tovtypedcl = itypeGetTypeDcl(to->pvtype);
-    INode *fromvtypedcl = itypeGetTypeDcl(from->pvtype);
-    switch (itypeMatches(tovtypedcl, fromvtypedcl, Regref)) {
-    case NoMatch:
-        return NoMatch;
-    case EqMatch:
+// Will from region coerce to a to region
+TypeCompare regionMatches(INode *to, INode *from, SubtypeConstraint constraint) {
+    if (to == from)
         return EqMatch;
+    if (to == borrowRef)
+        return CastSubtype;
+    return NoMatch;
+}
+
+// Will from-reference coerce to a to-reference (we know they are not the same)
+TypeCompare refMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint) {
+
+    // **Remove** A nullable reference may not coerce to a non-nullable reference
+    if ((from->flags & FlagRefNull) && !(to->flags & FlagRefNull))
+        return NoMatch;
+
+    // Start with matching the references' regions
+    TypeCompare result = regionMatches(from->region, to->region, constraint);
+    if (result == NoMatch)
+        return NoMatch;
+
+    // Now their permissions
+    switch (permMatches(to->perm, from->perm)) {
+    case NoMatch: return NoMatch;
+    case CastSubtype: result = CastSubtype;
+    default: break;
+    }
+
+    // Now we get to value-type (which might include lifetime).
+    // The variance of this match depends on the mutability/read permission of the reference
+    TypeCompare match;
+    switch (permGetFlags(to->perm) & (MayWrite | MayRead)) {
+    case 0:
+    case MayRead:
+        match = itypeMatches(to->pvtype, from->pvtype, Regref); // covariant
+        break;
+    case MayWrite:
+        match = itypeMatches(from->pvtype, to->pvtype, Regref); // contravariant
+        break;
+    case MayRead | MayWrite:
+        return itypeIsSame(to->pvtype, from->pvtype) ? result : NoMatch; // invariant
+    }
+    switch (match) {
+    case EqMatch:
+        return result;
     case CastSubtype:
         return CastSubtype;
     case ConvSubtype:
-        return ConvSubtype;
+        return constraint == Monomorph ? ConvSubtype : NoMatch;
     default:
         return NoMatch;
     }
