@@ -32,4 +32,7 @@ void arrayTypeCheck(TypeCheckState *pstate, ArrayNode *name);
 
 int arrayEqual(ArrayNode *node1, ArrayNode *node2);
 
+// Is from-type a subtype of to-struct (we know they are not the same)
+TypeCompare arrayMatches(ArrayNode *to, ArrayNode *from, SubtypeConstraint constraint);
+
 #endif

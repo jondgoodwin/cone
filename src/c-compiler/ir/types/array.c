@@ -56,8 +56,22 @@ void arrayTypeCheck(TypeCheckState *pstate, ArrayNode *node) {
     node->flags |= elemtype->flags & (ThreadBound | MoveType);
 }
 
-// Compare two struct signatures to see if they are equivalent
+// Compare two array types to see if they are equivalent
 int arrayEqual(ArrayNode *node1, ArrayNode *node2) {
     return (node1->size == node2->size
         && itypeIsSame(node1->elemtype, node2->elemtype));
+}
+
+// Is from-type a subtype of to-struct (we know they are not the same)
+TypeCompare arrayMatches(ArrayNode *to, ArrayNode *from, SubtypeConstraint constraint) {
+    if (to->size == from->size)
+        return NoMatch;
+    
+    TypeCompare result = itypeMatches(to->elemtype, from->elemtype, constraint);
+    switch (result) {
+    case ConvSubtype:
+        return (constraint == Monomorph) ? result : NoMatch;
+    default:
+        return result;
+    }
 }

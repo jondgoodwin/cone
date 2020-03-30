@@ -92,6 +92,12 @@ TypeCompare itypeMatches(INode *totype, INode *fromtype, SubtypeConstraint const
 
     // Type-specific matching logic
     switch (totype->tag) {
+
+    case UintNbrTag:
+    case IntNbrTag:
+    case FloatNbrTag:
+        return nbrMatches(totype, fromtype, constraint);
+
     case StructTag:
         return structMatches((StructNode*)totype, fromtype, constraint);
 
@@ -99,6 +105,14 @@ TypeCompare itypeMatches(INode *totype, INode *fromtype, SubtypeConstraint const
         if (fromtype->tag == TTupleTag)
             return itypeIsSame(totype, fromtype) ? EqMatch : NoMatch;
         return NoMatch;
+
+    case ArrayTag:
+        if (fromtype->tag == ArrayTag)
+            return arrayMatches((ArrayNode*)totype, (ArrayNode*)fromtype, constraint);
+        return NoMatch;
+
+    case FnSigTag:
+        return fnSigMatches((FnSigNode*)totype, fromtype);
 
     case RefTag:
         if (fromtype->tag == RefTag)
@@ -123,19 +137,6 @@ TypeCompare itypeMatches(INode *totype, INode *fromtype, SubtypeConstraint const
         if (fromtype->tag == PtrTag)
             return ptrMatches((PtrNode*)totype, (PtrNode*)fromtype, constraint);
         return NoMatch;
-
-    case ArrayTag:
-        if (fromtype->tag == ArrayTag)
-            return arrayEqual((ArrayNode*)totype, (ArrayNode*)fromtype);
-        return NoMatch;
-
-    case FnSigTag:
-        return fnSigMatches((FnSigNode*)totype, fromtype);
-
-    case UintNbrTag:
-    case IntNbrTag:
-    case FloatNbrTag:
-        return nbrMatches(totype, fromtype, constraint);
 
     case VoidTag:
         return fromtype->tag == VoidTag ? EqMatch : NoMatch;
