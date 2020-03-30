@@ -220,39 +220,16 @@ TypeCompare refvirtMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint cons
     }
 }
 
-// Will from reference coerce to a virtual reference (we know they are not the same)
+// Will from virtual reference coerce to a virtual reference (we know they are not the same)
 TypeCompare refvirtMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint) {
-    if (NoMatch == permMatches(to->perm, from->perm)
-        || (to->region != from->region && to->region != borrowRef)
-        || ((from->flags & FlagRefNull) && !(to->flags & FlagRefNull)))
+    // For now, there is no supported way to convert a virtual ref from one value type to another
+    // This could change later, maybe for monomorphization or maybe for runtime coercion
+    if (!itypeIsSame(to->pvtype, from->pvtype))
         return NoMatch;
 
-    // We don't check for mutability invariance here, because virtual reference cannot change shape
-
-    // Match on ref's vtype as well.
-    // If vtype is a struct, use a more relaxed subtype match appropriate to refs
-    INode *tovtypedcl = itypeGetTypeDcl(to->pvtype);
-    INode *fromvtypedcl = itypeGetTypeDcl(from->pvtype);
-    if (tovtypedcl->tag == StructTag && fromvtypedcl->tag == StructTag) {
-        if (from->tag == RefTag && tovtypedcl == fromvtypedcl) {
-            return (fromvtypedcl->flags & HasTagField) ? ConvSubtype : NoMatch;
-        }
-        TypeCompare match = structVirtRefMatches((StructNode*)tovtypedcl, (StructNode*)fromvtypedcl);
-        return match == CastSubtype ? ConvSubtype : match;
-    }
-
-    switch (itypeMatches(tovtypedcl, fromvtypedcl, Virtref)) {
-    case NoMatch:
-        return NoMatch;
-    case EqMatch:
-        return EqMatch;
-    case CastSubtype:
-        return CastSubtype;
-    case ConvSubtype:
-        return ConvSubtype;
-    default:
-        return NoMatch;
-    }
+    // However, region, permission and lifetime can be supertyped
+    // Note: mutability variance on value type should be invariant, since underlying subtype won't change
+    return refMatches(to, from, constraint);
 }
 
 // Return a type that is the supertype of both type nodes, or NULL if none found
