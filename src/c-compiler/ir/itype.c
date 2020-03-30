@@ -95,32 +95,39 @@ TypeCompare itypeMatches(INode *totype, INode *fromtype, SubtypeConstraint const
     case StructTag:
         return structMatches((StructNode*)totype, fromtype, constraint);
 
+    case TTupleTag:
+        if (fromtype->tag == TTupleTag)
+            return itypeIsSame(totype, fromtype) ? EqMatch : NoMatch;
+        return NoMatch;
+
     case RefTag:
-        if (fromtype->tag != RefTag)
-            return NoMatch;
-        return refMatches((RefNode*)totype, (RefNode*)fromtype, constraint);
+        if (fromtype->tag == RefTag)
+            return refMatches((RefNode*)totype, (RefNode*)fromtype, constraint);
+        return NoMatch;
 
     case VirtRefTag:
-        if (fromtype->tag != VirtRefTag && fromtype->tag != RefTag)
-            return NoMatch;
-        return refvirtMatches((RefNode*)totype, (RefNode*)fromtype, constraint);
+        if (fromtype->tag == VirtRefTag)
+            return refvirtMatches((RefNode*)totype, (RefNode*)fromtype, constraint);
+        else if (fromtype->tag == RefTag)
+            return refvirtMatchesRef((RefNode*)totype, (RefNode*)fromtype, constraint);
+        return NoMatch;
 
     case ArrayRefTag:
-        if (fromtype->tag != ArrayRefTag)
-            return NoMatch;
-        return arrayRefMatches((RefNode*)totype, (RefNode*)fromtype, constraint);
+        if (fromtype->tag == ArrayRefTag)
+            return arrayRefMatches((RefNode*)totype, (RefNode*)fromtype, constraint);
+        return NoMatch;
 
     case PtrTag:
         if (fromtype->tag == RefTag || fromtype->tag == ArrayRefTag)
             return itypeIsSame(((RefNode*)fromtype)->pvtype, ((PtrNode*)totype)->pvtype) ? ConvSubtype : NoMatch;
-        if (fromtype->tag != PtrTag)
-            return NoMatch;
-        return ptrMatches((PtrNode*)totype, (PtrNode*)fromtype, constraint);
+        if (fromtype->tag == PtrTag)
+            return ptrMatches((PtrNode*)totype, (PtrNode*)fromtype, constraint);
+        return NoMatch;
 
     case ArrayTag:
-        if (totype->tag != fromtype->tag)
-            return NoMatch;
-        return arrayEqual((ArrayNode*)totype, (ArrayNode*)fromtype);
+        if (fromtype->tag == ArrayTag)
+            return arrayEqual((ArrayNode*)totype, (ArrayNode*)fromtype);
+        return NoMatch;
 
     case FnSigTag:
         return fnSigMatches((FnSigNode*)totype, fromtype);
@@ -132,6 +139,7 @@ TypeCompare itypeMatches(INode *totype, INode *fromtype, SubtypeConstraint const
 
     case VoidTag:
         return fromtype->tag == VoidTag ? EqMatch : NoMatch;
+
     default:
         return itypeIsSame(totype, fromtype) ? EqMatch : NoMatch;
     }

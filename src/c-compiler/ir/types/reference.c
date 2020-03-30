@@ -177,6 +177,50 @@ TypeCompare refMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint)
 }
 
 // Will from reference coerce to a virtual reference (we know they are not the same)
+TypeCompare refvirtMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint constraint) {
+    // Given this performs a runtime conversion to a completely different type, 
+    // it does not make sense for monomorphization
+    if (constraint == Monomorph)
+        return NoMatch;
+
+    // Start with matching the references' regions
+    TypeCompare result = regionMatches(from->region, to->region, constraint);
+    if (result == NoMatch)
+        return NoMatch;
+
+    // Now their permissions
+    switch (permMatches(to->perm, from->perm)) {
+    case NoMatch: return NoMatch;
+    case CastSubtype: result = CastSubtype;
+    default: break;
+    }
+
+    // Handle value type without worrying about mutability-triggered variance
+    // This is because a virtual reference "supertype" can never change the value's underlying type
+    // Virtual references are based on structs/traits
+    StructNode *tovtypedcl = (StructNode*)itypeGetTypeDcl(to->pvtype);
+    StructNode *fromvtypedcl = (StructNode*)itypeGetTypeDcl(from->pvtype);
+    if (tovtypedcl->tag != StructTag || fromvtypedcl->tag != StructTag)
+        return NoMatch;
+
+    // When value types are equivalent, ensure it is a closed, tagged trait.
+    // The tag is needed to runtime select the vtable for the created virtual reference
+    if (tovtypedcl == fromvtypedcl)
+        return (fromvtypedcl->flags & HasTagField) ? ConvSubtype : NoMatch;
+
+    // Use special structural subtyping logic to not only check compatibility,
+    // but also to build vtable information
+    switch (structVirtRefMatches((StructNode*)tovtypedcl, (StructNode*)fromvtypedcl)) {
+    case EqMatch:
+    case CastSubtype:
+    case ConvSubtype:
+        return ConvSubtype;  // Creating a virtual reference is always a conversion
+    default:
+        return NoMatch;
+    }
+}
+
+// Will from reference coerce to a virtual reference (we know they are not the same)
 TypeCompare refvirtMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint) {
     if (NoMatch == permMatches(to->perm, from->perm)
         || (to->region != from->region && to->region != borrowRef)

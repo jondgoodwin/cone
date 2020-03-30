@@ -56,6 +56,9 @@ int refEqual(RefNode *node1, RefNode *node2);
 TypeCompare refMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint);
 
 // Will from reference coerce to a virtual reference (we know they are not the same)
+TypeCompare refvirtMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint constraint);
+
+// Will from reference coerce to a virtual reference (we know they are not the same)
 TypeCompare refvirtMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint);
 
 // Return a type that is the supertype of both type nodes, or NULL if none found
