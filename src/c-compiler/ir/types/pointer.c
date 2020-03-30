@@ -45,7 +45,8 @@ int ptrEqual(PtrNode *node1, PtrNode *node2) {
     return itypeIsSame(node1->pvtype, node2->pvtype);
 }
 
-// Will from pointer coerce to a to pointer (we know they are not the same)
+// Will from pointer coerce to a to pointer
 TypeCompare ptrMatches(PtrNode *to, PtrNode *from, SubtypeConstraint constraint) {
-    return itypeMatches(to->pvtype, from->pvtype, Regref) == EqMatch ? EqMatch : ConvSubtype;
+    // Since pointers support both read and write permissions, value type invariance is expected
+    return itypeIsSame(to->pvtype, from->pvtype)? EqMatch : NoMatch;
 }
