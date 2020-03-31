@@ -112,7 +112,9 @@ TypeCompare itypeMatches(INode *totype, INode *fromtype, SubtypeConstraint const
         return NoMatch;
 
     case FnSigTag:
-        return fnSigMatches((FnSigNode*)totype, fromtype);
+        if (fromtype->tag == FnSigTag)
+            return fnSigMatches((FnSigNode*)totype, (FnSigNode*)fromtype, constraint);
+        return NoMatch;
 
     case RefTag:
         if (fromtype->tag == RefTag)

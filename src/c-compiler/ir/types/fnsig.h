@@ -36,7 +36,7 @@ int fnSigEqual(FnSigNode *node1, FnSigNode *node2);
 int fnSigVrefEqual(FnSigNode *node1, FnSigNode *node2);
 
 // Return TypeCompare indicating whether from type matches the function signature
-TypeCompare fnSigMatches(FnSigNode *to, INode *fromdcl);
+TypeCompare fnSigMatches(FnSigNode *to, FnSigNode *from, SubtypeConstraint constraint);
 
 // Return true if type of from-exp matches totype
 int fnSigCoerce(FnSigNode *totype, INode **fromexp);

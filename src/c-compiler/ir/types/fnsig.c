@@ -108,16 +108,53 @@ int fnSigVrefEqual(FnSigNode *node1, FnSigNode *node2) {
 }
 
 // Return TypeCompare indicating whether from type matches the function signature
-TypeCompare fnSigMatches(FnSigNode *to, INode *fromdcl) {
-    // They only match if both are structurally identical function signatures
-    if (fromdcl->tag != FnSigTag)
+TypeCompare fnSigMatches(FnSigNode *to, FnSigNode *from, SubtypeConstraint constraint) {
+    TypeCompare result = EqMatch;
+
+    // Number of parameters must match
+    if (to->parms->used != from->parms->used)
         return NoMatch;
-    return fnSigEqual(to, (FnSigNode*)fromdcl) ? EqMatch : NoMatch;
+
+    // Every parameter's type must also match
+    INode **tonodesp, **fromnodesp;
+    uint32_t cnt;
+    fromnodesp = &nodesGet(from->parms, 0);
+    for (nodesFor(to->parms, cnt, tonodesp)) {
+        // Match for parameters is contravariant, switching order of to/from
+        switch (itypeMatches(*fromnodesp, *tonodesp, constraint)) {
+        case NoMatch:
+            return NoMatch;
+        case CastSubtype:
+            result = result == ConvSubtype ? ConvSubtype : CastSubtype;
+            break;
+        case ConvSubtype:
+            result = ConvSubtype;
+            break;
+        default:
+            break;
+        }
+        fromnodesp++;
+    }
+
+    // Return type is covariant
+    switch (itypeMatches(to->rettype, from->rettype, constraint)) {
+    case NoMatch:
+        return NoMatch;
+    case CastSubtype:
+        result = result == ConvSubtype ? ConvSubtype : CastSubtype;
+        break;
+    case ConvSubtype:
+        result = ConvSubtype;
+        break;
+    default:
+        break;
+    }
+    return result;
 }
 
 // Return true if type of from-exp matches totype
 int fnSigCoerce(FnSigNode *totype, INode **fromexp) {
-    return fnSigMatches(totype, iexpGetTypeDcl(*fromexp)) == EqMatch;
+    return itypeMatches((INode*)totype, iexpGetTypeDcl(*fromexp), Coercion) == EqMatch;
 }
 
 // Will the function call (caller) be able to call the 'to' function
