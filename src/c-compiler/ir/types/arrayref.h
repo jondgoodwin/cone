@@ -23,4 +23,7 @@ int arrayRefEqual(RefNode *node1, RefNode *node2);
 // Will from reference coerce to a to reference (we know they are not the same)
 TypeCompare arrayRefMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint);
 
+// Will from reference coerce to a to arrayref (we know they are not the same)
+TypeCompare arrayRefMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint constraint);
+
 #endif

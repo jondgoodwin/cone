@@ -129,6 +129,8 @@ TypeCompare itypeMatches(INode *totype, INode *fromtype, SubtypeConstraint const
     case ArrayRefTag:
         if (fromtype->tag == ArrayRefTag)
             return arrayRefMatches((RefNode*)totype, (RefNode*)fromtype, constraint);
+        else if (fromtype->tag == RefTag)
+            return arrayRefMatchesRef((RefNode*)totype, (RefNode*)fromtype, constraint);
         return NoMatch;
 
     case PtrTag:

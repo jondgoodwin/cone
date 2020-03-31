@@ -64,7 +64,7 @@ int arrayEqual(ArrayNode *node1, ArrayNode *node2) {
 
 // Is from-type a subtype of to-struct (we know they are not the same)
 TypeCompare arrayMatches(ArrayNode *to, ArrayNode *from, SubtypeConstraint constraint) {
-    if (to->size == from->size)
+    if (to->size != from->size)
         return NoMatch;
     
     TypeCompare result = itypeMatches(to->elemtype, from->elemtype, constraint);

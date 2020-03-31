@@ -466,6 +466,22 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
             assert(0 && "Unknown type to convert to reference");
     }
 
+    case ArrayRefTag:
+    {
+        // Convert ref-to-array into arrayref
+        if (fromtype->tag == RefTag) {
+            ArrayNode *arraytype = (ArrayNode*)((RefNode *)fromtype)->pvtype;
+            assert(arraytype->tag == ArrayTag);
+            LLVMValueRef aref = LLVMGetUndef(genlType(gen, totype));
+            LLVMValueRef size = LLVMConstInt(genlUsize(gen), arraytype->size, 0);
+            aref = LLVMBuildInsertValue(gen->builder, aref, genexp, 0, "arrayp");
+            aref = LLVMBuildInsertValue(gen->builder, aref, size, 1, "size");
+            return aref;
+        }
+        else
+            assert(0 && "Unknown type to convert to array reference");
+    }
+
     case VirtRefTag:
     {
         // Build a fat ptr whose vtable maps the fromtype struct to the totype trait

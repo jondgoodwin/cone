@@ -52,6 +52,9 @@ void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node);
 // Compare two reference signatures to see if they are equivalent
 int refEqual(RefNode *node1, RefNode *node2);
 
+// Will from region coerce to a to region
+TypeCompare regionMatches(INode *to, INode *from, SubtypeConstraint constraint);
+
 // Will from reference coerce to a to reference (we know they are not the same)
 TypeCompare refMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint);
 
