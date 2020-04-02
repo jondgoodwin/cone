@@ -144,7 +144,8 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
     errorMsgNode(node->vtype, ErrorInvType, "Unsupported built-in type conversion");
 }
 
-// Analyze type comparison (is) node
+// Analyze type comparison (is) node.
+// This only supports whether downcasting specialization is possible
 void castIsTypeCheck(TypeCheckState *pstate, CastNode *node) {
     node->vtype = (INode*)boolType;
     iexpTypeCheckAny(pstate, &node->exp);
@@ -157,36 +158,52 @@ void castIsTypeCheck(TypeCheckState *pstate, CastNode *node) {
         errorMsgNode(node->typ, ErrorInvType, "'is' requires a type to the right");
         return;
     }
+
+    // Downcasting type check from a virt ref to a ref, or from a ref to a ref?
     INode *totype = itypeGetTypeDcl(node->typ);
     INode *fromtype = iexpGetTypeDcl(node->exp);
+    if (totype->tag == RefTag && (fromtype->tag == VirtRefTag || fromtype->tag == RefTag)) {
+        RefNode *from = (RefNode*)fromtype;
+        RefNode *to = (RefNode*)totype;
 
-    // Handle the specialization check of a virtual reference
-    if (fromtype->tag == VirtRefTag) {
-        if (totype->tag == RefTag) {
-            StructNode *strnode = (StructNode*)itypeGetTypeDcl(((RefNode*)totype)->pvtype);
-            if (strnode->tag == StructTag) {
-                if (structVirtRefMatches((StructNode*)itypeGetTypeDcl(((RefNode*)fromtype)->pvtype), strnode))
+        // Match on region & permission
+        TypeCompare result = regionMatches(from->region, to->region, Coercion);
+        if (result != NoMatch)
+            result = permMatches(to->perm, from->perm);
+        if (result == NoMatch) {
+            errorMsgNode((INode*)node, ErrorInvType, "Reference region/permission won't downcast safely this way");
+            return;
+        }
+
+        // Under the refs should be a structure. Be sure to is a subtype of from
+        // Note that region/permission downcast covariantly, but the structure is contravariant
+        StructNode *fromstr = (StructNode*)itypeGetTypeDcl(((RefNode*)fromtype)->pvtype);
+        StructNode *tostr = (StructNode*)itypeGetTypeDcl(((RefNode*)totype)->pvtype);
+        if (fromstr->tag == StructTag && tostr->tag == StructTag) {
+            if (from->tag == VirtRefTag) {
+                if (structVirtRefMatches(fromstr, tostr))
                     return;
             }
+            // Downcasting tagged ref-to-trait to ref-to-struct requires tag
+            if (!(fromstr->flags & HasTagField)) {
+                errorMsgNode((INode*)node, ErrorInvType, "Impossible to downcast without a tag");
+                return;
+            }
+            if (structMatches(fromstr, (INode*)tostr, Regref))
+                return;
         }
-        errorMsgNode((INode*)node, ErrorInvType, "Types are not compatible for this specialization");
     }
 
-    // Make sure the checked type is a subtype of the value
-    INode *needtypedcl = itypeGetTypeDcl(node->typ);
-    INode *havetypedcl = itypeGetTypeDcl(((IExpNode*)node->exp)->vtype);
-    if (NoMatch == itypeMatches(havetypedcl, needtypedcl, Coercion)) {
-        errorMsgNode((INode*)node, ErrorInvType, "Types are not compatible for this specialization");
-        return;
+    // Downcasting type check from a tagged trait to a subtype struct
+    else if (fromtype->tag == StructTag && totype->tag == StructTag) {
+        StructNode *from = (StructNode*)fromtype;
+        if (!(from->flags & HasTagField)) {
+            errorMsgNode((INode*)node, ErrorInvType, "Impossible to downcast without a tag");
+            return;
+        }
+        if (structMatches(from, totype, Coercion))
+            return;
     }
 
-    // Make sure we have a mechanism to check the specialization at runtime
-    INode *basetypedcl = needtypedcl;
-    if (needtypedcl->tag == RefTag)
-        basetypedcl = itypeGetTypeDcl(((RefNode*)needtypedcl)->pvtype);
-    if (basetypedcl->tag != StructTag || (basetypedcl->flags & TraitType) || !(basetypedcl->flags & HasTagField)) {
-        errorMsgNode((INode*)node, ErrorInvType, "No mechanism exists to check this specialization");
-        return;
-    }
-
+    errorMsgNode((INode*)node, ErrorInvType, "Types are not compatible for this downcast specialization");
 }
