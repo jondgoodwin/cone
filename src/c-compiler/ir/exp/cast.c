@@ -101,6 +101,12 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
         }
         return;
     }
+    else {
+        // Auto-generated downcasting "conversion" may in face be a bitcast
+        if (fromtype->tag == RefTag && totype->tag == RefTag) {
+            node->flags |= FlagRecast;
+        }
+    }
 
     // Handle conversion to bool
     if (totype == (INode*)boolType) {
