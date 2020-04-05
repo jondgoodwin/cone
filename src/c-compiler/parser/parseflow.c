@@ -31,40 +31,11 @@ void parseInsertWhileBreak(INode *blk, INode *condexp) {
     nodesInsert(&((BlockNode*)blk)->stmts, (INode*)ifnode, 0);
 }
 
-// Parse control flow suffixes
-INode *parseFlowSuffix(ParseState *parse, INode *node) {
-    while (lexIsToken(IfToken) || lexIsToken(WhileToken) || lexIsToken(EachToken)) {
-        if (lexIsToken(IfToken)) {
-            BlockNode *blk;
-            IfNode *ifnode = newIfNode();
-            lexNextToken();
-            nodesAdd(&ifnode->condblk, parseAnyExpr(parse));
-            nodesAdd(&ifnode->condblk, (INode*)(blk = newBlockNode()));
-            nodesAdd(&blk->stmts, node);
-            node = (INode*)ifnode;
-        }
-        else if (lexIsToken(WhileToken)) {
-            LoopNode *loopnode = newLoopNode();
-            BlockNode *blk = newBlockNode();
-            loopnode->blk = (INode*)blk;
-            lexNextToken();
-            parseInsertWhileBreak((INode*)blk, parseAnyExpr(parse));
-            nodesAdd(&blk->stmts, node);
-            node = (INode*)loopnode;
-        }
-        else if (lexIsToken(EachToken)) {
-            BlockNode *blk = newBlockNode();
-            nodesAdd(&blk->stmts, node);
-            node = parseEach(parse, (INode *)blk, NULL);
-        }
-    }
-    parseEndOfStatement();
-    return node;
-}
-
 // Parse an expression statement within a function
 INode *parseExpStmt(ParseState *parse) {
-    return parseFlowSuffix(parse, (INode *)parseAnyExpr(parse));
+    INode *node = parseAnyExpr(parse);
+    parseEndOfStatement();
+    return node;
 }
 
 // Parse a block or an expression statement followed by semicolon
@@ -74,7 +45,6 @@ INode *parseBlockOrStmt(ParseState *parse) {
     }
     BlockNode *blk = newBlockNode();
     nodesAdd(&blk->stmts, parseExpStmt(parse));
-    parseEndOfStatement();
     return (INode*)blk;
 }
 
@@ -84,7 +54,8 @@ INode *parseReturn(ParseState *parse) {
     lexNextToken(); // Skip past 'return'
     if (!lexIsEndOfStatement())
         stmtnode->exp = parseAnyExpr(parse);
-    return parseFlowSuffix(parse, (INode*)stmtnode);
+    parseEndOfStatement();
+    return (INode*)stmtnode;
 }
 
 // Parses a variable bound to a pattern match on a value
@@ -455,7 +426,8 @@ INode *parseBlock(ParseState *parse) {
             }
             if (!(lexIsEndOfStatement() || lexIsToken(IfToken)))
                 node->exp = parseAnyExpr(parse);
-            nodesAdd(&blk->stmts, parseFlowSuffix(parse, (INode*)node));
+            parseEndOfStatement();
+            nodesAdd(&blk->stmts, (INode*)node);
             break;
         }
 
@@ -467,7 +439,8 @@ INode *parseBlock(ParseState *parse) {
                 node->life = (INode*)newNameUseNode(lex->val.ident);
                 lexNextToken();
             }
-            nodesAdd(&blk->stmts, parseFlowSuffix(parse, (INode*)node));
+            parseEndOfStatement();
+            nodesAdd(&blk->stmts, (INode*)node);
             break;
         }
 
