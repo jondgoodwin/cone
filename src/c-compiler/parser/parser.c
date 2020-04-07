@@ -354,6 +354,7 @@ ModuleNode *parsePgm(ConeOptions *opt) {
 
     // Initialize name table and populate with std library names
     nametblInit();
+    lexInit();
     stdlibInit(opt->ptrsize);
     mod = newModuleNode();
     parse.pgmmod = mod;

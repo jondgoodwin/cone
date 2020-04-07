@@ -67,6 +67,64 @@ void lexInject(char *url, char *src) {
     lexNextToken();
 }
 
+// Add a reserved identifier and its node to the global name table
+Name *keyAdd(char *keyword, uint16_t toktype) {
+    Name *sym;
+    INode *node;
+    sym = nametblFind(keyword, strlen(keyword));
+    sym->node = node = (INode*)memAllocBlk(sizeof(INode));
+    node->tag = KeywordTag;
+    node->flags = toktype;
+    return sym;
+}
+
+// Populate global name table with all reserved identifiers & their nodes
+void keywordInit() {
+    keyAdd("include", IncludeToken);
+    keyAdd("mod", ModToken);
+    keyAdd("extern", ExternToken);
+    keyAdd("set", SetToken);
+    keyAdd("macro", MacroToken);
+    keyAdd("fn", FnToken);
+    keyAdd("typedef", TypedefToken),
+    keyAdd("struct", StructToken);
+    keyAdd("trait", TraitToken);
+    keyAdd("mixin", MixinToken);
+    keyAdd("enumtrait", EnumTraitToken);
+    keyAdd("enum", EnumToken);
+    keyAdd("region", RegionToken);
+    keyAdd("return", RetToken);
+    keyAdd("do", DoToken);
+    keyAdd("with", WithToken);
+    keyAdd("if", IfToken);
+    keyAdd("elif", ElifToken);
+    keyAdd("else", ElseToken);
+    keyAdd("match", MatchToken);
+    keyAdd("loop", LoopToken);
+    keyAdd("while", WhileToken);
+    keyAdd("each", EachToken);
+    keyAdd("in", InToken);
+    keyAdd("by", ByToken);
+    keyAdd("break", BreakToken);
+    keyAdd("continue", ContinueToken);
+    keyAdd("not", NotToken);
+    keyAdd("or", OrToken);
+    keyAdd("and", AndToken);
+    keyAdd("as", AsToken);
+    keyAdd("is", IsToken);
+    keyAdd("into", IntoToken);
+
+    keyAdd("true", trueToken);
+    keyAdd("false", falseToken);
+    keyAdd("null", nullToken);
+}
+
+// Initialize lexer
+void lexInit() {
+    lexInject("init", "");
+    keywordInit();
+}
+
 // Inject a new source stream into the lexer
 void lexInjectFile(char *url) {
     char *src;

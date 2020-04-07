@@ -11,56 +11,6 @@
 
 #include <string.h>
 
-Name *keyAdd(char *keyword, uint16_t toktype) {
-    Name *sym;
-    INode *node;
-    sym = nametblFind(keyword, strlen(keyword));
-    sym->node = node = (INode*)memAllocBlk(sizeof(INode));
-    node->tag = KeywordTag;
-    node->flags = toktype;
-    return sym;
-}
-
-void keywordInit() {
-    keyAdd("include", IncludeToken);
-    keyAdd("mod", ModToken);
-    keyAdd("extern", ExternToken);
-    keyAdd("set", SetToken);
-    keyAdd("macro", MacroToken);
-    keyAdd("fn", FnToken);
-    keyAdd("typedef", TypedefToken),
-    keyAdd("struct", StructToken);
-    keyAdd("trait", TraitToken);
-    keyAdd("mixin", MixinToken);
-    keyAdd("enumtrait", EnumTraitToken);
-    keyAdd("enum", EnumToken);
-    keyAdd("region", RegionToken);
-    keyAdd("return", RetToken);
-    keyAdd("do", DoToken);
-    keyAdd("with", WithToken);
-    keyAdd("if", IfToken);
-    keyAdd("elif", ElifToken);
-    keyAdd("else", ElseToken);
-    keyAdd("match", MatchToken);
-    keyAdd("loop", LoopToken);
-    keyAdd("while", WhileToken);
-    keyAdd("each", EachToken);
-    keyAdd("in", InToken);
-    keyAdd("by", ByToken);
-    keyAdd("break", BreakToken);
-    keyAdd("continue", ContinueToken);
-    keyAdd("not", NotToken);
-    keyAdd("or", OrToken);
-    keyAdd("and", AndToken);
-    keyAdd("as", AsToken);
-    keyAdd("is", IsToken);
-    keyAdd("into", IntoToken);
-
-    keyAdd("true", trueToken);
-    keyAdd("false", falseToken);
-    keyAdd("null", nullToken);
-}
-
 PermNode *newPermNodeStr(char *name, uint16_t flags) {
     Name *namesym = nametblFind(name, strlen(name));
     PermNode *perm = newPermDclNode(namesym, flags);
@@ -207,8 +157,6 @@ void stdlibInit(int ptrsize) {
     parensName = nametblFind("()", 2);
     indexName = nametblFind("[]", 2);
     refIndexName = nametblFind("&[]", 3);
-
-    keywordInit();
 
     lexInject("corelib", corelib);
 
