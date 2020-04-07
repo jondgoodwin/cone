@@ -346,17 +346,21 @@ ModuleNode *parseModule(ParseState *parse) {
 
 // Parse a program = the main module
 ModuleNode *parsePgm(ConeOptions *opt) {
-    // Initialize name table and populate with std library names
-    nametblInit();
-    stdlibInit(opt->ptrsize);
-    lexInjectFile(opt->srcpath);
-
     ParseState parse;
     ModuleNode *mod;
-    mod = newModuleNode();
-    parse.pgmmod = mod;
     parse.mod = NULL;
     parse.typenode = NULL;
     parse.gennamePrefix = "";
+
+    // Initialize name table and populate with std library names
+    nametblInit();
+    stdlibInit(opt->ptrsize);
+    mod = newModuleNode();
+    parse.pgmmod = mod;
+    // parseGlobalStmts(&parse, mod);
+
+    mod = newModuleNode();
+    parse.pgmmod = mod;
+    lexInjectFile(opt->srcpath);
     return parseModuleBlk(&parse, mod);
 }

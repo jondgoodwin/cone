@@ -155,10 +155,14 @@ void stdOption() {
     noneName->node = (INode*)nonegen;
 }
 
+char *corelib =
+"enumtrait Result[T,E] {_ enum;}\n"
+"struct Ok[T,E] {ok T;}\n"
+"struct Err[T,E] {err E;}\n"
+;
+
 // Set up the standard library, whose names are always shared by all modules
 void stdlibInit(int ptrsize) {
-    lexInject("std", "");
-
     anonName = nametblFind("_", 1);
     selfName = nametblFind("self", 4);
     selfTypeName = nametblFind("Self", 4);
@@ -204,6 +208,10 @@ void stdlibInit(int ptrsize) {
     indexName = nametblFind("[]", 2);
     refIndexName = nametblFind("&[]", 3);
 
+    keywordInit();
+
+    lexInject("corelib", corelib);
+
     unknownType = (INode*)newAbsenceNode();
     unknownType->tag = UnknownTag;
     noCareType = (INode*)newAbsenceNode();
@@ -213,7 +221,6 @@ void stdlibInit(int ptrsize) {
     borrowRef->tag = BorrowRegTag;
     noValue = (INode*)newAbsenceNode();
 
-    keywordInit();
     staticLifetimeNode = newLifetimeDclNode(nametblFind("'static", 7), 0);
     stdPermInit();
     stdAllocInit();
