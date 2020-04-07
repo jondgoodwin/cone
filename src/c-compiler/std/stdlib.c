@@ -113,51 +113,6 @@ char *corelib =
 
 // Set up the standard library, whose names are always shared by all modules
 void stdlibInit(int ptrsize) {
-    anonName = nametblFind("_", 1);
-    selfName = nametblFind("self", 4);
-    selfTypeName = nametblFind("Self", 4);
-    thisName = nametblFind("this", 4);
-    cloneName = nametblFind("clone", 5);
-    finalName = nametblFind("final", 5);
-
-    plusEqName = nametblFind("+=", 2);
-    minusEqName = nametblFind("-=", 2);
-    multEqName = nametblFind("*=", 2);
-    divEqName = nametblFind("/=", 2);
-    remEqName = nametblFind("%=", 2);
-    orEqName = nametblFind("|=", 2);
-    andEqName = nametblFind("&=", 2);
-    xorEqName = nametblFind("^=", 2);
-    shlEqName = nametblFind("<<=", 3);
-    shrEqName = nametblFind(">>=", 3);
-
-    plusName = nametblFind("+", 1);
-    minusName = nametblFind("-", 1);
-    multName = nametblFind("*", 1);
-    divName = nametblFind("/", 1);
-    remName = nametblFind("%", 1);
-    orName = nametblFind("|", 1);
-    andName = nametblFind("&", 1);
-    xorName = nametblFind("^", 1);
-    shlName = nametblFind("<<", 2);
-    shrName = nametblFind(">>", 2);
-
-    incrName = nametblFind("++", 2);
-    decrName = nametblFind("--", 2);
-    incrPostName = nametblFind("+++", 3);
-    decrPostName = nametblFind("---", 3);
-
-    eqName = nametblFind("==", 2);
-    neName = nametblFind("!=", 2);
-    leName = nametblFind("<=", 2);
-    ltName = nametblFind("<", 1);
-    geName = nametblFind(">=", 2);
-    gtName = nametblFind(">", 1);
-
-    parensName = nametblFind("()", 2);
-    indexName = nametblFind("[]", 2);
-    refIndexName = nametblFind("&[]", 3);
-
     lexInject("corelib", corelib);
 
     unknownType = (INode*)newAbsenceNode();

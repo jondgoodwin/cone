@@ -8,54 +8,6 @@
 #ifndef stdlib_h
 #define stdlib_h
 
-// Common symbols
-Name *anonName;  // "_" - the absence of a name
-Name *selfName;  // "self"
-Name *selfTypeName; // "Self"
-Name *thisName;  // "this"
-Name *cloneName; // "clone" method
-Name *finalName; // "final" method
-
-Name *plusEqName;   // "+="
-Name *minusEqName;  // "-="
-Name *multEqName;   // "*="
-Name *divEqName;    // "/="
-Name *remEqName;    // "%="
-Name *orEqName;     // "|="
-Name *andEqName;    // "&="
-Name *xorEqName;    // "^="
-Name *shlEqName;    // "<<="
-Name *shrEqName;    // ">>="
-
-Name *plusName;     // "+"
-Name *minusName;    // "-"
-Name *multName;     // "*"
-Name *divName;      // "/"
-Name *remName;      // "%"
-Name *orName;       // "|"
-Name *andName;      // "&"
-Name *xorName;      // "^"
-Name *shlName;      // "<<"
-Name *shrName;      // ">>"
-
-Name *incrName;     // "++"
-Name *decrName;     // "--"
-Name *incrPostName; // "_++"
-Name *decrPostName; // "_--"
-
-Name *eqName;       // "=="
-Name *neName;       // "!="
-Name *leName;       // "<="
-Name *ltName;       // "<"
-Name *geName;       // ">="
-Name *gtName;       // ">"
-
-Name *parensName;   // "()"
-Name *indexName;    // "[]"
-Name *refIndexName; // "&[]"
-
-Name *optionName;   // "Option"
-
 // Unique (unclonable) nodes representing the absence of value or type
 INode *unknownType;   // Unknown/unspecified type
 INode *noCareType;    // When the receiver does not care what type is returned
