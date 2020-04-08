@@ -175,8 +175,8 @@ add_executable(conec
 	src/c-compiler/ir/meta/genvardcl.c
 	src/c-compiler/ir/meta/generic.c
 
-	src/c-compiler/std/stdlib.c
-	src/c-compiler/std/stdnumber.c
+	src/c-compiler/corelib/corelib.c
+	src/c-compiler/corelib/corenumber.c
 
 	src/c-compiler/parser/lexer.c
 	src/c-compiler/parser/parser.c
