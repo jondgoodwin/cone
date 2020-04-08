@@ -98,7 +98,7 @@ typedef struct AllocNode {
 #include "meta/genvardcl.h"
 #include "meta/generic.h"
 
-#include "../std/stdlib.h"
+#include "../corelib/corelib.h"
 
 // Context used for name resolution pass
 typedef struct NameResState {
