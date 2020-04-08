@@ -107,12 +107,12 @@ void stdOption() {
 
 char *corelib =
 "enumtrait Result[T,E] {_ enum;}\n"
-"struct Ok[T,E] {ok T;}\n"
-"struct Err[T,E] {err E;}\n"
+"struct Ok[T,E] : Result[T,E] {ok T;}\n"
+"struct Error[T,E] : Result[T,E] {error E;}\n"
 ;
 
 // Set up the standard library, whose names are always shared by all modules
-void stdlibInit(int ptrsize) {
+char *stdlibInit(int ptrsize) {
     lexInject("corelib", corelib);
 
     unknownType = (INode*)newAbsenceNode();
@@ -129,4 +129,6 @@ void stdlibInit(int ptrsize) {
     stdAllocInit();
     stdNbrInit(ptrsize);
     stdOption();
+
+    return corelib;
 }

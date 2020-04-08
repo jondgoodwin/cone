@@ -346,21 +346,27 @@ ModuleNode *parseModule(ParseState *parse) {
 
 // Parse a program = the main module
 ModuleNode *parsePgm(ConeOptions *opt) {
+    // Initialize name table and lexer
+    nametblInit();
+    lexInit();
+
+    // Initialize parser state
     ParseState parse;
-    ModuleNode *mod;
     parse.mod = NULL;
     parse.typenode = NULL;
     parse.gennamePrefix = "";
 
-    // Initialize name table and populate with std library names
-    nametblInit();
-    lexInit();
-    stdlibInit(opt->ptrsize);
-    mod = newModuleNode();
-    parse.pgmmod = mod;
-    // parseGlobalStmts(&parse, mod);
+    // Parse core library
+    // Note: we bypass module hooking here, because we want core lib types
+    // to be always visible across all other modules
+    ModuleNode *coremod = newModuleNode();
+    parse.pgmmod = coremod;
+    lexInject("corelib", stdlibInit(opt->ptrsize));
+    parseGlobalStmts(&parse, coremod);
 
-    mod = newModuleNode();
+    // Parse main source file
+    ModuleNode *mod = newModuleNode();
+    modAddNode(mod, NULL, (INode*)coremod); // Make sure it gets passes
     parse.pgmmod = mod;
     lexInjectFile(opt->srcpath);
     return parseModuleBlk(&parse, mod);

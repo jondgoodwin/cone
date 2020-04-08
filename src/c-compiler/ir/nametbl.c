@@ -278,12 +278,15 @@ void nametblHookGrow() {
 
 // Hook a name + node in the current hooktable
 void nametblHookNode(Name *name, INode *node) {
-    HookTable *tablemeta = &gHookTables[gHookTablePos];
-    if (tablemeta->size + 1 >= tablemeta->alloc)
-        nametblHookGrow();
-    HookTableEntry *entry = &tablemeta->hooktbl[tablemeta->size++];
-    entry->node = name->node; // Save previous node
-    entry->name = name;
+    // Only hook if we have a hook table (we don't for core lib)
+    if (gHookTableSize > 0) {
+        HookTable *tablemeta = &gHookTables[gHookTablePos];
+        if (tablemeta->size + 1 >= tablemeta->alloc)
+            nametblHookGrow();
+        HookTableEntry *entry = &tablemeta->hooktbl[tablemeta->size++];
+        entry->node = name->node; // Save previous node
+        entry->name = name;
+    }
     name->node = node; // Plug in new node
 }
 

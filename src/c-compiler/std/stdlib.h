@@ -49,7 +49,7 @@ INsTypeNode *ptrType;
 INsTypeNode *refType;
 INsTypeNode *arrayRefType;
 
-void stdlibInit(int ptrsize);
+char *stdlibInit(int ptrsize);
 void keywordInit();
 void stdNbrInit(int ptrsize);
 
