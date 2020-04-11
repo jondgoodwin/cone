@@ -148,6 +148,18 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     uint16_t tag = StructTag;
     lexNextToken();
 
+    // Handle attributes
+    if (lex->toktype == SamesizeToken) {
+        if (strflags & TraitType)
+            strflags |= SameSize;
+        else
+            errorMsgLex(ErrorNoIdent, "@samesize attribute only allowed on traits.");
+        lexNextToken();
+    }
+    // A non-same sized trait is essentially opaque
+    if ((strflags & TraitType) && !(strflags & SameSize))
+        strflags |= OpaqueType;
+
     // Process struct type name, if provided
     if (lexIsToken(IdentToken)) {
         strnode = newStructNode(lex->val.ident);

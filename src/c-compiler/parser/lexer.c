@@ -89,8 +89,8 @@ void keywordInit() {
     keyAdd("typedef", TypedefToken),
     keyAdd("struct", StructToken);
     keyAdd("trait", TraitToken);
+    keyAdd("@samesize", SamesizeToken);
     keyAdd("mixin", MixinToken);
-    keyAdd("enumtrait", EnumTraitToken);
     keyAdd("enum", EnumToken);
     keyAdd("region", RegionToken);
     keyAdd("return", RetToken);

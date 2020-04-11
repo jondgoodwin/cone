@@ -245,14 +245,7 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
 
         // 'trait' type definition
         case TraitToken: {
-            StructNode *strnode = (StructNode*)parseStruct(parse, TraitType | OpaqueType);
-            modAddNode(mod, strnode->namesym, (INode*)strnode);
-            break;
-        }
-
-        // 'enumtrait' type definition
-        case EnumTraitToken: {
-            StructNode *strnode = (StructNode*)parseStruct(parse, TraitType | SameSize);
+            StructNode *strnode = (StructNode*)parseStruct(parse, TraitType);
             modAddNode(mod, strnode->namesym, (INode*)strnode);
             break;
         }

@@ -43,11 +43,11 @@ void stdRegionInit() {
 }
 
 char *corelib =
-"enumtrait Option[T] {_ enum;}\n"
+"trait @samesize Option[T] {_ enum;}\n"
 "struct Null[T] : Option[T] {}\n"
 "struct Some[T] : Option[T] {some T}\n"
 
-"enumtrait Result[T,E] {_ enum}\n"
+"trait @samesize Result[T,E] {_ enum}\n"
 "struct Ok[T,E] : Result[T,E] {ok T}\n"
 "struct Error[T,E] : Result[T,E] {error E}\n"
 ;
