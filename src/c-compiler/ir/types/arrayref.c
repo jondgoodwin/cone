@@ -9,11 +9,11 @@
 
 // Serialize an array reference type
 void arrayRefPrint(RefNode *node) {
-    inodeFprint("&(");
+    inodeFprint("&[](");
     inodePrintNode(node->region);
     inodeFprint(" ");
     inodePrintNode((INode*)node->perm);
-    inodeFprint(node->flags & FlagRefNull? " &?[]" : " &[]");
+    inodeFprint(" ");
     inodePrintNode(node->pvtype);
     inodeFprint(")");
 }
@@ -38,8 +38,7 @@ void arrayRefTypeCheck(TypeCheckState *pstate, RefNode *node) {
 int arrayRefEqual(RefNode *node1, RefNode *node2) {
     return itypeIsSame(node1->pvtype,node2->pvtype) 
         && permIsSame(node1->perm, node2->perm)
-        && node1->region == node2->region
-        && (node1->flags & FlagRefNull) == (node2->flags & FlagRefNull);
+        && node1->region == node2->region;
 }
 
 // Will from reference coerce to a to reference (we know they are not the same)

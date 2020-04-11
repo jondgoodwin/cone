@@ -57,7 +57,7 @@ int iexpCoerce(INode **from, INode *totype) {
 
     // Re-type a null pointer literal to match the expected ref/ptr type
     if ((*from)->tag == NullTag) {
-        if (!refIsNullable(totype) && totype->tag != PtrTag)
+        if (totype->tag != PtrTag)
             return 0;
         ((IExpNode*)(*from))->vtype = totype;
         return 1;

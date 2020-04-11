@@ -63,12 +63,6 @@ RefNode *newArrayDerefNodeFrom(RefNode *refnode) {
     return dereftype;
 }
 
-// Is type a nullable reference?
-int refIsNullable(INode *typenode) {
-    RefNode *ref = (RefNode*)typenode;
-    return ref->tag == RefTag && (ref->flags & FlagRefNull);
-}
-
 // Serialize a pointer type
 void refPrint(RefNode *node) {
     inodeFprint("&(");
@@ -118,8 +112,7 @@ void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
 int refEqual(RefNode *node1, RefNode *node2) {
     return itypeIsSame(node1->pvtype,node2->pvtype) 
         && permIsSame(node1->perm, node2->perm)
-        && node1->region == node2->region
-        && (node1->flags & FlagRefNull) == (node2->flags & FlagRefNull);
+        && node1->region == node2->region;
 }
 
 // Will from region coerce to a to region
@@ -133,10 +126,6 @@ TypeCompare regionMatches(INode *to, INode *from, SubtypeConstraint constraint) 
 
 // Will from-reference coerce to a to-reference (we know they are not the same)
 TypeCompare refMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint) {
-
-    // **Remove** A nullable reference may not coerce to a non-nullable reference
-    if ((from->flags & FlagRefNull) && !(to->flags & FlagRefNull))
-        return NoMatch;
 
     // Start with matching the references' regions
     TypeCompare result = regionMatches(from->region, to->region, constraint);

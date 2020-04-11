@@ -8,8 +8,6 @@
 #ifndef reference_h
 #define reference_h
 
-#define FlagRefNull  0x0001
-
 // Reference node
 typedef struct RefNode {
     INodeHdr;
@@ -33,9 +31,6 @@ void refSetPermVtype(RefNode *refnode, INode *perm, INode *vtype);
 
 // Create a new ArrayDerefNode from an ArrayRefNode
 RefNode *newArrayDerefNodeFrom(RefNode *refnode);
-
-// Is type a nullable reference?
-int refIsNullable(INode *typenode);
 
 // Serialize a reference type
 void refPrint(RefNode *node);
