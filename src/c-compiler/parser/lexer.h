@@ -64,6 +64,8 @@ enum TokenTypes {
     FloatLitToken,    // Float literal
     StringLitToken,    // String literal
     IdentToken,        // Identifier
+    MetaIdentToken,   // Metaprogramming identifier (#if)
+    AttrIdentToken,   // Attribute identifier (@samesize)
     LifetimeToken,    // Lifetime variable ('a)
     PermToken,        // Permission identifier
 

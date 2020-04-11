@@ -449,6 +449,10 @@ void lexScanIdent(char *srcp) {
                     lex->toktype = identNode->flags;
                 else if (identNode && identNode->tag == PermTag)
                     lex->toktype = PermToken;
+                else if (*srcbeg == '@')
+                    lex->toktype = AttrIdentToken;
+                else if (*srcbeg == '#')
+                    lex->toktype = MetaIdentToken;
                 else
                     lex->toktype = IdentToken;
                 lex->srcp = srcp;
@@ -591,7 +595,7 @@ void lexNextTokenx() {
         case 'K': case 'L': case 'M': case 'N': case 'O':
         case 'P': case 'Q': case 'R': case 'S': case 'T':
         case 'U': case 'V': case 'W': case 'X': case 'Y': case 'Z':
-        case '$': case '_':
+        case '#': case '@': case '_':
             lexScanIdent(srcp);
             return;
 
