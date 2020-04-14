@@ -682,7 +682,10 @@ void lexNextTokenx() {
 
         // '<' and '<='
         case '<':
-            if (*(srcp + 1) == '=') {
+            if (*(srcp + 1) == '-') {
+                lexReturnPuncTok(LessDashToken, 2);
+            }
+            else if (*(srcp + 1) == '=') {
                 lexReturnPuncTok(LeToken, 2);
             }
             else if (*(srcp + 1) == '<') {
@@ -714,7 +717,12 @@ void lexNextTokenx() {
                 lexReturnPuncTok(GtToken, 1);
             }
 
-        case '?': lexReturnPuncTok(QuesToken, 1);
+        case '?': 
+            if (*(srcp + 1) == '.') {
+                lexReturnPuncTok(QuesDotToken, 2);
+            }
+            else
+                lexReturnPuncTok(QuesToken, 1);
         case '[': 
             lex->nbrcurly++;
             lexReturnPuncTok(LBracketToken, 1);
