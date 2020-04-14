@@ -31,6 +31,8 @@ enum ParseFlags {
 ModuleNode *parsePgm(ConeOptions *opt);
 ModuleNode *parseModuleBlk(ParseState *parse, ModuleNode *mod);
 INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags);
+// Is this end-of-statement? if ';', '}', or end-of-file
+int parseIsEndOfStatement();
 void parseEndOfStatement();
 void parseRCurly();
 void parseLCurly();
@@ -44,6 +46,8 @@ void parseCloseTok(uint16_t closetok);
 INode *parseIf(ParseState *parse);
 INode *parseMatch(ParseState *parse);
 INode *parseLoop(ParseState *parse, LifetimeNode *life);
+// Parse a block or an expression statement followed by semicolon
+INode *parseBlockOrStmt(ParseState *parse);
 INode *parseBlock(ParseState *parse);
 INode *parseLifetime(ParseState *parse, int stmtflag);
 

@@ -52,7 +52,7 @@ INode *parseBlockOrStmt(ParseState *parse) {
 INode *parseReturn(ParseState *parse) {
     ReturnNode *stmtnode = newReturnNode();
     lexNextToken(); // Skip past 'return'
-    if (!lexIsEndOfStatement())
+    if (!parseIsEndOfStatement())
         stmtnode->exp = parseAnyExpr(parse);
     parseEndOfStatement();
     return (INode*)stmtnode;
@@ -424,7 +424,7 @@ INode *parseBlock(ParseState *parse) {
                 node->life = (INode*)newNameUseNode(lex->val.ident);
                 lexNextToken();
             }
-            if (!(lexIsEndOfStatement() || lexIsToken(IfToken)))
+            if (!parseIsEndOfStatement())
                 node->exp = parseAnyExpr(parse);
             parseEndOfStatement();
             nodesAdd(&blk->stmts, (INode*)node);

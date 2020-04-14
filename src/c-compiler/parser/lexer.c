@@ -56,7 +56,7 @@ void lexInject(char *url, char *src) {
     lex->linenbr = 1;
     lex->flags = 0;
     lex->nbrcurly = 0;
-    lex->nbrToksInStmt = 0;
+    lex->tokPosInLine = 0;
     lex->indentch = '\0';
     lex->inject = 0;
     lex->curindent = 0;
@@ -533,16 +533,9 @@ int lexInjectToken() {
         lex->toktype = LCurlyToken;
         return 1;
     }
-    // inject ';' if nbrToksInStmt > 1 (unfinished statement)
-    if (lex->nbrToksInStmt > 1) {
-        lex->nbrToksInStmt = 0;
-        lex->toktype = SemiToken;
-        return 1;
-    }
     // Inject '}' if indentation decreases
     if (lex->curindent < lex->indents[lex->indentlvl]) {
         --lex->indentlvl;
-        lex->nbrToksInStmt = 0;
         lex->toktype = RCurlyToken;
         return 1;
     }
@@ -550,10 +543,9 @@ int lexInjectToken() {
     return 0;
 }
 
-// End of statement is either a semicolon or new line before current token
-int lexIsEndOfStatement() {
-    return lex->toktype == SemiToken || lex->toktype == RCurlyToken 
-        || lex->nbrToksInStmt <= 1 || lex->toktype == EofToken;
+// Is next token at start of line?
+int lexIsEndOfLine() {
+    return lex->tokPosInLine <= 1;
 }
 
 // Decode next token from the source into new lex->token
@@ -564,7 +556,7 @@ void lexNextTokenx() {
 
     char *srcp;
     srcp = lex->srcp;
-    lex->nbrToksInStmt++;
+    ++lex->tokPosInLine;
     while (1) {
         switch (*srcp) {
 
@@ -747,7 +739,6 @@ void lexNextTokenx() {
 
         // ';'
         case ';':
-            lex->nbrToksInStmt = 0;
             lexReturnPuncTok(SemiToken, 1);
 
         case '{': 
@@ -755,7 +746,6 @@ void lexNextTokenx() {
             lexReturnPuncTok(LCurlyToken, 1);
         case '}': 
             if (lex->nbrcurly > 0) --lex->nbrcurly;
-            lex->nbrToksInStmt = 0;
             lexReturnPuncTok(RCurlyToken, 1);
         
         // '/' or '//' or '/*'
@@ -808,7 +798,8 @@ void lexNextTokenx() {
         case '\n':
             srcp++;
             lex->linep = srcp;
-            lex->linenbr++;
+            lex->tokPosInLine = 0;
+            ++lex->linenbr;
             // In off-side mode
             if (lex->nbrcurly == 0) {
                 // Count line's indentation

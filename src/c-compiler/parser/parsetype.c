@@ -240,10 +240,8 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         parseRCurly();
     }
     // Opaque struct
-    else if (lexIsToken(SemiToken))
-        lexNextToken();
     else
-        errorMsgLex(ErrorNoLCurly, "Expected left curly bracket enclosing fields or methods");
+        parseEndOfStatement();
 
     parse->typenode = svtype;
     parse->gennamePrefix = svprefix;

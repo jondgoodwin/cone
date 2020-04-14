@@ -19,22 +19,39 @@
 #include <stdio.h>
 #include <string.h>
 
-// Skip to next statement
+// Skip to next statement for error recovery
 void parseSkipToNextStmt() {
-    while (!lexIsEndOfStatement()) {
-        if (lexIsToken(EofToken) || lexIsToken(RCurlyToken))
+    while (1) {
+        // Consume semicolon as end-of-statement
+        if (lexIsToken(SemiToken)) {
+            lexNextToken();
             return;
+        }
+        // Treat end-of-line, end-of-file, or '}' as end-of-statement
+        // (clearly end-of-line might *not* be end-of-statement)
+        if (lexIsEndOfLine() || lexIsToken(EofToken) || lexIsToken(RCurlyToken))
+            return;
+
         lexNextToken();
     }
-    if (lexIsToken(SemiToken))
-        lexNextToken();
+}
+
+// Is this end-of-statement? if ';', '}', or end-of-file
+int parseIsEndOfStatement() {
+    return (lex->toktype == SemiToken || lex->toktype == RCurlyToken || lex->toktype == EofToken);
 }
 
 // We expect semicolon since statement has run its course
 void parseEndOfStatement() {
-    if (!lexIsEndOfStatement())
-        errorMsgLex(ErrorNoSemi, "Expected semicolon or end of line - skipping forward to find it");
-    parseSkipToNextStmt();
+    // Consume semicolon as end-of-statement signifier, if found
+    if (lex->toktype == SemiToken) {
+        lexNextToken();
+        return;
+    }
+    // If no semi-colon specified, we expect to be at end-of-line,
+    // unless next token is '}' or end-of-file
+    if (!lexIsEndOfLine() && lex->toktype != RCurlyToken && lex->toktype != EofToken)
+        errorMsgLex(ErrorNoSemi, "Statement finished? Expected semicolon or end of line.");
 }
 
 // Expect right curly brace. If not found, search for '}' or ';'
@@ -99,8 +116,6 @@ INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags) {
     fnnode->vtype = parseFnSig(parse);
 
     // Process statements block that implements function, if provided
-    if (!lexIsToken(LCurlyToken) && !lexIsToken(SemiToken))
-        parseLCurly();
     if (lexIsToken(LCurlyToken)) {
         if (!(mayflags&ParseMayImpl))
             errorMsgNode((INode*)fnnode, ErrorBadImpl, "Function/method implementation is not allowed here.");
@@ -206,8 +221,7 @@ GenericNode *parseMacro(ParseState *parse) {
     if (lexIsToken(LBracketToken)) {
         parseGenericVars(parse, macro);
     }
-    macro->body = parseAnyExpr(parse);
-    parseEndOfStatement();
+    macro->body = parseBlockOrStmt(parse);
     return macro;
 }
 
