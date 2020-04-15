@@ -190,6 +190,31 @@ INode *parseSuffix(ParseState *parse, INode *node, uint16_t flags) {
             break;
         }
 
+        default:
+            return node;
+        }
+    }
+}
+
+// Parse the postfix operators: '.', '()', '[]', ++, --
+INode *parsePostfix(ParseState *parse) {
+    return parseSuffix(parse, parseTerm(parse), 0);
+}
+
+// Parse prefix dot operator
+INode *parseDotPrefix(ParseState *parse) {
+    // '.' as prefix operator implies 'this' as operand
+    if (lexIsToken(DotToken))
+        return parseSuffix(parse, (INode*)newNameUseNode(thisName), 0);
+    else
+        return parsePostfix(parse);
+}
+
+// Parse postfix ++ and -- operators
+INode *parsePostIncr(ParseState *parse) {
+    INode *node = parseDotPrefix(parse);
+    while (1) {
+        switch (lex->toktype) {
         case IncrToken:
         {
             node = (INode*)newFnCallOpname(node, incrPostName, 0);
@@ -208,12 +233,6 @@ INode *parseSuffix(ParseState *parse, INode *node, uint16_t flags) {
             return node;
         }
     }
-}
-
-// Parse the postfix operators: '.', '()', '[]', ++, --
-INode *parsePostfix(ParseState *parse) {
-    INode *node = lexIsToken(DotToken) ? (INode*)newNameUseNode(thisName) : parseTerm(parse);
-    return parseSuffix(parse, node, 0);
 }
 
 // Parse an address term - current token is '&'
@@ -325,7 +344,7 @@ INode *parsePrefix(ParseState *parse) {
     case AmperToken:
         return parseAddr(parse);
     default:
-        return parsePostfix(parse);
+        return parsePostIncr(parse);
     }
 }
 
