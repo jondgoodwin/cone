@@ -127,87 +127,75 @@ INode *parseArg(ParseState *parse) {
     return arg;
 }
 
-// Parse the postfix operators: '.', '()', '[]', ++, --
-// Flags may be FlagBorrow
-INode *parseSuffix(ParseState *parse, INode *node, uint16_t flags) {
-    while (1) {
-        switch (lex->toktype) {
+INode *parsePostCall(ParseState *parse, INode *node, uint16_t flags);
 
-        // Function call with possible parameters
-        case LParenToken:
-        case LBracketToken:
-        {
-            int closetok = lex->toktype == LBracketToken? RBracketToken : RParenToken;
-            FnCallNode *fncall = newFnCallNode(node, 8);
-            fncall->flags |= flags | (closetok == RBracketToken ? FlagIndex : 0);
+// Construct a FnCall node, by parsing its suffices on a passed operand node
+// We enter here knowing that next token is a '.', '(' or '['
+INode *parseFnCall(ParseState *parse, INode *node, uint16_t flags) {
+    FnCallNode *fncall = newFnCallNode(node, 0);
+    fncall->flags |= flags;
+
+    if (lexIsToken(DotToken)) {
+        lexNextToken();
+
+        // Get field/method name
+        if (!lexIsToken(IdentToken)) {
+            errorMsgLex(ErrorNoMbr, "This should be a named field/method");
             lexNextToken();
-            if (!lexIsToken(closetok)) {
-                nodesAdd(&fncall->args, parseArg(parse));
-                while (lexIsToken(CommaToken)) {
-                    lexNextToken();
-                    nodesAdd(&fncall->args, parseArg(parse));
-                }
-            }
-            parseCloseTok(closetok);
-            node = (INode *)fncall;
-            break;
+            return (INode*)fncall;
         }
+        NameUseNode *method = newNameUseNode(lex->val.ident);
+        method->tag = MbrNameUseTag;
+        fncall->methfld = method;
+        lexNextToken();
 
-        // Object call with possible parameters
-        case DotToken:
-        {
-            FnCallNode *fncall = newFnCallNode(node, 0);
-            fncall->flags |= flags;
-            lexNextToken();
+        // Square brackets after '.' are a separate fncall operation
+        if (lexIsToken(LBracketToken))
+            return parsePostCall(parse, (INode*)fncall, flags);
 
-            // Get field/method name
-            if (!lexIsToken(IdentToken)) {
-                errorMsgLex(ErrorNoMbr, "This should be a named field/method");
-                lexNextToken();
-                break;
-            }
-            NameUseNode *method = newNameUseNode(lex->val.ident);
-            method->tag = MbrNameUseTag;
-            fncall->methfld = method;
-            lexNextToken();
-
-            // If parameters provided, capture them as part of method call
-            if (lexIsToken(LParenToken)) {
-                lexNextToken();
-                fncall->args = newNodes(8);
-                if (!lexIsToken(RParenToken)) {
-                    while (1) {
-                        nodesAdd(&fncall->args, parseSimpleExpr(parse));
-                        if (lexIsToken(CommaToken))
-                            lexNextToken();
-                        else
-                            break;
-                    }
-                }
-                parseCloseTok(RParenToken);
-            }
-            node = (INode *)fncall;
-            break;
-        }
-
-        default:
-            return node;
-        }
     }
+
+    // Handle () or [] suffixes and their enclosed arguments
+    if (lexIsToken(LParenToken) || lexIsToken(LBracketToken)) {
+        int closetok;
+        if (lex->toktype == LBracketToken) {
+            fncall->flags |= FlagIndex;
+            closetok = RBracketToken;
+        }
+        else
+            closetok = RParenToken;
+        lexNextToken();
+        fncall->args = newNodes(8);
+        if (!lexIsToken(closetok)) {
+            nodesAdd(&fncall->args, parseArg(parse));
+            while (lexIsToken(CommaToken)) {
+                lexNextToken();
+                nodesAdd(&fncall->args, parseArg(parse));
+            }
+        }
+        parseCloseTok(closetok);
+    }
+
+    // Recursively wrap additional call suffixes, if any. Return fncall node otherwise.
+    if (lexIsToken(DotToken) || lexIsToken(LParenToken) || lexIsToken(LBracketToken))
+        return parsePostCall(parse, (INode*)fncall, flags);
+    return (INode*)fncall;
 }
 
-// Parse the postfix operators: '.', '()', '[]', ++, --
-INode *parsePostfix(ParseState *parse) {
-    return parseSuffix(parse, parseTerm(parse), 0);
+// Handle call suffix operators '.', '()', '[]' as postfix/infix operators
+INode *parsePostCall(ParseState *parse, INode *node, uint16_t flags) {
+    if (lexIsToken(DotToken) || lexIsToken(LParenToken) || lexIsToken(LBracketToken))
+        return parseFnCall(parse, node, flags);
+    return node;
 }
 
 // Parse prefix dot operator
 INode *parseDotPrefix(ParseState *parse) {
     // '.' as prefix operator implies 'this' as operand
     if (lexIsToken(DotToken))
-        return parseSuffix(parse, (INode*)newNameUseNode(thisName), 0);
+        return parseFnCall(parse, (INode*)newNameUseNode(thisName), 0);
     else
-        return parsePostfix(parse);
+        return parsePostCall(parse, parseTerm(parse), 0);
 }
 
 // Parse postfix ++ and -- operators
@@ -266,7 +254,7 @@ INode *parseAddr(ParseState *parse) {
         anode->vtype = (INode *)reftype;
         lexNextToken();
         reftype->perm = parsePerm(uniPerm);
-        anode->exp = parsePostfix(parse);
+        anode->exp = parseDotPrefix(parse);
         return (INode *)anode;
     }
 
@@ -286,7 +274,7 @@ INode *parseAddr(ParseState *parse) {
         anode->exp = lexIsToken(DotToken) ? (INode*)newNameUseNode(thisName) : parseTerm(parse);
 
     // Process borrow chain suffixes, and set flag to show if we had some
-    INode* node = parseSuffix(parse, (INode*)anode, FlagBorrow);
+    INode* node = parsePostCall(parse, (INode*)anode, FlagBorrow);
     if (node != (INode*)anode)
         anode->flags |= FlagSuffix;
     return node;
