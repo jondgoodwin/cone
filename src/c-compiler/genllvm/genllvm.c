@@ -343,7 +343,7 @@ void genmod(GenState *gen, ModuleNode *mod) {
     }
 
     // Serialize the LLVM IR, if requested
-    if (gen->opt->print_llvmir && LLVMPrintModuleToFile(gen->module, fileMakePath(gen->opt->output, mod->lexer->fname, "preir"), &err) != 0) {
+    if (gen->opt->print_llvmir && LLVMPrintModuleToFile(gen->module, fileMakePath(gen->opt->output, gen->opt->srcname, "preir"), &err) != 0) {
         errorMsg(ErrorGenErr, "Could not emit pre-ir file: %s", err);
         LLVMDisposeMessage(err);
     }
@@ -362,7 +362,7 @@ void genmod(GenState *gen, ModuleNode *mod) {
     LLVMDisposePassManager(passmgr);
 
     // Serialize the LLVM IR, if requested
-    if (gen->opt->print_llvmir && LLVMPrintModuleToFile(gen->module, fileMakePath(gen->opt->output, mod->lexer->fname, "ir"), &err) != 0) {
+    if (gen->opt->print_llvmir && LLVMPrintModuleToFile(gen->module, fileMakePath(gen->opt->output, gen->opt->srcname, "ir"), &err) != 0) {
         errorMsg(ErrorGenErr, "Could not emit ir file: %s", err);
         LLVMDisposeMessage(err);
     }
@@ -370,8 +370,8 @@ void genmod(GenState *gen, ModuleNode *mod) {
     // Transform IR to target's ASM and OBJ
     timerBegin(CodeGenTimer);
     if (gen->machine)
-        genlOut(fileMakePath(gen->opt->output, mod->lexer->fname, gen->opt->wasm? "wasm" : objext),
-            gen->opt->print_asm? fileMakePath(gen->opt->output, mod->lexer->fname, gen->opt->wasm? "wat" : asmext) : NULL,
+        genlOut(fileMakePath(gen->opt->output, gen->opt->srcname, gen->opt->wasm? "wasm" : objext),
+            gen->opt->print_asm? fileMakePath(gen->opt->output, gen->opt->srcname, gen->opt->wasm? "wat" : asmext) : NULL,
             gen->module, gen->opt->triple, gen->machine);
 
     LLVMDisposeModule(gen->module);
