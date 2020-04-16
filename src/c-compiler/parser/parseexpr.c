@@ -198,33 +198,16 @@ INode *parseDotPrefix(ParseState *parse) {
         return parsePostCall(parse, parseTerm(parse), 0);
 }
 
-// Parse postfix ++ and -- operators
-INode *parsePostIncr(ParseState *parse) {
-    INode *node = parseDotPrefix(parse);
-    while (1) {
-        switch (lex->toktype) {
-        case IncrToken:
-        {
-            node = (INode*)newFnCallOpname(node, incrPostName, 0);
-            node->flags |= FlagLvalOp;
-            lexNextToken();
-            break;
-        }
-        case DecrToken:
-        {
-            node = (INode*)newFnCallOpname(node, decrPostName, 0);
-            node->flags |= FlagLvalOp;
-            lexNextToken();
-            break;
-        }
-        default:
-            return node;
-        }
-    }
-}
-
-// Parse an address term - current token is '&'
+// Parse an "address term" for:
+// - ref to an anonymous function
+// - Allocation
+// - Borrowed ref
 INode *parseAddr(ParseState *parse) {
+    // Parse when it is not address operator
+    if (!lexIsToken(AmperToken))
+        return parseDotPrefix(parse);
+
+    // It is address operator ...
     RefNode *reftype = newRefNode();  // Type for address node
     reftype->pvtype = unknownType;    // Type inference will correct this
     reftype->region = borrowRef;
@@ -280,7 +263,32 @@ INode *parseAddr(ParseState *parse) {
     return node;
 }
 
-// Parse a prefix operator, e.g.: -
+// Parse postfix ++ and -- operators
+INode *parsePostIncr(ParseState *parse) {
+    INode *node = parseAddr(parse);
+    while (1) {
+        switch (lex->toktype) {
+        case IncrToken:
+        {
+            node = (INode*)newFnCallOpname(node, incrPostName, 0);
+            node->flags |= FlagLvalOp;
+            lexNextToken();
+            break;
+        }
+        case DecrToken:
+        {
+            node = (INode*)newFnCallOpname(node, decrPostName, 0);
+            node->flags |= FlagLvalOp;
+            lexNextToken();
+            break;
+        }
+        default:
+            return node;
+        }
+    }
+}
+
+// Parse a prefix operator: - (negative), ~ (not), ++, --, * (deref)
 INode *parsePrefix(ParseState *parse) {
     switch (lex->toktype) {
     case DashToken:
@@ -329,8 +337,6 @@ INode *parsePrefix(ParseState *parse) {
         node->exp = parsePrefix(parse);
         return (INode *)node;
     }
-    case AmperToken:
-        return parseAddr(parse);
     default:
         return parsePostIncr(parse);
     }
