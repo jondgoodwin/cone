@@ -11,7 +11,6 @@
 TTupleNode *newTTupleNode(int cnt) {
     TTupleNode *tuple;
     newNode(tuple, TTupleNode, TTupleTag);
-    tuple->vtype = unknownType;
     tuple->types = newNodes(cnt);
     return tuple;
 }
@@ -42,4 +41,20 @@ void ttupleTypeCheck(TypeCheckState *pstate, TTupleNode *tuple) {
     uint32_t cnt;
     for (nodesFor(tuple->types, cnt, nodesp))
         itypeTypeCheck(pstate, nodesp);
+}
+
+// Compare that two tuples are equivalent
+int ttupleEqual(TTupleNode *totype, TTupleNode *fromtype) {
+    if (fromtype->tag != TTupleTag)
+        return 0;
+    if (totype->types->used != fromtype->types->used)
+        return 0;
+
+    INode **fromnodesp = &nodesGet(fromtype->types, 0);
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(totype->types, cnt, nodesp))
+        if (!itypeIsSame(*nodesp, *fromnodesp++))
+            return 0;
+    return 1;
 }

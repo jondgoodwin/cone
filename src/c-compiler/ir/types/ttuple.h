@@ -12,7 +12,7 @@
 // It acts like an ad hoc struct, briefly binding together types
 // for a parallel assignment or multiple return values
 typedef struct TTupleNode {
-    IExpNodeHdr;
+    ITypeNodeHdr;
     Nodes *types;
 } TTupleNode;
 
@@ -27,5 +27,8 @@ void ttupleNameRes(NameResState *pstate, TTupleNode *node);
 
 // Type check type tuple node
 void ttupleTypeCheck(TypeCheckState *pstate, TTupleNode *node);
+
+// Compare that two tuples are equivalent
+int ttupleEqual(TTupleNode *totype, TTupleNode *fromtype);
 
 #endif

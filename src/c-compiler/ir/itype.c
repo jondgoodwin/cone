@@ -74,6 +74,8 @@ int itypeIsSame(INode *node1, INode *node2) {
         return ptrEqual((PtrNode*)node1, (PtrNode*)node2);
     case ArrayTag:
         return arrayEqual((ArrayNode*)node1, (ArrayNode*)node2);
+    case TTupleTag:
+        return ttupleEqual((TTupleNode*)node1, (TTupleNode*)node2);
     case VoidTag:
         return 1;
     default:
