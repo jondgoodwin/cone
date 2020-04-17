@@ -433,7 +433,7 @@ INode *parseShift(ParseState *parse) {
 INode *parseAnd(ParseState *parse) {
     INode *lhnode = parseShift(parse);
     while (1) {
-        if (lexIsToken(AmperToken)) {
+        if (lexIsToken(AmperToken) && !lexIsStmtBreak()) {
             FnCallNode *node = newFnCallOpname(lhnode, andName, 2);
             lexNextToken();
             nodesAdd(&node->args, parseShift(parse));
