@@ -853,3 +853,8 @@ void lexNextToken() {
     lexNextTokenx();
     timerBegin(ParseTimer);
 }
+
+// Return true if current token is first on a line that has not been indented
+int lexIsStmtBreak() {
+    return lex->tokPosInLine == 0;
+}

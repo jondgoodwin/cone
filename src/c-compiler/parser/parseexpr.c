@@ -184,7 +184,7 @@ INode *parseFnCall(ParseState *parse, INode *node, uint16_t flags) {
 
 // Handle call suffix operators '.', '()', '[]' as postfix/infix operators
 INode *parsePostCall(ParseState *parse, INode *node, uint16_t flags) {
-    if (lexIsToken(DotToken) || lexIsToken(LParenToken) || lexIsToken(LBracketToken))
+    if ((lexIsToken(DotToken) || lexIsToken(LParenToken) || lexIsToken(LBracketToken)) && !lexIsStmtBreak())
         return parseFnCall(parse, node, flags);
     return node;
 }
@@ -267,22 +267,17 @@ INode *parseAddr(ParseState *parse) {
 INode *parsePostIncr(ParseState *parse) {
     INode *node = parseAddr(parse);
     while (1) {
-        switch (lex->toktype) {
-        case IncrToken:
-        {
+        if (lexIsToken(IncrToken) && !lexIsStmtBreak()) {
             node = (INode*)newFnCallOpname(node, incrPostName, 0);
             node->flags |= FlagLvalOp;
             lexNextToken();
-            break;
         }
-        case DecrToken:
-        {
+        else if (lexIsToken(DecrToken) && !lexIsStmtBreak()) {
             node = (INode*)newFnCallOpname(node, decrPostName, 0);
             node->flags |= FlagLvalOp;
             lexNextToken();
-            break;
         }
-        default:
+        else {
             return node;
         }
     }
@@ -364,7 +359,7 @@ INode *parseCast(ParseState *parse) {
 INode *parseMult(ParseState *parse) {
     INode *lhnode = parseCast(parse);
     while (1) {
-        if (lexIsToken(StarToken)) {
+        if (lexIsToken(StarToken) && !lexIsStmtBreak()) {
             FnCallNode *node = newFnCallOpname(lhnode, multName, 2);
             lexNextToken();
             nodesAdd(&node->args, parseCast(parse));
@@ -397,7 +392,7 @@ INode *parseAdd(ParseState *parse) {
             nodesAdd(&node->args, parseMult(parse));
             lhnode = (INode*)node;
         }
-        else if (lexIsToken(DashToken)) {
+        else if (lexIsToken(DashToken) && !lexIsStmtBreak()) {
             FnCallNode *node = newFnCallOpname(lhnode, minusName, 2);
             lexNextToken();
             nodesAdd(&node->args, parseMult(parse));

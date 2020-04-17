@@ -170,4 +170,9 @@ void lexNextToken();
 // Is next token at start of line?
 int lexIsEndOfLine();
 
+// Return true if current token is first on a line that has not been indented
+// This is used by parser to determine whether an operator that starts a new line
+// should be treated as a continuation (infix) or a new statement (prefix).
+int lexIsStmtBreak();
+
 #endif
