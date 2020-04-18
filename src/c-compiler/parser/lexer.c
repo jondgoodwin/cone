@@ -59,6 +59,10 @@ void lexInject(char *url, char *src) {
     lex->indentch = '\0';
     lex->curindent = 0;
     lex->stmtindent = 0;
+    lex->blkStackLvl = 0;
+    lex->blkStack[0].blkindent = 0;
+    lex->blkStack[0].paranscnt = 0;
+    lex->blkStack[0].blkmode = FreeFormBlock;
 
     // Prime the pump with the first token
     lexNextToken();
@@ -145,17 +149,19 @@ void lexPop() {
 // ******  SIGNIFICANT WHITESPACE HANDLING ***********
 
 // Parser indicates new block starts here, e.g., '{'
-void lexBlockStart() {
-    /*
-    if (lex->indentlvl >= LEX_MAX_INDENTS)
+void lexBlockStart(LexBlockMode mode) {
+    if (lex->blkStackLvl >= LEX_MAX_BLOCKS)
         errorExit(ExitIndent, "Too many indent levels in source file.");
-    lex->indents[++lex->indentlvl] = lex->curindent;
-    */
+    int level = ++lex->blkStackLvl;
+    lex->blkStack[level].blkindent = lex->stmtindent;
+    lex->blkStack[level].paranscnt = 0;
+    lex->blkStack[level].blkmode = mode;
 }
 
 // Parser indicates block finishes here, e.g., '}'
 void lexBlockEnd() {
-    // --lex->indentlvl;
+    int level = lex->blkStackLvl--;
+    lex->stmtindent = lex->blkStack[level].blkindent;
 }
 
 // Is next token at start of line?
@@ -170,8 +176,10 @@ void lexStmtStart() {
 }
 
 // Return true if current token is first on a line that has not been indented
+// and does not have any open parantheses or brackets
 int lexIsStmtBreak() {
-    return lexIsEndOfLine() && lex->curindent <= lex->stmtindent;
+    return lexIsEndOfLine() && lex->curindent <= lex->stmtindent 
+        && lex->blkStack[lex->blkStackLvl].paranscnt == 0;
 }
 
 // Handle new line character.
@@ -761,16 +769,18 @@ void lexNextTokenx() {
             else
                 lexReturnPuncTok(QuesToken, 1);
         case '[': 
-            // lex->nbrcurly++;
+            lex->blkStack[lex->blkStackLvl].paranscnt++;
             lexReturnPuncTok(LBracketToken, 1);
         case ']': 
-            // if (lex->nbrcurly > 0) --lex->nbrcurly;
+            if (lex->blkStack[lex->blkStackLvl].paranscnt > 0)
+                --lex->blkStack[lex->blkStackLvl].paranscnt;
             lexReturnPuncTok(RBracketToken, 1);
         case '(': 
-            // lex->nbrcurly++;
+            ++lex->blkStack[lex->blkStackLvl].paranscnt;
             lexReturnPuncTok(LParenToken, 1);
         case ')': 
-            // if (lex->nbrcurly > 0) --lex->nbrcurly;
+            if (lex->blkStack[lex->blkStackLvl].paranscnt > 0)
+                --lex->blkStack[lex->blkStackLvl].paranscnt;
             lexReturnPuncTok(RParenToken, 1);
 
         // ':' and '::'

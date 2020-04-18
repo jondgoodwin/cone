@@ -13,7 +13,21 @@ typedef struct Name Name;    // ../ast/nametbl.h
 
 #include <stdint.h>
 
-#define LEX_MAX_INDENTS 1024
+#define LEX_MAX_BLOCKS 1024
+
+// What sort of block the lexer is working with
+typedef enum {
+    FreeFormBlock,    // Indentation is irrelevent
+    SigIndentBlock,   // Indentation is significant
+    SameStmtBlock     // Block statements on same line as statement
+} LexBlockMode;
+
+// Information about a block on the block stack
+typedef struct {
+    uint16_t blkindent;       // Indentation of stmt that started block
+    uint16_t paranscnt;       // How many open parantheses/brackets in block
+    LexBlockMode blkmode;     // Lexer block mode
+} LexBlockInfo;
 
 // Lexer state (one per source file)
 typedef struct Lexer {
@@ -48,6 +62,8 @@ typedef struct Lexer {
     int16_t stmtindent;      // Indentation level of current statement
     int16_t tokPosInLine;    // 0=First token in line, 1=Second, etc.
     char indentch;           // Are we using spaces or tabs?
+    int16_t blkStackLvl;     // How deep are we into block stack
+    LexBlockInfo blkStack[LEX_MAX_BLOCKS];  // Block stack
 } Lexer;
 
 // All the possible types for a token
@@ -162,6 +178,12 @@ void lexInjectFile(char *url);
 void lexInject(char *url, char *src);
 void lexPop();
 void lexNextToken();
+
+// Parser indicates new block starts here, e.g., '{'
+void lexBlockStart(LexBlockMode mode);
+
+// Parser indicates block finishes here, e.g., '}'
+void lexBlockEnd();
 
 // Is next token at start of line?
 int lexIsEndOfLine();
