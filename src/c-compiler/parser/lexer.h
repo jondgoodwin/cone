@@ -45,6 +45,7 @@ typedef struct Lexer {
 
     // ** Significant indentation state -->
     int16_t curindent;       // Indentation level of current line
+    int16_t stmtindent;      // Indentation level of current statement
     int16_t tokPosInLine;    // 0=First token in line, 1=Second, etc.
     char indentch;           // Are we using spaces or tabs?
 } Lexer;
@@ -164,6 +165,9 @@ void lexNextToken();
 
 // Is next token at start of line?
 int lexIsEndOfLine();
+
+// Parser signals the start of a new statement (for continuation analysis)
+void lexStmtStart();
 
 // Return true if current token is first on a line that has not been indented
 // This is used by parser to determine whether an operator that starts a new line

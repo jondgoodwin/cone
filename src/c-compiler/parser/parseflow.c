@@ -207,6 +207,7 @@ INode *parseMatch(ParseState *parse) {
 
     // Parse all cases
     while (!lexIsToken(RCurlyToken)) {
+        lexStmtStart();
         switch (lex->toktype) {
         case PermToken:
             parseBoundMatch(parse, ifnode, expnamenode, NULL);
@@ -379,6 +380,7 @@ INode *parseBlock(ParseState *parse) {
 
     blk->stmts = newNodes(8);
     while (! lexIsToken(EofToken) && ! lexIsToken(RCurlyToken)) {
+        lexStmtStart();
         switch (lex->toktype) {
         case SemiToken:
             lexNextToken();

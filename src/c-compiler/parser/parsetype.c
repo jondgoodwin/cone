@@ -196,6 +196,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     if (lexIsToken(LCurlyToken)) {
         lexNextToken();
         while (1) {
+            lexStmtStart();
             if (lexIsToken(SetToken)) {
                 lexNextToken();
                 if (!lexIsToken(FnToken))

@@ -232,6 +232,7 @@ ModuleNode *parseModule(ParseState *parse);
 void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
     // Create and populate a Module node for the program
     while (!lexIsToken(EofToken) && !lexIsToken(RCurlyToken)) {
+        lexStmtStart();
         switch (lex->toktype) {
 
         case IncludeToken:

@@ -58,6 +58,7 @@ void lexInject(char *url, char *src) {
     lex->tokPosInLine = 0;
     lex->indentch = '\0';
     lex->curindent = 0;
+    lex->stmtindent = 0;
 
     // Prime the pump with the first token
     lexNextToken();
@@ -157,14 +158,20 @@ void lexBlockEnd() {
     // --lex->indentlvl;
 }
 
-// Return true if current token is first on a line that has not been indented
-int lexIsStmtBreak() {
+// Is next token at start of line?
+int lexIsEndOfLine() {
     return lex->tokPosInLine == 0;
 }
 
-// Is next token at start of line?
-int lexIsEndOfLine() {
-    return lex->tokPosInLine <= 1;
+// Parser indicates the start of a new statement
+// This allows lexIsStmtBreak to know if a continuation line is indented
+void lexStmtStart() {
+    lex->stmtindent = lex->curindent;
+}
+
+// Return true if current token is first on a line that has not been indented
+int lexIsStmtBreak() {
+    return lexIsEndOfLine() && lex->curindent <= lex->stmtindent;
 }
 
 // Handle new line character.
