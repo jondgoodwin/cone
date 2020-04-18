@@ -43,15 +43,10 @@ typedef struct Lexer {
     uint32_t flags;        // Lexer flags
     uint16_t toktype;    // TokenTypes
 
-    // ** Off-side rule state -->
-    // if nbrcurly > 0, offside rule is turned off
-    int16_t nbrcurly;    // Number of explicit curly braces active
+    // ** Significant indentation state -->
+    int16_t curindent;       // Indentation level of current line
     int16_t tokPosInLine;    // 0=First token in line, 1=Second, etc.
-    int16_t curindent;    // Indentation level of current line
-    int16_t indents[LEX_MAX_INDENTS]; // LIFO list of indent levels
-    int16_t indentlvl;    // Current index in indents[]
-    char indentch;        // Are we using spaces or tabs?
-    char inject;        // non-zero if we need to inject tokens
+    char indentch;           // Are we using spaces or tabs?
 } Lexer;
 
 // All the possible types for a token

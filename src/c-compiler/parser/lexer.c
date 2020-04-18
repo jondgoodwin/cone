@@ -55,13 +55,9 @@ void lexInject(char *url, char *src) {
     lex->srcp = lex->tokp = lex->linep = src;
     lex->linenbr = 1;
     lex->flags = 0;
-    lex->nbrcurly = 0;
     lex->tokPosInLine = 0;
     lex->indentch = '\0';
-    lex->inject = 0;
     lex->curindent = 0;
-    lex->indentlvl = 0;
-    lex->indents[0] = 0;
 
     // Prime the pump with the first token
     lexNextToken();
@@ -147,6 +143,20 @@ void lexPop() {
 
 // ******  SIGNIFICANT WHITESPACE HANDLING ***********
 
+// Parser indicates new block starts here, e.g., '{'
+void lexBlockStart() {
+    /*
+    if (lex->indentlvl >= LEX_MAX_INDENTS)
+        errorExit(ExitIndent, "Too many indent levels in source file.");
+    lex->indents[++lex->indentlvl] = lex->curindent;
+    */
+}
+
+// Parser indicates block finishes here, e.g., '}'
+void lexBlockEnd() {
+    // --lex->indentlvl;
+}
+
 // Return true if current token is first on a line that has not been indented
 int lexIsStmtBreak() {
     return lex->tokPosInLine == 0;
@@ -193,29 +203,6 @@ char *lexNewLine(char *srcp) {
             break;
     }
     return srcp;
-}
-
-// Inject tokens for off-side rule indentation
-// Returns 1 if token is injected, 0 otherwise
-// - Same indentation -  and not continuation
-int lexInjectToken() {
-    // Inject '{' if indentation increases
-    if (lex->curindent > lex->indents[lex->indentlvl]) {
-        if (lex->indentlvl >= LEX_MAX_INDENTS)
-            errorExit(ExitIndent, "Too many indent levels in source file.");
-        lex->indents[++lex->indentlvl] = lex->curindent;
-        lex->inject = 0;
-        lex->toktype = LCurlyToken;
-        return 1;
-    }
-    // Inject '}' if indentation decreases
-    if (lex->curindent < lex->indents[lex->indentlvl]) {
-        --lex->indentlvl;
-        lex->toktype = RCurlyToken;
-        return 1;
-    }
-    lex->inject = 0;
-    return 0;
 }
 
 // ******  TOKEN-SPECIFIC LEXING **********
@@ -597,10 +584,6 @@ char *lexBlockComment(char *srcp) {
 
 // Decode next token from the source into new lex->token
 void lexNextTokenx() {
-    // Inject tokens, if needed based on current line's indentation
-    if (lex->inject && lexInjectToken())
-        return;
-
     char *srcp;
     srcp = lex->srcp;
     ++lex->tokPosInLine;
@@ -771,16 +754,16 @@ void lexNextTokenx() {
             else
                 lexReturnPuncTok(QuesToken, 1);
         case '[': 
-            lex->nbrcurly++;
+            // lex->nbrcurly++;
             lexReturnPuncTok(LBracketToken, 1);
         case ']': 
-            if (lex->nbrcurly > 0) --lex->nbrcurly;
+            // if (lex->nbrcurly > 0) --lex->nbrcurly;
             lexReturnPuncTok(RBracketToken, 1);
         case '(': 
-            lex->nbrcurly++;
+            // lex->nbrcurly++;
             lexReturnPuncTok(LParenToken, 1);
         case ')': 
-            if (lex->nbrcurly > 0) --lex->nbrcurly;
+            // if (lex->nbrcurly > 0) --lex->nbrcurly;
             lexReturnPuncTok(RParenToken, 1);
 
         // ':' and '::'
@@ -797,10 +780,8 @@ void lexNextTokenx() {
             lexReturnPuncTok(SemiToken, 1);
 
         case '{': 
-            lex->nbrcurly++;
             lexReturnPuncTok(LCurlyToken, 1);
         case '}': 
-            if (lex->nbrcurly > 0) --lex->nbrcurly;
             lexReturnPuncTok(RCurlyToken, 1);
         
         // '/' or '//' or '/*'
@@ -836,28 +817,10 @@ void lexNextTokenx() {
         // Handle new line
         case '\n':
             srcp = lexNewLine(srcp);
-            // In off-side mode
-            if (lex->nbrcurly == 0) {
-                // For non-blank, non-comment line in off-side mode, inject token if needed
-                if (*srcp != '\n' && !(*srcp == '/' && *(srcp + 1) == '/')) {
-                    lex->inject = 1;
-                    lex->tokp = lex->srcp = srcp;
-                    if (lexInjectToken())
-                        return;
-                }
-            }
             break;
 
         // End-of-file
         case '\0': case '\x1a':
-            if (lex->nbrcurly == 0) {
-                // For off-side, pretend eof is a new line to force needed injections
-                lex->inject = 1;
-                lex->curindent = 0;
-                lex->tokp = lex->srcp = srcp;
-                if (lexInjectToken())
-                    return;
-            }
             lexReturnPuncTok(EofToken, 0);
 
         // Bad character

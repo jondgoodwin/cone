@@ -463,7 +463,7 @@ INode *parseXor(ParseState *parse) {
 INode *parseOr(ParseState *parse) {
     INode *lhnode = parseXor(parse);
     while (1) {
-        if (lexIsToken(BarToken)) {
+        if (lexIsToken(BarToken) && !lexIsStmtBreak()) {
             FnCallNode *node = newFnCallOpname(lhnode, orName, 2);
             lexNextToken();
             nodesAdd(&node->args, parseXor(parse));
