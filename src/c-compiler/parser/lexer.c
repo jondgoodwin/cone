@@ -95,7 +95,6 @@ void keywordInit() {
     keyAdd("enum", EnumToken);
     keyAdd("region", RegionToken);
     keyAdd("return", RetToken);
-    keyAdd("do", DoToken);
     keyAdd("with", WithToken);
     keyAdd("if", IfToken);
     keyAdd("elif", ElifToken);

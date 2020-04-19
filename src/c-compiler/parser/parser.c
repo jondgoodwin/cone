@@ -41,7 +41,7 @@ int parseIsEndOfStatement() {
     return (lex->toktype == SemiToken || lex->toktype == RCurlyToken || lex->toktype == EofToken);
 }
 
-// We expect semicolon since statement has run its course
+// We expect optional semicolon since statement has run its course
 void parseEndOfStatement() {
     // Consume semicolon as end-of-statement signifier, if found
     if (lex->toktype == SemiToken) {
@@ -54,6 +54,24 @@ void parseEndOfStatement() {
         errorMsgLex(ErrorNoSemi, "Statement finished? Expected semicolon or end of line.");
 }
 
+// Return true if we have a consumed semi-colon or we are at end-of-line and next line is not indented
+// Otherwise, we expect to have a block
+int parseHasNoBlock() {
+    if (lex->toktype == SemiToken) {
+        lexNextToken();
+        return 1;
+    }
+    return lexIsEndOfLine() && (lex->curindent <= lex->stmtindent);
+}
+
+// Expect left curly brace. If not found, search for '{'
+void parseLCurly() {
+    errorMsgLex(ErrorNoLCurly, "Expected opening brace '{' - skipping forward to find it");
+    while (!lexIsToken(LCurlyToken) && !lexIsToken(SemiToken) && !lexIsToken(EofToken)) {
+        lexNextToken();
+    }
+}
+
 // Expect right curly brace. If not found, search for '}' or ';'
 void parseRCurly() {
     if (!lexIsToken(RCurlyToken))
@@ -64,14 +82,6 @@ void parseRCurly() {
         lexNextToken();
     }
     lexNextToken();
-}
-
-// Expect left curly brace. If not found, search for '{'
-void parseLCurly() {
-    errorMsgLex(ErrorNoLCurly, "Expected opening brace '{' - skipping forward to find it");
-    while (!lexIsToken(LCurlyToken) && !lexIsToken(SemiToken) && !lexIsToken(EofToken)) {
-        lexNextToken();
-    }
 }
 
 // Expect closing token (e.g., right parenthesis). If not found, search for it or '}' or ';'
@@ -330,24 +340,28 @@ ModuleNode *parseModule(ParseState *parse) {
     lexNextToken();
     filename = parseFile();
     modname = fileName(filename);
-    if (!lexIsToken(LCurlyToken) && !lexIsToken(SemiToken))
-        parseLCurly();
-
-    // This is a new module, build it
     mod = newModuleNode();
-    nameConcatPrefix(&parse->gennamePrefix, modname);
     mod->namesym = nametblFind(modname, strlen(modname));
-    if (lexIsToken(LCurlyToken)) {
-        lexNextToken();
-        parseModuleBlk(parse, mod);
-        parseRCurly();
-    }
-    else {
-        parseEndOfStatement();
+    nameConcatPrefix(&parse->gennamePrefix, modname);
+
+    // Check if module's block has been specified
+    if (parseHasNoBlock()) {
+        // If no block, get and inject the module file
         lexInjectFile(filename);
         parseModuleBlk(parse, mod);
         lexPop();
     }
+    else {
+        // Inline module
+        if (!lexIsToken(LCurlyToken))
+            parseLCurly();
+        if (lexIsToken(LCurlyToken)) {
+            lexNextToken();
+            parseModuleBlk(parse, mod);
+            parseRCurly();
+        }
+    }
+
     parse->gennamePrefix = svprefix;
     return mod;
 }

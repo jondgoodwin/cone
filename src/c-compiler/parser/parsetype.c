@@ -192,8 +192,9 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         strnode->basetrait = parseTypeName(parse);  // Type could be a qualified name or generic
     }
 
-    // Process field or method definitions
-    if (lexIsToken(LCurlyToken)) {
+    // If block has been provided, process field or method definitions
+    // If not, we have an opaque struct!
+    if (!parseHasNoBlock()) {
         lexNextToken();
         while (1) {
             lexStmtStart();
@@ -240,9 +241,6 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         }
         parseRCurly();
     }
-    // Opaque struct
-    else
-        parseEndOfStatement();
 
     parse->typenode = svtype;
     parse->gennamePrefix = svprefix;

@@ -145,7 +145,6 @@ enum TokenTypes {
     EnumToken,      // 'enum'
     RegionToken,    // 'region'
     RetToken,       // 'return'
-    DoToken,        // 'do'
     WithToken,      // 'with'
     IfToken,        // 'if'
     ElifToken,      // 'elif'

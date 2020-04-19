@@ -549,9 +549,6 @@ INode *parseSimpleExpr(ParseState *parse) {
         return parseLoop(parse, NULL);
     case LifetimeToken:
         return parseLifetime(parse, 0);
-    case DoToken:
-        lexNextToken();
-        return parseBlock(parse);
     case LCurlyToken:
         return parseBlock(parse);
     default:

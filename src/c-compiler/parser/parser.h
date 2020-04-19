@@ -33,7 +33,11 @@ ModuleNode *parseModuleBlk(ParseState *parse, ModuleNode *mod);
 INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags);
 // Is this end-of-statement? if ';', '}', or end-of-file
 int parseIsEndOfStatement();
+// We expect optional semicolon since statement has run its course
 void parseEndOfStatement();
+// Return true if we have a consumed semi-colon or we are at end-of-line and next line is not indented
+// Otherwise, we expect to have a block
+int parseHasNoBlock();
 void parseRCurly();
 void parseLCurly();
 // Parse a list of generic variables and add to the genericnode
