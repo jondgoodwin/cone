@@ -101,6 +101,7 @@ INode *parseTerm(ParseState *parse) {
         {
             INode *node;
             lexNextToken();
+            lexIncrParens();
             node = parseAnyExpr(parse);
             parseCloseTok(RParenToken);
             return node;
@@ -165,6 +166,7 @@ INode *parseFnCall(ParseState *parse, INode *node, uint16_t flags) {
         else
             closetok = RParenToken;
         lexNextToken();
+        lexIncrParens();
         fncall->args = newNodes(8);
         if (!lexIsToken(closetok)) {
             nodesAdd(&fncall->args, parseArg(parse));
@@ -637,6 +639,7 @@ INode *parseList(ParseState *parse, INode *typenode) {
     list->objfn = typenode;
     list->vtype = (INode*)arrtype;
     lexNextToken();
+    lexIncrParens();
     if (!lexIsToken(RBracketToken)) {
         while (1) {
             nodesAdd(&list->args, parseSimpleExpr(parse));

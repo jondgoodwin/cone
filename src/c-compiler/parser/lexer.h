@@ -186,6 +186,11 @@ int lexIsBlockEnd();
 // Parser indicates block finishes here, e.g., '}'
 void lexBlockEnd();
 
+// Decrement counter for parentheses/brackets
+void lexDecrParens();
+// Increment counter for parentheses/brackets
+void lexIncrParens();
+
 // Is next token at start of line?
 int lexIsEndOfLine();
 

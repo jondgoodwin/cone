@@ -129,8 +129,7 @@ void parseCloseTok(uint16_t closetok) {
         lexNextToken();
     }
     lexNextToken();
-    if (lex->blkStack[lex->blkStackLvl].paranscnt > 0)
-        --lex->blkStack[lex->blkStackLvl].paranscnt;
+    lexDecrParens();
 }
 
 // Parse a function block

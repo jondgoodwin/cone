@@ -182,6 +182,17 @@ int lexIsBlockEnd() {
     return 0;
 }
 
+// Decrement counter for parentheses/brackets
+void lexDecrParens() {
+    if (lex->blkStack[lex->blkStackLvl].paranscnt > 0)
+        --lex->blkStack[lex->blkStackLvl].paranscnt;
+}
+
+// Increment counter for parentheses/brackets
+void lexIncrParens() {
+    ++lex->blkStack[lex->blkStackLvl].paranscnt;
+}
+
 // Is next token at start of line?
 int lexIsEndOfLine() {
     return lex->tokPosInLine == 0;
@@ -787,18 +798,12 @@ void lexNextTokenx() {
             else
                 lexReturnPuncTok(QuesToken, 1);
         case '[': 
-            lex->blkStack[lex->blkStackLvl].paranscnt++;
             lexReturnPuncTok(LBracketToken, 1);
         case ']': 
-            if (lex->blkStack[lex->blkStackLvl].paranscnt > 0)
-                --lex->blkStack[lex->blkStackLvl].paranscnt;
             lexReturnPuncTok(RBracketToken, 1);
         case '(': 
-            ++lex->blkStack[lex->blkStackLvl].paranscnt;
             lexReturnPuncTok(LParenToken, 1);
         case ')': 
-            if (lex->blkStack[lex->blkStackLvl].paranscnt > 0)
-                --lex->blkStack[lex->blkStackLvl].paranscnt;
             lexReturnPuncTok(RParenToken, 1);
 
         // ':' and '::'
