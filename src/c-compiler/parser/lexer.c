@@ -163,6 +163,18 @@ void lexBlockEnd() {
     lex->stmtindent = lex->blkStack[level].blkindent;
 }
 
+// Does block end here, based on block mode?
+int lexIsBlockEnd() {
+    switch (lex->blkStack[lex->blkStackLvl].blkmode) {
+    case FreeFormBlock: 
+        return 0;
+    case SigIndentBlock:
+        return lexIsEndOfLine() && lex->curindent <= lex->blkStack[lex->blkStackLvl].blkindent;
+    case SameStmtBlock:
+        return 0;
+    }
+}
+
 // Is next token at start of line?
 int lexIsEndOfLine() {
     return lex->tokPosInLine == 0;

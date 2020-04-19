@@ -180,7 +180,8 @@ void lexNextToken();
 
 // Parser indicates new block starts here, e.g., '{'
 void lexBlockStart(LexBlockMode mode);
-
+// Does block end here, based on block mode?
+int lexIsBlockEnd();
 // Parser indicates block finishes here, e.g., '}'
 void lexBlockEnd();
 

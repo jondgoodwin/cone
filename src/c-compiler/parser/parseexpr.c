@@ -550,7 +550,7 @@ INode *parseSimpleExpr(ParseState *parse) {
     case LifetimeToken:
         return parseLifetime(parse, 0);
     case LCurlyToken:
-        return parseBlock(parse);
+        return parseExprBlock(parse);
     default:
         return parseOrExpr(parse);
     }

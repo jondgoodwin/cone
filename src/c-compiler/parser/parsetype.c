@@ -195,8 +195,8 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     // If block has been provided, process field or method definitions
     // If not, we have an opaque struct!
     if (!parseHasNoBlock()) {
-        lexNextToken();
-        while (1) {
+        parseBlockStart();
+        while (!parseBlockEnd()) {
             lexStmtStart();
             if (lexIsToken(SetToken)) {
                 lexNextToken();
@@ -236,10 +236,11 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 structAddField(strnode, field);
                 parseEndOfStatement();
             }
-            else
-                break;
+            else {
+                errorMsgLex(ErrorNoSemi, "Unknown struct statement.");
+                parseSkipToNextStmt();
+            }
         }
-        parseRCurly();
     }
 
     parse->typenode = svtype;

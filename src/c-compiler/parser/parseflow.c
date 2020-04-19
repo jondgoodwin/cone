@@ -38,16 +38,6 @@ INode *parseExpStmt(ParseState *parse) {
     return node;
 }
 
-// Parse a block or an expression statement followed by semicolon
-INode *parseBlockOrStmt(ParseState *parse) {
-    if (lexIsToken(LCurlyToken)) {
-        return parseBlock(parse);
-    }
-    BlockNode *blk = newBlockNode();
-    nodesAdd(&blk->stmts, parseExpStmt(parse));
-    return (INode*)blk;
-}
-
 // Parse a return statement
 INode *parseReturn(ParseState *parse) {
     ReturnNode *stmtnode = newReturnNode();
@@ -114,7 +104,7 @@ void parseBoundMatch(ParseState *parse, IfNode *ifnode, NameUseNode *expnamenode
     }
 
     // Create and-then block, with vardcl injected at start
-    BlockNode *blknode = (BlockNode*)parseBlockOrStmt(parse);
+    BlockNode *blknode = (BlockNode*)parseExprBlock(parse);
     nodesInsert(&blknode->stmts, (INode*)varnode, 0); // Inject vardcl at start of block
     nodesAdd(&ifnode->condblk, (INode*)blknode);
 }
@@ -141,7 +131,7 @@ INode *parseIf(ParseState *parse) {
     }
     else {
         nodesAdd(&ifnode->condblk, parseSimpleExpr(parse));
-        nodesAdd(&ifnode->condblk, parseBlockOrStmt(parse));
+        nodesAdd(&ifnode->condblk, parseExprBlock(parse));
     }
     while (1) {
         // Process final else clause and break loop
@@ -150,7 +140,7 @@ INode *parseIf(ParseState *parse) {
             lexNextToken();
             if (!lexIsToken(IfToken)) {
                 nodesAdd(&ifnode->condblk, elseCond); // else distinguished by a elseCond
-                nodesAdd(&ifnode->condblk, parseBlockOrStmt(parse));
+                nodesAdd(&ifnode->condblk, parseExprBlock(parse));
                 break;
             }
         }
@@ -178,7 +168,7 @@ INode *parseIf(ParseState *parse) {
         }
         else {
             nodesAdd(&ifnode->condblk, parseSimpleExpr(parse));
-            nodesAdd(&ifnode->condblk, parseBlockOrStmt(parse));
+            nodesAdd(&ifnode->condblk, parseExprBlock(parse));
         }
     }
     return retnode;
@@ -199,14 +189,10 @@ INode *parseMatch(ParseState *parse) {
     expnamenode->tag = VarNameUseTag;
     expnamenode->dclnode = (INode*)expdclnode;
     expdclnode->value = parseSimpleExpr(parse);
-    if (!lexIsToken(LCurlyToken)) {
-        errorMsgLex(ErrorBadTok, "Expected opening block brace '{' after match expression");
-        return (INode*)blknode;
-    }
-    lexNextToken();
 
     // Parse all cases
-    while (!lexIsToken(RCurlyToken)) {
+    parseBlockStart();
+    while (!parseBlockEnd()) {
         lexStmtStart();
         switch (lex->toktype) {
         case PermToken:
@@ -219,7 +205,7 @@ INode *parseMatch(ParseState *parse) {
             nodesAdd(&ifnode->condblk, (INode*)isnode);
             if (lexIsToken(ColonToken))
                 lexNextToken();
-            nodesAdd(&ifnode->condblk, parseBlockOrStmt(parse));
+            nodesAdd(&ifnode->condblk, parseExprBlock(parse));
             break;
         }
 
@@ -230,24 +216,23 @@ INode *parseMatch(ParseState *parse) {
             nodesAdd(&ifnode->condblk, (INode*)callnode);
             if (lexIsToken(ColonToken))
                 lexNextToken();
-            nodesAdd(&ifnode->condblk, parseBlockOrStmt(parse));
+            nodesAdd(&ifnode->condblk, parseExprBlock(parse));
             break;
         }
 
         case ElseToken:
             lexNextToken();
             nodesAdd(&ifnode->condblk, elseCond); // else distinguished by a elseCond condition
-            nodesAdd(&ifnode->condblk, parseBlockOrStmt(parse));
+            nodesAdd(&ifnode->condblk, parseExprBlock(parse));
             break;
 
         default:
             nodesAdd(&ifnode->condblk, parseSimpleExpr(parse));
             if (lexIsToken(ColonToken))
                 lexNextToken();
-            nodesAdd(&ifnode->condblk, parseBlockOrStmt(parse));
+            nodesAdd(&ifnode->condblk, parseExprBlock(parse));
         }
     }
-    parseRCurly();
 
     nodesAdd(&blknode->stmts, (INode*)expdclnode);
     nodesAdd(&blknode->stmts, (INode*)ifnode);
@@ -259,7 +244,7 @@ INode *parseLoop(ParseState *parse, LifetimeNode *life) {
     LoopNode *loopnode = newLoopNode();
     loopnode->life = life;
     lexNextToken();
-    loopnode->blk = parseBlock(parse);
+    loopnode->blk = parseExprBlock(parse);
     return (INode *)loopnode;
 }
 
@@ -269,7 +254,7 @@ INode *parseWhile(ParseState *parse, LifetimeNode *life) {
     loopnode->life = life;
     lexNextToken();
     INode *condexp = parseSimpleExpr(parse);
-    INode *blk = loopnode->blk = parseBlock(parse);
+    INode *blk = loopnode->blk = parseExprBlock(parse);
     parseInsertWhileBreak(blk, condexp);
     return (INode *)loopnode;
 }
@@ -308,7 +293,7 @@ INode *parseEach(ParseState *parse, INode *innerblk, LifetimeNode *life) {
         step = parseSimpleExpr(parse);
     }
     if (innerblk == NULL)
-        innerblk = parseBlock(parse);
+        innerblk = parseExprBlock(parse);
     loopnode->blk = innerblk;
 
     // Assemble logic for a range (with optional step), e.g.:
@@ -363,23 +348,19 @@ INode *parseWith(ParseState *parse) {
     lexNextToken();
     VarDclNode *this = newVarDclFull(thisName, VarDclTag, unknownType, (INode*)immPerm, NULL);
     this->value = parseSimpleExpr(parse);
-    BlockNode *blk = (BlockNode*)parseBlock(parse);
+    BlockNode *blk = (BlockNode*)parseExprBlock(parse);
     nodesInsert(&blk->stmts, (INode*)this, 0);
     return (INode *)blk;
 }
 
 // Parse a block of statements/expressions
-INode *parseBlock(ParseState *parse) {
+INode *parseExprBlock(ParseState *parse) {
     BlockNode *blk = newBlockNode();
 
-    if (!lexIsToken(LCurlyToken))
-        parseLCurly();
-    if (!lexIsToken(LCurlyToken))
-        return (INode*)blk;
-    lexNextToken();
+    parseBlockStart();
 
     blk->stmts = newNodes(8);
-    while (! lexIsToken(EofToken) && ! lexIsToken(RCurlyToken)) {
+    while (!parseBlockEnd()) {
         lexStmtStart();
         switch (lex->toktype) {
         case SemiToken:
@@ -447,7 +428,7 @@ INode *parseBlock(ParseState *parse) {
         }
 
         case LCurlyToken:
-            nodesAdd(&blk->stmts, parseBlock(parse));
+            nodesAdd(&blk->stmts, parseExprBlock(parse));
             break;
 
         // A local variable declaration, if it begins with a permission
@@ -461,6 +442,5 @@ INode *parseBlock(ParseState *parse) {
         }
     }
 
-    parseRCurly();
     return (INode*)blk;
 }
