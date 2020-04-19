@@ -187,7 +187,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     }
 
     // Obtain base trait, if specified
-    if (lexIsToken(ColonToken)) {
+    if (lexIsToken(ExtendsToken)) {
         lexNextToken();
         strnode->basetrait = parseTypeName(parse);  // Type could be a qualified name or generic
     }

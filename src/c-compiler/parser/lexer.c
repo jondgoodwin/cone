@@ -91,6 +91,7 @@ void keywordInit() {
     keyAdd("struct", StructToken);
     keyAdd("trait", TraitToken);
     keyAdd("@samesize", SamesizeToken);
+    keyAdd("extends", ExtendsToken);
     keyAdd("mixin", MixinToken);
     keyAdd("enum", EnumToken);
     keyAdd("region", RegionToken);
@@ -173,6 +174,7 @@ int lexIsBlockEnd() {
     case SameStmtBlock:
         return 0;
     }
+    return 0;
 }
 
 // Is next token at start of line?

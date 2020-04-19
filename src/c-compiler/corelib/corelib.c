@@ -44,12 +44,12 @@ void stdRegionInit() {
 
 char *corelib =
 "trait @samesize Option[T] {_ enum;}\n"
-"struct Null[T] : Option[T] {}\n"
-"struct Some[T] : Option[T] {some T}\n"
+"struct Null[T] extends Option[T] {}\n"
+"struct Some[T] extends Option[T] {some T}\n"
 
 "trait @samesize Result[T,E] {_ enum}\n"
-"struct Ok[T,E] : Result[T,E] {ok T}\n"
-"struct Error[T,E] : Result[T,E] {error E}\n"
+"struct Ok[T,E] extends Result[T,E] {ok T}\n"
+"struct Error[T,E] extends Result[T,E] {error E}\n"
 ;
 
 // Set up the standard library, whose names are always shared by all modules

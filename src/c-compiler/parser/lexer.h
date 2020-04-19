@@ -141,6 +141,7 @@ enum TokenTypes {
     StructToken,    // 'struct'
     TraitToken,     // 'trait'
     SamesizeToken,  // '@samesize'
+    ExtendsToken,   // 'extends'
     MixinToken,     // 'mixin'
     EnumToken,      // 'enum'
     RegionToken,    // 'region'
