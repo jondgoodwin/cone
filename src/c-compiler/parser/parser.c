@@ -21,6 +21,9 @@
 
 // Skip to next statement for error recovery
 void parseSkipToNextStmt() {
+    // Ensure we are always moving forwards, line by line
+    if (lexIsEndOfLine() && !lexIsToken(SemiToken) && !lexIsToken(EofToken) && !lexIsToken(RCurlyToken))
+        lexNextToken();
     while (1) {
         // Consume semicolon as end-of-statement
         if (lexIsToken(SemiToken)) {
@@ -57,6 +60,8 @@ void parseEndOfStatement() {
 // Return true if we have a consumed semi-colon or we are at end-of-line and next line is not indented
 // Otherwise, we expect to have a block
 int parseHasNoBlock() {
+    if (lex->toktype == LCurlyToken || lex->toktype == ColonToken)
+        return 0;
     if (lex->toktype == SemiToken) {
         lexNextToken();
         return 1;
@@ -123,6 +128,8 @@ void parseCloseTok(uint16_t closetok) {
         lexNextToken();
     }
     lexNextToken();
+    if (lex->blkStack[lex->blkStackLvl].paranscnt > 0)
+        --lex->blkStack[lex->blkStackLvl].paranscnt;
 }
 
 // Parse a function block
