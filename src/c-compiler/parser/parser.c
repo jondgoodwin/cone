@@ -103,10 +103,11 @@ int parseBlockEnd() {
         return 1;
     }
     if (lexIsBlockEnd()) {
+        lexBlockEnd();
         return 1;
     }
     if (lexIsToken(EofToken)) {
-        errorMsgLex(ErrorNoRCurly, "Expected closing brace '}' - skipping forward to find it");
+        errorMsgLex(ErrorNoRCurly, "Expected end of block (e.g., '}')");
         return 1;
     }
     return 0;

@@ -169,10 +169,15 @@ int lexIsBlockEnd() {
     switch (lex->blkStack[lex->blkStackLvl].blkmode) {
     case FreeFormBlock: 
         return 0;
+    case SameStmtBlock:
+        // It is not end-of-block if we are still on same line as block started on
+        if (!lexIsEndOfLine()) 
+            return 0;
+        // Switch mode for next line, using indentation to drive end-of-block
+        lex->blkStack[lex->blkStackLvl].blkmode = SigIndentBlock;
+        // Deliberate fallthrough
     case SigIndentBlock:
         return lexIsEndOfLine() && lex->curindent <= lex->blkStack[lex->blkStackLvl].blkindent;
-    case SameStmtBlock:
-        return 0;
     }
     return 0;
 }
