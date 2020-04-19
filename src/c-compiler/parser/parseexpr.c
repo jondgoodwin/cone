@@ -156,7 +156,7 @@ INode *parseFnCall(ParseState *parse, INode *node, uint16_t flags) {
     }
 
     // Handle () or [] suffixes and their enclosed arguments
-    if (lexIsToken(LParenToken) || lexIsToken(LBracketToken)) {
+    if ((lexIsToken(LParenToken) || lexIsToken(LBracketToken)) && !lexIsStmtBreak()) {
         int closetok;
         if (lex->toktype == LBracketToken) {
             fncall->flags |= FlagIndex;

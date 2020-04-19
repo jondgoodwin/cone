@@ -41,7 +41,8 @@ void parseSkipToNextStmt() {
 
 // Is this end-of-statement? if ';', '}', or end-of-file
 int parseIsEndOfStatement() {
-    return (lex->toktype == SemiToken || lex->toktype == RCurlyToken || lex->toktype == EofToken);
+    return (lex->toktype == SemiToken || lex->toktype == RCurlyToken || lex->toktype == EofToken
+        || lexIsStmtBreak());
 }
 
 // We expect optional semicolon since statement has run its course
@@ -277,7 +278,7 @@ ModuleNode *parseModule(ParseState *parse);
 // modAddNode adds node to module, as needed, including error message for dupes
 void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
     // Create and populate a Module node for the program
-    while (!lexIsToken(EofToken) && !lexIsToken(RCurlyToken)) {
+    while (lex->toktype!=EofToken && !parseBlockEnd()) {
         lexStmtStart();
         switch (lex->toktype) {
 
@@ -387,6 +388,7 @@ ModuleNode *parseModule(ParseState *parse) {
     // Check if module's block has been specified
     if (parseHasNoBlock()) {
         // If no block, get and inject the module file
+        parseEndOfStatement();
         lexInjectFile(filename);
         parseModuleBlk(parse, mod);
         lexPop();
@@ -395,7 +397,7 @@ ModuleNode *parseModule(ParseState *parse) {
         // Inline module
         parseBlockStart();
         parseModuleBlk(parse, mod);
-        parseBlockEnd();
+        // parseBlockEnd() will have happened
     }
 
     parse->gennamePrefix = svprefix;
