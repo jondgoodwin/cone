@@ -98,10 +98,6 @@ void parseBoundMatch(ParseState *parse, IfNode *ifnode, NameUseNode *expnamenode
         }
         valnode->value = parseSimpleExpr(parse);
     }
-    else {
-        if (lexIsToken(ColonToken))
-            lexNextToken();
-    }
 
     // Create and-then block, with vardcl injected at start
     BlockNode *blknode = (BlockNode*)parseExprBlock(parse);
@@ -203,8 +199,6 @@ INode *parseMatch(ParseState *parse) {
             lexNextToken();
             isnode->typ = parseVtype(parse);
             nodesAdd(&ifnode->condblk, (INode*)isnode);
-            if (lexIsToken(ColonToken))
-                lexNextToken();
             nodesAdd(&ifnode->condblk, parseExprBlock(parse));
             break;
         }
@@ -214,8 +208,6 @@ INode *parseMatch(ParseState *parse) {
             lexNextToken();
             nodesAdd(&callnode->args, parseSimpleExpr(parse));
             nodesAdd(&ifnode->condblk, (INode*)callnode);
-            if (lexIsToken(ColonToken))
-                lexNextToken();
             nodesAdd(&ifnode->condblk, parseExprBlock(parse));
             break;
         }
@@ -228,8 +220,6 @@ INode *parseMatch(ParseState *parse) {
 
         default:
             nodesAdd(&ifnode->condblk, parseSimpleExpr(parse));
-            if (lexIsToken(ColonToken))
-                lexNextToken();
             nodesAdd(&ifnode->condblk, parseExprBlock(parse));
         }
     }

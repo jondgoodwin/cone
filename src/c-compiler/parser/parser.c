@@ -328,9 +328,10 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
                     extflag |= FlagSystem;
                 lexNextToken();
             }
-            if (!parseHasNoBlock()) {
+            if (lexIsToken(ColonToken) || lexIsToken(LCurlyToken)) {
                 parseBlockStart();
                 while (!parseBlockEnd()) {
+                    lexStmtStart();
                     if (lexIsToken(FnToken) || lexIsToken(PermToken))
                         parseFnOrVar(parse, extflag);
                     else {
