@@ -101,6 +101,7 @@ INode *parseTerm(ParseState *parse) {
         {
             INode *node;
             lexNextToken();
+            lexIncrParens();
             node = parseAnyExpr(parse);
             parseCloseTok(RParenToken);
             return node;
@@ -156,7 +157,7 @@ INode *parseFnCall(ParseState *parse, INode *node, uint16_t flags) {
     }
 
     // Handle () or [] suffixes and their enclosed arguments
-    if (lexIsToken(LParenToken) || lexIsToken(LBracketToken)) {
+    if ((lexIsToken(LParenToken) || lexIsToken(LBracketToken)) && !lexIsStmtBreak()) {
         int closetok;
         if (lex->toktype == LBracketToken) {
             fncall->flags |= FlagIndex;
@@ -165,6 +166,7 @@ INode *parseFnCall(ParseState *parse, INode *node, uint16_t flags) {
         else
             closetok = RParenToken;
         lexNextToken();
+        lexIncrParens();
         fncall->args = newNodes(8);
         if (!lexIsToken(closetok)) {
             nodesAdd(&fncall->args, parseArg(parse));
@@ -463,7 +465,7 @@ INode *parseXor(ParseState *parse) {
 INode *parseOr(ParseState *parse) {
     INode *lhnode = parseXor(parse);
     while (1) {
-        if (lexIsToken(BarToken)) {
+        if (lexIsToken(BarToken) && !lexIsStmtBreak()) {
             FnCallNode *node = newFnCallOpname(lhnode, orName, 2);
             lexNextToken();
             nodesAdd(&node->args, parseXor(parse));
@@ -549,11 +551,8 @@ INode *parseSimpleExpr(ParseState *parse) {
         return parseLoop(parse, NULL);
     case LifetimeToken:
         return parseLifetime(parse, 0);
-    case DoToken:
-        lexNextToken();
-        return parseBlock(parse);
     case LCurlyToken:
-        return parseBlock(parse);
+        return parseExprBlock(parse);
     default:
         return parseOrExpr(parse);
     }
@@ -640,6 +639,7 @@ INode *parseList(ParseState *parse, INode *typenode) {
     list->objfn = typenode;
     list->vtype = (INode*)arrtype;
     lexNextToken();
+    lexIncrParens();
     if (!lexIsToken(RBracketToken)) {
         while (1) {
             nodesAdd(&list->args, parseSimpleExpr(parse));

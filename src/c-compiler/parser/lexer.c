@@ -55,13 +55,14 @@ void lexInject(char *url, char *src) {
     lex->srcp = lex->tokp = lex->linep = src;
     lex->linenbr = 1;
     lex->flags = 0;
-    lex->nbrcurly = 0;
     lex->tokPosInLine = 0;
     lex->indentch = '\0';
-    lex->inject = 0;
     lex->curindent = 0;
-    lex->indentlvl = 0;
-    lex->indents[0] = 0;
+    lex->stmtindent = 0;
+    lex->blkStackLvl = 0;
+    lex->blkStack[0].blkindent = 0;
+    lex->blkStack[0].paranscnt = 0;
+    lex->blkStack[0].blkmode = FreeFormBlock;
 
     // Prime the pump with the first token
     lexNextToken();
@@ -90,11 +91,11 @@ void keywordInit() {
     keyAdd("struct", StructToken);
     keyAdd("trait", TraitToken);
     keyAdd("@samesize", SamesizeToken);
+    keyAdd("extends", ExtendsToken);
     keyAdd("mixin", MixinToken);
     keyAdd("enum", EnumToken);
     keyAdd("region", RegionToken);
     keyAdd("return", RetToken);
-    keyAdd("do", DoToken);
     keyAdd("with", WithToken);
     keyAdd("if", IfToken);
     keyAdd("elif", ElifToken);
@@ -145,6 +146,111 @@ void lexPop() {
         lex = lex->prev;
 }
 
+// ******  SIGNIFICANT WHITESPACE HANDLING ***********
+
+// Parser indicates new block starts here, e.g., '{'
+void lexBlockStart(LexBlockMode mode) {
+    if (lex->blkStackLvl >= LEX_MAX_BLOCKS)
+        errorExit(ExitIndent, "Too many indent levels in source file.");
+    int level = ++lex->blkStackLvl;
+    lex->blkStack[level].blkindent = lex->stmtindent;
+    lex->blkStack[level].paranscnt = 0;
+    lex->blkStack[level].blkmode = mode;
+}
+
+// Parser indicates block finishes here, e.g., '}'
+void lexBlockEnd() {
+    int level = lex->blkStackLvl--;
+    lex->stmtindent = lex->blkStack[level].blkindent;
+}
+
+// Does block end here, based on block mode?
+int lexIsBlockEnd() {
+    switch (lex->blkStack[lex->blkStackLvl].blkmode) {
+    case FreeFormBlock: 
+        return 0;
+    case SameStmtBlock:
+        // It is not end-of-block if we are still on same line as block started on
+        if (!lexIsEndOfLine()) 
+            return 0;
+        // Switch mode for next line, using indentation to drive end-of-block
+        lex->blkStack[lex->blkStackLvl].blkmode = SigIndentBlock;
+        // Deliberate fallthrough
+    case SigIndentBlock:
+        return lexIsEndOfLine() && lex->curindent <= lex->blkStack[lex->blkStackLvl].blkindent;
+    }
+    return 0;
+}
+
+// Decrement counter for parentheses/brackets
+void lexDecrParens() {
+    if (lex->blkStack[lex->blkStackLvl].paranscnt > 0)
+        --lex->blkStack[lex->blkStackLvl].paranscnt;
+}
+
+// Increment counter for parentheses/brackets
+void lexIncrParens() {
+    ++lex->blkStack[lex->blkStackLvl].paranscnt;
+}
+
+// Is next token at start of line?
+int lexIsEndOfLine() {
+    return lex->tokPosInLine == 0;
+}
+
+// Parser indicates the start of a new statement
+// This allows lexIsStmtBreak to know if a continuation line is indented
+void lexStmtStart() {
+    lex->stmtindent = lex->curindent;
+}
+
+// Return true if current token is first on a line that has not been indented
+// and does not have any open parantheses or brackets
+int lexIsStmtBreak() {
+    return lexIsEndOfLine() && lex->curindent <= lex->stmtindent 
+        && lex->blkStack[lex->blkStackLvl].paranscnt == 0;
+}
+
+// Handle new line character.
+// Update lexer state, including indentation count for current line
+char *lexNewLine(char *srcp) {
+    srcp++;
+    lex->linep = srcp;
+    lex->tokPosInLine = 0;
+    ++lex->linenbr;
+    // Count line's indentation
+    lex->curindent = 0;
+    while (1) {
+        if (*srcp == '\r')
+            srcp++;
+        else if (*srcp == ' ' || *srcp == '\t') {
+            // Issue warning if inconsistent use of indentation character
+            switch (lex->indentch) {
+            case '\0':
+                lex->indentch = *srcp;
+                break;
+            case ' ':
+            case '\t':
+                if (*srcp != lex->indentch) {
+                    lex->tokp = srcp;
+                    errorMsgLex(WarnIndent, "Inconsistent indentation - use either spaces or tabs, not both.");
+                    lex->indentch = '*'; // Only issue warning once
+                }
+                break;
+            default:
+                break;
+            }
+            srcp++;
+            lex->curindent++;
+        }
+        else
+            break;
+    }
+    return srcp;
+}
+
+// ******  TOKEN-SPECIFIC LEXING **********
+
 /** Return value of hex digit, or -1 if not correct */
 char *lexHexDigits(int cnt, char *srcp, uint64_t *val) {
     *val = 0;
@@ -177,6 +283,7 @@ char *lexScanEscape(char *srcp, uint64_t *charval) {
     case '\'': *charval = '\''; return ++srcp;
     case '\"': *charval = '\"'; return ++srcp;
     case '\\': *charval = '\\'; return ++srcp;
+    case ' ': *charval = ' '; return ++srcp;
     case '\0': *charval = '\0'; return ++srcp;
     case 'x': return lexHexDigits(2, ++srcp, charval);
     case 'u': return lexHexDigits(4, ++srcp, charval);
@@ -263,11 +370,22 @@ void lexScanString(char *srcp) {
     srclen = 0;
     lex->val.strlit = newp;
     srcp = lex->tokp+1;
-    while (*srcp != '"') {
+    while (*srcp != '"' && *srcp) {
+        // discard all control chars, including spaces after new-line
+        if (*srcp < ' ') {
+            if (*srcp++ == '\n') {
+                while (*srcp <= ' ' && *srcp)
+                    ++srcp;
+            }
+            continue;
+        }
+
+        // Obtain next possible UTF-8 character
         if (*srcp == '\\')
             srcp = lexScanEscape(srcp, &uchar);
         else
             uchar = *srcp++;
+
         if (uchar < 0x80) {
             *newp++ = (unsigned char)uchar;
             srclen++;
@@ -520,40 +638,8 @@ char *lexBlockComment(char *srcp) {
     return; \
 }
 
-// Inject tokens for off-side rule indentation
-// Returns 1 if token is injected, 0 otherwise
-// - Same indentation -  and not continuation
-int lexInjectToken() {
-    // Inject '{' if indentation increases
-    if (lex->curindent > lex->indents[lex->indentlvl]) {
-        if (lex->indentlvl >= LEX_MAX_INDENTS)
-            errorExit(ExitIndent, "Too many indent levels in source file.");
-        lex->indents[++lex->indentlvl] = lex->curindent;
-        lex->inject = 0;
-        lex->toktype = LCurlyToken;
-        return 1;
-    }
-    // Inject '}' if indentation decreases
-    if (lex->curindent < lex->indents[lex->indentlvl]) {
-        --lex->indentlvl;
-        lex->toktype = RCurlyToken;
-        return 1;
-    }
-    lex->inject = 0;
-    return 0;
-}
-
-// Is next token at start of line?
-int lexIsEndOfLine() {
-    return lex->tokPosInLine <= 1;
-}
-
 // Decode next token from the source into new lex->token
 void lexNextTokenx() {
-    // Inject tokens, if needed based on current line's indentation
-    if (lex->inject && lexInjectToken())
-        return;
-
     char *srcp;
     srcp = lex->srcp;
     ++lex->tokPosInLine;
@@ -724,16 +810,12 @@ void lexNextTokenx() {
             else
                 lexReturnPuncTok(QuesToken, 1);
         case '[': 
-            lex->nbrcurly++;
             lexReturnPuncTok(LBracketToken, 1);
         case ']': 
-            if (lex->nbrcurly > 0) --lex->nbrcurly;
             lexReturnPuncTok(RBracketToken, 1);
         case '(': 
-            lex->nbrcurly++;
             lexReturnPuncTok(LParenToken, 1);
         case ')': 
-            if (lex->nbrcurly > 0) --lex->nbrcurly;
             lexReturnPuncTok(RParenToken, 1);
 
         // ':' and '::'
@@ -750,10 +832,8 @@ void lexNextTokenx() {
             lexReturnPuncTok(SemiToken, 1);
 
         case '{': 
-            lex->nbrcurly++;
             lexReturnPuncTok(LCurlyToken, 1);
         case '}': 
-            if (lex->nbrcurly > 0) --lex->nbrcurly;
             lexReturnPuncTok(RCurlyToken, 1);
         
         // '/' or '//' or '/*'
@@ -788,53 +868,11 @@ void lexNextTokenx() {
 
         // Handle new line
         case '\n':
-            srcp++;
-            lex->linep = srcp;
-            lex->tokPosInLine = 0;
-            ++lex->linenbr;
-            // In off-side mode
-            if (lex->nbrcurly == 0) {
-                // Count line's indentation
-                lex->curindent = 0;
-                while (1) {
-                    if (*srcp == '\r')
-                        srcp++;
-                    else if (*srcp == ' ' || *srcp == '\t') {
-                        if (lex->indentch == '\0')
-                            lex->indentch = *srcp;
-                        if (*srcp != lex->indentch) {
-                            lex->tokp = lex->srcp = srcp;
-                            if (*srcp == ' ')
-                                errorMsgLex(WarnIndent, "Inconsistent indentation - using space where tab is expected.");
-                            else
-                                errorMsgLex(WarnIndent, "Inconsistent indentation - using tab where space is expected.");
-                        }
-                        srcp++;
-                        lex->curindent++;
-                    }
-                    else
-                        break;
-                }
-                // For non-blank, non-comment line in off-side mode, inject token if needed
-                if (*srcp != '\n' && !(*srcp == '/' && *(srcp + 1) == '/')) {
-                    lex->inject = 1;
-                    lex->tokp = lex->srcp = srcp;
-                    if (lexInjectToken())
-                        return;
-                }
-            }
+            srcp = lexNewLine(srcp);
             break;
 
         // End-of-file
         case '\0': case '\x1a':
-            if (lex->nbrcurly == 0) {
-                // For off-side, pretend eof is a new line to force needed injections
-                lex->inject = 1;
-                lex->curindent = 0;
-                lex->tokp = lex->srcp = srcp;
-                if (lexInjectToken())
-                    return;
-            }
             lexReturnPuncTok(EofToken, 0);
 
         // Bad character
@@ -848,13 +886,9 @@ void lexNextTokenx() {
     }
 }
 
+// Obtain next token (and time how long it takes)
 void lexNextToken() {
     timerBegin(LexTimer);
     lexNextTokenx();
     timerBegin(ParseTimer);
-}
-
-// Return true if current token is first on a line that has not been indented
-int lexIsStmtBreak() {
-    return lex->tokPosInLine == 0;
 }

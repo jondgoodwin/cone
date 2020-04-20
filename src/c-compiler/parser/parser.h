@@ -31,11 +31,19 @@ enum ParseFlags {
 ModuleNode *parsePgm(ConeOptions *opt);
 ModuleNode *parseModuleBlk(ParseState *parse, ModuleNode *mod);
 INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags);
+// Skip to next statement for error recovery
+void parseSkipToNextStmt();
 // Is this end-of-statement? if ';', '}', or end-of-file
 int parseIsEndOfStatement();
+// We expect optional semicolon since statement has run its course
 void parseEndOfStatement();
-void parseRCurly();
-void parseLCurly();
+// Return true if we have a consumed semi-colon or we are at end-of-line and next line is not indented
+// Otherwise, we expect to have a block
+int parseHasNoBlock();
+// Expect a block to start, consume its token and set lexer mode
+void parseBlockStart();
+// Are we at end of block yet? If so, consume token and reset lexer mode
+int parseBlockEnd();
 // Parse a list of generic variables and add to the genericnode
 void parseGenericVars(ParseState *parse, GenericNode *genericnode);
 
@@ -46,9 +54,8 @@ void parseCloseTok(uint16_t closetok);
 INode *parseIf(ParseState *parse);
 INode *parseMatch(ParseState *parse);
 INode *parseLoop(ParseState *parse, LifetimeNode *life);
-// Parse a block or an expression statement followed by semicolon
-INode *parseBlockOrStmt(ParseState *parse);
-INode *parseBlock(ParseState *parse);
+// Parse an expression block
+INode *parseExprBlock(ParseState *parse);
 INode *parseLifetime(ParseState *parse, int stmtflag);
 
 // parseexpr.c

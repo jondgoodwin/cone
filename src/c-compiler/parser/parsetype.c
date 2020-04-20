@@ -187,15 +187,17 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     }
 
     // Obtain base trait, if specified
-    if (lexIsToken(ColonToken)) {
+    if (lexIsToken(ExtendsToken)) {
         lexNextToken();
         strnode->basetrait = parseTypeName(parse);  // Type could be a qualified name or generic
     }
 
-    // Process field or method definitions
-    if (lexIsToken(LCurlyToken)) {
-        lexNextToken();
-        while (1) {
+    // If block has been provided, process field or method definitions
+    // If not, we have an opaque struct!
+    if (!parseHasNoBlock()) {
+        parseBlockStart();
+        while (!parseBlockEnd()) {
+            lexStmtStart();
             if (lexIsToken(SetToken)) {
                 lexNextToken();
                 if (!lexIsToken(FnToken))
@@ -234,14 +236,12 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 structAddField(strnode, field);
                 parseEndOfStatement();
             }
-            else
-                break;
+            else {
+                errorMsgLex(ErrorNoSemi, "Unknown struct statement.");
+                parseSkipToNextStmt();
+            }
         }
-        parseRCurly();
     }
-    // Opaque struct
-    else
-        parseEndOfStatement();
 
     parse->typenode = svtype;
     parse->gennamePrefix = svprefix;

@@ -21,6 +21,9 @@
 
 // Skip to next statement for error recovery
 void parseSkipToNextStmt() {
+    // Ensure we are always moving forwards, line by line
+    if (lexIsEndOfLine() && !lexIsToken(SemiToken) && !lexIsToken(EofToken) && !lexIsToken(RCurlyToken))
+        lexNextToken();
     while (1) {
         // Consume semicolon as end-of-statement
         if (lexIsToken(SemiToken)) {
@@ -38,10 +41,11 @@ void parseSkipToNextStmt() {
 
 // Is this end-of-statement? if ';', '}', or end-of-file
 int parseIsEndOfStatement() {
-    return (lex->toktype == SemiToken || lex->toktype == RCurlyToken || lex->toktype == EofToken);
+    return (lex->toktype == SemiToken || lex->toktype == RCurlyToken || lex->toktype == EofToken
+        || lexIsStmtBreak());
 }
 
-// We expect semicolon since statement has run its course
+// We expect optional semicolon since statement has run its course
 void parseEndOfStatement() {
     // Consume semicolon as end-of-statement signifier, if found
     if (lex->toktype == SemiToken) {
@@ -54,24 +58,65 @@ void parseEndOfStatement() {
         errorMsgLex(ErrorNoSemi, "Statement finished? Expected semicolon or end of line.");
 }
 
-// Expect right curly brace. If not found, search for '}' or ';'
-void parseRCurly() {
-    if (!lexIsToken(RCurlyToken))
-        errorMsgLex(ErrorNoRCurly, "Expected closing brace '}' - skipping forward to find it");
-    while (! lexIsToken(RCurlyToken)) {
-        if (lexIsToken(EofToken))
-            return;
+// Return true if we have a consumed semi-colon or we are at end-of-line and next line is not indented
+// Otherwise, we expect to have a block
+int parseHasNoBlock() {
+    if (lex->toktype == LCurlyToken || lex->toktype == ColonToken)
+        return 0;
+    if (lex->toktype == SemiToken) {
         lexNextToken();
+        return 1;
     }
-    lexNextToken();
+    return lexIsEndOfLine() && (lex->curindent <= lex->stmtindent);
 }
 
-// Expect left curly brace. If not found, search for '{'
-void parseLCurly() {
-    errorMsgLex(ErrorNoLCurly, "Expected opening brace '{' - skipping forward to find it");
-    while (!lexIsToken(LCurlyToken) && !lexIsToken(SemiToken) && !lexIsToken(EofToken)) {
+// Expect a block to start, consume its token and set lexer mode
+void parseBlockStart() {
+    if (lex->toktype == LCurlyToken) {
+        lexNextToken();
+        lexBlockStart(FreeFormBlock);
+        return;
+    }
+    else if (lex->toktype == ColonToken) {
+        lexNextToken();
+        lexBlockStart(lexIsEndOfLine? SigIndentBlock : SameStmtBlock);
+        return;
+    }
+
+    // Generate error and try to recover
+    errorMsgLex(ErrorNoLCurly, "Expected ':' or '{' to start a block");
+    if (lexIsEndOfLine && lex->curindent > lex->stmtindent) {
+        lexBlockStart(SigIndentBlock);
+        return;
+    }
+    // Skip forward to find something we can use
+    while (1) {
+        if (lexIsToken(LCurlyToken) || lexIsToken(ColonToken)) {
+            parseBlockStart();
+            return;
+        }
+        if (lexIsToken(EofToken))
+            break;
         lexNextToken();
     }
+}
+
+// Are we at end of block yet? If so, consume token and reset lexer mode
+int parseBlockEnd() {
+    if (lexIsToken(RCurlyToken) && lex->blkStack[lex->blkStackLvl].blkmode == FreeFormBlock) {
+        lexNextToken();
+        lexBlockEnd();
+        return 1;
+    }
+    if (lexIsBlockEnd()) {
+        lexBlockEnd();
+        return 1;
+    }
+    if (lexIsToken(EofToken)) {
+        errorMsgLex(ErrorNoRCurly, "Expected end of block (e.g., '}')");
+        return 1;
+    }
+    return 0;
 }
 
 // Expect closing token (e.g., right parenthesis). If not found, search for it or '}' or ';'
@@ -84,6 +129,7 @@ void parseCloseTok(uint16_t closetok) {
         lexNextToken();
     }
     lexNextToken();
+    lexDecrParens();
 }
 
 // Parse a function block
@@ -116,10 +162,10 @@ INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags) {
     fnnode->vtype = parseFnSig(parse);
 
     // Process statements block that implements function, if provided
-    if (lexIsToken(LCurlyToken)) {
+    if (!parseHasNoBlock()) {
         if (!(mayflags&ParseMayImpl))
             errorMsgNode((INode*)fnnode, ErrorBadImpl, "Function/method implementation is not allowed here.");
-        fnnode->value = parseBlock(parse);
+        fnnode->value = parseExprBlock(parse);
     }
     else {
         if (!(mayflags&ParseMaySig))
@@ -221,7 +267,7 @@ GenericNode *parseMacro(ParseState *parse) {
     if (lexIsToken(LBracketToken)) {
         parseGenericVars(parse, macro);
     }
-    macro->body = parseBlockOrStmt(parse);
+    macro->body = parseExprBlock(parse);
     return macro;
 }
 
@@ -231,7 +277,8 @@ ModuleNode *parseModule(ParseState *parse);
 // modAddNode adds node to module, as needed, including error message for dupes
 void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
     // Create and populate a Module node for the program
-    while (!lexIsToken(EofToken) && !lexIsToken(RCurlyToken)) {
+    while (lex->toktype!=EofToken && !parseBlockEnd()) {
+        lexStmtStart();
         switch (lex->toktype) {
 
         case IncludeToken:
@@ -281,12 +328,16 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
                     extflag |= FlagSystem;
                 lexNextToken();
             }
-            if (lexIsToken(LCurlyToken)) {
-                lexNextToken();
-                while (lexIsToken(FnToken) || lexIsToken(PermToken)) {
-                    parseFnOrVar(parse, extflag);
+            if (!parseHasNoBlock()) {
+                parseBlockStart();
+                while (!parseBlockEnd()) {
+                    if (lexIsToken(FnToken) || lexIsToken(PermToken))
+                        parseFnOrVar(parse, extflag);
+                    else {
+                        errorMsgLex(ErrorNoSemi, "Extern expects only functions and variables");
+                        parseSkipToNextStmt();
+                    }
                 }
-                parseRCurly();
             }
             else
                 parseFnOrVar(parse, extflag);
@@ -329,24 +380,25 @@ ModuleNode *parseModule(ParseState *parse) {
     lexNextToken();
     filename = parseFile();
     modname = fileName(filename);
-    if (!lexIsToken(LCurlyToken) && !lexIsToken(SemiToken))
-        parseLCurly();
-
-    // This is a new module, build it
     mod = newModuleNode();
-    nameConcatPrefix(&parse->gennamePrefix, modname);
     mod->namesym = nametblFind(modname, strlen(modname));
-    if (lexIsToken(LCurlyToken)) {
-        lexNextToken();
-        parseModuleBlk(parse, mod);
-        parseRCurly();
-    }
-    else {
+    nameConcatPrefix(&parse->gennamePrefix, modname);
+
+    // Check if module's block has been specified
+    if (parseHasNoBlock()) {
+        // If no block, get and inject the module file
         parseEndOfStatement();
         lexInjectFile(filename);
         parseModuleBlk(parse, mod);
         lexPop();
     }
+    else {
+        // Inline module
+        parseBlockStart();
+        parseModuleBlk(parse, mod);
+        // parseBlockEnd() will have happened
+    }
+
     parse->gennamePrefix = svprefix;
     return mod;
 }
