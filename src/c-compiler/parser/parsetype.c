@@ -90,6 +90,7 @@ INode *parseTypeName(ParseState *parse) {
         FnCallNode *fncall = newFnCallNode(node, 8);
         fncall->flags |= FlagIndex;
         lexNextToken();
+        lexIncrParens();
         if (!lexIsToken(RBracketToken)) {
             nodesAdd(&fncall->args, parseVtype(parse));
             while (lexIsToken(CommaToken)) {

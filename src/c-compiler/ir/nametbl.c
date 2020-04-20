@@ -188,6 +188,8 @@ void nametblInit() {
     parensName = nametblFind("()", 2);
     indexName = nametblFind("[]", 2);
     refIndexName = nametblFind("&[]", 3);
+
+    optionName = nametblFind("Option", 6);
 }
 
 
