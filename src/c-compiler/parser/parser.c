@@ -103,7 +103,7 @@ void parseBlockStart() {
 
 // Are we at end of block yet? If so, consume token and reset lexer mode
 int parseBlockEnd() {
-    if (lexIsToken(RCurlyToken)) {
+    if (lexIsToken(RCurlyToken) && lex->blkStack[lex->blkStackLvl].blkmode == FreeFormBlock) {
         lexNextToken();
         lexBlockEnd();
         return 1;

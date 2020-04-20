@@ -283,6 +283,7 @@ char *lexScanEscape(char *srcp, uint64_t *charval) {
     case '\'': *charval = '\''; return ++srcp;
     case '\"': *charval = '\"'; return ++srcp;
     case '\\': *charval = '\\'; return ++srcp;
+    case ' ': *charval = ' '; return ++srcp;
     case '\0': *charval = '\0'; return ++srcp;
     case 'x': return lexHexDigits(2, ++srcp, charval);
     case 'u': return lexHexDigits(4, ++srcp, charval);
@@ -369,11 +370,22 @@ void lexScanString(char *srcp) {
     srclen = 0;
     lex->val.strlit = newp;
     srcp = lex->tokp+1;
-    while (*srcp != '"') {
+    while (*srcp != '"' && *srcp) {
+        // discard all control chars, including spaces after new-line
+        if (*srcp < ' ') {
+            if (*srcp++ == '\n') {
+                while (*srcp <= ' ' && *srcp)
+                    ++srcp;
+            }
+            continue;
+        }
+
+        // Obtain next possible UTF-8 character
         if (*srcp == '\\')
             srcp = lexScanEscape(srcp, &uchar);
         else
             uchar = *srcp++;
+
         if (uchar < 0x80) {
             *newp++ = (unsigned char)uchar;
             srclen++;
