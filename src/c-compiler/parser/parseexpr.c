@@ -488,13 +488,15 @@ INode *parseCmp(ParseState *parse) {
     case LeToken:  cmpop = "<="; break;
     case GtToken:  cmpop = ">"; break;
     case GeToken:  cmpop = ">="; break;
-    case IsToken: {
-        CastNode *node = newIsNode(lhnode, unknownType);
-        lexNextToken();
-        node->typ = parseVtype(parse);
-        return (INode*)node;
-    }
-    default: return lhnode;
+    default:
+        if (lexIsToken(IsToken) && !lexIsStmtBreak()) {
+            CastNode *node = newIsNode(lhnode, unknownType);
+            lexNextToken();
+            node->typ = parseVtype(parse);
+            return (INode*)node;
+        }
+        else
+            return lhnode;
     }
 
     FnCallNode *node = newFnCallOp(lhnode, cmpop, 2);
@@ -592,19 +594,6 @@ INode *parseAssign(ParseState *parse) {
         lexNextToken();
         INode *rval = parseAnyExpr(parse);
         return (INode*)newAssignNode(NormalAssign, lval, rval);
-    }
-
-    // sym:rval => this.sym = rval
-    case ColonToken:
-    {
-        lexNextToken();
-        INode *rval = parseAnyExpr(parse);
-        NameUseNode *thisnode = newNameUseNode(thisName);
-        FnCallNode *propnode = newFnCallNode((INode*)thisnode, 0);
-        if (lval->tag != NameUseTag)
-            errorMsgNode(lval, ErrorNoMbr, "A name must be specified before the ':'");
-        propnode->methfld = (NameUseNode*)lval;
-        return (INode*)newAssignNode(NormalAssign, (INode*)propnode, rval);
     }
 
     case PlusEqToken:

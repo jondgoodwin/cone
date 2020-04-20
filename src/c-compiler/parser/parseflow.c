@@ -190,35 +190,29 @@ INode *parseMatch(ParseState *parse) {
     parseBlockStart();
     while (!parseBlockEnd()) {
         lexStmtStart();
-        switch (lex->toktype) {
-        case PermToken:
+        if (lexIsToken(PermToken)) {
             parseBoundMatch(parse, ifnode, expnamenode, NULL);
-            break;
-        case IsToken: {
+        }
+        else if (lexIsToken(IsToken)) {
             CastNode *isnode = newIsNode((INode*)expnamenode, unknownType);
             lexNextToken();
             isnode->typ = parseVtype(parse);
             nodesAdd(&ifnode->condblk, (INode*)isnode);
             nodesAdd(&ifnode->condblk, parseExprBlock(parse));
-            break;
         }
-
-        case EqToken: {
+        else if (lexIsToken(EqToken)) {
             FnCallNode *callnode = newFnCallOp((INode*)expnamenode, "==", 2);
             lexNextToken();
             nodesAdd(&callnode->args, parseSimpleExpr(parse));
             nodesAdd(&ifnode->condblk, (INode*)callnode);
             nodesAdd(&ifnode->condblk, parseExprBlock(parse));
-            break;
         }
-
-        case ElseToken:
+        else if (lexIsToken(ElseToken)) {
             lexNextToken();
             nodesAdd(&ifnode->condblk, elseCond); // else distinguished by a elseCond condition
             nodesAdd(&ifnode->condblk, parseExprBlock(parse));
-            break;
-
-        default:
+        }
+        else {
             nodesAdd(&ifnode->condblk, parseSimpleExpr(parse));
             nodesAdd(&ifnode->condblk, parseExprBlock(parse));
         }
