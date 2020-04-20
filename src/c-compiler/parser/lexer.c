@@ -170,6 +170,8 @@ int lexIsBlockEnd() {
     case FreeFormBlock: 
         return 0;
     case SameStmtBlock:
+        if (lexIsToken(EofToken))
+            return 1;
         // It is not end-of-block if we are still on same line as block started on
         if (!lexIsEndOfLine()) 
             return 0;
@@ -177,6 +179,8 @@ int lexIsBlockEnd() {
         lex->blkStack[lex->blkStackLvl].blkmode = SigIndentBlock;
         // Deliberate fallthrough
     case SigIndentBlock:
+        if (lexIsToken(EofToken))
+            return 1;
         return lexIsEndOfLine() && lex->curindent <= lex->blkStack[lex->blkStackLvl].blkindent;
     }
     return 0;
