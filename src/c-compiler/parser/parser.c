@@ -299,15 +299,15 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
 
         // 'struct'-style type definition
         case StructToken: {
-            StructNode *strnode = (StructNode*)parseStruct(parse, 0);
-            modAddNode(mod, strnode->namesym, (INode*)strnode);
+            INode *node = (StructNode*)parseStruct(parse, 0);
+            modAddNode(mod, inodeGetName(node), node);
             break;
         }
 
         // 'trait' type definition
         case TraitToken: {
-            StructNode *strnode = (StructNode*)parseStruct(parse, TraitType);
-            modAddNode(mod, strnode->namesym, (INode*)strnode);
+            INode *node = (StructNode*)parseStruct(parse, TraitType);
+            modAddNode(mod, inodeGetName(node), node);
             break;
         }
 
