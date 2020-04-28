@@ -8,12 +8,6 @@
 #ifndef iexp_h
 #define iexp_h
 
-// Typed Node header, offering access to the node's type info
-// - vtype is the value type for an expression (e.g., 'i32')
-#define IExpNodeHdr \
-    INodeHdr; \
-    INode *vtype
-
 // Castable structure for all typed nodes
 typedef struct IExpNode {
     IExpNodeHdr;

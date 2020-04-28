@@ -43,6 +43,14 @@ typedef struct INode {
     INodeHdr;
 } INode;
 
+// Typed Node header, offering access to the node's type info
+// - vtype is the value type for an expression (e.g., 'i32')
+// Note: This header is here because we also need it for type nodes,
+// as parser does not know if some nodes are types or value expressions
+#define IExpNodeHdr \
+    INodeHdr; \
+    INode *vtype
+
 // Flags found at the top of a node's tag
 #define StmtGroup  0x0000   // Statement nodes that return no value
 #define ExpGroup   0x4000   // Nodes that return a typed value
@@ -72,9 +80,11 @@ enum NodeTags {
     BreakTag,       // Break node
     ContinueTag,    // Continue node
 
-    // Name usage (we do not know what type of name it is until name resolution pass)
+    // Parser-ambiguous nodes that will become either types or expressions
+    // during name resolution when we finally know for sure
     NameUseTag,     // Name use node (pre-name resolution)
 
+    // Named, non-type declaration nodes
     ModuleTag = StmtGroup + NamedNode,        // Module namespace
     FnDclTag,       // Function/method declaration
     VarDclTag,      // Variable declaration (global, local, parm)

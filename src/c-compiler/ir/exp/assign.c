@@ -62,9 +62,9 @@ void assignSingleCheck(TypeCheckState *pstate, INode *lval, INode **rval) {
 }
 
 // Handle parallel assignment (multiple values on both sides)
-void assignParaCheck(TypeCheckState *pstate, VTupleNode *lval, VTupleNode *rval) {
-    Nodes *lnodes = lval->values;
-    Nodes *rnodes = rval->values;
+void assignParaCheck(TypeCheckState *pstate, TupleNode *lval, TupleNode *rval) {
+    Nodes *lnodes = lval->elems;
+    Nodes *rnodes = rval->elems;
     if (lnodes->used > rnodes->used) {
         errorMsgNode((INode*)rval, ErrorBadTerm, "Not enough tuple values given to lvals");
         return;
@@ -81,7 +81,7 @@ void assignParaCheck(TypeCheckState *pstate, VTupleNode *lval, VTupleNode *rval)
 }
 
 // Handle when single function/expression returns to multiple lval
-void assignMultRetCheck(TypeCheckState *pstate, VTupleNode *lval, INode **rval) {
+void assignMultRetCheck(TypeCheckState *pstate, TupleNode *lval, INode **rval) {
     if (iexpTypeCheckAny(pstate, rval) == 0)
         return;;
     INode *rtype = ((IExpNode *)*rval)->vtype;
@@ -89,8 +89,8 @@ void assignMultRetCheck(TypeCheckState *pstate, VTupleNode *lval, INode **rval) 
         errorMsgNode(*rval, ErrorBadTerm, "Not enough values for lvals");
         return;
     }
-    Nodes *lnodes = lval->values;
-    Nodes *rtypes = ((TTupleNode*)((IExpNode *)*rval)->vtype)->types;
+    Nodes *lnodes = lval->elems;
+    Nodes *rtypes = ((TupleNode*)((IExpNode *)*rval)->vtype)->elems;
     if (lnodes->used > rtypes->used) {
         errorMsgNode(*rval, ErrorBadTerm, "Not enough tuple values for lvals");
         return;
@@ -107,8 +107,8 @@ void assignMultRetCheck(TypeCheckState *pstate, VTupleNode *lval, INode **rval) 
 }
 
 // Handle when multiple expressions assigned to single lval
-void assignToOneCheck(TypeCheckState *pstate, INode *lval, VTupleNode *rval) {
-    Nodes *rnodes = rval->values;
+void assignToOneCheck(TypeCheckState *pstate, INode *lval, TupleNode *rval) {
+    Nodes *rnodes = rval->elems;
     INode **rnodesp = &nodesGet(rnodes, 0);
     uint32_t rcnt = rnodes->used;
     assignSingleCheck(pstate, lval, rnodesp++);
@@ -123,13 +123,13 @@ void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
     INode *lval = node->lval;
     if (lval->tag == VTupleTag) {
         if (node->rval->tag == VTupleTag)
-            assignParaCheck(pstate, (VTupleNode*)node->lval, (VTupleNode*)node->rval);
+            assignParaCheck(pstate, (TupleNode*)node->lval, (TupleNode*)node->rval);
         else
-            assignMultRetCheck(pstate, (VTupleNode*)node->lval, &node->rval);
+            assignMultRetCheck(pstate, (TupleNode*)node->lval, &node->rval);
     }
     else {
         if (node->rval->tag == VTupleTag)
-            assignToOneCheck(pstate, node->lval, (VTupleNode*)node->rval);
+            assignToOneCheck(pstate, node->lval, (TupleNode*)node->rval);
         else
             assignSingleCheck(pstate, node->lval, &node->rval);
     }
@@ -175,9 +175,9 @@ void assignSingleFlow(INode *lval, INode **rval) {
 }
 
 // Handle parallel assignment (multiple values on both sides)
-void assignParaFlow(VTupleNode *lval, VTupleNode *rval) {
-    Nodes *lnodes = lval->values;
-    Nodes *rnodes = rval->values;
+void assignParaFlow(TupleNode *lval, TupleNode *rval) {
+    Nodes *lnodes = lval->elems;
+    Nodes *rnodes = rval->elems;
     uint32_t lcnt;
     INode **lnodesp;
     INode **rnodesp = &nodesGet(rnodes, 0);
@@ -192,10 +192,10 @@ void assignParaFlow(VTupleNode *lval, VTupleNode *rval) {
 }
 
 // Handle when single function/expression returns to multiple lval
-void assignMultRetFlow(VTupleNode *lval, INode **rval) {
-    Nodes *lnodes = lval->values;
+void assignMultRetFlow(TupleNode *lval, INode **rval) {
+    Nodes *lnodes = lval->elems;
     INode *rtype = ((IExpNode *)*rval)->vtype;
-    Nodes *rtypes = ((TTupleNode*)((IExpNode *)*rval)->vtype)->types;
+    Nodes *rtypes = ((TupleNode*)((IExpNode *)*rval)->vtype)->elems;
     uint32_t lcnt;
     INode **lnodesp;
     INode **rtypep = &nodesGet(rtypes, 0);
@@ -205,8 +205,8 @@ void assignMultRetFlow(VTupleNode *lval, INode **rval) {
 }
 
 // Handle when multiple expressions assigned to single lval
-void assignToOneFlow(INode *lval, VTupleNode *rval) {
-    Nodes *rnodes = rval->values;
+void assignToOneFlow(INode *lval, TupleNode *rval) {
+    Nodes *rnodes = rval->elems;
     INode **rnodesp = &nodesGet(rnodes, 0);
     uint32_t rcnt = rnodes->used;
     assignSingleFlow(lval, rnodesp++);
@@ -222,13 +222,13 @@ void assignFlow(FlowState *fstate, AssignNode **nodep) {
     INode *lval = node->lval;
     if (lval->tag == VTupleTag) {
         if (node->rval->tag == VTupleTag)
-            assignParaFlow((VTupleNode*)node->lval, (VTupleNode*)node->rval);
+            assignParaFlow((TupleNode*)node->lval, (TupleNode*)node->rval);
         else
-            assignMultRetFlow((VTupleNode*)node->lval, &node->rval);
+            assignMultRetFlow((TupleNode*)node->lval, &node->rval);
     }
     else {
         if (node->rval->tag == VTupleTag)
-            assignToOneFlow(node->lval, (VTupleNode*)node->rval);
+            assignToOneFlow(node->lval, (TupleNode*)node->rval);
         else {
             assignSingleFlow(node->lval, &node->rval);
         }

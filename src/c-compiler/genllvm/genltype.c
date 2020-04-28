@@ -344,13 +344,13 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
     case TTupleTag:
     {
         // Build struct typeref
-        TTupleNode *tuple = (TTupleNode*)typ;
+        TupleNode *tuple = (TupleNode*)typ;
         INode **nodesp;
         uint32_t cnt;
-        uint32_t propcount = tuple->types->used;
+        uint32_t propcount = tuple->elems->used;
         LLVMTypeRef *typerefs = (LLVMTypeRef *)memAllocBlk(propcount * sizeof(LLVMTypeRef));
         LLVMTypeRef *typerefp = typerefs;
-        for (nodesFor(tuple->types, cnt, nodesp)) {
+        for (nodesFor(tuple->elems, cnt, nodesp)) {
             *typerefp++ = genlType(gen, *nodesp);
         }
         return LLVMStructTypeInContext(gen->context, typerefs, propcount, 0);

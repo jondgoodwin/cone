@@ -853,12 +853,12 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
                 genlRcCounter(gen, val, anode->aliasamt, reftype);
         }
         else if (reftype->tag == TTupleTag) {
-            TTupleNode *tuple = (TTupleNode*)reftype;
+            TupleNode *tuple = (TupleNode*)reftype;
             INode **nodesp;
             uint32_t cnt;
             size_t index = 0;
             int16_t *countp = anode->counts;
-            for (nodesFor(tuple->types, cnt, nodesp)) {
+            for (nodesFor(tuple->elems, cnt, nodesp)) {
                 if (*countp != 0) {
                     reftype = (RefNode *)itypeGetTypeDcl(*nodesp);
                     LLVMValueRef strval = LLVMBuildExtractValue(gen->builder, val, index, "");
@@ -948,11 +948,11 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         }
         else {
             // Parallel assignment: each lval to value in tuple struct
-            VTupleNode *ltuple = (VTupleNode *)lval;
+            TupleNode *ltuple = (TupleNode *)lval;
             INode **nodesp;
             uint32_t cnt;
             int index = 0;
-            for (nodesFor(ltuple->values, cnt, nodesp)) {
+            for (nodesFor(ltuple->elems, cnt, nodesp)) {
                 genlStore(gen, *nodesp, LLVMBuildExtractValue(gen->builder, valueref, index++, ""));
             }
         }
@@ -961,12 +961,12 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     case VTupleTag:
     {
         // Load only: Creates an ad hoc struct to hold the tuple's values
-        VTupleNode *tuple = (VTupleNode *)termnode;
+        TupleNode *tuple = (TupleNode *)termnode;
         LLVMValueRef tupleval = LLVMGetUndef(genlType(gen, tuple->vtype));
         INode **nodesp;
         uint32_t cnt;
         unsigned int pos = 0;
-        for (nodesFor(tuple->values, cnt, nodesp)) {
+        for (nodesFor(tuple->elems, cnt, nodesp)) {
             tupleval = LLVMBuildInsertValue(gen->builder, tupleval, genlExpr(gen, *nodesp), pos++, "tuple");
         }
         return tupleval;

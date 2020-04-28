@@ -94,7 +94,7 @@ void inodePrintNode(INode *node) {
     case AssignTag:
         assignPrint((AssignNode *)node); break;
     case VTupleTag:
-        vtuplePrint((VTupleNode *)node); break;
+        vtuplePrint((TupleNode *)node); break;
     case FnCallTag:
     case FldAccessTag:
     case ArrIndexTag:
@@ -143,7 +143,7 @@ void inodePrintNode(INode *node) {
     case LifetimeTag:
         lifePrint((LifetimeNode *)node); break;
     case TTupleTag:
-        ttuplePrint((TTupleNode *)node); break;
+        ttuplePrint((TupleNode *)node); break;
     case AbsenceTag:
     case UnknownTag:
     case VoidTag:
@@ -224,7 +224,7 @@ void inodeNameRes(NameResState *pstate, INode **node) {
     case AssignTag:
         assignNameRes(pstate, (AssignNode *)*node); break;
     case VTupleTag:
-        vtupleNameRes(pstate, (VTupleNode *)*node); break;
+        vtupleNameRes(pstate, (TupleNode *)*node); break;
     case FnCallTag:
         fnCallNameRes(pstate, (FnCallNode **)node); break;
     case SizeofTag:
@@ -265,7 +265,7 @@ void inodeNameRes(NameResState *pstate, INode **node) {
     case ArrayTag:
         arrayNameRes(pstate, (ArrayNode *)*node); break;
     case TTupleTag:
-        ttupleNameRes(pstate, (TTupleNode *)*node); break;
+        ttupleNameRes(pstate, (TupleNode *)*node); break;
     case BorrowRegTag:
     case RegionTag:
         break;
@@ -338,7 +338,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     case AssignTag:
         assignTypeCheck(pstate, (AssignNode *)*node); break;
     case VTupleTag:
-        vtupleTypeCheck(pstate, (VTupleNode *)*node); break;
+        vtupleTypeCheck(pstate, (TupleNode *)*node); break;
     case FnCallTag:
         fnCallTypeCheck(pstate, (FnCallNode **)node); break;
     case SizeofTag:
@@ -384,7 +384,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     case ArrayTag:
         arrayTypeCheck(pstate, (ArrayNode *)*node); break;
     case TTupleTag:
-        ttupleTypeCheck(pstate, (TTupleNode *)*node); break;
+        ttupleTypeCheck(pstate, (TupleNode *)*node); break;
     case BorrowRegTag:
     case RegionTag:
     case PermTag:

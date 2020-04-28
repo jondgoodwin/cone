@@ -34,13 +34,13 @@ void flowInjectAliasNode(INode **nodep, int16_t rvalcount) {
         // First, decide if we need an alias node.
         // It is needed only if any returned value in tuple is rc/own with non-zero alias count
         // Note: aliasing count values are updated in case we want them
-        TTupleNode *tuple = (TTupleNode *)vtype;
+        TupleNode *tuple = (TupleNode *)vtype;
         int needaliasnode = 0;
         INode **nodesp;
         uint32_t cnt;
         size_t index = 0;
-        flowAliasSize(count = tuple->types->used);
-        for (nodesFor(tuple->types, cnt, nodesp)) {
+        flowAliasSize(count = tuple->elems->used);
+        for (nodesFor(tuple->elems, cnt, nodesp)) {
             RefNode *reftype = (RefNode *)itypeGetTypeDcl(*nodesp);
             if (reftype->tag != RefTag || !(reftype->region == (INode*)rcRegion || reftype->region == (INode*)soRegion)) {
                 flowAliasPut(index++, 0);
@@ -104,8 +104,8 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         INode **nodesp;
         uint32_t cnt;
         uint32_t index = 0;
-        flowAliasSize(((VTupleNode *)*nodep)->values->used);
-        for (nodesFor(((VTupleNode *)*nodep)->values, cnt, nodesp)) {
+        flowAliasSize(((TupleNode *)*nodep)->elems->used);
+        for (nodesFor(((TupleNode *)*nodep)->elems, cnt, nodesp)) {
             // pull out specific alias counter for resolution
             size_t svAliasPos = flowAliasPushNew(flowAliasGet(index++));
             flowLoadValue(fstate, nodesp);

@@ -8,28 +8,20 @@
 #ifndef vtuple_h
 #define vtuple_h
 
-// A value tuple is a comma-separated list of values, each of a different type
-// It acts like an ad hoc struct, briefly binding together values often
-// for a parallel assignment or multiple return values
-typedef struct VTupleNode {
-    IExpNodeHdr;
-    Nodes *values;
-} VTupleNode;
-
 // Create a new value tuple node
-VTupleNode *newVTupleNode();
+TupleNode *newVTupleNode();
 
 // Clone value tuple
-INode *cloneVTupleNode(CloneState *cstate, VTupleNode *node);
+INode *cloneVTupleNode(CloneState *cstate, TupleNode *node);
 
 // Serialize a value tuple node
-void vtuplePrint(VTupleNode *tuple);
+void vtuplePrint(TupleNode *tuple);
 
 // Name resolution for vtuple
-void vtupleNameRes(NameResState *pstate, VTupleNode *tuple);
+void vtupleNameRes(NameResState *pstate, TupleNode *tuple);
 
 // Type check the value tuple node
 // - Infer type tuple from types of vtuple's values
-void vtupleTypeCheck(TypeCheckState *pstate, VTupleNode *node);
+void vtupleTypeCheck(TypeCheckState *pstate, TupleNode *node);
 
 #endif

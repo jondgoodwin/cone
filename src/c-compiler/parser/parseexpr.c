@@ -564,11 +564,11 @@ INode *parseSimpleExpr(ParseState *parse) {
 INode *parseTuple(ParseState *parse) {
     INode *exp = parseSimpleExpr(parse);
     if (lexIsToken(CommaToken)) {
-        VTupleNode *tuple = newVTupleNode();
-        nodesAdd(&tuple->values, exp);
+        TupleNode *tuple = newVTupleNode();
+        nodesAdd(&tuple->elems, exp);
         while (lexIsToken(CommaToken)) {
             lexNextToken();
-            nodesAdd(&tuple->values, parseSimpleExpr(parse));
+            nodesAdd(&tuple->elems, parseSimpleExpr(parse));
         }
         return (INode*)tuple;
     }

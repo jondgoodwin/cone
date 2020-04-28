@@ -52,8 +52,8 @@ void returnTypeCheck(TypeCheckState *pstate, ReturnNode *node) {
             errorMsgNode(node->exp, ErrorBadTerm, "Not enough return values");
             return;
         }
-        Nodes *retnodes = ((VTupleNode*)node->exp)->values;
-        Nodes *rettypes = ((TTupleNode*)pstate->fnsig->rettype)->types;
+        Nodes *retnodes = ((TupleNode*)node->exp)->elems;
+        Nodes *rettypes = ((TupleNode*)pstate->fnsig->rettype)->elems;
         if (rettypes->used > retnodes->used) {
             errorMsgNode(node->exp, ErrorBadTerm, "Not enough return values");
             return;
@@ -66,7 +66,7 @@ void returnTypeCheck(TypeCheckState *pstate, ReturnNode *node) {
                 errorMsgNode(*(retnodesp-1), ErrorInvType, "Return value's type does not match fn return type");
         }
         // Establish the type of the tuple (from the expected return value types)
-        ((VTupleNode *)node->exp)->vtype = pstate->fnsig->rettype;
+        ((TupleNode *)node->exp)->vtype = pstate->fnsig->rettype;
     }
     else if (!iexpTypeCheckCoerce(pstate, pstate->fnsig->rettype, &node->exp)) {
         errorMsgNode((INode*)node, ErrorInvType, "Return expression type does not match return type on function");

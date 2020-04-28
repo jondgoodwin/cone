@@ -8,29 +8,29 @@
 #include "../ir.h"
 
 // Create a new value tuple node
-VTupleNode *newVTupleNode() {
-    VTupleNode *tuple;
-    newNode(tuple, VTupleNode, VTupleTag);
+TupleNode *newVTupleNode() {
+    TupleNode *tuple;
+    newNode(tuple, TupleNode, VTupleTag);
     tuple->vtype = unknownType;
-    tuple->values = newNodes(4);
+    tuple->elems = newNodes(4);
     return tuple;
 }
 
 // Clone value tuple
-INode *cloneVTupleNode(CloneState *cstate, VTupleNode *node) {
-    VTupleNode *newnode;
-    newnode = memAllocBlk(sizeof(VTupleNode));
-    memcpy(newnode, node, sizeof(VTupleNode));
-    newnode->values = cloneNodes(cstate, node->values);
+INode *cloneVTupleNode(CloneState *cstate, TupleNode *node) {
+    TupleNode *newnode;
+    newnode = memAllocBlk(sizeof(TupleNode));
+    memcpy(newnode, node, sizeof(TupleNode));
+    newnode->elems = cloneNodes(cstate, node->elems);
     return (INode *)newnode;
 }
 
 // Serialize a value tuple node
-void vtuplePrint(VTupleNode *tuple) {
+void vtuplePrint(TupleNode *tuple) {
     INode **nodesp;
     uint32_t cnt;
 
-    for (nodesFor(tuple->values, cnt, nodesp)) {
+    for (nodesFor(tuple->elems, cnt, nodesp)) {
         inodePrintNode(*nodesp);
         if (cnt)
             inodeFprint(",");
@@ -38,24 +38,24 @@ void vtuplePrint(VTupleNode *tuple) {
 }
 
 // Name resolution for vtuple
-void vtupleNameRes(NameResState *pstate, VTupleNode *tuple) {
+void vtupleNameRes(NameResState *pstate, TupleNode *tuple) {
     INode **nodesp;
     uint32_t cnt;
-    for (nodesFor(tuple->values, cnt, nodesp))
+    for (nodesFor(tuple->elems, cnt, nodesp))
         inodeNameRes(pstate, nodesp);
 }
 
 // Type check the value tuple node
 // - Infer type tuple from types of vtuple's values
-void vtupleTypeCheck(TypeCheckState *pstate, VTupleNode *tuple) {
+void vtupleTypeCheck(TypeCheckState *pstate, TupleNode *tuple) {
     // Build ad hoc type tuple that accumulates types of vtuple's values
-    TTupleNode *ttuple = newTTupleNode(tuple->values->used);
+    TupleNode *ttuple = newTTupleNode(tuple->elems->used);
     tuple->vtype = (INode *)ttuple;
     INode **nodesp;
     uint32_t cnt;
-    for (nodesFor(tuple->values, cnt, nodesp)) {
+    for (nodesFor(tuple->elems, cnt, nodesp)) {
         if (iexpTypeCheckAny(pstate, nodesp) == 0)
             continue;
-        nodesAdd(&ttuple->types, ((IExpNode *)*nodesp)->vtype);
+        nodesAdd(&ttuple->elems, ((IExpNode *)*nodesp)->vtype);
     }
 }

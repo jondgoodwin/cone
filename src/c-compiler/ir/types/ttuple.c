@@ -8,19 +8,19 @@
 #include "../ir.h"
 
 // Create a new type tuple node
-TTupleNode *newTTupleNode(int cnt) {
-    TTupleNode *tuple;
-    newNode(tuple, TTupleNode, TTupleTag);
-    tuple->types = newNodes(cnt);
+TupleNode *newTTupleNode(int cnt) {
+    TupleNode *tuple;
+    newNode(tuple, TupleNode, TTupleTag);
+    tuple->elems = newNodes(cnt);
     return tuple;
 }
 
 // Serialize a type tuple node
-void ttuplePrint(TTupleNode *tuple) {
+void ttuplePrint(TupleNode *tuple) {
     INode **nodesp;
     uint32_t cnt;
 
-    for (nodesFor(tuple->types, cnt, nodesp)) {
+    for (nodesFor(tuple->elems, cnt, nodesp)) {
         inodePrintNode(*nodesp);
         if (cnt)
             inodeFprint(",");
@@ -28,32 +28,32 @@ void ttuplePrint(TTupleNode *tuple) {
 }
 
 // Name resolution of the type tuple node
-void ttupleNameRes(NameResState *pstate, TTupleNode *tuple) {
+void ttupleNameRes(NameResState *pstate, TupleNode *tuple) {
     INode **nodesp;
     uint32_t cnt;
-    for (nodesFor(tuple->types, cnt, nodesp))
+    for (nodesFor(tuple->elems, cnt, nodesp))
         inodeNameRes(pstate, nodesp);
 }
 
 // Type check the type tuple node
-void ttupleTypeCheck(TypeCheckState *pstate, TTupleNode *tuple) {
+void ttupleTypeCheck(TypeCheckState *pstate, TupleNode *tuple) {
     INode **nodesp;
     uint32_t cnt;
-    for (nodesFor(tuple->types, cnt, nodesp))
+    for (nodesFor(tuple->elems, cnt, nodesp))
         itypeTypeCheck(pstate, nodesp);
 }
 
 // Compare that two tuples are equivalent
-int ttupleEqual(TTupleNode *totype, TTupleNode *fromtype) {
+int ttupleEqual(TupleNode *totype, TupleNode *fromtype) {
     if (fromtype->tag != TTupleTag)
         return 0;
-    if (totype->types->used != fromtype->types->used)
+    if (totype->elems->used != fromtype->elems->used)
         return 0;
 
-    INode **fromnodesp = &nodesGet(fromtype->types, 0);
+    INode **fromnodesp = &nodesGet(fromtype->elems, 0);
     INode **nodesp;
     uint32_t cnt;
-    for (nodesFor(totype->types, cnt, nodesp))
+    for (nodesFor(totype->elems, cnt, nodesp))
         if (!itypeIsSame(*nodesp, *fromnodesp++))
             return 0;
     return 1;

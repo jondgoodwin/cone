@@ -8,27 +8,26 @@
 #ifndef ttuple_h
 #define ttuple_h
 
-// A type tuple is a comma-separated list of types, each different
-// It acts like an ad hoc struct, briefly binding together types
-// for a parallel assignment or multiple return values
-typedef struct TTupleNode {
+// A tuple is a comma-separated list of elements, each different.
+// This structure supports both type tuples and tuple literals.
+typedef struct {
     ITypeNodeHdr;
-    Nodes *types;
-} TTupleNode;
+    Nodes *elems;
+} TupleNode;
 
 // Create a new type tuple node
-TTupleNode *newTTupleNode(int cnt);
+TupleNode *newTTupleNode(int cnt);
 
 // Serialize a type tuple node
-void ttuplePrint(TTupleNode *tuple);
+void ttuplePrint(TupleNode *tuple);
 
 // Name resolution of type tuple node
-void ttupleNameRes(NameResState *pstate, TTupleNode *node);
+void ttupleNameRes(NameResState *pstate, TupleNode *node);
 
 // Type check type tuple node
-void ttupleTypeCheck(TypeCheckState *pstate, TTupleNode *node);
+void ttupleTypeCheck(TypeCheckState *pstate, TupleNode *node);
 
 // Compare that two tuples are equivalent
-int ttupleEqual(TTupleNode *totype, TTupleNode *fromtype);
+int ttupleEqual(TupleNode *totype, TupleNode *fromtype);
 
 #endif
