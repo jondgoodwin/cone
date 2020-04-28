@@ -311,7 +311,7 @@ INode *parseFnSig(ParseState *parse) {
     if ((fnsig->rettype = parseVtype(parse)) != unknownType) {
         // Handle multiple return types
         if (lexIsToken(CommaToken)) {
-            TupleNode *rettype = newTTupleNode(4);
+            TupleNode *rettype = newTupleNode(4);
             nodesAdd(&rettype->elems, fnsig->rettype);
             while (lexIsToken(CommaToken)) {
                 lexNextToken();

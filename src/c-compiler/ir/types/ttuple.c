@@ -8,11 +8,20 @@
 #include "../ir.h"
 
 // Create a new type tuple node
-TupleNode *newTTupleNode(int cnt) {
+TupleNode *newTupleNode(int cnt) {
     TupleNode *tuple;
-    newNode(tuple, TupleNode, TTupleTag);
+    newNode(tuple, TupleNode, TupleTag);
     tuple->elems = newNodes(cnt);
     return tuple;
+}
+
+// Clone tuple
+INode *cloneTupleNode(CloneState *cstate, TupleNode *node) {
+    TupleNode *newnode;
+    newnode = memAllocBlk(sizeof(TupleNode));
+    memcpy(newnode, node, sizeof(TupleNode));
+    newnode->elems = cloneNodes(cstate, node->elems);
+    return (INode *)newnode;
 }
 
 // Serialize a type tuple node
@@ -29,10 +38,23 @@ void ttuplePrint(TupleNode *tuple) {
 
 // Name resolution of the type tuple node
 void ttupleNameRes(NameResState *pstate, TupleNode *tuple) {
+    int tag = -1;
     INode **nodesp;
     uint32_t cnt;
-    for (nodesFor(tuple->elems, cnt, nodesp))
+    for (nodesFor(tuple->elems, cnt, nodesp)) {
         inodeNameRes(pstate, nodesp);
+        int newtag = isTypeNode(*nodesp) ? TTupleTag : VTupleTag;
+        if (tag == -1)
+            tag = newtag;
+        else if (tag == -2)
+            ;
+        else if (tag != newtag)
+            tag = -2;
+    }
+    if (tag >= 0)
+        tuple->tag = tag;
+    else
+        errorMsgNode((INode*)tuple, ErrorBadElems, "Elements of tuple must be all types or all values");
 }
 
 // Type check the type tuple node

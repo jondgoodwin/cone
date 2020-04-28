@@ -16,7 +16,10 @@ typedef struct {
 } TupleNode;
 
 // Create a new type tuple node
-TupleNode *newTTupleNode(int cnt);
+TupleNode *newTupleNode(int cnt);
+
+// Clone tuple
+INode *cloneTupleNode(CloneState *cstate, TupleNode *node);
 
 // Serialize a type tuple node
 void ttuplePrint(TupleNode *tuple);

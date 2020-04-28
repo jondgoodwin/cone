@@ -83,6 +83,7 @@ enum NodeTags {
     // Parser-ambiguous nodes that will become either types or expressions
     // during name resolution when we finally know for sure
     NameUseTag,     // Name use node (pre-name resolution)
+    TupleTag,       // Tuple for tuple type or tuple literal
 
     // Named, non-type declaration nodes
     ModuleTag = StmtGroup + NamedNode,        // Module namespace

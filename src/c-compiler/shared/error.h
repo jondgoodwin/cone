@@ -72,6 +72,7 @@ enum ErrorCode {
     ErrorMove,      // Move error of some kind
     ErrorRecurse,   // Recursive type error
     ErrorBadStmt,   // Bad statement
+    ErrorBadElems,  // Inconsistent tuple elements
 
     // Warnings
     WarnCode = 3000,

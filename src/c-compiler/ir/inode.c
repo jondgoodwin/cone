@@ -223,8 +223,6 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         returnNameRes(pstate, (ReturnNode *)*node); break;
     case AssignTag:
         assignNameRes(pstate, (AssignNode *)*node); break;
-    case VTupleTag:
-        vtupleNameRes(pstate, (TupleNode *)*node); break;
     case FnCallTag:
         fnCallNameRes(pstate, (FnCallNode **)node); break;
     case SizeofTag:
@@ -264,7 +262,7 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         enumNameRes(pstate, (EnumNode *)*node); break;
     case ArrayTag:
         arrayNameRes(pstate, (ArrayNode *)*node); break;
-    case TTupleTag:
+    case TupleTag:
         ttupleNameRes(pstate, (TupleNode *)*node); break;
     case BorrowRegTag:
     case RegionTag:
@@ -434,5 +432,6 @@ Name *inodeGetName(INode *node) {
         return ((StructNode *)node)->namesym;
     default:
         assert(0 && "Unknown node to get name from");
+        return NULL;
     }
 }

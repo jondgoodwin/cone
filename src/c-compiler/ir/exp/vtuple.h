@@ -8,11 +8,7 @@
 #ifndef vtuple_h
 #define vtuple_h
 
-// Create a new value tuple node
-TupleNode *newVTupleNode();
-
-// Clone value tuple
-INode *cloneVTupleNode(CloneState *cstate, TupleNode *node);
+// Note: the newTupleNode and cloneTupleNode are in ttuple.c
 
 // Serialize a value tuple node
 void vtuplePrint(TupleNode *tuple);

@@ -564,7 +564,7 @@ INode *parseSimpleExpr(ParseState *parse) {
 INode *parseTuple(ParseState *parse) {
     INode *exp = parseSimpleExpr(parse);
     if (lexIsToken(CommaToken)) {
-        TupleNode *tuple = newVTupleNode();
+        TupleNode *tuple = newTupleNode(4);
         nodesAdd(&tuple->elems, exp);
         while (lexIsToken(CommaToken)) {
             lexNextToken();
