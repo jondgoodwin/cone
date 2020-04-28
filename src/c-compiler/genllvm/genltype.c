@@ -266,21 +266,21 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
 
     case PtrTag:
     {
-        LLVMTypeRef pvtype = genlType(gen, ((PtrNode *)typ)->pvtype);
-        return LLVMPointerType(pvtype, 0);
+        LLVMTypeRef vtexp = genlType(gen, ((StarNode *)typ)->vtexp);
+        return LLVMPointerType(vtexp, 0);
     }
 
     case RefTag:
     {
         RefNode *refnode = (RefNode*)typ;
-        LLVMTypeRef pvtype = genlType(gen, refnode->pvtype);
-        return LLVMPointerType(pvtype, 0);
+        LLVMTypeRef vtexp = genlType(gen, refnode->vtexp);
+        return LLVMPointerType(vtexp, 0);
     }
 
     case VirtRefTag:
     {
         RefNode *refnode = (RefNode*)typ;
-        StructNode *trait = (StructNode*)itypeGetTypeDcl(refnode->pvtype);
+        StructNode *trait = (StructNode*)itypeGetTypeDcl(refnode->vtexp);
         if (trait->vtable->llvmreftype == NULL)
             genlType(gen, (INode*)trait);
         return trait->vtable->llvmreftype;
@@ -290,8 +290,8 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
     {
         RefNode *refnode = (RefNode*)typ;
         LLVMTypeRef elemtypes[2];
-        LLVMTypeRef pvtype = genlType(gen, refnode->pvtype);
-        elemtypes[0] = LLVMPointerType(pvtype, 0);
+        LLVMTypeRef vtexp = genlType(gen, refnode->vtexp);
+        elemtypes[0] = LLVMPointerType(vtexp, 0);
         elemtypes[1] = _genlType(gen, "", (INode*)usizeType);
         return LLVMStructTypeInContext(gen->context, elemtypes, 2, 0);
     }

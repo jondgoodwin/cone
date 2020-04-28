@@ -26,13 +26,13 @@ INode *itypeGetTypeDcl(INode *type) {
     }
 }
 
-// Return node's type's declaration node (or pvtype if a ref or ptr)
+// Return node's type's declaration node (or vtexp if a ref or ptr)
 INode *itypeGetDerefTypeDcl(INode *node) {
     INode *typnode = itypeGetTypeDcl(node);
     if (typnode->tag == RefTag || typnode->tag == VirtRefTag)
-        return itypeGetTypeDcl(((RefNode*)node)->pvtype);
+        return itypeGetTypeDcl(((RefNode*)node)->vtexp);
     else if (node->tag == PtrTag)
-        return itypeGetTypeDcl(((PtrNode*)node)->pvtype);
+        return itypeGetTypeDcl(((StarNode*)node)->vtexp);
     return typnode;
 }
 
@@ -71,7 +71,7 @@ int itypeIsSame(INode *node1, INode *node2) {
     case VirtRefTag:
         return refEqual((RefNode*)node1, (RefNode*)node2);
     case PtrTag:
-        return ptrEqual((PtrNode*)node1, (PtrNode*)node2);
+        return ptrEqual((StarNode*)node1, (StarNode*)node2);
     case ArrayTag:
         return arrayEqual((ArrayNode*)node1, (ArrayNode*)node2);
     case TTupleTag:
@@ -139,9 +139,9 @@ TypeCompare itypeMatches(INode *totype, INode *fromtype, SubtypeConstraint const
 
     case PtrTag:
         if (fromtype->tag == RefTag || fromtype->tag == ArrayRefTag)
-            return itypeIsSame(((RefNode*)fromtype)->pvtype, ((PtrNode*)totype)->pvtype) ? ConvSubtype : NoMatch;
+            return itypeIsSame(((RefNode*)fromtype)->vtexp, ((StarNode*)totype)->vtexp) ? ConvSubtype : NoMatch;
         if (fromtype->tag == PtrTag)
-            return ptrMatches((PtrNode*)totype, (PtrNode*)fromtype, constraint);
+            return ptrMatches((StarNode*)totype, (StarNode*)fromtype, constraint);
         return NoMatch;
 
     case VoidTag:
@@ -198,14 +198,14 @@ char *itypeMangle(char *bufp, INode *vtype) {
             bufp = itypeMangle(bufp, reftype->perm);
             *bufp++ = ' ';
         }
-        bufp = itypeMangle(bufp, reftype->pvtype);
+        bufp = itypeMangle(bufp, reftype->vtexp);
         break;
     }
     case PtrTag:
     {
-        PtrNode *pvtype = (PtrNode *)vtype;
+        StarNode *vtexp = (StarNode *)vtype;
         *bufp++ = '*';
-        bufp = itypeMangle(bufp, pvtype->pvtype);
+        bufp = itypeMangle(bufp, vtexp->vtexp);
         break;
     }
     case UintNbrTag:

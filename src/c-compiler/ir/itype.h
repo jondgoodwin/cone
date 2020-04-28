@@ -51,7 +51,7 @@ typedef struct ITypeNode {
 // (Note: only use after it has been type-checked)
 INode *itypeGetTypeDcl(INode *node);
 
-// Return node's type's declaration node (or pvtype if a ref or ptr)
+// Return node's type's declaration node (or vtexp if a ref or ptr)
 INode *itypeGetDerefTypeDcl(INode *node);
 
 // Type check node, expecting it to be a type. Give error and return 0, if not.

@@ -17,7 +17,7 @@ VoidTypeNode *newVoidNode() {
 
 // Clone void
 INode *cloneVoidNode(CloneState *cstate, VoidTypeNode *node) {
-    PtrNode *newnode = memAllocBlk(sizeof(VoidTypeNode));
+    StarNode *newnode = memAllocBlk(sizeof(VoidTypeNode));
     memcpy(newnode, node, sizeof(VoidTypeNode));
     return (INode *)newnode;
 }

@@ -183,8 +183,8 @@ void castIsTypeCheck(TypeCheckState *pstate, CastNode *node) {
 
         // Under the refs should be a structure. Be sure to is a subtype of from
         // Note that region/permission downcast covariantly, but the structure is contravariant
-        StructNode *fromstr = (StructNode*)itypeGetTypeDcl(((RefNode*)fromtype)->pvtype);
-        StructNode *tostr = (StructNode*)itypeGetTypeDcl(((RefNode*)totype)->pvtype);
+        StructNode *fromstr = (StructNode*)itypeGetTypeDcl(((RefNode*)fromtype)->vtexp);
+        StructNode *tostr = (StructNode*)itypeGetTypeDcl(((RefNode*)totype)->vtexp);
         if (fromstr->tag == StructTag && tostr->tag == StructTag) {
             if (from->tag == VirtRefTag) {
                 if (structVirtRefMatches(fromstr, tostr))

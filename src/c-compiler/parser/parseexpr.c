@@ -211,7 +211,7 @@ INode *parseAddr(ParseState *parse) {
 
     // It is address operator ...
     RefNode *reftype = newRefNode();  // Type for address node
-    reftype->pvtype = unknownType;    // Type inference will correct this
+    reftype->vtexp = unknownType;    // Type inference will correct this
     reftype->region = borrowRef;
 
     lexNextToken();
@@ -250,9 +250,9 @@ INode *parseAddr(ParseState *parse) {
 
     // Get the term we are borrowing from (which might be a de-referenced reference)
     if (lexIsToken(StarToken)) {
-        DerefNode *derefnode = newDerefNode();
+        StarNode *derefnode = newDerefNode();
         lexNextToken();
-        derefnode->exp = lexIsToken(DotToken) ? (INode*)newNameUseNode(thisName) : parseTerm(parse);
+        derefnode->vtexp = lexIsToken(DotToken) ? (INode*)newNameUseNode(thisName) : parseTerm(parse);
         anode->exp = (INode*)derefnode;
     }
     else
@@ -329,9 +329,9 @@ INode *parsePrefix(ParseState *parse) {
     }
     case StarToken:
     {
-        DerefNode *node = newDerefNode();
+        StarNode *node = newDerefNode();
         lexNextToken();
-        node->exp = parsePrefix(parse);
+        node->vtexp = parsePrefix(parse);
         return (INode *)node;
     }
     default:

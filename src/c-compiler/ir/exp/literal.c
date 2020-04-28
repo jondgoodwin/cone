@@ -86,8 +86,8 @@ void litTypeCheck(TypeCheckState* pstate, IExpNode *node) {
 NullNode *newNullNode() {
     NullNode *node;
     newNode(node, NullNode, NullTag);
-    PtrNode *ptrtype = newPtrNode();
-    ptrtype->pvtype = unknownType;
+    StarNode *ptrtype = newPtrNode();
+    ptrtype->vtexp = unknownType;
     node->vtype = (INode*)ptrtype;
     return node;
 }

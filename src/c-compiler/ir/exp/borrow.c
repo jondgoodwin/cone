@@ -28,8 +28,8 @@ void borrowAuto(INode **node, INode* reftype) {
 void borrowMutRef(INode **node, INode* type) {
     // Rather than borrow from a deref, just return the ptr node we are de-reffing
     if ((*node)->tag == DerefTag) {
-        DerefNode *derefnode = (DerefNode *)*node;
-        *node = derefnode->exp;
+        StarNode *derefnode = (StarNode *)*node;
+        *node = derefnode->vtexp;
         return;
     }
     RefNode *refnode = newRefNodeFull(borrowRef, newPermUseNode(mutPerm), type);
@@ -74,12 +74,12 @@ void borrowTypeCheck(TypeCheckState *pstate, BorrowNode **nodep) {
     // Auto-deref the exp, if we are borrowing a reference to a reference's field or indexed value
     INode *exptype = iexpGetTypeDcl(node->exp);
     if ((node->flags & FlagSuffix) && (exptype->tag == RefTag || exptype->tag == PtrTag || exptype->tag == ArrayRefTag)) {
-        DerefNode *deref = newDerefNode();
-        deref->exp = node->exp;
+        StarNode *deref = newDerefNode();
+        deref->vtexp = node->exp;
         if (exptype->tag == ArrayRefTag)
             deref->vtype = (INode*)newArrayDerefNodeFrom((RefNode*)exptype);
         else
-            deref->vtype = ((RefNode*)exptype)->pvtype;  // assumes PtrNode has field in same place
+            deref->vtype = ((RefNode*)exptype)->vtexp;  // assumes StarNode has field in same place
         node->exp = (INode*)deref;
     }
 
@@ -94,7 +94,7 @@ void borrowTypeCheck(TypeCheckState *pstate, BorrowNode **nodep) {
         // From it, obtain variable we are borrowing from and actual/calculated permission
         INode *lvalvar = iexpGetLvalInfo(lval, &lvalperm, &reftype->scope);
         if (lvalvar == NULL) {
-            reftype->pvtype = (INode*)unknownType;  // Just to avoid a compiler crash later
+            reftype->vtexp = (INode*)unknownType;  // Just to avoid a compiler crash later
             return;
         }
         // Set lifetime of reference to borrowed variable's lifetime
@@ -113,7 +113,7 @@ void borrowTypeCheck(TypeCheckState *pstate, BorrowNode **nodep) {
     }
     else if (lvaltype->tag == ArrayDerefTag) {
         reftype->tag = ArrayRefTag;
-        refvtype = ((RefNode*)lvaltype)->pvtype;
+        refvtype = ((RefNode*)lvaltype)->vtexp;
     }
     else
         refvtype = lvaltype;

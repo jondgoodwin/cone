@@ -195,8 +195,8 @@ INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
 
     case DerefTag:
     {
-        INode *lvalvar = iexpGetLvalInfo(((DerefNode *)lval)->exp, lvalperm, scope);
-        RefNode *vtype = (RefNode*)iexpGetTypeDcl(((DerefNode *)lval)->exp);
+        INode *lvalvar = iexpGetLvalInfo(((StarNode *)lval)->vtexp, lvalperm, scope);
+        RefNode *vtype = (RefNode*)iexpGetTypeDcl(((StarNode *)lval)->vtexp);
         if (vtype->tag == RefTag || vtype->tag == ArrayRefTag)
             *lvalperm = vtype->perm;
         else if (vtype->tag == PtrTag)
@@ -225,7 +225,7 @@ INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
         INode *lvalvar = iexpGetLvalInfo(element->objfn, lvalperm, scope);
         if (lvalvar == NULL)
             return NULL;
-        RefNode *vtype = (RefNode*)iexpGetTypeDcl(((DerefNode *)lval)->exp);
+        RefNode *vtype = (RefNode*)iexpGetTypeDcl(((StarNode *)lval)->vtexp);
         if (vtype->tag == VirtRefTag)
             *lvalperm = vtype->perm;
         else {
@@ -259,7 +259,7 @@ uint16_t iexpGetPermFlags(INode *node) {
         return permGetFlags((INode*)opaqPerm);
     case DerefTag:
     {
-        RefNode *vtype = (RefNode*)iexpGetTypeDcl(((DerefNode *)node)->exp);
+        RefNode *vtype = (RefNode*)iexpGetTypeDcl(((StarNode *)node)->vtexp);
         if (vtype->tag == RefTag)
             return permGetFlags(vtype->perm);
         else if (vtype->tag == PtrTag)

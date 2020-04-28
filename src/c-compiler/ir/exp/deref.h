@@ -8,22 +8,19 @@
 #ifndef deref_h
 #define deref_h
 
-typedef struct DerefNode {
-    IExpNodeHdr;
-    INode *exp;
-} DerefNode;
+// The definition of StarNode is in pointer.h
 
-DerefNode *newDerefNode();
+StarNode *newDerefNode();
 
 // Clone deref
-INode *cloneDerefNode(CloneState *cstate, DerefNode *node);
+INode *cloneDerefNode(CloneState *cstate, StarNode *node);
 
-void derefPrint(DerefNode *node);
+void derefPrint(StarNode *node);
 // Name resolution of deref node
-void derefNameRes(NameResState *pstate, DerefNode *node);
+void derefNameRes(NameResState *pstate, StarNode *node);
 
 // Type check deref node
-void derefTypeCheck(TypeCheckState *pstate, DerefNode *node);
+void derefTypeCheck(TypeCheckState *pstate, StarNode *node);
 
 // Inject automatic deref node, if node's type is a ref or ptr. Return 1 if dereffed.
 int derefInject(INode **node);

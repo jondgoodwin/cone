@@ -121,8 +121,8 @@ INsTypeNode *newPtrTypeMethods() {
     ptrtypenode->llvmtype = NULL;
     iNsTypeInit((INsTypeNode*)ptrtypenode, 16);
 
-    PtrNode *voidptr = newPtrNode();
-    voidptr->pvtype = unknownType;
+    StarNode *voidptr = newPtrNode();
+    voidptr->vtexp = unknownType;
 
     // Create function signature for comparison methods
     FnSigNode *cmpsig = newFnSigNode();

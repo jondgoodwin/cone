@@ -123,7 +123,7 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
 
     // Handle call when we have a derefed pointer to a function
     if (fncall->objfn->tag == DerefTag) {
-        return LLVMBuildCall(gen->builder, genlExpr(gen, ((DerefNode*)fncall->objfn)->exp), fnargs, fncall->args->used, "");
+        return LLVMBuildCall(gen->builder, genlExpr(gen, ((StarNode*)fncall->objfn)->vtexp), fnargs, fncall->args->used, "");
     }
     // Handle call when we have a ref or pointer to a function
     INode *fntype = iexpGetTypeDcl(fncall->objfn);
@@ -158,7 +158,7 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
 
         // Pointer intrinsics
         if (typetag == PtrTag || typetag == RefTag) {
-            INode *pvtype = itypeGetTypeDcl(typetag == PtrTag ? ((PtrNode*)nbrtype)->pvtype : ((RefNode*)nbrtype)->pvtype);
+            INode *vtexp = itypeGetTypeDcl(typetag == PtrTag ? ((StarNode*)nbrtype)->vtexp : ((RefNode*)nbrtype)->vtexp);
             switch (((IntrinsicNode *)fndcl->value)->intrinsicFn) {
                 // Comparison
             case EqIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntEQ, fnargs[0], fnargs[1], ""); break;
@@ -170,12 +170,12 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
             case IncrIntrinsic: // ++x
             {
                 LLVMValueRef val = LLVMBuildLoad(gen->builder, fnargs[0], "");
-                LLVMTypeRef selftype = genlType(gen, pvtype);
-                if (pvtype->tag == PtrTag || pvtype->tag == RefTag) {
+                LLVMTypeRef selftype = genlType(gen, vtexp);
+                if (vtexp->tag == PtrTag || vtexp->tag == RefTag) {
                     LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), 1, 0);
                     fncallret = LLVMBuildGEP(gen->builder, val, &constone, 1, "");
                 }
-                else if (pvtype->tag == FloatNbrTag)
+                else if (vtexp->tag == FloatNbrTag)
                     fncallret = LLVMBuildFAdd(gen->builder, val, LLVMConstReal(selftype, 1.), "");
                 else
                     fncallret = LLVMBuildAdd(gen->builder, val, LLVMConstInt(selftype, 1, 0), "");
@@ -185,12 +185,12 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
             case DecrIntrinsic: // --x
             {
                 LLVMValueRef val = LLVMBuildLoad(gen->builder, fnargs[0], "");
-                LLVMTypeRef selftype = genlType(gen, pvtype);
-                if (pvtype->tag == PtrTag || pvtype->tag == RefTag) {
+                LLVMTypeRef selftype = genlType(gen, vtexp);
+                if (vtexp->tag == PtrTag || vtexp->tag == RefTag) {
                     LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), -1, 1);
                     fncallret = LLVMBuildGEP(gen->builder, val, &constone, 1, "");
                 }
-                else if (pvtype->tag == FloatNbrTag)
+                else if (vtexp->tag == FloatNbrTag)
                     fncallret = LLVMBuildFSub(gen->builder, val, LLVMConstReal(selftype, 1.), "");
                 else
                     fncallret = LLVMBuildSub(gen->builder, val, LLVMConstInt(selftype, 1, 0), "");
@@ -200,13 +200,13 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
             case IncrPostIntrinsic: // x++
             {
                 fncallret = LLVMBuildLoad(gen->builder, fnargs[0], "");
-                LLVMTypeRef selftype = genlType(gen, pvtype);
+                LLVMTypeRef selftype = genlType(gen, vtexp);
                 LLVMValueRef val;
-                if (pvtype->tag == PtrTag || pvtype->tag == RefTag) {
+                if (vtexp->tag == PtrTag || vtexp->tag == RefTag) {
                     LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), 1, 0);
                     val = LLVMBuildGEP(gen->builder, fncallret, &constone, 1, "");
                 }
-                else if (pvtype->tag == FloatNbrTag)
+                else if (vtexp->tag == FloatNbrTag)
                     val = LLVMBuildFAdd(gen->builder, fncallret, LLVMConstReal(selftype, 1.), "");
                 else
                     val = LLVMBuildAdd(gen->builder, fncallret, LLVMConstInt(selftype, 1, 0), "");
@@ -216,13 +216,13 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
             case DecrPostIntrinsic: // x--
             {
                 fncallret = LLVMBuildLoad(gen->builder, fnargs[0], "");
-                LLVMTypeRef selftype = genlType(gen, pvtype);
+                LLVMTypeRef selftype = genlType(gen, vtexp);
                 LLVMValueRef val;
-                if (pvtype->tag == PtrTag || pvtype->tag == RefTag) {
+                if (vtexp->tag == PtrTag || vtexp->tag == RefTag) {
                     LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), -1, 1);
                     val = LLVMBuildGEP(gen->builder, fncallret, &constone, 1, "");
                 }
-                else if (pvtype->tag == FloatNbrTag)
+                else if (vtexp->tag == FloatNbrTag)
                     val = LLVMBuildFSub(gen->builder, fncallret, LLVMConstReal(selftype, 1.), "");
                 else
                     val = LLVMBuildSub(gen->builder, fncallret, LLVMConstInt(selftype, 1, 0), "");
@@ -240,7 +240,7 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
                 LLVMValueRef selfint = LLVMBuildPtrToInt(gen->builder, fnargs[0], usize, "");
                 LLVMValueRef argint = LLVMBuildPtrToInt(gen->builder, fnargs[1], usize, "");
                 LLVMValueRef diff = LLVMBuildSub(gen->builder, selfint, argint, "");
-                long long valsize = LLVMABISizeOfType(gen->datalayout, genlType(gen, ((PtrNode*)nbrtype)->pvtype));
+                long long valsize = LLVMABISizeOfType(gen->datalayout, genlType(gen, ((StarNode*)nbrtype)->vtexp));
                 fncallret = LLVMBuildSDiv(gen->builder, diff, LLVMConstInt(genlType(gen, (INode*)usizeType), valsize, 1), "");
                 break;
             }
@@ -264,7 +264,7 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
 
         // Array reference intrinsics
         else if (typetag == ArrayRefTag) {
-            INode *pvtype = itypeGetTypeDcl(typetag == PtrTag ? ((PtrNode*)nbrtype)->pvtype : ((RefNode*)nbrtype)->pvtype);
+            INode *vtexp = itypeGetTypeDcl(typetag == PtrTag ? ((StarNode*)nbrtype)->vtexp : ((RefNode*)nbrtype)->vtexp);
             switch (((IntrinsicNode *)fndcl->value)->intrinsicFn) {
             case CountIntrinsic: fncallret = LLVMBuildExtractValue(gen->builder, fnargs[0], 1, "slicecount"); break;
             // Comparison
@@ -470,7 +470,7 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
     {
         // Convert ref-to-array into arrayref
         if (fromtype->tag == RefTag) {
-            ArrayNode *arraytype = (ArrayNode*)((RefNode *)fromtype)->pvtype;
+            ArrayNode *arraytype = (ArrayNode*)((RefNode *)fromtype)->vtexp;
             assert(arraytype->tag == ArrayTag);
             LLVMValueRef aref = LLVMGetUndef(genlType(gen, totype));
             LLVMValueRef size = LLVMConstInt(genlUsize(gen), arraytype->size, 0);
@@ -486,8 +486,8 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
     {
         // Build a fat ptr whose vtable maps the fromtype struct to the totype trait
         assert(fromtype->tag == RefTag);
-        StructNode *trait = (StructNode*)itypeGetTypeDcl(((RefNode*)totype)->pvtype);
-        StructNode *strnode = (StructNode*)itypeGetTypeDcl(((RefNode*)fromtype)->pvtype);
+        StructNode *trait = (StructNode*)itypeGetTypeDcl(((RefNode*)totype)->vtexp);
+        StructNode *strnode = (StructNode*)itypeGetTypeDcl(((RefNode*)fromtype)->vtexp);
         Vtable *vtable = ((StructNode*)trait)->vtable;
         LLVMValueRef vtablep;
         if (!(strnode->flags & TraitType)) {
@@ -610,7 +610,7 @@ LLVMValueRef genlIsType(GenState *gen, CastNode *isnode) {
     LLVMValueRef val = genlExpr(gen, isnode->exp);
     INode *exptype = iexpGetTypeDcl(isnode->exp);
     INode *istype = itypeGetTypeDcl(isnode->typ);
-    StructNode *structtype = (StructNode*)(istype->tag == RefTag ? itypeGetTypeDcl(((RefNode*)istype)->pvtype) : istype);
+    StructNode *structtype = (StructNode*)(istype->tag == RefTag ? itypeGetTypeDcl(((RefNode*)istype)->vtexp) : istype);
 
     // If pattern matching a virtual reference, compare vtable pointers
     if (exptype->tag == VirtRefTag) {
@@ -695,7 +695,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
     case VarNameUseTag:
         return ((VarDclNode*)((NameUseNode *)lval)->dclnode)->llvmvar;
     case DerefTag:
-        return genlExpr(gen, ((DerefNode *)lval)->exp);
+        return genlExpr(gen, ((StarNode *)lval)->vtexp);
     case ArrIndexTag:
     {
         FnCallNode *fncall = (FnCallNode *)lval;
@@ -889,9 +889,9 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
                 return LLVMBuildGEP(gen->builder, genlAddr(gen, fncall->objfn), indexes, 2, "");
             }
             case ArrayDerefTag: {
-                DerefNode *deref = (DerefNode *)fncall->objfn;
+                StarNode *deref = (StarNode *)fncall->objfn;
                 assert(deref->tag == DerefTag);
-                LLVMValueRef arrref = genlExpr(gen, deref->exp);
+                LLVMValueRef arrref = genlExpr(gen, deref->vtexp);
                 LLVMValueRef count = LLVMBuildExtractValue(gen->builder, arrref, 1, "count");
                 LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
                 genlBoundsCheck(gen, index, count);
@@ -992,14 +992,14 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
             INode *arraytype = itypeGetTypeDcl(((IExpNode*)anode->exp)->vtype);
             if (arraytype->tag == ArrayTag) {
                 LLVMValueRef tupleval = LLVMGetUndef(genlType(gen, (INode*)reftype));
-                LLVMTypeRef ptrtype = LLVMPointerType(genlType(gen, reftype->pvtype), 0);
+                LLVMTypeRef ptrtype = LLVMPointerType(genlType(gen, reftype->vtexp), 0);
                 LLVMValueRef ptr = LLVMBuildBitCast(gen->builder, genlAddr(gen, anode->exp), ptrtype, "fatptr");
                 tupleval = LLVMBuildInsertValue(gen->builder, tupleval, ptr, 0, "fatptr");
                 LLVMValueRef size = LLVMConstInt(genlType(gen, (INode*)usizeType), ((ArrayNode*)arraytype)->size, 0);
                 return LLVMBuildInsertValue(gen->builder, tupleval, size, 1, "fatsize");
             }
             else if (arraytype->tag == ArrayDerefTag) {
-                return genlExpr(gen, ((DerefNode*)anode->exp)->exp);
+                return genlExpr(gen, ((StarNode*)anode->exp)->vtexp);
             }
         }
         else
@@ -1008,7 +1008,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     case AllocateTag:
         return genlallocref(gen, (AllocateNode*)termnode);
     case DerefTag:
-        return LLVMBuildLoad(gen->builder, genlExpr(gen, ((DerefNode*)termnode)->exp), "deref");
+        return LLVMBuildLoad(gen->builder, genlExpr(gen, ((StarNode*)termnode)->vtexp), "deref");
     case OrLogicTag: case AndLogicTag:
         return genlLogic(gen, (LogicNode*)termnode);
     case NotLogicTag:

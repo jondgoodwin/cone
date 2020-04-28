@@ -8,9 +8,9 @@
 #include "../ir.h"
 
 // Create a new deref node
-DerefNode *newDerefNode() {
-    DerefNode *node;
-    newNode(node, DerefNode, DerefTag);
+StarNode *newDerefNode() {
+    StarNode *node;
+    newNode(node, StarNode, DerefTag);
     node->vtype = unknownType;
     return node;
 }
@@ -20,43 +20,43 @@ int derefInject(INode **node) {
     INode *nodetype = iexpGetTypeDcl(*node);
     if (nodetype->tag != RefTag && nodetype->tag != PtrTag)
         return 0;
-    DerefNode *deref = newDerefNode();
-    deref->exp = *node;
+    StarNode *deref = newDerefNode();
+    deref->vtexp = *node;
     if (nodetype->tag == PtrTag)
-        deref->vtype = ((PtrNode*)((IExpNode *)*node)->vtype)->pvtype;
+        deref->vtype = ((StarNode*)((IExpNode *)*node)->vtype)->vtexp;
     else
-        deref->vtype = ((RefNode*)((IExpNode *)*node)->vtype)->pvtype;
+        deref->vtype = ((RefNode*)((IExpNode *)*node)->vtype)->vtexp;
     *node = (INode*)deref;
     return 1;
 }
 
 // Clone deref
-INode *cloneDerefNode(CloneState *cstate, DerefNode *node) {
-    DerefNode *newnode;
-    newnode = memAllocBlk(sizeof(DerefNode));
-    memcpy(newnode, node, sizeof(DerefNode));
-    newnode->exp = cloneNode(cstate, node->exp);
+INode *cloneDerefNode(CloneState *cstate, StarNode *node) {
+    StarNode *newnode;
+    newnode = memAllocBlk(sizeof(StarNode));
+    memcpy(newnode, node, sizeof(StarNode));
+    newnode->vtexp = cloneNode(cstate, node->vtexp);
     return (INode *)newnode;
 }
 
 // Serialize deref
-void derefPrint(DerefNode *node) {
+void derefPrint(StarNode *node) {
     inodeFprint("*");
-    inodePrintNode(node->exp);
+    inodePrintNode(node->vtexp);
 }
 
 // Name resolution of deref node
-void derefNameRes(NameResState *pstate, DerefNode *node) {
-    inodeNameRes(pstate, &node->exp);
+void derefNameRes(NameResState *pstate, StarNode *node) {
+    inodeNameRes(pstate, &node->vtexp);
 }
 
 // Type check deref node
-void derefTypeCheck(TypeCheckState *pstate, DerefNode *node) {
-    if (iexpTypeCheckAny(pstate, &node->exp) == 0)
+void derefTypeCheck(TypeCheckState *pstate, StarNode *node) {
+    if (iexpTypeCheckAny(pstate, &node->vtexp) == 0)
         return;
 
-    PtrNode *ptype = (PtrNode*)((IExpNode *)node->exp)->vtype;
+    StarNode *ptype = (StarNode*)((IExpNode *)node->vtexp)->vtype;
     if (ptype->tag != RefTag && ptype->tag != PtrTag)
         errorMsgNode((INode*)node, ErrorNotPtr, "May only de-reference a simple reference or pointer.");
-    node->vtype = ptype->pvtype;
+    node->vtype = ptype->vtexp;
 }

@@ -128,16 +128,16 @@ void fnCallArrIndex(FnCallNode *node) {
         node->vtype = ((ArrayNode*)objtype)->elemtype;
         break;
     case RefTag: {
-        INode *vtype = ((RefNode *)objtype)->pvtype;
+        INode *vtype = ((RefNode *)objtype)->vtexp;
         assert(vtype->tag == ArrayTag);
         node->vtype = ((ArrayNode *)vtype)->elemtype;
         break;
     }
     case ArrayRefTag:
-        node->vtype = ((RefNode*)objtype)->pvtype;
+        node->vtype = ((RefNode*)objtype)->vtexp;
         break;
     case PtrTag:
-        node->vtype = ((PtrNode*)objtype)->pvtype;
+        node->vtype = ((StarNode*)objtype)->vtexp;
         break;
     default:
         assert(0 && "Invalid type for indexing");
@@ -400,7 +400,7 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
     callnode->methfld = NULL;
     callnode->vtype = ((FnSigNode*)bestmethod->vtype)->rettype;
     if (callnode->vtype->tag == PtrTag) {
-        INode *t_type = selftype->tag == RefTag? ((RefNode *)selftype)->pvtype : selftype;
+        INode *t_type = selftype->tag == RefTag? ((RefNode *)selftype)->vtexp : selftype;
         callnode->vtype = t_type;  // Generic substitution for T
     }
     return 1;
@@ -561,7 +561,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 
     // Regular reference
     case RefTag: {
-        INode *objdereftype = itypeGetTypeDcl(((RefNode *)objtype)->pvtype);
+        INode *objdereftype = itypeGetTypeDcl(((RefNode *)objtype)->vtexp);
         // Fill in empty methfld with '()', '[]' or '&[]' based on parser flags
         if (node->methfld == NULL)
             node->methfld = newNameUseNode(
@@ -605,7 +605,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 
     // Pointer type
     case PtrTag: {
-        INode *objdereftype = ((PtrNode *)objtype)->pvtype;
+        INode *objdereftype = ((StarNode *)objtype)->vtexp;
         if (node->flags & FlagIndex)
             fnCallArrIndex(node);
         else if (node->methfld) {

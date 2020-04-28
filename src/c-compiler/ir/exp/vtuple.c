@@ -19,27 +19,6 @@ void vtuplePrint(TupleNode *tuple) {
     }
 }
 
-// Name resolution for vtuple
-void vtupleNameRes(NameResState *pstate, TupleNode *tuple) {
-    int tag = -1;
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodesFor(tuple->elems, cnt, nodesp)) {
-        inodeNameRes(pstate, nodesp);
-        int newtag = isTypeNode(*nodesp) ? TTupleTag : VTupleTag;
-        if (tag == -1)
-            tag = newtag;
-        else if (tag == -2)
-            ;
-        else if (tag != newtag)
-            tag = -2;
-    }
-    if (tag >= 0)
-        tuple->tag = tag;
-    else
-        errorMsgNode((INode*)tuple, ErrorBadElems, "Elements of tuple must be all types or all values");
-}
-
 // Type check the value tuple node
 // - Infer type tuple from types of vtuple's values
 void vtupleTypeCheck(TypeCheckState *pstate, TupleNode *tuple) {

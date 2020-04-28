@@ -21,18 +21,18 @@ INode *cloneRefNode(CloneState *cstate, RefNode *node) {
     memcpy(newnode, node, sizeof(RefNode));
     newnode->region = cloneNode(cstate, node->region);
     newnode->perm = cloneNode(cstate, node->perm);
-    newnode->pvtype = cloneNode(cstate, node->pvtype);
+    newnode->vtexp = cloneNode(cstate, node->vtexp);
     return (INode *)newnode;
 }
 
 // Set type infection flags based on the reference's type parameters
 void refAdoptInfections(RefNode *refnode) {
-    if (refnode->perm == NULL || refnode->pvtype == unknownType)
+    if (refnode->perm == NULL || refnode->vtexp == unknownType)
         return;  // Wait until we have this info
     if (!(permGetFlags(refnode->perm) & MayAlias) || refnode->region == (INode*)soRegion)
         refnode->flags |= MoveType;
     if (refnode->perm == (INode*)mutPerm || refnode->perm == (INode*)constPerm 
-        || (refnode->pvtype->flags & ThreadBound))
+        || (refnode->vtexp->flags & ThreadBound))
         refnode->flags |= ThreadBound;
 }
 
@@ -41,7 +41,7 @@ RefNode *newRefNodeFull(INode *region, INode *perm, INode *vtype) {
     RefNode *refnode = newRefNode();
     refnode->region = region;
     refnode->perm = perm;
-    refnode->pvtype = vtype;
+    refnode->vtexp = vtype;
     refAdoptInfections(refnode);
     return refnode;
 }
@@ -49,7 +49,7 @@ RefNode *newRefNodeFull(INode *region, INode *perm, INode *vtype) {
 // Set the inferred value type of a reference
 void refSetPermVtype(RefNode *refnode, INode *perm, INode *vtype) {
     refnode->perm = perm;
-    refnode->pvtype = vtype;
+    refnode->vtexp = vtype;
     refAdoptInfections(refnode);
 }
 
@@ -59,7 +59,7 @@ RefNode *newArrayDerefNodeFrom(RefNode *refnode) {
     dereftype->tag = ArrayDerefTag;
     dereftype->region = refnode->region;
     dereftype->perm = refnode->perm;
-    dereftype->pvtype = refnode->pvtype;
+    dereftype->vtexp = refnode->vtexp;
     return dereftype;
 }
 
@@ -70,7 +70,7 @@ void refPrint(RefNode *node) {
     inodeFprint(" ");
     inodePrintNode((INode*)node->perm);
     inodeFprint(" ");
-    inodePrintNode(node->pvtype);
+    inodePrintNode(node->vtexp);
     inodeFprint(")");
 }
 
@@ -78,14 +78,14 @@ void refPrint(RefNode *node) {
 void refNameRes(NameResState *pstate, RefNode *node) {
     inodeNameRes(pstate, &node->region);
     inodeNameRes(pstate, (INode**)&node->perm);
-    inodeNameRes(pstate, &node->pvtype);
+    inodeNameRes(pstate, &node->vtexp);
 }
 
 // Type check a reference node
 void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
     itypeTypeCheck(pstate, &node->region);
     itypeTypeCheck(pstate, (INode**)&node->perm);
-    if (itypeTypeCheck(pstate, &node->pvtype) == 0)
+    if (itypeTypeCheck(pstate, &node->vtexp) == 0)
         return;
     refAdoptInfections(node);
 }
@@ -94,11 +94,11 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
 void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
     itypeTypeCheck(pstate, &node->region);
     itypeTypeCheck(pstate, (INode**)&node->perm);
-    if (itypeTypeCheck(pstate, &node->pvtype) == 0)
+    if (itypeTypeCheck(pstate, &node->vtexp) == 0)
         return;
     refAdoptInfections(node);
 
-    StructNode *trait = (StructNode*)itypeGetTypeDcl(node->pvtype);
+    StructNode *trait = (StructNode*)itypeGetTypeDcl(node->vtexp);
     if (trait->tag != StructTag) {
         errorMsgNode((INode*)node, ErrorInvType, "A virtual reference must be to a struct or trait.");
         return;
@@ -110,7 +110,7 @@ void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
 
 // Compare two reference signatures to see if they are equivalent
 int refEqual(RefNode *node1, RefNode *node2) {
-    return itypeIsSame(node1->pvtype,node2->pvtype) 
+    return itypeIsSame(node1->vtexp,node2->vtexp) 
         && permIsSame(node1->perm, node2->perm)
         && node1->region == node2->region;
 }
@@ -145,13 +145,13 @@ TypeCompare refMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint)
     switch (permGetFlags(to->perm) & (MayWrite | MayRead)) {
     case 0:
     case MayRead:
-        match = itypeMatches(to->pvtype, from->pvtype, Regref); // covariant
+        match = itypeMatches(to->vtexp, from->vtexp, Regref); // covariant
         break;
     case MayWrite:
-        match = itypeMatches(from->pvtype, to->pvtype, Regref); // contravariant
+        match = itypeMatches(from->vtexp, to->vtexp, Regref); // contravariant
         break;
     case MayRead | MayWrite:
-        return itypeIsSame(to->pvtype, from->pvtype) ? result : NoMatch; // invariant
+        return itypeIsSame(to->vtexp, from->vtexp) ? result : NoMatch; // invariant
     }
     switch (match) {
     case EqMatch:
@@ -187,8 +187,8 @@ TypeCompare refvirtMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint cons
     // Handle value type without worrying about mutability-triggered variance
     // This is because a virtual reference "supertype" can never change the value's underlying type
     // Virtual references are based on structs/traits
-    StructNode *tovtypedcl = (StructNode*)itypeGetTypeDcl(to->pvtype);
-    StructNode *fromvtypedcl = (StructNode*)itypeGetTypeDcl(from->pvtype);
+    StructNode *tovtypedcl = (StructNode*)itypeGetTypeDcl(to->vtexp);
+    StructNode *fromvtypedcl = (StructNode*)itypeGetTypeDcl(from->vtexp);
     if (tovtypedcl->tag != StructTag || fromvtypedcl->tag != StructTag)
         return NoMatch;
 
@@ -213,7 +213,7 @@ TypeCompare refvirtMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint cons
 TypeCompare refvirtMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint) {
     // For now, there is no supported way to convert a virtual ref from one value type to another
     // This could change later, maybe for monomorphization or maybe for runtime coercion
-    if (!itypeIsSame(to->pvtype, from->pvtype))
+    if (!itypeIsSame(to->vtexp, from->vtexp))
         return NoMatch;
 
     // However, region, permission and lifetime can be supertyped
@@ -230,9 +230,9 @@ INode *refFindSuper(INode *type1, INode *type2) {
         || itypeGetTypeDcl(typ1->perm) != itypeGetTypeDcl(typ2->perm))
         return NULL;
 
-    INode *pvtype = structRefFindSuper(typ1->pvtype, typ2->pvtype);
-    if (pvtype == NULL)
+    INode *vtexp = structRefFindSuper(typ1->vtexp, typ2->vtexp);
+    if (vtexp == NULL)
         return NULL;
 
-    return (INode*)newRefNodeFull(typ1->region, typ1->perm, pvtype);
+    return (INode*)newRefNodeFull(typ1->region, typ1->perm, vtexp);
 }

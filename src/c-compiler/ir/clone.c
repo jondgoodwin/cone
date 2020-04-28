@@ -27,7 +27,7 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     case CastTag:
         node = cloneCastNode(cstate, (CastNode *)nodep); break;
     case DerefTag:
-        node = cloneDerefNode(cstate, (DerefNode *)nodep); break;
+        node = cloneDerefNode(cstate, (StarNode *)nodep); break;
     case FnCallTag:
     case ArrIndexTag:
     case FldAccessTag:
@@ -88,7 +88,7 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     case FnSigTag:
         node = cloneFnSigNode(cstate, (FnSigNode *)nodep); break;
     case PtrTag:
-        node = clonePtrNode(cstate, (PtrNode *)nodep); break;
+        node = clonePtrNode(cstate, (StarNode *)nodep); break;
     case RefTag:
     case ArrayRefTag:
     case VirtRefTag:

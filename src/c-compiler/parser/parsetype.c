@@ -286,9 +286,9 @@ INode *parseFnSig(ParseState *parse) {
                     parm->vtype = (INode*)newNameUseNode(selfTypeName);
                 }
                 else if (parm->vtype->tag == RefTag) {
-                    PtrNode *refnode = (PtrNode *)parm->vtype;
-                    if (refnode->pvtype == unknownType) {
-                        refnode->pvtype = (INode*)newNameUseNode(selfTypeName);
+                    StarNode *refnode = (StarNode *)parm->vtype;
+                    if (refnode->vtexp == unknownType) {
+                        refnode->vtexp = (INode*)newNameUseNode(selfTypeName);
                     }
                 }
             }
@@ -356,7 +356,7 @@ INode *parseArrayType(ParseState *parse) {
 
 // Parse a pointer type
 INode *parsePtrType(ParseState *parse) {
-    PtrNode *ptype = newPtrNode();
+    StarNode *ptype = newPtrNode();
     lexNextToken();
 
     // Get value type, if provided
@@ -366,11 +366,11 @@ INode *parsePtrType(ParseState *parse) {
             errorMsgLex(WarnName, "Unnecessary name is ignored");
             lexNextToken();
         }
-        ptype->pvtype = parseFnSig(parse);
+        ptype->vtexp = parseFnSig(parse);
     }
-    else if ((ptype->pvtype = parseVtype(parse)) == NULL) {
+    else if ((ptype->vtexp = parseVtype(parse)) == NULL) {
         errorMsgLex(ErrorNoVtype, "Missing value type for the pointer");
-        ptype->pvtype = unknownType;
+        ptype->vtexp = unknownType;
     }
 
     return (INode *)ptype;
@@ -379,7 +379,7 @@ INode *parsePtrType(ParseState *parse) {
 // Parse a reference type
 INode *parseRefType(ParseState *parse) {
     RefNode *reftype = newRefNode();
-    reftype->pvtype = unknownType;
+    reftype->vtexp = unknownType;
     lexNextToken();
 
     // Notice whether it is a virtual reference
@@ -397,7 +397,7 @@ INode *parseRefType(ParseState *parse) {
             errorMsgLex(WarnName, "Unnecessary name is ignored");
             lexNextToken();
         }
-        reftype->pvtype = parseFnSig(parse);
+        reftype->vtexp = parseFnSig(parse);
     }
     // Get value type for ref to array or slice
     else if (lexIsToken(LBracketToken)) {
@@ -405,12 +405,12 @@ INode *parseRefType(ParseState *parse) {
         lexNextToken();
         if (lexIsToken(RBracketToken)) {
             lexNextToken();
-            reftype->pvtype = parseVtype(parse);
+            reftype->vtexp = parseVtype(parse);
         }
         else
-            reftype->pvtype = parseArrayType(parse);
+            reftype->vtexp = parseArrayType(parse);
     }
-    else if ((reftype->pvtype = parseVtype(parse)) == NULL) {
+    else if ((reftype->vtexp = parseVtype(parse)) == NULL) {
         errorMsgLex(ErrorNoVtype, "Missing value type for the reference");
     }
 

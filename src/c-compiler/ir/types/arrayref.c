@@ -14,7 +14,7 @@ void arrayRefPrint(RefNode *node) {
     inodeFprint(" ");
     inodePrintNode((INode*)node->perm);
     inodeFprint(" ");
-    inodePrintNode(node->pvtype);
+    inodePrintNode(node->vtexp);
     inodeFprint(")");
 }
 
@@ -22,21 +22,21 @@ void arrayRefPrint(RefNode *node) {
 void arrayRefNameRes(NameResState *pstate, RefNode *node) {
     inodeNameRes(pstate, &node->region);
     inodeNameRes(pstate, (INode**)&node->perm);
-    if (node->pvtype)
-        inodeNameRes(pstate, &node->pvtype);
+    if (node->vtexp)
+        inodeNameRes(pstate, &node->vtexp);
 }
 
 // Type check an array reference node
 void arrayRefTypeCheck(TypeCheckState *pstate, RefNode *node) {
     itypeTypeCheck(pstate, &node->region);
     itypeTypeCheck(pstate, (INode**)&node->perm);
-    if (node->pvtype)
-        itypeTypeCheck(pstate, &node->pvtype);
+    if (node->vtexp)
+        itypeTypeCheck(pstate, &node->vtexp);
 }
 
 // Compare two reference signatures to see if they are equivalent
 int arrayRefEqual(RefNode *node1, RefNode *node2) {
-    return itypeIsSame(node1->pvtype,node2->pvtype) 
+    return itypeIsSame(node1->vtexp,node2->vtexp) 
         && permIsSame(node1->perm, node2->perm)
         && node1->region == node2->region;
 }
@@ -49,7 +49,7 @@ TypeCompare arrayRefMatches(RefNode *to, RefNode *from, SubtypeConstraint constr
 // Will from reference coerce to a to arrayref (we know they are not the same)
 TypeCompare arrayRefMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint constraint) {
     // From type must be a reference to 
-    ArrayNode *arraytype = (ArrayNode*)from->pvtype;
+    ArrayNode *arraytype = (ArrayNode*)from->vtexp;
     if (arraytype->tag != ArrayTag)
         return NoMatch;
 
@@ -74,13 +74,13 @@ TypeCompare arrayRefMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint con
     switch (permGetFlags(to->perm) & (MayWrite | MayRead)) {
     case 0:
     case MayRead:
-        match = itypeMatches(to->pvtype, arraytype->elemtype, constraint); // covariant
+        match = itypeMatches(to->vtexp, arraytype->elemtype, constraint); // covariant
         break;
     case MayWrite:
-        match = itypeMatches(arraytype->elemtype, to->pvtype, constraint); // contravariant
+        match = itypeMatches(arraytype->elemtype, to->vtexp, constraint); // contravariant
         break;
     case MayRead | MayWrite:
-        return itypeIsSame(to->pvtype, arraytype->elemtype) ? result : NoMatch; // invariant
+        return itypeIsSame(to->vtexp, arraytype->elemtype) ? result : NoMatch; // invariant
     }
     switch (match) {
     case EqMatch:

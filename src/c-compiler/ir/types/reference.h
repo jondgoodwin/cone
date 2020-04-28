@@ -11,7 +11,7 @@
 // Reference node
 typedef struct RefNode {
     INodeHdr;
-    INode *pvtype;    // Value type
+    INode *vtexp;    // Value type
     INode *perm;      // Permission
     INode *region;    // Region
     uint16_t scope;   // Lifetime

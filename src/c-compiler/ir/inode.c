@@ -104,7 +104,7 @@ void inodePrintNode(INode *node) {
     case CastTag:  case IsTag:
         castPrint((CastNode *)node); break;
     case DerefTag:
-        derefPrint((DerefNode *)node); break;
+        derefPrint((StarNode *)node); break;
     case BorrowTag:
         borrowPrint((BorrowNode *)node); break;
     case AllocateTag:
@@ -128,7 +128,7 @@ void inodePrintNode(INode *node) {
     case ArrayRefTag:
         arrayRefPrint((RefNode *)node); break;
     case PtrTag:
-        ptrPrint((PtrNode *)node); break;
+        ptrPrint((StarNode *)node); break;
     case StructTag:
     case RegionTag:
         structPrint((StructNode *)node); break;
@@ -230,7 +230,7 @@ void inodeNameRes(NameResState *pstate, INode **node) {
     case CastTag:  case IsTag:
         castNameRes(pstate, (CastNode *)*node); break;
     case DerefTag:
-        derefNameRes(pstate, (DerefNode *)*node); break;
+        derefNameRes(pstate, (StarNode *)*node); break;
     case BorrowTag:
         borrowNameRes(pstate, (BorrowNode **)node); break;
     case AllocateTag:
@@ -255,7 +255,7 @@ void inodeNameRes(NameResState *pstate, INode **node) {
     case ArrayRefTag:
         arrayRefNameRes(pstate, (RefNode *)*node); break;
     case PtrTag:
-        ptrNameRes(pstate, (PtrNode *)*node); break;
+        ptrNameRes(pstate, (StarNode *)*node); break;
     case StructTag:
         structNameRes(pstate, (StructNode *)*node); break;
     case EnumTag:
@@ -344,7 +344,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     case CastTag:
         castTypeCheck(pstate, (CastNode *)*node); break;
     case DerefTag:
-        derefTypeCheck(pstate, (DerefNode *)*node); break;
+        derefTypeCheck(pstate, (StarNode *)*node); break;
     case BorrowTag:
         borrowTypeCheck(pstate, (BorrowNode **)node); break;
     case AllocateTag:
@@ -374,7 +374,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     case ArrayRefTag:
         arrayRefTypeCheck(pstate, (RefNode *)*node); break;
     case PtrTag:
-        ptrTypeCheck(pstate, (PtrNode *)*node); break;
+        ptrTypeCheck(pstate, (StarNode *)*node); break;
     case StructTag:
         structTypeCheck(pstate, (StructNode *)*node); break;
     case EnumTag:

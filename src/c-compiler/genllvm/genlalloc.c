@@ -43,7 +43,7 @@ LLVMValueRef genlmalloc(GenState *gen, long long size) {
 
 // If ref type is struct, dealias any fields holding rc/own references
 void genlDealiasFlds(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
-    StructNode *strnode = (StructNode*)itypeGetTypeDcl(refnode->pvtype);
+    StructNode *strnode = (StructNode*)itypeGetTypeDcl(refnode->vtexp);
     if (strnode->tag != StructTag)
         return;
     INode **nodesp;
@@ -78,7 +78,7 @@ LLVMValueRef genlFree(GenState *gen, LLVMValueRef ref) {
 // Generate code that creates an allocated ref by allocating and initializing
 LLVMValueRef genlallocref(GenState *gen, AllocateNode *allocatenode) {
     RefNode *reftype = (RefNode*)allocatenode->vtype;
-    long long valsize = LLVMABISizeOfType(gen->datalayout, genlType(gen, reftype->pvtype));
+    long long valsize = LLVMABISizeOfType(gen->datalayout, genlType(gen, reftype->vtexp));
     long long allocsize = 0;
     if (reftype->region == (INode*)rcRegion)
         allocsize = LLVMABISizeOfType(gen->datalayout, genlType(gen, (INode*)usizeType));

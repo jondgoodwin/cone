@@ -13,9 +13,6 @@
 // Serialize a value tuple node
 void vtuplePrint(TupleNode *tuple);
 
-// Name resolution for vtuple
-void vtupleNameRes(NameResState *pstate, TupleNode *tuple);
-
 // Type check the value tuple node
 // - Infer type tuple from types of vtuple's values
 void vtupleTypeCheck(TypeCheckState *pstate, TupleNode *node);
