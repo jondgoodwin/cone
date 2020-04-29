@@ -14,11 +14,11 @@ typedef struct {
     INode *vtexp;    // Value type
 } StarNode;
 
-// Create a new pointer type whose info will be filled in afterwards
-StarNode *newPtrNode();
+// Create a new "star" node (ptr type or deref exp) whose vtexp will be filled in later
+StarNode *newStarNode(uint16_t tag);
 
-// Clone pointer
-INode *clonePtrNode(CloneState *cstate, StarNode *node);
+// Clone ptr or deref node
+INode *cloneStarNode(CloneState *cstate, StarNode *node);
 
 // Serialize a pointer type
 void ptrPrint(StarNode *node);

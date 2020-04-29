@@ -286,7 +286,7 @@ INode *parseFnSig(ParseState *parse) {
                     parm->vtype = (INode*)newNameUseNode(selfTypeName);
                 }
                 else if (parm->vtype->tag == RefTag) {
-                    StarNode *refnode = (StarNode *)parm->vtype;
+                    RefNode *refnode = (RefNode *)parm->vtype;
                     if (refnode->vtexp == unknownType) {
                         refnode->vtexp = (INode*)newNameUseNode(selfTypeName);
                     }
@@ -356,7 +356,7 @@ INode *parseArrayType(ParseState *parse) {
 
 // Parse a pointer type
 INode *parsePtrType(ParseState *parse) {
-    StarNode *ptype = newPtrNode();
+    StarNode *ptype = newStarNode(StarTag);
     lexNextToken();
 
     // Get value type, if provided

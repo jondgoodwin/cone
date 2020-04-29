@@ -74,7 +74,7 @@ void borrowTypeCheck(TypeCheckState *pstate, BorrowNode **nodep) {
     // Auto-deref the exp, if we are borrowing a reference to a reference's field or indexed value
     INode *exptype = iexpGetTypeDcl(node->exp);
     if ((node->flags & FlagSuffix) && (exptype->tag == RefTag || exptype->tag == PtrTag || exptype->tag == ArrayRefTag)) {
-        StarNode *deref = newDerefNode();
+        StarNode *deref = newStarNode(DerefTag);
         deref->vtexp = node->exp;
         if (exptype->tag == ArrayRefTag)
             deref->vtype = (INode*)newArrayDerefNodeFrom((RefNode*)exptype);

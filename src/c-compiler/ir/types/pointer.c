@@ -8,15 +8,16 @@
 #include "../ir.h"
 #include <memory.h>
 
-// Create a new pointer type whose info will be filled in afterwards
-StarNode *newPtrNode() {
-    StarNode *ptrnode;
-    newNode(ptrnode, StarNode, PtrTag);
-    return ptrnode;
+// Create a new "star" node (ptr type or deref exp) whose vtexp will be filled in later
+StarNode *newStarNode(uint16_t tag) {
+    StarNode *node;
+    newNode(node, StarNode, tag);
+    node->vtype = unknownType;
+    return node;
 }
 
-// Clone pointer
-INode *clonePtrNode(CloneState *cstate, StarNode *node) {
+// Clone ptr or deref node
+INode *cloneStarNode(CloneState *cstate, StarNode *node) {
     StarNode *newnode = memAllocBlk(sizeof(StarNode));
     memcpy(newnode, node, sizeof(StarNode));
     newnode->vtexp = cloneNode(cstate, node->vtexp);
@@ -32,6 +33,7 @@ void ptrPrint(StarNode *node) {
 // Name resolution of a pointer type
 void ptrNameRes(NameResState *pstate, StarNode *node) {
     inodeNameRes(pstate, &node->vtexp);
+    node->tag = isTypeNode(node->vtexp) ? PtrTag : DerefTag;
 }
 
 // Type check a pointer type

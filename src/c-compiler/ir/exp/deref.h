@@ -8,16 +8,9 @@
 #ifndef deref_h
 #define deref_h
 
-// The definition of StarNode is in pointer.h
-
-StarNode *newDerefNode();
-
-// Clone deref
-INode *cloneDerefNode(CloneState *cstate, StarNode *node);
+// The definition of StarNode etc. is in pointer.h
 
 void derefPrint(StarNode *node);
-// Name resolution of deref node
-void derefNameRes(NameResState *pstate, StarNode *node);
 
 // Type check deref node
 void derefTypeCheck(TypeCheckState *pstate, StarNode *node);

@@ -250,7 +250,7 @@ INode *parseAddr(ParseState *parse) {
 
     // Get the term we are borrowing from (which might be a de-referenced reference)
     if (lexIsToken(StarToken)) {
-        StarNode *derefnode = newDerefNode();
+        StarNode *derefnode = newStarNode(StarTag);
         lexNextToken();
         derefnode->vtexp = lexIsToken(DotToken) ? (INode*)newNameUseNode(thisName) : parseTerm(parse);
         anode->exp = (INode*)derefnode;
@@ -329,7 +329,7 @@ INode *parsePrefix(ParseState *parse) {
     }
     case StarToken:
     {
-        StarNode *node = newDerefNode();
+        StarNode *node = newStarNode(StarTag);
         lexNextToken();
         node->vtexp = parsePrefix(parse);
         return (INode *)node;

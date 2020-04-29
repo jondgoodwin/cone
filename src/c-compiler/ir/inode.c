@@ -229,8 +229,6 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         sizeofNameRes(pstate, (SizeofNode *)*node); break;
     case CastTag:  case IsTag:
         castNameRes(pstate, (CastNode *)*node); break;
-    case DerefTag:
-        derefNameRes(pstate, (StarNode *)*node); break;
     case BorrowTag:
         borrowNameRes(pstate, (BorrowNode **)node); break;
     case AllocateTag:
@@ -254,7 +252,7 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         refNameRes(pstate, (RefNode *)*node); break;
     case ArrayRefTag:
         arrayRefNameRes(pstate, (RefNode *)*node); break;
-    case PtrTag:
+    case StarTag:
         ptrNameRes(pstate, (StarNode *)*node); break;
     case StructTag:
         structNameRes(pstate, (StructNode *)*node); break;
