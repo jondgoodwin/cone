@@ -210,16 +210,11 @@ INode *parseAddr(ParseState *parse) {
         return parseDotPrefix(parse);
 
     // It is address operator ...
-    RefNode *reftype = newRefNode(RefTag);  // Type for address node
-    reftype->vtexp = unknownType;    // Type inference will correct this
-    reftype->region = borrowRef;
-
     lexNextToken();
 
     // Borrowed reference to anonymous function/closure
     if (lexIsToken(FnToken)) {
         RefNode *anode = newBorrowNode();
-        anode->vtype = (INode *)reftype;
         INode *fndcl = parseFn(parse, 0, ParseMayAnon | ParseMayImpl);
         nodesAdd(&parse->mod->nodes, fndcl);
         NameUseNode *fnname = newNameUseNode(anonName);
@@ -227,26 +222,24 @@ INode *parseAddr(ParseState *parse) {
         fnname->dclnode = fndcl;
         fnname->vtype = ((FnDclNode *)fndcl)->vtype;
         anode->vtexp = (INode*)fnname;
-        reftype->perm = (INode*)opaqPerm;
+        anode->perm = (INode*)opaqPerm;
         return (INode *)anode;
     }
 
     // Allocated reference
     if (lexIsToken(IdentToken)
         && lex->val.ident->node && lex->val.ident->node->tag == RegionTag) {
-        reftype->region = (INode*)lex->val.ident->node;
         RefNode *anode = newAllocateNode();
-        anode->vtype = (INode *)reftype;
+        anode->region = (INode*)lex->val.ident->node;
         lexNextToken();
-        reftype->perm = parsePerm(uniPerm);
+        anode->perm = parsePerm(uniPerm);
         anode->vtexp = parseDotPrefix(parse);
         return (INode *)anode;
     }
 
     // Borrowed reference
     RefNode *anode = newBorrowNode();
-    reftype->perm = parsePerm(NULL);
-    anode->vtype = (INode *)reftype;
+    anode->perm = parsePerm(NULL);
 
     // Get the term we are borrowing from (which might be a de-referenced reference)
     if (lexIsToken(StarToken)) {

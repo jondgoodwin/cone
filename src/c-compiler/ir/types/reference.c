@@ -14,6 +14,7 @@ RefNode *newRefNode(uint16_t tag) {
     newNode(refnode, RefNode, tag);
     refnode->region = borrowRef;          // Default values
     refnode->perm = (INode*)constPerm;
+    refnode->vtype = (INode*)unknownType;
     return refnode;
 }
 

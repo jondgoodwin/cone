@@ -13,6 +13,7 @@
 RefNode *newAllocateNode() {
     RefNode *node;
     newNode(node, RefNode, AllocateTag);
+    node->vtype = (INode*)unknownType;
     return node;
 }
 
@@ -48,8 +49,9 @@ void allocateTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
         return;
 
     // Infer reference's value type based on initial value
-    RefNode *reftype = (RefNode *)node->vtype;
-    refSetPermVtype(reftype, reftype->perm, ((IExpNode*)node->vtexp)->vtype);
+    RefNode *reftype = newRefNodeFull(node->region, node->perm, ((IExpNode*)node->vtexp)->vtype);
+    inodeLexCopy((INode*)reftype, (INode*)node);
+    node->vtype = (INode *)reftype;
 }
 
 // Perform data flow analysis on allocate node
