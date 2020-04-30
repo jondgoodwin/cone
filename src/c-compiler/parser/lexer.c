@@ -740,6 +740,12 @@ void lexNextTokenx() {
             if (*(srcp + 1) == '=') {
                 lexReturnPuncTok(AndEqToken, 2);
             }
+            else if (*(srcp + 1) == '[' && *(srcp + 2) == ']') {
+                lexReturnPuncTok(ArrayRefToken, 3);
+            }
+            else if (*(srcp + 1) == '<') {
+                lexReturnPuncTok(VirtRefToken, 2);
+            }
             else {
                 lexReturnPuncTok(AmperToken, 1);
             }

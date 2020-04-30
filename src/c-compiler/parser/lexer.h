@@ -99,6 +99,8 @@ enum TokenTypes {
     PercentToken,       // '%'
     SlashToken,         // '/'
     AmperToken,         // '&'
+    ArrayRefToken,      // '&[]'
+    VirtRefToken,       // '&<'
     AndToken,           // 'and'
     BarToken,           // '|'
     OrToken,            // 'or'

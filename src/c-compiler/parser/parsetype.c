@@ -377,16 +377,10 @@ INode *parsePtrType(ParseState *parse) {
 }
 
 // Parse a reference type
-INode *parseRefType(ParseState *parse) {
-    RefNode *reftype = newRefNode(AmperTag);
+INode *parseRefType(ParseState *parse, uint16_t tag) {
+    RefNode *reftype = newRefNode(tag);
     reftype->vtexp = unknownType;
     lexNextToken();
-
-    // Notice whether it is a virtual reference
-    if (lexIsToken(LtToken)) {
-        reftype->tag = VirtRefTag;
-        lexNextToken();
-    }
 
     parseAllocPerm(reftype); // Get allocator and permission, if provided
 
@@ -398,17 +392,6 @@ INode *parseRefType(ParseState *parse) {
             lexNextToken();
         }
         reftype->vtexp = parseFnSig(parse);
-    }
-    // Get value type for ref to array or slice
-    else if (lexIsToken(LBracketToken)) {
-        reftype->tag = ArrayRefTag;
-        lexNextToken();
-        if (lexIsToken(RBracketToken)) {
-            lexNextToken();
-            reftype->vtexp = parseVtype(parse);
-        }
-        else
-            reftype->vtexp = parseArrayType(parse);
     }
     else if ((reftype->vtexp = parseVtype(parse)) == NULL) {
         errorMsgLex(ErrorNoVtype, "Missing value type for the reference");
@@ -454,7 +437,11 @@ INode* parseVtype(ParseState *parse) {
     case QuesToken:
         return parseOption(parse);
     case AmperToken:
-        return parseRefType(parse);
+        return parseRefType(parse, AmperTag);
+    case ArrayRefToken:
+        return parseRefType(parse, ArrayRefTag);
+    case VirtRefToken:
+        return parseRefType(parse, VirtRefTag);
     case StarToken:
         return parsePtrType(parse);
     case LBracketToken:
