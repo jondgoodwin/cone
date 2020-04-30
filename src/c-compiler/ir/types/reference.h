@@ -8,17 +8,17 @@
 #ifndef reference_h
 #define reference_h
 
-// Reference node
-typedef struct RefNode {
-    INodeHdr;
-    INode *vtexp;    // Value type
+// Reference node: used for reference type, allocation or borrow node
+typedef struct {
+    ITypeNodeHdr;
+    INode *vtexp;     // Value/type expression
     INode *perm;      // Permission
     INode *region;    // Region
     uint16_t scope;   // Lifetime
 } RefNode;
 
 // Create a new reference type whose info will be filled in afterwards
-RefNode *newRefNode();
+RefNode *newRefNode(uint16_t tag);
 
 // Clone reference
 INode *cloneRefNode(CloneState *cstate, RefNode *node);

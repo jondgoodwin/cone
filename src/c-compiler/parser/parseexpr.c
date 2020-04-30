@@ -210,7 +210,7 @@ INode *parseAddr(ParseState *parse) {
         return parseDotPrefix(parse);
 
     // It is address operator ...
-    RefNode *reftype = newRefNode();  // Type for address node
+    RefNode *reftype = newRefNode(RefTag);  // Type for address node
     reftype->vtexp = unknownType;    // Type inference will correct this
     reftype->region = borrowRef;
 
@@ -218,7 +218,7 @@ INode *parseAddr(ParseState *parse) {
 
     // Borrowed reference to anonymous function/closure
     if (lexIsToken(FnToken)) {
-        BorrowNode *anode = newBorrowNode();
+        RefNode *anode = newBorrowNode();
         anode->vtype = (INode *)reftype;
         INode *fndcl = parseFn(parse, 0, ParseMayAnon | ParseMayImpl);
         nodesAdd(&parse->mod->nodes, fndcl);
@@ -226,7 +226,7 @@ INode *parseAddr(ParseState *parse) {
         fnname->tag = VarNameUseTag;
         fnname->dclnode = fndcl;
         fnname->vtype = ((FnDclNode *)fndcl)->vtype;
-        anode->exp = (INode*)fnname;
+        anode->vtexp = (INode*)fnname;
         reftype->perm = (INode*)opaqPerm;
         return (INode *)anode;
     }
@@ -235,16 +235,16 @@ INode *parseAddr(ParseState *parse) {
     if (lexIsToken(IdentToken)
         && lex->val.ident->node && lex->val.ident->node->tag == RegionTag) {
         reftype->region = (INode*)lex->val.ident->node;
-        AllocateNode *anode = newAllocateNode();
+        RefNode *anode = newAllocateNode();
         anode->vtype = (INode *)reftype;
         lexNextToken();
         reftype->perm = parsePerm(uniPerm);
-        anode->exp = parseDotPrefix(parse);
+        anode->vtexp = parseDotPrefix(parse);
         return (INode *)anode;
     }
 
     // Borrowed reference
-    BorrowNode *anode = newBorrowNode();
+    RefNode *anode = newBorrowNode();
     reftype->perm = parsePerm(NULL);
     anode->vtype = (INode *)reftype;
 
@@ -253,10 +253,10 @@ INode *parseAddr(ParseState *parse) {
         StarNode *derefnode = newStarNode(StarTag);
         lexNextToken();
         derefnode->vtexp = lexIsToken(DotToken) ? (INode*)newNameUseNode(thisName) : parseTerm(parse);
-        anode->exp = (INode*)derefnode;
+        anode->vtexp = (INode*)derefnode;
     }
     else
-        anode->exp = lexIsToken(DotToken) ? (INode*)newNameUseNode(thisName) : parseTerm(parse);
+        anode->vtexp = lexIsToken(DotToken) ? (INode*)newNameUseNode(thisName) : parseTerm(parse);
 
     // Process borrow chain suffixes, and set flag to show if we had some
     INode* node = parsePostCall(parse, (INode*)anode, FlagBorrow);

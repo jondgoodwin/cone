@@ -185,9 +185,9 @@ void fnCallFinalizeArgs(FnCallNode *node) {
         if ((*argsp)->tag == StringLitTag 
             && (parmtype->tag == ArrayRefTag || parmtype->tag == PtrTag)) {
             RefNode *addrtype = newRefNodeFull(borrowRef, newPermUseNode(immPerm), (INode*)u8Type);
-            BorrowNode *borrownode = newBorrowNode();
+            RefNode *borrownode = newBorrowNode();
             borrownode->vtype = (INode*)addrtype;
-            borrownode->exp = *argsp;
+            borrownode->vtexp = *argsp;
             *argsp = (INode*)borrownode;
         }
 

@@ -378,7 +378,7 @@ INode *parsePtrType(ParseState *parse) {
 
 // Parse a reference type
 INode *parseRefType(ParseState *parse) {
-    RefNode *reftype = newRefNode();
+    RefNode *reftype = newRefNode(RefTag);
     reftype->vtexp = unknownType;
     lexNextToken();
 

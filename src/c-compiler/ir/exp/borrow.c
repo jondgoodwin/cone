@@ -10,16 +10,16 @@
 #include <assert.h>
 
 // Create a new borrow node
-BorrowNode *newBorrowNode() {
-    BorrowNode *node;
-    newNode(node, BorrowNode, BorrowTag);
+RefNode *newBorrowNode() {
+    RefNode *node;
+    newNode(node, RefNode, BorrowTag);
     return node;
 }
 
 // Insert automatic ref, if node is a variable
 void borrowAuto(INode **node, INode* reftype) {
-    BorrowNode *borrownode = newBorrowNode();
-    borrownode->exp = *node;
+    RefNode *borrownode = newBorrowNode();
+    borrownode->vtexp = *node;
     borrownode->vtype = reftype;
     *node = (INode*)borrownode;
 }
@@ -34,59 +34,59 @@ void borrowMutRef(INode **node, INode* type) {
     }
     RefNode *refnode = newRefNodeFull(borrowRef, newPermUseNode(mutPerm), type);
     inodeLexCopy((INode*)refnode, *node);
-    BorrowNode *borrownode = newBorrowNode();
+    RefNode *borrownode = newBorrowNode();
     inodeLexCopy((INode*)borrownode, *node);
-    borrownode->exp = *node;
+    borrownode->vtexp = *node;
     borrownode->vtype = (INode*)refnode;
     *node = (INode*)borrownode;
 }
 
 // Clone borrow
-INode *cloneBorrowNode(CloneState *cstate, BorrowNode *node) {
-    BorrowNode *newnode;
-    newnode = memAllocBlk(sizeof(BorrowNode));
-    memcpy(newnode, node, sizeof(BorrowNode));
-    newnode->exp = cloneNode(cstate, node->exp);
+INode *cloneBorrowNode(CloneState *cstate, RefNode *node) {
+    RefNode *newnode;
+    newnode = memAllocBlk(sizeof(RefNode));
+    memcpy(newnode, node, sizeof(RefNode));
+    newnode->vtexp = cloneNode(cstate, node->vtexp);
     return (INode *)newnode;
 }
 
 // Serialize borrow node
-void borrowPrint(BorrowNode *node) {
+void borrowPrint(RefNode *node) {
     inodeFprint("&(");
     inodePrintNode(node->vtype);
     inodeFprint("->");
-    inodePrintNode(node->exp);
+    inodePrintNode(node->vtexp);
     inodeFprint(")");
 }
 
 // Name resolution of borrow node
-void borrowNameRes(NameResState *pstate, BorrowNode **nodep) {
-    BorrowNode *node = *nodep;
-    inodeNameRes(pstate, &node->exp);
+void borrowNameRes(NameResState *pstate, RefNode **nodep) {
+    RefNode *node = *nodep;
+    inodeNameRes(pstate, &node->vtexp);
 }
 
 // Analyze borrow node
-void borrowTypeCheck(TypeCheckState *pstate, BorrowNode **nodep) {
-    BorrowNode *node = *nodep;
-    if (iexpTypeCheckAny(pstate, &node->exp) == 0 || iexpIsLval(node->exp) == 0)
+void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
+    RefNode *node = *nodep;
+    if (iexpTypeCheckAny(pstate, &node->vtexp) == 0 || iexpIsLval(node->vtexp) == 0)
         return;
 
     // Auto-deref the exp, if we are borrowing a reference to a reference's field or indexed value
-    INode *exptype = iexpGetTypeDcl(node->exp);
+    INode *exptype = iexpGetTypeDcl(node->vtexp);
     if ((node->flags & FlagSuffix) && (exptype->tag == RefTag || exptype->tag == PtrTag || exptype->tag == ArrayRefTag)) {
         StarNode *deref = newStarNode(DerefTag);
-        deref->vtexp = node->exp;
+        deref->vtexp = node->vtexp;
         if (exptype->tag == ArrayRefTag)
             deref->vtype = (INode*)newArrayDerefNodeFrom((RefNode*)exptype);
         else
             deref->vtype = ((RefNode*)exptype)->vtexp;  // assumes StarNode has field in same place
-        node->exp = (INode*)deref;
+        node->vtexp = (INode*)deref;
     }
 
     // Setup lval, perm and scope info as if we were borrowing from a global constant literal.
     // If not, extract this info from expression nodes
     RefNode *reftype = (RefNode *)node->vtype;
-    INode *lval = node->exp;
+    INode *lval = node->vtexp;
     INode *lvalperm = (INode*)immPerm;
     reftype->scope = 0;  // Global
     if (lval->tag != StringLitTag) {
@@ -129,8 +129,8 @@ void borrowTypeCheck(TypeCheckState *pstate, BorrowNode **nodep) {
 }
 
 // Perform data flow analysis on addr node
-void borrowFlow(FlowState *fstate, BorrowNode **nodep) {
-    BorrowNode *node = *nodep;
+void borrowFlow(FlowState *fstate, RefNode **nodep) {
+    RefNode *node = *nodep;
     RefNode *reftype = (RefNode *)node->vtype;
     // Borrowed reference:  Deactivate source variable if necessary
 }

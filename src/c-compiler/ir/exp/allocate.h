@@ -8,25 +8,22 @@
 #ifndef allocate_h
 #define allocate_h
 
-typedef struct AllocateNode {
-    IExpNodeHdr;
-    INode *exp;
-} AllocateNode;
+// Uses RefNode from reference.h
 
-AllocateNode *newAllocateNode();
+RefNode *newAllocateNode();
 
 // Clone allocate
-INode *cloneAllocateNode(CloneState *cstate, AllocateNode *node);
+INode *cloneAllocateNode(CloneState *cstate, RefNode *node);
 
-void allocatePrint(AllocateNode *node);
+void allocatePrint(RefNode *node);
 
 // Name resolution of allocate node
-void allocateNameRes(NameResState *pstate, AllocateNode **nodep);
+void allocateNameRes(NameResState *pstate, RefNode **nodep);
 
 // Type check allocate node
-void allocateTypeCheck(TypeCheckState *pstate, AllocateNode **node);
+void allocateTypeCheck(TypeCheckState *pstate, RefNode **node);
 
 // Perform data flow analysis on addr node
-void allocateFlow(FlowState *fstate, AllocateNode **nodep);
+void allocateFlow(FlowState *fstate, RefNode **nodep);
 
 #endif

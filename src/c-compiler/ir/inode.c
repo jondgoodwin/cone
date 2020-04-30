@@ -106,9 +106,9 @@ void inodePrintNode(INode *node) {
     case DerefTag:
         derefPrint((StarNode *)node); break;
     case BorrowTag:
-        borrowPrint((BorrowNode *)node); break;
+        borrowPrint((RefNode *)node); break;
     case AllocateTag:
-        allocatePrint((AllocateNode *)node); break;
+        allocatePrint((RefNode *)node); break;
     case NotLogicTag: case OrLogicTag: case AndLogicTag:
         logicPrint((LogicNode *)node); break;
     case ULitTag:
@@ -230,9 +230,9 @@ void inodeNameRes(NameResState *pstate, INode **node) {
     case CastTag:  case IsTag:
         castNameRes(pstate, (CastNode *)*node); break;
     case BorrowTag:
-        borrowNameRes(pstate, (BorrowNode **)node); break;
+        borrowNameRes(pstate, (RefNode **)node); break;
     case AllocateTag:
-        allocateNameRes(pstate, (AllocateNode **)node); break;
+        allocateNameRes(pstate, (RefNode **)node); break;
     case NotLogicTag:
         logicNotNameRes(pstate, (LogicNode *)*node); break;
     case OrLogicTag: case AndLogicTag:
@@ -344,9 +344,9 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     case DerefTag:
         derefTypeCheck(pstate, (StarNode *)*node); break;
     case BorrowTag:
-        borrowTypeCheck(pstate, (BorrowNode **)node); break;
+        borrowTypeCheck(pstate, (RefNode **)node); break;
     case AllocateTag:
-        allocateTypeCheck(pstate, (AllocateNode **)node); break;
+        allocateTypeCheck(pstate, (RefNode **)node); break;
     case NotLogicTag:
         logicNotTypeCheck(pstate, (LogicNode *)*node); break;
     case OrLogicTag: case AndLogicTag:

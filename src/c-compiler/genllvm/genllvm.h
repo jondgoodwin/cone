@@ -63,7 +63,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode);
 
 // genlalloc.c
 // Generate code that creates an allocated ref by allocating and initializing
-LLVMValueRef genlallocref(GenState *gen, AllocateNode *allocatenode);
+LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode);
 // Progressively dealias or drop all declared variables in nodes list
 void genlDealiasNodes(GenState *gen, Nodes *nodes);
 // Add to the counter of an rc allocated reference

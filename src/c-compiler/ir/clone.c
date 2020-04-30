@@ -17,13 +17,13 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     INode *node;
     switch (nodep->tag) {
     case AllocateTag:
-        node = cloneAllocateNode(cstate, (AllocateNode *)nodep); break;
+        node = cloneAllocateNode(cstate, (RefNode *)nodep); break;
     case AssignTag:
         node = cloneAssignNode(cstate, (AssignNode *)nodep); break;
     case BlockTag:
         node = cloneBlockNode(cstate, (BlockNode *)nodep); break;
     case BorrowTag:
-        node = cloneBorrowNode(cstate, (BorrowNode *)nodep); break;
+        node = cloneBorrowNode(cstate, (RefNode *)nodep); break;
     case CastTag:
         node = cloneCastNode(cstate, (CastNode *)nodep); break;
     case DerefTag:

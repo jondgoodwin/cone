@@ -9,9 +9,11 @@
 #include <memory.h>
 
 // Create a new reference type whose info will be filled in afterwards
-RefNode *newRefNode() {
+RefNode *newRefNode(uint16_t tag) {
     RefNode *refnode;
-    newNode(refnode, RefNode, RefTag);
+    newNode(refnode, RefNode, tag);
+    refnode->region = borrowRef;          // Default values
+    refnode->perm = (INode*)constPerm;
     return refnode;
 }
 
@@ -38,7 +40,7 @@ void refAdoptInfections(RefNode *refnode) {
 
 // Create a reference node based on fully-known type parameters
 RefNode *newRefNodeFull(INode *region, INode *perm, INode *vtype) {
-    RefNode *refnode = newRefNode();
+    RefNode *refnode = newRefNode(RefTag);
     refnode->region = region;
     refnode->perm = perm;
     refnode->vtexp = vtype;
@@ -55,7 +57,7 @@ void refSetPermVtype(RefNode *refnode, INode *perm, INode *vtype) {
 
 // Create a new ArrayDerefNode from an ArrayRefNode
 RefNode *newArrayDerefNodeFrom(RefNode *refnode) {
-    RefNode *dereftype = newRefNode();
+    RefNode *dereftype = newRefNode(RefTag);
     dereftype->tag = ArrayDerefTag;
     dereftype->region = refnode->region;
     dereftype->perm = refnode->perm;

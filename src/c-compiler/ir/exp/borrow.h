@@ -8,13 +8,10 @@
 #ifndef borrow_h
 #define borrow_h
 
-typedef struct BorrowNode {
-    IExpNodeHdr;
-    INode *exp;
-} BorrowNode;
+// Uses RefNode defined in reference.h
 
 // Create new borrow node
-BorrowNode *newBorrowNode();
+RefNode *newBorrowNode();
 
 // Insert automatic ref, if node is a variable
 void borrowAuto(INode **node, INode* reftype);
@@ -23,17 +20,17 @@ void borrowAuto(INode **node, INode* reftype);
 void borrowMutRef(INode **node, INode* type);
 
 // Clone borrow
-INode *cloneBorrowNode(CloneState *cstate, BorrowNode *node);
+INode *cloneBorrowNode(CloneState *cstate, RefNode *node);
 
-void borrowPrint(BorrowNode *node);
+void borrowPrint(RefNode *node);
 
 // Name resolution of borrow node
-void borrowNameRes(NameResState *pstate, BorrowNode **nodep);
+void borrowNameRes(NameResState *pstate, RefNode **nodep);
 
 // Type check borrow node
-void borrowTypeCheck(TypeCheckState *pstate, BorrowNode **node);
+void borrowTypeCheck(TypeCheckState *pstate, RefNode **node);
 
 // Perform data flow analysis on addr node
-void borrowFlow(FlowState *fstate, BorrowNode **nodep);
+void borrowFlow(FlowState *fstate, RefNode **nodep);
 
 #endif

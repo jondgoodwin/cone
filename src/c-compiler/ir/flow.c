@@ -93,10 +93,10 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         flowInjectAliasNode(nodep, -1);
         break;
     case BorrowTag:
-        borrowFlow(fstate, (BorrowNode **)nodep);
+        borrowFlow(fstate, (RefNode **)nodep);
         break;
     case AllocateTag:
-        allocateFlow(fstate, (AllocateNode **)nodep);
+        allocateFlow(fstate, (RefNode **)nodep);
         flowInjectAliasNode(nodep, -1);
         break;
     case VTupleTag:
