@@ -85,6 +85,7 @@ enum NodeTags {
     NameUseTag,     // Name use node (pre-name resolution)
     TupleTag,       // Tuple for tuple type or tuple literal
     StarTag,        // Could become pointer type or deref exp node
+    AmperTag,       // Could become ref type or borrow/alloc exp node
 
     // Named, non-type declaration nodes
     ModuleTag = StmtGroup + NamedNode,        // Module namespace

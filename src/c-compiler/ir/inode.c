@@ -248,7 +248,9 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         typedefNameRes(pstate, (TypedefNode *)*node); break;
     case FnSigTag:
         fnSigNameRes(pstate, (FnSigNode *)*node); break;
-    case RefTag: case VirtRefTag:
+    case AmperTag:
+    case RefTag:
+    case VirtRefTag:
         refNameRes(pstate, (RefNode *)*node); break;
     case ArrayRefTag:
         arrayRefNameRes(pstate, (RefNode *)*node); break;
@@ -281,7 +283,7 @@ void inodeNameRes(NameResState *pstate, INode **node) {
     case NullTag:
         break;
     default:
-        assert(0 && "**** ERROR **** Attempting to check an unknown node");
+        assert(0 && "**** ERROR **** Attempting to name resolve an unknown node");
     }
 }
 

@@ -285,7 +285,7 @@ INode *parseFnSig(ParseState *parse) {
                 if (parm->vtype == unknownType) {
                     parm->vtype = (INode*)newNameUseNode(selfTypeName);
                 }
-                else if (parm->vtype->tag == RefTag) {
+                else if (parm->vtype->tag == AmperTag) {
                     RefNode *refnode = (RefNode *)parm->vtype;
                     if (refnode->vtexp == unknownType) {
                         refnode->vtexp = (INode*)newNameUseNode(selfTypeName);
@@ -378,7 +378,7 @@ INode *parsePtrType(ParseState *parse) {
 
 // Parse a reference type
 INode *parseRefType(ParseState *parse) {
-    RefNode *reftype = newRefNode(RefTag);
+    RefNode *reftype = newRefNode(AmperTag);
     reftype->vtexp = unknownType;
     lexNextToken();
 

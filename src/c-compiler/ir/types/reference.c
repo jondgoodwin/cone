@@ -82,6 +82,8 @@ void refNameRes(NameResState *pstate, RefNode *node) {
     inodeNameRes(pstate, &node->region);
     inodeNameRes(pstate, (INode**)&node->perm);
     inodeNameRes(pstate, &node->vtexp);
+    if (node->tag == AmperTag)
+        node->tag = isTypeNode(node->vtexp) ? RefTag : (node->region == (INode*)borrowRef ? BorrowTag : AllocateTag);
 }
 
 // Type check a reference node
