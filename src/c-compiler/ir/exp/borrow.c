@@ -17,29 +17,23 @@ RefNode *newBorrowNode() {
     return node;
 }
 
-// Insert automatic ref, if node is a variable
-void borrowAuto(INode **node, INode* reftype) {
-    RefNode *borrownode = newBorrowNode();
-    borrownode->vtexp = *node;
-    borrownode->vtype = reftype;
-    *node = (INode*)borrownode;
-}
-
-// Inject a borrow mutable node on some node (expected to be an lval)
-void borrowMutRef(INode **node, INode* type) {
+// Inject a typed, borrowed node on some node (expected to be an lval)
+void borrowMutRef(INode **nodep, INode* type, INode *perm) {
+    INode *node = *nodep;
     // Rather than borrow from a deref, just return the ptr node we are de-reffing
-    if ((*node)->tag == DerefTag) {
-        StarNode *derefnode = (StarNode *)*node;
-        *node = derefnode->vtexp;
+    if (node->tag == DerefTag) {
+        StarNode *derefnode = (StarNode *)node;
+        *nodep = derefnode->vtexp;
         return;
     }
-    RefNode *refnode = newRefNodeFull(borrowRef, newPermUseNode(mutPerm), type);
-    inodeLexCopy((INode*)refnode, *node);
-    RefNode *borrownode = newBorrowNode();
-    inodeLexCopy((INode*)borrownode, *node);
-    borrownode->vtexp = *node;
-    borrownode->vtype = (INode*)refnode;
-    *node = (INode*)borrownode;
+  
+    if (iexpIsLval(node) == 0) {
+        errorMsgNode(node, ErrorInvType, "Auto-borrowing can only be done on an lval");
+    }
+    RefNode *reftype = newRefNodeFull(RefTag, node, borrowRef, perm, type);
+    RefNode *borrownode = newRefNodeFull(BorrowTag, node, borrowRef, perm, node);
+    borrownode->vtype = (INode*)reftype;
+    *nodep = (INode*)borrownode;
 }
 
 // Clone borrow
@@ -96,7 +90,7 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
         // From it, obtain variable we are borrowing from and actual/calculated permission
         INode *lvalvar = iexpGetLvalInfo(lval, &lvalperm, &scope);
         if (lvalvar == NULL) {
-            node->vtype = (INode*)newRefNodeFull(node->region, node->perm, (INode*)unknownType); // To avoid a crash later
+            node->vtype = (INode*)newRefNodeFull(RefTag, node, node->region, node->perm, (INode*)unknownType); // To avoid a crash later
             return;
         }
         // Set lifetime of reference to borrowed variable's lifetime
@@ -127,10 +121,8 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     if (!permMatches(refperm, lvalperm))
         errorMsgNode((INode *)node, ErrorBadPerm, "Borrowed reference cannot obtain this permission");
 
-    RefNode *reftype = newRefNodeFull(borrowRef, refperm, refvtype);
-    inodeLexCopy((INode*)reftype, (INode*)node);
+    RefNode *reftype = newRefNodeFull(tag, node, borrowRef, refperm, refvtype);
     reftype->scope = scope;
-    reftype->tag = tag;
     node->vtype = (INode *)reftype;
 }
 

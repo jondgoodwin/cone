@@ -214,7 +214,7 @@ INode *parseAddr(ParseState *parse) {
 
     // Borrowed reference to anonymous function/closure
     if (lexIsToken(FnToken)) {
-        RefNode *anode = newBorrowNode();
+        RefNode *anode = newRefNode(AmperTag);
         INode *fndcl = parseFn(parse, 0, ParseMayAnon | ParseMayImpl);
         nodesAdd(&parse->mod->nodes, fndcl);
         NameUseNode *fnname = newNameUseNode(anonName);
@@ -238,7 +238,7 @@ INode *parseAddr(ParseState *parse) {
     }
 
     // Borrowed reference
-    RefNode *anode = newBorrowNode();
+    RefNode *anode = newRefNode(AmperTag);
     anode->perm = parsePerm(NULL);
 
     // Get the term we are borrowing from (which might be a de-referenced reference)

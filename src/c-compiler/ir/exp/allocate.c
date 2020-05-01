@@ -49,8 +49,7 @@ void allocateTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
         return;
 
     // Infer reference's value type based on initial value
-    RefNode *reftype = newRefNodeFull(node->region, node->perm, ((IExpNode*)node->vtexp)->vtype);
-    inodeLexCopy((INode*)reftype, (INode*)node);
+    RefNode *reftype = newRefNodeFull(RefTag, (INode*)node, node->region, node->perm, ((IExpNode*)node->vtexp)->vtype);
     node->vtype = (INode *)reftype;
 }
 

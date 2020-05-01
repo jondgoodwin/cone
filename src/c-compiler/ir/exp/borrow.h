@@ -13,11 +13,8 @@
 // Create new borrow node
 RefNode *newBorrowNode();
 
-// Insert automatic ref, if node is a variable
-void borrowAuto(INode **node, INode* reftype);
-
 // Inject a borrow mutable node on some node (expected to be an lval)
-void borrowMutRef(INode **node, INode* type);
+void borrowMutRef(INode **node, INode* type, INode *perm);
 
 // Clone borrow
 INode *cloneBorrowNode(CloneState *cstate, RefNode *node);

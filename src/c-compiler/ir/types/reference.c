@@ -40,8 +40,10 @@ void refAdoptInfections(RefNode *refnode) {
 }
 
 // Create a reference node based on fully-known type parameters
-RefNode *newRefNodeFull(INode *region, INode *perm, INode *vtype) {
-    RefNode *refnode = newRefNode(RefTag);
+RefNode *newRefNodeFull(uint16_t tag, INode *lexnode, INode *region, INode *perm, INode *vtype) {
+    RefNode *refnode = newRefNode(tag);
+    if (lexnode)
+        inodeLexCopy((INode*)refnode, lexnode);
     refnode->region = region;
     refnode->perm = perm;
     refnode->vtexp = vtype;
@@ -80,7 +82,8 @@ void refPrint(RefNode *node) {
 // Name resolution of a reference node
 void refNameRes(NameResState *pstate, RefNode *node) {
     inodeNameRes(pstate, &node->region);
-    inodeNameRes(pstate, (INode**)&node->perm);
+    if (node->perm)
+        inodeNameRes(pstate, (INode**)&node->perm);
     inodeNameRes(pstate, &node->vtexp);
     if (node->tag == AmperTag)
         node->tag = isTypeNode(node->vtexp) ? RefTag : (node->region == (INode*)borrowRef ? BorrowTag : AllocateTag);
@@ -239,5 +242,5 @@ INode *refFindSuper(INode *type1, INode *type2) {
     if (vtexp == NULL)
         return NULL;
 
-    return (INode*)newRefNodeFull(typ1->region, typ1->perm, vtexp);
+    return (INode*)newRefNodeFull(RefTag, (INode*)typ1, typ1->region, typ1->perm, vtexp);
 }

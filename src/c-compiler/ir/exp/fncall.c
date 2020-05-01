@@ -146,7 +146,7 @@ void fnCallArrIndex(FnCallNode *node) {
     // If we are borrowing a reference to indexed element, fix up type
     if (node->flags & FlagBorrow) {
         assert(objtype->tag == RefTag || objtype->tag == ArrayRefTag);
-        RefNode *refnode = newRefNodeFull(borrowRef, ((RefNode*)objtype)->perm, node->vtype);
+        RefNode *refnode = newRefNodeFull(RefTag, (INode*)node, borrowRef, ((RefNode*)objtype)->perm, node->vtype);
         node->vtype = (INode*)refnode;
     }
     node->tag = ArrIndexTag;
@@ -184,7 +184,7 @@ void fnCallFinalizeArgs(FnCallNode *node) {
         INode *parmtype = iexpGetTypeDcl(*parmp);
         if ((*argsp)->tag == StringLitTag 
             && (parmtype->tag == ArrayRefTag || parmtype->tag == PtrTag)) {
-            RefNode *addrtype = newRefNodeFull(borrowRef, newPermUseNode(immPerm), (INode*)u8Type);
+            RefNode *addrtype = newRefNodeFull(RefTag, *argsp, borrowRef, newPermUseNode(immPerm), (INode*)u8Type);
             RefNode *borrownode = newBorrowNode();
             borrownode->vtype = (INode*)addrtype;
             borrownode->vtexp = *argsp;
@@ -508,13 +508,8 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     if (node->flags & FlagLvalOp) {
         // Lval Ops require a (mutable) reference.
         if (objtype->tag != RefTag) {
-            // Ensure we have an lval expression
-            if (iexpIsLval(node->objfn) == 0) {
-                errorMsgNode(node->objfn, ErrorInvType, "Operation requires an lval");
-                return;
-            }
             // Obtain a borrowed, mutable reference to it
-            borrowMutRef(&node->objfn, objtype);
+            borrowMutRef(&node->objfn, objtype, newPermUseNode(mutPerm));
             objtype = iexpGetTypeDcl(node->objfn);
         }
         // Make sure opassign method (+=) exists

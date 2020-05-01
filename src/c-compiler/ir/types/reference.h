@@ -24,7 +24,7 @@ RefNode *newRefNode(uint16_t tag);
 INode *cloneRefNode(CloneState *cstate, RefNode *node);
 
 // Create a new reference type whose info is known and analyzeable
-RefNode *newRefNodeFull(INode *region, INode *perm, INode *vtype);
+RefNode *newRefNodeFull(uint16_t tag, INode *lexnode, INode *region, INode *perm, INode *vtype);
 
 // Set the inferred value type of a reference
 void refSetPermVtype(RefNode *refnode, INode *perm, INode *vtype);
