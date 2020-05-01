@@ -9,14 +9,6 @@
 
 #include <assert.h>
 
-// Create a new allocate node
-RefNode *newAllocateNode() {
-    RefNode *node;
-    newNode(node, RefNode, AllocateTag);
-    node->vtype = (INode*)unknownType;
-    return node;
-}
-
 // Clone allocate
 INode *cloneAllocateNode(CloneState *cstate, RefNode *node) {
     RefNode *newnode = memAllocBlk(sizeof(RefNode));

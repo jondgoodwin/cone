@@ -229,7 +229,7 @@ INode *parseAddr(ParseState *parse) {
     // Allocated reference
     if (lexIsToken(IdentToken)
         && lex->val.ident->node && lex->val.ident->node->tag == RegionTag) {
-        RefNode *anode = newAllocateNode();
+        RefNode *anode = newRefNode(AmperTag);
         anode->region = (INode*)lex->val.ident->node;
         lexNextToken();
         anode->perm = parsePerm(uniPerm);

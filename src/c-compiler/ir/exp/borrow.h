@@ -10,9 +10,6 @@
 
 // Uses RefNode defined in reference.h
 
-// Create new borrow node
-RefNode *newBorrowNode();
-
 // Inject a borrow mutable node on some node (expected to be an lval)
 void borrowMutRef(INode **node, INode* type, INode *perm);
 

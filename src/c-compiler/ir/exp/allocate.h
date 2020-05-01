@@ -10,8 +10,6 @@
 
 // Uses RefNode from reference.h
 
-RefNode *newAllocateNode();
-
 // Clone allocate
 INode *cloneAllocateNode(CloneState *cstate, RefNode *node);
 

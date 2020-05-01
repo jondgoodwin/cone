@@ -184,8 +184,9 @@ void fnCallFinalizeArgs(FnCallNode *node) {
         INode *parmtype = iexpGetTypeDcl(*parmp);
         if ((*argsp)->tag == StringLitTag 
             && (parmtype->tag == ArrayRefTag || parmtype->tag == PtrTag)) {
+            // This approach needs fixing! Don't coerce to ptr, coerce array to arrayref (not ref)
             RefNode *addrtype = newRefNodeFull(RefTag, *argsp, borrowRef, newPermUseNode(immPerm), (INode*)u8Type);
-            RefNode *borrownode = newBorrowNode();
+            RefNode *borrownode = newRefNode(BorrowTag);
             borrownode->vtype = (INode*)addrtype;
             borrownode->vtexp = *argsp;
             *argsp = (INode*)borrownode;

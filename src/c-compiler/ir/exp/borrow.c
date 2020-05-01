@@ -9,14 +9,6 @@
 
 #include <assert.h>
 
-// Create a new borrow node
-RefNode *newBorrowNode() {
-    RefNode *node;
-    newNode(node, RefNode, BorrowTag);
-    node->vtype = (INode*)unknownType;
-    return node;
-}
-
 // Inject a typed, borrowed node on some node (expected to be an lval)
 void borrowMutRef(INode **nodep, INode* type, INode *perm) {
     INode *node = *nodep;
@@ -90,7 +82,7 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
         // From it, obtain variable we are borrowing from and actual/calculated permission
         INode *lvalvar = iexpGetLvalInfo(lval, &lvalperm, &scope);
         if (lvalvar == NULL) {
-            node->vtype = (INode*)newRefNodeFull(RefTag, node, node->region, node->perm, (INode*)unknownType); // To avoid a crash later
+            node->vtype = (INode*)newRefNodeFull(RefTag, (INode*)node, node->region, node->perm, (INode*)unknownType); // To avoid a crash later
             return;
         }
         // Set lifetime of reference to borrowed variable's lifetime
@@ -121,7 +113,7 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     if (!permMatches(refperm, lvalperm))
         errorMsgNode((INode *)node, ErrorBadPerm, "Borrowed reference cannot obtain this permission");
 
-    RefNode *reftype = newRefNodeFull(tag, node, borrowRef, refperm, refvtype);
+    RefNode *reftype = newRefNodeFull(tag, (INode*)node, borrowRef, refperm, refvtype);
     reftype->scope = scope;
     node->vtype = (INode *)reftype;
 }
