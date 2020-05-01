@@ -15,9 +15,6 @@ INode *cloneAllocateNode(CloneState *cstate, RefNode *node);
 
 void allocatePrint(RefNode *node);
 
-// Name resolution of allocate node
-void allocateNameRes(NameResState *pstate, RefNode **nodep);
-
 // Type check allocate node
 void allocateTypeCheck(TypeCheckState *pstate, RefNode **node);
 

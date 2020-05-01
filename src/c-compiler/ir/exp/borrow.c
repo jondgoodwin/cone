@@ -46,12 +46,6 @@ void borrowPrint(RefNode *node) {
     inodeFprint(")");
 }
 
-// Name resolution of borrow node
-void borrowNameRes(NameResState *pstate, RefNode **nodep) {
-    RefNode *node = *nodep;
-    inodeNameRes(pstate, &node->vtexp);
-}
-
 // Analyze borrow node
 void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     RefNode *node = *nodep;

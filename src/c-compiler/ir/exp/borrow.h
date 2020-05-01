@@ -18,9 +18,6 @@ INode *cloneBorrowNode(CloneState *cstate, RefNode *node);
 
 void borrowPrint(RefNode *node);
 
-// Name resolution of borrow node
-void borrowNameRes(NameResState *pstate, RefNode **nodep);
-
 // Type check borrow node
 void borrowTypeCheck(TypeCheckState *pstate, RefNode **node);
 

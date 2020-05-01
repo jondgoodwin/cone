@@ -229,10 +229,6 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         sizeofNameRes(pstate, (SizeofNode *)*node); break;
     case CastTag:  case IsTag:
         castNameRes(pstate, (CastNode *)*node); break;
-    case BorrowTag:
-        borrowNameRes(pstate, (RefNode **)node); break;
-    case AllocateTag:
-        allocateNameRes(pstate, (RefNode **)node); break;
     case NotLogicTag:
         logicNotNameRes(pstate, (LogicNode *)*node); break;
     case OrLogicTag: case AndLogicTag:

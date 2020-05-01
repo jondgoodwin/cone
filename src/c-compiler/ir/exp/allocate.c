@@ -26,12 +26,6 @@ void allocatePrint(RefNode *node) {
     inodeFprint(")");
 }
 
-// Name resolution of allocate node
-void allocateNameRes(NameResState *pstate, RefNode **nodep) {
-    RefNode *node = *nodep;
-    inodeNameRes(pstate, &node->vtexp);
-}
-
 // Type check allocate node
 void allocateTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     RefNode *node = *nodep;
