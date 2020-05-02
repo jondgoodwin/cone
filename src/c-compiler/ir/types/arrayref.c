@@ -74,13 +74,13 @@ TypeCompare arrayRefMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint con
     switch (permGetFlags(to->perm) & (MayWrite | MayRead)) {
     case 0:
     case MayRead:
-        match = itypeMatches(to->vtexp, arraytype->elemtype, constraint); // covariant
+        match = itypeMatches(to->vtexp, arrayElemType((INode*)arraytype), constraint); // covariant
         break;
     case MayWrite:
-        match = itypeMatches(arraytype->elemtype, to->vtexp, constraint); // contravariant
+        match = itypeMatches(arrayElemType((INode*)arraytype), to->vtexp, constraint); // contravariant
         break;
     case MayRead | MayWrite:
-        return itypeIsSame(to->vtexp, arraytype->elemtype) ? result : NoMatch; // invariant
+        return itypeIsSame(to->vtexp, arrayElemType((INode*)arraytype)) ? result : NoMatch; // invariant
     }
     switch (match) {
     case EqMatch:

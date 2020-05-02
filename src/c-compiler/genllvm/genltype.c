@@ -227,11 +227,8 @@ void genlBaseTrait(GenState *gen, StructNode *base) {
         unsigned long long size = LLVMStoreSizeOfType(gen->datalayout, strnode->llvmtype);
         if (maxsize > size) {
             // Append a padding field of the excess number of bytes
-            ArrayNode *padtyp = newArrayNode();
-            padtyp->size = (uint32_t)(maxsize - size);
-            padtyp->elemtype = (INode*)i8Type;
             FieldDclNode *padfld = newFieldDclNode(anonName, (INode*)immPerm);
-            padfld->vtype = (INode*)padtyp;
+            padfld->vtype = (INode*)newArrayNodeTyped((INode*)strnode, (size_t)(maxsize - size), (INode*)i8Type);
             nodelistAdd(&strnode->fields, (INode*)padfld);
         }
         strnode->llvmtype = NULL;
@@ -359,7 +356,7 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
     case ArrayTag:
     {
         ArrayNode *anode = (ArrayNode*)typ;
-        return LLVMArrayType(genlType(gen, anode->elemtype), anode->size);
+        return LLVMArrayType(genlType(gen, arrayElemType((INode*)anode)), anode->size);
     }
 
     case TypedefTag:

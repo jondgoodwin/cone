@@ -417,7 +417,7 @@ void lexScanString(char *srcp) {
     srcp++;
     srclen++;
 
-    lex->langtype = (INode*)newArrayNodeTyped(srclen, (INode*)u8Type);
+    lex->langtype = (INode*)newArrayNodeTyped(NULL, srclen, (INode*)u8Type);
     lex->toktype = StringLitToken;
     lex->srcp = srcp;
 }

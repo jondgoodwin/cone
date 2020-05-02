@@ -796,7 +796,8 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
             LLVMValueRef *valuep = values;
             for (nodesFor(lit->args, cnt, nodesp))
                 *valuep++ = genlExpr(gen, *nodesp);
-            return LLVMConstArray(genlType(gen, ((ArrayNode *)lit->vtype)->elemtype), values, size);
+            INode *elemtype = nodesGet(((ArrayNode *)lit->vtype)->elems, 0);
+            return LLVMConstArray(genlType(gen, elemtype), values, size);
         }
         else if (littype->tag == StructTag) {
             if (littype->flags & NullablePtr) {

@@ -9,10 +9,11 @@
 #define array_h
 
 // Array node
-typedef struct ArrayNode {
-    INsTypeNodeHdr;
+typedef struct {
+    ITypeNodeHdr;
     uint32_t size;    // LLVM 5 C-interface is restricted to 32-bits
-    INode *elemtype;
+    //Nodes *dimens;
+    Nodes *elems;     // Either a list of elements, or the element type
 } ArrayNode;
 
 ArrayNode *newArrayNode();
@@ -21,7 +22,11 @@ ArrayNode *newArrayNode();
 INode *cloneArrayNode(CloneState *cstate, ArrayNode *node);
 
 // Create a new array type of a specified size and element type
-ArrayNode *newArrayNodeTyped(size_t size, INode *elemtype);
+ArrayNode *newArrayNodeTyped(INode *lexnode, size_t size, INode *elemtype);
+
+// Return the element type of the array type
+INode *arrayElemType(INode *array);
+
 void arrayPrint(ArrayNode *node);
 
 // Name resolution of an array type

@@ -614,12 +614,12 @@ INode *parseAssign(ParseState *parse) {
     }
 }
 
+// Parse an array literal
 INode *parseList(ParseState *parse, INode *typenode) {
     FnCallNode *list = newFnCallNode(NULL, 4);
     list->tag = TypeLitTag;
-    ArrayNode *arrtype = newArrayNode();
     list->objfn = typenode;
-    list->vtype = (INode*)arrtype;
+    list->vtype = unknownType;
     lexNextToken();
     lexIncrParens();
     if (!lexIsToken(RBracketToken)) {
@@ -630,7 +630,6 @@ INode *parseList(ParseState *parse, INode *typenode) {
             lexNextToken();
         };
     }
-    arrtype->size = list->args->used;
     parseCloseTok(RBracketToken);
     return (INode*)list;
 }

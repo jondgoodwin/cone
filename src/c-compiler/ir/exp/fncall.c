@@ -125,12 +125,12 @@ void fnCallArrIndex(FnCallNode *node) {
     // Capture the element type returned
     switch (objtype->tag) {
     case ArrayTag:
-        node->vtype = ((ArrayNode*)objtype)->elemtype;
+        node->vtype = arrayElemType(objtype);
         break;
     case RefTag: {
         INode *vtype = ((RefNode *)objtype)->vtexp;
         assert(vtype->tag == ArrayTag);
-        node->vtype = ((ArrayNode *)vtype)->elemtype;
+        node->vtype = arrayElemType(vtype);
         break;
     }
     case ArrayRefTag:

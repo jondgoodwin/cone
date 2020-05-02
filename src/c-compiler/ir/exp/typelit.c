@@ -67,20 +67,21 @@ void typeLitArrayCheck(TypeCheckState *pstate, FnCallNode *arrlit) {
     }
 
     // Ensure all elements are consistently typed (matching first element's type)
-    INode *matchtype = NULL;
+    INode *matchtype = unknownType;
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(arrlit->args, cnt, nodesp)) {
         if (iexpTypeCheckAny(pstate, nodesp) == 0)
             continue;
-        if (matchtype == NULL) {
+        if (matchtype == unknownType) {
             // Get element type from first element
             // Type of array literal is: array of elements whose type matches first value
-            ((ArrayNode*)arrlit->vtype)->elemtype = matchtype = ((IExpNode*)*nodesp)->vtype;
+            matchtype = ((IExpNode*)*nodesp)->vtype;
         }
         else if (!itypeIsSame(((IExpNode*)*nodesp)->vtype, matchtype))
             errorMsgNode((INode*)*nodesp, ErrorBadArray, "Inconsistent type of array literal value");
     }
+    arrlit->vtype = (INode*)newArrayNodeTyped((INode*)arrlit, arrlit->args->used, matchtype);
 }
 
 // Return true if desired named field is found and swapped into place

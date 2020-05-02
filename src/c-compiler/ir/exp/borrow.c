@@ -91,7 +91,7 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     if (lvaltype->tag == ArrayTag) {
         // Borrowing from a fixed size array creates an array reference
         tag = ArrayRefTag;
-        refvtype = ((ArrayNode*)lvaltype)->elemtype;
+        refvtype = arrayElemType(lvaltype);
     }
     else if (lvaltype->tag == ArrayDerefTag) {
         tag = ArrayRefTag;

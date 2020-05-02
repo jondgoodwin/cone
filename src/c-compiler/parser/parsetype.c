@@ -346,10 +346,12 @@ INode *parseArrayType(ParseState *parse) {
         errorMsgLex(ErrorBadTok, "Expected closing square bracket");
 
     // Obtain array's element type
-    if ((atype->elemtype = parseVtype(parse)) == NULL) {
+    INode *elemtype;
+    if ((elemtype = parseVtype(parse)) == NULL) {
         errorMsgLex(ErrorNoVtype, "Missing array element type");
-        atype->elemtype = unknownType;
+        elemtype = unknownType;
     }
+    nodesAdd(&atype->elems, elemtype);
 
     return (INode *)atype;
 }
