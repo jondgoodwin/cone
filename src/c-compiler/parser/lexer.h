@@ -38,6 +38,7 @@ typedef struct Lexer {
         char *strlit;
         Name *ident;
     } val;
+    uint32_t strlen;   // Size of string literal
     INode *langtype;
 
     // immutable info about source

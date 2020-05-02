@@ -745,11 +745,10 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
     case StringLitTag:
     {
         SLitNode *strnode = (SLitNode *)lval;
-        ArrayNode *anode = (ArrayNode*)strnode->vtype;
         LLVMValueRef sglobal = LLVMAddGlobal(gen->module, genlType(gen, strnode->vtype), "string");
         LLVMSetLinkage(sglobal, LLVMInternalLinkage);
         LLVMSetGlobalConstant(sglobal, 1);
-        LLVMSetInitializer(sglobal, LLVMConstStringInContext(gen->context, strnode->strlit, anode->size, 1));
+        LLVMSetInitializer(sglobal, LLVMConstStringInContext(gen->context, strnode->strlit, strnode->strlen, 1));
         return sglobal;
     }
     }

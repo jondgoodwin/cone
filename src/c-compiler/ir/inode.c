@@ -393,8 +393,10 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     case GenVarDclTag:
         gVarDclTypeCheck(pstate, (GenVarDclNode *)*node); break;
 
-    case MbrNameUseTag:
     case StringLitTag:
+        slitTypeCheck(pstate, (SLitNode*)*node); break;
+
+    case MbrNameUseTag:
     case IntNbrTag: case UintNbrTag: case FloatNbrTag:
     case AbsenceTag:
     case UnknownTag:

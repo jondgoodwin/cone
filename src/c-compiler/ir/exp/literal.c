@@ -93,11 +93,12 @@ NullNode *newNullNode() {
 }
 
 // Create a new string literal node
-SLitNode *newSLitNode(char *str, INode *type) {
+SLitNode *newSLitNode(char *str, uint32_t strlen) {
     SLitNode *lit;
     newNode(lit, SLitNode, StringLitTag);
     lit->strlit = str;
-    lit->vtype = type;
+    lit->strlen = strlen;
+    lit->vtype = unknownType;
     return lit;
 }
 
@@ -112,6 +113,11 @@ INode *cloneSLitNode(SLitNode *lit) {
 // Serialize a string literal
 void slitPrint(SLitNode *lit) {
     inodeFprint("\"%s\"", lit->strlit);
+}
+
+// Type check string literal node
+void slitTypeCheck(TypeCheckState *pstate, SLitNode *node) {
+    node->vtype = (INode*)newArrayNodeTyped((INode*)node, node->strlen, (INode*)u8Type);
 }
 
 int litIsLiteral(INode* node) {

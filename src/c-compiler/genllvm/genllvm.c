@@ -102,8 +102,7 @@ LLVMValueRef genlAlloca(GenState *gen, LLVMTypeRef type, const char *name) {
 void genlGloVar(GenState *gen, VarDclNode *varnode) {
     if (varnode->value->tag == StringLitTag) {
         SLitNode *strnode = (SLitNode*)varnode->value;
-        ArrayNode *anode = (ArrayNode*)strnode->vtype;
-        LLVMSetInitializer(varnode->llvmvar, LLVMConstStringInContext(gen->context, strnode->strlit, anode->size, 1));
+        LLVMSetInitializer(varnode->llvmvar, LLVMConstStringInContext(gen->context, strnode->strlit, strnode->strlen, 1));
     }
     else
         LLVMSetInitializer(varnode->llvmvar, genlExpr(gen, varnode->value));

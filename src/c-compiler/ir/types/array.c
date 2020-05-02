@@ -20,8 +20,7 @@ ArrayNode *newArrayNode() {
 // Create a new array type of a specified size and element type
 ArrayNode *newArrayNodeTyped(INode *lexnode, size_t size, INode *elemtype) {
     ArrayNode *anode = newArrayNode();
-    if (lexnode)
-        inodeLexCopy((INode*)anode, lexnode);
+    inodeLexCopy((INode*)anode, lexnode);
     anode->size = size;
     nodesAdd(&anode->elems, elemtype);
     return anode;

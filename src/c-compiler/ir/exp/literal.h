@@ -9,25 +9,26 @@
 #define literal_h
 
 // Unsigned integer literal
-typedef struct ULitNode {
+typedef struct {
     IExpNodeHdr;
     uint64_t uintlit;
 } ULitNode;
 
 // Float literal
-typedef struct FLitNode {
+typedef struct {
     IExpNodeHdr;
     double floatlit;
 } FLitNode;
 
 // String literal
-typedef struct SLitNode {
+typedef struct {
     IExpNodeHdr;
     char *strlit;
+    uint32_t strlen;
 } SLitNode;
 
 // The null literal
-typedef struct NullNode {
+typedef struct {
     IExpNodeHdr;
 } NullNode;
 
@@ -55,12 +56,15 @@ void litTypeCheck(TypeCheckState* pstate, IExpNode *node);
 
 NullNode *newNullNode();
 
-SLitNode *newSLitNode(char *str, INode *type);
+SLitNode *newSLitNode(char *str, uint32_t strlen);
 
 // Clone literal
 INode *cloneSLitNode(SLitNode *lit);
 
 void slitPrint(SLitNode *node);
+
+// Type check string literal node
+void slitTypeCheck(TypeCheckState *pstate, SLitNode *node);
 
 int litIsLiteral(INode* node);
 
