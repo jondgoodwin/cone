@@ -59,10 +59,10 @@ void typeLitNbrCheck(TypeCheckState *pstate, FnCallNode *nbrlit, INode *type) {
 }
 
 // Type check an array literal
-void typeLitArrayCheck(TypeCheckState *pstate, FnCallNode *arrlit) {
+void typeLitArrayCheck(TypeCheckState *pstate, ArrayNode *arrlit) {
 
-    if (arrlit->args->used == 0) {
-        errorMsgNode((INode*)arrlit, ErrorBadArray, "Literal list may not be empty");
+    if (arrlit->elems->used == 0) {
+        errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal list may not be empty");
         return;
     }
 
@@ -70,7 +70,7 @@ void typeLitArrayCheck(TypeCheckState *pstate, FnCallNode *arrlit) {
     INode *matchtype = unknownType;
     INode **nodesp;
     uint32_t cnt;
-    for (nodesFor(arrlit->args, cnt, nodesp)) {
+    for (nodesFor(arrlit->elems, cnt, nodesp)) {
         if (iexpTypeCheckAny(pstate, nodesp) == 0)
             continue;
         if (matchtype == unknownType) {
@@ -81,7 +81,7 @@ void typeLitArrayCheck(TypeCheckState *pstate, FnCallNode *arrlit) {
         else if (!itypeIsSame(((IExpNode*)*nodesp)->vtype, matchtype))
             errorMsgNode((INode*)*nodesp, ErrorBadArray, "Inconsistent type of array literal value");
     }
-    arrlit->vtype = (INode*)newArrayNodeTyped((INode*)arrlit, arrlit->args->used, matchtype);
+    arrlit->vtype = (INode*)newArrayNodeTyped((INode*)arrlit, arrlit->elems->used, matchtype);
 }
 
 // Return true if desired named field is found and swapped into place

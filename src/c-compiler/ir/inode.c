@@ -315,8 +315,8 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
         fieldDclTypeCheck(pstate, (FieldDclNode *)*node); break;
     case VarNameUseTag:
         nameUseTypeCheck(pstate, (NameUseNode **)node); break;
-    case TypeLitTag:
-        typeLitArrayCheck(pstate, (FnCallNode *)*node); break; // only array. Others via fncall.
+    case ArrayLitTag:
+        typeLitArrayCheck(pstate, (ArrayNode *)*node); break;
     case BlockTag:
         blockTypeCheck(pstate, (BlockNode *)*node, expectType); break;
     case IfTag:

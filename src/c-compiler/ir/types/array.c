@@ -66,12 +66,14 @@ void arrayPrint(ArrayNode *node) {
     inodeFprint("]");
 }
 
-// Name resolution of an array type
+// Name resolution of an array type/literal
 void arrayNameRes(NameResState *pstate, ArrayNode *node) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(node->elems, cnt, nodesp))
         inodeNameRes(pstate, nodesp);
+    if (node->elems->used > 0 && !isTypeNode(nodesGet(node->elems, 0)))
+        node->tag = ArrayLitTag; // We have an array literal, not array type
 }
 
 // Type check an array type

@@ -18,7 +18,7 @@
 #include <assert.h>
 
 INode *parseAddr(ParseState *parse);
-INode *parseList(ParseState *parse, INode *typenode);
+INode *parseArrayLit(ParseState *parse, INode *typenode);
 
 // Parse a name use, which may be qualified with module names
 INode *parseNameUse(ParseState *parse) {
@@ -107,7 +107,7 @@ INode *parseTerm(ParseState *parse) {
             return node;
         }
     case LBracketToken:
-        return parseList(parse, NULL);
+        return parseArrayLit(parse, NULL);
     default:
         errorMsgLex(ErrorBadTerm, "Invalid term: expected name, literal, etc.");
         lexNextToken(); // Avoid infinite loop
@@ -615,23 +615,34 @@ INode *parseAssign(ParseState *parse) {
 }
 
 // Parse an array literal
-INode *parseList(ParseState *parse, INode *typenode) {
-    FnCallNode *list = newFnCallNode(NULL, 4);
-    list->tag = TypeLitTag;
-    list->objfn = typenode;
-    list->vtype = unknownType;
+INode *parseArrayLit(ParseState *parse, INode *typenode) {
+    ArrayNode *array = newArrayNode();
     lexNextToken();
-    lexIncrParens();
-    if (!lexIsToken(RBracketToken)) {
+
+    // Gather comma-separated expressions that are likely elements or element type
+    while (1) {
+        nodesAdd(&array->elems, parseSimpleExpr(parse));
+        if (!lexIsToken(CommaToken))
+            break;
+        lexNextToken();
+    }
+
+    // Semi-colon signals we had dimensions instead, swap and then get elements
+    if (lexIsToken(SemiToken)) {
+        lexNextToken();
+        Nodes *elems = array->dimens;
+        array->dimens = array->elems;
         while (1) {
-            nodesAdd(&list->args, parseSimpleExpr(parse));
+            nodesAdd(&elems, parseSimpleExpr(parse));
             if (!lexIsToken(CommaToken))
                 break;
             lexNextToken();
         };
+        array->elems = elems;
     }
     parseCloseTok(RBracketToken);
-    return (INode*)list;
+
+    return (INode *)array;
 }
 
 // This parses any kind of expression, including blocks, assignment or tuple

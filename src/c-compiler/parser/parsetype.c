@@ -331,6 +331,7 @@ INode *parseFnSig(ParseState *parse) {
 // Parse an array type or literal
 INode *parseArrayType(ParseState *parse) {
     ArrayNode *array = newArrayNode();
+    lexNextToken();
 
     // Gather comma-separated expressions that are likely elements or element type
     while (1) {
@@ -338,7 +339,7 @@ INode *parseArrayType(ParseState *parse) {
         if (!lexIsToken(CommaToken))
             break;
         lexNextToken();
-    };
+    }
 
     // Semi-colon signals we had dimensions instead, swap and then get elements
     if (lexIsToken(SemiToken)) {
@@ -449,7 +450,6 @@ INode* parseVtype(ParseState *parse) {
     case StarToken:
         return parsePtrType(parse);
     case LBracketToken:
-        lexNextToken();
         return parseArrayType(parse);
     case EnumToken:
         return parseEnum(parse);

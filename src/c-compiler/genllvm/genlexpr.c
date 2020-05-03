@@ -798,6 +798,20 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         INode *ptrtype = ((ULitNode*)termnode)->vtype;
         return LLVMConstNull(ptrtype? genlType(gen, ptrtype) : LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0));
     }
+    case ArrayLitTag:
+    {
+        ArrayNode *lit = (ArrayNode *)termnode;
+        INode *littype = itypeGetTypeDcl(lit->vtype);
+        uint32_t size = lit->elems->used;
+        INode **nodesp;
+        uint32_t cnt;
+        LLVMValueRef *values = (LLVMValueRef *)memAllocBlk(size * sizeof(LLVMValueRef *));
+        LLVMValueRef *valuep = values;
+        for (nodesFor(lit->elems, cnt, nodesp))
+            *valuep++ = genlExpr(gen, *nodesp);
+        INode *elemtype = nodesGet(((ArrayNode *)lit->vtype)->elems, 0);
+        return LLVMConstArray(genlType(gen, elemtype), values, size);
+    }
     case TypeLitTag:
     {
         FnCallNode *lit = (FnCallNode *)termnode;
@@ -805,15 +819,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         uint32_t size = lit->args->used;
         INode **nodesp;
         uint32_t cnt;
-        if (littype->tag == ArrayTag) {
-            LLVMValueRef *values = (LLVMValueRef *)memAllocBlk(size * sizeof(LLVMValueRef *));
-            LLVMValueRef *valuep = values;
-            for (nodesFor(lit->args, cnt, nodesp))
-                *valuep++ = genlExpr(gen, *nodesp);
-            INode *elemtype = nodesGet(((ArrayNode *)lit->vtype)->elems, 0);
-            return LLVMConstArray(genlType(gen, elemtype), values, size);
-        }
-        else if (littype->tag == StructTag) {
+        if (littype->tag == StructTag) {
             if (littype->flags & NullablePtr) {
                 // Special optimized logic for creating nullable ref/ptr value
                 StructNode *strnode = (StructNode *)littype;
