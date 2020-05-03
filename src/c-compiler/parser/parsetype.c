@@ -328,32 +328,34 @@ INode *parseFnSig(ParseState *parse) {
     return (INode*)fnsig;
 }
 
-// Parse an array type
+// Parse an array type or literal
 INode *parseArrayType(ParseState *parse) {
-    ArrayNode *atype = newArrayNode();
+    ArrayNode *array = newArrayNode();
 
-    // Obtain size as an unsigned integer literal
-    if (lexIsToken(IntLitToken)) {
-        atype->size = (uint32_t) lex->val.uintlit;
+    // Gather comma-separated expressions that are likely elements or element type
+    while (1) {
+        nodesAdd(&array->elems, parseSimpleExpr(parse));
+        if (!lexIsToken(CommaToken))
+            break;
         lexNextToken();
-    }
-    else
-        errorMsgLex(ErrorBadTok, "Expected integer literal for array size");
+    };
 
-    if (lexIsToken(RBracketToken))
+    // Semi-colon signals we had dimensions instead, swap and then get elements
+    if (lexIsToken(SemiToken)) {
         lexNextToken();
-    else
-        errorMsgLex(ErrorBadTok, "Expected closing square bracket");
-
-    // Obtain array's element type
-    INode *elemtype;
-    if ((elemtype = parseVtype(parse)) == NULL) {
-        errorMsgLex(ErrorNoVtype, "Missing array element type");
-        elemtype = unknownType;
+        Nodes *elems = array->dimens;
+        array->dimens = array->elems;
+        while (1) {
+            nodesAdd(&elems, parseVtype(parse)); // parseSimpleExpr
+            if (!lexIsToken(CommaToken))
+                break;
+            lexNextToken();
+        };
+        array->elems = elems;
     }
-    nodesAdd(&atype->elems, elemtype);
+    parseCloseTok(RBracketToken);
 
-    return (INode *)atype;
+    return (INode *)array;
 }
 
 // Parse a pointer type

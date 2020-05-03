@@ -353,10 +353,18 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
         return LLVMStructTypeInContext(gen->context, typerefs, propcount, 0);
     }
 
+    // Build out (potentially) multi-dimensional array type
     case ArrayTag:
     {
         ArrayNode *anode = (ArrayNode*)typ;
-        return LLVMArrayType(genlType(gen, arrayElemType((INode*)anode)), anode->size);
+        uint32_t cnt = anode->dimens->used;
+        INode **nodesp = &nodesGet(anode->dimens, cnt - 1);
+        LLVMTypeRef array = genlType(gen, arrayElemType((INode*)anode)); // Start with element type
+        while (cnt--) {
+            ULitNode *dim = (ULitNode*)*nodesp--;
+            array = LLVMArrayType(array, (unsigned int)dim->uintlit); // Build nested arrays from inside-out
+        }
+        return array;
     }
 
     case TypedefTag:

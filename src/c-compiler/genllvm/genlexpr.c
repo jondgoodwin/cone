@@ -473,7 +473,7 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
             ArrayNode *arraytype = (ArrayNode*)((RefNode *)fromtype)->vtexp;
             assert(arraytype->tag == ArrayTag);
             LLVMValueRef aref = LLVMGetUndef(genlType(gen, totype));
-            LLVMValueRef size = LLVMConstInt(genlUsize(gen), arraytype->size, 0);
+            LLVMValueRef size = LLVMConstInt(genlUsize(gen), arrayDim1((INode*)arraytype), 0);
             aref = LLVMBuildInsertValue(gen->builder, aref, genexp, 0, "arrayp");
             aref = LLVMBuildInsertValue(gen->builder, aref, size, 1, "size");
             return aref;
@@ -702,7 +702,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         INode *objtype = iexpGetTypeDcl(fncall->objfn);
         switch (objtype->tag) {
         case ArrayTag: {
-            LLVMValueRef count = LLVMConstInt(genlUsize(gen), ((ArrayNode*)objtype)->size, 0);
+            LLVMValueRef count = LLVMConstInt(genlUsize(gen), arrayDim1(objtype), 0);
             LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
             genlBoundsCheck(gen, index, count);
             LLVMValueRef indexes[2];
@@ -880,7 +880,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
             INode *objtype = iexpGetTypeDcl(fncall->objfn);
             switch (objtype->tag) {
             case ArrayTag: {
-                LLVMValueRef count = LLVMConstInt(genlUsize(gen), ((ArrayNode*)objtype)->size, 0);
+                LLVMValueRef count = LLVMConstInt(genlUsize(gen), arrayDim1(objtype), 0);
                 LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
                 genlBoundsCheck(gen, index, count);
                 LLVMValueRef indexes[2];
@@ -995,7 +995,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
                 LLVMTypeRef ptrtype = LLVMPointerType(genlType(gen, reftype->vtexp), 0);
                 LLVMValueRef ptr = LLVMBuildBitCast(gen->builder, genlAddr(gen, anode->vtexp), ptrtype, "fatptr");
                 tupleval = LLVMBuildInsertValue(gen->builder, tupleval, ptr, 0, "fatptr");
-                LLVMValueRef size = LLVMConstInt(genlType(gen, (INode*)usizeType), ((ArrayNode*)arraytype)->size, 0);
+                LLVMValueRef size = LLVMConstInt(genlType(gen, (INode*)usizeType), arrayDim1(arraytype), 0);
                 return LLVMBuildInsertValue(gen->builder, tupleval, size, 1, "fatsize");
             }
             else if (arraytype->tag == ArrayDerefTag) {

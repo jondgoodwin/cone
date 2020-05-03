@@ -8,14 +8,14 @@
 #ifndef array_h
 #define array_h
 
-// Array node
+// Array node: Either an array type or an array literal
 typedef struct {
     ITypeNodeHdr;
-    uint32_t size;    // LLVM 5 C-interface is restricted to 32-bits
-    //Nodes *dimens;
+    Nodes *dimens;    // Dimensions of the array
     Nodes *elems;     // Either a list of elements, or the element type
 } ArrayNode;
 
+// Create a new array node
 ArrayNode *newArrayNode();
 
 // Clone array
@@ -26,6 +26,9 @@ ArrayNode *newArrayNodeTyped(INode *lexnode, size_t size, INode *elemtype);
 
 // Return the element type of the array type
 INode *arrayElemType(INode *array);
+
+// Return the size of the first dimension (assuming 1-dimensional array)
+uint64_t arrayDim1(INode *array);
 
 void arrayPrint(ArrayNode *node);
 
