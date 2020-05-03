@@ -685,6 +685,27 @@ void genlBoundsCheck(GenState *gen, LLVMValueRef index, LLVMValueRef count) {
     LLVMPositionBuilderAtEnd(gen->builder, boundsblk);
 }
 
+LLVMValueRef genlArrayIndex(GenState *gen, FnCallNode *fncall, ArrayNode *objtype) {
+    // Allocate a indexing buffer for GEP
+    LLVMValueRef indexes[2];
+    LLVMValueRef *indexp = &indexes[0];
+    uint16_t nindex = objtype->dimens->used;
+    if (nindex > 1)
+        indexp = memAllocBlk(nindex * sizeof(LLVMValueRef));
+    indexp[0] = LLVMConstInt(genlUsize(gen), 0, 0);
+    
+    // Populate indexing buffer
+    for (int arg = 0; arg < nindex; arg++) {
+        ULitNode *dimen = (ULitNode*)nodesGet(objtype->dimens, arg);
+        assert(dimen->tag == ULitTag);
+        LLVMValueRef count = LLVMConstInt(genlUsize(gen), dimen->uintlit, 0);
+        LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, arg));
+        genlBoundsCheck(gen, index, count);
+        indexp[arg+1] = index;
+    }
+    return LLVMBuildGEP(gen->builder, genlAddr(gen, fncall->objfn), indexp, nindex+1, "");
+}
+
 // Generate an lval-ish pointer to the value (vs. load)
 LLVMValueRef genlAddr(GenState *gen, INode *lval) {
     switch (lval->tag) {
@@ -702,13 +723,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         INode *objtype = iexpGetTypeDcl(fncall->objfn);
         switch (objtype->tag) {
         case ArrayTag: {
-            LLVMValueRef count = LLVMConstInt(genlUsize(gen), arrayDim1(objtype), 0);
-            LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
-            genlBoundsCheck(gen, index, count);
-            LLVMValueRef indexes[2];
-            indexes[0] = LLVMConstInt(genlUsize(gen), 0, 0);
-            indexes[1] = index;
-            return LLVMBuildGEP(gen->builder, genlAddr(gen, fncall->objfn), indexes, 2, "");
+            return genlArrayIndex(gen, fncall, (ArrayNode*)objtype);
         }
         case ArrayRefTag: {
             LLVMValueRef arrref = genlExpr(gen, fncall->objfn);
@@ -880,13 +895,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
             INode *objtype = iexpGetTypeDcl(fncall->objfn);
             switch (objtype->tag) {
             case ArrayTag: {
-                LLVMValueRef count = LLVMConstInt(genlUsize(gen), arrayDim1(objtype), 0);
-                LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
-                genlBoundsCheck(gen, index, count);
-                LLVMValueRef indexes[2];
-                indexes[0] = LLVMConstInt(genlUsize(gen), 0, 0);
-                indexes[1] = index;
-                return LLVMBuildGEP(gen->builder, genlAddr(gen, fncall->objfn), indexes, 2, "");
+                return genlArrayIndex(gen, fncall, (ArrayNode*)objtype);
             }
             case ArrayDerefTag: {
                 StarNode *deref = (StarNode *)fncall->objfn;

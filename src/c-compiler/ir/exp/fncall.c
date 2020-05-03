@@ -88,38 +88,42 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
 // We won't arrive here if a method or field was specified
 // We can indexing into array or borrow reference to the indexed element
 void fnCallArrIndex(FnCallNode *node) {
-    uint32_t nargs = node->args? node->args->used : 0;
-    if (nargs != 1) {
-        errorMsgNode((INode *)node, ErrorBadIndex, "Array indexing/slicing supports only 1-2 arguments");
-        return;
-    }
     if (!(node->flags & FlagIndex)) {
-        errorMsgNode((INode *)node, ErrorBadIndex, "Unsupported operation on a value of this type.");
+        errorMsgNode((INode *)node, ErrorBadIndex, "Indexing not supported on a value of this type.");
         return;
     }
 
+    // Correct number of indices?
     INode *objtype = iexpGetTypeDcl(node->objfn);
-
-    // Ensure index is an integer
-    INode **indexp = &nodesGet(node->args, 0);
-    INode *indextype = iexpGetTypeDcl(*indexp);
-    if (objtype->tag == PtrTag) {
-        // Pointer supports signed or unsigned integer index
-        int match = 0;
-        if (indextype->tag == UintNbrTag)
-            match = iexpCoerce(indexp, (INode*)usizeType);
-        else if (indextype->tag == IntNbrTag)
-            match = iexpCoerce(indexp, (INode*)isizeType);
-        if (!match)
-            errorMsgNode((INode *)node, ErrorBadIndex, "Pointer index must be an integer");
+    uint32_t nexpected = objtype->tag == ArrayTag ? ((ArrayNode*)objtype)->dimens->used : 1;
+    uint32_t nargs = node->args? node->args->used : 0;
+    if (nargs != nexpected) {
+        errorMsgNode((INode *)node, ErrorBadIndex, "Incorrect number of indexing arguments");
+        return;
     }
-    else {
-        // All other array types only support unsigned (positive) integer indexing
-        int match = 0;
-        if (indextype->tag == UintNbrTag || (*indexp)->tag == ULitTag)
-            match = iexpCoerce(indexp, (INode*)usizeType);
-        if (!match)
-            errorMsgNode((INode *)node, ErrorBadIndex, "Array index must be an unsigned integer");
+    // Ensure all indices are integers
+    INode **indexp;
+    uint32_t cnt;
+    for (nodesFor(node->args, cnt, indexp)) {
+        INode *indextype = iexpGetTypeDcl(*indexp);
+        if (objtype->tag == PtrTag) {
+            // Pointer supports signed or unsigned integer index
+            int match = NoMatch;
+            if (indextype->tag == UintNbrTag)
+                match = iexpCoerce(indexp, (INode*)usizeType);
+            else if (indextype->tag == IntNbrTag)
+                match = iexpCoerce(indexp, (INode*)isizeType);
+            if (!match)
+                errorMsgNode((INode *)node, ErrorBadIndex, "Pointer index must be an integer");
+        }
+        else {
+            // All other array types only support unsigned (positive) integer indexing
+            int match = NoMatch;
+            if (indextype->tag == UintNbrTag || (*indexp)->tag == ULitTag)
+                match = iexpCoerce(indexp, (INode*)usizeType);
+            if (!match)
+                errorMsgNode((INode *)node, ErrorBadIndex, "Array index must be an unsigned integer");
+        }
     }
 
     // Capture the element type returned
