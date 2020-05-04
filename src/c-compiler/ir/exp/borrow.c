@@ -28,15 +28,6 @@ void borrowMutRef(INode **nodep, INode* type, INode *perm) {
     *nodep = (INode*)borrownode;
 }
 
-// Clone borrow
-INode *cloneBorrowNode(CloneState *cstate, RefNode *node) {
-    RefNode *newnode;
-    newnode = memAllocBlk(sizeof(RefNode));
-    memcpy(newnode, node, sizeof(RefNode));
-    newnode->vtexp = cloneNode(cstate, node->vtexp);
-    return (INode *)newnode;
-}
-
 // Serialize borrow node
 void borrowPrint(RefNode *node) {
     inodeFprint("&(");

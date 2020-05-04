@@ -9,14 +9,6 @@
 
 #include <assert.h>
 
-// Clone allocate
-INode *cloneAllocateNode(CloneState *cstate, RefNode *node) {
-    RefNode *newnode = memAllocBlk(sizeof(RefNode));
-    memcpy(newnode, node, sizeof(RefNode));
-    newnode->vtexp = cloneNode(cstate, node->vtexp);
-    return (INode *)newnode;
-}
-
 // Serialize allocate
 void allocatePrint(RefNode *node) {
     inodeFprint("&(");

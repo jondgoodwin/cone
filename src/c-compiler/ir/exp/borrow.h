@@ -13,9 +13,6 @@
 // Inject a borrow mutable node on some node (expected to be an lval)
 void borrowMutRef(INode **node, INode* type, INode *perm);
 
-// Clone borrow
-INode *cloneBorrowNode(CloneState *cstate, RefNode *node);
-
 void borrowPrint(RefNode *node);
 
 // Type check borrow node

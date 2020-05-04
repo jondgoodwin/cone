@@ -16,14 +16,10 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
 
     INode *node;
     switch (nodep->tag) {
-    case AllocateTag:
-        node = cloneAllocateNode(cstate, (RefNode *)nodep); break;
     case AssignTag:
         node = cloneAssignNode(cstate, (AssignNode *)nodep); break;
     case BlockTag:
         node = cloneBlockNode(cstate, (BlockNode *)nodep); break;
-    case BorrowTag:
-        node = cloneBorrowNode(cstate, (RefNode *)nodep); break;
     case CastTag:
         node = cloneCastNode(cstate, (CastNode *)nodep); break;
     case DerefTag:
@@ -83,12 +79,15 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         node = cloneStructNode(cstate, (StructNode *)nodep); break;
     case TTupleTag:
         node = cloneTupleNode(cstate, (TupleNode *)nodep); break;
+    case ArrayLitTag:
     case ArrayTag:
         node = cloneArrayNode(cstate, (ArrayNode *)nodep); break;
     case FnSigTag:
         node = cloneFnSigNode(cstate, (FnSigNode *)nodep); break;
     case PtrTag:
         node = cloneStarNode(cstate, (StarNode *)nodep); break;
+    case AllocateTag:
+    case BorrowTag:
     case RefTag:
     case ArrayRefTag:
     case VirtRefTag:

@@ -10,9 +10,6 @@
 
 // Uses RefNode from reference.h
 
-// Clone allocate
-INode *cloneAllocateNode(CloneState *cstate, RefNode *node);
-
 void allocatePrint(RefNode *node);
 
 // Type check allocate node
