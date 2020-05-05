@@ -28,6 +28,8 @@ void arrayRefNameRes(NameResState *pstate, RefNode *node) {
 
 // Type check an array reference node
 void arrayRefTypeCheck(TypeCheckState *pstate, RefNode *node) {
+    if (node->perm == unknownType)
+        node->perm = newPermUseNode(node->region == borrowRef ? constPerm : uniPerm);
     itypeTypeCheck(pstate, &node->region);
     itypeTypeCheck(pstate, (INode**)&node->perm);
     if (node->vtexp)

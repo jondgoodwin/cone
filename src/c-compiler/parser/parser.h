@@ -67,7 +67,7 @@ INode *parseNameUse(ParseState *parse);
 INode *parseTerm(ParseState *parse);
 
 // parsetype.c
-INode *parsePerm(PermNode *defperm);
+INode *parsePerm();
 void parseAllocPerm(RefNode *refnode);
 VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags);
 INode *parseFnSig(ParseState *parse);

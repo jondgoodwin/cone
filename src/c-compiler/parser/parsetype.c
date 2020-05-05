@@ -18,16 +18,13 @@
 #include <assert.h>
 
 // Parse a permission, return reference to defperm if not found
-INode *parsePerm(PermNode *defperm) {
+INode *parsePerm() {
     if (lexIsToken(PermToken)) {
         INode *perm = newPermUseNode((PermNode*)lex->val.ident->node);
         lexNextToken();
         return perm;
     }
-    else if (defperm)
-        return (INode*)newPermUseNode(defperm);
-    else
-        return (INode*)defperm;
+    return unknownType;
 }
 
 // Parse an allocator + permission for a reference type
@@ -36,12 +33,11 @@ void parseAllocPerm(RefNode *refnode) {
         && lex->val.ident->node && lex->val.ident->node->tag == RegionTag) {
         refnode->region = (INode*)lex->val.ident->node;
         lexNextToken();
-        refnode->perm = parsePerm(uniPerm);
     }
     else {
         refnode->region = borrowRef;
-        refnode->perm = parsePerm(constPerm);
     }
+    refnode->perm = parsePerm();
 }
 
 // Parse a variable declaration
@@ -51,8 +47,8 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     INode *perm;
 
     // Grab the permission type
-    perm = parsePerm(defperm);
-    INode *permdcl = itypeGetTypeDcl(perm);
+    perm = parsePerm();
+    INode *permdcl = perm==unknownType? unknownType : itypeGetTypeDcl(perm);
     if (permdcl == (INode*)mut1Perm || permdcl == (INode*)uniPerm || permdcl == (INode*)opaqPerm
         || (permdcl == (INode*)constPerm && !(flags & ParseMayConst)))
         errorMsgNode(perm, ErrorInvType, "Permission not valid for variable/field declaration");
@@ -112,7 +108,7 @@ FieldDclNode *parseFieldDcl(ParseState *parse, PermNode *defperm) {
 
     // Grab the permission type
     perm = parsePerm(defperm);
-    INode *permdcl = itypeGetTypeDcl(perm);
+    INode *permdcl = perm == unknownType? unknownType : itypeGetTypeDcl(perm);
     if (permdcl != (INode*)mutPerm && permdcl == (INode*)immPerm)
         errorMsgNode(perm, ErrorInvType, "Permission not valid for field declaration");
 

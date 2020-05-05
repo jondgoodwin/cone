@@ -22,6 +22,10 @@ void allocatePrint(RefNode *node) {
 void allocateTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     RefNode *node = *nodep;
 
+    // The default permission type is 'uni'
+    if (node->perm == unknownType)
+        node->perm = newPermUseNode(uniPerm);
+
     // Ensure expression is a value usable for initializing allocated memory
     if (iexpTypeCheckAny(pstate, &node->vtexp) == 0)
         return;

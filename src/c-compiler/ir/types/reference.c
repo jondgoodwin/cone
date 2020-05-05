@@ -91,6 +91,9 @@ void refNameRes(NameResState *pstate, RefNode *node) {
 
 // Type check a reference node
 void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
+    if (node->perm == unknownType)
+        node->perm = newPermUseNode(node->vtexp->tag == FnSigTag ? opaqPerm :
+        (node->region == borrowRef ? constPerm : uniPerm));
     itypeTypeCheck(pstate, &node->region);
     itypeTypeCheck(pstate, (INode**)&node->perm);
     if (itypeTypeCheck(pstate, &node->vtexp) == 0)
@@ -100,6 +103,8 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
 
 // Type check a virtual reference node
 void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
+    if (node->perm == unknownType)
+        node->perm = newPermUseNode(node->region == borrowRef ? constPerm : uniPerm);
     itypeTypeCheck(pstate, &node->region);
     itypeTypeCheck(pstate, (INode**)&node->perm);
     if (itypeTypeCheck(pstate, &node->vtexp) == 0)

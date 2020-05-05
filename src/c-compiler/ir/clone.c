@@ -44,7 +44,8 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     case GenericNameTag:
     case VarNameUseTag:
     case MbrNameUseTag:
-    case TypeNameUseTag: {
+    case TypeNameUseTag: 
+    {
         node = cloneNameUseNode(cstate, (NameUseNode *)nodep);
         // For traits as mixins, repoint 'Self' to the struct node
         if (cstate->selftype && ((NameUseNode*)node)->namesym == selfTypeName)

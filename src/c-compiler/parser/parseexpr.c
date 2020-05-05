@@ -232,14 +232,14 @@ INode *parseAddr(ParseState *parse) {
         RefNode *anode = newRefNode(AmperTag);
         anode->region = (INode*)lex->val.ident->node;
         lexNextToken();
-        anode->perm = parsePerm(uniPerm);
+        anode->perm = parsePerm();
         anode->vtexp = parseDotPrefix(parse);
         return (INode *)anode;
     }
 
     // Borrowed reference
     RefNode *anode = newRefNode(AmperTag);
-    anode->perm = parsePerm(NULL);
+    anode->perm = parsePerm();
 
     // Get the term we are borrowing from (which might be a de-referenced reference)
     if (lexIsToken(StarToken)) {
