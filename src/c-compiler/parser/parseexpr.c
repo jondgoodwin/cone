@@ -17,7 +17,6 @@
 #include <stdio.h>
 #include <assert.h>
 
-INode *parseAddr(ParseState *parse);
 INode *parseArrayLit(ParseState *parse, INode *typenode);
 
 // Parse a name use, which may be qualified with module names
@@ -200,36 +199,31 @@ INode *parseDotPrefix(ParseState *parse) {
         return parsePostCall(parse, parseTerm(parse), 0);
 }
 
-// Parse an "address term" for:
-// - ref to an anonymous function
-// - Allocation
-// - Borrowed ref
-INode *parseAddr(ParseState *parse) {
-    // Parse when it is not address operator
-    if (!lexIsToken(AmperToken))
-        return parseDotPrefix(parse);
-
-    // It is address operator ...
-    lexNextToken();
-
-    // Borrowed reference to anonymous function/closure
-    if (lexIsToken(FnToken)) {
-        RefNode *anode = newRefNode(AmperTag);
-        INode *fndcl = parseFn(parse, 0, ParseMayAnon | ParseMayImpl);
-        nodesAdd(&parse->mod->nodes, fndcl);
-        NameUseNode *fnname = newNameUseNode(anonName);
-        fnname->tag = VarNameUseTag;
-        fnname->dclnode = fndcl;
-        fnname->vtype = ((FnDclNode *)fndcl)->vtype;
-        anode->vtexp = (INode*)fnname;
-        anode->perm = (INode*)opaqPerm;
-        return (INode *)anode;
+// Parse an "ampersand term" for a ref type or reference constructor:
+// - Some reference type ('&', '&[]' or '&<')
+// - Allocation node (with region)
+// - Borrowed ref (including to an anonymous function or closure)
+INode *parseAmper(ParseState *parse) {
+    // If ampersand, choose correct tag
+    uint16_t tag;
+    switch (lex->toktype) {
+    case AmperToken:
+        tag = AmperTag; break;
+    case ArrayRefToken:
+        tag = ArrayRefTag; break;
+    case VirtRefToken:
+        tag = VirtRefTag; break;
+    default:
+        return parseDotPrefix(parse); // Not '&' op
     }
 
-    // Allocated reference
+    // It is ampersand operator, so create the node for holding region/perm/vtexp
+    RefNode *anode = newRefNode(tag);
+    lexNextToken();
+
+    // Allocated reference starts with a region
     if (lexIsToken(IdentToken)
         && lex->val.ident->node && lex->val.ident->node->tag == RegionTag) {
-        RefNode *anode = newRefNode(AmperTag);
         anode->region = (INode*)lex->val.ident->node;
         lexNextToken();
         anode->perm = parsePerm();
@@ -237,9 +231,20 @@ INode *parseAddr(ParseState *parse) {
         return (INode *)anode;
     }
 
-    // Borrowed reference
-    RefNode *anode = newRefNode(AmperTag);
+    // Without region, we have a borrowed reference
     anode->perm = parsePerm();
+
+    // Handle borrowed reference to anonymous function/closure
+    if (lexIsToken(FnToken)) {
+        INode *fndcl = parseFn(parse, 0, ParseMayAnon | ParseMayImpl);
+        nodesAdd(&parse->mod->nodes, fndcl);
+        NameUseNode *fnname = newNameUseNode(anonName);
+        fnname->tag = VarNameUseTag;
+        fnname->dclnode = fndcl;
+        fnname->vtype = ((FnDclNode *)fndcl)->vtype;
+        anode->vtexp = (INode*)fnname;
+        return (INode *)anode;
+    }
 
     // Get the term we are borrowing from (which might be a de-referenced reference)
     if (lexIsToken(StarToken)) {
@@ -260,7 +265,7 @@ INode *parseAddr(ParseState *parse) {
 
 // Parse postfix ++ and -- operators
 INode *parsePostIncr(ParseState *parse) {
-    INode *node = parseAddr(parse);
+    INode *node = parseAmper(parse);
     while (1) {
         if (lexIsToken(IncrToken) && !lexIsStmtBreak()) {
             node = (INode*)newFnCallOpname(node, incrPostName, 0);
