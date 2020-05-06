@@ -173,31 +173,36 @@ Nodes *parseArgs(ParseState *parse) {
     return args;
 }
 
+// Parse a '.'-based method call/field access
+INode *parseDotCall(ParseState *parse, INode *node, uint16_t flags) {
+    FnCallNode *fncall = newFnCallNode(node, 0);
+    fncall->flags |= flags;
+    lexNextToken();
+
+    // Get field/method name
+    if (lexIsToken(IdentToken)) {
+        NameUseNode *method = newNameUseNode(lex->val.ident);
+        method->tag = MbrNameUseTag;
+        fncall->methfld = method;
+    }
+    else
+        errorMsgLex(ErrorNoMbr, "This should be a named field/method");
+    lexNextToken();
+
+    // Parentheses after '.' are part of same fncall operation
+    if (lexIsToken(LParenToken))
+        fncall->args = parseArgs(parse);
+    return (INode*)fncall;
+}
+
 // This processes all suffix operators successively
 // Returns a node with first suffix inner-most, last is outermost.
 INode *parseSuffix(ParseState *parse, INode *node, uint16_t flags) {
 
     // Process as many suffixes as we have, each applying to the term before
     while (1) {
-        if (lexIsToken(DotToken)) {
-            FnCallNode *fncall = newFnCallNode(node, 0);
-            fncall->flags |= flags;
-            lexNextToken();
-
-            // Get field/method name
-            if (lexIsToken(IdentToken)) {
-                NameUseNode *method = newNameUseNode(lex->val.ident);
-                method->tag = MbrNameUseTag;
-                fncall->methfld = method;
-            }
-            else
-                errorMsgLex(ErrorNoMbr, "This should be a named field/method");
-            lexNextToken();
-
-            // Parentheses after '.' are part of same fncall operation
-            if (lexIsToken(LParenToken))
-                fncall->args = parseArgs(parse);
-            node = (INode*)fncall;
+        if (lexIsToken(DotToken) && !lexIsStmtBreak()) {
+            node = parseDotCall(parse, node, flags);
         }
 
         // Handle () suffix and enclosed arguments
@@ -303,7 +308,10 @@ INode *parsePrefix(ParseState *parse, int noSuffix) {
 
     // '.' sugar for: this.suffixes
     case DotToken:
-        return parseSuffix(parse, (INode*)newNameUseNode(thisName), 0);
+    {
+        INode *node = parseDotCall(parse, (INode*)newNameUseNode(thisName), 0);
+        return parseSuffix(parse, node, 0);
+    }
 
     // '*' (dereference or pointer type)
     case StarToken:
