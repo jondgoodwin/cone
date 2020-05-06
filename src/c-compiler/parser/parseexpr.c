@@ -17,8 +17,6 @@
 #include <stdio.h>
 #include <assert.h>
 
-INode *parseArrayLit(ParseState *parse, INode *typenode);
-
 // Parse a name use, which may be qualified with module names
 INode *parseNameUse(ParseState *parse) {
     NameUseNode *nameuse = newNameUseNode(NULL);
@@ -52,6 +50,37 @@ INode *parseNameUse(ParseState *parse) {
         }
     }
     return (INode*)nameuse;
+}
+
+// Parse an array literal
+INode *parseArrayLit(ParseState *parse, INode *typenode) {
+    ArrayNode *array = newArrayNode();
+    lexNextToken();
+
+    // Gather comma-separated expressions that are likely elements or element type
+    while (1) {
+        nodesAdd(&array->elems, parseSimpleExpr(parse));
+        if (!lexIsToken(CommaToken))
+            break;
+        lexNextToken();
+    }
+
+    // Semi-colon signals we had dimensions instead, swap and then get elements
+    if (lexIsToken(SemiToken)) {
+        lexNextToken();
+        Nodes *elems = array->dimens;
+        array->dimens = array->elems;
+        while (1) {
+            nodesAdd(&elems, parseSimpleExpr(parse));
+            if (!lexIsToken(CommaToken))
+                break;
+            lexNextToken();
+        };
+        array->elems = elems;
+    }
+    parseCloseTok(RBracketToken);
+
+    return (INode *)array;
 }
 
 // Parse a term: literal, identifier, etc.
@@ -127,98 +156,110 @@ INode *parseArg(ParseState *parse) {
     return arg;
 }
 
-INode *parsePostCall(ParseState *parse, INode *node, uint16_t flags);
-
-// Construct a FnCall node, by parsing its suffices on a passed operand node
-// We enter here knowing that next token is a '.', '(' or '['
-INode *parseFnCall(ParseState *parse, INode *node, uint16_t flags) {
-    FnCallNode *fncall = newFnCallNode(node, 0);
-    fncall->flags |= flags;
-
-    if (lexIsToken(DotToken)) {
-        lexNextToken();
-
-        // Get field/method name
-        if (!lexIsToken(IdentToken)) {
-            errorMsgLex(ErrorNoMbr, "This should be a named field/method");
+// Parse multiple arguments inside () or []. Return a Nodes containing all argument nodes.
+Nodes *parseArgs(ParseState *parse) {
+    int closetok = lex->toktype == LBracketToken ? RBracketToken : RParenToken;
+    lexNextToken();
+    lexIncrParens();
+    Nodes *args = newNodes(8);
+    if (!lexIsToken(closetok)) {
+        nodesAdd(&args, parseArg(parse));
+        while (lexIsToken(CommaToken)) {
             lexNextToken();
-            return (INode*)fncall;
+            nodesAdd(&args, parseArg(parse));
         }
-        NameUseNode *method = newNameUseNode(lex->val.ident);
-        method->tag = MbrNameUseTag;
-        fncall->methfld = method;
-        lexNextToken();
-
-        // Square brackets after '.' are a separate fncall operation
-        if (lexIsToken(LBracketToken))
-            return parsePostCall(parse, (INode*)fncall, flags);
-
     }
+    parseCloseTok(closetok);
+    return args;
+}
 
-    // Handle () or [] suffixes and their enclosed arguments
-    if ((lexIsToken(LParenToken) || lexIsToken(LBracketToken)) && !lexIsStmtBreak()) {
-        int closetok;
-        if (lex->toktype == LBracketToken) {
-            fncall->flags |= FlagIndex;
-            closetok = RBracketToken;
-        }
-        else
-            closetok = RParenToken;
-        lexNextToken();
-        lexIncrParens();
-        fncall->args = newNodes(8);
-        if (!lexIsToken(closetok)) {
-            nodesAdd(&fncall->args, parseArg(parse));
-            while (lexIsToken(CommaToken)) {
-                lexNextToken();
-                nodesAdd(&fncall->args, parseArg(parse));
+// This processes all suffix operators successively
+// Returns a node with first suffix inner-most, last is outermost.
+INode *parseSuffix(ParseState *parse, INode *node, uint16_t flags) {
+
+    // Process as many suffixes as we have, each applying to the term before
+    while (1) {
+        if (lexIsToken(DotToken)) {
+            FnCallNode *fncall = newFnCallNode(node, 0);
+            fncall->flags |= flags;
+            lexNextToken();
+
+            // Get field/method name
+            if (lexIsToken(IdentToken)) {
+                NameUseNode *method = newNameUseNode(lex->val.ident);
+                method->tag = MbrNameUseTag;
+                fncall->methfld = method;
             }
+            else
+                errorMsgLex(ErrorNoMbr, "This should be a named field/method");
+            lexNextToken();
+
+            // Parentheses after '.' are part of same fncall operation
+            if (lexIsToken(LParenToken))
+                fncall->args = parseArgs(parse);
+            node = (INode*)fncall;
         }
-        parseCloseTok(closetok);
+
+        // Handle () suffix and enclosed arguments
+        else if (lexIsToken(LParenToken) && !lexIsStmtBreak()) {
+            FnCallNode *fncall = newFnCallNode(node, 0);
+            fncall->flags |= flags;
+            fncall->args = parseArgs(parse);
+            node = (INode*)fncall;
+        }
+
+        // Handle [] indexing suffix and enclosed arguments
+        else if (lexIsToken(LBracketToken) && !lexIsStmtBreak()) {
+            FnCallNode *fncall = newFnCallNode(node, 0);
+            fncall->flags |= flags | FlagIndex;
+            fncall->args = parseArgs(parse);
+            node = (INode*)fncall;
+        }
+
+        // Handle postfix ++
+        else if (lexIsToken(IncrToken) && !lexIsStmtBreak()) {
+            node = (INode*)newFnCallOpname(node, incrPostName, 0);
+            node->flags |= FlagLvalOp;
+            lexNextToken();
+        }
+
+        // Handle postfix --
+        else if (lexIsToken(DecrToken) && !lexIsStmtBreak()) {
+            node = (INode*)newFnCallOpname(node, decrPostName, 0);
+            node->flags |= FlagLvalOp;
+            lexNextToken();
+        }
+
+        // No suffix, we are done with suffixes
+        else
+            return node;
     }
-
-    // Recursively wrap additional call suffixes, if any. Return fncall node otherwise.
-    if (lexIsToken(DotToken) || lexIsToken(LParenToken) || lexIsToken(LBracketToken))
-        return parsePostCall(parse, (INode*)fncall, flags);
-    return (INode*)fncall;
+    return node; // we never get here
 }
 
-// Handle call suffix operators '.', '()', '[]' as postfix/infix operators
-INode *parsePostCall(ParseState *parse, INode *node, uint16_t flags) {
-    if ((lexIsToken(DotToken) || lexIsToken(LParenToken) || lexIsToken(LBracketToken)) && !lexIsStmtBreak())
-        return parseFnCall(parse, node, flags);
-    return node;
+// Parse a term wrapped by any suffixes.
+// This is the normal precedence (except for borrowed references)
+INode *parseSuffixTerm(ParseState *parse) {
+    return parseSuffix(parse, parseTerm(parse), 0);
 }
 
-// Parse prefix dot operator
-INode *parseDotPrefix(ParseState *parse) {
-    // '.' as prefix operator implies 'this' as operand
-    if (lexIsToken(DotToken))
-        return parseFnCall(parse, (INode*)newNameUseNode(thisName), 0);
-    else
-        return parsePostCall(parse, parseTerm(parse), 0);
-}
+INode *parsePrefix(ParseState *parse, int noSuffix);
 
 // Parse an "ampersand term" for a ref type or reference constructor:
 // - Some reference type ('&', '&[]' or '&<')
 // - Allocation node (with region)
 // - Borrowed ref (including to an anonymous function or closure)
 INode *parseAmper(ParseState *parse) {
-    // If ampersand, choose correct tag
-    uint16_t tag;
+    // Create appropriate RefNode, depending on ampersand operator
+    RefNode *anode;
     switch (lex->toktype) {
     case AmperToken:
-        tag = AmperTag; break;
+        anode = newRefNode(AmperTag); break;
     case ArrayRefToken:
-        tag = ArrayRefTag; break;
+        anode = newRefNode(ArrayRefTag); break;
     case VirtRefToken:
-        tag = VirtRefTag; break;
-    default:
-        return parseDotPrefix(parse); // Not '&' op
+        anode = newRefNode(VirtRefTag); break;
     }
-
-    // It is ampersand operator, so create the node for holding region/perm/vtexp
-    RefNode *anode = newRefNode(tag);
     lexNextToken();
 
     // Allocated reference starts with a region
@@ -227,7 +268,7 @@ INode *parseAmper(ParseState *parse) {
         anode->region = (INode*)lex->val.ident->node;
         lexNextToken();
         anode->perm = parsePerm();
-        anode->vtexp = parseDotPrefix(parse);
+        anode->vtexp = parsePrefix(parse, 0);
         return (INode *)anode;
     }
 
@@ -246,51 +287,45 @@ INode *parseAmper(ParseState *parse) {
         return (INode *)anode;
     }
 
-    // Get the term we are borrowing from (which might be a de-referenced reference)
-    if (lexIsToken(StarToken)) {
-        StarNode *derefnode = newStarNode(StarTag);
-        lexNextToken();
-        derefnode->vtexp = lexIsToken(DotToken) ? (INode*)newNameUseNode(thisName) : parseTerm(parse);
-        anode->vtexp = (INode*)derefnode;
-    }
-    else
-        anode->vtexp = lexIsToken(DotToken) ? (INode*)newNameUseNode(thisName) : parseTerm(parse);
-
-    // Process borrow chain suffixes, and set flag to show if we had some
-    INode* node = parsePostCall(parse, (INode*)anode, FlagBorrow);
+    // Borrowed references handle precedence differently, consuming only a prefixed term w/o suffixes
+    // Then the suffixes are appended afterwards as a chain of method calls that consume the borrowed ref
+    anode->vtexp = parsePrefix(parse, 1);  // Consume prefixed-term but skip suffix parsing
+    INode* node = parseSuffix(parse, (INode*)anode, FlagBorrow);
     if (node != (INode*)anode)
-        anode->flags |= FlagSuffix;
+        anode->flags |= FlagSuffix;  // Set flag to show we ended up with suffixes
     return node;
 }
 
-// Parse postfix ++ and -- operators
-INode *parsePostIncr(ParseState *parse) {
-    INode *node = parseAmper(parse);
-    while (1) {
-        if (lexIsToken(IncrToken) && !lexIsStmtBreak()) {
-            node = (INode*)newFnCallOpname(node, incrPostName, 0);
-            node->flags |= FlagLvalOp;
-            lexNextToken();
-        }
-        else if (lexIsToken(DecrToken) && !lexIsStmtBreak()) {
-            node = (INode*)newFnCallOpname(node, decrPostName, 0);
-            node->flags |= FlagLvalOp;
-            lexNextToken();
-        }
-        else {
-            return node;
-        }
-    }
-}
-
-// Parse a prefix operator: - (negative), ~ (not), ++, --, * (deref)
-INode *parsePrefix(ParseState *parse) {
+// Parse a prefix operator.
+// If noSuffix flag on (for borrowed refs), parse only a term next, otherwise parse term+suffix.
+INode *parsePrefix(ParseState *parse, int noSuffix) {
     switch (lex->toktype) {
+
+    // '.' sugar for: this.suffixes
+    case DotToken:
+        return parseSuffix(parse, (INode*)newNameUseNode(thisName), 0);
+
+    // '*' (dereference or pointer type)
+    case StarToken:
+    {
+        StarNode *node = newStarNode(StarTag);
+        lexNextToken();
+        node->vtexp = parsePrefix(parse, noSuffix);
+        return (INode *)node;
+    }
+
+    // '&', '&[]', '&<' (borrow/allocate/ref type)
+    case AmperToken:
+    case ArrayRefToken:
+    case VirtRefToken:
+        return parseAmper(parse);
+
+    // '-' (negative). Optimize for literals
     case DashToken:
     {
         FnCallNode *node = newFnCallOpname(NULL, minusName, 0);
         lexNextToken();
-        INode *argnode = parsePrefix(parse);
+        INode *argnode = parsePrefix(parse, noSuffix);
         if (argnode->tag == ULitTag) {
             ((ULitNode*)argnode)->uintlit = (uint64_t)-((int64_t)((ULitNode*)argnode)->uintlit);
             return argnode;
@@ -302,44 +337,48 @@ INode *parsePrefix(ParseState *parse) {
         node->objfn = argnode;
         return (INode *)node;
     }
+
+    // '~' (bitwise not)
     case TildeToken:
     {
         FnCallNode *node = newFnCallOp(NULL, "~", 0);
         lexNextToken();
-        node->objfn = parsePrefix(parse);
+        node->objfn = parsePrefix(parse, noSuffix);
         return (INode *)node;
     }
+
+    // '++' (prefix increment)
     case IncrToken:
     {
         FnCallNode *node = newFnCallOpname(NULL, incrName, 0);
         node->flags |= FlagLvalOp;
         lexNextToken();
-        node->objfn = parsePrefix(parse);
+        node->objfn = parsePrefix(parse, noSuffix);
         return (INode *)node;
     }
+
+    // '--' (prefix decrement)
     case DecrToken:
     {
         FnCallNode *node = newFnCallOpname(NULL, decrName, 0);
         node->flags |= FlagLvalOp;
         lexNextToken();
-        node->objfn = parsePrefix(parse);
+        node->objfn = parsePrefix(parse, noSuffix);
         return (INode *)node;
     }
-    case StarToken:
-    {
-        StarNode *node = newStarNode(StarTag);
-        lexNextToken();
-        node->vtexp = parsePrefix(parse);
-        return (INode *)node;
-    }
+
+    // No prefix operator: get term or term+suffix, depending on flag
     default:
-        return parsePostIncr(parse);
+        if (noSuffix)
+            return parseTerm(parse); // save suffixes for a borrowed ref
+        else
+            return parseSuffixTerm(parse);  // normal precedence
     }
 }
 
 // Parse type cast
 INode *parseCast(ParseState *parse) {
-    INode *lhnode = parsePrefix(parse);
+    INode *lhnode = parsePrefix(parse, 0);
     if (lexIsToken(AsToken)) {
         CastNode *node = newRecastNode(lhnode, unknownType);
         lexNextToken();
@@ -617,37 +656,6 @@ INode *parseAssign(ParseState *parse) {
     default:
         return lval;
     }
-}
-
-// Parse an array literal
-INode *parseArrayLit(ParseState *parse, INode *typenode) {
-    ArrayNode *array = newArrayNode();
-    lexNextToken();
-
-    // Gather comma-separated expressions that are likely elements or element type
-    while (1) {
-        nodesAdd(&array->elems, parseSimpleExpr(parse));
-        if (!lexIsToken(CommaToken))
-            break;
-        lexNextToken();
-    }
-
-    // Semi-colon signals we had dimensions instead, swap and then get elements
-    if (lexIsToken(SemiToken)) {
-        lexNextToken();
-        Nodes *elems = array->dimens;
-        array->dimens = array->elems;
-        while (1) {
-            nodesAdd(&elems, parseSimpleExpr(parse));
-            if (!lexIsToken(CommaToken))
-                break;
-            lexNextToken();
-        };
-        array->elems = elems;
-    }
-    parseCloseTok(RBracketToken);
-
-    return (INode *)array;
 }
 
 // This parses any kind of expression, including blocks, assignment or tuple
