@@ -337,6 +337,17 @@ INode *parsePrefix(ParseState *parse, int noSuffix) {
     case VirtRefToken:
         return parseAmper(parse);
 
+    // '?' (Option type)
+    case QuesToken:
+    {
+        // Lower into 'Option[expr]'
+        NameUseNode *option = newNameUseNode(optionName);
+        FnCallNode *opttype = newFnCallNode((INode*)option, 1);
+        lexNextToken();
+        nodesAdd(&opttype->args, parsePrefix(parse, noSuffix));
+        return (INode*)opttype;
+    }
+
     // '-' (negative). Optimize for literals
     case DashToken:
     {
