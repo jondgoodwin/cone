@@ -49,11 +49,14 @@ void fnSigPrint(FnSigNode *sig) {
 
 // Name resolution of the function signature
 void fnSigNameRes(NameResState *pstate, FnSigNode *sig) {
+    uint16_t svscope = pstate->scope;
+    pstate->scope = 0; // Make scope 0 to avoid parameter names being hooked.
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(sig->parms, cnt, nodesp))
         inodeNameRes(pstate, nodesp);
     inodeNameRes(pstate, &sig->rettype);
+    pstate->scope = svscope;
 }
 
 // Type check the function signature
