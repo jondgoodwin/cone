@@ -191,7 +191,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
 
     // If block has been provided, process field or method definitions
     // If not, we have an opaque struct!
-    if (!parseHasNoBlock()) {
+    if (parseHasBlock()) {
         parseBlockStart();
         while (!parseBlockEnd()) {
             lexStmtStart();
@@ -239,6 +239,8 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
             }
         }
     }
+    else
+        parseEndOfStatement();
 
     parse->typenode = svtype;
     parse->gennamePrefix = svprefix;

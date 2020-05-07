@@ -58,16 +58,9 @@ void parseEndOfStatement() {
         errorMsgLex(ErrorNoSemi, "Statement finished? Expected semicolon or end of line.");
 }
 
-// Return true if we have a consumed semi-colon or we are at end-of-line and next line is not indented
-// Otherwise, we expect to have a block
-int parseHasNoBlock() {
-    if (lex->toktype == LCurlyToken || lex->toktype == ColonToken)
-        return 0;
-    if (lex->toktype == SemiToken) {
-        lexNextToken();
-        return 1;
-    }
-    return lexIsEndOfLine() && (lex->curindent <= lex->stmtindent);
+// Return true on '{' or ':'
+int parseHasBlock() {
+    return (lex->toktype == LCurlyToken || lex->toktype == ColonToken);
 }
 
 // Expect a block to start, consume its token and set lexer mode
@@ -162,7 +155,7 @@ INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags) {
     fnnode->vtype = parseFnSig(parse);
 
     // Process statements block that implements function, if provided
-    if (!parseHasNoBlock()) {
+    if (parseHasBlock()) {
         if (!(mayflags&ParseMayImpl))
             errorMsgNode((INode*)fnnode, ErrorBadImpl, "Function/method implementation is not allowed here.");
         fnnode->value = parseExprBlock(parse);
@@ -170,7 +163,8 @@ INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags) {
     else {
         if (!(mayflags&ParseMaySig))
             errorMsgNode((INode*)fnnode, ErrorNoImpl, "Function/method must be implemented.");
-        parseEndOfStatement();
+        if (!(mayflags&ParseEmbedded))
+            parseEndOfStatement();
     }
 
     return genericnode? (INode*)genericnode : (INode*) fnnode;
@@ -386,18 +380,18 @@ ModuleNode *parseModule(ParseState *parse) {
     nameConcatPrefix(&parse->gennamePrefix, modname);
 
     // Check if module's block has been specified
-    if (parseHasNoBlock()) {
+    if (parseHasBlock()) {
+        // Inline module
+        parseBlockStart();
+        parseModuleBlk(parse, mod);
+        // parseBlockEnd() will have happened
+    }
+    else {
         // If no block, get and inject the module file
         parseEndOfStatement();
         lexInjectFile(filename);
         parseModuleBlk(parse, mod);
         lexPop();
-    }
-    else {
-        // Inline module
-        parseBlockStart();
-        parseModuleBlk(parse, mod);
-        // parseBlockEnd() will have happened
     }
 
     parse->gennamePrefix = svprefix;

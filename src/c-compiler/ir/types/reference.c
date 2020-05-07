@@ -82,9 +82,10 @@ void refPrint(RefNode *node) {
 // Name resolution of a reference node
 void refNameRes(NameResState *pstate, RefNode *node) {
     inodeNameRes(pstate, &node->region);
-    if (node->perm)
-        inodeNameRes(pstate, (INode**)&node->perm);
+    inodeNameRes(pstate, (INode**)&node->perm);
     inodeNameRes(pstate, &node->vtexp);
+
+    // Decide if we have a reference type or a borrow/allocate constructor
     if (node->tag == AmperTag)
         node->tag = isTypeNode(node->vtexp) ? RefTag : (node->region == (INode*)borrowRef ? BorrowTag : AllocateTag);
 }

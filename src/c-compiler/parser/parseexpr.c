@@ -281,14 +281,23 @@ INode *parseAmper(ParseState *parse) {
     anode->perm = parsePerm();
 
     // Handle borrowed reference to anonymous function/closure
+    // Note: This could also be a ref to a function signature. We sort this out later.
     if (lexIsToken(FnToken)) {
-        INode *fndcl = parseFn(parse, 0, ParseMayAnon | ParseMayImpl);
-        nodesAdd(&parse->mod->nodes, fndcl);
-        NameUseNode *fnname = newNameUseNode(anonName);
-        fnname->tag = VarNameUseTag;
-        fnname->dclnode = fndcl;
-        fnname->vtype = ((FnDclNode *)fndcl)->vtype;
-        anode->vtexp = (INode*)fnname;
+        FnDclNode *fndcl = (FnDclNode*)parseFn(parse, 0, ParseMayAnon | ParseMayImpl | ParseMaySig | ParseEmbedded);
+        if (fndcl->value) {
+            // If we have an implemented function, we need to move it to the module so it gets generated
+            // Then refer to it using a nameuse node as part of this reference node
+            nodesAdd(&parse->mod->nodes, (INode*)fndcl);
+            NameUseNode *fnname = newNameUseNode(anonName);
+            fnname->tag = VarNameUseTag;
+            fnname->dclnode = (INode*)fndcl;
+            fnname->vtype = fndcl->vtype;
+            anode->vtexp = (INode*)fnname;
+        }
+        else {
+            // If no implementation, assume we have a function signature type instead
+            anode->vtexp = fndcl->vtype;
+        }
         return (INode *)anode;
     }
 

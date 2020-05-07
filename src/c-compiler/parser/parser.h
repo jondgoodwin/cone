@@ -24,7 +24,8 @@ enum ParseFlags {
     ParseMayAnon = 0x4000,        // The variable may be anonymous
     ParseMaySig  = 0x2000,        // The variable may be signature only
     ParseMayImpl = 0x1000,        // The variable may implement a code block
-    ParseMayConst = 0x0800      // const allowed for variable declaration
+    ParseEmbedded = 0x0800,       // Is embedded in expression (no semi)
+    ParseMayConst = 0x0400        // const allowed for variable declaration
 };
 
 // parser.c
@@ -37,9 +38,8 @@ void parseSkipToNextStmt();
 int parseIsEndOfStatement();
 // We expect optional semicolon since statement has run its course
 void parseEndOfStatement();
-// Return true if we have a consumed semi-colon or we are at end-of-line and next line is not indented
-// Otherwise, we expect to have a block
-int parseHasNoBlock();
+// Return true on '{' or ':'
+int parseHasBlock();
 // Expect a block to start, consume its token and set lexer mode
 void parseBlockStart();
 // Are we at end of block yet? If so, consume token and reset lexer mode
