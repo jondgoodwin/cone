@@ -39,6 +39,7 @@ Name *andEqName;    // "&="
 Name *xorEqName;    // "^="
 Name *shlEqName;    // "<<="
 Name *shrEqName;    // ">>="
+Name *lessDashName; // "<-"
 
 Name *plusName;     // "+"
 Name *minusName;    // "-"

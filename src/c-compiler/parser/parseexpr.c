@@ -681,6 +681,8 @@ INode *parseAssign(ParseState *parse) {
         return parseOpEq(parse, lval, shlEqName);
     case ShrEqToken:
         return parseOpEq(parse, lval, shrEqName);
+    case LessDashToken:
+        return parseOpEq(parse, lval, lessDashName);
     default:
         return lval;
     }

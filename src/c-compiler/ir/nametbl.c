@@ -161,6 +161,7 @@ void nametblInit() {
     xorEqName = nametblFind("^=", 2);
     shlEqName = nametblFind("<<=", 3);
     shrEqName = nametblFind(">>=", 3);
+    lessDashName = nametblFind("<-", 2);
 
     plusName = nametblFind("+", 1);
     minusName = nametblFind("-", 1);
