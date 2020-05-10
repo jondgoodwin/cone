@@ -290,7 +290,7 @@ INode *parseFnSig(ParseState *parse) {
                 if (parm->vtype == unknownType) {
                     parm->vtype = (INode*)newNameUseNode(selfTypeName);
                 }
-                else if (parm->vtype->tag == AmperTag) {
+                else if (parm->vtype->tag == RefTag) {
                     RefNode *refnode = (RefNode *)parm->vtype;
                     if (refnode->vtexp == unknownType) {
                         refnode->vtexp = (INode*)newNameUseNode(selfTypeName);

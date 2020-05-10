@@ -85,7 +85,6 @@ enum NodeTags {
     NameUseTag,     // Name use node (pre-name resolution)
     TupleTag,       // Tuple for tuple type or tuple literal
     StarTag,        // Could become pointer type or deref exp node
-    AmperTag,       // Could become ref type or borrow/alloc exp node
 
     // Named, non-type declaration nodes
     ModuleTag = StmtGroup + NamedNode,        // Module namespace
@@ -110,7 +109,9 @@ enum NodeTags {
     SizeofTag,      // Sizeof a type (usize)
     CastTag,        // Cast exp to another type
     BorrowTag,      // & (address of) operator
+    ArrayBorrowTag, // &[] borrow operator
     AllocateTag,    // & allocated ref allocation
+    ArrayAllocTag,  // &[] allocate operator
     DerefTag,       // * (pointed at) operator
     NotLogicTag,    // ! / not
     OrLogicTag,     // or
@@ -128,8 +129,8 @@ enum NodeTags {
     TypedefTag,     // A type name alias (structural)
     FnSigTag,       // Also method, closure, behavior, co-routine, thread, ...
     ArrayTag,       // Also dynamic arrays? SOA?
-    RefTag,         // Reference
-    ArrayRefTag,    // Array reference (slice ref)
+    RefTag,         // Reference (could become borrowtag/alloctag)
+    ArrayRefTag,    // Array reference (slice ref) (could become arrborrow/arralloc tag)
     VirtRefTag,     // Virtual reference
     ArrayDerefTag,  // De-referenced array reference (the slice itself)
     PtrTag,         // Pointer

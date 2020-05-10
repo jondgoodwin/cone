@@ -259,7 +259,7 @@ INode *parseAmper(ParseState *parse) {
     RefNode *anode;
     switch (lex->toktype) {
     case AmperToken:
-        anode = newRefNode(AmperTag); break;
+        anode = newRefNode(RefTag); break;
     case ArrayRefToken:
         anode = newRefNode(ArrayRefTag); break;
     case VirtRefToken:

@@ -22,8 +22,12 @@ void arrayRefPrint(RefNode *node) {
 void arrayRefNameRes(NameResState *pstate, RefNode *node) {
     inodeNameRes(pstate, &node->region);
     inodeNameRes(pstate, (INode**)&node->perm);
-    if (node->vtexp)
-        inodeNameRes(pstate, &node->vtexp);
+    inodeNameRes(pstate, &node->vtexp);
+
+    // If this is not a reference type, turn it into a borrow/allocate constructor
+    if (!isTypeNode(node->vtexp)) {
+        node->tag = node->region == (INode*)borrowRef ? ArrayBorrowTag : ArrayAllocTag;
+    }
 }
 
 // Type check an array reference node

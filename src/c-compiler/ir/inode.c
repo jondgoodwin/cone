@@ -244,7 +244,6 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         typedefNameRes(pstate, (TypedefNode *)*node); break;
     case FnSigTag:
         fnSigNameRes(pstate, (FnSigNode *)*node); break;
-    case AmperTag:
     case RefTag:
     case VirtRefTag:
         refNameRes(pstate, (RefNode *)*node); break;
@@ -341,6 +340,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
         castTypeCheck(pstate, (CastNode *)*node); break;
     case DerefTag:
         derefTypeCheck(pstate, (StarNode *)*node); break;
+    case ArrayBorrowTag:
     case BorrowTag:
         borrowTypeCheck(pstate, (RefNode **)node); break;
     case AllocateTag:

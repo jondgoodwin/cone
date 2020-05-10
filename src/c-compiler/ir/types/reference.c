@@ -85,9 +85,13 @@ void refNameRes(NameResState *pstate, RefNode *node) {
     inodeNameRes(pstate, (INode**)&node->perm);
     inodeNameRes(pstate, &node->vtexp);
 
-    // Decide if we have a reference type or a borrow/allocate constructor
-    if (node->tag == AmperTag)
-        node->tag = isTypeNode(node->vtexp) ? RefTag : (node->region == (INode*)borrowRef ? BorrowTag : AllocateTag);
+    // If this is not a reference type, turn it into a borrow/allocate constructor
+    if (!isTypeNode(node->vtexp)) {
+        if (node->tag == RefTag)
+            node->tag = node->region == (INode*)borrowRef ? BorrowTag : AllocateTag;
+        else
+            errorMsgNode((INode*)node, ErrorBadTerm, "May not borrow or allocate a virtual reference. Coerce from a regular ref.");
+    }
 }
 
 // Type check a reference node

@@ -58,7 +58,6 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     // Setup lval, perm and scope info as if we were borrowing from a global constant literal.
     // If not, extract this info from expression nodes
     uint16_t scope = 0;  // global
-    uint16_t tag = RefTag;
     INode *lval = node->vtexp;
     INode *lvalperm = (INode*)immPerm;
     scope = 0;  // Global
@@ -78,6 +77,7 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
 
     // The reference's value type is currently unknown (NULL).
     // Let's infer this value type from the lval we are borrowing from
+    uint16_t tag = RefTag;
     INode *refvtype;
     if (lvaltype->tag == ArrayTag) {
         // Borrowing from a fixed size array creates an array reference
