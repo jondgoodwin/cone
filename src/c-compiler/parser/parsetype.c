@@ -100,6 +100,13 @@ INode *parseTypeName(ParseState *parse) {
     return node;
 }
 
+// Parse an enum type
+INode* parseEnum(ParseState *parse) {
+    EnumNode *node = newEnumNode();
+    lexNextToken();
+    return (INode*)node;
+}
+
 // Parse a field declaration
 FieldDclNode *parseFieldDcl(ParseState *parse, PermNode *defperm) {
     FieldDclNode *fldnode;
@@ -121,7 +128,9 @@ FieldDclNode *parseFieldDcl(ParseState *parse, PermNode *defperm) {
     lexNextToken();
 
     // Get value type, if provided
-    if ((vtype = parseVtype(parse)))
+    if (lexIsToken(EnumToken))
+        fldnode->vtype = parseEnum(parse);
+    else if ((vtype = parseVtype(parse)))
         fldnode->vtype = vtype;
 
     // Get initialization value after '=', if provided
@@ -401,13 +410,6 @@ INode *parseRefType(ParseState *parse, uint16_t tag) {
     }
 
     return (INode *)reftype;
-}
-
-// Parse an enum type
-INode* parseEnum(ParseState *parse) {
-    EnumNode *node = newEnumNode();
-    lexNextToken();
-    return (INode*)node;
 }
 
 // Parse a typedef statement
