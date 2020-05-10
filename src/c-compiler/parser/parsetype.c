@@ -333,83 +333,6 @@ INode *parseFnSig(ParseState *parse) {
     return (INode*)fnsig;
 }
 
-// Parse an array type or literal
-INode *parseArrayType(ParseState *parse) {
-    ArrayNode *array = newArrayNode();
-    lexNextToken();
-
-    // Gather comma-separated expressions that are likely elements or element type
-    while (1) {
-        nodesAdd(&array->elems, parseSimpleExpr(parse));
-        if (!lexIsToken(CommaToken))
-            break;
-        lexNextToken();
-    }
-
-    // Semi-colon signals we had dimensions instead, swap and then get elements
-    if (lexIsToken(SemiToken)) {
-        lexNextToken();
-        Nodes *elems = array->dimens;
-        array->dimens = array->elems;
-        while (1) {
-            nodesAdd(&elems, parseVtype(parse)); // parseSimpleExpr
-            if (!lexIsToken(CommaToken))
-                break;
-            lexNextToken();
-        };
-        array->elems = elems;
-    }
-    parseCloseTok(RBracketToken);
-
-    return (INode *)array;
-}
-
-// Parse a pointer type
-INode *parsePtrType(ParseState *parse) {
-    StarNode *ptype = newStarNode(StarTag);
-    lexNextToken();
-
-    // Get value type, if provided
-    if (lexIsToken(FnToken)) {
-        lexNextToken();
-        if (lexIsToken(IdentToken)) {
-            errorMsgLex(WarnName, "Unnecessary name is ignored");
-            lexNextToken();
-        }
-        ptype->vtexp = parseFnSig(parse);
-    }
-    else if ((ptype->vtexp = parseVtype(parse)) == NULL) {
-        errorMsgLex(ErrorNoVtype, "Missing value type for the pointer");
-        ptype->vtexp = unknownType;
-    }
-
-    return (INode *)ptype;
-}
-
-// Parse a reference type
-INode *parseRefType(ParseState *parse, uint16_t tag) {
-    RefNode *reftype = newRefNode(tag);
-    reftype->vtexp = unknownType;
-    lexNextToken();
-
-    parseAllocPerm(reftype); // Get allocator and permission, if provided
-
-    // Get value type for reference to a function
-    if (lexIsToken(FnToken)) {
-        lexNextToken();
-        if (lexIsToken(IdentToken)) {
-            errorMsgLex(WarnName, "Unnecessary name is ignored");
-            lexNextToken();
-        }
-        reftype->vtexp = parseFnSig(parse);
-    }
-    else if ((reftype->vtexp = parseVtype(parse)) == NULL) {
-        errorMsgLex(ErrorNoVtype, "Missing value type for the reference");
-    }
-
-    return (INode *)reftype;
-}
-
 // Parse a typedef statement
 TypedefNode *parseTypedef(ParseState *parse) {
     lexNextToken();
@@ -423,15 +346,6 @@ TypedefNode *parseTypedef(ParseState *parse) {
     newnode->typeval = parseVtype(parse);
     parseEndOfStatement();
     return newnode;
-}
-
-// Parse initial '?' as sugar for Option type
-INode *parseOption(ParseState *parse) {
-    NameUseNode *option = newNameUseNode(optionName);
-    FnCallNode *opttype = newFnCallNode((INode*)option, 1);
-    lexNextToken();
-    nodesAdd(&opttype->args, parseVtype(parse));
-    return (INode*)opttype;
 }
 
 // Parse a type expression. Return unknownType if none found.
@@ -449,24 +363,4 @@ INode* parseVtype(ParseState *parse) {
     default:
         return unknownType;
     }
-    /*switch (lex->toktype) {
-    case QuesToken:
-        return parseOption(parse);
-    case AmperToken:
-        return parseRefType(parse, AmperTag);
-    case ArrayRefToken:
-        return parseRefType(parse, ArrayRefTag);
-    case VirtRefToken:
-        return parseRefType(parse, VirtRefTag);
-    case StarToken:
-        return parsePtrType(parse);
-    case LBracketToken:
-        return parseArrayType(parse);
-    case EnumToken:
-        return parseEnum(parse);
-    case IdentToken:
-        return parseTypeName(parse);
-    default:
-        return unknownType;
-    }*/
 }
