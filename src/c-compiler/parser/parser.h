@@ -65,6 +65,8 @@ INode *parseAnyExpr(ParseState *parse);
 INode *parseNameUse(ParseState *parse);
 // Parse a term: literal, identifier, etc.
 INode *parseTerm(ParseState *parse);
+// Parse a prefix operator
+INode *parsePrefix(ParseState *parse, int noSuffix);
 
 // parsetype.c
 INode *parsePerm();

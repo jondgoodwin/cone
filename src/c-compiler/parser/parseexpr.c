@@ -301,6 +301,13 @@ INode *parseAmper(ParseState *parse) {
         return (INode *)anode;
     }
 
+    // For a function parameter, we allow incomplete reference types
+    // where the type the reference points-to can be inferred later (typically, Self)
+    if (lexIsToken(CommaToken) || lexIsToken(RParenToken)) {
+        anode->vtexp = unknownType;
+        return (INode *)anode;
+    }
+
     // Borrowed references handle precedence differently, consuming only a prefixed term w/o suffixes
     // Then the suffixes are appended afterwards as a chain of method calls that consume the borrowed ref
     anode->vtexp = parsePrefix(parse, 1);  // Consume prefixed-term but skip suffix parsing

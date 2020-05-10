@@ -43,7 +43,6 @@ void parseAllocPerm(RefNode *refnode) {
 // Parse a variable declaration
 VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     VarDclNode *varnode;
-    INode *vtype;
     INode *perm;
 
     // Grab the permission type
@@ -62,8 +61,7 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     lexNextToken();
 
     // Get value type, if provided
-    if ((vtype = parseVtype(parse)))
-        varnode->vtype = vtype;
+    varnode->vtype = parseVtype(parse);
 
     // Get initialization value after '=', if provided
     if (lexIsToken(AssgnToken)) {
@@ -436,9 +434,22 @@ INode *parseOption(ParseState *parse) {
     return (INode*)opttype;
 }
 
-// Parse a value type signature. Return NULL if none found.
+// Parse a type expression. Return unknownType if none found.
 INode* parseVtype(ParseState *parse) {
+    // This is a placeholder since parser converges type and value expression parsing
     switch (lex->toktype) {
+    case QuesToken:
+    case AmperToken:
+    case ArrayRefToken:
+    case VirtRefToken:
+    case StarToken:
+    case LBracketToken:
+    case IdentToken:
+        return parsePrefix(parse, 0);
+    default:
+        return unknownType;
+    }
+    /*switch (lex->toktype) {
     case QuesToken:
         return parseOption(parse);
     case AmperToken:
@@ -457,5 +468,5 @@ INode* parseVtype(ParseState *parse) {
         return parseTypeName(parse);
     default:
         return unknownType;
-    }
+    }*/
 }
