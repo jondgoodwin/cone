@@ -27,7 +27,7 @@ static size_t gMemBlkArenaLeft = 0;
 static void *gMemStrArenaPos = NULL;
 static size_t gMemStrArenaLeft = 0;
 
-size_t memAllocated = 0;
+static size_t memAllocated = 0;
 
 /** Allocate memory for a block, aligned to a 16-byte boundary */
 void *memAllocBlk(size_t size) {

@@ -171,7 +171,7 @@ enum TokenTypes {
 };
 
 // Current lexer
-Lexer *lex;
+extern Lexer *lex;
 
 #define lexIsToken(tok) (lex->toktype == (tok))
 

@@ -85,7 +85,7 @@ enum ErrorCode {
     Uncounted = 9000,
 };
 
-int errors;
+extern int errors;
 
 // Send an error message to stderr
 void errorExit(int exitcode, const char *msg, ...);
