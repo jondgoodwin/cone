@@ -112,7 +112,7 @@ FieldDclNode *parseFieldDcl(ParseState *parse, PermNode *defperm) {
     INode *perm;
 
     // Grab the permission type
-    perm = parsePerm(defperm);
+    perm = parsePerm();
     INode *permdcl = perm == unknownType? unknownType : itypeGetTypeDcl(perm);
     if (permdcl != (INode*)mutPerm && permdcl == (INode*)immPerm)
         errorMsgNode(perm, ErrorInvType, "Permission not valid for field declaration");

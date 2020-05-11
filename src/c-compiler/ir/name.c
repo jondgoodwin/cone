@@ -12,6 +12,48 @@
 #include <stdint.h>
 #include <string.h>
 
+Name *anonName;
+Name *selfName;
+Name *selfTypeName;
+Name *thisName;
+Name *cloneName;
+Name *finalName;
+Name *plusEqName;
+Name *minusEqName;
+Name *multEqName;
+Name *divEqName;
+Name *remEqName;
+Name *orEqName;
+Name *andEqName;
+Name *xorEqName;
+Name *shlEqName;
+Name *shrEqName;
+Name *lessDashName;
+Name *plusName;
+Name *minusName;
+Name *multName;
+Name *divName;
+Name *remName;
+Name *orName;
+Name *andName;
+Name *xorName;
+Name *shlName;
+Name *shrName;
+Name *incrName;
+Name *decrName;
+Name *incrPostName;
+Name *decrPostName;
+Name *eqName;
+Name *neName;
+Name *leName;
+Name *ltName;
+Name *geName;
+Name *gtName;
+Name *parensName;
+Name *indexName;
+Name *refIndexName;
+Name *optionName;
+
 void nameConcatPrefix(char **prefix, char *name) {
     size_t size = strlen(*prefix) + strlen(name) + 1;
     char *newprefix = memAllocStr(*prefix, size);
