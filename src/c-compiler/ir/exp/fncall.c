@@ -133,8 +133,12 @@ void fnCallArrIndex(FnCallNode *node) {
         break;
     case RefTag: {
         INode *vtype = ((RefNode *)objtype)->vtexp;
-        assert(vtype->tag == ArrayTag);
-        node->vtype = arrayElemType(vtype);
+        if (vtype->tag == ArrayTag)
+            node->vtype = arrayElemType(vtype);
+        else if (vtype->tag == ArrayDerefTag)
+            node->vtype = ((RefNode*)vtype)->vtexp;
+        else
+            assert(0 && "Illegal type to index a reference to");
         break;
     }
     case ArrayRefTag:
@@ -566,7 +570,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         if (node->methfld == NULL)
             node->methfld = newNameUseNode(
                 node->flags & FlagIndex ? (node->flags & FlagBorrow ? refIndexName : indexName) : parensName);
-        if ((node->flags & FlagIndex) && objdereftype->tag == ArrayTag)
+        if ((node->flags & FlagIndex) && (objdereftype->tag == ArrayTag || objdereftype->tag == ArrayDerefTag))
             fnCallArrIndex(node);
         else if (node->methfld) {
             if (fnCallLowerPtrMethod(node, refType) == 0) {

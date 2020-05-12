@@ -92,9 +92,11 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         fnCallFlow(fstate, (FnCallNode**)nodep);
         flowInjectAliasNode(nodep, -1);
         break;
+    case ArrayBorrowTag:
     case BorrowTag:
         borrowFlow(fstate, (RefNode **)nodep);
         break;
+    case ArrayAllocTag:
     case AllocateTag:
         allocateFlow(fstate, (RefNode **)nodep);
         flowInjectAliasNode(nodep, -1);

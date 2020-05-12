@@ -105,8 +105,10 @@ void inodePrintNode(INode *node) {
         castPrint((CastNode *)node); break;
     case DerefTag:
         derefPrint((StarNode *)node); break;
+    case ArrayBorrowTag:
     case BorrowTag:
         borrowPrint((RefNode *)node); break;
+    case ArrayAllocTag:
     case AllocateTag:
         allocatePrint((RefNode *)node); break;
     case NotLogicTag: case OrLogicTag: case AndLogicTag:

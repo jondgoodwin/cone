@@ -88,7 +88,9 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     case PtrTag:
         node = cloneStarNode(cstate, (StarNode *)nodep); break;
     case AllocateTag:
+    case ArrayAllocTag:
     case BorrowTag:
+    case ArrayBorrowTag:
     case RefTag:
     case ArrayRefTag:
     case VirtRefTag:

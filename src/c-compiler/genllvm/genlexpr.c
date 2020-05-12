@@ -733,6 +733,16 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
             LLVMValueRef sliceptr = LLVMBuildExtractValue(gen->builder, arrref, 0, "sliceptr");
             return LLVMBuildGEP(gen->builder, sliceptr, &index, 1, "");
         }
+        case ArrayDerefTag: {
+            StarNode *deref = (StarNode *)fncall->objfn;
+            assert(deref->tag == DerefTag);
+            LLVMValueRef arrref = genlExpr(gen, deref->vtexp);
+            LLVMValueRef count = LLVMBuildExtractValue(gen->builder, arrref, 1, "count");
+            LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
+            genlBoundsCheck(gen, index, count);
+            LLVMValueRef sliceptr = LLVMBuildExtractValue(gen->builder, arrref, 0, "sliceptr");
+            return LLVMBuildGEP(gen->builder, sliceptr, &index, 1, "");
+        }
         case PtrTag: {
             LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
             return LLVMBuildGEP(gen->builder, genlExpr(gen, fncall->objfn), &index, 1, "");
@@ -896,41 +906,17 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     case FnCallTag:
         return genlFnCall(gen, (FnCallNode *)termnode);
     case ArrIndexTag:
-        if (termnode->flags & FlagBorrow) {
-            FnCallNode *fncall = (FnCallNode *)termnode;
-            INode *objtype = iexpGetTypeDcl(fncall->objfn);
-            switch (objtype->tag) {
-            case ArrayTag: {
-                return genlArrayIndex(gen, fncall, (ArrayNode*)objtype);
-            }
-            case ArrayDerefTag: {
-                StarNode *deref = (StarNode *)fncall->objfn;
-                assert(deref->tag == DerefTag);
-                LLVMValueRef arrref = genlExpr(gen, deref->vtexp);
-                LLVMValueRef count = LLVMBuildExtractValue(gen->builder, arrref, 1, "count");
-                LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
-                genlBoundsCheck(gen, index, count);
-                LLVMValueRef sliceptr = LLVMBuildExtractValue(gen->builder, arrref, 0, "sliceptr");
-                return LLVMBuildGEP(gen->builder, sliceptr, &index, 1, "");
-            }
-            case ArrayRefTag: {
-                LLVMValueRef arrref = genlExpr(gen, fncall->objfn);
-                LLVMValueRef count = LLVMBuildExtractValue(gen->builder, arrref, 1, "count");
-                LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
-                genlBoundsCheck(gen, index, count);
-                LLVMValueRef sliceptr = LLVMBuildExtractValue(gen->builder, arrref, 0, "sliceptr");
-                return LLVMBuildGEP(gen->builder, sliceptr, &index, 1, "");
-            }
-            case PtrTag: {
-                LLVMValueRef index = genlExpr(gen, nodesGet(fncall->args, 0));
-                return LLVMBuildGEP(gen->builder, genlExpr(gen, fncall->objfn), &index, 1, "");
-            }
-            default:
-                assert(0 && "Unknown type of arrindex element indexing node");
-            }
-        }
-        else
+    {
+        // If no borrowing is involved, just get address of lval, then load value
+        if (!(termnode->flags & FlagBorrow))
             return LLVMBuildLoad(gen->builder, genlAddr(gen, termnode), "");
+
+        // If borrowing, alter fncall to shortcut around the borrow node
+        FnCallNode *fncall = (FnCallNode *)termnode;
+        assert(fncall->objfn->tag == BorrowTag);
+        fncall->objfn = ((RefNode *)fncall->objfn)->vtexp;
+        return genlAddr(gen, termnode);
+    }
     case FldAccessTag:
     {
         FnCallNode *fncall = (FnCallNode *)termnode;
@@ -1002,23 +988,31 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     case BorrowTag:
     {
         RefNode *anode = (RefNode*)termnode;
+        return genlAddr(gen, anode->vtexp);
+    }
+    case ArrayBorrowTag:
+    {
+        RefNode *anode = (RefNode*)termnode;
         RefNode *reftype = (RefNode *)anode->vtype;
-        if (reftype->tag == ArrayRefTag) {
-            INode *arraytype = itypeGetTypeDcl(((IExpNode*)anode->vtexp)->vtype);
-            if (arraytype->tag == ArrayTag) {
-                LLVMValueRef tupleval = LLVMGetUndef(genlType(gen, (INode*)reftype));
-                LLVMTypeRef ptrtype = LLVMPointerType(genlType(gen, reftype->vtexp), 0);
-                LLVMValueRef ptr = LLVMBuildBitCast(gen->builder, genlAddr(gen, anode->vtexp), ptrtype, "fatptr");
-                tupleval = LLVMBuildInsertValue(gen->builder, tupleval, ptr, 0, "fatptr");
-                LLVMValueRef size = LLVMConstInt(genlType(gen, (INode*)usizeType), arrayDim1(arraytype), 0);
-                return LLVMBuildInsertValue(gen->builder, tupleval, size, 1, "fatsize");
-            }
-            else if (arraytype->tag == ArrayDerefTag) {
-                return genlExpr(gen, ((StarNode*)anode->vtexp)->vtexp);
-            }
+        INode *arraytype = itypeGetTypeDcl(((IExpNode*)anode->vtexp)->vtype);
+        if (arraytype->tag == ArrayTag) {
+            LLVMValueRef tupleval = LLVMGetUndef(genlType(gen, (INode*)reftype));
+            LLVMTypeRef ptrtype = LLVMPointerType(genlType(gen, reftype->vtexp), 0);
+            LLVMValueRef ptr = LLVMBuildBitCast(gen->builder, genlAddr(gen, anode->vtexp), ptrtype, "fatptr");
+            tupleval = LLVMBuildInsertValue(gen->builder, tupleval, ptr, 0, "fatptr");
+            LLVMValueRef size = LLVMConstInt(genlType(gen, (INode*)usizeType), arrayDim1(arraytype), 0);
+            return LLVMBuildInsertValue(gen->builder, tupleval, size, 1, "fatsize");
         }
-        else
-            return genlAddr(gen, anode->vtexp);
+        else if (arraytype->tag == ArrayDerefTag) {
+            return genlExpr(gen, ((StarNode*)anode->vtexp)->vtexp);
+        }
+        else {
+            // Build fat pointer slice to a single element
+            LLVMValueRef tupleval = LLVMGetUndef(genlType(gen, (INode*)reftype));
+            tupleval = LLVMBuildInsertValue(gen->builder, tupleval, genlAddr(gen, anode->vtexp), 0, "fatptr");
+            LLVMValueRef size = LLVMConstInt(genlType(gen, (INode*)usizeType), 1, 0);
+            return LLVMBuildInsertValue(gen->builder, tupleval, size, 1, "fatsize");
+        }
     }
     case AllocateTag:
         return genlallocref(gen, (RefNode*)termnode);

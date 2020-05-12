@@ -75,21 +75,25 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     }
     INode *lvaltype = ((IExpNode*)lval)->vtype;
 
-    // The reference's value type is currently unknown (NULL).
+    // The reference's value type is currently unknown
     // Let's infer this value type from the lval we are borrowing from
-    uint16_t tag = RefTag;
+    uint16_t tag;
     INode *refvtype;
-    if (lvaltype->tag == ArrayTag) {
-        // Borrowing from a fixed size array creates an array reference
-        tag = ArrayRefTag;
-        refvtype = arrayElemType(lvaltype);
-    }
-    else if (lvaltype->tag == ArrayDerefTag) {
-        tag = ArrayRefTag;
-        refvtype = ((RefNode*)lvaltype)->vtexp;
-    }
-    else
+    if (node->tag == BorrowTag) {
+        tag = RefTag;
         refvtype = lvaltype;
+    }
+    else {
+        tag = ArrayRefTag;  // Borrowing to create an array reference
+        if (lvaltype->tag == ArrayTag) {
+            refvtype = arrayElemType(lvaltype);
+        }
+        else if (lvaltype->tag == ArrayDerefTag) {
+            refvtype = ((RefNode*)lvaltype)->vtexp;
+        }
+        else
+            refvtype = lvaltype;  // a one-element slice!
+    }
 
     // Ensure requested/inferred permission matches lval's permission
     INode *refperm = node->perm;
