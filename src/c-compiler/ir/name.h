@@ -22,53 +22,53 @@ typedef struct Name {
 } Name;
 
 // Common symbols - see nametbl.c
-Name *anonName;  // "_" - the absence of a name
-Name *selfName;  // "self"
-Name *selfTypeName; // "Self"
-Name *thisName;  // "this"
-Name *cloneName; // "clone" method
-Name *finalName; // "final" method
+extern Name *anonName;  // "_" - the absence of a name
+extern Name *selfName;  // "self"
+extern Name *selfTypeName; // "Self"
+extern Name *thisName;  // "this"
+extern Name *cloneName; // "clone" method
+extern Name *finalName; // "final" method
 
-Name *plusEqName;   // "+="
-Name *minusEqName;  // "-="
-Name *multEqName;   // "*="
-Name *divEqName;    // "/="
-Name *remEqName;    // "%="
-Name *orEqName;     // "|="
-Name *andEqName;    // "&="
-Name *xorEqName;    // "^="
-Name *shlEqName;    // "<<="
-Name *shrEqName;    // ">>="
-Name *lessDashName; // "<-"
+extern Name *plusEqName;   // "+="
+extern Name *minusEqName;  // "-="
+extern Name *multEqName;   // "*="
+extern Name *divEqName;    // "/="
+extern Name *remEqName;    // "%="
+extern Name *orEqName;     // "|="
+extern Name *andEqName;    // "&="
+extern Name *xorEqName;    // "^="
+extern Name *shlEqName;    // "<<="
+extern Name *shrEqName;    // ">>="
+extern Name *lessDashName; // "<-"
 
-Name *plusName;     // "+"
-Name *minusName;    // "-"
-Name *multName;     // "*"
-Name *divName;      // "/"
-Name *remName;      // "%"
-Name *orName;       // "|"
-Name *andName;      // "&"
-Name *xorName;      // "^"
-Name *shlName;      // "<<"
-Name *shrName;      // ">>"
+extern Name *plusName;     // "+"
+extern Name *minusName;    // "-"
+extern Name *multName;     // "*"
+extern Name *divName;      // "/"
+extern Name *remName;      // "%"
+extern Name *orName;       // "|"
+extern Name *andName;      // "&"
+extern Name *xorName;      // "^"
+extern Name *shlName;      // "<<"
+extern Name *shrName;      // ">>"
 
-Name *incrName;     // "++"
-Name *decrName;     // "--"
-Name *incrPostName; // "_++"
-Name *decrPostName; // "_--"
+extern Name *incrName;     // "++"
+extern Name *decrName;     // "--"
+extern Name *incrPostName; // "_++"
+extern Name *decrPostName; // "_--"
 
-Name *eqName;       // "=="
-Name *neName;       // "!="
-Name *leName;       // "<="
-Name *ltName;       // "<"
-Name *geName;       // ">="
-Name *gtName;       // ">"
+extern Name *eqName;       // "=="
+extern Name *neName;       // "!="
+extern Name *leName;       // "<="
+extern Name *ltName;       // "<"
+extern Name *geName;       // ">="
+extern Name *gtName;       // ">"
 
-Name *parensName;   // "()"
-Name *indexName;    // "[]"
-Name *refIndexName; // "&[]"
+extern Name *parensName;   // "()"
+extern Name *indexName;    // "[]"
+extern Name *refIndexName; // "&[]"
 
-Name *optionName;   // "Option"
+extern Name *optionName;   // "Option"
 
 typedef struct VarDclNode VarDclNode;
 typedef struct FnDclNode FnDclNode;

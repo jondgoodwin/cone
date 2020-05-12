@@ -72,13 +72,13 @@ void parseBlockStart() {
     }
     else if (lex->toktype == ColonToken) {
         lexNextToken();
-        lexBlockStart(lexIsEndOfLine? SigIndentBlock : SameStmtBlock);
+        lexBlockStart(lexIsEndOfLine() ? SigIndentBlock : SameStmtBlock);
         return;
     }
 
     // Generate error and try to recover
     errorMsgLex(ErrorNoLCurly, "Expected ':' or '{' to start a block");
-    if (lexIsEndOfLine && lex->curindent > lex->stmtindent) {
+    if (lexIsEndOfLine() && lex->curindent > lex->stmtindent) {
         lexBlockStart(SigIndentBlock);
         return;
     }

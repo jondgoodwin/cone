@@ -21,8 +21,8 @@
 //   - NameUse nodes to the name declaration node that they refer to
 
 // Global Name Table configuration variables
-size_t gNameTblInitSize;                  // Initial maximum number of unique names (must be power of 2)
-unsigned int gNameTblUtil;    // % utilization that triggers doubling of table
+extern size_t gNameTblInitSize;                  // Initial maximum number of unique names (must be power of 2)
+extern unsigned int gNameTblUtil;    // % utilization that triggers doubling of table
 
 // Allocate and initialize the global name table
 void nametblInit();

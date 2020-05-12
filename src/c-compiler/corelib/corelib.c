@@ -11,6 +11,37 @@
 
 #include <string.h>
 
+INode *unknownType;
+INode *noCareType;
+INode *elseCond;
+INode *borrowRef;
+INode *noValue;
+PermNode *uniPerm;
+PermNode *mutPerm;
+PermNode *immPerm;
+PermNode *constPerm;
+PermNode *mut1Perm;
+PermNode *opaqPerm;
+LifetimeNode *staticLifetimeNode;
+AllocNode *soRegion;
+AllocNode *rcRegion;
+NbrNode *boolType;
+NbrNode *i8Type;
+NbrNode *i16Type;
+NbrNode *i32Type;
+NbrNode *i64Type;
+NbrNode *isizeType;
+NbrNode *u8Type;
+NbrNode *u16Type;
+NbrNode *u32Type;
+NbrNode *u64Type;
+NbrNode *usizeType;
+NbrNode *f32Type;
+NbrNode *f64Type;
+INsTypeNode *ptrType;
+INsTypeNode *refType;
+INsTypeNode *arrayRefType;
+
 PermNode *newPermNodeStr(char *name, uint16_t flags) {
     Name *namesym = nametblFind(name, strlen(name));
     PermNode *perm = newPermDclNode(namesym, flags);

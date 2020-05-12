@@ -27,10 +27,10 @@ size_t gNameTblInitSize = 16384;    // Initial maximum number of unique names (m
 unsigned int gNameTblUtil = 50;     // % utilization that triggers doubling of table
 
 // Private globals
-Name **gNameTable = NULL;           // The name table array
-size_t gNameTblAvail = 0;           // Number of allocated name table slots (power of 2)
-size_t gNameTblCeil = 0;            // Ceiling that triggers table growth
-size_t gNameTblUsed = 0;            // Number of name table slots used
+static Name **gNameTable = NULL;           // The name table array
+static size_t gNameTblAvail = 0;           // Number of allocated name table slots (power of 2)
+static size_t gNameTblCeil = 0;            // Ceiling that triggers table growth
+static size_t gNameTblUsed = 0;            // Number of name table slots used
 
 /** String hash function (djb: Dan Bernstein)
  * Ref: http://www.cse.yorku.ca/~oz/hash.html
