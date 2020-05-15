@@ -54,8 +54,6 @@ void litNameRes(NameResState* pstate, IExpNode *node);
 // Type check lit node
 void litTypeCheck(TypeCheckState* pstate, IExpNode *node);
 
-NullNode *newNullNode();
-
 SLitNode *newSLitNode(char *str, uint32_t strlen);
 
 // Clone literal

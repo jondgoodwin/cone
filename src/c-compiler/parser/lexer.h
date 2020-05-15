@@ -165,7 +165,6 @@ enum TokenTypes {
     IntoToken,      // 'into'
     trueToken,        // 'true'
     falseToken,        // 'false'
-    nullToken,      // 'null'
 
     NbrTokens
 };

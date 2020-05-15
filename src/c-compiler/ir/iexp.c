@@ -55,14 +55,6 @@ int iexpCoerce(INode **from, INode *totype) {
     if (totype == unknownType || totype == noCareType)
         return 1;
 
-    // Re-type a null pointer literal to match the expected ref/ptr type
-    if ((*from)->tag == NullTag) {
-        if (totype->tag != PtrTag)
-            return 0;
-        ((IExpNode*)(*from))->vtype = totype;
-        return 1;
-    }
-
     // Are types equivalent, or is 'to' a subtype of fromtypedcl?
     INode *totypedcl = itypeGetTypeDcl(totype);
     switch (iexpMatches(from, totypedcl, Coercion)) {

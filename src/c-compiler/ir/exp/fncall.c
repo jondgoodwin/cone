@@ -343,18 +343,6 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
     INode *objtype = iexpGetTypeDcl(obj);
     Name *methsym = callnode->methfld->namesym;
 
-    // if 'self' is 'null', swap self and first argument (order is irrelevant for ==/!-)
-    if (obj->tag == NullTag && callnode->args->used == 1) {
-        if (methsym != eqName && methsym != neName) {
-            errorMsgNode((INode*)callnode, ErrorNoMeth, "Method not supported for null, only equivalence.");
-            callnode->vtype = (INode*)unknownType; // make up a vtype
-            return 1;
-        }
-        callnode->objfn = nodesGet(callnode->args, 0);
-        nodesGet(callnode->args, 0) = obj;
-        obj = callnode->objfn;
-    }
-
     INode *foundnode = iNsTypeFindFnField(methtype, methsym);
     if (!foundnode)
         return 0;
@@ -377,10 +365,8 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
             INode *parm1type = iexpGetTypeDcl(nodesGet(parms, 1));
             INode *arg1type = iexpGetTypeDcl(nodesGet(args, 1));
             if (parm1type->tag == PtrTag || parm1type->tag == RefTag) {
-                if (nodesGet(args, 1)->tag == NullTag && (methsym == eqName || methsym == neName))
-                    ((IExpNode*)nodesGet(args, 1))->vtype = ((IExpNode*)nodesGet(args, 0))->vtype;
                 // When pointers are involved, we want to ensure they are the same type
-                else if (!itypeIsSame(arg1type, iexpGetTypeDcl(nodesGet(args, 0))))
+                if (!itypeIsSame(arg1type, iexpGetTypeDcl(nodesGet(args, 0))))
                     continue;
             }
             else {

@@ -83,15 +83,6 @@ void litTypeCheck(TypeCheckState* pstate, IExpNode *node) {
     itypeTypeCheck(pstate, &node->vtype);
 }
 
-NullNode *newNullNode() {
-    NullNode *node;
-    newNode(node, NullNode, NullTag);
-    StarNode *ptrtype = newStarNode(PtrTag);
-    ptrtype->vtexp = unknownType;
-    node->vtype = (INode*)ptrtype;
-    return node;
-}
-
 // Create a new string literal node
 SLitNode *newSLitNode(char *str, uint32_t strlen) {
     SLitNode *lit;
@@ -121,6 +112,6 @@ void slitTypeCheck(TypeCheckState *pstate, SLitNode *node) {
 }
 
 int litIsLiteral(INode* node) {
-    return (node->tag == FLitTag || node->tag == ULitTag || node->tag == NullTag || node->tag == StringLitTag
+    return (node->tag == FLitTag || node->tag == ULitTag || node->tag == StringLitTag
         || (node->tag == TypeLitTag && typeLitIsLiteral((FnCallNode*)node)));
 }

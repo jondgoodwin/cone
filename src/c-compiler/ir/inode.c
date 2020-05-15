@@ -168,10 +168,6 @@ void inodePrintNode(INode *node) {
         inodeFprint(")");
         break;
     }
-    case NullTag:
-        inodeFprint("null");
-        break;
-
     case MacroDclTag:
     case GenericDclTag:
         genericPrint((GenericNode *)node); break;
@@ -277,7 +273,6 @@ void inodeNameRes(NameResState *pstate, INode **node) {
     case AbsenceTag:
     case UnknownTag:
     case VoidTag:
-    case NullTag:
         break;
     default:
         assert(0 && "**** ERROR **** Attempting to name resolve an unknown node");
@@ -403,7 +398,6 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     case AbsenceTag:
     case UnknownTag:
     case VoidTag:
-    case NullTag:
         break;
     default:
         assert(0 && "**** ERROR **** Attempting to check an unknown node");

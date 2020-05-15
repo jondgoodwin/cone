@@ -117,7 +117,6 @@ void keywordInit() {
 
     keyAdd("true", trueToken);
     keyAdd("false", falseToken);
-    keyAdd("null", nullToken);
 }
 
 // Initialize lexer

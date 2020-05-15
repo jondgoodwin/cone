@@ -97,7 +97,6 @@ enum NodeTags {
     MbrNameUseTag,  // Member of a type's namespace (field/method)
     ULitTag,        // Integer literal
     FLitTag,        // Float literal
-    NullTag,        // Null literal
     StringLitTag,   // String literal
     ArrayLitTag,    // Array literal
     TypeLitTag,     // Type literal

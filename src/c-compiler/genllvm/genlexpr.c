@@ -803,11 +803,6 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         return LLVMConstInt(genlType(gen, ((ULitNode*)termnode)->vtype), ((ULitNode*)termnode)->uintlit, 0);
     case FLitTag:
         return LLVMConstReal(genlType(gen, ((FLitNode*)termnode)->vtype), ((FLitNode*)termnode)->floatlit);
-    case NullTag:
-    {
-        INode *ptrtype = ((ULitNode*)termnode)->vtype;
-        return LLVMConstNull(ptrtype? genlType(gen, ptrtype) : LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0));
-    }
     case ArrayLitTag:
     {
         ArrayNode *lit = (ArrayNode *)termnode;
