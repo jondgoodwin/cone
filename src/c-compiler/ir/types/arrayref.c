@@ -53,6 +53,7 @@ TypeCompare arrayRefMatches(RefNode *to, RefNode *from, SubtypeConstraint constr
 }
 
 // Will from reference coerce to a to arrayref (we know they are not the same)
+// At best, we get ConvSubtype, because a conversion is needed to convert ref to arrayref
 TypeCompare arrayRefMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint constraint) {
     // From type must be a reference to 
     ArrayNode *arraytype = (ArrayNode*)from->vtexp;
@@ -60,19 +61,12 @@ TypeCompare arrayRefMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint con
         return NoMatch;
 
     // Start with matching the references' regions
-    TypeCompare result = regionMatches(from->region, to->region, constraint);
-    if (result == NoMatch)
+    if (regionMatches(from->region, to->region, constraint) == NoMatch)
         return NoMatch;
 
     // Now their permissions
-    switch (permMatches(to->perm, from->perm)) {
-    case NoMatch: return NoMatch;
-    case CastSubtype: result = CastSubtype;
-    default: break;
-    }
-
-    if (result == CastSubtype)
-        result = ConvSubtype;   // ref to arrayref is a conversion
+    if (permMatches(to->perm, from->perm) == NoMatch)
+        return NoMatch;
 
     // Now we get to value-type (which might include lifetime).
     // The variance of this match depends on the mutability/read permission of the reference
@@ -86,11 +80,10 @@ TypeCompare arrayRefMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint con
         match = itypeMatches(arrayElemType((INode*)arraytype), to->vtexp, constraint); // contravariant
         break;
     case MayRead | MayWrite:
-        return itypeIsSame(to->vtexp, arrayElemType((INode*)arraytype)) ? result : NoMatch; // invariant
+        return itypeIsSame(to->vtexp, arrayElemType((INode*)arraytype)) ? ConvSubtype : NoMatch; // invariant
     }
     switch (match) {
     case EqMatch:
-        return result;
     case CastSubtype:
         return ConvSubtype;
     case ConvSubtype:

@@ -474,7 +474,10 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
             assert(arraytype->tag == ArrayTag);
             LLVMValueRef aref = LLVMGetUndef(genlType(gen, totype));
             LLVMValueRef size = LLVMConstInt(genlUsize(gen), arrayDim1((INode*)arraytype), 0);
-            aref = LLVMBuildInsertValue(gen->builder, aref, genexp, 0, "arrayp");
+            LLVMTypeRef elemtype = genlType(gen, nodesGet(arraytype->elems, 0));
+            LLVMTypeRef recasttype = LLVMPointerType(elemtype, 0);
+            LLVMValueRef genexpcast = LLVMBuildBitCast(gen->builder, genexp, recasttype, "");
+            aref = LLVMBuildInsertValue(gen->builder, aref, genexpcast, 0, "arrayp");
             aref = LLVMBuildInsertValue(gen->builder, aref, size, 1, "size");
             return aref;
         }
