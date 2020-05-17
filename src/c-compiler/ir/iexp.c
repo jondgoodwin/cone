@@ -39,9 +39,27 @@ int iexpTypeCheckAny(TypeCheckState *pstate, INode **from) {
     return 1;
 }
 
-// Is totype equivalent or a non-changing subtype of from's type
+// Return whether it is okay for from expression to be coerced to to-type
 TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constraint) {
-    return itypeMatches(totype, iexpGetTypeDcl(*from), constraint);
+    INode *fromtype = iexpGetTypeDcl(*from);
+    // Is totype a supertype of (or equivalent to) from's type?
+    TypeCompare result = itypeMatches(totype, fromtype, constraint);
+    if (result != NoMatch)
+        return result;
+
+    // Handle 'isTrue' conversion, if supported
+    if (totype == (INode*)boolType) {
+        switch (fromtype->tag) {
+        case UintNbrTag:
+        case IntNbrTag:
+        case FloatNbrTag:
+        case PtrTag:
+            return ConvByMeth;
+        default:
+            break;
+        }
+    }
+    return NoMatch;
 }
 
 // Coerce from-node's type to 'to' expected type, if needed
@@ -66,6 +84,9 @@ int iexpCoerce(INode **from, INode *totype) {
         *from = (INode*)newRecastNode(*from, totypedcl);
         return 1;
     case ConvSubtype:
+        *from = (INode*)newConvCastNode(*from, totypedcl);
+        return 1;
+    case ConvByMeth:
         *from = (INode*)newConvCastNode(*from, totypedcl);
         return 1;
     default: {

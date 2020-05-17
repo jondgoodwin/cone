@@ -59,13 +59,9 @@ TypeCompare nbrMatches(INode *totype, INode *fromtype, SubtypeConstraint constra
     if (constraint != Monomorph && constraint != Coercion)
         return NoMatch;
 
-    // Null check for a reference or pointer
-    if (totype == (INode*)boolType && (fromtype->tag == RefTag || fromtype->tag == PtrTag))
-        return ConvSubtype;
-
-    // Zero comparison
-    if (totype == (INode*)boolType && (fromtype->tag == UintNbrTag || fromtype->tag == IntNbrTag || fromtype->tag == FloatNbrTag))
-        return ConvSubtype;
+    // Bool is handled as a special case (also see iexpMatches)
+    if (totype == (INode*)boolType)
+        return fromtype == (INode*)boolType ? EqMatch : NoMatch;
 
     if (totype->tag != fromtype->tag)
         return isNbr(fromtype) ? NbrConvMatch : NoMatch;

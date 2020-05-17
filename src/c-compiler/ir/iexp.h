@@ -25,7 +25,7 @@ INode *iexpGetDerefTypeDcl(INode *node);
 // Type check node we expect to be an expression. Return 0 if not.
 int iexpTypeCheckAny(TypeCheckState *pstate, INode **from);
 
-// Is totype equivalent or a subtype of from's type
+// Return whether it is okay for from expression to be coerced to to-type
 TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constraint);
 
 // Coerce from-node's type to 'to' expected type, if needed
