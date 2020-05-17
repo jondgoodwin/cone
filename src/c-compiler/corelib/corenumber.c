@@ -88,6 +88,12 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
         iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(opsym, FlagMethFld, (INode *)unarysig, (INode *)newIntrinsicNode(CosIntrinsic)));
     }
 
+    // Create function signature and method for isTrue method for this type
+    FnSigNode *istruesig = newFnSigNode();
+    istruesig->rettype = (INode*)boolType;
+    nodesAdd(&istruesig->parms, (INode *)newVarDclFull(parm1, VarDclTag, (INode*)nbrtypenode, newPermUseNode(immPerm), NULL));
+    iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(istrueName, FlagMethFld, (INode *)istruesig, (INode *)newIntrinsicNode(IsTrueIntrinsic)));
+
     // Create function signature for comparison methods for this type
     FnSigNode *cmpsig = newFnSigNode();
     cmpsig->rettype = bits==1? (INode*)nbrtypenode : (INode*)boolType;
@@ -124,10 +130,18 @@ INsTypeNode *newPtrTypeMethods() {
     StarNode *voidptr = newStarNode(PtrTag);
     voidptr->vtexp = unknownType;
 
+    // Create function signature for unary method for isZero
+    Name *self = nametblFind("self", 4);
+    FnSigNode *unarysig = newFnSigNode();
+    unarysig->rettype = (INode*)boolType;
+    nodesAdd(&unarysig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidptr, newPermUseNode(immPerm), NULL));
+
+    // Compare to null
+    iNsTypeAddFn((INsTypeNode*)ptrtypenode, newFnDclNode(istrueName, FlagMethFld, (INode *)unarysig, (INode *)newIntrinsicNode(IsTrueIntrinsic)));
+
     // Create function signature for comparison methods
     FnSigNode *cmpsig = newFnSigNode();
     cmpsig->rettype = (INode*)boolType;
-    Name *self = nametblFind("self", 4);
     nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidptr, newPermUseNode(immPerm), NULL));
     Name *parm2 = nametblFind("b", 1);
     nodesAdd(&cmpsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)voidptr, newPermUseNode(immPerm), NULL));

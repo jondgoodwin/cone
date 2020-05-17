@@ -31,6 +31,7 @@ Name *shrEqName;
 Name *lessDashName;
 Name *plusName;
 Name *minusName;
+Name *istrueName;
 Name *multName;
 Name *divName;
 Name *remName;

@@ -12,6 +12,7 @@
 enum IntrinsicFn {
     // Arithmetic
     NegIntrinsic,
+    IsTrueIntrinsic,
     AddIntrinsic,
     SubIntrinsic,
     MulIntrinsic,

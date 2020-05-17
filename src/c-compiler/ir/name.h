@@ -43,6 +43,7 @@ extern Name *lessDashName; // "<-"
 
 extern Name *plusName;     // "+"
 extern Name *minusName;    // "-"
+extern Name *istrueName;   // "isTrue"
 extern Name *multName;     // "*"
 extern Name *divName;      // "/"
 extern Name *remName;      // "%"

@@ -165,6 +165,7 @@ void nametblInit() {
 
     plusName = nametblFind("+", 1);
     minusName = nametblFind("-", 1);
+    istrueName = nametblFind("isTrue", 6);
     multName = nametblFind("*", 1);
     divName = nametblFind("/", 1);
     remName = nametblFind("%", 1);

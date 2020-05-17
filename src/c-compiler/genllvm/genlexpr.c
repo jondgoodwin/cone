@@ -161,6 +161,7 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
             INode *vtexp = itypeGetTypeDcl(typetag == PtrTag ? ((StarNode*)nbrtype)->vtexp : ((RefNode*)nbrtype)->vtexp);
             switch (((IntrinsicNode *)fndcl->value)->intrinsicFn) {
                 // Comparison
+            case IsTrueIntrinsic: fncallret = LLVMBuildIsNotNull(gen->builder, fnargs[0], "isnotnull"); break;
             case EqIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntEQ, fnargs[0], fnargs[1], ""); break;
             case NeIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntNE, fnargs[0], fnargs[1], ""); break;
             case LtIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntULT, fnargs[0], fnargs[1], ""); break;
@@ -277,6 +278,7 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
         else if (typetag == FloatNbrTag) {
             switch (((IntrinsicNode *)fndcl->value)->intrinsicFn) {
             case NegIntrinsic: fncallret = LLVMBuildFNeg(gen->builder, fnargs[0], ""); break;
+            case IsTrueIntrinsic: fncallret = LLVMBuildFCmp(gen->builder, LLVMRealONE, fnargs[0], LLVMConstNull(genlType(gen, (INode*)nbrtype)), ""); break;
             case AddIntrinsic: fncallret = LLVMBuildFAdd(gen->builder, fnargs[0], fnargs[1], ""); break;
             case SubIntrinsic: fncallret = LLVMBuildFSub(gen->builder, fnargs[0], fnargs[1], ""); break;
             case MulIntrinsic: fncallret = LLVMBuildFMul(gen->builder, fnargs[0], fnargs[1], ""); break;
@@ -316,6 +318,7 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
 
                 // Arithmetic
             case NegIntrinsic: fncallret = LLVMBuildNeg(gen->builder, fnargs[0], ""); break;
+            case IsTrueIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntNE, fnargs[0], LLVMConstNull(genlType(gen, (INode*)nbrtype)), ""); break;
             case AddIntrinsic: fncallret = LLVMBuildAdd(gen->builder, fnargs[0], fnargs[1], ""); break;
             case SubIntrinsic: fncallret = LLVMBuildSub(gen->builder, fnargs[0], fnargs[1], ""); break;
             case MulIntrinsic: fncallret = LLVMBuildMul(gen->builder, fnargs[0], fnargs[1], ""); break;
