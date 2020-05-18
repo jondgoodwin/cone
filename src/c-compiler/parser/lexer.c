@@ -518,7 +518,7 @@ void lexScanNumber(char *srcp) {
         }
     }
     else
-        lex->langtype = (INode*)(isFloat ? f32Type : i32Type);
+        lex->langtype = isFloat ? (INode*)f32Type : unknownType;
 
     // Set value and type
     if (isFloat) {

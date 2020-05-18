@@ -52,7 +52,7 @@ INode *cloneFLitNode(CloneState *cstate, FLitNode *lit);
 void litNameRes(NameResState* pstate, IExpNode *node);
 
 // Type check lit node
-void litTypeCheck(TypeCheckState* pstate, IExpNode *node);
+void litTypeCheck(TypeCheckState* pstate, IExpNode *node, INode *expectType);
 
 SLitNode *newSLitNode(char *str, uint32_t strlen);
 

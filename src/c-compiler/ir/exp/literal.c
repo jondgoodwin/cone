@@ -10,10 +10,14 @@
 // Create a new unsigned literal node
 ULitNode *newULitNode(uint64_t nbr, INode *type) {
     ULitNode *lit;
-    NameUseNode *typename = newNameUseNode(((NbrNode*)type)->namesym);
     newNode(lit, ULitNode, ULitTag);
     lit->uintlit = nbr;
-    lit->vtype = (INode*)typename;
+    if (type != unknownType) {
+        NameUseNode *typename = newNameUseNode(((NbrNode*)type)->namesym);
+        lit->vtype = (INode*)typename;
+    }
+    else
+        lit->vtype = unknownType;
     return lit;
 }
 
@@ -51,9 +55,9 @@ void ulitPrint(ULitNode *lit) {
 // Create a new unsigned literal node
 FLitNode *newFLitNode(double nbr, INode *type) {
     FLitNode *lit;
-    NameUseNode *typename = newNameUseNode(((NbrNode*)type)->namesym);
     newNode(lit, FLitNode, FLitTag);
     lit->floatlit = nbr;
+    NameUseNode *typename = newNameUseNode(((NbrNode*)type)->namesym);
     lit->vtype = (INode*)typename;
     return lit;
 }
@@ -79,7 +83,26 @@ void litNameRes(NameResState* pstate, IExpNode *node) {
 }
 
 // Type check lit node
-void litTypeCheck(TypeCheckState* pstate, IExpNode *node) {
+void litTypeCheck(TypeCheckState* pstate, IExpNode *node, INode *expectType) {
+    // When an integer literal has no specified type, use expected or default to i32
+    if (node->vtype == unknownType) {
+        if (expectType != unknownType) {
+            node->vtype = expectType;
+            if (expectType->tag == FLitTag) {
+                // Convert integer literal to float node, if expected
+                node->tag = FLitTag;
+                ((FLitNode*)node)->floatlit = (double)((ULitNode*)node)->uintlit;
+            }
+        }
+        else {
+            // If no type expected, presume a type-checked i32 nameuse
+            NameUseNode *i32node = newNameUseNode(i32Type->namesym);
+            i32node->tag = TypeNameUseTag;
+            i32node->dclnode = (INode*)i32Type;
+            node->vtype = (INode*)i32node;
+        }
+    }
+
     itypeTypeCheck(pstate, &node->vtype);
 }
 

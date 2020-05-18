@@ -352,7 +352,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
         namedValTypeCheck(pstate, (NamedValNode *)*node); break;
     case ULitTag:
     case FLitTag:
-        litTypeCheck(pstate, (IExpNode*)*node); break;
+        litTypeCheck(pstate, (IExpNode*)*node, expectType); break;
 
     case TypeNameUseTag:
         nameUseTypeCheckType(pstate, (NameUseNode **)node); break;
