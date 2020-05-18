@@ -42,23 +42,21 @@ int iexpTypeCheckAny(TypeCheckState *pstate, INode **from) {
 // Return whether it is okay for from expression to be coerced to to-type
 TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constraint) {
     INode *fromtype = iexpGetTypeDcl(*from);
+
     // Is totype a supertype of (or equivalent to) from's type?
     TypeCompare result = itypeMatches(totype, fromtype, constraint);
     if (result != NoMatch)
         return result;
 
-    // Handle 'isTrue' conversion, if supported
+    // Handle implicit coercion to boolean, if type supports "isTrue" method
+    INode *foundnode;
     if (totype == (INode*)boolType) {
-        switch (fromtype->tag) {
-        case UintNbrTag:
-        case IntNbrTag:
-        case FloatNbrTag:
-        case PtrTag:
+        if ((foundnode = iTypeFindFnField(fromtype, istrueName)) && foundnode->tag == FnDclTag)
             return ConvByMeth;
-        default:
-            break;
-        }
+        else
+            return NoMatch;
     }
+
     return NoMatch;
 }
 
@@ -86,9 +84,22 @@ int iexpCoerce(INode **from, INode *totype) {
     case ConvSubtype:
         *from = (INode*)newConvCastNode(*from, totypedcl);
         return 1;
-    case ConvByMeth:
-        *from = (INode*)newConvCastNode(*from, totypedcl);
-        return 1;
+    case ConvByMeth: 
+    {
+        FnCallNode *istrue = newFnCallNode(*from, 1);
+        istrue->methfld = newNameUseNode(istrueName);
+        int success;
+        if (iexpGetTypeDcl(*from)->tag == PtrTag)
+            success = fnCallLowerPtrMethod(istrue, ptrType);
+        else
+            success = fnCallLowerMethod(istrue);
+        if (success) {
+            *from = (INode*)istrue;
+            return 1;
+        }
+        else
+            return 0;
+    }
     default: {
         // If not an integer literal, don't convert
         if ((*from)->tag != ULitTag)

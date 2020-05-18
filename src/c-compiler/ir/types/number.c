@@ -61,7 +61,7 @@ TypeCompare nbrMatches(INode *totype, INode *fromtype, SubtypeConstraint constra
 
     // Bool is handled as a special case (also see iexpMatches)
     if (totype == (INode*)boolType)
-        return fromtype == (INode*)boolType ? EqMatch : NoMatch;
+        return NoMatch;
 
     if (totype->tag != fromtype->tag)
         return isNbr(fromtype) ? NbrConvMatch : NoMatch;

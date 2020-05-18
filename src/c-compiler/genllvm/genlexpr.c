@@ -402,16 +402,6 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
     INode *totype = itypeGetTypeDcl(to);
     LLVMValueRef genexp = genlExpr(gen, exp);
 
-    // Casting a number to Bool means false if zero and true otherwise
-    if (totype == (INode*)boolType) {
-        if (fromtype->tag == RefTag || fromtype->tag == PtrTag)
-            return LLVMBuildIsNotNull(gen->builder, genexp, "isnotnull");
-        else if (fromtype->tag == FloatNbrTag)
-            return LLVMBuildFCmp(gen->builder, LLVMRealONE, genexp, LLVMConstNull(genlType(gen, fromtype)), "");
-        else
-            return LLVMBuildICmp(gen->builder, LLVMIntNE, genexp, LLVMConstNull(genlType(gen, fromtype)), "");
-    }
-
     // Handle number to number casts, depending on relative size and encoding format
     switch (totype->tag) {
 

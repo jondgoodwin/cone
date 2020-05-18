@@ -36,6 +36,7 @@ typedef enum {
 } CoerceFlag;
 
 typedef struct Name Name;
+typedef struct INsTypeNode INsTypeNode;
 
 // Named type node header (most types are named)
 #define ITypeNodeHdr \
@@ -54,6 +55,9 @@ INode *itypeGetTypeDcl(INode *node);
 
 // Return node's type's declaration node (or vtexp if a ref or ptr)
 INode *itypeGetDerefTypeDcl(INode *node);
+
+// Look for named field/method in type
+INode *iTypeFindFnField(INode *type, Name *name);
 
 // Type check node, expecting it to be a type. Give error and return 0, if not.
 int itypeTypeCheck(TypeCheckState *pstate, INode **node);

@@ -36,6 +36,21 @@ INode *itypeGetDerefTypeDcl(INode *node) {
     return typnode;
 }
 
+// Look for named field/method in type
+INode *iTypeFindFnField(INode *type, Name *name) {
+    switch (type->tag) {
+    case StructTag:
+    case UintNbrTag:
+    case IntNbrTag:
+    case FloatNbrTag:
+        return iNsTypeFindFnField((INsTypeNode*)type, name);
+    case PtrTag:
+        return iNsTypeFindFnField(ptrType, name);
+    default:
+        return NULL;
+    }
+}
+
 // Type check node, expecting it to be a type. Give error and return 0, if not.
 int itypeTypeCheck(TypeCheckState *pstate, INode **node) {
     inodeTypeCheckAny(pstate, node);
