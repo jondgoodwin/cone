@@ -64,8 +64,8 @@ TypeCompare nbrMatches(INode *totype, INode *fromtype, SubtypeConstraint constra
         return NoMatch;
 
     if (totype->tag != fromtype->tag)
-        return isNbr(fromtype) ? NbrConvMatch : NoMatch;
+        return NoMatch;
     if (((NbrNode *)totype)->bits == ((NbrNode *)fromtype)->bits)
         return EqMatch;
-    return ((NbrNode *)totype)->bits > ((NbrNode *)fromtype)->bits ? ConvSubtype : NbrShrinkMatch;
+    return ((NbrNode *)totype)->bits > ((NbrNode *)fromtype)->bits ? ConvSubtype : NoMatch;
 }

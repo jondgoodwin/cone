@@ -57,6 +57,13 @@ TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constrain
             return NoMatch;
     }
 
+    // Handle implicit conversion of untyped literal integer to any number type
+    INode *totyp = itypeGetTypeDcl(totype);
+    if ((*from)->tag == ULitTag && ((*from)->flags & FlagUnkType)
+        && (totyp->tag == UintNbrTag || totyp->tag == IntNbrTag || totyp->tag == FloatNbrTag)) {
+        return ConvSubtype;  // For literals, we do not care if to a supertype (for user convenience)
+    }
+
     return NoMatch;
 }
 
@@ -101,17 +108,7 @@ int iexpCoerce(INode **from, INode *totype) {
             return 0;
     }
     default: {
-        // If not an integer literal, don't convert
-        if ((*from)->tag != ULitTag)
-            return 0;
-        // If it is an integer literal, convert it to correct type/value in place
-        ULitNode *lit = (ULitNode*)(*from);
-        lit->vtype = totypedcl;
-        if (totypedcl->tag == FloatNbrTag) {
-            lit->tag = FLitTag;
-            ((FLitNode*)lit)->floatlit = (double)lit->uintlit;
-        }
-        return 1;
+        return 0;
     }
     }
 }
@@ -166,7 +163,7 @@ int iexpMultiInfer(INode *expectType, INode **maybeType, INode **from) {
 
     // When we have an expected type, ensure this branch matches
     TypeCompare match = iexpMatches(from, expectType, Coercion);
-    if (match == NoMatch || match == NbrConvMatch) {
+    if (match == NoMatch) {
         errorMsgNode(*from, ErrorInvType, "Expression type does not match expected type.");
         return NoMatch;
     }

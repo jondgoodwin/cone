@@ -15,8 +15,6 @@ typedef enum {
     CastSubtype,       // Subtype: From type can be recast to 'to' type (compile-time upcast)
     ConvSubtype,       // Subtype: From type can be converted to 'to' type (runtime upcast)
     ConvByMeth,        // Convert by using a method
-    NbrShrinkMatch,    // From type is same number type but loses bits
-    NbrConvMatch,      // Both types are numbers, but different kinds
 } TypeCompare;
 
 // The constraint context for comparing a subtyping relationship

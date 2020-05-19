@@ -180,6 +180,8 @@ enum NodeTags {
 
 #define FlagSuffix    0x0001        // Borrow: part of a borrow chain
 
+#define FlagUnkType   0x0001        // ULit: type is unspecified and may be converted to other number
+
 // Flags used across all types
 #define MoveType           0x0001  // Type's values impose move semantics (vs. copy)
 #define ThreadBound        0x0002  // Type's value copies must stay in the same thread (vs. sendable)

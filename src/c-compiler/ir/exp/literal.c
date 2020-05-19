@@ -12,12 +12,11 @@ ULitNode *newULitNode(uint64_t nbr, INode *type) {
     ULitNode *lit;
     newNode(lit, ULitNode, ULitTag);
     lit->uintlit = nbr;
-    if (type != unknownType) {
-        NameUseNode *typename = newNameUseNode(((NbrNode*)type)->namesym);
-        lit->vtype = (INode*)typename;
+    if (type == unknownType) {
+        lit->flags |= FlagUnkType;  // This flag allows us to convert it to another number type
+        type = (INode*)i32Type;     // But otherwise, default is a 32-bit integer
     }
-    else
-        lit->vtype = unknownType;
+    lit->vtype = (INode*)newNameUseNode(((NbrNode*)type)->namesym);
     return lit;
 }
 
@@ -84,25 +83,6 @@ void litNameRes(NameResState* pstate, IExpNode *node) {
 
 // Type check lit node
 void litTypeCheck(TypeCheckState* pstate, IExpNode *node, INode *expectType) {
-    // When an integer literal has no specified type, use expected or default to i32
-    if (node->vtype == unknownType) {
-        if (expectType != unknownType) {
-            node->vtype = expectType;
-            if (expectType->tag == FLitTag) {
-                // Convert integer literal to float node, if expected
-                node->tag = FLitTag;
-                ((FLitNode*)node)->floatlit = (double)((ULitNode*)node)->uintlit;
-            }
-        }
-        else {
-            // If no type expected, presume a type-checked i32 nameuse
-            NameUseNode *i32node = newNameUseNode(i32Type->namesym);
-            i32node->tag = TypeNameUseTag;
-            i32node->dclnode = (INode*)i32Type;
-            node->vtype = (INode*)i32node;
-        }
-    }
-
     itypeTypeCheck(pstate, &node->vtype);
 }
 
