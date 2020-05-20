@@ -206,6 +206,27 @@ void parseInclude(ParseState *parse) {
     lexPop();
 }
 
+char *stdiolib =
+"extern {fn print(str &[]u8); fn printFloat(a f64); fn printInt(a i64);}\n"
+;
+
+// Parse import statement: This is a hacked-up version for now
+void parseImport(ParseState *parse) {
+    char *filename;
+    lexNextToken();
+    filename = parseFile();
+    parseEndOfStatement();
+
+    if (strcmp(filename, "stdio") == 0) {
+        lexInject("stdio", stdiolib);
+        parseGlobalStmts(parse, parse->mod);
+        if (lex->toktype != EofToken) {
+            errorMsgLex(ErrorNoEof, "Expected end-of-file");
+        }
+        lexPop();
+    }
+}
+
 // Parse function or variable, as it may be preceded by a qualifier
 // Return NULL if not either
 void parseFnOrVar(ParseState *parse, uint16_t flags) {
@@ -277,6 +298,10 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
 
         case IncludeToken:
             parseInclude(parse);
+            break;
+
+        case ImportToken:
+            parseImport(parse);
             break;
 
         case ModToken: {

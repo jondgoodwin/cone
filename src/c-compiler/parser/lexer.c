@@ -82,6 +82,7 @@ Name *keyAdd(char *keyword, uint16_t toktype) {
 // Populate global name table with all reserved identifiers & their nodes
 void keywordInit() {
     keyAdd("include", IncludeToken);
+    keyAdd("import", ImportToken);
     keyAdd("mod", ModToken);
     keyAdd("extern", ExternToken);
     keyAdd("set", SetToken);
