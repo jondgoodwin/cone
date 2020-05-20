@@ -207,7 +207,7 @@ void parseInclude(ParseState *parse) {
 }
 
 char *stdiolib =
-"extern {fn print(str &[]u8); fn printFloat(a f64); fn printInt(a i64);}\n"
+"extern {fn print(str &[]u8); fn printFloat(a f64); fn printInt(a i64); fn printChar(code u64);}\n"
 ;
 
 // Parse import statement: This is a hacked-up version for now
