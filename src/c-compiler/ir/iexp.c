@@ -64,6 +64,15 @@ TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constrain
         return ConvSubtype;  // For literals, we do not care if to a supertype (for user convenience)
     }
 
+    // Auto-borrow to turn array into a read-only slice
+    // Later we can generalize this into more kinds of safe borrows
+    RefNode *arrreftype = (RefNode*)totyp;
+    if (totyp->tag == ArrayRefTag && fromtype->tag == ArrayTag
+        && itypeIsSame(((RefNode*)totyp)->vtexp, arrayElemType(fromtype))
+        && itypeGetTypeDcl(arrreftype->perm) == (INode*)constPerm && itypeGetTypeDcl(arrreftype->region) == borrowRef) {
+        return ConvBorrow;    // Auto-borrow
+    }
+
     return NoMatch;
 }
 
@@ -106,6 +115,17 @@ int iexpCoerce(INode **from, INode *totype) {
         }
         else
             return 0;
+    }
+    case ConvBorrow:
+    {
+        // Borrow from array to create arrayref
+        RefNode *arrreftype = (RefNode*)totypedcl;
+        RefNode *addrtype = newRefNodeFull(ArrayRefTag, *from, borrowRef, newPermUseNode(constPerm), arrreftype->vtexp);
+        RefNode *borrownode = newRefNode(ArrayBorrowTag);
+        borrownode->vtype = (INode*)addrtype;
+        borrownode->vtexp = *from;
+        *from = (INode*)borrownode;
+        return 1;
     }
     default: {
         return 0;

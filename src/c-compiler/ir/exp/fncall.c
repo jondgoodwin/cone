@@ -188,21 +188,9 @@ void fnCallFinalizeArgs(FnCallNode *node) {
     uint32_t cnt;
     INode **parmp = &nodesGet(fnsig->parms, 0);
     for (nodesFor(node->args, cnt, argsp)) {
-        // Auto-convert string literal to borrowed reference
-        INode *parmtype = iexpGetTypeDcl(*parmp);
-        if ((*argsp)->tag == StringLitTag 
-            && (parmtype->tag == ArrayRefTag || parmtype->tag == PtrTag)) {
-            // This approach needs fixing! Don't coerce to ptr, coerce array to arrayref (not ref)
-            RefNode *addrtype = newRefNodeFull(RefTag, *argsp, borrowRef, newPermUseNode(immPerm), (INode*)u8Type);
-            RefNode *borrownode = newRefNode(BorrowTag);
-            borrownode->vtype = (INode*)addrtype;
-            borrownode->vtexp = *argsp;
-            *argsp = (INode*)borrownode;
-        }
-
         // Make sure the type matches (and coerce as needed)
         // (but not for vref as self)
-        if (!iexpCoerce(argsp, ((IExpNode*)*parmp)->vtype) 
+        if (!iexpCoerce(argsp, ((IExpNode*)*parmp)->vtype)
             && !(cnt == node->args->used && (node->flags & FlagVDisp)))
             errorMsgNode(*argsp, ErrorInvType, "Expression's type does not match declared parameter");
         parmp++;

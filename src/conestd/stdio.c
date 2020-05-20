@@ -9,8 +9,8 @@
 #include <inttypes.h>
 #include <stdio.h>
 
-void print(char *p) {
-	printf("%s", p);
+void print(char *p, size_t len) {
+	fwrite(p, len, 1, stdout);
 }
 
 void printInt(int64_t nbr) {
