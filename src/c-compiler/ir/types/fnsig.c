@@ -161,7 +161,7 @@ int fnSigCoerce(FnSigNode *totype, INode **fromexp) {
 }
 
 // Will the function call (caller) be able to call the 'to' function
-// Return 0 if not. 1 if perfect match. 2+ for imperfect matches
+// Return 0 if not. 1 if perfect match. 2+ for every argument match requiring coercion
 int fnSigMatchesCall(FnSigNode *to, Nodes *args) {
     int matchsum = 1;
 
@@ -175,16 +175,13 @@ int fnSigMatchesCall(FnSigNode *to, Nodes *args) {
     uint32_t cnt;
     tonodesp = &nodesGet(to->parms, 0);
     for (nodesFor(args, cnt, callnodesp)) {
-        TypeCompare match;
-        switch (match = iexpMatches(callnodesp, ((IExpNode *)*tonodesp)->vtype, Coercion)) {
-        case NoMatch: return 0;
-        case EqMatch: break;
-        case CastSubtype:
-        case ConvSubtype: 
-            matchsum += match; break;
+        switch (iexpMatches(callnodesp, ((IExpNode *)*tonodesp)->vtype, Coercion)) {
+        case NoMatch: 
+            return 0;
+        case EqMatch: 
+            break;
         default:
-            if ((*callnodesp)->tag != ULitTag)
-                return 0;
+            ++matchsum;
         }
         tonodesp++;
     }
@@ -198,7 +195,7 @@ int fnSigMatchesCall(FnSigNode *to, Nodes *args) {
 }
 
 // Will the method call (caller) be able to call the 'to' function
-// Return 0 if not. 1 if perfect match. 2+ for imperfect matches
+// Return 0 if not. 1 if perfect match. 2+ for every argument match requiring coercion
 int fnSigMatchMethCall(FnSigNode *to, INode **self, Nodes *args) {
     uint32_t argcnt = args ? args->used + 1 : 1;
 
@@ -210,17 +207,14 @@ int fnSigMatchMethCall(FnSigNode *to, INode **self, Nodes *args) {
     INode **tonodesp = &nodesGet(to->parms, 0);
     INode *selftype = iexpGetTypeDcl(*self);
     int matchsum = 1;
-    TypeCompare match;
     if (selftype->tag != VirtRefTag) {
-        switch (match = iexpMatches(self, iexpGetTypeDcl(*tonodesp), Coercion)) {
+        switch (iexpMatches(self, iexpGetTypeDcl(*tonodesp), Coercion)) {
         case NoMatch:
             return 0;
-        case EqMatch: break;
-        case CastSubtype:
-        case ConvSubtype: 
-            matchsum += match; break;
+        case EqMatch: 
+            break;
         default:
-            return 0;
+            ++matchsum; 
         }
     }
     else {
@@ -237,16 +231,13 @@ int fnSigMatchMethCall(FnSigNode *to, INode **self, Nodes *args) {
     INode **callnodesp;
     uint32_t cnt;
     for (nodesFor(args, cnt, callnodesp)) {
-        switch (match = iexpMatches(callnodesp, ((IExpNode *)*tonodesp)->vtype, Coercion)) {
+        switch (iexpMatches(callnodesp, ((IExpNode *)*tonodesp)->vtype, Coercion)) {
         case NoMatch:
             return 0;
-        case EqMatch: break;
-        case CastSubtype:
-        case ConvSubtype:
-            matchsum += match; break;
+        case EqMatch: 
+            break;
         default:
-            if ((*callnodesp)->tag != ULitTag)
-                return 0;
+            ++matchsum;
         }
         tonodesp++;
     }
