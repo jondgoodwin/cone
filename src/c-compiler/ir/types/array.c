@@ -34,7 +34,8 @@ INode *arrayElemType(INode *array) {
 
 // Return the size of the first dimension (assuming 1-dimensional array)
 uint64_t arrayDim1(INode *array) {
-    return ((ULitNode *)(((ArrayNode *)array)->dimens))->uintlit;
+    ULitNode *dim1 = (ULitNode *)nodesGet(((ArrayNode *)array)->dimens, 0);
+    return dim1->uintlit;
 }
 
 // Clone array
