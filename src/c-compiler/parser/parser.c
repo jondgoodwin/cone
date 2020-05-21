@@ -207,7 +207,15 @@ void parseInclude(ParseState *parse) {
 }
 
 char *stdiolib =
-"extern {fn print(str &[]u8); fn printFloat(a f64); fn printInt(a i64); fn printChar(code u64);}\n"
+"extern {fn printStr(str &[]u8); fn printFloat(a f64); fn printInt(a i64); fn printChar(code u64);}\n"
+"struct IOStream{"
+"  fd i32;"
+"  fn `<-`(str &[]u8) {printStr(str)}"
+"  fn `<-`(i i64) {printInt(i)}"
+"  fn `<-`(n f64) {printFloat(n)}"
+"  fn `<-`(ch u64) {printChar(ch)}"
+"}"
+"imm print = IOStream[0]"
 ;
 
 // Parse import statement: This is a hacked-up version for now

@@ -9,7 +9,7 @@
 #include <inttypes.h>
 #include <stdio.h>
 
-void print(char *p, size_t len) {
+void printStr(char *p, size_t len) {
 	fwrite(p, len, 1, stdout);
 }
 
