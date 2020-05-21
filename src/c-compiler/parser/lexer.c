@@ -413,11 +413,11 @@ void lexScanString(char *srcp) {
             srclen+=4;
         }
     }
-    *newp = '\0';
-    srcp++;
-    srclen++;
+    *newp = '\0';  // Backstop with null to be careful
+    if (*srcp == '"')
+        srcp++;        // Move past terminating " character
 
-    lex->strlen = srclen;
+    lex->strlen = srclen;  // Count of all characters of string, except final null char.
     lex->toktype = StringLitToken;
     lex->srcp = srcp;
 }
