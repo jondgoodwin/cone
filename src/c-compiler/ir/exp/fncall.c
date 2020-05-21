@@ -281,6 +281,7 @@ int fnCallLowerMethod(FnCallNode *callnode) {
     if (!foundnode
         || !(foundnode->tag == FnDclTag || foundnode->tag == FieldDclTag)
         || !(foundnode->flags & FlagMethFld)) {
+        errorMsgNode((INode*)callnode, ErrorNotPublic, "Method or field `%s` not found.", &methsym->namestr);
         return 0;
     }
 
