@@ -28,6 +28,16 @@ NameUseNode *newNameUseNode(Name *namesym) {
     return name;
 }
 
+// Create a working variable for a value we intend to reuse later
+// The vardcl is appended to a list of nodes, and the nameuse node to it is returned
+INode *newNameUseAndDcl(Nodes **nodesp, INode *val) {
+    INode *var = (INode*)newVarDclFull(anonName, VarDclTag, unknownType, (INode*)immPerm, val);
+    nodesAdd(nodesp, var);
+    NameUseNode *varuse = newNameUseNode(anonName);
+    varuse->dclnode = var;
+    return (INode*)varuse;
+}
+
 NameUseNode *newMemberUseNode(Name *namesym) {
     NameUseNode *name;
     newNode(name, NameUseNode, MbrNameUseTag);

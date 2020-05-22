@@ -651,6 +651,38 @@ INode *parseOpEq(ParseState *parse, INode *lval, Name *opeqname) {
     return (INode*)node;
 }
 
+// Parse the append operator (<-)
+INode *parseAppend(ParseState *parse, INode *lval) {
+    FnCallNode *node = newFnCallOpname(lval, lessDashName, 2);
+    node->flags |= FlagOpAssgn | FlagLvalOp;
+    lexNextToken();
+    INode *rval = parseTuple(parse);
+    if (rval->tag != TupleTag) {
+        nodesAdd(&node->args, parseAnyExpr(parse));
+        return (INode*)node;
+    }
+
+    // If rval is a tuple, lower this to block with multiple append calls
+    BlockNode *blk = newBlockNode();
+    inodeLexCopy((INode*)blk, (INode*)node);
+    INode *lvalvar = newNameUseAndDcl(&blk->stmts, lval);
+    INode **nodesp;
+    uint32_t cnt;
+    TupleNode *tuple = (TupleNode *)rval;
+    for (nodesFor(tuple->elems, cnt, nodesp)) {
+        if (cnt == tuple->elems->used) {
+            node->objfn = *nodesp;
+        }
+        else {
+            node = newFnCallOpname(*nodesp, lessDashName, 2);
+            node->flags |= FlagOpAssgn | FlagLvalOp;
+        }
+        nodesAdd(&node->args, (INode*)node);
+    }
+
+    return (INode*)blk;
+}
+
 // Parse an assignment expression
 INode *parseAssign(ParseState *parse) {
     INode *lval = parseTuple(parse);
@@ -683,7 +715,7 @@ INode *parseAssign(ParseState *parse) {
     case ShrEqToken:
         return parseOpEq(parse, lval, shrEqName);
     case LessDashToken:
-        return parseOpEq(parse, lval, lessDashName);
+        return parseAppend(parse, lval);
     default:
         return lval;
     }
