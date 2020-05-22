@@ -22,7 +22,7 @@ void borrowMutRef(INode **nodep, INode* type, INode *perm) {
     if (iexpIsLval(node) == 0) {
         errorMsgNode(node, ErrorInvType, "Auto-borrowing can only be done on an lval");
     }
-    RefNode *reftype = newRefNodeFull(RefTag, node, borrowRef, perm, type);
+    RefNode *reftype = type != unknownType? newRefNodeFull(RefTag, node, borrowRef, perm, type) : unknownType;
     RefNode *borrownode = newRefNodeFull(BorrowTag, node, borrowRef, perm, node);
     borrownode->vtype = (INode*)reftype;
     *nodep = (INode*)borrownode;

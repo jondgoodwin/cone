@@ -26,7 +26,7 @@ NameUseNode *newNameUseNode(Name *name);
 
 // Create a working variable for a value we intend to reuse later
 // The vardcl is appended to a list of nodes, and the nameuse node to it is returned
-INode *newNameUseAndDcl(Nodes **nodesp, INode *val);
+INode *newNameUseAndDcl(Nodes **nodesp, INode *val, uint16_t scope);
 
 // Clone NameUse
 INode *cloneNameUseNode(CloneState *cstate, NameUseNode *node);

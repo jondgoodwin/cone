@@ -30,11 +30,13 @@ NameUseNode *newNameUseNode(Name *namesym) {
 
 // Create a working variable for a value we intend to reuse later
 // The vardcl is appended to a list of nodes, and the nameuse node to it is returned
-INode *newNameUseAndDcl(Nodes **nodesp, INode *val) {
-    INode *var = (INode*)newVarDclFull(anonName, VarDclTag, unknownType, (INode*)immPerm, val);
-    nodesAdd(nodesp, var);
+INode *newNameUseAndDcl(Nodes **nodesp, INode *val, uint16_t scope) {
+    VarDclNode *var = (VarDclNode*)newVarDclFull(anonName, VarDclTag, unknownType, (INode*)immPerm, val);
+    var->scope = scope;
+    nodesAdd(nodesp, (INode*)var);
     NameUseNode *varuse = newNameUseNode(anonName);
-    varuse->dclnode = var;
+    varuse->tag = VarNameUseTag;
+    varuse->dclnode = (INode*)var;
     return (INode*)varuse;
 }
 

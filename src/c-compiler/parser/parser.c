@@ -215,7 +215,7 @@ char *stdiolib =
 "  fn `<-`(n f64) {printFloat(n)}"
 "  fn `<-`(ch u64) {printChar(ch)}"
 "}"
-"imm print = IOStream[0]"
+"mut print = IOStream[0]"
 ;
 
 // Parse import statement: This is a hacked-up version for now

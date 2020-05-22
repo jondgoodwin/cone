@@ -82,6 +82,42 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
         for (nodesFor(node->args, cnt, argsp))
             inodeNameRes(pstate, argsp);
     }
+
+    // Lower "<-" (append) on a vtuple to a block that appends each tuple element separately
+    if (node->methfld && ((NameUseNode *)node->methfld)->namesym == lessDashName
+        && node->args > 0 && nodesGet(node->args, 0)->tag == VTupleTag) {
+
+        // Create block and start it with a variable that mutably borrows address of append receiver
+        INode *lval = node->objfn;
+        BlockNode *blk = newBlockNode();
+        inodeLexCopy((INode*)blk, (INode*)node);
+        blk->scope = pstate->scope + 1;
+        borrowMutRef(&lval, unknownType, (INode*)mutPerm);
+        INode *lvalvar = newNameUseAndDcl(&blk->stmts, lval, blk->scope);
+
+        // Use dereferenced name as receiver for sequence of appends
+        StarNode *starlval = newStarNode(DerefTag);
+        starlval->vtexp = lvalvar;
+
+        // Now create sequence of appends, one for each element of tuple
+        INode **nodesp;
+        uint32_t cnt;
+        TupleNode *tuple = (TupleNode *)nodesGet(node->args, 0);
+        for (nodesFor(tuple->elems, cnt, nodesp)) {
+            if (cnt == tuple->elems->used) {
+                node->objfn = (INode*)starlval;
+                nodesGet(node->args, 0) = *nodesp;
+            }
+            else {
+                node = newFnCallOpname((INode*)starlval, lessDashName, 2);
+                node->flags |= FlagOpAssgn | FlagLvalOp;
+                nodesAdd(&node->args, *nodesp);
+            }
+            nodesAdd(&blk->stmts, (INode*)node);
+        }
+        *nodep = (FnCallNode*)blk;  // Replace fncall with constructed block (casting badly to satisfy type check)
+        return;
+    }
 }
 
 // We have an object that is an array, arrayref, ptr, or reference to an array
