@@ -113,7 +113,7 @@ void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod) {
         {
             VarDclNode * varnode = (VarDclNode*)*nodesp;
             inodeTypeCheckAny(pstate, (INode**)&varnode->perm);
-            if (varnode->vtype)
+            if (varnode->vtype != unknownType)
                 inodeTypeCheckAny(pstate, &varnode->vtype);
             break;
         }

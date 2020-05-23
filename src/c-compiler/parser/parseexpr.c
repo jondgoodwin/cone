@@ -662,6 +662,11 @@ INode *parseAppend(ParseState *parse, INode *lval) {
 
 // Parse an assignment expression
 INode *parseAssign(ParseState *parse) {
+    // Prefix <- operator applies to 'this'
+    if (lexIsToken(LessDashToken)) {
+        return parseAppend(parse, (INode*)newNameUseNode(thisName));
+    }
+
     INode *lval = parseTuple(parse);
     switch (lex->toktype) {
     case AssgnToken:
