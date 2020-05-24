@@ -44,8 +44,11 @@ int iexpTypeCheckCoerce(TypeCheckState *pstate, INode *to, INode **from);
 // - from is the current branch whose type is being examined
 int iexpMultiInfer(INode *expectType, INode **maybeType, INode **from);
 
-// Ensure it is a lval, return error and 0 if not.
+// Return true if an lval, and 0 if not.
 int iexpIsLval(INode *lval);
+
+// Ensure it is a lval, return error and 0 if not.
+int iexpIsLvalError(INode *lval);
 
 // Extract lval variable, scope and overall permission from lval
 INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope);

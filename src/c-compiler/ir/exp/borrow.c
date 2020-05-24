@@ -19,13 +19,40 @@ void borrowMutRef(INode **nodep, INode* type, INode *perm) {
         return;
     }
   
-    if (iexpIsLval(node) == 0) {
+    if (iexpIsLvalError(node) == 0) {
         errorMsgNode(node, ErrorInvType, "Auto-borrowing can only be done on an lval");
     }
-    RefNode *reftype = type != unknownType? newRefNodeFull(RefTag, node, borrowRef, perm, type) : unknownType;
+    RefNode *reftype = type != unknownType? newRefNodeFull(RefTag, node, borrowRef, perm, type) : (RefNode*)unknownType;
     RefNode *borrownode = newRefNodeFull(BorrowTag, node, borrowRef, perm, node);
     borrownode->vtype = (INode*)reftype;
     *nodep = (INode*)borrownode;
+}
+
+// Auto-inject a borrow note in front of 'from', to create totypedcl type
+void borrowAuto(INode **from, INode *totypedcl) {
+    // Borrow from array to create arrayref (only one supported currently)
+    RefNode *arrreftype = (RefNode*)totypedcl;
+    RefNode *addrtype = newRefNodeFull(ArrayRefTag, *from, borrowRef, newPermUseNode(constPerm), arrreftype->vtexp);
+    RefNode *borrownode = newRefNode(ArrayBorrowTag);
+    borrownode->vtype = (INode*)addrtype;
+    borrownode->vtexp = *from;
+    *from = (INode*)borrownode;
+}
+
+// Can we safely auto-borrow to match expected type?
+// Note: totype has already done GetTypeDcl
+int borrowAutoMatches(INode *from, RefNode *totype) {
+    // We can only borrow from an lval
+    if (!iexpIsLval(from))
+        return 0;
+    INode *fromtype = iexpGetTypeDcl(from);
+
+    // Handle auto borrow of array to obtain a borrowed array reference (slice)
+    if (totype->tag == ArrayRefTag && fromtype->tag == ArrayTag) {
+        return (itypeIsSame(((RefNode*)totype)->vtexp, arrayElemType(fromtype))
+            && itypeGetTypeDcl(totype->perm) == (INode*)constPerm && itypeGetTypeDcl(totype->region) == borrowRef);
+    }
+    return 0;
 }
 
 // Serialize borrow node
@@ -40,7 +67,7 @@ void borrowPrint(RefNode *node) {
 // Analyze borrow node
 void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     RefNode *node = *nodep;
-    if (iexpTypeCheckAny(pstate, &node->vtexp) == 0 || iexpIsLval(node->vtexp) == 0)
+    if (iexpTypeCheckAny(pstate, &node->vtexp) == 0 || iexpIsLvalError(node->vtexp) == 0)
         return;
 
     // Auto-deref the exp, if we are borrowing a reference to a reference's field or indexed value

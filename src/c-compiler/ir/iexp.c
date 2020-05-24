@@ -64,12 +64,8 @@ TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constrain
         return ConvSubtype;  // For literals, we do not care if to a supertype (for user convenience)
     }
 
-    // Auto-borrow to turn array into a read-only slice
-    // Later we can generalize this into more kinds of safe borrows
-    RefNode *arrreftype = (RefNode*)totyp;
-    if (totyp->tag == ArrayRefTag && fromtype->tag == ArrayTag
-        && itypeIsSame(((RefNode*)totyp)->vtexp, arrayElemType(fromtype))
-        && itypeGetTypeDcl(arrreftype->perm) == (INode*)constPerm && itypeGetTypeDcl(arrreftype->region) == borrowRef) {
+    // Can we auto-borrow to match on the expected type?
+    if (borrowAutoMatches(*from, (RefNode*)totyp)) {
         return ConvBorrow;    // Auto-borrow
     }
 
@@ -118,13 +114,7 @@ int iexpCoerce(INode **from, INode *totype) {
     }
     case ConvBorrow:
     {
-        // Borrow from array to create arrayref
-        RefNode *arrreftype = (RefNode*)totypedcl;
-        RefNode *addrtype = newRefNodeFull(ArrayRefTag, *from, borrowRef, newPermUseNode(constPerm), arrreftype->vtexp);
-        RefNode *borrownode = newRefNode(ArrayBorrowTag);
-        borrownode->vtype = (INode*)addrtype;
-        borrownode->vtexp = *from;
-        *from = (INode*)borrownode;
+        borrowAuto(from, totypedcl);
         return 1;
     }
     default: {
@@ -203,6 +193,7 @@ int iexpMultiInfer(INode *expectType, INode **maybeType, INode **from) {
 int iexpIsLval(INode *lval) {
     switch (lval->tag) {
     case VarNameUseTag:
+    case StringLitTag:
     case DerefTag:
         return 1;
     case ArrIndexTag:
@@ -210,9 +201,16 @@ int iexpIsLval(INode *lval) {
     case FldAccessTag:
         return iexpIsLval(((FnCallNode *)lval)->objfn);
     default:
-        errorMsgNode(lval, ErrorBadLval, "Expression must be lval");
         return 0;
     }
+}
+
+// Ensure it is a lval, return error and 0 if not.
+int iexpIsLvalError(INode *lval) {
+    if (iexpIsLval(lval))
+        return 1;
+    errorMsgNode(lval, ErrorBadLval, "Expression must be lval");
+    return 0;
 }
 
 // Extract lval variable, scope and overall permission from lval

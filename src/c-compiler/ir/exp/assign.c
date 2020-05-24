@@ -52,7 +52,7 @@ void assignSingleCheck(TypeCheckState *pstate, INode *lval, INode **rval) {
     if (lval->tag == VarNameUseTag && ((NameUseNode*)lval)->namesym == anonName)
         return;
 
-    if (iexpIsLval(lval) == 0) {
+    if (iexpIsLvalError(lval) == 0) {
         return;
     }
     if (iexpTypeCheckCoerce(pstate, ((IExpNode*)lval)->vtype, rval) == 0) {
@@ -99,7 +99,7 @@ void assignMultRetCheck(TypeCheckState *pstate, TupleNode *lval, INode **rval) {
     INode **lnodesp;
     INode **rtypep = &nodesGet(rtypes, 0);
     for (nodesFor(lnodes, lcnt, lnodesp)) {
-        if (iexpIsLval(*lnodesp) == 0)
+        if (iexpIsLvalError(*lnodesp) == 0)
             continue;
         if (itypeIsSame(((IExpNode *)*lnodesp)->vtype, *rtypep++) == 0)
             errorMsgNode(*lnodesp, ErrorInvType, "Return value's type does not match lval's type");
