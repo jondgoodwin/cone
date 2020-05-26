@@ -74,7 +74,7 @@ solutions file. The build depends on [LLVM 7][llvm] being installed and availabl
 
 To build on Linux:
 
-	sudo apt-get install llvm-7.0-dev
+	sudo apt-get install llvm-7-dev
 	cmake .
 	make
 
