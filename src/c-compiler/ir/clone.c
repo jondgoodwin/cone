@@ -147,8 +147,24 @@ void clonePopState() {
     nametblHookPop();
 }
 
+// -------
+// cloneDclFix is needed by already-name-resolved nameuse nodes during cloning.
+// It re-points the cloned nameuse node to the comparably cloned dcl node.
+// This requires a LIFO stack that is built when cloning each named dcl node,
+// capturing a mapping from some original dcl node to its cloned copy.
+// Because blocks introduce local names, push and pop preserve and restores the stack's high-water point,
+// minimizing linear search throughput.
+
+// By being LIFO, this should be impervious to cloning within cloning.
+// -------
+
+// The clone dclnode map stack
 CloneDclMap *cloneDclMap = NULL;
+
+// High-water mark on clone dcl map stack, position of next entry
 uint32_t cloneDclPos = 0;
+
+// Current max number of entries in dclnode map stack, triggering growth if exceeded
 uint32_t cloneDclSize = 0;
 
 // Preserve high-water position in the dcl stack
@@ -180,10 +196,12 @@ void cloneDclSetMap(INode *orig, INode *clone) {
     map->clone = clone;
 }
 
-// Return the new pointer to the dcl node, given the original pointer
+// Return the new pointer to the cloned dcl node, given a pointer to the original dclnode
 INode *cloneDclFix(INode *orig) {
-    for (uint32_t pos = 0; pos < cloneDclPos; ++pos) {
-        CloneDclMap *map = &cloneDclMap[pos];
+    // Search for dcl node backwards in LIFO order
+    for (uint32_t pos = cloneDclPos; pos > 0; ) {
+        CloneDclMap *map = &cloneDclMap[--pos];
+        // Found: return cloned copy of the dcl node
         if (map->original == orig)
             return map->clone;
     }
