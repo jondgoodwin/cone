@@ -73,7 +73,7 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
             // Remember value and block if needed for phi merge
             if (vtype != unknownType) {
                 blkvals[phicnt] = blkval;
-                blks[phicnt++] = ablk;
+                blks[phicnt++] = LLVMGetInsertBlock(gen->builder);
             }
         }
 
@@ -562,25 +562,26 @@ LLVMValueRef genlNot(GenState *gen, LogicNode* node) {
 
 // Generate and, or
 LLVMValueRef genlLogic(GenState *gen, LogicNode* node) {
-    LLVMBasicBlockRef logicblks[2], logicphi;
+    LLVMBasicBlockRef logicblks[2];
     LLVMValueRef logicvals[2];
 
     // Set up basic blocks
-    logicblks[0] = LLVMGetInsertBlock(gen->builder);
-    logicphi = genlInsertBlock(gen, node->tag==AndLogicTag? "andphi" : "orphi");
-    logicblks[1] = genlInsertBlock(gen, node->tag==AndLogicTag? "andrhs" : "orrhs");
+    LLVMBasicBlockRef logicphi = genlInsertBlock(gen, node->tag==AndLogicTag? "andphi" : "orphi");
+    LLVMBasicBlockRef logicrhs = genlInsertBlock(gen, node->tag == AndLogicTag ? "andrhs" : "orrhs");
 
     // Generate left-hand condition and conditional branch
     logicvals[0] = genlExpr(gen, node->lexp);
     if (node->tag==OrLogicTag)
-        LLVMBuildCondBr(gen->builder, logicvals[0], logicphi, logicblks[1]);
+        LLVMBuildCondBr(gen->builder, logicvals[0], logicphi, logicrhs);
     else
-        LLVMBuildCondBr(gen->builder, logicvals[0], logicblks[1], logicphi);
+        LLVMBuildCondBr(gen->builder, logicvals[0], logicrhs, logicphi);
+    logicblks[0] = LLVMGetInsertBlock(gen->builder);
 
     // Generate right-hand condition and branch to phi
-    LLVMPositionBuilderAtEnd(gen->builder, logicblks[1]);
+    LLVMPositionBuilderAtEnd(gen->builder, logicrhs);
     logicvals[1] = genlExpr(gen, node->rexp);
     LLVMBuildBr(gen->builder, logicphi);
+    logicblks[1] = LLVMGetInsertBlock(gen->builder);
 
     // Generate phi
     LLVMPositionBuilderAtEnd(gen->builder, logicphi);
