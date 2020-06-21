@@ -376,7 +376,7 @@ void lexScanString(char *srcp) {
     srcp = lex->tokp+1;
     while (*srcp != '"' && *srcp) {
         // discard all control chars, including spaces after new-line
-        if (*srcp < ' ') {
+        if ((unsigned char)*srcp < ' ') {
             if (*srcp++ == '\n') {
                 while (*srcp <= ' ' && *srcp)
                     ++srcp;
@@ -384,33 +384,36 @@ void lexScanString(char *srcp) {
             continue;
         }
 
-        // Obtain next possible UTF-8 character
-        if (*srcp == '\\')
-            srcp = lexScanEscape(srcp, &uchar);
-        else
-            uchar = *srcp++;
-
-        if (uchar < 0x80) {
-            *newp++ = (unsigned char)uchar;
+        // Copy over next byte or an escaped character
+        if (*srcp != '\\') {
+            *newp++ = *srcp++; // Works for utf8-encoded characters as well
             srclen++;
         }
-        else if (uchar<0x800) {
-            *newp++ = 0xC0 | (unsigned char)(uchar >> 6);
-            *newp++ = 0x80 | (uchar & 0x3f);
-            srclen+=2;
-        }
-        else if (uchar<0x10000) {
-            *newp++ = 0xE0 | (unsigned char)(uchar >> 12);
-            *newp++ = 0x80 | ((uchar >> 6) & 0x3F);
-            *newp++ = 0x80 | (uchar & 0x3f);
-            srclen+=3;
-        }
-        else if (uchar<0x110000) {
-            *newp++ = 0xF0 | (unsigned char)(uchar >> 18);
-            *newp++ = 0x80 | ((uchar >> 12) & 0x3F);
-            *newp++ = 0x80 | ((uchar >> 6) & 0x3F);
-            *newp++ = 0x80 | (uchar & 0x3f);
-            srclen+=4;
+        else {
+            // Handle escaped character(s), including unicode
+            srcp = lexScanEscape(srcp, &uchar);
+            if (uchar < 0x80) {
+                *newp++ = (unsigned char)uchar;
+                srclen++;
+            }
+            else if (uchar<0x800) {
+                *newp++ = 0xC0 | (unsigned char)(uchar >> 6);
+                *newp++ = 0x80 | (uchar & 0x3f);
+                srclen+=2;
+            }
+            else if (uchar<0x10000) {
+                *newp++ = 0xE0 | (unsigned char)(uchar >> 12);
+                *newp++ = 0x80 | ((uchar >> 6) & 0x3F);
+                *newp++ = 0x80 | (uchar & 0x3f);
+                srclen+=3;
+            }
+            else if (uchar<0x110000) {
+                *newp++ = 0xF0 | (unsigned char)(uchar >> 18);
+                *newp++ = 0x80 | ((uchar >> 12) & 0x3F);
+                *newp++ = 0x80 | ((uchar >> 6) & 0x3F);
+                *newp++ = 0x80 | (uchar & 0x3f);
+                srclen+=4;
+            }
         }
     }
     *newp = '\0';  // Backstop with null to be careful
