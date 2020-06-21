@@ -85,7 +85,6 @@ char *corelib =
 
 // Set up the standard library, whose names are always shared by all modules
 char *stdlibInit(int ptrsize) {
-    lexInject("corelib", corelib);
 
     unknownType = (INode*)newAbsenceNode();
     unknownType->tag = UnknownTag;
