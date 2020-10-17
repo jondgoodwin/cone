@@ -320,8 +320,11 @@ void lexScanChar(char *srcp) {
     }
 
     // Obtain a single character/unicode (possibly escaped)
-    if (*srcp == '\\')
+    int isUnicode = 0;
+    if (*srcp == '\\') {
+        isUnicode = *(srcp + 1) == 'u' || *(srcp + 1) == 'U';
         srcp = lexScanEscape(srcp, &lex->val.uintlit);
+    }
     else
         lex->val.uintlit = *srcp++;
 
@@ -334,7 +337,7 @@ void lexScanChar(char *srcp) {
             srcp++;
         }
         else
-            lex->langtype = lex->val.uintlit >= 0x100 ? (INode*)u32Type : (INode*)u8Type;
+            lex->langtype = isUnicode || lex->val.uintlit >= 0x100 ? (INode*)u32Type : (INode*)u8Type;
         lex->toktype = IntLitToken;
         lex->srcp = srcp;
         return;
@@ -391,8 +394,9 @@ void lexScanString(char *srcp) {
         }
         else {
             // Handle escaped character(s), including unicode
+            int isUnicode = *(srcp + 1) == 'u' || *(srcp + 1) == 'U';
             srcp = lexScanEscape(srcp, &uchar);
-            if (uchar < 0x80) {
+            if (!isUnicode || uchar < 0x80) {
                 *newp++ = (unsigned char)uchar;
                 srclen++;
             }
