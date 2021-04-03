@@ -46,7 +46,7 @@ void genlParmVar(GenState *gen, VarDclNode *var) {
 
 // Generate a function
 void genlFn(GenState *gen, FnDclNode *fnnode) {
-    if (fnnode->value->tag == IntrinsicTag)
+    if ((fnnode->flags & FlagInline) || fnnode->value->tag == IntrinsicTag)
         return;
 
     LLVMValueRef svfn = gen->fn;
@@ -140,6 +140,10 @@ char *genlMangleMethName(char *workbuf, FnDclNode *node) {
 
 // Generate LLVMValueRef for a global function
 void genlGloFnName(GenState *gen, FnDclNode *glofn) {
+    // Do not generate inline functions
+    if (glofn->flags & FlagInline)
+        return;
+
     // Add function to the module
     if (glofn->value == NULL || glofn->value->tag != IntrinsicTag) {
         char workbuf[2048] = { '\0' };

@@ -164,6 +164,7 @@ enum TokenTypes {
     ContinueToken,    // 'continue'
     AsToken,        // 'as'
     IntoToken,      // 'into'
+    InlineToken,    // 'inline'
     trueToken,        // 'true'
     falseToken,        // 'false'
 

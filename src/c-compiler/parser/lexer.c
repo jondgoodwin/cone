@@ -115,6 +115,7 @@ void keywordInit() {
     keyAdd("as", AsToken);
     keyAdd("is", IsToken);
     keyAdd("into", IntoToken);
+    keyAdd("inline", InlineToken);
 
     keyAdd("true", trueToken);
     keyAdd("false", falseToken);

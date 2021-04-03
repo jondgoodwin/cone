@@ -154,6 +154,13 @@ INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags) {
     // Process the function's signature info.
     fnnode->vtype = parseFnSig(parse);
 
+    // Handle optional specification that we are declaring an inline function,
+    // one whose implementation will be "inlined" into any function that calls it
+    if (lexIsToken(InlineToken)) {
+        fnnode->flags |= FlagInline;
+        lexNextToken();
+    }
+
     // Process statements block that implements function, if provided
     if (parseHasBlock()) {
         if (!(mayflags&ParseMayImpl))

@@ -127,13 +127,15 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
     }
     // Handle call when we have a ref or pointer to a function
     INode *fntype = iexpGetTypeDcl(fncall->objfn);
-    if (fntype->tag != FnSigTag) {
-        assert(fntype->tag == RefTag || fntype->tag == PtrTag);
+    if (fntype->tag == RefTag || fntype->tag == PtrTag) {
         return LLVMBuildCall(gen->builder, genlExpr(gen, fncall->objfn), fnargs, fncall->args->used, "");
     }
+
     // We know at this point that fncall->objfn refers to some "named" function
+    assert(fntype->tag == FnSigTag);
     // Handle call when first argument (object) is a virtual reference
     if (fncall->flags & FlagVDisp) {
+        // Build code to obtain method's address from object "fat pointer"'s vtable, then call it
         FnDclNode *methdcl = (FnDclNode*)((NameUseNode *)fncall->objfn)->dclnode;
         LLVMValueRef vtable = LLVMBuildExtractValue(gen->builder, vref, 1, "");
         LLVMValueRef vtblmethp = LLVMBuildStructGEP(gen->builder, vtable, methdcl->vtblidx, &methdcl->namesym->namestr); // **fn
@@ -144,6 +146,22 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
     // A function call may be to an intrinsic, or to program-defined code
     NameUseNode *fnuse = (NameUseNode *)fncall->objfn;
     FnDclNode *fndcl = (FnDclNode *)fnuse->dclnode;
+    if (fndcl->flags & FlagInline) {
+        // For inline functions, first generate call args as local "parameter" variables
+        FnSigNode *fnsig = (FnSigNode*)fndcl->vtype;
+        uint32_t cnt;
+        INode **nodesp;
+        for (nodesFor(fnsig->parms, cnt, nodesp)) {
+            VarDclNode* var = (VarDclNode*)*nodesp;
+            assert(var->tag == VarDclTag);
+            // We always alloca in case variable is mutable or we want to take address of its value
+            var->llvmvar = genlAlloca(gen, genlType(gen, var->vtype), &var->namesym->namestr);
+            LLVMBuildStore(gen->builder, *fnargs++, var->llvmvar);
+        }
+
+        // Now generate function's block, as if any block, returning block's value
+        return genlBlock(gen, (BlockNode *)fndcl->value);
+    }
     switch (fndcl->value? fndcl->value->tag : BlockTag) {
     case BlockTag: {
         fncallret = LLVMBuildCall(gen->builder, fndcl->llvmvar, fnargs, fncall->args->used, "");
