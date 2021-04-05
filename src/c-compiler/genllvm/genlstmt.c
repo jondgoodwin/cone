@@ -70,6 +70,30 @@ LLVMValueRef genlLoop(GenState *gen, LoopNode *loopnode) {
     return NULL;
 }
 
+// Find the loop state in loop stack whose lifetime matches
+GenLoopState *genFindLoopState(GenState *gen, INode *life) {
+    uint32_t cnt = gen->loopstackcnt;
+    if (!life)
+        return &gen->loopstack[cnt - 1]; // use most recent, when no lifetime
+    LifetimeNode *lifeDclNode = (LifetimeNode *)((NameUseNode *)life)->dclnode;
+    while (cnt--) {
+        if (gen->loopstack[cnt].loop->life == lifeDclNode)
+            return &gen->loopstack[cnt];
+    }
+    return NULL;  // Should never get here
+}
+
+// Generate a block/loop break
+void genlBreak(GenState *gen, INode* life, INode* exp, Nodes* dealias) {
+    GenLoopState *loopstate = genFindLoopState(gen, life);
+    if (exp != noValue) {
+        loopstate->loopPhis[loopstate->loopPhiCnt] = genlExpr(gen, exp);
+        loopstate->loopBlks[loopstate->loopPhiCnt++] = LLVMGetInsertBlock(gen->builder);
+    }
+    genlDealiasNodes(gen, dealias);
+    LLVMBuildBr(gen->builder, loopstate->loopend);
+}
+
 // Generate a return statement
 void genlReturn(GenState *gen, ReturnNode *node) {
     if (node->exp != noValue) {
@@ -87,19 +111,6 @@ void genlReturn(GenState *gen, ReturnNode *node) {
 void genlBlockRet(GenState *gen, ReturnNode *node) {
 }
 
-// Find the loop state in loop stack whose lifetime matches
-GenLoopState *genFindLoopState(GenState *gen, INode *life) {
-    uint32_t cnt = gen->loopstackcnt;
-    if (!life)
-        return &gen->loopstack[cnt - 1]; // use most recent, when no lifetime
-    LifetimeNode *lifeDclNode = (LifetimeNode *)((NameUseNode *)life)->dclnode;
-    while (cnt--) {
-        if (gen->loopstack[cnt].loop->life == lifeDclNode)
-            return &gen->loopstack[cnt];
-    }
-    return NULL;  // Should never get here
-}
-
 // Generate a block's statements
 LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
     INode **nodesp;
@@ -107,20 +118,17 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
     LLVMValueRef lastval = NULL; // Should never be used by caller
     for (nodesFor(blk->stmts, cnt, nodesp)) {
         switch ((*nodesp)->tag) {
-        case BreakTag: {
-            BreakNode *brknode = (BreakNode*)*nodesp;
-            GenLoopState *loopstate = genFindLoopState(gen, brknode->life);
-            genlDealiasNodes(gen, brknode->dealias);
-            if (brknode->exp != noValue) {
-                loopstate->loopPhis[loopstate->loopPhiCnt] = genlExpr(gen, brknode->exp);
-                loopstate->loopBlks[loopstate->loopPhiCnt++] = LLVMGetInsertBlock(gen->builder);
-            }
-            LLVMBuildBr(gen->builder, loopstate->loopend);
-            break;
-        }
         case ContinueTag:
             genlDealiasNodes(gen, ((ContinueNode*)*nodesp)->dealias);
-            LLVMBuildBr(gen->builder, genFindLoopState(gen, ((BreakNode*)*nodesp)->life)->loopbeg); break;
+            LLVMBuildBr(gen->builder, genFindLoopState(gen, ((BreakNode*)*nodesp)->life)->loopbeg); 
+            break;
+
+        case BreakTag: {
+            BreakNode *brknode = (BreakNode*)*nodesp;
+            genlBreak(gen, brknode->life, brknode->exp, brknode->dealias);
+            break;
+        }
+
         case ReturnTag:
             genlReturn(gen, (ReturnNode*)*nodesp); break;
         case BlockRetTag:
