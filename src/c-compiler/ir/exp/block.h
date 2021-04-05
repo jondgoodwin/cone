@@ -14,7 +14,6 @@
 typedef struct BlockNode {
     IExpNodeHdr;
     Nodes *stmts;
-    uint16_t scope;
 } BlockNode;
 
 BlockNode *newBlockNode();

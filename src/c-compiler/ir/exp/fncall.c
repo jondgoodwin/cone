@@ -91,9 +91,8 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
         INode *lval = node->objfn;
         BlockNode *blk = newBlockNode();
         inodeLexCopy((INode*)blk, (INode*)node);
-        blk->scope = pstate->scope + 1;
         borrowMutRef(&lval, unknownType, (INode*)mutPerm);
-        INode *lvalvar = newNameUseAndDcl(&blk->stmts, lval, blk->scope);
+        INode *lvalvar = newNameUseAndDcl(&blk->stmts, lval, pstate->scope + 1);
 
         // Use dereferenced name as receiver for sequence of appends
         StarNode *starlval = newStarNode(DerefTag);

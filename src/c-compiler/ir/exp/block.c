@@ -23,7 +23,6 @@ INode *cloneBlockNode(CloneState *cstate, BlockNode *node) {
     newnode = memAllocBlk(sizeof(BlockNode));
     memcpy(newnode, node, sizeof(BlockNode));
     newnode->stmts = cloneNodes(cstate, node->stmts);
-    newnode->scope = ++cstate->scope;
     cloneDclPop(dclpos);
     return (INode *)newnode;
 }
@@ -48,8 +47,7 @@ void blockPrint(BlockNode *blk) {
 // - push and pop a namespace context for hooking local vars in global name table
 // - Ensure return/continue/break only appear as last statement in block
 void blockNameRes(NameResState *pstate, BlockNode *blk) {
-    uint16_t oldscope = pstate->scope;
-    blk->scope = ++pstate->scope; // Increment scope counter
+    ++pstate->scope; // Increment block scope counter
 
     nametblHookPush(); // Ensure block's local variable declarations are hooked
 
@@ -71,7 +69,7 @@ void blockNameRes(NameResState *pstate, BlockNode *blk) {
     }
 
     nametblHookPop();  // Unhook local variables from global name table
-    pstate->scope = oldscope;
+    --pstate->scope;
 }
 
 // Handle type-checking for a block. 
@@ -82,7 +80,7 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
     if (blk->stmts->used == 0)
         return;
 
-    pstate->scope = blk->scope;
+    ++pstate->scope;
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(blk->stmts, cnt, nodesp)) {
