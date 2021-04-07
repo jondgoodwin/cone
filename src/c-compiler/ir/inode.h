@@ -179,6 +179,8 @@ enum NodeTags {
 #define FlagLvalOp    0x0008        // FnCall: op requires an lval as object (a mutable ref)
 #define FlagOpAssgn   0x0010        // FnCall: method is an operator assignment (e.g., +=)
 
+#define FlagLoop      0x0001        // Block: is a Loop block
+
 #define FlagSuffix    0x0001        // Borrow: part of a borrow chain
 
 #define FlagUnkType   0x0001        // ULit: type is unspecified and may be converted to other number

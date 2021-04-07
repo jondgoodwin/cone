@@ -9,11 +9,20 @@
 #define block_h
 
 // Block is a ordered sequence of executable statements within a function.
-// It is also a local execution context/namespace owning local variables.
+// There are two varieties:  
+// - regular block that performs its statements once and then moves on
+// - loop block that automatically repeats its statements forever
+// Every block must end with one of these statements: return, break, continue or "block return"
+//
+// A block establishes a local execution context, a namespace that owns local variables.
 // Local variables are uniquely named and cannot be forward referenced.
+//
+// A block can have a named lifetime. When it does, one can break and continue to it.
 typedef struct BlockNode {
     IExpNodeHdr;
     Nodes *stmts;
+    LifetimeNode *life;   // nullable
+    Nodes *breaks;
 } BlockNode;
 
 BlockNode *newBlockNode();
@@ -35,9 +44,6 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blkvz, INode *expectType)
 // Ensure this particular block does not end with break/continue
 // Used by regular and loop blocks, but not by 'if' based blocks
 void blockNoBreak(BlockNode *blk);
-
-// Bidirectional type inference
-void blockBiTypeInfer(INode **totypep, BlockNode *blk);
 
 // Perform data flow analysis
 void blockFlow(FlowState *fstate, BlockNode **blknode);

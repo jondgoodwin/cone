@@ -137,7 +137,6 @@ void loopTypeCheck(TypeCheckState *pstate, LoopNode *node, INode *expectType) {
     }
 }
 
-// Bidirectional type inference
 // Perform data flow analysis on a loop expression
 void loopFlow(FlowState *fstate, LoopNode **nodep) {
     LoopNode *node = *nodep;

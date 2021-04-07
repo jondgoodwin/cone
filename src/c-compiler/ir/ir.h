@@ -109,6 +109,7 @@ typedef struct NameResState {
 } NameResState;
 
 #define TypeCheckLoopMax 256
+#define TypeCheckBlockMax 1024
 
 // Context used for type check pass
 typedef struct TypeCheckState {
@@ -116,6 +117,9 @@ typedef struct TypeCheckState {
     INode *typenode;          // Current type (e.g., struct)
     LoopNode **loopstack;     // Stack of active loops
     uint32_t loopcnt;         // How many currently in the loop stack
+    BlockNode *recentLoop;    // Innermost loop whose scope we are in
+    BlockNode **blockstack;   // Stack of active blocks
+    uint32_t blockcnt;        // How many currently in the block stack
     uint16_t scope;           // Current block scope level
 } TypeCheckState;
 

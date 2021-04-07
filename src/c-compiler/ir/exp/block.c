@@ -11,8 +11,18 @@
 BlockNode *newBlockNode() {
     BlockNode *blk;
     newNode(blk, BlockNode, BlockTag);
-    blk->vtype = unknownType;
+    blk->vtype = unknownType;  // This will be overridden with loop-as-expr
     blk->stmts = newNodes(8);
+    blk->life = NULL;
+    blk->breaks = NULL;
+    return blk;
+}
+
+// Create a new loop block node
+BlockNode *newLoopBlockNode() {
+    BlockNode *blk = newBlockNode();
+    blk->flags |= FlagLoop;
+    blk->breaks = newNodes(2);
     return blk;
 }
 
@@ -23,6 +33,9 @@ INode *cloneBlockNode(CloneState *cstate, BlockNode *node) {
     newnode = memAllocBlk(sizeof(BlockNode));
     memcpy(newnode, node, sizeof(BlockNode));
     newnode->stmts = cloneNodes(cstate, node->stmts);
+    newnode->life = (LifetimeNode*)cloneNode(cstate, (INode*)node->life);
+    if (node->breaks)
+        newnode->breaks = cloneNodes(cstate, node->breaks);
     cloneDclPop(dclpos);
     return (INode *)newnode;
 }
@@ -32,6 +45,10 @@ void blockPrint(BlockNode *blk) {
     INode **nodesp;
     uint32_t cnt;
 
+    if (blk->flags & FlagLoop) {
+        inodeFprint("loop");
+        inodePrintNL();
+    }
     if (blk->stmts) {
         inodePrintIncr();
         for (nodesFor(blk->stmts, cnt, nodesp)) {
@@ -44,13 +61,27 @@ void blockPrint(BlockNode *blk) {
 }
 
 // Handle name resolution and control structure compliance for a block
-// - push and pop a namespace context for hooking local vars in global name table
+// - push and pop a namespace context for hooking local vars & lifetime in global name table
 // - Ensure return/continue/break only appear as last statement in block
 void blockNameRes(NameResState *pstate, BlockNode *blk) {
     ++pstate->scope; // Increment block scope counter
-
     nametblHookPush(); // Ensure block's local variable declarations are hooked
 
+    // If block declares a lifetime declaration, hook into name table for name res
+    LifetimeNode *lifenode = blk->life;
+    if (lifenode) {
+        if (!lifenode->namesym->node) {
+            lifenode->life = pstate->scope;
+            // Add name to global name table for life of block
+            nametblHookNode(lifenode->namesym, (INode*)lifenode);
+        }
+        else {
+                errorMsgNode((INode *)lifenode, ErrorDupName, "Lifetime is already defined. Only one allowed.");
+                errorMsgNode((INode*)lifenode->namesym->node, ErrorDupName, "This is the conflicting definition for that name.");
+        }
+    }
+
+    // Name res each statement
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(blk->stmts, cnt, nodesp)) {
@@ -72,15 +103,30 @@ void blockNameRes(NameResState *pstate, BlockNode *blk) {
     --pstate->scope;
 }
 
-// Handle type-checking for a block. 
-// Mostly this is a pass-through to type-check the block's statements.
-// Note: By default, we set the block's type to that of the last statement
-// Bidirectional type inference may later change this
+// Handle type-checking for a block. This:
+// 1. Type checks the block's statements
+// 2. Verify block ends with valid block-ending statement
+// 3. Performs bidirectional inference to ensure block (and any breaks) return same-typed value
+//    All breaks must resolve to either the expected type or the same inferred supertype
+//    Coercion is performed on breaks as needed to accomplish this, or errors result
 void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
     if (blk->stmts->used == 0)
         return;
-
     ++pstate->scope;
+    BlockNode *svRecentLoop = pstate->recentLoop;
+    if (blk->flags & FlagLoop)
+        pstate->recentLoop = blk;
+
+    // Push block node on block stack so we can later gather all breaks that might belong to it
+    if (pstate->blockcnt >= TypeCheckBlockMax) {
+        errorMsgNode((INode*)blk, ErrorBadArray, "Overflowing fixed-size block stack.");
+        errorExit(100, "Unrecoverable error!");
+    }
+    pstate->blockstack[pstate->blockcnt++] = blk;
+
+    // Type check the block's statements.
+    // Do special checks of block-ending statements
+    // Note: blk->breaks will get populated here
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(blk->stmts, cnt, nodesp)) {
@@ -106,6 +152,70 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
         }
     }
     --pstate->scope;
+    --pstate->blockcnt;
+    pstate->recentLoop = svRecentLoop;
+
+    if ((blk->flags & FlagLoop) && blk->breaks->used == 0)
+        errorMsgNode((INode*)blk, WarnLoop, "Loop may never stop without a break.");
+
+    /*
+    // Do inference on all registered breaks to ensure they all return the expected type
+    INode *inferredType = unknownType;
+    TypeCompare match = EqMatch;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(blk->breaks, cnt, nodesp)) {
+        INode **breakexp = &((BreakNode *)*nodesp)->exp;
+        if (*breakexp == noValue && expectType != noCareType) {
+            errorMsgNode(*nodesp, ErrorInvType, "Loop/block expects a typed expression on break");
+            match = NoMatch;
+        }
+        else if (!iexpTypeCheckCoerce(pstate, expectType, breakexp)) {
+            errorMsgNode(*breakexp, ErrorInvType, "Expression does not match expected type.");
+            match = NoMatch;
+        }
+        else if (!isExpNode(*breakexp)) {
+            match = NoMatch;
+        }
+        else {
+            switch (iexpMultiInfer(expectType, &inferredType, breakexp)) {
+            case NoMatch:
+                match = NoMatch;
+                break;
+            case CastSubtype:
+                if (match != NoMatch)
+                    match = CastSubtype;
+                break;
+            case ConvSubtype:
+                if (match != NoMatch)
+                    match = ConvSubtype;
+                break;
+            default:
+                break;
+            }
+        }
+    }
+
+    if (expectType == noCareType)
+        return;
+
+    // When expectType specified, all branches have been coerced (or not w/ errors)
+    if (expectType != unknownType) {
+        blk->vtype = expectType;
+        return;
+    }
+
+    // If no specific type is expected, set the inferred type
+    blk->vtype = inferredType;
+
+    //  If coercion is needed for some blocks, perform them as needed
+    if (match == ConvSubtype || match == CastSubtype) {
+        for (nodesFor(blk->breaks, cnt, nodesp)) {
+            INode **breakexp = &((BreakNode *)*nodesp)->exp;
+            iexpCoerce(breakexp, inferredType);
+        }
+    }
+    */
 }
 
 // Ensure this particular block does not end with break/continue
