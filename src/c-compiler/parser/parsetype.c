@@ -358,6 +358,7 @@ INode* parseVtype(ParseState *parse) {
     case VirtRefToken:
     case StarToken:
     case LBracketToken:
+    case VoidToken:
     case IdentToken:
         return parsePrefix(parse, 0);
     default:

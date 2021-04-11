@@ -117,6 +117,7 @@ void keywordInit() {
     keyAdd("into", IntoToken);
     keyAdd("inline", InlineToken);
 
+    keyAdd("void", VoidToken);
     keyAdd("true", trueToken);
     keyAdd("false", falseToken);
 }
