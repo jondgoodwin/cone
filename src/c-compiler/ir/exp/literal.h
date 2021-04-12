@@ -8,6 +8,11 @@
 #ifndef literal_h
 #define literal_h
 
+// Nil literal node: represents the absence of a value. Always has type "void"
+typedef struct {
+    IExpNodeHdr;
+} NilLitNode;
+
 // Unsigned integer literal
 typedef struct {
     IExpNodeHdr;
@@ -27,10 +32,9 @@ typedef struct {
     uint32_t strlen;
 } SLitNode;
 
-// The null literal
-typedef struct {
-    IExpNodeHdr;
-} NullNode;
+NilLitNode *newNilLitNode();
+INode *cloneNilLitNode(CloneState *cstate, NilLitNode *node);
+void nilLitPrint(NilLitNode *node);
 
 ULitNode *newULitNode(uint64_t nbr, INode *type);
 

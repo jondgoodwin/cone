@@ -7,6 +7,28 @@
 
 #include "../ir.h"
 
+// Create a new nil literal node
+NilLitNode *newNilLitNode() {
+    NilLitNode *nil;
+    newNode(nil, NilLitNode, NilLitTag);
+    nil->vtype = (INode*)newVoidNode();
+    return nil;
+}
+
+// Clone nil node
+INode *cloneNilLitNode(CloneState *cstate, NilLitNode *lit) {
+    NilLitNode *newlit;
+    newlit = memAllocBlk(sizeof(NilLitNode));
+    memcpy(newlit, lit, sizeof(NilLitNode));
+    newlit->vtype = cloneNode(cstate, lit->vtype);
+    return (INode *)newlit;
+}
+
+// Serialize a nil node
+void nilLitPrint(NilLitNode *lit) {
+    inodeFprint("nil");
+}
+
 // Create a new unsigned literal node
 ULitNode *newULitNode(uint64_t nbr, INode *type) {
     ULitNode *lit;

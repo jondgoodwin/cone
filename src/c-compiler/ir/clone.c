@@ -56,6 +56,8 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         node = cloneSizeofNode(cstate, (SizeofNode *)nodep); break;
     case VTupleTag:
         node = cloneTupleNode(cstate, (TupleNode *)nodep); break;
+    case NilLitTag:
+        node = cloneNilLitNode(cstate, (NilLitNode *)nodep); break;
     case ULitTag:
         node = cloneULitNode(cstate, (ULitNode *)nodep); break;
     case FLitTag:

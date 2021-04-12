@@ -113,6 +113,8 @@ void inodePrintNode(INode *node) {
         allocatePrint((RefNode *)node); break;
     case NotLogicTag: case OrLogicTag: case AndLogicTag:
         logicPrint((LogicNode *)node); break;
+    case NilLitTag:
+        nilLitPrint((NilLitNode *)node); break;
     case ULitTag:
         ulitPrint((ULitNode *)node); break;
     case FLitTag:
@@ -233,6 +235,7 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         logicNameRes(pstate, (LogicNode *)*node); break;
     case NamedValTag:
         namedValNameRes(pstate, (NamedValNode *)*node); break;
+    case NilLitTag:
     case ULitTag:
     case FLitTag:
     case StringLitTag:
@@ -350,6 +353,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
         castIsTypeCheck(pstate, (CastNode *)*node); break;
     case NamedValTag:
         namedValTypeCheck(pstate, (NamedValNode *)*node); break;
+    case NilLitTag:
     case ULitTag:
     case FLitTag:
         litTypeCheck(pstate, (IExpNode*)*node, expectType); break;

@@ -95,6 +95,7 @@ enum NodeTags {
     // Expression nodes (having value type - or sometimes nullType)
     VarNameUseTag = ExpGroup,  // Variable or Function name use node  
     MbrNameUseTag,  // Member of a type's namespace (field/method)
+    NilLitTag,      // 'nil' literal (of void type)
     ULitTag,        // Integer literal
     FLitTag,        // Float literal
     StringLitTag,   // String literal
