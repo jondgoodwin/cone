@@ -20,9 +20,10 @@ INode *parseEach(ParseState *parse, INode *blk, LifetimeNode *life);
 
 // This helper routine inserts 'break if !condexp' at beginning of block
 void parseInsertWhileBreak(INode *blk, INode *condexp) {
-    INode *breaknode = (INode*)newBreakNode();
+    BreakNode *breaknode = newBreakNode();
+    breaknode->exp = (INode*)newNilLitNode();
     BlockNode *ifblk = newBlockNode();
-    nodesAdd(&ifblk->stmts, breaknode);
+    nodesAdd(&ifblk->stmts, (INode*)breaknode);
     LogicNode *notiter = newLogicNode(NotLogicTag);
     notiter->lexp = condexp;
     IfNode *ifnode = newIfNode();
@@ -42,8 +43,7 @@ INode *parseExpStmt(ParseState *parse) {
 INode *parseReturn(ParseState *parse) {
     ReturnNode *stmtnode = newReturnNode();
     lexNextToken(); // Skip past 'return'
-    if (!parseIsEndOfStatement())
-        stmtnode->exp = parseAnyExpr(parse);
+    stmtnode->exp = parseIsEndOfStatement()? (INode*)newNilLitNode() : parseAnyExpr(parse);
     parseEndOfStatement();
     return (INode*)stmtnode;
 }
@@ -391,8 +391,7 @@ INode *parseExprBlock(ParseState *parse) {
                 node->life = (INode*)newNameUseNode(lex->val.ident);
                 lexNextToken();
             }
-            if (!parseIsEndOfStatement())
-                node->exp = parseAnyExpr(parse);
+            node->exp = parseIsEndOfStatement()? (INode*)newNilLitNode() : parseAnyExpr(parse);
             parseEndOfStatement();
             nodesAdd(&blk->stmts, (INode*)node);
             break;

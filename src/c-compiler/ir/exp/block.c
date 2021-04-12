@@ -166,7 +166,7 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
     uint32_t cnt;
     for (nodesFor(blk->breaks, cnt, nodesp)) {
         INode **breakexp = &((BreakNode *)*nodesp)->exp;
-        if (*breakexp == noValue && expectType != noCareType) {
+        if ((*breakexp)->tag == NilLitTag && expectType != noCareType) {
             errorMsgNode(*nodesp, ErrorInvType, "Loop/block expects a typed expression on break");
             match = NoMatch;
         }
@@ -259,7 +259,7 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
             *lastnodep = (INode*)blkret;
         }
         else {
-            blkret->exp = noValue;
+            blkret->exp = (INode*)newNilLitNode();
             nodesAdd(&blk->stmts, (INode*)blkret);
         }
     }
@@ -307,19 +307,19 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
     {
         INode **retexp = &((ReturnNode *)*nodesp)->exp;
         int doalias = flowScopeDealias(svpos, &((ReturnNode *)*nodesp)->dealias, *retexp);
-        if (*retexp != noValue && doalias)
+        if ((*retexp)->tag != NilLitTag && doalias)
             flowLoadValue(fstate, retexp);
         break;
     }
     case BreakTag: {
         INode **brkexp = &((BreakNode *)*nodesp)->exp;
         int doalias = flowScopeDealias(svpos, &((ReturnNode *)*nodesp)->dealias, *brkexp);
-        if (*brkexp != noValue && doalias)
+        if ((*brkexp)->tag != NilLitTag && doalias)
             flowLoadValue(fstate, brkexp);
         break;
     }
     case ContinueTag:
-        flowScopeDealias(svpos, &((ContinueNode *)*nodesp)->dealias, noValue);
+        flowScopeDealias(svpos, &((ContinueNode *)*nodesp)->dealias, NULL);
         break;
     }
 

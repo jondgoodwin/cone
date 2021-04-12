@@ -15,7 +15,6 @@ INode *unknownType;
 INode *noCareType;
 INode *elseCond;
 INode *borrowRef;
-INode *noValue;
 PermNode *uniPerm;
 PermNode *mutPerm;
 PermNode *immPerm;
@@ -93,7 +92,6 @@ char *stdlibInit(int ptrsize) {
     elseCond = (INode*)newAbsenceNode();
     borrowRef = (INode*)newAbsenceNode();
     borrowRef->tag = BorrowRegTag;
-    noValue = (INode*)newAbsenceNode();
 
     staticLifetimeNode = newLifetimeDclNode(nametblFind("'static", 7), 0);
     stdPermInit();

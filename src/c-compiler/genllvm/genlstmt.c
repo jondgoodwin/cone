@@ -86,7 +86,7 @@ GenLoopState *genFindLoopState(GenState *gen, INode *life) {
 // Generate a block/loop break
 void genlBreak(GenState *gen, INode* life, INode* exp, Nodes* dealias) {
     GenLoopState *loopstate = genFindLoopState(gen, life);
-    if (exp != noValue) {
+    if (exp->tag != NilLitTag) {
         loopstate->loopPhis[loopstate->loopPhiCnt] = genlExpr(gen, exp);
         loopstate->loopBlks[loopstate->loopPhiCnt++] = LLVMGetInsertBlock(gen->builder);
     }
@@ -96,7 +96,7 @@ void genlBreak(GenState *gen, INode* life, INode* exp, Nodes* dealias) {
 
 // Generate a return statement
 void genlReturn(GenState *gen, ReturnNode *node) {
-    if (node->exp != noValue) {
+    if (node->exp->tag != NilLitTag) {
         LLVMValueRef retval = genlExpr(gen, node->exp);
         genlDealiasNodes(gen, node->dealias);
         LLVMBuildRet(gen->builder, retval);
@@ -134,7 +134,7 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
         case BlockRetTag:
         {
             ReturnNode *node = (ReturnNode*)*nodesp;
-            if (node->exp != noValue)
+            if (node->exp->tag != NilLitTag)
                 lastval = genlExpr(gen, node->exp);
             genlDealiasNodes(gen, node->dealias);
             break;

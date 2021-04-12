@@ -11,8 +11,16 @@
 ReturnNode *newReturnNode() {
     ReturnNode *node;
     newNode(node, ReturnNode, ReturnTag);
-    node->exp = noValue;
+    node->exp = NULL;
     node->dealias = NULL;
+    return node;
+}
+
+// New return node with exp injected, and copy lex pos from it
+ReturnNode *newReturnNodeExp(INode *exp) {
+    ReturnNode *node = newReturnNode();
+    node->exp = exp;
+    inodeLexCopy((INode*)node, (INode*)exp);
     return node;
 }
 

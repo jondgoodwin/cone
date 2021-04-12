@@ -85,7 +85,7 @@ void loopTypeCheck(TypeCheckState *pstate, LoopNode *node, INode *expectType) {
     uint32_t cnt;
     for (nodesFor(node->breaks, cnt, nodesp)) {
         INode **breakexp = &((BreakNode *)*nodesp)->exp;
-        if (*breakexp == noValue && expectType != noCareType) {
+        if ((*breakexp)->tag == NilLitTag && expectType != noCareType) {
             errorMsgNode(*nodesp, ErrorInvType, "Loop expected a typed expression");
             match = NoMatch;
             continue;

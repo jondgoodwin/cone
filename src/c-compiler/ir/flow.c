@@ -209,7 +209,7 @@ int flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp) {
         VarFlowInfo *avar = &gVarFlowStackp[--pos];
         RefNode *reftype = (RefNode*)avar->node->vtype;
         if (reftype->tag == RefTag && (reftype->region == (INode*)rcRegion || reftype->region == (INode*)soRegion)) {
-            if (retexp->tag != VarNameUseTag || ((NameUseNode *)retexp)->namesym != avar->node->namesym) {
+            if (retexp && (retexp->tag != VarNameUseTag || ((NameUseNode *)retexp)->namesym != avar->node->namesym)) {
                 if (*varlist == NULL)
                     *varlist = newNodes(4);
                 nodesAdd(varlist, (INode*)avar->node);

@@ -79,17 +79,16 @@ void fnDclNameRes(NameResState *pstate, FnDclNode *name) {
 void fnImplicitReturn(INode *rettype, BlockNode *blk) {
     INode *laststmt;
     if (blk->stmts->used == 0)
-        nodesAdd(&blk->stmts, (INode*)newReturnNode());
+        nodesAdd(&blk->stmts, (INode*)newReturnNodeExp((INode*)newNilLitNode()));
     laststmt = nodesLast(blk->stmts);
     if (rettype->tag == VoidTag) {
         if (laststmt->tag != ReturnTag)
-            nodesAdd(&blk->stmts, (INode*)newReturnNode());
+            nodesAdd(&blk->stmts, (INode*)newReturnNodeExp((INode*)newNilLitNode()));
     }
     else {
         // Inject return in front of expression
         if (isExpNode(laststmt)) {
-            ReturnNode *retnode = newReturnNode();
-            retnode->exp = laststmt;
+            ReturnNode *retnode = newReturnNodeExp(laststmt);
             nodesLast(blk->stmts) = (INode*)retnode;
         }
         else if (laststmt->tag != ReturnTag)

@@ -16,6 +16,7 @@ typedef struct ReturnNode {
 } ReturnNode;
 
 ReturnNode *newReturnNode();
+ReturnNode *newReturnNodeExp(INode *exp);
 
 // Clone return
 INode *cloneReturnNode(CloneState *cstate, ReturnNode *node);

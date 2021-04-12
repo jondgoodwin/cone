@@ -12,7 +12,7 @@ BreakNode *newBreakNode() {
     BreakNode *node;
     newNode(node, BreakNode, BreakTag);
     node->life = NULL;
-    node->exp = noValue;
+    node->exp = NULL;
     node->dealias = NULL;
     return node;
 }
