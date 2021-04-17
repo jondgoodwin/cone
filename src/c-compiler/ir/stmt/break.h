@@ -8,7 +8,7 @@
 #ifndef break_h
 #define break_h
 
-// Node info for break, return, blockret, and continue statements
+// Node info used by break, return, blockret, and continue statement nodes
 // Such statements are only (and must be) found at the end of a loop/regular block.
 // We share the same structure across all block-ending statements
 // so that we can substitute one for another (return -> break) and to find

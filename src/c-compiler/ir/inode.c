@@ -90,7 +90,7 @@ void inodePrintNode(INode *node) {
         inodeFprint("continue"); break;
     case BlockRetTag:
     case ReturnTag:
-        returnPrint((ReturnNode *)node); break;
+        returnPrint((BreakRetNode *)node); break;
     case AssignTag:
         assignPrint((AssignNode *)node); break;
     case VTupleTag:
@@ -218,9 +218,9 @@ void inodeNameRes(NameResState *pstate, INode **node) {
     case BreakTag:
         breakNameRes(pstate, (BreakRetNode *)*node); break;
     case ContinueTag:
-        continueNameRes(pstate, (ContinueNode *)*node); break;
+        continueNameRes(pstate, (BreakRetNode *)*node); break;
     case ReturnTag:
-        returnNameRes(pstate, (ReturnNode *)*node); break;
+        returnNameRes(pstate, (BreakRetNode *)*node); break;
     case AssignTag:
         assignNameRes(pstate, (AssignNode *)*node); break;
     case FnCallTag:
@@ -325,9 +325,9 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     case BreakTag:
         breakTypeCheck(pstate, (BreakRetNode *)*node); break;
     case ContinueTag:
-        continueTypeCheck(pstate, (ContinueNode *)*node); break;
+        continueTypeCheck(pstate, (BreakRetNode *)*node); break;
     case ReturnTag:
-        returnTypeCheck(pstate, (ReturnNode *)*node); break;
+        returnTypeCheck(pstate, (BreakRetNode *)*node); break;
     case AssignTag:
         assignTypeCheck(pstate, (AssignNode *)*node); break;
     case VTupleTag:

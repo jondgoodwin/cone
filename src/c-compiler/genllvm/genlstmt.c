@@ -95,7 +95,7 @@ void genlBreak(GenState *gen, INode* life, INode* exp, Nodes* dealias) {
 }
 
 // Generate a return statement
-void genlReturn(GenState *gen, ReturnNode *node) {
+void genlReturn(GenState *gen, BreakRetNode *node) {
     if (node->exp->tag != NilLitTag) {
         LLVMValueRef retval = genlExpr(gen, node->exp);
         genlDealiasNodes(gen, node->dealias);
@@ -108,7 +108,7 @@ void genlReturn(GenState *gen, ReturnNode *node) {
 }
 
 // Generate a block "return" node
-void genlBlockRet(GenState *gen, ReturnNode *node) {
+void genlBlockRet(GenState *gen, BreakRetNode *node) {
 }
 
 // Generate a block's statements
@@ -119,7 +119,7 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
     for (nodesFor(blk->stmts, cnt, nodesp)) {
         switch ((*nodesp)->tag) {
         case ContinueTag:
-            genlDealiasNodes(gen, ((ContinueNode*)*nodesp)->dealias);
+            genlDealiasNodes(gen, ((BreakRetNode*)*nodesp)->dealias);
             LLVMBuildBr(gen->builder, genFindLoopState(gen, ((BreakRetNode*)*nodesp)->life)->loopbeg); 
             break;
 
@@ -130,10 +130,10 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
         }
 
         case ReturnTag:
-            genlReturn(gen, (ReturnNode*)*nodesp); break;
+            genlReturn(gen, (BreakRetNode*)*nodesp); break;
         case BlockRetTag:
         {
-            ReturnNode *node = (ReturnNode*)*nodesp;
+            BreakRetNode *node = (BreakRetNode*)*nodesp;
             if (node->exp->tag != NilLitTag)
                 lastval = genlExpr(gen, node->exp);
             genlDealiasNodes(gen, node->dealias);

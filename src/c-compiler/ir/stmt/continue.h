@@ -8,20 +8,15 @@
 #ifndef continue_h
 #define continue_h
 
-// continue statement
-typedef struct ContinueNode {
-    INodeHdr;
-    INode *life;       // nullable
-    Nodes *dealias;
-} ContinueNode;
+// Continue statements use the BreakRetNode structure defined in break.h
 
-ContinueNode *newContinueNode();
+BreakRetNode *newContinueNode();
 
 // Clone continue
-INode *cloneContinueNode(CloneState *cstate, ContinueNode *node);
+INode *cloneContinueNode(CloneState *cstate, BreakRetNode *node);
 
 // Name resolution for continue
-void continueNameRes(NameResState *pstate, ContinueNode *node);
-void continueTypeCheck(TypeCheckState *pstate, ContinueNode *node);
+void continueNameRes(NameResState *pstate, BreakRetNode *node);
+void continueTypeCheck(TypeCheckState *pstate, BreakRetNode *node);
 
 #endif

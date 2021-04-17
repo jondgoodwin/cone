@@ -8,32 +8,32 @@
 #include "../ir.h"
 
 // Create a new continue node
-ContinueNode *newContinueNode() {
-    ContinueNode *node;
-    newNode(node, ContinueNode, ContinueTag);
+BreakRetNode *newContinueNode() {
+    BreakRetNode *node;
+    newNode(node, BreakRetNode, ContinueTag);
     node->life = NULL;
     node->dealias = NULL;
     return node;
 }
 
 // Clone continue
-INode *cloneContinueNode(CloneState *cstate, ContinueNode *node) {
-    ContinueNode *newnode;
-    newnode = memAllocBlk(sizeof(ContinueNode));
-    memcpy(newnode, node, sizeof(ContinueNode));
+INode *cloneContinueNode(CloneState *cstate, BreakRetNode *node) {
+    BreakRetNode *newnode;
+    newnode = memAllocBlk(sizeof(BreakRetNode));
+    memcpy(newnode, node, sizeof(BreakRetNode));
     newnode->life = cloneNode(cstate, node->life);
     return (INode *)newnode;
 }
 
 // Name resolution for continue
 // - Resolve any lifetime name
-void continueNameRes(NameResState *pstate, ContinueNode *node) {
+void continueNameRes(NameResState *pstate, BreakRetNode *node) {
     if (node->life)
         inodeNameRes(pstate, &node->life);
 }
 
 // Type check the continue expression, ensuring it lies within a loop
-void continueTypeCheck(TypeCheckState *pstate, ContinueNode *node) {
+void continueTypeCheck(TypeCheckState *pstate, BreakRetNode *node) {
     if (pstate->loopcnt == 0)
         errorMsgNode((INode*)node, ErrorNoLoop, "continue may only be used within a while/each/loop block");
     LoopNode *loopnode = breakFindLoopNode(pstate, node->life);

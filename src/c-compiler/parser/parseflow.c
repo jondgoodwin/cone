@@ -41,7 +41,7 @@ INode *parseExpStmt(ParseState *parse) {
 
 // Parse a return statement
 INode *parseReturn(ParseState *parse) {
-    ReturnNode *stmtnode = newReturnNode();
+    BreakRetNode *stmtnode = newReturnNode();
     lexNextToken(); // Skip past 'return'
     stmtnode->exp = parseIsEndOfStatement()? (INode*)newNilLitNode() : parseAnyExpr(parse);
     parseEndOfStatement();
@@ -399,7 +399,7 @@ INode *parseExprBlock(ParseState *parse) {
 
         case ContinueToken:
         {
-            ContinueNode *node = newContinueNode();
+            BreakRetNode *node = newContinueNode();
             lexNextToken();
             if (lexIsToken(LifetimeToken)) {
                 node->life = (INode*)newNameUseNode(lex->val.ident);

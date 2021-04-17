@@ -8,39 +8,39 @@
 #include "../ir.h"
 
 // Create a new return statement node
-ReturnNode *newReturnNode() {
-    ReturnNode *node;
-    newNode(node, ReturnNode, ReturnTag);
+BreakRetNode *newReturnNode() {
+    BreakRetNode *node;
+    newNode(node, BreakRetNode, ReturnTag);
     node->exp = NULL;
     node->dealias = NULL;
     return node;
 }
 
 // New return node with exp injected, and copy lex pos from it
-ReturnNode *newReturnNodeExp(INode *exp) {
-    ReturnNode *node = newReturnNode();
+BreakRetNode *newReturnNodeExp(INode *exp) {
+    BreakRetNode *node = newReturnNode();
     node->exp = exp;
     inodeLexCopy((INode*)node, (INode*)exp);
     return node;
 }
 
 // Clone return
-INode *cloneReturnNode(CloneState *cstate, ReturnNode *node) {
-    ReturnNode *newnode;
-    newnode = memAllocBlk(sizeof(ReturnNode));
-    memcpy(newnode, node, sizeof(ReturnNode));
+INode *cloneReturnNode(CloneState *cstate, BreakRetNode *node) {
+    BreakRetNode *newnode;
+    newnode = memAllocBlk(sizeof(BreakRetNode));
+    memcpy(newnode, node, sizeof(BreakRetNode));
     newnode->exp = cloneNode(cstate, node->exp);
     return (INode *)newnode;
 }
 
 // Serialize a return statement
-void returnPrint(ReturnNode *node) {
+void returnPrint(BreakRetNode *node) {
     inodeFprint(node->tag == BlockRetTag? "blockret " : "return ");
     inodePrintNode(node->exp);
 }
 
 // Name resolution for return
-void returnNameRes(NameResState *pstate, ReturnNode *node) {
+void returnNameRes(NameResState *pstate, BreakRetNode *node) {
     inodeNameRes(pstate, &node->exp);
 }
 
@@ -48,7 +48,7 @@ void returnNameRes(NameResState *pstate, ReturnNode *node) {
 // Related analysis for return elsewhere:
 // - Block ensures that return can only appear at end of block
 // - NameDcl turns fn block's final expression into an implicit return
-void returnTypeCheck(TypeCheckState *pstate, ReturnNode *node) {
+void returnTypeCheck(TypeCheckState *pstate, BreakRetNode *node) {
     // If we are returning the value from an 'if', recursively strip out any of its path's redundant 'return's
     if (node->exp->tag == IfTag)
         ifRemoveReturns((IfNode*)(node->exp));

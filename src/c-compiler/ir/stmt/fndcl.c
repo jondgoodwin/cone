@@ -88,7 +88,7 @@ void fnImplicitReturn(INode *rettype, BlockNode *blk) {
     else {
         // Inject return in front of expression
         if (isExpNode(laststmt)) {
-            ReturnNode *retnode = newReturnNodeExp(laststmt);
+            BreakRetNode *retnode = newReturnNodeExp(laststmt);
             nodesLast(blk->stmts) = (INode*)retnode;
         }
         else if (laststmt->tag != ReturnTag)

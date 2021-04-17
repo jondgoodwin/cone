@@ -252,7 +252,7 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
     default:
     {
         // Inject blockret node
-        ReturnNode *blkret = newReturnNode();
+        BreakRetNode *blkret = newReturnNode();
         blkret->tag = BlockRetTag;
         if (isExpNode(*lastnodep)) {
             blkret->exp = *lastnodep;
@@ -294,8 +294,8 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
     switch ((*nodesp)->tag) {
     case ReturnTag:
     {
-        INode **retexp = &((ReturnNode *)*nodesp)->exp;
-        int doalias = flowScopeDealias(0, &((ReturnNode *)*nodesp)->dealias, *retexp);
+        INode **retexp = &((BreakRetNode *)*nodesp)->exp;
+        int doalias = flowScopeDealias(0, &((BreakRetNode *)*nodesp)->dealias, *retexp);
         if (*retexp != unknownType && doalias) {
             size_t svAliasPos = flowAliasPushNew(1);
             flowLoadValue(fstate, retexp);
@@ -305,21 +305,21 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
     }
     case BlockRetTag:
     {
-        INode **retexp = &((ReturnNode *)*nodesp)->exp;
-        int doalias = flowScopeDealias(svpos, &((ReturnNode *)*nodesp)->dealias, *retexp);
+        INode **retexp = &((BreakRetNode *)*nodesp)->exp;
+        int doalias = flowScopeDealias(svpos, &((BreakRetNode *)*nodesp)->dealias, *retexp);
         if ((*retexp)->tag != NilLitTag && doalias)
             flowLoadValue(fstate, retexp);
         break;
     }
     case BreakTag: {
         INode **brkexp = &((BreakRetNode *)*nodesp)->exp;
-        int doalias = flowScopeDealias(svpos, &((ReturnNode *)*nodesp)->dealias, *brkexp);
+        int doalias = flowScopeDealias(svpos, &((BreakRetNode *)*nodesp)->dealias, *brkexp);
         if ((*brkexp)->tag != NilLitTag && doalias)
             flowLoadValue(fstate, brkexp);
         break;
     }
     case ContinueTag:
-        flowScopeDealias(svpos, &((ContinueNode *)*nodesp)->dealias, NULL);
+        flowScopeDealias(svpos, &((BreakRetNode *)*nodesp)->dealias, NULL);
         break;
     }
 

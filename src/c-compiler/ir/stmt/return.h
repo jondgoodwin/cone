@@ -8,27 +8,22 @@
 #ifndef return_h
 #define return_h
 
-// Return/blockret/yield expression node
-typedef struct ReturnNode {
-    INodeHdr;
-    Nodes *dealias;
-    INode *exp;
-} ReturnNode;
+// Return statements use the BreakRetNode structure defined in break.h
 
-ReturnNode *newReturnNode();
-ReturnNode *newReturnNodeExp(INode *exp);
+BreakRetNode *newReturnNode();
+BreakRetNode *newReturnNodeExp(INode *exp);
 
 // Clone return
-INode *cloneReturnNode(CloneState *cstate, ReturnNode *node);
+INode *cloneReturnNode(CloneState *cstate, BreakRetNode *node);
 
-void returnPrint(ReturnNode *node);
+void returnPrint(BreakRetNode *node);
 // Name resolution for return
-void returnNameRes(NameResState *pstate, ReturnNode *node);
+void returnNameRes(NameResState *pstate, BreakRetNode *node);
 
 // Type check for return statement
 // Related analysis for return elsewhere:
 // - Block ensures that return can only appear at end of block
 // - NameDcl turns fn block's final expression into an implicit return
-void returnTypeCheck(TypeCheckState *pstate, ReturnNode *node);
+void returnTypeCheck(TypeCheckState *pstate, BreakRetNode *node);
 
 #endif

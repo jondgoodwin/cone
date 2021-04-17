@@ -61,7 +61,7 @@ void ifRemoveReturns(IfNode *ifnode) {
         cnt--; nodesp++;
         laststmt = &nodesLast(((BlockNode*)*nodesp)->stmts);
         if ((*laststmt)->tag == ReturnTag)
-            *laststmt = ((ReturnNode*)*laststmt)->exp;
+            *laststmt = ((BreakRetNode*)*laststmt)->exp;
         if ((*laststmt)->tag == IfTag)
             ifRemoveReturns((IfNode*)*laststmt);
     }
