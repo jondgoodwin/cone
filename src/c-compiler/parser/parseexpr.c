@@ -86,6 +86,12 @@ INode *parseArrayLit(ParseState *parse, INode *typenode) {
 // Parse a term: literal, identifier, etc.
 INode *parseTerm(ParseState *parse) {
     switch (lex->toktype) {
+    case nilToken:
+    {
+        NilLitNode *node = newNilLitNode();
+        lexNextToken();
+        return (INode *)node;
+    }
     case trueToken:
     {
         ULitNode *node = newULitNode(1, (INode*)boolType);

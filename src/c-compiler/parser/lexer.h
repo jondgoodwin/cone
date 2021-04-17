@@ -166,6 +166,7 @@ enum TokenTypes {
     IntoToken,      // 'into'
     InlineToken,    // 'inline'
     VoidToken,      // 'void'
+    nilToken,       // 'nil'
     trueToken,        // 'true'
     falseToken,        // 'false'
 

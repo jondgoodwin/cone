@@ -24,7 +24,7 @@ INode *cloneLoopNode(CloneState *cstate, LoopNode *node) {
     LoopNode *newnode;
     newnode = memAllocBlk(sizeof(LoopNode));
     memcpy(newnode, node, sizeof(LoopNode));
-    newnode->breaks = cloneNodes(cstate, node->breaks);
+    newnode->breaks = cloneNodes(cstate, node->breaks); // Does not clone any INodes. Bad if it did.
     newnode->life = (LifetimeNode*)cloneNode(cstate, (INode*)node->life);
     newnode->blk = cloneNode(cstate, node->blk);
     cloneDclPop(dclpos);

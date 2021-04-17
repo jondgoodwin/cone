@@ -35,7 +35,7 @@ INode *cloneBlockNode(CloneState *cstate, BlockNode *node) {
     newnode->stmts = cloneNodes(cstate, node->stmts);
     newnode->life = (LifetimeNode*)cloneNode(cstate, (INode*)node->life);
     if (node->breaks)
-        newnode->breaks = cloneNodes(cstate, node->breaks);
+        newnode->breaks = cloneNodes(cstate, node->breaks);  // Does not clone any INodes. Bad if it did.
     cloneDclPop(dclpos);
     return (INode *)newnode;
 }

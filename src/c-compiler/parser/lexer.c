@@ -118,6 +118,7 @@ void keywordInit() {
     keyAdd("inline", InlineToken);
 
     keyAdd("void", VoidToken);
+    keyAdd("nil", nilToken);
     keyAdd("true", trueToken);
     keyAdd("false", falseToken);
 }
