@@ -66,7 +66,7 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         node = cloneSLitNode((SLitNode *)nodep); break;
 
     case BreakTag:
-        node = cloneBreakNode(cstate, (BreakNode *)nodep); break;
+        node = cloneBreakNode(cstate, (BreakRetNode *)nodep); break;
     case ContinueTag:
         node = cloneContinueNode(cstate, (ContinueNode *)nodep); break;
     case FieldDclTag:

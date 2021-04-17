@@ -216,7 +216,7 @@ void inodeNameRes(NameResState *pstate, INode **node) {
     case LoopTag:
         loopNameRes(pstate, (LoopNode *)*node); break;
     case BreakTag:
-        breakNameRes(pstate, (BreakNode *)*node); break;
+        breakNameRes(pstate, (BreakRetNode *)*node); break;
     case ContinueTag:
         continueNameRes(pstate, (ContinueNode *)*node); break;
     case ReturnTag:
@@ -323,7 +323,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     case LoopTag:
         loopTypeCheck(pstate, (LoopNode *)*node, expectType); break;
     case BreakTag:
-        breakTypeCheck(pstate, (BreakNode *)*node); break;
+        breakTypeCheck(pstate, (BreakRetNode *)*node); break;
     case ContinueTag:
         continueTypeCheck(pstate, (ContinueNode *)*node); break;
     case ReturnTag:

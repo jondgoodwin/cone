@@ -8,9 +8,9 @@
 #include "../ir.h"
 
 // Create a new break node
-BreakNode *newBreakNode() {
-    BreakNode *node;
-    newNode(node, BreakNode, BreakTag);
+BreakRetNode *newBreakNode() {
+    BreakRetNode *node;
+    newNode(node, BreakRetNode, BreakTag);
     node->life = NULL;
     node->exp = NULL;
     node->dealias = NULL;
@@ -18,10 +18,10 @@ BreakNode *newBreakNode() {
 }
 
 // Clone break
-INode *cloneBreakNode(CloneState *cstate, BreakNode *node) {
-    BreakNode *newnode;
-    newnode = memAllocBlk(sizeof(BreakNode));
-    memcpy(newnode, node, sizeof(BreakNode));
+INode *cloneBreakNode(CloneState *cstate, BreakRetNode *node) {
+    BreakRetNode *newnode;
+    newnode = memAllocBlk(sizeof(BreakRetNode));
+    memcpy(newnode, node, sizeof(BreakRetNode));
     newnode->exp = cloneNode(cstate, node->exp);
     newnode->life = cloneNode(cstate, node->life);
     return (INode *)newnode;
@@ -29,7 +29,7 @@ INode *cloneBreakNode(CloneState *cstate, BreakNode *node) {
 
 // Name resolution for break
 // - Resolve any lifetime or expression names
-void breakNameRes(NameResState *pstate, BreakNode *node) {
+void breakNameRes(NameResState *pstate, BreakRetNode *node) {
     if (node->life)
         inodeNameRes(pstate, &node->life);
     inodeNameRes(pstate, &node->exp);
@@ -49,7 +49,7 @@ LoopNode *breakFindLoopNode(TypeCheckState *pstate, INode *life) {
 }
 
 // Type check the break expression, ensure it matches loop's type
-void breakTypeCheck(TypeCheckState *pstate, BreakNode *node) {
+void breakTypeCheck(TypeCheckState *pstate, BreakRetNode *node) {
     if (pstate->loopcnt == 0) {
         errorMsgNode((INode*)node, ErrorNoLoop, "break may only be used within a while/each/loop block");
         return;

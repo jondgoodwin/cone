@@ -20,7 +20,7 @@ INode *parseEach(ParseState *parse, INode *blk, LifetimeNode *life);
 
 // This helper routine inserts 'break if !condexp' at beginning of block
 void parseInsertWhileBreak(INode *blk, INode *condexp) {
-    BreakNode *breaknode = newBreakNode();
+    BreakRetNode *breaknode = newBreakNode();
     breaknode->exp = (INode*)newNilLitNode();
     BlockNode *ifblk = newBlockNode();
     nodesAdd(&ifblk->stmts, (INode*)breaknode);
@@ -385,7 +385,7 @@ INode *parseExprBlock(ParseState *parse) {
 
         case BreakToken:
         {
-            BreakNode *node = newBreakNode();
+            BreakRetNode *node = newBreakNode();
             lexNextToken();
             if (lexIsToken(LifetimeToken)) {
                 node->life = (INode*)newNameUseNode(lex->val.ident);

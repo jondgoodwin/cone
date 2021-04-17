@@ -8,23 +8,27 @@
 #ifndef break_h
 #define break_h
 
-// break/continue statement
-typedef struct BreakNode {
+// Node info for break, return, blockret, and continue statements
+// Such statements are only (and must be) found at the end of a loop/regular block.
+// We share the same structure across all block-ending statements
+// so that we can substitute one for another (return -> break) and to find
+// field info in same place (even when not all are populated)
+typedef struct {
     INodeHdr;
-    INode *life;         // nullable
-    INode *exp;          // nullable
-    Nodes *dealias;
-} BreakNode;
+    INode *exp;         // value returned by break's/return's block (may be 'nil')
+    INode *life;        // lifetime for block scope to escape/re-start (null if none specified)
+    Nodes *dealias;     // Nodes used to de-alias/unwind current block scope-allocated values
+} BreakRetNode;
 
-BreakNode *newBreakNode();
+BreakRetNode *newBreakNode();
 
 // Name resolution for break
-void breakNameRes(NameResState *pstate, BreakNode *node);
+void breakNameRes(NameResState *pstate, BreakRetNode *node);
 
 // Clone break
-INode *cloneBreakNode(CloneState *cstate, BreakNode *node);
+INode *cloneBreakNode(CloneState *cstate, BreakRetNode *node);
 
-void breakTypeCheck(TypeCheckState *pstate, BreakNode *node);
+void breakTypeCheck(TypeCheckState *pstate, BreakRetNode *node);
 
 typedef struct LoopNode LoopNode;
 LoopNode *breakFindLoopNode(TypeCheckState *pstate, INode *life);

@@ -84,7 +84,7 @@ void loopTypeCheck(TypeCheckState *pstate, LoopNode *node, INode *expectType) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(node->breaks, cnt, nodesp)) {
-        INode **breakexp = &((BreakNode *)*nodesp)->exp;
+        INode **breakexp = &((BreakRetNode *)*nodesp)->exp;
         if ((*breakexp)->tag == NilLitTag && expectType != noCareType) {
             errorMsgNode(*nodesp, ErrorInvType, "Loop expected a typed expression");
             match = NoMatch;
@@ -131,7 +131,7 @@ void loopTypeCheck(TypeCheckState *pstate, LoopNode *node, INode *expectType) {
     //  If coercion is needed for some blocks, perform them as needed
     if (match == ConvSubtype || match == CastSubtype) {
         for (nodesFor(node->breaks, cnt, nodesp)) {
-            INode **breakexp = &((BreakNode *)*nodesp)->exp;
+            INode **breakexp = &((BreakRetNode *)*nodesp)->exp;
             iexpCoerce(breakexp, maybeType);
         }
     }
