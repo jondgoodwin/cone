@@ -18,7 +18,7 @@
 // An entry for each active loop block in current control flow stack
 #define GenLoopMax 256
 typedef struct {
-    LoopNode *loop;
+    BlockNode *loop;
     LLVMBasicBlockRef loopbeg;
     LLVMBasicBlockRef loopend;
     LLVMValueRef *loopPhis;

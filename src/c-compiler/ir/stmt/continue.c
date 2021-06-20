@@ -34,9 +34,9 @@ void continueNameRes(NameResState *pstate, BreakRetNode *node) {
 
 // Type check the continue expression, ensuring it lies within a loop
 void continueTypeCheck(TypeCheckState *pstate, BreakRetNode *node) {
-    if (pstate->loopcnt == 0)
+    if (pstate->recentLoop == NULL)
         errorMsgNode((INode*)node, ErrorNoLoop, "continue may only be used within a while/each/loop block");
-    LoopNode *loopnode = breakFindLoopNode(pstate, node->life);
+    BlockNode *loopnode = breakFindLoopNode(pstate, node->life);
     if (!loopnode)
         errorMsgNode((INode*)node, ErrorNoLoop, "continue's lifetime does not match a current loop");
 }

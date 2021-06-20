@@ -45,7 +45,7 @@ LLVMValueRef genlLoop(GenState *gen, LoopNode *loopnode) {
         errorExit(100, "Unrecoverable error!");
     }
     GenLoopState *loopstate = &gen->loopstack[gen->loopstackcnt];
-    loopstate->loop = loopnode;
+    loopstate->loop = (BlockNode*)loopnode;
     loopstate->loopbeg = loopbeg;
     loopstate->loopend = loopend;
     if (loopnode->vtype->tag != VoidTag) {
@@ -111,8 +111,35 @@ void genlReturn(GenState *gen, BreakRetNode *node) {
 void genlBlockRet(GenState *gen, BreakRetNode *node) {
 }
 
-// Generate a block's statements
+// Generate a block's statements (could be a loop block)
 LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
+    LLVMBasicBlockRef loopbeg, loopend;
+    GenLoopState *loopstate;
+
+    if (blk->flags & FlagLoop) {
+        loopend = genlInsertBlock(gen, "loopend");
+        loopbeg = genlInsertBlock(gen, "loopbeg");
+
+        // Push loop state info on loop stack for break & continue to use
+        if (gen->loopstackcnt >= GenLoopMax) {
+            errorMsgNode((INode*)blk, ErrorBadArray, "Overflowing fixed-size loop stack.");
+            errorExit(100, "Unrecoverable error!");
+        }
+        loopstate = &gen->loopstack[gen->loopstackcnt];
+        loopstate->loop = blk;
+        loopstate->loopbeg = loopbeg;
+        loopstate->loopend = loopend;
+        if (blk->vtype->tag != VoidTag) {
+            loopstate->loopPhis = (LLVMValueRef*)memAllocBlk(sizeof(LLVMValueRef) * blk->breaks->used);
+            loopstate->loopBlks = (LLVMBasicBlockRef*)memAllocBlk(sizeof(LLVMBasicBlockRef) * blk->breaks->used);
+            loopstate->loopPhiCnt = 0;
+        }
+        ++gen->loopstackcnt;
+
+        LLVMBuildBr(gen->builder, loopbeg);
+        LLVMPositionBuilderAtEnd(gen->builder, loopbeg);
+    }
+
     INode **nodesp;
     uint32_t cnt;
     LLVMValueRef lastval = NULL; // Should never be used by caller
@@ -142,6 +169,20 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
         default:
             lastval = genlExpr(gen, *nodesp);
         }
+    }
+
+    if (blk->flags & FlagLoop) {
+        LLVMBuildBr(gen->builder, loopbeg);
+        LLVMPositionBuilderAtEnd(gen->builder, loopend);
+
+        --gen->loopstackcnt;
+        if (blk->vtype->tag != UnknownTag) {
+            LLVMValueRef phi = LLVMBuildPhi(gen->builder, genlType(gen, blk->vtype), "loopval");
+            LLVMAddIncoming(phi, loopstate->loopPhis, loopstate->loopBlks, loopstate->loopPhiCnt);
+            return phi;
+        }
+        return NULL;
+
     }
     return lastval;
 }

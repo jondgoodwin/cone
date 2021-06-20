@@ -165,7 +165,7 @@ INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags) {
     if (parseHasBlock()) {
         if (!(mayflags&ParseMayImpl))
             errorMsgNode((INode*)fnnode, ErrorBadImpl, "Function/method implementation is not allowed here.");
-        fnnode->value = parseExprBlock(parse);
+        fnnode->value = parseExprBlock(parse, 0);
     }
     else {
         if (!(mayflags&ParseMaySig))
@@ -297,7 +297,7 @@ GenericNode *parseMacro(ParseState *parse) {
     if (lexIsToken(LBracketToken)) {
         parseGenericVars(parse, macro);
     }
-    macro->body = parseExprBlock(parse);
+    macro->body = parseExprBlock(parse, 0);
     return macro;
 }
 

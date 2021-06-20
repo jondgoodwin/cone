@@ -103,30 +103,32 @@ void blockNameRes(NameResState *pstate, BlockNode *blk) {
     --pstate->scope;
 }
 
-// Handle type-checking for a block. This:
+// Handle type-checking for a regular or loop block. This:
 // 1. Type checks the block's statements
 // 2. Verify block ends with valid block-ending statement
 // 3. Performs bidirectional inference to ensure block (and any breaks) return same-typed value
 //    All breaks must resolve to either the expected type or the same inferred supertype
 //    Coercion is performed on breaks as needed to accomplish this, or errors result
 void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
-    if (blk->stmts->used == 0)
-        return;
+    INode *inferredType = unknownType;
+    TypeCompare match = EqMatch;
+    INode **laststmtp = NULL;
+    INode **lastexp = NULL;
+        
+    // Save and adjust pstate for block
+    // This includes block stack, used for gathering all breaks that might belong to some block
     ++pstate->scope;
     BlockNode *svRecentLoop = pstate->recentLoop;
     if (blk->flags & FlagLoop)
         pstate->recentLoop = blk;
-
-    // Push block node on block stack so we can later gather all breaks that might belong to it
     if (pstate->blockcnt >= TypeCheckBlockMax) {
         errorMsgNode((INode*)blk, ErrorBadArray, "Overflowing fixed-size block stack.");
         errorExit(100, "Unrecoverable error!");
     }
     pstate->blockstack[pstate->blockcnt++] = blk;
 
-    // Type check the block's statements.
-    // Do special checks of block-ending statements
-    // Note: blk->breaks will get populated here
+    // Type check all of a block's statements, treating final statement differently
+    // This will populate block->breaks with pointers to all break statements for this block
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(blk->stmts, cnt, nodesp)) {
@@ -143,61 +145,62 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
                 errorMsgNode(*nodesp, ErrorBadStmt, "break/continue may only be the last statement in the block");
         }
         else {
-            // Last statement might need to deliver a value of some expected type
-            iexpTypeCheckCoerce(pstate, expectType, nodesp);
-
-            // Capture last statement's type
-            if (isExpNode(*nodesp))
-                blk->vtype = ((IExpNode *)*nodesp)->vtype;
+            laststmtp = nodesp;
+            // last statement is special-handled below
         }
     }
-    --pstate->scope;
-    --pstate->blockcnt;
-    pstate->recentLoop = svRecentLoop;
 
-    if ((blk->flags & FlagLoop) && blk->breaks->used == 0)
-        errorMsgNode((INode*)blk, WarnLoop, "Loop may never stop without a break.");
+    // Handle final statement differently for loop block vs. regular block
+    if (blk->flags & FlagLoop) {
+        // Warn if the loop block has no breaks, as loop may never stop
+        if ((blk->flags & FlagLoop) && blk->breaks->used == 0)
+            errorMsgNode((INode*)blk, WarnLoop, "Loop may never stop without a break.");
 
-    /*
+        // Last statement should not be break, continue, return
+        if (laststmtp && ((*laststmtp)->tag == BreakTag || (*laststmtp)->tag == ContinueTag || (*laststmtp)->tag == ReturnTag))
+            errorMsgNode((INode*)*laststmtp, ErrorBadStmt, "Don't end loop block with break, continue or return");
+
+        inodeTypeCheck(pstate, laststmtp, noCareType); // we don't care about the type
+    }
+    else {
+        // Last statement of a regular block needs to be a break, continue, return or blockret
+        if (laststmtp && isExpNode(*laststmtp)) {
+            // Wrap the final expression in a blockret statement (flow pass will need it)
+            BreakRetNode *retnode = newReturnNode();
+            retnode->tag = BlockRetTag;
+            retnode->exp = *laststmtp;
+            lastexp = &retnode->exp;
+            match = iexpMultiCoerceInfer(pstate, expectType, &inferredType, lastexp, match);
+        }
+        else if (laststmtp == NULL ||
+            !((*laststmtp)->tag == BreakTag || (*laststmtp)->tag == ContinueTag || (*laststmtp)->tag == ReturnTag)) {
+            inodeTypeCheck(pstate, laststmtp, noCareType); // we don't care about the type
+            // Add 'blockret nil' to end of empty block, or block ending without expression/break/cont/return
+            BreakRetNode *retnode = newReturnNode();
+            retnode->tag = BlockRetTag;
+            retnode->exp = (INode*)newNilLitNode();
+            nodesAdd(&blk->stmts, (INode*)retnode);
+            match = iexpMultiCoerceInfer(pstate, expectType, &inferredType, &retnode->exp, match);
+        }
+        else
+            inodeTypeCheck(pstate, laststmtp, noCareType); // we don't care about the type
+    }
+
     // Do inference on all registered breaks to ensure they all return the expected type
-    INode *inferredType = unknownType;
-    TypeCompare match = EqMatch;
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodesFor(blk->breaks, cnt, nodesp)) {
-        INode **breakexp = &((BreakRetNode *)*nodesp)->exp;
-        if ((*breakexp)->tag == NilLitTag && expectType != noCareType) {
-            errorMsgNode(*nodesp, ErrorInvType, "Loop/block expects a typed expression on break");
-            match = NoMatch;
-        }
-        else if (!iexpTypeCheckCoerce(pstate, expectType, breakexp)) {
-            errorMsgNode(*breakexp, ErrorInvType, "Expression does not match expected type.");
-            match = NoMatch;
-        }
-        else if (!isExpNode(*breakexp)) {
-            match = NoMatch;
-        }
-        else {
-            switch (iexpMultiInfer(expectType, &inferredType, breakexp)) {
-            case NoMatch:
-                match = NoMatch;
-                break;
-            case CastSubtype:
-                if (match != NoMatch)
-                    match = CastSubtype;
-                break;
-            case ConvSubtype:
-                if (match != NoMatch)
-                    match = ConvSubtype;
-                break;
-            default:
-                break;
-            }
+    // Note: Iterate differently because list may grow while iterating
+    if (blk->breaks) {
+        nodesp = (INode**)((blk->breaks) + 1);
+        cnt = 0;
+        for (; cnt < blk->breaks->used; ++cnt, ++nodesp) {
+            INode **breakexp = &((BreakRetNode *)*nodesp)->exp;
+            match = iexpMultiCoerceInfer(pstate, expectType, &inferredType, breakexp, match);
         }
     }
 
-    if (expectType == noCareType)
+    if (expectType == noCareType) {
+        blk->vtype = inferredType;
         return;
+    }
 
     // When expectType specified, all branches have been coerced (or not w/ errors)
     if (expectType != unknownType) {
@@ -208,14 +211,20 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
     // If no specific type is expected, set the inferred type
     blk->vtype = inferredType;
 
-    //  If coercion is needed for some blocks, perform them as needed
+    // If we have inferred a supertype, we need to re-coerce all expressions
     if (match == ConvSubtype || match == CastSubtype) {
         for (nodesFor(blk->breaks, cnt, nodesp)) {
             INode **breakexp = &((BreakRetNode *)*nodesp)->exp;
             iexpCoerce(breakexp, inferredType);
         }
+        if (lastexp)
+            iexpCoerce(lastexp, inferredType);
     }
-    */
+
+    // Restore pstate to prior condition
+    --pstate->scope;
+    --pstate->blockcnt;
+    pstate->recentLoop = svRecentLoop;
 }
 
 // Ensure this particular block does not end with break/continue

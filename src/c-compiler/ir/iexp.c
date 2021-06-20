@@ -189,6 +189,34 @@ int iexpMultiInfer(INode *expectType, INode **maybeType, INode **from) {
     }
 }
 
+// Used by 'if' and 'block/loop'/break to infer the type in common across all branches,
+// one branch at a time. Errors on bad type match and returns Match condition.
+// - expectType is the final type expected by receiver (or else NoCareType)
+// - inferredType is the inferred supertype in common
+// - fromexp is the current expression node whose type is being examined
+// - oldMatch is the current match status on whether all branches match or not
+int iexpMultiCoerceInfer(TypeCheckState *pstate, INode *expectType, INode **inferredType, INode **fromexp, int oldMatch) {
+    if (!iexpTypeCheckCoerce(pstate, expectType, fromexp)) {
+        errorMsgNode(*fromexp, ErrorInvType, "Expression does not match expected type.");
+        return NoMatch;
+    }
+    else if (!isExpNode(*fromexp)) {
+        return NoMatch;
+    }
+    else {
+        switch (iexpMultiInfer(expectType, inferredType, fromexp)) {
+        case NoMatch:
+            return NoMatch;
+        case CastSubtype:
+            return oldMatch == NoMatch? NoMatch : CastSubtype;
+        case ConvSubtype:
+            return oldMatch == NoMatch? NoMatch : ConvSubtype;
+        default:
+            return oldMatch;
+        }
+    }
+}
+
 // Ensure it is a lval, return error and 0 if not.
 int iexpIsLval(INode *lval) {
     switch (lval->tag) {

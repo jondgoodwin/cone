@@ -55,7 +55,7 @@ INode *parseIf(ParseState *parse);
 INode *parseMatch(ParseState *parse);
 INode *parseLoop(ParseState *parse, LifetimeNode *life);
 // Parse an expression block
-INode *parseExprBlock(ParseState *parse);
+INode *parseExprBlock(ParseState *parse, int isloop);
 INode *parseLifetime(ParseState *parse, int stmtflag);
 
 // parseexpr.c

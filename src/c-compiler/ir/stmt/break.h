@@ -30,7 +30,7 @@ INode *cloneBreakNode(CloneState *cstate, BreakRetNode *node);
 
 void breakTypeCheck(TypeCheckState *pstate, BreakRetNode *node);
 
-typedef struct LoopNode LoopNode;
-LoopNode *breakFindLoopNode(TypeCheckState *pstate, INode *life);
+typedef struct BlockNode BlockNode;
+BlockNode *breakFindLoopNode(TypeCheckState *pstate, INode *life);
 
 #endif

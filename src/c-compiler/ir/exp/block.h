@@ -26,6 +26,7 @@ typedef struct BlockNode {
 } BlockNode;
 
 BlockNode *newBlockNode();
+BlockNode *newLoopBlockNode();
 
 // Clone block
 INode *cloneBlockNode(CloneState *cstate, BlockNode *node);

@@ -36,21 +36,22 @@ void breakNameRes(NameResState *pstate, BreakRetNode *node) {
 }
 
 // Find the loop node in stack that matches the lifetime
-LoopNode *breakFindLoopNode(TypeCheckState *pstate, INode *life) {
-    uint32_t cnt = pstate->loopcnt;
-    if (!life)
-        return pstate->loopstack[cnt - 1]; // use most recent, when no lifetime
+BlockNode *breakFindLoopNode(TypeCheckState *pstate, INode *life) {
+    uint32_t cnt = pstate->blockcnt;
+    if (!life) {
+        return pstate->recentLoop; // use most recent, when no lifetime
+    }
     LifetimeNode *lifeDclNode = (LifetimeNode *)((NameUseNode *)life)->dclnode;
     while (cnt--) {
-        if (pstate->loopstack[cnt]->life == lifeDclNode)
-            return pstate->loopstack[cnt];
+        if (pstate->blockstack[cnt]->life == lifeDclNode)
+            return pstate->blockstack[cnt];
     }
     return NULL;
 }
 
 // Type check the break expression, ensure it matches loop's type
 void breakTypeCheck(TypeCheckState *pstate, BreakRetNode *node) {
-    if (pstate->loopcnt == 0) {
+    if (pstate->recentLoop == NULL) {
         errorMsgNode((INode*)node, ErrorNoLoop, "break may only be used within a while/each/loop block");
         return;
     }
@@ -58,7 +59,7 @@ void breakTypeCheck(TypeCheckState *pstate, BreakRetNode *node) {
     // Register the break with its specified loop
     // Note:  we don't do any type checking of the break expression to the loop
     // That is done later by the loop
-    LoopNode *loopnode = breakFindLoopNode(pstate, node->life);
+    BlockNode *loopnode = breakFindLoopNode(pstate, node->life);
     if (loopnode) {
         nodesAdd(&loopnode->breaks, (INode*)node);
     }

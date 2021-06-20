@@ -137,6 +137,6 @@ void slitTypeCheck(TypeCheckState *pstate, SLitNode *node) {
 }
 
 int litIsLiteral(INode* node) {
-    return (node->tag == FLitTag || node->tag == ULitTag || node->tag == StringLitTag
+    return (node->tag == FLitTag || node->tag == ULitTag || node->tag == StringLitTag || node->tag == NilLitTag
         || (node->tag == TypeLitTag && typeLitIsLiteral((FnCallNode*)node)));
 }

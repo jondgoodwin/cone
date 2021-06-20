@@ -16,7 +16,7 @@
 
 #include <stdio.h>
 
-INode *parseEach(ParseState *parse, INode *blk, LifetimeNode *life);
+INode *parseEach(ParseState *parse, LifetimeNode *life);
 
 // This helper routine inserts 'break if !condexp' at beginning of block
 void parseInsertWhileBreak(INode *blk, INode *condexp) {
@@ -100,7 +100,7 @@ void parseBoundMatch(ParseState *parse, IfNode *ifnode, NameUseNode *expnamenode
     }
 
     // Create and-then block, with vardcl injected at start
-    BlockNode *blknode = (BlockNode*)parseExprBlock(parse);
+    BlockNode *blknode = (BlockNode*)parseExprBlock(parse, 0);
     nodesInsert(&blknode->stmts, (INode*)varnode, 0); // Inject vardcl at start of block
     nodesAdd(&ifnode->condblk, (INode*)blknode);
 }
@@ -127,7 +127,7 @@ INode *parseIf(ParseState *parse) {
     }
     else {
         nodesAdd(&ifnode->condblk, parseSimpleExpr(parse));
-        nodesAdd(&ifnode->condblk, parseExprBlock(parse));
+        nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
     }
     while (1) {
         // Process final else clause and break loop
@@ -136,7 +136,7 @@ INode *parseIf(ParseState *parse) {
             lexNextToken();
             if (!lexIsToken(IfToken)) {
                 nodesAdd(&ifnode->condblk, elseCond); // else distinguished by a elseCond
-                nodesAdd(&ifnode->condblk, parseExprBlock(parse));
+                nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
                 break;
             }
         }
@@ -164,7 +164,7 @@ INode *parseIf(ParseState *parse) {
         }
         else {
             nodesAdd(&ifnode->condblk, parseSimpleExpr(parse));
-            nodesAdd(&ifnode->condblk, parseExprBlock(parse));
+            nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
         }
     }
     return retnode;
@@ -198,23 +198,23 @@ INode *parseMatch(ParseState *parse) {
             lexNextToken();
             isnode->typ = parseVtype(parse);
             nodesAdd(&ifnode->condblk, (INode*)isnode);
-            nodesAdd(&ifnode->condblk, parseExprBlock(parse));
+            nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
         }
         else if (lexIsToken(EqToken)) {
             FnCallNode *callnode = newFnCallOp((INode*)expnamenode, "==", 2);
             lexNextToken();
             nodesAdd(&callnode->args, parseSimpleExpr(parse));
             nodesAdd(&ifnode->condblk, (INode*)callnode);
-            nodesAdd(&ifnode->condblk, parseExprBlock(parse));
+            nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
         }
         else if (lexIsToken(ElseToken)) {
             lexNextToken();
             nodesAdd(&ifnode->condblk, elseCond); // else distinguished by a elseCond condition
-            nodesAdd(&ifnode->condblk, parseExprBlock(parse));
+            nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
         }
         else {
             nodesAdd(&ifnode->condblk, parseSimpleExpr(parse));
-            nodesAdd(&ifnode->condblk, parseExprBlock(parse));
+            nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
         }
     }
 
@@ -225,29 +225,25 @@ INode *parseMatch(ParseState *parse) {
 
 // Parse loop block
 INode *parseLoop(ParseState *parse, LifetimeNode *life) {
-    LoopNode *loopnode = newLoopNode();
-    loopnode->life = life;
     lexNextToken();
-    loopnode->blk = parseExprBlock(parse);
+    BlockNode *loopnode = (BlockNode*)parseExprBlock(parse, 1);
+    loopnode->life = life;
     return (INode *)loopnode;
 }
 
 // Parse while block
 INode *parseWhile(ParseState *parse, LifetimeNode *life) {
-    LoopNode *loopnode = newLoopNode();
-    loopnode->life = life;
     lexNextToken();
     INode *condexp = parseSimpleExpr(parse);
-    INode *blk = loopnode->blk = parseExprBlock(parse);
-    parseInsertWhileBreak(blk, condexp);
+    BlockNode *loopnode = (BlockNode*)parseExprBlock(parse, 1);
+    loopnode->life = life;
+    parseInsertWhileBreak((INode*)loopnode, condexp);
     return (INode *)loopnode;
 }
 
 // Parse each block
-INode *parseEach(ParseState *parse, INode *innerblk, LifetimeNode *life) {
+INode *parseEach(ParseState *parse, LifetimeNode *life) {
     BlockNode *outerblk = newBlockNode();   // surrounding block scope for isolating 'each' vars
-    LoopNode *loopnode = newLoopNode();
-    loopnode->life = life;
 
     // Obtain all the parsed pieces
     lexNextToken();
@@ -276,9 +272,8 @@ INode *parseEach(ParseState *parse, INode *innerblk, LifetimeNode *life) {
         lexNextToken();
         step = parseSimpleExpr(parse);
     }
-    if (innerblk == NULL)
-        innerblk = parseExprBlock(parse);
-    loopnode->blk = innerblk;
+    BlockNode *loopnode = (BlockNode*)parseExprBlock(parse, 1);
+    loopnode->life = life;
 
     // Assemble logic for a range (with optional step), e.g.:
     // { mut elemname = initial; while elemname <= iterend { ... ; elemname += step}}
@@ -292,14 +287,14 @@ INode *parseEach(ParseState *parse, INode *innerblk, LifetimeNode *life) {
             FnCallNode *pluseq = newFnCallOpname((INode*)newNameUseNode(elemname), plusEqName, 1);
             pluseq->flags |= FlagOpAssgn | FlagLvalOp;
             nodesAdd(&pluseq->args, step);
-            nodesAdd(&((BlockNode*)loopnode->blk)->stmts, (INode*)pluseq);
+            nodesAdd(&loopnode->stmts, (INode*)pluseq);
         }
         else {
             INode *incr = (INode *)newFnCallOpname((INode *)newNameUseNode(elemname), isrange > 0 ? incrPostName : decrPostName, 0);
             incr->flags |= FlagLvalOp;
-            nodesAdd(&((BlockNode*)loopnode->blk)->stmts, incr);
+            nodesAdd(&loopnode->stmts, incr);
         }
-        parseInsertWhileBreak(innerblk, iter);
+        parseInsertWhileBreak((INode*)loopnode, iter);
         nodesAdd(&outerblk->stmts, (INode*)loopnode);
     }
     return (INode *)outerblk;
@@ -321,7 +316,7 @@ INode *parseLifetime(ParseState *parse, int stmtflag) {
         if (lexIsToken(WhileToken))
             return parseWhile(parse, life);
         else if (lexIsToken(EachToken))
-            return parseEach(parse, NULL, life);
+            return parseEach(parse, life);
     }
     errorMsgLex(ErrorBadTok, "A lifetime may only be followed by a loop/while/each");
     return NULL;
@@ -332,18 +327,19 @@ INode *parseWith(ParseState *parse) {
     lexNextToken();
     VarDclNode *this = newVarDclFull(thisName, VarDclTag, unknownType, (INode*)immPerm, NULL);
     this->value = parseSimpleExpr(parse);
-    BlockNode *blk = (BlockNode*)parseExprBlock(parse);
+    BlockNode *blk = (BlockNode*)parseExprBlock(parse, 0);
     nodesInsert(&blk->stmts, (INode*)this, 0);
     return (INode *)blk;
 }
 
 // Parse a block of statements/expressions
-INode *parseExprBlock(ParseState *parse) {
-    BlockNode *blk = newBlockNode();
+INode *parseExprBlock(ParseState *parse, int isloop) {
+    BlockNode *blk = isloop? newLoopBlockNode() : newBlockNode();
+    if (blk->stmts == NULL)
+        blk->stmts = newNodes(8);
 
     parseBlockStart();
 
-    blk->stmts = newNodes(8);
     while (!parseBlockEnd()) {
         lexStmtStart();
         switch (lex->toktype) {
@@ -376,7 +372,7 @@ INode *parseExprBlock(ParseState *parse) {
             break;
 
         case EachToken:
-            nodesAdd(&blk->stmts, parseEach(parse, NULL, NULL));
+            nodesAdd(&blk->stmts, parseEach(parse, NULL));
             break;
 
         case LifetimeToken:
@@ -411,7 +407,7 @@ INode *parseExprBlock(ParseState *parse) {
         }
 
         case LCurlyToken:
-            nodesAdd(&blk->stmts, parseExprBlock(parse));
+            nodesAdd(&blk->stmts, parseExprBlock(parse, 0));
             break;
 
         // A local variable declaration, if it begins with a permission
