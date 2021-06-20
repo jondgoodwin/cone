@@ -51,11 +51,9 @@ void doAnalysis(ModuleNode **mod) {
     TypeCheckState tstate;
     tstate.fnsig = NULL;
     tstate.typenode = NULL;
-    tstate.loopcnt = 0;
-    tstate.loopstack = memAllocBlk(sizeof(LoopNode*) * TypeCheckLoopMax);
     tstate.recentLoop = NULL;
     tstate.blockcnt = 0;
-    tstate.blockstack = memAllocBlk(sizeof(LoopNode*) * TypeCheckBlockMax);
+    tstate.blockstack = memAllocBlk(sizeof(BlockNode*) * TypeCheckBlockMax);
     inodeTypeCheckAny(&tstate, (INode**)mod);
 }
 

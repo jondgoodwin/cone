@@ -32,44 +32,6 @@ LLVMBasicBlockRef genlInsertBlock(GenState *gen, char *name) {
 
 }
 
-// Generate a loop block
-LLVMValueRef genlLoop(GenState *gen, LoopNode *loopnode) {
-    LLVMBasicBlockRef loopbeg, loopend;
-
-    loopend = genlInsertBlock(gen, "loopend");
-    loopbeg = genlInsertBlock(gen, "loopbeg");
-
-    // Push loop state info on loop stack for break & continue to use
-    if (gen->loopstackcnt >= GenLoopMax) {
-        errorMsgNode((INode*)loopnode, ErrorBadArray, "Overflowing fixed-size loop stack.");
-        errorExit(100, "Unrecoverable error!");
-    }
-    GenLoopState *loopstate = &gen->loopstack[gen->loopstackcnt];
-    loopstate->loop = (BlockNode*)loopnode;
-    loopstate->loopbeg = loopbeg;
-    loopstate->loopend = loopend;
-    if (loopnode->vtype->tag != VoidTag) {
-        loopstate->loopPhis = (LLVMValueRef*)memAllocBlk(sizeof(LLVMValueRef) * loopnode->breaks->used);
-        loopstate->loopBlks = (LLVMBasicBlockRef*)memAllocBlk(sizeof(LLVMBasicBlockRef) * loopnode->breaks->used);
-        loopstate->loopPhiCnt = 0;
-    }
-    ++gen->loopstackcnt;
-
-    LLVMBuildBr(gen->builder, loopbeg);
-    LLVMPositionBuilderAtEnd(gen->builder, loopbeg);
-    genlBlock(gen, (BlockNode*)loopnode->blk);
-    LLVMBuildBr(gen->builder, loopbeg);
-    LLVMPositionBuilderAtEnd(gen->builder, loopend);
-
-    --gen->loopstackcnt;
-    if (loopnode->vtype->tag != UnknownTag) {
-        LLVMValueRef phi = LLVMBuildPhi(gen->builder, genlType(gen, loopnode->vtype), "loopval");
-        LLVMAddIncoming(phi, loopstate->loopPhis, loopstate->loopBlks, loopstate->loopPhiCnt);
-        return phi;
-    }
-    return NULL;
-}
-
 // Find the loop state in loop stack whose lifetime matches
 GenLoopState *genFindLoopState(GenState *gen, INode *life) {
     uint32_t cnt = gen->loopstackcnt;

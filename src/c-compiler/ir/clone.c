@@ -35,8 +35,6 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     case OrLogicTag:
     case AndLogicTag:
         node = cloneLogicNode(cstate, (LogicNode *)nodep); break;
-    case LoopTag:
-        node = cloneLoopNode(cstate, (LoopNode *)nodep); break;
     case NamedValTag:
         node = cloneNamedValNode(cstate, (NamedValNode *)nodep); break;
     case NameUseTag:

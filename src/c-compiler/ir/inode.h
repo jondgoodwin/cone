@@ -119,7 +119,6 @@ enum NodeTags {
     IsTag,          // ~~
     BlockTag,       // Block (list of statements)
     IfTag,          // if .. elif .. else statement
-    LoopTag,        // Loop node
     AliasTag,       // (injected) alias count tag
     NamedValTag,    // Named value (e.g., for a struct literal)
     AbsenceTag,     // unique, unclonable node for absence of info

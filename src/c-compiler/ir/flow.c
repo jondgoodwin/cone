@@ -84,8 +84,6 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         blockFlow(fstate, (BlockNode **)nodep); break;
     case IfTag:
         ifFlow(fstate, (IfNode **)nodep); break;
-    case LoopTag:
-        loopFlow(fstate, (LoopNode **)nodep); break;
     case AssignTag:
         assignFlow(fstate, (AssignNode **)nodep); break;
     case FnCallTag:

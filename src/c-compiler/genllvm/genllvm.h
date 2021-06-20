@@ -56,7 +56,6 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn);
 // genlstmt.c
 LLVMBasicBlockRef genlInsertBlock(GenState *gen, char *name);
 LLVMValueRef genlBlock(GenState *gen, BlockNode *blk);
-LLVMValueRef genlLoop(GenState *gen, LoopNode *wnode);
 
 // genlexpr.c
 LLVMValueRef genlExpr(GenState *gen, INode *termnode);

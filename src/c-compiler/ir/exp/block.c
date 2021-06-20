@@ -286,9 +286,6 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
         case VarDclTag:
             varDclFlow(fstate, (VarDclNode**)nodesp);
             break;
-        case LoopTag:
-            loopFlow(fstate, (LoopNode **)nodesp);
-            break;
         default:
             // An expression as statement throws out its value
             if (isExpNode(*nodesp))

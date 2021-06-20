@@ -82,8 +82,6 @@ void inodePrintNode(INode *node) {
         blockPrint((BlockNode *)node); break;
     case IfTag:
         ifPrint((IfNode *)node); break;
-    case LoopTag:
-        loopPrint((LoopNode *)node); break;
     case BreakTag:
         inodeFprint("break"); break;
     case ContinueTag:
@@ -213,8 +211,6 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         blockNameRes(pstate, (BlockNode *)*node); break;
     case IfTag:
         ifNameRes(pstate, (IfNode *)*node); break;
-    case LoopTag:
-        loopNameRes(pstate, (LoopNode *)*node); break;
     case BreakTag:
         breakNameRes(pstate, (BreakRetNode *)*node); break;
     case ContinueTag:
@@ -320,8 +316,6 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
         blockTypeCheck(pstate, (BlockNode *)*node, expectType); break;
     case IfTag:
         ifTypeCheck(pstate, (IfNode *)*node, expectType); break;
-    case LoopTag:
-        loopTypeCheck(pstate, (LoopNode *)*node, expectType); break;
     case BreakTag:
         breakTypeCheck(pstate, (BreakRetNode *)*node); break;
     case ContinueTag:

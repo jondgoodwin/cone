@@ -88,7 +88,6 @@ typedef struct AllocNode {
 #include "exp/fncall.h"
 #include "exp/if.h"
 #include "exp/literal.h"
-#include "exp/loop.h"
 #include "exp/namedval.h"
 #include "exp/typelit.h"
 #include "exp/logic.h"
@@ -115,8 +114,6 @@ typedef struct NameResState {
 typedef struct TypeCheckState {
     FnSigNode *fnsig;         // The type signature of the function we are within
     INode *typenode;          // Current type (e.g., struct)
-    LoopNode **loopstack;     // Stack of active loops
-    uint32_t loopcnt;         // How many currently in the loop stack
     BlockNode *recentLoop;    // Innermost loop whose scope we are in
     BlockNode **blockstack;   // Stack of active blocks
     uint32_t blockcnt;        // How many currently in the block stack
