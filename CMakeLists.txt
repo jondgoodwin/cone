@@ -151,7 +151,6 @@ add_executable(conec
 	src/c-compiler/ir/exp/if.c
 	src/c-compiler/ir/exp/literal.c
 	src/c-compiler/ir/exp/logic.c
-	src/c-compiler/ir/exp/loop.c
 	src/c-compiler/ir/exp/namedval.c
 	src/c-compiler/ir/exp/nameuse.c
 	src/c-compiler/ir/exp/sizeof.c
