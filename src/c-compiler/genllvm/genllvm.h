@@ -16,15 +16,15 @@
 #include <llvm-c/ExecutionEngine.h>
 
 // An entry for each active loop block in current control flow stack
-#define GenLoopMax 256
+#define GenBlockStackMax 256
 typedef struct {
-    BlockNode *loop;
-    LLVMBasicBlockRef loopbeg;
-    LLVMBasicBlockRef loopend;
-    LLVMValueRef *loopPhis;
-    LLVMBasicBlockRef *loopBlks;
-    uint32_t loopPhiCnt;
-} GenLoopState;
+    BlockNode *blocknode;
+    LLVMBasicBlockRef blockbeg;
+    LLVMBasicBlockRef blockend;
+    LLVMValueRef *phis;
+    LLVMBasicBlockRef *blocksFrom;
+    uint32_t phiCnt;
+} GenBlockState;
 
 typedef struct GenState {
     LLVMTargetMachineRef machine;
@@ -41,8 +41,8 @@ typedef struct GenState {
     LLVMMetadataRef difile;
 
     ConeOptions *opt;
-    GenLoopState *loopstack;
-    uint32_t loopstackcnt;
+    GenBlockState *blockstack;
+    uint32_t blockstackcnt;
 } GenState;
 
 // Setup LLVM generation, ensuring we know intended target

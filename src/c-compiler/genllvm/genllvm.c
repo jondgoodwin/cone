@@ -398,8 +398,8 @@ void genSetup(GenState *gen, ConeOptions *opt) {
     gen->fn = NULL;
     gen->allocaPoint = NULL;
     gen->block = NULL;
-    gen->loopstack = memAllocBlk(sizeof(GenLoopState)*GenLoopMax);
-    gen->loopstackcnt = 0;
+    gen->blockstack = memAllocBlk(sizeof(GenBlockState)*GenBlockStackMax);
+    gen->blockstackcnt = 0;
 }
 
 void genClose(GenState *gen) {

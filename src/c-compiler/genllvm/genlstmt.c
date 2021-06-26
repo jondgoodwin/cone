@@ -33,27 +33,27 @@ LLVMBasicBlockRef genlInsertBlock(GenState *gen, char *name) {
 }
 
 // Find the loop state in loop stack whose lifetime matches
-GenLoopState *genFindLoopState(GenState *gen, INode *life) {
-    uint32_t cnt = gen->loopstackcnt;
+GenBlockState *genFindBlockState(GenState *gen, INode *life) {
+    uint32_t cnt = gen->blockstackcnt;
     if (!life)
-        return &gen->loopstack[cnt - 1]; // use most recent, when no lifetime
+        return &gen->blockstack[cnt - 1]; // use most recent, when no lifetime
     LifetimeNode *lifeDclNode = (LifetimeNode *)((NameUseNode *)life)->dclnode;
     while (cnt--) {
-        if (gen->loopstack[cnt].loop->life == lifeDclNode)
-            return &gen->loopstack[cnt];
+        if (gen->blockstack[cnt].blocknode->life == lifeDclNode)
+            return &gen->blockstack[cnt];
     }
     return NULL;  // Should never get here
 }
 
 // Generate a block/loop break
 void genlBreak(GenState *gen, INode* life, INode* exp, Nodes* dealias) {
-    GenLoopState *loopstate = genFindLoopState(gen, life);
+    GenBlockState *blockstate = genFindBlockState(gen, life);
     if (exp->tag != NilLitTag) {
-        loopstate->loopPhis[loopstate->loopPhiCnt] = genlExpr(gen, exp);
-        loopstate->loopBlks[loopstate->loopPhiCnt++] = LLVMGetInsertBlock(gen->builder);
+        blockstate->phis[blockstate->phiCnt] = genlExpr(gen, exp);
+        blockstate->blocksFrom[blockstate->phiCnt++] = LLVMGetInsertBlock(gen->builder);
     }
     genlDealiasNodes(gen, dealias);
-    LLVMBuildBr(gen->builder, loopstate->loopend);
+    LLVMBuildBr(gen->builder, blockstate->blockend);
 }
 
 // Generate a return statement
@@ -75,31 +75,38 @@ void genlBlockRet(GenState *gen, BreakRetNode *node) {
 
 // Generate a block's statements (could be a loop block)
 LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
-    LLVMBasicBlockRef loopbeg, loopend;
-    GenLoopState *loopstate;
+    // Create separate blocks only when needed. 
+    // isLoop requires blkbeg and blkend. isPhiBlk only blkend when phi values must converge for break/returns
+    int isLoop = blk->flags & FlagLoop;
+    int isPhiBlk = isLoop; // or multiple break/returns to phi value
 
-    if (blk->flags & FlagLoop) {
-        loopend = genlInsertBlock(gen, "loopend");
-        loopbeg = genlInsertBlock(gen, "loopbeg");
+    LLVMBasicBlockRef blockbeg = NULL;
+    LLVMBasicBlockRef blockend = NULL;
+    GenBlockState *blkstate;
 
-        // Push loop state info on loop stack for break & continue to use
-        if (gen->loopstackcnt >= GenLoopMax) {
-            errorMsgNode((INode*)blk, ErrorBadArray, "Overflowing fixed-size loop stack.");
+    if (isPhiBlk) {
+        blockend = genlInsertBlock(gen, isLoop? "loopend" : "blockend");
+        if (isLoop) {
+            blockbeg = genlInsertBlock(gen, "loopbeg");
+            LLVMBuildBr(gen->builder, blockbeg);
+            LLVMPositionBuilderAtEnd(gen->builder, blockbeg);
+        }
+
+        // Push block info on stack for break & continue to use
+        if (gen->blockstackcnt >= GenBlockStackMax) {
+            errorMsgNode((INode*)blk, ErrorBadArray, "Overflowing fixed-size block stack.");
             errorExit(100, "Unrecoverable error!");
         }
-        loopstate = &gen->loopstack[gen->loopstackcnt];
-        loopstate->loop = blk;
-        loopstate->loopbeg = loopbeg;
-        loopstate->loopend = loopend;
+        blkstate = &gen->blockstack[gen->blockstackcnt];
+        blkstate->blocknode = blk;
+        blkstate->blockbeg = blockbeg;
+        blkstate->blockend = blockend;
         if (blk->vtype->tag != VoidTag) {
-            loopstate->loopPhis = (LLVMValueRef*)memAllocBlk(sizeof(LLVMValueRef) * blk->breaks->used);
-            loopstate->loopBlks = (LLVMBasicBlockRef*)memAllocBlk(sizeof(LLVMBasicBlockRef) * blk->breaks->used);
-            loopstate->loopPhiCnt = 0;
+            blkstate->phis = (LLVMValueRef*)memAllocBlk(sizeof(LLVMValueRef) * blk->breaks->used);
+            blkstate->blocksFrom = (LLVMBasicBlockRef*)memAllocBlk(sizeof(LLVMBasicBlockRef) * blk->breaks->used);
+            blkstate->phiCnt = 0;
         }
-        ++gen->loopstackcnt;
-
-        LLVMBuildBr(gen->builder, loopbeg);
-        LLVMPositionBuilderAtEnd(gen->builder, loopbeg);
+        ++gen->blockstackcnt;
     }
 
     INode **nodesp;
@@ -109,7 +116,7 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
         switch ((*nodesp)->tag) {
         case ContinueTag:
             genlDealiasNodes(gen, ((BreakRetNode*)*nodesp)->dealias);
-            LLVMBuildBr(gen->builder, genFindLoopState(gen, ((BreakRetNode*)*nodesp)->life)->loopbeg); 
+            LLVMBuildBr(gen->builder, genFindBlockState(gen, ((BreakRetNode*)*nodesp)->life)->blockbeg); 
             break;
 
         case BreakTag: {
@@ -133,14 +140,16 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
         }
     }
 
-    if (blk->flags & FlagLoop) {
-        LLVMBuildBr(gen->builder, loopbeg);
-        LLVMPositionBuilderAtEnd(gen->builder, loopend);
+    if (isLoop)
+        LLVMBuildBr(gen->builder, blockbeg);
 
-        --gen->loopstackcnt;
+    if (isPhiBlk) {
+        LLVMPositionBuilderAtEnd(gen->builder, blockend);
+
+        --gen->blockstackcnt;
         if (blk->vtype->tag != UnknownTag) {
-            LLVMValueRef phi = LLVMBuildPhi(gen->builder, genlType(gen, blk->vtype), "loopval");
-            LLVMAddIncoming(phi, loopstate->loopPhis, loopstate->loopBlks, loopstate->loopPhiCnt);
+            LLVMValueRef phi = LLVMBuildPhi(gen->builder, genlType(gen, blk->vtype), "phival");
+            LLVMAddIncoming(phi, blkstate->phis, blkstate->blocksFrom, blkstate->phiCnt);
             return phi;
         }
         return NULL;
