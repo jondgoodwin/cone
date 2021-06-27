@@ -17,6 +17,7 @@ typedef struct {
     INodeHdr;
     INode *exp;         // value returned by break's/return's block (may be 'nil')
     INode *life;        // lifetime for block scope to escape/re-start (null if none specified)
+    BlockNode *block;   // Block that this break/return applies to
     Nodes *dealias;     // Nodes used to de-alias/unwind current block scope-allocated values
 } BreakRetNode;
 
@@ -31,6 +32,6 @@ INode *cloneBreakNode(CloneState *cstate, BreakRetNode *node);
 void breakTypeCheck(TypeCheckState *pstate, BreakRetNode *node);
 
 typedef struct BlockNode BlockNode;
-BlockNode *breakFindLoopNode(TypeCheckState *pstate, INode *life);
+BlockNode *breakFindBlockNode(TypeCheckState *pstate, INode *life);
 
 #endif

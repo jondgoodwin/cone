@@ -12,6 +12,7 @@ BreakRetNode *newBreakNode() {
     BreakRetNode *node;
     newNode(node, BreakRetNode, BreakTag);
     node->life = NULL;
+    node->block = NULL;
     node->exp = NULL;
     node->dealias = NULL;
     return node;
@@ -36,7 +37,7 @@ void breakNameRes(NameResState *pstate, BreakRetNode *node) {
 }
 
 // Find the loop node in stack that matches the lifetime
-BlockNode *breakFindLoopNode(TypeCheckState *pstate, INode *life) {
+BlockNode *breakFindBlockNode(TypeCheckState *pstate, INode *life) {
     uint32_t cnt = pstate->blockcnt;
     if (!life) {
         return pstate->recentLoop; // use most recent, when no lifetime
@@ -56,12 +57,13 @@ void breakTypeCheck(TypeCheckState *pstate, BreakRetNode *node) {
         return;
     }
 
-    // Register the break with its specified loop
-    // Note:  we don't do any type checking of the break expression to the loop
-    // That is done later by the loop
-    BlockNode *loopnode = breakFindLoopNode(pstate, node->life);
-    if (loopnode) {
-        nodesAdd(&loopnode->breaks, (INode*)node);
+    // Register the break with the block node it applies to
+    // Note:  we don't type check the break expression until later (as part of block type check),
+    // when we can ensure all of them match to each other and whatever is expected
+    BlockNode *blocknode = breakFindBlockNode(pstate, node->life);
+    if (blocknode) {
+        nodesAdd(&blocknode->breaks, (INode*)node);
+        node->block = blocknode;
     }
     else
         errorMsgNode((INode*)node, ErrorNoLoop, "break's lifetime does not match a current loop");

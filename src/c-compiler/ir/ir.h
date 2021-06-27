@@ -69,6 +69,7 @@ typedef struct AllocNode {
     INsTypeNodeHdr;
 } AllocNode;
 
+#include "exp/block.h"
 #include "stmt/module.h"
 #include "stmt/break.h"
 #include "stmt/continue.h"
@@ -84,7 +85,6 @@ typedef struct AllocNode {
 #include "exp/cast.h"
 #include "exp/deref.h"
 #include "exp/nameuse.h"
-#include "exp/block.h"
 #include "exp/fncall.h"
 #include "exp/if.h"
 #include "exp/literal.h"

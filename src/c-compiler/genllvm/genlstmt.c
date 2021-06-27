@@ -33,21 +33,18 @@ LLVMBasicBlockRef genlInsertBlock(GenState *gen, char *name) {
 }
 
 // Find the loop state in loop stack whose lifetime matches
-GenBlockState *genFindBlockState(GenState *gen, INode *life) {
+GenBlockState *genFindBlockState(GenState *gen, BlockNode *block) {
     uint32_t cnt = gen->blockstackcnt;
-    if (!life)
-        return &gen->blockstack[cnt - 1]; // use most recent, when no lifetime
-    LifetimeNode *lifeDclNode = (LifetimeNode *)((NameUseNode *)life)->dclnode;
     while (cnt--) {
-        if (gen->blockstack[cnt].blocknode->life == lifeDclNode)
+        if (gen->blockstack[cnt].blocknode == block)
             return &gen->blockstack[cnt];
     }
     return NULL;  // Should never get here
 }
 
 // Generate a block/loop break
-void genlBreak(GenState *gen, INode* life, INode* exp, Nodes* dealias) {
-    GenBlockState *blockstate = genFindBlockState(gen, life);
+void genlBreak(GenState *gen, BlockNode* block, INode* exp, Nodes* dealias) {
+    GenBlockState *blockstate = genFindBlockState(gen, block);
     if (exp->tag != NilLitTag) {
         blockstate->phis[blockstate->phiCnt] = genlExpr(gen, exp);
         blockstate->blocksFrom[blockstate->phiCnt++] = LLVMGetInsertBlock(gen->builder);
@@ -116,12 +113,12 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
         switch ((*nodesp)->tag) {
         case ContinueTag:
             genlDealiasNodes(gen, ((BreakRetNode*)*nodesp)->dealias);
-            LLVMBuildBr(gen->builder, genFindBlockState(gen, ((BreakRetNode*)*nodesp)->life)->blockbeg); 
+            LLVMBuildBr(gen->builder, genFindBlockState(gen, ((BreakRetNode*)*nodesp)->block)->blockbeg); 
             break;
 
         case BreakTag: {
             BreakRetNode *brknode = (BreakRetNode*)*nodesp;
-            genlBreak(gen, brknode->life, brknode->exp, brknode->dealias);
+            genlBreak(gen, brknode->block, brknode->exp, brknode->dealias);
             break;
         }
 
