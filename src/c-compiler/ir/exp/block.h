@@ -21,7 +21,7 @@
 typedef struct BlockNode {
     IExpNodeHdr;
     Nodes *stmts;
-    LifetimeNode *life;   // nullable
+    Name *lifesym;     // nullable
     Nodes *breaks;
 } BlockNode;
 

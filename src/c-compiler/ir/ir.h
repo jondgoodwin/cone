@@ -103,6 +103,7 @@ typedef struct AllocNode {
 typedef struct NameResState {
     ModuleNode *mod;        // Current module
     INode *typenode;        // Current type (e.g., struct)
+    BlockNode *loopblock;   // Most current loop block (or NULL)
     uint16_t scope;         // The current block scope (0=global, 1=fnsig, 2+=blocks)
     uint16_t flags;         // e.g., PassWithinWhile
 } NameResState;
@@ -114,9 +115,6 @@ typedef struct NameResState {
 typedef struct TypeCheckState {
     FnSigNode *fnsig;         // The type signature of the function we are within
     INode *typenode;          // Current type (e.g., struct)
-    BlockNode *recentLoop;    // Innermost loop whose scope we are in
-    BlockNode **blockstack;   // Stack of active blocks
-    uint32_t blockcnt;        // How many currently in the block stack
     uint16_t scope;           // Current block scope level
 } TypeCheckState;
 

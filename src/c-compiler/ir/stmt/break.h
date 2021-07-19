@@ -31,7 +31,4 @@ INode *cloneBreakNode(CloneState *cstate, BreakRetNode *node);
 
 void breakTypeCheck(TypeCheckState *pstate, BreakRetNode *node);
 
-typedef struct BlockNode BlockNode;
-BlockNode *breakFindBlockNode(TypeCheckState *pstate, INode *life);
-
 #endif

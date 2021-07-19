@@ -7,7 +7,7 @@
 
 #include "../ir.h"
 
-// Create a new break node
+// Create a new break breaknode
 BreakRetNode *newBreakNode() {
     BreakRetNode *node;
     newNode(node, BreakRetNode, BreakTag);
@@ -30,41 +30,34 @@ INode *cloneBreakNode(CloneState *cstate, BreakRetNode *node) {
 
 // Name resolution for break
 // - Resolve any lifetime or expression names
-void breakNameRes(NameResState *pstate, BreakRetNode *node) {
-    if (node->life)
-        inodeNameRes(pstate, &node->life);
-    inodeNameRes(pstate, &node->exp);
-}
+void breakNameRes(NameResState *nstate, BreakRetNode *breaknode) {
+    inodeNameRes(nstate, &breaknode->exp);
 
-// Find the loop node in stack that matches the lifetime
-BlockNode *breakFindBlockNode(TypeCheckState *pstate, INode *life) {
-    uint32_t cnt = pstate->blockcnt;
-    if (!life) {
-        return pstate->recentLoop; // use most recent, when no lifetime
+    // Resolve break to block it applies to
+    if (breaknode->life) {
+        // If a lifetime was specified, resolve to lifetime-named block
+        inodeNameRes(nstate, &breaknode->life);
+        BlockNode *block = (BlockNode*)((NameUseNode*)(breaknode->life))->dclnode;
+        if (block && block->tag == BlockTag) {
+            breaknode->block = block;
+        }
+        else {
+            errorMsgNode((INode*)breaknode, ErrorNoLoop, "break's lifetime not found on a lifetime-named block");
+        }
     }
-    LifetimeNode *lifeDclNode = (LifetimeNode *)((NameUseNode *)life)->dclnode;
-    while (cnt--) {
-        if (pstate->blockstack[cnt]->life == lifeDclNode)
-            return pstate->blockstack[cnt];
+    else {
+        // If no lifetime specified, resolve to inner-most loop block
+        if (nstate->loopblock)
+            breaknode->block = nstate->loopblock;
+        else
+            errorMsgNode((INode*)breaknode, ErrorNoLoop, "break may only be used within a while/each/loop block");
     }
-    return NULL;
 }
 
 // Type check the break expression, ensure it matches loop's type
-void breakTypeCheck(TypeCheckState *pstate, BreakRetNode *node) {
-    if (pstate->recentLoop == NULL) {
-        errorMsgNode((INode*)node, ErrorNoLoop, "break may only be used within a while/each/loop block");
-        return;
-    }
+void breakTypeCheck(TypeCheckState *pstate, BreakRetNode *breaknode) {
 
-    // Register the break with the block node it applies to
     // Note:  we don't type check the break expression until later (as part of block type check),
     // when we can ensure all of them match to each other and whatever is expected
-    BlockNode *blocknode = breakFindBlockNode(pstate, node->life);
-    if (blocknode) {
-        nodesAdd(&blocknode->breaks, (INode*)node);
-        node->block = blocknode;
-    }
-    else
-        errorMsgNode((INode*)node, ErrorNoLoop, "break's lifetime does not match a current loop");
+    nodesAdd(&breaknode->block->breaks, (INode*)breaknode);
 }

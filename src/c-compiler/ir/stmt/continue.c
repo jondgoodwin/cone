@@ -27,18 +27,28 @@ INode *cloneContinueNode(CloneState *cstate, BreakRetNode *node) {
 
 // Name resolution for continue
 // - Resolve any lifetime name
-void continueNameRes(NameResState *pstate, BreakRetNode *node) {
-    if (node->life)
-        inodeNameRes(pstate, &node->life);
+void continueNameRes(NameResState *nstate, BreakRetNode *continuenode) {
+    // Resolve continue to block it applies to
+    if (continuenode->life) {
+        // If a lifetime was specified, resolve to lifetime-named block
+        inodeNameRes(nstate, &continuenode->life);
+        BlockNode *block = (BlockNode*)((NameUseNode*)(continuenode->life))->dclnode;
+        if (block && block->tag == BlockTag && (block->flags & FlagLoop)) {
+            continuenode->block = block;
+        }
+        else {
+            errorMsgNode((INode*)continuenode, ErrorNoLoop, "break's lifetime not found on a lifetime-named looping block");
+        }
+    }
+    else {
+        // If no lifetime specified, resolve to inner-most loop block
+        if (nstate->loopblock)
+            continuenode->block = nstate->loopblock;
+        else
+            errorMsgNode((INode*)continuenode, ErrorNoLoop, "continue may only be used within a while/each/loop block");
+    }
 }
 
-// Type check the continue expression, ensuring it lies within a loop
+// Type check the continue node
 void continueTypeCheck(TypeCheckState *pstate, BreakRetNode *node) {
-    if (pstate->recentLoop == NULL)
-        errorMsgNode((INode*)node, ErrorNoLoop, "continue may only be used within a while/each/loop block");
-    BlockNode *blocknode = breakFindBlockNode(pstate, node->life);
-    if (blocknode)
-        node->block = blocknode;
-    else
-        errorMsgNode((INode*)node, ErrorNoLoop, "continue's lifetime does not match a current loop");
 }

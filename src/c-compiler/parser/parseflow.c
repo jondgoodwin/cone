@@ -16,7 +16,7 @@
 
 #include <stdio.h>
 
-INode *parseEach(ParseState *parse, LifetimeNode *life);
+INode *parseEach(ParseState *parse, Name *lifesym);
 
 // This helper routine inserts 'break if !condexp' at beginning of block
 void parseInsertWhileBreak(INode *blk, INode *condexp) {
@@ -224,25 +224,25 @@ INode *parseMatch(ParseState *parse) {
 }
 
 // Parse loop block
-INode *parseLoop(ParseState *parse, LifetimeNode *life) {
+INode *parseLoop(ParseState *parse, Name *lifesym) {
     lexNextToken();
     BlockNode *loopnode = (BlockNode*)parseExprBlock(parse, 1);
-    loopnode->life = life;
+    loopnode->lifesym = lifesym;
     return (INode *)loopnode;
 }
 
 // Parse while block
-INode *parseWhile(ParseState *parse, LifetimeNode *life) {
+INode *parseWhile(ParseState *parse, Name *lifesym) {
     lexNextToken();
     INode *condexp = parseSimpleExpr(parse);
     BlockNode *loopnode = (BlockNode*)parseExprBlock(parse, 1);
-    loopnode->life = life;
+    loopnode->lifesym = lifesym;
     parseInsertWhileBreak((INode*)loopnode, condexp);
     return (INode *)loopnode;
 }
 
 // Parse each block
-INode *parseEach(ParseState *parse, LifetimeNode *life) {
+INode *parseEach(ParseState *parse, Name *lifesym) {
     BlockNode *outerblk = newBlockNode();   // surrounding block scope for isolating 'each' vars
 
     // Obtain all the parsed pieces
@@ -273,7 +273,7 @@ INode *parseEach(ParseState *parse, LifetimeNode *life) {
         step = parseSimpleExpr(parse);
     }
     BlockNode *loopnode = (BlockNode*)parseExprBlock(parse, 1);
-    loopnode->life = life;
+    loopnode->lifesym = lifesym;
 
     // Assemble logic for a range (with optional step), e.g.:
     // { mut elemname = initial; while elemname <= iterend { ... ; elemname += step}}
@@ -303,7 +303,7 @@ INode *parseEach(ParseState *parse, LifetimeNode *life) {
 // Parse a lifetime variable, followed by colon and then a loop
 // 'stmtflag' indicates it is a statement vs. an expression (loop)
 INode *parseLifetime(ParseState *parse, int stmtflag) {
-    LifetimeNode *life = newLifetimeDclNode(lex->val.ident, 0);
+    Name *lifesym = lex->val.ident;
     lexNextToken();
     if (lexIsToken(ColonToken))
         lexNextToken();
@@ -311,12 +311,12 @@ INode *parseLifetime(ParseState *parse, int stmtflag) {
         errorMsgLex(ErrorBadTok, "Missing ':' after lifetime");
 
     if (lexIsToken(LoopToken))
-        return parseLoop(parse, life);
+        return parseLoop(parse, lifesym);
     if (stmtflag) {
         if (lexIsToken(WhileToken))
-            return parseWhile(parse, life);
+            return parseWhile(parse, lifesym);
         else if (lexIsToken(EachToken))
-            return parseEach(parse, life);
+            return parseEach(parse, lifesym);
     }
     errorMsgLex(ErrorBadTok, "A lifetime may only be followed by a loop/while/each");
     return NULL;

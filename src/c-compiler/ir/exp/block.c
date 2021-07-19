@@ -13,7 +13,7 @@ BlockNode *newBlockNode() {
     newNode(blk, BlockNode, BlockTag);
     blk->vtype = unknownType;  // This will be overridden with loop-as-expr
     blk->stmts = newNodes(8);
-    blk->life = NULL;
+    blk->lifesym = NULL;
     blk->breaks = NULL;
     return blk;
 }
@@ -33,7 +33,6 @@ INode *cloneBlockNode(CloneState *cstate, BlockNode *node) {
     newnode = memAllocBlk(sizeof(BlockNode));
     memcpy(newnode, node, sizeof(BlockNode));
     newnode->stmts = cloneNodes(cstate, node->stmts);
-    newnode->life = (LifetimeNode*)cloneNode(cstate, (INode*)node->life);
     if (node->breaks)
         newnode->breaks = cloneNodes(cstate, node->breaks);  // Does not clone any INodes. Bad if it did.
     cloneDclPop(dclpos);
@@ -64,20 +63,26 @@ void blockPrint(BlockNode *blk) {
 // - push and pop a namespace context for hooking local vars & lifetime in global name table
 // - Ensure return/continue/break only appear as last statement in block
 void blockNameRes(NameResState *pstate, BlockNode *blk) {
+    // Set up for break and continue nodes that do not specify a labeled block
+    // By default we want to resolve them to inner-most loop block
+    BlockNode *svloopblock = pstate->loopblock;
+    if (blk->flags & FlagLoop) {
+        pstate->loopblock = blk;
+    }
+
     ++pstate->scope; // Increment block scope counter
     nametblHookPush(); // Ensure block's local variable declarations are hooked
 
     // If block declares a lifetime declaration, hook into name table for name res
-    LifetimeNode *lifenode = blk->life;
-    if (lifenode) {
-        if (!lifenode->namesym->node) {
-            lifenode->life = pstate->scope;
-            // Add name to global name table for life of block
-            nametblHookNode(lifenode->namesym, (INode*)lifenode);
+    Name *lifesym = blk->lifesym;
+    if (lifesym) {
+        // If not already declared, hook lifetime symbol to block in global name table
+        if (!lifesym->node) {
+            nametblHookNode(lifesym, (INode*)blk);
         }
         else {
-                errorMsgNode((INode *)lifenode, ErrorDupName, "Lifetime is already defined. Only one allowed.");
-                errorMsgNode((INode*)lifenode->namesym->node, ErrorDupName, "This is the conflicting definition for that name.");
+                errorMsgNode((INode *)blk, ErrorDupName, "Lifetime is already defined. Only one allowed.");
+                errorMsgNode((INode*)lifesym->node, ErrorDupName, "This is the conflicting definition for that name.");
         }
     }
 
@@ -101,6 +106,7 @@ void blockNameRes(NameResState *pstate, BlockNode *blk) {
 
     nametblHookPop();  // Unhook local variables from global name table
     --pstate->scope;
+    pstate->loopblock = svloopblock;
 }
 
 // Handle type-checking for a regular or loop block. This:
@@ -118,14 +124,6 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
     // Save and adjust pstate for block
     // This includes block stack, used for gathering all breaks that might belong to some block
     ++pstate->scope;
-    BlockNode *svRecentLoop = pstate->recentLoop;
-    if (blk->flags & FlagLoop)
-        pstate->recentLoop = blk;
-    if (pstate->blockcnt >= TypeCheckBlockMax) {
-        errorMsgNode((INode*)blk, ErrorBadArray, "Overflowing fixed-size block stack.");
-        errorExit(100, "Unrecoverable error!");
-    }
-    pstate->blockstack[pstate->blockcnt++] = blk;
 
     // Type check all of a block's statements, treating final statement differently
     // This will populate block->breaks with pointers to all break statements for this block
@@ -223,8 +221,6 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
 
     // Restore pstate to prior condition
     --pstate->scope;
-    --pstate->blockcnt;
-    pstate->recentLoop = svRecentLoop;
 }
 
 // Ensure this particular block does not end with break/continue
