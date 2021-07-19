@@ -24,7 +24,7 @@ INode *cloneBreakNode(CloneState *cstate, BreakRetNode *node) {
     newnode = memAllocBlk(sizeof(BreakRetNode));
     memcpy(newnode, node, sizeof(BreakRetNode));
     newnode->exp = cloneNode(cstate, node->exp);
-    newnode->life = cloneNode(cstate, node->life);
+    newnode->block = (BlockNode *)cloneDclFix((INode*)node->block);
     return (INode *)newnode;
 }
 

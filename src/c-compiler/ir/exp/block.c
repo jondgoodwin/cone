@@ -32,6 +32,7 @@ INode *cloneBlockNode(CloneState *cstate, BlockNode *node) {
     BlockNode *newnode;
     newnode = memAllocBlk(sizeof(BlockNode));
     memcpy(newnode, node, sizeof(BlockNode));
+    cloneDclSetMap((INode*)node, (INode*)newnode);  // For fixing cloned break/continue/return nodes
     newnode->stmts = cloneNodes(cstate, node->stmts);
     if (node->breaks)
         newnode->breaks = cloneNodes(cstate, node->breaks);  // Does not clone any INodes. Bad if it did.

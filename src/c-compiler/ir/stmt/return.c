@@ -12,6 +12,7 @@ BreakRetNode *newReturnNode() {
     BreakRetNode *node;
     newNode(node, BreakRetNode, ReturnTag);
     node->exp = NULL;
+    node->block = NULL;
     node->dealias = NULL;
     return node;
 }
@@ -30,6 +31,7 @@ INode *cloneReturnNode(CloneState *cstate, BreakRetNode *node) {
     newnode = memAllocBlk(sizeof(BreakRetNode));
     memcpy(newnode, node, sizeof(BreakRetNode));
     newnode->exp = cloneNode(cstate, node->exp);
+    newnode->block = (BlockNode *)cloneDclFix((INode*)node->block);
     return (INode *)newnode;
 }
 
