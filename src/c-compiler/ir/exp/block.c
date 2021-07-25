@@ -187,7 +187,7 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
 
     // Do inference on all registered breaks to ensure they all return the expected type
     // Note: Iterate differently because list may grow while iterating
-    if (blk->breaks) {
+    if (blk->breaks && blk != (BlockNode*)pstate->fn->value) {
         nodesp = (INode**)((blk->breaks) + 1);
         cnt = 0;
         for (; cnt < blk->breaks->used; ++cnt, ++nodesp) {

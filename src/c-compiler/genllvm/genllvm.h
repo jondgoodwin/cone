@@ -41,6 +41,7 @@ typedef struct GenState {
     LLVMMetadataRef difile;
 
     ConeOptions *opt;
+    INode *fnblock;
     GenBlockState *blockstack;
     uint32_t blockstackcnt;
 } GenState;

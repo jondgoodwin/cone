@@ -50,7 +50,7 @@ void doAnalysis(ModuleNode **mod) {
     // - Subtype and inheritance relationships are filled out
     // - The binary encoding is sorted (e.g., ensuring variant types are same size)
     TypeCheckState tstate;
-    tstate.fnsig = NULL;
+    tstate.fn = NULL;
     tstate.typenode = NULL;
     inodeTypeCheckAny(&tstate, (INode**)mod);
 }

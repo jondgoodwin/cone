@@ -52,27 +52,27 @@ void fnDclPrint(FnDclNode *name) {
 }
 
 // Resolve all names in a function
-void fnDclNameRes(NameResState *pstate, FnDclNode *name) {
-    inodeNameRes(pstate, &name->vtype);
-    if (!name->value)
+void fnDclNameRes(NameResState *nstate, FnDclNode *fndclnode) {
+    inodeNameRes(nstate, &fndclnode->vtype);
+    if (!fndclnode->value)
         return;
 
-    uint16_t oldscope = pstate->scope;
-    pstate->scope = 1;
+    uint16_t oldscope = nstate->scope;
+    nstate->scope = 1;
 
-    // Hook function's parameters into global name table
+    // Hook function's parameters into global fndclnode table
     // so that when we walk the function's logic, parameter names are resolved
-    FnSigNode *fnsig = (FnSigNode*)name->vtype;
+    FnSigNode *fnsig = (FnSigNode*)fndclnode->vtype;
     nametblHookPush();
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(fnsig->parms, cnt, nodesp))
         nametblHookNode(((VarDclNode *)*nodesp)->namesym, *nodesp);
 
-    inodeNameRes(pstate, &name->value);
+    inodeNameRes(nstate, &fndclnode->value);
 
     nametblHookPop();
-    pstate->scope = oldscope;
+    nstate->scope = oldscope;
 }
 
 // Syntactic sugar: Turn last statement implicit returns into explicit returns
@@ -118,10 +118,10 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     fnImplicitReturn(((FnSigNode*)fnnode->vtype)->rettype, (BlockNode *)fnnode->value);
 
     // Type check/inference of the function's logic
-    FnSigNode *oldfnsig = pstate->fnsig;
-    pstate->fnsig = (FnSigNode*)fnnode->vtype;   // needed for return type check
+    FnDclNode *svFn = pstate->fn;
+    pstate->fn = fnnode;
     inodeTypeCheck(pstate, &fnnode->value, noCareType);
-    pstate->fnsig = oldfnsig;
+    pstate->fn = svFn;
 
     // Immediately perform the data flow pass for this function
     // We run data flow separately as it requires type info which is inferred bottoms-up

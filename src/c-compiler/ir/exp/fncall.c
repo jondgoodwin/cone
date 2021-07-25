@@ -505,7 +505,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         // Build a resolved 'self' node
         NameUseNode *selfnode = newNameUseNode(selfName);
         selfnode->tag = VarNameUseTag;
-        selfnode->dclnode = nodesGet(pstate->fnsig->parms, 0);
+        selfnode->dclnode = nodesGet(((FnSigNode*)pstate->fn->vtype)->parms, 0);
         selfnode->vtype = ((VarDclNode*)selfnode->dclnode)->vtype;
         // Reuse existing fncallnode if we can
         if (node->methfld == NULL) {

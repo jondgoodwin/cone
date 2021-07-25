@@ -52,10 +52,12 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     LLVMValueRef svfn = gen->fn;
     LLVMBuilderRef svbuilder = gen->builder;
     LLVMValueRef svallocaPoint = gen->allocaPoint;
+    INode *svfnblock = gen->fnblock;
 
     FnSigNode *fnsig = (FnSigNode*)fnnode->vtype;
     assert(fnnode->value->tag == BlockTag);
     gen->fn = fnnode->llvmvar;
+    gen->fnblock = fnnode->value;
 
     // Attach block and builder to function
     LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(gen->context, gen->fn, "entry");
@@ -85,6 +87,7 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     gen->builder = svbuilder;
     gen->fn = svfn;
     gen->allocaPoint = svallocaPoint;
+    gen->fnblock = svfnblock;
 }
 
 // Insert every alloca before the allocaPoint in the function's entry block.
@@ -396,6 +399,7 @@ void genSetup(GenState *gen, ConeOptions *opt) {
 
     gen->context = LLVMGetGlobalContext(); // LLVM inlining bugs prevent use of LLVMContextCreate();
     gen->fn = NULL;
+    gen->fnblock = NULL;
     gen->allocaPoint = NULL;
     gen->block = NULL;
     gen->blockstack = memAllocBlk(sizeof(GenBlockState)*GenBlockStackMax);

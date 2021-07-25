@@ -29,7 +29,6 @@ LLVMBasicBlockRef genlInsertBlock(GenState *gen, char *name) {
         return LLVMInsertBasicBlockInContext(gen->context, nextblock, name);
     else
         return LLVMAppendBasicBlockInContext(gen->context, gen->fn, name);
-
 }
 
 // Find the loop state in loop stack whose lifetime matches
@@ -54,19 +53,26 @@ void genlBreak(GenState *gen, BlockNode* block, INode* exp, Nodes* dealias) {
 }
 
 // Generate a return statement
-void genlReturn(GenState *gen, BreakRetNode *node) {
-    if (node->exp->tag != NilLitTag) {
-        LLVMValueRef retval = genlExpr(gen, node->exp);
-        genlDealiasNodes(gen, node->dealias);
+void genlReturn(GenState *gen, BreakRetNode *retnode) {
+    // Handle inlined returns as breaks
+    if ((INode*)retnode->block != gen->fnblock) {
+        if (retnode->block->breaks->used > 1)
+            genlBreak(gen, retnode->block, retnode->exp, retnode->dealias);
+        return;
+    }
+
+    if (retnode->exp->tag != NilLitTag) {
+        LLVMValueRef retval = genlExpr(gen, retnode->exp);
+        genlDealiasNodes(gen, retnode->dealias);
         LLVMBuildRet(gen->builder, retval);
     }
     else {
-        genlDealiasNodes(gen, node->dealias);
+        genlDealiasNodes(gen, retnode->dealias);
         LLVMBuildRetVoid(gen->builder);
     }
 }
 
-// Generate a block "return" node
+// Generate a block "return" retnode
 void genlBlockRet(GenState *gen, BreakRetNode *node) {
 }
 
@@ -75,7 +81,7 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
     // Create separate blocks only when needed. 
     // isLoop requires blkbeg and blkend. isPhiBlk only blkend when phi values must converge for break/returns
     int isLoop = blk->flags & FlagLoop;
-    int isPhiBlk = isLoop; // or multiple break/returns to phi value
+    int isPhiBlk = isLoop || (blk->breaks && blk->breaks->used > 1); 
 
     LLVMBasicBlockRef blockbeg = NULL;
     LLVMBasicBlockRef blockend = NULL;

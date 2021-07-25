@@ -113,8 +113,8 @@ typedef struct NameResState {
 
 // Context used for type check pass
 typedef struct TypeCheckState {
-    FnSigNode *fnsig;         // The type signature of the function we are within
     INode *typenode;          // Current type (e.g., struct)
+    FnDclNode *fn;            // The function and its signature/block (for returned processing)
     uint16_t scope;           // Current block scope level
 } TypeCheckState;
 
