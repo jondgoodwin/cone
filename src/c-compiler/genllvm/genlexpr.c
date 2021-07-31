@@ -949,9 +949,18 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         INode *lval = node->lval;
         INode *rval = node->rval;
         LLVMValueRef valueref = genlExpr(gen, rval);
+        if (node->assignType == LeftAssign) {
+            // Normal assignment, except value of expression is contents of lval before mutation
+            LLVMValueRef lvalptr = genlAddr(gen, lval);
+            LLVMValueRef leftval = LLVMBuildLoad(gen->builder, lvalptr, "");
+            LLVMBuildStore(gen->builder, valueref, lvalptr);
+            return leftval;
+        }
+
         if (lval->tag != VTupleTag) {
-            if (rval->tag != VTupleTag)
+            if (rval->tag != VTupleTag) {
                 genlStore(gen, lval, valueref); // simple assignment
+            }
             else {
                 // Assign lval to first value in tuple struct
                 genlStore(gen, lval, LLVMBuildExtractValue(gen->builder, valueref, 0, ""));

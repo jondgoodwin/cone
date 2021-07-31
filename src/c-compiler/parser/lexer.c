@@ -792,7 +792,12 @@ void lexNextTokenx() {
                 lexReturnPuncTok(LessDashToken, 2);
             }
             else if (*(srcp + 1) == '=') {
-                lexReturnPuncTok(LeToken, 2);
+                if (*(srcp + 2) == '>') {
+                    lexReturnPuncTok(SwapToken, 3);
+                }
+                else {
+                    lexReturnPuncTok(LeToken, 2);
+                }
             }
             else if (*(srcp + 1) == '<') {
                 if (*(srcp + 2) == '=') {
@@ -842,6 +847,9 @@ void lexNextTokenx() {
         case ':':
             if (*(srcp + 1) == ':') {
                 lexReturnPuncTok(DblColonToken, 2);
+            }
+            else if (*(srcp + 1) == '=') {
+                lexReturnPuncTok(LAssgnToken, 2);
             }
             else {
                 lexReturnPuncTok(ColonToken, 1);

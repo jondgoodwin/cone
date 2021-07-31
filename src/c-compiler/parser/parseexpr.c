@@ -688,6 +688,20 @@ INode *parseAssign(ParseState *parse) {
         return (INode*)newAssignNode(NormalAssign, lval, rval);
     }
 
+    case LAssgnToken:
+    {
+        lexNextToken();
+        INode *rval = parseAnyExpr(parse);
+        return (INode*)newAssignNode(LeftAssign, lval, rval);
+    }
+
+    case SwapToken:
+    {
+        lexNextToken();
+        INode *rval = parseAnyExpr(parse);
+        return (INode*)newAssignNode(NormalAssign, lval, rval);
+    }
+
     case PlusEqToken:
         return parseOpEq(parse, lval, plusEqName);
     case MinusEqToken:

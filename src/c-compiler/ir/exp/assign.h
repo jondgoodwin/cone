@@ -10,7 +10,8 @@
 
 // Variations on assignment
 enum AssignType {
-    NormalAssign
+    NormalAssign,
+    LeftAssign
 };
 
 // Assignment node

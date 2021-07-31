@@ -111,6 +111,8 @@ enum TokenTypes {
     TildeToken,         // '~'
     LessDashToken,      // '<-'
     AssgnToken,         // '='
+    LAssgnToken,        // ':='
+    SwapToken,          // '<=>'
     IsToken,            // 'is'
     EqToken,            // '=='
     NeToken,            // '!='
