@@ -1,4 +1,4 @@
-# Cone - Next Steps (as of October 20, 2019)
+# Cone - Next Steps (as of August 1, 2021)
 
 ## Current Capability
 
@@ -16,10 +16,11 @@ examples demonstrate some of the language's currently supported features.
 The language documentation is quite robust, describing both current and planned features.
 Headers on documentation pages highlight what is not yet implemented.
 
-## Current Focus: Generics, Option, Result
+## Current Focus: 
 
-- Generic functions, structs and traits, able to use traits as bounds on types
-- Option and Result generic types for nullable references, exception handling and closures/iterators
+- Move semantics
+- Borrowed references, Lifetimes, and static permissions
+- Owning references, Regions, and lock permissions
 
 ## Feature Status
 
@@ -55,5 +56,5 @@ This table illustrates the current status of Cone's key features:
 | | static permissions | runtime permissions |
 | | pointers | trust block |
 | **Polymorphism** | | |
-| | | Generics |
+| | Generics |  |
 | | Macros | CTE |
