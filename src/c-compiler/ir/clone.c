@@ -18,6 +18,8 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     switch (nodep->tag) {
     case AssignTag:
         node = cloneAssignNode(cstate, (AssignNode *)nodep); break;
+    case SwapTag:
+        node = cloneSwapNode(cstate, (SwapNode *)nodep); break;
     case BlockTag:
         node = cloneBlockNode(cstate, (BlockNode *)nodep); break;
     case CastTag:

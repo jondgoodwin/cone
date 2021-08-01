@@ -79,6 +79,7 @@ enum NodeTags {
     BlockRetTag,    // Block "return" node. Injected by flow pass for de-aliasing.
     BreakTag,       // Break node
     ContinueTag,    // Continue node
+    SwapTag,        // Swap operator
 
     // Parser-ambiguous nodes that will become either types or expressions
     // during name resolution when we finally know for sure

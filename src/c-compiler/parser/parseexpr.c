@@ -699,7 +699,7 @@ INode *parseAssign(ParseState *parse) {
     {
         lexNextToken();
         INode *rval = parseAnyExpr(parse);
-        return (INode*)newAssignNode(NormalAssign, lval, rval);
+        return (INode*)newSwapNode(lval, rval);
     }
 
     case PlusEqToken:

@@ -943,6 +943,19 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
             return LLVMBuildExtractValue(gen->builder, genlExpr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
         }
     }
+    case SwapTag:
+    {
+        SwapNode *node = (SwapNode*)termnode;
+        INode *lval = node->lval;
+        INode *rval = node->rval;
+        LLVMValueRef lvalptr = genlAddr(gen, lval);
+        LLVMValueRef rvalptr = genlAddr(gen, rval);
+        LLVMValueRef rightval = LLVMBuildLoad(gen->builder, rvalptr, "");
+        LLVMValueRef leftval = LLVMBuildLoad(gen->builder, lvalptr, "");
+        LLVMBuildStore(gen->builder, rightval, lvalptr);
+        LLVMBuildStore(gen->builder, leftval, rvalptr);
+        return leftval;
+    }
     case AssignTag:
     {
         AssignNode *node = (AssignNode*)termnode;

@@ -91,6 +91,8 @@ void inodePrintNode(INode *node) {
         returnPrint((BreakRetNode *)node); break;
     case AssignTag:
         assignPrint((AssignNode *)node); break;
+    case SwapTag:
+        swapPrint((SwapNode *)node); break;
     case VTupleTag:
         vtuplePrint((TupleNode *)node); break;
     case FnCallTag:
@@ -219,6 +221,8 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         returnNameRes(pstate, (BreakRetNode *)*node); break;
     case AssignTag:
         assignNameRes(pstate, (AssignNode *)*node); break;
+    case SwapTag:
+        swapNameRes(pstate, (SwapNode *)*node); break;
     case FnCallTag:
         fnCallNameRes(pstate, (FnCallNode **)node); break;
     case SizeofTag:
@@ -324,6 +328,8 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
         returnTypeCheck(pstate, (BreakRetNode *)*node); break;
     case AssignTag:
         assignTypeCheck(pstate, (AssignNode *)*node); break;
+    case SwapTag:
+        swapTypeCheck(pstate, (SwapNode *)*node); break;
     case VTupleTag:
         vtupleTypeCheck(pstate, (TupleNode *)*node); break;
     case FnCallTag:
