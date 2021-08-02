@@ -167,7 +167,7 @@ void assignSingleFlow(INode *lval, INode **rval) {
     }
 
     // Mark that lval variable has valid initialized value.
-    if (lval->tag == NameUseTag) {
+    if (lval->tag == VarNameUseTag) {
         ((VarDclNode*)lvalvar)->flowtempflags |= VarInitialized;
         ((VarDclNode*)lvalvar)->flowtempflags &= 0xFFFF - VarMoved;
     }
