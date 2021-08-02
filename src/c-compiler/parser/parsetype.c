@@ -279,6 +279,7 @@ INode *parseFnSig(ParseState *parse) {
             parseInjectSelf(fnsig);
         while (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
             VarDclNode *parm = parseVarDcl(parse, immPerm, parseflags);
+            parm->flowtempflags |= VarInitialized;   // parameter vars always start with a valid value
             // Do special inference if function is a type's method
             if (parse->typenode) {
                 // Create default self parm, if 'self' was not specified

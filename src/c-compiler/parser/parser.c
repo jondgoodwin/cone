@@ -258,6 +258,7 @@ void parseFnOrVar(ParseState *parse, uint16_t flags) {
     else if lexIsToken(PermToken) {
         VarDclNode *node = parseVarDcl(parse, immPerm, ParseMayConst | ((flags&FlagExtern) ? ParseMaySig : ParseMayImpl | ParseMaySig));
         node->flags |= flags;
+        node->flowtempflags |= VarInitialized;   // Globals always hold a valid value
         parseEndOfStatement();
         nameGenVarName((VarDclNode *)node, parse->gennamePrefix);
         modAddNode(parse->mod, node->namesym, (INode*)node);
