@@ -54,6 +54,9 @@ typedef struct {
     int16_t aliasamt;  // count nbr if not a tuple, # of counts if tuple
 } AliasNode;
 
+// Handle when moving or copying a value to a new destination
+void flowHandleMoveOrCopy(INode **nodep);
+
 // Initialize a function's alias stack
 void flowAliasInit();
 

@@ -90,6 +90,7 @@ void flowHandleMoveOrCopy(INode **nodep) {
     }
     else {
         // Copying an owning reference triggers the region's aliasing behavior
+        flowAliasIncr();
         flowInjectAliasNode(nodep, 0);
     }
 }
@@ -136,10 +137,10 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
     }
     case VarNameUseTag:
         nameuseFlow(fstate, (NameUseNode**)nodep);
+        break;
     case DerefTag:
     case ArrIndexTag:
     case FldAccessTag:
-        flowHandleMoveOrCopy(nodep);
         break;
     case CastTag: case IsTag:
         flowLoadValue(fstate, &((CastNode *)*nodep)->exp);

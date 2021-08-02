@@ -647,6 +647,7 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     uint32_t cnt;
     for (nodesFor(node->args, cnt, argsp)) {
         flowLoadValue(fstate, argsp);
+        flowHandleMoveOrCopy(argsp);  // Argument values are moved or copied
         flowAliasReset();
     }
     flowAliasPop(svAliasPos);

@@ -149,21 +149,30 @@ void assignSingleFlow(INode *lval, INode **rval) {
             if (reftype->tag == RefTag && reftype->region == (INode*)soRegion)
                 errorMsgNode((INode*)lval, ErrorMove, "This frees reference. The reference is inaccessible for use.");
         }
+        return;
     }
 
-    // Non-anonymous lval increments alias counter
-    flowAliasIncr();
+    // Non-anonymous lval means assignment moves/copies rvalue
+    // - Enforce move semantics
+    // - Handle copy semantic aliasing
+    flowHandleMoveOrCopy(rval);
 
+    // Ensure lval is mutable.
     uint16_t lvalscope;
     INode *lvalperm;
     INode *lvalvar = iexpGetLvalInfo(lval, &lvalperm, &lvalscope);
-    if (lval->tag == NameUseTag)
-        ((VarDclNode*)lvalvar)->flowtempflags |= VarInitialized;
     if (!(MayWrite & permGetFlags(lvalperm))) {
         errorMsgNode(lval, ErrorNoMut, "You do not have permission to modify lval");
         return;
     }
 
+    // Mark that lval variable has valid initialized value.
+    if (lval->tag == NameUseTag) {
+        ((VarDclNode*)lvalvar)->flowtempflags |= VarInitialized;
+        ((VarDclNode*)lvalvar)->flowtempflags &= 0xFFFF - VarMoved;
+    }
+
+    // Handle lifetime enforcement for borrowed references
     RefNode* rvaltype = (RefNode *)((IExpNode*)*rval)->vtype;
     RefNode* lvaltype = (RefNode *)((IExpNode*)lval)->vtype;
     if (rvaltype->tag == RefTag && lvaltype->tag == RefTag && lvaltype->region == borrowRef) {
@@ -218,6 +227,8 @@ void assignToOneFlow(INode *lval, TupleNode *rval) {
 void assignFlow(FlowState *fstate, AssignNode **nodep) {
     AssignNode *node = *nodep;
 
+    flowLoadValue(fstate, &node->rval);
+
     // Handle tuple decomposition for parallel assignment
     INode *lval = node->lval;
     if (lval->tag == VTupleTag) {
@@ -233,6 +244,4 @@ void assignFlow(FlowState *fstate, AssignNode **nodep) {
             assignSingleFlow(node->lval, &node->rval);
         }
     }
-
-    flowLoadValue(fstate, &node->rval);
 }
