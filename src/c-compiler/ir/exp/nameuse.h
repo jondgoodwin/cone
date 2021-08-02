@@ -47,4 +47,7 @@ void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **name);
 // Handle type check for type name use references
 void nameUseTypeCheckType(TypeCheckState *pstate, NameUseNode **name);
 
+// Handle flow checking for nameuse
+void nameuseFlow(FlowState *fstate, NameUseNode **nodep);
+
 #endif

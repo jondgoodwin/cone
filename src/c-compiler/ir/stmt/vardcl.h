@@ -22,7 +22,8 @@ typedef struct VarDclNode {
 } VarDclNode;
 
 enum VarFlowTemp {
-    VarInitialized = 0x0001     // Variable has been initialized
+    VarInitialized = 0x0001,    // Variable has been initialized
+    VarMoved = 0x0002           // Variable has been moved
 };
 
 VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *perm);

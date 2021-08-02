@@ -78,4 +78,7 @@ char *itypeMangle(char *bufp, INode *vtype);
 // Opaque (field-less) structs, traits, functions, void will be false.
 int itypeIsConcrete(INode *type);
 
+// Return true if type implements move semantics
+int itypeIsMove(INode *type);
+
 #endif

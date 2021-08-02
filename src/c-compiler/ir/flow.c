@@ -10,10 +10,15 @@
 #include <assert.h>
 #include <memory.h>
 
+// Deactivate source of a moved value (or say move is illegal)
 void flowHandleMove(INode *node) {
-    uint16_t moveflag = itypeGetTypeDcl(((IExpNode *)node)->vtype)->flags & MoveType;
-    if (moveflag)
-        errorMsgNode(node, WarnCopy, "No current support for move. Be sure this is safe!");
+    switch (node->tag) {
+    case VarNameUseTag: {
+        VarDclNode *vardclnode = (VarDclNode *)((NameUseNode*)node)->dclnode;
+        vardclnode->flowtempflags |= VarMoved;
+        break;
+    }
+    }
 }
 
 // If needed, inject an alias node for rc/own references
@@ -73,6 +78,22 @@ void flowInjectAliasNode(INode **nodep, int16_t rvalcount) {
     *nodep = (INode*)aliasnode;
 }
 
+// Handle when we know we are either copying or moving a value
+// (e.g., for assignment or function arguments).
+void flowHandleMoveOrCopy(INode **nodep) {
+    uint16_t moveflag = itypeGetTypeDcl(((IExpNode *)*nodep)->vtype)->flags & MoveType;
+    if (iexpIsMove(*nodep)) {
+        // Moving needs to deactivate source variable use
+        if (flowAliasGet(0) > 0) {
+            flowHandleMove(*nodep);
+        }
+    }
+    else {
+        // Copying an owning reference triggers the region's aliasing behavior
+        flowInjectAliasNode(nodep, 0);
+    }
+}
+
 
 // Perform data flow analysis on a node whose value we intend to load
 // At minimum, we check that it is a valid, readable value
@@ -114,13 +135,11 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         break;
     }
     case VarNameUseTag:
+        nameuseFlow(fstate, (NameUseNode**)nodep);
     case DerefTag:
     case ArrIndexTag:
     case FldAccessTag:
-        flowInjectAliasNode(nodep, 0);
-        if (flowAliasGet(0) > 0) {
-            flowHandleMove(*nodep);
-        }
+        flowHandleMoveOrCopy(nodep);
         break;
     case CastTag: case IsTag:
         flowLoadValue(fstate, &((CastNode *)*nodep)->exp);

@@ -244,3 +244,8 @@ int itypeIsConcrete(INode *type) {
     INode *dcltype = itypeGetTypeDcl(type);
     return !(dcltype->flags & OpaqueType);
 }
+
+// Return true if type implements move semantics
+int itypeIsMove(INode *type) {
+    return itypeGetTypeDcl(type)->flags & MoveType;
+}

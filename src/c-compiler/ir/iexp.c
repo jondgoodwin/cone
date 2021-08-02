@@ -348,3 +348,8 @@ uint16_t iexpGetPermFlags(INode *node) {
         return 0;
     }
 }
+
+// Return true if value uses move semantics
+int iexpIsMove(INode *node) {
+    return itypeIsMove(((IExpNode *)node)->vtype);
+}

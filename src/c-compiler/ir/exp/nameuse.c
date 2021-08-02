@@ -182,3 +182,13 @@ void nameUseTypeCheckType(TypeCheckState *pstate, NameUseNode **namep) {
     else
         inodeTypeCheckAny(pstate, dclnode);
 }
+
+// Ensure variable has a usable value
+void nameuseFlow(FlowState *fstate, NameUseNode **nodep) {
+    NameUseNode *node = *nodep;
+    VarDclNode *vardclnode = (VarDclNode *)((NameUseNode*)node)->dclnode;
+    /*if (!(vardclnode->flowtempflags & VarInitialized))
+        errorMsgNode((INode*)node, ErrorMove, "This variable has not been initialized. There is no value to use.");
+    else*/ if (vardclnode->flowtempflags & VarMoved)
+        errorMsgNode((INode*)node, ErrorMove, "This variable's value has been moved out. It is no longer there to use.");
+}

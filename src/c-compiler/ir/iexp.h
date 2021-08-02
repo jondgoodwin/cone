@@ -67,4 +67,7 @@ int iexpSameType(INode *to, INode **from);
 // Retrieve the permission flags for the node
 uint16_t iexpGetPermFlags(INode *node);
 
+// Return true if value uses move semantics
+int iexpIsMove(INode *node);
+
 #endif
