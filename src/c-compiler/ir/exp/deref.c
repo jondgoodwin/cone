@@ -41,3 +41,8 @@ void derefTypeCheck(TypeCheckState *pstate, StarNode *node) {
     else
         errorMsgNode((INode*)node, ErrorNotPtr, "May only de-reference a simple reference or pointer.");
 }
+
+// Perform data flow analysis on deref node
+void derefFlow(FlowState *fstate, StarNode **node) {
+    flowLoadValue(fstate, &(*node)->vtexp);
+}

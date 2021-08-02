@@ -652,3 +652,15 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     }
     flowAliasPop(svAliasPos);
 }
+
+// Perform data flow analysis on array index node
+void fnCallArrIndexFlow(FlowState *fstate, FnCallNode **node) {
+    flowLoadValue(fstate, &(*node)->objfn);
+    flowLoadValue(fstate, &nodesGet((*node)->args, 0));
+}
+
+// Perform data flow analysis on field access node
+void fnCallFldAccessFlow(FlowState *fstate, FnCallNode **node) {
+    flowLoadValue(fstate, &(*node)->objfn);
+}
+

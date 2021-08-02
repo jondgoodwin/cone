@@ -261,6 +261,7 @@ void parseInjectSelf(FnSigNode *fnsig) {
     VarDclNode *selfparm = newVarDclFull(nametblFind("self", 4), VarDclTag, (INode*)selftype, newPermUseNode(constPerm), NULL);
     selfparm->scope = 1;
     selfparm->index = 0;
+    selfparm->flowtempflags |= VarInitialized;
     nodesAdd(&fnsig->parms, (INode*)selfparm);
 }
 

@@ -139,8 +139,13 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         nameuseFlow(fstate, (NameUseNode**)nodep);
         break;
     case DerefTag:
+        derefFlow(fstate, (StarNode**)nodep);
+        break;
     case ArrIndexTag:
+        fnCallArrIndexFlow(fstate, (FnCallNode**)nodep);
+        break;
     case FldAccessTag:
+        fnCallFldAccessFlow(fstate, (FnCallNode**)nodep);
         break;
     case CastTag: case IsTag:
         flowLoadValue(fstate, &((CastNode *)*nodep)->exp);

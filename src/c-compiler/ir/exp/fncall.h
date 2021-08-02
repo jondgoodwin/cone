@@ -48,4 +48,10 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype);
 // Do data flow analysis for fncall node (only real function calls)
 void fnCallFlow(FlowState *fstate, FnCallNode **nodep);
 
+// Perform data flow analysis on array index node
+void fnCallArrIndexFlow(FlowState *fstate, FnCallNode **node);
+
+// Perform data flow analysis on field access node
+void fnCallFldAccessFlow(FlowState *fstate, FnCallNode **node);
+
 #endif

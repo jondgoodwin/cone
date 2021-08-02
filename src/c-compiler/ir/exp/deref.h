@@ -18,5 +18,7 @@ void derefTypeCheck(TypeCheckState *pstate, StarNode *node);
 // Inject automatic deref node, if node's type is a ref or ptr. Return 1 if dereffed.
 int derefInject(INode **node);
 
+// Perform data flow analysis on deref node
+void derefFlow(FlowState *fstate, StarNode **node);
 
 #endif
