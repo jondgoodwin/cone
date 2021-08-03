@@ -13,11 +13,26 @@
 // Deactivate source of a moved value (or say move is illegal)
 void flowHandleMove(INode *node) {
     switch (node->tag) {
+
+    // For a variable, mark its value as moved
     case VarNameUseTag: {
         VarDclNode *vardclnode = (VarDclNode *)((NameUseNode*)node)->dclnode;
         vardclnode->flowtempflags |= VarMoved;
         break;
     }
+
+    // Go inwards to find the variable to mark it as moved
+    case FldAccessTag:
+    case ArrIndexTag: 
+        flowHandleMove(((FnCallNode*)node)->objfn);
+        break;
+    case DerefTag:
+        flowHandleMove(((StarNode*)node)->vtexp);
+        break;
+
+    // For any other node, no source variable to mark as moved
+    default:
+        break;
     }
 }
 
