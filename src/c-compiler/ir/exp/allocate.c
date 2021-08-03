@@ -40,4 +40,5 @@ void allocateFlow(FlowState *fstate, RefNode **nodep) {
     RefNode *node = *nodep;
     // For an allocated reference, we need to handle the copied value
     flowLoadValue(fstate, &node->vtexp);
+    flowHandleMoveOrCopy(&node->vtexp);
 }
