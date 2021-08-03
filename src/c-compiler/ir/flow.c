@@ -97,7 +97,7 @@ void flowHandleMoveOrCopy(INode **nodep) {
 
 
 // Perform data flow analysis on a node whose value we intend to load
-// At minimum, we check that it is a valid, readable value
+// At minimum, we check that any expression node holds an accessible, "readable" value
 void flowLoadValue(FlowState *fstate, INode **nodep) {
     // Handle specific nodes here - lvals (read check) + literals + fncall
     // fncall + literals? do not need copy check - it can return
@@ -161,6 +161,7 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         break;
     }
 
+    case SizeofTag:
     case NilLitTag:
     case ULitTag:
     case FLitTag:
