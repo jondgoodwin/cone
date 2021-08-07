@@ -641,16 +641,13 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 // Do data flow analysis for fncall node (only real function calls)
 void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     // Handle function call aliasing
-    size_t svAliasPos = flowAliasPushNew(1); // Alias reference arguments
     FnCallNode *node = *nodep;
     INode **argsp;
     uint32_t cnt;
     for (nodesFor(node->args, cnt, argsp)) {
         flowLoadValue(fstate, argsp);
         flowHandleMoveOrCopy(argsp);  // Argument values are moved or copied
-        flowAliasReset();
     }
-    flowAliasPop(svAliasPos);
 }
 
 // Perform data flow analysis on array index node

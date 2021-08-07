@@ -57,31 +57,4 @@ typedef struct {
 // Handle when moving or copying a value to a new destination
 void flowHandleMoveOrCopy(INode **nodep);
 
-// Initialize a function's alias stack
-void flowAliasInit();
-
-// Start a new frame on alias stack
-size_t flowAliasPushNew(int16_t init);
-
-// Restore previous stack
-void flowAliasPop(size_t oldpos);
-
-// Reset current frame (to one value initialized to init value)
-void flowAliasReset();
-
-// Ensure frame has enough initialized alias counts for 'size' values
-void flowAliasSize(int16_t size);
-
-// Set the focus position for lval aliasing
-void flowAliasFocus(int16_t pos);
-
-// Increment aliasing count at frame's position
-void flowAliasIncr();
-
-// Get aliasing count at frame's position
-int16_t flowAliasGet(size_t pos);
-
-// Store an aliasing count at frame's position
-void flowAliasPut(size_t pos, int16_t count);
-
 #endif

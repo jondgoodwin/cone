@@ -127,7 +127,6 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     // We run data flow separately as it requires type info which is inferred bottoms-up
     if (errors)
         return;
-    flowAliasInit();
     FlowState fstate;
     fstate.fnsig = (FnSigNode *)fnnode->vtype;
     fstate.scope = 1;

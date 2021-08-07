@@ -124,10 +124,8 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
 void varDclFlow(FlowState *fstate, VarDclNode **vardclnode) {
     flowAddVar(*vardclnode);
     if ((*vardclnode)->value) {
-        size_t svAliasPos = flowAliasPushNew(1);
         flowLoadValue(fstate, &((*vardclnode)->value));
         flowHandleMoveOrCopy(&((*vardclnode)->value));  // initialization copies/moves value
-        flowAliasPop(svAliasPos);
         (*vardclnode)->flowtempflags |= VarInitialized;
     }
 }
