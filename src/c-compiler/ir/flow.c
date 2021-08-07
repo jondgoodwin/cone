@@ -18,6 +18,9 @@ void flowHandleMove(INode *node) {
     case VarNameUseTag: {
         VarDclNode *vardclnode = (VarDclNode *)((NameUseNode*)node)->dclnode;
         vardclnode->flowtempflags |= VarMoved;
+        if (vardclnode->scope == 0) {
+            errorMsgNode(node, ErrorInvType, "May not move a value out of a global variable.");
+        }
         break;
     }
 
