@@ -40,59 +40,20 @@ void flowHandleMove(INode *node) {
 }
 
 // If needed, inject an alias node for rc/own references
-void flowInjectAliasNode(INode **nodep, int16_t rvalcount) {
-    int16_t count;
-    int16_t *counts = NULL;
+void flowInjectAliasNode(INode **nodep) {
     INode *vtype = ((IExpNode*)*nodep)->vtype;
-    if (vtype->tag != TTupleTag) {
-        // No need for injected node if we are not dealing with rc/own references and if alias calc = 0
-        RefNode *reftype = (RefNode *)itypeGetTypeDcl(vtype);
-        if (reftype->tag != RefTag || !(reftype->region == (INode*)rcRegion || reftype->region == (INode*)soRegion))
-            return;
-        count = flowAliasGet(0) + rvalcount;
-        if (count == 0 || (reftype->region == (INode*)soRegion && count > 0))
-            return;
-    }
-    else {
-        // First, decide if we need an alias node.
-        // It is needed only if any returned value in tuple is rc/own with non-zero alias count
-        // Note: aliasing count values are updated in case we want them
-        TupleNode *tuple = (TupleNode *)vtype;
-        int needaliasnode = 0;
-        INode **nodesp;
-        uint32_t cnt;
-        size_t index = 0;
-        flowAliasSize(count = tuple->elems->used);
-        for (nodesFor(tuple->elems, cnt, nodesp)) {
-            RefNode *reftype = (RefNode *)itypeGetTypeDcl(*nodesp);
-            if (reftype->tag != RefTag || !(reftype->region == (INode*)rcRegion || reftype->region == (INode*)soRegion)) {
-                flowAliasPut(index++, 0);
-                continue;
-            }
-            int16_t tcount = flowAliasGet(index) + rvalcount;
-            if (reftype->region == (INode*)soRegion && tcount > 0)
-                tcount = 0;
-            flowAliasPut(index++, tcount);
-            if (tcount != 0)
-                needaliasnode = 1;
-        }
-        if (!needaliasnode)
-            return;
-
-        // Allocate and fill memory segment containing alias counters
-        int16_t *countp = counts = (int16_t *)memAllocBlk(count * sizeof(int16_t));
-        int16_t pos = 0;
-        while (pos < count)
-            *countp++ = flowAliasGet(pos++);
-    }
+    // No need for injected node if we are not dealing with rc references
+    RefNode *reftype = (RefNode *)itypeGetTypeDcl(vtype);
+    if (reftype->tag != RefTag || reftype->region != (INode*)rcRegion)
+        return;
 
     // Inject alias count node
     AliasNode *aliasnode;
     newNode(aliasnode, AliasNode, AliasTag);
     aliasnode->exp = *nodep;
     aliasnode->vtype = vtype;
-    aliasnode->aliasamt = count;
-    aliasnode->counts = counts;
+    aliasnode->aliasamt = 1;
+    aliasnode->counts = NULL;
     *nodep = (INode*)aliasnode;
 }
 
@@ -102,14 +63,10 @@ void flowHandleMoveOrCopy(INode **nodep) {
     uint16_t moveflag = itypeGetTypeDcl(((IExpNode *)*nodep)->vtype)->flags & MoveType;
     if (iexpIsMove(*nodep)) {
         // Moving needs to deactivate source variable use
-        if (flowAliasGet(0) > 0) {
-            flowHandleMove(*nodep);
-        }
+        flowHandleMove(*nodep);
     }
     else {
-        // Copying an owning reference triggers the region's aliasing behavior
-        flowAliasIncr();
-        flowInjectAliasNode(nodep, 0);
+        flowInjectAliasNode(nodep);
     }
 }
 
@@ -128,7 +85,6 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         assignFlow(fstate, (AssignNode **)nodep); break;
     case FnCallTag:
         fnCallFlow(fstate, (FnCallNode**)nodep);
-        flowInjectAliasNode(nodep, -1);
         break;
     case ArrayBorrowTag:
     case BorrowTag:
@@ -137,19 +93,14 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
     case ArrayAllocTag:
     case AllocateTag:
         allocateFlow(fstate, (RefNode **)nodep);
-        flowInjectAliasNode(nodep, -1);
         break;
     case VTupleTag:
     {
         INode **nodesp;
         uint32_t cnt;
         uint32_t index = 0;
-        flowAliasSize(((TupleNode *)*nodep)->elems->used);
         for (nodesFor(((TupleNode *)*nodep)->elems, cnt, nodesp)) {
-            // pull out specific alias counter for resolution
-            size_t svAliasPos = flowAliasPushNew(flowAliasGet(index++));
             flowLoadValue(fstate, nodesp);
-            flowAliasPop(svAliasPos);
         }
         break;
     }
@@ -266,100 +217,4 @@ int flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp) {
 // Back out of current scope
 void flowScopePop(size_t startpos) {
     gVarFlowStackPos = startpos;
-}
-
-// *********************
-// Aliasing stack for data flow analysis
-//
-// As we traverse the IR nodes, this tracks expression "aliasing" in each block.
-// Aliasing is when we copy a value. This matters with rc and own references.
-// *********************
-
-int16_t *gFlowAliasStackp = NULL;
-size_t gFlowAliasStackSz = 0;
-size_t gFlowAliasStackPos = 0;
-int16_t gFlowAliasFocusPos = 0;
-
-// Ensure enough room for alias stack
-void flowAliasRoom(size_t highpos) {
-    if (highpos >= gFlowAliasStackSz) {
-        if (gFlowAliasStackSz == 0) {
-            gFlowAliasStackSz = 1024;
-            gFlowAliasStackp = (int16_t*)memAllocBlk(gFlowAliasStackSz * sizeof(int16_t));
-            memset(gFlowAliasStackp, 0, gFlowAliasStackSz * sizeof(int16_t));
-            gFlowAliasStackPos = 0;
-        }
-        else {
-            // Double table size, copying over old data
-            int16_t *oldtable = gFlowAliasStackp;
-            int oldsize = gFlowAliasStackSz;
-            gFlowAliasStackSz <<= 1;
-            gFlowAliasStackp = (int16_t*)memAllocBlk(gFlowAliasStackSz * sizeof(int16_t));
-            memset(gFlowAliasStackp, 0, gFlowAliasStackSz * sizeof(int16_t));
-            memcpy(gFlowAliasStackp, oldtable, oldsize * sizeof(int16_t));
-        }
-    }
-}
-
-// Initialize a function's alias stack
-void flowAliasInit() {
-    flowAliasRoom(3);
-    gFlowAliasStackp[0] = 1;  // current frame's # of aliasing values
-    gFlowAliasStackp[1] = 0;  // current frame's start aliasing count
-    gFlowAliasStackp[2] = 0;  // Alias count of first value
-}
-
-// Start a new frame on alias stack
-size_t flowAliasPushNew(int16_t init) {
-    size_t svpos = gFlowAliasStackPos;
-    int16_t oldstacksz = gFlowAliasStackp[svpos];
-    flowAliasRoom(5 + oldstacksz);
-    gFlowAliasStackPos += 2 + oldstacksz;
-    gFlowAliasStackp[gFlowAliasStackPos] = 1;       // current frame's # of aliasing values
-    gFlowAliasStackp[gFlowAliasStackPos+1] = init;  // current frame's start aliasing count
-    gFlowAliasStackp[gFlowAliasStackPos + 2] = init; // First value's alias count
-    return svpos;
-}
-
-// Restore previous stack
-void flowAliasPop(size_t oldpos) {
-    gFlowAliasStackPos = oldpos;
-    gFlowAliasFocusPos = 0;
-}
-
-// Reset current frame (to one value initialized to init value)
-void flowAliasReset() {
-    gFlowAliasStackp[gFlowAliasStackPos] = 1;
-    gFlowAliasStackp[gFlowAliasStackPos + 2] = gFlowAliasStackp[gFlowAliasStackPos + 1];
-}
-
-// Ensure frame has enough initialized alias counts for 'size' values
-void flowAliasSize(int16_t size) {
-    int16_t stacksz = gFlowAliasStackp[gFlowAliasStackPos];
-    if (stacksz >= size)
-        return;
-    int16_t init = gFlowAliasStackp[gFlowAliasStackPos + 1];
-    while (stacksz < size)
-        gFlowAliasStackp[gFlowAliasStackPos + 2 + stacksz++] = init;
-    gFlowAliasStackp[gFlowAliasStackPos] = size;
-}
-
-// Set the focus position for lval aliasing
-void flowAliasFocus(int16_t pos) {
-    gFlowAliasFocusPos = pos;
-}
-
-// Increment aliasing count at frame's position
-void flowAliasIncr() {
-    ++gFlowAliasStackp[gFlowAliasStackPos + 2 + gFlowAliasFocusPos];
-}
-
-// Get aliasing count at frame's position
-int16_t flowAliasGet(size_t pos) {
-    return gFlowAliasStackp[gFlowAliasStackPos + 2 + pos];
-}
-
-// Store an aliasing count at frame's position
-void flowAliasPut(size_t pos, int16_t count) {
-    gFlowAliasStackp[gFlowAliasStackPos + 2 + pos] = count;
 }

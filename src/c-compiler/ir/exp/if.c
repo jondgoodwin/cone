@@ -212,6 +212,5 @@ void ifFlow(FlowState *fstate, IfNode **ifnodep) {
             flowLoadValue(fstate, nodesp);
         nodesp++; cnt--;
         blockFlow(fstate, (BlockNode**)nodesp);
-        flowAliasReset();
     }
 }

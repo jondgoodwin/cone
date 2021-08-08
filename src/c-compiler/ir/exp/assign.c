@@ -144,11 +144,13 @@ void assignSingleFlow(INode *lval, INode **rval) {
     if (lval->tag == VarNameUseTag && ((NameUseNode*)lval)->namesym == anonName) {
         // When lval = '_' and this is an own reference, we may have a problem
         // If this assignment is supposed to return a reference, it cannot
+        /*
         if (flowAliasGet(0) > 0) {
             RefNode *reftype = (RefNode *)((IExpNode*)*rval)->vtype;
             if (reftype->tag == RefTag && reftype->region == (INode*)soRegion)
                 errorMsgNode((INode*)lval, ErrorMove, "This frees reference. The reference is inaccessible for use.");
         }
+        */
         return;
     }
 
@@ -191,10 +193,7 @@ void assignParaFlow(TupleNode *lval, TupleNode *rval) {
     INode **lnodesp;
     INode **rnodesp = &nodesGet(rnodes, 0);
     uint32_t rcnt = rnodes->used;
-    int16_t aliasfocus = 0;
-    flowAliasSize(lnodes->used);
     for (nodesFor(lnodes, lcnt, lnodesp)) {
-        flowAliasFocus(aliasfocus++);
         assignSingleFlow(*lnodesp, rnodesp++);
         rcnt--;
     }
