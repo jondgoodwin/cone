@@ -40,63 +40,22 @@ void flowHandleMove(INode *node) {
 }
 
 // If needed, inject an alias node for rc/own references
-/*
-void flowInjectAliasNode(INode **nodep, int16_t rvalcount) {
-    int16_t count;
-    int16_t *counts = NULL;
+void flowInjectAliasNode(INode **nodep) {
     INode *vtype = ((IExpNode*)*nodep)->vtype;
-    if (vtype->tag != TTupleTag) {
-        // No need for injected node if we are not dealing with rc/own references and if alias calc = 0
-        RefNode *reftype = (RefNode *)itypeGetTypeDcl(vtype);
-        if (reftype->tag != RefTag || !(reftype->region == (INode*)rcRegion || reftype->region == (INode*)soRegion))
-            return;
-        count = flowAliasGet(0) + rvalcount;
-        if (count == 0 || (reftype->region == (INode*)soRegion && count > 0))
-            return;
-    }
-    else {
-        // First, decide if we need an alias node.
-        // It is needed only if any returned value in tuple is rc/own with non-zero alias count
-        // Note: aliasing count values are updated in case we want them
-        TupleNode *tuple = (TupleNode *)vtype;
-        int needaliasnode = 0;
-        INode **nodesp;
-        uint32_t cnt;
-        size_t index = 0;
-        flowAliasSize(count = tuple->elems->used);
-        for (nodesFor(tuple->elems, cnt, nodesp)) {
-            RefNode *reftype = (RefNode *)itypeGetTypeDcl(*nodesp);
-            if (reftype->tag != RefTag || !(reftype->region == (INode*)rcRegion || reftype->region == (INode*)soRegion)) {
-                flowAliasPut(index++, 0);
-                continue;
-            }
-            int16_t tcount = flowAliasGet(index) + rvalcount;
-            if (reftype->region == (INode*)soRegion && tcount > 0)
-                tcount = 0;
-            flowAliasPut(index++, tcount);
-            if (tcount != 0)
-                needaliasnode = 1;
-        }
-        if (!needaliasnode)
-            return;
-
-        // Allocate and fill memory segment containing alias counters
-        int16_t *countp = counts = (int16_t *)memAllocBlk(count * sizeof(int16_t));
-        int16_t pos = 0;
-        while (pos < count)
-            *countp++ = flowAliasGet(pos++);
-    }
+    // No need for injected node if we are not dealing with rc references
+    RefNode *reftype = (RefNode *)itypeGetTypeDcl(vtype);
+    if (reftype->tag != RefTag || reftype->region != (INode*)rcRegion)
+        return;
 
     // Inject alias count node
     AliasNode *aliasnode;
     newNode(aliasnode, AliasNode, AliasTag);
     aliasnode->exp = *nodep;
     aliasnode->vtype = vtype;
-    aliasnode->aliasamt = count;
-    aliasnode->counts = counts;
+    aliasnode->aliasamt = 1;
+    aliasnode->counts = NULL;
     *nodep = (INode*)aliasnode;
 }
-*/
 
 // Handle when we know we are either copying or moving a value
 // (e.g., for assignment or function arguments).
@@ -107,7 +66,7 @@ void flowHandleMoveOrCopy(INode **nodep) {
         flowHandleMove(*nodep);
     }
     else {
-        //flowInjectAliasNode(nodep, 0);
+        flowInjectAliasNode(nodep);
     }
 }
 
