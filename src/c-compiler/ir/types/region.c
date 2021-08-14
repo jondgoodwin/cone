@@ -9,7 +9,7 @@
 
 int isRegion(INode *region, Name *namesym) {
     region = itypeGetTypeDcl(region);
-    if (region->tag == RegionTag) {
+    if (region->tag == StructTag) {
         StructNode *rnode = (StructNode*)region;
         return rnode->namesym == namesym;
     }

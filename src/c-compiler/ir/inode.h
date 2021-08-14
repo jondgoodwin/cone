@@ -147,7 +147,6 @@ enum NodeTags {
     FloatNbrTag,    // Floating point number
     StructTag,      // struct or trait
     PermTag,
-    RegionTag,
 
     // Meta group names
     MacroNameTag = MetaGroup,   // Macro name use node

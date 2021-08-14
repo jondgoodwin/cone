@@ -134,7 +134,6 @@ void inodePrintNode(INode *node) {
     case PtrTag:
         ptrPrint((StarNode *)node); break;
     case StructTag:
-    case RegionTag:
         structPrint((StructNode *)node); break;
     case EnumTag:
         enumPrint((EnumNode *)node); break;
@@ -261,7 +260,6 @@ void inodeNameRes(NameResState *pstate, INode **node) {
     case TupleTag:
         ttupleNameRes(pstate, (TupleNode *)*node); break;
     case BorrowRegTag:
-    case RegionTag:
         break;
 
     case MacroDclTag:
@@ -381,7 +379,6 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     case TTupleTag:
         ttupleTypeCheck(pstate, (TupleNode *)*node); break;
     case BorrowRegTag:
-    case RegionTag:
     case PermTag:
         break;
 

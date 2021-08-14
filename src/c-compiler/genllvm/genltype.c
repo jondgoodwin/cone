@@ -309,7 +309,6 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
     }
 
     case StructTag:
-    case RegionTag:
     {
         StructNode *strnode = (StructNode *)typ;
         // Handle base trait preprocessing for sealed variants
@@ -412,12 +411,6 @@ LLVMTypeRef genlType(GenState *gen, INode *typ) {
 // Generate LLVM value corresponding to the size of a type
 LLVMValueRef genlSizeof(GenState *gen, INode *vtype) {
     unsigned long long size = LLVMABISizeOfType(gen->datalayout, genlType(gen, vtype));
-    if (vtype->tag == RegionTag) {
-        if (LLVMPointerSize(gen->datalayout) == 4)
-            size = (size + 3) & 0xFFFFFFFC;
-        else
-            size = (size + 7) & 0xFFFFFFFFFFFFFFF8;
-    }
     return LLVMConstInt(genlType(gen, (INode*)usizeType), size, 0);
 }
 

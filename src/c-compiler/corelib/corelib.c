@@ -61,7 +61,7 @@ char *corelib =
 "struct Null[T] extends Option[T] {}\n"
 "struct Some[T] extends Option[T] {some T}\n"
 
-"struct rc {}\n"
+"struct rc {cnt usize}\n"
 "struct so {}\n"
 
 "trait @samesize Result[T,E] {_ enum}\n"

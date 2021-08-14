@@ -27,19 +27,6 @@ INode *parsePerm() {
     return unknownType;
 }
 
-// Parse an allocator + permission for a reference type
-void parseAllocPerm(RefNode *refnode) {
-    if (lexIsToken(IdentToken)
-        && lex->val.ident->node && lex->val.ident->node->tag == RegionTag) {
-        refnode->region = (INode*)lex->val.ident->node;
-        lexNextToken();
-    }
-    else {
-        refnode->region = borrowRef;
-    }
-    refnode->perm = parsePerm();
-}
-
 // Parse a variable declaration
 VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     VarDclNode *varnode;
