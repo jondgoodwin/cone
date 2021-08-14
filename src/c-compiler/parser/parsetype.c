@@ -360,6 +360,9 @@ INode* parseVtype(ParseState *parse) {
     case AmperToken:
     case ArrayRefToken:
     case VirtRefToken:
+    case PlusToken:
+    case PlusArrayRefToken:
+    case PlusVirtRefToken:
     case StarToken:
     case LBracketToken:
     case VoidToken:

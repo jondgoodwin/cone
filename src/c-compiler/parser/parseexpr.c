@@ -256,10 +256,10 @@ INode *parseSuffixTerm(ParseState *parse) {
 
 INode *parsePrefix(ParseState *parse, int noSuffix);
 
-// Parse an "ampersand term" for a ref type or reference constructor:
+// Parse an "ampersand term" for a borrowed ref type or constructor:
 // - Some reference type ('&', '&[]' or '&<')
-// - Allocation node (with region)
-// - Borrowed ref (including to an anonymous function or closure)
+// - Static permission
+// - Borrowed ref term (including to an anonymous function or closure)
 INode *parseAmper(ParseState *parse) {
     // Create appropriate RefNode, depending on ampersand operator
     RefNode *anode;
@@ -273,17 +273,7 @@ INode *parseAmper(ParseState *parse) {
     }
     lexNextToken();
 
-    // Allocated reference starts with a region
-    if (lexIsToken(IdentToken)
-        && lex->val.ident->node && lex->val.ident->node->tag == RegionTag) {
-        anode->region = (INode*)lex->val.ident->node;
-        lexNextToken();
-        anode->perm = parsePerm();
-        anode->vtexp = parsePrefix(parse, 0);
-        return (INode *)anode;
-    }
-
-    // Without region, we have a borrowed reference
+    // Static permission (optional)
     anode->perm = parsePerm();
 
     // Handle borrowed reference to anonymous function/closure
@@ -307,7 +297,7 @@ INode *parseAmper(ParseState *parse) {
         return (INode *)anode;
     }
 
-    // For a function parameter, we allow incomplete reference types
+    // For a function parameter type, we allow incomplete reference types
     // where the type the reference points-to can be inferred later (typically, Self)
     if (lexIsToken(CommaToken) || lexIsToken(RParenToken)) {
         anode->vtexp = unknownType;
@@ -321,6 +311,51 @@ INode *parseAmper(ParseState *parse) {
     if (node != (INode*)anode)
         anode->flags |= FlagSuffix;  // Set flag to show we ended up with suffixes
     return node;
+}
+
+// Parse an "plus term" for a region-managed ref type or constructor:
+// - Some reference type ('+', '+[]' or '+<')
+// - Region and permission annotations
+INode *parsePlus(ParseState *parse) {
+    // Create appropriate RefNode, depending on ampersand operator
+    RefNode *anode;
+    switch (lex->toktype) {
+    case PlusToken:
+        anode = newRefNode(RefTag); break;
+    case PlusArrayRefToken:
+        anode = newRefNode(ArrayRefTag); break;
+    case PlusVirtRefToken:
+        anode = newRefNode(VirtRefTag); break;
+    }
+    lexNextToken();
+
+    // Region-managed reference starts with a region annotation
+    if (!(lexIsToken(IdentToken)
+        && lex->val.ident->node && lex->val.ident->node->tag == RegionTag)) {
+        errorMsgLex(ErrorBadTerm, "Expected region annotation.");
+        return (INode *)anode;
+    }
+    anode->region = (INode*)lex->val.ident->node;
+    lexNextToken();
+
+    // Handle permission, if specified
+    if (lexIsToken(DashToken)) {
+        lexNextToken();
+        if (lexIsToken(PermToken)) {
+            anode->perm = newPermUseNode((PermNode*)lex->val.ident->node);
+            lexNextToken();
+        }
+        else {
+            errorMsgLex(ErrorBadTerm, "Expected permission annotation.");
+            return (INode *)anode;
+        }
+    }
+    else
+        anode->perm = newPermUseNode(uniPerm);
+
+    // Handle type or value expression
+    anode->vtexp = parsePrefix(parse, 0);
+    return (INode *)anode;
 }
 
 // Parse a prefix operator.
@@ -344,11 +379,17 @@ INode *parsePrefix(ParseState *parse, int noSuffix) {
         return (INode *)node;
     }
 
-    // '&', '&[]', '&<' (borrow/allocate/ref type)
+    // '&', '&[]', '&<' (borrow ref type/constructor)
     case AmperToken:
     case ArrayRefToken:
     case VirtRefToken:
         return parseAmper(parse);
+
+    // '+', '+[]', '+<' (region-managed ref type/constructor)
+    case PlusToken:
+    case PlusArrayRefToken:
+    case PlusVirtRefToken:
+        return parsePlus(parse);
 
     // '?' (Option type)
     case QuesToken:

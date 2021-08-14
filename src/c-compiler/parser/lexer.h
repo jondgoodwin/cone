@@ -95,6 +95,8 @@ enum TokenTypes {
     DotToken,           // '.'
     QuesDotToken,       // '?.'
     PlusToken,          // '+'
+    PlusArrayRefToken,  // '+[]'
+    PlusVirtRefToken,   // '+<'
     DashToken,          // '-'
     StarToken,          // '*'
     PercentToken,       // '%'

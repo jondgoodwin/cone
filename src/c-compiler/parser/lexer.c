@@ -707,6 +707,12 @@ void lexNextTokenx() {
             else if (*(srcp + 1) == '+') {
                 lexReturnPuncTok(IncrToken, 2);
             }
+            else if (*(srcp + 1) == '[' && *(srcp + 2) == ']') {
+                lexReturnPuncTok(PlusArrayRefToken, 3);
+            }
+            else if (*(srcp + 1) == '<') {
+                lexReturnPuncTok(PlusVirtRefToken, 2);
+            }
             else {
                 lexReturnPuncTok(PlusToken, 1);
             }
