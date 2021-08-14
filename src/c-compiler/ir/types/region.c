@@ -7,18 +7,10 @@
 
 #include "../ir.h"
 
-AllocNode *newRegionNodeStr(Name *namesym) {
-    AllocNode *allocnode;
-    newNode(allocnode, AllocNode, RegionTag);
-    allocnode->namesym = namesym;
-    namesym->node = (INode*)allocnode;
-    return allocnode;
-}
-
 int isRegion(INode *region, Name *namesym) {
     region = itypeGetTypeDcl(region);
     if (region->tag == RegionTag) {
-        AllocNode *rnode = (AllocNode*)region;
+        StructNode *rnode = (StructNode*)region;
         return rnode->namesym == namesym;
     }
     return 0;

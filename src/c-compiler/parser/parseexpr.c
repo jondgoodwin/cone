@@ -330,13 +330,11 @@ INode *parsePlus(ParseState *parse) {
     lexNextToken();
 
     // Region-managed reference starts with a region annotation
-    if (!(lexIsToken(IdentToken)
-        && lex->val.ident->node && lex->val.ident->node->tag == RegionTag)) {
+    if (!lexIsToken(IdentToken)) {
         errorMsgLex(ErrorBadTerm, "Expected region annotation.");
         return (INode *)anode;
     }
-    anode->region = (INode*)lex->val.ident->node;
-    lexNextToken();
+    anode->region = parseNameUse(parse);
 
     // Handle permission, if specified
     if (lexIsToken(DashToken)) {

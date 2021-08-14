@@ -22,8 +22,6 @@ PermNode *constPerm;
 PermNode *mut1Perm;
 PermNode *opaqPerm;
 LifetimeNode *staticLifetimeNode;
-AllocNode *soRegion;
-AllocNode *rcRegion;
 NbrNode *boolType;
 NbrNode *i8Type;
 NbrNode *i16Type;
@@ -58,15 +56,13 @@ void stdPermInit() {
     opaqPerm = newPermNodeStr("opaq", MayAlias | RaceSafe | IsLockless);
 }
 
-void stdRegionInit() {
-    soRegion = newRegionNodeStr(soName);
-    rcRegion = newRegionNodeStr(rcName);
-}
-
 char *corelib =
 "trait @samesize Option[T] {_ enum;}\n"
 "struct Null[T] extends Option[T] {}\n"
 "struct Some[T] extends Option[T] {some T}\n"
+
+"struct rc {}\n"
+"struct so {}\n"
 
 "trait @samesize Result[T,E] {_ enum}\n"
 "struct Ok[T,E] extends Result[T,E] {ok T}\n"
@@ -86,7 +82,6 @@ char *stdlibInit(int ptrsize) {
 
     staticLifetimeNode = newLifetimeDclNode(nametblFind("'static", 7), 0);
     stdPermInit();
-    stdRegionInit();
     stdNbrInit(ptrsize);
 
     return corelib;

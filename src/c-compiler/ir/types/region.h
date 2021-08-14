@@ -8,12 +8,6 @@
 #ifndef region_h
 #define region_h
 
-typedef struct {
-    INsTypeNodeHdr;
-} AllocNode;
-
-AllocNode *newRegionNodeStr(Name *namesym);
-
 int isRegion(INode *region, Name *namesym);
 
 int regionIsMove(INode *region);

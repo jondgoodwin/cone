@@ -130,12 +130,12 @@ void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
 int refEqual(RefNode *node1, RefNode *node2) {
     return itypeIsSame(node1->vtexp,node2->vtexp) 
         && permIsSame(node1->perm, node2->perm)
-        && node1->region == node2->region;
+        && itypeIsSame(node1->region, node2->region);
 }
 
 // Will from region coerce to a to region
 TypeCompare regionMatches(INode *to, INode *from, SubtypeConstraint constraint) {
-    if (to == from)
+    if (itypeIsSame(to, from))
         return EqMatch;
     if (to == borrowRef)
         return CastSubtype;
