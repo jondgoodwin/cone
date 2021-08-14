@@ -51,10 +51,10 @@ void genlDealiasFlds(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
     for (nodelistFor(&strnode->fields, cnt, nodesp)) {
         FieldDclNode *field = (FieldDclNode *)*nodesp;
         RefNode *vartype = (RefNode *)field->vtype;
-        if (vartype->tag != RefTag || !(vartype->region == (INode*)rcRegion || vartype->region == (INode*)soRegion))
+        if (vartype->tag != RefTag || !(isRegion(vartype->region, rcName) || isRegion(vartype->region, soName)))
             continue;
         LLVMValueRef fldref = LLVMBuildStructGEP(gen->builder, ref, field->index, &field->namesym->namestr);
-        if (vartype->region == (INode*)soRegion)
+        if (isRegion(vartype->region, soName))
             genlDealiasOwn(gen, fldref, vartype);
         else
             genlRcCounter(gen, fldref, -1, vartype);
@@ -80,10 +80,10 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     RefNode *reftype = (RefNode*)allocatenode->vtype;
     long long valsize = LLVMABISizeOfType(gen->datalayout, genlType(gen, reftype->vtexp));
     long long allocsize = 0;
-    if (reftype->region == (INode*)rcRegion)
+    if (isRegion(reftype->region, rcName))
         allocsize = LLVMABISizeOfType(gen->datalayout, genlType(gen, (INode*)usizeType));
     LLVMValueRef malloc = genlmalloc(gen, allocsize + valsize);
-    if (reftype->region == (INode*)rcRegion) {
+    if (isRegion(reftype->region, rcName)) {
         LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), 1, 0);
         LLVMTypeRef ptrusize = LLVMPointerType(genlType(gen, (INode*)usizeType), 0);
         LLVMValueRef counterptr = LLVMBuildBitCast(gen->builder, malloc, ptrusize, "");
@@ -140,10 +140,10 @@ void genlDealiasNodes(GenState *gen, Nodes *nodes) {
         RefNode *reftype = (RefNode *)var->vtype;
         if (reftype->tag == RefTag) {
             LLVMValueRef ref = LLVMBuildLoad(gen->builder, var->llvmvar, "allocref");
-            if (reftype->region == (INode*)soRegion) {
+            if (isRegion(reftype->region, soName)) {
                 genlDealiasOwn(gen, ref, reftype);
             }
-            else if (reftype->region == (INode*)rcRegion) {
+            else if (isRegion(reftype->region, rcName)) {
                 genlRcCounter(gen, ref, -1, reftype);
             }
         }

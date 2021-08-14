@@ -32,7 +32,7 @@ INode *cloneRefNode(CloneState *cstate, RefNode *node) {
 void refAdoptInfections(RefNode *refnode) {
     if (refnode->perm == NULL || refnode->vtexp == unknownType)
         return;  // Wait until we have this info
-    if (!(permGetFlags(refnode->perm) & MayAlias) || refnode->region == (INode*)soRegion)
+    if (!(permGetFlags(refnode->perm) & MayAlias) || regionIsMove(refnode->region))
         refnode->flags |= MoveType;
     if (refnode->perm == (INode*)mutPerm || refnode->perm == (INode*)constPerm 
         || (refnode->vtexp->flags & ThreadBound))

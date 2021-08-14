@@ -800,7 +800,7 @@ void genlStore(GenState *gen, INode *lval, LLVMValueRef rval) {
         return;
     LLVMValueRef lvalptr = genlAddr(gen, lval);
     RefNode *reftype = (RefNode *)((IExpNode*)lval)->vtype;
-    if (reftype->tag == RefTag && reftype->region == (INode*)rcRegion)
+    if (reftype->tag == RefTag && isRegion(reftype->region, rcName))
         genlRcCounter(gen, LLVMBuildLoad(gen->builder, lvalptr, "dealiasref"), -1, reftype);
     LLVMBuildStore(gen->builder, rval, lvalptr);
 }
@@ -888,7 +888,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         LLVMValueRef val = genlExpr(gen, anode->exp);
         RefNode *reftype = (RefNode*)iexpGetTypeDcl(termnode);
         if (reftype->tag == RefTag) {
-            if (reftype->region == (INode*)soRegion)
+            if (isRegion(reftype->region, soName))
                 genlDealiasOwn(gen, val, reftype);
             else
                 genlRcCounter(gen, val, anode->aliasamt, reftype);
@@ -903,7 +903,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
                 if (*countp != 0) {
                     reftype = (RefNode *)itypeGetTypeDcl(*nodesp);
                     LLVMValueRef strval = LLVMBuildExtractValue(gen->builder, val, index, "");
-                    if (reftype->region == (INode*)soRegion)
+                    if (isRegion(reftype->region, soName))
                         genlDealiasOwn(gen, strval, reftype);
                     else
                         genlRcCounter(gen, strval, *countp, reftype);

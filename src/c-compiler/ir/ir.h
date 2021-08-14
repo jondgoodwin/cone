@@ -63,11 +63,9 @@ typedef struct TypeCheckState TypeCheckState;
 #include "types/arrayref.h"
 #include "types/pointer.h"
 #include "types/struct.h"
+#include "types/region.h"
 #include "types/array.h"
 #include "types/void.h"
-typedef struct AllocNode {
-    INsTypeNodeHdr;
-} AllocNode;
 
 #include "exp/block.h"
 #include "stmt/module.h"

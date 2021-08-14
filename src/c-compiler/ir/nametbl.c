@@ -192,6 +192,9 @@ void nametblInit() {
     refIndexName = nametblFind("&[]", 3);
 
     optionName = nametblFind("Option", 6);
+
+    rcName = nametblFind("rc", 2);
+    soName = nametblFind("so", 2);
 }
 
 

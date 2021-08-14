@@ -44,7 +44,7 @@ void flowInjectAliasNode(INode **nodep) {
     INode *vtype = ((IExpNode*)*nodep)->vtype;
     // No need for injected node if we are not dealing with rc references
     RefNode *reftype = (RefNode *)itypeGetTypeDcl(vtype);
-    if (reftype->tag != RefTag || reftype->region != (INode*)rcRegion)
+    if (reftype->tag != RefTag || !isRegion(reftype->region, rcName))
         return;
 
     // Inject alias count node
@@ -201,7 +201,7 @@ int flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp) {
     while (pos > startpos) {
         VarFlowInfo *avar = &gVarFlowStackp[--pos];
         RefNode *reftype = (RefNode*)avar->node->vtype;
-        if (reftype->tag == RefTag && (reftype->region == (INode*)rcRegion || reftype->region == (INode*)soRegion)) {
+        if (reftype->tag == RefTag && (isRegion(reftype->region, soName) || isRegion(reftype->region, rcName))) {
             if (retexp && (retexp->tag != VarNameUseTag || ((NameUseNode *)retexp)->namesym != avar->node->namesym)) {
                 if (*varlist == NULL)
                     *varlist = newNodes(4);

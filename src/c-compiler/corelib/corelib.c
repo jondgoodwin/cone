@@ -58,18 +58,9 @@ void stdPermInit() {
     opaqPerm = newPermNodeStr("opaq", MayAlias | RaceSafe | IsLockless);
 }
 
-AllocNode *newRegionNodeStr(char *name) {
-    AllocNode *allocnode;
-    newNode(allocnode, AllocNode, RegionTag);
-    Name *namesym = nametblFind(name, strlen(name));
-    allocnode->namesym = namesym;
-    namesym->node = (INode*)allocnode;
-    return allocnode;
-}
-
 void stdRegionInit() {
-    soRegion = newRegionNodeStr("so");
-    rcRegion = newRegionNodeStr("rc");
+    soRegion = newRegionNodeStr(soName);
+    rcRegion = newRegionNodeStr(rcName);
 }
 
 char *corelib =

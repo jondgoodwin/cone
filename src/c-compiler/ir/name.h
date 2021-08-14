@@ -71,6 +71,9 @@ extern Name *refIndexName; // "&[]"
 
 extern Name *optionName;   // "Option"
 
+extern Name *rcName;       // "rc"
+extern Name *soName;       // "so"
+
 typedef struct VarDclNode VarDclNode;
 typedef struct FnDclNode FnDclNode;
 
