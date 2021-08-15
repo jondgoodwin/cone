@@ -2,7 +2,7 @@
  * @file
  *
  * This source file is part of Cone Programming Language C compiler.
- * Copyright (C) 2017-2020  Jonathan Goodwin
+ * Copyright (C) 2017-2021  Jonathan Goodwin
  *
  * Permission is hereby granted, free of charge, to any
  * person obtaining a copy of this software and associated
@@ -39,6 +39,6 @@
 
 #define CONE_VERSION    "Cone Compiler " CONE_VERSION_MAJOR "." CONE_VERSION_MINOR
 #define CONE_RELEASE    CONE_VERSION "." CONE_VERSION_RELEASE
-#define CONE_COPYRIGHT    CONE_RELEASE "  Copyright (C) 2017-2018 Jonathan Goodwin"
+#define CONE_COPYRIGHT    CONE_RELEASE "  Copyright (C) 2017-2021 Jonathan Goodwin"
 
 #endif
