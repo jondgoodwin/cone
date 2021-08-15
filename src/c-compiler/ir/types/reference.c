@@ -100,6 +100,10 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
         node->perm = newPermUseNode(node->vtexp->tag == FnSigTag ? opaqPerm :
         (node->region == borrowRef ? constPerm : uniPerm));
     itypeTypeCheck(pstate, &node->region);
+    if (node->region != borrowRef &&
+        itypeGetTypeDcl(node->region)->tag != StructTag) {
+        errorMsgNode(node->region, ErrorInvType, "Reference's region must be a struct type.");
+    }
     itypeTypeCheck(pstate, (INode**)&node->perm);
     if (itypeTypeCheck(pstate, &node->vtexp) == 0)
         return;
