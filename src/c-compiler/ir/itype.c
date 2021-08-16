@@ -61,6 +61,10 @@ int itypeTypeCheck(TypeCheckState *pstate, INode **node) {
     return 1;
 }
 
+size_t itypeHash(INode *node) {
+    return (size_t)itypeGetTypeDcl(node);
+}
+
 // Return 1 if nominally (or structurally) identical, 0 otherwise
 // Nodes must both be types, but may be name use or declare nodes
 int itypeIsSame(INode *node1, INode *node2) {
