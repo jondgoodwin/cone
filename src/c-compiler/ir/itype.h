@@ -61,7 +61,7 @@ INode *iTypeFindFnField(INode *type, Name *name);
 // Type check node, expecting it to be a type. Give error and return 0, if not.
 int itypeTypeCheck(TypeCheckState *pstate, INode **node);
 
-// Calculate hash for 
+// Calculate hash for a type for use indexing the type table
 size_t itypeHash(INode *type);
 
 // Return 1 if nominally (or structurally) identical, 0 otherwise.

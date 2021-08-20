@@ -23,7 +23,7 @@ static size_t gTypeTblUsed = 0;            // Number of type table slots used
 
 /** Modulo operation that calculates primary table entry from name's hash.
  * 'size' is always a power of 2 */
-#define nameHashMod(hash, size) \
+#define typeHashMod(hash, size) \
     (assert(((size)&((size)-1))==0), (size_t) ((hash) & ((size)-1)) )
 
 /** Calculate index into name table for a name using linear probing
@@ -32,11 +32,11 @@ static size_t gTypeTblUsed = 0;            // Number of type table slots used
 #define typetblFindSlot(tblp, hash, type) \
 { \
     size_t tbli; \
-    for (tbli = nameHashMod(hash, gTypeTblAvail);;) { \
+    for (tbli = typeHashMod(hash, gTypeTblAvail);;) { \
         tblp = &gTypeTable[tbli]; \
         if (tblp->type==NULL || (tblp->hash == hash && itypeIsSame(tblp->type, type))) \
             break; \
-        tbli = nameHashMod(tbli + 1, gTypeTblAvail); \
+        tbli = typeHashMod(tbli + 1, gTypeTblAvail); \
     } \
 }
 

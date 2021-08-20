@@ -443,6 +443,7 @@ ModuleNode *parseModule(ParseState *parse) {
 ModuleNode *parsePgm(ConeOptions *opt) {
     // Initialize name table and lexer
     nametblInit();
+    typetblInit();
     lexInit();
 
     // Initialize parser state

@@ -8,12 +8,18 @@
 #ifndef reference_h
 #define reference_h
 
+// Metadata for normalized reference type
+typedef struct {
+    LLVMTypeRef llvmtyperef;
+} RefMetaInfo;
+
 // Reference node: used for reference type, allocation or borrow node
 typedef struct {
     ITypeNodeHdr;
     INode *vtexp;     // Value/type expression
     INode *perm;      // Permission
     INode *region;    // Region
+    RefMetaInfo *meta; // normalized ref info
     uint16_t scope;   // Lifetime
 } RefNode;
 
@@ -37,6 +43,9 @@ void refPrint(RefNode *node);
 
 // Name resolution of a reference node
 void refNameRes(NameResState *pstate, RefNode *node);
+
+// Calculate hash for a structural reference type
+size_t refHash(RefNode *node);
 
 // Type check a reference node
 void refTypeCheck(TypeCheckState *pstate, RefNode *name);

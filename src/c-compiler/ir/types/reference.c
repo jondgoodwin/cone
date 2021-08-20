@@ -94,6 +94,19 @@ void refNameRes(NameResState *pstate, RefNode *node) {
     }
 }
 
+// Calculate hash for a structural reference type
+size_t refHash(RefNode *node) {
+    size_t hash = 5381;
+    hash = ((hash << 5) + hash) ^ itypeHash(node->region);
+    hash = ((hash << 5) + hash) ^ itypeHash(node->perm);
+    return ((hash << 5) + hash) ^ itypeHash(node->vtype);
+}
+
+// Allocate metadata for normalized reference type
+void *refMetaAlloc() {
+    return memAllocBlk(sizeof(RefMetaInfo));
+}
+
 // Type check a reference node
 void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
     if (node->perm == unknownType)
@@ -108,6 +121,9 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
     if (itypeTypeCheck(pstate, &node->vtexp) == 0)
         return;
     refAdoptInfections(node);
+    
+    // Normalize reference type and point to its metadata
+    node->meta = typetblFind((INode*)node, refMetaAlloc);
 }
 
 // Type check a virtual reference node

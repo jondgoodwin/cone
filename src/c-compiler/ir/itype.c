@@ -61,8 +61,16 @@ int itypeTypeCheck(TypeCheckState *pstate, INode **node) {
     return 1;
 }
 
+// Calculate the hash for a type to use in type table indexing
 size_t itypeHash(INode *node) {
-    return (size_t)itypeGetTypeDcl(node);
+    INode *type = itypeGetTypeDcl(node);
+    switch (type->tag) {
+    case RefTag:
+        return refHash((RefNode*)type);
+    default:
+        // Turn type's pointer into the hash, removing expected 0's in bottom bits
+        return ((size_t)type) >> 3;
+    }
 }
 
 // Return 1 if nominally (or structurally) identical, 0 otherwise

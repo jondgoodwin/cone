@@ -50,6 +50,7 @@ typedef struct TypeCheckState TypeCheckState;
 #include "../parser/lexer.h"
 #include "../shared/error.h"
 #include "nametbl.h"
+#include "typetbl.h"
 #include "../shared/memory.h"
 
 #include "types/typedef.h"
