@@ -18,7 +18,13 @@ void arrayRefNameRes(NameResState *pstate, RefNode *node);
 void arrayRefTypeCheck(TypeCheckState *pstate, RefNode *name);
 
 // Compare two reference signatures to see if they are equivalent
-int arrayRefEqual(RefNode *node1, RefNode *node2);
+int arrayRefIsSame(RefNode *node1, RefNode *node2);
+
+// Calculate hash for a structural reference type
+size_t arrayRefHash(RefNode *node);
+
+// Compare two reference signatures to see if they are equivalent at runtime
+int arrayRefIsRunSame(RefNode *node1, RefNode *node2);
 
 // Will from reference coerce to a to reference (we know they are not the same)
 TypeCompare arrayRefMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint);

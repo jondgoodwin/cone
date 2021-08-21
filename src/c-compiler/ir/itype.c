@@ -61,18 +61,6 @@ int itypeTypeCheck(TypeCheckState *pstate, INode **node) {
     return 1;
 }
 
-// Calculate the hash for a type to use in type table indexing
-size_t itypeHash(INode *node) {
-    INode *type = itypeGetTypeDcl(node);
-    switch (type->tag) {
-    case RefTag:
-        return refHash((RefNode*)type);
-    default:
-        // Turn type's pointer into the hash, removing expected 0's in bottom bits
-        return ((size_t)type) >> 3;
-    }
-}
-
 // Return 1 if nominally (or structurally) identical, 0 otherwise
 // Nodes must both be types, but may be name use or declare nodes
 int itypeIsSame(INode *node1, INode *node2) {
@@ -89,22 +77,79 @@ int itypeIsSame(INode *node1, INode *node2) {
     // For non-named types, equality is determined structurally
     // because they specify the same typed parts
     switch (node1->tag) {
-    case FnSigTag:
-        return fnSigEqual((FnSigNode*)node1, (FnSigNode*)node2);
     case RefTag: 
-        return refEqual((RefNode*)node1, (RefNode*)node2);
-    case ArrayRefTag:
-        return arrayRefEqual((RefNode*)node1, (RefNode*)node2);
+        return refIsSame((RefNode*)node1, (RefNode*)node2);
     case VirtRefTag:
-        return refEqual((RefNode*)node1, (RefNode*)node2);
+        return refIsSame((RefNode*)node1, (RefNode*)node2);
+    case ArrayRefTag:
+        return arrayRefIsSame((RefNode*)node1, (RefNode*)node2);
     case PtrTag:
         return ptrEqual((StarNode*)node1, (StarNode*)node2);
     case ArrayTag:
         return arrayEqual((ArrayNode*)node1, (ArrayNode*)node2);
     case TTupleTag:
         return ttupleEqual((TupleNode*)node1, (TupleNode*)node2);
+    case FnSigTag:
+        return fnSigEqual((FnSigNode*)node1, (FnSigNode*)node2);
     case VoidTag:
         return 1;
+    default:
+        return 0;
+    }
+}
+
+// Calculate the hash for a type to use in type table indexing
+size_t itypeHash(INode *node) {
+    INode *type = itypeGetTypeDcl(node);
+    switch (type->tag) {
+    case RefTag:
+    case VirtRefTag:
+        return refHash((RefNode*)type);
+    case ArrayRefTag:
+        return arrayRefHash((RefNode*)type);
+    case PermTag:
+        return ((size_t)immPerm) >> 3;  // Hash for all static permissions is the same
+    default:
+        // Turn type's pointer into the hash, removing expected 0's in bottom bits
+        return ((size_t)type) >> 3;
+    }
+}
+
+// Return 1 if nominally (or structurally) identical at runtime, 0 otherwise
+// Nodes must both be types, but may be name use or declare nodes
+// Is a companion for indexing into the type table
+int itypeIsRunSame(INode *node1, INode *node2) {
+
+    node1 = itypeGetTypeDcl(node1);
+    node2 = itypeGetTypeDcl(node2);
+
+    // If they are the same type name, types match
+    if (node1 == node2)
+        return 1;
+    if (node1->tag != node2->tag)
+        return 0;
+
+    // For non-named types, equality is determined structurally
+    // because they specify the same typed parts
+    switch (node1->tag) {
+    case RefTag:
+        return refIsRunSame((RefNode*)node1, (RefNode*)node2);
+    case VirtRefTag:
+        return refIsRunSame((RefNode*)node1, (RefNode*)node2);
+    case ArrayRefTag:
+        return arrayRefIsRunSame((RefNode*)node1, (RefNode*)node2);
+    case PtrTag:
+        return ptrEqual((StarNode*)node1, (StarNode*)node2);
+    case ArrayTag:
+        return arrayEqual((ArrayNode*)node1, (ArrayNode*)node2);
+    case TTupleTag:
+        return ttupleEqual((TupleNode*)node1, (TupleNode*)node2);
+    case FnSigTag:
+        return fnSigEqual((FnSigNode*)node1, (FnSigNode*)node2);
+    case VoidTag:
+        return 1;
+    case PermTag:
+        return 1;    // Static permissions are erased/equivalent at runtime
     default:
         return 0;
     }

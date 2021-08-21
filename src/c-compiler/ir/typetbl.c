@@ -34,7 +34,7 @@ static size_t gTypeTblUsed = 0;            // Number of type table slots used
     size_t tbli; \
     for (tbli = typeHashMod(hash, gTypeTblAvail);;) { \
         tblp = &gTypeTable[tbli]; \
-        if (tblp->type==NULL || (tblp->hash == hash && itypeIsSame(tblp->type, type))) \
+        if (tblp->type==NULL || (tblp->hash == hash && itypeIsRunSame(tblp->type, type))) \
             break; \
         tbli = typeHashMod(tbli + 1, gTypeTblAvail); \
     } \

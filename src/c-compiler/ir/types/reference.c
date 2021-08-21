@@ -15,7 +15,15 @@ RefNode *newRefNode(uint16_t tag) {
     refnode->region = borrowRef;          // Default values
     refnode->perm = (INode*)constPerm;
     refnode->vtype = (INode*)unknownType;
+    refnode->typeinfo = NULL;
     return refnode;
+}
+
+// Allocate info for normalized reference type
+void *refTypeInfoAlloc() {
+    RefTypeInfo *refinfo = memAllocBlk(sizeof(RefTypeInfo));
+    refinfo->llvmtyperef = NULL;
+    return (void*)refinfo;
 }
 
 // Clone reference
@@ -94,19 +102,6 @@ void refNameRes(NameResState *pstate, RefNode *node) {
     }
 }
 
-// Calculate hash for a structural reference type
-size_t refHash(RefNode *node) {
-    size_t hash = 5381;
-    hash = ((hash << 5) + hash) ^ itypeHash(node->region);
-    hash = ((hash << 5) + hash) ^ itypeHash(node->perm);
-    return ((hash << 5) + hash) ^ itypeHash(node->vtype);
-}
-
-// Allocate metadata for normalized reference type
-void *refMetaAlloc() {
-    return memAllocBlk(sizeof(RefMetaInfo));
-}
-
 // Type check a reference node
 void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
     if (node->perm == unknownType)
@@ -123,7 +118,7 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
     refAdoptInfections(node);
     
     // Normalize reference type and point to its metadata
-    node->meta = typetblFind((INode*)node, refMetaAlloc);
+    node->typeinfo = typetblFind((INode*)node, refTypeInfoAlloc);
 }
 
 // Type check a virtual reference node
@@ -147,10 +142,25 @@ void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
 }
 
 // Compare two reference signatures to see if they are equivalent
-int refEqual(RefNode *node1, RefNode *node2) {
+int refIsSame(RefNode *node1, RefNode *node2) {
     return itypeIsSame(node1->vtexp,node2->vtexp) 
         && permIsSame(node1->perm, node2->perm)
         && itypeIsSame(node1->region, node2->region);
+}
+
+// Calculate hash for a structural reference type
+size_t refHash(RefNode *node) {
+    size_t hash = 5381 + node->tag;
+    hash = ((hash << 5) + hash) ^ itypeHash(node->region);
+    hash = ((hash << 5) + hash) ^ itypeHash(node->perm);
+    return ((hash << 5) + hash) ^ itypeHash(node->vtype);
+}
+
+// Compare two reference signatures to see if they are equivalent at runtime
+int refIsRunSame(RefNode *node1, RefNode *node2) {
+    return itypeIsSame(node1->vtexp, node2->vtexp)
+        && itypeIsRunSame(node1->perm, node2->perm)
+        && itypeIsRunSame(node1->region, node2->region);
 }
 
 // Will from region coerce to a to region

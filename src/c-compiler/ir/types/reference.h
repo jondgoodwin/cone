@@ -11,7 +11,7 @@
 // Metadata for normalized reference type
 typedef struct {
     LLVMTypeRef llvmtyperef;
-} RefMetaInfo;
+} RefTypeInfo;
 
 // Reference node: used for reference type, allocation or borrow node
 typedef struct {
@@ -19,7 +19,7 @@ typedef struct {
     INode *vtexp;     // Value/type expression
     INode *perm;      // Permission
     INode *region;    // Region
-    RefMetaInfo *meta; // normalized ref info
+    RefTypeInfo *typeinfo; // normalized ref info
     uint16_t scope;   // Lifetime
 } RefNode;
 
@@ -44,9 +44,6 @@ void refPrint(RefNode *node);
 // Name resolution of a reference node
 void refNameRes(NameResState *pstate, RefNode *node);
 
-// Calculate hash for a structural reference type
-size_t refHash(RefNode *node);
-
 // Type check a reference node
 void refTypeCheck(TypeCheckState *pstate, RefNode *name);
 
@@ -54,7 +51,13 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *name);
 void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node);
 
 // Compare two reference signatures to see if they are equivalent
-int refEqual(RefNode *node1, RefNode *node2);
+int refIsSame(RefNode *node1, RefNode *node2);
+
+// Calculate hash for a structural reference type
+size_t refHash(RefNode *node);
+
+// Compare two reference signatures to see if they are equivalent at runtime
+int refIsRunSame(RefNode *node1, RefNode *node2);
 
 // Will from region coerce to a to region
 TypeCompare regionMatches(INode *to, INode *from, SubtypeConstraint constraint);

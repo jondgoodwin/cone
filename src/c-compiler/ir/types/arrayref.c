@@ -41,10 +41,25 @@ void arrayRefTypeCheck(TypeCheckState *pstate, RefNode *node) {
 }
 
 // Compare two reference signatures to see if they are equivalent
-int arrayRefEqual(RefNode *node1, RefNode *node2) {
-    return itypeIsSame(node1->vtexp,node2->vtexp) 
+int arrayRefIsSame(RefNode *node1, RefNode *node2) {
+    return itypeIsSame(node1->vtexp, node2->vtexp)
         && permIsSame(node1->perm, node2->perm)
-        && node1->region == node2->region;
+        && itypeIsSame(node1->region, node2->region);
+}
+
+// Calculate hash for a structural reference type
+size_t arrayRefHash(RefNode *node) {
+    size_t hash = 5381 + node->tag;
+    hash = ((hash << 5) + hash) ^ itypeHash(node->region);
+    hash = ((hash << 5) + hash) ^ itypeHash(node->perm);
+    return ((hash << 5) + hash) ^ itypeHash(node->vtype);
+}
+
+// Compare two reference signatures to see if they are equivalent at runtime
+int arrayRefIsRunSame(RefNode *node1, RefNode *node2) {
+    return itypeIsSame(node1->vtexp, node2->vtexp)
+        && itypeIsRunSame(node1->perm, node2->perm)
+        && itypeIsRunSame(node1->region, node2->region);
 }
 
 // Will from reference coerce to a to reference (we know they are not the same)
