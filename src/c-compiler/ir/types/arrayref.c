@@ -38,6 +38,9 @@ void arrayRefTypeCheck(TypeCheckState *pstate, RefNode *node) {
     itypeTypeCheck(pstate, (INode**)&node->perm);
     if (node->vtexp)
         itypeTypeCheck(pstate, &node->vtexp);
+
+    // Normalize reference type and point to its metadata
+    node->typeinfo = typetblFind((INode*)node, refTypeInfoAlloc);
 }
 
 // Compare two reference signatures to see if they are equivalent

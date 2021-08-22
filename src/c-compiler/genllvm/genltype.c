@@ -404,6 +404,14 @@ LLVMTypeRef genlType(GenState *gen, INode *typ) {
         }
         return typeref;
     }
+    else if (dcltype->tag == RefTag || dcltype->tag == ArrayRefTag || dcltype->tag == VirtRefTag) {
+        RefNode *reftype = (RefNode*)dcltype;
+        if (reftype->typeinfo == NULL)
+            return _genlType(gen, "", dcltype);
+        if (reftype->typeinfo->llvmtyperef)
+            return reftype->typeinfo->llvmtyperef;
+        return reftype->typeinfo->llvmtyperef = _genlType(gen, "", dcltype);
+    }
     else
         return _genlType(gen, "", dcltype);
 }

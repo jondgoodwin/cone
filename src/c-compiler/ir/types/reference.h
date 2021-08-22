@@ -26,6 +26,9 @@ typedef struct {
 // Create a new reference type whose info will be filled in afterwards
 RefNode *newRefNode(uint16_t tag);
 
+// Allocate normalized reference type info
+void *refTypeInfoAlloc();
+
 // Clone reference
 INode *cloneRefNode(CloneState *cstate, RefNode *node);
 
