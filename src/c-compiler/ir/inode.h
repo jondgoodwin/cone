@@ -188,12 +188,13 @@ enum NodeTags {
 // Flags used across all types
 #define MoveType           0x0001  // Type's values impose move semantics (vs. copy)
 #define ThreadBound        0x0002  // Type's value copies must stay in the same thread (vs. sendable)
-#define OpaqueType         0x0004  // Type cannot be instantiated as a value (empty struct, fn, abstract trait, void)
+#define OpaqueType         0x0004  // Type cannot be instantiated as a value (opaque struct, fn, abstract trait)
+#define ZeroSizeType       0x0008  // Type has no size in memory (void, empty struct)
 
-#define TraitType          0x0008  // Is a trait (vs. struct)
-#define SameSize           0x0010  // An enumtrait, where all implementations are padded to same size
-#define HasTagField        0x0020  // A trait/struct has an enumerated field identifying the variant type
-#define NullablePtr        0x0040  // trait/struct has nullable pointer, generating optimized data
+#define TraitType          0x0010  // Is a trait (vs. struct)
+#define SameSize           0x0020  // An enumtrait, where all implementations are padded to same size
+#define HasTagField        0x0040  // A trait/struct has an enumerated field identifying the variant type
+#define NullablePtr        0x0080  // trait/struct has nullable pointer, generating optimized data
 
 #define TypeChecked        0x8000  // Type has been type-checked
 #define TypeChecking       0x4000  // Type is in process of being type-checked

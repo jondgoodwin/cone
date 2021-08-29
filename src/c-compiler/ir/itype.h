@@ -82,8 +82,11 @@ INode *itypeFindSuper(INode *type1, INode *type2);
 char *itypeMangle(char *bufp, INode *vtype);
 
 // Return true if type has a concrete and instantiable. 
-// Opaque (field-less) structs, traits, functions, void will be false.
+// False for Opaque structs, traits, functions 
 int itypeIsConcrete(INode *type);
+
+// Return true if type has zero size (e.g., void, empty struct)
+int itypeIsZeroSize(INode *type);
 
 // Return true if type implements move semantics
 int itypeIsMove(INode *type);

@@ -224,6 +224,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     clonePopState();
 
     // Go through all fields to index them and calculate infection flags for ThreadBound/MoveType
+    int isZeroSize = 1;  // Start with assumption it is zero size, unless proven otherwise
     uint16_t infectFlag = 0;
     uint16_t index = 0;
     for (nodelistFor(&node->fields, cnt, nodesp)) {
@@ -232,6 +233,11 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
         // Notice if a field's threadbound or movetype infects the struct
         ITypeNode *fldtype = (ITypeNode*)itypeGetTypeDcl(((IExpNode*)(*nodesp))->vtype);
         infectFlag |= fldtype->flags & (ThreadBound | MoveType);
+        // Handle impact of fields that are opaque or non-zero-size
+        if (!itypeIsConcrete((INode*)fldtype))
+            node->flags |= OpaqueType;
+        if (!itypeIsZeroSize((INode*)fldtype))
+            isZeroSize = 0;
 
         if (fldtype->tag == EnumTag && !((*nodesp)->flags & IsTagField)) {
             if ((node->flags & TraitType) && !(node->flags & HasTagField) && node->basetrait == NULL) {
@@ -262,8 +268,12 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
         }
     }
 
-    // A 0-size (no field) struct is opaque. Cannot be instantiated.
-    if (node->fields.used == 0)
+    // If there are no fields with non-zero size, we have a zero-size struct
+    if (isZeroSize)
+        node->flags |= ZeroSizeType;
+
+    // A non-same sized trait is essentially opaque
+    if ((node->flags & TraitType) && !(node->flags & SameSize))
         node->flags |= OpaqueType;
 
     // We can say we know enough about the type at this point to
@@ -522,11 +532,4 @@ INode *structRefFindSuper(INode *type1, INode *type2) {
         && structGetBaseTrait((StructNode*)itypeGetTypeDcl(typ1->basetrait)) == structGetBaseTrait((StructNode*)itypeGetTypeDcl(typ2->basetrait)))
         return typ1->basetrait;
     return NULL;
-}
-
-// Return true if struct has no size
-int structIsZeroSize(INode *node) {
-    StructNode *strnode = (StructNode *)itypeGetTypeDcl(node);
-    assert(strnode->tag == StructTag);
-    return strnode->fields.used == 0;
 }

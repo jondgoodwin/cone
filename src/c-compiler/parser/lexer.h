@@ -149,6 +149,8 @@ enum TokenTypes {
     StructToken,    // 'struct'
     TraitToken,     // 'trait'
     SamesizeToken,  // '@samesize'
+    MoveToken,      // '@move'
+    OpaqueToken,    // '@opaque'
     ExtendsToken,   // 'extends'
     MixinToken,     // 'mixin'
     EnumToken,      // 'enum'

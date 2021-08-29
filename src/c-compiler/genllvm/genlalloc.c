@@ -34,7 +34,7 @@ void genlRefTypeSetup(GenState *gen, RefNode *reftype) {
     uint32_t fieldcnt = 1;
     LLVMTypeRef field_types[3];
     LLVMTypeRef *fieldtypep = &field_types[0];
-    if (!structIsZeroSize(reftype->region)) {
+    if (!itypeIsZeroSize(reftype->region)) {
         *fieldtypep++ = genlType(gen, reftype->region);
         ++fieldcnt;
     }

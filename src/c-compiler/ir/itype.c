@@ -13,6 +13,7 @@
 // Return node's type's declaration node
 // (Note: only use after it has been type-checked)
 INode *itypeGetTypeDcl(INode *type) {
+    assert(isTypeNode(type));
     while (1) {
         switch (type->tag) {
         case TypeNameUseTag:
@@ -293,13 +294,17 @@ char *itypeMangle(char *bufp, INode *vtype) {
     return bufp + strlen(bufp);
 }
 
-// Return true if type has a concrete and instantiable. 
-// Opaque (field-less) structs, traits, functions, void will be false.
+// Return true if type has a concrete and instantiable value. 
+// Opaque structs, traits, functions will be false.
 int itypeIsConcrete(INode *type) {
-    if (!isTypeNode(type))
-        return 0;
     INode *dcltype = itypeGetTypeDcl(type);
     return !(dcltype->flags & OpaqueType);
+}
+
+// Return true if type has zero size (e.g., void, empty struct)
+int itypeIsZeroSize(INode *type) {
+    INode *dcltype = itypeGetTypeDcl(type);
+    return dcltype->flags & ZeroSizeType;
 }
 
 // Return true if type implements move semantics

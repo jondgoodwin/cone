@@ -142,16 +142,25 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     lexNextToken();
 
     // Handle attributes
-    if (lex->toktype == SamesizeToken) {
-        if (strflags & TraitType)
-            strflags |= SameSize;
+    while (1) {
+        if (lex->toktype == SamesizeToken) {
+            if (strflags & TraitType)
+                strflags |= SameSize;
+            else
+                errorMsgLex(ErrorNoIdent, "@samesize attribute only allowed on traits.");
+            lexNextToken();
+        }
+        else if (lex->toktype == MoveToken) {
+            strflags |= MoveType;
+            lexNextToken();
+        }
+        else if (lex->toktype == OpaqueToken) {
+            strflags |= OpaqueType;
+            lexNextToken();
+        }
         else
-            errorMsgLex(ErrorNoIdent, "@samesize attribute only allowed on traits.");
-        lexNextToken();
+            break;
     }
-    // A non-same sized trait is essentially opaque
-    if ((strflags & TraitType) && !(strflags & SameSize))
-        strflags |= OpaqueType;
 
     // Process struct type name, if provided
     if (lexIsToken(IdentToken)) {
@@ -186,7 +195,6 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     }
 
     // If block has been provided, process field or method definitions
-    // If not, we have an opaque struct!
     if (parseHasBlock()) {
         parseBlockStart();
         while (!parseBlockEnd()) {

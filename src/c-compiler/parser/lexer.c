@@ -92,6 +92,8 @@ void keywordInit() {
     keyAdd("struct", StructToken);
     keyAdd("trait", TraitToken);
     keyAdd("@samesize", SamesizeToken);
+    keyAdd("@move", MoveToken);
+    keyAdd("@opaque", OpaqueToken);
     keyAdd("extends", ExtendsToken);
     keyAdd("mixin", MixinToken);
     keyAdd("enum", EnumToken);
