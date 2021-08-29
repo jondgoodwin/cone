@@ -62,6 +62,8 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk);
 LLVMValueRef genlExpr(GenState *gen, INode *termnode);
 
 // genlalloc.c
+// Build usable metadata about a reference 
+void genlRefTypeSetup(GenState *gen, RefNode *reftype);
 // Generate code that creates an allocated ref by allocating and initializing
 LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode);
 // Progressively dealias or drop all declared variables in nodes list

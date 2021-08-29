@@ -61,12 +61,12 @@ char *corelib =
 "struct Null[T] extends Option[T] {}\n"
 "struct Some[T] extends Option[T] {some T}\n"
 
-"struct rc {cnt usize}\n"
-"struct so {}\n"
-
 "trait @samesize Result[T,E] {_ enum}\n"
 "struct Ok[T,E] extends Result[T,E] {ok T}\n"
 "struct Error[T,E] extends Result[T,E] {error E}\n"
+
+"struct rc {cnt usize}\n"
+"struct so {}\n"
 ;
 
 // Set up the standard library, whose names are always shared by all modules

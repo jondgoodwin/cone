@@ -11,6 +11,8 @@
 // Metadata for normalized reference type
 typedef struct {
     LLVMTypeRef llvmtyperef;
+    LLVMTypeRef structype;
+    uint8_t vtexpDisp;
 } RefTypeInfo;
 
 // Reference node: used for reference type, allocation or borrow node

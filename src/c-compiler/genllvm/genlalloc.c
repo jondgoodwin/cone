@@ -23,6 +23,29 @@
 #include <string.h>
 #include <assert.h>
 
+// Build usable metadata about a reference 
+void genlRefTypeSetup(GenState *gen, RefNode *reftype) {
+    if (reftype->region->tag == BorrowRegTag)
+        return;
+
+    RefTypeInfo *refinfo = reftype->typeinfo;
+
+    // Build composite struct, with "fields" for region, perm, and vtype
+    uint32_t fieldcnt = 1;
+    LLVMTypeRef field_types[3];
+    LLVMTypeRef *fieldtypep = &field_types[0];
+    if (!structIsZeroSize(reftype->region)) {
+        *fieldtypep++ = genlType(gen, reftype->region);
+        ++fieldcnt;
+    }
+    *fieldtypep = genlType(gen, reftype->vtexp);
+    refinfo->vtexpDisp = fieldcnt - 1;
+    LLVMTypeRef structype = LLVMStructCreateNamed(gen->context, "refstruct");
+    LLVMStructSetBody(structype, field_types, fieldcnt, 0);
+    refinfo->structype = structype;
+}
+
+
 // Function declarations for malloc() and free()
 LLVMValueRef genlmallocval = NULL;
 LLVMValueRef genlfreeval = NULL;
@@ -77,12 +100,10 @@ LLVMValueRef genlFree(GenState *gen, LLVMValueRef ref) {
 
 // Generate code that creates an allocated ref by allocating and initializing
 LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
+    LLVMTypeRef llvmreftype = genlType(gen, allocatenode->vtype);
     RefNode *reftype = (RefNode*)allocatenode->vtype;
-    long long valsize = LLVMABISizeOfType(gen->datalayout, genlType(gen, reftype->vtexp));
-    long long allocsize = 0;
-    if (isRegion(reftype->region, rcName))
-        allocsize = LLVMABISizeOfType(gen->datalayout, genlType(gen, (INode*)usizeType));
-    LLVMValueRef malloc = genlmalloc(gen, allocsize + valsize);
+    long long structsize = LLVMABISizeOfType(gen->datalayout, reftype->typeinfo->structype);
+    LLVMValueRef malloc = genlmalloc(gen, structsize);
     if (isRegion(reftype->region, rcName)) {
         LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), 1, 0);
         LLVMTypeRef ptrusize = LLVMPointerType(genlType(gen, (INode*)usizeType), 0);
@@ -90,7 +111,7 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
         LLVMBuildStore(gen->builder, constone, counterptr); // Store 1 into refcounter
         malloc = LLVMBuildGEP(gen->builder, malloc, &constone, 1, ""); // Point to value
     }
-    LLVMValueRef valcast = LLVMBuildBitCast(gen->builder, malloc, genlType(gen, allocatenode->vtype), "");
+    LLVMValueRef valcast = LLVMBuildBitCast(gen->builder, malloc, llvmreftype, "");
     LLVMBuildStore(gen->builder, genlExpr(gen, allocatenode->vtexp), valcast);
     return valcast;
 }

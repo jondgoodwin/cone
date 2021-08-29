@@ -410,6 +410,7 @@ LLVMTypeRef genlType(GenState *gen, INode *typ) {
             return _genlType(gen, "", dcltype);
         if (reftype->typeinfo->llvmtyperef)
             return reftype->typeinfo->llvmtyperef;
+        genlRefTypeSetup(gen, reftype);
         return reftype->typeinfo->llvmtyperef = _genlType(gen, "", dcltype);
     }
     else

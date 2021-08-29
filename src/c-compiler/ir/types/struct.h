@@ -80,4 +80,7 @@ INode *structFindSuper(INode *type1, INode *type2);
 // This is used by reference types, where same-sized is no longer a requirement
 INode *structRefFindSuper(INode *type1, INode *type2);
 
+// Return true if struct is zero size
+int structIsZeroSize(INode *node);
+
 #endif

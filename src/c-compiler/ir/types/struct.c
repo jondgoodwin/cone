@@ -523,3 +523,10 @@ INode *structRefFindSuper(INode *type1, INode *type2) {
         return typ1->basetrait;
     return NULL;
 }
+
+// Return true if struct has no size
+int structIsZeroSize(INode *node) {
+    StructNode *strnode = (StructNode *)itypeGetTypeDcl(node);
+    assert(strnode->tag == StructTag);
+    return strnode->fields.used == 0;
+}
