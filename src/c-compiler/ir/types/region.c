@@ -15,7 +15,3 @@ int isRegion(INode *region, Name *namesym) {
     }
     return 0;
 }
-
-int regionIsMove(INode *region) {
-    return isRegion(region, soName);
-}

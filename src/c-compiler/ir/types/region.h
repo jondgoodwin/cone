@@ -10,6 +10,4 @@
 
 int isRegion(INode *region, Name *namesym);
 
-int regionIsMove(INode *region);
-
 #endif
