@@ -123,18 +123,25 @@ void genlVtable(GenState *gen, Vtable *vtable) {
 
 // Generate a LLVMTypeRef for a struct, based on its fields and alignment
 LLVMTypeRef genlStructType(GenState *gen, char *name, StructNode *strnode) {
-    // Build typeref from struct
+    LLVMTypeRef structype = LLVMStructCreateNamed(gen->context, name);
+    if (strnode->flags & OpaqueType)
+        return;
+
+    // Define body of struct
     INode **nodesp;
     uint32_t cnt;
     uint32_t fieldcnt = strnode->fields.used;
-    LLVMTypeRef *field_types = (LLVMTypeRef *)memAllocBlk(fieldcnt * sizeof(LLVMTypeRef));
-    LLVMTypeRef *field_type_ptr = field_types;
-    for (nodelistFor(&strnode->fields, cnt, nodesp)) {
-        *field_type_ptr++ = genlType(gen, ((FieldDclNode *)*nodesp)->vtype);
-    }
-    LLVMTypeRef structype = LLVMStructCreateNamed(gen->context, name);
-    if (fieldcnt > 0)
+    if (fieldcnt > 0) {
+        LLVMTypeRef *field_types = (LLVMTypeRef *)memAllocBlk(fieldcnt * sizeof(LLVMTypeRef));
+        LLVMTypeRef *field_type_ptr = field_types;
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            *field_type_ptr++ = genlType(gen, ((FieldDclNode *)*nodesp)->vtype);
+        }
         LLVMStructSetBody(structype, field_types, fieldcnt, 0);
+    }
+    else {
+        LLVMStructSetBody(structype, NULL, 0, 0);
+    }
 
     return structype;
 }
