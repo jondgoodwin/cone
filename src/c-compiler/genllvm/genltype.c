@@ -125,7 +125,7 @@ void genlVtable(GenState *gen, Vtable *vtable) {
 LLVMTypeRef genlStructType(GenState *gen, char *name, StructNode *strnode) {
     LLVMTypeRef structype = LLVMStructCreateNamed(gen->context, name);
     if (strnode->flags & OpaqueType)
-        return;
+        return structype;
 
     // Define body of struct
     INode **nodesp;
