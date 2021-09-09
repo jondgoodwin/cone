@@ -399,6 +399,8 @@ void genSetup(GenState *gen, ConeOptions *opt) {
     gen->block = NULL;
     gen->blockstack = memAllocBlk(sizeof(GenBlockState)*GenBlockStackMax);
     gen->blockstackcnt = 0;
+
+    gen->staticperm = genlStaticPerm(gen);
 }
 
 void genClose(GenState *gen) {

@@ -31,17 +31,13 @@ void genlRefTypeSetup(GenState *gen, RefNode *reftype) {
     RefTypeInfo *refinfo = reftype->typeinfo;
 
     // Build composite struct, with "fields" for region, perm, and vtype
-    uint32_t fieldcnt = 1;
     LLVMTypeRef field_types[3];
     LLVMTypeRef *fieldtypep = &field_types[0];
-    if (!itypeIsZeroSize(reftype->region)) {
-        *fieldtypep++ = genlType(gen, reftype->region);
-        ++fieldcnt;
-    }
+    *fieldtypep++ = genlType(gen, reftype->region);
+    *fieldtypep++ = genlType(gen, reftype->perm);
     *fieldtypep = genlType(gen, reftype->vtexp);
-    refinfo->vtexpDisp = fieldcnt - 1;
     LLVMTypeRef structype = LLVMStructCreateNamed(gen->context, "refstruct");
-    LLVMStructSetBody(structype, field_types, fieldcnt, 0);
+    LLVMStructSetBody(structype, field_types, 3, 0);
     refinfo->structype = structype;
 }
 

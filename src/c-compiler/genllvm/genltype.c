@@ -244,6 +244,12 @@ void genlBaseTrait(GenState *gen, StructNode *base) {
     base->llvmtype = baseTypeRef;
 }
 
+LLVMTypeRef genlStaticPerm(GenState* gen) {
+    LLVMTypeRef structype = LLVMStructCreateNamed(gen->context, "StaticPerm");
+    LLVMStructSetBody(structype, NULL, 0, 0);
+    return structype;
+}
+
 // Generate a LLVMTypeRef from a basic type definition node
 LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
     switch (typ->tag) {
@@ -314,6 +320,9 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
         }
         return LLVMFunctionType(genlType(gen, fnsig->rettype), param_types, fnsig->parms->used, 0);
     }
+
+    case PermTag:
+        return gen->staticperm;
 
     case StructTag:
     {
