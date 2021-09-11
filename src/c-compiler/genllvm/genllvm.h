@@ -40,7 +40,7 @@ typedef struct GenState {
     LLVMMetadataRef compileUnit;
     LLVMMetadataRef difile;
 
-    LLVMTypeRef staticperm;
+    LLVMTypeRef emptyStructType;
 
     ConeOptions *opt;
     INode *fnblock;
@@ -84,6 +84,6 @@ LLVMTypeRef genlType(GenState *gen, INode *typ);
 LLVMValueRef genlSizeof(GenState *gen, INode *vtype);
 // Generate unsigned integer whose bits are same size as a pointer
 LLVMTypeRef genlUsize(GenState *gen);
-LLVMTypeRef genlStaticPerm(GenState* gen);
+LLVMTypeRef genlEmptyStruct(GenState* gen);
 
 #endif

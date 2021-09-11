@@ -244,8 +244,9 @@ void genlBaseTrait(GenState *gen, StructNode *base) {
     base->llvmtype = baseTypeRef;
 }
 
-LLVMTypeRef genlStaticPerm(GenState* gen) {
-    LLVMTypeRef structype = LLVMStructCreateNamed(gen->context, "StaticPerm");
+// Generate a struct with no fields (useful for void, etc.)
+LLVMTypeRef genlEmptyStruct(GenState* gen) {
+    LLVMTypeRef structype = LLVMStructCreateNamed(gen->context, "void");
     LLVMStructSetBody(structype, NULL, 0, 0);
     return structype;
 }
@@ -272,7 +273,7 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
     }
 
     case VoidTag:
-        return LLVMVoidTypeInContext(gen->context);
+        return gen->emptyStructType;
 
     case PtrTag:
     {
@@ -322,7 +323,7 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
     }
 
     case PermTag:
-        return gen->staticperm;
+        return gen->emptyStructType;
 
     case StructTag:
     {

@@ -814,6 +814,8 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         LLVMSetCurrentDebugLocation(gen->builder, val);
     }
     switch (termnode->tag) {
+    case NilLitTag:
+        return LLVMGetUndef(gen->emptyStructType);
     case ULitTag:
         return LLVMConstInt(genlType(gen, ((ULitNode*)termnode)->vtype), ((ULitNode*)termnode)->uintlit, 0);
     case FLitTag:

@@ -61,15 +61,9 @@ void genlReturn(GenState *gen, BreakRetNode *retnode) {
         return;
     }
 
-    if (retnode->exp->tag != NilLitTag) {
-        LLVMValueRef retval = genlExpr(gen, retnode->exp);
-        genlDealiasNodes(gen, retnode->dealias);
-        LLVMBuildRet(gen->builder, retval);
-    }
-    else {
-        genlDealiasNodes(gen, retnode->dealias);
-        LLVMBuildRetVoid(gen->builder);
-    }
+    LLVMValueRef retval = genlExpr(gen, retnode->exp);
+    genlDealiasNodes(gen, retnode->dealias);
+    LLVMBuildRet(gen->builder, retval);
 }
 
 // Generate a block "return" retnode
@@ -155,7 +149,7 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
             LLVMAddIncoming(phi, blkstate->phis, blkstate->blocksFrom, blkstate->phiCnt);
             return phi;
         }
-        return NULL;
+        return LLVMGetUndef(gen->emptyStructType);
 
     }
     return lastval;

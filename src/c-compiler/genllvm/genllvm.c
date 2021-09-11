@@ -400,7 +400,7 @@ void genSetup(GenState *gen, ConeOptions *opt) {
     gen->blockstack = memAllocBlk(sizeof(GenBlockState)*GenBlockStackMax);
     gen->blockstackcnt = 0;
 
-    gen->staticperm = genlStaticPerm(gen);
+    gen->emptyStructType = genlEmptyStruct(gen);
 }
 
 void genClose(GenState *gen) {

@@ -70,7 +70,6 @@ INode *parsePrefix(ParseState *parse, int noSuffix);
 
 // parsetype.c
 INode *parsePerm();
-void parseAllocPerm(RefNode *refnode);
 VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags);
 INode *parseFnSig(ParseState *parse);
 INode *parseStruct(ParseState *parse, uint16_t flags);
