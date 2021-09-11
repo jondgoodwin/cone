@@ -30,8 +30,13 @@ void allocateTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     if (iexpTypeCheckAny(pstate, &node->vtexp) == 0)
         return;
 
+    INode *vtype = ((IExpNode*)node->vtexp)->vtype;
+    if (!itypeIsConcrete(vtype) || itypeIsZeroSize(vtype)) {
+        errorMsgNode(node->vtexp, ErrorInvType, "May not allocate a value of abstract or zero-size type");
+    }
+
     // Infer reference's value type based on initial value
-    RefNode *reftype = newRefNodeFull(RefTag, (INode*)node, node->region, node->perm, ((IExpNode*)node->vtexp)->vtype);
+    RefNode *reftype = newRefNodeFull(RefTag, (INode*)node, node->region, node->perm, vtype);
     refTypeCheck(pstate, reftype);
     node->vtype = (INode *)reftype;
 }
