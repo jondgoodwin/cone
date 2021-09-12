@@ -39,6 +39,8 @@ void genlRefTypeSetup(GenState *gen, RefNode *reftype) {
     LLVMTypeRef structype = LLVMStructCreateNamed(gen->context, "refstruct");
     LLVMStructSetBody(structype, field_types, 3, 0);
     refinfo->structype = structype;
+
+    refinfo->ptrstructype = LLVMPointerType(structype, 0);
 }
 
 
@@ -96,20 +98,25 @@ LLVMValueRef genlFree(GenState *gen, LLVMValueRef ref) {
 
 // Generate code that creates an allocated ref by allocating and initializing
 LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
-    LLVMTypeRef llvmreftype = genlType(gen, allocatenode->vtype);
     RefNode *reftype = (RefNode*)allocatenode->vtype;
+
+    // Do region allocation
     long long structsize = LLVMABISizeOfType(gen->datalayout, reftype->typeinfo->structype);
     LLVMValueRef malloc = genlmalloc(gen, structsize);
+    LLVMValueRef ptrstructype = LLVMBuildBitCast(gen->builder, malloc, reftype->typeinfo->ptrstructype, "");
+
+    // Initialize region
     if (isRegion(reftype->region, rcName)) {
         LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), 1, 0);
         LLVMTypeRef ptrusize = LLVMPointerType(genlType(gen, (INode*)usizeType), 0);
         LLVMValueRef counterptr = LLVMBuildBitCast(gen->builder, malloc, ptrusize, "");
         LLVMBuildStore(gen->builder, constone, counterptr); // Store 1 into refcounter
-        malloc = LLVMBuildGEP(gen->builder, malloc, &constone, 1, ""); // Point to value
     }
-    LLVMValueRef valcast = LLVMBuildBitCast(gen->builder, malloc, llvmreftype, "");
-    LLVMBuildStore(gen->builder, genlExpr(gen, allocatenode->vtexp), valcast);
-    return valcast;
+
+    // Initialize value (via copy)
+    LLVMValueRef valuep = LLVMBuildStructGEP(gen->builder, ptrstructype, ValueField, ""); // Point to value
+    LLVMBuildStore(gen->builder, genlExpr(gen, allocatenode->vtexp), valuep);
+    return valuep;
 }
 
 // Dealias an own allocated reference

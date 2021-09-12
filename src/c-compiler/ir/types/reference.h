@@ -12,7 +12,14 @@
 typedef struct {
     LLVMTypeRef llvmtyperef;
     LLVMTypeRef structype;
+    LLVMTypeRef ptrstructype;
 } RefTypeInfo;
+
+enum ManagedRefFields {
+    RegionField,
+    PermField,
+    ValueField
+};
 
 // Reference node: used for reference type, allocation or borrow node
 typedef struct {
