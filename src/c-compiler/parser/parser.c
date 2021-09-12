@@ -457,8 +457,10 @@ ModuleNode *parsePgm(ConeOptions *opt) {
     // to be always visible across all other modules
     ModuleNode *coremod = newModuleNode();
     parse.pgmmod = coremod;
+    parse.mod = coremod;
     lexInject("corelib", stdlibInit(opt->ptrsize));
     parseGlobalStmts(&parse, coremod);
+    parse.mod = NULL;
 
     // Parse main source file
     ModuleNode *mod = newModuleNode();

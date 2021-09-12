@@ -39,6 +39,26 @@ void allocateTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     RefNode *reftype = newRefNodeFull(RefTag, (INode*)node, node->region, node->perm, vtype);
     refTypeCheck(pstate, reftype);
     node->vtype = (INode *)reftype;
+
+    // Build allocation logic out of reference's region
+    if (reftype->typeinfo->alloccall == NULL) {
+        INode *region = itypeGetTypeDcl(node->region);
+        if (region->tag != StructTag) {
+            errorMsgNode(node->region, ErrorInvType, "Not a valid region.");
+            return;
+        }
+        /*
+        INode *allocmeth = iTypeFindFnField(region, allocMethodName);
+        if (allocmeth == NULL) {
+            errorMsgNode(node->region, ErrorInvType, "Region does not support allocation as it lacks _alloc method.");
+            return;
+        }
+        FnCallNode *fncall = newFnCallNode(allocmeth, 2);
+        // Fix problem that alloc has no self!
+        // Add size argument!  type-check fncall to method
+        reftype->typeinfo->alloccall = (INode*)fncall;
+        */
+    }
 }
 
 // Perform data flow analysis on allocate node

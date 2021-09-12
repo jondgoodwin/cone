@@ -195,6 +195,7 @@ void nametblInit() {
 
     rcName = nametblFind("rc", 2);
     soName = nametblFind("so", 2);
+    allocMethodName = nametblFind("_alloc", 6);
 }
 
 

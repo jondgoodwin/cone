@@ -23,6 +23,9 @@ RefNode *newRefNode(uint16_t tag) {
 void *refTypeInfoAlloc() {
     RefTypeInfo *refinfo = memAllocBlk(sizeof(RefTypeInfo));
     refinfo->llvmtyperef = NULL;
+    refinfo->structype = NULL;
+    refinfo->ptrstructype = NULL;
+    refinfo->alloccall = NULL;
     return (void*)refinfo;
 }
 

@@ -56,6 +56,7 @@ Name *refIndexName;
 Name *optionName;
 Name *rcName;
 Name *soName;
+Name *allocMethodName;
 
 void nameConcatPrefix(char **prefix, char *name) {
     size_t size = strlen(*prefix) + strlen(name) + 1;
