@@ -91,6 +91,7 @@ void keywordInit() {
     keyAdd("typedef", TypedefToken),
     keyAdd("struct", StructToken);
     keyAdd("trait", TraitToken);
+    keyAdd("@static", StaticToken);
     keyAdd("@samesize", SamesizeToken);
     keyAdd("@move", MoveToken);
     keyAdd("@opaque", OpaqueToken);

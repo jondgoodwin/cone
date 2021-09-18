@@ -130,8 +130,12 @@ INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags) {
     GenericNode *genericnode = NULL;
     FnDclNode *fnnode = newFnDclNode(NULL, nodeflags, NULL, NULL);
 
-    // Skip past the 'fn'
+    // Skip past the 'fn'. Handle @static attribute
     lexNextToken();
+    if (lexIsToken(StaticToken)) {
+        fnnode->flags &= 0xFFFF - FlagMethFld;
+        lexNextToken();
+    }
 
     // Process function name, if provided
     if (lexIsToken(IdentToken)) {
@@ -152,7 +156,7 @@ INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags) {
     }
 
     // Process the function's signature info.
-    fnnode->vtype = parseFnSig(parse);
+    fnnode->vtype = parseFnSig(parse, fnnode->flags);
 
     // Handle optional specification that we are declaring an inline function,
     // one whose implementation will be "inlined" into any function that calls it

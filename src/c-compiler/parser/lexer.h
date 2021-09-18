@@ -148,6 +148,7 @@ enum TokenTypes {
     TypedefToken,   // 'typedef'
     StructToken,    // 'struct'
     TraitToken,     // 'trait'
+    StaticToken,    // '@static'
     SamesizeToken,  // '@samesize'
     MoveToken,      // '@move'
     OpaqueToken,    // '@opaque'

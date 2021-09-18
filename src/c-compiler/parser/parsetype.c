@@ -261,7 +261,7 @@ void parseInjectSelf(FnSigNode *fnsig) {
 }
 
 // Parse a function's type signature
-INode *parseFnSig(ParseState *parse) {
+INode *parseFnSig(ParseState *parse, int fnflags) {
     FnSigNode *fnsig;
     uint16_t parmnbr = 0;
     uint16_t parseflags = ParseMaySig | ParseMayImpl;
@@ -273,7 +273,7 @@ INode *parseFnSig(ParseState *parse) {
     if (lexIsToken(LParenToken)) {
         lexNextToken();
         // A type's method with no parameters should still define self
-        if (lexIsToken(RParenToken) && parse->typenode)
+        if (lexIsToken(RParenToken) && (fnflags & FlagMethFld))
             parseInjectSelf(fnsig);
         while (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
             VarDclNode *parm = parseVarDcl(parse, immPerm, parseflags);
@@ -281,7 +281,7 @@ INode *parseFnSig(ParseState *parse) {
             // Do special inference if function is a type's method
             if (parse->typenode) {
                 // Create default self parm, if 'self' was not specified
-                if (parmnbr == 0 && parm->namesym != selfName) {
+                if ((fnflags & FlagMethFld) && parmnbr == 0 && parm->namesym != selfName) {
                     parseInjectSelf(fnsig);
                     ++parmnbr;
                 }
