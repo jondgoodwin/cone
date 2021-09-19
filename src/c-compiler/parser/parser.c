@@ -244,6 +244,18 @@ void parseImport(ParseState *parse) {
         }
         lexPop();
     }
+    else {
+        ModuleNode *svmod = parse->mod;
+        ModuleNode *newmod = newModuleNode();
+        parse->mod = newmod;
+        lexInjectFile(filename);
+        parseGlobalStmts(parse, newmod);
+        if (lex->toktype != EofToken) {
+            errorMsgLex(ErrorNoEof, "Expected end-of-file");
+        }
+        lexPop();
+        parse->mod = svmod;
+    }
 }
 
 // Parse function or variable, as it may be preceded by a qualifier
@@ -444,7 +456,7 @@ ModuleNode *parseModule(ParseState *parse) {
 }
 
 // Parse a program = the main module
-ModuleNode *parsePgm(ConeOptions *opt) {
+ProgramNode *parsePgm(ConeOptions *opt) {
     // Initialize name table and lexer
     nametblInit();
     typetblInit();
@@ -455,6 +467,8 @@ ModuleNode *parsePgm(ConeOptions *opt) {
     parse.mod = NULL;
     parse.typenode = NULL;
     parse.gennamePrefix = "";
+
+    ProgramNode *pgm = newProgramNode();
 
     // Parse core library
     // Note: we bypass module hooking here, because we want core lib types
@@ -471,5 +485,8 @@ ModuleNode *parsePgm(ConeOptions *opt) {
     modAddNode(mod, NULL, (INode*)coremod); // Make sure it gets passes
     parse.pgmmod = mod;
     lexInjectFile(opt->srcpath);
-    return parseModuleBlk(&parse, mod);
+
+    parseModuleBlk(&parse, mod);
+    pgm->pgmmod = mod;
+    return pgm;
 }

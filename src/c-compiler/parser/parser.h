@@ -29,7 +29,7 @@ enum ParseFlags {
 };
 
 // parser.c
-ModuleNode *parsePgm(ConeOptions *opt);
+ProgramNode *parsePgm(ConeOptions *opt);
 ModuleNode *parseModuleBlk(ParseState *parse, ModuleNode *mod);
 INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags);
 // Skip to next statement for error recovery

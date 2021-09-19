@@ -69,9 +69,11 @@ typedef struct INode {
 
 // All the possible tags for a node
 enum NodeTags {
+    ProgramTag = StmtGroup,
+
     // Lexer-only nodes that are *never* found in a program's IR.
     // KeywordTag exists for name table consistency
-    KeywordTag = StmtGroup,    // Keyword token (flags is the keyword's token type)
+    KeywordTag,     // Keyword token (flags is the keyword's token type)
 
     // Untyped (Basic) nodes
     IntrinsicTag,   // Alternative to fndcl block for internal operations (e.g., add)

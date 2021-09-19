@@ -324,12 +324,16 @@ void genlOut(char *objpath, char *asmpath, LLVMModuleRef mod, char *triple, LLVM
     }
 }
 
-// Generate IR nodes into LLVM IR using LLVM
 void genmod(GenState *gen, ModuleNode *mod) {
+    genlPackage(gen, mod);
+}
+
+// Generate IR nodes into LLVM IR using LLVM
+void genpgm(GenState *gen, ProgramNode *pgm) {
     char *err;
 
     // Generate IR to LLVM IR
-    genlPackage(gen, mod);
+    genlPackage(gen, pgm->pgmmod);
 
     // Verify generated IR
     if (gen->opt->verify) {

@@ -20,7 +20,7 @@
 #include <assert.h>
 
 // Run all semantic analysis passes against the AST/IR (after parse and before gen)
-void doAnalysis(ModuleNode **mod) {
+void doAnalysis(ProgramNode **pgm) {
 
     // Resolve all name uses to their appropriate declaration
     // Note: Some nodes may be replaced (e.g., 'a' to 'self.a')
@@ -30,7 +30,7 @@ void doAnalysis(ModuleNode **mod) {
     nstate.loopblock = NULL;
     nstate.scope = 0;
     nstate.flags = 0;
-    inodeNameRes(&nstate, (INode**)mod);
+    inodeNameRes(&nstate, (INode**)pgm);
     if (errors)
         return;
 
@@ -52,13 +52,12 @@ void doAnalysis(ModuleNode **mod) {
     TypeCheckState tstate;
     tstate.fn = NULL;
     tstate.typenode = NULL;
-    inodeTypeCheckAny(&tstate, (INode**)mod);
+    inodeTypeCheckAny(&tstate, (INode**)pgm);
 }
 
 int main(int argc, char **argv) {
     ConeOptions coneopt;
     GenState gen;
-    ModuleNode *modnode;
     int ok;
 
     // Get compiler's options from passed arguments
@@ -76,15 +75,15 @@ int main(int argc, char **argv) {
 
     // Parse source file, do semantic analysis, and generate code
     timerBegin(ParseTimer);
-    modnode = parsePgm(&coneopt);
+    ProgramNode* pgmnode = parsePgm(&coneopt);
     if (errors == 0) {
         timerBegin(SemTimer);
-        doAnalysis(&modnode);
+        doAnalysis(&pgmnode);
         if (errors == 0) {
             timerBegin(GenTimer);
             if (coneopt.print_ir)
-                inodePrint(coneopt.output, coneopt.srcpath, (INode*)modnode);
-            genmod(&gen, modnode);
+                inodePrint(coneopt.output, coneopt.srcpath, (INode*)pgmnode);
+            genpgm(&gen, pgmnode);
             genClose(&gen);
         }
     }

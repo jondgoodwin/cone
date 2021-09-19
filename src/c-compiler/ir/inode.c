@@ -65,6 +65,8 @@ void inodePrintDecr() {
 // Serialize a specific node
 void inodePrintNode(INode *node) {
     switch (node->tag) {
+    case ProgramTag:
+        pgmPrint((ProgramNode *)node); break;
     case ModuleTag:
         modPrint((ModuleNode *)node); break;
     case NameUseTag:
@@ -192,6 +194,8 @@ void inodePrint(char *dir, char *srcfn, INode *pgmnode) {
 // - node is a pointer to pointer so that a node can be replaced
 void inodeNameRes(NameResState *pstate, INode **node) {
     switch ((*node)->tag) {
+    case ProgramTag:
+        pgmNameRes(pstate, (ProgramNode*)*node); break;
     case ModuleTag:
         modNameRes(pstate, (ModuleNode*)*node); break;
     case FnDclTag:
@@ -302,6 +306,8 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     }
 
     switch ((*node)->tag) {
+    case ProgramTag:
+        pgmTypeCheck(pstate, (ProgramNode *)*node); break;
     case ModuleTag:
         modTypeCheck(pstate, (ModuleNode*)*node); break;
     case FnDclTag:

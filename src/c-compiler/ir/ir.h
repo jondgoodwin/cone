@@ -97,6 +97,8 @@ typedef struct TypeCheckState TypeCheckState;
 #include "meta/genvardcl.h"
 #include "meta/generic.h"
 
+#include "stmt/program.h"
+
 #include "../corelib/corelib.h"
 
 // Context used for name resolution pass
