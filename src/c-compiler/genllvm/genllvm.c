@@ -195,8 +195,8 @@ void genlGeneric(GenState *gen, GenericNode *gennode, int dobody) {
     }
 }
 
-// Generate module's nodes
-void genlModule(GenState *gen, ModuleNode *mod) {
+// Generate module's symbols
+void genlModuleSyms(GenState *gen, ModuleNode *mod) {
     uint32_t cnt;
     INode **nodesp;
 
@@ -211,6 +211,12 @@ void genlModule(GenState *gen, ModuleNode *mod) {
         else if (nodep->tag == GenericDclTag)
             genlGeneric(gen, (GenericNode *)nodep, 0);
     }
+}
+
+// Generate module's symbol implementations
+void genlModuleImpl(GenState *gen, ModuleNode *mod) {
+    uint32_t cnt;
+    INode **nodesp;
 
     // Generate the function's block or the variable's initialization value
     for (nodesFor(mod->nodes, cnt, nodesp)) {
@@ -234,7 +240,8 @@ void genlModule(GenState *gen, ModuleNode *mod) {
             break;
 
         case ModuleTag:
-            genlModule(gen, (ModuleNode*)nodep);
+            genlModuleSyms(gen, (ModuleNode*)nodep);
+            genlModuleImpl(gen, (ModuleNode*)nodep);
             break;
 
         default:
@@ -257,11 +264,14 @@ void genlPackage(GenState *gen, ProgramNode *pgm) {
             gen->difile, "Cone compiler", 13, 0, "", 0, 0, "", 0, LLVMDWARFEmissionFull, 0, 0, 0);
     }
 
-    // Generate all modules
+    // Generate all modules, first their symbols then their implementations
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(pgm->modules, cnt, nodesp)) {
-        genlModule(gen, (ModuleNode*)*nodesp);
+        genlModuleSyms(gen, (ModuleNode*)*nodesp);
+    }
+    for (nodesFor(pgm->modules, cnt, nodesp)) {
+        genlModuleImpl(gen, (ModuleNode*)*nodesp);
     }
 
     if (!gen->opt->release)

@@ -248,13 +248,20 @@ void parseImport(ParseState *parse) {
         ModuleNode *svmod = parse->mod;
         ModuleNode *newmod = pgmAddMod(parse->pgm);
         parse->mod = newmod;
+        modHook(svmod, newmod);
         lexInjectFile(filename);
         parseGlobalStmts(parse, newmod);
         if (lex->toktype != EofToken) {
             errorMsgLex(ErrorNoEof, "Expected end-of-file");
         }
         lexPop();
+        modHook(newmod, svmod);
         parse->mod = svmod;
+
+        // Add imported module to namespace of existing module
+        char *modstr = fileName(filename);
+        Name *modname = nametblFind(modstr, strlen(modstr));
+        modAddNamedNode(svmod, modname, (INode*)newmod);
     }
 }
 
