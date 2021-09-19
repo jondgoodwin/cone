@@ -12,14 +12,17 @@
 // Module is the envelope for all modules for the compiled program
 typedef struct {
     INodeHdr;
-    ModuleNode *pgmmod;      // The main program module
+    Nodes *modules;
 } ProgramNode;
 
 ProgramNode *newProgramNode();
 void pgmPrint(ProgramNode *pgm);
-//void pgmAddNode(ProgramNode *pgm, Name *name, INode *node);
-//void pgmAddNamedNode(ProgramNode *mod, Name *name, INode *node);
+
+// Add a new module to the program
+ModuleNode *pgmAddMod(ProgramNode *pgm);
+
 void pgmNameRes(NameResState *pstate, ProgramNode *mod);
+
 void pgmTypeCheck(TypeCheckState *pstate, ProgramNode *mod);
 
 #endif

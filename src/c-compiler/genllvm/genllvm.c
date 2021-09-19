@@ -246,9 +246,9 @@ void genlModule(GenState *gen, ModuleNode *mod) {
     }
 }
 
-void genlPackage(GenState *gen, ModuleNode *mod) {
+void genlPackage(GenState *gen, ProgramNode *pgm) {
 
-    assert(mod->tag == ModuleTag);
+    assert(pgm->tag == ProgramTag);
     gen->module = LLVMModuleCreateWithNameInContext(gen->opt->srcname, gen->context);
     if (!gen->opt->release) {
         gen->dibuilder = LLVMCreateDIBuilder(gen->module);
@@ -256,7 +256,14 @@ void genlPackage(GenState *gen, ModuleNode *mod) {
         gen->compileUnit = LLVMDIBuilderCreateCompileUnit(gen->dibuilder, LLVMDWARFSourceLanguageC,
             gen->difile, "Cone compiler", 13, 0, "", 0, 0, "", 0, LLVMDWARFEmissionFull, 0, 0, 0);
     }
-    genlModule(gen, mod);
+
+    // Generate all modules
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(pgm->modules, cnt, nodesp)) {
+        genlModule(gen, (ModuleNode*)*nodesp);
+    }
+
     if (!gen->opt->release)
         LLVMDIBuilderFinalize(gen->dibuilder);
 }
@@ -324,16 +331,12 @@ void genlOut(char *objpath, char *asmpath, LLVMModuleRef mod, char *triple, LLVM
     }
 }
 
-void genmod(GenState *gen, ModuleNode *mod) {
-    genlPackage(gen, mod);
-}
-
 // Generate IR nodes into LLVM IR using LLVM
 void genpgm(GenState *gen, ProgramNode *pgm) {
     char *err;
 
-    // Generate IR to LLVM IR
-    genlPackage(gen, pgm->pgmmod);
+    // Generate IR to LLVM IR 
+    genlPackage(gen, pgm);
 
     // Verify generated IR
     if (gen->opt->verify) {

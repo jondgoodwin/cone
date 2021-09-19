@@ -246,7 +246,7 @@ void parseImport(ParseState *parse) {
     }
     else {
         ModuleNode *svmod = parse->mod;
-        ModuleNode *newmod = newModuleNode();
+        ModuleNode *newmod = pgmAddMod(parse->pgm);
         parse->mod = newmod;
         lexInjectFile(filename);
         parseGlobalStmts(parse, newmod);
@@ -462,13 +462,14 @@ ProgramNode *parsePgm(ConeOptions *opt) {
     typetblInit();
     lexInit();
 
+    ProgramNode *pgm = newProgramNode();
+
     // Initialize parser state
     ParseState parse;
+    parse.pgm = pgm;
     parse.mod = NULL;
     parse.typenode = NULL;
     parse.gennamePrefix = "";
-
-    ProgramNode *pgm = newProgramNode();
 
     // Parse core library
     // Note: we bypass module hooking here, because we want core lib types
@@ -481,12 +482,11 @@ ProgramNode *parsePgm(ConeOptions *opt) {
     parse.mod = NULL;
 
     // Parse main source file
-    ModuleNode *mod = newModuleNode();
+    ModuleNode *mod = pgmAddMod(pgm);
     modAddNode(mod, NULL, (INode*)coremod); // Make sure it gets passes
     parse.pgmmod = mod;
     lexInjectFile(opt->srcpath);
 
     parseModuleBlk(&parse, mod);
-    pgm->pgmmod = mod;
     return pgm;
 }

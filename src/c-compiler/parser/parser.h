@@ -12,6 +12,7 @@
 typedef struct ConeOptions ConeOptions;
 
 typedef struct ParseState {
+    ProgramNode *pgm;       // Program node
     ModuleNode *pgmmod;     // Root module for program
     ModuleNode *mod;        // Current module
     INsTypeNode *typenode;  // Current type

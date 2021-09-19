@@ -14,32 +14,45 @@
 ProgramNode *newProgramNode() {
     ProgramNode *pgm;
     newNode(pgm, ProgramNode, ProgramTag);
-    pgm->pgmmod = NULL;
+    pgm->modules = newNodes(4);
     return pgm;
+}
+
+// Add a new module to the program
+ModuleNode *pgmAddMod(ProgramNode *pgm) {
+    ModuleNode *mod = newModuleNode();
+    nodesAdd(&pgm->modules, (INode*)mod);
+    return mod;
 }
 
 // Serialize a program node
 void pgmPrint(ProgramNode *pgm) {
     inodeFprint("program:\n");
     inodePrintIncr();
-    inodePrintNode((INode*)pgm->pgmmod);
-    /*
     INode **nodesp;
     uint32_t cnt;
-    for (nodesFor(mod->nodes, cnt, nodesp)) {
+    for (nodesFor(pgm->modules, cnt, nodesp)) {
         inodePrintIndent();
         inodePrintNode(*nodesp);
         inodePrintNL();
-    }*/
+    }
     inodePrintDecr();
 }
 
 // Name resolution of the program node
 void pgmNameRes(NameResState *pstate, ProgramNode *pgm) {
-    inodeNameRes(pstate, (INode**)&pgm->pgmmod);
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(pgm->modules, cnt, nodesp)) {
+        inodeNameRes(pstate, nodesp);
+    }
 }
 
 // Type check the program node
 void pgmTypeCheck(TypeCheckState *pstate, ProgramNode *pgm) {
-    inodeTypeCheckAny(pstate, (INode**)&pgm->pgmmod);
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(pgm->modules, cnt, nodesp)) {
+        inodeTypeCheckAny(pstate, nodesp);
+    }
 }
