@@ -83,7 +83,6 @@ Name *keyAdd(char *keyword, uint16_t toktype) {
 void keywordInit() {
     keyAdd("include", IncludeToken);
     keyAdd("import", ImportToken);
-    keyAdd("mod", ModToken);
     keyAdd("extern", ExternToken);
     keyAdd("set", SetToken);
     keyAdd("macro", MacroToken);

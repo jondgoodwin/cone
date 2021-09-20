@@ -58,6 +58,13 @@ Name *rcName;
 Name *soName;
 Name *allocMethodName;
 
+void nameNewPrefix(char **prefix, char *name) {
+    size_t size = strlen(name) + 1;
+    char *newprefix = memAllocStr(name, size);
+    strcat(newprefix, "_");
+    *prefix = newprefix;
+}
+
 void nameConcatPrefix(char **prefix, char *name) {
     size_t size = strlen(*prefix) + strlen(name) + 1;
     char *newprefix = memAllocStr(*prefix, size);

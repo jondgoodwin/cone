@@ -140,7 +140,6 @@ enum TokenTypes {
     // Keywords
     IncludeToken,   // 'include'
     ImportToken,    // 'import'
-    ModToken,       // 'mod'
     ExternToken,    // 'extern'
     SetToken,       // 'set'
     MacroToken,     // 'macro'

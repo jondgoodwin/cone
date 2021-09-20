@@ -245,9 +245,15 @@ void parseImport(ParseState *parse) {
         lexPop();
     }
     else {
+        char *svprefix = parse->gennamePrefix;
         ModuleNode *svmod = parse->mod;
         ModuleNode *newmod = pgmAddMod(parse->pgm);
+        char *modstr = fileName(filename);
+        Name *modname = nametblFind(modstr, strlen(modstr));
+        newmod->namesym = modname;
+        nameNewPrefix(&parse->gennamePrefix, modstr);
         parse->mod = newmod;
+
         modHook(svmod, newmod);
         lexInjectFile(filename);
         parseGlobalStmts(parse, newmod);
@@ -256,11 +262,11 @@ void parseImport(ParseState *parse) {
         }
         lexPop();
         modHook(newmod, svmod);
+
         parse->mod = svmod;
+        parse->gennamePrefix = svprefix;
 
         // Add imported module to namespace of existing module
-        char *modstr = fileName(filename);
-        Name *modname = nametblFind(modstr, strlen(modstr));
         modAddNamedNode(svmod, modname, (INode*)newmod);
     }
 }
@@ -325,8 +331,6 @@ GenericNode *parseMacro(ParseState *parse) {
     return macro;
 }
 
-ModuleNode *parseModule(ParseState *parse);
-
 // Parse a global area statement (within a module)
 // modAddNode adds node to module, as needed, including error message for dupes
 void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
@@ -342,12 +346,6 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
         case ImportToken:
             parseImport(parse);
             break;
-
-        case ModToken: {
-            ModuleNode *newmod = parseModule(parse);
-            modAddNode(mod, newmod->namesym, (INode*)newmod);
-            break;
-        }
 
         case TypedefToken: {
             TypedefNode *newnode = parseTypedef(parse);
@@ -426,39 +424,6 @@ ModuleNode *parseModuleBlk(ParseState *parse, ModuleNode *mod) {
     parseGlobalStmts(parse, mod);
     modHook(mod, oldmod);
     parse->mod = oldmod;
-    return mod;
-}
-
-// Parse a submodule within a program
-ModuleNode *parseModule(ParseState *parse) {
-    char *svprefix = parse->gennamePrefix;
-    ModuleNode *mod;
-    char *filename, *modname;
-
-    // Parse enough to know what we are dealing with
-    lexNextToken();
-    filename = parseFile();
-    modname = fileName(filename);
-    mod = newModuleNode();
-    mod->namesym = nametblFind(modname, strlen(modname));
-    nameConcatPrefix(&parse->gennamePrefix, modname);
-
-    // Check if module's block has been specified
-    if (parseHasBlock()) {
-        // Inline module
-        parseBlockStart();
-        parseModuleBlk(parse, mod);
-        // parseBlockEnd() will have happened
-    }
-    else {
-        // If no block, get and inject the module file
-        parseEndOfStatement();
-        lexInjectFile(filename);
-        parseModuleBlk(parse, mod);
-        lexPop();
-    }
-
-    parse->gennamePrefix = svprefix;
     return mod;
 }
 
