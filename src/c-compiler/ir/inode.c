@@ -80,6 +80,8 @@ void inodePrintNode(INode *node) {
         varDclPrint((VarDclNode *)node); break;
     case FieldDclTag:
         fieldDclPrint((FieldDclNode *)node); break;
+    case ImportTag:
+        importPrint((ImportNode *)node); break;
     case BlockTag:
         blockPrint((BlockNode *)node); break;
     case IfTag:
@@ -212,6 +214,8 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         nameUseNameRes(pstate, (NameUseNode **)node); break;
     case TypeLitTag:
         typeLitNameRes(pstate, (FnCallNode *)*node); break;
+    case ImportTag:
+        importNameRes(pstate, (ImportNode *)*node); break;
     case BlockTag:
         blockNameRes(pstate, (BlockNode *)*node); break;
     case IfTag:
@@ -316,6 +320,8 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
         varDclTypeCheck(pstate, (VarDclNode *)*node); break;
     case FieldDclTag:
         fieldDclTypeCheck(pstate, (FieldDclNode *)*node); break;
+    case ImportTag:
+        importTypeCheck(pstate, (ImportNode *)*node); break;
     case VarNameUseTag:
         nameUseTypeCheck(pstate, (NameUseNode **)node); break;
     case ArrayLitTag:

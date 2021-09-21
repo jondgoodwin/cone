@@ -82,6 +82,7 @@ enum NodeTags {
     BreakTag,       // Break node
     ContinueTag,    // Continue node
     SwapTag,        // Swap operator
+    ImportTag,      // import command
 
     // Parser-ambiguous nodes that will become either types or expressions
     // during name resolution when we finally know for sure

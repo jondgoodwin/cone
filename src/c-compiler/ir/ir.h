@@ -75,6 +75,7 @@ typedef struct TypeCheckState TypeCheckState;
 #include "stmt/fielddcl.h"
 #include "stmt/fndcl.h"
 #include "stmt/return.h"
+#include "stmt/import.h"
 #include "stmt/intrinsic.h"
 #include "stmt/swap.h"
 #include "stmt/vardcl.h"
