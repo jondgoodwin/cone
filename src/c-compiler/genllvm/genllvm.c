@@ -244,6 +244,9 @@ void genlModuleImpl(GenState *gen, ModuleNode *mod) {
             genlModuleImpl(gen, (ModuleNode*)nodep);
             break;
 
+        case ImportTag:
+            break;
+
         default:
             // No need to generate type declarations: type uses will do so
             if (isTypeNode(nodep))

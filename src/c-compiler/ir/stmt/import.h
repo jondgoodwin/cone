@@ -16,6 +16,9 @@ typedef struct {
     int foldall;   // was "*" specified?
 } ImportNode;
 
+// Create a new Import node
+ImportNode *newImportNode();
+
 void importPrint(ImportNode *pgm);
 
 void importNameRes(NameResState *pstate, ImportNode *mod);

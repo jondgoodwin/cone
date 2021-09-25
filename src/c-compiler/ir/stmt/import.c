@@ -21,7 +21,7 @@ ImportNode *newImportNode() {
 
 // Serialize a import node
 void importPrint(ImportNode *node) {
-    inodeFprint("import %s", &node->module->namesym->namestr);
+    inodeFprint("import %s", node->module? &node->module->namesym->namestr : "stdio");
     if (node->foldall)
         inodeFprint("::*");
 }

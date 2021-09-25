@@ -230,10 +230,17 @@ char *stdiolib =
 ;
 
 // Parse import statement: This is a hacked-up version for now
-void parseImport(ParseState *parse) {
-    char *filename;
+ImportNode *parseImport(ParseState *parse) {
+    ImportNode *importnode = newImportNode();
     lexNextToken();
-    filename = parseFile();
+    char *filename = parseFile();
+    if (lexIsToken(DblColonToken)) {
+        lexNextToken();
+        if (lexIsToken(StarToken)) {
+            importnode->foldall = 1;
+            lexNextToken();
+        }
+    }
     parseEndOfStatement();
 
     if (strcmp(filename, "stdio") == 0) {
@@ -268,7 +275,9 @@ void parseImport(ParseState *parse) {
 
         // Add imported module to namespace of existing module
         modAddNamedNode(svmod, modname, (INode*)newmod);
+        importnode->module = newmod;
     }
+    return importnode;
 }
 
 // Parse function or variable, as it may be preceded by a qualifier
@@ -343,9 +352,11 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
             parseInclude(parse);
             break;
 
-        case ImportToken:
-            parseImport(parse);
+        case ImportToken: {
+            ImportNode *newnode = parseImport(parse);
+            modAddNode(mod, NULL, (INode*)newnode);
             break;
+        }
 
         case TypedefToken: {
             TypedefNode *newnode = parseTypedef(parse);
