@@ -432,11 +432,22 @@ void inodeTypeCheckAny(TypeCheckState *pstate, INode **pgm) {
 
 // Obtain name from a named node
 Name *inodeGetName(INode *node) {
+    if (!isNamedNode(node))
+        return NULL;
+    if (isTypeNode(node))
+        return ((INsTypeNode*)node)->namesym;
+
     switch (node->tag) {
+    case FnDclTag:
+        return ((FnDclNode*)node)->namesym;
+    case VarDclTag:
+        return ((VarDclNode*)node)->namesym;
+    case FieldDclTag:
+        return ((FieldDclNode*)node)->namesym;
     case GenericDclTag:
         return ((GenericNode *)node)->namesym;
-    case StructTag:
-        return ((StructNode *)node)->namesym;
+    case GenVarDclTag:
+        return ((GenVarDclNode *)node)->namesym;
     default:
         assert(0 && "Unknown node to get name from");
         return NULL;

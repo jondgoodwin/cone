@@ -83,6 +83,7 @@ void modHook(ModuleNode *oldmod, ModuleNode *newmod) {
 // Name resolution of the module node
 void modNameRes(NameResState *pstate, ModuleNode *mod) {
     ModuleNode *owningmod = pstate->mod;
+    pstate->mod = mod;
 
     // Switch name table over to new module
     modHook(owningmod, mod);

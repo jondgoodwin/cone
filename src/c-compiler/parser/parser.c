@@ -254,15 +254,16 @@ ImportNode *parseImport(ParseState *parse) {
     else {
         char *svprefix = parse->gennamePrefix;
         ModuleNode *svmod = parse->mod;
-        ModuleNode *newmod = pgmAddMod(parse->pgm);
         char *modstr = fileName(filename);
         Name *modname = nametblFind(modstr, strlen(modstr));
-        newmod->namesym = modname;
         nameNewPrefix(&parse->gennamePrefix, modstr);
+
+        lexInjectFile(filename);
+        ModuleNode *newmod = pgmAddMod(parse->pgm);
+        newmod->namesym = modname;
         parse->mod = newmod;
 
         modHook(svmod, newmod);
-        lexInjectFile(filename);
         parseGlobalStmts(parse, newmod);
         if (lex->toktype != EofToken) {
             errorMsgLex(ErrorNoEof, "Expected end-of-file");

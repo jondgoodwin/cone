@@ -28,6 +28,20 @@ void importPrint(ImportNode *node) {
 
 // Name resolution of the import node
 void importNameRes(NameResState *pstate, ImportNode *node) {
+    if (!node->foldall || !node->module)
+        return;
+
+    ModuleNode *sourcemod = node->module;
+    ModuleNode *targetmod = pstate->mod;
+
+    // Process all nodes
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(sourcemod->nodes, cnt, nodesp)) {
+        if (!isNamedNode(*nodesp))
+            continue;
+        modAddNamedNode(targetmod, inodeGetName(*nodesp), *nodesp);
+    }
 }
 
 // Type check the import node
