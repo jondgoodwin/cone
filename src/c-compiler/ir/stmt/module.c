@@ -15,6 +15,7 @@ ModuleNode *newModuleNode() {
     ModuleNode *mod;
     newNode(mod, ModuleNode, ModuleTag);
     mod->namesym = NULL;
+    mod->imports = newNodes(8);
     mod->nodes = newNodes(64);
     namespaceInit(&mod->namespace, 64);
     return mod;
@@ -44,6 +45,13 @@ void modAddNamedNode(ModuleNode *mod, Name *name, INode *node) {
 //     because permissions and allocators do not support forward references
 // - We remember all public names for later resolution of qualified names
 void modAddNode(ModuleNode *mod, Name *name, INode *node) {
+
+    // imports need to be processed, as name folding must be finished
+    // before we do name resolution on module's nodes
+    if (node->tag == ImportTag) {
+        nodesAdd(&mod->imports, node);
+        return;
+    }
 
     // Add to regular ordered node list
     nodesAdd(&mod->nodes, node);
@@ -91,6 +99,10 @@ void modNameRes(NameResState *pstate, ModuleNode *mod) {
     // Process all nodes
     INode **nodesp;
     uint32_t cnt;
+    // Do name folding of imports, before we name resolve rest of module
+    for (nodesFor(mod->imports, cnt, nodesp)) {
+        inodeNameRes(pstate, nodesp);
+    }
     for (nodesFor(mod->nodes, cnt, nodesp)) {
         inodeNameRes(pstate, nodesp);
     }

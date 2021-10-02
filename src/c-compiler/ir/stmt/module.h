@@ -21,6 +21,7 @@
 typedef struct ModuleNode {
     IExpNodeHdr;
     Name *namesym;
+    Nodes *imports;          // All import nodes
     Nodes *nodes;            // All parsed nodes owned by the module
     Namespace namespace;     // The module's named nodes, owned or "used"
 } ModuleNode;
