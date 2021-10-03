@@ -229,25 +229,11 @@ char *stdiolib =
 "mut print = IOStream[0]"
 ;
 
-// Parse import statement: This is a hacked-up version for now
-ImportNode *parseImport(ParseState *parse) {
-    ImportNode *importnode = newImportNode();
-    lexNextToken();
-    char *filename = parseFile();
-    if (lexIsToken(DblColonToken)) {
-        lexNextToken();
-        if (lexIsToken(StarToken)) {
-            importnode->foldall = 1;
-            lexNextToken();
-        }
-    }
-    parseEndOfStatement();
-
+// Parse imported module
+ModuleNode *parseImportModule(ParseState *parse, char *filename, Name *modname) {
     char *svprefix = parse->gennamePrefix;
     ModuleNode *svmod = parse->mod;
-    char *modstr = fileName(filename);
-    Name *modname = nametblFind(modstr, strlen(modstr));
-    nameNewPrefix(&parse->gennamePrefix, modstr);
+    nameNewPrefix(&parse->gennamePrefix, &modname->namestr);
 
     if (strcmp(filename, "stdio") == 0)
         lexInject("stdio", stdiolib);
@@ -267,9 +253,31 @@ ImportNode *parseImport(ParseState *parse) {
 
     parse->mod = svmod;
     parse->gennamePrefix = svprefix;
+    return newmod;
+}
+
+// Parse import statement
+ImportNode *parseImport(ParseState *parse) {
+    ImportNode *importnode = newImportNode();
+    lexNextToken();
+    char *filename = parseFile();
+    char *modstr = fileName(filename);
+    Name *modname = nametblFind(modstr, strlen(modstr));
+
+    if (lexIsToken(DblColonToken)) {
+        lexNextToken();
+        if (lexIsToken(StarToken)) {
+            importnode->foldall = 1;
+            lexNextToken();
+        }
+    }
+    parseEndOfStatement();
+
+    // Parse the imported modules
+    ModuleNode *newmod = parseImportModule(parse, filename, modname);
 
     // Add imported module to namespace of existing module
-    modAddNamedNode(svmod, modname, (INode*)newmod);
+    modAddNamedNode(parse->mod, modname, (INode*)newmod);
     importnode->module = newmod;
 
     return importnode;
