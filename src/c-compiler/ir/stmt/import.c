@@ -46,4 +46,6 @@ void importNameRes(NameResState *pstate, ImportNode *node) {
 
 // Type check the import node
 void importTypeCheck(TypeCheckState *pstate, ImportNode *node) {
+    // Type check the module we are importing
+    inodeTypeCheckAny(pstate, (INode**)&node->module);
 }

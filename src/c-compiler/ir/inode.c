@@ -298,7 +298,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     // so that we know everything we need to know about correctly managing their values
     // (because of needing to infer infectious type constraints based on their composed fields).
     // However, type checking of a type node should only be done once
-    if (isTypeNode(*node)) {
+    if (isTypeNode(*node) || (*node)->tag == ModuleTag) {
         if ((*node)->flags & TypeChecked)
             return;
         if ((*node)->flags & TypeChecking) {
@@ -417,7 +417,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     }
 
     // Confirm when a type node has been checked
-    if (isTypeNode(*node)) {
+    if (isTypeNode(*node) || (*node)->tag == ModuleTag) {
         (*node)->flags |= TypeChecked;
     }
 }

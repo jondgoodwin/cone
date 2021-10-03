@@ -243,41 +243,35 @@ ImportNode *parseImport(ParseState *parse) {
     }
     parseEndOfStatement();
 
-    if (strcmp(filename, "stdio") == 0) {
+    char *svprefix = parse->gennamePrefix;
+    ModuleNode *svmod = parse->mod;
+    char *modstr = fileName(filename);
+    Name *modname = nametblFind(modstr, strlen(modstr));
+    nameNewPrefix(&parse->gennamePrefix, modstr);
+
+    if (strcmp(filename, "stdio") == 0)
         lexInject("stdio", stdiolib);
-        parseGlobalStmts(parse, parse->mod);
-        if (lex->toktype != EofToken) {
-            errorMsgLex(ErrorNoEof, "Expected end-of-file");
-        }
-        lexPop();
-    }
-    else {
-        char *svprefix = parse->gennamePrefix;
-        ModuleNode *svmod = parse->mod;
-        char *modstr = fileName(filename);
-        Name *modname = nametblFind(modstr, strlen(modstr));
-        nameNewPrefix(&parse->gennamePrefix, modstr);
-
+    else
         lexInjectFile(filename);
-        ModuleNode *newmod = pgmAddMod(parse->pgm);
-        newmod->namesym = modname;
-        parse->mod = newmod;
+    ModuleNode *newmod = pgmAddMod(parse->pgm);
+    newmod->namesym = modname;
+    parse->mod = newmod;
 
-        modHook(svmod, newmod);
-        parseGlobalStmts(parse, newmod);
-        if (lex->toktype != EofToken) {
-            errorMsgLex(ErrorNoEof, "Expected end-of-file");
-        }
-        lexPop();
-        modHook(newmod, svmod);
-
-        parse->mod = svmod;
-        parse->gennamePrefix = svprefix;
-
-        // Add imported module to namespace of existing module
-        modAddNamedNode(svmod, modname, (INode*)newmod);
-        importnode->module = newmod;
+    modHook(svmod, newmod);
+    parseGlobalStmts(parse, newmod);
+    if (lex->toktype != EofToken) {
+        errorMsgLex(ErrorNoEof, "Expected end-of-file");
     }
+    lexPop();
+    modHook(newmod, svmod);
+
+    parse->mod = svmod;
+    parse->gennamePrefix = svprefix;
+
+    // Add imported module to namespace of existing module
+    modAddNamedNode(svmod, modname, (INode*)newmod);
+    importnode->module = newmod;
+
     return importnode;
 }
 
