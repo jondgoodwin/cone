@@ -94,7 +94,7 @@ void modNameRes(NameResState *pstate, ModuleNode *mod) {
     pstate->mod = mod;
 
     // Switch name table over to new module
-    modHook(owningmod, mod);
+    modHook(NULL, mod);
 
     // Process all nodes
     INode **nodesp;
@@ -108,7 +108,7 @@ void modNameRes(NameResState *pstate, ModuleNode *mod) {
     }
 
     // Switch name table back to owner module
-    modHook(mod, owningmod);
+    modHook(mod, NULL);
     pstate->mod = owningmod;
 }
 

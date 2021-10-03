@@ -251,16 +251,14 @@ ModuleNode *parseImportModule(ParseState *parse, char *filename, Name *modname) 
     newmod->namesym = modname;
     parse->mod = newmod;
 
-    /*
-    // Auto-import core lib
+    // Auto-import core lib (except into corelib)
     ModuleNode *corelib = pgmFindMod(parse->pgm, corelibName);
-    if (corelib) {
+    if (corelib && corelib != newmod) {
         ImportNode *importnode = newImportNode();
         importnode->foldall = 1;
         importnode->module = corelib;
         modAddNode(newmod, NULL, (INode*)importnode);
     }
-    */
 
     modHook(svmod, newmod);
     parseGlobalStmts(parse, newmod);
@@ -481,6 +479,7 @@ ProgramNode *parsePgm(ConeOptions *opt) {
     ModuleNode *pgmmod = pgmAddMod(pgm);
     parse.pgmmod = pgmmod;
     lexInjectFile(opt->srcpath);
+    modHook(NULL, pgmmod);
 
     // Inject and parse core libary module, auto-imported into main source
     ModuleNode *corelib = parseImportModule(&parse, "", corelibName);
@@ -491,5 +490,6 @@ ProgramNode *parsePgm(ConeOptions *opt) {
 
     // Now actually parse main source file
     parseModuleBlk(&parse, pgmmod);
+    modHook(pgmmod, NULL);
     return pgm;
 }
