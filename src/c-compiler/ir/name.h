@@ -69,6 +69,7 @@ extern Name *parensName;   // "()"
 extern Name *indexName;    // "[]"
 extern Name *refIndexName; // "&[]"
 
+extern Name *corelibName;  // "corelib"
 extern Name *optionName;   // "Option"
 
 extern Name *rcName;       // "rc"

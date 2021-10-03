@@ -56,7 +56,7 @@ void stdPermInit() {
     opaqPerm = newPermNodeStr("opaq", MayAlias | RaceSafe | IsLockless);
 }
 
-char *corelib =
+char *corelibSource =
 "trait @samesize Option[T] {_ enum;}\n"
 "struct Null[T] extends Option[T] {}\n"
 "struct Some[T] extends Option[T] {some T}\n"
@@ -76,7 +76,7 @@ char *corelib =
 ;
 
 // Set up the standard library, whose names are always shared by all modules
-char *stdlibInit(int ptrsize) {
+void stdlibInit(int ptrsize) {
 
     unknownType = (INode*)newAbsenceNode();
     unknownType->tag = UnknownTag;
@@ -89,6 +89,4 @@ char *stdlibInit(int ptrsize) {
     staticLifetimeNode = newLifetimeDclNode(nametblFind("'static", 7), 0);
     stdPermInit();
     stdNbrInit(ptrsize);
-
-    return corelib;
 }

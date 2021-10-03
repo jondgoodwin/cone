@@ -241,7 +241,9 @@ ModuleNode *parseImportModule(ParseState *parse, char *filename, Name *modname) 
     ModuleNode *svmod = parse->mod;
     nameNewPrefix(&parse->gennamePrefix, &modname->namestr);
 
-    if (strcmp(filename, "stdio") == 0)
+    if (modname == corelibName)
+        lexInject("corelib", corelibSource);
+    else if (strcmp(filename, "stdio") == 0)
         lexInject("stdio", stdiolib);
     else
         lexInjectFile(filename);
@@ -453,6 +455,7 @@ ProgramNode *parsePgm(ConeOptions *opt) {
     nametblInit();
     typetblInit();
     lexInit();
+    stdlibInit(opt->ptrsize);
 
     ProgramNode *pgm = newProgramNode();
 
@@ -463,22 +466,19 @@ ProgramNode *parsePgm(ConeOptions *opt) {
     parse.typenode = NULL;
     parse.gennamePrefix = "";
 
-    // Parse core library
-    // Note: we bypass module hooking here, because we want core lib types
-    // to be always visible across all other modules
-    ModuleNode *coremod = newModuleNode();
-    parse.pgmmod = coremod;
-    parse.mod = coremod;
-    lexInject("corelib", stdlibInit(opt->ptrsize));
-    parseGlobalStmts(&parse, coremod);
-    parse.mod = NULL;
-
-    // Parse main source file
-    ModuleNode *mod = pgmAddMod(pgm);
-    modAddNode(mod, NULL, (INode*)coremod); // Make sure it gets passes
-    parse.pgmmod = mod;
+    // Create module node and set up for parsing main source file
+    ModuleNode *pgmmod = pgmAddMod(pgm);
+    parse.pgmmod = pgmmod;
     lexInjectFile(opt->srcpath);
 
-    parseModuleBlk(&parse, mod);
+    // Inject and parse core libary module, auto-imported into main source
+    ModuleNode *corelib = parseImportModule(&parse, "", corelibName);
+    ImportNode *importnode = newImportNode();
+    importnode->foldall = 1;
+    importnode->module = corelib;
+    modAddNode(pgmmod, NULL, (INode*)importnode);
+
+    // Now actually parse main source file
+    parseModuleBlk(&parse, pgmmod);
     return pgm;
 }

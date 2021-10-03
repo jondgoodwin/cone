@@ -44,7 +44,9 @@ extern INsTypeNode *ptrType;
 extern INsTypeNode *refType;
 extern INsTypeNode *arrayRefType;
 
-char *stdlibInit(int ptrsize);
+extern char *corelibSource;
+
+void stdlibInit(int ptrsize);
 void keywordInit();
 void stdNbrInit(int ptrsize);
 
