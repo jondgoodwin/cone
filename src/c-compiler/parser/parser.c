@@ -251,6 +251,17 @@ ModuleNode *parseImportModule(ParseState *parse, char *filename, Name *modname) 
     newmod->namesym = modname;
     parse->mod = newmod;
 
+    /*
+    // Auto-import core lib
+    ModuleNode *corelib = pgmFindMod(parse->pgm, corelibName);
+    if (corelib) {
+        ImportNode *importnode = newImportNode();
+        importnode->foldall = 1;
+        importnode->module = corelib;
+        modAddNode(newmod, NULL, (INode*)importnode);
+    }
+    */
+
     modHook(svmod, newmod);
     parseGlobalStmts(parse, newmod);
     if (lex->toktype != EofToken) {
