@@ -231,6 +231,12 @@ char *stdiolib =
 
 // Parse imported module
 ModuleNode *parseImportModule(ParseState *parse, char *filename, Name *modname) {
+    // If we already have module, don't re-parse. Just return it.
+    ModuleNode *newmod = pgmFindMod(parse->pgm, modname);
+    if (newmod)
+        return newmod;
+
+    // Let's load and parse the module
     char *svprefix = parse->gennamePrefix;
     ModuleNode *svmod = parse->mod;
     nameNewPrefix(&parse->gennamePrefix, &modname->namestr);
@@ -239,7 +245,7 @@ ModuleNode *parseImportModule(ParseState *parse, char *filename, Name *modname) 
         lexInject("stdio", stdiolib);
     else
         lexInjectFile(filename);
-    ModuleNode *newmod = pgmAddMod(parse->pgm);
+    newmod = pgmAddMod(parse->pgm);
     newmod->namesym = modname;
     parse->mod = newmod;
 

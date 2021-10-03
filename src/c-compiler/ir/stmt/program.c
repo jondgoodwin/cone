@@ -25,6 +25,18 @@ ModuleNode *pgmAddMod(ProgramNode *pgm) {
     return mod;
 }
 
+// Find an already parsed module, or return NULL if not found
+ModuleNode *pgmFindMod(ProgramNode *pgm, Name *modname) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(pgm->modules, cnt, nodesp)) {
+        ModuleNode *mod = (ModuleNode *)*nodesp;
+        if (mod->namesym == modname)
+            return mod;
+    }
+    return NULL;
+}
+
 // Serialize a program node
 void pgmPrint(ProgramNode *pgm) {
     inodeFprint("program:\n");

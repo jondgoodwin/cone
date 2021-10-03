@@ -18,6 +18,9 @@ typedef struct {
 ProgramNode *newProgramNode();
 void pgmPrint(ProgramNode *pgm);
 
+// Find an already parsed module, or return NULL if not found
+ModuleNode *pgmFindMod(ProgramNode *pgm, Name *modname);
+
 // Add a new module to the program
 ModuleNode *pgmAddMod(ProgramNode *pgm);
 
