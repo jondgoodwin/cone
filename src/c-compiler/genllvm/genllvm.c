@@ -195,64 +195,50 @@ void genlGeneric(GenState *gen, GenericNode *gennode, int dobody) {
     }
 }
 
-// Generate module's symbols
-void genlModuleSyms(GenState *gen, ModuleNode *mod) {
-    uint32_t cnt;
-    INode **nodesp;
+// Generate module or type global symbols
+void genlGlobalSyms(GenState *gen, INode *node) {
+    switch (node->tag) {
+    case VarDclTag:
+        genlGloVarName(gen, (VarDclNode *)node);
+        break;
+    case FnDclTag:
+        genlGloFnName(gen, (FnDclNode *)node);
+        break;
+    case GenericDclTag:
+        genlGeneric(gen, (GenericNode *)node, 0);
+        break;
 
-    // First generate the global variable LLVMValueRef for every global variable
-    // This way forward references to global variables will work correctly
-    for (nodesFor(mod->nodes, cnt, nodesp)) {
-        INode *nodep = *nodesp;
-        if (nodep->tag == VarDclTag)
-            genlGloVarName(gen, (VarDclNode *)nodep);
-        else if (nodep->tag == FnDclTag)
-            genlGloFnName(gen, (FnDclNode *)nodep);
-        else if (nodep->tag == GenericDclTag)
-            genlGeneric(gen, (GenericNode *)nodep, 0);
     }
 }
 
-// Generate module's symbol implementations
-void genlModuleImpl(GenState *gen, ModuleNode *mod) {
-    uint32_t cnt;
-    INode **nodesp;
-
-    // Generate the function's block or the variable's initialization value
-    for (nodesFor(mod->nodes, cnt, nodesp)) {
-        INode *nodep = *nodesp;
-        switch (nodep->tag) {
-        case VarDclTag:
-            if (((VarDclNode*)nodep)->value) {
-                genlGloVar(gen, (VarDclNode*)nodep);
-            }
-            break;
-
-        case FnDclTag:
-            if (((FnDclNode*)nodep)->value) {
-                genlFn(gen, (FnDclNode*)nodep);
-            }
-            break;
-
-        case MacroDclTag:
-        case GenericDclTag:
-            genlGeneric(gen, (GenericNode*)nodep, 1);
-            break;
-
-        case ModuleTag:
-            genlModuleSyms(gen, (ModuleNode*)nodep);
-            genlModuleImpl(gen, (ModuleNode*)nodep);
-            break;
-
-        case ImportTag:
-            break;
-
-        default:
-            // No need to generate type declarations: type uses will do so
-            if (isTypeNode(nodep))
-                break;
-            assert(0 && "Invalid global area node");
+// Generate module or type implementation (e.g., function blocks)
+void genlGlobalImpl(GenState *gen, INode *node) {
+    switch (node->tag) {
+    case VarDclTag:
+        if (((VarDclNode*)node)->value) {
+            genlGloVar(gen, (VarDclNode*)node);
         }
+        break;
+
+    case FnDclTag:
+        if (((FnDclNode*)node)->value) {
+            genlFn(gen, (FnDclNode*)node);
+        }
+        break;
+
+    case MacroDclTag:
+    case GenericDclTag:
+        genlGeneric(gen, (GenericNode*)node, 1);
+        break;
+
+    case ImportTag:
+        break;
+
+    default:
+        // No need to generate type declarations: type uses will do so
+        if (isTypeNode(node))
+            break;
+        assert(0 && "Invalid global area node");
     }
 }
 
@@ -267,14 +253,28 @@ void genlPackage(GenState *gen, ProgramNode *pgm) {
             gen->difile, "Cone compiler", 13, 0, "", 0, 0, "", 0, LLVMDWARFEmissionFull, 0, 0, 0);
     }
 
-    // Generate all modules, first their symbols then their implementations
+    // First, generate global symbols for all modules, so that forward references succeed
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(pgm->modules, cnt, nodesp)) {
-        genlModuleSyms(gen, (ModuleNode*)*nodesp);
+        ModuleNode *mod = (ModuleNode*)*nodesp;
+
+        uint32_t icnt;
+        INode **inodesp;
+        for (nodesFor(mod->nodes, icnt, inodesp)) {
+            genlGlobalSyms(gen, *inodesp);
+        }
     }
+
+    // Now generate implementation logic, including function logic or var init
     for (nodesFor(pgm->modules, cnt, nodesp)) {
-        genlModuleImpl(gen, (ModuleNode*)*nodesp);
+        ModuleNode *mod = (ModuleNode*)*nodesp;
+
+        uint32_t icnt;
+        INode **inodesp;
+        for (nodesFor(mod->nodes, icnt, inodesp)) {
+            genlGlobalImpl(gen, *inodesp);
+        }
     }
 
     if (!gen->opt->release)
