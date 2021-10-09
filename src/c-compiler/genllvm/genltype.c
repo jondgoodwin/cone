@@ -121,127 +121,133 @@ void genlVtable(GenState *gen, Vtable *vtable) {
     vtable->llvmreftype = virtref;
 }
 
-// Generate a LLVMTypeRef for a struct, based on its fields and alignment
-LLVMTypeRef genlStructType(GenState *gen, char *name, StructNode *strnode) {
-    LLVMTypeRef structype = LLVMStructCreateNamed(gen->context, name);
+// Generate the fields for a struct and optionally add padding bytes
+LLVMTypeRef genlStructFields(GenState *gen, LLVMTypeRef structype, StructNode *strnode, unsigned int padding) {
     if (strnode->flags & OpaqueType)
         return structype;
 
-    // Define body of struct
+    // Empty struct (void)
+    uint32_t fieldcnt = strnode->fields.used;
+    if (fieldcnt == 0 && padding == 0) {
+        LLVMStructSetBody(structype, NULL, 0, 0);
+        return structype;
+    }
+
+    // Add struct's fields (body) to type
     INode **nodesp;
     uint32_t cnt;
-    uint32_t fieldcnt = strnode->fields.used;
-    if (fieldcnt > 0) {
-        LLVMTypeRef *field_types = (LLVMTypeRef *)memAllocBlk(fieldcnt * sizeof(LLVMTypeRef));
-        LLVMTypeRef *field_type_ptr = field_types;
-        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
-            *field_type_ptr++ = genlType(gen, ((FieldDclNode *)*nodesp)->vtype);
-        }
-        LLVMStructSetBody(structype, field_types, fieldcnt, 0);
+    LLVMTypeRef *field_types = (LLVMTypeRef *)memAllocBlk(fieldcnt * sizeof(LLVMTypeRef));
+    LLVMTypeRef *field_type_ptr = field_types;
+    for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+        *field_type_ptr++ = genlType(gen, ((FieldDclNode *)*nodesp)->vtype);
     }
-    else {
-        LLVMStructSetBody(structype, NULL, 0, 0);
+    if (padding > 0) {
+        *field_type_ptr++ = LLVMArrayType(LLVMInt8TypeInContext(gen->context), padding);
+        ++fieldcnt;
     }
+    LLVMStructSetBody(structype, field_types, fieldcnt, 0);
 
     return structype;
 }
 
-// Do the advanced processing needed on same-size or tagged base traits
-void genlBaseTrait(GenState *gen, StructNode *base) {
-    // Only do it once
-    if (base->llvmtype || base->derived->used == 0)
-        return;
-
-    // Preprocess when base trait has a discriminant/tag field
-    if ((base->flags & HasTagField)) {
-        // Ensure tag field is large enough to handle number of variants
-        if (base->derived->used > 0x100) {
-            INode **nodesp;
-            uint32_t cnt;
-            for (nodelistFor(&base->fields, cnt, nodesp)) {
-                if ((*nodesp)->flags & IsTagField) {
-                    EnumNode *enumnode = (EnumNode *)itypeGetTypeDcl(*nodesp);
-                    if (base->derived->used > 0x1000000)
-                        enumnode->bytes = 4;
-                    else if (base->derived->used > 0x10000)
-                        enumnode->bytes = 3;
-                    else if (base->derived->used > 0x100)
-                        enumnode->bytes = 2;
-                }
-            }
-        }
-
-        // Set optimization flag if we have a nullable pointer variant types
-        if (base->flags & SameSize && base->derived->used == 2) {
-            // Look for 2 variants, one with one field (enum) and one with two
-            StructNode *nonenode = (StructNode*)nodesGet(base->derived, 0);
-            StructNode *somenode = (StructNode*)nodesGet(base->derived, 1);
-            if (nonenode->fields.used == 2 && somenode->fields.used == 1) {
-                StructNode *tempnode = nonenode;
-                nonenode = somenode;
-                somenode = tempnode;
-            }
-            else if (!(nonenode->fields.used == 1 && somenode->fields.used == 2))
-                nonenode = NULL;
-
-            // If some derived node's second field is a pointer, mark trait and derived's
-            // with optimization flag
-            if (nonenode) {
-                FieldDclNode *fld = (FieldDclNode*)nodelistGet(&somenode->fields, 1);
-                INode *fldtype = itypeGetTypeDcl(fld->vtype);
-                if (fldtype->tag == PtrTag || fldtype->tag == RefTag
-                    || fldtype->tag == VirtRefTag || fldtype->tag == ArrayRefTag) {
-
-                    // Yes, we have a nullable pointer, set flags to say so on trait & derived structs
-                    base->flags |= NullablePtr;
-                    INode **nodesp;
-                    uint32_t cnt;
-                    unsigned long long maxsize = 0;
-                    base->llvmtype = genlType(gen, fldtype);
-                    for (nodesFor(base->derived, cnt, nodesp)) {
-                        (*nodesp)->flags |= NullablePtr;
-                        ((StructNode*)*nodesp)->llvmtype = base->llvmtype;
-                    }
-                    return;
-                }
+// For tagged base traits (only do once, if needed):
+// - Auto-determine size of tag field
+// - Optimize optional references/pointers to use 0 for lack of pointer
+void genlSetupTaggedTrait(GenState *gen, StructNode *base) {
+    if (base->derived->used > 0x100) {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&base->fields, cnt, nodesp)) {
+            if ((*nodesp)->flags & IsTagField) {
+                EnumNode *enumnode = (EnumNode *)itypeGetTypeDcl(*nodesp);
+                if (base->derived->used > 0x1000000)
+                    enumnode->bytes = 4;
+                else if (base->derived->used > 0x10000)
+                    enumnode->bytes = 3;
+                else if (base->derived->used > 0x100)
+                    enumnode->bytes = 2;
             }
         }
     }
 
-    // When dealing with same-sized structs based on a trait,
-    // prep them to all be the same maxed size.
-    if (!(base->flags & SameSize))
-        return;
+    // Set optimization flag if we have a nullable pointer variant types
+    if (base->flags & SameSize && base->derived->used == 2) {
+        // Look for 2 variants, one with one field (enum) and one with two
+        StructNode *nonenode = (StructNode*)nodesGet(base->derived, 0);
+        StructNode *somenode = (StructNode*)nodesGet(base->derived, 1);
+        if (nonenode->fields.used == 2 && somenode->fields.used == 1) {
+            StructNode *tempnode = nonenode;
+            nonenode = somenode;
+            somenode = tempnode;
+        }
+        else if (!(nonenode->fields.used == 1 && somenode->fields.used == 2))
+            nonenode = NULL;
 
-    // Calculate the largest size of the struct variants
-    LLVMTypeRef baseTypeRef;
+        // If some derived node's second field is a pointer, mark trait and derived's
+        // with optimization flag
+        if (nonenode) {
+            FieldDclNode *fld = (FieldDclNode*)nodelistGet(&somenode->fields, 1);
+            INode *fldtype = itypeGetTypeDcl(fld->vtype);
+            if (fldtype->tag == PtrTag || fldtype->tag == RefTag
+                || fldtype->tag == VirtRefTag || fldtype->tag == ArrayRefTag) {
+
+                // Yes, we have a nullable pointer, set flags to say so on trait & derived structs
+                base->flags |= NullablePtr;
+                INode **nodesp;
+                uint32_t cnt;
+                unsigned long long maxsize = 0;
+                base->llvmtype = genlType(gen, fldtype);
+                for (nodesFor(base->derived, cnt, nodesp)) {
+                    (*nodesp)->flags |= NullablePtr;
+                    ((StructNode*)*nodesp)->llvmtype = base->llvmtype;
+                }
+                return;
+            }
+        }
+    }
+}
+
+// Generate samesize trait and all its concrete types, padding as needed
+void genlSameSizeTrait(GenState *gen, StructNode *base) {
+    
+    // Generate just "opaque" struct def for all concrete names (trait has already been done)
+    // This way any recursive types in fields will be able to latch on to these typerefs, if needed
+    // Later we will attach fields to the opaque struct defs
     INode **nodesp;
     uint32_t cnt;
-    unsigned long long maxsize = 0;
     for (nodesFor(base->derived, cnt, nodesp)) {
         StructNode *strnode = (StructNode *)*nodesp;
-        strnode->llvmtype = genlStructType(gen, &base->namesym->namestr, strnode);
-        unsigned long long size = LLVMStoreSizeOfType(gen->datalayout, strnode->llvmtype);
+        strnode->llvmtype = LLVMStructCreateNamed(gen->context, &strnode->namesym->namestr);
+    }
+
+    // Use throwaway types to determine the sizes of all concrete variants
+    // Remember the largest size
+    StructNode *maxStruct = NULL;
+    unsigned long long maxsize = 0;
+    unsigned long long *sizes = (unsigned long long *)memAllocBlk(base->derived->used * sizeof(unsigned long long));
+    unsigned long long *sizesp = sizes;
+    for (nodesFor(base->derived, cnt, nodesp)) {
+        StructNode *strnode = (StructNode *)*nodesp;
+        LLVMTypeRef structype = LLVMStructCreateNamed(gen->context, "Throwaway");
+        genlStructFields(gen, structype, strnode, 0);
+        unsigned long long size = LLVMStoreSizeOfType(gen->datalayout, structype);
+        *sizesp++ = size;
         if (size > maxsize) {
             maxsize = size;
-            baseTypeRef = strnode->llvmtype;
+            maxStruct = strnode;
         }
     }
 
-    // Now pad all variants, as needed, so all end up the same max size
+    // Now add fields + padding for all variants, so all end up the same max size
+    sizesp = sizes;
     for (nodesFor(base->derived, cnt, nodesp)) {
         StructNode *strnode = (StructNode *)*nodesp;
-        unsigned long long size = LLVMStoreSizeOfType(gen->datalayout, strnode->llvmtype);
-        if (maxsize > size) {
-            // Append a padding field of the excess number of bytes
-            FieldDclNode *padfld = newFieldDclNode(anonName, (INode*)immPerm);
-            padfld->vtype = (INode*)newArrayNodeTyped((INode*)strnode, (size_t)(maxsize - size), (INode*)i8Type);
-            nodelistAdd(&strnode->fields, (INode*)padfld);
-        }
-        strnode->llvmtype = NULL;
+        genlStructFields(gen, strnode->llvmtype, strnode, (unsigned int)(maxsize - *sizesp++));
     }
-
-    base->llvmtype = baseTypeRef;
+    
+    // basetrait also needs fields
+    if (maxStruct)
+        genlStructFields(gen, base->llvmtype, maxStruct, 0);
 }
 
 // Generate a struct with no fields (useful for void, etc.)
@@ -328,13 +334,26 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
     case StructTag:
     {
         StructNode *strnode = (StructNode *)typ;
-        // Handle base trait preprocessing for sealed variants
-        if ((typ->flags & HasTagField) || (typ->flags & SameSize)) {
-            StructNode *base = structGetBaseTrait((StructNode*)typ);
-            genlBaseTrait(gen, base);
+        if (strnode->llvmtype)
+            return strnode->llvmtype;
+
+        // If this struct is (or has) a base trait, do special handling (if needed)       
+        StructNode *base = structGetBaseTrait((StructNode*)typ);
+        if (base && base->llvmtype == NULL) {
+            if (base->flags & HasTagField)
+                genlSetupTaggedTrait(gen, base);
+
+            base->llvmtype = LLVMStructCreateNamed(gen->context, &base->namesym->namestr);
+            if (base->flags & SameSize) {
+                // This will gen trait + all its concrete variant types
+                genlSameSizeTrait(gen, base);
+                return strnode->llvmtype;
+            }
+            genlStructFields(gen, base->llvmtype, base, 0);
         }
 
-        return strnode->llvmtype? strnode->llvmtype : genlStructType(gen, name, (StructNode*)typ);
+        strnode->llvmtype = LLVMStructCreateNamed(gen->context, &strnode->namesym->namestr);
+        return genlStructFields(gen, strnode->llvmtype, strnode, 0);
     }
 
     case EnumTag:
