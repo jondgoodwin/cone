@@ -86,5 +86,7 @@ LLVMValueRef genlSizeof(GenState *gen, INode *vtype);
 // Generate unsigned integer whose bits are same size as a pointer
 LLVMTypeRef genlUsize(GenState *gen);
 LLVMTypeRef genlEmptyStruct(GenState* gen);
+// Generate a vtable type
+void genlVtable(GenState *gen, Vtable *vtable);
 
 #endif

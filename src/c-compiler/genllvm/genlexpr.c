@@ -503,6 +503,9 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
         StructNode *trait = (StructNode*)itypeGetTypeDcl(((RefNode*)totype)->vtexp);
         StructNode *strnode = (StructNode*)itypeGetTypeDcl(((RefNode*)fromtype)->vtexp);
         Vtable *vtable = ((StructNode*)trait)->vtable;
+        if (vtable->llvmvtable == NULL)
+            genlVtable(gen, vtable);
+
         LLVMValueRef vtablep;
         if (!(strnode->flags & TraitType)) {
             VtableImpl *impl;
@@ -631,6 +634,9 @@ LLVMValueRef genlIsType(GenState *gen, CastNode *isnode) {
     if (exptype->tag == VirtRefTag) {
         LLVMValueRef vtablep = LLVMBuildExtractValue(gen->builder, val, 1, "");
         Vtable *vtable = structGetBaseTrait(structtype)->vtable;
+        if (vtable->llvmvtable == NULL)
+            genlVtable(gen, vtable);
+
         INode **nodesp;
         uint32_t cnt;
         for (nodesFor(vtable->impl, cnt, nodesp)) {

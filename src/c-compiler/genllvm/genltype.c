@@ -299,7 +299,7 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
         RefNode *refnode = (RefNode*)typ;
         StructNode *trait = (StructNode*)itypeGetTypeDcl(refnode->vtexp);
         if (trait->vtable->llvmreftype == NULL)
-            genlType(gen, (INode*)trait);
+            genlVtable(gen, trait->vtable);
         return trait->vtable->llvmreftype;
     }
 
