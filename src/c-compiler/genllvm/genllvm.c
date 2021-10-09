@@ -197,6 +197,20 @@ void genlGeneric(GenState *gen, GenericNode *gennode, int dobody) {
 
 // Generate module or type global symbols
 void genlGlobalSyms(GenState *gen, INode *node) {
+    // Handle type nodes
+    if (isTypeNode(node)) {
+        // For types with a namespace, let's do its nodes too
+        if (isMethodType(node) && !(node->tag == StructTag && (node->flags & TraitType))) {
+            INsTypeNode *tnode = (INsTypeNode*)node;
+            INode **nodesp;
+            uint32_t cnt;
+            for (nodelistFor(&tnode->nodelist, cnt, nodesp)) {
+                genlGlobalSyms(gen, *nodesp);
+            }
+        }
+        return;
+    }
+
     switch (node->tag) {
     case VarDclTag:
         genlGloVarName(gen, (VarDclNode *)node);
@@ -207,12 +221,25 @@ void genlGlobalSyms(GenState *gen, INode *node) {
     case GenericDclTag:
         genlGeneric(gen, (GenericNode *)node, 0);
         break;
-
     }
 }
 
 // Generate module or type implementation (e.g., function blocks)
 void genlGlobalImpl(GenState *gen, INode *node) {
+    // Handle type nodes
+    if (isTypeNode(node)) {
+        // For types with a namespace, let's do its nodes too
+        if (isMethodType(node) && !(node->tag == StructTag && (node->flags & TraitType))) {
+            INsTypeNode *tnode = (INsTypeNode*)node;
+            INode **nodesp;
+            uint32_t cnt;
+            for (nodelistFor(&tnode->nodelist, cnt, nodesp)) {
+                genlGlobalImpl(gen, *nodesp);
+            }
+        }
+        return;
+    }
+
     switch (node->tag) {
     case VarDclTag:
         if (((VarDclNode*)node)->value) {
@@ -232,12 +259,10 @@ void genlGlobalImpl(GenState *gen, INode *node) {
         break;
 
     case ImportTag:
+    case FieldDclTag:
         break;
 
     default:
-        // No need to generate type declarations: type uses will do so
-        if (isTypeNode(node))
-            break;
         assert(0 && "Invalid global area node");
     }
 }

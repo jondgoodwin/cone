@@ -332,14 +332,7 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
         if ((typ->flags & HasTagField) || (typ->flags & SameSize)) {
             StructNode *base = structGetBaseTrait((StructNode*)typ);
             genlBaseTrait(gen, base);
-
-            // For any arbitrary trait in the inheritance hierarchy, use any arbitrary struct type
-            if (!base->llvmtype && (typ->flags & TraitType))
-                strnode->llvmtype = base->llvmtype;
         }
-
-        if (strnode->vtable)
-            genlVtable(gen, strnode->vtable);
 
         return strnode->llvmtype? strnode->llvmtype : genlStructType(gen, name, (StructNode*)typ);
     }
@@ -402,23 +395,8 @@ LLVMTypeRef genlType(GenState *gen, INode *typ) {
         if (dclnode->llvmtype)
             return dclnode->llvmtype;
 
-        // Also process the type's methods and functions
+        // Note: processing of a type's methods/functions happens elsewhere
         LLVMTypeRef typeref = dclnode->llvmtype = _genlType(gen, &dclnode->namesym->namestr, (INode*)dclnode);
-        if (isMethodType(dclnode) && !(dcltype->tag == StructTag && (dcltype->flags & TraitType))) {
-            INsTypeNode *tnode = (INsTypeNode*)dclnode;
-            INode **nodesp;
-            uint32_t cnt;
-            // Declare just method names first, enabling forward references
-            for (nodelistFor(&tnode->nodelist, cnt, nodesp)) {
-                if ((*nodesp)->tag == FnDclTag)
-                    genlGloFnName(gen, (FnDclNode*)*nodesp);
-            }
-            // Now generate the code for each method
-            for (nodelistFor(&tnode->nodelist, cnt, nodesp)) {
-                if ((*nodesp)->tag == FnDclTag)
-                    genlFn(gen, (FnDclNode*)*nodesp);
-            }
-        }
         return typeref;
     }
     else if (dcltype->tag == RefTag || dcltype->tag == ArrayRefTag || dcltype->tag == VirtRefTag) {
