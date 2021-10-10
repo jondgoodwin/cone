@@ -8,6 +8,8 @@
 #ifndef fileio_h
 #define fileio_h
 
+extern char **fileSearchPaths;
+
 // Load a file into an allocated string, return pointer or NULL if not found
 char *fileLoad(char *fn);
 

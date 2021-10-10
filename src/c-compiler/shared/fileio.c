@@ -12,6 +12,8 @@
 #include <string.h>
 #include <stddef.h>
 
+char **fileSearchPaths = NULL;
+
 /** Load a file into an allocated string, return pointer or NULL if not found */
 char *fileLoad(char *fn) {
     FILE *file;
@@ -91,30 +93,68 @@ char *fileExtPos(char *fn) {
     return dotpos && dotpos > strrchr(fn, '/') ? dotpos : 0;
 }
 
+// Return position of filename (after last slash)
+char *fileNamePos(char *fn) {
+    char *slashpos = strrchr(fn, '/');
+    return slashpos? slashpos + 1 : fn;
+}
+
 // Create a new source file url relative to current, substituting new path and .cone extension
 char *fileSrcUrl(char *cururl, char *srcfn, int newfolder) {
-    char *outnm;
     if (cururl == NULL)
         cururl = "";
-    outnm = memAllocStr("", strlen(cururl) + strlen(srcfn) + (newfolder ? 10 : 6));
+    char *extp = fileExtPos(srcfn);
+    char *fnamep = fileNamePos(srcfn);
+
+    // Calculate how large composed string needs to be, then allocate space
+    size_t outnmsz = strlen(cururl) + strlen(srcfn) + 1;
+    if (newfolder)
+        outnmsz += strlen(fnamep) + 1;
+    if (!extp)
+        outnmsz += strlen(".cone");
+    char *outnm = memAllocStr("", outnmsz);
+
+    // Compose full file path
     if (cururl && srcfn[0]!='/')
         strncat(outnm, cururl, fileFolder(cururl));
     strcat(outnm, srcfn);
-    if (newfolder)
-        strcat(outnm, "/mod.cone");
-    else if (!fileExtPos(outnm))
+    if (newfolder) {
+        // Look for file inside name as folder
+        if (extp)
+            *fileExtPos(outnm) = 0;
+        strcat(outnm, "/");
+        strcat(outnm, fnamep);
+    }
+    if (!extp)
         strcat(outnm, ".cone");
     return outnm;
 }
 
 // Load source file, where srcfn is relative to cururl
-// - Look at fn+.cone or fn+/mod.cone
+// - Look at fn+.cone or fn+/fn.cone
 // - return full pathname for source file
-char *fileLoadSrc(char *cururl, char *srcfn, char **fn) {
+char *fileLoadSrcWithFolder(char *cururl, char *srcfn, char **fn) {
     char *src;
     *fn = fileSrcUrl(cururl, srcfn, 0);
     if (src = fileLoad(*fn))
         return src;
     *fn = fileSrcUrl(cururl, srcfn, 1);
     return fileLoad(*fn);
+}
+
+// Search for and load source file, where srcfn is relative to cururl
+// - Use search paths
+// - Look at fn+.cone or fn+/mod.cone
+// - return full pathname for source file
+char *fileLoadSrc(char *cururl, char *srcfn, char **fn) {
+    char *src;
+    if (src = fileLoadSrcWithFolder(cururl, srcfn, fn))
+        return src;
+    char **searchPaths = fileSearchPaths;
+    if (searchPaths == NULL)
+        return NULL;
+    while (*searchPaths) {
+        if (src = fileLoadSrcWithFolder(*searchPaths++, srcfn, fn))
+            return src;
+    }
 }

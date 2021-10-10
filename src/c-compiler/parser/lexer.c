@@ -26,7 +26,7 @@
 Lexer *lex = NULL;        // Current lexer
 
 // Inject a new source stream into the lexer
-void lexInject(char *url, char *src) {
+void lexInject(char *src, char *url) {
     Lexer *prev;
 
     // Obtain next lexer block via link chain or allocation
@@ -126,8 +126,9 @@ void keywordInit() {
 }
 
 // Initialize lexer
-void lexInit() {
-    lexInject("init", "");
+void lexInit(ConeOptions *opt) {
+    fileSearchPaths = opt->package_search_paths;
+    lexInject("", "init");
     keywordInit();
 }
 
@@ -142,7 +143,7 @@ void lexInjectFile(char *url) {
         errorExit(ExitNF, "Cannot find or read source file %s", url);
 
     timerBegin(ParseTimer);
-    lexInject(fn, src);
+    lexInject(src, fn);
 }
 
 // Restore previous lexer's stream

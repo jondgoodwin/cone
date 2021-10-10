@@ -11,6 +11,7 @@
 typedef struct INode INode;    // ../ast/ast.h
 typedef struct Name Name;    // ../ast/nametbl.h
 
+#include "../coneopts.h"
 #include <stdint.h>
 
 #define LEX_MAX_BLOCKS 1024
@@ -185,9 +186,9 @@ extern Lexer *lex;
 #define lexIsToken(tok) (lex->toktype == (tok))
 
 // Lexer functions
-void lexInit();
+void lexInit(ConeOptions *opt);
 void lexInjectFile(char *url);
-void lexInject(char *url, char *src);
+void lexInject(char *src, char *url);
 void lexPop();
 void lexNextToken();
 

@@ -8,6 +8,7 @@
 #include "conec.h"
 #include "coneopts.h"
 #include "shared/options.h"
+#include "shared/memory.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -167,6 +168,40 @@ static void usage()
     );
 }
 
+// Handle creation of package_search_paths array of strings
+void coneOptPath(char *path, ConeOptions *opt) {
+    // Create package_search_paths based on count of semi-colon separated paths
+    int nbrPaths = 0;
+    if (*path) {
+        ++nbrPaths;
+        char *pathp = path;
+        while (*pathp) {
+            if (*pathp++ == ';')
+                ++nbrPaths;
+        }
+    }
+    opt->package_search_paths = (char **)memAllocBlk((nbrPaths + 1) * sizeof(char*));
+
+    // Split paths by semi-colon, populating package_search_paths
+    char **nextPath = opt->package_search_paths;
+    char *pathp = path;
+    while (*pathp) {
+        char *startp = pathp;
+        while (*pathp && *pathp != ';')
+            ++pathp;
+        size_t foldersz = pathp - startp;
+        char *folder = (char*)memAllocBlk(foldersz + 2);
+        memmove(folder, startp, foldersz);
+        folder[foldersz] = 0;
+        if (folder[foldersz - 1] != '/')
+            strcat(folder, "/");
+        *nextPath++ = folder;
+        if (*pathp == ';')
+            ++pathp;
+    }
+    *nextPath = NULL;
+}
+
 int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
     opt_state_t s;
     int id;
@@ -184,6 +219,7 @@ int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
     opt.pic = 1;
 #endif
     opt->release = 1;
+    opt->package_search_paths = NULL;
 
     while ((id = optNext(&s)) != -1) {
         switch (id) {
@@ -218,7 +254,7 @@ int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
             // define_build_flag(s.arg_val); 
             break;
         case OPT_PATHS:
-            // package_add_paths(s.arg_val, &opt); 
+            coneOptPath(s.arg_val, opt);
             break;
         case OPT_SAFE:
             //if (!package_add_safe(s.arg_val, &opt))
@@ -276,5 +312,3 @@ int coneOptSet(ConeOptions *opt, int *argc, char **argv) {
     }
     return 1;
 }
-
-

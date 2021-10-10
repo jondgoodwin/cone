@@ -242,9 +242,9 @@ ModuleNode *parseImportModule(ParseState *parse, char *filename, Name *modname) 
     nameNewPrefix(&parse->gennamePrefix, &modname->namestr);
 
     if (modname == corelibName)
-        lexInject("corelib", corelibSource);
+        lexInject(corelibSource, "corelib");
     else if (strcmp(filename, "stdio") == 0)
-        lexInject("stdio", stdiolib);
+        lexInject(stdiolib, "stdio");
     else
         lexInjectFile(filename);
     newmod = pgmAddMod(parse->pgm);
@@ -463,7 +463,7 @@ ProgramNode *parsePgm(ConeOptions *opt) {
     // Initialize name table and lexer
     nametblInit();
     typetblInit();
-    lexInit();
+    lexInit(opt);
     stdlibInit(opt->ptrsize);
 
     ProgramNode *pgm = newProgramNode();
