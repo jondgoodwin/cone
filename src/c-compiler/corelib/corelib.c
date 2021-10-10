@@ -65,14 +65,14 @@ char *corelibSource =
 "struct Ok[T,E] extends Result[T,E] {ok T}\n"
 "struct Error[T,E] extends Result[T,E] {error E}\n"
 
-//"extern fn malloc(size usize) *u8\n"
+"extern fn malloc(size usize) *u8\n"
 
 "struct @move so:\n"
-//"  fn @static _alloc(size usize) *u8 {malloc(size)}\n"
+"  fn @static _alloc(size usize) *u8 {malloc(size)}\n"
 
 "struct rc:\n"
 "  cnt usize\n"
-//"  fn @static _alloc(size usize) *u8 {malloc(size)}\n"
+"  fn @static _alloc(size usize) *u8 {malloc(size)}\n"
 ;
 
 // Set up the standard library, whose names are always shared by all modules
