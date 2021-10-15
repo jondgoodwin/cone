@@ -159,11 +159,12 @@ void assignSingleFlow(INode *lval, INode **rval) {
     // - Handle copy semantic aliasing
     flowHandleMoveOrCopy(rval);
 
-    // Ensure lval is mutable.
+    // Ensure lval is either mutable or var in need of initialization or mutable.
     uint16_t lvalscope;
     INode *lvalperm;
     INode *lvalvar = iexpGetLvalInfo(lval, &lvalperm, &lvalscope);
-    if (!(MayWrite & permGetFlags(lvalperm))) {
+    if (!(MayWrite & permGetFlags(lvalperm)) &&
+        (lval->tag != VarNameUseTag || ((VarDclNode*)lvalvar)->flowtempflags & VarInitialized)) {
         errorMsgNode(lval, ErrorNoMut, "You do not have permission to modify lval");
         return;
     }
