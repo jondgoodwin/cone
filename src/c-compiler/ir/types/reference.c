@@ -25,7 +25,6 @@ void *refTypeInfoAlloc() {
     refinfo->llvmtyperef = NULL;
     refinfo->structype = NULL;
     refinfo->ptrstructype = NULL;
-    refinfo->alloccall = NULL;
     return (void*)refinfo;
 }
 

@@ -96,14 +96,31 @@ LLVMValueRef genlFree(GenState *gen, LLVMValueRef ref) {
     return LLVMBuildCall(gen->builder, genlfreeval, &refcast, 1, "");
 }
 
-// Generate code that creates an allocated ref by allocating and initializing
+// Generate region-based allocation and initialization logc
+// It returns a reference to the allocated/initialized object (or null)
+// This is roughly what it does:
+//
+// fn allocate(size usize) +region-uni T
+//   imm ref = region::_alloc(T.size) as +region-uni T
+//   if (ref is None)
+//     panic or return None
+//   ref.region.init()
+//   ref.perm.init()
+//   T::init(&mut ref.TValue, initvalue)
+//   &ref.TValue or Some[&ref.TValue]
+//
 LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     RefNode *reftype = (RefNode*)allocatenode->vtype;
 
-    // Do region allocation
-    long long structsize = LLVMABISizeOfType(gen->datalayout, reftype->typeinfo->structype);
-    LLVMValueRef malloc = genlmalloc(gen, structsize);
+    // Calculate how much memory space we need to allocate
+    long long allocsize = LLVMABISizeOfType(gen->datalayout, reftype->typeinfo->structype);
+    // For array-refs: Increase allocsz by (elemsz-1) * valuetype-size
+
+    // Do region allocation and then bitcast to multi-layered-struct ptr
+    LLVMValueRef malloc = genlmalloc(gen, allocsize);
     LLVMValueRef ptrstructype = LLVMBuildBitCast(gen->builder, malloc, reftype->typeinfo->ptrstructype, "");
+
+    // Handle when allocation fails (returns NULL pointer)
 
     // Initialize region
     if (isRegion(reftype->region, rcName)) {
@@ -113,9 +130,11 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
         LLVMBuildStore(gen->builder, constone, counterptr); // Store 1 into refcounter
     }
 
-    // Initialize value (via copy)
+    // Initialize permission
+
+    // Initialize value (via copy or init function) and return pointer to it
     LLVMValueRef valuep = LLVMBuildStructGEP(gen->builder, ptrstructype, ValueField, ""); // Point to value
-    LLVMBuildStore(gen->builder, genlExpr(gen, allocatenode->vtexp), valuep);
+    LLVMBuildStore(gen->builder, genlExpr(gen, allocatenode->vtexp), valuep); // Copy value
     return valuep;
 }
 

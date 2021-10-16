@@ -157,4 +157,5 @@ char *fileLoadSrc(char *cururl, char *srcfn, char **fn) {
         if (src = fileLoadSrcWithFolder(*searchPaths++, srcfn, fn))
             return src;
     }
+    return NULL;
 }

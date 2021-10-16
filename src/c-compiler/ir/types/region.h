@@ -10,4 +10,6 @@
 
 int isRegion(INode *region, Name *namesym);
 
+void regionAllocTypeCheck(INode *region);
+
 #endif

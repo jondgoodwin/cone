@@ -13,7 +13,6 @@ typedef struct {
     LLVMTypeRef llvmtyperef;
     LLVMTypeRef structype;
     LLVMTypeRef ptrstructype;
-    INode *alloccall;
 } RefTypeInfo;
 
 enum ManagedRefFields {
