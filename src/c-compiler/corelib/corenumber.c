@@ -62,8 +62,8 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
         iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(plusName, FlagMethFld, (INode *)binsig, (INode *)newIntrinsicNode(AddIntrinsic)));
         iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(minusName, FlagMethFld, (INode *)binsig, (INode *)newIntrinsicNode(SubIntrinsic)));
         iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(multName, FlagMethFld, (INode *)binsig, (INode *)newIntrinsicNode(MulIntrinsic)));
-        iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(divName, FlagMethFld, (INode *)binsig, (INode *)newIntrinsicNode(DivIntrinsic)));
-        iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(remName, FlagMethFld, (INode *)binsig, (INode *)newIntrinsicNode(RemIntrinsic)));
+        iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(divName, FlagMethFld, (INode *)binsig, (INode *)newIntrinsicNode(typ == IntNbrTag ? SDivIntrinsic : DivIntrinsic)));
+        iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(remName, FlagMethFld, (INode *)binsig, (INode *)newIntrinsicNode(typ == IntNbrTag ? SRemIntrinsic : RemIntrinsic)));
     }
 
     // Bitwise operators (integer only)
@@ -75,7 +75,7 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
         iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(xorName, FlagMethFld, (INode *)binsig, (INode *)newIntrinsicNode(XorIntrinsic)));
         if (bits > 1) {
             iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(shlName, FlagMethFld, (INode *)binsig, (INode *)newIntrinsicNode(ShlIntrinsic)));
-            iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(shrName, FlagMethFld, (INode *)binsig, (INode *)newIntrinsicNode(ShrIntrinsic)));
+            iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(shrName, FlagMethFld, (INode *)binsig, (INode *)newIntrinsicNode(typ == IntNbrTag ? SShrIntrinsic : ShrIntrinsic)));
         }
     }
     // Floating point functions (intrinsics)
@@ -106,13 +106,13 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
     opsym = nametblFind("!=", 2);
     iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(opsym, FlagMethFld, (INode *)cmpsig, (INode *)newIntrinsicNode(NeIntrinsic)));
     opsym = nametblFind("<", 1);
-    iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(opsym, FlagMethFld, (INode *)cmpsig, (INode *)newIntrinsicNode(LtIntrinsic)));
+    iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(opsym, FlagMethFld, (INode *)cmpsig, (INode *)newIntrinsicNode(typ == IntNbrTag ? SLtIntrinsic : LtIntrinsic)));
     opsym = nametblFind("<=", 2);
-    iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(opsym, FlagMethFld, (INode *)cmpsig, (INode *)newIntrinsicNode(LeIntrinsic)));
+    iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(opsym, FlagMethFld, (INode *)cmpsig, (INode *)newIntrinsicNode(typ == IntNbrTag ? SLeIntrinsic : LeIntrinsic)));
     opsym = nametblFind(">", 1);
-    iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(opsym, FlagMethFld, (INode *)cmpsig, (INode *)newIntrinsicNode(GtIntrinsic)));
+    iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(opsym, FlagMethFld, (INode *)cmpsig, (INode *)newIntrinsicNode(typ == IntNbrTag ? SGtIntrinsic : GtIntrinsic)));
     opsym = nametblFind(">=", 2);
-    iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(opsym, FlagMethFld, (INode *)cmpsig, (INode *)newIntrinsicNode(GeIntrinsic)));
+    iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(opsym, FlagMethFld, (INode *)cmpsig, (INode *)newIntrinsicNode(typ == IntNbrTag ? SGeIntrinsic : GeIntrinsic)));
 
     return nbrtype;
 }

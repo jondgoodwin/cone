@@ -17,7 +17,9 @@ enum IntrinsicFn {
     SubIntrinsic,
     MulIntrinsic,
     DivIntrinsic,
+    SDivIntrinsic,
     RemIntrinsic,
+    SRemIntrinsic,
     IncrIntrinsic,
     DecrIntrinsic,
     IncrPostIntrinsic,
@@ -33,6 +35,10 @@ enum IntrinsicFn {
     LeIntrinsic,
     GtIntrinsic,
     GeIntrinsic,
+    SLtIntrinsic,
+    SLeIntrinsic,
+    SGtIntrinsic,
+    SGeIntrinsic,
 
     // Bitwise
     NotIntrinsic,
@@ -41,6 +47,7 @@ enum IntrinsicFn {
     XorIntrinsic,
     ShlIntrinsic,
     ShrIntrinsic,
+    SShrIntrinsic,
 
     // Reference methods
     CountIntrinsic,
