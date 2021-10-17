@@ -99,26 +99,8 @@ LLVMValueRef genlGetIntrinsicFn(GenState *gen, char *fnname, NameUseNode *fnuse)
     return fn;
 }
 
-// Generate a function call, including special intrinsics
-LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
-
-    int dispatch;
-    if (fncall->flags & FlagVDisp)
-        dispatch = VirtDispatch;
-    else
-        dispatch = SimpleDispatch;
-
-    INode *objfn = fncall->objfn;
-
-    // Get count and Valuerefs for all the arguments to pass to the function
-    uint32_t fnargcnt = fncall->args->used;
-    LLVMValueRef *fnargs = (LLVMValueRef*)memAllocBlk(fnargcnt * sizeof(LLVMValueRef*));
-    LLVMValueRef *fnarg = fnargs;
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodesFor(fncall->args, cnt, nodesp)) {
-        *fnarg++ = genlExpr(gen, *nodesp);
-    }
+// Generate a function call, including special intrinsics (Internal version)
+LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint32_t fnargcnt, LLVMValueRef *fnargs) {
 
     // Handle call when we have a derefed pointer to a function
     if (objfn->tag == DerefTag) {
@@ -376,6 +358,30 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
     }
 
     return fncallret;
+}
+
+// Generate a function call, including special intrinsics
+LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
+
+    int dispatch;
+    if (fncall->flags & FlagVDisp)
+        dispatch = VirtDispatch;
+    else
+        dispatch = SimpleDispatch;
+
+    INode *objfn = fncall->objfn;
+
+    // Get count and Valuerefs for all the arguments to pass to the function
+    uint32_t fnargcnt = fncall->args->used;
+    LLVMValueRef *fnargs = (LLVMValueRef*)memAllocBlk(fnargcnt * sizeof(LLVMValueRef*));
+    LLVMValueRef *fnarg = fnargs;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(fncall->args, cnt, nodesp)) {
+        *fnarg++ = genlExpr(gen, *nodesp);
+    }
+
+    return genlFnCallInternal(gen, dispatch, objfn, fnargcnt, fnargs);
 }
 
 // Generate a value converted to another type

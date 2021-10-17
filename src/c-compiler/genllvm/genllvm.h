@@ -68,6 +68,9 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk);
 
 // genlexpr.c
 LLVMValueRef genlExpr(GenState *gen, INode *termnode);
+// Generate a function call, including special intrinsics (Internal version)
+LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint32_t fnargcnt, LLVMValueRef *fnargs);
+
 
 // genlalloc.c
 // Build usable metadata about a reference 
