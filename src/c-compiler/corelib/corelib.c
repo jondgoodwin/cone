@@ -68,11 +68,11 @@ char *corelibSource =
 "extern fn malloc(size usize) *u8\n"
 
 "struct @move so:\n"
-"  fn @static _alloc(size usize) *u8 {malloc(size)}\n"
+"  fn @static _alloc(size usize) *u8 inline {malloc(size)}\n"
 
 "struct rc:\n"
 "  cnt usize\n"
-"  fn @static _alloc(size usize) *u8 {malloc(size)}\n"
+"  fn @static _alloc(size usize) *u8 inline {malloc(size)}\n"
 ;
 
 // Set up the standard library, whose names are always shared by all modules

@@ -45,22 +45,7 @@ void genlRefTypeSetup(GenState *gen, RefNode *reftype) {
 
 
 // Function declarations for malloc() and free()
-LLVMValueRef genlmallocval = NULL;
 LLVMValueRef genlfreeval = NULL;
-
-// Call malloc() (and generate declaration if needed)
-LLVMValueRef genlmalloc(GenState *gen, long long size) {
-    // Declare malloc() external function
-    if (genlmallocval == NULL) {
-        LLVMTypeRef parmtype = genlUsize(gen);
-        LLVMTypeRef rettype = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
-        LLVMTypeRef fnsig = LLVMFunctionType(rettype, &parmtype, 1, 0);
-        genlmallocval = LLVMAddFunction(gen->module, "malloc", fnsig);
-    }
-    // Call malloc
-    LLVMValueRef sizeval = LLVMConstInt(genlType(gen, (INode*)usizeType), size, 0);
-    return LLVMBuildCall(gen->builder, genlmallocval, &sizeval, 1, "");
-}
 
 // If ref type is struct, dealias any fields holding rc/own references
 void genlDealiasFlds(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
@@ -111,13 +96,16 @@ LLVMValueRef genlFree(GenState *gen, LLVMValueRef ref) {
 //
 LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     RefNode *reftype = (RefNode*)allocatenode->vtype;
+    INode *region = itypeGetTypeDcl(reftype->region);
 
     // Calculate how much memory space we need to allocate
     long long allocsize = LLVMABISizeOfType(gen->datalayout, reftype->typeinfo->structype);
     // For array-refs: Increase allocsz by (elemsz-1) * valuetype-size
+    LLVMValueRef sizeval = LLVMConstInt(genlType(gen, (INode*)usizeType), allocsize, 0);
 
-    // Do region allocation and then bitcast to multi-layered-struct ptr
-    LLVMValueRef malloc = genlmalloc(gen, allocsize);
+    // Do region allocation (using its _alloc method) and then bitcast to multi-layered-struct ptr
+    FnDclNode *allocmeth = (FnDclNode*)iTypeFindFnField(region, allocMethodName);
+    LLVMValueRef malloc = genlFnCallInternal(gen, SimpleDispatch, (INode*)allocmeth, 1, &sizeval);
     LLVMValueRef ptrstructype = LLVMBuildBitCast(gen->builder, malloc, reftype->typeinfo->ptrstructype, "");
 
     // Handle when allocation fails (returns NULL pointer)

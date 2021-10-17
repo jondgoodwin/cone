@@ -127,8 +127,18 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
     }
 
     // A function call may be to an intrinsic, or to program-defined code
-    NameUseNode *fnuse = (NameUseNode *)objfn;
-    FnDclNode *fndcl = (FnDclNode *)fnuse->dclnode;
+    NameUseNode *fnuse;
+    FnDclNode *fndcl;
+    if (objfn->tag == FnDclTag) {
+        fnuse = NULL; // Hmmm
+        fndcl = (FnDclNode *)objfn;
+    }
+    else {
+        assert(objfn->tag == VarNameUseTag);
+        fnuse = (NameUseNode *)objfn;
+        fndcl = (FnDclNode *)fnuse->dclnode;
+    }
+
     if (fndcl->flags & FlagInline) {
         // For inline functions, first generate call args as local "parameter" variables
         FnSigNode *fnsig = (FnSigNode*)fndcl->vtype;

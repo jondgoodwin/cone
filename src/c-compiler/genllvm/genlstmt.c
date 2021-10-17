@@ -122,8 +122,24 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
             break;
         }
 
-        case ReturnTag:
+        case ReturnTag: {
+            BreakRetNode *node = (BreakRetNode*)*nodesp;
+            // Handle inlined returns as breaks
+            if ((INode*)node->block != gen->fnblock) {
+                if (node->block->breaks->used > 1)
+                    // Add to phi
+                    genlBreak(gen, node->block, node->exp, node->dealias);
+                else {
+                    // Just one?  Handle return like BlockRet
+                    if (node->exp->tag != NilLitTag)
+                        lastval = genlExpr(gen, node->exp);
+                    genlDealiasNodes(gen, node->dealias);
+                }
+                break;
+            }
+
             genlReturn(gen, (BreakRetNode*)*nodesp); break;
+        }
         case BlockRetTag:
         {
             BreakRetNode *node = (BreakRetNode*)*nodesp;
