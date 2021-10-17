@@ -102,49 +102,50 @@ LLVMValueRef genlGetIntrinsicFn(GenState *gen, char *fnname, NameUseNode *fnuse)
 // Generate a function call, including special intrinsics
 LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
 
-    // Get Valuerefs for all the parameters to pass to the function
-    LLVMValueRef fncallret = NULL;
-    LLVMValueRef *fnargs = (LLVMValueRef*)memAllocBlk(fncall->args->used * sizeof(LLVMValueRef*));
+    int dispatch;
+    if (fncall->flags & FlagVDisp)
+        dispatch = VirtDispatch;
+    else
+        dispatch = SimpleDispatch;
+
+    INode *objfn = fncall->objfn;
+
+    // Get count and Valuerefs for all the arguments to pass to the function
+    uint32_t fnargcnt = fncall->args->used;
+    LLVMValueRef *fnargs = (LLVMValueRef*)memAllocBlk(fnargcnt * sizeof(LLVMValueRef*));
     LLVMValueRef *fnarg = fnargs;
     INode **nodesp;
     uint32_t cnt;
-    int vdispatch = fncall->flags & FlagVDisp;
-    LLVMValueRef vref;
     for (nodesFor(fncall->args, cnt, nodesp)) {
-        // For virtual reference, extract the object's regular reference
-        if (vdispatch) {
-            vdispatch = 0;
-            vref = genlExpr(gen, *nodesp);
-            *fnarg++ = LLVMBuildExtractValue(gen->builder, vref, 0, "");
-        }
-        else
-            *fnarg++ = genlExpr(gen, *nodesp);
+        *fnarg++ = genlExpr(gen, *nodesp);
     }
 
     // Handle call when we have a derefed pointer to a function
-    if (fncall->objfn->tag == DerefTag) {
-        return LLVMBuildCall(gen->builder, genlExpr(gen, ((StarNode*)fncall->objfn)->vtexp), fnargs, fncall->args->used, "");
+    if (objfn->tag == DerefTag) {
+        return LLVMBuildCall(gen->builder, genlExpr(gen, ((StarNode*)objfn)->vtexp), fnargs, fnargcnt, "");
     }
     // Handle call when we have a ref or pointer to a function
-    INode *fntype = iexpGetTypeDcl(fncall->objfn);
+    INode *fntype = iexpGetTypeDcl(objfn);
     if (fntype->tag == RefTag || fntype->tag == PtrTag) {
-        return LLVMBuildCall(gen->builder, genlExpr(gen, fncall->objfn), fnargs, fncall->args->used, "");
+        return LLVMBuildCall(gen->builder, genlExpr(gen, objfn), fnargs, fnargcnt, "");
     }
 
-    // We know at this point that fncall->objfn refers to some "named" function
+    // We know at this point that objfn refers to some "named" function
     assert(fntype->tag == FnSigTag);
     // Handle call when first argument (object) is a virtual reference
-    if (fncall->flags & FlagVDisp) {
+    if (dispatch == VirtDispatch) {
         // Build code to obtain method's address from object "fat pointer"'s vtable, then call it
-        FnDclNode *methdcl = (FnDclNode*)((NameUseNode *)fncall->objfn)->dclnode;
-        LLVMValueRef vtable = LLVMBuildExtractValue(gen->builder, vref, 1, "");
+        LLVMValueRef fatptr = fnargs[0];
+        LLVMValueRef vtable = LLVMBuildExtractValue(gen->builder, fatptr, 1, "");
+        fnargs[0] = LLVMBuildExtractValue(gen->builder, fatptr, 0, "");
+        FnDclNode *methdcl = (FnDclNode*)((NameUseNode *)objfn)->dclnode;
         LLVMValueRef vtblmethp = LLVMBuildStructGEP(gen->builder, vtable, methdcl->vtblidx, &methdcl->namesym->namestr); // **fn
         LLVMValueRef vtblmeth = LLVMBuildLoad(gen->builder, vtblmethp, "");
-        return LLVMBuildCall(gen->builder, vtblmeth, fnargs, fncall->args->used, "");
+        return LLVMBuildCall(gen->builder, vtblmeth, fnargs, fnargcnt, "");
     }
 
     // A function call may be to an intrinsic, or to program-defined code
-    NameUseNode *fnuse = (NameUseNode *)fncall->objfn;
+    NameUseNode *fnuse = (NameUseNode *)objfn;
     FnDclNode *fndcl = (FnDclNode *)fnuse->dclnode;
     if (fndcl->flags & FlagInline) {
         // For inline functions, first generate call args as local "parameter" variables
@@ -162,9 +163,11 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
         // Now generate function's block, as if any block, returning block's value
         return genlBlock(gen, (BlockNode *)fndcl->value);
     }
+
+    LLVMValueRef fncallret = NULL;
     switch (fndcl->value? fndcl->value->tag : BlockTag) {
     case BlockTag: {
-        fncallret = LLVMBuildCall(gen->builder, fndcl->llvmvar, fnargs, fncall->args->used, "");
+        fncallret = LLVMBuildCall(gen->builder, fndcl->llvmvar, fnargs, fnargcnt, "");
         if (fndcl->flags & FlagSystem) {
             LLVMSetInstructionCallConv(fncallret, LLVMX86StdcallCallConv);
         }
@@ -313,19 +316,19 @@ LLVMValueRef genlFnCall(GenState *gen, FnCallNode *fncall) {
             case SqrtIntrinsic: 
             {
                 char *fnname = nbrtype->bits == 32 ? "llvm.sqrt.f32" : "llvm.sqrt.f64";
-                fncallret = LLVMBuildCall(gen->builder, genlGetIntrinsicFn(gen, fnname, fnuse), fnargs, fncall->args->used, "");
+                fncallret = LLVMBuildCall(gen->builder, genlGetIntrinsicFn(gen, fnname, fnuse), fnargs, fnargcnt, "");
                 break;
             }
             case SinIntrinsic:
             {
                 char *fnname = nbrtype->bits == 32 ? "llvm.sin.f32" : "llvm.sin.f64";
-                fncallret = LLVMBuildCall(gen->builder, genlGetIntrinsicFn(gen, fnname, fnuse), fnargs, fncall->args->used, "");
+                fncallret = LLVMBuildCall(gen->builder, genlGetIntrinsicFn(gen, fnname, fnuse), fnargs, fnargcnt, "");
                 break;
             }
             case CosIntrinsic:
             {
                 char *fnname = nbrtype->bits == 32 ? "llvm.cos.f32" : "llvm.cos.f64";
-                fncallret = LLVMBuildCall(gen->builder, genlGetIntrinsicFn(gen, fnname, fnuse), fnargs, fncall->args->used, "");
+                fncallret = LLVMBuildCall(gen->builder, genlGetIntrinsicFn(gen, fnname, fnuse), fnargs, fnargcnt, "");
                 break;
             }
             }

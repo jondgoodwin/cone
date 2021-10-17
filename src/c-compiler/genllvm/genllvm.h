@@ -48,11 +48,16 @@ typedef struct GenState {
     uint32_t blockstackcnt;
 } GenState;
 
+// Different kinds of dispatch
+enum FnCallDispatch {
+    SimpleDispatch,  // Call function directly or indirectly
+    VirtDispatch     // Lookup function in vtable, and then dispatch
+};
+
 // Setup LLVM generation, ensuring we know intended target
 void genSetup(GenState *gen, ConeOptions *opt);
 void genClose(GenState *gen);
 void genpgm(GenState *gen, ProgramNode *pgm);
-void genmod(GenState *gen, ModuleNode *mod);
 void genlFn(GenState *gen, FnDclNode *fnnode);
 void genlGloVarName(GenState *gen, VarDclNode *glovar);
 void genlGloFnName(GenState *gen, FnDclNode *glofn);
