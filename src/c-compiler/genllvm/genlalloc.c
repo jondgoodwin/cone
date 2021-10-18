@@ -98,6 +98,7 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     RefNode *reftype = (RefNode*)allocatenode->vtype;
     INode *region = itypeGetTypeDcl(reftype->region);
     INode *perm = itypeGetTypeDcl(reftype->perm);
+    LLVMTypeRef valueptrtyp = LLVMPointerType(LLVMStructGetTypeAtIndex(LLVMGetElementType(reftype->typeinfo->ptrstructype), 2), 0);
 
     // Calculate how much memory space we need to allocate
     long long allocsize = LLVMABISizeOfType(gen->datalayout, reftype->typeinfo->structype);
@@ -110,6 +111,21 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     LLVMValueRef ptrstructype = LLVMBuildBitCast(gen->builder, malloc, reftype->typeinfo->ptrstructype, "");
 
     // Handle when allocation fails (returns NULL pointer)
+    LLVMValueRef isNull = LLVMBuildIsNull(gen->builder, ptrstructype, "isnull");
+    LLVMBasicBlockRef endif = genlInsertBlock(gen, "endif");
+    LLVMBasicBlockRef initblk = genlInsertBlock(gen, "initblk");
+    LLVMValueRef blkvals[2];
+    LLVMBasicBlockRef blks[2];
+
+    // Generate null/panic block, used when alloc returns 0
+    LLVMBasicBlockRef panicblk = genlInsertBlock(gen, "panicblk");
+    LLVMBuildCondBr(gen->builder, isNull, panicblk, initblk);
+    LLVMPositionBuilderAtEnd(gen->builder, panicblk);
+    genlPanic(gen);    
+    blkvals[0] = LLVMBuildBitCast(gen->builder, ptrstructype, valueptrtyp, "");
+    blks[0] = panicblk;
+    LLVMBuildBr(gen->builder, endif);
+    LLVMPositionBuilderAtEnd(gen->builder, initblk);
 
     // Initialize region using its 'init' method, if supplied
     INode *reginitmeth = iTypeFindFnField(region, initMethodName);
@@ -130,7 +146,15 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     // Initialize value (via copy or init function) and return pointer to it
     LLVMValueRef valuep = LLVMBuildStructGEP(gen->builder, ptrstructype, ValueField, ""); // Point to value
     LLVMBuildStore(gen->builder, genlExpr(gen, allocatenode->vtexp), valuep); // Copy value
-    return valuep;
+    blkvals[1] = valuep;
+    blks[1] = initblk;
+
+    // Finish up block, start new one, and return allocated
+    LLVMBuildBr(gen->builder, endif);
+    LLVMPositionBuilderAtEnd(gen->builder, endif);
+    LLVMValueRef phi = LLVMBuildPhi(gen->builder, valueptrtyp, "allocphi");
+    LLVMAddIncoming(phi, blkvals, blks, 2);
+    return phi;
 }
 
 // Dealias an own allocated reference
