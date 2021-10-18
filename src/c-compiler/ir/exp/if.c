@@ -135,7 +135,7 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
 
         if (*nodesp != elseCond) {
             if (0 == iexpCoerce(nodesp, (INode*)boolType))
-                errorMsgNode(*nodesp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
+                errorMsgNode(*nodesp, ErrorInvType, "Conditional expression requires true/false value (possibly via implicit .isTrue).");
         }
         else {
             hasElse = 1;

@@ -75,7 +75,7 @@ void genericNameTypeCheck(TypeCheckState *pstate, NameUseNode **gennode) {
     GenericNode *macrodcl = (GenericNode*)(*gennode)->dclnode;
     uint32_t expected = macrodcl->parms ? macrodcl->parms->used : 0;
     if (expected > 0) {
-        errorMsgNode((INode*)*gennode, ErrorManyArgs, "Macro expects arguments to be provided");
+        errorMsgNode((INode*)*gennode, ErrorManyArgs, "Generic or macro expects arguments to be provided");
         return;
     }
 

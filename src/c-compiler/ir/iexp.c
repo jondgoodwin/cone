@@ -76,7 +76,10 @@ TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constrain
 // Return 1 if type "matches", 0 otherwise
 int iexpCoerce(INode **from, INode *totype) {
     // From should be a typed expression node
-    assert(isExpNode(*from));
+    if (!isExpNode(*from)) {
+        errorMsgNode(*from, ErrorInvType, "An expression value is expected here.");
+        return 0;
+    }
     IExpNode *fromnode = (IExpNode *)*from;
 
     // No need to do coercion, if no expected type
