@@ -75,6 +75,7 @@ extern Name *optionName;   // "Option"
 extern Name *rcName;       // "rc"
 extern Name *soName;       // "so"
 extern Name *allocMethodName;  // "_alloc"
+extern Name *initMethodName;   // "init"
 
 typedef struct VarDclNode VarDclNode;
 typedef struct FnDclNode FnDclNode;

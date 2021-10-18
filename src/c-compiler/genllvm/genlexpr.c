@@ -141,15 +141,17 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
 
     if (fndcl->flags & FlagInline) {
         // For inline functions, first generate call args as local "parameter" variables
-        FnSigNode *fnsig = (FnSigNode*)fndcl->vtype;
-        uint32_t cnt;
-        INode **nodesp;
-        for (nodesFor(fnsig->parms, cnt, nodesp)) {
-            VarDclNode* var = (VarDclNode*)*nodesp;
-            assert(var->tag == VarDclTag);
-            // We always alloca in case variable is mutable or we want to take address of its value
-            var->llvmvar = genlAlloca(gen, genlType(gen, var->vtype), &var->namesym->namestr);
-            LLVMBuildStore(gen->builder, *fnargs++, var->llvmvar);
+        if (fnargcnt > 0) {
+            FnSigNode *fnsig = (FnSigNode*)fndcl->vtype;
+            uint32_t cnt;
+            INode **nodesp;
+            for (nodesFor(fnsig->parms, cnt, nodesp)) {
+                VarDclNode* var = (VarDclNode*)*nodesp;
+                assert(var->tag == VarDclTag);
+                // We always alloca in case variable is mutable or we want to take address of its value
+                var->llvmvar = genlAlloca(gen, genlType(gen, var->vtype), &var->namesym->namestr);
+                LLVMBuildStore(gen->builder, *fnargs++, var->llvmvar);
+            }
         }
 
         // Now generate function's block, as if any block, returning block's value

@@ -58,6 +58,7 @@ Name *optionName;
 Name *rcName;
 Name *soName;
 Name *allocMethodName;
+Name *initMethodName;
 
 void nameNewPrefix(char **prefix, char *name) {
     size_t size = strlen(name) + 1;

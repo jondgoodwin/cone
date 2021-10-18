@@ -110,12 +110,11 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
 
     // Handle when allocation fails (returns NULL pointer)
 
-    // Initialize region
-    if (isRegion(reftype->region, rcName)) {
-        LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), 1, 0);
-        LLVMTypeRef ptrusize = LLVMPointerType(genlType(gen, (INode*)usizeType), 0);
-        LLVMValueRef counterptr = LLVMBuildBitCast(gen->builder, malloc, ptrusize, "");
-        LLVMBuildStore(gen->builder, constone, counterptr); // Store 1 into refcounter
+    // Initialize region using its 'init' method, if supplied
+    INode *reginitmeth = iTypeFindFnField(region, initMethodName);
+    if (reginitmeth) {
+        LLVMValueRef regionp = LLVMBuildStructGEP(gen->builder, ptrstructype, 0, "region");
+        genlFnCallInternal(gen, SimpleDispatch, (INode*)reginitmeth, 1, &regionp);
     }
 
     // Initialize permission
