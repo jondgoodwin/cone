@@ -25,7 +25,7 @@ int regionIsPtrU8(RefNode *ptrnode) {
     return 1;
 }
 
-// Verify that region allocator exists and is correctly declared
+// Verify that region allocator exists and it (and init method) are correctly declared
 void regionAllocTypeCheck(INode *region) {
     if (region->tag != StructTag) {
         errorMsgNode(region, ErrorInvType, "Not a valid region.");

@@ -69,3 +69,32 @@ int permMatches(INode *ito, INode *ifrom) {
         return EqMatch;
     return NoMatch;
 }
+
+// Verify that permission init is correctly declared
+void permInitTypeCheck(INode *perm) {
+    if (perm->tag != StructTag)
+        return;
+
+    FnDclNode *initmeth = (FnDclNode*)iTypeFindFnField(perm, initMethodName);
+    if (initmeth == NULL) {
+        return;
+    }
+    FnSigNode *initsig = (FnSigNode*)itypeGetTypeDcl(initmeth->vtype);
+    if (initsig->parms->used != 1) {
+        errorMsgNode((INode*)initmeth, ErrorInvType, "Permission init method needs single self parm.");
+        return;
+    }
+    RefNode *selftype = (RefNode *)itypeGetTypeDcl(iexpGetTypeDcl(nodesGet(initsig->parms, 0)));
+    if (selftype->tag != RefTag
+        || selftype->region->tag != BorrowRegTag
+        || itypeGetTypeDcl(selftype->perm) != (INode*)uniPerm) {
+        errorMsgNode((INode*)initmeth, ErrorInvType, "Permission init method needs self type to be &uni.");
+        return;
+    }
+    INode *initrettype = itypeGetTypeDcl(initsig->rettype);
+    if (initrettype->tag != VoidTag) {
+        errorMsgNode((INode*)initmeth, ErrorInvType, "Permission init method must return void.");
+        return;
+    }
+
+}

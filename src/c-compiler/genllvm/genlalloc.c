@@ -97,6 +97,7 @@ LLVMValueRef genlFree(GenState *gen, LLVMValueRef ref) {
 LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     RefNode *reftype = (RefNode*)allocatenode->vtype;
     INode *region = itypeGetTypeDcl(reftype->region);
+    INode *perm = itypeGetTypeDcl(reftype->perm);
 
     // Calculate how much memory space we need to allocate
     long long allocsize = LLVMABISizeOfType(gen->datalayout, reftype->typeinfo->structype);
@@ -117,7 +118,14 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
         genlFnCallInternal(gen, SimpleDispatch, (INode*)reginitmeth, 1, &regionp);
     }
 
-    // Initialize permission
+    // Initialize permission, if it is a locked permission with an init method
+    if (perm->tag == StructTag) {
+        INode *perminitmeth = iTypeFindFnField(perm, initMethodName);
+        if (perminitmeth) {
+            LLVMValueRef permp = LLVMBuildStructGEP(gen->builder, ptrstructype, 1, "perm");
+            genlFnCallInternal(gen, SimpleDispatch, (INode*)perminitmeth, 1, &permp);
+        }
+    }
 
     // Initialize value (via copy or init function) and return pointer to it
     LLVMValueRef valuep = LLVMBuildStructGEP(gen->builder, ptrstructype, ValueField, ""); // Point to value

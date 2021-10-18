@@ -50,4 +50,7 @@ int permIsSame(INode *node1, INode *node2);
 // Will 'from' permission coerce to the target?
 int permMatches(INode *to, INode *from);
 
+// Verify that permission init is correctly declared
+void permInitTypeCheck(INode *perm);
+
 #endif

@@ -343,6 +343,9 @@ INode *parsePlus(ParseState *parse) {
             anode->perm = newPermUseNode((PermNode*)lex->val.ident->node);
             lexNextToken();
         }
+        else if (lexIsToken(IdentToken)) {
+            anode->perm = parseNameUse(parse);
+        }
         else {
             errorMsgLex(ErrorBadTerm, "Expected permission annotation.");
             return (INode *)anode;

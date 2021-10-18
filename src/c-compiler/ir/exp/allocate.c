@@ -40,9 +40,9 @@ void allocateTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     refTypeCheck(pstate, reftype);
     node->vtype = (INode *)reftype;
 
-    // Type check that ref region's allocation functions are declared correctly
+    // Type check that ref region + permission's allocation functions are declared correctly
     regionAllocTypeCheck(itypeGetTypeDcl(node->region));
-    INode *region = itypeGetTypeDcl(node->region);
+    permInitTypeCheck(itypeGetTypeDcl(node->perm));
 }
 
 // Perform data flow analysis on allocate node
