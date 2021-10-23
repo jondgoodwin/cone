@@ -552,7 +552,12 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         if (node->methfld == NULL)
             node->methfld = newNameUseNode(
                 node->flags & FlagIndex ? (node->flags & FlagBorrow ? refIndexName : indexName) : parensName);
-        fnCallLowerMethod(node); // Lower to a field access or function call
+        // Lower to a field access or function call
+        if (fnCallLowerMethod(node) == 0) {
+            errorMsgNode((INode*)node, ErrorNoMeth,
+                "No method/field named %s found that matches the call's arguments.",
+                &node->methfld->namesym->namestr);
+        }
         break;
 
     // Array type
