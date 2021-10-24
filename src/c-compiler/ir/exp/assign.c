@@ -136,10 +136,10 @@ void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
     node->vtype = ((IExpNode*)node->rval)->vtype;
 }
 
-// Perform data flow analysis between two single assignment nodes:
-// - Lval is mutable
-// - Borrowed reference lifetime is greater than its container
-void assignSingleFlow(INode *lval, INode **rval) {
+// Handle data flow analysis related to single assignment rval
+// Pass type of rval so we can determine what semantics apply
+// Return true if lval is anonName
+int assignlvalrtype(INode *lval, INode *rtype) {
     // '_' named lval is a placeholder that swallows (maybe drops) a value
     if (lval->tag == VarNameUseTag && ((NameUseNode*)lval)->namesym == anonName) {
         // When lval = '_' and this is an own reference, we may have a problem
@@ -151,13 +151,8 @@ void assignSingleFlow(INode *lval, INode **rval) {
                 errorMsgNode((INode*)lval, ErrorMove, "This frees reference. The reference is inaccessible for use.");
         }
         */
-        return;
+        return 1;
     }
-
-    // Non-anonymous lval means assignment moves/copies rvalue
-    // - Enforce move semantics
-    // - Handle copy semantic aliasing
-    flowHandleMoveOrCopy(rval);
 
     // Ensure lval is either mutable or var in need of initialization or mutable.
     uint16_t lvalscope;
@@ -166,7 +161,7 @@ void assignSingleFlow(INode *lval, INode **rval) {
     if (!(MayWrite & permGetFlags(lvalperm)) &&
         (lval->tag != VarNameUseTag || ((VarDclNode*)lvalvar)->flowtempflags & VarInitialized)) {
         errorMsgNode(lval, ErrorNoMut, "You do not have permission to modify lval");
-        return;
+        return 0;
     }
 
     // Mark that lval variable has valid initialized value.
@@ -176,14 +171,28 @@ void assignSingleFlow(INode *lval, INode **rval) {
     }
 
     // Handle lifetime enforcement for borrowed references
-    RefNode* rvaltype = (RefNode *)((IExpNode*)*rval)->vtype;
+    RefNode* rvaltype = (RefNode *)rtype;
     RefNode* lvaltype = (RefNode *)((IExpNode*)lval)->vtype;
     if (rvaltype->tag == RefTag && lvaltype->tag == RefTag && lvaltype->region == borrowRef) {
         if (lvalscope < rvaltype->scope) {
             errorMsgNode(lval, ErrorInvType, "lval outlives the borrowed reference you are storing");
-            return;
         }
     }
+    return 0;
+}
+
+// Perform data flow analysis between two single assignment nodes:
+// - Lval is mutable
+// - Borrowed reference lifetime is greater than its container
+void assignSingleFlow(INode *lval, INode **rval) {
+    // Handle lval-based data flow analysis
+    if (assignlvalrtype(lval, ((IExpNode*)*rval)->vtype))
+        return;
+
+    // Non-anonymous lval means assignment moves/copies rvalue
+    // - Enforce move semantics
+    // - Handle copy semantic aliasing
+    flowHandleMoveOrCopy(rval);
 }
 
 // Handle parallel assignment (multiple values on both sides)
@@ -210,6 +219,7 @@ void assignMultRetFlow(TupleNode *lval, INode **rval) {
     INode **rtypep = &nodesGet(rtypes, 0);
     for (nodesFor(lnodes, lcnt, lnodesp)) {
         // Need mutability check and borrowed lifetime check
+        assignlvalrtype(*lnodesp, *rtypep++);
     }
 }
 
