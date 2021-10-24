@@ -145,6 +145,7 @@ void nametblInit() {
 
     // Populate common symbols/names (see name.h)
     anonName = nametblFind("_", 1);
+    tempName = nametblFind("-_", 2);
     selfName = nametblFind("self", 4);
     selfTypeName = nametblFind("Self", 4);
     thisName = nametblFind("this", 4);

@@ -13,6 +13,7 @@
 #include <string.h>
 
 Name *anonName;
+Name *tempName;
 Name *selfName;
 Name *selfTypeName;
 Name *thisName;

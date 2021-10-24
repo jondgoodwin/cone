@@ -23,6 +23,7 @@ typedef struct Name {
 
 // Common symbols - see nametbl.c
 extern Name *anonName;  // "_" - the absence of a name
+extern Name *tempName;    // "-_"
 extern Name *selfName;  // "self"
 extern Name *selfTypeName; // "Self"
 extern Name *thisName;  // "this"

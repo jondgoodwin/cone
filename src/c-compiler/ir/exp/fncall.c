@@ -277,8 +277,8 @@ void fnCallOpAssgn(FnCallNode **nodep) {
         return;
 
     // If not, rewrite to: {imm tmp = lval; *tmp = *tmp + expr}
-    VarDclNode *tmpvar = newVarDclFull(anonName, VarDclTag, ((IExpNode*)callnode->objfn)->vtype, (INode*)immPerm, callnode->objfn);
-    NameUseNode *tmpname = newNameUseNode(anonName);
+    VarDclNode *tmpvar = newVarDclFull(tempName, VarDclTag, ((IExpNode*)callnode->objfn)->vtype, (INode*)immPerm, callnode->objfn);
+    NameUseNode *tmpname = newNameUseNode(tempName);
     tmpname->vtype = tmpvar->vtype;
     tmpname->tag = VarNameUseTag;
     tmpname->dclnode = (INode *)tmpvar;
@@ -286,7 +286,9 @@ void fnCallOpAssgn(FnCallNode **nodep) {
     derefInject(&derefvar);
     callnode->objfn = derefvar;
     callnode->methfld->namesym = fnCallOpEqMethod(methsym);
-    AssignNode *tmpassgn = newAssignNode(NormalAssign, derefvar, (INode*)callnode);
+    INode *dereflval = (INode *)tmpname;
+    derefInject(&dereflval);
+    AssignNode *tmpassgn = newAssignNode(NormalAssign, dereflval, (INode*)callnode);
     BlockNode *blk = newBlockNode();
     nodesAdd(&blk->stmts, (INode*)tmpvar);
     nodesAdd(&blk->stmts, (INode*)tmpassgn);
