@@ -190,7 +190,6 @@ INode *parseMatch(ParseState *parse) {
     parseBlockStart();
     while (!parseBlockEnd()) {
         lexStmtStart();
-        // --> check on PermToken still needed?
         if (lexIsToken(PermToken)) {
             parseBoundMatch(parse, ifnode, expnamenode, NULL);
         }
@@ -210,6 +209,7 @@ INode *parseMatch(ParseState *parse) {
                 nodesAdd(&ifnode->condblk, (INode *)callnode);
                 nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
             } else {
+                nodesAdd(&ifnode->condblk, parseSimpleExpr(parse));
                 nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
             }
         } else if (lexIsToken(ElseToken)) {
@@ -217,9 +217,6 @@ INode *parseMatch(ParseState *parse) {
             nodesAdd(&ifnode->condblk, elseCond); // else distinguished by a elseCond condition
             nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
         } else {
-            // --> are the following 2 lines still needed here?
-            nodesAdd(&ifnode->condblk, parseSimpleExpr(parse));
-            nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
             errorMsgLex(ErrorBadTerm, "Parser Error: should be either case or else");
             return (INode *)blknode;
         }
