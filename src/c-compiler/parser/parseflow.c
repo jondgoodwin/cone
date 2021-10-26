@@ -190,34 +190,40 @@ INode *parseMatch(ParseState *parse) {
     parseBlockStart();
     while (!parseBlockEnd()) {
         lexStmtStart();
+        // --> check on PermToken still needed?
         if (lexIsToken(PermToken)) {
             parseBoundMatch(parse, ifnode, expnamenode, NULL);
         }
-        else if (lexIsToken(IsToken)) {
-            CastNode *isnode = newIsNode((INode*)expnamenode, unknownType);
-            lexNextToken();
-            isnode->typ = parseVtype(parse);
-            nodesAdd(&ifnode->condblk, (INode*)isnode);
-            nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
-        }
-        else if (lexIsToken(EqToken)) {
-            FnCallNode *callnode = newFnCallOp((INode*)expnamenode, "==", 2);
-            lexNextToken();
-            nodesAdd(&callnode->args, parseSimpleExpr(parse));
-            nodesAdd(&ifnode->condblk, (INode*)callnode);
-            nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
-        }
-        else if (lexIsToken(ElseToken)) {
+        // First check if next token is case or else
+        if (lexIsToken(CaseToken)) {
+            lexNextToken(); // consume the 'case' token
+            if (lexIsToken(IsToken)) {
+                CastNode *isnode = newIsNode((INode *)expnamenode, unknownType);
+                lexNextToken();
+                isnode->typ = parseVtype(parse);
+                nodesAdd(&ifnode->condblk, (INode *)isnode);
+                nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
+            } else if (lexIsToken(EqToken)) {
+                FnCallNode *callnode = newFnCallOp((INode *)expnamenode, "==", 2);
+                lexNextToken();
+                nodesAdd(&callnode->args, parseSimpleExpr(parse));
+                nodesAdd(&ifnode->condblk, (INode *)callnode);
+                nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
+            } else {
+                nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
+            }
+        } else if (lexIsToken(ElseToken)) {
             lexNextToken();
             nodesAdd(&ifnode->condblk, elseCond); // else distinguished by a elseCond condition
             nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
-        }
-        else {
+        } else {
+            // --> are the following 2 lines still needed here?
             nodesAdd(&ifnode->condblk, parseSimpleExpr(parse));
             nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
+            errorMsgLex(ErrorBadTerm, "Parser Error: should be either case or else");
+            return (INode *)blknode;
         }
     }
-
     nodesAdd(&blknode->stmts, (INode*)expdclnode);
     nodesAdd(&blknode->stmts, (INode*)ifnode);
     return (INode *)blknode;

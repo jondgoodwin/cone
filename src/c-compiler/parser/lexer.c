@@ -103,6 +103,7 @@ void keywordInit() {
     keyAdd("if", IfToken);
     keyAdd("elif", ElifToken);
     keyAdd("else", ElseToken);
+    keyAdd("case", CaseToken);
     keyAdd("match", MatchToken);
     keyAdd("loop", LoopToken);
     keyAdd("while", WhileToken);
