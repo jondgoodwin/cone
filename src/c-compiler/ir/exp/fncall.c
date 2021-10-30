@@ -267,37 +267,6 @@ Name *fnCallOpEqMethod(Name *opeqname) {
     return NULL;
 }
 
-// Make sure opassign method (+=) exists. Rewrite it, if not.
-void fnCallOpAssgn(FnCallNode **nodep) {
-    // Check if opassign method (+=) exists
-    FnCallNode *callnode = *nodep;
-    Name *methsym = callnode->methfld->namesym;
-    INode *objdereftype = iexpGetDerefTypeDcl(callnode->objfn);
-    if (!isMethodType(objdereftype) || iNsTypeFindFnField((INsTypeNode*)objdereftype, methsym))
-        return;
-
-    // If not, rewrite to: {imm tmp = lval; *tmp = *tmp + expr}
-    VarDclNode *tmpvar = newVarDclFull(tempName, VarDclTag, ((IExpNode*)callnode->objfn)->vtype, (INode*)immPerm, callnode->objfn);
-    NameUseNode *tmpname = newNameUseNode(tempName);
-    tmpname->vtype = tmpvar->vtype;
-    tmpname->tag = VarNameUseTag;
-    tmpname->dclnode = (INode *)tmpvar;
-    INode *derefvar = (INode *)tmpname;
-    derefInject(&derefvar);
-    callnode->objfn = derefvar;
-    callnode->methfld->namesym = fnCallOpEqMethod(methsym);
-    INode *dereflval = (INode *)tmpname;
-    derefInject(&dereflval);
-    AssignNode *tmpassgn = newAssignNode(NormalAssign, dereflval, (INode*)callnode);
-    BlockNode *blk = newBlockNode();
-    nodesAdd(&blk->stmts, (INode*)tmpvar);
-    nodesAdd(&blk->stmts, (INode*)tmpassgn);
-    *((INode**)nodep) = (INode*)blk;
-
-    // Indicate, for FinalizeArgs, that we expect method to return this type
-    callnode->vtype = ((IExpNode*)derefvar)->vtype;
-}
-
 // Find best field or method (across overloaded methods whose type matches argument types)
 // Then lower the node to a function call (objfn+args) or field access (objfn+methfld) accordingly
 int fnCallLowerMethod(FnCallNode *callnode) {
@@ -427,6 +396,47 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
     return 1;
 }
 
+// Lower opassign method for method-based types
+void fnCallOpAssgn(FnCallNode **nodep) {
+    FnCallNode *callnode = *nodep;
+    INode *objtype = iexpGetTypeDcl(callnode->objfn);
+    Name *methsym = callnode->methfld->namesym;
+
+    // Change first argument to &mut obj
+    borrowMutRef(&callnode->objfn, objtype, newPermUseNode(mutPerm));
+
+    // Lower to op-assign, if method supported by type
+    if (iNsTypeFindFnField((INsTypeNode*)objtype, methsym)) {
+        fnCallLowerMethod(callnode);
+        return;
+    }
+
+    // Let's try rewriting to: {imm tmp = lval; *tmp = *tmp + expr}
+    VarDclNode *tmpvar = newVarDclFull(tempName, VarDclTag, ((IExpNode*)callnode->objfn)->vtype, (INode*)immPerm, callnode->objfn);
+    NameUseNode *tmpname = newNameUseNode(tempName);
+    tmpname->vtype = tmpvar->vtype;
+    tmpname->tag = VarNameUseTag;
+    tmpname->dclnode = (INode *)tmpvar;
+    INode *derefvar = (INode *)tmpname;
+    derefInject(&derefvar);
+    callnode->objfn = derefvar;
+    callnode->methfld->namesym = fnCallOpEqMethod(methsym);
+    if (!fnCallLowerMethod(callnode)) {
+        errorMsgNode((INode*)callnode, ErrorNoMeth,
+            "No method/field named %s found that matches the call's arguments.",
+            &methsym->namestr);
+        return;
+    }
+    INode *dereflval = (INode *)tmpname;
+    derefInject(&dereflval);
+    AssignNode *tmpassgn = newAssignNode(NormalAssign, dereflval, (INode*)callnode);
+    BlockNode *blk = newBlockNode();
+    blk->vtype = callnode->vtype;
+    nodesAdd(&blk->stmts, (INode*)tmpvar);
+    nodesAdd(&blk->stmts, (INode*)tmpassgn);
+    *((INode**)nodep) = (INode*)blk;
+}
+
 // Perform type check on function/method call node
 // This should only be run once on a node, as it mutably lowers the node to another form:
 // - If a generic/macro, it instantiates, then type checks instantiated nodes
@@ -524,19 +534,19 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         }
     }
 
-    // Handle when operand requires an lval (mutable ref)
+    // Handle when method operator requires an lval
+    // This is true for ++, --, <- and operator-equals (+=)
     INode *objtype = iexpGetTypeDcl(node->objfn);
     if (node->flags & FlagLvalOp) {
-        // Lval Ops require a (mutable) reference.
-        if (objtype->tag != RefTag) {
-            // Obtain a borrowed, mutable reference to it
-            borrowMutRef(&node->objfn, objtype, newPermUseNode(mutPerm));
-            objtype = iexpGetTypeDcl(node->objfn);
-        }
-        // Make sure opassign method (+=) exists
-        // If not, rewrite to: {imm l = lval; *l = *l + expr}
-        if (node->flags & FlagOpAssgn)
+        // Lower opassign for method-based types with extra logic
+        if (isMethodType(objtype) && (node->flags & FlagOpAssgn)) {
             fnCallOpAssgn(nodep);
+            return;
+        }
+
+        // Turn objfn into &mut objfn
+        borrowMutRef(&node->objfn, objtype, newPermUseNode(mutPerm));
+        objtype = iexpGetTypeDcl(node->objfn);
     }
 
     // Dispatch for correct handling based on the type of the object

@@ -287,7 +287,7 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
         }
 
         // Floating point intrinsics
-        else if (selftypkind == LLVMFloatTypeKind) {
+        else if (selftypkind == LLVMFloatTypeKind || selftypkind == LLVMDoubleTypeKind) {
             unsigned long long bitwidth = LLVMABISizeOfType(gen->datalayout, selftyp);
             switch (((IntrinsicNode *)fndcl->value)->intrinsicFn) {
             case NegIntrinsic: fncallret = LLVMBuildFNeg(gen->builder, fnargs[0], ""); break;
