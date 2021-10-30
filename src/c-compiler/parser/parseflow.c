@@ -190,13 +190,14 @@ INode *parseMatch(ParseState *parse) {
     parseBlockStart();
     while (!parseBlockEnd()) {
         lexStmtStart();
-        if (lexIsToken(PermToken)) {
-            parseBoundMatch(parse, ifnode, expnamenode, NULL);
-        }
-        // First check if next token is case or else
+        // Handle pattern that begins with 'case'
         if (lexIsToken(CaseToken)) {
             lexNextToken(); // consume the 'case' token
-            if (lexIsToken(IsToken)) {
+            // Handle bound variable pattern
+            if (lexIsToken(PermToken)) {
+                parseBoundMatch(parse, ifnode, expnamenode, NULL);
+            }
+            else if (lexIsToken(IsToken)) {
                 CastNode *isnode = newIsNode((INode *)expnamenode, unknownType);
                 lexNextToken();
                 isnode->typ = parseVtype(parse);
