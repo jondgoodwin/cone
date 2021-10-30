@@ -164,11 +164,7 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
     else {
         // Last statement of a regular block needs to be a break, continue, return or blockret
         if (laststmtp && isExpNode(*laststmtp)) {
-            // Wrap the final expression in a blockret statement (flow pass will need it)
-            BreakRetNode *retnode = newReturnNode();
-            retnode->tag = BlockRetTag;
-            retnode->exp = *laststmtp;
-            lastexp = &retnode->exp;
+            lastexp = laststmtp;
             match = iexpMultiCoerceInfer(pstate, expectType, &inferredType, lastexp, match);
         }
         else if (laststmtp == NULL ||
