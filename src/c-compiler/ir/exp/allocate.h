@@ -12,6 +12,9 @@
 
 void allocatePrint(RefNode *node);
 
+// Name resolution for questag: decide if Option type or fold into AllocNode
+void allocateQuesNameRes(NameResState *pstate, FnCallNode **nodep);
+
 // Type check allocate node
 void allocateTypeCheck(TypeCheckState *pstate, RefNode **node);
 

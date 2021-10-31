@@ -398,6 +398,7 @@ INode *parsePrefix(ParseState *parse, int noSuffix) {
         // Lower into 'Option[expr]'
         NameUseNode *option = newNameUseNode(optionName);
         FnCallNode *opttype = newFnCallNode((INode*)option, 1);
+        opttype->tag = QuesTag;  // In name resolution pass, we will lower to FnCallTag or AllocTag
         lexNextToken();
         nodesAdd(&opttype->args, parsePrefix(parse, noSuffix));
         return (INode*)opttype;

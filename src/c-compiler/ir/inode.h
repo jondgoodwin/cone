@@ -139,6 +139,7 @@ enum NodeTags {
     PtrTag,         // Pointer
     TTupleTag,      // Type tuple
     VoidTag,        // a type for "no value", such as no return values for a fn
+    QuesTag,        // For "?": may be Option[T] or for allocnode
     BorrowRegTag,   // Borrowed region
     UnknownTag,     // unknown type - must be resolved before gen
 
@@ -185,6 +186,8 @@ enum NodeTags {
 #define FlagLoop      0x0001        // Block: is a Loop block
 
 #define FlagSuffix    0x0001        // Borrow: part of a borrow chain
+
+#define FlagQues      0x0001        // Alloc:  Does it return Option[T]?
 
 #define FlagUnkType   0x0001        // ULit: type is unspecified and may be converted to other number
 

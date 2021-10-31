@@ -95,7 +95,15 @@ LLVMValueRef genlFree(GenState *gen, LLVMValueRef ref) {
 //   &ref.TValue or Some[&ref.TValue]
 //
 LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
-    RefNode *reftype = (RefNode*)allocatenode->vtype;
+    RefNode *reftype = (RefNode*)itypeGetTypeDcl(allocatenode->vtype);
+    if (reftype->tag != RefTag) {
+        // Extract reftype from Option type
+        assert(reftype->tag == StructTag && (allocatenode->flags & FlagQues) && "Should be Option type");
+        StructNode *optionTrait = (StructNode*)reftype;
+        StructNode *someStruct = (StructNode*)nodesGet(optionTrait->derived, 1);
+        reftype = (RefNode*)itypeGetTypeDcl(((IExpNode*)nodelistGet(&someStruct->fields, 0))->vtype);
+        assert(reftype->tag == RefTag && "Option type did not have reftype");
+    }
     INode *region = itypeGetTypeDcl(reftype->region);
     INode *perm = itypeGetTypeDcl(reftype->perm);
     LLVMTypeRef valueptrtyp = LLVMPointerType(LLVMStructGetTypeAtIndex(LLVMGetElementType(reftype->typeinfo->ptrstructype), 2), 0);

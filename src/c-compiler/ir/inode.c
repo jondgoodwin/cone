@@ -267,6 +267,8 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         arrayNameRes(pstate, (ArrayNode *)*node); break;
     case TupleTag:
         ttupleNameRes(pstate, (TupleNode *)*node); break;
+    case QuesTag:
+        allocateQuesNameRes(pstate, (FnCallNode **)node); break;
     case BorrowRegTag:
         break;
 
