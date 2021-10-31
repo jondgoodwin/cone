@@ -18,9 +18,36 @@ Headers on documentation pages highlight what is not yet implemented.
 
 ## Current Focus: 
 
-- Move semantics
-- Borrowed references, Lifetimes, and static permissions
-- Owning references, Regions, and lock permissions
+Since August 2021, development is focused on Cone's distinctive reference mechanisms 
+and the safety protections they require. Here is the ordered to-do list:
+
+- Move semantics - basics [Done - Aug]
+- Variables initialized before use [Done - Aug]
+- Programmable region annotations:
+  - Region annotations are structs [Done - Aug]
+  - Allocation & initializers [ongoing]
+  - Free and finalizers
+  - Alias and de-alias
+  - Weak references
+- Move semantics (advanced): 
+  - Auto-drop/dealias
+  - Conditional moves
+- Borrowed references
+- Lifetime constraints
+- Static permissions
+- Lock permissions
+
+Along the way, related features need work to support the above:
+
+- Sum type syntax adjustment
+- Generics refactor [ongoing]
+- Proper modules and import with name folding [Done - Oct]
+- Void and nil unit type support [Done - Sept]
+- @static methods on a type [Done - Sept]
+- @move and @opaque structs [Done - Aug]
+- Normalize ref types [Done - Aug]
+- inline functions [Done - July]
+- Block/loop and exit refactor [Done - July]
 
 ## Feature Status
 
@@ -51,7 +78,7 @@ This table illustrates the current status of Cone's key features:
 | | array, array refs | slices, collections |
 | | variant types | enum |
 | | references (incl. nullable) | safety guards |
-| | own, rc, borrowed | move/borrow semantics |
+| | so, rc, borrowed | move/borrow semantics |
 | | | gc, arena, pool |
 | | static permissions | runtime permissions |
 | | pointers | trust block |
