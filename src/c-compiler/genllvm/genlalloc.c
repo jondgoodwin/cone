@@ -129,7 +129,8 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     LLVMBasicBlockRef panicblk = genlInsertBlock(gen, "panicblk");
     LLVMBuildCondBr(gen->builder, isNull, panicblk, initblk);
     LLVMPositionBuilderAtEnd(gen->builder, panicblk);
-    genlPanic(gen);    
+    if (!(allocatenode->flags & FlagQues))
+        genlPanic(gen);    
     blkvals[0] = LLVMBuildBitCast(gen->builder, ptrstructype, valueptrtyp, "");
     blks[0] = panicblk;
     LLVMBuildBr(gen->builder, endif);
