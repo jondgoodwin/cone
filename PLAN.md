@@ -1,4 +1,4 @@
-# Cone - Next Steps (as of August 1, 2021)
+# Cone - Next Steps (as of November 1, 2021)
 
 ## Current Capability
 
