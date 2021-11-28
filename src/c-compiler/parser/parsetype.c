@@ -253,7 +253,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
 
 void parseInjectSelf(FnSigNode *fnsig) {
     NameUseNode *selftype = newNameUseNode(selfTypeName);
-    VarDclNode *selfparm = newVarDclFull(nametblFind("self", 4), VarDclTag, (INode*)selftype, newPermUseNode(constPerm), NULL);
+    VarDclNode *selfparm = newVarDclFull(nametblFind("self", 4), VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL);
     selfparm->scope = 1;
     selfparm->index = 0;
     selfparm->flowtempflags |= VarInitialized;

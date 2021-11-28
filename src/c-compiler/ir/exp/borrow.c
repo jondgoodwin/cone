@@ -22,6 +22,14 @@ void borrowMutRef(INode **nodep, INode* type, INode *perm) {
     if (iexpIsLvalError(node) == 0) {
         errorMsgNode(node, ErrorInvType, "Auto-borrowing can only be done on an lval");
     }
+
+    // Verify lval is mutable
+    INode *lvalperm = (INode*)immPerm;
+    uint16_t scope = 0;
+    INode *lvalvar = iexpGetLvalInfo(node, &lvalperm, &scope);
+    if (!permMatches(perm, lvalperm))
+        errorMsgNode((INode *)node, ErrorBadPerm, "Cannot borrow mutable reference to this.");
+
     RefNode *reftype = type != unknownType? newRefNodeFull(RefTag, node, borrowRef, perm, type) : (RefNode*)unknownType;
     RefNode *borrownode = newRefNodeFull(BorrowTag, node, borrowRef, perm, node);
     borrownode->vtype = (INode*)reftype;
