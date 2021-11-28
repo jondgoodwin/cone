@@ -306,6 +306,7 @@ int fnCallLowerMethod(FnCallNode *callnode) {
 
     FnDclNode *bestmethod = iNsTypeFindBestMethod((FnDclNode *)foundnode, &callnode->objfn, callnode->args);
     if (bestmethod == NULL) {
+        errorMsgNode((INode*)callnode, ErrorNotPublic, "No matching method '%s' found that matches the call's arguments.", &methsym->namestr);
         return 0;
     }
 
