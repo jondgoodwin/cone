@@ -225,7 +225,7 @@ int fnSigMatchMethCall(FnSigNode *to, INode **self, Nodes *args) {
     }
     ++tonodesp;
     if (argcnt == 1)
-        return to->parms->used == 1 || ((VarDclNode *)tonodesp)->value == NULL ? matchsum : 0;
+        return to->parms->used == 1 || ((VarDclNode *)*tonodesp)->value != NULL ? matchsum : 0;
 
     // Every specified argument must match corresponding parameter
     INode **callnodesp;
@@ -243,7 +243,7 @@ int fnSigMatchMethCall(FnSigNode *to, INode **self, Nodes *args) {
     }
     // Match fails if not enough arguments & method has no default values on parms
     if (argcnt != to->parms->used
-        && ((VarDclNode *)tonodesp)->value == NULL)
+        && ((VarDclNode *)*tonodesp)->value == NULL)
         return 0;
 
     // It is a match; return how perfect a match it is
