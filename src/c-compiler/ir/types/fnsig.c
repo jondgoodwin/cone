@@ -223,9 +223,9 @@ int fnSigMatchMethCall(FnSigNode *to, INode **self, Nodes *args) {
         if (((IExpNode*)*tonodesp)->vtype->tag != RefTag)
             return 0;
     }
-    if (argcnt == 1)
-        return matchsum;
     ++tonodesp;
+    if (argcnt == 1)
+        return to->parms->used == 1 || ((VarDclNode *)tonodesp)->value == NULL ? matchsum : 0;
 
     // Every specified argument must match corresponding parameter
     INode **callnodesp;
