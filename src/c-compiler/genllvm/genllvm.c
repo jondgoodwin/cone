@@ -438,6 +438,7 @@ void genSetup(GenState *gen, ConeOptions *opt) {
     opt->ptrsize = LLVMPointerSize(gen->datalayout) << 3;
 
     gen->context = LLVMGetGlobalContext(); // LLVM inlining bugs prevent use of LLVMContextCreate();
+    gen->builder = LLVMCreateBuilder();
     gen->fn = NULL;
     gen->fnblock = NULL;
     gen->allocaPoint = NULL;
