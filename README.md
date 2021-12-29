@@ -27,12 +27,7 @@ including the Congo build tool and additional example Cone programs.
 
 When finished, Cone will support these features:
 
-- Readable, modular marriage of 3D content and behavior:
-  - Simple, outline-like declarative syntax for content
-  - Procedural generation and behavior interwoven in content
-  - Snap-together, Internet-hosted, url-located parts
-- Compile-time memory, type, and concurrency safety checks
-- [Gradual memory management][gmm]: safely manage memory your way
+- Safely manage memory your way
   - Lexical, single-owner strategy for performance
   - Ref-counted or tracing GC for flexibility
   - Lifetime-constrained references for performance/simplicity
@@ -40,23 +35,22 @@ When finished, Cone will support these features:
 - Lightweight concurrency
   - Co-routines, threads and actors
   - Lockless and locked permissions for safe data sharing
+- Compile-time memory, type, and concurrency safety
 - Robust type system
   - Sum types, structs, arrays, slices, ranges, aliases
-  - struct subtyping via trait, interface, & parent inheritance
-  - Attach methods to any type
+  - struct subtyping via trait, & delegated inheritance
+  - Attach methods to any nominal type
 - Modules, macros, templates and meta-programming
 - Extensible pattern matching
-  - Type-defined '~~' match operator
   - 'match' blocks using custom match methods
   - Content extraction during matching
 - Functions, Methods and Closures
   - Multiple return values and implicit return
   - Computed properties
-- 'do' block for context management
+- 'with' block for context management
 - Concise, readable code:
   - 'this'-implied prefix operators for method cascading, etc.
   - Operator overloading
-  - Control clauses for 'if', 'while', 'each'
   - Type inference
   - Parallel assignment
   - Auto-detected off-side rule
@@ -68,17 +62,35 @@ When finished, Cone will support these features:
 
 A Visual Studio C++ solution can be created using the Cone.vcxproj project file.
 The generated object and executable files are created relative to the location of the 
-solutions file. The build depends on [LLVM 7][llvm] being installed and available at $(LLVMDIR).
+solutions file. 
 
-## Building (Linux)
+The build depends on [LLVM 13][llvm] being installed and libs/includes found at $(LLVMDIR).
+
+Building LLVM on Windows can be a pain. Some notes:
+
+1. Download llvm-13.0.0.src.tar.xz from https://github.com/llvm/llvm-project/releases 
+2. Extract the src to a path having no spaces (e.g., D:\libs\llvm-13.0.0.src)
+3. Make sure you have a recent version of CMake (which has CMake-GUI)
+4. Use CMake-GUI to configure. Fill in the source folder (above) and a new target folder (D:\libs\llvm-13.0.0.build) and hit Configure button
+   - When it asks if build folder should be created, say Yes
+   - When it prompts for a generator, specify the Visual Studio version installed (e.g., 15).
+   - In next drop down, select "Win32" to build 32-bit compiler.
+5. In CMake-Gui, change defaults if you want (e.g., 32-bit target triple is i686-pc-win32), and then hit "Generate" button.
+6. From build folder, double clicked on llvm.sln file to open Visual Studio. 
+   - Select Release, and then build ALL_BUILD
+   - Select Debug, and then build ALL_BUILD. (fails if not enough memory, shut all pgms off)
+7. Copy llvm-c from llvm-13.0.0.src/include to llvm-13.0.0.build/include
+8) In command prompt: setx LLVMDIR d:\libs\llvm-13.0.0.build\
+
+## Building (Linux and WSL in Windows)
 
 To build on Linux:
 
-	sudo apt-get install llvm-7-dev
+	sudo apt-get install llvm-13-dev
 	cmake .
 	make
 
-Note: To generate WebAssembly, it is necessary to custom-build LLVM, e.g.:
+Note: Sometimes, it is necessary to custom-build LLVM, e.g.:
 
 	mkdir llvm
 	cd llvm

@@ -67,6 +67,7 @@ set(LLVM_LINK_COMPONENTS
 		MSP430Info
 		MSP430Desc
 		MSP430CodeGen
+		MSP430AsmParser
 		MipsInfo
 		MipsDesc
 		MipsAsmParser
@@ -79,6 +80,11 @@ set(LLVM_LINK_COMPONENTS
 		PowerPCAsmParser
 		PowerPCDisassembler
 		PowerPCCodeGen
+		RISCVAsmParser
+		RISCVInfo
+		RISCVDesc
+		RISCVDisassembler
+		RiSCVCodeGen
 		SparcInfo
 		SparcDesc
 		SparcAsmParser
@@ -99,7 +105,6 @@ set(LLVM_LINK_COMPONENTS
 		X86AsmParser
 		X86Disassembler
 		X86CodeGen
-		X86Utils
 		XCoreInfo
 		XCoreDesc
 		XCoreDisassembler
