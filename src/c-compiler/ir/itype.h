@@ -91,4 +91,7 @@ int itypeIsZeroSize(INode *type);
 // Return true if type implements move semantics
 int itypeIsMove(INode *type);
 
+// Return true if this is a generic type
+int itypeIsGenericType(INode *type);
+
 #endif

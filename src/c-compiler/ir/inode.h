@@ -62,7 +62,7 @@ typedef struct INode {
 
 // Easy checks on the kind of node it is based on high-level flags
 #define isExpNode(node) (((node)->tag & GroupMask) == ExpGroup)
-#define isTypeNode(node) (((node)->tag & GroupMask) == TypeGroup)
+#define isTypeNode(node) (((node)->tag & GroupMask) == TypeGroup || itypeIsGenericType(node))
 #define isMetaNode(node) (((node)->tag & GroupMask) == MetaGroup)
 #define isNamedNode(node) ((node)->tag & NamedNode)
 #define isMethodType(node) (isTypeNode(node) && ((node)->tag & MethodType))

@@ -311,3 +311,13 @@ int itypeIsZeroSize(INode *type) {
 int itypeIsMove(INode *type) {
     return itypeGetTypeDcl(type)->flags & MoveType;
 }
+
+// Return true if this is a generic type
+int itypeIsGenericType(INode *type) {
+    if (type->tag != FnCallTag)
+        return 0;
+    FnCallNode *gentype = (FnCallNode*)type;
+    if (gentype->objfn->tag != GenericNameTag)
+        return 0;
+    return gentype->args->used > 0 && (nodesGet(&gentype->args, 0));
+}

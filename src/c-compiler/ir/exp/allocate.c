@@ -11,7 +11,7 @@
 
 // Serialize allocate
 void allocatePrint(RefNode *node) {
-    inodeFprint("&(");
+    inodeFprint("+(");
     inodePrintNode(node->vtype);
     inodeFprint("->");
     inodePrintNode(node->vtexp);
@@ -25,7 +25,7 @@ void allocateQuesNameRes(NameResState *pstate, FnCallNode **nodep) {
     inodeNameRes(pstate, &quesNode->objfn);
     inodeNameRes(pstate, &nodesGet(quesNode->args, 0));
 
-    quesNode->tag = FnCallTag;  // Treat as option type from here-onl
+    quesNode->tag = FnCallTag;  // Treat as option type
     INode *argnode = nodesGet(quesNode->args, 0);
     if (isTypeNode(argnode)) {
         // When arg is a type, then treat this as Option[T] type
