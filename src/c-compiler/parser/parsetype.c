@@ -133,7 +133,7 @@ FieldDclNode *parseFieldDcl(ParseState *parse, PermNode *defperm) {
 INode *parseStruct(ParseState *parse, uint16_t strflags) {
     char *svprefix = parse->gennamePrefix;
     INsTypeNode *svtype = parse->typenode;
-    GenericNode *genericnode = NULL;
+    MacroDclNode *genericnode = NULL;
     StructNode *strnode;
     uint16_t fieldnbr = 0;
 

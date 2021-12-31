@@ -96,6 +96,7 @@ typedef struct TypeCheckState TypeCheckState;
 #include "exp/vtuple.h"
 
 #include "meta/genvardcl.h"
+#include "meta/macro.h"
 #include "meta/generic.h"
 
 #include "stmt/program.h"

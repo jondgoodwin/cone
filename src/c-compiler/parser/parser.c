@@ -127,7 +127,7 @@ void parseCloseTok(uint16_t closetok) {
 
 // Parse a function block
 INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags) {
-    GenericNode *genericnode = NULL;
+    MacroDclNode *genericnode = NULL;
     FnDclNode *fnnode = newFnDclNode(NULL, nodeflags, NULL, NULL);
 
     // Skip past the 'fn'. Handle @static attribute
@@ -329,7 +329,7 @@ void parseFnOrVar(ParseState *parse, uint16_t flags) {
 }
 
 // Parse a list of generic variables and add to the genericnode
-void parseGenericVars(ParseState *parse, GenericNode *genericnode) {
+void parseGenericVars(ParseState *parse, MacroDclNode *genericnode) {
     lexNextToken(); // Go past left square bracket
     while (lexIsToken(IdentToken)) {
         GenVarDclNode *parm = newGVarDclNode(lex->val.ident);
@@ -345,13 +345,13 @@ void parseGenericVars(ParseState *parse, GenericNode *genericnode) {
 }
 
 // Parse a macro declaration
-GenericNode *parseMacro(ParseState *parse) {
+MacroDclNode *parseMacro(ParseState *parse) {
     lexNextToken();
     if (!lexIsToken(IdentToken)) {
         errorMsgLex(ErrorBadTok, "Expected a macro name");
         return newMacroDclNode(anonName);
     }
-    GenericNode *macro = newMacroDclNode(lex->val.ident);
+    MacroDclNode *macro = newMacroDclNode(lex->val.ident);
     lexNextToken();
     if (lexIsToken(LBracketToken)) {
         parseGenericVars(parse, macro);
@@ -400,7 +400,7 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
 
         // 'macro'
         case MacroToken: {
-            GenericNode *macro = parseMacro(parse);
+            MacroDclNode *macro = parseMacro(parse);
             modAddNode(mod, macro->namesym, (INode*)macro);
             break;
         }

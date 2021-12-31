@@ -452,7 +452,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     // If we have a true macro, go handle it elsewhere
     // Note: Macros don't want us to type check arguments until after substitution
     if (node->objfn->tag == MacroNameTag) {
-        genericCallTypeCheck(pstate, nodep);
+        macroCallTypeCheck(pstate, nodep);
         return;
     }
 

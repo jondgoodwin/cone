@@ -46,7 +46,7 @@ void parseBlockStart();
 // Are we at end of block yet? If so, consume token and reset lexer mode
 int parseBlockEnd();
 // Parse a list of generic variables and add to the genericnode
-void parseGenericVars(ParseState *parse, GenericNode *genericnode);
+void parseGenericVars(ParseState *parse, MacroDclNode *genericnode);
 
 // Expect closing token (e.g., right parenthesis). If not found, search for it or '}' or ';'
 void parseCloseTok(uint16_t closetok);

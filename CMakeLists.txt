@@ -181,6 +181,7 @@ add_executable(conec
 	src/c-compiler/ir/types/typedef.c
 	src/c-compiler/ir/types/void.c
 
+	src/c-compiler/ir/meta/macro.c
 	src/c-compiler/ir/meta/genvardcl.c
 	src/c-compiler/ir/meta/generic.c
 

@@ -180,7 +180,7 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
 }
 
 // Generate all instantiations of generic functions
-void genlGeneric(GenState *gen, GenericNode *gennode, int dobody) {
+void genlGeneric(GenState *gen, MacroDclNode *gennode, int dobody) {
     if (gennode->body->tag != FnDclTag)
         return;
 
@@ -219,7 +219,7 @@ void genlGlobalSyms(GenState *gen, INode *node) {
         genlGloFnName(gen, (FnDclNode *)node);
         break;
     case GenericDclTag:
-        genlGeneric(gen, (GenericNode *)node, 0);
+        genlGeneric(gen, (MacroDclNode *)node, 0);
         break;
     }
 }
@@ -255,7 +255,7 @@ void genlGlobalImpl(GenState *gen, INode *node) {
 
     case MacroDclTag:
     case GenericDclTag:
-        genlGeneric(gen, (GenericNode*)node, 1);
+        genlGeneric(gen, (MacroDclNode*)node, 1);
         break;
 
     case ImportTag:

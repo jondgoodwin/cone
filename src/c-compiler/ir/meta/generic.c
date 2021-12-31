@@ -11,9 +11,9 @@
 #include <assert.h>
 
 // Create a new generic declaraction node
-GenericNode *newMacroDclNode(Name *namesym) {
-    GenericNode *gennode;
-    newNode(gennode, GenericNode, MacroDclTag);
+MacroDclNode *newGenericDclNode(Name *namesym) {
+    MacroDclNode *gennode;
+    newNode(gennode, MacroDclNode, GenericDclTag);
     gennode->vtype = NULL;
     gennode->namesym = namesym;
     gennode->parms = newNodes(4);
@@ -22,76 +22,9 @@ GenericNode *newMacroDclNode(Name *namesym) {
     return gennode;
 }
 
-// Create a new generic declaraction node
-GenericNode *newGenericDclNode(Name *namesym) {
-    GenericNode *gennode = newMacroDclNode(namesym);
-    gennode->tag = GenericDclTag;
-    return gennode;
-}
-
-// Serialize
-void genericPrint(GenericNode *name) {
-    INode **nodesp;
-    uint32_t cnt;
-    inodeFprint("macro %s (", &name->namesym->namestr);
-    for (nodesFor(name->parms, cnt, nodesp)) {
-        inodePrintNode(*nodesp);
-        if (cnt > 1)
-            inodeFprint(", ");
-    }
-    inodeFprint(") ");
-    inodePrintNode(name->body);
-}
-
-// Perform name resolution
-void genericNameRes(NameResState *pstate, GenericNode *gennode) {
-    uint16_t oldscope = pstate->scope;
-    pstate->scope = 1;
-
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodesFor(gennode->parms, cnt, nodesp))
-        inodeNameRes(pstate, nodesp);
-
-    // Hook gennode's parameters into global name table
-    // so that when we walk the gennode's logic, parameter names are resolved
-    nametblHookPush();
-    for (nodesFor(gennode->parms, cnt, nodesp))
-        nametblHookNode(((VarDclNode *)*nodesp)->namesym, *nodesp);
-
-    inodeNameRes(pstate, (INode**)&gennode->body);
-
-    nametblHookPop();
-    pstate->scope = oldscope;
-}
-
-// Type check a generic declaration
-void genericTypeCheck(TypeCheckState *pstate, GenericNode *gennode) {
-}
-
-// Type check generic name use
-void genericNameTypeCheck(TypeCheckState *pstate, NameUseNode **gennode) {
-    // Obtain macro to expand
-    GenericNode *macrodcl = (GenericNode*)(*gennode)->dclnode;
-    uint32_t expected = macrodcl->parms ? macrodcl->parms->used : 0;
-    if (expected > 0) {
-        errorMsgNode((INode*)*gennode, ErrorManyArgs, "Generic or macro expects arguments to be provided");
-        return;
-    }
-
-    // Instantiate macro, replacing gennode
-    CloneState cstate;
-    clonePushState(&cstate, (INode*)*gennode, NULL, pstate->scope, NULL, NULL);
-    *((INode**)gennode) = cloneNode(&cstate, macrodcl->body);
-    clonePopState();
-
-    // Now type check the instantiated nodes
-    inodeTypeCheckAny(pstate, (INode**)gennode);
-}
-
 // Verify arguments are types, check if instantiated, instantiate if needed and return ptr to it
 INode *genericMemoize(TypeCheckState *pstate, FnCallNode *fncall) {
-    GenericNode *genericnode = (GenericNode*)((NameUseNode*)fncall->objfn)->dclnode;
+    MacroDclNode *genericnode = (MacroDclNode*)((NameUseNode*)fncall->objfn)->dclnode;
 
     // Verify all arguments are types
     INode **nodesp;
@@ -151,10 +84,10 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *fncall) {
     fnuse->dclnode = instance;
     return (INode *)fnuse;
 }
+
 // Instantiate a generic using passed arguments
 void genericCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
-    GenericNode *genericnode = (GenericNode*)((NameUseNode*)(*nodep)->objfn)->dclnode;
-    int isGeneric = genericnode->tag == GenericDclTag; // vs. macro
+    MacroDclNode *genericnode = (MacroDclNode*)((NameUseNode*)(*nodep)->objfn)->dclnode;
 
     uint32_t expected = genericnode->parms ? genericnode->parms->used : 0;
     if ((*nodep)->args->used != expected) {
@@ -163,14 +96,7 @@ void genericCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     }
 
     // Replace gennode call with instantiated body, substituting parameters
-    if (isGeneric)
-        *((INode**)nodep) = genericMemoize(pstate, *nodep);
-    else {
-        CloneState cstate;
-        clonePushState(&cstate, (INode*)*nodep, NULL, pstate->scope, genericnode->parms, (*nodep)->args);
-        *((INode**)nodep) = cloneNode(&cstate, genericnode->body);
-        clonePopState();
-    }
+    *((INode**)nodep) = genericMemoize(pstate, *nodep);
 
     // Now type check the instantiated nodes
     inodeTypeCheckAny(pstate, (INode **)nodep);
@@ -178,7 +104,7 @@ void genericCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 
 // Inference found an argtype that maps to a generic parmtype
 // Capture it, and return 0 if it does not match what we already thought it was
-int genericCaptureType(FnCallNode *gencall, GenericNode *genericnode, INode *parmtype, INode *argtype) {
+int genericCaptureType(FnCallNode *gencall, MacroDclNode *genericnode, INode *parmtype, INode *argtype) {
     INode **genvarp;
     uint32_t genvarcnt;
     INode **genargp = &nodesGet(gencall->args, 0);
@@ -198,7 +124,7 @@ int genericCaptureType(FnCallNode *gencall, GenericNode *genericnode, INode *par
 }
 
 // Infer generic type parameters from the type literal arguments
-int genericStructInferVars(TypeCheckState *pstate, GenericNode *genericnode, FnCallNode *node, FnCallNode *gencall) {
+int genericStructInferVars(TypeCheckState *pstate, MacroDclNode *genericnode, FnCallNode *node, FnCallNode *gencall) {
     StructNode *strsig = (StructNode*)itypeGetTypeDcl(genericnode->body);
 
     // Reorder the literal's arguments to match the type's field order
@@ -225,7 +151,7 @@ int genericStructInferVars(TypeCheckState *pstate, GenericNode *genericnode, FnC
 }
 
 // Infer generic type parameters from the function call arguments
-int genericFnInferVars(TypeCheckState *pstate, GenericNode *genericnode, FnCallNode *node, FnCallNode *gencall) {
+int genericFnInferVars(TypeCheckState *pstate, MacroDclNode *genericnode, FnCallNode *node, FnCallNode *gencall) {
     FnSigNode *fnsig = (FnSigNode*)itypeGetTypeDcl(((FnDclNode *)genericnode->body)->vtype);
     if (node->args->used > fnsig->parms->used) {
         errorMsgNode((INode*)node, ErrorFewArgs, "Too many arguments provided for generic function.");
@@ -254,7 +180,7 @@ int genericFnInferVars(TypeCheckState *pstate, GenericNode *genericnode, FnCallN
 // Instantiate a generic function node whose type parameters are inferred from the arguments
 // We know arguments have been type checked
 int genericInferVars(TypeCheckState *pstate, FnCallNode **nodep) {
-    GenericNode *genericnode = (GenericNode*)((NameUseNode*)(*nodep)->objfn)->dclnode;
+    MacroDclNode *genericnode = (MacroDclNode*)((NameUseNode*)(*nodep)->objfn)->dclnode;
     FnCallNode *node = *nodep;
 
     // Inject empty generic call node

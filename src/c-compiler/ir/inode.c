@@ -175,7 +175,7 @@ void inodePrintNode(INode *node) {
     }
     case MacroDclTag:
     case GenericDclTag:
-        genericPrint((GenericNode *)node); break;
+        macroPrint((MacroDclNode *)node); break;
     case GenVarDclTag:
         gVarDclPrint((GenVarDclNode *)node); break;
 
@@ -274,7 +274,7 @@ void inodeNameRes(NameResState *pstate, INode **node) {
 
     case MacroDclTag:
     case GenericDclTag:
-        genericNameRes(pstate, (GenericNode *)*node); break;
+        macroNameRes(pstate, (MacroDclNode *)*node); break;
     case GenVarDclTag:
         gVarDclNameRes(pstate, (GenVarDclNode *)*node); break;
 
@@ -398,10 +398,10 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
 
     case MacroDclTag:
     case GenericDclTag:
-        genericTypeCheck(pstate, (GenericNode *)*node); break;
+        macroTypeCheck(pstate, (MacroDclNode *)*node); break;
     case MacroNameTag:
     case GenericNameTag:
-        genericNameTypeCheck(pstate, (NameUseNode **)node); break;
+        macroNameTypeCheck(pstate, (NameUseNode **)node); break;
     case GenVarDclTag:
         gVarDclTypeCheck(pstate, (GenVarDclNode *)*node); break;
 
@@ -447,7 +447,7 @@ Name *inodeGetName(INode *node) {
     case FieldDclTag:
         return ((FieldDclNode*)node)->namesym;
     case GenericDclTag:
-        return ((GenericNode *)node)->namesym;
+        return ((MacroDclNode *)node)->namesym;
     case GenVarDclTag:
         return ((GenVarDclNode *)node)->namesym;
     default:
