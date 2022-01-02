@@ -468,20 +468,11 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         }
     }
 
-    // Handle generic inference/instantiation, otherwise type check objfn
-    if (node->objfn->tag == GenericNameTag) {
-        if (usesTypeArgs) {
-            // No inference required, just instantiate and we are done.
-            genericCallTypeCheck(pstate, nodep);
-            return;
-        }
+    // Perform generic substitution (if requested) and quit if that finishes processing
+    if (genericSubstitute(pstate, nodep))
+        return;
 
-        // We need to infer correct generic from arguments, if we can, then instantiate
-        if (genericInferVars(pstate, nodep) == 0)
-            return;
-    }
-    else
-        inodeTypeCheckAny(pstate, &node->objfn);
+    inodeTypeCheckAny(pstate, &node->objfn);
 
     // All arguments must now be expressions
     int badarg = 0;

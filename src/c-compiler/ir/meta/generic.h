@@ -10,10 +10,8 @@
 // Create a new generic declaration node
 MacroDclNode *newGenericDclNode(Name *namesym);
 
-// Instantiate a generic using passed arguments
-void genericCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep);
-
-// Instantiate a generic function node whose type parameters are inferred from the function call arguments
-int genericInferVars(TypeCheckState *pstate, FnCallNode **nodep);
+// Perform generic substitution, if this is a correctly set up generic "fncall"
+// Return 1 if done/error needed. Return 0 if not generic or it leaves behind a lit/fncall that needs processing.
+int genericSubstitute(TypeCheckState *pstate, FnCallNode **nodep);
 
 #endif

@@ -26,6 +26,13 @@ MacroDclNode *newGenericDclNode(Name *namesym) {
 INode *genericMemoize(TypeCheckState *pstate, FnCallNode *fncall) {
     MacroDclNode *genericnode = (MacroDclNode*)((NameUseNode*)fncall->objfn)->dclnode;
 
+    // Verify expected number of generic paraameters
+    uint32_t expected = genericnode->parms ? genericnode->parms->used : 0;
+    if (fncall->args->used != expected) {
+        errorMsgNode((INode*)fncall, ErrorManyArgs, "Incorrect number of arguments vs. parameters expected");
+        return NULL;
+    }
+
     // Verify all arguments are types
     INode **nodesp;
     uint32_t cnt;
@@ -83,23 +90,6 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *fncall) {
     fnuse->tag = isTypeNode(instance) ? TypeNameUseTag : VarNameUseTag;
     fnuse->dclnode = instance;
     return (INode *)fnuse;
-}
-
-// Instantiate a generic using passed arguments
-void genericCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
-    MacroDclNode *genericnode = (MacroDclNode*)((NameUseNode*)(*nodep)->objfn)->dclnode;
-
-    uint32_t expected = genericnode->parms ? genericnode->parms->used : 0;
-    if ((*nodep)->args->used != expected) {
-        errorMsgNode((INode*)*nodep, ErrorManyArgs, "Incorrect number of arguments vs. parameters expected");
-        return;
-    }
-
-    // Replace gennode call with instantiated body, substituting parameters
-    *((INode**)nodep) = genericMemoize(pstate, *nodep);
-
-    // Now type check the instantiated nodes
-    inodeTypeCheckAny(pstate, (INode **)nodep);
 }
 
 // Inference found an argtype that maps to a generic parmtype
@@ -217,7 +207,40 @@ int genericInferVars(TypeCheckState *pstate, FnCallNode **nodep) {
     }
 
     // Now let's instantiate generic "call", substituting instantiated node in objfn
-    genericCallTypeCheck(pstate, (FnCallNode**)&node->objfn);
+    *((INode**)&node->objfn) = genericMemoize(pstate, (FnCallNode*)node->objfn);
 
     return 1;
+}
+
+// Perform generic substitution, if this is a correctly set up generic "fncall"
+// Return 1 if done/error needed. Return 0 if not generic or it leaves behind a lit/fncall that needs processing.
+int genericSubstitute(TypeCheckState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+    if (node->objfn->tag != GenericNameTag)
+        return 0;
+
+    // Decide whether generic requires inference of type parameters
+    // For now, we decide based on whether any parameter is a type
+    int usesTypeArgs = 0;
+    INode **argsp;
+    uint32_t cnt;
+    if (node->args) {
+        for (nodesFor(node->args, cnt, argsp)) {
+            if (isTypeNode(*argsp))
+                usesTypeArgs = 1;
+        }
+    }
+
+    // Since the arguments are correct, no inference is needed
+    // Replace gennnone with instantiated generic, substituting parameters
+    // Then type check the substituted, instantiated node
+    if (usesTypeArgs) {
+        *((INode**)nodep) = genericMemoize(pstate, *nodep);
+        inodeTypeCheckAny(pstate, (INode **)nodep);
+        return 1;
+    }
+
+    // We need to infer correct generic from arguments, do that and instantiate
+    // If successful, we are left with an instantiated function call/type that FnCall still needs to type-check.
+    return genericInferVars(pstate, nodep)? 0 : 1;
 }
