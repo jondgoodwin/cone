@@ -138,7 +138,8 @@ void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod) {
         case FnDclTag:
         {
             FnDclNode * varnode = (FnDclNode*)*nodesp;
-            inodeTypeCheckAny(pstate, &varnode->vtype);
+            if (!varnode->genericinfo)
+                inodeTypeCheckAny(pstate, &varnode->vtype);
             break;
         }
         }

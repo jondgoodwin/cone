@@ -127,7 +127,6 @@ void parseCloseTok(uint16_t closetok) {
 
 // Parse a function block
 INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags) {
-    MacroDclNode *genericnode = NULL;
     FnDclNode *fnnode = newFnDclNode(NULL, nodeflags, NULL, NULL);
 
     // Skip past the 'fn'. Handle @static attribute
@@ -145,9 +144,8 @@ INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags) {
         fnnode->genname = &fnnode->namesym->namestr;
         lexNextToken();
         if (lexIsToken(LBracketToken)) {
-            genericnode = newGenericDclNode(fnnode->namesym);
-            parseGenericVars(parse, genericnode);
-            genericnode->body = (INode*)fnnode;
+            fnnode->genericinfo = newGenericInfo();
+            fnnode->genericinfo->parms = parseGenericParms(parse);
         }
     }
     else {
@@ -178,7 +176,7 @@ INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags) {
             parseEndOfStatement();
     }
 
-    return genericnode? (INode*)genericnode : (INode*) fnnode;
+    return (INode*) fnnode;
 }
 
 // Parse source filename/path as identifier or string literal
@@ -329,11 +327,12 @@ void parseFnOrVar(ParseState *parse, uint16_t flags) {
 }
 
 // Parse a list of generic variables and add to the genericnode
-void parseGenericVars(ParseState *parse, MacroDclNode *genericnode) {
+Nodes *parseGenericParms(ParseState *parse) {
     lexNextToken(); // Go past left square bracket
+    Nodes *parms = newNodes(2);
     while (lexIsToken(IdentToken)) {
         GenVarDclNode *parm = newGVarDclNode(lex->val.ident);
-        nodesAdd(&genericnode->parms, (INode*)parm);
+        nodesAdd(&parms, (INode*)parm);
         lexNextToken();
         if (lexIsToken(CommaToken))
             lexNextToken();
@@ -341,7 +340,8 @@ void parseGenericVars(ParseState *parse, MacroDclNode *genericnode) {
     if (lexIsToken(RBracketToken))
         lexNextToken();
     else
-        errorMsgLex(ErrorBadTok, "Expected list of macro parameter names ending with square bracket.");
+        errorMsgLex(ErrorBadTok, "Expected list of macro/generic parameter ending with square bracket.");
+    return parms;
 }
 
 // Parse a macro declaration
@@ -354,7 +354,7 @@ MacroDclNode *parseMacro(ParseState *parse) {
     MacroDclNode *macro = newMacroDclNode(lex->val.ident);
     lexNextToken();
     if (lexIsToken(LBracketToken)) {
-        parseGenericVars(parse, macro);
+        macro->parms = parseGenericParms(parse);
     }
     macro->body = parseExprBlock(parse, 0);
     return macro;

@@ -39,6 +39,7 @@ typedef struct StructNode {
     Nodes *derived;         // If a closed, base trait, this lists all structs derived from it
     NodeList fields;        // Ordered list of all fields
     Vtable *vtable;         // Pointer to vtable info (may be NULL)
+    GenericInfo *genericinfo;     // Link to generic parms, etc (or NULL if not generic)
     uint32_t tagnbr;        // If a tagged struct, this is the number in the tag field
 } StructNode;
 

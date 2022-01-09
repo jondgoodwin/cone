@@ -155,8 +155,6 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
         name->tag = VarNameUseTag;
     else if (name->dclnode->tag == MacroDclTag)
         name->tag = MacroNameTag;
-    else if (name->dclnode->tag == GenericDclTag)
-        name->tag = GenericNameTag;
     else if (name->dclnode->tag == GenVarDclTag)
         name->tag = GenVarUseTag;
     else

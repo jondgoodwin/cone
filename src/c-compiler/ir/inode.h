@@ -158,7 +158,6 @@ enum NodeTags {
     GenVarUseTag,               // Generic variable name use
 
     MacroDclTag = MetaGroup + NamedNode,     // Macro declaration
-    GenericDclTag,              // Generic declaration
     GenVarDclTag,               // Generic variable declaration
 
 };

@@ -12,16 +12,17 @@
 
 // Create a new function declaraction node
 FnDclNode *newFnDclNode(Name *namesym, uint16_t flags, INode *type, INode *val) {
-    FnDclNode *name;
-    newNode(name, FnDclNode, FnDclTag);
-    name->flags = flags;
-    name->vtype = type;
-    name->namesym = namesym;
-    name->value = val;
-    name->llvmvar = NULL;
-    name->genname = namesym? &namesym->namestr : "";
-    name->nextnode = NULL;
-    return name;
+    FnDclNode *node;
+    newNode(node, FnDclNode, FnDclTag);
+    node->flags = flags;
+    node->vtype = type;
+    node->namesym = namesym;
+    node->value = val;
+    node->llvmvar = NULL;
+    node->genname = namesym? &namesym->namestr : "";
+    node->nextnode = NULL;
+    node->genericinfo = NULL;
+    return node;
 }
 
 // Return a clone of a function/method declaration
@@ -29,6 +30,7 @@ INode *cloneFnDclNode(CloneState *cstate, FnDclNode *oldfn) {
     uint32_t dclpos = cloneDclPush();
     FnDclNode *newnode = memAllocBlk(sizeof(FnDclNode));
     memcpy(newnode, oldfn, sizeof(FnDclNode));
+    newnode->genericinfo = NULL;
     newnode->nextnode = NULL; // clear out linkages
     newnode->vtype = cloneNode(cstate, oldfn->vtype);
     newnode->value = cloneNode(cstate, oldfn->value);
@@ -37,42 +39,57 @@ INode *cloneFnDclNode(CloneState *cstate, FnDclNode *oldfn) {
 }
 
 // Serialize a function node
-void fnDclPrint(FnDclNode *name) {
-    if (name->namesym)
-        inodeFprint("fn %s", &name->namesym->namestr);
+void fnDclPrint(FnDclNode *node) {
+    if (node->namesym)
+        inodeFprint("fn %s", &node->namesym->namestr);
     else
         inodeFprint("fn");
-    inodePrintNode(name->vtype);
-    if (name->value) {
+    if (node->genericinfo)
+        genericInfoPrint(node->genericinfo);
+    inodePrintNode(node->vtype);
+    if (node->value) {
         inodeFprint(" {} ");
-        if (name->value->tag == BlockTag)
+        if (node->value->tag == BlockTag)
             inodePrintNL();
-        inodePrintNode(name->value);
+        inodePrintNode(node->value);
     }
 }
 
 // Resolve all names in a function
 void fnDclNameRes(NameResState *nstate, FnDclNode *fndclnode) {
-    inodeNameRes(nstate, &fndclnode->vtype);
-    if (!fndclnode->value)
-        return;
-
-    uint16_t oldscope = nstate->scope;
-    nstate->scope = 1;
-
-    // Hook function's parameters into global fndclnode table
-    // so that when we walk the function's logic, parameter names are resolved
-    FnSigNode *fnsig = (FnSigNode*)fndclnode->vtype;
-    nametblHookPush();
+    // Resolve generic parameters
     INode **nodesp;
     uint32_t cnt;
-    for (nodesFor(fnsig->parms, cnt, nodesp))
-        nametblHookNode(((VarDclNode *)*nodesp)->namesym, *nodesp);
+    if (fndclnode->genericinfo) {
+        for (nodesFor(fndclnode->genericinfo->parms, cnt, nodesp))
+            inodeNameRes(nstate, nodesp);
+    }
 
-    inodeNameRes(nstate, &fndclnode->value);
+    nametblHookPush();
+    if (fndclnode->genericinfo) {
+        // Hook generic parms so we can resolve them throughout type
+        for (nodesFor(fndclnode->genericinfo->parms, cnt, nodesp))
+            nametblHookNode(((VarDclNode *)*nodesp)->namesym, *nodesp);
+    }
+    inodeNameRes(nstate, &fndclnode->vtype);
+
+    if (fndclnode->value) {
+
+        uint16_t oldscope = nstate->scope;
+        nstate->scope = 1;
+
+        // Hook function's parameters into global fndclnode table
+        // so that when we walk the function's logic, parameter names are resolved
+        FnSigNode *fnsig = (FnSigNode*)fndclnode->vtype;
+        for (nodesFor(fnsig->parms, cnt, nodesp))
+            nametblHookNode(((VarDclNode *)*nodesp)->namesym, *nodesp);
+
+        inodeNameRes(nstate, &fndclnode->value);
+
+        nstate->scope = oldscope;
+    }
 
     nametblHookPop();
-    nstate->scope = oldscope;
 }
 
 // Syntactic sugar: Turn last statement implicit returns into explicit returns
@@ -101,6 +118,10 @@ void fnImplicitReturn(INode *rettype, BlockNode *blk) {
 // - Perform type checking for all statements
 // - Perform data flow analysis on variables and references
 void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
+    // Wait until a generic function is instantiated before type checking
+    if (fnnode->genericinfo)
+        return;
+
     itypeTypeCheck(pstate, &fnnode->vtype);
     // No need to type check function body if no body or is a default method of a trait
     if (!fnnode->value 

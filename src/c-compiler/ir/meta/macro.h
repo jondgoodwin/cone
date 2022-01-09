@@ -19,9 +19,6 @@ typedef struct MacroDclNode {
 // Create a new macro declaraction node
 MacroDclNode *newMacroDclNode(Name *namesym);
 
-// Create a new generic declaration node
-MacroDclNode *newGenericDclNode(Name *namesym);
-
 void macroPrint(MacroDclNode *fn);
 
 // Name resolution

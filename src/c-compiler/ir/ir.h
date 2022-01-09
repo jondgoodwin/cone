@@ -36,6 +36,7 @@ typedef struct Name Name;        // ../nametbl.h
 typedef struct Lexer Lexer;        // ../../parser/lexer.h
 typedef struct NameResState NameResState;
 typedef struct TypeCheckState TypeCheckState;
+typedef struct GenericInfo GenericInfo;
 
 // Interfaces & headers shared across nodes
 #include "inode.h"

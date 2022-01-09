@@ -10,16 +10,25 @@
 #include <string.h>
 #include <assert.h>
 
-// Create a new generic declaraction srcgencallp
-MacroDclNode *newGenericDclNode(Name *namesym) {
-    MacroDclNode *gennode;
-    newNode(gennode, MacroDclNode, GenericDclTag);
-    gennode->vtype = NULL;
-    gennode->namesym = namesym;
-    gennode->parms = newNodes(4);
-    gennode->body = NULL;
-    gennode->memonodes = newNodes(4);
-    return gennode;
+// Create a new generic info block
+GenericInfo *newGenericInfo() {
+    GenericInfo *geninfo = (GenericInfo*)memAllocBlk(sizeof(GenericInfo));
+    geninfo->parms = NULL;
+    geninfo->memonodes = NULL;
+    return geninfo;
+}
+
+// Serialize
+void genericInfoPrint(GenericInfo *info) {
+    INode **nodesp;
+    uint32_t cnt;
+    inodeFprint("[");
+    for (nodesFor(info->parms, cnt, nodesp)) {
+        inodePrintNode(*nodesp);
+        if (cnt > 1)
+            inodeFprint(", ");
+    }
+    inodeFprint("] ");
 }
 
 // Inference found an argtype that maps to a generic parmtype
@@ -100,7 +109,7 @@ int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNode *genf
 
 // Verify arguments are types, check if instantiated, instantiate if needed and return ptr to it
 INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nodetoclone, 
-        MacroDclNode *genericinfo, Name *name) {
+        GenericInfo *genericinfo, Name *name) {
 
     // Verify expected number of generic paraameters
     uint32_t expected = genericinfo->parms ? genericinfo->parms->used : 0;
@@ -121,6 +130,9 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
     }
     if (badargs)
         return NULL;
+
+    if (!genericinfo->memonodes)
+        genericinfo->memonodes = newNodes(2);
 
     // Check whether these types have already been instantiated for this generic
     // memonodes holds pairs of nodes: an FnCallNode and what it instantiated
@@ -168,16 +180,30 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
     return (INode *)fnuse;
 }
 
+// Obtain GenericInfo from node, if it exists
+GenericInfo *genericGetInfo(INode *node) {
+    switch (node->tag) {
+    case FnDclTag:
+        return ((FnDclNode *)node)->genericinfo;
+    case StructTag:
+        return ((StructNode *)node)->genericinfo;
+    default:
+        return NULL;
+    }
+}
+
 // Perform generic substitution, if this is a correctly set up generic "srcgencall"
 // Return 1 if generic subsituted or error. Return 0 if not generic or it leaves behind a lit/srcgencall that needs processing.
 int genericSubstitute(TypeCheckState *pstate, FnCallNode **srcgencallp) {
+    // Return if not generic, otherwise gather data needed to substitute
     FnCallNode *srcgencall = *srcgencallp;
-    if (srcgencall->objfn->tag != GenericNameTag)
+    if (srcgencall->objfn->tag != VarNameUseTag && srcgencall->objfn->tag != TypeNameUseTag)
         return 0;
-
-    MacroDclNode *genericinfo = (MacroDclNode*)((NameUseNode*)srcgencall->objfn)->dclnode;
-    Name *name = genericinfo->namesym;
-    INode *nodetoclone = genericinfo->body;
+    INode *nodetoclone = ((NameUseNode*)srcgencall->objfn)->dclnode;
+    GenericInfo *genericinfo = genericGetInfo(nodetoclone);
+    if (!genericinfo)
+        return 0;
+    Name *name = inodeGetName(nodetoclone);
 
     // Decide whether generic requires inference of type parameters
     // For now, we decide based on whether any parameter is a type

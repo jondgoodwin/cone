@@ -179,28 +179,13 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
     }
 }
 
-// Generate all instantiations of generic functions
-void genlGeneric(GenState *gen, MacroDclNode *gennode, int dobody) {
-    if (gennode->body->tag != FnDclTag)
-        return;
-
-    uint32_t cnt;
-    INode **nodesp;
-    for (nodesFor(gennode->memonodes, cnt, nodesp)) {
-        ++nodesp; --cnt;
-        if (dobody)
-            genlFn(gen, (FnDclNode*)*nodesp);
-        else
-            genlGloFnName(gen, (FnDclNode *)*nodesp);
-    }
-}
-
 // Generate module or type global symbols
 void genlGlobalSyms(GenState *gen, INode *node) {
     // Handle type nodes
     if (isTypeNode(node)) {
         // For types with a namespace, let's do its nodes too
-        if (isMethodType(node) && !(node->tag == StructTag && (node->flags & TraitType))) {
+        if (isMethodType(node) && !(node->tag == StructTag && 
+            ((node->flags & TraitType) || ((StructNode*)node)->genericinfo))) {
             INsTypeNode *tnode = (INsTypeNode*)node;
             INode **nodesp;
             uint32_t cnt;
@@ -216,10 +201,16 @@ void genlGlobalSyms(GenState *gen, INode *node) {
         genlGloVarName(gen, (VarDclNode *)node);
         break;
     case FnDclTag:
-        genlGloFnName(gen, (FnDclNode *)node);
-        break;
-    case GenericDclTag:
-        genlGeneric(gen, (MacroDclNode *)node, 0);
+        if (((FnDclNode*)node)->genericinfo) {
+            uint32_t cnt;
+            INode **nodesp;
+            for (nodesFor(((FnDclNode*)node)->genericinfo->memonodes, cnt, nodesp)) {
+                ++nodesp; --cnt;
+                genlGloFnName(gen, (FnDclNode *)*nodesp);
+            }
+        }
+        else
+            genlGloFnName(gen, (FnDclNode *)node);
         break;
     }
 }
@@ -229,7 +220,8 @@ void genlGlobalImpl(GenState *gen, INode *node) {
     // Handle type nodes
     if (isTypeNode(node)) {
         // For types with a namespace, let's do its nodes too
-        if (isMethodType(node) && !(node->tag == StructTag && (node->flags & TraitType))) {
+        if (isMethodType(node) && !(node->tag == StructTag && 
+            (node->flags & TraitType || ((StructNode*)node)->genericinfo))) {
             INsTypeNode *tnode = (INsTypeNode*)node;
             INode **nodesp;
             uint32_t cnt;
@@ -248,18 +240,22 @@ void genlGlobalImpl(GenState *gen, INode *node) {
         break;
 
     case FnDclTag:
-        if (((FnDclNode*)node)->value) {
+        if (((FnDclNode*)node)->genericinfo) {
+            uint32_t cnt;
+            INode **nodesp;
+            for (nodesFor(((FnDclNode*)node)->genericinfo->memonodes, cnt, nodesp)) {
+                ++nodesp; --cnt;
+                genlFn(gen, (FnDclNode*)*nodesp);
+            }
+        }
+        else if (((FnDclNode*)node)->value) {
             genlFn(gen, (FnDclNode*)node);
         }
         break;
 
-    case MacroDclTag:
-    case GenericDclTag:
-        genlGeneric(gen, (MacroDclNode*)node, 1);
-        break;
-
     case ImportTag:
     case FieldDclTag:
+    case MacroDclTag:
         break;
 
     default:

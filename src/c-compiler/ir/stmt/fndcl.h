@@ -15,6 +15,7 @@ typedef struct FnDclNode {
     LLVMValueRef llvmvar;         // LLVM's handle for a declared variable (for generation)
     char *genname;                // Name of the function as known to the linker
     struct FnDclNode *nextnode;   // Link to next overloaded method with the same name (or NULL)
+    GenericInfo *genericinfo;     // Link to generic parms, etc (or NULL if not generic)
     uint16_t vtblidx;             // Method ptr's index in the type's vtable
 } FnDclNode;
 

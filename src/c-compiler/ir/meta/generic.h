@@ -7,8 +7,16 @@
 #ifndef generic_h
 #define generic_h
 
-// Create a new generic declaration node
-MacroDclNode *newGenericDclNode(Name *namesym);
+typedef struct GenericInfo {
+    Nodes *parms;            // Declared parameter nodes w/ defaults (GenVarTag)
+    Nodes *memonodes;        // Pairs of memoized generic calls and cloned bodies
+} GenericInfo;
+
+// Create a new generic info block
+GenericInfo *newGenericInfo();
+
+// Serialize
+void genericInfoPrint(GenericInfo *info);
 
 // Perform generic substitution, if this is a correctly set up generic "fncall"
 // Return 1 if done/error needed. Return 0 if not generic or it leaves behind a lit/fncall that needs processing.

@@ -21,6 +21,7 @@ StructNode *newStructNode(Name *namesym) {
     snode->basetrait = NULL;
     snode->derived = NULL;
     snode->vtable = NULL;
+    snode->genericinfo = NULL;
     snode->tagnbr = 0;
     return snode;
 }
@@ -29,6 +30,8 @@ StructNode *newStructNode(Name *namesym) {
 INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     StructNode *newnode = memAllocBlk(sizeof(StructNode));
     memcpy(newnode, node, sizeof(StructNode));
+    newnode->genericinfo = NULL;
+    newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
     newnode->basetrait = cloneNode(cstate, node->basetrait);
     // Fields like derived, vtable, tagnbr do not yet have useful data to clone
 
@@ -67,20 +70,36 @@ void structAddField(StructNode *type, FieldDclNode *fnode) {
 
 // Serialize a struct type
 void structPrint(StructNode *node) {
-    inodeFprint(node->tag == StructTag? "struct %s {}" : "alloc %s {}", &node->namesym->namestr);
+    inodeFprint(node->tag == StructTag? "struct %s" : "alloc %s", &node->namesym->namestr);
+    if (node->genericinfo)
+        genericInfoPrint(node->genericinfo);
+    inodeFprint("{}");
 }
 
 // Name resolution of a struct type
 void structNameRes(NameResState *pstate, StructNode *node) {
+    // Resolve generic parameters
+    INode **nodesp;
+    uint32_t cnt;
+    if (node->genericinfo) {
+        for (nodesFor(node->genericinfo->parms, cnt, nodesp))
+            inodeNameRes(pstate, nodesp);
+    }
+
     INode *svtypenode = pstate->typenode;
     pstate->typenode = (INode*)node;
     nametblHookPush();
-    namespaceAdd(&node->namespace, selfTypeName, (INode*)node);
-    nametblHookNamespace(&node->namespace);
+    if (node->genericinfo) {
+        // Hook generic parms so we can resolve them throughout type
+        for (nodesFor(node->genericinfo->parms, cnt, nodesp))
+            nametblHookNode(((VarDclNode *)*nodesp)->namesym, *nodesp);
+    }
+    // Resolve base trait before any other name in type is hooked
     if (node->basetrait)
         inodeNameRes(pstate, &node->basetrait);
-    INode **nodesp;
-    uint32_t cnt;
+    // Now hook names inside the type
+    namespaceAdd(&node->namespace, selfTypeName, (INode*)node);
+    nametblHookNamespace(&node->namespace);
     for (nodelistFor(&node->fields, cnt, nodesp)) {
         inodeNameRes(pstate, (INode**)nodesp);
     }
@@ -138,6 +157,10 @@ void structInheritMethod(StructNode *strnode, FnDclNode *traitmeth, StructNode *
 
 // Type check a struct type
 void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
+    // Wait until a generic struct is instantiated before type checking
+    if (node->genericinfo)
+        return;
+
     INode *svtypenode = pstate->typenode;
     pstate->typenode = (INode*)node;
 
