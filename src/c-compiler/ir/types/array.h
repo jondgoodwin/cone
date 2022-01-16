@@ -38,6 +38,9 @@ void arrayNameRes(NameResState *pstate, ArrayNode *node);
 // Type check an array type
 void arrayTypeCheck(TypeCheckState *pstate, ArrayNode *name);
 
+// Is an array actually a literal?
+int arrayIsLiteral(ArrayNode *node);
+
 int arrayEqual(ArrayNode *node1, ArrayNode *node2);
 
 // Is from-type a subtype of to-struct (we know they are not the same)

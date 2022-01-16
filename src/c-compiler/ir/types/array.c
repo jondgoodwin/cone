@@ -109,6 +109,18 @@ void arrayTypeCheck(TypeCheckState *pstate, ArrayNode *node) {
     node->flags |= elemtype->flags & (ThreadBound | MoveType);
 }
 
+// Is the array actually a literal?
+int arrayIsLiteral(ArrayNode *node) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(node->elems, cnt, nodesp)) {
+        INode *elem = *nodesp;
+        if (!litIsLiteral(elem))
+            return 0;
+    }
+    return 1;
+}
+
 // Compare two array types to see if they are equivalent
 int arrayEqual(ArrayNode *node1, ArrayNode *node2) {
     // Are element type and number of dimensions equivalent?
