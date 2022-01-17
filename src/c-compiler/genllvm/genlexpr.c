@@ -1040,6 +1040,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         }
     }
     case AllocateTag:
+    case ArrayAllocTag:
         return genlallocref(gen, (RefNode*)termnode);
     case DerefTag:
         return LLVMBuildLoad(gen->builder, genlExpr(gen, ((StarNode*)termnode)->vtexp), "deref");

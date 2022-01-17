@@ -96,7 +96,8 @@ LLVMValueRef genlFree(GenState *gen, LLVMValueRef ref) {
 //
 LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     RefNode *reftype = (RefNode*)itypeGetTypeDcl(allocatenode->vtype);
-    if (reftype->tag != RefTag) {
+    LLVMTypeRef reftypellvm = genlType(gen, (INode*)reftype);  // Make sure typeinfo is populated
+    if (reftype->tag != RefTag && reftype->tag != ArrayRefTag) {
         // Extract reftype from Option type
         assert(reftype->tag == StructTag && (allocatenode->flags & FlagQues) && "Should be Option type");
         StructNode *optionTrait = (StructNode*)reftype;
@@ -106,12 +107,23 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     }
     INode *region = itypeGetTypeDcl(reftype->region);
     INode *perm = itypeGetTypeDcl(reftype->perm);
-    LLVMTypeRef valueptrtyp = LLVMPointerType(LLVMStructGetTypeAtIndex(LLVMGetElementType(reftype->typeinfo->ptrstructype), 2), 0);
+    LLVMTypeRef valuetypllvm = LLVMStructGetTypeAtIndex(LLVMGetElementType(reftype->typeinfo->ptrstructype), ValueField);
+    LLVMTypeRef valueptrtyp = LLVMPointerType(valuetypllvm, 0);
 
     // Calculate how much memory space we need to allocate
     long long allocsize = LLVMABISizeOfType(gen->datalayout, reftype->typeinfo->structype);
-    // For array-refs: Increase allocsz by (elemsz-1) * valuetype-size
     LLVMValueRef sizeval = LLVMConstInt(genlType(gen, (INode*)usizeType), allocsize, 0);
+    LLVMValueRef nbrelems = NULL;
+    if (reftype->tag == ArrayRefTag) {
+        // For array-refs: sizeval += (nbrelems-1) * elemsz
+        ArrayNode *initvalue = (ArrayNode*)allocatenode->vtexp;
+        nbrelems = LLVMConstInt(genlType(gen, (INode*)usizeType), initvalue->elems->used, 0);
+        LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), 1, 0);
+        LLVMValueRef nbrelemsdec = LLVMBuildSub(gen->builder, nbrelems, constone, "");
+        LLVMValueRef elemsz = LLVMConstInt(genlType(gen, (INode*)usizeType), LLVMABISizeOfType(gen->datalayout, valuetypllvm), 0);
+        LLVMValueRef extra = LLVMBuildMul(gen->builder, nbrelemsdec, elemsz, "");
+        sizeval = LLVMBuildAdd(gen->builder, sizeval, extra, "");
+    }
 
     // Do region allocation (using its _alloc method) and then bitcast to multi-layered-struct ptr
     FnDclNode *allocmeth = (FnDclNode*)iTypeFindFnField(region, allocMethodName);
@@ -130,8 +142,13 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     LLVMBuildCondBr(gen->builder, isNull, panicblk, initblk);
     LLVMPositionBuilderAtEnd(gen->builder, panicblk);
     if (!(allocatenode->flags & FlagQues))
-        genlPanic(gen);    
+        genlPanic(gen);
     blkvals[0] = LLVMBuildBitCast(gen->builder, ptrstructype, valueptrtyp, "");
+    if (reftype->tag == ArrayRefTag) {
+        LLVMValueRef tuplevalnull = LLVMGetUndef(reftypellvm);
+        tuplevalnull = LLVMBuildInsertValue(gen->builder, tuplevalnull, blkvals[0], 0, "fatptr");
+        blkvals[0] = LLVMBuildInsertValue(gen->builder, tuplevalnull, LLVMConstInt(genlType(gen, (INode*)usizeType), 0, 0), 1, "fatsize");
+    }
     blks[0] = panicblk;
     LLVMBuildBr(gen->builder, endif);
     LLVMPositionBuilderAtEnd(gen->builder, initblk);
@@ -154,14 +171,28 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
 
     // Initialize value (via copy or init function) and return pointer to it
     LLVMValueRef valuep = LLVMBuildStructGEP(gen->builder, ptrstructype, ValueField, ""); // Point to value
-    LLVMBuildStore(gen->builder, genlExpr(gen, allocatenode->vtexp), valuep); // Copy value
+    if (reftype->tag == RefTag) {
+        LLVMBuildStore(gen->builder, genlExpr(gen, allocatenode->vtexp), valuep); // Copy value
+    }
+    else {
+        // Copy initial value into allocated memory area for value
+        LLVMValueRef initval = genlExpr(gen, allocatenode->vtexp);
+        LLVMTypeRef initvaltype = LLVMPointerType(LLVMTypeOf(initval), 0);
+        LLVMValueRef valuepcast = LLVMBuildBitCast(gen->builder, valuep, initvaltype, "");
+        LLVMBuildStore(gen->builder, initval, valuepcast);
+
+        // Build fat pointer for returning
+        LLVMValueRef tupleval = LLVMGetUndef(reftypellvm);
+        tupleval = LLVMBuildInsertValue(gen->builder, tupleval, valuep, 0, "fatptr");
+        valuep = LLVMBuildInsertValue(gen->builder, tupleval, nbrelems, 1, "fatsize");
+    }
     blkvals[1] = valuep;
     blks[1] = initblk;
 
     // Finish up block, start new one, and return allocated
     LLVMBuildBr(gen->builder, endif);
     LLVMPositionBuilderAtEnd(gen->builder, endif);
-    LLVMValueRef phi = LLVMBuildPhi(gen->builder, valueptrtyp, "allocphi");
+    LLVMValueRef phi = LLVMBuildPhi(gen->builder, reftypellvm, "allocphi");
     LLVMAddIncoming(phi, blkvals, blks, 2);
     return phi;
 }

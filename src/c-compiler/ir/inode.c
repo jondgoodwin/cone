@@ -354,6 +354,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     case BorrowTag:
         borrowTypeCheck(pstate, (RefNode **)node); break;
     case AllocateTag:
+    case ArrayAllocTag:
         allocateTypeCheck(pstate, (RefNode **)node); break;
     case NotLogicTag:
         logicNotTypeCheck(pstate, (LogicNode *)*node); break;
