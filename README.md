@@ -107,7 +107,7 @@ Note: Sometimes, it is necessary to custom-build LLVM, e.g.:
 
 ## Building (Mac OS)
 
-To build on Mac OS:
+To build on Mac OS:*
 
 	brew install --with-toolchain llvm
 	llvm-config --bindir
@@ -116,6 +116,8 @@ CMake will auto-detect LLVM, so all you should need to do:
 
 	cmake .
 	make
+
+More detailed instructions: https://github.com/git-yledu/cone-misc/blob/main/install_cone_on_mac.md
 
 ## License
 
