@@ -59,11 +59,11 @@ void stdPermInit() {
 char *corelibSource =
 "trait @samesize Option[T] {_ enum;}\n"
 "struct Null[T] extends Option[T] {}\n"
-"struct Some[T] extends Option[T] {some T}\n"
+"struct Some[T] extends Option[T] {value T}\n"
 
 "trait @samesize Result[T,E] {_ enum}\n"
-"struct Ok[T,E] extends Result[T,E] {ok T}\n"
-"struct Error[T,E] extends Result[T,E] {error E}\n"
+"struct Ok[T,E] extends Result[T,E] {value T}\n"
+"struct Error[T,E] extends Result[T,E] {value E}\n"
 
 "extern fn malloc(size usize) *u8\n"
 
