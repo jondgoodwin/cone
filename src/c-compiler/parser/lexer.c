@@ -436,6 +436,23 @@ void lexScanString(char *srcp) {
     lex->srcp = srcp;
 }
 
+// Convert ascii float number to double float
+double lexToFloat(char *srcp, char *srcend) {
+    // Copy ascii literal to number, stripping out underscores
+    char number[1000];
+    if (srcend - srcp > 999)
+        srcend = srcp + 999; // avoid overflow
+    char *nbrp = number;
+    while (srcp < srcend) {
+        if (*srcp != '_')
+            *nbrp++ = *srcp;
+        ++srcp;
+    }
+    *nbrp = '\0';
+
+    return atof(number);
+}
+
 /** Tokenize an integer or floating point number */
 void lexScanNumber(char *srcp) {
 
@@ -537,7 +554,7 @@ void lexScanNumber(char *srcp) {
 
     // Set value and type
     if (isFloat) {
-        lex->val.floatlit = atof(srcbeg);
+        lex->val.floatlit = lexToFloat(srcbeg, srcp);
         lex->toktype = FloatLitToken;
     }
     else {
