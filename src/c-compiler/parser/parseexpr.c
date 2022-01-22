@@ -142,6 +142,16 @@ INode *parseTerm(ParseState *parse) {
         }
     case LBracketToken:
         return parseArrayLit(parse, NULL);
+    case IfToken:
+        return parseIf(parse);
+    case MatchToken:
+        return parseMatch(parse);
+    case LoopToken:
+        return parseLoop(parse, NULL);
+    case LifetimeToken:
+        return parseLifetime(parse, 0);
+    case LCurlyToken:
+        return parseExprBlock(parse, 0);
     default:
         errorMsgLex(ErrorBadTerm, "Invalid term: expected name, literal, etc.");
         lexNextToken(); // Avoid infinite loop
@@ -665,20 +675,7 @@ INode *parseOrExpr(ParseState *parse) {
 
 // This parses any kind of expression, including blocks, assignment or tuple
 INode *parseSimpleExpr(ParseState *parse) {
-    switch (lex->toktype) {
-    case IfToken:
-        return parseIf(parse);
-    case MatchToken:
-        return parseMatch(parse);
-    case LoopToken:
-        return parseLoop(parse, NULL);
-    case LifetimeToken:
-        return parseLifetime(parse, 0);
-    case LCurlyToken:
-        return parseExprBlock(parse, 0);
-    default:
-        return parseOrExpr(parse);
-    }
+    return parseOrExpr(parse);
 }
 
 // Parse a comma-separated expression tuple
