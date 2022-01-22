@@ -782,8 +782,21 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         LLVMSetInitializer(sglobal, LLVMConstStringInContext(gen->context, strnode->strlit, strnode->strlen, 1));
         return sglobal;
     }
+    default: {
+        INode *type = iexpGetTypeDcl(lval);
+        if (type->tag == ArrayTag) {
+            // LLVM provides no useful way to get the address of an array not stored in memory
+            // For example, a literal array or an array returned by a function
+            // So we hack it by storing in an unnamed local variable and return that address
+            // This is particularly necessary when doing an array index ([1,2,5][n])  (LLVM fail at this too)
+            LLVMValueRef temparray = genlAlloca(gen, genlType(gen, type), "temparray");
+            LLVMBuildStore(gen->builder, genlExpr(gen, lval), temparray);
+            return temparray;
+        }
+        assert(0 && "Cannot get address of this node");
+        return NULL;
     }
-    return NULL;
+    }
 }
 
 void genlStore(GenState *gen, INode *lval, LLVMValueRef rval) {
