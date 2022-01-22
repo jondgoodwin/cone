@@ -585,13 +585,26 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     // Regular reference
     case RefTag: {
         INode *objdereftype = itypeGetTypeDcl(((RefNode *)objtype)->vtexp);
-        // Fill in empty methfld with '()', '[]' or '&[]' based on parser flags
-        if (node->methfld == NULL)
-            node->methfld = newNameUseNode(
-                node->flags & FlagIndex ? (node->flags & FlagBorrow ? refIndexName : indexName) : parensName);
-        if ((node->flags & FlagIndex) && (objdereftype->tag == ArrayTag || objdereftype->tag == ArrayDerefTag))
+
+        // Handle calling a function-by-ref (only callable using parens)
+        if (objdereftype->tag == FnSigTag && !node->methfld) {
+            if ((node->flags & FlagIndex))
+                errorMsgNode((INode*)node, ErrorNoMeth, "Invalid operation on a function reference.");
+            else
+                fnCallFnSigTypeCheck(pstate, node);
+        }
+
+        // Handle indexing an array
+        else if ((node->flags & FlagIndex) && (objdereftype->tag == ArrayTag || objdereftype->tag == ArrayDerefTag))
             fnCallArrIndex(node);
-        else if (node->methfld) {
+
+        // Handle method call to some other type
+        else {
+            // Fill in empty methfld with '()', '[]' or '&[]' based on parser flags
+            if (node->methfld == NULL) {
+                Name *methname = node->flags & FlagIndex ? (node->flags & FlagBorrow ? refIndexName : indexName) : parensName;
+                node->methfld = newNameUseNode(methname);
+            }
             if (fnCallLowerPtrMethod(node, refType) == 0) {
                 if (isMethodType(objdereftype)) {
                     // Try to lower method or field, and if failing, deref and try again
@@ -604,12 +617,10 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
                 }
                 else if (objdereftype->tag == PtrTag)
                     fnCallLowerPtrMethod(node, ptrType);
+                else
+                    errorMsgNode((INode*)node, ErrorNoMeth, "Invalid operation on a reference.");
             }
         }
-        else if (objdereftype->tag == FnSigTag)
-            fnCallFnSigTypeCheck(pstate, node);
-        else
-            errorMsgNode((INode*)node, ErrorNoMeth, "Invalid operation on a reference.");
         break;
     }
 
