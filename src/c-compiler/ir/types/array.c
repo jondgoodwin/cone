@@ -81,7 +81,7 @@ void arrayNameRes(NameResState *pstate, ArrayNode *node) {
 void arrayTypeCheck(TypeCheckState *pstate, ArrayNode *node) {
 
     // Check out dimensions: must be literal numbers
-    if (node->dimens->used > 0) {
+    if (node->dimens->used == 1) {
         INode **nodesp;
         uint32_t cnt;
         for (nodesFor(node->dimens, cnt, nodesp)) {
@@ -90,7 +90,7 @@ void arrayTypeCheck(TypeCheckState *pstate, ArrayNode *node) {
         }
     }
     else
-        errorMsgNode((INode*)node, ErrorBadArray, "Array type must have numeric array dimensions");
+        errorMsgNode((INode*)node, ErrorBadArray, "Array type must have exactly one numeric array dimension");
 
     // Check out element type
     if (node->elems->used != 1) {
