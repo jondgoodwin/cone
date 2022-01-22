@@ -566,8 +566,9 @@ void lexScanNumber(char *srcp) {
 
 /** Tokenize an identifier or reserved token */
 void lexScanIdent(char *srcp) {
-    char *srcbeg = srcp++;    // Pointer to the start of the token
+    char *srcbeg = srcp;    // Pointer to the start of the token
     lex->tokp = srcbeg;
+    srcp += utf8ByteSkip(srcp);  // Skip past already accepted first character
     while (1) {
         switch (*srcp) {
 
@@ -590,8 +591,9 @@ void lexScanIdent(char *srcp) {
 
         default:
             // Allow unicode letters in identifier name
-            if (utf8IsLetter(srcp))
+            if (utf8IsLetter(srcp)) {
                 srcp += utf8ByteSkip(srcp);
+            }
             else {
                 INode *identNode;
                 // Find identifier token in name table and preserve info about it
@@ -933,9 +935,16 @@ void lexNextTokenx() {
         // Bad character
         default:
             {
-                lex->tokp = srcp;
-                errorMsgLex(ErrorBadTok, "Bad character '%c' starting unknown token", *srcp);
-                srcp += utf8ByteSkip(srcp);
+                if (utf8IsLetter(srcp)) {
+                    // Treat unicode character as the start of an identifier
+                    lexScanIdent(srcp);
+                    return;
+                }
+                else {
+                    lex->tokp = srcp;
+                    errorMsgLex(ErrorBadTok, "Bad character '%c' starting unknown token", *srcp);
+                    srcp += utf8ByteSkip(srcp);
+                }
             }
         }
     }

@@ -31,5 +31,5 @@ uint32_t utf8GetCode(const char *src) {
 
 // Return true if unicode is a letter
 int utf8IsLetter(const char* srcp) {
-    return !utf8IsMultibyte(srcp) && isalpha(*srcp);
+    return utf8IsMultibyte(srcp) || isalpha(*srcp);
 }
