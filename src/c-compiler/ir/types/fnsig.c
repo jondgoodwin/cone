@@ -124,7 +124,7 @@ TypeCompare fnSigMatches(FnSigNode *to, FnSigNode *from, SubtypeConstraint const
     fromnodesp = &nodesGet(from->parms, 0);
     for (nodesFor(to->parms, cnt, tonodesp)) {
         // Match for parameters is contravariant, switching order of to/from
-        switch (itypeMatches(*fromnodesp, *tonodesp, constraint)) {
+        switch (itypeMatches(iexpGetTypeDcl(*fromnodesp), iexpGetTypeDcl(*tonodesp), constraint)) {
         case NoMatch:
             return NoMatch;
         case CastSubtype:
