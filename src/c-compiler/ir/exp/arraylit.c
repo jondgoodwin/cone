@@ -37,6 +37,7 @@ void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit) {
             arrlit->vtype = (INode*)newArrayNodeTyped((INode*)arrlit,
                 (size_t)((ULitNode*)dimnode)->uintlit, ((IExpNode*)*elemnodep)->vtype);
         }
+        return;
     }
 
     // Otherwise handle multi-value array literal

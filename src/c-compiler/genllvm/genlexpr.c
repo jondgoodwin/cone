@@ -827,15 +827,26 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     case ArrayLitTag:
     {
         ArrayNode *lit = (ArrayNode *)termnode;
-        INode *littype = itypeGetTypeDcl(lit->vtype);
         uint32_t size = lit->elems->used;
-        INode **nodesp;
-        uint32_t cnt;
+        if (lit->dimens->used > 0) {
+            // When array size specifiedfor fill, use that
+            size = (uint32_t)((ULitNode*)nodesGet(lit->dimens, 0))->uintlit;
+        }
         LLVMValueRef *values = (LLVMValueRef *)memAllocBlk(size * sizeof(LLVMValueRef *));
         LLVMValueRef *valuep = values;
-        for (nodesFor(lit->elems, cnt, nodesp))
-            *valuep++ = genlExpr(gen, *nodesp);
-        INode *elemtype = nodesGet(((ArrayNode *)lit->vtype)->elems, 0);
+        if (lit->dimens->used > 0) {
+            LLVMValueRef fillval = genlExpr(gen, nodesGet(lit->elems, 0));
+            uint32_t cnt = size;
+            while (cnt--)
+                *valuep++ = fillval;
+        }
+        else {
+            INode **nodesp;
+            uint32_t cnt;
+            for (nodesFor(lit->elems, cnt, nodesp))
+                *valuep++ = genlExpr(gen, *nodesp);
+        }
+        INode *elemtype = nodesGet(((ArrayNode *)itypeGetTypeDcl(lit->vtype))->elems, 0);
         return LLVMConstArray(genlType(gen, elemtype), values, size);
     }
     case TypeLitTag:
