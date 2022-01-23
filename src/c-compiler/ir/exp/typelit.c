@@ -58,32 +58,6 @@ void typeLitNbrCheck(TypeCheckState *pstate, FnCallNode *nbrlit, INode *type) {
         errorMsgNode((INode*)first, ErrorBadArray, "May only create number literal from another number");
 }
 
-// Type check an array literal
-void typeLitArrayCheck(TypeCheckState *pstate, ArrayNode *arrlit) {
-
-    if (arrlit->elems->used == 0) {
-        errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal list may not be empty");
-        return;
-    }
-
-    // Ensure all elements are consistently typed (matching first element's type)
-    INode *matchtype = unknownType;
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodesFor(arrlit->elems, cnt, nodesp)) {
-        if (iexpTypeCheckAny(pstate, nodesp) == 0)
-            continue;
-        if (matchtype == unknownType) {
-            // Get element type from first element
-            // Type of array literal is: array of elements whose type matches first value
-            matchtype = ((IExpNode*)*nodesp)->vtype;
-        }
-        else if (!itypeIsSame(((IExpNode*)*nodesp)->vtype, matchtype))
-            errorMsgNode((INode*)*nodesp, ErrorBadArray, "Inconsistent type of array literal value");
-    }
-    arrlit->vtype = (INode*)newArrayNodeTyped((INode*)arrlit, arrlit->elems->used, matchtype);
-}
-
 // Return true if desired named field is found and swapped into place
 int typeLitGetName(Nodes *args, uint32_t argi, Name *name) {
     uint32_t nargs = args->used;

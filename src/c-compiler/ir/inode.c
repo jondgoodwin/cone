@@ -325,7 +325,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     case VarNameUseTag:
         nameUseTypeCheck(pstate, (NameUseNode **)node); break;
     case ArrayLitTag:
-        typeLitArrayCheck(pstate, (ArrayNode *)*node); break;
+        arrayLitTypeCheck(pstate, (ArrayNode *)*node); break;
     case BlockTag:
         blockTypeCheck(pstate, (BlockNode *)*node, expectType); break;
     case IfTag:

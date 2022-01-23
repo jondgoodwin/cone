@@ -91,6 +91,7 @@ typedef struct GenericInfo GenericInfo;
 #include "exp/if.h"
 #include "exp/literal.h"
 #include "exp/namedval.h"
+#include "exp/arraylit.h"
 #include "exp/typelit.h"
 #include "exp/logic.h"
 #include "exp/sizeof.h"

@@ -151,6 +151,7 @@ add_executable(conec
 	src/c-compiler/ir/stmt/vardcl.c
 
 	src/c-compiler/ir/exp/allocate.c
+	src/c-compiler/ir/exp/arraylit.c
 	src/c-compiler/ir/exp/assign.c
 	src/c-compiler/ir/exp/block.c
 	src/c-compiler/ir/exp/borrow.c

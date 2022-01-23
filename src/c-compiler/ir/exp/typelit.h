@@ -18,9 +18,6 @@ void typeLitNameRes(NameResState *pstate, FnCallNode *lit);
 // Also prevent the specification of a value for a private field outside the type's methods
 int typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private);
 
-// Type check an array literal
-void typeLitArrayCheck(TypeCheckState *pstate, ArrayNode *arrlit);
-
 // Check the type literal node
 void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *lit);
 
