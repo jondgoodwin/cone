@@ -12,6 +12,6 @@
 void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit);
 
 // Is an array actually a literal?
-int arrayIsLiteral(ArrayNode *node);
+int arrayLitIsLiteral(ArrayNode *node);
 
 #endif

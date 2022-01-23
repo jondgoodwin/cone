@@ -13,6 +13,33 @@
 // Type check an array literal
 void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit) {
 
+    // Handle array literal "fill" format: [dimen, fill-value]
+    if (arrlit->dimens->used > 0) {
+
+        // Ensure only one constant integer dimension
+        if (arrlit->dimens->used > 1) {
+            errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal may only specify one dimension");
+            return;
+        }
+        INode *dimnode = nodesGet(arrlit->dimens, 0);
+        if (dimnode->tag != ULitTag) {
+            errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal dimension value must be a constant integer");
+            return;
+        }
+
+        // Handle and type the single fill value
+        if (arrlit->elems->used != 1 || !isExpNode(nodesGet(arrlit->elems, 0))) {
+            errorMsgNode((INode*)arrlit, ErrorBadArray, "Array fill value may only be one value");
+            return;
+        }
+        INode **elemnodep = &nodesGet(arrlit->elems, 0);
+        if (iexpTypeCheckAny(pstate, elemnodep)) {
+            arrlit->vtype = (INode*)newArrayNodeTyped((INode*)arrlit,
+                (size_t)((ULitNode*)dimnode)->uintlit, ((IExpNode*)*elemnodep)->vtype);
+        }
+    }
+
+    // Otherwise handle multi-value array literal
     if (arrlit->elems->used == 0) {
         errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal list may not be empty");
         return;
@@ -37,7 +64,7 @@ void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit) {
 }
 
 // Is the array actually a literal?
-int arrayIsLiteral(ArrayNode *node) {
+int arrayLitIsLiteral(ArrayNode *node) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(node->elems, cnt, nodesp)) {
