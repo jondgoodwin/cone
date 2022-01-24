@@ -75,6 +75,8 @@ void arrayNameRes(NameResState *pstate, ArrayNode *node) {
         inodeNameRes(pstate, nodesp);
     if (node->elems->used > 0 && !isTypeNode(nodesGet(node->elems, 0)))
         node->tag = ArrayLitTag; // We have an array literal, not array type
+    for (nodesFor(node->dimens, cnt, nodesp))
+        inodeNameRes(pstate, nodesp);
 }
 
 // Type check an array type

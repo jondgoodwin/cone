@@ -81,6 +81,46 @@ LLVMValueRef genlFree(GenState *gen, LLVMValueRef ref) {
     return LLVMBuildCall(gen->builder, genlfreeval, &refcast, 1, "");
 }
 
+// Generate repetitive array fill of a value
+void genlAllocFillArray(GenState *gen, LLVMValueRef nbrelems, ArrayNode *arraylit, LLVMValueRef valuep) {
+    LLVMValueRef ptrphis[2];
+    LLVMValueRef cntphis[2];
+    LLVMBasicBlockRef phiblks[2];
+
+    // Set up blocks for the upcoming loop
+    LLVMBasicBlockRef loopend = genlInsertBlock(gen, "fillloopend");
+    LLVMBasicBlockRef loopbody = genlInsertBlock(gen, "fillloopbody");
+    LLVMBasicBlockRef loopbeg = genlInsertBlock(gen, "fillloopbeg");
+
+    // Finish out current block
+    LLVMValueRef fillval = genlExpr(gen, nodesGet(arraylit->elems, 0));
+    ptrphis[0] = valuep;
+    cntphis[0] = nbrelems;
+    phiblks[0] = LLVMGetInsertBlock(gen->builder);
+    LLVMBuildBr(gen->builder, loopbeg);
+
+    // Code for the beginning of the loop: the exit comparison
+    LLVMPositionBuilderAtEnd(gen->builder, loopbeg);
+    LLVMValueRef loopptrphi = LLVMBuildPhi(gen->builder, LLVMTypeOf(valuep), "ptrphi");
+    LLVMValueRef loopcntphi = LLVMBuildPhi(gen->builder, LLVMTypeOf(nbrelems), "ptrphi");
+    LLVMValueRef constzero = LLVMConstInt(LLVMTypeOf(loopcntphi), 0, 1);
+    LLVMValueRef condbool = LLVMBuildICmp(gen->builder, LLVMIntEQ, loopcntphi, constzero, "");
+    LLVMBuildCondBr(gen->builder, condbool, loopend, loopbody);
+
+    // Store value, increment pointer and decrement counter
+    LLVMPositionBuilderAtEnd(gen->builder, loopbody);
+    LLVMBuildStore(gen->builder, fillval, loopptrphi);
+    LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), 1, 1);
+    ptrphis[1] = LLVMBuildGEP(gen->builder, loopptrphi, &constone, 1, "");
+    cntphis[1] = LLVMBuildSub(gen->builder, loopcntphi, constone, "");
+    phiblks[1] = loopbody;
+    LLVMBuildBr(gen->builder, loopbeg);
+
+    LLVMAddIncoming(loopptrphi, ptrphis, phiblks, 2);
+    LLVMAddIncoming(loopcntphi, cntphis, phiblks, 2);
+    LLVMPositionBuilderAtEnd(gen->builder, loopend);
+}
+
 // Generate region-based allocation and initialization logc
 // It returns a reference to the allocated/initialized object (or null)
 // This is roughly what it does:
@@ -117,7 +157,10 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     if (reftype->tag == ArrayRefTag) {
         // For array-refs: sizeval += (nbrelems-1) * elemsz
         ArrayNode *initvalue = (ArrayNode*)allocatenode->vtexp;
-        nbrelems = LLVMConstInt(genlType(gen, (INode*)usizeType), initvalue->elems->used, 0);
+        if (initvalue->dimens->used > 0)
+            nbrelems = genlExpr(gen, nodesGet(initvalue->dimens, 0));
+        else
+            nbrelems = LLVMConstInt(genlType(gen, (INode*)usizeType), initvalue->elems->used, 0);
         LLVMValueRef constone = LLVMConstInt(genlType(gen, (INode*)usizeType), 1, 0);
         LLVMValueRef nbrelemsdec = LLVMBuildSub(gen->builder, nbrelems, constone, "");
         LLVMValueRef elemsz = LLVMConstInt(genlType(gen, (INode*)usizeType), LLVMABISizeOfType(gen->datalayout, valuetypllvm), 0);
@@ -175,11 +218,17 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
         LLVMBuildStore(gen->builder, genlExpr(gen, allocatenode->vtexp), valuep); // Copy value
     }
     else {
-        // Copy initial value into allocated memory area for value
-        LLVMValueRef initval = genlExpr(gen, allocatenode->vtexp);
-        LLVMTypeRef initvaltype = LLVMPointerType(LLVMTypeOf(initval), 0);
-        LLVMValueRef valuepcast = LLVMBuildBitCast(gen->builder, valuep, initvaltype, "");
-        LLVMBuildStore(gen->builder, initval, valuepcast);
+        // Handle array fill via run-time generation
+        if (allocatenode->vtexp->tag == ArrayLitTag && ((ArrayNode*)allocatenode->vtexp)->dimens > 0) {
+            genlAllocFillArray(gen, nbrelems, (ArrayNode*)allocatenode->vtexp, valuep);
+        }
+        else {
+            // Copy initial value into allocated memory area for value
+            LLVMValueRef initval = genlExpr(gen, allocatenode->vtexp);
+            LLVMTypeRef initvaltype = LLVMPointerType(LLVMTypeOf(initval), 0);
+            LLVMValueRef valuepcast = LLVMBuildBitCast(gen->builder, valuep, initvaltype, "");
+            LLVMBuildStore(gen->builder, initval, valuepcast);
+        }
 
         // Build fat pointer for returning
         LLVMValueRef tupleval = LLVMGetUndef(reftypellvm);

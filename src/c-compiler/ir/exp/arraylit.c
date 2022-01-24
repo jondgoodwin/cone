@@ -21,11 +21,15 @@ void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit) {
             errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal may only specify one dimension");
             return;
         }
-        INode *dimnode = nodesGet(arrlit->dimens, 0);
+        INode **dimnodep = &nodesGet(arrlit->dimens, 0);
+        INode *dimnode = *dimnodep;
         if (dimnode->tag != ULitTag) {
             errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal dimension value must be a constant integer");
-            return;
         }
+        else {
+            ((ULitNode*)dimnode)->vtype = (INode*)usizeType;
+        }
+        iexpTypeCheckCoerce(pstate, (INode*)usizeType, dimnodep);
 
         // Handle and type the single fill value
         if (arrlit->elems->used != 1 || !isExpNode(nodesGet(arrlit->elems, 0))) {
