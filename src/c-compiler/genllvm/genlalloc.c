@@ -102,7 +102,7 @@ void genlAllocFillArray(GenState *gen, LLVMValueRef nbrelems, ArrayNode *arrayli
     // Code for the beginning of the loop: the exit comparison
     LLVMPositionBuilderAtEnd(gen->builder, loopbeg);
     LLVMValueRef loopptrphi = LLVMBuildPhi(gen->builder, LLVMTypeOf(valuep), "ptrphi");
-    LLVMValueRef loopcntphi = LLVMBuildPhi(gen->builder, LLVMTypeOf(nbrelems), "ptrphi");
+    LLVMValueRef loopcntphi = LLVMBuildPhi(gen->builder, LLVMTypeOf(nbrelems), "cntphi");
     LLVMValueRef constzero = LLVMConstInt(LLVMTypeOf(loopcntphi), 0, 1);
     LLVMValueRef condbool = LLVMBuildICmp(gen->builder, LLVMIntEQ, loopcntphi, constzero, "");
     LLVMBuildCondBr(gen->builder, condbool, loopend, loopbody);

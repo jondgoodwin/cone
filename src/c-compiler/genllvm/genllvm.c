@@ -394,7 +394,7 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
     timerBegin(OptTimer);
     LLVMPassManagerRef passmgr = LLVMCreatePassManager();
     LLVMAddPromoteMemoryToRegisterPass(passmgr);     // Demote allocas to registers.
-    LLVMAddInstructionCombiningPass(passmgr);        // Do simple "peephole" and bit-twiddling optimizations
+    //LLVMAddInstructionCombiningPass(passmgr);        // Do simple "peephole" and bit-twiddling optimizations
     LLVMAddReassociatePass(passmgr);                 // Reassociate expressions.
     LLVMAddGVNPass(passmgr);                         // Eliminate common subexpressions.
     LLVMAddCFGSimplificationPass(passmgr);           // Simplify the control flow graph
