@@ -18,7 +18,7 @@ extern INode *borrowRef;  // When a reference's region is unspecified, as it is 
 extern PermNode *uniPerm;
 extern PermNode *mutPerm;
 extern PermNode *immPerm;
-extern PermNode *constPerm;
+extern PermNode *roPerm;
 extern PermNode *mut1Perm;
 extern PermNode *opaqPerm;
 

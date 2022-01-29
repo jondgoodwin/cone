@@ -18,7 +18,7 @@ INode *borrowRef;
 PermNode *uniPerm;
 PermNode *mutPerm;
 PermNode *immPerm;
-PermNode *constPerm;
+PermNode *roPerm;
 PermNode *mut1Perm;
 PermNode *opaqPerm;
 LifetimeNode *staticLifetimeNode;
@@ -51,7 +51,7 @@ void stdPermInit() {
     uniPerm = newPermNodeStr("uni", MayRead | MayWrite | RaceSafe | MayIntRefSum | IsLockless);
     mutPerm = newPermNodeStr("mut", MayRead | MayWrite | MayAlias | MayAliasWrite | IsLockless);
     immPerm = newPermNodeStr("imm", MayRead | MayAlias | RaceSafe | MayIntRefSum | IsLockless);
-    constPerm = newPermNodeStr("const", MayRead | MayAlias | IsLockless);
+    roPerm = newPermNodeStr("ro", MayRead | MayAlias | IsLockless);
     mut1Perm = newPermNodeStr("mut1", MayRead | MayWrite | MayAlias | MayIntRefSum | IsLockless);
     opaqPerm = newPermNodeStr("opaq", MayAlias | RaceSafe | IsLockless);
 }

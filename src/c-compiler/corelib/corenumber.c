@@ -246,7 +246,7 @@ INsTypeNode *newArrayRefTypeMethods() {
     reftypenode->llvmtype = NULL;
     iNsTypeInit((INsTypeNode*)reftypenode, 8);
 
-    RefNode *voidref = newRefNodeFull(RefTag, NULL, unknownType, newPermUseNode(constPerm), unknownType);
+    RefNode *voidref = newRefNodeFull(RefTag, NULL, unknownType, newPermUseNode(roPerm), unknownType);
     voidref->tag = ArrayRefTag;
 
     // '.count' operator

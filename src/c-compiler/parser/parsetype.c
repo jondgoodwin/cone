@@ -38,7 +38,7 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
         perm = (INode*)defperm;
     INode *permdcl = itypeGetTypeDcl(perm);
     if (permdcl == (INode*)mut1Perm || permdcl == (INode*)uniPerm || permdcl == (INode*)opaqPerm
-        || (permdcl == (INode*)constPerm && !(flags & ParseMayConst)))
+        || (permdcl == (INode*)roPerm && !(flags & ParseMayConst)))
         errorMsgNode(perm, ErrorInvType, "Permission not valid for variable/field declaration");
 
     // Obtain variable's name

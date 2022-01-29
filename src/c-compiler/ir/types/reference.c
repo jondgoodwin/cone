@@ -13,7 +13,7 @@ RefNode *newRefNode(uint16_t tag) {
     RefNode *refnode;
     newNode(refnode, RefNode, tag);
     refnode->region = borrowRef;          // Default values
-    refnode->perm = (INode*)constPerm;
+    refnode->perm = (INode*)roPerm;
     refnode->vtype = (INode*)unknownType;
     refnode->typeinfo = NULL;
     return refnode;
@@ -44,7 +44,7 @@ void refAdoptInfections(RefNode *refnode) {
         return;  // Wait until we have this info
     if (!(permGetFlags(refnode->perm) & MayAlias) || itypeIsMove(refnode->region))
         refnode->flags |= MoveType;
-    if (refnode->perm == (INode*)mutPerm || refnode->perm == (INode*)constPerm 
+    if (refnode->perm == (INode*)mutPerm || refnode->perm == (INode*)roPerm 
         || (refnode->vtexp->flags & ThreadBound))
         refnode->flags |= ThreadBound;
 }
@@ -108,7 +108,7 @@ void refNameRes(NameResState *pstate, RefNode *node) {
 void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
     if (node->perm == unknownType)
         node->perm = newPermUseNode(node->vtexp->tag == FnSigTag ? opaqPerm :
-        (node->region == borrowRef ? constPerm : uniPerm));
+        (node->region == borrowRef ? roPerm : uniPerm));
     itypeTypeCheck(pstate, &node->region);
     if (node->region != borrowRef &&
         itypeGetTypeDcl(node->region)->tag != StructTag) {
@@ -126,7 +126,7 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
 // Type check a virtual reference node
 void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
     if (node->perm == unknownType)
-        node->perm = newPermUseNode(node->region == borrowRef ? constPerm : uniPerm);
+        node->perm = newPermUseNode(node->region == borrowRef ? roPerm : uniPerm);
     itypeTypeCheck(pstate, &node->region);
     itypeTypeCheck(pstate, (INode**)&node->perm);
     if (itypeTypeCheck(pstate, &node->vtexp) == 0)

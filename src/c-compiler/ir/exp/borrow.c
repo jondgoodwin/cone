@@ -40,7 +40,7 @@ void borrowMutRef(INode **nodep, INode* type, INode *perm) {
 void borrowAuto(INode **from, INode *totypedcl) {
     // Borrow from array to create arrayref (only one supported currently)
     RefNode *arrreftype = (RefNode*)totypedcl;
-    RefNode *addrtype = newRefNodeFull(ArrayRefTag, *from, borrowRef, newPermUseNode(constPerm), arrreftype->vtexp);
+    RefNode *addrtype = newRefNodeFull(ArrayRefTag, *from, borrowRef, newPermUseNode(roPerm), arrreftype->vtexp);
     RefNode *borrownode = newRefNode(ArrayBorrowTag);
     borrownode->vtype = (INode*)addrtype;
     borrownode->vtexp = *from;
@@ -58,7 +58,7 @@ int borrowAutoMatches(INode *from, RefNode *totype) {
     // Handle auto borrow of array to obtain a borrowed array reference (slice)
     if (totype->tag == ArrayRefTag && fromtype->tag == ArrayTag) {
         return (itypeIsSame(((RefNode*)totype)->vtexp, arrayElemType(fromtype))
-            && itypeGetTypeDcl(totype->perm) == (INode*)constPerm && itypeGetTypeDcl(totype->region) == borrowRef);
+            && itypeGetTypeDcl(totype->perm) == (INode*)roPerm && itypeGetTypeDcl(totype->region) == borrowRef);
     }
     return 0;
 }
@@ -133,7 +133,7 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     // Ensure requested/inferred permission matches lval's permission
     INode *refperm = node->perm;
     if (refperm == unknownType)
-        refperm = newPermUseNode(itypeIsConcrete(refvtype) ? constPerm : opaqPerm);
+        refperm = newPermUseNode(itypeIsConcrete(refvtype) ? roPerm : opaqPerm);
     if (!permMatches(refperm, lvalperm))
         errorMsgNode((INode *)node, ErrorBadPerm, "Borrowed reference cannot obtain this permission");
 

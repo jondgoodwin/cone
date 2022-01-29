@@ -62,9 +62,9 @@ int permMatches(INode *ito, INode *ifrom) {
     if (to==from || to==opaqPerm)
         return EqMatch;
     if (from == uniPerm &&
-        (to == constPerm || to == mutPerm || to == immPerm || to == mut1Perm))
+        (to == roPerm || to == mutPerm || to == immPerm || to == mut1Perm))
         return EqMatch;
-    if (to == constPerm &&
+    if (to == roPerm &&
         (from == mutPerm || from == immPerm || from == mut1Perm))
         return EqMatch;
     return NoMatch;

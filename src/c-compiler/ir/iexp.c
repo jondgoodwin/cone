@@ -302,7 +302,7 @@ INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
             PermNode *methperm = (PermNode *)((VarDclNode*)((NameUseNode *)element->methfld)->dclnode)->perm;
             // Downgrade overall static permission if field is immutable
             if (methperm == immPerm)
-                *lvalperm = (INode*)constPerm;
+                *lvalperm = (INode*)roPerm;
         }
         return lvalvar;
     }
