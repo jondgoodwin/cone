@@ -50,7 +50,10 @@ void allocateTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
         node->perm = newPermUseNode(uniPerm);
 
     // Ensure expression is a value usable for initializing allocated memory
-    if (iexpTypeCheckAny(pstate, &node->vtexp) == 0)
+    if (node->tag == ArrayAllocTag && node->vtexp->tag == ArrayLitTag)
+        // Somewhat different Array literal type check that allows expression for array dimension
+        arrayLitTypeCheckDimExp(pstate, (ArrayNode *)node->vtexp);
+    else if (iexpTypeCheckAny(pstate, &node->vtexp) == 0)
         return;
 
     INode *vtype = ((IExpNode*)node->vtexp)->vtype;

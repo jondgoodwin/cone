@@ -11,7 +11,7 @@
 // as we don't yet know whether [] is a type or an array literal
 
 // Type check an array literal
-void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit) {
+void arrayLitTypeCheckDimExp(TypeCheckState *pstate, ArrayNode *arrlit) {
 
     // Handle array literal "fill" format: [dimen, fill-value]
     if (arrlit->dimens->used > 0) {
@@ -23,13 +23,11 @@ void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit) {
         }
         INode **dimnodep = &nodesGet(arrlit->dimens, 0);
         INode *dimnode = *dimnodep;
-        if (dimnode->tag != ULitTag) {
-            errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal dimension value must be a constant integer");
-        }
-        else {
-            ((ULitNode*)dimnode)->vtype = (INode*)usizeType;
-        }
-        iexpTypeCheckCoerce(pstate, (INode*)usizeType, dimnodep);
+        if (dimnode->tag == ULitTag)
+            ((ULitNode*)dimnode)->vtype = (INode*)usizeType; // Force type
+        // Ensure it coerces to usize
+        if (iexpTypeCheckCoerce(pstate, (INode*)usizeType, dimnodep) != 1)
+            errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal dimension must coerce to usize");
 
         // Handle and type the single fill value
         if (arrlit->elems->used != 1 || !isExpNode(nodesGet(arrlit->elems, 0))) {
@@ -66,6 +64,17 @@ void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit) {
             errorMsgNode((INode*)*nodesp, ErrorBadArray, "Inconsistent type of array literal value");
     }
     arrlit->vtype = (INode*)newArrayNodeTyped((INode*)arrlit, arrlit->elems->used, matchtype);
+}
+
+// The default type check
+void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit) {
+
+    // In the default scenario (not as part of region allocation),
+    // we must insist that array literal's dimension is a constant unsigned integer
+    if (arrlit->dimens->used > 0 && nodesGet(arrlit->dimens, 0)->tag != ULitTag) {
+        errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal dimension value must be a constant integer");
+    }
+    arrayLitTypeCheckDimExp(pstate, arrlit);
 }
 
 // Is the array actually a literal?

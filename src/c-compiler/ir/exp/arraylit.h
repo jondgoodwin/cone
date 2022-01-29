@@ -8,6 +8,9 @@
 #ifndef arraylit_h
 #define arraylit_h
 
+// Type check an array literal (used by region allocation only)
+void arrayLitTypeCheckDimExp(TypeCheckState *pstate, ArrayNode *arrlit);
+
 // Type check an array literal
 void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit);
 
