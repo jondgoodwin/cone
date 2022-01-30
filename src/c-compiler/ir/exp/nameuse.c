@@ -151,7 +151,9 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
     }
 
     // Distinguish whether a name is for a variable/function name vs. type
-    if (name->dclnode->tag == VarDclTag || name->dclnode->tag == FnDclTag)
+    if (name->dclnode->tag == VarDclTag 
+        || name->dclnode->tag == FnDclTag 
+        || name->dclnode->tag == ConstDclTag)
         name->tag = VarNameUseTag;
     else if (name->dclnode->tag == MacroDclTag)
         name->tag = MacroNameTag;
@@ -185,6 +187,8 @@ void nameUseTypeCheckType(TypeCheckState *pstate, NameUseNode **namep) {
 void nameuseFlow(FlowState *fstate, NameUseNode **nodep) {
     NameUseNode *node = *nodep;
     VarDclNode *vardclnode = (VarDclNode *)((NameUseNode*)node)->dclnode;
+    if (vardclnode->tag != VarDclTag)
+        return;
     if (!(vardclnode->flowtempflags & VarInitialized))
         errorMsgNode((INode*)node, ErrorMove, "This variable has not been initialized. There is no value to use.");
     else if (vardclnode->flowtempflags & VarMoved)

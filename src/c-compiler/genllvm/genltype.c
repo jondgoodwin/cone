@@ -389,8 +389,9 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
         INode **nodesp = &nodesGet(anode->dimens, cnt - 1);
         LLVMTypeRef array = genlType(gen, arrayElemType((INode*)anode)); // Start with element type
         while (cnt--) {
-            ULitNode *dim = (ULitNode*)*nodesp--;
-            array = LLVMArrayType(array, (unsigned int)dim->uintlit); // Build nested arrays from inside-out
+            INode *dimnode = *nodesp--;
+            assert(dimnode->tag == ULitTag);
+            array = LLVMArrayType(array, (unsigned int)((ULitNode*)dimnode)->uintlit); // Build nested arrays from inside-out
         }
         return array;
     }

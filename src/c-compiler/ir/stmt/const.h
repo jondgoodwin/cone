@@ -27,7 +27,4 @@ void constDclNameRes(NameResState *pstate, ConstDclNode *node);
 // Type check vardcl
 void constDclTypeCheck(TypeCheckState *pstate, ConstDclNode *node);
 
-// Perform data flow analysis
-void constDclFlow(FlowState *fstate, ConstDclNode **constdclnode);
-
 #endif

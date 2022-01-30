@@ -66,7 +66,3 @@ void constDclTypeCheck(TypeCheckState *pstate, ConstDclNode *name) {
     if (!litIsLiteral(name->value))
         errorMsgNode(name->value, ErrorNotLit, "Named constants must be assigned to a constant value.");
 }
-
-// Perform data flow analysis
-void constDclFlow(FlowState *fstate, ConstDclNode **constdclnode) {
-}

@@ -829,8 +829,12 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         ArrayNode *lit = (ArrayNode *)termnode;
         uint32_t size = lit->elems->used;
         if (lit->dimens->used > 0) {
-            // When array size specifiedfor fill, use that
-            size = (uint32_t)((ULitNode*)nodesGet(lit->dimens, 0))->uintlit;
+            // When array size specified for fill, use that
+            INode *dimnode = nodesGet(lit->dimens, 0);
+            while (dimnode->tag == VarNameUseTag)
+                dimnode = ((ConstDclNode*)((NameUseNode*)dimnode)->dclnode)->value;
+            assert(dimnode->tag == ULitTag);
+            size = (uint32_t)((ULitNode*)dimnode)->uintlit;
         }
         LLVMValueRef *values = (LLVMValueRef *)memAllocBlk(size * sizeof(LLVMValueRef *));
         LLVMValueRef *valuep = values;
@@ -897,7 +901,14 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     case VarNameUseTag:
     {
         VarDclNode *vardcl = (VarDclNode*)((NameUseNode *)termnode)->dclnode;
-        return LLVMBuildLoad(gen->builder, vardcl->llvmvar, &vardcl->namesym->namestr);
+        if (vardcl->tag == VarDclTag)
+            return LLVMBuildLoad(gen->builder, vardcl->llvmvar, &vardcl->namesym->namestr);
+        else if (vardcl->tag == ConstDclTag) {
+            ConstDclNode *constdcl = (ConstDclNode*)vardcl;
+            return genlExpr(gen, constdcl->value);
+        }
+        else
+            assert(0 && "Unknown DclNode");
     }
     case AliasTag:
     {

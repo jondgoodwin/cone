@@ -35,6 +35,10 @@ void arrayLitTypeCheckDimExp(TypeCheckState *pstate, ArrayNode *arrlit) {
             return;
         }
         INode **elemnodep = &nodesGet(arrlit->elems, 0);
+        if (dimnode->tag != ULitTag) {
+            while (dimnode->tag == VarNameUseTag)
+                dimnode = ((ConstDclNode*)((NameUseNode*)dimnode)->dclnode)->value;
+        }
         if (iexpTypeCheckAny(pstate, elemnodep)) {
             arrlit->vtype = (INode*)newArrayNodeTyped((INode*)arrlit,
                 (size_t)((ULitNode*)dimnode)->uintlit, ((IExpNode*)*elemnodep)->vtype);
@@ -71,8 +75,8 @@ void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit) {
 
     // In the default scenario (not as part of region allocation),
     // we must insist that array literal's dimension is a constant unsigned integer
-    if (arrlit->dimens->used > 0 && nodesGet(arrlit->dimens, 0)->tag != ULitTag) {
-        errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal dimension value must be a constant integer");
+    if (arrlit->dimens->used > 0 && !litIsLiteral(nodesGet(arrlit->dimens, 0))) {
+        errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal dimension value must be a constant");
     }
     arrayLitTypeCheckDimExp(pstate, arrlit);
 }
