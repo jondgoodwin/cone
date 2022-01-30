@@ -643,11 +643,11 @@ char *lexBlockComment(char *srcp) {
         if (*srcp == '*' && *(srcp + 1) == '/') {
             if (--nest == 0)
                 return srcp+2;
-            ++srcp;
+            ++srcp; ++srcp;
         }
         else if (*srcp == '/' && *(srcp + 1) == '*') {
             ++nest;
-            ++srcp;
+            ++srcp; ++srcp;
         }
         // ignore tokens inside line comment
         else if (*srcp == '/' && *(srcp + 1) == '/') {
@@ -662,7 +662,8 @@ char *lexBlockComment(char *srcp) {
                     srcp++;
             }
         }
-        ++srcp;
+        else
+            ++srcp;
     }
     return srcp;
 }
