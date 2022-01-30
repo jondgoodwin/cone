@@ -216,7 +216,7 @@ void parseInclude(ParseState *parse) {
 }
 
 char *stdiolib =
-"extern {fn printStr(str &[]u8); fn printFloat(a f64); fn printInt(a i64); fn printChar(code u64);}\n"
+"extern {fn printStr(str &[]u8); fn printFloat(a f64); fn printInt(a i64); fn printUInt(a u64); fn printChar(code u64);}\n"
 "struct IOStream{"
 "  fd i32;"
 "  fn `<-`(self &mut, str &[]u8) {printStr(str)}"
