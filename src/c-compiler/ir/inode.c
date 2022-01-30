@@ -78,6 +78,8 @@ void inodePrintNode(INode *node) {
         fnDclPrint((FnDclNode *)node); break;
     case VarDclTag:
         varDclPrint((VarDclNode *)node); break;
+    case ConstDclTag:
+        constDclPrint((ConstDclNode *)node); break;
     case FieldDclTag:
         fieldDclPrint((FieldDclNode *)node); break;
     case ImportTag:
@@ -203,6 +205,8 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         fnDclNameRes(pstate, (FnDclNode *)*node); break;
     case VarDclTag:
         varDclNameRes(pstate, (VarDclNode *)*node); break;
+    case ConstDclTag:
+        constDclNameRes(pstate, (ConstDclNode *)*node); break;
     case FieldDclTag:
         fieldDclNameRes(pstate, (FieldDclNode *)*node); break;
     case NameUseTag:
@@ -318,6 +322,8 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
         fnDclTypeCheck(pstate, (FnDclNode *)*node); break;
     case VarDclTag:
         varDclTypeCheck(pstate, (VarDclNode *)*node); break;
+    case ConstDclTag:
+        constDclTypeCheck(pstate, (ConstDclNode *)*node); break;
     case FieldDclTag:
         fieldDclTypeCheck(pstate, (FieldDclNode *)*node); break;
     case ImportTag:
@@ -444,6 +450,8 @@ Name *inodeGetName(INode *node) {
         return ((VarDclNode*)node)->namesym;
     case FieldDclTag:
         return ((FieldDclNode*)node)->namesym;
+    case ConstDclTag:
+        return ((ConstDclNode*)node)->namesym;
     case GenVarDclTag:
         return ((GenVarDclNode *)node)->namesym;
     default:

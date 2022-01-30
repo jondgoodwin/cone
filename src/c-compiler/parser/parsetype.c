@@ -67,6 +67,34 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     return varnode;
 }
 
+// Parse a named constant declaration
+ConstDclNode *parseConstDcl(ParseState *parse) {
+    ConstDclNode *constnode;
+    lexNextToken();
+
+    // Obtain name
+    if (!lexIsToken(IdentToken)) {
+        errorMsgLex(ErrorNoIdent, "Expected name for const declaration");
+        return newConstDclNode(anonName);
+    }
+    constnode = newConstDclNode(lex->val.ident);
+    lexNextToken();
+
+    // Get value type, if provided
+    constnode->vtype = parseVtype(parse);
+
+    // Get initialization value after '=', if provided
+    if (lexIsToken(AssgnToken)) {
+        lexNextToken();
+        constnode->value = parseAnyExpr(parse);
+    }
+    else {
+        errorMsgLex(ErrorNoInit, "Must specify const value.");
+    }
+
+    return constnode;
+}
+
 INode *parseTypeName(ParseState *parse) {
     INode *node = parseNameUse(parse);
     if (lexIsToken(LBracketToken)) {

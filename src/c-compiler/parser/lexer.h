@@ -145,6 +145,7 @@ enum TokenTypes {
     SetToken,      // 'set'
     MacroToken,    // 'macro'
     FnToken,       // 'fn'
+    ConstToken,    // 'const'
     TypedefToken,  // 'typedef'
     StructToken,   // 'struct'
     TraitToken,    // 'trait'

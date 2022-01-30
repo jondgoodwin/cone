@@ -438,6 +438,13 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
             parseFnOrVar(parse, 0);
             break;
 
+        // Named const declaration
+        case ConstToken: {
+            ConstDclNode *constnode = parseConstDcl(parse);
+            modAddNode(parse->mod, constnode->namesym, (INode*)constnode);
+            break;
+        }
+
         default:
             errorMsgLex(ErrorBadGloStmt, "Invalid global area statement");
             lexNextToken();

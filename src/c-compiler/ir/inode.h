@@ -95,6 +95,7 @@ enum NodeTags {
     FnDclTag,       // Function/method declaration
     VarDclTag,      // Variable declaration (global, local, parm)
     FieldDclTag,    // Field declaration in a struct, etc.
+    ConstDclTag,    // Constant declaration
 
     // Expression nodes (having value type - or sometimes nullType)
     VarNameUseTag = ExpGroup,  // Variable or Function name use node  

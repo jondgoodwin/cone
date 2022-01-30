@@ -79,6 +79,7 @@ typedef struct GenericInfo GenericInfo;
 #include "stmt/import.h"
 #include "stmt/intrinsic.h"
 #include "stmt/swap.h"
+#include "stmt/const.h"
 #include "stmt/vardcl.h"
 
 #include "exp/borrow.h"

@@ -87,6 +87,7 @@ void keywordInit() {
     keyAdd("set", SetToken);
     keyAdd("macro", MacroToken);
     keyAdd("fn", FnToken);
+    keyAdd("const", ConstToken);
     keyAdd("typedef", TypedefToken),
     keyAdd("struct", StructToken);
     keyAdd("trait", TraitToken);

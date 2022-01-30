@@ -256,6 +256,7 @@ void genlGlobalImpl(GenState *gen, INode *node) {
     case ImportTag:
     case FieldDclTag:
     case MacroDclTag:
+    case ConstDclTag:
         break;
 
     default:
