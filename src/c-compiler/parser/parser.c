@@ -222,7 +222,7 @@ char *stdiolib =
 "  fn `<-`(self &mut, str &[]u8) {printStr(str)}"
 "  fn `<-`(self &mut, i i64) {printInt(i)}"
 "  fn `<-`(self &mut, n f64) {printFloat(n)}"
-"  fn `<-`(self &mut, ch u64) {printChar(ch)}"
+"  fn `<-`(self &mut, i u64) {printUInt(i)}"
 "}"
 "mut print = IOStream[0]"
 ;

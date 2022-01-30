@@ -17,6 +17,10 @@ void printInt(int64_t nbr) {
 	printf("%"PRId64, nbr);
 }
 
+void printUInt(uint64_t nbr) {
+    printf("%"PRIu64, nbr);
+}
+
 void printFloat(double nbr) {
 	printf("%g", nbr);
 }
