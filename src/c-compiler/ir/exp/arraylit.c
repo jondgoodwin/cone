@@ -35,13 +35,21 @@ void arrayLitTypeCheckDimExp(TypeCheckState *pstate, ArrayNode *arrlit) {
             return;
         }
         INode **elemnodep = &nodesGet(arrlit->elems, 0);
+        size_t dimsize = 0;
         if (dimnode->tag != ULitTag) {
-            while (dimnode->tag == VarNameUseTag)
-                dimnode = ((ConstDclNode*)((NameUseNode*)dimnode)->dclnode)->value;
+            while (dimnode->tag == VarNameUseTag) {
+                INode *dclnode = ((NameUseNode*)dimnode)->dclnode;
+                if (dclnode->tag == ConstDclTag)
+                    dimnode = ((ConstDclNode*)dclnode)->value;
+                else
+                    break;
+            }
         }
+        if (dimnode->tag == ULitTag)
+            dimsize = (size_t)((ULitNode*)dimnode)->uintlit;
         if (iexpTypeCheckAny(pstate, elemnodep)) {
             arrlit->vtype = (INode*)newArrayNodeTyped((INode*)arrlit,
-                (size_t)((ULitNode*)dimnode)->uintlit, ((IExpNode*)*elemnodep)->vtype);
+                dimsize, ((IExpNode*)*elemnodep)->vtype);
         }
         return;
     }
