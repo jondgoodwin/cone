@@ -107,13 +107,20 @@ void genlGloVar(GenState *gen, VarDclNode *varnode) {
         // If no value on non-extern, initialize with the zero initializer
         if (!(varnode->flags & FlagExtern))
             LLVMSetInitializer(varnode->llvmvar, LLVMConstNull(genlType(gen,varnode->vtype)));
+        return;
     }
+
     else if (varnode->value->tag == StringLitTag) {
         SLitNode *strnode = (SLitNode*)varnode->value;
         LLVMSetInitializer(varnode->llvmvar, LLVMConstStringInContext(gen->context, strnode->strlit, strnode->strlen, 1));
     }
     else
         LLVMSetInitializer(varnode->llvmvar, genlExpr(gen, varnode->value));
+
+    // Mark initialized, immutable global variable as constant,
+    // so it goes into a faster memory page that we know we will never be mutated
+    if (itypeGetTypeDcl(varnode->perm) == immPerm)
+        LLVMSetGlobalConstant(varnode->llvmvar, 1);
 }
 
 // Generate LLVMValueRef for a global variable
