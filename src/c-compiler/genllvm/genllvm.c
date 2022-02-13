@@ -103,7 +103,12 @@ LLVMValueRef genlAlloca(GenState *gen, LLVMTypeRef type, const char *name) {
 
 // Generate global variable
 void genlGloVar(GenState *gen, VarDclNode *varnode) {
-    if (varnode->value->tag == StringLitTag) {
+    if (!varnode->value) {
+        // If no value on non-extern, initialize with the zero initializer
+        if (!(varnode->flags & FlagExtern))
+            LLVMSetInitializer(varnode->llvmvar, LLVMConstNull(genlType(gen,varnode->vtype)));
+    }
+    else if (varnode->value->tag == StringLitTag) {
         SLitNode *strnode = (SLitNode*)varnode->value;
         LLVMSetInitializer(varnode->llvmvar, LLVMConstStringInContext(gen->context, strnode->strlit, strnode->strlen, 1));
     }
@@ -234,9 +239,7 @@ void genlGlobalImpl(GenState *gen, INode *node) {
 
     switch (node->tag) {
     case VarDclTag:
-        if (((VarDclNode*)node)->value) {
-            genlGloVar(gen, (VarDclNode*)node);
-        }
+        genlGloVar(gen, (VarDclNode*)node);
         break;
 
     case FnDclTag:
