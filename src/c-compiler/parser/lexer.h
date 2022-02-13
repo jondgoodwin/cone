@@ -142,7 +142,6 @@ enum TokenTypes {
     IncludeToken,  // 'include'
     ImportToken,   // 'import'
     ExternToken,   // 'extern'
-    SetToken,      // 'set'
     MacroToken,    // 'macro'
     FnToken,       // 'fn'
     ConstToken,    // 'const'

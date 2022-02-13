@@ -171,8 +171,7 @@ enum NodeTags {
 #define FlagMethFld   0x0001        // FnDcl, VarDcl: Method or field (vs. static)
 #define FlagExtern    0x0002        // FnDcl, VarDcl: C ABI extern (no value, no mangle)
 #define FlagSystem    0x0004        // FnDcl: imported system call (+stdcall on Winx86)
-#define FlagSetMethod 0x0008        // FnDcl: "set" method
-#define FlagInline    0x0010        // FnDcl: "inline" fn/method
+#define FlagInline    0x0008        // FnDcl: "inline" fn/method
 
 #define IsTagField    0x0010        // FieldNode: This field is the trait's discriminant tag
 #define IsMixin       0x0020        // FieldNode: Is a trait mixin, vs. an instantiated field

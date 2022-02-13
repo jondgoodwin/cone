@@ -225,20 +225,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         parseBlockStart();
         while (!parseBlockEnd()) {
             lexStmtStart();
-            if (lexIsToken(SetToken)) {
-                lexNextToken();
-                if (!lexIsToken(FnToken))
-                    errorMsgLex(ErrorNotFn, "Expected fn declaration");
-                else {
-                    FnDclNode *fn = (FnDclNode*)parseFn(parse, FlagMethFld, methflags);
-                    if (fn && isNamedNode(fn)) {
-                        fn->flags |= FlagSetMethod;
-                        nameGenFnName(fn, parse->gennamePrefix);
-                        iNsTypeAddFn((INsTypeNode*)strnode, fn);
-                    }
-                }
-            }
-            else if (lexIsToken(FnToken)) {
+            if (lexIsToken(FnToken)) {
                 FnDclNode *fn = (FnDclNode*)parseFn(parse, FlagMethFld, methflags);
                 if (fn && isNamedNode(fn)) {
                     nameGenFnName(fn, parse->gennamePrefix);
