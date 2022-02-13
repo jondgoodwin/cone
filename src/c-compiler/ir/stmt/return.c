@@ -58,11 +58,9 @@ void returnTypeCheck(TypeCheckState *tstate, BreakRetNode *retnode) {
     // Ensure the vtype of the expression can be coerced to the function's declared return type
     // while processing the exp nodes
     FnSigNode *fnsig = (FnSigNode*)tstate->fn->vtype;
-    if (fnsig->rettype->tag == TTupleTag) {
-        if (retnode->exp->tag != VTupleTag) {
-            errorMsgNode(retnode->exp, ErrorBadTerm, "Not enough return values");
-            return;
-        }
+    if (fnsig->rettype->tag == TTupleTag && retnode->exp->tag == VTupleTag) {
+        // Where return expression is an explicit value tuple,
+        // we can safely perform implicit type coercions on individual tuple elements
         Nodes *retnodes = ((TupleNode*)retnode->exp)->elems;
         Nodes *rettypes = ((TupleNode*)fnsig->rettype)->elems;
         if (rettypes->used > retnodes->used) {
@@ -74,7 +72,7 @@ void returnTypeCheck(TypeCheckState *tstate, BreakRetNode *retnode) {
         INode **retnodesp = &nodesGet(retnodes, 0);
         for (nodesFor(rettypes, retcnt, rettypesp)) {
             if (!iexpTypeCheckCoerce(tstate, *rettypesp, retnodesp++))
-                errorMsgNode(*(retnodesp-1), ErrorInvType, "Return value's type does not match fn return type");
+                errorMsgNode(*(retnodesp - 1), ErrorInvType, "Return value's type does not match fn return type");
         }
         // Establish the type of the tuple (from the expected return value types)
         ((TupleNode *)retnode->exp)->vtype = fnsig->rettype;
