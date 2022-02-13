@@ -119,7 +119,7 @@ void genlGloVar(GenState *gen, VarDclNode *varnode) {
 
     // Mark initialized, immutable global variable as constant,
     // so it goes into a faster memory page that we know we will never be mutated
-    if (itypeGetTypeDcl(varnode->perm) == immPerm)
+    if (itypeGetTypeDcl(varnode->perm) == (INode*)immPerm)
         LLVMSetGlobalConstant(varnode->llvmvar, 1);
 }
 
