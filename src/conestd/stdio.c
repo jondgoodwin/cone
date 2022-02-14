@@ -13,6 +13,10 @@ void printStr(char *p, size_t len) {
 	fwrite(p, len, 1, stdout);
 }
 
+void printCStr(char *p) {
+    printf("%s", p);
+}
+
 void printInt(int64_t nbr) {
 	printf("%"PRId64, nbr);
 }
