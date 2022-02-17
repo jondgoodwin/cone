@@ -175,6 +175,7 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
 
     // Return a namenode pointing to fndcl instance
     NameUseNode *fnuse = newNameUseNode(name);
+    inodeLexCopy((INode*)fnuse, (INode*)srcgencall);
     fnuse->tag = isTypeNode(instance) ? TypeNameUseTag : VarNameUseTag;
     fnuse->dclnode = instance;
     return (INode *)fnuse;
