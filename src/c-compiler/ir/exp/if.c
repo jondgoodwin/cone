@@ -111,7 +111,8 @@ void ifExhaustCheck(IfNode *ifnode, CastNode *condition) {
             return;
     }
     // Turn last 'is' condition into 'else'
-    nodesGet(ifnode->condblk, ifnode->condblk->used - lowestcnt) = elseCond;
+    if (lowestcnt == 2)
+        nodesGet(ifnode->condblk, ifnode->condblk->used - 2) = elseCond;
 }
 
 // Type check the if statement node
