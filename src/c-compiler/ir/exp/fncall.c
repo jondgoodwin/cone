@@ -34,6 +34,14 @@ FnCallNode *newFnCallOp(INode *obj, char *op, int nnodes) {
     return node;
 }
 
+FnCallNode *newFnCallOpnameLower(INode *oldnode, INode *obj, Name *opname, int nnodes) {
+    FnCallNode *node = newFnCallNode(obj, nnodes);
+    inodeLexCopy((INode*)node, oldnode);
+    node->methfld = newMemberUseNode(opname);
+    inodeLexCopy((INode*)node->methfld, oldnode);
+    return node;
+}
+
 // Clone fncall
 INode *cloneFnCallNode(CloneState *cstate, FnCallNode *node) {
     FnCallNode *newnode;
@@ -108,7 +116,7 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
                 nodesGet(node->args, 0) = *nodesp;
             }
             else {
-                node = newFnCallOpname((INode*)starlval, lessDashName, 2);
+                node = newFnCallOpnameLower((INode*)*nodep, (INode*)starlval, lessDashName, 2);
                 node->flags |= FlagOpAssgn | FlagLvalOp;
                 nodesAdd(&node->args, *nodesp);
             }

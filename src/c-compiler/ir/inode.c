@@ -17,6 +17,7 @@
 
 // Copy lexer info over
 void inodeLexCopy(INode *new, INode *old) {
+    new->instnode = old->instnode;
     new->lexer = old->lexer;
     new->linenbr = old->linenbr;
     new->linep = old->linep;
