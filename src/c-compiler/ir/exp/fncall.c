@@ -503,10 +503,26 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             typeLitTypeCheck(pstate, *nodep);
             return;
         }
-        errorMsgNode(node->objfn, ErrorBadTerm, "May not do a function call on a type");
-        return;
+        if (node->methfld != NULL || node->objfn->tag != TypeNameUseTag) {
+            errorMsgNode(node->objfn, ErrorBadTerm, "May not do a function call on a type");
+            return;
+        }
+
+        // Initializer:  Change nameuse to refer to type's 'init' function
+        NameUseNode *nameuse = (NameUseNode *)node->objfn;
+        //nameUseAddQual(nameuse, nameuse->namesym);
+        nameuse->namesym = initMethodName;
+        Namespace *namespace = &((StructNode*)nameuse->dclnode)->namespace;
+        nameuse->dclnode = namespaceFind(namespace, nameuse->namesym);
+        if (nameuse->dclnode == NULL || nameuse->dclnode->tag != FnDclTag) {
+            errorMsgNode(node->objfn, ErrorBadTerm, "Does not refer to a valid type initializer");
+            return;
+        }
+        nameuse->tag = VarNameUseTag;
+        nameuse->vtype = ((FnDclNode*)nameuse->dclnode)->vtype;
     }
-    else if (!isExpNode(node->objfn)) {
+    
+    if (!isExpNode(node->objfn)) {
         errorMsgNode(node->objfn, ErrorNotTyped, "Expected a typed expression.");
         return;
     }
