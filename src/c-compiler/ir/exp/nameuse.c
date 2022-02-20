@@ -116,17 +116,25 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
     // For module-qualified names, look up name in that module
     if (name->qualNames) {
         // Do iterative look ups of module qualifiers beginning with basemod
-        ModuleNode *mod = name->qualNames->basemod;
+        Namespace *namespace = &name->qualNames->basemod->namespace;
         uint16_t cnt = name->qualNames->used;
         Name **namep = (Name**)(name->qualNames + 1);
         while (cnt--) {
-            mod = (ModuleNode*)namespaceFind(&mod->namespace, *namep++);
-            if (mod == NULL || mod->tag != ModuleTag) {
-                errorMsgNode((INode*)name, ErrorUnkName, "Module %s does not exist", &(*--namep)->namestr);
+            INode *foundnode = namespaceFind(namespace, *namep++);
+            if (foundnode == NULL) {
+                errorMsgNode((INode*)name, ErrorUnkName, "Namespace %s does not exist", &(*--namep)->namestr);
+                return;
+            }
+            else if (foundnode->tag == ModuleTag)
+                namespace = &((ModuleNode*)foundnode)->namespace;
+            else if (foundnode->tag == StructTag)
+                namespace = &((StructNode*)foundnode)->namespace;
+            else {
+                errorMsgNode((INode*)name, ErrorUnkName, "%s is not a valid namespace", &(*--namep)->namestr);
                 return;
             }
         }
-        name->dclnode = namespaceFind(&mod->namespace, name->namesym);
+        name->dclnode = namespaceFind(namespace, name->namesym);
     }
     else
         // For non-qualified names (current module), should already be hooked in global name table
