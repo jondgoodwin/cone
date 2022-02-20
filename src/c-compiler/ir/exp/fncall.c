@@ -339,6 +339,50 @@ int fnCallLowerMethod(FnCallNode *callnode) {
     return 1;
 }
 
+// A special type check for type initializer (only allowed as "value" in vardcl, assign, region-allocator)
+// Return false if not a type initializer call
+int fnCallTypeCheckInit(TypeCheckState *pstate, INode **totype, INode *node) {
+    // Return 0 if this is not an initializer call:  Type(parms)
+    if (node->tag != FnCallTag)
+        return 0;
+    FnCallNode *fncall = (FnCallNode*)node;
+    if (!isTypeNode(fncall->objfn) || (fncall->flags & FlagIndex) || fncall->methfld != NULL)
+        return 0;
+
+    // Transform into something we can lower to init function call
+    // obj is a fake object with correct &uni type. Generator will substitute correct lval ref
+    fncall->methfld = newNameUseNode(initMethodName);
+    inodeLexCopy((INode*)fncall->methfld, node);
+    INode *typenode = fncall->objfn;
+    INode *reftype = (INode*)newRefNodeFull(RefTag, node, borrowRef, newPermUseNode(uniPerm), typenode);
+    inodeLexCopy(reftype, typenode);
+    fncall->objfn = (INode*)newFakeULitNode(0, reftype);  // Use a fake object value, generator will substitute lval
+    inodeLexCopy(fncall->objfn, typenode);
+
+    // Type check arguments and objfn, methfld is not needed
+    INode **argsp;
+    uint32_t cnt;
+    if (fncall->args) {
+        for (nodesFor(fncall->args, cnt, argsp)) {
+            inodeTypeCheckAny(pstate, argsp);
+        }
+    }
+    inodeTypeCheckAny(pstate, &fncall->objfn);
+
+    // Now we can lower the method call to a function call
+    fnCallLowerMethod(fncall);
+    //fncall->flags |= FlagCallInit;
+
+    // Ensure we are building a value of the expected type
+    if (*totype == noCareType || *totype == unknownType)
+        *totype = typenode;
+    else if (itypeMatches(totype, typenode, Coercion) != EqMatch) {
+        // error message that says type does not match
+    }
+
+    return 1;
+}
+
 // We have a reference or pointer, and a method to find (comparison or arithmetic)
 // If found, lower the node to a function call (objfn+args)
 // Otherwise try again against the type it points to

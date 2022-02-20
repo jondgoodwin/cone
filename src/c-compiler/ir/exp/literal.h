@@ -36,6 +36,9 @@ NilLitNode *newNilLitNode();
 INode *cloneNilLitNode(CloneState *cstate, NilLitNode *node);
 void nilLitPrint(NilLitNode *node);
 
+// Create a new fake unsigned literal node
+ULitNode *newFakeULitNode(uint64_t nbr, INode *type);
+
 ULitNode *newULitNode(uint64_t nbr, INode *type);
 
 // Create a new unsigned literal node (after name resolution)

@@ -30,6 +30,15 @@ void nilLitPrint(NilLitNode *lit) {
 }
 
 // Create a new unsigned literal node
+ULitNode *newFakeULitNode(uint64_t nbr, INode *type) {
+    ULitNode *lit;
+    newNode(lit, ULitNode, ULitTag);
+    lit->uintlit = nbr;
+    lit->vtype = type;
+    return lit;
+}
+
+// Create a new unsigned literal node
 ULitNode *newULitNode(uint64_t nbr, INode *type) {
     ULitNode *lit;
     newNode(lit, ULitNode, ULitTag);
