@@ -57,13 +57,15 @@ void stdPermInit() {
 }
 
 char *corelibSource =
-"union Option[T] {_ enum;}\n"
-"struct Null[T] extends Option[T] {}\n"
-"struct Some[T] extends Option[T] {value T}\n"
+"union Option[T] {_ enum;\n"
+  "struct Null {}\n"
+  "struct Some {value T}\n"
+"}\n"
 
-"union Result[T,E] {_ enum}\n"
-"struct Ok[T,E] extends Result[T,E] {value T}\n"
-"struct Error[T,E] extends Result[T,E] {value E}\n"
+"union Result[T,E] {_ enum;\n"
+  "struct Ok {value T}\n"
+  "struct Error {value E}\n"
+"}\n"
 
 "extern fn malloc(size usize) *u8\n"
 

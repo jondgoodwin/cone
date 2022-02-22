@@ -107,8 +107,33 @@ int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNode *genf
     return retcode;
 }
 
+// Instantiate the generic based on parms and return
+INode *genericInstantiate(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nodetoclone,
+        GenericInfo *genericinfo, Name *name) {
+    CloneState cstate;
+    clonePushState(&cstate, (INode*)srcgencall, NULL, pstate->scope, genericinfo->parms, srcgencall->args);
+    INode *instance = cloneNode(&cstate, nodetoclone);
+    clonePopState();
+
+    // Remember instantiation for the future
+    if (!genericinfo->memonodes)
+        genericinfo->memonodes = newNodes(2);
+    nodesAdd(&genericinfo->memonodes, (INode*)srcgencall);
+    nodesAdd(&genericinfo->memonodes, instance);
+
+    // Type check the instanced declaration
+    inodeTypeCheckAny(pstate, &instance);
+
+    // Return a namenode pointing to fndcl instance
+    NameUseNode *fnuse = newNameUseNode(name);
+    inodeLexCopy((INode*)fnuse, (INode*)srcgencall);
+    fnuse->tag = isTypeNode(instance) ? TypeNameUseTag : VarNameUseTag;
+    fnuse->dclnode = instance;
+    return (INode *)fnuse;
+}
+
 // Verify arguments are types, check if instantiated, instantiate if needed and return ptr to it
-INode *genericMemoizeOne(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nodetoclone, 
+INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nodetoclone, 
         GenericInfo *genericinfo, Name *name) {
 
     // Verify expected number of generic parameters
@@ -161,59 +186,28 @@ INode *genericMemoizeOne(TypeCheckState *pstate, FnCallNode *srcgencall, INode *
     }
 
     // No match found, instantiate the dcl generic
-    CloneState cstate;
-    clonePushState(&cstate, (INode*)srcgencall, NULL, pstate->scope, genericinfo->parms, srcgencall->args);
-    INode *instance = cloneNode(&cstate, nodetoclone);
-    clonePopState();
+    // If node is not a tagged-field trait/struct, we can just instantiate it and be done
+    if (nodetoclone->tag != StructTag || !(nodetoclone->flags & HasTagField))
+        return genericInstantiate(pstate, srcgencall, nodetoclone, genericinfo, name);
 
-    // Type check the instanced declaration
-    inodeTypeCheckAny(pstate, &instance);
-
-    // Remember instantiation for the future
-    nodesAdd(&genericinfo->memonodes, (INode*)srcgencall);
-    nodesAdd(&genericinfo->memonodes, instance);
-
-    // Return a namenode pointing to fndcl instance
-    NameUseNode *fnuse = newNameUseNode(name);
-    inodeLexCopy((INode*)fnuse, (INode*)srcgencall);
-    fnuse->tag = isTypeNode(instance) ? TypeNameUseTag : VarNameUseTag;
-    fnuse->dclnode = instance;
-    return (INode *)fnuse;
-}
-
-// Memoize all nodes that are co-required by srcgencall node (e.g., traits of fixed number)
-INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nodetoclone,
-    GenericInfo *genericinfo, Name *name) {
-    // If node is not a tagged-field trait/struct, we can just memoize it and be done
-    NameUseNode *clonenameuse = (NameUseNode*)srcgencall->objfn;
-    StructNode *dclnode = (StructNode*)clonenameuse->dclnode;
-    //if (dclnode->tag != StructTag || !(dclnode->flags & HasTagField)) {
-        return genericMemoizeOne(pstate, srcgencall, nodetoclone, genericinfo, name);
-    //}
-
-    /*
-    // We will instantiate the base trait and all its variants, mutating clonenameuse for each
+    // For tag-based trait/struct, instantiate the base trait and all its variants
     // Begin by instantiating the base trait
     INode *retnode;
-    StructNode *basetrait = structGetBaseTrait(dclnode);
-    //clonenameuse->dclnode = (INode*)basetrait;
-    INode *svnode = genericMemoizeOne(pstate, srcgencall, (INode*)basetrait, genericinfo, name);
-    if (basetrait == dclnode)
-        retnode = svnode;
+    StructNode *basetrait = structGetBaseTrait((StructNode*)nodetoclone);
+    INode *instrait = genericInstantiate(pstate, srcgencall, (INode*)basetrait, basetrait->genericinfo, name);
+    if (basetrait == (StructNode*)nodetoclone)
+        retnode = instrait;
 
     // Now instantiate all variants
-    INode **nodesp;
-    uint32_t cnt;
     for (nodesFor(basetrait->derived, cnt, nodesp)) {
-        //clonenameuse->dclnode = *nodesp;
-        INode *svnode = genericMemoizeOne(pstate, srcgencall, (INode*)basetrait, genericinfo, name);
-        if (*nodesp == (INode*)dclnode)
+        //((StructNode*)*nodesp)->basetrait = instrait; // We already now know the instantiated basetrait
+        INode *svnode = genericInstantiate(pstate, srcgencall, *nodesp, ((StructNode*)*nodesp)->genericinfo, name);
+        if (*nodesp == (INode*)nodetoclone)
             retnode = svnode;
+        *nodesp = ((NameUseNode*)svnode)->dclnode; // Repair derived entry to point to instantiated variant
     }
 
-    //clonenameuse->dclnode = (INode*)dclnode;
     return retnode;
-    */
 }
 
 // Obtain GenericInfo from node, if it exists

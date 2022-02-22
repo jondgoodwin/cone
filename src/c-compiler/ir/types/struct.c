@@ -134,15 +134,6 @@ void structTypeCheckBaseTrait(StructNode *node) {
         errorMsgNode((INode*)node, ErrorInvType, "This type must be declared in the same module as the trait");
         return;
     }
-
-    // If a derived type is a struct, capture its tag number 
-    // and add it to the bottom-most trait's list of derived structs
-    if (!(node->flags & TraitType)) {
-        if (basetrait->derived == NULL)
-            basetrait->derived = newNodes(4);
-        node->tagnbr = basetrait->derived->used;
-        nodesAdd(&basetrait->derived, (INode*)node);
-    }
 }
 
 // Add method at end of strnode's method chain for this name
@@ -248,6 +239,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
 
     // Go through all fields to index them and calculate infection flags for ThreadBound/MoveType
     int isZeroSize = 1;  // Start with assumption it is zero size, unless proven otherwise
+    int hasEnumFld = 0;
     uint16_t infectFlag = 0;
     uint16_t index = 0;
     for (nodelistFor(&node->fields, cnt, nodesp)) {
@@ -263,8 +255,8 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
             isZeroSize = 0;
 
         if (fldtype->tag == EnumTag && !((*nodesp)->flags & IsTagField)) {
-            if ((node->flags & TraitType) && !(node->flags & HasTagField) && node->basetrait == NULL) {
-                node->flags |= HasTagField;
+            if ((node->flags & TraitType) && node->basetrait == NULL && !hasEnumFld) {
+                hasEnumFld = 1;
                 (*nodesp)->flags |= IsTagField;
             }
             else {
