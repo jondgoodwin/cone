@@ -170,14 +170,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
 
     // Handle attributes
     while (1) {
-        if (lex->toktype == SamesizeToken) {
-            if (strflags & TraitType)
-                strflags |= SameSize;
-            else
-                errorMsgLex(ErrorNoIdent, "@samesize attribute only allowed on traits.");
-            lexNextToken();
-        }
-        else if (lex->toktype == MoveToken) {
+        if (lex->toktype == MoveToken) {
             strflags |= MoveType;
             lexNextToken();
         }

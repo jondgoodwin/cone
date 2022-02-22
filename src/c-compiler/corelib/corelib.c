@@ -57,11 +57,11 @@ void stdPermInit() {
 }
 
 char *corelibSource =
-"trait @samesize Option[T] {_ enum;}\n"
+"union Option[T] {_ enum;}\n"
 "struct Null[T] extends Option[T] {}\n"
 "struct Some[T] extends Option[T] {value T}\n"
 
-"trait @samesize Result[T,E] {_ enum}\n"
+"union Result[T,E] {_ enum}\n"
 "struct Ok[T,E] extends Result[T,E] {value T}\n"
 "struct Error[T,E] extends Result[T,E] {value E}\n"
 
