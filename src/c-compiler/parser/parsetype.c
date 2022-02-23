@@ -170,14 +170,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
 
     // Handle attributes
     while (1) {
-        if (lex->toktype == SamesizeToken) {
-            if (strflags & TraitType)
-                strflags |= SameSize;
-            else
-                errorMsgLex(ErrorNoIdent, "@samesize attribute only allowed on traits.");
-            lexNextToken();
-        }
-        else if (lex->toktype == MoveToken) {
+        if (lex->toktype == MoveToken) {
             strflags |= MoveType;
             lexNextToken();
         }
@@ -249,6 +242,52 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 field->flags |= FlagMethFld;
                 structAddField(strnode, field);
                 parseEndOfStatement();
+            }
+            else if (lexIsToken(StructToken)) {
+                // If we see structs in trait/union, treat them as tagged extensions/derived structs
+                if (strnode->flags & TraitType) {
+                    strnode->flags |= HasTagField;
+                    StructNode *substruct = (StructNode *)parseStruct(parse, 0); // Parse sub-struct
+                    substruct->flags |= HasTagField | (strnode->flags & SameSize);
+
+                    // Build node that indicates this struct extends from trait
+                    if (substruct->basetrait)
+                        errorMsgLex(ErrorNoIdent, "trait's struct must not specify extends");
+                    INode *traitref = (INode*)newNameUseNode(strnode->namesym);
+
+                    // Inherit generic parms
+                    if (substruct->genericinfo)
+                        errorMsgLex(ErrorNoIdent, "trait's struct must not specify generic parms");
+                    if (strnode->genericinfo) {
+                        substruct->genericinfo = newGenericInfo();
+                        substruct->genericinfo->parms = newNodes(strnode->genericinfo->parms->used);
+                        INode **nodesp;
+                        uint32_t cnt;
+                        for (nodesFor(strnode->genericinfo->parms, cnt, nodesp)) {
+                            GenVarDclNode *parm = newGVarDclNode(((GenVarDclNode*)*nodesp)->namesym);
+                            nodesAdd(&substruct->genericinfo->parms, (INode*)parm);
+                        }
+                        // traitref needs to be a generic-qualified base trait name
+                        FnCallNode *gentraitref = newFnCallNode(traitref, strnode->genericinfo->parms->used);
+                        gentraitref->flags |= FlagIndex;
+                        for (nodesFor(strnode->genericinfo->parms, cnt, nodesp)) {
+                            nodesAdd(&gentraitref->args, (INode*)newNameUseNode(((GenVarDclNode *)*nodesp)->namesym));
+                        }
+                        traitref = (INode *)gentraitref;
+                    }
+                    substruct->basetrait = (INode*)traitref;
+
+                    // Add substruct to trait's list of derived, and capture enum value
+                    if (!strnode->derived)
+                        strnode->derived = newNodes(4);
+                    substruct->tagnbr = strnode->derived->used;
+                    nodesAdd(&strnode->derived, (INode*)substruct);
+                    modAddNode(parse->mod, inodeGetName((INode*)substruct), (INode*)substruct);
+                }
+                else {
+                    errorMsgLex(ErrorNoIdent, "structs in structs not yet supported");
+                    parseStruct(parse, 0);
+                }
             }
             else {
                 errorMsgLex(ErrorNoSemi, "Unknown struct statement.");

@@ -399,6 +399,13 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
             break;
         }
 
+        // 'union' type definition
+        case UnionToken: {
+            INode *node = parseStruct(parse, TraitType | SameSize);
+            modAddNode(mod, inodeGetName(node), node);
+            break;
+        }
+
         // 'macro'
         case MacroToken: {
             MacroDclNode *macro = parseMacro(parse);
