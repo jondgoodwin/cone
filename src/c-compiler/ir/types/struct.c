@@ -114,7 +114,11 @@ void structNameRes(NameResState *pstate, StructNode *node) {
 StructNode *structGetBaseTrait(StructNode *node) {
     if (node->basetrait == NULL)
         return (node->flags & TraitType) ? node : NULL;
-    return structGetBaseTrait((StructNode*)itypeGetTypeDcl(node->basetrait));
+    INode *trait = node->basetrait;
+    // Handle if trait is a genericized type
+    if (trait->tag == FnCallTag)
+        trait = ((FnCallNode*)trait)->objfn;
+    return structGetBaseTrait((StructNode*)itypeGetTypeDcl(trait));
 }
 
 // Type check when a type specifies a base trait that has a closed number of variants

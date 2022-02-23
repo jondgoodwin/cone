@@ -200,7 +200,7 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
 
     // Now instantiate all variants
     for (nodesFor(basetrait->derived, cnt, nodesp)) {
-        //((StructNode*)*nodesp)->basetrait = instrait; // We already now know the instantiated basetrait
+        ((StructNode*)*nodesp)->basetrait = instrait; // We already now know the instantiated basetrait
         INode *svnode = genericInstantiate(pstate, srcgencall, *nodesp, ((StructNode*)*nodesp)->genericinfo, name);
         if (*nodesp == (INode*)nodetoclone)
             retnode = svnode;

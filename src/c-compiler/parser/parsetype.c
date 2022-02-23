@@ -248,6 +248,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 if (strnode->flags & TraitType) {
                     strnode->flags |= HasTagField;
                     StructNode *substruct = (StructNode *)parseStruct(parse, 0); // Parse sub-struct
+                    substruct->flags |= HasTagField | (strnode->flags & SameSize);
 
                     // Build node that indicates this struct extends from trait
                     if (substruct->basetrait)
