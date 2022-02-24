@@ -174,6 +174,9 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
         if (basetrait->tag != StructTag || !(basetrait->flags & TraitType)) {
             errorMsgNode(node->basetrait, ErrorInvType, "Base trait must be a trait");
         }
+        else if ((node->flags & HasTagField) != (basetrait->flags & HasTagField)) {
+            errorMsgNode(node->basetrait, ErrorInvType, "May not extend a closed trait or union");
+        }
         else {
             // Do type-check with bottom-most trait
             // For closed types, the trait and derived node need info from each other
