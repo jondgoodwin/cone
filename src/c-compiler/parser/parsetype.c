@@ -214,6 +214,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     }
 
     // If block has been provided, process field or method definitions
+    int hasEnumFld = 0;
     if (parseHasBlock()) {
         parseBlockStart();
         while (!parseBlockEnd()) {
@@ -240,6 +241,8 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 FieldDclNode *field = parseFieldDcl(parse, mutPerm);
                 field->index = fieldnbr++;
                 field->flags |= FlagMethFld;
+                if (field->vtype->tag == EnumTag)
+                    hasEnumFld = 1;
                 structAddField(strnode, field);
                 parseEndOfStatement();
             }
@@ -297,6 +300,13 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     }
     else
         parseEndOfStatement();
+
+    // If a trait that needs a tag field doesn't have one, insert default enum field as first field
+    if ((strnode->flags & (TraitType | HasTagField)) && !hasEnumFld) {
+        FieldDclNode *fldnode = newFieldDclNode(anonName, (INode*)immPerm);
+        fldnode->vtype = (INode*)newEnumNode();
+        nodelistInsert(&strnode->fields, 0, (INode*)fldnode);
+    }
 
     parse->typenode = svtype;
     parse->gennamePrefix = svprefix;
