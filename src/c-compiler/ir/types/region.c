@@ -57,20 +57,13 @@ void regionAllocTypeCheck(INode *region) {
         return;
     }
     FnSigNode *initsig = (FnSigNode*)itypeGetTypeDcl(initmeth->vtype);
-    if (initsig->parms->used != 1) {
-        errorMsgNode((INode*)initmeth, ErrorInvType, "Region init method needs single self parm.");
+    if (initsig->parms->used != 0) {
+        errorMsgNode((INode*)initmeth, ErrorInvType, "Region init method may not have parameters.");
         return;
     }
-    RefNode *selftype = (RefNode *)itypeGetTypeDcl(iexpGetTypeDcl(nodesGet(initsig->parms, 0)));     
-    if (selftype->tag != RefTag 
-        || selftype->region->tag != BorrowRegTag 
-        || itypeGetTypeDcl(selftype->perm) != (INode*)uniPerm) {
-            errorMsgNode((INode*)initmeth, ErrorInvType, "Region init method needs self type to be &uni.");
-            return;
-    }
     INode *initrettype = itypeGetTypeDcl(initsig->rettype);
-    if (initrettype->tag != VoidTag) {
-        errorMsgNode((INode*)initmeth, ErrorInvType, "Region init method must return void.");
+    if (itypeMatches(initrettype, region, Coercion) != EqMatch) {
+        errorMsgNode((INode*)initmeth, ErrorInvType, "Region init method must return initial value.");
         return;
     }
 

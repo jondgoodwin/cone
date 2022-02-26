@@ -75,7 +75,7 @@ char *corelibSource =
 "struct rc:\n"
 "  cnt usize\n"
 "  fn _alloc(size usize) *u8 inline {malloc(size)}\n"
-"  fn init(self &uni) inline {cnt = 1}\n"
+"  fn init() rc inline {rc[1usize]}\n"
 ;
 
 // Set up the standard library, whose names are always shared by all modules

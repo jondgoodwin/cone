@@ -199,16 +199,18 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     // Initialize region using its 'init' method, if supplied
     INode *reginitmeth = iTypeFindFnField(region, initMethodName);
     if (reginitmeth) {
+        LLVMValueRef initval = genlFnCallInternal(gen, SimpleDispatch, (INode*)reginitmeth, 0, NULL);
         LLVMValueRef regionp = LLVMBuildStructGEP(gen->builder, ptrstructype, 0, "region");
-        genlFnCallInternal(gen, SimpleDispatch, (INode*)reginitmeth, 1, &regionp);
+        LLVMBuildStore(gen->builder, initval, regionp);
     }
 
     // Initialize permission, if it is a locked permission with an init method
     if (perm->tag == StructTag) {
         INode *perminitmeth = iTypeFindFnField(perm, initMethodName);
         if (perminitmeth) {
+            LLVMValueRef initval = genlFnCallInternal(gen, SimpleDispatch, (INode*)perminitmeth, 0, NULL);
             LLVMValueRef permp = LLVMBuildStructGEP(gen->builder, ptrstructype, 1, "perm");
-            genlFnCallInternal(gen, SimpleDispatch, (INode*)perminitmeth, 1, &permp);
+            LLVMBuildStore(gen->builder, initval, permp);
         }
     }
 

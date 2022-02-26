@@ -80,21 +80,13 @@ void permInitTypeCheck(INode *perm) {
         return;
     }
     FnSigNode *initsig = (FnSigNode*)itypeGetTypeDcl(initmeth->vtype);
-    if (initsig->parms->used != 1) {
-        errorMsgNode((INode*)initmeth, ErrorInvType, "Permission init method needs single self parm.");
-        return;
-    }
-    RefNode *selftype = (RefNode *)itypeGetTypeDcl(iexpGetTypeDcl(nodesGet(initsig->parms, 0)));
-    if (selftype->tag != RefTag
-        || selftype->region->tag != BorrowRegTag
-        || itypeGetTypeDcl(selftype->perm) != (INode*)uniPerm) {
-        errorMsgNode((INode*)initmeth, ErrorInvType, "Permission init method needs self type to be &uni.");
+    if (initsig->parms->used != 0) {
+        errorMsgNode((INode*)initmeth, ErrorInvType, "Permission init method may not have parameters.");
         return;
     }
     INode *initrettype = itypeGetTypeDcl(initsig->rettype);
-    if (initrettype->tag != VoidTag) {
-        errorMsgNode((INode*)initmeth, ErrorInvType, "Permission init method must return void.");
+    if (itypeMatches(initrettype, perm, Coercion) != EqMatch) {
+        errorMsgNode((INode*)initmeth, ErrorInvType, "Permission init method must return initial value.");
         return;
     }
-
 }
