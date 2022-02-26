@@ -220,8 +220,11 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         while (!parseBlockEnd()) {
             lexStmtStart();
             if (lexIsToken(FnToken)) {
-                FnDclNode *fn = (FnDclNode*)parseFn(parse, FlagMethFld, methflags);
+                FnDclNode *fn = (FnDclNode*)parseFn(parse, methflags);
                 if (fn && isNamedNode(fn)) {
+                    Nodes *parms = ((FnSigNode *)fn->vtype)->parms;
+                    if (parms->used > 0 && ((VarDclNode*)nodesGet(parms, 0))->namesym == selfName)
+                        fn->flags |= FlagMethFld;  // function is a method if first parm is 'self'
                     nameGenFnName(fn, parse->gennamePrefix);
                     iNsTypeAddFn((INsTypeNode*)strnode, fn);
                 }
@@ -313,17 +316,8 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     return (INode*)strnode;
 }
 
-void parseInjectSelf(FnSigNode *fnsig) {
-    NameUseNode *selftype = newNameUseNode(selfTypeName);
-    VarDclNode *selfparm = newVarDclFull(nametblFind("self", 4), VarDclTag, (INode*)selftype, newPermUseNode(immPerm), NULL);
-    selfparm->scope = 1;
-    selfparm->index = 0;
-    selfparm->flowtempflags |= VarInitialized;
-    nodesAdd(&fnsig->parms, (INode*)selfparm);
-}
-
 // Parse a function's type signature
-INode *parseFnSig(ParseState *parse, int fnflags) {
+INode *parseFnSig(ParseState *parse) {
     FnSigNode *fnsig;
     uint16_t parmnbr = 0;
     uint16_t parseflags = ParseMaySig | ParseMayImpl;
@@ -334,19 +328,11 @@ INode *parseFnSig(ParseState *parse, int fnflags) {
     // Process parameter declarations
     if (lexIsToken(LParenToken)) {
         lexNextToken();
-        // A type's method with no parameters should still define self
-        if (lexIsToken(RParenToken) && (fnflags & FlagMethFld))
-            parseInjectSelf(fnsig);
         while (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
             VarDclNode *parm = parseVarDcl(parse, immPerm, parseflags);
             parm->flowtempflags |= VarInitialized;   // parameter vars always start with a valid value
             // Do special inference if function is a type's method
             if (parse->typenode) {
-                // Create default self parm, if 'self' was not specified
-                if ((fnflags & FlagMethFld) && parmnbr == 0 && parm->namesym != selfName) {
-                    parseInjectSelf(fnsig);
-                    ++parmnbr;
-                }
                 // Infer value type of a parameter (or its reference) if unspecified
                 if (parm->vtype == unknownType) {
                     parm->vtype = (INode*)newNameUseNode(selfTypeName);

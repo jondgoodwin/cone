@@ -149,7 +149,6 @@ enum TokenTypes {
     StructToken,   // 'struct'
     TraitToken,    // 'trait'
     UnionToken,    // 'union'
-    StaticToken,   // '@static'
     MoveToken,     // '@move'
     OpaqueToken,   // '@opaque'
     ExtendsToken,  // 'extends'

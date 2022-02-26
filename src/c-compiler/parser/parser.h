@@ -32,7 +32,7 @@ enum ParseFlags {
 // parser.c
 ProgramNode *parsePgm(ConeOptions *opt);
 ModuleNode *parseModuleBlk(ParseState *parse, ModuleNode *mod);
-INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags);
+INode *parseFn(ParseState *parse, uint16_t mayflags);
 // Skip to next statement for error recovery
 void parseSkipToNextStmt();
 // Is this end-of-statement? if ';', '}', or end-of-file
@@ -73,7 +73,7 @@ INode *parsePrefix(ParseState *parse, int noSuffix);
 INode *parsePerm();
 VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags);
 ConstDclNode *parseConstDcl(ParseState *parse);
-INode *parseFnSig(ParseState *parse, int fnflags);
+INode *parseFnSig(ParseState *parse);
 INode *parseStruct(ParseState *parse, uint16_t flags);
 INode *parseVtype(ParseState *parse);
 TypedefNode *parseTypedef(ParseState *parse);

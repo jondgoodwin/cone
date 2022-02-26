@@ -70,11 +70,11 @@ char *corelibSource =
 "extern fn malloc(size usize) *u8\n"
 
 "struct @move so:\n"
-"  fn @static _alloc(size usize) *u8 inline {malloc(size)}\n"
+"  fn _alloc(size usize) *u8 inline {malloc(size)}\n"
 
 "struct rc:\n"
 "  cnt usize\n"
-"  fn @static _alloc(size usize) *u8 inline {malloc(size)}\n"
+"  fn _alloc(size usize) *u8 inline {malloc(size)}\n"
 "  fn init(self &uni) inline {cnt = 1}\n"
 ;
 

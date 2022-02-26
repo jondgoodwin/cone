@@ -126,15 +126,11 @@ void parseCloseTok(uint16_t closetok) {
 }
 
 // Parse a function block
-INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags) {
-    FnDclNode *fnnode = newFnDclNode(NULL, nodeflags, NULL, NULL);
+INode *parseFn(ParseState *parse, uint16_t mayflags) {
+    FnDclNode *fnnode = newFnDclNode(NULL, 0, NULL, NULL);
 
-    // Skip past the 'fn'. Handle @static attribute
+    // Skip past the 'fn'.
     lexNextToken();
-    if (lexIsToken(StaticToken)) {
-        fnnode->flags &= 0xFFFF - FlagMethFld;
-        lexNextToken();
-    }
 
     // Process function name, if provided
     if (lexIsToken(IdentToken)) {
@@ -154,7 +150,7 @@ INode *parseFn(ParseState *parse, uint16_t nodeflags, uint16_t mayflags) {
     }
 
     // Process the function's signature info.
-    fnnode->vtype = parseFnSig(parse, fnnode->flags);
+    fnnode->vtype = parseFnSig(parse);
 
     // Handle optional specification that we are declaring an inline function,
     // one whose implementation will be "inlined" into any function that calls it
@@ -304,7 +300,7 @@ ImportNode *parseImport(ParseState *parse) {
 void parseFnOrVar(ParseState *parse, uint16_t flags) {
 
     if (lexIsToken(FnToken)) {
-        FnDclNode *node = (FnDclNode*)parseFn(parse, 0, (flags&FlagExtern)? (ParseMayName | ParseMaySig) : (ParseMayName | ParseMayImpl));
+        FnDclNode *node = (FnDclNode*)parseFn(parse, (flags&FlagExtern)? (ParseMayName | ParseMaySig) : (ParseMayName | ParseMayImpl));
         node->flags |= flags;
         nameGenVarName((VarDclNode *)node, parse->gennamePrefix);
         modAddNode(parse->mod, node->namesym, (INode*)node);

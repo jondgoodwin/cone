@@ -91,7 +91,6 @@ void keywordInit() {
     keyAdd("struct", StructToken);
     keyAdd("trait", TraitToken);
     keyAdd("union", UnionToken);
-    keyAdd("@static", StaticToken);
     keyAdd("@move", MoveToken);
     keyAdd("@opaque", OpaqueToken);
     keyAdd("extends", ExtendsToken);

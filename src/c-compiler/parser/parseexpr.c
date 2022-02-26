@@ -289,7 +289,7 @@ INode *parseAmper(ParseState *parse) {
     // Handle borrowed reference to anonymous function/closure
     // Note: This could also be a ref to a function signature. We sort this out later.
     if (lexIsToken(FnToken)) {
-        FnDclNode *fndcl = (FnDclNode*)parseFn(parse, 0, ParseMayAnon | ParseMayImpl | ParseMaySig | ParseEmbedded);
+        FnDclNode *fndcl = (FnDclNode*)parseFn(parse, ParseMayAnon | ParseMayImpl | ParseMaySig | ParseEmbedded);
         if (fndcl->value) {
             // If we have an implemented function, we need to move it to the module so it gets generated
             // Then refer to it using a nameuse node as part of this reference node
