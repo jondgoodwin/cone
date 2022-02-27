@@ -57,7 +57,14 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
         if (!(flags&ParseMayImpl))
             errorMsgLex(ErrorBadImpl, "A default/initial value may not be specified here.");
         lexNextToken();
-        varnode->value = parseAnyExpr(parse);
+        if (lexIsToken(UndefToken)) {
+            // 'undef' is used to signal that programmer believes variable
+            // can be considered safely "initialized", even though it is UB.
+            varnode->flowtempflags |= VarInitialized;
+            lexNextToken();
+        }
+        else
+            varnode->value = parseAnyExpr(parse);
     }
     else {
         if (!(flags&ParseMaySig))

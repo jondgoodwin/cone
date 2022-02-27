@@ -123,6 +123,7 @@ void keywordInit() {
     keyAdd("nil", nilToken);
     keyAdd("true", trueToken);
     keyAdd("false", falseToken);
+    keyAdd("undef", UndefToken);
 }
 
 // Initialize lexer

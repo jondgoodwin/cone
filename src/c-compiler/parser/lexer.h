@@ -176,6 +176,7 @@ enum TokenTypes {
     nilToken,      // 'nil'
     trueToken,     // 'true'
     falseToken,    // 'false'
+    UndefToken,    // 'undef'
 
     NbrTokens
 };
