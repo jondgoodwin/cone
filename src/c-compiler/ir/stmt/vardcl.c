@@ -112,7 +112,7 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
             name->vtype = ((IExpNode *)name->value)->vtype;
         // Global variables and function parameters require literal initializers
         if (name->scope <= 1 && !litIsLiteral(name->value))
-            errorMsgNode(name->value, ErrorNotLit, "Variable may only be initialized with a literal value.");
+            errorMsgNode((INode*)name, ErrorNotLit, "Variable may only be initialized with a literal value.");
     }
 
     // Variables cannot hold a void or opaque struct value
