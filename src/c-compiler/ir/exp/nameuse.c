@@ -150,6 +150,7 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
         // Doing this rewrite ensures we reuse existing type check and gen code for
         // properly handling field access
         NameUseNode *selfnode = newNameUseNode(selfName);
+        copyNodeLex(selfnode, name);
         FnCallNode *fncall = newFnCallNode((INode *)selfnode, 0);
         fncall->methfld = name;
         copyNodeLex(fncall, name); // Copy lexer info into injected node in case it has errors

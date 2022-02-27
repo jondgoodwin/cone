@@ -93,12 +93,18 @@ int iexpCoerce(INode **from, INode *totype) {
         return 0;
     case EqMatch:
         return 1;
-    case CastSubtype:
-        *from = (INode*)newRecastNode(*from, totypedcl);
+    case CastSubtype: {
+        INode *newfrom = (INode*)newRecastNode(*from, totypedcl);
+        inodeLexCopy(newfrom, *from);
+        *from = newfrom;
         return 1;
-    case ConvSubtype:
-        *from = (INode*)newConvCastNode(*from, totypedcl);
+    }
+    case ConvSubtype: {
+        INode *newfrom = (INode*)newConvCastNode(*from, totypedcl);
+        inodeLexCopy(newfrom, *from);
+        *from = newfrom;
         return 1;
+    }
     case ConvByMeth: 
     {
         FnCallNode *istrue = newFnCallNode(*from, 1);
@@ -109,6 +115,7 @@ int iexpCoerce(INode **from, INode *totype) {
         else
             success = fnCallLowerMethod(istrue);
         if (success) {
+            inodeLexCopy((INode*)istrue, *from);
             *from = (INode*)istrue;
             return 1;
         }
