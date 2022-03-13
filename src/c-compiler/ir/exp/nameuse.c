@@ -40,6 +40,22 @@ INode *newNameUseAndDcl(Nodes **nodesp, INode *val, uint16_t scope) {
     return (INode*)varuse;
 }
 
+// Create a new nameuse node pointing to an existing dclnode
+INode *newNameUseFromDclNode(INode *dclnode, INode *lexnode) {
+    Name *name = inodeGetName(dclnode);
+    NameUseNode *fnuse = newNameUseNode(name);
+    inodeLexCopy((INode*)fnuse, lexnode);
+    fnuse->dclnode = dclnode;
+    if (isTypeNode(dclnode))
+        fnuse->tag = TypeNameUseTag;
+    else {
+        fnuse->tag = VarNameUseTag;
+        fnuse->vtype = ((IExpNode*)dclnode)->vtype;
+    }
+    fnuse->tag = isTypeNode(dclnode) ? TypeNameUseTag : VarNameUseTag;
+    return (INode *)fnuse;
+}
+
 NameUseNode *newMemberUseNode(Name *namesym) {
     NameUseNode *name;
     newNode(name, NameUseNode, MbrNameUseTag);

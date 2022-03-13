@@ -347,6 +347,7 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
             if (base->flags & SameSize) {
                 // This will gen trait + all its concrete variant types
                 genlSameSizeTrait(gen, base);
+                assert(strnode->llvmtype);
                 return strnode->llvmtype;
             }
             genlStructFields(gen, base->llvmtype, base, 0);

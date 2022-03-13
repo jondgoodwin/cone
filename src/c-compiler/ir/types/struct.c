@@ -32,8 +32,11 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     memcpy(newnode, node, sizeof(StructNode));
     newnode->genericinfo = NULL;
     newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
-    newnode->basetrait = cloneNode(cstate, node->basetrait);
-    // Fields like derived, vtable, tagnbr do not yet have useful data to clone
+
+    // Fields like basetrait, derived, vtable, tagnbr do not yet have useful data to clone
+    newnode->basetrait = NULL;
+    if (node->derived)
+        newnode->derived = newNodes(node->derived->used);
 
     // Recreate clones of fields/mixins and methods, sequentially and in namespace dictionary
     namespaceInit(&newnode->namespace, node->namespace.avail);

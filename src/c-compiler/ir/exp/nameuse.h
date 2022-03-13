@@ -28,6 +28,9 @@ NameUseNode *newNameUseNode(Name *name);
 // The vardcl is appended to a list of nodes, and the nameuse node to it is returned
 INode *newNameUseAndDcl(Nodes **nodesp, INode *val, uint16_t scope);
 
+// Create a new nameuse node pointing to an existing dclnode
+INode *newNameUseFromDclNode(INode *dclnode, INode *lexnode);
+
 // Clone NameUse
 INode *cloneNameUseNode(CloneState *cstate, NameUseNode *node);
 
