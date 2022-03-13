@@ -196,7 +196,6 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
     Nodes **instraitderived = &((StructNode*)instrait)->derived;
     for (nodesFor(basetrait->derived, cnt, nodesp)) {
         INode *instance = genericInstantiate(pstate, srcgencall, *nodesp, ((StructNode*)*nodesp)->genericinfo, name);
-        ((StructNode*)instance)->basetrait = instrait; // We already now know the instantiated basetrait
         nodesAdd(instraitderived, instance); // Repair trait's derived entry to point to instantiated variant
         if (*nodesp == (INode*)nodetoclone)
             retinstance = instance;

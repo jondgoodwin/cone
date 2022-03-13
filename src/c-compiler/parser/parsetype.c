@@ -260,6 +260,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 // If we see structs in trait/union, treat them as tagged extensions/derived structs
                 if (strnode->flags & TraitType) {
                     strnode->flags |= HasTagField;
+
                     StructNode *substruct = (StructNode *)parseStruct(parse, 0); // Parse sub-struct
                     substruct->flags |= HasTagField | (strnode->flags & SameSize);
 

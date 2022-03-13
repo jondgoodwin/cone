@@ -33,8 +33,8 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     newnode->genericinfo = NULL;
     newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
 
-    // Fields like basetrait, derived, vtable, tagnbr do not yet have useful data to clone
-    newnode->basetrait = NULL;
+    // Fields like derived, vtable, tagnbr do not yet have useful data to clone
+    newnode->basetrait = cloneNode(cstate, node->basetrait);
     if (node->derived)
         newnode->derived = newNodes(node->derived->used);
 
