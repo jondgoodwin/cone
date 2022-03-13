@@ -142,6 +142,11 @@ void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod) {
                 inodeTypeCheckAny(pstate, &varnode->vtype);
             break;
         }
+        case ConstDclTag:
+        {
+            inodeTypeCheckAny(pstate, nodesp);
+            break;
+        }
         }
     }
 
