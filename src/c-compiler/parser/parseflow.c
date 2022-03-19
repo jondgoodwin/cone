@@ -21,12 +21,16 @@ INode *parseEach(ParseState *parse, Name *lifesym);
 // This helper routine inserts 'break if !condexp' at beginning of block
 void parseInsertWhileBreak(INode *blk, INode *condexp) {
     BreakRetNode *breaknode = newBreakNode();
+    inodeLexCopy((INode*)breaknode, condexp);
     breaknode->exp = (INode*)newNilLitNode();
     BlockNode *ifblk = newBlockNode();
+    inodeLexCopy((INode*)ifblk, condexp);
     nodesAdd(&ifblk->stmts, (INode*)breaknode);
     LogicNode *notiter = newLogicNode(NotLogicTag);
+    inodeLexCopy((INode*)notiter, condexp);
     notiter->lexp = condexp;
     IfNode *ifnode = newIfNode();
+    inodeLexCopy((INode*)ifnode, condexp);
     nodesAdd(&ifnode->condblk, (INode *)notiter);
     nodesAdd(&ifnode->condblk, (INode *)ifblk);
     nodesInsert(&((BlockNode*)blk)->stmts, (INode*)ifnode, 0);

@@ -151,15 +151,15 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
 
     // Handle final statement differently for loop block vs. regular block
     if (blk->flags & FlagLoop) {
-        // Warn if the loop block has no breaks, as loop may never stop
-        if ((blk->flags & FlagLoop) && blk->breaks->used == 0)
-            errorMsgNode((INode*)blk, WarnLoop, "Loop may never stop without a break.");
-
         // Last statement should not be break, continue, return
         if (laststmtp && ((*laststmtp)->tag == BreakTag || (*laststmtp)->tag == ContinueTag || (*laststmtp)->tag == ReturnTag))
             errorMsgNode((INode*)*laststmtp, ErrorBadStmt, "Don't end loop block with break, continue or return");
 
         inodeTypeCheck(pstate, laststmtp, noCareType); // we don't care about the type
+
+        // Warn if the loop block has no breaks, as loop may never stop
+        if (blk->breaks->used == 0)
+            errorMsgNode((INode*)blk, WarnLoop, "Loop may never stop without a break.");
     }
     else {
         // Last statement of a regular block needs to be a break, continue, return or blockret
