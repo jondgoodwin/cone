@@ -46,12 +46,11 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
     }
 
     endif = genlInsertBlock(gen, "endif");
-    LLVMBasicBlockRef nextMemBlk;
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
 
         // Set up block for next condition (or endif if this is last condition)
         if (i + 1 < count)
-            nextif = nextMemBlk = LLVMInsertBasicBlockInContext(gen->context, endif, "ifnext");
+            nextif = LLVMInsertBasicBlockInContext(gen->context, endif, "ifnext");
         else
             nextif = endif;
 
@@ -62,8 +61,6 @@ LLVMValueRef genlIf(GenState *gen, IfNode *ifnode) {
             LLVMBuildCondBr(gen->builder, genlExpr(gen, *nodesp), ablk, nextif);
             LLVMPositionBuilderAtEnd(gen->builder, ablk);
         }
-        else
-            ablk = nextMemBlk;
 
         // Generate this condition's code block, along with jump to endif if block does not end with a return
         LLVMValueRef blkval = genlBlock(gen, (BlockNode*)*(nodesp + 1));
