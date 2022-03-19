@@ -104,7 +104,6 @@ void keywordInit() {
     keyAdd("else", ElseToken);
     keyAdd("case", CaseToken);
     keyAdd("match", MatchToken);
-    keyAdd("loop", LoopToken);
     keyAdd("while", WhileToken);
     keyAdd("each", EachToken);
     keyAdd("in", InToken);

@@ -146,8 +146,8 @@ INode *parseTerm(ParseState *parse) {
         return parseIf(parse);
     case MatchToken:
         return parseMatch(parse);
-    case LoopToken:
-        return parseLoop(parse, NULL);
+    case WhileToken:
+        return parseWhile(parse, NULL, 0);
     case LifetimeToken:
         return parseLifetime(parse, 0);
     case LCurlyToken:

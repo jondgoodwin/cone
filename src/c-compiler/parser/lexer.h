@@ -162,7 +162,6 @@ enum TokenTypes {
     ElseToken,     // 'else'
     CaseToken,     // 'case'
     MatchToken,    // 'match'
-    LoopToken,     // 'loop'
     WhileToken,    // 'while'
     EachToken,     // 'each'
     InToken,       // 'in'
