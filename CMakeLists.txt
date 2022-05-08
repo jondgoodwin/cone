@@ -66,7 +66,7 @@ set(LLVM_LINK_COMPONENTS
 		LanaiCodeGen
 		M68kInfo
 		M68kDesc
-		M68kAsmParse
+		M68kAsmParser
 		M68kDisassembler
 		M68kCodeGen
 		MSP430Info
