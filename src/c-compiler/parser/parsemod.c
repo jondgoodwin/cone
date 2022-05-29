@@ -20,8 +20,25 @@
 #include <stdio.h>
 #include <string.h>
 
+// Temporary hack:  The source for the importable stdio package
+char *stdiolib =
+"extern {fn printStr(str &[]u8); fn printCStr(str *u8); fn printFloat(a f64); fn printInt(a i64); fn printUInt(a u64); fn printChar(code u64);}\n"
+"struct IOStream{"
+"  fd i32;"
+"  fn `<-`(self &mut, str &[]u8) {printStr(str)}"
+"  fn `<-`(self &mut, str *u8) {printCStr(str)}"
+"  fn `<-`(self &mut, i i64) {printInt(i)}"
+"  fn `<-`(self &mut, n f64) {printFloat(n)}"
+"  fn `<-`(self &mut, i u64) {printUInt(i)}"
+"}"
+"mut print = IOStream[0]"
+;
+
+void parseGlobalStmts(ParseState *parse, ModuleNode *mod);
+ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name *modname);
+
 // Parse source filename/path as identifier or string literal
-char *parseFile() {
+char *parseFilename() {
     char *filename;
     switch (lex->toktype) {
     case IdentToken:
@@ -39,15 +56,15 @@ char *parseFile() {
     return filename;
 }
 
-void parseGlobalStmts(ParseState *parse, ModuleNode *mod);
-
 // Parse include statement
 void parseInclude(ParseState *parse) {
+    // Obtain filename of source file we want to include
     char *filename;
     lexNextToken();
-    filename = parseFile();
+    filename = parseFilename();
     parseEndOfStatement();
 
+    // Inject source of include file, parse its global statements, then pop lexer
     lexInjectFile(filename);
     parseGlobalStmts(parse, parse->mod);
     if (lex->toktype != EofToken) {
@@ -56,71 +73,17 @@ void parseInclude(ParseState *parse) {
     lexPop();
 }
 
-char *stdiolib =
-"extern {fn printStr(str &[]u8); fn printCStr(str *u8); fn printFloat(a f64); fn printInt(a i64); fn printUInt(a u64); fn printChar(code u64);}\n"
-"struct IOStream{"
-"  fd i32;"
-"  fn `<-`(self &mut, str &[]u8) {printStr(str)}"
-"  fn `<-`(self &mut, str *u8) {printCStr(str)}"
-"  fn `<-`(self &mut, i i64) {printInt(i)}"
-"  fn `<-`(self &mut, n f64) {printFloat(n)}"
-"  fn `<-`(self &mut, i u64) {printUInt(i)}"
-"}"
-"mut print = IOStream[0]"
-;
-
-// Parse imported module
-ModuleNode *parseImportModule(ParseState *parse, char *filename, Name *modname) {
-    // If we already have module, don't re-parse. Just return it.
-    ModuleNode *newmod = pgmFindMod(parse->pgm, modname);
-    if (newmod)
-        return newmod;
-
-    // Let's load and parse the module
-    char *svprefix = parse->gennamePrefix;
-    ModuleNode *svmod = parse->mod;
-    nameNewPrefix(&parse->gennamePrefix, &modname->namestr);
-
-    if (modname == corelibName)
-        lexInject(corelibSource, "corelib");
-    else if (strcmp(filename, "stdio") == 0)
-        lexInject(stdiolib, "stdio");
-    else
-        lexInjectFile(filename);
-    newmod = pgmAddMod(parse->pgm);
-    newmod->namesym = modname;
-    parse->mod = newmod;
-
-    // Auto-import core lib (except into corelib)
-    ModuleNode *corelib = pgmFindMod(parse->pgm, corelibName);
-    if (corelib && corelib != newmod) {
-        ImportNode *importnode = newImportNode();
-        importnode->foldall = 1;
-        importnode->module = corelib;
-        modAddNode(newmod, NULL, (INode*)importnode);
-    }
-
-    modHook(svmod, newmod);
-    parseGlobalStmts(parse, newmod);
-    if (lex->toktype != EofToken) {
-        errorMsgLex(ErrorNoEof, "Expected end-of-file");
-    }
-    lexPop();
-    modHook(newmod, svmod);
-
-    parse->mod = svmod;
-    parse->gennamePrefix = svprefix;
-    return newmod;
-}
-
 // Parse import statement
 ImportNode *parseImport(ParseState *parse) {
+    // Create import node
     ImportNode *importnode = newImportNode();
     lexNextToken();
-    char *filename = parseFile();
-    char *modstr = fileName(filename);
-    Name *modname = nametblFind(modstr, strlen(modstr));
 
+    // Parse name of imported module
+    char *filename = parseFilename();
+    char *modstr = fileName(filename);
+
+    // Process name folding instructions
     if (lexIsToken(DblColonToken)) {
         lexNextToken();
         if (lexIsToken(StarToken)) {
@@ -131,7 +94,8 @@ ImportNode *parseImport(ParseState *parse) {
     parseEndOfStatement();
 
     // Parse the imported modules
-    ModuleNode *newmod = parseImportModule(parse, filename, modname);
+    Name *modname = nametblFind(modstr, strlen(modstr));
+    ModuleNode *newmod = parseLoadAndParseModuleFile(parse, filename, modname);
 
     // Add imported module to namespace of existing module
     modAddNamedNode(parse->mod, modname, (INode*)newmod);
@@ -269,14 +233,52 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
     }
 }
 
-// Parse a module's global statement block
-ModuleNode *parseModuleBlk(ParseState *parse, ModuleNode *mod) {
-    ModuleNode *oldmod = parse->mod;
+// If we don't have it, load an imported module by its path/name, then fully parse it
+ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name *modname) {
+    // If we already have module, don't re-parse. Just return it.
+    ModuleNode *mod = pgmFindMod(parse->pgm, modname);
+    if (mod)
+        return mod;
+
+    // Push new gennameprefix into parse state
+    char *svprefix = parse->gennamePrefix;
+    nameNewPrefix(&parse->gennamePrefix, &modname->namestr);
+
+    // Create and add this new module to list of modules, and make it the current one
+    ModuleNode *svmod = parse->mod;
+    mod = pgmAddMod(parse->pgm);
+    mod->namesym = modname;
     parse->mod = mod;
-    modHook(oldmod, mod);
+
+    // Inject the module's source into the lexer
+    if (modname == corelibName)
+        lexInject(corelibSource, "corelib");
+    else if (strcmp(filename, "stdio") == 0)
+        lexInject(stdiolib, "stdio");
+    else
+        lexInjectFile(filename);
+
+    // Before parsing, all modules (except corelib) get an auto-import of core lib
+    ModuleNode *corelib = pgmFindMod(parse->pgm, corelibName);
+    if (corelib && corelib != mod) {
+        ImportNode *importnode = newImportNode();
+        importnode->foldall = 1;
+        importnode->module = corelib;
+        modAddNode(mod, NULL, (INode*)importnode);
+    }
+
+    // Parse the imported module's source, then pop lexer and name hook
+    modHook(svmod, mod);
     parseGlobalStmts(parse, mod);
-    modHook(mod, oldmod);
-    parse->mod = oldmod;
+    if (lex->toktype != EofToken) {
+        errorMsgLex(ErrorNoEof, "Expected end-of-file");
+    }
+    lexPop();
+    modHook(mod, svmod);
+
+    // Restore focus to original module we were working on
+    parse->mod = svmod;
+    parse->gennamePrefix = svprefix;
     return mod;
 }
 
@@ -298,20 +300,22 @@ ProgramNode *parsePgm(ConeOptions *opt) {
     parse.gennamePrefix = "";
 
     // Create module node and set up for parsing main source file
-    ModuleNode *pgmmod = pgmAddMod(pgm);
-    parse.pgmmod = pgmmod;
+    ModuleNode *mod = pgmAddMod(pgm);
+    parse.pgmmod = mod;
     lexInjectFile(opt->srcpath);
-    modHook(NULL, pgmmod);
+    modHook(NULL, mod);
 
-    // Inject and parse core libary module, auto-imported into main source
-    ModuleNode *corelib = parseImportModule(&parse, "", corelibName);
+    // Inject and parse core library module, auto-imported into main source
+    ModuleNode *corelib = parseLoadAndParseModuleFile(&parse, "", corelibName);
     ImportNode *importnode = newImportNode();
     importnode->foldall = 1;
     importnode->module = corelib;
-    modAddNode(pgmmod, NULL, (INode*)importnode);
+    modAddNode(mod, NULL, (INode*)importnode);
 
     // Now actually parse main source file
-    parseModuleBlk(&parse, pgmmod);
-    modHook(pgmmod, NULL);
+    parse.mod = mod;
+    modHook(NULL, mod);
+    parseGlobalStmts(&parse, mod);
+    modHook(mod, NULL);
     return pgm;
 }
