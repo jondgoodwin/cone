@@ -29,29 +29,16 @@ enum ParseFlags {
     ParseMayConst = 0x0400        // const allowed for variable declaration
 };
 
-// parser.c
+// parsemod.c
 ProgramNode *parsePgm(ConeOptions *opt);
 ModuleNode *parseModuleBlk(ParseState *parse, ModuleNode *mod);
+
+// parsefnflow.c
 INode *parseFn(ParseState *parse, uint16_t mayflags);
-// Skip to next statement for error recovery
-void parseSkipToNextStmt();
-// Is this end-of-statement? if ';', '}', or end-of-file
-int parseIsEndOfStatement();
-// We expect optional semicolon since statement has run its course
-void parseEndOfStatement();
-// Return true on '{' or ':'
-int parseHasBlock();
-// Expect a block to start, consume its token and set lexer mode
-void parseBlockStart();
-// Are we at end of block yet? If so, consume token and reset lexer mode
-int parseBlockEnd();
+// Parse a macro declaration
+MacroDclNode *parseMacro(ParseState *parse);
 // Parse a list of generic variables and add to the genericnode
 Nodes *parseGenericParms(ParseState *parse);
-
-// Expect closing token (e.g., right parenthesis). If not found, search for it or '}' or ';'
-void parseCloseTok(uint16_t closetok);
-
-// parseflow.c
 INode *parseIf(ParseState *parse);
 INode *parseMatch(ParseState *parse);
 INode *parseWhile(ParseState *parse, Name *lifesym, int stmtflag);
@@ -77,5 +64,21 @@ INode *parseFnSig(ParseState *parse);
 INode *parseStruct(ParseState *parse, uint16_t flags);
 INode *parseVtype(ParseState *parse);
 TypedefNode *parseTypedef(ParseState *parse);
+
+// parsehelper.c for statement/block start/end processing
+// Skip to next statement for error recovery
+void parseSkipToNextStmt();
+// Is this end-of-statement? if ';', '}', or end-of-file
+int parseIsEndOfStatement();
+// We expect optional semicolon since statement has run its course
+void parseEndOfStatement();
+// Return true on '{' or ':'
+int parseHasBlock();
+// Expect a block to start, consume its token and set lexer mode
+void parseBlockStart();
+// Are we at end of block yet? If so, consume token and reset lexer mode
+int parseBlockEnd();
+// Expect closing token (e.g., right parenthesis). If not found, search for it or '}' or ';'
+void parseCloseTok(uint16_t closetok);
 
 #endif

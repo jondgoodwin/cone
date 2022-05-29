@@ -1,7 +1,8 @@
-/** Parser
+/** Parse modules, including program
  * @file
  *
- * The parser translates the lexer's tokens into IR nodes
+ * parsePgm is the entry point into parsing, which translates the lexer's tokens into IR nodes
+ * These functions handle all module/global area parsing
  *
  * This source file is part of the Cone Programming Language C compiler
  * See Copyright Notice in conec.h
@@ -18,162 +19,6 @@
 
 #include <stdio.h>
 #include <string.h>
-
-// Skip to next statement for error recovery
-void parseSkipToNextStmt() {
-    // Ensure we are always moving forwards, line by line
-    if (lexIsEndOfLine() && !lexIsToken(SemiToken) && !lexIsToken(EofToken) && !lexIsToken(RCurlyToken))
-        lexNextToken();
-    while (1) {
-        // Consume semicolon as end-of-statement
-        if (lexIsToken(SemiToken)) {
-            lexNextToken();
-            return;
-        }
-        // Treat end-of-line, end-of-file, or '}' as end-of-statement
-        // (clearly end-of-line might *not* be end-of-statement)
-        if (lexIsEndOfLine() || lexIsToken(EofToken) || lexIsToken(RCurlyToken))
-            return;
-
-        lexNextToken();
-    }
-}
-
-// Is this end-of-statement? if ';', '}', or end-of-file
-int parseIsEndOfStatement() {
-    return (lex->toktype == SemiToken || lex->toktype == RCurlyToken || lex->toktype == EofToken
-        || lexIsStmtBreak());
-}
-
-// We expect optional semicolon since statement has run its course
-void parseEndOfStatement() {
-    // Consume semicolon as end-of-statement signifier, if found
-    if (lex->toktype == SemiToken) {
-        lexNextToken();
-        return;
-    }
-    // If no semi-colon specified, we expect to be at end-of-line,
-    // unless next token is '}' or end-of-file
-    if (!lexIsEndOfLine() && lex->toktype != RCurlyToken && lex->toktype != EofToken)
-        errorMsgLex(ErrorNoSemi, "Statement finished? Expected semicolon or end of line.");
-}
-
-// Return true on '{' or ':'
-int parseHasBlock() {
-    return (lex->toktype == LCurlyToken || lex->toktype == ColonToken);
-}
-
-// Expect a block to start, consume its token and set lexer mode
-void parseBlockStart() {
-    if (lex->toktype == LCurlyToken) {
-        lexNextToken();
-        lexBlockStart(FreeFormBlock);
-        return;
-    }
-    else if (lex->toktype == ColonToken) {
-        lexNextToken();
-        lexBlockStart(lexIsEndOfLine() ? SigIndentBlock : SameStmtBlock);
-        return;
-    }
-
-    // Generate error and try to recover
-    errorMsgLex(ErrorNoLCurly, "Expected ':' or '{' to start a block");
-    if (lexIsEndOfLine() && lex->curindent > lex->stmtindent) {
-        lexBlockStart(SigIndentBlock);
-        return;
-    }
-    // Skip forward to find something we can use
-    while (1) {
-        if (lexIsToken(LCurlyToken) || lexIsToken(ColonToken)) {
-            parseBlockStart();
-            return;
-        }
-        if (lexIsToken(EofToken))
-            break;
-        lexNextToken();
-    }
-}
-
-// Are we at end of block yet? If so, consume token and reset lexer mode
-int parseBlockEnd() {
-    if (lexIsToken(RCurlyToken) && lex->blkStack[lex->blkStackLvl].blkmode == FreeFormBlock) {
-        lexNextToken();
-        lexBlockEnd();
-        return 1;
-    }
-    if (lexIsBlockEnd()) {
-        lexBlockEnd();
-        return 1;
-    }
-    if (lexIsToken(EofToken)) {
-        errorMsgLex(ErrorNoRCurly, "Expected end of block (e.g., '}')");
-        return 1;
-    }
-    return 0;
-}
-
-// Expect closing token (e.g., right parenthesis). If not found, search for it or '}' or ';'
-void parseCloseTok(uint16_t closetok) {
-    if (!lexIsToken(closetok))
-        errorMsgLex(ErrorNoRParen, "Expected right parenthesis - skipping forward to find it");
-    while (!lexIsToken(closetok)) {
-        if (lexIsToken(EofToken) || lexIsToken(SemiToken) || lexIsToken(RCurlyToken))
-            return;
-        lexNextToken();
-    }
-    lexNextToken();
-    lexDecrParens();
-}
-
-// Parse a function block
-INode *parseFn(ParseState *parse, uint16_t mayflags) {
-    FnDclNode *fnnode = newFnDclNode(NULL, 0, NULL, NULL);
-
-    // Skip past the 'fn'.
-    lexNextToken();
-
-    // Process function name, if provided
-    if (lexIsToken(IdentToken)) {
-        if (!(mayflags&ParseMayName))
-            errorMsgLex(WarnName, "Unnecessary function name is ignored");
-        fnnode->namesym = lex->val.ident;
-        fnnode->genname = &fnnode->namesym->namestr;
-        lexNextToken();
-        if (lexIsToken(LBracketToken)) {
-            fnnode->genericinfo = newGenericInfo();
-            fnnode->genericinfo->parms = parseGenericParms(parse);
-        }
-    }
-    else {
-        if (!(mayflags&ParseMayAnon))
-            errorMsgLex(ErrorNoName, "Function declarations must be named");
-    }
-
-    // Process the function's signature info.
-    fnnode->vtype = parseFnSig(parse);
-
-    // Handle optional specification that we are declaring an inline function,
-    // one whose implementation will be "inlined" into any function that calls it
-    if (lexIsToken(InlineToken)) {
-        fnnode->flags |= FlagInline;
-        lexNextToken();
-    }
-
-    // Process statements block that implements function, if provided
-    if (parseHasBlock()) {
-        if (!(mayflags&ParseMayImpl))
-            errorMsgNode((INode*)fnnode, ErrorBadImpl, "Function/method implementation is not allowed here.");
-        fnnode->value = parseExprBlock(parse, 0);
-    }
-    else {
-        if (!(mayflags&ParseMaySig))
-            errorMsgNode((INode*)fnnode, ErrorNoImpl, "Function/method must be implemented.");
-        if (!(mayflags&ParseEmbedded))
-            parseEndOfStatement();
-    }
-
-    return (INode*) fnnode;
-}
 
 // Parse source filename/path as identifier or string literal
 char *parseFile() {
@@ -321,40 +166,6 @@ void parseFnOrVar(ParseState *parse, uint16_t flags) {
         parseSkipToNextStmt();
         return;
     }
-}
-
-// Parse a list of generic variables and add to the genericnode
-Nodes *parseGenericParms(ParseState *parse) {
-    lexNextToken(); // Go past left square bracket
-    Nodes *parms = newNodes(2);
-    while (lexIsToken(IdentToken)) {
-        GenVarDclNode *parm = newGVarDclNode(lex->val.ident);
-        nodesAdd(&parms, (INode*)parm);
-        lexNextToken();
-        if (lexIsToken(CommaToken))
-            lexNextToken();
-    }
-    if (lexIsToken(RBracketToken))
-        lexNextToken();
-    else
-        errorMsgLex(ErrorBadTok, "Expected list of macro/generic parameter ending with square bracket.");
-    return parms;
-}
-
-// Parse a macro declaration
-MacroDclNode *parseMacro(ParseState *parse) {
-    lexNextToken();
-    if (!lexIsToken(IdentToken)) {
-        errorMsgLex(ErrorBadTok, "Expected a macro name");
-        return newMacroDclNode(anonName);
-    }
-    MacroDclNode *macro = newMacroDclNode(lex->val.ident);
-    lexNextToken();
-    if (lexIsToken(LBracketToken)) {
-        macro->parms = parseGenericParms(parse);
-    }
-    macro->body = parseExprBlock(parse, 0);
-    return macro;
 }
 
 // Parse a global area statement (within a module)

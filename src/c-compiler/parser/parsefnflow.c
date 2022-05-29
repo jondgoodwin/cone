@@ -423,3 +423,87 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
 
     return (INode*)blk;
 }
+
+// Parse a list of generic variables and add to the genericnode
+Nodes *parseGenericParms(ParseState *parse) {
+    lexNextToken(); // Go past left square bracket
+    Nodes *parms = newNodes(2);
+    while (lexIsToken(IdentToken)) {
+        GenVarDclNode *parm = newGVarDclNode(lex->val.ident);
+        nodesAdd(&parms, (INode*)parm);
+        lexNextToken();
+        if (lexIsToken(CommaToken))
+            lexNextToken();
+    }
+    if (lexIsToken(RBracketToken))
+        lexNextToken();
+    else
+        errorMsgLex(ErrorBadTok, "Expected list of macro/generic parameter ending with square bracket.");
+    return parms;
+}
+
+// Parse a macro declaration
+MacroDclNode *parseMacro(ParseState *parse) {
+    lexNextToken();
+    if (!lexIsToken(IdentToken)) {
+        errorMsgLex(ErrorBadTok, "Expected a macro name");
+        return newMacroDclNode(anonName);
+    }
+    MacroDclNode *macro = newMacroDclNode(lex->val.ident);
+    lexNextToken();
+    if (lexIsToken(LBracketToken)) {
+        macro->parms = parseGenericParms(parse);
+    }
+    macro->body = parseExprBlock(parse, 0);
+    return macro;
+}
+
+// Parse a function block
+INode *parseFn(ParseState *parse, uint16_t mayflags) {
+    FnDclNode *fnnode = newFnDclNode(NULL, 0, NULL, NULL);
+
+    // Skip past the 'fn'.
+    lexNextToken();
+
+    // Process function name, if provided
+    if (lexIsToken(IdentToken)) {
+        if (!(mayflags&ParseMayName))
+            errorMsgLex(WarnName, "Unnecessary function name is ignored");
+        fnnode->namesym = lex->val.ident;
+        fnnode->genname = &fnnode->namesym->namestr;
+        lexNextToken();
+        if (lexIsToken(LBracketToken)) {
+            fnnode->genericinfo = newGenericInfo();
+            fnnode->genericinfo->parms = parseGenericParms(parse);
+        }
+    }
+    else {
+        if (!(mayflags&ParseMayAnon))
+            errorMsgLex(ErrorNoName, "Function declarations must be named");
+    }
+
+    // Process the function's signature info.
+    fnnode->vtype = parseFnSig(parse);
+
+    // Handle optional specification that we are declaring an inline function,
+    // one whose implementation will be "inlined" into any function that calls it
+    if (lexIsToken(InlineToken)) {
+        fnnode->flags |= FlagInline;
+        lexNextToken();
+    }
+
+    // Process statements block that implements function, if provided
+    if (parseHasBlock()) {
+        if (!(mayflags&ParseMayImpl))
+            errorMsgNode((INode*)fnnode, ErrorBadImpl, "Function/method implementation is not allowed here.");
+        fnnode->value = parseExprBlock(parse, 0);
+    }
+    else {
+        if (!(mayflags&ParseMaySig))
+            errorMsgNode((INode*)fnnode, ErrorNoImpl, "Function/method must be implemented.");
+        if (!(mayflags&ParseEmbedded))
+            parseEndOfStatement();
+    }
+
+    return (INode*)fnnode;
+}

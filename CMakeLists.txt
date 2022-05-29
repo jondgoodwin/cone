@@ -196,10 +196,11 @@ add_executable(conec
 	src/c-compiler/corelib/corenumber.c
 
 	src/c-compiler/parser/lexer.c
-	src/c-compiler/parser/parser.c
-	src/c-compiler/parser/parseflow.c
+	src/c-compiler/parser/parsemod.c
+	src/c-compiler/parser/parsefnflow.c
 	src/c-compiler/parser/parseexpr.c
 	src/c-compiler/parser/parsetype.c
+	src/c-compiler/parser/parsehelper.c
 
 	src/c-compiler/genllvm/genllvm.c
 	src/c-compiler/genllvm/genlstmt.c
