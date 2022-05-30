@@ -19,8 +19,9 @@ ProgramNode *newProgramNode() {
 }
 
 // Add a new module to the program
-ModuleNode *pgmAddMod(ProgramNode *pgm) {
+ModuleNode *pgmAddMod(ProgramNode *pgm, int16_t flags) {
     ModuleNode *mod = newModuleNode();
+    mod->flags |= flags;
     nodesAdd(&pgm->modules, (INode*)mod);
     return mod;
 }

@@ -173,6 +173,8 @@ enum NodeTags {
 #define FlagSystem    0x0004        // FnDcl: imported system call (+stdcall on Winx86)
 #define FlagInline    0x0008        // FnDcl: "inline" fn/method
 
+#define FlagGenMod    0x0001        // Module: Generate code for the module, if true
+
 #define IsTagField    0x0010        // FieldNode: This field is the trait's discriminant tag
 #define IsMixin       0x0020        // FieldNode: Is a trait mixin, vs. an instantiated field
 

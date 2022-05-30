@@ -246,7 +246,7 @@ ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name 
 
     // Create and add this new module to list of modules, and make it the current one
     ModuleNode *svmod = parse->mod;
-    mod = pgmAddMod(parse->pgm);
+    mod = pgmAddMod(parse->pgm, modname==corelibName || strcmp(filename, "stdio")? 0 : FlagGenMod);
     mod->namesym = modname;
     parse->mod = mod;
 
@@ -300,7 +300,7 @@ ProgramNode *parsePgm(ConeOptions *opt) {
     parse.gennamePrefix = "";
 
     // Create module node and set up for parsing main source file
-    ModuleNode *mod = pgmAddMod(pgm);
+    ModuleNode *mod = pgmAddMod(pgm, FlagGenMod);
     parse.pgmmod = mod;
     lexInjectFile(opt->srcpath);
     modHook(NULL, mod);

@@ -124,10 +124,16 @@ void genlGloVar(GenState *gen, VarDclNode *varnode) {
 }
 
 // Generate LLVMValueRef for a global variable
+// It sets appropriate visibility, linkage and constant flags for the linker
 void genlGloVarName(GenState *gen, VarDclNode *glovar) {
     glovar->llvmvar = LLVMAddGlobal(gen->module, genlType(gen, glovar->vtype), glovar->genname);
+
+    // Mark immutable global variables as 'constant', so they can appear in immutable blocks
+    // This improves performance
     if (permIsSame(glovar->perm, (INode*) immPerm))
         LLVMSetGlobalConstant(glovar->llvmvar, 1);
+
+    // Private global variables are not visible to other modules
     if (glovar->namesym && glovar->namesym->namestr == '_')
         LLVMSetVisibility(glovar->llvmvar, LLVMHiddenVisibility);
 }
@@ -274,7 +280,8 @@ void genlGlobalImpl(GenState *gen, INode *node) {
     }
 }
 
-void genlPackage(GenState *gen, ProgramNode *pgm) {
+// Generate the program
+void genlProgram(GenState *gen, ProgramNode *pgm) {
 
     assert(pgm->tag == ProgramTag);
     gen->module = LLVMModuleCreateWithNameInContext(gen->opt->srcname, gen->context);
@@ -302,10 +309,13 @@ void genlPackage(GenState *gen, ProgramNode *pgm) {
     for (nodesFor(pgm->modules, cnt, nodesp)) {
         ModuleNode *mod = (ModuleNode*)*nodesp;
 
-        uint32_t icnt;
-        INode **inodesp;
-        for (nodesFor(mod->nodes, icnt, inodesp)) {
-            genlGlobalImpl(gen, *inodesp);
+        // Generate implementation only for module(s) flagged for generation
+        if (mod->flags & FlagGenMod) {
+            uint32_t icnt;
+            INode **inodesp;
+            for (nodesFor(mod->nodes, icnt, inodesp)) {
+                genlGlobalImpl(gen, *inodesp);
+            }
         }
     }
 
@@ -381,7 +391,7 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
     char *err;
 
     // Generate IR to LLVM IR 
-    genlPackage(gen, pgm);
+    genlProgram(gen, pgm);
 
     // Verify generated IR
     if (gen->opt->verify) {

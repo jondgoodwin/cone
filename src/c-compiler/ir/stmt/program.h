@@ -22,7 +22,7 @@ void pgmPrint(ProgramNode *pgm);
 ModuleNode *pgmFindMod(ProgramNode *pgm, Name *modname);
 
 // Add a new module to the program
-ModuleNode *pgmAddMod(ProgramNode *pgm);
+ModuleNode *pgmAddMod(ProgramNode *pgm, int16_t flags);
 
 void pgmNameRes(NameResState *pstate, ProgramNode *mod);
 
