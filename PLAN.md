@@ -1,4 +1,4 @@
-# Cone - Next Steps (as of June 1, 2021)
+# Cone - Next Steps (as of June 1, 2022)
 
 ## Current Capability
 
@@ -8,7 +8,7 @@ as OpenGL-based native executables
 or [WebGL-based WebAssembly modules](http://cone.jondgoodwin.com/example/index.html).
 
 At this point, Cone's implemented features are largely richer than C's core features (although there are still gaps).
-There are several ways to gain a sense of what it supports and does not support:
+There are several ways to find out what it does, and does not, support:
 
 - The "Feature Status" section below gives a high-level view of which features are working or not.
 - A more detailed understanding can be gleaned from the robust language reference documentation.
@@ -26,7 +26,7 @@ module and type functionality into libraries.
 
 To make this easier:
 
-- Do not implementation values/code, but still generate public names, for imported modules
+- For imported modules, do not generate implementation values/code, but still generate public names
 - Improve name mangling for modules, types, generic and overloaded functions
 - Improve the congo build tool to build the standard and other libraries, and then link them in to executable programs
 - Implement full name folding behavior for modules, including special-case handling for core library and single-type modules
