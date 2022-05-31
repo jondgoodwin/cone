@@ -224,7 +224,10 @@ void genlGlobalSyms(GenState *gen, INode *node) {
             INode **nodesp;
             for (nodesFor(((FnDclNode*)node)->genericinfo->memonodes, cnt, nodesp)) {
                 ++nodesp; --cnt;
-                genlGloFnName(gen, (FnDclNode *)*nodesp);
+                FnDclNode *fnnode = (FnDclNode *)*nodesp;
+                genlGloFnName(gen, fnnode);
+                // Ensure that linker only picks one generic instantiation across multiple object files
+                LLVMSetLinkage(fnnode->llvmvar, LLVMLinkOnceAnyLinkage);
             }
         }
         else
