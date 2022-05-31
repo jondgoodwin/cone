@@ -241,6 +241,9 @@ void inodePrintDecr();
 // Obtain name from a named node
 Name *inodeGetName(INode *node);
 
+// Determine whether a named node is marked as private
+int inodeIsPrivate(INode *node);
+
 // Dispatch a node walk for the name resolution pass
 // - pstate is helpful state info for node traversal
 // - node is a pointer to pointer so that a node can be replaced

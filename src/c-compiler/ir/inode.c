@@ -460,3 +460,9 @@ Name *inodeGetName(INode *node) {
         return NULL;
     }
 }
+
+// Determine whether a named node is marked as private
+int inodeIsPrivate(INode *node) {
+    Name *namesym = inodeGetName(node);
+    return namesym && namesym->namestr == '_';
+}

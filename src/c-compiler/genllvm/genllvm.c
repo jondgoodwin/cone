@@ -297,11 +297,14 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
     uint32_t cnt;
     for (nodesFor(pgm->modules, cnt, nodesp)) {
         ModuleNode *mod = (ModuleNode*)*nodesp;
+        int16_t generating = mod->flags & FlagGenMod;
 
         uint32_t icnt;
         INode **inodesp;
         for (nodesFor(mod->nodes, icnt, inodesp)) {
-            genlGlobalSyms(gen, *inodesp);
+            // generate node's global name only if not a private name in a non-generating module
+            if (generating || !inodeIsPrivate(*inodesp))
+                genlGlobalSyms(gen, *inodesp);
         }
     }
 
