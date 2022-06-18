@@ -387,6 +387,7 @@ void lexScanString(char *srcp) {
         // discard all control chars, including spaces after new-line
         if ((unsigned char)*srcp < ' ') {
             if (*srcp++ == '\n') {
+                ++lex->linenbr;
                 while (*srcp <= ' ' && *srcp)
                     ++srcp;
             }
