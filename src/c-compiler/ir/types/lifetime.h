@@ -19,7 +19,8 @@ typedef uint16_t Lifetime;
 
 // Lifetime type info
 typedef struct LifetimeNode {
-    INsTypeNodeHdr;
+    ITypeNodeHdr;
+    Name *namesym;
     Lifetime life;
 } LifetimeNode;
 
