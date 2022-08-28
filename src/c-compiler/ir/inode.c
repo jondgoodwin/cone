@@ -439,12 +439,8 @@ void inodeTypeCheckAny(TypeCheckState *pstate, INode **pgm) {
 
 // Obtain name from a named node
 Name *inodeGetName(INode *node) {
-    if (!isNamedNode(node))
-        return NULL;
-    if (isTypeNode(node))
-        return ((INsTypeNode*)node)->namesym;
-
     switch (node->tag) {
+    // Non-type Declarations
     case FnDclTag:
         return ((FnDclNode*)node)->namesym;
     case VarDclTag:
@@ -455,8 +451,26 @@ Name *inodeGetName(INode *node) {
         return ((ConstDclNode*)node)->namesym;
     case GenVarDclTag:
         return ((GenVarDclNode *)node)->namesym;
+
+    // Type declarations
+    case LifetimeTag:
+        return ((LifetimeNode*)node)->namesym;
+    case StructTag:
+        return ((StructNode*)node)->namesym;
+    case ModuleTag:
+        return ((ModuleNode*)node)->namesym;
+    case IntNbrTag:
+        return ((NbrNode*)node)->namesym;
+    case UintNbrTag:
+        return ((NbrNode*)node)->namesym;
+    case FloatNbrTag:
+        return ((NbrNode*)node)->namesym;
+    case PermTag:
+        return ((PermNode*)node)->namesym;
+    case EnumTag:
+        return ((EnumNode*)node)->namesym;
     default:
-        assert(0 && "Unknown node to get name from");
+        assert(0 && "This kind of node has no namesym field");
         return NULL;
     }
 }

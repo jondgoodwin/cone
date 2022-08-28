@@ -417,7 +417,7 @@ LLVMTypeRef genlType(GenState *gen, INode *typ) {
             return dclnode->llvmtype;
 
         // Note: processing of a type's methods/functions happens elsewhere
-        LLVMTypeRef typeref = dclnode->llvmtype = _genlType(gen, &dclnode->namesym->namestr, (INode*)dclnode);
+        LLVMTypeRef typeref = dclnode->llvmtype = _genlType(gen, &inodeGetName(dcltype)->namestr, (INode*)dclnode);
         return typeref;
     }
     else if (dcltype->tag == RefTag || dcltype->tag == ArrayRefTag || dcltype->tag == VirtRefTag) {

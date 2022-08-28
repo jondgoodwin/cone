@@ -11,6 +11,7 @@
 // Lifetime type info
 typedef struct EnumNode {
     INsTypeNodeHdr;
+    Name *namesym;
     uint8_t bytes;
 } EnumNode;
 

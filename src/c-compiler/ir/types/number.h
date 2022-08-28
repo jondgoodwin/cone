@@ -11,6 +11,7 @@
 // For primitives such as integer, unsigned integet, floats
 typedef struct NbrNode {
     INsTypeNodeHdr;
+    Name *namesym;
     unsigned char bits;    // e.g., int32 uses 32 bits
 } NbrNode;
 

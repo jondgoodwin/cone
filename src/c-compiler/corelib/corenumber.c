@@ -123,7 +123,6 @@ INsTypeNode *newPtrTypeMethods() {
     // Create the node for this pointer type
     INsTypeNode *ptrtypenode;
     newNode(ptrtypenode, INsTypeNode, PtrTag);
-    ptrtypenode->namesym = NULL;
     ptrtypenode->llvmtype = NULL;
     iNsTypeInit((INsTypeNode*)ptrtypenode, 16);
 
@@ -200,7 +199,6 @@ INsTypeNode *newRefTypeMethods() {
     // Create the node for this reference type
     INsTypeNode *reftypenode;
     newNode(reftypenode, INsTypeNode, RefTag);
-    reftypenode->namesym = NULL;
     reftypenode->llvmtype = NULL;
     iNsTypeInit((INsTypeNode*)reftypenode, 8);
 
@@ -242,7 +240,6 @@ INsTypeNode *newArrayRefTypeMethods() {
     // Create the node for this array reference type
     INsTypeNode *reftypenode;
     newNode(reftypenode, INsTypeNode, ArrayRefTag);
-    reftypenode->namesym = NULL;
     reftypenode->llvmtype = NULL;
     iNsTypeInit((INsTypeNode*)reftypenode, 8);
 

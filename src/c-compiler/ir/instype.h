@@ -11,7 +11,6 @@
 // Namespaced type that supports named nodes (e.g., methods) and traits
 #define INsTypeNodeHdr \
     ITypeNodeHdr; \
-    Name *namesym; \
     NodeList nodelist; \
     Namespace namespace
 
