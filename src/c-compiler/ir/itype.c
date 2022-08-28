@@ -258,7 +258,8 @@ char *itypeMangle(char *bufp, INode *vtype) {
     case NameUseTag:
     case TypeNameUseTag:
     {
-        strcpy(bufp, &inodeGetName(((NameUseNode *)vtype)->dclnode)->namestr);
+        INode *dclnode = itypeGetTypeDcl(vtype);
+        strcpy(bufp, &inodeGetName(dclnode)->namestr);
         break;
     }
     case RefTag:
