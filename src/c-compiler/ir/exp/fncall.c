@@ -24,20 +24,20 @@ FnCallNode *newFnCallNode(INode *fn, int nnodes) {
 // Create new fncall node, prefilling method, self, and creating room for nnodes args
 FnCallNode *newFnCallOpname(INode *obj, Name *opname, int nnodes) {
     FnCallNode *node = newFnCallNode(obj, nnodes);
-    node->methfld = newMemberUseNode(opname);
+    node->methfld = (INode*)newMemberUseNode(opname);
     return node;
 }
 
 FnCallNode *newFnCallOp(INode *obj, char *op, int nnodes) {
     FnCallNode *node = newFnCallNode(obj, nnodes);
-    node->methfld = newMemberUseNode(nametblFind(op, strlen(op)));
+    node->methfld = (INode*)newMemberUseNode(nametblFind(op, strlen(op)));
     return node;
 }
 
 FnCallNode *newFnCallOpnameLower(INode *oldnode, INode *obj, Name *opname, int nnodes) {
     FnCallNode *node = newFnCallNode(obj, nnodes);
     inodeLexCopy((INode*)node, oldnode);
-    node->methfld = newMemberUseNode(opname);
+    node->methfld = (INode*)newMemberUseNode(opname);
     inodeLexCopy((INode*)node->methfld, oldnode);
     return node;
 }
@@ -50,7 +50,7 @@ INode *cloneFnCallNode(CloneState *cstate, FnCallNode *node) {
     newnode->objfn = cloneNode(cstate, node->objfn);
     if (node->args)
         newnode->args = cloneNodes(cstate, node->args);
-    newnode->methfld = (NameUseNode*)cloneNode(cstate, (INode*)node->methfld);
+    newnode->methfld = cloneNode(cstate, node->methfld);
     return (INode *)newnode;
 }
 
@@ -215,7 +215,7 @@ void fnCallFinalizeArgs(FnCallNode *node) {
 
     // Establish the return type of the function call (or error if not what was expected)
     if (node->vtype != unknownType && !itypeIsSame(fnsig->rettype, node->vtype)) {
-        errorMsgNode((INode*)node, ErrorNoMeth, "Cannot find valid `%s` method that returns same type that it takes.", &node->methfld->namesym);
+        errorMsgNode((INode*)node, ErrorNoMeth, "Type of call's returned value does not match what is expected");
     }
     node->vtype = fnsig->rettype;
 
@@ -279,7 +279,9 @@ Name *fnCallOpEqMethod(Name *opeqname) {
 // Then lower the node to a function call (objfn+args) or field access (objfn+methfld) accordingly
 int fnCallLowerMethod(FnCallNode *callnode) {
     INode *obj = callnode->objfn;
-    Name *methsym = callnode->methfld->namesym;
+    assert(callnode->methfld->tag == NameUseTag || callnode->methfld->tag == MbrNameUseTag || callnode->methfld->tag == VarNameUseTag);
+    NameUseNode *methfld = (NameUseNode*)callnode->methfld;
+    Name *methsym = methfld->namesym;
 
     INode *objdereftype = iexpGetDerefTypeDcl(obj);
     if (!isMethodType(objdereftype)) {
@@ -305,9 +307,9 @@ int fnCallLowerMethod(FnCallNode *callnode) {
             errorMsgNode((INode*)callnode, ErrorManyArgs, "May not provide arguments for a field access");
 
         derefInject(&callnode->objfn);  // automatically deref any reference/ptr, if needed
-        callnode->methfld->tag = MbrNameUseTag;
-        callnode->methfld->dclnode = (INode*)foundnode;
-        callnode->vtype = callnode->methfld->vtype = foundnode->vtype;
+        methfld->tag = MbrNameUseTag;
+        methfld->dclnode = (INode*)foundnode;
+        callnode->vtype = methfld->vtype = foundnode->vtype;
         callnode->tag = FldAccessTag;
         return 1;
     }
@@ -325,7 +327,7 @@ int fnCallLowerMethod(FnCallNode *callnode) {
     nodesInsert(&callnode->args, callnode->objfn, 0);
 
     // Re-purpose method's name use node into objfn, so name refers to found method
-    NameUseNode *methodrefnode = callnode->methfld;
+    NameUseNode *methodrefnode = (NameUseNode*)callnode->methfld;
     methodrefnode->tag = VarNameUseTag;
     methodrefnode->dclnode = (INode*)bestmethod;
     methodrefnode->vtype = bestmethod->vtype;
@@ -345,7 +347,9 @@ int fnCallLowerMethod(FnCallNode *callnode) {
 int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
     INode *obj = callnode->objfn;
     INode *objtype = iexpGetTypeDcl(obj);
-    Name *methsym = callnode->methfld->namesym;
+    assert(callnode->methfld->tag == NameUseTag || callnode->methfld->tag == MbrNameUseTag);
+    NameUseNode *methfld = (NameUseNode*)callnode->methfld;
+    Name *methsym = methfld->namesym;
 
     INode *foundnode = iNsTypeFindFnField(methtype, methsym);
     if (!foundnode)
@@ -391,7 +395,7 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
     // Re-purpose method's name use node into objfn, so name refers to found method
     INode **selfp = &nodesGet(callnode->args, 0);
     INode *selftype = iexpGetTypeDcl(*selfp);
-    NameUseNode *methodrefnode = callnode->methfld;
+    NameUseNode *methodrefnode = (NameUseNode*)callnode->methfld;
     methodrefnode->tag = VarNameUseTag;
     methodrefnode->dclnode = (INode*)bestmethod;
     methodrefnode->vtype = bestmethod->vtype;
@@ -409,7 +413,9 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
 void fnCallOpAssgn(FnCallNode **nodep) {
     FnCallNode *callnode = *nodep;
     INode *objtype = iexpGetTypeDcl(callnode->objfn);
-    Name *methsym = callnode->methfld->namesym;
+    assert(callnode->methfld->tag == NameUseTag || callnode->methfld->tag == MbrNameUseTag);
+    NameUseNode *methfld = (NameUseNode*)callnode->methfld;
+    Name *methsym = methfld->namesym;
 
     // Change first argument to &mut obj
     borrowMutRef(&callnode->objfn, objtype, newPermUseNode(mutPerm));
@@ -429,7 +435,7 @@ void fnCallOpAssgn(FnCallNode **nodep) {
     INode *derefvar = (INode *)tmpname;
     derefInject(&derefvar);
     callnode->objfn = derefvar;
-    callnode->methfld->namesym = fnCallOpEqMethod(methsym);
+    methfld->namesym = fnCallOpEqMethod(methsym);
     if (!fnCallLowerMethod(callnode)) {
         errorMsgNode((INode*)callnode, ErrorNoMeth,
             "No method/field named %s found that matches the call's arguments.",
@@ -538,13 +544,13 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         selfnode->vtype = ((VarDclNode*)selfnode->dclnode)->vtype;
         // Reuse existing fncallnode if we can
         if (node->methfld == NULL) {
-            node->methfld = (NameUseNode *)node->objfn;
+            node->methfld = node->objfn;
             node->objfn = (INode*)selfnode;
         }
         else {
             // Re-purpose objfn as self.method
             FnCallNode *fncall = newFnCallNode((INode *)selfnode, 0);
-            fncall->methfld = (NameUseNode *)node->objfn;
+            fncall->methfld = node->objfn;
             copyNodeLex(fncall, node->objfn); // Copy lexer info into injected node in case it has errors
             node->objfn = (INode*)fncall;
             inodeTypeCheckAny(pstate, &node->objfn);
@@ -579,13 +585,13 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     case FloatNbrTag:
         // Fill in empty methfld with '()', '[]' or '&[]' based on parser flags
         if (node->methfld == NULL)
-            node->methfld = newNameUseNode(
+            node->methfld = (INode*)newNameUseNode(
                 node->flags & FlagIndex ? (node->flags & FlagBorrow ? refIndexName : indexName) : parensName);
         // Lower to a field access or function call
         if (fnCallLowerMethod(node) == 0) {
             errorMsgNode((INode*)node, ErrorNoMeth,
                 "No method/field named %s found that matches the call's arguments.",
-                &node->methfld->namesym->namestr);
+                &((NameUseNode*)node->methfld)->namesym->namestr);
         }
         break;
 
@@ -628,7 +634,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             // Fill in empty methfld with '()', '[]' or '&[]' based on parser flags
             if (node->methfld == NULL) {
                 Name *methname = node->flags & FlagIndex ? (node->flags & FlagBorrow ? refIndexName : indexName) : parensName;
-                node->methfld = newNameUseNode(methname);
+                node->methfld = (INode*)newNameUseNode(methname);
             }
             if (fnCallLowerPtrMethod(node, refType) == 0) {
                 if (isMethodType(objdereftype)) {
@@ -637,7 +643,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
                         if (derefInject(&node->objfn) == 0 || fnCallLowerMethod(node) == 0)
                             errorMsgNode((INode*)node, ErrorNoMeth, 
                                 "No method/field named %s found that matches the call's arguments.", 
-                                &node->methfld->namesym->namestr);
+                                &((NameUseNode*)node->methfld)->namesym->namestr);
                     }
                 }
                 else if (objdereftype->tag == PtrTag)

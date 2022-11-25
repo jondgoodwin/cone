@@ -199,7 +199,7 @@ INode *parseDotCall(ParseState *parse, INode *node, uint16_t flags) {
     if (lexIsToken(IdentToken)) {
         NameUseNode *method = newNameUseNode(lex->val.ident);
         method->tag = MbrNameUseTag;
-        fncall->methfld = method;
+        fncall->methfld = (INode*)method;
     }
     else
         errorMsgLex(ErrorNoMbr, "This should be a named field/method");

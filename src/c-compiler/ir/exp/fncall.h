@@ -14,7 +14,7 @@
 typedef struct FnCallNode {
     IExpNodeHdr;
     INode *objfn;          // Object (for method calls) or function to call
-    NameUseNode *methfld;  // Name of method/field (or NULL)
+    INode *methfld;        // Method or field node after '.' operator (typically NameUseNode or NULL)
     Nodes *args;           // List of function call arguments (or NULL)
 } FnCallNode;
 
