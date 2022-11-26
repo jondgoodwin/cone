@@ -108,7 +108,7 @@ int iexpCoerce(INode **from, INode *totype) {
     case ConvByMeth: 
     {
         FnCallNode *istrue = newFnCallNode(*from, 1);
-        istrue->methfld = (INode *)newNameUseNode(istrueName);
+        istrue->methfld = (INode *)newMemberUseNode(istrueName);
         int success;
         if (iexpGetTypeDcl(*from)->tag == PtrTag)
             success = fnCallLowerPtrMethod(istrue, ptrType);

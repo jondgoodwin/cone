@@ -279,7 +279,7 @@ Name *fnCallOpEqMethod(Name *opeqname) {
 // Then lower the node to a function call (objfn+args) or field access (objfn+methfld) accordingly
 int fnCallLowerMethod(FnCallNode *callnode) {
     INode *obj = callnode->objfn;
-    assert(callnode->methfld->tag == NameUseTag || callnode->methfld->tag == MbrNameUseTag || callnode->methfld->tag == VarNameUseTag);
+    assert(callnode->methfld->tag == MbrNameUseTag);
     NameUseNode *methfld = (NameUseNode*)callnode->methfld;
     Name *methsym = methfld->namesym;
 
@@ -347,7 +347,7 @@ int fnCallLowerMethod(FnCallNode *callnode) {
 int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
     INode *obj = callnode->objfn;
     INode *objtype = iexpGetTypeDcl(obj);
-    assert(callnode->methfld->tag == NameUseTag || callnode->methfld->tag == MbrNameUseTag);
+    assert(callnode->methfld->tag == MbrNameUseTag);
     NameUseNode *methfld = (NameUseNode*)callnode->methfld;
     Name *methsym = methfld->namesym;
 
@@ -413,7 +413,7 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
 void fnCallOpAssgn(FnCallNode **nodep) {
     FnCallNode *callnode = *nodep;
     INode *objtype = iexpGetTypeDcl(callnode->objfn);
-    assert(callnode->methfld->tag == NameUseTag || callnode->methfld->tag == MbrNameUseTag);
+    assert(callnode->methfld->tag == MbrNameUseTag);
     NameUseNode *methfld = (NameUseNode*)callnode->methfld;
     Name *methsym = methfld->namesym;
 
@@ -545,12 +545,14 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         // Reuse existing fncallnode if we can
         if (node->methfld == NULL) {
             node->methfld = node->objfn;
+            node->methfld->tag = MbrNameUseTag;
             node->objfn = (INode*)selfnode;
         }
         else {
             // Re-purpose objfn as self.method
             FnCallNode *fncall = newFnCallNode((INode *)selfnode, 0);
             fncall->methfld = node->objfn;
+            fncall->methfld->tag = MbrNameUseTag;
             copyNodeLex(fncall, node->objfn); // Copy lexer info into injected node in case it has errors
             node->objfn = (INode*)fncall;
             inodeTypeCheckAny(pstate, &node->objfn);
@@ -585,7 +587,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     case FloatNbrTag:
         // Fill in empty methfld with '()', '[]' or '&[]' based on parser flags
         if (node->methfld == NULL)
-            node->methfld = (INode*)newNameUseNode(
+            node->methfld = (INode*)newMemberUseNode(
                 node->flags & FlagIndex ? (node->flags & FlagBorrow ? refIndexName : indexName) : parensName);
         // Lower to a field access or function call
         if (fnCallLowerMethod(node) == 0) {
@@ -634,7 +636,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             // Fill in empty methfld with '()', '[]' or '&[]' based on parser flags
             if (node->methfld == NULL) {
                 Name *methname = node->flags & FlagIndex ? (node->flags & FlagBorrow ? refIndexName : indexName) : parensName;
-                node->methfld = (INode*)newNameUseNode(methname);
+                node->methfld = (INode*)newMemberUseNode(methname);
             }
             if (fnCallLowerPtrMethod(node, refType) == 0) {
                 if (isMethodType(objdereftype)) {

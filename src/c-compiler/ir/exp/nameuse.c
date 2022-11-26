@@ -169,6 +169,7 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
         copyNodeLex(selfnode, name);
         FnCallNode *fncall = newFnCallNode((INode *)selfnode, 0);
         fncall->methfld = (INode*)name;
+        fncall->methfld->tag = MbrNameUseTag;
         copyNodeLex(fncall, name); // Copy lexer info into injected node in case it has errors
         *((FnCallNode**)namep) = fncall;
         inodeNameRes(pstate, (INode **)namep);
