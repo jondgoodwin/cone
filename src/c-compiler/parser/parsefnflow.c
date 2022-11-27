@@ -70,7 +70,7 @@ VarDclNode *parseBindVarDcl(ParseState *parse) {
 
     // Get type
     INode *vtype;
-    if ((vtype = parseVtype(parse)) != unknownType)
+    if ((vtype = parseType(parse)) != unknownType)
         varnode->vtype = vtype;
     else {
         errorMsgLex(ErrorInvType, "Expected type specification for pattern match binding");
@@ -204,7 +204,7 @@ INode *parseMatch(ParseState *parse) {
             else if (lexIsToken(IsToken)) {
                 CastNode *isnode = newIsNode((INode *)expnamenode, unknownType);
                 lexNextToken();
-                isnode->typ = parseVtype(parse);
+                isnode->typ = parseType(parse);
                 nodesAdd(&ifnode->condblk, (INode *)isnode);
                 nodesAdd(&ifnode->condblk, parseExprBlock(parse, 0));
             } else if (lexIsToken(EqToken)) {

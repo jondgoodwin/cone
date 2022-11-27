@@ -50,7 +50,7 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     lexNextToken();
 
     // Get value type, if provided
-    varnode->vtype = parseVtype(parse);
+    varnode->vtype = parseType(parse);
 
     // Get initialization value after '=', if provided
     if (lexIsToken(AssgnToken)) {
@@ -88,7 +88,7 @@ ConstDclNode *parseConstDcl(ParseState *parse) {
     lexNextToken();
 
     // Get value type, if provided
-    constnode->vtype = parseVtype(parse);
+    constnode->vtype = parseType(parse);
 
     // Get initialization value after '=', if provided
     if (lexIsToken(AssgnToken)) {
@@ -110,10 +110,10 @@ INode *parseTypeName(ParseState *parse) {
         lexNextToken();
         lexIncrParens();
         if (!lexIsToken(RBracketToken)) {
-            nodesAdd(&fncall->args, parseVtype(parse));
+            nodesAdd(&fncall->args, parseType(parse));
             while (lexIsToken(CommaToken)) {
                 lexNextToken();
-                nodesAdd(&fncall->args, parseVtype(parse));
+                nodesAdd(&fncall->args, parseType(parse));
             }
         }
         parseCloseTok(RBracketToken);
@@ -152,7 +152,7 @@ FieldDclNode *parseFieldDcl(ParseState *parse, PermNode *defperm) {
     // Get value type, if provided
     if (lexIsToken(EnumToken))
         fldnode->vtype = parseEnum(parse);
-    else if ((vtype = parseVtype(parse)))
+    else if ((vtype = parseType(parse)))
         fldnode->vtype = vtype;
 
     // Get initialization value after '=', if provided
@@ -242,7 +242,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 field->flags |= IsMixin | FlagMethFld;
                 lexNextToken();
                 INode *vtype;
-                if ((vtype = parseVtype(parse)))
+                if ((vtype = parseType(parse)))
                     field->vtype = vtype;
                 structAddField(strnode, field);
                 parseEndOfStatement();
@@ -368,14 +368,14 @@ INode *parseFnSig(ParseState *parse) {
         errorMsgLex(ErrorNoLParen, "Expected left parenthesis for parameter declarations");
 
     // Parse return type info - turn into void if none specified
-    if ((fnsig->rettype = parseVtype(parse)) != unknownType) {
+    if ((fnsig->rettype = parseType(parse)) != unknownType) {
         // Handle multiple return types
         if (lexIsToken(CommaToken)) {
             TupleNode *rettype = newTupleNode(4);
             nodesAdd(&rettype->elems, fnsig->rettype);
             while (lexIsToken(CommaToken)) {
                 lexNextToken();
-                nodesAdd(&rettype->elems, parseVtype(parse));
+                nodesAdd(&rettype->elems, parseType(parse));
             }
             fnsig->rettype = (INode*)rettype;
         }
@@ -398,16 +398,22 @@ TypedefNode *parseTypedef(ParseState *parse) {
     }
     TypedefNode *newnode = newTypedefNode(lex->val.ident);
     lexNextToken();
-    newnode->typeval = parseVtype(parse);
+    newnode->typeval = parseType(parse);
     parseEndOfStatement();
     return newnode;
 }
 
 // Parse a type expression. Return unknownType if none found.
-INode* parseVtype(ParseState *parse) {
+INode* parseType(ParseState *parse) {
     // This is a placeholder since parser converges type and value expression parsing
     switch (lex->toktype) {
-    case QuesToken:
+    case IdentToken:    // type identifier (or generic)
+    case VoidToken:     // void
+    case QuesToken:     // Optional type sugar
+    case LBracketToken: // Array
+    case LParenToken:   // Tuple
+
+    // References and pointers
     case AmperToken:
     case ArrayRefToken:
     case VirtRefToken:
@@ -415,10 +421,10 @@ INode* parseVtype(ParseState *parse) {
     case PlusArrayRefToken:
     case PlusVirtRefToken:
     case StarToken:
-    case LBracketToken:
-    case VoidToken:
-    case IdentToken:
+    {    
+        // The parsing logic for value expressions also works for types (although overkill)
         return parsePrefix(parse, 0);
+    }
     default:
         return unknownType;
     }

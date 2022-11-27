@@ -476,13 +476,13 @@ INode *parseCast(ParseState *parse) {
     if (lexIsToken(AsToken)) {
         CastNode *node = newRecastNode(lhnode, unknownType);
         lexNextToken();
-        node->typ = parseVtype(parse);
+        node->typ = parseType(parse);
         return (INode*)node;
     }
     else if (lexIsToken(IntoToken)) {
         CastNode *node = newConvCastNode(lhnode, unknownType);
         lexNextToken();
-        node->typ = parseVtype(parse);
+        node->typ = parseType(parse);
         return (INode*)node;
     }
     return lhnode;
@@ -623,7 +623,7 @@ INode *parseCmp(ParseState *parse) {
         if (lexIsToken(IsToken) && !lexIsStmtBreak()) {
             CastNode *node = newIsNode(lhnode, unknownType);
             lexNextToken();
-            node->typ = parseVtype(parse);
+            node->typ = parseType(parse);
             return (INode*)node;
         }
         else
