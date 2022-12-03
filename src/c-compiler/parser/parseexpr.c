@@ -201,6 +201,10 @@ INode *parseDotCall(ParseState *parse, INode *node, uint16_t flags) {
         method->tag = MbrNameUseTag;
         fncall->methfld = (INode*)method;
     }
+    // Or integer constant (for tuple element)
+    else if (lexIsToken(IntLitToken)) {
+        fncall->methfld = (INode*)newULitNode(lex->val.uintlit, lex->langtype);
+    }
     else
         errorMsgLex(ErrorNoMbr, "This should be a named field/method");
     lexNextToken();

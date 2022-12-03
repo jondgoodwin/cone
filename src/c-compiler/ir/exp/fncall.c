@@ -275,6 +275,19 @@ Name *fnCallOpEqMethod(Name *opeqname) {
     return NULL;
 }
 
+// Lower integer field index for tuple
+int fnCallLowerIntField(FnCallNode *callnode) {
+    if (callnode->methfld == NULL || callnode->methfld->tag != ULitTag || callnode->args != NULL)
+        return 0;
+    TupleNode* ttuple = (TupleNode*)((IExpNode*)callnode->objfn)->vtype;
+    uint64_t index = ((ULitNode*)callnode->methfld)->uintlit;
+    if (index >= (uint64_t)ttuple->elems->used)
+        return 0;
+    callnode->vtype = nodesGet(ttuple->elems, index);
+    callnode->tag = FldAccessTag;
+    return 1;
+}
+
 // Find best field or method (across overloaded methods whose type matches argument types)
 // Then lower the node to a function call (objfn+args) or field access (objfn+methfld) accordingly
 int fnCallLowerMethod(FnCallNode *callnode) {
@@ -595,6 +608,12 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
                 "No method/field named %s found that matches the call's arguments.",
                 &((NameUseNode*)node->methfld)->namesym->namestr);
         }
+        break;
+
+    // Tuple type
+    case TTupleTag:
+        if (fnCallLowerIntField(node) == 0)
+            errorMsgNode((INode*)node, ErrorNoMeth, "Invalid expression on a tuple");
         break;
 
     // Array type
