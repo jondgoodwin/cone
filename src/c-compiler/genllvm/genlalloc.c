@@ -289,16 +289,23 @@ void genlDealiasNodes(GenState *gen, Nodes *nodes) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(nodes, cnt, nodesp)) {
-        VarDclNode *var = (VarDclNode *)*nodesp;
-        RefNode *reftype = (RefNode *)var->vtype;
-        if (reftype->tag == RefTag) {
-            LLVMValueRef ref = LLVMBuildLoad(gen->builder, var->llvmvar, "allocref");
-            if (isRegion(reftype->region, soName)) {
-                genlDealiasOwn(gen, ref, reftype);
+        // Hack for dealias on local variables holding region-owning reference
+        if ((*nodesp)->tag == VarDclTag) {
+            VarDclNode *var = (VarDclNode *)*nodesp;
+            RefNode *reftype = (RefNode *)var->vtype;
+            if (reftype->tag == RefTag) {
+                LLVMValueRef ref = LLVMBuildLoad(gen->builder, var->llvmvar, "allocref");
+                if (isRegion(reftype->region, soName)) {
+                    genlDealiasOwn(gen, ref, reftype);
+                }
+                else if (isRegion(reftype->region, rcName)) {
+                    genlRcCounter(gen, ref, -1, reftype);
+                }
             }
-            else if (isRegion(reftype->region, rcName)) {
-                genlRcCounter(gen, ref, -1, reftype);
-            }
+        }
+        // Generate function calls that drop/dealias values
+        else {
+            genlExpr(gen, *nodesp);
         }
     }
 }

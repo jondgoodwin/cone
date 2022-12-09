@@ -322,3 +322,8 @@ int itypeIsGenericType(INode *type) {
         return 0;
     return gentype->args->used > 0 && (nodesGet(&gentype->args, 0));
 }
+
+// Return drop function (or NULL) for type
+INode *itypeGetDropFnDcl(INode *type) {
+    return NULL;
+}

@@ -94,4 +94,7 @@ int itypeIsMove(INode *type);
 // Return true if this is a generic type
 int itypeIsGenericType(INode *type);
 
+// Return drop function (or NULL) for type
+INode *itypeGetDropFnDcl(INode *type);
+
 #endif

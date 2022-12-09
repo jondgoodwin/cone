@@ -200,7 +200,8 @@ int flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp) {
     size_t pos = gVarFlowStackPos;
     while (pos > startpos) {
         VarFlowInfo *avar = &gVarFlowStackp[--pos];
-        RefNode *reftype = (RefNode*)avar->node->vtype;
+        INode *vartype = avar->node->vtype;
+        RefNode *reftype = (RefNode*)vartype;
         if (reftype->tag == RefTag && (isRegion(reftype->region, soName) || isRegion(reftype->region, rcName))) {
             if (retexp && (retexp->tag != VarNameUseTag || ((NameUseNode *)retexp)->namesym != avar->node->namesym)) {
                 if (*varlist == NULL)
@@ -209,6 +210,18 @@ int flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp) {
             }
             else
                 doalias = 0;
+        }
+        else {
+            // Add call to type's drop fn to dealias list, if there is one
+            INode *dropfn = itypeGetDropFnDcl(vartype);
+            if (dropfn != NULL) {
+                FnCallNode *dropfncall = newFnCallLower(retexp, dropfn, 1);
+                nodesAdd(&dropfncall->args, (INode*)newNameUseFromDclNode((INode*)avar, retexp));
+                borrowMutRef(&nodesGet(&dropfncall->args, 0), ((IExpNode*)avar)->vtype, (INode*)uniPerm);
+                if (*varlist == NULL)
+                    *varlist = newNodes(4);
+                nodesAdd(varlist, (INode*)dropfncall);
+            }
         }
     }
     return doalias;

@@ -22,6 +22,7 @@ FnCallNode *newFnCallNode(INode *objfn, int nnodes);
 // Create new fncall node, prefilling method, self, and creating room for nnodes args
 FnCallNode *newFnCallOpname(INode *obj, Name *opname, int nnodes);
 FnCallNode *newFnCallOp(INode *obj, char *op, int nnodes);
+FnCallNode *newFnCallLower(INode *oldnode, INode *obj, int nnodes);
 
 // Clone fncall
 INode *cloneFnCallNode(CloneState *cstate, FnCallNode *node);

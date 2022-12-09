@@ -42,6 +42,12 @@ FnCallNode *newFnCallOpnameLower(INode *oldnode, INode *obj, Name *opname, int n
     return node;
 }
 
+FnCallNode *newFnCallLower(INode *oldnode, INode *obj, int nnodes) {
+    FnCallNode *node = newFnCallNode(obj, nnodes);
+    inodeLexCopy((INode*)node, oldnode);
+    return node;
+}
+
 // Clone fncall
 INode *cloneFnCallNode(CloneState *cstate, FnCallNode *node) {
     FnCallNode *newnode;
