@@ -216,8 +216,9 @@ int flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp) {
             INode *dropfn = itypeGetDropFnDcl(vartype);
             if (dropfn != NULL) {
                 FnCallNode *dropfncall = newFnCallLower(retexp, dropfn, 1);
-                nodesAdd(&dropfncall->args, (INode*)newNameUseFromDclNode((INode*)avar, retexp));
-                borrowMutRef(&nodesGet(&dropfncall->args, 0), ((IExpNode*)avar)->vtype, (INode*)uniPerm);
+                INode *dropnameuse = (INode*)newNameUseFromDclNode((INode*)avar->node, retexp);
+                INode *borrow = newBorrowMutRef(dropnameuse, ((IExpNode*)avar->node)->vtype, (INode*)uniPerm);
+                nodesAdd(&dropfncall->args, borrow);
                 if (*varlist == NULL)
                     *varlist = newNodes(4);
                 nodesAdd(varlist, (INode*)dropfncall);

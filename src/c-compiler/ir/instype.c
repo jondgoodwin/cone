@@ -15,6 +15,7 @@
 void iNsTypeInit(INsTypeNode *type, int nodecnt) {
     nodelistInit(&type->nodelist, nodecnt);
     namespaceInit(&type->namespace, nodecnt);
+    type->dropfn = NULL;
     // type->subtypes = newNodes(0);
 }
 

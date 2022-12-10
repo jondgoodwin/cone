@@ -324,6 +324,12 @@ int itypeIsGenericType(INode *type) {
 }
 
 // Return drop function (or NULL) for type
-INode *itypeGetDropFnDcl(INode *type) {
-    return NULL;
+INode *itypeGetDropFnDcl(INode *typenode) {
+    INode *type = itypeGetTypeDcl(typenode);
+    switch (type->tag) {
+    case StructTag:
+        return ((StructNode*)type)->dropfn;
+    default:
+        return NULL;
+    }
 }

@@ -12,7 +12,8 @@
 #define INsTypeNodeHdr \
     ITypeNodeHdr; \
     NodeList nodelist; \
-    Namespace namespace
+    Namespace namespace; \
+    INode *dropfn
 
 // Interface for a namespaced type
 // -> nodes (NodeList) is the list of nodes

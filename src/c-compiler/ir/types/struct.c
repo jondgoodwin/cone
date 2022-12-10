@@ -153,6 +153,32 @@ void structInheritMethod(StructNode *strnode, FnDclNode *traitmeth, StructNode *
     iNsTypeAddFn((INsTypeNode *)strnode, (FnDclNode*)cloneNode(cstate, (INode*)traitmeth));
 }
 
+void structSetDropFn(StructNode *node) {
+    // look for struct's `final` method
+    INode *dropfn = namespaceFind(&node->namespace, finalName);
+    if (dropfn == NULL)
+        return;
+    if (dropfn->tag != FnDclTag) {
+        errorMsgNode(dropfn, ErrorBadMeth, "final can only be defined as a method");
+        return;
+    }
+
+    // Verify dropfn has one self argument of type &uni struct
+    FnDclNode *finalfn = (FnDclNode*)dropfn;
+    FnSigNode *fnsig = (FnSigNode*)finalfn->vtype;
+    if (fnsig->parms->used != 1) {
+        errorMsgNode(dropfn, ErrorBadMeth, "method may only have one parameter of type &uni");
+        return;
+    }
+    RefNode *selftype = (RefNode *)(((VarDclNode*)nodesGet(fnsig->parms, 0))->vtype);
+    if (selftype->tag != RefTag || selftype->region != borrowRef || itypeGetTypeDcl(selftype->perm) != (INode*)uniPerm) {
+        errorMsgNode(dropfn, ErrorBadMeth, "method may only have one parameter of type &uni");
+        return;
+    }
+
+    node->dropfn = dropfn;
+}
+
 // Type check a struct type
 void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     // Wait until a generic struct is instantiated before type checking
@@ -309,6 +335,8 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     for (nodelistFor(&node->nodelist, cnt, nodesp)) {
         inodeTypeCheckAny(pstate, (INode**)nodesp);
     }
+
+    structSetDropFn(node);
 
     pstate->typenode = svtypenode;
 }

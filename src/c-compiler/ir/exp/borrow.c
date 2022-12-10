@@ -9,6 +9,14 @@
 
 #include <assert.h>
 
+// Create a borrowed ref node
+INode *newBorrowMutRef(INode *node, INode* type, INode *perm) {
+    RefNode *reftype = type != unknownType ? newRefNodeFull(RefTag, node, borrowRef, perm, type) : (RefNode*)unknownType;
+    RefNode *borrownode = newRefNodeFull(BorrowTag, node, borrowRef, perm, node);
+    borrownode->vtype = (INode*)reftype;
+    return (INode*)borrownode;
+}
+
 // Inject a typed, borrowed node on some node (expected to be an lval)
 void borrowMutRef(INode **nodep, INode* type, INode *perm) {
     INode *node = *nodep;
