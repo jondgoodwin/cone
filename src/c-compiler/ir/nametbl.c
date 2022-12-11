@@ -150,6 +150,7 @@ void nametblInit() {
     selfTypeName = nametblFind("Self", 4);
     thisName = nametblFind("this", 4);
     cloneName = nametblFind("clone", 5);
+    dropName = nametblFind("drop", 4);
     finalName = nametblFind("final", 5);
 
     plusEqName = nametblFind("+=", 2);

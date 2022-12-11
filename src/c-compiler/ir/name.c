@@ -18,6 +18,7 @@ Name *selfName;
 Name *selfTypeName;
 Name *thisName;
 Name *cloneName;
+Name *dropName;
 Name *finalName;
 Name *plusEqName;
 Name *minusEqName;

@@ -154,26 +154,83 @@ void structInheritMethod(StructNode *strnode, FnDclNode *traitmeth, StructNode *
 }
 
 void structSetDropFn(StructNode *node) {
-    // look for struct's `final` method
+    // Obtain for struct's `final` method, if any, and validate it
     INode *dropfn = namespaceFind(&node->namespace, finalName);
-    if (dropfn == NULL)
-        return;
-    if (dropfn->tag != FnDclTag) {
-        errorMsgNode(dropfn, ErrorBadMeth, "final can only be defined as a method");
-        return;
+    if (dropfn != NULL) {
+        if (dropfn->tag != FnDclTag) {
+            errorMsgNode(dropfn, ErrorBadMeth, "final can only be defined as a method");
+            return;
+        }
+
+        // Verify dropfn has one self argument of type &uni struct
+        FnDclNode *finalfn = (FnDclNode*)dropfn;
+        FnSigNode *fnsig = (FnSigNode*)finalfn->vtype;
+        if (fnsig->parms->used != 1) {
+            errorMsgNode(dropfn, ErrorBadMeth, "method may only have one parameter of type &uni");
+            return;
+        }
+        RefNode *selftype = (RefNode *)(((VarDclNode*)nodesGet(fnsig->parms, 0))->vtype);
+        if (selftype->tag != RefTag || selftype->region != borrowRef || itypeGetTypeDcl(selftype->perm) != (INode*)uniPerm) {
+            errorMsgNode(dropfn, ErrorBadMeth, "method may only have one parameter of type &uni");
+            return;
+        }
     }
 
-    // Verify dropfn has one self argument of type &uni struct
-    FnDclNode *finalfn = (FnDclNode*)dropfn;
-    FnSigNode *fnsig = (FnSigNode*)finalfn->vtype;
-    if (fnsig->parms->used != 1) {
-        errorMsgNode(dropfn, ErrorBadMeth, "method may only have one parameter of type &uni");
-        return;
+    // if any field requires drop logic, build a new drop function for struct
+    BlockNode *block = NULL;
+    INode *selfDcl = NULL;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&node->fields, cnt, nodesp)) {
+        // See whether field's type requires a finalizer
+        VarDclNode *fld = (VarDclNode*)*nodesp;
+        INode *flddrop = itypeGetDropFnDcl(fld->vtype);
+        if (flddrop == NULL)
+            continue;
+
+        // Before we can add field's drop logic to new drop function, let's make sure it exists
+        if (block == NULL) {
+            // Create function dcl for new type drop function
+            INode *selftype = newNameUseFromDclNode((INode*)node, (INode*)node);
+            INode *refselftype = (INode*)newRefNodeFull(RefTag, (INode*)node, (INode*)borrowRef, (INode*)uniPerm, selftype);
+            selfDcl = (INode*)newVarDclFull(selfName, VarDclTag, (INode*)refselftype, (INode*)immPerm, NULL);
+            FnSigNode *fnsig = newFnSigNode();
+            nodesAdd(&fnsig->parms, (INode*)selfDcl);
+            fnsig->rettype = (INode*)newVoidNode();
+            block = newBlockNode();
+            INode *newdropfn = (INode*)newFnDclNode(dropName, FnDclTag, (INode*)fnsig, (INode*)block);
+            nodelistAdd(&node->nodelist, newdropfn);
+
+            // Block begins with call to struct's finalizer, if there is one
+            if (dropfn) {
+                FnCallNode *dropfncall = newFnCallLower((INode*)node, dropfn, 1);
+                INode *dropnameuse = (INode*)newNameUseFromDclNode(selfDcl, (INode*)node);
+                nodesAdd(&dropfncall->args, dropnameuse);
+                nodesAdd(&block->stmts, (INode*)dropfncall);
+            }
+            dropfn = newdropfn;
+        }
+
+        // Add call to field's drop fn
+        FnCallNode *dropfncall = newFnCallLower((INode*)node, flddrop, 1);
+        INode *dropnameuse = (INode*)newNameUseFromDclNode(selfDcl, (INode*)node);
+        StarNode *deref = newStarNode(DerefTag);
+        deref->vtexp = dropnameuse;
+        FnCallNode *fldref = newFnCallLower((INode*)node, (INode*)deref, 0);
+        fldref->tag = FldAccessTag;
+        fldref->flags |= FlagBorrow;
+        fldref->methfld = newNameUseFromDclNode((INode*)fld, (INode*)node);
+        fldref->methfld->tag = MbrNameUseTag;
+        nodesAdd(&dropfncall->args, (INode*)fldref);
+        nodesAdd(&block->stmts, (INode*)dropfncall);
     }
-    RefNode *selftype = (RefNode *)(((VarDclNode*)nodesGet(fnsig->parms, 0))->vtype);
-    if (selftype->tag != RefTag || selftype->region != borrowRef || itypeGetTypeDcl(selftype->perm) != (INode*)uniPerm) {
-        errorMsgNode(dropfn, ErrorBadMeth, "method may only have one parameter of type &uni");
-        return;
+
+    // If we have been building a drop function, end it with a return
+    if (block != NULL) {
+        BreakRetNode *retnode = newReturnNode();
+        retnode->exp = (INode*)newNilLitNode();
+        retnode->block = block;
+        nodesAdd(&block->stmts, (INode*)retnode);
     }
 
     node->dropfn = dropfn;

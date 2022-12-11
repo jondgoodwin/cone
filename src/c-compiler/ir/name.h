@@ -27,6 +27,7 @@ extern Name *tempName;    // "-_"
 extern Name *selfName;  // "self"
 extern Name *selfTypeName; // "Self"
 extern Name *thisName;  // "this"
+extern Name *dropName;  // "drop"
 extern Name *cloneName; // "clone" method
 extern Name *finalName; // "final" method
 
