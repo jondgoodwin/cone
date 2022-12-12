@@ -11,7 +11,6 @@
 CastNode *newRecastNode(INode *exp, INode *type) {
     CastNode *node;
     newNode(node, CastNode, CastTag);
-    node->flags |= FlagRecast;
     node->typ = node->vtype = type;
     node->exp = exp;
     return node;
@@ -21,6 +20,7 @@ CastNode *newRecastNode(INode *exp, INode *type) {
 CastNode *newConvCastNode(INode *exp, INode *type) {
     CastNode *node;
     newNode(node, CastNode, CastTag);
+    node->flags |= FlagConvert;
     node->typ = node->vtype = type;
     node->exp = exp;
     return node;
@@ -93,7 +93,7 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
     INode *totype = itypeGetTypeDcl(node->vtype);
 
     // Handle reinterpret casts, which must be same size
-    if (node->flags & FlagRecast) {
+    if (!(node->flags & FlagConvert)) {
         if (totype->tag != StructTag) {
             uint32_t tosize = castBitsize(totype);
             if (tosize == 0 || tosize != castBitsize(fromtype))
@@ -104,7 +104,7 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
     else {
         // Auto-generated downcasting "conversion" may in face be a bitcast
         if (fromtype->tag == RefTag && totype->tag == RefTag) {
-            node->flags |= FlagRecast;
+            node->flags &= 0xFFFF - FlagConvert;
         }
     }
 

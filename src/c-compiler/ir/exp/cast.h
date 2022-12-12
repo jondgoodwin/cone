@@ -15,7 +15,7 @@ typedef struct CastNode {
     INode *typ;
 } CastNode;
 
-#define FlagRecast 0x8000
+#define FlagConvert 0x8000  // Cast should convert instead of re-cast (default)
 
 // Create node for recasting to a new type without conversion
 CastNode *newRecastNode(INode *exp, INode *type);

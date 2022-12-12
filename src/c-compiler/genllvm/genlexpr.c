@@ -1055,9 +1055,9 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     case CastTag:
     {
         CastNode *node = (CastNode*)termnode;
-        if (node->flags & FlagRecast)
-            return genlRecast(gen, node->exp, node->vtype);
-        return genlConvert(gen, node->exp, node->vtype);
+        if (node->flags & FlagConvert)
+            return genlConvert(gen, node->exp, node->vtype);
+        return genlRecast(gen, node->exp, node->vtype);
     }
     case IsTag:
     {
