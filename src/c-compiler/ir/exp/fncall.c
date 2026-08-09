@@ -312,9 +312,9 @@ int fnCallLowerMethod(FnCallNode *callnode) {
         && !(obj->tag==VarNameUseTag && ((VarDclNode*)((NameUseNode*)obj)->dclnode)->namesym == selfName)) {
         errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/field `%s`.", &methsym->namestr);
     }
-    IExpNode *foundnode = (IExpNode*)iNsTypeFindFnField((INsTypeNode*)objdereftype, methsym);
+    INode *foundnode = iNsTypeFindFnField((INsTypeNode*)objdereftype, methsym);
     if (!foundnode
-        || !(foundnode->tag == FnDclTag || foundnode->tag == FieldDclTag)
+        || !(foundnode->tag == FnDclTag || foundnode->tag == FnOverloadDclTag || foundnode->tag == FieldDclTag)
         || !(foundnode->flags & FlagMethFld)) {
         errorMsgNode((INode*)callnode, ErrorNotPublic, "Method or field `%s` not found.", &methsym->namestr);
         return 0;
@@ -327,13 +327,13 @@ int fnCallLowerMethod(FnCallNode *callnode) {
 
         derefInject(&callnode->objfn);  // automatically deref any reference/ptr, if needed
         methfld->tag = MbrNameUseTag;
-        methfld->dclnode = (INode*)foundnode;
-        callnode->vtype = methfld->vtype = foundnode->vtype;
+        methfld->dclnode = foundnode;
+        callnode->vtype = methfld->vtype = ((IExpNode*)foundnode)->vtype;
         callnode->tag = FldAccessTag;
         return 1;
     }
 
-    FnDclNode *bestmethod = iNsTypeFindBestMethod((FnDclNode *)foundnode, &callnode->objfn, callnode->args);
+    FnDclNode *bestmethod = iNsTypeFindBestMethod(foundnode, &callnode->objfn, callnode->args);
     if (bestmethod == NULL) {
         errorMsgNode((INode*)callnode, ErrorNotPublic, "No matching method '%s' found that matches the call's arguments.", &methsym->namestr);
         return 0;
@@ -380,30 +380,7 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
     }
     nodesInsert(&callnode->args, callnode->objfn, 0);
 
-    FnDclNode *bestmethod = NULL;
-    Nodes *args = callnode->args;
-    for (FnDclNode *methnode = (FnDclNode *)foundnode; methnode; methnode = methnode->nextnode) {
-        Nodes *parms = ((FnSigNode *)methnode->vtype)->parms;
-        if (parms->used != args->used)
-            continue;
-        // Unary method is an instant match
-        // Binary methods need to ensure acceptable second argument
-        if (args->used > 1) {
-            INode *parm1type = iexpGetTypeDcl(nodesGet(parms, 1));
-            INode *arg1type = iexpGetTypeDcl(nodesGet(args, 1));
-            if (parm1type->tag == PtrTag || parm1type->tag == RefTag) {
-                // When pointers are involved, we want to ensure they are the same type
-                if (!itypeIsSame(arg1type, iexpGetTypeDcl(nodesGet(args, 0))))
-                    continue;
-            }
-            else {
-                if (!iexpCoerce(&nodesGet(args, 1), parm1type))
-                    continue;
-            }
-        }
-        bestmethod = methnode;
-        break;
-    }
+    FnDclNode *bestmethod = iNsTypeFindPtrMethod(foundnode, callnode->args);
     if (bestmethod == NULL) {
         errorMsgNode((INode*)callnode, ErrorNoMeth, "No method's parameter types match the call's arguments.");
         callnode->vtype = ((IExpNode*)obj)->vtype; // make up a vtype

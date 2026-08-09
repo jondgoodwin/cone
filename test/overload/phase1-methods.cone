@@ -1,0 +1,81 @@
+// Phase 1 characterization fixture: overloaded methods.
+// Captures the behavior that must not change when overload chains are
+// replaced by FnOverloadDclNode.
+
+import stdio::*
+
+// Same-named methods: value receiver, reference receiver, and extra parameter
+struct Point:
+  x f32
+  y f32
+
+  fn add(self) f32:
+    x + y
+  fn add(self &) f32:
+    x - y
+  fn add(self, other) f32:
+    self.x + other.x
+
+fn pointMethods() f32:
+  mut pt = Point[1., 2.]
+  imm other = Point[3., 4.]
+  imm valsum = pt.add()
+  imm refsum = (&pt).add()
+  imm twosum = pt.add(other)
+  valsum + refsum + twosum
+
+// Overloaded methods on types used through a virtual reference
+struct Rect:
+  w f32
+  h f32
+
+  fn area(self &) f32:
+    w * h
+  fn area(self &, scale f32) f32:
+    w * h * scale
+
+struct Circle:
+  r f32
+
+  fn area(self &) f32:
+    3.14 * r * r
+  fn area(self &, scale f32) f32:
+    3.14 * r * r * scale
+
+trait Shape:
+  fn area(self &) f32
+
+fn virtualArea(shape &<Shape) f32:
+  shape.area()
+
+fn shapes() f32:
+  imm rect = Rect[2., 3.]
+  imm circle = Circle[4.]
+  virtualArea(&rect) + virtualArea(&circle)
+
+// Overloaded methods reached through a trait-typed struct field
+struct Counter:
+  count i32
+
+  fn bump(self &mut):
+    count = count + 1
+  fn bump(self &mut, amount i32):
+    count = count + amount
+
+fn tallies() i32:
+  mut tally = Counter[0]
+  (&mut tally).bump()
+  (&mut tally).bump(3)
+  tally.count
+
+// The embedded stdio stream declares five same-named `<-` methods
+fn streaming():
+  print <- "text literal"
+  print <- 42i64
+  print <- 7u64
+  print <- 3.5d
+
+fn methodmain():
+  imm areas = pointMethods() + shapes()
+  imm counted = tallies()
+  streaming()

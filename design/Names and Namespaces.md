@@ -53,7 +53,7 @@ changing it.
 
 | C file | Name/namespace capability |
 | --- | --- |
-| `src/c-compiler/ir/instype.c` | Provides shared namespaced-type operations, method insertion/overload chains, field/method lookup, and method candidate selection. |
+| `src/c-compiler/ir/instype.c` | Provides shared namespaced-type operations, method insertion into direct or grouped overload bindings, field/method lookup, and method candidate selection. |
 | `src/c-compiler/ir/types/struct.c` | Owns struct/trait member namespaces, inserts fields and `Self`, hooks members and generic parameters during resolution, and performs inherited member lookup/collision checks. |
 | `src/c-compiler/ir/exp/fncall.c` | Resolves fields and overloaded methods from type namespaces, lowers member access/calls, inserts implicit `self`, and finds `init` for type calls. |
 | `src/c-compiler/ir/meta/macro.c` | Establishes macro parameter scope and resolves names in macro bodies before expansion. |
@@ -82,7 +82,8 @@ Current compiler behavior:
 
 - Structs and traits have one namespace containing fields, methods, static functions, inherited members, and `Self`.
 - A field or static function cannot collide with another member name.
-- Methods alone may currently overload; all methods with the spelling are chained behind the namespace's first function node.
+- Methods alone may currently overload. The first method declared for a spelling binds directly to its `FnDclNode`. A second same-named method replaces that binding with an `FnOverloadDclNode` holding both, and later methods are appended to its candidate vector. This direct-single/grouped-multiple representation is temporary: Phase 2 of the overload refactor gives every concrete declaration a unique name and binds every explicit overload name to an `FnOverloadDclNode`, even for a single candidate.
+- Every executable implementation remains a separate `FnDclNode`. The overload node is only a namespace binding, so lookup, call lowering, trait reconciliation, vtables, and code generation always record the selected concrete node.
 - A method cannot share a spelling with a field.
 - Struct/trait generic parameters form an enclosing lexical context while the type is resolved.
 - Unions reuse struct-like IR flags. Documented nested union variants are intended to be hoisted into the surrounding module rather than placed in a union namespace, but union support is incomplete.
@@ -136,7 +137,7 @@ After selection, the call refers directly to the chosen concrete function or met
 
 Visibility is checked on the name the caller uses. A public overload-set NameDef may expose concrete functions whose unique names are private, because those concrete names are implementation identities and are not looked up by the caller. Code generation must nevertheless make every concrete candidate reachable wherever its public overload set can be called.
 
-Extending a type's overload sets from an extension is intended, but its ownership and collision rules are deferred until extensions are designed. Generic candidates and merging matching `extern` declarations with implementations are likewise deferred; neither should cause the initial representation to inherit today's linked-list overload behavior.
+Extending a type's overload sets from an extension is intended, but its ownership and collision rules are deferred until extensions are designed. Generic candidates and merging matching `extern` declarations with implementations are likewise deferred; neither should cause the representation to inherit the linked-list overload behavior that `FnOverloadDclNode` replaced.
 
 ## Lookup and qualified paths
 
@@ -159,7 +160,7 @@ While resolving a type body, the compiler places the type's members in the looku
 
 - A parameter or local with the same spelling shadows the type member.
 - If no nearer binding shadows an instance field, its bare name is lowered to `self.field`.
-- If no nearer binding shadows an instance method, calling its bare name is lowered to `self.method(...)`.
+- If no nearer binding shadows an instance method, calling its bare name is lowered to `self.method(...)`. This applies to an overloaded name too: the bare name resolves to the type's `FnOverloadDclNode`, and the lowered member call selects the concrete candidate.
 - `self.field` or `self.method(...)` explicitly selects the member when a lexical name shadows it.
 
 Implicit `self` is therefore lowering performed after ordinary name resolution has selected an unqualified type member; it does not take precedence over lexical bindings.
@@ -221,7 +222,8 @@ Generic and macro syntax exists in the current compiler, but the website documen
 ## Known gaps between implementation and intent
 
 - Overloading:
-	- The current method-overload representation and selection algorithm are not the desired final design.
+	- The current method-overload selection algorithm is not the desired final design. Candidates are still ranked by first exact match, then lowest numeric coercion score, then declaration order.
+	- The overload binding is now an `FnOverloadDclNode`, but a concrete method still has no name of its own that is distinct from the overload name, and an explicit `overload` declaration syntax does not exist yet.
 	- Global function overloading is documented but unimplemented.
 - Compile unit handling of duplicate, consistent type `extern` vs. value-specified names.
 - Selective import folding and `as` renaming are documented but unimplemented.

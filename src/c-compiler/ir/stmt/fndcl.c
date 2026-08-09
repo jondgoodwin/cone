@@ -20,8 +20,16 @@ FnDclNode *newFnDclNode(Name *namesym, uint16_t flags, INode *type, INode *val) 
     node->value = val;
     node->llvmvar = NULL;
     node->genname = namesym? &namesym->namestr : "";
-    node->nextnode = NULL;
     node->genericinfo = NULL;
+    return node;
+}
+
+// Create a new overloaded function/method declaration node
+FnOverloadDclNode *newFnOverloadDclNode(Name *namesym) {
+    FnOverloadDclNode *node;
+    newNode(node, FnOverloadDclNode, FnOverloadDclTag);
+    node->namesym = namesym;
+    node->overloads = newNodes(2);
     return node;
 }
 
@@ -31,7 +39,6 @@ INode *cloneFnDclNode(CloneState *cstate, FnDclNode *oldfn) {
     FnDclNode *newnode = memAllocBlk(sizeof(FnDclNode));
     memcpy(newnode, oldfn, sizeof(FnDclNode));
     newnode->genericinfo = NULL;
-    newnode->nextnode = NULL; // clear out linkages
     newnode->vtype = cloneNode(cstate, oldfn->vtype);
     newnode->value = cloneNode(cstate, oldfn->value);
     cloneDclPop(dclpos);
@@ -52,6 +59,19 @@ void fnDclPrint(FnDclNode *node) {
         if (node->value->tag == BlockTag)
             inodePrintNL();
         inodePrintNode(node->value);
+    }
+}
+
+// Serialize an overloaded function/method declaration node.
+// Only the candidates' signatures are printed, as each candidate is
+// separately printed by the module or type that owns it.
+void fnOverloadDclPrint(FnOverloadDclNode *node) {
+    inodeFprint("overload %s", &node->namesym->namestr);
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(node->overloads, cnt, nodesp)) {
+        inodeFprint(" ");
+        inodePrintNode(((FnDclNode *)*nodesp)->vtype);
     }
 }
 

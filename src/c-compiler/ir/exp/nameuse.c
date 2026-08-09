@@ -179,6 +179,7 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
     // Distinguish whether a name is for a variable/function name vs. type
     if (name->dclnode->tag == VarDclTag 
         || name->dclnode->tag == FnDclTag 
+        || name->dclnode->tag == FnOverloadDclTag
         || name->dclnode->tag == ConstDclTag)
         name->tag = VarNameUseTag;
     else if (name->dclnode->tag == MacroDclTag)
@@ -192,6 +193,12 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
 // Handle type check for variable/function name use references
 void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
     NameUseNode *name = *namep;
+    // An overload set has no type of its own. The enclosing call rewrites this use
+    // to the concrete method it selects, which is where the type comes from.
+    if (name->dclnode->tag == FnOverloadDclTag) {
+        name->vtype = unknownType;
+        return;
+    }
     name->vtype = ((IExpNode*)name->dclnode)->vtype;
 }
 

@@ -24,6 +24,7 @@ Internal representation (IR) nodes are central to all passes:
 |      |              |                                                             |
 |      | Module       | Module declaration                                          |
 |      | FnDcl        | Function/method declaration `fn`                            |
+|      | FnOverloadDcl | Overloaded function/method declarations sharing one name   |
 |      | VarDcl       | Variable declaration (global, local, parm)                  |
 |      | FieldDcl     | Field declaration in a struct, etc.                         |
 |      | ConstDclTag  | Constant declaration                                        |
@@ -110,4 +111,18 @@ All IR node types start with these common fields (see inodes.h):
 | linenbr  | uint32_t | line number in source file                          |
 | tag      | uint16_t | Encoded node type+flags (see NodeTags and below)    |
 | flags    | uint16_t | compile-time flags                                  |
+
+## FnOverloadDcl
+
+`FnOverloadDclNode` (see `ir/stmt/fndcl.h`) is the namespace binding for a name
+declared by more than one function or method. It holds only the common `INode`
+header, its `namesym`, and an ordered `Nodes *overloads` vector of the concrete
+`FnDclNode` candidates. It has no function type, body, LLVM value, or generated
+symbol: every executable implementation remains a separate `FnDclNode`, and a
+call is always lowered to the concrete node that was selected.
+
+Because the module or type that owns the candidates already walks each concrete
+`FnDclNode`, name resolution and type checking of an `FnOverloadDclNode` are
+explicit no-ops; walking its vector again would process the same function
+bodies twice.
 

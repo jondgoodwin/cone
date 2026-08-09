@@ -310,7 +310,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
                     if ((*nodesp)->tag != FnDclTag)
                         continue;
                     FnDclNode *traitmeth = (FnDclNode*)*nodesp;
-                    FnDclNode *structmeth = (FnDclNode*)iNsTypeFindFnField((INsTypeNode *)node, traitmeth->namesym);
+                    INode *structmeth = iNsTypeFindFnField((INsTypeNode *)node, traitmeth->namesym);
                     if (structmeth == NULL)
                         // Inherit default method
                         structInheritMethod(node, traitmeth, trait, &cstate);
@@ -423,8 +423,9 @@ int structAddVtableImpl(StructNode *basenode, StructNode *strnode) {
             // Locate the corresponding method with matching name and vtype
             // Note, we need to be flexible in matching the self parameter
             FnDclNode *meth = (FnDclNode *)*nodesp;
-            FnDclNode *strmeth = (FnDclNode *)namespaceFind(&strnode->namespace, meth->namesym);
-            if ((strmeth = iNsTypeFindVrefMethod(strmeth, meth)) == NULL)
+            INode *strbinding = namespaceFind(&strnode->namespace, meth->namesym);
+            FnDclNode *strmeth = iNsTypeFindVrefMethod(strbinding, meth);
+            if (strmeth == NULL)
                 return 0;
             // it matches, add the method to the implementation
             nodesAdd(&impl->methfld, (INode*)strmeth);
@@ -567,8 +568,8 @@ TypeCompare structMatches(StructNode *to, INode *fromdcl, SubtypeConstraint cons
         // Locate the corresponding method with matching name and vtype
         // Note, we need to be flexible in matching the self parameter
         FnDclNode *meth = (FnDclNode *)*nodesp;
-        FnDclNode *strmeth = (FnDclNode *)namespaceFind(&from->namespace, meth->namesym);
-        if ((strmeth = iNsTypeFindVrefMethod(strmeth, meth)) == NULL)
+        INode *frombinding = namespaceFind(&from->namespace, meth->namesym);
+        if (iNsTypeFindVrefMethod(frombinding, meth) == NULL)
             return NoMatch;
     }
     // Technique for comparing fields varies ...

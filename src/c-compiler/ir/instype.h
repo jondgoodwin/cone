@@ -31,7 +31,9 @@ typedef struct VarDclNode VarDclNode;
 void iNsTypeInit(INsTypeNode *type, int nodecnt);
 
 // Add a static function or potentially overloaded method to dictionary
-// If method is overloaded, add it to the link chain of same named methods
+// The first method declared for a name binds directly to its FnDclNode.
+// A second same-named method replaces that binding with an FnOverloadDclNode
+// holding both, and later methods are appended to that node's candidates.
 void iNsTypeAddFnDict(INsTypeNode *type, FnDclNode *fnnode);
 
 // Add a function/method to type's dictionary and owned list
@@ -42,13 +44,17 @@ void iNsTypeAddFn(INsTypeNode *type, FnDclNode *fnnode);
 INode *iNsTypeFindFnField(INsTypeNode *type, Name *name);
 
 // Find method that best fits the passed arguments
-// 'firstmethod' is the first method that matches the name
-// We follow its forward links to find one whose parameter types best match args types
-// isvref skips type checking of the 'self' parameter for virtual references
-FnDclNode *iNsTypeFindBestMethod(FnDclNode *firstmethod, INode **self, Nodes *args);
+// 'binding' is the namespace's binding for the method's name:
+// either a single FnDclNode or an FnOverloadDclNode holding all candidates
+FnDclNode *iNsTypeFindBestMethod(INode *binding, INode **self, Nodes *args);
+
+// Find the first pointer/reference method candidate that accepts the passed arguments
+// 'binding' is the namespace's binding for the method's name
+FnDclNode *iNsTypeFindPtrMethod(INode *binding, Nodes *args);
 
 // Find method whose method signature matches exactly (except for self)
+// 'binding' is the namespace's binding for the method's name
 // return NULL if none
-FnDclNode *iNsTypeFindVrefMethod(FnDclNode *firstmeth, FnDclNode *matchmeth);
+FnDclNode *iNsTypeFindVrefMethod(INode *binding, FnDclNode *matchmeth);
 
 #endif
