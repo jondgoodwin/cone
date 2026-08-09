@@ -1,0 +1,527 @@
+<html>
+  <head>
+	  <title>Lexical Elements - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Lexical Elements</div>
+		</div>
+
+    <div class="text">
+		<p>A source program is a collection of UTF-8 encoded characters.
+			The job of the lexer is to group adjacent characters together into distinct 
+			<a href="#tokens">tokens</a>, separated by 
+			<a href="#whitespace">white-space</a> and <a href="#comment">comments</a>.
+			For the most part, the compiler's grammar-driven parser only uses the tokens, 
+			and ignores all human-friendly white-space.
+			A notable exception to this is when <a href="#indent">line indentation</a>
+			is significant when processing multi-line strings,
+			and determining the end of some blocks or multi-line statements.</p>
+
+		<h2 id="tokens">Tokens</h2>
+		<p>The type of every token is determined by its first characters:</p>
+		<ul>
+		<li><b><a href="#number">Integer or Float Literal</a></b>
+		begins with a numeric digit from '0' to '9'.</li>
+		<li><b><a href="#char">Character Literal</a></b>
+		begins with a single quote (').</li>
+		<li><b><a href="#string">String Literal</a></b>
+		begins with a double quote ("), r", or r`</li>
+		<li><b><A href="#lifetime">Lifetime Annotation</a></b>
+		begins with a single quote (').</li>
+		<li><b><a href="#ident">Identifier</a></b>
+		begins with a unicode-defined letter, 
+		an at sign '@', the hash '#', an underscore '_', or a backtick (`).</li>
+		<li><b><a href="#keywords">Keyword</a></b>
+		looks like an identifier, but is reserved exclusively for the compiler.</li>
+		<li><b><a href="#oper">Operator</a></b>
+		begins with certain punctuation characters between U+0021 and U+007F.</li>
+		<li><b><a href="#eof">End-of-file</a></b>, 
+		which is the null character (U+0000), end-of-file character (U+001A) or the end of the program.</li>
+		</ul>
+
+		<h3 id="number">Numeric Literal</h3>
+		<p>A numeric digit (from '0' to '9') starts an integer or float literal.
+		Although a negative sign ('-') preceding a numeric literal is
+		not considered part of the token (as that dash might be a minus sign), 
+		it still has the desired effect of negating the number that follows.
+		Using a negative sign on an unsigned integer literal does not make it a signed one.</p>
+		<p>Underscores may be used within a numeric literal to improve readability.</p>
+		
+		<h4>Integer Literal</h4>
+		<p>An Integer literal may be:</p>
+		<ul>
+		<li><b>Decimal integer.</b>
+		A simple sequence of numeric digits which stops at the first non-digit character.</li>
+		<li><b>Hexadecimal integer.</b>
+		Starts with '0x' followed by either numeric digits or 'a'-'f' (or 'A'-'F') to 
+		represent the hexadecimal digit values ten through fifteen.</li>
+		</ul>
+		<p>By default, an integer literal is a signed 32-bit number.
+		To change this, specify one of the following suffixes:</p>
+		<ul>
+		<li><b>i8</b> signed, 8-bit.</li>
+		<li><b>i16</b> signed, 16-bit.</li>
+		<li><b>i64</b> signed, 64-bit.</li>
+		<li><b>u8</b> unsigned, 8-bit.</li>
+		<li><b>u16</b> unsigned, 16-bit.</li>
+		<li><b>u32</b> or <b>u</b> unsigned, 32-bit.</li>
+		<li><b>u64</b> unsigned, 64-bit.</li>
+		<li><b>usize</b> unsigned, 32- or 64-bit.</li>
+		<li><b>isize</b> signed, 32- or 64-bit.</li>
+		</ul>
+		
+		<h4>Float Literal</h4>
+		<p>A float literal also starts with a digit from '0' to '9'.
+		To distinguish it from an integer literal, it must contain a decimal point, exponent ('E' or 'e'),
+		or a type suffix that explicitly declares it to be a float ('f', 'd', 'f32' or 'f64').
+		A period is considered to be a decimal point if it is unambiguously not being used as part of a
+		range operator; which is to say that the period is not immediately followed by another period.</p>
+		<p>The Float token may specify an exponent, which is indicated by 
+		an 'e' or 'E' followed by an optional minus sign and additional numeric digits.</p>
+		<p>By default, an float literal is a 32-bit number.
+		To change this, specify one of the following suffixes:</p>
+		<ul>
+		<li><b>f</b> or <b>f32</b> 32-bit.</li>
+		<li><b>d</b> or <b>f64</b> 64-bit.</li>
+		</ul>
+		
+		<h3 id="char">Character Literal</h3>
+		<p>A character literal begins and ends with a single quote (')
+		within which must be found a single UTF-8 unicode character.
+		Its type is u8 if its value fits in a byte.
+		Otherwise it is u32 (an unsigned, 32-bit integer) if its does not fit in a byte
+		or has a 'u' appended at the end of the literal (e.g., <span class="pre">'a'u</span>).</p>
+		<p>Any character whose Unicode value is 0x0020 or higher can be specified explicitly.
+		Alternatively, one of the following escape sequences that begin with '\' may be used:</p>
+		<dl id="escape">
+		<dt>\a</dt><dd>Alarm (U+0007)</dd>
+		<dt>\b</dt><dd>Backspace (U+0008)</dd>
+		<dt>\f</dt><dd>Form feed (U+000C)</dd>
+		<dt>\n</dt><dd>New-line (U+000A)</dd>
+		<dt>\r</dt><dd>Return (U+000D)</dd>
+		<dt>\t</dt><dd>Tab (U+0009)</dd>
+		<dt>\v</dt><dd>Vertical tab (U+000B)</dd>
+		<dt>\\</dt><dd>\</dd>
+		<dt>\'</dt><dd>'</dd>
+		<dt>\"</dt><dd>"</dd>
+		<dt>\0</dt><dd>Null character (U+0000)</dd>
+		<dt>\x<i>nn</i></dt><dd>hexadecimal code value for a byte.</dd>
+		<dt>\u<i>nnnn</i></dt><dd>unicode character which matches the specified hexadecimal code point.</dd>
+		<dt>\U<i>nnnnnnnn</i></dt><dd>unicode character which matches the specified hexadecimal code point.</dd>
+		</dl>
+		
+		<h3 id="string">String Literal</h3>
+		<p>With string literals, multiple techniques are offered for specifying text content:
+		All allow specification of multiple unicode characters,
+		but they vary in the handling of a few special characters
+		as needed for different circumstances.</p>
+		<p>A null character (U+0000) is always appended to the end of a string literal, for C compability.
+		All string literals are treated as immutable.</p>
+		
+		<h4>Escaped vs. Raw Text</h4>
+		<p>Many times it is convenient to use <a href="escape">escape sequences</a>
+		in order to visibly include control and unicode characters.
+		Other times, such as with regular expressions or XML text,
+		it is less error-prone and more readable to be able to specify backslashes or double quotes without
+		having to escape them with backslashes.</p>
+		<p>The first characters of the string literal establishes how escape sequences are handled:</p>
+		<ul>
+		<li>Just a double quote (") begins a string literal that uses escape sequences.
+		If a double quote or backslash is needed as part of the content, they must be escaped with a backslash.</li>
+		<li>'r' followed by a double quote (r") begins a raw string literal which does not use escape sequences.
+		Backslashes need not be escaped. Double quotes cannot appear in the string literal.</li>
+		<li>'r' followed by a backtick (r`) begins a raw string literal which does not use escape sequences.
+		Backslashes and double-quotes need not be escaped. Backticks cannot appear in the string literal.</li>
+		<li>Three double-quotes (""") begins a string literal that uses escape sequences.
+		Backslashes must be escaped, but double quotes need not be.</li>
+		<li>'r' followed by three double quotes (r""") begins a raw string literal which does not use escape sequences.
+		Neither backslashes nor double quotes need to be escaped to appear in the text content.</li>
+		</ul>
+		<p>If a string literal begins with a single double-quote (or backtick),
+		it ends with the next double quote (or backtick).
+		If the string literal begins with a triple double-quote, it ends with a triple double-quote.
+		If there are more than three double-quotes at the end, the terminator is the last three:</p>
+<pre>
+""""Happy Birthday!""""   // yields the string literal: "Happy Birthday!"
+</pre>
+
+		<h4>Multi-line String Literals</h4>
+		<p>Some string literals are long enough to require multiple lines of code to specify.
+		It would be convenient to be able to format such content properly using indentation and
+		readable margins, without that formatting necessarily carrying over into the text of the literal.</p>
+		<p>These are the rules that make that possible:</p>
+		<ul>
+		<li>Multi-line string literals must end the line right after the last of the opening double-quotes.
+		The end-of-line character(s) that follow are not included in the string literal.</li>
+		<li>The double quotes that terminate the literal must appear at the start of a subsequent line,
+		although they may be indented by any number of spaces or tabs.</li>
+		<li>The lines in-between contain the string literal's content.
+		Space or tab indentation equivalent to that found on the terminating double-quotes line are stripped.
+		A new-line character is appended to the line's content, unless the end-of-line is preceded by a backslash.</li>
+		</ul>
+		<p>For example:</p>
+<pre>
+// Equivalent to "a\nb"
+"
+   a
+   b\
+   "
+</pre>
+		
+		<h3 id="lifetime">Lifetime Annotation</h3>
+		<p>A lifetime annotation looks similar to a character literal,
+			in that it begins with a single quote (').
+			It is followed by a letter and then any number of alphanumeric characters.
+			The absence of a closing single-quote distinguishes it from a character literal.</p>
+<pre>
+'a
+'static
+</pre>
+	
+		<h3 id="ident">Identifier</h3>
+		<p>Other than the reserved <a href="#keywords">keywords</a>,
+		a program may define and use any identifier as a variable, member, function, method, type, etc.</p>
+		<p>Typically, an identifier begins with a letter, '@' (attributes), '#' (metaprogramming) or '_'. 
+		A letter may be 'a'-'z', 'A'-'Z', or
+		any unicode-defined universal letter as defined by C99 in ISO/IEC 9899:1999(E) Appendix D.
+		Identifiers are case-sensitive; 'abc' is different from 'ABC'.</p>
+		<p>Subsequent characters may be a letters, digits, '$', or '_'.</p>
+		<p>To be able to include other characters, such as punctuation, as part of an identifier
+		enclose the entire identifier in back-ticks.</p>
+		<p>The following are all valid identifiers:</p>
+<pre>
+balance toReturn True _temp_ $ π `*`
+</pre>
+		<p><b>Note</b>: '_' by itself (not followed by a letter or a number) is not an identifier,
+		but a special punctuation token.</p>
+
+		<h4 id="keywords">Keywords</h4>
+		<p>These keywords are <b>reserved</b> and may not be used as identifiers:</p>
+		
+		<dl>
+		<dt>and</dt>
+		<dd>logical 'and' operator used in boolean expressions</dd>
+		<dt>async</dt>
+		<dd>asynchronous execution</dd>
+		<dt>baseurl</dt>
+		<dd>url of the program's source code</dd>
+		<dt>break</dt>
+		<dd>terminate a loop block</dd>
+		<dt>context</dt>
+		<dd>The value of the currently executing execution state</dd>
+		<dt>continue</dt>
+		<dd>Re-iterate a 'while' or 'for' block</dd>
+		<dt>each</dt>
+		<dd>The block for iterating over a collection of values</dd>
+		<dt>else</dt>
+		<dd>A clause within an 'if' statement</dd>
+		<dt>elif</dt>
+		<dd>A clause within an 'if' statement</dd>
+		<dt>false</dt>
+		<dd>The value of 'false'</dd>
+		<dt>if</dt>
+		<dd>A conditional statement</dd>
+		<dt>in</dt>
+		<dd>A clause within a 'each' block</dd>
+		<dt>into</dt>
+		<dd>A clause within a 'match/with' block</dd>
+		<dt>local</dt>
+		<dd>ensures variable(s) are treated as locally scoped</dd>
+		<dt>match</dt>
+		<dd>Matches a calculated value to several possible values</dd>
+		<dt>new</dt>
+		<dd>Creates a new instance</dd>
+		<dt>not</dt>
+		<dd>logical 'not' operator used in boolean expressions</dd>
+		<dt>or</dt>
+		<dd>logical 'or' operator used in boolean expressions</dd>
+		<dt>return</dt>
+		<dd>terminate execution of a method with a return value</dd>
+		<dt>self</dt>
+		<dd>references the method's self parameter value</dd>
+		<dt>selfmethod</dt>
+		<dd>the currently executing method or closure</dd>
+		<dt>this</dt>
+		<dd>The value of the most inclusive 'with' block</dd>
+		<dt>true</dt>
+		<dd>The value of 'true'</dd>
+		<dt>using</dt>
+		<dd>clause on this block</dd>
+		<dt>wait</dt>
+		<dd>A block that waits until all its execution contexts are done.</dd>
+		<dt>while</dt>
+		<dd>A repetitive block</dd>
+		<dt>with</dt>
+		<dd>A clause in a 'match' block</dd>
+		<dt>yield</dt>
+		<dd>suspend a generator with a return value</dd>
+		</dl>
+
+		<h3 id="oper">Operator and Precedence</h3>
+		<p>An operator is a sequence of one or more punctuation characters with no intervening white space.
+		The compiler is greedy, and will look for the longest character sequence that matches one of these operators.
+		<p>The operators are sequenced from highest to lowest evaluation priority. 
+		Operators grouped together have the same priority.
+		In parenthesis is shown whether an operator appears in front of a value (prefix) or 
+		between values (infix). Some operators can be used in both contexts.
+		It also specifies the symbolic name of any method associated with that operator.</p>
+		
+		<h4>Value operators</h4>
+		<dl>
+		<dt>( )</dt>
+		<dd><i>(p)</i> prioritizes expression to be evaluated as a group</dd>
+		<dt>[ ]</dt>
+		<dd><i>(p)</i> array</dd>
+		<dt>{ }</dt>
+		<dd><i>(p)</i> code block</dd>
+		</dl>
+		
+		<h4>Term operators</h4>
+		<dl>
+		<dt>.</dt>
+		<dd><i>(i)</i> method call/property access</dd>
+		<dt>::</dt>
+		<dd><i>(i '[]')</i> indexed access</dd>
+		<dt>( )</dt>
+		<dd><i>(i)</i> method call parameters</dd>
+		<dt>[ ]</dt>
+		<dd><i>(i '[]')</i> indexed access</dd>
+		</dl>
+		
+		<h4>Prefix operators</h4>
+		<dl>
+		<dt>-</dt>
+		<dd><i>(p '@-')</i> negate</dd>
+		<dt>@</dt>
+		<dd><i>(p)</i> Internet resource load</dd>
+		<dt>&lt;&lt;</dt>
+		<dd><i>(p '&lt;&lt;')</i> append to 'this'</dd>
+		<dt>&gt;&gt;</dt>
+		<dd><i>(p '&gt;&gt;')</i> prepend to 'this'</dd>
+		</dl>
+		
+		<h4>Arithmetic/Collection operators</h4>
+		<dl>
+		<dt>**</dt>
+		<dd><i>(i '**')</i> exponent</dd>
+		</dl>
+		<dl>
+		<dt>*</dt>
+		<dd><i>(i '*')</i> multiply</dd>
+		<dt>/</dt>
+		<dd><i>(i '/')</i> divide/split</dd>
+		<dt>%</dt>
+		<dd><i>(i '%')</i> remainder</dd>
+		</dl>
+		<dl>
+		<dt>+</dt>
+		<dd><i>(i '+')</i> add</dd>
+		<dt>-</dt>
+		<dd><i>(i '-')</i> subtract</dd>
+		</dl>
+		
+		<h4>Range operator</h4>
+		<dl>
+		<dt>..</dt>
+		<dd><i>(i)</i> creates a range</dd>
+		</dl>
+
+		<h4>Evaluation operators</h4>
+		<dl>
+		<dt>==</dt>
+		<dd><i>(i '<=>')</i> equal</dd>
+		<dt>!=</dt>
+		<dd><i>(i '<=>')</i> not equal</dd>
+		<dt>===</dt>
+		<dd><i>(i)</i> equivalent</dd>
+		<dt>is</dt>
+		<dd><i>(i 'is')</i> match</dd>
+		<dt><=></dt>
+		<dd><i>(i '<=>')</i> compare (rocketship)</dd>
+		<dt>&lt;</dt>
+		<dd><i>(i '<=>')</i> less than</dd>
+		<dt>&lt;=</dt>
+		<dd><i>(i '<=>')</i> less than or equal</dd>
+		<dt>&gt;</dt>
+		<dd><i>(i '<=>')</i> greater than</dd>
+		<dt>&gt;=</dt>
+		<dd><i>(i '<=>')</i> greater than or equal</dd>
+		</dl>
+		
+		<h4>Evaluation operators</h4>
+		<dl>
+		<dt>! <i>not</i></dt>
+		<dd><i>(p)</i> logical not</dd>
+		</dl><dl>
+		<dt>&& <i>and</i></dt>
+		<dd><i>(i)</i> logical and</dd>
+		</dl><dl>
+		<dt>|| <i>or</i></dt>
+		<dd><i>(i)</i> logical or</dd>
+		</dl>
+
+		<h4>Append/Prepend operators</h4>
+		<dl>
+		<dt>&lt;&lt;</dt>
+		<dd><i>(i '&lt;&lt;')</i> append</dd>
+		<dt>&gt;&gt;</dt>
+		<dd><i>(i '&gt;&gt;')</i> prepend</dd>
+		</dl>
+
+		<h4>Assignment operators</h4>
+		<p><b>Note:</b> Within variable declarations, the evaluation priority of ',' and '=' are reversed.</p>
+		<dl>
+		<dt>,</dt>
+		<dd><i>(i)</i> value separation</dd>
+		</dl><dl>
+		<dt>=</dt>
+		<dd><i>(i)</i> assign</dd>
+		<dt>+=</dt>
+		<dd><i>(i '+')</i> add in place</dd>
+		<dt>-=</dt>
+		<dd><i>(i '-')</i> subtract in place</dd>
+		<dt>*=</dt>
+		<dd><i>(i '*')</i> multiply in place</dd>
+		<dt>/=</dt>
+		<dd><i>(i '/')</i> divide in place</dd>
+		</dl>
+		
+		<h4>Statement terminator</h4>
+		<p>The semicolon <span class="pre">;</span> is the lowest priority "operator".</p>
+		
+		<h3 id="eof">End-of-File</h3>
+		<p>The program code ends when it reaches a null character (U+0000), end-of-file character (U+001A) 
+		or has no more characters. 
+		The lexer will tidy up whatever is unfinished (e.g., still open blocks, literals, or comments)
+		and then will generate the end-of-file token for the parser.</p>
+		
+		<h2 id="whitespace">Whitespace</h2>
+		<p>Whitespace consists of the source characters which are largely ignored by the parser.
+			Whitespace comes in two forms:</p>
+		<ul>
+		<li><b>Whitespace characters.</b> These are all the ASCII control codes (1 - 32),
+			including space, tab, new-line and carriage return. These are primarily useful
+			for fashioning a human-digestible layout to the program and separating two tokens.
+			However, spaces and tabs found at the beginning of a line can sometimes be significant
+			to determining where a statement or block ends.
+			<p><b>Note:</b> If the program source begins with the UTF-8 byte-order mark (U+FEFF), it is ignored.
+			</p>
+		</li>
+		<li><b>Comments.</b> These are used to provide helpful documentation that improve
+			a human reader's understanding of the source program.
+		    Cone supports both line and block comments.</li>
+		</ul>
+
+		<h3 id="indent">Significant Indentation</h3>
+		<p>The newline character separates one line from the next (carriage returns are ignored).
+			Every line's indentation is the count of all spaces or tabs found at the start of each line.
+			To reduce errors, a source program should be consistent in the indentation character it uses;
+			either use only spaces or only tabs.
+			A warning is produced when a source program uses both tabs and spaces as indentation characters.</p>
+		<p>Most of the time, a line's indentation is irrelevant to the grammar and is ignored.
+			However, there are times the parser will pay attention to indentation to
+			determine when a statement or block ends.</p>
+		
+		<h4 id="line">End-of-Statement Determination</h4>
+		<p>Some statements (e.g., <span class="pre">if</span>) finish with a block.
+			The rest are terminated by a semi-colon.
+			If multiple statements are found on the same line, they must be separated by semi-colons.</p>
+<pre>
+isEmpty = true; count = repl * elements
+</pre>
+		<p>However, a semi-colon may be omitted when it would normally be placed at the end of a line.
+			In most cases, the parser uses grammar rules to correctly determine when one statement
+			ends and another begins, consuming as many lines as needed to finish each statement.
+			Most of the time, this works out well and accurately.
+			However, sometimes it can be grammatically ambiguous whether a statement
+			should consume the next line, as it could validly be a separate statement or part of
+			the existing one. This occurs when the follow-on line begins with any operator
+			(such as '*', '-', '.', '?.', '&lt;-', '(', or '[')
+			that may serve as either a prefix or infix operator.</p>
+<pre>
+mut a = b
+*c
+</pre>
+		<p>Should this be understood to be <span class="pre">mut a = b * c</span>
+		or <span class="pre">mut a = b; *c</span>? Both are grammatically valid.</p>
+		<p>To make this determination, the compiler looks at whether the follow-on
+			line(s) are indented from the first line of the statement.
+			If so, it interprets it as a continuation of the statement.
+			If not, it interprets it as a new statement.</p>
+		<p>These rules mean the above example is considered to be two statements.
+			To make it a single statement, use indentation (which also helps people):</p>
+<pre>
+mut a = b
+  * c
+</pre>
+
+		<h3>Blocks and Significant Indentation</h3>
+		<p>Cone, like many languages, supports the use of curly braces to delimit
+			a block consisting of multiple statements:</p>
+<pre>
+if a == 0 {
+  break
+}
+</pre>
+		<p>Some people really prefer how nicely braces visually delimit the begin and end of blocks.
+			However, for very small blocks, like this one, this approach wastes precious vertical
+			space viewable in an editor. The '}' closing brace takes up a whole line by itself.
+			And for some style guides, the '{' opening brace is also put on its own second line.
+			These wasted lines mean less of the program's logic is viewable in an editor without scrolling.
+		</p>
+		<p>For those eager to compact lines together more readably, Cone provides
+			an alternative syntax for delimiting blocks.
+			Instead of beginning the block with '{', use ':' instead.
+			This can either be followed by the block statement(s) on the same line,
+			or one or more statements indented on the following lines.</p>
+		<p>Here is the above example where the block statement follows on the same line.</p>
+<pre>
+if a == 0: break
+</pre>
+		<p>One can also specify multiple statements for the block on the same line, 
+			separated by semicolons:</p>
+<pre>
+if onSameLine: doSomething(); doSomethingElse()
+</pre>
+		<p>The other approach is to put the block's statement(s) on follow-on lines,
+			indented from the previous line. The block ends when the indentation goes back to its
+			original amount.
+		</p>
+<pre>
+if a == 0:
+  outlier = current
+  break
+b = 5
+</pre>
+		<p>This example is equivalent to this curly-brace version:</p>
+<pre>
+if a == 0 {
+  outlier = current
+  break
+}
+b = 5
+</pre>
+
+		<h3 id="comment">Comments</h3>
+		<p>Comments make the code's logic easier to understand and maintain.
+		They are for people. They have no impact on program execution.</p>
+		<p>Comments may be placed between any two tokens
+		(and certainly not within a text literal).</p>
+		<p>There are two types of comments:</p>
+		<ul>
+		<li>A <b>line comment.</b> begins with '//' and continues to the end of line.</li>
+		<li>A <b>block comment</b> starts with '/*'. It ends with its corresponding '*/', 
+		extending across multiple lines, if desired.
+		Block comments may be nested inside each other.
+		Line comments may be nested inside a block comment.
+		'/*' or '*/' embedded in text literals or line comments are ignored.</li>
+		</ul>
+		
+	</div>
+	</body>
+</html>

@@ -1,0 +1,160 @@
+<html>
+  <head>
+	  <title>Option Types - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Option Types</div>
+		</div>
+
+    <div class="text">
+	<p style="margin-left: 40px;"><i>Note: Option values may be created and pattern matched. Most sugar is not working.</i></p>
+
+	<p>The Option type is a built-in union.
+		It is useful when we want to express the idea that
+		we may or may not have a value of a certain type.
+		In some languages, these are sometimes called nullable types, since null 
+		represents the absence of a value.
+		Optional values are so useful that many kinds of syntactic sugar exist to make them easy to work with.</p>
+
+	<h2>Creating Option Values</h2>
+	<p>Let's declare and initialize a variable that might hold an integer:</p>
+<pre>
+mut maybeInt ?i32 = 5
+</pre>
+	<p>Notice that the type specifies a question mark before the integer type.
+		The question mark signifies this is an Option type. It is a syntactic abbreviation for
+		<span class="pre">Option[i32]</span>.</p>
+	<p>The value of 5 is automatically coerced into its optional integer equivalent.
+		It would also be possible to specify this explicitly using
+		<span class="pre">Some[i32][5]</span> or its shorter inferred version:
+		<span class="pre">Some[5]</span>.</p>
+	<p>To initialize this variable as having no value, use None:</p>
+<pre>
+mut maybeInt ?i32 = None
+</pre>
+	<p>Again, <span class="pre">None</span> is an inferred abbreviation for
+		<span class="pre">None[i32]</span>. The abbreviation is only possible
+		when the context makes it clear what sort of Option type we are working with.
+		Thus, this is ambiguous and therefore an error:</p>
+<pre>
+mut maybeInt = None   // **ERROR**: What type does the Option wrap?
+</pre>
+
+	<p><b>Option References</b>
+		Option references are optimized so they take no more space than regular references.
+		The None reference value is just a non-addressable address (typically, 0).
+	</p>
+
+	<h2>Unwrapping Option Values</h2>
+	<p>We cannot work with an Option value in the same way we would a value of its enclosed type.
+		Imagine trying to add some number to a optional integer (for example: <span class="pre">maybeInt + 4</span>).
+		How should it perform the addition when maybeInt is None?
+		In the face of this uncertainty, the compiler views it as unsafe and will emit an error.</p>
+	<p>To safely work with a optional value, it must first be unwrapped. 
+		This means performing pattern matching on the optional value to determine whether it holds a value or None.
+		Based on which it is, we can then act one way in one case and another way otherwise.</p>
+	<p>Explicit pattern matching is versatile enough to handle any unwrap-and-act scenario,
+		but the resulting code may be undesirably verbose.
+		Several operators offer succinct ways to work with optional values.</p>
+
+	<h3>Force unwrap, treat None as an exception</h3>
+	<p>One approach is to expect the value to <b>not</b> be None, and treat it as an 
+		<a href="refexcept.html">exception</a> if it is.
+	To handle a optional value this way, follow the optional value with the <span class="pre">?</span> operator.</p>
+<pre>
+imm val = maybeInt?
+</pre>
+  <p>If maybeInt is not None, then val will be the unwrapped integer value inside.
+	<p>An exception will be thrown if maybeInt is None.
+	This exception can be caught and handled if a <span class="pre">catch None</span> handler is provided.
+		If one is not specified, the exception will panic.</p>
+
+	<h3>Give None a default value</h3>
+	<p>An alternative approach to unwrapping involves specifying a default value
+		use when the optional value is None. This form of unwrapping uses the
+		<span class="pre">or</span> operator:</p>
+<pre>
+imm val = (maybeInt or 0) * scale
+</pre>
+	<p><span class="pre">val</span> will use the value of <span class="pre">maybeInt</span>
+		if it is not None. Otherwise it will use 0.</p>
+	<p>The value to the right of the operator cannot be a optional type,
+		and its type must match that of the wrapped type for the optional value on the left.
+		The expression for the default value will only be evaluated
+		when the optional value is None.
+	</p>
+
+	<h3>None propagation on safe method calls</h3>
+	<p>A third operator applies when we want to perform some operation on a optional value
+		when it is <b>not</b> None, but evaluate to None when it is.
+		This approach uses the <span class="pre">?.</span> operator,
+		a variation of the dot operator used to perform methods or access fields:</p>
+<pre>
+imm x = maybePoint?.dist()
+</pre>
+  <p>If maybePoint is not None, then x is a optional value that wraps the calculated distance of that point.
+		However, if maybePoint is None, then x will also be None.
+		In effect, we are performing a method or accessing a field if it is safe to do so,
+		and propagating None otherwise. 
+		Unlike the previous two operators, the result of using <span class="pre">?.</span> is always a optional value.
+	</p>
+	<p>This operator may also appear on the left hand side of an assignment statement,
+		and will bypass the assignment altogether if the optional value is None.
+	</p>
+
+	<h3>Conditional Variable Specialization</h3>
+	<p>Suppose we have a optional value stored in a variable, and we just want to check whether it is not None only once.
+		If it is not None, we want to be able to work with its unwrapped value using the same variable name
+		without having to constantly reaffirm it is not None.
+		This is surprisingly easy to accomplish:</p>
+<pre>
+if maybePoint:
+	imm x = maybePoint.x
+	imm y = maybePoint.y
+	imm dist = maybePoint.dist
+</pre>
+  <p>When an optional value is used in a conditional expression, it evaluates as false if None and true otherwise.
+		So, the above block will be performed whenever maybePoint is not None.
+		When this not None check is using a variable, as it is in this case, a local immutable shadow of that variable
+		is implicitly created at the top of the block which contains a copy of the unwrapped value inside maybePoint.
+		Since this shadow variable contains an unwrapped value, it can be directly used within that block as a Point value.
+		The use of this technique means, however, that the original variable is not accessible nor mutable within the block.</p>
+	<p>As an extension of this principle, if the conditional expression follows such a check with additional
+		conditions after the <span class="pre">and</span> operator, the shadow variable may also be used in the remaining condition:</p>
+<pre>
+if maybeInt and maybeInt &lt; 10:
+  scale *= maybeInt
+</pre>
+	<p>A conditional can also check for the None value:</p>
+<pre>
+if !maybeRef:
+  // do some error recovery actions
+</pre>
+	<p>The block is performed when maybeRef is None. No shadow variable is created for maybeRef at the top of the block,
+		as we have no value to unwrap.</p>
+
+	<h3>Pattern Matching</h3>
+	<p>If none of the above convenient approaches apply to your situation, 
+		just make use of straightforward pattern matching:</p>
+
+<pre>
+if imm integer = Some[maybeInt]:
+	scale *= integer
+else:
+	// Some recovery stuff
+</pre>
+	<p>When maybeInt is not None, its value is unwrapped and copied into the variable named <span class="pre">integer</span>,
+		where it can then be used inside that block. If it is None, then the alternative block is performed.</p>
+		
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="refresult.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

@@ -1,0 +1,191 @@
+<html>
+  <head>
+	  <title>Exception Handling - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Exception Handling</div>
+		</div>
+
+    <div class="text">
+
+		<p style="margin-left: 40px;"><i>Note: None of this has been implemented.</i></p>
+
+	<p>An exception occurs whenever a program tries to do something and fails.
+		Sometimes, there is no graceful way to recover from certain exceptions.
+		For example, maybe the program:</p>
+	<ul>
+		<li>Needs more heap or stack memory and it is all used up.</li>
+		<li>Encounters a math error, such as an overflow or divide by zero.</li>
+		<li>Tries to access an out-of-bounds memory location.</li>
+	</ul>
+	<p>When there is no obvious way to recover from an exception, the program "panics", 
+		shutting down as quickly and gracefully as possible.
+		Part of the shutdown process involves reporting on the nature of the failure
+		so the logic problem that failed to prevent this problem can be fixed.</p>
+	<p>In many cases, however, it is possible and desirable to recover from an
+		exception. This page describes how.</p>
+
+	<h2>Throwing Exceptions</h2>
+	<p>Recoverable exceptions are always directly communicated from one function
+		back to the function that called it.
+		Instead of returning the expected value, it throws an exception value.</p>
+<pre>
+fn factorial(mut n i32) i32 throws Bool:
+  if n &lt;= 0: throw false 
+  mut result = 1
+  while n:
+    result *= n--
+  result
+</pre>
+	<p>This function specifies <span class="pre">throws</span> as part of its signature
+		to indicate that if it cannot successfully return an integer value,
+		it will throw a boolean exception instead.
+		The first line does exactly that: If the parameter is a negative number,
+		it throws an exception value of <span class="pre">false</span>.</p>
+
+	<h2>Exception Handling</h2>
+	<p>Now that we have a function that can throw an exception,
+		let's show different ways to handle it.</p>
+	
+	<h3>Give exception a default value</h3>
+
+	<p>Use the <span class="pre">||</span> operator to establish
+		a default value in the event of a thrown exception.</p>
+<pre>
+fn calc(n i32) i32:
+  factorial(n) || 0
+</pre>
+	<p>If <span class="pre">factorial</span> throws an exception,
+		it is treated as if it had returned 0 instead.
+		The value to the right of the operator must be a plain value,
+		and its type must match that of the success value on the left.</p>
+
+	<h3>Panic on exception</h3>
+	<p>Use the <span class="pre">?</span> operator following any call 
+		to an exception-throwing function.</p>
+<pre>
+fn calc(n i32) i32:
+  factorial(n)? + 10
+</pre>
+	<p>This checks whether the function call succeeds
+		and returns a value. If so, it adds 10 to that result and returns it.
+		Since this function gives no clue on how to handle an exception,
+		the default behavior on a thrown exception will be that the program
+		panics and shuts down.</p>
+
+	<h3>Exception propagation</h3>
+	<p>Another approach involves
+		re-throwing the exception to the next caller up the call stack.</p>
+<pre>
+fn calc(n i32) i32 throws Bool:
+  factorial(n)? + 10
+</pre>
+	<p>Even though this function still does not specify an exception handler,
+		its signature shows that it also throws exceptions.
+		As a result, if the call to factorial throws an exception,
+		that exception will be re-thrown to the function which called
+		<span class="pre">calc</span>.
+		Importantly, there must be a type match between the exception value
+		received and the one the function re-throws.</p>
+	
+	<h3>catch exception handlers</h3>
+	<p>If we want some other behavior than panic or re-throw,
+		one or more exception handlers must be specified in the form of
+		a <span class="pre">catch</span> blocks.
+		This block appears at some point after the
+		<span class="pre">try</span>, but need not be
+		immediately afterwards.</p>
+<pre>
+fn calc(n i32) i32:
+  factorial(n)? + 10
+	
+  catch:
+    0
+</pre>
+	<p>Should the call to <span class="pre">factorial</span>
+		throw an exception, the <span class="pre">catch</span>
+		block handler will be run. In this case, it returns the number 0.
+		In effect, we have completely recovered from the thrown exception,
+		as this <span class="pre">calc</span> itself throws no exception.</p>
+	<p>Alternatively, we could handle it by throwing an
+		exception of a different type or value.</p>
+<pre>
+fn calc(n i32) i32 throws i32:
+  factorial(n)? + 10
+	
+  catch:
+    throw 0
+</pre>
+	<p>If we need more information about the exception,
+		a variable name (and optionally a type) may also be specified on 
+		the <span class="pre">catch</span> statement.
+		This binds to the exception value, so that it may be interrogated:
+	</p>
+<pre>
+fn calc(n i32) i32 throws i32:
+  factorial(n)? + 10
+
+  catch err:
+    if err:
+      panic
+    else:
+      throw 0
+</pre>
+	<p>This handler will trigger a <span class="pre">panic</span>
+		if the thrown exception value is <span class="pre">false</span>.
+		Otherwise, it will throw a new exception value of 0.</p>
+
+	<h2>Intentional Panics</h2>
+	<p>Recovering from a thrown exception may be possible and the right thing to do
+		in certain circumstances.
+		However, sometimes the right response to a bad condition
+		is to intentionally shut the program down.
+		As shown above, one way to do this is using the
+		<span class="pre">panic</span> statement.</p>
+
+	<h3>assert and requires</h3>
+	<p>The assert statement triggers a panic when its condition
+		evaluates to false.</p>
+<pre>
+assert idx &lt; bound
+</pre>
+	<p><span class="pre">assert</span> is only performed in test builds.
+	To get the equivalent guarantee in production as well:</p>
+<pre>
+requires idx &lt; bound
+</pre>
+
+	<h3>Contract conditions</h3>
+	<p>Where we want a function to preserve some invariants on entry
+		and exit from the function, the
+		<span class="pre">requires</span> and <span class="pre">ensures</span>
+		clauses may be added to a function signature.
+		These provide a visibly strengthened contract that governs use of the
+		function. If these conditions fail, a panic is triggered.</p>
+<pre>
+fn factorial(mut n i32) i32
+  requires n &gt; 0
+  ensures result &gt; 0:
+
+  mut result = 1
+  while n:
+    result *= n--
+  result
+</pre>
+	<p>This function expects that it will get a positive, non-zero number
+		and return the same. Any other behavior is a bug which we
+		want to catch quickly in testing and fix.</p>
+
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="reftypes.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

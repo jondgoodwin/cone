@@ -1,0 +1,190 @@
+<html>
+<head>
+	<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<link rel="stylesheet" type="text/css" href="standard.css" />
+<title>Cone - Versatile, Sound Type System</title>
+</head>
+<body>
+	<div id="header">
+		<div class="column">
+		<a href="/">
+			<img src="pegicon.png" width="56" height="56" alt="logo">
+		</a>
+		</div>
+		<span id="title">Cone</span>
+		<span id="sub">Versatile, Sound Type System</span></div>
+		<div class="column flow-opposite">
+	</div>
+
+	<div class="text">
+
+	<p>Before talking about Cone's distinctive type features, 
+		it would be prudent to offer a worldwind tour that shows how much of Cone's type system is deliberately familiar.
+		For example, Cone's concrete types are largely derived from C and ML dialects:</p>
+	<ul>
+	<li>Integer (i32, u8) and float (f32) primitive number types, as well as <a href="coneref/refnumber.html#enum">enums</a>.</li>
+	<li><a href="coneref/refstruct.html">struct</a> record types, with named fields.</li>
+	<li><a href="coneref/reftuple.html">tuple</a>, with comma-separated values or types.</li>
+	<li><a href="coneref/refarray.html">array</a> types, both fixed-size and dynamically-sized.</li>
+	<li><a href="coneref/refunion.html">union</a> (sum) types</li>
+	<li><a href="coneref/reffunc.html">function</a> signatures</li>
+	<li><a href="coneref/refvoid.html">void</a> (unit) type</li>
+	</ul>
+	<p><a href="refgeneric.html">Generic</a> versions of any type can be defined, using type-constrained parameters.</p >
+	<p>Inspired by OOP languages, all named (nominal) types support <a href="coneref/refmethod.html">methods</a>. 
+		Many operators are implicitly implemented as methods. Methods may be overloaded.</p>
+	<p>Like Rust, Cone supports several useful (and infectious) type constraints:</p>
+	<ul>
+	<li><a href="coneref/refmove.html">Move semantics</a>, disallowing multiple copies of a value</li>
+	<li><a href="coneref/reflifefn.html">Lifetimes</a>, preventing a value from escaping beyond its block scope</li>
+	<li>Thread-bound, preventing a value from escaping its current thread</li>
+	</ul>
+	<p>Type safety is enforced strictly. With the notable exception of subtype substitution, values must stay in their
+		type lanes. Even better, nullability is not the default: one must explicitly type a value as nullable using
+		<a href="coneref/refoption.html">Option[T]</a> or '?'.
+		Similarly, one cannot throw an exception up the call stack. Instead, failures are returned using 
+		<a href="coneref/refresult.html">Result</a> type values.</p>
+	<p>To reduce the burden on the programmer, the Cone compiler supports bi-directional type inference.
+		This minimizes how often type information needs to be annotated in the program.</p>
+	<p>In summary, Cone's rich static types improve long-term development productivity, as they help you catch more errors sooner.
+		These static types also make it possible to build faster programs, because you can design data structures
+		that can be optimized for what runs quickly on modern CPUs.</p>
+	
+	<h2>Cone's Distinctive Type System Features</h2>
+	<p>Even though Cone's type system is mostly derivative (although delightfully re-mixed), 
+		several type features are either new or significantly enriched in Cone.
+		These improvements improve your productivity, by making it easier to 
+		express common and useful design patterns in your code, particularly adding dynamic type-like flexibility,
+		without losing the performance and safety guarantees of static types:</p>
+	<ul>
+	<li><a href="memory.html">Region-managed references</a>, providing greater control over how memory is used.</li>
+	<li><a href="coneref/refperm.html">Permissions</a>, enabling faster static race safety protections.</li>
+	<li><a href="#traits">Traits</a>, supporting more flexible polymorphism</li>
+	<li><a href="#variant">Variant types</a>, enriching how variant types are implemented in memory.</li>
+	<li><a href="#subtype">Robust Subtyping</a>, enabling safe substitutions of subtypes into supertypes.</li>
+	<li><a href="#inherit">Delegated inheritance</a>, offering a better way to facilitate method reuse.</li>
+	<li><a href="#extend">Method extensions</a>, making it easy to add methods to an existing type.</li>
+	</ul>
+	<p>Let's walk through each of these in turn.</p>
+	
+	<h3 id="traits">Traits</h3>
+	<p>Many languages support some form of existential polymorphism, calling the feature
+		traits, interfaces, abstract classes, typeclasses, concepts, protocols, etc.
+		In general terms, this feature is used to define an abstract pattern of function or method signatures 
+		that multiple types can conform to, for substitution purposes.</p>
+	<p>Cone calls these traits. Cone's traits carry some distinctive improvements:</p>
+	<ul>
+	<li><b>Structural (vs. nominal) compliance</b>. This means that a struct does not need to declare that it
+		extends (or implements) a trait, in order for the trait to later be applied to the struct.
+		The struct need only comply with the trait's interface.
+		<p>This is a huge productivity benefit for you, because you don't have to defensively build a whole bunch of
+		interface classes for all your types, just in case you might need them later.
+		It also means you can retroactively apply a trait to some existing packaged library type,
+		without needing to get the packaged type changed.</p></li>
+	<li><b>Field (row) polymorphism</b>. This means that a trait can define fields as well as method signatures.
+		When it does, complying structs must have those fields. It is then possible to use the trait
+		to directly access these fields, without having to waste CPU cycles on going through a getter/setter method.</li>
+	<li><b>Multi-role versatility</b>. A single Cone trait can facilitate three very different, but related roles:
+		<ol>
+		<li>A type constraint for a generic's type parameter, ensuring only valid types are statically substituted.</li>
+		<li>A runtime mediator for virtual method dispatch or field access mechanisms.</li>
+		<li>A base type used to create multiple, compliant variant types (see below).</li>
+		</ol></li>
+	</ul>
+	
+	<h3 id="variant">Variant Types</h3>
+	<p>Often we want type flexibility, such that some value can (at runtime) be one of several possible types.
+		Most languages offer only one way to accomplish this, either with sum types or using inheritance.
+		Cone supports three different flavors of variant types, each with different advantages and constraints:</p>
+	<ul>
+	<li><b><a href="coneref/refunion.html">Union types</a></b>
+		support a fixed number of variants. All variants are padded to be the same size. 
+		Cone's union types offer several useful capabilities not supported by traditional sum types:</p>
+			<ul>
+		<li>Union types support the specification (and use) of methods for each variant.</li>
+		<li>All variants of a union type may share a common set of shared fields or methods.</li>
+		<li>Virtual method dispatch is supported when the union defines method signatures and 
+			all variants implement those methods.</li>
+		</ul></li>
+	<li><b><a href="coneref/refvariant.html">Closed trait-based variants</a></b>
+		also support a fixed number of variants, but each variant can vary in size.</li>
+	<li><b><a href="coneref/refvariant.html">Open trait-based variants</a></b>.
+		Any number of variants types may be defined across multiple modules, each with its own size.
+		This corresponds pretty closely with variant types that some languages support via inheritance.</li>
+	</ul>
+	<p>All flavors of variant types support methods, shared fields, virtual dispatch and pattern matching.</p>
+	<p>In most cases, union types are the preferable choice for speed and support for the largest variety of design patterns,
+		so long as its okay that the number of variants can all be defined in one module and all be padded to the same size.
+		However, when these restrictions are not acceptable, it is nice to be able to make use of trait-based variants.</p>
+	
+	<h3 id="inherit">Robust Subtyping</h3>
+	<p>Relevant to our conversation about traits and variant types, is how extensively and safely subtyping
+		is supported by Cone. Subtyping reflects the idea that a value of some type may be safely substituted
+		into the corresponding value of its supertype. Variant types are subtypes of their union or base trait.
+		Region-managed references are subtypes of borrowed reference. Some permissions are subtypes of other permissions.
+		And so on.</p>
+	<p>Subtyping is an important component for supporting polymorphic, flexible types, in that it ensures
+		that safety is not compromised.
+		Cone's subtyping rules are sophisticated enough to correctly handle variance requirements in the presence
+		of references, mutation and function signatures.</p>
+	<p>Subtype substitution can happen at compile-time (via parametric types on generics) 
+		or at runtime (via automatic runtime coercion). The rules for runtime substitution are less flexible
+		due to to memory constraints.</p>
+	<p>Runtime subtyping is particularly valuable for:
+	<ul>
+	<li>References.
+		If separate logic were needed for every combination of permissions and regions, code could get quite verbose!
+		Better yet, use of implicit reference coercions is "free": 
+		it neither bloats the size of generated code nor carries a runtime performance penalty.</li>
+	<li>Functions or methods.
+		Instead of needing a distinct function for every combination of types,
+		a single function can be written able to serve the needs of diversely-typed values.</p>
+	</ul>
+	
+	<h3 id="inherit">Delegated Inheritance</h3>
+	<p>In some circles, inheritance has gotten a bad name for being problematic and unnecessary.
+		Who doesn't flinch at large, complex programs that become hard to maintain due to deep inheritance trees
+		and fragile base classes?</p>
+	<p>When you have a powerful independent mechanism for polymorphism in traits, the need for 
+		implementation inheritance is definitely reduced.
+		That said, there still are times when it is handy for one type to be able to reuse methods
+		implemented by another type that is part of its composition.</p>
+	<p>Cone offers a distinctive form of inheritance called 
+		<a href="coneref/refinherit.html">"delegated inheritance"</a> which satisfies this need.
+		Consider this example:</p>
+<pre>
+struct Engine
+  fuel   f32
+  torque f32
+
+  fn thrust(amt f32) { ... }
+  fn power(on Bool) { ... }
+
+struct Car:
+  engine Engine use fuel, thrust
+  body   SportyLook
+  wheels RimWheels
+</pre>
+	<p>As part of its composition, Car has an Engine. 
+		The engine field specifies "use" to request delegated inheritance for the Engine's fuel field and thrust method. 
+		This means that <span class="pre">car.thrust(2.3)</span> is legal, and will
+		be forwarded automatically to Engine's thrust method like this:
+		<span class="pre">car.engine.thrust(2.3)</span>. It is nice to be able to do this without
+		requiring all the ceremony of building various delegation methods on Car,
+		as recommended by the "Favor Composition Over Inheritance" gang of four.</p>
+	<p>By using delegated inheritance, you can exploit the expressiveness of method and field reuse between types, 
+		while avoiding the entangling complexity of traditional inheritance.</p>
+		
+	<h3 id="extend">Method Extensions</h3>
+	<p>Sometimes, we import types from a package, but wish it supported more capabilities (methods) than it does.
+		Cone's <a href="coneref/reftypealias.html">"extend"</a> feature makes
+		it possible for one module to extend the methods supported by an imported type.
+		This would make it possible to import an floating-point number type that only supports arithmetic operations, 
+		and then extend it to also support logarithmic or trigonometric operations.
+		In effect, Cone's "extend" feature provides a workable solution to the so-called expression problem.</p>
+		
+	</div>
+
+</body>
+</html>

@@ -1,0 +1,228 @@
+<html>
+  <head>
+	  <title>Lifetime Annotations - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Lifetime Annotations</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: None of this is implemented.</i></p>
+	
+	<p>To ensure borrowed references are always safe to use, they carry 
+		a lifetime constraint that restricts them from living beyond the scope
+		they were created in.
+		This constraint prevents a borrowed reference from pointing to an
+		object that no longer exists.
+		Borrowed references may move freely around the program, so long as they never try to
+		travel beyond this lifetime barrier.
+		Attempts to violate this lifetime constraint result in a compiler error.</p>
+	<p>For a borrowed reference used within the same function where it was borrowed,
+		the compiler knows exactly which scope created the borrowed reference,
+		and thus knows exactly what scope represents its lifetime barrier.
+		However, a function that receives a borrowed reference from another function
+		has no visibility into which scope created the borrowed reference.
+		There is effectively a thick brick wall separating a called function
+		from the function that calls it. 
+		Each cannot see anything about what the other is doing with borrowed references.</p>
+
+	<h2>Lifetime Annotations on Function Signatures</h2>
+	<p>To bridge this knowledge gap, Cone looks for 
+		<a href="reftoken.html#lifetime">lifetime annotations</a> on
+		borrowed references in a function's signature.</p>
+<pre>
+fn dostuff(a: &'a i32, b: &'b i32) &'a i32, &'b i32
+</pre>
+	<p><span class="pre">'a</span> and <span class="pre">'b</span> are lifetime
+		annotations representing two possibly-different lifetime scopes.
+		Lifetime annotations are used to establish lifetime relationships between borrowed references.
+		In this example, this means the first return value
+		has the same lifetime as <span class="pre">a</span>, and the
+		second has the same lifetime as <span class="pre">b</span>.</p>
+	<p>Although the called function treats them as having the "same" lifetime,
+		they might in fact have different lifetimes in the calling function.
+		When references with two different lifetimes are treated as having the
+		same lifetime, their understood lifetime would be the shortest one,
+		as that is the only lifetime these references have in common.</p>
+	<p>Lifetime annotations may be omitted on some or all borrowed
+		references on a function signature.
+		All borrowed references without annotations are
+		understood to have the same lifetime, as if they had all been
+		marked by the same lifetime annotation.
+		The above example is thus identical to:</p>
+<pre>
+fn dostuff(a: &i32, b: &'b i32) &i32, &'b i32
+</pre>
+	<p>We can rule out the need for any lifetime annotations if the function does not
+		receive at least two borrowed references in its parameters.
+		We can also rule out them out if the borrowed references
+		in parameters are all read-only (<span class="pre">ro</span>)
+		and no borrowed reference is returned.
+		Beyond this simple test, there are two specific situations where
+		lifetime annotations might be required.</p>
+
+	<h3>Returned borrowed references</h3>
+	<p>When a function returns a borrowed reference and accepts at least two borrowed references
+		as parameters, lifetime annotations might be needed.
+		Let's illustrate with a simple example:</p>
+<pre>
+fn caller(nbr i32) i32:
+  mut ref &amp;i32
+  imm outer = 5
+  {
+    imm inner = 10
+    ref = refswitch(nbr, &outer, &inner)
+  }
+  *ref // Is this safe???
+</pre>
+	<p>That final de-reference will not be safe if the called function looks like this:</p>
+<pre>
+fn refswitch(nbr i32, ref1 &i32, ref2 &i32) &i32:
+  if nbr &lt; 0:
+    ref1
+  else:
+    ref2
+</pre>
+	<p>The problem is that <span class="pre">caller</span> has no idea whether
+		<span class="pre">refswitch</span> will return a reference to 
+		<span class="pre">inner</span> or <span class="pre">outer</span>.
+		Since it could possibly be a reference to <span class="pre">inner</span>, 
+		that final de-reference could be unsafe,
+		as <span class="pre">inner</span> is gone by the time the de-reference happens.</p>
+	<p>However, if we call a function that clearly indicates the returned reference
+		only originates from ref1 
+		(by marking <span class="pre">ref2</span> as having a different lifetime
+		<span class="pre">'a</span>),
+		then <span class="pre">caller</span>'s logic is safe:</p>
+<pre>
+fn refswitch(nbr i32, ref1 &i32, ref2 &'a i32) &i32:
+  ref1
+</pre>
+	<p>If the signature shows the returned reference originates
+		from ref2, <span class="pre">caller</span> once again triggers a compiler error:</p>
+<pre>
+fn refswitch(nbr i32, ref1 &'a i32, ref2 &i32) &i32:
+  ref2
+</pre>
+	<p>The lesson here is pretty simple: If a function returns a borrowed reference,
+		make sure its lifetime annotation matches the borrowed reference(s) it could be
+		sourced from. Then make sure that any borrowed references that are not
+		the source for it are marked with a different lifetime.
+		When correctly marked in this way, lifetime constraints will be properly
+		enforced on both the caller and called functions.</p>
+
+	<h3>Mutable borrowed reference parameters</h3>
+	<p>When a function passes at least two borrowed references as parameters,
+		at least one being mutable, lifetime annotations might be needed.
+		Consider:</p>
+<pre>
+fn tryit():
+  imm i = 5
+  mut a = &amp;i
+  {
+    imm b = 10
+		refstore(&amp;mut a, &amp;b) // is this ok?
+	}
+</pre>
+	<p>That's not going to work if it calls this function:</p>
+<pre>
+fn refstore(refmut &amp;mut &amp;i32, refval &amp;i32):
+  *refmut = refval  // Oh my!
+</pre>
+	<p>What's the problem?
+		<span class="pre">refstore</span> assumes that both borrowed references
+		point to objects of the same (smallest) lifetime.
+		<span class="pre">tryit</span> knows that smallest lifetime is the
+		scope of <span class="pre">b</span>. However, it realizes that there is a
+		risk that <span class="pre">refstore</span> might 
+		store <span class="pre">refval</span> in <span class="pre">retmut</span> (as it does!),
+		which would effectively lengthen the reference's lifetime to the scope of
+		<span class="pre">a</span>, which is longer than the known lifetime
+		of the object (<span class="pre">b</span>) it points to.
+		Because of this risk, <span class="pre">tryit</span> will trigger a compile error
+		on that call.</p>
+	<p>There are two ways to make this error go away.
+		The first involves move <span class="pre">b</span> to the same scope
+		as <span class="pre">a</span>, making the lifetimes truly equivalent.
+		The other approach is to make the <span class="pre">refstore</span>
+		function promise it won't store one reference inside the other,
+		by marking their lifetimes as independent:</p>
+<pre>
+fn refstore(refmut &amp;mut &amp;i32, refval &amp;'b i32):
+  **refmut = *refval
+</pre>
+	<p>The lesson here is once again simple:
+		If you pass a mutable borrowed reference, mark every other borrowed reference
+		with a different lifetime annotation if you don't intend for it to be
+		stored in the mutable borrowed reference.</p>
+
+	<h2>Lifetime Annotations on Fields</h2>
+	<p>It is not enough to just constrain the lifetimes of borrowed references,
+		we must also constrain the lifetimes of any data structures that
+		contain borrowed references as fields. Consider:</p>		
+<pre>
+struct Wrapper:
+  refa &'a u32
+  refb &'b u32
+</pre>
+	<p>Every <span class="pre">Wrapper</span> value contains two fields, 
+		both borrowed references, each with a different lifetime constraint.
+		The lifetime of this value will be constrained by whichever ends up as the
+		shorter of the two lifetimes:</p>
+<pre>
+fn process():
+  imm val = 5
+  makewrap(&val)
+
+fn makewrap(valref &i32) Wrapper:
+  imm val = 10
+  Wrapper[valref, &val]  // oops
+</pre>
+	<p>The <span class="pre">Wrapper</span> value is created
+		in the <span class="pre">makewrap</span> function
+		using a borrowed reference created in that function. 
+		Therefore, this value is lifetime-constrained
+		to this function and may not be returned to <span class="pre">process</span>.</p>
+
+	<h3>Lifetime Annotations on Types</h3>
+	<p>The same lifetime annotation principles we discussed earlier
+		apply to functions that receive or return values
+		which have borrowed references within them as fields.</p>
+<pre>
+fn process():
+  imm val = 5
+  makewrap(&val)
+	
+fn makewrap(valref &i32) &i32:
+  imm val = 10
+  getref(Wrapper[valref, &val])
+	
+fn getref(wrap: Wrapper&lt;'a, 'b&gt;) &'a i32:
+  wrap.refa
+</pre>
+	<p><span class="pre">getref</span> shows
+		how lifetime annotations are specified differently on aggregate types:
+		inside angled brackets are two lifetimes, 
+		one for each borrowed reference in the struct.
+		Notice that the function returns the borrowed reference
+		held by <span class="pre">refa</span> (the longer one),
+		also signalled by the lifetime annotation on the return type.</p>
+	<p>Were we to change <span class="pre">getref</span> to return
+		<span class="pre">refb</span> instead, the <span class="pre">makewrap</span>
+		function will be smacked with an error for trying to return
+		a borrowed reference it created and which must not outlive its scope.</p>
+
+
+			<p style="text-align: right; margin-top: 2em;">
+		<a href="refrefs.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

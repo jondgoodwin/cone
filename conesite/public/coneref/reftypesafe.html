@@ -1,0 +1,180 @@
+<html>
+  <head>
+	  <title>Type Safety and Subtypes - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Type Safety and Subtypes</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: Most of this is implemented to some degree.</i></p>
+	
+	<p>Typing is strict: You cannot put a round peg in a square hole.</p>
+	<p>Since all values, expressions and variables have a type, the compiler can (and will)
+		check whether the use of types is consistent.
+		In most cases, an error will be reported wherever a program:</p>
+	<ul>
+		<li>Stores a value of one type into a variable or collection declared for a different type.</li>
+		<li>Passes an argument of one type to a function that expects a value of another type in that position.</li>
+		<li>Returns a value of one type when the function's signature declares a different type for the return value.</li>
+		<li>Creates a reference (or pointer) to an object whose type does not match the reference's type declaration.</li>
+	</ul>
+	<p>These constraints protect against a program manipulating a value in ways that make no sense or could be harmful,
+		due to acting as if the value has a different meaning than it actually does.</p>
+	<p>However, sometimes we <i>do</i> want to transform a value of one type to another type.
+		Cone supports three such capabilities:</p>
+	<ul>
+		<li><b>Coercion</b>,
+			which implicitly and safely converts a value to some other expected type (usually a supertype).</li>
+		<li><b>Conversion</b>,
+			which explicitly constructs the closest "equivalent" value in another type.
+			This mapping is imperfect, as some (or all) of the meaning of the original value could be lost.</li>
+		<li><b>Reinterpretation</b>,
+			which explicitly preserves the original value but re-interprets it as if it has a different type.
+			This potentially unsafe capability will be described on another 
+			<a href="reftrust.html#reinterpret">page</a>.</li>
+	</ul>
+	<p>To distinguish between coercion and conversion, 
+		it is first necessary to understand how subtyping works in Cone.</p>
+
+	<h2 id="subtype">Subtypes</h2>
+	<p>Subtyping captures a simple but powerful idea: if we have two types named 
+		<span class="pre">Base</span> and <span class="pre">Subtype</span>,
+		how do we determine when it is safe to substitute in a value of
+		type <span class="pre">Subtype</span> whenever our program logic
+		is looking for a value of type <span class="pre">Base</span>?</p>
+		<p>Here are two essential criteria (there are others):</p>
+	<ul>
+		<li>Every possible value in <span class="pre">Subtype</span> can be mapped uniquely
+				to its semantically identical value in <span class="pre">Base</span>.</li>
+		<li>The behavior of values in <span class="pre">Subtype</span>
+			must correspond in every way to the behavior of equivalent
+			values in <span class="pre">Base</span>.
+			In our case, that means at minimum that for every method in <span class="pre">Base</span>,
+			there exists an equivalent method in <span class="pre">Subtype</span>
+			with the same type signature and constraints.</li>
+	</ul>
+	<p>Many type pairs in Cone comply with these criteria and support a safe subtyping relationship:</p>
+	<ul>
+		<li>Any variant type is a subtype of any trait or struct type 
+			that it complies with, even if it does not inherit from it.</li>
+		<li>Any non-nullable type is a subtype of its
+			nullable equivalent (e.g., <span class="pre">&Foo</span> 
+			is a subtype of <span class="pre">?&Foo</span>).</li>
+		<li>A borrowed reference is a subtype of an equivalently-typed owning reference
+			(e.g., <span class="pre">&Foo</span> is a subtype of <span class="pre">&so Foo</span>)</li>
+		<li>A <a href="refptr.html">pointer</a>
+			is a subtype of any reference whose object type is the same.</li>
+		<li>Some reference permissions are subtypes of others
+			(e.g., <span class="pre">ro</span> is a subtype of 
+			<span class="pre">imm</span> or <span class="pre">mut</span>).
+			Similarly, most permissions are a subtype of <span class="pre">uni</span>.</li>
+		<li>A smaller number type is a subtype of a larger version of the same type
+			(e.g., <span class="pre">u8</span> is a subtype of <span class="pre">u32</span>).</li>
+		<li>A struct is a subtype of any <a href="reftrait.html">trait</a> it conforms to.</li>
+	</ul>
+	<p>An important characteristic of subtyping relationships is that
+		it is trivially safe to transform a <span class="pre">Subtype</span> value
+		into its equivalent <span class="pre">Base</span> value.
+		However, the journey of a value back from <span class="pre">Base</span>
+		to <span class="pre">Subtype</span> often requires some sort of
+		pattern-matched guard, as there are likely to be values in <span class="pre">Base</span>
+		that do not have a valid mapping from 
+		<span class="pre">Subtype</span> to <span class="pre">Base</span>.
+		A successful pattern match guarantees we will get back a valid
+		<span class="pre">Subtype</span> value when the reverse transformation is applied.</p>
+		
+	<h2 id="coercion">Implicit Coercion</h2>
+	<p>We call it coercion when implicitly converting a value into
+		an expected type (usually a supertype).
+		Coercion is the one safe exception to the strict typing rule described earlier,
+		given that the type of a value and its receiver are not strictly the same.</p>
+	<p>Since coercion is always safe, Cone performs it implicitly
+		when copying or moving a subtype value
+		to any container (variable, parameter, return value, field, reference)
+		expecting a base value.
+		This happens during assignments, function calls and returns.
+		For example:</p>
+<pre>
+fn doStuff ():
+  imm bigint u32 = 101u8        // Coerce a u8 to u32
+  mut matrix = &so Mat4[]       // Allocate a matrix
+  imm float = mat4det(matrix)?  // Coerce &so uni Mat4 to ?&Mat4
+
+fn mat4det(mat &Mat4) f32 throws DivByZero:
+  // ...
+  return 1.0                     // Coerce f32 to Result&lt;&gt;
+</pre>
+	<p>Coercion is more than just changing the type of some value.
+		It usually means creating a new value whose encoding is different 
+		than its source value.</p>
+	<p>Coercion can also trigger compiler mechanics:
+		In the case of coercing an owning reference to a borrowed reference,
+		it triggers appropriate borrowing mechanics on the source variable.
+		Similarly, when coercing a non-copy value, move semantics apply.</p>
+	<p>If an expression requires, it is possible to explicitly request coercion.
+		For non-reference types, use the appropriate constructor
+		(as described below for conversion).
+		For references, use the <span class="pre">as</span> operator:</p>
+<pre>
+imm newref = oldref as &Point  // Explicitly coerce to a borrowed reference
+</pre>
+
+	<h3>Implicit Coercion to Bool</h3>
+	<p>In addition to supertype coercions, Cone supports the automatic coercion
+		of some value to Bool, so long as the value's type implements the
+		<span class="pre">isTrue</span> method. This is implemented by the number
+		and pointer types. A number is true if it is not zero. A pointer is true
+		if it is not null.</p>
+
+	<h3>Implicit Coercion of 'self'</h3>
+		<p>Cone offers a very different form of coercion when dealing with method calls 
+		(or field access) and the 'self' value. This convenience sugar
+		automatically coerces self from a value to a reference (or the other way).</p>
+	<p>Cone will automatically transform 'self' to a mutable borrowed reference
+		for operators that expect an lval, such as <span class="pre">++</span>,
+		<span class="pre">+=</span>, or a 'set' method.</p>
+<pre>
+++a    // equivalent to:  Type::`++`(&mut a)
+</pre>
+	<p>Automatic de-reference of 'self' may happen when 'self' is a reference,
+		but no method matches with a reference-based self.
+		'self' is then automatically dereferenced in hopes of finding a matching
+		method that uses a value rather than a reference.</p>
+<pre>
+&a + 5  // may coerce to:  a + 5
+</pre>
+
+<h2>Explicit Conversion</h2>
+	<p>Type conversion involves transforming a value of one type
+		to the closest possible value in another type.
+		For example, converting the integer 1 to the floating point number 1.0,
+		or serializing it to text:  "1".
+		Unlike coercion, conversion may not map perfectly: 
+		A valid mapping may not exist or some precision may be lost.
+	</p>
+	<p>Conversion is typically requested using the new type's constructor
+		or invoking one of its initializers</p>
+<pre>
+imm float = f32[1]
+imm text = Text(1) // "1"
+</pre>
+	<p>In some cases, it may be more convenient to request conversion 
+		by using some method in the old type:</p>
+<pre>
+imm text = 1.text
+</pre>
+		
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="reftypealias.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

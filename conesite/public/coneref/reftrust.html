@@ -1,0 +1,118 @@
+<html>
+  <head>
+	  <title>Trust - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Trust</div>
+		</div>
+
+    <div class="text">
+	
+	<p style="margin-left: 40px;"><i>Note: None of this is implemented.</i></p>
+	
+	<p>Safety is enriched when the programmer and the compiler work together
+		towards that end, each bringing different gifts to bear on the problem.
+		The compiler's gift is its obsessive ability to detect every time code
+		breaks its declared constraints.
+		This is manifested in the compiler's built-in guard rails for protecting your code
+		against a number of common safety hazards.
+		However, the compiler can only quickly check a small collection of very-simplistic rules;
+		it has no intelligence to detect when rule-breaking code is still 100% safe.
+		The compiler is trying to be helpful, but is just getting in the way!</p>
+	<p>This is where we rely on the programmer's gift 
+		(and ultimate responsibility) to figure this out,
+		using techniques more sophisticated than simple safety rules.
+		In such situations, Cone provides a built-in escape hatch from some of the 
+		over-anxious compiler's guard rails, in the form of an annotation. 
+		By preceding any any expression or block with <span class="pre">trust</span> 
+		(as in:  "trust me on this"), several safety checks are turned off,
+		thereby allowing:</p>
+	<ul>
+		<li><b>Raw pointer</b> dereferences, arithmetic, and re-casts.
+			This provides a way to bypass the safety constraints imposed on references
+			by permissions, lifetimes, regions and bounds-checks.
+			On the <a href="refptr.html">next page</a>, 
+			we'll explore this.</li>
+		<li><b>extern function</b> calls.
+			This is normally restricted, as Cone has no way to assure that some other language
+			has been as rigorous in verifying the safety of their function logic.
+			We'll explore this when introducing <a href="refinclude.html#extern">extern</a>.</li>
+		<li><b>Type reinterpretation</b>, where Cone has no way to know that
+			the re-cast value is being safely digested.</li>
+		<li><b>Non-discriminated unions</b> field access, where Cone has no way to know
+			what disciminant to pattern match against.</li>
+	</ul>
+	<p>By using this "trust" mechanism, compiler-unverifiable code can be
+		isolated and highlighted as such, while still acknowledging
+		that the programmer, who has the ultimate responsibility for safety,
+		may very clearly see what the compiler cannot.</p>
+
+	<h2>Type Reinterpretation</h2>
+	<p>Reinterpretation takes some existing encoded value and allows
+		it to be re-cast and manipulated as if it were 
+		a value of a different, but same-sized type.
+		For example, we can use re-interpretation to explicitly
+		coerce a non-nullable reference to a nullable one:</p>
+<pre>
+imm nullref = someref as ?&i32
+</pre>
+	<p>Reinterpretation uses the <span class="pre">as</span> operator.
+		Unlike other operators, <span class="pre">as</span> expects a type
+		to the right of the operator.</p>
+	<p>Unless the re-interpretation represents a legal coercion,
+		its use could pose a risk to type safety.
+		A value could behave badly when treated and manipulated
+		within the constraints of a different type.</p>
+	<p>When Cone is unsure of the risk, it requires use of
+		<span class="pre">trust</span> to reassure it that the reinterpretation is safe.
+		Use of this keyword marks that the programmer knows and accepts
+		the reponsibility for handling it in a safe and useful way.
+		For example, re-interpreting a nullable reference as non-nullable
+		without a visible check for null-ness requires such reassurance:</p>
+<pre>
+imm someref = trust {nullref as &i32}
+</pre>
+	<p>Although reinterpretation is mostly used with references and pointers,
+		other valid uses are possible.
+		For example, a IEEE 754-compliant floating-point number can be
+		reinterpreted as an unsigned integer to get direct access
+		to its encoded bits:</p>
+<pre>
+imm signbit = Bool[trust {pi as u64} >> 63]
+</pre>
+	<p>This sort of capability is needed to safely build advanced
+		floating point functions not supported by the CPU,
+		such as trigonometric operations.</p>
+
+	<h2>Unions</h2>
+	<p>A union provides similar capability to enums and variant types.
+		However, since it does explicitly designate a discriminant
+		unable to verify that the appropriate pattern match was done
+		prior to accessing a union's field.
+		<span class="pre">trust</span> is the programmers way to
+		tell the compiler not to worry here:</p>
+<pre>
+union Value:
+  nbr usize
+  ref &usize
+	
+fn getInt(v Value) usize trust:
+  if (v.nbr & 3 == 0):
+    *v.ref
+  else:
+    v.nbr>>2
+</pre>
+	<p>As this example shows, the entire function block can be marked as trustworthy.</p>
+	
+			<p style="text-align: right; margin-top: 2em;">
+			<a href="refptr.html"><img alt="_" src="next.png" /></a>
+		</p>
+		
+	</div>
+	</body>
+</html>

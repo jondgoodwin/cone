@@ -1,0 +1,120 @@
+<html>
+  <head>
+	  <title>Weak References - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Weak References</div>
+		</div>
+
+    <div class="text">
+
+		<p style="margin-left: 40px;"><i>Note: None of this is implemented.</i></p>
+	
+	<p>Owning and borrowed references always point to live objects,
+		and may always be directly used to manipulate the objects they point to.
+		This is not true for weak references.
+		Although there are many varieties of weak references,
+		what they share in common is the idea that they do not keep alive the object they point to.
+		sTherefore, we have to confirm whether
+		the weak reference still points to a live object before accessing it.</p>
+	<p>Weak references may sound like a bit like a nullable references,
+		however there is additional intelligent logic that runs alongside the
+		liveness check. Let's examine different kinds of weak
+		references and explain the value they add to various region strategies.</p>
+
+	<h2>Cycle-breaking Weak References</h2>
+	<p>As mentioned earlier, one of the disadvantages of the reference 
+		counting region strategy is that they can leak memory whenever a
+		data structure has cyclic references. Essentially, cyclic references
+		prevent reference counts from ever decrementing to zero. This can cause useless
+		islands of data, no longer accessible by the program, to persist in memory forever.</p>
+	<p>There are several good solutions for preventing cycle-based leaks.
+		The most common involves the injection of at least one weak reference
+		in every data structure cycle.
+		Unlike normal references, weak references won't keep the object it points to alive.
+		It accomplishes this using a separate weak reference counter which
+		behaves a bit differently than the "strong" reference count</p>
+	<p>The downside of a weak reference is that you need to pattern match on it
+		before you can use it, to ensure the object is still there.
+		As with many weak references, a successful pattern match produces
+		a lifetime-constrained borrowed reference which can be then be used
+		to work with the object it points to.</p>
+
+	<h2>Cached or memo-ized Weak References</h2>
+	<p>Imagine we want memory access to a large number of sizable objects.
+		Due to memory constraints, we may not be able to fit all of them in memory
+		at the same time, but we can readily reload or reconstruct them on demand.
+		In this situation, we can use weak references to point to such cached objects,
+		knowing that the underlying system store may automatically unload some objects 
+		at any time to reclaim space for other objects.</p>
+	<p>Pattern-matching on such a weak reference reloads the object, if it has been purged,
+		before producing a usable borrowed reference to the now-live object.</p>
+
+	<h2>First-class Arenas</h2>
+	<p>The sizeable performance advantage of arena regions, is offset by their inability
+		to reclaim memory until the entire arena is freed.
+		This means memory waste and determinism worsen steadily the longer a program runs.
+		This can be particularly problematic when using a global arena whose lifetime
+		lasts for the lifetime of the program.</p>
+	<p>Dynamic (first-class) arenas offer a nice solution to this problem.
+		A dynamic arena may be created at any time, used to allocate a bunch of temporary
+		objects, and then destroyed soon after, when we have no further need for any of those	objects. 
+		Short-lived arenas offer the same performance advantage, 
+		but dramatically improve determinism and memory efficiency.</p>
+	<p>If object references obtained from a dynamic arena never need to live longer
+		the lifetime of the scope where they were obtained, we can just produce a borrowed
+		reference for every object allocated within the dynamic arena.
+		However, if we need either the object references or the dynamic arena to
+		span multiple lifetime scopes, borrowed references may be too restrictive.</p>
+	<p>Weak references may be used to solve this flexible lifetime requirement.
+		Every request to allocate a new object in the arena returns a weak reference.
+		We know the object is still alive as long as the arena is alive, so to
+		access the object, we only need to prove the arena is still there:</p>
+
+<pre>
+imm arena = &so Arena[]    // Allocate a new dynamic arena
+imm objref = &arena mut 5  // Allocate a new i32 object in the new arena region
+arena[objref] = 2          // Change the value of the object
+</pre>
+	<p>Although it may look like we are "indexing" the arena by an object reference,
+		there is no runtime indexing logic taking place. This construction simply
+		allows the compiler to verify at compile-time that the arena is still alive,
+		and therefore the object reference is still valid.</p>
+	<p>The compiler can also verify that the object reference came from that arena,
+		as both share the same hidden lifetime information. 
+		This lifetime information must be explicitly noted should one wish to
+		pass the arena or object references to other functions or methods:</p>
+<pre>
+fn dowork(arena Arena['a], objref ArenaRef+'a') { ... }
+</pre>
+	<p>Notice that same lifetime annotation is specified for both the arena 
+		and the object reference. This ensures use of dynamic arena references is always safe.</p>
+
+	<h2>ECS-based Pools</h2>
+	<p>With games, we often want to create pool-allocated entities 
+		that we can deterministically kill at any time, much like single-owner objects. 
+		However, we also want other entities
+		to be able to refer to them over an extended period of time (e.g., one character following or tracking another).
+		The lifetime constraints of borrowed references make them unsuitable for these
+		shared references, as they need to survive beyond the scope they are created in.
+		An owning reference is also unsuitable, as the entity it points to could be
+		destroyed at any time, leaving unsafe or invalid reference(s) behind.</p>
+	<p>The solution is once again to use weak references for these shared references.
+		The weak reference is interrogated to see if it still points to the same live object.
+		If so, a borrowed reference is produced allowing access to the object.
+		Under the covers the weak reference determines
+		whether the same object is alive, using some technique like generational indexing,
+		a variation on reference counting, or subscription lists.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="reftypecoll.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

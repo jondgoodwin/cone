@@ -1,0 +1,118 @@
+<html>
+  <head>
+	  <title>Owning References - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Owning References</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: Much of this capability is implemented
+			except for error handling on bad allocations.</i></p>
+	
+	<p>When you allocate a new value within a region, you get back an owning reference that points to the new object.
+		For some regions, multiple alias copies may be created which are also owning references.
+		For safety reasons, a region's automatic memory management strategy ensures that the
+		object's memory is freed only when when the last owning reference to the object expires.
+		This timing ensures that an owning reference is always safe to de-reference
+		and that an object will only be freed once.</li>
+	
+	<p>This page describes how owning references are created and used.</p>
+	
+	<h2>Creating Owning References</h2>
+	<p>Let's ask a region to allocate a new value and give us back an owning reference:</p>
+<pre>
+imm nbrref = +rc-imm 4
+</pre>
+	<p>This uses the plus operator to dynamically allocate and initialize a new value,
+		specifying:</p>
+	<ul>
+		<li><a href="refregionglo.html"><b>Region</b></a> which allocates the value and manages its lifetime.
+			In this case, the value is allocated in the <span class="pre">rc</span> region.
+			Later, we will explore some of the different kinds of
+			<a href="refregionglo.html">regions</a> supported by Cone.</li>
+		<li><b><a href="refperm.html">Permission</a></b>.
+			This governs what you may do with the reference.
+			It can be a <a href="refperm.html">static</a> or <a href="refpermlock.html">lock</a> permission.
+			<span class="pre">uni</span> is assumed for an owning reference
+			when no permission is specified.
+		</li>
+		<li><b>Initial Value</b>.
+			A copy of this value is stored in the newly allocated memory location.
+			In this case, it is the integer 4.</li>
+	</ul>
+	<p>What we get back from this allocation is an owning reference, 
+		which this example stores in the variable <span class="pre">nbrref</span>.
+		The inferred type of this reference looks similar to the allocation:
+		<span class="pre">+rc-imm i32</span>.
+		This type signature includes the type of the initial value as the reference's value type.</p>
+	<p>A type's constructor or <a href="refinitdrop.html">initializer</a> may be specified
+		as the initial value.</p>
+<pre>
+imm gcref = +gc-mut Point3[1f, 2f, 3f]  // Allocate a new Point3 value using a constructor
+</pre>
+				
+	<h3>Creating Multiple References to the Same Value</h3>
+	<p>The creation of the <i>first</i> owning reference to a new value always comes from an allocation, as shown above.
+		Additional owning references to that value may then be created
+		by copying an existing reference via assignment or function calls:</p>
+<pre>
+imm nbrref = +rc-imm 4
+imm nbrref2 = nbrref        // nbrref2 and nbrref point to same value
+</pre>
+
+	<h3>How References and Allocations Expire</h3>
+	<p>Owning references keep the value they point to alive.
+		So long as a value has at least one owning reference that points to it,
+		the value's region will not dispose of the value and reclaim its memory space.
+		Only when all references to a value expire does the region have the right to free the value
+		(although how quickly this happens varies by region).</p>
+	<p>So, when does the lifetime of an owning reference expire?
+		When the data structure it is bound to expires or changes its value.
+		If the reference is never stored anywhere, it is consumed by the expression it is part of
+		and expires nearly immediately.
+		If the reference is stored in a variable, it expires no later than the end of the
+		lexical scope that variable is declared within
+		(and sooner, obviously, if the variable takes on a new value).
+		If the reference is pointed at by another reference,
+		then the lifetime of the former depends on the lifetime of the latter.</p>
+	<p>When all references to an allocated value expire 
+		and the region has decided to reclaim the value's space, 
+		the region will automatically invoke the value's 
+		<a href="refinitdrop.html">finalizer</a>, if it has been defined.</p>
+
+	<h3>Memory Allocation Errors</h3>
+	<p>Although unlikely, it is still possible for memory allocation requests to fail.
+		This typically happens when not enough contiguous, free memory exists to
+		satisfy the request.</p>
+	<p>Failure to allocate memory will trigger a different
+		response depending on whether the owning reference is marked as nullable.</p>
+	<ul>
+		<li><b>Non-nullable reference</b>:  the program will panic and shut down.</li>
+		<li><b>Nullable reference</b>: A failed allocation returns the value
+			<span class="pre">null</span>. Any of the mechanisms provided
+			for <a href="refoption.html">handling nullable values</a>
+			may be applied in an attempt to recover from this problem.</li>
+	</ul>
+	
+	<h2>Using a Reference</h2>
+	<p>By and large, region-managed references may be used in all the same ways as borrowed references.
+	They may be
+			<a href="refborrowref.html#ops">dereferenced, compared</a>, and
+			<a href="refborrowref.html#handle">handled</a>
+			in the same way as owning references.
+		</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="refregionglo.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

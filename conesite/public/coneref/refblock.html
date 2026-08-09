@@ -1,0 +1,289 @@
+<html>
+  <head>
+	  <title>Blocks - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Blocks and Statements</div>
+		</div>
+
+    <div class="text">
+
+		<p style="margin-left: 40px;"><i>Note: All of this capability is implemented
+				except for '.[]' indexing and the '<-' Prefix Operator.</i>
+		</p>
+
+		<p>A block is the basic unit for structured control flow.
+			It holds a ordered collection of statements that are executed in order, starting with the first statement.
+			It may also accumulate its own temporary, local state.
+			Blocks that evaluate to some value may also be used in expressions.</p>
+		<p>Before describing blocks, let's first cover statements.</p>
+			
+		<h2>Statements</h2>
+		<p>A statement is typically some expression to be performed. If the expression evaluates to
+			some value, it is then usually discarded by the statement.
+			In addition to expression statements, there are other kinds of statements,
+			such as <a href="refterm.html#vardcl">variable declarations</a>, 
+			a block treated as a statement,
+			or various statements used to control <a href="refflow.html">execution flow</a>.</p>
+		<p>Most statements may be explicitly terminated with a semi-colon.
+			However, specifying the semi-colon is not needed when the statement
+			finishes at the end of a line, as is typically the case.
+			This example show two expression statements:</p>
+<pre>
+mut a = 12   // Equivalent to: mut a = 12;
+mut b = 5    // Equivalent to: mut b = 5;
+</pre>
+		<p>A single line may hold more than one statement. When this is done,
+			use semi-colons to separate the statements:</p>
+<pre>
+a = 24; b = 6    // Equivalent to:  a = 24; b = 6;
+</pre>
+		<p>A statement may span multiple lines.
+			When this is required, continuation lines should be indented to visually signal that all the lines
+			constitute a single statement.</p>
+<pre>
+a = b + c + d
+    - e + f     // Equivalent to a = b + c + d - e + f;
+</pre>
+		<p>A failure to indent continuation lines may sometimes lead the compiler
+			to incorrectly believe the continuation line begins a new statement, rather than
+			continuing one already in progress:</p>
+<pre>
+a = b + c + d    // Equivalent to: a = b + c + d;
+- e + f          // Equivalent to: - e + f;
+</pre>
+
+		<h2>Blocks</h2>
+		<p>Blocks offer a versatile, easy-to-apprehend way to structure logic.
+	  A block's well-defined single point of entry and exit establishes clear
+	  boundaries around control flow as well as the local context it manages.</p>
+	  <p>Versatility comes from being able to nest different kinds of block easily within each other.
+	  This inherent modularity is useful when used in conjunction
+	  with control flow statements or to establish a context for compiler operations
+		(e.g., safety constraints).</p>
+	<p>Blocks support these roles:</p>
+	  <ul>
+		<li>Holding an ordered collection of statements</li>
+		<li>Establishing a lexical scope for a local context</li>
+		<li>Building and/or returning a value</li>
+	  </ul>
+
+	<h3>Ordered Collection of Statements</h3>
+	<p>At its simplest, a block is merely a ordered set of statements which are
+		executed one after another, in order.
+		There are two ways to mark that several statements belong to the same block:
+	<ul>
+		<li>Wrap the block's statements inside curly braces:
+<pre>
+{
+	a = 12
+	b = 5
+}
+</pre>
+		</li>
+	<li>When a statement ends with a block, signal the start of the block
+		with a colon, and then indent all of the block's statements which follow on separate lines.
+<pre>
+if a == 0:
+	a = 12
+b = 5        // Not part of if's inner block, since it is not indented.
+</pre>
+	<p>This convention makes more efficient use of vertical space,
+		particularly for small blocks.</p>
+	</li>
+	</ul>
+	<p>Blocks may be specified within blocks:</p>
+<pre>
+{
+  ++a;
+  {
+    ++b;
+    --a;
+  }
+  a + b;
+}
+</pre>
+	<p>The statements incrementing <span class="pre">b</span>
+	and decrementing <span class="pre">a</span> comprise an interior block within
+	an outer block. This particular example is a bit contrived,
+	as there is no good reason for us to use an interior block here,
+	since the logic would work the same if all statements belong to a single block.
+  However, later we will see useful examples of blocks embedded within other blocks.</p>
+		
+	<h3 id="blockscope">Lexical Context</h3>
+	<p>Execution of a block's statements always begins with the first statement,
+	as one cannot jump into the middle of a block. 
+	Likewise, execution of the block always finishes at the end of the block.
+	This single-entrance and single-exit nature makes it possible for a block
+	to create a temporary execution context that persists for the lifetime of the block
+	and then is automatically cleaned up at the end of the block.</p>
+	
+	<h4>Local Variables</h4>
+	<p>Any variable <a href="refterm.html#vardcl">declared</a> wihin a block
+		provides a temporary working state for that block.
+		Such variables are <i><a href="refterm.html#scope">local</a></i> to their block.
+		They cannot be referenced or used outside of that scope.
+		This silly example illustrates the block scope of declared variables:</p>
+<pre>
+{
+	mut result = 0
+	{
+		mut sum = a + b
+		result = sum
+	}
+	++result    // sum cannot be referenced in outer block
+}
+</pre>
+	<p>The block where a variable is defined is considered to be its lexical scope.
+	Scopes are nested from outer to inner, with global variables having the outer-most scope.
+	Variables declared in outer scopes are accessible in any inner scope.
+	However, the reverse is not true.
+	Thus, the outer block may not refer to <span class="pre">sum</span>.</p>
+	<p>If an inner block declares a local variable of the same name
+	as an outer scope (including global variables), 
+		the outer-scoped variable is effectively inaccessible
+		throughout the lexical scope of that inner block.
+		To avoid potential confusion, this should be avoided.</p>
+
+	<h4>Resource Disposal</h4>
+	<p>The execution lifetime of a local variable does not last beyond its lexical scope.
+	At the end of the block, any resources acquired by local variables
+	are automatically reclaimed. 
+	Reclamation might encompass a wide variety of possible activities,
+	including: freeing heap-allocated memory, decrementing counters,
+	releasing locks, joining threads,
+	or other type-based <a href="refinitdrop.html">finalization</a> activity
+	that closes acquired resources or removes dependencies to other objects.</p>
+		
+	<h3>Blocks as expressions</h3>
+	<p>Blocks that evaluate to a value may be used as an expression, embedded within a larger expression.
+	When a block is used as an expression,
+	its value is that of the last statement in the block.</p>
+<pre>
+// Using a block as an expression
+a = {
+	3.14
+	6      // a's value will become 6
+}
+</pre>
+
+	<h2 id="with">with blocks and this</h2>
+
+	<p>A <span class="pre">with</span> block is a special kind of block able
+		to focus its logic around a single value.
+		Its sugar offers a concise way to invoke many methods on, or access fields belonging to, some value.
+		Although it may resemble method chaining or cascades in other languages, 
+		it is more versatile.</p>
+	<p>A <span class="pre">this</span> block's simple mechanism consists of two aspects:</p>
+	<ul>
+		<li>implicit definition of a <span class="pre">this</span> variable within a block
+			(not to be confused with 
+			<a href="refmethod.html#self"><span class="pre">self</span></a>.)
+		</li>
+		<li>using operators that implicitly rely on the <span class="pre">this</span> variable</li>
+	</ul>
+
+	<h2>Implicit <span class="pre">this</span> Variable</h2>
+	<p>A <span class="pre">with</span> block is simply an expression followed by a code block.
+		Throughout the block, the variable <span class="pre">this</span> is understood to hold
+		the evaluated value of that expression.</p>
+<pre>
+// Calculate the value of 'this' (0.174533)
+with Float.Pi/180:
+	quarter = 90f * this // Use 'this' to convert to radians
+	acute = 10f * this
+</pre>
+	<p>The above example is short-hand for:</p>
+<pre>
+{
+	imm this = Float.Pi/180
+	quarter = 90f * this // Use 'this' to convert to radians
+	acute = 10f * this
+}
+</pre>
+	<p>Since <span class="pre">with</span> blocks can be nested within each other,
+		the value of <span class="pre">this</span> for any statement refers
+		to the inner-most <span class="pre">with</span> block's expression's value.</p>
+
+	<h2>'.' Prefix Operator</h2>
+	<p>The convenience of a <span class="pre">with</span> block comes from using
+	operators which implicitly work with the value of <span class="pre">this</span>.
+	The most common of these is the dot ('.') operator, used to call methods or access fields.</p>
+	<p>Normally, the '.' operator specifies some data object to the left,
+		on which a method might be invoked or whose field is accessed.
+		However, if no object is specified to the left of '.',
+		<span class="pre">this</span> is assumed.
+		It is common to find <span class="pre">with</span> block logic
+		taking advantage of this shortcut:</p>
+<pre>
+// Normalize point to unit length
+with &amp;mut point:
+	imm len = (.x * .x + .y * .y).sqrt
+	if len > 0:
+		.x /= len
+		.y /= len
+</pre>
+	<p>There are several things happening in this example:</p>
+	<ul>
+	<li>The <span class="pre">with</span> block works with a mutable reference to <span class="pre">point</span>.
+		We do this because the block changes the value of <span class="pre">point</span>.
+		If we had not captured a reference, the block would have tried to change the value of <span class="pre">this</span>,
+		which is not mutable and which does not survive the block.</li>
+	<li>It uses <span class="pre">.x</span> and <span class="pre">.y</span> to indirectly access
+		fields in <span class="pre">point</span>, via the mutable reference held by <span class="pre">this</span>
+		(<span class="pre">.x</span> is equivalent to <span class="pre">this.x</span>).
+		The block's logic is cleaner and easier to read without having to place
+		<span class="pre">point</span> ahead of every dot operator.</li>
+	</ul>
+	<p>Why is this approach is more versatile than method chaining or cascades?</p>
+	<ul>
+	<li>Called methods need not return <span class="pre">self</span>, as method chaining requires.</li>
+	<li>Method calls may appear at any point in the block logic, instead of having to be sequenced together.</li>
+	<li>It supports field access as well as method calls.</li>
+	</ul>
+		
+	<h2>'.[]' indexing</h2>
+	<p>'.[]' may be used to access or modify some element of a collection:</p>
+<pre>
+with myScene.numbers:
+	.[4] = 1.6      // Equivalent to: myScene.numbers[4] = 1.6
+	.[6] = 1.9
+	.sort       // Sort the list of numbers
+</pre>
+
+	<h2>'&lt;-' Prefix Operator</h2>
+	<p>The &lt;- operator adds the element on the right to the collection on the left.
+		If no collection is specified on the left, <span class="pre">this</span> is assumed.</p>
+<pre>
+// numbers is a vector of floating-point numbers
+with myScene.numbers:
+	&lt;- 3.4
+	&lt;- 2.6
+	&lt;- 1.4
+	.sort
+</pre>
+	<p>This appends three floating point numbers to the list of numbers held in
+		<span class="pre">myscene.numbers</span> and then re-sorts the numbers list 
+		by calling the <span class="pre">sort</span> method.
+	</p>
+	<p><b>Note:</b> If we just want to append three numbers without sorting:</p>
+<pre>
+myScene.numbers &lt;- [
+	3.4
+	2.6
+	1.4
+]
+</pre>
+
+		<p style="text-align: right; margin-top: 2em;">
+			<a href="reffunc.html"><img alt="_" src="next.png" /></a>
+		</p>
+		
+	</div>
+	</body>
+</html>

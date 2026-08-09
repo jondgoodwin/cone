@@ -1,0 +1,186 @@
+<html>
+  <head>
+	  <title>structs - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">structs</div>
+		</div>
+
+    <div class="text">
+
+	<p>A struct holds one or more named values (fields), each with its own type.
+			The struct's fields are located together in memory.
+			A field's value can be individually accessed using the field's name.</p>
+	<p>Let's illustrate by declaring a new struct type:</p>
+<pre>
+struct Complex:
+  real f32
+  imag f32
+</pre>
+	<p>This defines a new struct type called <span class="pre">Complex</span> that holds two fields of data.
+		The fields named <span class="pre">real</span> and <span class="pre">imag</span> 
+		are both 32-bit floating point numbers.</p>
+	<p>Variables can be declared and initialized using this new type, each with its own values in these two fields:</p>
+<pre>
+imm comp1 = Complex[real: 3.2, imag: 0.0]
+mut comp2 = Complex[real: 0.0, imag: 1.0]
+</pre>
+	<p>This page focuses on using structs to hold field-oriented data.
+		Subsequent pages will enrich what can be done with a struct by adding
+		<a href="refmethod.html">methods</a>, <a href="refinherit.html">inheritance</a>,
+		or <a href="reftrait.html">traits</a>.</p>
+	
+	<h2>Declaration</h2>
+	<p>Before we can make use of a specific data structure,
+		we need to declare it, giving it a name and specifying its fields:</p>
+	</p>
+<pre>
+struct Point:
+    x f32 = 0.
+    y f32 = 0.
+</pre>
+	<p>The struct's declared name is effectively new, custom-defined type.
+		This type name can be used to declare any number of variables containing values of this type
+	  (e.g., <span class="pre">imm pt1 Point</span>).</p>
+	<p>Field declarations look like variable declarations, specifying the field's:</p>
+	<ul>
+		<li><b>Permission.</b>
+			The actual permission that governs field access is derived from
+			both the field's and struct's permissions
+			using a mechanism called <a href="refperm.html#view">viewpoint adaptation</a>.
+			If unspecified, <span class="pre">mut</span> is assumed,
+			which effectively means the struct value's permission governs access.</li>
+		<li><b>Name.</b>
+			Each field must be given a unique name.
+			However, names used in one struct will not be confused with same-named
+			fields in other types, nor with variable or function names.
+			<p>Field names that begin with an underscore are considered pr\ivate.
+			Private fields can only be accessed by the struct's methods.
+			Fields should be private if we don't want logic outside the struct's methods
+			to depend on this implementation detail or be able to change its value directly.
+			This is particularly important when the field's value should be subject to
+			additional invariant constraints that are properly enforced by the struct's methods.</p>
+			<p>The anonymous name <span class="pre">_</span> may be used for
+			any data segment of the struct that we don't want or need access to.</p></li>
+		<li><b>Type.</b>
+			This can be any type:  numeric, Bool, an array, some other struct, etc.
+			The name <span class="pre">Self</span> may be used to refer to the struct
+			type currently being defined.
+			There is one important restriction: A field's type may not be the same
+			as the struct type we are declaring (or any recursive variation on this).
+			A field's type, however, may be a <a href="refrefs.html">reference</a> to the struct type.
+		</li>
+		<li><b>Default value.</b>
+			The default value must be a constant.
+			Specifying default values makes initialization of a newly created struct more convenient.</li>
+	</ul>
+
+	<h2>Initialization</h2>
+	<p>The initial value for any struct value is always built 
+		(explicitly or implicitly) using a struct constructor:
+	the struct name followed by comma-separated field values in square brackets.
+	Values may be marked with field names or just listed in declared order:</p>
+<pre>
+imm pt = Point [x: 3., y: 4.]    // Using field names
+imm pt2 = Point [3., 4.]         // When field names are omitted, order matters.
+imm pt3 = Point[]                // Uses x,y's declared default values of 0.
+</pre>
+	<p>Several constraints apply to struct constructors:</p>
+	<ul>
+		<li>The constructor must specify a value for every field lacking a default value.</li>
+		<li>Only the type's methods may use the struct constructor,
+			if the struct has any private field lacking a default value.</li>
+	</ul>
+	<p>It is also possible to initialize a new struct value by using one of the struct's defined
+		<a href="refinitdrop.html#initializer">initializer methods</a> instead.
+		Under the covers,
+		initializer methods also use the struct constructor to initialize the struct's value.</p>
+	
+	<h2>Copying</h2>
+	<p>Like numbers, struct values may be passed around between variables and functions:</p>
+<pre>
+fn main():
+	mut pt1 = Point[]
+	pt1 = change(pt1)
+
+fn change(mut pt Point) Point:
+	pt = Point[1., 2.]
+	pt
+</pre>
+	<p>Copies of the data structures are made as they are passed around
+		(e.g. into and returned by <span class="pre">change</span>).
+		Any changes made to a copy won't change the original struct value.
+		This may not always be the behavior that you want, though.
+		If a struct is too big to pass around efficiently,
+		or you want changes to apply to the source structure,
+		make use of <a href="refrefs.html">references</a> to a struct instead.</p>
+
+	<h2>Field Access</h2>
+	<p>Use the <span class="pre">.</span> operator to access a struct field's value,
+	specifying the struct value on the left and the field name on the right:</p>
+<pre>
+imm dist = (pt.x*pt.x + pt.y*pt.y).sqrt
+</pre>
+	<p>A field's value may also be altered in this way:</p>
+<pre>
+pt.y = pt.x
+</pre>
+	<p>The compiler applies field privacy and permission constraints to prevent invalid field accesses.
+		A private field can only be accessed by the type's methods.
+		Changing of a field's value is only allowed if the struct/field permissions allow mutability.</p>
+
+	<p>It is also possible to use the <span class="pre">&amp;</span> operator to 
+	<a href="refborref.html#internal">borrow a reference</a> to a specific field within a struct value.</p>
+
+	<h2>Comparing</h2>
+	<p>It is not possible to check whether two structs have the same value if the struct defines only fields.
+		However, two struct values may be compared if the struct implements
+		the <a href="refmethod.html#compare">comparison methods</a>.
+		Also, it is possible to perform <a href="refmatch.html#struct">partial matching</a>
+		of a struct against some pattern.
+	</p>
+
+	<h2>Empty structs</h2>
+	<p>It is perfectly legal to define a struct with no fields. 
+		Nearly always, such types may be used like any struct type for variables, fields, parameters, etc.:</p>
+	<ul>
+		<li>Although its values take up no space, empty struct values can nonetheless be passed around.</li>
+		<li>Methods may be defined for an empty struct and used by its values.</li>
+	</ul>
+	<p>The most significant restriction is that it is not possible to allocate a zero-sized value on the heap,
+	which means you cannot create an owning reference to a value of an empty struct.</p>
+
+	<p>The language's pre-defined <a href="refvoid.html"><span class="pre">void</span></a> type is defined internally as an empty struct.
+	
+	<h2 id="opaque">Opaque Types</h2>
+	<p>Sometimes it is valuable to work with types where we have no idea about the size or layout
+		of any values of that type. This is useful when interfacing with some external system
+		which knows the layout and size of the type's data, but is reluctant to share (or we don't really care).</p>
+	<p>We call such types <b>opaque</b>, because we cannot directly view their contents.
+		Declaring an opaque type is easy:</p>
+<pre>
+struct @opaque SocketHandle
+   // don't specify any fields as part of the type
+   // Methods may be defined.
+</pre>
+	<p>As one might expect, it is illegal for a variable or field to specify an opaque type.
+		An opaque value cannot be created or passed around. We cannot access its fields.
+		We cannot even determine its size.</p>
+	<p>Where opaque types are used is when pointed-at by references or pointers.
+		Such references can be obtained, passed around, and stored, like any reference.
+		We can call methods on a pointed-at value of an opaque type 
+		(typically implemented by the external system that knows the data layout and can work with such values).
+		However, we may not use pointer de-referencing to read or mutate the pointed-at value.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="refunion.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

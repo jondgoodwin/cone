@@ -1,0 +1,244 @@
+<html>
+  <head>
+	  <title>Special-Purpose Methods - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Operator Methods</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: Most of this has been implemented,
+		other than the &amp;- operator, closures, and init/drop methods.</i></p>
+
+	<p>Many operators are implemented as method calls. For instance, <span class="pre">x+3</span>
+		is treated as if it were:  <span class="pre">x.`+`(3)</span>
+		A type need only implement the <span class="pre">`+`</span> method to
+		make the <span class="pre">+</span> operator meaningful to values of that type.
+		If a program tries to apply the <span class="pre">+</span> operator to a value 
+		whose type has not implemented the <span class="pre">`+`</span> method,
+		a compiler error results.</p>
+	<p>Let's explore the implications across a number of operators.</p>
+
+	<h2>Value Operator Methods</h2>
+	<p>A type may support any of the <a href="refexpr.html#arith">arithmetic operators</a>
+		(<span class="pre">+</span>, <span class="pre">-</span>, <span class="pre">*</span>,
+		<span class="pre">/</span> and <span class="pre">%</span>) 
+		by implementing them as methods.
+		The integer and floating point types do this, of course,
+		but really any type that effectively encodes numbers or number structures can do this.
+		This might include: complex numbers, "big" integers, rationals, unit-based numbers, vectors or matrices.</p>
+		<p>On the previous page, the <span class="pre">Point</span> type example
+		took advantage of this by implementing the subtraction method:</p>
+<pre>
+fn `-`(pt2) Point:
+	Point[pt2.x - x, pt2.y - y]
+</pre>
+	<p><b>Note:</b> Whenever a name includes non-alphanumeric (or underscore) characters,
+		it must be enclosed in backticks. This is why the method name is shown as
+		<span class="pre">`-`</span>.</p>
+	<p>With this method implemented, one may simply subtract two Points in an expression:
+		<span class="pre">pt1 - pt2</span>.</p>
+	<p>Unary negation may also be implemented using the <span class="pre">`-`</span>.
+		The difference between the negation method and the subtraction method is that
+		the former needs only the self parameter:</p>
+<pre>
+fn `-`() Point:
+  Point[-x, -y]
+</pre>
+	
+	<h4>Logic and Shift Operator Methods</h4>
+	<p>Similarly, a type may support any of the <a href="refexpr.html#bitwise">logic and shift operators</a>
+		(<span class="pre">!</span>, <span class="pre">&</span>, <span class="pre">^</span>,
+		<span class="pre">~</span>, <span class="pre">&lt;&lt;</span> and <span class="pre">&gt;&gt;</span>) 
+		by implementing them as methods.</p>
+		
+	<h4 id="compare">Comparison Operator Methods</h4>
+	<p>To support operator-based comparison of two values, implement the appropriate
+		<a href="refif.html#compare">comparison operator(s)</a>
+		(<span class="pre">==</span>, <span class="pre">&lt;</span>, <span class="pre">&lt;=</span>,
+		<span class="pre">&gt;</span>, or <span class="pre">&gt;=</span>) 
+		as methods.
+		It is not necessary to implement the inequivalence operator (<span class="pre">!=</span>),
+		as this is supported automatically if <span class="pre">`==`</span> is implemented.
+	</p>
+
+	<h4>isTrue "truthy" Method</h4>
+	<p>Conditional expressions depend on a boolean value of true or false.
+		If a conditional expression returns a value of some type other than Bool,
+		Cone will check whether the type implements the <span class="pre">isTrue</span> method.
+		If so, it will use that method to convert a conditional expression's to true or false.</p>
+	<p>In effect, this is how Cone supports the notion of type-specific "truthy" values. For example:</p>
+	<ul>
+	<li>Integer values are false if 0, true otherwise.</li>
+	<li>Floating point values are false if 0 or -0, true otherwise.</li>
+	<li>Pointers are false if null, true otherwise.</li>
+	<li>Option values are false if None, and true if Some.</li>
+	</ul>
+	
+	<h2>Value Mutation Methods</h2>
+	<p>Several operator methods may be implemented that change an existing mutable value in memory.
+		When the value is held by some variable, the compiler effectively obtains a mutable reference to the variable,
+		and calls the method using the mutable reference.
+	<p>This can be illustrated with a simple example. Let's say that a type wants to override the simple assignment
+		operator with a method that performs a deep (rather than the default shallow) copy of the value.
+		The signature of the method will accept a mutable reference to the target:
+<pre>
+fn `=`(self &amp;mut, value) Self:
+</pre>
+	<p>When assignment is performed for a value of this type (<span class="pre">a = b</span>),
+		it will obtain a mutable borrowed reference to the lval 'a' and then
+		call the method like this:  <span class="pre">&amp;uni a.`=`(b)</span>.
+	
+	<h4>Arithmetic, Logic, Bitwise Assignment Operators</h4>
+	<p>A custom type may also support any of the <a href="refexpr.html#arithassign">arithmetic assignment operators</a>
+		(<span class="pre">+=</span>, <span class="pre">-=</span>, <span class="pre">*=</span>,
+		<span class="pre">/=</span> and <span class="pre">%=</span>) 
+		by implementing them as methods.</p>
+	<p>If a type does not implement the arithmetic assignment operators,
+		the compiler will attempt to implement them using the arithmetic methods.
+		Thus, <span class="pre">pt1 += pt2</span> would be treated as if it were:
+		<span class="pre">pt1 = pt1 + pt2</span>.</p>
+	<p>Similarly, the logic and shift assignment operators may also be implemented as methods.
+		If not, they will be handled in the same way as the arithmetic assignment operators.</p>
+	
+	<h4>Increment and Decrement Operators</h4>
+	<p>A type may implement the <a href="refexpr.html#incrdecr">increment or decrement operators</a>
+			(<span class="pre">++</span> and <span class="pre">--</span>) as methods.
+			When used as prefix operators, their names are <span class="pre">`++`</span> and <span class="pre">`--`</span>.
+			When used as postfix operators, their names are
+			<span class="pre">`_++`</span> and <span class="pre">`_--`</span>.
+	</p>
+
+	<h2>Computed Properties</h2>
+	<p>For public fields, there is often no reason to implement getters and setters to offer
+		direct access to their values, because it is faster to access the fields directly.
+		However, if it would be unsafe to offer direct access to certain fields,
+		in order to preserve specific data invariants, one should make them private
+		and then potentially offer appropriate getter and setter methods that preserve the invariants.</p>
+
+ 	<p>Implementing a getter and setter is easy:</p>
+<pre>
+struct Counter:
+	_count u32 = 0
+
+  // a getter
+  fn counter() u32:
+    _count
+
+  // a setter (notice the use of a mutable reference, since the value will be changed)
+  fn count(self &amp;mut, cnt u32):
+    _count = cnt
+</pre>
+	<p>And here we use them:</p>
+<pre>
+mut x = Counter[]
+x.counter // 0
+x.counter = 10 // uses the "setter" to set the value
+x.counter // 10
+</pre>
+	<p>Since we can omit the parentheses when using a getter or setter,
+		their use looks just like access to a public field.
+		This makes it possible to start off with a type that makes a field public,
+		and then later changes it to private because of an invariant.
+		By implementing getters and setters instead, the API can be preserved
+		even as the implementation evolves.</p>
+
+	<h2>Collection Operators</h2>
+	<p>By wrapping an array (or array reference) within a struct, one can
+		create all sorts of collections: indexed collections like vectors and dictionaries,
+		as well as stacks, queues, sets and more.
+		The difference between them is largely determined by which methods are implemented for
+		working with various elements of the collection.
+		Most collections will typically implement the
+		<span class="pre">len</span> method to find how many elements are currently in the collection,
+		and <span class="pre">iter</span> to enable iteration through the collection's elements.</p>
+	<p>A couple of operators make it easier to work with collections:
+		<span class="pre">[]</span> for indexed access and
+		<span class="pre">&lt;-</span> to add or remove an element.
+		Each collection type implements methods that determine how these operators work.</p>
+
+	<h3>[] Indexed Access Operator</h3>
+	<p>As we saw with arrays, the <span class="pre">[]</span> operator is used to
+		access a specific collection element according to its index.
+		Implementing the <span class="pre">[]</span> method as both a getter and setter
+		makes indexed access possible for other kinds of indexed collections.
+		The index need not even be an unsigned integer, as it is for an array.
+		Dictionaries, for example, often use strings as the index.</p>
+
+	<h3 id="append">&lt;- Append Operator</h3>
+	<p>Some types may implement one or more overloaded methods for "&lt;-", to "append"
+		values to a receiver. This can be useful for a variety of purposes:</p>
+	<ul>
+		<li>Appending elements to the end of some collection, queue or string.</li>
+		<li>Serializing data to an output stream, such as the console.</li>
+		<li>Sending data to another thread/actor/machine via a channel</li>
+	</ul>
+	<p>It is not necessary that all values appended to the receiver be data
+		that is accumulated by the receiver. Some values could be understood 
+		to be instructional directives that alter the behavior of the receiver
+		on the fly. For example, a directive could offer formatting, rendering or structuring instructions.	</p>
+	<p>As a convenience, if a tuple appears after the append operator, this is transformed into multiple
+		distinct append statements:</p>
+<pre>
+print &lt;- "Hello ", user   // equivalent to: print &lt;- "Hello "; print &lt;- user
+</pre>
+		
+	<h2>() "Function call" Operator</h2>
+	<p>It is actually possible to "call" an object as if it were a function.
+		Doing so will actually invoke the <span class="pre">()</span> method
+		for the object.
+
+	<h3>Closures as anonymous structs</h3>
+	<p>A closure is really just syntactic sugar for an anonymous struct
+		that implements the <span class="pre">()</span> method.
+		The closure <span class="pre">|n i32 {cnt = 0}| cnt += n</span>
+		is roughly equivalent to:</p>
+<pre>
+struct Cntstr:
+  _cnt = 0
+  fn `()`(self &amp;mut, n i32):
+    _cnt += n
+
+mut counter = Cntstr[]
+&amp;mut counter(1)        // 1
+&amp;mut counter(2)        // 3
+</pre>
+	<p>As this example demonstrates, the closure itself is defined by the
+		<span class="pre">Cntstr</span> struct.
+		The closure's state is define by its field(s).
+		The functional logic is captured within a single method named
+		<span class="pre">()</span>.</p>
+	<p>Any explicitly callable struct is effectively also a closure.</p>
+
+	<h2>Initializers and Finalizers</h2>
+	<p>A type may define one or more <b>initializers</b>.
+		Initializers offer an alternative to the type constructor
+		to create a new value of that type.
+		In contrast to a type constructor, which uses square brackets, an initializer uses parentheses:</p>
+<pre>
+imm pt = Point(1.)
+</pre>
+	<p>The default name for initializers is <span class="pre">init</span>. 
+		An initializer may, however, use some other name.
+		In particuar, an initializer named <span class="pre">clone</span>
+		is automatically used (when defined) whenever
+		a copy of a value needs to be made due to assignment, function call parameters, etc.</p>
+	<p>A type may also define a single <b>finalizer</b> called <span class="pre">final</span>.
+		This is automatically invoked immediately before any value of that type is destroyed,
+		and its memory space reclaimed.</p>
+	<p>On a later page, detailed advice is given 
+		on how to <a href="refinitdrop.html">define initializers and finalizers</a>.</p>
+	
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="refinitdrop.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>
