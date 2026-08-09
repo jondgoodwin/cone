@@ -1,0 +1,111 @@
+<html>
+<head>
+	<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<link rel="stylesheet" type="text/css" href="standard.css" />
+<title>Cone - Memory Managed Your Way</title>
+</head>
+<body>
+	<div id="header">
+		<div class="column">
+		<a href="/">
+			<img src="pegicon.png" width="56" height="56" alt="logo">
+		</a>
+		</div>
+		<span id="title">Cone</span>
+		<span id="sub">Memory Managed Your Way</span></div>
+		<div class="column flow-opposite">
+	</div>
+
+	<div class="text">
+	<p>Cone's region-based memory management is one of its more unusual features.</p>
+	<p>By decorating managed references with regions, you obtain precise control over how memory
+		is allocated and freed on a per-object basis. Coupled with the use of borrowed references,
+		regions make it possible to speed up the throughput and responsiveness of your programs,
+		while still preserving memory safety.</p>
+	<p>How is this possible?</p>
+	
+	<h2>When the Language Chooses the Memory Management Strategy</h2>
+	<p>Most languages completely decide for you the strategy they will use to manage memory.
+		For example, you might use the "new" keyword to allocate memory for a new object:</p>
+<pre>
+var person = new Person("Tako");
+</pre>
+	<p>Underneath, the language completely decides exactly how to allocate heap memory for this new object.
+		It also decides when (and how) it will free allocated memory once the object is not longer needed.</p>
+	<p>The memory management strategy chosen by most languages (e.g., C# and Java) is some flavor of <b>tracing garbage collection</b>.
+		Other languages (like Python and Swift) choose to use an enriched form of <b>reference counting</b>.
+		In many ways, these are both excellent choices. They are flexible across a wide range of use cases,
+		and their use can be largely invisible to the programmer.</p> 
+	<p>However, their runtime mechanisms often make these two strategies the slowest in throughput (and unpredictable in responsiveness), 
+		especially when memory is constrained.
+		Just imagine how many CPU cycles are spent allocating, freeing, copying, and liveness tracking
+		thousands or millions of small data objects found in many programs today.
+		Since these operations mutate memory along the way, the whole process is further slowed by needing to sync
+		memory changes in cache back to much slower memory.
+		By contrast, the <b>arena</b> (bump pointer) and <b>pool</b> (free list) strategies can sometimes be 10-20x faster.
+		Even <b>single-owner</b> (Rust and C++) is often faster.</p>
+	<p>The truth is simple: there is no perfect memory management strategy.
+		Each strategy carries different trade-offs in terms of throughput, responsiveness, safety, convenience,
+		memory consumption, runtime size, and data type restrictions.
+		So, when a language restricts programs to a single strategy,
+		that may work out well for some programs,
+		but it could easily be a poor fit for others.</p>
+		
+	<h2>Cone's Regions</h2>
+	<p>This is where Cone's regions come into play. 
+		Each region is an importable library package that implements some specific memory management strategy.</p>
+	<p>When you create a new object in Cone, you specify the region responsible for allocating (and ultimately freeing)
+		heap memory for that object:</p>
+<pre>
+imm person = +so Person("Tako");
+</pre>
+	<p>This uses the 'so' (single-owner) region to allocate and free memory.
+		You could just as easily pick the 'rc' (reference count) or 'gc' (tracing garbage collection) region instead.
+		For each new object, the choice of region is yours. All are safe, but each strategy carries a different balance of
+		advantages and disadvantages. You pick the one best aligned with how the person object is used by the program.</p>
+	<p>Even better, every heap-allocated object can select a different strategy, based on its needs.</p>
+	<p>Since Cone offers a broad variety of memory management strategies, you can optimize for throughput
+		and/or responsiveness by carefully selecting the right mix of strategies that best fit the program's data use requirements:</p>
+	<ul>
+	<li>Take advantage of the superior speed of <b>arenas</b>, when it is okay to temporarily leak some memory on 
+		short-lived scratch pads.</li>
+	<li>Take advantage of fast object <b>pools</b> when you have quite a few objects of similar size.</li>
+	<li>Use <b>single-owner</b> when you can guarantee an object is only referenced by one other object (which happens often).</li>
+	<li>Then use <b>ref-counting</b> or <b>tracing GC</b> otherwise. 
+		(And by the way, if you don't select tracing GC, you won't pay any of its run-time costs).</li>
+	</ul>
+	<p>Furthermore, if none of the existing region packages meet your needs, you can easily define and use your own region.</p>
+	<p>Cone's versatile regions give you the power 
+		to architect your program's use of memory for optimal throughput and latency,
+		without sacrificing safety, convenience, or data structure flexibility.</p>
+	<p>Click here to learn more about: <a href="coneref/refrefs.html">region-managed references</a>. Follow-on pages dive into more
+		detail about owning references, weak references, and region strategies.</p>
+	
+	<h2>Region Polymorphism and Borrowed References</h2>
+	<p>At this point, you might be concerned that having so many different regions is going to be a nightmare for
+		developers of popular library packages:  which one should they choose?
+		Will several different versions have to be built to accommodate different regions?</p>
+	<p>Fortunately, this is rarely a concern, because regions are types and modules support polymorphism.
+		For the few packages that actually need to allocate (and free) objects,
+		they can either pick an innocuous region (like single-owner or arena)
+		or can be written to be polymorphic over the region selected by the module that imports the package.</p>
+	<p>For packages that do not need to allocate objects, but do need to use references to objects,
+		they can make use of Cone's borrowed references.
+		A borrowed reference can be obtained from any region-managed reference and then passed along to any package.
+		Borrowed references have "forgotten" what region the object belongs to, but are still always safe to use
+		for reading (or modifying) some object's state.
+		It is the lifetime-constraint placed on borrowed references that makes them memory-safe.</p>
+	<p>Borrowed references are not just useful for polymorphism. Their use also 
+		speeds up many programs. Since borrowed references are free from region oversight,
+		they consume no cycles on liveness bookkeeping activities, such as tracing or reference counting.
+		Typically, the more your program uses borrowed references, instead of region references, 
+		the faster and more flexible it becomes.</p>
+	<p>Click here to learn more about: <a href="coneref/refborrow.html">borrowed references</a>. 
+		Follow-on pages dive into more details.</p>
+	
+
+	</div>
+
+</body>
+</html>

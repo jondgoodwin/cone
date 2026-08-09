@@ -1,0 +1,191 @@
+<html>
+  <head>
+	  <title>Move Types and Semantics - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Move Types and Semantics</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: None of this has been implemented.</i></p>
+	
+	<p>Values are copied as they flow from 
+		variable-to-variable or function-to-function.
+		Changes made to a copy don't affect the original value.</p>
+<pre>
+imm a = 3
+mut b = a  // b holds a copy of a's value
+b += 1     // b's value is changed to 4
+a          // is still 3
+</pre>
+	<p>Sometimes, however, we have values for which we don't want multiple copies to 
+		exist at the same time. Such "non-copyable" values can be useful:</p>
+		<ul>
+		<li>When the value depends on a stateful resource(s), where the existence of a copy of this value
+			would confuse how we interact with the resource(s).
+			For example, imagine the value is a handle to a just-opened file
+			and we make a copy of that handle as another value.
+			If we close the file using one handle,
+			it might then be unsafe to use the other handle.</li>
+		<li>When it is not clear how to create a faithful copy
+			of a complex value, particularly when insufficient metadata exists or when doing so involves
+			memory or resource allocation or establishing appropriate external dependencies.</li>
+		<li>When we want to take advantage of the single-owner memory management strategy.
+			If an allocated value never needs to be copied,
+			single-owner offers performance and determinacy advantages over
+			reference-counting and tracing GC.</li>
+		<li>When we want to transfer mutable data (including complex data graphs)
+			from one thread to another, without requiring
+			the use of performance-degrading locks or atomics.</li>
+		</ul>
+	<p>To provide safe support for such "non-copyable" values, Cone supports <b>move semantics</b>.
+	   Move semantics enable non-copyable values to be moved from one place to another in a code's logic.
+	   However, once the value moves, it may no longer be accessed from its old location.
+	   This restriction ensures there is only ever one copy of the value in existence.</p>
+		
+	<h2>Move vs. Copy Types</h2>
+	<p>Whether a value is handled by move vs. copy semantics is determined by its type.
+		In general, Cone treats most types as having copy semantics, unless it detects some reason
+		why move semantics restrictions are needed. Here are the rules:</p>
+	<ol>
+		<li>If the type declares that it uses move semantics, then it does. This is as simple as
+			adding the <span class="pre">@move</span> attribute on the type declaration:
+<pre>
+struct @move Handle:
+   id i32
+</pre></li>
+		<li>If the type implements an initializer method that essentially enables the creation of a copy,
+			the type's values have copy semantics.
+			Since the compiler automatically uses this cloning method (when implemented)
+			to make all copies of values of this type, these values are clearly copyable.</li>
+		<li>If the <a href="refinitdrop.html#finalizer">final</a> method is implemented,
+			the type's values have move semantics.
+			If the type requires a finalizer to clean up dependencies,
+			chances are excellent that creating copies will open the door to safety issues.</li>
+		<li>If <i>any</i> of the type's fields have move semantics,
+			the type's values have move semantics.
+			This is because if part of a value cannot be copied, the whole value certainly cannot be either.
+			</li>
+		<li>If any of the type's fields are references to other data structures,
+			the type's values have move semantics.
+			This is because it is not immediately obvious how to automatically and safely
+			create copies of this type's values.</li>
+		<li>If the type is marked as having move semantics, that's what it gets.</li>
+		<li>If none of the above apply, the type's values have copy semantics.</li>
+	</ol>
+
+	<h2>Move Capabilities and Restrictions</h2>
+	<p>Even when we want to prohibit the copying of these values,
+		we still want to be able to move such values around from variable-to-variable
+		or function-to-function.</p>
+	<p>Moving values around looks just like copying,
+		but adds restrictions to ensure multiple copies of the value are never made.
+		These restrictions, if not well understood, 
+		can make it frustrating to write programs that do what is desired
+		in a way that the compiler deems acceptable.</p>
+	
+	<h3>Source Deactivation</h3>
+	<p>It would be misleading to think that moving a value does not copy it.
+		In fact, a "shallow" copy of the value might well be made on every move.
+		What the move restrictions guarantee is that only one version of the value
+		ever exists at a time.</p>
+	<p>This guarantee is implemented by deactivating the value's source as part of the move. 
+		When the source is a variable,
+		this prohibits post-move access to that variable's value:</p>
+<pre>
+imm socket = Socket() // Open a new network socket (move semantics)
+imm sock2 = socket    // Move the value to sock2
+socket.poll()         // **ERROR** socket no longer has an accessible value
+</pre>
+	<p>By de-activating use of the variable <span class="pre">socket</span> after the move,
+		we effectively have only one "copy" of its value, which is now in <span class="pre">sock2</span>.
+		If we had not deactivated <span class="pre">socket</span>, 
+		we would then have two copies of a non-copyable value.</p>
+	<p>The same deactivation mechanism applies when passing a non-copyable value to another function.</p>
+<pre>
+imm socket = Socket() // Open a new network socket (move semantics)
+afunction(socket)     // the socket is moved to the called function
+anotherfunc(socket)   // **ERROR**: socket is deactivated and unusable
+</pre>
+	<p>Deactivation of the source happens even for <b>conditional moves</b>,
+	where one branch of conditional move the value but another does not.
+	When the branches join together again, the compiler can't know whether
+	the value is there or not, so conservatively, it assumes the value is gone.</p>
+
+	<p>A non-copyable value may be returned by a called function.
+		There is no need to deactivate the value's source, since it is already gone.</p>
+	<p>(<b>Note:</b> A deactivated source variable may be re-activated at any point by giving it a new value.)</p>
+
+	<h3>Scope-surfing and Destruction</h3>
+	<p>This movement of a non-copyable value can be understood as
+		shortening or lengthening the value's lifetime as it surfs from one scope to another.
+		When it fails to surf out of its last scope,
+		the value will be destroyed at the end of that scope, as it is no longer useful.</p>
+	<p>To destroy a move value more quickly, just assign it to the anonymous variable "_":</p>
+<pre>
+imm socket = Socket() // Open a new network socket (move semantics)
+_ = socket
+callfn(socket)        // **ERROR**. socket is deactivated
+</pre>
+	<p>Doing this on a copyable value has no effect.</p>
+	
+	<h3>Field/Element Moves</h3>
+	<p>If we want to move a non-copyable value out of a struct or array,
+		things get more complicated, as other values are now potentially affected
+		by such a move:</p>
+	<ul>
+		<li>A non-copyable value held by a named field in a struct may be moved out.
+			However, doing so invalidates any future access to the variable holding that struct, 
+			including any values held by its other fields.</li>
+		<li>It is prohibited to move out a non-copyable value held by some indexed element
+			in an array.</li>
+	</ul>
+	<p>These are significant limitations on the use of non-copyable values in structs and arrays.
+		However, these limitations can be ameliorated by using either the swap or left-assignment operator:</p>
+
+	<h3 id="swap">Swap Operator</h3>
+	<p>The swap operator may be used on copy or move values:</p>
+<pre>
+struct Connection:
+  s Socket
+  b i32
+mut conn = Connection[Socket(), 10]
+mut x = Socket()  // Open another socket
+conn.s &lt;=&gt; x
+// conn now contains the new socket and x contains the old one
+</pre>
+	<p>Swapping offers a helpful way to get around restrictive moves.
+	One can temporarily extract a 'move' value out of a field or array element by swapping
+		it with some arbitrary type-compatible value.
+		After making use of the extracted value, simply swap it back in.</p>
+	<p>The reason why this works is that we end up with no copies of either value
+		and the source still has a valid value
+		(even if it is only a dummy value).
+		That ensures that the original source stays safe to use.</p>
+	
+	<h3>Left-Assignment</h3>
+	<p>Assignment is an expression whose value (for copy semantics) 
+		is a copy of the value of the right-hand expression.
+		With move-only semantics, it can be very helpful to have the value of the
+		assignment expression be the value previously stored in the left-hand (lval) memory location.
+		To obtain this result, use the left-assignment operator (<span class="pre">:=</span>).</p>
+<pre>
+mut conn = Connection[Socket(), 10]
+mut x = conn.s := Socket()
+// conn now contains the new socket and x contains the old one
+</pre>
+		
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="refborref.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

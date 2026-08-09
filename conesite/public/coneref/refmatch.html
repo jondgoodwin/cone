@@ -1,0 +1,221 @@
+<html>
+  <head>
+    <title>Pattern Matching - Cone Reference</title>
+    <meta content="text/html; charset=UTF-8" http-equiv="content-type">
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" type="text/css" href="standard.css" />
+  </head>
+  <body>
+    <div id="header">
+      <a href="/"><div id="title">Cone</div></a>
+      <div id="sub">Pattern Matching</div>
+    </div>
+
+    <div class="text">
+
+  <p style="margin-left: 40px;"><i>Note: A very basic match capability is implemented,
+    supporting value equality, bound pattern matching and 'else'.</i></p>
+
+  <p>As with <span class="pre">if</span>, pattern matching is about deciding
+  which code path to perform. 
+  Its approach is to match a single value against multiple patterns.
+  The code block associated with the first matching pattern is performed.</p>
+  <p>Let's illustrate this with a simple (but mathematically unusual) example:</p>
+<pre>
+fn power(n i32, pow i32) i32:
+  match pow:
+    case ==0: 1
+    case ==1: n
+    case ==2: n * n
+    else: -1
+</pre>
+  <p>This example calculates its value differently based on the value of pow.
+  If pow is zero, we return 1. If pow is 1, we return n.
+  If pow is two, we return n squared. 
+  Finally, if pow is any other value, we return -1.</p>
+  <p>The structure of this form of pattern matching is straightforward:</p>
+  <ul>
+  <li>Any normal expression can be used after <span class="pre">match</span>.
+  This expression's evaluated value is what patterns are matched with.
+  If desired, an assignment expression can be used here to capture
+  this matchee value for later use in matched code blocks.</li>
+  <li>Any number of pattern blocks may follow. Each is comprised of the <span class="pre">case</span> keyword,
+    followed by a match pattern, which is followed by a block.
+  When a match pattern matches, the evaluated value of its block is the match's value</li>
+  <li>Using the <span class="pre">else</span> pattern will always match any value.
+  If specified, it should be the last pattern used.</li>
+  </ul>
+  <p>A versatile range of patterns are supported, 
+  able to match wholly to specified values, partially, or using a first-class pattern.
+  Pattern matching also supports de-structuring portions of the original value
+  into bound variables.</p>
+
+  <h2>Whole Value Matches</h2>
+  <p>These patterns involve straightforward comparisons between the matchee value
+  and one or more pattern values.</p>
+  <h3>Equivalence</h3>
+  <p>The simplest form of matching uses a value as the pattern.
+  This can be a constant value (as above) or any expression that evaluates to some value,
+  for example:</p>
+<pre>
+match val:
+  case ==anotherval.len: 4
+  else:                  0
+</pre>
+  <p>The type of the pattern value must match the type of the matchee value.
+  An equivalence match is performed between these values as if using the '==' operator.</p>
+  
+  <h3>Comparisons</h3>
+  <p>Comparison patterns make use of the <a href="refif.html#compop">comparison operators</a>
+  (including <span class="pre">!=</span>).
+  The left hand value is not specified, as it is understood to be the match value:</p>
+<pre>
+match n:
+  case &lt;0: -1
+  case &gt;0:  1
+  else:     0
+</pre>
+
+  <h3>Range pattern</h3>
+  <p>The range pattern checks whether the matchee value lies within a specified
+  range. This is specified by placing either the
+  <span class="pre">..</span> or <span class="pre">...</span> range operator
+  between two expressions:</p>
+<pre>
+match n:
+  case 0 .. 3:  1 // matches 0, 1, or 2 (but not 3)
+  case 3 ... 6: 2 // matches 3, 4, 5 or 6 inclusively
+</pre>
+  
+  <h2>Pattern Expressions</h2>
+  <p>Before continuing on to talk about partial pattern matching,
+  let's introduce ways to enhance the match patterns already described
+  as part of a more comprehensive pattern expression.</p>
+
+  <h3>Multiple patterns</h3>
+  <p>It is possible to list more than one possible pattern to match,
+  using <span class="pre">or</span> between each pattern:</p>
+<pre>
+match n:
+  case 2 or 3 or 5 or 7:  2
+  case -6 or -1...1 or 6: 1
+  else:                   0
+</pre>
+  
+  <h3>Tuples</h3>
+  <p>Multiple values to be matched can be specified on the
+  <span class="pre">match</span> statement as a comma-separated tuple
+  or with a function that returns multiple values.
+  If a tuple is specified on the match, then all match patterns must be specified as tuples.
+  For a tuple to match, all values must match individually:</p>
+<pre>
+match key,value:
+  case 0, _: 0
+  case _, 0: 1
+  else:      2
+</pre>
+
+  <h3>if Guards</h3>
+  <p>An 'if' clause may be specified following all patterns as an additional guard.
+  The condition expression after the 'if' must evaluate to true in order for the
+  match to take place.</p>
+<pre>
+match nbr:
+  case ==4 if cnt &gt; 0: 0 // matches only if nbr==4 and cnt&gt;0
+  case ==4:               1 // matches when nbr==4 and cnt&lt;=0
+  else:                   2  // matches when nbr != 4
+</pre>
+
+  
+  <h2>Partial matches</h2>
+  <p>When dealing with a composite data structure, partial matching
+  supports value or type matching on selected parts of that data.
+  A partial match pattern mimics the type structure of the data we are matching
+  against, specifying match patterns for the value or type of 
+  particular substructural elements.
+  It also supports "destructuring", binding variables to these or other substructural elements.</p>
+  <p>Partial match patterns begin with the <span class="pre">is</span> operator. 
+    Additional specifics of the pattern vary by type.</p>
+
+  <h3 id="array">Collection partial matches</h3>
+  <p>The simplest partial match checks whether an array (or array reference) begins with
+    certain elements:</p>
+<pre>
+match name:
+  case is "Judy":  judy // Matches if name string begins with "Judy"
+  case is "Frank": frank
+  else:            noone
+</pre>
+  <p>Alternatively, one can specify matching patterns for the first few elements:</p>
+<pre>
+match numbers:
+  case is [1, _]:           1
+  case is [_, 1]:           2
+  case is [&lt;=0, &lt;=0]: 3
+  else:                     4
+</pre>
+
+  <h3 id="struct">Struct partial matches</h3>
+  <p>A matching pattern may be created for specific named fields:</p>
+<pre>
+match points:
+  case is Point[0., _]:          1
+  case is Point[_, 0.]:          2
+  case is Point[&lt;0., &lt=0.]: 3
+  else:                          4
+</pre>
+  <p>Any unspecified fields in a struct pattern are assumed to match.</p>
+
+  <h3 id="enum">Variant type partial matches</h3>
+  <p>An variant pattern typically just matches against each option's variant type,
+    binding to a variable:</p>
+<pre>
+match oddval:
+  case imm intval SomeInt:     intval
+  case imm point PointStruct:  i32[point.x * point.y]
+  case is None:                    0
+</pre>
+  <p>If desired, pattern matching and binding can also be applied to the internal value(s):</p>
+<pre>
+match oddval:
+  case imm intval = SomeInt[&lt;0]: -intval
+  case imm intval = SomeInt:        intval
+  case is PointStruct[x=_, y=_]:    i32[x * y]
+  None:                             0
+</pre>
+
+  <h2>First-class patterns</h2>
+  <p>Whole and partial matching patterns handle many situations, but not all.
+  First-class patterns make it possible to support more sophisticated matching
+  algorithms.
+  Such algorithms are implemented in a callable function or method
+  that returns true for a successful match.
+  <p>Use of a first-class pattern is signaled using the <span class="pre">using</span> keyword.
+  The matchee value is implicitly included as part of the call
+  (essentially, the first parameter for a function and the second for a method call):</p>
+<pre>
+match n:
+  case using isPrime(): 0 // invokes isPrime(n)
+  case using isOdd():   1 // invokes isOdd(n)
+  else:                 2
+</pre>
+  <p>This technique can be quite powerful, 
+  as it makes it possible to support a broad range of complex
+  pattern matching strategies, such as regular expressions, parsing, etc.
+  A first-class pattern can be an object with state that changes as a result of
+  a successful match. As part of the match, data can be extracted from the
+  matchee value and preserved for later use by the match block.</p>
+  
+  <p><b>Note:</b> A first class pattern can also be applied to any arbitrary value as part of
+  an <span class="pre">if</span> statement:</p>
+<pre>
+if isOdd(n): ++nbr
+</pre>
+    
+    <p style="text-align: right; margin-top: 2em;">
+      <a href="refwhile.html"><img alt="_" src="next.png" /></a>
+    </p>
+
+  </div>
+  </body>
+</html>

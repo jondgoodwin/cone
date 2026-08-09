@@ -1,0 +1,195 @@
+<html>
+  <head>
+	  <title>include, import and extern - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">include, import and extern</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Name folding for import is unfinished.</i></p>
+	
+	<p>After a program's source code gets big enough, 
+		it may become easier to work with when partitioned across multiple files.
+		Once we have done this, we need a way to stitch these fragments together.
+		On this page, we introduce three such mechanisms for
+		use when combining together logic from multiple source files.</p>
+
+	<h2>include</h2>
+	<p>The <span class="pre">include</span> statement
+	incorporates another source file's contents 
+	as if were part of the current source file's module.
+	For example, suppose we had a source file called 'useme.cone':
+<pre>
+fn inc(a i32) i32:
+  a+1
+</pre>
+		<p>Another source file can now use its contents:</p>
+<pre>
+include useme
+
+fn timesnext(a i32):
+  a * inc(a) // uses a function defined by 'useme.cone'
+</pre>
+	<p>Since the names declared inside any included file(s) are treated
+		as part of the same module's namespace, each of the source files are
+		free to reference each other's names.
+		A source file should not be included more than once in a module.
+		For clarity's sake, it is often best to place all includes near the
+		top of the main source file for the module.</p>
+	
+	<h3>File names and Paths</h3>
+	<p>The <span class="pre">include</span> statement specifies a file path.
+		If the file path includes characters that are not legal for a Cone name
+		(such as periods or slashes),
+		it should be enclosed in double quotes 
+		(and make use of the appropriate escape sequences where needed).
+		If the file's extension is not specified, .cone is assumed.</p>
+	<p>In the simplest case, the file path specifies just the name of a source file
+		to be found in the same folder as the source file which includes it.
+		If a file of that name is not found there, the compiler will look for it
+		in a folder of the same name (e.g., "useme/useme.cone").
+		This behavior allows source files to be organized across nested folders,
+		where related source files are grouped together.</p>
+	<p>If desired, the file path may explicitly specify folders in front of the source file name.
+		This can be an absolute path name, such as "/libs/math/trigfns".
+		It can also be relative to the source file doing the including,
+		for example "nomnom/useme" or "../lib/useme".</p>
+	
+	<h2>import</h2>
+	<p>Use <span class="pre">import</span> to import another module that has its own namespace.
+		For example:</p>
+<pre>
+import math3d
+import opengl
+</pre>
+	<p><span class="pre">import</span> uses the same file path guidelines
+		as <span class="pre">include</span>.
+		However, it is capable of a more robust search for the specified file.
+		If it is not found in the current folder, it will search for it
+		in the list of folders provided to the compiler when invoked.
+		This allows the name of an imported module to correspond
+		to some externally-hosted packaged library.</p>
+	<p>More than one module may import the same module.
+		The imported module will only be loaded once.
+		Its information is then reused by all modules that imported it.</p>
+
+	<h3>Module-qualified names</h3>
+	<p>Unlike <span class="pre">include</span>,
+		<span class="pre">import</span> is bringing in a module with its 
+		own namespace. By default, the names of an imported module
+		are kept separate from the names in the module doing the importing.
+		The only name that the importing module automically obtains is the
+		name of the module it is importing.</p>
+
+	<p>Since the namespaces of the modules stay separated by default,
+		the importing module normally refers to names inside the imported module
+		using a module-qualified name:</p>
+<pre>
+import opengl
+
+fn setColor(col Color):
+  opengl::setColor(col)
+</pre>
+	<p><span class="pre">opengl::SetColor</span> references the <span class="pre">setColor</span>
+		function to be found in the imported <span class="pre">opengl</span> module.
+		The double-colon operator separates the module name from the name of the function
+		defined in that module.</p>
+	<p>Module-qualified names can only access public names.
+		Names marked private (beginning with an underscore) are not accessible
+		to any other module.</p>
+
+
+	<h3>Namespace folding</h3>
+	<p>By default, an imported module does not pollute the namespace of the module importing it.
+		This is often what you want. However, it can become tedious to read (and type)
+		module-qualified names when they are used a lot by the importing module's code.
+		To address this, the <span class="pre">import</span> command provides several ways to fold
+		some or all of its names into the importing module.
+		The names being folded can be for anything: type, function, global variable, macro, etc.
+		However, names folded in may not collide with any name the importing module already uses.</p>
+	<p>To fold in just a few specific names, list them on the
+		<span class="pre">import</span> command, separated by commas:</p>
+<pre>
+import math3d::Point3, Mat3
+
+fn move(pos &amp;Point3, delta Point3):
+  pos += delta
+</pre>
+	<p>Use <span class="pre">as</span> to provide an alias for a name that is already in use:</p>
+<pre>
+import math3d::Point3 as Point
+
+fn move(pos &amp;Point, delta Point):
+  pos += delta
+</pre>
+	<p>Or one can fold in all public names from the package using <span class="pre">*</span>:</p>
+<pre>
+import math3d::*
+
+fn move(pos &amp;Point3, delta Point3):
+  pos += delta
+</pre>
+
+<h2 id="extern">extern</h2>
+<p>Sometimes we want to make use of functions and global variables
+	that have been implemented in another language, such as C.
+	Since the Cone compiler cannot process source files written in another language,
+	neither <span class="pre">include</span> nor <span class="pre">import</span> will suffice.
+	Instead, an <span class="pre">extern</span> block must be used to
+	declare these entities and their types so that Cone logic may make use of them.</p>
+<pre>
+extern:
+  // Functions
+  fn printFloat(nbr f32)
+  fn printInt(nbr i32)
+  fn printString(str *u8) trust
+
+  // Global variables
+  mut indentation
+</pre>
+<p>The printString function has been marked
+	as <a href="reftrust.html">trustable</a>.
+	This indicates that we trust it to safely make use of the pointer it is given.
+	If we had not done so, any attempt to call such a potentially unsafe
+	<span class="pre">extern</span> function would require
+	use of <span class="pre">trust</span>.</p>
+<p>Although these <span class="pre">extern</span> names are effectively owned by some other module,
+	this folds these names into the current module, 
+	so that they can be used by any logic in this module.
+	Since they are owned by another module, that module is responsible for
+	initializing its global variables and implementing its functions.
+	Thus, no functions in an <span class="pre">extern</span> block
+	should be given implementation code, nor should variables be initialized.</p>
+
+<h3>Associated types and methods</h3>
+<p>Not uncommonly, external functions and variables depend on custom types and constants
+	defined by the external module.
+	If so, these types should also be declared in the <span class="pre">extern</span> block.
+	Constants can be defined using an <span class="pre">enum</span>.
+	If the internal field structure of a type is unknown,
+	an <a href="refstruct.html#opaque">opaque <span class="pre">struct</span></a> may be used.</p>
+<p>When custom types are defined, any externally defined function that take a value of
+	that type as the first parameter may be declared as methods on that type.
+	This allows the more convenient use of the dot operator when invoking
+	functions on some data value.</p>
+
+<h3>extern as include file</h3>
+<p>It can be helpful to package the <span class="pre">extern</span> block
+	for some C-compatible library (e.g., libcurl or sdl2) into its own file. 
+	This allows every module that needs these declarations to obtain them
+	via a simple <span class="pre">include</span>.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="refmeta.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

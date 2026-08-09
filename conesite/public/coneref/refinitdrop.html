@@ -1,0 +1,131 @@
+<html>
+  <head>
+	  <title>Initializers and Finalizers - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Initializers and Finalizers</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: None of this has been implemented.</i></p>
+	
+	<p>Initializers and finalizers are specialized methods a type may optionally define.
+		Their use bookends the life of a type's objects.
+		Initializers help create new objects. Finalizers help destroy them.</p>
+	<p>Many types don't need initializer or finalizer methods.
+		For those that do, here's how to define them.
+	</p>
+
+	<h2 id="initializer">Initializers</h2>
+	<p>Initializer methods offer an alternative to type constructors for creating new values of some type.
+		Type constructors have the limitation that they can only specify initial values 
+		for public fields of a new object.
+		Initializers offer more flexibility, as they can use any sort of logic for initializing
+		a new object's fields, even private fields.</p>
+	<p>Initializers are useful when the use of a type constructor would be:</p>
+	<ul>
+		<li><b>Insufficient</b>, because initialization needs to perform some logic that
+		 is more than simply assigning value(s).</li>
+		<li><b>Impossible</b>, because parts of the type are private and can only be accessed by methods of the type.</li>
+		<li><b>Inconvenient</b>, because the literal would be unnecessarily verbose in comparison to using an initializer.</li>
+	</ul>
+	<p>Here is a simple initializer:</p>
+<pre>
+fn init(self &new):
+  *self = Self[x: 1., y: 1., z: 1.]
+</pre>
+	<p>An initializer is a method, but it has a few differences from typical methods:</p>
+	<ul>
+		<li><b>The default name is <span class="pre">init</span></b>.
+			Initializers can have any name, but the benefit of the default name is that you need not
+			specify the initializer's name when using it to create a new value.
+			As with any method, multiple initializers may be defined (even with the same name).
+		</li>
+		<li><b><span class="pre">self</span> is a borrowed reference using the
+			<span class="pre">new</span> permission</b>.
+			Here's why:  An initializer is called when memory has been allocated for the new object,
+			but it does not yet hold a valid value.
+			The borrowed reference effectively points to this location.
+			It uses the <span class="pre">new</span> permission to signal that the reference
+			does not yet point to a valid value. This prevents the initializer
+			from accessing any of the fields until after they have been initialized.</li>
+		<li><b>Initializers don't return a value.</b>
+			After the initializer has finished running, the code that invoked the initializer
+			will automatically be given an owning reference pointing to the same location
+			as <span class="pre">self</span>.
+			Thus, having the initializer return a value would be superfluous and confusing.</li>
+		<li><b>The initializer's logic uses a type constructor.</b>
+			Essentially, an initializer's logic performs these steps in order:
+			<ol>
+				<li>Figure out what the values should be for every field
+					(if needed). The fields of self are inaccessible at this point,
+					as self is not pointing to a valid value.
+					This means it is also impossible to call any other methods on self.</li>
+				<li>Use a type constructor to initialize the entire value of
+					self at one time (as the above example does).</li>
+				<li>Perform any additional work on the value that the logic requires,
+					if needed. At this point, the initializer may access the value's
+					fields or call any other method on the value.</li>
+			</ol>
+		</li>
+	</ul>
+	<p>The following code invokes the initializer defined above:</p>
+<pre>
+imm gcref = +gc-mut Point()  // x,y,z of the new Point value are 1.0
+</pre>
+
+<h3 id="clone">Clone method</h3>
+<p>As discussed <a href="refmove.html">earlier</a>, it is not always obvious
+	how to create a faithful copy of some types' values.
+	When this difficulty exists (e.g., a value that contains references to other values),
+	a type may define a <span class="pre">clone</span> method
+	whose logic is capable of creating a faithful copy.</p>
+<p>A clone method is essentially an initializer whose second parameter
+	is a value or another borrowed reference to the value we want to copy:</p>
+<pre>
+fn clone(self &new, from &):
+  *self = Self[x: from.x, y: from.y, z: from.z]
+</pre>
+	<p>Whenever copies are automatically made (e.g., assignment or function calls),
+		the clone method will be used, if specified, to make these copies.</p>
+	
+	<h2 id="finalizer">Finalizer</h2>
+	<p>When a object is destroyed at the end of its life,
+		its finalizer logic, if defined, is automatically invoked.
+		Only types that acquire a dependent relationship
+		with other system object(s) need to define a finalizer.
+		The finalizer releases, gives back, or safely breaks
+		all such dependencies (e.g., closing file/network handles, de-subscribing to services, etc.)
+		before the value's memory is reclaimed.</p>
+	<p>Here's a finalizer:</p>
+<pre>
+fn final(self &uni):
+  file.close
+</pre>
+	<p>Key to a finalizer definition:</p>
+	<ul>
+		<li><b>The method's name must be <span class="pre">final</span></b>.
+			Only one may be defined.</li>
+		<li><b><span class="pre">self</span> is a borrowed reference using the
+			<span class="pre">uni</span> permission</b>.
+			No other parameters should be specified.</li>
+		<li><b>Finalizers don't return a value.</b></li>
+		<li><b>The logic may access the value and call methods.</b>
+			However, a finalizer's logic should run quickly without blocking,
+			while still breaking all dependencies. 
+		  After the finalizer finishes, the object will cease to exist.</li>
+	</ul>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="refinherit.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

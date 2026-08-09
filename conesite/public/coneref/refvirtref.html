@@ -1,0 +1,156 @@
+<html>
+  <head>
+	  <title>Virtual References - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Virtual References</div>
+		</div>
+
+    <div class="text">
+
+	<p>Virtual references are distinct from simple references.
+		A virtual reference is used to access some of an object's fields or invoke some of its methods,
+		without actually knowing its specific, concrete type.
+		This is necessary when runtime conditional logic prevents us from knowing the concrete type at compile-time.
+		All a virtual reference knows is that it points to an object whose structure (fields) and behavior (methods)
+		conform to some specified type.</p>
+
+	<h2>A trait example</h2>
+	<p>Let's illustrate this with an example:</p>
+<pre>
+struct Rectangle
+  height f32
+  width f32
+  fn area(self &) f32
+    height * width
+  fn perimeter(self &) f32
+    2. * (height + width)
+
+struct Circle
+  r f32
+  fn area(self &) f32
+    f32::pi * r * r
+  fn perimeter(self &) f32
+    2. * f32::pi * r
+
+trait Shape
+  fn area(self &) f32
+  fn perimeter(self &) f32
+	
+fn doMath(shape &amp;&lt;Shape) f32, f32
+  shape.area, shape.perimeter
+	
+fn tester()
+  imm circle = Circle[5]
+  doMath(&circle)             // 78.5, 31.4
+  imm square = Rectangle[10, 10]
+  doMath(&square)             // 100, 40
+</pre>
+	<p>We define two different types, <span class="pre">Rectangle</span> and <span class="pre">Circle</span>,
+		each with different fields. However, both of them implement the
+		<span class="pre">area</span> and <span class="pre">perimeter</span> methods.
+		We also define a <span class="pre">Shape</span> trait that declares the same two methods.
+		Despite the fact that <span class="pre">Rectangle</span> and <span class="pre">Circle</span>
+		never say that they comply with (nor inherit from) the <span class="pre">Shape</span> trait, the fact
+		that both types implement all its methods means they are compliant with this trait.</p>
+	<p>The <span class="pre">doMath</span> function accepts a virtual reference
+		(denoted by <span class="pre">&amp;&lt;</span>)
+		to some object whose type is compliant with the <span class="pre">Shape</span> trait.
+		Using this reference, it returns two numbers calculated by applying
+		the <span class="pre">area</span> and <span class="pre">perimeter</span>
+		methods on the object. If the object happens to be a <span class="pre">Rectangle</span>,
+		it will use the methods defined for <span class="pre">Rectangle</span>.
+		Likewise, it will use the <span class="pre">Circle</span> methods,
+		if that is actual type of the object.</p>
+	<p>The <span class="pre">tester</span> function demonstrates this behavior
+		by creating a specific circle and rectangle, borrowing a reference to each,
+		and then calling <span class="pre">doMath</span> on them both.
+		The calculated results we get back reflect that the right method was used,
+		based on the actual type of the object.</p>
+
+	<h2>How the Magic Works</h2>
+	<p>Even though <span class="pre">doMath</span> <i>seems</i> to have no idea what
+		the concrete type is of <span class="pre">shape</span>, it nonetheless
+		correctly invokes the appropriate concrete type method. It can do this because
+		virtual references are "fat" references containing two pieces of information: 
+		a reference to the real object itself and a reference to a <i>vtable</i>. 
+		This vtable makes the magic possible
+		by describing key information about the object's concrete type
+		as viewed from the perspective of the trait.
+		In particular, it captures reference addresses for the type's trait-declared methods
+		and location information for trait-declared fields,
+		as well as unique id identifying the concrete type.</p>
+	<p>In this example, the vtable contains two references to the concrete type's
+		<span class="pre">area</span> and <span class="pre">perimeter</span> methods.
+		There are actually two different versions of this vtable,
+		one for references to <span class="pre">Circle</span> objects
+		and a different one for references to <span class="pre">Rectangle</span> objects.
+		When a borrowed reference to one of those two types of objects is
+		passed to <span class="pre">doMath</span>, a virtual reference is automatically
+		created by attaching the type-specific vtable to the known pointer to the object.</p>
+	<p>When <span class="pre">doMath</span> invokes a method using a virtual reference,
+		it retrieves a reference to that method out of the virtual reference's vtable.
+		Then it calls that method passing the appropriate information,
+		in this case the reference to the object.
+		Calling a method indirectly (via a vtable) is called dynamic (or virtual) dispatch.</p>
+	
+	<h3>Working with Virtual References</h3>
+	<p>As the example above shows, a virtual reference is automatically created (coerced)
+		when passing a regular reference to a variable or function expecting a virtual reference.
+		This is called <i>upcasting</i>.</p>
+	<p>A compiler error will result if the concrete type 
+		does not structurally conform to the virtual reference's expected type.
+		The virtual reference's expected type can be a struct or trait.
+		Compliance simply means that all the fields and methods defined on the reference's type
+		have been implemented by the concrete type.
+		The compliant type may implement more fields and methods,
+		but it must implement at least the ones the reference's type defines.</p>
+	<p>This coercion may be explicitly requested using the <span class="pre">as</span> operator:</p>
+<pre>
+mut virtref = &circle as &amp;&lt;Shape
+</pre>
+	<p>Virtual references can be owning or borrowed. 
+		They can be freely passed around, stored, or compared much like all other references.
+		However, virtual references may not be de-referenced using the 
+		<span class="pre">*</span> operator, as a virtual reference can point to objects
+		of very different size and data composition.</p>
+	<p>The primary use of virtual references lies with the dot operator.
+		This is how one dispatches trait-declared methods and accesses trait-declared fields.</p>
+	
+	<h2>Pattern matching</h2>
+	<p>Sometimes we want to re-obtain the specific, concrete-type reference to an object
+		we have a virtual reference for. This is called downcasting.
+		This can be accomplished using pattern matching:</p>
+<pre>
+match shape
+  imm circle &&lt;Circle:
+    // circle is now usable as having type &Circle
+  im rect &lt;Rectangle:
+    // 'rect' is now usable as having type &Rectangle
+  _:
+    // some other unknown shape type
+</pre>
+	<p>Since a virtual reference might have been created from objects of many different types,
+		we use pattern matching to figure out which concrete type originally created the object,
+		information held by the vtable.</p>
+
+	<h2>Type Restrictions</h2>
+	<p>Some types may not be suitable
+		when used as a foundation for virtual references.
+		This would be the case if any method were defined as a generic function.
+		It would also happen if the type makes any use of <span class="pre">Self</span>
+		in any form other than as a virtual reference 
+		(<span class="pre">&amp;&lt;Self</span>).</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="refcloref.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

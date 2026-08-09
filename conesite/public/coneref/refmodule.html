@@ -1,0 +1,176 @@
+<html>
+  <head>
+	  <title>Modules - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Modules and Namespaces</div>
+		</div>
+
+    <div class="text">
+	
+	<p>Many things are given names: variables, functions, types, fields, methods, etc.
+		The collection of all names defined for a scope is called a namespace.
+		Blocks and types are two different kinds of namespaces.</p>
+	<p>Namespaces facilitate a modular architecture by:</p>
+	<ul>
+		<li>hiding implementation details visible within the namespace
+			behind the simpler, durable API shown outside.
+			This is called encapsulation.</li>
+		<li>lowering the accidental risk of name collisions, 
+			where two different items (possibly created by different authors) 
+			are given the same name.</li>
+	</ul>
+	<p>The rules governing names vary according to the type of namespace it belongs to. 
+		Let's review those here, beginning with the
+		introduction of a new kind of namespace: the module.</p>
+
+	<h2>Modules</h2>
+	<p>A module is a global namespace.
+		You have seen code examples for modules already:</p>
+<pre>
+// A type declaration
+struct Handler:
+  id u32
+
+// a global variable
+imm handler = Handler[0]
+
+// A function
+fn main():
+  // do some stuff
+</pre>
+	<p>As this example shows, modules hold global variables, functions,
+		and type declarations. They can also hold other named things,
+		such as macros and even other named modules.
+		Further, modules can import names from other modules.</p>
+	<p>Every program or library has a single main module.
+		That main module may import other modules or types offering reusable,
+		isolated capabilities it depends on.</p>
+	
+	<h3>Name rules</h3>
+	<p>Module names are:</p>
+	<ul>
+		<li><b>unique</b>. no two items in a module may have the same name.</li>
+		<li><b>order-independent</b>. One can reference functions, variables,
+			or types whose names are not defined until later in the module.
+			The only exception to this are permissions and regions whose
+			definition must precede their use.</li>
+		<li><b>public or private</b>. 
+			Public names may be referenced outside the module.
+			Private names (those beginning with an underscore) may not.</li>
+	</ul>
+	
+	<h3 id="global">Global variables</h3>
+	<p>Global variables across all modules (and types)
+		are managed by the global region.
+		Memory space for them is allocated automatically and all-at-once
+		when a program is loaded for execution.
+		The lifetime of all global variables is the same as the program's lifetime,
+		since global variables come into being when the program starts
+		and only disappear once the program stops.
+		The lifetime annotation for this scope is <span class="pre">'static</span>.</p>
+	<p>Global variable declarations have two important constraints:</p>
+	<ul>
+		<li>The <span class="pre">mut</span> permission is not permitted if
+			the program makes use of multiple threads.</li>
+		<li>Variables <i>must</i> be explicitly initialized with a valid value.
+			In many cases, the initial value is a statically-computable
+			constant value whose exact size is also known to the compiler.</li>
+	</ul>
+
+	<h3 id="dyninit">Dynamic initialization of global variables</h3>
+	<p>Sometimes, the initial value of a global variable is unknown,
+		or too complex to specify, at compile-time.
+		In such cases, we want to initialize the variable
+		using run-time logic invoked when the program or library is loaded.
+		To accomplish this, declare the variable without an initial value
+		and then initialize that variable inside
+		the module's initializer, a function called <span class="pre">init</span>.</p>
+<pre>
+imm handler
+
+fn @initpure init():
+  handler = Handler()
+</pre>
+	<p>The initializer is declared with <span class="pre">initpure</span>,
+		a less constrained version of
+		<a href="reffunc.html#pure"><span class="pre">pure</span></a>.
+		Any function marked as <span class="pre">initpure</span>
+		may not read any uninitialized global variables in the current module
+		and may only call functions marked as
+		<span class="pre">pure</span> or <span class="pre">initpure</span>.</p>
+	<p>To ensure safe and complete dynamic initialization, the compiler:</p>
+	<ul>
+		<li>Verifies that every uninitialized global variable is assigned a value at some point
+			within the same module's <span class="pre">initpure</span>-marked
+			<span class="pre">init</span> function.</li>
+		<li>Verifies that <span class="pre">pure</span> and <span class="pre">initpure</span>
+			functions comply with their constraints.</li>
+		<li>Runs the initializers for any dependent modules
+			before running the initializer for the module.</li>
+	</ul>
+	<p>A finalizer might be automatically be created, where needed,
+		to finalize any dynamically-initialized global variables.
+		This is run when the program is shutting down.</p>
+
+	<h2>Types as Namespaces</h2>
+	<p>Declarations for struct and enum types are also namespaces.
+		At a minimum, these hold the names of the type's fields and methods.
+		They may also hold the names for the type's static functions
+		and the names of other types (e.g., enums).</p>
+
+	<h3>Static Functions</h3>
+	<p>In addition to methods, a type may declare useful static functions
+		that are not methods and do not work with a specific object of that type.
+		All such functions should be declared within a 
+		<span class="pre">static</span> block.</p>
+<pre>
+struct Counter:
+  static:
+    fn zeroFactory() Counter:
+      Counter[0]
+</pre>
+			
+	<p>To make use of the function outside the type, qualify the name with the name of the type:</p>
+<pre>
+mut cnt = Counter::factory()
+</pre>
+
+	<h3>Name Rules</h3>
+	<p>A type's names are:</p>
+	<ul>
+		<li><b>unique for fields and functions, but not methods</b>.
+			Types allow the definition of multiple methods with the name.</li>
+		<li><b>largely order-independent</b>.
+			A name be be referenced before its declaration.
+			However, the order in which overloaded functions are declared can matter.</li>
+		<li><b>public or private</b>. 
+			Public names may be referenced by functions or methods not a part of the type.
+			Private names (those beginning with an underscore) may not.
+			Fields and methods are publicly accessed using the dot (.) operator.
+			Functions are accessed using the double-colon operator.</li>
+	</ul>
+		
+	<h2>Function Blocks</h2>
+	<p>All logic blocks inside functions and methods
+		are namespaces that hold local (and parameter) variables.</p>
+	<p>Every block's names are:</p>
+	<ul>
+		<li><b>unique</b>. no two variables in a block may be declared with the same name.
+			However, variables in a block might shadow same-named variables in outer scopes.</li>
+		<li><b>order-dependent</b>. Logic may not reference a local variable until after it is declared.</li>
+		<li><b>private</b>. Only the block logic may see and use local variables.</li>
+	</ul>
+	
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="refinclude.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

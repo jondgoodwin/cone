@@ -1,0 +1,106 @@
+<html>
+  <head>
+	  <title>union types - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">union types</div>
+		</div>
+
+    <div class="text">
+	<p style="margin-left: 40px;"><i>Note: None of this capability is currently implemented.</i></p>
+
+	<p>Unions are useful when we want a value to be represented by one of several variant struct types.
+		For example, consider this union type:</p>
+<pre>
+union Point:
+	struct XyPoint:
+		x f32
+		y f32
+	struct AngPoint:
+		dist f32
+		angle f32
+</pre>
+	<p>This defines a new union type called <span class="pre">Point</span>
+		which holds a single point value.
+		At any given point in time, that value would either be an XyPoint or a AngPoint value.</p>
+	<p>There are two interesting properties important to know about unions:</p>
+	<ul>
+		<li>These are discriminated unions: there is a hidden "tag" field at the beginning of the value
+			which is used at runtime to distinguish which of the variant types the value belongs to.
+			This tag field would effectively hold a 0 for an XyPoint and 1 for a AngPoint.
+			<p><b>Note:</b> The hidden tag field is implicitly positioned as the first field.
+				If one wishes to place it in a different spot, explicitly specify the tag field
+				(<span class="pre">_ enum</span>) in the place where it is desired.</p></li>
+		<li>All variant structs in a union occupy the exact same size of memory.
+			This size is the size of the largest struct plus the size of the tag field.
+			Any smaller structs are padded to fit.</li>
+		<li>All the variant types are considered part of the module namespace rather than part of the union namespace,
+			which means they can be used directly without the need to qualify the name with the name of the union.</li>
+	</ul>
+	<p>To create variant types who sizes vary, or whose number of variants is open-ended,
+		use a <a href="reftraitvar.html">variant trait</a> instead of a union.</p>
+	
+	<h3>Declaration</h3>
+	<p>As the above example shows, the simplest form of a union type declaration is as easy as packaging
+		several struct definitions inside an overall named union declaration block.
+		It is permissible for any of these structs to be empty of fields, as the presence of the tag field
+		ensures that the overall struct is not empty.</p>
+	<p>Any number of fields may be specified prior to the first struct declaration. 
+		All these fields are considered in common and at the beginning across all the variant structs.</p>
+<pre>
+union Event:
+	time datetime
+	struct ButtonEvent:
+		button u8
+		pushed Bool
+	struct KeyEvent:
+		key Unicode
+	struct QuitEvent
+</pre>
+	<p>In this example, all three variant structs include the <span class="pre">time</span>
+		field prior to any fields they have defined.</p>
+	<p>For alignment reasons, it may be desirable to place the implicit tag field in some other spot
+		other than the first field. To do this, specify an anonymous field of 
+		<span class="pre">_ enum</span> wherever the tag field should be located.
+		The size and type of the tag field can vary depending on the number of variants (e.g., u8 when variant count is 255 or less).
+		The tag field cannot be explicitly accessed, referenced or mutated.</p>
+
+		<h3>Initialization</h3>
+		<p>An union initial value is built using a constructor for one of the variant struct types:</p>
+<pre>
+mut event = QuitEvent[timestamp]
+oddval = KeyEvent[timestamp, 's']
+</pre>
+		<p>Notice that the constructor must specify a value for all common fields.
+			It can never specify a value for the hidden tag field, as that is determined by the variant type selected.</p>
+
+		<h3>Copying</h3>
+		<p>A union value may be passed around, by copy, just like any other value.
+			This is possible because all variant values of a specific enum type are the same size.
+			The enum type's size is effectively the size of its largest variant type
+			plus the size of its hidden tag field.
+		</p>
+
+		<h3>Value Access</h3>
+		<p>To safely gain access to the differently-typed value enclosed with an enum value,
+			we must use <a href="refmatch.html">pattern matching</a> to determine which variant type
+			it holds. Once that has been narrowed, it can be used like any other struct value.</p>
+
+	<h3>Comparing</h3>
+	<p>An enum value may only be compared for equivalence (and not order).
+		The equivalence check compares the tag fields first.
+		If they are equal, the appropriately-typed interior values are compared
+		using the <span class="pre">==</span> method.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="refoption.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

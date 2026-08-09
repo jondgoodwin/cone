@@ -1,0 +1,86 @@
+<html>
+  <head>
+	  <title>I/O and Concurrency - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">I/O and Concurrency</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: None of this is implemented or really designed.
+		Thus, this text is exploratory in nature, for now.</i></p>
+
+	<p>I/O encompasses any processing activity that extends beyond the boundaries of CPU/memory computation,
+		including user input and presentation, file or network requests, timers, etc.
+		From the perspective of the CPU, I/O activity can often take a long, indeterminate amount of time,
+		which presents a complicating challenge to efficiently scheduling concurrent work.</p>
+	<p>In essence, we want to satisfy these essential requirements:</p>
+	<ul>
+	<li>We don't want I/O activity to block the CPU from performing other available work.</li>
+	<li>When any I/O activity reports progress, we often want to continue processing where we left off,
+		based on a remembered execution and data state (context).</li>
+	<li>We sometimes want the option to "cancel" already-requested i/o work based on time-outs, failures or other changed conditions.
+		Sometimes, we want to cascade cancellation through multiple levels of already-submitted requests.</li>
+	</ul>
+	
+	<p>There are several architectural approaches to satisfy these requirements:</p>
+	<ul>
+	<li><b>Async/Await.</b>
+		I/O requests are always issued asynchronously (non-blocking), whose returned type is a promise.
+		When I/O finishes or fails, the promise fires the appropriate pre-determined logic. 
+		<p>Syntactic sugar is used to hide the complexity of
+		the promise handling, so that the "before" and "after" code look like a single block of sequential code.
+		Under the covers, they are actually independent logic, with the context of the "before" code captured as
+		an implicit closure that is passed as a continuation to the "after" code.</p>
+		<p>There are two significant drawbacks to this approach:</p>
+		<ul>
+		<li>async/await logic infects all functions/methods above it in the execution stack</li>
+		<li>There is no graceful way to implement cancellability</li>
+		</ul></li>
+		
+	<li><b>Gothreads.</b>
+		I/O requests are synchronous (blocking). It is up to the runtime scheduler to detect that a gothread 
+		is effectively blocked on i/o and effectively re-balance work so that other gothreads keep all CPUs busy.
+		<p>Although this approach avoids the infectious coloring issue of async/await
+			and is easier on the programmer (no extra annotations), it has its own drawbacks:</p>
+		<ul>
+		<li>The runtime logic needed to detect that a gothread is blocked on i/o is not cheap, quick or foolproof.
+			The same holds true for the reverse, noticing when the gothread becomes unblocked.
+			As a result, this approach is likely slower than an equivalent async/await implementation.</li>
+		<li>There is no graceful way to implement cancellability</li>
+		</ul>
+		
+	<li><b>Actors.</b>
+		Whenever multi-step i/o is required, the requesting actor (Requester) spawns a new actor (Workflow).
+			Part of the spawning message is the id of the Requester actor to return the final result to.
+			Workflow issues i/o requests as asynchronous messages to some environmental i/o actor.
+			Completed (or failed) i/o are sent as messages to the Workflow actor who can use its preserved
+			context to know what to do next. When the Workflow actor is finished with all its processing,
+			it returns a response to the Requester workflow as a message.</p>
+		<p>Like async/await, this uses continuation-passing style. In this case, the continuation is an actor (and its state)
+			able to support multiple kinds of messages. Since the actor accepts asynchronous messages from
+			any actor, it can also support the notion of a cancel message, and even the ability to pass that
+			cancel message on, dependending on its state. Unlike async/await, there is no notion of infectious
+			function colors up the execution stack, as all actors are already found at the top of the execution stack from the
+			point-of-view of the runtime scheduler.</p>
+		<p>The primary challenge of this approach is that it requires the programmer to manage
+			the concurrent workflow explicitly with actors. This may be a challenge for programmers
+			who are only familiar with synchronous-style programming.</p></li>
+	</ul>
+		
+	<p>Currently, the projected design for Cone is leaning towards an Actor-based approach for handling asynchronous I/O,
+		sequential workflows, and cancellability.</p>
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="refmodule.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

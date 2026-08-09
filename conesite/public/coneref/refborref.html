@@ -1,0 +1,353 @@
+<html>
+  <head>
+	  <title>Borrowed References - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Borrowed References</div>
+		</div>
+
+    <div class="text">
+
+	<p style="margin-left: 40px;"><i>Note: These are largely implemented,
+			but freezing/lifetime enforcement is missing and they struggle across method calls.</i></p>
+	
+	<p>References work differently than other types.
+	The basic idea is simple: references carry an address that points to some value in memory.
+	Using this reference, we can access or change the value the reference points to.</p>
+	<p>For example:</p>
+<pre>
+mut a = 3
+imm ref = &amp;mut a   // ref holds a reference to a's contents
+imm val = *ref     // val is now 3
+*ref = 4           // a is now set to 4
+</pre>
+	<p>The <span class="pre">&</span> operator borrows a mutable reference to the variable <span class="pre">a</span>,
+	effectively pointing to the value it holds.
+	The <span class="pre">*</span> (de-referencing) operator is used
+	to obtain and then change the value pointed to by the reference.</p>
+
+	<p>References are useful, as they support:</p>
+	<ul>
+		<li><b>Shared access to the same value</b>.
+			Multiple references may point to the same value.
+			Any of them can see (and possibly change) the latest value at that address.
+			If one reference changes a value, another sees the updated value.
+			By contrast, values copied around between functions do not work this way:
+			changing a copy leaves the original value unchanged.</li>
+		<li><b>Performance efficiency</b>.
+			For non-trivial data structures, it is faster to pass around a reference to the data
+			rather than making a full copy for each function that needs it.</li>
+		<li><b>Access to dynamically-allocated values</b>.
+			Values that have been allocated from a region (as opposed to local or global variables)
+			are only accessible via references.
+			We will talk about <a ref="refallocref.html">region-managed references</a> later.</li>
+		</ul>
+
+	<p>As the name suggests, borrowed references point to values that already exist in memory.
+		A common scenario is when we have some existing value and, for some limited lexical scope,
+		we want a reference able to work with that value.
+		A borrowed reference is ideal for this requirement because:</p>
+	<ul>
+		<li>Borrowed references may point to nearly any value accessible to program logic,	
+			including any variable, locked value, field, array element,
+			function, method, or any value pointed at by another reference.
+			This versatility makes it possible to create polymorphic functions or methods that
+			work with referred-to values no matter which region they were allocated in.</li>
+		<li>A borrowed reference is as fast as any reference can be,
+			as it never incurs any of the runtime bookkeeping cost borne by region-managed references.</li>
+	</ul>
+
+	<h2>Creating a Borrowed Reference</h2>
+	<p>Here are several ways to borrow a reference to some existing value.</p>
+
+	<h3>Borrowing from a variable</h3>
+	<p>Place the ampersand operator in front of any variable's name
+		to create a borrowed reference that points to the value held by that variable.
+		This works equally well on any global, local or parameter variable:</p>
+<pre>
+imm glovar = 2
+fn func(parm i32):
+	mut localvar = 3
+	imm ref1 = &amp;glovar    // ref1's type: &i32
+	imm ref2 = &amp;parm      // ref2's type: &i32
+	imm ref3 = &amp;localvar  // ref3's type: &i32
+</pre>
+
+	<h3>Borrowing from another reference</h3>
+	<p>To explicitly create a borrowed reference out of some other reference,
+		place the ampersand operator in front of a de-referenced reference:</p>
+<pre>
+imm borref = &amp;*someref    // Borrow from someref
+</pre>
+	<p>More often, however, borrowing a reference from an existing reference
+		happens implicitly, as part of a function (or method) call or assignment.
+		This happens when the receiver is given a region-managed reference but expects a borrowed reference.
+		So long as the value type (and permission) match, the borrow is performed automatically.</p>
+<pre>
+// This function accepts a borrowed reference
+fn incr(nbr &amp;i32):
+  *nbr + 1
+
+fn main():
+  imm allocref = +so 1   // An owning reference pointing to an allocated value of 1
+  incr(allocref)         // Coerces the rc reference to a borrowed reference
+</pre>
+	<p>Because <i>any</i> reference may be safely coerced to a borrowed reference,
+	functions and methods typically accept borrowed references as parameters.
+	This capability is what makes possible the benefits mentioned earlier:</p>
+	<ul>
+		<li>Functions and methods can be polymorphic across regions and permissions at no cost</li>
+		<li>Using borrowed references avoids the runtime performance overhead of reference counting (for the rc region)
+			and reference tracing (for a tracing GC region) within these functions.</li>
+	</ul>
+
+<h3 id="internal">Referring to a field or array element</h3>
+
+	<p>A borrowed reference may point to a value within some composite value,
+		such as a field in a <a href="refstruct.html">struct</a> 
+		or an element in an <a href="refarray.html">array</a>.
+		Again, all we need to do is apply the ampersand operator:
+	</p>
+<pre>
+imm ref1 = &amp;apoint.x   // a field within a struct
+imm ref2 = &amp;vec[a]     // an element within an array
+</pre>
+	<p>This kind of internal borrow is quite powerful, as it supports:</p>
+	<ul>
+	<li><b>Internal reference chains</b>.
+		One can reference values within values within values, by chaining together
+		fields or indexing:
+<pre>
+imm ref3 = &amp;vec[3].point.x
+</pre>
+	<p>Parentheses should be used, where needed, to clearly demark where an internal reference chain ends.
+	</p>			
+	</li>
+	<li><b>Methods in place of fields</b>.
+		A method name may be specified (instead of a field name) after the dot operator.
+		This calls the method, passing it the reference evaluated so far (as <span class="pre">self</span>),
+		and returning a borrowed reference calculated by the method's logic.
+		For example:
+<pre>
+imm ref4 = &amp;pointer.someref(key)  // passes &amp;pointer as self to someref method. Returns a reference
+</pre>
+	<p>Similarly (for some types), using the indexing operator <span class="pre">[]</span>
+		will invoke the type's <span class="pre">[]</span> method to obtained the borrowed reference.</p>
+	</li>
+	<li><b>Auto-dereferencing a reference source</b>.
+		When an internal reference expression begins with a reference as the source, it is automatically dereferenced:
+<pre>
+// pointref is a reference to a Point structure
+imm ref3 = &amp;pointref.x   // equivalent to:  &amp;*pointref.x
+</pre>
+	</li>
+	</ul>
+
+	<h3>Pattern-matching and each loops</h3>
+	<p>One may obtain borrowed references during
+		<span class="pre">each</span> iteration or
+		pattern matching by using a borrowed reference with the required permission as the source:</p>
+<pre>
+// increment every number in list
+each x in &mut list:
+  ++*x   // x is a mutable reference
+</pre>
+	
+	<h2>Permissions</h2>
+	<p>A reference permission may be specified when a reference is borrowed.
+		The permission governs what may be done with the reference: May we read its value?
+		May we change its value? May we make a copy of the reference?</p>
+	<p>This permission is specified after the ampersand operator.
+		If none is specified, <span class="pre">ro</span> is assumed.</p>
+<pre>
+mut a = 3
+imm ref = &amp;mut a   // Creates a mutable borrowed reference to a's value
+*ref = 4           // a is now set to 4
+</pre>
+
+	<p>The permission requested for the borrowed reference must be allowed by the source we are borrowing from.
+		For example, a mutable borrowed reference may not be obtained from an immutable variable.</p>
+	<p>Permission mechanics are rich enough to be more fully covered on 
+		<a href="refperm.html">their own page</a>.</p>
+
+	<h2 id="lifetime">Lifetime Constraints</h2>
+	<p>Every borrowed reference has a lifetime constraint implicitly imposed on it.
+		This lifetime constraint indicates how long the borrowed reference can stay alive before it must expire.</p>
+	<ul>
+	<li>A reference borrowed from a global variable or function is granted a 'global lifetime.
+		This means it can last for as long as it wants.</li>
+	<li>A reference borrowed from a local variable or another reference has its lifetime constrained
+		to the block where the borrow took place. The compiler prohibits it from surviving beyond the end of the block.</li>
+	</ul>
+
+	<p>This example demonstrates the importance of this lifetime constraint to memory safety:</p>
+<pre>
+fn getval() i32:
+  mut ref &amp;i32
+  {
+    imm a = 5
+    ref = &amp;a  // Bad idea! This violates the lifetime constraint
+	}
+  *ref   // Oops!
+</pre>
+	<p>The scope of the variable <span class="pre">a</span> lasts only for the duration of the inner block.
+	So when we are done executing that block, the variable <span class="pre">a</span> ceases to exist.
+	However, when we try copying the borrowed reference into <span class="pre">ref</span>, we effectively
+	extend its life beyond the scope it was created in and beyond the life of the value it points to. 
+	When we then dereference it, we are trying to retrieve a value that is no longer there.
+	That's a memory safety hazard we must avoid.</p>
+	<p>The compiler protects against this by throwing an error on this line: 
+	<span class="pre">ref = &amp;a</span>. This is illegal because we are storing a borrowed reference
+	into a memory location whose lifetime is longer than the borrowed reference.
+	A borrowed reference may only be stored in a place whose lifetime is the same or smaller than the
+	lifetime of the borrowed reference.</p>
+	<p>Most of the time, the compiler has all the information it needs to infer and enforce lifetime constraints.
+		However, sometimes it needs help in the form of
+		<a href="reflifefn.html">lifetime annotations</a>.</p>
+
+	<h3>Freezing access to the source of a borrow</h3>
+	<p>When a borrowed reference is created, its source is always a named variable.
+		That source variable either holds or points to the value we are borrowing a pointer to.
+		When we borrow from the source, we are not just gaining access to the value,
+		we are also gaining some or all of its access permissions.</p>
+	<p>Whenever we borrow from a non-global source,
+		the source variable is made inaccessible for the lifetime of the borrowed reference
+		in order to preserve permission guarantees:</p>
+<pre>
+fn freeze(n i32) i32:
+  if n &gt; 1:
+    imm borref = &amp;n   // borrowing makes 'n' inaccessible in this block 
+    imm m = n         // oops! n is frozen and may not be accessed
+  n                   // Ok because the borrow has expired.
+</pre>
+	
+	<h2 id="ops">Reference Operations</h2>
+	<p>The de-referencing and comparison operators may be directly applied to references.</p>
+
+	<h3>De-referencing</h3>
+	<p>The most common use of references is to access and work with the value it points to.
+		Accessing this value is called de-referencing.
+  	To explicitly de-reference, use the <span class="pre">*</span> operator.
+		Within expressions, dereferencing retrieves the value the reference points to.
+		Used to the left of an assignment operator, dereferencing changes that value.</p>
+<pre>
+mut count = 3
+imm ref = &amp;mut count
+imm val = *ref  // val is now 3
+*ref = 4        // ref now points to the value of 4 (in count)
+</pre>
+	<p>De-referencing is only permitted if the reference's permission allows it.
+		Certain permissions, such as <span class="pre">opaq</span> and the locked permissions,
+		disallow de-referencing.</p>
+
+	<h3>Comparison</h3>
+	<p>Two references may be compared for equality, even if they do not have the same type signature.
+		What this test determines is whether both references point to the same value:
+	</p>
+<pre>
+// Do ref1 and ref2 point to the same value?
+if ref1 == ref2:
+		// do some stuff
+</pre>
+	<p>It is also possible to compare whether one reference is "greater" than another.
+		This compares their respective memory addresses.
+		This might only be meaningful if both refer to somewhere within the same object.</p>
+
+	<h2 id="handle">Reference Handling</h2>
+	<p>References are values. As such, they can be stored and passed around a program.
+		Whether such transfers are simple copies or moves depends on the reference's permission
+		(move semantics apply to all references having the <a href="refmove.html">uni</a> permission).
+		Reference transfers also check reference type information to ensure everyone is in agreement
+		about what you can do with any passed-around reference.</p>
+	<p>Even though references are typed values,
+		they do sometimes get some special treatment to make them more convenient to use,
+		particularly to enable them to act as stand-ins for the values they point to.</p>
+
+	<h3>Reference Method Definitions</h3>
+	<p>Methods may be defined that accept references as the type for <span class="pre">self</span>.
+		However, importantly, such methods must be defined as part of the
+		<b>value type's</b> collection of methods.
+		Thus, if we want to define a method that works on a reference to a
+		<span class="pre">Point</span>, that method must be defined within the collection
+		of methods for the <span class="pre">Point</span> type:</p>
+<pre>
+struct Point:
+  // .. other Point methods here
+
+  // method that accepts a reference to a Point
+  fn normalize(self &amp;mut Point):
+    imm len = self.len
+    x /= len
+    y /= len
+    z /= len
+</pre>
+
+	<h3>Implicit De-referencing</h3>
+	<p>Since a reference is generally understood to be a stand-in for the value it references,
+		de-referencing often happens implicitly.
+	  For example, when the dot operator is applied to a reference to access a field, 
+		the reference is automatically de-referenced:</p>
+<pre>
+imm y = ref.y // equivalent to: (*ref).y
+</pre>
+	<p>Automatic de-referencing might also happen when applying
+		a method to a reference. For example:</p>
+<pre>
+imm pos = ref.abs    // pos is 4. Equivalent to: (*ref).abs
+imm sum = ref + 4.   // sum is 0. Equivalent to *ref1 + 4.
+</pre>
+	<p>With methods, the decision on whether or not to implicitly de-reference
+		depends on what is supported by implemented methods.
+		If an existing method can accept the reference as a reference, it is used.
+		If not, the reference is de-referenced before applying the method.</p>
+				
+	<h3>Nullable References</h3>
+	<p>References only ever point to valid values.
+		However, it is possible to explicitly declare and use nullable references,
+		much like any other <a href="refoption.html">nullable value</a>.</p>
+<pre>
+imm ref4 ?&amp;imm i32		 // nullable reference to an integer
+</pre>
+	<p>In addition to pointing to a valid value, a nullable reference
+		may also have the value <span class="pre">Null</span>,
+		which means the reference does not point to any valid value.
+	  To ensure safety, access to a nullable reference's value is only possible if
+		the code first ensures the reference does not have the value of <span class="pre">Null</span>:
+	</p>
+<pre>
+// This condition is true only if maybePoint is not null ...
+if maybePoint:
+  imm point = *maybePoint // ... allowing us to obtain its value
+imm point2 = *maybePoint    // **ERROR** We don't know if maybePoint is null here
+</pre>
+	<p><b>Note:</b> A special optimization ensures that nullable references are the same size
+		as regular references.</p>
+
+	<h2>Array and Virtual References</h2>
+	<p>In addition to regular references, there are also special-purpose "fat" references
+		which are handled somewhat differently:</p>
+	<ul>
+		<li><a href="refarrayref.html"><b>Array references</b></a>
+		point to a collection of identically-typed elements.
+		These elements are contiguous in memory with the reference pointing to the first element.
+		The number of elements is carried as part of the array reference.
+		Such references may be indexed and are subject to bounds checks.</li>
+		<li><a href="refvirtref.html"><b>Virtual references</b></a>
+		offer an abstract view of some value instantiated by one of several variant types.
+		In addition to pointing at the value's data, the reference also points to
+		runtime type information that facilitates field access or method dispatch.</li>
+	</ul>
+
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="reffnref.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

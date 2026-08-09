@@ -20,8 +20,31 @@ contains its C compiler (`conec`) and a small standard-library component
 - `src/c-compiler/shared/`: diagnostics, memory, file, option, timer, and UTF-8
   utilities.
 - `src/conestd/`: the C implementation of the standard-library component.
+- `conesite/`: source and static content for
+  [cone.jondgoodwin.com](https://cone.jondgoodwin.com), including the
+  playground, examples, and language documentation. The reference
+  documentation manifest is `conesite/public/coneref/index.html`.
+- `design/`: design notes for compiler and language subsystems. Use
+  `design/_index.md` to find the relevant topic, then page in only the notes
+  needed for the task.
+- `workitems/`: active and backlog compiler/language work. Its
+  `workitems/_index.md` plan summarizes the work and acts as the manifest for
+  the individual work-item notes; `workitems/__Top Priority.md` identifies the
+  current priority sequence.
 - `test/test.cone`: broad compiler smoke-test input.
 - `test/submod.cone`: imported module used by the smoke-test input.
+
+## Documentation context
+
+- Treat source code as the truth for current compiler behavior.
+- Consult `design/_index.md` when a task needs design intent or subsystem
+  context. Design notes complement the implementation and may describe
+  incomplete or planned behavior.
+- Consult `workitems/_index.md` for planned work, dependencies, and links to
+  detailed active or backlog items.
+- Consult `conesite/public/coneref/index.html` for the language reference
+  page index and the surrounding `conesite/` files when changing published
+  language documentation or playground behavior.
 
 ## Compiler pipeline
 

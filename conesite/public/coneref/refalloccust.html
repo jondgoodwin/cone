@@ -1,0 +1,79 @@
+<html>
+  <head>
+	  <title>Custom Allocators - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Custom Allocators</div>
+		</div>
+
+    <div class="text">
+
+	<p>Although Cone provides a rich collection of standard allocators, there are times that
+		other allocators can prove valuable. For example:
+		such as rc allocators that use tracing to break cycles or 
+		multi-threaded garbage collectors that use tracing for intrathread memory management and ref counting
+		for inter-thread memory management (Pony's Orca).</p>
+		<p>This is why Cone supports the creation and use of custom allocators. 
+	Definition of a new allocator looks and acts very much like a struct with methods.
+	For example:</p>
+<pre>
+// A simple reference counting allocator
+alloc rc
+  refcnt usize
+
+  fn allocate(size usize) *uni rc
+    imm rcref = malloc(size) as *uni rc
+    rcref.refcnt = 1
+    rcref
+  fn alias(self *mutx rc)
+    .refcnt += 1
+  fn dealias(self *mutx rc)
+    .refcnt -= 1
+    if .refcnt == 0
+      .free()
+  fn free(self *mutx rc)
+    free(self as *u8)
+</pre>
+	<p>As this example shows, an allocator typically defines at least these four methods
+	which are invoked automatically by the compiler based on key events in the lifetime of an owning reference:
+	<ul>
+	<li><b>allocate</b>. This is invoked whenever a new owning reference is created using the &amp; operator.
+	The compiler supplies the sizeof the appropriate type of value to be stored in the allocated memory.
+	This size is expanded to include runtime bookkeeping data for the allocator (e.g., refcnt) and permission.
+	After allocate, the compiler will also initialize any runtime permission's fields, if needed.
+	The compiler's final step is to adjust the pointer to point at the value's data (past the runtime bookkeeping data),
+	and then to initialize its value based on the literal, initializer or a copy of another similar value.</li>
+	<li><b>alias</b>. This is invoked whenever a new shared copy is made of the reference.</li>
+	<li><b>dealias</b>. This is invoked whenever an owning reference is destroyed, typically when
+	the variable holding the reference reaches the end of its lexical lifetime.
+	It can also happen when overwriting a reference held by an existing variable or field.</li>
+	<li><b>free</b>. This is invoked whenever the allocator determines the value is safe to free.
+	Before executing its logic, the compiler will invoke the finalizer on the object, if it exist,
+	which disposes of any resources obtained by the owning reference.</li>
+	</ul>
+	<p>Any allocator which does not define the alias method (e.g., the 'own' allocator)
+	ensures single-owner <a href="refmove.html">move semantics</a>,
+	as it prevents multiple copies of the reference from being created.
+	The single-owner reference is moved instead of being copied.
+	This restriction also constrains the permissions on borrowed references,
+	effectively disallowing <span class="pre">mut</span> and all other shared mutable permissions.</p>
+	<p>Alternatively, an allocator may also define the alias method which performs no logic (e.g., the gc allocator).
+	In this case, multiple, sharable references to the same value become possible.</p>
+	<p>Notice also that allocators work with pointers (which have no assigned allocator).
+	All allocator methods are considered wrapped as trust blocks, which allows the use of pointers
+	as well as trusted functions like malloc() and free().
+	The pointers are automatically and correctly cast by the compiler back and forth
+	from the correct pointer to the correct reference.</p>
+	
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="next.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>

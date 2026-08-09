@@ -1,0 +1,241 @@
+<html>
+  <head>
+	  <title>Array References - Cone Reference</title>
+		<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+	  <link rel="stylesheet" type="text/css" href="standard.css" />
+	</head>
+  <body>
+		<div id="header">
+			<a href="/"><div id="title">Cone</div></a>
+			<div id="sub">Array References and Slices</div>
+		</div>
+
+    <div class="text">
+
+    <p style="margin-left: 40px;"><i>Note: None of this is implemented.</i></p>
+    
+    <p>Array references offer the ability to create and work with arrays
+        whose size is determined, and is changeable, at runtime.
+        As much as possible, working with dynamic arrays is very similar to
+        static, fixed-size arrays. However, there are some important differences.</p>
+
+    <h2>Creation</h2>
+    <p>Let's allocate a new dynamic array:</p>
+<pre>
+imm nameref = +[]rc "Jan"
+</pre>
+    <p>This should look familar. We use the <span class="pre">+[]</span> array allocator operator 
+		followed by the region (<span class="pre">rc</span>) used to allocate a new dynamic array.
+        Its contents hold a copy of the 3-byte array given by the string literal above.
+        The allocation returns an owning <i>array</i> reference that points to this value.
+        Unlike regular references that point to a single value of a type,
+        array references point to multiple values of the same type.</p>
+    <p>The type signature of an array reference reflects this difference.
+        The type signature of <span class="pre">nameref</span> is <span class="pre">&amp;[]rc u8</span>.
+        Like a static array, array references use square brackets 
+        to indicate the reference points to a dynamic array of bytes.
+        No number is enclosed in the brackets
+        since we won't know the array's size until runtime.</p>
+
+    <h3>Creation Formats</h3>
+    <p>There are several ways to specify the initial values of a dynamic array:</p>
+    <ul>
+    <li><b>Copy another array</b>. Specify the array to copy from as part of the allocation:
+<pre>
+imm dynarr1 = +[]so [1,2,3]
+</pre>
+    <p>The array to copy from can also be a de-referenced array reference:</p>
+<pre>
+imm dynarr2 = *dynarr1
+</pre>
+    </li>
+    <li><b>Replicate an element</b>. 
+        Specify a count in square brackets followed by the initial value for all elements:
+<pre>
+imm dynarr3 = +[]gc [4; 0.]   // newarr's type:  &amp;[]gc f32
+</pre>
+       <p>Both the count and the value may be expressions.</p>         
+    </li>
+    <li><b>Use an expression</b>. 
+        Specify an expression that calculates each element's initial value:
+<pre>
+imm dynarr4 = +[]rc [4; n: n*n]
+</pre>
+    <p>The expression will be called for each element, with n incrementing upwards from 0.
+        The expression's returned value becomes the element's initial value and type.</p>
+    </li>
+    </ul>
+
+    <h2>Resizing and Appending</h2>
+    <p>Resizing a dynamic array is only possible when the owning array reference has the
+        <span class="pre">uni</span> permission.
+        This restriction ensures memory safety, as it protects against invalidating other references
+        that don't know the new size of the array.
+        A resized array may end up moving to a new memory location.</p>
+    <p>Resizing uses the <span class="pre">&lt;-</span> append operator,
+        along with providing values for the new elements of the larger array:</p>
+    <ul>
+    <li><b>Append another array</b>. 
+        This increases the size by the number of elements being added,
+        then appends the specified array's values:
+<pre>
+dynarr1 &lt;- [4,5]
+</pre>
+    </li>
+    <li><b>Shrink or grow via element replication</b>.
+        Specify the new size in square brackets followed by the fill value for any added elements:
+<pre>
+dynarr2 &lt;- [10; 0.]   // Grow it. Added elements initialized to zero
+dynarr2 &lt;- [2;  0.]   // Shrink it
+</pre>
+        <p>Both the count and the value may be expressions.</p>         
+    </li>
+    </ul>
+    <p>A reference array may be shrunk by setting a new size that is lower or the same as the current size:</p>
+<pre>
+dynarr2.len = 2
+</pre>
+        
+    <h2 id="slice">Slices (Borrowed References)</h2>
+    <p>A slice is simply a borrowed array reference.
+        It may be borrowed from any array or array reference in the usual way:</p>
+<pre>
+imm nbrSlice = &amp;[1, 2, 3]
+imm textSlice = &amp;"Padma"
+imm dynSlice = &amp;*dynarr2   // from a owning array reference
+</pre>
+    <p>These slices effectively point to all elements of the source's array.</p>
+    <p>If a static array is passed as a call argument where a slice is expected, 
+         it is automatically converted into a slice:</p>
+<pre>
+print("abc")    // equivalent to print(&"abc")
+</pre>
+        
+    <p><b>Safety Note:</b>
+        Because a slice is a borrowed reference, its lifetime is limited,
+        ensuring it can never outlive the source array it provides a view into.
+        Depending on permissions, it may temporarily lock out access to the variable it borrows from,
+        thereby ensuring the original array cannot be moved or resized while the slice is active.
+    </p>
+
+    <h3>Subslices</h3>
+    <p>It is also possible to create a new slice that points
+        to some subset of the elements in some array or array reference.
+        This is accomplished by indexing using a range operator
+        between two unsigned integers:</p>
+    <ul>
+    <li><span class="pre">..</span> excludes the last specified element.</li>
+    <li><span class="pre">...</span> includes the last specified element.</li>
+    <li><span class="pre">,</span> specifies how many elements are in the slice.</li>
+    </ul>
+    <p>For example:</p>
+<pre>
+imm x = &amp;"Abcd"[1..3]    // a slice pointing to "bc"
+imm y = &amp;"Abcd"[1...3]   // a slice pointing to "bcd"
+imm z = &amp;"Abcd"[2, 1]  // a slice pointing to "c"
+</pre>
+    <p>If either index integer is unspecified, 0 and end are assumed.</p>
+<pre>
+imm r = &amp;y[1..]        // a slice pointing to "cd" (end assumed)
+imm s = &amp;y[..]         // a slice pointing to "bcd" (0 and end assumed)
+</pre>
+    <p>An index integer may be specified relative to the last element:</p>
+<pre>
+imm r = &amp;y[$-2..]      // a slice pointing to "cd"
+</pre>
+    <p>A slice may also be created from a regular reference or a pointer:</p>
+<pre>
+imm slice1 = &ref[..]      // Slice count from reference is always 1
+imm slice2 = &ptr[0...5]
+</pre>
+
+    <h2>Operations</h2>
+    <p>Array references (owning or borrowed) may be indexed, copied, compared, iterated over, resized, 
+        and queried for their properties.
+        Many of these operations work the same way they do with static arrays.</p>
+
+    <h3>Access an Element</h3>
+    <p>A single element within an array may be accessed using 
+        an unsigned integer value enclosed in square brackets.
+        This supports both getting and setting the values at a specific index:</p>
+<pre>
+c_array[3] = c_array[2]    // the 4th element is now the same as the third
+</pre>
+    <p>Indexing is automatically bounds-checked by its known size.</p>
+
+    <h3>Borrowed Reference to an Element</h3>
+    <p>One can create a borrowed reference to any element of a dynamic array
+    in the same way as for an static array:</p>
+<pre>
+imm nbrRef = &amp;nbrSlice[1]     // points to 2
+imm charRef = &amp;textSlice[2]   // points to 'r'
+</pre>
+    <p>Borrowing a reference to a single element is <i>not</i> a slice.
+    It is just a regular borrowed reference to some value.</p>
+
+    <h3>Copy or Fill Elements</h3>
+    <p>Multiple elements of an array may be
+        copied into another array using a range in square brackets.
+        Both content segments must have the same type and size.</p>
+<pre>
+arrref[1 by 2] = sliceref[0 by 2]
+greetings[n by 5] = "Kevin"
+</pre>
+    <p>Similarly, a single value can be repeatedly filled into an array reference's elements:</p>
+<pre>
+arrref[1 .. 3] = 2
+</pre>
+
+    <h3>Iteration</h3>
+    <p>The <span class="pre">each</span> loop may iterate over an array reference's elements:</p>
+<pre>
+mut sum = 0
+each x in intslice:
+    sum += x
+</pre>
+    <p>Iteration can also obtain the index number for each value:</p>
+<pre>
+each i, x in intslice:
+    newslice[i] = x
+</pre>
+
+    <h3>Comparison</h3>
+    <p>Two array references may be compared for equality, so long as they have the same element type,
+        even if one is a borrowed reference and the other an owning reference.
+        This comparison checks for equality of both the starting pointer and the element count.</p>
+<pre>
+if ownref == borref:
+   ....
+</pre>
+    <p>Comparing for order (e.g., &lt;) is not possible directly.
+        One can of course compare the component parts of an array reference separately.</p>
+
+    <h3>Property Queries</h3>
+    <p>An array reference is a "fat" reference, as it holds two pieces of information:</p>
+    <ul>
+        <li>a pointer to the first element of the array</li>
+        <li>an unsigned integer specifying how many elements are in the array</li>
+    </ul>
+    <p>The component parts of an array reference can be obtained:</p>
+<pre>
+imm ptr = array.ptr     // The pointer to the first element
+imm len = array.len     // The number of elements
+</pre>
+
+    <h2>Collection Types</h2>
+    <p>One can create many different kinds of collection types using
+        a single-owner array reference as a private field within some struct.
+        The struct can define <a href="refmethop.html">operator methods</a>
+        (such as indexing),
+        so that the resulting type behaves very much like an array reference.
+        These methods can forward these requests, as appropriate, on to the array reference field.</p>
+
+
+	<p style="text-align: right; margin-top: 2em;">
+		<a href="reftrait.html"><img alt="_" src="next.png" /></a>
+	</p>
+
+	</div>
+	</body>
+</html>
