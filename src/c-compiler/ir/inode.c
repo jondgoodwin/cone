@@ -426,9 +426,9 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     case VoidTag:
         break;
     // The owning module or type type checks every concrete FnDclNode candidate,
-    // so walking the overload node's candidates again would process them twice
+    // so only the set's candidate signatures are compared here
     case FnOverloadDclTag:
-        break;
+        fnOverloadDclTypeCheck(pstate, (FnOverloadDclNode *)*node); break;
     default:
         assert(0 && "**** ERROR **** Attempting to check an unknown node");
     }

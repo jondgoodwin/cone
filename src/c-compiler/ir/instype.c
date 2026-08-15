@@ -19,35 +19,33 @@ void iNsTypeInit(INsTypeNode *type, int nodecnt) {
     // type->subtypes = newNodes(0);
 }
 
-// Add a function or potentially overloaded method to dictionary
-// The first method declared for a name binds directly to its FnDclNode.
-// A second same-named method replaces that binding with an FnOverloadDclNode
-// holding both, and later methods are appended to that node's candidates.
+// Bind a static function or method to its unique concrete name and, when it
+// declares an overload name, to that name's separate FnOverloadDclNode.
+// Two functions/methods declaring the same concrete name are a duplicate name error.
 void iNsTypeAddFnDict(INsTypeNode *type, FnDclNode *fnnode) {
-    INode *foundnode = namespaceAdd(&type->namespace, fnnode->namesym, (INode*)fnnode);
-    if (foundnode == NULL)
+    if (namespaceAdd(&type->namespace, fnnode->namesym, (INode*)fnnode) != NULL)
+        errorMsgNode((INode*)fnnode, ErrorDupName,
+            "Duplicate name %s: every function/method needs its own name.", &fnnode->namesym->namestr);
+
+    if (fnnode->overloadsym == NULL)
         return;
 
-    // Growing an existing overload set only requires the new declaration be a method
-    if (foundnode->tag == FnOverloadDclTag && (fnnode->flags & FlagMethFld)) {
-        nodesAdd(&((FnOverloadDclNode*)foundnode)->overloads, (INode*)fnnode);
+    // The overload name binds to its own node, holding every candidate declared for it
+    INode *binding = namespaceFind(&type->namespace, fnnode->overloadsym);
+    if (binding == NULL) {
+        FnOverloadDclNode *overloadnode = newFnOverloadDclNode(fnnode->overloadsym);
+        inodeLexCopy((INode*)overloadnode, (INode*)fnnode);
+        fnOverloadDclAdd(overloadnode, fnnode);
+        namespaceSet(&type->namespace, fnnode->overloadsym, (INode*)overloadnode);
         return;
     }
-
-    // Otherwise, only two methods may be turned into a new overload set
-    if (foundnode->tag != FnDclTag
-        || !(foundnode->flags & FlagMethFld) || !(fnnode->flags & FlagMethFld)) {
-        errorMsgNode((INode*)fnnode, ErrorDupName, "Duplicate name %s: Only methods can be overloaded.", &fnnode->namesym->namestr);
+    if (binding->tag != FnOverloadDclTag) {
+        errorMsgNode((INode*)fnnode, ErrorOverloadClash,
+            "Overload name %s is already declared as something that is not an overload name.",
+            &fnnode->overloadsym->namestr);
         return;
     }
-
-    // Replace the single method binding with an overload set holding both methods
-    FnOverloadDclNode *overloadnode = newFnOverloadDclNode(fnnode->namesym);
-    inodeLexCopy((INode*)overloadnode, foundnode);
-    overloadnode->flags |= FlagMethFld;
-    nodesAdd(&overloadnode->overloads, foundnode);
-    nodesAdd(&overloadnode->overloads, (INode*)fnnode);
-    namespaceSet(&type->namespace, fnnode->namesym, (INode*)overloadnode);
+    fnOverloadDclAdd((FnOverloadDclNode*)binding, fnnode);
 }
 
 // Add a function/method to type's dictionary and owned list
@@ -83,48 +81,48 @@ static uint32_t iNsTypeCandidates(INode **bindingp, INode ***candidatesp) {
     return 0;
 }
 
-// Find method that best fits the passed arguments
-// 'binding' is the namespace's binding for the method's name:
-// either a single FnDclNode or an FnOverloadDclNode holding all candidates
-FnDclNode *iNsTypeFindBestMethod(INode *binding, INode **self, Nodes *args) {
+// Find the one method candidate that accepts the call's receiver and arguments.
+// Every candidate is tested, using a viability test that never alters the call.
+// No candidate wins for being an exact rather than a coercible match, for needing
+// fewer coercions, or for being declared first: the caller resolves an ambiguity
+// by using a concrete name or by converting its arguments.
+FnDclNode *iNsTypeFindMethod(INode *binding, INode **self, Nodes *args, int *status) {
     INode **candidatep;
     uint32_t cnt = iNsTypeCandidates(&binding, &candidatep);
 
-    // Look for best-fit method
-    FnDclNode *bestmethod = NULL;
-    int bestnbr = 0x7fffffff; // ridiculously high number    
+    FnDclNode *found = NULL;
+    *status = OverloadNone;
     while (cnt--) {
         FnDclNode *methnode = (FnDclNode *)*candidatep++;
-        int match;
-        switch (match = fnSigMatchMethCall((FnSigNode *)methnode->vtype, self, args)) {
-        case 0: continue;        // not an acceptable match
-        case 1: return methnode;    // perfect match!
-        default:                // imprecise match using conversions
-            if (match < bestnbr) {
-                // Remember this as best found so far
-                bestnbr = match;
-                bestmethod = methnode;
-            }
+        if (!fnSigViableCall((FnSigNode *)methnode->vtype, self, args))
+            continue;
+        if (found) {
+            *status = OverloadAmbiguous;
+            return NULL;
         }
+        found = methnode;
+        *status = OverloadUnique;
     }
-    return bestmethod;
+    return found;
 }
 
-// Find the first pointer/reference method candidate that accepts the passed arguments
-// 'binding' is the namespace's binding for the method's name.
+// Find the one pointer/reference method candidate that accepts the passed arguments.
 // A unary method matches on arity alone. A binary method requires an acceptable
 // second argument: pointer/reference parameters must be the same type as self,
-// and any other parameter type must accept the coerced argument.
-FnDclNode *iNsTypeFindPtrMethod(INode *binding, Nodes *args) {
+// and any other parameter type must accept the argument through a permitted coercion.
+// Nothing is inserted into the call: argument finalization happens after selection.
+FnDclNode *iNsTypeFindPtrMethod(INode *binding, Nodes *args, int *status) {
     INode **candidatep;
     uint32_t cnt = iNsTypeCandidates(&binding, &candidatep);
 
+    FnDclNode *found = NULL;
+    *status = OverloadNone;
     while (cnt--) {
         FnDclNode *methnode = (FnDclNode *)*candidatep++;
         Nodes *parms = ((FnSigNode *)methnode->vtype)->parms;
         if (parms->used != args->used)
             continue;
-        // Unary method is an instant match
+        // Unary method matches on arity alone
         // Binary methods need to ensure acceptable second argument
         if (args->used > 1) {
             INode *parm1type = iexpGetTypeDcl(nodesGet(parms, 1));
@@ -135,27 +133,36 @@ FnDclNode *iNsTypeFindPtrMethod(INode *binding, Nodes *args) {
                     continue;
             }
             else {
-                if (!iexpCoerce(&nodesGet(args, 1), parm1type))
+                if (iexpMatches(&nodesGet(args, 1), parm1type, Coercion) == NoMatch)
                     continue;
             }
         }
-        return methnode;
+        if (found) {
+            *status = OverloadAmbiguous;
+            return NULL;
+        }
+        found = methnode;
+        *status = OverloadUnique;
     }
-    return NULL;
+    return found;
 }
 
 // Find method whose method signature matches exactly (except for self)
 // 'binding' is the namespace's binding for the method's name
-// return NULL if none
+// return NULL if none, or if more than one candidate matches
 FnDclNode *iNsTypeFindVrefMethod(INode *binding, FnDclNode *matchmeth) {
     INode **candidatep;
     uint32_t cnt = iNsTypeCandidates(&binding, &candidatep);
 
-    // Look through all overloaded methods for a match
+    // Look through every candidate the name declares for the sole exact match
+    FnDclNode *found = NULL;
     while (cnt--) {
         FnDclNode *methnode = (FnDclNode *)*candidatep++;
-        if (fnSigVrefEqual((FnSigNode*)methnode->vtype, (FnSigNode*)matchmeth->vtype))
-            return methnode;
+        if (!fnSigVrefEqual((FnSigNode*)methnode->vtype, (FnSigNode*)matchmeth->vtype))
+            continue;
+        if (found)
+            return NULL;
+        found = methnode;
     }
-    return NULL;
+    return found;
 }

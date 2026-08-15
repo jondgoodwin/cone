@@ -35,19 +35,19 @@ int fnSigEqual(FnSigNode *node1, FnSigNode *node2);
 // ignoring the first 'self' parameter (we know their types differ)
 int fnSigVrefEqual(FnSigNode *node1, FnSigNode *node2);
 
+// Do two signatures declare the same parameter types (ignoring return type)?
+// Used to detect two overload candidates that would accept the same arguments.
+int fnSigParmsEqual(FnSigNode *node1, FnSigNode *node2);
+
 // Return TypeCompare indicating whether from type matches the function signature
 TypeCompare fnSigMatches(FnSigNode *to, FnSigNode *from, SubtypeConstraint constraint);
 
 // Return true if type of from-exp matches totype
 int fnSigCoerce(FnSigNode *totype, INode **fromexp);
 
-// Will the function call (caller) be able to call the 'to' function
-// Return 0 if not. 1 if perfect match. 2+ for imperfect matches
-int fnSigMatchesCall(FnSigNode *to, Nodes *args);
-
-// Will the method call (caller) be able to call the 'to' function
-// Return 0 if not. 1 if perfect match. 2+ for imperfect matches
-// if skipfirst is on, don't type check first argument for a vref
-int fnSigMatchMethCall(FnSigNode *to, INode **self, Nodes *args);
+// Can a call passing 'self' (NULL if none) and 'args' call this signature?
+// This only decides viability, and never alters the call: no cast, borrow or
+// default argument is inserted. Argument finalization does that after selection.
+int fnSigViableCall(FnSigNode *to, INode **self, Nodes *args);
 
 #endif

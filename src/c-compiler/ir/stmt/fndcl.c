@@ -17,6 +17,7 @@ FnDclNode *newFnDclNode(Name *namesym, uint16_t flags, INode *type, INode *val) 
     node->flags = flags;
     node->vtype = type;
     node->namesym = namesym;
+    node->overloadsym = NULL;
     node->value = val;
     node->llvmvar = NULL;
     node->genname = namesym? &namesym->namestr : "";
@@ -31,6 +32,14 @@ FnOverloadDclNode *newFnOverloadDclNode(Name *namesym) {
     node->namesym = namesym;
     node->overloads = newNodes(2);
     return node;
+}
+
+// Append a concrete declaration to an overload set's ordered candidates.
+// The set is a method set when any of its candidates is a method, which is
+// what lets an unqualified use be rewritten to 'self.name'.
+void fnOverloadDclAdd(FnOverloadDclNode *ovlnode, FnDclNode *fnnode) {
+    nodesAdd(&ovlnode->overloads, (INode*)fnnode);
+    ovlnode->flags |= fnnode->flags & FlagMethFld;
 }
 
 // Return a clone of a function/method declaration
@@ -53,6 +62,8 @@ void fnDclPrint(FnDclNode *node) {
         inodeFprint("fn");
     if (node->genericinfo)
         genericInfoPrint(node->genericinfo);
+    if (node->overloadsym)
+        inodeFprint(" overload %s ", &node->overloadsym->namestr);
     inodePrintNode(node->vtype);
     if (node->value) {
         inodeFprint(" {} ");
@@ -63,15 +74,16 @@ void fnDclPrint(FnDclNode *node) {
 }
 
 // Serialize an overloaded function/method declaration node.
-// Only the candidates' signatures are printed, as each candidate is
-// separately printed by the module or type that owns it.
+// Only each candidate's concrete name and signature are printed, as each
+// candidate is separately printed by the module or type that owns it.
 void fnOverloadDclPrint(FnOverloadDclNode *node) {
     inodeFprint("overload %s", &node->namesym->namestr);
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(node->overloads, cnt, nodesp)) {
-        inodeFprint(" ");
-        inodePrintNode(((FnDclNode *)*nodesp)->vtype);
+        FnDclNode *candidate = (FnDclNode *)*nodesp;
+        inodeFprint(" %s ", candidate->namesym? &candidate->namesym->namestr : "");
+        inodePrintNode(candidate->vtype);
     }
 }
 
@@ -172,4 +184,26 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     fstate.fnsig = (FnSigNode *)fnnode->vtype;
     fstate.scope = 1;
     blockFlow(&fstate, (BlockNode **)&fnnode->value);
+}
+
+// Verify no two candidates of an overload set accept the same parameter signature.
+// Candidates are not walked, as each is separately name resolved and type checked
+// by the module or type that owns its concrete declaration.
+void fnOverloadDclTypeCheck(TypeCheckState *pstate, FnOverloadDclNode *node) {
+    INode **nodesp;
+    uint32_t cnt;
+    uint32_t index = 0;
+    for (nodesFor(node->overloads, cnt, nodesp)) {
+        FnDclNode *candidate = (FnDclNode *)*nodesp;
+        for (uint32_t prior = 0; prior < index; ++prior) {
+            FnDclNode *earlier = (FnDclNode *)nodesGet(node->overloads, prior);
+            if (fnSigParmsEqual((FnSigNode *)earlier->vtype, (FnSigNode *)candidate->vtype)) {
+                errorMsgNode((INode*)candidate, ErrorDupOverload,
+                    "%s accepts the same arguments as %s, so overload %s could never choose between them.",
+                    &candidate->namesym->namestr, &earlier->namesym->namestr, &node->namesym->namestr);
+                break;
+            }
+        }
+        ++index;
+    }
 }

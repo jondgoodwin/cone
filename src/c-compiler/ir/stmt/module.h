@@ -30,6 +30,11 @@ ModuleNode *newModuleNode();
 void modPrint(ModuleNode *mod);
 void modAddNode(ModuleNode *mod, Name *name, INode *node);
 void modAddNamedNode(ModuleNode *mod, Name *name, INode *node);
+
+// Add a parsed function to the module, binding its unique concrete name and,
+// when it declares an overload name, that name's separate FnOverloadDclNode
+void modAddFn(ModuleNode *mod, FnDclNode *fnnode);
+
 void modHook(ModuleNode *oldmod, ModuleNode *newmod);
 void modNameRes(NameResState *pstate, ModuleNode *mod);
 void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod);

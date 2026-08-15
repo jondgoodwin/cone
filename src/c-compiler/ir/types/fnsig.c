@@ -110,6 +110,24 @@ int fnSigVrefEqual(FnSigNode *node1, FnSigNode *node2) {
     return 1;
 }
 
+// Do two signatures declare the same parameter types (ignoring return type)?
+// Two overload candidates that compare equal would accept exactly the same
+// arguments, so the overload name could never choose between them.
+int fnSigParmsEqual(FnSigNode *node1, FnSigNode *node2) {
+    if (node1->parms->used != node2->parms->used)
+        return 0;
+
+    INode **nodes1p, **nodes2p;
+    uint32_t cnt;
+    nodes2p = &nodesGet(node2->parms, 0);
+    for (nodesFor(node1->parms, cnt, nodes1p)) {
+        if (!itypeIsSame(iexpGetTypeDcl(*nodes1p), iexpGetTypeDcl(*nodes2p)))
+            return 0;
+        nodes2p++;
+    }
+    return 1;
+}
+
 // Return TypeCompare indicating whether from type matches the function signature
 TypeCompare fnSigMatches(FnSigNode *to, FnSigNode *from, SubtypeConstraint constraint) {
     TypeCompare result = EqMatch;
@@ -160,92 +178,54 @@ int fnSigCoerce(FnSigNode *totype, INode **fromexp) {
     return itypeMatches((INode*)totype, iexpGetTypeDcl(*fromexp), Coercion) == EqMatch;
 }
 
-// Will the function call (caller) be able to call the 'to' function
-// Return 0 if not. 1 if perfect match. 2+ for every argument match requiring coercion
-int fnSigMatchesCall(FnSigNode *to, Nodes *args) {
-    int matchsum = 1;
 
-    // Too many arguments is not a match
-    if (args->used > to->parms->used)
-        return 0;
-
-    // Every parameter's type must also match
-    INode **tonodesp;
-    INode **callnodesp;
-    uint32_t cnt;
-    tonodesp = &nodesGet(to->parms, 0);
-    for (nodesFor(args, cnt, callnodesp)) {
-        switch (iexpMatches(callnodesp, ((IExpNode *)*tonodesp)->vtype, Coercion)) {
-        case NoMatch: 
-            return 0;
-        case EqMatch: 
-            break;
-        default:
-            ++matchsum;
-        }
-        tonodesp++;
-    }
-    // Match fails if not enough arguments & method has no default values on parms
-    if (args->used != to->parms->used 
-        && ((VarDclNode *)tonodesp)->value==NULL)
-        return 0;
-
-    // It is a match; return how perfect a match it is
-    return matchsum;
-}
-
-// Will the method call (caller) be able to call the 'to' function
-// Return 0 if not. 1 if perfect match. 2+ for every argument match requiring coercion
-int fnSigMatchMethCall(FnSigNode *to, INode **self, Nodes *args) {
-    uint32_t argcnt = args ? args->used + 1 : 1;
+// Can a call passing 'self' (NULL if none) and 'args' call this signature?
+// Only viability is decided: arity, required versus defaulted parameters, receiver
+// compatibility, and whether every explicit argument may be passed using a permitted
+// implicit coercion. Nothing is inserted into the call, and no candidate is preferred
+// over another for being an exact rather than a coercible match.
+int fnSigViableCall(FnSigNode *to, INode **self, Nodes *args) {
+    uint32_t argcnt = args ? args->used : 0;
+    if (self)
+        ++argcnt;
 
     // Too many arguments is not a match
     if (argcnt > to->parms->used)
         return 0;
 
-    // Compare self's type to expected self parameter type
-    INode **tonodesp = &nodesGet(to->parms, 0);
-    INode *selftype = iexpGetTypeDcl(*self);
-    int matchsum = 1;
-    if (selftype->tag != VirtRefTag) {
-        switch (iexpMatches(self, iexpGetTypeDcl(*tonodesp), Coercion)) {
-        case NoMatch:
+    INode **parmp = &nodesGet(to->parms, 0);
+
+    // A receiver, when there is one, must be passable as the first parameter
+    if (self) {
+        INode *selftype = iexpGetTypeDcl(*self);
+        if (selftype->tag != VirtRefTag) {
+            if (iexpMatches(self, iexpGetTypeDcl(*parmp), Coercion) == NoMatch)
+                return 0;
+        }
+        // A virtual reference receiver is not type checked here, beyond requiring
+        // that the candidate expects a reference it can be dispatched through
+        else if (((IExpNode*)*parmp)->vtype->tag != RefTag)
             return 0;
-        case EqMatch: 
-            break;
-        default:
-            ++matchsum; 
+        ++parmp;
+    }
+
+    // Every explicit argument must be passable to its corresponding parameter
+    if (args) {
+        INode **argsp;
+        uint32_t cnt;
+        for (nodesFor(args, cnt, argsp)) {
+            if (iexpMatches(argsp, ((IExpNode *)*parmp)->vtype, Coercion) == NoMatch)
+                return 0;
+            ++parmp;
         }
     }
-    else {
-        // For a virtual reference, the first argument need not be type-checked
-        // other than ensuring the found method expects a reference
-        if (((IExpNode*)*tonodesp)->vtype->tag != RefTag)
+
+    // Every parameter the call did not supply must declare a default value
+    uint32_t missing = to->parms->used - argcnt;
+    while (missing--) {
+        if (((VarDclNode *)*parmp++)->value == NULL)
             return 0;
     }
-    ++tonodesp;
-    if (argcnt == 1)
-        return to->parms->used == 1 || ((VarDclNode *)*tonodesp)->value != NULL ? matchsum : 0;
 
-    // Every specified argument must match corresponding parameter
-    INode **callnodesp;
-    uint32_t cnt;
-    for (nodesFor(args, cnt, callnodesp)) {
-        switch (iexpMatches(callnodesp, ((IExpNode *)*tonodesp)->vtype, Coercion)) {
-        case NoMatch:
-            return 0;
-        case EqMatch: 
-            break;
-        default:
-            ++matchsum;
-        }
-        tonodesp++;
-    }
-    // Match fails if not enough arguments & method has no default values on parms
-    if (argcnt != to->parms->used
-        && ((VarDclNode *)*tonodesp)->value == NULL)
-        return 0;
-
-    // It is a match; return how perfect a match it is
-    return matchsum;
+    return 1;
 }

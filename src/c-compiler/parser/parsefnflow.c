@@ -482,6 +482,30 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
             errorMsgLex(ErrorNoName, "Function declarations must be named");
     }
 
+    // Process the optional overload name this declaration also answers to.
+    // The concrete name stays this declaration's own identity; the overload name
+    // is shared with the other declarations that overload it.
+    if (lexIsToken(OverloadToken)) {
+        lexNextToken();
+        if (!lexIsToken(IdentToken)) {
+            errorMsgLex(ErrorBadOverload, "Expected the overload name that follows 'overload'");
+        }
+        else {
+            Name *overloadsym = lex->val.ident;
+            lexNextToken();
+            if (fnnode->namesym == NULL)
+                errorMsgLex(ErrorBadOverload, "An anonymous function may not declare an overload name");
+            else if (fnnode->namesym == overloadsym)
+                errorMsgLex(ErrorBadOverload,
+                    "A declaration's overload name must differ from its own name %s", &overloadsym->namestr);
+            else if (fnnode->genericinfo)
+                errorMsgLex(ErrorGenericOverload,
+                    "A generic function may not declare the overload name %s", &overloadsym->namestr);
+            else
+                fnnode->overloadsym = overloadsym;
+        }
+    }
+
     // Process the function's signature info.
     fnnode->vtype = parseFnSig(parse);
 

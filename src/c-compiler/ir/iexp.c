@@ -114,7 +114,7 @@ int iexpCoerce(INode **from, INode *totype) {
         if (iexpGetTypeDcl(*from)->tag == PtrTag)
             success = fnCallLowerPtrMethod(istrue, ptrType);
         else
-            success = fnCallLowerMethod(istrue);
+            success = fnCallLowerMethod(istrue) == 1;
         if (success) {
             inodeLexCopy((INode*)istrue, *from);
             *from = (INode*)istrue;

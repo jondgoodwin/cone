@@ -29,6 +29,7 @@
 
 **Types**
 - [[Names and Namespaces]], including name paths and name folding
+- [[Overload Refactor]]
 - [[Init and Final]]
 - Built-in Types:
 	- [[Types. Function and Closure]]

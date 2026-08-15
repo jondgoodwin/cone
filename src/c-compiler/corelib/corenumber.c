@@ -11,10 +11,18 @@
 #include "../ir/nametbl.h"
 #include <string.h>
 
+// Create a compiler-declared method whose concrete name is private and unique,
+// and which joins the overload set named by the operator it implements.
+// Only operators declared more than once for a type need this.
+static FnDclNode *newOverloadMethod(char *concretestr, Name *opsym, INode *sig, INode *val) {
+    FnDclNode *fnnode = newFnDclNode(nametblFind(concretestr, strlen(concretestr)), FlagMethFld, sig, val);
+    fnnode->overloadsym = opsym;
+    return fnnode;
+}
+
 // Create a new primitive number type node
 NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
     Name *namesym = nametblFind(name, strlen(name));
-
     // Start by creating the node for this number type
     NbrNode *nbrtype;
     newNode(nbrtype, NbrNode, typ);
@@ -53,14 +61,15 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
     Name *opsym;
 
     // Arithmetic operators (not applicable to boolean)
+    // '-' is declared twice, so each declaration gets its own concrete name
     if (bits > 1) {
-        iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(minusName, FlagMethFld, (INode *)unarysig, (INode *)newIntrinsicNode(NegIntrinsic)));
+        iNsTypeAddFn((INsTypeNode*)nbrtype, newOverloadMethod("_neg", minusName, (INode *)unarysig, (INode *)newIntrinsicNode(NegIntrinsic)));
         iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(incrName, FlagMethFld, (INode *)mutrefsig, (INode *)newIntrinsicNode(IncrIntrinsic)));
         iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(decrName, FlagMethFld, (INode *)mutrefsig, (INode *)newIntrinsicNode(DecrIntrinsic)));
         iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(incrPostName, FlagMethFld, (INode *)mutrefsig, (INode *)newIntrinsicNode(IncrPostIntrinsic)));
         iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(decrPostName, FlagMethFld, (INode *)mutrefsig, (INode *)newIntrinsicNode(DecrPostIntrinsic)));
         iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(plusName, FlagMethFld, (INode *)binsig, (INode *)newIntrinsicNode(AddIntrinsic)));
-        iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(minusName, FlagMethFld, (INode *)binsig, (INode *)newIntrinsicNode(SubIntrinsic)));
+        iNsTypeAddFn((INsTypeNode*)nbrtype, newOverloadMethod("_sub", minusName, (INode *)binsig, (INode *)newIntrinsicNode(SubIntrinsic)));
         iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(multName, FlagMethFld, (INode *)binsig, (INode *)newIntrinsicNode(MulIntrinsic)));
         iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(divName, FlagMethFld, (INode *)binsig, (INode *)newIntrinsicNode(typ == IntNbrTag ? SDivIntrinsic : DivIntrinsic)));
         iNsTypeAddFn((INsTypeNode*)nbrtype, newFnDclNode(remName, FlagMethFld, (INode *)binsig, (INode *)newIntrinsicNode(typ == IntNbrTag ? SRemIntrinsic : RemIntrinsic)));
@@ -171,7 +180,7 @@ INsTypeNode *newPtrTypeMethods() {
     nodesAdd(&binsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)usizeType, newPermUseNode(immPerm), NULL));
 
     iNsTypeAddFn((INsTypeNode*)ptrtypenode, newFnDclNode(plusName, FlagMethFld, (INode *)binsig, (INode *)newIntrinsicNode(AddIntrinsic)));
-    iNsTypeAddFn((INsTypeNode*)ptrtypenode, newFnDclNode(minusName, FlagMethFld, (INode *)binsig, (INode *)newIntrinsicNode(SubIntrinsic)));
+    iNsTypeAddFn((INsTypeNode*)ptrtypenode, newOverloadMethod("_ptrsub", minusName, (INode *)binsig, (INode *)newIntrinsicNode(SubIntrinsic)));
 
     // Create function signature for difference between two pointers
     FnSigNode *diffsig = newFnSigNode();
@@ -179,7 +188,7 @@ INsTypeNode *newPtrTypeMethods() {
     nodesAdd(&diffsig->parms, (INode *)newVarDclFull(self, VarDclTag, (INode*)voidptr, newPermUseNode(immPerm), NULL));
     nodesAdd(&diffsig->parms, (INode *)newVarDclFull(parm2, VarDclTag, (INode*)voidptr, newPermUseNode(immPerm), NULL));
 
-    iNsTypeAddFn((INsTypeNode*)ptrtypenode, newFnDclNode(minusName, FlagMethFld, (INode *)diffsig, (INode *)newIntrinsicNode(DiffIntrinsic)));
+    iNsTypeAddFn((INsTypeNode*)ptrtypenode, newOverloadMethod("_ptrdiff", minusName, (INode *)diffsig, (INode *)newIntrinsicNode(DiffIntrinsic)));
 
     // Create function signature for += and -= methods
     FnSigNode *bineqsig = newFnSigNode();

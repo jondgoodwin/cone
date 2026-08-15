@@ -114,15 +114,23 @@ All IR node types start with these common fields (see inodes.h):
 
 ## FnOverloadDcl
 
-`FnOverloadDclNode` (see `ir/stmt/fndcl.h`) is the namespace binding for a name
-declared by more than one function or method. It holds only the common `INode`
-header, its `namesym`, and an ordered `Nodes *overloads` vector of the concrete
-`FnDclNode` candidates. It has no function type, body, LLVM value, or generated
-symbol: every executable implementation remains a separate `FnDclNode`, and a
-call is always lowered to the concrete node that was selected.
+`FnOverloadDclNode` (see `ir/stmt/fndcl.h`) is the namespace binding for an
+explicitly declared overload name. It holds only the common `INode` header, its
+`namesym`, and an ordered `Nodes *overloads` vector of the concrete `FnDclNode`
+candidates that declared they overload that name. It has no function type, body,
+LLVM value, or generated symbol: every executable implementation remains a
+separate `FnDclNode` bound to its own unique concrete name, and a call is always
+lowered to the concrete node that was selected.
 
-Because the module or type that owns the candidates already walks each concrete
-`FnDclNode`, name resolution and type checking of an `FnOverloadDclNode` are
-explicit no-ops; walking its vector again would process the same function
-bodies twice.
+`FnDclNode` carries `Name *overloadsym`, which is the overload name this
+declaration also answers to, or `NULL` when it has only its concrete name. That
+field is what lets a cloned method (a generic instantiation or an inherited trait
+default) rebuild its overload membership in the cloned type's namespace, since
+the overload node itself is never copied.
+
+Name resolution of an `FnOverloadDclNode` is an explicit no-op, because the
+module or type that owns the candidates already walks each concrete `FnDclNode`;
+walking its vector again would resolve the same function bodies twice. Type
+checking only compares the candidates' already-checked signatures, to report two
+candidates that would accept the same arguments.
 

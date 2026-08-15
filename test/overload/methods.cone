@@ -1,0 +1,112 @@
+// Overloaded methods: unique concrete names plus explicit overload names.
+// Covers exact and coercible matches, default parameters, value and reference
+// receivers, virtual dispatch, and the compiler-embedded stdio stream.
+
+import stdio::*
+
+// One overload name across a value receiver, a reference receiver, and an extra parameter
+struct Point:
+  x f32
+  y f32
+
+  fn addValue overload add(self) f32:
+    x + y
+  fn addRef overload add(self &) f32:
+    x - y
+  fn addOther overload add(self, other) f32:
+    self.x + other.x
+
+fn pointMethods() f32:
+  mut pt = Point[1., 2.]
+  imm other = Point[3., 4.]
+  imm valsum = pt.add()
+  imm refsum = (&pt).add()
+  imm twosum = pt.add(other)
+  // A concrete name may always be called directly, bypassing overload selection
+  imm direct = pt.addValue()
+  valsum + refsum + twosum + direct
+
+// Overload selection with a coercible (not exact) argument, and a default parameter
+struct Scaler:
+  base f32
+
+  fn scaleWide overload scale(self, factor f64) f64:
+    f64[base] * factor
+  fn scaleCount overload scale(self, count i32, step i32 = 2) i32:
+    count * step
+
+fn scaling() f64:
+  imm s = Scaler[1.5]
+  // f32 widens to the f64 parameter; no other candidate accepts a float
+  imm wide = s.scale(2.5f)
+  // Only the i32 candidate accepts an integer, and it defaults its second parameter
+  imm defaulted = s.scale(4i32)
+  imm supplied = s.scale(4i32, 3i32)
+  wide + f64[defaulted] + f64[supplied]
+
+// Overloaded methods on types used through a virtual reference.
+// The trait requirement is satisfied by one candidate of the overload set.
+struct Rect:
+  w f32
+  h f32
+
+  fn areaOf overload area(self &) f32:
+    w * h
+  fn areaScaled overload area(self &, scale f32) f32:
+    w * h * scale
+
+struct Circle:
+  r f32
+
+  fn areaOf overload area(self &) f32:
+    3.14 * r * r
+  fn areaScaled overload area(self &, scale f32) f32:
+    3.14 * r * r * scale
+
+// A trait requirement satisfied by a directly named concrete method
+struct Square:
+  side f32
+
+  fn area(self &) f32:
+    side * side
+
+trait Shape:
+  fn area(self &) f32
+
+fn virtualArea(shape &<Shape) f32:
+  shape.area()
+
+fn shapes() f32:
+  imm rect = Rect[2., 3.]
+  imm circle = Circle[4.]
+  imm square = Square[5.]
+  virtualArea(&rect) + virtualArea(&circle) + virtualArea(&square)
+
+// Overloaded methods on a mutable reference receiver
+struct Counter:
+  count i32
+
+  fn bumpOne overload bump(self &mut):
+    count = count + 1
+  fn bumpBy overload bump(self &mut, amount i32):
+    count = count + amount
+
+fn tallies() i32:
+  mut tally = Counter[0]
+  (&mut tally).bump()
+  (&mut tally).bump(3)
+  (&mut tally).bumpBy(4)
+  tally.count
+
+// The embedded stdio stream declares five private `<-` candidates
+fn streaming():
+  print <- "text literal"
+  print <- 42i64
+  print <- 7u64
+  print <- 3.5d
+
+fn methodmain():
+  imm areas = pointMethods() + shapes()
+  imm scaled = scaling()
+  imm counted = tallies()
+  streaming()

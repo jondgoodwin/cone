@@ -717,7 +717,13 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         genlFn(gen, (FnDclNode*)lval);
         return ((FnDclNode*)lval)->llvmvar;
     case VarNameUseTag:
-        return ((VarDclNode*)((NameUseNode *)lval)->dclnode)->llvmvar;
+    {
+        // A name may refer to a variable's storage or to a generated function
+        INode *dclnode = ((NameUseNode *)lval)->dclnode;
+        if (dclnode->tag == FnDclTag)
+            return ((FnDclNode*)dclnode)->llvmvar;
+        return ((VarDclNode*)dclnode)->llvmvar;
+    }
     case DerefTag:
         return genlExpr(gen, ((StarNode *)lval)->vtexp);
     case ArrIndexTag:

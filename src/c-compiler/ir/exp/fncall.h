@@ -37,14 +37,20 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep);
 // Type check on fncall
 void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **node);
 
-// Find best field or method (across overloaded methods whose type matches argument types)
-// Then lower the node to a function call (objfn+args) or field access (objfn+methfld) accordingly
+// Find the one field or method that accepts the call's receiver and arguments,
+// then lower the node to a function call (objfn+args) or field access (objfn+methfld).
+// Returns 1 when lowered, 0 when the receiver's type supports no methods at all
+// (so the caller may try another way), and -1 when a diagnostic was reported.
 int fnCallLowerMethod(FnCallNode *callnode);
 
 // We have a reference or pointer, and a method to find (comparison or arithmetic)
 // If found, lower the node to a function call (objfn+args)
 // Otherwise try again against the type it points to
 int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype);
+
+// objfn names an overload set. Select the one candidate that accepts the call's
+// arguments, rewrite the call to that concrete function, then finalize its arguments.
+void fnCallLowerOverloadFn(FnCallNode *node);
 
 // Do data flow analysis for fncall node (only real function calls)
 void fnCallFlow(FlowState *fstate, FnCallNode **nodep);
