@@ -74,6 +74,15 @@ enum ErrorCode {
     ErrorBadStmt,   // Bad statement
     ErrorBadElems,  // Inconsistent tuple elements
 
+    // Overloaded function/method declaration and selection
+    ErrorBadOverload,    // Malformed 'overload' declaration
+    ErrorGenericOverload,// Generic function may not also declare an overload name
+    ErrorOverloadClash,  // Overload name is already bound to a different kind of declaration
+    ErrorDupOverload,    // Two candidates accept the same parameter signature
+    ErrorNoCandidate,    // No overloaded candidate accepts the call's arguments
+    ErrorAmbigCandidate, // More than one overloaded candidate accepts the call's arguments
+    ErrorOverloadUse,    // Overload name used somewhere other than a call's callee
+
     // Warnings
     WarnCode = 3000,
     WarnName,        // Unnecessary name

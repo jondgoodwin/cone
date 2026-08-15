@@ -59,6 +59,33 @@ void modAddNode(ModuleNode *mod, Name *name, INode *node) {
         modAddNamedNode(mod, name, node);
 }
 
+// Add a parsed function to the module:
+// - The concrete FnDclNode is always owned by the module and bound to its unique name
+// - An overload name binds separately to its own FnOverloadDclNode, which is also owned
+//     by the module so that it is printed and can be folded in by a wildcard import
+void modAddFn(ModuleNode *mod, FnDclNode *fnnode) {
+    modAddNode(mod, fnnode->namesym, (INode*)fnnode);
+
+    if (fnnode->overloadsym == NULL)
+        return;
+
+    INode *binding = namespaceFind(&mod->namespace, fnnode->overloadsym);
+    if (binding == NULL) {
+        FnOverloadDclNode *overloadnode = newFnOverloadDclNode(fnnode->overloadsym);
+        inodeLexCopy((INode*)overloadnode, (INode*)fnnode);
+        fnOverloadDclAdd(overloadnode, fnnode);
+        modAddNode(mod, overloadnode->namesym, (INode*)overloadnode);
+        return;
+    }
+    if (binding->tag != FnOverloadDclTag) {
+        errorMsgNode((INode*)fnnode, ErrorOverloadClash,
+            "Overload name %s is already declared as something that is not an overload name.",
+            &fnnode->overloadsym->namestr);
+        return;
+    }
+    fnOverloadDclAdd((FnOverloadDclNode*)binding, fnnode);
+}
+
 // Serialize a module node
 void modPrint(ModuleNode *mod) {
     INode **nodesp;

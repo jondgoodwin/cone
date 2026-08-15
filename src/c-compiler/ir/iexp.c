@@ -51,7 +51,8 @@ TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constrain
     // Handle implicit coercion to boolean, if type supports "isTrue" method
     INode *foundnode;
     if (totype == (INode*)boolType) {
-        if ((foundnode = iTypeFindFnField(fromtype, istrueName)) && foundnode->tag == FnDclTag)
+        if ((foundnode = iTypeFindFnField(fromtype, istrueName))
+            && (foundnode->tag == FnDclTag || foundnode->tag == FnOverloadDclTag))
             return ConvByMeth;
         else
             return NoMatch;
@@ -113,7 +114,7 @@ int iexpCoerce(INode **from, INode *totype) {
         if (iexpGetTypeDcl(*from)->tag == PtrTag)
             success = fnCallLowerPtrMethod(istrue, ptrType);
         else
-            success = fnCallLowerMethod(istrue);
+            success = fnCallLowerMethod(istrue) == 1;
         if (success) {
             inodeLexCopy((INode*)istrue, *from);
             *from = (INode*)istrue;

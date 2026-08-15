@@ -86,6 +86,7 @@ void keywordInit() {
     keyAdd("extern", ExternToken);
     keyAdd("macro", MacroToken);
     keyAdd("fn", FnToken);
+    keyAdd("overload", OverloadToken);
     keyAdd("const", ConstToken);
     keyAdd("typedef", TypedefToken),
     keyAdd("struct", StructToken);

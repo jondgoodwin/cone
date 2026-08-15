@@ -46,6 +46,9 @@ void genlParmVar(GenState *gen, VarDclNode *var) {
 
 // Generate a function
 void genlFn(GenState *gen, FnDclNode *fnnode) {
+    // Only a concrete declaration has an implementation. An overload name is a
+    // namespace binding that selection replaces long before generation.
+    assert(fnnode->tag == FnDclTag && "Only a concrete function/method is generated");
     if ((fnnode->flags & FlagInline) || fnnode->value->tag == IntrinsicTag)
         return;
 
@@ -138,10 +141,11 @@ void genlGloVarName(GenState *gen, VarDclNode *glovar) {
         LLVMSetVisibility(glovar->llvmvar, LLVMHiddenVisibility);
 }
 
-// Create mangled function name for overloaded function
+// Create mangled function name for a generic instantiation.
+// A concrete function/method needs no signature mangling: its source name is
+// unique in its namespace, and its generated name already carries that namespace.
 char *genlMangleMethName(char *workbuf, FnDclNode *node) {
-    // Use genned name if not an overloadable method/generic function
-    if (!(node->flags & FlagMethFld) && node->instnode == NULL)
+    if (node->instnode == NULL)
         return node->genname;
 
     strcat(workbuf, node->genname);
@@ -163,6 +167,11 @@ char *genlMangleMethName(char *workbuf, FnDclNode *node) {
 void genlGloFnName(GenState *gen, FnDclNode *glofn) {
     // Do not generate inline functions
     if (glofn->flags & FlagInline)
+        return;
+
+    // A candidate is reached both by its own namespace entry and through the
+    // overload set it joins, so only generate its symbol the first time
+    if (glofn->llvmvar)
         return;
 
     // Add function to the module
@@ -233,6 +242,17 @@ void genlGlobalSyms(GenState *gen, INode *node) {
         else
             genlGloFnName(gen, (FnDclNode *)node);
         break;
+    // An overload name has no symbol of its own, but it does make its candidates
+    // reachable. A public overload name in an imported module may select a
+    // private candidate, whose own namespace entry the program's privacy filter
+    // skips, so generate every candidate's name here too.
+    case FnOverloadDclTag: {
+        uint32_t ovlcnt;
+        INode **ovlnodesp;
+        for (nodesFor(((FnOverloadDclNode*)node)->overloads, ovlcnt, ovlnodesp))
+            genlGlobalSyms(gen, *ovlnodesp);
+        break;
+    }
     }
 }
 
@@ -276,6 +296,8 @@ void genlGlobalImpl(GenState *gen, INode *node) {
     case FieldDclTag:
     case MacroDclTag:
     case ConstDclTag:
+    // An overload name has no implementation of its own to generate
+    case FnOverloadDclTag:
         break;
 
     default:

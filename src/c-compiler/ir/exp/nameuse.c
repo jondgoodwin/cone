@@ -179,6 +179,7 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
     // Distinguish whether a name is for a variable/function name vs. type
     if (name->dclnode->tag == VarDclTag 
         || name->dclnode->tag == FnDclTag 
+        || name->dclnode->tag == FnOverloadDclTag
         || name->dclnode->tag == ConstDclTag)
         name->tag = VarNameUseTag;
     else if (name->dclnode->tag == MacroDclTag)
@@ -192,6 +193,16 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
 // Handle type check for variable/function name use references
 void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
     NameUseNode *name = *namep;
+    // An overload name has no value of its own: it names a set of concrete
+    // declarations. Only a call may use it, and the call type check selects and
+    // rewrites this use to the concrete declaration before reaching here.
+    if (name->dclnode->tag == FnOverloadDclTag) {
+        errorMsgNode((INode*)name, ErrorOverloadUse,
+            "The overload name %s may only be used as the name being called. Use a concrete name for its value.",
+            &name->namesym->namestr);
+        name->vtype = unknownType;
+        return;
+    }
     name->vtype = ((IExpNode*)name->dclnode)->vtype;
 }
 

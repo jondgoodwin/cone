@@ -93,6 +93,7 @@ enum NodeTags {
     // Named, non-type declaration nodes
     ModuleTag = StmtGroup + NamedNode,        // Module namespace
     FnDclTag,       // Function/method declaration
+    FnOverloadDclTag, // Overloaded function/method declarations sharing one name
     VarDclTag,      // Variable declaration (global, local, parm)
     FieldDclTag,    // Field declaration in a struct, etc.
     ConstDclTag,    // Constant declaration

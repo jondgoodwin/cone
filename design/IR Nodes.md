@@ -24,6 +24,7 @@ Internal representation (IR) nodes are central to all passes:
 |      |              |                                                             |
 |      | Module       | Module declaration                                          |
 |      | FnDcl        | Function/method declaration `fn`                            |
+|      | FnOverloadDcl | Overloaded function/method declarations sharing one name   |
 |      | VarDcl       | Variable declaration (global, local, parm)                  |
 |      | FieldDcl     | Field declaration in a struct, etc.                         |
 |      | ConstDclTag  | Constant declaration                                        |
@@ -110,4 +111,26 @@ All IR node types start with these common fields (see inodes.h):
 | linenbr  | uint32_t | line number in source file                          |
 | tag      | uint16_t | Encoded node type+flags (see NodeTags and below)    |
 | flags    | uint16_t | compile-time flags                                  |
+
+## FnOverloadDcl
+
+`FnOverloadDclNode` (see `ir/stmt/fndcl.h`) is the namespace binding for an
+explicitly declared overload name. It holds only the common `INode` header, its
+`namesym`, and an ordered `Nodes *overloads` vector of the concrete `FnDclNode`
+candidates that declared they overload that name. It has no function type, body,
+LLVM value, or generated symbol: every executable implementation remains a
+separate `FnDclNode` bound to its own unique concrete name, and a call is always
+lowered to the concrete node that was selected.
+
+`FnDclNode` carries `Name *overloadsym`, which is the overload name this
+declaration also answers to, or `NULL` when it has only its concrete name. That
+field is what lets a cloned method (a generic instantiation or an inherited trait
+default) rebuild its overload membership in the cloned type's namespace, since
+the overload node itself is never copied.
+
+Name resolution of an `FnOverloadDclNode` is an explicit no-op, because the
+module or type that owns the candidates already walks each concrete `FnDclNode`;
+walking its vector again would resolve the same function bodies twice. Type
+checking only compares the candidates' already-checked signatures, to report two
+candidates that would accept the same arguments.
 

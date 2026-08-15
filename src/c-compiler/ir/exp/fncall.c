@@ -294,8 +294,22 @@ int fnCallLowerIntField(FnCallNode *callnode) {
     return 1;
 }
 
-// Find best field or method (across overloaded methods whose type matches argument types)
-// Then lower the node to a function call (objfn+args) or field access (objfn+methfld) accordingly
+// Report why the name the caller used selected no single candidate.
+// 'kind' names what the name declares, for a call ("function") or a method call ("method").
+static void fnCallNoCandidate(INode *callnode, enum OverloadMatch status, Name *namesym, char *kind) {
+    if (status == OverloadAmbiguous)
+        errorMsgNode(callnode, ErrorAmbigCandidate,
+            "More than one %s declared by `%s` accepts these arguments. Call a concrete name or convert the arguments.",
+            kind, &namesym->namestr);
+    else
+        errorMsgNode(callnode, ErrorNoCandidate,
+            "No %s declared by `%s` accepts the call's arguments.", kind, &namesym->namestr);
+}
+
+// Find the one field or method that accepts the call's receiver and arguments,
+// then lower the node to a function call (objfn+args) or field access (objfn+methfld).
+// Returns 1 when lowered, 0 when the receiver's type supports no methods at all
+// (so the caller may try another way), and -1 when a diagnostic was reported.
 int fnCallLowerMethod(FnCallNode *callnode) {
     INode *obj = callnode->objfn;
     assert(callnode->methfld->tag == MbrNameUseTag);
@@ -307,17 +321,18 @@ int fnCallLowerMethod(FnCallNode *callnode) {
         return 0;
     }
 
-    // Do lookup. If node found, it must be an instance's method or field
+    // Visibility is checked against the spelling the caller actually used.
+    // A public overload name may therefore select a private concrete candidate.
     if (methsym->namestr == '_'
         && !(obj->tag==VarNameUseTag && ((VarDclNode*)((NameUseNode*)obj)->dclnode)->namesym == selfName)) {
         errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/field `%s`.", &methsym->namestr);
     }
-    IExpNode *foundnode = (IExpNode*)iNsTypeFindFnField((INsTypeNode*)objdereftype, methsym);
+    INode *foundnode = iNsTypeFindFnField((INsTypeNode*)objdereftype, methsym);
     if (!foundnode
-        || !(foundnode->tag == FnDclTag || foundnode->tag == FieldDclTag)
+        || !(foundnode->tag == FnDclTag || foundnode->tag == FnOverloadDclTag || foundnode->tag == FieldDclTag)
         || !(foundnode->flags & FlagMethFld)) {
-        errorMsgNode((INode*)callnode, ErrorNotPublic, "Method or field `%s` not found.", &methsym->namestr);
-        return 0;
+        errorMsgNode((INode*)callnode, ErrorNoMbr, "Method or field `%s` not found.", &methsym->namestr);
+        return -1;
     }
 
     // Handle when methfld refers to a field
@@ -327,16 +342,18 @@ int fnCallLowerMethod(FnCallNode *callnode) {
 
         derefInject(&callnode->objfn);  // automatically deref any reference/ptr, if needed
         methfld->tag = MbrNameUseTag;
-        methfld->dclnode = (INode*)foundnode;
-        callnode->vtype = methfld->vtype = foundnode->vtype;
+        methfld->dclnode = foundnode;
+        callnode->vtype = methfld->vtype = ((IExpNode*)foundnode)->vtype;
         callnode->tag = FldAccessTag;
         return 1;
     }
 
-    FnDclNode *bestmethod = iNsTypeFindBestMethod((FnDclNode *)foundnode, &callnode->objfn, callnode->args);
-    if (bestmethod == NULL) {
-        errorMsgNode((INode*)callnode, ErrorNotPublic, "No matching method '%s' found that matches the call's arguments.", &methsym->namestr);
-        return 0;
+    // Test every candidate the name declares, without altering the call
+    enum OverloadMatch status;
+    FnDclNode *selected = iNsTypeFindMethod(foundnode, &callnode->objfn, callnode->args, &status);
+    if (selected == NULL) {
+        fnCallNoCandidate((INode*)callnode, status, methsym, "method");
+        return -1;
     }
 
     // For a method call, make sure object is specified as first argument
@@ -345,15 +362,16 @@ int fnCallLowerMethod(FnCallNode *callnode) {
     }
     nodesInsert(&callnode->args, callnode->objfn, 0);
 
-    // Re-purpose method's name use node into objfn, so name refers to found method
+    // Re-purpose method's name use node into objfn, so name refers to selected method
     NameUseNode *methodrefnode = (NameUseNode*)callnode->methfld;
     methodrefnode->tag = VarNameUseTag;
-    methodrefnode->dclnode = (INode*)bestmethod;
-    methodrefnode->vtype = bestmethod->vtype;
+    methodrefnode->namesym = selected->namesym;
+    methodrefnode->dclnode = (INode*)selected;
+    methodrefnode->vtype = selected->vtype;
 
     callnode->objfn = (INode*)methodrefnode;
     callnode->methfld = NULL;
-    callnode->vtype = ((FnSigNode*)bestmethod->vtype)->rettype;
+    callnode->vtype = ((FnSigNode*)selected->vtype)->rettype;
 
     // Handle copying of value arguments and default arguments
     fnCallFinalizeArgs(callnode);
@@ -380,52 +398,70 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
     }
     nodesInsert(&callnode->args, callnode->objfn, 0);
 
-    FnDclNode *bestmethod = NULL;
-    Nodes *args = callnode->args;
-    for (FnDclNode *methnode = (FnDclNode *)foundnode; methnode; methnode = methnode->nextnode) {
-        Nodes *parms = ((FnSigNode *)methnode->vtype)->parms;
-        if (parms->used != args->used)
-            continue;
-        // Unary method is an instant match
-        // Binary methods need to ensure acceptable second argument
-        if (args->used > 1) {
-            INode *parm1type = iexpGetTypeDcl(nodesGet(parms, 1));
-            INode *arg1type = iexpGetTypeDcl(nodesGet(args, 1));
-            if (parm1type->tag == PtrTag || parm1type->tag == RefTag) {
-                // When pointers are involved, we want to ensure they are the same type
-                if (!itypeIsSame(arg1type, iexpGetTypeDcl(nodesGet(args, 0))))
-                    continue;
-            }
-            else {
-                if (!iexpCoerce(&nodesGet(args, 1), parm1type))
-                    continue;
-            }
-        }
-        bestmethod = methnode;
-        break;
-    }
-    if (bestmethod == NULL) {
-        errorMsgNode((INode*)callnode, ErrorNoMeth, "No method's parameter types match the call's arguments.");
+    enum OverloadMatch status;
+    FnDclNode *selected = iNsTypeFindPtrMethod(foundnode, callnode->args, &status);
+    if (selected == NULL) {
+        fnCallNoCandidate((INode*)callnode, status, methsym, "method");
         callnode->vtype = ((IExpNode*)obj)->vtype; // make up a vtype
         return 1;
     }
 
-
-    // Re-purpose method's name use node into objfn, so name refers to found method
+    // Re-purpose method's name use node into objfn, so name refers to selected method
     INode **selfp = &nodesGet(callnode->args, 0);
     INode *selftype = iexpGetTypeDcl(*selfp);
     NameUseNode *methodrefnode = (NameUseNode*)callnode->methfld;
     methodrefnode->tag = VarNameUseTag;
-    methodrefnode->dclnode = (INode*)bestmethod;
-    methodrefnode->vtype = bestmethod->vtype;
+    methodrefnode->namesym = selected->namesym;
+    methodrefnode->dclnode = (INode*)selected;
+    methodrefnode->vtype = selected->vtype;
     callnode->objfn = (INode*)methodrefnode;
     callnode->methfld = NULL;
-    callnode->vtype = ((FnSigNode*)bestmethod->vtype)->rettype;
+
+    // Now that exactly one candidate is selected, coerce the argument once.
+    // These compiler-declared signatures are generic over the pointer/reference's
+    // value type, so only a concretely typed parameter takes part in coercion.
+    Nodes *parms = ((FnSigNode *)selected->vtype)->parms;
+    if (parms->used > 1) {
+        INode *parm1type = iexpGetTypeDcl(nodesGet(parms, 1));
+        if (parm1type->tag != PtrTag && parm1type->tag != RefTag
+            && !iexpCoerce(&nodesGet(callnode->args, 1), parm1type))
+            errorMsgNode(nodesGet(callnode->args, 1), ErrorInvType,
+                "Expression's type does not match declared parameter");
+    }
+
+    callnode->vtype = ((FnSigNode*)selected->vtype)->rettype;
     if (callnode->vtype->tag == PtrTag) {
         INode *t_type = selftype->tag == RefTag? ((RefNode *)selftype)->vtexp : selftype;
         callnode->vtype = t_type;  // Generic substitution for T
     }
     return 1;
+}
+
+// objfn names an overload set. Select the one candidate that accepts the call's
+// arguments, rewrite the call to that concrete function, then finalize its arguments.
+void fnCallLowerOverloadFn(FnCallNode *node) {
+    NameUseNode *fnuse = (NameUseNode*)node->objfn;
+    FnOverloadDclNode *overloadnode = (FnOverloadDclNode*)fnuse->dclnode;
+
+    if ((node->flags & FlagIndex) || node->methfld != NULL) {
+        errorMsgNode((INode*)node->objfn, ErrorNoMeth, "A function may not be called using indexing or a method.");
+        return;
+    }
+
+    // Test every candidate the overload name declares, without altering the call
+    enum OverloadMatch status;
+    FnDclNode *selected = iNsTypeFindMethod((INode*)overloadnode, NULL, node->args, &status);
+    if (selected == NULL) {
+        fnCallNoCandidate((INode*)node, status, overloadnode->namesym, "function");
+        return;
+    }
+
+    // Rewrite the callee to the selected concrete declaration, so nothing downstream
+    // ever sees the overload node, then insert coercions and defaults exactly once
+    fnuse->namesym = selected->namesym;
+    fnuse->dclnode = (INode*)selected;
+    fnuse->vtype = selected->vtype;
+    fnCallFinalizeArgs(node);
 }
 
 // Lower opassign method for method-based types
@@ -455,7 +491,7 @@ void fnCallOpAssgn(FnCallNode **nodep) {
     derefInject(&derefvar);
     callnode->objfn = derefvar;
     methfld->namesym = fnCallOpEqMethod(methsym);
-    if (!fnCallLowerMethod(callnode)) {
+    if (fnCallLowerMethod(callnode) == 0) {
         errorMsgNode((INode*)callnode, ErrorNoMeth,
             "No method/field named %s found that matches the call's arguments.",
             &methsym->namestr);
@@ -505,7 +541,13 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     if (genericSubstitute(pstate, nodep))
         return;
 
-    inodeTypeCheckAny(pstate, &node->objfn);
+    // An overload name has no value of its own, so it is only legal here, naming what
+    // is called. Skipping the ordinary name-use check leaves that check free to reject
+    // the overload name everywhere else.
+    int calleeIsOverload = node->objfn->tag == VarNameUseTag
+        && ((NameUseNode*)node->objfn)->dclnode->tag == FnOverloadDclTag;
+    if (!calleeIsOverload)
+        inodeTypeCheckAny(pstate, &node->objfn);
 
     // All arguments must now be expressions
     int badarg = 0;
@@ -576,6 +618,13 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             node->objfn = (INode*)fncall;
             inodeTypeCheckAny(pstate, &node->objfn);
         }
+    }
+
+    // A call whose callee names an overload set selects its one viable candidate
+    if (node->objfn->tag == VarNameUseTag
+        && ((NameUseNode*)node->objfn)->dclnode->tag == FnOverloadDclTag) {
+        fnCallLowerOverloadFn(node);
+        return;
     }
 
     // Handle when method operator requires an lval

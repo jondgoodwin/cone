@@ -144,6 +144,7 @@ enum TokenTypes {
     ExternToken,   // 'extern'
     MacroToken,    // 'macro'
     FnToken,       // 'fn'
+    OverloadToken, // 'overload'
     ConstToken,    // 'const'
     TypedefToken,  // 'typedef'
     StructToken,   // 'struct'

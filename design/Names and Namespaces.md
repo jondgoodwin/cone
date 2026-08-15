@@ -53,7 +53,7 @@ changing it.
 
 | C file | Name/namespace capability |
 | --- | --- |
-| `src/c-compiler/ir/instype.c` | Provides shared namespaced-type operations, method insertion/overload chains, field/method lookup, and method candidate selection. |
+| `src/c-compiler/ir/instype.c` | Provides shared namespaced-type operations, binding of each concrete function/method name and of its separate overload node, field/method lookup, and all-candidate method selection. |
 | `src/c-compiler/ir/types/struct.c` | Owns struct/trait member namespaces, inserts fields and `Self`, hooks members and generic parameters during resolution, and performs inherited member lookup/collision checks. |
 | `src/c-compiler/ir/exp/fncall.c` | Resolves fields and overloaded methods from type namespaces, lowers member access/calls, inserts implicit `self`, and finds `init` for type calls. |
 | `src/c-compiler/ir/meta/macro.c` | Establishes macro parameter scope and resolves names in macro bodies before expansion. |
@@ -82,7 +82,8 @@ Current compiler behavior:
 
 - Structs and traits have one namespace containing fields, methods, static functions, inherited members, and `Self`.
 - A field or static function cannot collide with another member name.
-- Methods alone may currently overload; all methods with the spelling are chained behind the namespace's first function node.
+- Methods and static functions each declare a namespace-unique concrete name. A declaration may additionally name an overload set with `fn concrete overload shared(...)`. The concrete name binds directly to its `FnDclNode`; the overload name binds to a separate `FnOverloadDclNode` holding every candidate declared for it, including a set that currently has only one candidate. Two declarations claiming the same concrete name are a duplicate-name error, and an overload name already bound to anything other than an overload node is a collision error.
+- Every executable implementation remains a separate `FnDclNode`. The overload node is only a namespace binding, so lookup, call lowering, trait reconciliation, vtables, and code generation always record the selected concrete node.
 - A method cannot share a spelling with a field.
 - Struct/trait generic parameters form an enclosing lexical context while the type is resolved.
 - Unions reuse struct-like IR flags. Documented nested union variants are intended to be hoisted into the surrounding module rather than placed in a union namespace, but union support is incomplete.
@@ -94,11 +95,12 @@ Each generic or macro also owns a nested namespace hierarchy analogous to a func
 
 ### Modules
 
-Every program or library has a main module namespace. A module contains global variables and constants, functions, types, macros, and named modules. All immediate names must be unique, subject to the future overload exception.
+Every program or library has a main module namespace. A module contains global variables and constants, functions, types, macros, and named modules. All immediate names must be unique, subject to the overload exception described below.
 
 Current compiler behavior:
 
 - The main source and every imported source are represented by `ModuleNode`.
+- A parsed function always adds its concrete `FnDclNode` to the module's owned nodes and binds its unique name. When it declares an overload name, the module finds or creates that name's `FnOverloadDclNode`, appends the concrete node, and adds a newly created overload node to the module's owned nodes as well, so it is printed and can be folded in by a wildcard import.
 - `include` parses another file directly into the current module, so included declarations share the same namespace and collision domain.
 - `import` loads or reuses another module and binds that module's filename-derived name in the importing module.
 - The parser does not currently provide syntax for declaring arbitrary named nested modules, although the IR and documentation anticipate modules containing modules.
@@ -123,7 +125,7 @@ Every concrete function or method declares its own namespace-unique name. This i
 
 `fn intersect_bool overload intersect ...`
 
-Here `intersect_bool` is the concrete function's NameDef, while `intersect` is a distinct overload-set NameDef known to the compiler. The overload-set NameDef refers to the accumulated list of concrete function or method NameDefs that declare they overload that name. This preserves the namespace rule: each spelling still maps to exactly one NameDef.
+Here `intersect_bool` is the concrete function's NameDef, while `intersect` is a distinct overload-set NameDef known to the compiler. The overload-set NameDef refers to the accumulated list of concrete function or method NameDefs that declare they overload that name. This preserves the namespace rule: each spelling still maps to exactly one NameDef. In the compiler today this is a concrete `FnDclNode`, whose `overloadsym` records the set it joins, and an `FnOverloadDclNode` bound to the overload name.
 
 During recursive name/semantic resolution of a call, a use of `intersect` first resolves to the overload-set NameDef. The resolver recursively obtains the argument and candidate-signature types, selects the one concrete definition, and points the call at it before resolution of the call node finishes. An overload-set name is valid only as the function or method being called; it is not a first-class function value and its address cannot be taken. The set must contain exactly one candidate whose signature accepts the arguments, including permitted implicit coercions:
 
@@ -136,7 +138,7 @@ After selection, the call refers directly to the chosen concrete function or met
 
 Visibility is checked on the name the caller uses. A public overload-set NameDef may expose concrete functions whose unique names are private, because those concrete names are implementation identities and are not looked up by the caller. Code generation must nevertheless make every concrete candidate reachable wherever its public overload set can be called.
 
-Extending a type's overload sets from an extension is intended, but its ownership and collision rules are deferred until extensions are designed. Generic candidates and merging matching `extern` declarations with implementations are likewise deferred; neither should cause the initial representation to inherit today's linked-list overload behavior.
+Extending a type's overload sets from an extension is intended, but its ownership and collision rules are deferred until extensions are designed. Generic candidates and merging matching `extern` declarations with implementations are likewise deferred; a generic declaration may not currently name an overload set at all.
 
 ## Lookup and qualified paths
 
@@ -159,7 +161,7 @@ While resolving a type body, the compiler places the type's members in the looku
 
 - A parameter or local with the same spelling shadows the type member.
 - If no nearer binding shadows an instance field, its bare name is lowered to `self.field`.
-- If no nearer binding shadows an instance method, calling its bare name is lowered to `self.method(...)`.
+- If no nearer binding shadows an instance method, calling its bare name is lowered to `self.method(...)`. This applies to an overloaded name too: the bare name resolves to the type's `FnOverloadDclNode`, and the lowered member call selects the concrete candidate.
 - `self.field` or `self.method(...)` explicitly selects the member when a lexical name shadows it.
 
 Implicit `self` is therefore lowering performed after ordinary name resolution has selected an unqualified type member; it does not take precedence over lexical bindings.
@@ -221,8 +223,9 @@ Generic and macro syntax exists in the current compiler, but the website documen
 ## Known gaps between implementation and intent
 
 - Overloading:
-	- The current method-overload representation and selection algorithm are not the desired final design.
-	- Global function overloading is documented but unimplemented.
+	- Overloading is implemented with `FnDclNode` and `FnOverloadDclNode` rather than with a general `NameDef`, so the concrete/overload split described above exists only for functions and methods.
+	- A generic function may not declare an overload name; the parser reports that combination.
+	- Extending a type's overload sets from an extension, generic candidates, and merging matching `extern` declarations with implementations remain deferred.
 - Compile unit handling of duplicate, consistent type `extern` vs. value-specified names.
 - Selective import folding and `as` renaming are documented but unimplemented.
 - Nested named modules are documented but lack clear declaration syntax and parser support.

@@ -199,6 +199,11 @@ void structSetDropFn(StructNode *node) {
             fnsig->rettype = (INode*)newVoidNode();
             block = newBlockNode();
             INode *newdropfn = (INode*)newFnDclNode(dropName, FnDclTag, (INode*)fnsig, (INode*)block);
+            // Name the generated drop function after the type it drops, so its
+            // generated symbol stays unique among all the program's drop functions
+            char *dropgenname = memAllocStr(&node->namesym->namestr, node->namesym->namesz + 6);
+            strcat(dropgenname, "_drop");
+            ((FnDclNode*)newdropfn)->genname = dropgenname;
             nodelistAdd(&node->nodelist, newdropfn);
 
             // Block begins with call to struct's finalizer, if there is one
@@ -310,15 +315,16 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
                     if ((*nodesp)->tag != FnDclTag)
                         continue;
                     FnDclNode *traitmeth = (FnDclNode*)*nodesp;
-                    FnDclNode *structmeth = (FnDclNode*)iNsTypeFindFnField((INsTypeNode *)node, traitmeth->namesym);
+                    // A trait method is one named requirement. The type satisfies it with
+                    // a directly named method or the one overload candidate of that signature.
+                    INode *structmeth = iNsTypeFindFnField((INsTypeNode *)node, traitmeth->namesym);
                     if (structmeth == NULL)
-                        // Inherit default method
+                        // Nothing is declared for the name, so inherit the trait's default
                         structInheritMethod(node, traitmeth, trait, &cstate);
-                    else {
-                        // If no exact match, add it
-                        if (iNsTypeFindVrefMethod(structmeth, traitmeth) == NULL)
-                            structInheritMethod(node, traitmeth, trait, &cstate);
-                    }
+                    else if (iNsTypeFindVrefMethod(structmeth, traitmeth) == NULL)
+                        errorMsgNode((INode*)node, ErrorInvType,
+                            "Type declares %s, but none of what it declares has the signature %s requires",
+                            &traitmeth->namesym->namestr, &trait->namesym->namestr);
                 }
             }
         }
@@ -393,6 +399,18 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
         inodeTypeCheckAny(pstate, (INode**)nodesp);
     }
 
+    // Now that every method's signature is known, verify that no overload name this
+    // type declares has two candidates that would accept the same arguments.
+    // Each set is checked once, when its first candidate is reached.
+    for (nodelistFor(&node->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag != FnDclTag || ((FnDclNode*)*nodesp)->overloadsym == NULL)
+            continue;
+        INode *binding = namespaceFind(&node->namespace, ((FnDclNode*)*nodesp)->overloadsym);
+        if (binding != NULL && binding->tag == FnOverloadDclTag
+            && nodesGet(((FnOverloadDclNode*)binding)->overloads, 0) == *nodesp)
+            fnOverloadDclTypeCheck(pstate, (FnOverloadDclNode*)binding);
+    }
+
     structSetDropFn(node);
 
     pstate->typenode = svtypenode;
@@ -423,8 +441,9 @@ int structAddVtableImpl(StructNode *basenode, StructNode *strnode) {
             // Locate the corresponding method with matching name and vtype
             // Note, we need to be flexible in matching the self parameter
             FnDclNode *meth = (FnDclNode *)*nodesp;
-            FnDclNode *strmeth = (FnDclNode *)namespaceFind(&strnode->namespace, meth->namesym);
-            if ((strmeth = iNsTypeFindVrefMethod(strmeth, meth)) == NULL)
+            INode *strbinding = namespaceFind(&strnode->namespace, meth->namesym);
+            FnDclNode *strmeth = iNsTypeFindVrefMethod(strbinding, meth);
+            if (strmeth == NULL)
                 return 0;
             // it matches, add the method to the implementation
             nodesAdd(&impl->methfld, (INode*)strmeth);
@@ -567,8 +586,8 @@ TypeCompare structMatches(StructNode *to, INode *fromdcl, SubtypeConstraint cons
         // Locate the corresponding method with matching name and vtype
         // Note, we need to be flexible in matching the self parameter
         FnDclNode *meth = (FnDclNode *)*nodesp;
-        FnDclNode *strmeth = (FnDclNode *)namespaceFind(&from->namespace, meth->namesym);
-        if ((strmeth = iNsTypeFindVrefMethod(strmeth, meth)) == NULL)
+        INode *frombinding = namespaceFind(&from->namespace, meth->namesym);
+        if (iNsTypeFindVrefMethod(frombinding, meth) == NULL)
             return NoMatch;
     }
     // Technique for comparing fields varies ...

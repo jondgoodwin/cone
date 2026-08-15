@@ -77,6 +77,8 @@ void inodePrintNode(INode *node) {
         nameUsePrint((NameUseNode *)node); break;
     case FnDclTag:
         fnDclPrint((FnDclNode *)node); break;
+    case FnOverloadDclTag:
+        fnOverloadDclPrint((FnOverloadDclNode *)node); break;
     case VarDclTag:
         varDclPrint((VarDclNode *)node); break;
     case ConstDclTag:
@@ -288,6 +290,10 @@ void inodeNameRes(NameResState *pstate, INode **node) {
     case UnknownTag:
     case VoidTag:
         break;
+    // The owning module or type name resolves every concrete FnDclNode candidate,
+    // so walking the overload node's candidates again would process them twice
+    case FnOverloadDclTag:
+        break;
     default:
         assert(0 && "**** ERROR **** Attempting to name resolve an unknown node");
     }
@@ -419,6 +425,10 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     case UnknownTag:
     case VoidTag:
         break;
+    // The owning module or type type checks every concrete FnDclNode candidate,
+    // so only the set's candidate signatures are compared here
+    case FnOverloadDclTag:
+        fnOverloadDclTypeCheck(pstate, (FnOverloadDclNode *)*node); break;
     default:
         assert(0 && "**** ERROR **** Attempting to check an unknown node");
     }
@@ -443,6 +453,8 @@ Name *inodeGetName(INode *node) {
     // Non-type Declarations
     case FnDclTag:
         return ((FnDclNode*)node)->namesym;
+    case FnOverloadDclTag:
+        return ((FnOverloadDclNode*)node)->namesym;
     case VarDclTag:
         return ((VarDclNode*)node)->namesym;
     case FieldDclTag:

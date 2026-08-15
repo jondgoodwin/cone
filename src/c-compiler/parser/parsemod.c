@@ -25,11 +25,11 @@ char *stdiolib =
 "extern {fn printStr(str &[]u8); fn printCStr(str *u8); fn printFloat(a f64); fn printInt(a i64); fn printUInt(a u64); fn printChar(code u64);}\n"
 "struct IOStream{"
 "  fd i32;"
-"  fn `<-`(self &mut, str &[]u8) {printStr(str)}"
-"  fn `<-`(self &mut, str *u8) {printCStr(str)}"
-"  fn `<-`(self &mut, i i64) {printInt(i)}"
-"  fn `<-`(self &mut, n f64) {printFloat(n)}"
-"  fn `<-`(self &mut, i u64) {printUInt(i)}"
+"  fn _appendStr overload `<-`(self &mut, str &[]u8) {printStr(str)}"
+"  fn _appendCStr overload `<-`(self &mut, str *u8) {printCStr(str)}"
+"  fn _appendInt overload `<-`(self &mut, i i64) {printInt(i)}"
+"  fn _appendFloat overload `<-`(self &mut, n f64) {printFloat(n)}"
+"  fn _appendUInt overload `<-`(self &mut, i u64) {printUInt(i)}"
 "}"
 "mut print = IOStream[0]"
 ;
@@ -111,8 +111,8 @@ void parseFnOrVar(ParseState *parse, uint16_t flags) {
     if (lexIsToken(FnToken)) {
         FnDclNode *node = (FnDclNode*)parseFn(parse, (flags&FlagExtern)? (ParseMayName | ParseMaySig) : (ParseMayName | ParseMayImpl));
         node->flags |= flags;
-        nameGenVarName((VarDclNode *)node, parse->gennamePrefix);
-        modAddNode(parse->mod, node->namesym, (INode*)node);
+        nameGenFnName(node, parse->gennamePrefix);
+        modAddFn(parse->mod, node);
         return;
     }
 

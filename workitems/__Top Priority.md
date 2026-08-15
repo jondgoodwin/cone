@@ -1,12 +1,13 @@
 
 1. Install LLVM and ensure compiler compiles
-2. [[IR refactor]]
-3. [[Analysis re-factor]] - jit, with recursion checking
-4. [[Packages and Separate Compilation]]
-5. [[Using and Module Name-folding]] w/ [[Names and Namespaces]]
-6. [[Intrinsics]]
-7. [[Macro and Inline]]
-8. Generics on numbers
-9. C-competitive and -compatible
+2. [[Test Suite]]
+3. [[IR refactor]]
+4. [[Analysis re-factor]] - jit, with recursion checking
+5. [[Packages and Separate Compilation]]
+6. [[Using and Module Name-folding]] w/ [[Names and Namespaces]]
+7. [[Intrinsics]]
+8. [[Macro and Inline]]
+9. Generics on numbers
+10. C-competitive and -compatible
 	- [[Types. Pointers and Borrowed References]]
 
