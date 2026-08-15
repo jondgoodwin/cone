@@ -294,6 +294,18 @@ int fnCallLowerIntField(FnCallNode *callnode) {
     return 1;
 }
 
+// Report why the name the caller used selected no single candidate.
+// 'kind' names what the name declares, for a call ("function") or a method call ("method").
+static void fnCallNoCandidate(INode *callnode, enum OverloadMatch status, Name *namesym, char *kind) {
+    if (status == OverloadAmbiguous)
+        errorMsgNode(callnode, ErrorAmbigCandidate,
+            "More than one %s declared by `%s` accepts these arguments. Call a concrete name or convert the arguments.",
+            kind, &namesym->namestr);
+    else
+        errorMsgNode(callnode, ErrorNoCandidate,
+            "No %s declared by `%s` accepts the call's arguments.", kind, &namesym->namestr);
+}
+
 // Find the one field or method that accepts the call's receiver and arguments,
 // then lower the node to a function call (objfn+args) or field access (objfn+methfld).
 // Returns 1 when lowered, 0 when the receiver's type supports no methods at all
@@ -337,16 +349,10 @@ int fnCallLowerMethod(FnCallNode *callnode) {
     }
 
     // Test every candidate the name declares, without altering the call
-    int status;
+    enum OverloadMatch status;
     FnDclNode *selected = iNsTypeFindMethod(foundnode, &callnode->objfn, callnode->args, &status);
     if (selected == NULL) {
-        if (status == OverloadAmbiguous)
-            errorMsgNode((INode*)callnode, ErrorAmbigCandidate,
-                "More than one method declared by `%s` accepts these arguments. Call a concrete name or convert the arguments.",
-                &methsym->namestr);
-        else
-            errorMsgNode((INode*)callnode, ErrorNoCandidate,
-                "No method declared by `%s` accepts the call's arguments.", &methsym->namestr);
+        fnCallNoCandidate((INode*)callnode, status, methsym, "method");
         return -1;
     }
 
@@ -392,16 +398,10 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
     }
     nodesInsert(&callnode->args, callnode->objfn, 0);
 
-    int status;
+    enum OverloadMatch status;
     FnDclNode *selected = iNsTypeFindPtrMethod(foundnode, callnode->args, &status);
     if (selected == NULL) {
-        if (status == OverloadAmbiguous)
-            errorMsgNode((INode*)callnode, ErrorAmbigCandidate,
-                "More than one method declared by `%s` accepts these arguments. Call a concrete name or convert the arguments.",
-                &methsym->namestr);
-        else
-            errorMsgNode((INode*)callnode, ErrorNoCandidate,
-                "No method declared by `%s` accepts the call's arguments.", &methsym->namestr);
+        fnCallNoCandidate((INode*)callnode, status, methsym, "method");
         callnode->vtype = ((IExpNode*)obj)->vtype; // make up a vtype
         return 1;
     }
@@ -449,16 +449,10 @@ void fnCallLowerOverloadFn(FnCallNode *node) {
     }
 
     // Test every candidate the overload name declares, without altering the call
-    int status;
+    enum OverloadMatch status;
     FnDclNode *selected = iNsTypeFindMethod((INode*)overloadnode, NULL, node->args, &status);
     if (selected == NULL) {
-        if (status == OverloadAmbiguous)
-            errorMsgNode((INode*)node, ErrorAmbigCandidate,
-                "More than one function declared by %s accepts these arguments. Call a concrete name or convert the arguments.",
-                &overloadnode->namesym->namestr);
-        else
-            errorMsgNode((INode*)node, ErrorNoCandidate,
-                "No function declared by %s accepts the call's arguments.", &overloadnode->namesym->namestr);
+        fnCallNoCandidate((INode*)node, status, overloadnode->namesym, "function");
         return;
     }
 
@@ -497,7 +491,7 @@ void fnCallOpAssgn(FnCallNode **nodep) {
     derefInject(&derefvar);
     callnode->objfn = derefvar;
     methfld->namesym = fnCallOpEqMethod(methsym);
-    if (!fnCallLowerMethod(callnode)) {
+    if (fnCallLowerMethod(callnode) == 0) {
         errorMsgNode((INode*)callnode, ErrorNoMeth,
             "No method/field named %s found that matches the call's arguments.",
             &methsym->namestr);
@@ -551,7 +545,6 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     // is called. Skipping the ordinary name-use check leaves that check free to reject
     // the overload name everywhere else.
     int calleeIsOverload = node->objfn->tag == VarNameUseTag
-        && ((NameUseNode*)node->objfn)->dclnode != NULL
         && ((NameUseNode*)node->objfn)->dclnode->tag == FnOverloadDclTag;
     if (!calleeIsOverload)
         inodeTypeCheckAny(pstate, &node->objfn);

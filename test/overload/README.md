@@ -49,9 +49,9 @@ findings, are marked.
 | File | Expected diagnostics |
 | --- | --- |
 | `bad-nomatch.cone` | `Error 1056: No method declared by `add` accepts the call's arguments.` at 15:5 |
-| `bad-two-exact.cone` | `Error 1057: More than one function declared by pick accepts these arguments. Call a concrete name or convert the arguments.` at 14:7 |
-| `bad-exact-plus-coercible.cone` | `Error 1057: More than one function declared by widen accepts these arguments. Call a concrete name or convert the arguments.` at 13:8 |
-| `bad-two-coercible.cone` | `Error 1057: More than one function declared by widen accepts these arguments. Call a concrete name or convert the arguments.` at 13:8 |
+| `bad-two-exact.cone` | ``Error 1057: More than one function declared by `pick` accepts these arguments. Call a concrete name or convert the arguments.`` at 14:7 |
+| `bad-exact-plus-coercible.cone` | ``Error 1057: More than one function declared by `widen` accepts these arguments. Call a concrete name or convert the arguments.`` at 13:8 |
+| `bad-two-coercible.cone` | ``Error 1057: More than one function declared by `widen` accepts these arguments. Call a concrete name or convert the arguments.`` at 13:8 |
 | `bad-overload-as-value.cone` | `Error 1058: The overload name show may only be used as the name being called. Use a concrete name for its value.` at 13:12, 16:11, and 19:3; follow-on `Error 1034: Borrowed reference cannot obtain this permission` at 13:11 and `Error 1013: Return expression type does not match return type on function` at 19:3 with `Error 1013: This is the declared function's return type` at 18:15 |
 | `bad-duplicate-concrete.cone` | `Error 1011: Global name is already defined. Duplicates not allowed.` at 11:1 with `Error 1011: This is the conflicting definition for that name.` at 8:1, and `Error 1011: Duplicate name twice: every function/method needs its own name.` at 19:3 |
 | `bad-overload-name-clash.cone` | `Error 1054: Overload name label is already declared as something that is not an overload name.` at 10:1 and `Error 1054: Overload name size is already declared as something that is not an overload name.` at 18:3 |

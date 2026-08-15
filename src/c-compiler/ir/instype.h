@@ -53,12 +53,12 @@ INode *iNsTypeFindFnField(INsTypeNode *type, Name *name);
 // single concrete FnDclNode or an FnOverloadDclNode holding all candidates.
 // Every candidate is tested without altering the call. '*status' says whether no
 // candidate, exactly one candidate, or more than one candidate accepted it.
-FnDclNode *iNsTypeFindMethod(INode *binding, INode **self, Nodes *args, int *status);
+FnDclNode *iNsTypeFindMethod(INode *binding, INode **self, Nodes *args, enum OverloadMatch *status);
 
 // Find the one pointer/reference method candidate that accepts the passed arguments.
 // Every candidate is tested without altering the call, and pointer/reference
 // parameters must be the same type as self rather than merely coercible.
-FnDclNode *iNsTypeFindPtrMethod(INode *binding, Nodes *args, int *status);
+FnDclNode *iNsTypeFindPtrMethod(INode *binding, Nodes *args, enum OverloadMatch *status);
 
 // Find method whose method signature matches exactly (except for self)
 // 'binding' is the namespace's binding for the method's name

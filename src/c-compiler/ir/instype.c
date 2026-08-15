@@ -86,7 +86,7 @@ static uint32_t iNsTypeCandidates(INode **bindingp, INode ***candidatesp) {
 // No candidate wins for being an exact rather than a coercible match, for needing
 // fewer coercions, or for being declared first: the caller resolves an ambiguity
 // by using a concrete name or by converting its arguments.
-FnDclNode *iNsTypeFindMethod(INode *binding, INode **self, Nodes *args, int *status) {
+FnDclNode *iNsTypeFindMethod(INode *binding, INode **self, Nodes *args, enum OverloadMatch *status) {
     INode **candidatep;
     uint32_t cnt = iNsTypeCandidates(&binding, &candidatep);
 
@@ -111,7 +111,7 @@ FnDclNode *iNsTypeFindMethod(INode *binding, INode **self, Nodes *args, int *sta
 // second argument: pointer/reference parameters must be the same type as self,
 // and any other parameter type must accept the argument through a permitted coercion.
 // Nothing is inserted into the call: argument finalization happens after selection.
-FnDclNode *iNsTypeFindPtrMethod(INode *binding, Nodes *args, int *status) {
+FnDclNode *iNsTypeFindPtrMethod(INode *binding, Nodes *args, enum OverloadMatch *status) {
     INode **candidatep;
     uint32_t cnt = iNsTypeCandidates(&binding, &candidatep);
 
