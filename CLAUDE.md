@@ -33,8 +33,6 @@ contains its C compiler (`conec`) and a small standard-library component
   current priority sequence.
 - `test/test.cone`: broad compiler smoke-test input.
 - `test/submod.cone`: imported module used by the smoke-test input.
-- `test/overload/`: focused fixtures for overloaded functions and methods, with
-  expected diagnostics documented in `test/overload/README.md`.
 
 ## Documentation context
 
@@ -130,11 +128,9 @@ For a compiler change:
 
 1. Build `conec` and compile `test/test.cone`, adding focused Cone cases near
    related coverage in that file.
-2. Run any fixture suite covering the affected feature. For overloads, follow
-   the commands in `test/overload/README.md`; every positive fixture must
-   compile clean and every `bad-*.cone` fixture must fail with the exact
-   diagnostics and source locations that file records. Update that file when a
-   diagnostic's wording intentionally changes.
+2. Run any fixture suite covering the affected feature. There is no committed
+   fixture suite yet; see `workitems/Test Suite.md`, which also names the
+   branch holding the overload fixtures until they are restored.
 3. Inspect the generated IR when the change affects lowering or symbols.
 4. When the change affects runtime behavior, link and run a program.
 
