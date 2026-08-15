@@ -32,6 +32,13 @@ arguments so only one candidate accepts them.
 | `methods.cone` | Value, reference, and mutable-reference receivers under one overload name; a direct concrete method call; a coercible (widening) argument; a defaulted parameter; overloaded methods reached through a `&<Shape` virtual reference; a trait requirement satisfied by one overload candidate (`Rect`, `Circle`) and by a directly named method (`Square`); the five private `<-` candidates of the compiler-embedded `stdio` stream. |
 | `operators.cone` | A user-declared operator overload set (`+` on `Vec2`) plus non-overloaded operator methods (`+=`, `()`, `[]`); a direct call to an operator's concrete name; pointer comparison, arithmetic, difference and op-assign, where the compiler declares two `-` candidates; reference comparison operators; the numeric intrinsics, where `-` names both negation and subtraction. |
 | `globals.cone` | Module-level overload sets selected by exact and coercible arguments; direct calls to each concrete name; a private concrete candidate selected through a public overload name; a defaulted parameter on one candidate; static (non-method) overloaded functions inside a type, called as `Maker::make(...)`. |
+| `imports.cone` | An overload name folded into another module by a wildcard import, selecting a public candidate and a private one; a public concrete name called directly across the import. Its supporting module is `importsub.cone`, which is imported rather than compiled on its own. |
+
+`imports.cone` covers a case the single-file fixtures cannot reach. A private
+concrete candidate is reachable from another module only through a public
+overload name, so its symbol must be generated even though the importing compile
+does not generate that module's function bodies. Selecting one used to crash LLVM
+generation with a null `llvmvar`.
 
 ## Negative fixtures
 
@@ -69,6 +76,7 @@ From the repository root, with a built `conec` (see the build notes in
 build\x64-release\conec.exe --ir --llvmir -o <outdir> test\overload\methods.cone
 build\x64-release\conec.exe --ir --llvmir -o <outdir> test\overload\operators.cone
 build\x64-release\conec.exe --ir --llvmir -o <outdir> test\overload\globals.cone
+build\x64-release\conec.exe --ir --llvmir -o <outdir> test\overload\imports.cone
 build\x64-release\conec.exe --ir --llvmir -o <outdir> test\test.cone
 # each of these must fail with the diagnostics listed above
 Get-ChildItem test\overload\bad-*.cone | ForEach-Object {
@@ -81,6 +89,7 @@ Get-ChildItem test\overload\bad-*.cone | ForEach-Object {
 conec --ir --llvmir -o <outdir> test/overload/methods.cone
 conec --ir --llvmir -o <outdir> test/overload/operators.cone
 conec --ir --llvmir -o <outdir> test/overload/globals.cone
+conec --ir --llvmir -o <outdir> test/overload/imports.cone
 conec --ir --llvmir -o <outdir> test/test.cone
 for f in test/overload/bad-*.cone; do conec -o <outdir> "$f"; done
 ```
@@ -121,3 +130,9 @@ Useful things to confirm across a change:
 - In the LLVM IR, `@"Rect->Shape:Vtable"` and `@"Circle->Shape:Vtable"` record
   the selected concrete method (`@Rect_areaOf`, `@Circle_areaOf`), never an
   overload node.
+- In `imports.preir`, every candidate reachable through the imported overload
+  name is declared, including the private one:
+  `declare i64 @importsub_scaleInt(i64)` and
+  `declare hidden double @importsub__scaleFloat(double)`. The candidates of the
+  private overload name `_hidden` are not folded by the import and get no
+  declaration.

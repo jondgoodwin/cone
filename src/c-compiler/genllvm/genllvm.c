@@ -169,6 +169,11 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
     if (glofn->flags & FlagInline)
         return;
 
+    // A candidate is reached both by its own namespace entry and through the
+    // overload set it joins, so only generate its symbol the first time
+    if (glofn->llvmvar)
+        return;
+
     // Add function to the module
     if (glofn->value == NULL || glofn->value->tag != IntrinsicTag) {
         char workbuf[2048] = { '\0' };
@@ -237,10 +242,17 @@ void genlGlobalSyms(GenState *gen, INode *node) {
         else
             genlGloFnName(gen, (FnDclNode *)node);
         break;
-    // An overload name generates nothing: each of its candidates is a separate
-    // concrete declaration that the module or type generates on its own
-    case FnOverloadDclTag:
+    // An overload name has no symbol of its own, but it does make its candidates
+    // reachable. A public overload name in an imported module may select a
+    // private candidate, whose own namespace entry the program's privacy filter
+    // skips, so generate every candidate's name here too.
+    case FnOverloadDclTag: {
+        uint32_t ovlcnt;
+        INode **ovlnodesp;
+        for (nodesFor(((FnOverloadDclNode*)node)->overloads, ovlcnt, ovlnodesp))
+            genlGlobalSyms(gen, *ovlnodesp);
         break;
+    }
     }
 }
 
