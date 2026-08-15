@@ -69,7 +69,7 @@ call, and 1058 an overload name used outside the callee position.
 ## Running
 
 From the repository root, with a built `conec` (see the build notes in
-`.github/copilot-instructions.md`). The output directory must already exist.
+`CLAUDE.md`). The output directory must already exist.
 
 ```powershell
 # Windows
