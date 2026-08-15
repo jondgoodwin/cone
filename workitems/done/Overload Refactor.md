@@ -1,5 +1,16 @@
 # Overload Refactor
 
+> **Completed 2026-08-15.** All eleven requirements and both phases shipped in
+> pull request #70: Phase 1 as `889cda7`, Phase 2 as `fb4eede`, followed by
+> `34ca637` and `808dd54`.
+>
+> One part of the plan moved rather than landed. Step 1 of each phase built
+> fixtures under `test/overload/`, which were removed from that pull request to
+> be restored with the test runner; see [[Test Suite]], which names the branch
+> holding them. The plan below therefore refers to files that are not currently
+> in the tree, and to the `phase1-*` fixture names used before Phase 2 renamed
+> them.
+
 ## Requirements
 
 The compiler does not yet have `NameDef`. This refactor therefore uses the
