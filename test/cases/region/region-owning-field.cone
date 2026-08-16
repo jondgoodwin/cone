@@ -1,17 +1,16 @@
-// Defect: releasing a region-allocated struct that owns a reference corrupts the
-// heap.
+// Releasing a region-allocated struct that owns an 'rc' reference releases the
+// field's referent too.
 //
-// genlDealiasFlds in genllvm/genlalloc.c reaches an owning field with a struct
-// GEP, which yields the address of the field, and hands that straight to
-// genlRcCounter or genlDealiasOwn -- both of which expect the reference the
-// field holds, not a pointer to it. The counter it then decrements is whatever
-// sits eight bytes before the field, and the pointer it may free is the field's
-// own address. The run aborts before printing anything.
+// genlDealiasFlds reaches an owning field with a struct GEP, which yields the
+// address of the field, and loads the reference the field holds before handing it
+// to the release path. Without the load the counter decremented is whatever sits
+// eight bytes before the field.
 //
-// A struct with an owning field is fine on the stack, which is what the success
-// program uses: genlDealiasNodes only walks variables whose own type is an
-// owning reference, so a stack struct's fields are never released at all. The
-// defect needs the struct itself to be region-allocated.
+// A struct with an owning field on the stack is a different path: genlDealiasNodes
+// only walks variables whose own type is an owning reference, so a stack struct's
+// fields are never released at all. This scenario needs the struct itself to be
+// region-allocated. The '+so' owning field is still broken; see
+// region-owning-field-so.
 
 import stdio::*
 

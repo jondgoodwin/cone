@@ -24,4 +24,7 @@ void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *lit);
 // Is the type literal actually a literal?
 int typeLitIsLiteral(FnCallNode *node);
 
+// Perform data flow analysis on a type literal's field values
+void typeLitFlow(FlowState *fstate, FnCallNode **nodep);
+
 #endif

@@ -166,6 +166,11 @@ int assignlvalrtype(INode *lval, INode *rtype) {
 
     // Mark that lval variable has valid initialized value.
     if (lval->tag == VarNameUseTag) {
+        // Stopgap: record on this use that the variable held nothing yet, so code
+        // generation does not release uninitialized storage. Flow state is a
+        // running summary, so only the assignment site itself can carry this.
+        if (!(((VarDclNode*)lvalvar)->flowtempflags & VarInitialized))
+            lval->flags |= FlagFirstAssign;
         ((VarDclNode*)lvalvar)->flowtempflags |= VarInitialized;
         ((VarDclNode*)lvalvar)->flowtempflags &= 0xFFFF - VarMoved;
     }

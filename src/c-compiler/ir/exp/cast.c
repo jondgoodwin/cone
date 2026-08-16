@@ -172,8 +172,10 @@ void castIsTypeCheck(TypeCheckState *pstate, CastNode *node) {
         RefNode *from = (RefNode*)fromtype;
         RefNode *to = (RefNode*)totype;
 
-        // Match on region & permission
-        TypeCompare result = regionMatches(from->region, to->region, Coercion);
+        // Regions must match. A downcast may not move a reference from one region
+        // to another: they are represented differently in memory, so there is no
+        // recast between them, not even into a borrow.
+        TypeCompare result = itypeIsSame(from->region, to->region) ? EqMatch : NoMatch;
         if (result != NoMatch)
             result = permMatches(to->perm, from->perm);
         if (result == NoMatch) {

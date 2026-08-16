@@ -39,8 +39,10 @@ void flowHandleMove(INode *node) {
     }
 }
 
-// If needed, inject an alias node for rc/own references
-void flowInjectAliasNode(INode **nodep) {
+// If needed, inject an alias node for rc/own references, adjusting the count by amt.
+// One value can become more than one holder at once: an array fill literal stores
+// the reference it evaluates once into every one of its elements.
+void flowInjectAliasAmt(INode **nodep, int16_t amt) {
     INode *vtype = ((IExpNode*)*nodep)->vtype;
     // No need for injected node if we are not dealing with rc references
     RefNode *reftype = (RefNode *)itypeGetTypeDcl(vtype);
@@ -52,21 +54,45 @@ void flowInjectAliasNode(INode **nodep) {
     newNode(aliasnode, AliasNode, AliasTag);
     aliasnode->exp = *nodep;
     aliasnode->vtype = vtype;
-    aliasnode->aliasamt = 1;
+    aliasnode->aliasamt = amt;
     aliasnode->counts = NULL;
     *nodep = (INode*)aliasnode;
 }
 
+// If needed, inject an alias node for rc/own references
+void flowInjectAliasNode(INode **nodep) {
+    flowInjectAliasAmt(nodep, 1);
+}
+
 // Handle when we know we are either copying or moving a value
 // (e.g., for assignment or function arguments).
+// Does this expression still hold its value after it is read?
+// An lvalue names storage that keeps it; anything else is a temporary.
+int flowIsLvalRead(INode *node) {
+    switch (node->tag) {
+    case VarNameUseTag:
+    case DerefTag:
+    case ArrIndexTag:
+    case FldAccessTag:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 void flowHandleMoveOrCopy(INode **nodep) {
-    uint16_t moveflag = itypeGetTypeDcl(((IExpNode *)*nodep)->vtype)->flags & MoveType;
     if (iexpIsMove(*nodep)) {
         // Moving needs to deactivate source variable use
         flowHandleMove(*nodep);
     }
     else {
-        flowInjectAliasNode(nodep);
+        // A reference count is how many holders exist. Only an lvalue still
+        // holds its reference afterwards, so only an lvalue adds a holder. A
+        // temporary -- an allocation, a call's result, a literal -- hands over
+        // the reference it was born holding, and counting that again would
+        // count one holder twice.
+        if (flowIsLvalRead(*nodep))
+            flowInjectAliasNode(nodep);
     }
 }
 
@@ -130,13 +156,19 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         break;
     }
 
+    case TypeLitTag:
+        typeLitFlow(fstate, (FnCallNode**)nodep);
+        break;
+
+    case ArrayLitTag:
+        arrayLitFlow(fstate, (ArrayNode**)nodep);
+        break;
+
     case SizeofTag:
     case NilLitTag:
     case ULitTag:
     case FLitTag:
     case StringLitTag:
-    case TypeLitTag:
-    case ArrayLitTag:
     case AbsenceTag:
     case UnknownTag:
         break;
@@ -203,6 +235,14 @@ int flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp) {
         INode *vartype = avar->node->vtype;
         RefNode *reftype = (RefNode*)vartype;
         if (reftype->tag == RefTag && (isRegion(reftype->region, soName) || isRegion(reftype->region, rcName))) {
+            // Stopgap: a variable whose value was moved out no longer owns it, so
+            // releasing it here would free the new owner's allocation a second
+            // time. VarMoved is the state at scope exit rather than at each
+            // program point, so a value moved on only one branch is skipped on
+            // all of them -- that leaks rather than double-frees. Precise
+            // deactivation belongs to the region redesign.
+            if (avar->node->flowtempflags & VarMoved)
+                continue;
             if (retexp && (retexp->tag != VarNameUseTag || ((NameUseNode *)retexp)->namesym != avar->node->namesym)) {
                 if (*varlist == NULL)
                     *varlist = newNodes(4);

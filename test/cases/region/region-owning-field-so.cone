@@ -1,0 +1,34 @@
+// Releasing a region-allocated struct that owns a '+so' reference frees that
+// reference once, through the single owner the struct's field became.
+//
+// The literal's field value moves, so naming 'inner' there deactivates it and it
+// leaves the scope's dealias list. Only the struct's field releases the
+// allocation. While literals were treated as leaves by flow analysis, both the
+// variable and the field released it and the run corrupted the heap.
+//
+// region-owning-field is the same shape with an 'rc' field, where the second
+// holder is counted rather than forbidden.
+
+import stdio::*
+
+fn show(label &[]u8, n i64) {
+  printStr(label)
+  printStr(" = ")
+  printInt(n)
+  printStr("\n")
+}
+
+struct HeldSo {
+  r +so i32
+}
+
+fn f() {
+  imm inner = +so 5
+  imm outer = +so HeldSo[r: inner]
+  show("so-owning-field", i64[*outer.r])
+}
+
+fn main() i32 {
+  f()
+  0i32
+}

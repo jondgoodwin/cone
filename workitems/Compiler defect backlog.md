@@ -76,3 +76,21 @@ settle each in a minute.
 - **A parameterless macro name is not expanded** as a function's final statement,
   nor as the left operand of an operator. As a right operand and as an
   initializer it works.
+
+## Found while fixing [[Ownership memory safety]]
+
+Both were found by tracing something else, and neither belongs to ownership.
+
+- **An array holding owning references is never released.** `flowScopeDealias`
+  builds a scope's dealias list from variables whose *own* type is an owning
+  reference, and an array's type is an array. So every element leaks, however
+  the array was built. `region-fill-count` records this in passing, because
+  counting n holders for a fill is what makes the outcome a leak rather than a
+  use after free.
+- **`itypeIsGenericType` tests a tag nothing ever assigns.** It requires
+  `objfn->tag == GenericNameTag`, and `GenericNameTag` appears only in its own
+  declaration, two dispatch tables, and this test — it is never written to a
+  node. So the predicate is dead, and with it the `isTypeNode()` clause that
+  would let a generic instantiation count as a type. A written-out `Option[T]`
+  works only because the type parser instantiates it before anything asks. This
+  is why the fallible-allocation lowering fails; see [[Regions]].

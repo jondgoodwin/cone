@@ -815,7 +815,8 @@ void genlStore(GenState *gen, INode *lval, LLVMValueRef rval) {
         return;
     LLVMValueRef lvalptr = genlAddr(gen, lval);
     RefNode *reftype = (RefNode *)((IExpNode*)lval)->vtype;
-    if (reftype->tag == RefTag && isRegion(reftype->region, rcName))
+    // A first assignment has no previous value to release (see FlagFirstAssign)
+    if (reftype->tag == RefTag && isRegion(reftype->region, rcName) && !(lval->flags & FlagFirstAssign))
         genlRcCounter(gen, LLVMBuildLoad(gen->builder, lvalptr, "dealiasref"), -1, reftype);
     LLVMBuildStore(gen->builder, rval, lvalptr);
 }
@@ -862,7 +863,26 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
                 *valuep++ = genlExpr(gen, *nodesp);
         }
         INode *elemtype = nodesGet(((ArrayNode *)itypeGetTypeDcl(lit->vtype))->elems, 0);
-        return LLVMConstArray(genlType(gen, elemtype), values, size);
+        LLVMTypeRef elemtypellvm = genlType(gen, elemtype);
+        // A constant aggregate's operands must themselves be constants, so an element
+        // that is the result of an instruction -- a variable read, a call, an
+        // allocation -- cannot go into LLVMConstArray. Build the array up with
+        // insertvalue in that case, as a struct literal does. The constant array is
+        // kept where every element qualifies: it is cheaper, and it is the only form
+        // usable outside a function body.
+        int allconst = 1;
+        for (uint32_t index = 0; index < size; ++index) {
+            if (!LLVMIsConstant(values[index])) {
+                allconst = 0;
+                break;
+            }
+        }
+        if (allconst)
+            return LLVMConstArray(elemtypellvm, values, size);
+        LLVMValueRef arrayval = LLVMGetUndef(LLVMArrayType(elemtypellvm, size));
+        for (uint32_t index = 0; index < size; ++index)
+            arrayval = LLVMBuildInsertValue(gen->builder, arrayval, values[index], index, "arraylit");
+        return arrayval;
     }
     case TypeLitTag:
     {

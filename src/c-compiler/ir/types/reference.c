@@ -178,7 +178,7 @@ TypeCompare regionMatches(INode *to, INode *from, SubtypeConstraint constraint) 
 TypeCompare refMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint) {
 
     // Start with matching the references' regions
-    TypeCompare result = regionMatches(from->region, to->region, constraint);
+    TypeCompare result = regionMatches(to->region, from->region, constraint);
     if (result == NoMatch)
         return NoMatch;
 
@@ -223,7 +223,7 @@ TypeCompare refvirtMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint cons
         return NoMatch;
 
     // Start with matching the references' regions
-    TypeCompare result = regionMatches(from->region, to->region, constraint);
+    TypeCompare result = regionMatches(to->region, from->region, constraint);
     if (result == NoMatch)
         return NoMatch;
 

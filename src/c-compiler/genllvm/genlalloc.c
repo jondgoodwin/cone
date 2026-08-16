@@ -59,7 +59,10 @@ void genlDealiasFlds(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
         RefNode *vartype = (RefNode *)field->vtype;
         if (vartype->tag != RefTag || !(isRegion(vartype->region, rcName) || isRegion(vartype->region, soName)))
             continue;
-        LLVMValueRef fldref = LLVMBuildStructGEP(gen->builder, ref, field->index, &field->namesym->namestr);
+        // The GEP yields the field's address; the release routines want the
+        // reference the field holds, so load it.
+        LLVMValueRef fldptr = LLVMBuildStructGEP(gen->builder, ref, field->index, &field->namesym->namestr);
+        LLVMValueRef fldref = LLVMBuildLoad(gen->builder, fldptr, "fldref");
         if (isRegion(vartype->region, soName))
             genlDealiasOwn(gen, fldref, vartype);
         else
@@ -192,7 +195,10 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
         tuplevalnull = LLVMBuildInsertValue(gen->builder, tuplevalnull, blkvals[0], 0, "fatptr");
         blkvals[0] = LLVMBuildInsertValue(gen->builder, tuplevalnull, LLVMConstInt(genlType(gen, (INode*)usizeType), 0, 0), 1, "fatsize");
     }
-    blks[0] = panicblk;
+    // The phi's predecessor is whatever block the builder ended up in, which is not
+    // necessarily the block we positioned it in: generating the value above may have
+    // emitted branches of its own, splitting the block it started in.
+    blks[0] = LLVMGetInsertBlock(gen->builder);
     LLVMBuildBr(gen->builder, endif);
     LLVMPositionBuilderAtEnd(gen->builder, initblk);
 
@@ -221,7 +227,7 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     }
     else {
         // Handle array fill via run-time generation
-        if (allocatenode->vtexp->tag == ArrayLitTag && ((ArrayNode*)allocatenode->vtexp)->dimens > 0) {
+        if (allocatenode->vtexp->tag == ArrayLitTag && ((ArrayNode*)allocatenode->vtexp)->dimens->used > 0) {
             genlAllocFillArray(gen, nbrelems, (ArrayNode*)allocatenode->vtexp, valuep);
         }
         else {
@@ -238,9 +244,11 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
         valuep = LLVMBuildInsertValue(gen->builder, tupleval, nbrelems, 1, "fatsize");
     }
     blkvals[1] = valuep;
-    blks[1] = initblk;
 
-    // Finish up block, start new one, and return allocated
+    // Finish up block, start new one, and return allocated. As above, an initial value
+    // holding another allocation splits initblk, so the edge arrives from wherever the
+    // builder now is rather than from initblk.
+    blks[1] = LLVMGetInsertBlock(gen->builder);
     LLVMBuildBr(gen->builder, endif);
     LLVMPositionBuilderAtEnd(gen->builder, endif);
     LLVMValueRef phi = LLVMBuildPhi(gen->builder, reftypellvm, "allocphi");

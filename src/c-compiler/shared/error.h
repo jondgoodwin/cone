@@ -90,6 +90,10 @@ enum ErrorCode {
     ErrorAmbigCandidate = 1057, // More than one overloaded candidate accepts the call's arguments
     ErrorOverloadUse = 1058,    // Overload name used somewhere other than a call's callee
 
+    // Array literals
+    ErrorBadFill = 1059,        // Array fill literal may not repeat this value
+    ErrorFillCount = 1060,      // Array fill literal's element count cannot be counted into
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

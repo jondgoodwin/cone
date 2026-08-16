@@ -57,4 +57,10 @@ typedef struct {
 // Handle when moving or copying a value to a new destination
 void flowHandleMoveOrCopy(INode **nodep);
 
+// Does this expression still hold its value after it is read?
+int flowIsLvalRead(INode *node);
+
+// If needed, inject an alias node for rc references, adjusting the count by amt
+void flowInjectAliasAmt(INode **nodep, int16_t amt);
+
 #endif

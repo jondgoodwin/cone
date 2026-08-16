@@ -14,6 +14,9 @@ void arrayLitTypeCheckDimExp(TypeCheckState *pstate, ArrayNode *arrlit);
 // Type check an array literal
 void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit);
 
+// Perform data flow analysis on an array literal's element values
+void arrayLitFlow(FlowState *fstate, ArrayNode **nodep);
+
 // Is an array actually a literal?
 int arrayLitIsLiteral(ArrayNode *node);
 

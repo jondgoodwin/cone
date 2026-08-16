@@ -1,0 +1,28 @@
+// The region coercions that must stay refused.
+//
+// regionMatches allows a coercion only between identical regions or into the
+// borrow region. Everything else is a no-match, and the two that matter are the
+// reverse of what region-borrow-coerce establishes: a borrowed reference names
+// storage the callee does not own, so passing one where an owning reference is
+// wanted would hand a stack address to a parameter that will release it.
+//
+// This half could not be asserted while refMatches compared its regions in
+// reverse -- it compiled clean and ran, and there was no diagnostic to name.
+
+fn takesRc(r +rc-mut i32) i32 { *r }
+
+fn takesSo(r +so i32) i32 { *r }
+
+fn f() i32 {
+  mut local = 7i32
+
+  // A borrow may not stand in for an allocation, in either region
+  imm a = takesRc(&mut local)   //~ ErrorInvType
+  imm b = takesSo(&mut local)   //~ ErrorInvType
+
+  // Nor may one region's allocation stand in for another's
+  imm owned = +rc-mut 5
+  imm c = takesSo(owned)        //~ ErrorInvType
+
+  a
+}
