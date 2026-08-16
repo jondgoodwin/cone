@@ -56,7 +56,7 @@
 	- [[Lexer and Parser]] [[Syntax - Aggregating operators]]
 	- [[Analysis re-factor]]
 	- Generation: [[LLVM Generation]] and [[C-ABI Generation]]
-	- [[Test Suite]]
+	- [[Add test suite]]
 - Build System:
 	- Import vs. Include (allow include inside a type?)
 	- [[Packages and Separate Compilation]]

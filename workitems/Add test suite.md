@@ -1,0 +1,358 @@
+# Add test suite
+
+The compiler has no test runner. Every check is run by hand, which means a clean
+compile is the only routine evidence a change is correct, and a clean compile is
+not evidence of correct runtime behavior. This work item builds the missing
+infrastructure.
+
+`design/Test Suite.md` holds the design, the rationale, and the authoring
+guidance for test scenarios. This note is the work: what to build, and what
+"done" means.
+
+## Decisions taken
+
+| Decision | Choice |
+| --- | --- |
+| Runner | A single Python 3 script, no third-party dependencies. Python 3.13 is present; `tomllib` is available. |
+| Expectations | Located diagnostics annotated inline in the `.cone` source as `//~` comments; file-level facts in a per-group `cases.toml`. See R2.1. This reverses an earlier sidecar decision — annotations remove line numbers as a maintained artifact, so an inserted line no longer churns every expectation below it. |
+| WebAssembly | Out of scope for now. |
+| AST-dump assertions | Out of scope. `--ir` output has no stability contract and [[IR refactor]] would invalidate any golden written against it. |
+| Unit tests | Out of scope. Everything worth covering is reachable through the CLI; `--checktree` and `--verify` supply internal invariant checking. |
+| Preserved overload fixtures | Restructured into the new layout when the suite reaches them. They are **not** canonical — treat them as a worked example of what the format must express, not as content to restore verbatim. |
+| Continuous integration | Out of scope, but nothing may block it later. |
+
+## Requirements
+
+### R1 — Runner and invocation
+
+- **R1.1** A run either builds `conec` first or verifies the binary is newer than
+  every tracked compiler source, and refuses to run otherwise. A stale binary is
+  indistinguishable from a language regression: the binary checked in at
+  `build/x64-release/` predated the overload work by a week and failed
+  `test/test.cone` with 17 errors that looked exactly like a broken master.
+- **R1.2** Exit status is matched exactly against the taxonomy in
+  `src/c-compiler/shared/error.h` — 0 success, 1 compile errors, 2 source not
+  found, 3 out of memory, 4 bad options, 5 indent overflow. A rejection case
+  requires exactly 1. Accepting "nonzero" would score a mistyped fixture path and
+  a Windows access violation as correct rejections.
+- **R1.3** Every case runs with stdin redirected from null and under a wall-clock
+  timeout. `conec.c` and `error.c` both end with `getchar()` under `_DEBUG`, so a
+  Debug build hangs at exit without this.
+- **R1.4** Every run writes to its own output directory. Output filenames derive
+  from the source basename and the IR dump from the program root, so two cases
+  sharing a basename collide in a shared directory.
+- **R1.5** Cases are independent and safe to run in parallel, with no ordering
+  dependency and no reliance on another case's leftovers.
+- **R1.6** Runs on Windows and Linux/WSL with no installation step.
+- **R1.7** Runs the full suite by default. Selection is opt-in.
+
+### R2 — Test model
+
+- **R2.1** A scenario is a `.cone` source carrying its located-diagnostic
+  expectations inline as `//~` annotations. One `cases.toml` per group directory
+  holds category, tags, runs, and the file-level expectations that cannot attach
+  to a line. A `compile` scenario needs no expectations at all, since its category
+  fully describes the result.
+- **R2.2** One source may declare several runs (differing option sets). This is
+  how option matrices avoid duplicating source files.
+- **R2.3** A **check** is a named assertion against a generated artifact — LLVM
+  IR, or a run's stdout — declared in `cases.toml`. Located diagnostics are
+  annotations (R2.9) and are not checks; a check exists precisely for what has no
+  source line to attach to. Its name appears in failure output and is what
+  selection matches.
+- **R2.4** Cases carry pipeline-phase tags (`parse`, `nameres`, `typecheck`,
+  `flow`, `genllvm`, `runtime`). The group directory supplies the feature tag.
+- **R2.5** The runner derives a selection from a diff — mapping changed source
+  paths to tags through a checked-in table — and reports which tags it selected
+  and why.
+- **R2.6** A `--list` mode prints what would run without running it.
+- **R2.7** The runner's vocabulary is limited to command line, exit code, stderr,
+  stdout, and files produced. It contains no knowledge of compiler internals.
+- **R2.8** Results are reported in tier order, tier 0 first. Groups are
+  deliberately dependent — tier 1 and 2 scenarios assume the foundation works —
+  so a foundation break turns every group red, and tier ordering puts the root
+  cause at the top instead of burying it among downstream failures.
+- **R2.9** Annotation syntax: `//~ Code[:col] ["substring"] [follow-on]` applies
+  to its own line, `//~^` to the line above and repeatable. Codes are named
+  symbolically (R5.1). Bless writes the column and message substring; the author
+  writes the code name.
+- **R2.10** File-level expectations in `cases.toml` cover diagnostics with no
+  source location (`errorMsg` prints none — `ErrorNoLoop` at
+  `parsefnflow.c:240` and `:253`, and the `ErrorGenErr` family in `genllvm.c`),
+  total diagnostic count for `recover`, and any non-default exit status.
+- **R2.11** Scenario files are prefixed with their group name
+  (`core-success.cone`). Output filenames derive from the source basename, so
+  unprefixed names collide when scenarios from two groups are compiled by hand
+  into one scratch directory — which is exactly when the runner's per-run
+  directories (R1.4) are not in play.
+- **R2.12** `cases.toml` lists every scenario and every support module. A `.cone`
+  file in a group directory that is neither is an error. A support module is
+  imported by a scenario and never compiled on its own — `imports.cone` with
+  `importsub.cone` is the standing example, and it is also the access-violation
+  regression test, so the `module` group cannot be built without this.
+
+### R3 — Categories and pass criteria
+
+- **R3.1** Six categories, defined in the design note: `compile`, `run`, `warn`,
+  `reject`, `recover`, `driver`.
+- **R3.2** `compile` requires exit 0, no diagnostics, and **explicitly zero
+  warnings**. Warnings do not fail a compile on their own, so an unasserted
+  warning count is silently ignorable.
+- **R3.3** `compile` runs default to `--checktree` and `--verify` enabled, so
+  malformed IR and invalid LLVM fail the case rather than reaching an object
+  file.
+- **R3.4** `reject` matches, for each expected diagnostic, the code and the
+  source `line:column`; message text is matched as a required substring by
+  default, with exact text available where the wording is the point.
+- **R3.5** A case separates primary diagnostics from follow-on diagnostics that
+  exist only as consequences.
+- **R3.6** Expected-output parsing tolerates unprefixed continuation lines
+  (`Uncounted` prints with neither an `Error` nor a `Warning` prefix and is not
+  counted).
+- **R3.7** `run` compiles, links against `conestd`, executes, and compares
+  stdout. Where no linker is available the tier reports **skipped**, visibly and
+  distinctly from passed.
+- **R3.8** Any case may be marked `xfail`: it reports as an expected failure and
+  **fails the suite if it starts passing**.
+
+### R4 — Expected output management
+
+- **R4.1** Comparison is normalized: path separators in the diagnostic location
+  (which carries the path exactly as passed on the command line), the elapsed
+  time and memory figures in the success line, and line endings. The repository
+  has no `.gitattributes` line-ending rules, so a Windows working tree holds CRLF
+  while the repository holds LF; comparison and bless must both be
+  ending-agnostic.
+- **R4.2** A bless mode regenerates expected output in bulk. It must refuse to
+  bless a change in exit status or a crash, and its output must be plain text
+  that diffs small and reviewably.
+- **R4.4** Bless rewrites only the tail of each `//~` annotation — column and
+  message substring — leaving surrounding source and the author-written code name
+  untouched. It is a line-oriented edit, never a parse-and-reserialize of the
+  source file. A scenario whose annotations bless cannot place unambiguously is
+  reported, not guessed at.
+- **R4.3** A failure prints the case name, the exact command line, and the
+  expected-versus-actual delta.
+
+### R5 — Diagnostic identity stability
+
+- **R5.1** Cases name diagnostics symbolically (`ErrorNoCandidate`), never
+  numerically (`1056`).
+- **R5.2** `ErrorCode` is given explicit values, **and** the suite asserts a
+  checked-in name-to-number table. The enum is currently unnamed positions, so
+  inserting a code renumbers everything below it and silently invalidates every
+  expectation at once; this makes that failure loud and local.
+
+### R6 — Coverage and organization
+
+- **R6.1** Cases are organized into the 17 groups defined in
+  `design/Test Suite.md`, following the reference manual's chapters. A construct
+  is covered in depth in exactly one group. A feature with no group means a new
+  group and a new manual chapter.
+- **R6.2** Superseded by R2.12, which specifies how entry points and support
+  modules are declared.
+- **R6.3** Every crash or miscompile fix lands with a case that fails without it.
+- **R6.4** The suite reports which `ErrorCode` values have no `reject` case. The
+  enum is a closed list of roughly sixty codes, which makes this a cheap and
+  honest coverage metric.
+- **R6.5** No coverage in `test/test.cone` is lost. Its content is decomposed
+  across the groups that own it (sequencing step 4), not discarded, and the
+  staging file draining to empty is what marks that complete.
+- **R6.6** All test sources use curly-brace blocks. None may depend on
+  indentation or `:` for block structure, since the language is moving to
+  free-form only. Free-form already parses today, so this costs nothing now and
+  avoids rewriting the whole corpus later. `WarnIndent` and `ExitIndent` become
+  dead on that switch and are excluded from the R6.4 coverage report rather than
+  chased.
+- **R6.7** Every new `ErrorCode` lands with a `reject` scenario provoking it, in
+  the same change that adds the code. R6.4 reports the backlog; this keeps it
+  from growing.
+
+## Repository changes required
+
+Everything outside `test/` that this work has to touch. Each is small, but each
+is a place where the repository currently contradicts what the suite needs.
+
+### Compiler source
+
+| Change | Why | Requirement |
+| --- | --- | --- |
+| Give `ErrorCode` explicit values in `src/c-compiler/shared/error.h` | The values are unnamed enum positions, so inserting a code renumbers everything below it and silently invalidates every expectation at once | R5.2 |
+| Name the exit code at `src/c-compiler/genllvm/genlstmt.c:95` | `errorExit(100, "Unrecoverable error!")` uses a bare 100 that is not in the `ErrorCode` taxonomy at all, so R1.2's exact-status matching has nothing to match it against | R1.2 |
+| Remove or gate the `_DEBUG` `getchar()` in `src/c-compiler/conec.c` and `src/c-compiler/shared/error.c` | A Debug build blocks on stdin at exit, so every case hangs until its timeout | R1.3 |
+| Add an option suppressing the timing and memory figures in the success line | `errorSummary` prints elapsed seconds and kilobytes used, so successful output is not byte-stable and cannot be compared literally | R4.1 |
+
+### Documentation
+
+`CLAUDE.md` is the main one, and it is wrong in more than the obvious place:
+
+- **"Validating a change"** describes the by-hand procedure this work replaces —
+  "Build `conec` and compile `test/test.cone`", "Run any fixture suite covering
+  the affected feature. There is no committed fixture suite yet". The whole
+  section needs rewriting around the runner once it exists.
+- **`test/test.cone` is referenced by path** and moves under `test/cases/` in the
+  layout below.
+- **The stale-binary hazard is undocumented.** `CLAUDE.md` tells you to build and
+  compile, but nothing warns that a binary left over from an earlier session
+  produces failures indistinguishable from a language regression — which is
+  exactly what the checked-in `build/x64-release/conec.exe` did during this work
+  item's research, failing `test/test.cone` with 17 errors purely because it
+  predated the overload merge by a week. R1.1 makes the runner enforce this;
+  `CLAUDE.md` should say it too, since not every check goes through the runner.
+- **The link-and-run recipe** stays accurate, but the suite becomes its primary
+  consumer and should be cross-referenced from it.
+
+`design/_index.md` gains its entry for `design/Test Suite.md` (done as part of
+writing that note).
+
+The reference manual at `conesite/public/coneref/index.html` becomes the spine of
+the test organization (R6.1). Its chapter list is now load-bearing: adding a
+chapter implies asking whether a group is needed, and a feature with no chapter
+has nowhere to be tested. Worth a line in `CLAUDE.md` alongside the existing
+`conesite/` guidance.
+
+### Build and ignore files
+
+- `.gitignore` needs whatever directory the runner writes case output to, unless
+  that lands under the already-ignored `build/`. Preferring `build/` avoids the
+  change entirely and is the recommendation.
+- `CMakeLists.txt`, `Cone.vcxproj` and `Conestd.vcxproj` need no change: the
+  compiler changes above modify existing files without adding, removing or
+  renaming any. This holds only while the runner stays outside CMake — see the
+  CTest recommendation below.
+
+### Noticed in passing, out of scope
+
+`--width` / `ir_print_width` is parsed in `coneopts.c` and never read by
+anything. Dead option; worth removing or implementing, but not here.
+
+## Proposed layout
+
+```
+test/
+  run.py                     the runner
+  tags.toml                  source path -> tag map for diff-driven selection
+  codes.toml                 pinned ErrorCode name -> number table
+  cases/
+    <group>/                 one of the 17 groups
+      cases.toml             every scenario: category, tags, runs, file-level expectations
+      <group>-<name>.cone    one source per scenario, expectations annotated inline
+      <group>-<name>.out     expected stdout, for run scenarios
+```
+
+One `.cone` per scenario is irreducible — the compiler compiles files. Everything
+else collapses into it: located expectations are `//~` comments in the source, so
+the file still compiles by hand and still highlights, and the only per-group
+metadata is one `cases.toml`.
+
+`test/test.cone` and `test/submod.cone` move under `cases/`, which is the source
+of the `CLAUDE.md` path change noted above.
+
+## Anticipated scale
+
+Steady state, after backfill: roughly **45–65 scenario files** carrying **300–600
+named checks**, across 17 groups — about 65–85 files once the per-group
+`cases.toml` and the `run` scenarios' `.out` files are counted.
+
+| Kind | Estimate | Basis |
+| --- | --- | --- |
+| `compile` and `run` | 17–25 files | One success program per group, split in two where a group earns it |
+| `reject` | 25–35 files | One per compiler stage per group that needs it, each carrying 3–6 codes; ~60 `ErrorCode` values total, minus the indent codes R6.6 retires. Stage files split further for recovery interference, mutually exclusive file structure, or an aborting diagnostic |
+| `warn`, `recover`, `driver` | 5–8 files | Three live warning codes; a handful of recovery and invocation cases |
+
+Non-replication is what keeps this smaller than a per-feature corpus: tier 1 and
+2 groups test only their delta over the foundation, so most groups need one
+modest success program rather than a broad one.
+
+First delivery is far smaller — around 12 files: the `core` group built from the
+relocated smoke case, the restructured overload fixtures folded into `core` and
+`trait`, and the driver cases.
+
+At ~30ms per compile this is a few seconds serially and about a second in
+parallel, which is why R1.7 makes running everything the default.
+
+## Sequencing
+
+1. **Prove the annotation format by hand, before writing any runner.** Transcribe
+   two or three scenarios from the `overload-fixtures` branch `README.md` into
+   `//~` annotations — `bad-overload-as-value` above all, which has one primary
+   diagnostic at three positions plus two distinct follow-ons at other lines.
+   That is the hardest thing the syntax must express, and it is real recorded
+   output rather than an invented example. The same README also exercises support
+   modules (R2.12) and IR checks (R2.3). If the format cannot express it cleanly,
+   fix the format now rather than after a runner is built around it.
+2. Runner skeleton with `compile`, `reject`, and `driver` categories, plus
+   selection, parallelism, tier-ordered reporting, and bless mode.
+3. The compiler changes above.
+4. **Decompose `test/test.cone`.** It currently covers structs, traits, regions
+   and virtual references alongside core content — material that belongs to five
+   or six other groups under non-replication. This is substantially more than a
+   relocation, and it is the step that establishes whether non-replication holds
+   up in practice.
+
+   Extract the core-owned content into `core-success.cone`, converting to braces
+   (R6.6). Leave the remainder in place as a staging file that later groups draw
+   from as they are built. Decomposition is complete when the staging file is
+   empty, which makes the progress visible rather than a matter of judgment.
+5. `run` category and the link-and-run path.
+6. `warn`, `recover`, and `xfail`.
+7. Restructure the overload fixtures into the layout as its first substantial
+   consumer — function overload into `core`, method and trait overload into
+   `struct` and `trait` — including the single-file runtime check of overloaded
+   functions, methods, defaults and operators that was written and verified
+   during the overload refactor but never committed.
+8. Remaining groups in tier order, then the coverage report (R6.4) and backfill.
+
+## Preserved fixtures
+
+The [[Overload Refactor]] work built a fixture suite exercising much of this by
+hand, preserved on branch **`overload-fixtures`**, whose tip is the head of the
+overload refactor PR. Under `test/overload/` there: a `README.md` recording, for
+each negative fixture, the expected diagnostic code, exact message text,
+`line:column`, and which follow-on diagnostics to expect; positive fixtures
+`methods.cone`, `operators.cone`, `globals.cone`; `imports.cone` with
+`importsub.cone`, which is the regression test for the access violation fixed by
+commit `34ca637` and crashes the compiler without it; and eleven `bad-*.cone`
+covering diagnostics 1052–1058.
+
+That README is the most complete statement of what a negative case must express,
+and is worth reading before designing the expectations format. The fixtures themselves
+are not canonical. Several are redundant under the packing rule — `bad-two-exact`,
+`bad-exact-plus-coercible` and `bad-two-coercible` all provoke
+`ErrorAmbigCandidate` at type-check time and should become one file with three
+call sites — and the AST-dump assertions in the README are deliberately not
+carried over.
+
+## Recommendations on the two open questions
+
+### `codes.toml`: generated, checked in, and verified against the source
+
+Neither pure alternative works. Hand-maintaining sixty name-to-number pairs is
+error-prone, but generating the table at build time defeats its entire purpose —
+a renumber would silently regenerate a matching table and nothing would fail.
+
+The recommendation is the pattern that keeps both properties: **the runner parses
+`error.h` itself, compares the result against the checked-in `codes.toml`, and
+fails on any mismatch.** A renumber then produces one loud failure naming exactly
+which codes moved, and the fix is to re-bless and review the diff. No build step,
+no CMake change, no generated-file staleness, and it works identically on both
+platforms because it is just Python reading a header.
+
+Note this is defense in depth rather than the primary guard. Explicit `ErrorCode`
+values (R5.2) remove the hazard at the source; the table catches the case where
+someone adds a code without following the convention.
+
+### Invocation: run the script directly
+
+CTest is the wrong fit here, for a specific reason. Registering each case as a
+CTest test would require the case list at CMake configure time, so adding a case
+would mean re-running CMake — and diff-driven selection (R2.5) cannot be
+expressed in CTest at all, since `-R` matches test-name regexes and knows nothing
+about tags. Registering the whole suite as a single CTest test avoids that but
+then contributes nothing beyond a conventional entry point, while still requiring
+a configured build tree just to run tests.
+
+The runner already handles parallelism and selection better than CTest would, so
+**invoke it directly** and let it own both. If CI arrives later and wants a
+conventional hook, a three-line `add_test` registering the suite as one test can
+be added then, at no cost to anything designed now.

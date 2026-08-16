@@ -1,6 +1,6 @@
 
 1. Install LLVM and ensure compiler compiles
-2. [[Test Suite]]
+2. [[Add test suite]]
 3. [[IR refactor]]
 4. [[Analysis re-factor]] - jit, with recursion checking
 5. [[Packages and Separate Compilation]]

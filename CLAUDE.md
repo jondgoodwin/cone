@@ -129,7 +129,7 @@ For a compiler change:
 1. Build `conec` and compile `test/test.cone`, adding focused Cone cases near
    related coverage in that file.
 2. Run any fixture suite covering the affected feature. There is no committed
-   fixture suite yet; see `workitems/Test Suite.md`, which also names the
+   fixture suite yet; see `workitems/Add test suite.md`, which also names the
    branch holding the overload fixtures until they are restored.
 3. Inspect the generated IR when the change affects lowering or symbols.
 4. When the change affects runtime behavior, link and run a program.
