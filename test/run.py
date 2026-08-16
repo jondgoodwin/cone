@@ -10,6 +10,7 @@ expectations claim. Python 3.11+, no third-party dependencies.
     python test/run.py --list           print what would run, run nothing (R2.6)
     python test/run.py --coverage       ErrorCode coverage, run nothing (R6.4)
     python test/run.py --build          build the compiler first (R1.1)
+    python test/run.py --bless          record what the compiler produced (R4.2)
     python test/run.py --bless-codes    regenerate test/codes.toml (R5.2)
 
 The runner's whole vocabulary is the command line, the exit code, stderr,
@@ -18,9 +19,8 @@ internals beyond the diagnostic text format and the ``ErrorCode`` enum it reads
 out of ``src/c-compiler/shared/error.h``.
 
 Deferred, and why, is recorded in ``workitems/Add test suite.md``. What is left:
-bless (R4.2/R4.4) and diff-driven selection (R2.5). Any scenario asking for a
-deferred feature is a hard configuration error rather than something quietly
-ignored.
+diff-driven selection (R2.5). Any scenario asking for a deferred feature is a
+hard configuration error rather than something quietly ignored.
 """
 
 from __future__ import annotations
@@ -756,8 +756,10 @@ class Linker:
                 # not the one being handed to the child, so the linker has to be
                 # named absolutely out of the environment vcvars produced.
                 self.tool = which("link.exe", path=self.env.get("PATH", ""))
+                if self.tool is not None and not self._is_msvc_linker(self.tool):
+                    self.tool = None
                 if self.tool is None:
-                    self.reason = "the Visual Studio environment has no link.exe"
+                    self.reason = "no Microsoft link.exe in the Visual Studio environment"
             else:
                 self.tool = which("cc") or which("gcc")
                 if self.tool is None:
@@ -765,12 +767,18 @@ class Linker:
             return self.reason
 
     def _vs_environment(self) -> dict[str, str] | None:
-        from shutil import which
-        if which("link.exe"):
-            return dict(os.environ)
+        """The environment vcvars produces, or this one if it already links.
+
+        vcvars is tried first and an inherited ``link.exe`` is trusted only after
+        it identifies itself. Git for Windows ships a coreutils ``link.exe`` in
+        its ``/usr/bin``, so a Git Bash shell has one on PATH that is not a
+        linker at all; taking it on faith made every ``run`` scenario fail to
+        link, and fail in a way that read as a compiler problem rather than a
+        shell one.
+        """
         vcvars = find_vcvars()
         if not vcvars:
-            return None
+            return dict(os.environ) if self._is_msvc_linker("link.exe") else None
         result = subprocess.run(
             vcvars_command(vcvars, "set"),
             capture_output=True, text=True, errors="replace",
@@ -783,6 +791,18 @@ class Linker:
                 key, value = line.split("=", 1)
                 env[key] = value
         return env
+
+    @staticmethod
+    def _is_msvc_linker(tool: str) -> bool:
+        """Does this link.exe identify itself as Microsoft's?"""
+        try:
+            banner = subprocess.run(
+                [tool, "/?"], capture_output=True, text=True, errors="replace",
+                stdin=subprocess.DEVNULL, timeout=20,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return "Microsoft" in (banner.stdout + banner.stderr)
 
     def command(self, obj: Path, exe: Path) -> list[str]:
         if IS_WINDOWS:
@@ -896,6 +916,14 @@ class Result:
     problems: list[str] = field(default_factory=list)
     note: str = ""
 
+    # What the run actually produced, kept rather than only asserted against,
+    # because bless records it as the new expectation (R4.2). program_stdout
+    # stays None unless the program linked and ran to completion, so a case
+    # that never got that far cannot have its .out file blessed from nothing.
+    compiled: Completed | None = None
+    diagnostics: list[Diagnostic] = field(default_factory=list)
+    program_stdout: str | None = None
+
     @property
     def label(self) -> str:
         if self.run.name == "default":
@@ -964,6 +992,7 @@ class Runner:
         result.commands.append(quote(cmd))
         compiled = execute(cmd, REPO, out_dir, "conec",
                            self.args.timeout, self.args.max_output)
+        result.compiled = compiled
 
         if compiled.killed:
             result.status = FAIL
@@ -972,6 +1001,7 @@ class Runner:
             return result
 
         diagnostics = parse_diagnostics(compiled.stderr)
+        result.diagnostics = diagnostics
         self.check_exit(result, scenario, compiled)
         if scenario.category == "reject":
             self.check_rejection(result, scenario, diagnostics)
@@ -1162,6 +1192,7 @@ class Runner:
         result.commands.append(quote(cmd))
         invoked = execute(cmd, REPO, out_dir, "conec",
                           self.args.timeout, self.args.max_output)
+        result.compiled = invoked
         if invoked.killed:
             result.status = FAIL
             result.problems.append(f"compiler {invoked.killed}")
@@ -1210,6 +1241,11 @@ class Runner:
             result.problems.append(f"program exited {ran.code}, expected 0")
             return
 
+        # Recorded here, before the comparison rather than after it, because a
+        # mismatch is exactly the case bless exists for: what the program
+        # printed is the candidate expectation whether or not it matched.
+        result.program_stdout = ran.stdout
+
         expected_path = scenario.source.with_suffix(".out")
         if not expected_path.exists():
             result.status = FAIL
@@ -1222,7 +1258,6 @@ class Runner:
                                    + expected_path.name + ":\n" + indent(delta(
                                        trimmed(expected), trimmed(ran.stdout),
                                        expected_path.name, "actual")))
-        result.program_stdout = ran.stdout  # type: ignore[attr-defined]
 
     def check_artifacts(self, result: Result, scenario: Scenario,
                         out_dir: Path, target: str) -> None:
@@ -1243,7 +1278,7 @@ class Runner:
                     continue
                 text = normalize(artifact.read_text(encoding="utf-8", errors="replace"))
             else:
-                text = getattr(result, "program_stdout", "")
+                text = result.program_stdout or ""
             for needle in check.contains:
                 if needle not in text:
                     result.status = FAIL
@@ -1279,6 +1314,428 @@ def indent(text: str, prefix: str = "    ") -> str:
 def delta(expected: list[str], actual: list[str], left: str, right: str) -> str:
     return "\n".join(difflib.unified_diff(
         expected, actual, fromfile=left, tofile=right, lineterm="", n=2))
+
+
+# ---------------------------------------------------------------------------
+# Bless (R4.2, R4.4)
+# ---------------------------------------------------------------------------
+#
+# Bless records what the compiler actually produced as the new expectation. It
+# rewrites two things and nothing else: the tail of a //~ annotation -- the
+# column after ':' and the quoted substring -- and the .out file of a 'run'
+# scenario. It never adds an annotation, never deletes one, and never touches
+# cases.toml, because each of those is an authoring decision. A diagnostic no
+# annotation claims is reported so that the author can write its code name
+# (R2.9); an annotation nothing produced is reported so that the author can
+# decide whether the diagnostic should have been produced or the annotation
+# should go.
+#
+# Bless checks nothing. The review of its diff is the safety mechanism, which is
+# why it refuses anything that says the change was behavioral rather than
+# cosmetic: a changed exit status, or a crash.
+
+LINE_SPLIT_RE = re.compile(r"(\r\n|\n)")
+
+
+def split_lines(raw: str) -> tuple[list[str], list[str]]:
+    """Split text into line bodies and the terminator each line carries.
+
+    R4.1: bless preserves whatever line endings the file already uses rather
+    than converting it, and a file may hold both. Keeping each terminator beside
+    its own line means an untouched line is written back byte for byte and a
+    rewritten one keeps the ending it had. ``parse_annotations`` breaks lines at
+    the same two sequences, so the line numbers on both sides agree.
+    """
+    parts = LINE_SPLIT_RE.split(raw)
+    return parts[0::2], parts[1::2] + [""]
+
+
+def dominant_ending(raw: bytes) -> str:
+    """The line ending a file mostly uses, for one being rewritten whole."""
+    crlf = raw.count(b"\r\n")
+    return "\r\n" if crlf > raw.count(b"\n") - crlf else "\n"
+
+
+def escape_annotation_message(text: str) -> str:
+    """Quote a diagnostic message for the annotation grammar, which reads the
+    two escapes ``parse_annotations`` unescapes and no others."""
+    return text.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def sole_placement(expected: list[Annotation], produced: list[Diagnostic]
+                   ) -> list[tuple[Annotation, Diagnostic]] | None:
+    """The one way to give every annotation its own compatible diagnostic.
+
+    Reached only where a code and a line are shared, so the quoted substring is
+    all that is left to separate them. Returns None where there is no such
+    assignment or more than one: R4.4 says a scenario whose annotations bless
+    cannot place unambiguously is reported, not guessed at, and the orders the
+    two sides happen to arrive in are exactly the kind of guess it rules out.
+    """
+    found: list[list[tuple[Annotation, Diagnostic]]] = []
+
+    def walk(index: int, taken: frozenset[int],
+             chosen: list[tuple[Annotation, Diagnostic]]) -> None:
+        if len(found) > 1:
+            return
+        if index == len(expected):
+            found.append(list(chosen))
+            return
+        annotation = expected[index]
+        for position, candidate in enumerate(produced):
+            if position in taken:
+                continue
+            if annotation.message is not None \
+                    and annotation.message not in candidate.message:
+                continue
+            chosen.append((annotation, candidate))
+            walk(index + 1, taken | {position}, chosen)
+            chosen.pop()
+
+    walk(0, frozenset(), [])
+    return found[0] if len(found) == 1 else None
+
+
+def place_annotations(expected: list[Annotation], produced: list[Diagnostic],
+                      source_rel: str):
+    """Pair annotations with diagnostics loosely enough to bless (R4.4).
+
+    ``match_diagnostics`` keys on code, line and column, which is precisely what
+    bless cannot do: the column is the thing that may be wrong, so it cannot
+    also be part of the key. Bless pairs on code and line alone, and where one
+    line carries two annotations for one code it falls back on the quoted
+    substring, which is then the only discriminator left --
+    ``lexical-reject-tokens`` is the case that needs it, with two diagnostics
+    sharing a code, a line *and* a column.
+
+    Returns the pairs, the annotations nothing produced, the diagnostics no
+    annotation claims, and the (code, line) groups that stayed ambiguous. The
+    first two are reported rather than acted on, since writing or deleting an
+    annotation is the author's decision; the third refuses the scenario.
+    """
+    groups: dict[tuple[int, int], tuple[list[Annotation], list[Diagnostic]]] = {}
+    for annotation in expected:
+        groups.setdefault((annotation.code, annotation.line), ([], []))[0] \
+            .append(annotation)
+    for diagnostic in produced:
+        if normalize_path(diagnostic.path or "") != source_rel:
+            continue
+        groups.setdefault((diagnostic.code, diagnostic.line), ([], []))[1] \
+            .append(diagnostic)
+
+    pairs: list[tuple[Annotation, Diagnostic]] = []
+    unproduced: list[Annotation] = []
+    unclaimed: list[Diagnostic] = []
+    ambiguous: list[tuple[list[Annotation], list[Diagnostic]]] = []
+    for key in sorted(groups):
+        annotations, diagnostics = groups[key]
+        if len(annotations) == 1 and len(diagnostics) == 1:
+            pairs.append((annotations[0], diagnostics[0]))
+        elif not diagnostics:
+            unproduced += annotations
+        elif not annotations:
+            unclaimed += diagnostics
+        else:
+            placed = sole_placement(annotations, diagnostics)
+            if placed is None:
+                ambiguous.append((annotations, diagnostics))
+            else:
+                pairs += placed
+                claimed = {id(d) for _, d in placed}
+                unclaimed += [d for d in diagnostics if id(d) not in claimed]
+    return pairs, unproduced, unclaimed, ambiguous
+
+
+def rewrite_annotation(line: str, annotation: Annotation,
+                       produced: Diagnostic) -> str | None:
+    """Rewrite one ``//~``'s column and quoted substring, and nothing else.
+
+    R4.4 makes this a line-oriented edit rather than a parse-and-reserialize, so
+    the two fields are replaced by their spans within the line the author wrote.
+    The indentation, the position of the ``//~``, the caret run, the code name,
+    the ``follow-on`` flag, the spacing between fields and any trailing
+    whitespace all survive byte for byte, whether or not this runner would have
+    written them that way.
+
+    A field is rewritten only where what it asserts no longer holds, so a
+    correct expectation is left alone and the diff stays the size of the change
+    (R4.2). That matters for the substring in particular: the guidance is to pin
+    the fragment that identifies a diagnostic rather than the whole sentence, so
+    a fragment that still identifies it is still right and there is nothing to
+    bless. Where one has to be written, the whole message goes in, since bless
+    has no way to know which fragment of a new message the author would choose.
+
+    A field the author left off stays off. Adding a column to an annotation
+    written without one would tighten an expectation that was deliberately
+    loose, which is the same overreach as adding an annotation outright.
+    Returns None where the line already says the right thing.
+    """
+    at = line.find("//~")
+    marker = ANNOT_RE.match(line[at:])
+    parsed = ANNOT_BODY_RE.match(marker.group(2))
+    base = at + marker.start(2)
+
+    edits: list[tuple[int, int, str]] = []
+    if annotation.col is not None and produced.col is not None \
+            and annotation.col != produced.col:
+        start, end = parsed.span("col")
+        edits.append((base + start, base + end, str(produced.col)))
+    if annotation.message is not None \
+            and annotation.message not in produced.message:
+        start, end = parsed.span("message")
+        edits.append((base + start, base + end,
+                      escape_annotation_message(produced.message)))
+    if not edits:
+        return None
+    for start, end, text in sorted(edits, reverse=True):
+        line = line[:start] + text + line[end:]
+    return line
+
+
+def plan_source_edits(source: Path, pairs: list[tuple[Annotation, Diagnostic]]
+                      ) -> tuple[dict[int, str], list[str]]:
+    """The new text of every annotation line that needs one, keyed by line."""
+    bodies, _ = split_lines(source.read_bytes().decode("utf-8"))
+    edits: dict[int, str] = {}
+    described: list[str] = []
+    for annotation, produced in pairs:
+        index = annotation.annot_line - 1
+        rewritten = rewrite_annotation(bodies[index], annotation, produced)
+        if rewritten is None:
+            continue
+        edits[annotation.annot_line] = rewritten
+        described.append(f"{source.name}:{annotation.annot_line}:"
+                         f"\n  - {bodies[index].strip()}"
+                         f"\n  + {rewritten.strip()}")
+    return edits, described
+
+
+def apply_source_edits(source: Path, edits: dict[int, str]) -> None:
+    """Write the rewritten lines back, leaving every other byte as it was."""
+    raw = source.read_bytes().decode("utf-8")
+    bodies, endings = split_lines(raw)
+    for number, text in edits.items():
+        bodies[number - 1] = text
+    source.write_bytes("".join(
+        body + ending for body, ending in zip(bodies, endings)).encode("utf-8"))
+
+
+def plan_expected_stdout(path: Path, stdout: str) -> tuple[bytes, str] | None:
+    """The new bytes of a ``run`` scenario's .out file, or None if unchanged.
+
+    The comparison ignores trailing blank lines and line endings (R4.1), so what
+    is written is the program's output canonicalized the same way: its lines,
+    each terminated with the ending the file already used. A file being rewritten
+    whole has no per-line ending to preserve, so it keeps its dominant one.
+    """
+    ending = dominant_ending(path.read_bytes()) if path.exists() else "\n"
+    wanted = "".join(line + ending for line in trimmed(stdout)).encode("utf-8")
+    if path.exists() and path.read_bytes() == wanted:
+        return None
+    return wanted, f"{path.name}: {len(trimmed(stdout))} lines of stdout"
+
+
+@dataclass
+class Blessing:
+    """What bless did, or would not do, for one scenario."""
+    scenario: Scenario
+    refusal: str = ""
+    rewrote: list[str] = field(default_factory=list)
+    reported: list[str] = field(default_factory=list)
+
+    @property
+    def mark(self) -> str:
+        if self.refusal:
+            return "REFUSED"
+        return "blessed" if self.rewrote else "-"
+
+
+def annotated_diagnostics(scenario: Scenario, result: Result) -> list[Diagnostic]:
+    """The located diagnostics this scenario's category expects annotated.
+
+    The same split ``check_rejection`` and ``check_warning`` make: a warn
+    scenario annotates its warnings, and an error it also produced is a failure
+    of that scenario rather than something to place against an annotation.
+    """
+    located = [d for d in result.diagnostics if d.line is not None]
+    if scenario.category == "warn":
+        located = [d for d in located if d.is_warning]
+    return located
+
+
+def bless_scenario(scenario: Scenario, results: list[Result],
+                   by_number: dict[int, str]) -> Blessing:
+    """Record what one scenario produced, or refuse and say why."""
+    blessing = Blessing(scenario)
+
+    # R3.8. An xfail scenario's expectations describe the defect the mark
+    # exists to record. Blessing them to the buggy output would make the case
+    # pass, which the suite then reports as an XPASS, and would erase the
+    # description in the same stroke.
+    if scenario.xfail:
+        blessing.refusal = (
+            "marked xfail: its expectations record a defect rather than claim to"
+            " be current, so what the compiler produces is not a new one")
+        return blessing
+
+    for result in results:
+        where = "" if result.run.name == "default" else f"run {result.run.name}: "
+        produced = result.compiled
+        if produced is None or produced.killed:
+            blessing.refusal = (
+                f"{where}compiler {produced.killed if produced else 'never ran'}."
+                f" Nothing that hangs or floods has an expectation to record")
+            return blessing
+        # An exit status outside the taxonomy is a crash, and a status inside it
+        # that is not the one the category or cases.toml asked for is a
+        # behavioral change. Neither is a stale expectation, so neither is
+        # something bless may absorb (R4.2).
+        if produced.code not in EXIT_NAMES:
+            blessing.refusal = (
+                f"{where}exit status {produced.code} is not in the ErrorCode"
+                f" taxonomy, so the compiler crashed rather than finished")
+            return blessing
+        if produced.code != scenario.exit_code:
+            blessing.refusal = (
+                f"{where}exit status {produced.code} ({EXIT_NAMES[produced.code]}),"
+                f" where the scenario expects {scenario.exit_code}"
+                f" ({EXIT_NAMES.get(scenario.exit_code, '?')}). Something"
+                f" behavioral changed, which is not a thing to bless")
+            return blessing
+
+    # Every run of a scenario shares one source and one .out file, so two runs
+    # that disagree about what belongs in them have no single answer to write.
+    # No scenario declares more than one run today; this keeps the day one does
+    # from silently getting whichever run finished last.
+    agreed: tuple[dict[int, str], bytes | None] | None = None
+    described: list[str] = []
+    reported: list[str] = []
+
+    for result in results:
+        edits: dict[int, str] = {}
+        if scenario.category in ANNOTATABLE:
+            pairs, unproduced, unclaimed, ambiguous = place_annotations(
+                scenario.annotations, annotated_diagnostics(scenario, result),
+                scenario.source_rel)
+            if ambiguous:
+                blessing.refusal = "\n".join(
+                    [f"{len(ambiguous)} annotation group(s) bless cannot place"
+                     f" unambiguously, so nothing in this scenario was written"
+                     f" (R4.4). Distinguish them by their quoted substrings:"]
+                    + [indent(f"line {a[0].line}, {a[0].code_name}:\n"
+                              + indent("\n".join(
+                                  [f"annotation {x.describe()}" for x in a]
+                                  + [f"produced   {d.describe(by_number)}" for d in p])))
+                       for a, p in ambiguous])
+                return blessing
+            edits, lines = plan_source_edits(scenario.source, pairs)
+            described += lines
+            # Never written, only reported: bless does not know the code name of
+            # a diagnostic that appeared, and an annotation nothing produced may
+            # be a regression rather than a stale expectation (R4.4).
+            reported += [f"produced, and no annotation claims it: "
+                         f"{d.describe(by_number)}" for d in unclaimed]
+            reported += [f"annotated, and not produced: {a.describe()}"
+                         for a in unproduced]
+
+        stdout: bytes | None = None
+        if scenario.category == "run":
+            expected_path = scenario.source.with_suffix(".out")
+            if result.program_stdout is None:
+                reported.append(
+                    f"{expected_path.name} left alone: the program did not run to"
+                    f" completion, so it printed no expectation to record"
+                    + (f" ({result.note})" if result.note else ""))
+            else:
+                planned = plan_expected_stdout(expected_path, result.program_stdout)
+                if planned is not None:
+                    stdout, summary = planned
+                    described.append(summary)
+
+        if agreed is None:
+            agreed = (edits, stdout)
+        elif agreed != (edits, stdout):
+            blessing.refusal = (
+                f"run {result.run.name} would record something different from"
+                f" run {results[0].run.name}, and they share one source file")
+            return blessing
+
+    if agreed is not None:
+        edits, stdout = agreed
+        if edits:
+            apply_source_edits(scenario.source, edits)
+        if stdout is not None:
+            scenario.source.with_suffix(".out").write_bytes(stdout)
+    blessing.rewrote = described
+    blessing.reported = reported
+    return blessing
+
+
+def bless(results: list[Result], scenarios: list[Scenario],
+          by_number: dict[int, str]) -> int:
+    """R4.2. Re-record the selected scenarios, in tier order like a run.
+
+    Refusal is per scenario, not per suite: one case whose behavior changed does
+    not stop the others from being recorded, so a wide rewrite is not held up by
+    the one file that needs a person to look at it.
+    """
+    by_scenario: dict[str, list[Result]] = {}
+    for result in results:
+        by_scenario.setdefault(result.scenario.name, []).append(result)
+
+    blessings = []
+    for scenario in sorted(scenarios, key=lambda s: s.sort_key):
+        chosen = sorted(by_scenario.get(scenario.name, []), key=lambda r: r.run.name)
+        if not chosen:
+            continue
+        # A fault in bless itself refuses its own scenario rather than the whole
+        # run, the same way a fault in the runner fails only its own case. The
+        # planning that reads and decodes a source runs before anything is
+        # written, so the usual failure leaves the scenario untouched.
+        try:
+            blessings.append(bless_scenario(scenario, chosen, by_number))
+        except Exception as broken:                        # noqa: BLE001
+            blessings.append(Blessing(
+                scenario, refusal=f"bless itself failed: {broken!r}"))
+
+    tier = group = None
+    for blessing in blessings:
+        if blessing.scenario.tier != tier:
+            tier = blessing.scenario.tier
+            group = None
+            print(f"\ntier {tier}")
+        if blessing.scenario.group != group:
+            group = blessing.scenario.group
+            print(f"  {group}")
+        detail = ""
+        if blessing.rewrote:
+            detail = f"{len(blessing.rewrote)} expectation(s) recorded"
+        if blessing.reported:
+            detail += f"{', ' if detail else ''}{len(blessing.reported)} reported"
+        print(f"    {blessing.mark:<7}  {blessing.scenario.name:<28} {detail}")
+
+    for blessing in blessings:
+        if not (blessing.refusal or blessing.reported):
+            continue
+        print("\n" + "=" * 72)
+        print(f"{blessing.scenario.name}  ({blessing.scenario.category})")
+        if blessing.refusal:
+            print(indent("refused: " + blessing.refusal, "  "))
+        for note in blessing.reported:
+            print(indent("not written, for you to decide: " + note, "  "))
+
+    written = sum(len(b.rewrote) for b in blessings)
+    refused = [b for b in blessings if b.refusal]
+    print("\n" + "=" * 72)
+    summary = (f"{len(blessings)} scenarios: {written} expectation(s) recorded")
+    if refused:
+        summary += f", {len(refused)} scenario(s) REFUSED"
+    noted = sum(len(b.reported) for b in blessings)
+    if noted:
+        summary += f", {noted} reported and not written"
+    print(summary)
+    print("Bless checks nothing. Review the diff.")
+    return 1 if refused else 0
 
 
 # ---------------------------------------------------------------------------
@@ -1497,6 +1954,9 @@ def main(argv: list[str]) -> int:
                         help="print what would run, and run nothing (R2.6)")
     parser.add_argument("--coverage", action="store_true",
                         help="report ErrorCode values with no case, run nothing (R6.4)")
+    parser.add_argument("--bless", action="store_true",
+                        help="record what the compiler produced as the new"
+                             " expectation, and review the diff (R4.2)")
     parser.add_argument("--bless-codes", action="store_true",
                         help=f"regenerate {CODES_TOML.relative_to(REPO).as_posix()}"
                              f" from error.h, and review the diff (R5.2)")
@@ -1564,7 +2024,13 @@ def main(argv: list[str]) -> int:
     started = time.monotonic()
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
         results = list(pool.map(lambda item: runner.run(*item), work))
-    status = report(results, scenarios)
+    # Bless reads the same evidence a run asserts against, so it re-runs the
+    # selection and then records instead of reporting (R4.2). Pass or fail is
+    # not the question it answers -- what the compiler produced is.
+    if args.bless:
+        status = bless(results, scenarios, runner.by_number)
+    else:
+        status = report(results, scenarios)
     print(f"finished in {time.monotonic() - started:.1f}s")
     return status
 

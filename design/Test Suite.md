@@ -150,7 +150,8 @@ fn main() {
   successive annotations for one code line each take one more caret.
 - Name the code symbolically. Never write the number.
 - The column after `:` and any quoted substring are written by bless. You write
-  the code name.
+  the code name — and you decide whether either field is there at all, since
+  bless corrects the fields you wrote and never adds one you left off.
 - Mark `follow-on` for a diagnostic that exists only as a consequence of another.
   Without it, an unrelated change to error recovery breaks the scenario.
 
@@ -251,19 +252,41 @@ error, which is what keeps a forgotten registration from sitting unrun.
 
 ## 5. Update expectations
 
-Blessing records what the compiler actually produced as the new expectation. It
-rewrites the tail of each `//~` annotation in place — column and message text —
-leaving your code and your code names alone.
+Blessing records what the compiler actually produced as the new expectation.
 
 ```bash
 python test/run.py --bless core
 ```
 
+It rewrites exactly two things: the tail of each `//~` annotation in place —
+column and quoted substring — and the `.out` file of a `run` scenario. Your
+source, your code names, your caret runs, your `follow-on` flags and your
+`cases.toml` are left alone, and so is any field that is still right, so the
+diff is the size of the change. A substring it does have to rewrite becomes the
+whole message; trim it back to the fragment that identifies the diagnostic if
+you want one.
+
 Read the failures first, bless second, then review the diff. **Bless checks
 nothing; the review is the safety mechanism.**
 
-Bless refuses to change an exit status or absorb a crash. If it refuses,
-something behavioral broke — do not work around it.
+Bless never adds an annotation and never deletes one. It cannot know the code
+name of a diagnostic that appeared, and an annotation nothing produced may be a
+regression rather than a stale expectation, so it reports both and writes
+neither. It never adjusts a `diagnostics` count either: a changed set of
+diagnostics is a decision, not a bless.
+
+It refuses a scenario outright — recording nothing in it, while the rest of the
+suite still blesses — in four cases:
+
+- **The exit status changed.** Something behavioral broke; do not work around it.
+- **The run crashed**, timed out, or was killed by the output budget.
+- **Two annotations on one line share a code and cannot be told apart.** Bless
+  pairs an annotation with a diagnostic by code and line, and falls back on the
+  quoted substring when a line carries two of one code. Where that still leaves
+  a choice it refuses rather than guess, and names the group. Give the
+  annotations substrings that distinguish them.
+- **The scenario is marked `xfail`.** Its expectations record a defect rather
+  than claim to be current.
 
 After a syntax change: rewrite sources, bless the whole suite, review. A correct
 rewrite comes back green.

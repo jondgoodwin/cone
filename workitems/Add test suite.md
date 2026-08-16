@@ -454,14 +454,13 @@ Two behaviors the requirements imply but do not spell out:
 
 | Deferred | Requirement | Why |
 | --- | --- | --- |
-| Bless | R4.2, R4.4 | Needs a known-good baseline to test a rewriter against. Every expectation is correct right now, so there is nothing to bless and nothing to check a rewriter's output against. Build it once an expectation is genuinely wrong |
 | Diff-driven selection | R2.5 | Needs `tags.toml`, which does not exist. Selection by group, scenario, check name and `tag:<phase>` is implemented, so the vocabulary a diff would map onto is in place |
 
 Nothing deferred is silently ignored: an unimplemented `cases.toml` key fails
 discovery by name.
 
 The rest of this table has since been built — see "Found while building the
-remaining categories" below.
+remaining categories" and "Found while building bless" below.
 
 ### The staging file is in `test/staging/`, not under `test/cases/`
 
@@ -526,8 +525,8 @@ for it yet — R6.3 wants the case to land with the fix.
 
 Sequencing step 6 is done, and with it `codes.toml` (R5.2), the coverage report
 (R6.4), the `warn`, `recover` and `driver` categories (R3.1) and `xfail` (R3.8).
-`python test/run.py` runs twenty scenarios green. Only bless and diff-driven
-selection are left.
+`python test/run.py` runs twenty scenarios green. Only bless — since built, see
+below — and diff-driven selection were left.
 
 `test/codes.toml` is the pinned name-to-number table, regenerated with
 `--bless-codes` and compared against `error.h` before any case runs; a mismatch
@@ -594,6 +593,119 @@ one does not. `core-warn-loops` pins both.
 entirely tier 1 and 2 subject matter — references, permissions, moves, arrays,
 slices, methods, allocation — which is the expected shape at this point and is
 what R6.4 exists to make visible rather than to complain about.
+
+## Found while building bless
+
+`--bless` is built (R4.2, R4.4), so diff-driven selection is the only deferred
+item left. It re-runs the selected scenarios and records what the compiler
+actually produced, rewriting two things and nothing else: the tail of each `//~`
+annotation — the column after `:` and the quoted substring — and the `.out` file
+of a `run` scenario. The edit is line-oriented, as R4.4 requires. The file's
+lines are read, the two fields are replaced by their spans within the line the
+author wrote, and the lines are written back, so indentation, the position of
+the `//~`, the caret run, the code name, the `follow-on` flag and the spacing
+between fields all survive byte for byte whether or not the runner would have
+written them that way. Nothing is reserialized from a parsed representation, and
+each line keeps the ending it had, which is what makes R4.1's
+ending-agnostic requirement hold in the writing direction as well as the reading
+one.
+
+### A field is rewritten only where what it asserts no longer holds
+
+This falls out of the guidance to pin the fragment that identifies a diagnostic
+rather than the whole sentence. A fragment that is still contained in the
+message still identifies it, so there is nothing to bless and the line is left
+untouched; blessing a green corpus is therefore a no-op, which is the property
+that makes `--bless` safe to run over a whole suite. Where a substring does have
+to be rewritten it becomes the entire message, because bless has no way to know
+which fragment of a new sentence the author would have chosen — trimming it back
+is part of reviewing the diff. By the same reasoning a field the author left off
+stays off: adding a column to an annotation deliberately written without one
+would tighten an expectation, which is the same overreach as adding an
+annotation outright.
+
+### The pairing problem, and how it is resolved
+
+To rewrite a column, bless has to know which produced diagnostic belongs to
+which annotation — but the column is the thing that may be wrong, so it cannot
+also be part of the key. `match_diagnostics`, which the assertion path uses, keys
+on code, line *and* column and is deliberately left alone; bless has its own,
+looser pairing that keys on code and line only. Where one line carries two
+annotations for one code it falls back on the quoted substring, and requires that
+there be exactly one way to give every annotation in that group its own
+compatible diagnostic. Where there is none, or more than one, the scenario is
+refused and the group is printed with both sides side by side, as R4.4's "reported,
+not guessed at" requires. Pairing the two sides in the order they happen to arrive
+would work today and is exactly the guess that rules out: nothing says an author
+writes carets in emission order.
+
+`lexical-reject-tokens` is the case this exists for — two diagnostics sharing a
+code, a line and a column, separated only by their substrings — and
+`core-parse-decls` is the other, with three diagnostics on one line reached by
+`//~`, `//~^` and `//~^^`. Both bless correctly, and both refuse correctly once
+their substrings stop distinguishing anything.
+
+### What it refuses, and what it merely reports
+
+Refusal is per scenario rather than per suite, so one case whose behavior changed
+does not hold up recording the rest. A scenario is refused when its exit status
+differs from what its category or `cases.toml` expects, when the run crashed —
+a status outside the `ErrorCode` taxonomy, a timeout, or the output-budget kill —
+when its annotations cannot be placed unambiguously, or when it is marked
+`xfail`. The last was not anticipated: an `xfail` scenario's expectations record
+a defect rather than claim to be current, so blessing them to the buggy output
+would make the case pass, which R3.8 then reports as an XPASS, and would erase
+what the mark records in the same stroke.
+
+Reported but never written are a diagnostic that no annotation claims and an
+annotation that nothing produced. Bless cannot write the first because it does
+not know the code name, which R2.9 gives the author, and must not delete the
+second because it may be a regression rather than a stale expectation. Both are
+printed and the rest of the scenario is still recorded, since neither says the
+placeable annotations are wrong. `cases.toml` is never touched at all: a
+`diagnostics` count that no longer matches means the set of diagnostics changed,
+which is an authoring decision.
+
+### It was tested by breaking the corpus mechanically
+
+The corpus is green, so there was nothing genuinely wrong to bless, and a
+rewriter with no baseline to check against was the reason bless was deferred in
+the first place. The baseline was manufactured instead: a script perturbs every
+expectation in `test/cases/` — all fifty-three annotation columns, every quoted
+substring, and all four `.out` files — and bless is required to put them back
+byte-identical to a copy taken beforehand.
+
+Columns and `.out` files round-trip exactly, both with the corpus in LF and with
+the whole of it rewritten to CRLF, which is what checks that endings are
+preserved rather than normalized. Substrings round-trip exactly where the author
+had pinned the whole message, and where the author had pinned a fragment they
+come back as the whole message, which is correct rather than identical — the
+suite runs green afterwards either way, and blessing a second time changes
+nothing, so the result is a fixed point. Blessing every substring in
+`lexical-reject-tokens` into garbage is refused, and that file is left exactly as
+it was perturbed, which is the direct evidence that a refusal writes nothing in
+the scenario rather than most of it.
+
+The refusals were checked by hand: repairing every line of a `reject` scenario so
+that it compiles clean, appending a syntax error to a `compile` scenario so that
+it does not, and appending the known `::name` parser hang so the run is killed by
+the output budget. Each is refused for its own reason while the other scenarios
+selected alongside it still bless. `--bless` with a selector was checked against a
+fully perturbed corpus and restored only what it selected.
+
+### R1.6 was quietly broken from a Git Bash shell
+
+Found while testing bless, and pre-existing. Git for Windows ships a coreutils
+`link.exe` in its `/usr/bin`, so under Git Bash the runner found a `link.exe` on
+PATH, took it on faith, and skipped sourcing vcvars entirely. Every `run`
+scenario then failed to link, and failed in a way that read as a compiler problem
+rather than a shell one — which is the same class of misleading failure R1.1
+exists to prevent, arriving by a different route.
+
+vcvars is now tried first, and an inherited `link.exe` is trusted only after it
+identifies itself as Microsoft's. The suite runs green from PowerShell and from
+Git Bash. R1.6 asks for Windows and Linux/WSL with no installation step; it did
+not anticipate that one Windows shell would supply a decoy.
 
 ## Recommendations on the two open questions
 
