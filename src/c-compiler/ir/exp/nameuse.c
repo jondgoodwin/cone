@@ -22,6 +22,10 @@ typedef struct NameList {
 NameUseNode *newNameUseNode(Name *namesym) {
     NameUseNode *name;
     newNode(name, NameUseNode, NameUseTag);
+    // Type checking replaces this with the declaration's type. A use inside a
+    // template that is only ever cloned -- a trait's default method, a generic's
+    // body -- is never type checked at all, and keeps it.
+    name->vtype = unknownType;
     name->qualNames = NULL;
     name->dclnode = NULL;
     name->namesym = namesym;
@@ -59,6 +63,7 @@ INode *newNameUseFromDclNode(INode *dclnode, INode *lexnode) {
 NameUseNode *newMemberUseNode(Name *namesym) {
     NameUseNode *name;
     newNode(name, NameUseNode, MbrNameUseTag);
+    name->vtype = unknownType;
     name->qualNames = NULL;
     name->dclnode = NULL;
     name->namesym = namesym;
@@ -132,7 +137,8 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
     // For module-qualified names, look up name in that module
     if (name->qualNames) {
         // Do iterative look ups of module qualifiers beginning with basemod
-        Namespace *namespace = &name->qualNames->basemod->namespace;
+        ModuleNode *qualmod = name->qualNames->basemod;
+        Namespace *namespace = &qualmod->namespace;
         uint16_t cnt = name->qualNames->used;
         Name **namep = (Name**)(name->qualNames + 1);
         while (cnt--) {
@@ -141,8 +147,10 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
                 errorMsgNode((INode*)name, ErrorUnkName, "Namespace %s does not exist", &(*--namep)->namestr);
                 return;
             }
-            else if (foundnode->tag == ModuleTag)
-                namespace = &((ModuleNode*)foundnode)->namespace;
+            else if (foundnode->tag == ModuleTag) {
+                qualmod = (ModuleNode*)foundnode;
+                namespace = &qualmod->namespace;
+            }
             else if (foundnode->tag == StructTag)
                 namespace = &((StructNode*)foundnode)->namespace;
             else {
@@ -151,6 +159,22 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
             }
         }
         name->dclnode = namespaceFind(namespace, name->namesym);
+
+        // A private name belongs to the module that declares it, and qualifying
+        // reaches past that. Refusing it here is what refmodule.html says, and
+        // is also the only answer generation can honour: it emits no symbol for
+        // a private declaration of a module whose bodies this compile does not
+        // generate, so the call site would otherwise be left with nothing to
+        // call. A private candidate selected through a *public* overload name is
+        // untouched by this, because the program never names it.
+        //
+        // The declaration stays attached after the diagnostic: it is the one the
+        // program asked for, and leaving the use unresolved would only hand the
+        // next pass a null to trip over.
+        if (name->dclnode && qualmod != pstate->mod && name->namesym->namestr == '_')
+            errorMsgNode((INode*)name, ErrorNotPublic,
+                "%s is private to its module and may not be named from outside it.",
+                &name->namesym->namestr);
     }
     else
         // For non-qualified names (current module), should already be hooked in global name table

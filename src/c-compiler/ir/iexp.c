@@ -159,6 +159,11 @@ int iexpMultiInfer(INode *expectType, INode **maybeType, INode **from) {
     if (expectType == noCareType)
         return EqMatch;
 
+    // A branch already reported as bad contributes nothing to the type in
+    // common, and must not be compared against the branches that are still good
+    if (fromType == errorType)
+        return EqMatch;
+
     // when we need a specific type, but don't care which one,
     // we need to find the type in common between this and previous branches
     if (expectType == unknownType) {

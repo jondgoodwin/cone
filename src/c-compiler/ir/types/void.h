@@ -28,4 +28,7 @@ void voidPrint(VoidTypeNode *voidnode);
 // Create a new Absence node
 AbsenceNode *newAbsenceNode();
 
+// Create a node standing in for an expression already reported as bad
+INode *newErrorNode(INode *lexnode);
+
 #endif

@@ -34,11 +34,17 @@ void importNameRes(NameResState *pstate, ImportNode *node) {
     ModuleNode *sourcemod = node->module;
     ModuleNode *targetmod = pstate->mod;
 
-    // Process all nodes
+    // Process all nodes.
+    //
+    // A private name is not folded: refmodule.html says such a name may not be
+    // referenced outside its module, and generation agrees by emitting no symbol
+    // for one whose module this compile does not generate. A private *candidate*
+    // of a public overload name still arrives, because the overload name is what
+    // folds and the candidate travels inside it.
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(sourcemod->nodes, cnt, nodesp)) {
-        if (!isNamedNode(*nodesp))
+        if (!isNamedNode(*nodesp) || inodeIsPrivate(*nodesp))
             continue;
         modAddNamedNode(targetmod, inodeGetName(*nodesp), *nodesp);
     }

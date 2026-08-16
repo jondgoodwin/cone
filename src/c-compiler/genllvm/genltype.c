@@ -42,9 +42,19 @@ void genlVtableImpl(GenState *gen, VtableImpl *impl, LLVMTypeRef vtableRef) {
             val = LLVMConstInt(LLVMInt32TypeInContext(gen->context), offset, 0);
         }
         else {
-            // Pointer to method. Recast so parameter types match later on
+            // Pointer to method. Recast so parameter types match later on.
+            //
+            // The symbol is asked for rather than assumed. A vtable is built the
+            // first time a type mentioning it is generated, which happens while
+            // the module's symbols are still being declared: a function whose
+            // signature names '&<Shape' builds Shape's vtable, and any
+            // implementer declared later in the file has no symbol yet. Asking
+            // is idempotent, so a method already declared is untouched.
+            FnDclNode *meth = (FnDclNode *)*nodesp;
+            if (meth->llvmvar == NULL)
+                genlGloFnName(gen, meth);
             LLVMTypeRef newfntyp = LLVMStructGetTypeAtIndex(vtableRef, pos);
-            val = LLVMBuildBitCast(gen->builder, ((FnDclNode *)*nodesp)->llvmvar, newfntyp, "");
+            val = LLVMBuildBitCast(gen->builder, meth->llvmvar, newfntyp, "");
         }
         implRef = LLVMBuildInsertValue(gen->builder, implRef, val, pos++, "vtable entry");
     }

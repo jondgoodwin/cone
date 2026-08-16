@@ -13,6 +13,7 @@
 
 INode *unknownType;
 INode *noCareType;
+INode *errorType;
 INode *elseCond;
 INode *borrowRef;
 PermNode *uniPerm;
@@ -85,6 +86,13 @@ void stdlibInit(int ptrsize) {
     unknownType->tag = UnknownTag;
     noCareType = (INode*)newAbsenceNode();
     noCareType->tag = UnknownTag;
+    // Distinct from unknownType by identity, and deliberately so. unknownType
+    // means "not inferred yet", which must not silence anything. errorType means
+    // "already reported as bad", which must: every check that would complain
+    // about it stays quiet, so one compile reports several real problems instead
+    // of a cascade descending from the first.
+    errorType = (INode*)newAbsenceNode();
+    errorType->tag = UnknownTag;
     elseCond = (INode*)newAbsenceNode();
     borrowRef = (INode*)newAbsenceNode();
     borrowRef->tag = BorrowRegTag;

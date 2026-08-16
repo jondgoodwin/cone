@@ -11,6 +11,10 @@
 ArrayNode *newArrayNode() {
     ArrayNode *anode;
     newNode(anode, ArrayNode, ArrayTag);
+    // The node arrives as a type and may be re-tagged an array literal, whose
+    // vtype the type check fills in. Until then it is unknown rather than
+    // whatever the arena last held there.
+    anode->vtype = unknownType;
     anode->llvmtype = NULL;
     anode->dimens = newNodes(1);
     anode->elems = newNodes(1);

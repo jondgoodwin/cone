@@ -549,6 +549,14 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     if (!calleeIsOverload)
         inodeTypeCheckAny(pstate, &node->objfn);
 
+    // A callee already reported as bad -- a generic that could not be
+    // instantiated, say -- leaves nothing to call. The call inherits the mark
+    // rather than earning a second diagnostic saying its callee is not callable.
+    if (inodeIsError(node->objfn)) {
+        node->vtype = errorType;
+        return;
+    }
+
     // All arguments must now be expressions
     int badarg = 0;
     if (node->args) {
@@ -558,8 +566,10 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
                 badarg = 1;
             }
     }
-    if (badarg)
+    if (badarg) {
+        node->vtype = errorType;
         return;
+    }
 
     // If objfn is a type, handle it as a constructor or initializer
     if (isTypeNode(node->objfn)) {
@@ -572,6 +582,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         }
         if (node->methfld != NULL || node->objfn->tag != TypeNameUseTag) {
             errorMsgNode(node->objfn, ErrorBadTerm, "May not do a function call on a type");
+            node->vtype = errorType;
             return;
         }
 
@@ -583,6 +594,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         nameuse->dclnode = namespaceFind(namespace, nameuse->namesym);
         if (nameuse->dclnode == NULL || nameuse->dclnode->tag != FnDclTag) {
             errorMsgNode(node->objfn, ErrorBadTerm, "Does not refer to a valid type initializer");
+            node->vtype = errorType;
             return;
         }
         nameuse->tag = VarNameUseTag;
@@ -591,6 +603,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     
     if (!isExpNode(node->objfn)) {
         errorMsgNode(node->objfn, ErrorNotTyped, "Expected a typed expression.");
+        node->vtype = errorType;
         return;
     }
 
@@ -762,6 +775,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 
     default:
         errorMsgNode((INode*)node->objfn, ErrorNoMeth, "This type does not support calls or field access.");
+        node->vtype = errorType;
     }
 }
 

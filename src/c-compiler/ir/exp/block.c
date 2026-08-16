@@ -155,7 +155,8 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
         if (laststmtp && ((*laststmtp)->tag == BreakTag || (*laststmtp)->tag == ContinueTag || (*laststmtp)->tag == ReturnTag))
             errorMsgNode((INode*)*laststmtp, ErrorBadStmt, "Don't end loop block with break, continue or return");
 
-        inodeTypeCheck(pstate, laststmtp, noCareType); // we don't care about the type
+        if (laststmtp)
+            inodeTypeCheck(pstate, laststmtp, noCareType); // we don't care about the type
 
         // Warn if the loop block has no breaks, as loop may never stop
         if (blk->breaks->used == 0)
@@ -169,7 +170,11 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
         }
         else if (laststmtp == NULL ||
             !((*laststmtp)->tag == BreakTag || (*laststmtp)->tag == ContinueTag || (*laststmtp)->tag == ReturnTag)) {
-            inodeTypeCheck(pstate, laststmtp, noCareType); // we don't care about the type
+            // An empty block has no last statement to check, only the 'blockret
+            // nil' added just below. '{}' is legal, and so is the outer block an
+            // 'each' builds before it knows what it is iterating over.
+            if (laststmtp)
+                inodeTypeCheck(pstate, laststmtp, noCareType); // we don't care about the type
             // Add 'blockret nil' to end of empty block, or block ending without expression/break/cont/return
             BreakRetNode *retnode = newReturnNode();
             retnode->tag = BlockRetTag;

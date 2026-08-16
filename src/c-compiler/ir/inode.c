@@ -492,3 +492,9 @@ int inodeIsPrivate(INode *node) {
     Name *namesym = inodeGetName(node);
     return namesym && namesym->namestr == '_';
 }
+
+// Determine whether an earlier diagnostic already marked this node as bad.
+// A check that would complain about such a node has nothing new to report.
+int inodeIsError(INode *node) {
+    return isExpNode(node) && ((IExpNode*)node)->vtype == errorType;
+}

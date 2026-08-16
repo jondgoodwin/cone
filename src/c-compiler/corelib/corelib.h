@@ -11,6 +11,7 @@
 // Unique (unclonable) nodes representing the absence of value or type
 extern INode *unknownType;   // Unknown/unspecified type
 extern INode *noCareType;    // When the receiver does not care what type is returned
+extern INode *errorType;     // The type of a node already reported as bad
 extern INode *elseCond;   // node representing the 'else' condition for an 'if' node
 extern INode *borrowRef;  // When a reference's region is unspecified, as it is borrowed
 

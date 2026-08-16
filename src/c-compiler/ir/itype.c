@@ -166,6 +166,12 @@ TypeCompare itypeMatches(INode *totype, INode *fromtype, SubtypeConstraint const
     if (totype == fromtype)
         return EqMatch;
 
+    // Either side already reported as bad matches anything. The diagnostic that
+    // made it bad has been issued, and a mismatch derived from it says nothing
+    // the programmer does not already know.
+    if (totype == errorType || fromtype == errorType)
+        return EqMatch;
+
     // Type-specific matching logic
     switch (totype->tag) {
 

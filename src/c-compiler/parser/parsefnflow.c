@@ -305,6 +305,15 @@ INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag) {
         parseInsertWhileBreak((INode*)loopnode, iter);
         nodesAdd(&outerblk->stmts, (INode*)loopnode);
     }
+    else {
+        // Only the numeric range operators are rewritten into a loop. Anything
+        // else -- a collection, a slice, a closure iterator -- has no iteration
+        // protocol behind it yet, so the loop and its body are dropped. Saying
+        // so is the difference between an unimplemented feature and a statement
+        // that silently does nothing.
+        errorMsgNode(iter, ErrorNotIterable,
+            "'each' can only iterate over a numeric range, such as 'each x in 0 < n'.");
+    }
     return (INode *)outerblk;
 }
 
@@ -439,6 +448,11 @@ Nodes *parseGenericParms(ParseState *parse) {
         lexNextToken();
     else
         errorMsgLex(ErrorBadTok, "Expected list of macro/generic parameter ending with square bracket.");
+    // 'fn f[]()' declares a generic with nothing to substitute, so no call can
+    // ever instantiate it and the declaration would generate nothing at all.
+    // That is worth saying rather than leaving the function silently absent.
+    if (parms->used == 0)
+        errorMsgLex(ErrorNoGenParms, "A type parameter list must declare at least one parameter.");
     return parms;
 }
 

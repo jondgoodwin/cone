@@ -40,6 +40,7 @@ INode *cloneCastNode(CloneState *cstate, CastNode *node) {
 CastNode *newIsNode(INode *exp, INode *type) {
     CastNode *node;
     newNode(node, CastNode, IsTag);
+    node->vtype = (INode*)boolType;  // 'is' answers a question, whatever it asks about
     node->typ = type;
     node->exp = exp;
     return node;

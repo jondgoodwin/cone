@@ -20,7 +20,7 @@
 #include <assert.h>
 
 // Run all semantic analysis passes against the AST/IR (after parse and before gen)
-void doAnalysis(ProgramNode **pgm) {
+void doAnalysis(ConeOptions *opt, ProgramNode **pgm) {
 
     // Resolve all name uses to their appropriate declaration
     // Note: Some nodes may be replaced (e.g., 'a' to 'self.a')
@@ -31,8 +31,14 @@ void doAnalysis(ProgramNode **pgm) {
     nstate.scope = 0;
     nstate.flags = 0;
     inodeNameRes(&nstate, (INode**)pgm);
-    if (errors)
+    if (errors) {
+        // Name resolution reporting a bad program is one of the two places a
+        // phase returns early, so it is one of the two places to check that it
+        // left nothing empty behind it
+        if (opt->check_tree)
+            inodeCheckTree((INode*)*pgm);
         return;
+    }
 
     // Apply syntactic sugar, and perform type inference/check:
     // 1. Modules will do all its variables/function sigs first, before values/bodies
@@ -53,6 +59,9 @@ void doAnalysis(ProgramNode **pgm) {
     tstate.fn = NULL;
     tstate.typenode = NULL;
     inodeTypeCheckAny(&tstate, (INode**)pgm);
+
+    if (opt->check_tree)
+        inodeCheckTree((INode*)*pgm);
 }
 
 int main(int argc, char **argv) {
@@ -78,7 +87,7 @@ int main(int argc, char **argv) {
     ProgramNode* pgmnode = parsePgm(&coneopt);
     if (errors == 0) {
         timerBegin(SemTimer);
-        doAnalysis(&pgmnode);
+        doAnalysis(&coneopt, &pgmnode);
         if (errors == 0) {
             timerBegin(GenTimer);
             if (coneopt.print_ir)

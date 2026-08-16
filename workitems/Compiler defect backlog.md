@@ -5,10 +5,10 @@ language decision attached, and no shared cause. Each belongs near an existing
 work item rather than to this one; this page exists so that none of them is lost
 between the survey that found them and the feature work that will touch them.
 
-The three severe groups are elsewhere: [[Ownership memory safety]],
-[[Diagnose instead of crash]], [[Unenforced language rules]]. Full evidence for
-everything below is under "Found while building the groups" in
-[[Add test suite]].
+The three severe groups are elsewhere. [[Ownership memory safety]] and
+[[Diagnose instead of crash]] are done and now live in `workitems/done/`;
+[[Unenforced language rules]] is not. Full evidence for everything below is under
+"Found while building the groups" in [[Add test suite]].
 
 **Most of these are pinned by an `xfail` scenario**, which means the suite fails
 the day one is fixed and the fixer is told to remove the mark. They cannot be

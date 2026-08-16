@@ -7,9 +7,11 @@ while building the groups" in [[Add test suite]].
 These are separated from the other defects because none of them is a bug in the
 ordinary sense. In each case the code does what it was written to do; what is
 missing is a decision that was never made, or a check that was never written
-against a decision that was. **Every one of them needs a language answer before
-it needs a patch**, which is why they are not in [[Diagnose instead of crash]] or
-[[Ownership memory safety]].
+against a decision that was. **Most of them need a language answer before they
+need a patch**, which is why they are not in [[Diagnose instead of crash]] or
+[[Ownership memory safety]] — but check the reference manual before concluding
+that of any given one. Module-level privacy was listed here and turned out to be
+answered on a published page; it is now closed.
 
 Each also has the same testing property, and it is an uncomfortable one: **the
 suite cannot assert an absent check.** A scenario proves the compiler rejects
@@ -36,23 +38,24 @@ consequences: `imm` appears throughout the reference manual, the examples and th
 playground, and every use of it currently means nothing. Related:
 [[Permissions]].
 
-## Module-level privacy is not enforced
+## ~~Module-level privacy is not enforced~~ — enforced
 
-`importNameRes` (`ir/stmt/import.c`) folds **every** named node of an imported
-module, private ones included, and `nameUseNameRes` resolves `mod::_privateName`
-without complaint. Privacy exists as `LLVMHiddenVisibility` in genllvm and as the
-`ErrorNotPublic` check on methods and fields — that is all.
+**Closed by [[Diagnose instead of crash]].** It was listed here on the belief
+that it needed a language answer first — reject the access, or generate symbols
+for everything reachable and make privacy advisory. The answer was already
+published: `refmodule.html` says a name beginning with an underscore "may not be
+referenced outside the module", twice, once for modules and once for types. So
+there was a check to write and no decision to make, and the crash made it urgent.
 
-The consequence is a crash rather than a leak, because codegen skips private
-declarations in a non-generating module and the call site then uses a null
-`llvmvar`. Commit `34ca637` fixed one path of this (private *function candidates*
-reached through a public overload name, which `test/cases/module/module-imports`
-now pins as a regression test) and left the others.
+`importNameRes` no longer folds private names, and `nameUseNameRes` rejects
+`mod::_privateName` with `ErrorNotPublic`. A private *candidate* reached through a
+public overload name is deliberately untouched — the program never names it — and
+`test/cases/module/module-imports` still pins that. `module-nameres` pins the
+rejection.
 
-The decision: reject cross-module private access at name resolution, which is
-probably the intended rule, or generate symbols for everything reachable. The
-first makes the crash impossible; the second makes privacy advisory. Related:
-[[Names and Namespaces]], [[Using and Module Name-folding]].
+This entry is the reason to check the reference manual before assuming a rule
+needs a ruling. Related: [[Names and Namespaces]],
+[[Using and Module Name-folding]].
 
 ## Only one lifetime rule is enforced
 

@@ -55,6 +55,7 @@ add_executable(conec
 	src/c-compiler/shared/timer.c
 	src/c-compiler/shared/utf8.c
 
+	src/c-compiler/ir/checktree.c
 	src/c-compiler/ir/clone.c
 	src/c-compiler/ir/flow.c
 	src/c-compiler/ir/iexp.c

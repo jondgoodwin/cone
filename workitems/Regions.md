@@ -60,9 +60,12 @@ node and still fails, so this is not a repair to the existing lowering. Building
 the way round described above is the fix.
 
 The test suite cannot hold this defect in any form: `?+so` hangs, and a scenario
-whose assertion is "this takes twenty seconds" asserts nothing. The crash half is
-cross-listed to [[Diagnose instead of crash]]; it was found by [[Add test suite]]
-and triaged in [[Ownership memory safety]], which carries the rest of that survey.
+whose assertion is "this takes twenty seconds" asserts nothing. It was found by
+[[Add test suite]] and triaged in [[Ownership memory safety]], which carries the
+rest of that survey. It was also listed in [[Diagnose instead of crash]], which
+has since been completed and removed it: the crash half is not an error path that
+left a NULL behind, so nothing that item built reaches it, and this is the only
+place it lives now.
 
 Alloc and init for array references
 - Function-based initialization

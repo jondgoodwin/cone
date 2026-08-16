@@ -13,6 +13,7 @@
 AssignNode *newAssignNode(int16_t assigntype, INode *lval, INode *rval) {
     AssignNode *node;
     newNode(node, AssignNode, AssignTag);
+    node->vtype = unknownType;  // Type checking sets it from the lval
     node->assignType = assigntype;
     node->lval = lval;
     node->rval = rval;
