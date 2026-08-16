@@ -125,8 +125,18 @@ and the answer splits the work cleanly:**
   runs today.
 - A **reference receiver** (`self &`, `self &mut`) does require making a
   reference out of a pointer: a borrow with no region, lifetime or permission,
-  which is the operation `refptr.html` spells `trust{ptr1 as &i32}`. That half
-  is coupled to the unimplemented `trust` design.
+  which is the operation `refptr.html` spells `trust{ptr1 as &i32}`. **But that
+  operation is already spellable and already unguarded**: `imm r &mut Point =
+  &mut (*sp)` compiles clean today, outside any trust block, and generates valid
+  LLVM — as do `*p`, `p[i]`, `p.x` and `sp.y = 9`. So the fix manufactures
+  nothing the language does not already hand out; it is sugar over a borrow the
+  programmer can write by hand.
+
+  This matters for scheduling. Requiring `trust` for `p.method()` alone, while
+  every other pointer operation stays unguarded, would be a lone island of
+  strictness rather than a safety improvement. The `trust` design has to arrive
+  for all of them at once, and when it does this call site is one of the many it
+  will have to wrap, not a special case.
 
 **And the gap is not confined to pointers.** `fncall.c:731-736` looks like it
 retries method lookup after `derefInject` on the `RefTag` path — the comment in
@@ -138,13 +148,23 @@ value-receiver method is not callable through a reference either:
 `struct-methods.cone` never caught it because its `sum` has a `self &`
 candidate too.
 
-**Recommendation:** do the value-receiver half now, for pointers and references
-together, by repairing the dead retry so it fires when lookup found the name but
-no candidate accepted the receiver. It is one condition, it needs no language
-decision, and it fixes a reference bug nobody had noticed. Leave the
-reference-receiver half for `trust`. `safety-typecheck-ptruse`'s
-`methodThroughPointer` case must then be rewritten — it asserts the gap as
-though it were the rule — and split, since the two halves now differ.
+**Recommendation:** do both halves now. Repair the dead retry so it fires when
+lookup found the name but no candidate accepted the receiver, and let it try a
+deref and a borrow in turn — which is what the programmer would write by hand
+and what the reference path is already trying to do. It needs no language
+decision, it grants no capability pointers do not already have, and it fixes a
+reference bug nobody had noticed.
+
+The architectural question underneath — that a raw pointer can become a
+reference at all, with no region, lifetime or permission, and that nothing
+anywhere requires `trust` — is real and is bigger than this call site. It
+belongs to the `trust` work rather than here; see [[Unenforced language rules]]
+and `reftrust.html`. Fixing the lookup now does not make it worse and does not
+make it harder to close later.
+
+`safety-typecheck-ptruse`'s `methodThroughPointer` case must then be rewritten —
+it asserts the gap as though it were the rule — and the working forms moved to
+`safety-pointers` beside the field access they resemble.
 
 ### 2. Branch inference does not unify two identical closure types
 
