@@ -455,15 +455,30 @@ Two behaviors the requirements imply but do not spell out:
 | Deferred | Requirement | Why |
 | --- | --- | --- |
 | Bless | R4.2, R4.4 | Needs a known-good baseline to test a rewriter against. Every expectation is correct right now, so there is nothing to bless and nothing to check a rewriter's output against. Build it once an expectation is genuinely wrong |
-| `codes.toml` | R5.2 | Wants the explicit-`ErrorCode`-values compiler change first, which is sequencing step 3. The runner already parses `error.h` for name-to-number, which is the half that has to exist either way |
 | Diff-driven selection | R2.5 | Needs `tags.toml`, which does not exist. Selection by group, scenario, check name and `tag:<phase>` is implemented, so the vocabulary a diff would map onto is in place |
-| `warn`, `recover`, `driver` | R3.1, R3.8 | No scenarios exercise them. `driver` also needs an `argv` key that the `cases.toml` schema does not have, and adding schema without content to write against it is the wrong order |
-| `xfail` | R3.8 | Same. A scenario setting `xfail` is a hard configuration error rather than a silently ignored key, so this cannot be forgotten |
-| `ErrorCode` coverage report | R6.4 | Two groups is too small a sample to report a backlog against; it wants the tier 1 groups first |
 
-Nothing deferred is silently ignored. A `cases.toml` naming a deferred category
-reports the scenario as **skipped** with the reason; any other unimplemented key
-fails discovery by name.
+Nothing deferred is silently ignored: an unimplemented `cases.toml` key fails
+discovery by name.
+
+The rest of this table has since been built — see "Found while building the
+remaining categories" below.
+
+### The staging file is in `test/staging/`, not under `test/cases/`
+
+The layout above puts `test/test.cone` and `test/submod.cone` under `cases/`.
+They are in `test/staging/` instead. The runner walks only the *directories*
+under `test/cases/`, so a loose `.cone` file directly beneath it would be neither
+an error nor run — exactly the "sitting unrun" state R2.12 exists to prevent —
+and it cannot go inside a group directory, where an unregistered `.cone` file is
+an error by that same rule. `test/staging/` makes it unambiguously not a case.
+
+Draining it is not a step of its own. Its remaining content is structs and
+operator methods, unions and variant matching, arrays and slices, borrowed
+references and permissions, regions and rc references, pointers, closures,
+generics and macros, `each`, and imports — all still in `:`-block form needing
+brace conversion (R6.6). Every line of it belongs to a tier 1 or tier 2 group, so
+each group claims its own content as it is built, and the file empties as
+sequencing step 8 proceeds rather than in a pass before it.
 
 ### The CRLF hazard is worse than R4.1 records
 
@@ -506,6 +521,79 @@ This is what R1.2's exact-status matching is for: the runner reported "exit
 status 3221225477 (not in the ErrorCode taxonomy)". Accepting "nonzero" would
 have scored the access violation as a correct rejection. No scenario is added
 for it yet — R6.3 wants the case to land with the fix.
+
+## Found while building the remaining categories
+
+Sequencing step 6 is done, and with it `codes.toml` (R5.2), the coverage report
+(R6.4), the `warn`, `recover` and `driver` categories (R3.1) and `xfail` (R3.8).
+`python test/run.py` runs twenty scenarios green. Only bless and diff-driven
+selection are left.
+
+`test/codes.toml` is the pinned name-to-number table, regenerated with
+`--bless-codes` and compared against `error.h` before any case runs; a mismatch
+is a `SuiteError` naming exactly which codes moved, added or vanished.
+`--coverage` prints the R6.4 report and runs nothing.
+
+### `driver` is the one group with no manual chapter
+
+R6.1 says a group follows a reference-manual chapter. `driver` cannot: it tests
+the compiler's command line, not the language. It is tier 0, has no `.cone`
+files, and takes an `argv` key that no other category may use. The four statuses
+were measured rather than assumed — `--version` 0, unrecognized option
+`ExitOpts`, missing source `ExitNF`, no arguments `ExitOpts`.
+
+### `warn` asks exactly what `reject` asks
+
+The category table originally asked a `warn` scenario for exit 0, the named
+warnings present, and no errors — and, unlike `reject`, not for the absence of
+unnamed ones. **That was wrong and the table is corrected.** `warn` is the only
+category that permits a warning at all, since `compile` and `run` require
+explicitly zero (R3.2), so a `warn` scenario is the single place in the whole
+suite where a newly introduced spurious warning could sit unnoticed. Leaving that
+covered only by an author remembering to write a `diagnostics` count is precisely
+the silently-ignorable failure R3.2 exists to close. A `warn` scenario now
+requires every warning annotated, the same as `reject`.
+
+Discovery also refuses a `warn` scenario that names no warning at all, on the same
+ground: a category assertion nothing exercises is not an assertion.
+
+### `recover` is implemented and unexercised
+
+Nothing in `core`'s reach demonstrates recovery beyond what the existing `reject`
+scenarios already show. `core-parse-stmts` carries five parse diagnostics and
+`core-typecheck` eight, each accumulated and each annotated; a `recover` scenario
+over the same ground would assert strictly less. Recovery interference is real —
+the parser resynchronizes by skipping forward, and a file with several broken
+declarations yields one diagnostic rather than several, because parse errors stop
+the pipeline before analysis — but that is a reason `reject` files are split, not
+a scenario. The category is built and waits for a group whose diagnostics are
+recovery artifacts whose positions are not worth pinning.
+
+### Warning coverage is one code of three
+
+Of the three warnings in `error.h`, only `WarnLoop` is `core`'s to provoke.
+
+- **`WarnCopy` is emitted nowhere in the compiler.** It is declared in `error.h`
+  and has no `errorMsgNode` call anywhere in `src/`, so no scenario in any group
+  can reach it. Either the check it belongs to is unwritten or the code is dead.
+- **`WarnName` needs a function-valued expression.** `parseFn` reports it where
+  the parser expected an anonymous function and got a named one, which is
+  `parseexpr.c`'s `fn` term. It cannot be written without one, so it belongs to
+  `closure`.
+- **`WarnIndent` is excluded** from the coverage denominator by R6.6 along with
+  `ExitIndent`, rather than chased.
+
+`WarnLoop` is reported at the loop's *block*, not at the `while`, so the column
+is the `{`. A labeled `break` counts for the loop it names and not for the one it
+sits in, so a nested loop whose only exit is `break 'outer` warns while the outer
+one does not. `core-warn-loops` pins both.
+
+### Where coverage stands
+
+28 of 61 diagnostic codes are covered by tier 0. The 33 uncovered are almost
+entirely tier 1 and 2 subject matter — references, permissions, moves, arrays,
+slices, methods, allocation — which is the expected shape at this point and is
+what R6.4 exists to make visible rather than to complain about.
 
 ## Recommendations on the two open questions
 

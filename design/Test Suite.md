@@ -122,7 +122,7 @@ Never hand-assert what a category already covers.
 | --- | --- | --- |
 | `compile` | Compiles | Exit 0, no diagnostics, zero warnings, object emitted |
 | `run` | Compiles, links against `conestd`, executes | The above, plus stdout matches the `.out` file |
-| `warn` | Compiles | Exit 0, the named warnings present, no errors |
+| `warn` | Compiles | Exit 0, every annotated warning matched, no unannotated ones, no errors |
 | `reject` | Compiles | Exit exactly 1, every annotated diagnostic matched by code and location, and no unannotated ones |
 | `recover` | Compiles | Exit exactly 1, the expected diagnostic count, no crash and no hang |
 | `driver` | Invokes `conec` without valid Cone source | The exact exit code — bad option, missing file, `--version` |
@@ -218,6 +218,11 @@ diagnostics = 0              # total count; required for 'recover'
 exit        = 0              # only where it is not the category's default
 xfail       = false          # omit unless true
 
+[scenario.driver-bad-option]
+category    = "driver"       # a driver scenario has no .cone file
+argv        = ["--bogus"]    # the whole invocation; nothing is appended
+exit        = 4              # required: asserting it is the whole category
+
 [[scenario.core-overload.run]]   # omit entirely for a single default run
 name    = "wasm"
 options = ["--wasm"]
@@ -232,6 +237,12 @@ target   = "llvmir"
 contains = ["@scaleInt"]
 excludes = ["@scale("]
 ```
+
+`argv` belongs to a `driver` scenario and to nothing else. Such a scenario is the
+one kind with no `.cone` file, so the rule that a listed scenario without a
+source is an error does not reach it, and it is the one kind whose group —
+`driver` — follows no manual chapter, because the command line is not a language
+feature.
 
 The group directory supplies the feature tag, so `tags` carries only pipeline
 phases. A scenario with no annotations and no checks still needs its table: a

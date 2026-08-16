@@ -31,8 +31,13 @@ contains its C compiler (`conec`) and a small standard-library component
   `workitems/_index.md` plan summarizes the work and acts as the manifest for
   the individual work-item notes; `workitems/__Top Priority.md` identifies the
   current priority sequence.
-- `test/test.cone`: broad compiler smoke-test input.
-- `test/submod.cone`: imported module used by the smoke-test input.
+- `test/run.py`: the test suite runner. `design/Test Suite.md` is its authoring
+  guide.
+- `test/cases/<group>/`: one directory per coverage group, each with a
+  `cases.toml` listing its scenarios.
+- `test/staging/test.cone`: what is left of the broad compiler smoke-test input,
+  waiting to be claimed by the groups that own it. Empty means done.
+- `test/staging/submod.cone`: imported module used by the staging input.
 
 ## Documentation context
 
@@ -44,7 +49,10 @@ contains its C compiler (`conec`) and a small standard-library component
   detailed active or backlog items.
 - Consult `conesite/public/coneref/index.html` for the language reference
   page index and the surrounding `conesite/` files when changing published
-  language documentation or playground behavior.
+  language documentation or playground behavior. Its chapter list is also the
+  spine of the test suite's group organization: adding a chapter implies asking
+  whether a coverage group is needed, and a feature with no chapter has nowhere
+  to be tested.
 
 ## Compiler pipeline
 
@@ -131,8 +139,8 @@ name or `tag:<phase>` narrows it. `design/Test Suite.md` is the authoring guide:
 which group to touch, what to assert, and how expectations are written.
 
 **A stale `conec` fails good sources in ways indistinguishable from a language
-regression.** A binary left over from an earlier session once failed
-`test/test.cone` with 17 errors purely because it predated a merge. The runner
+regression.** A binary left over from an earlier session once failed the
+smoke-test input with 17 errors purely because it predated a merge. The runner
 refuses to run against a binary older than a compiler source, and `--build`
 builds first; outside the runner, build before believing any failure.
 
@@ -146,9 +154,8 @@ For a compiler change:
 1. Build `conec` and run `python test/run.py`.
 2. Add coverage for the change: a scenario in the owning group under
    `test/cases/`, following `design/Test Suite.md`. Coverage not yet decomposed
-   into groups still lives in `test/test.cone`; see
-   `workitems/Add test suite.md`, which also names the branch holding the
-   overload fixtures until they are restored.
+   into groups still lives in `test/staging/test.cone`, which drains to empty as
+   the groups claim it; see `workitems/Add test suite.md`.
 3. Inspect the generated IR when the change affects lowering or symbols.
 4. When the change affects runtime behavior, link and run a program.
 

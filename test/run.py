@@ -8,18 +8,19 @@ expectations claim. Python 3.11+, no third-party dependencies.
     python test/run.py core             run one group
     python test/run.py core-overload    run one scenario
     python test/run.py --list           print what would run, run nothing (R2.6)
+    python test/run.py --coverage       ErrorCode coverage, run nothing (R6.4)
     python test/run.py --build          build the compiler first (R1.1)
+    python test/run.py --bless-codes    regenerate test/codes.toml (R5.2)
 
 The runner's whole vocabulary is the command line, the exit code, stderr,
 stdout, and the files a run produced (R2.7). It knows nothing about compiler
 internals beyond the diagnostic text format and the ``ErrorCode`` enum it reads
 out of ``src/c-compiler/shared/error.h``.
 
-Deferred, and why, is recorded in ``workitems/Add test suite.md``. The short
-list: bless (R4.2/R4.4), ``codes.toml`` (R5.2), diff-driven selection (R2.5),
-and the ``warn``/``recover``/``driver`` categories with ``xfail`` (R3.8). Any
-scenario asking for a deferred feature is a hard configuration error rather
-than something quietly ignored.
+Deferred, and why, is recorded in ``workitems/Add test suite.md``. What is left:
+bless (R4.2/R4.4) and diff-driven selection (R2.5). Any scenario asking for a
+deferred feature is a hard configuration error rather than something quietly
+ignored.
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 CASES = REPO / "test" / "cases"
+CODES_TOML = REPO / "test" / "codes.toml"
 ERROR_H = REPO / "src" / "c-compiler" / "shared" / "error.h"
 IS_WINDOWS = os.name == "nt"
 
@@ -46,7 +48,13 @@ IS_WINDOWS = os.name == "nt"
 # Results are reported tier 0 first, because tier 1 and 2 groups assume the
 # foundation works and a foundation break would otherwise be buried under the
 # downstream failures it caused (R2.8).
+#
+# 'driver' is the one group that is not in that table and never will be: it
+# tests the compiler's command line rather than the language, so it follows no
+# reference-manual chapter (R6.1). It is tier 0 because nothing else means
+# anything if conec cannot be invoked.
 TIERS = {
+    "driver": 0,
     "lexical": 0,
     "core": 0,
     "struct": 1,
@@ -80,12 +88,20 @@ EXIT_NAMES = {
 }
 
 CATEGORIES = ("compile", "run", "warn", "reject", "recover", "driver")
-IMPLEMENTED = ("compile", "run", "reject")
-DEFAULT_EXIT = {"compile": 0, "run": 0, "reject": 1}
+
+# The category's exit status where cases.toml does not override it (R2.10).
+# 'driver' has no default: naming the status is the whole point of the category,
+# so it is required rather than inherited.
+DEFAULT_EXIT = {"compile": 0, "run": 0, "warn": 0, "reject": 1, "recover": 1}
+
+# Categories whose diagnostics are located, and so may carry //~ annotations.
+# 'warn' shares the mechanism with 'reject' because a warning is the same enum
+# printed in the same format; only the code's block differs.
+ANNOTATABLE = ("reject", "warn")
 
 SCENARIO_KEYS = {
     "category", "description", "tags", "diagnostics", "exit", "xfail",
-    "run", "unlocated", "check",
+    "run", "unlocated", "check", "argv",
 }
 
 
@@ -100,9 +116,11 @@ class SuiteError(Exception):
 def parse_error_codes(path: Path) -> dict[str, int]:
     """Read ``enum ErrorCode`` so cases can name diagnostics symbolically (R5.1).
 
-    The enum is still unnamed positions, so this walks it the way the C
-    compiler does. R5.2 wants explicit values plus a pinned ``codes.toml``; both
-    are sequencing step 3 and neither changes what this function has to do.
+    Every member carries an explicit value today, but this still walks the enum
+    the way the C compiler does — a member written without one takes the
+    previous value plus one — so a code added against the header's own
+    convention is read correctly and then reported by ``check_codes_table``
+    rather than silently mis-numbered here.
     """
     text = path.read_text(encoding="utf-8", errors="replace")
     match = re.search(r"enum\s+ErrorCode\s*\{(.*?)\}\s*;", text, re.S)
@@ -125,6 +143,81 @@ def parse_error_codes(path: Path) -> dict[str, int]:
         codes[member.group(1)] = value
         value += 1
     return codes
+
+
+CODES_HEADER = """\
+# ErrorCode name to number, pinned (R5.2).
+#
+# Regenerate with:  python test/run.py --bless-codes
+# and review the diff. The runner compares this table against
+# src/c-compiler/shared/error.h before any case runs, and fails naming exactly
+# which codes moved.
+#
+# These numbers are a published interface. Scenarios name codes symbolically
+# (R5.1) but the compiler prints the number, so a renumber would invalidate
+# every expectation at once and none of them loudly. Explicit values in error.h
+# remove that hazard at the source; this table is defense in depth, catching a
+# code added without following the header's convention.
+#
+# Written in the header's own declaration order, so the diff of a code added at
+# the end of its block is one line.
+
+"""
+
+
+def write_codes_table(path: Path, codes: dict[str, int]) -> None:
+    """R5.2. Generated, checked in, and verified against the source."""
+    lines = [CODES_HEADER]
+    for name, value in codes.items():
+        lines.append(f"{name} = {value}\n")
+    path.write_text("".join(lines), encoding="utf-8", newline="\n")
+
+
+def check_codes_table(codes: dict[str, int], path: Path) -> None:
+    """R5.2. Assert the checked-in table still describes ``error.h``.
+
+    This runs before any case does, and a mismatch is a fault in the suite's own
+    configuration rather than a compiler failure: every expectation in the corpus
+    is matched on the number the compiler printed, so a renumber makes the whole
+    corpus wrong at once. Failing here says so once, by name, instead of leaving
+    it to be inferred from a page of unrelated-looking case failures.
+    """
+    if not path.exists():
+        raise SuiteError(
+            f"no pinned ErrorCode table at {path.relative_to(REPO).as_posix()} (R5.2)\n"
+            f"  generate it with: python test/run.py --bless-codes"
+        )
+    try:
+        with path.open("rb") as handle:
+            table = tomllib.load(handle)
+    except tomllib.TOMLDecodeError as broken:
+        raise SuiteError(f"{path}: {broken}") from None
+
+    bad = sorted(name for name, value in table.items() if not isinstance(value, int))
+    if bad:
+        raise SuiteError(f"{path}: not a number: {', '.join(bad)}")
+
+    added = [n for n in codes if n not in table]
+    removed = [n for n in table if n not in codes]
+    moved = [(n, table[n], codes[n]) for n in codes if n in table and table[n] != codes[n]]
+    if not (added or removed or moved):
+        return
+
+    lines = [
+        f"{path.relative_to(REPO).as_posix()} no longer matches "
+        f"{ERROR_H.relative_to(REPO).as_posix()} (R5.2)."
+    ]
+    if moved:
+        lines.append("  renumbered, which invalidates every expectation naming them:")
+        lines += [f"    {n}: {was} -> {now}" for n, was, now in moved]
+    if added:
+        lines.append("  in error.h, not in the table:")
+        lines += [f"    {n} = {codes[n]}" for n in added]
+    if removed:
+        lines.append("  in the table, not in error.h:")
+        lines += [f"    {n} = {table[n]}" for n in removed]
+    lines.append("  regenerate with: python test/run.py --bless-codes, then review the diff")
+    raise SuiteError("\n".join(lines))
 
 
 @dataclass(frozen=True)
@@ -350,17 +443,19 @@ class Scenario:
     category: str
     description: str
     tags: tuple[str, ...]
-    source: Path
+    source: Path | None          # None for 'driver', which has no Cone source
     diagnostics: int | None
     exit_code: int
     runs: tuple[RunSpec, ...]
     checks: tuple[Check, ...]
     unlocated: tuple[dict, ...]
+    argv: tuple[str, ...] = ()   # 'driver' only: the whole invocation
+    xfail: bool = False
     annotations: list[Annotation] = field(default_factory=list)
 
     @property
     def source_rel(self) -> str:
-        return self.source.relative_to(REPO).as_posix()
+        return self.source.relative_to(REPO).as_posix() if self.source else ""
 
     @property
     def sort_key(self):
@@ -400,16 +495,41 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
         _require_keys(where, table, SCENARIO_KEYS)
         if not name.startswith(group + "-"):
             raise SuiteError(f"{where}: scenario name must start with {group!r}- (R2.11)")
-        source = group_dir / f"{name}.cone"
-        if not source.exists():
-            raise SuiteError(f"{where}: listed scenario has no {source.name} (R2.12)")
         category = table.get("category")
         if category not in CATEGORIES:
             raise SuiteError(f"{where}: category must be one of {', '.join(CATEGORIES)}")
-        if table.get("xfail"):
-            raise SuiteError(
-                f"{where}: xfail is deferred (R3.8) and no scenario may set it yet"
-            )
+
+        # A driver scenario invokes conec without valid Cone source, so argv is
+        # the whole input and there is no .cone file for R2.12 to require.
+        source: Path | None = None
+        argv: tuple[str, ...] = ()
+        if category == "driver":
+            if "argv" not in table:
+                raise SuiteError(f"{where}: a 'driver' scenario needs argv (may be empty)")
+            argv = tuple(str(a) for a in table["argv"])
+            if "exit" not in table:
+                raise SuiteError(
+                    f"{where}: a 'driver' scenario needs an explicit exit status;"
+                    f" asserting it is the whole category (R1.2)")
+            if table.get("run"):
+                raise SuiteError(
+                    f"{where}: a 'driver' scenario takes its options from argv,"
+                    f" so a [[run]] table would be silently ignored")
+            stray = group_dir / f"{name}.cone"
+            if stray.exists():
+                raise SuiteError(f"{where}: a 'driver' scenario must have no {stray.name}")
+        else:
+            if "argv" in table:
+                raise SuiteError(f"{where}: argv belongs to a 'driver' scenario only")
+            source = group_dir / f"{name}.cone"
+            if not source.exists():
+                raise SuiteError(f"{where}: listed scenario has no {source.name} (R2.12)")
+
+        # R2.10 names the total diagnostic count as recover's file-level
+        # expectation. It asserts the count rather than each diagnostic, so
+        # without it the scenario asserts nothing but the exit status.
+        if category == "recover" and table.get("diagnostics") is None:
+            raise SuiteError(f"{where}: a 'recover' scenario needs diagnostics = <count>")
 
         runs = tuple(
             RunSpec(entry.get("name", "default"), tuple(entry.get("options", [])))
@@ -449,15 +569,23 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
             runs=runs,
             checks=tuple(checks),
             unlocated=tuple(table.get("unlocated", [])),
+            argv=argv,
+            xfail=bool(table.get("xfail", False)),
         )
-        if category in IMPLEMENTED:
+        if source is not None:
             scenario.annotations = parse_annotations(source, codes)
-            if scenario.annotations and category != "reject":
+            if scenario.annotations and category not in ANNOTATABLE:
                 first = scenario.annotations[0]
                 raise SuiteError(
-                    f"{source}:{first.annot_line}: only a 'reject' scenario may carry"
-                    f" //~ annotations; this one is {category!r}"
+                    f"{source}:{first.annot_line}: only a {' or '.join(ANNOTATABLE)}"
+                    f" scenario may carry //~ annotations; this one is {category!r}"
                 )
+        # A warn scenario that names no warning asserts nothing its category does
+        # not already imply, which is the same hole R3.2 closes for compile.
+        if category == "warn" and not scenario.annotations and not scenario.unlocated:
+            raise SuiteError(
+                f"{where}: a 'warn' scenario must name at least one warning,"
+                f" as a //~ annotation or an [[unlocated]] entry")
         scenarios.append(scenario)
 
     # R2.12: a .cone file that is neither a listed scenario nor a listed support
@@ -751,6 +879,12 @@ def execute(cmd: list[str], cwd: Path, out_dir: Path, stem: str,
 
 PASS, FAIL, SKIP = "pass", "fail", "skip"
 
+# R3.8. An xfail case that fails is XFAIL, which is not a failure; one that
+# passes is XPASS, which is. Reporting XFAIL as pass would lose the distinction
+# the mark exists to make, and reporting XPASS as pass would let a fix land
+# without anyone noticing the mark is now a lie.
+XFAIL, XPASS = "xfail", "xpass"
+
 
 @dataclass
 class Result:
@@ -795,18 +929,16 @@ class Runner:
         # A fault in the runner fails its own case rather than the whole run, so
         # one bad case still leaves the other results readable.
         try:
-            return self._run(scenario, spec)
+            result = self._run(scenario, spec)
         except Exception:                                  # noqa: BLE001
             import traceback
-            return Result(scenario, spec, FAIL, 0.0,
-                          problems=["the runner itself failed:\n"
-                                    + indent(traceback.format_exc())])
+            result = Result(scenario, spec, FAIL, 0.0,
+                            problems=["the runner itself failed:\n"
+                                      + indent(traceback.format_exc())])
+        return expected_failure(result)
 
     def _run(self, scenario: Scenario, spec: RunSpec) -> Result:
         started = time.monotonic()
-        if scenario.category not in IMPLEMENTED:
-            return Result(scenario, spec, SKIP, 0.0,
-                          note=f"category {scenario.category!r} is deferred")
 
         # R1.4: output filenames derive from the source basename and the IR dump
         # from the program root, so two cases sharing a basename would collide
@@ -816,6 +948,9 @@ class Runner:
         for stale in out_dir.iterdir():
             if stale.is_file():
                 stale.unlink()
+
+        if scenario.category == "driver":
+            return self.run_driver(scenario, spec, out_dir, started)
 
         result = Result(scenario, spec, PASS, 0.0)
         options = list(spec.options)
@@ -840,6 +975,10 @@ class Runner:
         self.check_exit(result, scenario, compiled)
         if scenario.category == "reject":
             self.check_rejection(result, scenario, diagnostics)
+        elif scenario.category == "warn":
+            self.check_warning(result, scenario, diagnostics)
+        elif scenario.category == "recover":
+            self.check_recovery(result, scenario, diagnostics)
         else:
             self.check_clean(result, scenario, diagnostics, out_dir, spec)
 
@@ -893,6 +1032,42 @@ class Runner:
             result.status = FAIL
             result.problems.append(f"no object file emitted at {obj.name}")
 
+    def claim_unlocated(self, result: Result, scenario: Scenario,
+                        unlocated: list[Diagnostic]) -> list[Diagnostic]:
+        """R2.10. Pair the cases.toml ``unlocated`` entries against what
+        ``errorMsg`` printed with no source location, and return the leftovers.
+        A declared entry that was not produced fails here; what the caller does
+        with the leftovers is the category's business."""
+        leftover = list(unlocated)
+        for want in scenario.unlocated:
+            code = self.codes.get(want.get("code"))
+            hit = next((d for d in leftover
+                        if d.code == code and want.get("message", "") in d.message), None)
+            if hit:
+                leftover.remove(hit)
+            else:
+                result.status = FAIL
+                result.problems.append(
+                    f"expected unlocated {want.get('code')} "
+                    f"\"{want.get('message', '')}\", which was not produced")
+        return leftover
+
+    def report_missing(self, result: Result, missing: list[Annotation]) -> None:
+        """R3.5. A case separates primary diagnostics from the follow-on ones
+        that exist only as consequences, so a recovery change that drops a
+        consequent reads differently from one that drops the cause."""
+        if not missing:
+            return
+        result.status = FAIL
+        primary = [a for a in missing if not a.follow_on]
+        consequent = [a for a in missing if a.follow_on]
+        if primary:
+            result.problems.append("expected primary diagnostics, not produced:\n"
+                                   + indent("\n".join(a.describe() for a in primary)))
+        if consequent:
+            result.problems.append("expected follow-on diagnostics, not produced:\n"
+                                   + indent("\n".join(a.describe() for a in consequent)))
+
     def check_rejection(self, result: Result, scenario: Scenario,
                         diagnostics: list[Diagnostic]) -> None:
         """R3.4/R3.5. Every annotated diagnostic matched by code and location,
@@ -900,32 +1075,9 @@ class Runner:
         located = [d for d in diagnostics if d.line is not None]
         unlocated = [d for d in diagnostics if d.line is None]
         missing, extra = match_diagnostics(scenario.annotations, located, scenario.source_rel)
+        extra += self.claim_unlocated(result, scenario, unlocated)
 
-        # R2.10: diagnostics errorMsg prints with no source location have no
-        # line to annotate, so they are declared in cases.toml instead.
-        for want in scenario.unlocated:
-            code = self.codes.get(want.get("code"))
-            hit = next((d for d in unlocated
-                        if d.code == code and want.get("message", "") in d.message), None)
-            if hit:
-                unlocated.remove(hit)
-            else:
-                result.status = FAIL
-                result.problems.append(
-                    f"expected unlocated {want.get('code')} "
-                    f"\"{want.get('message', '')}\", which was not produced")
-        extra += unlocated
-
-        if missing:
-            result.status = FAIL
-            primary = [a for a in missing if not a.follow_on]
-            consequent = [a for a in missing if a.follow_on]
-            if primary:
-                result.problems.append("expected primary diagnostics, not produced:\n"
-                                       + indent("\n".join(a.describe() for a in primary)))
-            if consequent:
-                result.problems.append("expected follow-on diagnostics, not produced:\n"
-                                       + indent("\n".join(a.describe() for a in consequent)))
+        self.report_missing(result, missing)
         if extra:
             result.status = FAIL
             result.problems.append("produced, but not annotated:\n" + indent(
@@ -936,6 +1088,93 @@ class Runner:
             result.problems.append(
                 f"{len(diagnostics)} diagnostics, but cases.toml declares "
                 f"diagnostics = {scenario.diagnostics}")
+
+    def check_warning(self, result: Result, scenario: Scenario,
+                      diagnostics: list[Diagnostic]) -> None:
+        """The warn row of the category table in design/Test Suite.md section 4:
+        exit 0 (check_exit), the annotated warnings present, no unannotated ones,
+        and no errors.
+
+        Located warnings use the same //~ mechanism as reject, because a warning
+        is the same enum printed in the same format, and the criterion is the
+        same too. warn is the only category that permits a warning at all --
+        compile and run require explicitly zero (R3.2) -- so a warn scenario is
+        the single place in the suite where a newly introduced spurious warning
+        could sit unnoticed. Tolerating unannotated ones would leave that hole
+        covered only by an author remembering to write a `diagnostics` count,
+        which is exactly the silently-ignorable failure R3.2 exists to close.
+        """
+        errors = [d for d in diagnostics if not d.is_warning]
+        if errors:
+            result.status = FAIL
+            result.problems.append("errors, where the category expects none:\n" + indent(
+                "\n".join(d.describe(self.by_number) for d in errors)))
+
+        warnings = [d for d in diagnostics if d.is_warning]
+        located = [d for d in warnings if d.line is not None]
+        missing, extra = match_diagnostics(
+            scenario.annotations, located, scenario.source_rel)
+        extra += self.claim_unlocated(
+            result, scenario, [d for d in warnings if d.line is None])
+        self.report_missing(result, missing)
+        if extra:
+            result.status = FAIL
+            result.problems.append("warnings produced, but not annotated:\n" + indent(
+                "\n".join(d.describe(self.by_number) for d in extra)))
+
+        if scenario.diagnostics is not None and len(diagnostics) != scenario.diagnostics:
+            result.status = FAIL
+            result.problems.append(
+                f"{len(diagnostics)} diagnostics, but cases.toml declares "
+                f"diagnostics = {scenario.diagnostics}")
+
+    def check_recovery(self, result: Result, scenario: Scenario,
+                       diagnostics: list[Diagnostic]) -> None:
+        """The recover row of the category table: exit exactly 1, the expected
+        diagnostic count, no crash and no hang.
+
+        The point of recover is that the compiler kept going and produced a sane
+        count, so it does not require every diagnostic to be annotated — a
+        scenario whose diagnostics are recovery artifacts would otherwise have to
+        pin positions that recovery is free to move. The other two assertions are
+        already made elsewhere and are not repeated here: a crash is an exit
+        status outside the taxonomy, which check_exit catches exactly (R1.2), and
+        a hang is the wall-clock timeout in execute (R1.3).
+        """
+        if len(diagnostics) != scenario.diagnostics:
+            result.status = FAIL
+            result.problems.append(
+                f"{len(diagnostics)} diagnostics, but cases.toml declares "
+                f"diagnostics = {scenario.diagnostics}\n"
+                + indent("\n".join(d.describe(self.by_number) for d in diagnostics)))
+
+    def run_driver(self, scenario: Scenario, spec: RunSpec,
+                   out_dir: Path, started: float) -> Result:
+        """The driver row of the category table: invoke conec without valid Cone
+        source and assert the exact exit code.
+
+        argv is the whole invocation. Nothing is appended — no -o, no source —
+        because what is under test is what conec does with the command line it
+        was given, and an argument the runner added would be part of the answer.
+        """
+        result = Result(scenario, spec, PASS, 0.0)
+        cmd = [str(self.conec), *scenario.argv]
+        result.commands.append(quote(cmd))
+        invoked = execute(cmd, REPO, out_dir, "conec",
+                          self.args.timeout, self.args.max_output)
+        if invoked.killed:
+            result.status = FAIL
+            result.problems.append(f"compiler {invoked.killed}")
+        else:
+            self.check_exit(result, scenario, invoked)
+            # coneOptSet reports bad options and prints usage on stdout, not
+            # stderr, so a driver failure is invisible without this. Usage runs
+            # to sixty lines and says nothing about why the case failed, so only
+            # the head of it is shown.
+            if result.status == FAIL and invoked.stdout.strip():
+                result.problems.append("stdout:\n" + indent(head(invoked.stdout, 10)))
+        result.seconds = time.monotonic() - started
+        return result
 
     def link_and_run(self, result: Result, scenario: Scenario,
                      spec: RunSpec, out_dir: Path) -> None:
@@ -1026,6 +1265,13 @@ def trimmed(text: str) -> list[str]:
     return lines
 
 
+def head(text: str, limit: int) -> str:
+    lines = trimmed(text)
+    if len(lines) <= limit:
+        return "\n".join(lines)
+    return "\n".join(lines[:limit] + [f"... {len(lines) - limit} more lines"])
+
+
 def indent(text: str, prefix: str = "    ") -> str:
     return "\n".join(prefix + line for line in text.rstrip().split("\n"))
 
@@ -1039,7 +1285,31 @@ def delta(expected: list[str], actual: list[str], left: str, right: str) -> str:
 # Reporting
 # ---------------------------------------------------------------------------
 
-MARK = {PASS: "pass", FAIL: "FAIL", SKIP: "skip"}
+MARK = {PASS: "pass", FAIL: "FAIL", SKIP: "skip", XFAIL: "xfail", XPASS: "XPASS"}
+
+
+def expected_failure(result: Result) -> Result:
+    """R3.8. Translate a result under an ``xfail`` mark.
+
+    A failure becomes XFAIL and stops being a failure; a pass becomes XPASS and
+    starts being one, which is the half of the requirement that makes the mark
+    honest — a defect fixed elsewhere has to be noticed here rather than leaving
+    a case asserting a bug that no longer exists. A skip stays a skip: nothing
+    ran, so there is nothing to have expected.
+    """
+    if not result.scenario.xfail or result.status == SKIP:
+        return result
+    if result.status == FAIL:
+        result.status = XFAIL
+        first = result.problems[0].split("\n")[0] if result.problems else ""
+        result.note = f"expected failure: {first}" if first else "expected failure"
+        return result
+    result.status = XPASS
+    result.problems = [
+        "marked xfail, but the case passed. If the defect it recorded is fixed,"
+        " drop the xfail; the mark must never outlive what it describes (R3.8)."
+    ]
+    return result
 
 
 def report(results: list[Result], scenarios: list[Scenario]) -> int:
@@ -1055,10 +1325,12 @@ def report(results: list[Result], scenarios: list[Scenario]) -> int:
             group = result.scenario.group
             print(f"  {group}")
         note = f"  ({result.note})" if result.note else ""
-        print(f"    {MARK[result.status]}  {result.label:<28} "
+        print(f"    {MARK[result.status]:<5}  {result.label:<28} "
               f"{result.scenario.category:<8} {result.seconds * 1000:5.0f}ms{note}")
 
-    failures = [r for r in results if r.status == FAIL]
+    # An XPASS is a failure of the suite's own bookkeeping rather than of the
+    # compiler, but it fails the run and is reported the same way (R3.8).
+    failures = [r for r in results if r.status in (FAIL, XPASS)]
     if failures:
         print("\n" + "=" * 72)
         print("FAILURES")
@@ -1066,21 +1338,26 @@ def report(results: list[Result], scenarios: list[Scenario]) -> int:
             print("=" * 72)
             print(f"{result.label}  ({result.scenario.category})"
                   f"  {result.scenario.description}")
-            print(f"  source: {result.scenario.source_rel}")
+            if result.scenario.source_rel:
+                print(f"  source: {result.scenario.source_rel}")
             for command in result.commands:           # R4.3: the exact command line
                 print(f"  command: {command}")
             for problem in result.problems:
                 print(indent(problem, "  "))
             print()
 
-    passed = sum(1 for r in results if r.status == PASS)
-    skipped = sum(1 for r in results if r.status == SKIP)
+    tally = {status: sum(1 for r in results if r.status == status) for status in MARK}
     print("=" * 72)
-    summary = f"{len(scenarios)} scenarios, {len(results)} runs: {passed} passed"
-    if skipped:
-        summary += f", {skipped} skipped"
-    if failures:
-        summary += f", {len(failures)} FAILED"
+    summary = (f"{len(scenarios)} scenarios, {len(results)} runs: "
+               f"{tally[PASS]} passed")
+    if tally[XFAIL]:
+        summary += f", {tally[XFAIL]} expected failures"
+    if tally[SKIP]:
+        summary += f", {tally[SKIP]} skipped"
+    if tally[FAIL]:
+        summary += f", {tally[FAIL]} FAILED"
+    if tally[XPASS]:
+        summary += f", {tally[XPASS]} UNEXPECTEDLY PASSED"
     print(summary)
     return 1 if failures else 0
 
@@ -1097,11 +1374,18 @@ def list_cases(scenarios: list[Scenario]) -> None:
             group = scenario.group
             print(f"  {group}")
         detail = scenario.category
+        if scenario.xfail:
+            detail += " xfail"
         if scenario.tags:
             detail += "  tags: " + ",".join(scenario.tags)
-        if scenario.category == "reject":
+        if scenario.category in ANNOTATABLE:
             detail += f"  diagnostics: {len(scenario.annotations)}"
+        elif scenario.category == "recover":
+            detail += f"  diagnostics: {scenario.diagnostics}"
         print(f"    {scenario.name:<28} {detail}")
+        if scenario.category == "driver":
+            print(f"      argv: {' '.join(scenario.argv) or '(none)'}"
+                  f"  exit {scenario.exit_code}")
         for spec in scenario.runs:
             if spec.name != "default":
                 print(f"      run {spec.name}: {' '.join(spec.options)}")
@@ -1109,6 +1393,96 @@ def list_cases(scenarios: list[Scenario]) -> None:
             print(f"      check {check.name} ({check.target})")
     print(f"\n{len(scenarios)} scenarios, "
           f"{sum(len(s.runs) for s in scenarios)} runs")
+
+
+# ---------------------------------------------------------------------------
+# ErrorCode coverage (R6.4)
+# ---------------------------------------------------------------------------
+
+# Excluded from the coverage denominator, each for its own reason.
+#
+# The Exit* codes are not diagnostics: they are process exit statuses, asserted
+# by every scenario's category (R1.2) and provoked deliberately by the driver
+# group. Counting them as uncovered diagnostics would ask for reject scenarios
+# that cannot exist.
+BLOCK_MARKERS = ("ErrorCode", "WarnCode", "Uncounted")
+# R6.6: WarnIndent goes dead when the language becomes free-form only, and the
+# whole corpus is written in braces so that it can. Deliberately not chased.
+RETIRED_CODES = ("WarnIndent",)
+
+
+def diagnostic_codes(codes: dict[str, int]) -> dict[str, int]:
+    """The Error*/Warn* codes a reject or warn scenario could name."""
+    return {
+        name: value for name, value in codes.items()
+        if (name.startswith("Error") or name.startswith("Warn"))
+        and name not in BLOCK_MARKERS and name not in RETIRED_CODES
+    }
+
+
+def coverage(scenarios: list[Scenario]) -> dict[str, list[str]]:
+    """Which scenarios name each code, by //~ annotation or unlocated entry."""
+    named: dict[str, list[str]] = {}
+    for scenario in scenarios:
+        for annotation in scenario.annotations:
+            named.setdefault(annotation.code_name, []).append(scenario.name)
+        for entry in scenario.unlocated:
+            code = entry.get("code")
+            if code:
+                named.setdefault(code, []).append(scenario.name)
+    return {name: sorted(set(where)) for name, where in named.items()}
+
+
+def coverage_report(scenarios: list[Scenario], codes: dict[str, int]) -> None:
+    """R6.4. Which ErrorCode values have no case provoking them.
+
+    The enum is a closed list, which is what makes this cheap and honest: the
+    denominator is every diagnostic code the compiler can emit, not a guess. The
+    uncovered list is the actionable half — it is what decides which scenario
+    gets written next — so it is printed in full, in declaration order, with the
+    number beside the name so a code can be found in error.h without a search.
+    """
+    interesting = diagnostic_codes(codes)
+    named = coverage(scenarios)
+    covered = {n: named[n] for n in interesting if n in named}
+    uncovered = [n for n in interesting if n not in named]
+
+    # A name in a scenario that is not a diagnostic code at all cannot happen:
+    # parse_annotations rejects it. An excluded one can, and is worth saying.
+    excluded_but_named = sorted(
+        n for n in named if n in codes and n not in interesting)
+
+    print("ErrorCode coverage (R6.4)")
+    print(f"  from {ERROR_H.relative_to(REPO).as_posix()}, over all "
+          f"{len(scenarios)} scenarios")
+    print(f"  {len(covered)} of {len(interesting)} diagnostic codes covered, "
+          f"{len(uncovered)} not")
+
+    for kind, prefix in (("errors", "Error"), ("warnings", "Warn")):
+        missing = [n for n in uncovered if n.startswith(prefix)]
+        if not missing:
+            continue
+        print(f"\nuncovered {kind} ({len(missing)})")
+        for name in missing:
+            print(f"    {name:<24} {interesting[name]}")
+
+    if covered:
+        print(f"\ncovered ({len(covered)})")
+        for name, where in covered.items():
+            print(f"    {name:<24} {interesting[name]:<6} {', '.join(where)}")
+
+    exits = sum(1 for n in codes if n.startswith("Exit"))
+    print("\nexcluded from the denominator")
+    for label, why in (
+        (f"Exit* ({exits})", "process exit statuses, not diagnostics;"
+                             " the driver group asserts them"),
+        (", ".join(BLOCK_MARKERS), "block markers, never emitted"),
+        (", ".join(RETIRED_CODES), "dead once the language is free-form"
+                                   " only (R6.6)"),
+    ):
+        print(f"    {label:<32}{why}")
+    if excluded_but_named:
+        print(f"    named anyway by a scenario: {', '.join(excluded_but_named)}")
 
 
 # ---------------------------------------------------------------------------
@@ -1121,6 +1495,11 @@ def main(argv: list[str]) -> int:
                         help="what to run; everything, if omitted (R1.7)")
     parser.add_argument("--list", action="store_true",
                         help="print what would run, and run nothing (R2.6)")
+    parser.add_argument("--coverage", action="store_true",
+                        help="report ErrorCode values with no case, run nothing (R6.4)")
+    parser.add_argument("--bless-codes", action="store_true",
+                        help=f"regenerate {CODES_TOML.relative_to(REPO).as_posix()}"
+                             f" from error.h, and review the diff (R5.2)")
     parser.add_argument("--build", action="store_true",
                         help="build the compiler before running (R1.1)")
     parser.add_argument("--allow-stale", action="store_true",
@@ -1143,10 +1522,26 @@ def main(argv: list[str]) -> int:
 
     try:
         codes = parse_error_codes(ERROR_H)
-        scenarios = select(discover(codes), args.selectors)
+        if args.bless_codes:
+            write_codes_table(CODES_TOML, codes)
+            print(f"wrote {CODES_TOML.relative_to(REPO).as_posix()}:"
+                  f" {len(codes)} codes. Review the diff.")
+            return 0
+        # R5.2, before any case runs: every expectation in the corpus is matched
+        # on the number the compiler printed, so a renumber makes all of them
+        # wrong at once and this is the one place that can say so.
+        check_codes_table(codes, CODES_TOML)
+        discovered = discover(codes)
+        scenarios = select(discovered, args.selectors)
     except SuiteError as failure:
         print(f"error: {failure}", file=sys.stderr)
         return 2
+
+    # Coverage is a property of the whole corpus, so it ignores the selection
+    # rather than reporting a backlog against a fraction of it.
+    if args.coverage:
+        coverage_report(discovered, codes)
+        return 0
 
     if not scenarios:
         print("error: nothing to run", file=sys.stderr)

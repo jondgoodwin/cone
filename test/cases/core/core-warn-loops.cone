@@ -1,0 +1,54 @@
+// A 'while' with no condition and nothing that leaves it may never stop, and
+// the compiler says so. This is all of core's warning coverage, because the
+// other two live warning codes are not core's to provoke:
+//
+//   - WarnName is reported by parseFn where the parser expected an anonymous
+//     function and was given a named one, which is a function-valued
+//     expression. It cannot be written without one, so it belongs to 'closure'.
+//   - WarnCopy is declared in error.h and emitted nowhere in the compiler, so
+//     no scenario in any group can reach it today.
+//
+// Nothing here is called: a warn scenario is compiled and never run, so each
+// loop is a function on its own rather than a branch of one program.
+
+// A conditional loop is never warned about, however long it may take to finish
+fn conditional() {
+  mut i = 0
+  while i < 3 {
+    i++
+  }
+}
+
+// Nor is an unconditional one that a 'break' can leave
+fn breaks() {
+  mut i = 0
+  while {
+    i++
+    if i == 3 {
+      break
+    }
+  }
+}
+
+// An unconditional loop with no break may never stop. The warning is reported
+// at the loop's block, so the column is the '{' and not the 'while'.
+fn spins() {
+  mut i = 0
+  while {          //~ WarnLoop:9 "Loop may never stop without a break."
+    i++
+  }
+}
+
+// A labeled 'break' counts for the loop it names and not for the one it sits
+// in, so here the inner loop is warned about and the outer one is not.
+fn escapes() {
+  mut i = 0
+  'outer: while {
+    while {        //~ WarnLoop:11 "Loop may never stop without a break."
+      i++
+      if i == 3 {
+        break 'outer
+      }
+    }
+  }
+}
