@@ -115,9 +115,26 @@ without updating source compatibility and both build systems.
 
 ## Validating a change
 
-**There is no automated test runner, and compiling clean is not evidence of
-correct runtime behavior.** Treat a successful compile as the first check, not
-the last one.
+**Compiling clean is not evidence of correct runtime behavior.** Treat a
+successful compile as the first check, not the last one.
+
+Run the test suite. It builds nothing and needs no installation:
+
+```powershell
+python test/run.py
+```
+
+It compiles every scenario under `test/cases/`, asserts what each one's category
+and inline `//~` annotations claim, links and runs the `run` scenarios, and
+reports tier 0 first. `--list` prints what would run; a group, scenario, check
+name or `tag:<phase>` narrows it. `design/Test Suite.md` is the authoring guide:
+which group to touch, what to assert, and how expectations are written.
+
+**A stale `conec` fails good sources in ways indistinguishable from a language
+regression.** A binary left over from an earlier session once failed
+`test/test.cone` with 17 errors purely because it predated a merge. The runner
+refuses to run against a binary older than a compiler source, and `--build`
+builds first; outside the runner, build before believing any failure.
 
 Useful `conec` options: `--ir` writes an IR/AST dump, `--llvmir` writes LLVM IR
 before and after optimization, and `--wasm` targets WebAssembly. The output
@@ -126,11 +143,12 @@ git-ignored directory such as `build/`.
 
 For a compiler change:
 
-1. Build `conec` and compile `test/test.cone`, adding focused Cone cases near
-   related coverage in that file.
-2. Run any fixture suite covering the affected feature. There is no committed
-   fixture suite yet; see `workitems/Add test suite.md`, which also names the
-   branch holding the overload fixtures until they are restored.
+1. Build `conec` and run `python test/run.py`.
+2. Add coverage for the change: a scenario in the owning group under
+   `test/cases/`, following `design/Test Suite.md`. Coverage not yet decomposed
+   into groups still lives in `test/test.cone`; see
+   `workitems/Add test suite.md`, which also names the branch holding the
+   overload fixtures until they are restored.
 3. Inspect the generated IR when the change affects lowering or symbols.
 4. When the change affects runtime behavior, link and run a program.
 

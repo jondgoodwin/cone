@@ -416,6 +416,97 @@ diagnostic is an overload-declaration rule and would be surprising to find in
   five or six primaries plus follow-ons, and neither shows recovery
   interference, so they were left whole.
 
+## Found while building the runner
+
+Sequencing step 2 is done. `test/run.py` is a single Python 3.11+ script with no
+third-party dependencies. `python test/run.py` runs all fifteen tier 0 scenarios
+green, in tier order, in under two seconds.
+
+### What it implements
+
+Discovery and validation (R2.12), exact exit status (R1.2), stdin from null with
+a wall-clock timeout (R1.3), per-run output directories under `build/testrun/`
+(R1.4), parallelism (R1.5), Windows and Linux invocation (R1.6), the whole suite
+by default (R1.7), `//~` parsing and matching (R2.9) with `cases.toml`
+file-level expectations (R2.10), named checks against LLVM IR and stdout (R2.3),
+`--list` (R2.6), tier-ordered reporting (R2.8), the `compile`, `reject` and
+`run` categories with `--checktree --verify` and zero-warning enforcement
+(R3.2, R3.3, R3.7), normalization (R4.1), and failure output carrying the case,
+the exact command line and the delta (R4.3).
+
+R1.1 is enforced by comparing the binary's timestamp against every `.c` and `.h`
+under `src/` and against `CMakeLists.txt`; `--build` builds first instead, and
+`--allow-stale` downgrades the refusal to a warning for the case where a
+timestamp is misleading rather than the binary.
+
+Two behaviors the requirements imply but do not spell out:
+
+- **An output budget alongside the timeout.** The `::name` parser hang emits
+  unbounded output, and it reaches a megabyte in about a third of a second, so a
+  20-second timeout alone would mean gigabytes on disk per wedged case. A run is
+  killed at 8 MB as well as at 20 seconds, and the failure says which.
+- **A `llvmir` check reads the post-optimization dump.** `--llvmir` writes both
+  `<srcname>.preir` and `<srcname>.ir`; the latter is what reaches the object
+  file, so that is what a symbol assertion is about. `core-overload`'s three
+  checks pass against either.
+
+### Deferred, and why
+
+| Deferred | Requirement | Why |
+| --- | --- | --- |
+| Bless | R4.2, R4.4 | Needs a known-good baseline to test a rewriter against. Every expectation is correct right now, so there is nothing to bless and nothing to check a rewriter's output against. Build it once an expectation is genuinely wrong |
+| `codes.toml` | R5.2 | Wants the explicit-`ErrorCode`-values compiler change first, which is sequencing step 3. The runner already parses `error.h` for name-to-number, which is the half that has to exist either way |
+| Diff-driven selection | R2.5 | Needs `tags.toml`, which does not exist. Selection by group, scenario, check name and `tag:<phase>` is implemented, so the vocabulary a diff would map onto is in place |
+| `warn`, `recover`, `driver` | R3.1, R3.8 | No scenarios exercise them. `driver` also needs an `argv` key that the `cases.toml` schema does not have, and adding schema without content to write against it is the wrong order |
+| `xfail` | R3.8 | Same. A scenario setting `xfail` is a hard configuration error rather than a silently ignored key, so this cannot be forgotten |
+| `ErrorCode` coverage report | R6.4 | Two groups is too small a sample to report a backlog against; it wants the tier 1 groups first |
+
+Nothing deferred is silently ignored. A `cases.toml` naming a deferred category
+reports the scenario as **skipped** with the reason; any other unimplemented key
+fails discovery by name.
+
+### The CRLF hazard is worse than R4.1 records
+
+R4.1 anticipated CRLF in `.out` files. It also changes **what the compiler
+prints**. `core.autocrlf` is `true` on the development machine and the
+repository has no `.gitattributes` eol rules, so a checkout gives CRLF sources;
+`errorOutCode`'s echo loop copies up to `\n` and so carries the `\r` with it,
+and stderr's text mode then turns its own `\n` into a second line ending. The
+caret line holding `line:column` therefore lands two lines below the header on a
+CRLF checkout and one line below on an LF one.
+
+The runner skips blank lines — and only blank lines, never the echoed source,
+which contains the scenario's own `//~` text — between the echo and the caret.
+The suite was run green with the whole corpus rewritten to CRLF and again with
+it rewritten to LF.
+
+This is worth a `.gitattributes` deciding the question rather than a runner that
+tolerates both, but that is a repository-wide change affecting every file and
+belongs on its own, not inside the runner's commit.
+
+### Repository changes made
+
+- `.gitignore` gains `__pycache__/`. Nothing writes it today, but importing
+  `test/run.py` does, and that is how its parsing was checked by hand.
+- `CLAUDE.md`'s "Validating a change" said "There is no automated test runner",
+  which is now false and would send a reader back to the by-hand procedure. It
+  is updated to lead with the runner and to name the stale-binary hazard. The
+  full rewrite listed under "Documentation" above is still owed: it belongs with
+  the `test/test.cone` move, which has not happened.
+
+### A sixth compiler defect
+
+Found by feeding the runner a warning case, not by writing a scenario.
+
+| Defect | Where | Effect |
+| --- | --- | --- |
+| A `while` with an empty body crashes the compiler | Reproduces as `fn main() i32 { while { } 0i32 }` | Access violation, exit `0xC0000005`. A non-empty infinite loop is fine and warns `WarnLoop`, and a conditional `while` is fine, so it is the empty block specifically |
+
+This is what R1.2's exact-status matching is for: the runner reported "exit
+status 3221225477 (not in the ErrorCode taxonomy)". Accepting "nonzero" would
+have scored the access violation as a correct rejection. No scenario is added
+for it yet — R6.3 wants the case to land with the fix.
+
 ## Recommendations on the two open questions
 
 ### `codes.toml`: generated, checked in, and verified against the source
