@@ -1,17 +1,28 @@
-// Defect: an allocation whose initial value contains another allocation fails
-// LLVM module verification.
+// An allocation nested inside another allocation: the value a '+region-perm'
+// expression allocates may itself hold one, and both survive into the value the
+// outer allocation returns.
 //
-// genlallocref in genllvm/genlalloc.c records the block it is in, emits the
-// allocation's null check as a branch to a panic block and an init block, and
-// finishes with a phi over those two. Generating the initial value happens
-// between those steps, so an inner allocation splits the block the outer one is
-// building in, and the phi names predecessors that are no longer the ones
-// reaching it. The compiler reports ErrorGenErr, with no source line, and then
-// dies on an access violation carrying the broken module further, so the
-// scenario asserts nothing beyond the failure itself.
+// Both are printed rather than merely compiled, because the module verifying is
+// the weaker half of what is worth asserting here. genlallocref emits its
+// allocator's null check as a branch to a panic block and an init block and ends
+// with a phi over the two, and it generates the initial value in between. An
+// inner allocation emits branches of its own while that is happening, so the
+// block reaching the phi is no longer the block the outer allocation was
+// positioned in, and each incoming edge has to be read back from the builder
+// rather than remembered from before the value was generated.
 //
-// The success program therefore allocates a struct's owning field first, into a
-// variable, and names the variable in the literal.
+// The outer allocation is never released: its count is raised on the way into
+// the variable and lowered once on the way out, so it never reaches zero. That
+// is region-uninit-owning's and region-owning-field's subject, not this one's.
+
+import stdio::*
+
+fn show(label &[]u8, n i64) {
+  printStr(label)
+  printStr(" = ")
+  printInt(n)
+  printStr("\n")
+}
 
 struct Held {
   r +rc-mut i32
@@ -20,4 +31,11 @@ struct Held {
 
 fn f() {
   imm h = +rc-mut Held[r: +rc-mut 40, n: 41]
+  show("nested-inner-allocation", i64[*h.r])
+  show("outer-field-beside-it", i64[h.n])
+}
+
+fn main() i32 {
+  f()
+  0i32
 }
