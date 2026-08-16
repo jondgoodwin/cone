@@ -70,7 +70,7 @@ enum ErrorCode {
     ErrorNoEof = 1039,        // Missing end-of-file
     ErrorNoImpl = 1040,    // Function must be implemented
     ErrorBadImpl = 1041,    // Function must not be implemented
-    ErrorNotPublic = 1042, // Method is not public
+    ErrorNotPublic = 1042, // Private name accessed from outside what may see it
     ErrorBadMeth = 1043,   // Methods/fields not supported
     ErrorNotTyped = 1044,  // Expected a value that has a type
     ErrorBadIndex = 1045,  // Bad index/slice on array/ref
@@ -93,6 +93,15 @@ enum ErrorCode {
     // Array literals
     ErrorBadFill = 1059,        // Array fill literal may not repeat this value
     ErrorFillCount = 1060,      // Array fill literal's element count cannot be counted into
+
+    // Generics
+    ErrorNoGenParms = 1061,     // Type parameter list declares no parameters
+
+    // Iteration
+    ErrorNotIterable = 1062,    // Value cannot be iterated over by 'each'
+
+    // IR well-formedness (--checktree). A compiler defect, not a bad program
+    ErrorBadTree = 1063,        // A node was left with no type or no body
 
     // Warnings
     WarnCode = 3000,

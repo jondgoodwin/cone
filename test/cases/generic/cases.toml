@@ -13,23 +13,11 @@
 #
 # The reject scenarios are split by pipeline stage, because analysis halts
 # between stages and a later stage's expectation would never be reached. The
-# type-check stage is split again by mechanism: inference failures belong to the
-# generic instantiation path, arity failures to the macro expansion path, and
-# what each file covers of the two has no diagnostic in common.
-#
-# Left out, because the compiler crashes rather than diagnosing:
-#
-# - Anything wrong with a written-out type argument list. genericMemoize
-#   rejects two things -- the wrong number of type arguments,
-#   'max[i64, f64](1i64, 2i64)', and an argument that is not a type,
-#   'pickSecond[i64, 3](...)' -- and returns null for both. genericSubstitute
-#   then type-checks that null and the process dies with an access violation,
-#   so each of the two reaches its ErrorManyArgs and then kills the compiler.
-#   Both reach a generic type the same way, through 'Pair[i64, f64][...]' and
-#   'Pair[i64, 3][...]'. A crash fails no assertion and cannot usefully be
-#   marked xfail, so the whole explicit-type-argument error family is missing.
-# - An empty type parameter list, 'fn f[]()'. Same kind of death, in the parser
-#   instead. Noted again in generic-parse.
+# type-check stage is split again by mechanism, and the three files share no
+# diagnostic: generic-typecheck-infer covers type arguments that are absent and
+# cannot be derived, generic-typecheck-args covers type arguments that are
+# written out and do not match the declaration, and generic-typecheck-macro
+# covers the macro expansion path's arity.
 #
 # Left out, because the failure describes something other than the construct:
 #
@@ -69,6 +57,13 @@ name = "no-symbol-for-the-generic-itself"
 target = "llvmir"
 excludes = ["@max(", "@pickSecond(", "@firstOf(", "@boxUp("]
 
+# A generic with no instances contributes nothing at all, rather than crashing
+# code generation on the instance list it never grew
+[[scenario.generic-success.check]]
+name = "no-symbol-for-an-uninstantiated-generic"
+target = "llvmir"
+excludes = ["neverCalled"]
+
 [scenario.generic-macro]
 category = "run"
 description = "Macro expansion: substitution rather than evaluation, and what a macro parameter may be"
@@ -92,9 +87,9 @@ xfail = true
 
 [scenario.generic-parse]
 category = "reject"
-description = "Type parameter lists that do not close, and a macro with no name"
+description = "Type parameter lists that do not close or declare nothing, and a macro with no name"
 tags = ["parse"]
-diagnostics = 4
+diagnostics = 6
 
 # -------- type check stage --------
 
@@ -103,6 +98,12 @@ category = "reject"
 description = "Generic uses whose type arguments cannot be inferred"
 tags = ["typecheck"]
 diagnostics = 4
+
+[scenario.generic-typecheck-args]
+category = "reject"
+description = "Type argument lists written out that do not match the generic's parameters"
+tags = ["typecheck"]
+diagnostics = 5
 
 [scenario.generic-typecheck-macro]
 category = "reject"

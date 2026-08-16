@@ -612,10 +612,19 @@ LLVMValueRef genlIsType(GenState *gen, CastNode *isnode) {
     INode *istype = itypeGetTypeDcl(isnode->typ);
     StructNode *structtype = (StructNode*)(istype->tag == RefTag ? itypeGetTypeDcl(((RefNode*)istype)->vtexp) : istype);
 
-    // If pattern matching a virtual reference, compare vtable pointers
+    // If pattern matching a virtual reference, compare vtable pointers.
+    //
+    // The vtable to look in is the one the reference's own type names, not the
+    // one the concrete type inherits from. A type may satisfy a trait
+    // structurally without naming it -- which refvirtref.html treats as the
+    // ordinary case -- so it has no base trait to ask, and where it does have
+    // one, a reference to an intermediate trait carries that trait's vtable
+    // rather than the bottom-most one. The coercion that built the reference
+    // registered this concrete type's implementation in exactly this vtable.
     if (exptype->tag == VirtRefTag) {
         LLVMValueRef vtablep = LLVMBuildExtractValue(gen->builder, val, 1, "");
-        Vtable *vtable = structGetBaseTrait(structtype)->vtable;
+        StructNode *reftrait = (StructNode*)itypeGetTypeDcl(((RefNode*)exptype)->vtexp);
+        Vtable *vtable = reftrait->vtable;
         if (vtable->llvmvtable == NULL)
             genlVtable(gen, vtable);
 

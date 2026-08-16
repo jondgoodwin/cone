@@ -229,9 +229,15 @@ void genlGlobalSyms(GenState *gen, INode *node) {
         break;
     case FnDclTag:
         if (((FnDclNode*)node)->genericinfo) {
+            // A generic is only ever a symbol through its instantiations, and a
+            // generic this compilation unit never called has none: memonodes is
+            // still the null it was created as.
+            Nodes *memonodes = ((FnDclNode*)node)->genericinfo->memonodes;
+            if (memonodes == NULL)
+                break;
             uint32_t cnt;
             INode **nodesp;
-            for (nodesFor(((FnDclNode*)node)->genericinfo->memonodes, cnt, nodesp)) {
+            for (nodesFor(memonodes, cnt, nodesp)) {
                 ++nodesp; --cnt;
                 FnDclNode *fnnode = (FnDclNode *)*nodesp;
                 genlGloFnName(gen, fnnode);
@@ -280,9 +286,13 @@ void genlGlobalImpl(GenState *gen, INode *node) {
 
     case FnDclTag:
         if (((FnDclNode*)node)->genericinfo) {
+            // As above: an uninstantiated generic has no memonodes to generate
+            Nodes *memonodes = ((FnDclNode*)node)->genericinfo->memonodes;
+            if (memonodes == NULL)
+                break;
             uint32_t cnt;
             INode **nodesp;
-            for (nodesFor(((FnDclNode*)node)->genericinfo->memonodes, cnt, nodesp)) {
+            for (nodesFor(memonodes, cnt, nodesp)) {
                 ++nodesp; --cnt;
                 genlFn(gen, (FnDclNode*)*nodesp);
             }

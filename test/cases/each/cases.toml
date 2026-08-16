@@ -13,26 +13,22 @@
 #
 # Left uncovered on purpose:
 #
-# - Iterating anything that is not a range. conesite/public/coneref/refeach.html
-#   documents a collection iterator ('each x in [4, 3, 8, 2]'), an index-and-
-#   value form ('each i, x in slice') and a closure iterator, and its own note
-#   at the top says only the numeric range operators are implemented. The
-#   compiler agrees, but it does not say so: parseEach builds a wrapping block,
-#   fills it only on the range path, and returns it empty otherwise, so the loop
-#   and its body are silently discarded. The empty block then has a null
-#   statement list, and the first analysis pass over it dies with an access
-#   violation. 'each x in a', 'each x in [1, 2]' and 'each x in 7' all crash the
-#   compiler. Not an xfail, because a process death fails no assertion. The
-#   index-and-value form is the one shape that fails cleanly -- the parser wants
-#   'in' where the comma is -- and it is covered in each-parse.cone as
+# - The behavior of iterating anything that is not a range.
+#   conesite/public/coneref/refeach.html documents a collection iterator
+#   ('each x in [4, 3, 8, 2]'), an index-and-value form ('each i, x in slice')
+#   and a closure iterator, and its own note at the top says only the numeric
+#   range operators are implemented. So there is no behavior to cover: the
+#   rejection is the whole of it, and each-parse.cone asserts that rejection as
+#   ErrorNotIterable. The index-and-value form fails earlier and differently --
+#   the parser wants 'in' where the comma is -- and is covered there as
 #   ErrorBadTok.
 # - 'continue' inside an 'each'. It compiles, and the program then never
 #   terminates. The rewrite puts the increment at the end of the loop body, so
 #   'continue' jumps over it and the loop variable stops advancing. Excluded
 #   rather than marked xfail: the runner would have to hang to observe it.
 # - The '...' and '..' range operators the manual's examples use. They are not
-#   the operators parseEach looks for, so they would take the silent-discard
-#   path above.
+#   the operators parseEach looks for, so they take the non-range path above and
+#   would only re-assert ErrorNotIterable under a different spelling.
 # - An LLVM IR check. The rewrite produces no symbol of its own -- no iterator
 #   object, no call to an 'iter' method -- so there is nothing in the IR that
 #   the printed arithmetic does not already establish.
@@ -54,9 +50,9 @@ tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 
 [scenario.each-parse]
 category = "reject"
-description = "'each' headers the parser cannot turn into a loop"
+description = "'each' headers the parser cannot turn into a loop, and iterators it cannot loop over"
 tags = ["parse"]
-diagnostics = 6
+diagnostics = 9
 
 [[scenario.each-parse.unlocated]]
 code = "ErrorNoLoop"

@@ -10,10 +10,11 @@
 // rather than the tag comparison a plain '&Union' match uses, which is why it
 // is here and not in the union group.
 //
-// Narrowing only works where the concrete type names its base with 'extends'.
-// A type that conforms structurally has no nominal relationship to narrow along,
-// and matching one crashes code generation; trait-success covers structural
-// conformance and does not match on it.
+// Narrowing does not need 'extends'. refvirtref.html's own example conforms
+// structurally and matches back to the concrete type, so both are here: the
+// vtable a narrowing compares against is the one the reference's own type names,
+// not one the concrete type inherits, and a structural conformer has no
+// inherited one to offer.
 
 import stdio::*
 
@@ -119,6 +120,32 @@ fn openTrait() {
   show("open-trait-dispatch-circle", growAndMeasure(&mut circle))
 }
 
+// -------- the same trait, satisfied without naming it --------
+
+// Tri implements everything Shape declares and says nothing about Shape. That
+// is the ordinary case in refvirtref.html, and it has no base trait at all, so
+// nothing about it can be found by asking what it inherits from.
+//
+// It is deliberately declared *after* growAndMeasure, which is the other thing
+// this establishes. A vtable is built the first time a type naming it is
+// generated, and that happens while the module is still declaring its symbols,
+// so growAndMeasure's '&<mut Shape' parameter builds Shape's vtable before
+// anything below this line has a symbol. Every implementer above is declared
+// before it and so never showed that up. Rect and Circle stay where they are;
+// moving one here would test the same thing twice and lose the ordering that
+// the LLVM IR check below pins.
+struct Tri {
+  side i32
+
+  fn area(self &) i32 {side * side / 2}
+  fn grow(self &mut) {side = side + 1}
+}
+
+fn structuralConformer() {
+  mut tri = Tri[4]
+  show("structural-conformer-dispatch", growAndMeasure(&mut tri))
+}
+
 // -------- narrowing back to the concrete type --------
 
 // The single-pattern form: an 'if' whose condition binds when the virtual
@@ -133,11 +160,14 @@ fn rectWidth(s &<Shape) i32 {
 }
 
 // The multi-arm form. The trait is open, so an 'else' is required however many
-// implementers are named.
+// implementers are named. Tri is among the arms even though it never names
+// Shape: what a narrowing compares is the vtable the reference carries, and Tri
+// got one when it was coerced.
 fn describe(s &<Shape) i32 {
   match s {
     case imm r &Rect {r.w + r.h}
     case imm c &Circle {c.r}
+    case imm t &Tri {t.side}
     else {0}
   }
 }
@@ -153,10 +183,15 @@ fn isCircle(s &<Shape) i32 {
 fn narrowingTrait() {
   imm rect = Rect[2, 3]
   imm circle = Circle[4]
+  imm tri = Tri[9]
   show("narrow-if-binding-taken", rectWidth(&rect))
   show("narrow-if-binding-not-taken", rectWidth(&circle))
   show("narrow-match-first-arm", describe(&rect))
   show("narrow-match-second-arm", describe(&circle))
+  // The arm that used to be impossible: the concrete type conforms structurally,
+  // so there is no 'extends' link to reach its vtable through
+  show("narrow-match-structural-arm", describe(&tri))
+  show("narrow-if-structural-not-taken", rectWidth(&tri))
   show("narrow-match-is-false", isCircle(&rect))
   show("narrow-match-is-true", isCircle(&circle))
 }
@@ -198,6 +233,7 @@ fn main() i32 {
   unionVariants()
   unionThroughParameter()
   openTrait()
+  structuralConformer()
   narrowingTrait()
   narrowingUnion()
   interactions()

@@ -1462,6 +1462,14 @@ class Runner:
         options = list(spec.options)
         if scenario.category in ("compile", "run"):
             options += ["--checktree", "--verify"]        # R3.3
+        elif scenario.category in ("reject", "recover", "warn"):
+            # --checktree everywhere a compile happens, not only where it
+            # succeeds. Its subject is a phase that reports a bad program and
+            # returns leaving a node with no type or no body, so a scenario that
+            # provokes a diagnostic is the one that exercises it and a clean
+            # compile is the one that cannot. --verify is not added: there is no
+            # module to verify when generation never ran.
+            options.append("--checktree")
         if any(c.target == "llvmir" for c in scenario.checks):
             options.append("--llvmir")
 
@@ -2366,7 +2374,13 @@ def list_cases(scenarios: list[Scenario]) -> None:
 BLOCK_MARKERS = ("ErrorCode", "WarnCode", "Uncounted")
 # R6.6: WarnIndent goes dead when the language becomes free-form only, and the
 # whole corpus is written in braces so that it can. Deliberately not chased.
-RETIRED_CODES = ("WarnIndent",)
+#
+# ErrorBadTree accuses the compiler rather than the program. It is what
+# --checktree reports when a phase leaves a node with no type or no body, so no
+# source can provoke it and a scenario that could would be asserting that the
+# compiler is broken. It is covered the other way round: --checktree runs on
+# every compile in the corpus, so every scenario asserts that it stays silent.
+RETIRED_CODES = ("WarnIndent", "ErrorBadTree")
 
 
 def diagnostic_codes(codes: dict[str, int]) -> dict[str, int]:
@@ -2465,8 +2479,9 @@ def coverage_report(scenarios: list[Scenario], codes: dict[str, int]) -> None:
         (f"Exit* ({exits})", "process exit statuses, not diagnostics;"
                              " the driver group asserts them"),
         (", ".join(BLOCK_MARKERS), "block markers, never emitted"),
-        (", ".join(RETIRED_CODES), "dead once the language is free-form"
-                                   " only (R6.6)"),
+        ("WarnIndent", "dead once the language is free-form only (R6.6)"),
+        ("ErrorBadTree", "a compiler defect no source can provoke;"
+                         " --checktree asserts its silence everywhere"),
     ):
         print(f"    {label:<32}{why}")
     if excluded_but_named:

@@ -128,14 +128,19 @@ INode *genericInstantiate(TypeCheckState *pstate, FnCallNode *srcgencall, INode 
 }
 
 // Verify arguments are types, check if instantiated, instantiate if needed and return ptr to it
-INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nodetoclone, 
+//
+// A type argument list the generic cannot be instantiated from yields a node
+// already marked as bad rather than nothing at all. The caller substitutes it
+// for the call and carries on type checking the rest of the function, which is
+// where the next real diagnostic is.
+INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nodetoclone,
         GenericInfo *genericinfo, Name *name) {
 
     // Verify expected number of generic parameters
     uint32_t expected = genericinfo->parms ? genericinfo->parms->used : 0;
     if (srcgencall->args->used != expected) {
         errorMsgNode((INode*)srcgencall, ErrorManyArgs, "Incorrect number of arguments vs. parameters expected");
-        return NULL;
+        return newErrorNode((INode*)srcgencall);
     }
 
     // Verify all arguments are types
@@ -149,7 +154,7 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
         }
     }
     if (badargs)
-        return NULL;
+        return newErrorNode((INode*)srcgencall);
 
     if (!genericinfo->memonodes)
         genericinfo->memonodes = newNodes(2);
@@ -287,7 +292,14 @@ int genericSubstitute(TypeCheckState *pstate, FnCallNode **srcgencallp) {
     }
 
     // Now let's instantiate generic "call", substituting instantiated srcgencallp in objfn
-    *((INode**)&srcgencall->objfn) = genericMemoize(pstate, (FnCallNode*)srcgencall->objfn, nodetoclone, genericinfo, name);
+    INode *instance = genericMemoize(pstate, (FnCallNode*)srcgencall->objfn, nodetoclone, genericinfo, name);
+    if (inodeIsError(instance)) {
+        // Nothing was instantiated, so there is nothing left for the call to
+        // call. Replace the call itself and tell the caller it is handled.
+        *((INode**)srcgencallp) = instance;
+        return 1;
+    }
+    *((INode**)&srcgencall->objfn) = instance;
 
     return 0;
 }

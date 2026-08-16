@@ -13,6 +13,11 @@
 // as we don't yet know whether [] is a type or an array literal
 
 // Type check an array literal
+//
+// Every early return here follows a diagnostic, so each one marks the literal
+// with errorType before leaving. Without it the literal would carry no type at
+// all into the rest of the pass, which reads a value's type without asking
+// whether there is one.
 void arrayLitTypeCheckDimExp(TypeCheckState *pstate, ArrayNode *arrlit) {
 
     // Handle array literal "fill" format: [dimen, fill-value]
@@ -21,6 +26,7 @@ void arrayLitTypeCheckDimExp(TypeCheckState *pstate, ArrayNode *arrlit) {
         // Ensure only one constant integer dimension
         if (arrlit->dimens->used > 1) {
             errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal may only specify one dimension");
+            arrlit->vtype = errorType;
             return;
         }
         INode **dimnodep = &nodesGet(arrlit->dimens, 0);
@@ -34,6 +40,7 @@ void arrayLitTypeCheckDimExp(TypeCheckState *pstate, ArrayNode *arrlit) {
         // Handle and type the single fill value
         if (arrlit->elems->used != 1 || !isExpNode(nodesGet(arrlit->elems, 0))) {
             errorMsgNode((INode*)arrlit, ErrorBadArray, "Array fill value may only be one value");
+            arrlit->vtype = errorType;
             return;
         }
         INode **elemnodep = &nodesGet(arrlit->elems, 0);
@@ -53,12 +60,15 @@ void arrayLitTypeCheckDimExp(TypeCheckState *pstate, ArrayNode *arrlit) {
             arrlit->vtype = (INode*)newArrayNodeTyped((INode*)arrlit,
                 dimsize, ((IExpNode*)*elemnodep)->vtype);
         }
+        else
+            arrlit->vtype = errorType;   // iexpTypeCheckAny reported it
         return;
     }
 
     // Otherwise handle multi-value array literal
     if (arrlit->elems->used == 0) {
         errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal list may not be empty");
+        arrlit->vtype = errorType;
         return;
     }
 
@@ -76,6 +86,11 @@ void arrayLitTypeCheckDimExp(TypeCheckState *pstate, ArrayNode *arrlit) {
         }
         else if (!itypeIsSame(((IExpNode*)*nodesp)->vtype, matchtype))
             errorMsgNode((INode*)*nodesp, ErrorBadArray, "Inconsistent type of array literal value");
+    }
+    // No element typed successfully, so there is no element type to build on
+    if (matchtype == unknownType) {
+        arrlit->vtype = errorType;
+        return;
     }
     arrlit->vtype = (INode*)newArrayNodeTyped((INode*)arrlit, arrlit->elems->used, matchtype);
 }

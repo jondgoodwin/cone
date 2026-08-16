@@ -12,8 +12,9 @@
 # inherited defaults, field requirements -- and carries the LLVM IR checks,
 # because which declaration a vtable slot points at is exactly what a run cannot
 # observe. trait-variants establishes recovering the concrete type again, for a
-# union's closed set of variants and for an open trait's 'extends' implementers,
-# which is the operation the union group deliberately left here.
+# union's closed set of variants, for an open trait's 'extends' implementers and
+# for a type that conforms structurally without naming the trait at all, which is
+# the operation the union group deliberately left here.
 #
 # The reject scenarios are split first by pipeline stage, because analysis halts
 # between stages, and then by sub-family:
@@ -44,14 +45,9 @@
 #   Function references, the thing a closure reference would generalize, are
 #   ref's and closure's.
 #
-# - Narrowing a virtual reference whose target conforms structurally rather than
-#   with 'extends'. It type checks and then crashes LLVM generation with an
-#   access violation. A crash fails no assertion, so it cannot be marked xfail
-#   usefully; trait-variants narrows only 'extends' implementers and says so.
-#
-# - An anonymous 'trait {'. The parser reports the missing name and then returns
-#   a null declaration its caller dereferences, so the compiler crashes -- the
-#   same defect struct-parse records for 'struct {'.
+# - An anonymous 'trait {'. It is the same parseStruct path as 'struct {' and
+#   'union {', and struct-parse covers all three together rather than testing one
+#   parser function once per group.
 #
 # - A trait as a value type, beyond the one diagnostic in trait-typecheck-vref.
 #   A trait is not instantiable, so there is no behavior to establish past the
@@ -110,6 +106,19 @@ contains = [
 category = "run"
 description = "A base type's abstract method implemented per variant, dispatched and then narrowed back"
 tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+# Tri satisfies Shape structurally and is declared after the function whose
+# signature builds Shape's vtable. Both halves are invisible to a run: a vtable
+# slot holding a null function pointer is what the IR shows and what the printed
+# numbers cannot, and a bitcast of the real method is the proof the slot was
+# filled from a symbol rather than left empty.
+[[scenario.trait-variants.check]]
+name = "late-declared-structural-conformer-fills-its-vtable-slot"
+target = "llvmir"
+contains = [
+  '@"Tri->Shape:Vtable" = linkonce constant %"Shape:Vtable" { i32 (i8*)* bitcast (i32 (%Tri*)* @Tri_area',
+]
+excludes = ['@"Tri->Shape:Vtable" = linkonce constant %"Shape:Vtable" { i32 (i8*)* null']
 
 # -------- known defect --------
 

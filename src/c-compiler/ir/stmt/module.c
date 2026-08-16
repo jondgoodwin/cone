@@ -55,7 +55,10 @@ void modAddNode(ModuleNode *mod, Name *name, INode *node) {
 
     // Add to regular ordered node list
     nodesAdd(&mod->nodes, node);
-    if (name)
+    // '_' binds nothing, matching namespaceAdd. A declaration the parser could
+    // not name carries it, and hooking that would both make '_' resolve to the
+    // declaration and make a second unnamed one a duplicate of the first.
+    if (name && name != anonName)
         modAddNamedNode(mod, name, node);
 }
 

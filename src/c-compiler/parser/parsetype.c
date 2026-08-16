@@ -189,20 +189,24 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
             break;
     }
 
-    // Process struct type name, if provided
-    if (lexIsToken(IdentToken)) {
-        strnode = newStructNode(lex->val.ident);
-        strnode->tag = tag;
-        strnode->flags |= strflags;
-        strnode->mod = parse->mod;
-        nameConcatPrefix(&parse->gennamePrefix, &strnode->namesym->namestr);
-        parse->typenode = (INsTypeNode *)strnode;
-        lexNextToken();
-    }
-    else {
+    // Process struct type name, if provided.
+    //
+    // An unnamed type is built under the anonymous name rather than abandoned,
+    // so that the block below is still parsed: leaving here would hand the
+    // caller nothing to work with and drop the whole body on the parser's floor,
+    // where its opening brace becomes the next global statement. Callers keep
+    // such a declaration out of the module namespace, since '_' names nothing.
+    int named = lexIsToken(IdentToken);
+    if (!named)
         errorMsgLex(ErrorNoIdent, "Expected a name for the type");
-        return NULL;
-    }
+    strnode = newStructNode(named ? lex->val.ident : anonName);
+    strnode->tag = tag;
+    strnode->flags |= strflags;
+    strnode->mod = parse->mod;
+    nameConcatPrefix(&parse->gennamePrefix, &strnode->namesym->namestr);
+    parse->typenode = (INsTypeNode *)strnode;
+    if (named)
+        lexNextToken();
 
     uint16_t methflags = ParseMayName | ParseMayImpl;
     if (strnode->flags & TraitType)

@@ -1,0 +1,54 @@
+// Type argument lists written out, and the two things wrong with one that the
+// instantiation path refuses.
+//
+// Separate from generic-typecheck-infer because the mechanism is the opposite
+// one: there the type arguments are absent and have to be derived from the value
+// arguments, here they are present and are checked against the declaration
+// before anything is cloned. The two files share no diagnostic.
+//
+// Both shapes are written against a generic function and again against a generic
+// type, because the two reach genericMemoize by different callers and only the
+// pair establishes that the check is in the shared path.
+//
+// Each of these used to report its diagnostic and then kill the compiler: the
+// failed instantiation returned nothing, and its caller type-checked the nothing.
+// It now leaves a node marked as already-reported, which is why each function
+// below contributes exactly one diagnostic rather than a first one and then a
+// cascade about a callee that cannot be called.
+
+fn max[T](x T, y T) T {
+  if x > y {x} else {y}
+}
+
+fn pickSecond[T, U](a T, b U) U {
+  b
+}
+
+struct Box[T] {
+  v T
+}
+
+struct Pair[T, U] {
+  a T
+  b U
+}
+
+fn tooManyTypeArguments() {
+  imm r = max[i64, f64](1i64, 2i64)   //~ ErrorManyArgs:14 "Incorrect number of arguments vs. parameters expected"
+}
+
+fn tooFewTypeArguments() {
+  imm r = pickSecond[i64](1i64, 2i64) //~ ErrorManyArgs:21 "Incorrect number of arguments vs. parameters expected"
+}
+
+fn typeArgumentIsNotAType() {
+  imm r = pickSecond[i64, 3](1i64, 2i64)  //~ ErrorManyArgs:27 "Expected a type for a generic parameter"
+}
+
+fn tooManyTypeArgumentsOnAType() {
+  imm p = Box[i64, f64][v: 1i64]      //~ ErrorManyArgs:14 "Incorrect number of arguments vs. parameters expected"
+}
+
+fn typeArgumentIsNotATypeOnAType() {
+  imm p = Pair[i64, 3][a: 1i64, b: 2i64]  //~ ErrorManyArgs:21 "Expected a type for a generic parameter"
+}
