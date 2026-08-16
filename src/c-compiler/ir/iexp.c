@@ -294,7 +294,13 @@ INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
         // flowLoadValue(fstate, nodesFind(element->args, 0), 0);
         INode *lvalvar = iexpGetLvalInfo(element->objfn, lvalperm, scope);
         INode *objtype = iexpGetTypeDcl(element->objfn);
-        if (objtype->tag == ArrayRefTag)
+        // Indexing through any reference takes the permission from the
+        // reference, exactly as DerefTag does. RefTag belongs here because a
+        // reference to a fixed-size array is indexed without an explicit
+        // dereference; leaving it out took the permission of the variable
+        // holding the reference instead, so 'v[0] = x' on a '&mut [3; i32]'
+        // parameter was refused while '(*v)[0] = x' was allowed.
+        if (objtype->tag == ArrayRefTag || objtype->tag == RefTag)
             *lvalperm = ((RefNode*)objtype)->perm;
         else if (objtype->tag == PtrTag)
             *lvalperm = (INode*)mutPerm;

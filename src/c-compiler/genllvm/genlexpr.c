@@ -277,9 +277,30 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
         else if (selftypkind == LLVMStructTypeKind) {
             switch (((IntrinsicNode *)fndcl->value)->intrinsicFn) {
             case CountIntrinsic: fncallret = LLVMBuildExtractValue(gen->builder, fnargs[0], 1, "slicecount"); break;
-            // Comparison
-            case EqIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntEQ, fnargs[0], fnargs[1], ""); break;
-            case NeIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntNE, fnargs[0], fnargs[1], ""); break;
+
+            // Comparison. A slice is a compound pointer -- an address and a
+            // length -- so two slices are equal when both words are. 'icmp'
+            // takes integers and pointers, not aggregates, so each word is
+            // extracted and compared on its own. This is identity, not
+            // contents: it is total, O(1), and asks nothing of the element
+            // type, which needs no equality of its own.
+            case EqIntrinsic:
+            case NeIntrinsic:
+            {
+                int wantEq = ((IntrinsicNode *)fndcl->value)->intrinsicFn == EqIntrinsic;
+                LLVMValueRef lptr = LLVMBuildExtractValue(gen->builder, fnargs[0], 0, "");
+                LLVMValueRef rptr = LLVMBuildExtractValue(gen->builder, fnargs[1], 0, "");
+                LLVMValueRef llen = LLVMBuildExtractValue(gen->builder, fnargs[0], 1, "");
+                LLVMValueRef rlen = LLVMBuildExtractValue(gen->builder, fnargs[1], 1, "");
+                LLVMIntPredicate pred = wantEq ? LLVMIntEQ : LLVMIntNE;
+                LLVMValueRef ptrcmp = LLVMBuildICmp(gen->builder, pred, lptr, rptr, "");
+                LLVMValueRef lencmp = LLVMBuildICmp(gen->builder, pred, llen, rlen, "");
+                // Equal needs both words to agree; unequal needs either to differ
+                fncallret = wantEq
+                    ? LLVMBuildAnd(gen->builder, ptrcmp, lencmp, "sliceeq")
+                    : LLVMBuildOr(gen->builder, ptrcmp, lencmp, "slicene");
+                break;
+            }
             }
         }
 
@@ -697,7 +718,11 @@ void genlBoundsCheck(GenState *gen, LLVMValueRef index, LLVMValueRef count) {
     LLVMPositionBuilderAtEnd(gen->builder, boundsblk);
 }
 
-LLVMValueRef genlArrayIndex(GenState *gen, FnCallNode *fncall, ArrayNode *objtype) {
+// Index a fixed-size array, given a pointer to the array itself. The caller
+// supplies that pointer because where it comes from depends on what is being
+// indexed: an array lval has its address taken, while a reference to an array
+// already holds the address as its value.
+LLVMValueRef genlArrayIndex(GenState *gen, FnCallNode *fncall, ArrayNode *objtype, LLVMValueRef arrayp) {
     // Allocate a indexing buffer for GEP
     LLVMValueRef indexes[2];
     LLVMValueRef *indexp = &indexes[0];
@@ -715,7 +740,7 @@ LLVMValueRef genlArrayIndex(GenState *gen, FnCallNode *fncall, ArrayNode *objtyp
         genlBoundsCheck(gen, index, count);
         indexp[arg+1] = index;
     }
-    return LLVMBuildGEP(gen->builder, genlAddr(gen, fncall->objfn), indexp, nindex+1, "");
+    return LLVMBuildGEP(gen->builder, arrayp, indexp, nindex+1, "");
 }
 
 // Generate an lval-ish pointer to the value (vs. load)
@@ -741,7 +766,17 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         INode *objtype = iexpGetTypeDcl(fncall->objfn);
         switch (objtype->tag) {
         case ArrayTag: {
-            return genlArrayIndex(gen, fncall, (ArrayNode*)objtype);
+            return genlArrayIndex(gen, fncall, (ArrayNode*)objtype, genlAddr(gen, fncall->objfn));
+        }
+        case RefTag: {
+            // A reference to a fixed-size array, indexed without an explicit
+            // dereference. The reference's value is already the array's
+            // address, so it is the GEP base rather than something to take the
+            // address of. The bounds are the array type's own dimensions, so
+            // they are compile-time constants as for any fixed array.
+            ArrayNode *arraytype = (ArrayNode*)itypeGetTypeDcl(((RefNode*)objtype)->vtexp);
+            assert(arraytype->tag == ArrayTag);
+            return genlArrayIndex(gen, fncall, arraytype, genlExpr(gen, fncall->objfn));
         }
         case ArrayRefTag: {
             LLVMValueRef arrref = genlExpr(gen, fncall->objfn);
