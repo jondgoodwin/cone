@@ -1895,6 +1895,26 @@ def diagnostic_codes(codes: dict[str, int]) -> dict[str, int]:
     }
 
 
+def unraised_codes(codes: dict[str, int]) -> set[str]:
+    """Codes declared in error.h that nothing in the compiler ever raises.
+
+    Building the group corpus turned up eleven of them, each found by whichever
+    group would have owned it. Reporting them as merely "uncovered" is
+    misleading: no scenario can ever cover a code with no call site, so the
+    backlog looked eleven items longer than it was.
+
+    This is derived rather than listed, so it cannot go stale. A code that gains
+    a call site stops being reported here and starts being reported as genuinely
+    uncovered, which is exactly the transition someone adding a diagnostic wants
+    to see (R6.7).
+    """
+    sources = []
+    for path in (REPO / "src").rglob("*.c"):
+        sources.append(path.read_text(encoding="utf-8", errors="replace"))
+    blob = "\n".join(sources)
+    return {name for name in codes if not re.search(rf"\b{re.escape(name)}\b", blob)}
+
+
 def coverage(scenarios: list[Scenario]) -> dict[str, list[str]]:
     """Which scenarios name each code, by //~ annotation or unlocated entry."""
     named: dict[str, list[str]] = {}
@@ -1919,8 +1939,10 @@ def coverage_report(scenarios: list[Scenario], codes: dict[str, int]) -> None:
     """
     interesting = diagnostic_codes(codes)
     named = coverage(scenarios)
+    unraised = unraised_codes(codes)
     covered = {n: named[n] for n in interesting if n in named}
-    uncovered = [n for n in interesting if n not in named]
+    uncovered = [n for n in interesting if n not in named and n not in unraised]
+    unreachable = [n for n in interesting if n not in named and n in unraised]
 
     # A name in a scenario that is not a diagnostic code at all cannot happen:
     # parse_annotations rejects it. An excluded one can, and is worth saying.
@@ -1931,14 +1953,22 @@ def coverage_report(scenarios: list[Scenario], codes: dict[str, int]) -> None:
     print(f"  from {ERROR_H.relative_to(REPO).as_posix()}, over all "
           f"{len(scenarios)} scenarios")
     print(f"  {len(covered)} of {len(interesting)} diagnostic codes covered, "
-          f"{len(uncovered)} not")
+          f"{len(uncovered)} not, {len(unreachable)} raised by nothing")
 
     for kind, prefix in (("errors", "Error"), ("warnings", "Warn")):
         missing = [n for n in uncovered if n.startswith(prefix)]
         if not missing:
             continue
-        print(f"\nuncovered {kind} ({len(missing)})")
+        print(f"\nuncovered {kind} ({len(missing)}) -- a scenario could provoke these")
         for name in missing:
+            print(f"    {name:<24} {interesting[name]}")
+
+    if unreachable:
+        print(f"\nraised by nothing ({len(unreachable)}) -- declared in "
+              f"{ERROR_H.name}, no call site in src/")
+        print("    No scenario can cover these. Either the check each belongs to")
+        print("    is unwritten, or the code should be deleted from the enum.")
+        for name in unreachable:
             print(f"    {name:<24} {interesting[name]}")
 
     if covered:

@@ -37,7 +37,6 @@ contains its C compiler (`conec`) and a small standard-library component
   `cases.toml` listing its scenarios.
 - `test/staging/test.cone`: what is left of the broad compiler smoke-test input,
   waiting to be claimed by the groups that own it. Empty means done.
-- `test/staging/submod.cone`: imported module used by the staging input.
 
 ## Documentation context
 

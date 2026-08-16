@@ -6,277 +6,62 @@
 // neither an error nor run -- exactly the "sitting unrun" state that rule
 // exists to prevent. Here it is unambiguously not a case.
 //
-// It also still uses ':' blocks throughout. Converting to braces (R6.6) is part
-// of claiming content from it, not a separate pass.
+// This was the broad compiler smoke input. All fourteen buildable groups have
+// now claimed their content from it, and what is left is below: four
+// constructs, each of which either has no owning group or falls in a gap its
+// owner did not cover. Decomposition is complete when this file holds none of
+// them, so the length of what is left is the measure of what is left to do.
 //
-// This was the broad compiler smoke input. Its content is being moved into the
-// group that owns each construct (see design/Test Suite.md); what remains here
-// is what no group has claimed yet. Decomposition is complete when this file is
-// empty, so the length of what is left is the measure of what is left to do.
+// Still written in ':' block form, as the original was. Converting to braces
+// (R6.6) is part of claiming a construct, not a separate pass.
+
+// -------- 1. A 'while' used as an expression, with a labeled break --------
 //
-// Already extracted: operators and expressions, blocks and statements,
-// functions and function overload, 'if', 'while'/'break'/'continue', number
-// types, void, tuples, and local and global vars, all now in test/cases/core/;
-// literals, identifiers, comments and statement inference, now in
-// test/cases/lexical/.
-//
-// Still here, for the groups that will claim them: structs, methods and
-// operator methods; traits, unions and variant matching; arrays and slices;
-// borrowed references and permissions; regions and rc references; pointers;
-// closures; generics and macros; 'each'; and imports.
+// Owner: core, which owns 'while'/'break'/'continue'. core-success covers the
+// statement form of both; it does not cover a loop that yields a value, nor a
+// labeled break carrying one. Two different breaks in one loop return to two
+// different places here, which is the point of the construct.
 
-import stdio::*
-import submod::*
-
-macro one[p]:
-  p
-
-fn max[T](x T, y T) T:
-  if x > y {x} else {y}
-  
-// Define a custom type that supports an array-like API
-struct List:
-  mut arr [4; i32]
-
-  fn `[]`(self, index usize) i32:
-    arr[index]
-
-  fn `&[]`(self &mut) &[]mut i32:
-    &mut arr
-
-fn listops():
-  mut list = List[arr: [1, 5, 2, 8]]
-  // imm r = &mut list[3]
-  //imm q = *r
-
-imm x = "πabcdefghijklmnopqrstuvwxyz"
-
-fn matching(x i32) i32:
-  mut result = Ok[i32, i32][5]
-  mut some = if x==0 {Some[5]} else {None[i32][]}
-  mut n = one[if x==0 {5} else {6}]
-  imm r = max(2, 6)
-  imm r3 = max[f32](3.6, 6.2)
-  match x:
-    case ==1: {imm r = 8; n = 4}
-    else: n = 7
-  n	
-
-union Extense:
-  fld i32
-  fn incr(self &mut)
-  
-  struct Variant1:
-    nbr i32
-    fn incr(self &mut) {nbr += 1}
-  
-  struct Variant2:
-    x f32
-    y f32
-    fn incr(self &mut) {x += 1.; y+=1.}
-
-fn varsum(n Extense) i32:
-  glo2 + n.fld
-
-fn varcheck(n i32):
-  mut var = Variant1[n, 100]
-  mut var2 = Variant2[15, 33., 50.]
-  imm var3 = if n == 0 {var} else {var2} // supertype inference
-  imm var4 = if n == 0 {&var} else {&var2}
-  imm refvar &Extense = &var
-  mut vref &<mut Extense = &mut var
-  mut varxx Extense = var
-  vref = &mut varxx
-  vref.fld = 26
-  vref.incr()
-  if imm v1 &Variant1 = vref:
-    imm ss = 5
-  match refvar:
-    case imm v2 &Variant2: {v2.x + v2.y}
-    case imm v1 &Variant1: {f32[v1.nbr]}
-  glo2 = varsum(var)
-
-struct Drops:
-  n i32
-  dro2 Drop2
-
-  fn final(self &uni):
-    while n > 0:
-      --n
-
-struct Drop2:
-  n f32
-  fn final(self &uni):
-    n--
-
-fn dropper():
-  mut n = Drops[0, Drop2[1.2]]
-
-mut glowy = 34u32
-mut glo2 i32 = 7
-
-struct refstruct {ref +rc-mut i32}
-fn rcmret() u32, +rc-mut i32:
-  24u, +rc-mut 32
-fn rcstruct():
-  if &cone != &cone:
-    imm x = &cone
-  mut str = refstruct[ref: +rc-mut 2]
-  mut s +so i32
-  rcmret()
-  str.ref, s = +rc-mut 3, +so 2
-  imm newstr = +so str
-  return
-
-struct Opaque
-fn rcpass(ref +rc-mut u32) +rc-mut u32:
-    ref
-
-fn rcx(ref +rc-mut u32) +rc-mut u32:
-    imm rcref +rc-mut u32 = if (*ref == 10u) {ref} else {+rc-mut 16u}
-    rcref
-
-fn rctest():
-    mut rcref = +rc-mut 32u32
-    mut r2 = rcref
-    rcref = r2 = rcx(r2)
-    rcpass(rcref)
-    mut rcref2 = +rc-mut 4u32
-    rcref2 = rcref
-    *rcref = *rcref + 1
-
-fn ptrs(mut a *i32, b *i32) Bool:
-    b[*a] = a[0]
-    --a
-    mut r i32 = 4
-    if !a:
-      r = *a++
-    a = a + 2
-    a = a - 1
-    imm z = b - a
-    a += 4
-    a -= 4
-    a <= b
-
-fn cone() u32:
-    imm x = if true {5f} else {7d}
+fn labeledBreakValue() u32:
+    mut glowy = 34u32
     imm mum = 'a: while:
         if glowy:
             break 'a 4
         if glowy > 0:
             break 5
-    /*submod::*/incr()
-    rctest()
+    mum
+
+// -------- 2. The 'and' operator, and '!' on a non-Bool --------
+//
+// Owner: core, which owns operators and expressions. lexical-tokens covers '!'
+// on a Bool as a token; nothing covers 'and', its short-circuit behavior, or
+// what '!' means applied to a number.
+
+fn logicalOps(nbr u32) u32:
+    mut result = 1u
+    while nbr > 1 and !nbr > 50:
+        result = result * nbr
+    result
+
+// -------- 3. A number intrinsic method --------
+//
+// Owner: undecided. '.sqrt()' is a method on a number type supplied by corelib.
+// core owns number types and typemgmt owns conversion, but neither owns the
+// intrinsic method surface, and no group's "Owns" column mentions it. Decide
+// where it belongs before writing it; if the answer is "a new group", say so
+// rather than filing it somewhere convenient (R6.1).
+
+fn intrinsics(x f32) f32:
+    x.sqrt()
+
+// -------- 4. The '<-' append operator --------
+//
+// Owner: none. No group's "Owns" column mentions it. It lexes as LessDashToken,
+// interns as lessDashName, and fncall.c:100 lowers it on a vtuple to a block
+// appending each element separately -- an append operator, not a channel send.
+// It is reached here through stdio's IOStream. Candidates: core (an operator),
+// struct (it is dispatched as an operator method), or a corelib/stdio group
+// that does not exist yet.
+
+fn appendOp():
     print <- "hello"
-    points()
-    mut unsy = 23u
-    unsy = unsy++
-    //imm newval = &unsy + 4u // auto-deref
-    imm factptr = &fact
-    factptr(3u)
-    imm anonfn = &fn(x i32) i32 {x*x}
-    anonfn(3)
-    '\t'
-    2.3e1
-    glowy = unsy
-    glo2 = i32[2.3e1]
-    array(2)
-    fact(6)
-    calc(&mut glo2, 10)
-    glowy // Implicit return of global var's value
-
-// Structure handling test
-struct Point:
-    x f32
-    y f32
-    z f32 = 2.
-
-    fn decr(self &) f32:
-        x - 1.
-    fn addRef overload add(self &) f32:
-        x + self.y
-    fn addValue overload add(self) f32:
-        x + `()`()
-    fn addOther overload add(self, other) f32:
-        self.x + other.x
-    fn `+=`(self &mut, other Point) Point:
-        x = x + other.x*x
-        y = y + other.x*x
-        z = z + other.x*x
-        *self
-    fn `()`(self) f32:
-        x - z
-    fn xset(self &mut, xx f32):
-        imm m = Point[1., 2., 3.]
-        x = xx
-
-imm pp = Point[2., 3., 1.]
-fn points():
-    imm fval = 3f
-    mut pt Point = Point[y: 1f, x: fval]
-    mut xpt Point
-    xpt.x = 3f
-    with &mut xpt:
-        .y = .x
-    {
-        xpt.y = 3f
-    }
-    (&pt).add()
-    &pt.decr
-    pt += pt
-    pt.add()
-    pt()
-    xpt = pt
-    imm rpt = &mut pt
-    imm a = rpt.x
-    rpt.x = (pt.x).sqrt()
-
-fn fact(mut nbr u32) u32:
-  mut result = 1u
-  each nbrx in 1u < 10u by 2:
-    result += nbrx 
-  while nbr > 1 and !nbr>50:
-    result = result * nbr
-    if result > 10000u:
-      break 
-    nbr = nbr - 1
-  result
-  // if nbr { nbr*fact(nbr-1) } else { 1 }
-  
-fn calc(aa &mut i32, b = 1) i32:
-  imm a = *aa
-  *aa = 5
-  *aa -= 2
-  a + (a+a)*b % b
-
-fn array(index u32) u8:
-  mut a [4; u8] = [4u8, 10u8, 
-    12u8, 40u8]
-  imm r = &a[1]
-  mut b = a
-  imm slice = &[]mut b
-  imm ptr *u8 = slice
-  imm len = slice.len
-  imm refelem = &mut slice[0]
-  b[0] = a[2]
-  slice[1] = b[3]
-  slice[index]
-  
-fn refs():
-  mut a = 3
-  mut b = &a
-  if true:
-    mut c = 5
-    // b = &c  // Uncomment for lifetime error
-
-imm π = 3.1415926535
-
-fn summer():
-  print <- ∑(1, 10, &fn(n f32) f32 {π * n * n})
-
-fn ∑(low i32, high i32, lam &fn(n f32) f32) f32:
-  mut sum = 0.
-  each i in low <= high:
-    sum += lam(f32[i])
-  sum
-
