@@ -784,6 +784,14 @@ Building the corpus found **29 defects**. The count matters less than the fact
 that they fall into four repeating shapes, because each shape suggests a
 different remedy.
 
+**These are now owned by four follow-up work items**, split by the decision each
+defect needs rather than by subsystem, because that is what determines who can
+pick one up: [[Ownership memory safety]] for the miscompiles and the soundness
+hole, [[Diagnose instead of crash]] for the error paths that dereference their
+own NULL, [[Unenforced language rules]] for the rules nothing checks, and
+[[Compiler defect backlog]] for the residue. What follows stays here as the
+evidence — this is where each was found and how — and those items carry the work.
+
 **A. Memory-unsafe code generation — the serious ones, all in `region`.**
 
 | Defect | Where |
@@ -867,6 +875,20 @@ Each was verified against the compiler, not inferred from absence.
 | Module-level privacy | `importNameRes` folds every named node including private ones, and `mod::_privateName` resolves without complaint |
 | Lifetime rules beyond one | The only enforced rule is the assignment check at `assign.c:176-179`. Returning `&local` from a function is not diagnosed |
 
+**These are features, not defects, and most already have a work item.** The
+survey's contribution is that each is now *verified against the compiler* rather
+than assumed, so whoever picks one up knows exactly what exists. Routing:
+exception handling to [[Error Handling]]; concurrency and the sendability flags
+to [[Concurrency Threads]] and [[Concurrency Primitive Types]]; the `#`
+meta-language to [[Metaprogramming]]; weak references and lock permissions to
+[[Regions]] and [[Permissions]]; closure capture and closure references to
+[[Types. Function and Closure]]; initializers and `clone` to [[Init and Final]];
+delegated inheritance to [[Types. Struct and Union]]; selective import to
+[[Using and Module Name-folding]]; `enum` to [[Types. Number and Enum]]; and
+`typedef`/`extend` to [[Type Inference and Coercion]]. `imm` enforcement, module
+privacy and the lifetime gaps are rules rather than features and go to
+[[Unenforced language rules]].
+
 Two dead permission flags belong with these: `RaceSafe` and `IsLockless` are
 declared in `permission.h`, populated correctly across all six permissions in
 `corelib.c` — `RaceSafe` matching the manual's sendability prose exactly — and
@@ -931,8 +953,12 @@ open by disclaiming themselves, and all are accurate. The pattern is that
 
 ### Still owed
 
-- The 29 defects above. Each wants a fix plus the scenario that fails without it
-  (R6.3); the shape-B crashes cannot have that scenario until they are fixed.
+- The defects above, now owned by [[Ownership memory safety]],
+  [[Diagnose instead of crash]], [[Unenforced language rules]] and
+  [[Compiler defect backlog]]. Three with unambiguous one-line fixes — the
+  `::name` parser hang, the `>>=` lexer typo, and the `typedef` missing `break` —
+  were fixed here with their scenarios, since leaving a known typo unfixed to
+  file a work item about it helps nobody.
 - Diff-driven selection (R2.5) is the last unbuilt requirement.
 - `test/staging/test.cone` is down to **two constructs, neither of which has an
   owning group**: a number intrinsic method (`.sqrt()`) and the `<-` append
