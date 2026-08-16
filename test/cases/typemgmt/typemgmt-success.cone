@@ -127,6 +127,16 @@ fn intoForm() {
 
 // -------- reinterpretation --------
 
+// Two spellings of the same eight bytes, for the struct half of 'as'
+struct Halves {
+  lo i32
+  hi i32
+}
+
+struct Whole {
+  n i64
+}
+
 fn reinterpretation() {
   // 'as' does not convert: the bits are unchanged and only their reading
   // changes. 1.0f32 is 0x3F800000, which read as an i32 is 1065353216.
@@ -136,6 +146,19 @@ fn reinterpretation() {
   // The same bits an i32 reads as -1 an u32 reads as 4294967295
   mut minusOne i32 = -1
   showU("i32-bits-as-u32", minusOne as u32)
+
+  // A struct target is allowed when the sizes agree, which is the rule
+  // reftrust.html states. Two i32 fields and one i64 field occupy the same
+  // eight bytes, so the halves of the i64 are the two i32s.
+  // typemgmt-genllvm-recast holds the sizes that do not agree.
+  mut halves = Halves[1, 2]
+  imm whole = halves as Whole
+  show("struct-recast-same-size", if whole.n == 0i64 {0} else {1})
+
+  // ... and back again, which is what makes the reinterpretation faithful
+  imm back = whole as Halves
+  show("struct-recast-round-trip-low", back.lo)
+  show("struct-recast-round-trip-high", back.hi)
 }
 
 // -------- implicit coercion --------

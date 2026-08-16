@@ -570,10 +570,28 @@ LLVMValueRef genlRecast(GenState *gen, INode* exp, INode* to) {
     INode *totype = itypeGetTypeDcl(to);
     LLVMValueRef genexp = genlExpr(gen, exp);
     if (totype->tag == StructTag) {
+        // refrust.html: a reinterpretation re-casts a value "as if it were a
+        // value of a different, but same-sized type". castTypeCheck enforces
+        // that by comparing castBitsize, which has no answer for a struct --
+        // it knows nothing of field layout, padding or alignment. So a struct
+        // target is checked here instead, where the target's data layout gives
+        // the real size. Without it the store/load below allocated the source's
+        // bytes and loaded the target's, reading past the allocation whenever
+        // the target was larger.
+        LLVMTypeRef fromllvm = genlType(gen, ((IExpNode*)exp)->vtype);
+        LLVMTypeRef tollvm = genlType(gen, totype);
+        unsigned long long fromsize = LLVMABISizeOfType(gen->datalayout, fromllvm);
+        unsigned long long tosize = LLVMABISizeOfType(gen->datalayout, tollvm);
+        if (fromsize != tosize) {
+            errorMsgNode(exp, ErrorRecastSize,
+                "May only reinterpret a value as a same-sized type: size %llu here, %llu in the target.",
+                fromsize, tosize);
+            return LLVMGetUndef(tollvm);
+        }
         // LLVM does not bitcast structs, so this store/load hack gets around that problem
-        LLVMValueRef tempspaceptr = genlAlloca(gen, genlType(gen, ((IExpNode*)exp)->vtype), "");
+        LLVMValueRef tempspaceptr = genlAlloca(gen, fromllvm, "");
         LLVMValueRef store = LLVMBuildStore(gen->builder, genexp, tempspaceptr);
-        LLVMValueRef castptr = LLVMBuildBitCast(gen->builder, tempspaceptr, LLVMPointerType(genlType(gen, totype), 0), "");
+        LLVMValueRef castptr = LLVMBuildBitCast(gen->builder, tempspaceptr, LLVMPointerType(tollvm, 0), "");
         return LLVMBuildLoad(gen->builder, castptr, "");
     }
     return LLVMBuildBitCast(gen->builder, genexp, genlType(gen, totype), "");

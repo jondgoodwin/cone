@@ -109,6 +109,9 @@ enum ErrorCode {
     // Words held for language features not yet implemented
     ErrorReserved = 1065,       // Reserved word used as an identifier
 
+    // Reinterpretation, checked where the size is known
+    ErrorRecastSize = 1066,     // 'as' onto a struct whose size differs from the source's
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

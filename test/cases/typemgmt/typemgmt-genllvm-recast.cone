@@ -1,0 +1,43 @@
+// Reinterpreting a value into a struct of a different size.
+//
+// reftrust.html: reinterpretation re-casts a value "as if it were a value of a
+// different, but same-sized type". castTypeCheck enforces that by comparing
+// castBitsize, which has no answer for a struct -- it knows nothing of field
+// layout, padding or alignment -- so it used to skip the check entirely
+// whenever the target was a struct. Generation then allocated the source's
+// bytes, bitcast the pointer and loaded the target's, reading past the
+// allocation. A 4-byte i32 recast to a 24-byte struct emitted a 24-byte load
+// from an 'alloca i32', and passed --verify.
+//
+// LLVM generation stage only, and separate from typemgmt-typecheck-cast for
+// that reason: a type-check error in this file would mean generation never
+// ran, so the diagnostics below would never be reached. The size is checked
+// where it is known, which is the only place the target's data layout exists.
+//
+// The same-sized case is in typemgmt-success, so that a fix rejecting every
+// struct recast would not pass this file.
+
+struct Big {
+  a i64
+  b i64
+  c i64
+}
+
+struct One {
+  a i8
+}
+
+// Widening: the load would run 20 bytes past the 4 the source occupies
+fn numberToWiderStruct() i64 {
+  mut n i32 = 1
+  imm s = n as Big       //~ ErrorRecastSize:11 "size 4 here, 24 in the target"
+  s.a
+}
+
+// Narrowing is rejected too. It reads nothing out of bounds, but it is not
+// what 'as' means, and silently dropping 16 bytes is its own surprise.
+fn structToNarrowerStruct() i8 {
+  mut b = Big[1i64, 2i64, 3i64]
+  imm one = b as One     //~ ErrorRecastSize:13 "size 24 here, 1 in the target"
+  one.a
+}
