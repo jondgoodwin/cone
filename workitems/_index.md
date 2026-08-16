@@ -57,7 +57,7 @@
 	- [[Analysis re-factor]]
 	- Generation: [[LLVM Generation]] and [[C-ABI Generation]]
 	- Defects the test suite found, by the decision each needs:
-		- [[Ownership memory safety]] — miscompiles, and one soundness hole
+		- [[Ownership memory safety]] — miscompiles in provisional region code, awaiting its redesign
 		- [[Diagnose instead of crash]] — error paths that dereference their own NULL
 		- [[Unenforced language rules]] — documented rules nothing checks
 		- [[Compiler defect backlog]] — the residue, each with a clear answer
