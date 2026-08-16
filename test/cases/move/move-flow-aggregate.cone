@@ -1,0 +1,46 @@
+// What it costs to move a move value out of part of something, rather than out
+// of a whole variable.
+//
+// Moving a field or an array element deactivates the variable holding the whole
+// aggregate, not just the part moved, so the container's untouched fields go
+// with it. Moving out of a global is refused outright, since a global has no
+// scope in which a deactivated state could be recovered.
+//
+// Split from move-flow-deactivate because these are rules about which sources
+// may be moved from and what else the move takes down with it, not about which
+// operations move. One function, because flow analysis stops after the first
+// error.
+
+struct @move Handle {
+  id i32
+}
+
+struct Wrapper {
+  h Handle
+  n i32
+}
+
+// A global of move type, for the case below
+mut shared = Handle[1]
+
+fn main() i32 {
+  // Moving the field out deactivates the whole variable, including the field
+  // that was never moved
+  mut w = Wrapper[Handle[2], 3]
+  imm taken = w.h
+  imm useN = w.n            //~ ErrorMove:14 "moved out"
+
+  // ... and the moved field itself is gone
+  imm again = w.h           //~ ErrorMove:15 "moved out"
+
+  // An indexed element behaves the same way: the array variable is deactivated,
+  // so the elements not moved are unreachable too
+  mut arr [2; Handle] = [Handle[4], Handle[5]]
+  imm first = arr[0]
+  imm useSecond = arr[1].id //~ ErrorMove:19 "moved out"
+
+  // A global has no owner to hand the value back to, so the move is refused
+  imm stolen = shared       //~ ErrorInvType:16 "out of a global variable"
+
+  0i32
+}

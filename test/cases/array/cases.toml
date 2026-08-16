@@ -1,0 +1,61 @@
+# array - fixed-size arrays: the type '[N; T]', both array literal forms,
+# indexing, element assignment and array copy semantics. Tier 1.
+#
+# Key reference: design/Test Suite.md, "cases.toml keys".
+# The group directory supplies the feature tag, so tags carry pipeline phases.
+#
+# Slices and array references ('&[]', '.len', a pointer taken from a slice) are
+# collection's subject, not this group's, so they appear here only as the
+# '&[]u8' string parameter every run scenario's print helpers need.
+#
+# Both reject scenarios are type-check stage; the array syntax gives the parser
+# nothing of its own to reject, and an array's names resolve like any other
+# type's. They are split by sub-family rather than by stage: array-reject-shape
+# covers bracket forms that never become a well-formed array type or literal,
+# array-reject-use covers an array value that is well formed being initialized,
+# indexed or accessed wrongly. Together they would exceed the three-to-six
+# diagnostics one scenario should carry.
+#
+# Left uncovered on purpose:
+#
+# - A literal with two dimensions, '[2, 3; 0]'. It reports ErrorBadArray
+#   correctly and then crashes the compiler with an access violation:
+#   arrayLitTypeCheckDimExp returns after the error without giving the literal a
+#   vtype. Not an xfail, because the crash is a process death rather than a
+#   clean failure of an assertion.
+# - An empty array literal, '[]'. ErrorBadArray "Array literal list may not be
+#   empty" cannot be provoked from source: the parser demands an expression
+#   after '[' and reports ErrorBadTerm first, which is lexical's subject.
+# - ErrorBadIndex "Indexing not supported on a value of this type." The array,
+#   array-ref and pointer paths all call the index check only after testing the
+#   same flag it tests, so nothing reaches it.
+# - An index past the end of the array. 'a[7]' on a '[3; i32]' compiles clean
+#   and with no warning, so there is no diagnostic to assert.
+# - ErrorBadElems belongs to tuples, not arrays: it is raised only for a tuple
+#   whose elements are not all types or all values. An array literal with
+#   inconsistent element types reports ErrorBadArray instead.
+# - ErrorBadSlice and WarnCopy are declared in error.h and never raised
+#   anywhere in the compiler.
+
+support = []
+
+# -------- success --------
+
+[scenario.array-success]
+category = "run"
+description = "Array types, literals, indexing, element assignment and copy semantics"
+tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+# -------- type check stage --------
+
+[scenario.array-reject-shape]
+category = "reject"
+description = "Bracket forms that are neither a valid array type nor a valid array literal"
+tags = ["typecheck"]
+diagnostics = 6
+
+[scenario.array-reject-use]
+category = "reject"
+description = "Array initializers, indices and member access the compiler rejects"
+tags = ["typecheck"]
+diagnostics = 5

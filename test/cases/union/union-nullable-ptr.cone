@@ -1,0 +1,28 @@
+// The nullable-pointer layout: a two-variant union where one variant is empty
+// and the other holds a single reference needs no tag, because a null pointer
+// can stand for the empty variant.
+//
+// This is the shape 'Option[&T]' has, and it does not work. genlTypeMeta marks
+// the union NullablePtr and gives the base and both variants the bare pointer
+// as their LLVM type, but the variant's initializer still stores through a
+// pointer to the variant's struct type, so the module fails verification with
+// "Stored value type does not match pointer operand type". Adding a third
+// variant, which turns the optimization off, compiles.
+//
+// Marked xfail: it records the defect, and must start failing the suite as
+// soon as the defect is fixed. Nothing here is asserted beyond the compile
+// itself, because the diagnostic is a genllvm one with no source location.
+
+union Maybe {
+  struct Nothing {}
+
+  struct Just {
+    p &i32
+  }
+}
+
+fn main() i32 {
+  imm v = 41
+  mut j = Just[&v]
+  0i32
+}

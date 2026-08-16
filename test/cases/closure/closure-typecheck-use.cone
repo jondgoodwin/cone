@@ -1,0 +1,41 @@
+// An anonymous function whose type is not the type wanted where it is written.
+//
+// Type-check stage, body sub-phase: every signature in this file is well formed,
+// so the module reaches the bodies and all five diagnostics are produced.
+// Signature-phase failures are in closure-typecheck-sig; failures of the call
+// through a closure-typed value are in closure-typecheck-call.
+//
+// A closure type must agree in full. There is no subtyping between function
+// types here, so a difference in a parameter type, in the number of parameters,
+// or in the return type is a mismatch and not a conversion.
+
+fn applyTo(v i32, f &fn(n i32) i32) i32 {
+  f(v)
+}
+
+// A parameter type that differs is a mismatch, and it is reported against the
+// argument as a whole rather than against the part that differs
+fn wrongParmType() i32 {
+  applyTo(3, &fn(n f32) f32 {n})   //~ ErrorInvType:14 "Expression's type does not match declared parameter"
+}
+
+// So is a difference in how many parameters there are, even where the extra one
+// has a type the parameter's signature would accept
+fn wrongArity() i32 {
+  applyTo(3, &fn(n i32, m i32) i32 {n})   //~ ErrorInvType:14 "Expression's type does not match declared parameter"
+}
+
+// A variable that states its closure type gets the same rule as a parameter
+fn wrongDeclared() i32 {
+  imm f &fn(n i32) i32 = &fn(n f32) f32 {n}   //~ ErrorInvType:26 "Initialization value's type does not match variable's declared type"
+  0
+}
+
+// The body is checked against the return type the signature declares, exactly
+// as a named function's is. Both diagnostics land on this line: the first at
+// the offending expression, the second at the return type it disagrees with.
+fn wrongBodyType() i32 {
+  imm g = &fn(x i32) f32 {x}   //~ ErrorInvType:27 "Return expression type does not match return type on function"
+                               //~^ ErrorInvType:22 "This is the declared function's return type" follow-on
+  0
+}

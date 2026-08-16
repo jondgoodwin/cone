@@ -1,0 +1,50 @@
+// Struct declaration syntax the parser cannot accept.
+//
+// Parse stage. Each condition gets its own struct, because the parser recovers
+// from a bad member by skipping to the next statement and a second condition in
+// the same body is inside what it skips: a field permission error and an
+// unknown-statement error one line apart swallow each other and only the first
+// is ever reported.
+//
+// An anonymous 'struct {' is excluded. The parser reports the missing name and
+// then returns a null declaration that the caller dereferences, so the compiler
+// crashes instead of continuing, and a scenario cannot assert anything past it.
+
+// A field's permission may be 'mut' or omitted, never 'imm'
+struct BadPerm {
+  imm frozen i32           //~ ErrorInvType:3 "Permission not valid for field declaration"
+}
+
+// A struct may not be declared inside another struct
+struct BadNesting {
+  x i32
+  struct Inner {   //~ ErrorNoIdent:3 "structs in structs not yet supported"
+    z i32
+  }
+}
+
+// Only a trait may declare a method without implementing it
+struct NoBody {
+  x i32
+  fn missing(self) i32   //~ ErrorNoImpl:3 "must be implemented"
+}
+
+// An overload name must be free, or already name an overload set. Here it is
+// already the name of a method of this same type.
+struct NameClash {
+  v i32
+  fn size(self) i32 {
+    v
+  }
+  fn sizeScaled overload size(self, n i32) i32 {   //~ ErrorOverloadClash:3 "Overload name size is already declared as something that is not an overload name"
+    v * n
+  }
+}
+
+// A struct body holds field and method declarations, and nothing else. This is
+// last in the file because recovery from it skips forward past whatever
+// declaration follows, so anything after it would go unreported.
+struct BadMember {
+  x i32
+  while x > 0 { }   //~ ErrorNoSemi:3 "Unknown struct statement"
+}

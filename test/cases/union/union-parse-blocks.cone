@@ -1,0 +1,50 @@
+// Declarations a union body will not accept, and arms a match body will not
+// accept.
+//
+// Parse stage only. A union's variants are declared inside its own block rather
+// than with 'extends', so the variant may not restate what the block already
+// says. Both of those diagnostics are raised at the token following the variant
+// -- the union's closing brace -- so the annotation sits on that brace and not
+// on the declaration that is wrong.
+//
+// The match arm comes last on purpose: the parser abandons the whole match at
+// the first thing that is neither 'case' nor 'else', so any arm written after
+// it would be re-parsed as an ordinary statement and report again.
+
+trait Base {
+  n i32
+}
+
+// A variant is already known to extend the union it is written inside
+union WithExtends {
+  struct BadExtends extends Base {
+    a i32
+  }
+}                    //~ ErrorNoIdent:1 "trait's struct must not specify extends"
+
+// A variant inherits the union's generic parameters and may not declare its own
+union WithGenericParms {
+  struct BadParms[T] {
+    b T
+  }
+}                    //~ ErrorNoIdent:1 "trait's struct must not specify generic parms"
+
+union Shape {
+  kind i32
+
+  struct Circle {
+    radius i32
+  }
+
+  struct Rect {
+    w i32
+    h i32
+  }
+}
+
+fn stray(s &Shape) i32 {
+  match s {
+    case is &Circle {1}
+    imm x = 1        //~ ErrorBadTerm:5 "should be either case or else"
+  }
+}

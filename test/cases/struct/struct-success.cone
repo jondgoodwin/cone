@@ -1,0 +1,217 @@
+// A struct as data: declaring fields, building values, reading and changing
+// them, and what happens when a struct value is copied around.
+//
+// Everything a struct value holds is printed, because a constructor that
+// compiles is not a constructor that put the values in the right fields --
+// positional and named forms have to agree, and a defaulted field has to come
+// out with its default rather than whatever was next in the list.
+//
+// Methods, operator methods and finalizers are in struct-methods; opaque types
+// cannot be instantiated and so are in struct-opaque. This file declares no
+// method at all, so a failure here is about field layout and nothing else.
+
+import stdio::*
+
+fn show(label &[]u8, n i64) {
+  printStr(label)
+  printStr(" = ")
+  printInt(n)
+  printStr("\n")
+}
+
+fn showF(label &[]u8, n f64) {
+  printStr(label)
+  printStr(" = ")
+  printFloat(n)
+  printStr("\n")
+}
+
+// -------- declaration --------
+
+// A field states its type; a trailing field may also state a default value
+struct Point {
+  x i32
+  y i32
+  z i32 = 7
+}
+
+// A field may declare its own permission ahead of its name
+struct Holder {
+  mut count i32
+}
+
+// A struct with no fields at all is legal and its values may be passed around
+struct Empty {
+}
+
+// A field's type may be another struct, so struct values nest
+struct Segment {
+  head Point
+  tail Point
+}
+
+// -------- construction --------
+
+fn construction() {
+  // Positional: values are matched to fields in declaration order
+  imm a = Point[1, 2, 3]
+  show("positional-x", a.x)
+  show("positional-y", a.y)
+  show("positional-z", a.z)
+
+  // Named: order is free, and the compiler puts each value in its own field
+  imm b = Point[y: 20, x: 10, z: 30]
+  show("named-x", b.x)
+  show("named-y", b.y)
+  show("named-z", b.z)
+
+  // A field with a default may be left out of either form
+  imm c = Point[4, 5]
+  show("default-omitted", c.z)
+  imm d = Point[x: 6, y: 7]
+  show("default-omitted-named", d.z)
+
+  // A field's declared permission is part of the field, not of the constructor
+  mut h = Holder[count: 3]
+  show("perm-field", h.count)
+
+  // A zero-size value still constructs and still copies
+  imm e = Empty[]
+  imm e2 = e
+
+  // A struct-typed field is built with its own constructor
+  imm s = Segment[Point[1, 2, 3], Point[4, 5, 6]]
+  show("nested-head-x", s.head.x)
+  show("nested-tail-z", s.tail.z)
+}
+
+// -------- field access --------
+
+fn access() {
+  mut p = Point[1, 2, 3]
+
+  // A field is read and written through '.'
+  p.x = 40
+  p.y = p.x + 2
+  show("assigned-field", p.x)
+  show("field-from-field", p.y)
+
+  // A nested field is reached one '.' at a time
+  mut s = Segment[Point[1, 2, 3], Point[4, 5, 6]]
+  s.tail.y = s.head.y + 100
+  show("nested-assign", s.tail.y)
+
+  // A reference to a struct reaches the fields without being dereferenced
+  imm rp = &mut p
+  rp.x = 60
+  show("field-through-ref", p.x)
+
+  // A field may be borrowed on its own. The '&' binds to the name before the
+  // '.', so the parentheses are what make this a reference to the field
+  // rather than a field of a reference.
+  imm r = &(p.z)
+  show("field-borrow", *r)
+
+  // A struct may be declared without a value and assigned one later. It is the
+  // whole value that flow analysis tracks: filling the fields in one at a time
+  // instead leaves the variable uninitialized as far as it is concerned.
+  mut late Point
+  late = Point[11, 12, 13]
+  show("late-init", late.x + late.y + late.z)
+
+  // 'with' makes a value the subject of the block, so '.name' reaches its
+  // fields without repeating the value's name
+  mut w = Point[0, 0, 0]
+  with &mut w {
+    .x = 3
+    .y = .x * 2
+    .z = .x + .y
+  }
+  show("with-x", w.x)
+  show("with-y", w.y)
+  show("with-z", w.z)
+}
+
+// -------- copying --------
+
+// A struct parameter receives a copy, so changing it cannot reach the caller
+fn shift(mut p Point) Point {
+  p.x = p.x + 1000
+  p
+}
+
+fn copying() {
+  mut original = Point[1, 2, 3]
+
+  // Assignment copies every field
+  mut duplicate = original
+  duplicate.x = 99
+  show("copy-source-unchanged", original.x)
+  show("copy-target-changed", duplicate.x)
+
+  // So does passing to and returning from a function
+  imm shifted = shift(original)
+  show("arg-source-unchanged", original.x)
+  show("returned-copy", shifted.x)
+
+  // A whole struct value may be assigned over another one
+  original = Point[7, 8, 9]
+  show("whole-assign-x", original.x)
+  show("whole-assign-z", original.z)
+}
+
+// -------- fields of other types --------
+
+// A field's type may be any type, and f32 fields prove the compiler is not
+// quietly treating every field as a machine word
+struct Circle {
+  radius f32
+  filled Bool
+}
+
+fn othertypes() {
+  imm c = Circle[2.5, true]
+  showF("float-field", f64[c.radius])
+  if c.filled {
+    show("bool-field", 1)
+  }
+}
+
+// -------- interaction with control flow --------
+
+// A struct value is an ordinary value, so it flows through branches and loops
+fn pick(n i32) Point {
+  if n > 0 {
+    return Point[1, 1, 1]
+  }
+  Point[2, 2, 2]
+}
+
+fn controlflow() {
+  show("returned-from-branch", pick(1).x)
+  show("returned-from-fallthrough", pick(0).x)
+
+  // A struct chosen by an 'if' expression
+  imm chosen = if pick(1).x == 1 {Point[5, 6, 7]} else {Point[0, 0, 0]}
+  show("if-expression-struct", chosen.y)
+
+  // A struct accumulated across loop iterations
+  mut acc = Point[0, 0, 0]
+  mut i = 1
+  while i <= 4 {
+    acc.x = acc.x + i
+    acc.y = acc.y + acc.x
+    i++
+  }
+  show("loop-accumulated-x", acc.x)
+  show("loop-accumulated-y", acc.y)
+}
+
+fn main() i32 {
+  construction()
+  access()
+  copying()
+  othertypes()
+  controlflow()
+  0i32
+}

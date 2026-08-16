@@ -1,0 +1,47 @@
+// What may be borrowed from, and what may be dereferenced.
+//
+// Type-check stage only, and separate from ref-typecheck-perm because these
+// two families answer different questions: this file asks whether there is a
+// place to point at and something to point through, that one asks what the
+// pointer is then allowed to do. Neither carries a flow-stage expectation,
+// because flow analysis is skipped for every function once any error has been
+// reported; those live in ref-flow.
+
+fn twice(n u32) u32 { n * 2u }
+
+// A borrow needs a place in memory to point at. A computed value has none.
+fn borrowComputed() {
+  mut a = 3
+  imm r = &(a + 1)      //~ ErrorBadLval:15 "Expression must be lval"
+}
+
+// Nor does a literal, which the compiler is free to keep in the instruction
+fn borrowLiteral() {
+  imm r = &5            //~ ErrorBadLval:12 "Expression must be lval"
+}
+
+// Dereference needs a reference or a pointer. A number is neither.
+fn derefNumber() {
+  mut a = 3
+  imm v = *a            //~ ErrorNotPtr:11 "May only de-reference a simple reference or pointer"
+}
+
+// One '*' per level of reference: '&i32' has exactly one to give
+fn derefTooFar() {
+  mut a = 3
+  imm r = &a
+  imm v = **r           //~ ErrorNotPtr:11 "May only de-reference a simple reference or pointer"
+}
+
+// A reference's value type is part of its type, so a reference to one number
+// type is not a reference to another
+fn wrongValueType() {
+  mut a = 3
+  imm r &f32 = &a       //~ ErrorInvType:16 "Initialization value's type does not match variable's declared type"
+}
+
+// A function reference points at code, so there is no value behind it to name
+fn derefFunctionRef() {
+  imm f = &twice
+  imm g = *f            //~ ErrorInvType:7 "Variable's type must be concrete and instantiable"
+}

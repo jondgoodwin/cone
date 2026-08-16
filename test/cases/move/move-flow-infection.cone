@@ -1,0 +1,49 @@
+// Which types get move semantics. Each case moves a value of one such type and
+// then uses the source, so the diagnostic is the evidence that the type is a
+// move type; a copy type would produce nothing here.
+//
+// Four ways a type becomes non-copyable are reachable without a region: the
+// @move attribute, an inferred finalizer, a field that is itself a move type,
+// and an array whose element type is. The fifth the reference manual lists -- a
+// field that is a reference into another data structure -- is not: a borrowed
+// reference is a move type only under a permission that forbids aliasing, and
+// borrowing 'uni' is rejected outright. That case belongs to 'region'.
+//
+// One function again, because flow analysis stops running after the first error.
+
+// Declared non-copyable outright
+struct @move Attributed {
+  id i32
+}
+
+// A finalizer implies the value owns something a copy would duplicate
+struct Finalized {
+  id i32
+  fn final(self &uni Finalized) { }
+}
+
+// A field that cannot be copied makes the whole struct uncopyable
+struct HasMoveField {
+  h Attributed
+  n i32
+}
+
+fn main() i32 {
+  imm a = Attributed[1]
+  imm a2 = a
+  imm useA = a.id           //~ ErrorMove:14 "moved out"
+
+  imm b = Finalized[2]
+  imm b2 = b
+  imm useB = b.id           //~ ErrorMove:14 "moved out"
+
+  imm c = HasMoveField[Attributed[3], 4]
+  imm c2 = c
+  imm useC = c.n            //~ ErrorMove:14 "moved out"
+
+  mut d [2; Attributed] = [Attributed[5], Attributed[6]]
+  imm d2 = d
+  imm useD = d[0].id        //~ ErrorMove:14 "moved out"
+
+  0i32
+}

@@ -600,12 +600,30 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
     return scenarios
 
 
-def discover(codes: dict[str, int]) -> list[Scenario]:
+def discover(codes: dict[str, int], selectors: list[str]) -> list[Scenario]:
+    """Load every group, and decide how loudly to fail on a broken one.
+
+    A group directory whose configuration will not load is a hard error for the
+    full run — R2.12 exists so that a forgotten registration cannot sit unrun,
+    and the full run is what happens before a merge. But it is the wrong answer
+    while a group is being written: a directory that exists without its
+    cases.toml yet is the normal state of work in progress, and it would
+    otherwise block a run scoped to some entirely different group.
+
+    So a broken group is fatal when nothing was selected, and fatal when it is
+    what was selected. Otherwise it is reported and stepped over.
+    """
     if not CASES.is_dir():
         raise SuiteError(f"no case directory at {CASES}")
     scenarios: list[Scenario] = []
     for group_dir in sorted(p for p in CASES.iterdir() if p.is_dir()):
-        scenarios.extend(load_group(group_dir, codes))
+        try:
+            scenarios.extend(load_group(group_dir, codes))
+        except SuiteError as broken:
+            if not selectors or group_dir.name in selectors:
+                raise
+            print(f"warning: skipping group {group_dir.name}: {broken}\n",
+                  file=sys.stderr)
     return sorted(scenarios, key=lambda s: s.sort_key)
 
 
@@ -1991,7 +2009,9 @@ def main(argv: list[str]) -> int:
         # on the number the compiler printed, so a renumber makes all of them
         # wrong at once and this is the one place that can say so.
         check_codes_table(codes, CODES_TOML)
-        discovered = discover(codes)
+        # --coverage reports on the whole corpus, so it must not step over a
+        # broken group the way a scoped run may.
+        discovered = discover(codes, [] if args.coverage else args.selectors)
         scenarios = select(discovered, args.selectors)
     except SuiteError as failure:
         print(f"error: {failure}", file=sys.stderr)

@@ -1,0 +1,53 @@
+// How a union relates to its variants as a type: widening to the union is free,
+// narrowing back to a variant is what matching is for, and the set of variants
+// is closed.
+//
+// Type-check stage only: this file parses and resolves cleanly, so every
+// diagnostic below is reached. What a pattern may narrow to is in
+// union-typecheck-narrow; what a match must satisfy to be a value is in
+// union-typecheck-match.
+
+union Shape {
+  kind i32
+
+  struct Circle {
+    radius i32
+  }
+
+  struct Rect {
+    w i32
+    h i32
+  }
+}
+
+// Only the field the union declares is reachable without knowing the variant. A
+// variant's own field is not, however sure the caller is of which variant it is.
+fn variantFieldThroughUnion(s &Shape) {
+  imm r = s.radius     //~ ErrorNoMbr:12 "Method or field `radius` not found"
+}
+
+// A union value does not narrow to a variant by assignment
+fn unionToVariant(s Shape) {
+  mut c Circle = s     //~ ErrorInvType:18 "Initialization value's type does not match variable's declared type"
+}
+
+// ... nor does a reference to a union narrow to a reference to a variant
+fn unionRefToVariantRef(s &Shape) {
+  imm c &Circle = s    //~ ErrorInvType:19 "Initialization value's type does not match variable's declared type"
+}
+
+// Widening is only free where the reference cannot write: a mutable reference to
+// a variant would let the callee store a different variant through it
+fn takesMutUnion(s &mut Shape) {
+}
+
+fn mutVariantRefToUnion() {
+  mut c = Circle[1, 5]
+  takesMutUnion(&mut c)   //~ ErrorInvType:17 "Expression's type does not match declared parameter"
+}
+
+// A union's variants are all declared inside it, so nothing outside can join
+// the set later
+struct Outside extends Shape {   //~ ErrorInvType:24 "May not extend a closed trait or union"
+  z i32
+}

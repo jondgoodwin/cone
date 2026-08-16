@@ -1,0 +1,47 @@
+// Struct declarations the type checker rejects for what they declare, before
+// anything tries to use them.
+//
+// Type-check stage. These are properties of the type itself, so each is found
+// once at the declaration rather than at any use, and none of them needs a
+// caller to provoke it. Failures at a use site are in struct-typecheck-construct
+// and struct-typecheck-methods.
+
+// Two candidates of one overload name accept the same arguments, so the name
+// could never choose between them. Return types take no part in the decision,
+// so differing in one does not separate them.
+struct Choice {
+  v i32
+  fn dupOne overload dup(self, n i32) i32 {
+    v + n
+  }
+  fn dupTwo overload dup(self, n i32) f32 {  //~ ErrorDupOverload:3 "dupTwo accepts the same arguments as dupOne, so overload dup could never choose between them"
+    1.0
+  }
+}
+
+// A finalizer's one parameter must be '&uni self': it is the only permission
+// that says this reference is the last one that will ever exist
+struct ByValue {
+  v i32
+  fn final(self) {  //~ ErrorBadMeth:3 "may only have one parameter of type &uni"
+    return
+  }
+}
+
+struct ExtraParm {
+  v i32
+  fn final(self &uni, why i32) {  //~ ErrorBadMeth:3 "may only have one parameter of type &uni"
+    return
+  }
+}
+
+// 'final' names the finalizer, so nothing else may claim it
+struct FinalField {
+  final i32  //~ ErrorBadMeth:3 "final can only be defined as a method"
+}
+
+// A struct's field may not be the struct itself, at any depth: the value would
+// have to contain a copy of itself and so could have no size
+struct SelfHolding {
+  inner SelfHolding  //~ ErrorRecurse:9 "Recursive types are not supported"
+}

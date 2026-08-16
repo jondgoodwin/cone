@@ -1,0 +1,49 @@
+// What a pattern is allowed to narrow to: a variant of the union being matched,
+// and nothing else.
+//
+// Type-check stage only: this file parses and resolves cleanly, so every
+// diagnostic below is reached. Both patterns below name a type that exists and
+// resolves, so neither is a name-resolution failure -- the type is simply not
+// one the matched value could ever be.
+
+union Shape {
+  kind i32
+
+  struct Circle {
+    radius i32
+  }
+
+  struct Rect {
+    w i32
+    h i32
+  }
+}
+
+union Other {
+  struct Alpha {
+    a i32
+  }
+
+  struct Beta {
+    b i32
+  }
+}
+
+// A variant of a different union is still a variant, and still unreachable from
+// this one
+fn foreignVariant(s &Shape) i32 {
+  match s {
+    case imm a &Alpha {a.a}   //~ ErrorInvType:10 "Types are not compatible for this downcast specialization"
+    else {0}
+  }
+}
+
+// A value that is not a union has no variant to narrow to at all. The failed
+// narrowing leaves a cast the compiler then cannot build.
+fn matchNonUnion(n i32) i32 {
+  match n {
+    case imm c &Circle {c.radius}   //~ ErrorInvType:10 "Types are not compatible for this downcast specialization"
+                                    //~^ ErrorInvType:16 "Unsupported built-in type conversion" follow-on
+    else {0}
+  }
+}

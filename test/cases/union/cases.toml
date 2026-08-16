@@ -1,0 +1,78 @@
+# union - unions, Option, Result, pattern matching. Tier 1.
+#
+# Key reference: design/Test Suite.md, "cases.toml keys".
+# The group directory supplies the feature tag, so tags carry pipeline phases.
+#
+# A union is a closed trait whose variants are all one size, so this group's
+# subject is declaring one, constructing a variant, reading the field the
+# variants share, and recovering the variant by matching. An abstract method on
+# the union, a virtual reference and the dispatch through it are trait's, and
+# appear here only as far as having something to match on requires.
+#
+# The reject scenarios are split by pipeline stage, because analysis halts
+# between stages and a later stage's expectation would never be reached. Within
+# each stage they are split again by sub-family: the parse ones by whether the
+# malformed thing is a block's contents or a pattern binding's shape, the
+# type-check ones by whether the match, the pattern's target type, or the
+# union/variant type relationship is what rejects the code.
+#
+# Left out, because the compiler does not support them:
+#
+# - A reference to a generic instantiation. '&Option[i32]' fails to parse as a
+#   type -- ErrorNotTyped, "Expected a type" -- for any generic, not just a
+#   union, so Option and Result are matched by value here. Nothing narrower
+#   than a whole scenario is missing, so there is no xfail: the construct does
+#   not reach the stage that would assert anything.
+# - 'enum'. parseEnum builds an empty node, reachable only as a base trait's tag
+#   discriminant, which must be named '_'. There is no enum to test.
+
+support = []
+
+# -------- success --------
+
+[scenario.union-success]
+category = "run"
+description = "Union declaration, variant construction, the shared field, and every form of match"
+tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+# -------- known defect --------
+
+[scenario.union-nullable-ptr]
+category = "compile"
+description = "A two-variant union of an empty variant and a single reference, the Option[&T] shape"
+tags = ["genllvm"]
+xfail = true
+
+# -------- parse stage --------
+
+[scenario.union-parse-blocks]
+category = "reject"
+description = "Declarations a union body and arms a match body will not accept"
+tags = ["parse"]
+diagnostics = 3
+
+[scenario.union-parse-patterns]
+category = "reject"
+description = "Pattern bindings missing a permission, a name, a type, or a value to match"
+tags = ["parse"]
+diagnostics = 6
+
+# -------- type check stage --------
+
+[scenario.union-typecheck-match]
+category = "reject"
+description = "Matches that are not exhaustive, not ordered, or not of one type"
+tags = ["typecheck"]
+diagnostics = 6
+
+[scenario.union-typecheck-narrow]
+category = "reject"
+description = "Patterns narrowing to a type the matched value could never be"
+tags = ["typecheck"]
+diagnostics = 3
+
+[scenario.union-typecheck-variant]
+category = "reject"
+description = "Narrowing a union to a variant by assignment, and extending a closed union"
+tags = ["typecheck"]
+diagnostics = 5

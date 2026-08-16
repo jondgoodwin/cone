@@ -1,0 +1,58 @@
+// The shape of a pattern binding: a permission, a name, a type, and -- for the
+// single-pattern 'if' form -- the value to match against.
+//
+// Parse stage only. Each malformed binding is in its own function so the
+// parser's resynchronization from one cannot reach the next. Two of them
+// resynchronize by skipping forward for a block-opening token, which reports a
+// missing block on the way; those are the follow-on annotations.
+
+union Shape {
+  kind i32
+
+  struct Circle {
+    radius i32
+  }
+
+  struct Rect {
+    w i32
+    h i32
+  }
+}
+
+// A binding may only be 'imm' or 'mut': the others say nothing a match can act
+// on
+fn wrongPermission(s &Shape) i32 {
+  match s {
+    case ro c &Circle {c.radius}   //~ ErrorInvType:10 "Permission not valid for pattern match binding"
+    else {0}
+  }
+}
+
+// The permission has to be followed by the name the narrowed value binds to
+fn noBindingName(s &Shape) i32 {
+  match s {
+    case imm &Circle {1}           //~ ErrorNoIdent:14 "Expected variable name for declaration"
+                                   //~^ ErrorNoLCurly follow-on
+    else {0}
+  }
+}
+
+// The type is what says which variant the arm matches, so it is not optional
+// the way it is on an ordinary declaration with an initial value
+fn noBindingType(s &Shape) i32 {
+  match s {
+    case imm c {1}                 //~ ErrorInvType:16 "Expected type specification for pattern match binding"
+    else {0}
+  }
+}
+
+// The 'if' form binds against a value the condition names, unlike a match arm,
+// whose value is the one the match already captured
+fn noMatchedValue(s &Shape) i32 {
+  if imm c &Circle {               //~ ErrorInvType:20 "Expected '=' followed by value to match against"
+    1
+  }
+  else {                           //~ ErrorNoLCurly follow-on
+    0
+  }
+}

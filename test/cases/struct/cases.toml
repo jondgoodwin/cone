@@ -1,0 +1,138 @@
+# struct - structs, method definition, operator methods, initializers and
+# finalizers, delegated inheritance. Tier 1.
+#
+# Key reference: design/Test Suite.md, "cases.toml keys".
+# The group directory supplies the feature tag, so tags carry pipeline phases.
+#
+# The success program is split in two at the seam between what a struct holds
+# and what it declares: struct-success builds and copies values and declares no
+# method at all, so a failure there is about field layout; struct-methods calls
+# every method and operator method and declares no field the call does not need.
+# struct-opaque is a third success scenario and a 'compile' one, because an
+# opaque type's values cannot be created and so nothing about it can run.
+#
+# The reject scenarios are split by pipeline stage, because analysis halts
+# between stages and an expectation from a later stage would never be reached.
+# The type-check stage is split again by what is wrong: the declaration itself,
+# a constructor, or a call.
+#
+# Left out, with reasons:
+#
+# - Delegated inheritance -- a field carrying 'use' to forward names from the
+#   type it holds. conesite/public/coneref/refinherit.html says outright that
+#   none of it is implemented, and 'use' after a field's type does not parse:
+#   it ends the field's statement and the rest is an unknown struct statement.
+#   Nothing about the feature exists to test.
+#
+# - Initializers -- a 'fn init(self &new)' method. There is no 'new'
+#   permission: it does not resolve as a name, so the method cannot be written
+#   at all. conesite/public/coneref/refinitdrop.html says as much. Finalizers,
+#   which that same page also calls unimplemented, do work and are in
+#   struct-methods.
+#
+# - A 'clone' method, for the same reason: its first parameter is 'self &new'.
+#   The name 'clone' is recognized far enough to turn off the move-type
+#   inference a finalizer causes, but the method it refers to cannot be
+#   declared.
+#
+# - An anonymous 'struct {'. The parser reports the missing name and then
+#   returns a null declaration that its caller dereferences, so the compiler
+#   crashes. A crash fails no assertion and cannot be marked xfail usefully.
+#
+# - Field-by-field initialization of a struct declared without a value. Flow
+#   analysis tracks the whole value, so assigning every field one at a time
+#   still leaves the variable uninitialized. struct-success covers the whole
+#   value assignment that does work, and says so.
+
+support = []
+
+# -------- success --------
+
+[scenario.struct-success]
+category = "run"
+description = "Struct fields: declaring, constructing, reading, changing and copying them"
+tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.struct-methods]
+category = "run"
+description = "Methods, receivers, static functions, overloaded methods, operator methods and finalizers"
+tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+# Every method's symbol is its declaring type's name joined to its own concrete
+# name. That is what runtime cannot see: which candidate of an overload set a
+# call reached shows up in what it computed, but whether a symbol exists at all
+# does not.
+[[scenario.struct-methods.check]]
+name = "methods-lower-to-concrete-symbols"
+target = "llvmir"
+contains = [
+  "@Pair_sumValue",
+  "@Pair_sumRef",
+  "@Pair_sumOther",
+  "@Scaler_scaleWide",
+  "@Scaler_scaleCount",
+  "@Maker_fromInt",
+  "@Maker_fromFloat",
+  "@Vec_addVec",
+  "@Vec_addScalar",
+]
+
+# An overload name is not a declaration, so nothing is generated for it
+[[scenario.struct-methods.check]]
+name = "no-symbol-for-method-overload-name"
+target = "llvmir"
+excludes = ['@Pair_sum(', '@Scaler_scale(', '@Maker_make(', '@"Vec_+"']
+
+# An operator method's concrete name is punctuation, and it reaches the symbol
+# unchanged rather than being mangled or dropped
+[[scenario.struct-methods.check]]
+name = "operator-method-symbols-keep-their-punctuation"
+target = "llvmir"
+contains = ['@Vec_-(', '@"Vec_+="', '@"Vec_=="', '@"Vec_()"', '@"Vec_[]"', '@"List_&[]"']
+
+# A private method keeps its symbol but is not externally visible
+[[scenario.struct-methods.check]]
+name = "private-method-symbol-is-hidden"
+target = "llvmir"
+contains = ["define hidden i32 @Account__fee"]
+
+# A finalizer generates a function of its own. A struct whose field needs
+# dropping gets a second, generated one named for the type, which calls the
+# type's own finalizer and then the field's.
+[[scenario.struct-methods.check]]
+name = "finalizer-generates-a-drop-function"
+target = "llvmir"
+contains = ["@Resource_final", "@Bundle_final", "@Bundle_drop"]
+
+[scenario.struct-opaque]
+category = "compile"
+description = "An opaque struct, whose values cannot be created and are only reached by reference"
+tags = ["parse", "nameres", "typecheck", "genllvm"]
+
+# -------- parse stage --------
+
+[scenario.struct-parse]
+category = "reject"
+description = "Struct declaration syntax the parser cannot accept"
+tags = ["parse"]
+diagnostics = 5
+
+# -------- type check stage --------
+
+[scenario.struct-typecheck-decl]
+category = "reject"
+description = "Struct declarations rejected for what they declare"
+tags = ["typecheck"]
+diagnostics = 5
+
+[scenario.struct-typecheck-construct]
+category = "reject"
+description = "Struct constructors that do not agree with the type's fields"
+tags = ["typecheck"]
+diagnostics = 5
+
+[scenario.struct-typecheck-methods]
+category = "reject"
+description = "Method, field and operator accesses a struct's type cannot answer"
+tags = ["typecheck"]
+diagnostics = 6

@@ -1,0 +1,273 @@
+// Borrowed references: what '&' produces, what permission it may carry, how
+// long it may live, and what a reference to a function can do.
+//
+// Everything is printed, because a reference that compiles is not a reference
+// that points where it should. The pairs that matter are a write through the
+// reference followed by a read of the original variable, and a read through
+// the reference after the original was written.
+//
+// Owning references ('+rc', '+so'), array references and slices ('&[]'), and
+// virtual references ('&<') belong to region, collection and trait; none of
+// them appear here. Struct owns structs; Pair exists only because borrowing
+// part of a value needs a value with parts, and two fields is the fewest that
+// can also give a defined address ordering.
+
+import stdio::*
+
+struct Pair {
+  x i32
+  y i32
+}
+
+fn show(label &[]u8, n i64) {
+  printStr(label)
+  printStr(" = ")
+  printInt(n)
+  printStr("\n")
+}
+
+// -------- borrowing and dereference --------
+
+fn borrows() {
+  // '&mut' borrows a reference that may write; '*' reads and writes through it
+  mut a = 3
+  imm rw = &mut a
+  show("read-through-mut", *rw)
+  *rw = 7
+  show("write-through-mut", a)
+
+  // A reference type may also be stated on the variable rather than inferred
+  imm stated &mut i32 = &mut a
+  *stated = 8
+  show("stated-ref-type", a)
+
+  // Dereference is an expression like any other, so it composes
+  imm other = &a
+  show("deref-in-expression", *rw + *other)
+}
+
+// A reference is borrowed from a variable, and a parameter is a variable
+fn borrowParm(n i32) i32 {
+  imm r = &n
+  *r
+}
+
+fn borrowsFromParm() {
+  show("borrow-from-parm", borrowParm(21))
+}
+
+// -------- borrowing from a reference --------
+
+fn chained() {
+  mut a = 5
+  imm r = &mut a
+
+  // '&*r' borrows a new reference from the one r holds
+  imm reborrowed = &*r
+  show("borrow-from-deref", *reborrowed)
+
+  // A reference is itself a value, so a reference may point at one
+  imm rr = &r
+  show("ref-to-ref", **rr)
+}
+
+// -------- borrowing part of a value --------
+
+fn parts() {
+  mut p = Pair[1, 2]
+
+  // Parentheses are required around the field. Bare '&mut p.x' borrows p and
+  // then takes the field of that borrow, which is a different thing and does
+  // not work; ref-field-borrow records it.
+  imm fx = &mut (p.x)
+  *fx = 10
+  show("write-through-field-ref", p.x)
+
+  // A field is read and written through a reference to the whole struct, which
+  // dereferences the reference on the way
+  imm pr = &mut p
+  show("read-field-through-ref", pr.y)
+  pr.y = 20
+  show("write-field-through-ref", p.y)
+}
+
+// -------- permissions --------
+
+imm frozen = 30
+mut movable = 40
+
+fn onlyReads(n &i32) i32 { *n }
+fn alsoWrites(n &mut i32) { *n = *n + 1 }
+fn ignoresValue(n &opaq i32) i32 { 99 }
+
+fn permissions() {
+  mut source = 3
+  imm readonly = 4
+
+  // 'ro' is the default, and may be written out
+  imm implied = &source
+  imm explicit = &ro source
+  show("default-perm-reads", *implied)
+  show("ro-perm-reads", *explicit)
+
+  // 'imm' may be borrowed from an immutable variable, 'mut' from a mutable one
+  imm immref = &imm readonly
+  imm mutref = &mut source
+  show("imm-perm-reads", *immref)
+  *mutref = 6
+  show("mut-perm-writes", source)
+
+  // 'opaq' may be borrowed from anything, and promises to look at nothing
+  show("opaq-perm-borrows", ignoresValue(&opaq source))
+
+  // A 'mut' reference coerces to the 'ro' a reading function asks for, which
+  // is what lets one function serve every permission
+  show("mut-coerces-to-ro", onlyReads(&mut source))
+  show("imm-coerces-to-ro", onlyReads(&imm readonly))
+
+  // A 'mut' reference passes unchanged to a parameter that will write
+  alsoWrites(&mut source)
+  show("mut-passed-to-writer", source)
+}
+
+fn globalPermissions() {
+  // A global is borrowed exactly like a local, with the same permission rule
+  imm gro = &frozen
+  imm gmut = &mut movable
+  *gmut = 41
+  show("global-imm-borrow", *gro)
+  show("global-mut-borrow", movable)
+}
+
+// The variable's permission and the reference's permission are separate: this
+// variable may be re-pointed, and what it points at may not be written
+fn variableVersusReference() {
+  mut a = 1
+  mut b = 2
+  mut which = &a
+  show("mut-var-first-target", *which)
+  which = &b
+  show("mut-var-second-target", *which)
+
+  // ... and the reverse: the variable may not be re-pointed, the value may
+  imm fixed = &mut a
+  *fixed = 100
+  show("imm-var-mut-referent", a)
+}
+
+// -------- lifetime --------
+
+// A reference borrowed from a global has a global lifetime, so a function may
+// return one
+fn refToGlobal() &i32 {
+  &frozen
+}
+
+// A reference may also travel through a function and come back out
+fn passThrough(r &mut i32) &mut i32 {
+  r
+}
+
+fn lifetimes() {
+  mut a = 1
+  mut outer = &a
+
+  // A reference borrowed in an inner block may be stored in a variable of that
+  // same block, because the variable dies no later than what it points at
+  {
+    mut inner = 2
+    imm sameBlock = &mut inner
+    *sameBlock = 3
+    show("inner-borrow-inner-store", inner)
+  }
+
+  // A reference to a global carries no lifetime constraint, so it may be
+  // stored in a variable that outlives every block
+  {
+    outer = &frozen
+  }
+  show("global-borrow-outlives-block", *outer)
+
+  show("ref-returned-from-fn", *refToGlobal())
+  imm back = passThrough(&mut a)
+  *back = 9
+  show("ref-through-fn-and-back", a)
+}
+
+// -------- function references --------
+
+fn twice(n u32) u32 { n * 2u }
+fn thrice(n u32) u32 { n * 3u }
+
+// A parameter's reference type spells out the signature it accepts. It is the
+// last parameter because the return type of the signature would otherwise
+// swallow the comma.
+fn applyTo(n u32, f &fn(n u32) u32) u32 {
+  f(n)
+}
+
+fn fnrefs() {
+  // '&' on a function name borrows a reference that can be called
+  imm fr = &twice
+  show("call-through-fnref", i64[fr(4u)])
+
+  // The reference is a value: it passes to a function expecting that signature
+  show("fnref-as-argument", i64[applyTo(5u, &thrice)])
+
+  // ... and a mutable variable holding one selects the function at runtime
+  mut chosen = &twice
+  show("fnref-var-first", i64[chosen(6u)])
+  chosen = &thrice
+  show("fnref-var-second", i64[chosen(6u)])
+
+  // A function with no name is written where the reference is taken
+  imm square = &fn(n u32) u32 {n * n}
+  show("anonymous-fnref", i64[square(7u)])
+  show("anonymous-fnref-as-argument", i64[applyTo(8u, &fn(n u32) u32 {n + 1u})])
+}
+
+// -------- comparison --------
+
+fn compares() {
+  mut a = 1
+  mut b = 2
+  imm first = &a
+  imm alias = &a
+  imm second = &b
+
+  // References compare by the address they carry, so two borrows of one
+  // variable are equal and a borrow of another is not
+  mut n = 0
+  if first == alias { n = n + 1 }
+  if first != second { n = n + 2 }
+  if first == second { n = n + 4 }
+  if first != alias { n = n + 8 }
+  show("ref-equality-bits", n)
+
+  // Ordering compares the same addresses. Two locals have no defined order
+  // relative to each other, but two fields of one struct do, so the ordered
+  // pair is borrowed from within a single value.
+  mut p = Pair[1, 2]
+  imm low = &(p.x)
+  imm high = &(p.y)
+  mut m = 0
+  if low < high { m = m + 1 }
+  if high > low { m = m + 2 }
+  if low <= high { m = m + 4 }
+  if low >= high { m = m + 8 }
+  show("ref-ordering-bits", m)
+}
+
+fn main() i32 {
+  borrows()
+  borrowsFromParm()
+  chained()
+  parts()
+  permissions()
+  globalPermissions()
+  variableVersusReference()
+  lifetimes()
+  fnrefs()
+  compares()
+  0i32
+}
