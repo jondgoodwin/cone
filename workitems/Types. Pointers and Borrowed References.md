@@ -76,3 +76,68 @@ whatever the allocator last left there, and both checks below read it.
   comparison at all — it is a rule about what the borrowed-from variable may do —
   so it does not fall out of any of the above.
 
+## Receiver adjustment: what "`&` handling for method calls?" is about
+
+That question sits in the borrowed-references list above with no evidence
+attached. Here is the evidence, measured against the compiler by
+[[Compiler defect backlog]].
+
+**A method call resolves only when the way you hold the value already matches
+the way the method declared `self`.** Nothing adjusts the receiver. Field access,
+in the same expression position, adjusts freely — `p.x` reaches through a value,
+a reference or a pointer alike.
+
+| Held as | `fn m(self)` | `fn m(self &)` | `fn m(self &mut)` |
+| --- | --- | --- | --- |
+| a value | works | fails | fails |
+| `&T` | fails | works | n/a |
+| `&mut T` | fails | works | works |
+| `*T` | fails | fails | fails |
+| *a field, for contrast* | works | works | works |
+
+Seven of the eleven meaningful cells fail, each with `ErrorNoCandidate` "No
+method declared by `m` accepts the call's arguments". Raw pointers are not a
+special case — they are the row where nothing happens to line up.
+
+**Fixing a cell is one of two operations, and they are not comparable in cost:**
+
+- **Deref**, where the holder is a reference or pointer and the method wants a
+  value. A load and a copy. No reference is created, so nothing in permissions,
+  aliasing or lifetimes is touched. This is what field access already does.
+  **Being done now**, in the backlog work: `fncall.c:731-736` already contains a
+  deref-and-retry written for exactly this and gated on a condition that is
+  always false where it sits, so it can never run.
+- **Borrow**, where the holder is a value or a pointer and the method wants
+  `self &` or `self &mut`. This manufactures a reference, and that is the whole
+  of the design question. **Deferred here.**
+
+**Why the borrow half is a design question and not a fix.** Three reasons, and
+the third is the interesting one:
+
+1. It reverses a documented behavior. "Receivers are not auto-borrowed" is
+   recorded as an established fact by [[Add test suite]], and
+   `struct-methods.cone` deliberately writes `(&p).sum()`. Retiring that is a
+   language change, not a repair.
+2. Borrowing from a value needs the binding's permission and a lifetime;
+   borrowing from a pointer has neither to derive from. That is the same gap
+   "Improve coercion auto-borrow: only works on lvals, perm, regions, and more
+   types!" names above, arriving from the receiver side.
+3. **A pointer is an unsafe borrowed reference**, and treating it as one makes
+   the pointer row of that table fall out of the reference row rather than
+   needing rules of its own. That reframing is Jon's, and it is the reason this
+   note lives here rather than with pointers as a separate subject: the
+   "Trust block" and "Restrict pointer deref outside trust blocks" items at the
+   top of this page are the same work. `trust` means "drop the checks, I know
+   what I am doing" — so its *absence* is not a gate on anything. Today the
+   whole language behaves as though every line were inside a trust block, which
+   is why `&mut (*p)` compiles clean right now with no keyword in sight.
+
+**And the shape to design toward:** a method bound to its object is a value in
+its own right — C#'s delegate, a fully typed pair of a receiver and a function,
+so the compiler knows the parameters. Cone has the pieces scattered: function
+references, anonymous functions lifted to module scope, and virtual references
+carrying a vtable. Receiver adjustment, closure capture in
+[[Types. Function and Closure]] and delegates are three views of one question —
+how a callable and the thing it is called on travel together — and are worth
+designing at once rather than three times.
+

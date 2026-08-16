@@ -17,6 +17,18 @@ the day capture lands rather than quietly enshrining the gap. `closure-success`
 records what does work. Considered for [[Compiler defect backlog]] and left
 here: it is an unimplemented feature, not a defect with a clear right answer.
 
+**Delegates: a method bound to its object, as a typed value.** C#'s delegate is
+a receiver and a function travelling together, fully typed so the compiler knows
+what parameters to expect. Cone has the pieces scattered — function references,
+anonymous functions lifted to module scope, virtual references carrying a
+vtable — and no way to name the pair. This is the same question as closure
+capture (what state does a callable carry?) and as receiver adjustment (how does
+a callable find its `self`?), and Jon's framing is that a pointer is just an
+unsafe borrowed reference, so the safe and unsafe forms can be built the same
+way. The receiver-adjustment evidence and the table that motivates it are in
+[[Types. Pointers and Borrowed References]], under "Receiver adjustment". Design
+the three together.
+
 **Branch inference does not unify two identical closure types.**
 `imm f = if flag {&fn(x i32) i32 {x+1}} else {&fn(x i32) i32 {x+2}}` reports
 "Branch's expression type inconsistent with other branches", while coercion to
