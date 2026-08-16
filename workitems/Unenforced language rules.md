@@ -9,10 +9,14 @@ ordinary sense. In each case the code does what it was written to do; what is
 missing is a decision that was never made, or a check that was never written
 against a decision that was.
 
-**Every entry has now been verified against the compiler.** Four are closed
-outright, one is closed in part, and one has nothing to do until the feature it
-belongs to is picked up. Nothing on this page is now waiting on a check that
-someone could simply write: what remains is waiting on features.
+**Every entry has now been verified against the compiler, and every check that
+could be written has been.** What is left on this page is waiting on features,
+and each piece of it has been written into the work item that will build that
+feature — [[Types. Pointers and Borrowed References]] for lifetimes,
+[[Concurrency Threads]] for the permission flags,
+[[Copy & Alias vs. Move Semantics]] for `WarnCopy`, and [[Analysis re-factor]]
+for the one analysis gate still global. Read this page for how the compiler got
+here; look there for what to do next.
 
 The survey that produced this page was reading a compiler that has since moved,
 and much of it was misread at the time. Three entries turned out to be wrong in
@@ -63,16 +67,34 @@ name resolution reported anything — so that program never reached the flow gat
 at all, and never would have. Demonstrating the gate needs an earlier error that
 is specifically a *type-check* error in a function *body*.
 
-**Two related gates are deliberately untouched**, and are the reason a flow
-scenario still cannot open with a name-resolution or signature error:
+**`module.c` had the same defect one level up, and it is fixed too.**
+`modTypeCheck` type checks every declaration's signature first, then every body,
+and used to skip the body pass entirely unless the signature pass was
+error-free — so one malformed signature suppressed every body diagnostic in the
+module. It now records `FlagSigError` on a declaration whose own signature
+failed, and pass two skips only those. A declaration with a broken signature is
+still not checked in its body, because every use of a parameter whose type never
+resolved would report again and name nothing the author can act on.
 
-- `conec.c` returns after name resolution if it reported anything. Type checking
-  a tree with unresolved names is a different and much larger question.
-- `module.c` type checks no declaration *body* in a module if any *signature* in
-  it failed. This is the same shape of defect as the one just fixed, one level
-  up, and it is the obvious follow-up — but checking a body against a signature
-  that failed its own check is riskier than skipping flow analysis was, so it is
-  left as a decision rather than taken. Related: [[Analysis re-factor]].
+Removing the gate outright was measured first: it left the suite green, with
+`--checktree` silent everywhere, and changed exactly one scenario — three extra
+follow-on diagnostics from bodies checked against failed signatures. Skipping
+only the failed declaration removes the cross-declaration part of that. The part
+that remains is *within* one declaration, where a failed signature check leaves
+`unknownType` rather than `errorType` and the follow-ons are not suppressed.
+**Converting those paths to `errorType` is the remaining piece and belongs to
+[[Analysis re-factor]]**, which will be in all of them anyway; doing it as its own
+project would mean auditing every signature-phase error path blind.
+
+`FlagSigError` is `0x0100`. A module's declaration list holds type declarations
+as well as functions and variables, so the bit has to be free in both the
+declaration and the type flag blocks — an earlier attempt at `0x0040` collided
+with `HasTagField` and silently stopped type checking every tagged union.
+
+**One gate is deliberately untouched**, and is the reason a type-check or flow
+scenario still cannot contain a name-resolution error: `conec.c` returns after
+name resolution if it reported anything. Type checking a tree with unresolved
+names is a different and much larger question, and also [[Analysis re-factor]]'s.
 
 Related: [[Permissions]], [[Analysis re-factor]].
 
@@ -127,15 +149,16 @@ that field. It is now initialized to 0 — global lifetime — at construction.
 **What the return check does not reach**, established rather than claimed in
 `ref-flow-return`: a borrow laundered through a variable. Scope lives on the type
 node the borrow expression produced, and an assignment does not carry it onto the
-variable's declared type, so `mut r &i32; r = &local; r` returns clean. Closing
-that needs lifetimes tracked through variables — which is what the lifetime
-annotations in `reflifefn.html` are for, and they have no parser syntax at all.
-That is the remaining lifetime work and it is a feature, not a missing check.
+variable's declared type, so `mut r &i32; r = &local; r` returns clean.
 
-Scope numbering, which neither the code nor the design notes stated anywhere:
-**0 is a global, 1 is a parameter** (`parseFnSig` stamps every parameter with 1),
-**2 and up are locals**, one per enclosing block. Related:
-[[Types. Pointers and Borrowed References]].
+**That remainder is feature work, and it has moved.**
+[[Types. Pointers and Borrowed References]] now carries a section recording what
+is enforced, how a lifetime is represented, the scope numbering, and why each
+remaining hole needs work above it rather than a check. Two of its existing
+bullets turn out to be exactly this problem — "Should borrowed ref vtype be
+cloned? So, scope value is distinguishable?" is the enabling question, and "Add
+lifetime borrowed ref check on vardcl" is the check that becomes tractable once
+it is answered. Nothing about lifetimes is left on this page.
 
 ## Two permission flags are populated and never read
 
@@ -147,9 +170,21 @@ from `mut`, `ro` and `mut1`, matching `refconccomm.html`'s sendability prose
 exactly. `IsLockless` is set on all six. **Neither is read anywhere in the tree**:
 the only occurrences are the two definitions and the six `newPermNodeStr` calls.
 
-The concurrency design is one flag check away from being partially enforceable,
-and that check does not exist. Worth knowing before [[Concurrency Threads]] is
-picked up: the hard part is already done and was left disconnected.
+The concurrency design is one `permGetFlags` test away from being partially
+enforceable, and that check does not exist — because there is nothing yet to
+check. A flag test needs a construct that sends a reference to another thread,
+and no such construct parses; `spawn` and `actor` are reserved words as of the
+entry below, not implemented ones.
+
+Deleting the flags would be wrong in a way deleting the eight dead diagnostics
+was not: those were superseded, with another code already reporting the
+condition. These encode a live design decision that matches published prose, and
+re-deriving which permissions are sendable later would cost far more than the two
+lines cost now.
+
+**The finding has been written into [[Concurrency Threads]] itself**, since that
+is the file that will be open when it matters. This entry stays open only in the
+sense that a feature has not been built.
 
 ## ~~Eleven diagnostics are declared and never raised~~ — closed: one left, and it is waiting on a feature
 
@@ -189,10 +224,21 @@ distinguishable. Both now raise the code that names them:
   `ErrorInvType`, because a non-struct region is a type error rather than an
   allocation one. `region-typecheck-region` and `region-typecheck-init` assert it.
 
-**`WarnCopy` 3003 is the one left, and it is correct to leave it.** It names an
+**`WarnCopy` 3003 is the one left, and it is deliberately kept.** It names an
 unsafe copy of a `CopyMethod` or `CopyMove` typed value; neither name exists
-anywhere in the tree. There is no check to write until that machinery does.
-It belongs to [[Ownership memory safety]].
+anywhere in the tree — the only occurrence of either is that comment in
+`error.h`. So this is not an unwritten check against existing machinery: the
+machinery is absent too, and the intent lives in
+[[Copy & Alias vs. Move Semantics]] as "'Copy' method: use w/ allocated
+references, assignment, fn call, etc."
+
+That makes it a different category from the eight deleted above. Those were
+superseded — another diagnostic already reported their condition. This one has no
+substitute because its condition cannot arise yet, and `--coverage` says so
+accurately. The argument for deleting it is only that an empty "raised by
+nothing" list would make any future entry a red flag rather than noise-plus-one;
+weighed against losing the intent from where an implementer will look, keeping it
+wins.
 
 ## ~~Reserved words, before the features that need them~~ — closed, and the list was not the one in this entry
 

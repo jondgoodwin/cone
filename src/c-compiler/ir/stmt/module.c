@@ -155,7 +155,10 @@ void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod) {
     // Next, process only types for all global functions/variables
     // This ensures we can handle forward references to type info
     // (e.g., function parms) that must have been inferred from the value
+    // Each declaration remembers whether its own signature failed, so that the
+    // body pass can skip only those rather than stopping at the first one.
     for (nodesFor(mod->nodes, cnt, nodesp)) {
+        int errorsOnEntry = errors;
         switch ((*nodesp)->tag) {
         case VarDclTag:
         {
@@ -178,12 +181,18 @@ void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod) {
             break;
         }
         }
+        if (errors != errorsOnEntry)
+            (*nodesp)->flags |= FlagSigError;
     }
 
-    // Now we can process the full node info
-    if (errors == 0) {
-        for (nodesFor(mod->nodes, cnt, nodesp)) {
-            inodeTypeCheckAny(pstate, nodesp);
-        }
+    // Now we can process the full node info, for every declaration whose own
+    // signature type checked. One whose signature failed is skipped rather than
+    // stopping the pass: its body would be checked against the types that check
+    // was supposed to establish, so every use of them would report again, naming
+    // nothing the author can act on.
+    for (nodesFor(mod->nodes, cnt, nodesp)) {
+        if ((*nodesp)->flags & FlagSigError)
+            continue;
+        inodeTypeCheckAny(pstate, nodesp);
     }
 }
