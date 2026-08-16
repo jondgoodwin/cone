@@ -32,6 +32,21 @@ as that group's own subject requires.
 | 2 | `exception` | Exception handling |
 | 2 | `concurrency`, `safety`, `meta` | Concurrency; trust and raw pointers; metaprogramming |
 
+Three of these have no group directory, and the reasons differ. `exception` and
+`concurrency` are unimplemented down to the keyword table — real chapters, real
+features, nothing to test yet; their rows stay and the groups appear when the
+features do. `meta` is different: the `#` meta-language of `refmeta.html` is
+unimplemented down to the token, and the only metaprogramming that *is*
+implemented — `macro`, and all of `ir/meta/` — belongs to `generic` by the row
+above, which the manual agrees with by nesting `refmacro.html` under
+`refgeneric.html`. **The `meta` row is reserved for `refmeta.html`'s `#`
+language.** Do not resolve the apparent overlap by moving macros out of
+`generic`.
+
+`driver` is a group with no row here at all, and deliberately so: it tests the
+compiler's command line rather than the language, so it follows no chapter. It is
+the only such exception.
+
 Tier 0 spans several manual chapters because operators, functions and control
 flow cannot be tested apart. Tiers 1 and 2 test only their delta over the tiers
 below.
@@ -80,12 +95,32 @@ type checking. A type-check expectation sharing a file with a parse error never
 runs, and the scenario silently covers half of what it claims. Same-stage errors
 accumulate, so one file carries several distinct codes of one stage.
 
+**Same-stage is not always enough**, because two passes gate themselves on the
+global error count rather than on their own:
+
+- **`module.c:181` runs a declaration's *body* only if `errors == 0`.** Every
+  signature is type-checked first, so a signature-phase diagnostic silently
+  suppresses every body-phase diagnostic in the same file — both of them
+  type-check stage.
+- **`fndcl.c:181` runs `blockFlow` only if `errors == 0`.** So one error
+  anywhere, of any stage, silences data-flow analysis for every function after
+  it. Anything reported from the flow pass — `ErrorMove`, the lifetime check in
+  `assign.c`, and `ErrorNoMut` on an assignment, which is a flow diagnostic and
+  not a type-check one despite appearances — needs a file of its own, and its
+  diagnostics must all come from the first function that errors.
+
+Four groups hit these while being written. If a scenario reports fewer
+diagnostics than it should and the missing ones are all late in the file, this is
+why.
+
 **Split a stage into several files when any of these applies:**
 
 - **Recovery interference.** The parser resynchronizes by skipping forward, so
   recovery from one error can swallow the construct holding the next. If two
   conditions cannot be spaced far enough apart to recover independently, separate
-  them.
+  them. Known offenders: `ErrorNoRParen` and "Unknown struct statement" each eat
+  the following declaration, and the parser abandons an entire `match` at the
+  first arm that is neither `case` nor `else`. Each must be last in its file.
 - **Mutually exclusive structure.** `ErrorNoEof` needs the file to end wrongly.
   There is one end of file, so it is one per file and it must be last.
 - **Aborting diagnostics.** `errorExit` terminates immediately instead of
@@ -94,6 +129,20 @@ accumulate, so one file carries several distinct codes of one stage.
 - **More than three to six diagnostics.** Past that, split by sub-family.
 
 Name the split for what it covers — `core-parse-delimiters`, not `core-parse-1`.
+
+### What cannot be a scenario at all
+
+**A construct that crashes the compiler.** An access violation fails no
+assertion, so it cannot even be `xfail`. Several exist — see
+`workitems/Add test suite.md` — and each is excluded with a written reason in its
+group's `cases.toml` rather than left to be rediscovered.
+
+**A construct that silently parses as something else.** `xfail` asserts that a
+case fails; a construct the lexer or parser quietly reads as something valid
+fails nothing. Exclude it and say why.
+
+**A construct that hangs.** The runner's timeout survives it, but a scenario
+whose assertion is "this takes twenty seconds" asserts nothing worth having.
 
 ## 3. Write the source
 

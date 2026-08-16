@@ -175,6 +175,11 @@ is a place where the repository currently contradicts what the suite needs.
 
 ### Compiler source
 
+**Status: the first three are done. The fourth was dropped on purpose** — its
+only purpose was a byte-stable success line, and nothing compares one: the runner
+counts `Error` and `Warning` prefixes and asserts exit status. Reopen it if
+something ever wants to diff successful output literally.
+
 | Change | Why | Requirement |
 | --- | --- | --- |
 | Give `ErrorCode` explicit values in `src/c-compiler/shared/error.h` | The values are unnamed enum positions, so inserting a code renumbers everything below it and silently invalidates every expectation at once | R5.2 |
@@ -183,6 +188,12 @@ is a place where the repository currently contradicts what the suite needs.
 | Add an option suppressing the timing and memory figures in the success line | `errorSummary` prints elapsed seconds and kilobytes used, so successful output is not byte-stable and cannot be compared literally | R4.1 |
 
 ### Documentation
+
+**Status: done.** `CLAUDE.md`'s "Validating a change" now leads with
+`python test/run.py`, names the stale-binary hazard, and points at
+`design/Test Suite.md` for authoring. Its repository-layout section lists the
+runner, the group directories and the staging file. The reference-manual line is
+added. What follows is the original statement of the problem.
 
 `CLAUDE.md` is the main one, and it is wrong in more than the obvious place:
 
@@ -272,6 +283,16 @@ At ~30ms per compile this is a few seconds serially and about a second in
 parallel, which is why R1.7 makes running everything the default.
 
 ## Sequencing
+
+**All eight steps are done**, in a different order than planned. Step 5 came
+early, because the tier 0 corpus already contained `run` scenarios and leaving
+them unrunnable would have wasted the linking work. The coverage report from step
+8 came second rather than last, because it turned out to cost almost nothing once
+the runner parsed `error.h`, and it is far more useful as an input to the group
+work than as a summary of it. And step 4 stopped being a step: draining the
+staging file *is* building the tier 1 and 2 groups, so each group claimed its own
+content as it was written. Each departure is recorded in the "Found while..."
+section for the phase that made it.
 
 1. **Prove the annotation format by hand, before writing any runner.** Transcribe
    two or three scenarios from the `overload-fixtures` branch `README.md` into
@@ -411,6 +432,9 @@ diagnostic is an overload-declaration rule and would be surprising to find in
 - `test/test.cone` and `test/submod.cone` have **not** moved under
   `test/cases/`. The staging file was left in place, so the `CLAUDE.md` path
   references are still correct; the move belongs with the `CLAUDE.md` rewrite.
+  *(Since done — the staging file is at `test/staging/test.cone` and
+  `submod.cone` is superseded by the `module` group. See "The staging file is in
+  `test/staging/`" below.)*
 - `test/cases/core/core-typecheck.cone` carries eight diagnostics and
   `lexical-reject-tokens` seven, both past the three-to-six guidance. Both are
   five or six primaries plus follow-ons, and neither shows recovery
@@ -706,6 +730,215 @@ vcvars is now tried first, and an inherited `link.exe` is trusted only after it
 identifies itself as Microsoft's. The suite runs green from PowerShell and from
 Git Bash. R1.6 asks for Windows and Linux/WSL with no installation step; it did
 not anticipate that one Windows shell would supply a decoy.
+
+## Found while building the groups
+
+Sequencing steps 4, 7 and 8 are done. The suite runs **107 scenarios across 14
+groups**: 93 pass and 14 are expected failures, each recording a defect that
+fails cleanly and will fail the suite the day it is fixed.
+
+| Tier | Groups |
+| --- | --- |
+| 0 | `driver`, `lexical`, `core` |
+| 1 | `struct`, `union`, `array`, `closure`, `ref`, `move` |
+| 2 | `region`, `trait`, `collection`, `each`, `typemgmt`, `generic`, `module`, `safety` |
+
+`exception`, `concurrency` and `meta` have no directory; see the design note's
+group table for why, and the "unimplemented" list below for the evidence.
+
+Every group was written against the compiler rather than against the manual, and
+every group's `--bless` records zero changes — which is the check that says an
+expectation came from real output rather than being fitted to it.
+
+### Coverage
+
+`python test/run.py --coverage`: **43 of 61 diagnostic codes covered, 2
+genuinely uncovered, 11 raised by nothing.**
+
+That third bucket is new and is the more useful finding. Eleven codes are
+declared in `error.h` with no call site anywhere in `src/`: `ErrorDupImpl`,
+`ErrorNotFn`, `ErrorNoElse`, `ErrorNoVtype`, `ErrorNotLval`, `ErrorAddr`,
+`ErrorNoFlds`, `ErrorBadAlloc`, `ErrorNoDbl`, `ErrorBadSlice` and `WarnCopy`.
+Each was found independently by whichever group would have owned it, and the
+runner now derives the same list by scanning `src/`, so it cannot go stale. Either
+the check each belongs to is unwritten, or the code should be deleted from the
+enum — deletion is cheap now that values are explicit, since it leaves a gap
+rather than renumbering neighbours.
+
+`ErrorNoElse` is the instructive one: the exhaustiveness diagnostic everyone
+would expect it to be is actually `ErrorInvType`, "if requires an 'else' clause
+(or exhaustive matches) to return a value" (`ir/exp/if.c:181`).
+
+The two genuinely uncovered are both blocked rather than unwritten. `ErrorGenErr`
+is provoked by a nested allocation just before the compiler dies on it.
+`ErrorNoEof` is reported **only inside an included or imported file**
+(`parsemod.c:71` and `:274`), and annotation matching requires a diagnostic's
+path to equal the scenario's own source, so no inline annotation can reach it.
+The `module` group asserts the behavior as a `recover` scenario instead. Letting
+an annotation in a *support module* match diagnostics reported in that file is
+what R2.12's support-module model implies should already work, and is the fix.
+
+### The compiler defects, by shape
+
+Building the corpus found **29 defects**. The count matters less than the fact
+that they fall into four repeating shapes, because each shape suggests a
+different remedy.
+
+**A. Memory-unsafe code generation — the serious ones, all in `region`.**
+
+| Defect | Where |
+| --- | --- |
+| A moved `+so` reference double-frees | `genlDealiasNodes` frees every owning-reference variable with no notion of one whose value was moved out |
+| A first assignment to an uninitialized `rc` variable releases garbage | `genlStore` dealiases an `rc` lval's previous value without consulting `VarInitialized` |
+| A region-allocated struct owning a reference corrupts the heap on release | `genlDealiasFlds` reaches the field with a struct GEP and hands that *address* to a routine wanting the reference the field *holds*. A stack struct with such a field is safe only because its fields are never released at all — they leak |
+| A nested allocation fails LLVM module verification | |
+| Fallible allocation `?+rc-mut v` dies with an access violation | |
+
+**Region coercion is backwards, and it is a soundness hole.** `refMatches` calls
+`regionMatches(from->region, to->region)` — the arguments are swapped against the
+parameter names. One direction rejects a valid coercion, which
+`region-borrow-coerce` pins as an `xfail`. The other **silently accepts a
+borrowed reference where an owning one is wanted**, handing a stack address to a
+parameter typed `+rc-mut`; it compiles, it runs, and there is no diagnostic to
+assert against. The suite cannot hold the dangerous half.
+
+**B. Crash instead of diagnose.** In each of these the compiler works out that
+something is wrong, reports it or returns an error, and then dereferences the
+NULL that the error path left behind: `struct {` with no name; `trait {` with no
+name; `each x in <anything not a range>`; a two-dimension array literal
+(`[2, 3; 0]`); any error in a written-out generic type argument list; an empty
+generic type parameter list `fn f[]()`; narrowing to a *structurally* conforming
+target; and cross-module private access.
+
+**None of these can be a scenario.** A process death fails no assertion, so they
+cannot even be `xfail`ed — this is the category the suite structurally cannot
+hold, and it is the strongest argument for fixing them rather than recording
+them. Each is excluded with a written reason in its group's `cases.toml`.
+
+**C. One-line gaps.** A missing tag in a condition, a missing `break` in a
+switch, a signature built from `unknownType`, a permission read from the wrong
+node:
+
+- `itypeGetTypeDcl` (`ir/itype.c`) lacks a `break` after `case TypedefTag:` and
+  returns the typedef's unresolved `typeval`, so **any use of a typedef as a type
+  crashes**. This is the one defect whose fix looks genuinely mechanical.
+- `assign.c:175` gates the borrow-escape check on `RefTag` on both sides, so
+  `ArrayRefTag` skips it and **a slice may outlive the array it borrows**.
+- `newArrayRefTypeMethods` (`corelib/corenumber.c:274`) declares `==` and `!=`
+  for slices with a signature whose region, permission and element type are all
+  `unknownType`, which no real slice matches, so **slices cannot be compared**.
+- `iexpGetLvalInfo`'s `ArrIndexTag` case takes the permission from the reference
+  only for `ArrayRefTag` and `PtrTag`, so **writing through `&mut [N; T]`
+  requires an explicit deref**.
+- `parseAmper` re-applies suffixes to the borrow, so `&mut p.x` type-checks as
+  the field's type while codegen returns the field pointer — **LLVM verification
+  fails**. The array-index path has the `FlagBorrow` fixup the field path lacks.
+- `genlTypeMeta`'s nullable-pointer optimization gives base and variants a bare
+  pointer type while the variant initializer still stores through the variant's
+  struct type; **matching on one segfaults**.
+
+**D. Reported in the wrong place.** `each`'s synthesized increment reports at the
+function's closing brace, because `parseEach` builds those nodes with the lexer's
+position at the time the block finished. A name-fold clash between two wildcard
+imports names the wrong file entirely. And `ErrorFewArgs` is emitted with the
+message "Too many arguments provided for generic function" — code and message
+disagree, and `generic-typecheck-infer` asserts it as-is so that fixing either
+forces the choice.
+
+### Documented features that do not exist
+
+Each was verified against the compiler, not inferred from absence.
+
+| Feature | Evidence |
+| --- | --- |
+| Exception handling | No `try`/`catch`/`throw`/`throws`/`panic`/`assert` in the lexer's 43-entry keyword table. `\|\|` does not lex at all; `?` is *prefix* Option sugar, never the postfix form the manual shows |
+| Concurrency | No `spawn`/`thread`/`async`/`await`/`actor`/`qfn`/`atomic` |
+| The `#` meta-language | `lexer.c:608` produces `MetaIdentToken` and **no parser site consumes it** |
+| `trust` | No keyword, no parse rule |
+| Weak references, lock permissions | `weak` appears nowhere in `src/` in any case |
+| Closure capture | `parseexpr.c:296` lifts the `FnDclNode` to module scope while parsing, so an anonymous function never sees its enclosing locals. It is a lifted function with a reference type, not a closure |
+| Closure references | The literal `\|{w}\| {…}` does not lex; the type `+<so \|\|` does not parse |
+| Delegated inheritance | `engine Engine use fuel, thrust` — `use` terminates the field statement |
+| Initializers and `clone` | Both need `self &new`; there is no `new` permission |
+| `extend` | Not lexed. Only `extends`, which is trait inheritance |
+| Selective import | `import mod::name` — `parseImport` consumes `::` only to look for `*` |
+| `enum` | As already recorded for tier 0 |
+| **`imm` enforcement** | `imm n = 3; n = 5` compiles clean, as does writing through an `imm` reference or to an `imm` struct's field. There is no immutability check on a variable anywhere |
+| Module-level privacy | `importNameRes` folds every named node including private ones, and `mod::_privateName` resolves without complaint |
+| Lifetime rules beyond one | The only enforced rule is the assignment check at `assign.c:176-179`. Returning `&local` from a function is not diagnosed |
+
+Two dead permission flags belong with these: `RaceSafe` and `IsLockless` are
+declared in `permission.h`, populated correctly across all six permissions in
+`corelib.c` — `RaceSafe` matching the manual's sendability prose exactly — and
+**read nowhere**. The concurrency design is one flag check away from being
+partially assertable, and that check does not exist.
+
+**None of `throw`, `catch`, `panic`, `assert`, `yield`, `spawn` or `actor` is a
+reserved word.** A program declaring all seven as functions compiles clean.
+Implementing any of those chapters is therefore a breaking change to existing
+user code that no current test would catch. Reserving the words ahead of the
+features is cheap insurance, and cheapest now.
+
+### Published documentation that is wrong
+
+The manual was treated as a claim to verify throughout, and it needed to be.
+
+- `refmove.html` opens "None of this has been implemented." Nearly all of it is
+  implemented and enforced. It also says moving out of an indexed array element
+  is prohibited; the compiler permits it and deactivates the whole array.
+- `refperm.html` says dereferencing an `&opaq` reference is an error. It compiles
+  clean.
+- `refinitdrop.html` calls finalizers unimplemented. Finalizers work; it is
+  initializers that do not.
+- `refeach.html` admits only the range operators are implemented, but is silent
+  that the others *crash*.
+- The anonymous variable `_` for early destruction is documented and fails name
+  lookup.
+
+By contrast `refexcept.html`, `refconc.html`, `refmeta.html`, `reftrust.html`,
+`refweakref.html`, `refpermlock.html`, `refinherit.html` and `reflifefn.html` all
+open by disclaiming themselves, and all are accurate. The pattern is that
+*aspirational* chapters are honest and *partially built* ones drift.
+
+### Facts the corpus now pins, which nothing recorded before
+
+- **The coercion rule is one line.** `nbrMatches` (`ir/types/number.c:57`): same
+  tag, and strictly more bits. It widens, never narrows, never crosses
+  signed/unsigned, never crosses integer/float.
+- **An unsuffixed integer literal is i32; an unsuffixed float literal is f32.**
+  The second silently costs precision — `mut x f64 = 16777217.0` yields
+  16777216.
+- **Operator widening is asymmetric.** `wide + small` compiles, `small + wide`
+  does not: the candidate set comes from the left operand's type.
+- **`each` is purely a parser rewrite** into `{ mut v = lower; while cmp { body;
+  v += step } }`, which explains all of its surprising behavior.
+- **`match` is sugar for an `if` chain**, so its diagnostics say "if" and "else".
+- **Macro arguments are substituted, not evaluated**, and macro bodies are
+  name-resolved at the declaration site.
+- **Generic instantiation is memoized** and shared across spellings; instance
+  functions are name-mangled with their type arguments, instance structs are not.
+- **Structural conformance suffices for `&<Trait` coercion and dispatch; only
+  narrowing needs nominal `extends`.**
+- **A region is not a privileged set of two** — any struct with an `_alloc` of
+  the right shape is one, and the checks fire when an allocation names it, not
+  when it is declared.
+- **Flow analysis tracks whole values only**, never a field or element.
+- **Receivers are not auto-borrowed**; `&` binds tighter than `.`; `by` and `in`
+  are reserved; a `&fn(...)` parameter must come last.
+- **Bounds checks are emitted for fixed arrays and array references alike.** What
+  differs is that an array's length is a compile-time constant, so a constant
+  index folds the trap away, while a slice's comes from the value and does not.
+
+### Still owed
+
+- The 29 defects above. Each wants a fix plus the scenario that fails without it
+  (R6.3); the shape-B crashes cannot have that scenario until they are fixed.
+- Diff-driven selection (R2.5) is the last unbuilt requirement.
+- `test/staging/test.cone` holds four constructs. Two are `core`'s. Two —
+  a number intrinsic method, and the `<-` append operator — **have no owning
+  group**, and need one chosen rather than assumed.
+- R6.4 will not reach full coverage while eleven codes are unraisable and two are
+  unreachable by annotation.
 
 ## Recommendations on the two open questions
 
