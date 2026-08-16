@@ -752,7 +752,7 @@ expectation came from real output rather than being fitted to it.
 
 ### Coverage
 
-`python test/run.py --coverage`: **43 of 61 diagnostic codes covered, 2
+`python test/run.py --coverage`: **48 of 61 diagnostic codes covered, 2
 genuinely uncovered, 11 raised by nothing.**
 
 That third bucket is new and is the more useful finding. Eleven codes are
@@ -934,9 +934,11 @@ open by disclaiming themselves, and all are accurate. The pattern is that
 - The 29 defects above. Each wants a fix plus the scenario that fails without it
   (R6.3); the shape-B crashes cannot have that scenario until they are fixed.
 - Diff-driven selection (R2.5) is the last unbuilt requirement.
-- `test/staging/test.cone` holds four constructs. Two are `core`'s. Two —
-  a number intrinsic method, and the `<-` append operator — **have no owning
-  group**, and need one chosen rather than assumed.
+- `test/staging/test.cone` is down to **two constructs, neither of which has an
+  owning group**: a number intrinsic method (`.sqrt()`) and the `<-` append
+  operator. Every construct that had an owner has gone to it. What is left is an
+  ownership question, not unwritten work — and under R6.1 the answer may be a new
+  group and a new manual chapter, since neither has a chapter today.
 - R6.4 will not reach full coverage while eleven codes are unraisable and two are
   unreachable by annotation.
 

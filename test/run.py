@@ -377,7 +377,8 @@ def parse_annotations(source: Path, codes: dict[str, int]) -> list[Annotation]:
 
 
 def match_diagnostics(
-    expected: list[Annotation], actual: list[Diagnostic], source_rel: str
+    expected: list[Annotation], actual: list[Diagnostic], source_rel: str,
+    last_line: int = 0,
 ) -> tuple[list[Annotation], list[Diagnostic]]:
     """Pair annotations with diagnostics; return what was left over on each side.
 
@@ -387,6 +388,14 @@ def match_diagnostics(
     line and a column, and the substring is the only thing that separates them.
     Annotations carrying one are therefore matched first, so they claim their
     own diagnostic before a substring-less annotation can absorb it.
+
+    One relaxation, for the end of the file. A diagnostic reported at the EOF
+    token lands on the last line when the file has no trailing newline, and on
+    the line after it when it does — so which line it is depends on a byte no
+    editor shows you. An annotation on the final line matches either.
+    ``core-parse-unclosed`` is the case: `ErrorNoRCurly` is only ever reported at
+    EOF, and without this the scenario would silently break the first time
+    anything appended a newline to it.
     """
     unmatched_actual = list(actual)
     unmatched_expected: list[Annotation] = []
@@ -395,7 +404,9 @@ def match_diagnostics(
         for candidate in unmatched_actual:
             if candidate.code != annotation.code:
                 continue
-            if candidate.line != annotation.line:
+            at_eof = (last_line and annotation.line == last_line
+                      and candidate.line == last_line + 1)
+            if candidate.line != annotation.line and not at_eof:
                 continue
             if annotation.col is not None and candidate.col != annotation.col:
                 continue
@@ -449,6 +460,9 @@ class Scenario:
     runs: tuple[RunSpec, ...]
     checks: tuple[Check, ...]
     unlocated: tuple[dict, ...]
+    # Lines in the source, so an annotation on the final line can also match a
+    # diagnostic reported at the EOF token on the line after it.
+    last_line: int = 0
     argv: tuple[str, ...] = ()   # 'driver' only: the whole invocation
     xfail: bool = False
     annotations: list[Annotation] = field(default_factory=list)
@@ -574,6 +588,8 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
         )
         if source is not None:
             scenario.annotations = parse_annotations(source, codes)
+            body = source.read_text(encoding="utf-8", errors="replace")
+            scenario.last_line = len(normalize(body).rstrip("\n").split("\n"))
             if scenario.annotations and category not in ANNOTATABLE:
                 first = scenario.annotations[0]
                 raise SuiteError(
@@ -1122,7 +1138,8 @@ class Runner:
         and no unannotated ones."""
         located = [d for d in diagnostics if d.line is not None]
         unlocated = [d for d in diagnostics if d.line is None]
-        missing, extra = match_diagnostics(scenario.annotations, located, scenario.source_rel)
+        missing, extra = match_diagnostics(
+            scenario.annotations, located, scenario.source_rel, scenario.last_line)
         extra += self.claim_unlocated(result, scenario, unlocated)
 
         self.report_missing(result, missing)
@@ -1415,7 +1432,7 @@ def sole_placement(expected: list[Annotation], produced: list[Diagnostic]
 
 
 def place_annotations(expected: list[Annotation], produced: list[Diagnostic],
-                      source_rel: str):
+                      source_rel: str, last_line: int = 0):
     """Pair annotations with diagnostics loosely enough to bless (R4.4).
 
     ``match_diagnostics`` keys on code, line and column, which is precisely what
@@ -1438,8 +1455,15 @@ def place_annotations(expected: list[Annotation], produced: list[Diagnostic],
     for diagnostic in produced:
         if normalize_path(diagnostic.path or "") != source_rel:
             continue
-        groups.setdefault((diagnostic.code, diagnostic.line), ([], []))[1] \
-            .append(diagnostic)
+        # A diagnostic at the EOF token is reported on the line after the last
+        # when the file ends with a newline, and on the last line when it does
+        # not. match_diagnostics accepts either against an annotation on the
+        # final line, so bless has to group them the same way or it would refuse
+        # to write a column it can see perfectly well.
+        line = diagnostic.line
+        if last_line and line == last_line + 1:
+            line = last_line
+        groups.setdefault((diagnostic.code, line), ([], []))[1].append(diagnostic)
 
     pairs: list[tuple[Annotation, Diagnostic]] = []
     unproduced: list[Annotation] = []
@@ -1634,7 +1658,7 @@ def bless_scenario(scenario: Scenario, results: list[Result],
         if scenario.category in ANNOTATABLE:
             pairs, unproduced, unclaimed, ambiguous = place_annotations(
                 scenario.annotations, annotated_diagnostics(scenario, result),
-                scenario.source_rel)
+                scenario.source_rel, scenario.last_line)
             if ambiguous:
                 blessing.refusal = "\n".join(
                     [f"{len(ambiguous)} annotation group(s) bless cannot place"
