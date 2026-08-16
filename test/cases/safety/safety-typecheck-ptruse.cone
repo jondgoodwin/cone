@@ -1,0 +1,43 @@
+// Uses of a pointer that are not operator calls: indexing it with a non-integer,
+// calling it, naming something its value type does not have, and writing a
+// pointer type where a value is expected.
+//
+// Type check stage only, split from safety-typecheck-ptrops so that neither
+// file carries more diagnostics than a reader can hold at once.
+
+struct Point {
+  x i32
+  y i32
+  fn sum(self) i32 { x + y }
+}
+
+fn fractionalIndex(p *i32) {
+  // Indexing a pointer accepts a signed or an unsigned integer and nothing else
+  imm bad = p[1.5]      //~ ErrorBadIndex:14 "Pointer index must be an integer"
+}
+
+fn callIt(p *i32) {
+  // Parentheses on a pointer are a call, and only a pointer to a function
+  // signature can be called
+  p()                   //~ ErrorNoMeth:4 "Invalid operation on a pointer"
+}
+
+fn unknownField(sp *Point) {
+  // Field access reaches through the pointer, so the name is looked up in the
+  // struct pointed at
+  imm bad = sp.height   //~ ErrorNoMbr:15 "Method or field `height` not found"
+}
+
+fn methodThroughPointer(sp *Point) {
+  // A method is not reachable through a pointer. Field access dereferences
+  // automatically and a reference retries its method lookup after a deref, but
+  // the pointer path does neither, so 'self' never matches the receiver.
+  imm bad = sp.sum()    //~ ErrorNoCandidate:15 "No method declared by `sum`"
+}
+
+fn typeAsValue() {
+  // '*' before a name is a pointer type when the name is a type and a
+  // dereference when it is a value. Here it resolves to a type, which is not
+  // something an initializer can be.
+  imm bad = *i32        //~ ErrorNotTyped:13 "Expected a typed expression"
+}

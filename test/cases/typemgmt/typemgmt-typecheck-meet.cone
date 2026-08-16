@@ -1,0 +1,35 @@
+// Contexts that have to settle on one type for several values and cannot,
+// which is where coercion is asked for by the shape of the code rather than by
+// a declared type.
+//
+// Type-check stage only: this file parses and resolves cleanly, so every
+// diagnostic below is reached. Coercion into a declared type is in
+// typemgmt-typecheck-coerce.
+//
+// Split from that file because the failure here is not "this value will not
+// coerce to that type" but "no type exists that both values reach", and
+// because the operator case reports through overload selection instead.
+
+// Branches of an 'if' used as a value are coerced to the widest type among
+// them, so two branches of the same kind agree. Two different kinds have no
+// common type and neither branch is at fault, so the second one is reported.
+fn signedAndUnsignedBranches() {
+  mut signed i32 = 1
+  mut unsigned u32 = 1
+  imm x = if true {signed} else {unsigned}  //~ ErrorInvType:33 "Branch's expression type inconsistent with other branches"
+}
+
+fn integerAndFloatBranches() {
+  mut signed i32 = 1
+  imm y = if true {signed} else {2.5}       //~ ErrorInvType:33 "Branch's expression type inconsistent with other branches"
+}
+
+// An operator coerces its right operand to the left operand's type, and not
+// the other way round: the candidate set is the left type's, and i16 declares
+// no '+' that accepts an i64. Widening is therefore asymmetric, even though
+// the same two values in the other order need no conversion at all.
+fn operandOrderIsNotSymmetric() {
+  mut small i16 = 3
+  mut wide i64 = 4i64
+  imm z = small + wide                      //~ ErrorNoCandidate:17 "accepts the call's arguments"
+}

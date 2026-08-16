@@ -1,0 +1,110 @@
+# module - modules, namespaces, 'include'/'import'/'extern'. Tier 2.
+#
+# Key reference: design/Test Suite.md, "cases.toml keys".
+# The group directory supplies the feature tag, so tags carry pipeline phases.
+#
+# This is the first group with support modules: a .cone file here that is
+# neither a listed scenario nor a listed support module is an error (R2.12), so
+# every file a scenario imports or includes is named below. Support files carry
+# a 'module' prefix that an identifier can hold, because a module's name is also
+# its qualifier and 'module-importsub' is not spellable as one.
+#
+# Only module-success runs. Everything about 'import' compiles and stops there:
+# a program spanning modules cannot be linked yet, and design/Test Suite.md
+# section 4 forbids adding a synthetic 'main' to promote a scenario's category.
+# What running would have shown -- which symbol a call lowered to, and whether a
+# symbol was emitted at all -- is asserted as named llvmir checks instead.
+#
+# The failure scenarios are split by pipeline stage, because analysis halts
+# between stages. module-import-missing is split off again inside the parse
+# stage because its failure aborts rather than accumulates, and
+# module-include-eof because its diagnostic lands in an included file.
+#
+# Left out deliberately:
+#
+# - Selective import, 'import mod::name'. The parser accepts '::' only before
+#   '*', so this form is rejected as a malformed statement rather than resolved.
+#   Asserting today's rejection would pin a placeholder.
+# - Any access to a private module-level declaration across a module boundary
+#   other than a fn candidate reachable through a public overload name.
+#   'mod::_privateFn(...)' and 'mod::_privateVar' resolve without complaint and
+#   then crash LLVM generation with a null llvmvar -- the residue of the defect
+#   commit 34ca637 fixed for overload candidates. A crash fails no assertion
+#   cleanly, so it is excluded rather than marked xfail.
+# - A name-fold clash between two wildcard imports. It is diagnosed, but both
+#   diagnostics are attributed to a source module and one of them carries the
+#   wrong file url, so a scenario built on it would pin a reporting bug.
+
+support = ["moduleinc.cone", "modulesub.cone", "moduleeof.cone"]
+
+# -------- success --------
+
+[scenario.module-success]
+category = "run"
+description = "'include', 'extern' and namespace qualification inside one module"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+[scenario.module-imports]
+category = "compile"
+description = "A wildcard import folding an overload name with a private candidate"
+tags = ["parse", "nameres", "typecheck", "genllvm"]
+
+# The regression itself: a private candidate selected through a public overload
+# name has to get a symbol even though the privacy filter skips its own entry.
+[[scenario.module-imports.check]]
+name = "imported-private-candidate-declared"
+target = "llvmir"
+contains = [
+  "declare i64 @modulesub_scaleInt(i64)",
+  "declare hidden double @modulesub__scaleFloat(double)",
+  "declare i64 @modulesub_plain(i64)",
+]
+
+# An overload name has no symbol of its own, and a private overload name is not
+# folded by the import at all, so neither it nor its candidate is declared.
+[[scenario.module-imports.check]]
+name = "no-symbol-for-imported-overload-name"
+target = "llvmir"
+excludes = ["@modulesub_scale(", "@modulesub__hidden", "_hiddenOne"]
+
+[scenario.module-qualified]
+category = "compile"
+description = "An import without '::*', whose members are reached by qualifying them"
+tags = ["parse", "nameres", "typecheck", "genllvm"]
+
+# A qualified call lowers to the same namespaced concrete symbol a folded one
+# does, and the qualifier itself leaves nothing behind.
+[[scenario.module-qualified.check]]
+name = "qualified-call-lowers-to-namespaced-symbol"
+target = "llvmir"
+contains = ["@modulesub_plain", "@modulesub_scaleInt"]
+excludes = ["@modulesub_scale("]
+
+# -------- parse stage --------
+
+[scenario.module-parse]
+category = "reject"
+description = "Module qualifier and 'extern' declaration syntax the parser cannot accept"
+tags = ["parse"]
+diagnostics = 4
+
+[scenario.module-import-missing]
+category = "reject"
+description = "An import naming a source file that is not there"
+tags = ["parse"]
+diagnostics = 0
+exit = 2
+
+[scenario.module-include-eof]
+category = "recover"
+description = "An included file the parser stops reading before its end"
+tags = ["parse"]
+diagnostics = 1
+
+# -------- name resolution stage --------
+
+[scenario.module-nameres]
+category = "reject"
+description = "Module qualifiers and imported names that resolve to nothing"
+tags = ["nameres"]
+diagnostics = 4

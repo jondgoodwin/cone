@@ -1,0 +1,149 @@
+// Generic functions and generic types: declaring one type parameter list, and
+// what a call or a type literal does with it.
+//
+// A generic is not a type or a function. It is a template the compiler clones
+// once per distinct set of type arguments, so what has to be established is
+// which instance a use gets: the type arguments written out, the type arguments
+// inferred from the value arguments, two uses at one type argument sharing one
+// instance, and two uses at different type arguments getting different ones.
+// Only the last of those is visible in what the program prints, so the
+// instantiation itself is asserted against the generated LLVM IR, where each
+// instance appears under a name carrying its type arguments.
+//
+// Macros are the other half of this group and live in generic-macro, because
+// they are a separate declaration and expansion path that codegen never sees as
+// its own entity.
+//
+// i64 and f64 throughout, so that a printed value needs no conversion: a
+// numeric conversion is typemgmt's subject and would be scaffolding here.
+
+import stdio::*
+
+fn show(label &[]u8, n i64) {
+  printStr(label)
+  printStr(" = ")
+  printInt(n)
+  printStr("\n")
+}
+
+fn showF(label &[]u8, n f64) {
+  printStr(label)
+  printStr(" = ")
+  printFloat(n)
+  printStr("\n")
+}
+
+// -------- a generic function --------
+
+// One type parameter standing in for both parameter types and the return type,
+// so an instance is wrong unless all three were substituted together.
+fn max[T](x T, y T) T {
+  if x > y {x} else {y}
+}
+
+// Two type parameters, where the second alone decides the return type. An
+// instance that confused the two would return the wrong one.
+fn pickSecond[T, U](a T, b U) U {
+  b
+}
+
+struct Point {
+  x i64
+  y i64
+}
+
+fn firstOf[T](a T, b T) T {
+  a
+}
+
+fn inferredTypeArgument() {
+  // No type argument is written. It is inferred from the value arguments and
+  // then fixes the return type too.
+  show("inferred-i64", max(2i64, 6i64))
+  // A second use at the same type argument: the compiler memoizes instances, so
+  // this is the instance the line above created rather than a second one
+  show("inferred-i64-again", max(9i64, 4i64))
+  showF("inferred-f64", max(3.5d, 6.25d))
+}
+
+fn explicitTypeArgument() {
+  // The same generic, given its type argument outright
+  show("explicit-i64", max[i64](3i64, 8i64))
+  showF("explicit-f64", max[f64](3.5d, 2.25d))
+}
+
+fn severalTypeParameters() {
+  // The return type is U, the second parameter's
+  showF("second-of-int-and-float", pickSecond(1i64, 2.5d))
+  // Swapped, so a different instance answers, with the other return type
+  show("second-of-float-and-int", pickSecond(2.5d, 7i64))
+}
+
+fn genericOverAStructType() {
+  // A type argument does not have to be a number type; a struct instantiates
+  // the same generic just as well
+  imm p = firstOf(Point[x: 1i64, y: 2i64], Point[x: 3i64, y: 4i64])
+  show("struct-type-argument", p.x)
+}
+
+// -------- a generic type --------
+
+struct Box[T] {
+  v T
+}
+
+struct Pair[T, U] {
+  a T
+  b U
+}
+
+// A generic instantiation names a type: usable as a declared type, as a
+// parameter type, and as a generic function's return type.
+fn unbox(b Box[i64]) i64 {
+  b.v
+}
+
+fn boxUp[T](x T) Box[T] {
+  Box[T][v: x]
+}
+
+fn genericStruct() {
+  imm bi = Box[i64][v: 7i64]
+  show("box-explicit", bi.v)
+  imm bf = Box[f64][v: 1.5d]
+  showF("box-other-type-argument", bf.v)
+  // The type argument is inferred from the field values instead of written
+  imm bn = Box[v: 8i64]
+  show("box-inferred", bn.v)
+  // The instantiation used as a declared type and as a parameter type
+  imm bt Box[i64] = Box[i64][v: 9i64]
+  show("box-as-declared-type", unbox(bt))
+  // A field of an instance is an ordinary field, and assignable
+  mut bm = Box[i64][v: 1i64]
+  bm.v = 12i64
+  show("box-field-assigned", bm.v)
+}
+
+fn severalTypeParametersOnAStruct() {
+  imm p = Pair[i64, f64][a: 3i64, b: 4.5d]
+  show("pair-first-field", p.a)
+  showF("pair-second-field", p.b)
+}
+
+fn genericReturningGeneric() {
+  // A generic function whose return type is an instantiation of a generic type
+  // with the function's own type parameter
+  imm b = boxUp(5i64)
+  show("generic-returns-generic", b.v)
+}
+
+fn main() i32 {
+  inferredTypeArgument()
+  explicitTypeArgument()
+  severalTypeParameters()
+  genericOverAStructType()
+  genericStruct()
+  severalTypeParametersOnAStruct()
+  genericReturningGeneric()
+  0i32
+}

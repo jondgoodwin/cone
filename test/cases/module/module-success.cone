@@ -1,0 +1,60 @@
+// What 'include', 'extern' and namespace qualification do, established by
+// running them.
+//
+// This is the group's only running program, and it can only be one because a
+// program that spans modules cannot be linked yet: an imported module's symbols
+// are namespaced while a module compiled on its own emits root-module ones, so
+// the two never resolve (workitems/Packages and Separate Compilation.md).
+// 'include' is the one composition form that stays inside a single module -- it
+// injects another file's global declarations into this one -- so it is the only
+// one a running program can establish. Everything 'import' does is in the
+// 'compile' scenarios beside this file.
+//
+// The included file is moduleinc.cone.
+
+import stdio::*
+include moduleinc
+
+// 'extern' declares a signature the linker resolves, either as a block of them
+// or one at a time. These two come from the C runtime the runner already links.
+extern {
+  fn abs(n i32) i32
+}
+
+extern fn labs(n i64) i64
+
+// A type is a namespace as well, so a function declared inside one that takes
+// no self is reached by qualifying it rather than through a receiver.
+struct Counter {
+  fn stepOf(n i64) i64 {
+    n + 1i64
+  }
+}
+
+fn show(label &[]u8, n i64) {
+  printStr(label)
+  printStr(" = ")
+  printInt(n)
+  printStr("\n")
+}
+
+// Called from moduleinc.cone, which is parsed before this declaration is
+fn twice(n i64) i64 {
+  n * 2i64
+}
+
+fn main() i32 {
+  // An included declaration is this module's own: no qualifier needed, and no
+  // separate module to link against
+  show("included-fn", includedAdd(1i64))
+  show("included-global", includedTotal)
+  includedTotal = includedTotal + 1i64
+  show("included-global-mutated", includedTotal)
+  // The included file calling back into this one, which is only possible
+  // because the two share one namespace
+  show("included-calls-includer", includedTwice(4i64))
+  show("extern-block", i64[abs(-5i32)])
+  show("extern-single", labs(-7i64))
+  show("type-qualified", Counter::stepOf(41i64))
+  0i32
+}

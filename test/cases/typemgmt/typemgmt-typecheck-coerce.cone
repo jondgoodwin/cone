@@ -1,0 +1,63 @@
+// The boundary of implicit coercion between number types: it widens, within
+// one kind of number, and does nothing else.
+//
+// Type-check stage only: this file parses and resolves cleanly, so every
+// diagnostic below is reached. Each rule is shown in argument position,
+// because coercion into an argument, an initializer, an assignment and a
+// return value is one code path; 'core' already covers an initializer whose
+// type does not match its declaration.
+//
+// These are the rules other coverage groups keep rediscovering: an i16 reaches
+// an i64 parameter and a u8 does not, and a value inferred from an unsuffixed
+// literal is signed.
+
+fn wantI64(n i64) i64 {
+  n
+}
+
+fn wantU64(n u64) u64 {
+  n
+}
+
+fn wantI16(n i16) i16 {
+  n
+}
+
+fn wantF64(n f64) f64 {
+  n
+}
+
+fn wantF32(n f32) f32 {
+  n
+}
+
+// Signedness is not crossed, in either direction, however much room there is
+fn unsignedToSigned() {
+  mut byteVal u8 = 200
+  wantI64(byteVal)       //~ ErrorInvType:11 "Expression's type does not match declared parameter"
+}
+
+// Nor is the boundary between the integer and float kinds
+fn integerToFloat() {
+  mut small i16 = 300
+  wantF64(small)         //~ ErrorInvType:11 "Expression's type does not match declared parameter"
+}
+
+// Coercion only ever widens; narrowing has to be asked for
+fn signedNarrowing() {
+  mut wide i64 = 300i64
+  wantI16(wide)          //~ ErrorInvType:11 "Expression's type does not match declared parameter"
+}
+
+fn floatNarrowing() {
+  mut double f64 = 1.5d
+  wantF32(double)        //~ ErrorInvType:11 "Expression's type does not match declared parameter"
+}
+
+// An unsuffixed integer literal settles as i32 as soon as it is bound to a
+// name, so the value that reaches the call is signed and no longer free to
+// take on the parameter's type
+fn inferredLiteralIsSigned() {
+  imm inferred = 5
+  wantU64(inferred)      //~ ErrorInvType:11 "Expression's type does not match declared parameter"
+}

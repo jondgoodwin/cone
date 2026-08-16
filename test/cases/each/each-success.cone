@@ -1,0 +1,289 @@
+// 'each' over a numeric range: the four range operators, the optional 'by'
+// step, the scope and mutability of the loop variable, and how 'break' behaves
+// inside one.
+//
+// Everything is printed, because 'each' is not generated directly. The parser
+// rewrites it into a variable declaration plus a 'while' whose condition is the
+// range comparison and whose body ends with the increment, so a loop that
+// compiles is not a loop that visits the values meant. The sums below are
+// order-independent, so each one is paired with an iteration count where the
+// count is what distinguishes the operator.
+//
+// 'continue' and iteration over a collection are 'each' subjects that are
+// absent on purpose; cases.toml gives the reason for each.
+
+import stdio::*
+
+fn show(label &[]u8, n i64) {
+  printStr(label)
+  printStr(" = ")
+  printInt(n)
+  printStr("\n")
+}
+
+fn showU(label &[]u8, n u64) {
+  printStr(label)
+  printStr(" = ")
+  printUInt(n)
+  printStr("\n")
+}
+
+fn showF(label &[]u8, n f64) {
+  printStr(label)
+  printStr(" = ")
+  printFloat(n)
+  printStr("\n")
+}
+
+// -------- the four range operators --------
+
+// '<' stops before the bound and '<=' stops on it, so the two differ by one
+// visit and not merely by one added value.
+fn ascending() {
+  mut sum = 0
+  mut count = 0
+  each i in 0 < 5 {
+    sum += i
+    count += 1
+  }
+  show("lt-sum", sum)
+  show("lt-count", count)
+
+  mut sum2 = 0
+  mut count2 = 0
+  each i in 0 <= 5 {
+    sum2 += i
+    count2 += 1
+  }
+  show("le-sum", sum2)
+  show("le-count", count2)
+}
+
+// '>' and '>=' count down instead, so the first value is the left operand and
+// the loop variable is decremented rather than incremented.
+fn descending() {
+  mut first = -1
+  mut last = -1
+  mut count = 0
+  each i in 6 > 1 {
+    if count == 0 {
+      first = i
+    }
+    last = i
+    count += 1
+  }
+  show("gt-first", first)
+  show("gt-last", last)
+  show("gt-count", count)
+
+  mut last2 = -1
+  each i in 6 >= 1 {
+    last2 = i
+  }
+  show("ge-last", last2)
+}
+
+// A range that is already past its bound runs its body no times at all, in
+// either direction: the comparison is tested before the first visit.
+fn empty() {
+  mut count = 0
+  each i in 0 < 0 {
+    count += 1
+  }
+  each i in 0 > 0 {
+    count += 1
+  }
+  show("empty-count", count)
+}
+
+// -------- 'by' --------
+
+// Without 'by' the loop variable moves by one; with it, by the step. A
+// descending range still adds the step rather than subtracting it, so counting
+// down by more than one needs a negative step.
+fn stepped() {
+  mut sum = 0
+  mut count = 0
+  each i in 0 <= 10 by 2 {
+    sum += i
+    count += 1
+  }
+  show("by-asc-sum", sum)
+  show("by-asc-count", count)
+
+  mut sum2 = 0
+  each i in 10 >= 0 by -2 {
+    sum2 += i
+  }
+  show("by-desc-sum", sum2)
+}
+
+// -------- the element type --------
+
+// The loop variable takes the type of the range's operands, so an unsigned
+// range yields an unsigned variable and a float range a float one. The step
+// must be of that type too: an f64 range steps by an f64.
+fn unsignedRange() u64 {
+  mut result = 1u
+  each nbrx in 1u < 10u by 2 {
+    result += nbrx
+  }
+  result
+}
+
+fn floatRange() f64 {
+  mut sum = 0.
+  each x in 0. <= 1. by 0.5 {
+    sum += x
+  }
+  sum
+}
+
+// A range's bounds may be arbitrary expressions rather than literals, which is
+// what makes 'each' usable over a function's parameters.
+fn total(low i32, high i32) i32 {
+  mut sum = 0
+  each i in low <= high {
+    sum += i
+  }
+  sum
+}
+
+fn typed() {
+  showU("unsigned-result", unsignedRange())
+  showF("float-sum", floatRange())
+  show("param-bounds", total(1, 10))
+  show("param-bounds-empty", total(4, 3))
+}
+
+// -------- when the bounds and the step are evaluated --------
+
+mut boundCalls = 0
+fn upper() i32 {
+  boundCalls += 1
+  5
+}
+
+mut stepCalls = 0
+fn stride() i32 {
+  stepCalls += 1
+  1
+}
+
+// The upper bound is the loop's condition rather than a value captured once, so
+// it is re-evaluated on every test -- five visits, six evaluations, the last of
+// which is the one that ends the loop. The step sits at the end of the body, so
+// it is evaluated once per visit instead.
+fn reevaluated() {
+  mut count = 0
+  each i in 0 < upper() {
+    count += 1
+  }
+  show("bound-visits", count)
+  show("bound-evals", boundCalls)
+
+  mut count2 = 0
+  each i in 0 < 4 by stride() {
+    count2 += 1
+  }
+  show("step-visits", count2)
+  show("step-evals", stepCalls)
+}
+
+// -------- the loop variable --------
+
+// The loop variable belongs to a scope of its own around the loop, so a
+// variable of the same name outside it is neither read nor written: 'outer'
+// still holds 99 after a loop that counted it from 0 to 3.
+fn scoping() {
+  mut outer = 99
+  each outer in 0 < 3 {
+  }
+  show("shadowed-local", outer)
+}
+
+// It is mutable, and writing to it steers the loop: setting it to 8 on the
+// visit where it is 2 skips 3 through 7, so the loop makes four visits rather
+// than ten.
+fn writable() {
+  mut count = 0
+  each i in 0 < 10 {
+    count += 1
+    if i == 2 {
+      i = 8
+    }
+  }
+  show("writable-visits", count)
+}
+
+// -------- interaction with the rest of control flow --------
+
+// 'break' leaves an 'each' the way it leaves a 'while', and a labeled 'break'
+// leaves the loop it names, so the label on an 'each' reaches out of a nested
+// one.
+fn breaking() {
+  mut sum = 0
+  each i in 0 < 100 {
+    if i == 5 {
+      break
+    }
+    sum += i
+  }
+  show("break-sum", sum)
+
+  mut visits = 0
+  'outer: each i in 1 <= 3 {
+    each j in 1 <= 3 {
+      if j == 2 {
+        break 'outer
+      }
+      visits += 1
+    }
+  }
+  show("labeled-break-visits", visits)
+}
+
+// Loops nest in either combination, and an 'each' nested inside another gets a
+// fresh loop variable per outer visit rather than resuming where it stopped.
+fn nesting() {
+  mut sum = 0
+  each i in 1 <= 3 {
+    each j in 1 <= 3 {
+      sum += i * j
+    }
+  }
+  show("nested-sum", sum)
+
+  mut n = 0
+  mut rounds = 0
+  while n < 3 {
+    each i in 0 < 2 {
+      rounds += 1
+    }
+    n += 1
+  }
+  show("each-in-while", rounds)
+}
+
+// An empty body is accepted, unlike an empty 'while' body, and the program goes
+// on afterwards.
+fn emptyBody() {
+  each i in 0 < 3 {
+  }
+  show("after-empty-body", 1)
+}
+
+fn main() i32 {
+  ascending()
+  descending()
+  empty()
+  stepped()
+  typed()
+  reevaluated()
+  scoping()
+  writable()
+  breaking()
+  nesting()
+  emptyBody()
+  0i32
+}
