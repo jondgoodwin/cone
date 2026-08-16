@@ -92,7 +92,7 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
         // Push block info on stack for break & continue to use
         if (gen->blockstackcnt >= GenBlockStackMax) {
             errorMsgNode((INode*)blk, ErrorBadArray, "Overflowing fixed-size block stack.");
-            errorExit(100, "Unrecoverable error!");
+            errorExit(ExitGen, "Unrecoverable error!");
         }
         blkstate = &gen->blockstack[gen->blockstackcnt];
         blkstate->blocknode = blk;

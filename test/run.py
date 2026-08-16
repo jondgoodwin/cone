@@ -76,6 +76,7 @@ EXIT_NAMES = {
     3: "ExitMem",
     4: "ExitOpts",
     5: "ExitIndent",
+    6: "ExitGen",
 }
 
 CATEGORIES = ("compile", "run", "warn", "reject", "recover", "driver")
