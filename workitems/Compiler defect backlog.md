@@ -166,6 +166,16 @@ make it harder to close later.
 it asserts the gap as though it were the rule — and the working forms moved to
 `safety-pointers` beside the field access they resemble.
 
+**Status: the deref half is done; the borrow half is deferred and routed.**
+`fnCallLowerMethod` re-selects against the dereferenced receiver when no
+candidate accepted it as it stood, so a value receiver is now reachable through
+`&T`, `&mut T` and `*T` alike, and the dead retry is gone. Nothing borrows on the
+receiver's behalf: `self &` and `self &mut` stay out of a value's and a pointer's
+reach, pinned by `struct-typecheck-methods` and `safety-typecheck-ptruse`.
+`struct-methods` and `safety-pointers` run the working forms. The borrow half,
+and the operator fall-through the deref half brings with it, are written up under
+"Receiver adjustment" in [[Types. Pointers and Borrowed References]].
+
 ### 2. Branch inference does not unify two identical closure types
 
 Confirmed: `imm f = if flag {&fn(x i32) i32 {x+1}} else {&fn(x i32) i32 {x+2}}`

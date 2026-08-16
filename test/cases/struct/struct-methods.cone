@@ -11,6 +11,8 @@
 // does not borrow the receiver for the caller, so '(&mut c).bump()' is written
 // out; '&c.bump()' would mean '(&c).bump()' only by accident of precedence,
 // since '&' binds to the name and not to the field or method after the '.'.
+// The adjustment goes the other way only: a receiver held through a reference
+// is dereferenced to reach a value receiver, which is a load and a copy.
 //
 // Fields, construction and copying are in struct-success. Function overload is
 // core's; this file covers only what changes when the candidates are methods.
@@ -76,6 +78,19 @@ fn receivers() {
   mut d = Counter[1]
   imm ignored = d.peek()
   show("value-receiver-copies", d.n)
+
+  // A value receiver is reachable through a reference too: the receiver is
+  // dereferenced, so the method is handed a copy of what the reference points at
+  mut e = Counter[20]
+  show("value-receiver-through-ref", (&e).peek())
+  show("value-receiver-through-mut-ref", (&mut e).peek())
+
+  // The copy is taken when the call is made, so changing the original through
+  // the same reference afterwards cannot reach what the call already returned
+  imm twinned = (&mut e).twin()
+  (&mut e).bump()
+  show("deref-receiver-is-copy", twinned.n)
+  show("deref-original-advanced", e.peek())
 }
 
 // -------- privacy --------
@@ -174,6 +189,10 @@ fn overloads() {
   show("overload-value-receiver", p.sum())
   show("overload-ref-receiver", (&p).sum())
   show("overload-extra-parm", p.sum(Pair[5, 0]))
+  // A reference receiver is only dereferenced when no candidate accepts it as
+  // it stands, so the '&' candidate above still wins and this one -- which no
+  // candidate takes a reference for -- reaches the value candidate instead
+  show("overload-deref-to-value-candidate", (&p).sum(Pair[5, 0]))
   // A candidate keeps its own name and may be called without any selection
   show("overload-concrete-name", p.sumValue())
 

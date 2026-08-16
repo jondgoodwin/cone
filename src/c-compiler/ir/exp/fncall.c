@@ -308,6 +308,8 @@ static void fnCallNoCandidate(INode *callnode, enum OverloadMatch status, Name *
 
 // Find the one field or method that accepts the call's receiver and arguments,
 // then lower the node to a function call (objfn+args) or field access (objfn+methfld).
+// A receiver held through a reference or pointer is dereferenced where the selected
+// method declared 'self' by value; nothing is borrowed on the receiver's behalf.
 // Returns 1 when lowered, 0 when the receiver's type supports no methods at all
 // (so the caller may try another way), and -1 when a diagnostic was reported.
 int fnCallLowerMethod(FnCallNode *callnode) {
@@ -351,6 +353,21 @@ int fnCallLowerMethod(FnCallNode *callnode) {
     // Test every candidate the name declares, without altering the call
     enum OverloadMatch status;
     FnDclNode *selected = iNsTypeFindMethod(foundnode, &callnode->objfn, callnode->args, &status);
+
+    // A receiver held through a reference or a pointer still satisfies a method that
+    // declared 'self' by value, so dereference it and select again. That is a load and
+    // a copy -- the same adjustment a field access already makes -- and nothing more:
+    // no reference is manufactured, so a method wanting 'self &' or 'self &mut' stays
+    // out of the reach of a value or a pointer. The retry runs only when no candidate
+    // matched at all, so an ambiguity among the candidates the receiver already fits is
+    // reported as such, and a set holding both a value and a reference candidate still
+    // selects the reference one for a reference receiver.
+    if (selected == NULL && status == OverloadNone && derefInject(&callnode->objfn)) {
+        selected = iNsTypeFindMethod(foundnode, &callnode->objfn, callnode->args, &status);
+        if (selected == NULL)
+            callnode->objfn = obj;  // a failed retry leaves the call as it was found
+    }
+
     if (selected == NULL) {
         fnCallNoCandidate((INode*)callnode, status, methsym, "method");
         return -1;
@@ -726,15 +743,11 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
                 node->methfld = (INode*)newMemberUseNode(methname);
             }
             if (fnCallLowerPtrMethod(node, refType) == 0) {
-                if (isMethodType(objdereftype)) {
-                    // Try to lower method or field, and if failing, deref and try again
-                    if (fnCallLowerMethod(node) == 0) {
-                        if (derefInject(&node->objfn) == 0 || fnCallLowerMethod(node) == 0)
-                            errorMsgNode((INode*)node, ErrorNoMeth, 
-                                "No method/field named %s found that matches the call's arguments.", 
-                                &((NameUseNode*)node->methfld)->namesym->namestr);
-                    }
-                }
+                // Lower to a field access or function call, dereferencing the receiver
+                // where that is what the selected method wants. fnCallLowerMethod cannot
+                // answer 0 here, having already been told the deref type supports methods.
+                if (isMethodType(objdereftype))
+                    fnCallLowerMethod(node);
                 else if (objdereftype->tag == PtrTag)
                     fnCallLowerPtrMethod(node, ptrType);
                 else
@@ -763,8 +776,10 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         if (node->flags & FlagIndex)
             fnCallArrIndex(node);
         else if (node->methfld) {
-            if (fnCallLowerPtrMethod(node, ptrType) == 0)
-                fnCallLowerMethod(node);
+            // A pointer's own operators first, then the value type's fields and methods,
+            // reaching a value receiver by dereferencing the pointer
+            if (fnCallLowerPtrMethod(node, ptrType) == 0 && fnCallLowerMethod(node) == 0)
+                errorMsgNode((INode*)node, ErrorNoMeth, "Invalid operation on a pointer.");
         }
         else if (objdereftype->tag == FnSigTag)
             fnCallFnSigTypeCheck(pstate, node);

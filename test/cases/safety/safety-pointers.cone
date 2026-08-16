@@ -12,8 +12,8 @@
 // concrete form that gap takes.
 //
 // Slices belong to 'collection'; only the pointer a slice decays into is
-// claimed here. Structs belong to 'struct'; only reaching a field through a
-// pointer is claimed here.
+// claimed here. Structs belong to 'struct'; only reaching a field and a
+// value-receiver method through a pointer is claimed here.
 
 import stdio::*
 
@@ -38,6 +38,10 @@ fn showB(label &[]u8, b Bool) {
 struct Point {
   x i32
   y i32
+
+  fn sum(self) i32 {
+    x + y
+  }
 }
 
 mut cell i32 = 41
@@ -155,6 +159,21 @@ fn difference() {
   showU("minus-pointer-counts-elements", u64[gap])
 }
 
+// -------- an operator the pointer does not declare --------
+
+fn fallsThrough() {
+  // An operator method is an ordinary method under a backquoted name, so the
+  // receiver dereference reaches it like any other. A pointer declares '+' and
+  // '-' of its own, which is why those offset rather than read; it declares no
+  // '*', so '*' falls through to i32's, and the pointer is dereferenced to be
+  // the receiver. 'p * 2' therefore means '(*p) * 2' and not pointer
+  // arithmetic. safety-typecheck-ptrops holds the case where the fall-through
+  // still finds no candidate.
+  mut cells [4; i32] = [10, 20, 30, 40]
+  imm p *i32 = &cells[1]
+  show("operator-falls-through-to-value", p * 2)
+}
+
 // -------- comparing pointers --------
 
 fn comparison() {
@@ -190,6 +209,17 @@ fn structs() {
   // Dereferencing a struct pointer yields the whole value
   imm copy = *sp
   show("deref-whole-struct", copy.y)
+
+  // A method declaring its receiver by value is reached the same way a field
+  // is: the pointer is dereferenced and the method is handed a copy
+  show("method-value-receiver", sp.sum())
+
+  // The copy is taken when the call is made, so a later write through the
+  // pointer cannot reach what the call already returned
+  imm before = sp.sum()
+  sp.x = 30
+  show("method-receiver-copied", before)
+  show("method-sees-later-write", sp.sum())
 }
 
 // -------- interaction with control flow --------
@@ -223,6 +253,7 @@ fn main() i32 {
   access()
   arithmetic()
   difference()
+  fallsThrough()
   comparison()
   structs()
   walk()

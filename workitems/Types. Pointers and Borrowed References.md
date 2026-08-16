@@ -83,33 +83,49 @@ attached. Here is the evidence, measured against the compiler by
 [[Compiler defect backlog]].
 
 **A method call resolves only when the way you hold the value already matches
-the way the method declared `self`.** Nothing adjusts the receiver. Field access,
+the way the method declared `self`, except that a receiver held through a
+reference or a pointer is dereferenced to reach a value receiver.** Field access,
 in the same expression position, adjusts freely — `p.x` reaches through a value,
 a reference or a pointer alike.
 
 | Held as | `fn m(self)` | `fn m(self &)` | `fn m(self &mut)` |
 | --- | --- | --- | --- |
 | a value | works | fails | fails |
-| `&T` | fails | works | n/a |
-| `&mut T` | fails | works | works |
-| `*T` | fails | fails | fails |
+| `&T` | works | works | n/a |
+| `&mut T` | works | works | works |
+| `*T` | works | fails | fails |
 | *a field, for contrast* | works | works | works |
 
-Seven of the eleven meaningful cells fail, each with `ErrorNoCandidate` "No
-method declared by `m` accepts the call's arguments". Raw pointers are not a
-special case — they are the row where nothing happens to line up.
+The four cells that still fail are the ones that would need a reference made out
+of a value or a pointer, and each reports `ErrorNoCandidate` "No method declared
+by `m` accepts the call's arguments". Raw pointers are not a special case — they
+are the row where only the deref half applies.
 
 **Fixing a cell is one of two operations, and they are not comparable in cost:**
 
 - **Deref**, where the holder is a reference or pointer and the method wants a
   value. A load and a copy. No reference is created, so nothing in permissions,
   aliasing or lifetimes is touched. This is what field access already does.
-  **Being done now**, in the backlog work: `fncall.c:731-736` already contains a
-  deref-and-retry written for exactly this and gated on a condition that is
-  always false where it sits, so it can never run.
+  **Done.** `fnCallLowerMethod` re-selects against the dereferenced receiver when
+  no candidate accepted it as it stood; the dead retry that used to sit at the
+  `RefTag` call site is gone. The retry runs only on a total no-match, so an
+  overload set holding both a value and a reference candidate still gives the
+  reference one to a reference receiver, and an ambiguity is still reported as
+  one.
 - **Borrow**, where the holder is a value or a pointer and the method wants
   `self &` or `self &mut`. This manufactures a reference, and that is the whole
   of the design question. **Deferred here.**
+
+**One consequence of the deref half is worth knowing, because it is wider than
+methods called by name.** An operator is a method under a backquoted name, and
+`corelib` declares the number operators with value receivers, so an operator the
+reference or pointer type does not declare itself now falls through to the value
+type's. `p * 2` on a `*i32` means `(*p) * 2`, where it used to be an error;
+`p + 2` is unaffected, because a pointer declares its own `+`. `safety-pointers`
+runs the case and `safety-typecheck-ptrops` holds the one where the fall-through
+still finds no candidate. It follows from "deref the receiver" with no extra
+rule, but it is a silent read-through on a pointer, which is the kind of thing
+`trust` would otherwise be the place to gate.
 
 **Why the borrow half is a design question and not a fix.** Three reasons, and
 the third is the interesting one:
