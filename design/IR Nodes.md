@@ -112,6 +112,52 @@ All IR node types start with these common fields (see inodes.h):
 | tag      | uint16_t | Encoded node type+flags (see NodeTags and below)    |
 | flags    | uint16_t | compile-time flags                                  |
 
+## The three type sentinels, and what tells them apart
+
+`corelib.c` builds three singletons that are all `AbsenceNode`s retagged
+`UnknownTag`. They are distinguished by **identity**, never by tag, so a
+comparison against one must be `==` and never a tag test:
+
+| Singleton | Means | Effect on diagnostics |
+| --- | --- | --- |
+| `unknownType` | not inferred yet | none — a type may still be worked out |
+| `noCareType` | the receiver does not care what type comes back | none |
+| `errorType` | already reported as bad | **suppresses** follow-on complaints |
+
+Conflating `errorType` with `unknownType` buys either spurious cascades or masked
+real failures, which is why they are separate objects sharing a tag rather than
+one object.
+
+`errorType` is installed by an error path that has reported a diagnostic and has
+no honest type to give the node. `itypeMatches` returns `EqMatch` when either
+side is `errorType`, and `iexpMultiInfer` skips a branch carrying it, so
+everything derived from an already-reported node stays quiet. `inodeIsError`
+(`inode.c`) is the predicate for "an earlier diagnostic already covered this".
+
+Where a whole subtree has to be replaced rather than one node retyped,
+`newErrorNode` (`void.c`) builds an expression-shaped stand-in: a fresh
+`AbsenceNode` carrying the replaced expression's source position, with `errorType`
+as its value type. It is per-site rather than a singleton precisely because it
+holds a position.
+
+**Every constructor of an expression node must initialize `vtype`.** `memAllocBlk`
+does not zero, so an unset `vtype` holds arena garbage rather than NULL — which is
+how one of these defects faulted at an arbitrary address instead of at zero, and
+why `--checktree` could not see it. A node that has not been type checked yet
+carries `unknownType`.
+
+## --checktree
+
+`ir/checktree.c` walks the program after semantic analysis and reports
+`ErrorBadTree` for any expression node with no value type or any block with no
+statement list. It runs whether or not errors were reported, because a phase that
+reports a bad program and returns early is exactly what leaves those holes.
+`test/run.py` passes `--checktree` on every compile of every category.
+
+It does not descend into type declarations: a type may refer to itself through a
+reference, so that graph has cycles, and a type node's own `vtype` is not what
+these defects leave empty.
+
 ## FnOverloadDcl
 
 `FnOverloadDclNode` (see `ir/stmt/fndcl.h`) is the namespace binding for an

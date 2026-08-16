@@ -156,9 +156,11 @@ Name the split for what it covers — `core-parse-delimiters`, not `core-parse-1
 ### What cannot be a scenario at all
 
 **A construct that crashes the compiler.** An access violation fails no
-assertion, so it cannot even be `xfail`. Several exist — see
-[[Diagnose instead of crash]] — and each is excluded with a written reason in its
-group's `cases.toml` rather than left to be rediscovered.
+assertion, so it cannot even be `xfail`. Exclude it with a written reason in its
+group's `cases.toml` rather than leaving it to be rediscovered — and file the
+crash, because the exclusion is a placeholder for a fix and not a verdict. The
+last set of these is in `workitems/done/`, under [[Diagnose instead of crash]];
+the corpus currently has none.
 
 **A construct that silently parses as something else.** `xfail` asserts that a
 case fails; a construct the lexer or parser quietly reads as something valid
@@ -377,7 +379,10 @@ Deliberate exclusions, each with its reason. Reopen one on purpose, not by
 accident — and update this list when you do.
 
 - **No unit tests.** Everything reachable through the CLI; `--checktree` and
-  `--verify` cover internal invariants and run on every `compile`.
+  `--verify` cover internal invariants. `--checktree` runs on every compile of
+  any category, because what it looks for — a node an error path left with no
+  type or no body — only appears where a diagnostic was reported. `--verify`
+  runs on `compile` and `run`, where there is a generated module to verify.
 - **No AST-dump assertions.** `--ir` output has no stability contract.
 - **No WebAssembly tier** until there is a runtime to run against.
 - **No performance or memory regression tests.**

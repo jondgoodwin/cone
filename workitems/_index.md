@@ -58,7 +58,7 @@
 	- Generation: [[LLVM Generation]] and [[C-ABI Generation]]
 	- Defects the test suite found, by the decision each needs:
 		- [[Ownership memory safety]] — done; see `workitems/done/`
-		- [[Diagnose instead of crash]] — error paths that dereference their own NULL
+		- [[Diagnose instead of crash]] — done; see `workitems/done/`
 		- [[Unenforced language rules]] — documented rules nothing checks
 		- [[Compiler defect backlog]] — the residue, each with a clear answer
 - Build System:
