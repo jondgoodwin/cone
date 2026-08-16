@@ -1,0 +1,153 @@
+// Fixed-size arrays: the type '[N; T]', the two array literal forms, indexing,
+// element assignment, and the copy semantics of an array value.
+//
+// Everything is printed, because an index that compiles is not an index that
+// reaches the element meant. A slice or array reference ('&[]') is collection's
+// subject and appears here only as the '&[]u8' the print helpers take, which
+// every run scenario needs. Struct owns structs; the one struct below exists
+// only to establish that an array can be a member. The array is the whole
+// subject, so it is exercised in every position a value can occupy: local,
+// global, member, parameter, return value and element of another array.
+
+import stdio::*
+
+fn show(label &[]u8, n i64) {
+  printStr(label)
+  printStr(" = ")
+  printInt(n)
+  printStr("\n")
+}
+
+fn showU(label &[]u8, n u64) {
+  printStr(label)
+  printStr(" = ")
+  printUInt(n)
+  printStr("\n")
+}
+
+// -------- an array in a global, a member, a parameter and a return --------
+
+mut totals [3; i32] = [10, 20, 30]
+
+struct Holder {
+  mut arr [4; i32]
+  mut tag i32
+}
+
+// A parameter takes the array by value, so writing through it must not reach
+// the caller's array
+fn mutatesCopy(mut v [3; i32]) i32 {
+  v[0] = 100
+  v[0]
+}
+
+fn makeArr() [3; i32] {
+  [7, 8, 9]
+}
+
+// -------- literals --------
+
+fn literals() {
+  // A declared '[N; T]' type initialized from a literal that spans two lines.
+  // An unsuffixed integer literal is i32, so a u8 array needs the suffix on
+  // every element: the literal's element type must already be u8, as the
+  // initializer is matched against the declared type rather than coerced to it.
+  mut a [4; u8] = [4u8, 10u8,
+    12u8, 40u8]
+  showU("elem-first", a[0])
+  showU("elem-last", a[3])
+
+  // With no declared type the literal supplies both length and element type
+  imm inferred = [1, 2, 3]
+  show("inferred-elem", inferred[1])
+
+  // '[N; value]' is the other literal form: N elements, all of one value
+  imm filled = [3; 7u8]
+  showU("fill-first", filled[0])
+  showU("fill-last", filled[2])
+
+  // An array may be declared and assigned later. Flow analysis tracks the
+  // whole array rather than its elements, so the later assignment has to
+  // supply an entire array value; writing one element leaves the array still
+  // uninitialized as far as a subsequent read is concerned.
+  mut later [2; i32]
+  later = [5, 6]
+  show("declared-then-assigned", later[1])
+}
+
+// -------- indexing --------
+
+fn indexing() {
+  mut a [4; i32] = [4, 10, 12, 40]
+
+  // An index may be a literal or an unsigned integer held in a variable
+  mut i usize = 2
+  show("index-literal", a[1])
+  show("index-variable", a[i])
+
+  // Indexing yields an lvalue, so an element can be assigned from another
+  a[0] = a[2]
+  show("index-assign", a[0])
+
+  // ...and a borrowed reference to an element writes through to the array
+  imm elem = &mut a[3]
+  *elem = 41
+  show("elem-ref-write", a[3])
+
+  // An immutable array is still readable by index
+  imm frozen [3; i32] = [5, 6, 7]
+  show("imm-index", frozen[1])
+}
+
+// -------- copy semantics --------
+
+fn copies() {
+  // Assignment copies the whole array, so the two are independent afterwards
+  mut a [4; i32] = [1, 2, 3, 4]
+  mut b = a
+  b[0] = 99
+  show("copy-assign-target", b[0])
+  show("copy-assign-source", a[0])
+
+  // So does passing one to a function
+  mut c [3; i32] = [1, 2, 3]
+  show("copy-param-inside", mutatesCopy(c))
+  show("copy-param-caller", c[0])
+
+  // An array is returnable by value
+  imm made = makeArr()
+  show("returned-elem", made[2])
+}
+
+// -------- arrays in other positions --------
+
+fn nested() {
+  // The element type may itself be an array, and indexing then chains
+  mut grid [2; [3; i32]] = [[1, 2, 3], [4, 5, 6]]
+  show("nested-elem", grid[1][2])
+  grid[0][1] = 20
+  show("nested-assign", grid[0][1])
+}
+
+fn globals() {
+  show("global-elem", totals[0])
+  totals[1] = 99
+  show("global-assign", totals[1])
+}
+
+fn members() {
+  mut h = Holder[[1, 2, 3, 4], 5]
+  show("member-elem", h.arr[0])
+  h.arr[2] = 42
+  show("member-assign", h.arr[2])
+}
+
+fn main() i32 {
+  literals()
+  indexing()
+  copies()
+  nested()
+  globals()
+  members()
+  0i32
+}

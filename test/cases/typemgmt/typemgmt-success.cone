@@ -1,0 +1,288 @@
+// Where a value changes type: what the compiler will do implicitly, what it
+// makes you ask for, and what arithmetic each one actually performs.
+//
+// The three capabilities are distinct and are established separately here.
+// Coercion is implicit and only ever widens within one kind of number.
+// Conversion, written 'Type[value]' or 'value into Type', constructs the
+// closest value in the target type and may lose information. Reinterpretation,
+// written 'value as Type', keeps the bits and changes only how they are read.
+//
+// Every result is printed, because a conversion that compiles is not a
+// conversion that computes the right value: truncation direction, narrowing
+// wrap-around and two's-complement reinterpretation are all invisible to the
+// type checker and all easy to get wrong in code generation.
+//
+// 'core' owns the number types themselves, so nothing here exists to show that
+// i32 has a range.
+//
+// The fourth capability, 'typedef', is the absence of a change of type: the
+// alias and the type it names are one type, so a value crosses between them
+// with nothing generated for the crossing. It is established last, because what
+// makes it an alias rather than a new type is that the coercions and
+// conversions above apply to it unchanged.
+
+import stdio::*
+
+fn show(label &[]u8, n i64) {
+  printStr(label)
+  printStr(" = ")
+  printInt(n)
+  printStr("\n")
+}
+
+fn showU(label &[]u8, n u64) {
+  printStr(label)
+  printStr(" = ")
+  printUInt(n)
+  printStr("\n")
+}
+
+fn showF(label &[]u8, n f64) {
+  printStr(label)
+  printStr(" = ")
+  printFloat(n)
+  printStr("\n")
+}
+
+fn twice(n i32) i32 {
+  n * 2
+}
+
+// -------- explicit conversion, the constructor form --------
+
+// A global's initializer must be a literal, so a conversion can only reach one
+// by assignment. The receiving end of that assignment is tested below.
+mut total i32 = 0
+
+fn conversions() {
+  // A float converts to an integer by truncating toward zero, in both
+  // directions -- not by rounding and not by flooring
+  show("f64-to-i32", i32[2.75])
+  show("f64-to-i32-negative", i32[-2.75])
+
+  // An integer converts to a float exactly, while it still fits. The source is
+  // a typed variable rather than a literal, because a literal would have
+  // coerced to a float on its own and would establish nothing about crossing
+  // between the integer and float kinds -- which coercion refuses.
+  mut count i32 = 7
+  showF("i32-to-f64", f64[count])
+  showF("i32-to-f32", f64[f32[count]])
+
+  // Narrowing keeps the low bits: 300 is 0x12C, and an i8 keeps 0x2C
+  mut wide i64 = 300i64
+  show("i64-to-i8-wraps", i8[wide])
+
+  // Crossing between signed and unsigned reinterprets the two's-complement
+  // encoding rather than clamping or raising
+  mut minusOne i32 = -1
+  showU("i32-to-u8-negative", u8[minusOne])
+  showU("i32-to-u32-negative", u32[minusOne])
+
+  // f64 to f32 keeps only what f32 can represent. 16777217 is 2^24 + 1, the
+  // smallest integer an f32 cannot hold, so a round trip through f32 does not
+  // return the value that went in, while a round trip through f64 does. The
+  // 'd' suffix matters: an unsuffixed float literal is f32, so writing the
+  // value without it would lose the precision before any conversion did.
+  mut exact f64 = 16777217.0d
+  show("f64-round-trip", i32[exact])
+  show("f64-to-f32-loses-precision", i32[f32[exact]])
+
+  // The same distinction seen from the literal's side
+  mut unsuffixed f64 = 16777217.0
+  show("unsuffixed-float-literal-is-f32", i32[unsuffixed])
+  mut suffixed f64 = 16777217.0d
+  show("suffixed-float-literal-is-f64", i32[suffixed])
+
+  // Bool converts to and from the number types
+  mut flag Bool = true
+  show("bool-to-i32", i32[flag])
+  if Bool[5] {
+    show("nonzero-to-bool", 1)
+  }
+  if not Bool[0] {
+    show("zero-to-bool", 0)
+  }
+
+  // The operand is an arbitrary expression, not just a literal
+  showF("converted-call-result", f64[twice(3)])
+
+  // A conversion is an ordinary expression on the right of an assignment
+  total = i32[2.3e1]
+  show("assigned-conversion", total)
+}
+
+// -------- explicit conversion, the 'into' form --------
+
+fn intoForm() {
+  // 'into' converts exactly as the constructor form does
+  showF("into-f64", 3 into f64)
+  show("into-i32", 2.75 into i32)
+
+  // Including the coercion to Bool that a condition would have done anyway
+  mut n i32 = 5
+  if n into Bool {
+    show("into-bool", 1)
+  }
+}
+
+// -------- reinterpretation --------
+
+fn reinterpretation() {
+  // 'as' does not convert: the bits are unchanged and only their reading
+  // changes. 1.0f32 is 0x3F800000, which read as an i32 is 1065353216.
+  mut one f32 = 1.0
+  show("f32-bits-as-i32", one as i32)
+
+  // The same bits an i32 reads as -1 an u32 reads as 4294967295
+  mut minusOne i32 = -1
+  showU("i32-bits-as-u32", minusOne as u32)
+}
+
+// -------- implicit coercion --------
+
+// Coercion runs wherever a value meets an expected type: an argument, an
+// initializer, an assignment or a return. Only the argument case is shown for
+// each rule, because it is one rule and one code path.
+fn wantI64(n i64) i64 {
+  n
+}
+
+fn wantU64(n u64) u64 {
+  n
+}
+
+fn wantF64(n f64) f64 {
+  n
+}
+
+fn coercions() {
+  // A narrower number widens into a wider one of the same kind, silently
+  mut small i16 = 300
+  show("signed-widens", wantI64(small))
+  mut byteVal u8 = 200
+  showU("unsigned-widens", wantU64(byteVal))
+  mut single f32 = 1.5
+  showF("float-widens", wantF64(single))
+
+  // An unsuffixed integer literal has no settled type yet, so it takes on
+  // whatever number type it meets -- unlike a typed value, which would need a
+  // conversion to cross between integer and float or between signed and
+  // unsigned
+  mut asByte u8 = 5
+  mut asLong i64 = 5
+  mut asSingle f32 = 5
+  mut asDouble f64 = 5
+  showU("literal-to-u8", asByte)
+  show("literal-to-i64", asLong)
+  showF("literal-to-f32", asSingle)
+  showF("literal-to-f64", asDouble)
+
+  // A number coerces to Bool in a condition, by way of its 'isTrue' method
+  mut n i32 = 3
+  if n {
+    show("number-coerces-to-bool", 1)
+  }
+
+  // An operator coerces its right operand to the left operand's type, so
+  // mixed widths need no conversion written out in that direction. The other
+  // direction is not symmetric and is in typemgmt-typecheck-meet.
+  mut wide i64 = 100i64
+  show("right-operand-widens", wide + small)
+  mut double f64 = 1.5d
+  showF("float-right-operand-widens", double + single)
+}
+
+// -------- branches agreeing on one type --------
+
+fn branches() {
+  // Two branches of different widths meet at the wider of the two, and the
+  // narrower branch is coerced to it
+  showF("float-branches-meet-at-f64", if true {5f} else {7d})
+  showF("float-branches-else", if false {5f} else {7d})
+
+  mut narrow i16 = 3
+  mut wide i64 = 4i64
+  show("int-branches-meet-at-i64", if true {narrow} else {wide})
+}
+
+// -------- conversion where coercion cannot decide --------
+
+fn pickInt overload pick(n i64) i64 {
+  n * 2i64
+}
+
+fn pickFloat overload pick(n f64) f64 {
+  n * 3.0
+}
+
+fn disambiguate() {
+  // 'pick(3)' would be ambiguous: an unsuffixed literal is acceptable to both
+  // candidates. Converting the argument settles its type and so settles which
+  // candidate accepts the call.
+  show("conversion-picks-int", pick(i64[3]))
+  showF("conversion-picks-float", pick(f64[3]))
+}
+
+// -------- typedef, an alias rather than a change of type --------
+
+typedef Count i64
+// An alias of an alias, so that resolution has to follow the whole chain rather
+// than one link of it
+typedef Tally Count
+typedef Ratio f64
+
+struct Reading {
+  level i64
+}
+
+// An alias of a type that is not a number, named where a reference wants its
+// referent
+typedef ReadingRef &Reading
+
+// Each of the four positions below is a use of the alias as a type: a global, a
+// parameter, a return type, and a local in the function further down.
+mut recorded Count = 3i64
+
+fn bumped(n Count) Tally {
+  // The aliased type's operators are reached through the alias, which has no
+  // methods of its own
+  n + 1i64
+}
+
+fn levelOf(r ReadingRef) i64 {
+  r.level
+}
+
+fn typedefs() {
+  mut running Count = 40i64
+  running = bumped(running)
+  show("typedef-local", running)
+  show("typedef-global", recorded)
+
+  // Transparent in both directions: an i64 parameter takes a Count argument
+  // with no conversion written, and the coercion rules above are the alias's
+  // rules too, so a narrower number still widens into it
+  show("typedef-passes-as-aliased-type", wantI64(running))
+  mut narrow i16 = 12
+  mut widened Count = narrow
+  show("typedef-receives-coercion", widened)
+
+  // A reference to the alias is a reference to the struct it names
+  imm sample = Reading[9i64]
+  show("typedef-struct-ref", levelOf(&sample))
+
+  // Conversion targets the aliased type through the alias, and reads it back
+  mut scaled Ratio = f64[running] / 2.0d
+  showF("typedef-in-conversion", scaled)
+}
+
+fn main() i32 {
+  conversions()
+  intoForm()
+  reinterpretation()
+  coercions()
+  branches()
+  disambiguate()
+  typedefs()
+  0i32
+}

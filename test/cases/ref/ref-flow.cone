@@ -1,0 +1,39 @@
+// What a reference is allowed to write, and how long it is allowed to live.
+//
+// These are data-flow diagnostics, and data flow runs per function only while
+// the error count is still zero (fnDclTypeCheck returns before blockFlow once
+// 'errors' is non-zero). So the whole file is one function: a second function
+// would never be analyzed, and any type-check error anywhere would silence all
+// of it. That is also why the flow family gets its own file rather than
+// joining ref-typecheck-perm, whose subject is otherwise the same.
+//
+// The lifetime rule here is the only one the compiler enforces. Lifetime
+// annotations ('a on a signature) are not implemented, so nothing in this
+// group asserts them.
+
+fn writesAndLifetimes(readOnly &i32) {
+  mut target = 1
+  mut other = 2
+
+  // A reference borrowed without 'mut' may be read through but not written
+  imm reading = &target
+  *reading = 5           //~ ErrorNoMut:3 "You do not have permission to modify lval"
+
+  // ... and that holds for one arriving as a parameter, where the borrow is
+  // out of sight
+  *readOnly = 6          //~ ErrorNoMut:3 "You do not have permission to modify lval"
+
+  // The variable's own permission is a separate question: this one is 'imm',
+  // so it may not be re-pointed even though what it points at is writable
+  imm fixed = &mut target
+  fixed = &mut other     //~ ErrorNoMut:3 "You do not have permission to modify lval"
+
+  // A borrow of an inner-block variable may not be stored where it would
+  // outlive what it points at. This is the case the staging file flagged with
+  // "Uncomment for lifetime error", and the compiler does diagnose it.
+  mut escaping = &target
+  {
+    mut shortLived = 3
+    escaping = &shortLived  //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
+  }
+}

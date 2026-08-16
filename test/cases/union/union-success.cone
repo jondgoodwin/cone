@@ -1,0 +1,282 @@
+// What a union is: a closed set of variant structs sharing a common field and
+// one size, plus the pattern matching that recovers which variant a value is.
+//
+// Everything is printed, because a match that compiles is not a match that
+// dispatched to the right arm. The union carries no methods: an abstract method
+// on the base and the virtual reference that dispatches it are trait's subject,
+// and this group needs only enough reference to have something to match on.
+
+import stdio::*
+
+fn show(label &[]u8, n i64) {
+  printStr(label)
+  printStr(" = ")
+  printInt(n)
+  printStr("\n")
+}
+
+// -------- declaring a union --------
+
+// A field declared on the union itself is present in every variant, at the same
+// offset, so it can be read from a value whose variant is not yet known.
+union Shape {
+  kind i32
+
+  struct Circle {
+    radius i32
+  }
+
+  struct Rect {
+    w i32
+    h i32
+  }
+}
+
+// A union with no common field at all, whose variants hold different numbers of
+// fields of different types: the tag alone tells them apart, and every variant
+// is padded out to the size of the largest.
+union Signal {
+  struct Halt {}
+
+  struct Step {
+    amount i32
+  }
+
+  struct Drift {
+    rateX f32
+    rateY f32
+  }
+}
+
+// -------- constructing and reading --------
+
+fn construction() {
+  // A variant is constructed by naming the variant, not the union. Its
+  // positional initializer starts with the union's common field.
+  mut c = Circle[1, 5]
+  mut r = Rect[2, 3, 4]
+  show("variant-common-field", c.kind)
+  show("variant-own-field", c.radius)
+  show("other-variant-common-field", r.kind)
+  show("other-variant-own-field", r.w * r.h)
+
+  // The common field is writable through the variant
+  c.kind = 7
+  show("common-field-assigned", c.kind)
+
+  // A variant with no fields of its own still constructs, and a union with no
+  // common field is still told apart by its tag
+  mut h = Halt[]
+  mut st = Step[9]
+  mut d = Drift[1.5, 2.5]
+  show("empty-variant-matched", stride(&h))
+  show("sibling-variant-matched", stride(&st))
+  show("float-variant-matched", stride(&d))
+}
+
+// A union whose variants share no field at all: only the tag distinguishes them.
+// The conversion is here because show prints integers, not because a union
+// needs one.
+fn stride(s &Signal) i32 {
+  match s {
+    case imm h &Halt {0}
+    case imm t &Step {t.amount}
+    case imm d &Drift {i32[d.rateX + d.rateY]}
+  }
+}
+
+// -------- the union type itself --------
+
+// A union may be passed by value: the parameter is one variant's worth of
+// storage, and only the common field is readable without matching.
+fn kindOf(s Shape) i32 {
+  s.kind
+}
+
+fn unionValues() {
+  mut c = Circle[1, 5]
+  mut r = Rect[2, 3, 4]
+
+  // A union-typed variable accepts either variant, and accepts a different one
+  // later, because every variant is the same size
+  mut s Shape = c
+  show("union-var-holds-circle", s.kind)
+  s = r
+  show("union-var-reassigned-to-rect", s.kind)
+
+  show("union-passed-by-value", kindOf(c))
+  show("union-passed-by-value-other", kindOf(r))
+
+  // Two branches of differing variant type infer the union as their common
+  // supertype, both by value and by reference
+  imm byValue = if true {c} else {r}
+  show("supertype-inferred-by-value", byValue.kind)
+  imm byRef = if false {&c} else {&r}
+  show("supertype-inferred-by-ref", byRef.kind)
+
+  // A reference to a union is stated the same way as any other reference
+  imm sref &Shape = &r
+  show("union-reference-common-field", sref.kind)
+}
+
+// -------- matching --------
+
+// Matching every variant of a closed union is exhaustive, so the match is a
+// value-producing expression with no 'else' clause
+fn area(s &Shape) i32 {
+  match s {
+    case imm c &Circle {c.radius * c.radius}
+    case imm r &Rect {r.w * r.h}
+  }
+}
+
+// 'case is' tests the variant without binding a name to the narrowed value
+fn isRect(s &Shape) i32 {
+  match s {
+    case is &Rect {1}
+    else {0}
+  }
+}
+
+// An arm that does not name every variant needs an 'else' to be exhaustive
+fn radiusOr(s &Shape, dflt i32) i32 {
+  match s {
+    case imm c &Circle {c.radius}
+    else {dflt}
+  }
+}
+
+// A bound variable may be 'mut', which writes through to the matched value.
+// The parameter is '&mut Shape' rather than '&mut Circle' because a mutable
+// reference to a variant does not coerce to one to the union.
+fn grow(s &mut Shape) {
+  match s {
+    case mut c &mut Circle {c.radius = c.radius + 10}
+    case mut r &mut Rect {r.w = r.w + 10}
+  }
+}
+
+// The single-pattern form of a match is an 'if' whose condition binds
+fn circleRadius(s &Shape) i32 {
+  if imm c &Circle = s {
+    c.radius
+  }
+  else {
+    0
+  }
+}
+
+fn matching() {
+  mut c = Circle[1, 5]
+  mut r = Rect[2, 3, 4]
+  show("match-dispatch-circle", area(&c))
+  show("match-dispatch-rect", area(&r))
+  show("match-is-circle", isRect(&c))
+  show("match-is-rect", isRect(&r))
+  show("match-else-arm-taken", radiusOr(&r, 99))
+  show("match-named-arm-taken", radiusOr(&c, 99))
+  show("if-binding-taken", circleRadius(&c))
+  show("if-binding-not-taken", circleRadius(&r))
+
+  mut sc Shape = c
+  mut sr Shape = r
+  grow(&mut sc)
+  grow(&mut sr)
+  show("mut-binding-writes-through-circle", radiusOr(&sc, 99))
+  show("mut-binding-writes-through-rect", area(&sr))
+}
+
+// A match on a value rather than a variant compares with '=='
+fn classify(n i32) i32 {
+  match n {
+    case ==0 {100}
+    case ==1 {200}
+    else {300}
+  }
+}
+
+fn valueMatching() {
+  show("value-match-first", classify(0))
+  show("value-match-second", classify(1))
+  show("value-match-else", classify(9))
+}
+
+// -------- Option and Result --------
+
+// Option[T] and Result[T,E] are unions declared by the core library, so they
+// match exactly like a union declared here.
+fn unwrapOr(o Option[i32], dflt i32) i32 {
+  match o {
+    case imm s Some[i32] {s.value}
+    case imm n None[i32] {dflt}
+  }
+}
+
+fn signedResult(r Result[i32, i32]) i32 {
+  match r {
+    case imm k Ok[i32, i32] {k.value}
+    case imm e Error[i32, i32] {0 - e.value}
+  }
+}
+
+fn optionAndResult() {
+  show("option-some", unwrapOr(Some[7], 99))
+  show("option-none", unwrapOr(None[i32][], 99))
+
+  // Both branches of an 'if' infer Option as their supertype
+  imm chosen = if true {Some[3]} else {None[i32][]}
+  show("option-from-branches", unwrapOr(chosen, 99))
+
+  // A declared Option variable accepts either variant
+  mut opt Option[i32] = None[i32][]
+  show("option-declared-none", unwrapOr(opt, 42))
+  opt = Some[8]
+  show("option-declared-reassigned", unwrapOr(opt, 42))
+
+  show("result-ok", signedResult(Ok[i32, i32][5]))
+  show("result-error", signedResult(Error[i32, i32][3]))
+}
+
+// -------- interaction with the constructs below this tier --------
+
+// A union built in one branch and matched in another, accumulated in a loop:
+// the intersections where variant tags and control flow have to agree.
+fn stepped(n i32) Shape {
+  if n % 2 == 0 {
+    Circle[1, n]
+  }
+  else {
+    Rect[2, n, 2]
+  }
+}
+
+fn interactions() {
+  mut total = 0
+  mut i = 0
+  while i < 6 {
+    mut s = stepped(i)
+    total = total + area(&s)
+    i++
+  }
+  show("union-returned-from-branch-summed", total)
+
+  // A match whose arms are the last statement of a function, returning the
+  // union's own common field
+  mut acc = 0
+  mut j = 0
+  while j < 4 {
+    acc = acc + kindOf(stepped(j))
+    j++
+  }
+  show("union-by-value-in-loop", acc)
+}
+
+fn main() i32 {
+  construction()
+  unionValues()
+  matching()
+  valueMatching()
+  optionAndResult()
+  interactions()
+  0i32
+}

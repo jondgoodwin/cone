@@ -1,0 +1,182 @@
+// What an anonymous function is today: a function written where a value is
+// expected, given a reference type, bound, passed and called.
+//
+// Everything is printed, because a closure that compiles is not a closure that
+// calls the body you wrote. Named function references are 'ref's subject and do
+// not appear here.
+//
+// Nothing in this file captures anything from the enclosing function, because
+// nothing can: the parser lifts an anonymous function's declaration to module
+// scope, so its body sees module-scope names and its own parameters and nothing
+// else. closure-capture records that gap; this file records what works.
+
+import stdio::*
+
+fn show(label &[]u8, n i64) {
+  printStr(label)
+  printStr(" = ")
+  printInt(n)
+  printStr("\n")
+}
+
+fn showF(label &[]u8, n f64) {
+  printStr(label)
+  printStr(" = ")
+  printFloat(n)
+  printStr("\n")
+}
+
+// -------- what the body can see --------
+
+// An anonymous function body resolves names in module scope, so a global and a
+// named function are both reachable from inside one
+imm bias = 100
+mut sink = 0
+
+fn triple(n i32) i32 {
+  n * 3
+}
+
+// -------- higher-order functions --------
+
+// A parameter typed '&fn(...)' takes an anonymous function and is called
+// through. The parameter must come last: a return type is a tuple type, so a
+// later parameter would be parsed as a second return type instead.
+fn applyTo(v i32, f &fn(n i32) i32) i32 {
+  f(v)
+}
+
+// The staging file's summation, with 'each' replaced by 'while' so the only
+// subject here is the closure being called once per iteration
+fn sumOver(low i32, high i32, term &fn(n f32) f32) f32 {
+  mut sum = 0.
+  mut i = low
+  while i <= high {
+    sum += term(f32[i])
+    i++
+  }
+  sum
+}
+
+// -------- binding and calling --------
+
+fn bound() {
+  // Bound to a variable, then called through it
+  imm square = &fn(x i32) i32 {x * x}
+  show("bound-call", square(3))
+
+  // The variable's type may be written out instead of inferred
+  imm cube &fn(x i32) i32 = &fn(x i32) i32 {x * x * x}
+  show("declared-type-call", cube(3))
+
+  // A 'mut' binding accepts a different anonymous function later, and the call
+  // goes to whichever one it currently holds
+  mut step = &fn(x i32) i32 {x + 1}
+  show("before-rebind", step(10))
+  step = &fn(x i32) i32 {x + 100}
+  show("after-rebind", step(10))
+}
+
+fn signatures() {
+  // No parameters
+  imm answer = &fn() i32 {42}
+  show("no-parameters", answer())
+
+  // Several parameters, evaluated in the order written
+  imm blend = &fn(a i32, b i32, c i32) i32 {a * 100 + b * 10 + c}
+  show("three-parameters", blend(1, 2, 3))
+
+  // A trailing default, so the call may omit it
+  imm advance = &fn(x i32, amt i32 = 5) i32 {x + amt}
+  show("default-omitted", advance(10))
+  show("default-given", advance(10, 2))
+
+  // No return type means void, so the call is a statement and the effect is
+  // all there is to see
+  imm record = &fn(x i32) {sink = x}
+  record(77)
+  show("void-closure-effect", sink)
+
+  // Several return values are a tuple, as for a named function
+  imm split = &fn(x i32) i32, i32 {x / 10, x % 10}
+  mut tens i32
+  mut ones i32
+  tens, ones = split(47)
+  show("tuple-return-tens", tens)
+  show("tuple-return-ones", ones)
+}
+
+fn bodyScope() {
+  // A module-scope global and a named function are both in scope in the body
+  imm offset = &fn(x i32) i32 {x + bias}
+  show("body-reads-global", offset(5))
+  imm thrice = &fn(x i32) i32 {triple(x)}
+  show("body-calls-function", thrice(5))
+
+  // The body is an ordinary block: it may declare locals and use tier-0
+  // control flow, and its value is its last statement
+  imm classify = &fn(x i32) i32 {
+    imm doubled = x * 2
+    if doubled > 10 {
+      1
+    }
+    else {
+      0
+    }
+  }
+  show("body-if-high", classify(6))
+  show("body-if-low", classify(2))
+
+  imm countDown = &fn(x i32) i32 {
+    mut n = x
+    mut steps = 0
+    while n > 0 {
+      n = n - 3
+      steps++
+    }
+    steps
+  }
+  show("body-while", countDown(10))
+}
+
+fn passing() {
+  // Written inline at the call site
+  show("inline-argument", applyTo(7, &fn(n i32) i32 {n * n}))
+
+  // Bound first, then passed: the same value crosses the call boundary
+  imm negate = &fn(n i32) i32 {0 - n}
+  show("bound-argument", applyTo(7, negate))
+
+  // Two different anonymous functions reach the same parameter, so the call
+  // that runs is chosen by the value passed and not by the parameter's name
+  show("first-of-two", applyTo(4, &fn(n i32) i32 {n + 1}))
+  show("second-of-two", applyTo(4, &fn(n i32) i32 {n - 1}))
+
+  // A closure argument used inside a loop, which is the shape the staging
+  // file's summation had
+  showF("sum-of-squares", f64[sumOver(1, 4, &fn(n f32) f32 {n * n})])
+  showF("sum-of-halves", f64[sumOver(1, 4, &fn(n f32) f32 {n / 2.})])
+
+  // A call through a closure parameter composes with the tier-0 operators
+  // around it, so its result is an ordinary value
+  show("result-in-expression", applyTo(3, &fn(n i32) i32 {n * n}) + 1)
+}
+
+fn chosen(label &[]u8, high Bool) {
+  // An 'if' expression can select between two anonymous functions, but only
+  // where the variable states the closure type. Left to infer, the two branches
+  // are found to disagree even though they are written identically, so the
+  // declared type here is load-bearing rather than decoration.
+  imm pick &fn(x i32) i32 = if high {&fn(x i32) i32 {x * 10}} else {&fn(x i32) i32 {x}}
+  show(label, pick(6))
+}
+
+fn main() i32 {
+  bound()
+  signatures()
+  bodyScope()
+  passing()
+  chosen("if-selected-first", true)
+  chosen("if-selected-second", false)
+  0i32
+}

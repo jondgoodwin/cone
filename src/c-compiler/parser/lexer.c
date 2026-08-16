@@ -848,7 +848,7 @@ void lexNextTokenx() {
                 lexReturnPuncTok(GeToken, 2);
             }
             else if (*(srcp + 1) == '>') {
-                if (*(srcp + 1) == '=') {
+                if (*(srcp + 2) == '=') {
                     lexReturnPuncTok(ShrEqToken, 3);
                 }
                 else {

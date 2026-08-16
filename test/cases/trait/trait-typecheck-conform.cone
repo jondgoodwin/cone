@@ -1,0 +1,60 @@
+// What 'extends' demands of the type that names a trait as its base. Three of
+// the four diagnostics are reported against the struct declaration itself
+// rather than the method or field that is wrong, so each needs its own struct;
+// the duplicate-field one is reported against the trait it was mixed in from.
+//
+// These are checked when the struct type is checked, which is the same pass
+// that checks function bodies -- but not the same pass that checks function
+// signatures, and a signature error would suppress this whole file (module.c).
+// So nothing here declares a function outside a struct.
+
+trait Tagged {
+  // Mixing this field into Redeclares below, which declares 'tag' itself, is
+  // the duplicate. The field is cloned from here into the struct, and the clone
+  // keeps this location, so the diagnostic lands on the trait's declaration
+  // rather than on the struct that caused it.
+  tag i32  //~ ErrorDupName:3 "Trait may not mix in a duplicate field name"
+}
+
+trait Worker {
+  fn work(self &) i32
+}
+
+// A trait method with a body is a default rather than a requirement, which is
+// the case that distinguishes 'declares nothing' from 'declares the wrong
+// thing' below.
+trait Measured {
+  fn size(self &) i32 {1}
+}
+
+struct Plain {
+  n i32
+}
+
+// A base must be a trait. A struct has fields to mix in and methods to inherit,
+// but naming one is still rejected.
+struct FromStruct extends Plain {  //~ ErrorInvType:27 "Base trait must be a trait"
+  m i32
+}
+
+// The trait's field is mixed in, so declaring it again is a duplicate rather
+// than an override
+struct Redeclares extends Tagged {
+  tag i32
+}
+
+// Nothing is declared for a requirement that has no default, so there is
+// nothing to inherit either
+struct Silent extends Worker {  //~ ErrorInvType:8 "Type must implement work method"
+  q i32
+}
+
+// The name is declared, but only as an overload set whose one candidate takes
+// an extra argument. A trait requirement is one signature, so a same-named
+// declaration of a different signature does not satisfy it -- and does not let
+// the default be quietly used instead.
+struct Mismatched extends Measured {  //~ ErrorInvType:8 "none of what it declares has the signature"
+  r i32
+
+  fn sizeScaled overload size(self &, scale i32) i32 {r * scale}
+}

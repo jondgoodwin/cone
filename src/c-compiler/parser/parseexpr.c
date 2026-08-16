@@ -25,6 +25,7 @@ INode *parseNameUse(ParseState *parse) {
     if (lexIsToken(DblColonToken)) {
         nameUseBaseMod(nameuse, parse->pgmmod);
         baseset = 1;
+        lexNextToken();
     }
     while (1) {
         if (lexIsToken(IdentToken)) {

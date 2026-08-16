@@ -1,0 +1,41 @@
+// 'each' headers the parser cannot turn into a loop.
+//
+// All of 'each' is parse-stage work: the parser rewrites the loop into a
+// variable declaration and a 'while', so the header has to be well formed
+// before there is anything for a later stage to look at. Each case sits in its
+// own function, because the parser abandons the whole 'each' statement at the
+// first thing it cannot read and re-reads what follows as a statement of its
+// own.
+
+// A loop variable name is required directly after 'each'. Giving up here leaves
+// the parser on 'in', which is not the start of anything.
+fn noVariable() {
+  each in                //~ ErrorNoVar:8 "Missing variable name"
+                         //~^ ErrorBadTerm:8 follow-on
+  imm ok = 1
+}
+
+// 'in' is required after the loop variable, and the '{' that would have opened
+// the body is then read as the start of a second statement on the line.
+fn noIn() {
+  each i 1 < 2 {         //~ ErrorBadTok:10 "Missing 'in'"
+                         //~^ ErrorNoSemi:16 follow-on
+  }
+}
+
+// 'by' is recognized only after a range comparison. '5' is not one, so 'by' is
+// never consumed and the parser is still looking for the body's '{' when it
+// reaches it.
+fn stepWithoutRange() {
+  each i in 5 by 1 {     //~ ErrorNoLCurly:15
+  }
+}
+
+// 'each' is a statement and never an expression. The only way to write one in
+// expression position is behind a lifetime label, which the expression parser
+// does accept, so the check lives in the 'each' parser itself. It reports
+// through errorMsg with no source position, so cases.toml carries it.
+fn asExpression() {
+  imm n = 'a: each i in 0 < 5 {
+  }
+}

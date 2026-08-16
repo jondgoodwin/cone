@@ -1,0 +1,33 @@
+// Defect: assigning to an 'rc' reference variable declared without an initial
+// value releases whatever the uninitialized storage happened to contain.
+//
+// genlStore in genllvm/genlexpr.c decrements the reference count of an lval's
+// previous value before storing the new one, which is right for a variable that
+// holds a reference and wrong for one that has never held anything. Flow
+// analysis knows the difference -- ir/exp/assign.c consults VarInitialized when
+// deciding whether the write is permitted -- but code generation does not ask.
+// The run dies on an illegal instruction inside the release path.
+//
+// 'so' has no such counter and genlStore skips it, so the same shape works for
+// the other region. This is why the success program always gives an 'rc'
+// variable its allocation in the declaration.
+
+import stdio::*
+
+fn show(label &[]u8, n i64) {
+  printStr(label)
+  printStr(" = ")
+  printInt(n)
+  printStr("\n")
+}
+
+fn f() {
+  mut later +rc-mut i32
+  later = +rc-mut 9
+  show("assigned-after-declaring", i64[*later])
+}
+
+fn main() i32 {
+  f()
+  0i32
+}

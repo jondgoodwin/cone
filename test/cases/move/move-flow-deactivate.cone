@@ -1,0 +1,45 @@
+// Which operations deactivate a move value's source, and the neighbouring flow
+// state of a variable that never held a value at all.
+//
+// Every case is in one function on purpose. Data flow analysis runs per function
+// and is skipped entirely once any error exists, so a second function's
+// diagnostics would never be reported. Within a function they accumulate.
+
+struct @move Handle {
+  id i32
+}
+
+fn take(h Handle) i32 {
+  h.id
+}
+
+fn main() i32 {
+  // Assigning to another variable moves the value out of this one
+  imm a = Handle[1]
+  imm b = a
+  imm useA = a.id      //~ ErrorMove:14 "moved out"
+
+  // Passing it to a function moves it there
+  imm c = Handle[2]
+  take(c)
+  take(c)              //~ ErrorMove:8 "moved out"
+
+  // A move in only one branch still deactivates the source, because the join
+  // cannot know which way control went
+  imm d = Handle[3]
+  if useA > 0 { take(d) }
+  take(d)              //~ ErrorMove:8 "moved out"
+
+  // A value moved on through a second variable leaves that one empty too
+  imm e = Handle[4]
+  imm f = e
+  imm g = f
+  take(f)              //~ ErrorMove:8 "moved out"
+
+  // The other state flow analysis rejects a use in: declared, never given a
+  // value. Distinct from deactivation, and reported with the same code.
+  mut h Handle
+  take(h)              //~ ErrorMove:8 "has not been initialized"
+
+  0i32
+}

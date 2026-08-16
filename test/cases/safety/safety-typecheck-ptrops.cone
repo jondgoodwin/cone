@@ -1,0 +1,44 @@
+// Operators applied to a pointer where no candidate accepts the arguments.
+//
+// The compiler declares the pointer operators itself, over an unknown value
+// type, and selects among them by the second argument. Each case below breaks
+// one of the rules that selection applies, so the diagnostics here pin what a
+// pointer operator will and will not take.
+//
+// Type check stage only. The conversions live in safety-typecheck-ptrconv and
+// the non-operator uses in safety-typecheck-ptruse, because one file may not
+// mix stages and because six diagnostics is the most one file should carry.
+
+fn addPointers(p *i32, q *i32) {
+  // '+' offsets a pointer by an integer count; there is no candidate that adds
+  // two pointers
+  imm bad = p + q       //~ ErrorNoCandidate:15 "No method declared by `+`"
+}
+
+fn subtractOtherPointer(p *i32, b *u8) {
+  // The difference candidate requires both pointers to have the same value
+  // type, and the offset candidate will not take a pointer as its offset
+  imm bad = p - b       //~ ErrorNoCandidate:15 "No method declared by `-`"
+}
+
+fn fractionalOffset(mut p *i32) {
+  // An offset is a count of elements, so it must be an integer
+  p += 1.5              //~ ErrorNoCandidate:5 "No method declared by `+=`"
+}
+
+fn compareOtherPointer(p *i32, b *u8) {
+  // Comparison also requires the same value type on both sides
+  imm bad = p < b       //~ ErrorNoCandidate:15 "No method declared by `<`"
+}
+
+fn negate(p *i32) {
+  // A pointer has no unary negation, only the two binary '-' candidates
+  imm bad = -p          //~ ErrorNoCandidate:13 "No method declared by `-`"
+}
+
+fn multiply(p *i32) {
+  // A pointer declares no '*' at all. The call falls through to the methods of
+  // the type pointed at, which is where the diagnostic comes from, so the
+  // pointer never reaches an arithmetic operator it does not declare.
+  imm bad = p * 2       //~ ErrorNoCandidate:15 "No method declared by `*`"
+}

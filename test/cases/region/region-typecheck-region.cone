@@ -1,0 +1,33 @@
+// The '_alloc' method a region must declare for an allocation to name it.
+//
+// ir/types/region.c checks the shape when an allocation reaches the region, not
+// when the region is declared, so a malformed region that nothing allocates from
+// is silently fine. Every case below is therefore paired with an allocation at
+// the foot of the file.
+//
+// Each diagnostic lands on the offending declaration rather than on the
+// allocation that provoked it, which is why the four cases can share one
+// function without their messages piling onto one line.
+
+extern fn wmalloc(size usize) *u16
+
+struct noAlloc { }             //~ ErrorInvType "lacks _alloc static method"
+
+struct twoParms {
+  fn _alloc(size usize, extra usize) *u8 inline { malloc(size) }   //~ ErrorInvType "single usize parm"
+}
+
+struct wrongParm {
+  fn _alloc(size u32) *u8 inline { malloc(usize[size]) }           //~ ErrorInvType "single usize parm"
+}
+
+struct wrongReturn {
+  fn _alloc(size usize) *u16 inline { wmalloc(size) }              //~ ErrorInvType "must return *u8"
+}
+
+fn f() {
+  imm a = +noAlloc-mut 1
+  imm b = +twoParms-mut 2
+  imm c = +wrongParm-mut 3
+  imm d = +wrongReturn-mut 4
+}

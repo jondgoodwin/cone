@@ -1,0 +1,89 @@
+# closure - anonymous functions: writing one, giving it a type, binding it,
+# passing it and calling it. Tier 1.
+#
+# Key reference: design/Test Suite.md, "cases.toml keys".
+# The group directory supplies the feature tag, so tags carry pipeline phases.
+#
+# Not here, on purpose:
+#
+#   - Capture. An anonymous function cannot read a local of the function that
+#     encloses it, so there is nothing working to write a success scenario
+#     around. closure-capture is the xfail that records the gap.
+#   - References to named functions ('imm p = &fact'), which the design note
+#     gives to 'ref' as "function references", and closure references, which it
+#     gives to 'trait'.
+#   - An anonymous function declaring an overload name. It is an error
+#     (ErrorBadOverload) and core-parse-overload already covers it, so
+#     repeating it here would only duplicate that scenario.
+#   - An 'if' selecting between two anonymous functions with no declared type on
+#     the receiving variable. It is rejected (ErrorInvType, "Branch's expression
+#     type inconsistent with other branches") even when the branches are written
+#     identically, which looks like an inference gap rather than a rule worth
+#     pinning. closure-success covers the form that does work, where the
+#     variable states the closure type.
+#   - ErrorNotFn (1018), whose name suggests it is closure's. It is declared in
+#     error.h and emitted nowhere in the compiler, so no scenario can reach it.
+#     Calling a non-function reports ErrorNoMbr on '()' instead, which
+#     core-typecheck covers.
+#
+# The reject scenarios are split by pipeline stage, because analysis halts
+# between stages and an expectation from a later stage would never be reached.
+#
+# The type-check stage is split three ways, and the first split is forced rather
+# than stylistic: a module type checks every declaration's signature before any
+# body, and only reaches the bodies when the signature phase produced no errors
+# (module.c). A signature diagnostic therefore suppresses every body diagnostic
+# in its file, so closure-typecheck-sig holds the signature failures alone. The
+# two body-phase files are split by what breaks -- the closure not fitting the
+# type it is given to, versus the call made through it.
+
+support = []
+
+# -------- success --------
+
+[scenario.closure-success]
+category = "run"
+description = "Anonymous functions bound, typed, passed to a parameter and called"
+tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.closure-capture]
+category = "compile"
+description = "An anonymous function reading a local of the function enclosing it"
+tags = ["nameres"]
+xfail = true
+
+# -------- warnings --------
+
+[scenario.closure-warn-name]
+category = "warn"
+description = "Naming a function written where a value is expected"
+tags = ["parse"]
+diagnostics = 2
+
+# -------- parse stage --------
+
+[scenario.closure-parse-sig]
+category = "reject"
+description = "Anonymous function signatures the parser cannot accept"
+tags = ["parse"]
+diagnostics = 3
+
+# -------- type check stage --------
+
+[scenario.closure-typecheck-sig]
+category = "reject"
+description = "Parts of an anonymous function's signature that are not types"
+tags = ["typecheck"]
+diagnostics = 2
+
+[scenario.closure-typecheck-use]
+category = "reject"
+description = "An anonymous function whose type is not the type wanted where it is written"
+tags = ["typecheck"]
+diagnostics = 5
+
+[scenario.closure-typecheck-call]
+category = "reject"
+description = "Calls made through a value holding an anonymous function"
+tags = ["typecheck"]
+diagnostics = 3

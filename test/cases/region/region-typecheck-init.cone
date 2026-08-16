@@ -1,0 +1,43 @@
+// The 'init' method a region or a permission may declare, and the shape it has
+// to have when it does.
+//
+// 'init' is optional on both. Where it exists, allocation calls it and stores
+// what it returns into the allocation's header -- corelib's 'rc' uses it to set
+// the reference count to one -- so it may take no arguments and must return its
+// own type. The region check is ir/types/region.c and the permission check is
+// ir/types/permission.c; they are separated from the '_alloc' scenario because
+// they are about a different method and are reached by a different call.
+//
+// The permission cases are the only part of this group that touches a lock
+// permission. There are no lock permission types: the six permissions are
+// declared in corelib.c and none of them is a struct. What the compiler does
+// have is the machinery a lock permission would need -- a struct is accepted in
+// the permission slot, its 'init' is validated here, and genllvm/genlalloc.c
+// calls it -- so these two diagnostics are what can honestly be asserted.
+
+struct regionParms {
+  fn _alloc(size usize) *u8 inline { malloc(size) }
+  fn init(x usize) regionParms inline { regionParms[] }            //~ ErrorInvType "Region init method may not have parameters"
+}
+
+struct regionReturn {
+  fn _alloc(size usize) *u8 inline { malloc(size) }
+  fn init() usize inline { 1usize }                                //~ ErrorInvType "Region init method must return initial value"
+}
+
+struct permParms {
+  held usize
+  fn init(x usize) permParms inline { permParms[0usize] }          //~ ErrorInvType "Permission init method may not have parameters"
+}
+
+struct permReturn {
+  held usize
+  fn init() usize inline { 0usize }                                //~ ErrorInvType "Permission init method must return initial value"
+}
+
+fn f() {
+  imm a = +regionParms-mut 1
+  imm b = +regionReturn-mut 2
+  imm c = +rc-permParms 3
+  imm d = +rc-permReturn 4
+}

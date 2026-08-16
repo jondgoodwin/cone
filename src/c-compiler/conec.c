@@ -93,7 +93,4 @@ int main(int argc, char **argv) {
     if (coneopt.verbosity > 0)
         timerPrint();
     errorSummary();
-#ifdef _DEBUG
-    getchar();    // Hack for VS debugging
-#endif
 }

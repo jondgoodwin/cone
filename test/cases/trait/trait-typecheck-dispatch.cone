@@ -1,0 +1,53 @@
+// What will not go through a virtual reference that is otherwise well formed.
+// A virtual reference can reach exactly what the trait declared and nothing
+// else: the vtable has one slot per requirement, and there is no concrete type
+// behind it at compile time to fall back on.
+//
+// Separate from trait-typecheck-vref because these are about using a reference
+// that type checks, not about building one; keeping them apart also keeps each
+// file inside the three-to-six diagnostic limit.
+
+trait Shape {
+  fn area(self &) i32
+}
+
+struct Rect {
+  w i32
+  fn area(self &) i32 {w}
+
+  // Declared by the type but not by the trait, so not in the vtable
+  fn other(self &) i32 {w * 2}
+}
+
+// A trait declaring the call operator, which is what a closure reference would
+// need: the reference manual describes closure references as virtual references
+// to an implicit trait declaring '()'. Dispatching it is not implemented.
+trait Callable {
+  fn `()`(self &) i32
+}
+
+struct Adder {
+  n i32
+  fn `()`(self &) i32 {n + 1}
+}
+
+fn notInVtable(s &<Shape) {
+  // A method the concrete type has and the trait does not
+  imm m = s.other()   //~ ErrorNoMbr:12 "Method or field `other` not found"
+
+  // A field of the concrete type, for the same reason
+  imm f = s.w         //~ ErrorNoMbr:12 "Method or field `w` not found"
+}
+
+fn notAnOperation(s &<Shape, c &<Callable) {
+  // Calling the reference itself. This is the closure-reference case: even
+  // where the trait declares '()', the call is not routed through the vtable.
+  imm x = c()         //~ ErrorNoMeth:12 "Invalid operation on a virtual reference"
+
+  // Indexing it
+  imm y = s[0]        //~ ErrorNoMeth:12 "Invalid operation on a virtual reference"
+
+  // Dereferencing it. A virtual reference is a fat pointer, so there is no
+  // single address to load a whole value from.
+  imm z = *s          //~ ErrorNotPtr:11 "May only de-reference a simple reference or pointer"
+}

@@ -1,0 +1,163 @@
+# core - operators and expressions, blocks and statements, functions and
+# function overload, 'if', 'while'/'break'/'continue', number types and enum,
+# void, tuples, local and global vars. Tier 0.
+#
+# Key reference: design/Test Suite.md, "cases.toml keys".
+# The group directory supplies the feature tag, so tags carry pipeline phases.
+#
+# The reject scenarios are split by pipeline stage, because analysis halts
+# between stages and an expectation from a later stage would never be reached.
+# They are split again within the parse stage, by what recovery can reach, and
+# within the name-resolution and type-check stages by sub-family. Statement
+# placement is checked in both of those stages, and the name-resolution rule
+# hides the type-check one, so the two files provoke it in different ways.
+
+support = []
+
+# -------- success --------
+
+[scenario.core-success]
+category = "run"
+description = "Variables, number types, operators, blocks, if, while, functions, tuples and void"
+tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+# Two runs of one source (R2.2). The optimizer is the difference: 'release' is
+# the default build, 'debug' passes --debug, which turns optimization off. Both
+# are compared against the same .out, so anything the corpus establishes here
+# has to hold with and without the optimizer.
+#
+# This is worth a second run rather than a second file because the failure it
+# guards against is one nothing else can see: code generation that is wrong in a
+# way the optimizer happens to repair. Such a bug passes every scenario in the
+# suite and then breaks the first time someone builds unoptimized.
+[[scenario.core-success.run]]
+name = "release"
+options = []
+
+[[scenario.core-success.run]]
+name = "debug"
+options = ["--debug"]
+
+[scenario.core-overload]
+category = "run"
+description = "Which candidate of an overload set a call selects"
+tags = ["nameres", "typecheck", "genllvm", "runtime"]
+
+[[scenario.core-overload.check]]
+name = "overload-lowers-to-concrete"
+target = "llvmir"
+contains = [
+  "@scaleInt",
+  "@scaleFloat",
+  "@joinOne",
+  "@joinTwo",
+  "@stepInt",
+  "@stepFloat",
+  "@emitSigned",
+]
+
+[[scenario.core-overload.check]]
+name = "no-symbol-for-overload-name"
+target = "llvmir"
+excludes = ["@scale(", "@join(", "@step(", "@emit("]
+
+[[scenario.core-overload.check]]
+name = "private-candidate-keeps-its-symbol"
+target = "llvmir"
+contains = ["define hidden i64 @_emitUnsigned"]
+
+# -------- warnings --------
+
+[scenario.core-warn-loops]
+category = "warn"
+description = "A 'while' that may never stop, and the three that will"
+tags = ["typecheck"]
+diagnostics = 2
+
+# -------- parse stage --------
+
+[scenario.core-parse-stmts]
+category = "reject"
+description = "Statement and expression syntax the parser cannot accept"
+tags = ["parse"]
+diagnostics = 5
+
+[scenario.core-parse-decls]
+category = "reject"
+description = "Global-area declaration syntax the parser cannot accept"
+tags = ["parse"]
+diagnostics = 5
+
+[scenario.core-parse-fns]
+category = "reject"
+description = "Function declaration syntax the parser cannot accept"
+tags = ["parse"]
+diagnostics = 3
+
+[scenario.core-parse-names]
+category = "reject"
+description = "Two declarations claiming one global name"
+tags = ["parse"]
+diagnostics = 5
+
+[scenario.core-parse-overload]
+category = "reject"
+description = "Malformed 'overload' declarations"
+tags = ["parse"]
+diagnostics = 4
+
+# ErrorNoRCurly needs the file to end with a block still open, so it is one per
+# file and it has to be last. That is why it has a file of its own. It is
+# reported at the EOF token, whose line depends on whether the file ends with a
+# newline; the runner matches an annotation on the final line against either.
+[scenario.core-parse-unclosed]
+category = "reject"
+description = "A block the file never closes"
+tags = ["parse"]
+diagnostics = 1
+
+# -------- name resolution stage --------
+
+[scenario.core-nameres]
+category = "reject"
+description = "Names and lifetime labels that resolve to nothing"
+tags = ["nameres"]
+diagnostics = 5
+
+[scenario.core-nameres-stmtorder]
+category = "reject"
+description = "'return', 'break' and 'continue' before the end of their block"
+tags = ["nameres"]
+diagnostics = 3
+
+[scenario.core-nameres-tuple]
+category = "reject"
+description = "A tuple mixing types and values among its elements"
+tags = ["nameres"]
+diagnostics = 3
+
+# -------- type check stage --------
+
+[scenario.core-typecheck]
+category = "reject"
+description = "Types and arities that do not agree"
+tags = ["typecheck"]
+diagnostics = 8
+
+[scenario.core-typecheck-select]
+category = "reject"
+description = "Calls an overload name cannot resolve to exactly one candidate"
+tags = ["typecheck"]
+diagnostics = 4
+
+[scenario.core-typecheck-overload]
+category = "reject"
+description = "Overload sets that could never choose, and overload names used as values"
+tags = ["typecheck"]
+diagnostics = 5
+
+[scenario.core-typecheck-blockend]
+category = "reject"
+description = "Statements that cannot end the block they finish"
+tags = ["typecheck"]
+diagnostics = 4

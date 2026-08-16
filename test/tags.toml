@@ -1,0 +1,270 @@
+# Changed source path to test selector, for diff-driven selection (R2.5).
+#
+#     python test/run.py --since
+#     python test/run.py --list --since HEAD~1..HEAD
+#
+# The runner asks git which paths a diff touched, maps each one through the
+# rules below, and runs what they name. The mapping is checked in and reviewed
+# rather than derived, because it is a claim about the compiler -- "a change
+# here cannot break anything past name resolution" -- and a wrong claim is
+# invisible: the run goes green and the reader has no way to see what it
+# skipped. That is also why every rule carries a 'why'. The runner prints it,
+# so a selection can be argued with.
+#
+# A rule is:
+#
+#     [[rule]]
+#     path = "src/c-compiler/parser/"   # a string, or a list of them
+#     tags = ["parse"]                  # what a change here could break
+#     why  = "..."                      # printed beside the selection
+#
+# A 'path' ending in '/' matches everything beneath it; one that does not is
+# matched exactly. Where two rules match a path the longer one wins, so a rule
+# for one file overrides the rule for its directory and rules may be written in
+# whatever order reads best. Paths are repository-relative and always use
+# forward slashes, whatever the platform.
+#
+# Exactly one outcome per rule:
+#
+#   tags = [...]         The pipeline phases (R2.4) a change here could break:
+#                        parse, nameres, typecheck, flow, genllvm, runtime.
+#                        Selects every scenario carrying one of them.
+#   groups = [...]       Coverage groups, for a change no phase tag can reach.
+#   tags = []            Nothing in the corpus depends on this path. Say why;
+#                        an empty list is an assertion, not a shrug.
+#   everything = true    Run the whole suite. For anything cross-cutting enough
+#                        that naming phases would be a lie -- the diagnostic
+#                        taxonomy, the pipeline, the arena every node comes from.
+#   group-from-path = true
+#                        The path names its own group in its next component.
+#                        Used once, for test/cases/.
+#
+# A path no rule matches is **reported, and widens the run to the whole suite**.
+# That is the safe direction and the loud one: an unmapped path is exactly how a
+# diff-driven run would quietly skip the thing you were testing. So a new
+# compiler subsystem is a new rule here, in the change that adds it.
+#
+# When you are unsure, widen. A selection that runs too much wastes seconds; one
+# that runs too little produces a green run that means nothing.
+#
+# Key reference: workitems/Add test suite.md R2.5, and the group table in
+# design/Test Suite.md section 1.
+
+
+# ---------------------------------------------------------------------------
+# The compiler
+# ---------------------------------------------------------------------------
+
+[[rule]]
+path = "src/c-compiler/parser/"
+tags = ["parse"]
+why = """
+The lexer and the parser: everything that turns source text into IR. A change \
+here alters what the front end accepts and how it recovers, and nothing \
+downstream sees it except through the IR it built. parsefnflow.c is named for \
+the flow-control statements it parses, not for the flow pass -- that is \
+ir/flow.c."""
+
+[[rule]]
+path = ["src/c-compiler/shared/utf8.c", "src/c-compiler/shared/utf8.h"]
+tags = ["parse"]
+why = """
+UTF-8 decoding, reached from the lexer while reading identifiers and character \
+and string literals. The lexical group is where a change here shows."""
+
+[[rule]]
+path = "src/c-compiler/ir/"
+tags = ["nameres", "typecheck", "flow", "genllvm", "runtime"]
+why = """
+The IR and its semantic passes. Every file beneath here defines some \
+combination of a NameRes, TypeCheck and Flow entry point, and none of them \
+generates code -- 'genl' appears nowhere under ir/. genllvm and runtime are on \
+the list anyway, because the IR these passes leave behind is the IR code \
+generation reads: lowering during type check decides what genllvm sees, and the \
+five scenarios tagged genllvm without typecheck are exactly the \
+ownership-lowering cases where that shows. Only parse is left out, and it is \
+the one phase that cannot see a change here -- the parser is finished before \
+any of this runs."""
+
+[[rule]]
+path = ["src/c-compiler/ir/ir.h", "src/c-compiler/ir/inode.h"]
+everything = true
+why = """
+The umbrella IR headers: the node tag enum, the shared INode header, and the \
+include of every node type. The parser builds against them and genllvm reads \
+against them, so a change here can move the ground under every phase at once."""
+
+[[rule]]
+path = ["src/c-compiler/ir/flow.c", "src/c-compiler/ir/flow.h"]
+tags = ["flow"]
+why = """
+The data-flow pass itself -- alias counting, variable initialization state, and \
+the drop bookkeeping the region group depends on. It is the one part of ir/ \
+that runs in a single phase."""
+
+[[rule]]
+path = "src/c-compiler/genllvm/"
+tags = ["genllvm", "runtime"]
+why = """
+LLVM type, statement, expression and allocation generation. Nothing before code \
+generation can see a change here, and what it breaks is either the IR dump a \
+named check reads or what the linked program prints."""
+
+[[rule]]
+path = "src/c-compiler/corelib/"
+tags = ["nameres", "typecheck", "flow", "genllvm", "runtime"]
+why = """
+The compiler-defined core types, permissions, regions and number methods. They \
+are declared into the name table before any source is read, so a change reaches \
+name resolution and type checking; the permissions and regions declared here \
+are what flow analysis reasons about; and corenumber.c declares the intrinsics \
+genllvm lowers, so it reaches code generation and runtime as well. Only parse \
+is left out: the lexer does not consult corelib."""
+
+[[rule]]
+path = ["src/c-compiler/conec.c", "src/c-compiler/conec.h"]
+everything = true
+why = """
+The pipeline. It decides which phases run, in what order, and which are skipped \
+once the error count is nonzero -- which is the mechanism behind the \
+'never mix compiler stages in one failure scenario' rule every reject scenario \
+is written around."""
+
+[[rule]]
+path = [
+    "src/c-compiler/coneopts.c", "src/c-compiler/coneopts.h",
+    "src/c-compiler/shared/options.c", "src/c-compiler/shared/options.h",
+]
+everything = true
+why = """
+Option parsing. Every scenario is compiled through it -- the runner adds \
+--checktree and --verify to compile and run scenarios and --llvmir wherever a \
+check reads the dump -- and the driver group asserts the exit statuses \
+coneopts produces. The driver scenarios carry no phase tags at all, by design, \
+so no tag selection could reach them."""
+
+[[rule]]
+path = ["src/c-compiler/shared/error.c", "src/c-compiler/shared/error.h"]
+everything = true
+why = """
+The diagnostic taxonomy and the format it prints in. Every expectation in the \
+corpus is matched on a code from error.h, parsed out of the three lines \
+error.c writes, so a change here is a change to every expectation at once -- \
+not a parse change, whatever the diagnostic happens to be about. test/codes.toml \
+is checked against error.h before any case runs (R5.2)."""
+
+[[rule]]
+path = ["src/c-compiler/shared/memory.c", "src/c-compiler/shared/memory.h"]
+everything = true
+why = """
+The arena every IR node is allocated from. There is no phase that does not \
+depend on it, and what it breaks does not resemble what it is."""
+
+[[rule]]
+path = ["src/c-compiler/shared/fileio.c", "src/c-compiler/shared/fileio.h"]
+everything = true
+why = """
+Source loading and path handling. It decides what a source path resolves to, \
+which is the driver group's ExitNF case, and it supplies the path each \
+diagnostic location carries -- which annotation matching compares against the \
+scenario's own source before it will pair anything."""
+
+[[rule]]
+path = ["src/c-compiler/shared/timer.c", "src/c-compiler/shared/timer.h"]
+tags = []
+why = """
+The elapsed-time and kilobyte figures in the success line. normalize_stderr \
+replaces them precisely because they are not stable, and nothing in the corpus \
+asserts them, so no change here can move a result."""
+
+[[rule]]
+path = "src/conestd/"
+tags = ["runtime"]
+why = """
+The standard-library component the run scenarios link against. It cannot affect \
+a compile: it changes only what a linked program prints."""
+
+
+# ---------------------------------------------------------------------------
+# Building the compiler
+# ---------------------------------------------------------------------------
+
+[[rule]]
+path = ["CMakeLists.txt", "Cone.vcxproj", "Conestd.vcxproj"]
+everything = true
+why = """
+They build conec and conestd. A change to how the binary is produced is a \
+change to every result it produces, and R1.1 already treats CMakeLists.txt as \
+a compiler source when deciding whether the binary is stale."""
+
+
+# ---------------------------------------------------------------------------
+# The suite itself
+# ---------------------------------------------------------------------------
+
+[[rule]]
+path = "test/run.py"
+everything = true
+why = """
+The runner. Every pass and every failure in the corpus is its judgement, so a \
+change to it is a change to all of them."""
+
+[[rule]]
+path = "test/codes.toml"
+everything = true
+why = """
+The pinned ErrorCode table, compared against error.h before any case runs \
+(R5.2). A mismatch stops the whole suite rather than any part of it."""
+
+[[rule]]
+path = "test/tags.toml"
+tags = []
+why = """
+This table. It changes what a diff selects, not what the compiler does, so a \
+run it selected for itself would prove nothing about it. Review its diff \
+instead -- that is the whole mechanism."""
+
+[[rule]]
+path = "test/cases/"
+group-from-path = true
+why = """
+A scenario, its expected stdout, a support module and a cases.toml all belong \
+to the group directory they sit in, and that directory name is already a \
+selector the runner accepts. There is nothing to map: the path names its own \
+group."""
+
+
+# ---------------------------------------------------------------------------
+# Not compiler behavior
+# ---------------------------------------------------------------------------
+#
+# Each of these is a claim that no scenario can observe a change to the path,
+# not an admission that nobody looked.
+
+[[rule]]
+path = ["design/", "workitems/", "CLAUDE.md", "PLAN.md", "CONTRIBUTING.md"]
+tags = []
+why = """
+Design notes, work items and repository instructions. They record intent and \
+say what to build; the compiler reads none of them."""
+
+[[rule]]
+path = "conesite/"
+tags = []
+why = """
+The website, the playground and the reference manual. The manual's chapter list \
+is the spine of the group organization (R6.1), so adding a chapter may well \
+imply adding a group -- but that is an authoring decision to make, not a \
+selection a diff can derive."""
+
+[[rule]]
+path = [
+    ".github/", ".gitignore", ".gitattributes", "LICENSE", "COPYRIGHT",
+    "README.md",
+]
+tags = []
+why = """
+Repository housekeeping. .gitattributes is the near miss: it pins test/ to LF \
+endings, and line endings really do change what a compile prints (R4.1) -- but \
+the runner is ending-agnostic in both directions and is tested both ways, so \
+the pin decides the question rather than moving any result."""

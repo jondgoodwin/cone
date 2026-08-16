@@ -1,0 +1,80 @@
+# ref - borrowed references, static permissions, lifetime annotations and
+# function references. Tier 1.
+#
+# Key reference: design/Test Suite.md, "cases.toml keys".
+# The group directory supplies the feature tag, so tags carry pipeline phases.
+#
+# The failure scenarios are split first by pipeline stage and then by
+# sub-family:
+#
+# - The two type-check files answer different questions. ref-typecheck-borrow
+#   asks whether there is a place to point at and something to point through;
+#   ref-typecheck-perm asks what the resulting reference is then allowed to do.
+#   Together they would be ten diagnostics, past the three-to-six limit.
+# - ref-flow is separate and is a single function, because data-flow analysis
+#   runs per function only while the error count is zero. One type-check error
+#   anywhere in a file silences every flow diagnostic in it, and one flow error
+#   silences flow for every later function.
+#
+# There is no parse-stage scenario. A malformed borrow produces the generic
+# ErrorBadTerm/ErrorNoSemi pair core already covers, and '&' with a missing
+# operand silently swallows the statement that follows instead of failing, so
+# an expectation on it would assert nothing.
+#
+# Left out deliberately:
+#
+# - Lifetime annotations ('a on a signature, <'a, 'b> on a type). Not
+#   implemented; coneref/reflifefn.html says so and the parser has no syntax
+#   for them. The one lifetime rule the compiler does enforce -- a borrowed
+#   reference may not be stored where it would outlive what it points at -- is
+#   asserted in ref-flow.
+# - 'uni' and 'mut1' permissions on a borrow. They are named in the permission
+#   table but a borrow of a local variable can never obtain them, so there is
+#   nothing to establish here that is not region's move semantics.
+# - Dereferencing an '&opaq' reference. The reference manual forbids it; the
+#   compiler accepts it silently. An expectation either way would be a claim
+#   about a rule that is not checked.
+# - Freezing the source of a borrow. Documented and unimplemented: a variable
+#   stays fully usable while a reference to it is alive.
+#
+# Owning references, array references and slices, and virtual references belong
+# to region, collection and trait, and appear nowhere in this group.
+
+support = []
+
+# -------- success --------
+
+[scenario.ref-success]
+category = "run"
+description = "Borrowing, dereference, permissions, lifetime and function references"
+tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+# -------- known defect --------
+
+[scenario.ref-field-borrow]
+category = "compile"
+description = "Borrowing a reference to a struct field without parentheses"
+tags = ["parse", "typecheck", "genllvm"]
+xfail = true
+
+# -------- type check stage --------
+
+[scenario.ref-typecheck-borrow]
+category = "reject"
+description = "Expressions that cannot be borrowed from or dereferenced"
+tags = ["typecheck"]
+diagnostics = 6
+
+[scenario.ref-typecheck-perm]
+category = "reject"
+description = "Permissions a borrowed reference cannot obtain or coerce to"
+tags = ["typecheck"]
+diagnostics = 6
+
+# -------- flow stage --------
+
+[scenario.ref-flow]
+category = "reject"
+description = "Writes the permission forbids, and a borrow stored past its lifetime"
+tags = ["flow"]
+diagnostics = 4

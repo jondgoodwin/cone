@@ -1,0 +1,27 @@
+// The two things the parser has to say about a type parameter list and a macro
+// declaration: the list has to close, and the macro has to be named.
+//
+// parseGenericParms is shared by 'fn', 'struct' and 'macro', so one unclosed
+// list is written on a macro and one on a function, to establish that the same
+// rule reaches both. It reports at the token that should have been the closing
+// bracket, which is the block's opening brace here.
+//
+// The missing macro name comes last on purpose. Recovery from it leaves the
+// macro's body behind as a global-area statement and the parser then reaches
+// the end of the file, so anything written after it would not be parsed at all.
+//
+// Left out: an empty type parameter list, 'fn f[]()'. parseGenericParms accepts
+// it and the compiler then dies with an access violation rather than a
+// diagnostic, so there is nothing to annotate.
+
+macro badMacroParms[a b {    //~ ErrorBadTok:25 "square bracket"
+  a
+}
+
+fn badFnParms[T(x T) T {     //~ ErrorBadTok:16 "square bracket"
+  x
+}
+
+macro {                      //~ ErrorBadTok:7 "Expected a macro name"
+  1i32                       //~^ ErrorBadGloStmt:7 follow-on
+}

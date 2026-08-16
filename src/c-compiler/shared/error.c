@@ -26,10 +26,9 @@ void errorExit(int exitcode, const char *msg, ...) {
     va_end(argptr);
     fputs("\n", stderr);
 
-    // Exit with return code
-#ifdef _DEBUG
-    getchar();    // Hack for VS debugging
-#endif
+    // Exit with return code.
+    // Nothing waits on stdin here: a Debug build that paused for a keystroke
+    // would block every test case until its timeout.
     exit(exitcode);
 }
 

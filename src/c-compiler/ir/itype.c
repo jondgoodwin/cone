@@ -21,6 +21,7 @@ INode *itypeGetTypeDcl(INode *type) {
             break;
         case TypedefTag:
             type = ((TypedefNode *)type)->typeval;
+            break;
         default:
             return type;
         }

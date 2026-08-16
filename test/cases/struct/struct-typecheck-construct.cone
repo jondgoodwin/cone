@@ -1,0 +1,47 @@
+// Struct constructors that do not agree with the type they name.
+//
+// Type-check stage. A constructor is matched against the declaration field by
+// field, so every way of getting the list wrong is found at the constructor
+// itself. Method and operator calls, and the privacy of an access, are in
+// struct-typecheck-methods.
+
+struct Point {
+  x i32
+  y i32
+}
+
+// A field without a default must be given a value
+fn tooFew() {
+  imm p = Point[1]     //~ ErrorBadArray:16 "Not enough values specified"
+  return
+}
+
+fn tooMany() {
+  imm p = Point[1, 2, 3]   //~ ErrorBadArray:16 "Too many values specified"
+  return
+}
+
+// A named form must name a field of the type, and the diagnostic reports the
+// field left without a value rather than the name that matched nothing
+fn unnamedField() {
+  imm p = Point[x: 1, nosuch: 2]   //~ ErrorBadArray:16 "Cannot find named value matching the field y"
+  return
+}
+
+// A value's type must be the field's type. Only the first value is reported,
+// because the check stops at the field it could not fill.
+fn wrongType() {
+  imm p = Point[1., 2]   //~ ErrorBadArray:17 "does not match expected field's type"
+  return
+}
+
+// Only the type's own methods may give a private field a value
+struct Guarded {
+  open i32
+  _secret i32 = 0
+}
+
+fn privateField() {
+  imm g = Guarded[1, 2]  //~ ErrorNotTyped:22 "may specify a value for the private field _secret"
+  return
+}

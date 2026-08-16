@@ -1,0 +1,230 @@
+// Raw pointers: how one is created, what may be read and written through it,
+// how it moves, and how two of them compare.
+//
+// Every pointer here addresses a local array, a local struct or a global that
+// this file declares, and every offset stays inside what it addresses. That is
+// deliberate: a raw pointer scenario that runs off its allocation is undefined
+// behavior, and one that crashes asserts nothing.
+//
+// The group's other subject, 'trust', has no coverage because the compiler has
+// no such keyword; see cases.toml. Nothing here is inside a trust block, and
+// dereferencing, indexing and arithmetic all still compile, which is the
+// concrete form that gap takes.
+//
+// Slices belong to 'collection'; only the pointer a slice decays into is
+// claimed here. Structs belong to 'struct'; only reaching a field through a
+// pointer is claimed here.
+
+import stdio::*
+
+fn show(label &[]u8, n i64) {
+  printStr(label)
+  printStr(" = ")
+  printInt(n)
+  printStr("\n")
+}
+
+fn showU(label &[]u8, n u64) {
+  printStr(label)
+  printStr(" = ")
+  printUInt(n)
+  printStr("\n")
+}
+
+fn showB(label &[]u8, b Bool) {
+  show(label, if b {1} else {0})
+}
+
+struct Point {
+  x i32
+  y i32
+}
+
+mut cell i32 = 41
+
+// -------- creating a pointer --------
+
+fn creation() {
+  // A reference coerces to a pointer with the same value type, with no
+  // permission, region or lifetime carried across
+  mut cells [4; i32] = [10, 20, 30, 40]
+  imm p *i32 = &cells[0]
+  show("from-reference", *p)
+
+  // 'as' reinterprets a reference as a pointer explicitly
+  imm q = &cells[3] as *i32
+  show("from-recast-reference", *q)
+
+  // A pointer to a global outlives the function that made it, which is the
+  // whole point: pointers carry no lifetime
+  imm gp *i32 = &cell
+  show("to-global", *gp)
+
+  // A pointer may point at a pointer
+  imm pp **i32 = &gp
+  show("pointer-to-pointer", **pp)
+
+  // A slice decays to a pointer to its first element. 'collection' owns the
+  // slice; what is claimed here is that the pointer arrives usable.
+  mut bytes [3; u8] = [7u8, 8u8, 9u8]
+  imm slice = &[]mut bytes
+  imm bp *u8 = slice
+  showU("from-slice", u64[bp[1]])
+
+  // A pointer recasts to a pointer of another value type and back again
+  imm raw = p as *u8
+  imm back = raw as *i32
+  showB("recast-round-trip", back == p)
+}
+
+// -------- reading and writing through a pointer --------
+
+fn access() {
+  mut cells [4; i32] = [10, 20, 30, 40]
+  mut p *i32 = &cells[0]
+
+  // '*' reads and writes the value pointed at
+  show("deref-read", *p)
+  *p = 11
+  show("deref-write", cells[0])
+
+  // '[]' treats the pointer as the start of an array, with no bounds check
+  show("index-read", p[2])
+  p[2] = 33
+  show("index-write", cells[2])
+
+  // Unlike an array or a slice, a pointer accepts a signed index as well as an
+  // unsigned one
+  mut si i32 = 3
+  mut ui usize = 1
+  show("signed-index", p[si])
+  show("unsigned-index", p[ui])
+
+  // A negative index reaches backwards from where the pointer points
+  mut mid *i32 = p + 2
+  show("negative-index", mid[-1])
+}
+
+// -------- moving a pointer --------
+
+fn arithmetic() {
+  mut cells [4; i32] = [10, 20, 30, 40]
+  mut p *i32 = &cells[0]
+
+  // A step of one moves by one element, not by one byte
+  p++
+  show("post-incr", *p)
+  p--
+  show("post-decr", *p)
+  ++p
+  show("pre-incr", *p)
+  --p
+  show("pre-decr", *p)
+
+  // Postfix yields the pointer as it was, prefix the pointer as it becomes
+  show("postfix-yields-old", *p++)
+  show("prefix-yields-new", *--p)
+
+  // '+' and '-' offset without assigning; '+=' and '-=' offset in place
+  show("plus", *(p + 3))
+  mut q *i32 = p + 3
+  show("minus", *(q - 1))
+  p += 2
+  show("plus-assign", *p)
+  p -= 2
+  show("minus-assign", *p)
+}
+
+// -------- the two candidates of '-' --------
+
+fn difference() {
+  // '-' names two compiler-declared candidates for pointers. Which one a call
+  // selects is decided by the second argument's type, and the two return
+  // different types, so this is what tells them apart.
+  mut cells [4; i32] = [10, 20, 30, 40]
+  imm first *i32 = &cells[0]
+  imm last *i32 = &cells[3]
+
+  // Pointer minus integer offsets, yielding a pointer
+  imm moved = last - 2
+  show("minus-integer-offsets", *moved)
+
+  // Pointer minus pointer yields how many elements apart they are, counted in
+  // elements rather than bytes
+  imm gap = last - first
+  showU("minus-pointer-counts-elements", u64[gap])
+}
+
+// -------- comparing pointers --------
+
+fn comparison() {
+  mut cells [4; i32] = [10, 20, 30, 40]
+  imm first *i32 = &cells[0]
+  imm last *i32 = &cells[3]
+  imm alias *i32 = &cells[0]
+
+  showB("equal", first == alias)
+  showB("not-equal", first != last)
+  showB("less", first < last)
+  showB("less-equal", first <= alias)
+  showB("greater", last > first)
+  showB("greater-equal", last >= alias)
+
+  // A pointer is also a truth value. The compiler offers no way to spell a null
+  // pointer, so only the true side can be established here.
+  showB("truthy", if first {true} else {false})
+  showB("negated", !first)
+}
+
+// -------- pointers to a struct --------
+
+fn structs() {
+  mut pt = Point[3, 4]
+  imm sp *Point = &pt
+
+  // A field is reached through a pointer with no explicit dereference
+  show("field-read", sp.x)
+  sp.y = 9
+  show("field-write", pt.y)
+
+  // Dereferencing a struct pointer yields the whole value
+  imm copy = *sp
+  show("deref-whole-struct", copy.y)
+}
+
+// -------- interaction with control flow --------
+
+fn walk() {
+  // A pointer as a loop variable: the loop condition compares pointers and the
+  // body moves one, which is the ordinary way a pointer is used
+  mut cells [4; i32] = [10, 20, 30, 40]
+  mut p *i32 = &cells[0]
+  imm last *i32 = &cells[3]
+  mut sum = 0
+  while p <= last {
+    sum = sum + *p
+    p++
+  }
+  show("walk-sum", sum)
+
+  // Walking backwards, stopping before the pointer would leave the array
+  mut back *i32 = &cells[3]
+  imm first *i32 = &cells[0]
+  mut trailing = 0
+  while back > first {
+    trailing = trailing + *back
+    back -= 1
+  }
+  show("walk-backwards-sum", trailing)
+}
+
+fn main() i32 {
+  creation()
+  access()
+  arithmetic()
+  difference()
+  comparison()
+  structs()
+  walk()
+  0i32
+}

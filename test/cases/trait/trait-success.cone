@@ -1,0 +1,218 @@
+// What a trait is: a named set of method and field requirements, and the
+// virtual reference that dispatches through them at runtime.
+//
+// Two ways of satisfying a trait are exercised side by side, because they take
+// different paths through the compiler. A type may conform structurally, by
+// simply declaring what the trait requires and never naming it; or nominally,
+// with 'extends', which mixes the trait's fields into the type and inherits any
+// method the trait gave a body to. Only the nominal form gives '&Trait', a
+// plain reference to a base trait; both give '&<Trait', the fat pointer that
+// carries a vtable.
+//
+// Everything is printed, because a virtual call that compiles is not a virtual
+// call that reached the right implementation.
+//
+// Narrowing a virtual reference back to a concrete type is in trait-narrow
+// rather than here: it only works for a type that 'extends', and this file's
+// point is that structural conformance is enough for dispatch.
+
+import stdio::*
+
+fn show(label &[]u8, n i64) {
+  printStr(label)
+  printStr(" = ")
+  printInt(n)
+  printStr("\n")
+}
+
+// -------- structural conformance --------
+
+// A trait declaring one method requirement and naming no implementer.
+trait Shape {
+  fn area(self &) i32
+}
+
+// Rect satisfies Shape with one candidate of an overload set. 'area' is the
+// overload name, so neither declaration is called 'area' and neither could be
+// found by that name directly; the trait requirement still resolves, to the one
+// candidate whose signature it asked for.
+struct Rect {
+  w i32
+  h i32
+
+  fn areaOf overload area(self &) i32 {w * h}
+  fn areaScaled overload area(self &, scale i32) i32 {w * h * scale}
+}
+
+// Circle satisfies it the same way, so the two vtables are built from
+// same-named concrete methods on unrelated types.
+struct Circle {
+  r i32
+
+  fn areaOf overload area(self &) i32 {3 * r * r}
+  fn areaScaled overload area(self &, scale i32) i32 {3 * r * r * scale}
+}
+
+// Square satisfies it with a directly named concrete method. Nothing about the
+// trait distinguishes this case at the call site; the difference is only in
+// which declaration the vtable slot ends up pointing at.
+struct Square {
+  side i32
+
+  fn area(self &) i32 {side * side}
+}
+
+// The single virtual function all three reach.
+fn virtualArea(shape &<Shape) i32 {
+  shape.area()
+}
+
+fn structural() {
+  imm rect = Rect[2, 3]
+  imm circle = Circle[4]
+  imm square = Square[5]
+  show("virtual-dispatch-overload-candidate", virtualArea(&rect))
+  show("virtual-dispatch-other-overload-candidate", virtualArea(&circle))
+  show("virtual-dispatch-concrete-method", virtualArea(&square))
+
+  // The concrete name is still callable directly, and reaches the same code the
+  // vtable slot points at
+  show("concrete-name-called-directly", (&rect).areaOf())
+  show("other-candidate-not-in-vtable", (&rect).areaScaled(10))
+
+  // One virtual reference variable, retargeted to a different concrete type:
+  // the same call site loads a different vtable slot the second time
+  mut v &<Shape = &rect
+  show("virtual-ref-first-target", v.area())
+  v = &square
+  show("virtual-ref-retargeted", v.area())
+}
+
+// -------- nominal conformance with 'extends' --------
+
+// A trait may require fields as well as methods, and may give a method a body,
+// which becomes the default for any type that does not declare its own.
+trait Meter {
+  level i32
+
+  fn reading(self &) i32 {level * 2}
+  fn step(self &mut)
+}
+
+// Gauge takes the default 'reading' and must supply 'step'. 'level' is mixed
+// in by 'extends' rather than declared here, so the constructor's first
+// positional value fills it.
+struct Gauge extends Meter {
+  span i32
+
+  fn step(self &mut) {self.level = self.level + 1}
+}
+
+// Dial declares its own 'reading', which replaces the default in its vtable.
+struct Dial extends Meter {
+  fn reading(self &) i32 {self.level * 100}
+  fn step(self &mut) {self.level = self.level + 10}
+}
+
+// A plain reference to a base trait. This is not a virtual reference: it points
+// at the mixed-in prefix of the concrete value, so it can read the trait's
+// fields but dispatches nothing.
+fn baseLevel(m &Meter) i32 {
+  m.level
+}
+
+// A virtual reference to the same trait, which does dispatch
+fn readingOf(m &<Meter) i32 {
+  m.reading()
+}
+
+fn stepTwice(m &<mut Meter) {
+  m.step()
+  m.step()
+}
+
+// A field requirement is reached through the vtable too, and is writable
+// through a '&<mut' virtual reference. The parameter is 'mut' because the write
+// is checked against the variable holding the reference rather than the
+// reference's own permission; trait-vref-imm-field-write records that as a
+// defect.
+fn setLevel(mut m &<mut Meter, n i32) {
+  m.level = n
+}
+
+fn nominal() {
+  mut g = Gauge[3, 7]
+  mut d = Dial[5]
+
+  show("base-trait-ref-reads-field", baseLevel(&g))
+  show("base-trait-ref-other-type", baseLevel(&d))
+
+  show("inherited-default-method", readingOf(&g))
+  show("overriding-method-replaces-default", readingOf(&d))
+
+  // The mixed-in field is still the type's own field for direct access
+  show("mixed-in-field-direct", g.level)
+  show("own-field-alongside-mixed-in", g.span)
+
+  stepTwice(&mut g)
+  stepTwice(&mut d)
+  show("virtual-mutation-through-vref", g.level)
+  show("virtual-mutation-other-type", d.level)
+
+  setLevel(&mut g, 40)
+  show("virtual-field-written-through-vref", g.level)
+  show("virtual-field-read-through-vref", readingOf(&g))
+}
+
+// -------- a virtual reference as data --------
+
+// A virtual reference is an ordinary value: it can be a struct's field, and the
+// struct then holds one implementation without knowing which.
+struct Slot {
+  held &<Shape
+  uses i32
+}
+
+// The field is only ever set by the constructor: assigning one is rejected, and
+// trait-vref-lval records that as a defect.
+fn storedVirtualRefs() {
+  imm rect = Rect[2, 3]
+  imm square = Square[5]
+  mut v &<Shape = &rect
+  mut first = Slot[v, 1]
+  show("virtual-ref-in-struct-field", first.held.area())
+  v = &square
+  mut second = Slot[v, 2]
+  show("virtual-ref-field-other-target", second.held.area())
+  show("plain-field-alongside-virtual-ref", second.uses)
+}
+
+// -------- interaction with the constructs below this tier --------
+
+// Virtual dispatch chosen by a branch and accumulated in a loop: the
+// intersections where the vtable a call loads has to follow control flow.
+fn interactions() {
+  imm rect = Rect[2, 3]
+  imm square = Square[5]
+
+  mut total = 0
+  mut i = 0
+  while i < 4 {
+    mut v &<Shape = if i % 2 == 0 {&rect} else {&square}
+    total = total + v.area()
+    i++
+  }
+  show("virtual-dispatch-in-loop-summed", total)
+
+  // A virtual reference returned from a branch, then called once
+  imm chosen &<Shape = if true {&square} else {&rect}
+  show("virtual-ref-from-branch", chosen.area())
+}
+
+fn main() i32 {
+  structural()
+  nominal()
+  storedVirtualRefs()
+  interactions()
+  0i32
+}

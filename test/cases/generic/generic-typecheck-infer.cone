@@ -1,0 +1,51 @@
+// Uses of a generic whose type arguments cannot be worked out.
+//
+// Every one of these is a failure of inference: the type arguments are not
+// written, so the compiler has to derive them from the value arguments, and
+// here it cannot. Each result is bound to a local rather than returned, so the
+// return type is not a second thing that could disagree and the file's
+// diagnostics are the generic ones alone.
+//
+// Inference is all this file can cover. The errors in a written-out type
+// argument list -- the wrong number of them, 'max[i64, f64](1i64, 2i64)', or
+// an argument that is not a type, 'pickSecond[i64, 3](...)' -- each report
+// their ErrorManyArgs and then kill the compiler with an access violation,
+// because the null that the failed instantiation returned is type-checked
+// anyway. A crash fails no assertion and cannot be annotated.
+
+fn max[T](x T, y T) T {
+  if x > y {x} else {y}
+}
+
+// A type parameter that appears nowhere in the signature, so no argument can
+// ever tell the compiler what it is.
+fn phantom[T, U](x T) T {
+  x
+}
+
+struct Pair[T] {
+  a T
+  b T
+}
+
+fn tooManyArguments() {
+  // More value arguments than the generic has parameters. The generic path
+  // checks this before instantiating anything, and reports it as ErrorFewArgs
+  // despite the message, so this is not the ordinary call arity check.
+  imm r = max(1i64, 2i64, 3i64)   //~ ErrorFewArgs:14 "generic function"
+}
+
+fn inconsistentInference() {
+  // Both parameters are T, and the two arguments do not agree on what T is
+  imm r = max(1i64, 2.0d)         //~ ErrorInvType:21 "Inconsistent type for generic function"
+}
+
+fn uninferableParameter() {
+  imm r = phantom(1i64)           //~ ErrorInvType:18 "Could not infer all"
+}
+
+fn inconsistentFieldInference() {
+  // The same failure on a generic type, where the type argument is inferred
+  // from the type literal's field values instead of a call's arguments
+  imm p = Pair[a: 1i64, b: 2.0d]  //~ ErrorInvType:26 "Inconsistent type for generic type"
+}

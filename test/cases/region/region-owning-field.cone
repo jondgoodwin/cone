@@ -1,0 +1,39 @@
+// Defect: releasing a region-allocated struct that owns a reference corrupts the
+// heap.
+//
+// genlDealiasFlds in genllvm/genlalloc.c reaches an owning field with a struct
+// GEP, which yields the address of the field, and hands that straight to
+// genlRcCounter or genlDealiasOwn -- both of which expect the reference the
+// field holds, not a pointer to it. The counter it then decrements is whatever
+// sits eight bytes before the field, and the pointer it may free is the field's
+// own address. The run aborts before printing anything.
+//
+// A struct with an owning field is fine on the stack, which is what the success
+// program uses: genlDealiasNodes only walks variables whose own type is an
+// owning reference, so a stack struct's fields are never released at all. The
+// defect needs the struct itself to be region-allocated.
+
+import stdio::*
+
+fn show(label &[]u8, n i64) {
+  printStr(label)
+  printStr(" = ")
+  printInt(n)
+  printStr("\n")
+}
+
+struct Held {
+  r +rc-mut i32
+  n i32
+}
+
+fn f() {
+  mut stack = Held[r: +rc-mut 90, n: 91]
+  imm owned = +so stack
+  show("owning-field-of-allocated-struct", i64[*owned.r])
+}
+
+fn main() i32 {
+  f()
+  0i32
+}

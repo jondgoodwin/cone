@@ -1,0 +1,32 @@
+// Defect: a 'so' reference moved from one variable to another is freed twice.
+//
+// Flow analysis gets this right -- it deactivates the source, which region-flow
+// asserts -- but code generation does not use that result. genlDealiasNodes in
+// genllvm/genlalloc.c walks every variable declared in the block and frees each
+// one whose type is an owning reference, with no notion of a variable whose
+// value was moved out, so both names free the one allocation. The run aborts
+// with a heap corruption before it prints anything.
+//
+// This is the whole reason the success program never lets a 'so' reference land
+// in two variables. Without the defect, single-owner semantics are what the
+// region is for: moving the owner is the ordinary way to pass one along.
+
+import stdio::*
+
+fn show(label &[]u8, n i64) {
+  printStr(label)
+  printStr(" = ")
+  printInt(n)
+  printStr("\n")
+}
+
+fn moves() {
+  imm sole = +so 21
+  imm owner = sole
+  show("so-moved-to-new-owner", i64[*owner])
+}
+
+fn main() i32 {
+  moves()
+  0i32
+}

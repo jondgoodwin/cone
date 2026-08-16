@@ -1,0 +1,146 @@
+# collection - array references and slices: '&[]' over an array, the length a
+# slice carries, indexing and aliasing through one, and a slice as a parameter,
+# a result, a member and a global. Tier 2.
+#
+# Key reference: design/Test Suite.md, "cases.toml keys".
+# The group directory supplies the feature tag, so tags carry pipeline phases.
+#
+# The group's title in the manual is "collection types, array references and
+# slices". There are no collection types. src/c-compiler/corelib/ defines
+# Option, Result, 'so' and 'rc' and nothing else; there is no vector, map, list
+# or string type, and no generic container of any kind. Array references and
+# slices are therefore the whole of this group, and 'slice' and 'array
+# reference' name one thing: the ArrayRefTag type '&[]T', a data pointer and a
+# length carried together. A '&[N; T]' -- a plain reference whose value type is
+# a fixed-size array -- is the other construct here, and it is a different type
+# with different rules; the two are kept apart by name throughout.
+#
+# The fixed-size array itself is array's subject. It appears here only as what a
+# slice is borrowed from. Plain borrowed references and their permissions are
+# ref's, and appear only where the thing borrowed is a slice or an element of
+# one.
+#
+# The failure scenarios split first by pipeline stage and then by sub-family:
+#
+# - The two type-check files ask different questions. collection-typecheck-slice
+#   asks which operations a slice supports at all; collection-typecheck-perm
+#   asks what a well-formed slice is then allowed to do. Together they would be
+#   nine diagnostics, past the three-to-six limit.
+# - collection-flow is separate and is a single function, because whether an
+#   lval may be modified is decided in assignlvalrtype, which runs from
+#   blockFlow. Flow analysis runs per function only while the error count is
+#   zero, so one type-check error anywhere in a file silences every flow
+#   diagnostic in it, and one flow error silences flow for every later function.
+#
+# There is no parse-stage or name-resolution scenario. '&[]' is a single token
+# (lexical proves that) and a malformed slice type produces the generic
+# ErrorBadTerm core already covers; a slice type names only a permission and an
+# element type, both of which resolve like any other name.
+#
+# Left uncovered on purpose:
+#
+# - ErrorBadSlice (1047). Declared in shared/error.h and raised nowhere in the
+#   compiler. There is no source that provokes it.
+# - ErrorBadIndex on a slice -- a signed index, or the wrong number of indices.
+#   Both go through the same fnCallArrIndex checks the array group already
+#   asserts against an array, before the object's type is consulted at all, so
+#   a slice would re-test array's code rather than any slice behavior.
+# - '&[]' applied to something that is not an array or a slice. It is accepted
+#   and produces a one-element slice over that value (see the "a one-element
+#   slice!" branch in ir/exp/borrow.c). Nothing rejects it, so there is no
+#   diagnostic to assert, and asserting the success would pin a behavior no
+#   documentation claims.
+# - A user type's whole-value '&[]' operator method -- 'fn `&[]`(self &mut)
+#   &[]mut i32' as written in test/staging/test.cone. It declares and compiles,
+#   but nothing calls it: '&[]mut value' is the borrow operator, which builds a
+#   one-element slice of the struct rather than dispatching to the method. The
+#   indexed form of the same operator does dispatch, and struct covers it.
+# - An index past the end of a slice. It compiles, and the bounds check that
+#   would catch it aborts the process rather than failing an assertion.
+# - WarnCopy, ErrorNotLval, ErrorAddr, ErrorNoFlds and ErrorBadAlloc all sound
+#   as though a slice might provoke them. All five are dead in the compiler.
+
+support = []
+
+# -------- success --------
+
+[scenario.collection-success]
+category = "run"
+description = "Slices borrowed from arrays: length, indexing, aliasing and slices as values"
+tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+# -------- generated code --------
+
+# A slice's length is a field of the value, not of its type, so the check
+# against it cannot be folded even for a constant index. Asserted here rather
+# than at run time because the check only announces itself by aborting.
+[scenario.collection-bounds-slice]
+category = "compile"
+description = "Indexing a slice is bounds-checked against the length the slice carries"
+tags = ["typecheck", "genllvm"]
+
+[[scenario.collection-bounds-slice.check]]
+name = "slice-index-emits-bounds-check"
+target = "llvmir"
+contains = ["extractvalue { i32*, i64 }", "icmp ult i64 0, %count", "call void @llvm.trap()"]
+
+# The same constant index against an array whose length is in its type folds
+# away entirely. The pair is what makes either claim informative.
+[scenario.collection-bounds-fixed]
+category = "compile"
+description = "Indexing a fixed-size array through a reference needs no run-time check"
+tags = ["typecheck", "genllvm"]
+
+[[scenario.collection-bounds-fixed.check]]
+name = "fixed-array-index-needs-no-bounds-check"
+target = "llvmir"
+excludes = ["call void @llvm.trap()"]
+
+# -------- type check stage --------
+
+[scenario.collection-typecheck-slice]
+category = "reject"
+description = "Operations a slice does not support: dereference, unknown members, calls"
+tags = ["typecheck"]
+diagnostics = 4
+
+[scenario.collection-typecheck-perm]
+category = "reject"
+description = "Permissions a slice cannot obtain or coerce to, and element types it cannot claim"
+tags = ["typecheck"]
+diagnostics = 5
+
+# -------- flow stage --------
+
+[scenario.collection-flow]
+category = "reject"
+description = "Writes through a slice the permission forbids, and re-pointing an immutable one"
+tags = ["flow"]
+diagnostics = 3
+
+# -------- known defects --------
+
+# A write through a '&mut [N; T]' is refused unless the dereference is spelled
+# out, because the indexed-lval permission lookup has no case for a reference
+# whose value type is an array.
+[scenario.collection-arrayref-write]
+category = "compile"
+description = "Assigning an element through a reference to a fixed-size array"
+tags = ["typecheck", "flow"]
+xfail = true
+
+# '==' and '!=' are declared on the array-reference method table with a
+# signature no real slice matches, so no call to them ever selects a candidate.
+[scenario.collection-slice-compare]
+category = "compile"
+description = "Comparing two slices with the operators the compiler declares for them"
+tags = ["typecheck"]
+xfail = true
+
+# The lifetime rule ref-flow asserts for a borrowed reference is not applied to
+# a slice, so a slice may outlive the array it points at.
+[scenario.collection-flow-escape]
+category = "reject"
+description = "Storing a slice where it outlives the array it was borrowed from"
+tags = ["flow"]
+xfail = true

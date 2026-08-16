@@ -1,0 +1,26 @@
+// Defect: a slice may be stored where it outlives the array it points at.
+//
+// ref-flow establishes that the compiler does enforce this rule for a plain
+// borrowed reference, reporting ErrorInvType "lval outlives the borrowed
+// reference you are storing". assignlvalrtype in ir/exp/assign.c reaches that
+// check only when both the lval's type and the rval's type are RefTag, so an
+// ArrayRefTag on either side skips it and the assignment below is accepted.
+//
+// The escape is real: after the block ends, 'escaping' names storage that no
+// longer exists, and a write through it corrupts the frame. The same hole lets
+// a function return a slice borrowed from one of its own locals, which also
+// compiles clean today; that case is not annotated here because no diagnostic
+// has been established for it, and an expectation naming a code the compiler
+// has never produced for that construct would be a guess.
+//
+// xfail: the annotation names what the reference case already produces, so this
+// scenario passes as soon as the check learns about slices.
+
+fn escapingSlice() {
+  mut b [3; i32] = [1, 2, 3]
+  mut escaping = &[]mut b
+  {
+    mut inner [2; i32] = [7, 8]
+    escaping = &[]mut inner   //~ ErrorInvType "lval outlives the borrowed reference you are storing"
+  }
+}

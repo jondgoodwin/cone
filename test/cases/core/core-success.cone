@@ -1,0 +1,503 @@
+// The foundation every other group builds on: variables, number types,
+// operators, blocks, 'if', 'while', functions, tuples and void.
+//
+// Everything is printed, because arithmetic that compiles is not arithmetic
+// that is right. Function overload has its own scenario; so does everything
+// that belongs to another group. Conversions appear only where a number type's
+// own coverage needs them, and typemgmt owns their depth.
+
+import stdio::*
+
+fn show(label &[]u8, n i64) {
+  printStr(label)
+  printStr(" = ")
+  printInt(n)
+  printStr("\n")
+}
+
+fn showU(label &[]u8, n u64) {
+  printStr(label)
+  printStr(" = ")
+  printUInt(n)
+  printStr("\n")
+}
+
+fn showF(label &[]u8, n f64) {
+  printStr(label)
+  printStr(" = ")
+  printFloat(n)
+  printStr("\n")
+}
+
+// -------- global variables --------
+
+// A global may infer its type from its initial value or state it explicitly
+mut counter = 0
+mut total i64 = 100i64
+imm origin = 7
+imm limit i32 = 50
+
+fn globals() {
+  counter = counter + 1
+  total = total + 1
+  show("global-inferred", counter)
+  show("global-typed", total)
+  show("global-imm", origin)
+  show("global-imm-typed", limit)
+}
+
+// -------- local variables --------
+
+fn locals() {
+  // Inferred, explicitly typed, and assigned after declaration
+  mut a = 3
+  mut b i32 = 4
+  imm c = 5
+  mut d i32
+  d = a + b + c
+  show("local-inferred", a)
+  show("local-typed", b)
+  show("local-imm", c)
+  show("local-assigned-later", d)
+
+  // Assignment is an expression, so it chains right to left
+  mut e = 0
+  mut f = 0
+  e = f = 9
+  show("chained-assign-left", e)
+  show("chained-assign-right", f)
+
+  // An inner block has its own scope
+  {
+    mut a = 100
+    show("inner-block-local", a)
+  }
+  show("outer-after-block", a)
+}
+
+// -------- number types --------
+
+fn numbers() {
+  // Every signed width holds its own range. A literal wider than i32 needs its
+  // suffix: an unsuffixed literal is i32 and is truncated to fit, silently.
+  mut i8v i8 = 127
+  mut i16v i16 = 32767
+  mut i32v i32 = 2147483647
+  mut i64v i64 = 9223372036854775807i64
+  mut isizev isize = 42
+  show("i8", i8v)
+  show("i16", i16v)
+  show("i32", i32v)
+  show("i64", i64v)
+  show("isize", isizev)
+
+  // ... and every unsigned width
+  mut u8v u8 = 255
+  mut u16v u16 = 65535
+  mut u32v u32 = 4294967295
+  mut u64v u64 = 18446744073709551615u64
+  mut usizev usize = 42
+  showU("u8", u8v)
+  showU("u16", u16v)
+  showU("u32", u32v)
+  showU("u64", u64v)
+  showU("usize", usizev)
+
+  // Floats keep fractional values; f32 has less precision than f64
+  mut f32v f32 = 0.5
+  mut f64v f64 = 0.1
+  showF("f32", f32v)
+  showF("f64", f64v)
+
+  // A narrower signed value widens into a wider parameter without a cast
+  mut small i16 = 300
+  show("widened-to-i64", small)
+
+  // Bool is its own type, not a number
+  mut flag Bool = true
+  if flag {
+    show("bool-true", 1)
+  }
+
+  // Explicit conversion between number types, which typemgmt owns in depth
+  imm truncated = i32[2.75]
+  show("float-to-int", truncated)
+  showF("int-to-float", f64[7])
+}
+
+// -------- operators --------
+
+fn arithmetic() {
+  mut a = 17
+  mut b = 5
+  show("add", a + b)
+  show("subtract", a - b)
+  show("multiply", a * b)
+  show("divide", a / b)
+  show("remainder", a % b)
+  show("negate", -a)
+
+  // Multiplication binds tighter than addition; parentheses override it
+  show("precedence", 2 + 3 * 4)
+  show("parenthesized", (2 + 3) * 4)
+
+  // Floats use the same operators
+  showF("float-add", 1.5 + 2.25)
+  showF("float-divide", 7.5 / 2.5)
+}
+
+fn bitwise() {
+  mut a = 0x3C
+  mut b = 0x0F
+  show("and", a & b)
+  show("or", a | b)
+  show("xor", a ^ b)
+  show("not", ~a)
+  show("shift-left", a << 2)
+  show("shift-right", a >> 2)
+}
+
+fn comparison() {
+  mut a = 3
+  mut b = 4
+  mut n = 0
+  if a == b { n = n + 1 }
+  if a != b { n = n + 2 }
+  if a < b { n = n + 4 }
+  if a <= b { n = n + 8 }
+  if a > b { n = n + 16 }
+  if a >= b { n = n + 32 }
+  show("comparison-bits", n)
+}
+
+fn logic() {
+  mut t = true
+  mut f = false
+  mut n = 0
+  if t and not f { n = n + 1 }
+  if f or t { n = n + 2 }
+  if !f { n = n + 4 }
+  show("logic-bits", n)
+
+  // 'and' does not evaluate its right side when the left side is false
+  mut sideEffect = 0
+  if f and bump(&mut sideEffect) { sideEffect = sideEffect + 100 }
+  show("and-short-circuits", sideEffect)
+
+  // 'or' does not evaluate its right side when the left side is true
+  mut other = 0
+  if t or bump(&mut other) { other = other + 1 }
+  show("or-short-circuits", other)
+
+  // '!' is not restricted to Bool: a non-Bool operand is coerced to Bool
+  // first, so a nonzero number is true and zero is false
+  mut five = 5
+  mut zero = 0
+  mut notBits = 0
+  if !five { notBits = notBits + 1 }
+  if !zero { notBits = notBits + 2 }
+  show("not-on-number", notBits)
+
+  // '!' binds looser than a comparison, so this negates the comparison rather
+  // than its left operand: it means !(five > 50), not (!five) > 50
+  mut looser = 0
+  if !five > 50 { looser = 1 }
+  show("not-binds-looser-than-compare", looser)
+
+  // A comparison and a negated comparison combine in one 'and' chain
+  mut chained = 0
+  if five > 1 and !five > 50 { chained = 1 }
+  show("and-with-negated-compare", chained)
+}
+
+fn bump(n &mut i32) Bool {
+  *n = *n + 1
+  true
+}
+
+fn opassign() {
+  mut n = 20
+  n += 5
+  show("plus-eq", n)
+  n -= 3
+  show("minus-eq", n)
+  n *= 2
+  show("mult-eq", n)
+  n /= 4
+  show("div-eq", n)
+  n %= 7
+  show("rem-eq", n)
+
+  mut bits = 0x3C
+  bits &= 0x0F
+  show("and-eq", bits)
+  bits |= 0x30
+  show("or-eq", bits)
+  bits ^= 0xFF
+  show("xor-eq", bits)
+  bits <<= 1
+  show("shl-eq", bits)
+  // The counterpart shift, whose value is what distinguishes it from the token
+  // check in 'lexical': 390 is 0x186, and shifting it right twice gives 0x61
+  bits >>= 2
+  show("shr-eq", bits)
+}
+
+fn incrdecr() {
+  mut n = 10
+  n++
+  show("postfix-incr", n)
+  n--
+  show("postfix-decr", n)
+  ++n
+  show("prefix-incr", n)
+  --n
+  show("prefix-decr", n)
+}
+
+// -------- blocks as expressions --------
+
+fn blocks() {
+  // A block's value is the value of its last statement
+  imm fromBlock = {
+    mut a = 6
+    a * 7
+  }
+  show("block-value", fromBlock)
+
+  // Blocks nest, and the inner one's value is the outer one's value
+  imm nested = {
+    {
+      3 + 4
+    }
+  }
+  show("nested-block-value", nested)
+}
+
+// -------- if --------
+
+fn conditionals() {
+  mut n = 2
+
+  // As a statement, with all three clause spellings
+  mut branch = 0
+  if n == 1 {
+    branch = 1
+  }
+  elif n == 2 {
+    branch = 2
+  }
+  else {
+    branch = 3
+  }
+  show("elif-taken", branch)
+
+  // 'else if' means the same thing as 'elif'
+  mut branch2 = 0
+  if n == 1 {
+    branch2 = 1
+  }
+  else if n == 2 {
+    branch2 = 2
+  }
+  else {
+    branch2 = 3
+  }
+  show("else-if-taken", branch2)
+
+  // As an expression, where every branch supplies a value
+  imm chosen = if n > 0 {10} else {20}
+  show("if-expression", chosen)
+
+  // An 'if' with no matching branch and no else runs nothing
+  mut untouched = 5
+  if n == 99 {
+    untouched = 0
+  }
+  show("if-not-taken", untouched)
+}
+
+// -------- while, break, continue --------
+
+fn loops() {
+  // A conditional loop
+  mut sum = 0
+  mut i = 1
+  while i <= 5 {
+    sum = sum + i
+    i++
+  }
+  show("while-sum", sum)
+
+  // 'break' leaves the loop early
+  mut found = 0
+  mut j = 0
+  while j < 100 {
+    if j == 7 {
+      found = j
+      break
+    }
+    j++
+  }
+  show("break-at", found)
+
+  // 'continue' skips the rest of this iteration
+  mut odds = 0
+  mut k = 0
+  while k < 10 {
+    k++
+    if k % 2 == 0 {
+      continue
+    }
+    odds = odds + k
+  }
+  show("continue-skips-evens", odds)
+
+  // A loop with no condition is an expression, and 'break' supplies its value
+  mut m = 0
+  imm produced = while {
+    m++
+    if m == 4 {
+      break m * 10
+    }
+  }
+  show("loop-expression-value", produced)
+
+  // A lifetime label lets 'break' leave an outer loop from an inner one
+  mut escaped = 0
+  'outer: while {
+    mut p = 0
+    while p < 10 {
+      p++
+      if p == 3 {
+        escaped = p
+        break 'outer
+      }
+    }
+  }
+  show("labeled-break", escaped)
+
+  // A labeled 'break' may carry a value too, and the two loops here take their
+  // values from two different breaks: the labeled one supplies the outer
+  // loop's value from inside the inner loop, while the unlabeled one supplies
+  // the inner loop's value on every iteration that does not escape.
+  mut n = 0
+  mut innerTotal = 0
+  imm outerValue = 'esc: while {
+    n++
+    imm doubled = while {
+      if n >= 4 {
+        break 'esc n * 100
+      }
+      if n < 4 {
+        break n * 2
+      }
+    }
+    innerTotal = innerTotal + doubled
+  }
+  show("labeled-break-value", outerValue)
+  show("inner-break-total", innerTotal)
+}
+
+// -------- functions --------
+
+fn twice(n i32) i32 {
+  n * 2
+}
+
+// The last expression is the return value; 'return' says so explicitly
+fn signOf(n i32) i32 {
+  if n < 0 {
+    return -1
+  }
+  if n > 0 {
+    return 1
+  }
+  0
+}
+
+// A parameter may declare a default, which later parameters must also do
+fn addStep(n i32, step i32 = 1) i32 {
+  n + step
+}
+
+// A function with no declared return type returns void
+fn recordIt(n i32) {
+  counter = counter + n
+}
+
+// Several return values are a tuple
+fn minmax(a i32, b i32) i32, i32 {
+  if a < b {
+    return a, b
+  }
+  b, a
+}
+
+fn factorial(n i32) i32 {
+  if n <= 1 {
+    return 1
+  }
+  n * factorial(n - 1)
+}
+
+fn inlined(n i32) i32 inline {
+  n + 1
+}
+
+fn functions() {
+  show("call", twice(21))
+  show("return-negative", signOf(-5))
+  show("return-positive", signOf(5))
+  show("return-fallthrough", signOf(0))
+  show("default-parm-omitted", addStep(10))
+  show("default-parm-given", addStep(10, 5))
+  show("recursion", factorial(5))
+  show("inline-call", inlined(41))
+
+  // A void call is a statement, not a value
+  counter = 0
+  recordIt(3)
+  show("void-call-effect", counter)
+}
+
+// -------- tuples --------
+
+fn tuples() {
+  // Several values assigned in one statement
+  mut a = 1
+  mut b = 2
+  a, b = b, a
+  show("tuple-swap-a", a)
+  show("tuple-swap-b", b)
+
+  // A tuple-typed variable, and access to its elements by position
+  mut pair (i32, i32) = minmax(9, 4)
+  show("tuple-element-0", pair.0)
+  show("tuple-element-1", pair.1)
+
+  // Several return values received into separate variables
+  mut lo i32
+  mut hi i32
+  lo, hi = minmax(12, 3)
+  show("multi-return-lo", lo)
+  show("multi-return-hi", hi)
+}
+
+fn main() i32 {
+  globals()
+  locals()
+  numbers()
+  arithmetic()
+  bitwise()
+  comparison()
+  logic()
+  opassign()
+  incrdecr()
+  blocks()
+  conditionals()
+  loops()
+  functions()
+  tuples()
+  0i32
+}

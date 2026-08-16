@@ -10,3 +10,4 @@ is needed rather than loading the whole folder.
 | [IR Nodes](IR%20Nodes.md) | Overview of compiler IR node groups, the major node tags used across semantic passes, and the common source-location and node metadata fields. |
 | [Names and Namespaces](Names%20and%20Namespaces.md) | Current and intended rules for names, lexical scopes, module and type namespaces, lookup, visibility, imports, aliases, overloading, and a source-code manifest for the implementation. |
 | [Return](Return.md) | Focused notes for the `return` statement IR node, including its expression payload and placement restriction. |
+| [Test Suite](Test%20Suite.md) | Operational guide for adding or updating test coverage: the 17 test groups and what each owns, choosing the scenario to change, writing test sources, what to assert, and updating expectations. |

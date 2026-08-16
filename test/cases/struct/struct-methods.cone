@@ -1,0 +1,331 @@
+// What a struct can declare besides fields: methods, static functions,
+// overloaded methods, operator methods and a finalizer.
+//
+// Every method is called and what it computed is printed, because which
+// declaration a call reached is invisible in the source. That matters most for
+// an overload set, where the receiver's form -- a value, a '&' reference, a
+// '&mut' reference -- is what separates one candidate from another, and for the
+// operator methods, where the call site never names the method at all.
+//
+// A method that takes a reference receiver must be given one. The compiler
+// does not borrow the receiver for the caller, so '(&mut c).bump()' is written
+// out; '&c.bump()' would mean '(&c).bump()' only by accident of precedence,
+// since '&' binds to the name and not to the field or method after the '.'.
+//
+// Fields, construction and copying are in struct-success. Function overload is
+// core's; this file covers only what changes when the candidates are methods.
+
+import stdio::*
+
+fn show(label &[]u8, n i64) {
+  printStr(label)
+  printStr(" = ")
+  printInt(n)
+  printStr("\n")
+}
+
+// -------- receivers --------
+
+struct Counter {
+  n i32
+
+  // A value receiver gets a copy, so it cannot change the caller's value
+  fn peek(self) i32 {
+    n
+  }
+
+  // A '&' receiver reads the caller's value in place
+  fn read(self &) i32 {
+    n
+  }
+
+  // A '&mut' receiver changes it
+  fn bump(self &mut) {
+    n = n + 1
+  }
+
+  // A field is reached by bare name inside a method, and 'self' names the
+  // whole receiver where the field name alone will not do
+  fn compare(self, other Counter) i32 {
+    self.n - other.n
+  }
+
+  // A method may default a trailing parameter, exactly as a function may
+  fn scaled(self, factor i32 = 3) i32 {
+    n * factor
+  }
+
+  // 'Self' names the type being declared
+  fn twin(self) Self {
+    Self[n * 2]
+  }
+}
+
+fn receivers() {
+  mut c = Counter[10]
+  show("value-receiver", c.peek())
+  show("ref-receiver", (&c).read())
+  (&mut c).bump()
+  show("mut-ref-receiver", c.peek())
+  show("self-and-other", c.compare(Counter[4]))
+  show("default-parm-omitted", c.scaled())
+  show("default-parm-given", c.scaled(10))
+  show("Self-return", c.twin().n)
+
+  // A value receiver really did get a copy
+  mut d = Counter[1]
+  imm ignored = d.peek()
+  show("value-receiver-copies", d.n)
+}
+
+// -------- privacy --------
+
+// A field or method whose name begins with '_' is reachable only from inside
+// the type's own methods
+struct Account {
+  _balance i32 = 0
+  owner i32
+
+  fn _fee(self &) i32 {
+    2
+  }
+
+  fn deposit(self &mut, amount i32) {
+    _balance = _balance + amount - _fee()
+  }
+
+  fn balance(self) i32 {
+    _balance
+  }
+
+  // Only a method may give a private field a value in a constructor
+  fn opened(who i32, start i32) Account {
+    Account[start, who]
+  }
+}
+
+fn privacy() {
+  mut a = Account::opened(5, 100)
+  (&mut a).deposit(50)
+  show("private-field-via-method", a.balance())
+  show("public-field", a.owner)
+}
+
+// -------- static functions in a type --------
+
+// A function declared inside a type without a 'self' parameter is a function,
+// not a method: it is called through the type's name rather than on a value.
+// Overload names work there the same way they do at module level.
+struct Maker {
+  seed i32
+
+  fn fromInt overload make(n i32) Maker {
+    Maker[n]
+  }
+
+  fn fromFloat overload make(n f32) Maker {
+    Maker[i32[n] + 100]
+  }
+}
+
+fn statics() {
+  show("static-overload-int", Maker::make(3i32).seed)
+  show("static-overload-float", Maker::make(4.5f).seed)
+  show("static-concrete-name", Maker::fromInt(6i32).seed)
+}
+
+// -------- overloaded methods --------
+
+// One overload name across three candidates that differ only in how they take
+// the receiver and whether they take a second value
+struct Pair {
+  a i32
+  b i32
+
+  fn sumValue overload sum(self) i32 {
+    a + b
+  }
+
+  fn sumRef overload sum(self &) i32 {
+    a - b
+  }
+
+  fn sumOther overload sum(self, other Pair) i32 {
+    self.a + other.a
+  }
+}
+
+// Selection also has to work when the candidates differ by argument type, with
+// one match exact and the other reached by widening
+struct Scaler {
+  base i32
+
+  fn scaleWide overload scale(self, factor f64) f64 {
+    f64[base] * factor
+  }
+
+  fn scaleCount overload scale(self, count i32, step i32 = 2) i32 {
+    count * step + base
+  }
+}
+
+fn overloads() {
+  mut p = Pair[10, 3]
+  show("overload-value-receiver", p.sum())
+  show("overload-ref-receiver", (&p).sum())
+  show("overload-extra-parm", p.sum(Pair[5, 0]))
+  // A candidate keeps its own name and may be called without any selection
+  show("overload-concrete-name", p.sumValue())
+
+  imm s = Scaler[7]
+  // f32 widens to the f64 parameter, and no other candidate takes a float
+  show("overload-widened-arg", i64[s.scale(2.5f)])
+  // Only the i32 candidate takes an integer, and it supplies its own default
+  show("overload-default-parm", s.scale(4i32))
+  show("overload-default-given", s.scale(4i32, 3i32))
+}
+
+// -------- operator methods --------
+
+// An operator is a method under a backquoted name, so it may be overloaded and
+// called by its concrete name like any other
+struct Vec {
+  x i32
+  y i32
+
+  fn addVec overload `+`(self, other Vec) Vec {
+    Vec[x + other.x, y + other.y]
+  }
+
+  fn addScalar overload `+`(self, amount i32) Vec {
+    Vec[x + amount, y + amount]
+  }
+
+  fn `-`(self) Vec {
+    Vec[-x, -y]
+  }
+
+  fn `+=`(self &mut, other Vec) Vec {
+    x = x + other.x
+    y = y + other.y
+    *self
+  }
+
+  fn `==`(self, other Vec) Bool {
+    x == other.x and y == other.y
+  }
+
+  fn `()`(self) i32 {
+    x - y
+  }
+
+  fn `[]`(self, index usize) i32 {
+    if index == 0usize {x} else {y}
+  }
+}
+
+fn operators() {
+  mut v = Vec[1, 2]
+  imm w = Vec[10, 20]
+
+  imm sum = v + w
+  show("operator-add-struct", sum.x)
+  imm bumped = v + 5
+  show("operator-add-scalar", bumped.y)
+  show("operator-concrete-name", v.addVec(w).y)
+
+  imm negated = -w
+  show("operator-negate", negated.x)
+
+  v += w
+  show("operator-plus-equals", v.x)
+
+  if w == Vec[10, 20] {
+    show("operator-equals", 1)
+  }
+  if not (w == v) {
+    show("operator-not-equals", 1)
+  }
+
+  show("operator-call", v())
+  show("operator-index-0", v[0usize])
+  show("operator-index-1", v[1usize])
+}
+
+// A type may give '&[]' its own meaning, both as an indexed borrow and as a
+// whole-value borrow producing a slice
+struct List {
+  mut items [4; i32]
+
+  fn `[]`(self, index usize) i32 {
+    items[index]
+  }
+
+  fn `&[]`(self &mut, index usize) &mut i32 {
+    &mut items[index]
+  }
+}
+
+fn indexing() {
+  mut list = List[items: [1, 5, 2, 8]]
+  show("index-method", list[3usize])
+  imm slot = &mut list[1usize]
+  *slot = 50
+  show("borrow-index-method", list[1usize])
+}
+
+// -------- finalizers --------
+
+// A finalizer runs when the value it belongs to is destroyed. Both are counted
+// in a global, because nothing the finalizer does is visible any other way.
+mut finalized = 0
+
+struct Resource {
+  id i32
+
+  fn final(self &uni) {
+    finalized = finalized + 1
+  }
+}
+
+// A struct whose field has a finalizer gets one built for it, which runs the
+// type's own finalizer first and then the field's
+struct Bundle {
+  held Resource
+  label i32
+
+  fn final(self &uni) {
+    finalized = finalized + 100
+  }
+}
+
+fn scoped() {
+  mut r = Resource[1]
+  return
+}
+
+fn nested() {
+  mut b = Bundle[Resource[2], 3]
+  return
+}
+
+fn finalizers() {
+  finalized = 0
+  scoped()
+  show("finalizer-ran", finalized)
+
+  finalized = 0
+  nested()
+  show("finalizer-and-field-ran", finalized)
+}
+
+fn main() i32 {
+  receivers()
+  privacy()
+  statics()
+  overloads()
+  operators()
+  indexing()
+  finalizers()
+  0i32
+}

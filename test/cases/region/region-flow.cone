@@ -1,0 +1,40 @@
+// An owning reference is a move type when it cannot be aliased, and its
+// permission governs writes through it exactly as a borrowed reference's does.
+//
+// 'move' establishes the five ways a type acquires move semantics and leaves
+// this one here: ir/types/reference.c:45 infects a reference type when its
+// permission lacks MayAlias or its region is itself a move type. A borrow can
+// reach neither -- '&uni' is rejected outright -- so an owning region is the
+// only way to build a reference that moves, which makes this the group's.
+//
+// Every diagnostic is in one function on purpose. Data-flow analysis runs per
+// function and only while the error count is zero (ir/stmt/fndcl.c:181), so the
+// first function to raise one silences flow analysis for every later function
+// in the file; a second function here would assert nothing.
+
+fn moving() {
+  // 'so' is declared 'struct @move' in corelib, so every reference into it is a
+  // move type however aliasable its permission: the second read of the source
+  // finds nothing there
+  imm sole = +so 1
+  imm moved = sole
+  imm again = sole             //~ ErrorMove "has been moved out"
+
+  // The other path to the same place: an allocation with no stated permission is
+  // 'uni', which lacks MayAlias, so an 'rc' reference moves too even though the
+  // region counts references
+  imm unique = +rc 2
+  imm taken = unique
+  imm twice = unique           //~ ErrorMove "has been moved out"
+
+  // For contrast, the aliasable permission on the same region copies, and the
+  // source is still there. Two reads of it raise nothing.
+  imm shared = +rc-mut 3
+  imm copy1 = shared
+  imm copy2 = shared
+
+  // The permission belongs to the reference, so a 'ro' allocation may not be
+  // written through any more than a 'ro' borrow may
+  imm readonly = +rc-ro 4
+  *readonly = 5                //~ ErrorNoMut "permission to modify lval"
+}

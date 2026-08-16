@@ -1,0 +1,87 @@
+# typemgmt - conversion and coercion, typedef and extend. Tier 2.
+#
+# Key reference: design/Test Suite.md, "cases.toml keys".
+# The group directory supplies the feature tag, so tags carry pipeline phases.
+#
+# The subject is the moment a value changes type. 'core' owns the number types
+# themselves; nothing here exists to show that i32 has a range. What is pinned
+# here is which changes of type happen implicitly, which have to be asked for,
+# which are refused, and what arithmetic each one performs.
+#
+# Every reject scenario is type-check stage: the two cast operators and the
+# constructor form of conversion are the only surface syntax this group adds,
+# and neither has a parse-stage failure worth pinning (see below). They are
+# split by what reports the diagnostic, because the four paths are four
+# different pieces of the compiler and a change to one should not have to be
+# read out of a file covering the others:
+#
+#   -convert   the 'Type[value]' constructor form, reported by the type literal
+#   -cast      'as' and 'into', reported by the cast node
+#   -coerce    implicit coercion into a declared type, reported at the receiver
+#   -meet      contexts that must find one type for several values
+#
+# 'typedef' is covered in typemgmt-success rather than in a scenario of its own.
+# It has no failure of its own to pin -- an alias is the type it names, so
+# every way of misusing one is a misuse of that type, already covered by the
+# reject scenarios above. Until itypeGetTypeDcl was fixed to resolve a
+# TypedefTag rather than return its unresolved typeval, any use of an alias as a
+# type crashed LLVM generation, which is why this group excluded the feature
+# entirely; the success scenario now uses an alias as a global, a parameter, a
+# return type, a local and a reference's referent.
+#
+# Left out, with reasons:
+#
+# - 'extend' is not implemented. There is no 'extend' keyword; only 'extends',
+#   which is trait inheritance and belongs to 'trait'. The reference manual says
+#   as much on its own page.
+#
+# - 'as' and 'into' with the type omitted produce no parse error. The missing
+#   type silently becomes the unknown type and surfaces later as a confusing
+#   type-check message, one of them with a bogus 'init:1:1' location. A
+#   construct that silently parses as something else asserts nothing, so it is
+#   excluded rather than marked xfail.
+#
+# - An integer literal wider than i32 is silently truncated: 'mut n i64 =
+#   9223372036854775807' yields -1 with no diagnostic. This is a defect awaiting
+#   a diagnostic, and a scenario asserting the truncated value would pin the bug
+#   as intended behavior, so there is none. The success scenario writes the
+#   suffix everywhere a literal exceeds i32.
+#
+# - The float-literal counterpart is asserted rather than excluded, because it
+#   is a settled rule and not a defect: an unsuffixed float literal is f32, so a
+#   value needing f64 precision needs the 'd' suffix.
+
+support = []
+
+# -------- success --------
+
+[scenario.typemgmt-success]
+category = "run"
+description = "Coercion, conversion and reinterpretation, and the value each one produces"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# -------- type check stage --------
+
+[scenario.typemgmt-typecheck-convert]
+category = "reject"
+description = "Conversions in the 'Type[value]' form that cannot be built"
+tags = ["typecheck"]
+diagnostics = 3
+
+[scenario.typemgmt-typecheck-cast]
+category = "reject"
+description = "'as' and 'into' applied where no reinterpretation or conversion exists"
+tags = ["typecheck"]
+diagnostics = 3
+
+[scenario.typemgmt-typecheck-coerce]
+category = "reject"
+description = "Number coercions that do not happen implicitly"
+tags = ["typecheck"]
+diagnostics = 5
+
+[scenario.typemgmt-typecheck-meet]
+category = "reject"
+description = "Branches and operands with no type they both reach"
+tags = ["typecheck"]
+diagnostics = 3

@@ -1,0 +1,58 @@
+// Permissions a borrowed reference cannot obtain, and cannot coerce to.
+//
+// Type-check stage only: this file parses and resolves cleanly. It holds no
+// flow-stage expectation, because data-flow analysis is skipped for every
+// function once any error has been reported, so a flow diagnostic sharing a
+// file with a type-check one never runs. Those live in ref-flow.
+//
+// The rule under test is permMatches: a borrow may ask for the permission its
+// source already has, for 'ro' from any of 'mut'/'imm'/'uni', for any shared
+// permission from 'uni', and for 'opaq' from anything. Every other pairing is
+// an error. The rows starting from 'uni' are not exercised here, because a
+// plain variable never holds that permission.
+
+fn writes(n &mut i32) { }
+fn sharesAcrossThreads(n &imm i32) { }
+
+// A mutable reference may not be borrowed from an immutable variable, which is
+// the rule that keeps 'imm' meaning what it says
+fn mutFromImm() {
+  imm settled = 3
+  imm r = &mut settled   //~ ErrorBadPerm:11 "Borrowed reference cannot obtain this permission"
+}
+
+// Nor an immutable reference from a mutable variable: 'imm' promises no other
+// reference can change the value, and the variable itself still can
+fn immFromMut() {
+  mut changing = 3
+  imm r = &imm changing  //~ ErrorBadPerm:11 "Borrowed reference cannot obtain this permission"
+}
+
+// An operator-assignment borrows a mutable reference to its lval before it
+// calls the operator method, so it fails the same rule -- reported by the
+// auto-borrow path, with its own wording
+fn autoBorrowFromImm() {
+  imm settled = 3
+  settled += 1           //~ ErrorBadPerm:3 "Cannot borrow mutable reference to this"
+}
+
+// 'opaq' is the widest permission to borrow and the narrowest to hold, so it
+// coerces to nothing
+fn opaqToRo() {
+  mut n = 3
+  imm hidden = &opaq n
+  imm readable &i32 = hidden  //~ ErrorInvType:23 "Initialization value's type does not match variable's declared type"
+}
+
+// A reading reference does not become a writing one at a call
+fn roArgToMutParm() {
+  mut n = 3
+  writes(&n)             //~ ErrorInvType:10 "Expression's type does not match declared parameter"
+}
+
+// ... and a 'mut' reference does not become an 'imm' one. Coercion runs only
+// towards 'ro' and 'opaq', never towards a stronger promise.
+fn mutArgToImmParm() {
+  mut n = 3
+  sharesAcrossThreads(&mut n)  //~ ErrorInvType:23 "Expression's type does not match declared parameter"
+}

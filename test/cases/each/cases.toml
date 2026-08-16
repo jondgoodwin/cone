@@ -1,0 +1,79 @@
+# each - the 'each' statement and iteration. Tier 2.
+#
+# Key reference: design/Test Suite.md, "cases.toml keys".
+# The group directory supplies the feature tag, so tags carry pipeline phases.
+#
+# 'while', 'break' and 'continue' belong to core and are covered there. What is
+# here is 'each' itself: its header syntax, what it may iterate, how the loop
+# variable is bound and scoped, and how a 'break' behaves inside one.
+#
+# The failure scenarios are split by pipeline stage. That split is not cosmetic
+# here: 'each' is a parser rewrite, so a header the parser cannot read produces
+# no loop at all and nothing downstream ever sees it.
+#
+# Left uncovered on purpose:
+#
+# - Iterating anything that is not a range. conesite/public/coneref/refeach.html
+#   documents a collection iterator ('each x in [4, 3, 8, 2]'), an index-and-
+#   value form ('each i, x in slice') and a closure iterator, and its own note
+#   at the top says only the numeric range operators are implemented. The
+#   compiler agrees, but it does not say so: parseEach builds a wrapping block,
+#   fills it only on the range path, and returns it empty otherwise, so the loop
+#   and its body are silently discarded. The empty block then has a null
+#   statement list, and the first analysis pass over it dies with an access
+#   violation. 'each x in a', 'each x in [1, 2]' and 'each x in 7' all crash the
+#   compiler. Not an xfail, because a process death fails no assertion. The
+#   index-and-value form is the one shape that fails cleanly -- the parser wants
+#   'in' where the comma is -- and it is covered in each-parse.cone as
+#   ErrorBadTok.
+# - 'continue' inside an 'each'. It compiles, and the program then never
+#   terminates. The rewrite puts the increment at the end of the loop body, so
+#   'continue' jumps over it and the loop variable stops advancing. Excluded
+#   rather than marked xfail: the runner would have to hang to observe it.
+# - The '...' and '..' range operators the manual's examples use. They are not
+#   the operators parseEach looks for, so they would take the silent-discard
+#   path above.
+# - An LLVM IR check. The rewrite produces no symbol of its own -- no iterator
+#   object, no call to an 'iter' method -- so there is nothing in the IR that
+#   the printed arithmetic does not already establish.
+#
+# ErrorNoLoop is core's for 'break' outside a loop; the instance claimed here is
+# the other site that raises it, an 'each' in expression position, and it is the
+# only one of the two whose message names 'each'.
+
+support = []
+
+# -------- success --------
+
+[scenario.each-success]
+category = "run"
+description = "Range iteration: the four operators, 'by', loop variable scope and 'break'"
+tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+# -------- parse stage --------
+
+[scenario.each-parse]
+category = "reject"
+description = "'each' headers the parser cannot turn into a loop"
+tags = ["parse"]
+diagnostics = 6
+
+[[scenario.each-parse.unlocated]]
+code = "ErrorNoLoop"
+message = "each may not be used as an expression"
+
+# -------- name resolution stage --------
+
+[scenario.each-nameres]
+category = "reject"
+description = "The loop variable named outside the scope 'each' gives it"
+tags = ["nameres"]
+diagnostics = 2
+
+# -------- type check stage --------
+
+[scenario.each-typecheck]
+category = "reject"
+description = "Range bounds, element types and 'by' steps that do not agree"
+tags = ["typecheck"]
+diagnostics = 4

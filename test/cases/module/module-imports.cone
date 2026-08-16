@@ -1,0 +1,30 @@
+// A wildcard import folding another module's names into this one, and what
+// LLVM generation must emit for each of them.
+//
+// This is a regression scenario. Selecting the private candidate of an imported
+// public overload name crashed LLVM generation with an access violation until
+// commit 34ca637: the program's privacy filter skips a private declaration in a
+// module whose bodies this compile does not generate, on the assumption that
+// nothing outside that module can reach it, and an overload name breaks the
+// assumption. So this file's whole assertion is that it compiles at all, which
+// is why it needs no diagnostics and no output to be worth having.
+//
+// It compiles rather than runs because the imported module's bodies are never
+// generated here, so there is nothing to link the calls against. The symbol
+// checks in cases.toml carry what running it would otherwise have shown.
+//
+// The imported module is modulesub.cone.
+
+import modulesub::*
+
+fn imports() i64 {
+  // Selects the public candidate through the overload name
+  imm doubled = scale(21i64)
+  // Selects the private candidate through the public overload name. The caller
+  // never looks up the private concrete spelling, so this is allowed, and
+  // generation must still emit a symbol for it.
+  imm halved = scale(1.5d)
+  // A public concrete name stays directly callable across the import
+  imm bumped = plain(7i64)
+  doubled + bumped + i64[halved]
+}

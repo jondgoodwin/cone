@@ -1,0 +1,141 @@
+# region - owning references, region strategies, lock permissions and weak
+# references. Tier 2.
+#
+# Key reference: design/Test Suite.md, "cases.toml keys".
+# The group directory supplies the feature tag, so tags carry pipeline phases.
+#
+# Two regions exist, both declared in corelib.c: 'rc', which carries a count and
+# frees at zero, and 'so', which is 'struct @move' and is freed by its single
+# owner. Neither is privileged -- a region is a struct with an '_alloc' method
+# returning '*u8', so region-success declares a third -- and that is what the
+# type-check scenarios are about.
+#
+# The failure scenarios split first by pipeline stage. Within the type-check
+# stage they split again by which check raised the message, because the three
+# families ask different questions and would otherwise be twelve diagnostics in
+# one file:
+#
+# - region-typecheck-alloc asks what the allocation expression itself may say:
+#   what may be allocated, and what may stand in the region slot.
+# - region-typecheck-region asks what the named region must have declared for
+#   allocation to be possible at all: its '_alloc' method.
+# - region-typecheck-init asks the same about the optional 'init' method, for a
+#   region and for a permission.
+#
+# region-flow is a single function, because data-flow analysis runs per function
+# and only while the error count is zero (ir/stmt/fndcl.c:181): the first
+# function to raise a flow diagnostic silences flow analysis for every later one
+# in the file.
+#
+# Left out deliberately:
+#
+# - Weak references. Not implemented and not partially implemented: 'weak'
+#   appears nowhere in the compiler, in any spelling or case. There is no syntax
+#   for the '.weak' the manual describes and no runtime notion of a non-owning
+#   count. coneref/refweakref.html opens by saying none of it is implemented.
+# - Lock permissions. There are none, which coneref/refpermlock.html also says
+#   outright. The six permissions in corelib.c are all static, and the flag that
+#   would distinguish a locked one -- IsLockless in ir/types/permission.h -- is
+#   set on every one of them and read nowhere. What does exist is the shape a
+#   lock permission would need: a struct is accepted in the permission slot,
+#   permInitTypeCheck validates its 'init' method, and genlalloc.c calls that
+#   method when allocating. region-typecheck-init asserts the validation, which
+#   is all of it that can be provoked. A struct permission otherwise has
+#   undefined static meaning, because permGetFlags reads a PermTag node's flag
+#   word out of whatever it is handed.
+# - Fallible allocation, '?+rc-mut value'. The parser and name resolution lower
+#   it into Option, and then the compiler dies on an access violation before
+#   emitting anything. coneref/refallocref.html already says allocation error
+#   handling is the unimplemented part; an xfail here would record a crash
+#   rather than a defect in a feature that otherwise works.
+# - Array allocation, '+[]'. Array references and slices belong to collection.
+# - Virtual owning references, '+<'. They belong to trait.
+# - ErrorBadAlloc (1036), "Missing valid alloc methods", which sounds like this
+#   group's and is dead: ir/types/region.c raises every allocator complaint as
+#   ErrorInvType, and no site anywhere raises 1036.
+# - A global holding an owning reference. A global may only be initialized with
+#   a literal, so 'mut g = +rc-mut 80' is ErrorNotLit -- a fact about global
+#   initialization, which core owns, rather than about regions.
+#
+# The five xfail scenarios each name one defect in their header comment. Four are
+# code generation ignoring what the earlier phases decided, and the fifth is a
+# coercion rule that reads backwards; together they are why region-success keeps
+# an owning reference in one variable, allocates a struct's owning field before
+# the literal that names it, and reaches a borrow through '&*r'.
+
+support = []
+
+# -------- success --------
+
+[scenario.region-success]
+category = "run"
+description = "Allocating in a region, reference counting, single ownership, permissions, and owning references through fields, calls and branches"
+tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+# -------- known defects --------
+
+[scenario.region-so-move]
+category = "run"
+description = "Moving a 'so' reference between variables frees it twice"
+tags = ["genllvm", "runtime"]
+xfail = true
+
+[scenario.region-owning-field]
+category = "run"
+description = "Releasing a region-allocated struct that owns a reference corrupts the heap"
+tags = ["genllvm", "runtime"]
+xfail = true
+
+[scenario.region-uninit-owning]
+category = "run"
+description = "Assigning to an owning-reference variable declared without an initial value releases uninitialized storage"
+tags = ["genllvm", "runtime"]
+xfail = true
+
+[scenario.region-nested-alloc]
+category = "compile"
+description = "An allocation nested inside another allocation fails module verification"
+tags = ["genllvm"]
+xfail = true
+
+[scenario.region-borrow-coerce]
+category = "compile"
+description = "An owning reference does not coerce to a borrowed reference"
+tags = ["typecheck"]
+xfail = true
+
+# -------- parse stage --------
+
+[scenario.region-parse]
+category = "reject"
+description = "A '+' with no region annotation, and a '-' with no permission after it"
+tags = ["parse"]
+diagnostics = 4
+
+# -------- type check stage --------
+
+[scenario.region-typecheck-alloc]
+category = "reject"
+description = "Values that may not be allocated, and names that may not be a region"
+tags = ["typecheck"]
+diagnostics = 4
+
+[scenario.region-typecheck-region]
+category = "reject"
+description = "The '_alloc' method a region must declare"
+tags = ["typecheck"]
+diagnostics = 4
+
+[scenario.region-typecheck-init]
+category = "reject"
+description = "The 'init' method a region or a permission may declare, and its required shape"
+tags = ["typecheck"]
+diagnostics = 4
+
+# -------- flow stage --------
+
+[scenario.region-flow]
+category = "reject"
+description = "Owning references that move rather than copy, and a permission that forbids the write"
+tags = ["flow"]
+diagnostics = 3

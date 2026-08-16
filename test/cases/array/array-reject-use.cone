@@ -1,0 +1,41 @@
+// What an array value will not accept: initializers that are not of its type,
+// indices it cannot use, and member access it does not have.
+//
+// Type-check stage only, so every diagnostic below is reached. The bracket
+// forms that never become a well-formed array type or literal at all are in
+// array-reject-shape.
+//
+// Not here: an index past the end. 'a[7]' on a '[3; i32]' compiles clean and
+// with no warning, so there is no diagnostic to assert. See the group's
+// cases.toml.
+
+fn shortInitializer() {
+  // The initializer's length is part of its type, so a literal of the wrong
+  // length is a different array type rather than a short one
+  mut a [4; u8] = [1u8, 2u8]   //~ ErrorInvType:19 "Initialization value's type does not match variable's declared type"
+}
+
+fn wrongElementType() {
+  // Nor is the initializer coerced element by element: an unsuffixed integer
+  // literal is i32, so this is a [4; i32] value being given to a [4; u8]
+  mut a [4; u8] = [1, 2, 3, 4]   //~ ErrorInvType:19 "Initialization value's type does not match variable's declared type"
+}
+
+fn tooManyIndices() {
+  // One dimension takes one index
+  mut a [3; i32] = [1, 2, 3]
+  imm elem = a[1, 2]   //~ ErrorBadIndex:15 "Incorrect number of indexing arguments"
+}
+
+fn signedIndex() {
+  // An array index must be unsigned; only a pointer accepts a signed one
+  mut a [3; i32] = [1, 2, 3]
+  mut i i32 = 1
+  imm elem = a[i]   //~ ErrorBadIndex:15 "Array index must be an unsigned integer"
+}
+
+fn noMembers() {
+  // An array has no methods or fields of its own -- '.len' belongs to a slice
+  mut a [3; i32] = [1, 2, 3]
+  imm n = a.len   //~ ErrorNoMeth:12 "Invalid operation on an array"
+}

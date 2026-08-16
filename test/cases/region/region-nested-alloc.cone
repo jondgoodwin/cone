@@ -1,0 +1,23 @@
+// Defect: an allocation whose initial value contains another allocation fails
+// LLVM module verification.
+//
+// genlallocref in genllvm/genlalloc.c records the block it is in, emits the
+// allocation's null check as a branch to a panic block and an init block, and
+// finishes with a phi over those two. Generating the initial value happens
+// between those steps, so an inner allocation splits the block the outer one is
+// building in, and the phi names predecessors that are no longer the ones
+// reaching it. The compiler reports ErrorGenErr, with no source line, and then
+// dies on an access violation carrying the broken module further, so the
+// scenario asserts nothing beyond the failure itself.
+//
+// The success program therefore allocates a struct's owning field first, into a
+// variable, and names the variable in the literal.
+
+struct Held {
+  r +rc-mut i32
+  n i32
+}
+
+fn f() {
+  imm h = +rc-mut Held[r: +rc-mut 40, n: 41]
+}

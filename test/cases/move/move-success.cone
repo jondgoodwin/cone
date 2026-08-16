@@ -1,0 +1,132 @@
+// What move semantics permit: a move value flowing from variable to variable,
+// into and out of a call, and back into a deactivated variable; the swap and
+// left-assignment operators that exist so a move value can be taken out of a
+// field without invalidating its container; and the two ways a type escapes
+// move semantics and stays copyable.
+//
+// A success program can only show that a move is allowed, which a copy would be
+// too. What distinguishes the two is the source becoming unusable, and that is
+// an error, so it lives in the reject scenarios. The one distinguishing fact
+// this file can establish is the negative: for a copy type, the source is still
+// there afterwards.
+//
+// Structs appear because a move type has to be some type and 'struct @move' is
+// the only attribute that makes one directly; 'struct' owns their depth.
+
+import stdio::*
+
+fn show(label &[]u8, n i64) {
+  printStr(label)
+  printStr(" = ")
+  printInt(n)
+  printStr("\n")
+}
+
+// The @move attribute is the direct way to declare a type non-copyable
+struct @move Handle {
+  id i32
+}
+
+// A copy type, for contrast
+struct Plain {
+  id i32
+}
+
+// A finalizer makes a type a move type by inference, but a clone method says
+// copies can be made after all and cancels that
+struct Cloneable {
+  id i32
+  fn final(self &uni Cloneable) { }
+  fn clone(self &uni Cloneable) { }
+}
+
+fn takeHandle(h Handle) i32 {
+  h.id
+}
+
+fn makeHandle(n i32) Handle {
+  Handle[n]
+}
+
+// -------- moving a value around --------
+
+fn moves() {
+  // Variable to variable
+  imm a = Handle[1]
+  imm b = a
+  show("moved-to-new-var", b.id)
+
+  // A move value may be returned from a function and passed into one
+  show("moved-through-calls", takeHandle(makeHandle(2)))
+
+  // A deactivated variable becomes usable again when given a new value
+  mut c = makeHandle(3)
+  show("moved-into-call", takeHandle(c))
+  c = makeHandle(4)
+  show("reactivated-by-assign", c.id)
+
+  // A move value nested in a struct moves with the whole struct
+  imm outer = Wrapper[Handle[5], 6]
+  imm moved = outer
+  show("moved-with-container", moved.h.id)
+
+  // ... and so does an array of them
+  mut arr [2; Handle] = [Handle[7], Handle[8]]
+  imm arr2 = arr
+  show("moved-array-elem", arr2[1].id)
+}
+
+struct Wrapper {
+  h Handle
+  n i32
+}
+
+// -------- swap and left-assignment --------
+
+fn exchanges() {
+  // Swap leaves both sides holding a value, so neither source is deactivated
+  mut a = Handle[10]
+  mut b = Handle[20]
+  a <=> b
+  show("swap-left", a.id)
+  show("swap-right", b.id)
+
+  // Swapping a field with a local is how a move value comes out of a struct
+  // without invalidating the struct
+  mut w = Wrapper[Handle[30], 31]
+  mut spare = Handle[40]
+  w.h <=> spare
+  show("swap-field-out", spare.id)
+  show("swap-field-in", w.h.id)
+  show("swap-keeps-container", w.n)
+
+  // Left-assignment yields what the lval held before, rather than the new value
+  mut c = Handle[50]
+  imm old = c := Handle[60]
+  show("left-assign-value", old.id)
+  show("left-assign-lval", c.id)
+}
+
+// -------- types that stay copyable --------
+
+fn copies() {
+  // A plain struct copies: the source is still usable afterwards
+  imm p = Plain[70]
+  imm q = p
+  show("copy-source-still-usable", p.id)
+  show("copy-destination", q.id)
+
+  // A finalizer would make this a move type, but its clone method cancels that,
+  // so the source survives here too
+  imm c = Cloneable[80]
+  imm d = c
+  show("clone-cancels-move", c.id)
+  show("clone-destination", d.id)
+}
+
+fn main() i32 {
+  moves()
+  exchanges()
+  copies()
+  0i32
+}

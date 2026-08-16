@@ -1,0 +1,124 @@
+// Macros: a named body that is cloned into the use site, with the use's
+// arguments substituted for the declaration's parameters.
+//
+// Split from generic-success because a macro is a different declaration with a
+// different expansion path. A generic is instantiated per set of type arguments
+// and reaches code generation as its own function or type; a macro is expanded
+// into whatever surrounds it and leaves no entity of its own behind, so nothing
+// about it can be asserted against the generated LLVM IR. What can be asserted
+// is what expansion produces, which is what this program prints.
+//
+// The distinction that matters most is substitution versus evaluation: a macro
+// argument is a piece of source cloned in wherever the parameter appears, so an
+// argument used twice runs twice. That is only visible through a side effect,
+// so the argument here is a call that counts itself.
+//
+// i64 throughout, so a printed value needs no conversion.
+
+import stdio::*
+
+fn show(label &[]u8, n i64) {
+  printStr(label)
+  printStr(" = ")
+  printInt(n)
+  printStr("\n")
+}
+
+// -------- declaring macros --------
+
+// No parameters: the body is simply the expansion.
+macro four {
+  4i64
+}
+
+// One parameter, appearing once in the body.
+macro one[p] {
+  p
+}
+
+// One parameter, appearing twice, which is what makes substitution and
+// evaluation tell themselves apart.
+macro twice[p] {
+  p + p
+}
+
+// A parameter used where a type is expected, rather than where a value is.
+macro three[T] {
+  imm z T = 3
+  z
+}
+
+// A macro body's names are resolved where the macro is declared, so this 'base'
+// is the global one below however the use site spells its own names.
+imm base = 5i64
+
+macro fromBase {
+  base
+}
+
+mut counter = 0i64
+
+fn bump() i64 {
+  counter = counter + 1i64
+  counter
+}
+
+fn takesNoParameters() {
+  // A parameterless macro expands where a value is expected
+  imm z = four
+  show("macro-no-parameters", z)
+}
+
+fn takesAnExpression() {
+  show("macro-expression-argument", one[3i64 + 4i64])
+}
+
+fn takesABlock() {
+  // The argument is a whole block expression rather than a simple one, so this
+  // is what establishes that a macro argument is a piece of source and not a
+  // value the caller has already reduced
+  mut x = 1i64
+  show("macro-block-argument", one[if x == 0i64 {5i64} else {6i64}])
+}
+
+fn substitutesRatherThanEvaluates() {
+  // 'twice' names its parameter twice, so the argument's call runs twice: the
+  // sum is 1 + 2 rather than 1 + 1, and the counter ends at 2 rather than 1
+  show("macro-argument-substituted", twice[bump()])
+  show("macro-argument-evaluations", counter)
+}
+
+fn takesAType() {
+  show("macro-type-argument", three[i64])
+}
+
+fn resolvesAtDeclaration() {
+  // A local of the same name does not capture the macro body's reference
+  imm base = 9i64
+  imm z = fromBase
+  show("macro-resolved-at-declaration", z)
+  show("local-of-the-same-name-untouched", base)
+}
+
+// -------- a macro whose argument instantiates a generic --------
+
+fn max[T](x T, y T) T {
+  if x > y {x} else {y}
+}
+
+fn macroArgumentInstantiatesGeneric() {
+  // Macro expansion and generic instantiation both clone source, and both run
+  // during type check; this is the one nesting of them
+  show("macro-argument-is-a-generic-call", one[max(2i64, 6i64)])
+}
+
+fn main() i32 {
+  takesNoParameters()
+  takesAnExpression()
+  takesABlock()
+  substitutesRatherThanEvaluates()
+  takesAType()
+  resolvesAtDeclaration()
+  macroArgumentInstantiatesGeneric()
+  0i32
+}

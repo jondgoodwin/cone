@@ -1,0 +1,33 @@
+// What may be written through a slice, and what a slice variable may be
+// re-pointed at.
+//
+// These are data-flow diagnostics: whether an lval may be modified is decided
+// in assignlvalrtype, which runs from blockFlow. Data flow runs per function
+// only while the error count is still zero, so the whole file is one function.
+// A second function would never be analyzed, and a type-check error anywhere
+// would silence all of it -- which is why this is separate from
+// collection-typecheck-perm, whose subject is otherwise the same.
+//
+// The lifetime half of data flow is missing for slices; collection-flow-escape
+// records that.
+
+fn writesThroughSlices(readOnly &[]i32) {
+  mut b [3; i32] = [1, 2, 3]
+  mut c [3; i32] = [4, 5, 6]
+
+  // A slice borrowed without 'mut' may be read through but not written, even
+  // though the array behind it is mutable. The slice's permission is what the
+  // element assignment is checked against.
+  imm reading = &[]b
+  reading[0] = 9         //~ ErrorNoMut:10 "You do not have permission to modify lval"
+
+  // ... and that holds for one arriving as a parameter, where the borrow that
+  // produced it is out of sight
+  readOnly[1] = 9        //~ ErrorNoMut:11 "You do not have permission to modify lval"
+
+  // The variable's permission and the slice's are separate questions: this
+  // variable is 'imm', so it may not be re-pointed at another array even
+  // though what it points at may be written
+  imm fixed = &[]mut b
+  fixed = &[]mut c       //~ ErrorNoMut:3 "You do not have permission to modify lval"
+}

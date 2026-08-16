@@ -1,0 +1,75 @@
+// Calls a struct's type cannot answer.
+//
+// Type-check stage. A method call, a field access, a call through '()' and an
+// index through '[]' are all one lookup in the type's namespace, so all four
+// fail the same way and are worth keeping together: an operator is a method
+// under a backquoted name, and nothing about the call site says so. Privacy is
+// decided at the same lookup, against the spelling the caller wrote, so it is
+// here too. Wrong constructors are in struct-typecheck-construct.
+//
+// Every diagnostic here names the member that was not found or not allowed, so
+// the annotations are told apart by their quoted text rather than by position.
+//
+// A field access to a name the type does not declare is left out: it reports
+// the same code with the same message as the method call below, from the same
+// lookup, so it would assert nothing the first case does not.
+
+struct Point {
+  x i32
+  _secret i32 = 0
+
+  fn _fee(self) i32 {
+    1
+  }
+
+  fn addValue overload add(self) i32 {
+    x
+  }
+
+  fn addOther overload add(self, other Point) i32 {
+    x + other.x
+  }
+}
+
+fn missingMethod() {
+  imm p = Point[1]
+  p.nosuch()           //~ ErrorNoMbr:4 "Method or field `nosuch` not found"
+  return
+}
+
+// A struct only answers '()' if it declares that operator method
+fn noCallOperator() {
+  imm p = Point[1]
+  p()                  //~ ErrorNoMbr:4 "Method or field `()` not found"
+  return
+}
+
+// ... and only answers indexing if it declares '[]'
+fn noIndexOperator() {
+  imm p = Point[1]
+  p[0usize]            //~ ErrorNoMbr:4 "Method or field `[]` not found"
+  return
+}
+
+// An overload name that names candidates, none of which accepts these
+// arguments. This is the method form of the failure; core covers the function
+// form, and the two are reported from different places.
+fn noCandidate() {
+  imm p = Point[1]
+  p.add(2i32, 3i32, 4i32)   //~ ErrorNoCandidate:4 "No method declared by `add` accepts the call's arguments"
+  return
+}
+
+// A private method and a private field are both out of reach from outside the
+// type, and the concrete spelling is what the check is made against
+fn privateMethod() {
+  imm p = Point[1]
+  p._fee()             //~ ErrorNotPublic:4 "private method/field `_fee`"
+  return
+}
+
+fn privateField() {
+  imm p = Point[1]
+  imm s = p._secret    //~ ErrorNotPublic:12 "private method/field `_secret`"
+  return
+}
