@@ -32,16 +32,18 @@ Found while fixing the above:
 | A temporary's reference is counted as a second holder | Silent leak | **Fixed** — `flowHandleMoveOrCopy` |
 | An array literal's elements are never moved or copied | Silent, same shape | **Fixed** — `arrayLitFlow` |
 | An array literal cannot be generated unless its elements are constants | Loud, at compile time | **Open** — `array-nonconst-literal` |
-| Every array-reference allocation takes the fill path | **Silent, wrong data** | **Open** — `genlalloc.c:227` |
+| Every array-reference allocation takes the fill path | **Silent, wrong data** | **Fixed** — `genlalloc.c:227` |
 
 The suite went from 111 scenarios / 98 passed / 14 xfail to **118 / 108 / 11**.
 
-The last of those is the worst-behaved thing on this page and is one token:
-`((ArrayNode*)allocatenode->vtexp)->dimens > 0` tests a `Nodes*` pointer, which is
-never null there, instead of `->dimens->used > 0` as the same function does sixty
-lines earlier. So `+[]rc-mut [11i32, 22i32, 33i32]` compiles, runs, and fills the
+That last one was the worst-behaved thing on this page and was one token:
+`((ArrayNode*)allocatenode->vtexp)->dimens > 0` tested a `Nodes*` pointer, which is
+never null there, rather than `->dimens->used > 0` as the same function does sixty
+lines earlier. So `+[]rc-mut [11i32, 22i32, 33i32]` compiled, ran, and filled the
 array with three copies of `11`. It belongs to array allocation rather than to
-ownership, but it is recorded here because this is where it was found.
+ownership and is recorded here only because this is where it was found;
+`collection-success` now allocates a slice as well as borrowing one, which is the
+case that fails without the fix.
 
 ## The question this work item asks
 

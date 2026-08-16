@@ -227,7 +227,7 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     }
     else {
         // Handle array fill via run-time generation
-        if (allocatenode->vtexp->tag == ArrayLitTag && ((ArrayNode*)allocatenode->vtexp)->dimens > 0) {
+        if (allocatenode->vtexp->tag == ArrayLitTag && ((ArrayNode*)allocatenode->vtexp)->dimens->used > 0) {
             genlAllocFillArray(gen, nbrelems, (ArrayNode*)allocatenode->vtexp, valuep);
         }
         else {
