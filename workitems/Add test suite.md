@@ -960,13 +960,40 @@ open by disclaiming themselves, and all are accurate. The pattern is that
   were fixed here with their scenarios, since leaving a known typo unfixed to
   file a work item about it helps nobody.
 - Diff-driven selection (R2.5) is the last unbuilt requirement.
-- `test/staging/test.cone` is down to **two constructs, neither of which has an
-  owning group**: a number intrinsic method (`.sqrt()`) and the `<-` append
-  operator. Every construct that had an owner has gone to it. What is left is an
-  ownership question, not unwritten work — and under R6.1 the answer may be a new
-  group and a new manual chapter, since neither has a chapter today.
 - R6.4 will not reach full coverage while eleven codes are unraisable and two are
   unreachable by annotation.
+
+### Decomposition is complete (R6.5)
+
+`test/staging/` is gone. Every construct of the old smoke input went to the group
+that owns it, and the last two — which had no owning group — were settled rather
+than filed somewhere convenient:
+
+- **`.sqrt()` and the other float functions are future capability**, and belong
+  with float intrinsics rather than with any current group. Recorded in
+  [[Intrinsics]]. Coverage follows the capability; when it is built, R6.1's
+  question is whether it earns its own group and manual chapter.
+- **`<-` gets its own coverage group, once there are collections.** It is
+  implemented and reachable today only through stdio's `IOStream`, but it is an
+  append operator intended for collections, and `corelib/` has none — so covering
+  it now would pin the operator to the one consumer it is not for.
+  `design/Test Suite.md` carries the reserved `stream` row; see
+  [[Collection - Streams & Iteration]].
+
+### R1.6's Linux half is written but unverified
+
+The suite runs on Windows from both PowerShell and Git Bash. The POSIX paths
+exist — `cc`/`gcc` rather than `link.exe`, `.o` rather than `.obj`, `shlex.join`
+rather than `list2cmdline` — but **none of them has ever executed**, because no
+WSL or Linux environment was available while this was built.
+
+That is worth stating rather than assuming, because two Windows-specific linker
+faults turned up during this work: the runner sourced vcvars for `link.exe`
+correctly but then handed the command to `subprocess` as a list, which escaped
+the quotes around the batch path; and it later trusted Git for Windows'
+coreutils `link.exe` because it only checked that *a* `link.exe` existed. Both
+were found by running, neither by reading. The POSIX path deserves the same
+treatment before R1.6 is claimed outright.
 
 ## Recommendations on the two open questions
 

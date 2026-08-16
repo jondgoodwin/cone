@@ -35,8 +35,8 @@ contains its C compiler (`conec`) and a small standard-library component
   guide.
 - `test/cases/<group>/`: one directory per coverage group, each with a
   `cases.toml` listing its scenarios.
-- `test/staging/test.cone`: what is left of the broad compiler smoke-test input,
-  waiting to be claimed by the groups that own it. Empty means done.
+- `test/codes.toml`: the pinned `ErrorCode` name-to-number table the runner
+  checks `error.h` against before any case runs.
 
 ## Documentation context
 
@@ -152,9 +152,9 @@ For a compiler change:
 
 1. Build `conec` and run `python test/run.py`.
 2. Add coverage for the change: a scenario in the owning group under
-   `test/cases/`, following `design/Test Suite.md`. Coverage not yet decomposed
-   into groups still lives in `test/staging/test.cone`, which drains to empty as
-   the groups claim it; see `workitems/Add test suite.md`.
+   `test/cases/`, following `design/Test Suite.md`. A fix for a crash or a
+   miscompile lands with the case that fails without it, and a new `ErrorCode`
+   lands with the scenario that provokes it.
 3. Inspect the generated IR when the change affects lowering or symbols.
 4. When the change affects runtime behavior, link and run a program.
 

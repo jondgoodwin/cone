@@ -32,7 +32,14 @@ as that group's own subject requires.
 | 2 | `exception` | Exception handling |
 | 2 | `concurrency`, `safety`, `meta` | Concurrency; trust and raw pointers; metaprogramming |
 
-Three of these have no group directory, and the reasons differ. `exception` and
+One row is reserved rather than built. **`stream` will own the `<-` append
+operator** and whatever iteration protocol arrives with collections. `<-` is
+implemented today and reachable only through stdio's `IOStream`, but it is
+intended for collections and `corelib/` has none, so covering it now would pin
+the operator to the one consumer it is not for. The group appears with the
+collections; see [[Collection - Streams & Iteration]].
+
+Three of the rows above have no group directory, and the reasons differ. `exception` and
 `concurrency` are unimplemented down to the keyword table — real chapters, real
 features, nothing to test yet; their rows stay and the groups appear when the
 features do. `meta` is different: the `#` meta-language of `refmeta.html` is

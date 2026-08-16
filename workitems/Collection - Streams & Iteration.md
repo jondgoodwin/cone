@@ -1,4 +1,21 @@
 
+## `<-` gets its own test group, once there are collections
+
+The append operator is implemented and reached today only through stdio's
+`IOStream`: it lexes as `LessDashToken`, interns as `lessDashName`, and
+`fncall.c:100` lowers it on a vtuple to a block appending each element
+separately. It is an append operator, not a channel send.
+
+It is intended for collections, and there are none — `corelib/` defines
+`Option`, `Result`, `so` and `rc` and no container types at all, which the
+`collection` coverage group established while being written. So `<-` is the one
+construct [[Add test suite]] could not place: no group's subject covers it, and
+covering it through stdio alone would pin the operator to the one consumer that
+is not what it is for.
+
+**It gets its own coverage group when collections arrive**, alongside whatever
+manual chapter they bring. `design/Test Suite.md` carries the reserved row.
+
 ## Stream iterators
 
 These are more performant if they are not closures that return a nullable value, but instead are new state structs with two methods:
