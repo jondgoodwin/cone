@@ -1,0 +1,22 @@
+// The two counts a fill literal cannot express for a counted reference.
+//
+// region-fill-count asserts the amount a fill adds when it can be worked out:
+// n holders, or n-1 from a temporary. That amount is a constant in the injected
+// alias node, so there are two ways to ask for one the node cannot carry, and
+// both are refused rather than counted wrongly -- an undercount frees the
+// allocation while the array still points at it.
+//
+// Both diagnostics are in one function on purpose. Data-flow analysis runs per
+// function and only while the error count is zero (ir/stmt/fndcl.c:181), so the
+// first function to raise one silences flow analysis for every later function.
+//
+// The second line is the only syntax that reaches a run-time element count: the
+// plain literal form insists its dimension be a constant, and '+[]region-perm'
+// array allocation does not. It appears here for the count rather than for the
+// array reference, which stays collection's subject.
+
+fn fills(n usize) {
+  imm r = +rc-mut 7i32
+  imm many = [40000; r]              //~ ErrorBadFill "too many elements"
+  imm sized = +[]rc-mut [n; r]       //~ ErrorBadFill "known at compile time"
+}

@@ -7,6 +7,8 @@
 
 #include "../ir.h"
 
+#include <limits.h>
+
 // Note:  Creation, serialization and name checking are done with array type logic,
 // as we don't yet know whether [] is a type or an array literal
 
@@ -87,6 +89,86 @@ void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit) {
         errorMsgNode((INode*)arrlit, ErrorBadArray, "Array literal dimension value must be a constant");
     }
     arrayLitTypeCheckDimExp(pstate, arrlit);
+}
+
+// Return a fill literal's element count, or -1 when it is not known until run time.
+// The dimension may be a named constant, which code generation resolves the same way.
+// A count past what an alias amount can hold is clamped to just past it, so the
+// caller refuses it rather than wrapping into a plausible-looking number.
+static int64_t arrayLitFillCount(ArrayNode *arrlit) {
+    INode *dimnode = nodesGet(arrlit->dimens, 0);
+    while (dimnode->tag == VarNameUseTag) {
+        INode *dclnode = ((NameUseNode*)dimnode)->dclnode;
+        if (dclnode->tag != ConstDclTag)
+            return -1;
+        dimnode = ((ConstDclNode*)dclnode)->value;
+    }
+    if (dimnode->tag != ULitTag)
+        return -1;
+    uint64_t nbrelems = ((ULitNode*)dimnode)->uintlit;
+    return nbrelems > (uint64_t)INT16_MAX ? (int64_t)INT16_MAX + 1 : (int64_t)nbrelems;
+}
+
+// Perform data flow analysis on an array literal's element values.
+//
+// The list form '[a, b]' gives every element a holder of its own, so each value
+// is moved or copied exactly as a function call's argument is.
+//
+// The fill form '[n; value]' evaluates one expression and stores it into every
+// element, which the two ownership rules answer differently:
+//
+// - A move value has exactly one owner and cannot have n of them, so filling
+//   with one is refused however small n is. Proving n is 1 would buy a construct
+//   nobody writes at the cost of a rule that is harder to state.
+// - A counted reference may legitimately be repeated, but n holders appear
+//   rather than one, so the count rises by n -- or by n-1 when the value is a
+//   temporary, which hands over the one reference it was born holding. That
+//   amount is a constant in the alias node, so a count known only at run time
+//   cannot be expressed and is refused rather than counted wrongly.
+//
+// Both refusals are the same condition, that a fill cannot repeat this value.
+// The general answer -- rewriting a fill into a loop that builds the elements one
+// at a time, before generation -- is recorded in the Types. Array work item.
+void arrayLitFlow(FlowState *fstate, ArrayNode **nodep) {
+    ArrayNode *arrlit = *nodep;
+    INode **elemsp;
+    uint32_t cnt;
+
+    // List form: each element is its own holder
+    if (arrlit->dimens->used == 0) {
+        for (nodesFor(arrlit->elems, cnt, elemsp)) {
+            flowLoadValue(fstate, elemsp);
+            flowHandleMoveOrCopy(elemsp);
+        }
+        return;
+    }
+
+    // Fill form: one value, repeated
+    INode **valp = &nodesGet(arrlit->elems, 0);
+    flowLoadValue(fstate, valp);
+    if (iexpIsMove(*valp)) {
+        errorMsgNode(*valp, ErrorBadFill,
+            "An array fill literal may not repeat a move value, which may have only one owner.");
+        return;
+    }
+    RefNode *reftype = (RefNode *)iexpGetTypeDcl(*valp);
+    if (reftype->tag != RefTag || !isRegion(reftype->region, rcName))
+        return;   // Any other value copies freely, needing no count
+
+    int64_t nbrelems = arrayLitFillCount(arrlit);
+    if (nbrelems < 0) {
+        errorMsgNode(*valp, ErrorBadFill,
+            "An array fill literal whose value is a counted reference needs an element count known at compile time.");
+        return;
+    }
+    if (nbrelems > INT16_MAX) {
+        errorMsgNode(*valp, ErrorBadFill,
+            "An array fill literal has too many elements to count a reference into.");
+        return;
+    }
+    int16_t amt = flowIsLvalRead(*valp) ? (int16_t)nbrelems : (int16_t)(nbrelems - 1);
+    if (amt != 0)
+        flowInjectAliasAmt(valp, amt);
 }
 
 // Is the array actually a literal?

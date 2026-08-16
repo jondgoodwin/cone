@@ -1,15 +1,20 @@
-// Defect: naming a move value in an array literal's element does not deactivate
-// the source, so the value can still be read after it was moved away.
+// Naming a move value in an array literal's element deactivates the source, and
+// the fill form of the same literal refuses a move value outright.
 //
-// This is the sibling of move-flow-literal, which covers a type literal and is
-// fixed: ArrayLitTag is still treated as a leaf by flowLoadValue, so its elements
-// never reach flowHandleMoveOrCopy.
+// The list form '[a, b]' gives every element a holder of its own, so each value
+// is moved or copied on the same rule as a function call's argument: arrayLitFlow
+// hands each one to flowHandleMoveOrCopy, exactly as move-flow-literal's type
+// literal does with its field values.
 //
-// It is not the same fix, because an array literal has a second form. A fill
-// literal '[n; value]' repeats one expression across n elements, so a move value
-// would have to be moved into n slots -- which cannot be right for one owner --
-// and a counted reference would need n added rather than one. What a fill does to
-// a move or counted value is an open question; the list form below is not.
+// The fill form '[n; value]' is the other thing an array literal can be, and it
+// is where the two differ. It evaluates one expression and stores it into every
+// element, and a move value has exactly one owner, so there is nothing for the
+// second element to hold. It is refused however small n is: proving that n is 1
+// would buy a construct nobody writes, at the cost of a rule that is harder to
+// state than "a fill may not repeat a move value".
+//
+// While array literals were treated as leaves by flow analysis, both forms
+// compiled clean and the read below was a use after move.
 
 struct @move Handle {
   id i32
@@ -18,5 +23,9 @@ struct @move Handle {
 fn main() i32 {
   imm hd = Handle[7]
   imm arr [2; Handle] = [hd, Handle[8]]
+
+  imm two [2; Handle] = [2; Handle[9]]      //~ ErrorBadFill "may not repeat a move value"
+  imm one [1; Handle] = [1; Handle[10]]     //~ ErrorBadFill "may not repeat a move value"
+
   hd.id                     //~ ErrorMove
 }

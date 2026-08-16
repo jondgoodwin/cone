@@ -1,0 +1,35 @@
+// Defect: an array fill literal holding a counted reference cannot be generated,
+// so the count it asks for cannot be asserted against generated code.
+//
+// The count is how many holders exist, which region-success establishes for a
+// single binding: an lvalue keeps its reference, so copying from one adds a
+// holder, while a temporary hands over the reference it was born holding and
+// adds none. A fill '[n; value]' stores one value into n elements, so the amount
+// is n from an lvalue and n-1 from a temporary, and the non-fill case is exactly
+// n = 1. Flow analysis injects that amount today; what fails is behind it.
+//
+// The cause is not in this group and has nothing to do with regions. An array
+// literal is generated with LLVMConstArray, so any element that is the result of
+// an instruction -- and an allocation always is -- builds a constant array with
+// instruction operands, which the module verifier rejects. array-nonconst-literal
+// records that with an i32.
+//
+// This is what will assert the amount once the literal generates: a leak and a
+// use after free are equally silent on stdout, so the counter adjustment in the
+// generated IR is the only place the number is visible.
+//
+// Neither allocation below is ever released. An array whose elements are owning
+// references is not walked at scope exit -- flowScopeDealias visits variables
+// whose own type is an owning reference, and an array's is not -- so both leak.
+// Counting n holders is still what makes that a leak rather than a use after
+// free, which is what the count did before an array literal reached flow
+// analysis at all.
+
+fn fillFromLval() {
+  imm r = +rc-mut 7i32
+  imm arr = [12; r]
+}
+
+fn fillFromTemp() {
+  imm arr = [12; +rc-mut 8i32]
+}

@@ -11,8 +11,9 @@ the `region` group of the test suite. The evidence, with file and line, is under
 "Found while building the groups" in [[Add test suite]].
 
 **Four of the six are fixed**, and the two that remain are the two loud ones,
-left deliberately. Tracing the fourth uncovered two further defects in how flow
-analysis treats literals; both are fixed, and one open sibling is recorded.
+left deliberately. Tracing the fourth uncovered three further defects in how flow
+analysis treats literals; all three are fixed, and the code generation defect that
+keeps the last one from being asserted at run time is recorded.
 
 ## Status
 
@@ -31,9 +32,10 @@ Found while fixing the above:
 | --- | --- | --- |
 | A type literal's field values are never moved or copied | Silent corruption, and a use-after-move | **Fixed** — `typeLitFlow` |
 | A temporary's reference is counted as a second holder | Silent leak | **Fixed** — `flowHandleMoveOrCopy` |
-| An array literal's elements are never moved or copied | Silent, same shape | **Open** — `move-flow-arraylit` |
+| An array literal's elements are never moved or copied | Silent, same shape | **Fixed** — `arrayLitFlow` |
+| An array literal cannot be generated unless its elements are constants | Loud, at compile time | **Open** — `array-nonconst-literal` |
 
-The suite went from 111 scenarios / 98 passed / 14 xfail to **115 / 105 / 11**.
+The suite went from 111 scenarios / 98 passed / 14 xfail to **118 / 107 / 12**.
 
 ## The question this work item asks
 
@@ -131,15 +133,31 @@ wraps a value given by field name.
 Neither turned out to need a language decision. Both are the type's existing rule
 applied where it was not being applied.
 
+**An array literal was a leaf too**, and closing it took one decision rather than
+a design. The list form `[a, b]` gives every element a holder of its own, so each
+value is moved or copied exactly as a call's argument is. The fill form
+`[n; value]` makes n holders out of one value, and the two rules answer that
+differently: a move value has one owner and cannot have n, so a fill of one is
+**refused** — `ErrorBadFill`, unconditionally, because proving that n is 1 buys a
+construct nobody writes at the cost of a rule that is harder to state. A counted
+reference is repeated legitimately, so the count rises by n, or by n-1 from a
+temporary. That generalizes the non-fill case, which is exactly n = 1.
+
+The amount is a constant in the alias node, so a count known only at run time is
+refused as well rather than counted wrongly. **Rewriting a fill into a loop before
+generation is the general answer**, and it is recorded in [[Types. Array]] along
+with the semantic question it raises.
+
 ## What remains
 
-**An array literal has the same gap** — `ArrayLitTag` is still a leaf, so
-`[hd, Handle[8]]` does not deactivate `hd`. It is **not** the same fix, which is
-why it is recorded rather than made: an array literal has a second form, the fill
-`[n; value]`, which repeats one expression across n elements. A move value cannot
-be moved into n slots, and a counted reference would need n added rather than one.
-**What a fill does to a move or counted value is undecided**, and that is the
-blocker. `move-flow-arraylit` pins the list form, which is not in doubt.
+**The count a fill asks for cannot be asserted against generated code**, and the
+reason is not in this group: `genlExpr` builds an array literal with
+`LLVMConstArray`, so an element that is the result of an instruction — and an
+allocation always is — produces a constant array with instruction operands, and
+the module fails verification. It is true of an `i32` as much as of a reference,
+which is why nothing had noticed: the `array` group only ever writes constant
+elements. `array-nonconst-literal` records the cause and `region-fill-count` the
+consequence.
 
 **The two loud failures stay open deliberately.** Neither can be mistaken for
 working code — nested allocation fails module verification at compile time, and

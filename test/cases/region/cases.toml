@@ -51,6 +51,10 @@
 #   handling is the unimplemented part; an xfail here would record a crash
 #   rather than a defect in a feature that otherwise works.
 # - Array allocation, '+[]'. Array references and slices belong to collection.
+#   region-flow-fill is the one line of it here, and it is there for the count a
+#   fill literal asks for rather than for the array reference: it is the only
+#   syntax that reaches a run-time element count, because the plain literal form
+#   insists its dimension be a constant.
 # - Virtual owning references, '+<'. They belong to trait.
 # - ErrorBadAlloc (1036), "Missing valid alloc methods", which sounds like this
 #   group's and is dead: ir/types/region.c raises every allocator complaint as
@@ -72,8 +76,15 @@
 # field is a second holder and is counted, while region-owning-field-so's '+so'
 # field is the only holder, so naming it in the literal moves it.
 #
-# One xfail remains, and it is not code generation ignoring an earlier phase:
-# region-nested-alloc is a block-structure bug in the allocation path.
+# region-fill-count is the same question asked of an array fill literal, which
+# makes n holders out of one value at once. The 'move' group owns the other half
+# of that literal -- a move value may not be filled at all, which move-flow-arraylit
+# asserts -- and region-flow-fill covers the two counts the constant alias amount
+# cannot carry.
+#
+# Two xfails remain, and neither is code generation ignoring an earlier phase:
+# region-nested-alloc is a block-structure bug in the allocation path, and
+# region-fill-count waits on an array literal being generatable at all.
 
 support = []
 
@@ -110,6 +121,18 @@ description = "Releasing a region-allocated struct releases the '+so' reference 
 tags = ["flow", "genllvm", "runtime"]
 
 # -------- known defects --------
+
+# The amount is the whole claim, and no run could see it anyway: too low frees
+# the allocation while the array still points at it, too high leaks it, and
+# stdout shows neither. It carries no llvmir check yet, because there is no
+# generated code to check -- the literal itself does not survive module
+# verification, for a reason array-nonconst-literal owns. Written without one
+# rather than with a needle nothing has ever produced.
+[scenario.region-fill-count]
+category = "compile"
+description = "An array fill literal counting its value into every element: n holders from an lvalue, n-1 from a temporary"
+tags = ["flow", "genllvm"]
+xfail = true
 
 [scenario.region-nested-alloc]
 category = "compile"
@@ -158,3 +181,9 @@ category = "reject"
 description = "Owning references that move rather than copy, and a permission that forbids the write"
 tags = ["flow"]
 diagnostics = 3
+
+[scenario.region-flow-fill]
+category = "reject"
+description = "The element counts an array fill literal cannot count a reference into: too many, and not known until run time"
+tags = ["flow"]
+diagnostics = 2

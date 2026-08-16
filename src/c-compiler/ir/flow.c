@@ -39,8 +39,10 @@ void flowHandleMove(INode *node) {
     }
 }
 
-// If needed, inject an alias node for rc/own references
-void flowInjectAliasNode(INode **nodep) {
+// If needed, inject an alias node for rc/own references, adjusting the count by amt.
+// One value can become more than one holder at once: an array fill literal stores
+// the reference it evaluates once into every one of its elements.
+void flowInjectAliasAmt(INode **nodep, int16_t amt) {
     INode *vtype = ((IExpNode*)*nodep)->vtype;
     // No need for injected node if we are not dealing with rc references
     RefNode *reftype = (RefNode *)itypeGetTypeDcl(vtype);
@@ -52,9 +54,14 @@ void flowInjectAliasNode(INode **nodep) {
     newNode(aliasnode, AliasNode, AliasTag);
     aliasnode->exp = *nodep;
     aliasnode->vtype = vtype;
-    aliasnode->aliasamt = 1;
+    aliasnode->aliasamt = amt;
     aliasnode->counts = NULL;
     *nodep = (INode*)aliasnode;
+}
+
+// If needed, inject an alias node for rc/own references
+void flowInjectAliasNode(INode **nodep) {
+    flowInjectAliasAmt(nodep, 1);
 }
 
 // Handle when we know we are either copying or moving a value
@@ -153,12 +160,15 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         typeLitFlow(fstate, (FnCallNode**)nodep);
         break;
 
+    case ArrayLitTag:
+        arrayLitFlow(fstate, (ArrayNode**)nodep);
+        break;
+
     case SizeofTag:
     case NilLitTag:
     case ULitTag:
     case FLitTag:
     case StringLitTag:
-    case ArrayLitTag:
     case AbsenceTag:
     case UnknownTag:
         break;
