@@ -22,7 +22,7 @@ list. Tracing them uncovered four further defects, three of them fixed.
 | First assignment to an uninitialized `rc` releases garbage | Silent corruption | **Fixed** — `assign.c` + `genlexpr.c` |
 | A struct's `rc` owning field corrupts the heap on release | Silent corruption | **Fixed** — `genlalloc.c:62` |
 | A nested allocation fails module verification | Loud, at compile time | **Fixed** — `genlallocref`'s phi |
-| Fallible allocation `?+rc-mut v` | Loud, immediately | **Open** — see below |
+| Fallible allocation `?+rc-mut v` | Loud, immediately | **Open** — needs a lowering decision, see below |
 
 Found while fixing the above:
 
@@ -31,10 +31,14 @@ Found while fixing the above:
 | A type literal's field values are never moved or copied | Silent corruption, and a use-after-move | **Fixed** — `typeLitFlow` |
 | A temporary's reference is counted as a second holder | Silent leak | **Fixed** — `flowHandleMoveOrCopy` |
 | An array literal's elements are never moved or copied | Silent, same shape | **Fixed** — `arrayLitFlow` |
-| An array literal cannot be generated unless its elements are constants | Loud, at compile time | **Open** — `array-nonconst-literal` |
+| An array literal cannot be generated unless its elements are constants | Loud, at compile time | **Fixed** — `genlExpr` builds with insertvalue |
 | Every array-reference allocation takes the fill path | **Silent, wrong data** | **Fixed** — `genlalloc.c:227` |
 
-The suite went from 111 scenarios / 98 passed / 14 xfail to **118 / 108 / 11**.
+The suite went from 111 scenarios / 98 passed / 14 xfail to **118 / 110 / 9**, and
+the `region` group now carries no expected failures at all. The fill amount is
+asserted rather than merely emitted: `region-fill-count` reads the counter
+adjustment out of the generated IR, `add i64 %5, 12` from an lvalue fill and
+`add i64 %5, 11` from a temporary, which is the n / n-1 rule stated in numbers.
 
 That last one was the worst-behaved thing on this page and was one token:
 `((ArrayNode*)allocatenode->vtexp)->dimens > 0` tested a `Nodes*` pointer, which is
@@ -167,9 +171,43 @@ which is why nothing had noticed: the `array` group only ever writes constant
 elements. `array-nonconst-literal` records the cause and `region-fill-count` the
 consequence.
 
-**The two loud failures stay open deliberately.** Neither can be mistaken for
-working code — nested allocation fails module verification at compile time, and
-`?+rc-mut v` dies immediately with an access violation.
+## Fallible allocation, and why it is not a repair
+
+The semantics are settled and code generation already implements them. A plain
+allocation traps when the allocator returns null; `?` sets `FlagQues`, which
+suppresses the trap so the null reaches the program. `Option[&T]` needs no tag or
+wrapper because `genltype.c:174` collapses a two-variant union whose other variant
+holds one pointer into a bare pointer — so "either a null or a real reference" is
+the literal runtime representation, and `genlexpr` specialises both testing it and
+constructing it. **None of this is redesign-blocked.** How a region signals failure
+is already fixed: `_alloc` returns `*u8` and the null check is in `genlallocref`.
+
+What is broken is the front-end lowering, and it is structural rather than a slip:
+
+- **The allocate node's `vtype` ends up an expression.** Measured: for `+rc-mut 42`
+  it is `RefTag`; for `?+rc-mut 42` it stays `FnCallTag` — an un-instantiated
+  `Option[...]` in a type slot, which everything calling `itypeGetTypeDcl` then
+  walks as if it were a type.
+- **`itypeIsGenericType` is dead.** It is the only thing that can make
+  `isTypeNode()` true for a generic instantiation, and it tests for
+  `GenericNameTag`, which **nothing in the compiler ever assigns**. A written-out
+  `Option[T]` works only because the type parser instantiates it before anyone
+  asks the predicate; the `?` path has no such step.
+- **The lowering builds a cycle.** Name resolution points the allocate node's
+  `vtype` at the Option call whose `args[0]` *is that allocate node*, and type
+  check later patches it to a `RefNode` whose lex parent is the same allocate
+  node. Instantiating a generic across that recurses, which is why `?+rc-mut`
+  faults while `?+so` hangs.
+
+Substituting `itypeTypeCheck` for `inodeTypeCheckAny` gets `vtype` to a type node
+and still fails, so this is not a one-line repair. **The decision it needs** is
+where `?` lowers: instantiating `Option[T]` as a real type during name resolution,
+so the allocate node's `vtype` is a type from the outset, rather than an expression
+patched mid-type-check.
+
+Note the suite cannot hold this one either way. `?+so` hangs, and a scenario whose
+assertion is "this takes twenty seconds" asserts nothing — see "What cannot be a
+scenario at all" in [[Test Suite]].
 
 ## What the scenarios are worth, given a redesign is coming
 
