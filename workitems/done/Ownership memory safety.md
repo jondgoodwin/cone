@@ -1,5 +1,17 @@
 # Ownership memory safety
 
+> **Done.** Nine defects fixed, two decisions settled, and what needed a design
+> answer was handed to the item that owns it: fallible allocation to [[Regions]],
+> array fill literals to [[Types. Array]], two loose defects to
+> [[Compiler defect backlog]]. The suite went from 111 scenarios / 98 passed / 14
+> expected failures to **118 / 110 / 9**, and the `region` group carries no
+> expected failures at all.
+>
+> Read the "Status" table for what moved, and "What measuring the stopgaps
+> showed" for the parts worth carrying into the region redesign — chiefly that
+> there is no durable flow record for later phases to consult, which is the
+> structural reason this class of defect kept recurring.
+
 > **These are defects in provisional code.** Regions are only partly built and
 > were never robustly designed; a redesign carrying substantially new ideas is
 > intended, and getting that design right is the priority. Nothing here should be
