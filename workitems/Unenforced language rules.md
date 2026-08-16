@@ -9,9 +9,17 @@ ordinary sense. In each case the code does what it was written to do; what is
 missing is a decision that was never made, or a check that was never written
 against a decision that was. **Most of them need a language answer before they
 need a patch**, which is why they are not in [[Diagnose instead of crash]] or
-[[Ownership memory safety]] — but check the reference manual before concluding
-that of any given one. Module-level privacy was listed here and turned out to be
-answered on a published page; it is now closed.
+[[Ownership memory safety]].
+
+**Two of the six entries below have already turned out to be wrong**, both in the
+same direction: a rule that looked unenforced was enforced, and the reason it
+looked otherwise was worth more than the entry. Module-level privacy needed no
+language answer, because `refmodule.html` had already given one; it is closed.
+`imm` is checked, and what hid the check was flow analysis being gated on the
+global error count. **So verify each entry against the current compiler before
+acting on it, and read the reference manual before deciding a rule needs a
+ruling.** The survey that produced this page was reading a compiler that has
+since moved, and some of it was misread at the time.
 
 Each also has the same testing property, and it is an uncomfortable one: **the
 suite cannot assert an absent check.** A scenario proves the compiler rejects
@@ -21,22 +29,52 @@ is simply unenforced, the corpus records it by *establishing the opposite* — t
 `safety` group compiles pointer arithmetic with no trust block anywhere, which is
 the only honest way to pin the absence of a rule.
 
-## `imm` is not enforced at all
+## ~~`imm` is not enforced at all~~ — it is; the real defect is that any earlier error silences it
+
+**The original entry was wrong, and how it was wrong is the finding.** It said
+there is no immutability check on a variable anywhere in the compiler. There is,
+and there has been since 2021 (`bce6fbb`): `assign.c:162` reads the binding's own
+permission through `iexpGetLvalInfo`, and all three of the cases the entry listed
+as compiling clean are rejected with `ErrorNoMut`:
 
 ```cone
 imm n = 3
-n = 5            // compiles clean
+n = 5              // ErrorNoMut
+imm p = P[1]
+p.x = 5            // ErrorNoMut
+imm r = &p
+r.x = 5            // ErrorNoMut
 ```
 
-So does `p.x = 5` on an `imm p`, and `r.x = 5` through an `imm r = &p`, and
-`p[1] = 99` through an `imm p *i32`. There is no immutability check on a variable
-anywhere in the compiler. `ErrorNoMut` exists and is reachable, but only through
-*reference permissions* — never through the mutability of the binding.
+Two of the entry's examples are not defects at all. `imm r = &mut p; r.x = 5`
+compiles, and should: the binding is immutable, the referent is not. And
+`p[1] = 99` through an `imm p *i32` compiles because a pointer bypasses
+permission checks entirely, which is `trust`'s subject and not `imm`'s.
 
-This is the largest gap the survey found, and probably the one with the widest
-consequences: `imm` appears throughout the reference manual, the examples and the
-playground, and every use of it currently means nothing. Related:
-[[Permissions]].
+**What is real is why the survey saw nothing.** `ErrorNoMut` on an assignment is
+a *flow* diagnostic, and `fndcl.c:181` runs `blockFlow` only when `errors == 0`.
+So one error anywhere earlier in the compile — of any stage, in any function —
+silences immutability checking for everything after it:
+
+```cone
+fn first() i32 { nosuchname }   // ErrorUnkName
+fn second() i32 {
+  imm n = 3
+  n = 5                          // reported by nothing
+  n
+}
+```
+
+The same gate means **two `imm` violations in one file report only the first**.
+`design/Test Suite.md` already documents this as a hazard for writing scenarios;
+what it does not say is that it makes a whole class of rule conditionally
+enforced in ordinary use. `ErrorMove`, the lifetime check in `assign.c` and
+everything else reported from the flow pass are behind the same gate.
+
+That is the defect worth fixing, and it is one decision rather than several:
+whether flow analysis should run on a function whose own type check succeeded,
+regardless of what failed elsewhere. Related: [[Permissions]],
+[[Analysis re-factor]].
 
 ## ~~Module-level privacy is not enforced~~ — enforced
 
