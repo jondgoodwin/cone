@@ -154,6 +154,12 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     if (fnnode->genericinfo)
         return;
 
+    // Data flow runs only on a function this pass left well typed. Remember the
+    // error count on the way in, so that test is about this function alone: an
+    // earlier failure elsewhere in the compile must not silence immutability,
+    // move and lifetime checking for every function that follows it.
+    int errorsOnEntry = errors;
+
     itypeTypeCheck(pstate, &fnnode->vtype);
     // No need to type check function body if no body or is a default method of a trait
     if (!fnnode->value 
@@ -178,7 +184,9 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
 
     // Immediately perform the data flow pass for this function
     // We run data flow separately as it requires type info which is inferred bottoms-up
-    if (errors)
+    // Skip it when this function's own signature or body did not type check, as
+    // flow analysis relies on the types that check was supposed to establish.
+    if (errors != errorsOnEntry)
         return;
     FlowState fstate;
     fstate.fnsig = (FnSigNode *)fnnode->vtype;

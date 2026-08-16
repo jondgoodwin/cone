@@ -1,0 +1,51 @@
+// A function may not return a borrowed reference to one of its own locals.
+//
+// ref-flow asserts the other half of the same rule, between two variables. This
+// half is the function boundary: the caller reads the returned reference after
+// the frame that held the borrowed-from value is gone, so what it points at no
+// longer exists. coneref/reflifefn.html states the rule -- a borrowed reference
+// is restricted "from living beyond the scope they were created in", and a
+// violation "result[s] in a compiler error" -- and nothing enforced it here
+// until returnFlow in ir/stmt/return.c was written.
+//
+// Borrow scopes count outward: 0 is a global, 1 is a parameter, 2 or more is a
+// local. Only 2 and up escape, which is why the returns of a parameter borrow
+// in ref-success and of a parameter slice in collection-success stay legal.
+//
+// Every diagnostic here is a flow diagnostic, so each function must type check
+// cleanly for its own to be reported. They are separate functions rather than
+// one, because a function has one return.
+
+fn escapesImplicitly() &i32 {
+  mut n = 3
+  &n                        //~ ErrorEscape:3 "Returned borrowed reference outlives the local value it points to"
+}
+
+fn escapesExplicitly() &i32 {
+  mut n = 3
+  return &n                 //~ ErrorEscape:10 "Returned borrowed reference outlives the local value it points to"
+}
+
+// A slice carries the same scope as the reference it is built from, so the same
+// rule reaches it. collection-flow-escape asserts this between two variables.
+fn escapesAsSlice() &[]i32 {
+  mut b [3; i32] = [1, 2, 3]
+  &[]b                      //~ ErrorEscape:3 "Returned borrowed reference outlives the local value it points to"
+}
+
+// What the check does not reach, established here rather than claimed: a borrow
+// laundered through a variable. The scope of a borrow lives on the type node the
+// borrow expression itself produced, and an assignment does not carry it onto
+// the variable's declared type, so by the time this returns 'chosen' the return
+// sees a plain '&i32' of global scope. assignlvalrtype does not catch it either,
+// because 'chosen' and 'outer' share a scope and storing one in the other is
+// legal. Closing this needs lifetimes tracked through variables, which is what
+// coneref/reflifefn.html's unimplemented annotations are for.
+//
+// This function compiles clean, and that is the assertion.
+fn escapesThroughAVariable() &i32 {
+  mut chosen &i32
+  imm outer = 5
+  chosen = &outer
+  chosen
+}

@@ -1,0 +1,39 @@
+// One function's failure does not silence the next function's flow analysis.
+//
+// fnDclTypeCheck used to run blockFlow only while the global error count was
+// zero, so a single error anywhere earlier in the compile -- of any stage, in
+// any function -- turned off immutability checking, ErrorMove and the lifetime
+// checks for everything after it. A whole class of rule was enforced only in
+// files that were otherwise clean, which is how 'imm' came to look unenforced
+// when it had been checked since 2021.
+//
+// The gate is now per function: it compares the error count against the one on
+// entry, so a function whose own signature and body type checked is analyzed
+// whatever failed elsewhere. This file is the assertion. The first function
+// fails its type check and gets no flow analysis; the second and third type
+// check cleanly and report their flow diagnostics anyway.
+//
+// Two other gates are deliberately still global and are not what this asserts:
+// name resolution returns before type checking begins if it reported anything
+// (conec.c), and a module type checks no body if any signature failed
+// (module.c). Both are why the first function's error must be in its body.
+
+fn bodyFailsTypeCheck() i32 {
+  true                       //~ ErrorInvType:3 "Return expression type does not match return type on function"
+                             //~^^ ErrorInvType:25 "This is the declared function's return type" follow-on
+}
+
+// Reported only because the gate is per function now
+fn immStillChecked() i32 {
+  imm n = 3
+  n = 5                      //~ ErrorNoMut:3 "You do not have permission to modify lval"
+  n
+}
+
+// ... and a second offending function is reported too, where before only the
+// first function to reach flow analysis ever was
+fn immCheckedAgain() i32 {
+  imm m = 7
+  m = 9                      //~ ErrorNoMut:3 "You do not have permission to modify lval"
+  m
+}

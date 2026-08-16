@@ -118,19 +118,26 @@ type checking. A type-check expectation sharing a file with a parse error never
 runs, and the scenario silently covers half of what it claims. Same-stage errors
 accumulate, so one file carries several distinct codes of one stage.
 
-**Same-stage is not always enough**, because two passes gate themselves on the
-global error count rather than on their own:
+**Same-stage is not always enough**, because one pass still gates itself on the
+global error count rather than on its own:
 
-- **`module.c:181` runs a declaration's *body* only if `errors == 0`.** Every
-  signature is type-checked first, so a signature-phase diagnostic silently
-  suppresses every body-phase diagnostic in the same file — both of them
+- **`module.c` type checks a declaration's *body* only if `errors == 0`.** Every
+  signature in the module is type-checked first, so a signature-phase diagnostic
+  silently suppresses every body-phase diagnostic in the same file — both of them
   type-check stage.
-- **`fndcl.c:181` runs `blockFlow` only if `errors == 0`.** So one error
-  anywhere, of any stage, silences data-flow analysis for every function after
-  it. Anything reported from the flow pass — `ErrorMove`, the lifetime check in
-  `assign.c`, and `ErrorNoMut` on an assignment, which is a flow diagnostic and
-  not a type-check one despite appearances — needs a file of its own, and its
-  diagnostics must all come from the first function that errors.
+
+**`fndcl.c` no longer does.** `fnDclTypeCheck` compares the error count against
+the one it saw on entry, so data-flow analysis runs for any function whose own
+signature and body type checked, whatever failed elsewhere. Flow diagnostics —
+`ErrorMove`, the lifetime checks in `assign.c` and `return.c`, and `ErrorNoMut`
+on an assignment, which is a flow diagnostic and not a type-check one despite
+appearances — may now appear in several functions of one file, and after an
+earlier function has failed. `core-flow-gate` is the scenario that pins this.
+
+Existing flow scenarios were written under the old rule and are still one
+function each; that is now a simplification rather than a requirement. The
+module-level gate above is the reason a flow file still cannot open with a
+signature error.
 
 Four groups hit these while being written. If a scenario reports fewer
 diagnostics than it should and the missing ones are all late in the file, this is

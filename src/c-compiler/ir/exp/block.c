@@ -299,6 +299,8 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
     case ReturnTag:
     {
         INode **retexp = &((BreakRetNode *)*nodesp)->exp;
+        // Check the borrow's lifetime before flowLoadValue can replace the node
+        returnFlow((BreakRetNode *)*nodesp);
         int doalias = flowScopeDealias(0, &((BreakRetNode *)*nodesp)->dealias, *retexp);
         if (*retexp != unknownType && doalias) {
             flowLoadValue(fstate, retexp);

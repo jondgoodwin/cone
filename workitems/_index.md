@@ -59,7 +59,11 @@
 	- Defects the test suite found, by the decision each needs:
 		- [[Ownership memory safety]] — done; see `workitems/done/`
 		- [[Diagnose instead of crash]] — done; see `workitems/done/`
-		- [[Unenforced language rules]] — documented rules nothing checks
+		- [[Unenforced language rules]] — four entries closed, one in part;
+		  what remains waits on features rather than on checks
+		  (`RaceSafe`/`IsLockless` on [[Concurrency Threads]], `WarnCopy` and
+		  borrow freezing on [[Ownership memory safety]], lifetime tracking
+		  through variables)
 		- [[Compiler defect backlog]] — the residue, each with a clear answer
 - Build System:
 	- Import vs. Include (allow include inside a type?)

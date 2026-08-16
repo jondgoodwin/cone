@@ -46,6 +46,39 @@ void returnNameRes(NameResState *nstate, BreakRetNode *retnode) {
     inodeNameRes(nstate, &retnode->exp);
 }
 
+// A borrowed reference may not travel beyond the scope it was borrowed from.
+// assignlvalrtype enforces that between two variables; this enforces it at the
+// only other place a borrow can escape, the function's own return value.
+//
+// Borrow scopes count outward from the value borrowed from: 0 is a global, 1 is
+// a parameter (parseFnSig stamps every parameter with scope 1), and 2 or more is
+// a local of this function or of a block inside it. A global or a parameter
+// outlives the call; anything deeper is gone by the time the caller reads it.
+static void returnFlowEscape(INode *exp) {
+    if (!isExpNode(exp))
+        return;
+    // A value tuple returns each of its elements, so each is checked in turn
+    if (exp->tag == VTupleTag) {
+        INode **elemp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode*)exp)->elems, cnt, elemp))
+            returnFlowEscape(*elemp);
+        return;
+    }
+    RefNode *reftype = (RefNode *)((IExpNode*)exp)->vtype;
+    if (reftype == NULL || (reftype->tag != RefTag && reftype->tag != ArrayRefTag))
+        return;
+    if (reftype->region == borrowRef && reftype->scope > 1)
+        errorMsgNode(exp, ErrorEscape,
+            "Returned borrowed reference outlives the local value it points to");
+}
+
+// Perform data flow analysis on a return statement's value
+void returnFlow(BreakRetNode *retnode) {
+    if (retnode->exp)
+        returnFlowEscape(retnode->exp);
+}
+
 // Type check for return statement
 // Related analysis for return elsewhere:
 // - Block ensures that return can only appear at end of block

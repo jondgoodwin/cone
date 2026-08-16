@@ -124,6 +124,35 @@ void keywordInit() {
     keyAdd("true", trueToken);
     keyAdd("false", falseToken);
     keyAdd("undef", UndefToken);
+
+    // Words the language claims but has not implemented yet. Holding them now
+    // costs one rename in a program written today; letting a program bind one
+    // costs that program a rewrite when the feature arrives.
+    //
+    // The first group is every keyword reftoken.html already publishes as
+    // reserved that is not a token above. 'self' and 'this' are on that list too
+    // and are deliberately absent here: both already work, as a method's first
+    // parameter and as a 'with' block's value, so they are implemented rather
+    // than reserved.
+    keyAdd("async", ReservedToken);
+    keyAdd("baseurl", ReservedToken);
+    keyAdd("context", ReservedToken);
+    keyAdd("local", ReservedToken);
+    keyAdd("new", ReservedToken);
+    keyAdd("selfmethod", ReservedToken);
+    keyAdd("using", ReservedToken);
+    keyAdd("wait", ReservedToken);
+    keyAdd("yield", ReservedToken);
+
+    // The second group spells the syntax of features the reference describes but
+    // reftoken.html has not caught up with: refexcept.html for error handling,
+    // refcorout.html for coroutines, refconccomm.html for actors.
+    keyAdd("throw", ReservedToken);
+    keyAdd("catch", ReservedToken);
+    keyAdd("panic", ReservedToken);
+    keyAdd("assert", ReservedToken);
+    keyAdd("spawn", ReservedToken);
+    keyAdd("actor", ReservedToken);
 }
 
 // Initialize lexer
@@ -601,8 +630,23 @@ void lexScanIdent(char *srcp) {
                 // Substitute token type when identifier is a keyword
                 lex->val.ident = nametblFind(srcbeg, srcp-srcbeg);
                 identNode = (INode*)lex->val.ident->node;
-                if (identNode && identNode->tag == KeywordTag)
+                if (identNode && identNode->tag == KeywordTag) {
                     lex->toktype = identNode->flags;
+                    // A reserved word has no syntax to parse. Report it where it
+                    // was written, then release the name so the rest of the
+                    // compile treats it as the ordinary identifier the author
+                    // meant. Releasing it also reports each reserved word once,
+                    // at its first appearance, rather than at every use.
+                    if (lex->toktype == ReservedToken) {
+                        lex->srcp = srcp;
+                        errorMsgLex(ErrorReserved,
+                            "'%s' is reserved for a language feature that is not implemented yet. Rename it.",
+                            &lex->val.ident->namestr);
+                        lex->val.ident->node = NULL;
+                        lex->toktype = IdentToken;
+                        return;
+                    }
+                }
                 else if (identNode && identNode->tag == PermTag)
                     lex->toktype = PermToken;
                 else if (*srcbeg == '@')

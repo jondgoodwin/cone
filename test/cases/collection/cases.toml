@@ -28,9 +28,10 @@
 #   nine diagnostics, past the three-to-six limit.
 # - collection-flow is separate and is a single function, because whether an
 #   lval may be modified is decided in assignlvalrtype, which runs from
-#   blockFlow. Flow analysis runs per function only while the error count is
-#   zero, so one type-check error anywhere in a file silences every flow
-#   diagnostic in it, and one flow error silences flow for every later function.
+#   blockFlow. Flow analysis runs only on a function that type checked, so a
+#   type-check error in this file's own function would silence its every flow
+#   diagnostic. It no longer matters what other functions did: fnDclTypeCheck
+#   gates on this function's error count rather than on the global one.
 #
 # There is no parse-stage or name-resolution scenario. '&[]' is a single token
 # (lexical proves that) and a malformed slice type produces the generic
@@ -39,8 +40,9 @@
 #
 # Left uncovered on purpose:
 #
-# - ErrorBadSlice (1047). Declared in shared/error.h and raised nowhere in the
-#   compiler. There is no source that provokes it.
+# - Nothing stands where ErrorBadSlice (1047) did. It was declared in
+#   shared/error.h, raised nowhere, and has been deleted: '&[]' over a non-array
+#   is a one-element slice by design, so there was no condition for it to name.
 # - ErrorBadIndex on a slice -- a signed index, or the wrong number of indices.
 #   Both go through the same fnCallArrIndex checks the array group already
 #   asserts against an array, before the object's type is consulted at all, so
@@ -57,8 +59,9 @@
 #   indexed form of the same operator does dispatch, and struct covers it.
 # - An index past the end of a slice. It compiles, and the bounds check that
 #   would catch it aborts the process rather than failing an assertion.
-# - WarnCopy, ErrorNotLval, ErrorAddr, ErrorNoFlds and ErrorBadAlloc all sound
-#   as though a slice might provoke them. All five are dead in the compiler.
+# - WarnCopy sounds as though a slice might provoke it. It is declared in
+#   error.h and raised nowhere. ErrorNotLval, ErrorAddr and ErrorNoFlds sounded
+#   the same way and have been deleted; ErrorBadAlloc is now region's.
 
 support = []
 
@@ -137,10 +140,9 @@ description = "Comparing two slices with the operators the compiler declares for
 tags = ["typecheck"]
 xfail = true
 
-# The lifetime rule ref-flow asserts for a borrowed reference is not applied to
-# a slice, so a slice may outlive the array it points at.
+# The lifetime rule ref-flow asserts for a borrowed reference now also applies
+# to a slice, so a slice may no longer outlive the array it points at.
 [scenario.collection-flow-escape]
 category = "reject"
 description = "Storing a slice where it outlives the array it was borrowed from"
 tags = ["flow"]
-xfail = true
