@@ -10,10 +10,8 @@ Six defects in how owning references are generated and coerced, found by buildin
 the `region` group of the test suite. The evidence, with file and line, is under
 "Found while building the groups" in [[Add test suite]].
 
-**Four of the six are fixed**, and the two that remain are the two loud ones,
-left deliberately. Tracing the fourth uncovered three further defects in how flow
-analysis treats literals; all three are fixed, and the code generation defect that
-keeps the last one from being asserted at run time is recorded.
+**Five of the six are fixed.** Only fallible allocation remains of the original
+list. Tracing them uncovered four further defects, three of them fixed.
 
 ## Status
 
@@ -23,8 +21,8 @@ keeps the last one from being asserted at run time is recorded.
 | A moved `+so` reference double-frees | Silent corruption | **Fixed** — `flow.c` |
 | First assignment to an uninitialized `rc` releases garbage | Silent corruption | **Fixed** — `assign.c` + `genlexpr.c` |
 | A struct's `rc` owning field corrupts the heap on release | Silent corruption | **Fixed** — `genlalloc.c:62` |
-| A nested allocation | Loud, at compile time | **Open, deliberately** — `region-nested-alloc` |
-| Fallible allocation `?+rc-mut v` | Loud, immediately | **Open, deliberately** — [[Diagnose instead of crash]] |
+| A nested allocation fails module verification | Loud, at compile time | **Fixed** — `genlallocref`'s phi |
+| Fallible allocation `?+rc-mut v` | Loud, immediately | **Open** — see below |
 
 Found while fixing the above:
 
@@ -34,8 +32,16 @@ Found while fixing the above:
 | A temporary's reference is counted as a second holder | Silent leak | **Fixed** — `flowHandleMoveOrCopy` |
 | An array literal's elements are never moved or copied | Silent, same shape | **Fixed** — `arrayLitFlow` |
 | An array literal cannot be generated unless its elements are constants | Loud, at compile time | **Open** — `array-nonconst-literal` |
+| Every array-reference allocation takes the fill path | **Silent, wrong data** | **Open** — `genlalloc.c:227` |
 
-The suite went from 111 scenarios / 98 passed / 14 xfail to **118 / 107 / 12**.
+The suite went from 111 scenarios / 98 passed / 14 xfail to **118 / 108 / 11**.
+
+The last of those is the worst-behaved thing on this page and is one token:
+`((ArrayNode*)allocatenode->vtexp)->dimens > 0` tests a `Nodes*` pointer, which is
+never null there, instead of `->dimens->used > 0` as the same function does sixty
+lines earlier. So `+[]rc-mut [11i32, 22i32, 33i32]` compiles, runs, and fills the
+array with three copies of `11`. It belongs to array allocation rather than to
+ownership, but it is recorded here because this is where it was found.
 
 ## The question this work item asks
 

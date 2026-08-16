@@ -126,9 +126,12 @@ static int64_t arrayLitFillCount(ArrayNode *arrlit) {
 //   amount is a constant in the alias node, so a count known only at run time
 //   cannot be expressed and is refused rather than counted wrongly.
 //
-// Both refusals are the same condition, that a fill cannot repeat this value.
-// The general answer -- rewriting a fill into a loop that builds the elements one
-// at a time, before generation -- is recorded in the Types. Array work item.
+// The refusals carry two codes because they have two lifetimes. ErrorBadFill is a
+// language rule -- a move value has one owner, so it may not be repeated -- and
+// outlives this implementation. ErrorFillCount says only that the count cannot be
+// carried by a constant alias amount, and should disappear when a fill is rewritten
+// into a loop that builds the elements one at a time, before generation. That
+// general answer is recorded in the Types. Array work item.
 void arrayLitFlow(FlowState *fstate, ArrayNode **nodep) {
     ArrayNode *arrlit = *nodep;
     INode **elemsp;
@@ -157,12 +160,12 @@ void arrayLitFlow(FlowState *fstate, ArrayNode **nodep) {
 
     int64_t nbrelems = arrayLitFillCount(arrlit);
     if (nbrelems < 0) {
-        errorMsgNode(*valp, ErrorBadFill,
+        errorMsgNode(*valp, ErrorFillCount,
             "An array fill literal whose value is a counted reference needs an element count known at compile time.");
         return;
     }
     if (nbrelems > INT16_MAX) {
-        errorMsgNode(*valp, ErrorBadFill,
+        errorMsgNode(*valp, ErrorFillCount,
             "An array fill literal has too many elements to count a reference into.");
         return;
     }

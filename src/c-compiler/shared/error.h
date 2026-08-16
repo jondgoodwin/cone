@@ -92,6 +92,7 @@ enum ErrorCode {
 
     // Array literals
     ErrorBadFill = 1059,        // Array fill literal may not repeat this value
+    ErrorFillCount = 1060,      // Array fill literal's element count cannot be counted into
 
     // Warnings
     WarnCode = 3000,
