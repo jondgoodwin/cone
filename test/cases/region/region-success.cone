@@ -1,0 +1,261 @@
+// Owning references: what '+region-perm value' allocates, which region strategy
+// releases it, what permission it may carry, and how it interacts with the
+// borrowed references and move semantics the tiers below establish.
+//
+// Everything is printed. Allocation, aliasing and release are runtime behavior,
+// and a program that compiles proves none of it; the pairs that matter are a
+// write through one alias followed by a read through another, and a read after
+// the alias that made it went out of scope.
+//
+// Two regions exist, both defined in corelib.c: 'rc', which carries a reference
+// count and frees at zero, and 'so', which is declared '@move' and is freed by
+// its single owner. A third is declared here, because a region is an ordinary
+// struct with an '_alloc' method and nothing in the compiler restricts the set
+// to the two built in.
+//
+// Five things are deliberately absent, each with its own xfail scenario naming
+// the defect: moving a '+so' reference between variables, an allocation nested
+// inside another allocation, releasing a region-allocated struct that owns a
+// reference, assigning to an 'rc' variable declared without an initial value,
+// and passing an owning reference to a parameter expecting a borrowed one.
+
+import stdio::*
+
+fn show(label &[]u8, n i64) {
+  printStr(label)
+  printStr(" = ")
+  printInt(n)
+  printStr("\n")
+}
+
+// A region is a struct with an '_alloc' static method returning '*u8'. 'rc' also
+// declares a counter field and an 'init', which allocation calls; this one needs
+// neither, which is the smallest region that can exist.
+struct arena {
+  fn _alloc(size usize) *u8 inline { malloc(size) }
+}
+
+struct Plain {
+  n i32
+}
+
+struct Held {
+  r +rc-mut i32
+  n i32
+}
+
+struct Owned {
+  r +so i32
+  n i32
+}
+
+// -------- allocating --------
+
+fn allocates() {
+  // '+region-perm value' allocates a copy of the value in the region and yields
+  // an owning reference to it, which '*' reads and writes like any reference
+  mut r = +rc-mut 32u32
+  show("rc-allocated", i64[*r])
+  *r = *r + 1u
+  show("rc-written-through", i64[*r])
+
+  // 'so' is the single-owner region: no counter, freed when its owner dies
+  imm s = +so 21
+  show("so-allocated", i64[*s])
+
+  // A region is not a fixed set of two. This one is declared above.
+  imm a = +arena-mut 12
+  show("custom-region-allocated", i64[*a])
+
+  // The value allocated may be a struct as easily as a number
+  imm w = +so Plain[41]
+  show("allocated-struct-field", i64[w.n])
+}
+
+// -------- reference counting --------
+
+fn counts() {
+  // An 'rc' reference with an aliasable permission may be copied, and both
+  // names reach the one allocation: a write through either is seen by the other
+  mut first = +rc-mut 50
+  mut second = first
+  *second = 51
+  show("alias-sees-write", i64[*first])
+  *first = 52
+  show("original-sees-write", i64[*second])
+
+  // The count is what keeps the allocation alive: an alias made and dropped in
+  // an inner block releases its share, and the outer reference still reads
+  {
+    mut inner = first
+    *inner = 53
+  }
+  show("alive-after-alias-released", i64[*first])
+}
+
+// -------- permissions --------
+
+fn permissions() {
+  // Without an explicit permission an allocation is 'uni' -- one reference, no
+  // aliases -- which is what makes an owning reference a move type by default
+  imm sole = +rc 60
+  show("default-perm-uni", i64[*sole])
+
+  // The aliasable permissions an allocation may carry instead
+  imm shared = +rc-imm 61
+  imm readonly = +rc-ro 62
+  show("imm-perm", i64[*shared])
+  show("ro-perm", i64[*readonly])
+
+  // 'mut' is the one that may be written through, and the permission belongs to
+  // the reference rather than to the variable holding it
+  imm writable = +rc-mut 63
+  *writable = 64
+  show("mut-perm-writes", i64[*writable])
+}
+
+// -------- owning references in a struct --------
+
+fn fields() {
+  // A struct field may hold an owning reference. Its value is reached through
+  // the field exactly as through a variable.
+  mut h = Held[r: +rc-mut 70, n: 71]
+  show("rc-field", i64[*h.r])
+  *h.r = 72
+  show("rc-field-written", i64[*h.r])
+  show("plain-field-beside-it", i64[h.n])
+
+  // ... and a 'so' field, which the struct then solely owns
+  mut o = Owned[r: +so 73, n: 74]
+  show("so-field", i64[*o.r])
+  show("plain-field-beside-so", i64[o.n])
+
+  // An owning field is an lval like any other, and a tuple assignment reaches
+  // two of them at once. The 'rc' field's previous allocation loses a count on
+  // the way; the 'so' one's is only leaked, because genlStore counts 'rc' alone.
+  h.r, o.r = +rc-mut 75, +so 76
+  show("rc-field-reassigned", i64[*h.r])
+  show("so-field-reassigned", i64[*o.r])
+}
+
+// -------- owning references through calls --------
+
+fn makeRc() +rc-mut i32 { +rc-mut 80 }
+fn takeRc(r +rc-mut i32) i32 { *r }
+fn passRc(r +rc-mut i32) +rc-mut i32 { r }
+
+fn makeSo() +so i32 { +so 83 }
+fn takeSo(r +so i32) i32 { *r }
+
+// A branch may choose between an existing owning reference and a new allocation,
+// because both branches have the one reference type
+fn chooseRc(r +rc-mut i32) +rc-mut i32 {
+  imm chosen +rc-mut i32 = if *r == 81 { r } else { +rc-mut 82 }
+  chosen
+}
+
+// Several return values, one of them owning
+fn pairOut() u32, +rc-mut i32 {
+  24u, +rc-mut 85
+}
+
+fn calls() {
+  show("returned-from-call", i64[*makeRc()])
+  imm r = +rc-mut 81
+  show("passed-into-call", i64[takeRc(r)])
+  show("passed-out-and-back", i64[*passRc(r)])
+  show("branch-kept-argument", i64[*chooseRc(r)])
+  show("branch-allocated-instead", i64[*chooseRc(+rc-mut 9)])
+
+  // 'so' travels into and out of a call the same way, so long as it lands in
+  // no more than one variable on the way
+  show("so-into-call", i64[takeSo(+so 84)])
+  show("so-out-of-call", i64[*makeSo()])
+
+  // A tuple return carries an owning reference alongside a plain value
+  imm pair = pairOut()
+  show("tuple-plain-element", i64[pair.0])
+  show("tuple-owning-element", i64[*pair.1])
+}
+
+// -------- owning and borrowed references together --------
+
+fn onlyReads(n &i32) i32 { *n }
+
+fn withBorrows() {
+  // '&*r' borrows from what an owning reference points at, and the borrow is
+  // an ordinary borrowed reference: it passes to a function asking for '&i32'
+  imm r = +rc-mut 90
+  imm b = &*r
+  show("borrowed-from-owning", i64[*b])
+  show("borrow-passed-to-reader", i64[onlyReads(b)])
+
+  // Owning references compare by the address they carry, like borrowed ones
+  imm alias = r
+  imm other = +rc-mut 90
+  mut bits = 0
+  if r == alias { bits = bits + 1 }
+  if r != other { bits = bits + 2 }
+  if r == other { bits = bits + 4 }
+  show("owning-ref-equality-bits", i64[bits])
+}
+
+// -------- assignment and exchange --------
+
+fn assigns() {
+  // Assignment through owning references chains the way any assignment does
+  mut a = +rc-mut 100
+  mut b = +rc-mut 200
+  a = b = makeRc()
+  show("chained-assign-left", i64[*a])
+  show("chained-assign-right", i64[*b])
+
+  // Swap exchanges two owning references without either being released
+  mut c = +rc-mut 110
+  mut d = +rc-mut 120
+  c <=> d
+  show("swap-left", i64[*c])
+  show("swap-right", i64[*d])
+}
+
+// -------- allocating in a loop --------
+
+fn repeats() {
+  // Each iteration allocates and releases its own value
+  mut i = 0
+  mut total = 0
+  while i < 4 {
+    mut r = +rc-mut i
+    total = total + *r
+    i++
+  }
+  show("loop-allocation-total", i64[total])
+}
+
+// -------- function references --------
+
+// Comparison of two function references. 'ref' owns function references and
+// compared data references only, so this one pairing was left here.
+fn one() u32 { 1u }
+fn two() u32 { 2u }
+
+fn fnrefCompares() {
+  mut bits = 0
+  if &one == &one { bits = bits + 1 }
+  if &one != &two { bits = bits + 2 }
+  if &one == &two { bits = bits + 4 }
+  show("fnref-equality-bits", i64[bits])
+}
+
+fn main() i32 {
+  allocates()
+  counts()
+  permissions()
+  fields()
+  calls()
+  withBorrows()
+  assigns()
+  repeats()
+  fnrefCompares()
+  0i32
+}

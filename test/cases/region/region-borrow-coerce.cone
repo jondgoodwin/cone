@@ -1,0 +1,24 @@
+// Defect: an owning reference does not coerce to a borrowed reference, and a
+// borrowed reference does coerce to an owning one. The two directions are
+// exactly backwards.
+//
+// regionMatches in ir/types/reference.c decides whether one reference's region
+// may stand in for another's, and returns CastSubtype when its 'to' argument is
+// the borrow region. refMatches calls it as regionMatches(from->region,
+// to->region), so the parameter it tests as the target is the source, and the
+// rule reads in reverse: an allocation may be passed where a borrow is wanted
+// only in the direction that is unsound.
+//
+// Only the rejecting half can be asserted. The accepting half compiles clean and
+// runs, handing a stack address to a parameter typed as an owning reference; a
+// scenario for it would have to claim a diagnostic that never comes.
+//
+// The success program routes around this with '&*r', which borrows from what the
+// owning reference points at and yields an ordinary borrowed reference.
+
+fn onlyReads(n &i32) i32 { *n }
+
+fn f() i32 {
+  imm owned = +rc-mut 90
+  onlyReads(owned)
+}
