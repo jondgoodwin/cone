@@ -67,6 +67,13 @@ typedef struct INode {
 #define isNamedNode(node) ((node)->tag & NamedNode)
 #define isMethodType(node) (isTypeNode(node) && ((node)->tag & MethodType))
 
+// A parameterless macro's name stands for the value its body expands to, but it
+// is a meta node until type check performs that expansion. A position that
+// decides by node kind whether a statement can give a value -- a block's final
+// statement, a function's implicit return -- has to count the name as one, or
+// it is rejected before it ever gets the chance to expand.
+#define isExpOrMacroNode(node) (isExpNode(node) || (node)->tag == MacroNameTag)
+
 // All the possible tags for a node
 enum NodeTags {
     ProgramTag = StmtGroup,

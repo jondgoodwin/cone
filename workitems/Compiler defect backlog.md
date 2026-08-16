@@ -232,6 +232,40 @@ object of an operator call, or the block's value — rather than an argument.
 scheduled, since it may or may not claim a parameterless macro is a value
 anywhere a value goes. Route to [[Macro and Inline]].
 
+**Status: fixed, and it was three positions in two places, not two in one.**
+`refmacro.html` turned out to document only `macro max[a, b]` and never to
+mention the parameterless form at all, so Jon ruled it: a parameterless macro's
+name expands wherever a value is expected. The page now says so.
+
+The two failures had nothing in common but the symptom. The operand case fires
+in `macroCallTypeCheck` — measured, with the arity it saw: `expected=0 args=1`.
+`a + b` builds `FnCallNode{objfn: a, methfld: the operator, args: [b]}`, the same
+shape as calling `a` with one argument, and `fnCallTypeCheck` routed to the macro
+path on `objfn` alone. `methfld` is what tells a call from an application, and the
+route is now gated on it being absent. Parentheses never helped because they
+leave no node behind.
+
+The block case never reaches the macro path at all. `MacroNameTag` sits in
+`MetaGroup`, so `isExpNode` is false for it, and `fnImplicitReturn` runs *before*
+type check: it saw a last statement that was not an expression and reported
+`ErrorNoRet` before anything could expand. That is the whole of why `return TWO`
+worked and bare `TWO` did not — the parser had already built the `ReturnTag` in
+one case and not the other. `blockTypeCheck` carries the same test, which is why
+`if c {TWO} else {3}` failed too as a fourth position nobody had listed. Both now
+use `isExpOrMacroNode`, and both downstream paths type check the node before
+asking whether it is an expression, so the name expands and then answers.
+
+Macros *with* parameters are untouched: `MAX[1]` and bare `MAX` report exactly
+what they did. `MAX + 1` now reports "expects arguments to be provided" plus its
+follow-on rather than the arity of a call nobody wrote, which is what bare `MAX`
+already said.
+
+`generic-macro` runs all eight value positions and prints a different constant
+from each, so the `.out` proves which expansion produced which number rather than
+that it merely type checked. `generic-typecheck-macro` and the group's
+`cases.toml` both recorded the two positions as deliberately left out; both said
+so as though it were the rule, and both are gone.
+
 ### 4. Does `closure-capture` belong on this page?
 
 **No.** The backlog page is for defects with a clear right answer and no language

@@ -537,7 +537,14 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 
     // If we have a true macro, go handle it elsewhere
     // Note: Macros don't want us to type check arguments until after substitution
-    if (node->objfn->tag == MacroNameTag) {
+    //
+    // Only when the macro name is what is being called. An operator or method
+    // application builds the same node shape as a call -- 'TWO + 1' is
+    // objfn 'TWO', methfld '+', one argument -- so methfld is what tells the two
+    // apart. With it set, the name is the receiver a value is expected of, and
+    // it expands below like the name in any other value position; the operator
+    // is then applied to what it expanded to.
+    if (node->objfn->tag == MacroNameTag && node->methfld == NULL) {
         macroCallTypeCheck(pstate, nodep);
         return;
     }
