@@ -1,0 +1,54 @@
+// What a virtual reference may be made of, and what may be turned into one.
+// Every diagnostic here is about a type not fitting where a virtual reference
+// is asked for, or about a virtual reference not fitting where a plain type is;
+// trait-typecheck-dispatch has the ones about using a virtual reference that
+// does typecheck.
+//
+// Everything is inside a function body. A virtual reference in a parameter's
+// type would be checked in the signature pass, whose errors suppress every
+// body-pass diagnostic in the file (module.c), so the one function taking one
+// is written to be correct.
+
+trait Shape {
+  fn area(self &) i32
+}
+
+struct Rect {
+  w i32
+  fn area(self &) i32 {w}
+}
+
+// Declares nothing the trait asks for
+struct Blob {
+  z i32
+}
+
+fn virtualArea(s &<Shape) i32 {
+  s.area()
+}
+
+fn misuse() {
+  imm r = Rect[2]
+  imm b = Blob[3]
+
+  // A trait is abstract, so it is not a type a value can have. Only a
+  // reference to one is usable.
+  mut bare Shape   //~ ErrorInvType:7 "must be concrete and instantiable"
+
+  // A virtual reference's target must be a struct or trait; a number has no
+  // vtable to build
+  imm toNumber &<i32 = &r   //~ ErrorInvType:16 "must be to a struct or trait"
+                            //~^ ErrorInvType:24 "does not match variable's declared type" follow-on
+
+  // Blob satisfies nothing Shape requires, so no vtable can be built for it and
+  // the reference does not coerce
+  imm fromBlob &<Shape = &b   //~ ErrorInvType:26 "does not match variable's declared type"
+
+  // The same rejection at a call, where the parameter is what asks
+  virtualArea(&b)   //~ ErrorInvType:15 "does not match declared parameter"
+
+  // A virtual reference does not silently become a plain one again: the
+  // concrete type has to be recovered by matching on it
+  imm ok &<Shape = &r
+  imm back &Rect = ok   //~ ErrorInvType:20 "does not match variable's declared type"
+}

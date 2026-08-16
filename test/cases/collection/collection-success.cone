@@ -1,0 +1,216 @@
+// Array references and slices: what '&[]' produces from an array, what a slice
+// knows that an array does not, and that reading and writing through a slice
+// reach the array it was borrowed from.
+//
+// Everything is printed, and every write through a slice is followed by a read
+// of the underlying array (and every write to the array by a read through the
+// slice), because a slice that compiles is not a slice that aliases. A length
+// that is right and elements that are wrong would otherwise pass.
+//
+// The fixed-size array itself -- its type, its literals, its own indexing and
+// its copy semantics -- is array's subject and is used here only as the thing a
+// slice is borrowed from. Plain borrowed references are ref's; '&mut' appears
+// here only where a slice or an element of one is what is borrowed.
+
+import stdio::*
+
+fn show(label &[]u8, n i64) {
+  printStr(label)
+  printStr(" = ")
+  printInt(n)
+  printStr("\n")
+}
+
+fn showU(label &[]u8, n u64) {
+  printStr(label)
+  printStr(" = ")
+  printUInt(n)
+  printStr("\n")
+}
+
+// -------- taking a slice, and what it knows --------
+
+fn borrowing() {
+  mut b [4; i32] = [1, 2, 3, 4]
+
+  // '&[]' borrows a slice over the whole array. The length is carried by the
+  // slice rather than by its type, which is the difference that matters: the
+  // array's length is in '[4; i32]', the slice's is a value it holds.
+  imm s = &[]b
+  showU("slice-len", s.len)
+
+  // 'maxlen' is the second name for the same count, for a slice over a
+  // fixed-size array where the two cannot differ
+  showU("slice-maxlen", s.maxlen)
+
+  // A slice may be read by index like the array it came from
+  show("slice-index-read", s[1])
+
+  // The permission is written between '&[]' and the array, as on any borrow
+  imm rw = &[]mut b
+  showU("mut-slice-len", rw.len)
+
+  // A slice type may also be stated on the variable rather than inferred
+  imm stated &[]i32 = &[]b
+  show("stated-slice-type", stated[2])
+}
+
+// -------- a slice aliases the array it was borrowed from --------
+
+fn aliasing() {
+  mut b [4; i32] = [10, 20, 30, 40]
+  imm s = &[]mut b
+
+  // A write through the slice lands in the array
+  s[1] = 99
+  show("write-slice-read-array", b[1])
+
+  // ... and a write to the array is visible through the slice
+  b[2] = 77
+  show("write-array-read-slice", s[2])
+
+  // An element may be copied from the array into the slice, which is the same
+  // memory reached two ways
+  s[0] = b[3]
+  show("array-elem-into-slice", b[0])
+}
+
+// -------- indexing by a value only known at run time --------
+
+fn runtimeIndex(i usize) {
+  mut b [4; i32] = [5, 6, 7, 8]
+  imm s = &[]mut b
+
+  // The index is a variable, so no constant folding can stand in for the
+  // element being fetched from the slice's data pointer
+  show("runtime-index-read", s[i])
+  s[i] = 60
+  show("runtime-index-write", b[i])
+}
+
+// -------- references to elements --------
+
+fn elementRefs() {
+  mut b [4; i32] = [1, 2, 3, 4]
+
+  // A reference to an array element is a plain '&i32', not a slice
+  imm r = &b[1]
+  show("array-elem-ref-read", *r)
+
+  // The same borrow through a slice reaches the same element, so writing
+  // through it is visible in the array
+  imm s = &[]mut b
+  imm refelem = &mut s[0]
+  *refelem = 50
+  show("slice-elem-ref-write", b[0])
+
+  // The element reference is independent of the slice it came from: the slice
+  // may still be used afterwards
+  s[0] = s[0] + 1
+  show("slice-after-elem-ref", *refelem)
+}
+
+// -------- slices as parameters and results --------
+
+fn sumFirstTwo(s &[]i32) i32 {
+  s[0] + s[1]
+}
+
+fn setFirst(s &[]mut i32, n i32) {
+  s[0] = n
+}
+
+// A slice borrowed from the parameter's array outlives the call, because what
+// it points at belongs to the caller
+fn wholeOf(a &mut [4; i32]) &[]mut i32 {
+  &[]mut *a
+}
+
+fn firstOf(s &[]mut i32) &mut i32 {
+  &mut s[0]
+}
+
+fn parameters() {
+  mut b [4; i32] = [1, 2, 3, 4]
+  imm s = &[]mut b
+
+  // A 'mut' slice coerces to the 'ro' slice a reading function asks for, the
+  // same way a 'mut' reference does
+  show("mut-slice-to-ro-parm", sumFirstTwo(s))
+
+  // An array auto-borrows to a slice at a call, so the caller need not write
+  // '&[]' at all. This is the rule that lets printStr take '&[]u8' and be
+  // handed a string literal.
+  show("array-auto-borrows", sumFirstTwo(b))
+
+  // A slice parameter that may write reaches the caller's array
+  setFirst(s, 11)
+  show("write-through-slice-parm", b[0])
+
+  // A slice may be produced by a function as well as consumed by one
+  imm whole = wholeOf(&mut b)
+  showU("returned-slice-len", whole.len)
+  whole[3] = 44
+  show("write-through-returned-slice", b[3])
+
+  // ... and so may a reference to one of its elements
+  imm first = firstOf(s)
+  *first = 12
+  show("write-through-returned-elem-ref", b[0])
+}
+
+// -------- a slice over a byte array is what a string literal borrows to --------
+
+fn byteLen(s &[]u8) u64 {
+  u64[s.len]
+}
+
+fn bytes() {
+  // A string literal's type is an array of u8, and it auto-borrows to '&[]u8'
+  // exactly as any other array auto-borrows to a slice of its element type
+  showU("string-literal-len", byteLen("hello"))
+
+  // A u8 array reaches the same parameter, which is the fact that makes the
+  // literal's case unremarkable rather than special
+  mut raw [3; u8] = [65u8, 66u8, 67u8]
+  showU("u8-array-len", byteLen(raw))
+}
+
+// -------- slices in other positions --------
+
+mut totals [3; i32] = [100, 200, 300]
+
+struct Window {
+  mut view &[]mut i32
+}
+
+fn globals() {
+  // A global array is borrowed exactly as a local one is
+  imm g = &[]mut totals
+  showU("global-slice-len", g.len)
+  g[0] = 111
+  show("write-through-global-slice", totals[0])
+}
+
+fn members() {
+  mut b [4; i32] = [1, 2, 3, 4]
+
+  // A slice is a value, so a struct may hold one, and the struct then aliases
+  // the array the slice was borrowed from
+  mut w = Window[&[]mut b]
+  showU("member-slice-len", w.view.len)
+  w.view[2] = 33
+  show("write-through-member-slice", b[2])
+}
+
+fn main() i32 {
+  borrowing()
+  aliasing()
+  runtimeIndex(2)
+  elementRefs()
+  parameters()
+  bytes()
+  globals()
+  members()
+  0i32
+}
