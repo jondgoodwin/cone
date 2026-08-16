@@ -1,37 +1,32 @@
-// Defect: an array fill literal holding a counted reference cannot be generated,
-// so the count it asks for cannot be asserted against generated code.
+// An array fill literal holding a counted reference asks for one alias amount
+// covering every element it makes, and this asserts the number.
 //
 // The count is how many holders exist, which region-success establishes for a
 // single binding: an lvalue keeps its reference, so copying from one adds a
 // holder, while a temporary hands over the reference it was born holding and
 // adds none. A fill '[n; value]' stores one value into n elements, so the amount
 // is n from an lvalue and n-1 from a temporary, and the non-fill case is exactly
-// n = 1. Flow analysis injects that amount today; what fails is behind it.
+// n = 1. Flow analysis injects that amount once, ahead of the elements, so it
+// reaches the counter as a single add rather than as n of them.
 //
-// The cause is not in this group and has nothing to do with regions. An array
-// literal is generated with LLVMConstArray, so any element that is the result of
-// an instruction -- and an allocation always is -- builds a constant array with
-// instruction operands, which the module verifier rejects. array-nonconst-literal
-// records that with an i32.
+// The amount is the whole claim and no run could see it: too low frees the
+// allocation while the array still points at it, too high leaks it, and stdout
+// shows neither. So the counter adjustment in the generated IR is the only place
+// the number is visible, and the two llvmir checks in cases.toml read it there --
+// 'add i64 %5, 12' for the fill below that copies from an lvalue, and
+// 'add i64 %5, 11' for the one that consumes a temporary. That is why this stays
+// a 'compile' scenario carrying checks rather than becoming a 'run'.
 //
-// This is what will assert the amount once the literal generates: a leak and a
-// use after free are equally silent on stdout, so the counter adjustment in the
-// generated IR is the only place the number is visible.
-//
-// So this scenario is deliberately an xfail carrying no check, and it is the
-// signal as much as the record. The day array-nonconst-literal is fixed this
-// compiles, flips to XPASS and fails the suite -- and the work that falls due at
-// that moment is to add the two llvmir checks the amount has been waiting for:
-// 'add i64 %<n>, 12' from the lvalue fill below, and 'add i64 %<n>, 11' from the
-// temporary. Until then the amount is emitted and correct but unasserted, which
-// is the one thing about it worth not forgetting.
+// This could not be asserted until an array literal generated at all. Both forms
+// were built as a constant array, which cannot hold the result of an instruction
+// and an allocation always is, so the module failed verification before any of
+// this was reachable; array-nonconst-literal owns that fix.
 //
 // Neither allocation below is ever released. An array whose elements are owning
 // references is not walked at scope exit -- flowScopeDealias visits variables
 // whose own type is an owning reference, and an array's is not -- so both leak.
 // Counting n holders is still what makes that a leak rather than a use after
-// free, which is what the count did before an array literal reached flow
-// analysis at all.
+// free, which is what the count is for.
 
 fn fillFromLval() {
   imm r = +rc-mut 7i32

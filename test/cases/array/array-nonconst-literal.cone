@@ -1,21 +1,86 @@
-// Defect: an array literal whose elements are not compile-time constants
-// generates invalid LLVM IR, and the module fails verification.
+// An array literal whose elements are computed rather than constant: both
+// literal forms, and an element type that is a struct as well as a number.
 //
-// genlExpr builds both literal forms with LLVMConstArray, which takes constants.
-// Handed the result of an instruction instead -- the load of a variable, of a
-// parameter, of anything computed -- it produces a constant array whose operands
-// are instructions, and the verifier reports "Use of instruction is not an
-// instruction!". Both forms are affected and the element type is irrelevant:
-// array-success only ever writes literal elements, which is why the group did
-// not see this.
+// A constant aggregate's operands must themselves be constants, so an element
+// that is the result of an instruction -- a variable read, arithmetic, a call --
+// cannot go into the constant array both forms were once built with. genlExpr
+// keeps that form only when every element qualifies and otherwise builds the
+// array up with insertvalue, which is what a struct literal has always done.
 //
-// It is the reason no fill literal holding a counted reference can be asserted
-// against generated code; region-fill-count records that consequence.
+// Everything is printed, because an array that survives verification is not an
+// array whose elements arrived: an insertvalue chain that indexed wrongly, or
+// dropped an element, would still generate and still verify. The values are
+// derived from a parameter so that nothing here can fold to a constant, and the
+// all-constant literal is kept alongside them to hold the cheaper form down.
 
-fn nonconstFill(n i32) {
-  imm a = [3; n]
+import stdio::*
+
+fn show(label &[]u8, n i64) {
+  printStr(label)
+  printStr(" = ")
+  printInt(n)
+  printStr("\n")
 }
 
-fn nonconstList(n i32) {
-  imm a = [n, n]
+struct Point {
+  mut x i32
+  mut y i32
+}
+
+fn twice(n i32) i32 {
+  n + n
+}
+
+// -------- the fill form --------
+
+fn fillFromComputed(n i32) {
+  // One computed value repeated: every element must be that value
+  imm a = [3; twice(n)]
+  show("fill-first", a[0])
+  show("fill-middle", a[1])
+  show("fill-last", a[2])
+}
+
+// -------- the list form --------
+
+fn listFromComputed(n i32) {
+  // Each element a different instruction, so a chain that mixed up its indices
+  // would show up as the wrong number rather than as a verifier complaint
+  imm a = [n, n + 1, twice(n), n - 1]
+  show("list-0", a[0])
+  show("list-1", a[1])
+  show("list-2", a[2])
+  show("list-3", a[3])
+}
+
+// -------- element type is irrelevant --------
+
+fn structElems(n i32) {
+  imm a = [2; Point[n, twice(n)]]
+  show("struct-fill-x", a[1].x)
+  show("struct-fill-y", a[1].y)
+
+  imm b = [Point[n, 1], Point[2, n]]
+  show("struct-list-x", b[0].x)
+  show("struct-list-y", b[1].y)
+}
+
+// -------- the constant form still works --------
+
+fn constantsUnchanged() {
+  // Every element a constant, which is the form that was always generated
+  imm a = [11, 22, 33]
+  show("const-first", a[0])
+  show("const-last", a[2])
+
+  imm b = [3; 44]
+  show("const-fill", b[1])
+}
+
+fn main() i32 {
+  fillFromComputed(5i32)
+  listFromComputed(10i32)
+  structElems(3i32)
+  constantsUnchanged()
+  0i32
 }

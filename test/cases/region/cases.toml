@@ -86,8 +86,11 @@
 # inner allocation's own branches had already displaced, so it read the block back
 # from the builder instead.
 #
-# One xfail remains, and it is not code generation ignoring an earlier phase:
-# region-fill-count waits on an array literal being generatable at all.
+# No xfail remains. The last one was region-fill-count, and what it was waiting
+# on was not this group's: an array literal built as a constant array could not
+# hold an allocation, so the fill did not survive module verification and the
+# amount had nowhere to be read. array-nonconst-literal fixed that, and the two
+# llvmir checks the amount had been waiting for now assert it.
 
 support = []
 
@@ -131,19 +134,26 @@ category = "run"
 description = "Releasing a region-allocated struct releases the '+so' reference its field owns, once"
 tags = ["flow", "genllvm", "runtime"]
 
-# -------- known defects --------
-
-# The amount is the whole claim, and no run could see it anyway: too low frees
-# the allocation while the array still points at it, too high leaks it, and
-# stdout shows neither. It carries no llvmir check yet, because there is no
-# generated code to check -- the literal itself does not survive module
-# verification, for a reason array-nonconst-literal owns. Written without one
-# rather than with a needle nothing has ever produced.
+# The amount is the whole claim, and no run could see it: too low frees the
+# allocation while the array still points at it, too high leaks it, and stdout
+# shows neither. So it is a 'compile' carrying llvmir checks, which is the one
+# place the number appears. The register numbers below were read out of the dump
+# rather than chosen; the two functions are the same shape up to the amount, so
+# 12 against 11 is exactly the lvalue-versus-temporary difference being asserted.
 [scenario.region-fill-count]
 category = "compile"
 description = "An array fill literal counting its value into every element: n holders from an lvalue, n-1 from a temporary"
 tags = ["flow", "genllvm"]
-xfail = true
+
+[[scenario.region-fill-count.check]]
+name = "fill-from-lvalue-counts-n"
+target = "llvmir"
+contains = ["add i64 %5, 12"]
+
+[[scenario.region-fill-count.check]]
+name = "fill-from-temporary-counts-n-minus-one"
+target = "llvmir"
+contains = ["add i64 %5, 11"]
 
 # -------- parse stage --------
 
