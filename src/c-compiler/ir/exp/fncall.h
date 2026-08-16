@@ -22,6 +22,10 @@ FnCallNode *newFnCallNode(INode *objfn, int nnodes);
 // Create new fncall node, prefilling method, self, and creating room for nnodes args
 FnCallNode *newFnCallOpname(INode *obj, Name *opname, int nnodes);
 FnCallNode *newFnCallOp(INode *obj, char *op, int nnodes);
+// The '...Lower' forms position the new node on an existing one rather than on
+// wherever the lexer has reached, which is what a node synthesized after its
+// construct was parsed needs.
+FnCallNode *newFnCallOpnameLower(INode *oldnode, INode *obj, Name *opname, int nnodes);
 FnCallNode *newFnCallLower(INode *oldnode, INode *obj, int nnodes);
 
 // Clone fncall

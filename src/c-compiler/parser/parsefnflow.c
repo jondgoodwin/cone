@@ -287,18 +287,25 @@ INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag) {
     // { mut elemname = initial; while elemname <= iterend { ... ; elemname += step}}
     if (isrange) {
         FnCallNode *itercmp = (FnCallNode *)iter;
+        // Every node below is built after parseExprBlock has consumed the whole
+        // loop body, so the lexer sits on the token following the body's '}' --
+        // which is usually the enclosing function's. Position them on the range
+        // expression instead, since that is what the reader wrote and what the
+        // diagnostic is really about.
         VarDclNode *elemdcl = newVarDclNode(elemname, VarDclTag, (INode*)mutPerm);
+        inodeLexCopy((INode*)elemdcl, iter);
         elemdcl->value = itercmp->objfn;
         nodesAdd(&((BlockNode*)outerblk)->stmts, (INode*)elemdcl);
-        itercmp->objfn = (INode*)newNameUseNode(elemname);
+        itercmp->objfn = (INode*)newNameUseFromLex(elemname, iter);
         if (step) {
-            FnCallNode *pluseq = newFnCallOpname((INode*)newNameUseNode(elemname), plusEqName, 1);
+            FnCallNode *pluseq = newFnCallOpnameLower(iter, (INode*)newNameUseFromLex(elemname, iter), plusEqName, 1);
             pluseq->flags |= FlagOpAssgn | FlagLvalOp;
             nodesAdd(&pluseq->args, step);
             nodesAdd(&loopnode->stmts, (INode*)pluseq);
         }
         else {
-            INode *incr = (INode *)newFnCallOpname((INode *)newNameUseNode(elemname), isrange > 0 ? incrPostName : decrPostName, 0);
+            INode *incr = (INode *)newFnCallOpnameLower(iter, (INode *)newNameUseFromLex(elemname, iter),
+                isrange > 0 ? incrPostName : decrPostName, 0);
             incr->flags |= FlagLvalOp;
             nodesAdd(&loopnode->stmts, incr);
         }

@@ -1,18 +1,20 @@
 // Ranges whose parts do not agree once the loop has been rewritten.
 //
 // 'each' has no type rules of its own: the parser lowers it into a comparison,
-// an increment and possibly a '+=', and it is those that are type checked. That
-// is why two of the three diagnostics below are reported at their function's
-// closing '}' rather than at the loop -- the nodes the parser synthesizes carry
-// the lexer's position at the time the block finished parsing, not the position
-// of the range that produced them. The annotations therefore sit on the '}' of
-// the function, and the comment above each one says which loop it is really
-// about.
+// an increment and possibly a '+=', and it is those that are type checked. So
+// the diagnostics below name operators nothing in this file spells -- '+++' is
+// the post-increment appended to the loop body, and '+' is the '+=' a 'by'
+// step becomes.
+//
+// They are reported on the range that produced them. They used to land on the
+// enclosing function's closing '}': parseEach builds those nodes after
+// parseExprBlock has consumed the whole loop body, so they carried whatever
+// position the lexer had reached, which is the token after the body. Each
+// synthesized node is now positioned on the range expression instead.
 
 // The two bounds are the operands of one comparison, so they must be of one
 // type. An i32 lower bound and a u32 upper bound have no '<=' between them, and
-// the condition is then untyped for the 'while' that wants a boolean. This one
-// is reported where it belongs, on the operator.
+// the condition is then untyped for the 'while' that wants a boolean.
 fn mismatchedBounds() {
   each i in 0 <= 5u {    //~ ErrorNoCandidate:15 "No method declared by `<=`"
   }                      //~^ ErrorInvType:15 follow-on
@@ -20,17 +22,15 @@ fn mismatchedBounds() {
 
 // Whatever the bounds are, the loop variable is stepped by the increment
 // operator, so a type with no '++' cannot be iterated over however well its
-// comparison type checks. The '+++' is the post-increment the parser appended
-// to the body of the loop just below.
+// comparison type checks.
 fn notIncrementable() {
-  each b in false < true {
+  each b in false < true {  //~ ErrorNoMbr:19 "`+++` not found"
   }
-}                        //~ ErrorNoMbr:1 "`+++` not found"
+}
 
 // A 'by' step becomes a '+=' on the loop variable, so it has to be a type the
-// variable can be added to. An unsigned step does not add to a signed one. The
-// '+' is the '+=' the parser appended to the body of the loop just below.
+// variable can be added to. An unsigned step does not add to a signed one.
 fn mismatchedStep() {
-  each i in 0 < 5 by 1u {
+  each i in 0 < 5 by 1u {  //~ ErrorNoCandidate:15 "No method declared by `+`"
   }
-}                        //~ ErrorNoCandidate:1 "No method declared by `+`"
+}
