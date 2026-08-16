@@ -1,16 +1,13 @@
-// Defect: releasing a region-allocated struct that owns a '+so' reference
-// corrupts the heap, even though the same shape with an 'rc' field works --
-// region-owning-field asserts that one.
+// Releasing a region-allocated struct that owns a '+so' reference frees that
+// reference once, through the single owner the struct's field became.
 //
-// The cause is not in this group. A type literal's field initializers do not
-// apply move semantics, so naming 'inner' in the literal never deactivates it.
-// The variable stays on the scope's dealias list and frees the allocation that
-// the struct's field now also owns, so the release path runs twice. The same gap
-// is a use-after-move hole in its own right, which move-flow-literal records.
+// The literal's field value moves, so naming 'inner' there deactivates it and it
+// leaves the scope's dealias list. Only the struct's field releases the
+// allocation. While literals were treated as leaves by flow analysis, both the
+// variable and the field released it and the run corrupted the heap.
 //
-// Loading the field in genlDealiasFlds -- the fix region-owning-field needed --
-// does not help here: the second release is the source variable's, not the
-// field's. This one waits on the move semantics being settled.
+// region-owning-field is the same shape with an 'rc' field, where the second
+// holder is counted rather than forbidden.
 
 import stdio::*
 

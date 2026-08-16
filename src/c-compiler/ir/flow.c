@@ -59,14 +59,33 @@ void flowInjectAliasNode(INode **nodep) {
 
 // Handle when we know we are either copying or moving a value
 // (e.g., for assignment or function arguments).
+// Does this expression still hold its value after it is read?
+// An lvalue names storage that keeps it; anything else is a temporary.
+int flowIsLvalRead(INode *node) {
+    switch (node->tag) {
+    case VarNameUseTag:
+    case DerefTag:
+    case ArrIndexTag:
+    case FldAccessTag:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 void flowHandleMoveOrCopy(INode **nodep) {
-    uint16_t moveflag = itypeGetTypeDcl(((IExpNode *)*nodep)->vtype)->flags & MoveType;
     if (iexpIsMove(*nodep)) {
         // Moving needs to deactivate source variable use
         flowHandleMove(*nodep);
     }
     else {
-        flowInjectAliasNode(nodep);
+        // A reference count is how many holders exist. Only an lvalue still
+        // holds its reference afterwards, so only an lvalue adds a holder. A
+        // temporary -- an allocation, a call's result, a literal -- hands over
+        // the reference it was born holding, and counting that again would
+        // count one holder twice.
+        if (flowIsLvalRead(*nodep))
+            flowInjectAliasNode(nodep);
     }
 }
 
@@ -130,12 +149,15 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         break;
     }
 
+    case TypeLitTag:
+        typeLitFlow(fstate, (FnCallNode**)nodep);
+        break;
+
     case SizeofTag:
     case NilLitTag:
     case ULitTag:
     case FLitTag:
     case StringLitTag:
-    case TypeLitTag:
     case ArrayLitTag:
     case AbsenceTag:
     case UnknownTag:

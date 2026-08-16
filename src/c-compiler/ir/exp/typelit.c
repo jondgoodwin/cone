@@ -155,6 +155,21 @@ void typeLitStructCheck(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *
 
 // Check the list node
 // Note:  We get here from FnCallTypeCheck, which has already checked that all arguments are expressions
+// Perform data flow analysis on a type literal's field values.
+// A literal initializes its fields from expressions, so each value is moved or
+// copied exactly as a function call's argument is. A value given by field name
+// is wrapped in a NamedValNode, which is unwrapped here so the decision is made
+// about the value itself.
+void typeLitFlow(FlowState *fstate, FnCallNode **nodep) {
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor((*nodep)->args, cnt, argsp)) {
+        INode **valp = (*argsp)->tag == NamedValTag ? &((NamedValNode *)*argsp)->val : argsp;
+        flowLoadValue(fstate, valp);
+        flowHandleMoveOrCopy(valp);
+    }
+}
+
 void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *arrlit) {
 
     INode *littype = itypeGetTypeDcl(arrlit->vtype);

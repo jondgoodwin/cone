@@ -10,22 +10,30 @@ Six defects in how owning references are generated and coerced, found by buildin
 the `region` group of the test suite. The evidence, with file and line, is under
 "Found while building the groups" in [[Add test suite]].
 
-**Four are now fixed by stopgaps.** Two remain, plus one more the stopgap work
-uncovered. This item stays open for those three.
+**Four of the six are fixed**, and the two that remain are the two loud ones,
+left deliberately. Tracing the fourth uncovered two further defects in how flow
+analysis treats literals; both are fixed, and one open sibling is recorded.
 
 ## Status
 
 | Defect | How it failed | State |
 | --- | --- | --- |
 | Region coercion reads backwards | Silent unsoundness | **Fixed** — `reference.c:181`, `:226`, `arrayref.c:82` |
-| A moved `+so` reference double-frees | Silent corruption | **Fixed** — `flow.c:205` |
-| First assignment to an uninitialized `rc` releases garbage | Silent corruption | **Fixed** — `assign.c:170` + `genlexpr.c:819` |
+| A moved `+so` reference double-frees | Silent corruption | **Fixed** — `flow.c` |
+| First assignment to an uninitialized `rc` releases garbage | Silent corruption | **Fixed** — `assign.c` + `genlexpr.c` |
 | A struct's `rc` owning field corrupts the heap on release | Silent corruption | **Fixed** — `genlalloc.c:62` |
-| A struct's `+so` owning field double-frees | Silent corruption | **Open** — `region-owning-field-so` |
 | A nested allocation | Loud, at compile time | **Open, deliberately** — `region-nested-alloc` |
 | Fallible allocation `?+rc-mut v` | Loud, immediately | **Open, deliberately** — [[Diagnose instead of crash]] |
 
-The suite went from 111 scenarios / 98 passed / 14 xfail to **114 / 103 / 12**.
+Found while fixing the above:
+
+| Defect | How it failed | State |
+| --- | --- | --- |
+| A type literal's field values are never moved or copied | Silent corruption, and a use-after-move | **Fixed** — `typeLitFlow` |
+| A temporary's reference is counted as a second holder | Silent leak | **Fixed** — `flowHandleMoveOrCopy` |
+| An array literal's elements are never moved or copied | Silent, same shape | **Open** — `move-flow-arraylit` |
+
+The suite went from 111 scenarios / 98 passed / 14 xfail to **115 / 105 / 11**.
 
 ## The question this work item asks
 
@@ -91,19 +99,47 @@ outside `test/cases/`, so the suite is the whole measurable corpus.
 - `FlagFirstAssign` adds a flag bit to the IR. It is the most entrenching of the
   four and the first to reconsider once the redesign starts.
 
+## What a reference count means, and the two defects that followed
+
+Tracing the `+so` owning field led out of this group entirely, into what the count
+counts. The rule is that **the count is how many holders exist**:
+
+- `+rc[2]` creates the object *and* the first reference to it. Born at 1.
+- `imm a = +rc[2]` adds no holder. The temporary hands its reference to `a`, so
+  the count stays 1.
+- `imm b = a` does add one — `a` keeps its reference and `b` gets another — so 2.
+- `+so` is the same shape with the second holder forbidden, so binding from an
+  existing holder deactivates the source instead of counting it.
+
+Two defects followed from the compiler not expressing that.
+
+**`iexpIsMove` tests the type alone**, and `+rc-mut 7` and `a` have the same type.
+A type-only test cannot tell a temporary handing over its reference from an
+lvalue that keeps one, so `flowHandleMoveOrCopy` aliased both and every allocation
+bound to a variable was born at 1, aliased to 2, released once, and **leaked**.
+The suite could not see it: a `run` scenario observes stdout, not the heap. The
+fix is one condition — alias only an lvalue read.
+
+**A type literal was a leaf to flow analysis.** `TypeLitTag` sat in the same
+`switch` bucket as `ULitTag` and `StringLitTag`, so its field values were never
+visited: no move, no alias, no lifetime check. That is why a `+so` owning field
+double-freed — the source variable was never deactivated — and it was
+independently a **use-after-move hole**. A type literal is a `FnCallNode`, so it
+now does what a call does with its arguments, unwrapping the `NamedValNode` that
+wraps a value given by field name.
+
+Neither turned out to need a language decision. Both are the type's existing rule
+applied where it was not being applied.
+
 ## What remains
 
-**A `+so` owning field still double-frees**, and the cause is not in this group: a
-type literal's field initializers do not apply move semantics, so naming a
-variable in a literal never deactivates it. Passing the same value as a call
-argument does deactivate it. That gap is independently a **use-after-move hole** —
-reading the moved-from variable afterwards compiles clean — and it is recorded as
-`move-flow-literal` in the `move` group, with `region-owning-field-so` recording
-the consequence here.
-
-**Closing it is a language decision, not a codegen fix**: it settles whether a
-literal moves or copies its initializers. It is handed to the redesign rather than
-patched.
+**An array literal has the same gap** — `ArrayLitTag` is still a leaf, so
+`[hd, Handle[8]]` does not deactivate `hd`. It is **not** the same fix, which is
+why it is recorded rather than made: an array literal has a second form, the fill
+`[n; value]`, which repeats one expression across n elements. A move value cannot
+be moved into n slots, and a counted reference would need n added rather than one.
+**What a fill does to a move or counted value is undecided**, and that is the
+blocker. `move-flow-arraylit` pins the list form, which is not in doubt.
 
 **The two loud failures stay open deliberately.** Neither can be mistaken for
 working code — nested allocation fails module verification at compile time, and
@@ -118,7 +154,9 @@ suite the moment the behavior changes — including as a side effect of the rede
 which is exactly when you want to be told.
 
 That is not a prediction any more. Four of the five did precisely this during the
-stopgap work, and each flip is how the corresponding fix was confirmed.
+stopgap work, and each flip is how the corresponding fix was confirmed. So did
+both scenarios written afterwards to record newly found defects — one of which
+was fixed within the hour, by the scenario telling us it had been.
 
 If the redesign changes the spelling of regions, the remaining scenarios will need
 rewriting rather than deleting. `region-success` is the one to protect: 37
