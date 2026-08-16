@@ -1,13 +1,17 @@
 
 1. Install LLVM and ensure compiler compiles
-2. [[Add test suite]]
-3. [[IR refactor]]
-4. [[Analysis re-factor]] - jit, with recursion checking
-5. [[Packages and Separate Compilation]]
-6. [[Using and Module Name-folding]] w/ [[Names and Namespaces]]
-7. [[Intrinsics]]
-8. [[Macro and Inline]]
-9. Generics on numbers
-10. C-competitive and -compatible
+2. [[IR refactor]]
+3. [[Analysis re-factor]] - jit, with recursion checking
+4. [[Packages and Separate Compilation]]
+5. [[Using and Module Name-folding]] w/ [[Names and Namespaces]]
+6. [[Intrinsics]]
+7. [[Macro and Inline]]
+8. Generics on numbers
+9. C-competitive and -compatible
 	- [[Types. Pointers and Borrowed References]]
+
+Add test suite is done; see `workitems/done/`. It left four unplaced follow-ups,
+listed under Compiler Components in [[_index]] and not slotted here yet:
+[[Ownership memory safety]], [[Diagnose instead of crash]],
+[[Unenforced language rules]], [[Compiler defect backlog]].
 

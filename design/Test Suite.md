@@ -157,7 +157,7 @@ Name the split for what it covers — `core-parse-delimiters`, not `core-parse-1
 
 **A construct that crashes the compiler.** An access violation fails no
 assertion, so it cannot even be `xfail`. Several exist — see
-`workitems/Add test suite.md` — and each is excluded with a written reason in its
+[[Diagnose instead of crash]] — and each is excluded with a written reason in its
 group's `cases.toml` rather than left to be rediscovered.
 
 **A construct that silently parses as something else.** `xfail` asserts that a

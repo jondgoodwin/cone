@@ -21,9 +21,13 @@ internals beyond the diagnostic text format and the ``ErrorCode`` enum it reads
 out of ``src/c-compiler/shared/error.h`` -- and, for ``--since``, the checked-in
 claims in ``test/tags.toml`` about which phases a source path can reach.
 
-Every requirement in ``workitems/Add test suite.md`` is implemented. Any
-scenario asking for something that is not is a hard configuration error rather
-than something quietly ignored.
+Every requirement in ``workitems/done/Add test suite.md`` is implemented, with
+one caveat recorded there: the POSIX branches have never run. Any scenario asking
+for something that is not implemented is a hard configuration error rather than
+something quietly ignored.
+
+``design/Test Suite.md`` is the authoring guide -- which group to touch, what to
+assert, and how expectations are written.
 """
 
 from __future__ import annotations

@@ -56,7 +56,6 @@
 	- [[Lexer and Parser]] [[Syntax - Aggregating operators]]
 	- [[Analysis re-factor]]
 	- Generation: [[LLVM Generation]] and [[C-ABI Generation]]
-	- [[Add test suite]]
 	- Defects the test suite found, by the decision each needs:
 		- [[Ownership memory safety]] — miscompiles, and one soundness hole
 		- [[Diagnose instead of crash]] — error paths that dereference their own NULL

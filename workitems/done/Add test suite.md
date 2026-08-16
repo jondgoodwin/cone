@@ -1,5 +1,32 @@
 # Add test suite
 
+> **Completed 2026-08-16.** Every requirement is met. `python test/run.py` runs
+> **111 scenarios across 15 groups** — 97 passing, 14 expected failures — in
+> under eight seconds, and `--bless` records nothing, which is the check that
+> every expectation came from the compiler rather than being fitted to it.
+>
+> **One requirement is met in part.** R1.6 asks for Windows and Linux/WSL. The
+> suite is verified on Windows from both PowerShell and Git Bash. The POSIX
+> branches are written — `cc`/`gcc` rather than `link.exe`, `.o` rather than
+> `.obj`, `shlex.join` rather than `list2cmdline` — and have **never executed**,
+> because no Linux environment was available. Two Windows-specific linker faults
+> turned up here, both found by running and neither by reading, so the first
+> person to run this on Linux should expect to fix something and should look
+> there first.
+>
+> The survey found **29 compiler defects**, three of which were fixed here
+> because their fixes were unambiguous one-liners. The rest need language
+> decisions and are owned by [[Ownership memory safety]],
+> [[Diagnose instead of crash]], [[Unenforced language rules]] and
+> [[Compiler defect backlog]]. Fourteen are pinned by `xfail` scenarios that will
+> fail the suite the day they are fixed; eight are compiler crashes, which no
+> scenario can hold, and that is the gap those items exist to close.
+>
+> Two constructs left the staging file without a group and were settled rather
+> than filed: float intrinsics went to [[Intrinsics]] as future capability, and
+> `<-` has a reserved `stream` row awaiting collections, see
+> [[Collection - Streams & Iteration]].
+
 The compiler has no test runner. Every check is run by hand, which means a clean
 compile is the only routine evidence a change is correct, and a clean compile is
 not evidence of correct runtime behavior. This work item builds the missing
