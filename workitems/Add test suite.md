@@ -323,6 +323,99 @@ are not canonical. Several are redundant under the packing rule — `bad-two-exa
 call sites — and the AST-dump assertions in the README are deliberately not
 carried over.
 
+## Found while building the tier 0 groups
+
+Sequencing step 1 is done, and `lexical` and `core` are built:
+`test/cases/lexical/` and `test/cases/core/` hold fifteen scenarios and a
+`cases.toml` each, every one compiled by hand, and the four `run` scenarios
+linked against `conestd` and executed against their `.out` files. Step 4 is
+partly done — the core-owned content is out of `test/test.cone`, which now
+carries a header saying what is left and for whom.
+
+### The annotation format holds, with three things now written down
+
+`bad-overload-as-value`, `bad-malformed-overload` and `bad-duplicate-concrete`
+all transcribe cleanly, including one primary diagnostic at three positions,
+follow-ons at other lines, and a paired diagnostic pointing at a line *earlier*
+than the one that provoked it. Nothing in the overload README needed a format
+change. Three points the syntax left open are now specified in the design note:
+
+- **Carets count lines**, and an annotation-only line is a line, so successive
+  annotations for one code line each take one more caret (`//~^`, `//~^^`). The
+  alternative reading — every `//~^` in a run pointing at the nearest code line —
+  would have been ambiguous in `core-parse-decls`, which needs three diagnostics
+  on one line.
+- **The quoted substring is load-bearing, not decorative,** wherever two
+  diagnostics share a code, a line and a column. `lexical-reject-tokens` has
+  exactly that: a bad hex digit reports both the escape and the unfinished
+  literal at one position.
+- **A diagnostic positioned at end-of-file has no line to carry it.** Several are
+  reported at the token that should have followed, so the fix is to keep a
+  further declaration in the file rather than to reach for a file-level
+  expectation; `core-parse-decls` does this for `ErrorNoInit`.
+
+### Repository change made
+
+`.gitignore` ignored `*.out` as an executable, which would have silently dropped
+every `run` scenario's expected stdout. Now negated for `test/cases/**/*.out`.
+This was not on the list above; nothing else in the ignore file conflicts.
+
+### Compiler defects found by writing the cases
+
+None blocks tier 0 — each was routed around — but each is a bug the suite exists
+to catch, and each wants a fix plus the scenario that fails without it (R6.3).
+
+| Defect | Where | Effect |
+| --- | --- | --- |
+| `::name` at the start of a statement hangs the compiler | `parseNameUse`, `src/c-compiler/parser/parseexpr.c:25` sets the base module for a leading `::` but never consumes the token, so the statement parser re-enters at the same token forever | Unbounded output, no termination. One-line fix: `lexNextToken()` after `baseset = 1`. R1.3's timeout is what would keep this from wedging a suite run |
+| `>>=` does not lex | `src/c-compiler/parser/lexer.c:851` tests `*(srcp + 1)` where it means `*(srcp + 2)` | `ShrEqToken` is unreachable; `n >>= 1` lexes as `>>` then `=` and fails to parse. `<<=` is correct, so this is asymmetric |
+| An integer literal wider than i32 is truncated silently | An unsuffixed literal is i32, and nothing checks range | `mut n i64 = 9223372036854775807` yields -1, with no diagnostic. There is no range `ErrorCode` to name; adding one would be an R6.7 case |
+| `\0` is not an escape sequence | `lexScanEscape`, `src/c-compiler/parser/lexer.c:298`, matches the null *terminator*, not the character `0` | The reference manual lists `\0`; `'\0'` reports "Invalid escape sequence '0'" |
+| A non-ASCII character literal does not lex | `lexScanChar` reads one byte before expecting the closing quote | The manual says any code point 0x0020 or higher may be written directly; `'π'` fails. `'é'` works, so the escape is the only route |
+
+The last two are documentation-versus-implementation gaps rather than crashes:
+either the lexer gains the behavior or `reftoken.html` stops claiming it. The
+manual also documents raw (`r"`, `r\``) and triple-quoted string literals,
+multi-line string literal indentation stripping, and `$` in identifiers, none of
+which the lexer implements. Those are excluded from `lexical` rather than marked
+`xfail`, because none of them fails cleanly — each silently lexes as something
+else, so an `xfail` would assert nothing.
+
+### Uncovered in `core`, and why
+
+- **`enum` is not implemented yet, so `core` has no coverage for it.**
+  `parseEnum` builds an empty node and is called only from `parseFieldDcl`;
+  there is no standalone `enum` declaration, and a bare `enum` field is accepted
+  only as the tag discriminant of a base trait, which must be named `_`. Nothing
+  here is worth writing a scenario against. Where it lands once it exists is an
+  open question rather than settled by the `core` row of the group table — the
+  discriminant behavior clearly belongs with the tagged trait, and a full enum
+  type may or may not be core.
+- **Static functions declared inside a type** — `Maker::make(...)` in the
+  preserved `globals.cone` — are functions rather than methods, and overloading
+  them follows the same rules `core-overload` establishes. They are left for
+  `struct` only because they cannot be declared without one, under the "use no
+  construct you are not testing" rule. This is the *only* part of function
+  overload `core` does not cover: `core-overload` is entirely module-level
+  global functions, exercising selection by argument type, by argument count, a
+  defaulted parameter on one candidate, direct calls to each concrete name, and
+  a private candidate selected through a public overload name.
+
+One boundary call made rather than surfaced: `ErrorGenericOverload` is in
+`core-parse-overload`, with a generic parameter list as scaffolding, because the
+diagnostic is an overload-declaration rule and would be surprising to find in
+`generic`.
+
+### Still owed
+
+- `test/test.cone` and `test/submod.cone` have **not** moved under
+  `test/cases/`. The staging file was left in place, so the `CLAUDE.md` path
+  references are still correct; the move belongs with the `CLAUDE.md` rewrite.
+- `test/cases/core/core-typecheck.cone` carries eight diagnostics and
+  `lexical-reject-tokens` seven, both past the three-to-six guidance. Both are
+  five or six primaries plus follow-ons, and neither shows recovery
+  interference, so they were left whole.
+
 ## Recommendations on the two open questions
 
 ### `codes.toml`: generated, checked in, and verified against the source

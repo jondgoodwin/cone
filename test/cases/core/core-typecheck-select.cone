@@ -1,0 +1,55 @@
+// Calls an overload name cannot resolve to exactly one candidate.
+//
+// Type-check stage. Selection tests every candidate and requires exactly one to
+// accept the call, so both failures are here: none accepted, and more than one
+// accepted. The three ambiguity sites are the three ways a tie can arise, and
+// none of them is broken by exactness, coercion count or declaration order.
+
+fn scaleInt overload scale(n i64) i64 {
+  n * 2i64
+}
+
+fn scaleFloat overload scale(n f64) f64 {
+  n * 2.0
+}
+
+// No candidate takes two arguments
+fn noCandidate() {
+  scale(1i64, 2i64)   //~ ErrorNoCandidate:8 "No function declared by `scale` accepts the call's arguments"
+  return
+}
+
+// Two candidates accept one i32 exactly, because the second parameter of one of
+// them has a default
+fn pickOne overload pick(n i32) i32 {
+  n
+}
+
+fn pickTwo overload pick(n i32, step i32 = 1i32) i32 {
+  n * step
+}
+
+fn twoExact() {
+  pick(3i32)           //~ ErrorAmbigCandidate:7 "More than one function declared by `pick` accepts these arguments"
+  return
+}
+
+// One candidate matches exactly, the other by widening. Exactness does not win.
+fn widenNarrow overload widen(n i32) i32 {
+  n
+}
+
+fn widenWide overload widen(n i64) i64 {
+  n * 2i64
+}
+
+fn exactPlusCoercible() {
+  widen(5i32)          //~ ErrorAmbigCandidate:8 "More than one function declared by `widen` accepts these arguments"
+  return
+}
+
+// Both candidates match by widening. The narrower widening does not win.
+fn twoCoercible() {
+  widen(5i16)          //~ ErrorAmbigCandidate:8 "More than one function declared by `widen` accepts these arguments"
+  return
+}

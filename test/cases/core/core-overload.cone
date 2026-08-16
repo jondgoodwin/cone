@@ -1,0 +1,114 @@
+// Function overload: several declarations answering to one overload name, and
+// which one a call selects.
+//
+// Every declaration keeps a namespace-unique concrete name and opts into a
+// shared overload name. Selection tests every candidate and requires exactly
+// one to accept the call: an exact match is not preferred over a coercible one,
+// fewer coercions do not win, declaration order does not break ties, and return
+// types take no part. Which candidate ran is only visible in what it computes,
+// so every selection is printed.
+//
+// Overloaded methods, operator methods and overload names folded across a
+// module boundary belong to 'struct', 'trait' and 'module'.
+
+import stdio::*
+
+fn show(label &[]u8, n i64) {
+  printStr(label)
+  printStr(" = ")
+  printInt(n)
+  printStr("\n")
+}
+
+fn showU(label &[]u8, n u64) {
+  printStr(label)
+  printStr(" = ")
+  printUInt(n)
+  printStr("\n")
+}
+
+fn showF(label &[]u8, n f64) {
+  printStr(label)
+  printStr(" = ")
+  printFloat(n)
+  printStr("\n")
+}
+
+// -------- selection by argument type --------
+
+fn scaleInt overload scale(n i64) i64 {
+  n * 2i64
+}
+
+fn scaleFloat overload scale(n f64) f64 {
+  n * 3.0
+}
+
+fn byType() {
+  // Exact match on each candidate
+  show("exact-i64", scale(21i64))
+  showF("exact-f64", scale(1.5))
+  // i32 widens to i64; the f64 candidate accepts nothing here
+  show("coerced-i32-to-i64", scale(7i32))
+  // Every candidate keeps its own name and may be called without selection
+  show("concrete-int", scaleInt(5i64))
+  showF("concrete-float", scaleFloat(2.0))
+}
+
+// -------- selection by argument count --------
+
+fn joinOne overload join(a i32) i32 {
+  a
+}
+
+fn joinTwo overload join(a i32, b i32) i32 {
+  a * 100 + b
+}
+
+fn byArity() {
+  show("arity-one", join(7))
+  show("arity-two", join(7, 8))
+}
+
+// -------- a defaulted parameter on one candidate --------
+
+fn stepInt overload step(n i32, amount i32 = 10) i32 {
+  n + amount
+}
+
+fn stepFloat overload step(n f64) f64 {
+  n + 0.5
+}
+
+fn withDefaults() {
+  // The arguments carry suffixes because an unsuffixed integer literal has no
+  // settled type yet and so is acceptable to the f64 candidate as well, which
+  // makes the call ambiguous rather than defaulted
+  show("default-omitted", step(1i32))
+  show("default-given", step(1i32, 2i32))
+  showF("other-candidate", step(1.0))
+}
+
+// -------- a private candidate reached through a public overload name --------
+
+fn _emitUnsigned overload emit(n u64) u64 {
+  n + 1u64
+}
+
+fn emitSigned overload emit(n i64) i64 {
+  n - 1i64
+}
+
+fn withPrivate() {
+  // The caller never names the private concrete spelling
+  showU("private-candidate", emit(3u64))
+  show("public-candidate", emit(3i64))
+}
+
+fn main() i32 {
+  byType()
+  byArity()
+  withDefaults()
+  withPrivate()
+  0i32
+}

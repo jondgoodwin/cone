@@ -1,0 +1,107 @@
+# core - operators and expressions, blocks and statements, functions and
+# function overload, 'if', 'while'/'break'/'continue', number types and enum,
+# void, tuples, local and global vars. Tier 0.
+#
+# Key reference: design/Test Suite.md, "cases.toml keys".
+# The group directory supplies the feature tag, so tags carry pipeline phases.
+#
+# The reject scenarios are split by pipeline stage, because analysis halts
+# between stages and an expectation from a later stage would never be reached.
+# They are split again within the parse stage, by what recovery can reach.
+
+support = []
+
+# -------- success --------
+
+[scenario.core-success]
+category = "run"
+description = "Variables, number types, operators, blocks, if, while, functions, tuples and void"
+tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+[scenario.core-overload]
+category = "run"
+description = "Which candidate of an overload set a call selects"
+tags = ["nameres", "typecheck", "genllvm", "runtime"]
+
+[[scenario.core-overload.check]]
+name = "overload-lowers-to-concrete"
+target = "llvmir"
+contains = [
+  "@scaleInt",
+  "@scaleFloat",
+  "@joinOne",
+  "@joinTwo",
+  "@stepInt",
+  "@stepFloat",
+  "@emitSigned",
+]
+
+[[scenario.core-overload.check]]
+name = "no-symbol-for-overload-name"
+target = "llvmir"
+excludes = ["@scale(", "@join(", "@step(", "@emit("]
+
+[[scenario.core-overload.check]]
+name = "private-candidate-keeps-its-symbol"
+target = "llvmir"
+contains = ["define hidden i64 @_emitUnsigned"]
+
+# -------- parse stage --------
+
+[scenario.core-parse-stmts]
+category = "reject"
+description = "Statement and expression syntax the parser cannot accept"
+tags = ["parse"]
+diagnostics = 5
+
+[scenario.core-parse-decls]
+category = "reject"
+description = "Global-area declaration syntax the parser cannot accept"
+tags = ["parse"]
+diagnostics = 5
+
+[scenario.core-parse-fns]
+category = "reject"
+description = "Function declaration syntax the parser cannot accept"
+tags = ["parse"]
+diagnostics = 3
+
+[scenario.core-parse-names]
+category = "reject"
+description = "Two declarations claiming one global name"
+tags = ["parse"]
+diagnostics = 5
+
+[scenario.core-parse-overload]
+category = "reject"
+description = "Malformed 'overload' declarations"
+tags = ["parse"]
+diagnostics = 4
+
+# -------- name resolution stage --------
+
+[scenario.core-nameres]
+category = "reject"
+description = "Names and lifetime labels that resolve to nothing"
+tags = ["nameres"]
+diagnostics = 5
+
+# -------- type check stage --------
+
+[scenario.core-typecheck]
+category = "reject"
+description = "Types and arities that do not agree"
+tags = ["typecheck"]
+diagnostics = 8
+
+[scenario.core-typecheck-select]
+category = "reject"
+description = "Calls an overload name cannot resolve to exactly one candidate"
+tags = ["typecheck"]
+diagnostics = 4
+
+[scenario.core-typecheck-overload]
+category = "reject"
+description = "Overload sets that could never choose, and overload names used as values"
+tags = ["typecheck"]
+diagnostics = 5

@@ -145,13 +145,26 @@ fn main() {
 }
 ```
 
-- `//~` applies to its own line; `//~^` to the line above, repeatable for
-  further.
+- `//~` applies to its own line; `//~^` to the line above, `//~^^` two lines
+  above, and so on. Carets count lines, and an annotation-only line is a line, so
+  successive annotations for one code line each take one more caret.
 - Name the code symbolically. Never write the number.
 - The column after `:` and any quoted substring are written by bless. You write
   the code name.
 - Mark `follow-on` for a diagnostic that exists only as a consequence of another.
   Without it, an unrelated change to error recovery breaks the scenario.
+
+Two constraints follow from annotations living on lines:
+
+- **Where two diagnostics share a code, a line and a column**, the quoted
+  substring is the only thing that tells them apart, so it is required rather
+  than decorative. The lexer does this: a bad hex digit reports both the escape
+  and the literal it could not finish, at one position.
+- **A diagnostic reported at end-of-file has no line to carry it.** Some are
+  reported at the token that should have followed, which is the next
+  declaration's first token — so arrange for that declaration to exist rather
+  than ending the file there. Where the position really is the end of file, it is
+  a file-level expectation.
 
 ### File-level expectations: put them in `cases.toml`
 
@@ -188,6 +201,42 @@ excludes = ["@Point_add"]
 The name is what failure output reports and what selection matches.
 
 A bug fix lands with a scenario that fails without the fix.
+
+### `cases.toml` keys
+
+One table per scenario, keyed by the source's basename, plus a `support` list of
+modules that are imported and never compiled on their own.
+
+```toml
+support = []
+
+[scenario.core-overload]
+category    = "run"          # required; one of the six categories
+description = "..."          # one line, for failure output
+tags        = ["typecheck", "genllvm", "runtime"]
+diagnostics = 0              # total count; required for 'recover'
+exit        = 0              # only where it is not the category's default
+xfail       = false          # omit unless true
+
+[[scenario.core-overload.run]]   # omit entirely for a single default run
+name    = "wasm"
+options = ["--wasm"]
+
+[[scenario.core-overload.unlocated]]   # diagnostics errorMsg prints with no line
+code    = "ErrorNoLoop"
+message = "may not be used as an expression"
+
+[[scenario.core-overload.check]]
+name     = "overload-lowers-to-concrete"
+target   = "llvmir"
+contains = ["@scaleInt"]
+excludes = ["@scale("]
+```
+
+The group directory supplies the feature tag, so `tags` carries only pipeline
+phases. A scenario with no annotations and no checks still needs its table: a
+`.cone` file that is neither a listed scenario nor a listed support module is an
+error, which is what keeps a forgotten registration from sitting unrun.
 
 ## 5. Update expectations
 
