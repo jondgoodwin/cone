@@ -208,11 +208,34 @@ extracts the parameter's type with `iexpGetTypeDcl`, as `fnSigParmsEqual` and
 anonymous functions with the type inferred, with it declared, and with the two
 branches' parameters named differently, and calls each result.
 
-**`fnSigVrefEqual` has the same line and was left alone.** It compares parameter
-declarations by identity too, so a trait method with any parameter beyond `self`
-can never structurally match a struct's — but it decides virtual-reference
-conformance, so widening what it accepts is a trait-behavior change rather than
-this ruling. It is unmeasured; measure it before fixing it.
+**`fnSigVrefEqual` has the same line, was left alone, and has since been
+measured. It is a real defect, and a bigger one.** `fnsig.c:109` still compares
+parameter declarations by identity, so a trait requiring a method with any
+parameter beyond `self` **cannot be satisfied at all**:
+
+```cone
+trait Scaler { fn scaled(self &, factor i32) i32 }
+struct Box { w i32
+             fn scaled(self &, factor i32) i32 { w * factor } }
+fn useScaler(v &<Scaler) i32 { v.scaled(3) }
+// useScaler(&b) -> ErrorInvType "Expression's type does not match declared parameter"
+```
+
+The self-only control in the same file conforms fine, which is the whole of why
+the corpus never saw it: **every trait method requirement in `trait-success.cone`
+takes only `self`** — `fn area(self &)`, `fn reading(self &)`, `fn step(self &mut)`
+— and `fnSigVrefEqual` skips the first parameter, so the loop compares nothing
+and returns a match. The blind spot in the coverage has exactly the shape of the
+bug.
+
+**This contradicts published documentation rather than extending it.**
+`refvirtref.html`: "the fact that both types implement all its methods means they
+are compliant with this trait." No caveat about parameters — and every example on
+that page happens to take only `self`, so the manual demonstrates only the cases
+that work. Fixing it is therefore a defect repair toward the documented rule, not
+the trait-behavior decision it was cautiously filed as. Needs Jon's nod because
+it widens what conforms, and a `trait` scenario with a parameterized requirement,
+which the group has never had.
 
 ### 3. A parameterless macro name is not expanded in two of four positions
 
