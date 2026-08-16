@@ -29,11 +29,15 @@ way. The receiver-adjustment evidence and the table that motivates it are in
 [[Types. Pointers and Borrowed References]], under "Receiver adjustment". Design
 the three together.
 
-**Branch inference does not unify two identical closure types.**
-`imm f = if flag {&fn(x i32) i32 {x+1}} else {&fn(x i32) i32 {x+2}}` reports
-"Branch's expression type inconsistent with other branches", while coercion to
-a declared type of exactly that shape compiles. Each anonymous function appears
-to get its own type node. See [[Compiler defect backlog]].
+**Branch inference does not unify two identical closure types — fixed.**
+`imm f = if flag {&fn(x i32) i32 {x+1}} else {&fn(x i32) i32 {x+2}}` reported
+"Branch's expression type inconsistent with other branches" while coercion to a
+declared type of exactly that shape compiled. Each anonymous function does get
+its own type node, but that was not the cause: `fnSigEqual` compared each
+parameter's `VarDclNode` instead of its type, so it compared parameter
+declarations by identity. Anonymous function types now compare structurally, per
+Jon's ruling, and `closure-success` runs the inferred selection. Nothing was
+interned; see [[Compiler defect backlog]].
 
 `fn {q,inc=3}(v i32) {inc-- > 0? v*q : null}`
 

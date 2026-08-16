@@ -190,6 +190,30 @@ with coercion is an inconsistency rather than a policy. It belongs with
 signature types. Confirm that reading with Jon before it is scheduled, since it
 is the one place the survey's "possibly intended" hedge might still be right.
 
+**Status: fixed, and interning had nothing to do with it.** Jon ruled that
+anonymous function types compare structurally. Instrumenting `refIsSame` and
+`fnSigEqual` — three readings of the code had guessed wrong before anything was
+measured — put the divergence in one line of `fnSigEqual`: it compared each
+parameter with `itypeIsSame(*nodes1p, *nodes2p)`, and a signature's parameter is
+a `VarDclNode`, not a type. `itypeGetTypeDcl` guards that with an `assert` a
+Release build drops, so it returned the declaration unchanged, and `itypeIsSame`
+has no `VarDclTag` case: two distinct declarations fell to `default` and compared
+unequal. So the function did not "ignore parameter names" as its shape suggests —
+it compared parameter declarations by node identity, which only signatures
+literally sharing parameter nodes can satisfy. Everything else already worked:
+the measurement showed the return types same, the permissions same (both `opaq`
+wrappers, unwrapped by `permIsSame`), and the regions same. `fnSigEqual` now
+extracts the parameter's type with `iexpGetTypeDcl`, as `fnSigParmsEqual` and
+`fnSigMatches` beside it already did. `closure-success` selects between two
+anonymous functions with the type inferred, with it declared, and with the two
+branches' parameters named differently, and calls each result.
+
+**`fnSigVrefEqual` has the same line and was left alone.** It compares parameter
+declarations by identity too, so a trait method with any parameter beyond `self`
+can never structurally match a struct's — but it decides virtual-reference
+conformance, so widening what it accepts is a trait-behavior change rather than
+this ruling. It is unmeasured; measure it before fixing it.
+
 ### 3. A parameterless macro name is not expanded in two of four positions
 
 Confirmed exactly as recorded, with `macro TWO { 2 }`:

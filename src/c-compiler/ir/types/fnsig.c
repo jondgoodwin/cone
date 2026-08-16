@@ -78,10 +78,13 @@ int fnSigEqual(FnSigNode *node1, FnSigNode *node2) {
         || node1->parms->used != node2->parms->used)
         return 0;
 
-    // Every parameter's type must also match
+    // Every parameter's type must also match. A parameter is a VarDclNode, not a
+    // type, so its declared type has to be extracted before the types are compared.
+    // Comparing the declarations themselves compares node identity, which no two
+    // separately written signatures can ever satisfy.
     nodes2p = &nodesGet(node2->parms, 0);
     for (nodesFor(node1->parms, cnt, nodes1p)) {
-        if (!itypeIsSame(*nodes1p, *nodes2p))
+        if (!itypeIsSame(iexpGetTypeDcl(*nodes1p), iexpGetTypeDcl(*nodes2p)))
             return 0;
         nodes2p++;
     }
