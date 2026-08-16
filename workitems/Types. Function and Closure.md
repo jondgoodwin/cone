@@ -8,6 +8,21 @@
 **Closures:**
 - Design and document: Parse, semantic lowering, traits
 
+**Capture does not work today, and the suite pins it.** `parseexpr.c:296` lifts
+an anonymous function's `FnDclNode` to module scope while parsing, so its body
+never sees the enclosing function's locals: it is a lifted function with a
+reference type, not a closure. `test/cases/closure/closure-capture` is written
+as the code that should work and marked `xfail`, so it starts failing the suite
+the day capture lands rather than quietly enshrining the gap. `closure-success`
+records what does work. Considered for [[Compiler defect backlog]] and left
+here: it is an unimplemented feature, not a defect with a clear right answer.
+
+**Branch inference does not unify two identical closure types.**
+`imm f = if flag {&fn(x i32) i32 {x+1}} else {&fn(x i32) i32 {x+2}}` reports
+"Branch's expression type inconsistent with other branches", while coercion to
+a declared type of exactly that shape compiles. Each anonymous function appears
+to get its own type node. See [[Compiler defect backlog]].
+
 `fn {q,inc=3}(v i32) {inc-- > 0? v*q : null}`
 
 The first set of curly braces is the closure's internal state as captured in an anonymous struct:
