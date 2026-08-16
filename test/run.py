@@ -7,6 +7,8 @@ expectations claim. Python 3.11+, no third-party dependencies.
     python test/run.py                  run everything (R1.7)
     python test/run.py core             run one group
     python test/run.py core-overload    run one scenario
+    python test/run.py --since          run what a diff implies (R2.5)
+    python test/run.py --list --since   print that selection, run nothing
     python test/run.py --list           print what would run, run nothing (R2.6)
     python test/run.py --coverage       ErrorCode coverage, run nothing (R6.4)
     python test/run.py --build          build the compiler first (R1.1)
@@ -16,11 +18,12 @@ expectations claim. Python 3.11+, no third-party dependencies.
 The runner's whole vocabulary is the command line, the exit code, stderr,
 stdout, and the files a run produced (R2.7). It knows nothing about compiler
 internals beyond the diagnostic text format and the ``ErrorCode`` enum it reads
-out of ``src/c-compiler/shared/error.h``.
+out of ``src/c-compiler/shared/error.h`` -- and, for ``--since``, the checked-in
+claims in ``test/tags.toml`` about which phases a source path can reach.
 
-Deferred, and why, is recorded in ``workitems/Add test suite.md``. What is left:
-diff-driven selection (R2.5). Any scenario asking for a deferred feature is a
-hard configuration error rather than something quietly ignored.
+Every requirement in ``workitems/Add test suite.md`` is implemented. Any
+scenario asking for something that is not is a hard configuration error rather
+than something quietly ignored.
 """
 
 from __future__ import annotations
@@ -32,6 +35,7 @@ import os
 import re
 import subprocess
 import sys
+import textwrap
 import threading
 import time
 import tomllib
@@ -41,6 +45,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 CASES = REPO / "test" / "cases"
 CODES_TOML = REPO / "test" / "codes.toml"
+TAGS_TOML = REPO / "test" / "tags.toml"
 ERROR_H = REPO / "src" / "c-compiler" / "shared" / "error.h"
 IS_WINDOWS = os.name == "nt"
 
@@ -88,6 +93,13 @@ EXIT_NAMES = {
 }
 
 CATEGORIES = ("compile", "run", "warn", "reject", "recover", "driver")
+
+# The pipeline-phase tags a scenario may carry (R2.4). The group directory
+# supplies the feature tag, so 'tags' in cases.toml holds only these. They are
+# also the vocabulary test/tags.toml maps a changed source path onto (R2.5),
+# which is why the list is pinned here rather than inferred from the corpus: a
+# phase no scenario happens to carry today is still a phase.
+PHASES = ("parse", "nameres", "typecheck", "flow", "genllvm", "runtime")
 
 # The category's exit status where cases.toml does not override it (R2.10).
 # 'driver' has no default: naming the status is the whole point of the category,
@@ -662,6 +674,434 @@ def select(scenarios: list[Scenario], selectors: list[str]) -> list[Scenario]:
             f"  a selector is a group, a scenario, a check name, or tag:<phase>"
         )
     return chosen
+
+
+# ---------------------------------------------------------------------------
+# Diff-driven selection (R2.5)
+# ---------------------------------------------------------------------------
+#
+# Three obligations, in order: derive a selection from a diff, map it through a
+# checked-in table, and report what it selected and why.
+#
+# The third is not decoration. A selection nobody can check is worse than no
+# selection at all, because the green run it produces means something the reader
+# cannot pin down -- and the thing it skipped is invisible by construction. So
+# every changed path is printed beside the rule that claimed it and that rule's
+# own justification, and a path no rule places widens the run to everything and
+# says which path did it. Narrowing quietly is the failure mode; widening loudly
+# is the feature.
+#
+# Nothing here selects anything itself. It produces a set of the selectors
+# ``select`` already understands -- a group, or ``tag:<phase>`` -- and hands them
+# to it, so a diff-derived run and a hand-typed one are the same run.
+
+RULE_KEYS = {"path", "tags", "groups", "everything", "group-from-path", "why"}
+
+
+@dataclass(frozen=True)
+class Rule:
+    """One path pattern from ``test/tags.toml`` and what it claims about it.
+
+    A rule whose table entry listed several paths becomes one Rule per path, so
+    a rule always has exactly one pattern to report and to measure specificity
+    by. They share the one ``why``, which is what the report prints.
+    """
+    path: str
+    prefix: bool            # written with a trailing '/', so it covers a subtree
+    why: str
+    tags: tuple[str, ...] = ()
+    groups: tuple[str, ...] = ()
+    everything: bool = False
+    group_from_path: bool = False
+
+    def matches(self, changed: str) -> bool:
+        return changed.startswith(self.path) if self.prefix else changed == self.path
+
+    @property
+    def outcome(self) -> str:
+        """What this rule selects, as one line of the report."""
+        if self.everything:
+            return "the whole suite"
+        if self.group_from_path:
+            return "the group each path names"
+        named = [f"tag:{t}" for t in self.tags] + list(self.groups)
+        return ", ".join(named) if named else "nothing"
+
+
+def load_tag_map(path: Path) -> list[Rule]:
+    """R2.5. Read the checked-in path-to-tag table, refusing a broken one.
+
+    Validated eagerly, the way ``cases.toml`` is and for the same reason: a rule
+    naming a phase that is not a phase, or a group with no directory, would
+    otherwise surface as a selection that quietly missed something rather than
+    as a mistake in the table.
+    """
+    if not path.exists():
+        raise SuiteError(
+            f"no path-to-tag table at {path.relative_to(REPO).as_posix()} (R2.5)\n"
+            f"  --since maps a diff's paths through it, and there is no default"
+            f" map: what a path can break is a claim about the compiler, not"
+            f" something to guess at")
+    try:
+        with path.open("rb") as handle:
+            data = tomllib.load(handle)
+    except tomllib.TOMLDecodeError as broken:
+        raise SuiteError(f"{path}: {broken}") from None
+
+    _require_keys(str(path), data, {"rule"})
+    rules: list[Rule] = []
+    written: dict[str, str] = {}
+    for index, table in enumerate(data.get("rule", []), start=1):
+        where = f"{path}: [[rule]] #{index}"
+        _require_keys(where, table, RULE_KEYS)
+
+        why = table.get("why", "").strip()
+        if not why:
+            raise SuiteError(
+                f"{where}: needs a 'why'. The runner prints it beside the"
+                f" selection, which is what lets a reader disagree with it (R2.5)")
+
+        # Exactly one outcome. 'everything' and 'group-from-path' are marks
+        # rather than lists, so they cannot be combined with one or each other;
+        # tags and groups may appear together, and an empty 'tags' is a real
+        # outcome -- the claim that nothing in the corpus can see this path.
+        marks = [key for key in ("everything", "group-from-path") if table.get(key)]
+        listed = [key for key in ("tags", "groups") if key in table]
+        if len(marks) > 1 or (marks and listed):
+            raise SuiteError(
+                f"{where}: {' and '.join(marks + listed)} are alternatives;"
+                f" a rule has exactly one outcome")
+        if not marks and not listed:
+            raise SuiteError(
+                f"{where}: needs an outcome -- tags, groups, everything, or"
+                f" group-from-path. Write tags = [] to claim that no scenario"
+                f" can observe a change here")
+
+        tags = tuple(str(t) for t in table.get("tags", []))
+        unknown = [t for t in tags if t not in PHASES]
+        if unknown:
+            raise SuiteError(
+                f"{where}: {', '.join(unknown)} is not a pipeline phase."
+                f" The tags a scenario may carry are {', '.join(PHASES)} (R2.4)")
+        groups = tuple(str(g) for g in table.get("groups", []))
+        unknown = [g for g in groups if g not in TIERS]
+        if unknown:
+            raise SuiteError(
+                f"{where}: {', '.join(unknown)} is not a group. Groups come from"
+                f" the table in design/Test Suite.md section 1")
+
+        entry = table.get("path")
+        patterns = [entry] if isinstance(entry, str) else list(entry or [])
+        if not patterns:
+            raise SuiteError(f"{where}: needs a 'path', or a list of them")
+        for pattern in patterns:
+            pattern = str(pattern)
+            if pattern.startswith("/") or "\\" in pattern:
+                raise SuiteError(
+                    f"{where}: {pattern!r} must be repository-relative and use"
+                    f" forward slashes, since that is how git names a path")
+            if pattern in written:
+                raise SuiteError(
+                    f"{where}: {pattern!r} is already claimed by an earlier rule."
+                    f" The most specific rule wins, so two rules for one path"
+                    f" have no order to be resolved by")
+            written[pattern] = why
+            rules.append(Rule(
+                path=pattern,
+                prefix=pattern.endswith("/"),
+                why=" ".join(why.split()),
+                tags=tags,
+                groups=groups,
+                everything=bool(table.get("everything")),
+                group_from_path=bool(table.get("group-from-path")),
+            ))
+    if not rules:
+        raise SuiteError(f"{path}: no [[rule]] entries")
+    return rules
+
+
+def match_rule(changed: str, rules: list[Rule]) -> Rule | None:
+    """The most specific rule covering a path: the longest pattern that matches.
+
+    Longest-wins is what lets a rule for one file override the rule for its
+    directory -- ``shared/error.h`` is not a ``shared/`` change -- without the
+    table depending on the order its rows happen to be written in.
+    """
+    hits = [rule for rule in rules if rule.matches(changed)]
+    return max(hits, key=lambda rule: len(rule.path)) if hits else None
+
+
+# -- asking git -------------------------------------------------------------
+
+def git(*args: str) -> str:
+    """One read-only git command, or a SuiteError saying why there was none.
+
+    R2.5 reads its diff out of git, so git being absent or the tree not being a
+    repository is a fault in the run's configuration like any other, and reports
+    as one rather than as a traceback out of subprocess.
+    """
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(REPO), *args],
+            capture_output=True, text=True, errors="replace",
+            stdin=subprocess.DEVNULL,
+        )
+    except OSError as missing:
+        raise SuiteError(
+            f"cannot run git, which --since needs to read a diff: {missing}"
+        ) from None
+    if done.returncode != 0:
+        raise SuiteError(
+            f"git {' '.join(args)} failed with status {done.returncode}\n"
+            + indent((done.stderr or done.stdout).strip() or "(no output)"))
+    return done.stdout
+
+
+def git_ok(*args: str) -> str | None:
+    """The same, for a command that is allowed to have no answer.
+
+    Used only where failure is information rather than a fault: a branch with no
+    upstream is the ordinary state of a local or worktree branch, not an error.
+    """
+    try:
+        return git(*args).strip() or None
+    except SuiteError:
+        return None
+
+
+def check_repository() -> None:
+    """R2.5 fails cleanly where there is nothing to ask."""
+    try:
+        git("rev-parse", "--git-dir")
+    except SuiteError as broken:
+        raise SuiteError(
+            "--since derives its selection from a diff, and there is none here"
+            " to read:\n" + indent(str(broken))) from None
+
+
+def default_revision() -> tuple[str, str]:
+    """What ``--since`` compares against by default, and the sentence saying so.
+
+    The merge base with the branch's upstream is the right default where there
+    is one: it is everything this branch changed, which is the question a
+    pre-merge run asks. Plenty of branches have no upstream -- a worktree branch
+    made locally usually does not -- so the fallback is HEAD, which asks the
+    narrower question of what is uncommitted right now. The two answers differ,
+    which is why the runner prints which one it took rather than leaving it to
+    be inferred from the paths.
+    """
+    branch = git_ok("rev-parse", "--abbrev-ref", "HEAD") or "HEAD"
+    upstream = git_ok("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+    if upstream:
+        base = git_ok("merge-base", "HEAD", upstream)
+        if base:
+            return base, (f"the default: the merge base with {upstream}, which is"
+                          f" {branch}'s upstream, so this is everything the branch"
+                          f" changed")
+    return "HEAD", (f"the default: {branch} has no upstream to take a merge base"
+                    f" with, so this is the working tree's own uncommitted"
+                    f" changes. Name a revision or a range to widen it")
+
+
+def check_revision(revision: str) -> None:
+    """Refuse a --since argument git cannot resolve, and say what it takes.
+
+    ``--since`` takes an optional value, so ``--since core`` binds ``core`` as
+    the revision rather than as the selector it looks like. Left to git that
+    reports as an ambiguous-argument fatal about a word the user thinks of as a
+    group name, which explains nothing; this says what the option wanted and
+    where a selector goes instead.
+    """
+    for end in [part for part in re.split(r"\.{2,3}", revision) if part]:
+        if git_ok("rev-parse", "--verify", "--quiet", f"{end}^{{commit}}") is None:
+            raise SuiteError(
+                f"--since {revision}: {end!r} is not a revision this repository"
+                f" knows.\n"
+                f"  --since takes a commit or a range -- HEAD, HEAD~1..HEAD, a"
+                f" branch, a hash -- and\n"
+                f"  defaults to one when given none. A group, a scenario or a"
+                f" tag:<phase> is a\n"
+                f"  selector, and is passed on its own without --since.")
+
+
+def changed_paths(revision: str) -> tuple[list[str], str]:
+    """The repository-relative paths a diff touched, and what was compared.
+
+    A revision containing ``..`` is a range and is read as history: what those
+    commits changed, and nothing about the working tree. Anything else is
+    compared against the working tree, where uncommitted work lives -- including
+    files git is not yet tracking, since a source file added and not yet staged
+    is exactly the change a diff-driven run must not skip.
+    """
+    names = git("diff", "--name-only", revision).split("\n")
+    if ".." in revision:
+        scope = f"the commits in {revision}"
+    else:
+        names += git("ls-files", "--others", "--exclude-standard").split("\n")
+        scope = f"the working tree against {revision}, untracked files included"
+    return sorted({name.strip() for name in names if name.strip()}), scope
+
+
+# -- deriving and reporting the selection ------------------------------------
+
+@dataclass
+class Selection:
+    """What a diff selected, and everything needed to say why (R2.5)."""
+    revision: str
+    why_revision: str
+    scope: str
+    paths: list[str] = field(default_factory=list)
+    claimed: list[tuple[Rule, list[str]]] = field(default_factory=list)
+    # Paths the table does not place: no rule matched, or the one that did could
+    # not derive a group from the path. Either way they widen the run.
+    unplaced: list[str] = field(default_factory=list)
+    selectors: list[str] = field(default_factory=list)
+    widened: list[str] = field(default_factory=list)
+    dropped: list[str] = field(default_factory=list)
+
+    @property
+    def whole_suite(self) -> bool:
+        return bool(self.widened)
+
+
+def derive_selection(revision: str) -> Selection:
+    """Map a diff onto selectors ``select`` understands.
+
+    ``revision`` empty means take the default. Nothing here touches the corpus:
+    a selection is derived from paths and a table alone, so it can be printed
+    before discovery and does not depend on which scenarios happen to exist.
+    """
+    check_repository()
+    rules = load_tag_map(TAGS_TOML)
+    if revision:
+        why = "named on the command line"
+        check_revision(revision)
+    else:
+        revision, why = default_revision()
+    paths, scope = changed_paths(revision)
+    found = Selection(revision=revision, why_revision=why, scope=scope, paths=paths)
+
+    claimed: dict[Rule, list[str]] = {}
+    for changed in paths:
+        rule = match_rule(changed, rules)
+        if rule is None:
+            found.unplaced.append(changed)
+        else:
+            claimed.setdefault(rule, []).append(changed)
+
+    chosen: list[str] = []
+    for rule, matched in claimed.items():
+        if rule.everything:
+            found.widened.append(f"{rule.path} -- {rule.why}")
+            continue
+        if rule.group_from_path:
+            for changed in matched:
+                rest = changed[len(rule.path):].split("/")
+                if len(rest) < 2:
+                    found.unplaced.append(changed)
+                else:
+                    chosen.append(rest[0])
+            continue
+        chosen += [f"tag:{tag}" for tag in rule.tags] + list(rule.groups)
+
+    if found.unplaced:
+        found.unplaced.sort()
+        found.widened.append(
+            f"{len(found.unplaced)} changed path(s) that"
+            f" {TAGS_TOML.relative_to(REPO).as_posix()} does not place. An"
+            f" unmapped path is how a diff-driven run would quietly skip the"
+            f" thing you were testing, so it runs everything instead")
+    found.claimed = sorted(claimed.items(), key=lambda item: item[0].path)
+    found.selectors = sorted(set(chosen))
+    return found
+
+
+def prune_selectors(found: Selection, scenarios: list[Scenario]) -> None:
+    """Drop a derived selector the corpus does not currently carry.
+
+    ``select`` refuses a selector that matches nothing, and rightly: one typed
+    on the command line is a typo. One derived from the table is not. It means
+    the table names a phase or a group no scenario carries yet, which is a fact
+    about the corpus rather than a reason to abort a run -- so it is reported
+    and dropped, and the rest of the selection still runs.
+    """
+    known: set[str] = set()
+    for scenario in scenarios:
+        known |= {scenario.group, scenario.name}
+        known |= {f"tag:{tag}" for tag in scenario.tags}
+        known |= {check.name for check in scenario.checks}
+    found.dropped = [name for name in found.selectors if name not in known]
+    found.selectors = [name for name in found.selectors if name in known]
+
+
+def wrapped(text: str, prefix: str) -> str:
+    return "\n".join(textwrap.wrap(
+        " ".join(text.split()), width=78,
+        initial_indent=prefix, subsequent_indent=prefix)) or prefix.rstrip()
+
+
+def report_selection(found: Selection, chosen: list[Scenario], total: int) -> None:
+    """R2.5's second half: what was selected, and why.
+
+    Written to be argued with. Someone reading it should be able to say "yes,
+    that is the right set" or "no, it missed X", which needs three things and
+    not two: which revision, because a selection is only as good as the diff it
+    came from; which rule claimed each changed path, together with the claim
+    that rule makes; and what the result comes to in scenarios, by group, since
+    a count alone does not say whether the right ones are in it.
+    """
+    table = TAGS_TOML.relative_to(REPO).as_posix()
+    print("diff-driven selection (R2.5)")
+    print(f"  since {found.revision}")
+    print(wrapped(found.why_revision, "    "))
+    print(f"  comparing {found.scope}")
+    print(f"  {len(found.paths)} changed path(s), mapped through {table}")
+
+    for rule, matched in found.claimed:
+        pattern = rule.path + ("*" if rule.prefix else "")
+        print(f"\n  {pattern}  ->  {rule.outcome}")
+        for changed in matched:
+            print(f"      {changed}")
+        print(wrapped(rule.why, "      "))
+    if found.unplaced:
+        print("\n  (no rule)  ->  the whole suite")
+        for changed in found.unplaced:
+            print(f"      {changed}")
+        print(wrapped(
+            f"Nothing in {table} covers these, so what they could break is"
+            f" unknown rather than nothing. Add a rule for each in the change"
+            f" that introduces it.", "      "))
+    if found.dropped:
+        print(f"\n  dropped: {', '.join(found.dropped)}")
+        print(wrapped(
+            "The table names these, and no scenario in the corpus carries them"
+            " yet. Reported rather than fatal, since a derived selector is the"
+            " table's claim about the compiler and not a mistyped argument.",
+            "      "))
+
+    print()
+    if found.whole_suite:
+        print("  selected the whole suite, because:")
+        for reason in found.widened:
+            print(wrapped(reason, "      "))
+    elif found.selectors:
+        print(f"  selected {', '.join(found.selectors)}")
+    else:
+        print("  selected nothing.")
+        print(wrapped(
+            "Every changed path maps to a rule claiming no scenario can observe"
+            " it, so there is nothing to run. That is the answer, not an"
+            " oversight -- running everything here would say nothing about the"
+            " change.", "      "))
+
+    if not chosen:
+        return
+    counts: dict[str, int] = {}
+    for scenario in chosen:
+        counts[scenario.group] = counts.get(scenario.group, 0) + 1
+    print(f"  running {len(chosen)} of {total} scenarios")
+    print(wrapped(", ".join(f"{group} {count}" for group, count
+                            in sorted(counts.items())), "      "))
 
 
 # ---------------------------------------------------------------------------
@@ -1582,6 +2022,11 @@ class Blessing:
     """What bless did, or would not do, for one scenario."""
     scenario: Scenario
     refusal: str = ""
+    # An xfail scenario is passed over every time, by design. That is routine
+    # rather than a fault, so it is not counted as a refusal in the exit status —
+    # otherwise bless could never exit 0 on a corpus that records any defect at
+    # all, and the exit status would stop meaning anything.
+    routine: bool = False
     rewrote: list[str] = field(default_factory=list)
     reported: list[str] = field(default_factory=list)
 
@@ -1618,6 +2063,7 @@ def bless_scenario(scenario: Scenario, results: list[Result],
         blessing.refusal = (
             "marked xfail: its expectations record a defect rather than claim to"
             " be current, so what the compiler produces is not a new one")
+        blessing.routine = True
         return blessing
 
     for result in results:
@@ -1757,7 +2203,7 @@ def bless(results: list[Result], scenarios: list[Scenario],
         print(f"    {blessing.mark:<7}  {blessing.scenario.name:<28} {detail}")
 
     for blessing in blessings:
-        if not (blessing.refusal or blessing.reported):
+        if not ((blessing.refusal and not blessing.routine) or blessing.reported):
             continue
         print("\n" + "=" * 72)
         print(f"{blessing.scenario.name}  ({blessing.scenario.category})")
@@ -1767,9 +2213,12 @@ def bless(results: list[Result], scenarios: list[Scenario],
             print(indent("not written, for you to decide: " + note, "  "))
 
     written = sum(len(b.rewrote) for b in blessings)
-    refused = [b for b in blessings if b.refusal]
+    refused = [b for b in blessings if b.refusal and not b.routine]
+    passed_over = [b for b in blessings if b.routine]
     print("\n" + "=" * 72)
     summary = (f"{len(blessings)} scenarios: {written} expectation(s) recorded")
+    if passed_over:
+        summary += f", {len(passed_over)} xfail passed over"
     if refused:
         summary += f", {len(refused)} scenario(s) REFUSED"
     noted = sum(len(b.reported) for b in blessings)
@@ -1777,7 +2226,13 @@ def bless(results: list[Result], scenarios: list[Scenario],
         summary += f", {noted} reported and not written"
     print(summary)
     print("Bless checks nothing. Review the diff.")
-    return 1 if refused else 0
+    # Exit 0 means one thing: the corpus now describes what the compiler does.
+    # A refusal (R4.2 — a changed exit status, a crash, annotations bless cannot
+    # place) and a report (R4.4 — a diagnostic that appeared or vanished, which
+    # only an author can write or delete) both leave that untrue, so both are
+    # failures. Passing over an xfail leaves nothing untrue and does not count,
+    # or bless could never exit 0 on a corpus recording any defect at all.
+    return 1 if refused or noted else 0
 
 
 # ---------------------------------------------------------------------------
@@ -2024,6 +2479,14 @@ def main(argv: list[str]) -> int:
                         help="what to run; everything, if omitted (R1.7)")
     parser.add_argument("--list", action="store_true",
                         help="print what would run, and run nothing (R2.6)")
+    parser.add_argument("--since", nargs="?", const="", metavar="REV",
+                        help=f"select from a diff: map the paths changed since"
+                             f" REV through"
+                             f" {TAGS_TOML.relative_to(REPO).as_posix()} and run"
+                             f" what they name, reporting both (R2.5). REV may be"
+                             f" a range (HEAD~1..HEAD); with no REV, the merge"
+                             f" base with this branch's upstream, or HEAD where"
+                             f" there is none")
     parser.add_argument("--coverage", action="store_true",
                         help="report ErrorCode values with no case, run nothing (R6.4)")
     parser.add_argument("--bless", action="store_true",
@@ -2052,6 +2515,7 @@ def main(argv: list[str]) -> int:
     if args.conestd is None:
         args.conestd = args.conec.parent / ("conestd.lib" if IS_WINDOWS else "libconestd.a")
 
+    found: Selection | None = None
     try:
         codes = parse_error_codes(ERROR_H)
         if args.bless_codes:
@@ -2063,10 +2527,41 @@ def main(argv: list[str]) -> int:
         # on the number the compiler printed, so a renumber makes all of them
         # wrong at once and this is the one place that can say so.
         check_codes_table(codes, CODES_TOML)
+
+        # R2.5. Derived before discovery, because a diff maps to selectors
+        # through the table alone and reports the same way whether or not the
+        # corpus can satisfy it.
+        if args.since is not None:
+            if args.selectors:
+                raise SuiteError(
+                    f"--since derives a selection from a diff, so it cannot be"
+                    f" combined with selectors of your own"
+                    f" ({', '.join(args.selectors)}): they are two answers to"
+                    f" one question, and silently intersecting or unioning them"
+                    f" would make the reported selection a lie")
+            if args.coverage:
+                raise SuiteError(
+                    "--coverage reports on the whole corpus rather than on a"
+                    " selection (R6.4), so --since has nothing to narrow")
+            found = derive_selection(args.since)
+
         # --coverage reports on the whole corpus, so it must not step over a
-        # broken group the way a scoped run may.
-        discovered = discover(codes, [] if args.coverage else args.selectors)
-        scenarios = select(discovered, args.selectors)
+        # broken group the way a scoped run may. Neither may a diff-driven run
+        # that widened to everything.
+        scoped = args.selectors
+        if found is not None:
+            scoped = [] if found.whole_suite else found.selectors
+        discovered = discover(codes, [] if args.coverage else scoped)
+        if found is None:
+            scenarios = select(discovered, args.selectors)
+        else:
+            prune_selectors(found, discovered)
+            if found.whole_suite:
+                scenarios = discovered
+            elif found.selectors:
+                scenarios = select(discovered, found.selectors)
+            else:
+                scenarios = []
     except SuiteError as failure:
         print(f"error: {failure}", file=sys.stderr)
         return 2
@@ -2076,6 +2571,16 @@ def main(argv: list[str]) -> int:
     if args.coverage:
         coverage_report(discovered, codes)
         return 0
+
+    if found is not None:
+        report_selection(found, scenarios, len(discovered))
+        # A diff that selected nothing is an answer rather than a fault: the
+        # report has just said which rules claimed the changed paths and what
+        # each one claims. Running everything by accident is exactly what this
+        # mode exists to avoid.
+        if not scenarios:
+            return 0
+        print()
 
     if not scenarios:
         print("error: nothing to run", file=sys.stderr)

@@ -4,7 +4,23 @@ Use this when a compiler change needs test coverage added or updated. It answers
 in order: which group to touch, which scenario in it, what to write, what to
 assert, and how to update expectations.
 
-Run the full suite before every merge.
+Run the full suite before every merge. `python test/run.py` takes a few seconds
+and is the default for a reason.
+
+**While working, `--since` narrows it.** It reads the changed paths from git, maps
+them through `test/tags.toml`, prints which paths chose which tags and why, and
+runs that. An unmapped path widens to the whole suite rather than being skipped,
+and so does a change to something like `shared/error.h` that invalidates every
+expectation at once.
+
+**It is an inner-loop filter, not a substitute for the full run**, and the reason
+is worth understanding. A scenario's tags say what it is *about*, not every phase
+it passes through — `typemgmt-success` is tagged `typecheck, genllvm, runtime`
+even though its source obviously goes through the parser. So a parser change
+selects the scenarios written to exercise parsing, not every scenario a parser
+change could conceivably break. Widening the map until it could would select
+almost everything and buy nothing. The full run before merge is what closes that
+gap; keep it.
 
 ## 1. Pick the group
 
@@ -281,8 +297,8 @@ argv        = ["--bogus"]    # the whole invocation; nothing is appended
 exit        = 4              # required: asserting it is the whole category
 
 [[scenario.core-overload.run]]   # omit entirely for a single default run
-name    = "wasm"
-options = ["--wasm"]
+name    = "debug"                # declare all of them once you declare any
+options = ["--debug"]
 
 [[scenario.core-overload.unlocated]]   # diagnostics errorMsg prints with no line
 code    = "ErrorNoLoop"
@@ -294,6 +310,14 @@ target   = "llvmir"
 contains = ["@scaleInt"]
 excludes = ["@scale("]
 ```
+
+**Several runs of one source** is how an option matrix avoids duplicating a
+`.cone` file. Every run is compared against the same expectations, so what a
+second run buys is the assertion that those expectations do not depend on the
+option. `core-success` declares `release` and `debug`, the second passing
+`--debug` to turn optimization off — which is the only way the corpus can catch
+code generation that is wrong in a way the optimizer happens to repair. Declaring
+one run means declaring all of them; the default run disappears.
 
 `argv` belongs to a `driver` scenario and to nothing else. Such a scenario is the
 one kind with no `.cone` file, so the rule that a listed scenario without a

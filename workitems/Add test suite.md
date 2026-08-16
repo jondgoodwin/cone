@@ -476,15 +476,11 @@ Two behaviors the requirements imply but do not spell out:
 
 ### Deferred, and why
 
-| Deferred | Requirement | Why |
-| --- | --- | --- |
-| Diff-driven selection | R2.5 | Needs `tags.toml`, which does not exist. Selection by group, scenario, check name and `tag:<phase>` is implemented, so the vocabulary a diff would map onto is in place |
-
-Nothing deferred is silently ignored: an unimplemented `cases.toml` key fails
-discovery by name.
-
-The rest of this table has since been built — see "Found while building the
-remaining categories" and "Found while building bless" below.
+Nothing is deferred any longer — every row this table held has since been built.
+See "Found while building the remaining categories", "Found while building
+bless", and "Diff-driven selection (R2.5)" below. Nothing was silently ignored on
+the way: an unimplemented `cases.toml` key failed discovery by name for as long
+as it was unimplemented.
 
 ### The staging file is in `test/staging/`, not under `test/cases/`
 
@@ -959,9 +955,41 @@ open by disclaiming themselves, and all are accurate. The pattern is that
   `::name` parser hang, the `>>=` lexer typo, and the `typedef` missing `break` —
   were fixed here with their scenarios, since leaving a known typo unfixed to
   file a work item about it helps nobody.
-- Diff-driven selection (R2.5) is the last unbuilt requirement.
 - R6.4 will not reach full coverage while eleven codes are unraisable and two are
   unreachable by annotation.
+
+### Diff-driven selection (R2.5)
+
+`test/tags.toml` maps repository paths to selectors — 24 rules, 44 patterns,
+each carrying a `why` the runner prints verbatim, because "reports which tags it
+selected and why" is half the requirement. A path ending in `/` is a prefix and
+the longest match wins, so `shared/error.h` overrides `shared/` without the table
+depending on the order its rows are written in. Every rule names exactly one
+outcome: phase tags, groups, `everything`, an explicit "nothing observes this",
+or `group-from-path` for `test/cases/` where the directory *is* the selector.
+
+`--since [REV]` derives the selection and hands it to the same `select()` a typed
+selector goes through; there is no parallel mechanism. It defaults to the merge
+base with `@{upstream}`, or `HEAD` — the working tree, untracked files included —
+where the branch has none, and says which it took.
+
+**Unmapped widens rather than narrows.** A path no rule covers is named and the
+whole suite runs. So does a change to `error.h`, which invalidates every
+expectation at once. A diff-driven mode that silently skips is a trap; one that
+widens loudly is useful. All 471 tracked files map to a rule today, and adding a
+source directory without adding a row is caught the first time a diff touches it.
+
+**The limit worth knowing.** Tags say what a scenario is *about*, not every phase
+it traverses, so a parser change selects the 43 scenarios written to exercise
+parsing rather than every scenario a parser change could break. Widening until it
+did would select almost everything. The full run before merge is what closes
+that; `design/Test Suite.md` says so where someone will read it.
+
+Two mappings are judgement calls a later reader may want to revisit: `ir/`
+selects everything but `parse` (89 of 111, so barely a filter) because five
+ownership-lowering scenarios are tagged `genllvm` without `typecheck`; and
+`shared/timer.c` claims nothing observes it, which is true only while nothing
+compares successful output literally.
 
 ### Decomposition is complete (R6.5)
 
