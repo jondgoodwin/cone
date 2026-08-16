@@ -172,8 +172,11 @@ candidate accepted it as it stood, so a value receiver is now reachable through
 `&T`, `&mut T` and `*T` alike, and the dead retry is gone. Nothing borrows on the
 receiver's behalf: `self &` and `self &mut` stay out of a value's and a pointer's
 reach, pinned by `struct-typecheck-methods` and `safety-typecheck-ptruse`.
-`struct-methods` and `safety-pointers` run the working forms. The borrow half,
-and the operator fall-through the deref half brings with it, are written up under
+`struct-methods` and `safety-pointers` run the working forms. The deref half
+briefly reached operators too — `p * 2` on a `*i32` compiled and meant
+`(*p) * 2` — and Jon has since ruled that operations on a pointer are on the
+pointer and not the deref, so `p * 2` is `ErrorNoCandidate` again while
+`sp.sum()` is not. The borrow half, and that ruling, are written up under
 "Receiver adjustment" in [[Types. Pointers and Borrowed References]].
 
 ### 2. Branch inference does not unify two identical closure types

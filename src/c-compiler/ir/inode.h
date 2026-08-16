@@ -191,6 +191,14 @@ enum NodeTags {
 #define FlagVDisp     0x0004        // FnCall: a virtual dispatch function call
 #define FlagLvalOp    0x0008        // FnCall: op requires an lval as object (a mutable ref)
 #define FlagOpAssgn   0x0010        // FnCall: method is an operator assignment (e.g., +=)
+// An operator application ('a * b', '-a', 'a++', 'a += b') and a member access by
+// name ('p.sum()') build the same node shape, so only this records which the source
+// actually wrote. Set by the three operator constructors in fncall.c, which are the
+// only way an operator call is built. 0x0020 is free of every other block: it is
+// IsMixin on a FieldDcl and SameSize among the type flags, and a FnCallNode -- also
+// when retagged to FldAccess, ArrIndex or TypeLit -- stays in ExpGroup and is
+// neither.
+#define FlagOperator  0x0020        // FnCall: an operator application, not a named member access
 
 #define FlagLoop      0x0001        // Block: is a Loop block
 

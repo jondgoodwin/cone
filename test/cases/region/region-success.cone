@@ -193,7 +193,12 @@ fn withBorrows() {
   show("borrowed-from-owning", i64[*b])
   show("borrow-passed-to-reader", i64[onlyReads(b)])
 
-  // Owning references compare by the address they carry, like borrowed ones
+  // Owning references compare by the address they carry, like borrowed ones,
+  // and this block is written so that it can tell that from the alternative.
+  // 'r' and 'other' are two separate allocations holding the SAME number, so
+  // identity says they are unequal while a '==' that read through to the values
+  // would say they are equal. The matching 90s are the whole assertion: give
+  // 'other' a different number and the case still passes while proving nothing.
   imm alias = r
   imm other = +rc-mut 90
   mut bits = 0
@@ -239,14 +244,22 @@ fn repeats() {
 
 // Comparison of two function references. 'ref' owns function references and
 // compared data references only, so this one pairing was left here.
+//
+// 'alsoOne' exists so the comparison can be told apart from one that reads
+// through to what the functions are or do: it has the same signature as 'one'
+// and returns the same number, so nothing about it differs except which
+// function it is. Give it a different body and the case stops discriminating.
 fn one() u32 { 1u }
 fn two() u32 { 2u }
+fn alsoOne() u32 { 1u }
 
 fn fnrefCompares() {
   mut bits = 0
   if &one == &one { bits = bits + 1 }
   if &one != &two { bits = bits + 2 }
   if &one == &two { bits = bits + 4 }
+  if &one != &alsoOne { bits = bits + 8 }
+  if &one == &alsoOne { bits = bits + 16 }
   show("fnref-equality-bits", i64[bits])
 }
 

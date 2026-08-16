@@ -116,16 +116,33 @@ are the row where only the deref half applies.
   `self &` or `self &mut`. This manufactures a reference, and that is the whole
   of the design question. **Deferred here.**
 
-**One consequence of the deref half is worth knowing, because it is wider than
-methods called by name.** An operator is a method under a backquoted name, and
-`corelib` declares the number operators with value receivers, so an operator the
-reference or pointer type does not declare itself now falls through to the value
-type's. `p * 2` on a `*i32` means `(*p) * 2`, where it used to be an error;
-`p + 2` is unaffected, because a pointer declares its own `+`. `safety-pointers`
-runs the case and `safety-typecheck-ptrops` holds the one where the fall-through
-still finds no candidate. It follows from "deref the receiver" with no extra
-rule, but it is a silent read-through on a pointer, which is the kind of thing
-`trust` would otherwise be the place to gate.
+**The deref half briefly reached wider than methods called by name, and a
+pointer has since been narrowed back.** An operator is a method under a
+backquoted name, and `corelib` declares the number operators with value
+receivers, so an operator the holder type does not declare itself fell through
+to the value type's as well: `p * 2` on a `*i32` compiled and meant `(*p) * 2`,
+where it used to be an error, while the `p + 2` beside it offset the pointer,
+because a pointer declares its own `+`. Two lines that look alike doing entirely
+different things, and C's compile error becoming silent arithmetic.
+
+**Jon's ruling: operations on a pointer are on the pointer and not the deref;
+the deref has to be written.** `p * 2` is `ErrorNoCandidate` again, and
+`safety-typecheck-ptrops` asserts it. `p + 2` still offsets, and `sp.sum()` — a
+value receiver reached by name through a pointer, which is what the deref half
+was for — still works, run by `safety-pointers`.
+
+**Only a pointer narrows.** A reference's comparison operators are its own
+identity operators, declared by `corelib` for `RefTag` and selected by
+`fnCallLowerPtrMethod` before the value type is ever consulted; its arithmetic
+reaching the value's is by design and stays.
+
+The compiler tells the two apart with `FlagOperator`, set by the three operator
+constructors in `fncall.c` — the only way an operator application is built — and
+tested where `fnCallLowerMethod` would otherwise deref and retry. An operator
+application and a member access by name build the same node shape, so the flag
+is the only record of which the source actually wrote; a name predicate over the
+interned operator names would also have caught a user's `fn `+`(self, …)` called
+by name, which is not an operation on the pointer.
 
 **Why the borrow half is a design question and not a fix.** Three reasons, and
 the third is the interesting one:

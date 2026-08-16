@@ -22,20 +22,26 @@ FnCallNode *newFnCallNode(INode *fn, int nnodes) {
 }
 
 // Create new fncall node, prefilling method, self, and creating room for nnodes args
+// These three are the only way an operator application is built, so each marks the
+// node FlagOperator: a member access by name builds the same shape and must stay
+// distinguishable from it.
 FnCallNode *newFnCallOpname(INode *obj, Name *opname, int nnodes) {
     FnCallNode *node = newFnCallNode(obj, nnodes);
+    node->flags |= FlagOperator;
     node->methfld = (INode*)newMemberUseNode(opname);
     return node;
 }
 
 FnCallNode *newFnCallOp(INode *obj, char *op, int nnodes) {
     FnCallNode *node = newFnCallNode(obj, nnodes);
+    node->flags |= FlagOperator;
     node->methfld = (INode*)newMemberUseNode(nametblFind(op, strlen(op)));
     return node;
 }
 
 FnCallNode *newFnCallOpnameLower(INode *oldnode, INode *obj, Name *opname, int nnodes) {
     FnCallNode *node = newFnCallNode(obj, nnodes);
+    node->flags |= FlagOperator;
     inodeLexCopy((INode*)node, oldnode);
     node->methfld = (INode*)newMemberUseNode(opname);
     inodeLexCopy((INode*)node->methfld, oldnode);
@@ -309,7 +315,8 @@ static void fnCallNoCandidate(INode *callnode, enum OverloadMatch status, Name *
 // Find the one field or method that accepts the call's receiver and arguments,
 // then lower the node to a function call (objfn+args) or field access (objfn+methfld).
 // A receiver held through a reference or pointer is dereferenced where the selected
-// method declared 'self' by value; nothing is borrowed on the receiver's behalf.
+// method declared 'self' by value; nothing is borrowed on the receiver's behalf, and
+// an operator written on a pointer does not reach through at all.
 // Returns 1 when lowered, 0 when the receiver's type supports no methods at all
 // (so the caller may try another way), and -1 when a diagnostic was reported.
 int fnCallLowerMethod(FnCallNode *callnode) {
@@ -362,7 +369,18 @@ int fnCallLowerMethod(FnCallNode *callnode) {
     // matched at all, so an ambiguity among the candidates the receiver already fits is
     // reported as such, and a set holding both a value and a reference candidate still
     // selects the reference one for a reference receiver.
-    if (selected == NULL && status == OverloadNone && derefInject(&callnode->objfn)) {
+    //
+    // An operator written on a pointer is the one thing the retry does not reach.
+    // An operation on a pointer is an operation on the pointer, and the dereference
+    // has to be written, because the alternative is two lines that look alike doing
+    // different things: a pointer declares its own '+', so 'p + 2' offsets it, while
+    // it declares no '*', so 'p * 2' would quietly become '(*p) * 2'. It is an error
+    // again, as it was in C. Only a pointer narrows. A reference's comparisons are
+    // its own identity operators, which refType declares and fnCallLowerPtrMethod
+    // selects before ever arriving here, and its arithmetic reaching the value's is
+    // by design.
+    int opOnPointer = (callnode->flags & FlagOperator) && iexpGetTypeDcl(obj)->tag == PtrTag;
+    if (selected == NULL && status == OverloadNone && !opOnPointer && derefInject(&callnode->objfn)) {
         selected = iNsTypeFindMethod(foundnode, &callnode->objfn, callnode->args, &status);
         if (selected == NULL)
             callnode->objfn = obj;  // a failed retry leaves the call as it was found
@@ -783,8 +801,10 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         if (node->flags & FlagIndex)
             fnCallArrIndex(node);
         else if (node->methfld) {
-            // A pointer's own operators first, then the value type's fields and methods,
-            // reaching a value receiver by dereferencing the pointer
+            // A pointer's own operators first, then the value type's fields and named
+            // methods, reaching a value receiver by dereferencing the pointer. An
+            // operator the pointer does not declare stops here rather than reaching
+            // the value's; fnCallLowerMethod is what refuses it.
             if (fnCallLowerPtrMethod(node, ptrType) == 0 && fnCallLowerMethod(node) == 0)
                 errorMsgNode((INode*)node, ErrorNoMeth, "Invalid operation on a pointer.");
         }
