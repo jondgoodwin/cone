@@ -193,6 +193,8 @@ enum NodeTags {
 
 #define FlagUnkType   0x0001        // ULit: type is unspecified and may be converted to other number
 
+#define FlagFirstAssign 0x0080      // VarNameUse: assignment target held no prior value
+
 // Flags used across all types
 #define MoveType           0x0001  // Type's values impose move semantics (vs. copy)
 #define ThreadBound        0x0002  // Type's value copies must stay in the same thread (vs. sendable)

@@ -815,7 +815,8 @@ void genlStore(GenState *gen, INode *lval, LLVMValueRef rval) {
         return;
     LLVMValueRef lvalptr = genlAddr(gen, lval);
     RefNode *reftype = (RefNode *)((IExpNode*)lval)->vtype;
-    if (reftype->tag == RefTag && isRegion(reftype->region, rcName))
+    // A first assignment has no previous value to release (see FlagFirstAssign)
+    if (reftype->tag == RefTag && isRegion(reftype->region, rcName) && !(lval->flags & FlagFirstAssign))
         genlRcCounter(gen, LLVMBuildLoad(gen->builder, lvalptr, "dealiasref"), -1, reftype);
     LLVMBuildStore(gen->builder, rval, lvalptr);
 }

@@ -79,7 +79,7 @@ TypeCompare arrayRefMatchesRef(RefNode *to, RefNode *from, SubtypeConstraint con
         return NoMatch;
 
     // Start with matching the references' regions
-    if (regionMatches(from->region, to->region, constraint) == NoMatch)
+    if (regionMatches(to->region, from->region, constraint) == NoMatch)
         return NoMatch;
 
     // Now their permissions

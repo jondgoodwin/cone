@@ -1,0 +1,25 @@
+// Defect: naming a move value in a type literal's field does not deactivate the
+// source variable, so the value can still be read after it was moved away.
+//
+// Passing the same value as a call argument does deactivate it -- move-success
+// and move-flow-deactivate cover that -- so the gap is specific to how a literal
+// initializes its fields. flowHandleMoveOrCopy is never reached for them.
+//
+// This is why a region-allocated struct owning a '+so' reference double-frees;
+// region-owning-field-so records that consequence. Closing it decides whether a
+// literal moves or copies its initializers, which is a language question rather
+// than a code generation one.
+
+struct @move Handle {
+  id i32
+}
+
+struct Box {
+  h Handle
+}
+
+fn main() i32 {
+  imm hd = Handle[7]
+  imm boxed = Box[hd]
+  hd.id                     //~ ErrorMove
+}

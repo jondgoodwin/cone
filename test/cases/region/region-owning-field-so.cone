@@ -1,0 +1,37 @@
+// Defect: releasing a region-allocated struct that owns a '+so' reference
+// corrupts the heap, even though the same shape with an 'rc' field works --
+// region-owning-field asserts that one.
+//
+// The cause is not in this group. A type literal's field initializers do not
+// apply move semantics, so naming 'inner' in the literal never deactivates it.
+// The variable stays on the scope's dealias list and frees the allocation that
+// the struct's field now also owns, so the release path runs twice. The same gap
+// is a use-after-move hole in its own right, which move-flow-literal records.
+//
+// Loading the field in genlDealiasFlds -- the fix region-owning-field needed --
+// does not help here: the second release is the source variable's, not the
+// field's. This one waits on the move semantics being settled.
+
+import stdio::*
+
+fn show(label &[]u8, n i64) {
+  printStr(label)
+  printStr(" = ")
+  printInt(n)
+  printStr("\n")
+}
+
+struct HeldSo {
+  r +so i32
+}
+
+fn f() {
+  imm inner = +so 5
+  imm outer = +so HeldSo[r: inner]
+  show("so-owning-field", i64[*outer.r])
+}
+
+fn main() i32 {
+  f()
+  0i32
+}

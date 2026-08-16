@@ -21,6 +21,8 @@
 #   allocation to be possible at all: its '_alloc' method.
 # - region-typecheck-init asks the same about the optional 'init' method, for a
 #   region and for a permission.
+# - region-typecheck-coerce asks which coercions between regions are allowed,
+#   which is a rule about reference types rather than about allocating.
 #
 # region-flow is a single function, because data-flow analysis runs per function
 # and only while the error count is zero (ir/stmt/fndcl.c:181): the first
@@ -57,11 +59,18 @@
 #   a literal, so 'mut g = +rc-mut 80' is ErrorNotLit -- a fact about global
 #   initialization, which core owns, rather than about regions.
 #
-# The five xfail scenarios each name one defect in their header comment. Four are
-# code generation ignoring what the earlier phases decided, and the fifth is a
-# coercion rule that reads backwards; together they are why region-success keeps
-# an owning reference in one variable, allocates a struct's owning field before
-# the literal that names it, and reaches a borrow through '&*r'.
+# Four defects this group recorded as xfails are now fixed, and their scenarios
+# assert the behavior instead: a moved 'so' reference frees once, a first
+# assignment to an uninitialized owning variable releases nothing, a region-
+# allocated struct's 'rc' owning field is released through the reference it holds
+# rather than its address, and an owning reference coerces to a borrowed one.
+# region-typecheck-coerce pins the direction that must stay refused, which could
+# not be asserted while the coercion rule read backwards.
+#
+# Two xfails remain, and neither is code generation ignoring an earlier phase:
+# region-nested-alloc is a block-structure bug in the allocation path, and
+# region-owning-field-so waits on move semantics for type literals, which
+# move-flow-literal owns.
 
 support = []
 
@@ -72,25 +81,27 @@ category = "run"
 description = "Allocating in a region, reference counting, single ownership, permissions, and owning references through fields, calls and branches"
 tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 
-# -------- known defects --------
-
 [scenario.region-so-move]
 category = "run"
-description = "Moving a 'so' reference between variables frees it twice"
-tags = ["genllvm", "runtime"]
-xfail = true
+description = "Moving a 'so' reference between variables transfers ownership, and frees it once"
+tags = ["flow", "genllvm", "runtime"]
 
 [scenario.region-owning-field]
 category = "run"
-description = "Releasing a region-allocated struct that owns a reference corrupts the heap"
+description = "Releasing a region-allocated struct releases the 'rc' reference its field owns"
 tags = ["genllvm", "runtime"]
-xfail = true
 
 [scenario.region-uninit-owning]
 category = "run"
-description = "Assigning to an owning-reference variable declared without an initial value releases uninitialized storage"
-tags = ["genllvm", "runtime"]
-xfail = true
+description = "Assigning to an owning-reference variable declared without an initial value releases nothing first"
+tags = ["flow", "genllvm", "runtime"]
+
+[scenario.region-borrow-coerce]
+category = "compile"
+description = "An owning reference coerces to a borrowed reference"
+tags = ["typecheck"]
+
+# -------- known defects --------
 
 [scenario.region-nested-alloc]
 category = "compile"
@@ -98,10 +109,10 @@ description = "An allocation nested inside another allocation fails module verif
 tags = ["genllvm"]
 xfail = true
 
-[scenario.region-borrow-coerce]
-category = "compile"
-description = "An owning reference does not coerce to a borrowed reference"
-tags = ["typecheck"]
+[scenario.region-owning-field-so]
+category = "run"
+description = "Releasing a region-allocated struct that owns a '+so' reference frees it twice"
+tags = ["flow", "genllvm", "runtime"]
 xfail = true
 
 # -------- parse stage --------
@@ -131,6 +142,12 @@ category = "reject"
 description = "The 'init' method a region or a permission may declare, and its required shape"
 tags = ["typecheck"]
 diagnostics = 4
+
+[scenario.region-typecheck-coerce]
+category = "reject"
+description = "The region coercions that must stay refused: a borrow standing in for an allocation, and one region's allocation for another's"
+tags = ["typecheck"]
+diagnostics = 3
 
 # -------- flow stage --------
 

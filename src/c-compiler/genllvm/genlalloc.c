@@ -59,7 +59,10 @@ void genlDealiasFlds(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
         RefNode *vartype = (RefNode *)field->vtype;
         if (vartype->tag != RefTag || !(isRegion(vartype->region, rcName) || isRegion(vartype->region, soName)))
             continue;
-        LLVMValueRef fldref = LLVMBuildStructGEP(gen->builder, ref, field->index, &field->namesym->namestr);
+        // The GEP yields the field's address; the release routines want the
+        // reference the field holds, so load it.
+        LLVMValueRef fldptr = LLVMBuildStructGEP(gen->builder, ref, field->index, &field->namesym->namestr);
+        LLVMValueRef fldref = LLVMBuildLoad(gen->builder, fldptr, "fldref");
         if (isRegion(vartype->region, soName))
             genlDealiasOwn(gen, fldref, vartype);
         else
