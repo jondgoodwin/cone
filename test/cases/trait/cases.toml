@@ -92,6 +92,28 @@ target = "llvmir"
 contains = ['@"Meter_reading:+ro Gauge"', "@Dial_reading"]
 excludes = ["@Meter_reading(", '@"Meter_reading:+ro Dial"']
 
+# A requirement's parameters reach the vtable slot's own type, which is the half
+# of "the signatures must match exactly" a run cannot observe: the printed
+# numbers would be the same whatever the slot was typed as. The reference
+# parameter lowers to a pointer, so a widening that let a value satisfy a
+# reference requirement would show here as a mismatched slot type. Each
+# implementer's slot must hold its own method rather than be left null.
+[[scenario.trait-success.check]]
+name = "parameterized-requirement-types-its-vtable-slot"
+target = "llvmir"
+contains = [
+  '%"Scaler:Vtable" = type { i32 (i8*, i32)* }',
+  '%"Blender:Vtable" = type { i32 (i8*, i32, i32)*, i32 (i8*, i32*)* }',
+  '@"Box->Scaler:Vtable" = linkonce constant %"Scaler:Vtable" { i32 (i8*, i32)* bitcast (i32 (%Box*, i32)* @Box_scaled',
+  '@"Cup->Scaler:Vtable" = linkonce constant %"Scaler:Vtable" { i32 (i8*, i32)* bitcast (i32 (%Cup*, i32)* @Cup_scaled',
+  'bitcast (i32 (%Mix*, i32, i32)* @Mix_blend',
+  'bitcast (i32 (%Churn*, i32*)* @Churn_viaRef',
+]
+excludes = [
+  '@"Box->Scaler:Vtable" = linkonce constant %"Scaler:Vtable" { i32 (i8*, i32)* null',
+  '@"Cup->Scaler:Vtable" = linkonce constant %"Scaler:Vtable" { i32 (i8*, i32)* null',
+]
+
 # A virtual reference is a fat pointer of value and vtable, and a trait's field
 # requirement is a vtable slot holding an offset rather than a function pointer
 [[scenario.trait-success.check]]
@@ -148,7 +170,7 @@ diagnostics = 4
 category = "reject"
 description = "Types a virtual reference cannot be made of, or coerced to and from"
 tags = ["typecheck"]
-diagnostics = 6
+diagnostics = 9
 
 [scenario.trait-typecheck-dispatch]
 category = "reject"

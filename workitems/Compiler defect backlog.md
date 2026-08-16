@@ -240,6 +240,45 @@ the trait-behavior decision it was cautiously filed as. Needs Jon's nod because
 it widens what conforms, and a `trait` scenario with a parameterized requirement,
 which the group has never had.
 
+**Status: fixed, and code generation turned out to be sound underneath it.**
+Jon settled the design question two ways, and both are now written into the
+comment at `fnsig.c` so the rule stops being folklore:
+
+- **Parameters must match exactly.** A virtual reference dispatches through a
+  typed vtable slot, so the machine signatures have to line up.
+- **No implicit coercion in this comparison.** Coercion is a convenience at
+  calling, and is only appropriate for type comparison where subtyping is
+  correctly in play — which it is not between a trait requirement and a type's
+  implementation of it.
+
+So the repair is the same one line and the same shape as `fnSigEqual`'s above,
+and deliberately no wider. Measured before it was changed, by instrumenting the
+loop rather than reading it: the two compared parameters were `VarDclTag` (8195)
+and distinct nodes, `itypeIsSame` on them as they stood returned 0, and
+`itypeIsSame` on `iexpGetTypeDcl` of each returned 1 with both types `IntNbrTag`
+(45056). One measurement line printed for the whole compile, which is the
+self-only trait comparing nothing, exactly as predicted. `fnSigVrefEqual` now
+extracts the parameter's type, as `fnSigEqual`, `fnSigParmsEqual` and
+`fnSigMatches` beside it already did.
+
+**The risk was that nothing downstream of the check had ever run** — conformance
+for a parameterized requirement had always failed, so the vtable slot, the
+argument marshalling and the dispatch were all unexercised. They were correct
+first time: no code generation change was needed, `--verify` is clean, and the
+LLVM IR shows the slot typed with the requirement's parameters
+(`%"Scaler:Vtable" = type { i32 (i8*, i32)* }`), a reference parameter lowering
+to a pointer.
+
+`trait-success` now runs a parameterized requirement through a virtual reference
+with two implementers whose answers differ for the same argument, a
+two-parameter requirement and one whose parameter is a reference, and asserts
+every returned value. Its new IR check pins the slot types and the symbol in each
+implementer's slot, which is the half of "exactly" a run cannot observe.
+`trait-typecheck-vref` gained the three rejections that must not start passing —
+a parameter of the wrong type, a reference where a value is required, and one
+parameter too many — and each was verified to report identically against the
+pre-fix and post-fix compilers, so widening what conforms widened nothing else.
+
 ### 3. A parameterless macro name is not expanded in two of four positions
 
 Confirmed exactly as recorded, with `macro TWO { 2 }`:

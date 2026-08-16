@@ -103,10 +103,21 @@ int fnSigVrefEqual(FnSigNode *node1, FnSigNode *node2) {
         || node1->parms->used != node2->parms->used)
         return 0;
 
-    // Every parameter's type must also match
+    // Every parameter's type must also match, exactly. A parameter is a
+    // VarDclNode, not a type, so its declared type has to be extracted before the
+    // types are compared; comparing the declarations themselves compares node
+    // identity, which a trait's requirement and a type's implementation of it can
+    // never satisfy, since they are separately written.
+    //
+    // The match is exact rather than by coercion. Coercion is a convenience at a
+    // call site, and belongs to type comparison only where subtyping is in play,
+    // which it is not between a trait requirement and an implementation of it.
+    // A virtual reference dispatches through a typed vtable slot, so the machine
+    // signatures have to line up.
     nodes2p = &nodesGet(node2->parms, 0);
     for (nodesFor(node1->parms, cnt, nodes1p)) {
-        if (cnt < node1->parms->used && !itypeIsSame(*nodes1p, *nodes2p))
+        if (cnt < node1->parms->used
+            && !itypeIsSame(iexpGetTypeDcl(*nodes1p), iexpGetTypeDcl(*nodes2p)))
             return 0;
         nodes2p++;
     }

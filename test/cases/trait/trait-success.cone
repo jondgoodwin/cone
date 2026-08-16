@@ -88,6 +88,92 @@ fn structural() {
   show("virtual-ref-retargeted", v.area())
 }
 
+// -------- a requirement that takes parameters --------
+
+// Every requirement above takes only 'self', and for a long time that was the
+// only kind that worked: conformance compared parameter declarations by node
+// identity, which a trait's requirement and a separately written implementation
+// can never satisfy, and the self parameter is skipped, so a self-only
+// requirement was the one shape whose loop compared nothing.
+//
+// A requirement may take further parameters, and then the implementation's
+// parameter types must match it exactly. A virtual reference dispatches through
+// a typed vtable slot, so the machine signatures have to line up. Coercion is a
+// convenience at a call site, and belongs to type comparison only where
+// subtyping is in play, which it is not between a requirement and an
+// implementation of it. trait-typecheck-vref holds the rejections.
+
+trait Scaler {
+  fn scaled(self &, factor i32) i32
+}
+
+// Two implementers whose answers differ for the same argument, so a dispatch
+// that folded away, or read the wrong vtable slot, could not print both numbers
+struct Box {
+  w i32
+
+  fn scaled(self &, factor i32) i32 {w * factor}
+}
+
+struct Cup {
+  depth i32
+
+  fn scaled(self &, factor i32) i32 {depth - factor}
+}
+
+// 'exactly' is the rule, so a requirement of several parameters and one whose
+// parameter is itself a reference are where an accidental widening would show
+trait Blender {
+  fn blend(self &, a i32, b i32) i32
+  fn viaRef(self &, r &i32) i32
+}
+
+struct Mix {
+  k i32
+
+  fn blend(self &, a i32, b i32) i32 {k * a + b}
+  fn viaRef(self &, r &i32) i32 {k + *r}
+}
+
+struct Churn {
+  k i32
+
+  fn blend(self &, a i32, b i32) i32 {k + a * b}
+  fn viaRef(self &, r &i32) i32 {k * *r}
+}
+
+// The one virtual function both implementers of each trait reach, so every
+// argument is marshalled into a call whose callee is not known until it runs
+fn scaledBy(s &<Scaler, factor i32) i32 {
+  s.scaled(factor)
+}
+
+fn blendedBy(b &<Blender) i32 {
+  b.blend(4, 5)
+}
+
+fn viaRefOf(b &<Blender) i32 {
+  imm n = 11
+  b.viaRef(&n)
+}
+
+fn parameterized() {
+  imm box = Box[7]
+  imm cup = Cup[100]
+  show("parm-requirement-first-impl", scaledBy(&box, 3))
+  show("parm-requirement-other-impl", scaledBy(&cup, 3))
+  // The same call site with a different argument, so the parameter is really
+  // passed through rather than folded into the implementation
+  show("parm-requirement-other-argument", scaledBy(&box, 5))
+
+  imm mix = Mix[6]
+  imm churn = Churn[3]
+  show("two-parm-requirement-first-impl", blendedBy(&mix))
+  show("two-parm-requirement-other-impl", blendedBy(&churn))
+  show("ref-parm-requirement-first-impl", viaRefOf(&mix))
+  show("ref-parm-requirement-other-impl", viaRefOf(&churn))
+}
+
 // -------- nominal conformance with 'extends' --------
 
 // A trait may require fields as well as methods, and may give a method a body,
@@ -211,6 +297,7 @@ fn interactions() {
 
 fn main() i32 {
   structural()
+  parameterized()
   nominal()
   storedVirtualRefs()
   interactions()
