@@ -13,8 +13,13 @@
 // type checker and all easy to get wrong in code generation.
 //
 // 'core' owns the number types themselves, so nothing here exists to show that
-// i32 has a range. 'typedef' has no scenario at all -- see the note in
-// cases.toml.
+// i32 has a range.
+//
+// The fourth capability, 'typedef', is the absence of a change of type: the
+// alias and the type it names are one type, so a value crosses between them
+// with nothing generated for the crossing. It is established last, because what
+// makes it an alias rather than a new type is that the coercions and
+// conversions above apply to it unchanged.
 
 import stdio::*
 
@@ -218,6 +223,59 @@ fn disambiguate() {
   showF("conversion-picks-float", pick(f64[3]))
 }
 
+// -------- typedef, an alias rather than a change of type --------
+
+typedef Count i64
+// An alias of an alias, so that resolution has to follow the whole chain rather
+// than one link of it
+typedef Tally Count
+typedef Ratio f64
+
+struct Reading {
+  level i64
+}
+
+// An alias of a type that is not a number, named where a reference wants its
+// referent
+typedef ReadingRef &Reading
+
+// Each of the four positions below is a use of the alias as a type: a global, a
+// parameter, a return type, and a local in the function further down.
+mut recorded Count = 3i64
+
+fn bumped(n Count) Tally {
+  // The aliased type's operators are reached through the alias, which has no
+  // methods of its own
+  n + 1i64
+}
+
+fn levelOf(r ReadingRef) i64 {
+  r.level
+}
+
+fn typedefs() {
+  mut running Count = 40i64
+  running = bumped(running)
+  show("typedef-local", running)
+  show("typedef-global", recorded)
+
+  // Transparent in both directions: an i64 parameter takes a Count argument
+  // with no conversion written, and the coercion rules above are the alias's
+  // rules too, so a narrower number still widens into it
+  show("typedef-passes-as-aliased-type", wantI64(running))
+  mut narrow i16 = 12
+  mut widened Count = narrow
+  show("typedef-receives-coercion", widened)
+
+  // A reference to the alias is a reference to the struct it names
+  imm sample = Reading[9i64]
+  show("typedef-struct-ref", levelOf(&sample))
+
+  // Conversion targets the aliased type through the alias, and reads it back
+  mut scaled Ratio = f64[running] / 2.0d
+  showF("typedef-in-conversion", scaled)
+}
+
 fn main() i32 {
   conversions()
   intoForm()
@@ -225,5 +283,6 @@ fn main() i32 {
   coercions()
   branches()
   disambiguate()
+  typedefs()
   0i32
 }
