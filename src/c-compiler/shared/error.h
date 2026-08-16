@@ -36,7 +36,7 @@ enum ErrorCode {
     ErrorNoRCurly = 1005,    // Missing right curly brace
     ErrorBadTerm = 1006,   // Invalid term - something other than var, lit, etc.
     ErrorBadGloStmt = 1007, // Invalid global area type, var or function statement
-    ErrorDupImpl = 1008,    // Function already has another implementation
+    // 1008 was ErrorDupImpl; a second implementation of a name is ErrorDupName
     ErrorNoLParen = 1009,  // Expected left parenthesis not found
     ErrorNoRParen = 1010,    // Expected right parenthesis not found
     ErrorDupName = 1011,    // Duplicate name declaration
@@ -46,7 +46,7 @@ enum ErrorCode {
     ErrorNotLit = 1015,    // Value can only be a literal
     ErrorBadLval = 1016,    // Expression is not an lval
     ErrorNoMut = 1017,        // Mutation is not allowed
-    ErrorNotFn = 1018,        // Not a function
+    // 1018 was ErrorNotFn; calling a non-callable value is ErrorNoMbr on '()'
     ErrorUnkName = 1019,    // Unknown name (no declaration exists)
     ErrorNoType = 1020,    // No type specified (or inferrable)
     ErrorNoInit = 1021,    // Parm didn't specify required default value
@@ -56,16 +56,15 @@ enum ErrorCode {
     ErrorNoMeth = 1025,    // No such method defined by the object's type
     ErrorRetNotLast = 1026, // Return was found not at the end of the block
     ErrorNoRet = 1027,        // Return value expected but not given
-    ErrorNoElse = 1028,    // Missing 'else' branch
+    ErrorNoElse = 1028,    // 'if' used as a value has no 'else' (or exhaustive matches)
     ErrorNoLoop = 1029,    // 'break' or 'continue' allowed only in while/each loop
-    ErrorNoVtype = 1030,    // Missing value type
+    // 1030 was ErrorNoVtype; a node left with no type is ErrorBadTree (--checktree)
     ErrorNotPtr = 1031,    // Not a pointer
-    ErrorNotLval = 1032,    // Not an lval
-    ErrorAddr = 1033,        // Invalid expr to get an addr (&) of
+    // 1032 was ErrorNotLval, 1033 ErrorAddr; both conditions are ErrorBadLval
     ErrorBadPerm = 1034,    // Permission not allowed
-    ErrorNoFlds = 1035,    // Expression's type does not support fields
-    ErrorBadAlloc = 1036,  // Missing valid alloc methods
-    ErrorNoDbl = 1037,        // Missing '::'
+    // 1035 was ErrorNoFlds; a type with no such field is ErrorNoMbr
+    ErrorBadAlloc = 1036,  // Region cannot allocate: missing or ill-formed _alloc method
+    // 1037 was ErrorNoDbl; no construct requires a '::' that could be missing
     ErrorNoVar = 1038,        // Missing variable name
     ErrorNoEof = 1039,        // Missing end-of-file
     ErrorNoImpl = 1040,    // Function must be implemented
@@ -75,7 +74,8 @@ enum ErrorCode {
     ErrorNotTyped = 1044,  // Expected a value that has a type
     ErrorBadIndex = 1045,  // Bad index/slice on array/ref
     ErrorBadArray = 1046,  // Bad array
-    ErrorBadSlice = 1047,  // Bad slice type
+    // 1047 was ErrorBadSlice; borrowing a slice of a non-array is a one-element
+    // slice by design (borrow.c), so there is no bad-slice-type condition
     ErrorMove = 1048,      // Move error of some kind
     ErrorRecurse = 1049,   // Recursive type error
     ErrorBadStmt = 1050,   // Bad statement
@@ -102,6 +102,12 @@ enum ErrorCode {
 
     // IR well-formedness (--checktree). A compiler defect, not a bad program
     ErrorBadTree = 1063,        // A node was left with no type or no body
+
+    // Lifetimes
+    ErrorEscape = 1064,         // A borrowed reference would outlive what it borrows from
+
+    // Words held for language features not yet implemented
+    ErrorReserved = 1065,       // Reserved word used as an identifier
 
     // Warnings
     WarnCode = 3000,

@@ -1,20 +1,18 @@
-// Defect: a slice may be stored where it outlives the array it points at.
+// A slice may not be stored where it would outlive the array it points at.
 //
-// ref-flow establishes that the compiler does enforce this rule for a plain
-// borrowed reference, reporting ErrorInvType "lval outlives the borrowed
-// reference you are storing". assignlvalrtype in ir/exp/assign.c reaches that
-// check only when both the lval's type and the rval's type are RefTag, so an
-// ArrayRefTag on either side skips it and the assignment below is accepted.
+// ref-flow establishes the same rule for a plain borrowed reference, reporting
+// ErrorInvType "lval outlives the borrowed reference you are storing".
+// assignlvalrtype in ir/exp/assign.c used to reach that check only when both
+// the lval's type and the rval's type were RefTag, so an ArrayRefTag on either
+// side skipped it and the assignment below was accepted. A slice borrows
+// exactly as a reference does and carries the same scope, so both tags now
+// reach it.
 //
-// The escape is real: after the block ends, 'escaping' names storage that no
-// longer exists, and a write through it corrupts the frame. The same hole lets
-// a function return a slice borrowed from one of its own locals, which also
-// compiles clean today; that case is not annotated here because no diagnostic
-// has been established for it, and an expectation naming a code the compiler
-// has never produced for that construct would be a guess.
-//
-// xfail: the annotation names what the reference case already produces, so this
-// scenario passes as soon as the check learns about slices.
+// The escape this prevents is real: after the block ends, 'escaping' would name
+// storage that no longer exists, and a write through it would corrupt the
+// frame. The sibling case -- a function returning a slice borrowed from one of
+// its own locals -- is asserted by ref-flow-return, which owns the escape rule
+// for return values.
 
 fn escapingSlice() {
   mut b [3; i32] = [1, 2, 3]

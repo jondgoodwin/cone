@@ -209,6 +209,12 @@ enum NodeTags {
 #define TypeChecked        0x8000  // Type has been type-checked
 #define TypeChecking       0x4000  // Type is in process of being type-checked
 
+// Flags applied to any declaration a module holds, whatever its node kind.
+// modTypeCheck sets this on functions, variables and type declarations alike,
+// so the bit must be free in every block above: 0x0001-0x0080 are all spoken
+// for by one node family or another, and 0x4000/0x8000 by the type flags here.
+#define FlagSigError       0x0100  // Declaration's own signature failed type check
+
 // Allocate and initialize the INode portion of a new node
 #define newNode(node, nodestruct, nodetype) {\
     node = (nodestruct*) memAllocBlk(sizeof(nodestruct)); \

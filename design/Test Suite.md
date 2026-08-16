@@ -118,23 +118,39 @@ type checking. A type-check expectation sharing a file with a parse error never
 runs, and the scenario silently covers half of what it claims. Same-stage errors
 accumulate, so one file carries several distinct codes of one stage.
 
-**Same-stage is not always enough**, because two passes gate themselves on the
-global error count rather than on their own:
+**Same-stage used not to be enough**, because two passes gated themselves on the
+global error count rather than on their own. **Both are now per declaration**,
+and neither constrains how a file is written any more:
 
-- **`module.c:181` runs a declaration's *body* only if `errors == 0`.** Every
-  signature is type-checked first, so a signature-phase diagnostic silently
-  suppresses every body-phase diagnostic in the same file — both of them
-  type-check stage.
-- **`fndcl.c:181` runs `blockFlow` only if `errors == 0`.** So one error
-  anywhere, of any stage, silences data-flow analysis for every function after
-  it. Anything reported from the flow pass — `ErrorMove`, the lifetime check in
-  `assign.c`, and `ErrorNoMut` on an assignment, which is a flow diagnostic and
-  not a type-check one despite appearances — needs a file of its own, and its
-  diagnostics must all come from the first function that errors.
+- **`module.c` type checks every signature in the module first, then every
+  body.** It used to skip the body pass entirely unless the signature pass was
+  error-free, so one malformed signature suppressed every body-phase diagnostic
+  in the file. It now skips only the declarations whose own signature failed,
+  which it marks with `FlagSigError`.
+- **`fndcl.c` runs `blockFlow` on a function whose own signature and body type
+  checked**, whatever failed elsewhere. It used to require the global count to be
+  zero, so one error of any stage silenced data-flow analysis for every function
+  after it.
+
+So flow diagnostics — `ErrorMove`, the lifetime checks in `assign.c` and
+`return.c`, and `ErrorNoMut` on an assignment, which is a flow diagnostic and not
+a type-check one despite appearances — may now appear in several functions of one
+file, and after an earlier declaration has failed at either stage.
+`core-flow-gate` pins both gates, and is the one file in the corpus that
+deliberately mixes a signature failure, a body failure and flow diagnostics.
+
+Existing flow scenarios were written under the old rules and are still one
+function each, and `closure-typecheck-sig` is still split from
+`closure-typecheck-use` and `closure-typecheck-call`. Those splits are now
+simplifications rather than requirements.
+
+**One gate is still global**: name resolution returns before type checking begins
+if it reported anything (`conec.c`). A file whose subject is a type-check or flow
+diagnostic still cannot contain a name-resolution error.
 
 Four groups hit these while being written. If a scenario reports fewer
-diagnostics than it should and the missing ones are all late in the file, this is
-why.
+diagnostics than it should and the missing ones are all late in the file, check
+this first.
 
 **Split a stage into several files when any of these applies:**
 

@@ -16,6 +16,10 @@ RefNode *newRefNode(uint16_t tag) {
     refnode->perm = (INode*)roPerm;
     refnode->vtype = (INode*)unknownType;
     refnode->typeinfo = NULL;
+    // Global lifetime until borrowTypeCheck infers one from what is borrowed.
+    // Left uninitialized, the lifetime checks in assign.c and return.c read
+    // whatever the allocator last held there.
+    refnode->scope = 0;
     return refnode;
 }
 

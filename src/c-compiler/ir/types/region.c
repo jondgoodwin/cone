@@ -33,22 +33,22 @@ void regionAllocTypeCheck(INode *region) {
     }
     FnDclNode *allocmeth = (FnDclNode*)iTypeFindFnField(region, allocMethodName);
     if (allocmeth == NULL || allocmeth->tag != FnDclTag) {
-        errorMsgNode(region, ErrorInvType, "Region does not support allocation as it lacks _alloc static method.");
+        errorMsgNode(region, ErrorBadAlloc, "Region does not support allocation as it lacks _alloc static method.");
         return;
     }
     FnSigNode *allocsig = (FnSigNode*)itypeGetTypeDcl(allocmeth->vtype);
     if (allocsig->parms->used != 1) {
-        errorMsgNode((INode*)allocmeth, ErrorInvType, "Region _alloc method needs single usize parm.");
+        errorMsgNode((INode*)allocmeth, ErrorBadAlloc, "Region _alloc method needs single usize parm.");
         return;
     }
     NbrNode *sizetype = (NbrNode *)itypeGetTypeDcl(iexpGetTypeDcl(nodesGet(allocsig->parms, 0)));
     if (sizetype != usizeType) {
-        errorMsgNode((INode*)allocmeth, ErrorInvType, "Region _alloc method needs single usize parm.");
+        errorMsgNode((INode*)allocmeth, ErrorBadAlloc, "Region _alloc method needs single usize parm.");
         return;
     }
     RefNode *rettype = (RefNode*)itypeGetTypeDcl(allocsig->rettype);
     if (!regionIsPtrU8(rettype)) {
-        errorMsgNode((INode*)allocmeth, ErrorInvType, "Region _alloc method must return *u8.");
+        errorMsgNode((INode*)allocmeth, ErrorBadAlloc, "Region _alloc method must return *u8.");
         return;
     }
 
@@ -58,12 +58,12 @@ void regionAllocTypeCheck(INode *region) {
     }
     FnSigNode *initsig = (FnSigNode*)itypeGetTypeDcl(initmeth->vtype);
     if (initsig->parms->used != 0) {
-        errorMsgNode((INode*)initmeth, ErrorInvType, "Region init method may not have parameters.");
+        errorMsgNode((INode*)initmeth, ErrorBadAlloc, "Region init method may not have parameters.");
         return;
     }
     INode *initrettype = itypeGetTypeDcl(initsig->rettype);
     if (itypeMatches(initrettype, region, Coercion) != EqMatch) {
-        errorMsgNode((INode*)initmeth, ErrorInvType, "Region init method must return initial value.");
+        errorMsgNode((INode*)initmeth, ErrorBadAlloc, "Region init method must return initial value.");
         return;
     }
 

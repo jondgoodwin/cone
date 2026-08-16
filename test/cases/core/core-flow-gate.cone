@@ -1,0 +1,53 @@
+// One declaration's failure does not silence the next declaration's analysis.
+//
+// Two gates used to stop the compile at the first error rather than at the
+// failing declaration, and between them they made a whole class of rule
+// enforced only in files that were otherwise clean. That is how 'imm' came to
+// look unenforced when it had been checked since 2021.
+//
+// - modTypeCheck type checks every declaration's signature first and used to
+//   type check no body at all unless that pass was error-free. One malformed
+//   signature suppressed every body diagnostic in the module.
+// - fnDclTypeCheck ran blockFlow only while the global error count was zero, so
+//   one error anywhere earlier, of any stage, turned off immutability checking,
+//   ErrorMove and the lifetime checks for everything after it.
+//
+// Both are now per declaration: each compares the error count against the one
+// it saw on entry, so a declaration whose own signature and body type checked is
+// analyzed whatever failed elsewhere. This file is the assertion, and it is the
+// one file in the corpus that deliberately mixes the stages. Each function
+// below fails in a different way and none of them silences the next.
+//
+// One gate is deliberately still global and is not what this asserts: name
+// resolution returns before type checking begins if it reported anything
+// (conec.c). Type checking a tree with unresolved names is a different and much
+// larger question.
+
+// A failure in the signature phase. Its own body is skipped -- checking it
+// against a parameter whose type never resolved would report again at every use
+// and name nothing the author can act on -- so nothing else here is annotated
+// for this function.
+fn signatureFails(v i32, h &fn(n i32) i32 {n}) i32 {  //~ ErrorNotTyped:28 "Expected a type"
+  h(v)
+}
+
+// A failure in the body phase, reported even though a signature already failed
+fn bodyFailsTypeCheck() i32 {
+  true                       //~ ErrorInvType:3 "Return expression type does not match return type on function"
+                             //~^^ ErrorInvType:25 "This is the declared function's return type" follow-on
+}
+
+// A flow diagnostic, reported only because the gate is per function now
+fn immStillChecked() i32 {
+  imm n = 3
+  n = 5                      //~ ErrorNoMut:3 "You do not have permission to modify lval"
+  n
+}
+
+// ... and a second offending function is reported too, where before only the
+// first function to reach flow analysis ever was
+fn immCheckedAgain() i32 {
+  imm m = 7
+  m = 9                      //~ ErrorNoMut:3 "You do not have permission to modify lval"
+  m
+}

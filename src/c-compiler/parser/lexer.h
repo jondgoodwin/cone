@@ -178,6 +178,11 @@ enum TokenTypes {
     falseToken,    // 'false'
     UndefToken,    // 'undef'
 
+    // Words held for language features that are documented but not implemented.
+    // The lexer never returns this token: it diagnoses the use and hands back an
+    // identifier, so the rest of the parse proceeds as it would have.
+    ReservedToken,
+
     NbrTokens
 };
 

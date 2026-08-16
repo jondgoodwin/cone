@@ -178,7 +178,7 @@ void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
 
     // All paths must return a typed value. Absence of an 'else' clause makes that impossible
     if (!hasElse) {
-        errorMsgNode((INode*)ifnode, ErrorInvType, "if requires an 'else' clause (or exhaustive matches) to return a value");
+        errorMsgNode((INode*)ifnode, ErrorNoElse, "if requires an 'else' clause (or exhaustive matches) to return a value");
         return;
     }
 

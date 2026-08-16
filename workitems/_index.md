@@ -59,7 +59,11 @@
 	- Defects the test suite found, by the decision each needs:
 		- [[Ownership memory safety]] — done; see `workitems/done/`
 		- [[Diagnose instead of crash]] — done; see `workitems/done/`
-		- [[Unenforced language rules]] — documented rules nothing checks
+		- [[Unenforced language rules]] — every check that could be written
+		  has been; the remainder is feature work, carried now by
+		  [[Types. Pointers and Borrowed References]],
+		  [[Concurrency Threads]], [[Copy & Alias vs. Move Semantics]] and
+		  [[Analysis re-factor]]
 		- [[Compiler defect backlog]] — the residue, each with a clear answer
 - Build System:
 	- Import vs. Include (allow include inside a type?)
