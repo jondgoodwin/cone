@@ -8,15 +8,20 @@
 //
 // Owning references ('+rc', '+so'), array references and slices ('&[]'), and
 // virtual references ('&<') belong to region, collection and trait; none of
-// them appear here. Struct owns structs; Pair exists only because borrowing
-// part of a value needs a value with parts, and two fields is the fewest that
-// can also give a defined address ordering.
+// them appear here. Struct owns structs; Pair and Nest exist only because
+// borrowing part of a value needs a value with parts, and two fields is the
+// fewest that can also give a defined address ordering. Nest adds one level so
+// a borrow can be shown reaching through a chain of fields.
 
 import stdio::*
 
 struct Pair {
   x i32
   y i32
+}
+
+struct Nest {
+  pair Pair
 }
 
 fn show(label &[]u8, n i64) {
@@ -76,12 +81,31 @@ fn chained() {
 fn parts() {
   mut p = Pair[1, 2]
 
-  // Parentheses are required around the field. Bare '&mut p.x' borrows p and
-  // then takes the field of that borrow, which is a different thing and does
-  // not work; ref-field-borrow records it.
+  // A borrow applies to the whole suffixed term, so '&mut p.x' references the
+  // field. Parentheses change nothing, and both forms are here because the bare
+  // one used to borrow p and then take the field of that borrow -- typed as the
+  // field while codegen answered with its address.
   imm fx = &mut (p.x)
   *fx = 10
   show("write-through-field-ref", p.x)
+
+  mut q = Pair[1, 2]
+  imm qx = &mut q.x
+  *qx = 11
+  show("write-through-bare-field-ref", q.x)
+
+  // The second field, so the reference is not merely the struct's own address
+  imm qy = &mut q.y
+  *qy = 12
+  show("write-through-bare-second-field-ref", q.y)
+  show("bare-field-ref-left-first-field", q.x)
+
+  // Field of a field, so the borrow reaches through the whole chain
+  mut n = Nest[Pair[3, 4]]
+  imm inner = &mut n.pair.y
+  *inner = 13
+  show("write-through-nested-field-ref", n.pair.y)
+  show("nested-field-ref-left-sibling", n.pair.x)
 
   // A field is read and written through a reference to the whole struct, which
   // dereferences the reference on the way

@@ -319,13 +319,17 @@ INode *parseAmper(ParseState *parse) {
         return (INode *)anode;
     }
 
-    // Borrowed references handle precedence differently, consuming only a prefixed term w/o suffixes
-    // Then the suffixes are appended afterwards as a chain of method calls that consume the borrowed ref
-    anode->vtexp = parsePrefix(parse, 1);  // Consume prefixed-term but skip suffix parsing
-    INode* node = parseSuffix(parse, (INode*)anode, FlagBorrow);
-    if (node != (INode*)anode)
-        anode->flags |= FlagSuffix;  // Set flag to show we ended up with suffixes
-    return node;
+    // A borrow applies to the whole suffixed term, at the same precedence every
+    // other prefix operator has: '&x.a' references the field and '&x[4]' the
+    // fifth element, which is what coneref/refborref.html documents.
+    //
+    // This used to consume only the prefixed term and then re-apply the suffixes
+    // to the borrow, so '&x.a' was '(&x).a' and reached codegen typed as the
+    // field while returning the field's address. What made a borrow reach an
+    // element -- '&[]' dispatch on a type that declares it -- is now borrow.c's
+    // business, where the receiver's type is known.
+    anode->vtexp = parsePrefix(parse, 0);
+    return (INode *)anode;
 }
 
 // Parse an "plus term" for a region-managed ref type or constructor:

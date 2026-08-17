@@ -13,9 +13,13 @@ The three severe groups are elsewhere. [[Ownership memory safety]] and
 **Every entry below has been re-verified against the compiler by writing the
 program and reading what came out.** Four were wrong as recorded, in the same
 direction each time — the symptom was real and the stated cause was not — and
-each is corrected in place with its evidence. Two turned out to be memory-safety
-bugs rather than missing checks. Do the same before acting on what is left: the
-check costs a minute and it has now changed the work seven times. The last of
+each is corrected in place with its evidence. One more was wrong in the other
+direction, which is the rarer and more dangerous kind: `&Point[1, 2]` was
+recorded as a form that worked and had to be kept working, and it had never
+compiled at all — so a constraint on the fix was invented out of nothing.
+Two turned out to be memory-safety bugs rather than missing checks. Do the same
+before acting on what is left: the check costs a minute and it has now changed
+the work eight times. The last of
 them is the sharpest warning on the page: the recorded cause named the branch
 that reports the diagnostic, which was genuinely the branch that reported it,
 and was still wrong about why the tree reached it.
@@ -28,7 +32,7 @@ table below.
 
 ## Fixed
 
-Twelve are done, with a scenario each. They are recorded here rather than
+Fourteen are done, with a scenario each. They are recorded here rather than
 deleted because six of them were mis-diagnosed on this page and the correction
 is worth more than the entry was. Three of the last four were: one entry was two
 defects with one cause, another was two defects with two causes, of which only
@@ -49,6 +53,7 @@ finding what put the tree in front of it.
 | A generic instantiation is not a type inside a composite type | **Half of what was filed as "`&Box[T]` does not parse", and the recorded cause was right.** `itypeIsGenericType` tested `objfn->tag == GenericNameTag`, a tag nothing assigns, so `isTypeNode` said no to `Box[i64]` — and name resolution asks exactly there when it decides between a type and the expression sharing its syntax, so `*Box[i64]` read as a dereference and `[2; Box[i64]]` as an array literal. The discriminator was already in the tree: a generic is a declaration carrying a `GenericInfo`, which `genericSubstitute` has always used, and a macro cannot reach the test at all. One thing had to move with it: `inodeTypeCheck` marks a type node walked-once, and an instantiation is a type that this pass *replaces*, so marking it stranded the flag and made a second use of one node — a match pattern and the variable it declares share one — report a recursive type | `generic-success` |
 | An operator inside a method of a generic type is rejected | **Not a dispatch defect at all: every instance method's body was type checked twice, and lowering is not idempotent.** `cloneStructNode` copies the struct with `memcpy`, which carries `nodelist.used` across, then replaced `nodelist.nodes` with a fresh array and wrote each cloned method into it *while also* calling `iNsTypeAddFn`, which appends at the copied count — so the instance listed every method twice, at its own index and again after. `structTypeCheck` walks that list to check bodies, so the second visit re-lowered what the first had already lowered correctly. That is why the recorded cause looked right and was a consequence: on the second pass an operator call's `objfn` is a `VarNameUse` of the operator's own `FnDcl`, which carries `FlagMethFld`, so `fnCallTypeCheck`'s "rewrite to `self.method`" branch fired and looked `+` up on the instance. `+=` produced a different symptom from the same cause — `fnCallOpAssgn` had already rewritten it to a temporary, so the second pass reported `ErrorNotLit` "Variable may only be initialized with a literal value". The copy's list now starts empty (`nodelistInit`) and `iNsTypeAddFn` does both the append and the dictionary entry, mirroring the fields loop above it. **It predated `c6085e4`** — the line dates to `6696a27`, and only became reachable when generic methods started working. Code generation was never affected: it reaches an instance method through the same node twice and the second is a no-op | `generic-success` |
 | `Bool[r]` and `Bool[p]` fail | **The conversion they were said to disagree with did not work either.** `typeLitNbrCheck` rejected a ref/ptr source exactly as recorded, but `r into Bool` and `p into Bool` only *type checked*: `genlConvert` has no ref/ptr case and Bool is a 1-bit `UintNbrTag`, so the number arm read `((NbrNode*)fromtype)->bits` off a `RefNode` and emitted `trunc i32* to i1`. `--verify` rejects it; nothing had ever run it. The Bool rule now lives once, in `castConvertsToBool`, which both paths ask, and `genlConvert` lowers ref/ptr to Bool as the null test `isTrue` already generated for the implicit coercion of a pointer | `typemgmt-success`, `typemgmt-typecheck-convert` |
+| `&mut p.x` — a field borrow without parentheses, and `&Box[i64]` — a reference to a generic instantiation | **One rule, not two defects, and the recorded cause was right about the mechanism and wrong about what it cost.** `parseAmper` consumed a prefixed term without suffixes and re-applied them to the borrow, so `&x.a` was `(&x).a`: typed as the field while `genlexpr` honoured `FlagBorrow` and answered with its address, which `--verify` rejects. Jon's ruling is that `&` applies to the whole suffixed term, so `&x.a` references the field and `&x[4]` the element, which is what `coneref/refborref.html` already documents. `parseAmper` now parses its operand at normal prefix precedence and `&Box[i64]` needed nothing further — the instantiation arrives whole and `refNameRes` asks `itypeIsGenericType`, repaired in `d407ba4`, so the borrow was the one position still failing for want of the instantiation surviving as a unit. Two things had to move with it. `borrowTypeCheck` re-associates `&v[i]` to `(&v)[i]` where the operand is an index on a value, because a type declaring its own `` `&[]` `` decides what a reference to an element is and wants the receiver the borrow would make; that is the shape `fnCallArrIndex` has always wanted for an array, a slice or a pointer too, so nothing there changed. And a borrow now names its own reason for refusing an operand, because `&p.sum()` — the one meaning the ruling changes — borrows a temporary, and `iexpIsLvalError`'s "must be lval" explains an assignment target instead. **`&Point[1, 2]` was recorded as working and never did**: it was a literal of the *reference* type, which `typeLitTypeCheck` rejects with `ErrorTypeLitType`. It is now a literal of `Point` that the borrow refuses as a temporary, which is the same verdict said usefully | `ref-success`, `ref-typecheck-borrow`, `generic-success`, `union-success`, `struct-methods` |
 
 The same line held a second misread that no source can reach today: it took the
 field's own permission through a `VarDclNode*` cast, and `FieldDclNode` puts
@@ -70,14 +75,7 @@ truncated the returned pointer to 32 bits and segfaulted.
 
 | Defect | Cause | Pinned by |
 | --- | --- | --- |
-| `&mut p.x` — a field borrow without parentheses | `parseAmper` (`parseexpr.c:321-326`) re-applies suffixes to the borrow, so it becomes a field access on `&mut p` carrying `FlagBorrow`. `fnCallTypeCheck`'s field branch ignores the flag and types the access as the field's own type, while `genlexpr.c` honours it and returns the field pointer. LLVM verification fails. The array-index path (`fncall.c:203-208`) has the fixup the field path lacks | `ref-field-borrow` |
 | The nullable-pointer optimization | `genlTypeMeta` (`genllvm/genltype.c:174-207`) gives base and variants a bare pointer type while the variant initializer still stores through the variant's struct type. Verified: `--verify` reports "Stored value type does not match pointer operand type" on construction | `union-nullable-ptr` |
-
-## Declared but unusable
-
-| Defect | Cause | Pinned by |
-| --- | --- | --- |
-| `&Box[T]` — a reference to a generic instantiation — does not parse | **Re-scoped: it was two defects, and the other one is fixed.** "Only the `&` form fails" was wrong — `*Box[i64]`, `[2; Box[i64]]` and `?Box[i64]` failed too, all with the same pair of diagnostics, because an instantiation lost the type-versus-value vote at name resolution. That half is fixed; see the table above. `&Box[i64]` never reaches that vote: it parses as an index applied to `&Box`, since a borrow re-applies suffixes to itself. What is left is a precedence rule — `&` followed by a name that resolves to a generic has one possible reading — and it is the same `parseAmper` re-application `ref-field-borrow` pins, so the two should be decided together | `generic-ref-instance` |
 
 ## Reported in the wrong place
 

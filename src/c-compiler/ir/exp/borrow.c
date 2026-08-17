@@ -110,11 +110,59 @@ static int borrowRefIndexDispatches(RefNode *node) {
     return iNsTypeFindMethod(found, &recvr, NULL, &status) != NULL;
 }
 
+// Answer whether '&v[i]' should be re-associated to '(&v)[i]'.
+//
+// A borrow reaches the whole suffixed term, so the parser hands '&v[i]' over as a
+// borrow of the indexed element. That is the meaning, but it is not the shape the
+// index wants: a type may declare its own '`&[]`', and that method decides what a
+// reference to one of its elements is -- taking the very receiver this borrow
+// would make. Reading past it to the by-value '`[]`' would borrow a temporary.
+//
+// So the index takes the borrow as its receiver and becomes the whole expression,
+// which is also the shape fnCallArrIndex has always wanted for an array, a slice
+// or a pointer. Only an index directly on the term qualifies: '&x[i].a' borrows
+// the field, and its index is a plain one.
+//
+// A type in that position is not a receiver and is left alone. '&Box[i64]' is an
+// instantiation and never arrives here at all, refNameRes having kept the whole
+// node a type. '&Point[1, 2]' does arrive, and stays a literal of Point rather
+// than becoming an index of '&Point' -- a temporary, which the borrow refuses
+// below. It used to be a literal of the reference type, which nothing accepted.
+static int borrowReassocIndex(RefNode *node) {
+    if (node->tag != BorrowTag || node->vtexp->tag != FnCallTag)
+        return 0;
+    FnCallNode *index = (FnCallNode*)node->vtexp;
+    return (index->flags & FlagIndex) && index->methfld == NULL && !isTypeNode(index->objfn);
+}
+
 // Analyze borrow node
 void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     RefNode *node = *nodep;
-    if (iexpTypeCheckAny(pstate, &node->vtexp) == 0 || iexpIsLvalError(node->vtexp) == 0)
+
+    if (borrowReassocIndex(node)) {
+        FnCallNode *index = (FnCallNode*)node->vtexp;
+        node->vtexp = index->objfn;
+        node->flags |= FlagSuffix;  // the borrow is now the inner link of an index chain
+        index->objfn = (INode*)node;
+        index->flags |= FlagBorrow;
+        *((INode**)nodep) = (INode*)index;
+        inodeTypeCheckAny(pstate, (INode**)nodep);
         return;
+    }
+
+    if (iexpTypeCheckAny(pstate, &node->vtexp) == 0)
+        return;
+
+    // Every operand a borrow refuses is refused for one reason, so the borrow says
+    // that reason rather than iexpIsLvalError's "must be lval", which explains an
+    // assignment target and not this. A borrow reaches the whole suffixed term, so
+    // '&p.sum()' is the call's result -- a temporary -- and '(&p).sum()' is how a
+    // method is called on a borrowed receiver.
+    if (!iexpIsLval(node->vtexp)) {
+        errorMsgNode(node->vtexp, ErrorBadLval,
+            "May not borrow a temporary value. A borrowed reference needs a place in memory to point at.");
+        return;
+    }
 
     // Where '&[]value' dispatches to the value's own '&[]' method, the receiver
     // that method wants is a plain borrow of the value. Retag to build exactly

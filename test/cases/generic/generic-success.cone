@@ -102,6 +102,10 @@ fn genericOverAStructType() {
 
 struct Box[T] {
   v T
+
+  // A reference receiver, so an instance reached through '&Box[i64]' has a
+  // method to dispatch as well as a field to read
+  fn get(self &) T {v}
 }
 
 struct Pair[T, U] {
@@ -238,11 +242,23 @@ fn operatorsInsideAGenericMethod() {
 // instantiation used to lose that vote, so '*Box[i64]' read as a dereference
 // and '[2; Box[i64]]' as an array literal.
 //
-// '&Box[i64]' is still not one of these and is still generic-ref-instance's:
-// it fails in the parser, before any of this is asked.
+// '&Box[i64]' used not to be one of these, because the borrow never reached
+// this question: '&' consumed the bare name and then re-applied '[i64]' to the
+// borrow, so the instantiation was read as a type literal of a reference to the
+// generic itself. Now that a borrow applies to the whole suffixed term, the
+// instantiation arrives whole and the same vote decides it. That is what a
+// generic collection with '&self' methods needed.
 
 fn viaPointer(b *Box[i64]) i64 {
   (*b).v
+}
+
+fn viaRef(b &Box[i64]) i64 {
+  b.v
+}
+
+fn viaRefMethod(b &Box[i64]) i64 {
+  b.get()
 }
 
 fn optionalBox(o ?Box[i64]) i64 {
@@ -266,6 +282,11 @@ fn instantiationInsideAnotherType() {
   mut one = Box[i64][v: 7i64]
   imm p *Box[i64] = &mut one
   show("instantiation-as-pointer-target", viaPointer(p))
+
+  // Borrowed reference target type, reading a field and dispatching a method
+  // whose own receiver is '&self'
+  show("instantiation-as-ref-target", viaRef(&one))
+  show("instantiation-as-ref-target-method", viaRefMethod(&one))
 
   // Option's type argument, through the '?' sugar
   show("instantiation-as-option-argument", optionalBox(Some[Box[i64][v: 6i64]]))
