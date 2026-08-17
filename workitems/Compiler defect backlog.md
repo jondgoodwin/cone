@@ -121,7 +121,84 @@ Jon and are listed under "What needs a decision" below.
   never advances. `break` is fine. Unpinnable — the runner would have to hang to
   observe it. **No ruling needed**; what it needs is somewhere for the increment
   to live that `continue` reaches, which the parser rewrite has no notion of
-  today.
+  today. **Now measured — see below.**
+
+### Measured: `continue` inside an `each`
+
+Difficulty **low**, and the mechanism it needs already exists. Not fixed, because
+the item was filed as needing a report first. Everything below was compiled, and
+the hang was read out of the IR rather than run.
+
+**The symptom, without running anything.** `each i in 0 < 10 { if i == 3
+{ continue }; sum = sum + i }` generates `ifblk3: br label %loopbeg` while the
+`add i32 %3, 1` that advances `i` sits in `endif2`, the fall-through block. So
+the jump reaches the loop guard with `i` unchanged. Exactly as recorded.
+
+**Which loop a `continue` targets is already known, and not by the parser.**
+`continueNameRes` (`ir/stmt/continue.c`) resolves `continuenode->block` to the
+target loop's `BlockNode` — `nstate->loopblock` for a bare `continue`, and the
+lifetime-named block for `continue 'outer`, which it requires to carry
+`FlagLoop`. So the rewrite belongs in name resolution, not in `parseEach`, and
+telling this loop's `continue` from a nested loop's costs nothing: the resolved
+pointer is the answer.
+
+**The labelled case is not the hard case.** `continue 'outer` from inside a
+nested `each` needs the *outer* loop's step and nothing else — the inner loop is
+abandoned and its variable is re-initialized by the outer body on the next
+iteration. Verified by hand-writing the rewrite's output as a `while` nest with
+`i++` before `continue 'outer`: it compiles clean under `--verify` and exits 3,
+the predicted value. It is spellable today, and today it hangs.
+
+**The proposed shape does not compile; a simpler one does.** Wrapping the step
+and the `continue` in a block — `if c { { i++; continue } }` — is rejected by
+`blockNoBreak` with `ErrorBadStmt` "break/continue may only finish a conditional
+block". Inserting the step into the block that *already* holds the `continue`,
+immediately before it — `if c { i++; continue }` — compiles clean. That shape
+cannot violate the last-statement rule either, and for a structural reason: the
+rule guarantees every `continue` is already the last statement of some block, so
+inserting ahead of it keeps it last and makes the step an ordinary non-final
+expression statement.
+
+**Cloning is required, and is sound on evaluation count.** Reusing the one step
+node would put it in the tree twice and have it type checked twice, which is the
+non-idempotent-lowering corruption the generic-method row above describes. A
+clone is safe because only one of the two copies runs per iteration.
+`cloneFnCallNode` handles the `++`/`--`/`+=` node `parseEach` builds and recurses
+through `objfn`, `args` and `methfld`; `cloneNameUseNode` calls
+`cloneDclFix(NULL)` harmlessly on a copy taken before resolution, so a zeroed
+`CloneState` suffices and no dcl map is needed. The step is always still
+unresolved at that moment — it is the target loop block's last statement and the
+`continue` is nested inside, so the statement loop has not reached it.
+
+**One real hazard, and it is the reason this is not a two-line change.**
+`cloneNode`'s default arm is `assert(0 && "Do not know how to clone a node of
+this type")` — a no-op under the Release build's `/DNDEBUG` — after which `node`
+is uninitialized and `node->instnode = cstate->instnode` writes through it.
+`each x in a < b by <expr>` takes an arbitrary `parseSimpleExpr` as `<expr>` and
+cloning the `+=` recurses into it, so a step of a tag the switch does not list —
+`IsTag` is one, since only `CastTag` appears — becomes a wild write rather than a
+diagnostic. This fix wants that arm given a real diagnostic first. It is one
+instance of the 24 recorded under "Swept out" below.
+
+**Recommended shape.** Give `BlockNode` one flag meaning "my last statement is
+the synthesized step" — `FlagLoop` is `0x0001` and the only Block flag, so
+`0x0002` is free — set by `parseEach`. A flag rather than a pointer field,
+because `cloneBlockNode` memcpy's the flags and clones `stmts`, so a pointer
+would either be cloned twice or left pointing into the original. The step is
+reliably last: `parseEach` appends it and `parseInsertWhileBreak` inserts its
+guard at index 0, `blockTypeCheck`'s loop branch appends no `blockret`, and
+`blockFlow` runs later. Then in `blockNameRes`, after the statement loop and
+before `nametblHookPop`, insert a clone of `continuenode->block`'s last statement
+ahead of any `continue` whose target carries the flag, and resolve it — the pop
+has not happened, so the loop variable is still in scope.
+
+**A companion defect the rewrite does not fix.** `each i in 0 < 3 { continue }`
+reports `ErrorRetNotLast` "continue may only appear as the last statement in a
+block", pointing at the `continue` the reader did write last: the synthesized step
+made it not-last. `while i < 3 { continue }` reports the honest `ErrorBadStmt`
+pair instead. With the step inserted the `continue` is still not last in that
+block, so this needs handling of its own — most simply by treating the loop
+block's own trailing step as not counting toward the rule.
 - **A method cannot be called through a raw pointer.** **Re-scoped, and it is
   not only pointers.** See "What needs a decision".
 
