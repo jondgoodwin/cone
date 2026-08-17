@@ -29,16 +29,17 @@ Lexer *lex = NULL;        // Current lexer
 void lexInject(char *src, char *url) {
     Lexer *prev;
 
-    // Obtain next lexer block via link chain or allocation
+    // Every injected source gets its own block, never a recycled one. A block
+    // outlives parsing: each IR node stores the Lexer that was current when it
+    // was built and reads ->url from it whenever a diagnostic is reported, and
+    // conec.c reads ->fname off the program node to name its output files. So
+    // re-using a popped block rewrote the url out from under every node still
+    // pointing at it, and a diagnostic against an earlier module named a later
+    // module's file while echoing the earlier one's source line.
     prev = lex;
-    if (lex == NULL)
-        lex = (Lexer*) memAllocBlk(sizeof(Lexer));
-    else if (lex->next == NULL) {
-        lex->next = (Lexer*) memAllocBlk(sizeof(Lexer));
-        lex = lex->next;
-    }
-    else
-        lex = lex->next; // Re-use an old lexer block
+    lex = (Lexer*) memAllocBlk(sizeof(Lexer));
+    if (prev)
+        prev->next = lex;
     lex->next = NULL;
     lex->prev = prev;
 

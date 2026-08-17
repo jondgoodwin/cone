@@ -162,13 +162,34 @@ fn passing() {
   show("result-in-expression", applyTo(3, &fn(n i32) i32 {n * n}) + 1)
 }
 
-fn chosen(label &[]u8, high Bool) {
-  // An 'if' expression can select between two anonymous functions, but only
-  // where the variable states the closure type. Left to infer, the two branches
-  // are found to disagree even though they are written identically, so the
-  // declared type here is load-bearing rather than decoration.
-  imm pick &fn(x i32) i32 = if high {&fn(x i32) i32 {x * 10}} else {&fn(x i32) i32 {x}}
-  show(label, pick(6))
+// An 'if' used as a value has to settle on one type for its branches. Two
+// anonymous function types are compared structurally, so two separately written
+// '&fn(x i32) i32' are one type and the branches agree.
+//
+// Every selection is called through, because branches that agree on a type say
+// nothing about which body the value ends up holding. Each is selected both
+// ways, so a branch that was never taken cannot pass by accident.
+fn chosen(inferred &[]u8, declared &[]u8, renamed &[]u8, number &[]u8, high Bool) {
+  // Inferred: nothing states the type, so the branch types are compared to each
+  // other. This is the case that failed until the comparison stopped resting on
+  // the identity of the parameter declarations.
+  imm pick = if high {&fn(x i32) i32 {x * 10}} else {&fn(x i32) i32 {x}}
+  show(inferred, pick(6))
+
+  // The same selection with the type written out, so inference and coercion are
+  // shown to agree about it rather than only one of them accepting the code
+  imm picked &fn(x i32) i32 = if high {&fn(x i32) i32 {x * 10}} else {&fn(x i32) i32 {x}}
+  show(declared, picked(6))
+
+  // Parameter names are not part of a function type, so branches that differ
+  // only in what they call their parameter are still one type
+  imm named = if high {&fn(x i32) i32 {x * 10}} else {&fn(n i32) i32 {n}}
+  show(renamed, named(6))
+
+  // The control: the same 'if' shape over plain numbers, which has always been
+  // inferred, so a failure above is about function types and not about branches
+  imm factor = if high {10} else {1}
+  show(number, factor * 6)
 }
 
 fn main() i32 {
@@ -176,7 +197,7 @@ fn main() i32 {
   signatures()
   bodyScope()
   passing()
-  chosen("if-selected-first", true)
-  chosen("if-selected-second", false)
+  chosen("if-inferred-high", "if-declared-high", "if-renamed-parm-high", "if-number-high", true)
+  chosen("if-inferred-low", "if-declared-low", "if-renamed-parm-low", "if-number-low", false)
   0i32
 }

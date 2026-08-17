@@ -8,15 +8,20 @@
 //
 // Owning references ('+rc', '+so'), array references and slices ('&[]'), and
 // virtual references ('&<') belong to region, collection and trait; none of
-// them appear here. Struct owns structs; Pair exists only because borrowing
-// part of a value needs a value with parts, and two fields is the fewest that
-// can also give a defined address ordering.
+// them appear here. Struct owns structs; Pair and Nest exist only because
+// borrowing part of a value needs a value with parts, and two fields is the
+// fewest that can also give a defined address ordering. Nest adds one level so
+// a borrow can be shown reaching through a chain of fields.
 
 import stdio::*
 
 struct Pair {
   x i32
   y i32
+}
+
+struct Nest {
+  pair Pair
 }
 
 fn show(label &[]u8, n i64) {
@@ -76,12 +81,31 @@ fn chained() {
 fn parts() {
   mut p = Pair[1, 2]
 
-  // Parentheses are required around the field. Bare '&mut p.x' borrows p and
-  // then takes the field of that borrow, which is a different thing and does
-  // not work; ref-field-borrow records it.
+  // A borrow applies to the whole suffixed term, so '&mut p.x' references the
+  // field. Parentheses change nothing, and both forms are here because the bare
+  // one used to borrow p and then take the field of that borrow -- typed as the
+  // field while codegen answered with its address.
   imm fx = &mut (p.x)
   *fx = 10
   show("write-through-field-ref", p.x)
+
+  mut q = Pair[1, 2]
+  imm qx = &mut q.x
+  *qx = 11
+  show("write-through-bare-field-ref", q.x)
+
+  // The second field, so the reference is not merely the struct's own address
+  imm qy = &mut q.y
+  *qy = 12
+  show("write-through-bare-second-field-ref", q.y)
+  show("bare-field-ref-left-first-field", q.x)
+
+  // Field of a field, so the borrow reaches through the whole chain
+  mut n = Nest[Pair[3, 4]]
+  imm inner = &mut n.pair.y
+  *inner = 13
+  show("write-through-nested-field-ref", n.pair.y)
+  show("nested-field-ref-left-sibling", n.pair.x)
 
   // A field is read and written through a reference to the whole struct, which
   // dereferences the reference on the way
@@ -244,6 +268,21 @@ fn compares() {
   if first != alias { n = n + 8 }
   show("ref-equality-bits", n)
 
+  // The block above cannot tell address comparison from value comparison: 'a'
+  // and 'b' hold different numbers, so both readings answer the same. This one
+  // separates them. 'twinA' and 'twinB' are distinct variables holding the SAME
+  // number, so identity says the two references are unequal while a '==' that
+  // read through to the values would say they are equal. The equal values are
+  // the whole assertion -- make them differ and the case stops discriminating.
+  mut twinA = 5
+  mut twinB = 5
+  imm twin1 = &twinA
+  imm twin2 = &twinB
+  mut d = 0
+  if twin1 != twin2 { d = d + 1 }
+  if twin1 == twin2 { d = d + 2 }
+  show("ref-equality-is-identity-not-value", d)
+
   // Ordering compares the same addresses. Two locals have no defined order
   // relative to each other, but two fields of one struct do, so the ordered
   // pair is borrowed from within a single value.
@@ -256,6 +295,20 @@ fn compares() {
   if low <= high { m = m + 4 }
   if low >= high { m = m + 8 }
   show("ref-ordering-bits", m)
+
+  // And the same separation for ordering. 'rev.x' sits at the lower address but
+  // holds the LARGER number, so address order and value order disagree on every
+  // one of the four: by address this is the same 7 as above, by value it would
+  // be 8. Restoring an ascending pair would quietly cost the distinction.
+  mut rev = Pair[9, 4]
+  imm revlow = &(rev.x)
+  imm revhigh = &(rev.y)
+  mut r = 0
+  if revlow < revhigh { r = r + 1 }
+  if revhigh > revlow { r = r + 2 }
+  if revlow <= revhigh { r = r + 4 }
+  if revlow >= revhigh { r = r + 8 }
+  show("ref-ordering-is-identity-not-value", r)
 }
 
 fn main() i32 {

@@ -34,6 +34,9 @@ void castPrint(CastNode *node);
 // Name resolution of cast node
 void castNameRes(NameResState *pstate, CastNode *node);
 
+// Answer whether a value of fromtype may be converted to Bool
+int castConvertsToBool(INode *fromtype);
+
 // Type check cast node:
 // - reinterpret cast types must be same size
 // - Ensure type can be safely converted to target type

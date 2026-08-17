@@ -1,6 +1,8 @@
 Defects:
-[[Unenforced language rules]],
- [[Compiler defect backlog]].
+[[Unenforced language rules]].
+ ([[Compiler defect backlog]] is done; its residue is routed into the items
+ below, chiefly [[Analysis re-factor]], [[Types. Pointers and Borrowed
+ References]], [[Permissions]], [[Type Inference and Coercion]] and [[Regions]].)
 
 1. [[Analysis re-factor]] - jit, with recursion checking
 2. [[Packages and Separate Compilation]]

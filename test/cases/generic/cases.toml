@@ -19,14 +19,9 @@
 # written out and do not match the declaration, and generic-typecheck-macro
 # covers the macro expansion path's arity.
 #
-# Left out, because the failure describes something other than the construct:
-#
-# - A parameterless macro name used as a function's final statement, or as the
-#   left operand of an operator. Both are noted in generic-typecheck-macro.
-#
-# Two gaps are recorded as xfail scenarios rather than left out, because each
-# fails cleanly with a real diagnostic and each blocks a whole shape of generic
-# code: a method on a generic type, and a reference to a generic instantiation.
+# One gap is recorded as an xfail scenario rather than left out, because it fails
+# cleanly with a real diagnostic and blocks a whole shape of generic code: a
+# reference to a generic instantiation.
 
 support = []
 
@@ -34,7 +29,7 @@ support = []
 
 [scenario.generic-success]
 category = "run"
-description = "Generic functions and generic types, instantiated by inference and by explicit type argument"
+description = "Generic functions and generic types, instantiated by inference and by explicit type argument, including operators inside an instance's methods"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 
 # One 'define' per distinct set of type arguments, under a name carrying them,
@@ -64,24 +59,40 @@ name = "no-symbol-for-an-uninstantiated-generic"
 target = "llvmir"
 excludes = ["neverCalled"]
 
+# Two instances of one generic *type* each get a copy of every method, and the
+# copies share the generic's 'genname'. A generic function's instances are told
+# apart by the parameter types the mangler walks, but a generic type's method may
+# name no type parameter anywhere in its signature -- 'fn tally(self) i64', and
+# 'fn litSum(self &) i64' most of all, whose body is two literals -- so the
+# instance's type arguments are the only thing that distinguishes them.
+#
+# Both methods below are named for both instances, and the un-suffixed symbol they
+# used to share is excluded. The '.' excludes are the load-bearing half: within one
+# translation unit LLVM hides a symbol collision by appending '.1', so a check that
+# only looked for two definitions would have passed all along. Neither symbol may
+# depend on that.
+[[scenario.generic-success.check]]
+name = "instance-methods-carry-their-type-arguments"
+target = "llvmir"
+contains = [
+  '@"Holder_tally:Holder:i64"',
+  '@"Holder_tally:Holder:f64"',
+  '@"Holder_litSum:+ro Holder:i64"',
+  '@"Holder_litSum:+ro Holder:f64"',
+]
+excludes = [
+  '@"Holder_tally:Holder"',
+  '@"Holder_litSum:+ro Holder"',
+  '@"Holder_tally:Holder:i64.',
+  '@"Holder_tally:Holder:f64.',
+  '@"Holder_litSum:+ro Holder:i64.',
+  '@"Holder_litSum:+ro Holder:f64.',
+]
+
 [scenario.generic-macro]
 category = "run"
-description = "Macro expansion: substitution rather than evaluation, and what a macro parameter may be"
+description = "Macro expansion: substitution rather than evaluation, what a macro parameter may be, and every value position a parameterless name expands in"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
-
-# -------- known defects --------
-
-[scenario.generic-struct-method]
-category = "compile"
-description = "A method on a generic type, whose 'self' never matches the instantiated type"
-tags = ["typecheck"]
-xfail = true
-
-[scenario.generic-ref-instance]
-category = "compile"
-description = "A borrowed reference to a generic instantiation, which does not parse as a type"
-tags = ["parse", "typecheck"]
-xfail = true
 
 # -------- parse stage --------
 

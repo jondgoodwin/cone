@@ -88,6 +88,92 @@ fn structural() {
   show("virtual-ref-retargeted", v.area())
 }
 
+// -------- a requirement that takes parameters --------
+
+// Every requirement above takes only 'self', and for a long time that was the
+// only kind that worked: conformance compared parameter declarations by node
+// identity, which a trait's requirement and a separately written implementation
+// can never satisfy, and the self parameter is skipped, so a self-only
+// requirement was the one shape whose loop compared nothing.
+//
+// A requirement may take further parameters, and then the implementation's
+// parameter types must match it exactly. A virtual reference dispatches through
+// a typed vtable slot, so the machine signatures have to line up. Coercion is a
+// convenience at a call site, and belongs to type comparison only where
+// subtyping is in play, which it is not between a requirement and an
+// implementation of it. trait-typecheck-vref holds the rejections.
+
+trait Scaler {
+  fn scaled(self &, factor i32) i32
+}
+
+// Two implementers whose answers differ for the same argument, so a dispatch
+// that folded away, or read the wrong vtable slot, could not print both numbers
+struct Box {
+  w i32
+
+  fn scaled(self &, factor i32) i32 {w * factor}
+}
+
+struct Cup {
+  depth i32
+
+  fn scaled(self &, factor i32) i32 {depth - factor}
+}
+
+// 'exactly' is the rule, so a requirement of several parameters and one whose
+// parameter is itself a reference are where an accidental widening would show
+trait Blender {
+  fn blend(self &, a i32, b i32) i32
+  fn viaRef(self &, r &i32) i32
+}
+
+struct Mix {
+  k i32
+
+  fn blend(self &, a i32, b i32) i32 {k * a + b}
+  fn viaRef(self &, r &i32) i32 {k + *r}
+}
+
+struct Churn {
+  k i32
+
+  fn blend(self &, a i32, b i32) i32 {k + a * b}
+  fn viaRef(self &, r &i32) i32 {k * *r}
+}
+
+// The one virtual function both implementers of each trait reach, so every
+// argument is marshalled into a call whose callee is not known until it runs
+fn scaledBy(s &<Scaler, factor i32) i32 {
+  s.scaled(factor)
+}
+
+fn blendedBy(b &<Blender) i32 {
+  b.blend(4, 5)
+}
+
+fn viaRefOf(b &<Blender) i32 {
+  imm n = 11
+  b.viaRef(&n)
+}
+
+fn parameterized() {
+  imm box = Box[7]
+  imm cup = Cup[100]
+  show("parm-requirement-first-impl", scaledBy(&box, 3))
+  show("parm-requirement-other-impl", scaledBy(&cup, 3))
+  // The same call site with a different argument, so the parameter is really
+  // passed through rather than folded into the implementation
+  show("parm-requirement-other-argument", scaledBy(&box, 5))
+
+  imm mix = Mix[6]
+  imm churn = Churn[3]
+  show("two-parm-requirement-first-impl", blendedBy(&mix))
+  show("two-parm-requirement-other-impl", blendedBy(&churn))
+  show("ref-parm-requirement-first-impl", viaRefOf(&mix))
+  show("ref-parm-requirement-other-impl", viaRefOf(&churn))
+}
+
 // -------- nominal conformance with 'extends' --------
 
 // A trait may require fields as well as methods, and may give a method a body,
@@ -132,12 +218,22 @@ fn stepTwice(m &<mut Meter) {
 }
 
 // A field requirement is reached through the vtable too, and is writable
-// through a '&<mut' virtual reference. The parameter is 'mut' because the write
-// is checked against the variable holding the reference rather than the
-// reference's own permission; trait-vref-imm-field-write records that as a
-// defect.
-fn setLevel(mut m &<mut Meter, n i32) {
+// through a '&<mut' virtual reference. The binding holding the reference is
+// 'imm', which is the point: what a write through a reference is checked
+// against is the reference's own permission and not the binding's. No
+// dereference is injected for a virtual reference, so the field access keeps
+// the reference as its object and has to take the permission from it directly,
+// where a plain reference gets it from the injected deref.
+fn setLevel(imm m &<mut Meter, n i32) {
   m.level = n
+}
+
+// The same write with a local binding rather than a parameter
+fn setLevelLocally() i32 {
+  mut g = Gauge[3, 7]
+  imm m &<mut Meter = &mut g
+  m.level = 40
+  g.level
 }
 
 fn nominal() {
@@ -162,6 +258,7 @@ fn nominal() {
   setLevel(&mut g, 40)
   show("virtual-field-written-through-vref", g.level)
   show("virtual-field-read-through-vref", readingOf(&g))
+  show("virtual-field-written-through-imm-local", setLevelLocally())
 }
 
 // -------- a virtual reference as data --------
@@ -173,8 +270,11 @@ struct Slot {
   uses i32
 }
 
-// The field is only ever set by the constructor: assigning one is rejected, and
-// trait-vref-lval records that as a defect.
+// The field may be set by the constructor and assigned afterwards. Assigning it
+// is writing the field, not writing through the reference it holds, so what the
+// write is checked against is the struct's permission and the field's own --
+// never the permission of the trait reference being stored, which is what a
+// '&<Shape' field used to be refused for.
 fn storedVirtualRefs() {
   imm rect = Rect[2, 3]
   imm square = Square[5]
@@ -185,6 +285,13 @@ fn storedVirtualRefs() {
   mut second = Slot[v, 2]
   show("virtual-ref-field-other-target", second.held.area())
   show("plain-field-alongside-virtual-ref", second.uses)
+
+  // Retargeting the field itself, so the value read back proves the store
+  // reached the field rather than merely type checking
+  first.held = v
+  show("virtual-ref-field-reassigned", first.held.area())
+  first.uses = 9
+  show("plain-field-reassigned-alongside", first.uses)
 }
 
 // -------- interaction with the constructs below this tier --------
@@ -211,6 +318,7 @@ fn interactions() {
 
 fn main() i32 {
   structural()
+  parameterized()
   nominal()
   storedVirtualRefs()
   interactions()

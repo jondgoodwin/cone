@@ -67,6 +67,13 @@ typedef struct INode {
 #define isNamedNode(node) ((node)->tag & NamedNode)
 #define isMethodType(node) (isTypeNode(node) && ((node)->tag & MethodType))
 
+// A parameterless macro's name stands for the value its body expands to, but it
+// is a meta node until type check performs that expansion. A position that
+// decides by node kind whether a statement can give a value -- a block's final
+// statement, a function's implicit return -- has to count the name as one, or
+// it is rejected before it ever gets the chance to expand.
+#define isExpOrMacroNode(node) (isExpNode(node) || (node)->tag == MacroNameTag)
+
 // All the possible tags for a node
 enum NodeTags {
     ProgramTag = StmtGroup,
@@ -184,8 +191,25 @@ enum NodeTags {
 #define FlagVDisp     0x0004        // FnCall: a virtual dispatch function call
 #define FlagLvalOp    0x0008        // FnCall: op requires an lval as object (a mutable ref)
 #define FlagOpAssgn   0x0010        // FnCall: method is an operator assignment (e.g., +=)
+// An operator application ('a * b', '-a', 'a++', 'a += b') and a member access by
+// name ('p.sum()') build the same node shape, so only this records which the source
+// actually wrote. Set by the three operator constructors in fncall.c, which are the
+// only way an operator call is built. 0x0020 is free of every other block: it is
+// IsMixin on a FieldDcl and SameSize among the type flags, and a FnCallNode -- also
+// when retagged to FldAccess, ArrIndex or TypeLit -- stays in ExpGroup and is
+// neither.
+#define FlagOperator  0x0020        // FnCall: an operator application, not a named member access
 
 #define FlagLoop      0x0001        // Block: is a Loop block
+// 'each' lowers to a 'while' whose body ends with the step that advances the loop
+// variable, so a 'continue' inside the body would jump over it and the variable
+// would never advance. This marks a loop block whose *last* statement is that
+// synthesized step, which is what lets blockNameRes copy it ahead of every
+// 'continue' that targets the block, and what lets the "break/continue must be
+// last" rule ignore a step that displaced the 'continue' the reader wrote last.
+// A flag rather than a pointer field, because cloneBlockNode memcpy's the flags
+// and clones 'stmts', so a pointer would be left aimed into the original.
+#define FlagLoopStep  0x0002        // Block: last statement is 'each's synthesized step
 
 #define FlagSuffix    0x0001        // Borrow: part of a borrow chain
 

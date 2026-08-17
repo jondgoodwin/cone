@@ -60,6 +60,49 @@ void blockPrint(BlockNode *blk) {
     }
 }
 
+// Give a 'continue' the loop step it would otherwise jump over.
+//
+// 'each' lowers to a 'while' whose body ends with the step that advances the loop
+// variable, so a 'continue' anywhere in the body would reach the loop's guard with
+// the variable unchanged and the loop would never end. The repair is to copy the
+// step in immediately ahead of the 'continue', into the block that already holds
+// it: that cannot break the "break/continue must be last" rule, because the rule
+// guarantees the 'continue' is already this block's last statement, and the copy
+// becomes an ordinary non-final expression statement in front of it.
+//
+// A labelled 'continue' needs nothing more. It abandons every inner loop, whose
+// variables the outer body re-initializes on the next iteration, so the only step
+// that has to run is the step of the loop it names -- which is the block
+// continueNameRes has already resolved it to.
+//
+// Called after the statement loop has resolved this block's statements, so every
+// 'continue' in it knows its target, and before the local variables are unhooked,
+// so the copied step can still resolve the loop variable.
+static void blockContinueStep(NameResState *pstate, BlockNode *blk) {
+    uint32_t trailing = (blk->flags & FlagLoopStep) ? 1 : 0;
+    if (blk->stmts->used <= trailing)
+        return;
+    // The statement the reader wrote last, which a synthesized step sits behind
+    uint32_t pos = blk->stmts->used - 1 - trailing;
+    INode *stmt = nodesGet(blk->stmts, pos);
+    if (stmt->tag != ContinueTag)
+        return;
+    BlockNode *target = ((BreakRetNode *)stmt)->block;
+    if (target == NULL || !(target->flags & FlagLoopStep) || target->stmts->used == 0)
+        return;
+
+    // Clone rather than re-use. One node reachable twice in the tree is type
+    // checked twice, and lowering is not idempotent. Cloning is sound on
+    // evaluation count because only one of the two copies runs per iteration.
+    INode *origstep = nodesLast(target->stmts);
+    CloneState cstate;
+    cstate.instnode = origstep->instnode;
+    cstate.selftype = NULL;
+    cstate.scope = (uint16_t)pstate->scope;
+    nodesInsert(&blk->stmts, cloneNode(&cstate, origstep), pos);
+    inodeNameRes(pstate, &nodesGet(blk->stmts, pos));
+}
+
 // Handle name resolution and control structure compliance for a block
 // - push and pop a namespace context for hooking local vars & lifetime in global name table
 // - Ensure return/continue/break only appear as last statement in block
@@ -87,6 +130,14 @@ void blockNameRes(NameResState *pstate, BlockNode *blk) {
         }
     }
 
+    // An 'each' loop block ends with the synthesized step that advances the loop
+    // variable, so a jump the reader wrote last sits one place further back and the
+    // rule below, which counts from the end, has to count the step out. It applies
+    // to 'break' and 'continue' only: those jump to a block boundary that the loop
+    // owns, whereas a 'return' would leave the step behind as unreachable code that
+    // generation would emit after a terminator.
+    uint32_t lastpos = (blk->flags & FlagLoopStep) ? 2 : 1;
+
     // Name res each statement
     INode **nodesp;
     uint32_t cnt;
@@ -97,13 +148,19 @@ void blockNameRes(NameResState *pstate, BlockNode *blk) {
             case ReturnTag:
                 errorMsgNode(*nodesp, ErrorRetNotLast, "return may only appear as the last statement in a block"); break;
             case BreakTag:
-                errorMsgNode(*nodesp, ErrorRetNotLast, "break may only appear as the last statement in a block"); break;
+                if (cnt > lastpos)
+                    errorMsgNode(*nodesp, ErrorRetNotLast, "break may only appear as the last statement in a block");
+                break;
             case ContinueTag:
-                errorMsgNode(*nodesp, ErrorRetNotLast, "continue may only appear as the last statement in a block"); break;
+                if (cnt > lastpos)
+                    errorMsgNode(*nodesp, ErrorRetNotLast, "continue may only appear as the last statement in a block");
+                break;
             }
         }
         inodeNameRes(pstate, nodesp);
     }
+
+    blockContinueStep(pstate, blk);
 
     nametblHookPop();  // Unhook local variables from global name table
     --pstate->scope;
@@ -126,6 +183,10 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
     // This includes block stack, used for gathering all breaks that might belong to some block
     ++pstate->scope;
 
+    // An 'each' loop block ends with the synthesized step that advances the loop
+    // variable, so a 'continue' the reader wrote last sits one place further back.
+    uint32_t lastpos = (blk->flags & FlagLoopStep) ? 2 : 1;
+
     // Type check all of a block's statements, treating final statement differently
     // This will populate block->breaks with pointers to all break statements for this block
     INode **nodesp;
@@ -140,7 +201,7 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
         if (cnt > 1) {
             // All stmt nodes except the last one
             inodeTypeCheck(pstate, nodesp, noCareType); // we don't care about the type
-            if (((*nodesp)->tag == BreakTag || (*nodesp)->tag == ContinueTag))
+            if (cnt > lastpos && ((*nodesp)->tag == BreakTag || (*nodesp)->tag == ContinueTag))
                 errorMsgNode(*nodesp, ErrorBadStmt, "break/continue may only be the last statement in the block");
         }
         else {
@@ -164,7 +225,7 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
     }
     else {
         // Last statement of a regular block needs to be a break, continue, return or blockret
-        if (laststmtp && isExpNode(*laststmtp)) {
+        if (laststmtp && isExpOrMacroNode(*laststmtp)) {
             lastexp = laststmtp;
             match = iexpMultiCoerceInfer(pstate, expectType, &inferredType, lastexp, match);
         }
@@ -284,7 +345,22 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
             varDclFlow(fstate, (VarDclNode**)nodesp);
             break;
         case SwapTag:
-            swapFlow(fstate, (SwapNode **)nodesp); 
+            swapFlow(fstate, (SwapNode **)nodesp);
+            break;
+        // A break or continue reaches a non-final position only in an 'each' loop
+        // block, whose synthesized step follows the jump the reader wrote last.
+        // Nothing after the jump runs, so the scope's de-aliasing has to be captured
+        // here too, exactly as it is for a block's final node below.
+        case BreakTag: {
+            INode **brkexp = &((BreakRetNode *)*nodesp)->exp;
+            int doalias = flowScopeDealias(svpos, &((BreakRetNode *)*nodesp)->dealias, *brkexp);
+            if ((*brkexp)->tag != NilLitTag && doalias)
+                flowLoadValue(fstate, brkexp);
+            break;
+        }
+        case ContinueTag:
+            // A continue node carries no expression, so it de-aliases against none
+            flowScopeDealias(svpos, &((BreakRetNode *)*nodesp)->dealias, NULL);
             break;
         default:
             // An expression as statement throws out its value

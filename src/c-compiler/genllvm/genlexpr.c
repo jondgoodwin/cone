@@ -277,9 +277,30 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
         else if (selftypkind == LLVMStructTypeKind) {
             switch (((IntrinsicNode *)fndcl->value)->intrinsicFn) {
             case CountIntrinsic: fncallret = LLVMBuildExtractValue(gen->builder, fnargs[0], 1, "slicecount"); break;
-            // Comparison
-            case EqIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntEQ, fnargs[0], fnargs[1], ""); break;
-            case NeIntrinsic: fncallret = LLVMBuildICmp(gen->builder, LLVMIntNE, fnargs[0], fnargs[1], ""); break;
+
+            // Comparison. A slice is a compound pointer -- an address and a
+            // length -- so two slices are equal when both words are. 'icmp'
+            // takes integers and pointers, not aggregates, so each word is
+            // extracted and compared on its own. This is identity, not
+            // contents: it is total, O(1), and asks nothing of the element
+            // type, which needs no equality of its own.
+            case EqIntrinsic:
+            case NeIntrinsic:
+            {
+                int wantEq = ((IntrinsicNode *)fndcl->value)->intrinsicFn == EqIntrinsic;
+                LLVMValueRef lptr = LLVMBuildExtractValue(gen->builder, fnargs[0], 0, "");
+                LLVMValueRef rptr = LLVMBuildExtractValue(gen->builder, fnargs[1], 0, "");
+                LLVMValueRef llen = LLVMBuildExtractValue(gen->builder, fnargs[0], 1, "");
+                LLVMValueRef rlen = LLVMBuildExtractValue(gen->builder, fnargs[1], 1, "");
+                LLVMIntPredicate pred = wantEq ? LLVMIntEQ : LLVMIntNE;
+                LLVMValueRef ptrcmp = LLVMBuildICmp(gen->builder, pred, lptr, rptr, "");
+                LLVMValueRef lencmp = LLVMBuildICmp(gen->builder, pred, llen, rlen, "");
+                // Equal needs both words to agree; unequal needs either to differ
+                fncallret = wantEq
+                    ? LLVMBuildAnd(gen->builder, ptrcmp, lencmp, "sliceeq")
+                    : LLVMBuildOr(gen->builder, ptrcmp, lencmp, "slicene");
+                break;
+            }
             }
         }
 
@@ -401,6 +422,14 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
     INode *fromtype = iexpGetTypeDcl(exp);
     INode *totype = itypeGetTypeDcl(to);
     LLVMValueRef genexp = genlExpr(gen, exp);
+
+    // A reference or pointer converts to Bool by asking whether it is non-null,
+    // which is what the 'isTrue' intrinsic already generates for the implicit
+    // coercion of a pointer. Bool is a 1-bit UintNbrTag, so without this the
+    // number cases below would read NbrNode fields off a RefNode/StarNode and
+    // emit a 'trunc' of a pointer.
+    if (totype == (INode*)boolType && (fromtype->tag == RefTag || fromtype->tag == PtrTag))
+        return LLVMBuildIsNotNull(gen->builder, genexp, "isnotnull");
 
     // Handle number to number casts, depending on relative size and encoding format
     switch (totype->tag) {
@@ -549,13 +578,44 @@ LLVMValueRef genlRecast(GenState *gen, INode* exp, INode* to) {
     INode *totype = itypeGetTypeDcl(to);
     LLVMValueRef genexp = genlExpr(gen, exp);
     if (totype->tag == StructTag) {
+        // refrust.html: a reinterpretation re-casts a value "as if it were a
+        // value of a different, but same-sized type". castTypeCheck enforces
+        // that by comparing castBitsize, which has no answer for a struct --
+        // it knows nothing of field layout, padding or alignment. So a struct
+        // target is checked here instead, where the target's data layout gives
+        // the real size. Without it the store/load below allocated the source's
+        // bytes and loaded the target's, reading past the allocation whenever
+        // the target was larger.
+        LLVMTypeRef fromllvm = genlType(gen, ((IExpNode*)exp)->vtype);
+        LLVMTypeRef tollvm = genlType(gen, totype);
+        unsigned long long fromsize = LLVMABISizeOfType(gen->datalayout, fromllvm);
+        unsigned long long tosize = LLVMABISizeOfType(gen->datalayout, tollvm);
+        if (fromsize != tosize) {
+            errorMsgNode(exp, ErrorRecastSize,
+                "May only reinterpret a value as a same-sized type: size %llu here, %llu in the target.",
+                fromsize, tosize);
+            return LLVMGetUndef(tollvm);
+        }
         // LLVM does not bitcast structs, so this store/load hack gets around that problem
-        LLVMValueRef tempspaceptr = genlAlloca(gen, genlType(gen, ((IExpNode*)exp)->vtype), "");
+        LLVMValueRef tempspaceptr = genlAlloca(gen, fromllvm, "");
         LLVMValueRef store = LLVMBuildStore(gen->builder, genexp, tempspaceptr);
-        LLVMValueRef castptr = LLVMBuildBitCast(gen->builder, tempspaceptr, LLVMPointerType(genlType(gen, totype), 0), "");
+        LLVMValueRef castptr = LLVMBuildBitCast(gen->builder, tempspaceptr, LLVMPointerType(tollvm, 0), "");
         return LLVMBuildLoad(gen->builder, castptr, "");
     }
-    return LLVMBuildBitCast(gen->builder, genexp, genlType(gen, totype), "");
+    // A bitcast reinterprets a value of one first-class type as another, but
+    // LLVM will not use it to move between the pointer and integer kinds: it
+    // spells pointer-to-integer 'ptrtoint' and the reverse 'inttoptr'. Pick by
+    // the generated LLVM kinds rather than the Cone tags, since that is what
+    // the instruction has to agree with -- a reference is not always a plain
+    // pointer once virtual references and fat pointers are in play.
+    LLVMTypeRef tollvm = genlType(gen, totype);
+    LLVMTypeKind fromkind = LLVMGetTypeKind(LLVMTypeOf(genexp));
+    LLVMTypeKind tokind = LLVMGetTypeKind(tollvm);
+    if (fromkind == LLVMPointerTypeKind && tokind == LLVMIntegerTypeKind)
+        return LLVMBuildPtrToInt(gen->builder, genexp, tollvm, "");
+    if (fromkind == LLVMIntegerTypeKind && tokind == LLVMPointerTypeKind)
+        return LLVMBuildIntToPtr(gen->builder, genexp, tollvm, "");
+    return LLVMBuildBitCast(gen->builder, genexp, tollvm, "");
 }
 
 // Generate not
@@ -644,6 +704,11 @@ LLVMValueRef genlIsType(GenState *gen, CastNode *isnode) {
     // Special handling for nullable pointers
     if (structtype->flags & NullablePtr) {
         LLVMTypeRef ptrtype = structtype->llvmtype;
+        // Matching through a reference hands over the address of the value, so
+        // load it before testing it against null -- the tagged path below reads
+        // its tag field through the same kind of reference for the same reason.
+        if (istype->tag == RefTag)
+            val = LLVMBuildLoad(gen->builder, val, "nullable");
         if (LLVMGetTypeKind(ptrtype) != LLVMPointerTypeKind)
             val = LLVMBuildExtractValue(gen->builder, val, 0, "ptr"); // VirtRef & ArrayRef
         LLVMValueRef nullptr = LLVMConstPointerNull(ptrtype);
@@ -697,7 +762,11 @@ void genlBoundsCheck(GenState *gen, LLVMValueRef index, LLVMValueRef count) {
     LLVMPositionBuilderAtEnd(gen->builder, boundsblk);
 }
 
-LLVMValueRef genlArrayIndex(GenState *gen, FnCallNode *fncall, ArrayNode *objtype) {
+// Index a fixed-size array, given a pointer to the array itself. The caller
+// supplies that pointer because where it comes from depends on what is being
+// indexed: an array lval has its address taken, while a reference to an array
+// already holds the address as its value.
+LLVMValueRef genlArrayIndex(GenState *gen, FnCallNode *fncall, ArrayNode *objtype, LLVMValueRef arrayp) {
     // Allocate a indexing buffer for GEP
     LLVMValueRef indexes[2];
     LLVMValueRef *indexp = &indexes[0];
@@ -715,7 +784,15 @@ LLVMValueRef genlArrayIndex(GenState *gen, FnCallNode *fncall, ArrayNode *objtyp
         genlBoundsCheck(gen, index, count);
         indexp[arg+1] = index;
     }
-    return LLVMBuildGEP(gen->builder, genlAddr(gen, fncall->objfn), indexp, nindex+1, "");
+    return LLVMBuildGEP(gen->builder, arrayp, indexp, nindex+1, "");
+}
+
+// Answer whether a field access reaches into a variant carrying the
+// nullable-pointer optimization, which has no struct to index into: the
+// variant's single nameable field is the whole value, at offset zero.
+static int genlIsNullablePtrField(FnCallNode *fncall) {
+    INode *objtyp = iexpGetTypeDcl(fncall->objfn);
+    return objtyp->tag == StructTag && (objtyp->flags & NullablePtr) != 0;
 }
 
 // Generate an lval-ish pointer to the value (vs. load)
@@ -741,7 +818,17 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         INode *objtype = iexpGetTypeDcl(fncall->objfn);
         switch (objtype->tag) {
         case ArrayTag: {
-            return genlArrayIndex(gen, fncall, (ArrayNode*)objtype);
+            return genlArrayIndex(gen, fncall, (ArrayNode*)objtype, genlAddr(gen, fncall->objfn));
+        }
+        case RefTag: {
+            // A reference to a fixed-size array, indexed without an explicit
+            // dereference. The reference's value is already the array's
+            // address, so it is the GEP base rather than something to take the
+            // address of. The bounds are the array type's own dimensions, so
+            // they are compile-time constants as for any fixed array.
+            ArrayNode *arraytype = (ArrayNode*)itypeGetTypeDcl(((RefNode*)objtype)->vtexp);
+            assert(arraytype->tag == ArrayTag);
+            return genlArrayIndex(gen, fncall, arraytype, genlExpr(gen, fncall->objfn));
         }
         case ArrayRefTag: {
             LLVMValueRef arrref = genlExpr(gen, fncall->objfn);
@@ -774,6 +861,11 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         FnCallNode *fncall = (FnCallNode *)lval;
         if (fncall->methfld->tag == MbrNameUseTag) {
             FieldDclNode *flddcl = (FieldDclNode*)((NameUseNode*)fncall->methfld)->dclnode;
+            // Under the nullable-pointer optimization the variant has no struct
+            // at all: its one nameable field is the whole value, and the tag
+            // field is anonymous, so no GEP is wanted or possible.
+            if (genlIsNullablePtrField(fncall))
+                return genlAddr(gen, fncall->objfn);
             if (iexpGetTypeDcl(fncall->objfn)->tag == VirtRefTag) {
                 // Calculate address of virtual field pointed to by a virtual reference using vtable
                 LLVMValueRef objVRef = genlExpr(gen, fncall->objfn);
@@ -1001,6 +1093,9 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         if (fncall->methfld->tag == MbrNameUseTag) {
             FieldDclNode *flddcl = (FieldDclNode*)((NameUseNode*)fncall->methfld)->dclnode;
             INode *objtyp = iexpGetTypeDcl(fncall->objfn);
+            // See genlAddr: a nullable-pointer variant's field is the value
+            if (genlIsNullablePtrField(fncall))
+                return (termnode->flags & FlagBorrow) ? genlAddr(gen, fncall->objfn) : genlExpr(gen, fncall->objfn);
             if (objtyp->tag == VirtRefTag) {
                 LLVMValueRef fldpRef = genlAddr(gen, termnode);
                 return (termnode->flags & FlagBorrow) ? fldpRef : LLVMBuildLoad(gen->builder, fldpRef, "");

@@ -54,7 +54,19 @@ void typeLitNbrCheck(TypeCheckState *pstate, FnCallNode *nbrlit, INode *type) {
 
     INode *first = nodesGet(nbrlit->args, 0);
     INode *firsttype = itypeGetTypeDcl(((IExpNode*)first)->vtype);
-    if (firsttype->tag != IntNbrTag && firsttype->tag != UintNbrTag && firsttype->tag != FloatNbrTag) 
+
+    // 'Bool[value]' is the same conversion as 'value into Bool', so it accepts
+    // whatever that accepts -- a reference or a pointer included, which convert
+    // by asking whether they are non-null. Every other number type still
+    // requires a number source: a pointer has no conversion to an integer on
+    // either path.
+    if (type == (INode*)boolType) {
+        if (!castConvertsToBool(firsttype))
+            errorMsgNode((INode*)first, ErrorBadArray, "May only create Bool from a number, reference or pointer");
+        return;
+    }
+
+    if (firsttype->tag != IntNbrTag && firsttype->tag != UintNbrTag && firsttype->tag != FloatNbrTag)
         errorMsgNode((INode*)first, ErrorBadArray, "May only create number literal from another number");
 }
 

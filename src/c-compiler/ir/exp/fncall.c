@@ -22,20 +22,26 @@ FnCallNode *newFnCallNode(INode *fn, int nnodes) {
 }
 
 // Create new fncall node, prefilling method, self, and creating room for nnodes args
+// These three are the only way an operator application is built, so each marks the
+// node FlagOperator: a member access by name builds the same shape and must stay
+// distinguishable from it.
 FnCallNode *newFnCallOpname(INode *obj, Name *opname, int nnodes) {
     FnCallNode *node = newFnCallNode(obj, nnodes);
+    node->flags |= FlagOperator;
     node->methfld = (INode*)newMemberUseNode(opname);
     return node;
 }
 
 FnCallNode *newFnCallOp(INode *obj, char *op, int nnodes) {
     FnCallNode *node = newFnCallNode(obj, nnodes);
+    node->flags |= FlagOperator;
     node->methfld = (INode*)newMemberUseNode(nametblFind(op, strlen(op)));
     return node;
 }
 
 FnCallNode *newFnCallOpnameLower(INode *oldnode, INode *obj, Name *opname, int nnodes) {
     FnCallNode *node = newFnCallNode(obj, nnodes);
+    node->flags |= FlagOperator;
     inodeLexCopy((INode*)node, oldnode);
     node->methfld = (INode*)newMemberUseNode(opname);
     inodeLexCopy((INode*)node->methfld, oldnode);
@@ -204,6 +210,12 @@ void fnCallArrIndex(FnCallNode *node) {
     if (node->flags & FlagBorrow) {
         assert(objtype->tag == RefTag || objtype->tag == ArrayRefTag);
         RefNode *refnode = newRefNodeFull(RefTag, (INode*)node, borrowRef, ((RefNode*)objtype)->perm, node->vtype);
+        // An element of what a borrow points at lives exactly as long as the borrow
+        // does, so it inherits its lifetime. borrowTypeCheck sets the scope on the
+        // receiver it built; newRefNode defaults to 0, which means global, so
+        // leaving it would let '&mut a[1]' on a local be returned from a function
+        // while '&mut (p.x)' on the same local is refused.
+        refnode->scope = ((RefNode*)objtype)->scope;
         node->vtype = (INode*)refnode;
     }
     node->tag = ArrIndexTag;
@@ -308,6 +320,9 @@ static void fnCallNoCandidate(INode *callnode, enum OverloadMatch status, Name *
 
 // Find the one field or method that accepts the call's receiver and arguments,
 // then lower the node to a function call (objfn+args) or field access (objfn+methfld).
+// A receiver held through a reference or pointer is dereferenced where the selected
+// method declared 'self' by value; nothing is borrowed on the receiver's behalf, and
+// an operator written on a pointer does not reach through at all.
 // Returns 1 when lowered, 0 when the receiver's type supports no methods at all
 // (so the caller may try another way), and -1 when a diagnostic was reported.
 int fnCallLowerMethod(FnCallNode *callnode) {
@@ -351,6 +366,32 @@ int fnCallLowerMethod(FnCallNode *callnode) {
     // Test every candidate the name declares, without altering the call
     enum OverloadMatch status;
     FnDclNode *selected = iNsTypeFindMethod(foundnode, &callnode->objfn, callnode->args, &status);
+
+    // A receiver held through a reference or a pointer still satisfies a method that
+    // declared 'self' by value, so dereference it and select again. That is a load and
+    // a copy -- the same adjustment a field access already makes -- and nothing more:
+    // no reference is manufactured, so a method wanting 'self &' or 'self &mut' stays
+    // out of the reach of a value or a pointer. The retry runs only when no candidate
+    // matched at all, so an ambiguity among the candidates the receiver already fits is
+    // reported as such, and a set holding both a value and a reference candidate still
+    // selects the reference one for a reference receiver.
+    //
+    // An operator written on a pointer is the one thing the retry does not reach.
+    // An operation on a pointer is an operation on the pointer, and the dereference
+    // has to be written, because the alternative is two lines that look alike doing
+    // different things: a pointer declares its own '+', so 'p + 2' offsets it, while
+    // it declares no '*', so 'p * 2' would quietly become '(*p) * 2'. It is an error
+    // again, as it was in C. Only a pointer narrows. A reference's comparisons are
+    // its own identity operators, which refType declares and fnCallLowerPtrMethod
+    // selects before ever arriving here, and its arithmetic reaching the value's is
+    // by design.
+    int opOnPointer = (callnode->flags & FlagOperator) && iexpGetTypeDcl(obj)->tag == PtrTag;
+    if (selected == NULL && status == OverloadNone && !opOnPointer && derefInject(&callnode->objfn)) {
+        selected = iNsTypeFindMethod(foundnode, &callnode->objfn, callnode->args, &status);
+        if (selected == NULL)
+            callnode->objfn = obj;  // a failed retry leaves the call as it was found
+    }
+
     if (selected == NULL) {
         fnCallNoCandidate((INode*)callnode, status, methsym, "method");
         return -1;
@@ -423,7 +464,7 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
     Nodes *parms = ((FnSigNode *)selected->vtype)->parms;
     if (parms->used > 1) {
         INode *parm1type = iexpGetTypeDcl(nodesGet(parms, 1));
-        if (parm1type->tag != PtrTag && parm1type->tag != RefTag
+        if (parm1type->tag != PtrTag && parm1type->tag != RefTag && parm1type->tag != ArrayRefTag
             && !iexpCoerce(&nodesGet(callnode->args, 1), parm1type))
             errorMsgNode(nodesGet(callnode->args, 1), ErrorInvType,
                 "Expression's type does not match declared parameter");
@@ -520,7 +561,14 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 
     // If we have a true macro, go handle it elsewhere
     // Note: Macros don't want us to type check arguments until after substitution
-    if (node->objfn->tag == MacroNameTag) {
+    //
+    // Only when the macro name is what is being called. An operator or method
+    // application builds the same node shape as a call -- 'TWO + 1' is
+    // objfn 'TWO', methfld '+', one argument -- so methfld is what tells the two
+    // apart. With it set, the name is the receiver a value is expected of, and
+    // it expands below like the name in any other value position; the operator
+    // is then applied to what it expanded to.
+    if (node->objfn->tag == MacroNameTag && node->methfld == NULL) {
         macroCallTypeCheck(pstate, nodep);
         return;
     }
@@ -726,15 +774,11 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
                 node->methfld = (INode*)newMemberUseNode(methname);
             }
             if (fnCallLowerPtrMethod(node, refType) == 0) {
-                if (isMethodType(objdereftype)) {
-                    // Try to lower method or field, and if failing, deref and try again
-                    if (fnCallLowerMethod(node) == 0) {
-                        if (derefInject(&node->objfn) == 0 || fnCallLowerMethod(node) == 0)
-                            errorMsgNode((INode*)node, ErrorNoMeth, 
-                                "No method/field named %s found that matches the call's arguments.", 
-                                &((NameUseNode*)node->methfld)->namesym->namestr);
-                    }
-                }
+                // Lower to a field access or function call, dereferencing the receiver
+                // where that is what the selected method wants. fnCallLowerMethod cannot
+                // answer 0 here, having already been told the deref type supports methods.
+                if (isMethodType(objdereftype))
+                    fnCallLowerMethod(node);
                 else if (objdereftype->tag == PtrTag)
                     fnCallLowerPtrMethod(node, ptrType);
                 else
@@ -763,8 +807,12 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         if (node->flags & FlagIndex)
             fnCallArrIndex(node);
         else if (node->methfld) {
-            if (fnCallLowerPtrMethod(node, ptrType) == 0)
-                fnCallLowerMethod(node);
+            // A pointer's own operators first, then the value type's fields and named
+            // methods, reaching a value receiver by dereferencing the pointer. An
+            // operator the pointer does not declare stops here rather than reaching
+            // the value's; fnCallLowerMethod is what refuses it.
+            if (fnCallLowerPtrMethod(node, ptrType) == 0 && fnCallLowerMethod(node) == 0)
+                errorMsgNode((INode*)node, ErrorNoMeth, "Invalid operation on a pointer.");
         }
         else if (objdereftype->tag == FnSigTag)
             fnCallFnSigTypeCheck(pstate, node);

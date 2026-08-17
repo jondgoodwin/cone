@@ -12,8 +12,8 @@
 // concrete form that gap takes.
 //
 // Slices belong to 'collection'; only the pointer a slice decays into is
-// claimed here. Structs belong to 'struct'; only reaching a field through a
-// pointer is claimed here.
+// claimed here. Structs belong to 'struct'; only reaching a field and a
+// value-receiver method through a pointer is claimed here.
 
 import stdio::*
 
@@ -38,6 +38,10 @@ fn showB(label &[]u8, b Bool) {
 struct Point {
   x i32
   y i32
+
+  fn sum(self) i32 {
+    x + y
+  }
 }
 
 mut cell i32 = 41
@@ -190,6 +194,45 @@ fn structs() {
   // Dereferencing a struct pointer yields the whole value
   imm copy = *sp
   show("deref-whole-struct", copy.y)
+
+  // A method declaring its receiver by value is reached the same way a field
+  // is: the pointer is dereferenced and the method is handed a copy
+  show("method-value-receiver", sp.sum())
+
+  // The copy is taken when the call is made, so a later write through the
+  // pointer cannot reach what the call already returned
+  imm before = sp.sum()
+  sp.x = 30
+  show("method-receiver-copied", before)
+  show("method-sees-later-write", sp.sum())
+}
+
+// -------- reinterpreting a pointer as an integer --------
+
+fn integers() {
+  // A pointer is pointer-sized, so 'as usize' is the same same-sized
+  // reinterpretation any other pair of types gets. The instruction is not a
+  // bitcast: LLVM spells this 'ptrtoint' and the reverse 'inttoptr'.
+  //
+  // An address varies from run to run, so nothing here prints one. What is
+  // asserted is the relationships between addresses, which do not.
+  mut cells [4; i32] = [10, 20, 30, 40]
+  imm p *i32 = &cells[0]
+  imm n = p as usize
+
+  // The integer recasts back to a pointer addressing the same cell
+  imm back = n as *i32
+  showB("as-usize-round-trip", back == p)
+  show("as-usize-round-trip-deref", *back)
+
+  // Two pointers one element apart differ by the element's size in bytes,
+  // which is what makes the integer an address and not an opaque handle
+  imm q *i32 = &cells[1]
+  showU("as-usize-element-stride", u64[(q as usize) - n])
+
+  // A reference reinterprets the same way, and yields the address the pointer
+  // form of the same borrow gives
+  showB("ref-as-usize-agrees", (&cells[0] as usize) == n)
 }
 
 // -------- interaction with control flow --------
@@ -225,6 +268,7 @@ fn main() i32 {
   difference()
   comparison()
   structs()
+  integers()
   walk()
   0i32
 }

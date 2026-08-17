@@ -259,16 +259,73 @@ INode *itypeFindSuper(INode *type1, INode *type2) {
     }
 }
 
+// Add a named type declaration to the buffer: its name, plus the type arguments
+// it was instantiated with if it is a generic instance.
+//
+// The arguments are what tell two instances of one generic type apart. Both carry
+// the generic's name, and each instance's methods are clones sharing the generic's
+// 'genname', so without them both instances' copies of a method land on one LLVM
+// symbol. That symbol is 'linkonce': inside a single translation unit LLVM appends
+// '.1' and every call still reaches the body it meant, but once modules are
+// compiled separately the linker keeps one body and calls to the other instance
+// silently reach the wrong code. A generic *function*'s instances already differ,
+// because genlMangleMethName walks their parameter types and a type argument
+// appears in at least one of them; a generic *type*'s method may name no type
+// parameter anywhere in its signature -- 'fn tally(self) i64' -- so the arguments
+// have to come from the instance.
+//
+// cloneNode stamps the instantiating node on every node of an instance, and that
+// node is the call carrying the type arguments. It is required to be a call with a
+// non-empty list of types, which is what a macro expansion's node is not.
+static char *itypeMangleNamed(char *bufp, INode *dclnode) {
+    Name *namesym = inodeGetName(dclnode);
+    if (namesym == NULL)
+        return bufp;
+    strcpy(bufp, &namesym->namestr);
+    bufp += strlen(bufp);
+
+    INode *instnode = dclnode->instnode;
+    if (instnode == NULL
+        || (instnode->tag != FnCallTag && instnode->tag != TypeLitTag
+            && instnode->tag != ArrIndexTag && instnode->tag != FldAccessTag))
+        return bufp;
+    Nodes *typeargs = ((FnCallNode*)instnode)->args;
+    if (typeargs == NULL || typeargs->used == 0)
+        return bufp;
+
+    // Checked before anything is written, so a node that is not an instantiation
+    // after all leaves the plain name rather than half a suffix
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor(typeargs, cnt, argsp)) {
+        if (*argsp == NULL || !isTypeNode(*argsp))
+            return bufp;
+    }
+    for (nodesFor(typeargs, cnt, argsp)) {
+        *bufp++ = ':';
+        bufp = itypeMangle(bufp, *argsp);
+    }
+    return bufp;
+}
+
 // Add type mangle info to buffer
 char *itypeMangle(char *bufp, INode *vtype) {
     switch (vtype->tag) {
     case NameUseTag:
     case TypeNameUseTag:
-    {
-        INode *dclnode = itypeGetTypeDcl(vtype);
-        strcpy(bufp, &inodeGetName(dclnode)->namestr);
-        break;
-    }
+        return itypeMangleNamed(bufp, itypeGetTypeDcl(vtype));
+
+    // A generic's type argument arrives as the type declaration itself rather
+    // than as a use of its name, so the named types are mangled here as well.
+    // Through the name, not the one-letter kind these used to answer with, since
+    // 'i8' and 'i64' have to be told apart.
+    case UintNbrTag:
+    case IntNbrTag:
+    case FloatNbrTag:
+    case StructTag:
+    case EnumTag:
+        return itypeMangleNamed(bufp, vtype);
+
     case RefTag:
     case ArrayRefTag:
     case VirtRefTag:
@@ -289,13 +346,6 @@ char *itypeMangle(char *bufp, INode *vtype) {
         bufp = itypeMangle(bufp, vtexp->vtexp);
         break;
     }
-    case UintNbrTag:
-        *bufp++ = 'u'; break;
-    case IntNbrTag:
-        *bufp++ = 'i'; break;
-    case FloatNbrTag:
-        *bufp++ = 'f'; break;
-
     default:
         assert(0 && "unknown type for parameter type mangling");
     }
@@ -320,14 +370,31 @@ int itypeIsMove(INode *type) {
     return itypeGetTypeDcl(type)->flags & MoveType;
 }
 
-// Return true if this is a generic type
+// Return true if this is an instantiation of a generic type, such as 'Box[i64]'.
+//
+// An instantiation is an unlowered FnCallNode until type check replaces it with
+// the instance it names, and isTypeNode asks this so that the passes running
+// before then -- name resolution's type-versus-value disambiguation, above all
+// -- can tell one from a call. Without it '*Box[i64]' reads as a dereference
+// and '[2; Box[i64]]' as an array literal, so an instantiation is a type
+// everywhere but inside a composite type.
+//
+// What tells a generic from anything else is the GenericInfo its declaration
+// carries: a generic is an ordinary FnDcl or StructNode with a type parameter
+// list attached, which is also how genericSubstitute recognizes one. Only a
+// struct's instantiation is a type -- a generic function's names a function --
+// and a macro cannot arrive here at all, since a use of a MacroDcl is tagged
+// MacroNameTag rather than as a name use of a type.
 int itypeIsGenericType(INode *type) {
     if (type->tag != FnCallTag)
         return 0;
     FnCallNode *gentype = (FnCallNode*)type;
-    if (gentype->objfn->tag != GenericNameTag)
+    if (gentype->objfn->tag != TypeNameUseTag)
         return 0;
-    return gentype->args->used > 0 && (nodesGet(&gentype->args, 0));
+    INode *dclnode = ((NameUseNode*)gentype->objfn)->dclnode;
+    if (dclnode == NULL || dclnode->tag != StructTag || genericGetInfo(dclnode) == NULL)
+        return 0;
+    return gentype->args != NULL && gentype->args->used > 0 && nodesGet(gentype->args, 0) != NULL;
 }
 
 // Return drop function (or NULL) for type

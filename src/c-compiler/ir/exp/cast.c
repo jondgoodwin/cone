@@ -80,6 +80,23 @@ uint32_t castBitsize(INode *type) {
     }
 }
 
+// Answer whether a value of fromtype may be converted to Bool.
+// 'value into Bool' and the constructor form 'Bool[value]' are the same
+// conversion, so typeLitNbrCheck asks here rather than keeping a second list
+// that would have to be maintained alongside this one.
+int castConvertsToBool(INode *fromtype) {
+    switch (fromtype->tag) {
+    case UintNbrTag:
+    case IntNbrTag:
+    case FloatNbrTag:
+    case RefTag:
+    case PtrTag:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 // Type check cast node:
 // - reinterpret cast types must be same size
 // - Ensure type can be safely converted to target type
@@ -111,23 +128,16 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
 
     // Handle conversion to bool
     if (totype == (INode*)boolType) {
-        switch (fromtype->tag) {
-        case UintNbrTag:
-        case IntNbrTag:
-        case FloatNbrTag:
-        case RefTag:
-        case PtrTag:
-            break;
-        default:
+        if (!castConvertsToBool(fromtype))
             errorMsgNode(node->exp, ErrorInvType, "Only numbers and ref/ptr may convert to Bool");
-        }
         return;
     }
     switch (totype->tag) {
+    // A slice is two words, so "convert it to an integer" has no single answer:
+    // the length and the data address are both candidates and both are already
+    // spelled better, as 's.len' and 'p as usize'. This used to type check and
+    // then emit 'trunc { i32*, i64 } to i64', which --verify rejects.
     case UintNbrTag:
-        if (fromtype->tag == ArrayRefTag)
-            return;
-        // Fall-through expected here
     case IntNbrTag:
     case FloatNbrTag:
         if (fromtype->tag == UintNbrTag || fromtype->tag == IntNbrTag || fromtype->tag == FloatNbrTag)

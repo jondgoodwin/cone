@@ -9,8 +9,8 @@
 // order-independent, so each one is paired with an iteration count where the
 // count is what distinguishes the operator.
 //
-// 'continue' and iteration over a collection are 'each' subjects that are
-// absent on purpose; cases.toml gives the reason for each.
+// Iteration over a collection is the one 'each' subject absent on purpose;
+// cases.toml gives the reason.
 
 import stdio::*
 
@@ -241,6 +241,102 @@ fn breaking() {
     }
   }
   show("labeled-break-visits", visits)
+
+  // A 'break' as the whole body is legal, and leaves after one visit. The step
+  // the parser appends sits behind it, so the 'break' the reader wrote last is
+  // still the last one they wrote.
+  mut once = 0
+  each i in 0 < 5 {
+    once += 1
+    break
+  }
+  show("break-only-body-visits", once)
+}
+
+// 'continue' is the case the rewrite has to carry the step through. The step
+// that advances the loop variable is the body's last statement, so a 'continue'
+// jumping to the loop's guard would arrive with the variable unchanged and the
+// loop would never end. Every count below is therefore two claims at once: the
+// right values were visited, and the loop terminated at all.
+fn continuing() {
+  mut sum = 0
+  mut visits = 0
+  each i in 0 < 10 {
+    if i == 3 {
+      continue
+    }
+    sum += i
+    visits += 1
+  }
+  show("continue-sum", sum)
+  show("continue-visits", visits)
+
+  // With 'by', the step to carry is the '+=' rather than the '++', so a skipped
+  // visit must still advance by the step and not by one
+  mut stepped = 0
+  each i in 0 <= 10 by 2 {
+    if i == 4 {
+      continue
+    }
+    stepped += i
+  }
+  show("continue-by-sum", stepped)
+
+  // Counting down, where the step decrements
+  mut down = 0
+  each i in 5 > 0 {
+    if i == 3 {
+      continue
+    }
+    down += i
+  }
+  show("continue-descending-sum", down)
+}
+
+// A labeled 'continue' abandons every inner loop and steps the loop it names, so
+// the outer variable advances while the inner one starts over on the next visit.
+// The outer body after the inner loop is skipped, which is what 'tails' counts.
+fn labeledContinuing() {
+  mut pairs = 0
+  mut tails = 0
+  'outer: each i in 0 < 4 {
+    each j in 0 < 4 {
+      if j == 2 {
+        continue 'outer
+      }
+      pairs += 1
+    }
+    tails += 1
+  }
+  show("labeled-continue-pairs", pairs)
+  show("labeled-continue-tails", tails)
+}
+
+// A bare 'continue' inside an 'each' nested in a 'while' targets the 'each', so
+// the 'while' is left to its own condition and the inner loop still ends.
+fn continueInsideNestedEach() {
+  mut n = 0
+  mut visits = 0
+  while n < 2 {
+    each i in 0 < 4 {
+      if i == 1 {
+        continue
+      }
+      visits += 1
+    }
+    n += 1
+  }
+  show("continue-in-nested-each", visits)
+}
+
+// A 'continue' as the whole body is legal. The step the parser appends is not a
+// statement the reader wrote, so it does not make the 'continue' not-last, and
+// the loop still runs to its bound rather than spinning on one value.
+fn continueOnlyBody() {
+  each i in 0 < 3 {
+    continue
+  }
+  show("after-continue-only-body", 1)
 }
 
 // Loops nest in either combination, and an 'each' nested inside another gets a
@@ -283,6 +379,10 @@ fn main() i32 {
   scoping()
   writable()
   breaking()
+  continuing()
+  labeledContinuing()
+  continueInsideNestedEach()
+  continueOnlyBody()
   nesting()
   emptyBody()
   0i32

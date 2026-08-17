@@ -33,6 +33,10 @@ fn showF(label &[]u8, n f64) {
   printStr("\n")
 }
 
+fn showB(label &[]u8, b Bool) {
+  show(label, if b {1i64} else {0i64})
+}
+
 // -------- a generic function --------
 
 // One type parameter standing in for both parameter types and the return type,
@@ -98,6 +102,10 @@ fn genericOverAStructType() {
 
 struct Box[T] {
   v T
+
+  // A reference receiver, so an instance reached through '&Box[i64]' has a
+  // method to dispatch as well as a field to read
+  fn get(self &) T {v}
 }
 
 struct Pair[T, U] {
@@ -138,6 +146,185 @@ fn severalTypeParametersOnAStruct() {
   showF("pair-second-field", p.b)
 }
 
+// -------- methods on a generic type --------
+
+// A generic's methods are cloned with it, and 'self' is declared as a use of
+// 'Self'. The clone used to leave that pointing at the generic, so no method of
+// any instance had a receiver matching the instance it belonged to: every one
+// was rejected at its declaration and no call found a candidate. Nothing
+// downstream had ever run, and it turned out the instance's methods were never
+// given an LLVM symbol either, since code generation reaches a generic type's
+// instances only through its memoized instantiations.
+//
+// Two instances, so a method that had been generated once for the generic
+// rather than once per instance could not answer both.
+
+struct Holder[T] {
+  item T
+  count i64
+
+  // A value receiver, whose signature names no type parameter at all
+  fn tally(self) i64 {count}
+  // A reference receiver returning the type argument
+  fn unwrap(self &) T {item}
+  // A mutable reference receiver, so the write reaches the caller's value
+  fn clear(self &mut) {count = 0i64}
+
+  // -------- operators inside a generic type's method --------
+  //
+  // Cloning a generic listed each of its methods twice, once at its own index
+  // and once appended after the count memcpy had carried over, so every instance
+  // method's body was type checked twice on the same node. Lowering is not
+  // idempotent: the second visit saw what the first had already lowered. An
+  // operator call, by then a use of the operator's own FnDcl, took
+  // fnCallTypeCheck's "rewrite to self.method" path and was rejected as a method
+  // the instance does not declare, while '+=' had already become a temporary and
+  // was rejected as a variable initialized with something other than a literal.
+  // So each of these is an operator reached by a different route.
+
+  // No name in it at all, which is the narrowest form of the failure: it was not
+  // about the type argument, the fields or the receiver
+  fn litSum(self &) i64 {1i64 + 2i64}
+  // Arithmetic on a concretely typed field
+  fn countPlus(self &, n i64) i64 {count + n}
+  // A comparison, whose result type is not its operands'
+  fn overCount(self &, n i64) Bool {count > n}
+  // Arithmetic on a field of the type argument's type, returning T
+  fn itemSum(self &) T {item + item}
+  // And a comparison on that type, which each instance resolves for its own T
+  fn itemOver(self &, other T) Bool {item > other}
+  // An operator assignment, which is the FlagLvalOp/FlagOpAssgn route through
+  // fnCallTypeCheck rather than a plain method dispatch
+  fn bumpBy(self &mut, n i64) {count += n}
+}
+
+fn methodsOnAGenericType() {
+  mut hi = Holder[i64][item: 3i64, count: 1i64]
+  show("generic-method-value-receiver", hi.tally())
+  show("generic-method-ref-receiver-returns-T", (&hi).unwrap())
+  (&mut hi).clear()
+  show("generic-method-mut-receiver-mutated", hi.tally())
+
+  // A second instance at a different type argument, reaching its own clones
+  mut hf = Holder[f64][item: 2.5d, count: 4i64]
+  show("other-instance-method", hf.tally())
+  showF("other-instance-method-returns-its-T", (&hf).unwrap())
+}
+
+fn operatorsInsideAGenericMethod() {
+  mut hi = Holder[i64][item: 3i64, count: 1i64]
+  show("generic-method-operator-on-literals", (&hi).litSum())
+  show("generic-method-operator-on-field", (&hi).countPlus(4i64))
+  showB("generic-method-comparison-on-field", (&hi).overCount(0i64))
+  show("generic-method-operator-on-T-field", (&hi).itemSum())
+  showB("generic-method-comparison-on-T-field", (&hi).itemOver(9i64))
+  // The operator assignment writes through the mutable receiver, so the caller's
+  // value is what proves it ran rather than a temporary standing in for it
+  (&mut hi).bumpBy(5i64)
+  show("generic-method-operator-assign", hi.tally())
+
+  // The second instance again, so nothing here passes by one instance answering
+  // for both -- and its T is a float, so its T-typed operators are the other
+  // type's operators
+  mut hf = Holder[f64][item: 2.5d, count: 2i64]
+  show("other-instance-operator-on-literals", (&hf).litSum())
+  showF("other-instance-operator-on-T-field", (&hf).itemSum())
+  showB("other-instance-comparison-on-T-field", (&hf).itemOver(1.5d))
+  (&mut hf).bumpBy(3i64)
+  show("other-instance-operator-assign", hf.tally())
+}
+
+// An instantiation is a type wherever a type goes, including inside another
+// type. It is an unlowered call node until type check replaces it with the
+// instance it names, so every pass that runs before then has to recognize one
+// as a type -- name resolution above all, which is where '*T', '[N; T]' and
+// '?T' decide between a type and the expression that shares their syntax. An
+// instantiation used to lose that vote, so '*Box[i64]' read as a dereference
+// and '[2; Box[i64]]' as an array literal.
+//
+// '&Box[i64]' used not to be one of these, because the borrow never reached
+// this question: '&' consumed the bare name and then re-applied '[i64]' to the
+// borrow, so the instantiation was read as a type literal of a reference to the
+// generic itself. Now that a borrow applies to the whole suffixed term, the
+// instantiation arrives whole and the same vote decides it. That is what a
+// generic collection with '&self' methods needed.
+
+fn viaPointer(b *Box[i64]) i64 {
+  (*b).v
+}
+
+fn viaRef(b &Box[i64]) i64 {
+  b.v
+}
+
+fn viaRefMethod(b &Box[i64]) i64 {
+  b.get()
+}
+
+fn optionalBox(o ?Box[i64]) i64 {
+  match o {
+    case imm s Some[Box[i64]] {s.value.v}
+    case imm n None[Box[i64]] {0i64}
+  }
+}
+
+fn instantiationInsideAnotherType() {
+  // Array element type
+  mut a [2; Box[i64]] = [Box[i64][v: 3i64], Box[i64][v: 4i64]]
+  show("instantiation-as-array-element", a[0].v)
+  show("instantiation-as-array-element-second", a[1].v)
+  // Written through, so the element type is a real type and not a shape that
+  // merely type checked
+  a[1].v = 11i64
+  show("instantiation-as-array-element-assigned", a[1].v)
+
+  // Pointer target type
+  mut one = Box[i64][v: 7i64]
+  imm p *Box[i64] = &mut one
+  show("instantiation-as-pointer-target", viaPointer(p))
+
+  // Borrowed reference target type, reading a field and dispatching a method
+  // whose own receiver is '&self'
+  show("instantiation-as-ref-target", viaRef(&one))
+  show("instantiation-as-ref-target-method", viaRefMethod(&one))
+
+  // Option's type argument, through the '?' sugar
+  show("instantiation-as-option-argument", optionalBox(Some[Box[i64][v: 6i64]]))
+  show("instantiation-as-option-argument-none", optionalBox(None[Box[i64]][]))
+}
+
+// -------- a node kind the cloner has to know --------
+//
+// Instantiating a generic deep-copies its body, and the copier dispatches on
+// node tag. Its default arm was an assert, which the Release build's /DNDEBUG
+// turns into a no-op, so an unlisted tag fell through to a write against an
+// uninitialized pointer. 'is' was such a tag -- it builds the same node struct a
+// cast does and only the cast's tag was listed -- so a generic whose body tested
+// a variant crashed the compiler on an access violation. A union is scaffolding
+// here: what is claimed is that the body survives cloning, and 'is' is the
+// narrowest construct that reaches the arm.
+
+union Reading {
+  at i64
+  struct Spot {}
+  struct Span { len i64 }
+}
+
+fn spanLength[T](r T) i64 {
+  if r is Span {
+    1i64
+  } else {
+    0i64
+  }
+}
+
+fn clonedNodeKinds() {
+  mut spot Reading = Spot[3i64]
+  mut span Reading = Span[4i64, 9i64]
+  show("cloned-is-false", spanLength(spot))
+  show("cloned-is-true", spanLength(span))
+}
+
 fn genericReturningGeneric() {
   // A generic function whose return type is an instantiation of a generic type
   // with the function's own type parameter
@@ -152,6 +339,10 @@ fn main() i32 {
   genericOverAStructType()
   genericStruct()
   severalTypeParametersOnAStruct()
+  methodsOnAGenericType()
+  operatorsInsideAGenericMethod()
+  instantiationInsideAnotherType()
+  clonedNodeKinds()
   genericReturningGeneric()
   0i32
 }

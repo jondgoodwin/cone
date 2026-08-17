@@ -294,7 +294,13 @@ INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
         // flowLoadValue(fstate, nodesFind(element->args, 0), 0);
         INode *lvalvar = iexpGetLvalInfo(element->objfn, lvalperm, scope);
         INode *objtype = iexpGetTypeDcl(element->objfn);
-        if (objtype->tag == ArrayRefTag)
+        // Indexing through any reference takes the permission from the
+        // reference, exactly as DerefTag does. RefTag belongs here because a
+        // reference to a fixed-size array is indexed without an explicit
+        // dereference; leaving it out took the permission of the variable
+        // holding the reference instead, so 'v[0] = x' on a '&mut [3; i32]'
+        // parameter was refused while '(*v)[0] = x' was allowed.
+        if (objtype->tag == ArrayRefTag || objtype->tag == RefTag)
             *lvalperm = ((RefNode*)objtype)->perm;
         else if (objtype->tag == PtrTag)
             *lvalperm = (INode*)mutPerm;
@@ -308,13 +314,21 @@ INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
         INode *lvalvar = iexpGetLvalInfo(element->objfn, lvalperm, scope);
         if (lvalvar == NULL)
             return NULL;
-        RefNode *vtype = (RefNode*)iexpGetTypeDcl(((StarNode *)lval)->vtexp);
-        if (vtype->tag == VirtRefTag)
-            *lvalperm = vtype->perm;
-        else {
-            PermNode *methperm = (PermNode *)((VarDclNode*)((NameUseNode *)element->methfld)->dclnode)->perm;
-            // Downgrade overall static permission if field is immutable
-            if (methperm == immPerm)
+        // A field reached through a virtual reference takes the permission from
+        // the reference, exactly as DerefTag does for a plain one. It has to be
+        // done here because no dereference is injected for a virtual reference:
+        // derefInject rewrites only RefTag and PtrTag receivers, so the field
+        // access keeps the virtual reference as its objfn and the permission
+        // would otherwise be that of the binding holding it.
+        RefNode *objtype = (RefNode*)iexpGetTypeDcl(element->objfn);
+        if (objtype->tag == VirtRefTag)
+            *lvalperm = objtype->perm;
+        // Downgrade overall static permission if field is immutable.
+        // A tuple element is reached by index rather than by name, so it has no
+        // field declaration to ask.
+        if (element->methfld->tag == MbrNameUseTag) {
+            INode *flddcl = ((NameUseNode *)element->methfld)->dclnode;
+            if (flddcl->tag == FieldDclTag && ((FieldDclNode*)flddcl)->perm == (INode*)immPerm)
                 *lvalperm = (INode*)roPerm;
         }
         return lvalvar;

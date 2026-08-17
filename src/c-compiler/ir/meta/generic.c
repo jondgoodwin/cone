@@ -84,7 +84,7 @@ int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNode *genf
         FnCallNode *srcgencall, FnCallNode *inferredgencall) {
 
     if (srcgencall->args->used > genfnsig->parms->used) {
-        errorMsgNode((INode*)srcgencall, ErrorFewArgs, "Too many arguments provided for generic function.");
+        errorMsgNode((INode*)srcgencall, ErrorManyArgs, "Too many arguments provided for generic function.");
         return 0;
     }
 

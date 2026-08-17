@@ -136,7 +136,7 @@ void fnImplicitReturn(INode *rettype, BlockNode *blk) {
     }
     else {
         // Inject return in front of expression
-        if (isExpNode(laststmt)) {
+        if (isExpOrMacroNode(laststmt)) {
             BreakRetNode *retnode = newReturnNodeExp(laststmt);
             nodesLast(blk->stmts) = (INode*)retnode;
         }

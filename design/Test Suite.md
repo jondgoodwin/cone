@@ -245,6 +245,22 @@ fn main() {
 - Mark `follow-on` for a diagnostic that exists only as a consequence of another.
   Without it, an unrelated change to error recovery breaks the scenario.
 
+**An annotation may live in a support module.** A diagnostic carries the path of
+the file the offending node came from, and an annotation matches only a
+diagnostic reported against its own file — so a diagnostic the compiler reports
+inside an imported or included file is annotated *there*, not in the scenario
+that pulls it in. The runner works out which support modules a scenario reaches,
+following `import` and `include` transitively, and reads their annotations as
+part of that scenario's expectations. Bless rewrites them in place like any
+other, and a failure names the file so it is clear where the expectation lives.
+
+Two consequences worth knowing. A support module carrying annotations imposes
+them on **every** scenario that imports it, which is the honest reading: if two
+scenarios both pull in a module that fails, both must say so. And a scenario
+whose annotations are all in a support module still has none of its own —
+`module-typecheck-provenance` is the case, and its whole assertion is which file
+gets named.
+
 Two constraints follow from annotations living on lines:
 
 - **Where two diagnostics share a code, a line and a column**, the quoted

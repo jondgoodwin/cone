@@ -9,15 +9,35 @@
 
 fn twice(n u32) u32 { n * 2u }
 
+struct Counter {
+  n i32
+  fn doubled(self) i32 {n + n}
+}
+
 // A borrow needs a place in memory to point at. A computed value has none.
 fn borrowComputed() {
   mut a = 3
-  imm r = &(a + 1)      //~ ErrorBadLval:15 "Expression must be lval"
+  imm r = &(a + 1)      //~ ErrorBadLval:15 "May not borrow a temporary value"
 }
 
 // Nor does a literal, which the compiler is free to keep in the instruction
 fn borrowLiteral() {
-  imm r = &5            //~ ErrorBadLval:12 "Expression must be lval"
+  imm r = &5            //~ ErrorBadLval:12 "May not borrow a temporary value"
+}
+
+// A borrow applies to the whole suffixed term, so '&c.doubled()' borrows what
+// the method returned rather than the receiver it was called on. That is a
+// temporary, and '(&c).doubled()' is how a method is called on a borrowed
+// receiver.
+fn borrowMethodResult() {
+  mut c = Counter[3]
+  imm r = &c.doubled()  //~ ErrorBadLval:13 "May not borrow a temporary value"
+}
+
+// A constructed literal is a temporary too, so a reference type's own literal
+// syntax is not a way to allocate one
+fn borrowConstructed() {
+  imm r = &Counter[4]   //~ ErrorBadLval:19 "May not borrow a temporary value"
 }
 
 // Dereference needs a reference or a pointer. A number is neither.

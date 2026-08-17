@@ -22,6 +22,10 @@ FnCallNode *newFnCallNode(INode *objfn, int nnodes);
 // Create new fncall node, prefilling method, self, and creating room for nnodes args
 FnCallNode *newFnCallOpname(INode *obj, Name *opname, int nnodes);
 FnCallNode *newFnCallOp(INode *obj, char *op, int nnodes);
+// The '...Lower' forms position the new node on an existing one rather than on
+// wherever the lexer has reached, which is what a node synthesized after its
+// construct was parsed needs.
+FnCallNode *newFnCallOpnameLower(INode *oldnode, INode *obj, Name *opname, int nnodes);
 FnCallNode *newFnCallLower(INode *oldnode, INode *obj, int nnodes);
 
 // Clone fncall
@@ -39,6 +43,9 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **node);
 
 // Find the one field or method that accepts the call's receiver and arguments,
 // then lower the node to a function call (objfn+args) or field access (objfn+methfld).
+// A receiver held through a reference or pointer is dereferenced where the selected
+// method declared 'self' by value; nothing is borrowed on the receiver's behalf, and
+// an operator written on a pointer does not reach through at all.
 // Returns 1 when lowered, 0 when the receiver's type supports no methods at all
 // (so the caller may try another way), and -1 when a diagnostic was reported.
 int fnCallLowerMethod(FnCallNode *callnode);

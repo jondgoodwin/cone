@@ -32,6 +32,16 @@ NameUseNode *newNameUseNode(Name *namesym) {
     return name;
 }
 
+// The same, positioned on an existing node rather than on wherever the lexer
+// happens to be. A name use the parser synthesizes after it has consumed the
+// construct it belongs to would otherwise carry the position of whatever the
+// lexer had moved on to.
+NameUseNode *newNameUseFromLex(Name *namesym, INode *lexnode) {
+    NameUseNode *name = newNameUseNode(namesym);
+    inodeLexCopy((INode*)name, lexnode);
+    return name;
+}
+
 // Create a working variable for a value we intend to reuse later
 // The vardcl is appended to a list of nodes, and the nameuse node to it is returned
 INode *newNameUseAndDcl(Nodes **nodesp, INode *val, uint16_t scope) {

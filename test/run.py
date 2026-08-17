@@ -322,7 +322,13 @@ ANNOT_BODY_RE = re.compile(
 
 @dataclass(frozen=True)
 class Annotation:
-    """One expected located diagnostic, written as ``//~`` in the source."""
+    """One expected located diagnostic, written as ``//~`` in the source.
+
+    ``path`` is the file the annotation was written in, which is the scenario's
+    own source for most of them and a support module for the rest (R2.12). A
+    diagnostic only matches an annotation written in the file the compiler
+    reported it against, so the two travel together.
+    """
     code_name: str
     code: int
     line: int          # source line the diagnostic must be reported on
@@ -330,6 +336,8 @@ class Annotation:
     message: str | None
     follow_on: bool
     annot_line: int    # line the //~ itself sits on, for error reporting
+    path: str = ""     # repo-relative posix path of the file it was written in
+    last_line: int = 0  # lines in that file, so an EOF diagnostic can match
 
     def describe(self) -> str:
         where = f"{self.line}:{self.col}" if self.col is not None else f"{self.line}"
@@ -339,6 +347,12 @@ class Annotation:
         if self.follow_on:
             text += " follow-on"
         return text
+
+    def describe_in(self, source_rel: str) -> str:
+        """The same, naming the file when it is not the scenario's own source."""
+        if not self.path or self.path == source_rel:
+            return self.describe()
+        return f"{Path(self.path).name}: {self.describe()}"
 
 
 def parse_annotations(source: Path, codes: dict[str, int]) -> list[Annotation]:
@@ -388,13 +402,43 @@ def parse_annotations(source: Path, codes: dict[str, int]) -> list[Annotation]:
             message=message,
             follow_on="follow-on" in flags,
             annot_line=number,
+            path=source.relative_to(REPO).as_posix(),
+            last_line=count_lines(text),
         ))
     return found
 
 
+MODULE_RE = re.compile(r"^\s*(?:import|include)\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)
+
+
+def support_closure(source: Path, group_dir: Path, support: set[str]) -> list[Path]:
+    """The support modules a scenario pulls in, directly or through another.
+
+    R2.12 registers a support module per group; this says which scenarios each
+    one belongs to, which is what lets an annotation live in a support module.
+    A diagnostic reported inside an imported or included file has that file's
+    path, and an annotation only matches a diagnostic reported against its own
+    file, so without this a diagnostic in a support module could be produced
+    but never expected -- which is the hole that left ErrorNoEof uncoverable.
+    """
+    seen: set[str] = set()
+    found: list[Path] = []
+    queue = [source]
+    while queue:
+        text = queue.pop().read_text(encoding="utf-8", errors="replace")
+        for name in MODULE_RE.findall(normalize(text)):
+            if name not in support or name in seen:
+                continue
+            seen.add(name)
+            module = group_dir / f"{name}.cone"
+            if module.exists():
+                found.append(module)
+                queue.append(module)
+    return found
+
+
 def match_diagnostics(
-    expected: list[Annotation], actual: list[Diagnostic], source_rel: str,
-    last_line: int = 0,
+    expected: list[Annotation], actual: list[Diagnostic],
 ) -> tuple[list[Annotation], list[Diagnostic]]:
     """Pair annotations with diagnostics; return what was left over on each side.
 
@@ -412,6 +456,10 @@ def match_diagnostics(
     ``core-parse-unclosed`` is the case: `ErrorNoRCurly` is only ever reported at
     EOF, and without this the scenario would silently break the first time
     anything appended a newline to it.
+
+    An annotation carries the path and length of the file it was written in, so
+    a scenario whose annotations span its own source and a support module keys
+    each one against the right file rather than against the scenario's.
     """
     unmatched_actual = list(actual)
     unmatched_expected: list[Annotation] = []
@@ -420,13 +468,14 @@ def match_diagnostics(
         for candidate in unmatched_actual:
             if candidate.code != annotation.code:
                 continue
-            at_eof = (last_line and annotation.line == last_line
-                      and candidate.line == last_line + 1)
+            at_eof = (annotation.last_line
+                      and annotation.line == annotation.last_line
+                      and candidate.line == annotation.last_line + 1)
             if candidate.line != annotation.line and not at_eof:
                 continue
             if annotation.col is not None and candidate.col != annotation.col:
                 continue
-            if normalize_path(candidate.path or "") != source_rel:
+            if normalize_path(candidate.path or "") != annotation.path:
                 continue
             if annotation.message is not None and annotation.message not in candidate.message:
                 continue
@@ -479,6 +528,9 @@ class Scenario:
     # Lines in the source, so an annotation on the final line can also match a
     # diagnostic reported at the EOF token on the line after it.
     last_line: int = 0
+    # Every file this scenario's annotations may live in: its own source, then
+    # the support modules it imports or includes. Bless writes back to each.
+    annot_sources: tuple[Path, ...] = ()
     argv: tuple[str, ...] = ()   # 'driver' only: the whole invocation
     xfail: bool = False
     annotations: list[Annotation] = field(default_factory=list)
@@ -603,14 +655,20 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
             xfail=bool(table.get("xfail", False)),
         )
         if source is not None:
-            scenario.annotations = parse_annotations(source, codes)
+            # A support module's annotations belong to every scenario that pulls
+            # it in, so an imported or included file asserts its own diagnostics
+            # where they are reported rather than being unassertable (R2.12).
+            scenario.annot_sources = (source, *support_closure(source, group_dir, support))
+            scenario.annotations = [a for file in scenario.annot_sources
+                                    for a in parse_annotations(file, codes)]
             body = source.read_text(encoding="utf-8", errors="replace")
-            scenario.last_line = len(normalize(body).rstrip("\n").split("\n"))
+            scenario.last_line = count_lines(body)
             if scenario.annotations and category not in ANNOTATABLE:
                 first = scenario.annotations[0]
                 raise SuiteError(
-                    f"{source}:{first.annot_line}: only a {' or '.join(ANNOTATABLE)}"
-                    f" scenario may carry //~ annotations; this one is {category!r}"
+                    f"{REPO / first.path}:{first.annot_line}: only a"
+                    f" {' or '.join(ANNOTATABLE)} scenario may carry //~"
+                    f" annotations; {name!r} is {category!r}"
                 )
         # A warn scenario that names no warning asserts nothing its category does
         # not already imply, which is the same hole R3.2 closes for compile.
@@ -1315,6 +1373,11 @@ def normalize_path(text: str) -> str:
     return text.replace("\\", "/")
 
 
+def count_lines(text: str) -> int:
+    """Lines in a source, counted the way a diagnostic's line number counts them."""
+    return len(normalize(text).rstrip("\n").split("\n"))
+
+
 TIME_RE = re.compile(r"Compile finished in [^ ]+ sec \(\d+ kb\)\.")
 
 
@@ -1568,10 +1631,15 @@ class Runner:
                     f"\"{want.get('message', '')}\", which was not produced")
         return leftover
 
-    def report_missing(self, result: Result, missing: list[Annotation]) -> None:
+    def report_missing(self, result: Result, missing: list[Annotation],
+                       source_rel: str = "") -> None:
         """R3.5. A case separates primary diagnostics from the follow-on ones
         that exist only as consequences, so a recovery change that drops a
-        consequent reads differently from one that drops the cause."""
+        consequent reads differently from one that drops the cause.
+
+        An annotation written in a support module is named by its file, so a
+        failure says where the expectation lives rather than implying it sits
+        in the scenario's own source."""
         if not missing:
             return
         result.status = FAIL
@@ -1579,10 +1647,10 @@ class Runner:
         consequent = [a for a in missing if a.follow_on]
         if primary:
             result.problems.append("expected primary diagnostics, not produced:\n"
-                                   + indent("\n".join(a.describe() for a in primary)))
+                                   + indent("\n".join(a.describe_in(source_rel) for a in primary)))
         if consequent:
             result.problems.append("expected follow-on diagnostics, not produced:\n"
-                                   + indent("\n".join(a.describe() for a in consequent)))
+                                   + indent("\n".join(a.describe_in(source_rel) for a in consequent)))
 
     def check_rejection(self, result: Result, scenario: Scenario,
                         diagnostics: list[Diagnostic]) -> None:
@@ -1590,11 +1658,10 @@ class Runner:
         and no unannotated ones."""
         located = [d for d in diagnostics if d.line is not None]
         unlocated = [d for d in diagnostics if d.line is None]
-        missing, extra = match_diagnostics(
-            scenario.annotations, located, scenario.source_rel, scenario.last_line)
+        missing, extra = match_diagnostics(scenario.annotations, located)
         extra += self.claim_unlocated(result, scenario, unlocated)
 
-        self.report_missing(result, missing)
+        self.report_missing(result, missing, scenario.source_rel)
         if extra:
             result.status = FAIL
             result.problems.append("produced, but not annotated:\n" + indent(
@@ -1629,11 +1696,10 @@ class Runner:
 
         warnings = [d for d in diagnostics if d.is_warning]
         located = [d for d in warnings if d.line is not None]
-        missing, extra = match_diagnostics(
-            scenario.annotations, located, scenario.source_rel)
+        missing, extra = match_diagnostics(scenario.annotations, located)
         extra += self.claim_unlocated(
             result, scenario, [d for d in warnings if d.line is None])
-        self.report_missing(result, missing)
+        self.report_missing(result, missing, scenario.source_rel)
         if extra:
             result.status = FAIL
             result.problems.append("warnings produced, but not annotated:\n" + indent(
@@ -1884,7 +1950,7 @@ def sole_placement(expected: list[Annotation], produced: list[Diagnostic]
 
 
 def place_annotations(expected: list[Annotation], produced: list[Diagnostic],
-                      source_rel: str, last_line: int = 0):
+                      files: dict[str, int]):
     """Pair annotations with diagnostics loosely enough to bless (R4.4).
 
     ``match_diagnostics`` keys on code, line and column, which is precisely what
@@ -1899,13 +1965,19 @@ def place_annotations(expected: list[Annotation], produced: list[Diagnostic],
     annotation claims, and the (code, line) groups that stayed ambiguous. The
     first two are reported rather than acted on, since writing or deleting an
     annotation is the author's decision; the third refuses the scenario.
+
+    ``files`` maps every file the scenario's annotations may live in to that
+    file's length, and grouping keys on the path as well as the code and line,
+    so an annotation in a support module is never placed against a diagnostic
+    from the scenario's own source.
     """
-    groups: dict[tuple[int, int], tuple[list[Annotation], list[Diagnostic]]] = {}
+    groups: dict[tuple[str, int, int], tuple[list[Annotation], list[Diagnostic]]] = {}
     for annotation in expected:
-        groups.setdefault((annotation.code, annotation.line), ([], []))[0] \
-            .append(annotation)
+        groups.setdefault((annotation.path, annotation.code, annotation.line),
+                          ([], []))[0].append(annotation)
     for diagnostic in produced:
-        if normalize_path(diagnostic.path or "") != source_rel:
+        path = normalize_path(diagnostic.path or "")
+        if path not in files:
             continue
         # A diagnostic at the EOF token is reported on the line after the last
         # when the file ends with a newline, and on the last line when it does
@@ -1913,9 +1985,9 @@ def place_annotations(expected: list[Annotation], produced: list[Diagnostic],
         # final line, so bless has to group them the same way or it would refuse
         # to write a column it can see perfectly well.
         line = diagnostic.line
-        if last_line and line == last_line + 1:
-            line = last_line
-        groups.setdefault((diagnostic.code, line), ([], []))[1].append(diagnostic)
+        if files[path] and line == files[path] + 1:
+            line = files[path]
+        groups.setdefault((path, diagnostic.code, line), ([], []))[1].append(diagnostic)
 
     pairs: list[tuple[Annotation, Diagnostic]] = []
     unproduced: list[Annotation] = []
@@ -1986,19 +2058,28 @@ def rewrite_annotation(line: str, annotation: Annotation,
     return line
 
 
-def plan_source_edits(source: Path, pairs: list[tuple[Annotation, Diagnostic]]
-                      ) -> tuple[dict[int, str], list[str]]:
-    """The new text of every annotation line that needs one, keyed by line."""
-    bodies, _ = split_lines(source.read_bytes().decode("utf-8"))
-    edits: dict[int, str] = {}
+def plan_source_edits(pairs: list[tuple[Annotation, Diagnostic]]
+                      ) -> tuple[dict[str, dict[int, str]], list[str]]:
+    """The new text of every annotation line that needs one.
+
+    Keyed by the repo-relative path of the file the annotation lives in and
+    then by line, because a scenario's annotations may be spread across its own
+    source and the support modules it pulls in.
+    """
+    edits: dict[str, dict[int, str]] = {}
     described: list[str] = []
+    cached: dict[str, list[str]] = {}
     for annotation, produced in pairs:
+        if annotation.path not in cached:
+            cached[annotation.path] = split_lines(
+                (REPO / annotation.path).read_bytes().decode("utf-8"))[0]
+        bodies = cached[annotation.path]
         index = annotation.annot_line - 1
         rewritten = rewrite_annotation(bodies[index], annotation, produced)
         if rewritten is None:
             continue
-        edits[annotation.annot_line] = rewritten
-        described.append(f"{source.name}:{annotation.annot_line}:"
+        edits.setdefault(annotation.path, {})[annotation.annot_line] = rewritten
+        described.append(f"{Path(annotation.path).name}:{annotation.annot_line}:"
                          f"\n  - {bodies[index].strip()}"
                          f"\n  + {rewritten.strip()}")
     return edits, described
@@ -2107,16 +2188,22 @@ def bless_scenario(scenario: Scenario, results: list[Result],
     # that disagree about what belongs in them have no single answer to write.
     # No scenario declares more than one run today; this keeps the day one does
     # from silently getting whichever run finished last.
-    agreed: tuple[dict[int, str], bytes | None] | None = None
+    agreed: tuple[dict[str, dict[int, str]], bytes | None] | None = None
     described: list[str] = []
     reported: list[str] = []
 
+    # Every file the scenario's annotations may live in, and how long each is,
+    # so an EOF diagnostic groups against the final line of its own file.
+    annot_files = {file.relative_to(REPO).as_posix():
+                   count_lines(file.read_text(encoding="utf-8", errors="replace"))
+                   for file in scenario.annot_sources}
+
     for result in results:
-        edits: dict[int, str] = {}
+        edits: dict[str, dict[int, str]] = {}
         if scenario.category in ANNOTATABLE:
             pairs, unproduced, unclaimed, ambiguous = place_annotations(
                 scenario.annotations, annotated_diagnostics(scenario, result),
-                scenario.source_rel, scenario.last_line)
+                annot_files)
             if ambiguous:
                 blessing.refusal = "\n".join(
                     [f"{len(ambiguous)} annotation group(s) bless cannot place"
@@ -2128,14 +2215,14 @@ def bless_scenario(scenario: Scenario, results: list[Result],
                                   + [f"produced   {d.describe(by_number)}" for d in p])))
                        for a, p in ambiguous])
                 return blessing
-            edits, lines = plan_source_edits(scenario.source, pairs)
+            edits, lines = plan_source_edits(pairs)
             described += lines
             # Never written, only reported: bless does not know the code name of
             # a diagnostic that appeared, and an annotation nothing produced may
             # be a regression rather than a stale expectation (R4.4).
             reported += [f"produced, and no annotation claims it: "
                          f"{d.describe(by_number)}" for d in unclaimed]
-            reported += [f"annotated, and not produced: {a.describe()}"
+            reported += [f"annotated, and not produced: {a.describe_in(scenario.source_rel)}"
                          for a in unproduced]
 
         stdout: bytes | None = None
@@ -2162,8 +2249,8 @@ def bless_scenario(scenario: Scenario, results: list[Result],
 
     if agreed is not None:
         edits, stdout = agreed
-        if edits:
-            apply_source_edits(scenario.source, edits)
+        for rel, lines in edits.items():
+            apply_source_edits(REPO / rel, lines)
         if stdout is not None:
             scenario.source.with_suffix(".out").write_bytes(stdout)
     blessing.rewrote = described

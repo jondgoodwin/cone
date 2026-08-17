@@ -127,8 +127,14 @@ FnDclNode *iNsTypeFindPtrMethod(INode *binding, Nodes *args, enum OverloadMatch 
         if (args->used > 1) {
             INode *parm1type = iexpGetTypeDcl(nodesGet(parms, 1));
             INode *arg1type = iexpGetTypeDcl(nodesGet(args, 1));
-            if (parm1type->tag == PtrTag || parm1type->tag == RefTag) {
-                // When pointers are involved, we want to ensure they are the same type
+            if (parm1type->tag == PtrTag || parm1type->tag == RefTag || parm1type->tag == ArrayRefTag) {
+                // When pointers are involved, we want to ensure they are the same type.
+                // These compiler-declared signatures are deliberately generic over the
+                // region, permission and value type, so no real pointer/reference/slice
+                // matches one by coercion -- comparing the two arguments to each other is
+                // what selects the candidate. ArrayRefTag belongs here for the same
+                // reason the other two do; without it, slice '==' and '!=' were declared
+                // and unreachable.
                 if (!itypeIsSame(arg1type, iexpGetTypeDcl(nodesGet(args, 0))))
                     continue;
             }

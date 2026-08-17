@@ -23,6 +23,7 @@ typedef struct NameUseNode {
 } NameUseNode;
 
 NameUseNode *newNameUseNode(Name *name);
+NameUseNode *newNameUseFromLex(Name *name, INode *lexnode);
 
 // Create a working variable for a value we intend to reuse later
 // The vardcl is appended to a list of nodes, and the nameuse node to it is returned

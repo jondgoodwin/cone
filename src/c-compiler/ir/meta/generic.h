@@ -18,6 +18,12 @@ GenericInfo *newGenericInfo();
 // Serialize
 void genericInfoPrint(GenericInfo *info);
 
+// Obtain the GenericInfo a declaration carries, or NULL if it is not a generic.
+// This is what distinguishes a generic from every other declaration: a generic
+// is an ordinary FnDcl or StructNode with a parameter list attached, and not a
+// declaration node of its own.
+GenericInfo *genericGetInfo(INode *node);
+
 // Perform generic substitution, if this is a correctly set up generic "fncall"
 // Return 1 if done/error needed. Return 0 if not generic or it leaves behind a lit/fncall that needs processing.
 int genericSubstitute(TypeCheckState *pstate, FnCallNode **nodep);
