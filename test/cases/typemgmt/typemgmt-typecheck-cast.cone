@@ -26,3 +26,21 @@ fn convertNonNumberToBool() {
   mut pair (i32, i32) = 1, 2
   imm b = pair into Bool //~ ErrorInvType:11 "Only numbers and ref/ptr may convert to Bool"
 }
+
+// A slice is two words, so "convert it to an integer" has no single answer: the
+// length and the data address are both candidates, and each is already spelled
+// on its own. The length is 's.len', which collection-success runs. The address
+// is a pointer, and turning a pointer into an integer is 'p as usize' -- which
+// is nowhere in this corpus because it emits 'bitcast i32* to i64' and fails
+// module verification, recorded separately in the compiler defect backlog. So
+// nothing here makes a working reading unreachable: 'into' used to type check
+// this and then emit 'trunc { i32*, i64 } to i64', which --verify rejects.
+fn sliceToInteger(s &[]i32) {
+  imm n = s into usize   //~ ErrorInvType:18 "Unsupported built-in type conversion"
+}
+
+// 'as' refuses the same thing for its own reason: a slice is two words wide and
+// usize is one, so there is no bit pattern to keep
+fn sliceReinterpreted(s &[]i32) {
+  imm n = s as usize     //~ ErrorInvType:11 "May only reinterpret value to the same sized primitive type"
+}

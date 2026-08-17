@@ -1,0 +1,26 @@
+// Reinterpreting a raw pointer as an integer, and back. Marked xfail: it type
+// checks and generates code that LLVM rejects.
+//
+// 'as' keeps the bits, and castBitsize (cast.c:70) answers ptrsize for both
+// PtrTag and usize, so castTypeCheck's same-size rule is satisfied and nothing
+// else looks at the pair. genlRecast then reaches genlexpr.c's default arm and
+// emits LLVMBuildBitCast, which is not the instruction for this: LLVM spells a
+// pointer-to-integer reinterpretation 'ptrtoint' and the reverse 'inttoptr',
+// and refuses a bitcast between the two kinds outright. '--verify' reports
+// "Invalid bitcast   %1 = bitcast i32* %p1 to i64".
+//
+// Found while deciding that a slice may not convert to an integer, which rests
+// on the address being available as 'p as usize' -- the reading this defect
+// makes unavailable. It is why 'p as usize' appears nowhere else in this corpus.
+// The compiler defect backlog carries it.
+
+fn pointerAsInteger() {
+  mut cell = 3
+  imm p *i32 = &cell
+  imm n = p as usize
+}
+
+fn integerAsPointer() {
+  mut n usize = 0
+  imm p = n as *i32
+}

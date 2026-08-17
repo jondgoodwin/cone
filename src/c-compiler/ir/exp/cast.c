@@ -133,10 +133,11 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
         return;
     }
     switch (totype->tag) {
+    // A slice is two words, so "convert it to an integer" has no single answer:
+    // the length and the data address are both candidates and both are already
+    // spelled better, as 's.len' and 'p as usize'. This used to type check and
+    // then emit 'trunc { i32*, i64 } to i64', which --verify rejects.
     case UintNbrTag:
-        if (fromtype->tag == ArrayRefTag)
-            return;
-        // Fall-through expected here
     case IntNbrTag:
     case FloatNbrTag:
         if (fromtype->tag == UintNbrTag || fromtype->tag == IntNbrTag || fromtype->tag == FloatNbrTag)

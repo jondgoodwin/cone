@@ -32,7 +32,7 @@ table below.
 
 ## Fixed
 
-Fourteen are done, with a scenario each. They are recorded here rather than
+Fifteen are done, with a scenario each. They are recorded here rather than
 deleted because six of them were mis-diagnosed on this page and the correction
 is worth more than the entry was. Three of the last four were: one entry was two
 defects with one cause, another was two defects with two causes, of which only
@@ -54,6 +54,7 @@ finding what put the tree in front of it.
 | An operator inside a method of a generic type is rejected | **Not a dispatch defect at all: every instance method's body was type checked twice, and lowering is not idempotent.** `cloneStructNode` copies the struct with `memcpy`, which carries `nodelist.used` across, then replaced `nodelist.nodes` with a fresh array and wrote each cloned method into it *while also* calling `iNsTypeAddFn`, which appends at the copied count — so the instance listed every method twice, at its own index and again after. `structTypeCheck` walks that list to check bodies, so the second visit re-lowered what the first had already lowered correctly. That is why the recorded cause looked right and was a consequence: on the second pass an operator call's `objfn` is a `VarNameUse` of the operator's own `FnDcl`, which carries `FlagMethFld`, so `fnCallTypeCheck`'s "rewrite to `self.method`" branch fired and looked `+` up on the instance. `+=` produced a different symptom from the same cause — `fnCallOpAssgn` had already rewritten it to a temporary, so the second pass reported `ErrorNotLit` "Variable may only be initialized with a literal value". The copy's list now starts empty (`nodelistInit`) and `iNsTypeAddFn` does both the append and the dictionary entry, mirroring the fields loop above it. **It predated `c6085e4`** — the line dates to `6696a27`, and only became reachable when generic methods started working. Code generation was never affected: it reaches an instance method through the same node twice and the second is a no-op | `generic-success` |
 | `Bool[r]` and `Bool[p]` fail | **The conversion they were said to disagree with did not work either.** `typeLitNbrCheck` rejected a ref/ptr source exactly as recorded, but `r into Bool` and `p into Bool` only *type checked*: `genlConvert` has no ref/ptr case and Bool is a 1-bit `UintNbrTag`, so the number arm read `((NbrNode*)fromtype)->bits` off a `RefNode` and emitted `trunc i32* to i1`. `--verify` rejects it; nothing had ever run it. The Bool rule now lives once, in `castConvertsToBool`, which both paths ask, and `genlConvert` lowers ref/ptr to Bool as the null test `isTrue` already generated for the implicit coercion of a pointer | `typemgmt-success`, `typemgmt-typecheck-convert` |
 | `&mut p.x` — a field borrow without parentheses, and `&Box[i64]` — a reference to a generic instantiation | **One rule, not two defects, and the recorded cause was right about the mechanism and wrong about what it cost.** `parseAmper` consumed a prefixed term without suffixes and re-applied them to the borrow, so `&x.a` was `(&x).a`: typed as the field while `genlexpr` honoured `FlagBorrow` and answered with its address, which `--verify` rejects. Jon's ruling is that `&` applies to the whole suffixed term, so `&x.a` references the field and `&x[4]` the element, which is what `coneref/refborref.html` already documents. `parseAmper` now parses its operand at normal prefix precedence and `&Box[i64]` needed nothing further — the instantiation arrives whole and `refNameRes` asks `itypeIsGenericType`, repaired in `d407ba4`, so the borrow was the one position still failing for want of the instantiation surviving as a unit. Two things had to move with it. `borrowTypeCheck` re-associates `&v[i]` to `(&v)[i]` where the operand is an index on a value, because a type declaring its own `` `&[]` `` decides what a reference to an element is and wants the receiver the borrow would make; that is the shape `fnCallArrIndex` has always wanted for an array, a slice or a pointer too, so nothing there changed. And a borrow now names its own reason for refusing an operand, because `&p.sum()` — the one meaning the ruling changes — borrows a temporary, and `iexpIsLvalError`'s "must be lval" explains an assignment target instead. **`&Point[1, 2]` was recorded as working and never did**: it was a literal of the *reference* type, which `typeLitTypeCheck` rejects with `ErrorTypeLitType`. It is now a literal of `Point` that the borrow refuses as a temporary, which is the same verdict said usefully | `ref-success`, `ref-typecheck-borrow`, `generic-success`, `union-success`, `struct-methods` |
+| `s into usize` — a slice converts to an integer | Exactly as recorded: `castTypeCheck`'s `UintNbrTag` arm returned early for an `ArrayRefTag` source, so it type checked and `genlConvert` reached the number arm and emitted `trunc { i32*, i64 } to i64`, which `--verify` rejects. Jon's ruling is to reject it: a slice is two words, so "convert to an integer" could mean the length or the data address, and each is already spelled on its own. The early return is gone, so it reports the ordinary unsupported-conversion diagnostic. The constructor form `usize[s]` was already refused by `typeLitNbrCheck` and is unchanged | `typemgmt-typecheck-cast` |
 
 The same line held a second misread that no source can reach today: it took the
 field's own permission through a `VarDclNode*` cast, and `FieldDclNode` puts
@@ -76,6 +77,7 @@ truncated the returned pointer to 32 bits and segfaulted.
 | Defect | Cause | Pinned by |
 | --- | --- | --- |
 | The nullable-pointer optimization | `genlTypeMeta` (`genllvm/genltype.c:174-207`) gives base and variants a bare pointer type while the variant initializer still stores through the variant's struct type. Verified: `--verify` reports "Stored value type does not match pointer operand type" on construction | `union-nullable-ptr` |
+| `p as usize` and `n as *i32` — reinterpreting between a pointer and an integer | `castBitsize` (`cast.c:70`) answers `ptrsize` for `PtrTag` and for `usize`, so `castTypeCheck`'s same-size rule is satisfied and nothing else inspects the pair. `genlRecast` then falls to `genlexpr.c`'s default arm and emits `LLVMBuildBitCast`, which LLVM refuses between the two kinds — the instructions are `ptrtoint` and `inttoptr`. Verified: `--verify` reports "Invalid bitcast   %1 = bitcast i32* %p1 to i64" | `safety-ptr-as-int` |
 
 ## Reported in the wrong place
 
@@ -376,11 +378,20 @@ capture knows the suite will tell them.
 
 `usize[p]` was recorded here beside `Bool[p]` as one defect. It is a different
 question: `p into usize` fails too, so no permitted conversion is being made
-unreachable — a pointer simply does not *convert* to an integer. `p as usize`
-does work, by reinterpretation. So the question is whether taking a pointer's
-address as a number should be a conversion as well as a reinterpretation, which
-is a language decision and not a defect. Recommendation: leave it as
-reinterpretation only, and drop it from this page.
+unreachable — a pointer simply does not *convert* to an integer. So the question
+is whether taking a pointer's address as a number should be a conversion as well
+as a reinterpretation, which is a language decision and not a defect.
+Recommendation: leave it as reinterpretation only, and drop it from this page.
+
+**One correction, measured while rejecting `s into usize`, whose ruling rests on
+it.** This paragraph said "`p as usize` does work, by reinterpretation." It does
+not. It type checks — `castBitsize` answers `ptrsize` for both sides, so the
+same-size rule is satisfied — and then `genlRecast` reaches `genlexpr.c`'s
+default arm and emits `LLVMBuildBitCast`, which LLVM refuses between a pointer
+and an integer: the instructions are `ptrtoint` and `inttoptr`. `--verify`
+reports "Invalid bitcast   %1 = bitcast i32* %p1 to i64", and `n as *i32` fails
+the same way in reverse. That is why `p as usize` appears nowhere in the corpus.
+It is now pinned by `safety-ptr-as-int`, and it belongs in the table below.
 
 **Status: left undecided on purpose, and now pinned as it stands.** Fixing
 `Bool[p]` deliberately did not widen into it: the type-literal path asks the
