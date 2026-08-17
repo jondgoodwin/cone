@@ -64,16 +64,9 @@
 		  [[Types. Pointers and Borrowed References]],
 		  [[Concurrency Threads]], [[Copy & Alias vs. Move Semantics]] and
 		  [[Analysis re-factor]]
-		- [[Compiler defect backlog]] — done; see `workitems/done/`. Every
-		  wrong-code defect it recorded is fixed and `closure-capture` is the
-		  corpus's one remaining `xfail`, held by a feature rather than a
-		  defect. Eight of its entries were mis-diagnosed and are corrected
-		  there with the measurement; what it found and did not fix is routed
-		  to [[Compiler]] (how the compiler should react to reaching a state
-		  it believes impossible), [[Permissions]] (the meet of two
-		  permissions), [[Type Inference and Coercion]] (that meet's inference
-		  half, and inference never consulting the expected type),
-		  [[Regions]] (an array of owning references is never released),
+		- [[Compiler defect backlog]] — every defect it recorded is fixed; the
+		  remainder is design work, carried now by [[Compiler]],
+		  [[Permissions]], [[Type Inference and Coercion]], [[Regions]],
 		  [[Types. Struct and Union]] and [[Types. Function and Closure]]
 - Build System:
 	- Import vs. Include (allow include inside a type?)
