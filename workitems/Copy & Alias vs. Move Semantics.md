@@ -1,5 +1,15 @@
 
 - ‘Copy’ method: use w/ allocated references, assignment, fn call, etc.
+	- **`WarnCopy` (3003) is already declared for this and is raised nowhere**,
+	  deliberately kept by [[Unenforced language rules]] so the intent lives where
+	  an implementer will look — which is here. It names an unsafe copy of a
+	  `CopyMethod` or `CopyMove` typed value, and **neither name exists anywhere in
+	  the tree**: the only occurrence of either is the comment beside the code in
+	  `shared/error.h`. So this is not a missing check against existing machinery —
+	  the machinery is absent too, and building it is this item. `python
+	  test/run.py --coverage` lists the code under "raised by nothing" and is right
+	  to; it is the only entry there, so anything joining it is a red flag rather
+	  than noise.
 - .clone for custom copying/move
 
 #### Move semantics

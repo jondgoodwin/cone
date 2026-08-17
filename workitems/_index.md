@@ -63,7 +63,7 @@
 		  has been; the remainder is feature work, carried now by
 		  [[Types. Pointers and Borrowed References]],
 		  [[Concurrency Threads]], [[Copy & Alias vs. Move Semantics]] and
-		  [[Analysis re-factor]]
+		  [[Analysis re-factor]]. Done; see `workitems/done/`
 		- [[Compiler defect backlog]] — every defect it recorded is fixed; the
 		  remainder is design work, carried now by [[Compiler]],
 		  [[Permissions]], [[Type Inference and Coercion]], [[Regions]],

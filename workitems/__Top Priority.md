@@ -1,6 +1,3 @@
-Defects:
-[[Unenforced language rules]].
-
 1. [[Analysis re-factor]] - jit, with recursion checking
 2. [[Packages and Separate Compilation]]
 3. C-competitive and -compatible
