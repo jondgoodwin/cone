@@ -109,16 +109,23 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
     INode **nodesp;
     uint32_t cnt;
     LLVMValueRef lastval = NULL; // Should never be used by caller
+    // A break or continue terminates the LLVM basic block, so whatever follows it in
+    // the statement list is unreachable and must not be emitted -- an instruction
+    // after a terminator is invalid IR. It is reachable in an 'each' loop block,
+    // whose synthesized step sits behind the jump the reader wrote last.
+    int terminated = 0;
     for (nodesFor(blk->stmts, cnt, nodesp)) {
         switch ((*nodesp)->tag) {
         case ContinueTag:
             genlDealiasNodes(gen, ((BreakRetNode*)*nodesp)->dealias);
-            LLVMBuildBr(gen->builder, genFindBlockState(gen, ((BreakRetNode*)*nodesp)->block)->blockbeg); 
+            LLVMBuildBr(gen->builder, genFindBlockState(gen, ((BreakRetNode*)*nodesp)->block)->blockbeg);
+            terminated = 1;
             break;
 
         case BreakTag: {
             BreakRetNode *brknode = (BreakRetNode*)*nodesp;
             genlBreak(gen, brknode->block, brknode->exp, brknode->dealias);
+            terminated = 1;
             break;
         }
 
@@ -151,9 +158,11 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
         default:
             lastval = genlExpr(gen, *nodesp);
         }
+        if (terminated)
+            break;
     }
 
-    if (isLoop)
+    if (isLoop && !terminated)
         LLVMBuildBr(gen->builder, blockbeg);
 
     if (isPhiBlk) {

@@ -309,6 +309,11 @@ INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag) {
             incr->flags |= FlagLvalOp;
             nodesAdd(&loopnode->stmts, incr);
         }
+        // The step is now the block's last statement and stays there: the guard
+        // below is inserted at index 0, blockTypeCheck appends no 'blockret' to a
+        // loop block, and blockFlow runs later. Saying so is what lets name
+        // resolution find the step to copy ahead of a 'continue'.
+        loopnode->flags |= FlagLoopStep;
         parseInsertWhileBreak((INode*)loopnode, iter);
         nodesAdd(&outerblk->stmts, (INode*)loopnode);
     }

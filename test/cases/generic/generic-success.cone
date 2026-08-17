@@ -293,6 +293,38 @@ fn instantiationInsideAnotherType() {
   show("instantiation-as-option-argument-none", optionalBox(None[Box[i64]][]))
 }
 
+// -------- a node kind the cloner has to know --------
+//
+// Instantiating a generic deep-copies its body, and the copier dispatches on
+// node tag. Its default arm was an assert, which the Release build's /DNDEBUG
+// turns into a no-op, so an unlisted tag fell through to a write against an
+// uninitialized pointer. 'is' was such a tag -- it builds the same node struct a
+// cast does and only the cast's tag was listed -- so a generic whose body tested
+// a variant crashed the compiler on an access violation. A union is scaffolding
+// here: what is claimed is that the body survives cloning, and 'is' is the
+// narrowest construct that reaches the arm.
+
+union Reading {
+  at i64
+  struct Spot {}
+  struct Span { len i64 }
+}
+
+fn spanLength[T](r T) i64 {
+  if r is Span {
+    1i64
+  } else {
+    0i64
+  }
+}
+
+fn clonedNodeKinds() {
+  mut spot Reading = Spot[3i64]
+  mut span Reading = Span[4i64, 9i64]
+  show("cloned-is-false", spanLength(spot))
+  show("cloned-is-true", spanLength(span))
+}
+
 fn genericReturningGeneric() {
   // A generic function whose return type is an instantiation of a generic type
   // with the function's own type parameter
@@ -310,6 +342,7 @@ fn main() i32 {
   methodsOnAGenericType()
   operatorsInsideAGenericMethod()
   instantiationInsideAnotherType()
+  clonedNodeKinds()
   genericReturningGeneric()
   0i32
 }

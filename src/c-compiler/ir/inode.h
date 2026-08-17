@@ -201,6 +201,15 @@ enum NodeTags {
 #define FlagOperator  0x0020        // FnCall: an operator application, not a named member access
 
 #define FlagLoop      0x0001        // Block: is a Loop block
+// 'each' lowers to a 'while' whose body ends with the step that advances the loop
+// variable, so a 'continue' inside the body would jump over it and the variable
+// would never advance. This marks a loop block whose *last* statement is that
+// synthesized step, which is what lets blockNameRes copy it ahead of every
+// 'continue' that targets the block, and what lets the "break/continue must be
+// last" rule ignore a step that displaced the 'continue' the reader wrote last.
+// A flag rather than a pointer field, because cloneBlockNode memcpy's the flags
+// and clones 'stmts', so a pointer would be left aimed into the original.
+#define FlagLoopStep  0x0002        // Block: last statement is 'each's synthesized step
 
 #define FlagSuffix    0x0001        // Borrow: part of a borrow chain
 

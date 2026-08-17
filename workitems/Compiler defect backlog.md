@@ -30,12 +30,11 @@ They could not be fixed quietly and they could not rot silently, and all of them
 now are fixed: the section below is empty and `closure-capture` is the corpus's
 one remaining `xfail`, held by question 4 rather than by a defect. What is left
 open here is either awaiting a decision or recorded in passing by a scenario that
-passes, which is the weaker arrangement — see the two `continue`-shaped entries
-under "Behavioral, and possibly intended", neither of which a scenario can hold.
+passes, which is the weaker arrangement.
 
 ## Fixed
 
-Seventeen are done, with a scenario each. They are recorded here rather than
+Nineteen are done, with a scenario each. They are recorded here rather than
 deleted because six of them were mis-diagnosed on this page and the correction
 is worth more than the entry was. Three of the last four were: one entry was two
 defects with one cause, another was two defects with two causes, of which only
@@ -60,6 +59,8 @@ finding what put the tree in front of it.
 | The nullable-pointer optimization | **Three defects at three sites, and the one recorded here was the smallest of them — but the representation itself was never wrong, which is the finding that decided the difficulty.** `genlSetupTaggedTrait` (the function the entry called `genlTypeMeta`, `genltype.c:166-217`) marks the base and both variants `NullablePtr` and gives each the bare pointer as its `llvmtype`, correctly. Its caller in `genlType` then **overwrote both**, on the two lines immediately following the call: `base->llvmtype = LLVMStructCreateNamed(...)`, and then `genlSameSizeTrait` doing the same for every variant. So the flags survived and the types did not, and construction — which reads the flag — produced a bare `i32*` to store into an alloca of `%Just`. `genlType` now takes the optimization's answer instead of overwriting it, and no `%Maybe`, `%Just` or `%Nothing` type is emitted at all. Two more sites had simply never been reached, because nothing had ever got past construction: `genlIsType`'s nullable branch tested the reference against null instead of the value it points at, since it lacked the `istype->tag == RefTag` load the tagged branch beside it has always done — `icmp ne i32** %_2, i32* null`, which `--verify` rejects; and field access had no nullable case in either `genlAddr` or `genlExpr`, so `j.p` emitted a struct GEP against a pointer and **segfaulted inside LLVM**. Under the optimization the variant's one nameable field *is* the value, at offset zero — the tag field is anonymous and unreachable from source — so both arms now answer with the object itself. Nothing about how the optimization is represented changed; three sites were taught to consult what it already declared | `union-nullable-ptr` |
 | `p as usize` and `n as *i32` — reinterpreting between a pointer and an integer | Exactly as recorded, and it was one instruction choice. `genlRecast` ended in an unconditional `LLVMBuildBitCast`, which LLVM refuses between the pointer and integer kinds. It now picks `ptrtoint` and `inttoptr` for those two directions and bitcasts otherwise, deciding on the generated `LLVMTypeKind`s rather than on the Cone tags, since the instruction has to agree with the former and a reference is not always a plain pointer. **The reverse direction needed nothing opened up**: `castBitsize` answers `ptrsize` for `usize` as well as for `PtrTag` and `RefTag`, so `n as *i32` already type checked and already emitted the same invalid bitcast — measured on the pre-fix binary, which reported both. So the round trip is assertable, and `safety-pointers` now asserts it at run time: pointer to `usize` and back, dereferenced; two pointers one element apart differing by 4; and a reference reinterpreting to the address its pointer form gives | `safety-pointers` |
 | `s into usize` — a slice converts to an integer | Exactly as recorded: `castTypeCheck`'s `UintNbrTag` arm returned early for an `ArrayRefTag` source, so it type checked and `genlConvert` reached the number arm and emitted `trunc { i32*, i64 } to i64`, which `--verify` rejects. Jon's ruling is to reject it: a slice is two words, so "convert to an integer" could mean the length or the data address, and each is already spelled on its own. The early return is gone, so it reports the ordinary unsupported-conversion diagnostic. The constructor form `usize[s]` was already refused by `typeLitNbrCheck` and is unchanged | `typemgmt-typecheck-cast` |
+| `continue` inside an `each` hangs forever | Exactly as recorded, and the mechanism was already in place. `parseEach` ends the loop body with the step that advances the loop variable, so `continue` reached the guard with the variable unchanged. The repair is in name resolution rather than in the parser, because `continueNameRes` already resolves a `continue` — bare or labelled — to its target loop's `BlockNode`: `parseEach` marks that block `FlagLoopStep`, and `blockNameRes` copies its last statement in immediately ahead of the `continue` it holds. Into the block that *already* holds the jump, never a wrapper: `blockNoBreak` rejects `{ step; continue }`, while inserting ahead of a `continue` cannot break the last-statement rule, since that rule guarantees the `continue` is already last. The copy is a clone, because one node reachable twice would be type checked twice and lowering is not idempotent; it is sound on evaluation count because only one copy runs per iteration. Three things moved with it. The last-statement rule counts the synthesized step out for `break` and `continue`, which is the **companion defect** — `each i in 0 < 3 { continue }` used to report `ErrorRetNotLast` against the `continue` the reader did write last — but not for `return`, which would leave the step behind as code emitted after a terminator. `genlBlock` stops emitting a block's statements once a break or continue has terminated the LLVM basic block, for the same reason. And `blockFlow` now de-aliases a non-final break or continue, a position nothing could reach while the rule rejected it | `each-success` |
+| `cloneNode` writes through an uninitialized pointer for an unlisted tag | **A live access violation, not a latent one.** The `default:` arm was `assert(0 && "Do not know how to clone a node of this type")`, a no-op under the Release build's `/DNDEBUG`, after which `node->instnode = cstate->instnode` wrote through an uninitialized `node`. `IsTag` was such a tag — `is` builds the same `CastNode` a cast does and only `CastTag` was listed — so a generic function whose body tested a variant **crashed the compiler**, and where it did not crash it corrupted the tree into diagnostics reported against the wrong nodes. `IsTag` now joins the `CastTag` arm, and the `default:` arm terminates through `errorExit` rather than falling through: there is no node to return, and no diagnostic that would make the compile's output usable. The other 23 `assert(0)` sites are untouched; the general policy question stays with [[Compiler]] | `generic-success` |
 
 The same line held a second misread that no source can reach today: it took the
 field's own permission through a `VarDclNode*` cast, and `FieldDclNode` puts
@@ -112,93 +113,13 @@ too, so neither is about the untagged layout.
 
 ## Behavioral, and possibly intended
 
-Recorded because the survey could not tell. Two are now settled; two still need
-Jon and are listed under "What needs a decision" below.
+Recorded because the survey could not tell. Two are now settled — the `each`
+`continue` pair needed no ruling and is fixed — and two still need Jon and are
+listed under "What needs a decision" below.
 
-- **`continue` inside an `each` hangs forever.** Confirmed by reading
-  `parseEach`: the increment is appended to the end of the loop body
-  (`parsefnflow.c:298-311`), so `continue` jumps over it and the loop variable
-  never advances. `break` is fine. Unpinnable — the runner would have to hang to
-  observe it. **No ruling needed**; what it needs is somewhere for the increment
-  to live that `continue` reaches, which the parser rewrite has no notion of
-  today. **Now measured — see below.**
-
-### Measured: `continue` inside an `each`
-
-Difficulty **low**, and the mechanism it needs already exists. Not fixed, because
-the item was filed as needing a report first. Everything below was compiled, and
-the hang was read out of the IR rather than run.
-
-**The symptom, without running anything.** `each i in 0 < 10 { if i == 3
-{ continue }; sum = sum + i }` generates `ifblk3: br label %loopbeg` while the
-`add i32 %3, 1` that advances `i` sits in `endif2`, the fall-through block. So
-the jump reaches the loop guard with `i` unchanged. Exactly as recorded.
-
-**Which loop a `continue` targets is already known, and not by the parser.**
-`continueNameRes` (`ir/stmt/continue.c`) resolves `continuenode->block` to the
-target loop's `BlockNode` — `nstate->loopblock` for a bare `continue`, and the
-lifetime-named block for `continue 'outer`, which it requires to carry
-`FlagLoop`. So the rewrite belongs in name resolution, not in `parseEach`, and
-telling this loop's `continue` from a nested loop's costs nothing: the resolved
-pointer is the answer.
-
-**The labelled case is not the hard case.** `continue 'outer` from inside a
-nested `each` needs the *outer* loop's step and nothing else — the inner loop is
-abandoned and its variable is re-initialized by the outer body on the next
-iteration. Verified by hand-writing the rewrite's output as a `while` nest with
-`i++` before `continue 'outer`: it compiles clean under `--verify` and exits 3,
-the predicted value. It is spellable today, and today it hangs.
-
-**The proposed shape does not compile; a simpler one does.** Wrapping the step
-and the `continue` in a block — `if c { { i++; continue } }` — is rejected by
-`blockNoBreak` with `ErrorBadStmt` "break/continue may only finish a conditional
-block". Inserting the step into the block that *already* holds the `continue`,
-immediately before it — `if c { i++; continue }` — compiles clean. That shape
-cannot violate the last-statement rule either, and for a structural reason: the
-rule guarantees every `continue` is already the last statement of some block, so
-inserting ahead of it keeps it last and makes the step an ordinary non-final
-expression statement.
-
-**Cloning is required, and is sound on evaluation count.** Reusing the one step
-node would put it in the tree twice and have it type checked twice, which is the
-non-idempotent-lowering corruption the generic-method row above describes. A
-clone is safe because only one of the two copies runs per iteration.
-`cloneFnCallNode` handles the `++`/`--`/`+=` node `parseEach` builds and recurses
-through `objfn`, `args` and `methfld`; `cloneNameUseNode` calls
-`cloneDclFix(NULL)` harmlessly on a copy taken before resolution, so a zeroed
-`CloneState` suffices and no dcl map is needed. The step is always still
-unresolved at that moment — it is the target loop block's last statement and the
-`continue` is nested inside, so the statement loop has not reached it.
-
-**One real hazard, and it is the reason this is not a two-line change.**
-`cloneNode`'s default arm is `assert(0 && "Do not know how to clone a node of
-this type")` — a no-op under the Release build's `/DNDEBUG` — after which `node`
-is uninitialized and `node->instnode = cstate->instnode` writes through it.
-`each x in a < b by <expr>` takes an arbitrary `parseSimpleExpr` as `<expr>` and
-cloning the `+=` recurses into it, so a step of a tag the switch does not list —
-`IsTag` is one, since only `CastTag` appears — becomes a wild write rather than a
-diagnostic. This fix wants that arm given a real diagnostic first. It is one
-instance of the 24 recorded under "Swept out" below.
-
-**Recommended shape.** Give `BlockNode` one flag meaning "my last statement is
-the synthesized step" — `FlagLoop` is `0x0001` and the only Block flag, so
-`0x0002` is free — set by `parseEach`. A flag rather than a pointer field,
-because `cloneBlockNode` memcpy's the flags and clones `stmts`, so a pointer
-would either be cloned twice or left pointing into the original. The step is
-reliably last: `parseEach` appends it and `parseInsertWhileBreak` inserts its
-guard at index 0, `blockTypeCheck`'s loop branch appends no `blockret`, and
-`blockFlow` runs later. Then in `blockNameRes`, after the statement loop and
-before `nametblHookPop`, insert a clone of `continuenode->block`'s last statement
-ahead of any `continue` whose target carries the flag, and resolve it — the pop
-has not happened, so the loop variable is still in scope.
-
-**A companion defect the rewrite does not fix.** `each i in 0 < 3 { continue }`
-reports `ErrorRetNotLast` "continue may only appear as the last statement in a
-block", pointing at the `continue` the reader did write last: the synthesized step
-made it not-last. `while i < 3 { continue }` reports the honest `ErrorBadStmt`
-pair instead. With the step inserted the `continue` is still not last in that
-block, so this needs handling of its own — most simply by treating the loop
-block's own trailing step as not counting toward the rule.
+- **`continue` inside an `each` hangs forever** — fixed, along with the companion
+  defect that made a bare `continue` an `each`'s whole body illegal. See the
+  table above.
 - **A method cannot be called through a raw pointer.** **Re-scoped, and it is
   not only pointers.** See "What needs a decision".
 
@@ -233,7 +154,7 @@ went.
 
 | Finding | Now owned by |
 | --- | --- |
-| 24 `assert(0 && "unreachable")` sites, every one a no-op under the Release build's `/DNDEBUG`, so control falls through instead of failing. The systematic form of what [[Diagnose instead of crash]] closed site by site — and `--checktree` does not cover it, since it only finds a node left untyped | [[Compiler]], with three mechanisms sketched |
+| 24 `assert(0 && "unreachable")` sites, every one a no-op under the Release build's `/DNDEBUG`, so control falls through instead of failing. The systematic form of what [[Diagnose instead of crash]] closed site by site — and `--checktree` does not cover it, since it only finds a node left untyped. **One of the 24 is now fixed on its own**, `cloneNode`'s `default:` arm, because it was corrupting memory rather than merely failing to fail; see the table above. 23 remain | [[Compiler]], with three mechanisms sketched |
 | `iexpGetPermFlags` is dead code whose `DerefTag` arm falls through into `case ArrIndexTag:` in Release, reinterpreting a `StarNode` as a `FnCallNode`. **Not deleted:** that item explicitly plans to move this function to flow analysis, so it wants the function, and now knows what to repair first | [[Permissions]] |
 | Branch inference cannot meet two references differing only in permission, though coercion accepts `&mut` where `&` is wanted. Needs the meet of two permissions defined; `itypeFindSuper` then needs its missing `ArrayRefTag` and `PtrTag` arms | [[Permissions]] for the rule, [[Type Inference and Coercion]] for the inference |
 

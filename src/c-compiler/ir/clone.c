@@ -7,8 +7,6 @@
 
 #include "ir.h"
 
-#include <assert.h>
-
 // Deep copy a node
 INode *cloneNode(CloneState *cstate, INode *nodep) {
     if (nodep == NULL)
@@ -23,6 +21,7 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     case BlockTag:
         node = cloneBlockNode(cstate, (BlockNode *)nodep); break;
     case CastTag:
+    case IsTag:
         node = cloneCastNode(cstate, (CastNode *)nodep); break;
     case DerefTag:
         node = cloneStarNode(cstate, (StarNode *)nodep); break;
@@ -120,7 +119,13 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         node = nodep; break;
 
     default:
-        assert(0 && "Do not know how to clone a node of this type");
+        // A tag this switch does not list is a gap in the compiler, not a bad
+        // program -- but the assert this arm used to be is a no-op under the
+        // Release build's /DNDEBUG, so control fell through to the write below
+        // with 'node' uninitialized. Terminating is what the assert meant, and it
+        // is the only answer that cannot corrupt memory: there is no node to
+        // return and no diagnostic that would make the compile's output usable.
+        errorExit(ExitError, "Internal error: cloning is not implemented for a node of tag %d", nodep->tag);
     }
     node->instnode = cstate->instnode;
     return node;
