@@ -118,6 +118,24 @@ Both were found by tracing something else, and neither belongs to ownership.
   `?+rc-mut 5` still dies on the same access violation, byte for byte, against
   the fixed compiler.
 
+## Swept out, and routed to the items that own the design
+
+A sweep for the shape that produced six of the fixes above — a tag omitted from a
+dispatch switch, or `==` on nodes where structure was meant — turned up three
+findings that are **design questions rather than defects**, and each has gone to
+the item that owns it. They are listed here only so this page records where they
+went.
+
+| Finding | Now owned by |
+| --- | --- |
+| 24 `assert(0 && "unreachable")` sites, every one a no-op under the Release build's `/DNDEBUG`, so control falls through instead of failing. The systematic form of what [[Diagnose instead of crash]] closed site by site — and `--checktree` does not cover it, since it only finds a node left untyped | [[Compiler]], with three mechanisms sketched |
+| `iexpGetPermFlags` is dead code whose `DerefTag` arm falls through into `case ArrIndexTag:` in Release, reinterpreting a `StarNode` as a `FnCallNode`. **Not deleted:** that item explicitly plans to move this function to flow analysis, so it wants the function, and now knows what to repair first | [[Permissions]] |
+| Branch inference cannot meet two references differing only in permission, though coercion accepts `&mut` where `&` is wanted. Needs the meet of two permissions defined; `itypeFindSuper` then needs its missing `ArrayRefTag` and `PtrTag` arms | [[Permissions]] for the rule, [[Type Inference and Coercion]] for the inference |
+
+The identity-comparison half of the sweep came back clean: the remaining `==` on
+type nodes compare against singletons (`immPerm`, `roPerm`, `borrowRef`,
+`uniPerm`), which is what those are for.
+
 ## What needs a decision
 
 Four questions, with a recommendation for each. The first three are language
