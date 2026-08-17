@@ -138,6 +138,48 @@ fn severalTypeParametersOnAStruct() {
   showF("pair-second-field", p.b)
 }
 
+// An instantiation is a type wherever a type goes, including inside another
+// type. It is an unlowered call node until type check replaces it with the
+// instance it names, so every pass that runs before then has to recognize one
+// as a type -- name resolution above all, which is where '*T', '[N; T]' and
+// '?T' decide between a type and the expression that shares their syntax. An
+// instantiation used to lose that vote, so '*Box[i64]' read as a dereference
+// and '[2; Box[i64]]' as an array literal.
+//
+// '&Box[i64]' is still not one of these and is still generic-ref-instance's:
+// it fails in the parser, before any of this is asked.
+
+fn viaPointer(b *Box[i64]) i64 {
+  (*b).v
+}
+
+fn optionalBox(o ?Box[i64]) i64 {
+  match o {
+    case imm s Some[Box[i64]] {s.value.v}
+    case imm n None[Box[i64]] {0i64}
+  }
+}
+
+fn instantiationInsideAnotherType() {
+  // Array element type
+  mut a [2; Box[i64]] = [Box[i64][v: 3i64], Box[i64][v: 4i64]]
+  show("instantiation-as-array-element", a[0].v)
+  show("instantiation-as-array-element-second", a[1].v)
+  // Written through, so the element type is a real type and not a shape that
+  // merely type checked
+  a[1].v = 11i64
+  show("instantiation-as-array-element-assigned", a[1].v)
+
+  // Pointer target type
+  mut one = Box[i64][v: 7i64]
+  imm p *Box[i64] = &mut one
+  show("instantiation-as-pointer-target", viaPointer(p))
+
+  // Option's type argument, through the '?' sugar
+  show("instantiation-as-option-argument", optionalBox(Some[Box[i64][v: 6i64]]))
+  show("instantiation-as-option-argument-none", optionalBox(None[Box[i64]][]))
+}
+
 fn genericReturningGeneric() {
   // A generic function whose return type is an instantiation of a generic type
   // with the function's own type parameter
@@ -152,6 +194,7 @@ fn main() i32 {
   genericOverAStructType()
   genericStruct()
   severalTypeParametersOnAStruct()
+  instantiationInsideAnotherType()
   genericReturningGeneric()
   0i32
 }

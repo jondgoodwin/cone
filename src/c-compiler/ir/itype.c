@@ -320,14 +320,31 @@ int itypeIsMove(INode *type) {
     return itypeGetTypeDcl(type)->flags & MoveType;
 }
 
-// Return true if this is a generic type
+// Return true if this is an instantiation of a generic type, such as 'Box[i64]'.
+//
+// An instantiation is an unlowered FnCallNode until type check replaces it with
+// the instance it names, and isTypeNode asks this so that the passes running
+// before then -- name resolution's type-versus-value disambiguation, above all
+// -- can tell one from a call. Without it '*Box[i64]' reads as a dereference
+// and '[2; Box[i64]]' as an array literal, so an instantiation is a type
+// everywhere but inside a composite type.
+//
+// What tells a generic from anything else is the GenericInfo its declaration
+// carries: a generic is an ordinary FnDcl or StructNode with a type parameter
+// list attached, which is also how genericSubstitute recognizes one. Only a
+// struct's instantiation is a type -- a generic function's names a function --
+// and a macro cannot arrive here at all, since a use of a MacroDcl is tagged
+// MacroNameTag rather than as a name use of a type.
 int itypeIsGenericType(INode *type) {
     if (type->tag != FnCallTag)
         return 0;
     FnCallNode *gentype = (FnCallNode*)type;
-    if (gentype->objfn->tag != GenericNameTag)
+    if (gentype->objfn->tag != TypeNameUseTag)
         return 0;
-    return gentype->args->used > 0 && (nodesGet(&gentype->args, 0));
+    INode *dclnode = ((NameUseNode*)gentype->objfn)->dclnode;
+    if (dclnode == NULL || dclnode->tag != StructTag || genericGetInfo(dclnode) == NULL)
+        return 0;
+    return gentype->args != NULL && gentype->args->used > 0 && nodesGet(gentype->args, 0) != NULL;
 }
 
 // Return drop function (or NULL) for type

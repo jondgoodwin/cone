@@ -1,14 +1,31 @@
 // A borrowed reference to a generic instantiation. Marked xfail: '&Box[i64]'
 // does not parse as a type.
 //
-// A bare instantiation is a perfectly good type -- generic-success declares a
-// variable of one and passes one by value -- but the type parser will not take
-// one after '&'. It reports ErrorNotTyped twice, "Expected a typed expression"
-// at the instantiation and "Expected a type" at the reference.
+// This used to be filed as one defect with '*Box[i64]' and '[2; Box[i64]]' --
+// "an instantiation is not a type inside a composite type" -- and it is not.
+// Those two were a name-resolution question, and generic-success now runs them
+// alongside '?Box[i64]'. This one never reaches that question, because the
+// parse has already gone elsewhere.
 //
-// The consequence reaches past this group. It is why 'union' matches Option
-// and Result by value rather than by reference, and it will block any generic
-// collection whose methods take '&self'.
+// A borrow parses its operand without suffixes and then re-applies them to the
+// borrow, so that '&v[i]' is the '`&[]`' operator on v rather than a borrow of
+// an element, and '&Point[1, 2]' allocates a literal. '&Box[i64]' takes that
+// same path: it parses as an index applied to '&Box', a reference to the
+// generic itself. Name resolution finds a well-formed reference type there and
+// leaves it alone, so the enclosing '[i64]' is read as a type literal of
+// '&Box' whose one field value is the type i64 -- hence ErrorNotTyped
+// "Expected a typed expression" at the instantiation, and then "Expected a
+// type" at the parameter, since what is left is an expression.
+//
+// So the fix is a precedence rule, not a predicate: '&' followed by a name that
+// resolves to a generic has only one possible reading, and the borrow chain
+// would have to yield to it. That is the same parseAmper suffix re-application
+// that ref-field-borrow pins, and it is a language decision about how far a
+// borrow reaches.
+//
+// The consequence still reaches past this group: it is why 'union' matches
+// Option and Result by value rather than by reference, and it blocks any
+// generic collection whose methods take '&self'.
 //
 // When this scenario starts passing, drop the xfail and fold it into
 // generic-success as a printed fact.

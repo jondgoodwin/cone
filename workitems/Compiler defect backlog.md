@@ -39,6 +39,7 @@ more than the entry was.
 | `each`'s increment reports at the closing brace | As recorded. The synthesized nodes are now positioned on the range expression | `each-typecheck` |
 | The whole-value `` `&[]` `` operator method is unreachable | Exactly as recorded, and the reason is that the whole-value form never becomes a call. `&mut v[i]` parses to a `FlagIndex\|FlagBorrow` `FnCallNode`, which `fnCallTypeCheck` names `` `&[]` `` and dispatches; `&[]mut v` parses to a `RefNode` that `arrayRefNameRes` retags `ArrayBorrowTag`, so it reached `borrowTypeCheck` and fell to the "a one-element slice!" branch without dispatch ever being consulted. `borrowTypeCheck` now asks first, and where the value's type declares `` `&[]` `` and a candidate accepts the receiver, retags to a plain borrow and wraps it in the call — so the operator form becomes the `(&mut v).`&[]`()` that always worked | `struct-methods` |
 | Writing a trait field through `&<mut` is checked against the binding, and a struct field of virtual-reference type cannot be assigned | **One line, and neither defect was where the reading put it.** `iexpGetLvalInfo`'s `FldAccessTag` case read its `vtype` through `((StarNode*)lval)->vtexp`, and `StarNode` carries an `llvmtype` that `FnCallNode` does not — so the field it lands on is `methfld`, not `objfn`. Its `VirtRefTag` test was therefore asking whether the **field** was a virtual reference, never the object. That is the whole of both symptoms: a `&<Shape` *field* had its permission replaced by the permission of the reference it holds, so assigning it was refused; and a field reached *through* a virtual reference never took the reference's permission at all, so it kept the binding's. No `DerefTag` is involved either way — `derefInject` rewrites only `RefTag` and `PtrTag`, so a virtual receiver is never dereferenced, which is why the plain-reference controls worked | `trait-success`, `trait-flow-vref` |
+| A generic instantiation is not a type inside a composite type | **Half of what was filed as "`&Box[T]` does not parse", and the recorded cause was right.** `itypeIsGenericType` tested `objfn->tag == GenericNameTag`, a tag nothing assigns, so `isTypeNode` said no to `Box[i64]` — and name resolution asks exactly there when it decides between a type and the expression sharing its syntax, so `*Box[i64]` read as a dereference and `[2; Box[i64]]` as an array literal. The discriminator was already in the tree: a generic is a declaration carrying a `GenericInfo`, which `genericSubstitute` has always used, and a macro cannot reach the test at all. One thing had to move with it: `inodeTypeCheck` marks a type node walked-once, and an instantiation is a type that this pass *replaces*, so marking it stranded the flag and made a second use of one node — a match pattern and the variable it declares share one — report a recursive type | `generic-success` |
 | `Bool[r]` and `Bool[p]` fail | **The conversion they were said to disagree with did not work either.** `typeLitNbrCheck` rejected a ref/ptr source exactly as recorded, but `r into Bool` and `p into Bool` only *type checked*: `genlConvert` has no ref/ptr case and Bool is a 1-bit `UintNbrTag`, so the number arm read `((NbrNode*)fromtype)->bits` off a `RefNode` and emitted `trunc i32* to i1`. `--verify` rejects it; nothing had ever run it. The Bool rule now lives once, in `castConvertsToBool`, which both paths ask, and `genlConvert` lowers ref/ptr to Bool as the null test `isTrue` already generated for the implicit coercion of a pointer | `typemgmt-success`, `typemgmt-typecheck-convert` |
 
 The same line held a second misread that no source can reach today: it took the
@@ -69,7 +70,7 @@ truncated the returned pointer to 32 bits and segfaulted.
 | Defect | Cause | Pinned by |
 | --- | --- | --- |
 | No method on a generic struct can be called | `self` keeps the generic's type after cloning, so the call finds no candidate. Verified: two `ErrorInvType` "self parameter for a method must match" at the instantiation, then `ErrorNoCandidate` at the call | `generic-struct-method` |
-| `&Box[T]` — a reference to a generic instantiation — does not parse | Bare `Box[T]` is a fine type; only the `&` form fails, with `ErrorNotTyped` then "Expected a type". Blocks any generic collection with `&self` methods | `generic-ref-instance` |
+| `&Box[T]` — a reference to a generic instantiation — does not parse | **Re-scoped: it was two defects, and the other one is fixed.** "Only the `&` form fails" was wrong — `*Box[i64]`, `[2; Box[i64]]` and `?Box[i64]` failed too, all with the same pair of diagnostics, because an instantiation lost the type-versus-value vote at name resolution. That half is fixed; see the table above. `&Box[i64]` never reaches that vote: it parses as an index applied to `&Box`, since a borrow re-applies suffixes to itself. What is left is a precedence rule — `&` followed by a name that resolves to a generic has one possible reading — and it is the same `parseAmper` re-application `ref-field-borrow` pins, so the two should be decided together | `generic-ref-instance` |
 
 ## Reported in the wrong place
 
@@ -103,14 +104,16 @@ Both were found by tracing something else, and neither belongs to ownership.
   `itypeGetDropFnDcl`, which returns NULL for anything but a struct. So every
   element leaks, however the array was built. `region-fill-count` records this in
   passing.
-- **`itypeIsGenericType` tests a tag nothing ever assigns.** Confirmed:
-  `GenericNameTag` appears in its own declaration (`inode.h:159`), three dispatch
-  tables, and this test (`itype.c:328`) — and is never written to a node.
-  `nameUseNameRes` gives a use of a `MacroDclTag` declaration `MacroNameTag`, and
-  generics and macros share that declaration tag, so `MacroNameTag` is what the
-  predicate should be testing. **Careful:** making it so would also let a macro
-  call `MYMACRO[x]` satisfy `isTypeNode`, which is not a type. This is why the
-  fallible-allocation lowering fails; see [[Regions]].
+- **`itypeIsGenericType` tests a tag nothing ever assigns** — fixed. See the
+  table above. The worry recorded here, that generics and macros share
+  `MacroDclTag` and so cannot be told apart, was unfounded: they share nothing.
+  A generic is an ordinary `FnDclNode` or `StructNode` carrying a `GenericInfo`,
+  which is how `genericSubstitute` has always recognized one, and a macro has a
+  `MacroDclTag` declaration of its own whose uses are tagged `MacroNameTag`.
+  Neither the flag nor the representation change this entry feared was needed.
+  The claim that this is why fallible allocation fails did **not** hold:
+  `?+rc-mut 5` still dies on the same access violation, byte for byte, against
+  the fixed compiler.
 
 ## What needs a decision
 

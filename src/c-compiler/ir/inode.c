@@ -309,7 +309,13 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     // so that we know everything we need to know about correctly managing their values
     // (because of needing to infer infectious type constraints based on their composed fields).
     // However, type checking of a type node should only be done once
-    if (isTypeNode(*node) || (*node)->tag == ModuleTag) {
+    //
+    // A generic instantiation is a type but not a type declaration: this pass
+    // replaces it with the instance it names, and the instance carries these
+    // marks. Marking the instantiation itself would strand a mark on a node the
+    // walk abandoned, and a second walk of the same node -- a match pattern and
+    // the variable it declares share one -- would then read as a recursive type.
+    if (((isTypeNode(*node) && (*node)->tag != FnCallTag)) || (*node)->tag == ModuleTag) {
         if ((*node)->flags & TypeChecked)
             return;
         if ((*node)->flags & TypeChecking) {
@@ -433,8 +439,10 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
         assert(0 && "**** ERROR **** Attempting to check an unknown node");
     }
 
-    // Confirm when a type node has been checked
-    if (isTypeNode(*node) || (*node)->tag == ModuleTag) {
+    // Confirm when a type node has been checked. *node may have been replaced by
+    // now -- an instantiation leaves behind the instance it named, which is a
+    // declaration and does take the mark.
+    if (((isTypeNode(*node) && (*node)->tag != FnCallTag)) || (*node)->tag == ModuleTag) {
         (*node)->flags |= TypeChecked;
     }
 }
