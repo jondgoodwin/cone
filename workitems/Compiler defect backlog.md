@@ -17,15 +17,15 @@ each is corrected in place with its evidence. Two turned out to be memory-safety
 bugs rather than missing checks. Do the same before acting on what is left: the
 check costs a minute and it has now changed the work six times.
 
-**Most of these are pinned by an `xfail` scenario**, which means the suite fails
-the day one is fixed and the fixer is told to remove the mark. They cannot be
-fixed quietly and they cannot rot silently. The few that are not pinned are
-marked below, and those are the ones worth doing first, because nothing is
-watching them.
+**Every one still open is pinned by an `xfail` scenario**, which means the suite
+fails the day one is fixed and the fixer is told to remove the mark. They cannot
+be fixed quietly and they cannot rot silently. The two that were not pinned were
+done first for exactly that reason — nothing was watching them — and are in the
+table below.
 
 ## Fixed
 
-Seven are done, with a scenario each. They are recorded here rather than deleted
+Eight are done, with a scenario each. They are recorded here rather than deleted
 because three of them were mis-diagnosed on this page and the correction is worth
 more than the entry was.
 
@@ -37,6 +37,7 @@ more than the entry was.
 | `ErrorFewArgs` with a "too many" message | Exactly as recorded: the guard is `args->used > parms->used`. The message was right and the code was wrong | `generic-typecheck-infer` |
 | `as` onto a struct target is unchecked | **A stack over-read, not a missing check.** `genlRecast` allocates the source's bytes, bitcasts, and loads the target's, so `n as Big` emitted a 24-byte load from an `alloca i32` — and passed `--verify`. `castBitsize` has no answer for a struct, so the size is now checked in `genlRecast`, where the data layout exists, under `ErrorRecastSize` | `typemgmt-genllvm-recast`, `typemgmt-success` |
 | `each`'s increment reports at the closing brace | As recorded. The synthesized nodes are now positioned on the range expression | `each-typecheck` |
+| The whole-value `` `&[]` `` operator method is unreachable | Exactly as recorded, and the reason is that the whole-value form never becomes a call. `&mut v[i]` parses to a `FlagIndex\|FlagBorrow` `FnCallNode`, which `fnCallTypeCheck` names `` `&[]` `` and dispatches; `&[]mut v` parses to a `RefNode` that `arrayRefNameRes` retags `ArrayBorrowTag`, so it reached `borrowTypeCheck` and fell to the "a one-element slice!" branch without dispatch ever being consulted. `borrowTypeCheck` now asks first, and where the value's type declares `` `&[]` `` and a candidate accepts the receiver, retags to a plain borrow and wraps it in the call — so the operator form becomes the `(&mut v).`&[]`()` that always worked | `struct-methods` |
 | `Bool[r]` and `Bool[p]` fail | **The conversion they were said to disagree with did not work either.** `typeLitNbrCheck` rejected a ref/ptr source exactly as recorded, but `r into Bool` and `p into Bool` only *type checked*: `genlConvert` has no ref/ptr case and Bool is a 1-bit `UintNbrTag`, so the number arm read `((NbrNode*)fromtype)->bits` off a `RefNode` and emitted `trunc i32* to i1`. `--verify` rejects it; nothing had ever run it. The Bool rule now lives once, in `castConvertsToBool`, which both paths ask, and `genlConvert` lowers ref/ptr to Bool as the null test `isTrue` already generated for the implicit coercion of a pointer | `typemgmt-success`, `typemgmt-typecheck-convert` |
 
 One latent crash was found on the way and fixed with them:
@@ -59,7 +60,6 @@ truncated the returned pointer to 32 bits and segfaulted.
 | `&Box[T]` — a reference to a generic instantiation — does not parse | Bare `Box[T]` is a fine type; only the `&` form fails, with `ErrorNotTyped` then "Expected a type". Blocks any generic collection with `&self` methods | `generic-ref-instance` |
 | Writing a trait field through `&<mut` is checked against the binding | `imm m &<mut Meter` is rejected while `mut m` is fine, where a plain `imm r &mut Rect` writes through happily | `trait-vref-lval` |
 | A struct field of virtual-reference type cannot be assigned | A `&i32` field can | `trait-vref-lval` |
-| The whole-value `` `&[]` `` operator method is unreachable | Verified. `&[]mut value` is the borrow *operator* and types as `&[]mut Struct` — a one-element slice of the struct — rather than dispatching. The method is not unreachable in general: `(&mut v).`&[]`()` calls it and returns the declared type. Only the operator syntax skips it | **not pinned** |
 
 `trait-vref-lval`'s header comment is now stale: it says only the first of its
 two diagnostics is reported, because flow analysis ran only while the global

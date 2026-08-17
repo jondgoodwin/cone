@@ -271,8 +271,12 @@ fn operators() {
   show("operator-index-1", v[1usize])
 }
 
-// A type may give '&[]' its own meaning, both as an indexed borrow and as a
-// whole-value borrow producing a slice
+// A type may give '&[]' its own meaning, in either of two forms: the indexed
+// borrow '&mut v[i]', which takes an index and borrows one element, and the
+// whole-value borrow '&[]mut v', which takes none and answers with a slice.
+// They sit on two types because one type may not declare both under the
+// punctuation name, and an overload name would take the punctuation out of the
+// symbols the IR check below pins.
 struct List {
   mut items [4; i32]
 
@@ -285,12 +289,45 @@ struct List {
   }
 }
 
+struct Buffer {
+  mut cells [3; i32]
+
+  fn `&[]`(self &mut) &[]mut i32 {
+    &[]mut cells
+  }
+}
+
 fn indexing() {
   mut list = List[items: [1, 5, 2, 8]]
   show("index-method", list[3usize])
   imm slot = &mut list[1usize]
   *slot = 50
   show("borrow-index-method", list[1usize])
+
+  // The whole-value form dispatches to the method. The length is what says so:
+  // the method's slice spans the array field, three elements long, where a
+  // borrow deciding for itself would produce one element of the struct.
+  mut buffer = Buffer[cells: [7, 8, 9]]
+  imm all &[]mut i32 = &[]mut buffer
+  show("whole-value-method-len", i64[all.len])
+  show("whole-value-method-elem", all[0])
+
+  // The slice aliases the field rather than copying it, so a write through it
+  // is a write to the array
+  all[2] = 77
+  show("whole-value-method-aliases", buffer.cells[2])
+
+  // Naming the method reaches the same slice, which is what says the operator
+  // form selected the method rather than doing something of its own
+  imm named &[]mut i32 = (&mut buffer).`&[]`()
+  show("whole-value-explicit-call", named[2])
+
+  // List declares '&[]' as well, but only with an index, so no candidate
+  // accepts a receiver given none. The borrow keeps its own meaning there:
+  // '&[]' over a value that is not an array is a one-element slice of that
+  // value, and a declared method that does not fit does not change it.
+  imm unfitted &[]mut List = &[]mut list
+  show("no-accepting-candidate-stays-a-slice", i64[unfitted.len])
 }
 
 // -------- finalizers --------
