@@ -138,6 +138,44 @@ fn severalTypeParametersOnAStruct() {
   showF("pair-second-field", p.b)
 }
 
+// -------- methods on a generic type --------
+
+// A generic's methods are cloned with it, and 'self' is declared as a use of
+// 'Self'. The clone used to leave that pointing at the generic, so no method of
+// any instance had a receiver matching the instance it belonged to: every one
+// was rejected at its declaration and no call found a candidate. Nothing
+// downstream had ever run, and it turned out the instance's methods were never
+// given an LLVM symbol either, since code generation reaches a generic type's
+// instances only through its memoized instantiations.
+//
+// Two instances, so a method that had been generated once for the generic
+// rather than once per instance could not answer both.
+
+struct Holder[T] {
+  item T
+  count i64
+
+  // A value receiver, whose signature names no type parameter at all
+  fn tally(self) i64 {count}
+  // A reference receiver returning the type argument
+  fn unwrap(self &) T {item}
+  // A mutable reference receiver, so the write reaches the caller's value
+  fn clear(self &mut) {count = 0i64}
+}
+
+fn methodsOnAGenericType() {
+  mut hi = Holder[i64][item: 3i64, count: 1i64]
+  show("generic-method-value-receiver", hi.tally())
+  show("generic-method-ref-receiver-returns-T", (&hi).unwrap())
+  (&mut hi).clear()
+  show("generic-method-mut-receiver-mutated", hi.tally())
+
+  // A second instance at a different type argument, reaching its own clones
+  mut hf = Holder[f64][item: 2.5d, count: 4i64]
+  show("other-instance-method", hf.tally())
+  showF("other-instance-method-returns-its-T", (&hf).unwrap())
+}
+
 // An instantiation is a type wherever a type goes, including inside another
 // type. It is an unlowered call node until type check replaces it with the
 // instance it names, so every pass that runs before then has to recognize one
@@ -194,6 +232,7 @@ fn main() i32 {
   genericOverAStructType()
   genericStruct()
   severalTypeParametersOnAStruct()
+  methodsOnAGenericType()
   instantiationInsideAnotherType()
   genericReturningGeneric()
   0i32

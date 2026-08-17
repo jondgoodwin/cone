@@ -206,13 +206,47 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
     }
 }
 
+void genlGlobalSyms(GenState *gen, INode *node);
+
+// Generate the global symbols for one instance of a generic type, giving each
+// method the linkage that lets the linker keep one copy across object files --
+// the same treatment a generic function's instances get below.
+static void genlGenericInstanceSyms(GenState *gen, INode *instance) {
+    if (instance->tag != StructTag || (instance->flags & TraitType))
+        return;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&((INsTypeNode*)instance)->nodelist, cnt, nodesp)) {
+        genlGlobalSyms(gen, *nodesp);
+        if ((*nodesp)->tag == FnDclTag && ((FnDclNode*)*nodesp)->llvmvar)
+            LLVMSetLinkage(((FnDclNode*)*nodesp)->llvmvar, LLVMLinkOnceAnyLinkage);
+    }
+}
+
 // Generate module or type global symbols
 void genlGlobalSyms(GenState *gen, INode *node) {
     // Handle type nodes
     if (isTypeNode(node)) {
+        // A generic type is a symbol only through its instantiations, exactly as
+        // a generic function is: its own methods are uncloned templates with a
+        // type parameter for a receiver, and nothing can be generated for them.
+        // The instances live in memonodes and are reachable no other way, so
+        // without this a method of a generic struct got no symbol at all and the
+        // call to it loaded a null function.
+        if (node->tag == StructTag && ((StructNode*)node)->genericinfo) {
+            Nodes *memonodes = ((StructNode*)node)->genericinfo->memonodes;
+            if (memonodes == NULL)
+                return;
+            uint32_t cnt;
+            INode **nodesp;
+            for (nodesFor(memonodes, cnt, nodesp)) {
+                ++nodesp; --cnt;  // memonodes holds pairs: the call, then what it instantiated
+                genlGenericInstanceSyms(gen, *nodesp);
+            }
+            return;
+        }
         // For types with a namespace, let's do its nodes too
-        if (isMethodType(node) && !(node->tag == StructTag && 
-            ((node->flags & TraitType) || ((StructNode*)node)->genericinfo))) {
+        if (isMethodType(node) && !(node->tag == StructTag && (node->flags & TraitType))) {
             INsTypeNode *tnode = (INsTypeNode*)node;
             INode **nodesp;
             uint32_t cnt;
@@ -266,9 +300,22 @@ void genlGlobalSyms(GenState *gen, INode *node) {
 void genlGlobalImpl(GenState *gen, INode *node) {
     // Handle type nodes
     if (isTypeNode(node)) {
+        // As in genlGlobalSyms: a generic type has bodies to generate only in
+        // its instances, which are reachable through memonodes alone
+        if (node->tag == StructTag && ((StructNode*)node)->genericinfo) {
+            Nodes *memonodes = ((StructNode*)node)->genericinfo->memonodes;
+            if (memonodes == NULL)
+                return;
+            uint32_t cnt;
+            INode **nodesp;
+            for (nodesFor(memonodes, cnt, nodesp)) {
+                ++nodesp; --cnt;  // memonodes holds pairs: the call, then what it instantiated
+                genlGlobalImpl(gen, *nodesp);
+            }
+            return;
+        }
         // For types with a namespace, let's do its nodes too
-        if (isMethodType(node) && !(node->tag == StructTag && 
-            (node->flags & TraitType || ((StructNode*)node)->genericinfo))) {
+        if (isMethodType(node) && !(node->tag == StructTag && (node->flags & TraitType))) {
             INsTypeNode *tnode = (INsTypeNode*)node;
             INode **nodesp;
             uint32_t cnt;

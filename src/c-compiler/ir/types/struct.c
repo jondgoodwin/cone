@@ -33,6 +33,17 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     newnode->genericinfo = NULL;
     newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
 
+    // Within the copy, 'Self' is the copy. A method's self parameter is declared
+    // as a use of 'Self' (parsetype.c), and name resolution has already pointed
+    // that use at the struct being copied -- so without this every method of
+    // every generic instance kept the generic's type as its receiver, matching
+    // neither the instance at its declaration nor the call that selects it.
+    // The copy exists before any of its members are cloned, which is what makes
+    // this the place to say so. Saved and restored because a struct may be
+    // cloned while some enclosing 'Self' is in force.
+    INode *svselftype = cstate->selftype;
+    cstate->selftype = (INode*)newnode;
+
     // Fields like derived, vtable, tagnbr do not yet have useful data to clone
     newnode->basetrait = cloneNode(cstate, node->basetrait);
     if (node->derived)
@@ -58,6 +69,7 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
         iNsTypeAddFn((INsTypeNode*)newnode, (FnDclNode*)(*newnodesp++ = cloneNode(cstate, *nodesp)));
     }
 
+    cstate->selftype = svselftype;
     return (INode *)newnode;
 }
 

@@ -1,0 +1,41 @@
+// An operator inside a method of a generic type. Marked xfail: any operator
+// application in a generic struct's method body is rejected with
+//
+//   Method or field `+` not found.
+//
+// reported at the method and again per instantiation. The operands are
+// irrelevant -- '1i64 + 2i64', with no name in it at all, fails exactly as
+// 'count + 1i64' does -- so it is not about the type argument, the fields or
+// the receiver.
+//
+// This became reachable only when generic methods started working at all;
+// before that no method of a generic type was ever type checked, so nothing
+// downstream of the declaration had run. generic-success covers what does
+// work: a value receiver, a reference receiver returning the type argument,
+// and a mutable one whose write reaches the caller.
+//
+// Measured, at the failing lookup: the receiver the operator is dispatched on
+// is a VarNameUse of 'self' whose type is the instance, rather than the
+// operand that was written -- which is the shape fnCallTypeCheck's
+// "rewrite to self.method" branch produces when it folds a bare method name
+// into the call it already had. The same operator in a generic *function*
+// works, and in a non-generic struct's method works, so what to look at is
+// what that branch and the cloner do to a method body between them.
+//
+// When this scenario starts passing, drop the xfail and fold it into
+// generic-success beside methodsOnAGenericType.
+
+struct Counter[T] {
+  item T
+  count i64
+
+  fn bump(self &mut) {
+    count = count + 1i64
+  }
+}
+
+fn useIt() i64 {
+  mut c = Counter[i64][item: 1i64, count: 0i64]
+  (&mut c).bump()
+  c.count
+}
