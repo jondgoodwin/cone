@@ -218,12 +218,22 @@ fn stepTwice(m &<mut Meter) {
 }
 
 // A field requirement is reached through the vtable too, and is writable
-// through a '&<mut' virtual reference. The parameter is 'mut' because the write
-// is checked against the variable holding the reference rather than the
-// reference's own permission; trait-vref-imm-field-write records that as a
-// defect.
-fn setLevel(mut m &<mut Meter, n i32) {
+// through a '&<mut' virtual reference. The binding holding the reference is
+// 'imm', which is the point: what a write through a reference is checked
+// against is the reference's own permission and not the binding's. No
+// dereference is injected for a virtual reference, so the field access keeps
+// the reference as its object and has to take the permission from it directly,
+// where a plain reference gets it from the injected deref.
+fn setLevel(imm m &<mut Meter, n i32) {
   m.level = n
+}
+
+// The same write with a local binding rather than a parameter
+fn setLevelLocally() i32 {
+  mut g = Gauge[3, 7]
+  imm m &<mut Meter = &mut g
+  m.level = 40
+  g.level
 }
 
 fn nominal() {
@@ -248,6 +258,7 @@ fn nominal() {
   setLevel(&mut g, 40)
   show("virtual-field-written-through-vref", g.level)
   show("virtual-field-read-through-vref", readingOf(&g))
+  show("virtual-field-written-through-imm-local", setLevelLocally())
 }
 
 // -------- a virtual reference as data --------
@@ -259,8 +270,11 @@ struct Slot {
   uses i32
 }
 
-// The field is only ever set by the constructor: assigning one is rejected, and
-// trait-vref-lval records that as a defect.
+// The field may be set by the constructor and assigned afterwards. Assigning it
+// is writing the field, not writing through the reference it holds, so what the
+// write is checked against is the struct's permission and the field's own --
+// never the permission of the trait reference being stored, which is what a
+// '&<Shape' field used to be refused for.
 fn storedVirtualRefs() {
   imm rect = Rect[2, 3]
   imm square = Square[5]
@@ -271,6 +285,13 @@ fn storedVirtualRefs() {
   mut second = Slot[v, 2]
   show("virtual-ref-field-other-target", second.held.area())
   show("plain-field-alongside-virtual-ref", second.uses)
+
+  // Retargeting the field itself, so the value read back proves the store
+  // reached the field rather than merely type checking
+  first.held = v
+  show("virtual-ref-field-reassigned", first.held.area())
+  first.uses = 9
+  show("plain-field-reassigned-alongside", first.uses)
 }
 
 // -------- interaction with the constructs below this tier --------

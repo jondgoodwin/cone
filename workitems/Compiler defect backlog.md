@@ -38,7 +38,19 @@ more than the entry was.
 | `as` onto a struct target is unchecked | **A stack over-read, not a missing check.** `genlRecast` allocates the source's bytes, bitcasts, and loads the target's, so `n as Big` emitted a 24-byte load from an `alloca i32` — and passed `--verify`. `castBitsize` has no answer for a struct, so the size is now checked in `genlRecast`, where the data layout exists, under `ErrorRecastSize` | `typemgmt-genllvm-recast`, `typemgmt-success` |
 | `each`'s increment reports at the closing brace | As recorded. The synthesized nodes are now positioned on the range expression | `each-typecheck` |
 | The whole-value `` `&[]` `` operator method is unreachable | Exactly as recorded, and the reason is that the whole-value form never becomes a call. `&mut v[i]` parses to a `FlagIndex\|FlagBorrow` `FnCallNode`, which `fnCallTypeCheck` names `` `&[]` `` and dispatches; `&[]mut v` parses to a `RefNode` that `arrayRefNameRes` retags `ArrayBorrowTag`, so it reached `borrowTypeCheck` and fell to the "a one-element slice!" branch without dispatch ever being consulted. `borrowTypeCheck` now asks first, and where the value's type declares `` `&[]` `` and a candidate accepts the receiver, retags to a plain borrow and wraps it in the call — so the operator form becomes the `(&mut v).`&[]`()` that always worked | `struct-methods` |
+| Writing a trait field through `&<mut` is checked against the binding, and a struct field of virtual-reference type cannot be assigned | **One line, and neither defect was where the reading put it.** `iexpGetLvalInfo`'s `FldAccessTag` case read its `vtype` through `((StarNode*)lval)->vtexp`, and `StarNode` carries an `llvmtype` that `FnCallNode` does not — so the field it lands on is `methfld`, not `objfn`. Its `VirtRefTag` test was therefore asking whether the **field** was a virtual reference, never the object. That is the whole of both symptoms: a `&<Shape` *field* had its permission replaced by the permission of the reference it holds, so assigning it was refused; and a field reached *through* a virtual reference never took the reference's permission at all, so it kept the binding's. No `DerefTag` is involved either way — `derefInject` rewrites only `RefTag` and `PtrTag`, so a virtual receiver is never dereferenced, which is why the plain-reference controls worked | `trait-success`, `trait-flow-vref` |
 | `Bool[r]` and `Bool[p]` fail | **The conversion they were said to disagree with did not work either.** `typeLitNbrCheck` rejected a ref/ptr source exactly as recorded, but `r into Bool` and `p into Bool` only *type checked*: `genlConvert` has no ref/ptr case and Bool is a 1-bit `UintNbrTag`, so the number arm read `((NbrNode*)fromtype)->bits` off a `RefNode` and emitted `trunc i32* to i1`. `--verify` rejects it; nothing had ever run it. The Bool rule now lives once, in `castConvertsToBool`, which both paths ask, and `genlConvert` lowers ref/ptr to Bool as the null test `isTrue` already generated for the implicit coercion of a pointer | `typemgmt-success`, `typemgmt-typecheck-convert` |
+
+The same line held a second misread that no source can reach today: it took the
+field's own permission through a `VarDclNode*` cast, and `FieldDclNode` puts
+`perm` two pointers earlier, so the read fell past the end of the node. The
+"downgrade if the field is immutable" rule it implements has never fired, and
+still cannot: `imm` is the one permission `parseFieldDcl` (`parsetype.c:141`)
+rejects, so the only value the downgrade tests for is the only one a field may
+not be given. It now reads the right field of the right struct, so the rule will
+work the day the permission is allowed — and the guard that rejects it is worth
+a second look, since it is written `permdcl != mutPerm && permdcl == immPerm`,
+where the first half can never decide anything.
 
 One latent crash was found on the way and fixed with them:
 `newFnCallOpnameLower` was defined in `fncall.c` and declared in no header, so
@@ -58,13 +70,6 @@ truncated the returned pointer to 32 bits and segfaulted.
 | --- | --- | --- |
 | No method on a generic struct can be called | `self` keeps the generic's type after cloning, so the call finds no candidate. Verified: two `ErrorInvType` "self parameter for a method must match" at the instantiation, then `ErrorNoCandidate` at the call | `generic-struct-method` |
 | `&Box[T]` — a reference to a generic instantiation — does not parse | Bare `Box[T]` is a fine type; only the `&` form fails, with `ErrorNotTyped` then "Expected a type". Blocks any generic collection with `&self` methods | `generic-ref-instance` |
-| Writing a trait field through `&<mut` is checked against the binding | `imm m &<mut Meter` is rejected while `mut m` is fine, where a plain `imm r &mut Rect` writes through happily | `trait-vref-lval` |
-| A struct field of virtual-reference type cannot be assigned | A `&i32` field can | `trait-vref-lval` |
-
-`trait-vref-lval`'s header comment is now stale: it says only the first of its
-two diagnostics is reported, because flow analysis ran only while the global
-error count was zero. That gate is per declaration now and both are reported.
-Rewrite the comment when the scenario is fixed.
 
 ## Reported in the wrong place
 
