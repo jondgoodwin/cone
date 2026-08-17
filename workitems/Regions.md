@@ -70,6 +70,30 @@ place it lives now.
 Alloc and init for array references
 - Function-based initialization
 
+## An array holding owning references is never released
+
+Measured by [[Compiler defect backlog]], which found it while tracing something
+else and routed it here because it is de-aliasing work rather than a defect with
+a local fix.
+
+`flowScopeDealias` (`ir/flow.c:230-260`) builds a scope's dealias list from
+variables whose **own** type is an owning reference — it tests
+`reftype->tag == RefTag`. An array's type is `ArrayTag`, so it falls to the
+`else` branch, which asks `itypeGetDropFnDcl`; that returns NULL for anything but
+a `StructTag`. So **every element of an array of owning references leaks**,
+however the array was built. `region-fill-count` records it in passing, because
+counting *n* holders for a fill is what makes the outcome a leak rather than a
+use after free.
+
+Why it is not a one-line repair like its siblings: closing it needs flow analysis
+to see *through* an aggregate to the owning references inside it, and code
+generation to emit a loop releasing each element. Flow analysis tracks whole
+values only, never a field or an element — established by [[Add test suite]] —
+so this is the first thing that would need element granularity, and a struct
+holding an array of owning references wants the same treatment. That is the same
+boundary the drop/dealias design has to settle anyway, which is why it belongs
+here rather than being patched at the one site that noticed.
+
 **Weak refs**, existence check and de-ref
 - Existence check for “weak” pointers? 
 - Effect on de-ref of weak refs?

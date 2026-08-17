@@ -26,6 +26,16 @@ Recursive types
 - Separate infectious/cycle from rest of type check - how?
 
 Improve algorithm for deciding whether types have ‘move’ semantics:
+**A variant literal does not coerce to its union in a struct literal's field.**
+Measured by [[Compiler defect backlog]]. `Holder[Just[&v]]`, where `Holder`'s
+field is declared with the union's type, reports `ErrorBadArray` "Literal value's
+type does not match expected field's type" — while the same coercion in a
+variable initializer, `mut u Maybe = Just[&v]`, is accepted. Confirmed
+identically on a three-variant tagged union, so it is the type-literal field
+check rather than anything about the nullable-pointer layout it was found under.
+The initializer path proves the coercion exists; the field path does not ask for
+it.
+
 - Ttuple: any of its fields are move
 - Struct is move if it is marked as move 
 - Struct type is move if it implements a finalizer but no clone 

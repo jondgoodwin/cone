@@ -90,21 +90,25 @@ Empty. The two entries that were here — the nullable-pointer optimization and
 Neither is that optimization's, and both were confirmed against a tagged union
 too, so neither is about the untagged layout.
 
-- **`None[]` cannot be spelled at all.** Generic inference never consults the
-  expected type, so a variant carrying no argument to infer the parameter from
-  reports `ErrorInvType` "Could not infer all of generic's type parameters"
-  wherever it appears — `mut n Option[&i32] = None[]` and
-  `fn mk() Option[&i32] { None[] }` both fail, each followed by the mismatch
-  diagnostic it causes. So `Option[T]`'s empty side is unreachable for every `T`,
-  not only for a reference, and `union-nullable-ptr` reaches `Option[&i32]`
-  through `Some` alone and says why in a comment. Belongs with generic type
-  inference.
+- **A valueless variant must always spell its type argument.** Recorded first as
+  "`None[]` cannot be spelled at all", and that overstated it — **`None[i32][]`
+  and `None[&i32][]` both work**, and `union-success` uses the form throughout.
+  What is true: `Some` infers its argument from the value it wraps, `None` has no
+  value, so its argument can only come from the expected type — and generic
+  inference does not look there. `mut a Option[&i32] = None[]` reports "Could not
+  infer all of generic's type parameters", as an initializer and as an argument
+  alike. So the empty side is reachable for every `T`, just never concisely,
+  which is the saving an `Option` is meant to offer. **Routed to**
+  [[Type Inference and Coercion]], which holds the measured table and the
+  neighbouring bidirectional-inference entries; `union-nullable-ptr` now
+  exercises both sides of `Option[&i32]` and says why the empty one is verbose.
 - **A variant literal does not coerce to the union in a struct literal's field.**
   `Holder[Just[&v]]`, where `Holder`'s field has the union's type, reports
   `ErrorBadArray` "Literal value's type does not match expected field's
   type", while the same coercion in an initializer — `mut u Maybe = Just[&v]` —
   is accepted. Confirmed identically on a three-variant tagged union, so it is
-  the type-literal field check and not the layout. Belongs with the union work.
+  the type-literal field check and not the layout. **Routed to**
+  [[Types. Struct and Union]].
 
 ## Reported in the wrong place
 
