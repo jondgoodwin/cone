@@ -962,6 +962,14 @@ open by disclaiming themselves, and all are accurate. The pattern is that
   name-resolved at the declaration site.
 - **Generic instantiation is memoized** and shared across spellings; instance
   functions are name-mangled with their type arguments, instance structs are not.
+  The struct half of that is right and stays: an LLVM struct type name carries no
+  linker identity, so `%Holder` and `%Holder.1` may share a Cone name with no
+  consequence. An instance's **methods** are functions and did need one — they are
+  clones sharing the generic's `genname`, and their signatures may name no type
+  parameter at all, so both instances' copies landed on one `linkonce` symbol.
+  `itypeMangle` now appends a generic instance's type arguments wherever a named
+  type appears in a mangled name, which distinguishes the methods without renaming
+  the type.
 - **Structural conformance suffices for `&<Trait` coercion and dispatch; only
   narrowing needs nominal `extends`.**
 - **A region is not a privileged set of two** — any struct with an `_alloc` of

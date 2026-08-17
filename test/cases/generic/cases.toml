@@ -59,6 +59,36 @@ name = "no-symbol-for-an-uninstantiated-generic"
 target = "llvmir"
 excludes = ["neverCalled"]
 
+# Two instances of one generic *type* each get a copy of every method, and the
+# copies share the generic's 'genname'. A generic function's instances are told
+# apart by the parameter types the mangler walks, but a generic type's method may
+# name no type parameter anywhere in its signature -- 'fn tally(self) i64', and
+# 'fn litSum(self &) i64' most of all, whose body is two literals -- so the
+# instance's type arguments are the only thing that distinguishes them.
+#
+# Both methods below are named for both instances, and the un-suffixed symbol they
+# used to share is excluded. The '.' excludes are the load-bearing half: within one
+# translation unit LLVM hides a symbol collision by appending '.1', so a check that
+# only looked for two definitions would have passed all along. Neither symbol may
+# depend on that.
+[[scenario.generic-success.check]]
+name = "instance-methods-carry-their-type-arguments"
+target = "llvmir"
+contains = [
+  '@"Holder_tally:Holder:i64"',
+  '@"Holder_tally:Holder:f64"',
+  '@"Holder_litSum:+ro Holder:i64"',
+  '@"Holder_litSum:+ro Holder:f64"',
+]
+excludes = [
+  '@"Holder_tally:Holder"',
+  '@"Holder_litSum:+ro Holder"',
+  '@"Holder_tally:Holder:i64.',
+  '@"Holder_tally:Holder:f64.',
+  '@"Holder_litSum:+ro Holder:i64.',
+  '@"Holder_litSum:+ro Holder:f64.',
+]
+
 [scenario.generic-macro]
 category = "run"
 description = "Macro expansion: substitution rather than evaluation, what a macro parameter may be, and every value position a parameterless name expands in"
