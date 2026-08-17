@@ -63,10 +63,18 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
         }
         ++newnodesp;
     }
-    newnodesp = (INode**)memAllocBlk(node->nodelist.avail * sizeof(INode *));
-    newnode->nodelist.nodes = newnodesp;
+    // The copy's method list has to start empty. memcpy carried the original's
+    // 'used' count across, and iNsTypeAddFn appends at that count -- so writing
+    // each clone into a fresh array as well listed every method twice, once at
+    // its own index and once appended after the copied count. structTypeCheck
+    // walks this list to type check bodies, so every method of every instance
+    // was type checked twice on the same node, and the second visit re-lowered
+    // what the first had already lowered: an operator call, by then a use of the
+    // operator's own FnDcl, took the "rewrite to self.method" path and was
+    // rejected as a method the instance does not declare.
+    nodelistInit(&newnode->nodelist, node->nodelist.avail);
     for (nodelistFor(&node->nodelist, cnt, nodesp)) {
-        iNsTypeAddFn((INsTypeNode*)newnode, (FnDclNode*)(*newnodesp++ = cloneNode(cstate, *nodesp)));
+        iNsTypeAddFn((INsTypeNode*)newnode, (FnDclNode*)cloneNode(cstate, *nodesp));
     }
 
     cstate->selftype = svselftype;

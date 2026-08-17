@@ -33,6 +33,10 @@ fn showF(label &[]u8, n f64) {
   printStr("\n")
 }
 
+fn showB(label &[]u8, b Bool) {
+  show(label, if b {1i64} else {0i64})
+}
+
 // -------- a generic function --------
 
 // One type parameter standing in for both parameter types and the return type,
@@ -161,6 +165,33 @@ struct Holder[T] {
   fn unwrap(self &) T {item}
   // A mutable reference receiver, so the write reaches the caller's value
   fn clear(self &mut) {count = 0i64}
+
+  // -------- operators inside a generic type's method --------
+  //
+  // Cloning a generic listed each of its methods twice, once at its own index
+  // and once appended after the count memcpy had carried over, so every instance
+  // method's body was type checked twice on the same node. Lowering is not
+  // idempotent: the second visit saw what the first had already lowered. An
+  // operator call, by then a use of the operator's own FnDcl, took
+  // fnCallTypeCheck's "rewrite to self.method" path and was rejected as a method
+  // the instance does not declare, while '+=' had already become a temporary and
+  // was rejected as a variable initialized with something other than a literal.
+  // So each of these is an operator reached by a different route.
+
+  // No name in it at all, which is the narrowest form of the failure: it was not
+  // about the type argument, the fields or the receiver
+  fn litSum(self &) i64 {1i64 + 2i64}
+  // Arithmetic on a concretely typed field
+  fn countPlus(self &, n i64) i64 {count + n}
+  // A comparison, whose result type is not its operands'
+  fn overCount(self &, n i64) Bool {count > n}
+  // Arithmetic on a field of the type argument's type, returning T
+  fn itemSum(self &) T {item + item}
+  // And a comparison on that type, which each instance resolves for its own T
+  fn itemOver(self &, other T) Bool {item > other}
+  // An operator assignment, which is the FlagLvalOp/FlagOpAssgn route through
+  // fnCallTypeCheck rather than a plain method dispatch
+  fn bumpBy(self &mut, n i64) {count += n}
 }
 
 fn methodsOnAGenericType() {
@@ -174,6 +205,29 @@ fn methodsOnAGenericType() {
   mut hf = Holder[f64][item: 2.5d, count: 4i64]
   show("other-instance-method", hf.tally())
   showF("other-instance-method-returns-its-T", (&hf).unwrap())
+}
+
+fn operatorsInsideAGenericMethod() {
+  mut hi = Holder[i64][item: 3i64, count: 1i64]
+  show("generic-method-operator-on-literals", (&hi).litSum())
+  show("generic-method-operator-on-field", (&hi).countPlus(4i64))
+  showB("generic-method-comparison-on-field", (&hi).overCount(0i64))
+  show("generic-method-operator-on-T-field", (&hi).itemSum())
+  showB("generic-method-comparison-on-T-field", (&hi).itemOver(9i64))
+  // The operator assignment writes through the mutable receiver, so the caller's
+  // value is what proves it ran rather than a temporary standing in for it
+  (&mut hi).bumpBy(5i64)
+  show("generic-method-operator-assign", hi.tally())
+
+  // The second instance again, so nothing here passes by one instance answering
+  // for both -- and its T is a float, so its T-typed operators are the other
+  // type's operators
+  mut hf = Holder[f64][item: 2.5d, count: 2i64]
+  show("other-instance-operator-on-literals", (&hf).litSum())
+  showF("other-instance-operator-on-T-field", (&hf).itemSum())
+  showB("other-instance-comparison-on-T-field", (&hf).itemOver(1.5d))
+  (&mut hf).bumpBy(3i64)
+  show("other-instance-operator-assign", hf.tally())
 }
 
 // An instantiation is a type wherever a type goes, including inside another
@@ -233,6 +287,7 @@ fn main() i32 {
   genericStruct()
   severalTypeParametersOnAStruct()
   methodsOnAGenericType()
+  operatorsInsideAGenericMethod()
   instantiationInsideAnotherType()
   genericReturningGeneric()
   0i32
