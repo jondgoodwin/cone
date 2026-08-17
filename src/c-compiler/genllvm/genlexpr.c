@@ -423,6 +423,14 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
     INode *totype = itypeGetTypeDcl(to);
     LLVMValueRef genexp = genlExpr(gen, exp);
 
+    // A reference or pointer converts to Bool by asking whether it is non-null,
+    // which is what the 'isTrue' intrinsic already generates for the implicit
+    // coercion of a pointer. Bool is a 1-bit UintNbrTag, so without this the
+    // number cases below would read NbrNode fields off a RefNode/StarNode and
+    // emit a 'trunc' of a pointer.
+    if (totype == (INode*)boolType && (fromtype->tag == RefTag || fromtype->tag == PtrTag))
+        return LLVMBuildIsNotNull(gen->builder, genexp, "isnotnull");
+
     // Handle number to number casts, depending on relative size and encoding format
     switch (totype->tag) {
 

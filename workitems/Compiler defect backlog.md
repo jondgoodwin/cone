@@ -25,8 +25,8 @@ watching them.
 
 ## Fixed
 
-Six are done, with a scenario each. They are recorded here rather than deleted
-because two of them were mis-diagnosed on this page and the correction is worth
+Seven are done, with a scenario each. They are recorded here rather than deleted
+because three of them were mis-diagnosed on this page and the correction is worth
 more than the entry was.
 
 | Defect | What it actually was | Now covered by |
@@ -37,6 +37,7 @@ more than the entry was.
 | `ErrorFewArgs` with a "too many" message | Exactly as recorded: the guard is `args->used > parms->used`. The message was right and the code was wrong | `generic-typecheck-infer` |
 | `as` onto a struct target is unchecked | **A stack over-read, not a missing check.** `genlRecast` allocates the source's bytes, bitcasts, and loads the target's, so `n as Big` emitted a 24-byte load from an `alloca i32` — and passed `--verify`. `castBitsize` has no answer for a struct, so the size is now checked in `genlRecast`, where the data layout exists, under `ErrorRecastSize` | `typemgmt-genllvm-recast`, `typemgmt-success` |
 | `each`'s increment reports at the closing brace | As recorded. The synthesized nodes are now positioned on the range expression | `each-typecheck` |
+| `Bool[r]` and `Bool[p]` fail | **The conversion they were said to disagree with did not work either.** `typeLitNbrCheck` rejected a ref/ptr source exactly as recorded, but `r into Bool` and `p into Bool` only *type checked*: `genlConvert` has no ref/ptr case and Bool is a 1-bit `UintNbrTag`, so the number arm read `((NbrNode*)fromtype)->bits` off a `RefNode` and emitted `trunc i32* to i1`. `--verify` rejects it; nothing had ever run it. The Bool rule now lives once, in `castConvertsToBool`, which both paths ask, and `genlConvert` lowers ref/ptr to Bool as the null test `isTrue` already generated for the implicit coercion of a pointer | `typemgmt-success`, `typemgmt-typecheck-convert` |
 
 One latent crash was found on the way and fixed with them:
 `newFnCallOpnameLower` was defined in `fncall.c` and declared in no header, so
@@ -59,7 +60,6 @@ truncated the returned pointer to 32 bits and segfaulted.
 | Writing a trait field through `&<mut` is checked against the binding | `imm m &<mut Meter` is rejected while `mut m` is fine, where a plain `imm r &mut Rect` writes through happily | `trait-vref-lval` |
 | A struct field of virtual-reference type cannot be assigned | A `&i32` field can | `trait-vref-lval` |
 | The whole-value `` `&[]` `` operator method is unreachable | Verified. `&[]mut value` is the borrow *operator* and types as `&[]mut Struct` — a one-element slice of the struct — rather than dispatching. The method is not unreachable in general: `(&mut v).`&[]`()` calls it and returns the declared type. Only the operator syntax skips it | **not pinned** |
-| `Bool[r]` and `Bool[p]` fail | **Re-scoped.** `typeLitNbrCheck` (`ir/exp/typelit.c:57`) requires the source of a number literal to be a number, so the `Type[value]` path rejects a reference *and* a pointer, while `r into Bool` and `p into Bool` both work. The page blamed pointers; references fail identically and have nothing to do with `PtrTag` | **not pinned** |
 
 `trait-vref-lval`'s header comment is now stale: it says only the first of its
 two diagnostics is reported, because flow analysis ran only while the global
@@ -350,3 +350,9 @@ does work, by reinterpretation. So the question is whether taking a pointer's
 address as a number should be a conversion as well as a reinterpretation, which
 is a language decision and not a defect. Recommendation: leave it as
 reinterpretation only, and drop it from this page.
+
+**Status: left undecided on purpose, and now pinned as it stands.** Fixing
+`Bool[p]` deliberately did not widen into it: the type-literal path asks the
+conversion rule only for Bool, so `usize[p]` still reports exactly what it
+reported before, in `typemgmt-typecheck-convert`. Whoever takes the decision has
+a scenario to change rather than a silence to notice.
