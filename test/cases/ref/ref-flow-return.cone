@@ -10,7 +10,10 @@
 //
 // Borrow scopes count outward: 0 is a global, 1 is a parameter, 2 or more is a
 // local. Only 2 and up escape, which is why the returns of a parameter borrow
-// in ref-success and of a parameter slice in collection-success stay legal.
+// in ref-success and of a parameter slice in collection-success stay legal. Each
+// refusal below is therefore paired with the parameter-derived form of the same
+// expression, which must still compile -- either claim alone would be satisfied
+// by a check that is simply too eager or not there at all.
 //
 // Every diagnostic here is a flow diagnostic, so each function must type check
 // cleanly for its own to be reported. They are separate functions rather than
@@ -31,6 +34,38 @@ fn escapesExplicitly() &i32 {
 fn escapesAsSlice() &[]i32 {
   mut b [3; i32] = [1, 2, 3]
   &[]b                      //~ ErrorEscape:3 "Returned borrowed reference outlives the local value it points to"
+}
+
+// An element borrow escapes by the same rule, and used not to. '&mut a[1]' is
+// re-associated to '(&mut a)[1]', so the reference the function returns is built
+// by the index rather than by borrowTypeCheck, and the index left its scope at 0
+// -- a global, which nothing refuses. It now inherits the receiver borrow's
+// lifetime, which is what makes the two forms agree: '&mut (p.x)' on a local was
+// always caught.
+fn escapesAsArrayElement() &mut i32 {
+  mut a [3; i32] = [1, 2, 3]
+  &mut a[1]                 //~ ErrorEscape:9 "Returned borrowed reference outlives the local value it points to"
+}
+
+// Indexing a slice reaches the same code by a different receiver type: an
+// ArrayRefTag rather than a RefTag to an array.
+fn escapesAsSliceElement() &mut i32 {
+  mut a [3; i32] = [1, 2, 3]
+  imm s = &[]mut a
+  &mut s[1]                 //~ ErrorEscape:9 "Returned borrowed reference outlives the local value it points to"
+}
+
+// The other half of that claim, and the half that makes it informative: an
+// element borrow derived from a *parameter* carries the parameter's scope of 1
+// and is legitimately returnable, so the rule above is a lifetime check and not a
+// blanket refusal of element borrows. collection-success returns both of these
+// shapes and runs them; here they only have to compile.
+fn elementOfParamArray(a &mut [4; i32]) &mut i32 {
+  &mut a[2]
+}
+
+fn elementOfParamSlice(s &[]mut i32) &mut i32 {
+  &mut s[0]
 }
 
 // What the check does not reach, established here rather than claimed: a borrow

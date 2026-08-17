@@ -42,6 +42,15 @@ for a local**, one per enclosing block. `newRefNode` initializes it to 0; it use
 not to, so every reference type node the borrow path did not build carried
 whatever the allocator last left there, and both checks below read it.
 
+**One reference is not built by the borrow path at all**, and had to be taught the
+same lifetime: `&mut a[1]` is re-associated to `(&mut a)[1]`, so
+`fnCallArrIndex`'s `FlagBorrow` arm builds the element reference. It now copies
+the receiver borrow's scope, an element of what a borrow points at living exactly
+as long as the borrow. Before that it kept the 0 default and returning
+`&mut a[1]` on a local was accepted while `&mut (p.x)` on the same local was
+refused. Any further site that builds a `RefTag`/`ArrayRefTag` for a borrow
+without going through `borrowTypeCheck` wants the same treatment.
+
 **What is enforced**, both from the flow pass, both applying to `RefTag` and
 `ArrayRefTag` alike:
 

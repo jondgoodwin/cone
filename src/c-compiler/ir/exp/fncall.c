@@ -210,6 +210,12 @@ void fnCallArrIndex(FnCallNode *node) {
     if (node->flags & FlagBorrow) {
         assert(objtype->tag == RefTag || objtype->tag == ArrayRefTag);
         RefNode *refnode = newRefNodeFull(RefTag, (INode*)node, borrowRef, ((RefNode*)objtype)->perm, node->vtype);
+        // An element of what a borrow points at lives exactly as long as the borrow
+        // does, so it inherits its lifetime. borrowTypeCheck sets the scope on the
+        // receiver it built; newRefNode defaults to 0, which means global, so
+        // leaving it would let '&mut a[1]' on a local be returned from a function
+        // while '&mut (p.x)' on the same local is refused.
+        refnode->scope = ((RefNode*)objtype)->scope;
         node->vtype = (INode*)refnode;
     }
     node->tag = ArrIndexTag;
