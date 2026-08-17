@@ -207,6 +207,34 @@ fn structs() {
   show("method-sees-later-write", sp.sum())
 }
 
+// -------- reinterpreting a pointer as an integer --------
+
+fn integers() {
+  // A pointer is pointer-sized, so 'as usize' is the same same-sized
+  // reinterpretation any other pair of types gets. The instruction is not a
+  // bitcast: LLVM spells this 'ptrtoint' and the reverse 'inttoptr'.
+  //
+  // An address varies from run to run, so nothing here prints one. What is
+  // asserted is the relationships between addresses, which do not.
+  mut cells [4; i32] = [10, 20, 30, 40]
+  imm p *i32 = &cells[0]
+  imm n = p as usize
+
+  // The integer recasts back to a pointer addressing the same cell
+  imm back = n as *i32
+  showB("as-usize-round-trip", back == p)
+  show("as-usize-round-trip-deref", *back)
+
+  // Two pointers one element apart differ by the element's size in bytes,
+  // which is what makes the integer an address and not an opaque handle
+  imm q *i32 = &cells[1]
+  showU("as-usize-element-stride", u64[(q as usize) - n])
+
+  // A reference reinterprets the same way, and yields the address the pointer
+  // form of the same borrow gives
+  showB("ref-as-usize-agrees", (&cells[0] as usize) == n)
+}
+
 // -------- interaction with control flow --------
 
 fn walk() {
@@ -240,6 +268,7 @@ fn main() i32 {
   difference()
   comparison()
   structs()
+  integers()
   walk()
   0i32
 }

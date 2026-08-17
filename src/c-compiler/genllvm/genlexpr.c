@@ -602,7 +602,20 @@ LLVMValueRef genlRecast(GenState *gen, INode* exp, INode* to) {
         LLVMValueRef castptr = LLVMBuildBitCast(gen->builder, tempspaceptr, LLVMPointerType(tollvm, 0), "");
         return LLVMBuildLoad(gen->builder, castptr, "");
     }
-    return LLVMBuildBitCast(gen->builder, genexp, genlType(gen, totype), "");
+    // A bitcast reinterprets a value of one first-class type as another, but
+    // LLVM will not use it to move between the pointer and integer kinds: it
+    // spells pointer-to-integer 'ptrtoint' and the reverse 'inttoptr'. Pick by
+    // the generated LLVM kinds rather than the Cone tags, since that is what
+    // the instruction has to agree with -- a reference is not always a plain
+    // pointer once virtual references and fat pointers are in play.
+    LLVMTypeRef tollvm = genlType(gen, totype);
+    LLVMTypeKind fromkind = LLVMGetTypeKind(LLVMTypeOf(genexp));
+    LLVMTypeKind tokind = LLVMGetTypeKind(tollvm);
+    if (fromkind == LLVMPointerTypeKind && tokind == LLVMIntegerTypeKind)
+        return LLVMBuildPtrToInt(gen->builder, genexp, tollvm, "");
+    if (fromkind == LLVMIntegerTypeKind && tokind == LLVMPointerTypeKind)
+        return LLVMBuildIntToPtr(gen->builder, genexp, tollvm, "");
+    return LLVMBuildBitCast(gen->builder, genexp, tollvm, "");
 }
 
 // Generate not
