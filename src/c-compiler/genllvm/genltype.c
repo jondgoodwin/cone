@@ -350,8 +350,15 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
         // If this struct is (or has) a base trait, do special handling (if needed)       
         StructNode *base = structGetBaseTrait((StructNode*)typ);
         if (base && base->llvmtype == NULL) {
-            if (base->flags & HasTagField)
+            if (base->flags & HasTagField) {
                 genlSetupTaggedTrait(gen, base);
+                // The nullable-pointer optimization has already given the base
+                // and every variant the bare pointer as its LLVM type, and there
+                // is deliberately no struct: a null pointer is the empty variant.
+                // Take that answer rather than overwriting it below.
+                if (base->flags & NullablePtr)
+                    return strnode->llvmtype;
+            }
 
             base->llvmtype = LLVMStructCreateNamed(gen->context, &base->namesym->namestr);
             if (base->flags & SameSize) {

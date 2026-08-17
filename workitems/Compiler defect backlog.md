@@ -24,15 +24,18 @@ them is the sharpest warning on the page: the recorded cause named the branch
 that reports the diagnostic, which was genuinely the branch that reported it,
 and was still wrong about why the tree reached it.
 
-**Every one still open is pinned by an `xfail` scenario**, which means the suite
-fails the day one is fixed and the fixer is told to remove the mark. They cannot
-be fixed quietly and they cannot rot silently. The two that were not pinned were
-done first for exactly that reason — nothing was watching them — and are in the
-table below.
+**Every wrong-code defect was pinned by an `xfail` scenario**, which meant the
+suite failed the day one was fixed and the fixer was told to remove the mark.
+They could not be fixed quietly and they could not rot silently, and all of them
+now are fixed: the section below is empty and `closure-capture` is the corpus's
+one remaining `xfail`, held by question 4 rather than by a defect. What is left
+open here is either awaiting a decision or recorded in passing by a scenario that
+passes, which is the weaker arrangement — see the two `continue`-shaped entries
+under "Behavioral, and possibly intended", neither of which a scenario can hold.
 
 ## Fixed
 
-Sixteen are done, with a scenario each. They are recorded here rather than
+Seventeen are done, with a scenario each. They are recorded here rather than
 deleted because six of them were mis-diagnosed on this page and the correction
 is worth more than the entry was. Three of the last four were: one entry was two
 defects with one cause, another was two defects with two causes, of which only
@@ -54,6 +57,7 @@ finding what put the tree in front of it.
 | An operator inside a method of a generic type is rejected | **Not a dispatch defect at all: every instance method's body was type checked twice, and lowering is not idempotent.** `cloneStructNode` copies the struct with `memcpy`, which carries `nodelist.used` across, then replaced `nodelist.nodes` with a fresh array and wrote each cloned method into it *while also* calling `iNsTypeAddFn`, which appends at the copied count — so the instance listed every method twice, at its own index and again after. `structTypeCheck` walks that list to check bodies, so the second visit re-lowered what the first had already lowered correctly. That is why the recorded cause looked right and was a consequence: on the second pass an operator call's `objfn` is a `VarNameUse` of the operator's own `FnDcl`, which carries `FlagMethFld`, so `fnCallTypeCheck`'s "rewrite to `self.method`" branch fired and looked `+` up on the instance. `+=` produced a different symptom from the same cause — `fnCallOpAssgn` had already rewritten it to a temporary, so the second pass reported `ErrorNotLit` "Variable may only be initialized with a literal value". The copy's list now starts empty (`nodelistInit`) and `iNsTypeAddFn` does both the append and the dictionary entry, mirroring the fields loop above it. **It predated `c6085e4`** — the line dates to `6696a27`, and only became reachable when generic methods started working. Code generation was never affected: it reaches an instance method through the same node twice and the second is a no-op | `generic-success` |
 | `Bool[r]` and `Bool[p]` fail | **The conversion they were said to disagree with did not work either.** `typeLitNbrCheck` rejected a ref/ptr source exactly as recorded, but `r into Bool` and `p into Bool` only *type checked*: `genlConvert` has no ref/ptr case and Bool is a 1-bit `UintNbrTag`, so the number arm read `((NbrNode*)fromtype)->bits` off a `RefNode` and emitted `trunc i32* to i1`. `--verify` rejects it; nothing had ever run it. The Bool rule now lives once, in `castConvertsToBool`, which both paths ask, and `genlConvert` lowers ref/ptr to Bool as the null test `isTrue` already generated for the implicit coercion of a pointer | `typemgmt-success`, `typemgmt-typecheck-convert` |
 | `&mut p.x` — a field borrow without parentheses, and `&Box[i64]` — a reference to a generic instantiation | **One rule, not two defects, and the recorded cause was right about the mechanism and wrong about what it cost.** `parseAmper` consumed a prefixed term without suffixes and re-applied them to the borrow, so `&x.a` was `(&x).a`: typed as the field while `genlexpr` honoured `FlagBorrow` and answered with its address, which `--verify` rejects. Jon's ruling is that `&` applies to the whole suffixed term, so `&x.a` references the field and `&x[4]` the element, which is what `coneref/refborref.html` already documents. `parseAmper` now parses its operand at normal prefix precedence and `&Box[i64]` needed nothing further — the instantiation arrives whole and `refNameRes` asks `itypeIsGenericType`, repaired in `d407ba4`, so the borrow was the one position still failing for want of the instantiation surviving as a unit. Two things had to move with it. `borrowTypeCheck` re-associates `&v[i]` to `(&v)[i]` where the operand is an index on a value, because a type declaring its own `` `&[]` `` decides what a reference to an element is and wants the receiver the borrow would make; that is the shape `fnCallArrIndex` has always wanted for an array, a slice or a pointer too, so nothing there changed. And a borrow now names its own reason for refusing an operand, because `&p.sum()` — the one meaning the ruling changes — borrows a temporary, and `iexpIsLvalError`'s "must be lval" explains an assignment target instead. **`&Point[1, 2]` was recorded as working and never did**: it was a literal of the *reference* type, which `typeLitTypeCheck` rejects with `ErrorTypeLitType`. It is now a literal of `Point` that the borrow refuses as a temporary, which is the same verdict said usefully | `ref-success`, `ref-typecheck-borrow`, `generic-success`, `union-success`, `struct-methods` |
+| The nullable-pointer optimization | **Three defects at three sites, and the one recorded here was the smallest of them — but the representation itself was never wrong, which is the finding that decided the difficulty.** `genlSetupTaggedTrait` (the function the entry called `genlTypeMeta`, `genltype.c:166-217`) marks the base and both variants `NullablePtr` and gives each the bare pointer as its `llvmtype`, correctly. Its caller in `genlType` then **overwrote both**, on the two lines immediately following the call: `base->llvmtype = LLVMStructCreateNamed(...)`, and then `genlSameSizeTrait` doing the same for every variant. So the flags survived and the types did not, and construction — which reads the flag — produced a bare `i32*` to store into an alloca of `%Just`. `genlType` now takes the optimization's answer instead of overwriting it, and no `%Maybe`, `%Just` or `%Nothing` type is emitted at all. Two more sites had simply never been reached, because nothing had ever got past construction: `genlIsType`'s nullable branch tested the reference against null instead of the value it points at, since it lacked the `istype->tag == RefTag` load the tagged branch beside it has always done — `icmp ne i32** %_2, i32* null`, which `--verify` rejects; and field access had no nullable case in either `genlAddr` or `genlExpr`, so `j.p` emitted a struct GEP against a pointer and **segfaulted inside LLVM**. Under the optimization the variant's one nameable field *is* the value, at offset zero — the tag field is anonymous and unreachable from source — so both arms now answer with the object itself. Nothing about how the optimization is represented changed; three sites were taught to consult what it already declared | `union-nullable-ptr` |
 | `p as usize` and `n as *i32` — reinterpreting between a pointer and an integer | Exactly as recorded, and it was one instruction choice. `genlRecast` ended in an unconditional `LLVMBuildBitCast`, which LLVM refuses between the pointer and integer kinds. It now picks `ptrtoint` and `inttoptr` for those two directions and bitcasts otherwise, deciding on the generated `LLVMTypeKind`s rather than on the Cone tags, since the instruction has to agree with the former and a reference is not always a plain pointer. **The reverse direction needed nothing opened up**: `castBitsize` answers `ptrsize` for `usize` as well as for `PtrTag` and `RefTag`, so `n as *i32` already type checked and already emitted the same invalid bitcast — measured on the pre-fix binary, which reported both. So the round trip is assertable, and `safety-pointers` now asserts it at run time: pointer to `usize` and back, dereferenced; two pointers one element apart differing by 4; and a reference reinterpreting to the address its pointer form gives | `safety-pointers` |
 | `s into usize` — a slice converts to an integer | Exactly as recorded: `castTypeCheck`'s `UintNbrTag` arm returned early for an `ArrayRefTag` source, so it type checked and `genlConvert` reached the number arm and emitted `trunc { i32*, i64 } to i64`, which `--verify` rejects. Jon's ruling is to reject it: a slice is two words, so "convert to an integer" could mean the length or the data address, and each is already spelled on its own. The early return is gone, so it reports the ordinary unsupported-conversion diagnostic. The constructor form `usize[s]` was already refused by `typeLitNbrCheck` and is unchanged | `typemgmt-typecheck-cast` |
 
@@ -75,9 +79,29 @@ truncated the returned pointer to 32 bits and segfaulted.
 
 ## Wrong code generated
 
-| Defect | Cause | Pinned by |
-| --- | --- | --- |
-| The nullable-pointer optimization | `genlTypeMeta` (`genllvm/genltype.c:174-207`) gives base and variants a bare pointer type while the variant initializer still stores through the variant's struct type. Verified: `--verify` reports "Stored value type does not match pointer operand type" on construction | `union-nullable-ptr` |
+Empty. The two entries that were here — the nullable-pointer optimization and
+`p as usize` — are both fixed, and are in the table above.
+
+## Found while fixing the nullable-pointer optimization
+
+Neither is that optimization's, and both were confirmed against a tagged union
+too, so neither is about the untagged layout.
+
+- **`None[]` cannot be spelled at all.** Generic inference never consults the
+  expected type, so a variant carrying no argument to infer the parameter from
+  reports `ErrorInvType` "Could not infer all of generic's type parameters"
+  wherever it appears — `mut n Option[&i32] = None[]` and
+  `fn mk() Option[&i32] { None[] }` both fail, each followed by the mismatch
+  diagnostic it causes. So `Option[T]`'s empty side is unreachable for every `T`,
+  not only for a reference, and `union-nullable-ptr` reaches `Option[&i32]`
+  through `Some` alone and says why in a comment. Belongs with generic type
+  inference.
+- **A variant literal does not coerce to the union in a struct literal's field.**
+  `Holder[Just[&v]]`, where `Holder`'s field has the union's type, reports
+  `ErrorBadArray` "Literal value's type does not match expected field's
+  type", while the same coercion in an initializer — `mut u Maybe = Just[&v]` —
+  is accepted. Confirmed identically on a three-variant tagged union, so it is
+  the type-literal field check and not the layout. Belongs with the union work.
 
 ## Reported in the wrong place
 

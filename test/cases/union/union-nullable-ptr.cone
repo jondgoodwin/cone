@@ -1,17 +1,35 @@
-// The nullable-pointer layout: a two-variant union where one variant is empty
-// and the other holds a single reference needs no tag, because a null pointer
-// can stand for the empty variant.
+// The nullable-pointer layout: a two-variant union of an empty variant and a
+// variant holding a single reference needs no tag, because a null pointer can
+// stand for the empty variant. This is the shape 'Option[&T]' has, and the
+// compiler optimizes it -- a value of the union is the bare pointer.
 //
-// This is the shape 'Option[&T]' has, and it does not work. genlTypeMeta marks
-// the union NullablePtr and gives the base and both variants the bare pointer
-// as their LLVM type, but the variant's initializer still stores through a
-// pointer to the variant's struct type, so the module fails verification with
-// "Stored value type does not match pointer operand type". Adding a third
-// variant, which turns the optimization off, compiles.
+// It is a scenario of its own because union-success cannot reach it. Every
+// union there has a shared field or more than two variants, either of which
+// turns the optimization off, so the optimized representation would otherwise
+// go ungenerated. What is claimed here is that the two representations behave
+// identically: the variant constructs, its field reads and writes, the union
+// round-trips a variant, and every form of match recovers which variant it is.
 //
-// Marked xfail: it records the defect, and must start failing the suite as
-// soon as the defect is fixed. Nothing here is asserted beyond the compile
-// itself, because the diagnostic is a genllvm one with no source location.
+// That the tag really is gone is asserted by a named check in cases.toml, since
+// runtime cannot see whether one was emitted.
+//
+// 'Option[&i32]' appears with only its 'Some' side, because 'None[]' cannot be
+// spelled: inference never consults the expected type, so the variant carrying
+// no argument to infer from reports ErrorGenericArgs whatever context it is
+// given. That is a generic-inference gap and not this layout's.
+
+import stdio::*
+
+fn show(label &[]u8, n i64) {
+  printStr(label)
+  printStr(" = ")
+  printInt(n)
+  printStr("\n")
+}
+
+fn showB(label &[]u8, b Bool) {
+  show(label, if b {1} else {0})
+}
 
 union Maybe {
   struct Nothing {}
@@ -21,8 +39,68 @@ union Maybe {
   }
 }
 
+// -------- recovering the variant --------
+
+// Matching through a reference to the union, binding the narrowed value
+fn read(m &Maybe) i32 {
+  match m {
+    case imm j &Just {*j.p}
+    case imm n &Nothing {-1i32}
+  }
+}
+
+// 'case is' tests the variant without binding a name to it
+fn present(m &Maybe) Bool {
+  match m {
+    case is &Just {true}
+    else {false}
+  }
+}
+
+// -------- the shape through the generic Option --------
+
+fn readOption(o &Option[&i32]) i32 {
+  match o {
+    case imm s &Some[&i32] {*s.value}
+    else {-1i32}
+  }
+}
+
 fn main() i32 {
   imm v = 41
+  imm w = 7
+
+  // Both variants are ordinary values of the union
+  mut some Maybe = Just[&v]
+  mut none Maybe = Nothing[]
+
+  show("match-reference-variant", read(&some))
+  show("match-empty-variant", read(&none))
+  showB("is-reference-variant", present(&some))
+  showB("is-empty-variant", present(&none))
+
+  // 'is' against the value rather than through a reference reaches the same
+  // null test from the other side
+  showB("value-is-reference-variant", some is Just)
+  showB("value-is-empty-variant", none is Nothing)
+
+  // On the variant type itself the field is reachable and writable, where the
+  // optimization leaves it occupying the whole value
   mut j = Just[&v]
+  show("field-read", *j.p)
+  j.p = &w
+  show("field-write", *j.p)
+
+  // A variant assigned into the union and recovered from it again survives the
+  // round trip, which is the whole of what the representation must guarantee
+  mut back Maybe = j
+  show("round-trip", read(&back))
+
+  // Assigning the other variant over it empties the same storage
+  back = Nothing[]
+  show("reassigned-to-empty", read(&back))
+
+  mut opt Option[&i32] = Some[&v]
+  show("option-some", readOption(&opt))
   0i32
 }

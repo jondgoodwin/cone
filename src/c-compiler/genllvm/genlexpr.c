@@ -704,6 +704,11 @@ LLVMValueRef genlIsType(GenState *gen, CastNode *isnode) {
     // Special handling for nullable pointers
     if (structtype->flags & NullablePtr) {
         LLVMTypeRef ptrtype = structtype->llvmtype;
+        // Matching through a reference hands over the address of the value, so
+        // load it before testing it against null -- the tagged path below reads
+        // its tag field through the same kind of reference for the same reason.
+        if (istype->tag == RefTag)
+            val = LLVMBuildLoad(gen->builder, val, "nullable");
         if (LLVMGetTypeKind(ptrtype) != LLVMPointerTypeKind)
             val = LLVMBuildExtractValue(gen->builder, val, 0, "ptr"); // VirtRef & ArrayRef
         LLVMValueRef nullptr = LLVMConstPointerNull(ptrtype);
@@ -782,6 +787,14 @@ LLVMValueRef genlArrayIndex(GenState *gen, FnCallNode *fncall, ArrayNode *objtyp
     return LLVMBuildGEP(gen->builder, arrayp, indexp, nindex+1, "");
 }
 
+// Answer whether a field access reaches into a variant carrying the
+// nullable-pointer optimization, which has no struct to index into: the
+// variant's single nameable field is the whole value, at offset zero.
+static int genlIsNullablePtrField(FnCallNode *fncall) {
+    INode *objtyp = iexpGetTypeDcl(fncall->objfn);
+    return objtyp->tag == StructTag && (objtyp->flags & NullablePtr) != 0;
+}
+
 // Generate an lval-ish pointer to the value (vs. load)
 LLVMValueRef genlAddr(GenState *gen, INode *lval) {
     switch (lval->tag) {
@@ -848,6 +861,11 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         FnCallNode *fncall = (FnCallNode *)lval;
         if (fncall->methfld->tag == MbrNameUseTag) {
             FieldDclNode *flddcl = (FieldDclNode*)((NameUseNode*)fncall->methfld)->dclnode;
+            // Under the nullable-pointer optimization the variant has no struct
+            // at all: its one nameable field is the whole value, and the tag
+            // field is anonymous, so no GEP is wanted or possible.
+            if (genlIsNullablePtrField(fncall))
+                return genlAddr(gen, fncall->objfn);
             if (iexpGetTypeDcl(fncall->objfn)->tag == VirtRefTag) {
                 // Calculate address of virtual field pointed to by a virtual reference using vtable
                 LLVMValueRef objVRef = genlExpr(gen, fncall->objfn);
@@ -1075,6 +1093,9 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         if (fncall->methfld->tag == MbrNameUseTag) {
             FieldDclNode *flddcl = (FieldDclNode*)((NameUseNode*)fncall->methfld)->dclnode;
             INode *objtyp = iexpGetTypeDcl(fncall->objfn);
+            // See genlAddr: a nullable-pointer variant's field is the value
+            if (genlIsNullablePtrField(fncall))
+                return (termnode->flags & FlagBorrow) ? genlAddr(gen, fncall->objfn) : genlExpr(gen, fncall->objfn);
             if (objtyp->tag == VirtRefTag) {
                 LLVMValueRef fldpRef = genlAddr(gen, termnode);
                 return (termnode->flags & FlagBorrow) ? fldpRef : LLVMBuildLoad(gen->builder, fldpRef, "");
