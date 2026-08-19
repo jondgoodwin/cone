@@ -316,14 +316,14 @@ void inodeTypeCheck(AnalysisState *pstate, INode **node, INode *expectType) {
     // walk abandoned, and a second walk of the same node -- a match pattern and
     // the variable it declares share one -- would then read as a recursive type.
     if (((isTypeNode(*node) && (*node)->tag != FnCallTag)) || (*node)->tag == ModuleTag) {
-        if ((*node)->flags & TypeChecked)
+        if ((*node)->flags & Analyzed)
             return;
-        if ((*node)->flags & TypeChecking) {
+        if ((*node)->flags & Analyzing) {
             errorMsgNode(*node, ErrorRecurse, "Recursive types are not supported for now.");
             return;
         }
         else
-            (*node)->flags |= TypeChecking;
+            (*node)->flags |= Analyzing;
     }
 
     switch ((*node)->tag) {
@@ -443,7 +443,7 @@ void inodeTypeCheck(AnalysisState *pstate, INode **node, INode *expectType) {
     // now -- an instantiation leaves behind the instance it named, which is a
     // declaration and does take the mark.
     if (((isTypeNode(*node) && (*node)->tag != FnCallTag)) || (*node)->tag == ModuleTag) {
-        (*node)->flags |= TypeChecked;
+        (*node)->flags |= Analyzed;
     }
 }
 

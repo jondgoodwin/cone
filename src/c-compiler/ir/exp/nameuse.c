@@ -246,7 +246,7 @@ void nameUseTypeCheckType(AnalysisState *pstate, NameUseNode **namep) {
     // to ensure it is correct and knows about its infectious constraints
     // Guards are in place to ensure this only will be done once, as early as possible.
     INode **dclnode = &(*namep)->dclnode;
-    if (((*dclnode)->flags & TypeChecking) && !((*dclnode)->flags & TypeChecked)) {
+    if (((*dclnode)->flags & Analyzing) && !((*dclnode)->flags & Analyzed)) {
         errorMsgNode((INode*)*namep, ErrorRecurse, "Recursive types are not supported for now.");
         return;
     }

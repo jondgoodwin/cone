@@ -230,13 +230,21 @@ enum NodeTags {
 #define HasTagField        0x0040  // A trait/struct has an enumerated field identifying the variant type
 #define NullablePtr        0x0080  // trait/struct has nullable pointer, generating optimized data
 
-#define TypeChecked        0x8000  // Type has been type-checked
-#define TypeChecking       0x4000  // Type is in process of being type-checked
+// Analysis progress. Currently set on type nodes and modules only.
+//
+// Analyzing means a declaration is under analysis: it can still answer what it
+// has already established, which for a type is its identity but not yet its
+// size. Analyzed means analysis of it finished -- for a nominal type that is
+// *laid out*, set before its methods are checked so that a method may use its
+// own type by value. See design/Analysis.md.
+#define Analyzed           0x8000  // Analysis of this declaration finished
+#define Analyzing          0x4000  // This declaration is under analysis
 
 // Flags applied to any declaration a module holds, whatever its node kind.
 // modTypeCheck sets this on functions, variables and type declarations alike,
 // so the bit must be free in every block above: 0x0001-0x0080 are all spoken
-// for by one node family or another, and 0x4000/0x8000 by the type flags here.
+// for by one node family or another, and 0x4000/0x8000 by the analysis marks
+// here.
 #define FlagSigError       0x0100  // Declaration's own signature failed type check
 
 // Allocate and initialize the INode portion of a new node
