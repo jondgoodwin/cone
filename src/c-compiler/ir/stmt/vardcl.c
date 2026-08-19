@@ -119,9 +119,12 @@ void varDclTypeCheck(AnalysisState *pstate, VarDclNode *name) {
             errorMsgNode((INode*)name, ErrorNotLit, "Variable may only be initialized with a literal value.");
     }
 
-    // Variables cannot hold a void or opaque struct value
-    if (!itypeIsConcrete(name->vtype))
-        errorMsgNode((INode*)name, ErrorInvType, "Variable's type must be concrete and instantiable.");
+    // A variable holds its type by value, so that type has to be able to say how
+    // large it is
+    char *nosize = itypeNoSizeCause(name->vtype);
+    if (nosize)
+        errorMsgNode((INode*)name, ErrorNoSize, "Variable %s cannot be held by value: its type %s.",
+            &name->namesym->namestr, nosize);
 }
 
 // Perform data flow analysis

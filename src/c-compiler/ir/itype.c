@@ -359,6 +359,56 @@ int itypeIsConcrete(INode *type) {
     return !(dcltype->flags & OpaqueType);
 }
 
+// Why this type cannot report a size. See itype.h.
+//
+// Order matters: a trait that is not @samesize and a struct infected by an
+// unsized field both carry OpaqueType, so each is asked before the plain
+// declared-opaque reading that would otherwise absorb it.
+char *itypeNoSizeCause(INode *type) {
+    INode *dcltype = itypeGetTypeDcl(type);
+
+    // Still being laid out. Its own fields are what this walk is in the middle
+    // of settling, so there is no size to give yet -- and no cycle check is
+    // needed to say so, since a finished type would not be in this state.
+    if ((dcltype->flags & Analyzing) && !(dcltype->flags & Analyzed))
+        return "is still being laid out, so it would have to contain itself. Break the cycle by holding it through a reference";
+
+    // An array's size is its length times its element's, so it has one only if
+    // its element does -- section 5's table. Without this, a struct holding an
+    // array of itself has no field that ever asks, and laying it out runs the
+    // compiler out of stack.
+    if (dcltype->tag == ArrayTag)
+        return itypeNoSizeCause(nodesGet(((ArrayNode*)dcltype)->elems, 0));
+
+    if (!(dcltype->flags & OpaqueType))
+        return NULL;
+
+    // A function signature is a description of a call, not a value
+    if (dcltype->tag == FnSigTag)
+        return "is a function signature, which is not a value. Use a reference to a function instead";
+
+    if (dcltype->tag == StructTag) {
+        StructNode *strnode = (StructNode*)dcltype;
+
+        // A trait whose implementations differ in size has no one size
+        if ((dcltype->flags & TraitType) && !(dcltype->flags & SameSize))
+            return "is a trait whose implementations may differ in size. Use a virtual reference, '&<Trait>'";
+
+        // Opacity is infectious, so the cause is usually a field rather than
+        // this type. Name that field: the type it holds is where to look next.
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            if (itypeNoSizeCause(((IExpNode*)*nodesp)->vtype) != NULL)
+                return "holds a field whose own type has no known size. That field is where the cause is";
+        }
+
+        return "is declared @opaque, so this program is not told how large it is. Hold it through a reference";
+    }
+
+    return "has no known size, so it cannot be held by value";
+}
+
 // Return true if type has zero size (e.g., void, empty struct)
 int itypeIsZeroSize(INode *type) {
     INode *dcltype = itypeGetTypeDcl(type);

@@ -35,7 +35,8 @@ four checks with no expectation changes.
 | 4 Bound instantiation depth | `adeb75a` | Macros needed the bound too, and two diagnostic defects surfaced with it. See hazards 5 and 6. |
 | 5 Demand from value name uses | `6d7de87` | Held green only by moving the signature-failure skip into the declaration. See hazards 7 and 8. |
 | 6 Remove the signature pre-pass | `8ef2fb2` | A net deletion, green first try. Stage 5 had already carried the risk. |
-| 7-8 | | not started |
+| 7 Read the in-progress state | | Three expectations moved, exactly as predicted. A fourth case was a crash the plan did not name. See hazard 9. |
+| 8 | | not started |
 
 ## Standing hazards, found in flight
 
@@ -104,6 +105,15 @@ These were discovered while doing the stages and are not in the design note.
    one injected temporary, and not harmless once a declaration can be analyzed
    from the middle of a body. Fixed in stage 5 along with `fnDclTypeCheck` saving
    and resetting scope, which is rule 8's half of that stage.
+
+9. **The blanket refusal was also the only guard on an array of self.** Design
+   section 8 says rule 4 removes the only thing catching a recursive *generic*,
+   which is why stage 4 comes first. The same is true of `struct S { more [2; S]
+   }`, which nothing names: with the refusal gone and nothing else asking, laying
+   it out ran the compiler out of stack. An array's size is its length times its
+   element's -- section 5's own table -- so `itypeNoSizeCause` asks the element,
+   and the field holding the array reports. Found by probing beyond the corpus,
+   not by the suite, which had no such case.
 
 ## Sequencing principles
 
@@ -397,6 +407,37 @@ removed is what catches a recursive generic type today.
 corpus records unenforced rules by establishing the opposite, so a case may exist
 that asserts something this stage correctly invalidates — rewrite it and say why,
 per principle 6.
+
+**Done.** Green on all four checks, exactly the three named expectations moved,
+one scenario added and one extended: 122 scenarios / 123 runs, `--coverage` 59
+of 62 (`ErrorRecurse` retired into a comment per `error.h`'s own convention for
+a withdrawn code, `ErrorNoSize` covered by three scenarios, so the ratio holds).
+What differed:
+
+- **The signal of a bad reading stayed silent, and a probe beyond the corpus did
+  not.** No scenario failed that the list did not name. But `struct S { more
+  [2; S] }` -- which nothing in the plan, the design, or the corpus names -- went
+  from a spurious diagnostic to a stack overflow, for the same reason section 8
+  gives for generics. See hazard 9. Fixed here, with the case that fails without
+  it.
+- **The language reference already documented the behaviour this delivers.**
+  `conesite/public/coneref/refstruct.html` says a field's type may not be the
+  struct being declared, "however, may be a reference to the struct type". The
+  published rule was right and the compiler was refusing the legal half, so no
+  documentation change was needed.
+- **`[n; T]` where `T` is opaque now reports twice**, once from `array.c`'s own
+  element check on `ErrorInvType` and once from the field that holds the array on
+  `ErrorNoSize`. Before this stage it reported once. Design 13.3 deliberately
+  leaves `array.c` and `typelit.c` on `ErrorInvType`, so nothing was changed
+  there -- but where the size check belongs for an array is now a real question,
+  and answering it would also decide whether `&[n; T]` should be legal. Raised,
+  not decided.
+- **Rule 5's chain was not implemented.** This stage names which of the five
+  causes applies and, for an infected struct, which field carries it -- one level.
+  The design's worked example prints the whole path down to the `@opaque` type
+  at the bottom. That path is recoverable by walking fields at the report site,
+  so it needs no stored demand stack, but it is a traversal and a multi-line
+  diagnostic that the stage's own text does not ask for. Raised, not decided.
 
 ---
 

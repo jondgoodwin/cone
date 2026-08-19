@@ -82,7 +82,12 @@ void fieldDclTypeCheck(AnalysisState *pstate, FieldDclNode *name) {
             name->vtype = ((IExpNode *)name->value)->vtype;
     }
 
-    // Fields cannot hold a void or opaque struct value
-    if (!itypeIsConcrete(name->vtype))
-        errorMsgNode((INode*)name, ErrorInvType, "Field's type must be concrete and instantiable.");
+    // A field holds its type by value, so that type has to be able to say how
+    // large it is. This is where a recursive struct is caught -- and where one
+    // that recurses through a reference is not, since the reference answers for
+    // itself without asking what it points at.
+    char *nosize = itypeNoSizeCause(name->vtype);
+    if (nosize)
+        errorMsgNode((INode*)name, ErrorNoSize, "Field %s cannot be held by value: its type %s.",
+            &name->namesym->namestr, nosize);
 }

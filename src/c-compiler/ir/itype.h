@@ -85,6 +85,14 @@ char *itypeMangle(char *bufp, INode *vtype);
 // False for Opaque structs, traits, functions 
 int itypeIsConcrete(INode *type);
 
+// Why this type cannot report a size, as a sentence naming the cause and the
+// remedy, or NULL where the type is sized and may be held by value.
+//
+// There are five causes and one diagnostic, ErrorNoSize, because everything
+// except the wording would be identical between them and the remedy is what the
+// author actually needs. See design/Analysis.md section 6.
+char *itypeNoSizeCause(INode *type);
+
 // Return true if type has zero size (e.g., void, empty struct)
 int itypeIsZeroSize(INode *type);
 

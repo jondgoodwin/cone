@@ -40,8 +40,21 @@ struct FinalField {
   final i32  //~ ErrorBadMeth:3 "final can only be defined as a method"
 }
 
-// A struct's field may not be the struct itself, at any depth: the value would
-// have to contain a copy of itself and so could have no size
+// A struct's field may not be the struct itself: the value would have to
+// contain a copy of itself and so could have no size. Held through a reference
+// it is legal and is how a linked list is written, which struct-recursive
+// covers -- so what is rejected here is holding it by value, and the diagnostic
+// says which of the five reasons a type has no size this one is.
 struct SelfHolding {
-  inner SelfHolding  //~ ErrorRecurse:9 "Recursive types are not supported"
+  inner SelfHolding  //~ ErrorNoSize:3 "still being laid out"
+}
+
+// The same by value, one level further down. An array's size is its length
+// times its element's, so an array of a struct still being laid out has no size
+// either -- and this is the form that has no field of its own to ask, so
+// without the array asking on its behalf nothing here reports and laying the
+// struct out runs the compiler out of stack.
+struct SelfArraying {
+  v i64
+  more [2; SelfArraying]  //~ ErrorNoSize:3 "still being laid out"
 }

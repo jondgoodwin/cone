@@ -267,13 +267,12 @@ void nameUseTypeCheckType(AnalysisState *pstate, NameUseNode **namep) {
     // Do type check on the type declaration this refers to,
     // to ensure it is correct and knows about its infectious constraints
     // Guards are in place to ensure this only will be done once, as early as possible.
-    INode **dclnode = &(*namep)->dclnode;
-    if (((*dclnode)->flags & Analyzing) && !((*dclnode)->flags & Analyzed)) {
-        errorMsgNode((INode*)*namep, ErrorRecurse, "Recursive types are not supported for now.");
-        return;
-    }
-    else
-        inodeTypeCheckAny(pstate, dclnode);
+    //
+    // Naming a type that is still being laid out is not itself an error: the
+    // name resolves to the same declaration either way. What such a type cannot
+    // answer is its size, and that is asked by whatever wants to hold a value of
+    // it -- a field, a variable, an array element -- not here.
+    inodeTypeCheckAny(pstate, &(*namep)->dclnode);
 }
 
 // Ensure variable has a usable value

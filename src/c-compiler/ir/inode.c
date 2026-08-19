@@ -321,12 +321,14 @@ void inodeTypeCheck(AnalysisState *pstate, INode **node, INode *expectType) {
     if (((isTypeNode(*node) && (*node)->tag != FnCallTag)) || (*node)->tag == ModuleTag) {
         if ((*node)->flags & Analyzed)
             return;
-        if ((*node)->flags & Analyzing) {
-            errorMsgNode(*node, ErrorRecurse, "Recursive types are not supported for now.");
+        // Under analysis and reached again. Its identity is established, which
+        // is what a type question needs; only a *size* question has no answer
+        // yet, and that is asked where a value is held rather than here. This
+        // is what makes a linked list expressible: 'next &S' asks S for its
+        // identity, and the reference answers the size on its own behalf.
+        if ((*node)->flags & Analyzing)
             return;
-        }
-        else
-            (*node)->flags |= Analyzing;
+        (*node)->flags |= Analyzing;
     }
     else if (inodeIsDcl(*node)) {
         if ((*node)->flags & Analyzed)

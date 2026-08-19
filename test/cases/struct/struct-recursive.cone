@@ -1,0 +1,67 @@
+// Structs that reach themselves, directly or through each other.
+//
+// All three forms were refused until analysis learned to answer a type that is
+// still being laid out instead of refusing it. Every re-entry was an error
+// regardless of what had been asked, so Cone could not express a linked list or
+// a tree at all -- 'struct S { next &S }' was rejected along with the genuinely
+// infinite 'struct S { inner S }'.
+//
+// What tells them apart is not recursion but size, and it belongs to the type
+// being asked rather than to the field asking. A reference answers its own size
+// -- a pointer is a pointer whatever it points at -- and never consults its
+// target, so a cycle passing through one always terminates. A field holding a
+// struct by value does consult it, and a struct mid-layout has nothing to say.
+// struct-typecheck-decl holds the by-value form that is still refused.
+//
+// 'compile' rather than 'run': traversing a list needs a nullable reference,
+// which is a union with an empty variant, and the union machinery would be most
+// of the file. What matters here is that these declarations are accepted and
+// reach code generation as genuinely self-referential types, which the named
+// check in cases.toml asserts against the LLVM IR -- runtime could not see it.
+
+// -------- direct: a linked list --------
+
+// The list node the whole rule exists for. 'next' is a reference, so laying out
+// Node never asks Node for its size.
+struct Node {
+  v i64
+  next &Node
+}
+
+fn nodeNext(n &Node) i64 {
+  n.next.v
+}
+
+// -------- mixed: one by value, one by reference --------
+
+// Owner holds Held by value, so Held must be sized -- and it is, because its
+// own field is a reference. The cycle is broken on the second hop rather than
+// the first, which is the case that says the rule is about each field's own
+// type and not about whether a cycle exists anywhere.
+struct Owner {
+  v i64
+  held Held
+}
+
+struct Held {
+  back &Owner
+}
+
+fn ownerBack(o &Owner) i64 {
+  o.held.back.v
+}
+
+// -------- pure: neither asks the other --------
+
+struct Left {
+  v i64
+  r &Right
+}
+
+struct Right {
+  l &Left
+}
+
+fn leftRound(l &Left) i64 {
+  l.r.l.v
+}
