@@ -32,7 +32,7 @@ four checks with no expectation changes.
 | 1 Fold the analysis state | `752935e` | 87 files. Also fixed `tstate.scope` never being initialised. |
 | 2 Rename the flags | `4f28e78` | 4 files. |
 | 3 Mark every declaration | `ee26cb7` | The probe fired; see hazard 1 below. |
-| 4 Bound instantiation depth | `63031f1` | Macros needed the bound too, and two diagnostic defects surfaced with it. See hazards 5 and 6. |
+| 4 Bound instantiation depth | `adeb75a` | Macros needed the bound too, and two diagnostic defects surfaced with it. See hazards 5 and 6. |
 | 5-8 | | not started |
 
 ## Standing hazards, found in flight
