@@ -152,47 +152,18 @@ void modTypeCheck(AnalysisState *pstate, ModuleNode *mod) {
         inodeTypeCheckAny(pstate, nodesp);
     }
 
-    // Next, process only types for all global functions/variables
-    // This ensures we can handle forward references to type info
-    // (e.g., function parms) that must have been inferred from the value
-    // Each declaration remembers whether its own signature failed, so that the
-    // body pass can skip only those rather than stopping at the first one.
+    // Then analyze every declaration this module holds, in the order written.
+    //
+    // There used to be two passes here: every declaration's signature first, so
+    // that a forward reference had a type to read, and only then the bodies.
+    // Reaching a name now analyzes the declaration it names, so a forward
+    // reference pulls what it needs forward itself -- including the case the
+    // pre-pass could never serve, a global whose type comes from its own initial
+    // value and so is not known until that value is analyzed.
+    //
+    // Order still does not decide what is analyzed, only when: this loop reaches
+    // every declaration, and one already analyzed by demand returns at once.
     for (nodesFor(mod->nodes, cnt, nodesp)) {
-        int errorsOnEntry = errors;
-        switch ((*nodesp)->tag) {
-        case VarDclTag:
-        {
-            VarDclNode * varnode = (VarDclNode*)*nodesp;
-            inodeTypeCheckAny(pstate, (INode**)&varnode->perm);
-            if (varnode->vtype != unknownType)
-                inodeTypeCheckAny(pstate, &varnode->vtype);
-            break;
-        }
-        case FnDclTag:
-        {
-            FnDclNode * varnode = (FnDclNode*)*nodesp;
-            if (!varnode->genericinfo)
-                inodeTypeCheckAny(pstate, &varnode->vtype);
-            break;
-        }
-        case ConstDclTag:
-        {
-            inodeTypeCheckAny(pstate, nodesp);
-            break;
-        }
-        }
-        if (errors != errorsOnEntry)
-            (*nodesp)->flags |= FlagSigError;
-    }
-
-    // Now we can process the full node info, for every declaration whose own
-    // signature type checked. One whose signature failed is skipped rather than
-    // stopping the pass: its body would be checked against the types that check
-    // was supposed to establish, so every use of them would report again, naming
-    // nothing the author can act on.
-    for (nodesFor(mod->nodes, cnt, nodesp)) {
-        if ((*nodesp)->flags & FlagSigError)
-            continue;
         inodeTypeCheckAny(pstate, nodesp);
     }
 }

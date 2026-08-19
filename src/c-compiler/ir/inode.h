@@ -240,13 +240,6 @@ enum NodeTags {
 #define Analyzed           0x8000  // Analysis of this declaration finished
 #define Analyzing          0x4000  // This declaration is under analysis
 
-// Flags applied to any declaration a module holds, whatever its node kind.
-// modTypeCheck sets this on functions, variables and type declarations alike,
-// so the bit must be free in every block above: 0x0001-0x0080 are all spoken
-// for by one node family or another, and 0x4000/0x8000 by the analysis marks
-// here.
-#define FlagSigError       0x0100  // Declaration's own signature failed type check
-
 // Allocate and initialize the INode portion of a new node
 #define newNode(node, nodestruct, nodetype) {\
     node = (nodestruct*) memAllocBlk(sizeof(nodestruct)); \

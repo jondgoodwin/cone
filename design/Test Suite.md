@@ -122,11 +122,12 @@ accumulate, so one file carries several distinct codes of one stage.
 global error count rather than on their own. **Both are now per declaration**,
 and neither constrains how a file is written any more:
 
-- **`module.c` type checks every signature in the module first, then every
-  body.** It used to skip the body pass entirely unless the signature pass was
-  error-free, so one malformed signature suppressed every body-phase diagnostic
-  in the file. It now skips only the declarations whose own signature failed,
-  which it marks with `FlagSigError`.
+- **`fndcl.c` skips a function's body when that function's own signature did
+  not type check.** `module.c` used to do this across two passes — every
+  signature in the module, then every body, and no body at all unless the
+  signature pass was error-free — so one malformed signature suppressed every
+  body-phase diagnostic in the file. Both passes are gone: a declaration is
+  analyzed whole, and the skip is now local to the one whose signature failed.
 - **`fndcl.c` runs `blockFlow` on a function whose own signature and body type
   checked**, whatever failed elsewhere. It used to require the global count to be
   zero, so one error of any stage silenced data-flow analysis for every function

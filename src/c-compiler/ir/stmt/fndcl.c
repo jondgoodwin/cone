@@ -168,12 +168,10 @@ void fnDclTypeCheck(AnalysisState *pstate, FnDclNode *fnnode) {
 
     // A body is not checked against a signature that failed: every use of the
     // types that check was supposed to establish would report again, naming
-    // nothing the author can act on. The module's signature pre-pass records
-    // that failure in FlagSigError and its body pass skips those declarations,
-    // but a use may now demand this one first, arriving here without passing
-    // through that loop. The skip belongs to the declaration, not to the walk
-    // that happened to reach it.
-    if (fnnode->flags & FlagSigError)
+    // nothing the author can act on. This is the same shape as the flow gate
+    // below -- the count this call entered with, so that it is about this
+    // declaration alone and not about whatever failed elsewhere.
+    if (errors != errorsOnEntry)
         return;
 
     // No need to type check function body if no body or is a default method of a trait

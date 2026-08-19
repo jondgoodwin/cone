@@ -34,7 +34,8 @@ four checks with no expectation changes.
 | 3 Mark every declaration | `ee26cb7` | The probe fired; see hazard 1 below. |
 | 4 Bound instantiation depth | `adeb75a` | Macros needed the bound too, and two diagnostic defects surfaced with it. See hazards 5 and 6. |
 | 5 Demand from value name uses | `6d7de87` | Held green only by moving the signature-failure skip into the declaration. See hazards 7 and 8. |
-| 6-8 | | not started |
+| 6 Remove the signature pre-pass | | A net deletion, green first try. Stage 5 had already carried the risk. |
+| 7-8 | | not started |
 
 ## Standing hazards, found in flight
 
@@ -333,6 +334,32 @@ isolation, and only after demand demonstrably replaces what it removes.
 
 **Expectation changes.** Watch `--bless` closely. Drift here almost certainly
 means the skip above was not preserved.
+
+**Done.** Green on all four checks first try, no expectation changes, no
+scenario added: 121 scenarios / 122 runs, `--coverage` 59 of 62. **1 line of
+code added to `src/`, 31 removed.** What differed:
+
+- **The drift this stage warned about had already been paid for in stage 5.**
+  Moving the skip into `fnDclTypeCheck` there is what made this a deletion; had
+  both landed together, the closure cascade would have looked like a consequence
+  of removing the pre-pass rather than of demand overtaking the flag.
+- **The skip's new test was dead code in stage 5 and is live now.** `errors !=
+  errorsOnEntry` after the signature check measured zero hits across the corpus
+  while the pre-pass still ran, because the pre-pass had already marked the
+  signature analyzed and re-checking it reported nothing. With the pre-pass gone
+  it fires exactly three times, each on a declaration whose own signature failed:
+  two closures in `closure-typecheck-sig` and `signatureFails` in
+  `core-flow-gate`. Reproducing `FlagSigError` exactly, and nothing more -- the
+  worry that an error from a *demanded* declaration could gate an innocent body
+  is not reachable in the corpus.
+- **Design 13.3's second bullet needed nothing.** The `unknownType` check that
+  coped with a half-analyzed declaration lived inside the pre-pass and left with
+  it. Every remaining `unknownType` comparison in `src/` reads as genuine
+  inference or a parser default, so none was removed on suspicion.
+- **Companion changes landed with it**, per design 13.6: `design/Test Suite.md`
+  and `core-flow-gate.cone` both described the two-pass mechanism.
+  `design/Analysis.md` still names `FlagSigError` throughout and is deliberately
+  left alone -- it is rewritten as an as-is description once the stages are done.
 
 ---
 
