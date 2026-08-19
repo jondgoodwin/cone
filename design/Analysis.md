@@ -21,10 +21,30 @@ if it reports anything, `conec.c` returns before type check begins. So type chec
 never meets an unbound name and nothing has to reason about a partly-bound
 declaration.
 
-It stays a single source-order pass deliberately. Binding a name needs the
-declaration to *exist*, not to be analyzed, and the parser guarantees that, so
-name resolution never enters another declaration's analysis and gains nothing
-from running on demand.
+It stays a single source-order pass deliberately, and the reason is stronger than
+that it gains nothing. Binding a name needs the declaration to *exist*, not to be
+analyzed, and the parser guarantees that — so name resolution has no use for
+demand. But it also could not have it cheaply:
+
+**Name resolution binds through a global slot; type check does not.** A name has
+one `node` field, and `nametblHookNode` plugs a declaration into it and stacks the
+previous value for `nametblHookPop` to restore. That is how a block's locals
+shadow and unshadow. Three sites read it — `nameUseNameRes`, `varDclNameRes` and
+`modNameRes` — and all three are name resolution. By type check every use points
+at its declaration directly through `dclnode`, and nothing consults the slot.
+
+So type check can be suspended anywhere and re-entered on another declaration
+with nothing to save. Name resolution cannot: jumping out of a function body into
+an unrelated declaration would leave that function's locals still plugged in, and
+a matching name in the declaration jumped to would bind to one of them. Making it
+demand-driven means saving and restoring the whole hook stack at every jump.
+
+**What that costs today** is the global gate: one unresolved name anywhere stops
+the compile before any type checking, so a file cannot report a name error and an
+unrelated type error in one run. Removing it is [[Namedef Refactor]]'s, which asks
+for per-node unresolved/resolving/resolved states and says the pipeline change
+wants its own design. It would also mean every site that reads `dclnode` handling
+an unbound one, which the gate makes impossible today.
 
 **Type check is demand-driven and it interleaves.** A declaration reaches names
 belonging to other declarations, so its type check suspends, the named
