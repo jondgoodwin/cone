@@ -21,9 +21,45 @@ Traits
 - Associated types
 
 Recursive types
-- Forbid recursive type cycles that involve no references and those without a terminable abstract type (e.g., sum type)
-- How to handle infectious typing decidability for recursive type cycles
-- Separate infectious/cycle from rest of type check - how?
+
+**Mostly closed by [[Analysis re-factor]].** A struct may now hold itself, or
+another struct that holds it, through a reference, which is what makes a linked
+list or a tree expressible; a cycle with no reference in it is refused, naming
+the field and saying to break the cycle with a reference (`ErrorNoSize`).
+`struct-recursive` and `struct-typecheck-nosize` cover both sides.
+
+- ~~Forbid recursive type cycles that involve no references~~ -- done, per above.
+- **Still open: a cycle with no terminating variant.** A `union` whose every
+  variant recurses has no base case, and nothing checks that. Deciding it is a
+  termination question about the whole cycle, not a size question about one
+  field, so the mechanism above does not reach it.
+- ~~How to handle infectious typing decidability for recursive type cycles~~ --
+  answered. A type's size is asked where a value of it is held, and a type still
+  being laid out answers "no size" rather than being refused. Opacity infection
+  is chased where it is reported rather than stored.
+- ~~Separate infectious/cycle from rest of type check - how?~~ -- answered by
+  *not* separating it. Reading the in-progress mark in place is what removed the
+  need for a separate pass. See `design/Analysis.md` rules 4 and 5.
+
+**A union variant may hold its own union by value, and the field is silently
+dropped.** Measured while closing the above, and *not* fixed by it -- identical
+before and after, so it is a hole of its own rather than a regression.
+
+```cone
+union Bad {
+  struct Leaf { v i64 }
+  struct Wrap { t Bad }    // accepted
+}
+```
+
+compiles clean and generates `%Bad = type { i8, i64 }` -- tag plus the largest
+variant *ignoring* `Wrap`, which has nowhere to put its `t`. That is a
+miscompile, not a missing diagnostic. The size check that catches the same shape
+in a plain struct does not fire because the union is already marked laid out by
+the time its variants' fields are checked: the base trait settles first, then the
+variants. Whatever fixes it has to make a variant's field see the union as still
+in progress, which is a question about the order inside `structTypeCheck` rather
+than about the size rule.
 
 Improve algorithm for deciding whether types have ‘move’ semantics:
 **A variant literal does not coerce to its union in a struct literal's field.**
