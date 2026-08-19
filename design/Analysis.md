@@ -86,11 +86,30 @@ Every declaration carries two bits in its node `flags`:
 | `Analyzing` | `0x4000` | Analysis of this declaration has begun and not finished |
 | `Analyzed` | `0x8000` | Analysis of this declaration finished |
 
-`inodeTypeCheck` sets and tests them, in two branches: one for type nodes and
-modules, one for every other declaration (`inodeIsDcl`). `Analyzed` returns at
-once — analysis lowers and replaces nodes, so a second walk of a declaration
-corrupts it, which makes the mark a correctness requirement rather than an
-optimization.
+**They are type check's marks, and only type check's.** `inodeTypeCheck` sets and
+tests them, in two branches: one for type nodes and modules, one for every other
+declaration (`inodeIsDcl`). `inodeNameRes` neither sets nor reads them — it is a
+bare dispatch with no guard — and neither does flow analysis. `Analyzing` means
+*this declaration's type check has begun*, not that anything about name
+resolution is in progress.
+
+That is safe rather than an oversight, and the global gate is what makes it so:
+name resolution finishes over the whole program before type check starts, so
+every declaration is fully bound before any mark is set. There is no cross-phase
+state to keep consistent because there is no overlap. Were the two walks ever
+merged (section 1), these marks would not survive the merge unchanged — a
+declaration could then be name-resolved but not type checked, which is a third
+state neither bit can express.
+
+`Analyzed` returns at once — analysis lowers and replaces nodes, so a second walk
+of a declaration corrupts it, which makes the mark a correctness requirement
+rather than an optimization.
+
+**The name is broader than what it marks**, which is worth knowing before relying
+on it. They were `TypeChecking` and `TypeChecked` until this work renamed them,
+because most of what carries them is not a type. But "analyzed" now reads as
+though it covers all of analysis, and it does not: it covers one phase, and for a
+type it covers less than that — *laid out*, with the methods still to come.
 
 **For a type, `Analyzed` means laid out**, not "everything about me is done". It
 is set in `structTypeCheck` at the point the layout settles — fields indexed,
