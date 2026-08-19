@@ -111,9 +111,12 @@ void arrayTypeCheck(AnalysisState *pstate, ArrayNode *node) {
     // it is not a type at all -- not even behind a reference, which is the one
     // place an opaque type is otherwise usable. This is the only site that
     // refuses that, since a reference to such an array asks nothing of it.
-    char *elemnosize = itypeNoSizeCause(*elemtypep);
+    INode *elemroot;
+    char *elemnosize = itypeNoSizeCause(*elemtypep, &elemroot);
     if (elemnosize) {
-        errorMsgNode((INode*)node, ErrorNoSize, "An array cannot be made of this type: it %s.", elemnosize);
+        errorMsgNode((INode*)node, ErrorNoSize, "An array cannot be made of this element type: %s %s.",
+            itypeName(elemroot), elemnosize);
+        itypeNoSizeExplain(*elemtypep);
     }
     // If the element's type if ThreadBound or Move, so is the array's type
     ITypeNode *elemtype = (ITypeNode*)itypeGetTypeDcl(*elemtypep);

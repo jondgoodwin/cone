@@ -86,8 +86,11 @@ void fieldDclTypeCheck(AnalysisState *pstate, FieldDclNode *name) {
     // large it is. This is where a recursive struct is caught -- and where one
     // that recurses through a reference is not, since the reference answers for
     // itself without asking what it points at.
-    char *nosize = itypeNoSizeCause(name->vtype);
-    if (nosize)
-        errorMsgNode((INode*)name, ErrorNoSize, "Field %s cannot be held by value: its type %s.",
-            &name->namesym->namestr, nosize);
+    INode *nosizeroot;
+    char *nosize = itypeNoSizeCause(name->vtype, &nosizeroot);
+    if (nosize) {
+        errorMsgNode((INode*)name, ErrorNoSize, "Field %s cannot be held by value: %s %s.",
+            &name->namesym->namestr, itypeName(nosizeroot), nosize);
+        itypeNoSizeExplain(name->vtype);
+    }
 }

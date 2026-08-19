@@ -121,10 +121,13 @@ void varDclTypeCheck(AnalysisState *pstate, VarDclNode *name) {
 
     // A variable holds its type by value, so that type has to be able to say how
     // large it is
-    char *nosize = itypeNoSizeCause(name->vtype);
-    if (nosize)
-        errorMsgNode((INode*)name, ErrorNoSize, "Variable %s cannot be held by value: its type %s.",
-            &name->namesym->namestr, nosize);
+    INode *nosizeroot;
+    char *nosize = itypeNoSizeCause(name->vtype, &nosizeroot);
+    if (nosize) {
+        errorMsgNode((INode*)name, ErrorNoSize, "Variable %s cannot be held by value: %s %s.",
+            &name->namesym->namestr, itypeName(nosizeroot), nosize);
+        itypeNoSizeExplain(name->vtype);
+    }
 }
 
 // Perform data flow analysis

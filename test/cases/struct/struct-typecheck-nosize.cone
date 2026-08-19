@@ -1,0 +1,73 @@
+// Every way a declaration can name a type that cannot say how large it is.
+//
+// One family, one diagnostic, and its own file rather than a share of
+// struct-typecheck-decl: the reasons differ but the fact does not, so what a
+// reader wants side by side is which cause produced which message and which
+// remedy it named. struct-opaque is the other half of the opaque cases -- what
+// such a type may do, which is be pointed at.
+//
+// A size is missing infectiously as often as directly, so the message names the
+// declaration that actually lacks the size rather than the type the field
+// happens to hold, and uncounted lines below it name the hops in between. Those
+// lines carry no code and so are not annotated here; the annotation is on the
+// diagnostic that counts.
+
+// -------- still being laid out --------
+
+// A struct's field may not be the struct itself: the value would have to
+// contain a copy of itself. Held through a reference it is legal and is how a
+// linked list is written, which struct-recursive covers.
+struct SelfHolding {
+  inner SelfHolding  //~ ErrorNoSize:3 "still being laid out"
+}
+
+// The same one level down. An array's size is its length times its element's,
+// so an array of a struct still being laid out has none either -- and the array
+// is what reports, because it asks its element that question when the array type
+// is formed, which is earlier and nearer the cause than the field holding it.
+// Nothing asked at all before that, and laying this struct out ran the compiler
+// out of stack.
+struct SelfArraying {
+  v i64
+  more [2; SelfArraying]  //~ ErrorNoSize:8 "still being laid out"
+}
+
+// -------- declared @opaque --------
+
+struct @opaque Handle {
+}
+
+// A field holds its type by value
+struct Holder {
+  h Handle   //~ ErrorNoSize:3 "is declared @opaque"
+}
+
+// So does a variable
+fn inVariable() {
+  mut h Handle   //~ ErrorNoSize:7 "is declared @opaque"
+  return
+}
+
+// Opacity is infectious, so a field may name a type that is unsized only
+// because of something further down. The diagnostic names Handle, which is
+// where the author has to go, not Nested, which is where they already are.
+struct Nested {
+  h Handle   //~ ErrorNoSize:3 "is declared @opaque"
+}
+
+struct Outer {
+  n Nested   //~ ErrorNoSize:3 "is declared @opaque"
+}
+
+// An array of them is refused where the array is written rather than where it
+// is held, because the array is then a type with no size. That is also why the
+// reference below is refused: a reference to an opaque type is the whole point
+// of the type, but a reference to an *array* of them still needs the array to
+// be a type, and it is not.
+struct Slots {
+  many [4; Handle]   //~ ErrorNoSize:8 "is declared @opaque"
+}
+
+fn behindRef(p &[4; Handle]) i32 {   //~ ErrorNoSize:17 "is declared @opaque"
+  0
+}
