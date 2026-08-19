@@ -2,8 +2,12 @@ Design: `design/Analysis.md` builds this design one example at a time, deriving
 each mechanism from the program that forces it, and measuring current behaviour
 rather than reading it. Its sections 1-9 are the design in order; 10 is
 resolution order per declaration kind; 12 is what changes per node; 13 is
-reference, including the five defects it closes (13.4) and the open decisions
-(13.5). Read it before starting.
+reference, including the five defects it closes (13.4) and the questions that
+were settled deliberately (13.5). Read it before starting.
+
+Plan: `workitems/Analysis re-factor plan.md` sequences the work into eight
+commits, each green and revertable on its own, with what each changes, why it
+is safe at that point, and which test expectations it moves.
 
 1. Create AnalysisState from folding TypeCheckState into NameResState
 	1. Rename NameResState to AnalysisState

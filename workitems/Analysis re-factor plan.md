@@ -1,0 +1,293 @@
+Sequenced implementation plan for [[Analysis re-factor]]. The design is
+`design/Analysis.md`; this is the order it gets built in and how each step is
+proved. Read the design first — this plan names mechanisms without re-explaining
+them, and its rule numbers are that note's.
+
+## How this plan is used
+
+One branch, one commit per stage. Not pull requests: the branch is read before
+merge either way, and a stack of dependent PRs needs rebasing every time a stage
+changes. Each commit is green and revertable on its own, so a stage that turns
+out wrong costs one commit rather than the sequence.
+
+**A stage is done when all four hold:**
+
+1. The build is clean.
+2. `python test/run.py` is green — 119 scenarios / 120 runs at the start, plus
+   whatever the stage adds.
+3. `python test/run.py --bless` records no drift, *or* the drift is named and
+   defended in the commit message.
+4. `python test/run.py --coverage` is no worse — 57 of 60 at the start.
+
+**A stale `conec` fails good sources in ways indistinguishable from a
+regression.** Build before believing any failure; `--build` builds first.
+
+## Sequencing principles
+
+1. **Mechanical before semantic.** Changes that cannot alter behaviour go first,
+   so the suite proves them against a known-good base. If a rename breaks
+   something, that is a fact about the rename, not about the design.
+2. **Add capability before anything relies on it.** The flags are extended as a
+   no-op commit, then the demand that needs them arrives. If the marking is
+   wrong, it surfaces where nothing else changed.
+3. **Fix the hazard before removing the guard.** The instantiation limit lands
+   before rule 4, because rule 4 removes the blanket refusal that currently
+   catches recursive generics by accident.
+4. **Remove scaffolding last and alone**, so a dependency nobody saw costs one
+   revert.
+5. **Every fix commit carries the scenario that proves it.** The five defects in
+   design section 13.4 have no coverage. Each arrives with its own case; that is
+   what makes "no worse than before" checkable rather than asserted.
+6. **Changed expectations are defended in the commit message.** Rewriting a
+   scenario because behaviour genuinely changed is correct. Rewriting one to
+   silence a failure is not, and the message is where the difference is argued.
+7. **Plan for being wrong.** Re-read the code against this plan at each stage
+   boundary rather than trusting it end to end. The design note was built by
+   measuring rather than reading, and several confident readings still turned out
+   wrong; this plan has had no such scrutiny.
+
+## Scope check
+
+The only new algorithm in the plan is a depth counter on instantiation. Nothing
+else adds a data structure, an IR field, or a traversal. If a stage seems to need
+one, that is a signal the design mis-read something — stop and raise it rather
+than inventing storage.
+
+---
+
+## Stage 1 — Fold the analysis state
+
+**Goal.** One `AnalysisState` replacing `NameResState` and `TypeCheckState`.
+Item 1 of the work item.
+
+**Changes.** `ir/ir.h`: merge the two structs — the union is `mod`, `typenode`,
+`loopblock`, `fn`, `scope`, `flags`. `conec.c`: one state, and **initialise
+`scope`** — today `tstate.scope` is never set, and `blockTypeCheck` increments it
+while `clonePushState` consumes it. Then the signatures: 87 files, 201
+occurrences, 189 parameter declarations.
+
+The two dispatchers stay separate. Only the state merges; `inodeNameRes` and
+`inodeTypeCheck` are untouched.
+
+**Why safe here.** Pure rename and merge. No behaviour depends on it.
+
+**Expectation changes.** None.
+
+**Signal of a bad reading.** Any scenario changing behaviour. A merge of two
+structs cannot legitimately do that, so a diff in `--bless` here means a field
+collided or `scope` was being read as garbage in a way something depended on.
+
+---
+
+## Stage 2 — Rename the flags
+
+**Goal.** `TypeChecking` → `Analyzing`, `TypeChecked` → `Analyzed`. The names
+assume the marked thing is a type; after stage 3 most marked things are not.
+
+**Changes.** 9 sites: `ir/inode.h` (definitions), `inode.c` (the guard and the
+set), `exp/nameuse.c`, `types/struct.c` (the clone clear, and the set at the
+layout point).
+
+While here: the comment at `structTypeCheck`'s set says "we know enough about the
+type at this point". Make it say enough for *what* — laid out, method set
+complete, methods themselves not yet analyzed. The whole scheme rests on that
+placement.
+
+**Why safe here.** Rename only.
+
+**Expectation changes.** None.
+
+---
+
+## Stage 3 — Mark every declaration
+
+**Goal.** `Analyzing`/`Analyzed` set on `FnDcl`, `VarDcl`, `FieldDcl` and
+`ConstDcl` as well as type nodes and modules, with an early return when
+`Analyzed`. Rule 2, made general.
+
+**Changes.** `inode.c`, the guard at the top of `inodeTypeCheck` — currently
+conditioned on `isTypeNode(*node) || ModuleTag`. Extend the condition; keep the
+in-progress branch refusing exactly as it does now.
+
+**Why safe here.** Nothing is visited twice today, so both the early return and
+the refusal are unreachable for the new node kinds. The commit proves the marking
+is placed correctly while nothing depends on it.
+
+**Probe this before writing it.** That no declaration is currently visited twice
+is a reading, not a measurement. Instrument the guard to report when it would
+have returned early or refused, run the suite, and confirm silence. Design
+section 13.4 describes the tracing method.
+
+**Expectation changes.** None.
+
+**Signal of a bad reading.** The probe firing. If some declaration *is* visited
+twice today, that is either a defect or a shared node, and it has to be
+understood before demand multiplies the ways in.
+
+---
+
+## Stage 4 — Bound instantiation depth
+
+**Goal.** Rule 7. Fixes a live compiler crash, and lands before the guard that
+currently hides it is removed in stage 7.
+
+**Changes.** `ir/meta/generic.c` around `genericInstantiate`, and the macro
+expansion path in `ir/meta/macro.c`: count depth, refuse past `TypeCheckLoopMax`
+(declared in `ir.h`, currently with no call site anywhere). A new `ErrorCode` is
+likely — decide against design section 13.5's reasoning, and register it in
+**both** `shared/error.h` and `test/codes.toml`; next free is 1067, never
+renumber. `--bless-codes` regenerates the table.
+
+**Scenario.** `test/cases/generic/` — the recursive generic function that today
+dies with a stack overflow and no diagnostic:
+
+```cone
+fn recur[T](x T) T { recur[Box[T]](Box[T][x]).v }
+struct Box[T] { v T }
+fn f() i64 { recur[i64](3i64) }
+```
+
+**Why safe here.** Independent of everything above and below. On its own it turns
+a crash into a diagnostic.
+
+**Expectation changes.** None; one case added.
+
+---
+
+## Stage 5 — Demand from value name uses
+
+**Goal.** Rule 1 for the declarations that lack it. This is the ordering defect
+the work item names.
+
+**Changes.** `exp/nameuse.c`, `nameUseTypeCheck`: analyze the declaration rather
+than reading whatever is in its `vtype`, as `nameUseTypeCheckType` already does.
+
+Rule 6 becomes reachable in the same commit — a constant demanded while it is
+`Analyzing` and its type is still `unknownType` is circular. That is
+`ErrorCircular`, the second new code, in `error.h` and `codes.toml`.
+
+**Also audit the walk context** (rule 8). Demand now leaves from many more
+places. `structTypeCheck` saves and restores `typenode`, `fnDclTypeCheck` saves
+and restores `fn`; check every declaration entry saves what it changes, and that
+`loopblock` and `scope` are right across a jump.
+
+**Scenarios.** Two: the forward reference to an inferred global (design section
+1), and the circular constant (section 7).
+
+**Why safe here.** Stage 3 supplies the flags this depends on, so a global
+referenced twice is analyzed once.
+
+**Expectation changes.** Watch for scenarios that depended on a global being
+untyped at the moment a function body read it. None is known.
+
+---
+
+## Stage 6 — Remove the signature pre-pass
+
+**Goal.** Delete `modTypeCheck`'s signature pre-pass and the `FlagSigError` flag.
+Stage 5 replaced what they were for.
+
+**Changes.** `ir/stmt/module.c`, `modTypeCheck`: both loops collapse to one that
+analyzes each declaration. `inode.h`: `FlagSigError` (`0x0100`) goes.
+
+**Keep the behaviour the flag carried.** It stops a declaration whose signature
+failed from having its body checked. That is no longer cross-pass state — it is
+local control flow inside one declaration's analysis, the same shape
+`fnDclTypeCheck` already uses to skip flow after an error. **The flag goes; the
+skip stays.** Without it this stage produces extra cascading diagnostics.
+
+**Why safe here.** Last of the structural changes that can be reverted in
+isolation, and only after demand demonstrably replaces what it removes.
+
+**Expectation changes.** Watch `--bless` closely. Drift here almost certainly
+means the skip above was not preserved.
+
+---
+
+## Stage 7 — Read the in-progress state
+
+**Goal.** Rules 4 and 5. Recursive data structures become expressible.
+
+**Changes.** `inode.c`, the in-progress branch of `inodeTypeCheck`: instead of
+`ErrorRecurse` whatever was asked, answer — the type for a type question, "no
+known size" for a size question. `ErrorNoSize` is the new code, its message
+naming which of the five causes applies (design section 6): `@opaque`, a
+non-`SameSize` trait, a function signature, infection from an unsized field, or
+still being laid out. Retire `ErrorRecurse` from the layout path, and move
+`types/struct.c`'s field check and `stmt/vardcl.c`'s variable check off
+`ErrorInvType`'s "must be concrete and instantiable".
+
+**Scenarios.** The three forms that are legal and currently refused — the linked
+list, and both mixed and pure mutual-reference pairs (design section 5) — as a
+`run` scenario if a list can be built and traversed, otherwise `compile`.
+
+**Expectation changes, all three known:**
+
+- `test/cases/struct/struct-typecheck-decl.cone:46` asserts
+  `ErrorRecurse:9 "Recursive types are not supported"` on `inner SelfHolding`.
+  That is a by-value self-hold, still an error; the code and message change.
+- `test/cases/ref/ref-typecheck-borrow.cone` and
+  `test/cases/trait/trait-typecheck-vref.cone` assert "concrete and
+  instantiable"; the code changes.
+
+**Why safe here.** Stage 4 already bounds instantiation. Without it this stage
+turns a spurious error into a stack overflow, because the blanket refusal being
+removed is what catches a recursive generic type today.
+
+**Signal of a bad reading.** A scenario failing that this list does not name. The
+corpus records unenforced rules by establishing the opposite, so a case may exist
+that asserts something this stage correctly invalidates — rewrite it and say why,
+per principle 6.
+
+---
+
+## Stage 8 — Lowering out of name resolution
+
+**Goal.** Item 2.6, rewritten on the work item to say what it asks.
+
+**Changes.** `exp/fncall.c`, `fnCallNameRes`: the `<-` value-tuple expansion moves
+to type check, where its `borrowMutRef` gets a real type instead of the
+`unknownType` it is handed today. `exp/nameuse.c`, `nameUseNameRes`: the
+bare-name-to-`self.member` rewrite moves to type check, where it merges with the
+copy `fnCallTypeCheck` already performs.
+
+**Why safe here.** Independent of the rest. It is last because the second half is
+a merge, and merging into `fnCallTypeCheck` is easier once stage 7 has made its
+preconditions explicit.
+
+**Expectation changes.** None expected. The `<-` case has coverage; check which
+group before starting.
+
+---
+
+## After the stages
+
+Not part of this work, recorded so they are not lost:
+
+- **Suppressing repeated diagnostics** — the second half of rule 5. Needs a
+  `Failed` state per declaration and a test at every reporting site. Design
+  section 13.2 says what it would buy.
+- **Migrating the eight type properties out of `flags`** into `ITypeNodeHdr`.
+  [[IR refactor]]'s call; this work neither needs it nor makes it worse.
+- **Giving the parser distinct node shapes for distinct syntaxes**, which is what
+  would actually shrink `fnCallTypeCheck`. [[Lexer and Parser]] and
+  [[IR refactor]].
+- **Item 3's sub-steps 3.4 to 3.8** prescribe a manual topological order within a
+  module. Demand makes that unnecessary. Confirm with Jon that they are struck
+  rather than deferred.
+- **`assert(0)` is a no-op** in the release build — 23 sites fall through into
+  the next switch case. [[Compiler]] owns what replaces them. Do not convert them
+  as a side effect of this work.
+
+## When the stages are done
+
+- **Rewrite `design/Analysis.md` as an as-is description.** It is a before/after
+  argument, built to justify a change. Once the change has landed, the "today"
+  halves are history and the note should describe how analysis works, full stop:
+  the rules, the resolution order per declaration kind, and what each flag means.
+  The measured defects in 13.4 become scenarios in the corpus and can go; 13.5's
+  settled questions are worth keeping, since they say what was decided against.
+- **This plan is disposable.** Discard it, or append whatever it turned out to
+  teach to [[Analysis re-factor]]. It exists to sequence the work, not to
+  describe the result.
+- **Delete `handoff-analysis-refactor.md`** from the repository root.
