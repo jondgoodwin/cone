@@ -7,6 +7,7 @@ is needed rather than loading the whole folder.
 
 | Document | Contents |
 | --- | --- |
+| [Analysis](Analysis.md) | How name resolution, type checking and flow analysis run today and how they would run on demand, built up one example at a time; resolution order within each declaration kind, what changes per node, and the defects the change closes. |
 | [IR Nodes](IR%20Nodes.md) | Overview of compiler IR node groups, the major node tags used across semantic passes, the common source-location and node metadata fields, the three type sentinels and what `--checktree` verifies. |
 | [Names and Namespaces](Names%20and%20Namespaces.md) | Current and intended rules for names, lexical scopes, module and type namespaces, lookup, visibility, imports, aliases, overloading, and a source-code manifest for the implementation. |
 | [Return](Return.md) | Focused notes for the `return` statement IR node, including its expression payload and placement restriction. |

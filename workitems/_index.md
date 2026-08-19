@@ -54,7 +54,7 @@
 **Ecosystem**
 - [[Compiler]] Components
 	- [[Lexer and Parser]] [[Syntax - Aggregating operators]]
-	- [[Analysis re-factor]]
+	- [[Analysis re-factor]] — design in `design/Analysis.md`
 	- Generation: [[LLVM Generation]] and [[C-ABI Generation]]
 	- Defects the test suite found, by the decision each needs:
 		- [[Ownership memory safety]] — done; see `workitems/done/`

@@ -1,0 +1,615 @@
+
+Analysis is the work between parsing and generation: binding names to
+declarations, establishing types, and checking flow rules for ownership,
+permissions and lifetimes.
+
+This note builds the design one example at a time. Each section starts from a
+program, shows what the compiler does with it today, and derives the one
+mechanism that program forces. Sections 10 to 13 are reference: resolution order
+per declaration kind, a per-node summary of what changes, the rules collected,
+and what was measured.
+
+Claims about current behaviour were measured against the compiler, not read from
+it. Section 13.2 says how to re-measure. Everything else is design, and is the
+subject of [[Analysis re-factor]].
+
+## 1. The problem, in three lines
+
+```cone
+fn early() i64 { later }    // Error 1013: return expression type does not match
+mut later = 5i64
+```
+
+Reverse the two lines and it compiles. Give `later` an explicit type and it
+compiles either way.
+
+Nothing is wrong with the program. `early` is checked before `later` has been
+looked at, so it is checked against a type that does not exist yet.
+
+## 2. The core idea
+
+When analysis reaches a name it does not yet know, it analyzes that name's
+declaration to completion, then carries on where it left off.
+
+Applied to section 1: checking `early`'s body reaches `later`, so `later` is
+analyzed — its initializer is a literal, so its type becomes `i64` — and then
+`early`'s body continues against a type that is now known. Source order stops
+mattering.
+
+**The compiler already does this.** Not for globals, but for types. Given:
+
+```cone
+fn main() i64 {
+  mut p = Point[1i64, 2i64]
+  (&p).sum() + gLimit
+}
+
+struct Point {
+  x i64
+  y i64
+  fn sum(self &) i64 { self.x + self.y }
+}
+
+mut gLimit i64 = 10i64
+```
+
+tracing what analysis enters, and in what order, produces:
+
+```
+typecheck fn     main
+typecheck var    p
+typecheck struct Point      <-- demanded from inside main's body
+typecheck field  y          <-- fields run backwards
+typecheck field  x
+typecheck fn     sum
+typecheck var    self
+cached    struct Point
+flow      fn     sum        <-- sum's flow analysis, inside main's type check
+flow      fn     main
+cached    struct Point
+typecheck var    gLimit     <-- never demanded; arrives in source order
+```
+
+`Point` is analyzed *completely* — fields, methods, and the flow analysis of
+those methods — from the middle of `main`'s body, at the moment `main` first
+needs it. That is this design, working, for one kind of declaration.
+
+`gLimit` is not. It is reached only when the source-order walk arrives, after
+`main` has been type checked *and* flow analyzed.
+
+**The whole difference is one line.** A name use of a type lands in
+`nameUseTypeCheckType`, a name use of a value in `nameUseTypeCheck`:
+
+| Function | What it does with the declaration it names |
+| --- | --- |
+| `nameUseTypeCheckType` | `inodeTypeCheckAny(pstate, dclnode)` — analyzes it now |
+| `nameUseTypeCheck` | `name->vtype = ((IExpNode*)name->dclnode)->vtype` — reads whatever is there |
+
+So this is not new machinery. It is machinery that reaches one node family.
+
+**What props up the other family today.** `modTypeCheck` runs a signature
+pre-pass over every declaration so forward references have *something* to read,
+then a body pass, marking any declaration whose signature failed with
+`FlagSigError` so the body pass skips it. The pre-pass cannot infer:
+
+```c
+if (varnode->vtype != unknownType)
+    inodeTypeCheckAny(pstate, &varnode->vtype);
+```
+
+A global whose type comes from its initializer is deliberately left
+`unknownType`. Hence section 1. The pre-pass, `FlagSigError`, and the
+`unknownType` checks that cope with a half-analyzed declaration all exist to
+support source order, and all become unnecessary.
+
+> **Rule 1.** Reaching a name analyzes its declaration before continuing.
+
+## 3. Broadening: do not analyze twice
+
+```cone
+fn a() i64 { shared() }
+fn b() i64 { shared() }
+fn shared() i64 { 7 }
+```
+
+`a` demands `shared`. Then `b` demands `shared` again. Analyzing it twice is not
+merely wasted work — analysis lowers and replaces nodes, so a declaration
+analyzed twice is corrupted.
+
+So each declaration records that it is done, and a demand for a finished
+declaration returns immediately. The trace in section 2 shows this already
+working: `cached struct Point` is the second and third demands returning without
+work.
+
+> **Rule 2.** A finished declaration answers from what it recorded. — flag
+> `Analyzed`
+
+## 4. Broadening: what if it is already being analyzed?
+
+```cone
+fn even(n i64) i64 { if n == 0 { 1 } else { odd(n - 1) } }
+fn odd(n i64) i64 { if n == 0 { 0 } else { even(n - 1) } }
+```
+
+Analyzing `even` reaches `odd`, which reaches `even` — which is not finished.
+Rule 2 does not apply. Yet this compiles today and should.
+
+It works because of *where* the recursion lands. A function's analysis fills in
+its signature before it starts its body, so when the demand comes back around,
+`even`'s signature is already there. The body is not, and nobody needs it: a
+call needs the callee's signature, never its body.
+
+That generalises into the invariant the whole design rests on:
+
+> **Rule 3.** A declaration establishes its own type before analyzing anything
+> that could refer back to it. — flag `Analyzing`
+
+`fnDclTypeCheck` already works this way. What is missing is that nothing *states*
+it, so a node method that filled in a type only after checking a body would break
+demand everywhere with no local sign of it.
+
+Note what this means for the two flags: `Analyzing` does not mean "refuse". It
+means "ask me for my type, not my body". Today the compiler treats it as a trap,
+and section 5 is what that costs.
+
+## 5. Broadening: when re-entry *is* fatal
+
+```cone
+struct A { b B }
+struct B { a A }
+```
+
+`A` needs `B`'s size to lay out its field. `B` needs `A`'s size. Neither can
+answer. This must be an error — the two are infinitely large.
+
+But this is a linked list, and must not be:
+
+```cone
+struct S {
+  v i64
+  next &S
+}
+```
+
+**Today both are refused**, with `ErrorRecurse`, because re-entering an
+unfinished declaration is treated as failure regardless of what was asked. Cone
+cannot express a linked list or a tree.
+
+The distinction is not about recursion. It is about size, and it belongs to the
+type being asked rather than to the field asking:
+
+| Type | Answers its size from |
+| --- | --- |
+| a number, permission, or other primitive | itself |
+| a reference or pointer, `&T` / `*T` | itself — pointer size, whatever `T` is |
+| an array `[n; T]` | `n`, and `T`'s size |
+| a nominal type | its own settled layout |
+| a nominal type still being laid out | it cannot |
+
+A reference answers on its own behalf and never consults its target. That one
+rule settles every case without the field having to know which case it is in:
+
+- `A { b B }`, `B { a A }` — `A` asks `B`, which asks `A` mid-layout. Error,
+  reported at `B`'s field `a`.
+- `A { b B }`, `B { a &A }` — `B`'s field is a reference, so `B` completes and
+  `A` gets its size. **Legal.**
+- `A { b &B }`, `B { a &A }` — neither asks the other. **Legal.**
+- `S { v i64; next &S }` — `S` never asks itself. **Legal.** A linked list.
+
+The last three are refused today.
+
+There is deliberately no recursion check here. An unfinished struct has no size,
+a finished one does, and the diagnostic belongs to the field that needed one.
+That is also the better error: it names what is wrong and points at the field
+the author can change.
+
+> **Rule 4.** A field asks its type for a size. A type still being laid out has
+> none, and the field that asked reports it. — flag `SizeKnown`
+
+**`SizeKnown` is not `Analyzed`.** A method may use its own type by value —
+`fn twin(self) Self` — so the size has to be available before the type's methods
+are checked. `structTypeCheck` already sets `TypeChecked` early for exactly this
+reason, commented "we know enough about the type at this point", which makes
+"done" a lie about the methods. Splitting the two lets `Analyzed` mean what it
+says. (This overload causes no live defect: measured, a method may call one
+declared after it, in either order.)
+
+## 6. Broadening: the other four ways a size is missing
+
+```cone
+struct @opaque Handle { }
+struct Wrapper { h Handle }   // Error 1013: Field's type must be concrete and instantiable
+struct Outer { w Wrapper }    // Error 1013: Field's type must be concrete and instantiable
+fn f() { mut o Outer }        // Error 1013: Variable's type must be concrete and instantiable
+```
+
+One mistake, three diagnostics, and none of them mentions `Handle` or says what
+is wrong with it.
+
+Recursion is only one of five reasons a type cannot report a size, and the remedy
+differs for each:
+
+| Cause | Where it comes from | What the author does |
+| --- | --- | --- |
+| declared `@opaque` | `parsetype.c`, the `@opaque` marker | hold it only by reference |
+| a trait that is not `SameSize` | `structTypeCheck` | use a virtual reference, `&<Trait>` |
+| a function signature | `fnSigTypeCheck` | use a reference or a closure |
+| a struct with any unsized field | `structTypeCheck`, infectiously | fix the field — the cause is further down |
+| still being laid out | rule 4 | break the cycle with a reference |
+
+The fourth is why the cause must be *chased*. Opacity is infectious, so the type
+a field names is usually unsized only because of something several levels below
+it, and naming the proximate type tells the author nothing.
+
+Analyzing on demand supplies the chase for free: **the demand stack is the
+explanation.** At the moment a field cannot get a size, the stack from that field
+to the root is the cycle for recursion and the infection path for opacity, so the
+compiler can say:
+
+```
+Field 'w' has no known size, so it cannot be held by value.
+  'Outer.w' has type 'Wrapper'
+  'Wrapper' has no size because its field 'h' has type 'Handle'
+  'Handle' is declared @opaque: its layout is not known to this program
+  Hold it by reference instead
+```
+
+And once `Wrapper` is recorded as unsized-and-reported, `Outer` consumes that
+silently: one mistake, one diagnostic. No phase holds that chain today at the
+moment it would need to print it.
+
+> **Rule 5.** "No known size" carries which of the five causes it is, and the
+> chain that led there. A declaration already reported as bad answers with that
+> and provokes no second diagnostic.
+
+## 7. Broadening: when there is no earlier answer at all
+
+```cone
+const A = B
+const B = A     // compiles clean today
+fn f() i64 { A }
+```
+
+Accepted in silence. The only complaint arrives at the *use*, as a type mismatch
+naming neither constant.
+
+Rule 3 says a declaration establishes its type before anything can recurse. Two
+kinds of declaration cannot: a constant, and a variable or field whose type is
+inferred, both take their type *from* the very thing that might recurse. There is
+no earlier answer to give.
+
+```cone
+mut a = a       // the same shape, for an inferred variable
+```
+
+So for these, re-entry while `Analyzing` is an error naming the circularity —
+detectable without a new flag, since it is exactly "asked for a type, and the
+type is still `unknownType` while under analysis".
+
+> **Rule 6.** A constant or inferred declaration re-entered before its type
+> exists is circular, and says so.
+
+## 8. Broadening: generics and macros
+
+```cone
+fn recur[T](x T) T { recur[Box[T]](Box[T][x]).v }
+struct Box[T] { v T }
+fn f() i64 { recur[i64](3i64) }
+```
+
+This crashes the compiler today — stack overflow, `0xC00000FD`, no diagnostic.
+
+A generic is not analyzed; it is a template, and `structTypeCheck` and
+`fnDclTypeCheck` both return early when `genericinfo` is set. Only *instances*
+are analyzed, each a fresh clone that `genericInstantiate` checks as it builds,
+memoized on `genericinfo->memonodes`. So instantiation is already demand-driven,
+and rules 1 to 7 apply to instances rather than templates.
+
+**But the flags cannot police this.** They find a cycle by returning to the *same
+node*, and a generic instantiating itself at ever-larger arguments never does —
+every instance is a new node with new arguments. Macros expand by the same
+clone-and-check path and are exposed identically.
+
+The type form is caught today, but only by accident:
+
+```cone
+struct Box[T] {
+  v T
+  next &Box[Box[T]]   // Error 1049 today
+}
+```
+
+It is refused because `ErrorRecurse` refuses every re-entry — the same blanket
+rule that refuses the linked list in section 5. **So rule 4 removes the only
+thing standing between this program and the crash above.** The two must land
+together, or a spurious error becomes a stack overflow.
+
+> **Rule 7.** Instantiation depth is bounded by a limit, checked where instances
+> are created. This is in addition to rules 2 and 4, not instead of them.
+
+`TypeCheckLoopMax` (256) and `TypeCheckBlockMax` (1024) are declared in `ir.h`
+for exactly this and have no call site anywhere.
+
+## 9. Broadening: the walk context
+
+Demand means jumping from the middle of a function body into an unrelated struct
+declaration. The state carried along the walk — `fn`, `loopblock`, `scope`,
+`typenode` — all describes somewhere else at that moment.
+
+So entering a declaration saves and resets the walk context rather than
+inheriting it. Merging `NameResState` and `TypeCheckState` into one
+`AnalysisState` is item 1 of [[Analysis re-factor]] and is a safe mechanical
+change on its own, but the merge alone is not sufficient; the reset is the part
+that matters here.
+
+The merge also removes an existing defect by construction: `conec.c` initializes
+`tstate.fn` and `tstate.typenode` but not `tstate.scope`, which
+`blockTypeCheck` increments and `clonePushState` consumes.
+
+> **Rule 8.** Entering a declaration saves and resets the walk context.
+
+## 10. Order of resolution within a declaration
+
+Rules 3 and 4 constrain *when* a declaration answers. This is the order each
+kind establishes things in, which is what makes those answers available at the
+right moment. Steps marked **→** are where a demand can leave and re-enter.
+
+### 10.1 Struct and trait
+
+1. If it is a generic template, stop. Only instances are analyzed.
+2. **→** Analyze the base trait.
+3. Propagate the base trait's closed-type flags (`SameSize`, `HasTagField`).
+   A derived type of a closed trait must be declared in the same module.
+4. Insert a mixin field for the base trait at position 0.
+5. Walk fields **backwards**: expand mixins in place — splicing in the trait's
+   fields and inheriting its methods — and **→** analyze each ordinary field.
+   Backwards so that splicing does not invalidate the position.
+6. Index the fields. Compute infectious flags from them: `ThreadBound`,
+   `MoveType`, `OpaqueType`, `ZeroSizeType`. Identify the tag field.
+7. `final` forces `MoveType`; `clone` clears it. Propagate infection up to base
+   traits.
+8. **Size is now known.** *Today:* sets `TypeChecked`. *Design:* sets
+   `SizeKnown`.
+9. **→** Analyze the methods.
+10. *Design:* sets `Analyzed`, which today happened at step 8.
+
+Steps 2 and 5 are where recursion arrives, and step 8 is why a method at step 9
+may use its own type by value.
+
+### 10.2 Closed traits, unions and variants
+
+A union is not a node kind. It is a trait carrying `HasTagField` or `SameSize`,
+whose variants are structs written inside its body.
+
+Two things follow, and both are simpler than they look:
+
+- **The variant list is complete at parse time.** `parsetype.c` adds each nested
+  struct to the trait's `derived` list and assigns its tag number as it parses.
+  Nothing has to discover variants during analysis.
+- **Analysis never computes a union's size.** `genlSameSizeTrait` determines each
+  variant's size and pads to the largest at *generation* time. So `SizeKnown` for
+  a closed trait means every variant has been analyzed and is itself sized — not
+  that a byte count exists.
+
+The rule that a derived type must live in the same module as its closed trait
+(step 3 above) is what keeps both of these true.
+
+### 10.3 Function and method
+
+1. If it is a generic template, stop.
+2. **→** Analyze the signature: parameters, then return type. **The type is now
+   established** — this is rule 3, and it is why mutual recursion works.
+3. If there is no body, or it is a trait's default method, stop.
+4. Check that a method's `self` parameter matches its enclosing type.
+5. Turn an implicit final-expression return into an explicit one.
+6. **→** Analyze the body.
+7. Run flow analysis on the body — escape, permission, lifetime, move — and skip
+   it if this function raised anything, since flow relies on the types that check
+   was meant to establish.
+
+### 10.4 Variable, field and constant
+
+1. **→** Analyze the permission, then the declared type.
+2. If there is no initializer, the type must have been declared.
+3. **→** Analyze the initializer, coercing it to the declared type; if no type
+   was declared, **the type becomes the initializer's**. This is rule 6's
+   exception: for this shape, steps 1 and 3 are the same step.
+4. A global or parameter requires a literal initializer; so does a field default.
+5. The type must be concrete and instantiable — rule 5's report site.
+
+### 10.5 Module and program
+
+1. **→** Analyze imports first. Includes are not modules and are not visited
+   separately.
+2. *Today:* a signature pre-pass over every declaration, then a body pass
+   skipping anything marked `FlagSigError`. *Design:* neither. Iterate the
+   declarations and analyze each; demand pulls forward whatever it needs.
+
+The driver still visits everything. Demand changes *when* a declaration is
+analyzed, never *whether*, so the set analyzed is order-independent even though
+the sequence is not, and an unreferenced declaration with an error still fails
+the compile.
+
+## 11. What does not change
+
+- **Flow stays terminal, per function.** It already runs at the close of a
+  function's type check, and nothing ever demands a flow result from elsewhere.
+- **Lowering stays where it is.** The concern it raises is doing it twice, and
+  rules 2 and 3 already prevent that: lowering happens inside a declaration's
+  body, each body is analyzed once, and nothing outside demands a body. Lowering
+  also *cannot* move to a pass after a declaration is checked, because it is the
+  typing — `fnCallLowerMethod` sets the call's `vtype` from the method it
+  selects, and the parent expression needs that type.
+- **Locals stay source-ordered.** Everything above concerns declarations in a
+  namespace. Locals are hooked and unhooked during the walk, and `mut a = a`
+  fails at name resolution because the name is not yet in scope.
+- **`fnCallTypeCheck` does not get smaller.** See 12.1.
+
+## 12. Flow change by node
+
+### 12.1 Summary
+
+| Node | Today | Under the design |
+| --- | --- | --- |
+| Program | Two full passes: name resolution over everything, then type check | One pass; iterate modules |
+| Module | Signature pre-pass, then body pass, `FlagSigError` between them | Iterate declarations; demand orders them |
+| Struct / trait | Demand-driven already; one flag pair, every re-entry an error | `SizeKnown` at step 10.1.8, `Analyzed` after methods; re-entry answered per rule 4 |
+| Closed trait | Same | Unchanged — variants come from the parser, size from generation |
+| FnDcl | Signature then body; recursion works by walk order | Same order, now stated as rule 3 |
+| FnSig | Parameters then return type | Unchanged |
+| VarDcl (global) | Type checked in source order; inferred type left `unknownType` by the pre-pass | Analyzed on demand; inferred type resolved when first asked |
+| VarDcl (local) | Source-ordered within its block | Unchanged |
+| FieldDcl | Analyzed during its struct's field walk | Same, and asks its type for a size per rule 4 |
+| ConstDcl | Type comes from its value; circularity undetected | Circularity reported per rule 6 |
+| NameUse → type | `nameUseTypeCheckType` analyzes the declaration | Unchanged — this is the model |
+| NameUse → value | `nameUseTypeCheck` reads `vtype`, whatever is there | Analyzes the declaration, like the type case |
+| FnCall | 272 lines; forces its callee explicitly, propagates `errorType` by hand | Forcing and poisoning become uniform; the rest is unchanged. See 12.2 |
+| Generic / macro | Instance cloned and checked on demand, no depth bound | Same, with rule 7's limit |
+
+### 12.2 Why `fnCallTypeCheck` does not shrink
+
+It is the largest node method in the compiler — 272 lines, plus ~250 in helpers —
+so it is worth being precise about what it gains. Roughly 140 lines of front
+matter, then a 124-line dispatch on the receiver's type.
+
+About a quarter of the front matter goes: the explicit
+`inodeTypeCheckAny(pstate, &node->objfn)` to force the callee, since reading the
+callee's type *is* the demand; the hand-written `inodeIsError` and `errorType`
+propagation, which becomes rule 5's uniform poisoning; the initializer path's
+direct `((FnDclNode*)nameuse->dclnode)->vtype` read, correct today only because
+the walk order happened to analyze it first; and `genericSubstitute`'s "quit if
+that finished processing" protocol.
+
+The rest is not about order. It is one node shape meaning six things — `objfn`
+plus `methfld` serves a call, a method call, an operator, an index, a field
+access and a type constructor, with `FlagIndex`, `FlagBorrow`, `FlagOperator`,
+`FlagLvalOp` and `FlagOpAssgn` telling them apart after the fact. That is why the
+macro check must ask whether `methfld` is NULL to distinguish `TWO + 1` from a
+macro call, and why the receiver dispatch has eight cases. The parser knows which
+syntax it saw and discards the distinction; recovering it is
+[[Lexer and Parser]] and [[IR refactor]] work.
+
+**The gain is decomposability, not line count.** The method is one long sequence
+because each step establishes unstated preconditions for the next. That is the
+defect shape this file has produced before: `((StarNode*)fncall)->vtexp` read
+`methfld` for years because two structs overlap and nothing declared what had to
+hold. With every declaration complete before the call is looked at, the receiver
+cases stop sharing setup and can be separated.
+
+## 13. Reference
+
+### 13.1 The rules
+
+1. Reaching a name analyzes its declaration before continuing.
+2. A finished declaration answers from what it recorded. — `Analyzed`
+3. A declaration establishes its own type before analyzing anything that could
+   refer back to it. — `Analyzing`
+4. A field asks its type for a size; a type still being laid out has none, and
+   the field that asked reports it. — `SizeKnown`
+5. "No known size" carries its cause and its chain, and a declaration already
+   reported as bad provokes no second diagnostic.
+6. A constant or inferred declaration re-entered before its type exists is
+   circular.
+7. Instantiation depth is bounded by a limit.
+8. Entering a declaration saves and resets the walk context.
+
+### 13.2 What has to be stored
+
+Three flags, two of which exist.
+
+`TypeChecking` (`0x4000`) and `TypeChecked` (`0x8000`) already carry rules 2 and
+3, and those bits have no other meaning in node `flags` for any declaration
+family. Their names assume the marked thing is a type and most declarations are
+not, so they want renaming — `Analyzing` and `Analyzed`, or any pair that says
+*analysis*. That belongs with item 1, which is already the change that stops
+calling this work type checking. Two other things change: they must be set on
+every declaration rather than on type nodes and modules only, and `Analyzing`
+must be read rather than always refused.
+
+`SizeKnown` (rule 4) is new and belongs in `ITypeNodeHdr` in `itype.h`, the
+header every type node already shares — it is a property of types, and only types
+are asked. That is also the better home for the eight type properties already
+crowded into `flags` next to per-family bits: `MoveType`, `ThreadBound`,
+`OpaqueType`, `ZeroSizeType`, `TraitType`, `SameSize`, `HasTagField`,
+`NullablePtr`. Their being there is why claiming a bit is hazardous at all —
+`0x0040` once collided with `HasTagField` and silently stopped type checking
+every tagged union. Migrating them is [[IR refactor]]'s call; adding one field for
+`SizeKnown` does not wait on it.
+
+Nothing here needs a declaration-node header or a change to `INodeHdr`.
+
+Rule 6 needs no flag: it is "asked for a type, and the type is still
+`unknownType` while `Analyzing`".
+
+The flags live on the node, not the name — generic and macro instantiation clones
+declarations and each clone is legitimately unanalyzed, which is why
+`cloneStructNode` already clears `TypeChecked | TypeChecking` and would need to
+clear `SizeKnown` too.
+
+### 13.3 What this deletes
+
+- `modTypeCheck`'s signature pre-pass, and with it `FlagSigError`.
+- The `unknownType` checks that cope with a half-analyzed declaration, as
+  distinct from those that mean genuine inference.
+- `ErrorRecurse` as a blanket refusal; rules 4 and 6 replace it.
+- The global name-resolution gate in `doAnalysis`, if type checking a tree with
+  unresolved names becomes well defined — see 13.5.
+
+### 13.4 What was measured, and how to re-measure
+
+Every claim about current behaviour above was produced by running the compiler.
+The trace in section 2 came from temporarily printing declaration-level entry to
+`inodeNameRes`, `inodeTypeCheck` (including its early return when the work is
+already done) and the `blockFlow` call in `fnDclTypeCheck`, then reverting. It
+takes a few minutes and is worth repeating rather than trusting this note after
+the code has moved.
+
+Measured defects this design closes, none of which has a test scenario yet:
+
+| Defect | Section |
+| --- | --- |
+| Forward reference to an inferred global fails | 1 |
+| A linked list, and both mutual-reference forms, are refused | 5 |
+| One unsized root reports once per level, naming no cause | 6 |
+| A circular constant compiles clean and misreports at the use | 7 |
+| A recursive generic crashes the compiler | 8 |
+
+### 13.5 Open decisions
+
+1. Whether removing the name-resolution gate is in scope. It changes what a
+   program with an unresolved name reports, and invalidates the
+   one-stage-per-scenario rule in [Test Suite](Test%20Suite.md) section 2, which
+   would need rewriting with it.
+2. Whether binding the names a declaration mentions is worth tracking separately,
+   or is simply the first step of analyzing it. This note assumes the latter.
+3. What diagnostic carries rule 5. The condition is one — a type that cannot
+   report a size — with five causes, so the likely shape is a single new
+   `ErrorCode` naming the cause and the chain, replacing `ErrorRecurse` here and
+   `ErrorInvType`'s "must be concrete and instantiable". Five separate codes
+   would be indistinguishable to everything but the message.
+4. Whether anything needs a fuller notion of a completed type — inherited methods
+   in place, infectious flags settled — beyond `SizeKnown`. Analysis does not.
+   Generation supplies it for closed traits already (10.2).
+5. What item 2.6 of the work item is for, given section 11 answers the
+   double-lowering concern. Two things are worth confirming during
+   implementation rather than designing around: whether any *expression* node is
+   reachable twice within one declaration's walk, where a declaration-level flag
+   would not see it — `inodeTypeCheck` documents a *type* node in that position,
+   a match pattern and the variable it declares sharing one; and that clone
+   correctness stays its own concern, since the defect that checked every generic
+   instance method twice was a bad `memcpy` in `cloneStructNode`, which no
+   analysis order would have caught.
+
+### 13.6 Hazards for the implementation
+
+- **Diagnostics come out in dependency order**, not source order. Per-line
+  annotations in the test suite are unaffected; anything asserting a count or a
+  sequence is not.
+- **The suite cannot assert an absent check.** Where a rule is unenforced the
+  corpus records it by establishing the opposite, so a scenario that starts
+  failing may be one this work correctly invalidated.
+- **`assert(0)` is a no-op** in the release build: 23 sites compile to nothing
+  under `/DNDEBUG` and fall through into the next switch case. Converting error
+  paths touches the same code; what should replace them is [[Compiler]]'s.
+- **Node `flags` bits are not one namespace.** Check every declaration family
+  before claiming a bit, not just the type block.
