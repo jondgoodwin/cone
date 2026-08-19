@@ -23,7 +23,7 @@ INode *iexpGetTypeDcl(INode *node);
 INode *iexpGetDerefTypeDcl(INode *node);
 
 // Type check node we expect to be an expression. Return 0 if not.
-int iexpTypeCheckAny(TypeCheckState *pstate, INode **from);
+int iexpTypeCheckAny(AnalysisState *pstate, INode **from);
 
 // Return whether it is okay for from expression to be coerced to to-type
 TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constraint);
@@ -35,7 +35,7 @@ int iexpCoerce(INode **from, INode *totypep);
 // Perform full type check on from-node and ensure it is an expression.
 // Then coerce from-node's type to 'to' expected type, if needed
 // Return 1 if type "matches", 0 otherwise
-int iexpTypeCheckCoerce(TypeCheckState *pstate, INode *to, INode **from);
+int iexpTypeCheckCoerce(AnalysisState *pstate, INode *to, INode **from);
 
 // Used by 'if' and 'loop' to infer the type in common across all branches,
 // one branch at a time. Errors on bad type match and returns Match condition.
@@ -50,7 +50,7 @@ int iexpMultiInfer(INode *expectType, INode **maybeType, INode **from);
 // - inferredType is the inferred supertype in common
 // - fromexp is the current expression node whose type is being examined
 // - oldMatch is the current match status on whether all branches match or not
-int iexpMultiCoerceInfer(TypeCheckState *pstate, INode *expectType, INode **inferredType, INode **fromexp, int oldMatch);
+int iexpMultiCoerceInfer(AnalysisState *pstate, INode *expectType, INode **inferredType, INode **fromexp, int oldMatch);
 
 // Return true if an lval, and 0 if not.
 int iexpIsLval(INode *lval);

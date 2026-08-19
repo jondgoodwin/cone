@@ -37,7 +37,7 @@ void ttuplePrint(TupleNode *tuple) {
 }
 
 // Name resolution of the type tuple node
-void ttupleNameRes(NameResState *pstate, TupleNode *tuple) {
+void ttupleNameRes(AnalysisState *pstate, TupleNode *tuple) {
     int tag = -1;
     INode **nodesp;
     uint32_t cnt;
@@ -58,7 +58,7 @@ void ttupleNameRes(NameResState *pstate, TupleNode *tuple) {
 }
 
 // Type check the type tuple node
-void ttupleTypeCheck(TypeCheckState *pstate, TupleNode *tuple) {
+void ttupleTypeCheck(AnalysisState *pstate, TupleNode *tuple) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(tuple->elems, cnt, nodesp))

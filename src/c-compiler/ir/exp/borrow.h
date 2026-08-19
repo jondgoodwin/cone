@@ -26,7 +26,7 @@ int borrowAutoMatches(INode *from, RefNode *totype);
 void borrowPrint(RefNode *node);
 
 // Type check borrow node
-void borrowTypeCheck(TypeCheckState *pstate, RefNode **node);
+void borrowTypeCheck(AnalysisState *pstate, RefNode **node);
 
 // Perform data flow analysis on addr node
 void borrowFlow(FlowState *fstate, RefNode **nodep);

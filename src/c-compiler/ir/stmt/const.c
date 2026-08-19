@@ -41,7 +41,7 @@ void constDclPrint(ConstDclNode *name) {
 }
 
 // Enable name resolution of local variables
-void constDclNameRes(NameResState *pstate, ConstDclNode *name) {
+void constDclNameRes(AnalysisState *pstate, ConstDclNode *name) {
     if (name->vtype)
         inodeNameRes(pstate, &name->vtype);
 
@@ -52,7 +52,7 @@ void constDclNameRes(NameResState *pstate, ConstDclNode *name) {
 }
 
 // Type check constant against its initial value
-void constDclTypeCheck(TypeCheckState *pstate, ConstDclNode *name) {
+void constDclTypeCheck(AnalysisState *pstate, ConstDclNode *name) {
     if (itypeTypeCheck(pstate, &name->vtype) == 0)
         return;
 

@@ -36,10 +36,10 @@ void fnCallPrint(FnCallNode *node);
 // Name resolution on 'fncall'
 // - If node is indexing on a type, retag node as a typelit
 // Note: this never name resolves .methfld, which is handled in type checking
-void fnCallNameRes(NameResState *pstate, FnCallNode **nodep);
+void fnCallNameRes(AnalysisState *pstate, FnCallNode **nodep);
 
 // Type check on fncall
-void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **node);
+void fnCallTypeCheck(AnalysisState *pstate, FnCallNode **node);
 
 // Find the one field or method that accepts the call's receiver and arguments,
 // then lower the node to a function call (objfn+args) or field access (objfn+methfld).

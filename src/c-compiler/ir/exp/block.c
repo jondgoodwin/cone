@@ -78,7 +78,7 @@ void blockPrint(BlockNode *blk) {
 // Called after the statement loop has resolved this block's statements, so every
 // 'continue' in it knows its target, and before the local variables are unhooked,
 // so the copied step can still resolve the loop variable.
-static void blockContinueStep(NameResState *pstate, BlockNode *blk) {
+static void blockContinueStep(AnalysisState *pstate, BlockNode *blk) {
     uint32_t trailing = (blk->flags & FlagLoopStep) ? 1 : 0;
     if (blk->stmts->used <= trailing)
         return;
@@ -106,7 +106,7 @@ static void blockContinueStep(NameResState *pstate, BlockNode *blk) {
 // Handle name resolution and control structure compliance for a block
 // - push and pop a namespace context for hooking local vars & lifetime in global name table
 // - Ensure return/continue/break only appear as last statement in block
-void blockNameRes(NameResState *pstate, BlockNode *blk) {
+void blockNameRes(AnalysisState *pstate, BlockNode *blk) {
     // Set up for break and continue nodes that do not specify a labeled block
     // By default we want to resolve them to inner-most loop block
     BlockNode *svloopblock = pstate->loopblock;
@@ -173,7 +173,7 @@ void blockNameRes(NameResState *pstate, BlockNode *blk) {
 // 3. Performs bidirectional inference to ensure block (and any breaks) return same-typed value
 //    All breaks must resolve to either the expected type or the same inferred supertype
 //    Coercion is performed on breaks as needed to accomplish this, or errors result
-void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
+void blockTypeCheck(AnalysisState *pstate, BlockNode *blk, INode *expectType) {
     INode *inferredType = unknownType;
     TypeCompare match = EqMatch;
     INode **laststmtp = NULL;

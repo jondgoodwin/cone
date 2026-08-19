@@ -67,7 +67,7 @@ void varDclPrint(VarDclNode *name) {
 }
 
 // Enable name resolution of local variables
-void varDclNameRes(NameResState *pstate, VarDclNode *name) {
+void varDclNameRes(AnalysisState *pstate, VarDclNode *name) {
     inodeNameRes(pstate, (INode**)&name->perm);
     if (name->vtype)
         inodeNameRes(pstate, &name->vtype);
@@ -91,7 +91,7 @@ void varDclNameRes(NameResState *pstate, VarDclNode *name) {
 }
 
 // Type check variable against its initial value
-void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
+void varDclTypeCheck(AnalysisState *pstate, VarDclNode *name) {
     itypeTypeCheck(pstate, (INode**)&name->perm);
     if (itypeTypeCheck(pstate, &name->vtype) == 0)
         return;

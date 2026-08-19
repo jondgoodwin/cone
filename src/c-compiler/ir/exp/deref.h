@@ -13,7 +13,7 @@
 void derefPrint(StarNode *node);
 
 // Type check deref node
-void derefTypeCheck(TypeCheckState *pstate, StarNode *node);
+void derefTypeCheck(AnalysisState *pstate, StarNode *node);
 
 // Inject automatic deref node, if node's type is a ref or ptr. Return 1 if dereffed.
 int derefInject(INode **node);

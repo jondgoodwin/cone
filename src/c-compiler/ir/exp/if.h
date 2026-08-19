@@ -22,12 +22,12 @@ INode *cloneIfNode(CloneState *cstate, IfNode *node);
 void ifPrint(IfNode *ifnode);
 
 // if node name resolution
-void ifNameRes(NameResState *pstate, IfNode *ifnode);
+void ifNameRes(AnalysisState *pstate, IfNode *ifnode);
 
 // Type check the if statement node
 // - Every conditional expression must be a bool
 // - if's vtype is specified/checked only when coerced by iexpCoerces
-void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType);
+void ifTypeCheck(AnalysisState *pstate, IfNode *ifnode, INode *expectType);
 
 void ifRemoveReturns(IfNode *ifnode);
 

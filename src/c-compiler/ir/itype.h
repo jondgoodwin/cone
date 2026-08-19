@@ -59,7 +59,7 @@ INode *itypeGetDerefTypeDcl(INode *node);
 INode *iTypeFindFnField(INode *type, Name *name);
 
 // Type check node, expecting it to be a type. Give error and return 0, if not.
-int itypeTypeCheck(TypeCheckState *pstate, INode **node);
+int itypeTypeCheck(AnalysisState *pstate, INode **node);
 
 // Return 1 if nominally (or structurally) identical, 0 otherwise.
 // Nodes must both be types, but may be name use or declare nodes.

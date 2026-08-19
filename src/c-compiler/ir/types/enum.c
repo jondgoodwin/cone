@@ -24,9 +24,9 @@ void enumPrint(EnumNode *node) {
 }
 
 // Name resolution of an enum type
-void enumNameRes(NameResState *pstate, EnumNode *node) {
+void enumNameRes(AnalysisState *pstate, EnumNode *node) {
 }
 
 // Type check an enum type
-void enumTypeCheck(TypeCheckState *pstate, EnumNode *node) {
+void enumTypeCheck(AnalysisState *pstate, EnumNode *node) {
 }

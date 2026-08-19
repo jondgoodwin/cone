@@ -94,7 +94,7 @@ void refPrint(RefNode *node) {
 }
 
 // Name resolution of a reference node
-void refNameRes(NameResState *pstate, RefNode *node) {
+void refNameRes(AnalysisState *pstate, RefNode *node) {
     inodeNameRes(pstate, &node->region);
     inodeNameRes(pstate, (INode**)&node->perm);
     inodeNameRes(pstate, &node->vtexp);
@@ -109,7 +109,7 @@ void refNameRes(NameResState *pstate, RefNode *node) {
 }
 
 // Type check a reference node
-void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
+void refTypeCheck(AnalysisState *pstate, RefNode *node) {
     if (node->perm == unknownType)
         node->perm = newPermUseNode(node->vtexp->tag == FnSigTag ? opaqPerm :
         (node->region == borrowRef ? roPerm : uniPerm));
@@ -128,7 +128,7 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
 }
 
 // Type check a virtual reference node
-void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
+void refvirtTypeCheck(AnalysisState *pstate, RefNode *node) {
     if (node->perm == unknownType)
         node->perm = newPermUseNode(node->region == borrowRef ? roPerm : uniPerm);
     itypeTypeCheck(pstate, &node->region);

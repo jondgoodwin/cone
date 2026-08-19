@@ -31,13 +31,13 @@ void ptrPrint(StarNode *node) {
 }
 
 // Name resolution of a pointer type
-void ptrNameRes(NameResState *pstate, StarNode *node) {
+void ptrNameRes(AnalysisState *pstate, StarNode *node) {
     inodeNameRes(pstate, &node->vtexp);
     node->tag = isTypeNode(node->vtexp) ? PtrTag : DerefTag;
 }
 
 // Type check a pointer type
-void ptrTypeCheck(TypeCheckState *pstate, StarNode *node) {
+void ptrTypeCheck(AnalysisState *pstate, StarNode *node) {
     if (itypeTypeCheck(pstate, &node->vtexp) == 0)
         return;
 }

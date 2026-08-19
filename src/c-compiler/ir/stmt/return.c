@@ -42,7 +42,7 @@ void returnPrint(BreakRetNode *node) {
 }
 
 // Name resolution for return
-void returnNameRes(NameResState *nstate, BreakRetNode *retnode) {
+void returnNameRes(AnalysisState *nstate, BreakRetNode *retnode) {
     inodeNameRes(nstate, &retnode->exp);
 }
 
@@ -83,7 +83,7 @@ void returnFlow(BreakRetNode *retnode) {
 // Related analysis for return elsewhere:
 // - Block ensures that return can only appear at end of block
 // - NameDcl turns fn block's final expression into an implicit return
-void returnTypeCheck(TypeCheckState *tstate, BreakRetNode *retnode) {
+void returnTypeCheck(AnalysisState *tstate, BreakRetNode *retnode) {
     // If we are returning the value from an 'if', recursively strip out any of its path's redundant 'return's
     if (retnode->exp->tag == IfTag)
         ifRemoveReturns((IfNode*)(retnode->exp));

@@ -41,24 +41,24 @@ void logicPrint(LogicNode *node) {
 }
 
 // Name resolution of not logic node
-void logicNotNameRes(NameResState *pstate, LogicNode *node) {
+void logicNotNameRes(AnalysisState *pstate, LogicNode *node) {
     inodeNameRes(pstate, &node->lexp);
 }
 
 // Type check not logic node
-void logicNotTypeCheck(TypeCheckState *pstate, LogicNode *node) {
+void logicNotTypeCheck(AnalysisState *pstate, LogicNode *node) {
     if (0 == iexpTypeCheckCoerce(pstate, (INode*)boolType, &node->lexp))
         errorMsgNode(node->lexp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
 }
 
 // Name resolution of logic node
-void logicNameRes(NameResState *pstate, LogicNode *node) {
+void logicNameRes(AnalysisState *pstate, LogicNode *node) {
     inodeNameRes(pstate, &node->lexp);
     inodeNameRes(pstate, &node->rexp);
 }
 
 // Analyze logic node
-void logicTypeCheck(TypeCheckState *pstate, LogicNode *node) {
+void logicTypeCheck(AnalysisState *pstate, LogicNode *node) {
     if (0 == iexpTypeCheckCoerce(pstate, (INode*)boolType, &node->lexp))
         errorMsgNode(node->lexp, ErrorInvType, "Conditional expression must be coercible to boolean value.");
     if (0 == iexpTypeCheckCoerce(pstate, (INode*)boolType, &node->rexp))

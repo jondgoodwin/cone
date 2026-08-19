@@ -53,7 +53,7 @@ void pgmPrint(ProgramNode *pgm) {
 }
 
 // Name resolution of the program node
-void pgmNameRes(NameResState *pstate, ProgramNode *pgm) {
+void pgmNameRes(AnalysisState *pstate, ProgramNode *pgm) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(pgm->modules, cnt, nodesp)) {
@@ -62,7 +62,7 @@ void pgmNameRes(NameResState *pstate, ProgramNode *pgm) {
 }
 
 // Type check the program node
-void pgmTypeCheck(TypeCheckState *pstate, ProgramNode *pgm) {
+void pgmTypeCheck(AnalysisState *pstate, ProgramNode *pgm) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(pgm->modules, cnt, nodesp)) {

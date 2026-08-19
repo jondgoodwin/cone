@@ -24,10 +24,10 @@ INode *cloneStarNode(CloneState *cstate, StarNode *node);
 void ptrPrint(StarNode *node);
 
 // Name resolution of a pointer type
-void ptrNameRes(NameResState *pstate, StarNode *node);
+void ptrNameRes(AnalysisState *pstate, StarNode *node);
 
 // Type check a pointer type
-void ptrTypeCheck(TypeCheckState *pstate, StarNode *name);
+void ptrTypeCheck(AnalysisState *pstate, StarNode *name);
 
 // Compare two pointer signatures to see if they are equivalent
 int ptrEqual(StarNode *node1, StarNode *node2);

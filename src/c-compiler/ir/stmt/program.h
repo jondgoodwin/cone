@@ -24,8 +24,8 @@ ModuleNode *pgmFindMod(ProgramNode *pgm, Name *modname);
 // Add a new module to the program
 ModuleNode *pgmAddMod(ProgramNode *pgm, int16_t flags);
 
-void pgmNameRes(NameResState *pstate, ProgramNode *mod);
+void pgmNameRes(AnalysisState *pstate, ProgramNode *mod);
 
-void pgmTypeCheck(TypeCheckState *pstate, ProgramNode *mod);
+void pgmTypeCheck(AnalysisState *pstate, ProgramNode *mod);
 
 #endif

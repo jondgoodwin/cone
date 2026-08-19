@@ -21,8 +21,8 @@ ImportNode *newImportNode();
 
 void importPrint(ImportNode *pgm);
 
-void importNameRes(NameResState *pstate, ImportNode *mod);
+void importNameRes(AnalysisState *pstate, ImportNode *mod);
 
-void importTypeCheck(TypeCheckState *pstate, ImportNode *mod);
+void importTypeCheck(AnalysisState *pstate, ImportNode *mod);
 
 #endif

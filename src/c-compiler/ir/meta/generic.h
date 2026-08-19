@@ -26,6 +26,6 @@ GenericInfo *genericGetInfo(INode *node);
 
 // Perform generic substitution, if this is a correctly set up generic "fncall"
 // Return 1 if done/error needed. Return 0 if not generic or it leaves behind a lit/fncall that needs processing.
-int genericSubstitute(TypeCheckState *pstate, FnCallNode **nodep);
+int genericSubstitute(AnalysisState *pstate, FnCallNode **nodep);
 
 #endif

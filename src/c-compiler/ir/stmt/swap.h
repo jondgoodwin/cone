@@ -23,10 +23,10 @@ INode *cloneSwapNode(CloneState *cstate, SwapNode *node);
 void swapPrint(SwapNode *node);
 
 // Name resolution for assignment node
-void swapNameRes(NameResState *pstate, SwapNode *node);
+void swapNameRes(AnalysisState *pstate, SwapNode *node);
 
 // Type check for assignment node
-void swapTypeCheck(TypeCheckState *pstate, SwapNode *node);
+void swapTypeCheck(AnalysisState *pstate, SwapNode *node);
 
 // Perform data flow analysis on assignment node
 void swapFlow(FlowState *fstate, SwapNode **node);

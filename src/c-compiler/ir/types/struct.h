@@ -57,13 +57,13 @@ void structAddField(StructNode *type, FieldDclNode *node);
 void structPrint(StructNode *node);
 
 // Name resolution of a struct type
-void structNameRes(NameResState *pstate, StructNode *node);
+void structNameRes(AnalysisState *pstate, StructNode *node);
 
 // Get bottom-most base trait for some trait/struct, or NULL if there is not one
 StructNode *structGetBaseTrait(StructNode *node);
 
 // Type check a struct type
-void structTypeCheck(TypeCheckState *pstate, StructNode *name);
+void structTypeCheck(AnalysisState *pstate, StructNode *name);
 
 // Populate the vtable for this struct
 void structMakeVtable(StructNode *node);

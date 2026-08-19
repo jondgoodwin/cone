@@ -24,13 +24,14 @@ void doAnalysis(ConeOptions *opt, ProgramNode **pgm) {
 
     // Resolve all name uses to their appropriate declaration
     // Note: Some nodes may be replaced (e.g., 'a' to 'self.a')
-    NameResState nstate;
-    nstate.mod = NULL;
-    nstate.typenode = NULL;
-    nstate.loopblock = NULL;
-    nstate.scope = 0;
-    nstate.flags = 0;
-    inodeNameRes(&nstate, (INode**)pgm);
+    AnalysisState astate;
+    astate.mod = NULL;
+    astate.typenode = NULL;
+    astate.loopblock = NULL;
+    astate.fn = NULL;
+    astate.scope = 0;
+    astate.flags = 0;
+    inodeNameRes(&astate, (INode**)pgm);
     if (errors) {
         // Name resolution reporting a bad program is one of the two places a
         // phase returns early, so it is one of the two places to check that it
@@ -55,10 +56,13 @@ void doAnalysis(ConeOptions *opt, ProgramNode **pgm) {
     // - Infectiousness of types is handled (move semantics, lifetimes, thread-bound, etc.)
     // - Subtype and inheritance relationships are filled out
     // - The binary encoding is sorted (e.g., ensuring variant types are same size)
-    TypeCheckState tstate;
-    tstate.fn = NULL;
-    tstate.typenode = NULL;
-    inodeTypeCheckAny(&tstate, (INode**)pgm);
+    astate.mod = NULL;
+    astate.typenode = NULL;
+    astate.loopblock = NULL;
+    astate.fn = NULL;
+    astate.scope = 0;
+    astate.flags = 0;
+    inodeTypeCheckAny(&astate, (INode**)pgm);
 
     if (opt->check_tree)
         inodeCheckTree((INode*)*pgm);

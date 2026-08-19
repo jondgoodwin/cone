@@ -22,15 +22,15 @@ MacroDclNode *newMacroDclNode(Name *namesym);
 void macroPrint(MacroDclNode *fn);
 
 // Name resolution
-void macroNameRes(NameResState *pstate, MacroDclNode *node);
+void macroNameRes(AnalysisState *pstate, MacroDclNode *node);
 
 // Type check generic
-void macroTypeCheck(TypeCheckState *pstate, MacroDclNode *node);
+void macroTypeCheck(AnalysisState *pstate, MacroDclNode *node);
 
 // Type check generic name use
-void macroNameTypeCheck(TypeCheckState *pstate, NameUseNode **macro);
+void macroNameTypeCheck(AnalysisState *pstate, NameUseNode **macro);
 
 // Instantiate a generic using passed arguments
-void macroCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep);
+void macroCallTypeCheck(AnalysisState *pstate, FnCallNode **nodep);
 
 #endif

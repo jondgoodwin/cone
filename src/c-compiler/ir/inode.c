@@ -198,7 +198,7 @@ void inodePrint(char *dir, char *srcfn, INode *pgmnode) {
 // Dispatch a node walk for the current semantic analysis pass
 // - pstate is helpful state info for node traversal
 // - node is a pointer to pointer so that a node can be replaced
-void inodeNameRes(NameResState *pstate, INode **node) {
+void inodeNameRes(AnalysisState *pstate, INode **node) {
     switch ((*node)->tag) {
     case ProgramTag:
         pgmNameRes(pstate, (ProgramNode*)*node); break;
@@ -303,7 +303,7 @@ void inodeNameRes(NameResState *pstate, INode **node) {
 // - pstate is helpful state info for node traversal
 // - node is a pointer to pointer so that a node can be replaced
 // - expectType is the type expected of an expression node (or unknownType/noCareType)
-void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
+void inodeTypeCheck(AnalysisState *pstate, INode **node, INode *expectType) {
 
     // Type nodes are fully checked the first time they are referenced,
     // so that we know everything we need to know about correctly managing their values
@@ -451,7 +451,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
 // Perform a node walk for the current semantic analysis pass (w/ no type expected)
 // - pstate is helpful state info for node traversal
 // - node is a pointer to pointer so that a node can be replaced
-void inodeTypeCheckAny(TypeCheckState *pstate, INode **pgm) {
+void inodeTypeCheckAny(AnalysisState *pstate, INode **pgm) {
     inodeTypeCheck(pstate, pgm, unknownType);
 }
 

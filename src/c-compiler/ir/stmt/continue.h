@@ -16,7 +16,7 @@ BreakRetNode *newContinueNode();
 INode *cloneContinueNode(CloneState *cstate, BreakRetNode *node);
 
 // Name resolution for continue
-void continueNameRes(NameResState *pstate, BreakRetNode *node);
-void continueTypeCheck(TypeCheckState *pstate, BreakRetNode *node);
+void continueNameRes(AnalysisState *pstate, BreakRetNode *node);
+void continueTypeCheck(AnalysisState *pstate, BreakRetNode *node);
 
 #endif

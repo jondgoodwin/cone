@@ -88,7 +88,7 @@ void fnOverloadDclPrint(FnOverloadDclNode *node) {
 }
 
 // Resolve all names in a function
-void fnDclNameRes(NameResState *nstate, FnDclNode *fndclnode) {
+void fnDclNameRes(AnalysisState *nstate, FnDclNode *fndclnode) {
     // Resolve generic parameters
     INode **nodesp;
     uint32_t cnt;
@@ -149,7 +149,7 @@ void fnImplicitReturn(INode *rettype, BlockNode *blk) {
 // - Turn implicit returns into explicit returns
 // - Perform type checking for all statements
 // - Perform data flow analysis on variables and references
-void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
+void fnDclTypeCheck(AnalysisState *pstate, FnDclNode *fnnode) {
     // Wait until a generic function is instantiated before type checking
     if (fnnode->genericinfo)
         return;
@@ -197,7 +197,7 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
 // Verify no two candidates of an overload set accept the same parameter signature.
 // Candidates are not walked, as each is separately name resolved and type checked
 // by the module or type that owns its concrete declaration.
-void fnOverloadDclTypeCheck(TypeCheckState *pstate, FnOverloadDclNode *node) {
+void fnOverloadDclTypeCheck(AnalysisState *pstate, FnOverloadDclNode *node) {
     INode **nodesp;
     uint32_t cnt;
     uint32_t index = 0;

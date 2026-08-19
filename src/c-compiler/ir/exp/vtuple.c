@@ -21,7 +21,7 @@ void vtuplePrint(TupleNode *tuple) {
 
 // Type check the value tuple node
 // - Infer type tuple from types of vtuple's values
-void vtupleTypeCheck(TypeCheckState *pstate, TupleNode *tuple) {
+void vtupleTypeCheck(AnalysisState *pstate, TupleNode *tuple) {
     // Build ad hoc type tuple that accumulates types of vtuple's values
     TupleNode *ttuple = newTupleNode(tuple->elems->used);
     ttuple->tag = TTupleTag;

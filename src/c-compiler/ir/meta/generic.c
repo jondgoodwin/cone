@@ -53,7 +53,7 @@ int genericCaptureType(FnCallNode *gencall, Nodes *genparms, INode *parmtype, IN
 }
 
 // Infer generic type parameters (inferredgencall) from the type literal arguments (srcgencallp)
-int genericInferStructParms(TypeCheckState *pstate, Nodes *genparms, StructNode *genstruct, 
+int genericInferStructParms(AnalysisState *pstate, Nodes *genparms, StructNode *genstruct, 
         FnCallNode *srcgencall, FnCallNode *inferredgencall) {
 
     // Reorder the literal's arguments to match the type's field order
@@ -80,7 +80,7 @@ int genericInferStructParms(TypeCheckState *pstate, Nodes *genparms, StructNode 
 }
 
 // Infer generic type parameters from the function call arguments
-int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNode *genfnsig, 
+int genericInferFnParms(AnalysisState *pstate, Nodes *genparms, FnSigNode *genfnsig, 
         FnCallNode *srcgencall, FnCallNode *inferredgencall) {
 
     if (srcgencall->args->used > genfnsig->parms->used) {
@@ -108,7 +108,7 @@ int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNode *genf
 }
 
 // Instantiate the generic based on parms and return
-INode *genericInstantiate(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nodetoclone,
+INode *genericInstantiate(AnalysisState *pstate, FnCallNode *srcgencall, INode *nodetoclone,
         GenericInfo *genericinfo, Name *name) {
     CloneState cstate;
     clonePushState(&cstate, (INode*)srcgencall, NULL, pstate->scope, genericinfo->parms, srcgencall->args);
@@ -133,7 +133,7 @@ INode *genericInstantiate(TypeCheckState *pstate, FnCallNode *srcgencall, INode 
 // already marked as bad rather than nothing at all. The caller substitutes it
 // for the call and carries on type checking the rest of the function, which is
 // where the next real diagnostic is.
-INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nodetoclone,
+INode *genericMemoize(AnalysisState *pstate, FnCallNode *srcgencall, INode *nodetoclone,
         GenericInfo *genericinfo, Name *name) {
 
     // Verify expected number of generic parameters
@@ -223,7 +223,7 @@ GenericInfo *genericGetInfo(INode *node) {
 
 // Perform generic substitution, if this is a correctly set up generic "srcgencall"
 // Return 1 if generic subsituted or error. Return 0 if not generic or it leaves behind a lit/srcgencall that needs processing.
-int genericSubstitute(TypeCheckState *pstate, FnCallNode **srcgencallp) {
+int genericSubstitute(AnalysisState *pstate, FnCallNode **srcgencallp) {
     // Return if not generic, otherwise gather data needed to substitute
     FnCallNode *srcgencall = *srcgencallp;
     if (srcgencall->objfn->tag != VarNameUseTag && srcgencall->objfn->tag != TypeNameUseTag)

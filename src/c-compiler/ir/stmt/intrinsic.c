@@ -21,5 +21,5 @@ void intrinsicPrint(IntrinsicNode *intrinsicNode) {
 }
 
 // Check the intrinsic node
-void intrinsicPass(TypeCheckState *pstate, IntrinsicNode *intrinsicNode) {
+void intrinsicPass(AnalysisState *pstate, IntrinsicNode *intrinsicNode) {
 }

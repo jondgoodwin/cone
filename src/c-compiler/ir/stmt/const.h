@@ -22,9 +22,9 @@ INode *cloneConstDclNode(CloneState *cstate, ConstDclNode *node);
 void constDclPrint(ConstDclNode *fn);
 
 // Name resolution of vardcl
-void constDclNameRes(NameResState *pstate, ConstDclNode *node);
+void constDclNameRes(AnalysisState *pstate, ConstDclNode *node);
 
 // Type check vardcl
-void constDclTypeCheck(TypeCheckState *pstate, ConstDclNode *node);
+void constDclTypeCheck(AnalysisState *pstate, ConstDclNode *node);
 
 #endif

@@ -33,10 +33,10 @@ uint64_t arrayDim1(INode *array);
 void arrayPrint(ArrayNode *node);
 
 // Name resolution of an array type
-void arrayNameRes(NameResState *pstate, ArrayNode *node);
+void arrayNameRes(AnalysisState *pstate, ArrayNode *node);
 
 // Type check an array type
-void arrayTypeCheck(TypeCheckState *pstate, ArrayNode *name);
+void arrayTypeCheck(AnalysisState *pstate, ArrayNode *name);
 
 int arrayEqual(ArrayNode *node1, ArrayNode *node2);
 

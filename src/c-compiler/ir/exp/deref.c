@@ -29,7 +29,7 @@ void derefPrint(StarNode *node) {
 }
 
 // Type check deref node
-void derefTypeCheck(TypeCheckState *pstate, StarNode *node) {
+void derefTypeCheck(AnalysisState *pstate, StarNode *node) {
     if (iexpTypeCheckAny(pstate, &node->vtexp) == 0)
         return;
 

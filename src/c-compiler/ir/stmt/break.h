@@ -24,11 +24,11 @@ typedef struct {
 BreakRetNode *newBreakNode();
 
 // Name resolution for break
-void breakNameRes(NameResState *pstate, BreakRetNode *node);
+void breakNameRes(AnalysisState *pstate, BreakRetNode *node);
 
 // Clone break
 INode *cloneBreakNode(CloneState *cstate, BreakRetNode *node);
 
-void breakTypeCheck(TypeCheckState *pstate, BreakRetNode *node);
+void breakTypeCheck(AnalysisState *pstate, BreakRetNode *node);
 
 #endif

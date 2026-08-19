@@ -56,7 +56,7 @@ void castPrint(CastNode *node) {
 }
 
 // Name resolution of cast node
-void castNameRes(NameResState *pstate, CastNode *node) {
+void castNameRes(AnalysisState *pstate, CastNode *node) {
     inodeNameRes(pstate, &node->exp);
     inodeNameRes(pstate, &node->typ);
 }
@@ -100,7 +100,7 @@ int castConvertsToBool(INode *fromtype) {
 // Type check cast node:
 // - reinterpret cast types must be same size
 // - Ensure type can be safely converted to target type
-void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
+void castTypeCheck(AnalysisState *pstate, CastNode *node) {
     if (iexpTypeCheckAny(pstate, &node->exp) == 0)
         return;
     if (itypeTypeCheck(pstate, &node->typ) == 0)
@@ -163,7 +163,7 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
 
 // Analyze type comparison (is) node.
 // This only supports whether downcasting specialization is possible
-void castIsTypeCheck(TypeCheckState *pstate, CastNode *node) {
+void castIsTypeCheck(AnalysisState *pstate, CastNode *node) {
     node->vtype = (INode*)boolType;
     iexpTypeCheckAny(pstate, &node->exp);
     itypeTypeCheck(pstate, &node->typ);
