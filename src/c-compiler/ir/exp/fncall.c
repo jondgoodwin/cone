@@ -574,14 +574,11 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     }
 
     // Type check arguments (methfld is handled later)
-    int usesTypeArgs = 0;
     INode **argsp;
     uint32_t cnt;
     if (node->args) {
         for (nodesFor(node->args, cnt, argsp)) {
             inodeTypeCheckAny(pstate, argsp);
-            if (isTypeNode(*argsp))
-                usesTypeArgs = 1;
         }
     }
 

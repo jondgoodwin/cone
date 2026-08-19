@@ -204,15 +204,19 @@ That is also the better error: it names what is wrong and points at the field
 the author can change.
 
 > **Rule 4.** A field asks its type for a size. A type still being laid out has
-> none, and the field that asked reports it. — flag `SizeKnown`
+> none, and the field that asked reports it.
 
-**`SizeKnown` is not `Analyzed`.** A method may use its own type by value —
-`fn twin(self) Self` — so the size has to be available before the type's methods
-are checked. `structTypeCheck` already sets `TypeChecked` early for exactly this
-reason, commented "we know enough about the type at this point", which makes
-"done" a lie about the methods. Splitting the two lets `Analyzed` mean what it
-says. (This overload causes no live defect: measured, a method may call one
-declared after it, in either order.)
+**This needs no new state.** `Analyzed` set means laid out, so the size is
+available; `Analyzing` without `Analyzed` means still being laid out, so it is
+not. What changes is only how that state is *read*: today every re-entry is
+refused; instead it answers "here is my type" or "I have no size yet" according
+to what was asked.
+
+`Analyzed` therefore means *laid out*, not *everything about me is done* — a
+type's methods are checked after it is set. That is deliberate, and it is what
+`structTypeCheck` already does, so that a method may use its own type by value:
+`fn twin(self) Self`. Nothing needs a "methods are checked too" state, and
+measured, a method may call one declared after it in either order.
 
 ## 6. Broadening: the other four ways a size is missing
 
@@ -258,9 +262,25 @@ And once `Wrapper` is recorded as unsized-and-reported, `Outer` consumes that
 silently: one mistake, one diagnostic. No phase holds that chain today at the
 moment it would need to print it.
 
-> **Rule 5.** "No known size" carries which of the five causes it is, and the
-> chain that led there. A declaration already reported as bad answers with that
-> and provokes no second diagnostic.
+> **Rule 5.** "No known size" names which of the five causes it is, and the chain
+> that led there.
+
+Naming the cause costs no storage: where a field cannot get a size, the compiler
+can test `OpaqueType`, trait-without-`SameSize`, `FnSig`, or in-progress, and say
+which.
+
+**This is one new `ErrorCode`, `ErrorNoSize`**, carrying all five causes in its
+message. It replaces `ErrorRecurse` on the layout path — after rule 4 that code's
+text is simply false, since recursive types *are* supported through a reference —
+and it replaces `ErrorInvType`'s two "must be concrete and instantiable" uses,
+which today say nothing about what is wrong. Five separate codes would be
+indistinguishable to everything except the message, so the cause belongs in the
+text rather than in the number.
+
+*Suppressing the repeat* is a separate thing and is **not** part of this work. It
+needs a declaration to record that it was already reported — new state, and a new
+test at every site that reports. The cascade above therefore stays as it is,
+three diagnostics for one mistake, until that is taken up on its own.
 
 ## 7. Broadening: when there is no earlier answer at all
 
@@ -288,6 +308,12 @@ type is still `unknownType` while under analysis".
 
 > **Rule 6.** A constant or inferred declaration re-entered before its type
 > exists is circular, and says so.
+
+This is a second new `ErrorCode`, `ErrorCircular`, and not a variant of
+`ErrorNoSize`: the condition differs and so does the remedy. "This type cannot
+tell you its size, hold it by reference" and "this definition depends on itself"
+are not the same advice, and one message covering both would have to hedge about
+which it meant.
 
 ## 8. Broadening: generics and macros
 
@@ -350,9 +376,50 @@ The merge also removes an existing defect by construction: `conec.c` initializes
 
 ## 10. Order of resolution within a declaration
 
-Rules 3 and 4 constrain *when* a declaration answers. This is the order each
-kind establishes things in, which is what makes those answers available at the
-right moment. Steps marked **→** are where a demand can leave and re-enter.
+**Name resolution, type check and flow analysis stay separate.** Each remains its
+own node method, reached through its own dispatch, exactly as today. What changes
+is when they run.
+
+**Name resolution stays one eager pass over the whole program, and its gate stays
+global.** It does not need to change, and deliberately does not. Binding a name
+needs the declaration to *exist*, not to be analyzed — the parser guarantees that
+— so name resolution never enters another declaration's analysis and gains
+nothing from running on demand. Keeping it means the compiler still stops before
+type checking if any name failed to resolve, so type checking never meets an
+unbound name and nothing anywhere has to reason about a partly-failed
+declaration.
+
+None of the defects in 13.4 is a name-binding ordering bug. They are all in type
+and size analysis, which is what changes.
+
+**Type checking is what becomes demand-driven, and it interleaves.** A
+declaration reaches names belonging to other declarations, so its type check
+suspends, the named declaration is analyzed, and only then does the first resume
+— and that nests. At any moment several declarations are part-way through their
+own type check at different depths of incursion, which is what puts the work in
+dependency order instead of source order.
+
+**Flow stays where it is:** run on a function's body at the close of that
+function's type check, and skipped if the function raised anything.
+
+**Lowering belongs to type check, and two sites have to move there.** Name
+resolution lowers in two places today, both without types to work from:
+
+- `fnCallNameRes` expands `<-` on a value tuple into a whole block, and injects
+  its borrow as `borrowMutRef(&lval, unknownType, mutPerm)` — passing
+  `unknownType` because no type exists yet.
+- `nameUseNameRes` rewrites a bare `a` into `self.a` when the name resolves to a
+  method or field, building an `FnCallNode` to do it. `fnCallTypeCheck` performs
+  the same rewrite for a different case, so the logic exists twice, in two
+  phases.
+
+Both belong in type check, where the types they need exist and where the second
+can merge with the copy already there. This is what item 2.6 of the work item
+asks for; it does not depend on the rest and lands last.
+
+The rest of this section is the type-check order for each kind, which is where
+the interesting sequencing lives. Steps marked **→** are where a demand can leave
+and re-enter.
 
 ### 10.1 Struct and trait
 
@@ -368,10 +435,17 @@ right moment. Steps marked **→** are where a demand can leave and re-enter.
    `MoveType`, `OpaqueType`, `ZeroSizeType`. Identify the tag field.
 7. `final` forces `MoveType`; `clone` clears it. Propagate infection up to base
    traits.
-8. **Size is now known.** *Today:* sets `TypeChecked`. *Design:* sets
-   `SizeKnown`.
+8. **Size is now known**, and `Analyzed` is set here — meaning *laid out*, not
+   *finished*. Unchanged from today, where it sets `TypeChecked`.
 9. **→** Analyze the methods.
-10. *Design:* sets `Analyzed`, which today happened at step 8.
+
+Nothing needs a state stronger than step 8's. Everything a consumer can ask a
+type for is established by then, including the method set: mixins are expanded
+and trait methods inherited in step 5, so the namespace is complete before the
+mark is set. What happens at step 9 is each method being analyzed individually,
+which is demanded per method and is never a property of the type. The mark should
+say so where it is set — today's comment there, "we know enough about the type at
+this point", is true but does not say enough for what.
 
 Steps 2 and 5 are where recursion arrives, and step 8 is why a method at step 9
 may use its own type by value.
@@ -387,7 +461,7 @@ Two things follow, and both are simpler than they look:
   struct to the trait's `derived` list and assigns its tag number as it parses.
   Nothing has to discover variants during analysis.
 - **Analysis never computes a union's size.** `genlSameSizeTrait` determines each
-  variant's size and pads to the largest at *generation* time. So `SizeKnown` for
+  variant's size and pads to the largest at *generation* time. So "size known" for
   a closed trait means every variant has been analyzed and is itself sized — not
   that a byte count exists.
 
@@ -434,12 +508,13 @@ the compile.
 
 - **Flow stays terminal, per function.** It already runs at the close of a
   function's type check, and nothing ever demands a flow result from elsewhere.
-- **Lowering stays where it is.** The concern it raises is doing it twice, and
-  rules 2 and 3 already prevent that: lowering happens inside a declaration's
+- **Lowering stays with type check.** The concern it raises is doing it twice,
+  and rules 2 and 3 already prevent that: lowering happens inside a declaration's
   body, each body is analyzed once, and nothing outside demands a body. Lowering
-  also *cannot* move to a pass after a declaration is checked, because it is the
+  also *cannot* become a pass after a declaration is checked, because it is the
   typing — `fnCallLowerMethod` sets the call's `vtype` from the method it
-  selects, and the parent expression needs that type.
+  selects, and the parent expression needs that type. What does move is the two
+  lowerings currently done during name resolution; see section 10.
 - **Locals stay source-ordered.** Everything above concerns declarations in a
   namespace. Locals are hooked and unhooked during the walk, and `mut a = a`
   fails at name resolution because the name is not yet in scope.
@@ -451,9 +526,9 @@ the compile.
 
 | Node | Today | Under the design |
 | --- | --- | --- |
-| Program | Two full passes: name resolution over everything, then type check | One pass; iterate modules |
+| Program | Name resolution over everything, gate, then type check | Unchanged; the second pass becomes demand-driven |
 | Module | Signature pre-pass, then body pass, `FlagSigError` between them | Iterate declarations; demand orders them |
-| Struct / trait | Demand-driven already; one flag pair, every re-entry an error | `SizeKnown` at step 10.1.8, `Analyzed` after methods; re-entry answered per rule 4 |
+| Struct / trait | Demand-driven already; every re-entry an error | Same flags, same placement; re-entry answered per rule 4 rather than refused |
 | Closed trait | Same | Unchanged — variants come from the parser, size from generation |
 | FnDcl | Signature then body; recursion works by walk order | Same order, now stated as rule 3 |
 | FnSig | Parameters then return type | Unchanged |
@@ -463,38 +538,67 @@ the compile.
 | ConstDcl | Type comes from its value; circularity undetected | Circularity reported per rule 6 |
 | NameUse → type | `nameUseTypeCheckType` analyzes the declaration | Unchanged — this is the model |
 | NameUse → value | `nameUseTypeCheck` reads `vtype`, whatever is there | Analyzes the declaration, like the type case |
-| FnCall | 272 lines; forces its callee explicitly, propagates `errorType` by hand | Forcing and poisoning become uniform; the rest is unchanged. See 12.2 |
+| FnCall | A chain: each test askable only once an earlier step established enough to ask it | Each decision made against a complete declaration, so the chain flattens into a dispatch. See 12.2 |
 | Generic / macro | Instance cloned and checked on demand, no depth bound | Same, with rule 7's limit |
 
-### 12.2 Why `fnCallTypeCheck` does not shrink
+### 12.2 What `fnCallTypeCheck` gains
 
-It is the largest node method in the compiler — 272 lines, plus ~250 in helpers —
-so it is worth being precise about what it gains. Roughly 140 lines of front
-matter, then a 124-line dispatch on the receiver's type.
+Its front matter is the hardest code in the compiler to read, and the reason is
+that it is a *chain*, not a set of branches. Each test can only be asked once an
+earlier step has established enough to ask it:
 
-About a quarter of the front matter goes: the explicit
-`inodeTypeCheckAny(pstate, &node->objfn)` to force the callee, since reading the
-callee's type *is* the demand; the hand-written `inodeIsError` and `errorType`
-propagation, which becomes rule 5's uniform poisoning; the initializer path's
-direct `((FnDclNode*)nameuse->dclnode)->vtype` read, correct today only because
-the walk order happened to analyze it first; and `genericSubstitute`'s "quit if
-that finished processing" protocol.
+```
+is the callee a macro?          -- must be asked first: a macro does not want
+                                   its arguments checked before substitution
+  analyze the arguments         -- must happen next: generic argument inference
+                                   reads their types
+    substitute the generic      -- must happen before the callee is analyzed,
+                                   because it replaces the callee
+      is the callee an overload name?
+                                -- must be asked before analyzing the callee,
+                                   because analyzing an overload name is an error
+        analyze the callee      -- only now is there a type to look at
+          is it a type?         -- constructor, or 'init' lookup
+            is it a method name? -- rewrite to self.method
+              what shape is the receiver?  -- the eight-case dispatch
+```
 
-The rest is not about order. It is one node shape meaning six things — `objfn`
-plus `methfld` serves a call, a method call, an operator, an index, a field
-access and a type constructor, with `FlagIndex`, `FlagBorrow`, `FlagOperator`,
-`FlagLvalOp` and `FlagOpAssgn` telling them apart after the fact. That is why the
-macro check must ask whether `methfld` is NULL to distinguish `TWO + 1` from a
-macro call, and why the receiver dispatch has eight cases. The parser knows which
-syntax it saw and discards the distinction; recovering it is
-[[Lexer and Parser]] and [[IR refactor]] work.
+Nothing here is locally justified. Every branch is correct only because of what
+ran before it, and none of that is written down. Reordering any two steps breaks
+something silently, which is why the sequence has to be read end to end before
+any part of it can be changed — and why a reader cannot start in the middle.
 
-**The gain is decomposability, not line count.** The method is one long sequence
-because each step establishes unstated preconditions for the next. That is the
-defect shape this file has produced before: `((StarNode*)fncall)->vtexp` read
-`methfld` for years because two structs overlap and nothing declared what had to
-hold. With every declaration complete before the call is looked at, the receiver
-cases stop sharing setup and can be separated.
+**Analyzing on demand makes each decision locally justified**, because the
+declaration a name refers to is completely analyzed at the moment the name use
+has to decide anything about it. Concretely, in this method:
+
+- The explicit `inodeTypeCheckAny(pstate, &node->objfn)` disappears. Reading the
+  callee's type *is* the demand, so "analyze the callee" stops being a step that
+  a path can be written without.
+- `nameuse->vtype = ((FnDclNode*)nameuse->dclnode)->vtype` on the initializer
+  path, and every other direct read of a declaration's type, becomes correct by
+  construction rather than because the walk happened to get there first.
+- `namespaceFind` for `init`, and the method lookups in `fnCallLowerMethod`, ask
+  a namespace that is guaranteed complete — mixins expanded, trait methods
+  inherited. Today that guarantee is supplied by nothing but ordering.
+- The hand-written `inodeIsError` test and `errorType` assignment become rule 5's
+  uniform answer, so a bad callee is handled the same way here as everywhere.
+- `genericSubstitute`'s "quit if that finished processing" protocol goes, once an
+  instantiation is just another declaration analyzed on demand.
+
+The chain then flattens into a dispatch. Each receiver shape can be read, and
+changed, on its own, because it no longer depends on setup performed by the
+branches above it. That is what the defect record from this file argues for:
+`((StarNode*)fncall)->vtexp` read `methfld` for years because two node structs
+overlap and nothing declared what had to hold at that point.
+
+What this does not address is that one node shape means six things — `objfn` plus
+`methfld` serves a call, a method call, an operator, an index, a field access and
+a type constructor, with `FlagIndex`, `FlagBorrow`, `FlagOperator`, `FlagLvalOp`
+and `FlagOpAssgn` to tell them apart afterwards. That is why the macro test has
+to ask whether `methfld` is NULL to distinguish `TWO + 1` from a macro call. The
+parser knows which syntax it saw and discards the distinction; recovering it is
+[[Lexer and Parser]] and [[IR refactor]] work, and it is independent of this.
 
 ## 13. Reference
 
@@ -505,9 +609,8 @@ cases stop sharing setup and can be separated.
 3. A declaration establishes its own type before analyzing anything that could
    refer back to it. — `Analyzing`
 4. A field asks its type for a size; a type still being laid out has none, and
-   the field that asked reports it. — `SizeKnown`
-5. "No known size" carries its cause and its chain, and a declaration already
-   reported as bad provokes no second diagnostic.
+   the field that asked reports it. — `Analyzed` means laid out
+5. "No known size" names its cause and its chain.
 6. A constant or inferred declaration re-entered before its type exists is
    circular.
 7. Instantiation depth is bounded by a limit.
@@ -515,45 +618,59 @@ cases stop sharing setup and can be separated.
 
 ### 13.2 What has to be stored
 
-Three flags, two of which exist.
+**Nothing new.** `TypeChecking` (`0x4000`) and `TypeChecked` (`0x8000`) already
+carry rules 2, 3 and 4, and their placement is already right: `structTypeCheck`
+sets `TypeChecked` where the layout settles, which is what makes it answer "size
+known".
 
-`TypeChecking` (`0x4000`) and `TypeChecked` (`0x8000`) already carry rules 2 and
-3, and those bits have no other meaning in node `flags` for any declaration
-family. Their names assume the marked thing is a type and most declarations are
-not, so they want renaming — `Analyzing` and `Analyzed`, or any pair that says
-*analysis*. That belongs with item 1, which is already the change that stops
-calling this work type checking. Two other things change: they must be set on
-every declaration rather than on type nodes and modules only, and `Analyzing`
-must be read rather than always refused.
+Two things change, neither of them storage.
 
-`SizeKnown` (rule 4) is new and belongs in `ITypeNodeHdr` in `itype.h`, the
-header every type node already shares — it is a property of types, and only types
-are asked. That is also the better home for the eight type properties already
-crowded into `flags` next to per-family bits: `MoveType`, `ThreadBound`,
-`OpaqueType`, `ZeroSizeType`, `TraitType`, `SameSize`, `HasTagField`,
-`NullablePtr`. Their being there is why claiming a bit is hazardous at all —
-`0x0040` once collided with `HasTagField` and silently stopped type checking
-every tagged union. Migrating them is [[IR refactor]]'s call; adding one field for
-`SizeKnown` does not wait on it.
+**They are read rather than refused.** Today re-entering a declaration that is
+`TypeChecking` and not `TypeChecked` reports `ErrorRecurse` whatever was asked.
+Instead: asked for a type, answer with it; asked for a size, answer that there is
+none, and let the field that asked report rule 5. Rule 6 needs no flag either —
+it is "asked for a type, and the type is still `unknownType` while under
+analysis".
 
-Nothing here needs a declaration-node header or a change to `INodeHdr`.
+**They are set on every declaration**, not on type nodes and modules only. The
+bits carry no other meaning in node `flags` for any declaration family, so this
+costs nothing.
 
-Rule 6 needs no flag: it is "asked for a type, and the type is still
-`unknownType` while `Analyzing`".
+Their names should change with the work. `TypeChecking` and `TypeChecked` assume
+the marked thing is a type, and most declarations are not — `Analyzing` and
+`Analyzed`, or any pair that says *analysis*. That belongs with item 1, which is
+already the change that stops calling this work type checking.
 
-The flags live on the node, not the name — generic and macro instantiation clones
+The flags live on the node, not the name: generic and macro instantiation clones
 declarations and each clone is legitimately unanalyzed, which is why
-`cloneStructNode` already clears `TypeChecked | TypeChecking` and would need to
-clear `SizeKnown` too.
+`cloneStructNode` already clears `TypeChecked | TypeChecking`.
+
+Deliberately not added, and why:
+
+| Considered | Would give | Why not now |
+| --- | --- | --- |
+| a `SizeKnown` field on `ITypeNodeHdr` | "laid out" separate from "methods checked" | `TypeChecked` at the layout point already says it. Nothing asks for "methods checked". Costs eight bytes on every type node. |
+| a `Failed` state per declaration | suppressing a repeated diagnostic (the second half of rule 5) | New state plus a new test at every site that reports. The cascade it fixes is no worse than today's. |
+
+The eight type properties crowded into `flags` next to per-family bits —
+`MoveType`, `ThreadBound`, `OpaqueType`, `ZeroSizeType`, `TraitType`, `SameSize`,
+`HasTagField`, `NullablePtr` — would be better in `ITypeNodeHdr`, and their being
+in `flags` is why claiming a bit is hazardous at all: `0x0040` once collided with
+`HasTagField` and silently stopped type checking every tagged union. That is
+[[IR refactor]]'s call, and this work neither needs it nor makes it worse.
 
 ### 13.3 What this deletes
 
 - `modTypeCheck`'s signature pre-pass, and with it `FlagSigError`.
 - The `unknownType` checks that cope with a half-analyzed declaration, as
   distinct from those that mean genuine inference.
-- `ErrorRecurse` as a blanket refusal; rules 4 and 6 replace it.
-- The global name-resolution gate in `doAnalysis`, if type checking a tree with
-  unresolved names becomes well defined — see 13.5.
+- `ErrorRecurse` as a blanket refusal on the layout path, replaced by
+  `ErrorNoSize`.
+- `ErrorInvType`'s "must be concrete and instantiable" for a field and for a
+  variable, also replaced by `ErrorNoSize`. This narrows the compiler's most
+  overloaded code by two uses.
+- Nothing about name resolution or its gate. Both stay exactly as they are —
+  see section 10.
 
 ### 13.4 What was measured, and how to re-measure
 
@@ -574,33 +691,43 @@ Measured defects this design closes, none of which has a test scenario yet:
 | A circular constant compiles clean and misreports at the use | 7 |
 | A recursive generic crashes the compiler | 8 |
 
-### 13.5 Open decisions
+### 13.5 Settled, so that they are not reopened by accident
 
-1. Whether removing the name-resolution gate is in scope. It changes what a
-   program with an unresolved name reports, and invalidates the
-   one-stage-per-scenario rule in [Test Suite](Test%20Suite.md) section 2, which
-   would need rewriting with it.
-2. Whether binding the names a declaration mentions is worth tracking separately,
-   or is simply the first step of analyzing it. This note assumes the latter.
-3. What diagnostic carries rule 5. The condition is one — a type that cannot
-   report a size — with five causes, so the likely shape is a single new
-   `ErrorCode` naming the cause and the chain, replacing `ErrorRecurse` here and
-   `ErrorInvType`'s "must be concrete and instantiable". Five separate codes
-   would be indistinguishable to everything but the message.
-4. Whether anything needs a fuller notion of a completed type — inherited methods
-   in place, infectious flags settled — beyond `SizeKnown`. Analysis does not.
-   Generation supplies it for closed traits already (10.2).
-5. What item 2.6 of the work item is for, given section 11 answers the
-   double-lowering concern. Two things are worth confirming during
-   implementation rather than designing around: whether any *expression* node is
-   reachable twice within one declaration's walk, where a declaration-level flag
-   would not see it — `inodeTypeCheck` documents a *type* node in that position,
-   a match pattern and the variable it declares sharing one; and that clone
-   correctness stays its own concern, since the defect that checked every generic
-   instance method twice was a bad `memcpy` in `cloneStructNode`, which no
-   analysis order would have caught.
+| Question | Answer | Where |
+| --- | --- | --- |
+| Does the name-resolution gate change? | No. One eager pass, global gate, as today. | 10 |
+| Is name binding tracked as its own state? | No. It is the first thing analyzing a declaration does, and nothing else asks. | 10 |
+| What new state does this need? | None. Two existing flags, renamed, read rather than refused. | 13.2 |
+| What diagnostic carries rule 5? | One new code, `ErrorNoSize`, cause in the message. Rule 6 gets `ErrorCircular`. | 6, 7 |
+| Does anything need "complete" beyond "laid out"? | No consumer exists. Do not add one. | 10.1 |
+| What is item 2.6 for? | No lowering during name resolution; two sites move to type check. | 10 |
 
-### 13.6 Hazards for the implementation
+Two of these were settled *against* adding machinery — a `SizeKnown` field and a
+`Failed` state — and 13.2 records what each would have bought, so that reopening
+them is a decision rather than a rediscovery.
+
+### 13.6 Companion changes outside the compiler
+
+Decisions land in this note; consequences land in the guides and the corpus in
+the commit that changes the behaviour, not before — writing them up early would
+leave the authoring guide describing a compiler that does not exist.
+
+- **The comment at `structTypeCheck`'s `TypeChecked` assignment** should say what
+  the mark guarantees — laid out, method set complete, methods themselves not yet
+  analyzed — since the whole scheme rests on its placement.
+- **Two new `ErrorCode`s**, `ErrorNoSize` and `ErrorCircular`, in *both*
+  `src/c-compiler/shared/error.h` and `test/codes.toml` — the runner validates
+  one against the other before any case runs. Next free is 1067; never renumber.
+  `python test/run.py --bless-codes` regenerates the table.
+- **Scenarios asserting `ErrorInvType` for "must be concrete and instantiable"**
+  move to `ErrorNoSize`. `--bless` shows exactly which.
+- **The five defects in 13.4 need scenarios.** None has one. Each lands with the
+  change that fixes it, and two of the five are what prove the new codes.
+- **[Test Suite](Test%20Suite.md) needs no change to its stage rule.** Name
+  resolution and its gate are unchanged (section 10), so a scenario still holds
+  errors from one stage only.
+
+### 13.7 Hazards for the implementation
 
 - **Diagnostics come out in dependency order**, not source order. Per-line
   annotations in the test suite are unaffected; anything asserting a count or a
@@ -613,3 +740,10 @@ Measured defects this design closes, none of which has a test scenario yet:
   paths touches the same code; what should replace them is [[Compiler]]'s.
 - **Node `flags` bits are not one namespace.** Check every declaration family
   before claiming a bit, not just the type block.
+- **Confirm no *expression* node is reachable twice within one declaration's
+  walk.** A declaration-level flag would not see it. `inodeTypeCheck` documents a
+  *type* node in that position — a match pattern and the variable it declares
+  share one — so the question is whether an expression equivalent exists.
+- **Clone correctness stays its own concern.** The defect that type checked every
+  generic instance method twice was a bad `memcpy` in `cloneStructNode`, which no
+  analysis order would have caught.

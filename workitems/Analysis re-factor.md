@@ -17,7 +17,11 @@ reference, including the five defects it closes (13.4) and the open decisions
 	3. nameres: dictionary is complete and all names are resolved
 	4. typecheck: conforms when constraint exists, inferred when it does not
 	5. flow for escape, permission, lifetime, read-only-when-populated analysis
-	6. lower, make this happen after typecheck (e.g., fncall)
+	6. No lowering during name resolution: move the '<-' value-tuple
+	   expansion in fnCallNameRes, and the bare-name-to-self.member rewrite
+	   in nameUseNameRes, into type check where the types they need exist.
+	   (Lowering cannot move any later than that -- it is what establishes
+	   the node's type. See design/Analysis.md section 10.)
 3. Switch to just-in-time name resolution and type check to fix ordering bugs. For pgm, mod, struct, union, fnsig nodes
 	2. Visit all imports first, but not includes! (module-only)
 	3. Build this level's dictionary of all declared names (do this in parser), including fields/var, methods/fn/macros/behaviors, typedcls, constants, etc.
