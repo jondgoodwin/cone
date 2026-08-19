@@ -195,25 +195,15 @@ void nameUseNameRes(AnalysisState *pstate, NameUseNode **namep) {
         return;
     }
 
-    // If name is for a method or field, rewrite node as 'self.field'
-    if (name->dclnode->tag == FieldDclTag && name->dclnode->flags & FlagMethFld) {
-        // Doing this rewrite ensures we reuse existing type check and gen code for
-        // properly handling field access
-        NameUseNode *selfnode = newNameUseNode(selfName);
-        copyNodeLex(selfnode, name);
-        FnCallNode *fncall = newFnCallNode((INode *)selfnode, 0);
-        fncall->methfld = (INode*)name;
-        fncall->methfld->tag = MbrNameUseTag;
-        copyNodeLex(fncall, name); // Copy lexer info into injected node in case it has errors
-        *((FnCallNode**)namep) = fncall;
-        inodeNameRes(pstate, (INode **)namep);
-        return;
-    }
-
     // Distinguish whether a name is for a variable/function name vs. type
+    //
+    // A bare field name is one of these: it names a value, and type check
+    // rewrites it to 'self.field'. That rewrite used to happen here, which meant
+    // building a call node before any type existed to check it against.
     if (name->dclnode->tag == VarDclTag 
         || name->dclnode->tag == FnDclTag 
         || name->dclnode->tag == FnOverloadDclTag
+        || name->dclnode->tag == FieldDclTag
         || name->dclnode->tag == ConstDclTag)
         name->tag = VarNameUseTag;
     else if (name->dclnode->tag == MacroDclTag)
@@ -237,6 +227,37 @@ void nameUseTypeCheck(AnalysisState *pstate, NameUseNode **namep) {
         name->vtype = unknownType;
         return;
     }
+    // A bare field name inside a method means 'self.field'. This is lowering --
+    // it builds a call node and takes its type from what that call resolves to
+    // -- so it belongs to type check. Name resolution did it, with no type to
+    // work from. Its counterpart in fnCallTypeCheck covers the disjoint case, a
+    // bare *method* name being called.
+    if (name->dclnode->tag == FieldDclTag && (name->dclnode->flags & FlagMethFld)) {
+        // Only a method has a receiver to reach a field through. A field's own
+        // default value is analyzed with no function around it, so a name that
+        // resolved to a sibling field there has nothing to qualify it.
+        if (pstate->fn == NULL || !(pstate->fn->flags & FlagMethFld)) {
+            errorMsgNode((INode*)name, ErrorUnkName,
+                "%s is a field, and there is no self here to reach it through.",
+                &name->namesym->namestr);
+            name->vtype = errorType;
+            return;
+        }
+        // Build a resolved 'self' node and re-read the name as a member of it
+        NameUseNode *selfnode = newNameUseNode(selfName);
+        copyNodeLex(selfnode, name);
+        selfnode->tag = VarNameUseTag;
+        selfnode->dclnode = nodesGet(((FnSigNode*)pstate->fn->vtype)->parms, 0);
+        selfnode->vtype = ((VarDclNode*)selfnode->dclnode)->vtype;
+        FnCallNode *fncall = newFnCallNode((INode *)selfnode, 0);
+        fncall->methfld = (INode*)name;
+        fncall->methfld->tag = MbrNameUseTag;
+        copyNodeLex(fncall, name); // Copy lexer info into injected node in case it has errors
+        *((FnCallNode**)namep) = fncall;
+        inodeTypeCheckAny(pstate, (INode**)namep);
+        return;
+    }
+
     // Rule 1: reaching a name analyzes the declaration it names, so what is read
     // below is a finished type rather than whatever source order happened to
     // leave behind. A declaration already analyzed returns at once; one still

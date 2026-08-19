@@ -36,7 +36,7 @@ four checks with no expectation changes.
 | 5 Demand from value name uses | `6d7de87` | Held green only by moving the signature-failure skip into the declaration. See hazards 7 and 8. |
 | 6 Remove the signature pre-pass | `8ef2fb2` | A net deletion, green first try. Stage 5 had already carried the risk. |
 | 7 Read the in-progress state | `acdacbe` | Three expectations moved, exactly as predicted. A fourth case was a crash the plan did not name. See hazard 9. |
-| 8 | | not started |
+| 8 Lowering out of name resolution | | The two sites are disjoint, not duplicates, and neither had coverage. See hazard 10. |
 
 ## Standing hazards, found in flight
 
@@ -114,6 +114,15 @@ These were discovered while doing the stages and are not in the design note.
    element's -- section 5's own table -- so `itypeNoSizeCause` asks the element,
    and the field holding the array reports. Found by probing beyond the corpus,
    not by the suite, which had no such case.
+
+10. **The two lowering sites are disjoint, and the "merge" is not one.** The
+    plan and the design both say `nameUseNameRes`'s rewrite merges with the copy
+    `fnCallTypeCheck` performs. Measured, they never overlap: name resolution
+    rewrote a bare *field* name, and `fnCallTypeCheck` rewrites a bare *method*
+    name being called. Neither had any coverage -- the `fnCallTypeCheck` branch
+    fires **zero** times across all 123 scenarios, and `<-` on a value tuple is
+    named nowhere in the corpus. Both were covered first, then the field half was
+    moved and the method half left alone.
 
 ## Sequencing principles
 
@@ -457,6 +466,29 @@ preconditions explicit.
 
 **Expectation changes.** None expected. The `<-` case has coverage; check which
 group before starting.
+
+**Done.** Green on all four checks, no expectation changes, one scenario added
+and two extended: 123 scenarios / 124 runs, `--coverage` 59 of 62. What
+differed:
+
+- **The `<-` case had no coverage at all.** The only mention of the operator in
+  the corpus is a comment in `lexical-literals.cone` saying core owns its
+  overload set. It was covered first, in its own commit, so that the move could
+  claim no expectation change against a corpus that already tested it.
+- **The merge described does not exist.** See hazard 10. What landed is a move,
+  not a merge, and it left `fnCallTypeCheck`'s branch untouched because unifying
+  logic with no coverage on one side is exactly what this work has spent eight
+  stages not doing.
+- **Two shapes had to be probed for, because nothing exercised them.** A bare
+  field name in a *static* function of its own type -- which has no receiver to
+  build -- would have dereferenced a null `pstate->fn`. And a field default
+  naming a sibling field moved from a name-resolution failure saying the name
+  `self` does not exist, which the author never wrote, to a type-check failure
+  naming the rule actually broken. Both are covered now, in
+  `struct-typecheck-barefield`.
+- **`node->args > 0` compared a pointer against zero**, so an empty argument list
+  would have read past the end of the list. It reads `node->args &&
+  node->args->used > 0` now.
 
 ---
 
