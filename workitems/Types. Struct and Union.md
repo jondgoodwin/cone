@@ -41,25 +41,24 @@ the field and saying to break the cycle with a reference (`ErrorNoSize`).
   *not* separating it. Reading the in-progress mark in place is what removed the
   need for a separate pass. See `design/Analysis.md` rules 4 and 5.
 
-**A union variant may hold its own union by value, and the field is silently
-dropped.** Measured while closing the above, and *not* fixed by it -- identical
-before and after, so it is a hole of its own rather than a regression.
+- ~~A union variant may hold its own union by value~~ -- found while closing the
+  above, and fixed. `union Bad { struct Wrap { t Bad } }` compiled clean and
+  generated `%Bad = type { i8, i64 }`: tag plus the largest variant *ignoring*
+  `Wrap`, which had nowhere to put its `t`. A miscompile, not a missing
+  diagnostic, and the same before and after the re-factor.
 
-```cone
-union Bad {
-  struct Leaf { v i64 }
-  struct Wrap { t Bad }    // accepted
-}
-```
+  The cause was that a closed trait's laid-out mark says only that its *own*
+  fields are settled -- for a union, the tag. Its variants are analyzed
+  afterwards, each pulling the trait in as its base and finishing it first, so
+  the mark was already set when a variant asked. Asking a union for a size now
+  also asks whether every variant is laid out. `union-typecheck-variant` holds
+  the case that fails without it, and `union-success` holds the tree that must
+  keep working.
 
-compiles clean and generates `%Bad = type { i8, i64 }` -- tag plus the largest
-variant *ignoring* `Wrap`, which has nowhere to put its `t`. That is a
-miscompile, not a missing diagnostic. The size check that catches the same shape
-in a plain struct does not fire because the union is already marked laid out by
-the time its variants' fields are checked: the base trait settles first, then the
-variants. Whatever fixes it has to make a variant's field see the union as still
-in progress, which is a question about the order inside `structTypeCheck` rather
-than about the size rule.
+  The first attempt analyzed the variants from inside the trait, before the mark.
+  That refused the bad case correctly and then crashed on the legal tree: moving
+  that step reorders the mixin splice the variants depend on. Asking the question
+  where the size is wanted, rather than reordering layout, is what worked.
 
 Improve algorithm for deciding whether types have ‘move’ semantics:
 **A variant literal does not coerce to its union in a struct literal's field.**

@@ -49,6 +49,21 @@ category = "run"
 description = "Struct fields: declaring, constructing, reading, changing and copying them"
 tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 
+# Structs that reach themselves through a reference must survive into code
+# generation as self-referential types rather than being flattened or dropped.
+# A type whose own name appears inside its body is the whole claim, and runtime
+# cannot see it.
+[[scenario.struct-success.check]]
+name = "recursive-types-reach-code-generation"
+target = "llvmir"
+contains = [
+  "%Node = type { i64, %Node* }",
+  "%Owner = type { i64, %Held }",
+  "%Held = type { %Owner* }",
+  "%Left = type { i64, %Right* }",
+  "%Right = type { %Left* }",
+]
+
 [scenario.struct-methods]
 category = "run"
 description = "Methods, receivers, static functions, overloaded methods, operator methods and finalizers"
@@ -107,27 +122,6 @@ tags = ["parse", "nameres", "typecheck", "genllvm"]
 
 # -------- parse stage --------
 
-[scenario.struct-recursive]
-category = "compile"
-description = "Structs that reach themselves through a reference, directly and through each other"
-tags = ["typecheck", "genllvm"]
-
-# The declarations compiling is most of what this scenario is, and the category
-# asserts that on its own. What it cannot assert is that the recursion survives
-# into code generation rather than being flattened or dropped, so the three
-# shapes are named against the LLVM IR: a type whose own name appears inside its
-# body is the whole claim.
-[[scenario.struct-recursive.check]]
-name = "recursive-types-reach-code-generation"
-target = "llvmir"
-contains = [
-  "%Node = type { i64, %Node* }",
-  "%Owner = type { i64, %Held }",
-  "%Held = type { %Owner* }",
-  "%Left = type { i64, %Right* }",
-  "%Right = type { %Left* }",
-]
-
 [scenario.struct-parse]
 category = "reject"
 description = "Struct declaration syntax the parser cannot accept"
@@ -138,21 +132,15 @@ diagnostics = 8
 
 [scenario.struct-typecheck-decl]
 category = "reject"
-description = "Struct declarations rejected for what they declare"
+description = "Struct declarations rejected for what they declare, including a field name with no self to reach it through"
 tags = ["typecheck"]
-diagnostics = 4
+diagnostics = 6
 
 [scenario.struct-typecheck-nosize]
 category = "reject"
 description = "Declarations naming a type that cannot say how large it is"
 tags = ["typecheck"]
 diagnostics = 8
-
-[scenario.struct-typecheck-barefield]
-category = "reject"
-description = "A field named on its own where there is no self to reach it through"
-tags = ["typecheck"]
-diagnostics = 2
 
 [scenario.struct-typecheck-construct]
 category = "reject"

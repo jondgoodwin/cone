@@ -51,3 +51,24 @@ fn mutVariantRefToUnion() {
 struct Outside extends Shape {   //~ ErrorInvType:24 "May not extend a closed trait or union"
   z i32
 }
+
+// A variant may not hold its own union by value: the union is at least as large
+// as this variant, which is at least as large as the union. Through a reference
+// it is legal and is how a tree is written, which union-success covers.
+//
+// The union's own laid-out mark does not settle this. It says its own fields --
+// the tag -- are done, and the variants are analyzed after that, each pulling
+// the union in as its base trait. So the size is not known until every variant
+// is, which is what the diagnostic says. Before it, this compiled clean and
+// generated a layout with the field simply dropped.
+union Container {
+  kind i32
+
+  struct Item {
+    n i32
+  }
+
+  struct Nested {
+    inner Container   //~ ErrorNoSize:5 "variant still being laid out"
+  }
+}

@@ -367,6 +367,31 @@ int itypeIsConcrete(INode *type) {
 
 static INode *itypeNoSizeField(INode *dcltype, uint32_t depth);
 
+// Is this a closed trait -- a union -- with a variant that is not laid out yet?
+//
+// A closed trait's size is the largest of its variants, and generation is what
+// computes that. Its own Analyzed mark says only that its own fields are
+// settled, which for a union is the tag: the variants are analyzed separately,
+// each pulling this trait in as its base trait and finishing it before its own
+// fields are walked. So the mark cannot be read as 'has a size' here, and one
+// variant still in flight is exactly the case where the trait has none -- which
+// is what a variant holding its own union by value asks for.
+static int itypeVariantPending(INode *dcltype) {
+    // TraitType and a derived list are both required: a *variant* carries the
+    // closed flags too, inherited from its trait, and has no derived list at all.
+    if (dcltype->tag != StructTag || !(dcltype->flags & TraitType)
+        || !(dcltype->flags & (HasTagField | SameSize))
+        || ((StructNode*)dcltype)->derived == NULL)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(((StructNode*)dcltype)->derived, cnt, nodesp)) {
+        if (!((*nodesp)->flags & Analyzed))
+            return 1;
+    }
+    return 0;
+}
+
 // A type's name, for a diagnostic. See itype.h.
 char *itypeName(INode *type) {
     INode *dcltype = itypeGetTypeDcl(type);
@@ -396,6 +421,10 @@ static char *itypeNoSizeOwnCause(INode *dcltype, uint32_t depth) {
     // needed to say so, since a finished type would not be in this state.
     if ((dcltype->flags & Analyzing) && !(dcltype->flags & Analyzed))
         return "is still being laid out, so it would have to contain itself. Break the cycle by holding it through a reference";
+
+    // A union is laid out only once every variant is, whatever its own mark says
+    if (itypeVariantPending(dcltype))
+        return "is a union with a variant still being laid out, so it would have to contain itself. Break the cycle by holding it through a reference";
 
     if (!(dcltype->flags & OpaqueType))
         return NULL;

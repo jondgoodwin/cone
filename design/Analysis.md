@@ -165,6 +165,10 @@ There is deliberately no recursion check. An unfinished struct has no size, a
 finished one does, and the diagnostic belongs to the field that needed one, which
 is also the better error: it names what to change.
 
+**A union has a size only when every variant does.** Its own mark says only that
+its tag is settled, so a variant holding its own union by value asks a question
+the mark would wrongly answer yes to. See 10.2.
+
 **An array's size is its length times its element's**, so an array of a type with
 no size has none either — and then it is not a type at all, not even behind a
 reference, because there is nothing to allocate. `arrayTypeCheck` says so where
@@ -288,11 +292,19 @@ whose variants are structs written inside its body.
 - **The variant list is complete at parse time.** `parsetype.c` adds each nested
   struct to the trait's `derived` list and assigns its tag number as it parses.
 - **Analysis never computes a union's size.** `genlSameSizeTrait` sizes each
-  variant and pads to the largest at *generation* time, so "size known" for a
-  closed trait means every variant is analyzed and itself sized.
+  variant and pads to the largest at *generation* time.
 
 The rule that a derived type lives in the same module as its closed trait keeps
 both true.
+
+**A closed trait's `Analyzed` mark does not mean it has a size.** It means its
+*own* fields are laid out, which for a union is the tag. Each variant is reached
+separately and pulls the trait in as its base trait, finishing it before walking
+its own fields — so the trait is marked long before the variants that determine
+its size are done. Anything asking a union for a size has to ask whether every
+variant is laid out as well; `itypeVariantPending` is that question, and section
+6 is where it is asked. Without it a variant could hold its own union by value,
+which compiled clean and generated a layout with the field dropped.
 
 ### 10.3 Function and method
 
