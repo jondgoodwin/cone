@@ -34,7 +34,7 @@ four checks with no expectation changes.
 | 3 Mark every declaration | `ee26cb7` | The probe fired; see hazard 1 below. |
 | 4 Bound instantiation depth | `adeb75a` | Macros needed the bound too, and two diagnostic defects surfaced with it. See hazards 5 and 6. |
 | 5 Demand from value name uses | `6d7de87` | Held green only by moving the signature-failure skip into the declaration. See hazards 7 and 8. |
-| 6 Remove the signature pre-pass | | A net deletion, green first try. Stage 5 had already carried the risk. |
+| 6 Remove the signature pre-pass | `8ef2fb2` | A net deletion, green first try. Stage 5 had already carried the risk. |
 | 7-8 | | not started |
 
 ## Standing hazards, found in flight
