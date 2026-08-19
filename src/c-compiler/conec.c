@@ -41,21 +41,31 @@ void doAnalysis(ConeOptions *opt, ProgramNode **pgm) {
         return;
     }
 
-    // Apply syntactic sugar, and perform type inference/check:
-    // 1. Modules will do all its variables/function sigs first, before values/bodies
-    // 2. Type checking pass will first substitute macros/generics 
-    // 3. A node will first type check all its subnodes, before checking types and other rules
-    // 4. Type checking and inference are performed bidirectionally, expecting agreement
-    // 5. When a function body has been type checked, data flow analysis is then performed on it
-    // Note: Some nodes may be lowered, injected or replaced (particularly fncall)
+    // Apply syntactic sugar, and perform type inference/check.
     //
-    // Type checking of type nodes will go depth first (recursively) from a nameuse reference to the type's dcl
-    // in order to infectiously fill in information about these types:
-    // - A type may not be composed of a zero - size type
-    // - Pointers allow for recursive types, but otherwise, types must form a directed acyclic graph
-    // - Infectiousness of types is handled (move semantics, lifetimes, thread-bound, etc.)
-    // - Subtype and inheritance relationships are filled out
-    // - The binary encoding is sorted (e.g., ensuring variant types are same size)
+    // A second walk of the whole program, not a continuation of the first: name
+    // resolution is complete and every name is bound, which is what lets this
+    // pass assume a declaration exists wherever one is named.
+    //
+    // Where the first walk is eager and in source order, this one is
+    // demand-driven. Reaching a name analyzes the declaration it names before
+    // carrying on, so declarations are analyzed in dependency order and each is
+    // analyzed once, however many places reach it. A module iterates its
+    // declarations to be sure every one is reached; it does not decide the
+    // order. See design/Analysis.md.
+    //
+    // Along the way:
+    // - Macros and generic instantiations are substituted, and the instance is
+    //   analyzed as any other declaration would be
+    // - Nodes are lowered, injected and replaced, particularly fncall; lowering
+    //   is what establishes a node's type, so it belongs to this pass alone
+    // - Types fill in infectious information as they are laid out: move
+    //   semantics, lifetimes, thread-bound, subtype and inheritance relations
+    // - A type reached while it is still being laid out answers what it can --
+    //   its identity, but not a size, which is what makes a linked list
+    //   expressible and a by-value cycle an error
+    // - Data flow analysis runs on each function body as that function's own
+    //   type check closes
     astate.mod = NULL;
     astate.typenode = NULL;
     astate.loopblock = NULL;

@@ -73,7 +73,20 @@ The original plan follows, with its outcome recorded against each item.
 	3. Add `FnDclNode *fn` to AnalysisState
 	4. Rename TypeCheckState to AnalysisState
 	5. Rename tState to aState
-2. Create analyze method for nodes, beginning with pgm, that combines nameres and typecheck. 
+2. ~~Create analyze method for nodes, beginning with pgm, that combines nameres and typecheck.~~
+
+	**The combining was decided against, and the two walks are still separate.**
+	`doAnalysis` runs `inodeNameRes` over the whole program, gates on the error
+	count, then runs `inodeTypeCheckAny` over it. Binding a name needs the
+	declaration to *exist*, not to be analyzed, and the parser guarantees that --
+	so name resolution never enters another declaration's analysis and gains
+	nothing from running on demand. Keeping it separate is also what lets type
+	check assume every name is bound, so nothing downstream reasons about a
+	partly-bound declaration. What merged was the *state*: `NameResState` and
+	`TypeCheckState` became one `AnalysisState`. See `design/Analysis.md`
+	sections 1 and 13.
+
+	The sub-items below are what actually landed.
 	1. Be sure to confirm nameres did not error before running typecheck.
 	2. Check for recursion and place limits on infinite recursion
 	3. nameres: dictionary is complete and all names are resolved
