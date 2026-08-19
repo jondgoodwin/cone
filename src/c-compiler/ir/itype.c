@@ -373,12 +373,10 @@ char *itypeNoSizeCause(INode *type) {
     if ((dcltype->flags & Analyzing) && !(dcltype->flags & Analyzed))
         return "is still being laid out, so it would have to contain itself. Break the cycle by holding it through a reference";
 
-    // An array's size is its length times its element's, so it has one only if
-    // its element does -- section 5's table. Without this, a struct holding an
-    // array of itself has no field that ever asks, and laying it out runs the
-    // compiler out of stack.
-    if (dcltype->tag == ArrayTag)
-        return itypeNoSizeCause(nodesGet(((ArrayNode*)dcltype)->elems, 0));
+    // An array is not asked here. Its size is its length times its element's --
+    // section 5's table -- and arrayTypeCheck asks the element that question
+    // when the array type is formed, which is earlier and closer to the cause.
+    // Asking again on the holder's behalf would only repeat what it said.
 
     if (!(dcltype->flags & OpaqueType))
         return NULL;

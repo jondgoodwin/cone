@@ -107,8 +107,13 @@ void arrayTypeCheck(AnalysisState *pstate, ArrayNode *node) {
         errorMsgNode((INode*)node, ErrorBadArray, "Element type must be a known type");
         return;
     }
-    if (!itypeIsConcrete(*elemtypep)) {
-        errorMsgNode((INode*)node, ErrorInvType, "Element's type must be concrete and instantiable.");
+    // An array of a type that cannot say how large it is has no size either, so
+    // it is not a type at all -- not even behind a reference, which is the one
+    // place an opaque type is otherwise usable. This is the only site that
+    // refuses that, since a reference to such an array asks nothing of it.
+    char *elemnosize = itypeNoSizeCause(*elemtypep);
+    if (elemnosize) {
+        errorMsgNode((INode*)node, ErrorNoSize, "An array cannot be made of this type: it %s.", elemnosize);
     }
     // If the element's type if ThreadBound or Move, so is the array's type
     ITypeNode *elemtype = (ITypeNode*)itypeGetTypeDcl(*elemtypep);

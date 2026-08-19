@@ -434,13 +434,15 @@ What differed:
   struct being declared, "however, may be a reference to the struct type". The
   published rule was right and the compiler was refusing the legal half, so no
   documentation change was needed.
-- **`[n; T]` where `T` is opaque now reports twice**, once from `array.c`'s own
-  element check on `ErrorInvType` and once from the field that holds the array on
-  `ErrorNoSize`. Before this stage it reported once. Design 13.3 deliberately
-  leaves `array.c` and `typelit.c` on `ErrorInvType`, so nothing was changed
-  there -- but where the size check belongs for an array is now a real question,
-  and answering it would also decide whether `&[n; T]` should be legal. Raised,
-  not decided.
+- **Where the array size check belongs was raised, and Jon settled it**: an array
+  of a type with no known size has none either, so it is not a type at all, not
+  even behind a reference -- there is nothing to allocate. `array.c` is the only
+  site that can say so, since a reference asks the array nothing, so its check
+  stays and now reports `ErrorNoSize` with the cause. That made the field's own
+  question about arrays pure duplication, and it was dropped: one accurate
+  diagnostic per mistake, at the array, which is nearer the cause than the field
+  holding it. `struct-typecheck-opaque` asserts the rule, which nothing did --
+  the corpus held opaque types only in the positions where they work.
 - **Rule 5's chain was not implemented.** This stage names which of the five
   causes applies and, for an infected struct, which field carries it -- one level.
   The design's worked example prints the whole path down to the `@opaque` type
