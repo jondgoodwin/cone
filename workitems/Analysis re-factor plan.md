@@ -32,11 +32,12 @@ four checks with no expectation changes.
 | 1 Fold the analysis state | `752935e` | 87 files. Also fixed `tstate.scope` never being initialised. |
 | 2 Rename the flags | `4f28e78` | 4 files. |
 | 3 Mark every declaration | `ee26cb7` | The probe fired; see hazard 1 below. |
-| 4-8 | | not started |
+| 4 Bound instantiation depth | `63031f1` | Macros needed the bound too, and two diagnostic defects surfaced with it. See hazards 5 and 6. |
+| 5-8 | | not started |
 
 ## Standing hazards, found in flight
 
-These were discovered while doing stages 1-3 and are not in the design note.
+These were discovered while doing the stages and are not in the design note.
 
 1. **Clone functions silently duplicate analysis state.** `cloneFnDclNode`,
    `cloneVarDclNode` and `cloneFieldDclNode` `memcpy` the whole node, flags
@@ -68,6 +69,20 @@ These were discovered while doing stages 1-3 and are not in the design note.
 4. **The runner's staleness guard fires after any git operation that touches
    source mtimes** — `stash`, `checkout`, `stash pop`. It refuses to run rather
    than reporting failures against a stale binary. Rebuild; do not debug.
+5. **A node built during analysis takes the lexer's position, which by then is
+   the end of the file.** `newNode` reads `lex->tokp`, so an injected node points
+   at nothing unless `inodeLexCopy` is called on it. `genericSubstitute`'s
+   `inferredgencall` was one, found because stage 4's diagnostic landed on it and
+   pointed one line past the end of the source. Any diagnostic reported on an
+   injected node is suspect until its position is checked against a real program.
+6. **A block whose only value expression was reported bad infers `unknownType`,
+   not `errorType`.** `iexpMultiInfer` returns `EqMatch` for an `errorType`
+   branch *before* recording it, so `inferredType` is left unknown, the block's
+   `vtype` becomes `unknownType`, and the enclosing return reports a type
+   mismatch that says nothing. Measured on a runaway macro in a function's value
+   position: one real diagnostic, two follow-ons. Nothing was done about it --
+   it is the deferred "suppressing repeated diagnostics" work, recorded here
+   because it is where that work should start.
 
 ## Sequencing principles
 
@@ -196,6 +211,36 @@ fn f() i64 { recur[i64](3i64) }
 a crash into a diagnostic.
 
 **Expectation changes.** None; one case added.
+
+**Done.** Green on all four checks, no expectation changes, one scenario added:
+120 scenarios / 121 runs and `--coverage` 58 of 61. Four things differed from
+what is written above.
+
+- **The macro path needed the bound as much as the generic one, and its own
+  scenario.** The plan named `macro.c` but the design's example was a generic.
+  Both macro expansion paths -- a parameterless name standing for its body, and
+  a call substituting arguments -- crash identically today, measured at depth
+  ~2282 against the generic form's ~702. `TypeCheckLoopMax` (256) sits well under
+  both. The corpus's deepest legitimate expansion is **1**, generic and macro
+  alike, so the limit has three orders of magnitude of headroom over real code.
+- **One runaway generic yields more than one diagnostic.** Refusing at the limit
+  and unwinding puts the *next* instantiation out at the limit as well, so the
+  canonical example reports three times, once per instantiation site on the line.
+  Nothing suppresses that, and the scenario is written so each site sits on its
+  own line, since bless cannot place two annotations sharing a line and a code
+  unless their messages differ.
+- **The diagnostic arrived buried under 256 frames of instantiation trace.**
+  `errorMsgNode` follows `instnode` to the end, which is one or two frames for
+  ordinary code and 1546 lines of output here. It now shows four and counts the
+  rest. This is behaviour every diagnostic shares, and no corpus scenario nests
+  deep enough to notice.
+- **It also pointed one line past the end of the file**, because
+  `genericSubstitute` injects a call node without copying the position of the
+  call it stands for. Fixed in the same commit; see hazard 5.
+
+The probe was worth running twice: once over the corpus to learn the real depth,
+and once on the crashing programs to learn how far each gets before the stack
+gives out. Neither number is derivable from the code.
 
 ---
 

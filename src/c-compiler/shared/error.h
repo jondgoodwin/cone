@@ -112,6 +112,9 @@ enum ErrorCode {
     // Reinterpretation, checked where the size is known
     ErrorRecastSize = 1066,     // 'as' onto a struct whose size differs from the source's
 
+    // Generic and macro expansion
+    ErrorInstDepth = 1067,      // Expansion nested deeper than the compiler will follow
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

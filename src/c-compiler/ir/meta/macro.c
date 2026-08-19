@@ -72,6 +72,13 @@ void macroNameTypeCheck(AnalysisState *pstate, NameUseNode **gennode) {
         return;
     }
 
+    // A macro whose body names itself expands without end, and no mark can see
+    // it: each expansion is a fresh clone, never the node expanded before.
+    if (!genericInstantiateEnter((INode*)*gennode)) {
+        *((INode**)gennode) = newErrorNode((INode*)*gennode);
+        return;
+    }
+
     // Instantiate macro, replacing gennode
     CloneState cstate;
     clonePushState(&cstate, (INode*)*gennode, NULL, pstate->scope, NULL, NULL);
@@ -80,6 +87,7 @@ void macroNameTypeCheck(AnalysisState *pstate, NameUseNode **gennode) {
 
     // Now type check the instantiated nodes
     inodeTypeCheckAny(pstate, (INode**)gennode);
+    genericInstantiateExit();
 }
 
 // Instantiate a generic using passed arguments
@@ -92,6 +100,12 @@ void macroCallTypeCheck(AnalysisState *pstate, FnCallNode **nodep) {
         return;
     }
 
+    // Bounded for the same reason as the parameterless form above
+    if (!genericInstantiateEnter((INode*)*nodep)) {
+        *((INode**)nodep) = newErrorNode((INode*)*nodep);
+        return;
+    }
+
     // Replace gennode call with instantiated body, substituting parameters
     CloneState cstate;
     clonePushState(&cstate, (INode*)*nodep, NULL, pstate->scope, genericnode->parms, (*nodep)->args);
@@ -100,5 +114,6 @@ void macroCallTypeCheck(AnalysisState *pstate, FnCallNode **nodep) {
 
     // Now type check the instantiated nodes
     inodeTypeCheckAny(pstate, (INode **)nodep);
+    genericInstantiateExit();
 }
 
