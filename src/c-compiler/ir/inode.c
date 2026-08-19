@@ -305,10 +305,13 @@ void inodeNameRes(AnalysisState *pstate, INode **node) {
 // - expectType is the type expected of an expression node (or unknownType/noCareType)
 void inodeTypeCheck(AnalysisState *pstate, INode **node, INode *expectType) {
 
-    // Type nodes are fully checked the first time they are referenced,
-    // so that we know everything we need to know about correctly managing their values
-    // (because of needing to infer infectious type constraints based on their composed fields).
-    // However, type checking of a type node should only be done once
+    // A declaration is analyzed once, however many places reach it. Analysis
+    // lowers and replaces nodes, so a second walk of one corrupts it; the marks
+    // are a correctness requirement rather than an optimization.
+    //
+    // Type nodes are fully checked the first time they are referenced, so that
+    // we know everything we need about managing their values (infectious
+    // constraints have to be inferred from the fields they compose).
     //
     // A generic instantiation is a type but not a type declaration: this pass
     // replaces it with the instance it names, and the instance carries these
@@ -324,6 +327,18 @@ void inodeTypeCheck(AnalysisState *pstate, INode **node, INode *expectType) {
         }
         else
             (*node)->flags |= Analyzing;
+    }
+    else if (inodeIsDcl(*node)) {
+        if ((*node)->flags & Analyzed)
+            return;
+        // Under analysis and reached again. Its own type was established before
+        // it began anything that could refer back to it, so the caller reads
+        // that from the node and there is nothing left to do here. Unreachable
+        // until a use demands a declaration rather than reading it, and it is
+        // what lets two functions call each other.
+        if ((*node)->flags & Analyzing)
+            return;
+        (*node)->flags |= Analyzing;
     }
 
     switch ((*node)->tag) {
@@ -439,10 +454,11 @@ void inodeTypeCheck(AnalysisState *pstate, INode **node, INode *expectType) {
         assert(0 && "**** ERROR **** Attempting to check an unknown node");
     }
 
-    // Confirm when a type node has been checked. *node may have been replaced by
+    // Confirm the declaration has been analyzed. *node may have been replaced by
     // now -- an instantiation leaves behind the instance it named, which is a
     // declaration and does take the mark.
-    if (((isTypeNode(*node) && (*node)->tag != FnCallTag)) || (*node)->tag == ModuleTag) {
+    if (((isTypeNode(*node) && (*node)->tag != FnCallTag)) || (*node)->tag == ModuleTag
+            || inodeIsDcl(*node)) {
         (*node)->flags |= Analyzed;
     }
 }
@@ -492,6 +508,21 @@ Name *inodeGetName(INode *node) {
     default:
         assert(0 && "This kind of node has no namesym field");
         return NULL;
+    }
+}
+
+// Is this a declaration that carries its own analysis marks?
+// Type declarations and modules are handled separately: they are reached as
+// types rather than as declarations, and a type's mark means laid out.
+int inodeIsDcl(INode *node) {
+    switch (node->tag) {
+    case FnDclTag:
+    case VarDclTag:
+    case FieldDclTag:
+    case ConstDclTag:
+        return 1;
+    default:
+        return 0;
     }
 }
 

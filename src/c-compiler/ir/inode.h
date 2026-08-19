@@ -283,6 +283,7 @@ void inodePrintDecr();
 Name *inodeGetName(INode *node);
 
 // Determine whether a named node is marked as private
+int inodeIsDcl(INode *node);
 int inodeIsPrivate(INode *node);
 
 // Determine whether an earlier diagnostic already marked this node as bad

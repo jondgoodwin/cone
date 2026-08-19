@@ -26,6 +26,10 @@ FieldDclNode *newFieldDclNode(Name *namesym, INode *perm) {
 INode *cloneFieldDclNode(CloneState *cstate, FieldDclNode *node) {
     FieldDclNode *newnode = memAllocBlk(sizeof(FieldDclNode));
     memcpy(newnode, node, sizeof(FieldDclNode));
+    // A clone is unanalyzed however far along the node it was copied from got.
+    // memcpy carries the analysis marks with everything else, and a clone that
+    // kept them would be skipped by the guard in inodeTypeCheck.
+    newnode->flags &= 0xffff - (Analyzed | Analyzing);
     newnode->vtype = cloneNode(cstate, node->vtype);
     newnode->value = cloneNode(cstate, node->value);
     return (INode*)newnode;
