@@ -36,7 +36,7 @@ four checks with no expectation changes.
 | 5 Demand from value name uses | `6d7de87` | Held green only by moving the signature-failure skip into the declaration. See hazards 7 and 8. |
 | 6 Remove the signature pre-pass | `8ef2fb2` | A net deletion, green first try. Stage 5 had already carried the risk. |
 | 7 Read the in-progress state | `acdacbe` | Three expectations moved, exactly as predicted. A fourth case was a crash the plan did not name. See hazard 9. |
-| 8 Lowering out of name resolution | | The two sites are disjoint, not duplicates, and neither had coverage. See hazard 10. |
+| 8 Lowering out of name resolution | `968355c` | The two sites are disjoint, not duplicates, and neither had coverage. See hazard 10. |
 
 ## Standing hazards, found in flight
 
