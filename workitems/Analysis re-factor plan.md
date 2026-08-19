@@ -33,7 +33,7 @@ four checks with no expectation changes.
 | 2 Rename the flags | `4f28e78` | 4 files. |
 | 3 Mark every declaration | `ee26cb7` | The probe fired; see hazard 1 below. |
 | 4 Bound instantiation depth | `adeb75a` | Macros needed the bound too, and two diagnostic defects surfaced with it. See hazards 5 and 6. |
-| 5 Demand from value name uses | | Held green only by moving the signature-failure skip into the declaration. See hazards 7 and 8. |
+| 5 Demand from value name uses | `6d7de87` | Held green only by moving the signature-failure skip into the declaration. See hazards 7 and 8. |
 | 6-8 | | not started |
 
 ## Standing hazards, found in flight
