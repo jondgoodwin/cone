@@ -163,13 +163,9 @@ this first.
   first arm that is neither `case` nor `else`. Each must be last in its file.
 - **Mutually exclusive structure.** `ErrorNoEof` needs the file to end wrongly.
   There is one end of file, so it is one per file and it must be last.
-- **Anything that ends the process.** `errorExit` terminates immediately instead
-  of accumulating — `ExitNF`, `ExitMem`, `ExitIndent` — and so does a crash. A
-  scenario whose subject is a construct that *used* to take the compiler down
-  belongs on its own for the same reason: when the guard regresses, the process
-  dies and every expectation in that file is lost with it, so it should not be
-  sharing a file with coverage of anything else. `generic-typecheck-depth` is the
-  case in point.
+- **Aborting diagnostics.** `errorExit` terminates immediately instead of
+  accumulating — `ExitNF`, `ExitMem`, `ExitIndent`. Nothing after one of these
+  runs, so it gets its own file and never shares with accumulating errors.
 - **One diagnostic's whole story.** Where a single `ErrorCode` covers several
   distinct causes with different remedies, the cases belong side by side, so that
   a reader can check each cause names the right advice and a change that reworded
@@ -181,6 +177,14 @@ than three to six diagnostics, split by sub-family", with no argument for the
 number. Ten scenarios already exceed it and one carries fifteen, so it described
 nothing the corpus does. Split for one of the reasons above, or because the file
 stops being about one thing; not for a count.
+
+**A scenario whose subject used to crash the compiler is not a reason to split
+either**, though it costs something worth writing down in the file. If that
+guard regresses, the scenario does not fail an assertion — the process dies and
+every expectation in the file is lost with it, including coverage of unrelated
+things. `generic-typecheck-macro` carries both arity and non-termination and says
+so at the top. Accepting that cost is the ordinary choice; a separate file buys
+only the isolation.
 
 Name the split for what it covers — `core-parse-delimiters`, not `core-parse-1`.
 
