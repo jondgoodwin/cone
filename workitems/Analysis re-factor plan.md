@@ -22,6 +22,53 @@ out wrong costs one commit rather than the sequence.
 **A stale `conec` fails good sources in ways indistinguishable from a
 regression.** Build before believing any failure; `--build` builds first.
 
+## Progress
+
+Branch `analysis-refactor-design`. Stages 1-3 are done and each was green on all
+four checks with no expectation changes.
+
+| Stage | Commit | Notes |
+| --- | --- | --- |
+| 1 Fold the analysis state | `752935e` | 87 files. Also fixed `tstate.scope` never being initialised. |
+| 2 Rename the flags | `4f28e78` | 4 files. |
+| 3 Mark every declaration | `ee26cb7` | The probe fired; see hazard 1 below. |
+| 4-8 | | not started |
+
+## Standing hazards, found in flight
+
+These were discovered while doing stages 1-3 and are not in the design note.
+
+1. **Clone functions silently duplicate analysis state.** `cloneFnDclNode`,
+   `cloneVarDclNode` and `cloneFieldDclNode` `memcpy` the whole node, flags
+   included, and never cleared the analysis marks — only `cloneStructNode` did.
+   Nothing had noticed because only types carried those marks. Stage 3 fixed all
+   three, but the *class* is what matters: this is the third defect of this shape
+   in this codebase, after `cloneStructNode` carrying a list's `used` count into
+   every generic instance method. **Anything added to a node's flags from here
+   needs its clone audited in the same commit.**
+2. **A declaration under analysis returns silently; it does not raise
+   `ErrorRecurse`.** Stage 3 deviated from what this plan said, deliberately.
+   Refusing would fire on mutual recursion the moment stage 5 lands. Rule 3 says
+   a declaration's own type is established before anything can refer back to it,
+   so the caller reads that from the node and there is nothing to do. Stage 5
+   depends on this; stage 7 gives type nodes the equivalent treatment for size.
+3. **The probe technique works, and reading the code does not.** Instrument the
+   thing under test to *report instead of act*, compile all 120 corpus sources,
+   and confirm silence:
+
+   ```bash
+   for f in $(find test/cases -name "*.cone"); do
+     ./build/x64-release/conec.exe -o build/probe "$f" 2>&1 | grep "^PROBE"
+   done
+   ```
+
+   Stage 3's probe found hazard 1, which no amount of reading would have. Stages
+   5 and 7 both have "signal of a bad reading" lines that want the same
+   treatment before the change is written.
+4. **The runner's staleness guard fires after any git operation that touches
+   source mtimes** — `stash`, `checkout`, `stash pop`. It refuses to run rather
+   than reporting failures against a stale binary. Rebuild; do not debug.
+
 ## Sequencing principles
 
 1. **Mechanical before semantic.** Changes that cannot alter behaviour go first,
@@ -109,20 +156,18 @@ placement.
 conditioned on `isTypeNode(*node) || ModuleTag`. Extend the condition; keep the
 in-progress branch refusing exactly as it does now.
 
-**Why safe here.** Nothing is visited twice today, so both the early return and
-the refusal are unreachable for the new node kinds. The commit proves the marking
-is placed correctly while nothing depends on it.
+**Done — `ee26cb7`.** Green, no expectation changes, but not the no-op it was
+predicted to be.
 
-**Probe this before writing it.** That no declaration is currently visited twice
-is a reading, not a measurement. Instrument the guard to report when it would
-have returned early or refused, run the suite, and confirm silence. Design
-section 13.4 describes the tracing method.
+The probe fired on four scenarios, two generic and two trait. The cause was not
+a second walk: the three declaration clone functions carried the marks into
+their copies, so a clone was born already analyzed and the guard would have
+skipped it entirely. Fixing those three made the probe silent across all 120
+sources, confirming that nothing is genuinely visited twice today. See standing
+hazard 1.
 
-**Expectation changes.** None.
-
-**Signal of a bad reading.** The probe firing. If some declaration *is* visited
-twice today, that is either a defect or a shared node, and it has to be
-understood before demand multiplies the ways in.
+The in-progress branch returns silently rather than refusing, which is a
+deliberate departure from what this plan said. See standing hazard 2.
 
 ---
 
