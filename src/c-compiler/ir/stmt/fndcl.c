@@ -165,6 +165,17 @@ void fnDclTypeCheck(AnalysisState *pstate, FnDclNode *fnnode) {
     int errorsOnEntry = errors;
 
     itypeTypeCheck(pstate, &fnnode->vtype);
+
+    // A body is not checked against a signature that failed: every use of the
+    // types that check was supposed to establish would report again, naming
+    // nothing the author can act on. The module's signature pre-pass records
+    // that failure in FlagSigError and its body pass skips those declarations,
+    // but a use may now demand this one first, arriving here without passing
+    // through that loop. The skip belongs to the declaration, not to the walk
+    // that happened to reach it.
+    if (fnnode->flags & FlagSigError)
+        return;
+
     // No need to type check function body if no body or is a default method of a trait
     if (!fnnode->value 
         || ((fnnode->flags & FlagMethFld) && pstate->typenode->tag == StructTag && (pstate->typenode->flags & TraitType)))
@@ -180,10 +191,19 @@ void fnDclTypeCheck(AnalysisState *pstate, FnDclNode *fnnode) {
     // Syntactic sugar: Turn implicit returns into explicit returns
     fnImplicitReturn(((FnSigNode*)fnnode->vtype)->rettype, (BlockNode *)fnnode->value);
 
-    // Type check/inference of the function's logic
+    // Type check/inference of the function's logic.
+    //
+    // Rule 8: this declaration may have been reached by demand, from the middle
+    // of some other function's body, so the walk context describes somewhere
+    // else. Saving and resetting both is what makes analyzing a declaration
+    // independent of where it was analyzed from. Scope 1 is the signature's,
+    // matching what fnDclNameRes sets, so the body's own block is scope 2.
     FnDclNode *svFn = pstate->fn;
+    uint16_t svScope = pstate->scope;
     pstate->fn = fnnode;
+    pstate->scope = 1;
     inodeTypeCheck(pstate, &fnnode->value, noCareType);
+    pstate->scope = svScope;
     pstate->fn = svFn;
 
     // Immediately perform the data flow pass for this function

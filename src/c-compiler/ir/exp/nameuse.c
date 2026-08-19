@@ -237,7 +237,29 @@ void nameUseTypeCheck(AnalysisState *pstate, NameUseNode **namep) {
         name->vtype = unknownType;
         return;
     }
-    name->vtype = ((IExpNode*)name->dclnode)->vtype;
+    // Rule 1: reaching a name analyzes the declaration it names, so what is read
+    // below is a finished type rather than whatever source order happened to
+    // leave behind. A declaration already analyzed returns at once; one still
+    // under analysis returns having established its own type, which is all a use
+    // needs and is what lets two functions call each other.
+    inodeTypeCheckAny(pstate, &name->dclnode);
+
+    // Rule 6: a constant, and a variable or field whose type is inferred, take
+    // their type *from* the value that may name them back, so re-entering one
+    // before that type exists leaves nothing to answer with. Every other
+    // declaration has established its type by now, so an unknown type here is
+    // exactly a definition depending on itself.
+    INode *dcl = name->dclnode;
+    if (((IExpNode*)dcl)->vtype == unknownType
+        && (dcl->flags & Analyzing) && !(dcl->flags & Analyzed)) {
+        errorMsgNode((INode*)name, ErrorCircular,
+            "%s is defined in terms of itself, so it has no type to give.",
+            &name->namesym->namestr);
+        name->vtype = errorType;
+        return;
+    }
+
+    name->vtype = ((IExpNode*)dcl)->vtype;
 }
 
 // Handle type check for type name use references

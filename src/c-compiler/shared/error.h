@@ -115,6 +115,9 @@ enum ErrorCode {
     // Generic and macro expansion
     ErrorInstDepth = 1067,      // Expansion nested deeper than the compiler will follow
 
+    // Demand-driven analysis
+    ErrorCircular = 1068,       // A declaration whose type comes from a value that names it back
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

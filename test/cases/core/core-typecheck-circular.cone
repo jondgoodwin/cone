@@ -1,0 +1,30 @@
+// Declarations whose type comes from a value that names them back.
+//
+// Its own file rather than a line in core-typecheck, because the sub-family is
+// distinct and core-typecheck already carries eight diagnostics.
+//
+// Every other kind of declaration establishes its own type before analyzing
+// anything that could refer back to it -- that is what lets two functions call
+// each other. A named constant, and a variable or field with no declared type,
+// cannot: the type comes *from* the initial value, which is the very thing that
+// recursed. There is no earlier answer to give, so the recursion is the error.
+//
+// Both shapes compiled clean before the check existed. The only complaint came
+// from the use site, as a type mismatch naming neither declaration.
+
+// A pair of constants, each defined as the other.
+const A = B
+const B = A                //~ ErrorCircular:11 "defined in terms of itself"
+
+// A use, so that the file also establishes that no second diagnostic follows
+// from reading a declaration that was reported circular.
+fn usesConstant() i64 {
+  A
+}
+
+// The same shape in one declaration: a global whose type is inferred from an
+// initial value that reads the global. The literal check fires as well, because
+// a name is not a literal, and it is written here rather than left out so that
+// the file's count is what the compiler actually produces.
+mut selfNamed = selfNamed  //~ ErrorCircular:17 "defined in terms of itself"
+                           //~^ ErrorNotLit:5 "may only be initialized with a literal value" follow-on

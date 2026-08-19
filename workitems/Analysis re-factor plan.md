@@ -33,7 +33,8 @@ four checks with no expectation changes.
 | 2 Rename the flags | `4f28e78` | 4 files. |
 | 3 Mark every declaration | `ee26cb7` | The probe fired; see hazard 1 below. |
 | 4 Bound instantiation depth | `adeb75a` | Macros needed the bound too, and two diagnostic defects surfaced with it. See hazards 5 and 6. |
-| 5-8 | | not started |
+| 5 Demand from value name uses | | Held green only by moving the signature-failure skip into the declaration. See hazards 7 and 8. |
+| 6-8 | | not started |
 
 ## Standing hazards, found in flight
 
@@ -83,6 +84,25 @@ These were discovered while doing the stages and are not in the design note.
    position: one real diagnostic, two follow-ons. Nothing was done about it --
    it is the deferred "suppressing repeated diagnostics" work, recorded here
    because it is where that work should start.
+
+7. **Demand runs ahead of `FlagSigError`.** The module's signature pre-pass sets
+   the flag and its body pass skips those declarations, but a use can now demand
+   a declaration before that loop reaches it, arriving at `fnDclTypeCheck`
+   without passing the skip. Measured: one scenario, `closure-typecheck-sig`,
+   gained two cascading diagnostics from a closure body that had never been type
+   checked. Stage 5 moved the skip into `fnDclTypeCheck`, which is where stage 6
+   needs it anyway -- **the skip now belongs to the declaration, and stage 6 has
+   only to swap the flag test for `errors != errorsOnEntry` once the pre-pass is
+   gone.** The first attempt tested both, but the error-count half fires nowhere
+   in the corpus and would have widened the gate `core-flow-gate` pins, so it was
+   left for stage 6 to add when it becomes reachable.
+8. **`blockTypeCheck` leaked `pstate->scope` on two of its three exits.** The
+   `--pstate->scope` sat after two early returns, so the counter climbed for the
+   rest of the compile: successive module-level functions were entered at scope
+   0, 1, 2, 3, 4, 5. Harmless while scope was only read by `clonePushState` and
+   one injected temporary, and not harmless once a declaration can be analyzed
+   from the middle of a body. Fixed in stage 5 along with `fnDclTypeCheck` saving
+   and resetting scope, which is rule 8's half of that stage.
 
 ## Sequencing principles
 
@@ -269,6 +289,28 @@ referenced twice is analyzed once.
 
 **Expectation changes.** Watch for scenarios that depended on a global being
 untyped at the moment a function body read it. None is known.
+
+**Done.** Green on all four checks, no expectation changes, two scenarios added
+and one success program extended: 121 scenarios / 122 runs, `--coverage` 59 of
+62. What differed:
+
+- **The audit found two real defects, not the one it was looking for.** Rule 8's
+  concern was `loopblock` and `scope` being wrong across a demand jump.
+  `loopblock` turned out to be read only during name resolution, which is still
+  one eager source-order pass, so demand cannot reach it at all. `scope` was
+  worse than "not reset": `blockTypeCheck` was leaking it. See hazard 8.
+- **`typenode` is not reachable stale.** Probing every demand in the corpus for a
+  non-NULL `typenode` found exactly one, `self` inside its own type's method,
+  where pointing at that type is correct. No reset was added, because none could
+  be provoked or tested.
+- **The one scenario that moved was not a global at all** but a closure, and the
+  cause was the signature-failure skip rather than anything about types. See
+  hazard 7. Preserving the skip put the suite back to no drift, which is what
+  this stage predicted.
+- **Two of the three probes disproved the reading that prompted them.** The
+  guess that `errors != errorsOnEntry` inside `fnDclTypeCheck` would catch the
+  signature failure measured zero hits corpus-wide, because the pre-pass had
+  already marked the signature analyzed and the re-check reported nothing.
 
 ---
 
