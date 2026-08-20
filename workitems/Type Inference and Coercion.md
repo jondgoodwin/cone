@@ -73,6 +73,24 @@ canonicalised through `typetblFind` was considered and deliberately deferred; it
 was not needed for that defect, and would make the whole class impossible rather
 than fixed.
 
+### A call cannot push an expected type into its arguments
+
+Measured. `fnCallTypeCheck` type checks every argument *before* the line that
+resolves the callee, so at the moment an argument is checked there is no
+parameter type to check it against. Every expected type a call could supply has
+to be applied afterwards, by coercion, rather than during.
+
+That is why a number literal argument cannot take its type from the parameter it
+is passed to; [[Lexer and Parser]]'s "number literal nodes can take an expected
+type" item is blocked on this ordering, not on the lexer.
+
+[[Analysis re-factor]] removed the reason for the order. Demand means resolving
+the callee first is now safe — reaching a name type checks the declaration it
+names, and a callee already checked returns at once. The front end was simply
+not restructured to do it. The full account, with the other two front-end gaps
+the same measurement found, is in [[Namedef Refactor]], whose four-step
+choreography for an overloaded call is what this would complete.
+
 ### Inference & Type checking
 
 Test for i32 -> ?i32 coercion in structs

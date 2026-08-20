@@ -89,6 +89,13 @@ Sections worth adding, in the order their absence costs most:
 2. **Calls and overload resolution.** `fnCallTypeCheck` is the largest function
    in the phase by a wide margin and serves several distinct syntaxes at once,
    which is also why [[IR refactor]] and [[Lexer and Parser]] want to split it.
+   What the note most needs to say is *where the callee becomes knowable*: the
+   dispatch leads with syntax, resolves the callee partway down, and has one
+   path that deliberately skips resolving it. Until that is restructured, the
+   note has to describe an invariant that holds in most of the function and not
+   all of it. The measurements are in [[Namedef Refactor]]; the argument-order
+   half is in [[Type Inference and Coercion]]; the one arm nothing exercises is
+   in [[Init and Final]].
 3. **Casts and conversions.** What `castTypeCheck` permits, and what `is`
    decides in `castIsTypeCheck`.
 4. **References and borrows.** `borrowTypeCheck`, and precisely where it stops
