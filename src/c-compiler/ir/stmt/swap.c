@@ -38,13 +38,13 @@ void swapPrint(SwapNode *node) {
 }
 
 // Name resolution for swap node
-void swapNameRes(AnalysisState *pstate, SwapNode *node) {
+void swapNameRes(NameResState *pstate, SwapNode *node) {
     inodeNameRes(pstate, &node->lval);
     inodeNameRes(pstate, &node->rval);
 }
 
 // Type checking for swap node
-void swapTypeCheck(AnalysisState *pstate, SwapNode *node) {
+void swapTypeCheck(TypeCheckState *pstate, SwapNode *node) {
     if (iexpTypeCheckAny(pstate, &node->lval) == 0 || iexpIsLvalError(node->lval) == 0)
         return;
 

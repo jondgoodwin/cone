@@ -30,7 +30,7 @@ INode *cloneBreakNode(CloneState *cstate, BreakRetNode *node) {
 
 // Name resolution for break
 // - Resolve any lifetime or expression names
-void breakNameRes(AnalysisState *nstate, BreakRetNode *breaknode) {
+void breakNameRes(NameResState *nstate, BreakRetNode *breaknode) {
     inodeNameRes(nstate, &breaknode->exp);
 
     // Resolve break to block it applies to
@@ -55,7 +55,7 @@ void breakNameRes(AnalysisState *nstate, BreakRetNode *breaknode) {
 }
 
 // Type check the break expression, ensure it matches loop's type
-void breakTypeCheck(AnalysisState *pstate, BreakRetNode *breaknode) {
+void breakTypeCheck(TypeCheckState *pstate, BreakRetNode *breaknode) {
 
     // Note:  we don't type check the break expression until later (as part of block type check),
     // when we can ensure all of them match to each other and whatever is expected

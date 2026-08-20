@@ -26,8 +26,8 @@ INode *cloneFnSigNode(CloneState *cstate, FnSigNode *node);
 
 void fnSigPrint(FnSigNode *node);
 // Name resolution of the function signature
-void fnSigNameRes(AnalysisState *pstate, FnSigNode *sig);
-void fnSigTypeCheck(AnalysisState *pstate, FnSigNode *name);
+void fnSigNameRes(NameResState *pstate, FnSigNode *sig);
+void fnSigTypeCheck(TypeCheckState *pstate, FnSigNode *name);
 int fnSigEqual(FnSigNode *node1, FnSigNode *node2);
 
 // For virtual reference structural matches on two methods,

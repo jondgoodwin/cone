@@ -72,7 +72,7 @@ void arrayPrint(ArrayNode *node) {
 }
 
 // Name resolution of an array type/literal
-void arrayNameRes(AnalysisState *pstate, ArrayNode *node) {
+void arrayNameRes(NameResState *pstate, ArrayNode *node) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(node->elems, cnt, nodesp))
@@ -84,7 +84,7 @@ void arrayNameRes(AnalysisState *pstate, ArrayNode *node) {
 }
 
 // Type check an array type
-void arrayTypeCheck(AnalysisState *pstate, ArrayNode *node) {
+void arrayTypeCheck(TypeCheckState *pstate, ArrayNode *node) {
 
     // Check out dimensions: must be literal numbers
     if (node->dimens->used == 1) {

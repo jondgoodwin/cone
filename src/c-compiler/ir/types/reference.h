@@ -53,13 +53,13 @@ RefNode *newArrayDerefNodeFrom(RefNode *refnode);
 void refPrint(RefNode *node);
 
 // Name resolution of a reference node
-void refNameRes(AnalysisState *pstate, RefNode *node);
+void refNameRes(NameResState *pstate, RefNode *node);
 
 // Type check a reference node
-void refTypeCheck(AnalysisState *pstate, RefNode *name);
+void refTypeCheck(TypeCheckState *pstate, RefNode *name);
 
 // Type check a virtual reference node
-void refvirtTypeCheck(AnalysisState *pstate, RefNode *node);
+void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node);
 
 // Compare two reference signatures to see if they are equivalent
 int refIsSame(RefNode *node1, RefNode *node2);

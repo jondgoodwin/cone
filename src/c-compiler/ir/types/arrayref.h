@@ -12,10 +12,10 @@
 void arrayRefPrint(RefNode *node);
 
 // Name resolution of an array reference node
-void arrayRefNameRes(AnalysisState *pstate, RefNode *node);
+void arrayRefNameRes(NameResState *pstate, RefNode *node);
 
 // Semantically analyze an array reference node
-void arrayRefTypeCheck(AnalysisState *pstate, RefNode *name);
+void arrayRefTypeCheck(TypeCheckState *pstate, RefNode *name);
 
 // Compare two reference signatures to see if they are equivalent
 int arrayRefIsSame(RefNode *node1, RefNode *node2);

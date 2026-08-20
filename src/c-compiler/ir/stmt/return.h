@@ -18,13 +18,13 @@ INode *cloneReturnNode(CloneState *cstate, BreakRetNode *node);
 
 void returnPrint(BreakRetNode *node);
 // Name resolution for return
-void returnNameRes(AnalysisState *pstate, BreakRetNode *node);
+void returnNameRes(NameResState *pstate, BreakRetNode *node);
 
 // Type check for return statement
 // Related analysis for return elsewhere:
 // - Block ensures that return can only appear at end of block
 // - NameDcl turns fn block's final expression into an implicit return
-void returnTypeCheck(AnalysisState *pstate, BreakRetNode *node);
+void returnTypeCheck(TypeCheckState *pstate, BreakRetNode *node);
 
 // Data flow for return: a returned borrowed reference may not point to a local
 void returnFlow(BreakRetNode *node);

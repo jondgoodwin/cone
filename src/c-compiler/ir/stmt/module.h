@@ -36,7 +36,7 @@ void modAddNamedNode(ModuleNode *mod, Name *name, INode *node);
 void modAddFn(ModuleNode *mod, FnDclNode *fnnode);
 
 void modHook(ModuleNode *oldmod, ModuleNode *newmod);
-void modNameRes(AnalysisState *pstate, ModuleNode *mod);
-void modTypeCheck(AnalysisState *pstate, ModuleNode *mod);
+void modNameRes(NameResState *pstate, ModuleNode *mod);
+void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod);
 
 #endif

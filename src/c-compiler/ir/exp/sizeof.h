@@ -22,9 +22,9 @@ INode *cloneSizeofNode(CloneState *cstate, SizeofNode *node);
 void sizeofPrint(SizeofNode *node);
 
 // Name resolution of sizeof node
-void sizeofNameRes(AnalysisState *pstate, SizeofNode *node);
+void sizeofNameRes(NameResState *pstate, SizeofNode *node);
 
 // Type check sizeof node
-void sizeofTypeCheck(AnalysisState *pstate, SizeofNode *node);
+void sizeofTypeCheck(TypeCheckState *pstate, SizeofNode *node);
 
 #endif

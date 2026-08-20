@@ -30,10 +30,10 @@ INode *cloneAssignNode(CloneState *cstate, AssignNode *node);
 void assignPrint(AssignNode *node);
 
 // Name resolution for assignment node
-void assignNameRes(AnalysisState *pstate, AssignNode *node);
+void assignNameRes(NameResState *pstate, AssignNode *node);
 
 // Type check for assignment node
-void assignTypeCheck(AnalysisState *pstate, AssignNode *node);
+void assignTypeCheck(TypeCheckState *pstate, AssignNode *node);
 
 // Perform data flow analysis on assignment node
 void assignFlow(FlowState *fstate, AssignNode **node);

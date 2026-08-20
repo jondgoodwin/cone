@@ -15,6 +15,6 @@ void vtuplePrint(TupleNode *tuple);
 
 // Type check the value tuple node
 // - Infer type tuple from types of vtuple's values
-void vtupleTypeCheck(AnalysisState *pstate, TupleNode *node);
+void vtupleTypeCheck(TypeCheckState *pstate, TupleNode *node);
 
 #endif

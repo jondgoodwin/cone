@@ -119,7 +119,7 @@ void modHook(ModuleNode *oldmod, ModuleNode *newmod) {
 }
 
 // Name resolution of the module node
-void modNameRes(AnalysisState *pstate, ModuleNode *mod) {
+void modNameRes(NameResState *pstate, ModuleNode *mod) {
     ModuleNode *owningmod = pstate->mod;
     pstate->mod = mod;
 
@@ -143,7 +143,7 @@ void modNameRes(AnalysisState *pstate, ModuleNode *mod) {
 }
 
 // Type check the module node
-void modTypeCheck(AnalysisState *pstate, ModuleNode *mod) {
+void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod) {
     INode **nodesp;
     uint32_t cnt;
 

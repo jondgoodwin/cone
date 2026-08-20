@@ -136,7 +136,7 @@ static int borrowReassocIndex(RefNode *node) {
 }
 
 // Analyze borrow node
-void borrowTypeCheck(AnalysisState *pstate, RefNode **nodep) {
+void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     RefNode *node = *nodep;
 
     if (borrowReassocIndex(node)) {

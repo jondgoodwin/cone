@@ -23,9 +23,9 @@ INode *cloneNamedValNode(CloneState *cstate, NamedValNode *node);
 void namedValPrint(NamedValNode *node);
 
 // Name resolution of named value node
-void namedValNameRes(AnalysisState *pstate, NamedValNode *node);
+void namedValNameRes(NameResState *pstate, NamedValNode *node);
 
 // Type check named value node
-void namedValTypeCheck(AnalysisState *pstate, NamedValNode *node);
+void namedValTypeCheck(TypeCheckState *pstate, NamedValNode *node);
 
 #endif

@@ -35,10 +35,10 @@ INode *cloneVarDclNode(CloneState *cstate, VarDclNode *node);
 void varDclPrint(VarDclNode *fn);
 
 // Name resolution of vardcl
-void varDclNameRes(AnalysisState *pstate, VarDclNode *node);
+void varDclNameRes(NameResState *pstate, VarDclNode *node);
 
 // Type check vardcl
-void varDclTypeCheck(AnalysisState *pstate, VarDclNode *node);
+void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *node);
 
 // Perform data flow analysis
 void varDclFlow(FlowState *fstate, VarDclNode **vardclnode);

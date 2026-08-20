@@ -23,7 +23,7 @@ void typeLitPrint(FnCallNode *node) {
 }
 
 // Check the type literal node (actually done by fncall)
-void typeLitNameRes(AnalysisState *pstate, FnCallNode *arrlit) {
+void typeLitNameRes(NameResState *pstate, FnCallNode *arrlit) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(arrlit->args, cnt, nodesp))
@@ -45,7 +45,7 @@ int typeLitIsLiteral(FnCallNode *node) {
 }
 
 // Type check a number literal
-void typeLitNbrCheck(AnalysisState *pstate, FnCallNode *nbrlit, INode *type) {
+void typeLitNbrCheck(TypeCheckState *pstate, FnCallNode *nbrlit, INode *type) {
 
     if (nbrlit->args->used != 1) {
         errorMsgNode((INode*)nbrlit, ErrorBadArray, "Number literal requires one value");
@@ -143,7 +143,7 @@ int typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private) {
 }
 
 // Type check a struct literal
-void typeLitStructCheck(AnalysisState *pstate, FnCallNode *arrlit, StructNode *strnode) {
+void typeLitStructCheck(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *strnode) {
 
     // Ensure type has been type-checked, in case any rewriting/semantic analysis was needed
     itypeTypeCheck(pstate, &arrlit->vtype);
@@ -182,7 +182,7 @@ void typeLitFlow(FlowState *fstate, FnCallNode **nodep) {
     }
 }
 
-void typeLitTypeCheck(AnalysisState *pstate, FnCallNode *arrlit) {
+void typeLitTypeCheck(TypeCheckState *pstate, FnCallNode *arrlit) {
 
     INode *littype = itypeGetTypeDcl(arrlit->vtype);
     if (!itypeIsConcrete(arrlit->vtype))

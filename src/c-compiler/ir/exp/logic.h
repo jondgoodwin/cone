@@ -23,15 +23,15 @@ INode *cloneLogicNode(CloneState *cstate, LogicNode *node);
 void logicPrint(LogicNode *node);
 
 // Name resolution of not logic node
-void logicNotNameRes(AnalysisState *pstate, LogicNode *node);
+void logicNotNameRes(NameResState *pstate, LogicNode *node);
 
 // Type check not logic node
-void logicNotTypeCheck(AnalysisState *pstate, LogicNode *node);
+void logicNotTypeCheck(TypeCheckState *pstate, LogicNode *node);
 
 // Name resolution of logic node
-void logicNameRes(AnalysisState *pstate, LogicNode *node);
+void logicNameRes(NameResState *pstate, LogicNode *node);
 
 // Type check logic node
-void logicTypeCheck(AnalysisState *pstate, LogicNode *node);
+void logicTypeCheck(TypeCheckState *pstate, LogicNode *node);
 
 #endif

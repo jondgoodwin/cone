@@ -9,10 +9,10 @@
 #define arraylit_h
 
 // Type check an array literal (used by region allocation only)
-void arrayLitTypeCheckDimExp(AnalysisState *pstate, ArrayNode *arrlit);
+void arrayLitTypeCheckDimExp(TypeCheckState *pstate, ArrayNode *arrlit);
 
 // Type check an array literal
-void arrayLitTypeCheck(AnalysisState *pstate, ArrayNode *arrlit);
+void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit);
 
 // Perform data flow analysis on an array literal's element values
 void arrayLitFlow(FlowState *fstate, ArrayNode **nodep);

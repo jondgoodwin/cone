@@ -20,9 +20,9 @@ TypedefNode *newTypedefNode(Name *namesym);
 void typedefPrint(TypedefNode *var);
 
 // Name resolution
-void typedefNameRes(AnalysisState *pstate, TypedefNode *var);
+void typedefNameRes(NameResState *pstate, TypedefNode *var);
 
 // Type check generic variable declaration
-void typedefTypeCheck(AnalysisState *pstate, TypedefNode *var);
+void typedefTypeCheck(TypeCheckState *pstate, TypedefNode *var);
 
 #endif

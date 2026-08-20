@@ -68,7 +68,7 @@ void ifRemoveReturns(IfNode *ifnode) {
 }
 
 // if node name resolution
-void ifNameRes(AnalysisState *pstate, IfNode *ifnode) {
+void ifNameRes(NameResState *pstate, IfNode *ifnode) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(ifnode->condblk, cnt, nodesp)) {
@@ -120,7 +120,7 @@ void ifExhaustCheck(IfNode *ifnode, CastNode *condition) {
 // - else can only be last
 // All branches must resolve to either the expected type or the same inferred supertype
 // Coercion is performed on branches as needed to accomplish this, or errors result
-void ifTypeCheck(AnalysisState *pstate, IfNode *ifnode, INode *expectType) {
+void ifTypeCheck(TypeCheckState *pstate, IfNode *ifnode, INode *expectType) {
     int hasElse = 0;
     TypeCompare match = EqMatch;
     INode *maybeType = unknownType;

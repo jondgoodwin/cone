@@ -46,16 +46,16 @@ void fnDclPrint(FnDclNode *fn);
 void fnOverloadDclPrint(FnOverloadDclNode *fn);
 
 /// Resolve all names in a function
-void fnDclNameRes(AnalysisState *pstate, FnDclNode *name);
+void fnDclNameRes(NameResState *pstate, FnDclNode *name);
 
 // Type checking a function's logic, does more than you might think:
 // - Turn implicit returns into explicit returns
 // - Perform type checking for all statements
 // - Perform data flow analysis on variables and references
-void fnDclTypeCheck(AnalysisState *pstate, FnDclNode *fnnode);
+void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode);
 
 // Verify no two candidates of an overload set accept the same parameter signature.
 // Candidates are not walked, as each is separately checked by its owning module or type.
-void fnOverloadDclTypeCheck(AnalysisState *pstate, FnOverloadDclNode *node);
+void fnOverloadDclTypeCheck(TypeCheckState *pstate, FnOverloadDclNode *node);
 
 #endif

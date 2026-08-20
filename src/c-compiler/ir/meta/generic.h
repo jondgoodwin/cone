@@ -41,6 +41,6 @@ void genericInstantiateExit();
 
 // Perform generic substitution, if this is a correctly set up generic "fncall"
 // Return 1 if done/error needed. Return 0 if not generic or it leaves behind a lit/fncall that needs processing.
-int genericSubstitute(AnalysisState *pstate, FnCallNode **nodep);
+int genericSubstitute(TypeCheckState *pstate, FnCallNode **nodep);
 
 #endif

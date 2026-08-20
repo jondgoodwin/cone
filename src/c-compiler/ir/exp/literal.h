@@ -56,10 +56,10 @@ void flitPrint(FLitNode *node);
 INode *cloneFLitNode(CloneState *cstate, FLitNode *lit);
 
 // Name resolution of lit node
-void litNameRes(AnalysisState* pstate, IExpNode *node);
+void litNameRes(NameResState* pstate, IExpNode *node);
 
 // Type check lit node
-void litTypeCheck(AnalysisState* pstate, IExpNode *node, INode *expectType);
+void litTypeCheck(TypeCheckState* pstate, IExpNode *node, INode *expectType);
 
 SLitNode *newSLitNode(char *str, uint32_t strlen);
 
@@ -69,7 +69,7 @@ INode *cloneSLitNode(SLitNode *lit);
 void slitPrint(SLitNode *node);
 
 // Type check string literal node
-void slitTypeCheck(AnalysisState *pstate, SLitNode *node);
+void slitTypeCheck(TypeCheckState *pstate, SLitNode *node);
 
 int litIsLiteral(INode* node);
 

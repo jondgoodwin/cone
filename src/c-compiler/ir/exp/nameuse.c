@@ -136,7 +136,7 @@ void nameUsePrint(NameUseNode *name) {
 // - Point to name declaration in other module or this one
 // - If name is for a method or field, rewrite node as 'self.field'
 // - If not method/field, re-tag it as either TypeNameUse or VarNameUse
-void nameUseNameRes(AnalysisState *pstate, NameUseNode **namep) {
+void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
     NameUseNode *name = *namep;
 
     // If name is already "resolved", we are done.
@@ -215,7 +215,7 @@ void nameUseNameRes(AnalysisState *pstate, NameUseNode **namep) {
 }
 
 // Handle type check for variable/function name use references
-void nameUseTypeCheck(AnalysisState *pstate, NameUseNode **namep) {
+void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
     NameUseNode *name = *namep;
     // An overload name has no value of its own: it names a set of concrete
     // declarations. Only a call may use it, and the call type check selects and
@@ -284,7 +284,7 @@ void nameUseTypeCheck(AnalysisState *pstate, NameUseNode **namep) {
 }
 
 // Handle type check for type name use references
-void nameUseTypeCheckType(AnalysisState *pstate, NameUseNode **namep) {
+void nameUseTypeCheckType(TypeCheckState *pstate, NameUseNode **namep) {
     // Do type check on the type declaration this refers to,
     // to ensure it is correct and knows about its infectious constraints
     // Guards are in place to ensure this only will be done once, as early as possible.

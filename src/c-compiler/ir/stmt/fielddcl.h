@@ -26,9 +26,9 @@ INode *cloneFieldDclNode(CloneState *cstate, FieldDclNode *node);
 void fieldDclPrint(FieldDclNode *fn);
 
 // Name resolution of field declaration
-void fieldDclNameRes(AnalysisState *pstate, FieldDclNode *node);
+void fieldDclNameRes(NameResState *pstate, FieldDclNode *node);
 
 // Type check field declaration
-void fieldDclTypeCheck(AnalysisState *pstate, FieldDclNode *node);
+void fieldDclTypeCheck(TypeCheckState *pstate, FieldDclNode *node);
 
 #endif

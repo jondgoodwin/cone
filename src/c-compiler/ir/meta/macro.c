@@ -37,7 +37,7 @@ void macroPrint(MacroDclNode *name) {
 }
 
 // Perform name resolution
-void macroNameRes(AnalysisState *pstate, MacroDclNode *gennode) {
+void macroNameRes(NameResState *pstate, MacroDclNode *gennode) {
     uint16_t oldscope = pstate->scope;
     pstate->scope = 1;
 
@@ -59,11 +59,11 @@ void macroNameRes(AnalysisState *pstate, MacroDclNode *gennode) {
 }
 
 // Type check a generic declaration
-void macroTypeCheck(AnalysisState *pstate, MacroDclNode *gennode) {
+void macroTypeCheck(TypeCheckState *pstate, MacroDclNode *gennode) {
 }
 
 // Type check generic name use
-void macroNameTypeCheck(AnalysisState *pstate, NameUseNode **gennode) {
+void macroNameTypeCheck(TypeCheckState *pstate, NameUseNode **gennode) {
     // Obtain macro to expand
     MacroDclNode *macrodcl = (MacroDclNode*)(*gennode)->dclnode;
     uint32_t expected = macrodcl->parms ? macrodcl->parms->used : 0;
@@ -91,7 +91,7 @@ void macroNameTypeCheck(AnalysisState *pstate, NameUseNode **gennode) {
 }
 
 // Instantiate a generic using passed arguments
-void macroCallTypeCheck(AnalysisState *pstate, FnCallNode **nodep) {
+void macroCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     MacroDclNode *genericnode = (MacroDclNode*)((NameUseNode*)(*nodep)->objfn)->dclnode;
 
     uint32_t expected = genericnode->parms ? genericnode->parms->used : 0;

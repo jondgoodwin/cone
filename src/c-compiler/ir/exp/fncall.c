@@ -89,7 +89,7 @@ void fnCallPrint(FnCallNode *node) {
 // Name resolution on 'fncall'
 // - If node is indexing on a type, retag node as a typelit
 // Note: this never name resolves .methfld, which is handled in type checking
-void fnCallNameRes(AnalysisState *pstate, FnCallNode **nodep) {
+void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
     INode **argsp;
     uint32_t cnt;
@@ -119,7 +119,7 @@ static int fnCallIsAppendTuple(FnCallNode *node) {
 // receiver's type. Name resolution did this and had no type to give, so it
 // passed unknownType and left the injected borrow untyped for everything after
 // it. See design/Analysis.md section 10.
-static void fnCallLowerAppendTuple(AnalysisState *pstate, FnCallNode **nodep) {
+static void fnCallLowerAppendTuple(TypeCheckState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
 
     // The receiver is analyzed first, because its type is what the borrow needs
@@ -288,7 +288,7 @@ void fnCallFinalizeArgs(FnCallNode *node) {
 }
 
 // objfn is a function or a pointer to one. Make sure it is called correctly.
-void fnCallFnSigTypeCheck(AnalysisState *pstate, FnCallNode *node) {
+void fnCallFnSigTypeCheck(TypeCheckState *pstate, FnCallNode *node) {
     if ((node->flags & FlagIndex) || node->methfld != NULL) {
         errorMsgNode((INode*)node->objfn, ErrorNoMeth, "A function may not be called using indexing or a method.");
         return;
@@ -573,7 +573,7 @@ void fnCallOpAssgn(FnCallNode **nodep) {
 // - If an array index, it turns it into an ArrIndex node
 // - A method call is resolved by lookup and lowered to a function call
 // - A function call coerces and injects arguments as needed
-void fnCallTypeCheck(AnalysisState *pstate, FnCallNode **nodep) {
+void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
 
     // If we have a true macro, go handle it elsewhere

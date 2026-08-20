@@ -25,10 +25,10 @@ INode *cloneTupleNode(CloneState *cstate, TupleNode *node);
 void ttuplePrint(TupleNode *tuple);
 
 // Name resolution of type tuple node
-void ttupleNameRes(AnalysisState *pstate, TupleNode *node);
+void ttupleNameRes(NameResState *pstate, TupleNode *node);
 
 // Type check type tuple node
-void ttupleTypeCheck(AnalysisState *pstate, TupleNode *node);
+void ttupleTypeCheck(TypeCheckState *pstate, TupleNode *node);
 
 // Compare that two tuples are equivalent
 int ttupleEqual(TupleNode *totype, TupleNode *fromtype);

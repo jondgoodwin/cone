@@ -19,7 +19,7 @@ void allocatePrint(RefNode *node) {
 }
 
 // Name resolution for questag: decide if Option type or fold into AllocNode
-void allocateQuesNameRes(AnalysisState *pstate, FnCallNode **nodep) {
+void allocateQuesNameRes(NameResState *pstate, FnCallNode **nodep) {
     FnCallNode *quesNode = *nodep;
 
     inodeNameRes(pstate, &quesNode->objfn);
@@ -42,7 +42,7 @@ void allocateQuesNameRes(AnalysisState *pstate, FnCallNode **nodep) {
 }
 
 // Type check allocate node
-void allocateTypeCheck(AnalysisState *pstate, RefNode **nodep) {
+void allocateTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     RefNode *node = *nodep;
 
     // The default permission type is 'uni'

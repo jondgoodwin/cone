@@ -19,9 +19,9 @@ GenVarDclNode *newGVarDclNode(Name *namesym);
 void gVarDclPrint(GenVarDclNode *var);
 
 // Name resolution
-void gVarDclNameRes(AnalysisState *pstate, GenVarDclNode *var);
+void gVarDclNameRes(NameResState *pstate, GenVarDclNode *var);
 
 // Type check generic variable declaration
-void gVarDclTypeCheck(AnalysisState *pstate, GenVarDclNode *var);
+void gVarDclTypeCheck(TypeCheckState *pstate, GenVarDclNode *var);
 
 #endif

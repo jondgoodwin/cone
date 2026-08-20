@@ -283,20 +283,29 @@ corpus is 1.
 
 ## 9. The walk context
 
-`AnalysisState` is carried through both name resolution and type check:
+**Each walk carries its own state**, `NameResState` and `TypeCheckState`. They
+overlap on two fields and differ on three:
 
-| Field | Meaning | Saved and reset by |
-| --- | --- | --- |
-| `mod` | current module | `modNameRes` |
-| `typenode` | current type | `structTypeCheck` |
-| `fn` | current function | `fnDclTypeCheck` |
-| `loopblock` | innermost loop block | `blockNameRes` |
-| `scope` | 0 global, 1 signature, 2+ blocks | `fnDclTypeCheck`, `blockTypeCheck`, `fnSigTypeCheck` |
+| Field | Meaning | In | Saved and reset by |
+| --- | --- | --- | --- |
+| `mod` | current module | name resolution | `modNameRes` |
+| `loopblock` | innermost loop block | name resolution | `blockNameRes` |
+| `fn` | current function | type check | `fnDclTypeCheck` |
+| `typenode` | current type | both | `structNameRes`, `structTypeCheck` |
+| `scope` | 0 global, 1 signature, 2+ blocks | both | `fnDclNameRes`, `fnDclTypeCheck`, `blockTypeCheck`, `fnSigTypeCheck` |
 
 Demand means jumping from the middle of one function's body into an unrelated
 declaration, so everything above describes somewhere else at that moment.
 **Entering a declaration saves and resets what it changes**, which is what makes
 analyzing a declaration independent of where it was analyzed from.
+
+The two are separate because the walks are. Measured over the corpus, no
+function takes both — 37 take `NameResState` and 66 take `TypeCheckState`, and
+neither walk ever enters the other. A single merged state was tried and
+reverted: it compiled, but it handed every `*NameRes` function an `fn` it must
+never read and every `*TypeCheck` function a `mod` and `loopblock` it must never
+read, turning a compile error into a convention. Keeping them apart is what
+makes `pstate->fn` inside a name resolution function fail to build.
 
 `loopblock` is read only during name resolution, which is still one eager
 source-order pass, so demand cannot reach it. `scope` is consumed during type

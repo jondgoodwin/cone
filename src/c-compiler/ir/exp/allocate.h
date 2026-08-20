@@ -13,10 +13,10 @@
 void allocatePrint(RefNode *node);
 
 // Name resolution for questag: decide if Option type or fold into AllocNode
-void allocateQuesNameRes(AnalysisState *pstate, FnCallNode **nodep);
+void allocateQuesNameRes(NameResState *pstate, FnCallNode **nodep);
 
 // Type check allocate node
-void allocateTypeCheck(AnalysisState *pstate, RefNode **node);
+void allocateTypeCheck(TypeCheckState *pstate, RefNode **node);
 
 // Perform data flow analysis on addr node
 void allocateFlow(FlowState *fstate, RefNode **nodep);

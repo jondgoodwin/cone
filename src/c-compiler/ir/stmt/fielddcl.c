@@ -49,7 +49,7 @@ void fieldDclPrint(FieldDclNode *name) {
 }
 
 // Enable name resolution of field declarations
-void fieldDclNameRes(AnalysisState *pstate, FieldDclNode *name) {
+void fieldDclNameRes(NameResState *pstate, FieldDclNode *name) {
     inodeNameRes(pstate, (INode**)&name->perm);
     inodeNameRes(pstate, &name->vtype);
 
@@ -58,7 +58,7 @@ void fieldDclNameRes(AnalysisState *pstate, FieldDclNode *name) {
 }
 
 // Type check field declaration against its initial value
-void fieldDclTypeCheck(AnalysisState *pstate, FieldDclNode *name) {
+void fieldDclTypeCheck(TypeCheckState *pstate, FieldDclNode *name) {
     inodeTypeCheckAny(pstate, (INode**)&name->perm);
     if (itypeTypeCheck(pstate, &name->vtype) == 0)
         return;

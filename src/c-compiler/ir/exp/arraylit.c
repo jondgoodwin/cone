@@ -18,7 +18,7 @@
 // with errorType before leaving. Without it the literal would carry no type at
 // all into the rest of the pass, which reads a value's type without asking
 // whether there is one.
-void arrayLitTypeCheckDimExp(AnalysisState *pstate, ArrayNode *arrlit) {
+void arrayLitTypeCheckDimExp(TypeCheckState *pstate, ArrayNode *arrlit) {
 
     // Handle array literal "fill" format: [dimen, fill-value]
     if (arrlit->dimens->used > 0) {
@@ -96,7 +96,7 @@ void arrayLitTypeCheckDimExp(AnalysisState *pstate, ArrayNode *arrlit) {
 }
 
 // The default type check
-void arrayLitTypeCheck(AnalysisState *pstate, ArrayNode *arrlit) {
+void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit) {
 
     // In the default scenario (not as part of region allocation),
     // we must insist that array literal's dimension is a constant unsigned integer

@@ -27,7 +27,7 @@ INode *cloneContinueNode(CloneState *cstate, BreakRetNode *node) {
 
 // Name resolution for continue
 // - Resolve any lifetime name
-void continueNameRes(AnalysisState *nstate, BreakRetNode *continuenode) {
+void continueNameRes(NameResState *nstate, BreakRetNode *continuenode) {
     // Resolve continue to block it applies to
     if (continuenode->life) {
         // If a lifetime was specified, resolve to lifetime-named block
@@ -50,5 +50,5 @@ void continueNameRes(AnalysisState *nstate, BreakRetNode *continuenode) {
 }
 
 // Type check the continue node
-void continueTypeCheck(AnalysisState *pstate, BreakRetNode *node) {
+void continueTypeCheck(TypeCheckState *pstate, BreakRetNode *node) {
 }

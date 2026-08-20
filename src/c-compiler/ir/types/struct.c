@@ -100,7 +100,7 @@ void structPrint(StructNode *node) {
 }
 
 // Name resolution of a struct type
-void structNameRes(AnalysisState *pstate, StructNode *node) {
+void structNameRes(NameResState *pstate, StructNode *node) {
     // Resolve generic parameters
     INode **nodesp;
     uint32_t cnt;
@@ -262,7 +262,7 @@ void structSetDropFn(StructNode *node) {
 }
 
 // Type check a struct type
-void structTypeCheck(AnalysisState *pstate, StructNode *node) {
+void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     // Wait until a generic struct is instantiated before type checking
     if (node->genericinfo)
         return;

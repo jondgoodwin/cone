@@ -5,18 +5,45 @@ for how analysis works; read this for what was done and what it taught.
 
 The work landed as eight commits, each green on the whole suite and revertable on
 its own. The sequencing plan they were built from has been absorbed here and
-discarded.
+discarded. **Stages 1 and 2 were later reverted**; see the note below the table.
 
 | Stage | Commit | What it taught |
 | --- | --- | --- |
-| 1 Fold the analysis state | `752935e` | 87 files. Also fixed `tstate.scope` never being initialised. |
-| 2 Rename the flags | `4f28e78` | 4 files. |
+| 1 Fold the analysis state | `752935e` | 87 files. **Reverted.** Its one real fix, `tstate.scope` never being initialised, was kept. |
+| 2 Rename the flags | `4f28e78` | 4 files. **Reverted.** |
 | 3 Mark every declaration | `ee26cb7` | Three clone functions were carrying the marks into their copies, so a clone was born already analyzed. |
 | 4 Bound instantiation depth | `adeb75a` | Macros needed the bound as much as generics. Corpus depth is 1; the crash is at ~702 and ~2282. |
 | 5 Demand from value name uses | `6d7de87` | `blockTypeCheck` was leaking `pstate->scope` on two of three exits. Demand runs ahead of `FlagSigError`. |
 | 6 Remove the signature pre-pass | `8ef2fb2` | A net deletion, green first try, because stage 5 had already carried the risk. |
 | 7 Read the in-progress state | `acdacbe` | Exactly the three predicted expectations moved. An array of self was a crash nothing named. |
 | 8 Lowering out of name resolution | `968355c` | The two lowering sites are disjoint, not duplicates, and neither had coverage. |
+
+### Stages 1 and 2 were reverted
+
+Both were graded "no behaviour change, suite green", which is true and is not a
+reason to make a change. Nothing after them depended on either: stages 3 to 8
+need the marks to exist and to be set on every declaration, not to be named or
+housed any particular way. Measured afterwards, by instrumenting the compiler and
+compiling all 122 corpus sources:
+
+- **The merge had no instance to justify it.** No function takes both states --
+  37 take the name resolution state, 66 the type check state -- and neither walk
+  ever enters the other. Three of the six merged fields are read by one walk and
+  never the other: `mod` 424 reads in name resolution and 0 in type check,
+  `loopblock` 1773 and 0, `fn` 0 and 6406. A seventh field, `flags`, was read by
+  neither, before the merge or after. What the merge cost is a compile error:
+  `pstate->fn` inside a `*NameRes` function used to fail to build, and after it
+  merely returned NULL.
+- **The rename's premise was false.** It held that most marked things would not
+  be types once stage 3 landed. Of first marks, 12,336 land on type nodes and
+  5,304 on non-types. And every one of ~66,000 mark touches is in the type check
+  walk, so `Analyzed` claimed coverage by all three phases that the code has
+  never had -- which misled a reader after `design/Analysis.md` had documented
+  the true scope.
+
+The revert kept both commits' genuine gains: the `scope` initialisation fix and
+the comments explaining what the marks mean and why `structTypeCheck` sets one
+where it does.
 
 Five measured defects are closed: a forward reference to an inferred global, a
 linked list and both mutual-reference forms, an unsized root reporting no cause,
@@ -26,6 +53,11 @@ compiler. Three new codes carry them — `ErrorInstDepth`, `ErrorCircular`,
 
 ## What this taught that the design note does not say
 
+- **Check that a change is *needed*, not only that it is *safe*.** Stages 1 and 2
+  were verified green and never questioned, and both were reverted. "The suite
+  still passes" is evidence a change did no harm, not evidence it was worth
+  making. Both were inherited from a plan, and a plan item is a proposal, not a
+  finding.
 - **Measure; do not read.** Every confident reading of this compiler that was not
   measured turned out wrong at least once, including several during design. The
   technique that kept working is in `design/Analysis.md` section 12. Two crashes
@@ -67,12 +99,12 @@ compiler. Three new codes carry them — `ErrorInstDepth`, `ErrorCircular`,
 
 The original plan follows, with its outcome recorded against each item.
 
-1. Create AnalysisState from folding TypeCheckState into NameResState
-	1. Rename NameResState to AnalysisState
-	2. Rename nState to aState
-	3. Add `FnDclNode *fn` to AnalysisState
-	4. Rename TypeCheckState to AnalysisState
-	5. Rename tState to aState
+1. ~~Create AnalysisState from folding TypeCheckState into NameResState~~
+
+	**Done and reverted.** `NameResState` and `TypeCheckState` are separate
+	again, because the walks are: no function takes both, and half the merged
+	fields belong to exactly one walk. The merge's one real gain, initialising
+	`tstate.scope`, is kept. The dead `flags` field is gone.
 2. ~~Create analyze method for nodes, beginning with pgm, that combines nameres and typecheck.~~
 
 	**The combining was decided against, and the two walks are still separate.**
@@ -82,9 +114,9 @@ The original plan follows, with its outcome recorded against each item.
 	so name resolution never enters another declaration's analysis and gains
 	nothing from running on demand. Keeping it separate is also what lets type
 	check assume every name is bound, so nothing downstream reasons about a
-	partly-bound declaration. What merged was the *state*: `NameResState` and
-	`TypeCheckState` became one `AnalysisState`. See `design/Analysis.md`
-	sections 1 and 13.
+	partly-bound declaration. The *state* was merged for a while and then split
+	back apart, for the same reason. See `design/Analysis.md` sections 1, 9
+	and 13.
 
 	The sub-items below are what actually landed.
 	1. Be sure to confirm nameres did not error before running typecheck.

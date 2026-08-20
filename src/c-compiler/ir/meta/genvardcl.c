@@ -25,10 +25,10 @@ void gVarDclPrint(GenVarDclNode *name) {
 }
 
 // Perform name resolution
-void gVarDclNameRes(AnalysisState *pstate, GenVarDclNode *var) {
+void gVarDclNameRes(NameResState *pstate, GenVarDclNode *var) {
     nametblHookNode(var->namesym, (INode*)var);
 }
 
 // Type check 
-void gVarDclTypeCheck(AnalysisState *pstate, GenVarDclNode *var) {
+void gVarDclTypeCheck(TypeCheckState *pstate, GenVarDclNode *var) {
 }

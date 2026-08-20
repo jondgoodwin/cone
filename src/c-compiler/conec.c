@@ -24,14 +24,12 @@ void doAnalysis(ConeOptions *opt, ProgramNode **pgm) {
 
     // Resolve all name uses to their appropriate declaration
     // Note: Some nodes may be replaced (e.g., 'a' to 'self.a')
-    AnalysisState astate;
-    astate.mod = NULL;
-    astate.typenode = NULL;
-    astate.loopblock = NULL;
-    astate.fn = NULL;
-    astate.scope = 0;
-    astate.flags = 0;
-    inodeNameRes(&astate, (INode**)pgm);
+    NameResState nstate;
+    nstate.mod = NULL;
+    nstate.typenode = NULL;
+    nstate.loopblock = NULL;
+    nstate.scope = 0;
+    inodeNameRes(&nstate, (INode**)pgm);
     if (errors) {
         // Name resolution reporting a bad program is one of the two places a
         // phase returns early, so it is one of the two places to check that it
@@ -66,13 +64,14 @@ void doAnalysis(ConeOptions *opt, ProgramNode **pgm) {
     //   expressible and a by-value cycle an error
     // - Data flow analysis runs on each function body as that function's own
     //   type check closes
-    astate.mod = NULL;
-    astate.typenode = NULL;
-    astate.loopblock = NULL;
-    astate.fn = NULL;
-    astate.scope = 0;
-    astate.flags = 0;
-    inodeTypeCheckAny(&astate, (INode**)pgm);
+    // Every field initialised, scope included: blockTypeCheck increments it and
+    // clonePushState reads it, so leaving it out is an uninitialised stack read
+    // on every compile.
+    TypeCheckState tstate;
+    tstate.typenode = NULL;
+    tstate.fn = NULL;
+    tstate.scope = 0;
+    inodeTypeCheckAny(&tstate, (INode**)pgm);
 
     if (opt->check_tree)
         inodeCheckTree((INode*)*pgm);

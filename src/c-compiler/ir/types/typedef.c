@@ -26,12 +26,12 @@ void typedefPrint(TypedefNode *name) {
 }
 
 // Perform name resolution
-void typedefNameRes(AnalysisState *pstate, TypedefNode *var) {
+void typedefNameRes(NameResState *pstate, TypedefNode *var) {
     inodeNameRes(pstate, &var->typeval);
     nametblHookNode(var->namesym, (INode*)var);
 }
 
 // Type check 
-void typedefTypeCheck(AnalysisState *pstate, TypedefNode *var) {
+void typedefTypeCheck(TypeCheckState *pstate, TypedefNode *var) {
     itypeTypeCheck(pstate, &var->typeval);
 }

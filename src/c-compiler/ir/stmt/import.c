@@ -27,7 +27,7 @@ void importPrint(ImportNode *node) {
 }
 
 // Name resolution of the import node
-void importNameRes(AnalysisState *pstate, ImportNode *node) {
+void importNameRes(NameResState *pstate, ImportNode *node) {
     if (!node->foldall || !node->module)
         return;
 
@@ -51,7 +51,7 @@ void importNameRes(AnalysisState *pstate, ImportNode *node) {
 }
 
 // Type check the import node
-void importTypeCheck(AnalysisState *pstate, ImportNode *node) {
+void importTypeCheck(TypeCheckState *pstate, ImportNode *node) {
     // Type check the module we are importing
     inodeTypeCheckAny(pstate, (INode**)&node->module);
 }

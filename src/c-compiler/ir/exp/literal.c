@@ -108,12 +108,12 @@ void flitPrint(FLitNode *lit) {
 }
 
 // Name resolution of lit node
-void litNameRes(AnalysisState* pstate, IExpNode *node) {
+void litNameRes(NameResState* pstate, IExpNode *node) {
     inodeNameRes(pstate, &node->vtype);
 }
 
 // Type check lit node
-void litTypeCheck(AnalysisState* pstate, IExpNode *node, INode *expectType) {
+void litTypeCheck(TypeCheckState* pstate, IExpNode *node, INode *expectType) {
     itypeTypeCheck(pstate, &node->vtype);
 }
 
@@ -141,7 +141,7 @@ void slitPrint(SLitNode *lit) {
 }
 
 // Type check string literal node
-void slitTypeCheck(AnalysisState *pstate, SLitNode *node) {
+void slitTypeCheck(TypeCheckState *pstate, SLitNode *node) {
     node->vtype = (INode*)newArrayNodeTyped((INode*)node, node->strlen, (INode*)u8Type);
 }
 

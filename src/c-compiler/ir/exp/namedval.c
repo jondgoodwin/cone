@@ -34,12 +34,12 @@ void namedValPrint(NamedValNode *node) {
 }
 
 // Name resolution of named value node
-void namedValNameRes(AnalysisState *pstate, NamedValNode *node) {
+void namedValNameRes(NameResState *pstate, NamedValNode *node) {
     inodeNameRes(pstate, &node->val);
 }
 
 // Type check named value node
-void namedValTypeCheck(AnalysisState *pstate, NamedValNode *node) {
+void namedValTypeCheck(TypeCheckState *pstate, NamedValNode *node) {
     if (iexpTypeCheckAny(pstate, &node->val) == 0)
         return;
     node->vtype = ((IExpNode*)node->val)->vtype;

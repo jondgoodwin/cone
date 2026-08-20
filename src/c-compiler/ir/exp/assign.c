@@ -40,7 +40,7 @@ void assignPrint(AssignNode *node) {
 }
 
 // Name resolution for assignment node
-void assignNameRes(AnalysisState *pstate, AssignNode *node) {
+void assignNameRes(NameResState *pstate, AssignNode *node) {
     inodeNameRes(pstate, &node->lval);
     inodeNameRes(pstate, &node->rval);
 }
@@ -48,7 +48,7 @@ void assignNameRes(AnalysisState *pstate, AssignNode *node) {
 // Type check a single matched assignment between lval and rval
 // - lval must be a lval
 // - rval's type must coerce to lval's type
-void assignSingleCheck(AnalysisState *pstate, INode *lval, INode **rval) {
+void assignSingleCheck(TypeCheckState *pstate, INode *lval, INode **rval) {
     // '_' named lval need not be checked. It is a placeholder that just swallows a value
     if (lval->tag == VarNameUseTag && ((NameUseNode*)lval)->namesym == anonName)
         return;
@@ -63,7 +63,7 @@ void assignSingleCheck(AnalysisState *pstate, INode *lval, INode **rval) {
 }
 
 // Handle parallel assignment (multiple values on both sides)
-void assignParaCheck(AnalysisState *pstate, TupleNode *lval, TupleNode *rval) {
+void assignParaCheck(TypeCheckState *pstate, TupleNode *lval, TupleNode *rval) {
     Nodes *lnodes = lval->elems;
     Nodes *rnodes = rval->elems;
     if (lnodes->used > rnodes->used) {
@@ -82,7 +82,7 @@ void assignParaCheck(AnalysisState *pstate, TupleNode *lval, TupleNode *rval) {
 }
 
 // Handle when single function/expression returns to multiple lval
-void assignMultRetCheck(AnalysisState *pstate, TupleNode *lval, INode **rval) {
+void assignMultRetCheck(TypeCheckState *pstate, TupleNode *lval, INode **rval) {
     if (iexpTypeCheckAny(pstate, rval) == 0)
         return;;
     INode *rtype = ((IExpNode *)*rval)->vtype;
@@ -108,7 +108,7 @@ void assignMultRetCheck(AnalysisState *pstate, TupleNode *lval, INode **rval) {
 }
 
 // Handle when multiple expressions assigned to single lval
-void assignToOneCheck(AnalysisState *pstate, INode *lval, TupleNode *rval) {
+void assignToOneCheck(TypeCheckState *pstate, INode *lval, TupleNode *rval) {
     Nodes *rnodes = rval->elems;
     INode **rnodesp = &nodesGet(rnodes, 0);
     uint32_t rcnt = rnodes->used;
@@ -116,7 +116,7 @@ void assignToOneCheck(AnalysisState *pstate, INode *lval, TupleNode *rval) {
 }
 
 // Type checking for assignment node
-void assignTypeCheck(AnalysisState *pstate, AssignNode *node) {
+void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
     if (iexpTypeCheckAny(pstate, &node->lval) == 0)
         return;
 

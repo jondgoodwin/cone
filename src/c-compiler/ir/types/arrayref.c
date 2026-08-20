@@ -19,7 +19,7 @@ void arrayRefPrint(RefNode *node) {
 }
 
 // Name resolution of an array reference node
-void arrayRefNameRes(AnalysisState *pstate, RefNode *node) {
+void arrayRefNameRes(NameResState *pstate, RefNode *node) {
     inodeNameRes(pstate, &node->region);
     inodeNameRes(pstate, (INode**)&node->perm);
     inodeNameRes(pstate, &node->vtexp);
@@ -31,7 +31,7 @@ void arrayRefNameRes(AnalysisState *pstate, RefNode *node) {
 }
 
 // Type check an array reference node
-void arrayRefTypeCheck(AnalysisState *pstate, RefNode *node) {
+void arrayRefTypeCheck(TypeCheckState *pstate, RefNode *node) {
     if (node->perm == unknownType)
         node->perm = newPermUseNode(node->region == borrowRef ? roPerm : uniPerm);
     itypeTypeCheck(pstate, &node->region);

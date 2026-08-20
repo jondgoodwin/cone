@@ -32,12 +32,12 @@ void sizeofPrint(SizeofNode *node) {
 }
 
 // Name resolution of sizeof node
-void sizeofNameRes(AnalysisState *pstate, SizeofNode *node) {
+void sizeofNameRes(NameResState *pstate, SizeofNode *node) {
     inodeNameRes(pstate, &node->type);
 }
 
 // Type check sizeof node
-void sizeofTypeCheck(AnalysisState *pstate, SizeofNode *node) {
+void sizeofTypeCheck(TypeCheckState *pstate, SizeofNode *node) {
     if (itypeTypeCheck(pstate, &node->type) == 0)
         return;
 }
