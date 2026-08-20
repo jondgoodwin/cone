@@ -54,8 +54,10 @@
 **Ecosystem**
 - [[Compiler]] Components
 	- [[Lexer and Parser]] [[Syntax - Aggregating operators]]
-	- Analysis: `design/type-check-phase.md` describes how it runs.
-	  [[Analysis re-factor]] — done; see `workitems/done/`
+	- Analysis: `design/type-check-phase.md` describes how type check is
+	  scheduled. [[Analysis re-factor]] — done; see `workitems/done/`
+	- [[Design Documentation]] — what `design/` still owes: the type
+	  reasoning itself, a flow analysis note, and the naming conventions
 	- Generation: [[LLVM Generation]] and [[C-ABI Generation]]
 	- Defects the test suite found, by the decision each needs:
 		- [[Ownership memory safety]] — done; see `workitems/done/`
