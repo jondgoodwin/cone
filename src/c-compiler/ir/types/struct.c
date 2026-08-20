@@ -31,7 +31,7 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     StructNode *newnode = memAllocBlk(sizeof(StructNode));
     memcpy(newnode, node, sizeof(StructNode));
     newnode->genericinfo = NULL;
-    newnode->flags &= 0xffff - (Analyzed | Analyzing);
+    newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
 
     // Within the copy, 'Self' is the copy. A method's self parameter is declared
     // as a use of 'Self' (parsetype.c), and name resolution has already pointed
@@ -410,16 +410,16 @@ void structTypeCheck(AnalysisState *pstate, StructNode *node) {
     if ((node->flags & TraitType) && !(node->flags & SameSize))
         node->flags |= OpaqueType;
 
-    // Mark the type analyzed here, before its methods are checked, because this
+    // Mark the type checked here, before its methods are checked, because this
     // is the point its layout settles: fields are indexed, size is known, and
     // the method set is complete -- mixins were expanded and trait methods
     // inherited during the field walk above. What follows is each method being
-    // analyzed in its own right, which nothing outside this type waits on.
+    // checked in its own right, which nothing outside this type waits on.
     //
     // The placement is load-bearing, not an optimization. A method may use its
     // own type by value ('fn twin(self) Self'), so the size has to be available
     // before step below runs. See design/Analysis.md section 10.1.
-    node->flags |= Analyzed;
+    node->flags |= TypeChecked;
 
     // Type check all methods, etc.
     for (nodelistFor(&node->nodelist, cnt, nodesp)) {

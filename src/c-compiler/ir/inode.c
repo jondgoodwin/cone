@@ -305,9 +305,9 @@ void inodeNameRes(AnalysisState *pstate, INode **node) {
 // - expectType is the type expected of an expression node (or unknownType/noCareType)
 void inodeTypeCheck(AnalysisState *pstate, INode **node, INode *expectType) {
 
-    // A declaration is analyzed once, however many places reach it. Analysis
-    // lowers and replaces nodes, so a second walk of one corrupts it; the marks
-    // are a correctness requirement rather than an optimization.
+    // A declaration is type checked once, however many places reach it. This
+    // pass lowers and replaces nodes, so a second walk of one corrupts it; the
+    // marks are a correctness requirement rather than an optimization.
     //
     // Type nodes are fully checked the first time they are referenced, so that
     // we know everything we need about managing their values (infectious
@@ -319,28 +319,28 @@ void inodeTypeCheck(AnalysisState *pstate, INode **node, INode *expectType) {
     // walk abandoned, and a second walk of the same node -- a match pattern and
     // the variable it declares share one -- would then read as a recursive type.
     if (((isTypeNode(*node) && (*node)->tag != FnCallTag)) || (*node)->tag == ModuleTag) {
-        if ((*node)->flags & Analyzed)
+        if ((*node)->flags & TypeChecked)
             return;
         // Under analysis and reached again. Its identity is established, which
         // is what a type question needs; only a *size* question has no answer
         // yet, and that is asked where a value is held rather than here. This
         // is what makes a linked list expressible: 'next &S' asks S for its
         // identity, and the reference answers the size on its own behalf.
-        if ((*node)->flags & Analyzing)
+        if ((*node)->flags & TypeChecking)
             return;
-        (*node)->flags |= Analyzing;
+        (*node)->flags |= TypeChecking;
     }
     else if (inodeIsDcl(*node)) {
-        if ((*node)->flags & Analyzed)
+        if ((*node)->flags & TypeChecked)
             return;
         // Under analysis and reached again. Its own type was established before
         // it began anything that could refer back to it, so the caller reads
         // that from the node and there is nothing left to do here. Unreachable
         // until a use demands a declaration rather than reading it, and it is
         // what lets two functions call each other.
-        if ((*node)->flags & Analyzing)
+        if ((*node)->flags & TypeChecking)
             return;
-        (*node)->flags |= Analyzing;
+        (*node)->flags |= TypeChecking;
     }
 
     switch ((*node)->tag) {
@@ -456,12 +456,12 @@ void inodeTypeCheck(AnalysisState *pstate, INode **node, INode *expectType) {
         assert(0 && "**** ERROR **** Attempting to check an unknown node");
     }
 
-    // Confirm the declaration has been analyzed. *node may have been replaced by
+    // Confirm the declaration has been type checked. *node may have been replaced by
     // now -- an instantiation leaves behind the instance it named, which is a
     // declaration and does take the mark.
     if (((isTypeNode(*node) && (*node)->tag != FnCallTag)) || (*node)->tag == ModuleTag
             || inodeIsDcl(*node)) {
-        (*node)->flags |= Analyzed;
+        (*node)->flags |= TypeChecked;
     }
 }
 

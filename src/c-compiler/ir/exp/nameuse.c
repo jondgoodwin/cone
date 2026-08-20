@@ -260,8 +260,8 @@ void nameUseTypeCheck(AnalysisState *pstate, NameUseNode **namep) {
 
     // Rule 1: reaching a name analyzes the declaration it names, so what is read
     // below is a finished type rather than whatever source order happened to
-    // leave behind. A declaration already analyzed returns at once; one still
-    // under analysis returns having established its own type, which is all a use
+    // leave behind. A declaration already type checked returns at once; one still
+    // under type check returns having established its own type, which is all a use
     // needs and is what lets two functions call each other.
     inodeTypeCheckAny(pstate, &name->dclnode);
 
@@ -272,7 +272,7 @@ void nameUseTypeCheck(AnalysisState *pstate, NameUseNode **namep) {
     // exactly a definition depending on itself.
     INode *dcl = name->dclnode;
     if (((IExpNode*)dcl)->vtype == unknownType
-        && (dcl->flags & Analyzing) && !(dcl->flags & Analyzed)) {
+        && (dcl->flags & TypeChecking) && !(dcl->flags & TypeChecked)) {
         errorMsgNode((INode*)name, ErrorCircular,
             "%s is defined in terms of itself, so it has no type to give.",
             &name->namesym->namestr);

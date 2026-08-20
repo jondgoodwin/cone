@@ -370,8 +370,8 @@ static INode *itypeNoSizeField(INode *dcltype, uint32_t depth);
 // Is this a closed trait -- a union -- with a variant that is not laid out yet?
 //
 // A closed trait's size is the largest of its variants, and generation is what
-// computes that. Its own Analyzed mark says only that its own fields are
-// settled, which for a union is the tag: the variants are analyzed separately,
+// computes that. Its own TypeChecked mark says only that its own fields are
+// settled, which for a union is the tag: the variants are type checked separately,
 // each pulling this trait in as its base trait and finishing it before its own
 // fields are walked. So the mark cannot be read as 'has a size' here, and one
 // variant still in flight is exactly the case where the trait has none -- which
@@ -386,7 +386,7 @@ static int itypeVariantPending(INode *dcltype) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(((StructNode*)dcltype)->derived, cnt, nodesp)) {
-        if (!((*nodesp)->flags & Analyzed))
+        if (!((*nodesp)->flags & TypeChecked))
             return 1;
     }
     return 0;
@@ -419,7 +419,7 @@ static char *itypeNoSizeOwnCause(INode *dcltype, uint32_t depth) {
     // Still being laid out. Its own fields are what this walk is in the middle
     // of settling, so there is no size to give yet -- and no cycle check is
     // needed to say so, since a finished type would not be in this state.
-    if ((dcltype->flags & Analyzing) && !(dcltype->flags & Analyzed))
+    if ((dcltype->flags & TypeChecking) && !(dcltype->flags & TypeChecked))
         return "is still being laid out, so it would have to contain itself. Break the cycle by holding it through a reference";
 
     // A union is laid out only once every variant is, whatever its own mark says

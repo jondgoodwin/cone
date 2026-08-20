@@ -65,11 +65,11 @@ than types nor later.
 ## 2. The rules
 
 1. **Reaching a name analyzes its declaration** before continuing.
-2. **A finished declaration answers from what it recorded.** — `Analyzed`
+2. **A finished declaration answers from what it recorded.** — `TypeChecked`
 3. **A declaration establishes its own type before analyzing anything that could
-   refer back to it.** — `Analyzing`
+   refer back to it.** — `TypeChecking`
 4. **A field asks its type for a size.** A type still being laid out has none,
-   and the field that asked reports it. — `Analyzed` means *laid out*
+   and the field that asked reports it. — `TypeChecked` means *laid out*
 5. **"No known size" names its cause and the chain that led there.**
 6. **A constant or inferred declaration re-entered before its type exists is
    circular**, and says so.
@@ -83,13 +83,13 @@ Every declaration carries two bits in its node `flags`:
 
 | Flag | Value | Means |
 | --- | --- | --- |
-| `Analyzing` | `0x4000` | Analysis of this declaration has begun and not finished |
-| `Analyzed` | `0x8000` | Analysis of this declaration finished |
+| `TypeChecking` | `0x4000` | Type check of this declaration has begun and not finished |
+| `TypeChecked` | `0x8000` | Type check of this declaration finished |
 
 **They are type check's marks, and only type check's.** `inodeTypeCheck` sets and
 tests them, in two branches: one for type nodes and modules, one for every other
 declaration (`inodeIsDcl`). `inodeNameRes` neither sets nor reads them — it is a
-bare dispatch with no guard — and neither does flow analysis. `Analyzing` means
+bare dispatch with no guard — and neither does flow analysis. `TypeChecking` means
 *this declaration's type check has begun*, not that anything about name
 resolution is in progress.
 
@@ -101,17 +101,21 @@ merged (section 1), these marks would not survive the merge unchanged — a
 declaration could then be name-resolved but not type checked, which is a third
 state neither bit can express.
 
-`Analyzed` returns at once — analysis lowers and replaces nodes, so a second walk
-of a declaration corrupts it, which makes the mark a correctness requirement
+`TypeChecked` returns at once — type check lowers and replaces nodes, so a second
+walk of a declaration corrupts it, which makes the mark a correctness requirement
 rather than an optimization.
 
-**The name is broader than what it marks**, which is worth knowing before relying
-on it. They were `TypeChecking` and `TypeChecked` until this work renamed them,
-because most of what carries them is not a type. But "analyzed" now reads as
-though it covers all of analysis, and it does not: it covers one phase, and for a
-type it covers less than that — *laid out*, with the methods still to come.
+**The name says which phase, and that is the useful thing about it.** This work
+renamed the pair to `Analyzing`/`Analyzed` for a while, reasoning that "type" in
+the name claimed the marked thing was a type, and that once the marks went on
+every declaration most marked things would not be. Measured over the corpus,
+most marked things *are* types — 12,336 type nodes against 5,304 non-types — so
+the premise was false, and the broader name cost the one thing the pair does say
+accurately: these belong to type check and to nothing else. The rename was
+reverted. Read `TypeChecked` as "this declaration was type checked", never as "the
+node carrying it is a type".
 
-**For a type, `Analyzed` means laid out**, not "everything about me is done". It
+**For a type, `TypeChecked` means laid out**, not "everything about me is done". It
 is set in `structTypeCheck` at the point the layout settles — fields indexed,
 size known, method set complete — and *before* the methods themselves are
 analyzed. The placement is load-bearing: a method may use its own type by value,
@@ -153,7 +157,7 @@ the name is not yet in scope.
 
 ## 5. Re-entry
 
-Reaching a declaration that is `Analyzing` and not `Analyzed` is normal, not an
+Reaching a declaration that is `TypeChecking` and not `TypeChecked` is normal, not an
 error. What it can answer depends on what was asked.
 
 **Asked for a type, it answers.** Rule 3 says a declaration establishes its own
@@ -317,7 +321,7 @@ Steps marked **→** are where a demand can leave and re-enter.
    `MoveType`, `OpaqueType`, `ZeroSizeType`. Identify the tag field.
 7. `final` forces `MoveType`; `clone` clears it. Propagate infection up to base
    traits.
-8. **Size is now known**, and `Analyzed` is set here — meaning laid out.
+8. **Size is now known**, and `TypeChecked` is set here — meaning laid out.
 9. **→** Analyze the methods.
 
 Steps 2 and 5 are where recursion arrives; step 8 is why a method at step 9 may
@@ -336,7 +340,7 @@ whose variants are structs written inside its body.
 The rule that a derived type lives in the same module as its closed trait keeps
 both true.
 
-**A closed trait's `Analyzed` mark does not mean it has a size.** It means its
+**A closed trait's `TypeChecked` mark does not mean it has a size.** It means its
 *own* fields are laid out, which for a union is the tag. Each variant is reached
 separately and pulls the trait in as its base trait, finishing it before walking
 its own fields — so the trait is marked long before the variants that determine
@@ -440,7 +444,7 @@ rediscovery:
 
 | Considered | Would give | Why not |
 | --- | --- | --- |
-| a `SizeKnown` field on `ITypeNodeHdr` | "laid out" separate from "methods checked" | `Analyzed` at the layout point already says it, and nothing asks for the other. Costs eight bytes on every type node. |
+| a `SizeKnown` field on `ITypeNodeHdr` | "laid out" separate from "methods checked" | `TypeChecked` at the layout point already says it, and nothing asks for the other. Costs eight bytes on every type node. |
 | a `Failed` state per declaration | suppressing a repeated diagnostic | New state plus a new test at every site that reports. |
 
 ## 14. Hazards

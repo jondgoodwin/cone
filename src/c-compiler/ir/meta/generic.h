@@ -28,7 +28,7 @@ GenericInfo *genericGetInfo(INode *node);
 //
 // Both work by cloning a declaration and analyzing the clone, and analyzing it
 // can expand the same declaration again at larger arguments. Every expansion is
-// a distinct node, so the Analyzing mark never sees such a cycle -- nothing ever
+// a distinct node, so the TypeChecking mark never sees such a cycle -- nothing ever
 // returns to the same node. Depth is the only thing that tells a generic that
 // terminates from one that does not, and past the limit it is the C stack the
 // walk runs on that gives out, with no diagnostic at all.

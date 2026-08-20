@@ -47,10 +47,10 @@ INode *cloneFnDclNode(CloneState *cstate, FnDclNode *oldfn) {
     uint32_t dclpos = cloneDclPush();
     FnDclNode *newnode = memAllocBlk(sizeof(FnDclNode));
     memcpy(newnode, oldfn, sizeof(FnDclNode));
-    // A clone is unanalyzed however far along the node it was copied from got.
-    // memcpy carries the analysis marks with everything else, and a clone that
+    // A clone is unchecked however far along the node it was copied from got.
+    // memcpy carries the type check marks with everything else, and a clone that
     // kept them would be skipped by the guard in inodeTypeCheck.
-    newnode->flags &= 0xffff - (Analyzed | Analyzing);
+    newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
     newnode->genericinfo = NULL;
     newnode->vtype = cloneNode(cstate, oldfn->vtype);
     newnode->value = cloneNode(cstate, oldfn->value);

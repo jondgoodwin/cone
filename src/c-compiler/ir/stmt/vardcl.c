@@ -47,10 +47,10 @@ VarDclNode *newVarDclFull(Name *namesym, uint16_t tag, INode *type, INode *perm,
 INode *cloneVarDclNode(CloneState *cstate, VarDclNode *node) {
     VarDclNode *newnode = memAllocBlk(sizeof(VarDclNode));
     memcpy(newnode, node, sizeof(VarDclNode));
-    // A clone is unanalyzed however far along the node it was copied from got.
-    // memcpy carries the analysis marks with everything else, and a clone that
+    // A clone is unchecked however far along the node it was copied from got.
+    // memcpy carries the type check marks with everything else, and a clone that
     // kept them would be skipped by the guard in inodeTypeCheck.
-    newnode->flags &= 0xffff - (Analyzed | Analyzing);
+    newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
     newnode->vtype = cloneNode(cstate, node->vtype);
     newnode->value = cloneNode(cstate, node->value);
     cloneDclSetMap((INode*)node, (INode*)newnode);

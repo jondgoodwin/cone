@@ -64,7 +64,7 @@ For a call through an overload name, this choreography is:
 The same mechanism should address other cases where name resolution currently runs before it has enough semantic information. It must retain explicit per-node states such as unresolved, resolving, and resolved so forward references are supported, completed work is not repeated, and true dependency cycles produce controlled diagnostics rather than recursion. This pipeline change is broader than NameDef representation and should have its own design and focused tests, but stages 3–5 depend on it.
 
 **The per-node states this asks for now exist for type check**, built by
-[[Analysis re-factor]]: `Analyzing` and `Analyzed` on every declaration, read
+[[Analysis re-factor]]: `TypeChecking` and `TypeChecked` on every declaration, read
 rather than refused, so a forward reference analyzes what it names, finished work
 is not repeated, and a true cycle reports `ErrorCircular` or `ErrorNoSize`
 instead of recursing. `design/Analysis.md` is the design and the corpus has the
