@@ -122,11 +122,12 @@ accumulate, so one file carries several distinct codes of one stage.
 global error count rather than on their own. **Both are now per declaration**,
 and neither constrains how a file is written any more:
 
-- **`module.c` type checks every signature in the module first, then every
-  body.** It used to skip the body pass entirely unless the signature pass was
-  error-free, so one malformed signature suppressed every body-phase diagnostic
-  in the file. It now skips only the declarations whose own signature failed,
-  which it marks with `FlagSigError`.
+- **`fndcl.c` skips a function's body when that function's own signature did
+  not type check.** `module.c` used to do this across two passes — every
+  signature in the module, then every body, and no body at all unless the
+  signature pass was error-free — so one malformed signature suppressed every
+  body-phase diagnostic in the file. Both passes are gone: a declaration is
+  analyzed whole, and the skip is now local to the one whose signature failed.
 - **`fndcl.c` runs `blockFlow` on a function whose own signature and body type
   checked**, whatever failed elsewhere. It used to require the global count to be
   zero, so one error of any stage silenced data-flow analysis for every function
@@ -165,7 +166,25 @@ this first.
 - **Aborting diagnostics.** `errorExit` terminates immediately instead of
   accumulating — `ExitNF`, `ExitMem`, `ExitIndent`. Nothing after one of these
   runs, so it gets its own file and never shares with accumulating errors.
-- **More than three to six diagnostics.** Past that, split by sub-family.
+- **One diagnostic's whole story.** Where a single `ErrorCode` covers several
+  distinct causes with different remedies, the cases belong side by side, so that
+  a reader can check each cause names the right advice and a change that reworded
+  one is visible against the others. `struct-typecheck-nosize` is that file for
+  `ErrorNoSize` and its five causes.
+
+**Length is not a reason to split**, and this guide used to say it was — "more
+than three to six diagnostics, split by sub-family", with no argument for the
+number. Ten scenarios already exceed it and one carries fifteen, so it described
+nothing the corpus does. Split for one of the reasons above, or because the file
+stops being about one thing; not for a count.
+
+**A scenario whose subject used to crash the compiler is not a reason to split
+either**, though it costs something worth writing down in the file. If that
+guard regresses, the scenario does not fail an assertion — the process dies and
+every expectation in the file is lost with it, including coverage of unrelated
+things. `generic-typecheck-macro` carries both arity and non-termination and says
+so at the top. Accepting that cost is the ordinary choice; a separate file buys
+only the isolation.
 
 Name the split for what it covers — `core-parse-delimiters`, not `core-parse-1`.
 

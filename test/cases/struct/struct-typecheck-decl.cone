@@ -4,7 +4,9 @@
 // Type-check stage. These are properties of the type itself, so each is found
 // once at the declaration rather than at any use, and none of them needs a
 // caller to provoke it. Failures at a use site are in struct-typecheck-construct
-// and struct-typecheck-methods.
+// and struct-typecheck-methods, and a declaration rejected because its type has
+// no size -- which is its own family, with its own diagnostic -- is in
+// struct-typecheck-nosize.
 
 // Two candidates of one overload name accept the same arguments, so the name
 // could never choose between them. Return types take no part in the decision,
@@ -40,8 +42,24 @@ struct FinalField {
   final i32  //~ ErrorBadMeth:3 "final can only be defined as a method"
 }
 
-// A struct's field may not be the struct itself, at any depth: the value would
-// have to contain a copy of itself and so could have no size
-struct SelfHolding {
-  inner SelfHolding  //~ ErrorRecurse:9 "Recursive types are not supported"
+// A field named on its own means 'self.field', and the rewrite needs a self to
+// build. The two places a field name resolves without one are a static function,
+// which has no receiver, and a field's own default value, which is analyzed with
+// no function around it at all.
+//
+// Both used to fail during name resolution, which is where the rewrite lived,
+// and the first reported that the name 'self' -- which the author never wrote --
+// did not exist. Lowering belongs to type check, so they are reached here now,
+// and the second is caught by the rule it actually breaks.
+struct Selfless {
+  x i32
+
+  fn origin() i32 {
+    x   //~ ErrorUnkName:5 "there is no self here to reach it through"
+  }
+}
+
+struct Defaulted {
+  a i32
+  b i32 = a   //~ ErrorNotLit:11 "Field default must be a literal value"
 }

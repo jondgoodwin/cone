@@ -6,7 +6,7 @@
 >
 > One part of the plan moved rather than landed. Step 1 of each phase built
 > fixtures under `test/overload/`, which were removed from that pull request to
-> be restored with the test runner; see [[Test Suite]], which names the branch
+> be restored with the test runner; see [[test-suite|Test Suite]], which names the branch
 > holding them. The plan below therefore refers to files that are not currently
 > in the tree, and to the `phase1-*` fixture names used before Phase 2 renamed
 > them.
@@ -165,8 +165,8 @@ explicit, global overloads are enabled, and ambiguity becomes an error.
      dictionary insertion reconstructs overload nodes and never copies an
      overload vector that points into the source type.
 
-7. **Phase 1 verification, then `design/IR Nodes.md` and
-   `design/Names and Namespaces.md`**
+7. **Phase 1 verification, then `design/ir-nodes.md` and
+   `design/names-and-namespaces.md`**
    - Rebuild `conec`; compile the Phase 1 fixtures and `test/test.cone`; compare
      AST and LLVM IR with the baseline; and run the native smoke result where
      supported. This phase is not complete if syntax, selected methods,
@@ -331,8 +331,8 @@ explicit, global overloads are enabled, and ambiguity becomes an error.
       visibility errors, lookup failures, no-match errors, and ambiguity errors
       must be distinguishable.
 
-14. **Final verification, then `design/IR Nodes.md`,
-    `design/Names and Namespaces.md`,
+14. **Final verification, then `design/ir-nodes.md`,
+    `design/names-and-namespaces.md`,
     `conesite/public/coneref/reffunc.html`,
     `conesite/public/coneref/refmethod.html`,
     `conesite/public/coneref/refmodule.html`, and

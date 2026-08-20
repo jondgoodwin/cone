@@ -258,14 +258,20 @@ void blockTypeCheck(TypeCheckState *pstate, BlockNode *blk, INode *expectType) {
         }
     }
 
+    // The scope this block opened is closed on every path out of here, not only
+    // the last one. It used to leak on the two returns below, so the counter
+    // climbed for the rest of the compile. Nothing read it closely enough to
+    // notice until a declaration could be analyzed from the middle of a body.
     if (expectType == noCareType) {
         blk->vtype = inferredType;
+        --pstate->scope;
         return;
     }
 
     // When expectType specified, all branches have been coerced (or not w/ errors)
     if (expectType != unknownType) {
         blk->vtype = expectType;
+        --pstate->scope;
         return;
     }
 

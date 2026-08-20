@@ -169,6 +169,14 @@ struct Pair {
   fn sumOther overload sum(self, other Pair) i32 {
     self.a + other.a
   }
+
+  // A method named on its own inside another method means 'self.method', the
+  // same way a bare field name means 'self.field'. The two are rewritten by
+  // different code in different places, so both are exercised: 'a' below is the
+  // field form and 'sumValue()' is the method form.
+  fn viaBareNames(self) i32 {
+    a + sumValue()
+  }
 }
 
 // Selection also has to work when the candidates differ by argument type, with
@@ -196,6 +204,9 @@ fn overloads() {
   show("overload-deref-to-value-candidate", (&p).sum(Pair[5, 0]))
   // A candidate keeps its own name and may be called without any selection
   show("overload-concrete-name", p.sumValue())
+  // A field and a method, each named on its own inside a method, both reach
+  // 'self'. 10 + (10 + 3).
+  show("bare-names-reach-self", p.viaBareNames())
 
   imm s = Scaler[7]
   // f32 widens to the f64 parameter, and no other candidate takes a float
@@ -242,6 +253,15 @@ struct Vec {
   fn `[]`(self, index usize) i32 {
     if index == 0usize {x} else {y}
   }
+
+  // '<-' is the one operator whose right-hand side may be a value tuple, which
+  // the compiler lowers into one application per element against a single
+  // borrow of the receiver. Counting the applications is what tells that apart
+  // from the tuple arriving as one argument.
+  fn `<-`(self &mut, amount i32) {
+    x = x + amount
+    y = y + 1
+  }
 }
 
 fn operators() {
@@ -270,6 +290,21 @@ fn operators() {
   show("operator-call", v())
   show("operator-index-0", v[0usize])
   show("operator-index-1", v[1usize])
+
+  // '<-' with one value on the right is an ordinary operator method call
+  mut acc = Vec[0, 0]
+  acc <- 3
+  show("operator-append-one-x", acc.x)
+  show("operator-append-one-count", acc.y)
+
+  // ... and with a value tuple it applies once per element, in order, against
+  // one borrow of the receiver rather than re-evaluating it each time. The
+  // count is what proves the tuple was taken apart rather than passed whole,
+  // and the sum is what proves the order and that every element arrived.
+  mut many = Vec[0, 0]
+  many <- (4, 5, 6)
+  show("operator-append-tuple-x", many.x)
+  show("operator-append-tuple-count", many.y)
 }
 
 // A type may give '&[]' its own meaning, in either of two forms: the indexed

@@ -106,23 +106,33 @@ typedef struct GenericInfo GenericInfo;
 
 #include "../corelib/corelib.h"
 
-// Context used for name resolution pass
+#define TypeCheckLoopMax 256
+#define TypeCheckBlockMax 1024
+
+// A state apiece, because the two walks are disjoint.
+//
+// No function takes both: measured over the corpus, 37 take the name
+// resolution state and 66 the type check state, and neither walk ever enters
+// the other. Two structs keep that a compile error rather than a convention --
+// a name resolution function cannot reach 'fn', and a type check function
+// cannot reach 'mod' or 'loopblock', because the field is not there.
+//
+// A declaration that changes any of these saves and restores it, because
+// analysis of one declaration nests inside another's. See design/type-check-phase.md.
+
+// Context used for the name resolution pass
 typedef struct NameResState {
     ModuleNode *mod;        // Current module
     INode *typenode;        // Current type (e.g., struct)
     BlockNode *loopblock;   // Most current loop block (or NULL)
     uint16_t scope;         // The current block scope (0=global, 1=fnsig, 2+=blocks)
-    uint16_t flags;         // e.g., PassWithinWhile
 } NameResState;
 
-#define TypeCheckLoopMax 256
-#define TypeCheckBlockMax 1024
-
-// Context used for type check pass
+// Context used for the type check pass
 typedef struct TypeCheckState {
-    INode *typenode;          // Current type (e.g., struct)
-    FnDclNode *fn;            // The function and its signature/block (for returned processing)
-    uint16_t scope;           // Current block scope level
+    INode *typenode;        // Current type (e.g., struct)
+    FnDclNode *fn;          // The function and its signature/block (for returned processing)
+    uint16_t scope;         // The current block scope (0=global, 1=fnsig, 2+=blocks)
 } TypeCheckState;
 
 #endif

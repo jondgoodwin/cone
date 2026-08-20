@@ -26,6 +26,10 @@ FieldDclNode *newFieldDclNode(Name *namesym, INode *perm) {
 INode *cloneFieldDclNode(CloneState *cstate, FieldDclNode *node) {
     FieldDclNode *newnode = memAllocBlk(sizeof(FieldDclNode));
     memcpy(newnode, node, sizeof(FieldDclNode));
+    // A clone is unchecked however far along the node it was copied from got.
+    // memcpy carries the type check marks with everything else, and a clone that
+    // kept them would be skipped by the guard in inodeTypeCheck.
+    newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
     newnode->vtype = cloneNode(cstate, node->vtype);
     newnode->value = cloneNode(cstate, node->value);
     return (INode*)newnode;
@@ -78,7 +82,15 @@ void fieldDclTypeCheck(TypeCheckState *pstate, FieldDclNode *name) {
             name->vtype = ((IExpNode *)name->value)->vtype;
     }
 
-    // Fields cannot hold a void or opaque struct value
-    if (!itypeIsConcrete(name->vtype))
-        errorMsgNode((INode*)name, ErrorInvType, "Field's type must be concrete and instantiable.");
+    // A field holds its type by value, so that type has to be able to say how
+    // large it is. This is where a recursive struct is caught -- and where one
+    // that recurses through a reference is not, since the reference answers for
+    // itself without asking what it points at.
+    INode *nosizeroot;
+    char *nosize = itypeNoSizeCause(name->vtype, &nosizeroot);
+    if (nosize) {
+        errorMsgNode((INode*)name, ErrorNoSize, "Field %s cannot be held by value: %s %s.",
+            &name->namesym->namestr, itypeName(nosizeroot), nosize);
+        itypeNoSizeExplain(name->vtype);
+    }
 }

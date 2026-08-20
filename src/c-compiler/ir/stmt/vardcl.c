@@ -47,6 +47,10 @@ VarDclNode *newVarDclFull(Name *namesym, uint16_t tag, INode *type, INode *perm,
 INode *cloneVarDclNode(CloneState *cstate, VarDclNode *node) {
     VarDclNode *newnode = memAllocBlk(sizeof(VarDclNode));
     memcpy(newnode, node, sizeof(VarDclNode));
+    // A clone is unchecked however far along the node it was copied from got.
+    // memcpy carries the type check marks with everything else, and a clone that
+    // kept them would be skipped by the guard in inodeTypeCheck.
+    newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
     newnode->vtype = cloneNode(cstate, node->vtype);
     newnode->value = cloneNode(cstate, node->value);
     cloneDclSetMap((INode*)node, (INode*)newnode);
@@ -115,9 +119,15 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
             errorMsgNode((INode*)name, ErrorNotLit, "Variable may only be initialized with a literal value.");
     }
 
-    // Variables cannot hold a void or opaque struct value
-    if (!itypeIsConcrete(name->vtype))
-        errorMsgNode((INode*)name, ErrorInvType, "Variable's type must be concrete and instantiable.");
+    // A variable holds its type by value, so that type has to be able to say how
+    // large it is
+    INode *nosizeroot;
+    char *nosize = itypeNoSizeCause(name->vtype, &nosizeroot);
+    if (nosize) {
+        errorMsgNode((INode*)name, ErrorNoSize, "Variable %s cannot be held by value: %s %s.",
+            &name->namesym->namestr, itypeName(nosizeroot), nosize);
+        itypeNoSizeExplain(name->vtype);
+    }
 }
 
 // Perform data flow analysis

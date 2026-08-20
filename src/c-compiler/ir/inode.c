@@ -305,10 +305,13 @@ void inodeNameRes(NameResState *pstate, INode **node) {
 // - expectType is the type expected of an expression node (or unknownType/noCareType)
 void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
 
-    // Type nodes are fully checked the first time they are referenced,
-    // so that we know everything we need to know about correctly managing their values
-    // (because of needing to infer infectious type constraints based on their composed fields).
-    // However, type checking of a type node should only be done once
+    // A declaration is type checked once, however many places reach it. This
+    // pass lowers and replaces nodes, so a second walk of one corrupts it; the
+    // marks are a correctness requirement rather than an optimization.
+    //
+    // Type nodes are fully checked the first time they are referenced, so that
+    // we know everything we need about managing their values (infectious
+    // constraints have to be inferred from the fields they compose).
     //
     // A generic instantiation is a type but not a type declaration: this pass
     // replaces it with the instance it names, and the instance carries these
@@ -318,12 +321,26 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     if (((isTypeNode(*node) && (*node)->tag != FnCallTag)) || (*node)->tag == ModuleTag) {
         if ((*node)->flags & TypeChecked)
             return;
-        if ((*node)->flags & TypeChecking) {
-            errorMsgNode(*node, ErrorRecurse, "Recursive types are not supported for now.");
+        // Under analysis and reached again. Its identity is established, which
+        // is what a type question needs; only a *size* question has no answer
+        // yet, and that is asked where a value is held rather than here. This
+        // is what makes a linked list expressible: 'next &S' asks S for its
+        // identity, and the reference answers the size on its own behalf.
+        if ((*node)->flags & TypeChecking)
             return;
-        }
-        else
-            (*node)->flags |= TypeChecking;
+        (*node)->flags |= TypeChecking;
+    }
+    else if (inodeIsDcl(*node)) {
+        if ((*node)->flags & TypeChecked)
+            return;
+        // Under analysis and reached again. Its own type was established before
+        // it began anything that could refer back to it, so the caller reads
+        // that from the node and there is nothing left to do here. Unreachable
+        // until a use demands a declaration rather than reading it, and it is
+        // what lets two functions call each other.
+        if ((*node)->flags & TypeChecking)
+            return;
+        (*node)->flags |= TypeChecking;
     }
 
     switch ((*node)->tag) {
@@ -439,10 +456,11 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
         assert(0 && "**** ERROR **** Attempting to check an unknown node");
     }
 
-    // Confirm when a type node has been checked. *node may have been replaced by
+    // Confirm the declaration has been type checked. *node may have been replaced by
     // now -- an instantiation leaves behind the instance it named, which is a
     // declaration and does take the mark.
-    if (((isTypeNode(*node) && (*node)->tag != FnCallTag)) || (*node)->tag == ModuleTag) {
+    if (((isTypeNode(*node) && (*node)->tag != FnCallTag)) || (*node)->tag == ModuleTag
+            || inodeIsDcl(*node)) {
         (*node)->flags |= TypeChecked;
     }
 }
@@ -492,6 +510,21 @@ Name *inodeGetName(INode *node) {
     default:
         assert(0 && "This kind of node has no namesym field");
         return NULL;
+    }
+}
+
+// Is this a declaration that carries its own analysis marks?
+// Type declarations and modules are handled separately: they are reached as
+// types rather than as declarations, and a type's mark means laid out.
+int inodeIsDcl(INode *node) {
+    switch (node->tag) {
+    case FnDclTag:
+    case VarDclTag:
+    case FieldDclTag:
+    case ConstDclTag:
+        return 1;
+    default:
+        return 0;
     }
 }
 

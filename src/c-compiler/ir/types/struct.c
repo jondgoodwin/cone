@@ -410,8 +410,15 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     if ((node->flags & TraitType) && !(node->flags & SameSize))
         node->flags |= OpaqueType;
 
-    // We can say we know enough about the type at this point to
-    // declare it fully checked, so as to not trigger type recursion warnings.
+    // Mark the type checked here, before its methods are checked, because this
+    // is the point its layout settles: fields are indexed, size is known, and
+    // the method set is complete -- mixins were expanded and trait methods
+    // inherited during the field walk above. What follows is each method being
+    // checked in its own right, which nothing outside this type waits on.
+    //
+    // The placement is load-bearing, not an optimization. A method may use its
+    // own type by value ('fn twin(self) Self'), so the size has to be available
+    // before step below runs. See design/type-check-phase.md section 10.1.
     node->flags |= TypeChecked;
 
     // Type check all methods, etc.

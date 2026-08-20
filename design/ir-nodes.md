@@ -10,7 +10,7 @@ Internal representation (IR) nodes are central to all passes:
 | Stmt | Keyword      | Lexer-only node for name table consistency                  |
 |      | Intrinsic    | Function intrinsic "dcl"                                    |
 |      |              |                                                             |
-|      | [[Return]]   | `return`                                                    |
+|      | [[return|Return]]   | `return`                                                    |
 |      | [[BlockRet]] | injected last stmt of block lacking return, break, continue |
 |      | [[Break]]    | 'break'                                                     |
 |      | [[Continue]] | `continue`                                                  |

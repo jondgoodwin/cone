@@ -15,4 +15,4 @@ intrinsic method surface, and no reference-manual chapter describes it.
 
 Test coverage follows the capability. When float intrinsics are built out, the
 question R6.1 asks is whether they need their own group and manual chapter —
-`design/Test Suite.md` records that a feature with no group means both.
+`design/test-suite.md` records that a feature with no group means both.

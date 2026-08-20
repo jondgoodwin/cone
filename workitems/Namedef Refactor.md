@@ -1,6 +1,6 @@
 1. Create namedef node (name, type/constraint, value, generic?, owner?) and convert compliant nodes accordingly
 2. 	1. Switch exp/type detection algorithm to not use nodetype as signal, thereby fixing nameuse variants etc.
-3. 	2. See [[Names and Namespaces]]
+3. 	2. See [[names-and-namespaces|Names and Namespaces]]
 ### Requirements
 
 The refactor should separate the act of binding a name from the kind of thing bound to that name. A `NameDef` is the canonical declaration/binding record: it owns the interned name, an optional declared type or constraint, the bound value, optional generic information, and code-generation ownership/provenance. Its containing namespace or lexical scope owns the binding separately. Specialized information that is not common to all bindings (such as variable permissions and flow state, function linkage and LLVM state, field indexes, or a type's layout and member namespace) remains on the bound value or on purpose-specific metadata rather than being copied into `NameDef`.
@@ -62,6 +62,49 @@ For a call through an overload name, this choreography is:
 4. Point the call at the concrete definition before returning from resolution of the call node.
 
 The same mechanism should address other cases where name resolution currently runs before it has enough semantic information. It must retain explicit per-node states such as unresolved, resolving, and resolved so forward references are supported, completed work is not repeated, and true dependency cycles produce controlled diagnostics rather than recursion. This pipeline change is broader than NameDef representation and should have its own design and focused tests, but stages 3–5 depend on it.
+
+**The per-node states this asks for now exist for type check**, built by
+[[Analysis re-factor]]: `TypeChecking` and `TypeChecked` on every declaration, read
+rather than refused, so a forward reference analyzes what it names, finished work
+is not repeated, and a true cycle reports `ErrorCircular` or `ErrorNoSize`
+instead of recursing. `design/type-check-phase.md` is the design and the corpus has the
+tests. Two things that item deliberately did *not* do and this one may still
+want: name resolution stays one eager pass with a global gate, because binding a
+name needs the declaration to exist rather than to be analyzed; and no `Failed`
+state was added, so a declaration already reported still reports again at every
+later use.
+
+**How far `fnCallTypeCheck` still is from the four-step choreography above.**
+Measured by instrumenting its front end and compiling all 122 corpus sources.
+Demand made the *guarantee* available; the dispatch was not restructured to use
+it, so three gaps remain and each maps onto a step above.
+
+- **Step 1 is skipped for the very case it describes.** `calleeIsOverload` peeks
+  at `dclnode->tag` and then does *not* type check the callee. That path fires
+  21 times, and in all 21 the callee had not been checked by anything else — 0
+  of 21 arrived already checked. So the ~50 lines below it run in two modes,
+  callee-resolved and callee-unresolved, with nothing marking which. The
+  downstream `self.method` test confirms it: 2946 arrivals with a checked
+  declaration, 22 without. An invariant held by convention rather than by
+  construction is what the [[Analysis re-factor]] revert was about.
+- **Step 2 runs in the wrong order.** Arguments are type checked *above* the
+  line that resolves the callee, so argument checking cannot see parameter types
+  and no expected type can be pushed down into an argument. Recorded from the
+  coercion side in [[Type Inference and Coercion]].
+- **The dispatch leads with syntax, not with the declaration.** The first two
+  decisions — macro, and `<-` on a value tuple — are pattern matches on
+  `objfn->tag` and `methfld`'s namesym, taken before anything is analyzed. At
+  entry the callee's declaration is already `TypeChecked` in 3736 cases and not
+  in 41, so the front end cannot rely on it and does not try.
+
+**What would collapse the front end.** Resolve `objfn` first, macros excepted —
+they must not have arguments checked before substitution — and then dispatch on
+what the *declaration is* rather than on what the *node looks like*. That is
+item 1.1's "do not use nodetype as signal" applied to the call node, and it
+composes with [[Lexer and Parser]] giving `()` and `[]` distinct node shapes:
+fewer syntaxes per shape makes the leading tests smaller, and resolve-first
+makes the rest answer from the declaration instead of re-deriving from syntax.
+Neither alone is enough.
 
 3. **Introduce canonical NameDefs at lookup boundaries.**
 	- Add `NameDef` with its spelling, optional type/constraint, referenced IR value, source/origin link, visibility, and code-generation provenance.

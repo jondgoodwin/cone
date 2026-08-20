@@ -207,6 +207,69 @@ fn controlflow() {
   show("loop-accumulated-y", acc.y)
 }
 
+// -------- structs that reach themselves --------
+
+// A struct may hold itself, or another struct that holds it, through a
+// reference. All three forms were refused until analysis learned to answer a
+// type still being laid out rather than refuse it, so Cone could not express a
+// linked list or a tree at all.
+//
+// What separates them from the infinite forms is not recursion but size, and it
+// belongs to the type being asked. A reference answers its own size -- a pointer
+// is a pointer whatever it points at -- so a cycle through one always
+// terminates. struct-typecheck-nosize holds the by-value forms that are still
+// refused.
+//
+// Declared and reached by reference rather than built and traversed: a list
+// needs a nullable reference, and the union machinery for that belongs to the
+// union group. The named check in cases.toml is what asserts these reach code
+// generation as genuinely self-referential types, which runtime cannot see.
+
+// The list node the whole rule exists for. 'next' is a reference, so laying out
+// Node never asks Node for its size.
+struct Node {
+  v i64
+  next &Node
+}
+
+fn nodeNext(n &Node) i64 {
+  n.next.v
+}
+
+// One by value, one by reference: Owner holds Held by value, so Held must be
+// sized -- and it is, because its own field is a reference. The cycle breaks on
+// the second hop rather than the first.
+// Owner holds Held by value, so Held must be sized -- and it is, because its
+// own field is a reference. The cycle is broken on the second hop rather than
+// the first, which is the case that says the rule is about each field's own
+// type and not about whether a cycle exists anywhere.
+struct Owner {
+  v i64
+  held Held
+}
+
+struct Held {
+  back &Owner
+}
+
+fn ownerBack(o &Owner) i64 {
+  o.held.back.v
+}
+
+// Neither asks the other.
+struct Left {
+  v i64
+  r &Right
+}
+
+struct Right {
+  l &Left
+}
+
+fn leftRound(l &Left) i64 {
+  l.r.l.v
+}
+
 fn main() i32 {
   construction()
   access()

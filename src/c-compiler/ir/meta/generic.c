@@ -107,6 +107,24 @@ int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNode *genf
     return retcode;
 }
 
+// How deeply expansion is currently nested. See generic.h.
+static uint32_t instantiateDepth = 0;
+
+int genericInstantiateEnter(INode *errnode) {
+    if (instantiateDepth >= TypeCheckLoopMax) {
+        errorMsgNode(errnode, ErrorInstDepth,
+            "Generic or macro expansion nested more than %d deep. It likely expands itself endlessly.",
+            TypeCheckLoopMax);
+        return 0;
+    }
+    ++instantiateDepth;
+    return 1;
+}
+
+void genericInstantiateExit() {
+    --instantiateDepth;
+}
+
 // Instantiate the generic based on parms and return
 INode *genericInstantiate(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nodetoclone,
         GenericInfo *genericinfo, Name *name) {
@@ -182,29 +200,35 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
         }
     }
 
-    // No match found, instantiate the dcl generic
+    // No match found, instantiate the dcl generic.
+    // Instantiating analyzes the new instance, which may instantiate this same
+    // generic again at larger type arguments, so this is where depth is counted.
+    if (!genericInstantiateEnter((INode*)srcgencall))
+        return newErrorNode((INode*)srcgencall);
+
+    INode *retinstance;
     // If node is not a tagged-field trait/struct, we can just instantiate it and be done
     if (nodetoclone->tag != StructTag || !(nodetoclone->flags & HasTagField)) {
-        INode *instance = genericInstantiate(pstate, srcgencall, nodetoclone, genericinfo, name);
-        return newNameUseFromDclNode(instance, (INode*)srcgencall);
+        retinstance = genericInstantiate(pstate, srcgencall, nodetoclone, genericinfo, name);
     }
+    else {
+        // For tag-based trait/struct, instantiate the base trait and all its variants
+        // Begin by instantiating the base trait
+        StructNode *basetrait = structGetBaseTrait((StructNode*)nodetoclone);
+        INode *instrait = genericInstantiate(pstate, srcgencall, (INode*)basetrait, basetrait->genericinfo, name);
+        if (basetrait == (StructNode*)nodetoclone)
+            retinstance = instrait;
 
-    // For tag-based trait/struct, instantiate the base trait and all its variants
-    // Begin by instantiating the base trait
-    INode *retinstance;
-    StructNode *basetrait = structGetBaseTrait((StructNode*)nodetoclone);
-    INode *instrait = genericInstantiate(pstate, srcgencall, (INode*)basetrait, basetrait->genericinfo, name);
-    if (basetrait == (StructNode*)nodetoclone)
-        retinstance = instrait;
-
-    // Now instantiate all variants
-    Nodes **instraitderived = &((StructNode*)instrait)->derived;
-    for (nodesFor(basetrait->derived, cnt, nodesp)) {
-        INode *instance = genericInstantiate(pstate, srcgencall, *nodesp, ((StructNode*)*nodesp)->genericinfo, name);
-        nodesAdd(instraitderived, instance); // Repair trait's derived entry to point to instantiated variant
-        if (*nodesp == (INode*)nodetoclone)
-            retinstance = instance;
+        // Now instantiate all variants
+        Nodes **instraitderived = &((StructNode*)instrait)->derived;
+        for (nodesFor(basetrait->derived, cnt, nodesp)) {
+            INode *instance = genericInstantiate(pstate, srcgencall, *nodesp, ((StructNode*)*nodesp)->genericinfo, name);
+            nodesAdd(instraitderived, instance); // Repair trait's derived entry to point to instantiated variant
+            if (*nodesp == (INode*)nodetoclone)
+                retinstance = instance;
+        }
     }
+    genericInstantiateExit();
 
     return newNameUseFromDclNode(retinstance, (INode*)srcgencall);
 }
@@ -260,8 +284,11 @@ int genericSubstitute(TypeCheckState *pstate, FnCallNode **srcgencallp) {
     // If successful, we are left with an instantiated function call/type that FnCall still needs to type-check.
 
     // Inject empty generic call as the place to fill in and hold the inferred type parameters
+    // A node built here takes the lexer's position, which by type check is the
+    // end of the source, so it is given the position of the call it stands for.
     uint32_t nparms = genericinfo->parms->used;
     FnCallNode *inferredgencall = newFnCallNode(srcgencall->objfn, nparms);
+    inodeLexCopy((INode*)inferredgencall, (INode*)srcgencall);
     srcgencall->objfn = (INode*)inferredgencall;
     while (nparms--)
         nodesAdd(&inferredgencall->args, (INode*)NULL);

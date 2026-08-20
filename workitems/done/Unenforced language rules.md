@@ -114,7 +114,7 @@ public overload name is deliberately untouched — the program never names it �
 rejection.
 
 This entry is the reason to check the reference manual before assuming a rule
-needs a ruling. Related: [[Names and Namespaces]],
+needs a ruling. Related: [[names-and-namespaces|Names and Namespaces]],
 [[Using and Module Name-folding]].
 
 ## ~~Only one lifetime rule is enforced~~ — closed: three are, and the fourth needs lifetime tracking

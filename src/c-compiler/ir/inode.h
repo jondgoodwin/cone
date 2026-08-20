@@ -230,14 +230,17 @@ enum NodeTags {
 #define HasTagField        0x0040  // A trait/struct has an enumerated field identifying the variant type
 #define NullablePtr        0x0080  // trait/struct has nullable pointer, generating optimized data
 
-#define TypeChecked        0x8000  // Type has been type-checked
-#define TypeChecking       0x4000  // Type is in process of being type-checked
-
-// Flags applied to any declaration a module holds, whatever its node kind.
-// modTypeCheck sets this on functions, variables and type declarations alike,
-// so the bit must be free in every block above: 0x0001-0x0080 are all spoken
-// for by one node family or another, and 0x4000/0x8000 by the type flags here.
-#define FlagSigError       0x0100  // Declaration's own signature failed type check
+// Type check progress, carried by every declaration. These are type check's
+// marks and no other phase's: inodeTypeCheck sets and tests them, and neither
+// name resolution nor flow analysis reads or writes them.
+//
+// TypeChecking means a declaration's type check has begun: it can still answer
+// what it has already established, which for a type is its identity but not yet
+// its size. TypeChecked means its type check finished -- for a nominal type that
+// is *laid out*, set before its methods are checked so that a method may use its
+// own type by value. See design/type-check-phase.md.
+#define TypeChecked        0x8000  // Type check of this declaration finished
+#define TypeChecking       0x4000  // This declaration's type check has begun
 
 // Allocate and initialize the INode portion of a new node
 #define newNode(node, nodestruct, nodetype) {\
@@ -275,6 +278,7 @@ void inodePrintDecr();
 Name *inodeGetName(INode *node);
 
 // Determine whether a named node is marked as private
+int inodeIsDcl(INode *node);
 int inodeIsPrivate(INode *node);
 
 // Determine whether an earlier diagnostic already marked this node as bad

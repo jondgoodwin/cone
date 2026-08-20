@@ -77,7 +77,8 @@ enum ErrorCode {
     // 1047 was ErrorBadSlice; borrowing a slice of a non-array is a one-element
     // slice by design (borrow.c), so there is no bad-slice-type condition
     ErrorMove = 1048,      // Move error of some kind
-    ErrorRecurse = 1049,   // Recursive type error
+    // 1049 was ErrorRecurse; a type reached mid-layout has no size, which is
+    // ErrorNoSize, and recursion through a reference is legal
     ErrorBadStmt = 1050,   // Bad statement
     ErrorBadElems = 1051,  // Inconsistent tuple elements
 
@@ -111,6 +112,15 @@ enum ErrorCode {
 
     // Reinterpretation, checked where the size is known
     ErrorRecastSize = 1066,     // 'as' onto a struct whose size differs from the source's
+
+    // Generic and macro expansion
+    ErrorInstDepth = 1067,      // Expansion nested deeper than the compiler will follow
+
+    // Demand-driven analysis
+    ErrorCircular = 1068,       // A declaration whose type comes from a value that names it back
+
+    // Layout
+    ErrorNoSize = 1069,         // A value whose type cannot report a size
 
     // Warnings
     WarnCode = 3000,

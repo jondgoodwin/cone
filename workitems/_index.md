@@ -28,7 +28,7 @@
 	- [[Flow typing and refinements]]
 
 **Types**
-- [[Names and Namespaces]], including name paths and name folding
+- [[names-and-namespaces|Names and Namespaces]], including name paths and name folding
 - [[Init and Final]]
 - Built-in Types:
 	- [[Types. Function and Closure]]
@@ -54,7 +54,10 @@
 **Ecosystem**
 - [[Compiler]] Components
 	- [[Lexer and Parser]] [[Syntax - Aggregating operators]]
-	- [[Analysis re-factor]]
+	- Analysis: `design/type-check-phase.md` describes how type check is
+	  scheduled. [[Analysis re-factor]] — done; see `workitems/done/`
+	- [[Design Documentation]] — what `design/` still owes: the type
+	  reasoning itself, a flow analysis note, and the naming conventions
 	- Generation: [[LLVM Generation]] and [[C-ABI Generation]]
 	- Defects the test suite found, by the decision each needs:
 		- [[Ownership memory safety]] — done; see `workitems/done/`

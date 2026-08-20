@@ -103,40 +103,57 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
             inodeNameRes(pstate, argsp);
     }
 
-    // Lower "<-" (append) on a vtuple to a block that appends each tuple element separately
-    if (node->methfld && ((NameUseNode *)node->methfld)->namesym == lessDashName
-        && node->args > 0 && nodesGet(node->args, 0)->tag == VTupleTag) {
+}
 
-        // Create block and start it with a variable that mutably borrows address of append receiver
-        INode *lval = node->objfn;
-        BlockNode *blk = newBlockNode();
-        inodeLexCopy((INode*)blk, (INode*)node);
-        borrowMutRef(&lval, unknownType, (INode*)mutPerm);
-        INode *lvalvar = newNameUseAndDcl(&blk->stmts, lval, pstate->scope + 1);
+// Is this '<-' applied to a value tuple, which lowers to one application per
+// element rather than one call taking a tuple?
+static int fnCallIsAppendTuple(FnCallNode *node) {
+    return node->methfld && ((NameUseNode *)node->methfld)->namesym == lessDashName
+        && node->args && node->args->used > 0 && nodesGet(node->args, 0)->tag == VTupleTag;
+}
 
-        // Use dereferenced name as receiver for sequence of appends
-        StarNode *starlval = newStarNode(DerefTag);
-        starlval->vtexp = lvalvar;
+// Lower "<-" (append) on a vtuple to a block that appends each tuple element separately
+//
+// This is lowering, so it belongs to type check: the receiver is borrowed once
+// and every element applied against that borrow, and the borrow needs the
+// receiver's type. Name resolution did this and had no type to give, so it
+// passed unknownType and left the injected borrow untyped for everything after
+// it. See design/type-check-phase.md section 10.
+static void fnCallLowerAppendTuple(TypeCheckState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
 
-        // Now create sequence of appends, one for each element of tuple
-        INode **nodesp;
-        uint32_t cnt;
-        TupleNode *tuple = (TupleNode *)nodesGet(node->args, 0);
-        for (nodesFor(tuple->elems, cnt, nodesp)) {
-            if (cnt == tuple->elems->used) {
-                node->objfn = (INode*)starlval;
-                nodesGet(node->args, 0) = *nodesp;
-            }
-            else {
-                node = newFnCallOpnameLower((INode*)*nodep, (INode*)starlval, lessDashName, 2);
-                node->flags |= FlagOpAssgn | FlagLvalOp;
-                nodesAdd(&node->args, *nodesp);
-            }
-            nodesAdd(&blk->stmts, (INode*)node);
+    // The receiver is analyzed first, because its type is what the borrow needs
+    inodeTypeCheckAny(pstate, &node->objfn);
+
+    // Create block and start it with a variable that mutably borrows address of append receiver
+    INode *lval = node->objfn;
+    BlockNode *blk = newBlockNode();
+    inodeLexCopy((INode*)blk, (INode*)node);
+    borrowMutRef(&lval, iexpGetTypeDcl(node->objfn), (INode*)mutPerm);
+    INode *lvalvar = newNameUseAndDcl(&blk->stmts, lval, pstate->scope + 1);
+
+    // Use dereferenced name as receiver for sequence of appends
+    StarNode *starlval = newStarNode(DerefTag);
+    starlval->vtexp = lvalvar;
+
+    // Now create sequence of appends, one for each element of tuple
+    INode **nodesp;
+    uint32_t cnt;
+    TupleNode *tuple = (TupleNode *)nodesGet(node->args, 0);
+    for (nodesFor(tuple->elems, cnt, nodesp)) {
+        if (cnt == tuple->elems->used) {
+            node->objfn = (INode*)starlval;
+            nodesGet(node->args, 0) = *nodesp;
         }
-        *nodep = (FnCallNode*)blk;  // Replace fncall with constructed block (casting badly to satisfy type check)
-        return;
+        else {
+            node = newFnCallOpnameLower((INode*)*nodep, (INode*)starlval, lessDashName, 2);
+            node->flags |= FlagOpAssgn | FlagLvalOp;
+            nodesAdd(&node->args, *nodesp);
+        }
+        nodesAdd(&blk->stmts, (INode*)node);
     }
+    *nodep = (FnCallNode*)blk;  // Replace fncall with constructed block (casting badly to satisfy type check)
+    inodeTypeCheckAny(pstate, (INode**)nodep);
 }
 
 // We have an object that is an array, arrayref, ptr, or reference to an array
@@ -573,15 +590,20 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         return;
     }
 
+    // '<-' on a value tuple becomes a block of applications, one per element.
+    // Ahead of the arguments below, because the tuple is taken apart rather than
+    // checked as an argument in its own right.
+    if (fnCallIsAppendTuple(node)) {
+        fnCallLowerAppendTuple(pstate, nodep);
+        return;
+    }
+
     // Type check arguments (methfld is handled later)
-    int usesTypeArgs = 0;
     INode **argsp;
     uint32_t cnt;
     if (node->args) {
         for (nodesFor(node->args, cnt, argsp)) {
             inodeTypeCheckAny(pstate, argsp);
-            if (isTypeNode(*argsp))
-                usesTypeArgs = 1;
         }
     }
 

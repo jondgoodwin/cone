@@ -47,6 +47,10 @@ INode *cloneFnDclNode(CloneState *cstate, FnDclNode *oldfn) {
     uint32_t dclpos = cloneDclPush();
     FnDclNode *newnode = memAllocBlk(sizeof(FnDclNode));
     memcpy(newnode, oldfn, sizeof(FnDclNode));
+    // A clone is unchecked however far along the node it was copied from got.
+    // memcpy carries the type check marks with everything else, and a clone that
+    // kept them would be skipped by the guard in inodeTypeCheck.
+    newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
     newnode->genericinfo = NULL;
     newnode->vtype = cloneNode(cstate, oldfn->vtype);
     newnode->value = cloneNode(cstate, oldfn->value);
@@ -161,6 +165,15 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     int errorsOnEntry = errors;
 
     itypeTypeCheck(pstate, &fnnode->vtype);
+
+    // A body is not checked against a signature that failed: every use of the
+    // types that check was supposed to establish would report again, naming
+    // nothing the author can act on. This is the same shape as the flow gate
+    // below -- the count this call entered with, so that it is about this
+    // declaration alone and not about whatever failed elsewhere.
+    if (errors != errorsOnEntry)
+        return;
+
     // No need to type check function body if no body or is a default method of a trait
     if (!fnnode->value 
         || ((fnnode->flags & FlagMethFld) && pstate->typenode->tag == StructTag && (pstate->typenode->flags & TraitType)))
@@ -176,10 +189,19 @@ void fnDclTypeCheck(TypeCheckState *pstate, FnDclNode *fnnode) {
     // Syntactic sugar: Turn implicit returns into explicit returns
     fnImplicitReturn(((FnSigNode*)fnnode->vtype)->rettype, (BlockNode *)fnnode->value);
 
-    // Type check/inference of the function's logic
+    // Type check/inference of the function's logic.
+    //
+    // Rule 8: this declaration may have been reached by demand, from the middle
+    // of some other function's body, so the walk context describes somewhere
+    // else. Saving and resetting both is what makes analyzing a declaration
+    // independent of where it was analyzed from. Scope 1 is the signature's,
+    // matching what fnDclNameRes sets, so the body's own block is scope 2.
     FnDclNode *svFn = pstate->fn;
+    uint16_t svScope = pstate->scope;
     pstate->fn = fnnode;
+    pstate->scope = 1;
     inodeTypeCheck(pstate, &fnnode->value, noCareType);
+    pstate->scope = svScope;
     pstate->fn = svFn;
 
     // Immediately perform the data flow pass for this function

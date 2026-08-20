@@ -85,6 +85,29 @@ char *itypeMangle(char *bufp, INode *vtype);
 // False for Opaque structs, traits, functions 
 int itypeIsConcrete(INode *type);
 
+// Why this type cannot report a size, as a sentence naming the cause and the
+// remedy, or NULL where the type is sized and may be held by value.
+//
+// There are five causes and one diagnostic, ErrorNoSize, because everything
+// except the wording would be identical between them and the remedy is what the
+// author actually needs. See design/type-check-phase.md section 6.
+//
+// A size is missing infectiously as often as directly: the type a field names is
+// usually unsized only because of something several levels below it. So *rootp
+// is set to the declaration that actually lacks the size, which is what the
+// sentence returned is about, and itypeNoSizeExplain names the hops between.
+char *itypeNoSizeCause(INode *type, INode **rootp);
+
+// Name the path from an unsized type to the declaration that is the cause, one
+// uncounted frame per hop, each pointing at the field that carried it down.
+// Says nothing where the type is its own cause -- the diagnostic already did.
+void itypeNoSizeExplain(INode *type);
+
+// A type's name, for a diagnostic. Types that have no name of their own
+// describe themselves instead, since a diagnostic still has to call them
+// something.
+char *itypeName(INode *type);
+
 // Return true if type has zero size (e.g., void, empty struct)
 int itypeIsZeroSize(INode *type);
 

@@ -359,6 +359,157 @@ int itypeIsConcrete(INode *type) {
     return !(dcltype->flags & OpaqueType);
 }
 
+// How many hops of an infection path are worth following or printing. Ordinary
+// code is one or two; the bound is here so that a pathological nesting -- or a
+// by-value cycle already reported and still in the tree -- cannot run this off
+// the stack or bury the diagnostic.
+#define NoSizeChainMax 8
+
+static INode *itypeNoSizeField(INode *dcltype, uint32_t depth);
+
+// Is this a closed trait -- a union -- with a variant that is not laid out yet?
+//
+// A closed trait's size is the largest of its variants, and generation is what
+// computes that. Its own TypeChecked mark says only that its own fields are
+// settled, which for a union is the tag: the variants are type checked separately,
+// each pulling this trait in as its base trait and finishing it before its own
+// fields are walked. So the mark cannot be read as 'has a size' here, and one
+// variant still in flight is exactly the case where the trait has none -- which
+// is what a variant holding its own union by value asks for.
+static int itypeVariantPending(INode *dcltype) {
+    // TraitType and a derived list are both required: a *variant* carries the
+    // closed flags too, inherited from its trait, and has no derived list at all.
+    if (dcltype->tag != StructTag || !(dcltype->flags & TraitType)
+        || !(dcltype->flags & (HasTagField | SameSize))
+        || ((StructNode*)dcltype)->derived == NULL)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(((StructNode*)dcltype)->derived, cnt, nodesp)) {
+        if (!((*nodesp)->flags & TypeChecked))
+            return 1;
+    }
+    return 0;
+}
+
+// A type's name, for a diagnostic. See itype.h.
+char *itypeName(INode *type) {
+    INode *dcltype = itypeGetTypeDcl(type);
+    switch (dcltype->tag) {
+    case FnSigTag:
+        return "a function signature";
+    case ArrayTag:
+        return "an array";
+    case RefTag: case VirtRefTag: case ArrayRefTag: case PtrTag:
+        return "a reference";
+    default:
+        break;
+    }
+    Name *namesym = inodeGetName(dcltype);
+    return namesym ? (char*)&namesym->namestr : "this type";
+}
+
+// This type's own reason for having no size, ignoring anything it caught from a
+// field, or NULL when it has a size or is unsized only by infection.
+//
+// Order matters: a trait that is not @samesize and a struct infected by an
+// unsized field both carry OpaqueType, so each is asked before the plain
+// declared-opaque reading that would otherwise absorb it.
+static char *itypeNoSizeOwnCause(INode *dcltype, uint32_t depth) {
+    // Still being laid out. Its own fields are what this walk is in the middle
+    // of settling, so there is no size to give yet -- and no cycle check is
+    // needed to say so, since a finished type would not be in this state.
+    if ((dcltype->flags & TypeChecking) && !(dcltype->flags & TypeChecked))
+        return "is still being laid out, so it would have to contain itself. Break the cycle by holding it through a reference";
+
+    // A union is laid out only once every variant is, whatever its own mark says
+    if (itypeVariantPending(dcltype))
+        return "is a union with a variant still being laid out, so it would have to contain itself. Break the cycle by holding it through a reference";
+
+    if (!(dcltype->flags & OpaqueType))
+        return NULL;
+
+    // A function signature is a description of a call, not a value
+    if (dcltype->tag == FnSigTag)
+        return "is not a value at all. Use a reference to a function instead";
+
+    if (dcltype->tag == StructTag) {
+        // A trait whose implementations differ in size has no one size
+        if ((dcltype->flags & TraitType) && !(dcltype->flags & SameSize))
+            return "is a trait whose implementations may differ in size. Use a virtual reference, '&<Trait>'";
+
+        // Opacity is infectious. Where a field carried it, this type is not the
+        // cause and the caller keeps walking.
+        if (itypeNoSizeField(dcltype, depth) != NULL)
+            return NULL;
+
+        return "is declared @opaque, so this program is not told how large it is. Hold it through a reference";
+    }
+
+    return "has no known size, so it cannot be held by value";
+}
+
+// The first field of this struct whose own type has no size, or NULL if none
+// does. This is the hop an infected type's size went missing across.
+//
+// Depth-bounded because the type graph it walks may be cyclic. A cycle through
+// a reference is legal and terminates on its own -- a reference is not a struct
+// -- but a by-value cycle that was already reported still sits in the tree, and
+// this runs on error paths, where the tree is exactly the shape nothing checked.
+static INode *itypeNoSizeField(INode *dcltype, uint32_t depth) {
+    if (dcltype->tag != StructTag || depth >= NoSizeChainMax)
+        return NULL;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&((StructNode*)dcltype)->fields, cnt, nodesp)) {
+        INode *fldtype = itypeGetTypeDcl(((IExpNode*)*nodesp)->vtype);
+        if (itypeNoSizeOwnCause(fldtype, depth + 1) != NULL
+            || itypeNoSizeField(fldtype, depth + 1) != NULL)
+            return *nodesp;
+    }
+    return NULL;
+}
+
+// Why this type cannot report a size. See itype.h.
+char *itypeNoSizeCause(INode *type, INode **rootp) {
+    INode *dcltype = itypeGetTypeDcl(type);
+    uint32_t hops = 0;
+    while (++hops <= NoSizeChainMax) {
+        char *own = itypeNoSizeOwnCause(dcltype, 0);
+        if (own) {
+            if (rootp)
+                *rootp = dcltype;
+            return own;
+        }
+        INode *fld = itypeNoSizeField(dcltype, 0);
+        if (fld == NULL)
+            return NULL;
+        dcltype = itypeGetTypeDcl(((IExpNode*)fld)->vtype);
+    }
+    if (rootp)
+        *rootp = dcltype;
+    return "has no known size, and the chain that led there is deeper than this message will follow";
+}
+
+// Name the path from an unsized type to its cause. See itype.h.
+void itypeNoSizeExplain(INode *type) {
+    INode *dcltype = itypeGetTypeDcl(type);
+    uint32_t hops = 0;
+    while (++hops <= NoSizeChainMax) {
+        // Its own cause is what the diagnostic already said, so the walk ends
+        // rather than repeating it
+        if (itypeNoSizeOwnCause(dcltype, 0) != NULL)
+            return;
+        INode *fld = itypeNoSizeField(dcltype, 0);
+        if (fld == NULL)
+            return;
+        INode *fldtype = itypeGetTypeDcl(((IExpNode*)fld)->vtype);
+        errorMsgNode(fld, Uncounted, "... %s has no size because its field %s has type %s",
+            itypeName(dcltype), &inodeGetName(fld)->namestr, itypeName(fldtype));
+        dcltype = fldtype;
+    }
+}
+
 // Return true if type has zero size (e.g., void, empty struct)
 int itypeIsZeroSize(INode *type) {
     INode *dcltype = itypeGetTypeDcl(type);

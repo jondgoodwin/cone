@@ -14,12 +14,3 @@ IntrinsicNode *newIntrinsicNode(int16_t intrinsic) {
     intrinsicNode->intrinsicFn = intrinsic;
     return intrinsicNode;
 }
-
-// Serialize an intrinsic node
-void intrinsicPrint(IntrinsicNode *intrinsicNode) {
-    inodeFprint("intrinsic function");
-}
-
-// Check the intrinsic node
-void intrinsicPass(TypeCheckState *pstate, IntrinsicNode *intrinsicNode) {
-}

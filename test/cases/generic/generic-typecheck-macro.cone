@@ -1,13 +1,21 @@
-// Macro uses whose argument list does not match the declaration's parameters.
+// Macro and generic uses that expansion cannot serve: an argument list that does
+// not match the declaration, and a body that would expand forever.
 //
-// Split from generic-typecheck-infer because a macro is checked by a different
-// path: it has no type arguments to infer and no instance to build, so all it
-// can get wrong is how many arguments it was given. Every diagnostic here is
-// ErrorManyArgs, and they are told apart by the line each is on.
+// Split from generic-typecheck-infer because these are checked by a different
+// path: a macro has no type arguments to infer and no instance to build, and a
+// runaway expansion is well formed at every step and fails only on how deep it
+// goes. Two codes, and the annotations are told apart by the line each is on.
 //
 // A parameterless macro's name is a value, so getting its arity wrong is the
 // only way to name one and be told no. Those value positions are all exercised
 // in generic-macro, which runs them.
+//
+// The non-terminating cases carry a cost worth knowing: before the depth limit
+// existed they were a stack overflow with no diagnostic, so if that guard
+// regresses this file does not fail an assertion -- the compiler dies and every
+// expectation here is lost with it, arity cases included.
+
+// -------- argument counts --------
 
 macro one[p] {
   p
@@ -31,4 +39,56 @@ fn noArgumentsAtAll() {
   // list to have counted.
   one                        //~ ErrorManyArgs:3 "expects arguments to be provided"
   imm r = 1i64
+}
+
+// -------- expansion that never terminates --------
+
+// A generic that instantiates itself at a larger type argument never returns to
+// a node it has already analyzed -- every instance is a fresh clone with new
+// arguments -- so the marks that catch a declaration analyzing itself cannot see
+// it. Nesting depth is the only thing that can.
+//
+// Three paths reach the same limit: generic instantiation, and the two macro
+// expansion paths, a name standing for its body and a call substituting
+// arguments into it. A guard removed from any one brings the crash back for that
+// path alone, so all three are here.
+
+struct Box[T] {
+  v T
+}
+
+// Each call instantiates 'recur' one 'Box' deeper than the call that reached it,
+// so the type argument grows without limit. Both instantiation sites are
+// refused: the depth is reached inside the innermost one, and the call wrapping
+// it is at the limit too as the refusal unwinds.
+//
+// The box is built on its own line and the recursive call takes its type by
+// inference, so that each line carries one instantiation. Written as a single
+// expression the line would carry three, which no annotation can tell apart.
+fn recur[T](x T) T {
+  imm boxed = Box[T][x]        //~ ErrorInstDepth:18 "nested more than"
+  recur(boxed).v               //~ ErrorInstDepth:8 "nested more than"
+}
+
+fn useGeneric() i64 {
+  recur[i64](3i64)
+}
+
+// A macro's body is cloned into the use site and analyzed there, so a body
+// naming the macro expands again, and again.
+macro selfNamed {
+  selfNamed                    //~ ErrorInstDepth:3 "nested more than"
+}
+
+fn useMacroName() {
+  imm a = selfNamed
+}
+
+// The same, through the path that substitutes arguments for parameters.
+macro selfCalled[p] {
+  selfCalled[p]                //~ ErrorInstDepth:13 "nested more than"
+}
+
+fn useMacroCall() {
+  imm b = selfCalled[1i64]
 }

@@ -74,14 +74,42 @@ void errorOutCode(char *tokp, uint32_t linenbr, char *linep, char *url, int code
     fprintf(stderr, "^--- %s:%d:%d\n", url, linenbr, pos);
 }
 
+// How many frames of an instantiation trace are worth printing.
+//
+// A node cloned by a generic instantiation or a macro expansion remembers what
+// expanded it, and that chain is as long as the expansion nested. Ordinary code
+// nests one or two deep, so the whole chain is worth showing. An expansion that
+// never terminates nests until ErrorInstDepth stops it, and printing all of it
+// would bury the diagnostic itself under hundreds of identical frames.
+#define ErrorInstTraceMax 4
+
+// One frame of an instantiation trace, without following the chain further
+static void errorMsgFrame(INode *node, int code, const char *msg, ...) {
+    va_list argptr;
+    va_start(argptr, msg);
+    errorOutCode(node->srcp, node->linenbr, node->linep, node->lexer->url, code, msg, argptr);
+    va_end(argptr);
+}
+
 // Send an error message to stderr
 void errorMsgNode(INode *node, int code, const char *msg, ...) {
     va_list argptr;
     va_start(argptr, msg);
     errorOutCode(node->srcp, node->linenbr, node->linep, node->lexer->url, code, msg, argptr);
     va_end(argptr);
-    if (node->instnode)
-        errorMsgNode(node->instnode, Uncounted, "... as instantiated by this part of the source code");
+
+    // Name what instantiated this node, and what instantiated that, outward
+    uint32_t shown = 0;
+    for (INode *instnode = node->instnode; instnode; instnode = instnode->instnode) {
+        if (shown++ == ErrorInstTraceMax) {
+            uint32_t more = 0;
+            for (INode *rest = instnode; rest; rest = rest->instnode)
+                ++more;
+            errorMsg(Uncounted, "... and %u further instantiation%s not shown", more, more == 1 ? "" : "s");
+            break;
+        }
+        errorMsgFrame(instnode, Uncounted, "... as instantiated by this part of the source code");
+    }
 }
 
 // Send an error message to stderr
