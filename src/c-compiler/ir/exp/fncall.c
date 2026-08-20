@@ -118,7 +118,7 @@ static int fnCallIsAppendTuple(FnCallNode *node) {
 // and every element applied against that borrow, and the borrow needs the
 // receiver's type. Name resolution did this and had no type to give, so it
 // passed unknownType and left the injected borrow untyped for everything after
-// it. See design/Analysis.md section 10.
+// it. See design/type-check-phase.md section 10.
 static void fnCallLowerAppendTuple(TypeCheckState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
 

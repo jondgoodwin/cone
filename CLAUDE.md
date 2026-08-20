@@ -31,7 +31,7 @@ contains its C compiler (`conec`) and a small standard-library component
   `workitems/_index.md` plan summarizes the work and acts as the manifest for
   the individual work-item notes; `workitems/__Top Priority.md` identifies the
   current priority sequence.
-- `test/run.py`: the test suite runner. `design/Test Suite.md` is its authoring
+- `test/run.py`: the test suite runner. `design/test-suite.md` is its authoring
   guide.
 - `test/cases/<group>/`: one directory per coverage group, each with a
   `cases.toml` listing its scenarios.
@@ -134,7 +134,7 @@ python test/run.py
 It compiles every scenario under `test/cases/`, asserts what each one's category
 and inline `//~` annotations claim, links and runs the `run` scenarios, and
 reports tier 0 first. `--list` prints what would run; a group, scenario, check
-name or `tag:<phase>` narrows it. `design/Test Suite.md` is the authoring guide:
+name or `tag:<phase>` narrows it. `design/test-suite.md` is the authoring guide:
 which group to touch, what to assert, and how expectations are written.
 
 **A stale `conec` fails good sources in ways indistinguishable from a language
@@ -152,7 +152,7 @@ For a compiler change:
 
 1. Build `conec` and run `python test/run.py`.
 2. Add coverage for the change: a scenario in the owning group under
-   `test/cases/`, following `design/Test Suite.md`. A fix for a crash or a
+   `test/cases/`, following `design/test-suite.md`. A fix for a crash or a
    miscompile lands with the case that fails without it, and a new `ErrorCode`
    lands with the scenario that provokes it.
 3. Inspect the generated IR when the change affects lowering or symbols.

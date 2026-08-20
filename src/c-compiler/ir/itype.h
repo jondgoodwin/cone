@@ -90,7 +90,7 @@ int itypeIsConcrete(INode *type);
 //
 // There are five causes and one diagnostic, ErrorNoSize, because everything
 // except the wording would be identical between them and the remedy is what the
-// author actually needs. See design/Analysis.md section 6.
+// author actually needs. See design/type-check-phase.md section 6.
 //
 // A size is missing infectiously as often as directly: the type a field names is
 // usually unsized only because of something several levels below it. So *rootp

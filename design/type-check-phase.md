@@ -1,14 +1,24 @@
 Analysis is the work between parsing and generation: binding names to
 declarations, establishing types, and checking flow rules for ownership,
-permissions and lifetimes.
+permissions and lifetimes. **This note covers the middle one, type check.**
 
-This note describes how analysis works. It was written as a before/after
-argument for [[Analysis re-factor]] and rewritten as a description once that
-landed; `git log design/Analysis.md` has the argument if the reasoning behind a
-decision is wanted. Claims here were measured against the compiler rather than
-read from it, and section 12 says how to re-measure.
+What it describes is how type check is *scheduled*: what demand means, what the
+phase may assume from name resolution, the two marks a declaration carries, what
+a declaration still under type check can answer, and the order each declaration
+kind resolves in.
 
-## 1. The three phases
+What it does not describe is what the checks *decide* — coercion and inference,
+overload resolution, casts, borrows, tuples and literals — nor flow analysis,
+which has no design note at all. Both gaps are measured and carried by
+[[Design Documentation]].
+
+It was written as a before/after argument for [[Analysis re-factor]] and
+rewritten as a description once that landed. `git log --follow` on this file has
+the argument if the reasoning behind a decision is wanted, and reaches back past
+the rename from `Analysis.md`. Claims here were measured against the compiler
+rather than read from it, and section 12 says how to re-measure.
+
+## 1. Where this phase sits
 
 ```
 parse  ->  name resolution  ->  type check  ->  generation
@@ -394,7 +404,7 @@ elsewhere, whichever walk arrived at it.
 2. Iterate the declarations and analyze each. Demand pulls forward whatever a
    forward reference needs; one already analyzed returns at once.
 
-## 11. Diagnostics analysis owns
+## 11. Diagnostics type check owns
 
 | Code | Raised when |
 | --- | --- |

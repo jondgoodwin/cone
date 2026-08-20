@@ -14,7 +14,7 @@ covering it through stdio alone would pin the operator to the one consumer that
 is not what it is for.
 
 **It gets its own coverage group when collections arrive**, alongside whatever
-manual chapter they bring. `design/Test Suite.md` carries the reserved row.
+manual chapter they bring. `design/test-suite.md` carries the reserved row.
 
 ## Stream iterators
 

@@ -28,7 +28,7 @@
 	- [[Flow typing and refinements]]
 
 **Types**
-- [[Names and Namespaces]], including name paths and name folding
+- [[names-and-namespaces|Names and Namespaces]], including name paths and name folding
 - [[Init and Final]]
 - Built-in Types:
 	- [[Types. Function and Closure]]
@@ -54,7 +54,7 @@
 **Ecosystem**
 - [[Compiler]] Components
 	- [[Lexer and Parser]] [[Syntax - Aggregating operators]]
-	- Analysis: `design/Analysis.md` describes how it runs.
+	- Analysis: `design/type-check-phase.md` describes how it runs.
 	  [[Analysis re-factor]] — done; see `workitems/done/`
 	- Generation: [[LLVM Generation]] and [[C-ABI Generation]]
 	- Defects the test suite found, by the decision each needs:

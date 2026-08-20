@@ -1,6 +1,6 @@
 1. Create namedef node (name, type/constraint, value, generic?, owner?) and convert compliant nodes accordingly
 2. 	1. Switch exp/type detection algorithm to not use nodetype as signal, thereby fixing nameuse variants etc.
-3. 	2. See [[Names and Namespaces]]
+3. 	2. See [[names-and-namespaces|Names and Namespaces]]
 ### Requirements
 
 The refactor should separate the act of binding a name from the kind of thing bound to that name. A `NameDef` is the canonical declaration/binding record: it owns the interned name, an optional declared type or constraint, the bound value, optional generic information, and code-generation ownership/provenance. Its containing namespace or lexical scope owns the binding separately. Specialized information that is not common to all bindings (such as variable permissions and flow state, function linkage and LLVM state, field indexes, or a type's layout and member namespace) remains on the bound value or on purpose-specific metadata rather than being copied into `NameDef`.
@@ -67,7 +67,7 @@ The same mechanism should address other cases where name resolution currently ru
 [[Analysis re-factor]]: `TypeChecking` and `TypeChecked` on every declaration, read
 rather than refused, so a forward reference analyzes what it names, finished work
 is not repeated, and a true cycle reports `ErrorCircular` or `ErrorNoSize`
-instead of recursing. `design/Analysis.md` is the design and the corpus has the
+instead of recursing. `design/type-check-phase.md` is the design and the corpus has the
 tests. Two things that item deliberately did *not* do and this one may still
 want: name resolution stays one eager pass with a global gate, because binding a
 name needs the declaration to exist rather than to be analyzed; and no `Failed`

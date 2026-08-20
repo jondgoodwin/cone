@@ -1,4 +1,4 @@
-**Done.** `design/Analysis.md` describes the result: what demand means, the two
+**Done.** `design/type-check-phase.md` describes the result: what demand means, the two
 marks a declaration carries, what one under analysis can answer about its type
 and its size, and the resolution order within each declaration kind. Read that
 for how analysis works; read this for what was done and what it taught.
@@ -38,7 +38,7 @@ compiling all 122 corpus sources:
   be types once stage 3 landed. Of first marks, 12,336 land on type nodes and
   5,304 on non-types. And every one of ~66,000 mark touches is in the type check
   walk, so `Analyzed` claimed coverage by all three phases that the code has
-  never had -- which misled a reader after `design/Analysis.md` had documented
+  never had -- which misled a reader after `design/type-check-phase.md` had documented
   the true scope.
 
 The revert kept both commits' genuine gains: the `scope` initialisation fix and
@@ -60,7 +60,7 @@ compiler. Three new codes carry them — `ErrorInstDepth`, `ErrorCircular`,
   finding.
 - **Measure; do not read.** Every confident reading of this compiler that was not
   measured turned out wrong at least once, including several during design. The
-  technique that kept working is in `design/Analysis.md` section 12. Two crashes
+  technique that kept working is in `design/type-check-phase.md` section 12. Two crashes
   and two silent defects were found by probing programs the corpus did not have;
   none would have been found by reading.
 - **Sequencing carried real information.** Stage 6 was a clean deletion only
@@ -115,7 +115,7 @@ The original plan follows, with its outcome recorded against each item.
 	nothing from running on demand. Keeping it separate is also what lets type
 	check assume every name is bound, so nothing downstream reasons about a
 	partly-bound declaration. The *state* was merged for a while and then split
-	back apart, for the same reason. See `design/Analysis.md` sections 1, 9
+	back apart, for the same reason. See `design/type-check-phase.md` sections 1, 9
 	and 13.
 
 	The sub-items below are what actually landed.
@@ -128,7 +128,7 @@ The original plan follows, with its outcome recorded against each item.
 	   expansion in fnCallNameRes, and the bare-name-to-self.member rewrite
 	   in nameUseNameRes, into type check where the types they need exist.
 	   (Lowering cannot move any later than that -- it is what establishes
-	   the node's type. See design/Analysis.md section 10.)
+	   the node's type. See design/type-check-phase.md section 10.)
 3. Switch to just-in-time type check to fix ordering bugs. For pgm, mod, struct, union, fnsig nodes
 	2. Visit all imports first, but not includes! (module-only) -- **done**, `modTypeCheck`
 	3. Build this level's dictionary of all declared names (do this in parser), including fields/var, methods/fn/macros/behaviors, typedcls, constants, etc. -- **done**, and name resolution stays one eager pass over it (design section 10)

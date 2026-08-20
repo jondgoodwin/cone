@@ -39,7 +39,7 @@ the field and saying to break the cycle with a reference (`ErrorNoSize`).
   is chased where it is reported rather than stored.
 - ~~Separate infectious/cycle from rest of type check - how?~~ -- answered by
   *not* separating it. Reading the in-progress mark in place is what removed the
-  need for a separate pass. See `design/Analysis.md` rules 4 and 5.
+  need for a separate pass. See `design/type-check-phase.md` rules 4 and 5.
 
 - ~~A union variant may hold its own union by value~~ -- found while closing the
   above, and fixed. `union Bad { struct Wrap { t Bad } }` compiled clean and

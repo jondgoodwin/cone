@@ -418,7 +418,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     //
     // The placement is load-bearing, not an optimization. A method may use its
     // own type by value ('fn twin(self) Self'), so the size has to be available
-    // before step below runs. See design/Analysis.md section 10.1.
+    // before step below runs. See design/type-check-phase.md section 10.1.
     node->flags |= TypeChecked;
 
     // Type check all methods, etc.

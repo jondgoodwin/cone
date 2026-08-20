@@ -238,7 +238,7 @@ enum NodeTags {
 // what it has already established, which for a type is its identity but not yet
 // its size. TypeChecked means its type check finished -- for a nominal type that
 // is *laid out*, set before its methods are checked so that a method may use its
-// own type by value. See design/Analysis.md.
+// own type by value. See design/type-check-phase.md.
 #define TypeChecked        0x8000  // Type check of this declaration finished
 #define TypeChecking       0x4000  // This declaration's type check has begun
 
