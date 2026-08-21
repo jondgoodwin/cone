@@ -16,9 +16,13 @@
 // that means the container's permission governs, which is what makes the first
 // two assignments legal.
 //
-// What a field's permission should mean beyond this -- in particular the
-// viewpoint adaptation the manual describes and the compiler does not implement
-// -- is open, and workitems/Permissions carries it.
+// The second half of the file is the composition rule the manual calls
+// viewpoint adaptation: what governs is the container's permission and the
+// field's together, and either one saying no is enough. For the one thing a
+// permission decides today -- whether a write is allowed -- that is already
+// what the compiler does, and these are the cases that pin it. The rest of
+// adaptation is unimplemented because the flags it would combine are read
+// nowhere; workitems/Permissions carries what that leaves open.
 
 struct Reading {
   inferred i32
@@ -38,4 +42,21 @@ fn writes() {
 
   // 'imm' is the field saying no, whatever the container permits
   r.frozen = 7              //~ ErrorNoMut:4 "You do not have permission to modify lval"
+}
+
+// The container saying no, over a field that says yes
+fn throughValue() {
+  imm frozen = Reading[1, 2, 3]
+  frozen.written = 9        //~ ErrorNoMut "You do not have permission to modify lval"
+}
+
+fn throughRoRef(r &Reading) {
+  r.written = 9             //~ ErrorNoMut "You do not have permission to modify lval"
+}
+
+// ... and the pair that shows it is both and not either: through a mutable
+// reference the 'mut' field is writable and the 'imm' field is still not
+fn throughMutRef(r &mut Reading) {
+  r.written = 9
+  r.frozen = 8              //~ ErrorNoMut "You do not have permission to modify lval"
 }

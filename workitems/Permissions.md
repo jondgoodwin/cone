@@ -89,20 +89,41 @@ a declaration always being mutable; the only thing the annotation buys is
 knowing the value cannot change, and an editor could derive that from the code
 alone without the author having to decide up front and then change the decision.
 
-*Where that holds:* **locals**. Within one function body it is exactly
-computable and nothing outside the body depends on it.
+*This caveat stands about as written.* Claude argued against it for parameters
+and for fields and was wrong on both, for reasons worth keeping so the argument
+is not made again:
 
-*Where it does not:* **fields and parameters**, for two reasons. It is a
-contract rather than an inference — it constrains code the type's author never
-sees, and inference from local code cannot produce a promise. And `imm` is not
-only "does not change": it carries `RaceSafe` and `MayIntRefSum`, which `mut`
-does not. An immutable field is safely shareable across threads, which no editor
-can derive because it is a guarantee the author is making. Under a two-word
-vocabulary `imm` is the only way to say it, so it becomes load-bearing the
-moment [[Concurrency Threads]] lands rather than decorative. A lesser point: an
-inferred permission makes the declaration a consequence of its body, so a line
-changed deep in a function silently flips it — fine as an editor annotation,
-poor in a diff and poor in a signature.
+- **A parameter is a local.** It is stack-allocated on the call and gone on
+  return, and its declaration permission is not part of the signature: verified,
+  `fnSigMatches` compares `iexpGetTypeDcl` of each parameter and nothing else. So
+  a caller cannot observe whether the callee declared its own copy `mut`. What a
+  caller *can* observe is a reference parameter's permission — but that is the
+  permission on the reference *type*, parsed by `parsePerm` inside `parseType`,
+  not the declaration permission `parseDclPerm` handles. Confusing the two is
+  what made the argument look right.
+- **A field does not need to carry thread-safety.** Sharing is decided at the
+  reference that reaches the struct, not at the field, and a field cannot be
+  shared independently of its container: whatever permission you hold on the
+  whole is the ceiling on every part. So `imm` on a field only has to answer
+  "may I change this field's contents", which is exactly what `mut`/`imm` says
+  and all it has to say. The `RaceSafe` flag `imm` carries is about a *value's*
+  shareability and is not what a field's permission is for.
+- **The inert flags are not evidence of anything.** Four of the seven permission
+  flags — `MayAliasWrite`, `RaceSafe`, `MayIntRefSum`, `IsLockless` — are read
+  nowhere in the compiler. That is not a finding about the design; it is that
+  the concurrency half is not built yet. The one thing it does explain is that
+  `imm` and `ro` are behaviourally identical today, differing only in
+  `RaceSafe|MayIntRefSum`, which is why dropping `ro` from declarations cost
+  nothing.
+
+*What survives, on a different argument than the one that failed.* A local's and
+a parameter's mutability is derivable from one function body, which is what makes
+the editor-annotation framing work for them. **A field's is not derivable from
+anything**: a field has no body, so the equivalent inference is "is this ever
+assigned anywhere in the program", which is whole-program and does not survive
+separate compilation. So of the three, the field is the one whose annotation
+encodes intent no analysis can recover — modestly, since the alternative is
+simply "all fields mutable", which is safe.
 
 **3. A global needs a third answer this vocabulary cannot give.** A mutable
 global is shared mutable state by definition, so `mut` on one is sound only
@@ -115,11 +136,18 @@ globals in a way it is not for the other three**, and this note is what says so.
 
 ### What is still undecided beneath all of it
 
-**Viewpoint adaptation.** `coneref/refstruct.html` says the governing permission
-is "derived from both the field's and the struct's permissions using a mechanism
-called viewpoint adaptation". The word appears nowhere in `src/` or `design/`:
-it is documented and unimplemented. The decision above is compatible with adding
-it, because `mut` on a field already *means* "the container governs" and is
-where adaptation would attach — but until it exists, a field's permission does
-one thing, which is to refuse a write.
+**Viewpoint adaptation — the write half is already there.** `refstruct.html` says
+the governing permission is "derived from both the field's and the struct's
+permissions using a mechanism called viewpoint adaptation". The word appears
+nowhere in `src/` or `design/`, which made it look unimplemented. It is not:
+`iexpGetLvalInfo` takes the container's permission and then downgrades on the
+field's, which is the minimum of the two, and it holds in both directions — a
+`mut` field is not writable through an `imm` value or a `&` reference, and an
+`imm` field is not writable through a `&mut` one. `struct-flow-fieldperm` pins
+all four cases.
+
+So for the one thing a permission decides today, adaptation is done. What is
+unimplemented is adaptation over the flags that decide sharing and aliasing, and
+those are unimplemented because the flags themselves are read nowhere. That is
+the same gap as [[Concurrency Threads]] rather than a separate one.
 
