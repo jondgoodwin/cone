@@ -109,6 +109,18 @@ Because the retag happens here, the four constructor tags have **no arms in
 
 ## Type check
 
+**A reference type must name what it refers to.** `refTypeCheck` and
+`arrayRefTypeCheck` each compare `vtexp` against `unknownType` **by pointer** —
+`errorType` shares the tag and means "already reported" — then raise
+`ErrorNoRefType` and assign `errorType` so nothing downstream reports it again.
+`parseAmper` leaves `vtexp` unknown on purpose, because a reference in a
+parameter position may have its pointee inferred, and `parseFnSig` is the only
+thing that ever fills one in. Every other spelling — `fn f(s &)`, `&&`, `*&`,
+`&[]`, `(&, i32)`, a non-`self` parameter inside a method — used to reach
+`genlType` still unknown and hand `LLVMPointerType` a NULL element type. Every
+enclosing type reaches these two guards through `itypeTypeCheck` on its own
+pointee, which is what makes two checks cover all of them.
+
 ### `borrowTypeCheck`
 
 In order: re-associate `&v[i]` into `(&v)[i]` when the operand is an index, so a
@@ -214,16 +226,9 @@ paths call libc `free`.
 
 ## Hazards
 
-- **`refHash` and `arrayRefHash` hash `vtype`, which is permanently
-  `unknownType` on a type node.** Every `RefTag` hashes to a function of tag and
-  region alone. Correctness survives via linear probing; the table degenerates.
-
-- **`arrayRefTypeCheck` never calls `refAdoptInfections`**, so a slice type
-  written in source has different move semantics from the identical type built
-  by an allocation. Same work item.
-- **`ThreadBound` infection is unreachable** — it compares `perm` by pointer
-  identity while the adjacent `MoveType` test unwraps through `permGetFlags`.
-  Same work item.
+- **Nothing consumes `ThreadBound`.** `refAdoptInfections` sets it, and struct
+  and array types propagate it up from their fields and elements, but no check
+  anywhere reads it. The infection is computed and inert.
 - **A borrowed reference's inferred type has `typeinfo == NULL`.** The borrow
   path and the allocate path have different invariants for the same field.
   Anything reading `typeinfo` off an arbitrary reference type crashes on borrows

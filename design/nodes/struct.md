@@ -10,7 +10,8 @@ fields, computes infectious flags, sets `TypeChecked` **before** methods, then
 synthesizes a drop function. Generation lowers to a named LLVM struct, or to
 padded variants, or to nothing at all.
 
-*Provenance: read from source; the two crashes in Hazards were measured.*
+*Provenance: read from source; the two crashes this note used to list in Hazards
+were measured, then fixed.*
 
 ## Shape
 
@@ -20,7 +21,7 @@ padded variants, or to nothing at all.
 | `namespace` | every named member: fields, methods, overload sets, and `Self` |
 | `dropfn` | NULL until the last step of type check |
 | `mod` | owning module. Read in one place: rejecting a variant declared outside its closed trait's module |
-| `basetrait` | the `extends` **type expression** — a `NameUseNode`, or an `FnCallNode` for a generic base. **Not a `StructNode*`**; use `structGetBaseTrait` |
+| `basetrait` | the `extends` **type expression** — a `NameUseNode`, or an `FnCallNode` for a generic base. **Not a `StructNode*`.** Two helpers unwrap it and they answer different questions: `structBaseTraitDcl` takes **one hop**, to the declaration of the trait this type extends, while `structGetBaseTrait` recurses to the **bottom-most** one. Picking the wrong one is what used to hang the infection loop |
 | `derived` | for a **closed** trait, its variants in declaration order. The index *is* the `tagnbr` |
 | `fields` | all fields in layout order |
 | `vtable` | NULL until `structMakeVtable` |
@@ -69,10 +70,10 @@ generation.
 
 `structNameRes`, in a strict order that matters:
 
-1. Resolve generic parameters — **before** any hook is pushed. (This is where
-   the generic parameter leak comes from — see Hazards in
-   [generic](generic.md).)
-2. Push the hook table, hook the generic parameter names.
+1. Push the hook table.
+2. Resolve generic parameters **inside** the push — resolving one hooks it, so
+   doing it beforehand would bind it in the enclosing scope and the matching pop
+   would never remove it.
 3. **Resolve `basetrait` now**, before the type's own namespace is hooked — the
    comment says "before any other name in type is hooked", and the reason is
    scoping: once step 5 hooks the members, they shadow module scope, and the
@@ -99,7 +100,7 @@ generation.
 4. **Walk forwards**: assign `FieldDclNode.index` over the final order, OR the
    field types' infectious flags together, and identify the tag field.
 5. `final` forces `MoveType`; `clone` clears it. Then propagate up the base
-   chain — **this loop hangs, see Hazards.**
+   chain, one `structBaseTraitDcl` hop per iteration.
 6. **`TypeChecked` is set here, before the methods.** The placement is
    load-bearing, not an optimization: fields are indexed, size is known, and the
    method set is complete, so a method may use its own type by value —
@@ -161,19 +162,9 @@ order — `genlallocref` hard-codes `derived[1]` as `Option`'s `Some`.
 
 ## Hazards
 
-- **The infection loop never terminates.** `trait = (StructNode *)node->basetrait`
-  re-reads `node`, so any type with a base trait that acquires `MoveType` or
-  `ThreadBound` **hangs the compiler**. A union variant holding an owning
-  reference is enough; so is an `extends` struct with a `final` method. Measured.
-  The same line also casts a
-  `NameUseNode` to `StructNode*`, so even fixed it would infect the wrong node.
-- **A virtual reference to a plain struct segfaults.** `refvirtTypeCheck` calls
-  `structMakeVtable` for any `StructTag`, and that walks `derived`, which only a
-  trait has. Measured. Whether `&<Struct` should work at all, rather than be
-  refused, is a language question the crash does not answer.
-- **`structTypeCheck` has early returns that leak `pstate->typenode`** and, on
-  the mixin paths, a hook-table level. Only reachable after a diagnostic, but it
-  corrupts everything checked afterwards.
+- **Whether `&<Struct` should work at all**, rather than be refused, is an open
+  language question. `refvirtTypeCheck` requires a `TraitType` today, so the
+  answer in force is "refused".
 - **A method of a type never gets that type's drop calls** — `structSetDropFn`
   runs after the method loop, so `dropfn` is still NULL while method bodies are
   checked and flow-analyzed.

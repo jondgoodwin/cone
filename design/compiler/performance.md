@@ -64,10 +64,10 @@ no scope chain to walk. See [Name Resolution](../phases/name-resolution.md).
 permissions are erased at runtime, `&mut i32`, `&ro i32` and `&uni i32` collapse
 to **one** entry sharing one LLVM type and one allocation-header struct.
 
-> One defect worth knowing about while reading this: `refHash` hashes a field
-> that is always `unknownType` on a reference type node, so every `RefTag`
-> lands in one bucket and the table degenerates toward a linear scan. Correct
-> but slow — the probing still finds the right entry.
+`refHash` and `arrayRefHash` hash `vtexp`, the type pointed at, which is the
+field `refIsSame` compares — so the table spreads. They used to hash `vtype`,
+permanently `unknownType` on a reference type node, and every `RefTag` landed in
+one bucket; linear probing kept the lookup correct and turned it into a scan.
 
 ## Memoization
 

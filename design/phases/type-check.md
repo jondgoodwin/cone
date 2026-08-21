@@ -392,6 +392,7 @@ elsewhere, whichever walk arrived at it.
 
 | Code | Raised when |
 | --- | --- |
+| `ErrorNoRefType` (1074) | a reference or slice type never says what it refers to — `refTypeCheck` and `arrayRefTypeCheck` are its only two sites |
 | `ErrorNoSize` (1069) | a value's type cannot say how large it is — five causes, named in the message |
 | `ErrorCircular` (1068) | a constant or inferred declaration is defined in terms of itself |
 | `ErrorInstDepth` (1067) | generic or macro expansion nests past `TypeCheckLoopMax` |
