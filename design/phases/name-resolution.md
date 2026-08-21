@@ -163,8 +163,9 @@ next pass a null to trip over.
 
 - **The pass is not idempotent, and cannot be.** `inodeNameRes` has no arm for
   `DerefTag`, `PtrTag`, `BorrowTag`, `AllocateTag`, `ArrayLitTag`, `VTupleTag`
-  or `TTupleTag` — **all of which it produces**. A second walk falls into
-  `default: assert(0)`, which is a no-op under `NDEBUG`.
+  or `TTupleTag` — **all of which it produces**. A second walk falls into the
+  `default:` arm, which now reports `ErrorUnreachable` and stops. It used to be
+  `assert(0)`, a no-op under `NDEBUG`, so a second walk passed in silence.
 - **`blockContinueStep` is the one re-entry.** After the statement loop,
   `blockNameRes` clones an `each` loop's trailing step ahead of a `continue` and
   re-runs `inodeNameRes` on the copy. It works because resolved `NameUseNode`s

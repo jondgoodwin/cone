@@ -253,8 +253,11 @@ the built-in permissions are zero-sized. See [Generation](generation.md),
 - **`flowScopeDealias` reads `vtype` raw**, without `itypeGetTypeDcl`, while
   `flowInjectAliasAmt` resolves it. A variable declared through a typedef alias
   to an owning reference is likely missed.
-- **`flowLoadValue`'s `default: assert(0)` is a no-op under `NDEBUG`**, so an
-  unhandled tag in a release compiler falls through silently.
+- **`flowLoadValue`'s `default:` arm now reports and stops.** It used to be
+  `assert(0)`, a no-op under `NDEBUG`, so an unhandled tag in a release compiler
+  was skipped silently — meaning no move check, no alias injection and no
+  initialization check for that value. It now calls `errorUnreachable`. Whether
+  any tag reaches it is unestablished.
 
 ## 9. Code pointer map
 

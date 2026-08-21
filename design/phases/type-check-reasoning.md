@@ -214,8 +214,9 @@ Three syntaxes, all `CastNode`:
 | `x is T` | `newIsNode` | is this the runtime type? |
 
 **Reinterpret requires identical bit size** (`castBitsize`), except to a struct,
-which is unchecked. **Convert** permits number to number, ref/ptr to ref/ptr,
-virtual reference to reference, `SameSize` struct to struct, and anything
+which is unchecked. **Convert** permits number to number, reference or pointer
+to pointer, reference to reference, virtual reference to reference, `SameSize`
+struct to struct, and anything
 `castConvertsToBool` allows to `Bool`. A ref-to-ref conversion drops
 `FlagConvert` on the spot — it is a bitcast after all. Everything else is
 `ErrorInvType`. A slice deliberately does not convert to an integer: length and

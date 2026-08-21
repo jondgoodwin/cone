@@ -431,9 +431,10 @@ Kept so that reopening one is a decision rather than a rediscovery.
   before claiming a bit, not just the type block. A collision has no
   diagnostic: `0x0040` overlapping `HasTagField` stops type checking every
   tagged union and reports nothing.
-- **`assert(0)` is a no-op** in the release build: those sites compile to nothing
-  under `/DNDEBUG` and fall through into the next switch case. What should
-  replace them is undecided — the mechanism, not whether.
+- **An ordinary `assert` is a no-op** in the release build: it compiles to
+  nothing under `/DNDEBUG`. The sites that meant *unreachable* no longer are
+  asserts — they call `errorUnreachable`, which reports `ErrorUnreachable` and
+  exits. Do not write a new `assert(0)` expecting it to catch anything shipped.
 - **A node built during analysis takes the lexer's position**, which by then is
   the end of the file. `newNode` reads `lex->tokp`, so an injected node points at
   nothing unless `inodeLexCopy` is called on it.

@@ -55,8 +55,10 @@ looking for "what does type check do to a borrow" knows the answer is
 
 The full list of dispatchers a new tag must be added to is in
 [IR Nodes](../nodes/_index.md), "Adding a node tag" — and the reason that list
-is worth having is that **a missing arm is silent**: the `default:` arms are
-`assert(0)`, which `NDEBUG` compiles out.
+is worth having is that **a missing arm no longer passes silently**: the
+`default:` arms call `errorUnreachable`, which reports and stops. They used to
+be `assert(0)`, which `NDEBUG` compiled out of the Release build, so a missing
+arm meant the node fell into whatever followed.
 
 ## Walk state
 

@@ -43,6 +43,9 @@ than the tidy-up it was filed as:
   tag, so `&t.0` never matched — and with the assert behind it compiled out of a
   Release build, control fell into the string-literal case and read the field
   access as an `SLitNode`. That is a segfault on one line of ordinary source.
+  The general form of that failure mode is closed: [[Compiler]] audited all 22
+  remaining `assert(0)` sites, converted every one to `errorUnreachable`, and
+  fixed the three a source actually reaches.
 - `genlConvert`'s surviving struct conversion used a mid-block `LLVMBuildAlloca`.
   Inside a loop that is a frame slot per iteration and `mem2reg` does not promote
   it, so `x into <struct>` in a long loop overflowed the stack.

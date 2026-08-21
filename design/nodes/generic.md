@@ -148,6 +148,13 @@ return type is not mangled. A generic *type*'s methods recover their arguments
 from `self`'s type through `itypeMangleNamed`, which is why
 `fn tally(self) i64` does not collide across instances.
 
+`itypeMangle` writes a named type through `itypeMangleNamed`, and the structural
+types under their own punctuation: `&`/`+`/`<` for the three reference kinds,
+`*` for a pointer, `(a,b)` for a tuple, `[n;elem]` for an array, `f(parms)ret`
+for a signature, `v` for void. The last four were added after a generic
+instantiated at a tuple, an array, a function reference or void was found to
+mangle to **nothing**, so every such instance of one generic shared a name.
+
 ## Hazards
 
 - **A generic parameter leaks into the enclosing module.** All three `*NameRes`
@@ -164,7 +171,7 @@ from `self`'s type through `itypeMangleNamed`, which is why
 - **A clone must clear the type check marks**, or the instance silently skips
   its own check. Only four clone functions do; every other copies `flags`
   verbatim. A new declaration-bearing node kind inherits the bug.
-- **Two instances can collide on one symbol.** Measured: `fn tag[T](a i32) i32`
+- **Two instances can still collide on one symbol.** Measured: `fn tag[T](a i32) i32`
   instantiated at `i32` and `f32` emits `@"tag:i32"` and `@"tag:i32.1"` —
   because `T` appears in no parameter, both mangle identically and LLVM
   disambiguates *within the module only*. Under `linkonce`, across object files

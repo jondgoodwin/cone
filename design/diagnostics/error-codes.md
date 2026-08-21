@@ -31,7 +31,9 @@ analysis gate and the two `fnDclTypeCheck` early returns all compare `errors`.
 
 Exit codes are their own thing and they abort immediately rather than being
 counted: `ExitError` (1), `ExitNF` (2, source file not found), `ExitOpts` (4),
-`ExitIndent` (5, past 1024 nested blocks), `ExitGen` (6).
+`ExitIndent` (5, past 1024 nested blocks), `ExitGen` (6). `ExitGen` covers
+both unrecoverable internal failures: code generation that could not proceed,
+and a compiler invariant that did not hold.
 
 ## Reporting
 
@@ -41,6 +43,7 @@ counted: `ExitError` (1), `ExitNF` (2, source file not found), `ExitOpts` (4),
 | `errorMsgNode` | a node's stored position, **plus the instantiation trace** | every phase after parsing |
 | `errorMsg` | nothing | when there is no position to give, which should be rare |
 | `errorExit` | prints and exits | only where continuing is impossible |
+| `errorUnreachable` | a node's position, then exits `ExitGen` | a state the compiler had ruled out — never a bad program |
 
 **`errorMsgNode` walks `instnode`** to print "as instantiated by…" outward from
 the reported node, capped at `ErrorInstTraceMax` (4). Ordinary code nests one or
@@ -88,6 +91,26 @@ told apart by message substring. It now means only what it says, and
 rest. The tell was the scenarios: when a code needs a substring to be useful,
 the substring is doing the code's job.
 
+## The one code with no scenario
+
+`ErrorUnreachable` is reported by `errorUnreachable` and by nothing else. It
+means the compiler reached a state it had established cannot happen: not a bad
+program, a compiler defect. A source that provoked it would be a bug report
+rather than a test case, so it is the one code that lands without a scenario —
+deliberately, not by oversight.
+
+Everything about it follows from that. It goes through `errorMsgNode` so a
+report carries a source position **and the instantiation trace**, which for a
+defect that only appears inside a generic expansion is the only actionable part.
+It then exits `ExitGen` — the compiler has just established that its own
+invariants do not hold, so anything further it emitted would be guesswork. A
+separate exit code was considered and rejected: it would enlarge the `driver`
+category's contract for a status nothing can produce.
+
+**Never call it for a condition a source can reach.** That is a missing
+diagnostic, and it gets a code and a message of its own, upstream where the rule
+lives.
+
 ## Suppressing a cascade
 
 One mistake should produce one diagnostic. Two mechanisms:
@@ -107,11 +130,11 @@ complaint from every enclosing node.
 
 ## Hazards
 
-- **`assert(0 && "...")` is a no-op in the release build.** `NDEBUG` compiles
-  those sites to nothing and control falls through into the next switch case.
-  There are two dozen of them; several are reachable from bad *source* rather
-  than from a compiler defect, so they want auditing rather than mechanical
-  conversion. Do not add a new one expecting it to catch anything shipped.
+- **An `assert` is a no-op in the release build.** `NDEBUG` compiles it to
+  nothing, and the release build is the only one the test runner uses, so an
+  `assert` has never caught anything in a tested configuration. Do not add one
+  expecting it to. The twenty-two sites that meant *unreachable* have been
+  converted to `errorUnreachable`; the ordinary value asserts have not.
 - **Reusing a code makes a scenario unable to tell two conditions apart.** If
   you find yourself picking an existing code because the new condition is
   "close enough", that is the smell.
