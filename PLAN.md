@@ -1,4 +1,6 @@
-# Cone - Next Steps (as of June 1, 2022)
+# Cone - Next Steps (as of August-September 2026)
+
+After four dormant years the project is active again.
 
 ## Current Capability
 
@@ -19,18 +21,23 @@ There are several ways to find out what it does, and does not, support:
 
 ## Current Focus: Modules, Packages and Libraries
 
-The language is becoming progressively more solid. As more features come online, bugs get squashed, and 
-the design improves for versatility and ease-of-use, it becomes attractive to write larger 
-and more interesting programs. As these programs grow bigger, so grows the need for packaging reusable
-module and type functionality into libraries.
+Everything the language needs next sits behind one gate. `Option` and `Result` live
+inside the compiler as source compiled into it, and so do the `so` and `rc` regions.
+Nothing about them changes, and nothing joins them, without rebuilding `conec`.
+A core library is a package, so packages come first.
 
-To make this easier:
+What that delivers:
 
-- For imported modules, do not generate implementation values/code, but still generate public names
-- Improve name mangling for modules, types, generic and overloaded functions
-- Improve the congo build tool to build the standard and other libraries, and then link them in to executable programs
-- Implement full name folding behavior for modules, including special-case handling for core library and single-type modules
-- Add some module capabilities to types (e.g., include, macro methods, typedef, subtypes)
+- **Programs that span source files.** A program spanning modules cannot be linked today.
+- **Libraries built once and linked into many programs**, with congo building them,
+  publishing their interface, and consuming them.
+- **A core library that grows on its own schedule** — `Option`, `Result`, error handling,
+  collections — with no compiler release in the way.
+- **Memory strategies written in Cone.** Arenas, pools and tracing collectors need a package
+  to live in and global state to hold. Single-owner and reference counting are the only
+  regions today because they are the only two the compiler implements itself.
+- **Namespaces that hold up in a large program** — modules nested inside a package,
+  imports that state what they bring in, names folded or renamed where they collide.
 
 ## Feature Status
 
