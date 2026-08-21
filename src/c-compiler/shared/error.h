@@ -122,6 +122,13 @@ enum ErrorCode {
     // Layout
     ErrorNoSize = 1069,         // A value whose type cannot report a size
 
+    // Argument lists, split out of ErrorManyArgs, which now means only that a
+    // call passed more arguments than the declaration accepts
+    ErrorArgCount = 1070,       // An instantiation's argument count is not its parameter count
+    ErrorNotType = 1071,        // A generic argument that must be a type is not one
+    ErrorNoArgs = 1072,         // A generic or macro with parameters was named without arguments
+    ErrorFldArgs = 1073,        // Arguments given to a field access, which accepts none
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

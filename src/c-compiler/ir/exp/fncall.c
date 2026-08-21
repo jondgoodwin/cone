@@ -370,7 +370,7 @@ int fnCallLowerMethod(FnCallNode *callnode) {
     // Handle when methfld refers to a field
     if (foundnode->tag == FieldDclTag) {
         if (callnode->args != NULL)
-            errorMsgNode((INode*)callnode, ErrorManyArgs, "May not provide arguments for a field access");
+            errorMsgNode((INode*)callnode, ErrorFldArgs, "May not provide arguments for a field access");
 
         derefInject(&callnode->objfn);  // automatically deref any reference/ptr, if needed
         methfld->tag = MbrNameUseTag;
