@@ -269,7 +269,12 @@ int flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp) {
                     *varlist = newNodes(4);
                 nodesAdd(varlist, (INode*)avar->node);
             }
-            else
+            // 'doalias' answers only for a lone returned name, because it gates
+            // flowLoadValue over the whole return expression. A tuple's elements
+            // are exempted from release one by one above, but each still needs
+            // the move and initialization check flowLoadValue makes -- and the
+            // elements that are not names need the rest of what it does.
+            else if (retexp->tag == VarNameUseTag)
                 doalias = 0;
         }
         else {
