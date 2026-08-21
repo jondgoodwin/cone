@@ -78,6 +78,17 @@ rather than here:
   a line reading `a`, an invalid lead byte, and `a` is lexed as one identifier
   spanning the newline.
 
+**One entry closed by a decision rather than by a fix.** `parseFieldDcl` rejected
+the wrong permission — its check reduced to `== immPerm`, so it refused the one
+permission that is legal and admitted four that are not — and the repair waited
+on [[Permissions]] saying which permissions a field may carry. That answer
+landed: `mut` or `imm`, on a field exactly as on a variable, with a field
+defaulting to `mut` and a variable to `imm`. `parseDclPerm` now states the rule
+once for both, which also applied the `defperm` that `parseFieldDcl` had always
+ignored and retired `ro` on a variable along with the `ParseMayConst` flag that
+existed only to allow it. The caveats Jon attached to that decision are in
+[[Permissions]], not here.
+
 **Two fixes are not assertable by the runner**, which is a gap in the runner
 rather than in them. `--ir` naming its dump after the source compiled, and the
 debug file name being the real source path, both produce a *filename* or *debug
@@ -89,30 +100,6 @@ artifact names or a `--debug` knob would close it. Carried by
 ---
 
 # Still open
-
-## `parseFieldDcl` rejects the wrong permission
-
-**Measured.** `struct A { imm x i32 }` is `Error 1013`; `uni` and `opaq` fields
-compile clean.
-
-```c
-if (permdcl != (INode*)mutPerm && permdcl == (INode*)immPerm)
-```
-
-`immPerm` is never `mutPerm`, so this reduces to `== immPerm` — it rejects
-exactly `imm` and admits everything else. Almost certainly `!=` was meant in the
-second clause. `parseFieldDcl` also takes a `defperm` argument that its body
-never reads.
-
-**Fix waits on [[Permissions]]** to say which permissions are legal on a field —
-flipping the condition inverts which one is rejected, so the mechanical fix
-needs that answer first. Listed here because the *defect* is not in doubt.
-
-The neighbouring half of this is now fixed, which raises the stakes: a `ro` field
-used to be writable because `iexpGetLvalInfo` compared node pointers, and it now
-asks the permission whether it may write. So a field's permission is read for
-something real, and what it should *mean* is a question [[Permissions]] owes an
-answer to rather than a note.
 
 ## `.len` on a fixed-size array is rejected
 

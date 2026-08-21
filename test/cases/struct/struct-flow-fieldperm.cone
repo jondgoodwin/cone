@@ -1,0 +1,41 @@
+// What a field's permission governs: whether the field may be written.
+//
+// Flow stage. ErrorNoMut on an assignment is a data-flow diagnostic rather than
+// a type-check one, despite reading like one -- core-flow-gate is where that is
+// pinned.
+//
+// The permission was write-only state until recently. The one place that read
+// it compared node pointers against the raw 'imm' singleton, and a permission
+// written in source is a name use wrapping that singleton, so it never matched
+// and an 'imm' field was writable. It asks the permission whether it may write
+// now.
+//
+// A field's permission may be 'mut' or 'imm' and nothing else -- struct-parse
+// holds the four that are refused. The two written out here are contrasted with
+// one that writes none, which defaults to 'mut': per coneref/refstruct.html
+// that means the container's permission governs, which is what makes the first
+// two assignments legal.
+//
+// What a field's permission should mean beyond this -- in particular the
+// viewpoint adaptation the manual describes and the compiler does not implement
+// -- is open, and workitems/Permissions carries it.
+
+struct Reading {
+  inferred i32
+  mut written i32
+  imm frozen i32
+}
+
+fn writes() {
+  mut r = Reading[1, 2, 3]
+
+  // A field with no permission written defaults to 'mut', so the container's
+  // permission is what governs, and this container is mutable
+  r.inferred = 9
+
+  // The same, said out loud
+  r.written = 8
+
+  // 'imm' is the field saying no, whatever the container permits
+  r.frozen = 7              //~ ErrorNoMut:4 "You do not have permission to modify lval"
+}

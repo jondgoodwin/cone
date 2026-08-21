@@ -118,7 +118,7 @@ void parseFnOrVar(ParseState *parse, uint16_t flags) {
 
     // A global variable declaration, if it begins with a permission
     else if lexIsToken(PermToken) {
-        VarDclNode *node = parseVarDcl(parse, immPerm, ParseMayConst | ((flags&FlagExtern) ? ParseMaySig : ParseMayImpl | ParseMaySig));
+        VarDclNode *node = parseVarDcl(parse, immPerm, (flags&FlagExtern) ? ParseMaySig : ParseMayImpl | ParseMaySig);
         node->flags |= flags;
         node->flowtempflags |= VarInitialized;   // Globals always hold a valid value
         parseEndOfStatement();

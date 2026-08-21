@@ -26,7 +26,6 @@ enum ParseFlags {
     ParseMaySig  = 0x2000,        // The variable may be signature only
     ParseMayImpl = 0x1000,        // The variable may implement a code block
     ParseEmbedded = 0x0800,       // Is embedded in expression (no semi)
-    ParseMayConst = 0x0400        // const allowed for variable declaration
 };
 
 // parsemod.c
@@ -58,6 +57,9 @@ INode *parsePrefix(ParseState *parse);
 
 // parsetype.c
 INode *parsePerm();
+
+// Parse the permission a declaration carries, defaulting to 'defperm'
+INode *parseDclPerm(PermNode *defperm);
 VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags);
 ConstDclNode *parseConstDcl(ParseState *parse);
 INode *parseFnSig(ParseState *parse);
