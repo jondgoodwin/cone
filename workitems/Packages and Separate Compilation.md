@@ -264,15 +264,10 @@ this compile defines a name or only declares it — and a cross-package origin f
 symbol naming. Leave room for those even though the struct work will not fill
 them.
 
-`FnOverloadDclNode` is already a proto-binding — a namespace entry that is not a
-declaration, holding a name and what it refers to. Generalize from it rather
-than inventing beside it.
-
-**[[Namedef Refactor]]'s scope is under review**, so "land its stages 1–5 first"
-is not the plan. Re-derive the record from what folding, visibility and
-delegated inheritance actually require, and keep the separable refactors it
-bundles — tag-group classification, the name-use tag merge, migrating
-declaration data onto the binding — as their own decisions.
+The record is a `NameAliasNode` rather than a universal binding: declarations
+keep their representation, and only the entries that bind something declared
+elsewhere become nodes of their own. [[Namedef Refactor]] carries the shape, the
+capability predicates it depends on, and the staging.
 
 ---
 

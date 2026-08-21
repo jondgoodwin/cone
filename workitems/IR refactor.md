@@ -1,6 +1,6 @@
 
-1. Create namedef node (name, type/constraint, value, generic?, owner?) and convert compliant nodes accordingly
-	1. Switch exp/type detection algorithm to not use nodetype as signal, thereby fixing nameuse variants etc.
+1. Add a name alias node, binding a name to something declared elsewhere with its own spelling and visibility. Declarations keep their representation.
+	1. Switch exp/type detection to answer from a node's characteristics, following the chain from name use through alias to declaration, rather than from the tag's group bits. That is what removes the nameuse variants.
 	2. See [[Namedef Refactor]]
 2. Create genericdef node (genname, parmdefs, body)
 	1. Handle genname correctly regardless of name aliasing and cross-module references and "ownership"
