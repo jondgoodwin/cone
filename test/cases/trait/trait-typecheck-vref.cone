@@ -74,10 +74,19 @@ fn misuse() {
   // that is what the diagnostic names as the remedy.
   mut bare Shape   //~ ErrorNoSize:7 "implementations may differ in size"
 
-  // A virtual reference's target must be a struct or trait; a number has no
-  // vtable to build
-  imm toNumber &<i32 = &r   //~ ErrorInvType:16 "must be to a struct or trait"
+  // A virtual reference's target must be a trait; a number has no vtable to build
+  imm toNumber &<i32 = &r   //~ ErrorInvType:16 "must be to a trait"
                             //~^ ErrorInvType:24 "does not match variable's declared type" follow-on
+
+  // A plain struct is refused for the same reason, and this is the spelling that
+  // used to crash rather than say so. Writing '&<Rect' directly was caught in
+  // name resolution; coercing a plain reference into one reached
+  // structMakeVtable, which ends by walking the list of derived types that only
+  // a trait allocates, and read a NULL one. Whether a virtual reference to a
+  // struct should instead work is a language question, and
+  // workitems/Types. Struct and Union carries it.
+  imm toStruct &<Rect = &r   //~ ErrorInvType:16 "must be to a trait"
+                             //~^ ErrorInvType:25 "does not match variable's declared type" follow-on
 
   // Blob satisfies nothing Shape requires, so no vtable can be built for it and
   // the reference does not coerce

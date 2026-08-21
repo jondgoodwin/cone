@@ -1,0 +1,37 @@
+// What a 'break' or a 'continue' releases: every scope it leaves, not only the
+// one it stands in.
+//
+// Both functions here are about the de-alias list flow analysis attaches to the
+// jump, and both were empty where they should not have been:
+//
+// - 'continue' carries no value, and the parameter that says what is being
+//   returned was doing two jobs. NULL meant "nothing is returned", and it was
+//   also read as "release nothing", so a continue emitted no release at all
+//   while the identical break emitted one.
+// - A jump releases from where it stands down to the block it names. Only
+//   'return' passed the whole function; a break or continue passed the block it
+//   was written in, so every scope between the jump and its target leaked.
+//
+// This is a 'compile' rather than a 'run' for the reason region-fill-count is:
+// too few releases frees nothing and leaks, too many frees what the caller
+// still holds, and stdout shows neither. The generated IR is where the number
+// is, and the checks in cases.toml read it there.
+
+fn continueReleases() {
+  while true {
+    if true {
+      imm counted = +rc-mut 3i32
+      continue
+    }
+  }
+}
+
+fn breakReleasesEveryScope() {
+  while true {
+    imm outer = +rc-mut 1i32
+    if true {
+      imm inner = +rc-mut 2i32
+      break
+    }
+  }
+}

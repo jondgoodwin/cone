@@ -129,6 +129,42 @@ fn intoForm() {
   }
 }
 
+// -------- converting into a struct, repeatedly --------
+
+// A conversion whose target is a struct cannot be a bitcast -- LLVM does not
+// bitcast an aggregate -- so it is done by storing into stack space and loading
+// it back under the other type. That space was allocated where the conversion
+// stands, which inside a loop is a fresh frame slot every iteration that
+// mem2reg cannot promote away. The loop below overflowed the stack; it is long
+// enough to do so at the 1MB Windows default and short enough to be free.
+//
+// It reads the union's shared field back so the conversion is not dead, and
+// 'union' owns the union itself -- what is claimed here is only that the
+// conversion happens on the stack the function already has.
+union Extense {
+  fld i32
+
+  struct Variant1 {
+    nbr i32
+  }
+
+  struct Variant2 {
+    x i32
+    y i32
+  }
+}
+
+fn intoStructInLoop() {
+  mut e Extense = Variant2[20, 3, 4]
+  mut i = 0
+  while i < 400000 {
+    mut one = Variant1[10, i]
+    e = one into Extense
+    i = i + 1
+  }
+  show("into-struct-in-loop", e.fld)
+}
+
 // -------- converting a reference or a pointer to Bool --------
 
 fn referenceToBool() {
@@ -332,6 +368,7 @@ fn typedefs() {
 fn main() i32 {
   conversions()
   intoForm()
+  intoStructInLoop()
   referenceToBool()
   reinterpretation()
   coercions()
