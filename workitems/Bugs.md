@@ -52,6 +52,18 @@ than the tidy-up it was filed as:
   end-of-file check, so the rest of the main file was discarded in silence — no
   diagnostic, exit 0, an object emitted from half the source.
 
+**One defect this pass found rather than inherited**, and fixed: a reference
+type with no pointee — `fn f(s &)`, `&&`, `(&, i32)`, `*&`, `&[]`, `&[]&[]`, a
+parameter after one of them, and a non-`self` parameter inside a method — parsed
+cleanly and reached `genlType`, whose `Invalid vtype to generate` assert is
+compiled out of a Release build and returns NULL. `LLVMPointerType` then
+dereferenced it: access violation, no diagnostic, no exit code. `parseAmper`
+accepts the spelling on purpose so a method can write `self &`, and `parseFnSig`
+— which is the only thing that fills one in — fills in `Self` and inspects the
+outer node's tag only. `refTypeCheck` and `arrayRefTypeCheck` now report
+`ErrorNoRefType`, which covers all eight because every enclosing type reaches
+them through `itypeTypeCheck` on its own pointee.
+
 **Two things this pass surfaced and did not repair**, recorded where they belong
 rather than here:
 
