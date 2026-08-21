@@ -46,6 +46,9 @@ RefNode *newRefNodeFull(uint16_t tag, INode *lexnode, INode *region, INode *perm
 // Set the inferred value type of a reference
 void refSetPermVtype(RefNode *refnode, INode *perm, INode *vtype);
 
+// Set type infection flags based on the reference's type parameters
+void refAdoptInfections(RefNode *refnode);
+
 // Create a new ArrayDerefNode from an ArrayRefNode
 RefNode *newArrayDerefNodeFrom(RefNode *refnode);
 
