@@ -9,8 +9,8 @@ Type check **never checks a template** — only clones. `genericSubstitute` from
 call either memo-hits an existing instance or clones a new one. Flow and
 generation see only instances, reachable **only** through `memonodes`.
 
-*Provenance: read from source; the parameter-leak escalation and the symbol
-collision were measured.*
+*Provenance: read from source; the symbol collision was measured. The
+parameter-leak escalation this note used to list was measured, then fixed.*
 
 ## Shape
 
@@ -62,7 +62,10 @@ their own `memonodes`.
 
 **There is no `genericNameRes`**, because there is no generic node. A generic
 function is resolved by `fnDclNameRes`, a generic type by `structNameRes` — the
-same functions that handle non-generic ones, with a `genericinfo` prologue.
+same functions that handle non-generic ones, with a `genericinfo` prologue. That
+prologue pushes the hook table *first* and resolves the parameters inside it,
+because resolving one hooks it: done beforehand, the parameter would bind in the
+enclosing scope and the matching pop would never remove it.
 
 Two consequences that define the phase boundary:
 
@@ -157,13 +160,6 @@ mangle to **nothing**, so every such instance of one generic shared a name.
 
 ## Hazards
 
-- **A generic parameter leaks into the enclosing module.** All three `*NameRes`
-  sites resolve `parms` *before* `nametblHookPush`, and `gVarDclNameRes` hooks
-  unconditionally. Measured, with three severities: a valid program rejected
-  (the leak shadows a real module type, forward only); an invalid one silently
-  accepted (a template is never checked); and a **hard compiler abort** on
-  instantiation — `Internal error: cloning is not implemented for a node of tag
-  57345`, no source location.
 - **`cloneNode`'s `GenVarUseTag` arm has no guard.** It re-enters `cloneNode` on
   a *global* whose value at type-check time need not be what name resolution
   saw. NULL yields NULL silently; an unhandled tag kills the compile. This one
@@ -180,15 +176,12 @@ mangle to **nothing**, so every such instance of one generic shared a name.
 - **`--checktree` has the coverage exactly inverted.** It descends into
   templates, which are never type checked, and never into instances, because
   `memonodes` is not in its switch.
-- **`ErrorManyArgs` is overloaded** across three distinct conditions — wrong
-  arity, non-type argument, and "expects arguments to be provided" — against the
-  project rule that each diagnostic gets its own code.
 - **`MacroDclNode.memonodes` is dead**, and `GenericNameTag` is assigned by
   nothing.
 
 ## What lives elsewhere
 
 - Instantiation scheduling, depth bounding, and why the marks cannot police it: [Type Check Phase](../phases/type-check.md), "Generics and macros"
-- Hooking, and what the leak escapes from: [Name Resolution](../phases/name-resolution.md), "Hooking"
+- Hooking, and what a pushed table scopes: [Name Resolution](../phases/name-resolution.md), "Hooking"
 - Symbol naming and `linkonce`: [Generation](../phases/generation.md)
 - Cloning a struct, and the `Self` rebinding: [struct](struct.md)

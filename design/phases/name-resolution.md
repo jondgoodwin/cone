@@ -7,8 +7,9 @@ stops. [Names and Namespaces](../phases/names-and-namespaces.md) is the **rules*
 name means, visibility, imports, aliases, overloading. Change a rule there;
 change how the walk implements it here.
 
-*Provenance: read from source; the `Name.node` read sites, the generic parameter
-leak in Hazards, and the parse-time namespace guarantee were measured. See
+*Provenance: read from source; the `Name.node` read sites and the parse-time
+namespace guarantee were measured. The generic parameter leak this note used to
+list in Hazards was measured, then fixed. See
 [Measuring](../diagnostics/measuring.md).*
 
 ## 1. Key principles
@@ -172,13 +173,11 @@ next pass a null to trip over.
   early-out. It must run after the statement loop (so `continue` targets are
   known) and before `nametblHookPop` (so the copy can still see the loop
   variable).
-- **A generic parameter leaks into the enclosing module scope.**
-  `fnDclNameRes`, `structNameRes` and `macroNameRes` all resolve their parameter
-  list *before* `nametblHookPush`, and `gVarDclNameRes` hooks unconditionally,
-  so the parameter binds in the module's table and is never popped. Measured:
-  with `fn ident[T](a T) T` present, a later `fn other(b T)` resolves `T` and
-  fails at type check instead of reporting an unknown name. Instantiating such
-  a function aborts the compiler outright.
+- **`gVarDclNameRes` hooks unconditionally**, so a generic parameter binds
+  wherever it is resolved. `fnDclNameRes`, `structNameRes` and `macroNameRes`
+  each resolve their parameter list *inside* `nametblHookPush` for exactly that
+  reason; resolving one beforehand leaks it into the enclosing scope, where the
+  matching pop never reaches it.
 - **`pstate->typenode` is written and never read** in this phase.
   `structNameRes` saves and restores it; nothing consults it.
 - **`fnSigNameRes` forces `scope = 0`** so that a signature reached as a *type*
