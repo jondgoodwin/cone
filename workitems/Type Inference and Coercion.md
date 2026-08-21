@@ -115,7 +115,7 @@ type" item is blocked on this ordering, not on the lexer.
 the callee first is now safe — reaching a name type checks the declaration it
 names, and a callee already checked returns at once. The front end was simply
 not restructured to do it. The full account, with the other two front-end gaps
-the same measurement found, is in [[Namedef Refactor]], whose four-step
+the same measurement found, is in [[Tag Group and Name Aliasing Refactor]], whose four-step
 choreography for an overloaded call is what this would complete.
 
 ### Inference & Type checking

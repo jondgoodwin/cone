@@ -19,8 +19,8 @@ filename. So step 2 below is small, and it is what unblocks the core library —
 step 9, the expensive one, buys build speed rather than the ability to link, and
 can wait until the model has been exercised.
 
-The spine is **0 → 1 → 2 → 3 → 4**, and **4 is the unblock**. 5 hangs off 4 with
-a NameDef question attached. 6, 7 and 8 hang off 4 and can run in parallel. 9 is
+The spine is **0 → 1 → 2 → 3 → 4**, and **4 is the unblock**. 5 hangs off 4 and
+depends on [[Tag Group and Name Aliasing Refactor]]. 6, 7 and 8 hang off 4 and can run in parallel. 9 is
 a second spine that only starts once 4 is real. 10 is independent and
 deliberately last.
 
@@ -202,6 +202,13 @@ explaining why nothing there runs comes out.
   name every file involved and not just the last one parsed.
 - Retire `include`, once step 0's first item has given the C-shim packages that
   replace its one remaining use.
+- Scenario for the transit rule. Today whether a folded name is reachable as
+  `A::name` depends on module load order: `modNameRes` folds a module's imports
+  at the start of *that module's* resolution and `pgmNameRes` walks modules in
+  load order, so a root module naming `mid::plain` is rejected while the same
+  reference from a module loaded after the folding one compiles. Both measured.
+  Neither answer is the decided one, so the scenario lands with the fix rather
+  than pinning today's behavior.
 
 
 ---
@@ -266,7 +273,7 @@ them.
 
 The record is a `NameAliasNode` rather than a universal binding: declarations
 keep their representation, and only the entries that bind something declared
-elsewhere become nodes of their own. [[Namedef Refactor]] carries the shape, the
+elsewhere become nodes of their own. [[Tag Group and Name Aliasing Refactor]] carries the shape, the
 capability predicates it depends on, and the staging.
 
 ---

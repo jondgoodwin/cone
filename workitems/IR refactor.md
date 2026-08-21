@@ -1,7 +1,7 @@
 
 1. Add a name alias node, binding a name to something declared elsewhere with its own spelling and visibility. Declarations keep their representation.
 	1. Switch exp/type detection to answer from a node's characteristics, following the chain from name use through alias to declaration, rather than from the tag's group bits. That is what removes the nameuse variants.
-	2. See [[Namedef Refactor]]
+	2. See [[Tag Group and Name Aliasing Refactor]]
 2. Create genericdef node (genname, parmdefs, body)
 	1. Handle genname correctly regardless of name aliasing and cross-module references and "ownership"
 3. Add a "header" to type nodes that includes:

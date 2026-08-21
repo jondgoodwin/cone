@@ -136,7 +136,7 @@ Sections worth adding, in the order their absence costs most:
    dispatch leads with syntax, resolves the callee partway down, and has one
    path that deliberately skips resolving it. Until that is restructured, the
    note has to describe an invariant that holds in most of the function and not
-   all of it. The measurements are in [[Namedef Refactor]]; the argument-order
+   all of it. The measurements are in [[Tag Group and Name Aliasing Refactor]]; the argument-order
    half is in [[Type Inference and Coercion]]; the one arm nothing exercises is
    in [[Init and Final]].
 3. **Casts and conversions.** What `castTypeCheck` permits, and what `is`
