@@ -40,7 +40,7 @@ INode *parsePerm() {
 // mutation is opted into, while a field defaults to 'mut', which per
 // coneref/refstruct.html means the container's permission governs.
 //
-// workitems/Permissions records what is not settled here, including that a
+// workitems/permissions.md records what is not settled here, including that a
 // global needs a third answer this vocabulary cannot give.
 INode *parseDclPerm(PermNode *defperm) {
     INode *perm = parsePerm();

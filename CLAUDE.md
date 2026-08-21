@@ -33,7 +33,7 @@ contains its C compiler (`conec`) and a small standard-library component
   needed for the task.
 - `workitems/`: active and backlog compiler/language work. Its
   `workitems/_index.md` plan summarizes the work and acts as the manifest for
-  the individual work-item notes; `workitems/__Top Priority.md` identifies the
+  the individual work-item notes; `workitems/__top-priority.md` identifies the
   current priority sequence.
 - `test/run.py`: the test suite runner. `design/diagnostics/test-suite.md` is its authoring
   guide.
@@ -179,7 +179,7 @@ link prog.obj build\x64-release\conestd.lib /OUT:prog.exe /SUBSYSTEM:CONSOLE msv
 A program that spans modules cannot be linked yet. Compiling a module on its
 own emits root-module symbol names (`@scaleInt`), while an importing module
 references namespaced ones (`@mymod_scaleInt`), so the two never resolve. See
-`workitems/Packages and Separate Compilation.md`. Runtime checks must therefore
+`workitems/packages-and-separate-compilation.md`. Runtime checks must therefore
 live in a single source file.
 
 ## Change discipline

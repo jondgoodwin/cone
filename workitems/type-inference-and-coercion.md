@@ -1,0 +1,127 @@
+
+Bugs:
+- Mut background = Rgba[]  implicit typing does not work
+- Successful coercion of Some[Variant1] to Option[VarTrait]
+- Untyped integer, for example `var x u32 = 5`:
+	- [https://cone.jondgoodwin.com/play/index.html?gist=e2da8485600ad7b4140e270d1b284950](https://cone.jondgoodwin.com/play/index.html?gist=e2da8485600ad7b4140e270d1b284950)
+	- - [https://cone.jondgoodwin.com/play/index.html?gist=bafee1a55aa7850a68162b91c9d69083](https://cone.jondgoodwin.com/play/index.html?gist=bafee1a55aa7850a68162b91c9d69083)
+
+
+### Inference never consults the expected type, so a valueless variant must always spell its type argument
+
+Measured. `Some` can infer its type argument from the value it wraps; `None` has
+no value, so its argument can only come from the expected type — and generic
+inference does not look there:
+
+| Spelling, with `mut a Option[i32] = …` | Result |
+| --- | --- |
+| `None[i32][]` | works — and is what `union-success` uses throughout |
+| `None[]` | `ErrorInvType` "Could not infer all of generic's type parameters" |
+| `None` | `ErrorNotTyped` — a bare generic name is a type, not a value |
+| `None[i32]` | `ErrorNotTyped` — same, an instantiation is still a type |
+| `Some[3]` | works: `T` comes from the argument |
+
+Also fails as an argument: `wantOpt(None[])` where the parameter is declared
+`Option[i32]`, though `wantOpt(None[i32][])` is accepted.
+
+So `Option[T]`'s empty side is **reachable for every `T`** — the earlier claim
+that it could not be spelled anywhere was wrong — but it can only be reached by
+writing the type argument out, which is exactly what an `Option` is meant to save
+you. Every use in the corpus is spelled in full for this reason.
+
+**What it needs is bidirectional inference**, which is this section's subject
+rather than a defect with a local fix: when a generic's arguments do not
+determine all its parameters, the expected type should supply the rest. The
+narrow case — the expected type is an instantiation of the union that declares
+the variant, so its arguments are the variant's — may be affordable on its own,
+and is worth costing before the general form is attempted. The neighbouring
+entries below ("Test for i32 -> ?i32 coercion in structs", "Coerce => Build
+TypeLit node, putting in enum and type as constraint") are the same problem seen
+from the coercion side.
+
+One related finding measured with it turned out to be a plain defect rather
+than part of this subject, and is fixed by [[bugs|Bugs]]: a struct literal's fields
+were matched with exact type equality instead of coercion, so a variant literal
+was refused in a field though the same coercion is accepted in a variable
+initializer. `typeLitStructCheck` coerces now. It was fixable ahead of this item
+because the compiler's own inconsistency settled what the right answer was —
+nothing about bidirectional inference had to be decided first.
+
+*The array literal's elements were the same defect, and are fixed with it:* they
+now fold to a common supertype the way `if` folds its branches, and are coerced
+to what they meet at. Establishing that took the same argument — a variant is
+accepted as a variable's value, as a struct literal's field and as an `if`
+branch, so the array literal refusing it was the compiler contradicting itself.
+
+**What remains is this item's, and it is the other half of the same line.**
+`inodeTypeCheck` dispatches `arrayLitTypeCheck` **without** `expectType`, where
+the `BlockTag` and `IfTag` arms immediately beside it pass it through. So an
+array literal folds its elements among themselves and the result is matched
+against the declared type afterward rather than coerced to it:
+
+```cone
+imm ok i64 = 1                  // accepted
+imm arr [3; i64] = [1, 2, 3]    // Error 1013: does not match declared type
+mut a [4; u8] = [4u8, 10u8, 12u8, 40u8]   // the suffixes are why
+```
+
+Threading `expectType` in is one line at the dispatch; what it needs first is an
+answer to what an array literal does with an expected array type — whether the
+declared dimension constrains the element count, and whether a number literal
+element adopts the declared element type. That is this item's question, and it
+is the same one the entries above ask.
+
+### Branch inference cannot meet two references differing only in permission
+
+Measured by [[compiler-defect-backlog|Compiler defect backlog]]. `itypeFindSuper` is what `iexpMultiInfer`
+falls back on when the branches of an `if` are not already the same type, and it
+has arms for numbers, structs, `RefTag` and `VirtRefTag` — and none for
+`ArrayRefTag` or `PtrTag`. Identical slices meet only because `itypeIsSame`
+catches them one line earlier.
+
+Worse, the `RefTag` arm it does have gives up whenever the permissions differ,
+so `if c { &mut a } else { &a }` reports "Branch's expression type inconsistent
+with other branches" even though coercion accepts a `&mut` wherever a `&` is
+wanted. **Inference and coercion disagree about whether these two types have a
+supertype** — the same inconsistency that turned out to be behind the closure
+defect below, arriving from the permission side instead of the parameter side.
+
+What it needs is the meet of two permissions, which belongs to [[permissions|Permissions]]
+and is recorded there; this side is then the missing `itypeFindSuper` arms.
+
+**Fixed, and worth knowing because the shape recurs:** branch inference used to
+reject two structurally identical anonymous function types. `fnSigEqual` compared
+each parameter's `VarDclNode` rather than its type, so it compared parameter
+declarations by node identity — which no two separately written signatures can
+satisfy. Coercion to a declared type worked the whole time, because `fnSigMatches`
+beside it extracted the type. Anonymous function types now compare structurally,
+per Jon's ruling. Interning function signature types the way reference types are
+canonicalised through `typetblFind` was considered and deliberately deferred; it
+was not needed for that defect, and would make the whole class impossible rather
+than fixed.
+
+### A call cannot push an expected type into its arguments
+
+Measured. `fnCallTypeCheck` type checks every argument *before* the line that
+resolves the callee, so at the moment an argument is checked there is no
+parameter type to check it against. Every expected type a call could supply has
+to be applied afterwards, by coercion, rather than during.
+
+That is why a number literal argument cannot take its type from the parameter it
+is passed to; [[lexer-and-parser|Lexer and Parser]]'s "number literal nodes can take an expected
+type" item is blocked on this ordering, not on the lexer.
+
+[[analysis-re-factor|Analysis re-factor]] removed the reason for the order. Demand means resolving
+the callee first is now safe — reaching a name type checks the declaration it
+names, and a callee already checked returns at once. The front end was simply
+not restructured to do it. The full account, with the other two front-end gaps
+the same measurement found, is in [[tag-group-and-name-aliasing-refactor|Tag Group and Name Aliasing Refactor]], whose four-step
+choreography for an overloaded call is what this would complete.
+
+### Inference & Type checking
+
+Test for i32 -> ?i32 coercion in structs
+- If samesize basest trait, with tag as 1st field, loop through derived variants to find one whose 2nd field’s type matches (but no other)
+- Coerce => Build TypeLit node, putting in enum and type as constraint
+
+Coercion of Numbers/String literals: both expMatches and expCoerces get involved to set type for numbers and to borrow for literal strings

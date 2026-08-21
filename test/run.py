@@ -21,7 +21,7 @@ internals beyond the diagnostic text format and the ``ErrorCode`` enum it reads
 out of ``src/c-compiler/shared/error.h`` -- and, for ``--since``, the checked-in
 claims in ``test/tags.toml`` about which phases a source path can reach.
 
-Every requirement in ``workitems/done/Add test suite.md`` is implemented, with
+Every requirement in ``workitems/done/add-test-suite.md`` is implemented, with
 one caveat recorded there: the POSIX branches have never run. Any scenario asking
 for something that is not implemented is a hard configuration error rather than
 something quietly ignored.

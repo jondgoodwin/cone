@@ -339,7 +339,7 @@ INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
                 // permission is nothing in a Release build -- it would read a
                 // flag word out of an AbsenceNode. Which permissions a field may
                 // carry, and what an unwritten one should mean, are open in
-                // workitems/Permissions.
+                // workitems/permissions.md.
                 INode *fldperm = ((FieldDclNode*)flddcl)->perm;
                 if (fldperm->tag == TypeNameUseTag)
                     fldperm = (INode*)((NameUseNode*)fldperm)->dclnode;
