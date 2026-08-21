@@ -62,10 +62,10 @@
 	- [[Vault and repo sync]] — `Cone Vault/` and the repo hold two copies of
 	  these notes and have diverged. Not urgent; recorded so it is known.
 	- [[Bugs]] — defects with a known fix, needing no design decision and no
-	  major refactor. Where an item is part bug and part open question, only the
-	  bug half is there and it names the item holding the rest. Everything it
-	  recorded at `50c6ba8` is fixed or closed by a decision, and what each
-	  decision was is recorded there.
+	  major refactor. Every entry it recorded is fixed, or closed by a decision
+	  that it records. Done; see `workitems/done/`. Where an entry was part bug
+	  and part open question, the bug half was fixed there and the item holding
+	  the rest is named in it.
 	- Defects the test suite found, by the decision each needs:
 		- [[Ownership memory safety]] — done; see `workitems/done/`
 		- [[Diagnose instead of crash]] — done; see `workitems/done/`
