@@ -36,8 +36,13 @@ void arrayRefTypeCheck(TypeCheckState *pstate, RefNode *node) {
         node->perm = newPermUseNode(node->region == borrowRef ? roPerm : uniPerm);
     itypeTypeCheck(pstate, &node->region);
     itypeTypeCheck(pstate, (INode**)&node->perm);
-    if (node->vtexp)
+    if (node->vtexp) {
         itypeTypeCheck(pstate, &node->vtexp);
+        // A slice spelled out in source must acquire the same move semantics as
+        // the identical type allocateTypeCheck builds, which goes through
+        // newRefNodeFull. refAdoptInfections reads vtexp, so it stays guarded.
+        refAdoptInfections(node);
+    }
 
     // Normalize reference type and point to its metadata
     node->typeinfo = typetblFind((INode*)node, refTypeInfoAlloc);
@@ -52,10 +57,12 @@ int arrayRefIsSame(RefNode *node1, RefNode *node2) {
 
 // Calculate hash for a structural reference type
 size_t arrayRefHash(RefNode *node) {
+    // Hash the element type, which is 'vtexp'; see refHash. A slice written
+    // without one has no element type to hash.
     size_t hash = 5381 + node->tag;
     hash = ((hash << 5) + hash) ^ itypeHash(node->region);
     hash = ((hash << 5) + hash) ^ itypeHash(node->perm);
-    return ((hash << 5) + hash) ^ itypeHash(node->vtype);
+    return ((hash << 5) + hash) ^ (node->vtexp ? itypeHash(node->vtexp) : 0);
 }
 
 // Compare two reference signatures to see if they are equivalent at runtime

@@ -158,7 +158,10 @@ void typeLitStructCheck(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *
     for (nodelistFor(&strnode->fields, cnt, nodesp)) {
         FieldDclNode *field = (FieldDclNode *)*nodesp;
         INode **litval = &nodesGet(arrlit->args, argi);
-        if (!iexpSameType(*nodesp, litval)) {
+        // Coerce the value to the field's type rather than demanding an exact
+        // match: a field takes a value on the same terms a variable initializer
+        // does, including a union variant standing in for the union.
+        if (!iexpCoerce(litval, field->vtype)) {
             errorMsgNode((INode*)*litval, ErrorBadArray, "Literal value's type does not match expected field's type");
         }
         ++argi;

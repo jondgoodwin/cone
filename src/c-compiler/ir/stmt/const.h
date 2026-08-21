@@ -16,9 +16,6 @@ typedef struct ConstDclNode {
 
 ConstDclNode *newConstDclNode(Name *namesym);
 
-// Create a new variable dcl node that is a copy of an existing one
-INode *cloneConstDclNode(CloneState *cstate, ConstDclNode *node);
-
 void constDclPrint(ConstDclNode *fn);
 
 // Name resolution of vardcl

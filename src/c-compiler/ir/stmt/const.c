@@ -20,15 +20,12 @@ ConstDclNode *newConstDclNode(Name *namesym) {
     return name;
 }
 
-// Create a new constant dcl node that is a copy of an existing one
-INode *cloneConstDclNode(CloneState *cstate, ConstDclNode *node) {
-    ConstDclNode *newnode = memAllocBlk(sizeof(ConstDclNode));
-    memcpy(newnode, node, sizeof(ConstDclNode));
-    newnode->vtype = cloneNode(cstate, node->vtype);
-    newnode->value = cloneNode(cstate, node->value);
-    cloneDclSetMap((INode*)node, (INode*)newnode);
-    return (INode*)newnode;
-}
+// There is no clone for a constant declaration. 'const' is parsed only in the
+// global statement area (parsemod.c), and cloning is entered only on a
+// function, struct or macro body, so no const node can reach it. cloneNode has
+// no ConstDclTag arm either, and its default arm says so loudly. Whoever makes
+// 'const' legal inside a body writes both halves together -- including the
+// TypeChecked/TypeChecking clear that every other declaration clone does.
 
 // Serialize a constant node
 void constDclPrint(ConstDclNode *name) {

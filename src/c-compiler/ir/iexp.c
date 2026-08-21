@@ -323,12 +323,15 @@ INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
         RefNode *objtype = (RefNode*)iexpGetTypeDcl(element->objfn);
         if (objtype->tag == VirtRefTag)
             *lvalperm = objtype->perm;
-        // Downgrade overall static permission if field is immutable.
+        // Downgrade overall static permission if the field may not be written.
+        // Ask the permission for its flags rather than comparing node pointers:
+        // a permission written in source is a name use wrapping the singleton,
+        // so only a compiler-synthesized field would ever match by identity.
         // A tuple element is reached by index rather than by name, so it has no
         // field declaration to ask.
         if (element->methfld->tag == MbrNameUseTag) {
             INode *flddcl = ((NameUseNode *)element->methfld)->dclnode;
-            if (flddcl->tag == FieldDclTag && ((FieldDclNode*)flddcl)->perm == (INode*)immPerm)
+            if (flddcl->tag == FieldDclTag && !(permGetFlags(((FieldDclNode*)flddcl)->perm) & MayWrite))
                 *lvalperm = (INode*)roPerm;
         }
         return lvalvar;
@@ -361,7 +364,12 @@ uint16_t iexpGetPermFlags(INode *node) {
             return permGetFlags(vtype->perm);
         else if (vtype->tag == PtrTag)
             return 0xFFFF;  // <-- In a trust block?
-        assert(0 && "Should be ref or ptr");
+        else if (vtype->tag == ArrayRefTag || vtype->tag == VirtRefTag)
+            return permGetFlags(vtype->perm);
+        // Answer with no permission rather than falling into the next case,
+        // which would reinterpret this StarNode as a FnCallNode. The assert
+        // that used to end this arm is nothing in a Release build.
+        return 0;
     }
     case ArrIndexTag:
     {
