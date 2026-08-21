@@ -111,6 +111,11 @@ category's contract for a status nothing can produce.
 diagnostic, and it gets a code and a message of its own, upstream where the rule
 lives.
 
+Having no scenario has a cost worth naming: nothing exercises this reporting
+path, so a regression in it — the position, the trace, the exit code — would
+leave the suite green. [Measuring](measuring.md) carries the recipe for
+provoking it by hand, which is the only way to check.
+
 ## Suppressing a cascade
 
 One mistake should produce one diagnostic. Two mechanisms:

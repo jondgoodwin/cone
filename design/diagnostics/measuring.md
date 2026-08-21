@@ -34,6 +34,28 @@ the only build the runner uses. This is how the audit of the twenty-two
 "unreachable" sites found the three a source actually reaches; reading the code
 had not found them.
 
+For the inverse question — "does the report still look right when it fires?" —
+there is nothing to run. `ErrorUnreachable` is the one diagnostic that
+deliberately has no scenario, because a source that provoked it would be a bug
+report rather than a test case, so nothing in the corpus exercises its reporting
+path. Provoke it by hand: put a line *ahead of* the switch in a function that is
+reached constantly, intercepting a tag that certainly arrives.
+
+```c
+// temporary, ahead of _genlType's switch
+if (typ->tag == FloatNbrTag) errorUnreachable(typ, "provoked");
+```
+
+Rebuild, compile anything, and check all four parts: the code, the source
+position, the "as instantiated by" trace where the site is reached inside a
+generic expansion, and exit 6. Pick a tag the switch already handles — the point
+is to fire from somewhere real source reaches, not to find a gap.
+
+**Then take the line out.** A probe of this shape is a compile error on any
+branch where `errorUnreachable` is not yet declared, so one left behind breaks
+the build for whoever picks that tree up next, and looks like deliberate work
+rather than a leftover.
+
 ## Reading what the compiler produced
 
 | Flag | Writes | Use it for |
