@@ -74,8 +74,10 @@ telling the lexer what it is doing, which is the whole argument for this shape.
 Statement ends are inferred rather than required. `lexStmtStart` records the
 statement's indent; `lexIsStmtBreak` is true when the current token is first on
 its line, is not indented past that, and the current block's paren count is
-zero. A semicolon is optional. `parseAdd` consults it to decide whether a
-leading `-` continues the previous statement or starts a new one.
+zero. A semicolon is optional. `parseAdd` consults it for `+` and `-` alike, to
+decide whether a leading sign continues the previous statement or starts a new
+one — both are prefix operators, so guarding only one of them absorbs a line
+that begins with the other.
 
 ## 3. The precedence cascade
 
@@ -220,6 +222,7 @@ never be analyzed.
 | `parseBlockStart` | on a missing `{`/`:`, pretends an indented block started, else scans forward for one |
 | `parseTerm` default | reports `ErrorBadTerm`, consumes one token to avoid an infinite loop, returns `NULL` |
 | anonymous placeholders | the declaration parsers substitute `anonName` so the caller always gets a node |
+| `parsePgm`'s end-of-file test | `ErrorNoEof` when the main file's global statements stopped short of EOF — a stray `}` ends `parseGlobalStmts`, and this is the one place the parser refuses to finish quietly |
 
 The rationale is written into `parseStruct`: an unnamed type is built under the
 anonymous name rather than abandoned, so the body is still parsed — leaving
@@ -291,11 +294,18 @@ numbers.
 
 ## 11. Known gaps
 
-Five things read off the source while writing this note look wrong and are
-**unverified**: unbalanced paren counting, a missing statement-break guard on
-`+`, four tokens that are lexed and never consumed, two dead parameters, and a
-stray `}` at global scope driving the block stack negative. Each needs a probe
-before it is trusted; do not rely on this area without one.
+Of the five things read off the source while writing this note, one is still
+**unverified**: four tokens that are lexed and never consumed. It needs a probe
+before it is trusted.
+
+The other four were probed and fixed. `parseArrayLit` and `parseFnSig` call
+`lexIncrParens` now, so a bracketed construct split across an unindented line
+parses and stops decrementing an enclosing paren's count. `parseAdd` guards `+`
+as it already guarded `-`. The two dead parameters are gone from `parser.h` and
+every call site. And a stray `}` at global scope is `ErrorNoEof` — the symptom
+was **not** the block stack going negative: `parsePgm` simply had no end-of-file
+check, so the rest of the main file was discarded in silence, exit 0, object
+emitted.
 
 ## 12. What lives elsewhere
 

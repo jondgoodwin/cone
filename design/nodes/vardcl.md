@@ -53,9 +53,12 @@ The absences are the point:
 a fresh unchecked node however far along its source got. Without that,
 `inodeTypeCheck`'s declaration guard skips the clone entirely.
 
-`cloneConstDclNode` does not clear them — and is **dead code**: `cloneNode` has
-no `ConstDclTag` arm, so reaching it would hit `default:` and exit. Unreachable
-today because a `const` is only ever module-level.
+**There is no clone for a constant.** `const` is parsed only in the global
+statement area, and cloning is entered only on a function, struct or macro body,
+so no `ConstDclNode` can reach `cloneNode` — which has no `ConstDclTag` arm
+either, and whose `default:` says so. Whoever makes `const` legal inside a body
+owes both halves, the mark clearing above included; `const.c` carries that note
+where the function used to be.
 
 ## Parse
 
@@ -63,12 +66,15 @@ today because a `const` is only ever module-level.
 
 | Site | Flags | Stamps |
 | --- | --- | --- |
-| global (`parseFnOrVar`) | `ParseMayConst`, plus impl/sig | `VarInitialized`, `nameGenVarName`, `modAddNode`. `scope` stays 0 |
-| local (`parseExprBlock`) | const/sig/impl | nothing — scope comes from name resolution |
-| parameter (`parseFnSig`) | sig/impl, **no `ParseMayConst`** | `VarInitialized`, `scope = 1`, `index`, `Self` inference |
+| global (`parseFnOrVar`) | impl/sig, or sig alone for an `extern` | `VarInitialized`, `nameGenVarName`, `modAddNode`. `scope` stays 0 |
+| local (`parseExprBlock`) | sig/impl | nothing — scope comes from name resolution |
+| parameter (`parseFnSig`) | sig/impl, dropping to impl once one parameter has a default | `VarInitialized`, `scope = 1`, `index`, `Self` inference |
 
-So `ro` is accepted on a global or a local and **rejected on a parameter**,
-purely from that flag difference.
+**The permission rule is the same at all three.** `parseDclPerm` takes whatever
+was written, substitutes the default for nothing, and reports `ErrorInvType` for
+anything that is not `mut` or `imm` — so `ro` is refused on a global, a local and
+a parameter alike. Only the default differs, and it differs by *kind* rather than
+by site: `imm` for all three of these, `mut` for a field.
 
 **`undef` is not an initializer.** `mut y i32 = undef` builds no `value` node at
 all; it stamps `VarInitialized` directly. That is the "the author asserts this
@@ -122,9 +128,12 @@ parameter names**.
    not.
 
 `fieldDclTypeCheck` differs three ways: it uses `inodeTypeCheckAny` on the
-permission, so an unset one passes silently; the **literal check comes first**,
-before coercion, so a non-literal default is reported as non-literal and never
-type-matched; and its size check is the recursive-struct catch.
+permission rather than demanding a type, which would let an unset one through —
+every construction site supplies a real one today, the synthetic mixin field and
+`cloneFieldDclNode`'s `memcpy` included, so nothing reaches that laxity; the
+**literal check comes first**, before coercion, so a non-literal default is
+reported as non-literal and never type-matched; and its size check is the
+recursive-struct catch.
 
 `constDclTypeCheck` has no permission, coerces, infers, then requires a literal.
 
