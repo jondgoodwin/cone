@@ -78,14 +78,16 @@ Struct Handling Optimization?  LLVM does not bitcast structs, so the current co
 - strField 730 should use GEP where we already have the pointer
 - Deref 812 should avoid doing the Load
 - Still later, we can optimize so that small structs are treated as separate values
-## Two crashes, moved to [[Bugs]]
+## Two crashes, fixed in [[Bugs]]
 
-The infection-propagation loop in `structTypeCheck` never terminates, so any
-type with a base trait that acquires `MoveType` or `ThreadBound` hangs the
-compiler — a union variant owning a reference is enough. And a virtual
-reference to a plain struct segfaults, because `refvirtTypeCheck` calls
+The infection-propagation loop in `structTypeCheck` never terminated, so any
+type with a base trait that acquired `MoveType` or `ThreadBound` hung the
+compiler — a union variant owning a reference was enough. And a virtual
+reference to a plain struct segfaulted, because `refvirtTypeCheck` called
 `structMakeVtable` without checking `TraitType` and that walks a `derived` list
-only a trait allocates. Both measured; repros and fixes in [[Bugs]].
+only a trait allocates. Both fixed, with scenarios in `union`, `struct` and
+`trait`. `refvirtTypeCheck` now requires a trait and reports when it does not
+find one.
 
 **The language question stays here:** should `&<Struct` on a plain struct be a
 diagnostic, or should it work? A structural conformer has everything a vtable

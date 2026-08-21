@@ -1,8 +1,11 @@
 
 - Have flowLoadValue do read permission checks on “lval” node types (nameuse, deref, arrindex, strfield) and move iexpGetPermFlag to flow?
-	- **`iexpGetPermFlags` is dead today — nothing but itself calls it — and it
-	  carries a fall-through bug**, now in [[Bugs]]. Fix it before this item
-	  picks the function up; the two missing arms are named there.
+	- **`iexpGetPermFlags` is dead today — nothing but itself calls it.** Its
+	  fall-through bug is fixed: the deref arm ended in an assert that Release
+	  compiles out, so control fell into the array-index case and reinterpreted
+	  the `StarNode` as a `FnCallNode`. It now answers for a slice and a virtual
+	  reference, and returns rather than falling through for anything else.
+	  Read that arm before this item picks the function up. Fixed by [[Bugs]].
 	- The sibling it was modelled on, `iexpGetLvalInfo`, has now had three missing
 	  arms repaired (`RefTag` on array indexing, and a `((StarNode*)lval)->vtexp`
 	  cast that was silently reading `methfld`). Read those fixes before extending
@@ -37,19 +40,27 @@ Field permissions blog/doc Necessary for safety. Special case of uni owner and m
 
 ## What should a field's permission mean?
 
-**Undecided, and three code defects wait on it.** Measured: a field's permission
-is currently write-only state. `parseFieldDcl`'s validity check is degenerate —
+**Undecided, and two code defects wait on it — and the question is now live
+rather than academic.** Measured: a field's permission used to be write-only
+state. `parseFieldDcl`'s validity check is degenerate —
 `permdcl != mutPerm && permdcl == immPerm` reduces to `== immPerm`, so it
 rejects exactly `imm` and admits `uni`, `opaq`, `mut1` and `ro`. Its `defperm`
 argument is passed and never read, so an unwritten permission stays
-`unknownType`. And the sole enforcement site compares by pointer identity
+`unknownType`. And the sole enforcement site compared by pointer identity
 against the raw `immPerm` singleton, which a written permission never is — so a
-`ro` field is writable.
+`ro` field was writable.
 
-The third is a plain comparison bug and is in [[Bugs]]: comparing wrongly is
-wrong whatever the answer turns out to be. **The first two are not**, because
-flipping the parse check inverts which permission is legal, and wiring `defperm`
-decides what an unannotated field gets. Both need this question answered first.
+**The third is fixed**, and that is what makes this urgent: `iexpGetLvalInfo`
+now asks the permission whether it may write, so a field's permission governs
+writes for the first time. `ro` and `opaq` fields are read-only from today;
+`mut`, `uni` and `mut1` are not. Nobody decided that — it fell out of choosing
+`MayWrite` as the test, which was the only choice that made the reported defect
+go away. Whether it is the *right* rule is exactly this question.
+
+**The other two are not fixable without the answer**, because flipping the parse
+check inverts which permission is legal, and wiring `defperm` decides what an
+unannotated field gets. [[Bugs]] carries the first as a defect that is not in
+doubt while its fix is.
 
 Answer it, then land all three together with scenarios in the `struct` group
 covering each permission keyword on a field and a write through a restricted

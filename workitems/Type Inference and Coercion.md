@@ -40,12 +40,17 @@ TypeLit node, putting in enum and type as constraint") are the same problem seen
 from the coercion side.
 
 One related finding measured with it turned out to be a plain defect rather
-than part of this subject, and now lives in [[Bugs]]: a struct literal's fields
-are matched with exact type equality instead of coercion, so a variant literal
-is refused in a field though the same coercion is accepted in a variable
-initializer. It is listed there because the compiler's own inconsistency settles
-what the right answer is — nothing about bidirectional inference has to be
-decided first.
+than part of this subject, and is fixed by [[Bugs]]: a struct literal's fields
+were matched with exact type equality instead of coercion, so a variant literal
+was refused in a field though the same coercion is accepted in a variable
+initializer. `typeLitStructCheck` coerces now. It was fixable ahead of this item
+because the compiler's own inconsistency settled what the right answer was —
+nothing about bidirectional inference had to be decided first.
+
+*Still matched exactly, and deliberately not claimed with it:* an array
+literal's elements, which are compared with `itypeIsSame` against the first
+element and no supertype search. Whether that is the same defect or a rule is
+not established.
 
 ### Branch inference cannot meet two references differing only in permission
 

@@ -79,11 +79,14 @@ remedy. So the test is not "is this a different condition?" but "would a caller
 ever branch on which?" If nothing would, one code and a specific message is
 right.
 
-That is a narrow licence. `ErrorManyArgs` currently covers wrong arity, a
-non-type generic argument, and "expects arguments to be provided" — three
-conditions a reader would absolutely distinguish, and the test file has to
-disambiguate them by message substring. That is the rule being broken, not
-applied.
+That is a narrow licence, and `ErrorManyArgs` was the worked example of taking
+it too far: it covered wrong arity, a non-type generic argument, "expects
+arguments to be provided" and arguments given to a field access — conditions a
+reader would absolutely distinguish, and the scenarios asserting them had to be
+told apart by message substring. It now means only what it says, and
+`ErrorArgCount`, `ErrorNotType`, `ErrorNoArgs` and `ErrorFldArgs` carry the
+rest. The tell was the scenarios: when a code needs a substring to be useful,
+the substring is doing the code's job.
 
 ## Suppressing a cascade
 

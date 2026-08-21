@@ -89,6 +89,26 @@ needs a judgement call rather than transcription:
   "sometimes depicts the language as it is envisioned to be", so any aim taken
   from it needs its distance measured rather than assumed.
 
+## Two things the test runner cannot assert
+
+Found by [[Bugs]], while fixing two defects whose repairs the corpus has no way
+to pin.
+
+A named check may target the post-optimization LLVM IR dump or a run's stdout,
+and nothing else. So neither of these can have a scenario:
+
+- **The name of a produced artifact.** `--ir` used to write `init.ast` whatever
+  was compiled, because the name came from the pseudo-source corelib is injected
+  from. It now writes `<srcname>.ast`, and no scenario says so. A `driver`
+  scenario asserts an exit code and nothing about what was written.
+- **Debug metadata.** The `DIFile` name was the literal `"main.cone"` and is now
+  the real source path. The runner never passes `--debug`, so no asserted
+  artifact contains debug metadata at all.
+
+Either a check target for a produced filename, or a run spec that passes
+`--debug` and a check target for the pre-optimization dump, would close both.
+Small, and worth deciding once rather than each time this comes up.
+
 ## Related
 
 [[Vault and repo sync]] — the same notes exist in `Cone Vault/` and have

@@ -18,220 +18,65 @@ says which work item holds the rest.
 the fix is, and which test group the scenario lands in. An entry that cannot say
 those things is not ready to be here.
 
-Every entry marked **measured** was reproduced against a release `conec` at
-`3daeed7`. Entries under "Unconfirmed" were read from source and never run —
-confirm before acting.
+---
+
+# What has been fixed
+
+Everything this file recorded at `50c6ba8` is fixed except the entries below,
+and each fixed defect landed with the scenario that fails without it. Run
+against a compiler built before the fixes, every one of those scenarios fails —
+two of them by timing out, which is what a hang looks like from the runner.
+
+Ten of the fixes have no scenario, and the reason is the same in each case:
+nothing a source file can say reaches them. `iexpGetPermFlags` has no caller,
+`ThreadBound` has no consumer, the two structural hashes and the dead
+`cloneConstDclNode` and the dead `genlAddr` `FnDclTag` case change no output,
+the vtable guard fires only if a compiler invariant broke, the two dead parser
+parameters have no behavior, and the artifact and debug-metadata names are not
+something the runner can assert today.
+
+**Three of the fixes were bigger than the entry that described them**, and are
+worth knowing about because each turned out to be a crash or a miscompile rather
+than the tidy-up it was filed as:
+
+- `genlAddr` tested a *type* tag where a tuple element's index is an expression
+  tag, so `&t.0` never matched — and with the assert behind it compiled out of a
+  Release build, control fell into the string-literal case and read the field
+  access as an `SLitNode`. That is a segfault on one line of ordinary source.
+- `genlConvert`'s surviving struct conversion used a mid-block `LLVMBuildAlloca`.
+  Inside a loop that is a frame slot per iteration and `mem2reg` does not promote
+  it, so `x into <struct>` in a long loop overflowed the stack.
+- A stray `}` at global scope does not drive the block stack negative in any way
+  that is read, which is what the entry suspected. What it did was worse:
+  `parsePgm` was the one caller of the global-statement parser with no
+  end-of-file check, so the rest of the main file was discarded in silence — no
+  diagnostic, exit 0, an object emitted from half the source.
+
+**Two things this pass surfaced and did not repair**, recorded where they belong
+rather than here:
+
+- `parseCloseTok`'s give-up return skips `lexDecrParens`, so an unterminated
+  bracket leaks one from the open-delimiter count. Unobservable in the two
+  unclosed-bracket scenarios, which recover by consuming to end of file.
+  [[Lexer and Parser]].
+- `utf8IsLetter` is `utf8IsMultibyte(srcp) || isalpha(*srcp)`, so *every* byte
+  at or above 0x80 — malformed ones included — is accepted as an identifier
+  start, and multi-byte junk never reaches the bad-character path at all. That
+  is [[Lexer and Parser]]'s "UTF8 support for IsLetter", now with a reproducer:
+  a line reading `a`, an invalid lead byte, and `a` is lexed as one identifier
+  spanning the newline.
+
+**Two fixes are not assertable by the runner**, which is a gap in the runner
+rather than in them. `--ir` naming its dump after the source compiled, and the
+debug file name being the real source path, both produce a *filename* or *debug
+metadata* — and a check may target only the post-optimization LLVM IR dump or a
+run's stdout, and the runner never passes `--debug`. Either a check target for
+artifact names or a `--debug` knob would close it. Carried by
+[[Design notes follow-on]] rather than opened as its own item.
 
 ---
 
-# Crashes and hangs
-
-## The infection loop in `structTypeCheck` never terminates
-
-**Measured.** The compiler hangs — no output, no diagnostic.
-
-```cone
-union Holder {
-  struct Full { r +so i32 }
-  struct Empty { z i32 }
-}
-```
-
-Exit 124 under a 12-second timeout. Delete the `+so` and it compiles in ~12 ms.
-An `extends` struct with a `final` method is the other way in.
-
-`ir/types/struct.c`:
-
-```c
-StructNode *trait = (StructNode *)node->basetrait;
-while (trait) {
-    trait->flags |= infectFlag;
-    trait = (StructNode *)node->basetrait;    // re-reads node, never advances
-}
-```
-
-**Any type with a base trait that acquires `MoveType` or `ThreadBound` hangs.** A
-union variant always has a base trait and an owning reference always infects
-`MoveType`, so a tagged union owning anything is enough.
-
-**Second bug, same line:** `basetrait` is a `NameUseNode`, not a `StructNode` —
-`structGetBaseTrait` exists to unwrap it. The flags are being OR'd into the name
-use node's flag word. Fix both: advance the cursor, and unwrap each hop.
-
-Scenarios in `union` and `struct`. Because the failure is a hang rather than a
-diagnostic, the runner's timeout is what has to catch a regression.
-
-## A leaked generic parameter aborts the compiler
-
-**Measured.**
-
-```cone
-fn one[T](a T) T { a }
-fn two[U](b U) U {
-  imm z T = b               // T leaked from 'one'
-  b
-}
-fn main() i32 { two[i32](1) }
-```
-
-→ `Internal error: cloning is not implemented for a node of tag 57345`, no
-source location. 57345 is `GenVarDclTag`.
-
-Cause: `fnDclNameRes`, `structNameRes` and `macroNameRes` all resolve their
-parameter list *before* `nametblHookPush()`, and `gVarDclNameRes` hooks
-unconditionally — so the parameter binds in the enclosing module's table and is
-never popped. The post-push re-hook then saves the already-leaked value as its
-"previous", so the matching pop restores the leak instead of removing it.
-
-Two more symptoms of the same cause:
-
-- **A valid program is rejected.** The leak shadows a real module-level type of
-  the same name, forward of the generic only.
-- **An invalid one is silently accepted.** A template is never type checked, so
-  a function naming a leaked parameter compiles clean until something
-  instantiates it.
-
-**Fix:** move the pre-push `inodeNameRes` of `parms` inside the push; the
-existing post-push `nametblHookNode` loop then becomes redundant and should go.
-`parseGenericParms` parses no bounds and no defaults, so nothing a parameter's
-resolution needs can come from an earlier one.
-
-Scenarios in `generic`, covering all three symptoms. The abort case cannot be
-asserted by a diagnostic expectation — the process dies.
-
-## `structMakeVtable` walks a NULL list for a non-trait
-
-**Measured.** SIGSEGV.
-
-```cone
-struct Sq { mut w i32 }
-fn takes(s &<Sq) i32 {0}
-fn main() i32 {
-  mut q = Sq[3]
-  imm r = &q
-  takes(r)        // SIGSEGV
-}
-```
-
-`refvirtTypeCheck` calls `structMakeVtable` once it knows the value type is a
-`StructTag`, never checking `TraitType`; `structMakeVtable` ends by walking
-`derived`, which only a trait allocates. Writing `&<q` directly is caught
-cleanly by `refNameRes` — only the coercion path crashes.
-
-**Fix (the bug half):** `structMakeVtable` must not walk a NULL list, and
-`refvirtTypeCheck` should require `TraitType` and report if not.
-
-**Design half stays in [[Types. Struct and Union]]:** whether `&<Struct` on a
-plain struct should be a diagnostic or should work.
-
----
-
-# Memory safety
-
-## Returning owning references in a tuple frees them before the return
-
-**Measured.** A use-after-free followed by a double free.
-
-```cone
-fn pair() +rc-mut i32, +rc-mut i32 {
-  imm a = +rc-mut 1
-  imm b = +rc-mut 2
-  a, b
-}
-```
-
-Compiles clean. `--llvmir` shows two `malloc`s, **four `-1` decrements and no
-increments**. In `pair`: build the tuple, decrement `b` to zero and free it,
-decrement `a` to zero and free it, return two dangling pointers. The caller then
-decrements both again.
-
-**Fix (the bug half):** `flowScopeDealias`'s "do not release what is being
-returned" test is
-`retexp->tag != VarNameUseTag || namesym != avar->node->namesym`, so a
-`VTupleTag` return matches nothing and every element is released.
-`returnFlowEscape` already walks a returned tuple element by element for the
-borrow check; this needs the same.
-
-**Design half stays in [[Copy & Alias vs. Move Semantics]]:** `assignMultRetFlow`
-does no move-or-copy accounting either, and cannot simply call
-`flowHandleMoveOrCopy` — it iterates return *types*, so there is no per-element
-value node to wrap. Where a destructuring's alias adjustment attaches is a
-design question.
-
-## `continue` releases no owning reference
-
-**Measured.** `break` emits the decrement-and-free; `continue` emits nothing.
-
-```cone
-fn leaky() {
-  while true {
-    if true {
-      imm shared = +rc-mut 3
-      continue
-    }
-  }
-}
-```
-
-`blockFlow` passes `retexp = NULL` for a `ContinueTag`, and inside
-`flowScopeDealias` that same parameter gates the `so`/`rc` arm — so with NULL
-every owning reference falls to the `else` and is dropped from the list. The
-drop-fn arm is unaffected, so a struct's `drop` still fires.
-
-**Fix:** separate the two jobs `retexp` is doing. NULL should mean "nothing is
-being returned, so cancel nothing" — not "add nothing".
-
-Scenario in `region`, asserting the counter adjustment in the generated IR, in
-the style of `region-fill-count`.
-
-## `break` and `continue` release only their innermost scope
-
-**Measured alongside the above.** Only `ReturnTag` passes `startpos = 0`;
-`BreakTag`, `ContinueTag` and `BlockRetTag` all pass the mark for the block
-being left. A `break` targeting an outer loop from inside nested blocks releases
-only the innermost one; every scope in between leaks.
-
-**Fix:** use the *target* block's stack mark rather than the current block's.
-`BreakRetNode.block` already names the target, so the mark can be recorded when
-flow enters a block. Small plumbing, no design decision — what should happen is
-not in doubt.
-
----
-
-# Wrong output
-
-## `genlBlock` emits an invalid phi
-
-**Measured.** Emitted silently; only `--verify` catches it.
-
-```cone
-imm v = while { if n > 1 { break } else { break } }
-```
-
-→ `%phival = phi %void` with **no incoming entries**, and `--verify` reports
-"PHINode should have one entry for each predecessor of its parent basic block!"
-
-The phi arrays are allocated under `blk->vtype->tag != VoidTag` but the phi is
-*built* under `!= UnknownTag`. On the `VoidTag` path `phiCnt` is an
-uninitialized arena read.
-
-**Fix:** make the two conditions the same one.
-
-## A `ro` field is writable
-
-**Measured.** `struct C { ro x i32 }` then `c.x = 9` compiles clean.
-
-The only reader of `FieldDclNode.perm` is `iexpGetLvalInfo`'s `FldAccessTag`
-arm, which downgrades when `flddcl->perm == (INode*)immPerm` — a **pointer
-identity** test against the raw singleton. A written permission is a
-`NameUseNode` wrapper built by `newPermUseNode`, so it never matches. Only
-compiler-synthesized fields can reach that branch.
-
-**Fix:** compare through `permGetFlags` or `permIsSame`, as the adjacent code
-already does.
-
-**Design half stays in [[Permissions]]:** what a field's permission should
-*mean*.
+# Still open
 
 ## `parseFieldDcl` rejects the wrong permission
 
@@ -251,35 +96,11 @@ never reads.
 flipping the condition inverts which one is rejected, so the mechanical fix
 needs that answer first. Listed here because the *defect* is not in doubt.
 
-## A struct literal's fields are matched exactly, so a variant literal is refused
-
-**Measured.** *(from [[Type Inference and Coercion]])*
-
-```cone
-union Shape {
-  struct Circle { r i32 }
-  struct Rect { w i32 }
-}
-struct Holder { s Shape }
-
-imm ok Shape = Circle[3]        // accepted
-imm h = Holder[Circle[4]]       // Error 1046: Literal value's type does not
-                                // match expected field's type
-```
-
-The identical coercion is accepted in a variable initializer and refused in a
-struct literal's field, so **the compiler's own inconsistency settles what the
-right answer is** — nothing about inference has to be decided first.
-
-Cause: `typeLitStructCheck`'s positional pass asserts `iexpSameType(field, argval)`
-— exact equality, no coercion — where a variable initializer goes through
-`iexpTypeCheckCoerce`.
-
-**Fix:** coerce instead of comparing. Scenario in `union` or `struct`.
-
-*Related but not claimed here:* array literal elements are matched the same way,
-with `itypeIsSame` against the first element and no supertype search. Whether
-that is the same defect or a deliberate rule has not been established.
+The neighbouring half of this is now fixed, which raises the stakes: a `ro` field
+used to be writable because `iexpGetLvalInfo` compared node pointers, and it now
+asks the permission whether it may write. So a field's permission is read for
+something real, and what it should *mean* is a question [[Permissions]] owes an
+answer to rather than a note.
 
 ## `.len` on a fixed-size array is rejected
 
@@ -294,11 +115,11 @@ imm length = bigarray.len       // Error 1025: Invalid operation on an array
 The published array documentation says this works, so the correct behavior is
 not in doubt.
 
-**Sizing, honestly:** this is a small addition rather than a repair.
-`len`/`maxlen` are registered as `CountIntrinsic` only on the array *reference*
-type (`corenumber.c`), and generation extracts field 1 of the slice fat pointer.
-`ArrayTag` is in the type group with neither `NamedNode` nor `MethodType`, so a
-fixed-size array has no namespace to hold a method at all, and
+**Sizing, honestly:** this is a small addition rather than a repair, which is why
+this pass left it. `len`/`maxlen` are registered as `CountIntrinsic` only on the
+array *reference* type (`corenumber.c`), and generation extracts field 1 of the
+slice fat pointer. `ArrayTag` is in the type group with neither `NamedNode` nor
+`MethodType`, so a fixed-size array has no namespace to hold a method at all, and
 `fnCallTypeCheck`'s `ArrayTag` arm handles only `FlagIndex`. The length is a
 compile-time `ULitTag` in `dimens`, so it can fold to a constant.
 
@@ -306,184 +127,22 @@ compile-time `ULitTag` in `dimens`, so it can fold to a constant.
 "`.len` and `maxlen` for arrref and array" as feature work — the same gap from
 the other side.
 
----
-
-# Unconfirmed
-
-Read from source, never run. Confirm before acting; each names what would settle
-it.
-
-## `iexpGetPermFlags` falls through a disabled assert
-
-*(from [[Permissions]], where it was parked because that item wants the
-function)*
-
-Its `DerefTag` arm sets the permission for `RefTag` and `PtrTag` only, then ends
-in `assert(0 && "Should be ref or ptr")`. The Release build defines `NDEBUG`, so
-that assert is nothing and control **falls through into `case ArrIndexTag:`**,
-which reinterprets the `StarNode` as a `FnCallNode`. A slice or virtual-reference
-deref takes that path.
-
-**Fix:** add the `ArrayRefTag` and `VirtRefTag` arms, and do not trust the assert
-to have been guarding anything.
-
-**Unobservable today** — nothing but the function itself calls it, so there is no
-scenario to write until [[Permissions]] picks it up. Fix it anyway, before that
-happens.
-
-## Two UTF-8 diagnostic defects
-
-*(from [[Lexer and Parser]])*
-
-- A bad token does not correctly print a bad UTF-8 character code.
-- The error-message line pointer does not correctly handle multi-byte
-  characters — the caret lands in the wrong column.
-
-Both are local to diagnostic printing in `shared/error.c` and the lexer's bad-token
-path, and neither needs a language decision. One line each in the source note, so
-scope is assumed rather than shown — reproduce before sizing.
-
-## Paren counting looks unbalanced
-
-*(from [[Lexer and Parser]])*
-
-`lexIncrParens` is called from three sites — `parseTerm`'s `(`, `parseArgs`, and
-`parseTypeName`'s `[` — and `lexDecrParens` from one, `parseCloseTok`, which also
-serves `parseArrayLit`, `parseFnSig` and `parseStruct`'s generic list, none of
-which increment. `lexDecrParens` guards underflow, so the visible effect would be
-`paranscnt` sitting at zero when it should not, letting `lexIsStmtBreak` fire
-inside a multi-line construct.
-
-*Settle it:* parse a `fn` signature and an array literal each broken across
-lines.
-
-## `parseAdd` guards `-` against a statement break but not `+`
-
-*(from [[Lexer and Parser]])*
-
-`+` is also a prefix operator — a region-managed reference — so a line beginning
-`+rc T` after a complete statement may be absorbed as a binary addition.
-
-*Settle it:* write that source and read the `--ir` dump.
-
-## A stray `}` at global scope drives the block stack negative
-
-*(from [[Lexer and Parser]])*
-
-`parseBlockEnd` at level 0 consumes the `}` and calls `lexBlockEnd`, which
-decrements past zero. The immediate path appears not to read `blkStack[-1]`, but
-the `include` path — which returns into `parseInclude` and continues in the outer
-file with a different `lex` — was not traced.
-
-*Settle it:* compile a source with an unmatched `}` at global scope under a
-sanitizer.
-
-## `genlAddr`'s `FnDclTag` case may be dead, and is wrong if it is not
-
-*(from [[LLVM Generation]])*
-
-It calls `genlGloFnName` (idempotent) *and* `genlFn` (not idempotent — it would
-emit a second entry block into an already-generated function). Anonymous
-functions are lifted to module scope and reached through a `VarNameUseTag`, so no
-reach was found.
-
-## `refHash` and `arrayRefHash` hash the wrong field
-
-Both end with `itypeHash(node->vtype)`. On a reference *type* node `vtype` is
-permanently `unknownType` — the pointed-at type is in `vtexp`. So the hash
-collapses to a function of tag and region alone, and every `&i32`, `&Point` and
-`&mut [3; u8]` lands in one bucket. Correctness survives via linear probing;
-the type table degenerates toward a linear scan. Should be `node->vtexp`.
-
-*Settle the cost:* a probe counter in `typetblFindSlot`, over the corpus.
-
-## `arrayRefTypeCheck` never calls `refAdoptInfections`
-
-The four call sites are all in `reference.c`. A slice type written in source
-acquires neither `MoveType` nor `ThreadBound`, while the identical type built by
-`allocateTypeCheck` does — two spellings of one type disagreeing about move
-semantics.
-
-*Settle it:* `imm s +so[]i32 = +so[] [3; 1i32]` with and without the annotation,
-reading the source twice in each.
-
-## `ThreadBound` infection is unreachable
-
-`refAdoptInfections` tests `refnode->perm == (INode*)mutPerm` by pointer while
-the adjacent `MoveType` test goes through `permGetFlags`, which unwraps the
-`NameUseNode`. So `MoveType` works and `ThreadBound` silently does not, in
-adjacent lines. Invisible today because nothing consumes the flag except further
-infection propagation — it becomes real when [[Concurrency Threads]] lands.
-
-## `newVarDclFull` leaves `genname` uninitialized
-
-Every other field is set; `genname` is not, and the arena never zeroes. Latent
-only because the mangling and global-emission paths are reached solely from
-nodes built by `newVarDclNode`.
-
-## `genlAddr` and `genlExpr` test different tags for a tuple element
-
-`genlAddr` tests `methfld->tag == UintNbrTag`, a *type* tag; `genlExpr` tests
-`ULitTag`, an expression tag. They cannot both be right, and `genlAddr`'s looks
-wrong — which would send `&tuple.0` into its `assert(0)`.
-
-*Settle it:* compile a source that borrows a tuple element by index.
-
-## `itypeMangle`'s ternary is always true
-
-`vtype->tag == VirtRefTag ? '<' : ArrayRefTag ? '+' : '&'` — `ArrayRefTag` is a
-nonzero constant, so a plain `RefTag` mangles as `'+'`, identically to
-`ArrayRefTag`, and `'&'` is unreachable. Visible in an emitted symbol:
-`@"Meter_reading:+ro Gauge"` for `fn reading(self &)`. One character.
-
-## `structTypeCheck`'s early returns leak state
-
-The base-trait failure and the two mixin failures return without restoring
-`pstate->typenode`, and the mixin ones also skip `clonePopState` — leaving a
-hook-table level pushed. Only reachable after a diagnostic has fired, but it
-corrupts everything checked afterwards.
-
 ## `structAddField` drops a duplicate field after indices are assigned
 
 On a duplicate name it reports and returns without adding to `fields`, while the
-parser has already assigned `index` over the original numbering — so positional
-literals for that type shift by one.
+parser has already assigned `index` over the original numbering.
 
-## `genlConvert` can build a virtual reference from an uninitialized vtable
+**The symptom this was filed with does not hold.** `structTypeCheck` renumbers
+every field from zero during its field walk, so the parser's numbering is
+overwritten before anything reads it and a positional literal cannot shift. What
+is left is a type carrying a name in its namespace with no field behind it in
+`fields`, reachable only after `ErrorDupName` has already fired — so nothing is
+generated from it.
 
-Converting a reference to a virtual reference linearly scans `vtable->impl` for
-the matching struct; on a miss there is no assert and no default, so the fat
-pointer is built from garbage. The trait/tag branch has the same shape when no
-`IsTagField` is found. Misbehaves silently in both build configurations.
-
-## `genlConvert` duplicates its struct conversion
-
-Once in `case StructTag:` using raw `LLVMBuildAlloca` (mid-block) and once in
-`default:` using `genlAlloca` (entry block). The mid-block alloca may not be
-promoted by mem2reg.
-
-## `cloneConstDclNode` is dead and would not work if reached
-
-`cloneNode` has no `ConstDclTag` arm, so reaching it hits the `default:` that
-calls `errorExit`. It is also the one clone function that does not clear
-`TypeChecked | TypeChecking`.
-
-## Two dead parameters in the parser
-
-`parsePrefix`'s `noSuffix` and `parseArrayLit`'s `typenode` are passed the same
-value at every call site. `noSuffix` looks like a leftover of the
-borrow-precedence change `parseAmper` documents.
-
-## `--ir` writes to `init.ast`
-
-Not `<srcname>.ast` — the name comes from the corelib pseudo-source, so every
-compile overwrites the same file regardless of what was compiled.
-
-## Dead and write-only generation state
-
-`gen->block` is set to NULL in `genSetup` and never read or written again.
-`gen->compileUnit` is write-only. The debug file name is hardcoded to
-`"main.cone"` rather than the real source path.
+**What wants deciding is whether that matters.** Either the entry closes as
+"harmless after a diagnostic", or the answer is that a type whose declaration
+failed should not be walked further at all — which is the question `errorType`
+and `--checktree` already ask, and belongs with them rather than here.
 
 ## `flowLoadValue` may be missing on array indexes in assignment
 
@@ -493,14 +152,7 @@ compile overwrites the same file regardless of what was compiled.
 Recorded with a question mark by its author, and **the function it names no
 longer exists** — there is no `assignLvalInfo` in the tree. The lval-read logic
 now lives in `flowIsLvalRead`, and assignment's flow pass in `assignFlow` /
-`assignlvalrtype`. Someone has to work out what the entry now refers to before
-it can be sized at all. Kept because a missing `flowLoadValue` on an index
+`assignlvalrtype`. Someone has to work out what the entry now refers to before it
+can be sized at all. Kept because a missing `flowLoadValue` on an index
 expression would be a real hole, and losing the observation is worse than
 carrying a stale one.
-
-## `ErrorManyArgs` covers three unrelated conditions
-
-In `genericMemoize` and the two macro type checks it serves wrong arity, a
-non-type argument, and "expects arguments to be provided" — against the project
-rule that each diagnostic gets its own `ErrorCode`, and the test file has to
-disambiguate them by message substring.

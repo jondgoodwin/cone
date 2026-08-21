@@ -35,9 +35,12 @@ a double free — `fn pair() +rc-mut i32, +rc-mut i32` frees both before the
 return and the caller decrements them again. **Two independent causes, and the
 symptom is not closed until both are fixed.**
 
-Cause 1 is a plain defect and lives in [[Bugs]]: `flowScopeDealias`'s "do not
-release what is being returned" test only recognizes a bare name use, so a
-`VTupleTag` return matches nothing.
+Cause 1 was a plain defect and is fixed by [[Bugs]]: `flowScopeDealias`'s "do
+not release what is being returned" test only recognized a bare name use, so a
+`VTupleTag` return matched nothing and every element was released. It now walks
+a returned tuple element by element. `region-tuple-return` asserts that the
+function releases nothing, so the callee half of the symptom is closed and
+what remains below is the caller's.
 
 **Cause 2 is this item's, because it needs a decision.** `assignMultRetFlow`
 does no move-or-copy accounting, and cannot simply call

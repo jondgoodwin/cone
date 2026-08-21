@@ -6,11 +6,18 @@
 ### How should the compiler react to reaching a state it believes impossible?
 
 Undesigned today, and the current answer is "silently continue with garbage."
-There are **24 `assert(0 && "...")` sites** across the parser, the IR and LLVM
+There are **22 `assert(0 && "...")` sites** across the parser, the IR and LLVM
 generation, used to mean *unreachable*. The Release configuration compiles with
 `/DNDEBUG`, so every one of them is `((void)0)` in the shipping compiler, and
 control simply carries on — falling into the next `switch` case where the assert
 was a case's last statement.
+
+**Three of them were reachable, and two of those were the crash.** [[Bugs]]
+repaired `iexpGetPermFlags`' deref arm and both `Invalid FldAccess methfld.`
+sites, each of which fell into the following case: the one in `genlAddr` read a
+field access as a string literal and segfaulted on `&t.0`, one line of ordinary
+source. The remaining sites are unaudited and the count above is only smaller,
+not safer -- a fall-through is invisible until something reaches it.
 
 **This is not hypothetical.** `genlAddr`'s `ArrIndexTag` case had no arm for a
 reference to a fixed-size array; the moment the type checker stopped rejecting

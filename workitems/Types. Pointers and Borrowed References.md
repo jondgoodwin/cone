@@ -184,15 +184,18 @@ how a callable and the thing it is called on travel together — and are worth
 designing at once rather than three times.
 
 
-## Three reference-node defects, moved to [[Bugs]]
+## Three reference-node defects, fixed in [[Bugs]]
 
-`refHash`/`arrayRefHash` hash `vtype` — permanently `unknownType` on a reference
-type node — instead of `vtexp`; `arrayRefTypeCheck` never calls
-`refAdoptInfections`, so a slice written in source disagrees about move
+`refHash`/`arrayRefHash` hashed `vtype` — permanently `unknownType` on a
+reference type node — instead of `vtexp`; `arrayRefTypeCheck` never called
+`refAdoptInfections`, so a slice written in source disagreed about move
 semantics with the identical type built by an allocation; and `ThreadBound`
-infection compares a permission by pointer identity where the adjacent
-`MoveType` test unwraps, making it unreachable. All read from source, none
-measured. Details in [[Bugs]].
+infection compared a permission by pointer identity where the adjacent
+`MoveType` test unwraps, making it unreachable. All three are fixed.
+
+The middle one was the only one with a symptom, and it was real: written out,
+`+[]so i32` was copyable, so a moved-from slice could be used again with nothing
+said. `region-flow` asserts it now.
 
 The `ThreadBound` one is untestable until something reads the flag, which is
 [[Concurrency Threads]]'s.
