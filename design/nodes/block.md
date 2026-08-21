@@ -19,6 +19,7 @@ measured.*
 | `lifesym` | the `Name` of a `'label:` annotation, else NULL. The *declaration* side; `BreakRetNode.life` is the use side |
 | `breaks` | the `BreakRetNode`s targeting this block. NULL for a regular block; allocated for a loop; created lazily for an **inline** function's body |
 | `vtype` | `unknownType` until the end of type check |
+| `flowmark` | where this block's scope starts on the flow stack. Set by `blockFlow` on entry and **valid only while flow is inside the block**; read by a `break` or `continue` naming it, to know how many scopes it is leaving |
 
 | Flag | Means |
 | --- | --- |
@@ -89,8 +90,9 @@ last node is not a jump, flow wraps it (if it is an expression) or appends
 does a regular block ending in an expression. `blockTypeCheck` handles only the
 third case. Looking in one place misses two.
 
-The final node's `dealias` is then built — `return` unwinds from position 0,
-the whole function; everything else unwinds this block only.
+The final node's `dealias` is then built — `return` unwinds from position 0, the
+whole function; `blockret` unwinds this block; a `break` or `continue` unwinds
+from where it stands down to its target block's `flowmark`.
 
 ## Generation
 
@@ -133,5 +135,5 @@ sits behind the jump the reader wrote last.
 
 - The four block-ending statements and their `dealias`: [return](return.md)
 - Folding value paths into one type, and the re-coercion pass: [Type Check Reasoning](../phases/type-check-reasoning.md), "Unifying branches"
-- Scope release lists and what `continue` fails to release: [Flow Analysis](../phases/flow.md)
+- Scope release lists, and how far a jump unwinds: [Flow Analysis](../phases/flow.md)
 - Basic blocks and phis: [Generation](../phases/generation.md)
