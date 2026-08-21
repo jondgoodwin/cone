@@ -112,9 +112,22 @@ A symbol's spelling is a function of the package, never of which module was
 `argv[1]`. Measured: the same module emits `@scaleInt` compiled as root and
 `@modulesub_scaleInt` compiled as an import.
 
-- Give the root module a name and a non-empty prefix; stop keying "no prefix" on
-  the empty string in `nameGenFnName` and `nameGenVarName`.
-- Decide the generated-name separator: `_` vs `:`.
+- Give the root module a name and a prefix by the same rule everything else
+  uses; stop keying "no prefix" on the empty string in `nameGenFnName` and
+  `nameGenVarName`. **`main` must still emit as `@main`** — measured, and the C
+  runtime links against exactly that — so the entry point needs an explicit
+  exemption alongside the one `FlagExtern` already has.
+- **Settle what a package exports**, which decides how much of the name is
+  needed. A generated name is package plus module path; a program needs the
+  module path and not the package component, because nothing imports a program.
+  Options to weigh: `LLVMInternalLinkage` versus today's `LLVMHiddenVisibility`
+  for what is not exported; whether library privates go internal too; and
+  build-mode defaults versus an explicit export set that also covers wasm and
+  DLL exports and gives the C ABI its hook. `--library` and congo's `exe`/`lib`
+  targets already distinguish the modes. The option space is in
+  `design/nodes/module.md`, "What a package exports".
+- Decide the generated-name separator: `_` vs `:`. Fewer names go through it if
+  only cross-package names are mangled.
 - Overloaded functions: how a concrete candidate's real name is spelled, given
   the overload name has no symbol of its own.
 - Make generic instance names deterministic **across packages** so `linkonce`

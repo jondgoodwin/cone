@@ -412,6 +412,39 @@ packages may use C FFI, is the policy half of the same question.
 **`include` cannot be retired before this exists**, because packaging an
 `extern` block into an include file is what the sample projects use it for.
 
+### What a package exports, and what that does to its symbols
+
+The linker has one flat symbol namespace and the language has many, which is why
+a public name carries its package in its symbol. But that reasoning only bites
+for names something else can reference, and **a program exports its entry point
+and nothing else** — nothing imports a program, so no name of its ever has to be
+referenced from outside. A program therefore needs the module path in its
+generated names and not the package component.
+
+What is open is the mechanism, and it is worth choosing rather than defaulting
+into:
+
+- **Linkage for what a program does not export.** Today private names get
+  `LLVMHiddenVisibility`, in `genlGloVarName` and `genlGloFnName`. Hidden keeps a
+  symbol out of a shared library's export table but leaves it a global symbol at
+  static link, so it can still collide. `LLVMInternalLinkage` makes it
+  object-local and collision-proof. The hazard that distinguishes them is silent:
+  a program defining `fn log(...)` emits `@log` externally, a package calling
+  libm's `log` emits a matching `declare`, the linker satisfies the reference
+  from the program and never pulls `log.o` — so the package calls the wrong
+  function with no diagnostic.
+- **Whether private names in a *library* also become internal.** It shrinks the
+  mangled namespace to exactly the names that cross a package boundary. It also
+  means a private helper reached from a public inline or generic body must be
+  re-emitted per importer rather than linked against, which is what `linkonce`
+  already does for generic instances.
+- **Build-mode defaults, or an explicit export set.** `--library` and congo's
+  `exe`/`lib` targets already distinguish the modes. But a program built as a
+  WebAssembly module or a DLL does export more than an entry point — the samples
+  carry a `wasm.syms` listing exactly that. An explicit export set covers all
+  three with one mechanism and three defaults, and gives the C ABI its hook,
+  since exporting under an unmangled C name is the same operation.
+
 ### How far the module/type convergence goes
 
 Modules and types are meant to share namespace machinery while staying distinct
@@ -470,10 +503,11 @@ annotation on a reference names is a type.
 ### Consequences that follow whichever way those go
 
 - **Symbol identity must stop depending on which module was the root.** The
-  measured asymmetry above is the mechanism; what is open is what the stable
-  prefix is a function of — the package, presumably, with the module path
-  beneath it — what separator it uses, and how an overload name's concrete
-  candidates are spelled.
+  measured asymmetry above is the mechanism. A generated name has two
+  components — the package, and the module path within it — and the package
+  component is what makes a public name distinguishable once the linker flattens
+  every namespace into one. What separator it uses, and how an overload name's
+  concrete candidates are spelled, are open. So is the larger question below.
 - **The serialized interface must carry bodies, not signatures.** Generics
   monomorphize at the use site, macros expand at the use site, and `inline` is
   macro-shaped, so an importer needs the body of each. The artifact is
