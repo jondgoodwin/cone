@@ -15,6 +15,7 @@ BlockNode *newBlockNode() {
     blk->stmts = newNodes(8);
     blk->lifesym = NULL;
     blk->breaks = NULL;
+    blk->flowmark = 0;
     return blk;
 }
 
@@ -303,9 +304,20 @@ void blockNoBreak(BlockNode *blk) {
 }
 
 // Perform data flow analysis on a block
+// Where the scope being left by a break or continue starts on the flow stack.
+// The jump leaves every scope between here and the block it names, so the mark
+// is that block's, not the current one's. 'svpos' is the fallback for a jump
+// whose target failed to resolve.
+static size_t blockJumpMark(BreakRetNode *brknode, size_t svpos) {
+    return brknode->block ? brknode->block->flowmark : svpos;
+}
+
 void blockFlow(FlowState *fstate, BlockNode **blknode) {
     BlockNode *blk = *blknode;
     size_t svpos = flowScopePush();
+    // Record where this block's scope starts, so a break or continue naming it
+    // releases every scope between the jump and this block, not just its own.
+    blk->flowmark = svpos;
 
     // If this is function's main block, include parameters in flow analysis
     if (++fstate->scope == 2) {
@@ -358,16 +370,19 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
         // Nothing after the jump runs, so the scope's de-aliasing has to be captured
         // here too, exactly as it is for a block's final node below.
         case BreakTag: {
-            INode **brkexp = &((BreakRetNode *)*nodesp)->exp;
-            int doalias = flowScopeDealias(svpos, &((BreakRetNode *)*nodesp)->dealias, *brkexp);
+            BreakRetNode *brknode = (BreakRetNode *)*nodesp;
+            INode **brkexp = &brknode->exp;
+            int doalias = flowScopeDealias(blockJumpMark(brknode, svpos), &brknode->dealias, *brkexp);
             if ((*brkexp)->tag != NilLitTag && doalias)
                 flowLoadValue(fstate, brkexp);
             break;
         }
-        case ContinueTag:
+        case ContinueTag: {
             // A continue node carries no expression, so it de-aliases against none
-            flowScopeDealias(svpos, &((BreakRetNode *)*nodesp)->dealias, NULL);
+            BreakRetNode *brknode = (BreakRetNode *)*nodesp;
+            flowScopeDealias(blockJumpMark(brknode, svpos), &brknode->dealias, NULL);
             break;
+        }
         default:
             // An expression as statement throws out its value
             if (isExpNode(*nodesp))
@@ -398,14 +413,15 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
         break;
     }
     case BreakTag: {
-        INode **brkexp = &((BreakRetNode *)*nodesp)->exp;
-        int doalias = flowScopeDealias(svpos, &((BreakRetNode *)*nodesp)->dealias, *brkexp);
+        BreakRetNode *brknode = (BreakRetNode *)*nodesp;
+        INode **brkexp = &brknode->exp;
+        int doalias = flowScopeDealias(blockJumpMark(brknode, svpos), &brknode->dealias, *brkexp);
         if ((*brkexp)->tag != NilLitTag && doalias)
             flowLoadValue(fstate, brkexp);
         break;
     }
     case ContinueTag:
-        flowScopeDealias(svpos, &((BreakRetNode *)*nodesp)->dealias, NULL);
+        flowScopeDealias(blockJumpMark((BreakRetNode *)*nodesp, svpos), &((BreakRetNode *)*nodesp)->dealias, NULL);
         break;
     }
 

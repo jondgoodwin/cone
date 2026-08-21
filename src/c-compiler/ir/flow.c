@@ -225,7 +225,28 @@ size_t flowScopePush() {
     return gVarFlowStackPos;
 }
 
-// Create de-alias list of all own/rc reference variables (except single retexp name)
+// Is this variable's value the one being handed to the caller, and therefore
+// not to be released as the scope ends?
+// 'retexp' is the value being returned, or NULL where nothing is: NULL means
+// nothing is exempt, not that nothing is released.
+// A multi-value return hands back a value tuple, whose elements are exempt one
+// by one -- the same walk returnFlowEscape does for the borrow check.
+static int flowIsScopeResult(INode *retexp, VarDclNode *varnode) {
+    if (retexp == NULL)
+        return 0;
+    if (retexp->tag == VTupleTag) {
+        INode **elemp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode*)retexp)->elems, cnt, elemp)) {
+            if (flowIsScopeResult(*elemp, varnode))
+                return 1;
+        }
+        return 0;
+    }
+    return retexp->tag == VarNameUseTag && ((NameUseNode *)retexp)->namesym == varnode->namesym;
+}
+
+// Create de-alias list of all own/rc reference variables (except the retexp name(s))
 // As a simple optimization: returns 0 if retexp name was not de-aliased
 int flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp) {
     int doalias = 1;
@@ -243,7 +264,7 @@ int flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp) {
             // deactivation belongs to the region redesign.
             if (avar->node->flowtempflags & VarMoved)
                 continue;
-            if (retexp && (retexp->tag != VarNameUseTag || ((NameUseNode *)retexp)->namesym != avar->node->namesym)) {
+            if (!flowIsScopeResult(retexp, avar->node)) {
                 if (*varlist == NULL)
                     *varlist = newNodes(4);
                 nodesAdd(varlist, (INode*)avar->node);

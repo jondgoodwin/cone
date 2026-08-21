@@ -23,6 +23,10 @@ typedef struct BlockNode {
     Nodes *stmts;
     Name *lifesym;     // nullable
     Nodes *breaks;
+    size_t flowmark;   // transient: where this block's scope starts on the flow
+                       // stack, so a break/continue targeting it knows how many
+                       // scopes it is leaving. Set by blockFlow; valid only
+                       // while flow analysis is inside this block.
 } BlockNode;
 
 BlockNode *newBlockNode();
