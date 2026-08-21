@@ -93,19 +93,16 @@ void fnOverloadDclPrint(FnOverloadDclNode *node) {
 
 // Resolve all names in a function
 void fnDclNameRes(NameResState *nstate, FnDclNode *fndclnode) {
-    // Resolve generic parameters
     INode **nodesp;
     uint32_t cnt;
+
+    nametblHookPush();
+    // Resolve generic parameters inside the hooked context. Resolving one hooks
+    // it, so doing it before the push would bind it in the enclosing scope and
+    // the matching pop would never remove it.
     if (fndclnode->genericinfo) {
         for (nodesFor(fndclnode->genericinfo->parms, cnt, nodesp))
             inodeNameRes(nstate, nodesp);
-    }
-
-    nametblHookPush();
-    if (fndclnode->genericinfo) {
-        // Hook generic parms so we can resolve them throughout type
-        for (nodesFor(fndclnode->genericinfo->parms, cnt, nodesp))
-            nametblHookNode(((VarDclNode *)*nodesp)->namesym, *nodesp);
     }
     inodeNameRes(nstate, &fndclnode->vtype);
 
