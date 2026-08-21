@@ -331,8 +331,21 @@ INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
         // field declaration to ask.
         if (element->methfld->tag == MbrNameUseTag) {
             INode *flddcl = ((NameUseNode *)element->methfld)->dclnode;
-            if (flddcl->tag == FieldDclTag && !(permGetFlags(((FieldDclNode*)flddcl)->perm) & MayWrite))
-                *lvalperm = (INode*)roPerm;
+            if (flddcl->tag == FieldDclTag) {
+                // A field whose declaration wrote no permission keeps
+                // unknownType: parseFieldDcl takes a default permission and
+                // never applies it. Unwrap and check for a real one rather than
+                // handing that to permGetFlags, whose assert that it was given a
+                // permission is nothing in a Release build -- it would read a
+                // flag word out of an AbsenceNode. Which permissions a field may
+                // carry, and what an unwritten one should mean, are open in
+                // workitems/Permissions.
+                INode *fldperm = ((FieldDclNode*)flddcl)->perm;
+                if (fldperm->tag == TypeNameUseTag)
+                    fldperm = (INode*)((NameUseNode*)fldperm)->dclnode;
+                if (fldperm->tag == PermTag && !(permGetFlags(fldperm) & MayWrite))
+                    *lvalperm = (INode*)roPerm;
+            }
         }
         return lvalvar;
     }
