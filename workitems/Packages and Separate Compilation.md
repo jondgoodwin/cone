@@ -69,6 +69,18 @@ entry in its "What the model has not decided" section.
   green` for a package, and standalone `use matrix::*` for a namespace already
   in scope. `using` stays reserved so it can be diagnosed.
 - **`include` is retired**, but not before the C-shim question below is answered.
+- **`_` is private to its module**, never to the package; a `_`-named submodule
+  is private to its parent. Nesting is a real boundary, and an organizational
+  subfolder is how files group without one.
+- **A folded or imported name is private to the module that folded it**, with
+  `pub` opting in — `import pub B use pub c as d`. Folding never widens
+  visibility beyond the origin. `pub` marks a binding and `_` marks a
+  declaration; `pub` never appears on a declaration and is contextual to
+  `import`/`use`.
+- **Visibility is a bit on the binding**, written once from the `_` spelling for
+  a declared name and read by every check thereafter. Access asks the binding
+  the caller traversed, linkage asks the declaring binding, and diagnostics want
+  both ends.
 
 ### Still open, in the order to take them
 
@@ -84,16 +96,12 @@ entry in its "What the model has not decided" section.
    — `bigint::BigInt`. Fold at import, name the top-level module independently of
    the package, convention, or a shortcut rule. A module with no global state is
    pure namespace and much library code needs none, so this shape will be common.
-3. **What `_` means once modules nest** — private to its module, or to its
-   package. Per-module erects barriers inside a package and pushes names public
-   to cross them; per-package is C#'s `internal` and makes nesting free. Not yet
-   discussed, and it lands on step 3.
-4. **How far the module/type convergence goes.** Whether a module may declare or
+3. **How far the module/type convergence goes.** Whether a module may declare or
    implement a module trait, whether a package's top-level module may be
    parameterized, and whether folding into a module and into a type are one
    operation — the last being delegated inheritance. **Substitution before
    generativity**: the region protocol wants module traits, not generic modules.
-5. **What a region is.** Module, `region` declaration, or `struct` with an
+4. **What a region is.** Module, `region` declaration, or `struct` with an
    `_alloc` — three live descriptions, and a `region` keyword the lexer interns
    and nothing parses. Also whether its protocol is a contract the compiler holds
    structurally or one written in Cone as a module trait. Its implementation is
@@ -101,9 +109,6 @@ entry in its "What the model has not decided" section.
 
 Smaller, and to be folded into whichever session they touch:
 
-- **Whether folding transits.** If A folds B's publics and Z folds A's, does Z
-  see B's? Posed and left open in `modules-vs-types.md`. **This is the prelude
-  question**, and it belongs with item 2.
 - **The manifest** — what defines a package's name and contents, including files
   the parser never reads (see [[Metaprogramming]] on compile-time embedded data).
   Deferred to package support by decision; the compiler needs none of it for
@@ -212,8 +217,9 @@ explaining why nothing there runs comes out.
   gates this step as much as it gates retiring `include`.
 - Make them real Cone source files in a `core` package, and refactor how
   Conehome holds them.
-- Turn the auto-import into a documented prelude rule, using step 0's transit
-  answer.
+- Turn the auto-import into a documented prelude rule. A fold is private to the
+  module that made it, so a prelude is re-exported deliberately with `use pub`
+  rather than transiting by default.
 - `Option` and `Result` become ordinary library types. They are already Cone
   source; what is left is that the compiler names `Option` in `parseexpr.c` for
   the `?T` sugar. The nullable-pointer collapse in `genltype.c` needs no change:
@@ -228,18 +234,45 @@ needs no compiler rebuild.
 
 Carried in full by [[Using and Module Name-folding]]. The `use` clause and its
 standalone form: selective names, `as` renaming, `except` against a wildcard, the
-block form for long lists, and the transit rule from step 0. Switch the lexer's
-reserved `using` to `use`, keeping `using` reserved so it can be diagnosed with
-a suggestion rather than rejected as an unknown statement.
+block form for long lists, and `pub` re-export. Switch the lexer's reserved
+`using` to `use`, keeping `using` reserved so it can be diagnosed with a
+suggestion rather than rejected as an unknown statement.
 
-**Dependency to decide before starting.** A renamed fold needs a binding whose
-spelling differs from the definition's while retaining origin and visibility.
-Today a fold binds the *same node* into a second namespace, so a different local
-spelling is not expressible. That record is what `NameDef` is. Either land
-[[Namedef Refactor]] stages 1–5 first, or build a narrow alias node and accept
-doing this twice. [[__Top Priority]] currently orders this item ahead of
-[[IR refactor]], so the collision is already implicit and should be made
-explicit.
+Route all six visibility decisions through the binding's bit rather than the
+spelling — `nameUseNameRes`, `fnCallLowerMethod`, `typeLitStructReorder` and
+`genlGloVarName` read `namestr == '_'` directly today; only `genlProgram` and
+`importNameRes` go through `inodeIsPrivate`, which inverts from a query into the
+initializer that stamps the bit.
+
+**Prerequisite: a binding record, and structs are the place to build it.** A
+folded name needs its own spelling, visibility and origin while pointing at a
+declaration owned elsewhere. Today a module fold inserts the *same node* into a
+second namespace, so there is nowhere to put any of that.
+
+The same record is what name-folding into a **type** needs, and that is the
+better first target: delegated inheritance is a capability structs do not have,
+so it can be built beside the existing clone-based mixin without regressing
+anything, while changing module folding is a replacement of working behavior.
+Build it there, exercise it, then apply it to modules.
+
+What transfers whole: the record, namespace entries becoming bindings, the
+visibility bit, collision checks against the receiving namespace, and local
+re-spelling. What structs need and modules never will: retargeting `self`
+through the delegating field, field cloning for layout, vtable slots. What
+modules need and structs never exercise: code-generation provenance — whether
+this compile defines a name or only declares it — and a cross-package origin for
+symbol naming. Leave room for those even though the struct work will not fill
+them.
+
+`FnOverloadDclNode` is already a proto-binding — a namespace entry that is not a
+declaration, holding a name and what it refers to. Generalize from it rather
+than inventing beside it.
+
+**[[Namedef Refactor]]'s scope is under review**, so "land its stages 1–5 first"
+is not the plan. Re-derive the record from what folding, visibility and
+delegated inheritance actually require, and keep the separable refactors it
+bundles — tag-group classification, the name-use tag merge, migrating
+declaration data onto the binding — as their own decisions.
 
 ---
 

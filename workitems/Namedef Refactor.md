@@ -1,3 +1,30 @@
+**Scope under review; re-derive before starting.** What
+[[Packages and Separate Compilation]] and delegated inheritance actually require
+is narrow — a namespace entry that is a *binding*: local spelling, visibility
+bit, the value it refers to, a link to its origin, and room for code-generation
+provenance. Everything below assumes something larger.
+
+Three reasons to re-derive rather than execute as written:
+
+- **It bundles separable refactors.** Replacing tag-group classification in
+  `isExpNode`/`isTypeNode`, merging the name-use tag variants, and migrating
+  declaration data onto the binding are each worth deciding on their own merits.
+  Only the binding record is on the critical path for folding and visibility.
+- **Stages 3–5 carry a dual representation across behavior-preserving steps**,
+  where duplicated `namesym`, `vtype` and `value` stay live behind a
+  compatibility accessor. No test can distinguish those intermediate states,
+  which sits badly against the rule that a change lands with a case that fails
+  without it.
+- **The pipeline prerequisite has been overtaken.** [[Analysis re-factor]] built
+  the per-node states for type check and deliberately left name resolution as one
+  eager pass; the plan below still asks for both to be interleaved as a
+  precondition.
+
+**Better first target: structs.** Name-folding into a type does not exist yet, so
+the binding record can be built beside the clone-based mixin without regressing
+anything, then applied to module folding — which is a replacement of working
+behavior. `FnOverloadDclNode` is already a proto-binding to generalize from.
+
 1. Create namedef node (name, type/constraint, value, generic?, owner?) and convert compliant nodes accordingly
 2. 	1. Switch exp/type detection algorithm to not use nodetype as signal, thereby fixing nameuse variants etc.
 3. 	2. See [[names-and-namespaces|Names and Namespaces]]

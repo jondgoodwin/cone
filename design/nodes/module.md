@@ -281,10 +281,53 @@ module, and two sibling module folders can declare the same module name.
   reserved so that spelling can be diagnosed rather than merely rejected.
 - **`include` is retired.** A module spanning source files does properly what
   `include` did by injection.
-- **There are no header files.** A package's public interface is inferred from
-  its definitions, marked by spelling: a leading `_` is private.
 - **Building a package emits a serialized interface** for importers to read
   instead of re-parsing implementation sources.
+
+### Visibility
+
+There are no header files and no export list: a package's public interface is
+what its definitions say it is.
+
+- **`_` is private to its module**, always — not to the package. A nested module
+  neither sees its parent's private names nor exposes its own to it, so nesting
+  is a real boundary. An organizational subfolder is how files are grouped
+  *without* erecting one, which is why the boundary needs no escape hatch: no one
+  is forced to nest for layout reasons.
+- **A `_`-named submodule is private to its parent**, which is how a package
+  keeps internals internal without a second visibility level.
+- **A folded or imported name is private to the module that folded it**,
+  whatever its visibility at the origin. `import B use c as d` binds both `B` and
+  `d` in A, and neither is reachable as `A::B` or `A::d`. `pub` opts in:
+  `import pub B use pub c as d`. A module's public surface is therefore what it
+  declares and deliberately re-exports, never what it happens to depend on.
+- **Folding never widens visibility beyond the origin** — only a public name can
+  be folded at all, so no chain of re-exports can escalate.
+- **`pub` marks a binding; `_` marks a declaration.** `pub` never appears on a
+  declaration, and is contextual to `import`/`use` so it stays usable as an
+  identifier.
+
+**Visibility is a bit on the binding, and every check reads it.** The `_`
+spelling writes that bit once, when a declared name's binding is built, and is
+never consulted again. It could not be: the binding for `B` inside A must be
+private while `B` is a public package in its own right, and no `_` appears
+anywhere in the spelling to say so.
+
+**The binding chain has two ends, and different questions want different ones.**
+
+- **Access** is decided by the binding the caller *traversed*: X reaching `A::T`
+  asks A's binding, never B's declaration. That is what makes a default-private
+  fold enforceable, and it generalizes the existing rule that an overload name's
+  visibility is checked against the spelling the caller used.
+- **Linkage and code generation** are decided by the *declaring* binding, since a
+  folded binding defines nothing and emits nothing.
+- **Diagnostics want both ends**: the local spelling the author wrote, and the
+  declaration that supplies the real name and source position. A failure reached
+  through a `*` fold has to be able to say where the name came from.
+
+So a binding carries its local spelling, its visibility bit, the value it refers
+to, and a link to its origin — and the same record has to serve a type's
+namespace, where folding a member is delegated inheritance.
 
 ### What is implemented
 
@@ -295,6 +338,21 @@ declaration, no nesting, no package, no manifest, no interface artifact, and no
 function. What does work is the multi-module *generation* path, exercised by
 `stdio` on every compile that prints, and folding into a single module namespace,
 which is what the accumulation rule above asks for.
+
+**Visibility has no bit, and whether a fold transits is decided by load order.**
+Six sites decide visibility and four of them read `namesym->namestr == '_'`
+directly rather than through `inodeIsPrivate` — `nameUseNameRes`,
+`fnCallLowerMethod`, `typeLitStructReorder` and the hidden-linkage test in
+`genlGloVarName`. There is nowhere to record a folded binding's own visibility,
+because `importNameRes` inserts the imported declaration node itself into the
+receiving namespace.
+
+Measured: `modNameRes` folds a module's imports at the start of *that module's*
+resolution and `pgmNameRes` walks modules in load order, so a fold is invisible
+to modules resolved earlier and visible to those resolved later. A root module
+naming `mid::plain`, where `plain` was folded into `mid`, is rejected as an
+unknown name; the same reference from a sibling module loaded after the folding
+one compiles.
 
 ## What the model has not decided
 
