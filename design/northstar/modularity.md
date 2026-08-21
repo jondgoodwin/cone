@@ -77,13 +77,12 @@ module may span source files, each file belonging to exactly one module. Package
 dependencies form a DAG. The shape is .NET's: the assembly is what ships and
 what compiles, and the namespaces inside it are free to nest.
 
-**Neither the file nor the module is the compilation unit** — "the only sensible
-approach that allows multiple source files in the same module to refer to
-entities in each other is to compile all of a module's source files together, at
-the same time," and the package is where that reasoning lands once modules nest
-inside one. There are no header files: declarations are inferred from
-definitions, and building a package emits a serialized public interface for
-importers to read.
+**The package is the compilation unit** — "the only sensible approach that
+allows multiple source files in the same module to refer to entities in each
+other is to compile all of a module's source files together, at the same time,"
+and a package is what holds those files. There are no header files:
+declarations are inferred from definitions, and building a package emits a
+serialized public interface for importers to read.
 
 **What distinguishes a module from a type is state, not namespace.** Both carry
 a namespace, and the aim is for both to carry the same namespace machinery. A

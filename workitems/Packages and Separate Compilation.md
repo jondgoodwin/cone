@@ -39,13 +39,11 @@ entry in its "What the model has not decided" section.
   compilation unit**, emitting one object file, with a function-per-section
   COMDAT so the linker's inclusion granularity is the function. A codegen
   partition is a build knob with no semantic content; splitting a large codebase
-  into packages is the recommended coarser form of the same lever. This retires
-  the per-source-file object file and, with it, the need to attribute any
-  declaration to an owning file.
-- **A module is a namespace, and modules nest.** A package correlates to one
-  top-level module. The earlier single-level rule is revised: its stated reason
-  was multi-level *package* names burdening build tooling, and nesting inside a
-  package leaves package names flat.
+  into packages is the recommended coarser form of the same lever. No
+  declaration needs an owning source file.
+- **A module is a namespace, and modules nest** by path within a package, which
+  keeps package names themselves flat. A package correlates to one top-level
+  module.
 - **A module may span source files**, each file belonging to exactly one module.
 - **Modules and types share namespace machinery and differ in state** — a
   module's state is global and singleton with no `self`, a type's is per-instance
@@ -71,10 +69,13 @@ entry in its "What the model has not decided" section.
    the old note that `FlagExtern` should become a collection of globals in an
    "extern" module. **Blocks retiring `include`**, since packaging an `extern`
    block into an include file is what the sample projects use it for.
-3. **Where a folded name lives when a module spans files.** There is no
-   file-level scope in the IR. Does a source file become a lookup scope between
-   block scopes and the module namespace, and what does that do to
-   one-namespace-one-uniqueness-domain? Blocks step 3 and step 5.
+3. **Where a folded name lives, and the idiom for reaching a package's
+   members.** There is no file-level scope in the IR: does a source file become
+   a lookup scope between block scopes and the module namespace, and what does
+   that do to one-namespace-one-uniqueness-domain? Alongside it, what a caller
+   writes to reach a single-type package without saying the name twice —
+   `bigint::BigInt`. A module with no global state is pure namespace, and much
+   library code needs none, so this shape will be common. Blocks steps 3 and 5.
 4. **How far the module/type convergence goes.** Whether a module may be
    generic, may declare or implement an interface, whether a package's top-level
    module may be parameterized, and whether folding into a module and into a type
@@ -173,8 +174,6 @@ explaining why nothing there runs comes out.
 - Retire `include`, once step 0's second item has given the C-shim packages that
   replace its one remaining use.
 
-**Not needed any more:** marking each `fn` and `var` with the source file it came
-from. One object per package means no declaration needs an owning file.
 
 ---
 

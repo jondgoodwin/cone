@@ -203,12 +203,10 @@ because they remove work rather than adding it:
 - **A module is a namespace**, holding global variables, functions, types,
   macros and other modules.
 - **A package correlates to one top-level module.** Its name is the package's.
-- **Modules nest, and are reached by path.** This revises the earlier
-  single-level rule, whose stated reason was that multi-level names would burden
-  package management and build tooling. Nesting *inside* a package leaves
-  package names flat, so that reason no longer applies. The shape is the one
-  .NET uses: the assembly is the unit, and namespaces within it are free to
-  nest.
+- **Modules nest, and are reached by path.** Nesting stays inside a package, so
+  package names themselves are flat and build tooling never sees a multi-level
+  name. The shape is .NET's: the assembly is the unit, and the namespaces within
+  it are free to nest.
 - **A module may span several source files.** Each source file belongs to
   exactly one module.
 - **Namespace machinery is meant to be common to modules and types** — nesting,
@@ -268,6 +266,29 @@ decision is not made:
 `mod` is separately ambiguous between two features, and Rust has both: declaring
 **which module this file belongs to**, and declaring a **nested module inline
 within a file**. Whether Cone wants either, or both, is part of this decision.
+
+### The idiom for reaching a package's members
+
+A package named after the thing it provides puts that name in every path twice —
+`bigint::BigInt`. This is not an edge case: a module with no global state is
+pure namespace, and a great deal of library code needs none, so single-type
+packages will be common.
+
+Four answers are available, and none is chosen:
+
+- **Fold at import.** `import bigint::BigInt`, then write `BigInt`. Needs
+  nothing beyond selective folding, and is what Rust does with `use`.
+- **Name the top-level module independently of the package's distribution
+  name**, so what you install and what you path through need not match.
+- **Convention.** Name the package for the domain and the type for the thing, so
+  the repetition never arises — `math3d::Point3`, Go's `bytes.Buffer`.
+- **A shortcut rule**: a member whose name matches its module is reachable by
+  the module name alone.
+
+Prior art splits. Go accepts `time.Time` and tunes names so the qualified form
+reads well; Rust accepts `regex::Regex` and leans on `use`; Python's
+`datetime.datetime` is the cautionary case. Whether the answer should differ for
+a package and for a nested module is part of the question.
 
 ### How a C library becomes a Cone package
 
