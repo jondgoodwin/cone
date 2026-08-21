@@ -49,9 +49,7 @@ Three rules to enforce:
   longer", "then fixed", "has since" and "now <verb>s" catches nearly all of it.
   Each hit needs a human read — "used to" also means "employed to" — so this is a
   reported list, not a hard failure. The rule it enforces is in
-  `design/_index.md`, "Conventions"; a sweep in August 2026 cleared twenty-odd
-  hits across sixteen notes, all of them added by a change that fixed a defect
-  and annotated the note instead of deleting the claim.
+  `design/_index.md`, "Conventions".
 
 All three are currently clean and all three were checked by hand.
 
@@ -118,5 +116,6 @@ Small, and worth deciding once rather than each time this comes up.
 
 ## Related
 
-[[Vault and repo sync]] — the same notes exist in `Cone Vault/` and have
-diverged. Not urgent, recorded separately.
+[[Vault and repo sync]] — done. The duplicate vault copies of these notes are
+deleted, so `design/` and `workitems/` are the only copies and anything
+automating over them sees everything.

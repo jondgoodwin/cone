@@ -59,8 +59,8 @@
 	- [[Design notes follow-on]] — what `design/` still owes.
 	  [[Design Documentation]] built it out; done, see `workitems/done/`
 	- Generation: [[LLVM Generation]] and [[C-ABI Generation]]
-	- [[Vault and repo sync]] — `Cone Vault/` and the repo hold two copies of
-	  these notes and have diverged. Not urgent; recorded so it is known.
+	- [[Vault and repo sync]] — the repo is now the only copy of these notes.
+	  Done; see `workitems/done/`
 	- [[Bugs]] — defects with a known fix, needing no design decision and no
 	  major refactor. Every entry it recorded is fixed, or closed by a decision
 	  that it records. Done; see `workitems/done/`. Where an entry was part bug

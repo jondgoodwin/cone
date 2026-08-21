@@ -1,3 +1,13 @@
+> **Closed 2026-08-21 by taking the first option.** `Cone Vault/Design/` and
+> `Cone Vault/Todo/` are deleted; the repo is the only copy. Before deleting,
+> every vault file was compared against the whole `design/` + `workitems/`
+> corpus sentence by sentence. Nothing was lost: most files were identical or
+> reworded and expanded in the repo, and the one substantial vault-only block —
+> the "Overloading requirements" and implementation plan in the vault's
+> `Namedef Refactor.md` — is the draft of work that shipped as PR #70 and is
+> recorded in [[Overload Refactor]]. `Cone Vault/Videos/` has no repo
+> counterpart and stays.
+
 `Cone Vault/` and the repository hold two copies of the same notes, and they
 have already diverged.
 
