@@ -182,9 +182,18 @@ these defects leave empty.
 ## 6. Adding a node tag: every arm you must add
 
 A tag is dispatched from a dozen `switch (node->tag)` statements spread over
-five files. **Missing one is silent in the release build** — the `default:`
-arms are `assert(0)`, and `NDEBUG` compiles them out, so the node falls through
-into whatever follows. Work the list.
+five files, and **missing one is still silent in half of them.** The arms that
+meant *unreachable* — `inodeNameRes`, `inodeTypeCheck`, `inodeGetName`,
+`flowLoadValue`, `_genlType`, `genlExpr`, `genlAddr` and `genlGlobalImpl` — used
+to be `assert(0)`, which `NDEBUG` compiles out, and call `errorUnreachable` now,
+so a tag missing there aborts the compile with a source position. `cloneNode`
+reaches the same end by its own route, `errorExit(ExitError, …)` with a message
+of its own. The rest say nothing: `inodePrintNode` prints
+`**** UNKNOWN NODE ****`, `checkNode` breaks, `flowHandleMove` and
+`flowIsLvalRead` fall out of `default:` deliberately, `genlBlock` runs
+`genlExpr`, and `genlGlobalSyms` has no `default:` at all. Where an abort does
+fire it turns a miscompile into a bug report; it does not make the tag work.
+Work the list.
 
 | File | Function | Add an arm when |
 | --- | --- | --- |

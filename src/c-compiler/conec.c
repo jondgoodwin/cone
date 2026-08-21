@@ -104,7 +104,7 @@ int main(int argc, char **argv) {
         if (errors == 0) {
             timerBegin(GenTimer);
             if (coneopt.print_ir)
-                inodePrint(coneopt.output, coneopt.srcpath, (INode*)pgmnode);
+                inodePrint(coneopt.output, coneopt.srcname, (INode*)pgmnode);
             genpgm(&gen, pgmnode);
             genClose(&gen);
         }

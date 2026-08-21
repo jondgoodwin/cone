@@ -141,7 +141,11 @@ by `ifExhaustCheck`, and a value-producing `if` with no `else` is `ErrorNoElse`.
 - **`unknownType`**: the first branch sets the type in common; each later branch
   must be the same type or have a supertype in common with it, found by
   `itypeFindSuper`. No common supertype is `ErrorInvType`, reported on the
-  branch.
+  branch. **Note what the third branch is compared against**: once two variants
+  have widened the type in common to their trait, a third is asked for a
+  supertype of *the trait and a variant*, not of two variants. `structFindSuper`
+  and `structRefFindSuper` answer both shapes; they used to answer only the
+  first, so two branches unified and three did not.
 - **a real type**: every branch is matched against it directly, and the type in
   common becomes the expected supertype as soon as two branches differ.
 
@@ -214,8 +218,9 @@ Three syntaxes, all `CastNode`:
 | `x is T` | `newIsNode` | is this the runtime type? |
 
 **Reinterpret requires identical bit size** (`castBitsize`), except to a struct,
-which is unchecked. **Convert** permits number to number, ref/ptr to ref/ptr,
-virtual reference to reference, `SameSize` struct to struct, and anything
+which is unchecked. **Convert** permits number to number, reference or pointer
+to pointer, reference to reference, virtual reference to reference, `SameSize`
+struct to struct, and anything
 `castConvertsToBool` allows to `Bool`. A ref-to-ref conversion drops
 `FlagConvert` on the spot — it is a bitcast after all. Everything else is
 `ErrorInvType`. A slice deliberately does not convert to an integer: length and

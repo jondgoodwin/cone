@@ -48,7 +48,10 @@ void refAdoptInfections(RefNode *refnode) {
         return;  // Wait until we have this info
     if (!(permGetFlags(refnode->perm) & MayAlias) || itypeIsMove(refnode->region))
         refnode->flags |= MoveType;
-    if (refnode->perm == (INode*)mutPerm || refnode->perm == (INode*)roPerm 
+    // Unwrap the permission before comparing: a permission written in source is
+    // a name use wrapping the singleton, which is why the MayAlias test above
+    // goes through permGetFlags rather than comparing pointers.
+    if (itypeGetTypeDcl(refnode->perm) == (INode*)mutPerm || itypeGetTypeDcl(refnode->perm) == (INode*)roPerm
         || (refnode->vtexp->flags & ThreadBound))
         refnode->flags |= ThreadBound;
 }
@@ -119,6 +122,17 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
         errorMsgNode(node->region, ErrorInvType, "Reference's region must be a struct type.");
     }
     itypeTypeCheck(pstate, (INode**)&node->perm);
+    // A reference in a parameter position parses with no pointee, because
+    // parseAmper leaves it to be inferred. Only a method's 'self' is ever
+    // inferred, by parseFnSig, and it looks at the outer node only -- so a bare
+    // '&' anywhere else arrives here still unknown, and genlType would hand
+    // LLVMPointerType a NULL element type. Compare by pointer: errorType shares
+    // this tag and means "already reported".
+    if (node->vtexp == unknownType) {
+        errorMsgNode((INode*)node, ErrorNoRefType, "A reference type must specify the type it refers to.");
+        node->vtexp = errorType;
+        return;
+    }
     if (itypeTypeCheck(pstate, &node->vtexp) == 0)
         return;
     refAdoptInfections(node);
@@ -138,8 +152,8 @@ void refvirtTypeCheck(TypeCheckState *pstate, RefNode *node) {
     refAdoptInfections(node);
 
     StructNode *trait = (StructNode*)itypeGetTypeDcl(node->vtexp);
-    if (trait->tag != StructTag) {
-        errorMsgNode((INode*)node, ErrorInvType, "A virtual reference must be to a struct or trait.");
+    if (trait->tag != StructTag || !(trait->flags & TraitType)) {
+        errorMsgNode((INode*)node, ErrorInvType, "A virtual reference must be to a trait.");
         return;
     }
 
@@ -156,10 +170,13 @@ int refIsSame(RefNode *node1, RefNode *node2) {
 
 // Calculate hash for a structural reference type
 size_t refHash(RefNode *node) {
+    // The type pointed at is 'vtexp'. On a reference type node 'vtype' is
+    // permanently unknownType, so hashing it collapses every reference type
+    // into one bucket. refIsSame compares vtexp, so this is what agrees with it.
     size_t hash = 5381 + node->tag;
     hash = ((hash << 5) + hash) ^ itypeHash(node->region);
     hash = ((hash << 5) + hash) ^ itypeHash(node->perm);
-    return ((hash << 5) + hash) ^ itypeHash(node->vtype);
+    return ((hash << 5) + hash) ^ itypeHash(node->vtexp);
 }
 
 // Compare two reference signatures to see if they are equivalent at runtime

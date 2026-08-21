@@ -34,10 +34,8 @@ typedef struct GenState {
     LLVMValueRef fn;
     LLVMValueRef allocaPoint;
     LLVMBuilderRef builder;
-    LLVMBasicBlockRef block;
 
     LLVMDIBuilderRef dibuilder;
-    LLVMMetadataRef compileUnit;
     LLVMMetadataRef difile;
 
     LLVMTypeRef emptyStructType;

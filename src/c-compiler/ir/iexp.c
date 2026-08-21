@@ -18,7 +18,7 @@ INode *iexpGetTypeDcl(INode *node) {
     else {
         //if (isTypeNode(node)) // caller should be using itypeGetTypeDcl()
         //    return node;
-        assert(0 && "Cannot obtain a type from this non-expression node");
+        errorUnreachable(node, "a request for the type of a node that is not an expression");
         return unknownType;
     }
 }
@@ -323,13 +323,29 @@ INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
         RefNode *objtype = (RefNode*)iexpGetTypeDcl(element->objfn);
         if (objtype->tag == VirtRefTag)
             *lvalperm = objtype->perm;
-        // Downgrade overall static permission if field is immutable.
+        // Downgrade overall static permission if the field may not be written.
+        // Ask the permission for its flags rather than comparing node pointers:
+        // a permission written in source is a name use wrapping the singleton,
+        // so only a compiler-synthesized field would ever match by identity.
         // A tuple element is reached by index rather than by name, so it has no
         // field declaration to ask.
         if (element->methfld->tag == MbrNameUseTag) {
             INode *flddcl = ((NameUseNode *)element->methfld)->dclnode;
-            if (flddcl->tag == FieldDclTag && ((FieldDclNode*)flddcl)->perm == (INode*)immPerm)
-                *lvalperm = (INode*)roPerm;
+            if (flddcl->tag == FieldDclTag) {
+                // A field whose declaration wrote no permission keeps
+                // unknownType: parseFieldDcl takes a default permission and
+                // never applies it. Unwrap and check for a real one rather than
+                // handing that to permGetFlags, whose assert that it was given a
+                // permission is nothing in a Release build -- it would read a
+                // flag word out of an AbsenceNode. Which permissions a field may
+                // carry, and what an unwritten one should mean, are open in
+                // workitems/Permissions.
+                INode *fldperm = ((FieldDclNode*)flddcl)->perm;
+                if (fldperm->tag == TypeNameUseTag)
+                    fldperm = (INode*)((NameUseNode*)fldperm)->dclnode;
+                if (fldperm->tag == PermTag && !(permGetFlags(fldperm) & MayWrite))
+                    *lvalperm = (INode*)roPerm;
+            }
         }
         return lvalvar;
     }
@@ -361,7 +377,12 @@ uint16_t iexpGetPermFlags(INode *node) {
             return permGetFlags(vtype->perm);
         else if (vtype->tag == PtrTag)
             return 0xFFFF;  // <-- In a trust block?
-        assert(0 && "Should be ref or ptr");
+        else if (vtype->tag == ArrayRefTag || vtype->tag == VirtRefTag)
+            return permGetFlags(vtype->perm);
+        // Answer with no permission rather than falling into the next case,
+        // which would reinterpret this StarNode as a FnCallNode. The assert
+        // that used to end this arm is nothing in a Release build.
+        return 0;
     }
     case ArrIndexTag:
     {

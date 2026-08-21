@@ -284,6 +284,50 @@ fn interactions() {
     j++
   }
   show("union-by-value-in-loop", acc)
+
+  // A variant holding a move type infects the union with move semantics, and
+  // the infection walks up the base trait every variant has. That walk never
+  // advanced its cursor, so declaring this union hung the compiler outright --
+  // no output, no diagnostic. The assertion is therefore that this file
+  // compiles at all; the runner's timeout is what catches a regression.
+  imm boxed = Boxed[1, Handle[9]]
+  show("move-typed-variant", boxed.kind)
+
+  // A variant stands in for its union wherever the union is expected, and a
+  // struct literal's field is such a place. It used to be the one place it was
+  // not: a literal's values were compared for exact type equality where a
+  // variable initializer coerces, so the same value the line above accepts was
+  // refused one line down.
+  imm asVariable Shape = Circle[1, 4]
+  imm inField = Framed[Circle[1, 5]]
+  show("variant-coerces-in-initializer", area(&asVariable))
+  show("variant-coerces-in-struct-literal", area(&inField.s))
+}
+
+// A struct with a union-typed field, for the literal above. It is here rather
+// than beside Shape for the same reason Held is: the coercion is the subject,
+// not the struct.
+struct Framed {
+  s Shape
+}
+
+// The union whose declaration is the subject above. Declared down here with the
+// other interaction types rather than beside Shape, because it is not what this
+// group is about -- only the infection it triggers is.
+struct @move Handle {
+  id i32
+}
+
+union Held {
+  kind i32
+
+  struct Boxed {
+    h Handle
+  }
+
+  struct Bare {
+    n i32
+  }
 }
 
 // A union may reach itself through a reference, which is how a tree is written.

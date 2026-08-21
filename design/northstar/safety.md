@@ -33,11 +33,11 @@ test scenarios that assert the absence deliberately.*
 
 | Property | Checked? | Where, or why not |
 | --- | --- | --- |
-| use of an uninitialized variable | **yes** | `nameuseFlow`, but on a whole-function summary — "initialized on one branch" reads as initialized everywhere |
+| use of an uninitialized variable | **yes** | `nameuseFlow`, but on a whole-function summary — "initialized on one branch" reads as initialized everywhere. An assignment's target is read only for the parts of it that are values — its index and its dereference — never for the base of a partial write |
 | use after move | **yes** | `nameuseFlow`, same summary caveat |
 | move out of a global | **yes** | `flowHandleMove` |
 | write through a read-only reference | **yes** | `assignlvalrtype`, `swapFlow` — `MayWrite` only |
-| write through a `ro` *field* | **no** | the check compares by pointer identity against a singleton a written permission never is |
+| write through an `imm` *field* | **yes** | `iexpGetLvalInfo`, taking the minimum of the field's permission and its container's |
 | **read** through a reference lacking `MayRead` | **no** | `MayRead` is never consulted as an access check anywhere |
 | a borrow stored into a longer-lived place | **yes** | `assignlvalrtype`, one site |
 | a borrow returned from a function | **yes** | `returnFlowEscape`, one site |
@@ -51,8 +51,8 @@ test scenarios that assert the absence deliberately.*
 | **raw pointer** bounds | **no** | unchecked by construction |
 | raw pointer deref / arithmetic gated by `trust` | **no** | `trust` is not a keyword and has no parse rule |
 | allocation failure | **yes** | null test then `llvm.trap`, unless `?` asked for an `Option` |
-| thread-safety of a shared reference | **no** | `RaceSafe` is populated and read nowhere; `ThreadBound` infection is unreachable |
-| release of an owning reference at scope exit | **partly** | leaks on `continue`, on intervening scopes under `break`, on a conditionally-moved variable, and for arrays of owning references |
+| thread-safety of a shared reference | **no** | `RaceSafe` is populated and read nowhere; `ThreadBound` is now infected correctly and nothing consumes it either |
+| release of an owning reference at scope exit | **partly** | leaks on a conditionally-moved variable, and for arrays of owning references |
 
 ## The four shapes the gaps take
 
@@ -129,11 +129,15 @@ does not cross threads unsafely, or that memory is released.
   unenforced rules by compiling a violation clean. A scenario that starts
   failing may be one your fix correctly invalidated — read it before "fixing"
   it.
-- **`assert(0)` is a no-op in the release build**, so internal consistency
-  checks are absent from the shipped compiler.
-- **`--verify` is off by default**, and the compiler does emit invalid LLVM IR
-  in at least one shape. Malformed IR is not a safety property of the language,
-  but it is a way a "clean compile" lies.
+- **`assert` is a no-op in the release build**, so any internal consistency
+  check written as one is absent from the shipped compiler. The 22 sites that
+  meant *unreachable* now call `errorUnreachable` instead and do fire there; the
+  ordinary value asserts still do not.
+- **`--verify` is off by default.** No corpus scenario fails it today — the one
+  shape that did, an empty phi from a valueless loop-as-expression, is fixed and
+  covered — but nothing has run it over a program outside the corpus. Malformed
+  IR is not a safety property of the language, but it is a way a "clean compile"
+  lies.
 - **`--checktree` checks IR well-formedness, not safety.** Passing it says
   nothing about any row above.
 

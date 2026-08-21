@@ -157,7 +157,7 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
     // Verify expected number of generic parameters
     uint32_t expected = genericinfo->parms ? genericinfo->parms->used : 0;
     if (srcgencall->args->used != expected) {
-        errorMsgNode((INode*)srcgencall, ErrorManyArgs, "Incorrect number of arguments vs. parameters expected");
+        errorMsgNode((INode*)srcgencall, ErrorArgCount, "Incorrect number of arguments vs. parameters expected");
         return newErrorNode((INode*)srcgencall);
     }
 
@@ -167,7 +167,7 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
     int badargs = 0;
     for (nodesFor(srcgencall->args, cnt, nodesp)) {
         if (!isTypeNode(*nodesp)) {
-            errorMsgNode((INode*)*nodesp, ErrorManyArgs, "Expected a type for a generic parameter");
+            errorMsgNode((INode*)*nodesp, ErrorNotType, "Expected a type for a generic parameter");
             badargs = 1;
         }
     }
@@ -307,7 +307,10 @@ int genericSubstitute(TypeCheckState *pstate, FnCallNode **srcgencallp) {
             return 1;
         break;
     default:
-        assert(0 && "Illegal generic type.");
+        // genericGetInfo answers for a function and a struct and nothing else,
+        // and it was asked about this very node
+        errorUnreachable((INode*)srcgencall, "a generic that is neither a function nor a struct");
+        return 1;
     }
 
     // Be sure all expected generic parameters were inferred

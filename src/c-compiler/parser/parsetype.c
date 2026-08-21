@@ -27,19 +27,35 @@ INode *parsePerm() {
     return unknownType;
 }
 
-// Parse a variable declaration
-VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
-    VarDclNode *varnode;
-    INode *perm;
-
-    // Grab the permission type
-    perm = parsePerm();
+// Parse the permission a declaration carries, defaulting to 'defperm' when the
+// source writes none.
+//
+// A declaration names one storage location that only it owns, so the aliasing
+// distinctions the reference permissions draw have nothing to say about it --
+// MayAlias is read only off a reference type's permission, and MayAliasWrite is
+// read nowhere. What is left to choose is whether the value may change, and
+// 'mut' and 'imm' are the two that say it.
+//
+// The defaults differ, and deliberately: a variable defaults to 'imm', so
+// mutation is opted into, while a field defaults to 'mut', which per
+// coneref/refstruct.html means the container's permission governs.
+//
+// workitems/Permissions records what is not settled here, including that a
+// global needs a third answer this vocabulary cannot give.
+INode *parseDclPerm(PermNode *defperm) {
+    INode *perm = parsePerm();
     if (perm->tag == UnknownTag)
         perm = (INode*)defperm;
     INode *permdcl = itypeGetTypeDcl(perm);
-    if (permdcl == (INode*)mut1Perm || permdcl == (INode*)uniPerm || permdcl == (INode*)opaqPerm
-        || (permdcl == (INode*)roPerm && !(flags & ParseMayConst)))
-        errorMsgNode(perm, ErrorInvType, "Permission not valid for variable/field declaration");
+    if (permdcl != (INode*)mutPerm && permdcl != (INode*)immPerm)
+        errorMsgNode(perm, ErrorInvType, "A declaration's permission must be 'mut' or 'imm'");
+    return perm;
+}
+
+// Parse a variable declaration
+VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
+    VarDclNode *varnode;
+    INode *perm = parseDclPerm(defperm);
 
     // Obtain variable's name
     if (!lexIsToken(IdentToken)) {
@@ -133,13 +149,7 @@ INode* parseEnum(ParseState *parse) {
 FieldDclNode *parseFieldDcl(ParseState *parse, PermNode *defperm) {
     FieldDclNode *fldnode;
     INode *vtype;
-    INode *perm;
-
-    // Grab the permission type
-    perm = parsePerm();
-    INode *permdcl = perm == unknownType? unknownType : itypeGetTypeDcl(perm);
-    if (permdcl != (INode*)mutPerm && permdcl == (INode*)immPerm)
-        errorMsgNode(perm, ErrorInvType, "Permission not valid for field declaration");
+    INode *perm = parseDclPerm(defperm);
 
     // Obtain variable's name
     if (!lexIsToken(IdentToken)) {
@@ -340,6 +350,7 @@ INode *parseFnSig(ParseState *parse) {
     // Process parameter declarations
     if (lexIsToken(LParenToken)) {
         lexNextToken();
+        lexIncrParens();
         while (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
             VarDclNode *parm = parseVarDcl(parse, immPerm, parseflags);
             parm->flowtempflags |= VarInitialized;   // parameter vars always start with a valid value
@@ -427,7 +438,7 @@ INode* parseType(ParseState *parse) {
     case StarToken:
     {    
         // The parsing logic for value expressions also works for types (although overkill)
-        return parsePrefix(parse, 0);
+        return parsePrefix(parse);
     }
     default:
         return unknownType;

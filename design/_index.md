@@ -112,7 +112,7 @@ Most real work crosses phases. Start here instead.
 | I want to… | Go to |
 | --- | --- |
 | add or change an operator | [Parse](phases/parse.md), "Adding an operator" — six edits spanning parse, `corelib/` and generation |
-| add a new IR node tag | [IR Nodes](nodes/_index.md), "Adding a node tag" — every dispatch arm, and why a missing one is silent |
+| add a new IR node tag | [IR Nodes](nodes/_index.md), "Adding a node tag" — every dispatch arm, and which of them report a missing one |
 | change what syntax means | [Parse](phases/parse.md), "What the parser leaves undecided", then [Name Resolution](phases/name-resolution.md), "What it retags" |
 | work out why a name will not resolve | [Name Resolution](phases/name-resolution.md), "Hooking" onward; the rules are in [Names and Namespaces](phases/names-and-namespaces.md) |
 | work out why a value is or is not accepted | [Type Check Reasoning](phases/type-check-reasoning.md), "The verdict vocabulary" and "Coercion" |

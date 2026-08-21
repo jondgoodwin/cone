@@ -8,7 +8,8 @@ assuming it does anything a borrow checker does. It does not.
 
 *Provenance: read from source; the defects in Hazards were measured by reading
 emitted LLVM IR, and the claims about what is **not** enforced are corroborated
-by test scenarios asserting the absence. See [Measuring](../diagnostics/measuring.md).*
+by test scenarios asserting the absence. The jump-release defects this note used
+to list were measured, then fixed. See [Measuring](../diagnostics/measuring.md).*
 
 ## 1. It is a fifth phase that is not a fifth pass
 
@@ -166,8 +167,20 @@ order. Per variable: an `so` or `rc` reference is added to the list, unless it
 was moved out; anything else asks `itypeGetDropFnDcl` and, if there is one,
 builds a call to the drop fn on a `&uni` borrow.
 
+**Where a jump's start position comes from.** `BlockNode.flowmark` is the flow
+stack position `blockFlow` recorded on entering that block. A `break` or
+`continue` passes its *target* block's mark, through `blockJumpMark`, so it
+releases from where it stands down to the block it names rather than its own
+scope alone; `return` passes 0, the whole function. The mark is transient — set
+by `blockFlow` and valid only while flow is inside that block — and
+`blockJumpMark` falls back to the current position for a jump whose target
+failed to resolve.
+
 The `doalias` return is a real optimization: returning a named owning variable
-cancels both the `+1` alias and the `-1` dealias rather than emitting both.
+cancels both the `+1` alias and the `-1` dealias rather than emitting both. It
+answers **only for a lone returned name**, because it gates `flowLoadValue` over
+the whole return expression: a tuple's elements are exempted from release one by
+one, but each still needs the move and initialization check that walk makes.
 
 > `flow.h` and `flow.c` disagree about what `flowScopeDealias` returns. The code
 > matches `flow.c`.
@@ -178,7 +191,7 @@ cancels both the `+1` alias and the `-1` dealias rather than emitting both.
 | --- | --- | --- | --- |
 | **Move / ownership** | yes | `ErrorMove` on use of a moved-out or uninitialized variable; move out of a global refused | field granularity — moving `p.x` deactivates all of `p`; conditional moves; loop-carried moves |
 | **Escape / lifetime** | representation in type check, enforcement here | storing a borrow into a longer-lived lval; returning a borrow of a local | a borrow laundered through a variable; anything across a function boundary — there is no lifetime annotation syntax; freezing a borrow's source |
-| **De-aliasing / drops** | flow decides, generation executes | scope-exit release of `so`/`rc` refs and drop-fn structs | arrays of owning references; `continue`; scopes between a `break` and its target — see Hazards |
+| **De-aliasing / drops** | flow decides, generation executes | scope-exit release of `so`/`rc` refs and drop-fn structs, from a jump down to the block it names | arrays of owning references; a variable moved out on only one path — see Hazards |
 | **Permission** | `MayWrite` only | `ErrorNoMut` on assignment and swap | `MayRead` is never consulted as an access check anywhere; `MayAliasWrite`, `RaceSafe`, `IsLockless` are populated and read nowhere |
 | **Initialization** | yes | `ErrorMove` "has not been initialized" | "initialized on one branch" reads as initialized everywhere; the unused-variable warning in `flow.h`'s header does not exist |
 | **Array fill rules** | yes | `ErrorBadFill` for a repeated move value; `ErrorFillCount` for a non-constant count | — |
@@ -232,17 +245,6 @@ the built-in permissions are zero-sized. See [Generation](generation.md),
 
 ## 8. Hazards
 
-- **`continue` releases no owning reference.** `blockFlow` passes
-  `retexp = NULL` for a `ContinueTag`, and inside `flowScopeDealias` that same
-  parameter gates the `so`/`rc` arm, so with NULL every such reference falls to
-  the `else` and is dropped from the list. The drop-fn arm is unaffected, so a
-  struct's `drop` still fires. Measured.
-- **`break` and `continue` release only their innermost block.** Only
-  `ReturnTag` passes `startpos = 0`.
-- **Returning owning references in a tuple frees them before the return.** The
-  `doalias` cancellation only recognizes a bare `VarNameUseTag` as "the value
-  being returned", so a `VTupleTag` return matches nothing and every element is
-  released on the way out; the caller then decrements freed memory. Measured.
 - **A moved-out variable is skipped at scope exit on every path**, because
   `VarMoved` is a whole-function summary. That leaks rather than double-frees,
   which is the deliberate choice; the in-code comment says so.
@@ -253,8 +255,11 @@ the built-in permissions are zero-sized. See [Generation](generation.md),
 - **`flowScopeDealias` reads `vtype` raw**, without `itypeGetTypeDcl`, while
   `flowInjectAliasAmt` resolves it. A variable declared through a typedef alias
   to an owning reference is likely missed.
-- **`flowLoadValue`'s `default: assert(0)` is a no-op under `NDEBUG`**, so an
-  unhandled tag in a release compiler falls through silently.
+- **`flowLoadValue`'s `default:` arm now reports and stops.** It used to be
+  `assert(0)`, a no-op under `NDEBUG`, so an unhandled tag in a release compiler
+  was skipped silently — meaning no move check, no alias injection and no
+  initialization check for that value. It now calls `errorUnreachable`. Whether
+  any tag reaches it is unestablished.
 
 ## 9. Code pointer map
 

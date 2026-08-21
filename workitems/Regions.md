@@ -109,11 +109,12 @@ here rather than being patched at the one site that noticed.
 
 - [Dart and LLVM-safepoint](https://medium.com/dartlang/dart-on-llvm-b82e83f99a70)
 
-## Two dealias holes, moved to [[Bugs]]
+## Two dealias holes, fixed in [[Bugs]]
 
-`continue` releases no owning reference at all, and `break`/`continue` release
+`continue` released no owning reference at all, and `break`/`continue` released
 only their innermost scope rather than every scope up to the block they target.
-Both measured; both now in [[Bugs]] with their repros.
+Both measured; both fixed, and `region-jump-release` asserts the two counts in
+the generated IR.
 
 They are recorded there rather than here because neither needs a decision — but
 they are the same shape as the `VarMoved` stopgap above: a release list built

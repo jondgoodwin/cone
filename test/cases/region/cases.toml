@@ -159,6 +159,44 @@ name = "fill-from-temporary-counts-n-minus-one"
 target = "llvmir"
 contains = ["add i64 %5, 11"]
 
+# Returning owning references in a value tuple. The claim is that 'pair' adjusts
+# no counter at all: both allocations are handed to the caller, so neither is
+# released on the way out. The file holds nothing but that one function, which
+# is what lets the check exclude the counter adjustment across the whole module
+# rather than having to name a register. Without the fix the module carries two
+# of them -- a use after free, then a double free, in a program that compiled
+# clean.
+[scenario.region-tuple-return]
+category = "compile"
+description = "Owning references returned in a value tuple are handed to the caller, not released"
+tags = ["flow", "genllvm"]
+
+[[scenario.region-tuple-return.check]]
+name = "returned-tuple-elements-not-released"
+target = "llvmir"
+excludes = ["add i64"]
+
+# What a break or a continue releases. Two counts, in two functions, and neither
+# is visible to a run for the reason region-fill-count gives: too few releases
+# leaks, too many frees what is still held, and stdout shows neither. The
+# register numbers below were read out of the post-optimization dump rather than
+# chosen. Without the fix 'continueReleases' adjusts no counter at all and
+# 'breakReleasesEveryScope' adjusts one instead of two.
+[scenario.region-jump-release]
+category = "compile"
+description = "A break or continue releases every scope it leaves, and a continue releases at all"
+tags = ["flow", "genllvm"]
+
+[[scenario.region-jump-release.check]]
+name = "continue-releases-its-scope"
+target = "llvmir"
+contains = ["%6 = add i64 %5, -1"]
+
+[[scenario.region-jump-release.check]]
+name = "break-releases-the-scopes-between"
+target = "llvmir"
+contains = ["%9 = add i64 %8, -1", "%14 = add i64 %13, -1"]
+
 # -------- parse stage --------
 
 [scenario.region-parse]
@@ -199,7 +237,7 @@ diagnostics = 3
 category = "reject"
 description = "Owning references that move rather than copy, and a permission that forbids the write"
 tags = ["flow"]
-diagnostics = 3
+diagnostics = 4
 
 [scenario.region-flow-fill]
 category = "reject"

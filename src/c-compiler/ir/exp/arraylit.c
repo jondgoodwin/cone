@@ -72,25 +72,49 @@ void arrayLitTypeCheckDimExp(TypeCheckState *pstate, ArrayNode *arrlit) {
         return;
     }
 
-    // Ensure all elements are consistently typed (matching first element's type)
+    // Settle the element type: every element must agree, meeting at a common
+    // supertype where they differ. That is the same question 'if' asks across
+    // its branches, and itypeFindSuper is what answers it there too. Requiring
+    // each element to match the first one exactly made an array literal the one
+    // construct that refused a variant where its union was wanted -- a variable
+    // initializer, a struct literal's field and an 'if' all accept that.
     INode *matchtype = unknownType;
+    int metatsuper = 0;   // some element met at a supertype, so all must coerce
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(arrlit->elems, cnt, nodesp)) {
         if (iexpTypeCheckAny(pstate, nodesp) == 0)
             continue;
+        // An element already reported as bad contributes no type of its own,
+        // and must not be compared against the ones that are still good
+        if (iexpGetTypeDcl(*nodesp) == errorType)
+            continue;
         if (matchtype == unknownType) {
-            // Get element type from first element
-            // Type of array literal is: array of elements whose type matches first value
             matchtype = ((IExpNode*)*nodesp)->vtype;
+            continue;
         }
-        else if (!itypeIsSame(((IExpNode*)*nodesp)->vtype, matchtype))
+        if (itypeIsSame(((IExpNode*)*nodesp)->vtype, matchtype))
+            continue;
+        INode *super = itypeFindSuper(matchtype, ((IExpNode*)*nodesp)->vtype);
+        if (super == NULL)
             errorMsgNode((INode*)*nodesp, ErrorBadArray, "Inconsistent type of array literal value");
+        else {
+            matchtype = super;
+            metatsuper = 1;
+        }
     }
     // No element typed successfully, so there is no element type to build on
     if (matchtype == unknownType) {
         arrlit->vtype = errorType;
         return;
+    }
+    // Where the elements met at a supertype rather than agreeing outright, each
+    // one is coerced to it -- otherwise the element type the array claims and
+    // the values stored in it would disagree about size. 'if' coerces its
+    // branches to the type in common for the same reason.
+    if (metatsuper) {
+        for (nodesFor(arrlit->elems, cnt, nodesp))
+            iexpCoerce(nodesp, matchtype);
     }
     arrlit->vtype = (INode*)newArrayNodeTyped((INode*)arrlit, arrlit->elems->used, matchtype);
 }

@@ -13,7 +13,8 @@ place — type check rewrites a `return` inside an inlined function into a break
 and it puts every field where the code that reads it expects, even for the tags
 that never populate it.
 
-*Provenance: read from source. The `continue` defect in Hazards was measured.*
+*Provenance: read from source. The jump-release defects this note used to list in
+Hazards were measured, then fixed.*
 
 ## Shape
 
@@ -22,7 +23,7 @@ that never populate it.
 | `exp` | the value carried out | yes | yes, `nil` if none | yes, `nil` if none | **never** |
 | `life` | named lifetime of the block being escaped | **uninitialized** | **uninitialized** | yes | yes |
 | `block` | the block this leaves — set by **name resolution** for break/continue, by **type check** for return | yes | no | yes | yes |
-| `dealias` | what to release on the way out — filled by **flow** | yes | yes | yes | yes, but see Hazards |
+| `dealias` | what to release on the way out — filled by **flow** | yes | yes | yes | yes |
 
 Constructors: `newReturnNode` (retag to `BlockRetTag` for a block return),
 `newReturnNodeExp` (wraps an expression **and copies its source position** — use
@@ -85,8 +86,10 @@ other and with what the block's context expects. See
 Two jobs, both in `blockFlow` and `flowScopeDealias`:
 
 - **Fill `dealias`** with what leaves scope on this path. `return` passes start
-  position 0 — the whole function, parameters included. The other three pass the
-  mark for the block being left.
+  position 0 — the whole function, parameters included. `blockret` passes its own
+  block's `flowmark`; `break` and `continue` pass their **target** block's,
+  through `blockJumpMark`, so a jump releases every scope between it and the
+  block it names.
 - **Inject `blockret` into loop blocks.** Regular blocks got theirs from
   `blockTypeCheck`; a loop block gets one only here, and it is where the loop
   body's per-iteration release list hangs.
@@ -109,11 +112,6 @@ stub — `BlockRetTag` is handled inline in `genlBlock`.
 
 ## Hazards
 
-- **`continue` releases nothing.** `blockFlow` passes a NULL expression to
-  `flowScopeDealias`, where that same parameter gates whether anything is added
-  to the list at all, so every owning reference in scope leaks. Measured.
-- **`break` and `continue` release only their innermost block**, not the scopes
-  between them and the block they target. Only `return` passes 0.
 - **`block` is NULL until name resolution** for break and continue, and until
   *type check* for return. Anything walking these nodes earlier must not read
   it.

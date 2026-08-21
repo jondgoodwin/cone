@@ -129,6 +129,42 @@ fn intoForm() {
   }
 }
 
+// -------- converting into a struct, repeatedly --------
+
+// A conversion whose target is a struct cannot be a bitcast -- LLVM does not
+// bitcast an aggregate -- so it is done by storing into stack space and loading
+// it back under the other type. That space was allocated where the conversion
+// stands, which inside a loop is a fresh frame slot every iteration that
+// mem2reg cannot promote away. The loop below overflowed the stack; it is long
+// enough to do so at the 1MB Windows default and short enough to be free.
+//
+// It reads the union's shared field back so the conversion is not dead, and
+// 'union' owns the union itself -- what is claimed here is only that the
+// conversion happens on the stack the function already has.
+union Extense {
+  fld i32
+
+  struct Variant1 {
+    nbr i32
+  }
+
+  struct Variant2 {
+    x i32
+    y i32
+  }
+}
+
+fn intoStructInLoop() {
+  mut e Extense = Variant2[20, 3, 4]
+  mut i = 0
+  while i < 400000 {
+    mut one = Variant1[10, i]
+    e = one into Extense
+    i = i + 1
+  }
+  show("into-struct-in-loop", e.fld)
+}
+
 // -------- converting a reference or a pointer to Bool --------
 
 fn referenceToBool() {
@@ -256,6 +292,44 @@ fn branches() {
   mut narrow i16 = 3
   mut wide i64 = 4i64
   show("int-branches-meet-at-i64", if true {narrow} else {wide})
+
+  // Two variants of one union meet at the union, and a third value then meets
+  // the type already reached rather than a sibling variant. That second step
+  // used to fail: the meet widened to the trait and then compared the third
+  // value against it, and a trait and a variant that extends it were not
+  // considered to have a supertype. Two branches worked and three did not, so
+  // the count is the whole point of these two lines. 'union' owns unions; what
+  // is claimed here is only that the type in common survives a third value.
+  show("two-variants-meet-at-the-union", sides(if true {Wide[1, 4]} else {Tall[2, 5]}))
+  show("three-variants-still-meet", sides(if false {Wide[1, 4]} elif true {Tall[2, 5]} else {Wide[1, 6]}))
+
+  // ... and the same through references, where the meet has no size to satisfy
+  imm w = Wide[1, 7]
+  imm t = Tall[2, 8]
+  imm u = Wide[1, 9]
+  show("three-references-meet", sidesRef(if false {&w} elif true {&t} else {&u}))
+}
+
+// The union the meet above settles on, and a reader of it. Both are here rather
+// than in 'union' because the subject is the meet, not the union.
+union Boxy {
+  kind i32
+
+  struct Wide {
+    n i32
+  }
+
+  struct Tall {
+    n i32
+  }
+}
+
+fn sides(b Boxy) i64 {
+  i64[b.kind]
+}
+
+fn sidesRef(b &Boxy) i64 {
+  i64[b.kind]
 }
 
 // -------- conversion where coercion cannot decide --------
@@ -292,6 +366,15 @@ struct Reading {
 // referent
 typedef ReadingRef &Reading
 
+// An alias of an array, to be indexed through a reference to it. This is the
+// one position where the alias used not to be transparent: the index resolved
+// the reference but read the tag off the pointee unresolved, so it matched
+// neither the array arm nor the slice arm, left the index with no element type,
+// and came out as a return-type mismatch on a function that is correct. 'array'
+// owns arrays; what is established here is that naming one through an alias
+// changes nothing about indexing it.
+typedef Cells [3; i64]
+
 // Each of the four positions below is a use of the alias as a type: a global, a
 // parameter, a return type, and a local in the function further down.
 mut recorded Count = 3i64
@@ -304,6 +387,10 @@ fn bumped(n Count) Tally {
 
 fn levelOf(r ReadingRef) i64 {
   r.level
+}
+
+fn cellAt(c &Cells, i usize) i64 {
+  c[i]
 }
 
 fn typedefs() {
@@ -324,6 +411,13 @@ fn typedefs() {
   imm sample = Reading[9i64]
   show("typedef-struct-ref", levelOf(&sample))
 
+  // And a reference to an aliased array indexes as the array it names. The
+  // second index is what shows the element reached is the one meant rather than
+  // a constant that happens to be right.
+  mut cells Cells = [11i64, 22i64, 33i64]
+  show("typedef-array-ref-index-first", cellAt(&cells, 0))
+  show("typedef-array-ref-index-last", cellAt(&cells, 2))
+
   // Conversion targets the aliased type through the alias, and reads it back
   mut scaled Ratio = f64[running] / 2.0d
   showF("typedef-in-conversion", scaled)
@@ -332,6 +426,7 @@ fn typedefs() {
 fn main() i32 {
   conversions()
   intoForm()
+  intoStructInLoop()
   referenceToBool()
   reinterpretation()
   coercions()

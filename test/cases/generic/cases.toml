@@ -47,6 +47,21 @@ contains = [
   '@"boxUp:i64"',
 ]
 
+# A type argument that is not a named type still names its instance. Each of
+# these four used to mangle to nothing, so 'passThrough:' was the name of all
+# five instances and LLVM appended '.1' onto four of them.
+[[scenario.generic-success.check]]
+name = "unnamed-type-arguments-mangle"
+target = "llvmir"
+contains = [
+  '@"passThrough:(i64,i64)"',
+  '@"passThrough:(i64,i64,i64)"',
+  '@"passThrough:[2;i64]"',
+  '@"passThrough:&f(i64)i64"',
+  '@"passThrough:v"',
+]
+excludes = ['@"passThrough:"']
+
 [[scenario.generic-success.check]]
 name = "no-symbol-for-the-generic-itself"
 target = "llvmir"
@@ -66,6 +81,12 @@ excludes = ["neverCalled"]
 # 'fn litSum(self &) i64' most of all, whose body is two literals -- so the
 # instance's type arguments are the only thing that distinguishes them.
 #
+# The '&ro' in litSum's name is also load-bearing, for a second reason. The
+# mangler chose that character with a ternary whose middle test was a bare
+# 'ArrayRefTag' -- a nonzero constant, so always true -- and '&' was
+# unreachable: a plain reference was named exactly as a slice would be. These
+# strings are what pins the two apart now.
+#
 # Both methods below are named for both instances, and the un-suffixed symbol they
 # used to share is excluded. The '.' excludes are the load-bearing half: within one
 # translation unit LLVM hides a symbol collision by appending '.1', so a check that
@@ -77,16 +98,16 @@ target = "llvmir"
 contains = [
   '@"Holder_tally:Holder:i64"',
   '@"Holder_tally:Holder:f64"',
-  '@"Holder_litSum:+ro Holder:i64"',
-  '@"Holder_litSum:+ro Holder:f64"',
+  '@"Holder_litSum:&ro Holder:i64"',
+  '@"Holder_litSum:&ro Holder:f64"',
 ]
 excludes = [
   '@"Holder_tally:Holder"',
-  '@"Holder_litSum:+ro Holder"',
+  '@"Holder_litSum:&ro Holder"',
   '@"Holder_tally:Holder:i64.',
   '@"Holder_tally:Holder:f64.',
-  '@"Holder_litSum:+ro Holder:i64.',
-  '@"Holder_litSum:+ro Holder:f64.',
+  '@"Holder_litSum:&ro Holder:i64.',
+  '@"Holder_litSum:&ro Holder:f64.',
 ]
 
 [scenario.generic-macro]

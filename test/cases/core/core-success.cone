@@ -418,6 +418,21 @@ fn loops() {
   }
   show("labeled-break-value", outerValue)
   show("inner-break-total", innerTotal)
+
+  // A loop bound to a name whose every break carries no value has void type:
+  // the paths still converge on one basic block, but there is no value for
+  // them to converge on. Code generation used to build a phi there anyway,
+  // over a count it had never initialized, and emitted one with no incoming
+  // entries. Nothing at run time can see that -- only the --verify every
+  // 'run' scenario is compiled with rejects it -- so the assertion this case
+  // carries is that it compiles at all, and the value shown is only proof the
+  // loop ran.
+  mut q = 0
+  imm novalue = while {
+    q++
+    if q > 2 { break } else { break }
+  }
+  show("void-loop-as-expression", q)
 }
 
 // -------- functions --------
@@ -496,6 +511,18 @@ fn tuples() {
   mut pair (i32, i32) = minmax(9, 4)
   show("tuple-element-0", pair.0)
   show("tuple-element-1", pair.1)
+
+  // An element by position is an lval, so a reference may be taken to one and
+  // written through. Code generation tested the index against a type tag where
+  // the index is a literal expression, so the test never matched -- and with
+  // the assert behind it compiled out of a Release build, control fell into
+  // the next case and read the field access as a string literal. Borrowing a
+  // tuple element crashed the compiler.
+  imm first = &pair.0
+  imm second = &mut pair.1
+  *second = 40
+  show("tuple-element-borrowed", *first)
+  show("tuple-element-written-through", pair.1)
 
   // Several return values received into separate variables
   mut lo i32

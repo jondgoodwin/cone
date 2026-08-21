@@ -1,0 +1,25 @@
+// Returning owning references in a value tuple hands them to the caller, so
+// none of them is released on the way out.
+//
+// A function returning one reference names it, and flowScopeDealias exempts
+// that one name from the scope's release list. A multi-value return hands back
+// a value tuple instead, which is not a name -- so every element matched
+// nothing, and all of them were released. The caller then released them again:
+// a use after free followed by a double free, in a program that compiled clean.
+//
+// The count is the whole claim and no run can see it. Both allocations here are
+// handed to the caller, so a correct 'pair' adjusts no counter at all -- which
+// is why this file holds nothing else, and why the check in cases.toml can
+// exclude the counter adjustment across the whole module rather than having to
+// name a register.
+//
+// The caller's side of this is not asserted here. Destructuring a multi-value
+// return does no move-or-copy accounting yet, which is a question about where a
+// destructuring's alias adjustment attaches; workitems/Copy & Alias vs. Move
+// Semantics carries it.
+
+fn pair() +rc-mut i32, +rc-mut i32 {
+  imm a = +rc-mut 1i32
+  imm b = +rc-mut 2i32
+  a, b
+}

@@ -101,21 +101,18 @@ void structPrint(StructNode *node) {
 
 // Name resolution of a struct type
 void structNameRes(NameResState *pstate, StructNode *node) {
-    // Resolve generic parameters
     INode **nodesp;
     uint32_t cnt;
-    if (node->genericinfo) {
-        for (nodesFor(node->genericinfo->parms, cnt, nodesp))
-            inodeNameRes(pstate, nodesp);
-    }
 
     INode *svtypenode = pstate->typenode;
     pstate->typenode = (INode*)node;
     nametblHookPush();
+    // Resolve generic parameters inside the hooked context. Resolving one hooks
+    // it, so doing it before the push would bind it in the enclosing scope and
+    // the matching pop would never remove it.
     if (node->genericinfo) {
-        // Hook generic parms so we can resolve them throughout type
         for (nodesFor(node->genericinfo->parms, cnt, nodesp))
-            nametblHookNode(((VarDclNode *)*nodesp)->namesym, *nodesp);
+            inodeNameRes(pstate, nodesp);
     }
     // Resolve base trait before any other name in type is hooked
     if (node->basetrait)
@@ -133,15 +130,25 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     pstate->typenode = svtypenode;
 }
 
-// Get bottom-most base trait for some trait/struct, or NULL if there is not one
-StructNode *structGetBaseTrait(StructNode *node) {
-    if (node->basetrait == NULL)
-        return (node->flags & TraitType) ? node : NULL;
+// Unwrap one inheritance hop: the declaration of the trait this type extends.
+// 'basetrait' is written as a name use, or as a generic instantiation call.
+// Not the same as structGetBaseTrait below, which recurses to the bottom-most.
+StructNode *structBaseTraitDcl(StructNode *node) {
     INode *trait = node->basetrait;
+    if (trait == NULL)
+        return NULL;
     // Handle if trait is a genericized type
     if (trait->tag == FnCallTag)
         trait = ((FnCallNode*)trait)->objfn;
-    return structGetBaseTrait((StructNode*)itypeGetTypeDcl(trait));
+    return (StructNode*)itypeGetTypeDcl(trait);
+}
+
+// Get bottom-most base trait for some trait/struct, or NULL if there is not one
+StructNode *structGetBaseTrait(StructNode *node) {
+    StructNode *base = structBaseTraitDcl(node);
+    if (base == NULL)
+        return (node->flags & TraitType) ? node : NULL;
+    return structGetBaseTrait(base);
 }
 
 // Type check when a type specifies a base trait that has a closed number of variants
@@ -279,8 +286,10 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
 
     // Handle when a base trait is specified
     if (node->basetrait) {
-        if (itypeTypeCheck(pstate, &node->basetrait) == 0)
+        if (itypeTypeCheck(pstate, &node->basetrait) == 0) {
+            pstate->typenode = svtypenode;
             return;
+        }
         StructNode *basetrait = (StructNode*)itypeGetTypeDcl(node->basetrait);
         if (basetrait->tag != StructTag || !(basetrait->flags & TraitType)) {
             errorMsgNode(node->basetrait, ErrorInvType, "Base trait must be a trait");
@@ -312,8 +321,11 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     while (fldpos >= 0) {
         FieldDclNode *field = (FieldDclNode*)*fldnodesp;
         if (field->flags & IsMixin) {
-            if (itypeTypeCheck(pstate, &field->vtype) == 0)
+            if (itypeTypeCheck(pstate, &field->vtype) == 0) {
+                clonePopState();
+                pstate->typenode = svtypenode;
                 return;
+            }
             // A dummy mixin field requesting we mixin its fields and methods
             StructNode *trait = (StructNode*)itypeGetTypeDcl(field->vtype);
             if (trait->tag != StructTag || !(trait->flags & TraitType)) {
@@ -395,10 +407,10 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     // Populate infection flags in this struct/trait, and recursively to all inherited traits
     if (infectFlag) {
         node->flags |= infectFlag;
-        StructNode *trait = (StructNode *)node->basetrait;
+        StructNode *trait = structBaseTraitDcl(node);
         while (trait) {
             trait->flags |= infectFlag;
-            trait = (StructNode *)node->basetrait;
+            trait = structBaseTraitDcl(trait);
         }
     }
 
@@ -538,8 +550,11 @@ void structMakeVtable(StructNode *node) {
     // This is particularly important for keeping tag order correctness
     // when building a virtual ref out of a regular ref to the trait
     // as it uses the tag value to index into a list of vtables
-    for (nodesFor(node->derived, cnt, nodesp)) {
-        structAddVtableImpl(node, (StructNode *)*nodesp);
+    // Only a trait allocates 'derived'; a plain struct's is NULL
+    if (node->derived) {
+        for (nodesFor(node->derived, cnt, nodesp)) {
+            structAddVtableImpl(node, (StructNode *)*nodesp);
+        }
     }
 }
 
@@ -674,6 +689,15 @@ INode *structFindSuper(INode *type1, INode *type2) {
         && structGetBaseTrait((StructNode*)itypeGetTypeDcl(typ1->basetrait)) == structGetBaseTrait((StructNode*)itypeGetTypeDcl(typ2->basetrait))
         && (typ1->flags & SameSize))
         return typ1->basetrait;
+    // ... or one of them is already the base trait the other extends. An
+    // inferred type in common meets this the moment a third value arrives: two
+    // variants widen the type to their trait, and the third is then being
+    // compared against the trait rather than against a sibling. The trait is
+    // the answer already reached.
+    if (typ2->basetrait && structGetBaseTrait(typ2) == typ1 && (typ2->flags & SameSize))
+        return type1;
+    if (typ1->basetrait && structGetBaseTrait(typ1) == typ2 && (typ1->flags & SameSize))
+        return type2;
     return NULL;
 }
 
@@ -687,5 +711,11 @@ INode *structRefFindSuper(INode *type1, INode *type2) {
     if (typ1->basetrait && typ2->basetrait
         && structGetBaseTrait((StructNode*)itypeGetTypeDcl(typ1->basetrait)) == structGetBaseTrait((StructNode*)itypeGetTypeDcl(typ2->basetrait)))
         return typ1->basetrait;
+    // ... or one is already the base trait the other extends; see structFindSuper.
+    // Size is not a requirement here, because a reference has its own.
+    if (typ2->basetrait && structGetBaseTrait(typ2) == typ1)
+        return type1;
+    if (typ1->basetrait && structGetBaseTrait(typ1) == typ2)
+        return type2;
     return NULL;
 }

@@ -118,7 +118,7 @@ void parseFnOrVar(ParseState *parse, uint16_t flags) {
 
     // A global variable declaration, if it begins with a permission
     else if lexIsToken(PermToken) {
-        VarDclNode *node = parseVarDcl(parse, immPerm, ParseMayConst | ((flags&FlagExtern) ? ParseMaySig : ParseMayImpl | ParseMaySig));
+        VarDclNode *node = parseVarDcl(parse, immPerm, (flags&FlagExtern) ? ParseMaySig : ParseMayImpl | ParseMaySig);
         node->flags |= flags;
         node->flowtempflags |= VarInitialized;   // Globals always hold a valid value
         parseEndOfStatement();
@@ -316,6 +316,11 @@ ProgramNode *parsePgm(ConeOptions *opt) {
     parse.mod = mod;
     modHook(NULL, mod);
     parseGlobalStmts(&parse, mod);
+    // A stray '}' at global scope ends the statement loop. Without this the rest
+    // of the main file is silently discarded, exactly as an include would be --
+    // parseInclude and parseLoadAndParseModuleFile already make the same check.
+    if (lex->toktype != EofToken)
+        errorMsgLex(ErrorNoEof, "Expected end-of-file");
     modHook(mod, NULL);
     return pgm;
 }

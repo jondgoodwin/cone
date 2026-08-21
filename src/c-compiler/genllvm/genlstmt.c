@@ -45,8 +45,13 @@ GenBlockState *genFindBlockState(GenState *gen, BlockNode *block) {
 void genlBreak(GenState *gen, BlockNode* block, INode* exp, Nodes* dealias) {
     GenBlockState *blockstate = genFindBlockState(gen, block);
     if (exp->tag != NilLitTag) {
-        blockstate->phis[blockstate->phiCnt] = genlExpr(gen, exp);
-        blockstate->blocksFrom[blockstate->phiCnt++] = LLVMGetInsertBlock(gen->builder);
+        // Generate the value for its effects either way; record it only where the
+        // block converges on a value and so has phi arrays to record it in.
+        LLVMValueRef brkval = genlExpr(gen, exp);
+        if (blockstate->phis) {
+            blockstate->phis[blockstate->phiCnt] = brkval;
+            blockstate->blocksFrom[blockstate->phiCnt++] = LLVMGetInsertBlock(gen->builder);
+        }
     }
     genlDealiasNodes(gen, dealias);
     LLVMBuildBr(gen->builder, blockstate->blockend);
@@ -98,11 +103,19 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
         blkstate->blocknode = blk;
         blkstate->blockbeg = blockbeg;
         blkstate->blockend = blockend;
-        if (blk->vtype->tag != VoidTag) {
+        // A phi is wanted only where the block converges on a value. Allocating the
+        // arrays and building the phi must agree on that: they used to test
+        // different conditions, so a void block built a phi over an uninitialized
+        // count and emitted one with no incoming entries.
+        if (blk->vtype->tag != VoidTag && blk->vtype->tag != UnknownTag) {
             blkstate->phis = (LLVMValueRef*)memAllocBlk(sizeof(LLVMValueRef) * blk->breaks->used);
             blkstate->blocksFrom = (LLVMBasicBlockRef*)memAllocBlk(sizeof(LLVMBasicBlockRef) * blk->breaks->used);
-            blkstate->phiCnt = 0;
         }
+        else {
+            blkstate->phis = NULL;
+            blkstate->blocksFrom = NULL;
+        }
+        blkstate->phiCnt = 0;
         ++gen->blockstackcnt;
     }
 
@@ -169,7 +182,7 @@ LLVMValueRef genlBlock(GenState *gen, BlockNode *blk) {
         LLVMPositionBuilderAtEnd(gen->builder, blockend);
 
         --gen->blockstackcnt;
-        if (blk->vtype->tag != UnknownTag) {
+        if (blkstate->phis) {
             LLVMValueRef phi = LLVMBuildPhi(gen->builder, genlType(gen, blk->vtype), "phival");
             LLVMAddIncoming(phi, blkstate->phis, blkstate->blocksFrom, blkstate->phiCnt);
             return phi;

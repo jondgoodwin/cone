@@ -43,14 +43,15 @@ void macroNameRes(NameResState *pstate, MacroDclNode *gennode) {
 
     INode **nodesp;
     uint32_t cnt;
-    for (nodesFor(gennode->parms, cnt, nodesp))
-        inodeNameRes(pstate, nodesp);
 
     // Hook gennode's parameters into global name table
-    // so that when we walk the gennode's logic, parameter names are resolved
+    // so that when we walk the gennode's logic, parameter names are resolved.
+    // Resolving a parameter hooks it, so this has to happen inside the push --
+    // before it, the parameter would bind in the enclosing scope and the
+    // matching pop would never remove it.
     nametblHookPush();
     for (nodesFor(gennode->parms, cnt, nodesp))
-        nametblHookNode(((VarDclNode *)*nodesp)->namesym, *nodesp);
+        inodeNameRes(pstate, nodesp);
 
     inodeNameRes(pstate, (INode**)&gennode->body);
 
@@ -68,7 +69,7 @@ void macroNameTypeCheck(TypeCheckState *pstate, NameUseNode **gennode) {
     MacroDclNode *macrodcl = (MacroDclNode*)(*gennode)->dclnode;
     uint32_t expected = macrodcl->parms ? macrodcl->parms->used : 0;
     if (expected > 0) {
-        errorMsgNode((INode*)*gennode, ErrorManyArgs, "Generic or macro expects arguments to be provided");
+        errorMsgNode((INode*)*gennode, ErrorNoArgs, "Generic or macro expects arguments to be provided");
         return;
     }
 
@@ -96,7 +97,7 @@ void macroCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 
     uint32_t expected = genericnode->parms ? genericnode->parms->used : 0;
     if ((*nodep)->args->used != expected) {
-        errorMsgNode((INode*)*nodep, ErrorManyArgs, "Incorrect number of arguments vs. parameters expected");
+        errorMsgNode((INode*)*nodep, ErrorArgCount, "Incorrect number of arguments vs. parameters expected");
         return;
     }
 

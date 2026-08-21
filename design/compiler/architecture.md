@@ -54,9 +54,13 @@ looking for "what does type check do to a borrow" knows the answer is
 `borrowTypeCheck` in `ir/exp/borrow.c` without searching.
 
 The full list of dispatchers a new tag must be added to is in
-[IR Nodes](../nodes/_index.md), "Adding a node tag" — and the reason that list
-is worth having is that **a missing arm is silent**: the `default:` arms are
-`assert(0)`, which `NDEBUG` compiles out.
+[IR Nodes](../nodes/_index.md), "Adding a node tag" — and the reason that list is
+worth having is that **a missing arm passes silently in some of them.** In
+`inodeNameRes`, `inodeTypeCheck`, `inodeGetName`, `flowLoadValue`, `_genlType`,
+`genlExpr`, `genlAddr` and `genlGlobalImpl`, the `default:` arm calls
+`errorUnreachable`, which reports and stops; each used to be `assert(0)`, which
+`NDEBUG` compiled out of the Release build. The rest let a tag they do not list
+through, some of them deliberately.
 
 ## Walk state
 

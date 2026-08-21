@@ -40,12 +40,36 @@ TypeLit node, putting in enum and type as constraint") are the same problem seen
 from the coercion side.
 
 One related finding measured with it turned out to be a plain defect rather
-than part of this subject, and now lives in [[Bugs]]: a struct literal's fields
-are matched with exact type equality instead of coercion, so a variant literal
-is refused in a field though the same coercion is accepted in a variable
-initializer. It is listed there because the compiler's own inconsistency settles
-what the right answer is — nothing about bidirectional inference has to be
-decided first.
+than part of this subject, and is fixed by [[Bugs]]: a struct literal's fields
+were matched with exact type equality instead of coercion, so a variant literal
+was refused in a field though the same coercion is accepted in a variable
+initializer. `typeLitStructCheck` coerces now. It was fixable ahead of this item
+because the compiler's own inconsistency settled what the right answer was —
+nothing about bidirectional inference had to be decided first.
+
+*The array literal's elements were the same defect, and are fixed with it:* they
+now fold to a common supertype the way `if` folds its branches, and are coerced
+to what they meet at. Establishing that took the same argument — a variant is
+accepted as a variable's value, as a struct literal's field and as an `if`
+branch, so the array literal refusing it was the compiler contradicting itself.
+
+**What remains is this item's, and it is the other half of the same line.**
+`inodeTypeCheck` dispatches `arrayLitTypeCheck` **without** `expectType`, where
+the `BlockTag` and `IfTag` arms immediately beside it pass it through. So an
+array literal folds its elements among themselves and the result is matched
+against the declared type afterward rather than coerced to it:
+
+```cone
+imm ok i64 = 1                  // accepted
+imm arr [3; i64] = [1, 2, 3]    // Error 1013: does not match declared type
+mut a [4; u8] = [4u8, 10u8, 12u8, 40u8]   // the suffixes are why
+```
+
+Threading `expectType` in is one line at the dispatch; what it needs first is an
+answer to what an array literal does with an expected array type — whether the
+declared dimension constrains the element count, and whether a number literal
+element adopts the declared element type. That is this item's question, and it
+is the same one the entries above ask.
 
 ### Branch inference cannot meet two references differing only in permission
 

@@ -22,11 +22,17 @@ Backend thoughts
 
 ## Observations from writing `design/phases/generation.md`
 
-Read from source, unverified. The plainly-defective ones moved to [[Bugs]]:
-`itypeMangle`'s always-true ternary, the `genlAddr`/`genlExpr` tag mismatch on a
-tuple element, `genlBlock`'s asymmetric phi guard, `genlConvert`'s
-uninitialized vtable pointer and its duplicated struct conversion, the possibly
-dead `genlAddr` `FnDclTag` arm, and the hardcoded debug file name.
+Read from source, unverified. The plainly-defective ones went to [[Bugs]] and
+are now fixed: `itypeMangle`'s always-true ternary, the `genlAddr`/`genlExpr`
+tag mismatch on a tuple element, `genlBlock`'s asymmetric phi guard,
+`genlConvert`'s uninitialized vtable pointer and its duplicated struct
+conversion, the dead `genlAddr` `FnDclTag` arm, and the hardcoded debug file
+name.
+
+Two of them were worse than read: `&t.0` segfaulted, because the tag mismatch
+sent the field access into a case label below it that read it as a string
+literal; and the duplicated struct conversion's surviving copy allocated
+mid-block, so `x into <struct>` in a long loop overflowed the stack.
 
 Three stay here, because each needs a decision rather than a repair:
 

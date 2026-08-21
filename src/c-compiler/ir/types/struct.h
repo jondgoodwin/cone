@@ -59,6 +59,9 @@ void structPrint(StructNode *node);
 // Name resolution of a struct type
 void structNameRes(NameResState *pstate, StructNode *node);
 
+// Unwrap one inheritance hop: the declaration of the trait this type extends
+StructNode *structBaseTraitDcl(StructNode *node);
+
 // Get bottom-most base trait for some trait/struct, or NULL if there is not one
 StructNode *structGetBaseTrait(StructNode *node);
 

@@ -51,6 +51,21 @@ fn makeArr() [3; i32] {
 
 // -------- literals --------
 
+// A union, for the literal below whose elements have to meet at it. 'union'
+// owns unions; what the array group needs from one is two element types that
+// are not the same and do have a type in common.
+union Boxy {
+  kind i32
+
+  struct Wide {
+    n i32
+  }
+
+  struct Tall {
+    n i32
+  }
+}
+
 fn literals() {
   // A declared '[N; T]' type initialized from a literal that spans two lines.
   // An unsuffixed integer literal is i32, so a u8 array needs the suffix on
@@ -77,6 +92,27 @@ fn literals() {
   mut later [2; i32]
   later = [5, 6]
   show("declared-then-assigned", later[1])
+
+  // The elements settle on one type by meeting at a common supertype, not by
+  // matching the first element exactly: two variants of a union meet at the
+  // union, and the third element then meets the type already reached rather
+  // than a sibling. Until that worked, an array literal was the one construct
+  // that refused a variant where its union was wanted -- a variable
+  // initializer, a struct literal's field and an 'if' all accept it. The
+  // elements are coerced to the type they met at, which is what makes them the
+  // union's size rather than each variant's; reading a field of one is how that
+  // is visible from here.
+  imm boxes = [Wide[1, 4], Tall[2, 5], Wide[1, 6]]
+  show("variants-meet-at-the-union", boxes[1].kind)
+  show("variants-meet-third-element", boxes[2].kind)
+
+  // It is the general fold and not a union rule: two number widths meet at the
+  // wider one here exactly as they do across 'if' branches, which
+  // typemgmt-success asserts from the other side. Signed against unsigned still
+  // has no type in common, which array-reject-shape holds.
+  imm narrow i16 = 3
+  imm wide i64 = 4i64
+  show("number-widths-meet", i32[[narrow, wide][1]])
 }
 
 // -------- indexing --------

@@ -418,7 +418,7 @@ LLVMTypeRef _genlType(GenState *gen, char *name, INode *typ) {
         return genlType(gen, ((TypedefNode *)typ)->typeval);
 
     default:
-        assert(0 && "Invalid vtype to generate");
+        errorUnreachable(typ, "a type code generation has no case for");
         return NULL;
     }
 }

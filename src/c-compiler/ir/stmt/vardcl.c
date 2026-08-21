@@ -38,6 +38,7 @@ VarDclNode *newVarDclFull(Name *namesym, uint16_t tag, INode *type, INode *perm,
     name->scope = 0;
     name->index = 0;
     name->llvmvar = NULL;
+    name->genname = &namesym->namestr;
     name->flowflags = 0;
     name->flowtempflags = 0;
     return name;

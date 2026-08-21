@@ -190,7 +190,10 @@ void inodePrintNode(INode *node) {
 
 // Serialize the program's IR to dir+srcfn
 void inodePrint(char *dir, char *srcfn, INode *pgmnode) {
-    irfile = fopen(fileMakePath(dir, pgmnode->lexer->fname, "ast"), "wb");
+    // Name the dump after the source compiled. The program node's own lexer is
+    // the "init" pseudo-source corelib is injected from, so every compile used
+    // to overwrite one init.ast.
+    irfile = fopen(fileMakePath(dir, srcfn, "ast"), "wb");
     inodePrintNode(pgmnode);
     fclose(irfile);
 }
@@ -295,7 +298,8 @@ void inodeNameRes(NameResState *pstate, INode **node) {
     case FnOverloadDclTag:
         break;
     default:
-        assert(0 && "**** ERROR **** Attempting to name resolve an unknown node");
+        errorUnreachable(*node, "a node name resolution has no case for");
+        break;
     }
 }
 
@@ -453,7 +457,8 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     case FnOverloadDclTag:
         fnOverloadDclTypeCheck(pstate, (FnOverloadDclNode *)*node); break;
     default:
-        assert(0 && "**** ERROR **** Attempting to check an unknown node");
+        errorUnreachable(*node, "a node type check has no case for");
+        return;
     }
 
     // Confirm the declaration has been type checked. *node may have been replaced by
@@ -508,7 +513,7 @@ Name *inodeGetName(INode *node) {
     case EnumTag:
         return ((EnumNode*)node)->namesym;
     default:
-        assert(0 && "This kind of node has no namesym field");
+        errorUnreachable(node, "a request for the name of a node that has none");
         return NULL;
     }
 }

@@ -27,25 +27,48 @@ where — print declaration-level entry to `inodeNameRes` and `inodeTypeCheck`,
 including its early return when the work is already done, plus the `blockFlow`
 call in `fnDclTypeCheck`.
 
-For "is this arm reachable?", put `assert(0)` in it and run the suite. Remember
-that `assert` is compiled out under `NDEBUG`, which the Release build defines —
-so use a `fprintf` or a debug build, not an assert, unless you are building
-Debug.
+For "is this arm reachable?", put a `fprintf(stderr, ...)` in it, rebuild, and
+compile against it — the suite first, then sources written to try to get there.
+**Never an `assert`**: `NDEBUG` compiles it out of the Release build, which is
+the only build the runner uses. This is how the audit of the twenty-two
+"unreachable" sites found the three a source actually reaches; reading the code
+had not found them.
+
+For the inverse question — "does the report still look right when it fires?" —
+there is nothing to run. `ErrorUnreachable` is the one diagnostic that
+deliberately has no scenario, because a source that provoked it would be a bug
+report rather than a test case, so nothing in the corpus exercises its reporting
+path. Provoke it by hand: put a line *ahead of* the switch in a function that is
+reached constantly, intercepting a tag that certainly arrives.
+
+```c
+// temporary, ahead of _genlType's switch
+if (typ->tag == FloatNbrTag) errorUnreachable(typ, "provoked");
+```
+
+Rebuild, compile anything, and check all four parts: the code, the source
+position, the "as instantiated by" trace where the site is reached inside a
+generic expansion, and exit 6. Pick a tag the switch already handles — the point
+is to fire from somewhere real source reaches, not to find a gap.
+
+**Then take the line out.** A probe of this shape is a compile error on any
+branch where `errorUnreachable` is not yet declared, so one left behind breaks
+the build for whoever picks that tree up next, and looks like deliberate work
+rather than a leftover.
 
 ## Reading what the compiler produced
 
 | Flag | Writes | Use it for |
 | --- | --- | --- |
-| `--ir` | a Cone IR/AST dump — **written to `init.ast`**, not `<srcname>.ast`; the name comes from the corelib pseudo-source | what a phase built or lowered a construct into |
+| `--ir` | a Cone IR/AST dump, written to `<srcname>.ast` — `inodePrint` names it after the source compiled, not after the corelib pseudo-source the program node's own lexer points at | what a phase built or lowered a construct into |
 | `--llvmir` | **two** files, `<name>.preir` before optimization and `<name>.ir` after | what generation emitted. Read `.preir` — `.ir` has been through mem2reg and GVN and no longer resembles the emission |
 | `--checktree` | nothing, unless it finds a hole | an expression node with no `vtype`, or a block with no statements. `test/run.py` passes it on every compile |
 | `--verify` | LLVM's own module verification | malformed IR — a phi with the wrong predecessors, a truncation of a pointer |
 | `--asm` | `.asm`/`.s`, or `.wat` under `--wasm` | the final instruction selection |
 
-**`--verify` is off by default, and the compiler does emit invalid IR.** A
-loop-as-expression whose breaks all carry `nil` emits a phi with no incoming
-entries; without `--verify` that is written out silently. Turn it on whenever a
-change touches basic blocks or phis.
+**`--verify` is off by default**, so malformed IR is written out silently unless
+you ask. No corpus scenario fails it today, but the corpus is the only thing it
+has been run over. Turn it on whenever a change touches basic blocks or phis.
 
 The output directory must already exist and each run writes several files, so
 use a git-ignored directory such as `build/probe/`.
@@ -61,7 +84,7 @@ python test/run.py
 ```
 
 `--list` prints what would run; a group, scenario, check name or `tag:<phase>`
-narrows it. `--build` builds first. `design/test-suite.md` is the authoring
+narrows it. `--build` builds first. [Test Suite](test-suite.md) is the authoring
 guide.
 
 **A stale `conec` fails good sources in ways indistinguishable from a language

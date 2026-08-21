@@ -401,6 +401,29 @@ fn nested() {
   return
 }
 
+// A finalizer makes its type a move type -- there is no sense in copying a value
+// that will be finalized -- and that infection propagates up the base trait of
+// every type that extends one. The walk up never advanced its cursor, so
+// declaring this pair hung the compiler outright: no output, no diagnostic. The
+// assertion is that this file compiles at all, and the runner's timeout is what
+// catches a regression.
+trait Meter {
+  reading i32
+}
+
+struct Gauge extends Meter {
+  scale i32
+
+  fn final(self &uni) {
+    finalized = finalized + 1000
+  }
+}
+
+fn extended() {
+  mut g = Gauge[7, 2]
+  return
+}
+
 fn finalizers() {
   finalized = 0
   scoped()
@@ -409,6 +432,10 @@ fn finalizers() {
   finalized = 0
   nested()
   show("finalizer-and-field-ran", finalized)
+
+  finalized = 0
+  extended()
+  show("finalizer-on-extending-struct-ran", finalized)
 }
 
 fn main() i32 {

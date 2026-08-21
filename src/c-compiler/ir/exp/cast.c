@@ -143,10 +143,19 @@ void castTypeCheck(TypeCheckState *pstate, CastNode *node) {
         if (fromtype->tag == UintNbrTag || fromtype->tag == IntNbrTag || fromtype->tag == FloatNbrTag)
             return;
         break;
+    // A reference is reached from a virtual reference, which is the
+    // auto-generated downcast, or from another reference, which the block above
+    // has already turned back into a bitcast. Not from a pointer: a reference
+    // carries a region, a permission and a lifetime, and a raw pointer supplies
+    // none of them, so there is nothing to build one out of. This used to fall
+    // through into the pointer case and be accepted, and genlConvert has no arm
+    // for it -- 'p into &i32' reached the arm's assert, which a Release build
+    // compiles out, and died on a null LLVM value. 'p as &i32' is the spelling
+    // for keeping the bits, and it generates a bitcast.
     case RefTag:
-        if (fromtype->tag == VirtRefTag)
+        if (fromtype->tag == VirtRefTag || fromtype->tag == RefTag)
             return;
-        // Deliberate fall-through here
+        break;
     case PtrTag:
         if (fromtype->tag == RefTag || fromtype->tag == PtrTag)
             return;

@@ -9,8 +9,8 @@ Type check **never checks a template** — only clones. `genericSubstitute` from
 call either memo-hits an existing instance or clones a new one. Flow and
 generation see only instances, reachable **only** through `memonodes`.
 
-*Provenance: read from source; the parameter-leak escalation and the symbol
-collision were measured.*
+*Provenance: read from source; the symbol collision was measured. The
+parameter-leak escalation this note used to list was measured, then fixed.*
 
 ## Shape
 
@@ -62,7 +62,10 @@ their own `memonodes`.
 
 **There is no `genericNameRes`**, because there is no generic node. A generic
 function is resolved by `fnDclNameRes`, a generic type by `structNameRes` — the
-same functions that handle non-generic ones, with a `genericinfo` prologue.
+same functions that handle non-generic ones, with a `genericinfo` prologue. That
+prologue pushes the hook table *first* and resolves the parameters inside it,
+because resolving one hooks it: done beforehand, the parameter would bind in the
+enclosing scope and the matching pop would never remove it.
 
 Two consequences that define the phase boundary:
 
@@ -148,15 +151,15 @@ return type is not mangled. A generic *type*'s methods recover their arguments
 from `self`'s type through `itypeMangleNamed`, which is why
 `fn tally(self) i64` does not collide across instances.
 
+`itypeMangle` writes a named type through `itypeMangleNamed`, and the structural
+types under their own punctuation: `&`/`+`/`<` for the three reference kinds,
+`*` for a pointer, `(a,b)` for a tuple, `[n;elem]` for an array, `f(parms)ret`
+for a signature, `v` for void. The last four were added after a generic
+instantiated at a tuple, an array, a function reference or void was found to
+mangle to **nothing**, so every such instance of one generic shared a name.
+
 ## Hazards
 
-- **A generic parameter leaks into the enclosing module.** All three `*NameRes`
-  sites resolve `parms` *before* `nametblHookPush`, and `gVarDclNameRes` hooks
-  unconditionally. Measured, with three severities: a valid program rejected
-  (the leak shadows a real module type, forward only); an invalid one silently
-  accepted (a template is never checked); and a **hard compiler abort** on
-  instantiation — `Internal error: cloning is not implemented for a node of tag
-  57345`, no source location.
 - **`cloneNode`'s `GenVarUseTag` arm has no guard.** It re-enters `cloneNode` on
   a *global* whose value at type-check time need not be what name resolution
   saw. NULL yields NULL silently; an unhandled tag kills the compile. This one
@@ -164,7 +167,7 @@ from `self`'s type through `itypeMangleNamed`, which is why
 - **A clone must clear the type check marks**, or the instance silently skips
   its own check. Only four clone functions do; every other copies `flags`
   verbatim. A new declaration-bearing node kind inherits the bug.
-- **Two instances can collide on one symbol.** Measured: `fn tag[T](a i32) i32`
+- **Two instances can still collide on one symbol.** Measured: `fn tag[T](a i32) i32`
   instantiated at `i32` and `f32` emits `@"tag:i32"` and `@"tag:i32.1"` —
   because `T` appears in no parameter, both mangle identically and LLVM
   disambiguates *within the module only*. Under `linkonce`, across object files
@@ -173,15 +176,12 @@ from `self`'s type through `itypeMangleNamed`, which is why
 - **`--checktree` has the coverage exactly inverted.** It descends into
   templates, which are never type checked, and never into instances, because
   `memonodes` is not in its switch.
-- **`ErrorManyArgs` is overloaded** across three distinct conditions — wrong
-  arity, non-type argument, and "expects arguments to be provided" — against the
-  project rule that each diagnostic gets its own code.
 - **`MacroDclNode.memonodes` is dead**, and `GenericNameTag` is assigned by
   nothing.
 
 ## What lives elsewhere
 
 - Instantiation scheduling, depth bounding, and why the marks cannot police it: [Type Check Phase](../phases/type-check.md), "Generics and macros"
-- Hooking, and what the leak escapes from: [Name Resolution](../phases/name-resolution.md), "Hooking"
+- Hooking, and what a pushed table scopes: [Name Resolution](../phases/name-resolution.md), "Hooking"
 - Symbol naming and `linkonce`: [Generation](../phases/generation.md)
 - Cloning a struct, and the `Self` rebinding: [struct](struct.md)

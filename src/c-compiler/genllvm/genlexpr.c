@@ -384,7 +384,8 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
         break;
     }
     default:
-        assert(0 && "invalid type of function call");
+        errorUnreachable((INode*)fndcl, "a function declaration whose value is neither a block nor an intrinsic");
+        break;
     }
 
     return fncallret;
@@ -468,8 +469,10 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
 
     case StructTag:
     {
-        // LLVM does not bitcast structs, so this store/load hack gets around that problem
-        LLVMValueRef tempspaceptr = LLVMBuildAlloca(gen->builder, genlType(gen, fromtype), "");
+        // LLVM does not bitcast structs, so this store/load hack gets around that problem.
+        // genlAlloca puts it in the entry block: a mid-block alloca inside a loop
+        // is a new frame slot per iteration, which mem2reg does not promote.
+        LLVMValueRef tempspaceptr = genlAlloca(gen, genlType(gen, fromtype), "");
         LLVMValueRef store = LLVMBuildStore(gen->builder, genexp, tempspaceptr);
         LLVMValueRef castptr = LLVMBuildBitCast(gen->builder, tempspaceptr, LLVMPointerType(genlType(gen, totype), 0), "");
         return LLVMBuildLoad(gen->builder, castptr, "");
@@ -484,8 +487,13 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
         }
         else if (fromtype->tag == RefTag)
             return LLVMBuildBitCast(gen->builder, genexp, genlType(gen, totype), "");
-        else
-            assert(0 && "Unknown type to convert to reference");
+        else {
+            // castTypeCheck accepts a reference target from a virtual reference
+            // or another reference and nothing else. A pointer source used to
+            // reach here through a fall-through in that table.
+            errorUnreachable(exp, "a conversion to a reference from something that is not one");
+            return NULL;
+        }
     }
 
     case ArrayRefTag:
@@ -503,8 +511,13 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
             aref = LLVMBuildInsertValue(gen->builder, aref, size, 1, "size");
             return aref;
         }
-        else
-            assert(0 && "Unknown type to convert to array reference");
+        else {
+            // castTypeCheck has no slice arm at all, so every 'into &[]T' is
+            // already refused as an unsupported conversion; the only thing
+            // that builds a slice here is the coercion from a ref-to-array
+            errorUnreachable(exp, "a conversion to a slice reference from something that is not a reference");
+            return NULL;
+        }
     }
 
     case VirtRefTag:
@@ -517,7 +530,7 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
         if (vtable->llvmvtable == NULL)
             genlVtable(gen, vtable);
 
-        LLVMValueRef vtablep;
+        LLVMValueRef vtablep = NULL;
         if (!(strnode->flags & TraitType)) {
             VtableImpl *impl;
             INode **nodesp;
@@ -529,6 +542,10 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
                     break;
                 }
             }
+            // Every reachable coercion registers its implementation during type
+            // check, so a miss means an invariant broke rather than bad source.
+            if (vtablep == NULL)
+                errorExit(ExitGen, "No vtable implementation registered for this struct");
         }
         else {
             // Use tag field to lookup correct vtable
@@ -546,6 +563,8 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
                     vtablep = LLVMBuildLoad(gen->builder, vtablep, "");
                 }
             }
+            if (vtablep == NULL)
+                errorExit(ExitGen, "Virtual reference source trait has no tag field");
         }
         LLVMValueRef vref = LLVMGetUndef(genlType(gen, totype));
         LLVMTypeRef vptr = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
@@ -562,13 +581,7 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
             return LLVMBuildBitCast(gen->builder, genexp, genlType(gen, totype), "");
 
     default:
-        if (totype->tag == StructTag) {
-            // LLVM does not bitcast structs, so this store/load hack gets around that problem
-            LLVMValueRef tempspaceptr = genlAlloca(gen, genlType(gen, fromtype), "");
-            LLVMValueRef store = LLVMBuildStore(gen->builder, genexp, tempspaceptr);
-            LLVMValueRef castptr = LLVMBuildBitCast(gen->builder, tempspaceptr, LLVMPointerType(genlType(gen, totype),0), "");
-            return LLVMBuildLoad(gen->builder, castptr, "");
-        }
+        // A struct destination cannot reach here: StructTag is a case above.
         return LLVMBuildBitCast(gen->builder, genexp, genlType(gen, totype), "");
     }
 }
@@ -698,7 +711,11 @@ LLVMValueRef genlIsType(GenState *gen, CastNode *isnode) {
                 return LLVMBuildICmp(gen->builder, LLVMIntEQ, diff, zero, "isvtable");
             }
         }
-        assert(0 && "Could not find specialized type's vtable");
+        // The coercion that built the virtual reference is what registers a
+        // concrete type in the trait's vtable, and a narrowing arm naming a
+        // type registers it too
+        errorUnreachable((INode*)isnode, "a narrowing whose concrete type has no entry in the reference's vtable");
+        return NULL;
     }
 
     // Special handling for nullable pointers
@@ -733,7 +750,9 @@ LLVMValueRef genlIsType(GenState *gen, CastNode *isnode) {
             return LLVMBuildICmp(gen->builder, LLVMIntEQ, val, tagval, "istag");
         }
     }
-    assert(0 && "Should not reach here, because type check ensures type has a tag field");
+    // castIsTypeCheck refuses a downcast whose source struct has no tag field,
+    // and the target is a subtype of that source, so it carries the tag too
+    errorUnreachable((INode*)isnode, "a narrowing to a type carrying no tag field");
     return NULL;
 }
 
@@ -798,10 +817,11 @@ static int genlIsNullablePtrField(FnCallNode *fncall) {
 // Generate an lval-ish pointer to the value (vs. load)
 LLVMValueRef genlAddr(GenState *gen, INode *lval) {
     switch (lval->tag) {
-    case FnDclTag:
-        genlGloFnName(gen, (FnDclNode *)lval);
-        genlFn(gen, (FnDclNode*)lval);
-        return ((FnDclNode*)lval)->llvmvar;
+    // There is no FnDclTag case. A name bound to a function resolves to a
+    // VarNameUseTag (nameUseNameRes), and an anonymous function is lifted to
+    // module scope and reached the same way, so no bare FnDclNode arrives here.
+    // The one that used to be here called genlFn, which is not idempotent and
+    // would have appended a second entry block to an already-generated function.
     case VarNameUseTag:
     {
         // A name may refer to a variable's storage or to a generated function
@@ -853,7 +873,10 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
             return LLVMBuildGEP(gen->builder, genlExpr(gen, fncall->objfn), &index, 1, "");
         }
         default:
-            assert(0 && "Unknown type of arrindex element indexing node");
+            // fnCallArrIndex is the only thing that builds an ArrIndexTag, and
+            // it accepts exactly the five receiver types above
+            errorUnreachable(lval, "an index whose receiver is not an array, slice or pointer");
+            return NULL;
         }
     }
     case FldAccessTag:
@@ -878,12 +901,18 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
             }
             return LLVMBuildStructGEP(gen->builder, genlAddr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
         }
-        else if (fncall->methfld->tag == UintNbrTag) {
+        // A tuple element is reached by index, which fnCallLowerIntField leaves
+        // as the ULitNode the source wrote. UintNbrTag is that literal's *type*,
+        // so testing for it never matched -- and with asserts compiled out,
+        // control fell into the next case and read this node as a string literal.
+        else if (fncall->methfld->tag == ULitTag) {
             ULitNode *ulit = (ULitNode*)fncall->methfld;
             return LLVMBuildStructGEP(gen->builder, genlAddr(gen, fncall->objfn), (unsigned int)ulit->uintlit, "");
         }
-        else
-            assert(0 && "Invalid FldAccess methfld.");
+        // All three places that build a FldAccessTag set methfld to a member
+        // name use or to the tuple index literal
+        errorUnreachable(lval, "a field access naming neither a member nor a tuple index");
+        return NULL;
     }
     case StringLitTag:
     {
@@ -905,7 +934,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
             LLVMBuildStore(gen->builder, genlExpr(gen, lval), temparray);
             return temparray;
         }
-        assert(0 && "Cannot get address of this node");
+        errorUnreachable(lval, "a request for the address of a node that has none");
         return NULL;
     }
     }
@@ -1039,8 +1068,10 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
             ConstDclNode *constdcl = (ConstDclNode*)vardcl;
             return genlExpr(gen, constdcl->value);
         }
-        else
-            assert(0 && "Unknown DclNode");
+        else {
+            errorUnreachable(termnode, "a name use bound to a declaration that is neither a variable nor a constant");
+            return NULL;
+        }
     }
     case AliasTag:
     {
@@ -1116,8 +1147,9 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
                 return LLVMBuildExtractValue(gen->builder, genlExpr(gen, fncall->objfn), (unsigned int)ulit->uintlit, "");
             }
         }
-        else
-            assert(0 && "Invalid FldAccess methfld.");
+        // See genlAddr: methfld is a member name use or a tuple index literal
+        errorUnreachable(termnode, "a field access naming neither a member nor a tuple index");
+        return NULL;
     }
     case SwapTag:
     {
@@ -1238,7 +1270,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     case IfTag:
         return genlIf(gen, (IfNode*)termnode); break;
     default:
-        assert(0 && "Unknown node to genlExpr!");
+        errorUnreachable(termnode, "an expression node code generation has no case for");
         return NULL;
     }
 }
