@@ -44,55 +44,70 @@ entry in its "What the model has not decided" section.
 - **A module is a namespace, and modules nest** by path within a package, which
   keeps package names themselves flat. A package correlates to one top-level
   module.
-- **A module may span source files**, each file belonging to exactly one module.
 - **Modules and types share namespace machinery and differ in state** — a
   module's state is global and singleton with no `self`, a type's is per-instance
   through `self`. A module holding one type is therefore a type at the package's
   top level, not a special construct.
-- **`import` names a package** and marks its declarations externally supplied,
-  subsuming `extern` for Cone packages.
+- **`mod` is a block**, carried by one designated file per module folder, named
+  for the folder; sibling files auto-include into it. A subfolder is a submodule
+  only if it holds its own designated file declaring a `mod`, and a module
+  folder must be a direct child of its parent module's folder. The module's name
+  comes from the `mod` declaration and is conventionally, not necessarily, the
+  folder's. The compiler is pointed at one file and walks outward; `src/` and the
+  package name are congo's layout convention and the compiler never sees them.
+- **`mod X[T]:` parses from the start.** Generic-module semantics land with
+  module polymorphism, and accepting the syntax now means no source is rewritten
+  when they do.
+- **`import` names a package**, resolved through the search path rather than by
+  file path, and marks its declarations externally supplied — subsuming `extern`
+  for Cone packages. A module imports a package at most once: an identical
+  repeat is ignored, a differing one is an error.
+- **Folding accumulates into the one module namespace.** No file-level scope; the
+  namespace's existing uniqueness rule reports collisions. A spelling cannot be
+  aliased two ways within one module.
+- **`use` states what to fold** — `import opengl use setColor, sub::* except
+  green` for a package, and standalone `use matrix::*` for a namespace already
+  in scope. `using` stays reserved so it can be diagnosed.
 - **`include` is retired**, but not before the C-shim question below is answered.
 
 ### Still open, in the order to take them
 
-1. **How a module's source files are found.** Folder tree authoritative (Java,
-   Python, Go), a declaration in each file authoritative (.NET), or folder
-   default with an override. `mod` is separately ambiguous between declaring
-   *which module this file belongs to* and declaring a *nested module inline
-   within a file*; Rust has both, and Cone must choose which it wants. Blocks
-   step 3.
-2. **How a C library becomes a Cone package.** `extern` moves rather than
+1. **How a C library becomes a Cone package.** `extern` moves rather than
    disappears: it becomes how a package declares symbols supplied by something
    the compiler cannot read. Needs a name-to-C-symbol mapping, calling
    convention, `trust`, opaque types, and a decision on whether such a package is
    hand-written Cone or generated. `--safe=package` is the policy half. Carries
    the old note that `FlagExtern` should become a collection of globals in an
-   "extern" module. **Blocks retiring `include`**, since packaging an `extern`
-   block into an include file is what the sample projects use it for.
-3. **Where a folded name lives, and the idiom for reaching a package's
-   members.** There is no file-level scope in the IR: does a source file become
-   a lookup scope between block scopes and the module namespace, and what does
-   that do to one-namespace-one-uniqueness-domain? Alongside it, what a caller
-   writes to reach a single-type package without saying the name twice —
-   `bigint::BigInt`. A module with no global state is pure namespace, and much
-   library code needs none, so this shape will be common. Blocks steps 3 and 5.
-4. **How far the module/type convergence goes.** Whether a module may be
-   generic, may declare or implement an interface, whether a package's top-level
-   module may be parameterized, and whether folding into a module and into a type
-   are literally one operation — the last being delegated inheritance. Only the
-   final question blocks anything before step 10.
+   "extern" module. **Blocks retiring `include`, and blocks step 4**, since
+   `stdio`'s methods call into `conestd`'s C.
+2. **The idiom for reaching a package's members** without saying the name twice
+   — `bigint::BigInt`. Fold at import, name the top-level module independently of
+   the package, convention, or a shortcut rule. A module with no global state is
+   pure namespace and much library code needs none, so this shape will be common.
+3. **What `_` means once modules nest** — private to its module, or to its
+   package. Per-module erects barriers inside a package and pushes names public
+   to cross them; per-package is C#'s `internal` and makes nesting free. Not yet
+   discussed, and it lands on step 3.
+4. **How far the module/type convergence goes.** Whether a module may declare or
+   implement a module trait, whether a package's top-level module may be
+   parameterized, and whether folding into a module and into a type are one
+   operation — the last being delegated inheritance. **Substitution before
+   generativity**: the region protocol wants module traits, not generic modules.
 5. **What a region is.** Module, `region` declaration, or `struct` with an
    `_alloc` — three live descriptions, and a `region` keyword the lexer interns
-   and nothing parses. Most separable; its implementation is step 6 and can run
-   in parallel with everything.
+   and nothing parses. Also whether its protocol is a contract the compiler holds
+   structurally or one written in Cone as a module trait. Its implementation is
+   step 6 and can run in parallel with everything.
 
 Smaller, and to be folded into whichever session they touch:
 
 - **Whether folding transits.** If A folds B's publics and Z folds A's, does Z
   see B's? Posed and left open in `modules-vs-types.md`. **This is the prelude
-  question**, and it belongs with item 3.
-- **How a package is named and found on disk**, and how that relates to the
-  `import` spelling and the manifest. Belongs with item 1.
+  question**, and it belongs with item 2.
+- **The manifest** — what defines a package's name and contents, including files
+  the parser never reads (see [[Metaprogramming]] on compile-time embedded data).
+  Deferred to package support by decision; the compiler needs none of it for
+  steps 1–4.
 - **Compiler options** the model needs — `--pkg-path` and `--safe=package` name
   a concept the language does not have yet.
 
@@ -162,16 +177,25 @@ explaining why nothing there runs comes out.
 
 ## 3. Modules that nest and span files
 
-- Implement whatever step 0's first item decided about finding a module's source
-  files — a folder rule, a per-file declaration, or both — and add the `mod`
-  node if that answer needs one.
+- Add the `mod` node and parse it as a block, with optional generic parameters
+  accepted and unimplemented. Inline nested `mod` blocks parse too.
+- Implement the folder walk: from the file the compiler is given, sibling
+  `.cone` files auto-include into that module; each subfolder is probed for a
+  designated file declaring a `mod` and recursed into as a submodule, or its
+  contents at any depth join the enclosing module. Reject a designated file
+  found beneath an organizational folder — that is the illegal
+  module-under-non-module case, and silently treating it as ordinary files is
+  the confusing failure.
 - Separate import *file* handling from *module* handling; file handling becomes
   a dictionary keyed by path, independent of the module tree.
-- Nested modules: declaration, qualified paths through them, and the visibility
-  rule at each level.
-- Add the file-level scope step 0's third item decided on, so two files in one
-  module can hold different imports.
-- Retire `include`, once step 0's second item has given the C-shim packages that
+- Nested modules: qualified paths through them, and the visibility rule step 0's
+  third item settles.
+- `import` stops accepting paths. `parseFilename`'s string-literal form and the
+  `fileName` reduction exist to serve path-based import and `include`; both go.
+- Enforce one import per package per module: ignore an identical repeat, reject
+  a differing one. Both diagnostics, and the module-wide name collision, must
+  name every file involved and not just the last one parsed.
+- Retire `include`, once step 0's first item has given the C-shim packages that
   replace its one remaining use.
 
 
@@ -202,8 +226,11 @@ needs no compiler rebuild.
 
 ## 5. Complete name folding
 
-Carried in full by [[Using and Module Name-folding]]. Selective names, aliasing,
-`except`, and the transit rule from step 0.
+Carried in full by [[Using and Module Name-folding]]. The `use` clause and its
+standalone form: selective names, `as` renaming, `except` against a wildcard, the
+block form for long lists, and the transit rule from step 0. Switch the lexer's
+reserved `using` to `use`, keeping `using` reserved so it can be diagnosed with
+a suggestion rather than rejected as an unknown statement.
 
 **Dependency to decide before starting.** A renamed fold needs a binding whose
 spelling differs from the definition's while retaining origin and visibility.
@@ -223,7 +250,9 @@ in parallel. Carried by [[Regions]].
 
 - Replace the `isRegion(..., rcName)` / `soName` name dispatch — seven sites
   across `ir/flow.c`, `genllvm/genlalloc.c`, `genllvm/genlexpr.c` and
-  `ir/exp/arraylit.c` — with a region protocol.
+  `ir/exp/arraylit.c` — with a region protocol. It can start as a contract the
+  compiler holds structurally, so this step does not wait on module traits;
+  step 10 later lets the same contract be written in Cone.
 - Generalize the allocation header. `genlRcCounter` finding the count at
   `((usize*)ref) - 1` holds only because `rc` has one `usize` field and a
   zero-sized permission; `genlDealiasOwn` freeing the reference directly holds
@@ -279,9 +308,19 @@ serializes the wrong thing.
 
 ## 10. Module polymorphism
 
-Carried by [[Module generics and traits]]: generic modules and modtrait — module
+Carried by [[Module generics and traits]]: modtrait and generic modules — module
 substitution and generativity, which [[modularity|Modularity]] names as the two
 missing strategies at the module layer.
 
+**Modtraits first.** The demand comes from regions: a region protocol is an
+interface, so substitution is what makes a region fully library code, while a
+generic module is a separate axis. Nothing forces that order technically.
+
+Generic modules bring per-instantiation global state, per-instantiation `init`,
+mangling that encodes the instantiation, and cloning every declaration across
+every file of a module rather than just a type's methods. The syntax parses from
+step 3, so adding the semantics rewrites no source.
+
 Genuinely new design; both drafts that would carry it are outlines. **Nothing in
-0–9 waits on it.** Step 0 need only avoid foreclosing it.
+0–9 waits on it**, though step 6 delivers a compiler-held region contract that
+modtraits would later replace with one written in Cone.

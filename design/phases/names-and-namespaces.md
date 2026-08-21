@@ -192,21 +192,20 @@ Visibility should belong to the original definition or declaration, while access
 
 `include` contributes declarations to the current module. It does not introduce a namespace.
 
-Plain `import math` binds the imported module as `math`; public members are intended to be accessed as `math::name`.
+Plain `import math` binds the imported package as `math`; public members are accessed as `math::name`. A `use` clause states what to fold, and `use` also stands alone for a namespace already in scope:
 
-Documented folding supports:
+```
+import opengl use setColor, sub::* except green
+use matrix::*
+```
 
-- Selectively bringing a member into the importing namespace.
-- Renaming while folding, such as importing `math3d::Point3` as `Point`.
-- Folding all public names with `::*`.
-- Folding any category of name, subject to the importing namespace's single collision domain.
+Folding supports selecting members, renaming with `as`, excluding from a wildcard with `except`, and a block form for a long list. Any category of name may fold, subject to the receiving namespace's single collision domain, and a `use` clause leaves the package name bound as a qualifier. A module imports a package at most once: an identical repeat is ignored, a differing one is an error. Folds from every file accumulate into the one module namespace, so a spelling cannot be aliased two ways within a module. [module](../nodes/module.md) carries the model these rules serve.
 
 Current compiler behavior is narrower:
 
-- Plain module import and wildcard `::*` folding are parsed.
-- Selective folding and `as` renaming are not implemented.
-- Wildcard folding inserts the imported declaration's existing IR node directly into the receiving module namespace.
-- Imported modules are loaded once and reused.
+- `import` takes a file path rather than a package name, and only wildcard `::*` folding is parsed. There is no `use`, no selection, no `as`, no `except`.
+- Wildcard folding inserts the imported declaration's existing IR node directly into the receiving module namespace, so a different local spelling is not expressible.
+- Imported modules are loaded once and reused, keyed on the basename of the path.
 
 The intended NameDef behavior is:
 
@@ -237,8 +236,8 @@ Generic and macro syntax exists in the current compiler, but the website documen
 	- A generic function may not declare an overload name; the parser reports that combination.
 	- Extending a type's overload sets from an extension, generic candidates, and merging matching `extern` declarations with implementations remain deferred.
 - Compile unit handling of duplicate, consistent type `extern` vs. value-specified names.
-- Selective import folding and `as` renaming are documented but unimplemented.
-- Nested named modules are documented but lack clear declaration syntax and parser support.
+- `use`, selective folding, `as` renaming and `except` are designed and unimplemented; `import` still takes a path rather than a package name.
+- Nested modules and the `mod` declaration that carries them are designed and unbuilt; the parser has no `mod`.
 - General aliases beyond `typedef` are not implemented.
 - Generic, macro, union, inheritance, and metaprogram namespace behavior is partly implemented, incomplete, or aspirational.
-- Packages organize importable libraries but are not yet defined as a distinct namespace layer.
+- A package is the compilation unit and correlates to one top-level module, but nothing in the compiler represents one.

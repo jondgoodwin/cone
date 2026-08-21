@@ -222,50 +222,85 @@ natural shape for a value, and it is why a module cannot be nested inside a
 type. A module holding a single type is therefore not a special construct — it
 is a type sitting at the package's top level.
 
+### Source files and folders
+
+A module's source files are the files of a folder, and the folder tree carries
+the module tree:
+
+- **A module folder holds one designated file, named for the folder** —
+  `matrix/matrix.cone`. It alone carries the `mod` block. Every other `.cone`
+  file in the folder is auto-included into that module, exactly as `include`
+  injects a file's global statements today.
+- **A subfolder is a submodule when it holds its own designated file declaring a
+  `mod`**, and organizational otherwise. An organizational folder's files, at
+  any depth beneath it, belong to the enclosing module. This is what lets a
+  forty-file module group its files by topic without minting namespaces for
+  them.
+- **A module folder must be a direct child of its parent module's folder.** So
+  the module tree's *shape* mirrors the folder tree's. A designated file found
+  beneath an organizational folder is an error, not a deeper submodule.
+- **A module's name comes from its `mod` declaration**, and is conventionally
+  the folder's name rather than required to be. Structure corresponds; names
+  need not.
+- **The compiler is pointed at one file** and walks outward: siblings join the
+  module, subfolders are probed for their designated file. It needs no package
+  concept to do this. The layout convention that a package's top module lives in
+  `src/` as `<package>.cone` is congo's, and the compiler never sees it.
+
+Two collisions follow and want diagnostics that name full paths: two
+organizational subfolders can each declare the same name into the enclosing
+module, and two sibling module folders can declare the same module name.
+
 ### Composing packages
 
-- **`import` names a package**, and its declarations arrive **externally
-  supplied**: declared for the linker, never defined by this compile. That
-  subsumes `extern` for Cone packages — importing is what marks a name external,
-  and no `extern` keyword is written by the importer.
+- **`import` names a package** — a name resolved through the search path, never
+  a file path — and its declarations arrive **externally supplied**: declared
+  for the linker, never defined by this compile. That subsumes `extern` for Cone
+  packages; the importer writes no `extern` keyword.
+- **A module imports a given package at most once.** A second import of the same
+  package with an identical fold spec is silently ignored; a differing one is an
+  error. Identity is the resolved package plus the normalized fold spec — the
+  wildcard flag and the set of source-name/local-name pairs, order-insensitive.
+- **Folding accumulates into the one module namespace.** There is no file-level
+  scope: any file may write imports, all of them fold into the module, and the
+  namespace's existing uniqueness rule reports a collision. One consequence is
+  deliberate — a spelling cannot be aliased two ways within one module, because
+  within one namespace it is one thing.
+- **`use` states what to fold**, as a clause of `import` for a package and
+  standing alone for a namespace already in scope:
+
+  ```
+  import opengl use setColor, sub::* except green
+  use matrix::*
+  ```
+
+  The fold lives with the declaration when there is one, which is what keeps a
+  package's fold spec in a single place. `except` binds to the wildcard it
+  follows. A `use` clause does not unbind the package name, which stays
+  available as a qualifier. A long list takes a block form. `using` stays
+  reserved so that spelling can be diagnosed rather than merely rejected.
 - **`include` is retired.** A module spanning source files does properly what
   `include` did by injection.
 - **There are no header files.** A package's public interface is inferred from
   its definitions, marked by spelling: a leading `_` is private.
 - **Building a package emits a serialized interface** for importers to read
   instead of re-parsing implementation sources.
-- **Name folding happens at source-file level.**
 
 ### What is implemented
 
-**Almost none of it.** A module is a source file today; there is no package, no
-manifest, no interface artifact, no nesting, and no way to declare a module's
-name independently of the file it was found in. Sections and COMDATs are not
-emitted per function. What does work is the multi-module *generation* path,
-exercised by `stdio` on every compile that prints.
+**Almost none of it.** A module is a source file today. There is no `mod`
+declaration, no nesting, no package, no manifest, no interface artifact, and no
+`use`; `import` takes a file path rather than a package name, folds only with
+`::*`, and cannot rename or exclude. Sections and COMDATs are not emitted per
+function. What does work is the multi-module *generation* path, exercised by
+`stdio` on every compile that prints, and folding into a single module namespace,
+which is what the accumulation rule above asks for.
 
 ## What the model has not decided
 
 Each of these is a question the current mechanism answers by accident, or that
 two documents answer differently. They are recorded here so that work in this
 area starts from what is actually open.
-
-### How a module's source files are found
-
-A module spans files, so something must say which. Three shapes, and the
-decision is not made:
-
-- **The folder tree is authoritative.** Every source file in a directory
-  belongs to the module that directory names, and the module path mirrors the
-  directory path. Java and Python work this way; Go does, minus nesting. No
-  syntax is needed at all.
-- **A declaration in the file is authoritative.** Each file states the module it
-  belongs to, and folder layout is free. .NET works this way.
-- **Folder gives a default, a declaration overrides it.**
-
-`mod` is separately ambiguous between two features, and Rust has both: declaring
-**which module this file belongs to**, and declaring a **nested module inline
-within a file**. Whether Cone wants either, or both, is part of this decision.
 
 ### The idiom for reaching a package's members
 
@@ -308,27 +343,25 @@ packages may use C FFI, is the policy half of the same question.
 **`include` cannot be retired before this exists**, because packaging an
 `extern` block into an include file is what the sample projects use it for.
 
-### Where a folded name lives when a module spans files
-
-Folding is per source file, and `import` today folds into `mod->namespace`, of
-which there is exactly one per module. **There is no file-level scope anywhere
-in the IR** — `include` shares the including module's namespace outright.
-
-Now that modules span files, two files in one module will each want their own
-imports and their own folding choices, and a single module namespace cannot hold
-both. Settling this means deciding whether a source file becomes a lookup scope
-between the block scopes and the module namespace, and what that does to the
-rule that a namespace is one uniqueness domain.
-
 ### How far the module/type convergence goes
 
 Modules and types are meant to share namespace machinery while staying distinct
-in state. What is not settled is how much machinery that is: whether a module
-may be generic, whether a module may declare or implement an interface, whether
-a package's own top-level module may be parameterized, and whether name folding
-into a module and into a type are literally the same operation. The last is the
-one the author has called out as the interesting case — folding applied to types
-is delegated inheritance.
+in state. `mod X[T]:` is accepted syntax from the start so that no source needs
+rewriting when the semantics arrive; what a generic module *means* is not
+settled — per-instantiation global state, per-instantiation `init`, mangling
+that encodes the instantiation, and cloning every declaration across every file
+of the module rather than just a type's methods. Whether a package's own
+top-level module may be parameterized is the sharpest form of the question,
+since importing such a package would mean instantiating it.
+
+**Substitution is wanted before generativity.** A region protocol — a module
+supplying alloc, free, alias and dealias — is an interface, so module traits are
+what the region work is waiting on, and a generic module is a separate axis.
+Nothing forces that order technically; the demand does.
+
+Also unsettled: whether folding into a module and folding into a type are
+literally one operation. That is the case the author has called out as the
+interesting one, since folding applied to types is delegated inheritance.
 
 ### What a region is
 
@@ -355,6 +388,11 @@ which holds only because `so`'s region struct is empty. Seven sites across
 compiled in. Any region beyond those two — arena, pool, tracing collector —
 needs that name dispatch replaced by a protocol and the allocation header
 generalized.
+
+Whether that protocol is a contract the compiler holds structurally — a module
+supplying the right methods — or one written in Cone as a module trait is itself
+open. The first is buildable now; the second is what makes a region fully
+library code.
 
 That a module carries global singleton state, and a type does not, is why the
 region-as-module description is the one that fits the state half; what a region
