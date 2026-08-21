@@ -53,7 +53,7 @@ operator** and whatever iteration protocol arrives with collections. `<-` is
 implemented today and reachable only through stdio's `IOStream`, but it is
 intended for collections and `corelib/` has none, so covering it now would pin
 the operator to the one consumer it is not for. The group appears with the
-collections; see [[Collection - Streams & Iteration]].
+collections.
 
 Three of the rows above have no group directory, and the reasons differ. `exception` and
 `concurrency` are unimplemented down to the keyword table — real chapters, real
@@ -172,11 +172,10 @@ this first.
   one is visible against the others. `struct-typecheck-nosize` is that file for
   `ErrorNoSize` and its five causes.
 
-**Length is not a reason to split**, and this guide used to say it was — "more
-than three to six diagnostics, split by sub-family", with no argument for the
-number. Ten scenarios already exceed it and one carries fifteen, so it described
-nothing the corpus does. Split for one of the reasons above, or because the file
-stops being about one thing; not for a count.
+**Length is not a reason to split.** Ten scenarios carry more than six
+diagnostics and one carries fifteen, so any threshold would describe nothing the
+corpus does. Split for one of the reasons above, or because the file stops being
+about one thing; never for a count.
 
 **A scenario whose subject used to crash the compiler is not a reason to split
 either**, though it costs something worth writing down in the file. If that
@@ -194,7 +193,7 @@ Name the split for what it covers — `core-parse-delimiters`, not `core-parse-1
 assertion, so it cannot even be `xfail`. Exclude it with a written reason in its
 group's `cases.toml` rather than leaving it to be rediscovered — and file the
 crash, because the exclusion is a placeholder for a fix and not a verdict. The
-last set of these is in `workitems/done/`, under [[Diagnose instead of crash]];
+last set of these is in `workitems/done/`;
 the corpus currently has none.
 
 **A construct that silently parses as something else.** `xfail` asserts that a

@@ -28,3 +28,27 @@
 - break/continue
 
 - Review move page in documentation
+## Where a destructuring's alias adjustment attaches
+
+Returning owning references in a tuple is a measured use-after-free followed by
+a double free — `fn pair() +rc-mut i32, +rc-mut i32` frees both before the
+return and the caller decrements them again. **Two independent causes, and the
+symptom is not closed until both are fixed.**
+
+Cause 1 is a plain defect and lives in [[Bugs]]: `flowScopeDealias`'s "do not
+release what is being returned" test only recognizes a bare name use, so a
+`VTupleTag` return matches nothing.
+
+**Cause 2 is this item's, because it needs a decision.** `assignMultRetFlow`
+does no move-or-copy accounting, and cannot simply call
+`flowHandleMoveOrCopy`: the other three assignment paths hold an `INode**` for
+the rval and can replace it with an injected `AliasNode`, while
+`assignMultRetFlow` iterates the return *types*, so there is no per-element
+value node to wrap. Whatever adjustment a destructuring needs has to attach to
+the call as a whole — which is the shape `AliasNode`'s currently-unused `counts`
+array was evidently meant for, and which `genlExpr`'s dead `TTupleTag` arm
+already anticipates.
+
+Settle it with a function returning a tuple of two `+rc-mut` references,
+destructured into two variables, counting the adjustments in `--llvmir` against
+the number of live holders.

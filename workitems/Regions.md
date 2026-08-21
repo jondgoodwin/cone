@@ -108,3 +108,15 @@ here rather than being patched at the one site that noticed.
 
 
 - [Dart and LLVM-safepoint](https://medium.com/dartlang/dart-on-llvm-b82e83f99a70)
+
+## Two dealias holes, moved to [[Bugs]]
+
+`continue` releases no owning reference at all, and `break`/`continue` release
+only their innermost scope rather than every scope up to the block they target.
+Both measured; both now in [[Bugs]] with their repros.
+
+They are recorded there rather than here because neither needs a decision — but
+they are the same shape as the `VarMoved` stopgap above: a release list built
+from a running summary rather than from the path actually taken. **A redesign
+that makes dealiasing path-aware should close all three at once**, and if that
+redesign is imminent it is worth doing instead of the two point fixes.

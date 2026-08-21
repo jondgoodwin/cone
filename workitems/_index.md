@@ -54,11 +54,16 @@
 **Ecosystem**
 - [[Compiler]] Components
 	- [[Lexer and Parser]] [[Syntax - Aggregating operators]]
-	- Analysis: `design/type-check-phase.md` describes how type check is
+	- Analysis: `design/phases/type-check.md` describes how type check is
 	  scheduled. [[Analysis re-factor]] — done; see `workitems/done/`
-	- [[Design Documentation]] — what `design/` still owes: the type
-	  reasoning itself, a flow analysis note, and the naming conventions
+	- [[Design notes follow-on]] — what `design/` still owes.
+	  [[Design Documentation]] built it out; done, see `workitems/done/`
 	- Generation: [[LLVM Generation]] and [[C-ABI Generation]]
+	- [[Vault and repo sync]] — `Cone Vault/` and the repo hold two copies of
+	  these notes and have diverged. Not urgent; recorded so it is known.
+	- [[Bugs]] — defects with a known fix, needing no design decision and no
+	  major refactor. Where an item is part bug and part open question, only the
+	  bug half is there and it names the item holding the rest.
 	- Defects the test suite found, by the decision each needs:
 		- [[Ownership memory safety]] — done; see `workitems/done/`
 		- [[Diagnose instead of crash]] — done; see `workitems/done/`

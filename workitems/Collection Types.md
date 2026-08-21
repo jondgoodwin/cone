@@ -50,4 +50,3 @@ strz is an immutable only "ptr" type
 - Resize / Append    
 - search ?  & other things D does?
 
-- assignLvalInfo needs to invoke flowLoadValue on array indexes?

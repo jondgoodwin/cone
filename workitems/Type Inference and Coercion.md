@@ -39,10 +39,13 @@ entries below ("Test for i32 -> ?i32 coercion in structs", "Coerce => Build
 TypeLit node, putting in enum and type as constraint") are the same problem seen
 from the coercion side.
 
-Two related findings measured with it, both confirmed on a tagged union so
-neither belongs to the nullable-pointer layout: a variant literal **does not
-coerce to its union in a struct literal's field**, though the same coercion in a
-variable initializer is accepted.
+One related finding measured with it turned out to be a plain defect rather
+than part of this subject, and now lives in [[Bugs]]: a struct literal's fields
+are matched with exact type equality instead of coercion, so a variant literal
+is refused in a field though the same coercion is accepted in a variable
+initializer. It is listed there because the compiler's own inconsistency settles
+what the right answer is — nothing about bidirectional inference has to be
+decided first.
 
 ### Branch inference cannot meet two references differing only in permission
 

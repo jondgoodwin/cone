@@ -67,7 +67,7 @@ The same mechanism should address other cases where name resolution currently ru
 [[Analysis re-factor]]: `TypeChecking` and `TypeChecked` on every declaration, read
 rather than refused, so a forward reference analyzes what it names, finished work
 is not repeated, and a true cycle reports `ErrorCircular` or `ErrorNoSize`
-instead of recursing. `design/type-check-phase.md` is the design and the corpus has the
+instead of recursing. `design/phases/type-check.md` is the design and the corpus has the
 tests. Two things that item deliberately did *not* do and this one may still
 want: name resolution stays one eager pass with a global gate, because binding a
 name needs the declaration to exist rather than to be analyzed; and no `Failed`

@@ -1,3 +1,11 @@
+This note is the **rules**: what a name means, how lookup, visibility,
+qualification, imports, aliases and overloading are supposed to behave, and
+where the compiler does not yet match. Parts of it describe intended rather than
+current behavior, and say so.
+
+[Name Resolution](name-resolution.md) is the **mechanism** — how the walk
+implements these rules, what it retags, and where it stops. Change a rule here;
+change how it is carried out there.
 
 A namespace maps each of its names, each with its own spelling in that namespace, to one binding. A namespace has a single uniqueness domain for its names, regardless of whether the names refer to a module, type, value, function, field, method, macro, generic, or other kind of declared name. This is essentially true of overloaded functions or methods as well.
 
@@ -41,7 +49,7 @@ changing it.
 
 | C file | Name/namespace capability |
 | --- | --- |
-| `src/c-compiler/ir/exp/nameuse.c` | Represents name and member uses, stores qualification paths, resolves qualified paths through module/type namespaces, resolves unqualified names through hooks, retags uses by declaration kind, and lowers bare fields to `self.field`. |
+| `src/c-compiler/ir/exp/nameuse.c` | Represents name and member uses, stores qualification paths, resolves qualified paths through module/type namespaces, resolves unqualified names through hooks, and retags uses by declaration kind. Binding a bare field name is here; **lowering it to `self.field` is `nameUseTypeCheck`'s**, because building that call node needs a type to check it against. |
 | `src/c-compiler/ir/exp/block.c` | Pushes lexical scope hooks, binds labeled lifetimes, resolves statements in declaration order, and restores outer bindings on block exit. |
 | `src/c-compiler/ir/stmt/fndcl.c` | Establishes function generic-parameter and value-parameter bindings while resolving signatures and bodies. |
 | `src/c-compiler/ir/stmt/vardcl.c` | Resolves an initializer before binding its local variable, enforces same-scope uniqueness, and permits nested shadowing through scope hooks. |
@@ -55,7 +63,7 @@ changing it.
 | --- | --- |
 | `src/c-compiler/ir/instype.c` | Provides shared namespaced-type operations, binding of each concrete function/method name and of its separate overload node, field/method lookup, and all-candidate method selection. |
 | `src/c-compiler/ir/types/struct.c` | Owns struct/trait member namespaces, inserts fields and `Self`, hooks members and generic parameters during resolution, and performs inherited member lookup/collision checks. |
-| `src/c-compiler/ir/exp/fncall.c` | Resolves fields and overloaded methods from type namespaces, lowers member access/calls, inserts implicit `self`, and finds `init` for type calls. |
+| `src/c-compiler/ir/exp/fncall.c` | Resolves fields and overloaded methods from type namespaces, lowers member access/calls, inserts implicit `self`, and finds `init` for type calls. **All of this is `fnCallTypeCheck`'s**, not name resolution's — `fnCallNameRes` walks `objfn` and the arguments and deliberately leaves `methfld` alone, since selecting a member needs the receiver's type. |
 | `src/c-compiler/ir/meta/macro.c` | Establishes macro parameter scope and resolves names in macro bodies before expansion. |
 | `src/c-compiler/ir/meta/genvardcl.c` | Binds generic variables into the active resolution scope. |
 
@@ -174,7 +182,9 @@ Documented Cone visibility is spelling-based:
 - A type member beginning with `_` is private to its type.
 - Other names are public.
 
-The current compiler recognizes leading-underscore privacy in selected code-generation and member-access paths, but module-qualified lookup and import folding do not consistently enforce the documented rule.
+The compiler enforces this on the paths that can reach a private name: `nameUseNameRes` reports `ErrorNotPublic` for a `_`-prefixed name reached through a module qualifier from outside its module, `importNameRes` skips private nodes when folding, and `fnCallLowerMethod` refuses a private member on a receiver that is not `self`.
+
+One consequence is deliberate and worth knowing: **visibility is checked against the spelling the caller used**, so a public overload name may legitimately select a private concrete candidate.
 
 Visibility should belong to the original definition or declaration, while access is evaluated from the use site. A folded or renamed NameDef must not make a private definition public merely by changing its local spelling. The design must also decide whether an alias may deliberately narrow visibility.
 
@@ -229,7 +239,6 @@ Generic and macro syntax exists in the current compiler, but the website documen
 - Compile unit handling of duplicate, consistent type `extern` vs. value-specified names.
 - Selective import folding and `as` renaming are documented but unimplemented.
 - Nested named modules are documented but lack clear declaration syntax and parser support.
-- Module-qualified privacy is not enforced consistently.
 - General aliases beyond `typedef` are not implemented.
 - Generic, macro, union, inheritance, and metaprogram namespace behavior is partly implemented, incomplete, or aspirational.
 - Packages organize importable libraries but are not yet defined as a distinct namespace layer.
