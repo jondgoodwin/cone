@@ -165,27 +165,86 @@ private names. **A public overload name breaks that assumption**, so
 ## The model, as decided
 
 The argument is in the author's *When Modules Are Not Just Namespaces*
-(`ProgLing/plingsite/content/post/cone-modules.md`); what it means for Cone is
-in [Modularity](../northstar/modularity.md). The decisions:
+(`ProgLing/plingsite/content/post/cone-modules.md`) and *Modules vs Types*
+(`modules-vs-types.md`); what modularity is for is in
+[Modularity](../northstar/modularity.md).
 
-- **A module is package-sized, not file-sized.** `Module >= Source File`: one
-  module is implemented by one or more source files, and each source file is
-  wholly owned by exactly one module.
-- **Every package is a module, and a module is essentially a package**, whether
-  or not it is ever published.
-- **Modules are single-level**, and their dependencies form a DAG.
-- **There are no header files.** A module's public interface is inferred from
+### The package is the unit
+
+- **A package is the unit of distribution, the semantic unit, and the
+  compilation unit.** All of a package's source files are parsed, resolved and
+  type checked together, which is what lets them see each other's names with no
+  declarations written by hand.
+- **A package emits one object file.** Selective linking is preserved by giving
+  each function its own section and COMDAT, so the linker's inclusion
+  granularity is the **function**, not the object file. `--gc-sections` on ELF
+  and wasm, `/OPT:REF` on COFF.
+- **Splitting a codegen partition is a build knob with no semantic content.**
+  If LLVM's optimization time on a large package becomes a problem, the package
+  may be emitted as several LLVM modules; nothing about the language changes.
+  Splitting a large codebase into several *packages* is the coarser form of the
+  same lever, and is the recommended one.
+- **Package dependencies form a DAG.**
+
+Two consequences of the package being the compilation unit are worth stating,
+because they remove work rather than adding it:
+
+- **No declaration needs an owning source file.** A generic instance, an
+  expanded macro and a cloned trait default method have use sites rather than a
+  home file, and with one object per package the question never arises.
+- **Deduplication happens in the IR, not in the linker.** `genericinfo`'s
+  `memonodes` memoizes an instantiation on the generic's declaration, matched by
+  argument types, so twenty files instantiating `Option[i32]` produce one
+  instance and one symbol. `LLVMLinkOnceAnyLinkage` is therefore a
+  **cross-package** mechanism only.
+
+### The module is a namespace
+
+- **A module is a namespace**, holding global variables, functions, types,
+  macros and other modules.
+- **A package correlates to one top-level module.** Its name is the package's.
+- **Modules nest, and are reached by path.** This revises the earlier
+  single-level rule, whose stated reason was that multi-level names would burden
+  package management and build tooling. Nesting *inside* a package leaves
+  package names flat, so that reason no longer applies. The shape is the one
+  .NET uses: the assembly is the unit, and namespaces within it are free to
+  nest.
+- **A module may span several source files.** Each source file belongs to
+  exactly one module.
+- **Namespace machinery is meant to be common to modules and types** — nesting,
+  generics, interfaces and name folding, so that the layers look alike rather
+  than each inventing its own.
+
+**What separates a module from a type is state, not namespace.** A module's
+state is global and singleton: gathered by the link editor, reached at a fixed
+address, and its functions take no `self`. A type's state is per-instance and
+may live anywhere in memory, reached through `self`. That distinction is what
+makes a module the natural shape for a region or a subsystem and a type the
+natural shape for a value, and it is why a module cannot be nested inside a
+type. A module holding a single type is therefore not a special construct — it
+is a type sitting at the package's top level.
+
+### Composing packages
+
+- **`import` names a package**, and its declarations arrive **externally
+  supplied**: declared for the linker, never defined by this compile. That
+  subsumes `extern` for Cone packages — importing is what marks a name external,
+  and no `extern` keyword is written by the importer.
+- **`include` is retired.** A module spanning source files does properly what
+  `include` did by injection.
+- **There are no header files.** A package's public interface is inferred from
   its definitions, marked by spelling: a leading `_` is private.
-- **Building a package emits a serialized public interface** for importers to
-  read instead of re-parsing implementation sources.
-- **The compilation unit is the module, not the source file**, with per-source
-  object files preserving selective linking.
+- **Building a package emits a serialized interface** for importers to read
+  instead of re-parsing implementation sources.
 - **Name folding happens at source-file level.**
 
-**None of the multi-file half of this is implemented.** A module is a source
-file today — the shape the design explicitly rejects — and there is no package,
-no manifest, no interface artifact, and no way to declare a module's name
-independently of the file it was found in.
+### What is implemented
+
+**Almost none of it.** A module is a source file today; there is no package, no
+manifest, no interface artifact, no nesting, and no way to declare a module's
+name independently of the file it was found in. Sections and COMDATs are not
+emitted per function. What does work is the multi-module *generation* path,
+exercised by `stdio` on every compile that prints.
 
 ## What the model has not decided
 
@@ -193,31 +252,62 @@ Each of these is a question the current mechanism answers by accident, or that
 two documents answer differently. They are recorded here so that work in this
 area starts from what is actually open.
 
-### Whether a module may contain a module
+### How a module's source files are found
 
-`cone-modules` says a module cannot be composed of sub-modules. `refmodule.html`
-says a module may hold "even other named modules", and `module.h`'s own comment
-lists "Modules nested within this parent module". The parser provides no syntax
-for declaring one.
+A module spans files, so something must say which. Three shapes, and the
+decision is not made:
 
-The distinction none of the three draws is between a module namespace
-**containing a binding to** another module — which `parseImport` already does,
-and which qualified names require — and a module **declaring** a module inside
-itself. Settling this means choosing which of those "nested modules" means, and
-saying so in the reference page and the header comment together.
+- **The folder tree is authoritative.** Every source file in a directory
+  belongs to the module that directory names, and the module path mirrors the
+  directory path. Java and Python work this way; Go does, minus nesting. No
+  syntax is needed at all.
+- **A declaration in the file is authoritative.** Each file states the module it
+  belongs to, and folder layout is free. .NET works this way.
+- **Folder gives a default, a declaration overrides it.**
 
-### What `extern` is for
+`mod` is separately ambiguous between two features, and Rust has both: declaring
+**which module this file belongs to**, and declaring a **nested module inline
+within a file**. Whether Cone wants either, or both, is part of this decision.
 
-`refinclude.html` documents `extern` blocks as the C FFI mechanism, complete
-with `trust`, opaque structs, extern methods, and the extern-block-as-include
-idiom the sample projects use. [Names and
-Namespaces](../phases/names-and-namespaces.md) instead designs `extern` as the
-form a package's *serialized interface* takes, with matching `extern`s and one
-implementation merging into a single canonical binding.
+### How a C library becomes a Cone package
 
-Those are two futures for one keyword — FFI declaration, interface declaration,
-or both — and the code-generation provenance rules differ between them. Nothing
-decides which.
+Cone code must be able to use C-API libraries, and the mechanism must produce
+something `import` can name — a package — rather than declarations sprinkled
+through user code. `extern` therefore does not disappear so much as move: it
+becomes how a package declares that its symbols are supplied by something the
+compiler cannot read, and the `extern` block that today gets packaged into an
+include file becomes the package itself.
+
+What that needs, and none of it is designed: how a Cone name maps to an
+unmangled C symbol, how calling convention and `trust` are stated, how opaque
+types are declared, and whether such a package is written in Cone source or
+generated. `--safe=package`, which exists in the option help and controls which
+packages may use C FFI, is the policy half of the same question.
+
+**`include` cannot be retired before this exists**, because packaging an
+`extern` block into an include file is what the sample projects use it for.
+
+### Where a folded name lives when a module spans files
+
+Folding is per source file, and `import` today folds into `mod->namespace`, of
+which there is exactly one per module. **There is no file-level scope anywhere
+in the IR** — `include` shares the including module's namespace outright.
+
+Now that modules span files, two files in one module will each want their own
+imports and their own folding choices, and a single module namespace cannot hold
+both. Settling this means deciding whether a source file becomes a lookup scope
+between the block scopes and the module namespace, and what that does to the
+rule that a namespace is one uniqueness domain.
+
+### How far the module/type convergence goes
+
+Modules and types are meant to share namespace machinery while staying distinct
+in state. What is not settled is how much machinery that is: whether a module
+may be generic, whether a module may declare or implement an interface, whether
+a package's own top-level module may be parameterized, and whether name folding
+into a module and into a type are literally the same operation. The last is the
+one the author has called out as the interesting case — folding applied to types
+is delegated inheritance.
 
 ### What a region is
 
@@ -245,53 +335,17 @@ compiled in. Any region beyond those two — arena, pool, tracing collector —
 needs that name dispatch replaced by a protocol and the allocation header
 generalized.
 
-### Where a folded name lives when a module spans files
-
-Folding is decided to be per source file, and `import` today folds into
-`mod->namespace`, of which there is exactly one per module. **There is no
-file-level scope anywhere in the IR** — `include` shares the including module's
-namespace outright.
-
-Once `Module >= Source File` is real, two files in one module will each want
-their own imports and their own folding choices, and a single module namespace
-cannot hold both. Settling this means deciding whether a source file becomes a
-lookup scope between the block scopes and the module namespace, and what that
-does to the rule that a namespace is one uniqueness domain.
-
-### What the compilation unit is, and what an object file is
-
-The decision as written couples two claims that may be separable: *the module is
-the compilation unit* — a semantic claim, that these sources are parsed,
-resolved and checked together and can see each other's names without
-declarations — and *per-source-file object files preserve selective linking*, a
-build claim.
-
-The second rests on an assumption worth re-examining. Selective linking at
-object-file granularity was the C-era answer; a linker doing section-level
-collection reaches the same result from one object file per module. Against
-that, per-file object emission requires deciding which source file *owns* each
-declaration, and that question is ill-posed for exactly the entities Cone leans
-on hardest: a generic instance or an expanded macro has no home file, only the
-use sites that triggered it — which is why `linkonce` is needed already.
-
-The framing that may dissolve it: **a codegen partition is a build-performance
-knob, not a semantic boundary**, and need not correspond to source files at all.
-Settling this means stating separately what the semantic unit is, what the
-emitted artifact is, and what — if anything — chooses a partition inside it.
-
-The same question reaches upward. *Every package is a module* makes the package
-and the semantic unit the same thing. If a package could instead hold several
-modules, the compilation unit would be the package and a module would be a
-namespace within it — which is also an answer to how a core library subdivides
-without submodules.
+That a module carries global singleton state, and a type does not, is why the
+region-as-module description is the one that fits the state half; what a region
+annotation on a reference names is a type.
 
 ### Consequences that follow whichever way those go
 
 - **Symbol identity must stop depending on which module was the root.** The
   measured asymmetry above is the mechanism; what is open is what the stable
-  prefix is a function of, what separator it uses, and how an overload name's
-  concrete candidates and a generic's instances are spelled so `linkonce`
-  merges them across units.
+  prefix is a function of — the package, presumably, with the module path
+  beneath it — what separator it uses, and how an overload name's concrete
+  candidates are spelled.
 - **The serialized interface must carry bodies, not signatures.** Generics
   monomorphize at the use site, macros expand at the use site, and `inline` is
   macro-shaped, so an importer needs the body of each. The artifact is
@@ -306,9 +360,15 @@ without submodules.
   appears nowhere in the source. Region modules with global state — arenas,
   pools, collectors — cannot work without it.
 - **Whether folding transits is unanswered.** If A folds B's public names and Z
-  folds A's, whether Z sees B's names is posed in
-  `ProgLing/plingsite/content/post/modules-vs-types.md` and left as "option on
-  which". A prelude for a core library is exactly this question.
+  folds A's, whether Z sees B's names is posed in `modules-vs-types.md` and left
+  as "option on which". A prelude for a core library is exactly this question.
+- **Dependency fan-out is unmeasured.** Section GC decides what reaches the
+  binary; it does not decide what must resolve at link time. Archive member
+  extraction precedes it, so calling one function from a package pulls its whole
+  object and every undefined symbol in it enters resolution. Whether that ends
+  in a hard error for a symbol only unreachable code references depends on
+  linker and version. It wants an experiment once a multi-package program
+  exists, not an assertion.
 - **Module substitution and generativity are aims without a design.** Both
   drafts that would carry them are outlines.
   [Modularity](../northstar/modularity.md) states the aim and measures the

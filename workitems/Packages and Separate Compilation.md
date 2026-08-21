@@ -1,4 +1,4 @@
-Modules, packages, compile units and namespace folding.
+Packages, modules, compile units and namespace folding.
 
 **Why this is the top priority.** Until it is solved, there is no core library —
 a core library *is* a package. And without a core library the language cannot
@@ -9,14 +9,15 @@ so should everything that follows them.
 The mechanism as it stands, and the model as it has been decided, are in
 `design/nodes/module.md` ([[module|Module]]). This item does not restate them.
 
-**The sequencing insight.** Separate compilation and multi-module linking have
-been treated as one thing here. They are not. **A core library needs multi-module
-linking, which mostly exists already; it does not need separate compilation.**
-`import stdio::*` today emits `@stdio_print` and full definitions for the
-`IOStream` methods, because `stdio` is the one imported module granted
+**The sequencing insight.** Separate compilation and multi-package linking have
+been treated as one thing here. They are not. **A core library needs
+multi-package linking, which mostly exists already; it does not need separate
+compilation.** `import stdio::*` today emits `@stdio_print` and full definitions
+for the `IOStream` methods, because `stdio` is the one imported module granted
 `FlagGenMod`. Every other imported module is denied it by a `strcmp` on its
 filename. So step 2 below is small, and it is what unblocks the core library —
-step 9, the expensive one, can wait until the model has been exercised.
+step 9, the expensive one, buys build speed rather than the ability to link, and
+can wait until the model has been exercised.
 
 The spine is **0 → 1 → 2 → 3 → 4**, and **4 is the unblock**. 5 hangs off 4 with
 a NameDef question attached. 6, 7 and 8 hang off 4 and can run in parallel. 9 is
@@ -27,66 +28,76 @@ deliberately last.
 
 ## 0. Settle the model, and write it down
 
-No code. Each item below is a decision that two documents currently answer
-differently, or that the implementation answers by accident. Each gets its own
-discussion session; the outcome lands in `design/nodes/module.md`, replacing the
-corresponding entry in its "What the model has not decided" section.
+No code. Each item is a decision that two documents answer differently, or that
+the implementation answers by accident. Each gets its own discussion session,
+and the outcome lands in `design/nodes/module.md`, replacing the corresponding
+entry in its "What the model has not decided" section.
 
-Recommended order, most upstream first:
+### Decided
 
-1. **What the compilation unit is, and what an object file is.** Challenging
-   "the module is the compilation unit, emitting per-source-file object files
-   for selective linking." The semantic claim and the build claim may be
-   separable; section-level linker collection may make per-file objects
-   unnecessary; a generic instance or expanded macro has no home file. Possible
-   reframing: a codegen partition is a build-performance knob, not a semantic
-   boundary. Reaches upward into whether `package == module` at all — if a
-   package may hold several modules, the compilation unit is the package.
-   **Take this first: it constrains 2, 3 and 4 below.**
-2. **Whether a module may contain a module.** Single-level per the post; "even
-   other named modules" per `refmodule.html` and `module.h`. Separate *a
-   namespace containing a binding to* a module from *a module declaring* one.
-   Then answer the question this is really about: **how does a core library
-   subdivide** — submodules, types-as-namespaces, or a package layer? The
-   existing position is that a package can only be a module and never a type,
-   that a module cannot be imported into a type while types may namespace other
-   types and macros, that a module has vars and functions rather than fields
-   and methods, and that global variables do not support delegated inheritance
-   the way fields do. Confirm or revise, and record it as the answer rather
-   than as an aside.
-3. **Where a folded name lives when a module spans files.** Folding is
-   per-source-file by decision; there is no file-level scope in the IR. Does a
-   source file become a lookup scope between block scopes and the module
-   namespace, and what does that do to one-namespace-one-uniqueness-domain?
-   Decide `include`'s fate in the same session — real multi-file modules do
-   properly what `include` does by injection, so what remains for it is
-   packaging an `extern` block, which is item 4's question.
-4. **What `extern` is for.** "Get rid of this, because an extern is a name in an
-   imported package" versus [[names-and-namespaces|Names and Namespaces]]'s
-   design in which matching `extern`s and one implementation merge into a single
-   canonical binding, which is how a serialized interface would be spelled.
-   FFI declaration, interface declaration, or both. Needs item 1's answer about
-   the artifact. Carries the old note that `FlagExtern` should become a
-   collection of globals in an "extern" module.
+- **The package is the unit of distribution, the semantic unit and the
+  compilation unit**, emitting one object file, with a function-per-section
+  COMDAT so the linker's inclusion granularity is the function. A codegen
+  partition is a build knob with no semantic content; splitting a large codebase
+  into packages is the recommended coarser form of the same lever. This retires
+  the per-source-file object file and, with it, the need to attribute any
+  declaration to an owning file.
+- **A module is a namespace, and modules nest.** A package correlates to one
+  top-level module. The earlier single-level rule is revised: its stated reason
+  was multi-level *package* names burdening build tooling, and nesting inside a
+  package leaves package names flat.
+- **A module may span source files**, each file belonging to exactly one module.
+- **Modules and types share namespace machinery and differ in state** — a
+  module's state is global and singleton with no `self`, a type's is per-instance
+  through `self`. A module holding one type is therefore a type at the package's
+  top level, not a special construct.
+- **`import` names a package** and marks its declarations externally supplied,
+  subsuming `extern` for Cone packages.
+- **`include` is retired**, but not before the C-shim question below is answered.
+
+### Still open, in the order to take them
+
+1. **How a module's source files are found.** Folder tree authoritative (Java,
+   Python, Go), a declaration in each file authoritative (.NET), or folder
+   default with an override. `mod` is separately ambiguous between declaring
+   *which module this file belongs to* and declaring a *nested module inline
+   within a file*; Rust has both, and Cone must choose which it wants. Blocks
+   step 3.
+2. **How a C library becomes a Cone package.** `extern` moves rather than
+   disappears: it becomes how a package declares symbols supplied by something
+   the compiler cannot read. Needs a name-to-C-symbol mapping, calling
+   convention, `trust`, opaque types, and a decision on whether such a package is
+   hand-written Cone or generated. `--safe=package` is the policy half. Carries
+   the old note that `FlagExtern` should become a collection of globals in an
+   "extern" module. **Blocks retiring `include`**, since packaging an `extern`
+   block into an include file is what the sample projects use it for.
+3. **Where a folded name lives when a module spans files.** There is no
+   file-level scope in the IR. Does a source file become a lookup scope between
+   block scopes and the module namespace, and what does that do to
+   one-namespace-one-uniqueness-domain? Blocks step 3 and step 5.
+4. **How far the module/type convergence goes.** Whether a module may be
+   generic, may declare or implement an interface, whether a package's top-level
+   module may be parameterized, and whether folding into a module and into a type
+   are literally one operation — the last being delegated inheritance. Only the
+   final question blocks anything before step 10.
 5. **What a region is.** Module, `region` declaration, or `struct` with an
    `_alloc` — three live descriptions, and a `region` keyword the lexer interns
-   and nothing parses. Most separable of the five; its implementation is item 6
-   and can run in parallel with everything.
+   and nothing parses. Most separable; its implementation is step 6 and can run
+   in parallel with everything.
 
-Also to be decided here, each smaller than the five above:
+Smaller, and to be folded into whichever session they touch:
 
 - **Whether folding transits.** If A folds B's publics and Z folds A's, does Z
   see B's? Posed and left open in `modules-vs-types.md`. **This is the prelude
-  question** and item 4 cannot be designed without it.
-- **Where a module's name comes from**, and how it relates to the file or
-  directory it was found in, to the `import` spelling, and to the package
-  manifest. Today it is the filename.
-- **Compiler options** the model needs — the existing `--pkg-path` and
-  `--safe=package` currently name a concept the language does not have.
+  question**, and it belongs with item 3.
+- **How a package is named and found on disk**, and how that relates to the
+  `import` spelling and the manifest. Belongs with item 1.
+- **Compiler options** the model needs — `--pkg-path` and `--safe=package` name
+  a concept the language does not have yet.
 
-**Exit:** `design/nodes/module.md` has no "not decided" section left that blocks
-steps 1–4, and `refmodule.html`, `refinclude.html` and `module.h`'s comment
-agree with it.
+**Exit:** `design/nodes/module.md` has no open question left that blocks steps
+1–4, and `refmodule.html`, `refinclude.html` and `module.h`'s comment agree with
+it.
 
 ---
 
@@ -102,9 +113,10 @@ and the two never resolve.
 - Decide the namespace separator for generated names: `_` vs `:`.
 - Overloaded function names: how a concrete candidate's real name is spelled,
   given the overload name has no symbol of its own.
-- Make generic instance names deterministic across compilation units, so that
-  `LLVMLinkOnceAnyLinkage` actually merges them rather than accumulating
-  near-duplicates. Confirm `linkonce` works correctly for generic functions.
+- Make generic instance names deterministic **across packages**, so that
+  `LLVMLinkOnceAnyLinkage` actually merges them. Within a package `memonodes`
+  already dedups in the IR, so this is purely a cross-package concern. Confirm
+  `linkonce` works correctly for generic functions.
 - Handle `genname` correctly regardless of aliasing, cross-module reference and
   ownership — the same requirement [[IR refactor]] item 2.1 states for
   `genericdef`.
@@ -118,13 +130,28 @@ syntax, no new nodes.
 
 Generate bodies for every module in the program, not only the root and `stdio`.
 
-- Remove the filename `strcmp` that grants `FlagGenMod`; replace it with
-  whatever step 0.1 decided the rule is.
+- Remove the filename `strcmp` that grants `FlagGenMod`. What a compile
+  generates is now "everything in this package"; what an `import` brings in is
+  declared, never defined.
 - Revisit the privacy filter in `genlProgram` accordingly — its assumption that
   nothing outside a module reaches a private name is already broken by public
-  overload names, and generating every module changes what it is protecting.
+  overload names, and generating a whole package changes what it is protecting.
+- **Emit a section and a COMDAT per function** in `genlGloFnName`, so the
+  linker's inclusion granularity is the function rather than the object file.
+  `LLVMSetSection` and the `Comdat.h` API are both in LLVM 13's C API;
+  `LLVMCreateTargetMachine` takes no `TargetOptions`, so there is no
+  `FunctionSections` switch to flip. The COFF path needs a spike confirming the
+  hand-rolled COMDAT matches what `/Gy` emits.
+- **Teach congo the matching link flags** — `--gc-sections` on ELF and wasm,
+  `/OPT:REF` on COFF, which is off by default whenever `/DEBUG` is on.
 - Import cycle detection: name resolution in dependency order, and an error on a
   recursive cycle. The DAG rule is decided and nothing enforces it.
+- **Measure dependency fan-out.** Section GC decides what reaches the binary,
+  not what must resolve at link time: archive extraction precedes it, so calling
+  one function from a package pulls its whole object and every undefined symbol
+  in it enters resolution. Whether that hard-errors for a symbol only
+  unreachable code references depends on linker and version. This step is the
+  first point at which a real multi-package program exists to test it on.
 
 **Exit:** a program spanning modules links and runs. The `module` test group's
 scenarios can be promoted from `compile` to `run`, and its `cases.toml` note
@@ -132,17 +159,22 @@ explaining why nothing there runs comes out.
 
 ---
 
-## 3. `mod` declaration, multi-file modules, file scope
+## 3. Modules that nest and span files
 
-- Add the `mod` node and parse it in source files.
+- Implement whatever step 0's first item decided about finding a module's source
+  files — a folder rule, a per-file declaration, or both — and add the `mod`
+  node if that answer needs one.
 - Separate import *file* handling from *module* handling; file handling becomes
-  a dictionary. Module names come from parsing `mod`, not from the filename.
-- Add the file-level scope step 0.3 decided on, so two files in one module can
-  hold different imports.
-- Mark each `fn` and `var` with whether it belongs to the current source file,
-  to the extent step 0.1's answer still needs it — if the codegen partition is
-  not the source file, this bookkeeping may not be needed at all.
-- `include`: implement whatever step 0.3 decided, including removing it.
+  a dictionary keyed by path, independent of the module tree.
+- Nested modules: declaration, qualified paths through them, and the visibility
+  rule at each level.
+- Add the file-level scope step 0's third item decided on, so two files in one
+  module can hold different imports.
+- Retire `include`, once step 0's second item has given the C-shim packages that
+  replace its one remaining use.
+
+**Not needed any more:** marking each `fn` and `var` with the source file it came
+from. One object per package means no declaration needs an owning file.
 
 ---
 
@@ -151,6 +183,10 @@ explaining why nothing there runs comes out.
 **This is the unblock.** `corelib` and `stdio` are C string literals today —
 `corelibSource` in `corelib.c` and `stdiolib` in `parsemod.c`.
 
+- **Build the C-shim package mechanism first.** `stdio` cannot become a package
+  without it: its `IOStream` methods call `printStr` and friends, which
+  `conestd` implements in C. This is step 0's second open item made real, and it
+  gates this step as much as it gates retiring `include`.
 - Make them real Cone source files in a `core` package, and refactor how
   Conehome holds them.
 - Turn the auto-import into a documented prelude rule, using step 0's transit
@@ -193,7 +229,7 @@ in parallel. Carried by [[Regions]].
   `((usize*)ref) - 1` holds only because `rc` has one `usize` field and a
   zero-sized permission; `genlDealiasOwn` freeing the reference directly holds
   only because `so`'s region struct is empty.
-- Implement `region` syntax or delete the keyword, per step 0.5.
+- Implement `region` syntax or delete the keyword, per step 0's fifth open item.
 
 **Exit:** a region the compiler has never heard of — an arena — can be written
 in Cone.
