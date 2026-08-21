@@ -129,6 +129,9 @@ enum ErrorCode {
     ErrorNoArgs = 1072,         // A generic or macro with parameters was named without arguments
     ErrorFldArgs = 1073,        // Arguments given to a field access, which accepts none
 
+    // Reference types
+    ErrorNoRefType = 1074,      // A reference type did not name what it refers to
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

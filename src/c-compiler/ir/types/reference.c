@@ -122,6 +122,17 @@ void refTypeCheck(TypeCheckState *pstate, RefNode *node) {
         errorMsgNode(node->region, ErrorInvType, "Reference's region must be a struct type.");
     }
     itypeTypeCheck(pstate, (INode**)&node->perm);
+    // A reference in a parameter position parses with no pointee, because
+    // parseAmper leaves it to be inferred. Only a method's 'self' is ever
+    // inferred, by parseFnSig, and it looks at the outer node only -- so a bare
+    // '&' anywhere else arrives here still unknown, and genlType would hand
+    // LLVMPointerType a NULL element type. Compare by pointer: errorType shares
+    // this tag and means "already reported".
+    if (node->vtexp == unknownType) {
+        errorMsgNode((INode*)node, ErrorNoRefType, "A reference type must specify the type it refers to.");
+        node->vtexp = errorType;
+        return;
+    }
     if (itypeTypeCheck(pstate, &node->vtexp) == 0)
         return;
     refAdoptInfections(node);
