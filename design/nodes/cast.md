@@ -112,7 +112,10 @@ virtual references and fat pointers are in play.
   emit a truncation of a pointer.
 - numbers: `fptoui`/`fptosi`/`trunc`/`sext`/`zext`/`uitofp`/`sitofp`/
   `fptrunc`/`fpext`.
-- struct: alloca-store-bitcast-load, because LLVM does not bitcast structs.
+- struct: alloca-store-bitcast-load, because LLVM does not bitcast structs. The
+  alloca is `genlAlloca`, so it lands in the entry block — a mid-block one inside
+  a loop is a fresh frame slot per iteration, which mem2reg does not promote, and
+  `x into <struct>` in a long loop ran the stack out.
 - `RefTag` from `VirtRefTag`: `extractvalue 0`, then bitcast.
 - `ArrayRefTag` from a ref-to-array: bitcast the pointer, then `insertvalue`
   the pointer and the compile-time dimension into the fat pointer.
@@ -137,11 +140,6 @@ nullable-pointer union (compare against null), and tagged (read the
   after checking does not tell you what the author wrote.
 - **A struct reinterpret is checked in generation, not type check.** A size
   mismatch surfaces late, as `ErrorRecastSize`.
-- **`genlConvert`'s virtual-reference path leaves the vtable pointer
-  uninitialized** when its linear scan finds no implementation — no assert, no
-  default.
-- **`genlConvert` handles struct conversion twice**, once in `case StructTag:`
-  with a mid-block alloca and once in `default:` with an entry-block one.
 - **`genlConvert`'s two "unknown source" arms now report `ErrorUnreachable` and
   exit.** Reaching either means the conversion table above accepted something
   generation has no arm for, which is how `p into &i32` used to crash.

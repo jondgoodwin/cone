@@ -1,6 +1,8 @@
 Generation lowers the analyzed IR to an LLVM module and emits an object file. It
 validates almost nothing: every assumption in section 5 is a hard prerequisite,
-and the asserts that guard them are compiled out of the release build.
+and what guards them is uneven — the sites that meant *unreachable* report and
+exit, while the ordinary value asserts beside them are compiled out of the
+release build. Section 5 says which is which.
 
 Read section 4 before writing any cast, GEP, load or store. Being one level of
 indirection off is the characteristic bug in this phase, and it does not
@@ -171,6 +173,12 @@ Concrete hazards, each of which has been gotten wrong here before:
 - **`genlRecast` picks by generated LLVM kinds, not Cone tags** — deliberately,
   because a reference is not always a plain pointer once fat pointers are in
   play.
+- **`genlAddr` and `genlExpr` must test the same tag for a tuple element.** Both
+  test `ULitTag`, because `fnCallLowerIntField` leaves the index as the
+  `ULitNode` the source wrote; `UintNbrTag` is that literal's *type*. `genlAddr`
+  tested the type, matched nowhere, and — with the assert beside it compiled out
+  — fell into the next case and read the node as a string literal, which is what
+  made `&t.0` segfault.
 
 ## 5. What generation assumes
 
@@ -264,22 +272,14 @@ variables.
   operand constant-folds. A non-constant operand there would be catastrophic.
 - **A string literal emits a fresh global per occurrence.** Nothing deduplicates
   them, and constant merging is not in the pass list.
-- **`genlConvert`'s virtual-reference path leaves the vtable pointer
-  uninitialized** if the linear scan finds no matching implementation — no
-  assert, no default. Silent misbehavior in both build configurations.
-- **`genlBlock` allocates its phi arrays under one condition and builds the phi
-  under a different one** (`VoidTag` vs `UnknownTag`). Valueless blocks appear
-  to carry `unknownType` today, so the case seems unreached — but it is an
-  asymmetry, not a guard.
-- **`genlAddr` and `genlExpr` test different tags for the same tuple-element
-  form** — `UintNbrTag` in one, `ULitTag` in the other. One of them is wrong.
 - **The block stack is a fixed 256 entries** and overflow is a hard exit.
 
-These and several other unverified observations — a possibly-dead `genlAddr`
-arm, an always-true ternary in `itypeMangle`, duplicated struct-conversion code
-— are unverified, and each needs a probe before it is acted on. `itypeMangle`
-itself has since been probed for a different reason and now covers the tuple,
-array, signature and void parameter types it used to write nothing for.
+Three observations that sat here unverified have since been probed and acted on.
+`genlAddr`'s `FnDclTag` arm is gone, with a comment saying why calling `genlFn`
+from there was unsafe. `itypeMangle`'s ternary reads
+`vtype->tag==ArrayRefTag? '+' : '&'`, and the function now covers the tuple,
+array, signature and void parameter types it used to write nothing for. The
+duplicated struct conversion is one arm, using `genlAlloca`.
 
 ## 9. Code pointer map
 

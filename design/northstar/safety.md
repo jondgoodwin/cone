@@ -133,9 +133,11 @@ does not cross threads unsafely, or that memory is released.
   check written as one is absent from the shipped compiler. The 22 sites that
   meant *unreachable* now call `errorUnreachable` instead and do fire there; the
   ordinary value asserts still do not.
-- **`--verify` is off by default**, and the compiler does emit invalid LLVM IR
-  in at least one shape. Malformed IR is not a safety property of the language,
-  but it is a way a "clean compile" lies.
+- **`--verify` is off by default.** No corpus scenario fails it today — the one
+  shape that did, an empty phi from a valueless loop-as-expression, is fixed and
+  covered — but nothing has run it over a program outside the corpus. Malformed
+  IR is not a safety property of the language, but it is a way a "clean compile"
+  lies.
 - **`--checktree` checks IR well-formedness, not safety.** Passing it says
   nothing about any row above.
 

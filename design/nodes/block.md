@@ -8,8 +8,8 @@ binds a lifetime label, enforces jump placement, and repairs `each`'s
 brackets the scope, injects `blockret`, and builds the release list. Generation
 creates basic blocks only when it has to.
 
-*Provenance: read from source; the double `blockret` and the malformed phi were
-measured.*
+*Provenance: read from source; the double `blockret` was measured. The malformed
+phi this note used to list was measured, then fixed.*
 
 ## Shape
 
@@ -101,6 +101,11 @@ A regular block with at most one break emits its statements straight into the
 current block. A loop gets `loopbeg` and `loopend` and a back-edge; a phi block
 gets `blockend` and a `GenBlockState` on a fixed 256-deep stack.
 
+**A phi is built only where the block converges on a value**, and one condition
+answers that — `vtype` is neither `VoidTag` nor `UnknownTag` — read once to
+allocate the arrays and once to build the phi. `genlBreak` guards on those arrays
+existing, while still generating its value for the effects.
+
 A `terminated` flag stops emission after a jump, because an instruction after a
 terminator is invalid IR — reachable only in an `each` block, where the step
 sits behind the jump the reader wrote last.
@@ -113,13 +118,6 @@ sits behind the jump the reader wrote last.
   Measured: `{}` and `{ mut z = n }` each show two `blockret nil` in an `--ir`
   dump. Harmless at generation — both emit nothing — but the first one's
   `dealias` is never populated.
-- **`genlBlock`'s two phi guards disagree**, and the result is invalid LLVM IR.
-  Storage is allocated under `vtype != VoidTag` but the phi is built under
-  `vtype != UnknownTag`. Measured: a loop-as-expression whose breaks all carry
-  `nil` emits `%phival = phi %void` **with no incoming entries**, and
-  `--verify` reports "PHINode should have one entry for each predecessor". The
-  default build does not run the verifier, so it is emitted silently. `phiCnt`
-  is an uninitialized arena read on that path.
 - **A colliding lifetime label is not hooked** after its diagnostic, so an inner
   `break 'x` binds to the outer block.
 - **`breakNameRes` accepts any labelled block; `continueNameRes` requires a
