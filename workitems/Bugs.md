@@ -127,32 +127,57 @@ artifact names or a `--debug` knob would close it. Carried by
 
 # Still open
 
-## `structAddField` drops a duplicate field after indices are assigned
+Nothing. Both remaining entries were closed by a decision on 2026-08-21, and
+what each decided is below so it is not re-derived.
 
-On a duplicate name it reports and returns without adding to `fields`, while the
-parser has already assigned `index` over the original numbering.
+## `structAddField` drops a duplicate field — closed, no defect
 
-**The symptom this was filed with does not hold.** `structTypeCheck` renumbers
-every field from zero during its field walk, so the parser's numbering is
-overwritten before anything reads it and a positional literal cannot shift. What
-is left is a type carrying a name in its namespace with no field behind it in
-`fields`, reachable only after `ErrorDupName` has already fired — so nothing is
-generated from it.
+**`structAddField` is correct.** Two claims in the entry, neither of which
+holds. `structTypeCheck` renumbers every field from zero during its field walk,
+so the `index` the parser stamped is overwritten before anything reads it. And
+`namespaceAdd` keeps the first node it finds and returns it rather than
+replacing, so when the duplicate is skipped the namespace still names a field
+that is in `fields`. Measured: a struct with a duplicated field name reports
+`ErrorDupName` once, with no cascade, and nothing is generated because
+`conec.c` only calls `genpgm` when `errors == 0`.
 
-**What wants deciding is whether that matters.** Either the entry closes as
-"harmless after a diagnostic", or the answer is that a type whose declaration
-failed should not be walked further at all — which is the question `errorType`
-and `--checktree` already ask, and belongs with them rather than here.
+**The symptom the entry describes does exist, on a different path.** When a
+struct extends a trait, `structTypeCheck` splices the trait's fields in and
+calls `namespaceAdd` *after* inserting each one — so on a collision the clone
+lands in `fields` while the namespace keeps the struct's own. `fields` then
+holds two entries for one name, and a positional literal is told "Not enough
+values specified on type literal", which blames the reader's literal for the
+compiler's decision.
 
-## `flowLoadValue` may be missing on array indexes in assignment
+**It was left, deliberately, and this is why.** The obvious repair — report and
+skip the insert — is unsound: `nodelistMakeSpace` pre-sizes the gap to exactly
+`trait->fields.used` slots and the loop fills every one, so skipping leaves a
+slot holding whatever `memmove` shifted there. Giving the clone a default value
+does not work either, because the surplus field is at position 0 and the values
+shift, so it is the *last* field that runs out. What is left is either removing
+the struct's own duplicate afterwards — which needs the namespace repointed and
+decides that the trait's field wins, a semantic choice on an error path — or a
+sentinel for "this type's declaration failed", which is the general
+`errorType`-for-types question `--checktree` also circles. The benefit is one
+fewer message in a compile that already fails on a real error.
 
-*(from [[Collection Types]], where it read
-"assignLvalInfo needs to invoke flowLoadValue on array indexes?")*
+## `flowLoadValue` on array indexes — fixed, and it was worse than filed
 
-Recorded with a question mark by its author, and **the function it names no
-longer exists** — there is no `assignLvalInfo` in the tree. The lval-read logic
-now lives in `flowIsLvalRead`, and assignment's flow pass in `assignFlow` /
-`assignlvalrtype`. Someone has to work out what the entry now refers to before it
-can be sized at all. Kept because a missing `flowLoadValue` on an index
-expression would be a real hole, and losing the observation is worse than
-carrying a stale one.
+The entry named `assignLvalInfo`, which no longer exists. Restated in current
+terms: `assignFlow` read only its right side, and the left went to
+`assignlvalrtype`, which checks write permission and borrow lifetime and is not
+a value read. So **no value sub-expression on the left of an assignment was
+ever flow-analyzed**, and the same expression was checked on the right and not
+on the left. Measured three ways: an uninitialized index in `a[i] = 5`, a
+moved-from value used as an index, and — the one that is not a missing
+diagnostic — `*p = 5` on an uninitialized reference, which compiled clean and
+emitted `load` then `store` through it. `swapFlow` read both of its sides all
+along, so assignment and swap disagreed about one expression.
+
+`assignFlowLvalReads` now reads an index and a dereference's operand, and
+recurses through a field access. `array-flow-index` and `ref-flow` cover both
+halves. **The base of a partial write is deliberately still not read** —
+whether `a[i] = 5` reads `a` is a question about read-modify-write against
+flow's whole-variable tracking, and [[Use, escape analysis and de-aliasing]]
+carries it. `array-flow-index` pins that boundary as a non-diagnostic, so it is
+asserted rather than assumed.

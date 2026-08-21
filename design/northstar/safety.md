@@ -33,7 +33,7 @@ test scenarios that assert the absence deliberately.*
 
 | Property | Checked? | Where, or why not |
 | --- | --- | --- |
-| use of an uninitialized variable | **yes** | `nameuseFlow`, but on a whole-function summary — "initialized on one branch" reads as initialized everywhere |
+| use of an uninitialized variable | **yes** | `nameuseFlow`, but on a whole-function summary — "initialized on one branch" reads as initialized everywhere. An assignment's target is read only for the parts of it that are values — its index and its dereference — never for the base of a partial write |
 | use after move | **yes** | `nameuseFlow`, same summary caveat |
 | move out of a global | **yes** | `flowHandleMove` |
 | write through a read-only reference | **yes** | `assignlvalrtype`, `swapFlow` — `MayWrite` only |

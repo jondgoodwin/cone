@@ -130,9 +130,9 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     pstate->typenode = svtypenode;
 }
 
-// Get bottom-most base trait for some trait/struct, or NULL if there is not one
 // Unwrap one inheritance hop: the declaration of the trait this type extends.
 // 'basetrait' is written as a name use, or as a generic instantiation call.
+// Not the same as structGetBaseTrait below, which recurses to the bottom-most.
 StructNode *structBaseTraitDcl(StructNode *node) {
     INode *trait = node->basetrait;
     if (trait == NULL)
@@ -143,6 +143,7 @@ StructNode *structBaseTraitDcl(StructNode *node) {
     return (StructNode*)itypeGetTypeDcl(trait);
 }
 
+// Get bottom-most base trait for some trait/struct, or NULL if there is not one
 StructNode *structGetBaseTrait(StructNode *node) {
     StructNode *base = structBaseTraitDcl(node);
     if (base == NULL)

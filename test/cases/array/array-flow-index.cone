@@ -1,0 +1,29 @@
+// An index on the left of an assignment is a value, and is read like one.
+//
+// Flow stage. An assignment reads its right side; its left side is a target,
+// but the index an element is chosen by is a value in its own right. It was
+// not read at all, so the same expression was checked on the right and not on
+// the left -- 'imm x = a[i]' caught an uninitialized index and 'a[i] = 5' did
+// not. Swap read both of its sides all along.
+//
+// 'ref' holds the other half, writing through an uninitialized reference,
+// which is the same gap and was a silent store through uninitialized memory.
+
+fn readsTheIndex() {
+  mut a [3; i32] = [1, 2, 3]
+  mut i usize
+  a[i] = 5               //~ ErrorMove:5 "has not been initialized"
+}
+
+// The boundary, pinned deliberately: the *base* of a partial write is not
+// read. Assigning one element of an array that holds nothing yet raises
+// nothing here, because whether 'a[i] = 5' reads 'a' is a question about
+// read-modify-write against flow's whole-variable tracking, and it is not
+// settled. Flow tracks the whole array rather than its elements, so 'a' is
+// still uninitialized to a later reader either way -- array-success says so
+// from the succeeding side.
+fn doesNotReadTheBase() {
+  mut a [3; i32]
+  a[0] = 5
+  return
+}

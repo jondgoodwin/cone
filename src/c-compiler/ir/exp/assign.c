@@ -244,10 +244,51 @@ void assignToOneFlow(INode *lval, TupleNode *rval) {
 // Perform data flow analysis on assignment node
 // - lval needs to be mutable.
 // - borrowed reference lifetimes must exceed lifetime of lval
+// Read the value sub-expressions of an assignment's target.
+//
+// Assignment reads its right side. Its left side is a target -- but parts of a
+// target are values in their own right: the index an element is chosen by, and
+// the reference a dereference writes through. Neither was read, so an
+// uninitialized index went unnoticed where the identical expression on the
+// right was caught, and '*p = 5' through an uninitialized reference compiled
+// and emitted the store. swapFlow has always read both of its sides in full,
+// so assignment and swap disagreed about the same expression.
+//
+// The *base* of a partial write is deliberately not read here. Whether
+// 'a[i] = 5' reads 'a' is a question about read-modify-write against flow's
+// whole-variable tracking, and it is not settled.
+static void assignFlowLvalReads(FlowState *fstate, INode **lvalp) {
+    switch ((*lvalp)->tag) {
+    case ArrIndexTag: {
+        FnCallNode *index = (FnCallNode *)*lvalp;
+        assignFlowLvalReads(fstate, &index->objfn);
+        flowLoadValue(fstate, &nodesGet(index->args, 0));
+        break;
+    }
+    case DerefTag:
+        flowLoadValue(fstate, &((StarNode *)*lvalp)->vtexp);
+        break;
+    case FldAccessTag:
+        assignFlowLvalReads(fstate, &((FnCallNode *)*lvalp)->objfn);
+        break;
+    default:
+        break;
+    }
+}
+
 void assignFlow(FlowState *fstate, AssignNode **nodep) {
     AssignNode *node = *nodep;
 
     flowLoadValue(fstate, &node->rval);
+
+    if (node->lval->tag == VTupleTag) {
+        INode **lvalp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode*)node->lval)->elems, cnt, lvalp))
+            assignFlowLvalReads(fstate, lvalp);
+    }
+    else
+        assignFlowLvalReads(fstate, &node->lval);
 
     // Handle tuple decomposition for parallel assignment
     INode *lval = node->lval;
