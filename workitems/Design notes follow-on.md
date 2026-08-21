@@ -15,7 +15,9 @@ source pair, not per tag, and only for a node whose behavior is spread across
 phases and is not recoverable from one file. Not written, and each to be judged
 against that rule rather than written reflexively: `array`, `number`, `enum`,
 `permission`, `region`, `fnsig`, `fndcl`, `module`, `import`, `logic`, `deref`,
-`sizeof`, `swap`, `ttuple`/`vtuple`, `typedef`, `void`. Several are probably
+`sizeof`, `swap`, `ttuple`/`vtuple`, `typedef`, `void`. `module` is now written,
+and carries the package and compilation-unit model with it. Several of the rest
+are probably
 fully explained by their header plus one `*TypeCheck` function and deserve a
 manifest row and nothing more.
 
@@ -31,9 +33,10 @@ visibility bug cannot tell which half describes the compiler they are debugging.
 
 Its stale rows were corrected and a header now states the split against
 `phases/name-resolution.md`, but the real fix is to separate the current rules
-from the NameDef design and move the latter to [[Namedef Refactor]]. It also
-lacks the provenance line every other note carries, and its source-code manifest
-duplicates the phase note's pointer map in a different format.
+from the binding design and move the latter to
+[[Tag Group and Name Aliasing Refactor]]. It also lacks the provenance line every
+other note carries, and its source-code manifest duplicates the phase note's
+pointer map in a different format.
 
 ## 3. A note checker
 

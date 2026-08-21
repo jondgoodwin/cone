@@ -123,6 +123,7 @@ Most real work crosses phases. Start here instead.
 | know what something costs at runtime | [Performance](northstar/performance.md) |
 | add a file, a node family, or a phase | [Architecture](compiler/architecture.md) |
 | understand how a program is composed from pieces | [Modularity](northstar/modularity.md) |
+| change modules, imports, or what a compile emits for each of them | [module](nodes/module.md) — the model, and what it has not decided |
 | work out why the compiler is slow | [Compiler Performance](compiler/performance.md) |
 | emit different LLVM, or fix a miscompile | [Generation](phases/generation.md), "Pointer levels", before writing any cast, GEP, load or store |
 | understand a node end to end | [IR Nodes](nodes/_index.md), "Per-node notes", and `nodes/` |
@@ -143,6 +144,7 @@ and carries the manifest for the per-node notes beside it.
 | `StructNode` — struct, trait and union | [struct](nodes/struct.md) |
 | `RefNode` — references, borrows, allocations, slices, virtual refs | [references](nodes/references.md) |
 | `VarDclNode`, `FieldDclNode`, `ConstDclNode` | [vardcl](nodes/vardcl.md) |
+| `ModuleNode`, `ImportNode`, `ProgramNode` — and the module/package/compilation-unit model | [module](nodes/module.md) |
 | `NameUseNode` — every appearance of a name | [nameuse](nodes/nameuse.md) |
 | `AssignNode` | [assign](nodes/assign.md) |
 | `CastNode` — `as`, `into`, `is`, and injected coercions | [cast](nodes/cast.md) |

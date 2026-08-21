@@ -9,7 +9,7 @@ Fix () and [] when used as postfix operators
   constructors, initializers, the bare-name-to-`self.method` rewrite, and
   ordinary calls, so the front end re-derives at type check what the source
   already said. The other half is resolving the callee first; see
-  [[Namedef Refactor]].
+  [[Tag Group and Name Aliasing Refactor]].
 
 Lexer:
 - Raw string literals
@@ -35,7 +35,7 @@ Number literal inference
 - Number literal nodes can take an expected type (and default otherwise)
 	- Blocked by call ordering, not by the lexer: `fnCallTypeCheck` checks
 	  arguments before it resolves the callee, so no parameter type exists to
-	  hand down. See [[Type Inference and Coercion]] and [[Namedef Refactor]].
+	  hand down. See [[Type Inference and Coercion]] and [[Tag Group and Name Aliasing Refactor]].
 - Move number conversion logic to “into” node and alter gen logic accordingly
 - Document up number coercion/conversion in Cone doc.
 - Document future number capabilities in this TODO doc

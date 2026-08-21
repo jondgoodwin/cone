@@ -70,27 +70,31 @@ improve the versatility of modules, at some cost to complexity", letting a
 program be configured by plugging in modules rather than by creating singleton
 types.
 
-**A module is meant to be package-sized, not file-sized.** The stated rule is
-`Module >= Source File` — one module implemented by one or more source files,
-with each source file wholly owned by exactly one module, and a common pattern
-of one type per file. Modules are single-level, and their dependencies form a
-DAG.
+**The package is the unit, and a module is a namespace within it.** A package is
+the unit of distribution, the semantic unit and the compilation unit; it
+correlates to one top-level module, and modules nest beneath that by path. A
+module may span source files, each file belonging to exactly one module. Package
+dependencies form a DAG. The shape is .NET's: the assembly is what ships and
+what compiles, and the namespaces inside it are free to nest.
 
-**Rust's design is the explicitly rejected alternative.** Rust takes
-`Module <= Source File`, forcing every file to be its own module and then adding
-versatility to compensate. The stated reason for rejecting it: no sufficient
-incremental value "to make it worth increasing user confusion and complexity
-this much."
+**The package is the compilation unit** — "the only sensible approach that
+allows multiple source files in the same module to refer to entities in each
+other is to compile all of a module's source files together, at the same time,"
+and a package is what holds those files. There are no header files:
+declarations are inferred from definitions, and building a package emits a
+serialized public interface for importers to read.
 
-**The module, not the source file, is the compilation unit** — "the only
-sensible approach that allows multiple source files in the same module to refer
-to entities in each other is to compile all of a module's source files together,
-at the same time." There are no header files: declarations are inferred from
-definitions, and building a package emits a serialized public-interface file for
-importers to read.
+**What distinguishes a module from a type is state, not namespace.** Both carry
+a namespace, and the aim is for both to carry the same namespace machinery. A
+module's state is global and singleton, reached at a fixed address by functions
+that take no `self`; a type's is per-instance, reached through `self`. That is
+why a module cannot nest inside a type, and why a module holding one type is
+simply a type at the package's top level.
 
-**Cone today is file-per-module**, which is the Rust shape the design rejects.
-That is the largest single distance between the modularity aim and the code.
+**Cone today is file-per-module, with no package at all.** That is the largest
+single distance between the modularity aim and the code.
+[module](../nodes/module.md) carries the model in full, and what it has not yet
+decided.
 
 ## What Cone has today, concretely
 
@@ -138,19 +142,24 @@ public, the member is not, and calling through the set is the way in.
 prefix plus enclosing type names plus the source name — and **the main module's
 prefix is empty**. Compiling `mymod.cone` directly emits `@scaleInt`; compiling
 a `main.cone` that imports it emits `@mymod_scaleInt`, and the two never
-resolve. An imported module is not flagged for generation at all, so only a
-`declare` is emitted. **A program spanning modules cannot be linked today.**
+resolve. **A program spanning modules cannot be linked today.**
 
-This is **downstream of the module design being unimplemented**, not an
-independent defect: the compilation unit is supposed to be the module, with a
-serialized public interface emitted for importers. Fixing the symbol prefix
-alone would not deliver what the design asks for. The author anticipated the
-cost — "it is not a trivial effort to add the compiler the ability to ingest,
-preserve, and re-ingest public interface information from source files."
+The generation machinery, though, is not the missing part. An imported module's
+bodies are emitted whenever it is flagged for generation, and `stdio` is flagged
+— a compile that prints emits `@stdio_print` and full definitions for the
+`IOStream` methods, alongside the caller. Every other imported module is denied
+the flag by a `strcmp` on its filename. So what blocks a multi-package program
+is the symbol rule and that one condition, not the absence of a mechanism.
+
+The serialized interface is a separate and larger cost, and it buys build speed
+rather than the ability to link at all. The author anticipated it — "it is not a
+trivial effort to add the compiler the ability to ingest, preserve, and re-ingest
+public interface information from source files."
 
 **Packages are a search path, not a unit.** `--pkg-path` finds files and
 `--safe=package` appears in the option help, but there is no package in the
-language — no manifest, no versioning, no namespace layer above the module.
+language — no manifest, no versioning, and nothing that makes a set of source
+files one compiled, distributable thing.
 
 **There is no thread layer.** Which of async/await, gothreads or actors Cone
 adopts is an open question the author treats as unsettled across the field; the
