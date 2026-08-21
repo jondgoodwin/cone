@@ -369,8 +369,9 @@ void genlProgram(GenState *gen, ProgramNode *pgm) {
     gen->module = LLVMModuleCreateWithNameInContext(gen->opt->srcname, gen->context);
     if (!gen->opt->release) {
         gen->dibuilder = LLVMCreateDIBuilder(gen->module);
-        gen->difile = LLVMDIBuilderCreateFile(gen->dibuilder, "main.cone", 9, ".", 1);
-        gen->compileUnit = LLVMDIBuilderCreateCompileUnit(gen->dibuilder, LLVMDWARFSourceLanguageC,
+        gen->difile = LLVMDIBuilderCreateFile(gen->dibuilder, gen->opt->srcpath, strlen(gen->opt->srcpath), ".", 1);
+        // The compile unit is attached to the module; nothing reads it back
+        LLVMDIBuilderCreateCompileUnit(gen->dibuilder, LLVMDWARFSourceLanguageC,
             gen->difile, "Cone compiler", 13, 0, "", 0, 0, "", 0, LLVMDWARFEmissionFull, 0, 0, 0, "", 0, "", 0);
     }
 
@@ -544,7 +545,6 @@ void genSetup(GenState *gen, ConeOptions *opt) {
     gen->fn = NULL;
     gen->fnblock = NULL;
     gen->allocaPoint = NULL;
-    gen->block = NULL;
     gen->blockstack = memAllocBlk(sizeof(GenBlockState)*GenBlockStackMax);
     gen->blockstackcnt = 0;
 

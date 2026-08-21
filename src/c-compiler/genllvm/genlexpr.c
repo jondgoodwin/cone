@@ -468,8 +468,10 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
 
     case StructTag:
     {
-        // LLVM does not bitcast structs, so this store/load hack gets around that problem
-        LLVMValueRef tempspaceptr = LLVMBuildAlloca(gen->builder, genlType(gen, fromtype), "");
+        // LLVM does not bitcast structs, so this store/load hack gets around that problem.
+        // genlAlloca puts it in the entry block: a mid-block alloca inside a loop
+        // is a new frame slot per iteration, which mem2reg does not promote.
+        LLVMValueRef tempspaceptr = genlAlloca(gen, genlType(gen, fromtype), "");
         LLVMValueRef store = LLVMBuildStore(gen->builder, genexp, tempspaceptr);
         LLVMValueRef castptr = LLVMBuildBitCast(gen->builder, tempspaceptr, LLVMPointerType(genlType(gen, totype), 0), "");
         return LLVMBuildLoad(gen->builder, castptr, "");
@@ -517,7 +519,7 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
         if (vtable->llvmvtable == NULL)
             genlVtable(gen, vtable);
 
-        LLVMValueRef vtablep;
+        LLVMValueRef vtablep = NULL;
         if (!(strnode->flags & TraitType)) {
             VtableImpl *impl;
             INode **nodesp;
@@ -529,6 +531,10 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
                     break;
                 }
             }
+            // Every reachable coercion registers its implementation during type
+            // check, so a miss means an invariant broke rather than bad source.
+            if (vtablep == NULL)
+                errorExit(ExitGen, "No vtable implementation registered for this struct");
         }
         else {
             // Use tag field to lookup correct vtable
@@ -546,6 +552,8 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
                     vtablep = LLVMBuildLoad(gen->builder, vtablep, "");
                 }
             }
+            if (vtablep == NULL)
+                errorExit(ExitGen, "Virtual reference source trait has no tag field");
         }
         LLVMValueRef vref = LLVMGetUndef(genlType(gen, totype));
         LLVMTypeRef vptr = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
@@ -562,13 +570,7 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
             return LLVMBuildBitCast(gen->builder, genexp, genlType(gen, totype), "");
 
     default:
-        if (totype->tag == StructTag) {
-            // LLVM does not bitcast structs, so this store/load hack gets around that problem
-            LLVMValueRef tempspaceptr = genlAlloca(gen, genlType(gen, fromtype), "");
-            LLVMValueRef store = LLVMBuildStore(gen->builder, genexp, tempspaceptr);
-            LLVMValueRef castptr = LLVMBuildBitCast(gen->builder, tempspaceptr, LLVMPointerType(genlType(gen, totype),0), "");
-            return LLVMBuildLoad(gen->builder, castptr, "");
-        }
+        // A struct destination cannot reach here: StructTag is a case above.
         return LLVMBuildBitCast(gen->builder, genexp, genlType(gen, totype), "");
     }
 }
@@ -798,10 +800,11 @@ static int genlIsNullablePtrField(FnCallNode *fncall) {
 // Generate an lval-ish pointer to the value (vs. load)
 LLVMValueRef genlAddr(GenState *gen, INode *lval) {
     switch (lval->tag) {
-    case FnDclTag:
-        genlGloFnName(gen, (FnDclNode *)lval);
-        genlFn(gen, (FnDclNode*)lval);
-        return ((FnDclNode*)lval)->llvmvar;
+    // There is no FnDclTag case. A name bound to a function resolves to a
+    // VarNameUseTag (nameUseNameRes), and an anonymous function is lifted to
+    // module scope and reached the same way, so no bare FnDclNode arrives here.
+    // The one that used to be here called genlFn, which is not idempotent and
+    // would have appended a second entry block to an already-generated function.
     case VarNameUseTag:
     {
         // A name may refer to a variable's storage or to a generated function
@@ -878,12 +881,16 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
             }
             return LLVMBuildStructGEP(gen->builder, genlAddr(gen, fncall->objfn), flddcl->index, &flddcl->namesym->namestr);
         }
-        else if (fncall->methfld->tag == UintNbrTag) {
+        // A tuple element is reached by index, which fnCallLowerIntField leaves
+        // as the ULitNode the source wrote. UintNbrTag is that literal's *type*,
+        // so testing for it never matched -- and with asserts compiled out,
+        // control fell into the next case and read this node as a string literal.
+        else if (fncall->methfld->tag == ULitTag) {
             ULitNode *ulit = (ULitNode*)fncall->methfld;
             return LLVMBuildStructGEP(gen->builder, genlAddr(gen, fncall->objfn), (unsigned int)ulit->uintlit, "");
         }
-        else
-            assert(0 && "Invalid FldAccess methfld.");
+        assert(0 && "Invalid FldAccess methfld.");
+        return NULL;
     }
     case StringLitTag:
     {
@@ -1116,8 +1123,8 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
                 return LLVMBuildExtractValue(gen->builder, genlExpr(gen, fncall->objfn), (unsigned int)ulit->uintlit, "");
             }
         }
-        else
-            assert(0 && "Invalid FldAccess methfld.");
+        assert(0 && "Invalid FldAccess methfld.");
+        return NULL;
     }
     case SwapTag:
     {

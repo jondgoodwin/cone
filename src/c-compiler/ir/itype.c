@@ -331,7 +331,7 @@ char *itypeMangle(char *bufp, INode *vtype) {
     case VirtRefTag:
     {
         RefNode *reftype = (RefNode *)vtype;
-        *bufp++ = vtype->tag==VirtRefTag? '<' : ArrayRefTag? '+' : '&';
+        *bufp++ = vtype->tag==VirtRefTag? '<' : vtype->tag==ArrayRefTag? '+' : '&';
         if (permIsSame(reftype->perm, (INode*)roPerm)) {
             bufp = itypeMangle(bufp, reftype->perm);
             *bufp++ = ' ';
