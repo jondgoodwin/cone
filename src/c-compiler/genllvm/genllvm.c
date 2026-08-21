@@ -358,7 +358,7 @@ void genlGlobalImpl(GenState *gen, INode *node) {
         break;
 
     default:
-        assert(0 && "Invalid global area node");
+        errorUnreachable(node, "a module-level declaration code generation has no case for");
         break;
     }
 }

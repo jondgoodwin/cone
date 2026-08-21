@@ -18,7 +18,7 @@ INode *iexpGetTypeDcl(INode *node) {
     else {
         //if (isTypeNode(node)) // caller should be using itypeGetTypeDcl()
         //    return node;
-        assert(0 && "Cannot obtain a type from this non-expression node");
+        errorUnreachable(node, "a request for the type of a node that is not an expression");
         return unknownType;
     }
 }

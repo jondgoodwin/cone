@@ -133,6 +133,32 @@ void errorMsg(int code, const char *msg, ...) {
     va_end(argptr);
 }
 
+// Report a state the compiler had established cannot happen, and stop.
+//
+// This is what an 'assert(0 && "unreachable")' was doing in a Debug build and
+// what it was not doing in a Release one: NDEBUG compiles the assert to
+// ((void)0), so the shipping compiler carried on with a node it had just said
+// was impossible -- reading it as whatever the next 'case' expected, or running
+// the rest of the function on a value it could not have. That is a wrong object
+// file or an access violation, either way with nothing said.
+//
+// It reports through errorMsgNode rather than errorExit alone so the author
+// gets a source position, including the instantiation trace: a defect that only
+// shows up inside a generic expansion is nearly unreportable without the code
+// that expanded it. Then it exits, because the compiler has just established
+// that its own invariants do not hold and anything further it produced would be
+// guesswork. ExitGen is that exit: it already means "stopped, internally", and
+// splitting a second code off it would enlarge the driver contract for a status
+// no scenario can produce.
+//
+// Nothing calls this for a bad program. A condition a source can reach is a
+// missing diagnostic and gets a code and a message of its own.
+void errorUnreachable(INode *node, const char *msg) {
+    errorMsgNode(node, ErrorUnreachable,
+        "Compiler defect: %s. Please report this, with the source that provoked it.", msg);
+    errorExit(ExitGen, "Compile abandoned: the compiler reached a state it had ruled out");
+}
+
 // Generate final message for a compile
 void errorSummary() {
     if (errors > 0)

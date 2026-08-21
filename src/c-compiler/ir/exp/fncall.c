@@ -215,7 +215,9 @@ void fnCallArrIndex(FnCallNode *node) {
         else if (vtype->tag == ArrayDerefTag)
             node->vtype = ((RefNode*)vtype)->vtexp;
         else {
-            assert(0 && "Illegal type to index a reference to");
+            // fnCallTypeCheck resolved the same pointee to decide this call was
+            // an index, and reaches here only for an array or a slice
+            errorUnreachable((INode*)node, "an index through a reference to something that is not an array or slice");
             return;
         }
         break;
@@ -227,7 +229,9 @@ void fnCallArrIndex(FnCallNode *node) {
         node->vtype = ((StarNode*)objtype)->vtexp;
         break;
     default:
-        assert(0 && "Invalid type for indexing");
+        // fnCallTypeCheck calls this from its array, slice, reference and
+        // pointer arms only, switching on this same receiver type
+        errorUnreachable((INode*)node, "an index on a receiver type fnCallTypeCheck does not index");
         return;
     }
 

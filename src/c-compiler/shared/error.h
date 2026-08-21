@@ -25,7 +25,11 @@ enum ErrorCode {
     ExitMem = 3,    // Out of memory
     ExitOpts = 4,    // Invalid compiler options
     ExitIndent = 5,    // Too many indent levels in lexer
-    ExitGen = 6,    // Unrecoverable failure during code generation
+    // Unrecoverable internal failure: code generation could not proceed, or a
+    // compiler invariant did not hold. Both mean the compiler has nothing
+    // further it can honestly say about this source, so both stop here rather
+    // than accumulate. See errorUnreachable.
+    ExitGen = 6,
 
     // Non-terminating errors
     ErrorCode = 1000,
@@ -132,6 +136,11 @@ enum ErrorCode {
     // Reference types
     ErrorNoRefType = 1074,      // A reference type did not name what it refers to
 
+    // The compiler's own invariants. This is the one code no source is supposed
+    // to be able to produce, and so the one code with no scenario: reaching it
+    // means a compiler defect, not a bad program. See errorUnreachable.
+    ErrorUnreachable = 1075,    // A state the compiler had established cannot happen
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name
@@ -150,6 +159,7 @@ void errorExit(int exitcode, const char *msg, ...);
 void errorMsgNode(INode *node, int code, const char *msg, ...);
 void errorMsgLex(int code, const char *msg, ...);
 void errorMsg(int code, const char *msg, ...);
+void errorUnreachable(INode *node, const char *msg);
 void errorSummary();
 
 #endif

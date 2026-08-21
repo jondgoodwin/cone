@@ -298,7 +298,7 @@ void inodeNameRes(NameResState *pstate, INode **node) {
     case FnOverloadDclTag:
         break;
     default:
-        assert(0 && "**** ERROR **** Attempting to name resolve an unknown node");
+        errorUnreachable(*node, "a node name resolution has no case for");
         break;
     }
 }
@@ -457,7 +457,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     case FnOverloadDclTag:
         fnOverloadDclTypeCheck(pstate, (FnOverloadDclNode *)*node); break;
     default:
-        assert(0 && "**** ERROR **** Attempting to check an unknown node");
+        errorUnreachable(*node, "a node type check has no case for");
         return;
     }
 
@@ -513,7 +513,7 @@ Name *inodeGetName(INode *node) {
     case EnumTag:
         return ((EnumNode*)node)->namesym;
     default:
-        assert(0 && "This kind of node has no namesym field");
+        errorUnreachable(node, "a request for the name of a node that has none");
         return NULL;
     }
 }

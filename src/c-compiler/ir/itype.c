@@ -408,7 +408,7 @@ char *itypeMangle(char *bufp, INode *vtype) {
         break;
 
     default:
-        assert(0 && "unknown type for parameter type mangling");
+        errorUnreachable(vtype, "a parameter type the instance-name mangler has no case for");
         return bufp;
     }
     return bufp + strlen(bufp);
