@@ -191,6 +191,6 @@ order — `genlallocref` hard-codes `derived[1]` as `Option`'s `Some`.
 
 - Layout, size, and why `TypeChecked` sits where it does: [Type Check Phase](../phases/type-check.md), "Struct and trait"
 - Unions at LLVM level, and vtables: [Generation](../phases/generation.md)
-- Field declarations, and why their permissions are inert: [vardcl](vardcl.md)
+- Field declarations, and what their permissions govern: [vardcl](vardcl.md)
 - Virtual references and how a vtable is selected: [references](references.md)
 - Instantiating a generic struct: [generic](generic.md)

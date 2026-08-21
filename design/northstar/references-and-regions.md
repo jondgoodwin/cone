@@ -103,6 +103,44 @@ anything coerces **to** `borrowRef`, and never between two owning regions.
 
 ### Permission — what may be done through this reference
 
+**Two different things share the word, and confusing them is easy.** A reference
+*type* carries a permission, and so does a *declaration* — a field, a local, a
+parameter or a global. They are written in different places, parsed by different
+functions, admit different vocabularies, and answer different questions:
+
+| | reference permission | declaration permission |
+| --- | --- | --- |
+| Written | inside a type: `&mut Point`, `+rc-ro T` | before a name: `mut x i32` |
+| Parsed by | `parsePerm`, inside `parseType` | `parseDclPerm` |
+| Vocabulary | all six below | `mut` and `imm`, nothing else |
+| Answers | read, write, alias, share — and move-ness | may this storage's value change |
+| Default | `ro` borrowed, `uni` owning, `opaq` for a function | `imm` on a variable, `mut` on a field |
+
+**Why they differ is the reason the rest of this note exists.** A declaration
+names one storage location that only it owns, so the aliasing and sharing
+distinctions have nothing to bite on: what is left to choose is whether the value
+may change. A reference is by definition a *second* way to reach something, which
+is where the other axes start to matter.
+
+Two consequences worth knowing:
+
+- **A declaration permission is not part of a function's signature.**
+  `fnSigMatches` compares each parameter's *type* and nothing else, so
+  `fn f(mut n i32)` and `fn f(n i32)` are one signature and a caller cannot tell
+  them apart. What a caller does see is the permission on a reference
+  parameter's *type* — a different thing in the same sentence, which is what
+  makes a parameter's own permission as private to the body as a local's.
+- **They compose by taking the minimum, for the one bit that is enforced.**
+  `iexpGetLvalInfo` walks an lval to its variable, adopting a reference's
+  permission wherever one is crossed and downgrading on a field's. So a `mut`
+  field is not writable through an `imm` value or a `&` reference, and an `imm`
+  field is not writable through a `&mut` one. That is the write half of what
+  `coneref/refstruct.html` calls *viewpoint adaptation*, and it is the half that
+  exists; adaptation over the sharing bits is unimplemented because those bits
+  are read nowhere.
+
+The six below are the reference vocabulary. A declaration uses two of them.
+
 Six permissions, each a bit set:
 
 | | `MayRead` | `MayWrite` | `MayAlias` | `MayAliasWrite` | `RaceSafe` | `MayIntRefSum` | `IsLockless` |
@@ -136,10 +174,14 @@ threads; `opaq` as the universal receiver. Transitions are irreversible under a
 move, but **temporary and reversible when done by borrowing** — which is how a
 `uni` reference is recovered after being lent out.
 
-**Only two of the seven bits are consulted today.** `MayWrite` gates assignment
-and swap; `MayAlias` decides move-ness. `MayRead` is never used as an access
-check, and `MayAliasWrite`, `RaceSafe`, `MayIntRefSum` and `IsLockless` are
-populated and read nowhere. See [Safety](safety.md).
+**Only two of the seven bits are consulted today.** `MayWrite` gates assignment,
+swap and a field write; `MayAlias` decides move-ness. `MayRead` is read only by
+the variance rule below, never as an access check, and `MayAliasWrite`,
+`RaceSafe`, `MayIntRefSum` and `IsLockless` are populated and read nowhere. That
+is not a judgement on the design — it is that the concurrency half is unbuilt,
+and those are the bits it would consult. One consequence is worth stating
+outright: **`imm` and `ro` are behaviourally identical today**, differing only in
+`RaceSafe` and `MayIntRefSum`. See [Safety](safety.md).
 
 The coercion lattice (`permMatches`) is small: `uni` coerces down to `ro`,
 `mut`, `imm` or `mut1`; anything readable coerces up to `ro`; `opaq` accepts

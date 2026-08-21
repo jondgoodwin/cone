@@ -3,13 +3,15 @@ locals, parameters, and compiler-injected temporaries), `FieldDclNode`, and
 `ConstDclNode`. They differ mostly in **what they do not have**.
 
 **At a glance.** Built by `parseVarDcl`, `parseFieldDcl`, `parseConstDcl` —
-each with a different set of what is allowed. Name resolution hooks a local
+each with a different set of what is allowed, though the first two now share one
+permission rule in `parseDclPerm`: `mut` or `imm`, defaulting to `imm` on a
+variable and `mut` on a field. A constant has no permission at all. Name resolution hooks a local
 *after* resolving its initializer. Type check runs permission → type →
 initializer → literal rule → size rule. Flow registers the variable, moves or
 copies the initializer, and marks it initialized. Generation allocas.
 
-*Provenance: read from source; the field-permission defects and the `undef`
-behavior were measured.*
+*Provenance: read from source; the `undef` behavior was measured. The
+field-permission defects this note used to list were measured, then fixed.*
 
 ## Shape
 
@@ -18,7 +20,7 @@ behavior were measured.*
 | `vtype` | declared or inferred | declared or inferred | declared or inferred |
 | `namesym` | yes | yes | yes |
 | `value` | initializer, or NULL | default, or NULL | **required** |
-| `perm` | yes | yes, but inert — see Hazards | **none** |
+| `perm` | yes | yes — governs writes, see Hazards | **none** |
 | `scope` | 0 global, 1 parameter, 2+ local | none | none |
 | `index` | parameter position | **LLVM struct field slot** | none |
 | `vtblidx` | none | vtable slot | none |
@@ -42,7 +44,7 @@ The absences are the point:
 | Function | Note |
 | --- | --- |
 | `newVarDclNode` | full initialization, including `genname` |
-| `newVarDclFull` | takes type and value — **and never sets `genname`**. See Hazards |
+| `newVarDclFull` | takes type and value; sets `genname` like its sibling |
 | `newFieldDclNode` | leaves `vtblidx` untouched |
 | `newConstDclNode` | — |
 
@@ -160,17 +162,16 @@ Fields and constants have no flow participation at all.
 
 ## Hazards
 
-- **`newVarDclFull` leaves `genname` uninitialized.** The arena never zeroes, so
-  every node from it carries a garbage `char*`. Latent only because the
-  mangling and global-emission paths are reached solely from nodes built by
-  `newVarDclNode`. Promote a synthesized variable to module scope and it
-  becomes a real bug.
-- **A field's permission is inert, and its one parse check is inverted.**
-  `imm` is rejected while `uni` and `opaq` pass; `defperm` is ignored; and the
-  sole enforcement site compares by pointer identity against the raw `immPerm`
-  singleton, which a written permission never is — so a `ro` field is writable.
-  All measured. The comparison is wrong however the language question is
-  settled; the other two cannot be repaired until it is.
+- **`permGetFlags` will read a flag word out of whatever it is handed.** Its
+  `assert(perm->tag == PermTag)` is nothing in a Release build, so a caller that
+  might hold `unknownType` — which is what an unwritten permission was, before
+  `parseDclPerm` applied a default — gets garbage rather than a diagnostic.
+  Unwrap `TypeNameUseTag` and check for `PermTag` before asking.
+- **A field's permission governs exactly one thing: whether the field may be
+  written**, and it does so together with the permission of whatever the field
+  is reached through — the minimum of the two. It says nothing about sharing,
+  because a field cannot be shared independently of its container: whatever
+  permission reaches the whole is the ceiling on every part.
 - **Field `index` is stamped twice** — at parse, and authoritatively in
   `structTypeCheck` after mixin flattening moves fields. Only the second is
   trustworthy.

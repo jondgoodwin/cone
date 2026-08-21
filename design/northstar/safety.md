@@ -37,7 +37,7 @@ test scenarios that assert the absence deliberately.*
 | use after move | **yes** | `nameuseFlow`, same summary caveat |
 | move out of a global | **yes** | `flowHandleMove` |
 | write through a read-only reference | **yes** | `assignlvalrtype`, `swapFlow` — `MayWrite` only |
-| write through a `ro` *field* | **no** | the check compares by pointer identity against a singleton a written permission never is |
+| write through an `imm` *field* | **yes** | `iexpGetLvalInfo`, taking the minimum of the field's permission and its container's |
 | **read** through a reference lacking `MayRead` | **no** | `MayRead` is never consulted as an access check anywhere |
 | a borrow stored into a longer-lived place | **yes** | `assignlvalrtype`, one site |
 | a borrow returned from a function | **yes** | `returnFlowEscape`, one site |
