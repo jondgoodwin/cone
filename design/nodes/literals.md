@@ -93,8 +93,9 @@ in declaration order and rewrites `args` to match: a `NamedValNode` is moved
 into position; a missing field takes its default; a field flagged `IsTagField`
 gets the variant's `tagnbr` **inserted** — which is how a union variant's
 discriminant is materialized. A `_`-prefixed field may not be given a value from
-outside the type. Then a positional pass requires **exact** type equality per
-field, again with no coercion.
+outside the type. Then a positional pass runs each value through `iexpCoerce`
+against its field's type: **a field takes a value on the same terms a variable
+initializer does**, a union variant standing in for its union included.
 
 `litIsLiteral` is the compile-time-constant predicate the global, parameter and
 field-default rules use. It accepts a use resolved to a `ConstDclTag`, which is
@@ -162,8 +163,8 @@ interning, and constant merging is not in the pass list.
   run-time-sized allocation's type claims a zero-length array. That path
   generates through the run-time fill loop, not the constant path.
 - **`typeLitStructReorder`'s error recovery inserts fake zero values** typed as
-  the field's type, so a later exact-type check can pass on a value that is not
-  real.
+  the field's type, so the coercion pass that follows passes on a value that is
+  not real.
 - **`newFakeULitNode` is dead code.**
 
 ## What lives elsewhere

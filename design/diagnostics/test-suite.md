@@ -193,8 +193,7 @@ Name the split for what it covers — `core-parse-delimiters`, not `core-parse-1
 assertion, so it cannot even be `xfail`. Exclude it with a written reason in its
 group's `cases.toml` rather than leaving it to be rediscovered — and file the
 crash, because the exclusion is a placeholder for a fix and not a verdict. The
-last set of these is in `workitems/done/`;
-the corpus currently has none.
+corpus currently excludes no scenario for a crash.
 
 **A construct that silently parses as something else.** `xfail` asserts that a
 case fails; a construct the lexer or parser quietly reads as something valid
