@@ -281,8 +281,15 @@ module, and two sibling module folders can declare the same module name.
   reserved so that spelling can be diagnosed rather than merely rejected.
 - **`include` is retired.** A module spanning source files does properly what
   `include` did by injection.
-- **Building a package emits a serialized interface** for importers to read
-  instead of re-parsing implementation sources.
+- **Building a package emits an interface artifact** for importers to read
+  instead of re-parsing implementation sources. Until one exists an imported
+  package is parsed for its declarations and linked against its prebuilt object,
+  so the artifact buys build speed rather than the ability to link. It cannot
+  hold signatures alone: generics monomorphize at the use site, macros expand at
+  the use site, `inline` is macro-shaped, and trait defaults are cloned into
+  implementers, so an importer needs those bodies — and a private helper reached
+  from one of them has to travel with it, emitted by nobody and callable by
+  nobody.
 
 ### Visibility
 
@@ -383,7 +390,11 @@ reads well; Rust accepts `regex::Regex` and leans on `use`; Python's
 `datetime.datetime` is the cautionary case. Whether the answer should differ for
 a package and for a nested module is part of the question.
 
-### How a C library becomes a Cone package
+### How a C library becomes a Cone package, and what an interface artifact is
+
+These are one question. A C library's package and a package's generated
+interface are the same artifact — public declarations, no bodies, symbols
+supplied elsewhere — one written by hand and one emitted by the compiler.
 
 Cone code must be able to use C-API libraries, and the mechanism must produce
 something `import` can name — a package — rather than declarations sprinkled
