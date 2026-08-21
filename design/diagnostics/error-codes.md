@@ -82,14 +82,13 @@ remedy. So the test is not "is this a different condition?" but "would a caller
 ever branch on which?" If nothing would, one code and a specific message is
 right.
 
-That is a narrow licence, and `ErrorManyArgs` was the worked example of taking
-it too far: it covered wrong arity, a non-type generic argument, "expects
-arguments to be provided" and arguments given to a field access — conditions a
-reader would absolutely distinguish, and the scenarios asserting them had to be
-told apart by message substring. It now means only what it says, and
-`ErrorArgCount`, `ErrorNotType`, `ErrorNoArgs` and `ErrorFldArgs` carry the
-rest. The tell was the scenarios: when a code needs a substring to be useful,
-the substring is doing the code's job.
+That is a narrow licence, and the tell that it has been stretched is the
+scenarios: **when a scenario needs a message substring to tell two uses of one
+code apart, the substring is doing the code's job.** Wrong arity, a non-type
+generic argument, a call that expects arguments and gets none, and arguments
+given to a field access are four conditions a reader would absolutely
+distinguish — so they are four codes, `ErrorArgCount`, `ErrorNotType`,
+`ErrorNoArgs` and `ErrorFldArgs`, and `ErrorManyArgs` means only what it says.
 
 ## The one code with no scenario
 

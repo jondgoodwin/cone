@@ -65,9 +65,10 @@ permissions are erased at runtime, `&mut i32`, `&ro i32` and `&uni i32` collapse
 to **one** entry sharing one LLVM type and one allocation-header struct.
 
 `refHash` and `arrayRefHash` hash `vtexp`, the type pointed at, which is the
-field `refIsSame` compares — so the table spreads. They used to hash `vtype`,
-permanently `unknownType` on a reference type node, and every `RefTag` landed in
-one bucket; linear probing kept the lookup correct and turned it into a scan.
+field `refIsSame` compares — so the table spreads. Hashing `vtype` instead would
+put every `RefTag` in one bucket, since `vtype` is permanently `unknownType` on a
+reference type node; linear probing would keep the lookup correct and turn it
+into a scan.
 
 ## Memoization
 

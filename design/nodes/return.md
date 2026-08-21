@@ -13,8 +13,7 @@ place — type check rewrites a `return` inside an inlined function into a break
 and it puts every field where the code that reads it expects, even for the tags
 that never populate it.
 
-*Provenance: read from source. The jump-release defects this note used to list in
-Hazards were measured, then fixed.*
+*Provenance: read from source.*
 
 ## Shape
 

@@ -118,40 +118,32 @@ type checking. A type-check expectation sharing a file with a parse error never
 runs, and the scenario silently covers half of what it claims. Same-stage errors
 accumulate, so one file carries several distinct codes of one stage.
 
-**Same-stage used not to be enough**, because two passes gated themselves on the
-global error count rather than on their own. **Both are now per declaration**,
-and neither constrains how a file is written any more:
+**Both error gates within type check are per declaration**, so neither
+constrains how a file is written:
 
 - **`fndcl.c` skips a function's body when that function's own signature did
-  not type check.** `module.c` used to do this across two passes — every
-  signature in the module, then every body, and no body at all unless the
-  signature pass was error-free — so one malformed signature suppressed every
-  body-phase diagnostic in the file. Both passes are gone: a declaration is
-  analyzed whole, and the skip is now local to the one whose signature failed.
+  not type check.** The skip is local to that function; every other declaration
+  in the file is analyzed whole.
 - **`fndcl.c` runs `blockFlow` on a function whose own signature and body type
-  checked**, whatever failed elsewhere. It used to require the global count to be
-  zero, so one error of any stage silenced data-flow analysis for every function
-  after it.
+  checked**, whatever failed elsewhere.
 
 So flow diagnostics — `ErrorMove`, the lifetime checks in `assign.c` and
 `return.c`, and `ErrorNoMut` on an assignment, which is a flow diagnostic and not
-a type-check one despite appearances — may now appear in several functions of one
+a type-check one despite appearances — may appear in several functions of one
 file, and after an earlier declaration has failed at either stage.
 `core-flow-gate` pins both gates, and is the one file in the corpus that
 deliberately mixes a signature failure, a body failure and flow diagnostics.
 
-Existing flow scenarios were written under the old rules and are still one
-function each, and `closure-typecheck-sig` is still split from
-`closure-typecheck-use` and `closure-typecheck-call`. Those splits are now
-simplifications rather than requirements.
+Several flow scenarios are one function each, and `closure-typecheck-sig` is
+split from `closure-typecheck-use` and `closure-typecheck-call`. Those splits
+are simplifications rather than requirements.
 
-**One gate is still global**: name resolution returns before type checking begins
-if it reported anything (`conec.c`). A file whose subject is a type-check or flow
-diagnostic still cannot contain a name-resolution error.
+**One gate is global**: name resolution returns before type checking begins if it
+reported anything (`conec.c`). A file whose subject is a type-check or flow
+diagnostic cannot contain a name-resolution error.
 
-Four groups hit these while being written. If a scenario reports fewer
-diagnostics than it should and the missing ones are all late in the file, check
-this first.
+If a scenario reports fewer diagnostics than it should and the missing ones are
+all late in the file, check that gate first.
 
 **Split a stage into several files when any of these applies:**
 
@@ -177,9 +169,9 @@ diagnostics and one carries fifteen, so any threshold would describe nothing the
 corpus does. Split for one of the reasons above, or because the file stops being
 about one thing; never for a count.
 
-**A scenario whose subject used to crash the compiler is not a reason to split
-either**, though it costs something worth writing down in the file. If that
-guard regresses, the scenario does not fail an assertion — the process dies and
+**A scenario whose subject is a crash guard is not a reason to split either**,
+though it costs something worth writing down in the file. If that guard
+regresses, the scenario does not fail an assertion — the process dies and
 every expectation in the file is lost with it, including coverage of unrelated
 things. `generic-typecheck-macro` carries both arity and non-termination and says
 so at the top. Accepting that cost is the ordinary choice; a separate file buys

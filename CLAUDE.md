@@ -202,6 +202,13 @@ live in a single source file.
   gone stale is worse than a missing one, because it gets trusted. If a note
   needs no change, that is the normal case for a tactical fix — say so in the PR
   description rather than silently skipping the check.
+
+  **Fixing a note means deleting what stopped being true, not annotating it.**
+  A note describes the compiler as it is; it is not a changelog of itself. Do not
+  leave behind "was measured, then fixed", "this note used to list", "now
+  reports", or a hazard entry rewritten to say the hazard is gone. Git holds the
+  history, and a reader asking how the compiler behaves is not asking for it.
+  `design/_index.md`, "Conventions", is the full rule.
 - Keep `CMakeLists.txt`, `Cone.vcxproj`, and `Conestd.vcxproj` synchronized when
   adding, removing, or renaming C source files or changing shared toolchain
   requirements.

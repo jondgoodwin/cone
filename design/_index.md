@@ -173,6 +173,16 @@ simpler design, the intuition the name invites. Do not narrate what the project
 tried and reverted; nobody reading a note needs the changelog, and a decision
 recounted as an episode reads as drama rather than argument.
 
+**That includes the note's own history.** A note is not a changelog of itself.
+It never says what it used to list, what has since been fixed, or when a claim
+was checked — git holds all three, and a reader asking how the compiler behaves
+is not asking any of them. **When a note's claim stops being true, delete the
+claim.** Do not leave it annotated as fixed, and do not replace a hazard with a
+sentence saying it is gone: an absent hazard is the normal state and says
+nothing. The same goes for present behavior described as a delta — "now reports",
+"no longer asserts", "used to be `assert(0)`" all state the current fact in a
+form that decays the moment the previous state is forgotten. Write the fact.
+
 The same goes for names. A reader assumes things are named well, so a note
 explains a name **only where it is not doing its job intuitively** — and then
 against the reading it wrongly invites, not against a name it used to have.

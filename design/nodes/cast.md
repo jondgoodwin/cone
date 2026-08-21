@@ -72,10 +72,9 @@ address are both candidates and both are spelled better already, as `s.len` and
 **A pointer does not convert to a reference**, and the table above is what the
 code does rather than what it means to do. A reference carries a region, a
 permission and a lifetime and a raw pointer supplies none of them, so there is
-no value to construct. This used to be accepted by a fall-through from the
-reference row into the pointer row, and `genlConvert` has no arm for it: the
-assert saying so was compiled out of the Release build and `p into &i32` died on
-a null LLVM value. `p as &i32` is the spelling that keeps the bits.
+no value to construct. `genlConvert` has no arm for it either, so anything the
+table let through would reach generation with nothing to emit. `p as &i32` is
+the spelling that keeps the bits.
 
 ### `castIsTypeCheck`
 
@@ -140,9 +139,9 @@ nullable-pointer union (compare against null), and tagged (read the
   after checking does not tell you what the author wrote.
 - **A struct reinterpret is checked in generation, not type check.** A size
   mismatch surfaces late, as `ErrorRecastSize`.
-- **`genlConvert`'s two "unknown source" arms now report `ErrorUnreachable` and
+- **`genlConvert`'s two "unknown source" arms report `ErrorUnreachable` and
   exit.** Reaching either means the conversion table above accepted something
-  generation has no arm for, which is how `p into &i32` used to crash.
+  generation has no arm for.
 
 ## What lives elsewhere
 

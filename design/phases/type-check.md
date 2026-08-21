@@ -433,9 +433,9 @@ Kept so that reopening one is a decision rather than a rediscovery.
   diagnostic: `0x0040` overlapping `HasTagField` stops type checking every
   tagged union and reports nothing.
 - **An ordinary `assert` is a no-op** in the release build: it compiles to
-  nothing under `/DNDEBUG`. The sites that meant *unreachable* no longer are
-  asserts — they call `errorUnreachable`, which reports `ErrorUnreachable` and
-  exits. Do not write a new `assert(0)` expecting it to catch anything shipped.
+  nothing under `/DNDEBUG`. A site that means *unreachable* calls
+  `errorUnreachable`, which reports `ErrorUnreachable` and exits. Do not write a
+  new `assert(0)` expecting it to catch anything shipped.
 - **A node built during analysis takes the lexer's position**, which by then is
   the end of the file. `newNode` reads `lex->tokp`, so an injected node points at
   nothing unless `inodeLexCopy` is called on it.

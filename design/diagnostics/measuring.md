@@ -88,8 +88,8 @@ narrows it. `--build` builds first. [Test Suite](test-suite.md) is the authoring
 guide.
 
 **A stale `conec` fails good sources in ways indistinguishable from a language
-regression.** A binary left over from an earlier session once failed the
-smoke-test input with 17 errors purely because it predated a merge. The runner
+regression** — a binary predating a merge reports errors by the dozen on input
+the current compiler accepts, and nothing in the output says why. The runner
 refuses to run against a binary older than any compiler source; outside the
 runner, build before believing any failure.
 
@@ -102,8 +102,14 @@ directly.
 
 Each design note states near the top whether its claims were measured or read.
 That is not a formality. A note that is merely plausible is worse than no note,
-because it gets trusted. During the analysis re-factor, every confident reading
-of this compiler that was not measured turned out wrong at least once.
+because it gets trusted — and in this compiler a confident reading is not
+evidence: the dispatch is by tag, the phases mutate what they walk, and the
+paths that matter are the ones a reader assumes are unreachable.
 
 Read carefully, measure where you are uncertain, and say which you did. A claim
 a reader would act on destructively gets measured.
+
+**Provenance labels the note's live claims, not its history.** It says how what
+the note now asserts was established. It does not record what an earlier version
+of the note said, or that something it once listed has since been fixed — when a
+claim stops being true, the claim is deleted, not annotated.

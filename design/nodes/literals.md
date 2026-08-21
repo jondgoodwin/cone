@@ -153,10 +153,10 @@ interning, and constant merging is not in the pass list.
 - **`ArrayLitTag` has no arm in `inodePrintNode`**, so an array literal
   serializes as `**** UNKNOWN NODE ****` in an `--ir` dump.
 - **`TypeLitTag` has no arm in `inodeTypeCheck`**, so it falls to the default,
-  which now reports `ErrorUnreachable` and stops rather than passing silently.
-  `typeLitNameRes` *is* dispatched, so an already-retagged literal in a cloned
-  generic body can be name-resolved but not re-checked — and if that path is
-  live, it now aborts the compile instead of quietly skipping the check.
+  which reports `ErrorUnreachable` and stops. `typeLitNameRes` *is* dispatched,
+  so an already-retagged literal in a cloned generic body can be name-resolved
+  but not re-checked — and if that path is live, the compile aborts rather than
+  skipping the check.
 - **`cloneArrayNode` clones `elems` but shares `dimens`**, so a cloned fill
   literal shares its dimension node with the original.
 - **A fill dimension that cannot be resolved silently becomes 0**, so a

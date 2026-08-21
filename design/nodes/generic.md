@@ -9,8 +9,7 @@ Type check **never checks a template** — only clones. `genericSubstitute` from
 call either memo-hits an existing instance or clones a new one. Flow and
 generation see only instances, reachable **only** through `memonodes`.
 
-*Provenance: read from source; the symbol collision was measured. The
-parameter-leak escalation this note used to list was measured, then fixed.*
+*Provenance: read from source; the symbol collision was measured.*
 
 ## Shape
 

@@ -8,8 +8,7 @@ binds a lifetime label, enforces jump placement, and repairs `each`'s
 brackets the scope, injects `blockret`, and builds the release list. Generation
 creates basic blocks only when it has to.
 
-*Provenance: read from source; the double `blockret` was measured. The malformed
-phi this note used to list was measured, then fixed.*
+*Provenance: read from source; the double `blockret` was measured.*
 
 ## Shape
 

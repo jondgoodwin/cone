@@ -294,18 +294,9 @@ numbers.
 
 ## 11. Known gaps
 
-Of the five things read off the source while writing this note, one is still
-**unverified**: four tokens that are lexed and never consumed. It needs a probe
-before it is trusted.
-
-The other four were probed and fixed. `parseArrayLit` and `parseFnSig` call
-`lexIncrParens` now, so a bracketed construct split across an unindented line
-parses and stops decrementing an enclosing paren's count. `parseAdd` guards `+`
-as it already guarded `-`. The two dead parameters are gone from `parser.h` and
-every call site. And a stray `}` at global scope is `ErrorNoEof` — the symptom
-was **not** the block stack going negative: `parsePgm` simply had no end-of-file
-check, so the rest of the main file was discarded in silence, exit 0, object
-emitted.
+**Four tokens are lexed and never consumed.** This is read off the source and
+**unverified** — it needs a probe before it is trusted, and it is the one claim
+in this note that does.
 
 ## 12. What lives elsewhere
 

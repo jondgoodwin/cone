@@ -9,7 +9,7 @@ tracking, move-or-copy, borrow lifetime, and the `FlagFirstAssign` marker
 generation depends on. Generation stores, releasing the previous value first.
 
 *Provenance: read from source; the tuple-return defect in Flow was measured
-against emitted LLVM IR, and its release half has since been fixed.*
+against emitted LLVM IR.*
 
 ## Shape
 
@@ -83,7 +83,7 @@ deactivates its source; an lvalue read of a counted reference gets a `+1`.
 **`assignMultRetFlow` calls `assignlvalrtype` only** — no move-or-copy at all,
 so the holders a destructuring creates are never counted. `flowScopeDealias`
 walks a `VTupleTag` return element by element and exempts each from release, so
-the return side no longer frees what it is handing back; this caller-side hole is
+the return side does not free what it is handing back. The caller-side hole is
 what remains.
 
 ## Generation

@@ -8,8 +8,7 @@ name means, visibility, imports, aliases, overloading. Change a rule there;
 change how the walk implements it here.
 
 *Provenance: read from source; the `Name.node` read sites and the parse-time
-namespace guarantee were measured. The generic parameter leak this note used to
-list in Hazards was measured, then fixed. See
+namespace guarantee were measured. See
 [Measuring](../diagnostics/measuring.md).*
 
 ## 1. Key principles
@@ -165,8 +164,7 @@ next pass a null to trip over.
 - **The pass is not idempotent, and cannot be.** `inodeNameRes` has no arm for
   `DerefTag`, `PtrTag`, `BorrowTag`, `AllocateTag`, `ArrayLitTag`, `VTupleTag`
   or `TTupleTag` — **all of which it produces**. A second walk falls into the
-  `default:` arm, which now reports `ErrorUnreachable` and stops. It used to be
-  `assert(0)`, a no-op under `NDEBUG`, so a second walk passed in silence.
+  `default:` arm, which reports `ErrorUnreachable` and stops.
 - **`blockContinueStep` is the one re-entry.** After the statement loop,
   `blockNameRes` clones an `each` loop's trailing step ahead of a `continue` and
   re-runs `inodeNameRes` on the copy. It works because resolved `NameUseNode`s

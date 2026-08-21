@@ -58,8 +58,7 @@ The full list of dispatchers a new tag must be added to is in
 worth having is that **a missing arm passes silently in some of them.** In
 `inodeNameRes`, `inodeTypeCheck`, `inodeGetName`, `flowLoadValue`, `_genlType`,
 `genlExpr`, `genlAddr` and `genlGlobalImpl`, the `default:` arm calls
-`errorUnreachable`, which reports and stops; each used to be `assert(0)`, which
-`NDEBUG` compiled out of the Release build. The rest let a tag they do not list
+`errorUnreachable`, which reports and stops. The rest let a tag they do not list
 through, some of them deliberately.
 
 ## Walk state

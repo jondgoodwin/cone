@@ -10,8 +10,7 @@ variable and `mut` on a field. A constant has no permission at all. Name resolut
 initializer → literal rule → size rule. Flow registers the variable, moves or
 copies the initializer, and marks it initialized. Generation allocas.
 
-*Provenance: read from source; the `undef` behavior was measured. The
-field-permission defects this note used to list were measured, then fixed.*
+*Provenance: read from source; the `undef` behavior was measured.*
 
 ## Shape
 
@@ -57,8 +56,7 @@ a fresh unchecked node however far along its source got. Without that,
 statement area, and cloning is entered only on a function, struct or macro body,
 so no `ConstDclNode` can reach `cloneNode` — which has no `ConstDclTag` arm
 either, and whose `default:` says so. Whoever makes `const` legal inside a body
-owes both halves, the mark clearing above included; `const.c` carries that note
-where the function used to be.
+owes both halves, the mark clearing above included; `const.c` carries that note.
 
 ## Parse
 

@@ -10,8 +10,7 @@ fields, computes infectious flags, sets `TypeChecked` **before** methods, then
 synthesizes a drop function. Generation lowers to a named LLVM struct, or to
 padded variants, or to nothing at all.
 
-*Provenance: read from source; the two crashes this note used to list in Hazards
-were measured, then fixed.*
+*Provenance: read from source.*
 
 ## Shape
 
@@ -21,7 +20,7 @@ were measured, then fixed.*
 | `namespace` | every named member: fields, methods, overload sets, and `Self` |
 | `dropfn` | NULL until the last step of type check |
 | `mod` | owning module. Read in one place: rejecting a variant declared outside its closed trait's module |
-| `basetrait` | the `extends` **type expression** — a `NameUseNode`, or an `FnCallNode` for a generic base. **Not a `StructNode*`.** Two helpers unwrap it and they answer different questions: `structBaseTraitDcl` takes **one hop**, to the declaration of the trait this type extends, while `structGetBaseTrait` recurses to the **bottom-most** one. Picking the wrong one is what used to hang the infection loop |
+| `basetrait` | the `extends` **type expression** — a `NameUseNode`, or an `FnCallNode` for a generic base. **Not a `StructNode*`.** Two helpers unwrap it and they answer different questions: `structBaseTraitDcl` takes **one hop**, to the declaration of the trait this type extends, while `structGetBaseTrait` recurses to the **bottom-most** one. Picking the wrong one is how the infection loop hangs |
 | `derived` | for a **closed** trait, its variants in declaration order. The index *is* the `tagnbr` |
 | `fields` | all fields in layout order |
 | `vtable` | NULL until `structMakeVtable` |

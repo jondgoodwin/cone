@@ -8,8 +8,8 @@ assuming it does anything a borrow checker does. It does not.
 
 *Provenance: read from source; the defects in Hazards were measured by reading
 emitted LLVM IR, and the claims about what is **not** enforced are corroborated
-by test scenarios asserting the absence. The jump-release defects this note used
-to list were measured, then fixed. See [Measuring](../diagnostics/measuring.md).*
+by test scenarios asserting the absence. See
+[Measuring](../diagnostics/measuring.md).*
 
 ## 1. It is a fifth phase that is not a fifth pass
 
@@ -255,11 +255,11 @@ the built-in permissions are zero-sized. See [Generation](generation.md),
 - **`flowScopeDealias` reads `vtype` raw**, without `itypeGetTypeDcl`, while
   `flowInjectAliasAmt` resolves it. A variable declared through a typedef alias
   to an owning reference is likely missed.
-- **`flowLoadValue`'s `default:` arm now reports and stops.** It used to be
-  `assert(0)`, a no-op under `NDEBUG`, so an unhandled tag in a release compiler
-  was skipped silently — meaning no move check, no alias injection and no
-  initialization check for that value. It now calls `errorUnreachable`. Whether
-  any tag reaches it is unestablished.
+- **`flowLoadValue`'s `default:` arm reports `ErrorUnreachable` and stops.** An
+  unhandled tag therefore fails the compile rather than passing through it —
+  passing through would mean no move check, no alias injection and no
+  initialization check for that value. Whether any tag reaches it is
+  unestablished.
 
 ## 9. Code pointer map
 

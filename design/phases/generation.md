@@ -203,7 +203,7 @@ Everything below is required, unchecked, and fatal if violated.
 
 **An impossible state is reported, not assumed away.** The documented build is
 `Release`, which defines `NDEBUG`, so an `assert` is not a trap there. Every
-site that meant *unreachable* now calls `errorUnreachable`, which reports
+site that means *unreachable* calls `errorUnreachable`, which reports
 `ErrorUnreachable` against the node — with its instantiation trace — and exits
 `ExitGen`. The ordinary value asserts scattered through generation are still
 asserts and still compiled out; do not add one expecting it to catch anything
@@ -273,13 +273,6 @@ variables.
 - **A string literal emits a fresh global per occurrence.** Nothing deduplicates
   them, and constant merging is not in the pass list.
 - **The block stack is a fixed 256 entries** and overflow is a hard exit.
-
-Three observations that sat here unverified have since been probed and acted on.
-`genlAddr`'s `FnDclTag` arm is gone, with a comment saying why calling `genlFn`
-from there was unsafe. `itypeMangle`'s ternary reads
-`vtype->tag==ArrayRefTag? '+' : '&'`, and the function now covers the tuple,
-array, signature and void parameter types it used to write nothing for. The
-duplicated struct conversion is one arm, using `genlAlloca`.
 
 ## 9. Code pointer map
 

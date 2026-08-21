@@ -35,18 +35,25 @@ from the NameDef design and move the latter to [[Namedef Refactor]]. It also
 lacks the provenance line every other note carries, and its source-code manifest
 duplicates the phase note's pointer map in a different format.
 
-## 3. A link checker
+## 3. A note checker
 
 The notes cross-link heavily and nothing verifies them; `design/nodes/_index.md`
 carried eight dangling links for a long time precisely because nothing looked.
-Two rules to enforce:
+Three rules to enforce:
 
 - every markdown link in `design/` resolves;
 - **no `design/` note contains a wiki-link to a work item** — the dependency runs
   one way, work item to design note, so that closing an item prompts updating its
-  notes rather than leaving a note pointing at something that no longer exists.
+  notes rather than leaving a note pointing at something that no longer exists;
+- **no `design/` note narrates its own history.** A grep for "used to", "no
+  longer", "then fixed", "has since" and "now <verb>s" catches nearly all of it.
+  Each hit needs a human read — "used to" also means "employed to" — so this is a
+  reported list, not a hard failure. The rule it enforces is in
+  `design/_index.md`, "Conventions"; a sweep in August 2026 cleared twenty-odd
+  hits across sixteen notes, all of them added by a change that fixed a defect
+  and annotated the note instead of deleting the claim.
 
-Both are currently clean and both were checked by hand.
+All three are currently clean and all three were checked by hand.
 
 ## 4. Northstar: what the sources say that the notes do not yet
 
