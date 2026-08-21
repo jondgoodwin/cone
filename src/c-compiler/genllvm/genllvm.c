@@ -359,6 +359,7 @@ void genlGlobalImpl(GenState *gen, INode *node) {
 
     default:
         assert(0 && "Invalid global area node");
+        break;
     }
 }
 

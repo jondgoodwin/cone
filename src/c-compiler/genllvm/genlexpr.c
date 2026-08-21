@@ -385,6 +385,7 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
     }
     default:
         assert(0 && "invalid type of function call");
+        break;
     }
 
     return fncallret;
@@ -486,8 +487,10 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
         }
         else if (fromtype->tag == RefTag)
             return LLVMBuildBitCast(gen->builder, genexp, genlType(gen, totype), "");
-        else
+        else {
             assert(0 && "Unknown type to convert to reference");
+            return NULL;
+        }
     }
 
     case ArrayRefTag:
@@ -505,8 +508,10 @@ LLVMValueRef genlConvert(GenState *gen, INode* exp, INode* to) {
             aref = LLVMBuildInsertValue(gen->builder, aref, size, 1, "size");
             return aref;
         }
-        else
+        else {
             assert(0 && "Unknown type to convert to array reference");
+            return NULL;
+        }
     }
 
     case VirtRefTag:
@@ -701,6 +706,7 @@ LLVMValueRef genlIsType(GenState *gen, CastNode *isnode) {
             }
         }
         assert(0 && "Could not find specialized type's vtable");
+        return NULL;
     }
 
     // Special handling for nullable pointers
@@ -857,6 +863,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         }
         default:
             assert(0 && "Unknown type of arrindex element indexing node");
+            return NULL;
         }
     }
     case FldAccessTag:
@@ -1046,8 +1053,10 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
             ConstDclNode *constdcl = (ConstDclNode*)vardcl;
             return genlExpr(gen, constdcl->value);
         }
-        else
+        else {
             assert(0 && "Unknown DclNode");
+            return NULL;
+        }
     }
     case AliasTag:
     {

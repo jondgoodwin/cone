@@ -174,6 +174,7 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         break;
     default:
         assert(0);
+        break;
     }
 }
 

@@ -299,6 +299,7 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         break;
     default:
         assert(0 && "**** ERROR **** Attempting to name resolve an unknown node");
+        break;
     }
 }
 
@@ -457,6 +458,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
         fnOverloadDclTypeCheck(pstate, (FnOverloadDclNode *)*node); break;
     default:
         assert(0 && "**** ERROR **** Attempting to check an unknown node");
+        return;
     }
 
     // Confirm the declaration has been type checked. *node may have been replaced by

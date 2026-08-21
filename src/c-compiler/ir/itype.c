@@ -348,6 +348,7 @@ char *itypeMangle(char *bufp, INode *vtype) {
     }
     default:
         assert(0 && "unknown type for parameter type mangling");
+        return bufp;
     }
     return bufp + strlen(bufp);
 }

@@ -209,8 +209,10 @@ void fnCallArrIndex(FnCallNode *node) {
             node->vtype = arrayElemType(vtype);
         else if (vtype->tag == ArrayDerefTag)
             node->vtype = ((RefNode*)vtype)->vtexp;
-        else
+        else {
             assert(0 && "Illegal type to index a reference to");
+            return;
+        }
         break;
     }
     case ArrayRefTag:
@@ -221,6 +223,7 @@ void fnCallArrIndex(FnCallNode *node) {
         break;
     default:
         assert(0 && "Invalid type for indexing");
+        return;
     }
 
     // If we are borrowing a reference to indexed element, fix up type

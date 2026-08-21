@@ -308,6 +308,7 @@ int genericSubstitute(TypeCheckState *pstate, FnCallNode **srcgencallp) {
         break;
     default:
         assert(0 && "Illegal generic type.");
+        return 1;
     }
 
     // Be sure all expected generic parameters were inferred
