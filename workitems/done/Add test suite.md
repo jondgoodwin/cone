@@ -32,7 +32,7 @@ compile is the only routine evidence a change is correct, and a clean compile is
 not evidence of correct runtime behavior. This work item builds the missing
 infrastructure.
 
-`design/test-suite.md` holds the design, the rationale, and the authoring
+`design/diagnostics/test-suite.md` holds the design, the rationale, and the authoring
 guidance for test scenarios. This note is the work: what to build, and what
 "done" means.
 
@@ -173,7 +173,7 @@ guidance for test scenarios. This note is the work: what to build, and what
 ### R6 — Coverage and organization
 
 - **R6.1** Cases are organized into the 17 groups defined in
-  `design/test-suite.md`, following the reference manual's chapters. A construct
+  `design/diagnostics/test-suite.md`, following the reference manual's chapters. A construct
   is covered in depth in exactly one group. A feature with no group means a new
   group and a new manual chapter.
 - **R6.2** Superseded by R2.12, which specifies how entry points and support
@@ -218,7 +218,7 @@ something ever wants to diff successful output literally.
 
 **Status: done.** `CLAUDE.md`'s "Validating a change" now leads with
 `python test/run.py`, names the stale-binary hazard, and points at
-`design/test-suite.md` for authoring. Its repository-layout section lists the
+`design/diagnostics/test-suite.md` for authoring. Its repository-layout section lists the
 runner, the group directories and the staging file. The reference-manual line is
 added. What follows is the original statement of the problem.
 
@@ -240,7 +240,7 @@ added. What follows is the original statement of the problem.
 - **The link-and-run recipe** stays accurate, but the suite becomes its primary
   consumer and should be cross-referenced from it.
 
-`design/_index.md` gains its entry for `design/test-suite.md` (done as part of
+`design/_index.md` gains its entry for `design/diagnostics/test-suite.md` (done as part of
 writing that note).
 
 The reference manual at `conesite/public/coneref/index.html` becomes the spine of
@@ -1018,7 +1018,7 @@ source directory without adding a row is caught the first time a diff touches it
 it traverses, so a parser change selects the 43 scenarios written to exercise
 parsing rather than every scenario a parser change could break. Widening until it
 did would select almost everything. The full run before merge is what closes
-that; `design/test-suite.md` says so where someone will read it.
+that; `design/diagnostics/test-suite.md` says so where someone will read it.
 
 Two mappings are judgement calls a later reader may want to revisit: `ir/`
 selects everything but `parse` (89 of 111, so barely a filter) because five
@@ -1040,7 +1040,7 @@ than filed somewhere convenient:
   implemented and reachable today only through stdio's `IOStream`, but it is an
   append operator intended for collections, and `corelib/` has none — so covering
   it now would pin the operator to the one consumer it is not for.
-  `design/test-suite.md` carries the reserved `stream` row; see
+  `design/diagnostics/test-suite.md` carries the reserved `stream` row; see
   [[Collection - Streams & Iteration]].
 
 ### R1.6's Linux half is written but unverified

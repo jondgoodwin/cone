@@ -118,7 +118,7 @@ typedef struct GenericInfo GenericInfo;
 // cannot reach 'mod' or 'loopblock', because the field is not there.
 //
 // A declaration that changes any of these saves and restores it, because
-// analysis of one declaration nests inside another's. See design/type-check-phase.md.
+// analysis of one declaration nests inside another's. See design/phases/type-check.md.
 
 // Context used for the name resolution pass
 typedef struct NameResState {

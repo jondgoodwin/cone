@@ -39,7 +39,7 @@ the field and saying to break the cycle with a reference (`ErrorNoSize`).
   is chased where it is reported rather than stored.
 - ~~Separate infectious/cycle from rest of type check - how?~~ -- answered by
   *not* separating it. Reading the in-progress mark in place is what removed the
-  need for a separate pass. See `design/type-check-phase.md` rules 4 and 5.
+  need for a separate pass. See `design/phases/type-check.md` rules 4 and 5.
 
 - ~~A union variant may hold its own union by value~~ -- found while closing the
   above, and fixed. `union Bad { struct Wrap { t Bad } }` compiled clean and
@@ -61,15 +61,10 @@ the field and saying to break the cycle with a reference (`ErrorNoSize`).
   where the size is wanted, rather than reordering layout, is what worked.
 
 Improve algorithm for deciding whether types have ‘move’ semantics:
-**A variant literal does not coerce to its union in a struct literal's field.**
-Measured by [[Compiler defect backlog]]. `Holder[Just[&v]]`, where `Holder`'s
-field is declared with the union's type, reports `ErrorBadArray` "Literal value's
-type does not match expected field's type" — while the same coercion in a
-variable initializer, `mut u Maybe = Just[&v]`, is accepted. Confirmed
-identically on a three-variant tagged union, so it is the type-literal field
-check rather than anything about the nullable-pointer layout it was found under.
-The initializer path proves the coercion exists; the field path does not ask for
-it.
+A variant literal not coercing to its union in a struct literal's field has
+moved to [[Bugs]] — the cause turned out to be `typeLitStructCheck` comparing
+field types with `iexpSameType` instead of coercing, which needs no decision
+from this item.
 
 - Ttuple: any of its fields are move
 - Struct is move if it is marked as move 
@@ -83,3 +78,17 @@ Struct Handling Optimization?  LLVM does not bitcast structs, so the current co
 - strField 730 should use GEP where we already have the pointer
 - Deref 812 should avoid doing the Load
 - Still later, we can optimize so that small structs are treated as separate values
+## Two crashes, moved to [[Bugs]]
+
+The infection-propagation loop in `structTypeCheck` never terminates, so any
+type with a base trait that acquires `MoveType` or `ThreadBound` hangs the
+compiler — a union variant owning a reference is enough. And a virtual
+reference to a plain struct segfaults, because `refvirtTypeCheck` calls
+`structMakeVtable` without checking `TraitType` and that walks a `derived` list
+only a trait allocates. Both measured; repros and fixes in [[Bugs]].
+
+**The language question stays here:** should `&<Struct` on a plain struct be a
+diagnostic, or should it work? A structural conformer has everything a vtable
+needs, and `structVirtRefMatches` already builds one on demand for the coercion
+path — so "it should work" is defensible. Closing the crash does not answer it,
+and should not be taken to.

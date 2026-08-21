@@ -1,22 +1,15 @@
-Analysis is the work between parsing and generation: binding names to
-declarations, establishing types, and checking flow rules for ownership,
-permissions and lifetimes. **This note covers the middle one, type check.**
+Type check has two halves. **This note covers *when* a declaration is checked**:
+what demand means, the two marks a declaration carries, what a declaration still
+under check can answer about its type and its size, and the order each
+declaration kind resolves in.
+[Type Check Reasoning](type-check-reasoning.md) covers *what* the checks decide.
 
-What it describes is how type check is *scheduled*: what demand means, what the
-phase may assume from name resolution, the two marks a declaration carries, what
-a declaration still under type check can answer, and the order each declaration
-kind resolves in.
+Read this when a declaration is analyzed in an order you did not expect, when a
+type reports no size, when something is called circular, or before changing
+anything that walks declarations.
 
-What it does not describe is what the checks *decide* — coercion and inference,
-overload resolution, casts, borrows, tuples and literals — nor flow analysis,
-which has no design note at all. Both gaps are measured and carried by
-[[Design Documentation]].
-
-It was written as a before/after argument for [[Analysis re-factor]] and
-rewritten as a description once that landed. `git log --follow` on this file has
-the argument if the reasoning behind a decision is wanted, and reaches back past
-the rename from `Analysis.md`. Claims here were measured against the compiler
-rather than read from it, and section 12 says how to re-measure.
+*Provenance: measured. Every claim here was produced by running the compiler
+rather than reading it — see [Measuring](../diagnostics/measuring.md).*
 
 ## 1. Where this phase sits
 
@@ -31,30 +24,26 @@ if it reports anything, `conec.c` returns before type check begins. So type chec
 never meets an unbound name and nothing has to reason about a partly-bound
 declaration.
 
-It stays a single source-order pass deliberately, and the reason is stronger than
-that it gains nothing. Binding a name needs the declaration to *exist*, not to be
-analyzed, and the parser guarantees that — so name resolution has no use for
-demand. But it also could not have it cheaply:
+It stays a single source-order pass deliberately. Binding a name needs the
+declaration to *exist*, not to be analyzed, and the parser guarantees that — so
+name resolution has no use for demand. But it also could not have it cheaply:
+**it binds through a global slot**, and jumping out of a function body into an
+unrelated declaration would leave that function's locals still plugged in, so a
+matching name in the declaration jumped to would bind to one of them. Demand
+would mean saving and restoring the whole hook stack at every jump. The
+mechanism is [Name Resolution](name-resolution.md) section 2.
 
-**Name resolution binds through a global slot; type check does not.** A name has
-one `node` field, and `nametblHookNode` plugs a declaration into it and stacks the
-previous value for `nametblHookPop` to restore. That is how a block's locals
-shadow and unshadow. Three sites read it — `nameUseNameRes`, `varDclNameRes` and
-`modNameRes` — and all three are name resolution. By type check every use points
-at its declaration directly through `dclnode`, and nothing consults the slot.
+**Type check has no such constraint**, so it can be suspended anywhere and
+re-entered with nothing to save. The one place it hooks at all is generic
+substitution — `clonePushState` hooks the arguments, `cloneNode` reads them,
+`clonePopState` unhooks — and that is self-contained within one instantiation,
+which is not a suspension point.
 
-So type check can be suspended anywhere and re-entered on another declaration
-with nothing to save. Name resolution cannot: jumping out of a function body into
-an unrelated declaration would leave that function's locals still plugged in, and
-a matching name in the declaration jumped to would bind to one of them. Making it
-demand-driven means saving and restoring the whole hook stack at every jump.
-
-**What that costs today** is the global gate: one unresolved name anywhere stops
-the compile before any type checking, so a file cannot report a name error and an
-unrelated type error in one run. Removing it is [[Namedef Refactor]]'s, which asks
-for per-node unresolved/resolving/resolved states and says the pipeline change
-wants its own design. It would also mean every site that reads `dclnode` handling
-an unbound one, which the gate makes impossible today.
+**What the eager pass costs** is the global gate: one unresolved name anywhere
+stops the compile before any type checking, so a file cannot report a name error
+and an unrelated type error in one run. Removing it needs a per-node
+unresolved/resolving/resolved state, and every site that reads `dclnode`
+handling an unbound one.
 
 **Type check is demand-driven and it interleaves.** A declaration reaches names
 belonging to other declarations, so its type check suspends, the named
@@ -115,22 +104,18 @@ state neither bit can express.
 walk of a declaration corrupts it, which makes the mark a correctness requirement
 rather than an optimization.
 
-**The name says which phase, and that is the useful thing about it.** This work
-renamed the pair to `Analyzing`/`Analyzed` for a while, reasoning that "type" in
-the name claimed the marked thing was a type, and that once the marks went on
-every declaration most marked things would not be. Measured over the corpus,
-most marked things *are* types — 12,336 type nodes against 5,304 non-types — so
-the premise was false, and the broader name cost the one thing the pair does say
-accurately: these belong to type check and to nothing else. The rename was
-reverted. Read `TypeChecked` as "this declaration was type checked", never as "the
-node carrying it is a type".
+**Read `TypeChecked` as "this declaration was type checked", never as "the node
+carrying it is a type".** Most things carrying the mark *are* types, which is
+what makes the reading tempting and wrong. The name states which phase owns the
+mark; it says nothing about what the marked node is.
 
 **For a type, `TypeChecked` means laid out**, not "everything about me is done". It
 is set in `structTypeCheck` at the point the layout settles — fields indexed,
 size known, method set complete — and *before* the methods themselves are
 analyzed. The placement is load-bearing: a method may use its own type by value,
 `fn twin(self) Self`, so the size has to be available before methods run.
-Nothing needs a state stronger than that; see section 13.
+Nothing needs a state stronger than that, and nothing should be added that
+does — see "Settled deliberately" below.
 
 **The marks live on the node, not on the name.** Generic and macro instantiation
 clones declarations, and each clone is legitimately unanalyzed, so every clone
@@ -309,13 +294,12 @@ declaration, so everything above describes somewhere else at that moment.
 **Entering a declaration saves and resets what it changes**, which is what makes
 analyzing a declaration independent of where it was analyzed from.
 
-The two are separate because the walks are. Measured over the corpus, no
-function takes both — 37 take `NameResState` and 66 take `TypeCheckState`, and
-neither walk ever enters the other. A single merged state was tried and
-reverted: it compiled, but it handed every `*NameRes` function an `fn` it must
-never read and every `*TypeCheck` function a `mod` and `loopblock` it must never
-read, turning a compile error into a convention. Keeping them apart is what
-makes `pstate->fn` inside a name resolution function fail to build.
+**The two are separate deliberately**, so that `pstate->fn` inside a name
+resolution function fails to build rather than reading a field it must not.
+Measured, no function takes both. One merged struct would compile perfectly
+well — and would hand every `*NameRes` function an `fn` it must never read, and
+every `*TypeCheck` function a `mod` and `loopblock` it must never read. Two
+structs make that a compile error instead of a convention.
 
 `loopblock` is read only during name resolution, which is still one eager
 source-order pass, so demand cannot reach it. `scope` is consumed during type
@@ -412,9 +396,9 @@ elsewhere, whichever walk arrived at it.
 | `ErrorCircular` (1068) | a constant or inferred declaration is defined in terms of itself |
 | `ErrorInstDepth` (1067) | generic or macro expansion nests past `TypeCheckLoopMax` |
 
-`ErrorRecurse` (1049) is retired. It refused every re-entry, which is how a
-linked list came to be rejected, and after rule 4 its text — "recursive types are
-not supported" — is simply false.
+**`ErrorRecurse` (1049) is retired and its number must not be reused.** It
+refused every re-entry, which rule 4 replaced: a reference answers its own size,
+so a type reached again through one is not an error.
 
 A diagnostic reported on a node that came from an instantiation names what
 expanded it, and what expanded that, outward. That trace is capped at four
@@ -422,51 +406,20 @@ frames: ordinary code nests one or two deep, and a runaway expansion caught by
 `ErrorInstDepth` would otherwise bury the diagnostic under hundreds of identical
 frames.
 
-## 12. How to re-measure
+## 12. Settled deliberately
 
-Every claim here was produced by running the compiler. The technique that keeps
-working is to **instrument the thing under test to report instead of act,
-compile every corpus source, and read what comes out**:
-
-```bash
-for f in $(find test/cases -name "*.cone"); do
-  ./build/x64-release/conec.exe -o build/probe "$f" 2>&1 | grep "^PROBE"
-done
-```
-
-Silence is the result you want when the claim is "nothing does this". It has
-found, among others: three clone functions carrying analysis marks into their
-copies; `blockTypeCheck` leaking `pstate->scope` on two of its three exits; and
-that `fnCallTypeCheck`'s bare-method rewrite fires nowhere in the corpus at all.
-
-For an order question, temporarily print declaration-level entry to
-`inodeNameRes`, `inodeTypeCheck` — including its early return when the work is
-already done — and the `blockFlow` call in `fnDclTypeCheck`.
-
-**A stale `conec` fails good sources in ways indistinguishable from a
-regression.** Build before believing any failure; `python test/run.py --build`
-builds first.
-
-## 13. Settled deliberately
+Kept so that reopening one is a decision rather than a rediscovery.
 
 | Question | Answer |
 | --- | --- |
 | Does the name-resolution gate change? | No. One eager pass, global gate. |
 | Is name binding tracked as its own state? | No. It is the first thing analyzing a declaration does, and nothing else asks. |
 | What state does demand need? | None beyond the two marks, read rather than refused. |
-| Does anything need "complete" beyond "laid out"? | No consumer exists. Do not add one. |
+| Does anything need "complete" beyond "laid out"? | No consumer exists. A `SizeKnown` field on `ITypeNodeHdr` would separate "laid out" from "methods checked", but `TypeChecked` at the layout point already says the first and nothing asks for the second. Do not add one. |
 | Should a size question have five codes? | No. One code, cause in the message. |
+| Should a repeated diagnostic be suppressed? | Not for now. It needs a `Failed` state per declaration plus a test at every reporting site. |
 
-Two of these were settled *against* adding machinery, and what each would have
-bought is worth keeping so that reopening it is a decision rather than a
-rediscovery:
-
-| Considered | Would give | Why not |
-| --- | --- | --- |
-| a `SizeKnown` field on `ITypeNodeHdr` | "laid out" separate from "methods checked" | `TypeChecked` at the layout point already says it, and nothing asks for the other. Costs eight bytes on every type node. |
-| a `Failed` state per declaration | suppressing a repeated diagnostic | New state plus a new test at every site that reports. |
-
-## 14. Hazards
+## 13. Hazards
 
 - **Diagnostics come out in dependency order, not source order.** Per-line
   annotations in the test suite are unaffected; anything asserting a count or a
@@ -475,15 +428,45 @@ rediscovery:
   corpus records it by establishing the opposite, so a scenario that starts
   failing may be one a change correctly invalidated.
 - **Node `flags` bits are not one namespace.** Check every declaration family
-  before claiming a bit, not just the type block. `0x0040` once collided with
-  `HasTagField` and silently stopped type checking every tagged union.
+  before claiming a bit, not just the type block. A collision has no
+  diagnostic: `0x0040` overlapping `HasTagField` stops type checking every
+  tagged union and reports nothing.
 - **`assert(0)` is a no-op** in the release build: those sites compile to nothing
   under `/DNDEBUG` and fall through into the next switch case. What should
-  replace them is [[Compiler]]'s.
+  replace them is undecided — the mechanism, not whether.
 - **A node built during analysis takes the lexer's position**, which by then is
   the end of the file. `newNode` reads `lex->tokp`, so an injected node points at
   nothing unless `inodeLexCopy` is called on it.
 - **The eight type properties crowded into `flags`** — `MoveType`, `ThreadBound`,
   `OpaqueType`, `ZeroSizeType`, `TraitType`, `SameSize`, `HasTagField`,
-  `NullablePtr` — would be better in `ITypeNodeHdr`. That is [[IR refactor]]'s
-  call; analysis neither needs it nor makes it worse.
+  `NullablePtr` — would be better in `ITypeNodeHdr`. Analysis neither needs that
+  nor makes it worse.
+
+## 14. Code pointer map
+
+| File | Function | Purpose |
+| --- | --- | --- |
+| `conec.c` | `doAnalysis` | runs name resolution, gates on errors, then walks the program for type check |
+| `ir/inode.c` | `inodeTypeCheck` | the dispatch switch, and where both marks are set and tested |
+| | `inodeTypeCheckAny` | the same with no expected type |
+| `ir/itype.c` | `itypeTypeCheck` | check a node expected to be a type |
+| | `itypeNoSizeCause`, `itypeNoSizeExplain` | the five causes of section 6, and the hop-by-hop trace |
+| | `itypeVariantPending` | whether every variant of a union is laid out — section 10.2 |
+| `ir/iexp.c` | `iexpTypeCheckAny` | check a node expected to be an expression |
+| `ir/types/struct.c` | `structTypeCheck` | the nine steps of section 10.1; sets `TypeChecked` at the layout point |
+| `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the eight steps of section 10.3, including both error-delta gates |
+| `ir/stmt/vardcl.c` | `varDclTypeCheck` | section 10.4 |
+| `ir/stmt/module.c` | `modTypeCheck` | imports first, then declarations — section 10.5 |
+| `ir/meta/generic.c` | `genericInstantiate`, `genericInstantiateEnter` | instantiation, memoization, and the depth bound |
+| `ir/clone.c` | `clonePushState`, `clonePopState` | the one place type check hooks a name |
+| `ir/ir.h` | (`TypeCheckState`) | the walk context of section 9 |
+
+## 15. What lives elsewhere
+
+| Question | Note |
+| --- | --- |
+| What a check actually decides — coercion, overloads, casts, borrows | [Type Check Reasoning](type-check-reasoning.md) |
+| What may be assumed already bound, and why the gate exists | [Name Resolution](name-resolution.md) |
+| Moves, aliasing, drops — what runs at step 8 of section 10.3 | [Flow Analysis](flow.md) |
+| Node headers, marks as flag bits, the sentinels | [IR Nodes](../nodes/_index.md) |
+| How to re-measure any claim here | [Measuring](../diagnostics/measuring.md) |

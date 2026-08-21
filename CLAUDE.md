@@ -24,14 +24,18 @@ contains its C compiler (`conec`) and a small standard-library component
   [cone.jondgoodwin.com](https://cone.jondgoodwin.com), including the
   playground, examples, and language documentation. The reference
   documentation manifest is `conesite/public/coneref/index.html`.
-- `design/`: design notes for compiler and language subsystems. Use
+- `design/`: design notes, grouped as `northstar/` (what Cone is aiming at and
+  how far the compiler is — the notes that would survive a rewrite), `phases/`
+  (one per compiler phase, plus the naming rules), `nodes/` (what is true of
+  every IR node, plus per-node notes), `compiler/` (how `conec` itself is built
+  and stays fast), and `diagnostics/` (measuring, error codes, test suite). Use
   `design/_index.md` to find the relevant topic, then page in only the notes
   needed for the task.
 - `workitems/`: active and backlog compiler/language work. Its
   `workitems/_index.md` plan summarizes the work and acts as the manifest for
   the individual work-item notes; `workitems/__Top Priority.md` identifies the
   current priority sequence.
-- `test/run.py`: the test suite runner. `design/test-suite.md` is its authoring
+- `test/run.py`: the test suite runner. `design/diagnostics/test-suite.md` is its authoring
   guide.
 - `test/cases/<group>/`: one directory per coverage group, each with a
   `cases.toml` listing its scenarios.
@@ -57,11 +61,18 @@ contains its C compiler (`conec`) and a small standard-library component
 
 `src/c-compiler/conec.c` defines the high-level pipeline:
 
-1. Parse source into heterogeneous `INode` IR nodes.
-2. Resolve names.
-3. Type-check and infer types while lowering syntactic sugar.
-4. Run data-flow analysis from function type checking.
-5. Generate LLVM IR and output.
+1. Parse source into heterogeneous `INode` IR nodes — `design/phases/parse.md`
+2. Resolve names — `design/phases/name-resolution.md`
+3. Type-check and infer types while lowering syntactic sugar —
+   `design/phases/type-check.md` for when a declaration is checked,
+   `design/phases/type-check-reasoning.md` for what the checks decide
+4. Run data-flow analysis from function type checking — `design/phases/flow.md`
+5. Generate LLVM IR and output — `design/phases/generation.md`
+
+Each phase note carries its key principles, what the phase deliberately does
+*not* do, its hazards, and a file-and-function map into the code. Read the one
+that owns the problem before changing it. `design/nodes/_index.md` covers what is
+true of every IR node regardless of phase.
 
 IR nodes may be replaced or lowered during name resolution and type checking.
 When changing a language feature, trace and update every affected phase:
@@ -134,7 +145,7 @@ python test/run.py
 It compiles every scenario under `test/cases/`, asserts what each one's category
 and inline `//~` annotations claim, links and runs the `run` scenarios, and
 reports tier 0 first. `--list` prints what would run; a group, scenario, check
-name or `tag:<phase>` narrows it. `design/test-suite.md` is the authoring guide:
+name or `tag:<phase>` narrows it. `design/diagnostics/test-suite.md` is the authoring guide:
 which group to touch, what to assert, and how expectations are written.
 
 **A stale `conec` fails good sources in ways indistinguishable from a language
@@ -152,7 +163,7 @@ For a compiler change:
 
 1. Build `conec` and run `python test/run.py`.
 2. Add coverage for the change: a scenario in the owning group under
-   `test/cases/`, following `design/test-suite.md`. A fix for a crash or a
+   `test/cases/`, following `design/diagnostics/test-suite.md`. A fix for a crash or a
    miscompile lands with the case that fails without it, and a new `ErrorCode`
    lands with the scenario that provokes it.
 3. Inspect the generated IR when the change affects lowering or symbols.
@@ -173,6 +184,24 @@ live in a single source file.
 
 ## Change discipline
 
+- **A code change is not finished until its notes are.** Every PR that changes
+  compiler behavior lands with the matching updates in the same commit:
+  - a test scenario under `test/cases/` in the owning group,
+  - the `design/` note for each phase whose mechanism, invariant, or contract
+    moved — the phase notes and any per-node note the change touches,
+  - the `workitems/` item that owns the subsystem, so what the change closed
+    stops being listed as owed and what it opened is recorded.
+
+  **The dependency runs one way: a work item may point at a design note, a
+  design note never points at a work item.** That is what makes closing an item
+  prompt the question of which notes, tests and reference pages now need
+  updating; a note that pointed back would simply go stale.
+
+  Where the change contradicts something a note asserts, fix the note in that
+  commit rather than leaving it to be discovered later. A design note that has
+  gone stale is worse than a missing one, because it gets trusted. If a note
+  needs no change, that is the normal case for a tactical fix — say so in the PR
+  description rather than silently skipping the check.
 - Keep `CMakeLists.txt`, `Cone.vcxproj`, and `Conestd.vcxproj` synchronized when
   adding, removing, or renaming C source files or changing shared toolchain
   requirements.

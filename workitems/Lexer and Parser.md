@@ -29,3 +29,23 @@ Number literal inference
 - Move number conversion logic to “into” node and alter gen logic accordingly
 - Document up number coercion/conversion in Cone doc.
 - Document future number capabilities in this TODO doc
+## Four tokens are lexed and never consumed
+
+`MetaIdentToken`, `AttrIdentToken`, `QuesDotToken` and `RegionToken` are
+produced by the lexer and referenced by no parser function, so they presumably
+fall through to `ErrorBadTerm`/`ErrorBadGloStmt`. **Read from source, unverified.**
+
+This is here rather than in [[Bugs]] because the repair is a decision: either
+give them syntax or stop lexing them. A token that only ever produces "bad term"
+is a worse diagnostic than an unknown character, so doing nothing is not
+neutral. *Settle what it does today:* compile a source containing `#if`,
+`@samesize`, `a?.b` and `region R`.
+
+Three further parser observations from the same reading — unbalanced paren
+counting, `parseAdd` guarding `-` against a statement break but not `+`, and a
+stray `}` at global scope driving the block stack negative — are in [[Bugs]],
+all unverified.
+
+Two dead parameters (`parsePrefix`'s `noSuffix`, `parseArrayLit`'s `typenode`)
+are cleanup rather than defects and are recorded in [[Bugs]] under the same
+caveat.

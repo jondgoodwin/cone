@@ -26,7 +26,7 @@ one caveat recorded there: the POSIX branches have never run. Any scenario askin
 for something that is not implemented is a hard configuration error rather than
 something quietly ignored.
 
-``design/test-suite.md`` is the authoring guide -- which group to touch, what to
+``design/diagnostics/test-suite.md`` is the authoring guide -- which group to touch, what to
 assert, and how expectations are written.
 """
 
@@ -53,7 +53,7 @@ TAGS_TOML = REPO / "test" / "tags.toml"
 ERROR_H = REPO / "src" / "c-compiler" / "shared" / "error.h"
 IS_WINDOWS = os.name == "nt"
 
-# Tier per group, from the group table in design/test-suite.md section 1.
+# Tier per group, from the group table in design/diagnostics/test-suite.md section 1.
 # Results are reported tier 0 first, because tier 1 and 2 groups assume the
 # foundation works and a foundation break would otherwise be buried under the
 # downstream failures it caused (R2.8).
@@ -555,7 +555,7 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
     if group not in TIERS:
         raise SuiteError(
             f"{group_dir}: group {group!r} has no tier.\n"
-            f"  Groups come from the table in design/test-suite.md section 1;"
+            f"  Groups come from the table in design/diagnostics/test-suite.md section 1;"
             f" add it there and in TIERS in {Path(__file__).name}."
         )
     toml_path = group_dir / "cases.toml"
@@ -850,7 +850,7 @@ def load_tag_map(path: Path) -> list[Rule]:
         if unknown:
             raise SuiteError(
                 f"{where}: {', '.join(unknown)} is not a group. Groups come from"
-                f" the table in design/test-suite.md section 1")
+                f" the table in design/diagnostics/test-suite.md section 1")
 
         entry = table.get("path")
         patterns = [entry] if isinstance(entry, str) else list(entry or [])
@@ -1675,7 +1675,7 @@ class Runner:
 
     def check_warning(self, result: Result, scenario: Scenario,
                       diagnostics: list[Diagnostic]) -> None:
-        """The warn row of the category table in design/test-suite.md section 4:
+        """The warn row of the category table in design/diagnostics/test-suite.md section 4:
         exit 0 (check_exit), the annotated warnings present, no unannotated ones,
         and no errors.
 

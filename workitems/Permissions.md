@@ -1,15 +1,8 @@
 
 - Have flowLoadValue do read permission checks on “lval” node types (nameuse, deref, arrindex, strfield) and move iexpGetPermFlag to flow?
 	- **`iexpGetPermFlags` is dead today — nothing but itself calls it — and it
-	  carries a bug that would bite the moment this item picks it up.** Its
-	  `DerefTag` arm sets the permission for `RefTag` and `PtrTag` only, then ends
-	  in `assert(0 && "Should be ref or ptr")`. The Release build defines `NDEBUG`,
-	  so that assert is nothing and control **falls through into
-	  `case ArrIndexTag:`**, which reinterprets the `StarNode` as a `FnCallNode`.
-	  A slice or virtual-reference deref takes that path. Add the `ArrayRefTag` and
-	  `VirtRefTag` arms when moving it, and do not trust the assert to have been
-	  guarding anything. Found by [[Compiler defect backlog]]; not deleted, because
-	  this item wants the function.
+	  carries a fall-through bug**, now in [[Bugs]]. Fix it before this item
+	  picks the function up; the two missing arms are named there.
 	- The sibling it was modelled on, `iexpGetLvalInfo`, has now had three missing
 	  arms repaired (`RefTag` on array indexing, and a `((StarNode*)lval)->vtexp`
 	  cast that was silently reading `methfld`). Read those fixes before extending
@@ -41,3 +34,23 @@ inference side.
 - [[Managed Reference Metadata Access Prototype]]
 
 Field permissions blog/doc Necessary for safety. Special case of uni owner and mut fields: can’t allow shared/mut here for thread safety (we want isolated data that moves, can allow shared immutable, uni). Restricts us to hierarch graphs. To solve, we want to annotate these references as belonging to a region (=lifetime!). If field perm=mut w/ uni container we permit if lifetime matches (must be specified). This allows us to do scoped arenas!
+
+## What should a field's permission mean?
+
+**Undecided, and three code defects wait on it.** Measured: a field's permission
+is currently write-only state. `parseFieldDcl`'s validity check is degenerate —
+`permdcl != mutPerm && permdcl == immPerm` reduces to `== immPerm`, so it
+rejects exactly `imm` and admits `uni`, `opaq`, `mut1` and `ro`. Its `defperm`
+argument is passed and never read, so an unwritten permission stays
+`unknownType`. And the sole enforcement site compares by pointer identity
+against the raw `immPerm` singleton, which a written permission never is — so a
+`ro` field is writable.
+
+The third is a plain comparison bug and is in [[Bugs]]: comparing wrongly is
+wrong whatever the answer turns out to be. **The first two are not**, because
+flipping the parse check inverts which permission is legal, and wiring `defperm`
+decides what an unannotated field gets. Both need this question answered first.
+
+Answer it, then land all three together with scenarios in the `struct` group
+covering each permission keyword on a field and a write through a restricted
+one.

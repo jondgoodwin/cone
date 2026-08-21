@@ -1,49 +1,92 @@
-Building out `design/`: which subsystems have a note, which do not, what the
-notes that exist are missing, and the conventions they follow.
+**Done.** Building out `design/`: which subsystems have a note, which do not,
+what the notes that exist are missing, and the conventions they follow.
 
-`design/_index.md` is the manifest. This item is about what belongs in it that
-is not there yet.
+`design/` went from five notes to thirty, grouped into `northstar/`, `phases/`,
+`nodes/`, `compiler/` and `diagnostics/`, with `design/_index.md` routing by aim,
+by phase and by task. Every subsystem in the coverage table below now has a note.
 
-The gap is not a new observation. `design/ir-nodes.md` already links to
-`[[Name Resolution]]`, `[[Type Check]]`, `[[Generation]]`, `[[parser]]` and
-four node notes that have never existed — eight dangling links written by
-someone who expected these notes to be there.
+**The remainder moved to [[Design notes follow-on]]** — per-node notes not yet
+earned, the `names-and-namespaces` split, a link checker, and the northstar
+material the author's own writing surfaced that has not been folded in.
+[[Vault and repo sync]] carries the duplicate-copies problem.
+
+This item is kept for its reasoning rather than its task list: what a design note
+is for, the provenance rule, and the two measured sections at the end that show
+how a note's scope was decided.
+
+The gap was not a new observation. `design/nodes/_index.md` carried eight dangling
+links — to name resolution, type check, generation, the parser, and four node
+notes — written by someone who expected these notes to be there. **All eight now
+resolve**, which is what the first pass of this item was for.
 
 ## What a design note is for
 
 A design note says **how a subsystem works** — the mechanism, the invariants,
 and the reasons a shape was chosen over the alternatives. A work item says
 **what to do about it** — open bugs, unfinished features, decisions still owed.
-The split matters when both exist for one subject: `design/type-check-phase.md`
+The split matters when both exist for one subject: `design/phases/type-check.md`
 should describe how coercion reaches a decision, and
 [[Type Inference and Coercion]] should keep the measured cases where that
 decision is wrong. Neither should restate the other.
 
-**Write these from measurement, not from reading.** Every claim in
-`design/type-check-phase.md` was produced by instrumenting the compiler to
-report instead of act and compiling every corpus source; section 12 of that note
-is the technique. During [[Analysis re-factor]], every confident reading of this
-compiler that was not measured turned out wrong at least once. A design note
-that is merely plausible is worse than no note, because it gets trusted.
+**Read the code carefully; measure where you are uncertain; say which you did.**
+Every claim in `design/phases/type-check.md` was produced by instrumenting the
+compiler to report instead of act and compiling every corpus source;
+`design/diagnostics/measuring.md` is that technique, and it remains the standard for any
+claim that matters enough to be sure of. But that bar cannot hold uniformly across a dozen
+more notes, and pretending otherwise would produce notes that *claim* to be
+measured and are not — which is worse than either honest option.
+
+So: **every note states its provenance near the top**, and a claim that a reader
+would act on destructively gets measured rather than read. During
+[[Analysis re-factor]], every confident reading of this compiler that was not
+measured turned out wrong at least once, and writing the five phase notes
+repeated that lesson three times — a claim that borrow lifetimes were enforced
+nowhere, a claim that three sites read `Name.node`, and a `continue` that turned
+out to leak. Each was caught by checking rather than by rereading. A design note
+that is merely plausible is worse than no note, because it gets trusted; a note
+that says which of its claims were checked lets the reader calibrate.
 
 ## Coverage today
 
+`design/` is grouped into five folders; `design/_index.md` routes by aim, by
+phase and by task.
+
 | Subsystem | Note | State |
 | --- | --- | --- |
-| Type check scheduling | `type-check-phase.md` | thorough |
-| Type check reasoning | — | **missing**; see below |
-| Name resolution | `names-and-namespaces.md`, plus section 1 of `type-check-phase.md` | partial |
-| Flow analysis | — | **missing entirely** |
-| IR nodes | `ir-nodes.md` | present |
-| `return` | `return.md` | focused, complete |
-| Test suite | `test-suite.md` | operational guide, complete |
-| Lexer and parser | — | missing; [[Lexer and Parser]] holds the work |
-| LLVM generation | — | missing; [[LLVM Generation]] holds the work |
-| Generics and macros | section 8 of `type-check-phase.md` | thin |
+| Parse (lexer and parser) | `phases/parse.md` | present |
+| Name resolution | `phases/name-resolution.md` | present |
+| Type check scheduling | `phases/type-check.md` | thorough |
+| Type check reasoning | `phases/type-check-reasoning.md` | present |
+| Flow analysis | `phases/flow.md` | present |
+| LLVM generation | `phases/generation.md` | present |
+| Naming rules | `phases/names-and-namespaces.md` | present; stale rows corrected |
+| IR nodes | `nodes/_index.md` | present; also the per-node manifest |
+| Per-node notes | `nodes/*.md` | twelve written; the rest below |
+| Generics and macros | `nodes/generic.md` | present — was the weakest coverage, now closed |
+| Measuring | `diagnostics/measuring.md` | present |
+| Error codes | `diagnostics/error-codes.md` | present |
+| Test suite | `diagnostics/test-suite.md` | operational guide, complete |
+| References and regions | `northstar/references-and-regions.md` | present; corrected against the author's writing |
+| Safety | `northstar/safety.md` | present — a scorecard of promise against enforcement |
+| Performance (language) | `northstar/performance.md` | present; corrected against the author's writing |
+| Modularity | `northstar/modularity.md` | present; corrected against the author's writing |
+| Compiler architecture | `compiler/architecture.md` | present |
+| Compiler performance | `compiler/performance.md` | present |
+
+**Sections 1 and 2 below are closed** — `phases/type-check-reasoning.md` and
+`phases/flow.md` are what closed them. They are kept unedited because the
+reasoning about *what belongs in a phase note*, and the function-size
+measurements behind it, still apply to the notes not yet written. Read them as
+worked examples of how to scope a note, not as outstanding work.
+
+## What is still owed
+
+Moved to [[Design notes follow-on]].
 
 ## 1. The type check phase covers *when*, not *what*
 
-`design/type-check-phase.md` is 480 lines. Sections 2 to 8, 10 and 11 — about
+`design/phases/type-check.md` is 480 lines. Sections 2 to 8, 10 and 11 — about
 81% — describe how type check is scheduled: demand, the two marks, re-entry,
 size, circularity, and the resolution order within each declaration kind. That
 part is measured and solid.
@@ -107,7 +150,7 @@ Sections worth adding, in the order their absence costs most:
 
 `ir/flow.c` is 274 lines with its own `FlowState`, plus 559 lines in
 `parser/parsefnflow.c`. It does alias accounting, move handling, and scope
-dealiasing. `design/type-check-phase.md` gives it three sentences, all about
+dealiasing. `design/phases/type-check.md` gives it three sentences, all about
 *when* it runs, and says so explicitly rather than pretending otherwise.
 
 It should have its own note. Escape, permission, lifetime and move analysis are
@@ -145,7 +188,7 @@ name.
 `[[names-and-namespaces|Names and Namespaces]]`.
 
 **Renames go through `git mv`** so `git log --follow` reaches past them.
-`design/type-check-phase.md` was `Analysis.md` until this work.
+`design/phases/type-check.md` was `Analysis.md` until this work.
 
 ## Why the rename happened, so it is not undone
 
