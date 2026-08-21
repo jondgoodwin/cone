@@ -3,48 +3,76 @@
 - No array bounds checking
 - Target conditionals
 
-### How should the compiler react to reaching a state it believes impossible?
+### How the compiler reacts to reaching a state it believes impossible
 
-Undesigned today, and the current answer is "silently continue with garbage."
-There are **22 `assert(0 && "...")` sites** across the parser, the IR and LLVM
-generation, used to mean *unreachable*. The Release configuration compiles with
-`/DNDEBUG`, so every one of them is `((void)0)` in the shipping compiler, and
-control simply carries on — falling into the next `switch` case where the assert
-was a case's last statement.
+**Decided and applied.** A state the compiler had ruled out is reported through
+`errorUnreachable` and the compile stops. All 22 `assert(0 && "...")` sites are
+converted; none is left able to fall through.
 
-**Three of them were reachable, and two of those were the crash.** [[Bugs]]
-repaired `iexpGetPermFlags`' deref arm and both `Invalid FldAccess methfld.`
-sites, each of which fell into the following case: the one in `genlAddr` read a
-field access as a string literal and segfaulted on `&t.0`, one line of ordinary
-source. The remaining sites are unaudited and the count above is only smaller,
-not safer -- a fall-through is invisible until something reaches it.
+The problem it closes: the Release configuration compiles with `/DNDEBUG`, so
+every one of those asserts was `((void)0)` in the shipping compiler and control
+simply carried on. Four of them ended a `case` without a `break`, so the node was
+reinterpreted as whatever the next label expected -- the shape that segfaulted on
+`&t.0`, one line of ordinary source. Nine more ran the rest of their function on
+a value the assert had just declared impossible. `test/run.py` only ever runs
+`build/x64-release`, so no assert in this tree had ever fired in a tested
+configuration.
 
-**This is not hypothetical.** `genlAddr`'s `ArrIndexTag` case had no arm for a
-reference to a fixed-size array; the moment the type checker stopped rejecting
-`v[0] = x` on a `&mut [3; i32]`, legal source reached that `default: assert(0)`
-and the compiler died with an access violation instead of saying anything. Two
-more sites of the same shape are recorded in [[Permissions]] and were repaired in
-[[Compiler defect backlog]].
+`errorUnreachable(INode *node, const char *msg)` reports `ErrorUnreachable`
+through `errorMsgNode` and exits `ExitGen`. Going through `errorMsgNode` is what
+buys the source position **and the instantiation trace**: a defect inside a
+generic expansion prints the call that expanded it, which is usually the only
+thing a bug report can act on. It is `void`, called before the inert `return`
+each site already needs, because six sites return six different types and no
+single return type fits.
 
-This is the systematic form of what [[Diagnose instead of crash]] closed one site
-at a time. That item fixed the error paths that dereferenced their own NULL and
-built `--checktree` and `errorType` to catch a malformed tree — but `--checktree`
-only finds a node left with no type or no body, so it would not have caught the
-crash above.
+The other two options on the table were rejected. Building Release with asserts
+enabled aborts rather than diagnoses and hands the user a stack trace. Widening
+`--checktree` is still the better end state and is not excluded by this -- it
+finds a node left with no type or no body, which is a different class of
+malformation from the ones here.
 
-What wants deciding is the mechanism, not whether. Options, roughly:
+**What the audit found.** Three sites a source actually reaches, all closed
+upstream rather than at the assert, in the commit "Close the three assert sites a
+real source can reach":
 
-- A helper — `unreachableNode(node, msg)` — that reports through the normal
-  diagnostic path and exits non-zero. Cheap, mechanical to apply to all 24,
-  and turns a crash into a filed bug report with a source location.
-- Keep the asserts but build Release with them enabled. Loud, but aborts rather
-  than diagnosing, and gives a user a stack trace instead of a message.
-- Widen `--checktree`/`ErrorBadTree` to cover more invariants, and treat the
-  assert sites as genuinely unreachable once it does. Most work, best end state.
+- `genlConvert`'s reference arm. `p into &i32` was accepted by a fall-through in
+  `castTypeCheck`'s conversion table and **segfaulted the compiler**. A reference
+  carries a region, a permission and a lifetime that a raw pointer cannot supply,
+  so the conversion is not one; `castTypeCheck` now says so and `p as &i32`
+  remains the spelling that keeps the bits.
+- `fnCallArrIndex`'s reference arm. `&Alias` to an aliased array read the pointee
+  tag unresolved, so a valid index came out as a return-type mismatch. It now
+  resolves the pointee the way its caller did.
+- `itypeMangle`'s default. A generic instantiated at a tuple, an array, a
+  function reference or void mangled to nothing, so every such instance of one
+  generic shared a symbol. The four now mangle.
 
-Whichever is chosen, the sites should be audited rather than mechanically
-converted: several of them are reachable from bad *source* rather than from a
-compiler defect, and those want a real diagnostic with an `ErrorCode` instead of
-an internal-error message. Found by [[Compiler defect backlog]].
+Nine sites were classified unreachable from the guard that makes them so:
+`genlConvert`'s two reference arms, `genlIsType`'s tag-field fallthrough,
+`genlAddr`'s index default, both `Invalid FldAccess methfld` arms,
+`fnCallArrIndex`'s two, and `genericSubstitute`'s default. Each argument is one
+step: `fnCallArrIndex` is the only thing that builds an `ArrIndexTag` and admits
+four receiver types; all three builders of a `FldAccessTag` set `methfld` to a
+member use or a tuple index; `genericGetInfo` answers for a function and a struct
+and nothing else.
+
+**Thirteen sites remain unclassified**, and that is the open half of this item.
+No source found in the pass reaches them and no guard was located that rules them
+out: `genlIntrinsicFn`'s call-kind default, `genlIsType`'s vtable lookup,
+`genlAddr`'s default, `genlExpr`'s declaration and node defaults,
+`genlGlobalImpl`'s default, `genlType`'s default, `flowLoadValue`'s default,
+`iexpGetTypeDcl`'s non-expression arm, `inodeNameRes`' and `inodeTypeCheck`'s
+defaults, `inodeGetName`'s default, and `itypeMangle`'s default. They now abort
+with a report rather than continue, which is an improvement in every case, but a
+reachable one would tell a user "compiler defect" for a program that deserves a
+diagnostic. Two of them -- `genlGlobalImpl` and `flowLoadValue` -- previously
+fell through harmlessly, so converting them is the one place this change could
+turn a working compile into a failing one.
+
+Reaching them is the work that is left: the method that found the three was to
+put a `fprintf` in the arm, rebuild, and compile adversarial sources against it,
+which is far more reliable than reading. `design/diagnostics/measuring.md`
+describes it.
 
 

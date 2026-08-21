@@ -194,6 +194,12 @@ the flag wrong is not a type error.
 - **`fnCallLowerMethod` returns three values** — 1 lowered, 0 receiver has no
   methods so try another way, −1 already reported. Treating it as a boolean
   produces a duplicate diagnostic.
+- **`fnCallArrIndex` must resolve the receiver's type the way its caller did.**
+  It is reached only from the array, slice, reference and pointer arms above,
+  and its own switch has to agree with that decision. Reading a reference's
+  pointee tag raw rather than through `itypeGetTypeDcl` was the bug: `&Alias` to
+  a typedef of an array matched neither the array nor the slice arm, so a valid
+  index kept `unknownType` and surfaced as a return-type mismatch elsewhere.
 
 ## What lives elsewhere
 

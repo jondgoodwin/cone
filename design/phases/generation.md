@@ -193,9 +193,13 @@ Everything below is required, unchecked, and fatal if violated.
 - **Field indices, vtable slot indices, tag numbers and parameter positions are
   correct.** All are consumed without validation.
 
-**The asserts are compiled out.** The documented build is `Release`, which
-defines `NDEBUG`, so every `assert(0 && "...")` above becomes undefined
-behavior in the shipped compiler rather than a trap.
+**An impossible state is reported, not assumed away.** The documented build is
+`Release`, which defines `NDEBUG`, so an `assert` is not a trap there. Every
+site that meant *unreachable* now calls `errorUnreachable`, which reports
+`ErrorUnreachable` against the node — with its instantiation trace — and exits
+`ExitGen`. The ordinary value asserts scattered through generation are still
+asserts and still compiled out; do not add one expecting it to catch anything
+shipped.
 
 ## 6. Statements and expressions
 
@@ -273,7 +277,9 @@ variables.
 
 These and several other unverified observations — a possibly-dead `genlAddr`
 arm, an always-true ternary in `itypeMangle`, duplicated struct-conversion code
-— are unverified, and each needs a probe before it is acted on.
+— are unverified, and each needs a probe before it is acted on. `itypeMangle`
+itself has since been probed for a different reason and now covers the tuple,
+array, signature and void parameter types it used to write nothing for.
 
 ## 9. Code pointer map
 

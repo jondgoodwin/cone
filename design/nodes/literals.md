@@ -151,10 +151,11 @@ interning, and constant merging is not in the pass list.
   suffix on every element, and `imm a [3; i64] = [1, 2, 3]` is refused.
 - **`ArrayLitTag` has no arm in `inodePrintNode`**, so an array literal
   serializes as `**** UNKNOWN NODE ****` in an `--ir` dump.
-- **`TypeLitTag` has no arm in `inodeTypeCheck`**, so it falls to the `assert(0)`
-  default — a silent no-op under `NDEBUG`. `typeLitNameRes` *is* dispatched, so
-  an already-retagged literal in a cloned generic body can be name-resolved but
-  not re-checked.
+- **`TypeLitTag` has no arm in `inodeTypeCheck`**, so it falls to the default,
+  which now reports `ErrorUnreachable` and stops rather than passing silently.
+  `typeLitNameRes` *is* dispatched, so an already-retagged literal in a cloned
+  generic body can be name-resolved but not re-checked — and if that path is
+  live, it now aborts the compile instead of quietly skipping the check.
 - **`cloneArrayNode` clones `elems` but shares `dimens`**, so a cloned fill
   literal shares its dimension node with the original.
 - **A fill dimension that cannot be resolved silently becomes 0**, so a

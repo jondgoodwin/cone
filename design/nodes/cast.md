@@ -69,6 +69,14 @@ A slice deliberately does **not** convert to an integer: the length and the data
 address are both candidates and both are spelled better already, as `s.len` and
 `p into usize`. Everything else is `ErrorInvType`.
 
+**A pointer does not convert to a reference**, and the table above is what the
+code does rather than what it means to do. A reference carries a region, a
+permission and a lifetime and a raw pointer supplies none of them, so there is
+no value to construct. This used to be accepted by a fall-through from the
+reference row into the pointer row, and `genlConvert` has no arm for it: the
+assert saying so was compiled out of the Release build and `p into &i32` died on
+a null LLVM value. `p as &i32` is the spelling that keeps the bits.
+
 ### `castIsTypeCheck`
 
 Decides only whether a **downcast specialization** is possible, and needs a
@@ -134,6 +142,9 @@ nullable-pointer union (compare against null), and tagged (read the
   default.
 - **`genlConvert` handles struct conversion twice**, once in `case StructTag:`
   with a mid-block alloca and once in `default:` with an entry-block one.
+- **`genlConvert`'s two "unknown source" arms now report `ErrorUnreachable` and
+  exit.** Reaching either means the conversion table above accepted something
+  generation has no arm for, which is how `p into &i32` used to crash.
 
 ## What lives elsewhere
 

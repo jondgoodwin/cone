@@ -332,6 +332,45 @@ fn genericReturningGeneric() {
   show("generic-returns-generic", b.v)
 }
 
+// -------- a type argument that is not a named type --------
+
+// Every type argument above is a named type -- a number, a struct -- and a name
+// was the one shape the instance-name mangler could write. A tuple, an array, a
+// function reference and void each wrote nothing at all, so two instances of
+// one generic came out under one name and LLVM had to tell them apart by
+// appending '.1'. Within a module that is only a confusing symbol; across
+// modules 'linkonce' would merge two instances of different types into one.
+//
+// Each of the four is instantiated below and the names are asserted in
+// cases.toml. The values are printed too, because a distinct name is not a
+// distinct body: the instance still has to have been substituted at the type it
+// was named for.
+fn twice(n i64) i64 {
+  n * 2i64
+}
+
+fn nothing() {
+}
+
+fn passThrough[T](a T) T {
+  a
+}
+
+fn unnamedTypeArguments() {
+  imm pair = passThrough((3i64, 4i64))
+  show("tuple-type-argument", pair.0)
+  // A second tuple of a different arity: one instance per type argument means
+  // this is a different instance, which is exactly what one shared name hid
+  imm triple = passThrough((5i64, 6i64, 7i64))
+  show("tuple-type-argument-other-arity", triple.2)
+  imm arr = passThrough([8i64, 9i64])
+  show("array-type-argument", arr[1])
+  imm fnref = passThrough(&twice)
+  show("fn-ref-type-argument", fnref(10i64))
+  passThrough(nothing())
+  show("void-type-argument", 1i64)
+}
+
 fn main() i32 {
   inferredTypeArgument()
   explicitTypeArgument()
@@ -344,5 +383,6 @@ fn main() i32 {
   instantiationInsideAnotherType()
   clonedNodeKinds()
   genericReturningGeneric()
+  unnamedTypeArguments()
   0i32
 }

@@ -182,9 +182,11 @@ these defects leave empty.
 ## 6. Adding a node tag: every arm you must add
 
 A tag is dispatched from a dozen `switch (node->tag)` statements spread over
-five files. **Missing one is silent in the release build** — the `default:`
-arms are `assert(0)`, and `NDEBUG` compiles them out, so the node falls through
-into whatever follows. Work the list.
+five files. **Missing one used to be silent in the release build** — the
+`default:` arms were `assert(0)`, which `NDEBUG` compiles out, so the node fell
+through into whatever followed. They now call `errorUnreachable`, so a missing
+arm aborts the compile with a source position instead. That turns a miscompile
+into a bug report; it does not make the tag work. Work the list.
 
 | File | Function | Add an arm when |
 | --- | --- | --- |

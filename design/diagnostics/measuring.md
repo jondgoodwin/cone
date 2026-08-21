@@ -27,10 +27,12 @@ where — print declaration-level entry to `inodeNameRes` and `inodeTypeCheck`,
 including its early return when the work is already done, plus the `blockFlow`
 call in `fnDclTypeCheck`.
 
-For "is this arm reachable?", put `assert(0)` in it and run the suite. Remember
-that `assert` is compiled out under `NDEBUG`, which the Release build defines —
-so use a `fprintf` or a debug build, not an assert, unless you are building
-Debug.
+For "is this arm reachable?", put a `fprintf(stderr, ...)` in it, rebuild, and
+compile against it — the suite first, then sources written to try to get there.
+**Never an `assert`**: `NDEBUG` compiles it out of the Release build, which is
+the only build the runner uses. This is how the audit of the twenty-two
+"unreachable" sites found the three a source actually reaches; reading the code
+had not found them.
 
 ## Reading what the compiler produced
 

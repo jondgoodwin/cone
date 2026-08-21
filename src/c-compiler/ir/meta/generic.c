@@ -307,7 +307,10 @@ int genericSubstitute(TypeCheckState *pstate, FnCallNode **srcgencallp) {
             return 1;
         break;
     default:
-        assert(0 && "Illegal generic type.");
+        // genericGetInfo answers for a function and a struct and nothing else,
+        // and it was asked about this very node
+        errorUnreachable((INode*)srcgencall, "a generic that is neither a function nor a struct");
+        return 1;
     }
 
     // Be sure all expected generic parameters were inferred

@@ -204,13 +204,22 @@ void fnCallArrIndex(FnCallNode *node) {
         node->vtype = arrayElemType(objtype);
         break;
     case RefTag: {
-        INode *vtype = ((RefNode *)objtype)->vtexp;
+        // Resolve the pointee, exactly as fnCallTypeCheck did when it decided
+        // this call was an index at all. Reading the tag off the unresolved
+        // node instead made '&Alias' -- a reference to a typedef of an array --
+        // match neither arm, so a valid index was left with no element type and
+        // reported as a return-type mismatch two lines later.
+        INode *vtype = itypeGetTypeDcl(((RefNode *)objtype)->vtexp);
         if (vtype->tag == ArrayTag)
             node->vtype = arrayElemType(vtype);
         else if (vtype->tag == ArrayDerefTag)
             node->vtype = ((RefNode*)vtype)->vtexp;
-        else
-            assert(0 && "Illegal type to index a reference to");
+        else {
+            // fnCallTypeCheck resolved the same pointee to decide this call was
+            // an index, and reaches here only for an array or a slice
+            errorUnreachable((INode*)node, "an index through a reference to something that is not an array or slice");
+            return;
+        }
         break;
     }
     case ArrayRefTag:
@@ -220,7 +229,10 @@ void fnCallArrIndex(FnCallNode *node) {
         node->vtype = ((StarNode*)objtype)->vtexp;
         break;
     default:
-        assert(0 && "Invalid type for indexing");
+        // fnCallTypeCheck calls this from its array, slice, reference and
+        // pointer arms only, switching on this same receiver type
+        errorUnreachable((INode*)node, "an index on a receiver type fnCallTypeCheck does not index");
+        return;
     }
 
     // If we are borrowing a reference to indexed element, fix up type

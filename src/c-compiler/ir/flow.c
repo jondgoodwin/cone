@@ -173,7 +173,8 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
     case UnknownTag:
         break;
     default:
-        assert(0);
+        errorUnreachable(*nodep, "a value node data-flow analysis has no case for");
+        break;
     }
 }
 

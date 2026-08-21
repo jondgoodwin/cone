@@ -129,8 +129,10 @@ does not cross threads unsafely, or that memory is released.
   unenforced rules by compiling a violation clean. A scenario that starts
   failing may be one your fix correctly invalidated — read it before "fixing"
   it.
-- **`assert(0)` is a no-op in the release build**, so internal consistency
-  checks are absent from the shipped compiler.
+- **`assert` is a no-op in the release build**, so any internal consistency
+  check written as one is absent from the shipped compiler. The 22 sites that
+  meant *unreachable* now call `errorUnreachable` instead and do fire there; the
+  ordinary value asserts still do not.
 - **`--verify` is off by default**, and the compiler does emit invalid LLVM IR
   in at least one shape. Malformed IR is not a safety property of the language,
   but it is a way a "clean compile" lies.
