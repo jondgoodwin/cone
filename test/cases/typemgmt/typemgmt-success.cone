@@ -328,6 +328,15 @@ struct Reading {
 // referent
 typedef ReadingRef &Reading
 
+// An alias of an array, to be indexed through a reference to it. This is the
+// one position where the alias used not to be transparent: the index resolved
+// the reference but read the tag off the pointee unresolved, so it matched
+// neither the array arm nor the slice arm, left the index with no element type,
+// and came out as a return-type mismatch on a function that is correct. 'array'
+// owns arrays; what is established here is that naming one through an alias
+// changes nothing about indexing it.
+typedef Cells [3; i64]
+
 // Each of the four positions below is a use of the alias as a type: a global, a
 // parameter, a return type, and a local in the function further down.
 mut recorded Count = 3i64
@@ -340,6 +349,10 @@ fn bumped(n Count) Tally {
 
 fn levelOf(r ReadingRef) i64 {
   r.level
+}
+
+fn cellAt(c &Cells, i usize) i64 {
+  c[i]
 }
 
 fn typedefs() {
@@ -359,6 +372,13 @@ fn typedefs() {
   // A reference to the alias is a reference to the struct it names
   imm sample = Reading[9i64]
   show("typedef-struct-ref", levelOf(&sample))
+
+  // And a reference to an aliased array indexes as the array it names. The
+  // second index is what shows the element reached is the one meant rather than
+  // a constant that happens to be right.
+  mut cells Cells = [11i64, 22i64, 33i64]
+  show("typedef-array-ref-index-first", cellAt(&cells, 0))
+  show("typedef-array-ref-index-last", cellAt(&cells, 2))
 
   // Conversion targets the aliased type through the alias, and reads it back
   mut scaled Ratio = f64[running] / 2.0d

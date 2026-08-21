@@ -7,6 +7,7 @@
 
 #include "ir.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <assert.h>
 
@@ -346,6 +347,66 @@ char *itypeMangle(char *bufp, INode *vtype) {
         bufp = itypeMangle(bufp, vtexp->vtexp);
         break;
     }
+
+    // The structural types. A generic's parameter takes whatever type the call
+    // inferred, so any of these can be what an instance's parameter is declared
+    // as -- 'max((1,2), (3,4))' is a tuple, 'max(&f, &g)' a reference to a
+    // signature. Each used to fall to the default below, which wrote nothing,
+    // so every instance of one generic shared a mangled name and LLVM had to
+    // tell them apart by appending '.1'. Within a module that is only a
+    // confusing symbol; across modules, 'linkonce' would merge two instances of
+    // different types into one.
+    case TTupleTag:
+    {
+        TupleNode *tuple = (TupleNode *)vtype;
+        INode **nodesp;
+        uint32_t cnt;
+        *bufp++ = '(';
+        for (nodesFor(tuple->elems, cnt, nodesp)) {
+            bufp = itypeMangle(bufp, *nodesp);
+            if (cnt > 1)
+                *bufp++ = ',';
+        }
+        *bufp++ = ')';
+        break;
+    }
+    case ArrayTag:
+    {
+        ArrayNode *anode = (ArrayNode *)vtype;
+        INode **nodesp;
+        uint32_t cnt;
+        *bufp++ = '[';
+        for (nodesFor(anode->dimens, cnt, nodesp)) {
+            // Every dimension is a ULitNode by the time a type is mangled; a
+            // dimension that is not one has already been reported
+            if ((*nodesp)->tag == ULitTag)
+                bufp += sprintf(bufp, "%llu", (unsigned long long)((ULitNode*)*nodesp)->uintlit);
+            *bufp++ = ';';
+        }
+        bufp = itypeMangle(bufp, arrayElemType(vtype));
+        *bufp++ = ']';
+        break;
+    }
+    case FnSigTag:
+    {
+        FnSigNode *fnsig = (FnSigNode *)vtype;
+        INode **nodesp;
+        uint32_t cnt;
+        *bufp++ = 'f';
+        *bufp++ = '(';
+        for (nodesFor(fnsig->parms, cnt, nodesp)) {
+            bufp = itypeMangle(bufp, ((IExpNode *)*nodesp)->vtype);
+            if (cnt > 1)
+                *bufp++ = ',';
+        }
+        *bufp++ = ')';
+        bufp = itypeMangle(bufp, fnsig->rettype);
+        break;
+    }
+    case VoidTag:
+        *bufp++ = 'v';
+        break;
+
     default:
         assert(0 && "unknown type for parameter type mangling");
         return bufp;

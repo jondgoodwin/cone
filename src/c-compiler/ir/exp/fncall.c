@@ -204,7 +204,12 @@ void fnCallArrIndex(FnCallNode *node) {
         node->vtype = arrayElemType(objtype);
         break;
     case RefTag: {
-        INode *vtype = ((RefNode *)objtype)->vtexp;
+        // Resolve the pointee, exactly as fnCallTypeCheck did when it decided
+        // this call was an index at all. Reading the tag off the unresolved
+        // node instead made '&Alias' -- a reference to a typedef of an array --
+        // match neither arm, so a valid index was left with no element type and
+        // reported as a return-type mismatch two lines later.
+        INode *vtype = itypeGetTypeDcl(((RefNode *)objtype)->vtexp);
         if (vtype->tag == ArrayTag)
             node->vtype = arrayElemType(vtype);
         else if (vtype->tag == ArrayDerefTag)

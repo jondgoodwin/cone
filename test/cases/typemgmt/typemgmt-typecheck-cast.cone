@@ -44,3 +44,20 @@ fn sliceToInteger(s &[]i32) {
 fn sliceReinterpreted(s &[]i32) {
   imm n = s as usize     //~ ErrorInvType:11 "May only reinterpret value to the same sized primitive type"
 }
+
+// A raw pointer does not convert to a reference. A reference carries a region,
+// a permission and a lifetime, and the pointer supplies none of them, so there
+// is no value to construct. This used to be accepted by a fall-through in the
+// conversion table and then reach code generation, which has no arm for it: the
+// assert that said so is compiled out of a Release build, and the compile died
+// on a null LLVM value with no diagnostic and no exit code.
+//
+// 'as' is the spelling that keeps the bits, and it is accepted -- safety owns
+// what that costs. The pointer here is only the source type this rejection
+// needs; safety-pointers owns pointers themselves.
+mut cell i32 = 0
+
+fn pointerToReference() {
+  imm p *i32 = &cell
+  imm r = p into &i32    //~ ErrorInvType:18 "Unsupported built-in type conversion"
+}
