@@ -52,7 +52,7 @@ void errorOut(int code, const char *msg, va_list args) {
 // Send an error message plus code context to stderr
 void errorOutCode(char *tokp, uint32_t linenbr, char *linep, char *url, int code, const char *msg, va_list args) {
     char *srcp;
-    int pos, spaces;
+    int pos;
 
     // Send out the error message and count
     errorOut(code, msg, args);
@@ -64,12 +64,17 @@ void errorOutCode(char *tokp, uint32_t linenbr, char *linep, char *url, int code
         fputc(*srcp++, stderr);
     fputc('\n', stderr);
 
-    // Depict where error message applies along with source file/pos info
+    // Depict where error message applies along with source file/pos info.
+    // Pad and count one column per character, not per byte: a UTF-8
+    // continuation byte (10xxxxxx) belongs to the character before it, so
+    // counting it would push the caret right of what it points at.
     fprintf(stderr, "     ");
-    pos = (spaces = tokp - linep) + 1;
-    srcp = linep;
-    while (spaces--) {
-        fputc(*srcp++ == '\t'? '\t' : ' ', stderr);
+    pos = 1;
+    for (srcp = linep; srcp < tokp; ++srcp) {
+        if ((*srcp & 0xC0) == 0x80)
+            continue;
+        fputc(*srcp == '\t' ? '\t' : ' ', stderr);
+        ++pos;
     }
     fprintf(stderr, "^--- %s:%d:%d\n", url, linenbr, pos);
 }

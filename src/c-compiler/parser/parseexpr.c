@@ -54,9 +54,10 @@ INode *parseNameUse(ParseState *parse) {
 }
 
 // Parse an array literal
-INode *parseArrayLit(ParseState *parse, INode *typenode) {
+INode *parseArrayLit(ParseState *parse) {
     ArrayNode *array = newArrayNode();
     lexNextToken();
+    lexIncrParens();
 
     // Gather comma-separated expressions that are likely elements or element type
     while (1) {
@@ -142,7 +143,7 @@ INode *parseTerm(ParseState *parse) {
             return node;
         }
     case LBracketToken:
-        return parseArrayLit(parse, NULL);
+        return parseArrayLit(parse);
     case IfToken:
         return parseIf(parse);
     case MatchToken:
@@ -269,7 +270,7 @@ INode *parseSuffixTerm(ParseState *parse) {
     return parseSuffix(parse, parseTerm(parse), 0);
 }
 
-INode *parsePrefix(ParseState *parse, int noSuffix);
+INode *parsePrefix(ParseState *parse);
 
 // Parse an "ampersand term" for a borrowed ref type or constructor:
 // - Some reference type ('&', '&[]' or '&<')
@@ -328,7 +329,7 @@ INode *parseAmper(ParseState *parse) {
     // field while returning the field's address. What made a borrow reach an
     // element -- '&[]' dispatch on a type that declares it -- is now borrow.c's
     // business, where the receiver's type is known.
-    anode->vtexp = parsePrefix(parse, 0);
+    anode->vtexp = parsePrefix(parse);
     return (INode *)anode;
 }
 
@@ -374,13 +375,12 @@ INode *parsePlus(ParseState *parse) {
         anode->perm = newPermUseNode(uniPerm);
 
     // Handle type or value expression
-    anode->vtexp = parsePrefix(parse, 0);
+    anode->vtexp = parsePrefix(parse);
     return (INode *)anode;
 }
 
-// Parse a prefix operator.
-// If noSuffix flag on (for borrowed refs), parse only a term next, otherwise parse term+suffix.
-INode *parsePrefix(ParseState *parse, int noSuffix) {
+// Parse a prefix operator, then a term with its suffixes.
+INode *parsePrefix(ParseState *parse) {
     switch (lex->toktype) {
 
     // '.' sugar for: this.suffixes
@@ -395,7 +395,7 @@ INode *parsePrefix(ParseState *parse, int noSuffix) {
     {
         StarNode *node = newStarNode(StarTag);
         lexNextToken();
-        node->vtexp = parsePrefix(parse, noSuffix);
+        node->vtexp = parsePrefix(parse);
         return (INode *)node;
     }
 
@@ -419,7 +419,7 @@ INode *parsePrefix(ParseState *parse, int noSuffix) {
         FnCallNode *opttype = newFnCallNode((INode*)option, 1);
         opttype->tag = QuesTag;  // In name resolution pass, we will lower to FnCallTag or AllocTag
         lexNextToken();
-        nodesAdd(&opttype->args, parsePrefix(parse, noSuffix));
+        nodesAdd(&opttype->args, parsePrefix(parse));
         return (INode*)opttype;
     }
 
@@ -428,7 +428,7 @@ INode *parsePrefix(ParseState *parse, int noSuffix) {
     {
         FnCallNode *node = newFnCallOpname(NULL, minusName, 0);
         lexNextToken();
-        INode *argnode = parsePrefix(parse, noSuffix);
+        INode *argnode = parsePrefix(parse);
         if (argnode->tag == ULitTag) {
             ((ULitNode*)argnode)->uintlit = (uint64_t)-((int64_t)((ULitNode*)argnode)->uintlit);
             return argnode;
@@ -446,7 +446,7 @@ INode *parsePrefix(ParseState *parse, int noSuffix) {
     {
         FnCallNode *node = newFnCallOp(NULL, "~", 0);
         lexNextToken();
-        node->objfn = parsePrefix(parse, noSuffix);
+        node->objfn = parsePrefix(parse);
         return (INode *)node;
     }
 
@@ -456,7 +456,7 @@ INode *parsePrefix(ParseState *parse, int noSuffix) {
         FnCallNode *node = newFnCallOpname(NULL, incrName, 0);
         node->flags |= FlagLvalOp;
         lexNextToken();
-        node->objfn = parsePrefix(parse, noSuffix);
+        node->objfn = parsePrefix(parse);
         return (INode *)node;
     }
 
@@ -466,22 +466,19 @@ INode *parsePrefix(ParseState *parse, int noSuffix) {
         FnCallNode *node = newFnCallOpname(NULL, decrName, 0);
         node->flags |= FlagLvalOp;
         lexNextToken();
-        node->objfn = parsePrefix(parse, noSuffix);
+        node->objfn = parsePrefix(parse);
         return (INode *)node;
     }
 
-    // No prefix operator: get term or term+suffix, depending on flag
+    // No prefix operator: get the term with its suffixes
     default:
-        if (noSuffix)
-            return parseTerm(parse); // save suffixes for a borrowed ref
-        else
-            return parseSuffixTerm(parse);  // normal precedence
+        return parseSuffixTerm(parse);
     }
 }
 
 // Parse type cast
 INode *parseCast(ParseState *parse) {
-    INode *lhnode = parsePrefix(parse, 0);
+    INode *lhnode = parsePrefix(parse);
     if (lexIsToken(AsToken)) {
         CastNode *node = newRecastNode(lhnode, unknownType);
         lexNextToken();
@@ -528,7 +525,7 @@ INode *parseMult(ParseState *parse) {
 INode *parseAdd(ParseState *parse) {
     INode *lhnode = parseMult(parse);
     while (1) {
-        if (lexIsToken(PlusToken)) {
+        if (lexIsToken(PlusToken) && !lexIsStmtBreak()) {
             FnCallNode *node = newFnCallOpname(lhnode, plusName, 2);
             lexNextToken();
             nodesAdd(&node->args, parseMult(parse));

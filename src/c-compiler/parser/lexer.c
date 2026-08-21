@@ -304,7 +304,7 @@ char *lexHexDigits(int cnt, char *srcp, uint64_t *val) {
         else if (*srcp>='a' && *srcp<='f')
             *val += *srcp++ - ('a' - 10);
         else {
-            errorMsgLex(ErrorBadTok, "Invalid hexadecimal character '%c'", *srcp);
+            errorMsgLex(ErrorBadTok, "Invalid hexadecimal character '%.*s'", utf8ByteSkip(srcp), srcp);
             return srcp;
         }
     }
@@ -330,7 +330,7 @@ char *lexScanEscape(char *srcp, uint64_t *charval) {
     case 'u': return lexHexDigits(4, ++srcp, charval);
     case 'U': return lexHexDigits(8, ++srcp, charval);
     default:
-        errorMsgLex(ErrorBadTok, "Invalid escape sequence '%c'", *srcp);
+        errorMsgLex(ErrorBadTok, "Invalid escape sequence '%.*s'", utf8ByteSkip(srcp), srcp);
         *charval = *srcp++;
         return srcp;
     }
@@ -989,7 +989,7 @@ void lexNextTokenx() {
                 }
                 else {
                     lex->tokp = srcp;
-                    errorMsgLex(ErrorBadTok, "Bad character '%c' starting unknown token", *srcp);
+                    errorMsgLex(ErrorBadTok, "Bad character '%.*s' starting unknown token", utf8ByteSkip(srcp), srcp);
                     srcp += utf8ByteSkip(srcp);
                 }
             }

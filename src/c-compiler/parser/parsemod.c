@@ -316,6 +316,11 @@ ProgramNode *parsePgm(ConeOptions *opt) {
     parse.mod = mod;
     modHook(NULL, mod);
     parseGlobalStmts(&parse, mod);
+    // A stray '}' at global scope ends the statement loop. Without this the rest
+    // of the main file is silently discarded, exactly as an include would be --
+    // parseInclude and parseLoadAndParseModuleFile already make the same check.
+    if (lex->toktype != EofToken)
+        errorMsgLex(ErrorNoEof, "Expected end-of-file");
     modHook(mod, NULL);
     return pgm;
 }

@@ -340,6 +340,7 @@ INode *parseFnSig(ParseState *parse) {
     // Process parameter declarations
     if (lexIsToken(LParenToken)) {
         lexNextToken();
+        lexIncrParens();
         while (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
             VarDclNode *parm = parseVarDcl(parse, immPerm, parseflags);
             parm->flowtempflags |= VarInitialized;   // parameter vars always start with a valid value
@@ -427,7 +428,7 @@ INode* parseType(ParseState *parse) {
     case StarToken:
     {    
         // The parsing logic for value expressions also works for types (although overkill)
-        return parsePrefix(parse, 0);
+        return parsePrefix(parse);
     }
     default:
         return unknownType;
