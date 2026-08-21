@@ -64,6 +64,29 @@ outer node's tag only. `refTypeCheck` and `arrayRefTypeCheck` now report
 `ErrorNoRefType`, which covers all eight because every enclosing type reaches
 them through `itypeTypeCheck` on its own pointee.
 
+**One entry left on a premise that was wrong.** `.len` on a fixed-size array was
+recorded here on the grounds that "the published array documentation says this
+works". It does not: `coneref/refarray.html`'s own opening note lists `.len`
+among what is unimplemented, and the body that describes it working is the
+aspirational half the site warns about. Measured today, the compiler rejects it
+cleanly with a correct exit code in every spelling. It is a missing feature, and
+it has gone to [[Collection Types]] with the two features the manual defines in
+terms of it, `$-` and `each` over an array.
+
+**One defect found while checking that**, and fixed: an array literal's elements
+had to match the first element by `itypeIsSame`, with no supertype search, which
+made an array literal the one construct that refused a variant where its union
+was wanted — a variable initializer, a struct literal's field and an `if` branch
+all accept one. They fold to a common supertype now and are coerced to it.
+
+That turned out to sit on a wider hole in the fold itself: `structFindSuper` and
+`structRefFindSuper` answered "these two variants share a base trait" and not
+"one of these *is* the base trait the other extends" — which is what a third
+value is asked about, once two have already widened the type in common to their
+trait. So `if a {Circle} elif b {Rect} else {Circle}` failed where two branches
+succeeded, in `if` and `break` as much as in an array literal. Both answer both
+shapes now.
+
 **Two things this pass surfaced and did not repair**, recorded where they belong
 rather than here:
 
@@ -100,31 +123,6 @@ artifact names or a `--debug` knob would close it. Carried by
 ---
 
 # Still open
-
-## `.len` on a fixed-size array is rejected
-
-**Measured.** *(from [[Constant literals]], where it was the file's one entry
-labelled "Bug")*
-
-```cone
-imm bigarray = [1,2,3]
-imm length = bigarray.len       // Error 1025: Invalid operation on an array
-```
-
-The published array documentation says this works, so the correct behavior is
-not in doubt.
-
-**Sizing, honestly:** this is a small addition rather than a repair, which is why
-this pass left it. `len`/`maxlen` are registered as `CountIntrinsic` only on the
-array *reference* type (`corenumber.c`), and generation extracts field 1 of the
-slice fat pointer. `ArrayTag` is in the type group with neither `NamedNode` nor
-`MethodType`, so a fixed-size array has no namespace to hold a method at all, and
-`fnCallTypeCheck`'s `ArrayTag` arm handles only `FlagIndex`. The length is a
-compile-time `ULitTag` in `dimens`, so it can fold to a constant.
-
-**Do not work this twice:** [[Collection Types]] carries
-"`.len` and `maxlen` for arrref and array" as feature work — the same gap from
-the other side.
 
 ## `structAddField` drops a duplicate field after indices are assigned
 

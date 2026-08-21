@@ -688,6 +688,15 @@ INode *structFindSuper(INode *type1, INode *type2) {
         && structGetBaseTrait((StructNode*)itypeGetTypeDcl(typ1->basetrait)) == structGetBaseTrait((StructNode*)itypeGetTypeDcl(typ2->basetrait))
         && (typ1->flags & SameSize))
         return typ1->basetrait;
+    // ... or one of them is already the base trait the other extends. An
+    // inferred type in common meets this the moment a third value arrives: two
+    // variants widen the type to their trait, and the third is then being
+    // compared against the trait rather than against a sibling. The trait is
+    // the answer already reached.
+    if (typ2->basetrait && structGetBaseTrait(typ2) == typ1 && (typ2->flags & SameSize))
+        return type1;
+    if (typ1->basetrait && structGetBaseTrait(typ1) == typ2 && (typ1->flags & SameSize))
+        return type2;
     return NULL;
 }
 
@@ -701,5 +710,11 @@ INode *structRefFindSuper(INode *type1, INode *type2) {
     if (typ1->basetrait && typ2->basetrait
         && structGetBaseTrait((StructNode*)itypeGetTypeDcl(typ1->basetrait)) == structGetBaseTrait((StructNode*)itypeGetTypeDcl(typ2->basetrait)))
         return typ1->basetrait;
+    // ... or one is already the base trait the other extends; see structFindSuper.
+    // Size is not a requirement here, because a reference has its own.
+    if (typ2->basetrait && structGetBaseTrait(typ2) == typ1)
+        return type1;
+    if (typ1->basetrait && structGetBaseTrait(typ1) == typ2)
+        return type2;
     return NULL;
 }

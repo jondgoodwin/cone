@@ -292,6 +292,44 @@ fn branches() {
   mut narrow i16 = 3
   mut wide i64 = 4i64
   show("int-branches-meet-at-i64", if true {narrow} else {wide})
+
+  // Two variants of one union meet at the union, and a third value then meets
+  // the type already reached rather than a sibling variant. That second step
+  // used to fail: the meet widened to the trait and then compared the third
+  // value against it, and a trait and a variant that extends it were not
+  // considered to have a supertype. Two branches worked and three did not, so
+  // the count is the whole point of these two lines. 'union' owns unions; what
+  // is claimed here is only that the type in common survives a third value.
+  show("two-variants-meet-at-the-union", sides(if true {Wide[1, 4]} else {Tall[2, 5]}))
+  show("three-variants-still-meet", sides(if false {Wide[1, 4]} elif true {Tall[2, 5]} else {Wide[1, 6]}))
+
+  // ... and the same through references, where the meet has no size to satisfy
+  imm w = Wide[1, 7]
+  imm t = Tall[2, 8]
+  imm u = Wide[1, 9]
+  show("three-references-meet", sidesRef(if false {&w} elif true {&t} else {&u}))
+}
+
+// The union the meet above settles on, and a reader of it. Both are here rather
+// than in 'union' because the subject is the meet, not the union.
+union Boxy {
+  kind i32
+
+  struct Wide {
+    n i32
+  }
+
+  struct Tall {
+    n i32
+  }
+}
+
+fn sides(b Boxy) i64 {
+  i64[b.kind]
+}
+
+fn sidesRef(b &Boxy) i64 {
+  i64[b.kind]
 }
 
 // -------- conversion where coercion cannot decide --------

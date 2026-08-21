@@ -74,9 +74,15 @@ requires the fill dimension to be a literal constant.
 
 - **Fill form**: one dimension only; a `ULitTag` dimension is forced to `usize`;
   exactly one fill value.
-- **List form**: not empty; the **first** successfully typed element sets the
-  type, and every later one must be `itypeIsSame` — **no supertype search, no
-  coercion**, so `[1, 2u8]` and `[circleRef, rectRef]` are both refused.
+- **List form**: not empty; the elements settle on one type by folding, the same
+  way an `if` folds its branches — the first successfully typed element sets the
+  type in common, and each later one either matches it or meets it at a
+  supertype found by `itypeFindSuper`. An element already reported bad
+  contributes nothing. Where a supertype was reached, a second pass coerces
+  every element to it, because the array's element type and the values in it
+  would otherwise disagree about size. So `[Circle[..], Rect[..]]` is an array
+  of their union, while `[1, 2u8]` is still refused — signed and unsigned have
+  no type in common.
 
 Every diagnostic path sets `errorType`, so the literal never leaves the pass
 untyped.
@@ -137,8 +143,12 @@ interning, and constant merging is not in the pass list.
   literals are context-typed. They are not — coercion adapts them afterward.
 - **`FlagUnkType` is a permission to convert, not a range check.** Nothing asks
   whether the literal's value fits.
-- **Array elements are matched exactly**, with no supertype search — a surprise
-  if you expect the same folding an `if` does across branches.
+- **An array literal is not given the expected type.** `inodeTypeCheck`
+  dispatches `arrayLitTypeCheck` without `expectType`, where the `BlockTag` and
+  `IfTag` arms beside it pass it through. So the elements fold among themselves
+  and the result is matched against the declared type afterward rather than
+  coerced to it — which is why `imm a [4; u8] = [4, 10, 12, 40]` needs the `u8`
+  suffix on every element, and `imm a [3; i64] = [1, 2, 3]` is refused.
 - **`ArrayLitTag` has no arm in `inodePrintNode`**, so an array literal
   serializes as `**** UNKNOWN NODE ****` in an `--ir` dump.
 - **`TypeLitTag` has no arm in `inodeTypeCheck`**, so it falls to the `assert(0)`

@@ -141,7 +141,11 @@ by `ifExhaustCheck`, and a value-producing `if` with no `else` is `ErrorNoElse`.
 - **`unknownType`**: the first branch sets the type in common; each later branch
   must be the same type or have a supertype in common with it, found by
   `itypeFindSuper`. No common supertype is `ErrorInvType`, reported on the
-  branch.
+  branch. **Note what the third branch is compared against**: once two variants
+  have widened the type in common to their trait, a third is asked for a
+  supertype of *the trait and a variant*, not of two variants. `structFindSuper`
+  and `structRefFindSuper` answer both shapes; they used to answer only the
+  first, so two branches unified and three did not.
 - **a real type**: every branch is matched against it directly, and the type in
   common becomes the expected supertype as soon as two branches differ.
 

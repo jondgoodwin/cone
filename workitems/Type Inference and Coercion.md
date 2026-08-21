@@ -47,10 +47,29 @@ initializer. `typeLitStructCheck` coerces now. It was fixable ahead of this item
 because the compiler's own inconsistency settled what the right answer was —
 nothing about bidirectional inference had to be decided first.
 
-*Still matched exactly, and deliberately not claimed with it:* an array
-literal's elements, which are compared with `itypeIsSame` against the first
-element and no supertype search. Whether that is the same defect or a rule is
-not established.
+*The array literal's elements were the same defect, and are fixed with it:* they
+now fold to a common supertype the way `if` folds its branches, and are coerced
+to what they meet at. Establishing that took the same argument — a variant is
+accepted as a variable's value, as a struct literal's field and as an `if`
+branch, so the array literal refusing it was the compiler contradicting itself.
+
+**What remains is this item's, and it is the other half of the same line.**
+`inodeTypeCheck` dispatches `arrayLitTypeCheck` **without** `expectType`, where
+the `BlockTag` and `IfTag` arms immediately beside it pass it through. So an
+array literal folds its elements among themselves and the result is matched
+against the declared type afterward rather than coerced to it:
+
+```cone
+imm ok i64 = 1                  // accepted
+imm arr [3; i64] = [1, 2, 3]    // Error 1013: does not match declared type
+mut a [4; u8] = [4u8, 10u8, 12u8, 40u8]   // the suffixes are why
+```
+
+Threading `expectType` in is one line at the dispatch; what it needs first is an
+answer to what an array literal does with an expected array type — whether the
+declared dimension constrains the element count, and whether a number literal
+element adopts the declared element type. That is this item's question, and it
+is the same one the entries above ask.
 
 ### Branch inference cannot meet two references differing only in permission
 
