@@ -18,6 +18,7 @@
 #include <llvm-c/Target.h>
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitWriter.h>
+#include <llvm-c/Comdat.h>
 #include <llvm-c/Transforms/Scalar.h>
 #include <llvm-c/Transforms/IPO.h>
 #if LLVM_VERSION_MAJOR >= 7
@@ -44,6 +45,51 @@ void genlParmVar(GenState *gen, VarDclNode *var) {
     LLVMBuildStore(gen->builder, LLVMGetParam(gen->fn, var->index), var->llvmvar);
 }
 
+// Put a generated global in a COMDAT of its own, named for the symbol itself.
+// A COFF section is otherwise all-or-nothing: without this, every function an
+// object file defines ships in the executable, whether or not the program can
+// reach it. With it, the linker discards the unreachable ones (/OPT:REF), and
+// transitively their callees too. Only a definition may lead a COMDAT, so this
+// belongs with generating the body, not with generating the name: an imported
+// module's functions have bodies in the IR but are only declarations here.
+//
+// The selection kind says what the linker does when two object files both
+// supply the symbol. Merging is what a generic instantiation needs and what
+// nothing else wants: 'any' silently keeps one copy, which for every other
+// symbol would turn a duplicate definition from a link error into a coin toss.
+// So it follows the linkage the caller already chose.
+void genlComdat(GenState *gen, LLVMValueRef global) {
+    if (gen->comdats == ComdatNone)
+        return;
+
+    size_t namelen;
+    const char *name = LLVMGetValueName2(global, &namelen);
+    assert(namelen > 0 && "a COMDAT is named for its symbol, so the symbol needs a name");
+    LLVMLinkage linkage = LLVMGetLinkage(global);
+    int mergeable = linkage == LLVMLinkOnceAnyLinkage || linkage == LLVMLinkOnceODRLinkage
+                 || linkage == LLVMWeakAnyLinkage || linkage == LLVMWeakODRLinkage;
+
+    LLVMComdatRef comdat = LLVMGetOrInsertComdat(gen->module, name);
+    LLVMSetComdatSelectionKind(comdat,
+        (mergeable || gen->comdats == ComdatMergeOnly)?
+            LLVMAnyComdatSelectionKind : LLVMNoDeduplicateComdatSelectionKind);
+    LLVMSetComdat(global, comdat);
+}
+
+// An anonymous 'fn' literal is lifted to module scope with no name at all.
+// Give it one that is private to this object file. It needs a name to lead a
+// COMDAT, and it needs private linkage because nothing outside this object can
+// refer to it: left public, the name LLVM's mangler invents is one that every
+// other object file would invent too, and the two would collide.
+static void genlNameAnonFn(GenState *gen, LLVMValueRef fn) {
+    size_t namelen;
+    LLVMGetValueName2(fn, &namelen);
+    if (namelen > 0)
+        return;
+    LLVMSetValueName2(fn, "anon", 4);   // LLVM appends a suffix to keep it unique
+    LLVMSetLinkage(fn, LLVMInternalLinkage);
+}
+
 // Generate a function
 void genlFn(GenState *gen, FnDclNode *fnnode) {
     // Only a concrete declaration has an implementation. An overload name is a
@@ -51,6 +97,9 @@ void genlFn(GenState *gen, FnDclNode *fnnode) {
     assert(fnnode->tag == FnDclTag && "Only a concrete function/method is generated");
     if ((fnnode->flags & FlagInline) || fnnode->value->tag == IntrinsicTag)
         return;
+
+    genlNameAnonFn(gen, fnnode->llvmvar);
+    genlComdat(gen, fnnode->llvmvar);
 
     LLVMValueRef svfn = gen->fn;
     LLVMBuilderRef svbuilder = gen->builder;
@@ -106,6 +155,11 @@ LLVMValueRef genlAlloca(GenState *gen, LLVMTypeRef type, const char *name) {
 
 // Generate global variable
 void genlGloVar(GenState *gen, VarDclNode *varnode) {
+    // An extern global is defined in some other object file; this one only
+    // names it, and a declaration may not lead a COMDAT
+    if (!(varnode->flags & FlagExtern))
+        genlComdat(gen, varnode->llvmvar);
+
     if (!varnode->value) {
         // If no value on non-extern, initialize with the zero initializer
         if (!(varnode->flags & FlagExtern))
@@ -529,6 +583,20 @@ void genpgm(GenState *gen, ProgramNode *pgm) {
 }
 
 // Setup LLVM generation, ensuring we know intended target
+// Which COMDAT selection kinds this target's object format will lower. Both
+// restrictions are hard errors inside LLVM's backend rather than something it
+// works around, and the C API exposes no object-format query, so ask the triple.
+static int genlComdatSupport(char *triple) {
+    if (strstr(triple, "wasm") || strstr(triple, "emscripten"))
+        return ComdatMergeOnly;
+    // Mach-O needs none: its assembler emits .subsections_via_symbols, which
+    // already lets the linker strip a symbol at a time
+    if (strstr(triple, "darwin") || strstr(triple, "apple")
+        || strstr(triple, "macos") || strstr(triple, "ios"))
+        return ComdatNone;
+    return ComdatFull;
+}
+
 void genSetup(GenState *gen, ConeOptions *opt) {
     gen->opt = opt;
 
@@ -549,6 +617,7 @@ void genSetup(GenState *gen, ConeOptions *opt) {
     gen->blockstack = memAllocBlk(sizeof(GenBlockState)*GenBlockStackMax);
     gen->blockstackcnt = 0;
 
+    gen->comdats = genlComdatSupport(opt->triple);   // genlCreateMachine filled in the default
     gen->emptyStructType = genlEmptyStruct(gen);
 }
 

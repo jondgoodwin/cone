@@ -63,6 +63,7 @@ void genlVtableImpl(GenState *gen, VtableImpl *impl, LLVMTypeRef vtableRef) {
     impl->llvmvtablep = LLVMAddGlobal(gen->module, vtableRef, impl->name);
     LLVMSetGlobalConstant(impl->llvmvtablep, 1);
     LLVMSetLinkage(impl->llvmvtablep, LLVMLinkOnceAnyLinkage);
+    genlComdat(gen, impl->llvmvtablep);
     LLVMSetInitializer(impl->llvmvtablep, implRef);
 }
 
@@ -117,6 +118,7 @@ void genlVtable(GenState *gen, Vtable *vtable) {
     vtable->llvmvtables = LLVMAddGlobal(gen->module, LLVMTypeOf(vtablelist), "vtable-list");
     LLVMSetGlobalConstant(vtable->llvmvtables, 1);
     LLVMSetLinkage(vtable->llvmvtables, LLVMLinkOnceAnyLinkage);
+    genlComdat(gen, vtable->llvmvtables);
     LLVMSetInitializer(vtable->llvmvtables, vtablelist);
 
     // Build the virtual reference type for this vtable. It is a fat pointer:

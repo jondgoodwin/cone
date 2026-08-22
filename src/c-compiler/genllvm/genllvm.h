@@ -41,10 +41,19 @@ typedef struct GenState {
     LLVMTypeRef emptyStructType;
 
     ConeOptions *opt;
+    int comdats;            // enum ComdatSupport, from the target's object format
     INode *fnblock;
     GenBlockState *blockstack;
     uint32_t blockstackcnt;
 } GenState;
+
+// What the target's object file format does with COMDATs, which is how a
+// symbol becomes individually discardable
+enum ComdatSupport {
+    ComdatNone,        // Mach-O has no COMDAT concept at all
+    ComdatMergeOnly,   // WebAssembly lowers only the 'any' selection kind
+    ComdatFull         // COFF and ELF lower both kinds
+};
 
 // Different kinds of dispatch
 enum FnCallDispatch {
@@ -57,6 +66,7 @@ void genSetup(GenState *gen, ConeOptions *opt);
 void genClose(GenState *gen);
 void genpgm(GenState *gen, ProgramNode *pgm);
 void genlFn(GenState *gen, FnDclNode *fnnode);
+void genlComdat(GenState *gen, LLVMValueRef global);
 void genlGloVarName(GenState *gen, VarDclNode *glovar);
 void genlGloFnName(GenState *gen, FnDclNode *glofn);
 

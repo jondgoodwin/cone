@@ -264,6 +264,15 @@ module, and two sibling module folders can declare the same module name.
   a file path — and its declarations arrive **externally supplied**: declared
   for the linker, never defined by this compile. That subsumes `extern` for Cone
   packages; the importer writes no `extern` keyword.
+- **What monomorphizes or expands at the use site is the exception, and the
+  importer defines it.** A generic instance, an expanded macro, an `inline` body
+  and a cloned trait default have no definition in the imported package to link
+  against, because the package cannot know which ones exist — the same reason
+  the interface artifact below cannot hold signatures alone. So an importing
+  compile does emit definitions for those, and `LLVMLinkOnceAnyLinkage` is what
+  lets several importers each emit the same one. This is the whole of the
+  exception: it does not extend to anything the imported package could have
+  emitted itself.
 - **A module imports a given package at most once.** A second import of the same
   package with an identical fold spec is silently ignored; a differing one is an
   error. Identity is the resolved package plus the normalized fold spec — the
