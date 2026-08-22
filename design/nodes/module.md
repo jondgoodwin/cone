@@ -93,12 +93,19 @@ it are visible in emitted IR:
   path works, and is exercised on every compile that prints.
 - Importing an ordinary module emits **only `declare`s** —
   `declare i64 @modulesub_scaleInt(i64)` — because its bodies are never reached.
+  Measured, that is the module's *public* surface whether or not the importer
+  calls it: a public function nothing references is still declared, and a private
+  one is not declared at all. So what an import contributes today is already the
+  shape of a `.h` file, derived from the imported source rather than from a
+  reduced artifact.
 - Compiling that same module as the root emits `define i64 @scaleInt(i64)`,
   unprefixed, because the root's `gennamePrefix` is the empty string and
   `nameGenFnName` applies nothing to an empty prefix.
 
 So **a symbol's identity depends on which compilation the module was the root
-of**, and the two spellings never resolve against each other.
+of**, and the two spellings never resolve against each other. That, and not the
+declarations, is why an import cannot be linked against: nothing can emit the
+definitions those declarations name.
 
 `parseImport` derives the module name from the filename through `fileName`,
 accepts `::` only when `*` follows it, and binds the loaded module into the
@@ -542,7 +549,18 @@ annotation on a reference names is a type.
   into the current module and leaves no trace; the other builds a namespace.
 - **The root module's `namesym` is NULL.** Anything keying on a module's name
   must handle it, and the empty `gennamePrefix` that goes with it is why root
-  symbols are unprefixed.
+  symbols are unprefixed. It also defeats `pgmFindMod`, which matches by name, so
+  **an import cycle leading back to the root re-reads the root's file and parses
+  it a second time as a distinct module**, prefixed with the root file's own
+  name. Measured: the compile succeeds, and the second copy contributes a
+  dangling declaration for every root name — a `declare` for each function and an
+  `external global` for each variable. Nothing references them, so nothing fails.
+  The duplication is latent rather than harmless: were that second copy
+  generated, each becomes a second definition of a root function and a second
+  allocation of a root global. Giving the root a name is what closes it.
+- **A cycle among non-root modules is fine.** Name resolution runs after all
+  parsing, so the half-parsed module `pgmFindMod` returns is complete before
+  anything reads it. Nothing detects a cycle, and nothing needs to.
 - **`FlagGenMod` is decided by a `strcmp` on the filename.** A user module named
   `stdio` would have its bodies generated.
 - **A folded name is the same node in two namespaces.** Mutating a declaration

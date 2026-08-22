@@ -68,23 +68,48 @@ they gain meaning in stage 12.
 
 Nothing here waits on an open decision.
 
-### 1. Generate every module, not just root and `stdio`
+### 1. Generate every module, not just root and `stdio` — dropped
 
-What a compile generates is everything in *this* package; an import is declared,
-never defined.
+**The rule this stage was built on has two halves, and today they contradict
+each other.** "A compile generates everything in *this* package; an import is
+declared, never defined" partitions modules into two sets that are disjoint in
+the end state — package modules arrive by the folder walk, imports by the search
+path. Today they are the *same* set, because path-based `import` is the only way
+to get a second module at all. Granting `FlagGenMod` to imported modules
+therefore does not implement the rule; it picks the half that turns `import` into
+`include` with a namespace, which is the opposite of what `import` becomes.
 
-- Delete the filename `strcmp` in `parseLoadAndParseModuleFile` that grants
-  `FlagGenMod`.
-- Revisit `genlProgram`'s privacy filter — it assumes nothing outside a module
-  reaches a private name, which public overload names already break, and
-  generating a whole package changes what it protects.
-- Import cycle detection: resolve in dependency order, error on a cycle. The DAG
-  rule is decided and nothing enforces it.
+**What the compiler already does is the interim model the design describes.** An
+imported module's source is parsed and type checked in full, and generation emits
+declarations for its public names and nothing at all for its private ones.
+Measured: a public function the importer never calls is still declared, a private
+one never is. That is a `.h` file derived from source, and the stage 14 artifact
+only replaces the derivation with a digest — build speed, not linkability, which
+is what `design/nodes/module.md` says.
 
-**Lands with:** the `module` group promoting from `compile` to `run`, and its
-`cases.toml` note explaining why nothing there runs coming out. Smallest change
-with the highest value, and it gives every later stage a real multi-module test
-bed.
+**So there is nothing to do here.** Generating several modules into one object
+belongs to stage 9, where the folder walk is what puts them in one package and
+the two sets stop overlapping. Doing it earlier means writing sample and test
+sources whose `import` statements teach a model that stage 10 reverses.
+
+Two items listed under this stage move rather than disappear:
+
+- **Import cycle detection** goes to wherever package resolution lands. Measured
+  first: a cycle among non-root modules already compiles correctly, because name
+  resolution runs after all parsing, so the half-parsed module `pgmFindMod`
+  returns is complete before anything reads it. Modules within a package will all
+  be read together and see each other, so a module-level cycle stops being a
+  diagnosable condition; the DAG rule is a *package* rule.
+- **Dependency-ordered resolution** goes to stage 8, which rebuilds the fold.
+  Settling it here would decide whether a fold transits — a question
+  `design/nodes/module.md` lists as open — as a side effect rather than a
+  decision.
+
+**What this leaves behind is that stage 3 is the real unblock**, not this one.
+Today's declarations are unsatisfiable only because nothing can emit the matching
+definitions: compiled on its own a module emits `@scaleInt`, unprefixed, while an
+importer declares `@modulesub_scaleInt`. That is the whole of the code-generation
+gap, and `stdio`'s filename `strcmp` exists to carve one module out of it.
 
 ### 2. Function-per-section and COMDAT
 
@@ -101,7 +126,8 @@ file.
   what must resolve at link time: archive extraction precedes it, so calling one
   function from a package pulls its whole object and every undefined symbol in it
   enters resolution. Whether that hard-errors for a symbol only unreachable code
-  references depends on linker and version. Stage 1 is what makes it testable.
+  references depends on linker and version. It needs two packages to measure, so
+  it waits on stage 3 giving a separately built module resolvable symbols.
 
 **Lands with:** `llvmir` checks on section and COMDAT emission, and the fan-out
 measurement recorded in `design/nodes/module.md`.
@@ -117,6 +143,11 @@ A symbol's spelling is a function of the package, never of which module was
   `nameGenVarName`. **`main` must still emit as `@main`** — measured, and the C
   runtime links against exactly that — so the entry point needs an explicit
   exemption alongside the one `FlagExtern` already has.
+- **It also closes a silent duplication.** The root's NULL `namesym` defeats
+  `pgmFindMod`, so an import cycle back to the root re-parses the root's file as
+  a second module: measured, every root declaration is emitted twice and a root
+  global gets two separate allocations, with a clean compile and a successful
+  link. Naming the root is the fix; the scenario belongs with it.
 - **Settle what a package exports**, which decides how much of the name is
   needed. A generated name is package plus module path; a program needs the
   module path and not the package component, because nothing imports a program.
@@ -136,11 +167,20 @@ A symbol's spelling is a function of the package, never of which module was
 - Handle `genname` correctly regardless of aliasing and cross-package reference —
   the same requirement [[ir-refactor|IR refactor]] item 2.1 states for `genericdef`.
 
-**Here rather than earlier** because whole-program linking works without it. It
-is separate compilation that needs it, so it carries no risk for stages 1–2.
+**This is the stage that makes `import` mean something.** Generation already
+emits an imported module's public names as declarations and its private ones not
+at all; what is missing is any way to produce the definitions those declarations
+name, because a module compiled on its own is the root and the root has no
+prefix. Settle that and a package can be built once and linked into a program
+through the mechanism that already exists — no new syntax, no new nodes, and the
+`stdio` carve-out can go.
 
-**Lands with:** `llvmir` checks in the `module` group. No new syntax, no new
-nodes.
+Still outside it, so that the scope is clear: how an importer *finds* a package
+once `import` stops taking file paths (stage 10), and how a build is told to
+produce a library rather than a program.
+
+**Lands with:** `llvmir` checks in the `module` group, and the first `run`
+scenario that links a separately compiled module.
 
 ---
 
