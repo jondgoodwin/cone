@@ -66,6 +66,7 @@ void genSetup(GenState *gen, ConeOptions *opt);
 void genClose(GenState *gen);
 void genpgm(GenState *gen, ProgramNode *pgm);
 void genlFn(GenState *gen, FnDclNode *fnnode);
+void genlComdat(GenState *gen, LLVMValueRef global);
 void genlGloVarName(GenState *gen, VarDclNode *glovar);
 void genlGloFnName(GenState *gen, FnDclNode *glofn);
 

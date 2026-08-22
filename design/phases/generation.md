@@ -23,6 +23,9 @@ unreachable paths are reading only, and say so. See [Measuring](../diagnostics/m
 4. **Generation decides nothing about memory.** Every release, every count
    adjustment, every drop call was injected by flow analysis. Generation replays
    the lists.
+5. **Every definition is separately discardable.** Each one leads a COMDAT of
+   its own, so the linker decides at symbol granularity what ships rather than
+   at object-file granularity.
 
 ## 2. Ordering, and why setup runs before parsing
 
@@ -44,29 +47,45 @@ Both recurse into a type's method list and into a generic's
 `genericinfo->memonodes`. Generic instances get `LLVMLinkOnceAnyLinkage`. An
 uninstantiated generic generates nothing.
 
-**Each definition leads a COMDAT of its own, named for its symbol** — every
-function and every global variable. Without one a section is all-or-nothing, so
-every function an object file defines ships whether or not the program can reach
-it; with one the linker discards the unreachable ones and, transitively,
-whatever only they called. The attachment is at the definition sites, `genlFn`
-and `genlGloVar`, and not in the symbol pass, because **only a definition may
-lead a COMDAT**: an imported module's functions have bodies in the IR but are
-declarations in this object, and `LLVMVerifyModule` rejects a declaration in a
-COMDAT. Hidden visibility does not prevent it — a private function strips like
-any other.
+### Symbols, linkage and COMDATs
 
-**The selection kind follows the linkage.** `any` merges silently, keeping one
-copy of a symbol several object files each define. That is what a generic
-instantiation needs and what nothing else should ask for, so everything not
-`linkonce` or `weak` gets `nodeduplicate` instead, leaving a genuine duplicate
-definition the link error it should be.
+A section is all-or-nothing, so without further help every function an object
+file defines ships whether or not the program can reach it. **Each definition
+leads a COMDAT of its own, named for its symbol**, which lets the linker discard
+the unreachable ones and, transitively, whatever only they referenced.
 
-**Not every object format has them, so `genSetup` asks the triple** and stores
-the answer in `gen->comdats`. Mach-O has no COMDAT concept at all and needs
-none — its assembler emits `.subsections_via_symbols`, which already lets the
-linker strip a symbol at a time — while WebAssembly lowers only `any`, so on
-wasm every symbol is mergeable whether it wants to be or not. Both restrictions
-are hard errors inside LLVM's backend, not something it works around.
+**Two questions have to be answered for every generated global, and they are not
+independent.** The caller chooses the linkage; `genlComdat` derives the rest, so
+a new kind of symbol has only to get its linkage right and cannot end up with a
+selection kind that contradicts it:
+
+| What the symbol is | Linkage the caller sets | What `genlComdat` then does |
+| --- | --- | --- |
+| a definition only this object can supply | external | `nodeduplicate` — a duplicate definition is a real error and stays one |
+| a definition several objects may each supply — a generic instance, a vtable | `linkonce` | `any` — the linker keeps one copy and says nothing |
+| a definition nothing outside can name — an anonymous `fn`, a string literal | `internal` | `nodeduplicate`; nothing can collide with it in any case |
+| a declaration — an imported module's function, an `extern` | external | nothing: **only a definition may lead a COMDAT**, and `LLVMVerifyModule` rejects one that does not |
+
+That last row is why the attachment is at the definition sites and not in the
+symbol pass. An imported module's functions have bodies in the IR and are
+declarations in this object; `genlGloFnName` cannot tell, because the
+`FlagGenMod` that separates them is tested a level up.
+
+**The rule reaches only what passes through `genlComdat`.** A global built with
+`LLVMAddGlobal` and never handed to it sits in a shared section, is not
+individually discardable, and keeps alive everything it names. A vtable did
+exactly that: a struct coerced to `&<Trait` kept every one of its trait methods
+in the image whether or not anything ever dispatched. The call sites are
+`genlFn`, `genlGloVar`, `genlVtableImpl`, `genlVtable`, and the `StringLitTag`
+case in `genlAddr`. **A new kind of generated global needs a sixth.**
+
+**Not every object format has COMDATs, so `genSetup` asks the triple** and stores
+the answer in `gen->comdats`. Mach-O has no COMDAT concept and needs none — its
+assembler emits `.subsections_via_symbols`, which already lets the linker strip a
+symbol at a time — while WebAssembly lowers only `any`, so on wasm every symbol
+is mergeable whether it wants to be or not. Both are hard errors inside LLVM's
+backend rather than something it works around, and the C API exposes no
+object-format query.
 
 **An anonymous `fn` literal is given a name and internal linkage** in `genlFn`,
 because it is lifted to module scope with neither. It needs a name for a COMDAT

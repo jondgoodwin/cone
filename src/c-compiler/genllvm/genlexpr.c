@@ -920,6 +920,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
         LLVMValueRef sglobal = LLVMAddGlobal(gen->module, genlType(gen, strnode->vtype), "string");
         LLVMSetLinkage(sglobal, LLVMInternalLinkage);
         LLVMSetGlobalConstant(sglobal, 1);
+        genlComdat(gen, sglobal);
         LLVMSetInitializer(sglobal, LLVMConstStringInContext(gen->context, strnode->strlit, strnode->strlen, 1));
         return sglobal;
     }

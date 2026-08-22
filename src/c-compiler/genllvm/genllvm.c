@@ -58,7 +58,7 @@ void genlParmVar(GenState *gen, VarDclNode *var) {
 // nothing else wants: 'any' silently keeps one copy, which for every other
 // symbol would turn a duplicate definition from a link error into a coin toss.
 // So it follows the linkage the caller already chose.
-static void genlComdat(GenState *gen, LLVMValueRef global) {
+void genlComdat(GenState *gen, LLVMValueRef global) {
     if (gen->comdats == ComdatNone)
         return;
 

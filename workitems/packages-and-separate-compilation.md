@@ -115,10 +115,11 @@ gap, and `stdio`'s filename `strcmp` exists to carve one module out of it.
 
 So the linker's inclusion granularity is the symbol rather than the object file.
 
-**Every generated definition now leads a COMDAT named for itself**, function and
-global variable alike, with the selection kind following the linkage: `any` for
-the generic instantiations that must merge, `nodeduplicate` for everything else
-so a duplicate definition stays a link error.
+**Every generated definition now leads a COMDAT named for itself** — function,
+global variable, vtable and string literal — with the selection kind following
+the linkage: `any` for the generic instantiations and vtables that must merge,
+`nodeduplicate` for everything else so a duplicate definition stays a link
+error.
 `design/phases/generation.md` section 2 carries the rule, its one exception, and
 the object formats that cannot take it. No separate section call is needed after
 all: on COFF a COMDAT already puts its symbol in a section of its own, so
@@ -142,6 +143,15 @@ Three of the stage's uncertainties closed on the way.
   after, and `__unnamed_1` to collide over — is settled here rather than deferred
   to stage 3. It gets a generated name and internal linkage, which also lets the
   inliner delete the unused ones outright.
+- **Not every generated global went through the new code**, and a symbol that
+  misses it keeps alive everything it names. A vtable names every method in its
+  slots, so before this a struct coerced to `&<Trait` kept all of them in the
+  image whether or not anything dispatched: measured, a program that takes one
+  `&<Shape` and never calls through it shipped the method, the vtable and the
+  vtable list, and now ships none of the three, `.text` falling from 4092 to
+  3756 bytes. A string literal only a dead function mentioned survived the same
+  way. Both are routed through it now; `design/phases/generation.md` section 2
+  lists the call sites, because the next kind of generated global has to add one.
 - **Dependency fan-out is dropped rather than deferred.** Archive extraction
   precedes section GC, so pulling one function from a package pulls its whole
   object and every undefined symbol in it must resolve. That is what every
@@ -168,6 +178,7 @@ Still owed:
 **Landed with:** `functions-are-individually-discardable` and
 `global-variables-are-individually-discardable` in `test/cases/core`,
 `only-instances-ask-the-linker-to-merge` in `test/cases/generic`,
+`vtables-are-discardable-and-mergeable` in `test/cases/trait`,
 `anonymous-functions-are-named-and-private` in `test/cases/closure`, and
 `imported-declarations-carry-no-comdat` in `test/cases/module`.
 
