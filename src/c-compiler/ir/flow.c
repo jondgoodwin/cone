@@ -209,7 +209,7 @@ void flowAddVar(VarDclNode *varnode) {
         else {
             // Double table size, copying over old data
             VarFlowInfo *oldtable = gVarFlowStackp;
-            int oldsize = gVarFlowStackSz;
+            size_t oldsize = gVarFlowStackSz;
             gVarFlowStackSz <<= 1;
             gVarFlowStackp = (VarFlowInfo*)memAllocBlk(gVarFlowStackSz * sizeof(VarFlowInfo));
             memset(gVarFlowStackp, 0, gVarFlowStackSz * sizeof(VarFlowInfo));

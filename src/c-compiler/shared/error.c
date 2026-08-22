@@ -163,5 +163,5 @@ void errorUnreachable(INode *node, const char *msg) {
 void errorSummary() {
     if (errors > 0)
         errorExit(ExitError, "Unsuccessful compile: %d errors, %d warnings", errors, warnings);
-    fprintf(stderr, "Compile finished in %.6g sec (%lu kb). %d warnings detected\n", timerSummary(), memUsed()/1024, warnings);
+    fprintf(stderr, "Compile finished in %.6g sec (%zu kb). %d warnings detected\n", timerSummary(), memUsed()/1024, warnings);
 }

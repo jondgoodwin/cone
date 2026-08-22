@@ -956,7 +956,7 @@ void genlStore(GenState *gen, INode *lval, LLVMValueRef rval) {
 LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     if (!gen->opt->release && gen->fn) {
         LLVMMetadataRef loc = LLVMDIBuilderCreateDebugLocation(gen->context, 
-            termnode->linenbr, termnode->srcp-termnode->linep, LLVMGetSubprogram(gen->fn), NULL);
+            termnode->linenbr, (unsigned)(termnode->srcp-termnode->linep), LLVMGetSubprogram(gen->fn), NULL);
         LLVMValueRef val = LLVMMetadataAsValue(gen->context, loc);
         LLVMSetCurrentDebugLocation(gen->builder, val);
     }
@@ -1089,7 +1089,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
             TupleNode *tuple = (TupleNode*)reftype;
             INode **nodesp;
             uint32_t cnt;
-            size_t index = 0;
+            unsigned index = 0;
             int16_t *countp = anode->counts;
             for (nodesFor(tuple->elems, cnt, nodesp)) {
                 if (*countp != 0) {
