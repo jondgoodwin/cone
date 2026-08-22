@@ -216,6 +216,29 @@ A symbol's spelling is a function of the package, never of which module was
   purely cross-package.
 - Handle `genname` correctly regardless of aliasing and cross-package reference —
   the same requirement [[ir-refactor|IR refactor]] item 2.1 states for `genericdef`.
+- **Instantiating an imported module's generic emits an invalid declaration.**
+  Measured on two files, an importer calling `pick[i64]` from an imported
+  module: `declare linkonce i64 @"gsub_pick:i64:i64"`, which fails `--verify`
+  with "Global is external, but doesn't have external or weak linkage". The
+  instance hangs off the *imported* module's generic node, so the symbol pass
+  names it and the implementation pass, which visits only modules flagged for
+  generation, never gives it a body. Nothing in the corpus catches it: no
+  scenario imports a module containing a generic, because the `generic` group
+  imports only `stdio` and `stdio` is carved out into being generated. The fix is
+  the exception `design/nodes/module.md` states under "Composing packages" — the
+  importer defines the instance — and it is narrower than what got stage 1
+  dropped, since generating an imported module's instances is not generating its
+  modules. The scenario belongs with it, in the `module` group.
+- **Fold the linkage and COMDAT decision into one call.** Generation sets
+  linkage in six places and attaches a COMDAT in five, and the two are not
+  paired: a generic instance takes its linkage in the symbol pass and its COMDAT
+  in the implementation pass, so the pair can disagree with nothing to catch it.
+  A call taking the concept — local, unique to this object, merged across
+  objects — would derive both, per target, the way the COMDAT already derives
+  from linkage. It waits on this stage twice over: "what a package exports"
+  above adds the rows the concept does not have yet, and moving the generic
+  case's linkage out of the symbol pass is the same edit as the bug above.
+  `design/phases/generation.md` section 2 carries today's mapping.
 
 **This is the stage that makes `import` mean something.** Generation already
 emits an imported module's public names as declarations and its private ones not
