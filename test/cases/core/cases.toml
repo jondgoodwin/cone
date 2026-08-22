@@ -38,6 +38,13 @@ options = []
 name = "debug"
 options = ["--debug"]
 
+# A global variable is discardable on the same terms as a function, and for the
+# same reason.
+[[scenario.core-success.check]]
+name = "global-variables-are-individually-discardable"
+target = "llvmir"
+contains = ["$counter = comdat nodeduplicate", "@counter = global i32 0, comdat"]
+
 [scenario.core-overload]
 category = "run"
 description = "Which candidate of an overload set a call selects"
@@ -65,6 +72,24 @@ excludes = ["@scale(", "@join(", "@step(", "@emit("]
 name = "private-candidate-keeps-its-symbol"
 target = "llvmir"
 contains = ["define hidden i64 @_emitUnsigned"]
+
+# Each function leads a COMDAT named for itself. A COFF section is otherwise
+# all-or-nothing, so without this every function an object file defines ships in
+# the executable whether the program can reach it or not; with it the linker
+# discards the unreachable ones. A private function gets one too -- hidden
+# visibility does not stop a symbol leading a COMDAT.
+#
+# 'nodeduplicate' is the selection kind that keeps a duplicate definition a link
+# error. Only what must merge asks to merge; generic-success pins the other side.
+[[scenario.core-overload.check]]
+name = "functions-are-individually-discardable"
+target = "llvmir"
+contains = [
+  "$scaleInt = comdat nodeduplicate",
+  "define i64 @scaleInt(i64 %0) comdat {",
+  "$_emitUnsigned = comdat nodeduplicate",
+  "define hidden i64 @_emitUnsigned(i64 %0) comdat {",
+]
 
 # -------- warnings --------
 

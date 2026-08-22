@@ -44,6 +44,39 @@ Both recurse into a type's method list and into a generic's
 `genericinfo->memonodes`. Generic instances get `LLVMLinkOnceAnyLinkage`. An
 uninstantiated generic generates nothing.
 
+**Each definition leads a COMDAT of its own, named for its symbol** — every
+function and every global variable. Without one a section is all-or-nothing, so
+every function an object file defines ships whether or not the program can reach
+it; with one the linker discards the unreachable ones and, transitively,
+whatever only they called. The attachment is at the definition sites, `genlFn`
+and `genlGloVar`, and not in the symbol pass, because **only a definition may
+lead a COMDAT**: an imported module's functions have bodies in the IR but are
+declarations in this object, and `LLVMVerifyModule` rejects a declaration in a
+COMDAT. Hidden visibility does not prevent it — a private function strips like
+any other.
+
+**The selection kind follows the linkage.** `any` merges silently, keeping one
+copy of a symbol several object files each define. That is what a generic
+instantiation needs and what nothing else should ask for, so everything not
+`linkonce` or `weak` gets `nodeduplicate` instead, leaving a genuine duplicate
+definition the link error it should be.
+
+**Not every object format has them, so `genSetup` asks the triple** and stores
+the answer in `gen->comdats`. Mach-O has no COMDAT concept at all and needs
+none — its assembler emits `.subsections_via_symbols`, which already lets the
+linker strip a symbol at a time — while WebAssembly lowers only `any`, so on
+wasm every symbol is mergeable whether it wants to be or not. Both restrictions
+are hard errors inside LLVM's backend, not something it works around.
+
+**An anonymous `fn` literal is given a name and internal linkage** in `genlFn`,
+because it is lifted to module scope with neither. It needs a name for a COMDAT
+to be named after, and internal linkage because the name LLVM's mangler invents
+for an unnamed symbol — `__unnamed_1` — is the one every other object file
+invents too. Internal linkage also lets the inliner delete the ones nothing
+calls, so an unused literal never reaches the object file. The suffix LLVM
+appends to keep `anon` unique is the module symbol table's counter, so it shifts
+when unrelated globals are added.
+
 `genlFn` per function: entry block, a dummy `allocaPoint` alloca, an alloca and
 store for **every** parameter, then `genlBlock` on the body, then erase the
 alloca point. Every parameter and local is memory-backed on purpose — the
@@ -284,6 +317,8 @@ variables.
 | | `genlProgram` | the two-pass symbols-then-implementations walk |
 | | `genlGlobalSyms`, `genlGlobalImpl` | declare a node's symbol; emit its body |
 | | `genlFn`, `genlParmVar`, `genlAlloca` | function body, parameter allocas, entry-block alloca placement |
+| | `genlComdat`, `genlNameAnonFn` | the per-definition COMDAT that lets the linker drop a symbol; the private name an anonymous `fn` needs to have one |
+| | `genlComdatSupport` | what the target's object format does with COMDATs |
 | | `genlOut` | set triple and layout, emit object and asm |
 | `genllvm/genltype.c` | `genlType`, `_genlType` | the memoizing entry and the per-tag lowering switch |
 | | `genlSetupTaggedTrait`, `genlSameSizeTrait` | the three union shapes |

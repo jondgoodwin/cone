@@ -111,26 +111,65 @@ definitions: compiled on its own a module emits `@scaleInt`, unprefixed, while a
 importer declares `@modulesub_scaleInt`. That is the whole of the code-generation
 gap, and `stdio`'s filename `strcmp` exists to carve one module out of it.
 
-### 2. Function-per-section and COMDAT
+### 2. Per-symbol COMDAT — done
 
-So the linker's inclusion granularity is the function rather than the object
-file.
+So the linker's inclusion granularity is the symbol rather than the object file.
 
-- Emit a section and a COMDAT per function in `genlGloFnName`. `LLVMSetSection`
-  and the `Comdat.h` API are both in LLVM 13's C API; `LLVMCreateTargetMachine`
-  takes no `TargetOptions`, so there is no `FunctionSections` switch to flip.
-  The COFF path needs a spike confirming the hand-rolled COMDAT matches `/Gy`.
-- Teach congo `--gc-sections` on ELF and wasm, `/OPT:REF` on COFF — which is off
-  by default whenever `/DEBUG` is on.
-- **Measure dependency fan-out.** Section GC decides what reaches the binary, not
-  what must resolve at link time: archive extraction precedes it, so calling one
-  function from a package pulls its whole object and every undefined symbol in it
-  enters resolution. Whether that hard-errors for a symbol only unreachable code
-  references depends on linker and version. It needs two packages to measure, so
-  it waits on stage 3 giving a separately built module resolvable symbols.
+**Every generated definition now leads a COMDAT named for itself**, function and
+global variable alike, with the selection kind following the linkage: `any` for
+the generic instantiations that must merge, `nodeduplicate` for everything else
+so a duplicate definition stays a link error.
+`design/phases/generation.md` section 2 carries the rule, its one exception, and
+the object formats that cannot take it. No separate section call is needed after
+all: on COFF a COMDAT already puts its symbol in a section of its own, so
+`LLVMSetSection` and the missing `FunctionSections` switch are both moot.
 
-**Lands with:** `llvmir` checks on section and COMDAT emission, and the fan-out
-measurement recorded in `design/nodes/module.md`.
+Measured on COFF, linking with `/OPT:REF` a program that imports `stdio` and
+prints one integer: all five of `IOStream`'s append methods reached the
+executable before, none do now, and `.text` fell from 4028 to 3740 bytes. Two
+uncalled user-written functions went the same way, and an unused global variable
+with them. A used function too large to inline still ships, and the programs
+still print what they printed. Measured separately, linking two objects that
+each define the same symbol: an instantiation of `max[i64]` merges silently, and
+an ordinary function is `LNK2005: already defined`.
+
+Three of the stage's uncertainties closed on the way.
+
+- **Hidden visibility does not stop a symbol leading a COMDAT**, so a private
+  function strips like any other. That was the one risk that could have forced a
+  different approach.
+- **The anonymous `fn` literal** — no name, so nothing for a COMDAT to be named
+  after, and `__unnamed_1` to collide over — is settled here rather than deferred
+  to stage 3. It gets a generated name and internal linkage, which also lets the
+  inliner delete the unused ones outright.
+- **Dependency fan-out is dropped rather than deferred.** Archive extraction
+  precedes section GC, so pulling one function from a package pulls its whole
+  object and every undefined symbol in it must resolve. That is what every
+  toolchain does, it is invisible under a package manager, and the answer for an
+  optional dependency is conditional compilation. It does not bear on the
+  one-object-file-per-package decision.
+
+Still owed:
+
+- **Teach congo the flags:** `--gc-sections` on ELF and wasm, `/OPT:REF` on COFF
+  — which is off by default whenever `/DEBUG` is on — and `-dead_strip` on
+  Mach-O, which is how that format does the same job without COMDATs.
+- **The suite has no cross-target coverage**, and this stage is the argument for
+  it: Mach-O rejects COMDATs outright and WebAssembly rejects every selection
+  kind but `any`, so the first working version of this change hard-errored on
+  both and every scenario still passed. Compiling one source per object format is
+  a few seconds of suite time. Where it belongs is a suite-shape question —
+  `driver` is the only group that follows no manual chapter, but its own note
+  says a driver scenario has no Cone source.
+- **ELF is compiled but not linked.** `nodeduplicate` lowers there without
+  complaint; that a duplicate still errors and an unreachable symbol still goes
+  is measured on COFF only.
+
+**Landed with:** `functions-are-individually-discardable` and
+`global-variables-are-individually-discardable` in `test/cases/core`,
+`only-instances-ask-the-linker-to-merge` in `test/cases/generic`,
+`anonymous-functions-are-named-and-private` in `test/cases/closure`, and
+`imported-declarations-carry-no-comdat` in `test/cases/module`.
 
 ### 3. Package-rooted symbol identity
 
