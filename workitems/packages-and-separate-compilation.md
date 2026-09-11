@@ -56,6 +56,58 @@ model has not decided" section.
    and nothing parses. Also whether its protocol is a contract the compiler holds
    structurally or one written in Cone. Gates the regions track only.
 
+5. **The naming scheme, end to end.** Every facet of how a declaration becomes
+   a linker symbol: the package and module prefix, the type prefix, the
+   separator or the absence of one, the name itself, the suffix that
+   distinguishes a generic instance, and the two C-ABI directions. Today's
+   module-prefix-plus-`_` is a convention rather than an encoding — `a_b::c` and
+   `a::b_c` spell one symbol — and it has nowhere to carry a package version or
+   an overload candidate, while `itypeMangle`'s type-argument suffix uses
+   characters that force the symbol to print quoted.
+
+   **Survey.** Single `_` is what C libraries use — `sqlite3_open`,
+   `curl_easy_init` — and it works there because a person picks the prefix and
+   owns its uniqueness. Generated prefixes divide into markers and proofs. Ada's
+   `api__count` is unambiguous only because Ada forbids `__` inside an
+   identifier, which is unavailable here: `_` marks private, and
+   `stdio_IOStream__appendStr` already contains `__` from `IOStream` plus
+   `_appendStr`. Fortran's `__m_MOD_five`, `m_mp_five_` and `m.five_` are
+   markers in the same sense — fine in practice, ambiguous in principle. The
+   four schemes that are provably unambiguous — Itanium C++
+   `_ZN6matrix3ops3mulEi`, D, Swift, and Rust v0 `_RNvNtC6matrix3ops3mul` — all
+   reach it by **length-prefixing each component** instead of separating them,
+   which dissolves the separator question rather than answering it. Go is the
+   outlier that keeps punctuation, spelling symbols `github.com/foo/bar.Baz`.
+
+   **The object format is not the constraint.** COFF, ELF and Mach-O symbol
+   names are length-delimited byte strings; measured on COFF, `conec` already
+   emits and links `Rect->Shape:Vtable` and `string.10`. What restricts the
+   character set is tooling that writes a symbol as *text* — assembler source,
+   linker and version scripts, `.def` files, `/EXPORT:`, `nm` parsers. Rust v0
+   restricts itself to `A-Z`, `a-z`, `0-9`, `_` on exactly that reasoning, and
+   names `.` as not portable.
+
+   **What the scheme must carry** is what decides it, and three of these are not
+   carried today: the module path, the type-argument list, a concrete overload
+   candidate, and a **package version disambiguator** — Rust encodes a crate
+   disambiguator because two same-named crates at different versions can occupy
+   one binary, and a package manager puts Cone there too.
+
+   **C-ABI names are author-stated, never derived**, in both directions. Every
+   language surveyed provides the opt-out — `extern "C"`, `bind(C, name=)`,
+   `pragma Export (C, ..., "name")`, `#[no_mangle]`, `pragma(mangle, "...")`,
+   `@_cdecl("name")`, `//export` — so a symbol meant for C never passes through
+   the mangler. Also relevant whichever scheme wins: **C reserves
+   leading-underscore identifiers**, and a private Cone declaration emits
+   `@_scaleFloat` into that space.
+
+   **Timing.** Changing the scheme costs a rewrite of `nameGenFnName`,
+   `nameGenVarName` and `itypeMangle` while nothing has been built against it,
+   and costs an ecosystem migration afterwards — Rust's legacy-to-v0 move took
+   about eight years, because prebuilt artifacts, debuggers, profilers and every
+   symbol-reading tool had to move together. **On the critical path**: settled
+   in stage 3, before stage 13 makes `core` and `stdio` the first real packages.
+
 Deferred by decision: **the manifest** — what defines a package's name and
 contents, including files the parser never reads (see [[metaprogramming|Metaprogramming]] on
 compile-time embedded data). No stage before 13 needs it. **Compiler options**
@@ -207,8 +259,8 @@ A symbol's spelling is a function of the package, never of which module was
   DLL exports and gives the C ABI its hook. `--library` and congo's `exe`/`lib`
   targets already distinguish the modes. The option space is in
   `design/nodes/module.md`, "What a package exports".
-- Decide the generated-name separator: `_` vs `:`. Fewer names go through it if
-  only cross-package names are mangled.
+- Settle the naming scheme end to end, per decision 5 — prefix, separator or
+  its absence, generic-instance suffix, and both C-ABI directions.
 - Overloaded functions: how a concrete candidate's real name is spelled, given
   the overload name has no symbol of its own.
 - Make generic instance names deterministic **across packages** so `linkonce`
