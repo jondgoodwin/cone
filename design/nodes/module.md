@@ -172,7 +172,7 @@ private names. **A public overload name breaks that assumption**, so
 ## The model, as decided
 
 The argument is in the author's *When Modules Are Not Just Namespaces*
-(`ProgLing/plingsite/content/post/cone-modules.md`) and *Modules vs Types*
+(`c:/src/progling/content/post/cone-modules.md`) and *Modules vs Types*
 (`modules-vs-types.md`); what modularity is for is in
 [Modularity](../northstar/modularity.md).
 
@@ -485,7 +485,7 @@ interesting one, since folding applied to types is delegated inheritance.
 
 Three descriptions are live at once:
 
-- *Region Modules* (`ProgLing/plingsite/content/post/region-modules.md`) says a
+- *Region Modules* (`c:/src/progling/content/post/region-modules.md`) says a
   region is an importable **module**, holding the annotation type, the region's
   global state, and its API.
 - `refregionglo.html` shows a **`region` declaration** — `region @move so:` —

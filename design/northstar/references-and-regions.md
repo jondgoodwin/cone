@@ -21,7 +21,7 @@ beyond `_alloc` and `init`. The strategies that motivate the whole design —
 arena, pool, tracing GC — are unwritten.
 
 The argument is in *Memory Managed Your Way* (`conesite/public/memory.html`) and
-`ProgLing/plingsite/content/post/gradual-memory-management.md`. The origin is
+`c:/src/progling/content/post/gradual-memory-management.md`. The origin is
 concrete: a 17ms frame budget for realtime 3D.
 
 **The division of labour is one sentence**: *regions and lifetimes ensure

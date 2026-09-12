@@ -32,7 +32,7 @@ divergence may mean the code has drifted, or may mean the articulation moved
 ahead of it deliberately. Resolve it; do not assume which side is wrong.
 
 The author's writing is the source for the aims: `conesite/public/*.html`
-outside `coneref/`, and the posts under `ProgLing/plingsite/content/post/`.
+outside `coneref/`, and the posts under `c:/src/progling/content/post/`.
 Where a note states an aim, it credits the post that argues for it — those carry
 the general case, and the note carries what it means for Cone.
 

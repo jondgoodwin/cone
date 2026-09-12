@@ -8,7 +8,7 @@ strategies at the function and type layers, only the first at the module layer,
 and no thread layer at all.
 
 The framing below is the author's, from *Modularity in Programming*
-(`ProgLing/plingsite/content/post/modularity-in-programming.md`). That post
+(`c:/src/progling/content/post/modularity-in-programming.md`). That post
 carries the general argument; this note carries what it means for Cone.
 
 *Provenance: principles from the author's stated design; the current-state
