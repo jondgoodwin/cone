@@ -2,7 +2,7 @@ How the compiler stays fast, and which of its design choices exist for that
 reason.
 
 This is about `conec`'s own speed. What a *Cone program* costs at runtime is
-[the language's cost model](../northstar/performance.md).
+[the language's cost model](../topics/performance.md).
 
 *Provenance: read from source. The timer instrumentation is the way to measure
 any claim here.*
@@ -15,12 +15,17 @@ refactor toward a constraint solver, an immutable IR, or generic-based analysis
 layers would contradict a written commitment, so make the case before making the
 change.
 
-## Key principles
+## Principles
+
+⚠ **Not `[derived]`** — these are stated commitments, per the paragraph above,
+and the measurements are on file.
 
 0. **No solvers, and no abstraction layers in semantic analysis.** Type
    inference and borrow checking use cascading conditionals; semantic analysis
    traverses the full IR only three times, and none of it runs through core
-   library templates or generics.
+   library templates or generics. ▸ **Forbids** a constraint solver, an immutable
+   IR and generic-based analysis layers — each would contradict a written
+   commitment, so make the case before making the change.
 1. **Allocate and never free.** The process is short-lived, so the arena trades
    memory for the absence of ownership bookkeeping.
 2. **Compare pointers, not contents.** Names and reference types are interned so
@@ -124,7 +129,7 @@ For anything finer, instrument and compile the corpus:
 
 ## What lives elsewhere
 
-- What a Cone construct costs at runtime: [Performance](../northstar/performance.md)
+- What a Cone construct costs at runtime: [Performance](../topics/performance.md)
 - How the source is organized: [Architecture](architecture.md)
 - The constructor discipline the arena demands: [IR Nodes](../nodes/_index.md)
 - Demand-driven scheduling and the marks: [Type Check](../phases/type-check.md)

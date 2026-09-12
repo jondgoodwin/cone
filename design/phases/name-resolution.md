@@ -11,15 +11,25 @@ change how the walk implements it here.
 namespace guarantee were measured. See
 [Measuring](../diagnostics/measuring.md).*
 
-## 1. Key principles
+## 1. Principles — [derived]
+
+⚠ **Read from source, with the `Name.node` read sites measured.** **Unchecked
+with the author is the claim that these rule rather than describe.**
 
 1. **There is no lookup routine.** No scope chain, no search path. Unqualified
-   resolution is one pointer read: `name->dclnode = name->namesym->node`.
-2. **Scoping is hooking.** Entering a scope *plugs* declarations into each
-   name's single `node` slot and stacks the previous value; leaving restores it.
-3. **It retags; it does not rewrite.** The phase mutates the node it was handed.
-   Swapping one node for another is type check's job — with exactly one
-   exception.
+   resolution is one pointer read: `name->dclnode = name->namesym->node`. ▸
+   **Forbids** any rule that would need to *search* for a binding — which is why
+   a name whose namespace depends on a value's type cannot be resolved here at
+   all, and is deferred wholesale.
+2. **Scoping is hooking.** Entering a scope *plugs* declarations into each name's
+   single `node` slot and stacks the previous; leaving restores it. ▸ **Settles**
+   that scope entry and exit must be perfectly paired, and **forbids** resolving
+   a node out of walk order, since the slot's contents are only correct inside
+   the right scope.
+3. **It retags; it does not rewrite.** The phase mutates the node it was handed;
+   swapping one node for another is type check's job, with exactly one exception.
+   ▸ **Settles** that a caller's pointer stays valid across this phase, which is
+   what lets the walk hand out nodes without indirection.
 4. **Anything needing a type is deferred wholesale.** The one lookup primitive
    is a read from a global slot. A name whose namespace depends on a value's
    type cannot use it, so member names, overload selection and instantiation all

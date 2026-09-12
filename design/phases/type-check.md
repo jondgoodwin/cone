@@ -61,7 +61,16 @@ node's type — `fnCallLowerMethod` sets a call's `vtype` from the method it
 selects, and the parent expression needs that type — so it can be neither earlier
 than types nor later.
 
-## 2. The rules
+## 2. Principles — the rules
+
+⚠ **Measured, not read** — every claim in this note was produced by running the
+compiler. **Unchecked with the author is the claim that these are ruling
+positions rather than the present arrangement.**
+
+▸ **What the eight collectively forbid is any dependence on source order.**
+Reaching a name pulls its declaration forward, so the order declarations appear
+in decides *when* each is analyzed and never *whether*. A rule that only holds
+when declarations are written in a particular sequence contradicts the set.
 
 1. **Reaching a name analyzes its declaration** before continuing.
 2. **A finished declaration answers from what it recorded.** — `TypeChecked`

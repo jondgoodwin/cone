@@ -5,6 +5,21 @@ Use this when a design note says something you cannot confirm by reading, when
 you need to know whether a code path runs at all, or when a change's effect is
 not visible in the diagnostics.
 
+## Principles — [derived]
+
+**The source code is the truth for current behaviour; a note is not.** ▸
+**Forbids** citing a design note as evidence about what the compiler does. A
+note explains and states the aim, and the whole `[planned]` / `[differs]`
+vocabulary exists because the two can legitimately disagree.
+
+**A claim marked *measured* was produced by running the compiler, never by
+reading it.** ▸ **Settles** what the mark means and **forbids** promoting a
+careful reading to a measurement. A note that says *read from source* is
+reporting its own confidence, and that is load-bearing rather than a hedge.
+
+**Unreachable paths stay unproven, and say so.** ▸ **Forbids** asserting on the
+strength of the code alone that a branch never runs.
+
 ## The technique
 
 **Instrument the thing under test to report instead of act, compile every

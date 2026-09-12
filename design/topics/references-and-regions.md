@@ -39,16 +39,32 @@ want the shape before the detail.
 *Provenance: read from source; the lowerings and the permission table were
 measured.*
 
-## Key principles
+## Principles — [derived]
+
+⚠ **The premise above is the author's and is quoted. These four are read from
+source**, and what is unchecked is the claim that they are ruling positions
+rather than the present arrangement.
 
 1. **Three axes, independently chosen.** `+rc-mut Point` names a region, a
-   permission and a value type, and each is a separate decision.
+   permission and a value type, and each is a separate decision. ▸ **Forbids**
+   the fused capability of Pony or the welded aliasing-mutability-lifetime of
+   Rust. **This is the principle most "Cone cannot express X" claims dissolve
+   against**, and it is why an error at one axis is fixable at that axis —
+   locality [Expressiveness and Attention](expressiveness-and-attention.md)
+   depends on.
 2. **A region is an ordinary struct**, not a compiler concept. Anything with a
-   suitable `_alloc` is one.
+   suitable `_alloc` is one. ▸ **Settles** that a new strategy is library work,
+   not compiler work. ⚠ **[differs: seven sites across `ir/flow.c`,
+   `genllvm/genlalloc.c`, `genllvm/genlexpr.c` and `ir/exp/arraylit.c` dispatch
+   on whether a region is *named* `rc` or `so`]** — so today the principle holds
+   in placement only.
 3. **A permission is a set of capability bits**, not a keyword the compiler
-   special-cases. What a permission permits is data.
+   special-cases. What a permission permits is data. ▸ **Forbids** a fixed
+   permission vocabulary, and **settles** that adding one is a table entry.
 4. **Move-ness is derived, never declared, on a reference.** It falls out of the
-   permission and the region.
+   permission and the region. ▸ **Forbids** a `move` annotation on a reference
+   type, and **settles** that move semantics can never disagree with the axes
+   that produced them.
 
 ## The axes
 

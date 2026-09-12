@@ -7,29 +7,100 @@ intended or incomplete behavior, always marked as such.
 
 Page in the note you need. Do not load the folder.
 
+## What Cone is for
+
+**Two aims: performance, and agility.** Everything else serves one of them.
+
+- **Performance** — the program is fast, and the programmer has the levers to
+  make it faster. Memory technique is where the orders of magnitude are.
+- **Agility** — the program stays changeable. Modularity and safety are both in
+  service of this: modularity so a change stays local, safety so a change is
+  caught when it is wrong rather than in production.
+
+Stating it this way names the tension the public four — *fast, fit, friendly,
+safe* — leave implicit. **Performance work usually costs agility** (hand-tuned
+code is rigid) **and agility mechanisms usually cost performance** (indirection,
+abstraction, bookkeeping). A language claiming both is claiming to reduce that
+trade-off, and every note here has to hold that claim up.
+
+**Attention is the scale both aims are priced in.** A safety, modularity or
+performance mechanism that costs more attention than it saves is a bad trade
+whatever it guarantees. [Expressiveness and Attention](topics/expressiveness-and-attention.md)
+carries that argument.
+
+## Two kinds of note
+
 ```
 design/
-  northstar/    what Cone is trying to be, and how far the compiler currently is
+  topics/       one concern followed across the whole compiler — safety, modularity, memory
   phases/       one note per compiler phase, plus the naming rules they implement
   nodes/        what is true of every IR node, and per-node notes
   compiler/     conec as a piece of software — how it is built, and how it stays fast
   diagnostics/  how to find out what the compiler does, and how to say it is wrong
 ```
 
-**The test for `northstar/`: if `conec` were rewritten from scratch, would this
-note survive?** The other four folders describe *this* compiler — its phases,
-its nodes, its construction, its tooling — and would be thrown away with it. A
-northstar note states what the language is aiming at.
+**A topic note follows one concern across every phase and node it touches.** A
+**structure note** — phases, nodes, compiler, diagnostics — describes how this
+compiler is built.
 
-Each has two halves: **the aim**, and **the current distance from it**. The
-second is the actionable half, and it is measured rather than asserted.
+**Both open with the principles they own**, then the design those principles
+rule over, then what of it is built. The three are separated by section, never
+by annotation sprinkled through prose.
 
-**Where the aim and the code disagree, that is a question, not automatically a
-defect.** These principles were largely worked out *while* the language was
-being built — the author's own posts describe going back to first principles
-mid-stream and finding that writing them down deepened the understanding. So a
-divergence may mean the code has drifted, or may mean the articulation moved
-ahead of it deliberately. Resolve it; do not assume which side is wrong.
+**What differs is whose principles they are**, and the old northstar test sorts
+them: *if `conec` were rewritten from scratch, would this survive?* A topic
+note's principles are about the **language**, and survive. A structure note's are
+about **this compiler** — one node family per source pair, the linker's
+inclusion granularity is the function — and are thrown away with it. Both are
+real, and both rule over decisions downstream of them.
+
+## Principles: own them, or inherit them
+
+**A note states the principles it owns and references the ones it inherits.**
+Writing out an inherited principle is how two notes come to disagree about it —
+which has already happened, with the package model stated in full in both
+[Modularity](topics/modularity.md) and [module](nodes/module.md).
+
+**The owner is the note whose subject the principle is.** Symbol naming is about
+generation, so [Generation](phases/generation.md) owns it. Attention as the
+scarce resource is about expressiveness, so that note owns it and the rest point
+at it.
+
+**Every principle names something it forbids or settles.** If you cannot say
+what it would reject, it is decoration — cut it. *"Give programmers the levers"*
+forbids nothing. *"The linker's inclusion granularity is the function, not the
+object file"* settles a dozen choices downstream.
+
+**A note that owns no principles writes no such section.** Absence by emptiness,
+never by rule.
+
+**A principle the author has not passed on is marked `[derived]`** — read from
+the code and from a note's own prose rather than confirmed. Same inheritance rule
+as the status tags: mark the section where that is true of all of it, override
+inline where one differs. The marker goes when the author has reviewed it.
+
+⚠ **The hazard `[derived]` exists for is not invention from nothing.** Most
+principles are recoverable, because a position that rules on something has left
+evidence in the shape of the code. **The hazard is promoting an implementation
+accident to a principle** — asserting intent behind something that merely fell
+out of how it was built. [assign](nodes/assign.md) carries a worked example of
+both kinds in one section.
+
+**A principle in a topic note names the structure note that implements it.** A
+mechanism stated in a topic with nothing named to carry it is a mechanism with no
+owner.
+
+⚠ **A new topic note asserts that a concern exists, and is the author's to
+authorize.** Keeping its measured distances current is not.
+
+## Where the aim and the code disagree
+
+**That is a question, not automatically a defect.** These principles were largely
+worked out *while* the language was being built — the author's own posts describe
+going back to first principles mid-stream and finding that writing them down
+deepened the understanding. So a divergence may mean the code has drifted, or may
+mean the articulation moved ahead of it deliberately. Resolve it; do not assume
+which side is wrong.
 
 The author's writing is the source for the aims: `conesite/public/*.html`
 outside `coneref/`, and the posts under `c:/src/progling/content/post/`.
@@ -59,28 +130,30 @@ against how name resolution implements them. It is not a phase, and the rules it
 states are enforced from parse and type check as well; it lives here because it
 is read beside the phase that carries most of them.
 
-## Northstar
+## Topics
 
-**Two aims: performance, and agility.** Everything else serves one of them.
+**One note per concern the language takes a position on.** Each opens with the
+principles it owns, carries the design they rule over, and states the measured
+distance from it.
 
-- **Performance** — the program is fast, and the programmer has the levers to
-  make it faster. Memory technique is where the orders of magnitude are.
-- **Agility** — the program stays changeable. **Modularity** and **safety** are
-  both in service of this: modularity so a change stays local, safety so a
-  change is caught when it is wrong rather than in production.
+▸ **What earns a topic note is a position on a trade-off that could have gone
+the other way** — not an aspiration.
 
-Stating it this way names the tension the public four — *fast, fit, friendly,
-safe* — leave implicit. **Performance work usually costs agility** (hand-tuned
-code is rigid) **and agility mechanisms usually cost performance**
-(indirection, abstraction, bookkeeping). A language claiming both is claiming to
-reduce that trade-off, and that claim is what the notes below have to hold up.
+⚠ **A correction, 12 September 2026.** This index claimed Performance stated an
+aspiration rather than a position, and that it carried none of the decisions in
+`conesite/public/fast.html`. **Both were wrong, and both came from reading the
+row in this table instead of the note.** The note carries five explicit bets, a
+what-is-free table, a what-costs table, and the strongest principle in the
+folder: **no construct's cost is invisible at the point you write it.** ▸ **The
+summary here was thin; the note was not.**
 
-| Note | Serves | The aim | The distance |
+| Note | Serves | The position | The distance |
 | --- | --- | --- | --- |
-| [References and Regions](northstar/references-and-regions.md) | **both** | Memory strategy chosen per object, with safety preserved across all of them | mechanism built, two regions ship; the strategies that motivate it — arena, pool, tracing GC — are not written |
-| [Performance](northstar/performance.md) | performance | Give knowledgeable programmers the levers for proven high-performance strategies | most levers unbuilt; what exists is the machinery making them cheap to add and free to skip |
-| [Modularity](northstar/modularity.md) | agility | Every layer — block, function, type, thread, module — surfacing the same three strategies | all three at function and type; only isolation at module; no thread layer; separate compilation does not work |
-| [Safety](northstar/safety.md) | agility | Memory and type safety without a garbage collector, at no runtime cost | a scorecard: what is checked, what is not, and the four shapes the gaps take |
+| [References and Regions](topics/references-and-regions.md) | **both** | Memory strategy chosen per object, with safety preserved across all of them | mechanism built, two regions ship; the strategies that motivate it — arena, pool, tracing GC — are not written |
+| [Performance](topics/performance.md) | performance | Give knowledgeable programmers the levers for proven high-performance strategies | most levers unbuilt; what exists is the machinery making them cheap to add and free to skip |
+| [Modularity](topics/modularity.md) | agility | Every layer — block, function, type, thread, module, program — surfacing the same six strategies | composition, namespace and encapsulation broadly present; substitution, generativity and extensibility thin out above the type layer; no thread layer; the program layer has no namespace at all |
+| [Safety](topics/safety.md) | agility | Memory and type safety without a garbage collector, at no runtime cost | a scorecard: what is checked, what is not, and the four shapes the gaps take |
+| [Expressiveness and Attention](topics/expressiveness-and-attention.md) | **the scale, not an aim** | Programming as Lego assembly — small, uniform, opaque interfaces. Attention is the scarce resource both aims are priced in | the mechanisms meant to deliver it are the unbuilt ones: no thread layer so no actors, no module substitution, borrowing narrowed only by convention |
 
 **References and regions is where the two axes meet**, which is why it is the
 most distinctive thing in the language: one construct — a region-decorated,
@@ -90,11 +163,32 @@ there first.
 
 *Not placed by this framing*: **fit** — "programs pack a lot of power for their
 size, both as source files and as delivered executables" — reads as partly
-performance and partly agility, and has no note. Whether it is a design
-principle with content or a positioning claim is worth deciding.
+performance and partly agility, and has no note. The "power for their size" half
+is now argued in Expressiveness and Attention; whether what remains is a design
+principle with content or a positioning claim is still worth deciding.
 
-Each note states an aim and then the measured distance from it. The second half
-is the actionable one.
+⚠ **Open, with a recommendation: three strategies, or six?**
+[Modularity](topics/modularity.md) enumerates three — complexity isolation,
+interface-based substitution, multi-use generation. The author's concept vault
+enumerates **six** — composition, namespace, encapsulation, substitution,
+generativity, extensibility.
+
+▸ **The recommendation is six, and the argument is that the three cannot classify
+two of Cone's most distinctive mechanisms.** Name-folding is a *namespace*
+operation, and delegated inheritance is name-folding applied to types — under the
+three it has nowhere to sit. `extends` and `mixin` being one mechanism, a
+synthetic field at position 0, is a *composition* fact and files under none of
+them. **The layers already agree at six on both sides** — block, function, type,
+thread/concurrency, module/package, program/service — **so only the strategies
+were compressed, and the note is a 3×5 rendering of a 6×6 matrix.**
+
+▸ **What the three do well survives the move.** Isolation decreases complexity
+while substitution and generation increase coupling — on six, that becomes
+composition, namespace and encapsulation neutral-to-reducing, and substitution,
+generativity and extensibility increasing. **Keep it as an observation about what
+each strategy costs, not as the taxonomy.**
+
+⚠ **Not yet passed on by the author.**
 
 ## The compiler
 
@@ -118,11 +212,11 @@ Most real work crosses phases. Start here instead.
 | work out why a value is or is not accepted | [Type Check Reasoning](phases/type-check-reasoning.md), "The verdict vocabulary" and "Coercion" |
 | change a call, a method, or overloading | [Type Check Reasoning](phases/type-check-reasoning.md), "Calls, methods and overloads" |
 | fix a double release, a leak, or a bad move | [Flow Analysis](phases/flow.md), "Moves and counting" onward, then [Generation](phases/generation.md), "The allocation header" |
-| change ownership, borrowing, or lifetimes | [References and Regions](northstar/references-and-regions.md) for the model, then [Flow Analysis](phases/flow.md) for what enforces it |
-| know whether a safety property actually holds | [Safety](northstar/safety.md) — the scorecard, and why a clean compile proves less than it looks like |
-| know what something costs at runtime | [Performance](northstar/performance.md) |
+| change ownership, borrowing, or lifetimes | [References and Regions](topics/references-and-regions.md) for the model, then [Flow Analysis](phases/flow.md) for what enforces it |
+| know whether a safety property actually holds | [Safety](topics/safety.md) — the scorecard, and why a clean compile proves less than it looks like |
+| know what something costs at runtime | [Performance](topics/performance.md) |
 | add a file, a node family, or a phase | [Architecture](compiler/architecture.md) |
-| understand how a program is composed from pieces | [Modularity](northstar/modularity.md) |
+| understand how a program is composed from pieces | [Modularity](topics/modularity.md) |
 | change modules, imports, or what a compile emits for each of them | [module](nodes/module.md) — the model, and what it has not decided |
 | work out why the compiler is slow | [Compiler Performance](compiler/performance.md) |
 | emit different LLVM, or fix a miscompile | [Generation](phases/generation.md), "Pointer levels", before writing any cast, GEP, load or store |
@@ -131,6 +225,40 @@ Most real work crosses phases. Start here instead.
 | add or change a diagnostic | [Error Codes](diagnostics/error-codes.md) |
 | add or update test coverage | [Test Suite](diagnostics/test-suite.md) |
 | find a built-in type, operator method, or intrinsic | `corelib/` — see the family map in [IR Nodes](nodes/_index.md) |
+
+## By language feature
+
+The other two tables route by *compiler* structure. This one routes by the
+language itself — start here when you know what the feature is called to a
+programmer but not which phase or node owns it. The reference pages under
+`conesite/public/coneref/` are the user-facing description; the notes are the
+design behind it.
+
+| Category | Reference pages | Design note |
+| --- | --- | --- |
+| **Lexical and basic form** | `reftoken` · `refterm` · `refbasics` · `ebnf` | [Parse](phases/parse.md) |
+| **Expressions and control flow** | `refexpr` · `refif` · `refwhile` · `refeach` · `refblock` · `refmatch` · `refflow` | [block](nodes/block.md) · [if](nodes/if.md) · [return](nodes/return.md) |
+| **Functions** | `reffunc` · `refmethod` · `refmethop` · `refclosure` · `reffnref` · `refcloref` | [fncall](nodes/fncall.md) |
+| **Core types** | `reftypes` · `refnumber` · `refstruct` · `refunion` · `reftuple` · `refarray` · `reftypealias` · `refvoid` | [struct](nodes/struct.md) · [literals](nodes/literals.md) |
+| **Traits and polymorphism** | `reftrait` · `reftraitvar` · `refinherit` · `refvirtref` · `refgeneric` | [struct](nodes/struct.md) · [generic](nodes/generic.md) |
+| **References, permissions, regions** | `refrefs` · `refptr` · `refborref` · `refperm` · `refpermlock` · `refweakref` · `refarrayref` · `refallocref` · `refalloccust` · `refregionglo` · `refmove` · `reflifefn` | [references](nodes/references.md) · [References and Regions](topics/references-and-regions.md) · [Flow Analysis](phases/flow.md) |
+| **Lifetime and construction** | `refinitdrop` · `reftypemanage` | [Flow Analysis](phases/flow.md) · [vardcl](nodes/vardcl.md) |
+| **Modules and packages** | `refmodule` · `refinclude` | [module](nodes/module.md) |
+| **Safety and trust** | `refsafety` · `reftypesafe` · `reftrust` | [Safety](topics/safety.md) |
+| **Error handling** | `refexcept` · `refoption` · `refresult` | ⚠ **no note** |
+| **Metaprogramming** | `refmacro` · `refmeta` | [generic](nodes/generic.md) |
+| **Concurrency** | `refconc` · `refconccomm` · `refconcio` · `refcorout` | ⚠ **no note; no thread layer exists** |
+| **Collections** | `reftypecoll` | ⚠ **no note** |
+
+⚠ **A reference page shows the language's *intended* shape, not only what is
+built** — see "The language reference" below. Three categories above have no
+design note at all, and the concurrency one has no implementation either.
+
+⚠ **Congo — the build tool — is absent from this folder entirely.** It is not
+`conec`, it lives at `c:/src/conehome/bin/congo`, and whether its design belongs
+in this repo is an open question owned by the repo-convergence work item in the
+author's corpus. **Recorded here so the gap is visible rather than merely
+unfilled.**
 
 ## Nodes
 
@@ -201,3 +329,112 @@ would settle it. It does not say who owns fixing it.
 
 The change discipline — that a code change is not finished until its notes are —
 is in `CLAUDE.md`.
+
+## Implementation status
+
+**`[built]` is the default and is never written.** A note describes the design;
+where the code matches, nothing is marked, and the note reads as the standard it
+is.
+
+Two annotations, each terminating whatever it qualifies — a section title, a
+paragraph, or a bullet, so the referent is never ambiguous:
+
+- **`[planned]`** — decided, and not in the code.
+- **`[differs: what the code actually does]`** — the design reads as ordinary
+  prose and the divergence sits inside the brackets.
+
+```
+Regions are declared `region @move so:` with `alloc` and `free`
+[differs: implemented as `struct @move so:` with `_alloc`, and no `free` at all]
+```
+
+Mark at the coarsest level that is true, and override inline only where a child
+differs. A largely-unbuilt section then costs one annotation, and so does a
+largely-built one.
+
+**This is not an exception to the no-changelog rule above.** `[differs]` states a
+present gap between the design and the code. "Was `assert(0)`" is history and is
+deleted; "[differs: dispatches on whether the region is named `rc` or `so`]" is
+the current fact.
+
+**There is no marker for code a note does not describe.** A note is an abstract
+summary from one perspective and necessarily leaves implementation detail out. If
+a detail matters to the design's integrity, state it in the note's own terms; if
+it does not, leave it out. Its presence in the code already means a decision was
+taken — the only open question is relevance, and relevance is answered by writing
+it or not writing it.
+
+## The language reference
+
+`conesite/public/coneref/` shows the language's **intended** shape, not only what
+is built. With no users yet, the breadth is what a reader needs to see.
+
+Each page opens with an italic status note naming the exceptions — the form 31 of
+the 60 pages already use:
+
+> *Note: All of this capability is implemented except .len, multi-element
+> segments, 'each' iteration, comparison, and pattern matching.*
+
+Where a page is long enough that naming exceptions at the top no longer tells a
+reader which paragraph they bite on, mark the affected content itself. **Every
+code example that will not compile today is marked**, because examples are what a
+reader copies.
+
+**Neither the notes nor the reference ever carries scheduling** — no dates, no
+priorities, no work-item references. `[planned]` is a fact about the code, not a
+commitment about when it changes.
+
+## Ripple: what a change here reaches
+
+**"What lives elsewhere" is a read-more list, and this is not.** That section
+answers *where do I go to learn about X*. This one answers *if X changes here,
+what breaks*. The relations differ — read-more is roughly symmetric and stable,
+ripple is directional and keyed to a specific fact — so they are separate
+sections and neither substitutes for the other.
+
+**A ripple entry names the fact, then its consumers.** Naming only a file is
+worthless; any two notes in this folder are "related".
+
+```
+The symbol scheme — consumed by `phases/generation.md` (naming), by
+`nameGenFnName`, `nameGenVarName` and `itypeMangle`, and by
+`coneref/refmodule.html` (name qualification).
+```
+
+**Name an area, never a precise location.** Same reason a code pointer names a
+function and not a line: a ripple list is written by the fact's owner and points
+at consumers that change without telling it. A fact plus an area survives a
+refactor, because the search still finds it. A precise location rots silently.
+
+**Ripple entries are required for `[planned]` and `[differs]` facts, and optional
+for `[built]` ones.** A built fact has ground truth — if the notes drift, read the
+code. A decided-but-unbuilt fact exists only in the notes, and its reference page
+is marked `[planned]` too, so drift between two notes is unrecoverable rather than
+merely wrong.
+
+**The owner of a fact is the note whose SUBJECT it is**, never a note that
+consumes it. Symbol naming is about generation, so `phases/generation.md` owns it
+and `nodes/module.md` refers to it. Where no existing note has a fact as its
+subject, that is the signal the topic needs a note of its own — which makes a
+topic-owned note a rare and earned thing rather than a default.
+
+## Boundaries between notes are moment-in-time decisions
+
+**Which note carries which material is decided under a particular focus, and it
+is expected to move.** Working on packages makes it natural to write symbol
+generation into the module note; once the focus leaves, that material belongs with
+generation, referred to from module.
+
+**Moving material and redrawing boundaries is encouraged — but propose it first.**
+The relocation is agreed before it happens and recorded when it does, so a later
+reader does not read a note as having quietly lost something.
+
+## What a decided-design change records
+
+Three things: **what rumination fed it, what prior art was surveyed, and what was
+measured.** The provenance line near the top of each note already carries the
+third.
+
+**Research is required where a decision has prior art we do not know — not to
+re-justify what is already settled.** A rule that demands a literature review for
+every small change gets ignored, which is worse than not having it.

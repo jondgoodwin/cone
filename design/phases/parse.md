@@ -9,21 +9,32 @@ resolution's — the boundary is not where most readers expect it.
 to `parsePrefix`, and parse-time namespace population were traced end to end.
 Section 11 is what is unverified. See [Measuring](../diagnostics/measuring.md).*
 
-## 1. Key principles
+## 1. Principles — [derived]
+
+⚠ **Read from source and traced end to end.** **Unchecked with the author is the
+claim that these rule rather than describe.**
 
 1. **One grammar for types and values.** `parseType` dispatches every
-   type-starting token to `parsePrefix` — the *value* expression parser. There
-   is no separate type grammar and no backtracking.
-2. **The parser drives the lexer's block mode.** Indentation is not tokenized.
-   The parser tells the lexer when a block starts and what kind it is, and asks
-   whether it has ended.
+   type-starting token to `parsePrefix` — the *value* expression parser. No
+   separate type grammar, no backtracking. ▸ **Forbids** a syntax that can only
+   be disambiguated by knowing whether a type or a value is expected, and
+   **settles** that a new type form costs an arm in the value parser.
+2. **The parser drives the lexer's block mode.** Indentation is not tokenized;
+   the parser tells the lexer when a block starts and what kind, and asks whether
+   it has ended. ▸ **Forbids** a standalone lexer — token stream and parse state
+   are not separable here, which is what a second front end would have to
+   reproduce.
 3. **The parser desugars.** `match`, `each`, `while`, `with`, bound patterns and
-   several prefix forms are lowered here, into blocks and `if` chains.
+   several prefix forms are lowered here into blocks and `if` chains. ▸
+   **Settles** that later phases never see those forms, so a new sugar costs no
+   node, no dispatch arm and no phase work.
 4. **The parser binds module-level names.** Module namespaces are populated,
-   hooked into the global name table, and checked for duplicates *during*
-   parsing, not during name resolution.
+   hooked into the global name table, and duplicate-checked *during* parsing. ▸
+   **This is what lets name resolution have no lookup routine** — by the time it
+   runs, every module-level name is already in its slot.
 
-Principles 3 and 4 are the two most readers get wrong.
+▸ **Principles 3 and 4 are the two most readers get wrong**, and both move the
+boundary with name resolution earlier than expected.
 
 ## 2. The lexer
 

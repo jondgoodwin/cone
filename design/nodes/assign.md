@@ -11,6 +11,38 @@ generation depends on. Generation stores, releasing the previous value first.
 *Provenance: read from source; the tuple-return defect in Flow was measured
 against emitted LLVM IR.*
 
+## Principles — [derived]
+
+⚠ **Read from the code and this note's own prose, not confirmed by the author.**
+Each was already stated here as description; promoting it to a principle asserts
+it is a ruling position rather than an incidental fact, and that assertion is
+what has not been checked.
+
+**Mutability and ownership are enforced in flow, not type check.** Type check
+decides whether the types fit. Flow decides whether the write is permitted,
+whether the value moves or copies, and whether a borrow outlives what it points
+at. ▸ **So a new ownership or permission rule is added in `flow.c`, and a
+type-check helper that starts reasoning about permissions is in the wrong file.**
+
+**Assignment is an expression, and its value is the rval's** — not the lval's,
+and not nothing. ▸ **That is what makes `a = b = c` mean what it looks like, and
+why `vtype` comes from the right-hand side.** `:=` exists because the other
+answer — yielding the target's prior content — is occasionally wanted, and it is
+a separate operator rather than a mode on this one.
+
+**Operator-assignment is desugared, never a node.** `+=` becomes an `FnCallNode`
+carrying `FlagOpAssgn`, lowered to the base operator's method. ▸ **So a new
+op-assign form costs a parse entry and nothing else — no IR node, no phase arms,
+no generation case.** A second assignment-shaped node would have to re-implement
+every rule above, and would drift from them.
+
+**Assignment binds loosest and recurses rather than loops.** ▸ **Right-
+associativity falls out of the recursion.** A loop here would silently make it
+left-associative.
+⚠ **The weakest of the four, and it may not be a principle at all** — the note
+describes a mechanism and its consequence, and whether right-associativity was
+chosen or fell out of recursive descent is not recoverable from the code.
+
 ## Shape
 
 | Field | Meaning |

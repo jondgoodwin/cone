@@ -12,20 +12,33 @@ produce a type error — it produces a value where an address was wanted.
 three union shapes were measured against emitted LLVM IR. Claims about
 unreachable paths are reading only, and say so. See [Measuring](../diagnostics/measuring.md).*
 
-## 1. Key principles
+## 1. Principles — [derived]
+
+⚠ **Read from source and measured against emitted IR.** **What has not been
+checked with the author is the claim that these are ruling positions rather than
+a description of the present arrangement.**
 
 1. **Types are lowered lazily and memoized**, on `llvmtype` for a named type and
-   on the interned `typeinfo` for a reference type. There is no type pass.
+   on the interned `typeinfo` for a reference type. There is no type pass. ▸
+   **Forbids** a whole-program type-lowering stage, and **settles** that adding a
+   type costs a lowering function and nothing global.
 2. **Symbols for the whole program are declared before any body is emitted**, so
-   forward references resolve. That is the only global ordering.
+   forward references resolve. **That is the only global ordering.** ▸ **Settles**
+   that nothing else here may depend on visit order, which is what lets bodies be
+   emitted in any sequence.
 3. **Permissions and regions are erased.** They shape the allocation header and
-   nothing else. Move-ness, thread-binding and lifetimes are erased entirely.
-4. **Generation decides nothing about memory.** Every release, every count
-   adjustment, every drop call was injected by flow analysis. Generation replays
-   the lists.
-5. **Every definition is separately discardable.** Each one leads a COMDAT of
-   its own, so the linker decides at symbol granularity what ships rather than
-   at object-file granularity.
+   nothing else; move-ness, thread-binding and lifetimes are erased entirely. ▸
+   **This is [Performance](../topics/performance.md)'s central bet cashed in
+   here**, and it **forbids** any safety distinction needing a runtime
+   representation.
+4. **Generation decides nothing about memory.** Every release, count adjustment
+   and drop call was injected by flow analysis; generation replays the lists. ▸
+   **Forbids** this phase reasoning about ownership at all — a double-release bug
+   is a flow bug, and searching for it here wastes the search.
+5. **Every definition is separately discardable.** Each leads a COMDAT of its
+   own, so the linker decides at symbol granularity rather than object-file
+   granularity. ▸ **Settles** the one-object-file-per-package model: coarse
+   objects cost nothing when inclusion is decided per symbol.
 
 ## 2. Ordering, and why setup runs before parsing
 
@@ -357,6 +370,6 @@ variables.
 
 | Question | Note |
 | --- | --- |
-| What a region and a permission mean before they are erased | [References and Regions](../northstar/references-and-regions.md) |
+| What a region and a permission mean before they are erased | [References and Regions](../topics/references-and-regions.md) |
 | What injected the alias nodes and dealias lists | [Flow Analysis](flow.md) |
 | What guarantees every node has a `vtype` | [IR Nodes](../nodes/_index.md), "--checktree" |

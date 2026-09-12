@@ -12,6 +12,47 @@ machinery that makes those levers cheap to add and free to not use.
 
 The argument is in *Optimal Performance* (`conesite/public/fast.html`).
 
+## Principles — [derived]
+
+⚠ **Assembled 12 September 2026 from what this note and `fast.html` already
+state.** Nothing here is new; what is new is the claim that these are ruling
+positions rather than description. **Not yet passed on by the author.**
+
+**Prevent, do not profile.** Profiling finds hot spots and is useless against
+inefficiency diffused thinly across a codebase — *"thousands of tiny paper cuts…
+largely invisible to performance profilers."* ▸ **So the language's job is to
+make the cheap construct the natural one to write, and the remedy is
+architectural.** **This forbids** treating "optimize later" as the answer to a
+design question about layout, allocation or copying.
+
+**Memory technique is where the orders of magnitude are — not code generation.**
+▸ **So the compiler's own optimization is table stakes, and the pass list stays
+short deliberately.** **This forbids** buying performance by out-optimizing LLVM
+rather than by handing it better-shaped IR.
+
+**No construct's cost is invisible at the point you write it.** Every row of the
+cost table below has a mark in the source — the `+rc`, the `[]`, the `<`, the
+`[T]`. ▸ **This is the principle the others are in service of**, and **it forbids**
+any feature whose expense is inferred rather than written: implicit boxing, a
+hidden copy of a large value, an allocation the source does not name.
+
+**The static safety apparatus is free, or it is wrong.** Permissions, regions,
+lifetimes and move-ness are checked and then discarded; `&T` and `+rc T` are the
+same machine value. ▸ **This is the central bet, and it is falsifiable** — the
+day a safety distinction needs a runtime representation, the bet has failed and
+the design has to be reopened rather than patched.
+
+**Abstraction is opt-in at the point of use.** Dynamic dispatch happens where
+`&<Trait` is written and nowhere else; generics monomorphize. **This forbids**
+uniform boxing and type erasure, and it accepts code size as the price.
+
+▸ **Each principle names where it is cashed in:** the first two in
+[References and Regions](references-and-regions.md) and the region choice at each
+allocation; the third in the cost table below and in
+[Generation](../phases/generation.md); the fourth in `%void = type {}` and the
+interning of reference types by machine representation; the fifth in
+monomorphization and the fat pointer.
+
 ## The strategies the language means to enable
 
 These are the levers, in the author's framing — what a programmer reaches for,

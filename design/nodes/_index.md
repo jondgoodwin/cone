@@ -12,6 +12,33 @@ What each phase *does* to these nodes is in the phase notes:
 *Provenance: read from source, plus measured claims carried over from
 [Type Check Phase](../phases/type-check.md). See [Measuring](../diagnostics/measuring.md).*
 
+## Principles — [derived]
+
+⚠ **Read from source across every node family.** **Unchecked with the author is
+the claim that these are ruling positions rather than the present arrangement.**
+
+**One struct serves many roles, and the tag separates them late.** `FnCallNode`
+carries nine unrelated syntaxes; `RefNode` seven tags across two groups;
+`StructNode` is struct, trait and union; `BreakRetNode` is four statements;
+`BlockNode` is a block and a loop; `CastNode` is five conversion forms;
+`NameUseNode` is every appearance of any name. ▸ **Forbids** minting a node per
+syntax, and **settles** that a new syntax usually costs a tag or a flag rather
+than a node family, a header, and an arm in every dispatcher.
+
+⚠ **THE PER-NODE NOTES INHERIT THIS ONE AND DO NOT RESTATE IT.** Each opens by
+saying which roles its struct serves — that is the principle applied, not a
+principle of its own.
+
+**A node is its tag, and group membership lives in the tag's high bits**, so a
+predicate is a mask test rather than a list. ▸ **Settles** the cost of asking
+"is this an expression"; **forbids** a group whose membership cannot be encoded
+that way. Section 1 carries the two predicates that are *not* pure mask tests,
+and both exist because a node's kind changes as the compiler learns more.
+
+**The walks mutate through double pointers.** ▸ **Settles** that a node may be
+replaced in place by its own handler, which is what lets lowering and coercion
+inject nodes without a rewriting pass. Section 3.
+
 ## 1. A node is its tag
 
 `inode.h` is the truth for the tag list; do not mirror it here. What matters is

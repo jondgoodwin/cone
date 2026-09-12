@@ -24,7 +24,7 @@ contains its C compiler (`conec`) and a small standard-library component
   [cone.jondgoodwin.com](https://cone.jondgoodwin.com), including the
   playground, examples, and language documentation. The reference
   documentation manifest is `conesite/public/coneref/index.html`.
-- `design/`: design notes, grouped as `northstar/` (what Cone is aiming at and
+- `design/`: design notes, grouped as `topics/` (what Cone is aiming at and
   how far the compiler is — the notes that would survive a rewrite), `phases/`
   (one per compiler phase, plus the naming rules), `nodes/` (what is true of
   every IR node, plus per-node notes), `compiler/` (how `conec` itself is built
@@ -192,7 +192,14 @@ live in a single source file.
     moved — the phase notes and any per-node note the change touches,
   - the item that owns the subsystem in
     `C:\Users\jondg\MyDrive\Incubator\Cone\Backlog\`, so what the change closed
-    stops being listed as owed and what it opened is recorded.
+    stops being listed as owed and what it opened is recorded,
+  - the **implementation-status annotations** on every design note the change
+    touches — a `[planned]` that is now built is deleted, and a `[differs]` whose
+    divergence is closed goes with it. `design/_index.md`, "Implementation
+    status", carries the scheme,
+  - the **reference page** under `conesite/public/coneref/` for any feature whose
+    built status changed, including the italic status note at the top of that
+    page and any marking on its examples.
 
   **The dependency runs one way: a work item may point at a design note, a
   design note never points at a work item.** That is what makes closing an item

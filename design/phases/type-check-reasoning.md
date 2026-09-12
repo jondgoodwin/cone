@@ -12,13 +12,21 @@ whether two types fit.
 overload selection is unranked, were checked against every candidate path. See
 [Measuring](../diagnostics/measuring.md).*
 
-## 1. Key principles
+## 1. Principles — [derived]
+
+⚠ **Read from source; that overload selection is unranked was checked against
+every candidate path.** **Unchecked with the author is the claim that these rule
+rather than describe.**
 
 1. **An expected type flows down as an argument; an inferred type flows back as
-   `vtype`.** One direction each, no unification variables, no backtracking.
+   `vtype`.** One direction each, no unification variables, no backtracking. ▸
+   **Forbids** Hindley-Milner-style inference, and **settles** that a type error
+   is always reportable at the node where it was found — there is no constraint
+   set to blame later.
 2. **Deciding and rewriting are separate.** `iexpMatches` returns a verdict and
-   changes nothing. `iexpCoerce` is the only function that turns a verdict into
-   an injected node.
+   changes nothing; `iexpCoerce` is the only function that turns a verdict into
+   an injected node. ▸ **Settles** that a check may be run speculatively — which
+   is what makes unranked overload filtering possible at all.
 3. **Coercion does not report a type mismatch.** `iexpCoerce` returns 0 and the
    caller writes the diagnostic, which is why the same mismatch reads
    differently at an argument, an assignment and a return. It does report two

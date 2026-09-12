@@ -7,6 +7,25 @@ assert, and how to update expectations.
 Run the full suite before every merge. `python test/run.py` takes a few seconds
 and is the default for a reason.
 
+## Principles — [derived]
+
+**An unknown widens the run; it never narrows it.** An unmapped path, or a change
+to something like `shared/error.h`, expands `--since` to the whole suite rather
+than being skipped. ▸ **Forbids** a filter that can silently omit coverage —
+the failure mode of every selective test runner, and the reason this one is safe
+to use in the inner loop.
+
+**A scenario asserts a code, so a diagnostic's identity is a test interface.** ▸
+**This is why [Error Codes](error-codes.md) forbids reusing a code for an
+unrelated condition**: two conditions sharing one cannot be told apart by any
+test, whatever their messages say.
+
+**Where a rule is unenforced, a scenario establishes the opposite** — a
+violation that compiles clean, pinned deliberately. ▸ **Settles** how to read a
+scenario that starts failing: it may be one a fix correctly invalidated, not a
+regression. [Safety](../topics/safety.md) and [Flow Analysis](../phases/flow.md)
+both depend on this convention.
+
 **While working, `--since` narrows it.** It reads the changed paths from git, maps
 them through `test/tags.toml`, prints which paths chose which tags and why, and
 runs that. An unmapped path widens to the whole suite rather than being skipped,

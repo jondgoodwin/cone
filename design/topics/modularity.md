@@ -1,33 +1,51 @@
 Modularity is a first-order goal for Cone, ranked by its designer alongside
 expressiveness and a powerful type system — not a consequence of having modules.
 
-**The aim** is that every layer of the language surfaces the same three
-modularity strategies, so that types, modules and threads look alike rather than
-each inventing its own. **The distance** is that Cone today has all three
-strategies at the function and type layers, only the first at the module layer,
-and no thread layer at all.
+**The aim** is that every layer of the language surfaces the same modularity
+strategies, so that types, modules and threads look alike rather than each
+inventing its own. **The distance** is that the first three strategies are
+broadly present, the last three thin out sharply above the type layer, and there
+is no thread layer at all.
 
 The framing below is the author's, from *Modularity in Programming*
-(`c:/src/progling/content/post/modularity-in-programming.md`). That post
-carries the general argument; this note carries what it means for Cone.
+(`c:/src/progling/content/post/modularity-in-programming.md`) and his concept
+vault. That material carries the general argument; this note carries what it
+means for Cone.
 
 *Provenance: principles from the author's stated design; the current-state
 claims read from source, with the separate-compilation gap measured.*
 
-## The three strategies
+## Principles — the six strategies — [derived]
 
-Every modularity mechanism, at every layer, is one of these:
+⚠ **This note enumerated THREE until 12 September 2026** — complexity isolation,
+interface-based substitution, multi-use generation. **The author's concept vault
+enumerates six, and so does his recent writing** (*"six strategies learned once
+and applied six times, instead of thirty-six unrelated features"*). **The six are
+adopted here and the change has not yet been passed on by him.**
+
+▸ **Why six rather than three.** The three cannot classify two of Cone's most
+distinctive mechanisms. **Name-folding is a *namespace* operation**, and
+delegated inheritance is name-folding applied to types — under the three it has
+nowhere to sit. **`extends` and `mixin` being one mechanism, a synthetic field at
+position 0, is a *composition* fact** and files under none of the three. The
+three were a coarsening that dropped exactly the categories Cone innovates in.
+
+Each strategy builds on the ones before it:
 
 | Strategy | What it is | Benefit |
 | --- | --- | --- |
-| **Complexity isolation** | a black box: interior logic invisible from outside, interaction through a public interface | reduces cognitive load; changes stay local, so an evolving system stays stable |
-| **Interface-based substitution** | components that differ inside but comply with one interface, so they interchange | plug-and-play versatility |
-| **Multi-use generation** | one abstracted component generating many specialized ones | development productivity |
+| **Composition** | a component is assembled from parts, carrying some ordering arrangement | the whole is built rather than written |
+| **Namespace** | a component's parts get unique names by which they are referenced | reach without collision |
+| **Encapsulation** | interior detail — algorithm, private state — is hidden, shrinking the surface available for coupling | reduces cognitive load; changes stay local |
+| **Substitution** | components differ inside but comply with one interface, so they interchange | plug-and-play versatility |
+| **Generativity** | one abstracted component generates many specialized ones | development productivity |
+| **Extensibility** | a reusable component can be enriched after the fact | reuse without forking |
 
-**The tension between them is the design content.** Isolation *decreases*
-complexity and fragility. Substitution and generation *increase* coupling, and
-therefore complexity and fragility. A language cannot maximize all three, and
-each layer's design is a position on that trade.
+**The tension is the design content, and it does not run evenly across the six.**
+Composition, namespace and encapsulation are neutral or *reducing* on coupling.
+**Substitution, generativity and extensibility *increase* it**, and therefore
+increase complexity and fragility. A language cannot maximize all six, and each
+layer's design is a position on that trade.
 
 The same caution applies to drawing boundaries: high cohesion and low coupling
 is the goal, but over-fragmenting in anticipation of future complexity
@@ -39,16 +57,24 @@ complexity avoided.
 Ordered smallest to largest. **Languages agree in the small and diverge in the
 large**, which is why the interesting decisions are at the bottom of this table.
 
-| Layer | Isolation | Substitution | Generation |
-| --- | --- | --- | --- |
-| **control block** | yes — single entry, single exit, private locals released at exit | n/a by design — promote it to a function instead | n/a |
-| **function** | yes | via function references | via generics |
-| **type** | yes — `_`-prefixed members are private | via traits and virtual references | via generics; via trait default methods cloned into implementers |
-| **thread** | **absent** — no thread layer exists yet | — | — |
-| **module** | yes — `_`-prefixed names are private, namespaces are qualified | **absent** | **absent** |
-| **program / library** | via `extern` and the C ABI | — | — |
+| Layer | Composition | Namespace | Encapsulation | Substitution | Generativity | Extensibility |
+| --- | --- | --- | --- | --- | --- | --- |
+| **control block** | statements in sequence, blocks nested | locals | single entry, single exit; locals released at exit | n/a by design — promote it to a function | n/a | n/a |
+| **function** | the block it holds, and the calls in it | parameters and locals | body invisible; the signature is the interface | function references | generics | overload sets ⚠ *unconfirmed reading* |
+| **type** | fields; `extends` and `mixin` flattened at compile time | members | `_`-prefixed members are private | traits and virtual references | generics; trait defaults cloned into implementers | ⚠ **unknown** — whether a type can gain methods outside its own declaration is not established |
+| **thread** | **absent** | **absent** | **absent** | **absent** | **absent** | **absent** |
+| **module** | **[planned]** — the folder walk makes a module span files; today a module *is* one file | yes — this is what a module is today | `_`-prefixed names are private | **absent** — module traits are planned | **absent** — generic modules are planned | **absent** |
+| **program / library** | linking; `extern` and the C ABI | ⚠ **absent — the linker has one flat symbol space**, and nothing in a generated name carries the package | partial — hidden visibility, but what a package exports is undecided | **absent** | **absent** | **absent** |
 
-**The stated goal is to close the two gaps by making the layers symmetric** —
+⚠ **The six-column table shows something the three-column one could not.**
+**Namespace at the program/library layer is absent** — a flat linker symbol space
+with no package component in a generated name. **That is the separate-compilation
+problem restated as a modularity gap**, and under the old three columns it was
+invisible, because "namespace" was folded into isolation. **Composition at the
+module layer being *planned* rather than absent is the other thing it surfaces:**
+the folder walk is a composition mechanism, not a namespace one.
+
+**The stated goal is to close the gaps by making the layers symmetric** —
 "to make modularity for types, modules and threads look the same, including how
 to support name-folding (delegated inheritance) the same way for types and
 modules." The open work items on module generics, polymorphic modules and region
@@ -64,37 +90,26 @@ There are two families of module system, and Cone is currently the simpler one:
   to subtype and parametric polymorphism; some descendants make modules
   first-class values.
 
-Cone is a namespace system with the isolation strategy only. Adding substitution
-and generativity to modules is explicitly seen as an opportunity — it "would
+Cone's modules carry namespace and encapsulation, and nothing above them. Adding
+substitution and generativity is explicitly seen as an opportunity — it "would
 improve the versatility of modules, at some cost to complexity", letting a
 program be configured by plugging in modules rather than by creating singleton
 types.
 
-**The package is the unit, and a module is a namespace within it.** A package is
-the unit of distribution, the semantic unit and the compilation unit; it
-correlates to one top-level module, and modules nest beneath that by path. A
-module may span source files, each file belonging to exactly one module. Package
-dependencies form a DAG. The shape is .NET's: the assembly is what ships and
-what compiles, and the namespaces inside it are free to nest.
+**What Cone's modules actually are is not this note's subject.** The package as
+unit of distribution and compilation, the module as a nesting namespace within
+it, the folder walk, `import` and `use`, what distinguishes a module from a type
+— all of that is Cone's specific answer at this layer, and [module](../nodes/module.md)
+owns it. This note is modularity as a discipline: what the strategies are, which
+layers surface them, and where Cone stands against that.
 
-**The package is the compilation unit** — "the only sensible approach that
-allows multiple source files in the same module to refer to entities in each
-other is to compile all of a module's source files together, at the same time,"
-and a package is what holds those files. There are no header files:
-declarations are inferred from definitions, and building a package emits a
-serialized public interface for importers to read.
+⚠ **This paragraph replaced a full restatement of the package model on 12
+September 2026.** It was written out here and again in `module.md`, in
+near-identical language, with nothing saying which won. **That duplication is
+the reason the own-or-inherit rule exists.**
 
-**What distinguishes a module from a type is state, not namespace.** Both carry
-a namespace, and the aim is for both to carry the same namespace machinery. A
-module's state is global and singleton, reached at a fixed address by functions
-that take no `self`; a type's is per-instance, reached through `self`. That is
-why a module cannot nest inside a type, and why a module holding one type is
-simply a type at the package's top level.
-
-**Cone today is file-per-module, with no package at all.** That is the largest
-single distance between the modularity aim and the code.
-[module](../nodes/module.md) carries the model in full, and what it has not yet
-decided.
+**At the module layer Cone today is file-per-module, with no package at all.**
+That is the largest single distance between the modularity aim and the code.
 
 ## What Cone has today, concretely
 

@@ -5,14 +5,21 @@ Read this before adding a diagnostic, and before reusing an existing code.
 
 *Provenance: read from source, cross-checked against `test/codes.toml`.*
 
-## Key principles
+## Principles — [derived]
+
+⚠ **Read from source and cross-checked against `test/codes.toml`.** **Unchecked
+is the claim that these rule rather than describe.**
 
 1. **A diagnostic gets its own code.** Do not reuse an unrelated one for a new
    condition. Lookup failures, visibility errors and no-match errors must stay
    distinguishable — a scenario asserts a code, so two conditions sharing one
-   cannot be told apart by any test.
+   cannot be told apart by any test. ▸ **Forbids** the convenience of the nearest
+   existing code, and **settles** that the test suite is the constraint: a code
+   is an assertion target before it is a message.
 2. **The numbers are a published interface.** The compiler prints the number, so
-   a renumber invalidates every expectation at once and none of them loudly.
+   a renumber invalidates every expectation at once and none of them loudly. ▸
+   **Forbids** tidying the ranges. **Retirement leaves a hole**; holes are
+   cheaper than renumbering.
 3. **The cause goes in the message, not in a second code** — but only where the
    codes would be indistinguishable except by wording. Section 4 is where that
    line sits.

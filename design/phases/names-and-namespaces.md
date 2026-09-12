@@ -7,7 +7,32 @@ current behavior, and say so.
 implements these rules, what it retags, and where it stops. Change a rule here;
 change how it is carried out there.
 
-A namespace maps each of its names, each with its own spelling in that namespace, to one binding. A namespace has a single uniqueness domain for its names, regardless of whether the names refer to a module, type, value, function, field, method, macro, generic, or other kind of declared name. This is essentially true of overloaded functions or methods as well.
+## Principles
+
+⚠ **This note is the rules, so its principles ARE its subject** — the sections
+below are those rules in detail rather than a separate layer above them.
+**Stated here so that what they forbid is visible before the detail starts.**
+
+**A namespace has a single uniqueness domain, whatever a name refers to.** A
+module cannot hold a type and a function of the same name. ▸ **Forbids**
+per-kind namespaces — the C struct-tag arrangement, or a language where a type
+and a value may share a spelling. **Overload names are not an exception**: the
+overload name is itself one name in the namespace, mapping to the candidates.
+
+**A binding is not the thing it binds, and one value may have several
+bindings.** Import folding and aliasing both produce a second binding to one
+declaration. ▸ **Forbids** treating a name as a property of a declaration, and
+**settles** why visibility is a bit on the *binding* — the binding for `B`
+inside A can be private while `B` is a public package in its own right.
+
+**Visibility is checked against the spelling the caller used**, never against
+the declaration reached. ▸ **Settles** how a public overload name may
+legitimately select a private candidate: the set is public, the member is not,
+and calling through the set is the way in.
+
+⚠ **Parts of this note describe intended rather than current behaviour and say
+so.** The `NameDef` design below is the clearest case — the implementation
+predates it.
 
 The concepts should remain distinct:
 

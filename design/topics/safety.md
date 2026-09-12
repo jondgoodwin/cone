@@ -9,7 +9,12 @@ is not evidence the rule holds.
 a program that violates it and observing no diagnostic; several are pinned by
 test scenarios that assert the absence deliberately.*
 
-## Key principles
+## Principles
+
+⚠ **1 and 2 are the author's stated position and are quoted. 3, 4 and 5 are
+measured facts about the present state, not positions** — they belong here
+because they rule what a reader may conclude from a clean compile, which is the
+most consequential thing this note settles.
 
 1. **The programmer is primarily responsible; the compiler is a teammate.** The
    stated position is that the compiler will never understand intended behaviour
@@ -20,7 +25,12 @@ test scenarios that assert the absence deliberately.*
    following Rust, is that a smarter compiler identifies safety exposures
    "without sacrificing runtime performance and flexibility". What safety costs
    instead is **complexity** — reference semantics are more complex than pointer
-   semantics precisely because of it, and the author says so plainly.
+   semantics precisely because of it, and the author says so plainly. ▸ **So the
+   trade safety actually makes is against attention**, which is priced in
+   [Expressiveness and Attention](expressiveness-and-attention.md), where the
+   author's position is that Rust underprices exactly this cost. **Forbids** a
+   safety mechanism paid for at runtime; **permits** one paid for in complexity,
+   but requires the price to be named.
 3. **A clean compile proves less than it looks like it proves.** Several rules
    the language documents are enforced nowhere.
 4. **Where a rule is unenforced, the corpus records it by establishing the

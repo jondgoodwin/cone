@@ -169,12 +169,25 @@ The privacy filter in pass 1 assumes nothing outside a module can reach its
 private names. **A public overload name breaks that assumption**, so
 `genlGlobalSyms` generates every candidate of an `FnOverloadDclNode` explicitly.
 
-## The model, as decided
+## Principles — the model, as decided
+
+**This section is this note's principles**, and it is `[planned]` almost
+throughout — "What is implemented" below says how little of it exists. ▸ **So a
+reader should take every statement here as ruling what gets built, not as
+describing what runs.**
+
+⚠ **Two of the sources below are superseded and neither says so.** *When Modules
+Are Not Just Namespaces* (2022) states that modules are single-level, that every
+package *is* a module, and that folding happens at source-file level. **The model
+here has modules nesting within a package and folding accumulating into one
+module namespace with no file scope at all.** The post is still the only public
+statement of Cone's module design.
 
 The argument is in the author's *When Modules Are Not Just Namespaces*
 (`c:/src/progling/content/post/cone-modules.md`) and *Modules vs Types*
-(`modules-vs-types.md`); what modularity is for is in
-[Modularity](../northstar/modularity.md).
+(`modules-vs-types.md`); what modularity is for — the six strategies and which
+layers surface them — is in [Modularity](../topics/modularity.md), which
+**defers the whole of Cone's specific module design to this note**.
 
 ### The package is the unit
 
@@ -524,12 +537,25 @@ annotation on a reference names is a type.
   component is what makes a public name distinguishable once the linker flattens
   every namespace into one. What separator it uses, and how an overload name's
   concrete candidates are spelled, are open. So is the larger question below.
-- **The serialized interface must carry bodies, not signatures.** Generics
+- **The interface artifact must carry bodies, not signatures.** Generics
   monomorphize at the use site, macros expand at the use site, and `inline` is
-  macro-shaped, so an importer needs the body of each. The artifact is
-  therefore serialized IR, and it exposes private declarations that a public
-  generic or inline body calls — the same assumption the overload privacy
-  filter already breaks.
+  macro-shaped, so an importer needs the body of each. It exposes private
+  declarations that a public generic or inline body calls — the same assumption
+  the overload privacy filter already breaks.
+
+  **The format is Cone source, not serialized IR.** `[planned]` **Decided by the
+  author, 12 September 2026:** the artifact is **auto-generated**, with
+  **hand-written as a transitional stage** — and nobody hand-writes serialized
+  IR, so the format is the language itself. ▸ **This is also what makes a C
+  library's package and a generated package interface one artifact with one
+  loading path**, which is what that decision requires. Emitting it needs a
+  printer producing valid Cone rather than the `--ir` debug dump; the prior art
+  is Swift's textual `.swiftinterface`, chosen for the same reason — a module
+  built by one compiler version stays readable by a later one.
+
+  ⚠ **This paragraph previously read "the artifact is therefore serialized IR."**
+  That was stated here and contradicted in the packages backlog item, with
+  nothing saying which won.
 - **Module `init` and `final` are specified and absent.** `refmodule.html`
   describes an `init` function marked `initpure`, a constraint that it read no
   uninitialized global of its own module and call only `pure` or `initpure`
@@ -549,7 +575,7 @@ annotation on a reference names is a type.
   exists, not an assertion.
 - **Module substitution and generativity are aims without a design.** Both
   drafts that would carry them are outlines.
-  [Modularity](../northstar/modularity.md) states the aim and measures the
+  [Modularity](../topics/modularity.md) states the aim and measures the
   distance.
 
 ## Hazards
@@ -586,7 +612,7 @@ annotation on a reference names is a type.
 
 - The name rules a module implements — lookup, qualification, visibility,
   folding, aliases, overloading: [Names and Namespaces](../phases/names-and-namespaces.md)
-- What modularity is for, and how far Cone is from it: [Modularity](../northstar/modularity.md)
+- What modularity is for, and how far Cone is from it: [Modularity](../topics/modularity.md)
 - Module loading as a parse-time activity, and the name-table hook:
   [Parse](../phases/parse.md)
 - The symbol-naming rule, `linkonce`, and the allocation header:

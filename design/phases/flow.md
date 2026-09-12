@@ -11,6 +11,33 @@ emitted LLVM IR, and the claims about what is **not** enforced are corroborated
 by test scenarios asserting the absence. See
 [Measuring](../diagnostics/measuring.md).*
 
+## Principles — [derived]
+
+⚠ **Read from source; the defects in Hazards were measured, and the claims about
+what is *not* enforced are corroborated by scenarios asserting the absence.**
+**Unchecked is the claim that these rule rather than describe.**
+
+**Flow is scheduled per function, never globally.** ▸ **Forbids** any rule
+needing whole-program reachability — inter-procedural escape, a global alias
+graph, a cross-function lifetime. Section 1 below says why: flow needs types, and
+types arrive by demand, so there is no moment at which "type checking is done"
+for the program.
+
+**It is not a borrow checker, and reasoning by analogy to Rust will be wrong.**
+▸ The note carries "What a reader from Rust will get wrong" for exactly this.
+**This is the least guessable part of the compiler**, and the principle is that
+guessing is not a method here.
+
+**Flow decides; generation replays.** Every release, count adjustment and drop
+call is injected here as IR. ▸ **Settles** where an ownership bug lives — a
+double release is a flow bug however it surfaces, and
+[Generation](generation.md) states the same boundary from its side.
+
+**Where a rule is unenforced, a scenario establishes the opposite.** A violation
+that compiles clean is pinned deliberately. ▸ **So a scenario that starts failing
+may be one a fix correctly invalidated** — the same convention
+[Safety](../topics/safety.md) uses, and for the same reason.
+
 ## 1. It is a fifth phase that is not a fifth pass
 
 `doAnalysis` runs exactly two whole-program walks: name resolution, then type
@@ -292,8 +319,8 @@ Test sources that pin behavior precisely: `test/cases/move/move-flow-*.cone`,
 
 | Question | Note |
 | --- | --- |
-| What the three reference axes mean, and what each permits | [References and Regions](../northstar/references-and-regions.md) |
-| Which safety properties actually hold today | [Safety](../northstar/safety.md) |
+| What the three reference axes mean, and what each permits | [References and Regions](../topics/references-and-regions.md) |
+| Which safety properties actually hold today | [Safety](../topics/safety.md) |
 | When a function is type checked at all | [Type Check Phase](type-check.md) |
 | What a borrow's type records, and where | [Type Check Reasoning](type-check-reasoning.md), "Borrows: where type check stops" |
 | How the allocation header is laid out | [Generation](generation.md), "The allocation header" |

@@ -6,19 +6,34 @@ before adding a node, a phase, or a file.
 
 *Provenance: read from source.*
 
-## Key principles
+## Principles — [derived]
+
+⚠ **Read from source, and strongly evidenced** — a uniform function-naming scheme
+across forty-five node files does not arise by accident. **What has not been
+checked is the claim that these are ruling positions rather than a description of
+how the code happens to be arranged.**
 
 1. **One node family per source pair.** `ir/exp/fncall.c` and `.h` own
    `FnCallNode` entirely — its struct, constructors, and its behavior in every
-   phase.
+   phase. ▸ **Forbids** a phase file that knows the internals of several node
+   families, which is the shape the central dispatchers would otherwise grow.
 2. **A node exports one function per phase, named uniformly.** `newXNode`,
    `cloneXNode`, `xPrint`, `xNameRes`, `xTypeCheck`, `xFlow`. If a phase does
-   nothing to a node, the function is absent rather than empty.
+   nothing to a node, the function is absent rather than empty. ▸ **Settles where
+   to look** — "what does type check do to a borrow" is `borrowTypeCheck` in
+   `ir/exp/borrow.c`, with no searching. **Forbids** a node inventing its own
+   spelling, because the dispatchers stop being mechanical the moment one does.
 3. **Dispatch is centralized; behavior is not.** One `switch (tag)` per phase in
-   a shared file routes to the per-node function. Adding a node means adding
-   arms to those switches — nothing else changes.
-4. **Each walk carries its own state struct**, and they are deliberately not
-   merged.
+   a shared file routes to the per-node function. ▸ **Settles the cost of adding
+   a node**: arms in those switches, and nothing else.
+4. **Each walk carries its own state struct**, deliberately not merged. ▸
+   **Forbids** the convenience of one context object threaded through every
+   phase, which is how a phase comes to depend on another phase's bookkeeping.
+5. **The dependency runs one way, and `genllvm/` is the only directory that
+   includes LLVM headers.** `shared/` knows nothing, `ir/` knows `shared/`,
+   everything else knows `ir/`. ▸ **This is what would make a second back end
+   possible**, and it **forbids** a front-end file reaching for an LLVM type for
+   convenience.
 
 ## The layout
 

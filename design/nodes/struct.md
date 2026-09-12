@@ -12,6 +12,32 @@ padded variants, or to nothing at all.
 
 *Provenance: read from source.*
 
+## Principles — [derived]
+
+**`extends` and `mixin` are one mechanism: a synthetic mixin field at position
+0.** A trait's fields become a *prefix* of the implementer's layout, and its
+default methods are cloned in. ▸ **That prefix property is what makes a by-value
+coercion to a same-size base trait a pure recast** — no conversion, no copy.
+**Forbids** an inheritance model where a base's fields may sit anywhere in the
+derived layout.
+
+**Composition is compile-time flattening; polymorphism moves out to traits.**
+The author's term is **delegated inheritance**, and the insight driving it is
+that this is *the same name-folding* a module fold does — see
+[Modularity](../topics/modularity.md), which owns that symmetry as an aim. ▸
+**Forbids** "pure composition plus extra magic", which is how the note describes
+conventional inheritance.
+
+**A type's namespace and a module's are meant to be the same machinery.** ▸
+**Settles** why folding a member into a type is expected to be one operation
+with folding a name into a module, and **forbids** each layer inventing its own
+namespace rules. [Names and Namespaces](../phases/names-and-namespaces.md) owns
+the rules themselves.
+
+⚠ **The layout consequence is a hazard, not a free lunch:** a mixin brings
+fields in *at a position*, so adding one shifts every later field index and
+positional type literals move with it.
+
 ## Shape
 
 | Field | Meaning |

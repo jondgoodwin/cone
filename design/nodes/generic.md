@@ -11,6 +11,30 @@ generation see only instances, reachable **only** through `memonodes`.
 
 *Provenance: read from source; the symbol collision was measured.*
 
+## Principles — [derived]
+
+**Genericity is a side block, not a node kind.** A generic is an ordinary
+`FnDclNode` or `StructNode` carrying `GenericInfo`; carrying one is the entire
+definition. ▸ **Forbids** a parallel generic IR, and **settles** that every
+phase's handling of a generic declaration is its handling of the ordinary one.
+
+**Instantiation is cloning, and cloning stands in for name resolution.** ▸
+**Forbids** type substitution into a shared template — there is no environment
+threaded through later phases, because an instance is an ordinary declaration
+with concrete types by the time anything looks at it. **This is what makes
+monomorphization cheap for the compiler**, and it is where
+[Performance](../topics/performance.md)'s "generics are monomorphized" bet is
+paid for.
+
+**A template is never type checked — only its instances are.** ▸ **Settles**
+that a generic body containing an error valid for no type argument goes
+undiagnosed until instantiated, and **forbids** expecting C++-concept or
+Rust-trait-bound style checking of the template itself.
+
+**Instances are reachable only through `memonodes`.** ▸ **Settles** that
+deduplication happens in the IR rather than in the linker, which is why
+`linkonce` is a cross-package mechanism only.
+
 ## Shape
 
 **`GenericInfo`** — two fields, hung off a declaration:
