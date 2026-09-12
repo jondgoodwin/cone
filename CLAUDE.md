@@ -31,10 +31,10 @@ contains its C compiler (`conec`) and a small standard-library component
   and stays fast), and `diagnostics/` (measuring, error codes, test suite). Use
   `design/_index.md` to find the relevant topic, then page in only the notes
   needed for the task.
-- `workitems/`: active and backlog compiler/language work. Its
-  `workitems/_index.md` plan summarizes the work and acts as the manifest for
-  the individual work-item notes; `workitems/__top-priority.md` identifies the
-  current priority sequence.
+- `workitems/`: **the backlog and plan moved out of this repo on 11 September
+  2026.** `workitems/_index.md` is now a pointer to
+  `C:\Users\jondg\MyDrive\Incubator\Cone\`, where the backlog, the plan and the
+  active work items live. `workitems/done/` still holds completed items.
 - `test/run.py`: the test suite runner. `design/diagnostics/test-suite.md` is its authoring
   guide.
 - `test/cases/<group>/`: one directory per coverage group, each with a
@@ -48,8 +48,9 @@ contains its C compiler (`conec`) and a small standard-library component
 - Consult `design/_index.md` when a task needs design intent or subsystem
   context. Design notes complement the implementation and may describe
   incomplete or planned behavior.
-- Consult `workitems/_index.md` for planned work, dependencies, and links to
-  detailed active or backlog items.
+- Consult `C:\Users\jondg\MyDrive\Incubator\Cone\Backlog\_index.md` for planned
+  work and its dependencies, and `...\Incubator\Cone\cone-plan.md` for what is
+  active and which objective it serves. `workitems/_index.md` points there.
 - Consult `conesite/public/coneref/index.html` for the language reference
   page index and the surrounding `conesite/` files when changing published
   language documentation or playground behavior. Its chapter list is also the
@@ -179,7 +180,7 @@ link prog.obj build\x64-release\conestd.lib /OUT:prog.exe /SUBSYSTEM:CONSOLE msv
 A program that spans modules cannot be linked yet. Compiling a module on its
 own emits root-module symbol names (`@scaleInt`), while an importing module
 references namespaced ones (`@mymod_scaleInt`), so the two never resolve. See
-`workitems/packages-and-separate-compilation.md`. Runtime checks must therefore
+`C:\Users\jondg\MyDrive\Incubator\Cone\Backlog\packages-and-separate-compilation.md`. Runtime checks must therefore
 live in a single source file.
 
 ## Change discipline
@@ -189,7 +190,8 @@ live in a single source file.
   - a test scenario under `test/cases/` in the owning group,
   - the `design/` note for each phase whose mechanism, invariant, or contract
     moved — the phase notes and any per-node note the change touches,
-  - the `workitems/` item that owns the subsystem, so what the change closed
+  - the item that owns the subsystem in
+    `C:\Users\jondg\MyDrive\Incubator\Cone\Backlog\`, so what the change closed
     stops being listed as owed and what it opened is recorded.
 
   **The dependency runs one way: a work item may point at a design note, a
