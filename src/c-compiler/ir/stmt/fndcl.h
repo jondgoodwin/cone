@@ -35,7 +35,8 @@ FnDclNode *newFnDclNode(Name *namesym, uint16_t tag, INode *sig, INode *val);
 // Create a new overloaded function/method declaration node
 FnOverloadDclNode *newFnOverloadDclNode(Name *namesym);
 
-// Append a concrete declaration to an overload set's ordered candidates
+// Append a concrete declaration to an overload set's ordered candidates,
+// unless it is private and the set's name is public (ErrorPrivOverload)
 void fnOverloadDclAdd(FnOverloadDclNode *ovlnode, FnDclNode *fnnode);
 
 // Return a clone of a function/method declaration

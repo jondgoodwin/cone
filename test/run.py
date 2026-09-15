@@ -623,12 +623,13 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
         checks = []
         for entry in table.get("check", []):
             _require_keys(f"{where}.check", entry, {"name", "target", "contains", "excludes"})
-            if entry.get("target") not in ("llvmir", "stdout"):
-                raise SuiteError(f"{where}.check: target must be 'llvmir' or 'stdout'")
+            if entry.get("target") not in ("llvmir", "preir", "symbols", "stdout"):
+                raise SuiteError(
+                    f"{where}.check: target must be 'llvmir', 'preir', 'symbols' or 'stdout'")
             if entry["target"] == "stdout" and category != "run":
                 raise SuiteError(
                     f"{where}.check: only a 'run' scenario produces stdout to check")
-            if entry["target"] == "llvmir" and category not in ("compile", "run"):
+            if entry["target"] in ("llvmir", "preir", "symbols") and category not in ("compile", "run"):
                 raise SuiteError(
                     f"{where}.check: a {category!r} scenario reaches no code generation")
             checks.append(Check(
@@ -1485,6 +1486,402 @@ def object_extension(options: tuple[str, ...]) -> str:
     return "obj" if IS_WINDOWS else "o"
 
 
+# ---------------------------------------------------------------------------
+# Symbols: the demangler, and the 'symbols' check target
+# ---------------------------------------------------------------------------
+#
+# conec spells every Cone-to-Cone symbol as '_C' and a path (ir/name.c is the
+# encoder; design/phases/names-and-namespaces.md "Symbols" is the standard). A
+# 'symbols' check reads the pre-optimization .preir and asserts against one line
+# per global symbol, each carrying the symbol's demangled reading rather than its
+# bytes, so a check says 'Pt::get' where the IR says '_CNvNt2Pt3get'.
+#
+# The grammar, version 0:
+#
+#   symbol  = '_C' [version] ( path | 'Y' type path | 'L' path )
+#   path    = 'C' ident                  a top module
+#           | 'N' ('v'|'t') [path] ident a value / a type, nested in its owner;
+#                                        no parent path when the owner is the root
+#           | 'I' path {type} 'E'        an instance of a generic, with its type arguments
+#   type    = basic-letter | path | 'T' {type} 'E' | 'F' {type} 'E' type
+#           | 'A' type decimal '_' | 'R' ident ident type | 'S' ident ident type
+#           | 'V' ident ident path | 'P' type
+#   ident   = decimal ['_'] bytes        bytes all [A-Za-z0-9_]; '_' when they start with '_' or a digit
+#           | 'u' decimal '_' bytes      punycode over that basic set, '_' the delimiter
+#           | 'o' code                   an operator method name
+#   decimal = '0' | [1-9][0-9]*
+#
+# A reference's two identifiers are its region and its permission; a borrowed
+# reference has no region, spelled as the empty identifier '0'.
+
+class DemangleError(Exception):
+    pass
+
+
+DEMANGLE_BASIC_TYPES = {
+    "a": "i8", "s": "i16", "l": "i32", "x": "i64", "n": "i128",
+    "h": "u8", "t": "u16", "m": "u32", "y": "u64", "o": "u128",
+    "f": "f32", "d": "f64", "b": "Bool", "u": "void", "i": "isize", "j": "usize",
+}
+
+# Itanium's codes where Itanium has the operator, Cone's own where it does not.
+DEMANGLE_OPERATORS = {
+    "pl": "+", "mi": "-", "ml": "*", "dv": "/", "rm": "%",
+    "eq": "==", "ne": "!=", "lt": "<", "le": "<=", "gt": ">", "ge": ">=",
+    "an": "&", "or": "|", "eo": "^", "ls": "<<", "rs": ">>", "nt": "!", "ng": "-",
+    "ix": "[]", "cl": "()", "pp": "++", "mm": "--",
+    "pL": "+=", "mI": "-=", "mL": "*=", "dV": "/=", "rM": "%=",
+    "aN": "&=", "oR": "|=", "eO": "^=", "lS": "<<=", "rS": ">>=",
+    "la": "<-", "rx": "&[]", "pP": "+++", "mM": "---",
+}
+
+PUNY_ASCII_LIFT = 0x110000
+
+
+def demangle_is_basic(ch: str) -> bool:
+    return ch.isascii() and (ch.isalnum() or ch == "_")
+
+
+def punycode_decode(text: str) -> str:
+    """RFC 3492 decoding with '_' as the delimiter and [A-Za-z0-9_] as the basic
+    set. A decoded code point above the Unicode range is a non-basic ASCII
+    character the encoder lifted there, so that an identifier with only
+    non-ASCII characters is spelled exactly as Rust v0 spells it."""
+    def adapt(delta: int, numpoints: int, first: bool) -> int:
+        delta = delta // 700 if first else delta // 2
+        delta += delta // numpoints
+        k = 0
+        while delta > 455:
+            delta //= 35
+            k += 36
+        return k + 36 * delta // (delta + 38)
+
+    if "_" in text:
+        basic, tail = text.rsplit("_", 1)
+    else:
+        basic, tail = "", text
+    for ch in basic:
+        if not demangle_is_basic(ch):
+            raise DemangleError(f"punycode basic part holds {ch!r}")
+    out = list(basic)
+    n, i, bias, pos = 128, 0, 72, 0
+    while pos < len(tail):
+        oldi, w, k = i, 1, 36
+        while True:
+            if pos >= len(tail):
+                raise DemangleError("punycode ends inside a delta")
+            ch = tail[pos]
+            pos += 1
+            if "a" <= ch <= "z":
+                digit = ord(ch) - ord("a")
+            elif "0" <= ch <= "9":
+                digit = ord(ch) - ord("0") + 26
+            else:
+                raise DemangleError(f"punycode digit {ch!r}")
+            i += digit * w
+            t = 1 if k <= bias else 26 if k >= bias + 26 else k - bias
+            if digit < t:
+                break
+            w *= 36 - t
+            k += 36
+        bias = adapt(i - oldi, len(out) + 1, oldi == 0)
+        n += i // (len(out) + 1)
+        i %= len(out) + 1
+        code = n - PUNY_ASCII_LIFT if n >= PUNY_ASCII_LIFT else n
+        out.insert(i, chr(code))
+        i += 1
+    return "".join(out)
+
+
+class Demangler:
+    def __init__(self, text: str):
+        self.text = text
+        self.pos = 0
+
+    def peek(self) -> str:
+        return self.text[self.pos] if self.pos < len(self.text) else ""
+
+    def take(self) -> str:
+        ch = self.peek()
+        if not ch:
+            raise DemangleError("unexpected end of symbol")
+        self.pos += 1
+        return ch
+
+    def expect(self, ch: str) -> None:
+        got = self.take()
+        if got != ch:
+            raise DemangleError(f"expected {ch!r} at {self.pos - 1}, found {got!r}")
+
+    def decimal(self) -> int:
+        ch = self.take()
+        if not ch.isdigit():
+            raise DemangleError(f"expected a decimal at {self.pos - 1}, found {ch!r}")
+        if ch == "0":
+            return 0
+        digits = ch
+        while self.peek().isdigit():
+            digits += self.take()
+        return int(digits)
+
+    def ident(self) -> str:
+        ch = self.peek()
+        if ch == "o":
+            self.take()
+            code = self.text[self.pos:self.pos + 2]
+            if code not in DEMANGLE_OPERATORS:
+                raise DemangleError(f"operator code {code!r} at {self.pos}")
+            self.pos += 2
+            return DEMANGLE_OPERATORS[code]
+        puny = ch == "u"
+        if puny:
+            self.take()
+        length = self.decimal()
+        if puny:
+            self.expect("_")
+        elif self.peek() == "_":
+            self.take()
+        raw = self.text[self.pos:self.pos + length]
+        if len(raw) != length:
+            raise DemangleError(f"identifier of {length} bytes runs off the end")
+        self.pos += length
+        if puny:
+            name = punycode_decode(raw)
+        else:
+            for c in raw:
+                if not demangle_is_basic(c):
+                    raise DemangleError(f"identifier holds {c!r} unencoded")
+            name = raw
+        # A name Cone source could only write in backticks is read back in them
+        if any(c.isascii() and not demangle_is_basic(c) for c in name):
+            return f"`{name}`"
+        return name
+
+    def path(self) -> str:
+        ch = self.take()
+        if ch == "C":
+            return self.ident()
+        if ch == "N":
+            kind = self.take()
+            if kind not in "vt":
+                raise DemangleError(f"namespace {kind!r} at {self.pos - 1}")
+            parent = self.path() if self.peek() in ("C", "N", "I") else ""
+            name = self.ident()
+            return f"{parent}::{name}" if parent else name
+        if ch == "I":
+            base = self.path()
+            args = []
+            while self.peek() != "E":
+                args.append(self.type())
+            self.take()
+            return f"{base}[{','.join(args)}]"
+        raise DemangleError(f"path cannot start with {ch!r} at {self.pos - 1}")
+
+    def region_perm(self) -> str:
+        region = self.ident()
+        perm = self.ident()
+        return f"{region} {perm} " if region else f"{perm} "
+
+    def type(self) -> str:
+        ch = self.peek()
+        if ch in DEMANGLE_BASIC_TYPES:
+            self.take()
+            return DEMANGLE_BASIC_TYPES[ch]
+        if ch in ("C", "N", "I"):
+            return self.path()
+        self.take()
+        if ch == "T":
+            elems = []
+            while self.peek() != "E":
+                elems.append(self.type())
+            self.take()
+            return f"({','.join(elems)})"
+        if ch == "F":
+            parms = []
+            while self.peek() != "E":
+                parms.append(self.type())
+            self.take()
+            ret = self.type()
+            return f"fn({','.join(parms)})" + ("" if ret == "void" else f" {ret}")
+        if ch == "A":
+            elem = self.type()
+            size = self.decimal()
+            self.expect("_")
+            return f"[{size}] {elem}"
+        if ch == "R":
+            return "&" + self.region_perm() + self.type()
+        if ch == "S":
+            return "&[]" + self.region_perm() + self.type()
+        if ch == "V":
+            return "&<" + self.region_perm() + self.path()
+        if ch == "P":
+            return "*" + self.type()
+        raise DemangleError(f"type cannot start with {ch!r} at {self.pos - 1}")
+
+    def symbol(self) -> str:
+        self.expect("_")
+        self.expect("C")
+        if self.peek().isdigit():
+            version = self.decimal()
+            if version != 0:
+                raise DemangleError(f"scheme version {version} is not one this demangler reads")
+        ch = self.peek()
+        if ch == "Y":
+            self.take()
+            reading = f"{self.type()} as {self.path()} (vtable)"
+        elif ch == "L":
+            self.take()
+            reading = f"{self.path()} (vtable list)"
+        else:
+            reading = self.path()
+        if self.pos != len(self.text):
+            raise DemangleError(f"trailing {self.text[self.pos:]!r}")
+        return reading
+
+
+def demangle(symbol: str) -> str:
+    """The reading of one LLVM global name. A name not spelled by the scheme
+    -- 'main', a C name, 'string', 'anon' -- is its own reading. An encoded
+    symbol is [A-Za-z0-9_] throughout, so a '.' in one can only start LLVM's
+    uniquifying suffix, which is kept."""
+    if not symbol.startswith("_C"):
+        return symbol
+    base, dot, suffix = symbol.partition(".")
+    try:
+        return Demangler(base).symbol() + dot + suffix
+    except DemangleError as failure:
+        return f"{symbol} (undemangled: {failure})"
+
+
+# The worked examples the scheme was decided with. The demangler is checked
+# against them before any case runs, so a grammar change that breaks a reading
+# fails loudly rather than as a scattering of failed checks; the scenarios then
+# check the encoder against the demangler on the symbols conec actually emits.
+DEMANGLE_EXAMPLES = [
+    ("plainPub", "plainPub"),
+    ("main", "main"),
+    ("counter", "counter"),
+    ("_CNvC3sub5subFn", "sub::subFn"),
+    ("_CNvC3sub9subGlobal", "sub::subGlobal"),
+    ("_CNvNt2Pt3get", "Pt::get"),
+    ("_CNvNtC3sub5SubPt3get", "sub::SubPt::get"),
+    # D3: the '_' separator precedes bytes that begin with '_' or a digit, as
+    # in v0, so '_hid' is '4__hid' (the decided table's '4_hid' is a slip)
+    ("_CNvNtC3sub5SubPt4__hid", "sub::SubPt::_hid"),
+    ("_CNvNt2Pt3_1st", "Pt::1st"),
+    ("_CINv4pickxE", "pick[i64]"),
+    ("_CINvC4gsub4pickxE", "gsub::pick[i64]"),
+    ("_CINvC4gsub4pickxxE", "gsub::pick[i64,i64]"),
+    ("_CNvINt6HolderxE5tally", "Holder[i64]::tally"),
+    ("_CNvNt5Gauge7reading", "Gauge::reading"),
+    ("_CNvNt6Bundle4drop", "Bundle::drop"),
+    ("_CNvNt3Vecopl", "Vec::+"),
+    ("_CNvNt4Listorx", "List::&[]"),
+    ("_CYNt5GaugeNt5Meter", "Gauge as Meter (vtable)"),
+    ("_CLNt5Meter", "Meter (vtable list)"),
+    ("_CINv4pickR2so3mutlE", "pick[&so mut i32]"),
+    ("_CINv4pickR02roNt6HolderE", "pick[&ro Holder]"),
+    ("_CINv4pickS03mutlE", "pick[&[]mut i32]"),
+    ("_CINv4pickV02roNt5MeterE", "pick[&<ro Meter]"),
+    ("_CINv11passThroughTxxEE", "passThrough[(i64,i64)]"),
+    ("_CINv11passThroughAx2_E", "passThrough[[2] i64]"),
+    ("_CINv11passThroughAAx3_2_E", "passThrough[[2] [3] i64]"),
+    ("_CINv11passThroughR02roFxExE", "passThrough[&ro fn(i64) i64]"),
+    ("_CINv11passThroughFEuE", "passThrough[fn()]"),
+    ("_CINv11passThroughuE", "passThrough[void]"),
+    ("_CINv11passThroughPhE", "passThrough[*u8]"),
+    ("_CNvC1mu9_gre_6ka8i", "m::größe"),
+    ("_CNvNt6Umlautu8_ab_eh24y", "Umlaut::`a b`"),
+    ("_CNvNt6Umlautu8_bo32gvah", "Umlaut::`+ -`"),
+    ("_CNvC3a_b1c", "a_b::c"),
+    ("_CNvC1a3b_c", "a::b_c"),
+    ("_CNvNtC5stdio8IOStream10__appendInt", "stdio::IOStream::_appendInt"),
+    ("_CNvC3sub5subFn.1", "sub::subFn.1"),
+    ("abs", "abs"),
+]
+
+
+def demangle_selftest() -> None:
+    """Every worked example reads as the scheme says it does; otherwise no
+    'symbols' check can be trusted, so the run stops here."""
+    wrong = []
+    for symbol, reading in DEMANGLE_EXAMPLES:
+        got = demangle(symbol)
+        if got != reading:
+            wrong.append(f"  {symbol}: read {got!r}, expected {reading!r}")
+    if wrong:
+        raise SuiteError("the demangler disagrees with the worked examples:\n" + "\n".join(wrong))
+
+
+# What LLVM prints between 'define'/'declare' (or a global's '=') and the type:
+# linkage, preemption, visibility, storage class, thread locality, address
+# significance, and a calling convention. Everything else starts the type.
+LLVM_SYMBOL_WORDS = {
+    "private", "internal", "available_externally", "linkonce", "weak", "common",
+    "appending", "extern_weak", "linkonce_odr", "weak_odr", "external",
+    "dso_local", "dso_preemptable", "default", "hidden", "protected",
+    "dllimport", "dllexport", "thread_local", "unnamed_addr", "local_unnamed_addr",
+    "externally_initialized",
+}
+
+SYMBOL_NAME = r'@("(?:[^"\\]|\\.)*"|[-A-Za-z$._0-9]+)'
+SYMBOL_FUNCTION = re.compile(r"^(define|declare)\s+(.*?)" + SYMBOL_NAME + r"\(")
+SYMBOL_GLOBAL = re.compile(r"^" + SYMBOL_NAME + r"\s*=\s*(.*?)\b(global|constant)\b")
+SYMBOL_COMDAT_DEF = re.compile(r"^\$" + SYMBOL_NAME[1:] + r"\s*=\s*comdat\s+(\w+)")
+SYMBOL_COMDAT_USE = re.compile(r"\bcomdat\b(?:\(\$(\"(?:[^\"\\]|\\.)*\"|[^)]*)\))?")
+
+
+def symbol_words(text: str) -> list[str]:
+    """The leading keywords of a symbol line, in LLVM's order."""
+    words = []
+    tokens = text.split()
+    while tokens:
+        token = tokens[0]
+        if token in LLVM_SYMBOL_WORDS or token.endswith("cc"):
+            words.append(tokens.pop(0))
+        elif token == "cc" and len(tokens) > 1 and tokens[1].isdigit():
+            words.append(f"cc {tokens[1]}")
+            del tokens[:2]
+        else:
+            break
+    return words
+
+
+def symbol_lines(ir: str) -> list[str]:
+    """One line per global symbol of an LLVM IR dump: the kind, the linkage and
+    visibility words as LLVM prints them, the demangled name, then
+    'comdat <kind>' for a symbol that leads one."""
+    comdats = {}
+    for line in ir.split("\n"):
+        found = SYMBOL_COMDAT_DEF.match(line)
+        if found:
+            comdats[found.group(1).strip('"')] = found.group(2)
+
+    lines = []
+    for line in ir.split("\n"):
+        found = SYMBOL_FUNCTION.match(line)
+        if found:
+            kind, words, name = found.group(1), symbol_words(found.group(2)), found.group(3)
+            tail = line[line.rfind(")") + 1:]
+        else:
+            found = SYMBOL_GLOBAL.match(line)
+            if not found:
+                continue
+            name, words, kind = found.group(1), symbol_words(found.group(2)), found.group(3)
+            if "external" in words:
+                words.remove("external")
+                kind = "external " + kind
+            tail = line[found.end():]
+        name = name.strip('"')
+        parts = [kind, *words, demangle(name)]
+        comdat = SYMBOL_COMDAT_USE.search(tail)
+        if comdat:
+            leader = (comdat.group(1) or name).strip('"')
+            parts += ["comdat", comdats.get(leader, "?")]
+        lines.append(" ".join(parts))
+    return lines
+
+
 class Runner:
     def __init__(self, args, codes: dict[str, int], linker: Linker):
         self.args = args
@@ -1533,7 +1930,7 @@ class Runner:
             # compile is the one that cannot. --verify is not added: there is no
             # module to verify when generation never ran.
             options.append("--checktree")
-        if any(c.target == "llvmir" for c in scenario.checks):
+        if any(c.target in ("llvmir", "preir", "symbols") for c in scenario.checks):
             options.append("--llvmir")
 
         out_rel = out_dir.relative_to(REPO).as_posix()
@@ -1561,10 +1958,13 @@ class Runner:
         else:
             self.check_clean(result, scenario, diagnostics, out_dir, spec)
 
-        # LLVM IR checks are asserted before linking, so they still run on a
-        # machine with no linker where the run scenarios themselves skip (R3.7).
+        # LLVM IR and symbol checks are asserted before linking, so they still
+        # run on a machine with no linker where the run scenarios themselves
+        # skip (R3.7).
         if result.status == PASS:
             self.check_artifacts(result, scenario, out_dir, "llvmir")
+            self.check_artifacts(result, scenario, out_dir, "preir")
+            self.check_artifacts(result, scenario, out_dir, "symbols")
         if result.status == PASS and scenario.category == "run":
             self.link_and_run(result, scenario, spec, out_dir)
             if result.status == PASS:
@@ -1814,22 +2214,50 @@ class Runner:
 
     def check_artifacts(self, result: Result, scenario: Scenario,
                         out_dir: Path, target: str) -> None:
-        """R2.3. Named checks against a generated artifact — LLVM IR, or a run's
-        stdout — for what has no source line to attach to."""
+        """R2.3. Named checks against a generated artifact — LLVM IR, the
+        symbols it declares, or a run's stdout — for what has no source line
+        to attach to."""
+        symbols: str | None = None
         for check in scenario.checks:
             if check.target != target:
                 continue
-            if check.target == "llvmir":
+            if check.target in ("llvmir", "preir"):
                 # genllvm writes <srcname>.ir after optimization and .preir
                 # before it. The post-optimization dump is what reaches the
-                # object file, so that is what a symbol assertion is about.
-                artifact = out_dir / f"{scenario.source.stem}.ir"
+                # object file, so 'llvmir' is for what must survive the
+                # optimizer -- which, since a program's definitions are all
+                # internal, is only what 'main' reaches. 'preir' is for what
+                # generation wrote: the optimizer deletes an internal
+                # definition nothing references and folds the rest into
+                # 'main', so an instruction, a type or a signature in a
+                # 'compile' scenario, or in a function 'main' absorbs, is
+                # read before it runs.
+                suffix = ".ir" if check.target == "llvmir" else ".preir"
+                artifact = out_dir / f"{scenario.source.stem}{suffix}"
                 if not artifact.exists():
                     result.status = FAIL
                     result.problems.append(
                         f"check {check.name!r}: no LLVM IR dump at {artifact.name}")
                     continue
                 text = normalize(artifact.read_text(encoding="utf-8", errors="replace"))
+            elif check.target == "symbols":
+                # A symbol's spelling and linkage are generation's facts, so
+                # they are read where generation wrote them: the optimizer
+                # drops an internal definition nothing references, and a
+                # check on an uncalled definition must still see it. The
+                # derived lines are written beside the dump for reading.
+                artifact = out_dir / f"{scenario.source.stem}.preir"
+                if not artifact.exists():
+                    result.status = FAIL
+                    result.problems.append(
+                        f"check {check.name!r}: no LLVM IR dump at {artifact.name}")
+                    continue
+                if symbols is None:
+                    ir = normalize(artifact.read_text(encoding="utf-8", errors="replace"))
+                    symbols = "\n".join(symbol_lines(ir)) + "\n"
+                    (out_dir / f"{scenario.source.stem}.symbols").write_text(
+                        symbols, encoding="utf-8")
+                text = symbols
             else:
                 text = result.program_stdout or ""
             for needle in check.contains:
@@ -2595,6 +3023,9 @@ def main(argv: list[str]) -> int:
                              f" there is none")
     parser.add_argument("--coverage", action="store_true",
                         help="report ErrorCode values with no case, run nothing (R6.4)")
+    parser.add_argument("--selftest", action="store_true",
+                        help="check the symbol demangler against its worked examples,"
+                             " which every run does first, and run nothing")
     parser.add_argument("--bless", action="store_true",
                         help="record what the compiler produced as the new"
                              " expectation, and review the diff (R4.2)")
@@ -2623,6 +3054,13 @@ def main(argv: list[str]) -> int:
 
     found: Selection | None = None
     try:
+        # Before any case runs: a 'symbols' check asserts readings the
+        # demangler produces, so a demangler that has drifted from the scheme
+        # is reported here as one fault rather than as many failed checks.
+        demangle_selftest()
+        if args.selftest:
+            print(f"demangler: {len(DEMANGLE_EXAMPLES)} worked examples read as the scheme says")
+            return 0
         codes = parse_error_codes(ERROR_H)
         if args.bless_codes:
             write_codes_table(CODES_TOML, codes)

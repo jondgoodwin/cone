@@ -398,7 +398,7 @@ worthless; any two notes in this folder are "related".
 
 ```
 The symbol scheme — consumed by `phases/generation.md` (lowering), by
-`nameSymbol`, `genlLinkage` and `itypeMangle`, and by
+`nameSymbol`, `nameType` and `genlLinkage`, and by
 `coneref/refmodule.html` (name qualification).
 ```
 

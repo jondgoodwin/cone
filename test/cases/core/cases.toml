@@ -44,31 +44,39 @@ options = ["--debug"]
 # and outlive the dead function that was its only mention.
 [[scenario.core-success.check]]
 name = "global-variables-are-individually-discardable"
-target = "llvmir"
+target = "symbols"
 contains = [
-  "$counter = comdat nodeduplicate",
-  "@counter = global i32 0, comdat",
-  "$string = comdat nodeduplicate",
-  '@string = internal constant [3 x i8] c" = ", comdat',
+  "global internal counter comdat nodeduplicate",
+  "constant internal string comdat nodeduplicate",
 ]
 
-# Pins today's spelling, linkage, visibility and COMDAT of the root module's
-# own symbols, so the symbol-generation refactor can show nothing moved. A
-# root symbol is its source name with no prefix; a private global differs from
-# a public one only by 'hidden'; an 'imm' global is a 'constant'; and 'main' is
-# an ordinary function that nothing special-cases. Each is a definition, so
-# each leads its own 'nodeduplicate' COMDAT. The 'main' line stops before its
-# '{' because the debug run puts a '!dbg' there, and both runs read this check.
+# The program linkage rule on the root module's own symbols. A root symbol is
+# its source name with no prefix, and every definition is internal -- a
+# program's symbols are its own, so nothing outside the object may resolve
+# against them -- except 'main', which the C runtime resolves. A private global
+# is spelled and linked exactly as a public one: privacy is a fact about the
+# namespace, not the object file, so no symbol carries 'hidden'. An 'imm'
+# global is a 'constant'. Each is a definition, so each leads its own
+# 'nodeduplicate' COMDAT.
 [[scenario.core-success.check]]
-name = "root-symbol-spellings-are-unchanged"
+name = "root-definitions-are-internal-except-main"
+target = "symbols"
+contains = [
+  "global internal total comdat nodeduplicate",
+  "global internal _hiddenTotal comdat nodeduplicate",
+  "constant internal origin comdat nodeduplicate",
+  "define main comdat nodeduplicate",
+]
+excludes = [" hidden ", "define internal main "]
+
+# 'main' is the one definition the optimizer cannot delete or fold away, so it
+# is where the COMDAT line itself is pinned as LLVM prints it. The 'define'
+# line stops before its '{' because the debug run puts a '!dbg' there, and both
+# runs read this check.
+[[scenario.core-success.check]]
+name = "main-leads-its-own-comdat"
 target = "llvmir"
 contains = [
-  "$total = comdat nodeduplicate",
-  "@total = global i64 100, comdat",
-  "$_hiddenTotal = comdat nodeduplicate",
-  "@_hiddenTotal = hidden global i32 0, comdat",
-  "$origin = comdat nodeduplicate",
-  "@origin = constant i32 7, comdat",
   "$main = comdat nodeduplicate",
   "define i32 @main() comdat",
 ]
@@ -78,46 +86,50 @@ category = "run"
 description = "Which candidate of an overload set a call selects"
 tags = ["nameres", "typecheck", "genllvm", "runtime"]
 
+# Every candidate is a definition under its own concrete name, the private
+# ones of the private set included. Read before optimization: each is called
+# once or twice, and the inliner folds every internal function it can into
+# 'main' and deletes what it folded.
 [[scenario.core-overload.check]]
 name = "overload-lowers-to-concrete"
-target = "llvmir"
+target = "symbols"
 contains = [
-  "@scaleInt",
-  "@scaleFloat",
-  "@joinOne",
-  "@joinTwo",
-  "@stepInt",
-  "@stepFloat",
-  "@emitSigned",
+  "define internal scaleInt comdat nodeduplicate",
+  "define internal scaleFloat comdat nodeduplicate",
+  "define internal joinOne comdat nodeduplicate",
+  "define internal joinTwo comdat nodeduplicate",
+  "define internal stepInt comdat nodeduplicate",
+  "define internal stepFloat comdat nodeduplicate",
+  "define internal _emitUnsigned comdat nodeduplicate",
+  "define internal _emitSigned comdat nodeduplicate",
 ]
 
+# An overload name is not a declaration, so nothing is generated for it. A
+# definition's name is followed by its COMDAT, so the trailing space is what
+# stops 'scale' from matching 'scaleInt'.
 [[scenario.core-overload.check]]
 name = "no-symbol-for-overload-name"
-target = "llvmir"
-excludes = ["@scale(", "@join(", "@step(", "@emit("]
-
-[[scenario.core-overload.check]]
-name = "private-candidate-keeps-its-symbol"
-target = "llvmir"
-contains = ["define hidden i64 @_emitUnsigned"]
+target = "symbols"
+excludes = ["scale ", "join ", "step ", "_emit "]
 
 # Each function leads a COMDAT named for itself. A COFF section is otherwise
 # all-or-nothing, so without this every function an object file defines ships in
 # the executable whether the program can reach it or not; with it the linker
-# discards the unreachable ones. A private function gets one too -- hidden
-# visibility does not stop a symbol leading a COMDAT.
+# discards the unreachable ones. A private function gets one too, and it is
+# spelled and linked exactly as a public one: privacy is a fact about the
+# namespace, not the object file.
 #
 # 'nodeduplicate' is the selection kind that keeps a duplicate definition a link
-# error. Only what must merge asks to merge; generic-success pins the other side.
+# error. In a program compile nothing asks to merge, since every definition is
+# internal and the object is the only one that references it.
 [[scenario.core-overload.check]]
 name = "functions-are-individually-discardable"
-target = "llvmir"
+target = "symbols"
 contains = [
-  "$scaleInt = comdat nodeduplicate",
-  "define i64 @scaleInt(i64 %0) comdat {",
-  "$_emitUnsigned = comdat nodeduplicate",
-  "define hidden i64 @_emitUnsigned(i64 %0) comdat {",
+  "define internal scaleInt comdat nodeduplicate",
+  "define internal _emitUnsigned comdat nodeduplicate",
 ]
+excludes = [" hidden ", "comdat any"]
 
 # -------- warnings --------
 
@@ -158,6 +170,12 @@ category = "reject"
 description = "Malformed 'overload' declarations"
 tags = ["parse"]
 diagnostics = 4
+
+[scenario.core-parse-overload-private]
+category = "reject"
+description = "A private candidate joining a public overload name"
+tags = ["parse"]
+diagnostics = 2
 
 # ErrorNoRCurly needs the file to end with a block still open, so it is one per
 # file and it has to be last. That is why it has a file of its own. It is

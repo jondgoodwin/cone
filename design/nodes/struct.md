@@ -135,7 +135,8 @@ generation.
 7. Type check every method.
 8. **`structSetDropFn`** — validate a `final` method, then, if any field's type
    has a drop function, synthesize a `drop` method, owned by the type so its
-   symbol is `<Name>_drop`, calling `final` and then each droppable field. The
+   symbol is spelled as any method's — `Bundle::drop`, `_CNvNt6Bundle4drop` —
+   calling `final` and then each droppable field. The
    generated body is built pre-lowered and is **never type checked or flow
    analyzed**.
 

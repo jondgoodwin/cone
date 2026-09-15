@@ -64,7 +64,7 @@ large**, which is why the interesting decisions are at the bottom of this table.
 | **type** | fields; `extends` and `mixin` flattened at compile time | members | `_`-prefixed members are private | traits and virtual references | generics; trait defaults cloned into implementers | ⚠ **unknown** — whether a type can gain methods outside its own declaration is not established |
 | **thread** | **absent** | **absent** | **absent** | **absent** | **absent** | **absent** |
 | **module** | **[planned]** — the folder walk makes a module span files; today a module *is* one file | yes — this is what a module is today | `_`-prefixed names are private | **absent** — module traits are planned | **absent** — generic modules are planned | **absent** |
-| **program / library** | linking; `extern` and the C ABI | ⚠ **absent — the linker has one flat symbol space**, and nothing in a generated name carries the package | partial — hidden visibility, but what a package exports is undecided | **absent** | **absent** | **absent** |
+| **program / library** | linking; `extern` and the C ABI | ⚠ **absent — the linker has one flat symbol space**, and nothing in a generated name carries the package | partial — a program's definitions are internal to its object, but what a package exports is undecided | **absent** | **absent** | **absent** |
 
 ⚠ **The six-column table shows something the three-column one could not.**
 **Namespace at the program/library layer is absent** — a flat linker symbol space
@@ -147,21 +147,23 @@ names are private to the including module.
 | type, `_` field | not settable from outside in a type literal | `typeLitStructReorder` |
 | any namespace | no duplicate name, whatever the kind | `namespaceAdd`, `modAddNamedNode` |
 
-Visibility is checked against **the spelling the caller used**, so a public
-overload name may legitimately select a private concrete candidate — the set is
-public, the member is not, and calling through the set is the way in.
+Visibility is checked against **the spelling the caller used**, which is why a
+private concrete candidate may not join a public overload name
+(`ErrorPrivOverload`): through the public spelling it would be reachable from
+outside its owner. Both are private, or both public.
 
 ## The distance, honestly
 
-**Separate compilation does not work.** A declaration's symbol is the module
-prefix plus enclosing type names plus the source name — and **the main module's
-prefix is empty**. Compiling `mymod.cone` directly emits `@scaleInt`; compiling
-a `main.cone` that imports it emits `@mymod_scaleInt`, and the two never
-resolve. **A program spanning modules cannot be linked today.**
+**Separate compilation does not work.** A declaration's symbol is its path —
+enclosing modules, then enclosing types, then the name — and **the root module
+contributes nothing to it**. Compiling `modulesub.cone` directly emits
+`@scaleInt`, bare; compiling a `main.cone` that imports it emits
+`@_CNvC9modulesub8scaleInt`, `modulesub::scaleInt`, and the two never resolve.
+**A program spanning modules cannot be linked today.**
 
 The generation machinery, though, is not the missing part. An imported module's
 bodies are emitted whenever it is flagged for generation, and `stdio` is flagged
-— a compile that prints emits `@stdio_print` and full definitions for the
+— a compile that prints emits `stdio::print` and full definitions for the
 `IOStream` methods, alongside the caller. Every other imported module is denied
 the flag by a `strcmp` on its filename. So what blocks a multi-package program
 is the symbol rule and that one condition, not the absence of a mechanism.

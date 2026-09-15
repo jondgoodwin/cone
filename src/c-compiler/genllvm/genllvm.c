@@ -180,30 +180,54 @@ void genlGloVar(GenState *gen, VarDclNode *varnode) {
         LLVMSetGlobalConstant(varnode->llvmvar, 1);
 }
 
-// Set a just-created global's linkage, visibility, storage class and calling
-// convention together, from the declaring node's facts. The one place that
-// decides them, so the COMDAT kind genlComdat later reads off the linkage
-// cannot disagree with what was chosen here.
+// Whether this object file defines a declared symbol rather than merely
+// declaring it: the declaration is not externally supplied, its module is one
+// this compile generates bodies for, and a function has a body to generate.
+// An imported module's functions have bodies in the IR and are declarations
+// here, which is why the module's flag decides and not the node alone.
+static int genlIsDefinedHere(INode *dclnode) {
+    DclInfo *dclinfo = inodeGetDclInfo(dclnode);
+    if (dclinfo->facts & DclExternal)
+        return 0;
+    ModuleNode *mod = dclInfoGetModule(dclnode);
+    if (mod == NULL || !(mod->flags & FlagGenMod))
+        return 0;
+    return dclnode->tag != FnDclTag || ((FnDclNode*)dclnode)->value != NULL;
+}
+
+// Set a just-created global's linkage, storage class and calling convention
+// together, from the declaring node's facts. The one place that decides them,
+// so the COMDAT kind genlComdat later reads off the linkage cannot disagree
+// with what was chosen here.
 //
-// 'dclnode' is NULL for a vtable, which no node declares. 'mergeable' says
-// several object files may each define the symbol and the linker is to keep
-// one: an instance of a generic, since it is produced wherever it is used, and
-// a vtable. Everything else is external and unique, so a duplicate definition
-// stays a link error. A private name is hidden from the export table, except
-// that a system-convention function is imported rather than defined here, and
-// the import wins.
-void genlLinkage(LLVMValueRef global, INode *dclnode, int mergeable) {
+// The program rule: a definition is internal, since nothing outside this
+// object may resolve against a program's symbols -- except 'main', which the C
+// runtime resolves, and a C-style name, which is published to or imported from
+// C. A declaration is external, as an LLVM declaration can be nothing else; a
+// system-convention one is imported with its calling convention. Visibility is
+// never set: a private name is a fact about the namespace, not the object file.
+//
+// 'dclnode' is NULL for a vtable, which no node declares. 'defined' says this
+// object defines the symbol. A package compile will make an instance of a
+// generic and a vtable 'linkonce any' here, since every object that uses one
+// produces it; a program compile is the only consumer of its own, so internal.
+void genlLinkage(LLVMValueRef global, INode *dclnode, int defined) {
     if (dclnode) {
         DclInfo *dclinfo = inodeGetDclInfo(dclnode);
         if (dclnode->tag == FnDclTag && (dclinfo->facts & DclSystemCC)) {
             LLVMSetFunctionCallConv(global, LLVMX86StdcallCallConv);
             LLVMSetDLLStorageClass(global, LLVMDLLImportStorageClass);
         }
-        else if (dclinfo->facts & DclPrivate)
-            LLVMSetVisibility(global, LLVMHiddenVisibility);
+        if (dclinfo->facts & DclCName)
+            return;
     }
-    if (mergeable)
-        LLVMSetLinkage(global, LLVMLinkOnceAnyLinkage);
+    if (!defined)
+        return;
+    size_t namelen;
+    const char *name = LLVMGetValueName2(global, &namelen);
+    if (namelen == 4 && memcmp(name, "main", 4) == 0)
+        return;
+    LLVMSetLinkage(global, LLVMInternalLinkage);
 }
 
 // Generate LLVMValueRef for a global variable
@@ -217,7 +241,7 @@ void genlGloVarName(GenState *gen, VarDclNode *glovar) {
     if (permIsSame(glovar->perm, (INode*) immPerm))
         LLVMSetGlobalConstant(glovar->llvmvar, 1);
 
-    genlLinkage(glovar->llvmvar, (INode*)glovar, 0);
+    genlLinkage(glovar->llvmvar, (INode*)glovar, genlIsDefinedHere((INode*)glovar));
 }
 
 // Generate LLVMValueRef for a global function
@@ -236,7 +260,7 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
         char symbol[2048];
         nameSymbol(symbol, (INode*)glofn);
         glofn->llvmvar = LLVMAddFunction(gen->module, symbol, genlType(gen, glofn->vtype));
-        genlLinkage(glofn->llvmvar, (INode*)glofn, nameIsGenericInstance(glofn));
+        genlLinkage(glofn->llvmvar, (INode*)glofn, genlIsDefinedHere((INode*)glofn));
 
         // Add metadata on implemented functions (debug mode only)
         if (!gen->opt->release && glofn->value) {
@@ -254,9 +278,8 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
 void genlGlobalSyms(GenState *gen, INode *node);
 
 // Generate the global symbols for one instance of a generic type. Each method
-// is owned by the instance, which is what makes genlLinkage give it the
-// linkage that lets the linker keep one copy across object files -- the same
-// treatment a generic function's instances get below.
+// is owned by the instance, so its symbol reads as the instance then the
+// method, and it is defined by whichever module owns the generic.
 static void genlGenericInstanceSyms(GenState *gen, INode *instance) {
     if (instance->tag != StructTag || (instance->flags & TraitType))
         return;
@@ -322,17 +345,12 @@ void genlGlobalSyms(GenState *gen, INode *node) {
         else
             genlGloFnName(gen, (FnDclNode *)node);
         break;
-    // An overload name has no symbol of its own, but it does make its candidates
-    // reachable. A public overload name in an imported module may select a
-    // private candidate, whose own namespace entry the program's privacy filter
-    // skips, so generate every candidate's name here too.
-    case FnOverloadDclTag: {
-        uint32_t ovlcnt;
-        INode **ovlnodesp;
-        for (nodesFor(((FnOverloadDclNode*)node)->overloads, ovlcnt, ovlnodesp))
-            genlGlobalSyms(gen, *ovlnodesp);
+    // An overload name has no symbol of its own. Each of its candidates is also
+    // a node of the module or type that owns it, and is named there: a public
+    // name holds only public candidates (fnOverloadDclAdd), and a private name
+    // is filtered along with its private candidates.
+    case FnOverloadDclTag:
         break;
-    }
     }
 }
 

@@ -178,8 +178,10 @@ link prog.obj build\x64-release\conestd.lib /OUT:prog.exe /SUBSYSTEM:CONSOLE msv
 ```
 
 A program that spans modules cannot be linked yet. Compiling a module on its
-own emits root-module symbol names (`@scaleInt`), while an importing module
-references namespaced ones (`@mymod_scaleInt`), so the two never resolve. See
+own makes it the root, whose declarations are spelled bare (`@scaleInt`), while
+an importing module references them by module path
+(`@_CNvC9modulesub8scaleInt`, read `modulesub::scaleInt`), so the two never
+resolve. See
 `C:\Users\jondg\MyDrive\Incubator\Cone\Backlog\packages-and-separate-compilation.md`. Runtime checks must therefore
 live in a single source file.
 
