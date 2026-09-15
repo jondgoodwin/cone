@@ -13,7 +13,7 @@ typedef struct VarDclNode {
     Name *namesym;
     INode *value;              // Starting value/declaration (NULL if not initialized)
     LLVMValueRef llvmvar;      // LLVM's handle for a declared variable (for generation)
-    char *genname;             // Name of variable as known to the linker
+    DclInfo dclinfo;           // Owner and the facts that decide the linker symbol (globals; name.c spells it)
     INode *perm;               // Permission type (often mut or imm)
     uint16_t scope;            // 0=global
     uint16_t index;            // index within this scope (e.g., parameter number)

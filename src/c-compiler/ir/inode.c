@@ -518,6 +518,30 @@ Name *inodeGetName(INode *node) {
     }
 }
 
+// Obtain the declaration facts of a node that declares a symbol the object file
+// can carry, or NULL if it declares none. This is the only place that knows
+// which node kinds those are.
+DclInfo *inodeGetDclInfo(INode *node) {
+    switch (node->tag) {
+    case FnDclTag:
+        return &((FnDclNode*)node)->dclinfo;
+    case VarDclTag:
+        return &((VarDclNode*)node)->dclinfo;
+    case StructTag:
+        return &((StructNode*)node)->dclinfo;
+    case ModuleTag:
+        return &((ModuleNode*)node)->dclinfo;
+    default:
+        return NULL;
+    }
+}
+
+// Obtain the module or type node a declaration lives in, or NULL if it has none
+INode *inodeGetOwner(INode *node) {
+    DclInfo *info = inodeGetDclInfo(node);
+    return info ? info->owner : NULL;
+}
+
 // Is this a declaration that carries its own analysis marks?
 // Type declarations and modules are handled separately: they are reached as
 // types rather than as declarations, and a type's mark means laid out.

@@ -57,26 +57,43 @@ here, before parsing.
    `FlagGenMod`.
 
 Both recurse into a type's method list and into a generic's
-`genericinfo->memonodes`. Generic instances get `LLVMLinkOnceAnyLinkage`. An
-uninstantiated generic generates nothing.
+`genericinfo->memonodes`. An uninstantiated generic generates nothing.
 
 ### Symbols, linkage and COMDATs
+
+**The rules are not here.** What a symbol is spelled, what linkage it gets and
+why are [Names and Namespaces](names-and-namespaces.md), "Symbols"; this phase
+lowers them, in two functions and a derivation:
+
+- **`nameSymbol`** (`ir/name.c`, IR layer, no LLVM in it) spells the symbol of
+  a function or global from the node alone: its owner chain, its declared name,
+  and for an instance of a generic the mangled parameter types. `nameVtable`
+  and `nameVtableImpl` spell a vtable type and a vtable. Nothing in generation
+  builds a name string; `genlGloFnName` and `genlGloVarName` hand
+  `LLVMAddFunction` and `LLVMAddGlobal` what `nameSymbol` returns.
+- **`genlLinkage`** sets linkage, visibility, storage class and calling
+  convention together, from the declaration facts and one argument saying
+  whether the symbol is mergeable — `nameIsGenericInstance` for a function, and
+  always for a vtable, which no node declares. It is the one place that decides
+  them.
+- **`genlComdat`** then derives the COMDAT selection kind from the linkage
+  already on the global, at each definition site.
 
 A section is all-or-nothing, so without further help every function an object
 file defines ships whether or not the program can reach it. **Each definition
 leads a COMDAT of its own, named for its symbol**, which lets the linker discard
 the unreachable ones and, transitively, whatever only they referenced.
 
-**Two questions have to be answered for every generated global, and they are not
-independent.** The caller chooses the linkage; `genlComdat` derives the rest, so
-a new kind of symbol has only to get its linkage right and cannot end up with a
-selection kind that contradicts it:
+**Linkage and selection kind are not independent**, which is why the second is
+read off the first rather than chosen beside it. A new kind of symbol has only
+to reach `genlLinkage` and cannot end up with a selection kind that contradicts
+its linkage:
 
-| What the symbol is | Linkage the caller sets | What `genlComdat` then does |
+| What the symbol is | Linkage `genlLinkage` sets | What `genlComdat` then does |
 | --- | --- | --- |
 | a definition only this object can supply | external | `nodeduplicate` — a duplicate definition is a real error and stays one |
-| a definition several objects may each supply — a generic instance, a vtable | `linkonce` | `any` — the linker keeps one copy and says nothing |
-| a definition nothing outside can name — an anonymous `fn`, a string literal | `internal` | `nodeduplicate`; nothing can collide with it in any case |
+| a definition several objects may each supply — an instance of a generic, a vtable | `linkonce` | `any` — the linker keeps one copy and says nothing |
+| a definition nothing outside can name — an anonymous `fn`, a string literal | `internal`, set at the site that names it | `nodeduplicate`; nothing can collide with it in any case |
 | a declaration — an imported module's function, an `extern` | external | nothing: **only a definition may lead a COMDAT**, and `LLVMVerifyModule` rejects one that does not |
 
 That last row is why the attachment is at the definition sites and not in the
@@ -163,8 +180,10 @@ Three shapes, chosen in `genlSetupTaggedTrait`:
 A named `"<Trait>:Vtable"` struct whose fields are, per slot, either a function
 pointer **whose self parameter is erased to `i8*`** (to avoid LLVM type-check
 errors on self) or an `i32` **byte offset** for a virtual field. One `linkonce
-constant` per implementing struct, plus a `vtable-list` array indexed by tag
-number for the trait-to-virtref coercion.
+constant` per implementing struct, named `"<Impl>-><Trait>:Vtable"`, plus a
+`vtable-list` array indexed by tag number for the trait-to-virtref coercion.
+`nameVtable` and `nameVtableImpl` spell the first two from the trait and
+implementing type nodes; the list is a literal, shared by every trait.
 
 ### The allocation header
 
@@ -315,15 +334,14 @@ by default. `--debug` emits DWARF and drops optimization — it is the only
 switch here, with release as the default. Debug info covers only files and
 subprograms, and the file name is hardcoded.
 
-**Cross-module linking is broken, and the rule is worth stating exactly.** A
-declaration's linker symbol is the module prefix, plus each enclosing type name,
-plus the source name — except that an `extern` declaration is never prefixed.
-The main module's prefix is empty. So compiling `mymod.cone` directly makes it
-the main module and emits `@scaleInt`; compiling a `main.cone` that imports it
-makes it an imported module and emits `@mymod_scaleInt`. The two object files
-never resolve against each other. Compounding it, an ordinary imported module
-does not get `FlagGenMod`, so only a `declare` is emitted for it.
-Separate compilation is what has to settle it.
+**Cross-module linking is broken.** A symbol is spelled from its owner chain,
+and the root module contributes no name to it — [Names and Namespaces](names-and-namespaces.md),
+"Symbols". So compiling `mymod.cone` directly makes it the root and emits
+`@scaleInt`; compiling a `main.cone` that imports it makes it an imported module
+and emits `@mymod_scaleInt`. The two object files never resolve against each
+other. Compounding it, an ordinary imported module does not get `FlagGenMod`,
+so only a `declare` is emitted for it. Separate compilation is what has to
+settle it.
 
 Also absent: closures with an environment — an anonymous `fn` is lifted to
 module scope and a `&fn` value is a bare function pointer with no capture
@@ -349,7 +367,9 @@ variables.
 | | `genlProgram` | the two-pass symbols-then-implementations walk |
 | | `genlGlobalSyms`, `genlGlobalImpl` | declare a node's symbol; emit its body |
 | | `genlFn`, `genlParmVar`, `genlAlloca` | function body, parameter allocas, entry-block alloca placement |
-| | `genlComdat`, `genlNameAnonFn` | the per-definition COMDAT that lets the linker drop a symbol; the private name an anonymous `fn` needs to have one |
+| | `genlGloFnName`, `genlGloVarName` | declare a function or global under the symbol `nameSymbol` spells |
+| | `genlLinkage` | linkage, visibility, storage class and calling convention, together, from the declaration facts |
+| | `genlComdat`, `genlNameAnonFn` | the per-definition COMDAT that lets the linker drop a symbol, its kind read off the linkage; the private name an anonymous `fn` needs to have one |
 | | `genlComdatSupport` | what the target's object format does with COMDATs |
 | | `genlOut` | set triple and layout, emit object and asm |
 | `genllvm/genltype.c` | `genlType`, `_genlType` | the memoizing entry and the per-tag lowering switch |
@@ -364,7 +384,8 @@ variables.
 | `genllvm/genlalloc.c` | `genlRefTypeSetup`, `genlallocref` | the `{region, perm, value}` header and its emission |
 | | `genlRcCounter`, `genlDealiasOwn`, `genlDealiasNodes` | count adjustment, free, and replaying flow's lists |
 | `ir/types/reference.h` | `enum ManagedRefFields` | `RegionField`, `PermField`, `ValueField` |
-| `ir/name.c` | `nameGenFnName`, `nameNewPrefix` | the symbol naming rule of section 7 |
+| `ir/name.c` | `nameSymbol`, `nameIsGenericInstance`, `nameVtable`, `nameVtableImpl` | spelling a symbol from a node's owner chain and facts — the rules are in [Names and Namespaces](names-and-namespaces.md), "Symbols" |
+| `ir/dclinfo.c` | `dclInfoJoin` | writes the declaration facts where a declaration joins its namespace |
 
 ## 10. What lives elsewhere
 

@@ -24,7 +24,7 @@
 #include <assert.h>
 
 // Generate a specific vtable value for some struct
-void genlVtableImpl(GenState *gen, VtableImpl *impl, LLVMTypeRef vtableRef) {
+void genlVtableImpl(GenState *gen, Vtable *vtable, VtableImpl *impl, LLVMTypeRef vtableRef) {
     // Ensure the struct has been "built", as we need to point to its fields and methods
     LLVMTypeRef structRef = genlType(gen, impl->structdcl);
 
@@ -60,9 +60,10 @@ void genlVtableImpl(GenState *gen, VtableImpl *impl, LLVMTypeRef vtableRef) {
     }
 
     // Create and initialize global variable to hold vtable info
-    impl->llvmvtablep = LLVMAddGlobal(gen->module, vtableRef, impl->name);
+    char symbol[2048];
+    impl->llvmvtablep = LLVMAddGlobal(gen->module, vtableRef, nameVtableImpl(symbol, impl->structdcl, vtable->trait));
     LLVMSetGlobalConstant(impl->llvmvtablep, 1);
-    LLVMSetLinkage(impl->llvmvtablep, LLVMLinkOnceAnyLinkage);
+    genlLinkage(impl->llvmvtablep, NULL, 1);
     genlComdat(gen, impl->llvmvtablep);
     LLVMSetInitializer(impl->llvmvtablep, implRef);
 }
@@ -101,8 +102,11 @@ void genlVtable(GenState *gen, Vtable *vtable) {
             *field_type_ptr++ = LLVMInt32TypeInContext(gen->context);
     }
 
-    // Declare the vtable type itself
-    LLVMTypeRef vtableRef = LLVMStructCreateNamed(gen->context, vtable->name);
+    // Declare the vtable type itself. The virtual reference type below takes the
+    // same name, which LLVM uniquifies with a suffix.
+    char vtablename[2048];
+    nameVtable(vtablename, vtable->trait);
+    LLVMTypeRef vtableRef = LLVMStructCreateNamed(gen->context, vtablename);
     if (fieldcnt > 0)
         LLVMStructSetBody(vtableRef, field_types, fieldcnt, 0);
 
@@ -111,13 +115,13 @@ void genlVtable(GenState *gen, Vtable *vtable) {
     LLVMValueRef *vtables = (LLVMValueRef *)memAllocBlk(vtable->impl->used * sizeof(LLVMValueRef *));
     LLVMValueRef *vtablesp = vtables;
     for (nodesFor(vtable->impl, cnt, nodesp)) {
-        genlVtableImpl(gen, (VtableImpl*)*nodesp, vtableRef);
+        genlVtableImpl(gen, vtable, (VtableImpl*)*nodesp, vtableRef);
         *vtablesp++ = ((VtableImpl*)*nodesp)->llvmvtablep;
     }
     LLVMValueRef vtablelist = LLVMConstArray(LLVMPointerType(vtableRef, 0), vtables, vtable->impl->used);
     vtable->llvmvtables = LLVMAddGlobal(gen->module, LLVMTypeOf(vtablelist), "vtable-list");
     LLVMSetGlobalConstant(vtable->llvmvtables, 1);
-    LLVMSetLinkage(vtable->llvmvtables, LLVMLinkOnceAnyLinkage);
+    genlLinkage(vtable->llvmvtables, NULL, 1);
     genlComdat(gen, vtable->llvmvtables);
     LLVMSetInitializer(vtable->llvmvtables, vtablelist);
 
@@ -127,7 +131,7 @@ void genlVtable(GenState *gen, Vtable *vtable) {
     LLVMTypeRef vreffields[2];
     vreffields[0] = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
     vreffields[1] = LLVMPointerType(vtableRef, 0);
-    LLVMTypeRef virtref = LLVMStructCreateNamed(gen->context, vtable->name);
+    LLVMTypeRef virtref = LLVMStructCreateNamed(gen->context, vtablename);
     LLVMStructSetBody(virtref, vreffields, 2, 0);
     vtable->llvmvtable = vtableRef;
     vtable->llvmreftype = virtref;

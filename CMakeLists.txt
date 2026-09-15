@@ -57,6 +57,7 @@ add_executable(conec
 
 	src/c-compiler/ir/checktree.c
 	src/c-compiler/ir/clone.c
+	src/c-compiler/ir/dclinfo.c
 	src/c-compiler/ir/flow.c
 	src/c-compiler/ir/iexp.c
 	src/c-compiler/ir/inode.c

@@ -173,8 +173,8 @@ a literal is constant-folded in place.
 **It binds module-level names.** `modAddNode`, `modAddNamedNode` and `modAddFn`
 run *during* parsing, so by the time a module's parse finishes its namespace is
 populated, `ErrorDupName` and `ErrorOverloadClash` have already been reported,
-overload sets have their `FnOverloadDclNode`, and linker names are mangled with
-the module prefix. The stated reason is that permissions and allocators do not
+overload sets have their `FnOverloadDclNode`, and every declaration records the
+module as its owner. The stated reason is that permissions and allocators do not
 support forward references, so their names must be in the table as they are
 read.
 
@@ -265,7 +265,7 @@ numbers.
 | | `lexStmtStart`, `lexIsStmtBreak`, `lexNewLine` | statement-end inference and indent tracking |
 | `parser/parsemod.c` | `parsePgm` | **entry point** — tables, program, main module, corelib, main file |
 | | `parseGlobalStmts` | the global statement dispatch loop |
-| | `parseLoadAndParseModuleFile` | per-module unit: de-dup, name prefix, injection, corelib import, `modHook` |
+| | `parseLoadAndParseModuleFile` | per-module unit: de-dup, naming, injection, corelib import, `modHook` |
 | | `parseImport`, `parseInclude` | the two source-composition forms |
 | `parser/parsehelper.c` | `parseBlockStart`, `parseBlockEnd` | `{` vs `:` entry and exit, with recovery |
 | | `parseEndOfStatement`, `parseSkipToNextStmt`, `parseCloseTok` | statement termination and the two resyncs |

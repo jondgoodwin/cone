@@ -23,7 +23,7 @@ copies the initializer, and marks it initialized. Generation allocas.
 | `scope` | 0 global, 1 parameter, 2+ local | none | none |
 | `index` | parameter position | **LLVM struct field slot** | none |
 | `vtblidx` | none | vtable slot | none |
-| `genname` | linker symbol, globals only | none | none |
+| `dclinfo` | owner and the facts the linker symbol is spelled from, globals only — [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols" | none | none |
 | `llvmvar` | alloca or global | none | **none** |
 | `flowtempflags` | `VarInitialized`, `VarMoved` | none | none |
 | `flowflags` | **dead** — zeroed twice, never read | none | none |
@@ -42,8 +42,8 @@ The absences are the point:
 
 | Function | Note |
 | --- | --- |
-| `newVarDclNode` | full initialization, including `genname` |
-| `newVarDclFull` | takes type and value; sets `genname` like its sibling |
+| `newVarDclNode` | full initialization; `dclinfo` is cleared here and written when a global joins its module |
+| `newVarDclFull` | takes type and value; otherwise as its sibling |
 | `newFieldDclNode` | leaves `vtblidx` untouched |
 | `newConstDclNode` | — |
 
@@ -64,7 +64,7 @@ owes both halves, the mark clearing above included; `const.c` carries that note.
 
 | Site | Flags | Stamps |
 | --- | --- | --- |
-| global (`parseFnOrVar`) | impl/sig, or sig alone for an `extern` | `VarInitialized`, `nameGenVarName`, `modAddNode`. `scope` stays 0 |
+| global (`parseFnOrVar`) | impl/sig, or sig alone for an `extern` | `VarInitialized`, then `modAddNode`, which records the module as owner and writes the declaration facts. `scope` stays 0 |
 | local (`parseExprBlock`) | sig/impl | nothing — scope comes from name resolution |
 | parameter (`parseFnSig`) | sig/impl, dropping to impl once one parameter has a default | `VarInitialized`, `scope = 1`, `index`, `Self` inference |
 
@@ -161,9 +161,10 @@ Fields and constants have no flow participation at all.
   parameter unconditionally. A parameter arrives as an SSA value but Cone lets
   you assign to it and borrow from it, so it needs storage. `genlAlloca` hoists
   it to the entry block for mem2reg to undo.
-- **`genlGloVarName`** then **`genlGloVar`** — `LLVMAddGlobal` from `genname`,
-  marked constant for `imm` and hidden for a leading `_`; then a null, string,
-  or constant-expression initializer.
+- **`genlGloVarName`** then **`genlGloVar`** — `LLVMAddGlobal` under the symbol
+  `nameSymbol` spells, marked constant for `imm`, with `genlLinkage` setting
+  hidden visibility for a private name; then a null, string, or
+  constant-expression initializer.
 - **`index` does two unrelated jobs**: `LLVMGetParam` for a parameter, and the
   struct GEP / `extractvalue` position for a field.
 
@@ -200,4 +201,4 @@ Fields and constants have no flow participation at all.
 - Move-or-copy and the flow stack: [Flow Analysis](../phases/flow.md)
 - Where mutability is actually enforced: [assign](assign.md)
 - Field layout, mixins, and the vtable: [struct](struct.md)
-- Symbol naming and why cross-module linking is broken: [Generation](../phases/generation.md)
+- How a global's symbol is spelled and linked: [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols"; why cross-module linking is broken: [Generation](../phases/generation.md)

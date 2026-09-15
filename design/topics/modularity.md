@@ -195,4 +195,4 @@ discipline — unstructured concurrency being "similar to GOTO."
 - Lookup, qualification, hooking and overloading: [Names and Namespaces](../phases/names-and-namespaces.md)
 - Mixin expansion and trait inheritance, step by step: [struct](../nodes/struct.md)
 - Instantiation and monomorphization: [generic](../nodes/generic.md)
-- The symbol-naming rule in full: [Generation](../phases/generation.md)
+- The symbol-naming rule in full: [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols"; its lowering: [Generation](../phases/generation.md)

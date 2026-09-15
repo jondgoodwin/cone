@@ -8,21 +8,19 @@
 #ifndef struct_h
 #define struct_h
 
-typedef struct ModuleNode ModuleNode;
-
 // Describes how some struct implements a virtual reference's vtable
 typedef struct {
     INode *structdcl;          // struct that implements
     Nodes *methfld;            // specific methods and fields in same order as vtable
-    char *name;                // generated name for the implemented vtable
     LLVMValueRef llvmvtablep;  // generates a pointer to the implemented vtable
 } VtableImpl;
 
-// Describes the virtual interface supported by some trait/struct
+// Describes the virtual interface supported by some trait/struct.
+// Its names are spelled at generation from 'trait' and each impl's struct (name.c).
 typedef struct {
+    INode *trait;              // the trait/struct whose virtual interface this is
     Nodes *methfld;            // list of public methods and then fields
     Nodes *impl;               // list of VtableImpl, for structs using this virtref
-    char *name;                // generated name for the vtable type
     LLVMTypeRef llvmvtable;    // for the vtable
     LLVMTypeRef llvmreftype;   // For the virtual reference, not the vtable
     LLVMValueRef llvmvtables;  // List of vtables
@@ -35,7 +33,7 @@ typedef struct {
 typedef struct StructNode {
     INsTypeNodeHdr;
     Name *namesym;
-    ModuleNode *mod;        // Owning module, to check if struct defined in same mod as trait
+    DclInfo dclinfo;        // Owner and the facts that decide the linker symbol
     INode *basetrait;       // Which trait has fields embedded at start of this trait/struct
     Nodes *derived;         // If a closed, base trait, this lists all structs derived from it
     NodeList fields;        // Ordered list of all fields

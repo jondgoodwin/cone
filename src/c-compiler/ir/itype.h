@@ -78,6 +78,10 @@ TypeCompare itypeMatches(INode *totype, INode *fromtype, SubtypeConstraint const
 // Return a type that is the supertype of both type nodes, or NULL if none found
 INode *itypeFindSuper(INode *type1, INode *type2);
 
+// The type arguments a generic instance was instantiated with, or NULL when the
+// declaration is not an instance of a generic
+Nodes *itypeInstanceTypeArgs(INode *dclnode);
+
 // Add type mangle info to buffer
 char *itypeMangle(char *bufp, INode *vtype);
 

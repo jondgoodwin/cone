@@ -277,6 +277,12 @@ void inodePrintDecr();
 // Obtain name from a named node
 Name *inodeGetName(INode *node);
 
+// Obtain the declaration facts of a node that declares a symbol, or NULL if it does not
+DclInfo *inodeGetDclInfo(INode *node);
+
+// Obtain the module or type node a declaration lives in, or NULL if it has none
+INode *inodeGetOwner(INode *node);
+
 // Determine whether a named node is marked as private
 int inodeIsDcl(INode *node);
 int inodeIsPrivate(INode *node);

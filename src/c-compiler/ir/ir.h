@@ -37,10 +37,12 @@ typedef struct Lexer Lexer;        // ../../parser/lexer.h
 typedef struct NameResState NameResState;
 typedef struct TypeCheckState TypeCheckState;
 typedef struct GenericInfo GenericInfo;
+typedef struct DclInfo DclInfo;          // dclinfo.h
 
 // Interfaces & headers shared across nodes
 #include "inode.h"
 #include "name.h"
+#include "dclinfo.h"
 #include "itype.h"
 #include "iexp.h"
 #include "instype.h"

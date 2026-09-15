@@ -496,7 +496,6 @@ INode *parseFn(ParseState *parse, uint16_t mayflags) {
         if (!(mayflags&ParseMayName))
             errorMsgLex(WarnName, "Unnecessary function name is ignored");
         fnnode->namesym = lex->val.ident;
-        fnnode->genname = &fnnode->namesym->namestr;
         lexNextToken();
         if (lexIsToken(LBracketToken)) {
             fnnode->genericinfo = newGenericInfo();

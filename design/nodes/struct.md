@@ -45,7 +45,7 @@ positional type literals move with it.
 | `nodelist` | ordered **methods and static functions only** — never fields |
 | `namespace` | every named member: fields, methods, overload sets, and `Self` |
 | `dropfn` | NULL until the last step of type check |
-| `mod` | owning module. Read in one place: rejecting a variant declared outside its closed trait's module |
+| `dclinfo` | owner and the facts its symbols are spelled from — [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols". The owner is a module, or the trait for a variant declared inside one. Read for one thing besides naming: rejecting a variant declared outside its closed trait's module, through `dclInfoGetModule` |
 | `basetrait` | the `extends` **type expression** — a `NameUseNode`, or an `FnCallNode` for a generic base. **Not a `StructNode*`.** Two helpers unwrap it and they answer different questions: `structBaseTraitDcl` takes **one hop**, to the declaration of the trait this type extends, while `structGetBaseTrait` recurses to the **bottom-most** one. Picking the wrong one is how the infection loop hangs |
 | `derived` | for a **closed** trait, its variants in declaration order. The index *is* the `tagnbr` |
 | `fields` | all fields in layout order |
@@ -77,12 +77,14 @@ generation.
 - `@move` and `opaque` attributes consumed into flags.
 - An **unnamed type is still built**, under `anonName`, so the body is still
   parsed rather than dumped onto the module's statement stream.
-- `gennamePrefix` extended with the type name, so each method gets `Type_meth`.
+- Each method joins the type through `iNsTypeAddFn`, which records the type as
+  its owner; that is what spells its symbol `Type_meth` at generation.
 - `mixin T` becomes a `FieldDclNode` named `_` flagged `IsMixin`, a **placeholder
   that survives to type check**.
 - A **nested `struct` inside a trait** sets `HasTagField` on the enclosing trait,
   synthesizes the variant's `basetrait`, assigns `tagnbr` from `derived->used`,
-  and registers the variant at module scope. For a generic trait it copies the
+  and registers the variant at module scope — bound in the module, but owned
+  by the trait, so its symbols are spelled after it. For a generic trait it copies the
   trait's generic parameters into the variant and builds `basetrait` as
   `Trait[P1,P2,…]`.
 - **A tag field is synthesized at position 0** when
@@ -132,9 +134,10 @@ generation.
    `fn twin(self) Self`.
 7. Type check every method.
 8. **`structSetDropFn`** — validate a `final` method, then, if any field's type
-   has a drop function, synthesize a `<Name>_drop` calling `final` and then each
-   droppable field. The generated body is built pre-lowered and is **never type
-   checked or flow analyzed**.
+   has a drop function, synthesize a `drop` method, owned by the type so its
+   symbol is `<Name>_drop`, calling `final` and then each droppable field. The
+   generated body is built pre-lowered and is **never type checked or flow
+   analyzed**.
 
 ### Matching
 
@@ -193,8 +196,6 @@ order — `genlallocref` hard-codes `derived[1]` as `Option`'s `Some`.
 - **A method of a type never gets that type's drop calls** — `structSetDropFn`
   runs after the method loop, so `dropfn` is still NULL while method bodies are
   checked and flow-analyzed.
-- **A generic type's drop functions collide on one symbol**: `<namesym>_drop`
-  with no module prefix and no type arguments.
 - **Multiple mixins produce multiple tag fields**, and no duplicate-name error
   fires because `namespaceAdd` silently ignores `_`.
 - **A trait's `TypeChecked` does not mean it has a size.** A union's size is

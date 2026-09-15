@@ -15,9 +15,10 @@ resolves anything else the module declares. Type check walks imports first, then
 every declaration in source order. Generation declares symbols for every module
 and emits bodies only for those flagged `FlagGenMod`.
 
-*Provenance: read from source. The symbol-prefix asymmetry and the `stdio`
-exception were measured from emitted LLVM IR; the imported-module `declare`s are
-pinned by the `module` test group. See [Measuring](../diagnostics/measuring.md).*
+*Provenance: read from source. The root-versus-import symbol asymmetry and the
+`stdio` exception were measured from emitted LLVM IR; the imported-module
+`declare`s and the root-cycle behaviour are pinned by the `module` test group.
+See [Measuring](../diagnostics/measuring.md).*
 
 ## Shape
 
@@ -30,7 +31,8 @@ own `imports`.
 
 | Field | Meaning |
 | --- | --- |
-| `namesym` | the module's name — **NULL for the root module**, and derived from the *filename* for every other |
+| `namesym` | the module's name, derived from the *filename* — the source file's basename for the root, the imported file's for every other. What `pgmFindMod` matches on |
+| `dclinfo` | the declaration facts — [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols". `owner` is NULL for every file module. **The root is the module without `DclNamesChain`**: it has a name and contributes it to no symbol |
 | `imports` | `ImportNode`s only, held apart from `nodes` so folding can run before anything else resolves |
 | `nodes` | every declaration the module owns, in source order. This is what printing and generation iterate |
 | `namespace` | every name *visible* in the module: what it declares, plus what an import folded in |
@@ -56,23 +58,26 @@ selective name list, no rename, and no exclusion.
 | `newProgramNode` | one per compile |
 | `pgmAddMod` | appends a module and takes its flags. The caller sets `namesym` afterwards |
 | `pgmFindMod` | linear search by interned name. **This is what makes a module load once** however many modules import it |
-| `newModuleNode` | `namesym` NULL, empty `imports`, `nodes` and `namespace` |
+| `newModuleNode` | `namesym` NULL, `dclinfo` cleared, empty `imports`, `nodes` and `namespace` |
 | `newImportNode` | `module` NULL, `foldall` 0 |
 
 ## Parse
 
 `parsePgm` establishes the program in an order that matters:
 
-1. The root `ModuleNode` is added first and flagged `FlagGenMod`. **Its
-   `namesym` is never set.**
+1. The root `ModuleNode` is added first and flagged `FlagGenMod`. It is named
+   after the source file's basename, so that an import cycle back to it finds
+   it in `pgmFindMod`; it is not given `DclNamesChain`, so it prefixes nothing.
 2. `corelib` is parsed, from the `corelibSource` string in `corelib.c`.
 3. An `ImportNode` with `foldall` set is added to the root for `corelib`.
 4. The root's own source is parsed.
 
 `parseLoadAndParseModuleFile` is the single path by which any module is loaded.
-It reuses an already-parsed module by name, pushes a `gennamePrefix` built from
-the module name, decides `FlagGenMod`, injects the source, adds an auto-import
+It reuses an already-parsed module by name, names the new one and marks it
+`DclNamesChain`, decides `FlagGenMod`, injects the source, adds an auto-import
 of `corelib` with `foldall`, and swaps the name-table hook with `modHook`.
+Every declaration the module's parse adds through `modAddNode` records the
+module as its owner.
 
 **Two modules are built in, and neither is a file.** `corelib` is the
 `corelibSource` string in `corelib.c`; `stdio` is the `stdiolib` string at the
@@ -99,13 +104,15 @@ it are visible in emitted IR:
   shape of a `.h` file, derived from the imported source rather than from a
   reduced artifact.
 - Compiling that same module as the root emits `define i64 @scaleInt(i64)`,
-  unprefixed, because the root's `gennamePrefix` is the empty string and
-  `nameGenFnName` applies nothing to an empty prefix.
+  unprefixed, because the root contributes no name to the owner chain its
+  declarations are spelled from.
 
 So **a symbol's identity depends on which compilation the module was the root
 of**, and the two spellings never resolve against each other. That, and not the
 declarations, is why an import cannot be linked against: nothing can emit the
-definitions those declarations name.
+definitions those declarations name. How a symbol is spelled from its
+declaration, and the linkage it gets, is
+[Names and Namespaces](../phases/names-and-namespaces.md), "Symbols".
 
 `parseImport` derives the module name from the filename through `fileName`,
 accepts `::` only when `*` follows it, and binds the loaded module into the
@@ -114,11 +121,6 @@ importing module's namespace with `modAddNamedNode`.
 `parseInclude` injects the named file's tokens and parses its global statements
 into the *current* module. It builds no node, creates no namespace, and leaves
 no record that it happened.
-
-Generated-name prefixes are built by `nameNewPrefix` and `nameConcatPrefix`,
-extended with the type name by `parseStruct`, and applied by `nameGenFnName` and
-`nameGenVarName`. Both apply nothing when the prefix is empty, and nothing when
-the declaration carries `FlagExtern`.
 
 ## Name resolution
 
@@ -160,10 +162,10 @@ Flow analysis has no module concept; it runs per function body.
    when it is private *and* its module is not generating.
 2. **Implementations.** Only modules flagged `FlagGenMod`.
 
-`ImportTag` is an explicit no-op in `genlGlobalImpl`. Generic instances get
-`LLVMLinkOnceAnyLinkage` so the linker keeps one copy across object files, which
-is the only place today's generation anticipates more than one object file at
-all.
+`ImportTag` is an explicit no-op in `genlGlobalImpl`. `genlLinkage` gives an
+instance of a generic `LLVMLinkOnceAnyLinkage` so the linker keeps one copy
+across object files, which is the only place today's generation anticipates
+more than one object file at all.
 
 The privacy filter in pass 1 assumes nothing outside a module can reach its
 private names. **A public overload name breaks that assumption**, so
@@ -375,13 +377,13 @@ function. What does work is the multi-module *generation* path, exercised by
 `stdio` on every compile that prints, and folding into a single module namespace,
 which is what the accumulation rule above asks for.
 
-**Visibility has no bit, and whether a fold transits is decided by load order.**
-Six sites decide visibility and four of them read `namesym->namestr == '_'`
-directly rather than through `inodeIsPrivate` — `nameUseNameRes`,
-`fnCallLowerMethod`, `typeLitStructReorder` and the hidden-linkage test in
-`genlGloVarName`. There is nowhere to record a folded binding's own visibility,
-because `importNameRes` inserts the imported declaration node itself into the
-receiving namespace.
+**A binding has no visibility bit, and whether a fold transits is decided by
+load order.** A declaration has one — `DclPrivate`, written from the `_` when
+it joins its namespace, and what generation reads — but three sites still read
+`namesym->namestr == '_'` directly rather than through `inodeIsPrivate`:
+`nameUseNameRes`, `fnCallLowerMethod` and `typeLitStructReorder`. There is
+nowhere to record a folded binding's own visibility, because `importNameRes`
+inserts the imported declaration node itself into the receiving namespace.
 
 Measured: `modNameRes` folds a module's imports at the start of *that module's*
 resolution and `pgmNameRes` walks modules in load order, so a fold is invisible
@@ -454,7 +456,7 @@ What is open is the mechanism, and it is worth choosing rather than defaulting
 into:
 
 - **Linkage for what a program does not export.** Today private names get
-  `LLVMHiddenVisibility`, in `genlGloVarName` and `genlGloFnName`. Hidden keeps a
+  `LLVMHiddenVisibility`, in `genlLinkage`. Hidden keeps a
   symbol out of a shared library's export table but leaves it a global symbol at
   static link, so it can still collide. `LLVMInternalLinkage` makes it
   object-local and collision-proof. The hazard that distinguishes them is silent:
@@ -532,11 +534,12 @@ annotation on a reference names is a type.
 ### Consequences that follow whichever way those go
 
 - **Symbol identity must stop depending on which module was the root.** The
-  measured asymmetry above is the mechanism. A generated name has two
-  components — the package, and the module path within it — and the package
-  component is what makes a public name distinguishable once the linker flattens
-  every namespace into one. What separator it uses, and how an overload name's
-  concrete candidates are spelled, are open. So is the larger question below.
+  measured asymmetry above is the mechanism. A generated name is the module
+  path, outermost first, and there is no package component: a package
+  correlates to one top-level module, whose name is what makes a public name
+  distinguishable once the linker flattens every namespace into one. The rules,
+  and what of the spelling is still open, are
+  [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols".
 - **The interface artifact must carry bodies, not signatures.** Generics
   monomorphize at the use site, macros expand at the use site, and `inline` is
   macro-shaped, so an importer needs the body of each. It exposes private
@@ -582,17 +585,15 @@ annotation on a reference names is a type.
 
 - **`include` and `import` look alike and are not.** One injects declarations
   into the current module and leaves no trace; the other builds a namespace.
-- **The root module's `namesym` is NULL.** Anything keying on a module's name
-  must handle it, and the empty `gennamePrefix` that goes with it is why root
-  symbols are unprefixed. It also defeats `pgmFindMod`, which matches by name, so
-  **an import cycle leading back to the root re-reads the root's file and parses
-  it a second time as a distinct module**, prefixed with the root file's own
-  name. Measured: the compile succeeds, and the second copy contributes a
-  dangling declaration for every root name — a `declare` for each function and an
-  `external global` for each variable. Nothing references them, so nothing fails.
-  The duplication is latent rather than harmless: were that second copy
-  generated, each becomes a second definition of a root function and a second
-  allocation of a root global. Giving the root a name is what closes it.
+- **The root's name is its file's basename, and `pgmFindMod` matches every
+  module by name.** A root file whose basename equals a built-in module or any
+  imported module's basename collides there. Measured: `corelib.cone` has
+  `parsePgm`'s corelib load find the root itself, so the root is folded into
+  its own namespace and every declaration is reported as a duplicate — and
+  corelib is never parsed; `stdio.cone` importing `stdio` gets the root back,
+  with the same duplicates and no `print`. What would settle it is a root
+  identity no import can spell, or a diagnostic when the root's name matches a
+  module it loads.
 - **A cycle among non-root modules is fine.** Name resolution runs after all
   parsing, so the half-parsed module `pgmFindMod` returns is complete before
   anything reads it. Nothing detects a cycle, and nothing needs to.
@@ -615,7 +616,9 @@ annotation on a reference names is a type.
 - What modularity is for, and how far Cone is from it: [Modularity](../topics/modularity.md)
 - Module loading as a parse-time activity, and the name-table hook:
   [Parse](../phases/parse.md)
-- The symbol-naming rule, `linkonce`, and the allocation header:
+- How a declaration's symbol is spelled and what linkage it gets:
+  [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols"
+- The lowering of those rules, `linkonce`, COMDATs, and the allocation header:
   [Generation](../phases/generation.md)
 - Mixins, trait inheritance, and types as namespaces: [struct](struct.md)
 - Instantiation, cloning and memonodes: [generic](generic.md)
