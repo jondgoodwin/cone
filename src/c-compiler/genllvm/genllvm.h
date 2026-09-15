@@ -67,9 +67,9 @@ void genClose(GenState *gen);
 void genpgm(GenState *gen, ProgramNode *pgm);
 void genlFn(GenState *gen, FnDclNode *fnnode);
 void genlComdat(GenState *gen, LLVMValueRef global);
-// Set a declared symbol's linkage, visibility, storage class and calling convention
-// from its node's facts (NULL for a vtable); 'mergeable' lets the linker keep one of many
-void genlLinkage(LLVMValueRef global, INode *dclnode, int mergeable);
+// Set a declared symbol's linkage, storage class and calling convention from its
+// node's facts (NULL for a vtable); 'defined' says this object file defines it
+void genlLinkage(LLVMValueRef global, INode *dclnode, int defined);
 void genlGloVarName(GenState *gen, VarDclNode *glovar);
 void genlGloFnName(GenState *gen, FnDclNode *glofn);
 

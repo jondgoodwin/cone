@@ -63,6 +63,8 @@ void genlVtableImpl(GenState *gen, Vtable *vtable, VtableImpl *impl, LLVMTypeRef
     char symbol[2048];
     impl->llvmvtablep = LLVMAddGlobal(gen->module, vtableRef, nameVtableImpl(symbol, impl->structdcl, vtable->trait));
     LLVMSetGlobalConstant(impl->llvmvtablep, 1);
+    // Defined here: a program compile is the only user of its vtables. A package
+    // compile will make this 'linkonce any', as every object using the trait builds one.
     genlLinkage(impl->llvmvtablep, NULL, 1);
     genlComdat(gen, impl->llvmvtablep);
     LLVMSetInitializer(impl->llvmvtablep, implRef);
@@ -119,8 +121,11 @@ void genlVtable(GenState *gen, Vtable *vtable) {
         *vtablesp++ = ((VtableImpl*)*nodesp)->llvmvtablep;
     }
     LLVMValueRef vtablelist = LLVMConstArray(LLVMPointerType(vtableRef, 0), vtables, vtable->impl->used);
-    vtable->llvmvtables = LLVMAddGlobal(gen->module, LLVMTypeOf(vtablelist), "vtable-list");
+    char listsymbol[2048];
+    vtable->llvmvtables = LLVMAddGlobal(gen->module, LLVMTypeOf(vtablelist), nameVtableList(listsymbol, vtable->trait));
     LLVMSetGlobalConstant(vtable->llvmvtables, 1);
+    // The list holds the implementers this compile saw, so it is one per
+    // compilation unit and internal in a package compile too
     genlLinkage(vtable->llvmvtables, NULL, 1);
     genlComdat(gen, vtable->llvmvtables);
     LLVMSetInitializer(vtable->llvmvtables, vtablelist);

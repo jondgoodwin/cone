@@ -37,7 +37,19 @@ FnOverloadDclNode *newFnOverloadDclNode(Name *namesym) {
 // Append a concrete declaration to an overload set's ordered candidates.
 // The set is a method set when any of its candidates is a method, which is
 // what lets an unqualified use be rewritten to 'self.name'.
+//
+// A private candidate may not join a public name: the name would make it
+// reachable from outside its owner, and a symbol that is private and reachable
+// has no sound linkage. A compiler-defined intrinsic is exempt, as it is not a
+// symbol at all, which is what lets the core types hide '_neg' behind '-'.
 void fnOverloadDclAdd(FnOverloadDclNode *ovlnode, FnDclNode *fnnode) {
+    if (inodeIsPrivate((INode*)fnnode) && !inodeIsPrivate((INode*)ovlnode)
+        && !(fnnode->value && fnnode->value->tag == IntrinsicTag)) {
+        errorMsgNode((INode*)fnnode, ErrorPrivOverload,
+            "%s is private, so it may not join the public overload name %s; make both private or both public.",
+            &fnnode->namesym->namestr, &ovlnode->namesym->namestr);
+        return;
+    }
     nodesAdd(&ovlnode->overloads, (INode*)fnnode);
     ovlnode->flags |= fnnode->flags & FlagMethFld;
 }

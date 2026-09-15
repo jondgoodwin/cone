@@ -162,8 +162,8 @@ Fields and constants have no flow participation at all.
   you assign to it and borrow from it, so it needs storage. `genlAlloca` hoists
   it to the entry block for mem2reg to undo.
 - **`genlGloVarName`** then **`genlGloVar`** — `LLVMAddGlobal` under the symbol
-  `nameSymbol` spells, marked constant for `imm`, with `genlLinkage` setting
-  hidden visibility for a private name; then a null, string, or
+  `nameSymbol` spells, marked constant for `imm`, with `genlLinkage` making it
+  internal when this object defines it; then a null, string, or
   constant-expression initializer.
 - **`index` does two unrelated jobs**: `LLVMGetParam` for a parameter, and the
   struct GEP / `extractvalue` position for a field.

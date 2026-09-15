@@ -82,9 +82,6 @@ INode *itypeFindSuper(INode *type1, INode *type2);
 // declaration is not an instance of a generic
 Nodes *itypeInstanceTypeArgs(INode *dclnode);
 
-// Add type mangle info to buffer
-char *itypeMangle(char *bufp, INode *vtype);
-
 // Return true if type has a concrete and instantiable. 
 // False for Opaque structs, traits, functions 
 int itypeIsConcrete(INode *type);

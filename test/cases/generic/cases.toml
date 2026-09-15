@@ -32,120 +32,109 @@ category = "run"
 description = "Generic functions and generic types, instantiated by inference and by explicit type argument, including operators inside an instance's methods"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 
-# One 'define' per distinct set of type arguments, under a name carrying them,
-# and never one for the generic itself. This is the only place instantiation is
-# visible: which instance ran is not something the program can print.
-# An instance is the one symbol several object files may each define, so it is
-# the one that asks the linker to keep a single copy -- 'comdat any', matching
-# the linkonce linkage. An ordinary function in the same file asks the opposite,
-# so that a genuine duplicate definition stays a link error.
+# One 'define' per distinct set of type arguments, read as the generic's name
+# with those arguments, and never one for the generic itself. This is the only
+# place instantiation is visible: which instance ran is not something the
+# program can print.
+# In a program compile an instance is a definition like any other -- internal,
+# with a 'nodeduplicate' COMDAT -- because this object is the only one that
+# references it. Asking the linker to merge is a package compile's case, where
+# every object that uses the generic produces the instance; that compile does
+# not exist yet, so nothing here asks.
 [[scenario.generic-success.check]]
-name = "only-instances-ask-the-linker-to-merge"
-target = "llvmir"
+name = "instances-are-definitions-like-any-other"
+target = "symbols"
 contains = [
-  '$"max:i64:i64" = comdat any',
-  'define linkonce i64 @"max:i64:i64"(i64 %0, i64 %1) comdat {',
-  "$inferredTypeArgument = comdat nodeduplicate",
+  "define internal max[i64] comdat nodeduplicate",
+  "define internal inferredTypeArgument comdat nodeduplicate",
 ]
+excludes = ["linkonce", "comdat any"]
 
 [[scenario.generic-success.check]]
 name = "one-instance-per-type-argument"
-target = "llvmir"
+target = "symbols"
 contains = [
-  '@"max:i64:i64"',
-  '@"max:f64:f64"',
-  '@"pickSecond:i64:f64"',
-  '@"pickSecond:f64:i64"',
-  '@"firstOf:Point:Point"',
-  '@"boxUp:i64"',
+  "define internal max[i64] comdat nodeduplicate",
+  "define internal max[f64] comdat nodeduplicate",
+  "define internal pickSecond[i64,f64] comdat nodeduplicate",
+  "define internal pickSecond[f64,i64] comdat nodeduplicate",
+  "define internal firstOf[Point] comdat nodeduplicate",
+  "define internal boxUp[i64] comdat nodeduplicate",
 ]
 
-# A type argument that is not a named type still names its instance. Each of
-# these four used to mangle to nothing, so 'passThrough:' was the name of all
-# five instances and LLVM appended '.1' onto four of them.
+# A type argument that is not a named type still names its instance: a tuple,
+# an array, a reference to a function signature and void each spell their own
+# instance. Were any of them spelled as nothing, the instances would share a
+# name and LLVM would tell them apart with its '.1' uniquifier, which the last
+# exclude forbids.
 [[scenario.generic-success.check]]
 name = "unnamed-type-arguments-mangle"
-target = "llvmir"
+target = "symbols"
 contains = [
-  '@"passThrough:(i64,i64)"',
-  '@"passThrough:(i64,i64,i64)"',
-  '@"passThrough:[2;i64]"',
-  '@"passThrough:&f(i64)i64"',
-  '@"passThrough:v"',
+  "define internal passThrough[(i64,i64)] comdat nodeduplicate",
+  "define internal passThrough[(i64,i64,i64)] comdat nodeduplicate",
+  "define internal passThrough[[2] i64] comdat nodeduplicate",
+  "define internal passThrough[&opaq fn(i64) i64] comdat nodeduplicate",
+  "define internal passThrough[void] comdat nodeduplicate",
 ]
-excludes = ['@"passThrough:"']
+excludes = ["passThrough[]", "].1 "]
 
+# The generic's own name is never a symbol: an instance reads as the name with
+# its arguments, so the bare name followed by a space is what would show one.
 [[scenario.generic-success.check]]
 name = "no-symbol-for-the-generic-itself"
-target = "llvmir"
-excludes = ["@max(", "@pickSecond(", "@firstOf(", "@boxUp("]
+target = "symbols"
+excludes = ["max ", "pickSecond ", "firstOf ", "boxUp "]
 
 # A generic with no instances contributes nothing at all, rather than crashing
 # code generation on the instance list it never grew
 [[scenario.generic-success.check]]
 name = "no-symbol-for-an-uninstantiated-generic"
-target = "llvmir"
+target = "symbols"
 excludes = ["neverCalled"]
 
-# Two instances of one generic *type* each get a copy of every method, and the
-# copies are spelled after the same owner. A generic function's instances are told
-# apart by the parameter types the mangler walks, but a generic type's method may
-# name no type parameter anywhere in its signature -- 'fn tally(self) i64', and
-# 'fn litSum(self &) i64' most of all, whose body is two literals -- so the
-# instance's type arguments are the only thing that distinguishes them.
+# Two instances of one generic *type* each get a copy of every method, and each
+# copy is owned by its instance, so its symbol reads as the instance -- the
+# generic with its type arguments -- then the method. A generic type's method
+# may name no type parameter anywhere in its signature -- 'fn tally(self) i64',
+# and 'fn litSum(self &) i64' most of all, whose body is two literals -- so the
+# owner's type arguments are the only thing that distinguishes the copies.
 #
-# The '&ro' in litSum's name is also load-bearing, for a second reason. The
-# mangler chose that character with a ternary whose middle test was a bare
-# 'ArrayRefTag' -- a nonzero constant, so always true -- and '&' was
-# unreachable: a plain reference was named exactly as a slice would be. These
-# strings are what pins the two apart now.
-#
-# Both methods below are named for both instances, and the un-suffixed symbol they
-# used to share is excluded. The '.' excludes are the load-bearing half: within one
-# translation unit LLVM hides a symbol collision by appending '.1', so a check that
-# only looked for two definitions would have passed all along. Neither symbol may
-# depend on that.
+# Both methods below are named for both instances, and the un-suffixed symbol
+# an uninstantiated owner would give is excluded. The '.1' excludes are the
+# load-bearing half: within one translation unit LLVM hides a symbol collision
+# by appending '.1', so a check that only looked for two definitions would have
+# passed all along. Neither symbol may depend on that.
 [[scenario.generic-success.check]]
 name = "instance-methods-carry-their-type-arguments"
-target = "llvmir"
+target = "symbols"
 contains = [
-  '@"Holder_tally:Holder:i64"',
-  '@"Holder_tally:Holder:f64"',
-  '@"Holder_litSum:&ro Holder:i64"',
-  '@"Holder_litSum:&ro Holder:f64"',
+  "define internal Holder[i64]::tally comdat nodeduplicate",
+  "define internal Holder[f64]::tally comdat nodeduplicate",
+  "define internal Holder[i64]::litSum comdat nodeduplicate",
+  "define internal Holder[f64]::litSum comdat nodeduplicate",
 ]
 excludes = [
-  '@"Holder_tally:Holder"',
-  '@"Holder_litSum:&ro Holder"',
-  '@"Holder_tally:Holder:i64.',
-  '@"Holder_tally:Holder:f64.',
-  '@"Holder_litSum:&ro Holder:i64.',
-  '@"Holder_litSum:&ro Holder:f64.',
+  " Holder::tally ",
+  " Holder::litSum ",
+  "::tally.1 ",
+  "::litSum.1 ",
 ]
 
-# Pins today's full spelling of a generic type's method instance, so the
-# symbol-generation refactor can show nothing moved: 'linkonce' with a 'comdat
-# any', named for the generic's method and the instance's type arguments, the
-# receiver typed as the instance's own struct.
-#
-# The runner reads the post-optimization .ir, and that decides what can be
-# pinned. Both instances of Holder clone every method, so 'clear' is cloned
-# for f64 too and defined in the pre-optimization .preir -- but nothing calls
-# that clone, and an unreferenced linkonce definition is dead, so the optimizer
-# drops it before the .ir is written. The exclude records that: an unreferenced
-# instance leaves no symbol in what the runner sees, and it would start
-# appearing only if its linkage stopped being linkonce or optimization were
-# turned off for this scenario.
+# A generic type's method instance is linked like a generic function's
+# instance: internal, a definition of this object. Both instances of Holder
+# clone every method, so 'clear' is cloned for f64 too although nothing calls
+# it; a symbols check reads the pre-optimization dump, where that unreferenced
+# clone is still defined, which is what lets it assert the linkage of a
+# definition the optimizer removes as dead before it reaches the object file.
 [[scenario.generic-success.check]]
-name = "generic-type-method-instances-are-linkonce-and-mergeable"
-target = "llvmir"
+name = "generic-type-method-instances-are-defined-even-uncalled"
+target = "symbols"
 contains = [
-  '$"Holder_tally:Holder:i64" = comdat any',
-  'define linkonce i64 @"Holder_tally:Holder:i64"(%Holder %0) comdat {',
-  '$"Holder_clear:&Holder:i64" = comdat any',
-  'define linkonce %void @"Holder_clear:&Holder:i64"(%Holder* %0) comdat {',
+  "define internal Holder[i64]::tally comdat nodeduplicate",
+  "define internal Holder[i64]::clear comdat nodeduplicate",
+  "define internal Holder[f64]::clear comdat nodeduplicate",
 ]
-excludes = ['@"Holder_clear:&Holder:f64"', '$"Holder_clear:&Holder:f64"']
 
 [scenario.generic-macro]
 category = "run"

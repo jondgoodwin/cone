@@ -93,19 +93,20 @@ module is denied it.
 That asymmetry is the whole of the separate-compilation gap, and both sides of
 it are visible in emitted IR:
 
-- `import stdio::*` emits `@stdio_print` **and definitions** for
-  `@stdio_IOStream__appendStr` and its siblings. The multi-module generation
-  path works, and is exercised on every compile that prints.
+- `import stdio::*` emits `stdio::print` **and definitions** for
+  `stdio::IOStream::appendStr` and its siblings, all internal. The multi-module
+  generation path works, and is exercised on every compile that prints.
 - Importing an ordinary module emits **only `declare`s** —
-  `declare i64 @modulesub_scaleInt(i64)` — because its bodies are never reached.
+  `declare i64 @_CNvC9modulesub8scaleInt(i64)`, read `modulesub::scaleInt` —
+  because its bodies are never reached.
   Measured, that is the module's *public* surface whether or not the importer
   calls it: a public function nothing references is still declared, and a private
   one is not declared at all. So what an import contributes today is already the
   shape of a `.h` file, derived from the imported source rather than from a
   reduced artifact.
-- Compiling that same module as the root emits `define i64 @scaleInt(i64)`,
-  unprefixed, because the root contributes no name to the owner chain its
-  declarations are spelled from.
+- Compiling that same module as the root emits
+  `define internal i64 @scaleInt(i64 %0)`, bare, because the root contributes
+  no name to the owner chain its declarations are spelled from.
 
 So **a symbol's identity depends on which compilation the module was the root
 of**, and the two spellings never resolve against each other. That, and not the
@@ -137,9 +138,10 @@ therefore not expressible, which is why renaming and selective folding are
 described in [Names and Namespaces](../phases/names-and-namespaces.md) and are
 not implemented.
 
-Private is spelling: `inodeIsPrivate` tests for a leading `_`. A public overload
-name whose selected candidate is private still travels across the fold, because
-the `FnOverloadDclNode` is what folds and the candidate rides inside it.
+Private is spelling: `inodeIsPrivate` tests for a leading `_`. An overload name
+folds as one node, the `FnOverloadDclNode`, with its candidates riding inside
+it; a public name holds only public candidates (`ErrorPrivOverload`), so the
+fold carries nothing private.
 
 ## Type check
 
@@ -162,14 +164,17 @@ Flow analysis has no module concept; it runs per function body.
    when it is private *and* its module is not generating.
 2. **Implementations.** Only modules flagged `FlagGenMod`.
 
-`ImportTag` is an explicit no-op in `genlGlobalImpl`. `genlLinkage` gives an
-instance of a generic `LLVMLinkOnceAnyLinkage` so the linker keeps one copy
-across object files, which is the only place today's generation anticipates
-more than one object file at all.
+`ImportTag` is an explicit no-op in `genlGlobalImpl`. `genlLinkage` makes every
+definition of a program internal except `main` and a C-style name, and leaves
+an imported module's declarations external; the only place generation
+anticipates more than one Cone object file is the comment saying a package
+compile will make an instance of a generic and a vtable `linkonce`.
 
 The privacy filter in pass 1 assumes nothing outside a module can reach its
-private names. **A public overload name breaks that assumption**, so
-`genlGlobalSyms` generates every candidate of an `FnOverloadDclNode` explicitly.
+private names, and a public overload name cannot break that assumption: a
+private candidate may not join one (`ErrorPrivOverload`), so an
+`FnOverloadDclNode` generates nothing of its own, and each candidate is
+generated as the module's or type's node it also is.
 
 ## Principles — the model, as decided
 
@@ -455,20 +460,20 @@ generated names and not the package component.
 What is open is the mechanism, and it is worth choosing rather than defaulting
 into:
 
-- **Linkage for what a program does not export.** Today private names get
-  `LLVMHiddenVisibility`, in `genlLinkage`. Hidden keeps a
-  symbol out of a shared library's export table but leaves it a global symbol at
-  static link, so it can still collide. `LLVMInternalLinkage` makes it
-  object-local and collision-proof. The hazard that distinguishes them is silent:
-  a program defining `fn log(...)` emits `@log` externally, a package calling
-  libm's `log` emits a matching `declare`, the linker satisfies the reference
-  from the program and never pulls `log.o` — so the package calls the wrong
-  function with no diagnostic.
+- **Linkage for what a program does not export** is settled and built: every
+  definition of a program compile is `LLVMInternalLinkage`, in `genlLinkage`,
+  except `main` and a C-style name, and nothing is `hidden`. Hidden visibility
+  would keep a symbol out of a shared library's export table but leave it a
+  global symbol at static link, so it could still collide; internal linkage
+  makes it object-local and collision-proof. The hazard that distinguishes them
+  is silent: were a program's `fn log(...)` emitted as an external `@log`, a
+  package calling libm's `log` would have its `declare` satisfied from the
+  program and `log.o` never pulled — the wrong function with no diagnostic.
 - **Whether private names in a *library* also become internal.** It shrinks the
   mangled namespace to exactly the names that cross a package boundary. It also
   means a private helper reached from a public inline or generic body must be
-  re-emitted per importer rather than linked against, which is what `linkonce`
-  already does for generic instances.
+  re-emitted per importer rather than linked against, which is the package
+  compile's `linkonce` rule for generic instances (L2).
 - **Build-mode defaults, or an explicit export set.** `--library` and congo's
   `exe`/`lib` targets already distinguish the modes. But a program built as a
   WebAssembly module or a DLL does export more than an entry point — the samples
@@ -543,8 +548,9 @@ annotation on a reference names is a type.
 - **The interface artifact must carry bodies, not signatures.** Generics
   monomorphize at the use site, macros expand at the use site, and `inline` is
   macro-shaped, so an importer needs the body of each. It exposes private
-  declarations that a public generic or inline body calls — the same assumption
-  the overload privacy filter already breaks.
+  declarations that a public generic or inline body calls — the one place a
+  private declaration is needed from outside its module, since a public
+  overload name may hold no private candidate.
 
   **The format is Cone source, not serialized IR.** `[planned]` **Decided by the
   author, 12 September 2026:** the artifact is **auto-generated**, with
@@ -618,7 +624,7 @@ annotation on a reference names is a type.
   [Parse](../phases/parse.md)
 - How a declaration's symbol is spelled and what linkage it gets:
   [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols"
-- The lowering of those rules, `linkonce`, COMDATs, and the allocation header:
+- The lowering of those rules, linkage, COMDATs, and the allocation header:
   [Generation](../phases/generation.md)
 - Mixins, trait inheritance, and types as namespaces: [struct](struct.md)
 - Instantiation, cloning and memonodes: [generic](generic.md)
