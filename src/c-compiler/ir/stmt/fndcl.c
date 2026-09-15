@@ -20,7 +20,7 @@ FnDclNode *newFnDclNode(Name *namesym, uint16_t flags, INode *type, INode *val) 
     node->overloadsym = NULL;
     node->value = val;
     node->llvmvar = NULL;
-    node->genname = namesym? &namesym->namestr : "";
+    dclInfoInit(&node->dclinfo);
     node->genericinfo = NULL;
     return node;
 }
@@ -66,6 +66,7 @@ void fnDclPrint(FnDclNode *node) {
         inodeFprint("fn");
     if (node->genericinfo)
         genericInfoPrint(node->genericinfo);
+    dclInfoPrint((INode*)node);
     if (node->overloadsym)
         inodeFprint(" overload %s ", &node->overloadsym->namestr);
     inodePrintNode(node->vtype);

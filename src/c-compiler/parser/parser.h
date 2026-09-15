@@ -16,7 +16,6 @@ typedef struct ParseState {
     ModuleNode *pgmmod;     // Root module for program
     ModuleNode *mod;        // Current module
     INsTypeNode *typenode;  // Current type
-    char *gennamePrefix;    // Module or type prefix for unique linker names
 } ParseState;
 
 // When parsing a variable definition, what syntax is allowed?

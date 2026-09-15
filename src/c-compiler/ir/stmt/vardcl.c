@@ -21,7 +21,7 @@ VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *perm) {
     name->scope = 0;
     name->index = 0;
     name->llvmvar = NULL;
-    name->genname = &namesym->namestr;
+    dclInfoInit(&name->dclinfo);
     name->flowflags = 0;
     name->flowtempflags = 0;
     return name;
@@ -38,7 +38,7 @@ VarDclNode *newVarDclFull(Name *namesym, uint16_t tag, INode *type, INode *perm,
     name->scope = 0;
     name->index = 0;
     name->llvmvar = NULL;
-    name->genname = &namesym->namestr;
+    dclInfoInit(&name->dclinfo);
     name->flowflags = 0;
     name->flowtempflags = 0;
     return name;
@@ -61,7 +61,9 @@ INode *cloneVarDclNode(CloneState *cstate, VarDclNode *node) {
 // Serialize a variable node
 void varDclPrint(VarDclNode *name) {
     inodePrintNode((INode*)name->perm);
-    inodeFprint(" %s ", &name->namesym->namestr);
+    inodeFprint(" %s", &name->namesym->namestr);
+    dclInfoPrint((INode*)name);
+    inodeFprint(" ");
     inodePrintNode(name->vtype);
     if (name->value) {
         inodeFprint(" = ");

@@ -300,6 +300,7 @@ INode *parseAmper(ParseState *parse) {
             // If we have an implemented function, we need to move it to the module so it gets generated
             // Then refer to it using a nameuse node as part of this reference node
             nodesAdd(&parse->mod->nodes, (INode*)fndcl);
+            dclInfoJoin((INode*)fndcl, (INode*)parse->mod);
             NameUseNode *fnname = newNameUseNode(anonName);
             fnname->tag = VarNameUseTag;
             fnname->dclnode = (INode*)fndcl;

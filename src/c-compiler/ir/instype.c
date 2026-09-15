@@ -48,11 +48,15 @@ void iNsTypeAddFnDict(INsTypeNode *type, FnDclNode *fnnode) {
     fnOverloadDclAdd((FnOverloadDclNode*)binding, fnnode);
 }
 
-// Add a function/method to type's dictionary and owned list
+// Add a function/method to type's dictionary and owned list.
+// The type becomes the function's owner, also when the function is a clone:
+// a generic instance's methods are owned by the instance, and a trait default
+// inherited by an implementing type is owned by that type, not the trait.
 void iNsTypeAddFn(INsTypeNode *type, FnDclNode *fnnode) {
     NodeList *mnodes = &type->nodelist;
     nodelistAdd(mnodes, (INode*)fnnode);
     iNsTypeAddFnDict(type, fnnode);
+    dclInfoJoin((INode*)fnnode, (INode*)type);
 }
 
 // Find the named node (could be method or field)

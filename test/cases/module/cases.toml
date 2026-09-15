@@ -35,7 +35,8 @@
 #   wrong file url, so a scenario built on it would pin a reporting bug.
 
 support = ["moduleinc.cone", "modulesub.cone", "moduleeof.cone",
-           "moduleprov.cone", "moduleprov2.cone", "modulenoname.cone"]
+           "moduleprov.cone", "moduleprov2.cone", "modulenoname.cone",
+           "modulesyms.cone", "modulecyc.cone", "modulex_y.cone", "modulex.cone"]
 
 # -------- success --------
 
@@ -43,6 +44,16 @@ support = ["moduleinc.cone", "modulesub.cone", "moduleeof.cone",
 category = "run"
 description = "'include', 'extern' and namespace qualification inside one module"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+# Pins today's spelling of an 'extern' declaration, so the symbol-generation
+# refactor can show nothing moved: the C name exactly as written, no prefix, a
+# 'declare' that leads no COMDAT. Both forms of the declaration -- in a block
+# and on its own -- come out the same.
+[[scenario.module-success.check]]
+name = "extern-declares-the-bare-c-name"
+target = "llvmir"
+contains = ["declare i32 @abs(i32)", "declare i64 @labs(i64)"]
+excludes = ["$abs", "$labs", "@abs(i32) comdat", "@labs(i64) comdat"]
 
 [scenario.module-imports]
 category = "compile"
@@ -91,6 +102,137 @@ name = "qualified-call-lowers-to-namespaced-symbol"
 target = "llvmir"
 contains = ["@modulesub_plain", "@modulesub_scaleInt"]
 excludes = ["@modulesub_scale("]
+
+# -------- symbol characterisation --------
+#
+# The four scenarios below pin what the compiler emits today for symbol kinds
+# no other check names, so that the symbol-generation refactor can show nothing
+# moved. Each pins the current behaviour as it is, oddities included; none
+# asserts what the compiler should do.
+
+[scenario.module-extern-system]
+category = "compile"
+description = "An 'extern system' declaration and the imported, stdcall symbol it lowers to"
+tags = ["parse", "genllvm"]
+
+# Pins today's spelling for the symbol-generation refactor: 'system' adds the
+# DLL import storage class and the x86 stdcall convention to an otherwise
+# ordinary extern declaration, which still takes no prefix and no COMDAT.
+[[scenario.module-extern-system.check]]
+name = "extern-system-declares-a-dllimport-stdcall-symbol"
+target = "llvmir"
+contains = ["declare dllimport x86_stdcallcc i32 @GetTickCount()"]
+excludes = ["$GetTickCount", "@GetTickCount() comdat"]
+
+[scenario.module-symbols]
+category = "compile"
+description = "What an importer emits for an imported global, private declarations, extern and struct methods"
+tags = ["parse", "nameres", "typecheck", "genllvm"]
+
+# Pins today's spelling for the symbol-generation refactor: an imported global
+# is a prefixed 'external' declaration with no initializer and no COMDAT, and
+# an imported 'imm' global is an 'external constant'.
+[[scenario.module-symbols.check]]
+name = "imported-global-is-an-external-declaration"
+target = "llvmir"
+contains = [
+  "@modulesyms_shared = external global i64",
+  "@modulesyms_fixed = external constant i64",
+]
+excludes = [
+  "$modulesyms_shared",
+  "$modulesyms_fixed",
+  "@modulesyms_shared = global",
+  "@modulesyms_fixed = constant",
+]
+
+# Pins today's behaviour for the symbol-generation refactor: an imported
+# module's private top-level function and global leave no symbol at all in the
+# importer, while its public function is declared.
+[[scenario.module-symbols.check]]
+name = "imported-private-top-level-names-are-absent"
+target = "llvmir"
+contains = ["declare i64 @modulesyms_pubFn(i64)"]
+excludes = ["_privFn", "_privGlobal"]
+
+# Pins today's behaviour for the symbol-generation refactor, unevenness
+# included: a struct's methods are declared under the module prefix and then
+# the type prefix, the struct type itself carries no module prefix, and the
+# private method *is* declared -- 'hidden', like a private root method --
+# although a private top-level function of the same module is not.
+[[scenario.module-symbols.check]]
+name = "imported-private-method-is-declared-hidden"
+target = "llvmir"
+contains = [
+  "declare i32 @modulesyms_Gadget_get(%Gadget*)",
+  "declare hidden i32 @modulesyms_Gadget__hid(%Gadget*)",
+  "declare %Gadget @modulesyms_Gadget_make(i32)",
+]
+excludes = [
+  "@modulesyms_Gadget_get(%Gadget*) comdat",
+  "@modulesyms_Gadget__hid(%Gadget*) comdat",
+  "%modulesyms_Gadget",
+]
+
+# Pins today's behaviour for the symbol-generation refactor: an 'extern'
+# declared inside an imported module is still the bare C name, with no module
+# prefix.
+[[scenario.module-symbols.check]]
+name = "extern-inside-an-imported-module-takes-no-prefix"
+target = "llvmir"
+contains = ["declare i64 @labs(i64)"]
+excludes = ["@modulesyms_labs"]
+
+[scenario.module-cycle]
+category = "compile"
+description = "An import cycle back to the root file, which finds the root instead of re-parsing it"
+tags = ["parse", "nameres", "genllvm"]
+
+# The root's own declarations are defined under their bare names, as in any
+# root file, and the sub module's under its prefix ...
+[[scenario.module-cycle.check]]
+name = "root-defines-its-own-symbols-unprefixed"
+target = "llvmir"
+contains = [
+  "@counter = global i64 5, comdat",
+  "define i64 @rootFn(i64 %0) comdat {",
+  "define i64 @caller() comdat {",
+  "declare i64 @modulecyc_subFn(i64)",
+]
+
+# ... and each of them exactly once. The root module is named after its file,
+# so the import back to it finds the module already parsed rather than reading
+# the file again as a second module named 'module-cycle': nothing is declared
+# under that prefix, and no definition is repeated (LLVM would print a second
+# '@rootFn' as '@rootFn.1').
+[[scenario.module-cycle.check]]
+name = "cycle-finds-the-root-and-declares-nothing-twice"
+target = "llvmir"
+excludes = [
+  "@module-cycle_",
+  "@rootFn.1",
+  "@caller.1",
+  "@counter.1",
+]
+
+[scenario.module-collision]
+category = "compile"
+description = "'z' in module 'modulex_y' and 'y_z' in module 'modulex', which join into one symbol"
+tags = ["parse", "nameres", "genllvm"]
+
+# Pins today's behaviour for the symbol-generation refactor: the prefix and the
+# name join with a bare '_', so the two declarations spell the same symbol and
+# LLVM renames the second '.1'. The call sites pin which spelling each call
+# was bound to. Pinned as it is: the '.1' symbol is unresolvable.
+[[scenario.module-collision.check]]
+name = "prefix-and-name-join-into-one-symbol-that-llvm-uniquifies"
+target = "llvmir"
+contains = [
+  "declare i64 @modulex_y_z()",
+  "declare i64 @modulex_y_z.1()",
+  "call i64 @modulex_y_z()",
+  "call i64 @modulex_y_z.1()",
+]
 
 # -------- parse stage --------
 

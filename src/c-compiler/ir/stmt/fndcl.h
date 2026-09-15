@@ -14,7 +14,7 @@ typedef struct FnDclNode {
     Name *overloadsym;            // Overload name this declaration also joins (NULL if none)
     INode *value;                 // Block or intrinsic code nodes (NULL if no code)
     LLVMValueRef llvmvar;         // LLVM's handle for a declared variable (for generation)
-    char *genname;                // Name of the function as known to the linker
+    DclInfo dclinfo;              // Owner and the facts that decide the linker symbol (name.c spells it)
     GenericInfo *genericinfo;     // Link to generic parms, etc (or NULL if not generic)
     uint16_t vtblidx;             // Method ptr's index in the type's vtable
 } FnDclNode;

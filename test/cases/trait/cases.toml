@@ -88,13 +88,16 @@ contains = [
 excludes = ["@Rect_areaScaled to", "@Circle_areaScaled to"]
 
 # A trait's default method is not a symbol of its own: it is cloned into each
-# type that inherits it, named for the trait and the receiver it was cloned for.
-# Dial declares its own, so its slot names Dial's method and no clone is made.
+# type that inherits it, and the clone is owned by that type, so its symbol is
+# spelled exactly as a method written there would be -- the same shape Dial's
+# own 'reading' gets. Nothing is spelled after the trait, and the clone carries
+# no type-argument suffix, because an inherited default is a copy rather than
+# an instance of a generic.
 [[scenario.trait-success.check]]
 name = "inherited-default-is-cloned-per-implementing-type"
 target = "llvmir"
-contains = ['@"Meter_reading:&ro Gauge"', "@Dial_reading"]
-excludes = ["@Meter_reading(", '@"Meter_reading:&ro Dial"']
+contains = ["@Gauge_reading", "@Dial_reading"]
+excludes = ["@Meter_reading(", '@"Meter_reading:']
 
 # A requirement's parameters reach the vtable slot's own type, which is the half
 # of "the signatures must match exactly" a run cannot observe: the printed
@@ -126,6 +129,50 @@ target = "llvmir"
 contains = [
   '%"Meter:Vtable" = type { i32 (i8*)*, %void (i8*)*, i32 }',
   '%"Shape:Vtable.0" = type { i8*, %"Shape:Vtable"* }',
+]
+
+# Pins today's spelling of the vtable list, so the symbol-generation refactor
+# can show nothing moved. Every trait's list is emitted under the one literal
+# name 'vtable-list', 'linkonce' with a 'comdat any'; the second trait in a
+# module gets '.1', which is LLVM's own uniquifier rather than anything the
+# compiler spells. Shape's list is first and Scaler's second because that is
+# the order their vtables are built in this file.
+[[scenario.trait-success.check]]
+name = "vtable-list-is-one-name-uniquified-per-trait"
+target = "llvmir"
+contains = [
+  "$vtable-list = comdat any",
+  '@vtable-list = linkonce constant [3 x %"Shape:Vtable"*] [%"Shape:Vtable"* @"Rect->Shape:Vtable", %"Shape:Vtable"* @"Circle->Shape:Vtable", %"Shape:Vtable"* @"Square->Shape:Vtable"], comdat',
+  "$vtable-list.1 = comdat any",
+  '@vtable-list.1 = linkonce constant [2 x %"Scaler:Vtable"*] [%"Scaler:Vtable"* @"Box->Scaler:Vtable", %"Scaler:Vtable"* @"Cup->Scaler:Vtable"], comdat',
+]
+
+[scenario.trait-inherited-defaults]
+category = "compile"
+description = "Two types inheriting one trait default each get their own copy of it, spelled after the type"
+tags = ["typecheck", "genllvm"]
+
+# Two implementers of the same trait inherit the same default. Each clone is
+# owned by its implementing type and so lands on its own symbol, and each is a
+# definition here, as a method written in that type would be: external, with a
+# 'nodeduplicate' COMDAT rather than the merging linkage a generic instance
+# gets. The trait's own copy is not a symbol at all. A collision between the two
+# clones would show as LLVM's '.1' uniquifier on the second definition.
+[[scenario.trait-inherited-defaults.check]]
+name = "each-implementing-type-defines-its-own-clone"
+target = "llvmir"
+contains = [
+  "$Alpha_reading = comdat nodeduplicate",
+  "define i32 @Alpha_reading(",
+  "$Beta_reading = comdat nodeduplicate",
+  "define i32 @Beta_reading(",
+]
+excludes = [
+  "@Meter_reading",
+  "@Alpha_reading.1",
+  "@Beta_reading.1",
+  "linkonce i32 @Alpha_reading",
+  "linkonce i32 @Beta_reading",
 ]
 
 [scenario.trait-variants]
