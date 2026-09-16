@@ -41,8 +41,8 @@ is entirely that `uint16_t`.
 | `AllocateTag` | exp | initial value | built `RefTag`, or an `Option` call under `FlagQues` |
 | `ArrayAllocTag` | exp | initial value | built `ArrayRefTag` node |
 
-The group bits are the discriminator: type tags are `TypeGroup`, constructor
-tags are `ExpGroup`. **The `scope` that matters is the one on a borrow's
+The group is the discriminator: type tags are `TypeGroup`, constructor tags
+are `ExpGroup`. **The `scope` that matters is the one on a borrow's
 *result* type**; the expression node's own is never read.
 
 `RefTypeInfo` holds three LLVM handles: the reference's own type, the

@@ -51,26 +51,27 @@ typedef struct INode {
     INodeHdr; \
     INode *vtype
 
-// Flags found at the top of a node's tag
-#define StmtGroup  0x0000   // Statement nodes that return no value
-#define ExpGroup   0x4000   // Nodes that return a typed value
-#define TypeGroup  0x8000   // Nodes that define or refer to a type
-#define MetaGroup  0xC000   // Generic, macro, metaconditional nodes
-#define GroupMask  0xC000
-#define NamedNode  0x2000   // Node that defines a named item (not nameuse)
-#define MethodType 0x1000   // Type that supports methods
+// The four groups a node can belong to
+typedef enum NodeGroup {
+    StmtGroup,      // Statement nodes that return no value
+    ExpGroup,       // Nodes that return a typed value
+    TypeGroup,      // Nodes that define or refer to a type
+    MetaGroup       // Generic, macro, metaconditional nodes
+} NodeGroup;
 
-// Easy checks on the kind of node it is. For every node but a name use, the
-// tag is the node's characteristic and its group bits are the answer. A name use
-// stands for whatever it names, so it answers for its declaration (nameUseGroup)
-// and belongs to no group until it is bound to one; an unlowered instantiation
-// of a generic type counts as a type (itypeIsGenericType). See inodeIsExp and
-// its siblings in inode.c.
+// Easy checks on the kind of node it is. A tag names a node kind and nothing
+// more: which group it belongs to, whether it declares a named item, and whether
+// it is a type that carries methods are looked up in the tag table in inode.c.
+// For every node but a name use the tag is the node's characteristic, so that
+// table is the answer. A name use stands for whatever it names, so it answers
+// for its declaration (nameUseGroup) and belongs to no group until it is bound
+// to one; an unlowered instantiation of a generic type counts as a type
+// (itypeIsGenericType). See inodeIsExp and its siblings in inode.c.
 #define isExpNode(node) inodeIsExp((INode*)(node))
 #define isTypeNode(node) inodeIsType((INode*)(node))
 #define isMetaNode(node) inodeIsMeta((INode*)(node))
-#define isNamedNode(node) ((node)->tag & NamedNode)
-#define isMethodType(node) (isTypeNode(node) && ((node)->tag & MethodType))
+#define isNamedNode(node) inodeIsNamed((INode*)(node))
+#define isMethodType(node) inodeIsMethodType((INode*)(node))
 #define isNameUseNode(node) ((node)->tag == NameUseTag)
 
 // A parameterless macro's name stands for the value its body expands to, but it
@@ -80,9 +81,11 @@ typedef struct INode {
 // it is rejected before it ever gets the chance to expand.
 #define isExpOrMacroNode(node) (isExpNode(node) || nameUseNames((INode*)(node), MacroDclTag))
 
-// All the possible tags for a node
+// All the possible tags for a node. The numbers are arbitrary and mean nothing:
+// what a tag is -- its group, whether it declares a name, whether it carries
+// methods -- is the tag table in inode.c, which needs a row for every tag here.
 enum NodeTags {
-    ProgramTag = StmtGroup,
+    ProgramTag,
 
     // Lexer-only nodes that are *never* found in a program's IR.
     // KeywordTag exists for name table consistency
@@ -106,7 +109,7 @@ enum NodeTags {
     StarTag,        // Could become pointer type or deref exp node
 
     // Named, non-type declaration nodes
-    ModuleTag = StmtGroup + NamedNode,        // Module namespace
+    ModuleTag,      // Module namespace
     FnDclTag,       // Function/method declaration
     FnOverloadDclTag, // Overloaded function/method declarations sharing one name
     VarDclTag,      // Variable declaration (global, local, parm)
@@ -114,7 +117,7 @@ enum NodeTags {
     ConstDclTag,    // Constant declaration
 
     // Expression nodes (having value type - or sometimes nullType)
-    NilLitTag = ExpGroup,  // 'nil' literal (of void type)
+    NilLitTag,      // 'nil' literal (of void type)
     ULitTag,        // Integer literal
     FLitTag,        // Float literal
     StringLitTag,   // String literal
@@ -143,7 +146,7 @@ enum NodeTags {
     AbsenceTag,     // unique, unclonable node for absence of info
 
     // Unnamed type node
-    TypedefTag = TypeGroup, // A type name alias (structural)
+    TypedefTag,     // A type name alias (structural)
     FnSigTag,       // Also method, closure, behavior, co-routine, thread, ...
     ArrayTag,       // Also dynamic arrays? SOA?
     RefTag,         // Reference (could become borrowtag/alloctag)
@@ -157,19 +160,22 @@ enum NodeTags {
     BorrowRegTag,   // Borrowed region
     UnknownTag,     // unknown type - must be resolved before gen
 
-    EnumTag = TypeGroup + NamedNode,    // Enumerated value
+    // Named type nodes
+    EnumTag,        // Enumerated value
     LifetimeTag,
 
-    IntNbrTag = TypeGroup + NamedNode + MethodType,    // Integer
+    // Named type nodes that support methods
+    IntNbrTag,      // Integer
     UintNbrTag,     // Unsigned integer
     FloatNbrTag,    // Floating point number
     StructTag,      // struct or trait
     PermTag,
 
     // Meta group declarations
-    MacroDclTag = MetaGroup + NamedNode,     // Macro declaration
-    GenVarDclTag,               // Generic variable declaration
+    MacroDclTag,    // Macro declaration
+    GenVarDclTag,   // Generic variable declaration
 
+    NodeTagCount    // How many tags there are: the size of inode.c's tag table
 };
 
 // *****************
@@ -286,6 +292,11 @@ void inodePrintDecr();
 int inodeIsExp(INode *node);
 int inodeIsType(INode *node);
 int inodeIsMeta(INode *node);
+
+// Does this node declare a named item, and is it a type that supports methods?
+// The isNamedNode and isMethodType macros above are the way to ask.
+int inodeIsNamed(INode *node);
+int inodeIsMethodType(INode *node);
 
 // Obtain name from a named node
 Name *inodeGetName(INode *node);

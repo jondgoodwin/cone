@@ -603,15 +603,105 @@ int inodeIsError(INode *node) {
     return isExpNode(node) && ((IExpNode*)node)->vtype == errorType;
 }
 
+// What a tag is, since its number says nothing: the group it belongs to,
+// whether it declares a named item, and whether it is a type that supports
+// methods.
+typedef struct NodeTagFacts {
+    NodeGroup group;
+    int named;      // Declares a named item (a name use names one, and is not one)
+    int method;     // A type that supports methods
+} NodeTagFacts;
+
+// Every tag in enum NodeTags needs a row here. A tag with none is a statement
+// that declares nothing and carries no methods, and nothing says so.
+static NodeTagFacts nodeTagFacts[NodeTagCount] = {
+    [ProgramTag] = {StmtGroup, 0, 0},
+    [KeywordTag] = {StmtGroup, 0, 0},
+
+    [IntrinsicTag] = {StmtGroup, 0, 0},
+    [ReturnTag] = {StmtGroup, 0, 0},
+    [BlockRetTag] = {StmtGroup, 0, 0},
+    [BreakTag] = {StmtGroup, 0, 0},
+    [ContinueTag] = {StmtGroup, 0, 0},
+    [SwapTag] = {StmtGroup, 0, 0},
+    [ImportTag] = {StmtGroup, 0, 0},
+
+    // A name use is in no group of its own: it answers for what it names
+    [NameUseTag] = {StmtGroup, 0, 0},
+    [TupleTag] = {StmtGroup, 0, 0},
+    [StarTag] = {StmtGroup, 0, 0},
+
+    [ModuleTag] = {StmtGroup, 1, 0},
+    [FnDclTag] = {StmtGroup, 1, 0},
+    [FnOverloadDclTag] = {StmtGroup, 1, 0},
+    [VarDclTag] = {StmtGroup, 1, 0},
+    [FieldDclTag] = {StmtGroup, 1, 0},
+    [ConstDclTag] = {StmtGroup, 1, 0},
+
+    [NilLitTag] = {ExpGroup, 0, 0},
+    [ULitTag] = {ExpGroup, 0, 0},
+    [FLitTag] = {ExpGroup, 0, 0},
+    [StringLitTag] = {ExpGroup, 0, 0},
+    [ArrayLitTag] = {ExpGroup, 0, 0},
+    [TypeLitTag] = {ExpGroup, 0, 0},
+    [VTupleTag] = {ExpGroup, 0, 0},
+    [AssignTag] = {ExpGroup, 0, 0},
+    [FnCallTag] = {ExpGroup, 0, 0},
+    [ArrIndexTag] = {ExpGroup, 0, 0},
+    [FldAccessTag] = {ExpGroup, 0, 0},
+    [SizeofTag] = {ExpGroup, 0, 0},
+    [CastTag] = {ExpGroup, 0, 0},
+    [BorrowTag] = {ExpGroup, 0, 0},
+    [ArrayBorrowTag] = {ExpGroup, 0, 0},
+    [AllocateTag] = {ExpGroup, 0, 0},
+    [ArrayAllocTag] = {ExpGroup, 0, 0},
+    [DerefTag] = {ExpGroup, 0, 0},
+    [NotLogicTag] = {ExpGroup, 0, 0},
+    [OrLogicTag] = {ExpGroup, 0, 0},
+    [AndLogicTag] = {ExpGroup, 0, 0},
+    [IsTag] = {ExpGroup, 0, 0},
+    [BlockTag] = {ExpGroup, 0, 0},
+    [IfTag] = {ExpGroup, 0, 0},
+    [AliasTag] = {ExpGroup, 0, 0},
+    [NamedValTag] = {ExpGroup, 0, 0},
+    [AbsenceTag] = {ExpGroup, 0, 0},
+
+    [TypedefTag] = {TypeGroup, 0, 0},
+    [FnSigTag] = {TypeGroup, 0, 0},
+    [ArrayTag] = {TypeGroup, 0, 0},
+    [RefTag] = {TypeGroup, 0, 0},
+    [ArrayRefTag] = {TypeGroup, 0, 0},
+    [VirtRefTag] = {TypeGroup, 0, 0},
+    [ArrayDerefTag] = {TypeGroup, 0, 0},
+    [PtrTag] = {TypeGroup, 0, 0},
+    [TTupleTag] = {TypeGroup, 0, 0},
+    [VoidTag] = {TypeGroup, 0, 0},
+    [QuesTag] = {TypeGroup, 0, 0},
+    [BorrowRegTag] = {TypeGroup, 0, 0},
+    [UnknownTag] = {TypeGroup, 0, 0},
+
+    [EnumTag] = {TypeGroup, 1, 0},
+    [LifetimeTag] = {TypeGroup, 1, 0},
+
+    [IntNbrTag] = {TypeGroup, 1, 1},
+    [UintNbrTag] = {TypeGroup, 1, 1},
+    [FloatNbrTag] = {TypeGroup, 1, 1},
+    [StructTag] = {TypeGroup, 1, 1},
+    [PermTag] = {TypeGroup, 1, 1},
+
+    [MacroDclTag] = {MetaGroup, 1, 0},
+    [GenVarDclTag] = {MetaGroup, 1, 0},
+};
+
 // The group a node belongs to: StmtGroup, ExpGroup, TypeGroup or MetaGroup.
-// For every node but a name use the tag is the node's characteristic, so its
-// group bits are the answer. A name use stands for whatever it names, so it is
+// For every node but a name use the tag is the node's characteristic, so the
+// tag table is the answer. A name use stands for whatever it names, so it is
 // asked of the declaration at the end of its chain of names rather than of the
 // use itself: that is what lets a name reached through an alias answer.
-static uint16_t inodeGroup(INode *node) {
+static NodeGroup inodeGroup(INode *node) {
     if (isNameUseNode(node))
         return nameUseGroup((NameUseNode*)node);
-    return node->tag & GroupMask;
+    return nodeTagFacts[node->tag].group;
 }
 
 int inodeIsExp(INode *node) {
@@ -626,4 +716,16 @@ int inodeIsType(INode *node) {
 
 int inodeIsMeta(INode *node) {
     return inodeGroup(node) == MetaGroup;
+}
+
+// Does this node declare a named item? A name use is not one, whatever it names.
+int inodeIsNamed(INode *node) {
+    return nodeTagFacts[node->tag].named;
+}
+
+// Is this a type that supports methods? An unlowered generic instantiation is a
+// type, but it is a call node until type check replaces it with the instance
+// that holds the methods, so it is not one of these yet.
+int inodeIsMethodType(INode *node) {
+    return isTypeNode(node) && nodeTagFacts[node->tag].method;
 }

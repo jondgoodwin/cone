@@ -99,7 +99,7 @@ INode *nameUseGetDcl(NameUseNode *name) {
 // not yet resolved, or a member name before type check selects the member
 // against the receiver's type -- is in no group: not an expression, not a
 // type, not a meta node.
-uint16_t nameUseGroup(NameUseNode *name) {
+NodeGroup nameUseGroup(NameUseNode *name) {
     INode *dcl = nameUseGetDcl(name);
     if (dcl == NULL)
         return StmtGroup;
