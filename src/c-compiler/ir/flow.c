@@ -12,18 +12,16 @@
 
 // Deactivate source of a moved value (or say move is illegal)
 void flowHandleMove(INode *node) {
-    switch (node->tag) {
-
     // For a variable, mark its value as moved
-    case VarNameUseTag: {
+    if (isNameUseNode(node) && isExpNode(node)) {
         VarDclNode *vardclnode = (VarDclNode *)((NameUseNode*)node)->dclnode;
         vardclnode->flowtempflags |= VarMoved;
         if (vardclnode->scope == 0) {
             errorMsgNode(node, ErrorInvType, "May not move a value out of a global variable.");
         }
-        break;
+        return;
     }
-
+    switch (node->tag) {
     // Go inwards to find the variable to mark it as moved
     case FldAccessTag:
     case ArrIndexTag: 
@@ -69,8 +67,9 @@ void flowInjectAliasNode(INode **nodep) {
 // Does this expression still hold its value after it is read?
 // An lvalue names storage that keeps it; anything else is a temporary.
 int flowIsLvalRead(INode *node) {
+    if (isNameUseNode(node) && isExpNode(node))
+        return 1;
     switch (node->tag) {
-    case VarNameUseTag:
     case DerefTag:
     case ArrIndexTag:
     case FldAccessTag:
@@ -102,6 +101,10 @@ void flowHandleMoveOrCopy(INode **nodep) {
 void flowLoadValue(FlowState *fstate, INode **nodep) {
     // Handle specific nodes here - lvals (read check) + literals + fncall
     // fncall + literals? do not need copy check - it can return
+    if (isNameUseNode(*nodep) && isExpNode(*nodep)) {
+        nameuseFlow(fstate, (NameUseNode**)nodep);
+        return;
+    }
     switch ((*nodep)->tag) {
     case BlockTag:
         blockFlow(fstate, (BlockNode **)nodep); break;
@@ -130,9 +133,6 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
         }
         break;
     }
-    case VarNameUseTag:
-        nameuseFlow(fstate, (NameUseNode**)nodep);
-        break;
     case DerefTag:
         derefFlow(fstate, (StarNode**)nodep);
         break;
@@ -244,7 +244,7 @@ static int flowIsScopeResult(INode *retexp, VarDclNode *varnode) {
         }
         return 0;
     }
-    return retexp->tag == VarNameUseTag && ((NameUseNode *)retexp)->namesym == varnode->namesym;
+    return isNameUseNode(retexp) && isExpNode(retexp) && ((NameUseNode *)retexp)->namesym == varnode->namesym;
 }
 
 // Create de-alias list of all own/rc reference variables (except the retexp name(s))
@@ -275,7 +275,7 @@ int flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp) {
             // are exempted from release one by one above, but each still needs
             // the move and initialization check flowLoadValue makes -- and the
             // elements that are not names need the rest of what it does.
-            else if (retexp->tag == VarNameUseTag)
+            else if (isNameUseNode(retexp) && isExpNode(retexp))
                 doalias = 0;
         }
         else {
