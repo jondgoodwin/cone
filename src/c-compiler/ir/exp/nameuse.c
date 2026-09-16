@@ -115,7 +115,11 @@ void nameUseAddQual(NameUseNode *node, Name *name) {
         while (cnt--)
             *newp++ = *oldp++;
     }
-    Name **namep = (Name**)&(node->qualNames + 1)[used];
+    // The names follow the header as Name* slots, so step in Name* strides.
+    // Indexing (qualNames + 1) directly steps in whole-NameList strides, which
+    // put the second qualifier two slots along and left slot 1 unset for the
+    // walk in nameUseNameRes to read.
+    Name **namep = (Name**)(node->qualNames + 1) + used;
     *namep = name;
     ++node->qualNames->used;
 }
