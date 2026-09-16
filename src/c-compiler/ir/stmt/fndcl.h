@@ -29,8 +29,9 @@ typedef struct FnOverloadDclNode {
     Nodes *overloads;             // Ordered list of FnDclNode candidates
 } FnOverloadDclNode;
 
-// Create a new function declaraction node
-FnDclNode *newFnDclNode(Name *namesym, uint16_t tag, INode *sig, INode *val);
+// Create a new function declaraction node. The tag is always FnDclTag; the
+// second argument is the node's flags (FlagMethFld and friends)
+FnDclNode *newFnDclNode(Name *namesym, uint16_t flags, INode *sig, INode *val);
 
 // Create a new overloaded function/method declaration node
 FnOverloadDclNode *newFnOverloadDclNode(Name *namesym);
