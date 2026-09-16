@@ -143,7 +143,7 @@ enum ErrorCode {
     ErrorUnreachable = 1075,    // A state the compiler had established cannot happen
 
     // Macro methods
-    ErrorBareMbr = 1076,        // A macro method's body names a member of its type without 'self.'
+    ErrorBareMbr = 1077,        // A macro method's body names a member of its type without 'self.'
 
     // Warnings
     WarnCode = 3000,
