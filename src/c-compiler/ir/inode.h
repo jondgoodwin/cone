@@ -283,8 +283,11 @@ DclInfo *inodeGetDclInfo(INode *node);
 // Obtain the module or type node a declaration lives in, or NULL if it has none
 INode *inodeGetOwner(INode *node);
 
-// Determine whether a named node is marked as private
+// Is this a declaration that carries its own analysis marks?
 int inodeIsDcl(INode *node);
+
+// Determine whether a named node is private: its DclPrivate bit when it carries
+// DclInfo, else its spelling
 int inodeIsPrivate(INode *node);
 
 // Determine whether an earlier diagnostic already marked this node as bad
