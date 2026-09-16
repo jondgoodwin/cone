@@ -44,8 +44,8 @@ where import folding lives.** A folded name is added to `namespace` and never to
 generate it.
 
 `ModuleNode` extends `IExpNodeHdr` and so carries a `vtype` slot, but
-`ModuleTag` is `StmtGroup + NamedNode`: `isExpNode` is false, `newModuleNode`
-never sets `vtype`, and nothing reads it.
+`ModuleTag` is a named node in `StmtGroup`: `isExpNode` is false,
+`newModuleNode` never sets `vtype`, and nothing reads it.
 
 **`ImportNode`** holds `module` — the loaded `ModuleNode` — and `foldall`,
 recording whether `::*` was written. That is the whole of import: there is no

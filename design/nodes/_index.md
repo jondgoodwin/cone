@@ -29,12 +29,14 @@ than a node family, a header, and an arm in every dispatcher.
 saying which roles its struct serves — that is the principle applied, not a
 principle of its own.
 
-**A node is its tag, and group membership lives in the tag's high bits**, so a
-predicate is a mask test rather than a list. ▸ **Settles** the cost of asking
-"is this an expression"; **forbids** a group whose membership cannot be encoded
-that way. Section 1 carries the exceptions: a name use answers for what it
-names rather than for itself, and two nodes are counted into a group before
-type check has replaced them.
+**A node is its tag, and a tag's number means nothing.** What a tag *is* — the
+group it belongs to, whether it declares a name, whether it carries methods —
+is one table, which every predicate reads. ▸ **Settles** that a new node kind
+costs an enum line and a table row rather than an arithmetic choice, and
+**forbids** deducing anything about a node from its tag's value. Section 1
+carries the exceptions: a name use answers for what it names rather than for
+itself, and two nodes are counted into a group before type check has replaced
+them.
 
 **The walks mutate through double pointers.** ▸ **Settles** that a node may be
 replaced in place by its own handler, which is what lets lowering and coercion
@@ -42,18 +44,23 @@ inject nodes without a rewriting pass. Section 3.
 
 ## 1. A node is its tag
 
-`inode.h` is the truth for the tag list; do not mirror it here. What matters is
-that **the tag encodes group membership in its high bits**, so a predicate is a
-mask test rather than a list of tags:
+`inode.h` is the truth for the tag list; do not mirror it here. The tags are a
+flat enumeration and their numbers are arbitrary. What each one *is* — three
+characteristics — is `nodeTagFacts` in `inode.c`, one row per tag, and every
+predicate below reads it:
 
-| Bits | Constant | Predicate |
+| Characteristic | Values | Predicate |
 | --- | --- | --- |
-| `0x0000` | `StmtGroup` | statements, returning no value |
-| `0x4000` | `ExpGroup` | `isExpNode` — returns a typed value |
-| `0x8000` | `TypeGroup` | `isTypeNode` — defines or names a type |
-| `0xC000` | `MetaGroup` | `isMetaNode` — generic, macro, metaconditional |
-| `0x2000` | `NamedNode` | `isNamedNode` — declares a name |
-| `0x1000` | `MethodType` | `isMethodType` — a type that supports methods |
+| group | `StmtGroup` | statements, returning no value |
+| | `ExpGroup` | `isExpNode` — returns a typed value |
+| | `TypeGroup` | `isTypeNode` — defines or names a type |
+| | `MetaGroup` | `isMetaNode` — generic, macro, metaconditional |
+| named | declares a named item | `isNamedNode` |
+| method | a type that supports methods | `isMethodType` |
+
+**A tag with no row is a statement that declares nothing and carries no
+methods, and nothing reports it.** That is the one hazard the table adds, and
+section 6 lists it among the arms a new tag needs.
 
 **A name use is the exception: it answers for the declaration it names.**
 `isExpNode`, `isTypeNode` and `isMetaNode` are functions (`inodeIsExp` and its
@@ -69,7 +76,10 @@ to answer with.
 **Two more are counted into a group before type check has replaced them.**
 `isTypeNode` also counts an unlowered `Box[i64]` as a type
 (`itypeIsGenericType`) — without which `*Box[i64]` reads as a dereference.
-`isMethodType` inherits that, being `isTypeNode` and the bit. Separately,
+`isMethodType` inherits that, being `isTypeNode` and the table's method
+column — so an unlowered instantiation is a type but not yet a method type,
+since the call node standing in for it is not what carries the methods.
+Separately,
 `isExpOrMacroNode` counts a parameterless macro name as an expression: it is a
 meta node until type check expands it, so any position deciding by node kind
 whether a statement can give a value has to count it, or it is rejected before
@@ -123,7 +133,7 @@ Cone source.
 | `srcp` | `char*` | start of the parsed token |
 | `linep` | `char*` | start of the line holding `srcp` |
 | `linenbr` | `uint32_t` | 1-based line number |
-| `tag` | `uint16_t` | node kind plus group bits (section 1) |
+| `tag` | `uint16_t` | node kind; what that kind is, is section 1's table |
 | `flags` | `uint16_t` | node-specific flags |
 
 **`flags` is not one namespace.** The same bit means different things on
@@ -236,8 +246,9 @@ Work the list.
 
 | File | Function | Add an arm when |
 | --- | --- | --- |
-| `ir/inode.h` | `enum NodeTags` | always — and get the group bits right, section 1 |
-| `ir/inode.c` | `inodePrintNode` | always. Miss it and `--ir` silently prints nothing for the node |
+| `ir/inode.h` | `enum NodeTags` | always — one line, anywhere in the list |
+| `ir/inode.c` | `nodeTagFacts` | always — the row saying what the tag is, section 1. Miss it and the tag is silently a statement that declares nothing |
+| | `inodePrintNode` | always. Miss it and `--ir` silently prints nothing for the node |
 | | `inodeNameRes` | the node survives parsing |
 | | `inodeTypeCheck` | the node survives name resolution |
 | | `inodeGetName`, `inodeIsDcl` | it declares a name |

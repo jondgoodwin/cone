@@ -42,7 +42,7 @@ INode *nameUseGetDcl(NameUseNode *name);
 
 // The group a name use belongs to (ExpGroup, TypeGroup or MetaGroup),
 // asked of the declaration it names
-uint16_t nameUseGroup(NameUseNode *name);
+NodeGroup nameUseGroup(NameUseNode *name);
 
 // Does this node name a declaration with the given tag? No for a node that is
 // not a name use, and for a name use bound to nothing yet

@@ -241,7 +241,7 @@ void structSetDropFn(StructNode *node) {
             nodesAdd(&fnsig->parms, (INode*)selfDcl);
             fnsig->rettype = (INode*)newVoidNode();
             block = newBlockNode();
-            INode *newdropfn = (INode*)newFnDclNode(dropName, FnDclTag, (INode*)fnsig, (INode*)block);
+            INode *newdropfn = (INode*)newFnDclNode(dropName, FlagMethFld, (INode*)fnsig, (INode*)block);
             // Owned by the type it drops, so its symbol is spelled after that
             // type and stays unique among all the program's drop functions
             nodelistAdd(&node->nodelist, newdropfn);
