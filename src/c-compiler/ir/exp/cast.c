@@ -233,5 +233,34 @@ void castIsTypeCheck(TypeCheckState *pstate, CastNode *node) {
             return;
     }
 
+    // Narrowing something already concrete, which is a different mistake from
+    // naming two incompatible types and deserves to be told apart from it. The
+    // usual way in is not a downcast the author wrote: a method with a body
+    // declared on a union or closed trait is a *default*, cloned into every
+    // variant with 'Self' repointed, so inside it 'self' is one variant and
+    // 'match self' asks to narrow a type that is already as narrow as it gets.
+    // Reporting only that the types do not match sends the reader to look at the
+    // pattern, where nothing is wrong.
+    INode *fromstrnode = (fromtype->tag == RefTag || fromtype->tag == VirtRefTag)
+        ? itypeGetTypeDcl(((RefNode*)fromtype)->vtexp) : fromtype;
+    if (fromstrnode->tag == StructTag && !(fromstrnode->flags & TraitType)) {
+        StructNode *fromstr = (StructNode*)fromstrnode;
+        StructNode *base = structBaseTraitDcl(fromstr);
+        if (base == NULL)
+            errorMsgNode((INode*)node, ErrorInvType,
+                "%s is a concrete type, so there is nothing to narrow.",
+                &fromstr->namesym->namestr);
+        else if (node->instnode)
+            // Cloned from somewhere, which is what a default method's copy is
+            errorMsgNode((INode*)node, ErrorInvType,
+                "%s is one variant of %s, so it is already narrowed. A method with a body is copied into each variant, and `self` is that variant inside the copy. Declare the method without a body and implement it in each variant.",
+                &fromstr->namesym->namestr, &base->namesym->namestr);
+        else
+            errorMsgNode((INode*)node, ErrorInvType,
+                "%s is one variant of %s, so it is already narrowed. Only a reference to %s narrows to a variant.",
+                &fromstr->namesym->namestr, &base->namesym->namestr, &base->namesym->namestr);
+        return;
+    }
+
     errorMsgNode((INode*)node, ErrorInvType, "Types are not compatible for this downcast specialization");
 }

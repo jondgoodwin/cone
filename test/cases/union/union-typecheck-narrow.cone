@@ -59,3 +59,34 @@ fn foreignRegion(s &Shape) i32 {
     else {0}
   }
 }
+
+// A value that is already a variant has nothing left to narrow. Naming the
+// cause matters here because the usual way in is not a downcast anyone wrote: a
+// method with a body declared on a union is a default, cloned into every variant
+// with 'Self' repointed, so inside the copy 'self' is one variant and 'match self'
+// asks to narrow it. The two forms below are the same mistake reached the two
+// ways, and each says which.
+fn matchAVariant(c &Circle) i32 {
+  match c {
+    case imm r &Rect {r.w}   //~ ErrorInvType:10 "Circle is one variant of Shape, so it is already narrowed"
+    else {0}
+  }
+}
+
+union Gauge {
+  reading i32
+
+  struct Low { lo i32 }
+  struct High { hi i32 }
+
+  // A default, so it is copied into Low and into High
+  fn pick(self &) i32 {
+    match self {
+      // Reported twice, once per copy: the default is cloned into Low and into
+      // High, and each copy narrows a 'self' that is already its own variant
+      case imm l &Low {l.lo}   //~ ErrorInvType:12 "Low is one variant of Gauge"
+                               //~^ ErrorInvType:12 "High is one variant of Gauge"
+      else {0}
+    }
+  }
+}
