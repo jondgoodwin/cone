@@ -53,6 +53,16 @@ restores. **Blocks are never recycled**, deliberately: every IR node stores the
 is reported, so reusing a popped block rewrites the file name out from under
 every node still pointing at it.
 
+**An identifier may be spelled in any letters UTF-8 can carry**, which is
+`utf8IsLetter`: ASCII letters, or the start of a well-formed multi-byte
+character. **Well-formed is the load-bearing word.** A byte is only a character
+if it leads a sequence whose continuation bytes are actually there, so a stray
+byte is refused as a token (`ErrorBadTok`) rather than absorbed into a name, and
+the scan resumes at the byte after it rather than at the length its lead byte
+claimed. `utf8ByteSkip` never advances past the character in front of it, which
+is what keeps a malformed byte from consuming the source that follows.
+`lexical-reject-tokens` holds both shapes.
+
 **Names are interned at scan time, and `Name.node` is the binding slot.**
 `nametblFind` returns one immovable `Name*` per unique string. That same
 `node` field is what makes classification O(1) in the scanner: `keywordInit`

@@ -64,7 +64,10 @@ nothing. This is the single most common way a new diagnostic comes out wrong.
 ## Adding one
 
 1. Add the code to `shared/error.h` **with an explicit value**, at the end of
-   its block, in declaration order.
+   its block, in declaration order. **The next free number is the highest in use
+   plus one, not the next number after the block you are writing in** — a block
+   sits where it reads best, and its neighbours' numbers say nothing about what
+   is taken.
 2. Add the same name and number to `test/codes.toml`. The runner compares that
    table against the header **before any case runs** and fails naming exactly
    which codes moved. Regenerate with `python test/run.py --bless-codes` and
@@ -75,6 +78,14 @@ nothing. This is the single most common way a new diagnostic comes out wrong.
 Explicit values in the header are what remove the renumber hazard at the source;
 the pinned table is defence in depth, catching a code added without following
 the header's convention.
+
+**The runner also refuses two names for one number**, which is principle 1 made
+mechanical. The pinned table compares names to numbers and so cannot see a
+collision — both names are present and both agree with the header — but the
+corpus matches a diagnostic on the number alone, so two conditions sharing one
+are indistinguishable to every scenario that asserts either. Where a collision
+has to be resolved, the later-added code takes the next free number and the
+older one keeps what it published.
 
 ## When one code carries several causes
 

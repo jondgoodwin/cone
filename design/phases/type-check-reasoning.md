@@ -71,8 +71,9 @@ So the normal path is `iexpTypeCheckCoerce`:
    provoke a second complaint from every enclosing node.
 4. `iexpCoerce(from, totype)`.
 
-`litTypeCheck` also takes `expectType` and ignores it. An untyped literal is
-not typed by its context here; it is typed by the coercion in section 5.
+`litTypeCheck` uses `expectType` for one case: an untyped integer literal takes
+an integer expected type and keeps it, so its constant is built at that width.
+Every other literal is typed by the coercion in section 5.
 
 ## 4. The verdict vocabulary
 
@@ -117,7 +118,9 @@ monomorphization branch.
    fallbacks below.
 3. **Source is an untyped integer literal** (`ULitTag` with `FlagUnkType`) and
    the target is any number type: `ConvSubtype`. Deliberately not a subtype
-   check — a literal goes wherever the author wrote it.
+   check — a literal goes wherever the author wrote it. An integer target has
+   already taken the flag in `litTypeCheck`, so what reaches here is a float
+   target.
 4. **Auto-borrow** (`borrowAutoMatches`): can a borrow of the source produce the
    target reference?
 

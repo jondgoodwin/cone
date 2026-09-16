@@ -54,15 +54,30 @@ bound, because it is matched against a field by symbol later.
 
 ## Type check
 
-**`litTypeCheck` accepts `expectType` and ignores it.** Its whole body is
-`itypeTypeCheck(&node->vtype)`. A literal is not context-typed here.
+**`litTypeCheck` context-types an untyped integer literal, and nothing else.**
+When `expectType` is an integer type and the node is a `ULitTag` carrying
+`FlagUnkType`, the literal takes that type and drops the flag. Every other
+literal is typed by `itypeTypeCheck(&node->vtype)` alone.
 
-**`FlagUnkType` is consumed in exactly one place** — `iexpMatches`, which
-returns `ConvSubtype` for an untyped integer literal against any number type.
-So the literal keeps its default `i32` and the *coercion* machinery adapts it by
-wrapping it in a conversion; the node is never rewritten in place. Note the test
-is on the flag only: **it never asks whether the value fits the target type**,
-and it deliberately ignores subtype direction "for user convenience".
+**Adopting the type is what builds the constant at the right width.** The
+alternative, converting from the `i32` default, materializes the constant at 32
+bits first and widens what is left, which silently drops every bit above the low
+32 — `i64`'s maximum stored as `-1`, `u64`'s as `4294967295`, `i64`'s minimum as
+`0`. `typemgmt-success` pins the four cases that tell the two apart.
+
+**A float target is left to the conversion path**, because widening a literal to
+`f32`/`f64` changes its representation rather than its width. ⚠ **So a literal
+too wide for `i32` still loses its high bits on the way to a float**:
+`mut n f64 = 5000000000` yields `705032704.0` [differs].
+
+**`FlagUnkType` is also read by `iexpMatches`**, which returns `ConvSubtype` for
+an untyped integer literal against any number type — now reached only for a
+float target, since an integer target has already consumed the flag. It
+deliberately ignores subtype direction "for user convenience".
+
+⚠ **Nothing asks whether the value fits the type it lands on.** `mut n u8 = 300`
+stores `44` and `mut n i32 = 3000000000` stores `-1294967296`, both silently
+[differs]. See the hazard below for why the check is not simply a comparison.
 
 `slitTypeCheck` sets a string's type to an array of `u8` sized from `strlen`. A
 string literal is also an lval.
@@ -140,10 +155,21 @@ interning, and constant merging is not in the pass list.
 
 ## Hazards
 
-- **`litTypeCheck` ignores `expectType`**, so the parameter reads as though
-  literals are context-typed. They are not — coercion adapts them afterward.
+- **Only an integer literal is context-typed.** Every other literal is still
+  adapted by coercion afterward, so `expectType` reads as more general than it is.
 - **`FlagUnkType` is a permission to convert, not a range check.** Nothing asks
-  whether the literal's value fits.
+  whether the literal's value fits the type it lands on.
+- **A negated literal cannot be told from a large positive one**, which is what
+  makes that range check harder than a comparison. `parsePrefix` folds unary `-`
+  into the literal by negating `uintlit` in place, two's complement, and records
+  nothing — so `-1` and `18446744073709551615` are the same node. A check can
+  decide most cases by sign extension (a value fits a signed *N*-bit type when
+  bit *N*-1 repeats to the top), but `mut n i64 = 18446744073709551615` is
+  indistinguishable from `mut n i64 = -1` and would have to pass. Deciding that
+  one needs the parser to record that it negated.
+- **The lexer wraps a literal too big for 64 bits**, accumulating into a
+  `uint64_t` with no overflow test, so `99999999999999999999999` becomes
+  `200376420520689663` with no diagnostic.
 - **An array literal is not given the expected type.** `inodeTypeCheck`
   dispatches `arrayLitTypeCheck` without `expectType`, where the `BlockTag` and
   `IfTag` arms beside it pass it through. So the elements fold among themselves

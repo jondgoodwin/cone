@@ -158,6 +158,23 @@ def parse_error_codes(path: Path) -> dict[str, int]:
             value = int(member.group(2))
         codes[member.group(1)] = value
         value += 1
+
+    # Two names for one number is the failure this walk cannot otherwise see.
+    # Scenarios name a code symbolically and the runner matches on the number, so
+    # a shared number makes two conditions indistinguishable: an expectation
+    # naming one is satisfied by the other, and a report can only guess which
+    # name to print. The table check below compares names to numbers and so
+    # passes a collision through; this is the check that does not.
+    collisions = {}
+    for name, number in codes.items():
+        collisions.setdefault(number, []).append(name)
+    shared = {n: names for n, names in collisions.items() if len(names) > 1}
+    if shared:
+        lines = [f"{path.relative_to(REPO).as_posix()}: one number, more than one name (R5.1)."]
+        for number in sorted(shared):
+            lines.append(f"    {number} = {', '.join(shared[number])}")
+        lines.append("  give the later-added code the next free number; never renumber the older one")
+        raise SuiteError("\n".join(lines))
     return codes
 
 
