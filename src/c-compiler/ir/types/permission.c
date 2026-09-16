@@ -23,7 +23,7 @@ PermNode *newPermDclNode(Name *namesym, uint16_t flags) {
 // Create a new permission use node
 INode *newPermUseNode(PermNode *permdcl) {
     NameUseNode *perm;
-    newNode(perm, NameUseNode, TypeNameUseTag);
+    newNode(perm, NameUseNode, NameUseTag);
     perm->vtype = NULL;
     perm->namesym = permdcl->namesym;
     perm->dclnode = (INode*)permdcl;

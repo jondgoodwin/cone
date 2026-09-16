@@ -612,8 +612,9 @@ annotation on a reference names is a type.
   reported against an injected pseudo-file, and editing either means rebuilding
   the compiler.
 - **`parseModuleBlk` is declared in `parser.h` and defined nowhere.**
-- **A module name resolves as a type name use** — the retag falls through to
-  `TypeNameUseTag` by default, not because a module is a type.
+- **A use of a module's name answers `isTypeNode` true** — `nameUseGroup`'s
+  fallthrough for every declaration that is not a value, a macro or a generic
+  parameter, not because a module is a type.
 
 ## What lives elsewhere
 

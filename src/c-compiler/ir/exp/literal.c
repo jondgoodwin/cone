@@ -55,7 +55,6 @@ ULitNode *newULitNode(uint64_t nbr, INode *type) {
 ULitNode *newULitNodeTC(uint64_t nbr, INode *type) {
     ULitNode *lit;
     NameUseNode *typename = newNameUseNode(((NbrNode*)type)->namesym);
-    typename->tag = TypeNameUseTag;
     typename->dclnode = type;
     newNode(lit, ULitNode, ULitTag);
     lit->uintlit = nbr;

@@ -261,7 +261,6 @@ void structSetDropFn(StructNode *node) {
         fldref->tag = FldAccessTag;
         fldref->flags |= FlagBorrow;
         fldref->methfld = newNameUseFromDclNode((INode*)fld, (INode*)node);
-        fldref->methfld->tag = MbrNameUseTag;
         nodesAdd(&dropfncall->args, (INode*)fldref);
         nodesAdd(&block->stmts, (INode*)dropfncall);
     }

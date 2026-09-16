@@ -386,7 +386,6 @@ int fnCallLowerMethod(FnCallNode *callnode) {
             errorMsgNode((INode*)callnode, ErrorFldArgs, "May not provide arguments for a field access");
 
         derefInject(&callnode->objfn);  // automatically deref any reference/ptr, if needed
-        methfld->tag = MbrNameUseTag;
         methfld->dclnode = foundnode;
         callnode->vtype = methfld->vtype = ((IExpNode*)foundnode)->vtype;
         callnode->tag = FldAccessTag;
@@ -435,7 +434,6 @@ int fnCallLowerMethod(FnCallNode *callnode) {
 
     // Re-purpose method's name use node into objfn, so name refers to selected method
     NameUseNode *methodrefnode = (NameUseNode*)callnode->methfld;
-    methodrefnode->tag = VarNameUseTag;
     methodrefnode->namesym = selected->namesym;
     methodrefnode->dclnode = (INode*)selected;
     methodrefnode->vtype = selected->vtype;
@@ -481,7 +479,6 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
     INode **selfp = &nodesGet(callnode->args, 0);
     INode *selftype = iexpGetTypeDcl(*selfp);
     NameUseNode *methodrefnode = (NameUseNode*)callnode->methfld;
-    methodrefnode->tag = VarNameUseTag;
     methodrefnode->namesym = selected->namesym;
     methodrefnode->dclnode = (INode*)selected;
     methodrefnode->vtype = selected->vtype;
@@ -556,7 +553,6 @@ void fnCallOpAssgn(FnCallNode **nodep) {
     VarDclNode *tmpvar = newVarDclFull(tempName, VarDclTag, ((IExpNode*)callnode->objfn)->vtype, (INode*)immPerm, callnode->objfn);
     NameUseNode *tmpname = newNameUseNode(tempName);
     tmpname->vtype = tmpvar->vtype;
-    tmpname->tag = VarNameUseTag;
     tmpname->dclnode = (INode *)tmpvar;
     INode *derefvar = (INode *)tmpname;
     derefInject(&derefvar);
@@ -680,7 +676,6 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             node->vtype = errorType;
             return;
         }
-        nameuse->tag = VarNameUseTag;
         nameuse->vtype = ((FnDclNode*)nameuse->dclnode)->vtype;
     }
     
@@ -696,20 +691,17 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         && ((NameUseNode*)node->objfn)->qualNames == NULL) {
         // Build a resolved 'self' node
         NameUseNode *selfnode = newNameUseNode(selfName);
-        selfnode->tag = VarNameUseTag;
         selfnode->dclnode = nodesGet(((FnSigNode*)pstate->fn->vtype)->parms, 0);
         selfnode->vtype = ((VarDclNode*)selfnode->dclnode)->vtype;
         // Reuse existing fncallnode if we can
         if (node->methfld == NULL) {
             node->methfld = node->objfn;
-            node->methfld->tag = MbrNameUseTag;
             node->objfn = (INode*)selfnode;
         }
         else {
             // Re-purpose objfn as self.method
             FnCallNode *fncall = newFnCallNode((INode *)selfnode, 0);
             fncall->methfld = node->objfn;
-            fncall->methfld->tag = MbrNameUseTag;
             copyNodeLex(fncall, node->objfn); // Copy lexer info into injected node in case it has errors
             node->objfn = (INode*)fncall;
             inodeTypeCheckAny(pstate, &node->objfn);

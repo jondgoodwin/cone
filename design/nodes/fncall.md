@@ -21,7 +21,7 @@ re-derive.
 | Field | Meaning |
 | --- | --- |
 | `objfn` | the callee, or the receiver of a method/field/index |
-| `methfld` | the member after `.`, or the operator's interned name — `MbrNameUseTag`, or a `ULitTag` for a tuple element index, or NULL |
+| `methfld` | the member after `.`, or the operator's interned name — a `NameUseNode` bound to nothing until the member is selected, or a `ULitTag` for a tuple element index, or NULL |
 | `args` | argument list, or NULL. **The receiver is inserted at index 0** when a method is selected |
 | `vtype` | the call's result type, established by lowering |
 
@@ -68,11 +68,12 @@ Nothing about which of those it is has been decided yet.
 
 `fnCallNameRes` resolves `objfn` and each argument. That is all.
 
-**It never resolves `methfld`** — its own comment says so, and `inodeNameRes`
-lists `MbrNameUseTag` in the do-nothing arm. Selecting a member needs the
-receiver's *type*, which does not exist yet. Resolving `objfn` first is what
-lets `itypeIsGenericType` recognize an unlowered `Box[i64]` as a type, which the
-type-versus-value retags elsewhere depend on.
+**It never resolves `methfld`** — its own comment says so, and since nothing
+else hands a member name to `inodeNameRes`, a member name is a `NameUseNode`
+name resolution never meets. Selecting a member needs the receiver's *type*,
+which does not exist yet. Resolving `objfn` first is what lets
+`itypeIsGenericType` recognize an unlowered `Box[i64]` as a type, which the
+type-versus-value decisions elsewhere depend on.
 
 ## Type check
 

@@ -9,12 +9,13 @@
 
 typedef struct NameList NameList;
 
-// Name use node, which ultimately points to the applicable declaration for the name
-// The node's name may optionally include module name qualifiers. Used by:
-// - NameUseTag. A name token prior to name resolution pass
-// - VarNameUseTag. A name use node resolved to a variable or function declaration
-// - TypeNameUseTag. A name use node resolved to a type declaration
-// - MbrNameUseTag. A method or field name being applied to some value
+// Name use node: every appearance of a name, which name resolution points at
+// the declaration it names. One tag, NameUseTag, throughout; whether the use is
+// a type, a value or a macro is asked of that declaration (nameUseGroup). The
+// name may carry module qualifiers. A member name -- a field, method or
+// operator applied to a value -- is the same node, held in a call's member
+// slot and bound only when type check selects the member against the
+// receiver's type.
 typedef struct NameUseNode {
     IExpNodeHdr;
     Name *namesym;          // Pointer to the global name table entry
@@ -49,12 +50,11 @@ int nameUseNames(INode *node, uint16_t dcltag);
 
 void nameUseBaseMod(NameUseNode *node, ModuleNode *basemod);
 void nameUseAddQual(NameUseNode *node, Name *name);
+// Create a member name, to be applied to a value and bound by type check
 NameUseNode *newMemberUseNode(Name *namesym);
 void nameUsePrint(NameUseNode *name);
-// Handle name resolution for name use references
-// - Point to name declaration in other module or this one
-// - If name is for a method or field, rewrite node as 'self.field'
-// - If not method/field, re-tag it as either TypeNameUse or VarNameUse
+// Handle name resolution for name use references: bind dclnode to the
+// declaration the name refers to, in this module or another
 void nameUseNameRes(NameResState *pstate, NameUseNode **namep);
 
 // Handle type check for variable/function name use references

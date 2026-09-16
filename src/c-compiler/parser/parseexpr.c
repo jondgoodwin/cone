@@ -198,11 +198,8 @@ INode *parseDotCall(ParseState *parse, INode *node, uint16_t flags) {
     lexNextToken();
 
     // Get field/method name
-    if (lexIsToken(IdentToken)) {
-        NameUseNode *method = newNameUseNode(lex->val.ident);
-        method->tag = MbrNameUseTag;
-        fncall->methfld = (INode*)method;
-    }
+    if (lexIsToken(IdentToken))
+        fncall->methfld = (INode*)newMemberUseNode(lex->val.ident);
     // Or integer constant (for tuple element)
     else if (lexIsToken(IntLitToken)) {
         fncall->methfld = (INode*)newULitNode(lex->val.uintlit, lex->langtype);
@@ -302,7 +299,6 @@ INode *parseAmper(ParseState *parse) {
             nodesAdd(&parse->mod->nodes, (INode*)fndcl);
             dclInfoJoin((INode*)fndcl, (INode*)parse->mod);
             NameUseNode *fnname = newNameUseNode(anonName);
-            fnname->tag = VarNameUseTag;
             fnname->dclnode = (INode*)fndcl;
             fnname->vtype = fndcl->vtype;
             anode->vtexp = (INode*)fnname;

@@ -202,9 +202,10 @@ void inodePrint(char *dir, char *srcfn, INode *pgmnode) {
 // - pstate is helpful state info for node traversal
 // - node is a pointer to pointer so that a node can be replaced
 void inodeNameRes(NameResState *pstate, INode **node) {
-    // Every name use resolves here except a member name, which waits for the
-    // receiver's type: fnCallTypeCheck selects the member against it
-    if (isNameUseNode(*node) && (*node)->tag != MbrNameUseTag) {
+    // Every name use that reaches this walk resolves here. A member name never
+    // does: fnCallNameRes leaves the call's member slot alone, because selecting
+    // the member needs the receiver's type, and fnCallTypeCheck selects it.
+    if (isNameUseNode(*node)) {
         nameUseNameRes(pstate, (NameUseNode **)node);
         return;
     }
@@ -286,7 +287,6 @@ void inodeNameRes(NameResState *pstate, INode **node) {
     case GenVarDclTag:
         gVarDclNameRes(pstate, (GenVarDclNode *)*node); break;
 
-    case MbrNameUseTag:
     case IntNbrTag: case UintNbrTag: case FloatNbrTag:
     case PermTag:
     case AbsenceTag:
@@ -347,13 +347,21 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
         (*node)->flags |= TypeChecking;
     }
 
-    // A resolved name is checked as what its declaration is: a type, or a
-    // value. A member name is neither until the call it belongs to selects the
-    // member against the receiver's type, and a macro's name is expanded below.
-    if (isNameUseNode(*node) && isTypeNode(*node))
-        nameUseTypeCheckType(pstate, (NameUseNode **)node);
-    else if (isNameUseNode(*node) && isExpNode(*node) && (*node)->tag != MbrNameUseTag)
-        nameUseTypeCheck(pstate, (NameUseNode **)node);
+    // A resolved name is checked as what its declaration is: a type, a value,
+    // or a macro to expand. A member name never arrives here: the call it
+    // belongs to selects the member against the receiver's type.
+    if (isNameUseNode(*node)) {
+        if (isTypeNode(*node))
+            nameUseTypeCheckType(pstate, (NameUseNode **)node);
+        else if (isExpNode(*node))
+            nameUseTypeCheck(pstate, (NameUseNode **)node);
+        else if (nameUseNames(*node, MacroDclTag))
+            macroNameTypeCheck(pstate, (NameUseNode **)node);
+        else {
+            errorUnreachable(*node, "a node type check has no case for");
+            return;
+        }
+    }
     else switch ((*node)->tag) {
     case ProgramTag:
         pgmTypeCheck(pstate, (ProgramNode *)*node); break;
@@ -440,16 +448,12 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
 
     case MacroDclTag:
         macroTypeCheck(pstate, (MacroDclNode *)*node); break;
-    case MacroNameTag:
-    case GenericNameTag:
-        macroNameTypeCheck(pstate, (NameUseNode **)node); break;
     case GenVarDclTag:
         gVarDclTypeCheck(pstate, (GenVarDclNode *)*node); break;
 
     case StringLitTag:
         slitTypeCheck(pstate, (SLitNode*)*node); break;
 
-    case MbrNameUseTag:
     case IntNbrTag: case UintNbrTag: case FloatNbrTag:
     case AbsenceTag:
     case UnknownTag:
@@ -570,22 +574,6 @@ int inodeIsPrivate(INode *node) {
 // A check that would complain about such a node has nothing new to report.
 int inodeIsError(INode *node) {
     return isExpNode(node) && ((IExpNode*)node)->vtype == errorType;
-}
-
-// Is this a NameUseNode, whatever it has resolved to so far?
-int inodeIsNameUse(INode *node) {
-    switch (node->tag) {
-    case NameUseTag:
-    case VarNameUseTag:
-    case MbrNameUseTag:
-    case TypeNameUseTag:
-    case MacroNameTag:
-    case GenericNameTag:
-    case GenVarUseTag:
-        return 1;
-    default:
-        return 0;
-    }
 }
 
 // The group a node belongs to: StmtGroup, ExpGroup, TypeGroup or MetaGroup.

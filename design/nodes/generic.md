@@ -197,8 +197,7 @@ are [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols".
 - **`--checktree` has the coverage exactly inverted.** It descends into
   templates, which are never type checked, and never into instances, because
   `memonodes` is not in its switch.
-- **`MacroDclNode.memonodes` is dead**, and `GenericNameTag` is assigned by
-  nothing.
+- **`MacroDclNode.memonodes` is dead.**
 
 ## What lives elsewhere
 
