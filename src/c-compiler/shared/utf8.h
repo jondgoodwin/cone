@@ -10,16 +10,15 @@
 
 #include <stdint.h>
 
-// Evalutes non-zero if UTF8 code takes more than one byte
-#define utf8IsMultibyte(src) (*(src)&0x80)
+// How many bytes the character at src occupies: the length its lead byte
+// declares, but only when that many continuation bytes actually follow.
+// Anything malformed -- a continuation byte standing alone, a byte no character
+// may start with, or a lead byte whose sequence is cut short -- counts as one,
+// so a caller reports it and resumes at the byte after. Zero at end of source.
+int utf8ByteSkip(const char *src);
 
-// Evaluates to how many bytes to skip over to next UTF8 character
-// Note that we won't skip past end-of-string
-#define utf8ByteSkip(src) (\
-    (*(src) & 0xF0) == 0xF0? 4 : \
-    (*(src) & 0xE0) == 0xE0? 3 : \
-    (*(src) & 0xC0) == 0xC0? 2 : \
-    (*(src) == '\0' || *(src) == '\x1A')? 0 : 1)
+// Non-zero if src starts a well-formed character of more than one byte
+int utf8IsMultibyte(const char *src);
 
 uint32_t utf8GetCode(const char *src);
 int utf8IsLetter(const char* srcp);
