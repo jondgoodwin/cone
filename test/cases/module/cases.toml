@@ -42,7 +42,8 @@
 support = ["moduleinc.cone", "modulesub.cone", "moduleeof.cone",
            "moduleprov.cone", "moduleprov2.cone", "modulenoname.cone",
            "modulesyms.cone", "modulecyc.cone", "modulex_y.cone", "modulex.cone",
-           "moduletransit.cone", "modulelate.cone", "moduleearly.cone"]
+           "moduletransit.cone", "modulelate.cone", "moduleearly.cone",
+           "modulemacro.cone"]
 
 # -------- success --------
 
@@ -101,6 +102,32 @@ excludes = [
   "modulesub::scaleFloat comdat",
   "modulesub::plain comdat",
 ]
+
+[scenario.module-imports-macro]
+category = "compile"
+description = "A wildcard import of a module declaring a macro, which the fold once abandoned the compile on"
+tags = ["parse", "nameres", "typecheck", "genllvm"]
+
+# The fold asks every named node of the imported module whether it is private,
+# and a macro is a named node; asking it for its name once reached a node kind
+# the name lookup did not know and abandoned the compile as a compiler defect.
+# The folded function is declared in the importer like any imported function.
+# The macro is expanded into its use and leaves no symbol, so nothing is
+# declared under its name.
+[[scenario.module-imports-macro.check]]
+name = "folded-function-declared-and-macro-leaves-no-symbol"
+target = "symbols"
+contains = ["declare modulemacro::bump"]
+excludes = ["modulemacro::four"]
+
+# The macro's body, the literal 4, is what the one call passes: the fold
+# carried the macro across and the use expanded it. Pre-optimization IR,
+# because the optimizer removes the uncalled internal function; the argument
+# list alone, because a check may not spell a symbol's encoded bytes.
+[[scenario.module-imports-macro.check]]
+name = "folded-macro-expands-into-its-use"
+target = "preir"
+contains = ["(i64 4)"]
 
 [scenario.module-qualified]
 category = "compile"

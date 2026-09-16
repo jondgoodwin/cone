@@ -181,7 +181,7 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
         // The declaration stays attached after the diagnostic: it is the one the
         // program asked for, and leaving the use unresolved would only hand the
         // next pass a null to trip over.
-        if (name->dclnode && qualmod != pstate->mod && name->namesym->namestr == '_')
+        if (name->dclnode && qualmod != pstate->mod && inodeIsPrivate(name->dclnode))
             errorMsgNode((INode*)name, ErrorNotPublic,
                 "%s is private to its module and may not be named from outside it.",
                 &name->namesym->namestr);
