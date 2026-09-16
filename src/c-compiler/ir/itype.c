@@ -15,17 +15,15 @@
 // (Note: only use after it has been type-checked)
 INode *itypeGetTypeDcl(INode *type) {
     assert(isTypeNode(type));
+    // A name that names something other than a type is handed back as it is,
+    // so that a caller's tag test reports it where it was written
     while (1) {
-        switch (type->tag) {
-        case TypeNameUseTag:
-            type = ((NameUseNode *)type)->dclnode;
-            break;
-        case TypedefTag:
+        if (isNameUseNode(type) && isTypeNode(type))
+            type = nameUseGetDcl((NameUseNode *)type);
+        else if (type->tag == TypedefTag)
             type = ((TypedefNode *)type)->typeval;
-            break;
-        default:
+        else
             return type;
-        }
     }
 }
 

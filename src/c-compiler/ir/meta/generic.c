@@ -250,9 +250,11 @@ GenericInfo *genericGetInfo(INode *node) {
 int genericSubstitute(TypeCheckState *pstate, FnCallNode **srcgencallp) {
     // Return if not generic, otherwise gather data needed to substitute
     FnCallNode *srcgencall = *srcgencallp;
-    if (srcgencall->objfn->tag != VarNameUseTag && srcgencall->objfn->tag != TypeNameUseTag)
+    // Only a name that names a value or a type can name a generic
+    INode *objfn = srcgencall->objfn;
+    if (!isNameUseNode(objfn) || !(isExpNode(objfn) || isTypeNode(objfn)))
         return 0;
-    INode *nodetoclone = ((NameUseNode*)srcgencall->objfn)->dclnode;
+    INode *nodetoclone = nameUseGetDcl((NameUseNode*)objfn);
     GenericInfo *genericinfo = genericGetInfo(nodetoclone);
     if (!genericinfo)
         return 0;
