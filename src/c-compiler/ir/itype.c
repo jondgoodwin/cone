@@ -467,16 +467,15 @@ int itypeIsMove(INode *type) {
 // What tells a generic from anything else is the GenericInfo its declaration
 // carries: a generic is an ordinary FnDcl or StructNode with a type parameter
 // list attached, which is also how genericSubstitute recognizes one. Only a
-// struct's instantiation is a type -- a generic function's names a function --
-// and a macro cannot arrive here at all, since a use of a MacroDcl is tagged
-// MacroNameTag rather than as a name use of a type.
+// struct's instantiation is a type: a generic function's names a function, and
+// a macro's names a MacroDcl.
 int itypeIsGenericType(INode *type) {
     if (type->tag != FnCallTag)
         return 0;
     FnCallNode *gentype = (FnCallNode*)type;
-    if (gentype->objfn->tag != TypeNameUseTag)
+    if (!isNameUseNode(gentype->objfn))
         return 0;
-    INode *dclnode = ((NameUseNode*)gentype->objfn)->dclnode;
+    INode *dclnode = nameUseGetDcl((NameUseNode*)gentype->objfn);
     if (dclnode == NULL || dclnode->tag != StructTag || genericGetInfo(dclnode) == NULL)
         return 0;
     return gentype->args != NULL && gentype->args->used > 0 && nodesGet(gentype->args, 0) != NULL;

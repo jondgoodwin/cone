@@ -89,6 +89,42 @@ INode *cloneNameUseNode(CloneState *cstate, NameUseNode *node) {
     return (INode *)newnode;
 }
 
+// The declaration a name use names, at the end of its chain of names,
+// or NULL while it is unresolved
+INode *nameUseGetDcl(NameUseNode *name) {
+    INode *dcl = name->dclnode;
+    while (dcl && isNameUseNode(dcl))
+        dcl = ((NameUseNode*)dcl)->dclnode;
+    return dcl;
+}
+
+// The group a name use belongs to, asked of the declaration it names rather
+// than read off the use: a variable, function, overload set, field or constant
+// makes it an expression; a macro or a generic parameter makes it a meta node;
+// every other declaration makes it a type. That last is a fallthrough rather
+// than a claim: a module is not a type, and a use of its name answers as one.
+// Until a name is resolved there is no declaration to ask, so the use answers
+// for its own tag -- which is what a member name does until type check selects
+// the member against the receiver's type.
+uint16_t nameUseGroup(NameUseNode *name) {
+    INode *dcl = nameUseGetDcl(name);
+    if (dcl == NULL)
+        return name->tag & GroupMask;
+    switch (dcl->tag) {
+    case VarDclTag:
+    case FnDclTag:
+    case FnOverloadDclTag:
+    case FieldDclTag:
+    case ConstDclTag:
+        return ExpGroup;
+    case MacroDclTag:
+    case GenVarDclTag:
+        return MetaGroup;
+    default:
+        return TypeGroup;
+    }
+}
+
 // If a NameUseNode has module name qualifiers, it will first set basemod
 // (either root module or the current module scope). This allocates an area
 // for qualifiers to be added.

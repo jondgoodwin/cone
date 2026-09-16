@@ -35,6 +35,14 @@ INode *newNameUseFromDclNode(INode *dclnode, INode *lexnode);
 // Clone NameUse
 INode *cloneNameUseNode(CloneState *cstate, NameUseNode *node);
 
+// The declaration a name use names, at the end of its chain of names,
+// or NULL while it is unresolved
+INode *nameUseGetDcl(NameUseNode *name);
+
+// The group a name use belongs to (ExpGroup, TypeGroup or MetaGroup),
+// asked of the declaration it names
+uint16_t nameUseGroup(NameUseNode *name);
+
 void nameUseBaseMod(NameUseNode *node, ModuleNode *basemod);
 void nameUseAddQual(NameUseNode *node, Name *name);
 NameUseNode *newMemberUseNode(Name *namesym);

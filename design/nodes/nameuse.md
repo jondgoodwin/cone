@@ -69,6 +69,19 @@ constant → `VarNameUseTag`; macro → `MacroNameTag`; generic parameter →
 `GenVarUseTag`; **everything else, including a module, → `TypeNameUseTag`** by
 fallthrough.
 
+## What a use answers
+
+`isExpNode`, `isTypeNode` and `isMetaNode` do not read the tag of a name use.
+They ask `nameUseGroup`, which follows `dclnode` to the declaration at the end
+of the chain of names (`nameUseGetDcl`) and classifies that, by the same rule
+the retag uses: a value declaration → expression; a macro or generic parameter →
+meta; everything else → type. A use with no declaration yet — unresolved, or a
+`MbrNameUseTag` before type check selects the member — answers for its own tag.
+
+The use is asked rather than stamped because an alias has nothing to stamp: a
+name that resolves to a binding pointing at a declaration is whatever the
+declaration is, and only the declaration can say.
+
 Privacy is checked on the qualified path: a `_`-prefixed name reached through a
 qualifier from outside its module is `ErrorNotPublic`. **The declaration stays
 attached after that diagnostic** — it is the one the program asked for, and
@@ -131,9 +144,11 @@ the most common way to be off by an indirection here.
 
 - **`dclnode` is NULL for `MbrNameUseTag`** until a member is selected. Code
   that walks name uses and dereferences `dclnode` must exclude it.
-- **A module resolves to `TypeNameUseTag`.** `ModuleTag` is in the statement
-  group, so `isTypeNode` is false for it — the tag is simply the fallthrough
-  default, not a claim that a module is a type.
+- **A use of a module's name answers `isTypeNode` true**, and is retagged
+  `TypeNameUseTag`. `ModuleTag` is in the statement group, so `isTypeNode` is
+  false for the module itself; the use's answer is `nameUseGroup`'s fallthrough
+  for every declaration that is not a value, a macro or a generic parameter, not
+  a claim that a module is a type.
 - **Names are compared by pointer**, never by string. A name built without
   `nametblFind` will never match anything.
 - **`newNameUseNode` takes the lexer's current position.** For a synthesized

@@ -107,10 +107,11 @@ guarantees that. Locals are the exception and are deliberately order-dependent â
 | `ArrayRefTag` | `ArrayBorrowTag` / `ArrayAllocTag` | `arrayRefNameRes` |
 | `QuesTag` | `FnCallTag` for `Option[T]` | `allocateQuesNameRes` |
 
-Every one of these hinges on `isTypeNode`, which is a mask test **plus**
-`itypeIsGenericType` â€” an unlowered `FnCallNode` naming a generic struct counts
-as a type. Without that, `*Box[i64]` reads as a dereference and `[2; Box[i64]]`
-as an array literal.
+Every one of these hinges on `isTypeNode`. For a name use it asks the
+declaration the name resolved to (`nameUseGroup`), not the use's own tag, and
+an unlowered `FnCallNode` naming a generic struct counts as a type
+(`itypeIsGenericType`). Without the latter, `*Box[i64]` reads as a dereference
+and `[2; Box[i64]]` as an array literal.
 
 **One site rewrites a parent's pointer**: `allocateQuesNameRes` collapses `&x?`
 into the allocation node with `FlagQues` set. Everything else mutates in place.
@@ -204,6 +205,7 @@ next pass a null to trip over.
 | `ir/nametbl.c` | `nametblFind`, `nametblHook*` | interning and the hook stack that implements all scoping |
 | `ir/namespace.c` | `namespaceFind`, `namespaceSet` | the hash table a module or type owns |
 | `ir/exp/nameuse.c` | `nameUseNameRes` | the whole resolution decision: early-out, qualified walk, privacy, retag |
+| `ir/exp/nameuse.c` | `nameUseGroup` | what a resolved name answers to `isExpNode`, `isTypeNode` and `isMetaNode`, asked of its declaration |
 | `ir/stmt/module.c` | `modNameRes`, `modHook` | imports walked before nodes; module hook push/pop |
 | `ir/stmt/import.c` | `importNameRes` | wildcard folding; skips private and unnamed nodes |
 | `ir/exp/block.c` | `blockNameRes`, `blockContinueStep` | scope push/pop, lifetime labels, jump placement, the one re-entry |

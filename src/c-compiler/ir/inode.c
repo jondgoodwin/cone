@@ -568,3 +568,44 @@ int inodeIsPrivate(INode *node) {
 int inodeIsError(INode *node) {
     return isExpNode(node) && ((IExpNode*)node)->vtype == errorType;
 }
+
+// Is this a NameUseNode, whatever it has resolved to so far?
+int inodeIsNameUse(INode *node) {
+    switch (node->tag) {
+    case NameUseTag:
+    case VarNameUseTag:
+    case MbrNameUseTag:
+    case TypeNameUseTag:
+    case MacroNameTag:
+    case GenericNameTag:
+    case GenVarUseTag:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+// The group a node belongs to: StmtGroup, ExpGroup, TypeGroup or MetaGroup.
+// For every node but a name use the tag is the node's characteristic, so its
+// group bits are the answer. A name use stands for whatever it names, so it is
+// asked of the declaration at the end of its chain of names rather than of the
+// use itself: that is what lets a name reached through an alias answer.
+static uint16_t inodeGroup(INode *node) {
+    if (isNameUseNode(node))
+        return nameUseGroup((NameUseNode*)node);
+    return node->tag & GroupMask;
+}
+
+int inodeIsExp(INode *node) {
+    return inodeGroup(node) == ExpGroup;
+}
+
+// An instantiation of a generic type, 'Box[i64]', is a call node until type
+// check replaces it with the instance it names, and is a type all the while
+int inodeIsType(INode *node) {
+    return inodeGroup(node) == TypeGroup || itypeIsGenericType(node);
+}
+
+int inodeIsMeta(INode *node) {
+    return inodeGroup(node) == MetaGroup;
+}
