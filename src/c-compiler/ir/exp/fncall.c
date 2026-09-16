@@ -662,7 +662,8 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             typeLitTypeCheck(pstate, *nodep);
             return;
         }
-        if (node->methfld != NULL || node->objfn->tag != TypeNameUseTag) {
+        // Only a type that was named can be asked for its 'init'
+        if (node->methfld != NULL || !isNameUseNode(node->objfn)) {
             errorMsgNode(node->objfn, ErrorBadTerm, "May not do a function call on a type");
             node->vtype = errorType;
             return;
