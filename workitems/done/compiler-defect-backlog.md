@@ -340,23 +340,18 @@ a parameter of the wrong type, a reference where a value is required, and one
 parameter too many — and each was verified to report identically against the
 pre-fix and post-fix compilers, so widening what conforms widened nothing else.
 
-### 3. A parameterless macro name is not expanded in two of four positions
+### 3. A parameterless macro name is not expanded in two of four positions — no longer true
 
-Confirmed exactly as recorded, with `macro TWO { 2 }`:
+All four positions work, re-measured 17 September 2026 with `macro TWO { 2 }`:
+`TWO + 1` returns 3 and a block ending in `TWO` returns 2, which are the two
+that failed. `refmacro.html` states the rule this now matches — a parameterless
+macro's name "expands to the macro's logic wherever a value is expected: as an
+initializer, as either operand of an operator, as an argument, as what a
+function returns, and as the value a block hands back."
 
-| Position | Result |
-| --- | --- |
-| initializer, `imm a = TWO` | works |
-| right operand, `1 + TWO` | works |
-| left operand, `TWO + 1` | `ErrorManyArgs` "Incorrect number of arguments vs. parameters expected" |
-| final statement, `TWO` | `ErrorInvType` "A return value is expected but this statement cannot give one" |
-
-Both failures are positions where the name is the *receiver* of something — the
-object of an operator call, or the block's value — rather than an argument.
-
-**Recommendation:** a defect, and `refmacro.html` should be read before it is
-scheduled, since it may or may not claim a parameterless macro is a value
-anywhere a value goes. Route to [[macro-and-inline|Macro and Inline]].
+Nothing here was scheduled, so it was closed by other work rather than by a fix
+aimed at it. **No scenario pins it**, which is the weaker arrangement this page
+warns about elsewhere: it passes today and nothing would say so if it stopped.
 
 **Status: fixed, and it was three positions in two places, not two in one.**
 `refmacro.html` turned out to document only `macro max[a, b]` and never to
