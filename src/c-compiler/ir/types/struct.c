@@ -359,6 +359,14 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
                 for (nodelistFor(&trait->nodelist, cnt, nodesp)) {
                     if ((*nodesp)->tag != FnDclTag)
                         continue;
+                    // Only a method is inherited. A static function of the trait
+                    // takes no receiver, so there is nothing about it to specialize
+                    // per implementer and nothing that dispatches it: it stays the
+                    // trait's own, reached as 'Trait::name'. Copying it gave every
+                    // implementer a symbol no name could reach, since a qualified
+                    // name on the implementer does not find it either.
+                    if (!((*nodesp)->flags & FlagMethFld))
+                        continue;
                     FnDclNode *traitmeth = (FnDclNode*)*nodesp;
                     // A trait method is one named requirement. The type satisfies it with
                     // a directly named method or the one overload candidate of that signature.
@@ -539,6 +547,11 @@ void structMakeVtable(StructNode *node) {
         // A macro expands where it is used and has nothing to dispatch to
         if ((*nodesp)->tag != FnDclTag)
             continue;
+        // Nor has a static function: with no receiver there is nothing to
+        // dispatch on, so it is neither a slot nor a requirement an implementer
+        // has to satisfy. It stays the declaring type's own.
+        if (!((*nodesp)->flags & FlagMethFld))
+            continue;
         FnDclNode *meth = (FnDclNode *)*nodesp;
         if (meth->namesym->namestr != '_') {
             meth->vtblidx = vtblidx++;
@@ -636,6 +649,11 @@ TypeCompare structMatches(StructNode *to, INode *fromdcl, SubtypeConstraint cons
         // Locate the corresponding method with matching name and vtype
         // Note, we need to be flexible in matching the self parameter
         if ((*nodesp)->tag != FnDclTag)
+            continue;
+        // A static function of the supertype is not a requirement: it has no
+        // receiver, so it says nothing about the shape of a value, and it is
+        // reached through the type that declares it rather than through this one
+        if (!((*nodesp)->flags & FlagMethFld))
             continue;
         FnDclNode *meth = (FnDclNode *)*nodesp;
         INode *frombinding = namespaceFind(&from->namespace, meth->namesym);

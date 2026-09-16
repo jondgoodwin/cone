@@ -312,11 +312,19 @@ void genlGlobalSyms(GenState *gen, INode *node) {
             return;
         }
         // For types with a namespace, let's do its nodes too
-        if (isMethodType(node) && !(node->tag == StructTag && (node->flags & TraitType))) {
+        if (isMethodType(node)) {
             INsTypeNode *tnode = (INsTypeNode*)node;
             INode **nodesp;
             uint32_t cnt;
+            int istrait = node->tag == StructTag && (node->flags & TraitType);
             for (nodelistFor(&tnode->nodelist, cnt, nodesp)) {
+                // A trait's methods are not its own to generate: a requirement has
+                // no body, and a default was cloned into each implementer, which
+                // owns and names the copy. Its static functions are its own --
+                // nothing inherits or dispatches them -- so they are generated
+                // here or nowhere, and 'Trait::name()' loaded a null without this.
+                if (istrait && ((*nodesp)->flags & FlagMethFld))
+                    continue;
                 genlGlobalSyms(gen, *nodesp);
             }
         }
@@ -374,12 +382,17 @@ void genlGlobalImpl(GenState *gen, INode *node) {
             }
             return;
         }
-        // For types with a namespace, let's do its nodes too
-        if (isMethodType(node) && !(node->tag == StructTag && (node->flags & TraitType))) {
+        // For types with a namespace, let's do its nodes too. Same split as
+        // genlGlobalSyms: a trait's methods belong to its implementers, its
+        // static functions to itself.
+        if (isMethodType(node)) {
             INsTypeNode *tnode = (INsTypeNode*)node;
             INode **nodesp;
             uint32_t cnt;
+            int istrait = node->tag == StructTag && (node->flags & TraitType);
             for (nodelistFor(&tnode->nodelist, cnt, nodesp)) {
+                if (istrait && ((*nodesp)->flags & FlagMethFld))
+                    continue;
                 genlGlobalImpl(gen, *nodesp);
             }
         }

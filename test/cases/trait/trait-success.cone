@@ -183,6 +183,12 @@ trait Meter {
 
   fn reading(self &) i32 {level * 2}
   fn step(self &mut)
+
+  // A static function: no 'self', so nothing dispatches it and no implementer
+  // inherits it. It belongs to the trait, is spelled after it, and is reached
+  // only as 'Meter::scale'. trait-nameres-static holds the other half, that
+  // neither Gauge nor Dial can name it.
+  fn scale() i32 {7}
 }
 
 // Gauge takes the default 'reading' and must supply 'step'. 'level' is mixed
@@ -201,10 +207,17 @@ struct Dial extends Meter {
 }
 
 // A plain reference to a base trait. This is not a virtual reference: it points
-// at the mixed-in prefix of the concrete value, so it can read the trait's
-// fields but dispatches nothing.
+// at the mixed-in prefix of the concrete value, so it reads the trait's fields
+// directly. Meter is an open trait and so carries no tag, which is why a method
+// call through this reference is refused rather than dispatched --
+// trait-typecheck-dispatch pins that, and trait-variants pins the closed case,
+// where the tag does select the variant's method.
 fn baseLevel(m &Meter) i32 {
   m.level
+}
+
+fn traitStatic() i32 {
+  Meter::scale()
 }
 
 // A virtual reference to the same trait, which does dispatch
@@ -242,6 +255,8 @@ fn nominal() {
 
   show("base-trait-ref-reads-field", baseLevel(&g))
   show("base-trait-ref-other-type", baseLevel(&d))
+
+  show("trait-static-called-through-the-trait", traitStatic())
 
   show("inherited-default-method", readingOf(&g))
   show("overriding-method-replaces-default", readingOf(&d))

@@ -42,7 +42,20 @@ positional type literals move with it.
 
 | Field | Meaning |
 | --- | --- |
-| `nodelist` | ordered **methods, static functions and macros only** — never fields. Every walk of it that reads a `FnDclNode` — the vtable, the subtype comparison, trait default folding — skips a `MacroDclTag` first |
+| `nodelist` | ordered **methods, static functions and macros only** — never fields. Every walk of it that reads a `FnDclNode` — the vtable, the subtype comparison, trait default folding — skips a `MacroDclTag` first, and on a trait skips a **static function** too (see below) |
+
+⚠ **A static function of a trait is the trait's own, and four walks of `nodelist`
+have to say so.** `FlagMethFld` is what distinguishes it: no `self`, so there is
+no receiver to specialize, nothing to dispatch on, and nothing about the shape of
+a value for it to assert. It is **not** folded into implementers
+(`structTypeCheck`), **not** a vtable slot (`structMakeVtable`), **not** a
+requirement a subtype must satisfy (`structMatches`), and — unlike a trait's
+methods, which the implementers own clones of — **it is generated here or
+nowhere** (`genlGlobalSyms` and `genlGlobalImpl`). Miss the last and
+`Trait::name()` calls a null; miss any of the first three and every implementer
+stops conforming the moment a trait declares one. It is reached as
+`Trait::name`, and an implementer or variant cannot name it at all:
+`trait-nameres-static` pins both spellings, `trait-success` the call.
 | `namespace` | every named member: fields, methods, macros, overload sets, and `Self` |
 | `dropfn` | NULL until the last step of type check |
 | `dclinfo` | owner and the facts its symbols are spelled from — [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols". The owner is a module, or the trait for a variant declared inside one. Read for one thing besides naming: rejecting a variant declared outside its closed trait's module, through `dclInfoGetModule` |
