@@ -357,47 +357,6 @@ int iexpSameType(INode *to, INode **from) {
     return itypeIsSame(iexpGetTypeDcl(to), iexpGetTypeDcl(*from));
 }
 
-// Retrieve the permission flags for the node
-uint16_t iexpGetPermFlags(INode *node) {
-    // A value name answers for its declaration: a variable's permission, a
-    // function's opaque one, and nothing for a field or a constant
-    if (isNameUseNode(node) && isExpNode(node))
-        return iexpGetPermFlags(((NameUseNode*)node)->dclnode);
-    switch (node->tag) {
-    case VarDclTag:
-        return permGetFlags(((VarDclNode*)node)->perm);
-    case FnDclTag:
-        return permGetFlags((INode*)opaqPerm);
-    case DerefTag:
-    {
-        RefNode *vtype = (RefNode*)iexpGetTypeDcl(((StarNode *)node)->vtexp);
-        if (vtype->tag == RefTag)
-            return permGetFlags(vtype->perm);
-        else if (vtype->tag == PtrTag)
-            return 0xFFFF;  // <-- In a trust block?
-        else if (vtype->tag == ArrayRefTag || vtype->tag == VirtRefTag)
-            return permGetFlags(vtype->perm);
-        // Answer with no permission rather than falling into the next case,
-        // which would reinterpret this StarNode as a FnCallNode. The assert
-        // that used to end this arm is nothing in a Release build.
-        return 0;
-    }
-    case ArrIndexTag:
-    {
-        FnCallNode *fncall = (FnCallNode *)node;
-        return iexpGetPermFlags(fncall->objfn);
-    }
-    case FldAccessTag:
-    {
-        FnCallNode *fncall = (FnCallNode *)node;
-        // Field access. Permission is the conjunction of structure and field permissions.
-        return iexpGetPermFlags(fncall->objfn) & iexpGetPermFlags((INode*)fncall->methfld);
-    }
-    default:
-        return 0;
-    }
-}
-
 // Return true if value uses move semantics
 int iexpIsMove(INode *node) {
     return itypeIsMove(((IExpNode *)node)->vtype);
