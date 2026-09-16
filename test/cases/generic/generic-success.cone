@@ -325,6 +325,27 @@ fn clonedNodeKinds() {
   show("cloned-is-true", spanLength(span))
 }
 
+// A match written in source shares one scrutinee node across its arms, and the
+// exhaustiveness check used to know the arms tested the same value by that
+// shared pointer. Cloning copies the node once per arm, so a match inside a
+// generic covering every variant was refused as needing an 'else'. The arms
+// are now recognized as testing the same variable, however many copies of the
+// use there are. The type parameter is scaffolding: it is what makes the body
+// a clone.
+fn spanOrZero[T](r &Reading, unused T) i64 {
+  match r {
+    case imm s &Spot {0i64}
+    case imm p &Span {p.len}
+  }
+}
+
+fn clonedMatchIsExhaustive() {
+  mut spot Reading = Spot[3i64]
+  mut span Reading = Span[4i64, 9i64]
+  show("cloned-match-empty-variant", spanOrZero(&spot, 1i64))
+  show("cloned-match-other-variant", spanOrZero(&span, 1i64))
+}
+
 fn genericReturningGeneric() {
   // A generic function whose return type is an instantiation of a generic type
   // with the function's own type parameter
@@ -382,6 +403,7 @@ fn main() i32 {
   operatorsInsideAGenericMethod()
   instantiationInsideAnotherType()
   clonedNodeKinds()
+  clonedMatchIsExhaustive()
   genericReturningGeneric()
   unnamedTypeArguments()
   0i32

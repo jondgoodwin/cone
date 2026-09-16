@@ -76,6 +76,18 @@ void ifNameRes(NameResState *pstate, IfNode *ifnode) {
     }
 }
 
+// Do two 'is' conditions test the same value? The match desugaring writes one
+// scrutinee node into every condition, so a match written in source shares it.
+// A clone of the match -- a generic instance's, or a macro expansion's -- copies
+// that node once per condition, so there two uses of the one variable the
+// desugaring declared are what the same scrutinee looks like.
+static int ifSameScrutinee(INode *a, INode *b) {
+    if (a == b)
+        return 1;
+    return a->tag == VarNameUseTag && b->tag == VarNameUseTag
+        && ((NameUseNode*)a)->dclnode == ((NameUseNode*)b)->dclnode;
+}
+
 // Detect when all closed variants are matched, and turn last match into 'else'
 // We know the condition is an 'is' node
 void ifExhaustCheck(IfNode *ifnode, CastNode *condition) {
@@ -98,7 +110,7 @@ void ifExhaustCheck(IfNode *ifnode, CastNode *condition) {
         for (nodesFor(ifnode->condblk, cnt, nodesp)) {
             if ((*nodesp)->tag == IsTag) {
                 CastNode *isnode = (CastNode*)*nodesp;
-                if (isnode->exp == condition->exp && itypeGetDerefTypeDcl(isnode->typ) == *varnodesp) {
+                if (ifSameScrutinee(isnode->exp, condition->exp) && itypeGetDerefTypeDcl(isnode->typ) == *varnodesp) {
                     found = 1;
                     if (cnt < lowestcnt)
                         lowestcnt = cnt;
