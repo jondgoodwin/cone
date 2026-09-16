@@ -313,29 +313,110 @@ Some facts belong to the file rather than a line:
 
 ### Two choices, for lowering and codegen defects
 
-**Assert what the program prints.** Use LLVM IR only for what runtime cannot see:
-whether a symbol was emitted at all, what a vtable slot points at, whether a
-private candidate reachable through a public overload name got a `declare`.
-Symbol names change when separate compilation lands.
+**Assert what the program prints.** Use the generated artifacts only for what
+runtime cannot see: whether a symbol was emitted at all and with what linkage
+(`symbols`), what a vtable slot points at (`llvmir`), how a type was laid out
+or what instruction flow analysis injected (`preir`), whether an imported
+overload name's candidates were each declared (`symbols`).
 
 **Pin the fragment that identifies a diagnostic, not the sentence.**
 
 ### Generated-artifact assertions: named checks
 
-An assertion against LLVM IR or a run's stdout has no source line to attach to.
-Write it as a named check in `cases.toml`:
+An assertion against LLVM IR, the symbols it declares, or a run's stdout has no
+source line to attach to. Write it as a named check in `cases.toml`:
 
 ```toml
-[[scenario.core-success.check]]
-name = "overload-lowers-to-concrete"
-target = "llvmir"
-contains = ["@Point_addValue", "@Point_addRef"]
-excludes = ["@Point_add"]
+[[scenario.struct-methods.check]]
+name = "methods-lower-to-concrete-symbols"
+target = "symbols"
+contains = ["define internal Point::addValue comdat nodeduplicate"]
+excludes = ["Point::add "]
 ```
 
 The name is what failure output reports and what selection matches.
 
 A bug fix lands with a scenario that fails without the fix.
+
+#### `llvmir`
+
+Matches against the **post-optimization** dump, `<name>.ir` — the IR that
+reaches the object file. Use it for what must survive the optimizer: a vtable
+slot that holds a bitcast rather than `null`, a `%"Meter:Vtable" = type`, the
+`$main = comdat` line. **A program's definitions are all internal, so only what
+`main` reaches survives**: the optimizer deletes an internal definition nothing
+references and folds the rest into `main`, which leaves a `compile` scenario's
+dump empty of functions and a `run` scenario's holding little but `main`, its
+globals and its constants. A check on anything else belongs on `preir`.
+**Never write an encoded symbol's bytes into it** — `@_CNvNt2Pt3get` is a
+`symbols` assertion, below, and the reader of a check is owed `Pt::get`. Bare
+names (`@main`, a root `fn`, a C name) are their own spelling and may appear
+where the check is about a `$name = comdat` line or a call.
+
+#### `preir`
+
+Matches against the **pre-optimization** dump, `<name>.preir` — what
+generation wrote, before the optimizer deletes or folds it. Use it for an
+instruction, a type or a signature that is the claim: the `icmp` a slice index
+emits against its runtime count, the `add i64 %6, 12` flow analysis injects for
+a fill literal, `%Node = type { i64, %Node* }`, `@read(i32**`. Register numbers
+are the pre-optimization ones — allocas and loads are still there — and are
+read out of the dump rather than chosen. The same rule about symbol bytes
+applies.
+
+#### `symbols`
+
+Matches against one line per global symbol, derived from the
+**pre-optimization** dump, `<name>.preir`. A symbol's spelling and linkage are
+generation's facts, so they are read where generation wrote them: the optimizer
+deletes an internal definition nothing references, and a check on an uncalled
+definition — a generic type's method instance nobody used, say — must still see
+it. The runner writes the derived lines beside the dump as `<name>.symbols`, so
+a failing check can be read against them.
+
+Each line is, in order, separated by single spaces:
+
+1. the **kind**: `define` or `declare` for a function; `global` or `constant`
+   for a variable defined here, `external global` or `external constant` for
+   one merely declared;
+2. the **linkage, visibility, storage-class and calling-convention words**
+   exactly as LLVM prints them, in LLVM's order, and only those it prints —
+   so nothing for `external` linkage or `default` visibility: `internal`,
+   `dllimport x86_stdcallcc`; a program compile sets no visibility and asks
+   nothing to merge, so `hidden` and `linkonce` are what an `excludes` guards
+   against;
+3. the **demangled name**: the symbol read back through the scheme in
+   `design/phases/names-and-namespaces.md`, "Symbols" — `sub::SubPt::get`,
+   `Holder[i64]::tally`, `pick[&so mut i32]`, `Vec::+`, a vtable as
+   `Gauge as Meter (vtable)`, a vtable list as `Meter (vtable list)`, a name
+   Cone source could only write in backticks in its backticks. A symbol the
+   scheme does not spell — `main`, a root `fn`, a C name, `string`, `anon` — is
+   its own reading, and LLVM's `.1` uniquifier is kept on whatever it landed on;
+4. `comdat <kind>` — `comdat nodeduplicate` or `comdat any` — when the symbol
+   leads a COMDAT, which every definition does on the default triple.
+
+```
+define main comdat nodeduplicate
+define internal Pt::_hid comdat nodeduplicate
+define internal Holder[i64]::tally comdat nodeduplicate
+declare sub::subFn
+declare dllimport x86_stdcallcc GetTickCount
+global internal _privGlobal comdat nodeduplicate
+external global sub::subGlobal
+constant internal Gauge as Meter (vtable) comdat nodeduplicate
+constant internal Meter (vtable list) comdat nodeduplicate
+```
+
+Since a definition's name is followed by its COMDAT and a declaration's ends
+the line, an `excludes` for a name that is a prefix of another — `Pair::sum`
+beside `Pair::sumValue` — writes the trailing space or newline:
+`"Pair::sum "`, `"modulesub::scale\n"`.
+
+The demangler lives in `test/run.py`, and every run begins by reading the
+scheme's worked examples through it (`--selftest` does only that). A grammar
+change that broke a reading therefore stops the run as one fault, and the
+scenarios then check conec's encoder against the demangler on the symbols it
+actually emits; `struct-methods` is where a punycoded name does so.
 
 ### `cases.toml` keys
 
@@ -368,9 +449,9 @@ message = "may not be used as an expression"
 
 [[scenario.core-overload.check]]
 name     = "overload-lowers-to-concrete"
-target   = "llvmir"
-contains = ["@scaleInt"]
-excludes = ["@scale("]
+target   = "symbols"           # or "llvmir", "preir", or "stdout" for a 'run' scenario
+contains = ["define internal scaleInt comdat nodeduplicate"]
+excludes = ["scale "]          # a definition's name is followed by its COMDAT
 ```
 
 **Several runs of one source** is how an option matrix avoids duplicating a

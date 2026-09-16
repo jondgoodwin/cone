@@ -52,10 +52,12 @@ tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 # Structs that reach themselves through a reference must survive into code
 # generation as self-referential types rather than being flattened or dropped.
 # A type whose own name appears inside its body is the whole claim, and runtime
-# cannot see it.
+# cannot see it. Read before optimization: the functions that mention these
+# types are folded into 'main' and deleted, and a type nothing mentions is not
+# printed.
 [[scenario.struct-success.check]]
 name = "recursive-types-reach-code-generation"
-target = "llvmir"
+target = "preir"
 contains = [
   "%Node = type { i64, %Node* }",
   "%Owner = type { i64, %Held }",
@@ -69,51 +71,81 @@ category = "run"
 description = "Methods, receivers, static functions, overloaded methods, operator methods and finalizers"
 tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 
-# Every method's symbol is its declaring type's name joined to its own concrete
+# Every method's symbol reads as its declaring type, then its own concrete
 # name. That is what runtime cannot see: which candidate of an overload set a
 # call reached shows up in what it computed, but whether a symbol exists at all
 # does not.
 [[scenario.struct-methods.check]]
 name = "methods-lower-to-concrete-symbols"
-target = "llvmir"
+target = "symbols"
 contains = [
-  "@Pair_sumValue",
-  "@Pair_sumRef",
-  "@Pair_sumOther",
-  "@Scaler_scaleWide",
-  "@Scaler_scaleCount",
-  "@Maker_fromInt",
-  "@Maker_fromFloat",
-  "@Vec_addVec",
-  "@Vec_addScalar",
+  "define internal Pair::sumValue comdat nodeduplicate",
+  "define internal Pair::sumRef comdat nodeduplicate",
+  "define internal Pair::sumOther comdat nodeduplicate",
+  "define internal Scaler::scaleWide comdat nodeduplicate",
+  "define internal Scaler::scaleCount comdat nodeduplicate",
+  "define internal Maker::fromInt comdat nodeduplicate",
+  "define internal Maker::fromFloat comdat nodeduplicate",
+  "define internal Vec::addVec comdat nodeduplicate",
+  "define internal Vec::addScalar comdat nodeduplicate",
 ]
 
-# An overload name is not a declaration, so nothing is generated for it
+# An overload name is not a declaration, so nothing is generated for it. A
+# definition's name is followed by its COMDAT, so the trailing space is what
+# stops 'Pair::sum' from matching 'Pair::sumValue'.
 [[scenario.struct-methods.check]]
 name = "no-symbol-for-method-overload-name"
-target = "llvmir"
-excludes = ['@Pair_sum(', '@Scaler_scale(', '@Maker_make(', '@"Vec_+"']
+target = "symbols"
+excludes = ["Pair::sum ", "Scaler::scale ", "Maker::make ", "Vec::+ "]
 
-# An operator method's concrete name is punctuation, and it reaches the symbol
-# unchanged rather than being mangled or dropped
+# An operator method's concrete name is punctuation. The symbol spells it as a
+# fixed code -- '+=' is 'opL' -- and it reads back as the operator itself.
 [[scenario.struct-methods.check]]
-name = "operator-method-symbols-keep-their-punctuation"
-target = "llvmir"
-contains = ['@Vec_-(', '@"Vec_+="', '@"Vec_=="', '@"Vec_()"', '@"Vec_[]"', '@"Vec_<-"', '@"List_&[]"']
+name = "operator-method-symbols-read-as-the-operator"
+target = "symbols"
+contains = [
+  "define internal Vec::- comdat nodeduplicate",
+  "define internal Vec::+= comdat nodeduplicate",
+  "define internal Vec::== comdat nodeduplicate",
+  "define internal Vec::() comdat nodeduplicate",
+  "define internal Vec::[] comdat nodeduplicate",
+  "define internal Vec::<- comdat nodeduplicate",
+  "define internal List::&[] comdat nodeduplicate",
+]
 
-# A private method keeps its symbol but is not externally visible
+# A name outside [A-Za-z0-9_] -- Unicode letters, or anything in backticks --
+# is punycoded into the symbol and read back as written: a Unicode identifier
+# bare, a backticked one in its backticks. This is the one place the encoder
+# in conec and the demangler in the runner meet on a punycoded name, so it is
+# where a disagreement between them would show.
 [[scenario.struct-methods.check]]
-name = "private-method-symbol-is-hidden"
-target = "llvmir"
-contains = ["define hidden i32 @Account__fee"]
+name = "encoded-names-read-back-as-written"
+target = "symbols"
+contains = [
+  "define internal Umlaut::größe comdat nodeduplicate",
+  "define internal Umlaut::`a b` comdat nodeduplicate",
+  "define internal Umlaut::`+ -` comdat nodeduplicate",
+]
+
+# A private method is a symbol like any other: privacy is a fact about the
+# namespace, not a spelling or a visibility, so nothing marks it 'hidden'.
+[[scenario.struct-methods.check]]
+name = "private-method-keeps-its-symbol"
+target = "symbols"
+contains = ["define internal Account::_fee comdat nodeduplicate"]
+excludes = [" hidden "]
 
 # A finalizer generates a function of its own. A struct whose field needs
 # dropping gets a second, generated one named for the type, which calls the
 # type's own finalizer and then the field's.
 [[scenario.struct-methods.check]]
 name = "finalizer-generates-a-drop-function"
-target = "llvmir"
-contains = ["@Resource_final", "@Bundle_final", "@Bundle_drop"]
+target = "symbols"
+contains = [
+  "define internal Resource::final comdat nodeduplicate",
+  "define internal Bundle::final comdat nodeduplicate",
+  "define internal Bundle::drop comdat nodeduplicate",
+]
 
 [scenario.struct-opaque]
 category = "compile"
@@ -126,7 +158,7 @@ tags = ["parse", "nameres", "typecheck", "genllvm"]
 category = "reject"
 description = "Struct declaration syntax the parser cannot accept"
 tags = ["parse"]
-diagnostics = 11
+diagnostics = 12
 
 # -------- type check stage --------
 

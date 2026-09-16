@@ -78,7 +78,9 @@ tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
 
 # A slice's length is a field of the value, not of its type, so the check
 # against it cannot be folded even for a constant index. Asserted here rather
-# than at run time because the check only announces itself by aborting.
+# than at run time because the check only announces itself by aborting. Both
+# scenarios are read before optimization: nothing calls their one function,
+# and a program's definitions are internal, so the optimizer deletes it.
 [scenario.collection-bounds-slice]
 category = "compile"
 description = "Indexing a slice is bounds-checked against the length the slice carries"
@@ -86,11 +88,13 @@ tags = ["typecheck", "genllvm"]
 
 [[scenario.collection-bounds-slice.check]]
 name = "slice-index-emits-bounds-check"
-target = "llvmir"
+target = "preir"
 contains = ["extractvalue { i32*, i64 }", "icmp ult i64 0, %count", "call void @llvm.trap()"]
 
-# The same constant index against an array whose length is in its type folds
-# away entirely. The pair is what makes either claim informative.
+# The same constant index against an array whose length is in its type needs no
+# comparison at all: both operands are constants, so generation folds the test
+# as it builds it and emits no 'icmp'. The pair is what makes either claim
+# informative.
 [scenario.collection-bounds-fixed]
 category = "compile"
 description = "Indexing a fixed-size array through a reference needs no run-time check"
@@ -98,8 +102,8 @@ tags = ["typecheck", "genllvm"]
 
 [[scenario.collection-bounds-fixed.check]]
 name = "fixed-array-index-needs-no-bounds-check"
-target = "llvmir"
-excludes = ["call void @llvm.trap()"]
+target = "preir"
+excludes = ["icmp"]
 
 # -------- type check stage --------
 

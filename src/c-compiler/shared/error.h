@@ -94,6 +94,7 @@ enum ErrorCode {
     ErrorNoCandidate = 1056,    // No overloaded candidate accepts the call's arguments
     ErrorAmbigCandidate = 1057, // More than one overloaded candidate accepts the call's arguments
     ErrorOverloadUse = 1058,    // Overload name used somewhere other than a call's callee
+    ErrorPrivOverload = 1076,   // A private candidate may not join a public overload name
 
     // Array literals
     ErrorBadFill = 1059,        // Array fill literal may not repeat this value

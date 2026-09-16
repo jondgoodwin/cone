@@ -13,7 +13,7 @@
 # a program spanning modules cannot be linked yet, and design/diagnostics/test-suite.md
 # section 4 forbids adding a synthetic 'main' to promote a scenario's category.
 # What running would have shown -- which symbol a call lowered to, and whether a
-# symbol was emitted at all -- is asserted as named llvmir checks instead.
+# symbol was emitted at all -- is asserted as named symbols checks instead.
 #
 # The failure scenarios are split by pipeline stage, because analysis halts
 # between stages. module-import-missing is split off again inside the parse
@@ -57,37 +57,43 @@ excludes = ["$abs", "$labs", "@abs(i32) comdat", "@labs(i64) comdat"]
 
 [scenario.module-imports]
 category = "compile"
-description = "A wildcard import folding an overload name with a private candidate"
+description = "A wildcard import folding an overload name, and what the importer declares for it"
 tags = ["parse", "nameres", "typecheck", "genllvm"]
 
-# The regression itself: a private candidate selected through a public overload
-# name has to get a symbol even though the privacy filter skips its own entry.
+# Every candidate of the folded overload name is declared in the importer, and
+# every one is public: a private candidate may not join a public name
+# (core-parse-overload-private), so the fold never reaches a declaration the
+# importer may not see. A declaration is external, as an LLVM declaration can
+# be nothing else.
 [[scenario.module-imports.check]]
-name = "imported-private-candidate-declared"
-target = "llvmir"
+name = "imported-candidates-declared"
+target = "symbols"
 contains = [
-  "declare i64 @modulesub_scaleInt(i64)",
-  "declare hidden double @modulesub__scaleFloat(double)",
-  "declare i64 @modulesub_plain(i64)",
+  "declare modulesub::scaleInt",
+  "declare modulesub::scaleFloat",
+  "declare modulesub::plain",
 ]
 
-# An overload name has no symbol of its own, and a private overload name is not
-# folded by the import at all, so neither it nor its candidate is declared.
+# An overload name has no symbol of its own; a private overload name is not
+# folded by the import at all, so neither it nor its candidate is declared; and
+# a private function nothing public reaches leaves no symbol either. A
+# declaration's line ends at its name, so the newline is what stops
+# 'modulesub::scale' from matching 'modulesub::scaleInt'.
 [[scenario.module-imports.check]]
 name = "no-symbol-for-imported-overload-name"
-target = "llvmir"
-excludes = ["@modulesub_scale(", "@modulesub__hidden", "_hiddenOne"]
+target = "symbols"
+excludes = ["modulesub::scale\n", "modulesub::_hidden", "_hiddenOne", "_scaleFloat"]
 
 # The other half of the COMDAT rule core-overload states: only a definition may
 # lead one. An imported module's functions have bodies in the IR, but this
 # object file merely declares them, so they get none.
 [[scenario.module-imports.check]]
 name = "imported-declarations-carry-no-comdat"
-target = "llvmir"
+target = "symbols"
 excludes = [
-  "@modulesub_scaleInt(i64) comdat",
-  "@modulesub__scaleFloat(double) comdat",
-  "@modulesub_plain(i64) comdat",
+  "modulesub::scaleInt comdat",
+  "modulesub::scaleFloat comdat",
+  "modulesub::plain comdat",
 ]
 
 [scenario.module-qualified]
@@ -95,20 +101,21 @@ category = "compile"
 description = "An import without '::*', whose members are reached by qualifying them"
 tags = ["parse", "nameres", "typecheck", "genllvm"]
 
-# A qualified call lowers to the same namespaced concrete symbol a folded one
-# does, and the qualifier itself leaves nothing behind.
+# A qualified call reaches the same namespaced concrete symbol a folded one
+# does, so the importer declares it, and the qualifier itself leaves nothing
+# behind.
 [[scenario.module-qualified.check]]
 name = "qualified-call-lowers-to-namespaced-symbol"
-target = "llvmir"
-contains = ["@modulesub_plain", "@modulesub_scaleInt"]
-excludes = ["@modulesub_scale("]
+target = "symbols"
+contains = ["declare modulesub::plain", "declare modulesub::scaleInt"]
+excludes = ["modulesub::scale\n"]
 
-# -------- symbol characterisation --------
+# -------- symbol kinds --------
 #
-# The four scenarios below pin what the compiler emits today for symbol kinds
-# no other check names, so that the symbol-generation refactor can show nothing
-# moved. Each pins the current behaviour as it is, oddities included; none
-# asserts what the compiler should do.
+# The four scenarios below assert the symbol an importer emits for kinds no
+# other check names: an 'extern system' declaration, an imported global, an
+# imported private declaration, an extern inside an imported module, an import
+# cycle, and two modules whose names would once have joined into one symbol.
 
 [scenario.module-extern-system]
 category = "compile"
@@ -129,59 +136,60 @@ category = "compile"
 description = "What an importer emits for an imported global, private declarations, extern and struct methods"
 tags = ["parse", "nameres", "typecheck", "genllvm"]
 
-# Pins today's spelling for the symbol-generation refactor: an imported global
-# is a prefixed 'external' declaration with no initializer and no COMDAT, and
-# an imported 'imm' global is an 'external constant'.
+# An imported global is an 'external' declaration spelled after its module,
+# with no initializer and no COMDAT; an imported 'imm' global is an 'external
+# constant'. A definition's line would carry its COMDAT.
 [[scenario.module-symbols.check]]
 name = "imported-global-is-an-external-declaration"
-target = "llvmir"
+target = "symbols"
 contains = [
-  "@modulesyms_shared = external global i64",
-  "@modulesyms_fixed = external constant i64",
+  "external global modulesyms::shared",
+  "external constant modulesyms::fixed",
 ]
 excludes = [
-  "$modulesyms_shared",
-  "$modulesyms_fixed",
-  "@modulesyms_shared = global",
-  "@modulesyms_fixed = constant",
+  "modulesyms::shared comdat",
+  "modulesyms::fixed comdat",
 ]
 
-# Pins today's behaviour for the symbol-generation refactor: an imported
-# module's private top-level function and global leave no symbol at all in the
-# importer, while its public function is declared.
+# An imported module's private top-level function and global leave no symbol
+# at all in the importer, while its public function is declared.
 [[scenario.module-symbols.check]]
 name = "imported-private-top-level-names-are-absent"
-target = "llvmir"
-contains = ["declare i64 @modulesyms_pubFn(i64)"]
+target = "symbols"
+contains = ["declare modulesyms::pubFn"]
 excludes = ["_privFn", "_privGlobal"]
 
-# Pins today's behaviour for the symbol-generation refactor, unevenness
-# included: a struct's methods are declared under the module prefix and then
-# the type prefix, the struct type itself carries no module prefix, and the
-# private method *is* declared -- 'hidden', like a private root method --
+# A struct's methods are declared after the module and then the type, and the
+# private method *is* declared, spelled and linked like the public ones,
 # although a private top-level function of the same module is not.
 [[scenario.module-symbols.check]]
-name = "imported-private-method-is-declared-hidden"
-target = "llvmir"
+name = "imported-private-method-is-declared"
+target = "symbols"
 contains = [
-  "declare i32 @modulesyms_Gadget_get(%Gadget*)",
-  "declare hidden i32 @modulesyms_Gadget__hid(%Gadget*)",
-  "declare %Gadget @modulesyms_Gadget_make(i32)",
+  "declare modulesyms::Gadget::get",
+  "declare modulesyms::Gadget::_hid",
+  "declare modulesyms::Gadget::make",
 ]
 excludes = [
-  "@modulesyms_Gadget_get(%Gadget*) comdat",
-  "@modulesyms_Gadget__hid(%Gadget*) comdat",
-  "%modulesyms_Gadget",
+  "modulesyms::Gadget::get comdat",
+  "modulesyms::Gadget::_hid comdat",
 ]
 
-# Pins today's behaviour for the symbol-generation refactor: an 'extern'
-# declared inside an imported module is still the bare C name, with no module
-# prefix.
+# The struct's LLVM type is named after the type alone: an LLVM type name is
+# not an object-file symbol, so it takes no module path.
+[[scenario.module-symbols.check]]
+name = "imported-struct-type-carries-no-module-path"
+target = "llvmir"
+contains = ["%Gadget = type"]
+excludes = ["%modulesyms_Gadget", '%"modulesyms::Gadget"']
+
+# An 'extern' declared inside an imported module is still the bare C name,
+# with no module path.
 [[scenario.module-symbols.check]]
 name = "extern-inside-an-imported-module-takes-no-prefix"
-target = "llvmir"
-contains = ["declare i64 @labs(i64)"]
-excludes = ["@modulesyms_labs"]
+target = "symbols"
+contains = ["declare labs"]
+excludes = ["modulesyms::labs"]
 
 [scenario.module-cycle]
 category = "compile"
@@ -189,50 +197,49 @@ description = "An import cycle back to the root file, which finds the root inste
 tags = ["parse", "nameres", "genllvm"]
 
 # The root's own declarations are defined under their bare names, as in any
-# root file, and the sub module's under its prefix ...
+# root file, and the sub module's after its module ...
 [[scenario.module-cycle.check]]
 name = "root-defines-its-own-symbols-unprefixed"
-target = "llvmir"
+target = "symbols"
 contains = [
-  "@counter = global i64 5, comdat",
-  "define i64 @rootFn(i64 %0) comdat {",
-  "define i64 @caller() comdat {",
-  "declare i64 @modulecyc_subFn(i64)",
+  "global internal counter comdat nodeduplicate",
+  "define internal rootFn comdat nodeduplicate",
+  "define internal caller comdat nodeduplicate",
+  "declare modulecyc::subFn",
 ]
 
 # ... and each of them exactly once. The root module is named after its file,
 # so the import back to it finds the module already parsed rather than reading
 # the file again as a second module named 'module-cycle': nothing is declared
-# under that prefix, and no definition is repeated (LLVM would print a second
-# '@rootFn' as '@rootFn.1').
+# under that module, and no definition is repeated (LLVM would print a second
+# 'rootFn' as 'rootFn.1').
 [[scenario.module-cycle.check]]
 name = "cycle-finds-the-root-and-declares-nothing-twice"
-target = "llvmir"
+target = "symbols"
 excludes = [
-  "@module-cycle_",
-  "@rootFn.1",
-  "@caller.1",
-  "@counter.1",
+  "module-cycle",
+  "rootFn.1",
+  "caller.1",
+  "counter.1",
 ]
 
 [scenario.module-collision]
 category = "compile"
-description = "'z' in module 'modulex_y' and 'y_z' in module 'modulex', which join into one symbol"
+description = "'z' in module 'modulex_y' and 'y_z' in module 'modulex', which a separator-joined symbol would have confused"
 tags = ["parse", "nameres", "genllvm"]
 
-# Pins today's behaviour for the symbol-generation refactor: the prefix and the
-# name join with a bare '_', so the two declarations spell the same symbol and
-# LLVM renames the second '.1'. The call sites pin which spelling each call
-# was bound to. Pinned as it is: the '.1' symbol is unresolvable.
+# Every component of a symbol is length-prefixed, so a module named 'modulex_y'
+# declaring 'z' and a module named 'modulex' declaring 'y_z' spell two symbols
+# rather than one. Were they to join into one, LLVM would rename the second
+# '.1' and one of the two calls would reference a symbol nothing defines.
 [[scenario.module-collision.check]]
-name = "prefix-and-name-join-into-one-symbol-that-llvm-uniquifies"
-target = "llvmir"
+name = "distinct-modules-spell-distinct-symbols"
+target = "symbols"
 contains = [
-  "declare i64 @modulex_y_z()",
-  "declare i64 @modulex_y_z.1()",
-  "call i64 @modulex_y_z()",
-  "call i64 @modulex_y_z.1()",
+  "declare modulex_y::z",
+  "declare modulex::y_z",
 ]
+excludes = [".1"]
 
 # -------- parse stage --------
 

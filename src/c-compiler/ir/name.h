@@ -80,23 +80,27 @@ extern Name *allocMethodName;  // "_alloc"
 extern Name *initMethodName;   // "init"
 
 typedef struct VarDclNode VarDclNode;
-typedef struct FnDclNode FnDclNode;
-
-// Is this function an instance of a generic: instantiated from a generic
-// function, or a method of a generic type's instance?
-int nameIsGenericInstance(FnDclNode *fn);
 
 // Spell the linker symbol of a declaring node (fn or global variable) into buf,
-// which is returned: owner chain, declared name, and a type-argument suffix for
-// an instance of a generic. Bare for a C-style name; empty for an unnamed fn.
+// which is returned: '_C' and the declaration's path, or the declared name
+// alone for a C-style name and for a root declaration that is not an instance
+// of a generic. Empty for an unnamed fn.
 char *nameSymbol(char *buf, INode *dclnode);
 
-// Spell the name of a trait's vtable into buf, which is returned: '<Trait>:Vtable'
+// Spell a type into the buffer, returning the position after it. Where an
+// instance of a generic carries its type arguments.
+char *nameType(char *bufp, INode *vtype);
+
+// Spell the name of a trait's vtable into buf, which is returned: '<Trait>:Vtable'.
+// An LLVM type name, not a symbol.
 char *nameVtable(char *buf, INode *trait);
 
 // Spell the symbol of the vtable an implementing type supplies for a trait
-// into buf, which is returned: '<Impl>-><Trait>:Vtable'
+// into buf, which is returned: '_CY<type><trait-path>'
 char *nameVtableImpl(char *buf, INode *impl, INode *trait);
+
+// Spell the symbol of a trait's vtable list into buf, which is returned: '_CL<trait-path>'
+char *nameVtableList(char *buf, INode *trait);
 
 
 #endif

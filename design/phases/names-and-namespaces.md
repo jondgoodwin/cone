@@ -26,9 +26,11 @@ declaration. ▸ **Forbids** treating a name as a property of a declaration, and
 inside A can be private while `B` is a public package in its own right.
 
 **Visibility is checked against the spelling the caller used**, never against
-the declaration reached. ▸ **Settles** how a public overload name may
-legitimately select a private candidate: the set is public, the member is not,
-and calling through the set is the way in.
+the declaration reached. ▸ **Forbids** a private concrete candidate joining a
+public overload name (`ErrorPrivOverload`): through the public spelling the
+private member would be reachable from outside its owner, and a symbol that is
+private yet needed from outside has no sound linkage. An intrinsic candidate is
+exempt, since it is never a symbol.
 
 ⚠ **Parts of this note describe intended rather than current behaviour and say
 so.** The `NameDef` design below is the clearest case — the implementation
@@ -170,7 +172,7 @@ During recursive name/semantic resolution of a call, a use of `intersect` first 
 
 After selection, the call refers directly to the chosen concrete function or method NameDef. Return types do not participate in overload selection. Methods follow the same model, with the receiver included in signature matching. Operators use this mechanism as well and normally appear in source through their overload name.
 
-Visibility is checked on the name the caller uses. A public overload-set NameDef may expose concrete functions whose unique names are private, because those concrete names are implementation identities and are not looked up by the caller. Code generation must nevertheless make every concrete candidate reachable wherever its public overload set can be called.
+Visibility is checked on the name the caller uses, so an overload set and its candidates must agree: a private concrete candidate may not join a public overload name. `fnOverloadDclAdd` reports `ErrorPrivOverload` where the set is built, for a module's functions and a type's methods alike, and leaves the candidate out; the author makes both private or both public. A compiler-defined intrinsic is exempt, because it is never a symbol — which is how the core types hide `_neg` behind `-`. A public name therefore holds only public candidates, and generation has nothing to reach that its own privacy filter would hide.
 
 Extending a type's overload sets from an extension is intended, but its ownership and collision rules are deferred until extensions are designed. Generic candidates and merging matching `extern` declarations with implementations are likewise deferred; a generic declaration may not currently name an overload set at all.
 
@@ -210,7 +212,7 @@ Documented Cone visibility is spelling-based:
 
 The compiler enforces this on the paths that can reach a private name: `nameUseNameRes` reports `ErrorNotPublic` for a `_`-prefixed name reached through a module qualifier from outside its module, `importNameRes` skips private nodes when folding, and `fnCallLowerMethod` refuses a private member on a receiver that is not `self`. A declaration's visibility is also written once, from the spelling, into its `DclPrivate` bit when it joins its namespace, and generation reads the bit rather than the spelling — see "Symbols".
 
-One consequence is deliberate and worth knowing: **visibility is checked against the spelling the caller used**, so a public overload name may legitimately select a private concrete candidate.
+One consequence is deliberate and worth knowing: **visibility is checked against the spelling the caller used**, which is why a public overload name may not hold a private concrete candidate (`ErrorPrivOverload`) — through the public spelling the private one would be reachable.
 
 Visibility should belong to the original definition or declaration, while access is evaluated from the use site. A folded or renamed NameDef must not make a private definition public merely by changing its local spelling. The design must also decide whether an alias may deliberately narrow visibility.
 
@@ -272,9 +274,12 @@ is that *if* a name is emitted, its spelling and linkage follow from here — an
 anonymous `fn` literals and string constants, whose names (`anon`, `string`,
 plus LLVM's uniquing suffix) come from no declared name.
 
-*Provenance: the rules are the author's; the as-built table is measured from
-emitted LLVM IR and pinned by `llvmir` checks in the `core`, `generic`,
-`module`, `struct` and `trait` groups.*
+*Provenance: the rules are the author's and the scheme's decisions are the
+compiler's. The grammar, the worked examples and the as-built table are
+measured from emitted LLVM IR, read back by the demangler in `test/run.py` —
+whose selftest over the worked examples runs on every suite invocation — and
+pinned by `symbols` checks in the `core`, `generic`, `module`, `struct` and
+`trait` groups.*
 
 ### The declaration facts
 
@@ -314,7 +319,7 @@ visibility; linkage is the compiler's to derive.
 | --- | --- |
 | owner chain | linkage: internal or external |
 | declared name | mergeable or unique |
-| visibility bit | export-table visibility (hidden or default; undefined until an export set exists) |
+| visibility bit | nothing, today: a program compile sets no export-table visibility, and what a package exports is undecided |
 | supply: defined in this compile, or externally supplied | |
 | naming regime: C-style or Cone-style | |
 | calling convention, for C-style names | |
@@ -323,25 +328,25 @@ visibility; linkage is the compiler's to derive.
 
 Rules for Cone-consumed names; C FFI names have their own (S5).
 
-- **S1.** A symbol is a prefix naming the owner chain, then the declared name
-  possibly mangled, then possibly a suffix qualifying its individuality.
-  [differs: today the prefix is `<name>_` per owner, the name follows bare, and
-  the suffix for an instance of a generic is a `:`-separated mangling of each
-  parameter's type — which is where the type arguments show, because a
-  parameter names them]
+- **S1.** A symbol is a sigil, then a path: the owner chain innermost last,
+  each component a length-prefixed identifier, and an instance of a generic
+  wrapping its type arguments around its own component. Nothing else is
+  encoded — no signature, no visibility, no lifetime, no suffix.
 - **S2.** The owner chain is the enclosing modules, outermost first, then the
   enclosing types; a module never sits inside a type. **There is no package
-  name.** The compiler knows only module names declared in source; a version
-  slot, when one is filled, is a suffix on the top module.
+  name.** The compiler knows only module names declared in source; the version
+  slot is v0's disambiguator, `s<base62>_` before the top module's identifier,
+  and nothing fills it.
 - **S3.** A source file with no `mod` declaration contributes no module name,
-  so its declarations carry no module prefix. The program's root is prefix-less
-  on purpose, which is why `main` needs no special case.
-- **S4.** Each owner in the chain is spelled the way its own symbol would be —
-  its name possibly mangled, then its suffix if it has one. The only owner
-  carrying a suffix is a generic type instance, whose suffix is its type
-  arguments. [differs: a type in the chain contributes its declared name alone;
-  an instance's arguments reach the symbol only through the mangled parameter
-  types, where `self`'s type carries them]
+  so its declarations carry no module component. The program's root is
+  prefix-less on purpose, which is why `main` needs no special case: a root
+  declaration with nothing to encode is spelled bare, and one with something
+  to encode — a root type's method, an instance of a root generic — starts its
+  chain at the first named owner.
+- **S4.** Each owner in the chain is spelled the way its own path would be.
+  The only owner carrying more than its identifier is a generic type instance,
+  whose component carries its type arguments, so `fn tally(self) i64` is told
+  apart across `Holder[i64]` and `Holder[f64]`.
 - **S5. C FFI names.** Every module is flagged C-style or Cone-style. In a
   C-style module the owner chain contributes no prefix, no name is mangled and
   nothing carries a suffix, so such a module cannot declare a generic. The flag
@@ -353,28 +358,232 @@ Rules for Cone-consumed names; C FFI names have their own (S5).
   [differs: there is no module flag and no literal prefix; the regime is per
   declaration, from `extern`, and an `extern` inside a Cone module is spelled
   bare wherever it is declared]
-- **S6. Vtables.** A vtable's owner chain is the implementing type's and its
-  suffix is the trait, both spelled by these rules; a vtable list's owner chain
-  is the trait's. [differs: a vtable is `<Impl>-><Trait>:Vtable` and its LLVM
-  type `<Trait>:Vtable`, from the two types' declared names alone; every
-  trait's list is the one literal `vtable-list`, which LLVM uniquifies as
-  `vtable-list.1` for the second trait in a module]
+- **S6. Vtables.** A vtable is the implementing type then the trait's path,
+  `Y<type><trait-path>` — this type as that trait — and a trait's vtable list
+  is the trait's path alone, `L<trait-path>`. The vtable's LLVM *type* is
+  named `<Trait>:Vtable` from the trait's declared name (`nameVtable`): an
+  LLVM type name, not an object-file symbol, so it is not encoded.
 - **S7.** Overloaded functions need no signature encoding: a concrete candidate
   already has a unique declared name in its namespace, and only that name
   reaches the symbol. Only an instance of a generic needs type arguments
   encoded.
 - **S8.** An identifier may contain any character, in backticks, and may be
-  Unicode; both reach the symbol table as quoted or raw-byte symbols. So the
-  scheme needs an encoding for the name itself, not only a prefix. **Open:**
-  which encoding; Rust v0's punycode-based one is the nearest prior art.
+  Unicode. The symbol therefore encodes the name itself, not only its path: a
+  name outside `[A-Za-z0-9_]` is punycoded, and an operator method's name is a
+  fixed two-letter code. An encoded symbol is `[A-Za-z0-9_]` throughout, so it
+  is never quoted in the IR, and a `.` in one can only start LLVM's
+  uniquifying suffix.
 
-**The exact form is open.** What is decided in principle is that each
-component is length-prefixed, which dissolves the separator question — with `_`
-as both separator and identifier character, `a_b::c` and `a::b_c` spell one
-symbol today — that a sigil opens the symbol in the space C reserves for
-implementations, as `_Z` and `_R` do, and that the top module leaves a version
-slot. The bytes are not decided, and neither is whether a program's prefix-less
-symbols are emitted bare or encoded with an empty chain.
+#### The grammar
+
+The scheme is Rust v0's where the two languages coincide and Cone's own where
+they do not, so that what Cone adds later — closures, const generics — has a
+Rust-shaped place to go. `nameSymbol`, `namePath`, `nameIdent` and `nameType`
+in `ir/name.c` are the productions; the demangler in `test/run.py` reads them
+back.
+
+```
+symbol   = "_C" [version] path                   a fn, a global, a method
+         | "_C" [version] "Y" type path          a vtable: this type as that trait
+         | "_C" [version] "L" path               a trait's vtable list
+version  = decimal                               absent = 0, and only 0 is spelled
+
+path     = "C" ident                             a top module
+         | "N" "v" [path] ident                  a fn or global, nested in its owner
+         | "N" "t" [path] ident                  a type, or a module inside a module
+         | "I" path {type} "E"                   an instance of a generic, with its type arguments
+
+ident    = decimal ["_"] bytes                   bytes in [A-Za-z0-9_]; "_" when they begin with "_" or a digit
+         | "u" decimal "_" bytes                 punycode over the basic set [A-Za-z0-9_], delimiter "_"
+         | "o" code                              an operator method
+
+type     = letter                                a built-in number type, Bool, or void
+         | path                                  any other named type
+         | "T" {type} "E"                        tuple
+         | "F" {type} "E" type                   fn signature: parameters, then return type
+         | "A" type decimal "_"                  fixed array: element type, then extent
+         | "R" ident ident type                  reference: region, permission, target
+         | "S" ident ident type                  array reference
+         | "V" ident ident path                  virtual reference to a trait
+         | "P" type                              raw pointer
+
+decimal  = "0" | [1-9][0-9]*
+```
+
+**Identifiers.** The length is decimal and the bytes follow; the `_` is
+required exactly when the bytes begin with `_` or a digit, so `_hid` is
+`4__hid` and `1st` is `3_1st`, and a reader takes the length, skips one `_`
+if present, then the bytes. The empty identifier is `0`. Punycode is RFC 3492
+with `[A-Za-z0-9_]` as the basic set rather than all of ASCII and `_` as the
+delimiter; a non-basic ASCII code point — backticked punctuation, a space — is
+lifted above the Unicode range before encoding, so the RFC's initial `n` of
+128 stands and an identifier with only non-ASCII characters encodes
+byte-identically to v0. `größe` is `u9_gre_6ka8i`; `` `a b` `` is
+`u8_ab_eh24y`. An operator method's name is `o` and a code, Itanium's where
+Itanium has the operator and Cone's own where it does not
+(`nameOperatorCode`):
+
+| | | | | | |
+| --- | --- | --- | --- | --- | --- |
+| `pl` `+` | `mi` `-` | `ml` `*` | `dv` `/` | `rm` `%` | `eq` `==` |
+| `ne` `!=` | `lt` `<` | `le` `<=` | `gt` `>` | `ge` `>=` | `an` `&` |
+| `or` `\|` | `eo` `^` | `ls` `<<` | `rs` `>>` | `ix` `[]` | `cl` `()` |
+| `pp` `++` | `mm` `--` | `pL` `+=` | `mI` `-=` | `mL` `*=` | `dV` `/=` |
+| `rM` `%=` | `aN` `&=` | `oR` `\|=` | `eO` `^=` | `lS` `<<=` | `rS` `>>=` |
+| `la` `<-` | `rx` `&[]` | `pP` postfix `++` | `mM` postfix `--` | | |
+
+The last row is Cone's own. Postfix `++` and `--` are interned as `+++` and
+`---`, which is how the demangler prints them. `!` is a logic node and never a
+method, and unary `-` is the ordinary name `_neg`, so Itanium's `nt` and `ng`
+are read by the demangler and spelled by nothing.
+
+**Paths.** The root module contributes nothing, so a component whose parent is
+the root has an empty parent path: `Nv` followed by a digit is a root fn's
+identifier, `NvNt2Pt3get` is `Pt::get`. `I` wraps the instance's own component
+— `INv4pickxE` — and an instance that is an owner carries its arguments in
+place, `NvINt6HolderxE5tally`. A method of a generic type's instance carries
+the instantiating node its owner's cloning stamped on it, which is the owner's
+and not its own, so the arguments are spelled on the owner once. A variant of
+a tagged trait is owned by the trait, `NtNt7Extense8Variant1`.
+
+**The bare rule** is `nameSymbol`'s: a C-style name, or a declaration with an
+empty owner chain that is not itself an instance of a generic — every root fn
+and global, `main` among them — is its declared name alone. Everything else is
+`_C` and its path. A function with no name at all, a lifted `fn` literal,
+spells the empty string and is named `anon` at generation.
+
+**Types** are spelled by `nameType`, which draws exactly the distinctions
+`itypeIsSame` draws: a reference's region, permission and target but not its
+lifetime; an array's extents; a signature's parameter and return types. The
+letters are v0's, matched by node identity against the corelib globals, so a
+user type named `i64` inside a module is still a path:
+
+| | | | | | | |
+| --- | --- | --- | --- | --- | --- | --- |
+| `a` i8 | `s` i16 | `l` i32 | `x` i64 | `i` isize | `f` f32 | `b` Bool |
+| `h` u8 | `t` u16 | `m` u32 | `y` u64 | `j` usize | `d` f64 | `u` void |
+
+`n` and `o`, v0's i128 and u128, are read by the demangler and declared by
+nothing. A region and a permission are each the identifier of the declaration
+they name — `2so`, `2rc`, `3mut`, `2ro`, `4opaq` — and a borrowed reference,
+which names no region, spells the empty identifier `0`: `R2so3mutl` is
+`&so mut i32`, `R04opaqFxEx` is `&opaq fn(i64) i64`. An array of several
+dimensions is an array of arrays, one `A` per dimension and the extents
+innermost first: `AAx3_2_` is `[2] [3] i64`.
+
+#### How to read a symbol
+
+Read left to right after `_C`. `N` announces a nested component and the next
+letter says value or type; then comes the parent, innermost last; a digit
+starts a length, and that many bytes of name follow. `I…E` wraps a generic
+instance's arguments. `Y` is the vtable of a type for a trait, `L` a trait's
+vtable list. Every row below is a spelling `conec` emits, read back by the
+demangler in `test/run.py`:
+
+| Cone declaration | Symbol | Read as |
+| --- | --- | --- |
+| `fn plainPub()` in the root, `fn main`, root `mut pubGlobal` | `@plainPub` `@main` `@pubGlobal` | bare: nothing to encode (D2) |
+| `fn subFn()` in file module `sub` | `_CNvC3sub5subFn` | `sub::subFn` |
+| `mut subGlobal` in module `sub` | `_CNvC3sub9subGlobal` | `sub::subGlobal` |
+| `struct Pt { fn get(self) }` in the root | `_CNvNt2Pt3get` | `Pt::get` — the root contributes nothing |
+| `SubPt::get` in module `sub` | `_CNvNtC3sub5SubPt3get` | `sub::SubPt::get` |
+| private `SubPt::_hid` | `_CNvNtC3sub5SubPt4__hid` | `sub::SubPt::_hid` — the separator `_` is required before a name beginning with `_` or a digit, so two underscores; privacy is a fact, not a spelling |
+| root generic `fn pick[T](a T, b T)` at `i64` | `_CINv4pickxE` | `pick[i64]` — the type *argument*, once |
+| `fn pickSecond[T,U]` at `i64`, `f64` | `_CINv10pickSecondxdE` | `pickSecond[i64,f64]` |
+| `Holder[i64]::tally` | `_CNvINt6HolderxE5tally` | `Holder[i64]::tally` — the instance is the owner |
+| `Meter`'s default `reading` inherited by `Gauge` | `_CNvNt5Gauge7reading` | `Gauge::reading` — spelled as an override written there |
+| the `drop` the compiler synthesizes for `Bundle` | `_CNvNt6Bundle4drop` | `Bundle::drop` |
+| `Vec::-`, `Vec::+=`, `List::&[]` | `_CNvNt3Vecomi`, `_CNvNt3VecopL`, `_CNvNt4Listorx` | `Vec::-`, `Vec::+=`, `List::&[]` |
+| `Gauge`'s vtable for trait `Meter` | `_CYNt5GaugeNt5Meter` | `Gauge as Meter (vtable)` |
+| `Meter`'s vtable list | `_CLNt5Meter` | `Meter (vtable list)` |
+| the vtable of `Variant1`, a variant of tagged trait `Extense` | `_CYNtNt7Extense8Variant1Nt7Extense` | `Extense::Variant1 as Extense (vtable)` — a variant is owned by its trait |
+| `passThrough[T]` at `&opaq fn(i64) i64` | `_CINv11passThroughR04opaqFxExE` | `passThrough[&opaq fn(i64) i64]` — borrowed, so the region is `0` |
+| `passThrough` at `(i64,i64)`, at `[2] i64`, at `void` | `_CINv11passThroughTxxEE`, `_CINv11passThroughAx2_E`, `_CINv11passThroughuE` | `passThrough[(i64,i64)]`, `passThrough[[2] i64]`, `passThrough[void]` |
+| `fn größe(self)` and `` fn `a b`(self) `` on `Umlaut` | `_CNvNt6Umlautu9_gre_6ka8i`, `_CNvNt6Umlautu8_ab_eh24y` | `Umlaut::größe`, ``Umlaut::`a b` `` — punycode, read back in backticks where source needs them |
+| `extern fn abs`, `extern system GetTickCount` | `@abs`, `@GetTickCount` | C names, bare (S5) |
+| `modulex::y_z` and `modulex_y::z` | `_CNvC7modulex3y_z`, `_CNvC9modulex_y1z` | distinct by construction |
+| `modulesub.cone` compiled as root, then imported | `@scaleInt` vs `_CNvC9modulesub8scaleInt` | two spellings for one declaration; a module name declared in source is what would reunite them |
+
+#### Decisions
+
+Each names the choice, then the alternative it rejects and why.
+
+**D1 · Sigil.** `_C`, then an optional decimal scheme version, then the path;
+absent version is 0, exactly as v0's `_R[version]`. Not `_R` itself: Rust
+tools would parse Cone's extensions and fail confusingly. `_C` sits in the
+space C reserves for implementations, as `_Z` and `_R` do, and says whose
+symbol it is.
+
+**D2 · Bare root.** A root declaration with nothing to encode stays bare;
+everything else is encoded, and the program root contributes no path
+component. Not `C<file-basename>` for the root: it would reunite the two
+spellings of a file compiled as root and as import, but the root is
+prefix-less on purpose (S3) and a module's name belongs in source, not in a
+filename. Not `C0`, an empty top-module identifier: it says the root has a
+name when the point is that it has none. Not encoding root fns too, for one
+code path: it costs the readability of every IR check and of `main`, buys
+nothing while the root is internal, and the bare rule is one line.
+
+**D3 · Identifiers.** v0's length-prefix exactly, with two extensions:
+punycode over the safe basic set, so a non-ASCII name is byte-identical to v0
+and a backticked ASCII name, which v0 cannot spell, encodes instead of failing;
+and `o<code>` for operator methods. Not Rust's trait-method names (`add`,
+`index`) for operators: a user may declare a method literally named `add`, and
+then `Vec::+` and `Vec::add` spell one symbol. Not punycoding operators
+through `u`: decodable, but unreadable in an object file, and the object file
+is meant to be read.
+
+**D4 · Paths.** v0's `C`, `Nv`, `Nt` and `I…E`, whose arguments are the type
+arguments and never the parameter types (S7); an instance as owner carries its
+arguments (S4). Not Rust's `M`/`X` impl paths for methods: Cone's methods live
+in the type's namespace, so `Nt` then `Nv` says it directly and reads as
+`Type::method`; the impl productions encode a Rust concept Cone does not have.
+
+**D5 · Types.** v0's letters where the type coincides, and Cone's own `R`,
+`S`, `V` and `P` for what v0 cannot say, region and permission spelled as the
+identifiers of the declarations they name. Region and permission are always
+spelled and lifetime never, because those are the distinctions `itypeIsSame`
+draws — an encoding that omitted the region would spell `&so mut T` and
+`&rc mut T` alike, a collision rather than a distinction. Not v0's `R`/`Q`
+for `&`/`&mut`: they carry no region, and permission is not two-valued in
+Cone. Not v0's `K…` const encoding for array extents: decimal is readable,
+and `K` is the Rust-shaped place for const generics when Cone has them.
+
+**D6 · Vtables.** `Y<type><trait-path>` — v0's "this type, that trait", which
+is precisely what a vtable is — and `L<trait-path>` for the list, one per
+compilation unit with internal linkage (L4), since its contents are the
+implementers this compile saw. Not `X<impl-path><type><trait>`: with an empty
+root, the impl path and the type are not separable by a parser.
+
+**D7 · No back-references.** Version 0 has none. They only compress, nothing
+is built against the scheme, and adding them is what the version digit is for.
+Not in version 0: it doubles the encoder and the demangler for no benefit until symbols
+get long.
+
+**D8 · Program linkage.** In a program compile every definition is internal
+except `main` and a C-style name; a declaration is external, as an LLVM
+`declare` can be nothing else; visibility is never set. The soundness argument
+is S3's: a program's bare `@log` must never satisfy a package's reference to
+libm's `log`. The consequence is that LLVM's optimizer deletes an internal
+definition nothing references, which is why symbols are asserted from the
+pre-optimization dump.
+
+**D9 · The overload rule.** A private concrete candidate may not join a public
+overload name — `ErrorPrivOverload`, raised where the set is built
+(`fnOverloadDclAdd`), everywhere and not only across a package boundary; an
+intrinsic candidate is exempt because it is never a symbol. Not deferred to a
+visibility bit on the binding: the check is one line here, and it removes a
+linkage case (L5).
+
+**D10 · The demangler** lives in `test/run.py`, and `symbols` is a check
+target: one line per global with its linkage and its demangled name, so the
+suite asserts `Holder[i64]::tally` rather than bytes. Not a C demangler in
+`conec`: a second implementation of the grammar to maintain before the first
+has settled, with no second consumer to justify it.
+
+**Open.** Back-references, and with them the first use of the version digit.
+The package linkage table under "Linkage" is the rule and not the code, and
+L5's generic-helper half and L6 are open there.
 
 ### Linkage
 
@@ -399,7 +608,18 @@ The cases, in a program compile:
 | a global variable | internal |
 | an instance of a generic, wherever declared | internal — this object is the only one that references it |
 | a vtable for a type declared here | internal |
+| a trait's vtable list | internal, in every kind of compile (L4) |
 | a C-style declaration, inbound or outbound | external, unique |
+| an imported module's declaration — a symbol this object does not define | external: an LLVM `declare` can be nothing else |
+
+**As built, the program rule.** `genlLinkage` asks one question: does this
+object define the symbol? A definition — a declaration whose module is flagged
+`FlagGenMod`, not `extern`, with a body if a function; every vtable and vtable
+list — is `internal`, except `main` and a C-style name, which stay external. A
+declaration is external. No visibility is ever set: a private name is spelled
+and linked exactly as a public one, since privacy is a fact about the
+namespace, not the object file. A package compile does not exist yet; its
+cases below are the rule, not the code.
 
 In a package compile:
 
@@ -414,10 +634,7 @@ In a package compile:
 | an instance of a generic the package itself instantiated | external, mergeable |
 | a vtable | external, mergeable |
 | a trait default cloned into a type this package declares | external, unique — one package emits it |
-
-[differs: external everywhere; `hidden` visibility on `_` names, which COFF
-ignores; `linkonce any` on instances of generics and on vtables; a COMDAT of
-selection kind `nodeduplicate` on every other definition]
+| a trait's vtable list | internal (L4) |
 
 The prior art that settled the derivation: C++ `static` is linkage, not access,
 and a header-scoped `static` reached from an inline function is an ODR
@@ -426,66 +643,74 @@ single `.cpp` owns a header variable. Rust's author writes `pub` or not, and the
 compiler derives linkage from what references the item. Cone has one object per
 package, so "outside" means outside the object.
 
+- **L4, the vtable list.** Not mergeable, although L2 would make it so: its
+  contents are the implementers *this compile* saw, so two objects would
+  produce different bodies under one name and the linker would keep whichever
+  it met first. One list per compilation unit, internal, in every kind of
+  compile.
+- **L5, private but reachable through an overload name.** A private concrete
+  candidate may not join a public overload name — `ErrorPrivOverload`, raised
+  where the set is built (`fnOverloadDclAdd`), for a module's functions and a
+  type's methods alike, and not only across a package boundary. Through a
+  public name the candidate would be reachable from outside its owner, and a
+  symbol that is private yet needed from outside has no sound linkage; the
+  author makes both private or both public. A compiler-defined intrinsic is
+  exempt, as it is never a symbol, which is how the core types hide `_neg`
+  behind `-`. The refused candidate is left out of the set; the set stands.
+
 **Open:**
 
-- **L4, the vtable list.** By L2 it is mergeable, but its contents are the
-  implementers *this compile* saw, so two objects produce different bodies
-  under one name and the linker keeps whichever it meets first. Probably one
-  list per compilation unit, internal.
-- **L5, private but reachable across a package boundary.** A private concrete
-  candidate selected through a public overload name is ruled a compile error.
-  A private helper called from a public generic or `inline` body, whose
-  instance the importer emits, is not ruled: the importer may emit its own
-  internal copy of the helper, but a private *global* reached that way has one
-  owner and cannot be duplicated, so it is either forbidden from such bodies or
-  accepted as external and hidden.
+- **L5, the other half.** A private helper called from a public generic or
+  `inline` body, whose instance the importer emits, is not ruled: the importer
+  may emit its own internal copy of the helper, but a private *global* reached
+  that way has one owner and cannot be duplicated, so it is either forbidden
+  from such bodies or accepted as external and hidden.
 - **L6.** The compiler must be told whether it is producing an importable
   package; a `mod util` inside a program looks identical to a package's module,
   and `--library` today changes only the relocation mode. Under S3 a program's
   prefix-less symbols are internal, which is what makes prefix-less sound: a
-  program's `@log` can no longer satisfy a package's reference to libm's `log`.
+  program's `@log` cannot satisfy a package's reference to libm's `log`.
 
 ### As built
 
-One row per kind of symbol. Linkage is LLVM's spelling — absent means
-`external` — and the COMDAT is the selection kind of the one each definition
-leads; a declaration leads none. Measured on the default x64 Windows triple,
-where both selection kinds appear.
+One row per kind of symbol, a program compile. Linkage is LLVM's spelling —
+absent means `external` — and the COMDAT is the selection kind of the one each
+definition leads; a declaration leads none. No symbol carries a visibility.
+Measured on the default x64 Windows triple from the pre-optimization dump,
+which is where the `symbols` check target reads them.
 
-| Kind | Spelling today | Linkage · visibility · COMDAT |
+| Kind | Spelling today | Linkage · COMDAT |
 | --- | --- | --- |
-| root `fn`, public | `define i64 @plainPub(i64 %0) comdat {` | external · default · `nodeduplicate` |
-| root `fn`, private | `define hidden i64 @_plainPriv(i64 %0) comdat {` | external · **hidden** · `nodeduplicate` |
-| `fn main` | `define i32 @main() comdat {` — nothing special-cases it | external · default · `nodeduplicate` |
-| root global: `mut`, `imm`, private | `@pubGlobal = global i64 5, comdat` · `@constGlobal = constant i64 7, comdat` · `@_privGlobal = hidden global i64 6, comdat` | external · default / hidden · `nodeduplicate` |
-| struct method, static fn, private method | `@Pt_get` · `@Pt_make` · `define hidden i32 @Pt__hid(%Pt* %0) comdat {` | as the root rows |
-| imported module's `fn` | `declare i64 @sub_subFn(i64)`; a private top-level `fn` or global leaves no symbol; a private overload candidate is `declare hidden double @modulesub__scaleFloat(double)` | external · default / hidden · none |
-| imported module's global | `@sub_subGlobal = external global i64`; `imm` is `external constant` | external · default · none |
-| method on a struct in an imported module | `declare i32 @sub_SubPt_get(%SubPt*)`; the private method **is** declared, `declare hidden i32 @sub_SubPt__hid(%SubPt*)`, because the privacy filter in `genlProgram` tests only the module's top-level node | external · default / hidden · none |
-| the same file as root and as import | `define i64 @scaleInt(i64 %0) comdat {` as root; `declare i64 @modulesub_scaleInt(i64)` when imported — one declaration, two symbols, depending on which compilation the module was the root of | |
-| instance of a generic `fn` | `define linkonce i64 @"pick:i64:i64"(i64 %0, i64 %1) comdat {` | **linkonce** · default · **`any`** |
-| method of a generic type's instance | `define linkonce i64 @"Holder_tally:Holder:i64"(%Holder %0) comdat {` — the arguments come from `self`'s type, so `fn tally(self) i64` is told apart across instances | linkonce · default · `any` |
-| trait default cloned into an implementer | `define i32 @Gauge_reading(%Gauge* %0) comdat {` — spelled exactly as an override written there, `@Dial_reading`; no suffix, since a copy is not an instance | external · default · `nodeduplicate` |
-| synthesized drop function | `@Bundle_drop`; in an imported module `declare %void @sub_Bundle_drop(%Bundle*)`; for a generic instance `define linkonce %void @"Holder_drop:&Holder:i64"(%Holder* %0) comdat {` | as its type's methods |
-| vtable | `@"Gauge->Meter:Vtable" = linkonce constant %"Meter:Vtable" { ... }, comdat` | linkonce · default · `any` |
-| vtable list | `@vtable-list = linkonce constant [2 x %"Meter:Vtable"*] [...], comdat`; a second trait's is `@vtable-list.1` | linkonce · default · `any` |
-| `extern` | `declare i32 @abs(i32)` — bare inside a module too | external · default · none |
-| `extern system` | `declare dllimport x86_stdcallcc i32 @GetTickCount()` | external · default · none |
-| string literal | `@string = internal constant [5 x i8] c"hello", comdat` | **internal** · default · `nodeduplicate` |
-| anonymous `fn` | `define internal i32 @anon(i32 %0) comdat {` | internal · default · `nodeduplicate` |
+| root `fn`, public or private | `define internal i64 @plainPub(i64 %0) comdat {` · `define internal i64 @_plainPriv(i64 %0) comdat {` — bare, nothing to encode | internal · `nodeduplicate` |
+| `fn main` | `define i32 @main() comdat {` — the one definition `genlLinkage` leaves external, by its bare name | external · `nodeduplicate` |
+| root global: `mut`, `imm`, private | `@pubGlobal = internal global i64 5, comdat` · `@constGlobal = internal constant i64 7, comdat` · `@_privGlobal = internal global i64 6, comdat` | internal · `nodeduplicate` |
+| struct method, static fn, private method | `@_CNvNt2Pt3get` · `@_CNvNt2Pt4make` · `define internal i32 @_CNvNt2Pt4__hid(%Pt* %0) comdat {` — `Pt::get`, `Pt::make`, `Pt::_hid` | internal · `nodeduplicate` |
+| imported module's `fn` | `declare i64 @_CNvC3sub5subFn(i64)` — `sub::subFn`; a private top-level `fn` or global leaves no symbol | external · none |
+| imported module's global | `@_CNvC3sub9subGlobal = external global i64`; `imm` is `external constant` | external · none |
+| method on a struct in an imported module | `declare i32 @_CNvNtC3sub5SubPt3get(%SubPt*)`; the private method **is** declared, `declare i32 @_CNvNtC3sub5SubPt4__hid(%SubPt*)`, because the privacy filter in `genlProgram` tests only the module's top-level node | external · none |
+| the same file as root and as import | `define internal i64 @scaleInt(i64 %0) comdat {` as root; `declare i64 @_CNvC9modulesub8scaleInt(i64)` when imported — one declaration, two symbols, depending on which compilation the module was the root of | |
+| instance of a generic `fn` | `define internal i64 @_CINv4pickxE(i64 %0, i64 %1) comdat {` — `pick[i64]` | internal · `nodeduplicate` |
+| method of a generic type's instance | `define internal i64 @_CNvINt6HolderxE5tally(%Holder %0) comdat {` — `Holder[i64]::tally`; the instance is the owner, so `fn tally(self) i64` is told apart across instances | internal · `nodeduplicate` |
+| trait default cloned into an implementer | `define internal i32 @_CNvNt5Gauge7reading(%Gauge* %0) comdat {` — spelled exactly as an override written there, `Gauge::reading`; no arguments, since a copy is not an instance | internal · `nodeduplicate` |
+| synthesized drop function | `_CNvNt6Bundle4drop` — `Bundle::drop` | as its type's methods |
+| vtable | `@_CYNt5GaugeNt5Meter = internal constant %"Meter:Vtable" { ... }, comdat` — `Gauge as Meter` | internal · `nodeduplicate` |
+| vtable list | `@_CLNt5Meter = internal constant [2 x %"Meter:Vtable"*] [...], comdat` — one per trait, so LLVM never uniquifies one | internal · `nodeduplicate` |
+| `extern` | `declare i32 @abs(i32)` — bare inside a module too | external · none |
+| `extern system` | `declare dllimport x86_stdcallcc i32 @GetTickCount()` | external · none |
+| string literal | `@string = internal constant [5 x i8] c"hello", comdat` | internal · `nodeduplicate` |
+| anonymous `fn` | `define internal i32 @anon(i32 %0) comdat {` | internal · `nodeduplicate` |
 | `inline` fn | no symbol | |
-| overload name | no symbol; each candidate is spelled as an ordinary `fn` | |
-| `stdio` | defined in every importer, since `stdio` is a generating module: `@stdio_print = global %IOStream zeroinitializer, comdat`, `define hidden %void @stdio_IOStream__appendInt(...) comdat {` — two such objects would clash | external · default / hidden · `nodeduplicate` |
-| corelib's `extern fn malloc`, `free` from `genlFree`, `llvm.trap`, `llvm.sqrt.*` | `declare i8* @malloc(i64)` and so on — C and LLVM names, minted outside these rules | external · default · none |
-| `a_b::c` and `a::b_c` | both `@a_b_c`; LLVM renames the second `@a_b_c.1`, which nothing will ever define | |
+| overload name | no symbol; each candidate is spelled as an ordinary `fn`, and a public name holds only public candidates (L5) | |
+| `stdio` | defined in every importer, since `stdio` is a generating module: `@_CNvC5stdio5print = internal global %IOStream zeroinitializer, comdat`, `define internal %void @_CNvNtC5stdio8IOStream9appendInt(...) comdat {` — internal, so two such objects cannot clash | internal · `nodeduplicate` |
+| corelib's `extern fn malloc`, `free` from `genlFree`, `llvm.trap`, `llvm.sqrt.*` | `declare i8* @malloc(i64)` and so on — C and LLVM names, minted outside these rules | external · none |
+| `a_b::c` and `a::b_c` | `_CNvC3a_b1c` and `_CNvC1a3b_c` — distinct by construction | |
 | an import cycle back to the root | the root is found by name, and each root declaration is defined once | |
 
-Read on COFF: `nodeduplicate` is selection 1, `any` is selection 2, `internal`
-becomes `Static`, and everything else — `hidden` included — is `External`.
-
-The test runner reads the post-optimization `.ir`, where an unreferenced
-`linkonce` instance and an inlined `anon` have already vanished; a symbol
-assertion written against `.preir` can pass where the runner's fails.
+Read on COFF: `nodeduplicate` is selection 1, `internal` becomes `Static`, and
+`external` is `External`. The optimizer deletes an internal definition nothing
+references and folds the rest into `main`, which is why the test runner reads
+symbols from `.preir`: a symbol assertion against the post-optimization `.ir`
+would see little but `main`.
 
 ## Known gaps between implementation and intent
 

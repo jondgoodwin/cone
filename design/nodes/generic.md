@@ -9,7 +9,7 @@ Type check **never checks a template** — only clones. `genericSubstitute` from
 call either memo-hits an existing instance or clones a new one. Flow and
 generation see only instances, reachable **only** through `memonodes`.
 
-*Provenance: read from source; the symbol collision was measured.*
+*Provenance: read from source; the instance symbols were measured from emitted IR.*
 
 ## Principles — [derived]
 
@@ -73,8 +73,8 @@ defaults, no kinds.** An empty list is `ErrorNoGenParms`.
 
 Attached by `parseFn` only in the named branch — so an anonymous function can
 never be generic — and by `parseStruct` after the type name. Nothing about the
-symbol is decided here: it is spelled at generation, and the type-argument
-suffix is what tells one instance from another.
+symbol is decided here: it is spelled at generation, and the type arguments in
+its path are what tell one instance from another.
 
 The non-obvious case is a **variant of a generic tagged trait**: it may not
 write its own parameters, so the parser synthesizes a parallel list reusing the
@@ -165,27 +165,24 @@ does not have.
 ## Generation
 
 `genlGlobalSyms` and `genlGlobalImpl` each have two generic branches, both
-walking `memonodes` with the pair stride. `genlLinkage` gives an instance
-`LLVMLinkOnceAnyLinkage` — the C++ template answer, so several translation units
-may emit one and the linker keeps one.
+walking `memonodes` with the pair stride. In a program compile `genlLinkage`
+makes an instance internal like every other definition; the C++ template
+answer — `linkonce`, so several translation units may emit one and the linker
+keeps one — is the package compile's, which does not exist yet.
 
-**Mangling keys off being an instance**, which `nameIsGenericInstance` decides:
-the function's own `instnode` carries type arguments (`itypeInstanceTypeArgs`),
-or its owner is an instance of a generic type. A concrete function needs no
-suffix, and neither does a trait default cloned into an ordinary implementer —
-its `instnode` is the implementing struct, not a call, so it is a copy rather
-than an instance. An instance's name gets `':' + itypeMangle(...)` per
-**parameter type** — the return type is not mangled. A generic *type*'s methods
-recover their arguments from `self`'s type through `itypeMangleNamed`, which is
-why `fn tally(self) i64` does not collide across instances. The rules are
-[Names and Namespaces](../phases/names-and-namespaces.md), "Symbols".
-
-`itypeMangle` writes a named type through `itypeMangleNamed`, and the structural
-types under their own punctuation: `&`/`+`/`<` for the three reference kinds,
-`*` for a pointer, `(a,b)` for a tuple, `[n;elem]` for an array, `f(parms)ret`
-for a signature, `v` for void. The last four were added after a generic
-instantiated at a tuple, an array, a function reference or void was found to
-mangle to **nothing**, so every such instance of one generic shared a name.
+**The symbol keys off being an instance**, which `nameSymbol` reads off the
+node: the function's own `instnode` carries type arguments
+(`itypeInstanceTypeArgs`), or its owner is an instance of a generic type. A
+concrete function's path component is its identifier alone, and so is a trait
+default's cloned into an ordinary implementer — its `instnode` is the
+implementing struct, not a call, so it is a copy rather than an instance. An
+instance's component is wrapped `I…E` around its **type arguments**, never the
+parameter types, so `fn tag[T](a i32)` at `i32` and at `f32` are two symbols;
+and a generic *type*'s instance carries its arguments as an owner, which is why
+`fn tally(self) i64` does not collide across instances. `nameType` spells
+every argument, structural ones included — tuple, array, signature, void, the
+three reference kinds, pointer — so no instance spells to nothing. The rules
+are [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols".
 
 ## Hazards
 
@@ -196,12 +193,6 @@ mangle to **nothing**, so every such instance of one generic shared a name.
 - **A clone must clear the type check marks**, or the instance silently skips
   its own check. Only four clone functions do; every other copies `flags`
   verbatim. A new declaration-bearing node kind inherits the bug.
-- **Two instances can still collide on one symbol.** Measured: `fn tag[T](a i32) i32`
-  instantiated at `i32` and `f32` emits `@"tag:i32"` and `@"tag:i32.1"` —
-  because `T` appears in no parameter, both mangle identically and LLVM
-  disambiguates *within the module only*. Under `linkonce`, across object files
-  the linker keeps one. **The rule: a generic function collides whenever its
-  type arguments do not all appear in its parameter types.**
 - **`--checktree` has the coverage exactly inverted.** It descends into
   templates, which are never type checked, and never into instances, because
   `memonodes` is not in its switch.
@@ -212,5 +203,5 @@ mangle to **nothing**, so every such instance of one generic shared a name.
 
 - Instantiation scheduling, depth bounding, and why the marks cannot police it: [Type Check Phase](../phases/type-check.md), "Generics and macros"
 - Hooking, and what a pushed table scopes: [Name Resolution](../phases/name-resolution.md), "Hooking"
-- Symbol naming and `linkonce`: [Generation](../phases/generation.md)
+- Symbol spelling: [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols"; its lowering, linkage and COMDATs: [Generation](../phases/generation.md)
 - Cloning a struct, and the `Self` rebinding: [struct](struct.md)
