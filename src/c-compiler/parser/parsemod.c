@@ -111,7 +111,6 @@ void parseFnOrVar(ParseState *parse, uint16_t flags) {
     if (lexIsToken(FnToken)) {
         FnDclNode *node = (FnDclNode*)parseFn(parse, (flags&FlagExtern)? (ParseMayName | ParseMaySig) : (ParseMayName | ParseMayImpl));
         node->flags |= flags;
-        nameGenFnName(node, parse->gennamePrefix);
         modAddFn(parse->mod, node);
         return;
     }
@@ -122,7 +121,6 @@ void parseFnOrVar(ParseState *parse, uint16_t flags) {
         node->flags |= flags;
         node->flowtempflags |= VarInitialized;   // Globals always hold a valid value
         parseEndOfStatement();
-        nameGenVarName((VarDclNode *)node, parse->gennamePrefix);
         modAddNode(parse->mod, node->namesym, (INode*)node);
     }
     else {
@@ -240,14 +238,13 @@ ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name 
     if (mod)
         return mod;
 
-    // Push new gennameprefix into parse state
-    char *svprefix = parse->gennamePrefix;
-    nameNewPrefix(&parse->gennamePrefix, &modname->namestr);
-
     // Create and add this new module to list of modules, and make it the current one
     ModuleNode *svmod = parse->mod;
     mod = pgmAddMod(parse->pgm, modname==corelibName || strcmp(filename, "stdio")? 0 : FlagGenMod);
     mod->namesym = modname;
+    // Every loaded module names itself in the owner chain; only the root does not
+    dclInfoJoin((INode*)mod, NULL);
+    mod->dclinfo.facts |= DclNamesChain;
     parse->mod = mod;
 
     // Inject the module's source into the lexer
@@ -278,7 +275,6 @@ ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name 
 
     // Restore focus to original module we were working on
     parse->mod = svmod;
-    parse->gennamePrefix = svprefix;
     return mod;
 }
 
@@ -297,10 +293,14 @@ ProgramNode *parsePgm(ConeOptions *opt) {
     parse.pgm = pgm;
     parse.mod = NULL;
     parse.typenode = NULL;
-    parse.gennamePrefix = "";
 
-    // Create module node and set up for parsing main source file
+    // Create module node and set up for parsing main source file.
+    // The root is named after its file, as an imported module is, so that an
+    // import cycle back to this file finds it (pgmFindMod) instead of reading
+    // the file again as a second module. It sets no DclNamesChain: the root
+    // contributes no prefix, so its declarations are spelled bare.
     ModuleNode *mod = pgmAddMod(pgm, FlagGenMod);
+    mod->namesym = nametblFind(opt->srcname, strlen(opt->srcname));
     parse.pgmmod = mod;
     lexInjectFile(opt->srcpath);
     modHook(NULL, mod);

@@ -24,6 +24,7 @@ typedef struct ModuleNode {
     Nodes *imports;          // All import nodes
     Nodes *nodes;            // All parsed nodes owned by the module
     Namespace namespace;     // The module's named nodes, owned or "used"
+    DclInfo dclinfo;         // Owner and the facts that decide the linker symbols it prefixes
 } ModuleNode;
 
 ModuleNode *newModuleNode();

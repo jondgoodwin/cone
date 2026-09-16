@@ -72,8 +72,9 @@ globals in `clone.c`.
 defaults, no kinds.** An empty list is `ErrorNoGenParms`.
 
 Attached by `parseFn` only in the named branch — so an anonymous function can
-never be generic — and by `parseStruct` after the type name. `genname` is fixed
-to the plain source name here; the type-argument suffix is added at generation.
+never be generic — and by `parseStruct` after the type name. Nothing about the
+symbol is decided here: it is spelled at generation, and the type-argument
+suffix is what tells one instance from another.
 
 The non-obvious case is a **variant of a generic tagged trait**: it may not
 write its own parameters, so the parser synthesizes a parallel list reusing the
@@ -164,15 +165,20 @@ does not have.
 ## Generation
 
 `genlGlobalSyms` and `genlGlobalImpl` each have two generic branches, both
-walking `memonodes` with the pair stride. Instances get
+walking `memonodes` with the pair stride. `genlLinkage` gives an instance
 `LLVMLinkOnceAnyLinkage` — the C++ template answer, so several translation units
 may emit one and the linker keeps one.
 
-**Mangling keys off `instnode`.** A concrete function needs no suffix.
-An instance's name gets `':' + itypeMangle(...)` per **parameter type** — the
-return type is not mangled. A generic *type*'s methods recover their arguments
-from `self`'s type through `itypeMangleNamed`, which is why
-`fn tally(self) i64` does not collide across instances.
+**Mangling keys off being an instance**, which `nameIsGenericInstance` decides:
+the function's own `instnode` carries type arguments (`itypeInstanceTypeArgs`),
+or its owner is an instance of a generic type. A concrete function needs no
+suffix, and neither does a trait default cloned into an ordinary implementer —
+its `instnode` is the implementing struct, not a call, so it is a copy rather
+than an instance. An instance's name gets `':' + itypeMangle(...)` per
+**parameter type** — the return type is not mangled. A generic *type*'s methods
+recover their arguments from `self`'s type through `itypeMangleNamed`, which is
+why `fn tally(self) i64` does not collide across instances. The rules are
+[Names and Namespaces](../phases/names-and-namespaces.md), "Symbols".
 
 `itypeMangle` writes a named type through `itypeMangleNamed`, and the structural
 types under their own punctuation: `&`/`+`/`<` for the three reference kinds,

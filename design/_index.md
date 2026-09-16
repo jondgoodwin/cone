@@ -61,10 +61,11 @@ Writing out an inherited principle is how two notes come to disagree about it �
 which has already happened, with the package model stated in full in both
 [Modularity](topics/modularity.md) and [module](nodes/module.md).
 
-**The owner is the note whose subject the principle is.** Symbol naming is about
-generation, so [Generation](phases/generation.md) owns it. Attention as the
-scarce resource is about expressiveness, so that note owns it and the rest point
-at it.
+**The owner is the note whose subject the principle is.** Symbol naming is a
+rule about names, so [Names and Namespaces](phases/names-and-namespaces.md)
+owns it and [Generation](phases/generation.md) carries only the lowering.
+Attention as the scarce resource is about expressiveness, so that note owns it
+and the rest point at it.
 
 **Every principle names something it forbids or settles.** If you cannot say
 what it would reject, it is decoration — cut it. *"Give programmers the levers"*
@@ -396,8 +397,8 @@ sections and neither substitutes for the other.
 worthless; any two notes in this folder are "related".
 
 ```
-The symbol scheme — consumed by `phases/generation.md` (naming), by
-`nameGenFnName`, `nameGenVarName` and `itypeMangle`, and by
+The symbol scheme — consumed by `phases/generation.md` (lowering), by
+`nameSymbol`, `genlLinkage` and `itypeMangle`, and by
 `coneref/refmodule.html` (name qualification).
 ```
 
@@ -413,8 +414,9 @@ is marked `[planned]` too, so drift between two notes is unrecoverable rather th
 merely wrong.
 
 **The owner of a fact is the note whose SUBJECT it is**, never a note that
-consumes it. Symbol naming is about generation, so `phases/generation.md` owns it
-and `nodes/module.md` refers to it. Where no existing note has a fact as its
+consumes it. Symbol naming is a naming rule, so `phases/names-and-namespaces.md`
+owns it and `phases/generation.md` and `nodes/module.md` refer to it. Where no
+existing note has a fact as its
 subject, that is the signal the topic needs a note of its own — which makes a
 topic-owned note a rare and earned thing rather than a default.
 

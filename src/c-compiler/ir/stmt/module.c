@@ -18,6 +18,7 @@ ModuleNode *newModuleNode() {
     mod->imports = newNodes(8);
     mod->nodes = newNodes(64);
     namespaceInit(&mod->namespace, 64);
+    dclInfoInit(&mod->dclinfo);
     return mod;
 }
 
@@ -53,8 +54,12 @@ void modAddNode(ModuleNode *mod, Name *name, INode *node) {
         return;
     }
 
-    // Add to regular ordered node list
+    // Add to regular ordered node list, and record the module as the
+    // declaration's owner. An imported module never comes this way: it is
+    // declared program-wide and only bound here (modAddNamedNode), so it keeps
+    // no owner.
     nodesAdd(&mod->nodes, node);
+    dclInfoJoin(node, (INode*)mod);
     // '_' binds nothing, matching namespaceAdd. A declaration the parser could
     // not name carries it, and hooking that would both make '_' resolve to the
     // declaration and make a second unnamed one a duplicate of the first.
@@ -94,10 +99,13 @@ void modPrint(ModuleNode *mod) {
     INode **nodesp;
     uint32_t cnt;
 
-    if (mod->namesym)
-        inodeFprint("module %s\n", &mod->namesym->namestr);
+    // The root module is the one that contributes no name to the owner chain
+    if (mod->dclinfo.facts & DclNamesChain)
+        inodeFprint("module %s", &mod->namesym->namestr);
     else
-        inodeFprint("IR for program %s\n", mod->lexer->url);
+        inodeFprint("IR for program %s", mod->lexer->url);
+    dclInfoPrint((INode*)mod);
+    inodeFprint("\n");
     inodePrintIncr();
     for (nodesFor(mod->nodes, cnt, nodesp)) {
         inodePrintIndent();

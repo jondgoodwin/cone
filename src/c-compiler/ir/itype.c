@@ -260,24 +260,46 @@ INode *itypeFindSuper(INode *type1, INode *type2) {
     }
 }
 
+// The type arguments a generic instance was instantiated with, or NULL when the
+// declaration is not an instance of a generic.
+//
+// cloneNode stamps the instantiating node on every node of an instance, and for
+// a generic instance that node is the call carrying the type arguments. It is
+// required to be a call with a non-empty list of types. A macro expansion's node
+// is not, and neither is the implementing struct that a trait's default method
+// is cloned into: an inherited default is a copy, not an instance.
+Nodes *itypeInstanceTypeArgs(INode *dclnode) {
+    INode *instnode = dclnode->instnode;
+    if (instnode == NULL
+        || (instnode->tag != FnCallTag && instnode->tag != TypeLitTag
+            && instnode->tag != ArrIndexTag && instnode->tag != FldAccessTag))
+        return NULL;
+    Nodes *typeargs = ((FnCallNode*)instnode)->args;
+    if (typeargs == NULL || typeargs->used == 0)
+        return NULL;
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor(typeargs, cnt, argsp)) {
+        if (*argsp == NULL || !isTypeNode(*argsp))
+            return NULL;
+    }
+    return typeargs;
+}
+
 // Add a named type declaration to the buffer: its name, plus the type arguments
 // it was instantiated with if it is a generic instance.
 //
 // The arguments are what tell two instances of one generic type apart. Both carry
-// the generic's name, and each instance's methods are clones sharing the generic's
-// 'genname', so without them both instances' copies of a method land on one LLVM
+// the generic's name, and each instance's methods are clones spelled after the
+// same owner, so without them both instances' copies of a method land on one LLVM
 // symbol. That symbol is 'linkonce': inside a single translation unit LLVM appends
 // '.1' and every call still reaches the body it meant, but once modules are
 // compiled separately the linker keeps one body and calls to the other instance
 // silently reach the wrong code. A generic *function*'s instances already differ,
-// because genlMangleMethName walks their parameter types and a type argument
-// appears in at least one of them; a generic *type*'s method may name no type
-// parameter anywhere in its signature -- 'fn tally(self) i64' -- so the arguments
-// have to come from the instance.
-//
-// cloneNode stamps the instantiating node on every node of an instance, and that
-// node is the call carrying the type arguments. It is required to be a call with a
-// non-empty list of types, which is what a macro expansion's node is not.
+// because nameSymbol walks their parameter types and a type argument appears in
+// at least one of them; a generic *type*'s method may name no type parameter
+// anywhere in its signature -- 'fn tally(self) i64' -- so the arguments have to
+// come from the instance.
 static char *itypeMangleNamed(char *bufp, INode *dclnode) {
     Name *namesym = inodeGetName(dclnode);
     if (namesym == NULL)
@@ -285,23 +307,13 @@ static char *itypeMangleNamed(char *bufp, INode *dclnode) {
     strcpy(bufp, &namesym->namestr);
     bufp += strlen(bufp);
 
-    INode *instnode = dclnode->instnode;
-    if (instnode == NULL
-        || (instnode->tag != FnCallTag && instnode->tag != TypeLitTag
-            && instnode->tag != ArrIndexTag && instnode->tag != FldAccessTag))
-        return bufp;
-    Nodes *typeargs = ((FnCallNode*)instnode)->args;
-    if (typeargs == NULL || typeargs->used == 0)
-        return bufp;
-
-    // Checked before anything is written, so a node that is not an instantiation
+    // Decided before anything is written, so a node that is not an instantiation
     // after all leaves the plain name rather than half a suffix
+    Nodes *typeargs = itypeInstanceTypeArgs(dclnode);
+    if (typeargs == NULL)
+        return bufp;
     INode **argsp;
     uint32_t cnt;
-    for (nodesFor(typeargs, cnt, argsp)) {
-        if (*argsp == NULL || !isTypeNode(*argsp))
-            return bufp;
-    }
     for (nodesFor(typeargs, cnt, argsp)) {
         *bufp++ = ':';
         bufp = itypeMangle(bufp, *argsp);
@@ -411,7 +423,10 @@ char *itypeMangle(char *bufp, INode *vtype) {
         errorUnreachable(vtype, "a parameter type the instance-name mangler has no case for");
         return bufp;
     }
-    return bufp + strlen(bufp);
+    // Terminated here rather than measured with strlen, which would read on
+    // into whatever the caller's buffer held beyond the mangling
+    *bufp = '\0';
+    return bufp;
 }
 
 // Return true if type has a concrete and instantiable value. 

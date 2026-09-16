@@ -176,7 +176,6 @@ FieldDclNode *parseFieldDcl(ParseState *parse, PermNode *defperm) {
 
 // Parse a struct
 INode *parseStruct(ParseState *parse, uint16_t strflags) {
-    char *svprefix = parse->gennamePrefix;
     INsTypeNode *svtype = parse->typenode;
     StructNode *strnode;
     uint16_t fieldnbr = 0;
@@ -212,8 +211,6 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     strnode = newStructNode(named ? lex->val.ident : anonName);
     strnode->tag = tag;
     strnode->flags |= strflags;
-    strnode->mod = parse->mod;
-    nameConcatPrefix(&parse->gennamePrefix, &strnode->namesym->namestr);
     parse->typenode = (INsTypeNode *)strnode;
     if (named)
         lexNextToken();
@@ -246,7 +243,6 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                     Nodes *parms = ((FnSigNode *)fn->vtype)->parms;
                     if (parms->used > 0 && ((VarDclNode*)nodesGet(parms, 0))->namesym == selfName)
                         fn->flags |= FlagMethFld;  // function is a method if first parm is 'self'
-                    nameGenFnName(fn, parse->gennamePrefix);
                     iNsTypeAddFn((INsTypeNode*)strnode, fn);
                 }
             }
@@ -311,6 +307,10 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                     substruct->tagnbr = strnode->derived->used;
                     nodesAdd(&strnode->derived, (INode*)substruct);
                     modAddNode(parse->mod, inodeGetName((INode*)substruct), (INode*)substruct);
+                    // Bound in the module, but declared inside the trait: the
+                    // variant's symbols are spelled after the trait, so the trait
+                    // is its owner
+                    dclInfoJoin((INode*)substruct, (INode*)strnode);
                 }
                 else {
                     errorMsgLex(ErrorNoIdent, "structs in structs not yet supported");
@@ -334,7 +334,6 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     }
 
     parse->typenode = svtype;
-    parse->gennamePrefix = svprefix;
     return (INode*)strnode;
 }
 

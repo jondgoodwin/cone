@@ -17,7 +17,7 @@ StructNode *newStructNode(Name *namesym) {
     snode->llvmtype = NULL;
     iNsTypeInit((INsTypeNode*)snode, 8);
     nodelistInit(&snode->fields, 8);
-    snode->mod = NULL;
+    dclInfoInit(&snode->dclinfo);
     snode->basetrait = NULL;
     snode->derived = NULL;
     snode->vtable = NULL;
@@ -96,7 +96,18 @@ void structPrint(StructNode *node) {
     inodeFprint(node->tag == StructTag? "struct %s" : "alloc %s", &node->namesym->namestr);
     if (node->genericinfo)
         genericInfoPrint(node->genericinfo);
-    inodeFprint("{}");
+    dclInfoPrint((INode*)node);
+    // Each method by name and owner only: an inherited default or a generic
+    // instance's method is owned by this type, not by where it was written
+    inodeFprint("{");
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&node->nodelist, cnt, nodesp)) {
+        FnDclNode *fn = (FnDclNode*)*nodesp;
+        inodeFprint(cnt == node->nodelist.used ? "fn %s" : ", fn %s", fn->namesym ? &fn->namesym->namestr : "");
+        dclInfoPrint(*nodesp);
+    }
+    inodeFprint("}");
 }
 
 // Name resolution of a struct type
@@ -164,7 +175,7 @@ void structTypeCheckBaseTrait(StructNode *node) {
     node->flags |= isClosedFlags;  // mark this derived type as having these closed properties
 
     // A derived type of a closed trait must be declared in the same module
-    if (basetrait->mod != node->mod) {
+    if (dclInfoGetModule((INode*)basetrait) != dclInfoGetModule((INode*)node)) {
         errorMsgNode((INode*)node, ErrorInvType, "This type must be declared in the same module as the trait");
         return;
     }
@@ -226,12 +237,10 @@ void structSetDropFn(StructNode *node) {
             fnsig->rettype = (INode*)newVoidNode();
             block = newBlockNode();
             INode *newdropfn = (INode*)newFnDclNode(dropName, FnDclTag, (INode*)fnsig, (INode*)block);
-            // Name the generated drop function after the type it drops, so its
-            // generated symbol stays unique among all the program's drop functions
-            char *dropgenname = memAllocStr(&node->namesym->namestr, node->namesym->namesz + 6);
-            strcat(dropgenname, "_drop");
-            ((FnDclNode*)newdropfn)->genname = dropgenname;
+            // Owned by the type it drops, so its symbol is spelled after that
+            // type and stays unique among all the program's drop functions
             nodelistAdd(&node->nodelist, newdropfn);
+            dclInfoJoin(newdropfn, (INode*)node);
 
             // Block begins with call to struct's finalizer, if there is one
             if (dropfn) {
@@ -465,12 +474,6 @@ int structAddVtableImpl(StructNode *basenode, StructNode *strnode) {
     impl->llvmvtablep = NULL;
     impl->structdcl = (INode*)strnode;
 
-    // Construct a global name for this vtable implementation
-    size_t strsize = strnode->namesym->namesz + strlen(vtable->name) + 3;
-    impl->name = memAllocStr(&strnode->namesym->namestr, strsize);
-    strcat(impl->name, "->");
-    strcat(impl->name, vtable->name);
-
     // For every field/method in the vtable, find its matching one in strnode
     impl->methfld = newNodes(vtable->methfld->used);
     INode **nodesp;
@@ -518,12 +521,10 @@ void structMakeVtable(StructNode *node) {
         return;
     Vtable *vtable = memAllocBlk(sizeof(Vtable));
     node->vtable = vtable;
+    vtable->trait = (INode*)node;
     vtable->llvmreftype = NULL;
     vtable->llvmvtable = NULL;
     vtable->impl = newNodes(4);
-
-    vtable->name = memAllocStr(&node->namesym->namestr, node->namesym->namesz + 8);
-    strcat(vtable->name, ":Vtable");
 
     // Populate methfld with all public methods and then fields in trait
     vtable->methfld = newNodes(node->fields.used + node->nodelist.used);

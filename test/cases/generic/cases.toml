@@ -88,7 +88,7 @@ target = "llvmir"
 excludes = ["neverCalled"]
 
 # Two instances of one generic *type* each get a copy of every method, and the
-# copies share the generic's 'genname'. A generic function's instances are told
+# copies are spelled after the same owner. A generic function's instances are told
 # apart by the parameter types the mangler walks, but a generic type's method may
 # name no type parameter anywhere in its signature -- 'fn tally(self) i64', and
 # 'fn litSum(self &) i64' most of all, whose body is two literals -- so the
@@ -122,6 +122,30 @@ excludes = [
   '@"Holder_litSum:&ro Holder:i64.',
   '@"Holder_litSum:&ro Holder:f64.',
 ]
+
+# Pins today's full spelling of a generic type's method instance, so the
+# symbol-generation refactor can show nothing moved: 'linkonce' with a 'comdat
+# any', named for the generic's method and the instance's type arguments, the
+# receiver typed as the instance's own struct.
+#
+# The runner reads the post-optimization .ir, and that decides what can be
+# pinned. Both instances of Holder clone every method, so 'clear' is cloned
+# for f64 too and defined in the pre-optimization .preir -- but nothing calls
+# that clone, and an unreferenced linkonce definition is dead, so the optimizer
+# drops it before the .ir is written. The exclude records that: an unreferenced
+# instance leaves no symbol in what the runner sees, and it would start
+# appearing only if its linkage stopped being linkonce or optimization were
+# turned off for this scenario.
+[[scenario.generic-success.check]]
+name = "generic-type-method-instances-are-linkonce-and-mergeable"
+target = "llvmir"
+contains = [
+  '$"Holder_tally:Holder:i64" = comdat any',
+  'define linkonce i64 @"Holder_tally:Holder:i64"(%Holder %0) comdat {',
+  '$"Holder_clear:&Holder:i64" = comdat any',
+  'define linkonce %void @"Holder_clear:&Holder:i64"(%Holder* %0) comdat {',
+]
+excludes = ['@"Holder_clear:&Holder:f64"', '$"Holder_clear:&Holder:f64"']
 
 [scenario.generic-macro]
 category = "run"

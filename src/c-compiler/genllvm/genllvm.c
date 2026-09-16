@@ -180,41 +180,44 @@ void genlGloVar(GenState *gen, VarDclNode *varnode) {
         LLVMSetGlobalConstant(varnode->llvmvar, 1);
 }
 
+// Set a just-created global's linkage, visibility, storage class and calling
+// convention together, from the declaring node's facts. The one place that
+// decides them, so the COMDAT kind genlComdat later reads off the linkage
+// cannot disagree with what was chosen here.
+//
+// 'dclnode' is NULL for a vtable, which no node declares. 'mergeable' says
+// several object files may each define the symbol and the linker is to keep
+// one: an instance of a generic, since it is produced wherever it is used, and
+// a vtable. Everything else is external and unique, so a duplicate definition
+// stays a link error. A private name is hidden from the export table, except
+// that a system-convention function is imported rather than defined here, and
+// the import wins.
+void genlLinkage(LLVMValueRef global, INode *dclnode, int mergeable) {
+    if (dclnode) {
+        DclInfo *dclinfo = inodeGetDclInfo(dclnode);
+        if (dclnode->tag == FnDclTag && (dclinfo->facts & DclSystemCC)) {
+            LLVMSetFunctionCallConv(global, LLVMX86StdcallCallConv);
+            LLVMSetDLLStorageClass(global, LLVMDLLImportStorageClass);
+        }
+        else if (dclinfo->facts & DclPrivate)
+            LLVMSetVisibility(global, LLVMHiddenVisibility);
+    }
+    if (mergeable)
+        LLVMSetLinkage(global, LLVMLinkOnceAnyLinkage);
+}
+
 // Generate LLVMValueRef for a global variable
 // It sets appropriate visibility, linkage and constant flags for the linker
 void genlGloVarName(GenState *gen, VarDclNode *glovar) {
-    glovar->llvmvar = LLVMAddGlobal(gen->module, genlType(gen, glovar->vtype), glovar->genname);
+    char symbol[2048];
+    glovar->llvmvar = LLVMAddGlobal(gen->module, genlType(gen, glovar->vtype), nameSymbol(symbol, (INode*)glovar));
 
     // Mark immutable global variables as 'constant', so they can appear in immutable blocks
     // This improves performance
     if (permIsSame(glovar->perm, (INode*) immPerm))
         LLVMSetGlobalConstant(glovar->llvmvar, 1);
 
-    // Private global variables are not visible to other modules
-    if (glovar->namesym && glovar->namesym->namestr == '_')
-        LLVMSetVisibility(glovar->llvmvar, LLVMHiddenVisibility);
-}
-
-// Create mangled function name for a generic instantiation.
-// A concrete function/method needs no signature mangling: its source name is
-// unique in its namespace, and its generated name already carries that namespace.
-char *genlMangleMethName(char *workbuf, FnDclNode *node) {
-    if (node->instnode == NULL)
-        return node->genname;
-
-    strcat(workbuf, node->genname);
-    char *bufp = workbuf + strlen(workbuf);
-
-    FnSigNode *fnsig = (FnSigNode *)node->vtype;
-    uint32_t cnt;
-    INode **nodesp;
-    for (nodesFor(fnsig->parms, cnt, nodesp)) {
-        *bufp++ = ':';
-        bufp = itypeMangle(bufp, ((IExpNode *)*nodesp)->vtype);
-    }
-    *bufp = '\0';
-
-    return workbuf;
+    genlLinkage(glovar->llvmvar, (INode*)glovar, 0);
 }
 
 // Generate LLVMValueRef for a global function
@@ -230,30 +233,18 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
 
     // Add function to the module
     if (glofn->value == NULL || glofn->value->tag != IntrinsicTag) {
-        char workbuf[2048] = { '\0' };
-        char *manglednm = genlMangleMethName(workbuf, glofn);
-        char *fnname = glofn->namesym? &glofn->namesym->namestr : "";
-        glofn->llvmvar = LLVMAddFunction(gen->module, manglednm, genlType(gen, glofn->vtype));
-
-        // Specify appropriate storage class, visibility and call convention
-        // extern functions (linkedited in separately):
-        if (glofn->flags & FlagSystem) {
-            LLVMSetFunctionCallConv(glofn->llvmvar, LLVMX86StdcallCallConv);
-            LLVMSetDLLStorageClass(glofn->llvmvar, LLVMDLLImportStorageClass);
-        }
-        // else if glofn-flags involve dynamic library export:
-        //    LLVMSetDLLStorageClass(glofn->llvmvar, LLVMDLLExportStorageClass); 
-        else if (fnname[0] == '_') {
-            // Private globals should be hidden. (public globals have DefaultVisibility)            
-            LLVMSetVisibility(glofn->llvmvar, LLVMHiddenVisibility);
-        }
+        char symbol[2048];
+        nameSymbol(symbol, (INode*)glofn);
+        glofn->llvmvar = LLVMAddFunction(gen->module, symbol, genlType(gen, glofn->vtype));
+        genlLinkage(glofn->llvmvar, (INode*)glofn, nameIsGenericInstance(glofn));
 
         // Add metadata on implemented functions (debug mode only)
         if (!gen->opt->release && glofn->value) {
+            char *fnname = glofn->namesym? &glofn->namesym->namestr : "";
             LLVMMetadataRef fntype = LLVMDIBuilderCreateSubroutineType(gen->dibuilder,
                 gen->difile, NULL, 0, 0);
             LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(gen->dibuilder, gen->difile,
-                fnname, strlen(fnname), manglednm, strlen(manglednm),
+                fnname, strlen(fnname), symbol, strlen(symbol),
                 gen->difile, glofn->linenbr, fntype, 0, 1, glofn->linenbr, LLVMDIFlagPublic, 0);
             LLVMSetSubprogram(glofn->llvmvar, sp);
         }
@@ -262,19 +253,17 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
 
 void genlGlobalSyms(GenState *gen, INode *node);
 
-// Generate the global symbols for one instance of a generic type, giving each
-// method the linkage that lets the linker keep one copy across object files --
-// the same treatment a generic function's instances get below.
+// Generate the global symbols for one instance of a generic type. Each method
+// is owned by the instance, which is what makes genlLinkage give it the
+// linkage that lets the linker keep one copy across object files -- the same
+// treatment a generic function's instances get below.
 static void genlGenericInstanceSyms(GenState *gen, INode *instance) {
     if (instance->tag != StructTag || (instance->flags & TraitType))
         return;
     INode **nodesp;
     uint32_t cnt;
-    for (nodelistFor(&((INsTypeNode*)instance)->nodelist, cnt, nodesp)) {
+    for (nodelistFor(&((INsTypeNode*)instance)->nodelist, cnt, nodesp))
         genlGlobalSyms(gen, *nodesp);
-        if ((*nodesp)->tag == FnDclTag && ((FnDclNode*)*nodesp)->llvmvar)
-            LLVMSetLinkage(((FnDclNode*)*nodesp)->llvmvar, LLVMLinkOnceAnyLinkage);
-    }
 }
 
 // Generate module or type global symbols
@@ -327,10 +316,7 @@ void genlGlobalSyms(GenState *gen, INode *node) {
             INode **nodesp;
             for (nodesFor(memonodes, cnt, nodesp)) {
                 ++nodesp; --cnt;
-                FnDclNode *fnnode = (FnDclNode *)*nodesp;
-                genlGloFnName(gen, fnnode);
-                // Ensure that linker only picks one generic instantiation across multiple object files
-                LLVMSetLinkage(fnnode->llvmvar, LLVMLinkOnceAnyLinkage);
+                genlGloFnName(gen, (FnDclNode *)*nodesp);
             }
         }
         else

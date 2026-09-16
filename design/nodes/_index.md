@@ -189,7 +189,7 @@ such defect faulted at an arbitrary address instead of at zero, and why
 carries `unknownType`.
 
 This is one root cause behind several separate defects — an uninitialized
-`genname`, `vtblidx`, `life` and `phiCnt` have each been found the same way. The
+`vtblidx`, `life` and `phiCnt` have each been found the same way. The
 allocator is right for a short-lived compiler; the discipline it demands is that
 **a partially-initialized struct is indistinguishable from a fully-initialized
 one** until something reads the hole.
