@@ -33,8 +33,12 @@ INode *parseNameUse(ParseState *parse) {
             lexNextToken();
             // Identifier is a module qualifier
             if (lexIsToken(DblColonToken)) {
-                if (!baseset)
+                // The list is made once, on the first qualifier. Making it again
+                // on the second would discard the first.
+                if (!baseset) {
                     nameUseBaseMod(nameuse, parse->mod); // relative to current module
+                    baseset = 1;
+                }
                 nameUseAddQual(nameuse, name);
                 lexNextToken();
             }
