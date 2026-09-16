@@ -25,8 +25,8 @@ declaration. ▸ **Forbids** treating a name as a property of a declaration, and
 **settles** why visibility is a bit on the *binding* — the binding for `B`
 inside A can be private while `B` is a public package in its own right.
 
-**Visibility is checked against the spelling the caller used**, never against
-the declaration reached. ▸ **Forbids** a private concrete candidate joining a
+**Visibility is checked on the binding the caller's name reaches**, never on
+the declaration overload selection then picks. ▸ **Forbids** a private concrete candidate joining a
 public overload name (`ErrorPrivOverload`): through the public spelling the
 private member would be reachable from outside its owner, and a symbol that is
 private yet needed from outside has no sound linkage. An intrinsic candidate is
@@ -210,9 +210,9 @@ Documented Cone visibility is spelling-based:
 - A type member beginning with `_` is private to its type.
 - Other names are public.
 
-The compiler enforces this on the paths that can reach a private name: `nameUseNameRes` reports `ErrorNotPublic` for a `_`-prefixed name reached through a module qualifier from outside its module, `importNameRes` skips private nodes when folding, and `fnCallLowerMethod` refuses a private member on a receiver that is not `self`. A declaration's visibility is also written once, from the spelling, into its `DclPrivate` bit when it joins its namespace, and generation reads the bit rather than the spelling — see "Symbols".
+The compiler enforces this on the paths that can reach a private name: `nameUseNameRes` reports `ErrorNotPublic` for a private declaration reached through a module qualifier from outside its module, `importNameRes` skips private nodes when folding, `fnCallLowerMethod` refuses a private member on a receiver that is not `self`, and `typeLitStructReorder` refuses a value for a private field outside the type's methods. The spelling is read once, where a declaration joins its namespace (`dclInfoJoin`), into its `DclPrivate` bit; every check after that asks `inodeIsPrivate`, which answers from the bit for a declaration that carries `DclInfo` and from the spelling only for a node that carries none — a field, a const, a macro, a typedef, an overload name, a generic parameter. Generation reads the same bit — see "Symbols".
 
-One consequence is deliberate and worth knowing: **visibility is checked against the spelling the caller used**, which is why a public overload name may not hold a private concrete candidate (`ErrorPrivOverload`) — through the public spelling the private one would be reachable.
+One consequence is deliberate and worth knowing: **visibility is checked on the binding the caller's name reaches**, not on the candidate overload selection then picks, which is why a public overload name may not hold a private concrete candidate (`ErrorPrivOverload`) — through the public name the private one would be reachable.
 
 Visibility should belong to the original definition or declaration, while access is evaluated from the use site. A folded or renamed NameDef must not make a private definition public merely by changing its local spelling. The design must also decide whether an alias may deliberately narrow visibility.
 

@@ -118,7 +118,7 @@ int typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private) {
                 }
             }
             // Don't allow a value to be given for a private field outside of the type's methods
-            if (!private && field->namesym->namestr == '_') {
+            if (!private && inodeIsPrivate((INode*)field)) {
                 errorMsgNode(*litval, ErrorNotTyped, "Only a method in the type may specify a value for the private field %s.", &field->namesym->namestr);
                 retcode = 0;
             }

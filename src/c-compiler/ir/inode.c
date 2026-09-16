@@ -495,6 +495,10 @@ Name *inodeGetName(INode *node) {
         return ((FieldDclNode*)node)->namesym;
     case ConstDclTag:
         return ((ConstDclNode*)node)->namesym;
+    case MacroDclTag:
+        return ((MacroDclNode*)node)->namesym;
+    case TypedefTag:
+        return ((TypedefNode*)node)->namesym;
     case GenVarDclTag:
         return ((GenVarDclNode *)node)->namesym;
 
@@ -560,10 +564,15 @@ int inodeIsDcl(INode *node) {
     }
 }
 
-// Determine whether a named node is marked as private
+// Determine whether a named node is private. A declaration that carries DclInfo
+// answers from its DclPrivate bit, written once when it joined its namespace.
+// A node that carries none (a field, const, macro, typedef, overload name or
+// generic parameter) has only its spelling to answer from.
 int inodeIsPrivate(INode *node) {
-    Name *namesym = inodeGetName(node);
-    return namesym && namesym->namestr == '_';
+    DclInfo *dclinfo = inodeGetDclInfo(node);
+    if (dclinfo)
+        return (dclinfo->facts & DclPrivate) != 0;
+    return nameSpellsPrivate(inodeGetName(node));
 }
 
 // Determine whether an earlier diagnostic already marked this node as bad.

@@ -65,6 +65,11 @@ Name *soName;
 Name *allocMethodName;
 Name *initMethodName;
 
+// Does the name begin with '_', the spelling that declares it private?
+int nameSpellsPrivate(Name *namesym) {
+    return namesym != NULL && namesym->namestr == '_';
+}
+
 // ---- Identifiers -----------------------------------------------------------
 //
 // An identifier is spelled <decimal length>[_]<bytes> when its bytes are all in
