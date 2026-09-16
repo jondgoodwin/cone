@@ -33,6 +33,16 @@
 # - A name-fold clash between two wildcard imports. It is diagnosed, but both
 #   diagnostics are attributed to a source module and one of them carries the
 #   wrong file url, so a scenario built on it would pin a reporting bug.
+# - A path with two qualifiers, 'mod::Type::name' or '::mod::Type::name'.
+#   nameUseAddQual (ir/exp/nameuse.c) stores the second qualifier at the wrong
+#   offset -- it indexes the list in NameList strides rather than Name-pointer
+#   strides -- so the walk in nameUseNameRes reads a slot nothing set. As a
+#   value the path reports "Namespace Gadget does not exist" for a type that
+#   does; in a type position the same path crashes the compiler. A construct
+#   that crashes cannot be a scenario, and the diagnostic the value form gives
+#   is read from uninitialised memory. The one-qualifier forms -- 'mod::name',
+#   'Type::name', '::mod::name', and 'mod::Type' as a final component -- are
+#   what module-qualified, module-success and struct-methods pin.
 
 support = ["moduleinc.cone", "modulesub.cone", "moduleeof.cone",
            "moduleprov.cone", "moduleprov2.cone", "modulenoname.cone",
@@ -104,6 +114,24 @@ tags = ["parse", "nameres", "typecheck", "genllvm"]
 # A qualified call reaches the same namespaced concrete symbol a folded one
 # does, so the importer declares it, and the qualifier itself leaves nothing
 # behind.
+# A qualified global is the same external declaration a fold reaches, and a
+# qualified type name lowers to the type itself: the LLVM type is named after
+# the struct alone, and the root fn that takes one is declared over it. A
+# qualifier is a way of finding a declaration, never part of what it lowers to.
+[[scenario.module-qualified.check]]
+name = "qualified-global-lowers-to-the-declaration"
+target = "symbols"
+contains = [
+  "external global modulesyms::shared",
+  "external constant modulesyms::fixed",
+]
+
+[[scenario.module-qualified.check]]
+name = "qualified-type-name-is-the-type"
+target = "preir"
+contains = ["%Gadget = type", "@gadgetOf(%Gadget"]
+excludes = ["modulesyms_Gadget", '"modulesyms::Gadget"']
+
 [[scenario.module-qualified.check]]
 name = "qualified-call-lowers-to-namespaced-symbol"
 target = "symbols"
@@ -284,9 +312,9 @@ diagnostics = 1
 
 [scenario.module-nameres]
 category = "reject"
-description = "Module qualifiers and imported names that resolve to nothing, or to something private"
+description = "Module and type qualifiers and imported names that resolve to nothing, or to something private"
 tags = ["nameres"]
-diagnostics = 5
+diagnostics = 7
 
 # -------- type check stage --------
 
