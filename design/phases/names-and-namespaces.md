@@ -25,8 +25,8 @@ declaration. ▸ **Forbids** treating a name as a property of a declaration, and
 **settles** why visibility is a bit on the *binding* — the binding for `B`
 inside A can be private while `B` is a public package in its own right.
 
-**Visibility is checked against the spelling the caller used**, never against
-the declaration reached. ▸ **Forbids** a private concrete candidate joining a
+**Visibility is checked on the binding the caller's name reaches**, never on
+the declaration overload selection then picks. ▸ **Forbids** a private concrete candidate joining a
 public overload name (`ErrorPrivOverload`): through the public spelling the
 private member would be reachable from outside its owner, and a symbol that is
 private yet needed from outside has no sound linkage. An intrinsic candidate is
@@ -77,7 +77,7 @@ changing it.
 
 | C file | Name/namespace capability |
 | --- | --- |
-| `src/c-compiler/ir/exp/nameuse.c` | Represents name and member uses, stores qualification paths, resolves qualified paths through module/type namespaces, resolves unqualified names through hooks, and retags uses by declaration kind. Binding a bare field name is here; **lowering it to `self.field` is `nameUseTypeCheck`'s**, because building that call node needs a type to check it against. |
+| `src/c-compiler/ir/exp/nameuse.c` | Represents name and member uses, stores qualification paths, resolves qualified paths through module/type namespaces, resolves unqualified names through hooks, and answers what a use is — type, value, macro — from the declaration it is bound to (`nameUseGroup`, `nameUseNames`). Binding a bare field name is here; **lowering it to `self.field` is `nameUseTypeCheck`'s**, because building that call node needs a type to check it against. |
 | `src/c-compiler/ir/exp/block.c` | Pushes lexical scope hooks, binds labeled lifetimes, resolves statements in declaration order, and restores outer bindings on block exit. |
 | `src/c-compiler/ir/stmt/fndcl.c` | Establishes function generic-parameter and value-parameter bindings while resolving signatures and bodies. |
 | `src/c-compiler/ir/stmt/vardcl.c` | Resolves an initializer before binding its local variable, enforces same-scope uniqueness, and permits nested shadowing through scope hooks. |
@@ -187,9 +187,9 @@ Current compiler behavior:
 - `::module::name` begins in the program's root module.
 - Qualification supports multiple components.
 - Each intermediate component must currently resolve to a module or struct-like type.
-- A resolved `NameUseNode` points directly to a heterogeneous declaration node and is retagged as a type, value, macro, or generic use according to that node's tag.
+- A resolved `NameUseNode` points directly to a heterogeneous declaration node. It keeps its one tag; whether it is a type, a value, a macro or a generic parameter is asked of that node (`nameUseGroup`, `nameUseNames`), never stamped on the use.
 
-The NameDef design instead makes lookup return a stable NameDef. A resolved reference remains one kind of `NameUse` node pointing to that definition. The definition or its IR value explicitly indicates whether it is usable as a type, runtime value, callable, macro, namespace, generic, or other semantic kind; the surrounding use validates that role. Name resolution does not retag the reference or infer its role from the numeric category of a node tag.
+The NameDef design instead makes lookup return a stable NameDef. A resolved reference remains one kind of `NameUse` node pointing to that definition — as it already does — but the definition or its IR value explicitly indicates whether it is usable as a type, runtime value, callable, macro, namespace, generic, or other semantic kind, and the surrounding use validates that role, where today the use classifies the declaration by its tag.
 
 ### Bare names inside a type
 
@@ -210,9 +210,9 @@ Documented Cone visibility is spelling-based:
 - A type member beginning with `_` is private to its type.
 - Other names are public.
 
-The compiler enforces this on the paths that can reach a private name: `nameUseNameRes` reports `ErrorNotPublic` for a `_`-prefixed name reached through a module qualifier from outside its module, `importNameRes` skips private nodes when folding, and `fnCallLowerMethod` refuses a private member on a receiver that is not `self`. A declaration's visibility is also written once, from the spelling, into its `DclPrivate` bit when it joins its namespace, and generation reads the bit rather than the spelling — see "Symbols".
+The compiler enforces this on the paths that can reach a private name: `nameUseNameRes` reports `ErrorNotPublic` for a private declaration reached through a module qualifier from outside its module, `importNameRes` skips private nodes when folding, `fnCallLowerMethod` refuses a private member on a receiver that is not `self`, and `typeLitStructReorder` refuses a value for a private field outside the type's methods. The spelling is read once, where a declaration joins its namespace (`dclInfoJoin`), into its `DclPrivate` bit; every check after that asks `inodeIsPrivate`, which answers from the bit for a declaration that carries `DclInfo` and from the spelling only for a node that carries none — a field, a const, a macro, a typedef, an overload name, a generic parameter. Generation reads the same bit — see "Symbols".
 
-One consequence is deliberate and worth knowing: **visibility is checked against the spelling the caller used**, which is why a public overload name may not hold a private concrete candidate (`ErrorPrivOverload`) — through the public spelling the private one would be reachable.
+One consequence is deliberate and worth knowing: **visibility is checked on the binding the caller's name reaches**, not on the candidate overload selection then picks, which is why a public overload name may not hold a private concrete candidate (`ErrorPrivOverload`) — through the public name the private one would be reachable.
 
 Visibility should belong to the original definition or declaration, while access is evaluated from the use site. A folded or renamed NameDef must not make a private definition public merely by changing its local spelling. The design must also decide whether an alias may deliberately narrow visibility.
 

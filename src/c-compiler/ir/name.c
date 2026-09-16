@@ -65,6 +65,11 @@ Name *soName;
 Name *allocMethodName;
 Name *initMethodName;
 
+// Does the name begin with '_', the spelling that declares it private?
+int nameSpellsPrivate(Name *namesym) {
+    return namesym != NULL && namesym->namestr == '_';
+}
+
 // ---- Identifiers -----------------------------------------------------------
 //
 // An identifier is spelled <decimal length>[_]<bytes> when its bytes are all in
@@ -249,17 +254,12 @@ static Nodes *nameOwnTypeArgs(INode *node) {
 // The declaration a type expression names, through any name use or typedef
 static INode *nameTypeDcl(INode *type) {
     while (1) {
-        switch (type->tag) {
-        case NameUseTag:
-        case TypeNameUseTag:
-            type = ((NameUseNode *)type)->dclnode;
-            break;
-        case TypedefTag:
+        if (isNameUseNode(type) && isTypeNode(type))
+            type = nameUseGetDcl((NameUseNode *)type);
+        else if (type->tag == TypedefTag)
             type = ((TypedefNode *)type)->typeval;
-            break;
-        default:
+        else
             return type;
-        }
     }
 }
 
@@ -337,9 +337,9 @@ static char *nameRegionPerm(char *bufp, RefNode *reftype) {
 // but not its lifetime; an array's dimensions; a signature's parameter and
 // return types.
 char *nameType(char *bufp, INode *vtype) {
+    if (isNameUseNode(vtype) && isTypeNode(vtype))
+        return nameType(bufp, nameTypeDcl(vtype));
     switch (vtype->tag) {
-    case NameUseTag:
-    case TypeNameUseTag:
     case TypedefTag:
         return nameType(bufp, nameTypeDcl(vtype));
 

@@ -8,8 +8,12 @@
 # and what it declares: struct-success builds and copies values and declares no
 # method at all, so a failure there is about field layout; struct-methods calls
 # every method and operator method and declares no field the call does not need.
-# struct-opaque is a third success scenario and a 'compile' one, because an
-# opaque type's values cannot be created and so nothing about it can run.
+# struct-operators is the rest of the operator-method table: struct-methods
+# keeps the seven spellings whose meaning it explains, and struct-operators
+# applies every other spelling once, so that the table of operator names and
+# the symbol codes they lower to is pinned whole in one place. struct-opaque
+# is a fourth success scenario and a 'compile' one, because an opaque type's
+# values cannot be created and so nothing about it can run.
 #
 # The reject scenarios are split by pipeline stage, because analysis halts
 # between stages and an expectation from a later stage would never be reached.
@@ -90,6 +94,22 @@ contains = [
   "define internal Vec::addScalar comdat nodeduplicate",
 ]
 
+# A call names its method in several ways -- on a value, on a reference,
+# through 'self', bare inside a method, and through the type's name with the
+# receiver as an argument -- and every one of them lowers to the same concrete
+# symbol. The symbols say that the methods written to exercise those forms
+# exist and that no form minted a symbol of its own; which candidate each
+# reached is in the printed values.
+[[scenario.struct-methods.check]]
+name = "call-forms-reach-the-concrete-method"
+target = "symbols"
+contains = [
+  "define internal Pair::viaBareNames comdat nodeduplicate",
+  "define internal Pair::viaSelf comdat nodeduplicate",
+  "define internal Pair::viaBareOverload comdat nodeduplicate",
+]
+excludes = ["Pair::sum ", "Pair::self", "self::"]
+
 # An overload name is not a declaration, so nothing is generated for it. A
 # definition's name is followed by its COMDAT, so the trailing space is what
 # stops 'Pair::sum' from matching 'Pair::sumValue'.
@@ -147,6 +167,48 @@ contains = [
   "define internal Bundle::drop comdat nodeduplicate",
 ]
 
+[scenario.struct-operators]
+category = "run"
+description = "Every operator spelling a struct may declare as a method, and the symbol each reaches"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+# One symbol per spelling, each reading back as the operator it was declared
+# under: the arithmetic, comparison, bitwise and assignment operators, and the
+# prefix and postfix increments as four distinct methods. The seven spellings
+# struct-methods declares are pinned there. A spelling that reached another
+# method, or two that shared a code, would print wrong or be missing here.
+[[scenario.struct-operators.check]]
+name = "operator-spellings-reach-their-own-symbols"
+target = "symbols"
+contains = [
+  "define internal Num::* comdat nodeduplicate",
+  "define internal Num::/ comdat nodeduplicate",
+  "define internal Num::% comdat nodeduplicate",
+  "define internal Num::!= comdat nodeduplicate",
+  "define internal Num::< comdat nodeduplicate",
+  "define internal Num::<= comdat nodeduplicate",
+  "define internal Num::> comdat nodeduplicate",
+  "define internal Num::>= comdat nodeduplicate",
+  "define internal Num::& comdat nodeduplicate",
+  "define internal Num::| comdat nodeduplicate",
+  "define internal Num::^ comdat nodeduplicate",
+  "define internal Num::<< comdat nodeduplicate",
+  "define internal Num::>> comdat nodeduplicate",
+  "define internal Num::-= comdat nodeduplicate",
+  "define internal Num::*= comdat nodeduplicate",
+  "define internal Num::/= comdat nodeduplicate",
+  "define internal Num::%= comdat nodeduplicate",
+  "define internal Num::&= comdat nodeduplicate",
+  "define internal Num::|= comdat nodeduplicate",
+  "define internal Num::^= comdat nodeduplicate",
+  "define internal Num::<<= comdat nodeduplicate",
+  "define internal Num::>>= comdat nodeduplicate",
+  "define internal Num::++ comdat nodeduplicate",
+  "define internal Num::-- comdat nodeduplicate",
+  "define internal Num::+++ comdat nodeduplicate",
+  "define internal Num::--- comdat nodeduplicate",
+]
+
 [scenario.struct-opaque]
 category = "compile"
 description = "An opaque struct, whose values cannot be created and are only reached by reference"
@@ -156,9 +218,17 @@ tags = ["parse", "nameres", "typecheck", "genllvm"]
 
 [scenario.struct-parse]
 category = "reject"
-description = "Struct declaration syntax the parser cannot accept"
+description = "Struct declaration syntax the parser cannot accept, and member names it cannot declare twice"
 tags = ["parse"]
-diagnostics = 12
+diagnostics = 15
+
+# -------- name resolution stage --------
+
+[scenario.struct-nameres-qualifier]
+category = "reject"
+description = "'Self' used as a qualifier, which a qualified path cannot see"
+tags = ["nameres"]
+diagnostics = 1
 
 # -------- type check stage --------
 

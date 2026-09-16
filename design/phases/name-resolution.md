@@ -26,10 +26,13 @@ with the author is the claim that these rule rather than describe.**
    that scope entry and exit must be perfectly paired, and **forbids** resolving
    a node out of walk order, since the slot's contents are only correct inside
    the right scope.
-3. **It retags; it does not rewrite.** The phase mutates the node it was handed;
-   swapping one node for another is type check's job, with exactly one exception.
-   ▸ **Settles** that a caller's pointer stays valid across this phase, which is
-   what lets the walk hand out nodes without indirection.
+3. **It binds and retags in place; it does not rewrite.** A name use is bound —
+   `dclnode` is set and the node keeps its tag, since what it is can be asked of
+   the declaration — and the parser-ambiguous shapes are retagged. Either way the
+   phase mutates the node it was handed; swapping one node for another is type
+   check's job, with exactly one exception. ▸ **Settles** that a caller's pointer
+   stays valid across this phase, which is what lets the walk hand out nodes
+   without indirection.
 4. **Anything needing a type is deferred wholesale.** The one lookup primitive
    is a read from a global slot. A name whose namespace depends on a value's
    type cannot use it, so member names, overload selection and instantiation all
@@ -96,10 +99,13 @@ guarantees that. Locals are the exception and are deliberately order-dependent �
 
 ## 4. What it retags
 
+A name use is not among them. `nameUseNameRes` sets `dclnode` and the node stays
+a `NameUseTag`; whether it is a type, a value or a macro is asked of the
+declaration (`nameUseGroup`) by everything that needs to know, this table's
+functions included.
+
 | Before | After | Function |
 | --- | --- | --- |
-| `NameUseTag` | `VarNameUseTag` (var, fn, overload, field, const) | `nameUseNameRes` |
-| | `MacroNameTag`, `GenVarUseTag`, else `TypeNameUseTag` | |
 | `TupleTag` | `TTupleTag` / `VTupleTag`; mixed is `ErrorBadElems` and the tag is left alone | `ttupleNameRes` |
 | `StarTag` | `PtrTag` / `DerefTag` | `ptrNameRes` |
 | `ArrayTag` | `ArrayLitTag` when the first element is not a type | `arrayNameRes` |
@@ -107,10 +113,10 @@ guarantees that. Locals are the exception and are deliberately order-dependent �
 | `ArrayRefTag` | `ArrayBorrowTag` / `ArrayAllocTag` | `arrayRefNameRes` |
 | `QuesTag` | `FnCallTag` for `Option[T]` | `allocateQuesNameRes` |
 
-Every one of these hinges on `isTypeNode`, which is a mask test **plus**
-`itypeIsGenericType` — an unlowered `FnCallNode` naming a generic struct counts
-as a type. Without that, `*Box[i64]` reads as a dereference and `[2; Box[i64]]`
-as an array literal.
+Every one of these hinges on `isTypeNode`. For a name use it asks the
+declaration the name was bound to, and an unlowered `FnCallNode` naming a
+generic struct counts as a type (`itypeIsGenericType`). Without the latter,
+`*Box[i64]` reads as a dereference and `[2; Box[i64]]` as an array literal.
 
 **One site rewrites a parent's pointer**: `allocateQuesNameRes` collapses `&x?`
 into the allocation node with `FlagQues` set. Everything else mutates in place.
@@ -119,7 +125,7 @@ into the allocation node with `FlagQues` set. Everything else mutates in place.
 
 | Deferred to type check | Because |
 | --- | --- |
-| `.field` and `.method` — `MbrNameUseTag` is an explicit no-op arm | selecting a member needs the receiver's type. `fnCallLowerMethod` does the lookup, the visibility check and the overload selection together |
+| `.field` and `.method` — `fnCallNameRes` never walks the call's member slot, so `inodeNameRes` never meets a member name | selecting a member needs the receiver's type. `fnCallLowerMethod` does the lookup, the visibility check and the overload selection together |
 | Rewriting a bare field name to `self.field` | that is lowering — it builds a call node and takes its type from what the call resolves to, and there is no type here to work from |
 | Overload selection | needs argument types. The name binds to the `FnOverloadDclNode`; `fnCallLowerOverloadFn` picks the candidate |
 | Generic instantiation and macro expansion | there is no `NameRes` function in `ir/meta/generic.c` at all |
@@ -127,17 +133,19 @@ into the allocation node with `FlagQues` set. Everything else mutates in place.
 The last is worth stating positively: **a template is name-resolved once, in
 place, and instances are cloned rather than re-resolved.** `cloneNameUseNode`
 calls `cloneDclFix` to re-point a cloned use at the correspondingly cloned
-declaration, and a `GenVarUseTag` is replaced by a clone of whatever
-`clonePushState` hooked its name to. A resolved template plus a substitution map
+declaration, and a use naming a generic parameter is replaced by a clone of
+whatever `clonePushState` hooked its name to. A resolved template plus a substitution map
 is the contract; there is never a second name resolution pass.
 
 ## 6. Contract
 
 **Guaranteed when the pass finishes without errors:**
 
-- Every reachable `NameUseNode` has a non-NULL `dclnode`, **except**
-  `MbrNameUseTag` nodes.
-- No `NameUseTag`, `TupleTag`, `StarTag` or `QuesTag` remains.
+- Every reachable `NameUseNode` has a non-NULL `dclnode`, **except** a member
+  name — the `methfld` of a call — which this pass never visits.
+- A `NameUseNode` is still a `NameUseTag`: it is bound, not retagged, and
+  answers `isTypeNode`, `isExpNode` and `isMetaNode` for its declaration.
+- No `TupleTag`, `StarTag` or `QuesTag` remains.
 - Every `BreakTag`/`ContinueTag` has a non-NULL `block`.
 - `return`/`break`/`continue` appear only as a block's last statement, modulo
   the `FlagLoopStep` allowance for `each`'s synthesized step.
@@ -207,7 +215,8 @@ next pass a null to trip over.
 | `ir/inode.c` | `inodeNameRes` | the dispatch switch — start here to add a node kind |
 | `ir/nametbl.c` | `nametblFind`, `nametblHook*` | interning and the hook stack that implements all scoping |
 | `ir/namespace.c` | `namespaceFind`, `namespaceSet` | the hash table a module or type owns |
-| `ir/exp/nameuse.c` | `nameUseNameRes` | the whole resolution decision: early-out, qualified walk, privacy, retag |
+| `ir/exp/nameuse.c` | `nameUseNameRes` | the whole resolution decision: early-out, qualified walk, privacy; it binds `dclnode` and changes nothing else |
+| `ir/exp/nameuse.c` | `nameUseGroup` | what a resolved name answers to `isExpNode`, `isTypeNode` and `isMetaNode`, asked of its declaration |
 | `ir/stmt/module.c` | `modNameRes`, `modHook` | imports walked before nodes; module hook push/pop |
 | `ir/stmt/import.c` | `importNameRes` | wildcard folding; skips private and unnamed nodes |
 | `ir/exp/block.c` | `blockNameRes`, `blockContinueStep` | scope push/pop, lifetime labels, jump placement, the one re-entry |

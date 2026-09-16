@@ -69,7 +69,7 @@ int genericInferStructParms(TypeCheckState *pstate, Nodes *genparms, StructNode 
         INode *parmtype = ((VarDclNode *)(*parmp))->vtype;
         INode *argtype = ((FieldDclNode *)*argsp)->vtype;
         // If type of expected parm is a generic variable, capture type of corresponding argument
-        if (parmtype->tag == GenVarUseTag
+        if (nameUseNames(parmtype, GenVarDclTag)
             && genericCaptureType(inferredgencall, genparms, parmtype, argtype) == 0) {
             errorMsgNode(*argsp, ErrorInvType, "Inconsistent type for generic type");
             retcode = 0;
@@ -97,7 +97,7 @@ int genericInferFnParms(TypeCheckState *pstate, Nodes *genparms, FnSigNode *genf
         INode *parmtype = ((VarDclNode *)(*parmp))->vtype;
         INode *argtype = ((IExpNode *)*argsp)->vtype;
         // If type of expected parm is a generic variable, capture type of corresponding argument
-        if (parmtype->tag == GenVarUseTag
+        if (nameUseNames(parmtype, GenVarDclTag)
             && genericCaptureType(inferredgencall, genparms, parmtype, argtype) == 0) {
             errorMsgNode(*argsp, ErrorInvType, "Inconsistent type for generic function");
             retcode = 0;
@@ -250,9 +250,11 @@ GenericInfo *genericGetInfo(INode *node) {
 int genericSubstitute(TypeCheckState *pstate, FnCallNode **srcgencallp) {
     // Return if not generic, otherwise gather data needed to substitute
     FnCallNode *srcgencall = *srcgencallp;
-    if (srcgencall->objfn->tag != VarNameUseTag && srcgencall->objfn->tag != TypeNameUseTag)
+    // Only a name that names a value or a type can name a generic
+    INode *objfn = srcgencall->objfn;
+    if (!isNameUseNode(objfn) || !(isExpNode(objfn) || isTypeNode(objfn)))
         return 0;
-    INode *nodetoclone = ((NameUseNode*)srcgencall->objfn)->dclnode;
+    INode *nodetoclone = nameUseGetDcl((NameUseNode*)objfn);
     GenericInfo *genericinfo = genericGetInfo(nodetoclone);
     if (!genericinfo)
         return 0;

@@ -60,19 +60,25 @@ typedef struct INode {
 #define NamedNode  0x2000   // Node that defines a named item (not nameuse)
 #define MethodType 0x1000   // Type that supports methods
 
-// Easy checks on the kind of node it is based on high-level flags
-#define isExpNode(node) (((node)->tag & GroupMask) == ExpGroup)
-#define isTypeNode(node) (((node)->tag & GroupMask) == TypeGroup || itypeIsGenericType(node))
-#define isMetaNode(node) (((node)->tag & GroupMask) == MetaGroup)
+// Easy checks on the kind of node it is. For every node but a name use, the
+// tag is the node's characteristic and its group bits are the answer. A name use
+// stands for whatever it names, so it answers for its declaration (nameUseGroup)
+// and belongs to no group until it is bound to one; an unlowered instantiation
+// of a generic type counts as a type (itypeIsGenericType). See inodeIsExp and
+// its siblings in inode.c.
+#define isExpNode(node) inodeIsExp((INode*)(node))
+#define isTypeNode(node) inodeIsType((INode*)(node))
+#define isMetaNode(node) inodeIsMeta((INode*)(node))
 #define isNamedNode(node) ((node)->tag & NamedNode)
 #define isMethodType(node) (isTypeNode(node) && ((node)->tag & MethodType))
+#define isNameUseNode(node) ((node)->tag == NameUseTag)
 
 // A parameterless macro's name stands for the value its body expands to, but it
 // is a meta node until type check performs that expansion. A position that
 // decides by node kind whether a statement can give a value -- a block's final
 // statement, a function's implicit return -- has to count the name as one, or
 // it is rejected before it ever gets the chance to expand.
-#define isExpOrMacroNode(node) (isExpNode(node) || (node)->tag == MacroNameTag)
+#define isExpOrMacroNode(node) (isExpNode(node) || nameUseNames((INode*)(node), MacroDclTag))
 
 // All the possible tags for a node
 enum NodeTags {
@@ -91,9 +97,11 @@ enum NodeTags {
     SwapTag,        // Swap operator
     ImportTag,      // import command
 
-    // Parser-ambiguous nodes that will become either types or expressions
+    // Parser-ambiguous nodes. A name use is an expression, a type or a meta
+    // node according to the declaration name resolution binds it to, and is
+    // asked rather than retagged (nameUseGroup); the other two are retagged
     // during name resolution when we finally know for sure
-    NameUseTag,     // Name use node (pre-name resolution)
+    NameUseTag,     // Name use node: stands for whatever its dclnode declares
     TupleTag,       // Tuple for tuple type or tuple literal
     StarTag,        // Could become pointer type or deref exp node
 
@@ -106,9 +114,7 @@ enum NodeTags {
     ConstDclTag,    // Constant declaration
 
     // Expression nodes (having value type - or sometimes nullType)
-    VarNameUseTag = ExpGroup,  // Variable or Function name use node  
-    MbrNameUseTag,  // Member of a type's namespace (field/method)
-    NilLitTag,      // 'nil' literal (of void type)
+    NilLitTag = ExpGroup,  // 'nil' literal (of void type)
     ULitTag,        // Integer literal
     FLitTag,        // Float literal
     StringLitTag,   // String literal
@@ -137,8 +143,7 @@ enum NodeTags {
     AbsenceTag,     // unique, unclonable node for absence of info
 
     // Unnamed type node
-    TypeNameUseTag = TypeGroup, // Type name use node
-    TypedefTag,     // A type name alias (structural)
+    TypedefTag = TypeGroup, // A type name alias (structural)
     FnSigTag,       // Also method, closure, behavior, co-routine, thread, ...
     ArrayTag,       // Also dynamic arrays? SOA?
     RefTag,         // Reference (could become borrowtag/alloctag)
@@ -161,11 +166,7 @@ enum NodeTags {
     StructTag,      // struct or trait
     PermTag,
 
-    // Meta group names
-    MacroNameTag = MetaGroup,   // Macro name use node
-    GenericNameTag,             // Generic name use node
-    GenVarUseTag,               // Generic variable name use
-
+    // Meta group declarations
     MacroDclTag = MetaGroup + NamedNode,     // Macro declaration
     GenVarDclTag,               // Generic variable declaration
 
@@ -280,6 +281,12 @@ void inodePrintIndent();
 void inodePrintIncr();
 void inodePrintDecr();
 
+// Is this node an expression, a type, or a meta node? The isExpNode,
+// isTypeNode and isMetaNode macros above are the way to ask.
+int inodeIsExp(INode *node);
+int inodeIsType(INode *node);
+int inodeIsMeta(INode *node);
+
 // Obtain name from a named node
 Name *inodeGetName(INode *node);
 
@@ -289,8 +296,11 @@ DclInfo *inodeGetDclInfo(INode *node);
 // Obtain the module or type node a declaration lives in, or NULL if it has none
 INode *inodeGetOwner(INode *node);
 
-// Determine whether a named node is marked as private
+// Is this a declaration that carries its own analysis marks?
 int inodeIsDcl(INode *node);
+
+// Determine whether a named node is private: its DclPrivate bit when it carries
+// DclInfo, else its spelling
 int inodeIsPrivate(INode *node);
 
 // Determine whether a declaration is a member reached through a receiver

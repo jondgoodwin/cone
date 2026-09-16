@@ -1,0 +1,147 @@
+// Every operator spelling a struct may declare as a method, each reached by
+// its operator form and each lowering to a symbol of its own.
+//
+// An operator method is a method under a backquoted name, and the symbol
+// spells that name as a fixed two-letter code (design/phases/names-and-namespaces.md,
+// "Symbols"). What this file pins is the whole table: that each spelling the
+// parser turns into a method call reaches the method declared under exactly
+// that name, and that the symbol reads back as the operator. Both halves can
+// go wrong invisibly -- a spelling could reach the wrong method, or two
+// spellings one symbol -- so each operator is applied once and its result
+// printed, and cases.toml names every symbol.
+//
+// Split from struct-methods, which pins seven of these ('+' through an overload
+// name, '-', '+=', '==', '()', '[]', '<-', '&[]') together with what each means:
+// its subject is what a struct declares, and the two operators with meanings of
+// their own -- '<-' over a tuple, '&[]' in both forms -- belong beside that.
+// This file is the rest of the table and nothing else, so the seven are not
+// declared here again.
+//
+// Postfix '++' and '--' are distinct methods from the prefix ones. The lexer
+// interns them as '+++' and '---', which is the name a declaration writes;
+// they add and subtract ten here so that a postfix form reaching the prefix
+// method would show in the value.
+
+import stdio::*
+
+fn show(label &[]u8, n i64) {
+  printStr(label)
+  printStr(" = ")
+  printInt(n)
+  printStr("\n")
+}
+
+struct Num {
+  v i32
+
+  // -------- arithmetic --------
+  fn `*`(self, o Num) Num { Num[v * o.v] }
+  fn `/`(self, o Num) Num { Num[v / o.v] }
+  fn `%`(self, o Num) Num { Num[v % o.v] }
+
+  // -------- comparison --------
+  // '!=' is its own method, not the negation of '=='
+  fn `!=`(self, o Num) Bool { v != o.v }
+  fn `<`(self, o Num) Bool { v < o.v }
+  fn `<=`(self, o Num) Bool { v <= o.v }
+  fn `>`(self, o Num) Bool { v > o.v }
+  fn `>=`(self, o Num) Bool { v >= o.v }
+
+  // -------- bitwise --------
+  fn `&`(self, o Num) Num { Num[v & o.v] }
+  fn `|`(self, o Num) Num { Num[v | o.v] }
+  fn `^`(self, o Num) Num { Num[v ^ o.v] }
+  fn `<<`(self, o Num) Num { Num[v << o.v] }
+  fn `>>`(self, o Num) Num { Num[v >> o.v] }
+
+  // -------- assignment operators --------
+  fn `-=`(self &mut, o Num) Num { v = v - o.v; *self }
+  fn `*=`(self &mut, o Num) Num { v = v * o.v; *self }
+  fn `/=`(self &mut, o Num) Num { v = v / o.v; *self }
+  fn `%=`(self &mut, o Num) Num { v = v % o.v; *self }
+  fn `&=`(self &mut, o Num) Num { v = v & o.v; *self }
+  fn `|=`(self &mut, o Num) Num { v = v | o.v; *self }
+  fn `^=`(self &mut, o Num) Num { v = v ^ o.v; *self }
+  fn `<<=`(self &mut, o Num) Num { v = v << o.v; *self }
+  fn `>>=`(self &mut, o Num) Num { v = v >> o.v; *self }
+
+  // -------- increment and decrement, prefix and postfix --------
+  fn `++`(self &mut) Num { v = v + 1; *self }
+  fn `--`(self &mut) Num { v = v - 1; *self }
+  fn `+++`(self &mut) Num { v = v + 10; *self }
+  fn `---`(self &mut) Num { v = v - 10; *self }
+}
+
+fn arithmetic() {
+  imm a = Num[14]
+  imm b = Num[3]
+  show("mult", (a * b).v)
+  show("div", (a / b).v)
+  show("rem", (a % b).v)
+}
+
+fn comparison() {
+  imm a = Num[14]
+  imm b = Num[3]
+  mut n = 0
+  if a != b { n = n + 1 }
+  if a < b { n = n + 2 }
+  if a <= b { n = n + 4 }
+  if a > b { n = n + 8 }
+  if a >= b { n = n + 16 }
+  show("comparison-bits", n)
+}
+
+fn bitwise() {
+  imm a = Num[14]
+  imm b = Num[3]
+  show("and", (a & b).v)
+  show("or", (a | b).v)
+  show("xor", (a ^ b).v)
+  show("shl", (a << b).v)
+  show("shr", (a >> b).v)
+}
+
+fn opassign() {
+  mut c = Num[14]
+  imm b = Num[3]
+  c -= b
+  show("minus-eq", c.v)
+  c *= b
+  show("mult-eq", c.v)
+  c /= b
+  show("div-eq", c.v)
+  c %= b
+  show("rem-eq", c.v)
+  c <<= b
+  show("shl-eq", c.v)
+  c >>= b
+  show("shr-eq", c.v)
+  c ^= b
+  show("xor-eq", c.v)
+  c |= b
+  show("or-eq", c.v)
+  c &= Num[6]
+  show("and-eq", c.v)
+}
+
+fn incrdecr() {
+  mut c = Num[2]
+  ++c
+  show("prefix-incr", c.v)
+  --c
+  show("prefix-decr", c.v)
+  c++
+  show("postfix-incr", c.v)
+  c--
+  show("postfix-decr", c.v)
+}
+
+fn main() i32 {
+  arithmetic()
+  comparison()
+  bitwise()
+  opassign()
+  incrdecr()
+  0i32
+}

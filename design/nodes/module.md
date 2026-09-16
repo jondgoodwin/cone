@@ -138,7 +138,7 @@ therefore not expressible, which is why renaming and selective folding are
 described in [Names and Namespaces](../phases/names-and-namespaces.md) and are
 not implemented.
 
-Private is spelling: `inodeIsPrivate` tests for a leading `_`. An overload name
+Private is the declaration's `DclPrivate` bit, asked through `inodeIsPrivate`. An overload name
 folds as one node, the `FnOverloadDclNode`, with its candidates riding inside
 it; a public name holds only public candidates (`ErrorPrivOverload`), so the
 fold carries nothing private.
@@ -384,11 +384,10 @@ which is what the accumulation rule above asks for.
 
 **A binding has no visibility bit, and whether a fold transits is decided by
 load order.** A declaration has one — `DclPrivate`, written from the `_` when
-it joins its namespace, and what generation reads — but three sites still read
-`namesym->namestr == '_'` directly rather than through `inodeIsPrivate`:
-`nameUseNameRes`, `fnCallLowerMethod` and `typeLitStructReorder`. There is
-nowhere to record a folded binding's own visibility, because `importNameRes`
-inserts the imported declaration node itself into the receiving namespace.
+it joins its namespace, and what every visibility check reads through
+`inodeIsPrivate`. There is nowhere to record a folded binding's own visibility,
+because `importNameRes` inserts the imported declaration node itself into the
+receiving namespace.
 
 Measured: `modNameRes` folds a module's imports at the start of *that module's*
 resolution and `pgmNameRes` walks modules in load order, so a fold is invisible
@@ -612,8 +611,9 @@ annotation on a reference names is a type.
   reported against an injected pseudo-file, and editing either means rebuilding
   the compiler.
 - **`parseModuleBlk` is declared in `parser.h` and defined nowhere.**
-- **A module name resolves as a type name use** — the retag falls through to
-  `TypeNameUseTag` by default, not because a module is a type.
+- **A use of a module's name answers `isTypeNode` true** — `nameUseGroup`'s
+  fallthrough for every declaration that is not a value, a macro or a generic
+  parameter, not because a module is a type.
 
 ## What lives elsewhere
 

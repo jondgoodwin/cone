@@ -49,7 +49,6 @@ INode *newNameUseAndDcl(Nodes **nodesp, INode *val, uint16_t scope) {
     var->scope = scope;
     nodesAdd(nodesp, (INode*)var);
     NameUseNode *varuse = newNameUseNode(tempName);
-    varuse->tag = VarNameUseTag;
     varuse->dclnode = (INode*)var;
     return (INode*)varuse;
 }
@@ -60,24 +59,18 @@ INode *newNameUseFromDclNode(INode *dclnode, INode *lexnode) {
     NameUseNode *fnuse = newNameUseNode(name);
     inodeLexCopy((INode*)fnuse, lexnode);
     fnuse->dclnode = dclnode;
-    if (isTypeNode(dclnode))
-        fnuse->tag = TypeNameUseTag;
-    else {
-        fnuse->tag = VarNameUseTag;
+    if (!isTypeNode(dclnode))
         fnuse->vtype = ((IExpNode*)dclnode)->vtype;
-    }
-    fnuse->tag = isTypeNode(dclnode) ? TypeNameUseTag : VarNameUseTag;
     return (INode *)fnuse;
 }
 
+// Create a member name: a field, method or operator name to be applied to a
+// value. It is an ordinary name use that name resolution never sees -- it
+// lives in a call's member slot, which fnCallNameRes leaves alone -- and it
+// stays bound to nothing until fnCallLowerMethod selects the member against
+// the receiver's type.
 NameUseNode *newMemberUseNode(Name *namesym) {
-    NameUseNode *name;
-    newNode(name, NameUseNode, MbrNameUseTag);
-    name->vtype = unknownType;
-    name->qualNames = NULL;
-    name->dclnode = NULL;
-    name->namesym = namesym;
-    return name;
+    return newNameUseNode(namesym);
 }
 
 // Clone NameUse
@@ -87,6 +80,51 @@ INode *cloneNameUseNode(CloneState *cstate, NameUseNode *node) {
     memcpy(newnode, node, sizeof(NameUseNode));
     newnode->dclnode = cloneDclFix(node->dclnode);
     return (INode *)newnode;
+}
+
+// The declaration a name use names, at the end of its chain of names,
+// or NULL while it is unresolved
+INode *nameUseGetDcl(NameUseNode *name) {
+    INode *dcl = name->dclnode;
+    while (dcl && isNameUseNode(dcl))
+        dcl = ((NameUseNode*)dcl)->dclnode;
+    return dcl;
+}
+
+// The group a name use belongs to, asked of the declaration it names: a
+// variable, function, overload set, field or constant makes it an expression; a
+// macro or a generic parameter makes it a meta node; every other declaration
+// makes it a type. That last is a fallthrough rather than a claim: a module is
+// not a type, and a use of its name answers as one. A name bound to nothing --
+// not yet resolved, or a member name before type check selects the member
+// against the receiver's type -- is in no group: not an expression, not a
+// type, not a meta node.
+uint16_t nameUseGroup(NameUseNode *name) {
+    INode *dcl = nameUseGetDcl(name);
+    if (dcl == NULL)
+        return StmtGroup;
+    switch (dcl->tag) {
+    case VarDclTag:
+    case FnDclTag:
+    case FnOverloadDclTag:
+    case FieldDclTag:
+    case ConstDclTag:
+        return ExpGroup;
+    case MacroDclTag:
+    case GenVarDclTag:
+        return MetaGroup;
+    default:
+        return TypeGroup;
+    }
+}
+
+// Does this node name a declaration with the given tag? No for a node that is
+// not a name use, and for a name use bound to nothing yet
+int nameUseNames(INode *node, uint16_t dcltag) {
+    if (!isNameUseNode(node))
+        return 0;
+    INode *dcl = nameUseGetDcl((NameUseNode*)node);
+    return dcl != NULL && dcl->tag == dcltag;
 }
 
 // If a NameUseNode has module name qualifiers, it will first set basemod
@@ -115,7 +153,11 @@ void nameUseAddQual(NameUseNode *node, Name *name) {
         while (cnt--)
             *newp++ = *oldp++;
     }
-    Name **namep = (Name**)&(node->qualNames + 1)[used];
+    // The names follow the header as Name* slots, so step in Name* strides.
+    // Indexing (qualNames + 1) directly steps in whole-NameList strides, which
+    // put the second qualifier two slots along and left slot 1 unset for the
+    // walk in nameUseNameRes to read.
+    Name **namep = (Name**)(node->qualNames + 1) + used;
     *namep = name;
     ++node->qualNames->used;
 }
@@ -132,10 +174,11 @@ void nameUsePrint(NameUseNode *name) {
     inodeFprint("%s", &name->namesym->namestr);
 }
 
-// Handle name resolution for name use references
-// - Point to name declaration in other module or this one
-// - If name is for a method or field, rewrite node as 'self.field'
-// - If not method/field, re-tag it as either TypeNameUse or VarNameUse
+// Handle name resolution for name use references: point dclnode at the name's
+// declaration, in this module or another. That is all a use needs -- whether
+// it is a type, a value or a macro is asked of the declaration (nameUseGroup),
+// and a bare field name is lowered to 'self.field' by type check, which has
+// the type that lowering needs.
 void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
     NameUseNode *name = *namep;
 
@@ -181,7 +224,7 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
         // The declaration stays attached after the diagnostic: it is the one the
         // program asked for, and leaving the use unresolved would only hand the
         // next pass a null to trip over.
-        if (name->dclnode && qualmod != pstate->mod && name->namesym->namestr == '_')
+        if (name->dclnode && qualmod != pstate->mod && inodeIsPrivate(name->dclnode))
             errorMsgNode((INode*)name, ErrorNotPublic,
                 "%s is private to its module and may not be named from outside it.",
                 &name->namesym->namestr);
@@ -205,24 +248,6 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
         errorMsgNode((INode*)name, ErrorBareMbr,
             "In a macro method, %s must be reached through self, as self.%s",
             &name->namesym->namestr, &name->namesym->namestr);
-
-    // Distinguish whether a name is for a variable/function name vs. type
-    //
-    // A bare field name is one of these: it names a value, and type check
-    // rewrites it to 'self.field'. That rewrite used to happen here, which meant
-    // building a call node before any type existed to check it against.
-    if (name->dclnode->tag == VarDclTag 
-        || name->dclnode->tag == FnDclTag 
-        || name->dclnode->tag == FnOverloadDclTag
-        || name->dclnode->tag == FieldDclTag
-        || name->dclnode->tag == ConstDclTag)
-        name->tag = VarNameUseTag;
-    else if (name->dclnode->tag == MacroDclTag)
-        name->tag = MacroNameTag;
-    else if (name->dclnode->tag == GenVarDclTag)
-        name->tag = GenVarUseTag;
-    else
-        name->tag = TypeNameUseTag;
 }
 
 // Handle type check for variable/function name use references
@@ -257,12 +282,10 @@ void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
         // Build a resolved 'self' node and re-read the name as a member of it
         NameUseNode *selfnode = newNameUseNode(selfName);
         copyNodeLex(selfnode, name);
-        selfnode->tag = VarNameUseTag;
         selfnode->dclnode = nodesGet(((FnSigNode*)pstate->fn->vtype)->parms, 0);
         selfnode->vtype = ((VarDclNode*)selfnode->dclnode)->vtype;
         FnCallNode *fncall = newFnCallNode((INode *)selfnode, 0);
         fncall->methfld = (INode*)name;
-        fncall->methfld->tag = MbrNameUseTag;
         copyNodeLex(fncall, name); // Copy lexer info into injected node in case it has errors
         *((FnCallNode**)namep) = fncall;
         inodeTypeCheckAny(pstate, (INode**)namep);

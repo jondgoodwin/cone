@@ -6,6 +6,10 @@ Cone is an in-development systems programming language. This repository
 contains its C compiler (`conec`) and a small standard-library component
 (`conestd`). The compiler targets LLVM and currently depends on LLVM 13.
 
+This file is a map and a set of working rules. What the compiler does, and why,
+lives in `design/`; do not describe compiler behaviour here, because a sentence
+here goes stale without anyone noticing.
+
 ## Repository layout
 
 - `src/c-compiler/parser/`: lexer and parser; converts Cone source into IR.
@@ -28,52 +32,34 @@ contains its C compiler (`conec`) and a small standard-library component
   how far the compiler is — the notes that would survive a rewrite), `phases/`
   (one per compiler phase, plus the naming rules), `nodes/` (what is true of
   every IR node, plus per-node notes), `compiler/` (how `conec` itself is built
-  and stays fast), and `diagnostics/` (measuring, error codes, test suite). Use
-  `design/_index.md` to find the relevant topic, then page in only the notes
-  needed for the task.
-- `workitems/`: **the backlog and plan moved out of this repo on 11 September
-  2026.** `workitems/_index.md` is now a pointer to
-  `C:\Users\jondg\MyDrive\Incubator\Cone\`, where the backlog, the plan and the
-  active work items live. `workitems/done/` still holds completed items.
-- `test/run.py`: the test suite runner. `design/diagnostics/test-suite.md` is its authoring
-  guide.
+  and stays fast), and `diagnostics/` (measuring, error codes, test suite).
+  `design/_index.md` is the entry point.
+- `workitems/`: the plan and backlog are kept by the project owner outside this
+  repository; `workitems/_index.md` says so. `workitems/done/` holds completed
+  items.
+- `test/run.py`: the test suite runner. `design/diagnostics/test-suite.md` is
+  its authoring guide.
 - `test/cases/<group>/`: one directory per coverage group, each with a
   `cases.toml` listing its scenarios.
 - `test/codes.toml`: the pinned `ErrorCode` name-to-number table the runner
   checks `error.h` against before any case runs.
 
-## Documentation context
+## Where to look
 
-- Treat source code as the truth for current compiler behavior.
-- Consult `design/_index.md` when a task needs design intent or subsystem
-  context. Design notes complement the implementation and may describe
-  incomplete or planned behavior.
-- Consult `C:\Users\jondg\MyDrive\Incubator\Cone\Backlog\_index.md` for planned
-  work and its dependencies, and `...\Incubator\Cone\cone-plan.md` for what is
-  active and which objective it serves. `workitems/_index.md` points there.
-- Consult `conesite/public/coneref/index.html` for the language reference
-  page index and the surrounding `conesite/` files when changing published
-  language documentation or playground behavior. Its chapter list is also the
+- Treat source code as the truth for current compiler behaviour.
+- `src/c-compiler/conec.c` defines the pipeline: parse, name resolution, type
+  check and lowering, flow analysis, LLVM generation. `design/_index.md` maps
+  each phase to its note. Each phase note carries its principles, what the
+  phase deliberately does *not* do, its hazards, and a file-and-function map
+  into the code. Read the one that owns the problem before changing it;
+  `design/nodes/_index.md` covers what is true of every IR node regardless of
+  phase. Design notes may describe planned behaviour and say so.
+- `conesite/public/coneref/index.html` is the language reference page index.
+  Consult it and the surrounding `conesite/` files when changing published
+  language documentation or playground behaviour. Its chapter list is also the
   spine of the test suite's group organization: adding a chapter implies asking
   whether a coverage group is needed, and a feature with no chapter has nowhere
   to be tested.
-
-## Compiler pipeline
-
-`src/c-compiler/conec.c` defines the high-level pipeline:
-
-1. Parse source into heterogeneous `INode` IR nodes — `design/phases/parse.md`
-2. Resolve names — `design/phases/name-resolution.md`
-3. Type-check and infer types while lowering syntactic sugar —
-   `design/phases/type-check.md` for when a declaration is checked,
-   `design/phases/type-check-reasoning.md` for what the checks decide
-4. Run data-flow analysis from function type checking — `design/phases/flow.md`
-5. Generate LLVM IR and output — `design/phases/generation.md`
-
-Each phase note carries its key principles, what the phase deliberately does
-*not* do, its hazards, and a file-and-function map into the code. Read the one
-that owns the problem before changing it. `design/nodes/_index.md` covers what is
-true of every IR node regardless of phase.
 
 IR nodes may be replaced or lowered during name resolution and type checking.
 When changing a language feature, trace and update every affected phase:
@@ -103,8 +89,8 @@ the Cone smoke-test input.
 ### Windows
 
 The verified configuration uses a 64-bit LLVM 13 installation with the X86 and
-WebAssembly targets, the Ninja generator, and the VS 2022 x64 toolchain. On the
-current development machine `LLVM_DIR` is `C:\LLVM\13\lib\cmake\llvm`.
+WebAssembly targets, the Ninja generator, and the VS 2022 x64 toolchain. Pass
+`-DLLVM_DIR=<llvm root>\lib\cmake\llvm` when LLVM is not on CMake's search path.
 
 ```powershell
 cmake -S . -B build\x64-release -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -112,7 +98,7 @@ cmake --build build\x64-release
 ```
 
 `cl.exe` needs the Visual Studio environment. From a shell that does not
-already have it, wrap the build:
+already have it, wrap the build (adjust the path for your edition):
 
 ```powershell
 cmd /c '"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" >nul && cmake --build build\x64-release'
@@ -146,14 +132,14 @@ python test/run.py
 It compiles every scenario under `test/cases/`, asserts what each one's category
 and inline `//~` annotations claim, links and runs the `run` scenarios, and
 reports tier 0 first. `--list` prints what would run; a group, scenario, check
-name or `tag:<phase>` narrows it. `design/diagnostics/test-suite.md` is the authoring guide:
-which group to touch, what to assert, and how expectations are written.
+name or `tag:<phase>` narrows it. `design/diagnostics/test-suite.md` is the
+authoring guide: which group to touch, what to assert, and how expectations are
+written.
 
 **A stale `conec` fails good sources in ways indistinguishable from a language
-regression.** A binary left over from an earlier session once failed the
-smoke-test input with 17 errors purely because it predated a merge. The runner
-refuses to run against a binary older than a compiler source, and `--build`
-builds first; outside the runner, build before believing any failure.
+regression.** The runner refuses to run against a binary older than a compiler
+source, and `--build` builds first (it finds the Visual Studio environment
+itself); outside the runner, build before believing any failure.
 
 Useful `conec` options: `--ir` writes an IR/AST dump, `--llvmir` writes LLVM IR
 before and after optimization, and `--wasm` targets WebAssembly. The output
@@ -164,9 +150,9 @@ For a compiler change:
 
 1. Build `conec` and run `python test/run.py`.
 2. Add coverage for the change: a scenario in the owning group under
-   `test/cases/`, following `design/diagnostics/test-suite.md`. A fix for a crash or a
-   miscompile lands with the case that fails without it, and a new `ErrorCode`
-   lands with the scenario that provokes it.
+   `test/cases/`, following `design/diagnostics/test-suite.md`. A fix for a
+   crash or a miscompile lands with the case that fails without it, and a new
+   `ErrorCode` lands with the scenario that provokes it.
 3. Inspect the generated IR when the change affects lowering or symbols.
 4. When the change affects runtime behavior, link and run a program.
 
@@ -177,13 +163,8 @@ link it against `conestd` and the C runtime from a VS environment:
 link prog.obj build\x64-release\conestd.lib /OUT:prog.exe /SUBSYSTEM:CONSOLE msvcrt.lib legacy_stdio_definitions.lib
 ```
 
-A program that spans modules cannot be linked yet. Compiling a module on its
-own makes it the root, whose declarations are spelled bare (`@scaleInt`), while
-an importing module references them by module path
-(`@_CNvC9modulesub8scaleInt`, read `modulesub::scaleInt`), so the two never
-resolve. See
-`C:\Users\jondg\MyDrive\Incubator\Cone\Backlog\packages-and-separate-compilation.md`. Runtime checks must therefore
-live in a single source file.
+A program that spans modules cannot be linked yet, so runtime checks live in a
+single source file. `design/nodes/module.md` explains why.
 
 ## Change discipline
 
@@ -192,16 +173,16 @@ live in a single source file.
   - a test scenario under `test/cases/` in the owning group,
   - the `design/` note for each phase whose mechanism, invariant, or contract
     moved — the phase notes and any per-node note the change touches,
-  - the item that owns the subsystem in
-    `C:\Users\jondg\MyDrive\Incubator\Cone\Backlog\`, so what the change closed
-    stops being listed as owed and what it opened is recorded,
   - the **implementation-status annotations** on every design note the change
     touches — a `[planned]` that is now built is deleted, and a `[differs]` whose
     divergence is closed goes with it. `design/_index.md`, "Implementation
     status", carries the scheme,
   - the **reference page** under `conesite/public/coneref/` for any feature whose
     built status changed, including the italic status note at the top of that
-    page and any marking on its examples.
+    page and any marking on its examples,
+  - and, when you have access to the owner's plan, the work item that owns the
+    subsystem, so what the change closed stops being listed as owed and what it
+    opened is recorded.
 
   **The dependency runs one way: a work item may point at a design note, a
   design note never points at a work item.** That is what makes closing an item

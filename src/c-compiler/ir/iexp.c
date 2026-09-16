@@ -235,8 +235,9 @@ int iexpMultiCoerceInfer(TypeCheckState *pstate, INode *expectType, INode **infe
 
 // Ensure it is a lval, return error and 0 if not.
 int iexpIsLval(INode *lval) {
+    if (isNameUseNode(lval) && isExpNode(lval))
+        return 1;
     switch (lval->tag) {
-    case VarNameUseTag:
     case StringLitTag:
     case DerefTag:
         return 1;
@@ -259,11 +260,8 @@ int iexpIsLvalError(INode *lval) {
 
 // Extract lval variable, scope and overall permission from lval
 INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
-    switch (lval->tag) {
-
-        // A variable or named function node
-    case VarNameUseTag:
-    {
+    // A variable or named function node
+    if (isNameUseNode(lval) && isExpNode(lval)) {
         INode *lvalvar = ((NameUseNode *)lval)->dclnode;
         if (lvalvar->tag == VarDclTag) {
             *lvalperm = ((VarDclNode *)lvalvar)->perm;
@@ -275,7 +273,7 @@ INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
         }
         return lvalvar;
     }
-
+    switch (lval->tag) {
     case DerefTag:
     {
         INode *lvalvar = iexpGetLvalInfo(((StarNode *)lval)->vtexp, lvalperm, scope);
@@ -329,7 +327,7 @@ INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
         // so only a compiler-synthesized field would ever match by identity.
         // A tuple element is reached by index rather than by name, so it has no
         // field declaration to ask.
-        if (element->methfld->tag == MbrNameUseTag) {
+        if (isNameUseNode(element->methfld)) {
             INode *flddcl = ((NameUseNode *)element->methfld)->dclnode;
             if (flddcl->tag == FieldDclTag) {
                 // A field whose declaration wrote no permission keeps
@@ -340,9 +338,7 @@ INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
                 // flag word out of an AbsenceNode. Which permissions a field may
                 // carry, and what an unwritten one should mean, are open in
                 // workitems/permissions.md.
-                INode *fldperm = ((FieldDclNode*)flddcl)->perm;
-                if (fldperm->tag == TypeNameUseTag)
-                    fldperm = (INode*)((NameUseNode*)fldperm)->dclnode;
+                INode *fldperm = itypeGetTypeDcl(((FieldDclNode*)flddcl)->perm);
                 if (fldperm->tag == PermTag && !(permGetFlags(fldperm) & MayWrite))
                     *lvalperm = (INode*)roPerm;
             }
@@ -363,9 +359,11 @@ int iexpSameType(INode *to, INode **from) {
 
 // Retrieve the permission flags for the node
 uint16_t iexpGetPermFlags(INode *node) {
+    // A value name answers for its declaration: a variable's permission, a
+    // function's opaque one, and nothing for a field or a constant
+    if (isNameUseNode(node) && isExpNode(node))
+        return iexpGetPermFlags(((NameUseNode*)node)->dclnode);
     switch (node->tag) {
-    case VarNameUseTag:
-        return iexpGetPermFlags((INode*)((NameUseNode*)node)->dclnode);
     case VarDclTag:
         return permGetFlags(((VarDclNode*)node)->perm);
     case FnDclTag:

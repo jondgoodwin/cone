@@ -55,8 +55,9 @@ void iNsTypeAddFnDict(INsTypeNode *type, FnDclNode *fnnode) {
 void iNsTypeAddFn(INsTypeNode *type, FnDclNode *fnnode) {
     NodeList *mnodes = &type->nodelist;
     nodelistAdd(mnodes, (INode*)fnnode);
-    iNsTypeAddFnDict(type, fnnode);
+    // Join before binding: fnOverloadDclAdd reads the DclPrivate bit the join writes
     dclInfoJoin((INode*)fnnode, (INode*)type);
+    iNsTypeAddFnDict(type, fnnode);
 }
 
 // Add a macro to type's dictionary and owned list. It shares the one namespace

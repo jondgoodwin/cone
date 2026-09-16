@@ -212,8 +212,9 @@ Two adjustments are worth knowing because they are asymmetric on purpose:
   wrote an operator, and the retry is skipped when it is set on a pointer
   receiver.
 
-Visibility is checked against **the spelling the caller used**, so a public
-overload name may legitimately select a private concrete candidate.
+Visibility is checked on **the binding the caller's name reaches** — a
+method's `DclPrivate` bit, or the spelling of a field or an overload name — so
+a public overload name may legitimately select a private concrete candidate.
 
 ## 8. Casts and `is`
 

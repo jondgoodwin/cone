@@ -117,13 +117,16 @@ arguments, conditions and array elements use.
 
 ## 4. What the parser leaves undecided
 
-Seven node kinds are **shape-stable but tag-unstable**: the parser builds the
-right fields and the wrong tag, and name resolution retags once the name binds.
-`inode.h` labels the first three explicitly as "parser-ambiguous".
+A name is left **bound to nothing**: `NameUseTag` with `dclnode` NULL. Name
+resolution binds it and changes nothing else; what the name is — a type, a
+value, a macro — is asked of the declaration from then on. Seven other node
+kinds are **shape-stable but tag-unstable**: the parser builds the right fields
+and the wrong tag, and name resolution retags once the names inside have bound.
+`inode.h` labels `NameUseTag`, `TupleTag` and `StarTag` explicitly as
+"parser-ambiguous".
 
 | Built as | Becomes | Retagged in |
 | --- | --- | --- |
-| `NameUseTag` | `VarNameUseTag`, `TypeNameUseTag`, `MacroNameTag`, `GenVarUseTag` | `nameUseNameRes` |
 | `TupleTag` | `TTupleTag` (all types) or `VTupleTag` (all values); mixed is `ErrorBadElems` | `ttupleNameRes` |
 | `StarTag` | `PtrTag` if the operand is a type, else `DerefTag` | `ptrNameRes` |
 | `ArrayTag` | stays a type, or becomes `ArrayLitTag` | `arrayNameRes` |
@@ -202,8 +205,8 @@ module.
 - Module namespaces are populated and hooked; duplicate globals already
   reported.
 - A few `NameUseNode`s are **pre-resolved** — the anonymous variables desugaring
-  synthesizes — with `dclnode` already set and the tag already `VarNameUseTag`.
-  `nameUseNameRes` returns immediately for these.
+  synthesizes — with `dclnode` already set. `nameUseNameRes` returns immediately
+  for these.
 - Blocks always have a non-NULL `stmts` list.
 
 **Not yet true:**

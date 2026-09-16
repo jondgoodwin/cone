@@ -77,7 +77,7 @@ flow later injects wraps the already-coerced node.
 Given an `is` condition on a **closed** variant set — a trait with no base of
 its own, carrying `HasTagField` or `SameSize` — it checks whether every entry of
 `derived` is matched by some arm testing **the same scrutinee**: the same node,
-or two `VarNameUseTag` uses of one declaration (`ifSameScrutinee`). The second
+or two name uses of one declaration (`ifSameScrutinee`). The second
 form is what a clone of the match presents — a generic instance's or a macro
 expansion's — since cloning copies the shared node once per arm. If they all
 are, and one of the variant tests is the **last** condition, it **overwrites that

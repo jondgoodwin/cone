@@ -81,6 +81,17 @@ contains = [
   "define i32 @main() comdat",
 ]
 
+# A method of a number type lowers to what the type's declaration holds -- an
+# intrinsic -- and never to a symbol of its own. 'sqrt' is the one that leaves
+# a trace the dump can show, the LLVM intrinsic it calls; the operators called
+# by name become instructions and leave none. Read before optimization because
+# the release run folds a call on a constant away.
+[[scenario.core-success.check]]
+name = "number-method-lowers-to-intrinsic"
+target = "preir"
+contains = ["call double @llvm.sqrt.f64("]
+excludes = ["@sqrt", "isTrue"]
+
 [scenario.core-overload]
 category = "run"
 description = "Which candidate of an overload set a call selects"
@@ -131,6 +142,28 @@ contains = [
 ]
 excludes = [" hidden ", "comdat any"]
 
+[scenario.core-shadowing]
+category = "run"
+description = "Which of two declarations under one spelling a bare name binds to, by scope"
+tags = ["nameres", "typecheck", "genllvm", "runtime"]
+
+# Both declarations under the spelling 'weigh' exist as symbols -- the
+# module's function bare, the type's method after its type -- and so do both
+# shadowed globals, so the printed values and not the presence of a symbol
+# are what say which one each bare name reached. What the symbols pin is that
+# shadowing binds and never renames: nothing is spelled after what it hid or
+# what hid it, and LLVM had no clash to uniquify.
+[[scenario.core-shadowing.check]]
+name = "shadowed-and-shadowing-both-keep-their-symbols"
+target = "symbols"
+contains = [
+  "define internal weigh comdat nodeduplicate",
+  "define internal Widget::weigh comdat nodeduplicate",
+  "global internal depth comdat nodeduplicate",
+  "constant internal width comdat nodeduplicate",
+]
+excludes = ["weigh.1", "depth.1", "width.1"]
+
 # -------- warnings --------
 
 [scenario.core-warn-loops]
@@ -161,9 +194,9 @@ diagnostics = 3
 
 [scenario.core-parse-names]
 category = "reject"
-description = "Two declarations claiming one global name"
+description = "Two declarations claiming one global name, across every kind of declaration"
 tags = ["parse"]
-diagnostics = 5
+diagnostics = 15
 
 [scenario.core-parse-overload]
 category = "reject"
@@ -206,6 +239,14 @@ category = "reject"
 description = "A tuple mixing types and values among its elements"
 tags = ["nameres"]
 diagnostics = 3
+
+# The lexical-scope counterpart of core-parse-names: a block's names are
+# hooked as the walk reaches them, so its duplicates are found here.
+[scenario.core-nameres-dupname]
+category = "reject"
+description = "Two declarations claiming one name in one block: a local, and a lifetime label"
+tags = ["nameres"]
+diagnostics = 4
 
 # -------- type check stage --------
 

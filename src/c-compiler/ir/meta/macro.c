@@ -139,7 +139,6 @@ static INode *macroSelfReceiver(TypeCheckState *pstate, INode *usenode, Name *ma
     }
     NameUseNode *selfnode = newNameUseNode(selfName);
     copyNodeLex(selfnode, usenode);
-    selfnode->tag = VarNameUseTag;
     selfnode->dclnode = nodesGet(((FnSigNode*)pstate->fn->vtype)->parms, 0);
     selfnode->vtype = ((VarDclNode*)selfnode->dclnode)->vtype;
     return (INode*)selfnode;
@@ -160,7 +159,6 @@ void macroNameTypeCheck(TypeCheckState *pstate, NameUseNode **gennode) {
         FnCallNode *call = newFnCallNode(self, 0);
         copyNodeLex(call, *gennode);
         call->methfld = (INode*)*gennode;
-        call->methfld->tag = MbrNameUseTag;
         *((INode**)gennode) = (INode*)call;
         macroMethodTypeCheck(pstate, (FnCallNode**)gennode, macrodcl);
         return;
@@ -187,7 +185,6 @@ void macroCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             return;
         }
         (*nodep)->methfld = (*nodep)->objfn;
-        (*nodep)->methfld->tag = MbrNameUseTag;
         (*nodep)->objfn = self;
         macroMethodTypeCheck(pstate, nodep, macrodcl);
         return;

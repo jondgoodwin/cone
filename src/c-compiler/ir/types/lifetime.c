@@ -31,7 +31,7 @@ INode *cloneLifetimeDclNode(CloneState *cstate, LifetimeNode *node) {
 // Create a new lifetime use node
 INode *newLifetimeUseNode(LifetimeNode *lifedcl) {
     NameUseNode *life;
-    newNode(life, NameUseNode, TypeNameUseTag);
+    newNode(life, NameUseNode, NameUseTag);
     life->vtype = NULL;
     life->namesym = lifedcl->namesym;
     life->dclnode = (INode*)lifedcl;
@@ -46,18 +46,16 @@ void lifePrint(LifetimeNode *node) {
 
 // Are the lifetimes the same?
 int lifeIsSame(INode *node1, INode *node2) {
-    if (node1->tag == TypeNameUseTag)
-        node1 = (INode*)((NameUseNode*)node1)->dclnode;
-    if (node2->tag == TypeNameUseTag)
-        node2 = (INode*)((NameUseNode*)node2)->dclnode;
+    node1 = itypeGetTypeDcl(node1);
+    node2 = itypeGetTypeDcl(node2);
     assert(node1->tag == LifetimeTag && node2->tag == LifetimeTag);
     return node1 == node2;
 }
 
 // Will 'from' lifetime coerce as a subtype to the target?
 int lifeMatches(INode *ito, INode *ifrom) {
-    LifetimeNode *from = (LifetimeNode *)((ifrom->tag == TypeNameUseTag)? (INode*)((NameUseNode*)ifrom)->dclnode : ifrom);
-    LifetimeNode *to = (LifetimeNode *)((ito->tag == TypeNameUseTag)? (INode*)((NameUseNode*)ito)->dclnode : ito);
+    LifetimeNode *from = (LifetimeNode *)itypeGetTypeDcl(ifrom);
+    LifetimeNode *to = (LifetimeNode *)itypeGetTypeDcl(ito);
     assert(from->tag == LifetimeTag && to->tag == LifetimeTag);
 
     // 'static is a supertype of all lifetimes

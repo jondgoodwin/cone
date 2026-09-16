@@ -84,7 +84,8 @@ void ifNameRes(NameResState *pstate, IfNode *ifnode) {
 static int ifSameScrutinee(INode *a, INode *b) {
     if (a == b)
         return 1;
-    return a->tag == VarNameUseTag && b->tag == VarNameUseTag
+    return isNameUseNode(a) && isNameUseNode(b)
+        && ((NameUseNode*)a)->dclnode != NULL
         && ((NameUseNode*)a)->dclnode == ((NameUseNode*)b)->dclnode;
 }
 

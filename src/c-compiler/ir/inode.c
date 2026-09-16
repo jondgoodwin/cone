@@ -65,16 +65,16 @@ void inodePrintDecr() {
 
 // Serialize a specific node
 void inodePrintNode(INode *node) {
+    // A name use prints as its name, whatever it has resolved to
+    if (isNameUseNode(node)) {
+        nameUsePrint((NameUseNode *)node);
+        return;
+    }
     switch (node->tag) {
     case ProgramTag:
         pgmPrint((ProgramNode *)node); break;
     case ModuleTag:
         modPrint((ModuleNode *)node); break;
-    case NameUseTag:
-    case VarNameUseTag:
-    case TypeNameUseTag:
-    case MbrNameUseTag:
-        nameUsePrint((NameUseNode *)node); break;
     case FnDclTag:
         fnDclPrint((FnDclNode *)node); break;
     case FnOverloadDclTag:
@@ -202,6 +202,13 @@ void inodePrint(char *dir, char *srcfn, INode *pgmnode) {
 // - pstate is helpful state info for node traversal
 // - node is a pointer to pointer so that a node can be replaced
 void inodeNameRes(NameResState *pstate, INode **node) {
+    // Every name use that reaches this walk resolves here. A member name never
+    // does: fnCallNameRes leaves the call's member slot alone, because selecting
+    // the member needs the receiver's type, and fnCallTypeCheck selects it.
+    if (isNameUseNode(*node)) {
+        nameUseNameRes(pstate, (NameUseNode **)node);
+        return;
+    }
     switch ((*node)->tag) {
     case ProgramTag:
         pgmNameRes(pstate, (ProgramNode*)*node); break;
@@ -215,12 +222,6 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         constDclNameRes(pstate, (ConstDclNode *)*node); break;
     case FieldDclTag:
         fieldDclNameRes(pstate, (FieldDclNode *)*node); break;
-    case NameUseTag:
-    case VarNameUseTag:
-    case TypeNameUseTag:
-    case MacroNameTag:
-    case GenericNameTag:
-        nameUseNameRes(pstate, (NameUseNode **)node); break;
     case TypeLitTag:
         typeLitNameRes(pstate, (FnCallNode *)*node); break;
     case ImportTag:
@@ -286,7 +287,6 @@ void inodeNameRes(NameResState *pstate, INode **node) {
     case GenVarDclTag:
         gVarDclNameRes(pstate, (GenVarDclNode *)*node); break;
 
-    case MbrNameUseTag:
     case IntNbrTag: case UintNbrTag: case FloatNbrTag:
     case PermTag:
     case AbsenceTag:
@@ -347,7 +347,22 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
         (*node)->flags |= TypeChecking;
     }
 
-    switch ((*node)->tag) {
+    // A resolved name is checked as what its declaration is: a type, a value,
+    // or a macro to expand. A member name never arrives here: the call it
+    // belongs to selects the member against the receiver's type.
+    if (isNameUseNode(*node)) {
+        if (isTypeNode(*node))
+            nameUseTypeCheckType(pstate, (NameUseNode **)node);
+        else if (isExpNode(*node))
+            nameUseTypeCheck(pstate, (NameUseNode **)node);
+        else if (nameUseNames(*node, MacroDclTag))
+            macroNameTypeCheck(pstate, (NameUseNode **)node);
+        else {
+            errorUnreachable(*node, "a node type check has no case for");
+            return;
+        }
+    }
+    else switch ((*node)->tag) {
     case ProgramTag:
         pgmTypeCheck(pstate, (ProgramNode *)*node); break;
     case ModuleTag:
@@ -362,8 +377,6 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
         fieldDclTypeCheck(pstate, (FieldDclNode *)*node); break;
     case ImportTag:
         importTypeCheck(pstate, (ImportNode *)*node); break;
-    case VarNameUseTag:
-        nameUseTypeCheck(pstate, (NameUseNode **)node); break;
     case ArrayLitTag:
         arrayLitTypeCheck(pstate, (ArrayNode *)*node); break;
     case BlockTag:
@@ -409,8 +422,6 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     case FLitTag:
         litTypeCheck(pstate, (IExpNode*)*node, expectType); break;
 
-    case TypeNameUseTag:
-        nameUseTypeCheckType(pstate, (NameUseNode **)node); break;
     case TypedefTag:
         typedefTypeCheck(pstate, (TypedefNode *)*node); break;
     case FnSigTag:
@@ -437,16 +448,12 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
 
     case MacroDclTag:
         macroTypeCheck(pstate, (MacroDclNode *)*node); break;
-    case MacroNameTag:
-    case GenericNameTag:
-        macroNameTypeCheck(pstate, (NameUseNode **)node); break;
     case GenVarDclTag:
         gVarDclTypeCheck(pstate, (GenVarDclNode *)*node); break;
 
     case StringLitTag:
         slitTypeCheck(pstate, (SLitNode*)*node); break;
 
-    case MbrNameUseTag:
     case IntNbrTag: case UintNbrTag: case FloatNbrTag:
     case AbsenceTag:
     case UnknownTag:
@@ -492,10 +499,12 @@ Name *inodeGetName(INode *node) {
         return ((FieldDclNode*)node)->namesym;
     case ConstDclTag:
         return ((ConstDclNode*)node)->namesym;
+    case MacroDclTag:
+        return ((MacroDclNode*)node)->namesym;
+    case TypedefTag:
+        return ((TypedefNode*)node)->namesym;
     case GenVarDclTag:
         return ((GenVarDclNode *)node)->namesym;
-    case MacroDclTag:
-        return ((MacroDclNode *)node)->namesym;
 
     // Type declarations
     case LifetimeTag:
@@ -559,10 +568,15 @@ int inodeIsDcl(INode *node) {
     }
 }
 
-// Determine whether a named node is marked as private
+// Determine whether a named node is private. A declaration that carries DclInfo
+// answers from its DclPrivate bit, written once when it joined its namespace.
+// A node that carries none (a field, const, macro, typedef, overload name or
+// generic parameter) has only its spelling to answer from.
 int inodeIsPrivate(INode *node) {
-    Name *namesym = inodeGetName(node);
-    return namesym && namesym->namestr == '_';
+    DclInfo *dclinfo = inodeGetDclInfo(node);
+    if (dclinfo)
+        return (dclinfo->facts & DclPrivate) != 0;
+    return nameSpellsPrivate(inodeGetName(node));
 }
 
 // Determine whether a declaration is a member reached through a receiver: a
@@ -587,4 +601,29 @@ int inodeIsMember(INode *node) {
 // A check that would complain about such a node has nothing new to report.
 int inodeIsError(INode *node) {
     return isExpNode(node) && ((IExpNode*)node)->vtype == errorType;
+}
+
+// The group a node belongs to: StmtGroup, ExpGroup, TypeGroup or MetaGroup.
+// For every node but a name use the tag is the node's characteristic, so its
+// group bits are the answer. A name use stands for whatever it names, so it is
+// asked of the declaration at the end of its chain of names rather than of the
+// use itself: that is what lets a name reached through an alias answer.
+static uint16_t inodeGroup(INode *node) {
+    if (isNameUseNode(node))
+        return nameUseGroup((NameUseNode*)node);
+    return node->tag & GroupMask;
+}
+
+int inodeIsExp(INode *node) {
+    return inodeGroup(node) == ExpGroup;
+}
+
+// An instantiation of a generic type, 'Box[i64]', is a call node until type
+// check replaces it with the instance it names, and is a type all the while
+int inodeIsType(INode *node) {
+    return inodeGroup(node) == TypeGroup || itypeIsGenericType(node);
+}
+
+int inodeIsMeta(INode *node) {
+    return inodeGroup(node) == MetaGroup;
 }

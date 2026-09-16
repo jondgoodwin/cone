@@ -189,8 +189,9 @@ discipline — unstructured concurrency being "similar to GOTO."
 - **A mixin brings fields in at a position**, so adding one shifts every later
   field index, and positional type literals move with it.
 - **Two mixins can each bring a discriminant field**, and nothing rejects it.
-- **A module name resolves as a type name use** — the retag falls through to
-  `TypeNameUseTag` by default, not because a module is a type.
+- **A use of a module's name answers `isTypeNode` true** — `nameUseGroup`'s
+  fallthrough for every declaration that is not a value, a macro or a generic
+  parameter, not because a module is a type.
 
 ## What lives elsewhere
 
