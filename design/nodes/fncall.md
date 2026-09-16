@@ -113,8 +113,25 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
 | `TTupleTag` | `fnCallLowerIntField` — element by literal index |
 | `ArrayTag` | `fnCallArrIndex`, only under `FlagIndex` |
 | `ArrayRefTag` | index, or `fnCallLowerPtrMethod` against `arrayRefType` |
-| `RefTag` | function-by-ref, array index, or `fnCallLowerPtrMethod` then `fnCallLowerMethod` |
+| `RefTag` | function-by-ref, array index, or `fnCallLowerPtrMethod`, then `fnCallLowerTraitMethod` and failing that `fnCallLowerMethod` |
 | `VirtRefTag` | `fnCallLowerPtrMethod`, else set `FlagVDisp` and `fnCallLowerMethod` |
+
+**A method called on a plain reference to a trait dispatches on the variant**,
+and `fnCallLowerTraitMethod` is what routes it there. Neither of the trait's own
+declarations is callable — an abstract method has no body, and one with a body is
+a default that was cloned into each variant — so selecting either left the call
+naming a declaration with no symbol, which generation dereferenced as a null.
+The route is the one [reftraitvar](../../conesite/public/coneref/reftraitvar.html)
+describes: the tag says which variant, that selects its vtable, and the vtable
+holds the method. It is built by coercing the receiver to `&<Trait`, which
+already exists and already does the tag lookup, and then dispatching as any
+virtual reference does — the compiler writing what a caller could write by hand.
+
+**An open trait has no tag**, so `refvirtMatches` refuses that coercion, and the
+refusal is reported rather than left to fail later. The same page states the rule
+and the remedy: obtain a virtual reference first. **A field takes none of this**
+— it lives in the trait's own layout, a prefix of every implementer, so
+`fnCallLowerMethod` reaches it directly.
 | `PtrTag` | the pointer's own operators first, then the value's fields and named methods |
 
 ### Selecting a candidate

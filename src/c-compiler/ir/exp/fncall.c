@@ -516,6 +516,60 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
     return 1;
 }
 
+// The receiver is a plain reference to a trait (or union) and the name it calls
+// is a method rather than a field. Return 0 when this is not that case.
+//
+// Such a call dispatches on which variant the reference points at, which the
+// trait's own declaration cannot answer: an abstract method has no body, and a
+// method with a body is a default that was cloned into each variant, so neither
+// the requirement nor the original is a function anything can call. Reaching one
+// is what left the call naming a declaration with no symbol, and generation
+// dereferenced that null.
+//
+// The route is the one coneref/reftraitvar.html describes -- the tag says which
+// variant, that selects the vtable, and the vtable holds the method -- and it is
+// already built as the coercion from '&Trait' to '&<Trait'. So this coerces and
+// then dispatches virtually, which is what a caller otherwise has to write by
+// hand. An open trait has no tag and refvirtMatches refuses the coercion, which
+// is the same page's rule; that refusal is reported here rather than left to a
+// crash.
+int fnCallLowerTraitMethod(TypeCheckState *pstate, FnCallNode *callnode, INode *objdereftype) {
+    if (objdereftype->tag != StructTag || !(objdereftype->flags & TraitType))
+        return 0;
+    if (callnode->methfld == NULL || !isNameUseNode(callnode->methfld))
+        return 0;
+
+    // A field is reached through the trait's own layout and needs no dispatch,
+    // which is what fnCallLowerMethod already does with it
+    Name *methsym = ((NameUseNode*)callnode->methfld)->namesym;
+    INode *foundnode = iNsTypeFindFnField((INsTypeNode*)objdereftype, methsym);
+    if (foundnode == NULL || foundnode->tag == FieldDclTag)
+        return 0;
+
+    RefNode *objtype = (RefNode*)iexpGetTypeDcl(callnode->objfn);
+    if (objtype->tag != RefTag)
+        return 0;
+
+    // Build '&<perm Trait' and let coercion decide whether it is reachable
+    RefNode *vreftype = newRefNodeFull(VirtRefTag, (INode*)callnode, (INode*)borrowRef,
+                                       objtype->perm, objtype->vtexp);
+    INode *vreftypep = (INode*)vreftype;
+    if (itypeTypeCheck(pstate, &vreftypep) == 0)
+        return 1;   // already reported
+
+    if (!iexpCoerce(&callnode->objfn, vreftypep)) {
+        errorMsgNode((INode*)callnode, ErrorNoMeth,
+            "`%s` is dispatched on the variant, which a reference to an open trait cannot determine. Use a virtual reference (&<).",
+            &methsym->namestr);
+        callnode->vtype = errorType;
+        return 1;
+    }
+
+    callnode->flags |= FlagVDisp;
+    fnCallLowerMethod(callnode);
+    return 1;
+}
+
 // objfn names an overload set. Select the one candidate that accepts the call's
 // arguments, rewrite the call to that concrete function, then finalize its arguments.
 void fnCallLowerOverloadFn(FnCallNode *node) {
@@ -842,8 +896,10 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
                 // Lower to a field access or function call, dereferencing the receiver
                 // where that is what the selected method wants. fnCallLowerMethod cannot
                 // answer 0 here, having already been told the deref type supports methods.
-                if (isMethodType(objdereftype))
-                    fnCallLowerMethod(node);
+                if (isMethodType(objdereftype)) {
+                    if (fnCallLowerTraitMethod(pstate, node, objdereftype) == 0)
+                        fnCallLowerMethod(node);
+                }
                 else if (objdereftype->tag == PtrTag)
                     fnCallLowerPtrMethod(node, ptrType);
                 else

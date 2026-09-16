@@ -51,3 +51,25 @@ fn notAnOperation(s &<Shape, c &<Callable) {
   // single address to load a whole value from.
   imm z = *s          //~ ErrorNotPtr:11 "May only de-reference a simple reference or pointer"
 }
+
+// An open trait has no tag, so a plain reference to one cannot say which
+// implementer it points at, and a method call through it has nothing to
+// dispatch on. coneref/reftraitvar.html states the rule and names the remedy:
+// obtain a virtual reference first. The closed form needs no such thing and is
+// exercised in trait-variants, where the tag selects the vtable.
+//
+// A field is different and still reaches: it lives in the trait's own layout,
+// which is a prefix of every implementer, so no dispatch is involved.
+trait Gauge {
+  level i32
+  fn reading(self &) i32 {level * 2}
+}
+
+struct Dial extends Gauge {
+  fn reading(self &) i32 {self.level + 1}
+}
+
+fn openTraitDispatch(g &Gauge) i32 {
+  imm ok = g.level
+  g.reading()         //~ ErrorNoMeth:4 "reference to an open trait cannot determine"
+}

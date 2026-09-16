@@ -34,14 +34,20 @@ union Extense {
 
   fn incr(self &mut)
 
+  // A second requirement, read-only, so the same dispatch can be exercised
+  // through a plain '&' reference further down
+  fn measure(self &) i32
+
   struct Variant1 {
     nbr i32
+    fn measure(self &) i32 {100 + nbr}
     fn incr(self &mut) {nbr += 1}
   }
 
   struct Variant2 {
     x i32
     y i32
+    fn measure(self &) i32 {200 + x}
     fn incr(self &mut) {x += 1; y += 1}
   }
 }
@@ -84,6 +90,26 @@ fn unionThroughParameter() {
   incrTwice(&mut two)
   show("dispatch-through-parameter-variant1", one.nbr)
   show("dispatch-through-parameter-variant2", two.x)
+}
+
+// The same dispatch through a *plain* reference, which is what a closed base
+// type's tag is for: coneref/reftraitvar.html says the tag determines the
+// variant, that selects its vtable, and the vtable holds the method. The
+// compiler inserts the coercion to a virtual reference that a caller would
+// otherwise have to write out, so one call site reaches two implementations.
+//
+// Neither a requirement on the union nor a default cloned into the variants is a
+// function anything can call. Until the coercion was inserted, the call named one
+// of those declarations, which has no symbol, and generation dereferenced a null.
+fn sizeOf(e &Extense) i32 {
+  e.measure()
+}
+
+fn unionThroughPlainRef() {
+  imm one Extense = Variant1[1, 5]
+  imm two Extense = Variant2[2, 6, 7]
+  show("plain-ref-dispatch-variant1", sizeOf(&one))
+  show("plain-ref-dispatch-variant2", sizeOf(&two))
 }
 
 // -------- the open form: a trait with 'extends' implementers --------
@@ -232,6 +258,7 @@ fn interactions() {
 fn main() i32 {
   unionVariants()
   unionThroughParameter()
+  unionThroughPlainRef()
   openTrait()
   structuralConformer()
   narrowingTrait()
