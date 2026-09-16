@@ -174,7 +174,7 @@ Fields and constants have no flow participation at all.
   `assert(perm->tag == PermTag)` is nothing in a Release build, so a caller that
   might hold `unknownType` — which is what an unwritten permission was, before
   `parseDclPerm` applied a default — gets garbage rather than a diagnostic.
-  Unwrap `TypeNameUseTag` and check for `PermTag` before asking.
+  Unwrap the name with `itypeGetTypeDcl` and check for `PermTag` before asking.
 - **A field's permission governs exactly one thing: whether the field may be
   written**, and it does so together with the permission of whatever the field
   is reached through — the minimum of the two. It says nothing about sharing,
