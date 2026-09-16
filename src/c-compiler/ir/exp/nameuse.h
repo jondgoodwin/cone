@@ -43,6 +43,10 @@ INode *nameUseGetDcl(NameUseNode *name);
 // asked of the declaration it names
 uint16_t nameUseGroup(NameUseNode *name);
 
+// Does this node name a declaration with the given tag? No for a node that is
+// not a name use, and for a name use bound to nothing yet
+int nameUseNames(INode *node, uint16_t dcltag);
+
 void nameUseBaseMod(NameUseNode *node, ModuleNode *basemod);
 void nameUseAddQual(NameUseNode *node, Name *name);
 NameUseNode *newMemberUseNode(Name *namesym);

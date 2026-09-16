@@ -125,6 +125,15 @@ uint16_t nameUseGroup(NameUseNode *name) {
     }
 }
 
+// Does this node name a declaration with the given tag? No for a node that is
+// not a name use, and for a name use bound to nothing yet
+int nameUseNames(INode *node, uint16_t dcltag) {
+    if (!isNameUseNode(node))
+        return 0;
+    INode *dcl = nameUseGetDcl((NameUseNode*)node);
+    return dcl != NULL && dcl->tag == dcltag;
+}
+
 // If a NameUseNode has module name qualifiers, it will first set basemod
 // (either root module or the current module scope). This allocates an area
 // for qualifiers to be added.

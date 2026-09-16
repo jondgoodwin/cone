@@ -356,7 +356,7 @@ static void fnCallNoCandidate(INode *callnode, enum OverloadMatch status, Name *
 // (so the caller may try another way), and -1 when a diagnostic was reported.
 int fnCallLowerMethod(FnCallNode *callnode) {
     INode *obj = callnode->objfn;
-    assert(callnode->methfld->tag == MbrNameUseTag);
+    assert(isNameUseNode(callnode->methfld));
     NameUseNode *methfld = (NameUseNode*)callnode->methfld;
     Name *methsym = methfld->namesym;
 
@@ -368,7 +368,8 @@ int fnCallLowerMethod(FnCallNode *callnode) {
     // Visibility is checked against the spelling the caller actually used.
     // A public overload name may therefore select a private concrete candidate.
     if (methsym->namestr == '_'
-        && !(obj->tag==VarNameUseTag && ((VarDclNode*)((NameUseNode*)obj)->dclnode)->namesym == selfName)) {
+        && !(isNameUseNode(obj) && isExpNode(obj)
+             && ((VarDclNode*)((NameUseNode*)obj)->dclnode)->namesym == selfName)) {
         errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/field `%s`.", &methsym->namestr);
     }
     INode *foundnode = iNsTypeFindFnField((INsTypeNode*)objdereftype, methsym);
@@ -454,7 +455,7 @@ int fnCallLowerMethod(FnCallNode *callnode) {
 int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
     INode *obj = callnode->objfn;
     INode *objtype = iexpGetTypeDcl(obj);
-    assert(callnode->methfld->tag == MbrNameUseTag);
+    assert(isNameUseNode(callnode->methfld));
     NameUseNode *methfld = (NameUseNode*)callnode->methfld;
     Name *methsym = methfld->namesym;
 
@@ -538,7 +539,7 @@ void fnCallLowerOverloadFn(FnCallNode *node) {
 void fnCallOpAssgn(FnCallNode **nodep) {
     FnCallNode *callnode = *nodep;
     INode *objtype = iexpGetTypeDcl(callnode->objfn);
-    assert(callnode->methfld->tag == MbrNameUseTag);
+    assert(isNameUseNode(callnode->methfld));
     NameUseNode *methfld = (NameUseNode*)callnode->methfld;
     Name *methsym = methfld->namesym;
 
@@ -597,7 +598,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     // apart. With it set, the name is the receiver a value is expected of, and
     // it expands below like the name in any other value position; the operator
     // is then applied to what it expanded to.
-    if (node->objfn->tag == MacroNameTag && node->methfld == NULL) {
+    if (nameUseNames(node->objfn, MacroDclTag) && node->methfld == NULL) {
         macroCallTypeCheck(pstate, nodep);
         return;
     }
@@ -626,8 +627,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     // An overload name has no value of its own, so it is only legal here, naming what
     // is called. Skipping the ordinary name-use check leaves that check free to reject
     // the overload name everywhere else.
-    int calleeIsOverload = node->objfn->tag == VarNameUseTag
-        && ((NameUseNode*)node->objfn)->dclnode->tag == FnOverloadDclTag;
+    int calleeIsOverload = nameUseNames(node->objfn, FnOverloadDclTag);
     if (!calleeIsOverload)
         inodeTypeCheckAny(pstate, &node->objfn);
 
@@ -691,7 +691,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     }
 
     // If objfn is the name of a method/field, rewrite to: self.method
-    if (node->objfn->tag == VarNameUseTag
+    if (isNameUseNode(node->objfn) && isExpNode(node->objfn)
         && ((NameUseNode*)node->objfn)->dclnode->flags & FlagMethFld
         && ((NameUseNode*)node->objfn)->qualNames == NULL) {
         // Build a resolved 'self' node
@@ -717,8 +717,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     }
 
     // A call whose callee names an overload set selects its one viable candidate
-    if (node->objfn->tag == VarNameUseTag
-        && ((NameUseNode*)node->objfn)->dclnode->tag == FnOverloadDclTag) {
+    if (nameUseNames(node->objfn, FnOverloadDclTag)) {
         fnCallLowerOverloadFn(node);
         return;
     }
