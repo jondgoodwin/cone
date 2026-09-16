@@ -131,7 +131,7 @@ LLVMValueRef genlFnCallInternal(GenState *gen, int dispatch, INode *objfn, uint3
         fndcl = (FnDclNode *)objfn;
     }
     else {
-        assert(objfn->tag == VarNameUseTag);
+        assert(isNameUseNode(objfn) && isExpNode(objfn));
         fnuse = (NameUseNode *)objfn;
         fndcl = (FnDclNode *)fnuse->dclnode;
     }
@@ -816,20 +816,19 @@ static int genlIsNullablePtrField(FnCallNode *fncall) {
 
 // Generate an lval-ish pointer to the value (vs. load)
 LLVMValueRef genlAddr(GenState *gen, INode *lval) {
-    switch (lval->tag) {
-    // There is no FnDclTag case. A name bound to a function resolves to a
-    // VarNameUseTag (nameUseNameRes), and an anonymous function is lifted to
+    // A name may refer to a variable's storage or to a generated function.
+    // There is no FnDclTag case below. A name bound to a function is a name use
+    // of the FnDclNode (nameUseNameRes), and an anonymous function is lifted to
     // module scope and reached the same way, so no bare FnDclNode arrives here.
     // The one that used to be here called genlFn, which is not idempotent and
     // would have appended a second entry block to an already-generated function.
-    case VarNameUseTag:
-    {
-        // A name may refer to a variable's storage or to a generated function
+    if (isNameUseNode(lval) && isExpNode(lval)) {
         INode *dclnode = ((NameUseNode *)lval)->dclnode;
         if (dclnode->tag == FnDclTag)
             return ((FnDclNode*)dclnode)->llvmvar;
         return ((VarDclNode*)dclnode)->llvmvar;
     }
+    switch (lval->tag) {
     case DerefTag:
         return genlExpr(gen, ((StarNode *)lval)->vtexp);
     case ArrIndexTag:
@@ -882,7 +881,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
     case FldAccessTag:
     {
         FnCallNode *fncall = (FnCallNode *)lval;
-        if (fncall->methfld->tag == MbrNameUseTag) {
+        if (isNameUseNode(fncall->methfld)) {
             FieldDclNode *flddcl = (FieldDclNode*)((NameUseNode*)fncall->methfld)->dclnode;
             // Under the nullable-pointer optimization the variant has no struct
             // at all: its one nameable field is the whole value, and the tag
@@ -942,7 +941,7 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
 }
 
 void genlStore(GenState *gen, INode *lval, LLVMValueRef rval) {
-    if (lval->tag == VarNameUseTag && ((NameUseNode*)lval)->namesym == anonName)
+    if (isNameUseNode(lval) && isExpNode(lval) && ((NameUseNode*)lval)->namesym == anonName)
         return;
     LLVMValueRef lvalptr = genlAddr(gen, lval);
     RefNode *reftype = (RefNode *)((IExpNode*)lval)->vtype;
@@ -960,6 +959,20 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         LLVMValueRef val = LLVMMetadataAsValue(gen->context, loc);
         LLVMSetCurrentDebugLocation(gen->builder, val);
     }
+    // A value name loads its variable, or recurses into its constant's value
+    if (isNameUseNode(termnode) && isExpNode(termnode)) {
+        VarDclNode *vardcl = (VarDclNode*)((NameUseNode *)termnode)->dclnode;
+        if (vardcl->tag == VarDclTag)
+            return LLVMBuildLoad(gen->builder, vardcl->llvmvar, &vardcl->namesym->namestr);
+        else if (vardcl->tag == ConstDclTag) {
+            ConstDclNode *constdcl = (ConstDclNode*)vardcl;
+            return genlExpr(gen, constdcl->value);
+        }
+        else {
+            errorUnreachable(termnode, "a name use bound to a declaration that is neither a variable nor a constant");
+            return NULL;
+        }
+    }
     switch (termnode->tag) {
     case NilLitTag:
         return LLVMGetUndef(gen->emptyStructType);
@@ -974,7 +987,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         if (lit->dimens->used > 0) {
             // When array size specified for fill, use that
             INode *dimnode = nodesGet(lit->dimens, 0);
-            while (dimnode->tag == VarNameUseTag)
+            while (isNameUseNode(dimnode) && isExpNode(dimnode))
                 dimnode = ((ConstDclNode*)((NameUseNode*)dimnode)->dclnode)->value;
             assert(dimnode->tag == ULitTag);
             size = (uint32_t)((ULitNode*)dimnode)->uintlit;
@@ -1060,20 +1073,6 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     {
         return LLVMBuildLoad(gen->builder, genlAddr(gen, termnode), "");
     }
-    case VarNameUseTag:
-    {
-        VarDclNode *vardcl = (VarDclNode*)((NameUseNode *)termnode)->dclnode;
-        if (vardcl->tag == VarDclTag)
-            return LLVMBuildLoad(gen->builder, vardcl->llvmvar, &vardcl->namesym->namestr);
-        else if (vardcl->tag == ConstDclTag) {
-            ConstDclNode *constdcl = (ConstDclNode*)vardcl;
-            return genlExpr(gen, constdcl->value);
-        }
-        else {
-            errorUnreachable(termnode, "a name use bound to a declaration that is neither a variable nor a constant");
-            return NULL;
-        }
-    }
     case AliasTag:
     {
         AliasNode *anode = (AliasNode*)termnode;
@@ -1122,7 +1121,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     case FldAccessTag:
     {
         FnCallNode *fncall = (FnCallNode *)termnode;
-        if (fncall->methfld->tag == MbrNameUseTag) {
+        if (isNameUseNode(fncall->methfld)) {
             FieldDclNode *flddcl = (FieldDclNode*)((NameUseNode*)fncall->methfld)->dclnode;
             INode *objtyp = iexpGetTypeDcl(fncall->objfn);
             // See genlAddr: a nullable-pointer variant's field is the value

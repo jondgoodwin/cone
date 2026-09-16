@@ -132,10 +132,10 @@ everywhere, and a move in one arm of an `if` poisons both.
 
 ## Generation
 
-`genlExpr`'s `VarNameUseTag` case loads `dclnode->llvmvar` — which is a
-**pointer to** the value, since every local and parameter is an alloca. A
-`ConstDclTag` recurses into the constant's value instead. `genlAddr` returns
-`llvmvar` itself without the load.
+`genlExpr` recognizes a value name (`isNameUseNode` and `isExpNode`) ahead of
+its switch and loads `dclnode->llvmvar` — which is a **pointer to** the value,
+since every local and parameter is an alloca. A `ConstDclTag` recurses into the
+constant's value instead. `genlAddr` returns `llvmvar` itself without the load.
 
 That one-level difference between `genlExpr` and `genlAddr` on the same node is
 the most common way to be off by an indirection here.
