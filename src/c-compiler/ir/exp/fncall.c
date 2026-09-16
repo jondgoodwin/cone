@@ -365,13 +365,17 @@ int fnCallLowerMethod(FnCallNode *callnode) {
         return 0;
     }
 
-    // Visibility is checked against the spelling the caller actually used.
-    // A public overload name may therefore select a private concrete candidate.
-    if (methsym->namestr == '_'
+    // Visibility is that of the binding the caller's name reaches: a method's
+    // DclPrivate bit, or the spelling of a field or an overload name. A public
+    // overload name may therefore select a private concrete candidate. A name
+    // that binds nothing has only its spelling, and is still refused as private
+    // before it is reported missing.
+    INode *foundnode = iNsTypeFindFnField((INsTypeNode*)objdereftype, methsym);
+    int isprivate = foundnode ? inodeIsPrivate(foundnode) : nameSpellsPrivate(methsym);
+    if (isprivate
         && !(obj->tag==VarNameUseTag && ((VarDclNode*)((NameUseNode*)obj)->dclnode)->namesym == selfName)) {
         errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/field `%s`.", &methsym->namestr);
     }
-    INode *foundnode = iNsTypeFindFnField((INsTypeNode*)objdereftype, methsym);
     if (!foundnode
         || !(foundnode->tag == FnDclTag || foundnode->tag == FnOverloadDclTag || foundnode->tag == FieldDclTag)
         || !(foundnode->flags & FlagMethFld)) {

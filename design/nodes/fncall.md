@@ -115,7 +115,7 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
 ### Selecting a candidate
 
 `fnCallLowerMethod`: look the name up in the receiver's namespace, check
-visibility against **the spelling the caller used**, then `iNsTypeFindMethod`,
+the visibility of **the binding the name reaches** (`inodeIsPrivate`), then `iNsTypeFindMethod`,
 which tests every candidate with `fnSigViableCall` and **alters nothing**. One
 viable candidate is a match; two are `OverloadAmbiguous`. There is no ranking.
 
