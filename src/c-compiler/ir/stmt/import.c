@@ -46,7 +46,16 @@ void importNameRes(NameResState *pstate, ImportNode *node) {
     for (nodesFor(sourcemod->nodes, cnt, nodesp)) {
         if (!isNamedNode(*nodesp) || inodeIsPrivate(*nodesp))
             continue;
-        modAddNamedNode(targetmod, inodeGetName(*nodesp), *nodesp);
+        // A module's nodes are not all things a source named. An anonymous
+        // function is lifted here while parsing so that it is generated, and it
+        // carries no name at all -- there is nothing for an importer to fold,
+        // and handing that NULL to the namespace crashed the compile of any file
+        // wildcard-importing a module that contained one. It is reached through
+        // the reference the source wrote, which travels with the expression.
+        Name *name = inodeGetName(*nodesp);
+        if (name == NULL)
+            continue;
+        modAddNamedNode(targetmod, name, *nodesp);
     }
 }
 

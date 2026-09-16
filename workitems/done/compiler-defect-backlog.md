@@ -350,8 +350,10 @@ initializer, as either operand of an operator, as an argument, as what a
 function returns, and as the value a block hands back."
 
 Nothing here was scheduled, so it was closed by other work rather than by a fix
-aimed at it. **No scenario pins it**, which is the weaker arrangement this page
-warns about elsewhere: it passes today and nothing would say so if it stopped.
+aimed at it. It is pinned: `generic-macro`'s `everyValuePosition` walks every
+position a value may be written in, and its comment names the left operand, the
+parenthesised left operand and the final statement as the ones that used to be
+rejected.
 
 **Status: fixed, and it was three positions in two places, not two in one.**
 `refmacro.html` turned out to document only `macro max[a, b]` and never to
