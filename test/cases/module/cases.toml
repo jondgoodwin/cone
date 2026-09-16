@@ -25,11 +25,6 @@
 # - Selective import, 'import mod::name'. The parser accepts '::' only before
 #   '*', so this form is rejected as a malformed statement rather than resolved.
 #   Asserting today's rejection would pin a placeholder.
-# - A wildcard import naming a private member unqualified, 'import mod::*' and
-#   then '_privateFn(...)'. The fold no longer carries private names across, so
-#   this is an ordinary ErrorUnkName and would only re-assert what notFolded
-#   already establishes in module-nameres. The qualified form, which the fold
-#   cannot filter, is asserted there as ErrorNotPublic.
 # - A name-fold clash between two wildcard imports. It is diagnosed, but both
 #   diagnostics are attributed to a source module and one of them carries the
 #   wrong file url, so a scenario built on it would pin a reporting bug.
@@ -37,6 +32,7 @@
 support = ["moduleinc.cone", "modulesub.cone", "moduleeof.cone",
            "moduleprov.cone", "moduleprov2.cone", "modulenoname.cone",
            "modulesyms.cone", "modulecyc.cone", "modulex_y.cone", "modulex.cone",
+           "moduletransit.cone", "modulelate.cone", "moduleearly.cone",
            "modulemacro.cone"]
 
 # -------- success --------
@@ -131,6 +127,24 @@ tags = ["parse", "nameres", "typecheck", "genllvm"]
 # A qualified call reaches the same namespaced concrete symbol a folded one
 # does, so the importer declares it, and the qualifier itself leaves nothing
 # behind.
+# A qualified global is the same external declaration a fold reaches, and a
+# qualified type name lowers to the type itself: the LLVM type is named after
+# the struct alone, and the root fn that takes one is declared over it. A
+# qualifier is a way of finding a declaration, never part of what it lowers to.
+[[scenario.module-qualified.check]]
+name = "qualified-global-lowers-to-the-declaration"
+target = "symbols"
+contains = [
+  "external global modulesyms::shared",
+  "external constant modulesyms::fixed",
+]
+
+[[scenario.module-qualified.check]]
+name = "qualified-type-name-is-the-type"
+target = "preir"
+contains = ["%Gadget = type", "@gadgetOf(%Gadget"]
+excludes = ["modulesyms_Gadget", '"modulesyms::Gadget"']
+
 [[scenario.module-qualified.check]]
 name = "qualified-call-lowers-to-namespaced-symbol"
 target = "symbols"
@@ -150,6 +164,36 @@ tags = ["parse", "nameres", "typecheck", "genllvm"]
 name = "two-qualifier-call-lowers-to-the-static-function"
 target = "symbols"
 contains = ["declare modulesyms::Gadget::make"]
+
+# -------- the load-order trio --------
+#
+# Three scenarios reach one name, 'moduletransit::plain', which moduletransit
+# holds only by folding modulesub. Whether the qualifier can see it depends
+# today on whether the asking module was loaded before or after moduletransit:
+# the root and moduleearly (loaded first) are refused, modulelate (loaded
+# after) resolves. module-nameres-transit.cone carries the explanation and the
+# statement that this is a known defect pinned on purpose; the other two are
+# its controls, and a fix changes all three together.
+
+[scenario.module-transit]
+category = "compile"
+description = "A folded name reached through its module's qualifier from a module loaded after it, which resolves"
+tags = ["parse", "nameres", "typecheck", "genllvm"]
+
+# What the root names lowers to the declaring modules' symbols, and the name
+# modulelate reached through 'moduletransit::' is declared under the module
+# that declares it -- a fold binds a name, it declares nothing, so nothing is
+# spelled after moduletransit for it or after modulelate.
+[[scenario.module-transit.check]]
+name = "transit-name-declares-under-its-declaring-module"
+target = "symbols"
+contains = [
+  "declare modulelate::viaMid",
+  "declare moduletransit::midOwn",
+  "declare modulesub::plain",
+  "declare modulesub::scaleInt",
+]
+excludes = ["moduletransit::plain", "moduletransit::scale", "modulelate::plain"]
 
 # -------- symbol kinds --------
 #
@@ -325,9 +369,34 @@ diagnostics = 1
 
 [scenario.module-nameres]
 category = "reject"
-description = "Module qualifiers and imported names that resolve to nothing, or to something private"
+description = "Module and type qualifiers and imported names that resolve to nothing, or to something private"
 tags = ["nameres"]
-diagnostics = 5
+diagnostics = 7
+
+# Once left out as re-asserting what notFolded establishes; pinned now because
+# a fold that ran and a fold that never happened are two different reasons for
+# one code, and the classification refactor and the transit rule both touch
+# what a fold carries across.
+[scenario.module-nameres-fold]
+category = "reject"
+description = "Private names a wildcard import does not fold: a function, an overload name and its candidate"
+tags = ["nameres"]
+diagnostics = 3
+
+# The refused two-thirds of the load-order trio (see module-transit above).
+[scenario.module-nameres-transit]
+category = "reject"
+description = "A folded name reached through its module's qualifier from the root, which loads first and is refused"
+tags = ["nameres"]
+diagnostics = 2
+
+# Its one diagnostic is reported against moduleearly.cone, so the annotation
+# lives there and this file has none.
+[scenario.module-nameres-transit-early]
+category = "reject"
+description = "The same reach from a module loaded before the folding one, refused although it is not the root"
+tags = ["nameres"]
+diagnostics = 1
 
 # -------- type check stage --------
 

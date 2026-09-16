@@ -1,0 +1,42 @@
+// A name folded into a module by its wildcard import, reached from the root
+// through that module's qualifier -- and refused.
+//
+// Name-resolution stage only: this file parses cleanly, and name resolution
+// returns before type checking, so a type-check expectation here would never
+// run.
+//
+// moduletransit.cone has 'import modulesub::*', so 'plain' and the overload
+// name 'scale' are names of moduletransit -- but only once moduletransit's own
+// name resolution has run, because a wildcard fold is performed by the
+// importing module's name-resolution pass and not at parse time
+// (design/phases/name-resolution.md, section 3). Modules are resolved in the
+// order they were loaded, and the root loads first, so when this file's
+// 'moduletransit::plain' is looked up the fold has not happened and the name
+// is not there. moduletransit's own declaration, 'midOwn', is in its namespace
+// from parse time and resolves fine from the same position.
+//
+// THIS IS A KNOWN DEFECT, PINNED DELIBERATELY. The same two lines resolve
+// cleanly from a module loaded after moduletransit (modulelate.cone, compiled
+// by module-transit), and fail again from one loaded before it
+// (moduleearly.cone, compiled by module-nameres-transit-early), so what a
+// qualified name can reach depends on file load order. The fix -- a transit
+// rule that makes a folded name reachable through the qualifier whatever the
+// order -- will make this scenario fail, which is the point: it must change
+// this pin visibly, and update the three scenarios together.
+//
+// The imported modules are moduletransit.cone and, through it, modulesub.cone.
+
+import moduletransit
+
+fn foldedConcreteName() i64 {
+  moduletransit::plain(1i64)    //~ ErrorUnkName:3 "The name plain does not refer to a declared name"
+}
+
+fn foldedOverloadName() i64 {
+  moduletransit::scale(2i64)    //~ ErrorUnkName:3 "The name scale does not refer to a declared name"
+}
+
+// The module's own name is there whatever the order
+fn ownName() i64 {
+  moduletransit::midOwn(3i64)
+}
