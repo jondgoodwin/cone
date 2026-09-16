@@ -55,7 +55,6 @@ ULitNode *newULitNode(uint64_t nbr, INode *type) {
 ULitNode *newULitNodeTC(uint64_t nbr, INode *type) {
     ULitNode *lit;
     NameUseNode *typename = newNameUseNode(((NbrNode*)type)->namesym);
-    typename->tag = TypeNameUseTag;
     typename->dclnode = type;
     newNode(lit, ULitNode, ULitTag);
     lit->uintlit = nbr;
@@ -149,6 +148,6 @@ int litIsLiteral(INode* node) {
     return (node->tag == FLitTag || node->tag == ULitTag || node->tag == StringLitTag || node->tag == NilLitTag
         || (node->tag == ArrayLitTag && arrayLitIsLiteral((ArrayNode*)node))
         || (node->tag == TypeLitTag && typeLitIsLiteral((FnCallNode*)node))
-        || (node->tag == VarNameUseTag && ((NameUseNode*)node)->dclnode->tag == ConstDclTag)
+        || nameUseNames(node, ConstDclTag)
         );
 }

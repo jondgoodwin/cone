@@ -31,7 +31,7 @@ INode *cloneLifetimeDclNode(CloneState *cstate, LifetimeNode *node) {
 // Create a new lifetime use node
 INode *newLifetimeUseNode(LifetimeNode *lifedcl) {
     NameUseNode *life;
-    newNode(life, NameUseNode, TypeNameUseTag);
+    newNode(life, NameUseNode, NameUseTag);
     life->vtype = NULL;
     life->namesym = lifedcl->namesym;
     life->dclnode = (INode*)lifedcl;

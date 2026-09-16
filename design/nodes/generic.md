@@ -102,8 +102,9 @@ Two consequences that define the phase boundary:
 ### How a cloned name gets re-pointed — two independent mechanisms
 
 **Type parameters, through the global name table.** `clonePushState` hooks each
-parameter's `Name` directly to the **argument node**. `cloneNode`'s
-`GenVarUseTag` arm then reads `namesym->node` and clones it. So substitution is
+parameter's `Name` directly to the **argument node**. `cloneNode`, meeting a
+use that names a generic parameter (`nameUseNames` with `GenVarDclTag`), then
+reads `namesym->node` and clones it. So substitution is
 by *name*, through a global, at clone time — and the argument is **deep-copied
 at every use site**.
 
@@ -118,8 +119,8 @@ function's self-recursive call re-instantiate rather than point at itself.
 **Templates return early.** `fnDclTypeCheck` and `structTypeCheck` both begin
 `if (genericinfo) return;` — before the signature is checked, before the body,
 before flow. `macroTypeCheck` is empty. A template body is written against
-`GenVarUseTag` nodes standing for nothing, so every check would be a false
-diagnostic. The cost is silent acceptance — see Hazards.
+uses of generic parameters, which stand for nothing, so every check would be a
+false diagnostic. The cost is silent acceptance — see Hazards.
 
 `genericSubstitute`, from `fnCallTypeCheck` **after** the arguments are checked:
 
@@ -127,8 +128,8 @@ diagnostic. The cost is silent acceptance — see Hazards.
 2. If **any** argument is a type node, take the explicit path: `genericMemoize`,
    then check the replacement, return handled.
 3. Otherwise **infer**: build a call node of NULL slots, walk the arguments
-   against the template's parameter list, and where a parameter's type is a
-   `GenVarUseTag`, capture the argument's type by `Name`. A slot filled twice
+   against the template's parameter list, and where a parameter's type names a
+   generic parameter, capture the argument's type by `Name`. A slot filled twice
    must agree by `itypeIsSame`. Any slot still NULL is "could not infer".
 
 `genericMemoize` validates arity and that every argument is a type, then looks
@@ -159,8 +160,8 @@ instance *is* flowed: `genericInstantiate` ends with `inodeTypeCheckAny`, which
 for a declaration with `genericinfo == NULL` runs the full check including flow.
 
 A template body could not be flowed even in principle — `itypeIsMove`,
-`permGetFlags` and drop selection all read a type declaration a `GenVarUseTag`
-does not have.
+`permGetFlags` and drop selection all read a type declaration a use of a generic
+parameter does not have.
 
 ## Generation
 
@@ -186,18 +187,17 @@ are [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols".
 
 ## Hazards
 
-- **`cloneNode`'s `GenVarUseTag` arm has no guard.** It re-enters `cloneNode` on
-  a *global* whose value at type-check time need not be what name resolution
-  saw. NULL yields NULL silently; an unhandled tag kills the compile. This one
-  arm is where an unrelated defect elsewhere becomes a hard abort.
+- **`cloneNode`'s generic-parameter substitution has no guard.** It re-enters
+  `cloneNode` on a *global* whose value at type-check time need not be what name
+  resolution saw. NULL yields NULL silently; an unhandled tag kills the compile.
+  This one path is where an unrelated defect elsewhere becomes a hard abort.
 - **A clone must clear the type check marks**, or the instance silently skips
   its own check. Only four clone functions do; every other copies `flags`
   verbatim. A new declaration-bearing node kind inherits the bug.
 - **`--checktree` has the coverage exactly inverted.** It descends into
   templates, which are never type checked, and never into instances, because
   `memonodes` is not in its switch.
-- **`MacroDclNode.memonodes` is dead**, and `GenericNameTag` is assigned by
-  nothing.
+- **`MacroDclNode.memonodes` is dead.**
 
 ## What lives elsewhere
 

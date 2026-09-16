@@ -45,15 +45,9 @@ void arrayLitTypeCheckDimExp(TypeCheckState *pstate, ArrayNode *arrlit) {
         }
         INode **elemnodep = &nodesGet(arrlit->elems, 0);
         size_t dimsize = 0;
-        if (dimnode->tag != ULitTag) {
-            while (dimnode->tag == VarNameUseTag) {
-                INode *dclnode = ((NameUseNode*)dimnode)->dclnode;
-                if (dclnode->tag == ConstDclTag)
-                    dimnode = ((ConstDclNode*)dclnode)->value;
-                else
-                    break;
-            }
-        }
+        // A dimension may name a constant, whose value may name another
+        while (nameUseNames(dimnode, ConstDclTag))
+            dimnode = ((ConstDclNode*)((NameUseNode*)dimnode)->dclnode)->value;
         if (dimnode->tag == ULitTag)
             dimsize = (size_t)((ULitNode*)dimnode)->uintlit;
         if (iexpTypeCheckAny(pstate, elemnodep)) {
@@ -136,12 +130,8 @@ void arrayLitTypeCheck(TypeCheckState *pstate, ArrayNode *arrlit) {
 // caller refuses it rather than wrapping into a plausible-looking number.
 static int64_t arrayLitFillCount(ArrayNode *arrlit) {
     INode *dimnode = nodesGet(arrlit->dimens, 0);
-    while (dimnode->tag == VarNameUseTag) {
-        INode *dclnode = ((NameUseNode*)dimnode)->dclnode;
-        if (dclnode->tag != ConstDclTag)
-            return -1;
-        dimnode = ((ConstDclNode*)dclnode)->value;
-    }
+    while (nameUseNames(dimnode, ConstDclTag))
+        dimnode = ((ConstDclNode*)((NameUseNode*)dimnode)->dclnode)->value;
     if (dimnode->tag != ULitTag)
         return -1;
     uint64_t nbrelems = ((ULitNode*)dimnode)->uintlit;

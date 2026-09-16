@@ -77,7 +77,7 @@ changing it.
 
 | C file | Name/namespace capability |
 | --- | --- |
-| `src/c-compiler/ir/exp/nameuse.c` | Represents name and member uses, stores qualification paths, resolves qualified paths through module/type namespaces, resolves unqualified names through hooks, and retags uses by declaration kind. Binding a bare field name is here; **lowering it to `self.field` is `nameUseTypeCheck`'s**, because building that call node needs a type to check it against. |
+| `src/c-compiler/ir/exp/nameuse.c` | Represents name and member uses, stores qualification paths, resolves qualified paths through module/type namespaces, resolves unqualified names through hooks, and answers what a use is — type, value, macro — from the declaration it is bound to (`nameUseGroup`, `nameUseNames`). Binding a bare field name is here; **lowering it to `self.field` is `nameUseTypeCheck`'s**, because building that call node needs a type to check it against. |
 | `src/c-compiler/ir/exp/block.c` | Pushes lexical scope hooks, binds labeled lifetimes, resolves statements in declaration order, and restores outer bindings on block exit. |
 | `src/c-compiler/ir/stmt/fndcl.c` | Establishes function generic-parameter and value-parameter bindings while resolving signatures and bodies. |
 | `src/c-compiler/ir/stmt/vardcl.c` | Resolves an initializer before binding its local variable, enforces same-scope uniqueness, and permits nested shadowing through scope hooks. |
@@ -187,9 +187,9 @@ Current compiler behavior:
 - `::module::name` begins in the program's root module.
 - Qualification supports multiple components.
 - Each intermediate component must currently resolve to a module or struct-like type.
-- A resolved `NameUseNode` points directly to a heterogeneous declaration node and is retagged as a type, value, macro, or generic use according to that node's tag.
+- A resolved `NameUseNode` points directly to a heterogeneous declaration node. It keeps its one tag; whether it is a type, a value, a macro or a generic parameter is asked of that node (`nameUseGroup`, `nameUseNames`), never stamped on the use.
 
-The NameDef design instead makes lookup return a stable NameDef. A resolved reference remains one kind of `NameUse` node pointing to that definition. The definition or its IR value explicitly indicates whether it is usable as a type, runtime value, callable, macro, namespace, generic, or other semantic kind; the surrounding use validates that role. Name resolution does not retag the reference or infer its role from the numeric category of a node tag.
+The NameDef design instead makes lookup return a stable NameDef. A resolved reference remains one kind of `NameUse` node pointing to that definition — as it already does — but the definition or its IR value explicitly indicates whether it is usable as a type, runtime value, callable, macro, namespace, generic, or other semantic kind, and the surrounding use validates that role, where today the use classifies the declaration by its tag.
 
 ### Bare names inside a type
 

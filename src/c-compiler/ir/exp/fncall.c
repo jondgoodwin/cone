@@ -356,7 +356,7 @@ static void fnCallNoCandidate(INode *callnode, enum OverloadMatch status, Name *
 // (so the caller may try another way), and -1 when a diagnostic was reported.
 int fnCallLowerMethod(FnCallNode *callnode) {
     INode *obj = callnode->objfn;
-    assert(callnode->methfld->tag == MbrNameUseTag);
+    assert(isNameUseNode(callnode->methfld));
     NameUseNode *methfld = (NameUseNode*)callnode->methfld;
     Name *methsym = methfld->namesym;
 
@@ -373,7 +373,8 @@ int fnCallLowerMethod(FnCallNode *callnode) {
     INode *foundnode = iNsTypeFindFnField((INsTypeNode*)objdereftype, methsym);
     int isprivate = foundnode ? inodeIsPrivate(foundnode) : nameSpellsPrivate(methsym);
     if (isprivate
-        && !(obj->tag==VarNameUseTag && ((VarDclNode*)((NameUseNode*)obj)->dclnode)->namesym == selfName)) {
+        && !(isNameUseNode(obj) && isExpNode(obj)
+             && ((VarDclNode*)((NameUseNode*)obj)->dclnode)->namesym == selfName)) {
         errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/field `%s`.", &methsym->namestr);
     }
     if (!foundnode
@@ -389,7 +390,6 @@ int fnCallLowerMethod(FnCallNode *callnode) {
             errorMsgNode((INode*)callnode, ErrorFldArgs, "May not provide arguments for a field access");
 
         derefInject(&callnode->objfn);  // automatically deref any reference/ptr, if needed
-        methfld->tag = MbrNameUseTag;
         methfld->dclnode = foundnode;
         callnode->vtype = methfld->vtype = ((IExpNode*)foundnode)->vtype;
         callnode->tag = FldAccessTag;
@@ -438,7 +438,6 @@ int fnCallLowerMethod(FnCallNode *callnode) {
 
     // Re-purpose method's name use node into objfn, so name refers to selected method
     NameUseNode *methodrefnode = (NameUseNode*)callnode->methfld;
-    methodrefnode->tag = VarNameUseTag;
     methodrefnode->namesym = selected->namesym;
     methodrefnode->dclnode = (INode*)selected;
     methodrefnode->vtype = selected->vtype;
@@ -458,7 +457,7 @@ int fnCallLowerMethod(FnCallNode *callnode) {
 int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
     INode *obj = callnode->objfn;
     INode *objtype = iexpGetTypeDcl(obj);
-    assert(callnode->methfld->tag == MbrNameUseTag);
+    assert(isNameUseNode(callnode->methfld));
     NameUseNode *methfld = (NameUseNode*)callnode->methfld;
     Name *methsym = methfld->namesym;
 
@@ -484,7 +483,6 @@ int fnCallLowerPtrMethod(FnCallNode *callnode, INsTypeNode *methtype) {
     INode **selfp = &nodesGet(callnode->args, 0);
     INode *selftype = iexpGetTypeDcl(*selfp);
     NameUseNode *methodrefnode = (NameUseNode*)callnode->methfld;
-    methodrefnode->tag = VarNameUseTag;
     methodrefnode->namesym = selected->namesym;
     methodrefnode->dclnode = (INode*)selected;
     methodrefnode->vtype = selected->vtype;
@@ -542,7 +540,7 @@ void fnCallLowerOverloadFn(FnCallNode *node) {
 void fnCallOpAssgn(FnCallNode **nodep) {
     FnCallNode *callnode = *nodep;
     INode *objtype = iexpGetTypeDcl(callnode->objfn);
-    assert(callnode->methfld->tag == MbrNameUseTag);
+    assert(isNameUseNode(callnode->methfld));
     NameUseNode *methfld = (NameUseNode*)callnode->methfld;
     Name *methsym = methfld->namesym;
 
@@ -559,7 +557,6 @@ void fnCallOpAssgn(FnCallNode **nodep) {
     VarDclNode *tmpvar = newVarDclFull(tempName, VarDclTag, ((IExpNode*)callnode->objfn)->vtype, (INode*)immPerm, callnode->objfn);
     NameUseNode *tmpname = newNameUseNode(tempName);
     tmpname->vtype = tmpvar->vtype;
-    tmpname->tag = VarNameUseTag;
     tmpname->dclnode = (INode *)tmpvar;
     INode *derefvar = (INode *)tmpname;
     derefInject(&derefvar);
@@ -601,7 +598,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     // apart. With it set, the name is the receiver a value is expected of, and
     // it expands below like the name in any other value position; the operator
     // is then applied to what it expanded to.
-    if (node->objfn->tag == MacroNameTag && node->methfld == NULL) {
+    if (nameUseNames(node->objfn, MacroDclTag) && node->methfld == NULL) {
         macroCallTypeCheck(pstate, nodep);
         return;
     }
@@ -630,8 +627,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     // An overload name has no value of its own, so it is only legal here, naming what
     // is called. Skipping the ordinary name-use check leaves that check free to reject
     // the overload name everywhere else.
-    int calleeIsOverload = node->objfn->tag == VarNameUseTag
-        && ((NameUseNode*)node->objfn)->dclnode->tag == FnOverloadDclTag;
+    int calleeIsOverload = nameUseNames(node->objfn, FnOverloadDclTag);
     if (!calleeIsOverload)
         inodeTypeCheckAny(pstate, &node->objfn);
 
@@ -684,7 +680,6 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             node->vtype = errorType;
             return;
         }
-        nameuse->tag = VarNameUseTag;
         nameuse->vtype = ((FnDclNode*)nameuse->dclnode)->vtype;
     }
     
@@ -695,25 +690,22 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     }
 
     // If objfn is the name of a method/field, rewrite to: self.method
-    if (node->objfn->tag == VarNameUseTag
+    if (isNameUseNode(node->objfn) && isExpNode(node->objfn)
         && ((NameUseNode*)node->objfn)->dclnode->flags & FlagMethFld
         && ((NameUseNode*)node->objfn)->qualNames == NULL) {
         // Build a resolved 'self' node
         NameUseNode *selfnode = newNameUseNode(selfName);
-        selfnode->tag = VarNameUseTag;
         selfnode->dclnode = nodesGet(((FnSigNode*)pstate->fn->vtype)->parms, 0);
         selfnode->vtype = ((VarDclNode*)selfnode->dclnode)->vtype;
         // Reuse existing fncallnode if we can
         if (node->methfld == NULL) {
             node->methfld = node->objfn;
-            node->methfld->tag = MbrNameUseTag;
             node->objfn = (INode*)selfnode;
         }
         else {
             // Re-purpose objfn as self.method
             FnCallNode *fncall = newFnCallNode((INode *)selfnode, 0);
             fncall->methfld = node->objfn;
-            fncall->methfld->tag = MbrNameUseTag;
             copyNodeLex(fncall, node->objfn); // Copy lexer info into injected node in case it has errors
             node->objfn = (INode*)fncall;
             inodeTypeCheckAny(pstate, &node->objfn);
@@ -721,8 +713,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     }
 
     // A call whose callee names an overload set selects its one viable candidate
-    if (node->objfn->tag == VarNameUseTag
-        && ((NameUseNode*)node->objfn)->dclnode->tag == FnOverloadDclTag) {
+    if (nameUseNames(node->objfn, FnOverloadDclTag)) {
         fnCallLowerOverloadFn(node);
         return;
     }

@@ -122,7 +122,6 @@ INode *parseIf(ParseState *parse) {
         BlockNode *blknode = newBlockNode();
         VarDclNode *valnode = newVarDclFull(anonName, VarDclTag, unknownType, (INode*)immPerm, NULL);
         NameUseNode *valnamenode = newNameUseNode(anonName);
-        valnamenode->tag = VarNameUseTag;
         valnamenode->dclnode = (INode*)valnode;
         nodesAdd(&blknode->stmts, (INode*)valnode);
         nodesAdd(&blknode->stmts, (INode*)ifnode);
@@ -159,7 +158,6 @@ INode *parseIf(ParseState *parse) {
             nodesAdd(&ifnode->condblk, (INode*)blknode);
             VarDclNode *valnode = newVarDclFull(anonName, VarDclTag, unknownType, (INode*)immPerm, NULL);
             NameUseNode *valnamenode = newNameUseNode(anonName);
-            valnamenode->tag = VarNameUseTag;
             valnamenode->dclnode = (INode*)valnode;
             nodesAdd(&blknode->stmts, (INode*)valnode);
             ifnode = newIfNode();
@@ -186,7 +184,6 @@ INode *parseMatch(ParseState *parse) {
     lexNextToken();
     VarDclNode *expdclnode = newVarDclNode(anonName, VarDclTag, (INode*)immPerm);
     NameUseNode *expnamenode = newNameUseNode(anonName);
-    expnamenode->tag = VarNameUseTag;
     expnamenode->dclnode = (INode*)expdclnode;
     expdclnode->value = parseSimpleExpr(parse);
 

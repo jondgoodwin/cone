@@ -1,10 +1,12 @@
-`NameUseNode` is every appearance of a name in a program. One struct, four tags,
-and the tag changes as the compiler learns what the name meant.
+`NameUseNode` is every appearance of a name in a program. One struct, one tag,
+`NameUseTag`, from the parser to generation; what the name meant is asked of the
+declaration it is bound to, never stamped on the use.
 
-**At a glance.** Built by the parser as `NameUseTag`, undecided. Name resolution
-binds `dclnode` and **retags** by the declaration's kind. Type check demands the
-declaration, reads its type, and lowers two special cases. Flow uses it as the
-one place initialization and move state are diagnosed. Generation loads.
+**At a glance.** Built by the parser, bound to nothing. Name resolution binds
+`dclnode`, and from then on `isExpNode`, `isTypeNode` and `isMetaNode` answer
+for the declaration. Type check demands the declaration, reads its type, and
+lowers two special cases. Flow uses it as the one place initialization and move
+state are diagnosed. Generation loads.
 
 *Provenance: read from source.*
 
@@ -13,23 +15,27 @@ one place initialization and move state are diagnosed. Generation loads.
 | Field | Meaning |
 | --- | --- |
 | `namesym` | the interned name — compared by pointer identity, never by string |
-| `dclnode` | the declaration it names. **NULL until name resolution**, and NULL forever for `MbrNameUseTag` until type check selects a member |
+| `dclnode` | the declaration it names. **NULL until name resolution**, and NULL for a member name until type check selects the member |
 | `qualNames` | module qualifier list for `a::b::name`, else NULL |
 | `vtype` | the declaration's type, taken during type check |
 
-Four tags, all one struct:
+One tag serves three situations, told apart by `dclnode` and by where the node
+sits:
 
-| Tag | Means | Set by |
+| A use that is | Has | Because |
 | --- | --- | --- |
-| `NameUseTag` | a name token, undecided | parser |
-| `VarNameUseTag` | resolved to a variable, function, overload set, field or constant | `nameUseNameRes` |
-| `TypeNameUseTag` | resolved to a type — **or a module**, which falls through to this by default | `nameUseNameRes` |
-| `MbrNameUseTag` | a member being applied to a value: `.field`, `.method`, an operator | parser, via `newMemberUseNode` |
+| not yet resolved | `dclnode == NULL`, and is in no group | the parser built it; name resolution has not reached it, or failed to bind it |
+| resolved | `dclnode` set; answers `isExpNode`, `isTypeNode` or `isMetaNode` for the declaration | `nameUseNameRes` bound it, or a constructor built it pre-resolved |
+| a member name — `.field`, `.method`, an operator | `dclnode == NULL` until `fnCallLowerMethod` selects the member; sits in a call's `methfld` | selecting a member needs the receiver's type |
 
-**`MbrNameUseTag` is the odd one.** It is never resolved by name resolution —
-`inodeNameRes` lists it in the do-nothing arm — because selecting a member needs
-the receiver's type. `fnCallLowerMethod` fills in its `dclnode`, and by then the
-node has usually been repurposed into the call's `objfn`.
+**A member name is a position, not a kind of node.** It is an ordinary
+`NameUseNode` that name resolution never sees — `fnCallNameRes` leaves the
+call's member slot alone, and nothing else hands one to `inodeNameRes` — and
+every reader that meets one is holding a call's `methfld` and knows it. The one
+question it can be asked before the member is selected is `isNameUseNode`, which
+tells it from the `ULitTag` a tuple index puts in the same slot. Once
+`fnCallLowerMethod` has selected the member the node is usually repurposed into
+the call's `objfn`, and answers as a value from then on.
 
 ## Constructors
 
@@ -37,7 +43,7 @@ node has usually been repurposed into the call's `objfn`.
 | --- | --- |
 | `newNameUseNode` | a parsed name |
 | `newNameUseFromLex` | the same, positioned on an existing node — for anything synthesized |
-| `newMemberUseNode` | an `MbrNameUseTag` |
+| `newMemberUseNode` | a member name, for a call's `methfld` — the same node, named for what the call site is building |
 | `newNameUseFromDclNode` | a **pre-resolved** use, `dclnode` already set |
 | `newNameUseAndDcl` | a working variable plus a use of it, for desugaring |
 | `cloneNameUseNode` | instantiation — calls `cloneDclFix` to re-point at the correspondingly cloned declaration |
@@ -51,8 +57,8 @@ node has usually been repurposed into the call's `objfn`.
 
 **Some uses arrive already resolved.** The anonymous variables desugaring
 synthesizes — `match`'s subject capture, a bound pattern's value, a lifted
-closure's reference — are built with `dclnode` set and the tag already
-`VarNameUseTag`. `nameUseNameRes` returns immediately for these.
+closure's reference — are built with `dclnode` set. `nameUseNameRes` returns
+immediately for these.
 
 ## Name resolution
 
@@ -64,19 +70,22 @@ closure's reference — are built with `dclnode` set and the tag already
   intermediate must be a module or a struct. This **bypasses the hook table**,
   so it is not shadowed by locals.
 
-Then retag by the declaration's tag: variable, function, overload set, field or
-constant → `VarNameUseTag`; macro → `MacroNameTag`; generic parameter →
-`GenVarUseTag`; **everything else, including a module, → `TypeNameUseTag`** by
-fallthrough.
+That is the whole of it: `dclnode` is set and nothing else on the node changes.
 
 ## What a use answers
 
-`isExpNode`, `isTypeNode` and `isMetaNode` do not read the tag of a name use.
-They ask `nameUseGroup`, which follows `dclnode` to the declaration at the end
-of the chain of names (`nameUseGetDcl`) and classifies that, by the same rule
-the retag uses: a value declaration → expression; a macro or generic parameter →
-meta; everything else → type. A use with no declaration yet — unresolved, or a
-`MbrNameUseTag` before type check selects the member — answers for its own tag.
+`isExpNode`, `isTypeNode` and `isMetaNode` ask `nameUseGroup`, which follows
+`dclnode` to the declaration at the end of the chain of names (`nameUseGetDcl`)
+and classifies that: a variable, function, overload set, field or constant →
+expression; a macro or generic parameter → meta; **everything else, including a
+module, → type** by fallthrough. A use bound to nothing — unresolved, or a
+member name before type check selects the member — is in no group: none of the
+three answers true.
+
+`nameUseNames(node, dcltag)` asks the sharper question a reader usually means —
+does this name a `ConstDclTag`, an `FnOverloadDclTag`, a `MacroDclTag`, a
+`GenVarDclTag` — and answers no for a node that is not a name use and for one
+bound to nothing.
 
 The use is asked rather than stamped because an alias has nothing to stamp: a
 name that resolves to a binding pointing at a declaration is whatever the
@@ -132,23 +141,23 @@ everywhere, and a move in one arm of an `if` poisons both.
 
 ## Generation
 
-`genlExpr`'s `VarNameUseTag` case loads `dclnode->llvmvar` — which is a
-**pointer to** the value, since every local and parameter is an alloca. A
-`ConstDclTag` recurses into the constant's value instead. `genlAddr` returns
-`llvmvar` itself without the load.
+`genlExpr` recognizes a value name (`isNameUseNode` and `isExpNode`) ahead of
+its switch and loads `dclnode->llvmvar` — which is a **pointer to** the value,
+since every local and parameter is an alloca. A `ConstDclTag` recurses into the
+constant's value instead. `genlAddr` returns `llvmvar` itself without the load.
 
 That one-level difference between `genlExpr` and `genlAddr` on the same node is
 the most common way to be off by an indirection here.
 
 ## Hazards
 
-- **`dclnode` is NULL for `MbrNameUseTag`** until a member is selected. Code
-  that walks name uses and dereferences `dclnode` must exclude it.
-- **A use of a module's name answers `isTypeNode` true**, and is retagged
-  `TypeNameUseTag`. `ModuleTag` is in the statement group, so `isTypeNode` is
-  false for the module itself; the use's answer is `nameUseGroup`'s fallthrough
-  for every declaration that is not a value, a macro or a generic parameter, not
-  a claim that a module is a type.
+- **`dclnode` is NULL for a member name** until the member is selected. Code
+  that walks name uses and dereferences `dclnode` must not reach into a call's
+  `methfld`; `nameUseNames` and the three group predicates are safe to ask.
+- **A use of a module's name answers `isTypeNode` true.** `ModuleTag` is in
+  the statement group, so `isTypeNode` is false for the module itself; the use's
+  answer is `nameUseGroup`'s fallthrough for every declaration that is not a
+  value, a macro or a generic parameter, not a claim that a module is a type.
 - **Names are compared by pointer**, never by string. A name built without
   `nametblFind` will never match anything.
 - **`newNameUseNode` takes the lexer's current position.** For a synthesized
@@ -162,7 +171,7 @@ the most common way to be off by an indirection here.
 
 ## What lives elsewhere
 
-- Hooking, lookup order, and the retag table: [Name Resolution](../phases/name-resolution.md)
+- Hooking, lookup order, and what the pass does retag: [Name Resolution](../phases/name-resolution.md)
 - What a name *means* — visibility, imports, overloading: [Names and Namespaces](../phases/names-and-namespaces.md)
 - Demand, circularity, and the two marks: [Type Check Phase](../phases/type-check.md)
 - Why an overload name has no value: [IR Nodes](_index.md), "FnOverloadDcl"

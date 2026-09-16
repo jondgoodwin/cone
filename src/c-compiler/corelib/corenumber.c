@@ -34,7 +34,6 @@ NbrNode *newNbrTypeNode(char *name, uint16_t typ, char bits) {
     namesym->node = (INode*)nbrtype;
 
     NameUseNode *nbrtypenode = newNameUseNode(namesym);
-    nbrtypenode->tag = TypeNameUseTag;
     nbrtypenode->dclnode = (INode*)nbrtype;
 
     // Create function signature for unary methods for this type

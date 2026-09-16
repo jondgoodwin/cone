@@ -50,7 +50,7 @@ void assignNameRes(NameResState *pstate, AssignNode *node) {
 // - rval's type must coerce to lval's type
 void assignSingleCheck(TypeCheckState *pstate, INode *lval, INode **rval) {
     // '_' named lval need not be checked. It is a placeholder that just swallows a value
-    if (lval->tag == VarNameUseTag && ((NameUseNode*)lval)->namesym == anonName)
+    if (isNameUseNode(lval) && isExpNode(lval) && ((NameUseNode*)lval)->namesym == anonName)
         return;
 
     if (iexpIsLvalError(lval) == 0) {
@@ -142,7 +142,8 @@ void assignTypeCheck(TypeCheckState *pstate, AssignNode *node) {
 // Return true if lval is anonName
 int assignlvalrtype(INode *lval, INode *rtype) {
     // '_' named lval is a placeholder that swallows (maybe drops) a value
-    if (lval->tag == VarNameUseTag && ((NameUseNode*)lval)->namesym == anonName) {
+    int lvalIsName = isNameUseNode(lval) && isExpNode(lval);
+    if (lvalIsName && ((NameUseNode*)lval)->namesym == anonName) {
         // When lval = '_' and this is an own reference, we may have a problem
         // If this assignment is supposed to return a reference, it cannot
         /*
@@ -160,13 +161,13 @@ int assignlvalrtype(INode *lval, INode *rtype) {
     INode *lvalperm;
     INode *lvalvar = iexpGetLvalInfo(lval, &lvalperm, &lvalscope);
     if (!(MayWrite & permGetFlags(lvalperm)) &&
-        (lval->tag != VarNameUseTag || ((VarDclNode*)lvalvar)->flowtempflags & VarInitialized)) {
+        (!lvalIsName || ((VarDclNode*)lvalvar)->flowtempflags & VarInitialized)) {
         errorMsgNode(lval, ErrorNoMut, "You do not have permission to modify lval");
         return 0;
     }
 
     // Mark that lval variable has valid initialized value.
-    if (lval->tag == VarNameUseTag) {
+    if (lvalIsName) {
         // Stopgap: record on this use that the variable held nothing yet, so code
         // generation does not release uninitialized storage. Flow state is a
         // running summary, so only the assignment site itself can carry this.
