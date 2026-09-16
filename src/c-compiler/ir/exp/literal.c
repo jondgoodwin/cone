@@ -114,6 +114,27 @@ void litNameRes(NameResState* pstate, IExpNode *node) {
 // Type check lit node
 void litTypeCheck(TypeCheckState* pstate, IExpNode *node, INode *expectType) {
     itypeTypeCheck(pstate, &node->vtype);
+
+    // An integer literal the source gave no suffix to becomes the integer type
+    // it is wanted as, rather than being converted to it. FlagUnkType says the
+    // i32 it was built with was newULitNode's default and never the source's
+    // choice, and iexpMatches already lets such a literal stand for any number
+    // type -- but as a conversion, and a conversion builds the constant at the
+    // default width first. Every bit above the low 32 was dropped there and the
+    // result widened back: 'mut n i64 = 9223372036854775807' stored -1, u64's
+    // maximum stored 4294967295, and i64's minimum stored 0. Adopting the type
+    // here builds the constant once, at the width it is stored at.
+    //
+    // Integer targets only. Coercion to a float is a real conversion, changing
+    // representation rather than width, and stays on the conversion path.
+    if (node->tag == ULitTag && (node->flags & FlagUnkType) && expectType != NULL
+        && expectType != unknownType && expectType != noCareType) {
+        INode *expect = itypeGetTypeDcl(expectType);
+        if (expect->tag == IntNbrTag || expect->tag == UintNbrTag) {
+            node->vtype = expect;
+            node->flags &= ~FlagUnkType;
+        }
+    }
 }
 
 // Create a new string literal node
