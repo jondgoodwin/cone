@@ -13,10 +13,12 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         return NULL;
 
     INode *node;
-    // A name use clones as the same struct, re-pointed at the cloned
-    // declaration. A generic parameter's use is the exception: it is replaced
-    // by a clone of the argument its name is hooked to, below.
-    if (isNameUseNode(nodep) && nodep->tag != GenVarUseTag) {
+    // A use of a generic parameter is replaced by a clone of the argument its
+    // name is hooked to. Every other name use clones as the same struct,
+    // re-pointed at the cloned declaration.
+    if (nameUseNames(nodep, GenVarDclTag))
+        return cloneNode(cstate, ((NameUseNode*)nodep)->namesym->node);
+    if (isNameUseNode(nodep)) {
         node = cloneNameUseNode(cstate, (NameUseNode *)nodep);
         // For traits as mixins, repoint 'Self' to the struct node
         if (cstate->selftype && ((NameUseNode*)node)->namesym == selfTypeName)
@@ -98,10 +100,6 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     case IntNbrTag:
     case FloatNbrTag:
         node = cloneNbrNode(cstate, (NbrNode *)nodep);  break; // Don't clone for now
-
-    case GenVarUseTag:
-        node = cloneNode(cstate, ((GenVarDclNode*)nodep)->namesym->node);
-        return node;
 
     case AbsenceTag:
     case UnknownTag:

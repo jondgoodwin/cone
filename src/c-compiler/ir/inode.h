@@ -77,7 +77,7 @@ typedef struct INode {
 // decides by node kind whether a statement can give a value -- a block's final
 // statement, a function's implicit return -- has to count the name as one, or
 // it is rejected before it ever gets the chance to expand.
-#define isExpOrMacroNode(node) (isExpNode(node) || (node)->tag == MacroNameTag)
+#define isExpOrMacroNode(node) (isExpNode(node) || nameUseNames((INode*)(node), MacroDclTag))
 
 // All the possible tags for a node
 enum NodeTags {
