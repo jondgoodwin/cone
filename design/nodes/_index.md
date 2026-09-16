@@ -32,8 +32,9 @@ principle of its own.
 **A node is its tag, and group membership lives in the tag's high bits**, so a
 predicate is a mask test rather than a list. ▸ **Settles** the cost of asking
 "is this an expression"; **forbids** a group whose membership cannot be encoded
-that way. Section 1 carries the two predicates that are *not* pure mask tests,
-and both exist because a node's kind changes as the compiler learns more.
+that way. Section 1 carries the exceptions: a name use answers for what it
+names rather than for itself, and two nodes are counted into a group before
+type check has replaced them.
 
 **The walks mutate through double pointers.** ▸ **Settles** that a node may be
 replaced in place by its own handler, which is what lets lowering and coercion
@@ -54,14 +55,24 @@ mask test rather than a list of tags:
 | `0x2000` | `NamedNode` | `isNamedNode` — declares a name |
 | `0x1000` | `MethodType` | `isMethodType` — a type that supports methods |
 
-**Two of these predicates are not pure mask tests, and both matter.**
-`isTypeNode` is the mask *plus* `itypeIsGenericType`, so that an unlowered
-`Box[i64]` counts as a type before type check replaces it — without which
-`*Box[i64]` reads as a dereference. `isMethodType` inherits that, being
-`isTypeNode` and the bit. Separately, `isExpOrMacroNode` counts a parameterless
-macro name as an expression: it is a meta node until type check expands it, so
-any position deciding by node kind whether a statement can give a value has to
-count it, or it is rejected before it gets the chance to expand.
+**A name use is the exception: it answers for the declaration it names.**
+`isExpNode`, `isTypeNode` and `isMetaNode` are functions (`inodeIsExp` and its
+siblings in `inode.c`), and for a `NameUseNode` — any tag `isNameUseNode`
+admits — they ask `nameUseGroup`: a variable, function, overload set, field or
+constant makes the use an expression; a macro or generic parameter makes it a
+meta node; every other declaration, a module included, makes it a type. A use
+still unresolved, and a member use until type check selects the member, has no
+declaration to ask and answers for its own tag. A use is asked rather than
+stamped so that a name reached through an alias has something to answer with.
+
+**Two more are counted into a group before type check has replaced them.**
+`isTypeNode` also counts an unlowered `Box[i64]` as a type
+(`itypeIsGenericType`) — without which `*Box[i64]` reads as a dereference.
+`isMethodType` inherits that, being `isTypeNode` and the bit. Separately,
+`isExpOrMacroNode` counts a parameterless macro name as an expression: it is a
+meta node until type check expands it, so any position deciding by node kind
+whether a statement can give a value has to count it, or it is rejected before
+it gets the chance to expand.
 
 Node structs are castable, and there are four headers, each extending the last:
 

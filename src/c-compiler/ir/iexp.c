@@ -340,9 +340,7 @@ INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
                 // flag word out of an AbsenceNode. Which permissions a field may
                 // carry, and what an unwritten one should mean, are open in
                 // workitems/permissions.md.
-                INode *fldperm = ((FieldDclNode*)flddcl)->perm;
-                if (fldperm->tag == TypeNameUseTag)
-                    fldperm = (INode*)((NameUseNode*)fldperm)->dclnode;
+                INode *fldperm = itypeGetTypeDcl(((FieldDclNode*)flddcl)->perm);
                 if (fldperm->tag == PermTag && !(permGetFlags(fldperm) & MayWrite))
                     *lvalperm = (INode*)roPerm;
             }

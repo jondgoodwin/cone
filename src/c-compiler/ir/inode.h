@@ -60,12 +60,17 @@ typedef struct INode {
 #define NamedNode  0x2000   // Node that defines a named item (not nameuse)
 #define MethodType 0x1000   // Type that supports methods
 
-// Easy checks on the kind of node it is based on high-level flags
-#define isExpNode(node) (((node)->tag & GroupMask) == ExpGroup)
-#define isTypeNode(node) (((node)->tag & GroupMask) == TypeGroup || itypeIsGenericType(node))
-#define isMetaNode(node) (((node)->tag & GroupMask) == MetaGroup)
+// Easy checks on the kind of node it is. For every node but a name use, the
+// tag is the node's characteristic and its group bits are the answer. A name use
+// stands for whatever it names, so it answers for its declaration (nameUseGroup),
+// and an unlowered instantiation of a generic type counts as a type
+// (itypeIsGenericType). See inodeIsExp and its siblings in inode.c.
+#define isExpNode(node) inodeIsExp((INode*)(node))
+#define isTypeNode(node) inodeIsType((INode*)(node))
+#define isMetaNode(node) inodeIsMeta((INode*)(node))
 #define isNamedNode(node) ((node)->tag & NamedNode)
 #define isMethodType(node) (isTypeNode(node) && ((node)->tag & MethodType))
+#define isNameUseNode(node) inodeIsNameUse((INode*)(node))
 
 // A parameterless macro's name stands for the value its body expands to, but it
 // is a meta node until type check performs that expansion. A position that
@@ -273,6 +278,15 @@ void inodePrintNL();
 void inodePrintIndent();
 void inodePrintIncr();
 void inodePrintDecr();
+
+// Is this a NameUseNode, whatever it has resolved to so far?
+int inodeIsNameUse(INode *node);
+
+// Is this node an expression, a type, or a meta node? The isExpNode,
+// isTypeNode and isMetaNode macros above are the way to ask.
+int inodeIsExp(INode *node);
+int inodeIsType(INode *node);
+int inodeIsMeta(INode *node);
 
 // Obtain name from a named node
 Name *inodeGetName(INode *node);

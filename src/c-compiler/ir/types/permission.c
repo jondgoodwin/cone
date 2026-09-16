@@ -38,26 +38,23 @@ void permPrint(PermNode *node) {
 
 // Get permission's flags
 int permGetFlags(INode *perm) {
-    if (perm->tag == TypeNameUseTag)
-        perm = (INode*)((NameUseNode*)perm)->dclnode;
+    perm = itypeGetTypeDcl(perm);
     assert(perm->tag == PermTag);
     return ((PermNode *)perm)->permflags;
 }
 
 // Are the permissions the same?
 int permIsSame(INode *node1, INode *node2) {
-    if (node1->tag == TypeNameUseTag)
-        node1 = (INode*)((NameUseNode*)node1)->dclnode;
-    if (node2->tag == TypeNameUseTag)
-        node2 = (INode*)((NameUseNode*)node2)->dclnode;
+    node1 = itypeGetTypeDcl(node1);
+    node2 = itypeGetTypeDcl(node2);
     assert(node1->tag == PermTag && node2->tag == PermTag);
     return node1 == node2;
 }
 
 // Will 'from' permission coerce to the target?
 int permMatches(INode *ito, INode *ifrom) {
-    PermNode *from = (PermNode *)((ifrom->tag == TypeNameUseTag)? (INode*)((NameUseNode*)ifrom)->dclnode : ifrom);
-    PermNode *to = (PermNode *)((ito->tag == TypeNameUseTag)? (INode*)((NameUseNode*)ito)->dclnode : ito);
+    PermNode *from = (PermNode *)itypeGetTypeDcl(ifrom);
+    PermNode *to = (PermNode *)itypeGetTypeDcl(ito);
     assert(from->tag == PermTag && to->tag == PermTag);
     if (to==from || to==opaqPerm)
         return EqMatch;

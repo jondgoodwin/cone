@@ -13,7 +13,16 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         return NULL;
 
     INode *node;
-    switch (nodep->tag) {
+    // A name use clones as the same struct, re-pointed at the cloned
+    // declaration. A generic parameter's use is the exception: it is replaced
+    // by a clone of the argument its name is hooked to, below.
+    if (isNameUseNode(nodep) && nodep->tag != GenVarUseTag) {
+        node = cloneNameUseNode(cstate, (NameUseNode *)nodep);
+        // For traits as mixins, repoint 'Self' to the struct node
+        if (cstate->selftype && ((NameUseNode*)node)->namesym == selfTypeName)
+            ((NameUseNode*)node)->dclnode = cstate->selftype;
+    }
+    else switch (nodep->tag) {
     case AssignTag:
         node = cloneAssignNode(cstate, (AssignNode *)nodep); break;
     case SwapTag:
@@ -38,19 +47,6 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         node = cloneLogicNode(cstate, (LogicNode *)nodep); break;
     case NamedValTag:
         node = cloneNamedValNode(cstate, (NamedValNode *)nodep); break;
-    case NameUseTag:
-    case MacroNameTag:
-    case GenericNameTag:
-    case VarNameUseTag:
-    case MbrNameUseTag:
-    case TypeNameUseTag: 
-    {
-        node = cloneNameUseNode(cstate, (NameUseNode *)nodep);
-        // For traits as mixins, repoint 'Self' to the struct node
-        if (cstate->selftype && ((NameUseNode*)node)->namesym == selfTypeName)
-            ((NameUseNode*)node)->dclnode = cstate->selftype;
-        break;
-    }
     case SizeofTag:
         node = cloneSizeofNode(cstate, (SizeofNode *)nodep); break;
     case VTupleTag:
