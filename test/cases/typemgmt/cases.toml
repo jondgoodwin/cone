@@ -21,13 +21,17 @@
 #   -meet      contexts that must find one type for several values
 #
 # 'typedef' is covered in typemgmt-success rather than in a scenario of its own.
-# It has no failure of its own to pin -- an alias is the type it names, so
-# every way of misusing one is a misuse of that type, already covered by the
-# reject scenarios above. Until itypeGetTypeDcl was fixed to resolve a
-# TypedefTag rather than return its unresolved typeval, any use of an alias as a
-# type crashed LLVM generation, which is why this group excluded the feature
-# entirely; the success scenario now uses an alias as a global, a parameter, a
-# return type, a local and a reference's referent.
+# An alias is the type it names, so nearly every way of misusing one is a
+# misuse of that type, already covered by the reject scenarios above. The one
+# failure it has of its own -- an alias used as a qualifier, which the
+# qualified-path walk does not follow to the struct it names -- is
+# typemgmt-nameres-alias; and an alias of a reference in a literal, the one way
+# to put a reference type before '[', is in typemgmt-typecheck-convert. Until
+# itypeGetTypeDcl was fixed to resolve a TypedefTag rather than return its
+# unresolved typeval, any use of an alias as a type crashed LLVM generation,
+# which is why this group excluded the feature entirely; the success scenario
+# now uses an alias as a global, a parameter, a return type, a local, a
+# reference's referent, and in a struct literal and a number conversion.
 #
 # Left out, with reasons:
 #
@@ -58,7 +62,25 @@ support = []
 [scenario.typemgmt-success]
 category = "run"
 description = "Coercion, conversion and reinterpretation, and the value each one produces"
-tags = ["typecheck", "genllvm", "runtime"]
+tags = ["nameres", "typecheck", "genllvm", "runtime"]
+
+# An alias never reaches generation as a type of its own. The struct it names
+# is the LLVM type, a value built through the alias is a value of that type,
+# and no alias -- of a struct, a number, a reference or an array -- leaves a
+# type named after itself.
+[[scenario.typemgmt-success.check]]
+name = "alias-lowers-to-the-type-it-names"
+target = "preir"
+contains = ["%Reading = type { i64 }"]
+excludes = ["%Sample", "%ReadingRef", "%Count = type", "%Tally = type", "%Cells = type"]
+
+# -------- name resolution stage --------
+
+[scenario.typemgmt-nameres-alias]
+category = "reject"
+description = "An alias used as a qualifier, which the qualified-path walk does not follow"
+tags = ["nameres"]
+diagnostics = 1
 
 # -------- type check stage --------
 
@@ -66,7 +88,7 @@ tags = ["typecheck", "genllvm", "runtime"]
 category = "reject"
 description = "Conversions in the 'Type[value]' form that cannot be built"
 tags = ["typecheck"]
-diagnostics = 5
+diagnostics = 6
 
 [scenario.typemgmt-typecheck-cast]
 category = "reject"
