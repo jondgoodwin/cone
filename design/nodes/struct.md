@@ -70,6 +70,15 @@ The infectious flags — `MoveType`, `ThreadBound`, `OpaqueType`, `ZeroSizeType`
 are computed from the fields during type check. `NullablePtr` is set only during
 generation.
 
+⚠ **`OpaqueType` means "no value of this may be held", and three unrelated facts
+set it**: the type was declared `@opaque`, it is a trait that is not `@samesize`,
+or one of its fields is unsized. **Only the first means there is no layout.** A
+trait's own fields are known and indexed, and a struct with an unsized field is
+refused by type check (`ErrorNoSize`, `struct-typecheck-nosize`) long before
+anything asks for its layout. `DeclaredOpaque` marks the first case at parse, and
+it is what generation asks; reading `OpaqueType` there left every trait an opaque
+LLVM struct, which is why a reference to a trait could not be lowered.
+
 ## Parse
 
 `parseStruct` arrives with much already done:

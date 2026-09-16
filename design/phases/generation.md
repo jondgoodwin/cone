@@ -161,7 +161,7 @@ and SRoA can undo it.
 | **`&[]T`** | **anonymous `{ T*, usize }`** — element pointer at 0, element **count** at 1 |
 | **`&<Trait`** | **named `{ i8*, Vtable* }`** — object as `i8*`, then vtable pointer |
 | `fn` signature | `LLVMFunctionType`, never varargs; a `&fn` is a pointer to it |
-| struct / trait | named struct, fields in declaration order |
+| struct / trait | named struct, fields in declaration order. **A trait's body is its own fields**, which are a prefix of every implementer's, so `&Trait` points at the trait's layout and reaches the fields the trait declares. Only a type declared `@opaque` is left an opaque LLVM struct, and `DeclaredOpaque` — not `OpaqueType` — is what says so: a trait carries `OpaqueType` because it has no size as a *value*, which does not mean it has no fields |
 | enum | `i8`…`i64` by `EnumNode.bytes` |
 | tuple | anonymous struct |
 | array | nested `LLVMArrayType`; each dimension must be a `ULitTag` |

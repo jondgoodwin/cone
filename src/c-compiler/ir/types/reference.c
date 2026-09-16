@@ -39,6 +39,17 @@ INode *cloneRefNode(CloneState *cstate, RefNode *node) {
     newnode->region = cloneNode(cstate, node->region);
     newnode->perm = cloneNode(cstate, node->perm);
     newnode->vtexp = cloneNode(cstate, node->vtexp);
+    // A clone refers to something the original did not: cloning is how a trait's
+    // method becomes an implementing type's and a generic's becomes an
+    // instance's, and both repoint 'Self'. typeinfo is the normalized record for
+    // the reference type, interned by what it refers to, and generation memoizes
+    // the LLVM type on it -- so a copy holding the original's answers for the
+    // original's pointee, and whichever type generated first named it for all of
+    // them. The copy carries the original's TypeChecked mark, so refTypeCheck
+    // will not revisit it; normalize here instead, against the pointee just
+    // cloned above.
+    if (newnode->typeinfo)
+        newnode->typeinfo = typetblFind((INode*)newnode, refTypeInfoAlloc);
     return (INode *)newnode;
 }
 

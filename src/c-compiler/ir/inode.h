@@ -238,6 +238,14 @@ enum NodeTags {
 #define OpaqueType         0x0004  // Type cannot be instantiated as a value (opaque struct, fn, abstract trait)
 #define ZeroSizeType       0x0008  // Type has no size in memory (void, empty struct)
 
+// OpaqueType says a value of this type may not be held, and three unrelated
+// facts set it: the type was declared @opaque, it is a trait that is not
+// @samesize, or a field of it is unsized. Only the first means there is no
+// layout to generate -- a trait's own fields are known and are a prefix of every
+// implementer's, and a struct with an unsized field is refused by type check
+// (ErrorNoSize) long before generation. So generation asks this, not OpaqueType.
+#define DeclaredOpaque     0x0100  // Type was declared @opaque: it has no fields
+
 #define TraitType          0x0010  // Is a trait (vs. struct)
 #define SameSize           0x0020  // An enumtrait, where all implementations are padded to same size
 #define HasTagField        0x0040  // A trait/struct has an enumerated field identifying the variant type

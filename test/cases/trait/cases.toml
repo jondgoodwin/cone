@@ -193,6 +193,39 @@ excludes = [
   "Beta::reading.1",
 ]
 
+# The receiver each clone takes, which the symbol above cannot show. Both clones
+# shared one receiver type until 17 Sept 2026 -- whichever implementer generated
+# first named the pointee for every reference to '&ro Meter', because a cloned
+# reference node kept the original's interned type record and the LLVM type is
+# memoized on it. Beta's clone took a '%Alpha*' and would have read 'span' off
+# the end of an Alpha.
+[[scenario.trait-inherited-defaults.check]]
+name = "each-clone-takes-its-own-receiver"
+target = "llvmir"
+contains = [
+  "define internal i32 @_CNvNt5Alpha7reading(%Alpha* %0)",
+  "define internal i32 @_CNvNt4Beta7reading(%Beta* %0)",
+]
+
+# A plain reference to a trait is compiled with the trait's own layout, which is
+# the tag field plus the fields the trait declares, and is a prefix of every
+# implementer. One function serves implementers of two different sizes, so any
+# implementer's type here would be wrong for the other -- and being the larger of
+# the two, '%Beta' would read past the end of an Alpha.
+[[scenario.trait-inherited-defaults.check]]
+name = "a-trait-reference-takes-the-traits-own-layout"
+target = "llvmir"
+contains = [
+  "%Meter = type { i8, i32 }",
+  "%Alpha = type { i8, i32 }",
+  "%Beta = type { i8, i32, i32 }",
+  "define internal i32 @baseLevel(%Meter* %0)",
+]
+excludes = [
+  "define internal i32 @baseLevel(%Alpha* %0)",
+  "define internal i32 @baseLevel(%Beta* %0)",
+]
+
 [scenario.trait-variants]
 category = "run"
 description = "A base type's abstract method implemented per variant, dispatched and then narrowed back"

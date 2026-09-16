@@ -144,7 +144,13 @@ void genlVtable(GenState *gen, Vtable *vtable) {
 
 // Generate the fields for a struct and optionally add padding bytes
 LLVMTypeRef genlStructFields(GenState *gen, LLVMTypeRef structype, StructNode *strnode, unsigned int padding) {
-    if (strnode->flags & OpaqueType)
+    // A type declared @opaque names no fields, so it stays an opaque LLVM struct
+    // and may only be pointed at. Every other type here has a layout, including
+    // a trait: a trait carries OpaqueType because it has no size as a *value*,
+    // which is a different statement from having no fields. Its own fields are
+    // known, and they are a prefix of every implementer's, which is what lets a
+    // reference to a trait reach the fields the trait declares.
+    if (strnode->flags & DeclaredOpaque)
         return structype;
 
     // Empty struct (void)

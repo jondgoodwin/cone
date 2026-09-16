@@ -191,7 +191,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
             lexNextToken();
         }
         else if (lex->toktype == OpaqueToken) {
-            strflags |= OpaqueType;
+            strflags |= OpaqueType | DeclaredOpaque;
             lexNextToken();
         }
         else

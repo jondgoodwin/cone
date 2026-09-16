@@ -21,8 +21,18 @@ measured against emitted IR.*
 | `perm` | permission — usually a `NameUseNode` wrapper built by `newPermUseNode`, not the bare `PermNode`. See Hazards |
 | `vtexp` | **the pointed-at type** on a type node; **the value expression** on an expression node |
 | `vtype` | unused on a type node; the **constructed reference type** on an expression node |
-| `typeinfo` | interned `RefTypeInfo` — the LLVM handles |
+| `typeinfo` | interned `RefTypeInfo` — the LLVM handles. **Interned by what the reference refers to**, so reference types that agree at run time share one record and generation memoizes the LLVM type on it |
 | `scope` | lifetime: 0 global, 1 parameter, 2+ local |
+
+⚠ **A cloned reference re-interns, in `cloneRefNode`.** Cloning is how a trait's
+method becomes an implementer's and a generic's becomes an instance's, and both
+repoint `Self` — so the copy refers to something the original did not, while the
+`memcpy` brings the original's `typeinfo` across. The copy also carries the
+original's `TypeChecked` mark, so `refTypeCheck` never revisits it to normalize.
+Sharing the record made the memoized LLVM type answer for the original's pointee:
+whichever implementer generated first named it for all of them, so a trait
+default's clones took one another's receiver and `fn f(m &Trait)` took an
+implementer's type. `trait-inherited-defaults` pins both.
 
 **There is no lifetime field.** `LifetimeNode` exists in `ir/types/lifetime.c`
 and `lifeMatches` is called from nowhere; only `'static` is ever built. Lifetime
