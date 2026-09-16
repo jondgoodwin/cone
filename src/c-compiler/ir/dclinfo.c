@@ -15,7 +15,8 @@ void dclInfoJoin(INode *node, INode *owner) {
     dclinfo->owner = owner;
 
     uint16_t facts = 0;
-    if (inodeIsPrivate(node))
+    // The spelling, not inodeIsPrivate: this is where the bit inodeIsPrivate reads is written
+    if (nameSpellsPrivate(inodeGetName(node)))
         facts |= DclPrivate;
     // 'extern' and 'extern system' are fn/var flags; the same bits mean other things on a type
     if (node->tag == FnDclTag || node->tag == VarDclTag) {
