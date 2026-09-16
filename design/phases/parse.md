@@ -275,7 +275,7 @@ numbers.
 | | `parseSuffix`, `parseDotCall`, `parseArgs`, `parseArg` | postfix `.`, `()`, `[]`, `++`, `--`; named values |
 | | `parseTerm`, `parseNameUse`, `parseArrayLit` | literals, parens, blocks-as-expressions, qualified names |
 | `parser/parsetype.c` | `parseType` | the type dispatcher that delegates to `parsePrefix` — principle 1 |
-| | `parseStruct` | struct/trait/union: generics, `extends`, fields, methods, tag-field synthesis |
+| | `parseStruct` | struct/trait/union: generics, `extends`, fields, methods, macros (a method when parameter 0 is `self`), tag-field synthesis |
 | | `parseFnSig` | parameters, `Self` inference, single or tuple return type |
 | | `parseVarDcl`, `parseFieldDcl`, `parseConstDcl`, `parsePerm` | the declaration forms |
 | `parser/parsefnflow.c` | `parseFn` | function/method declaration — **despite the file name, this is where declarations and control flow are parsed, not data flow analysis** |

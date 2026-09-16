@@ -42,8 +42,8 @@ positional type literals move with it.
 
 | Field | Meaning |
 | --- | --- |
-| `nodelist` | ordered **methods and static functions only** — never fields |
-| `namespace` | every named member: fields, methods, overload sets, and `Self` |
+| `nodelist` | ordered **methods, static functions and macros only** — never fields. Every walk of it that reads a `FnDclNode` — the vtable, the subtype comparison, trait default folding — skips a `MacroDclTag` first |
+| `namespace` | every named member: fields, methods, macros, overload sets, and `Self` |
 | `dropfn` | NULL until the last step of type check |
 | `dclinfo` | owner and the facts its symbols are spelled from — [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols". The owner is a module, or the trait for a variant declared inside one. Read for one thing besides naming: rejecting a variant declared outside its closed trait's module, through `dclInfoGetModule` |
 | `basetrait` | the `extends` **type expression** — a `NameUseNode`, or an `FnCallNode` for a generic base. **Not a `StructNode*`.** Two helpers unwrap it and they answer different questions: `structBaseTraitDcl` takes **one hop**, to the declaration of the trait this type extends, while `structGetBaseTrait` recurses to the **bottom-most** one. Picking the wrong one is how the infection loop hangs |

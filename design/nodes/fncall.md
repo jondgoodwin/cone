@@ -80,9 +80,13 @@ type-versus-value retags elsewhere depend on.
 
 **Stage 1 — syntax, before the callee is known.**
 Macro call (only when `methfld` is NULL — with it set, the name is a receiver
-and expands like any other value); `<-` on a value tuple, which becomes a block
-of applications; then every argument is checked; then generic substitution,
-which may finish the node entirely.
+and expands like any other value; a macro *method* named bare is first rewritten
+to `self.name`); `<-` on a value tuple, which becomes a block of applications.
+Then, for a member access by name that is not an operator, the **receiver is
+checked ahead of the arguments** and its type asked what the name binds: a macro
+method expands here, through `macroMethodTypeCheck`, with its arguments still
+unchecked, as a macro's must be. Then every argument is checked; then generic
+substitution, which may finish the node entirely.
 
 **Stage 2 — make the callee knowable.**
 Check `objfn`, *unless* it names an overload set — that one path deliberately
@@ -128,6 +132,12 @@ selection be a pure filter.
 
 A field, rather than a method, retags the node `FldAccessTag` and injects a
 deref on the receiver if needed.
+
+A private member (`_name`) is granted to a receiver that is the enclosing
+method's own `self`, and to an access that a macro method's body wrote on *its*
+`self` — the clone carries `FlagSelfRecv`, stamped by `cloneFnCallNode` at
+expansion, since by then the receiver is the use site's expression. Every other
+receiver gets `ErrorNotPublic`.
 
 Two asymmetries that are deliberate:
 

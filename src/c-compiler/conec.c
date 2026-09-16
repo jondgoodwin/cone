@@ -28,6 +28,7 @@ void doAnalysis(ConeOptions *opt, ProgramNode **pgm) {
     nstate.mod = NULL;
     nstate.typenode = NULL;
     nstate.loopblock = NULL;
+    nstate.macromethod = NULL;
     nstate.scope = 0;
     inodeNameRes(&nstate, (INode**)pgm);
     if (errors) {

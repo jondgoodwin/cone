@@ -26,6 +26,7 @@ typedef struct INsTypeNode {
 // Needed for helper functions
 typedef struct FnDclNode FnDclNode;
 typedef struct VarDclNode VarDclNode;
+typedef struct MacroDclNode MacroDclNode;
 
 // Outcome of testing every candidate a name declares against one call
 enum OverloadMatch {
@@ -43,6 +44,9 @@ void iNsTypeAddFnDict(INsTypeNode *type, FnDclNode *fnnode);
 
 // Add a function/method to type's dictionary and owned list
 void iNsTypeAddFn(INsTypeNode *type, FnDclNode *fnnode);
+
+// Add a macro to type's dictionary and owned list
+void iNsTypeAddMacro(INsTypeNode *type, MacroDclNode *macro);
 
 // Find the named node (could be method or field)
 // Return the node, if found or NULL if not found

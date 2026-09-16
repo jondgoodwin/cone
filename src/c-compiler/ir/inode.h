@@ -175,8 +175,8 @@ enum NodeTags {
 // Node-specific flags
 // *****************
 
-// VarDclTag and FnDclTag flags
-#define FlagMethFld   0x0001        // FnDcl, VarDcl: Method or field (vs. static)
+// VarDclTag, FnDclTag and MacroDclTag flags
+#define FlagMethFld   0x0001        // FnDcl, VarDcl, MacroDcl: Method or field (vs. static)
 #define FlagExtern    0x0002        // FnDcl, VarDcl: C ABI extern (no value, no mangle)
 #define FlagSystem    0x0004        // FnDcl: imported system call (+stdcall on Winx86)
 #define FlagInline    0x0008        // FnDcl: "inline" fn/method
@@ -199,6 +199,12 @@ enum NodeTags {
 // when retagged to FldAccess, ArrIndex or TypeLit -- stays in ExpGroup and is
 // neither.
 #define FlagOperator  0x0020        // FnCall: an operator application, not a named member access
+// A macro method's body reaches its receiver's members through 'self', and its
+// expansion puts the use site's own expression there. This records that the
+// member access was written on 'self', which is what lets the expansion reach a
+// private member exactly where the method it stands in for could. Set only by
+// cloneFnCallNode, during a macro method's expansion.
+#define FlagSelfRecv  0x0040        // FnCall: receiver was a macro method's 'self'
 
 #define FlagLoop      0x0001        // Block: is a Loop block
 // 'each' lowers to a 'while' whose body ends with the step that advances the loop
@@ -286,6 +292,9 @@ INode *inodeGetOwner(INode *node);
 // Determine whether a named node is marked as private
 int inodeIsDcl(INode *node);
 int inodeIsPrivate(INode *node);
+
+// Determine whether a declaration is a member reached through a receiver
+int inodeIsMember(INode *node);
 
 // Determine whether an earlier diagnostic already marked this node as bad
 int inodeIsError(INode *node);

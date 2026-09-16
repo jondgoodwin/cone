@@ -159,10 +159,14 @@ belong entirely to type check.
 
 ## 7. Diagnostics
 
-The phase owns no `ErrorCode` exclusively. It raises `ErrorUnkName` (three
-sites in `nameUseNameRes`), `ErrorNotPublic`, `ErrorDupName` (duplicate local,
-duplicate lifetime label, colliding folded import), `ErrorRetNotLast`,
-`ErrorNoLoop`, `ErrorBadElems`, `ErrorBadTerm` and `ErrorInvType`.
+The phase owns one `ErrorCode` exclusively: `ErrorBareMbr` (1076), raised by
+`nameUseNameRes` when a macro method's body names a member of its type bare —
+`NameResState.macromethod` is set for the duration of the body, and the name is
+known to be a member here, where type check would only see the wrong receiver.
+It also raises `ErrorUnkName` (three sites in `nameUseNameRes`),
+`ErrorNotPublic`, `ErrorDupName` (duplicate local, duplicate lifetime label,
+colliding folded import), `ErrorRetNotLast`, `ErrorNoLoop`, `ErrorBadElems`,
+`ErrorBadTerm` and `ErrorInvType`.
 
 **A failed lookup does not un-resolve a successful one.** On the private
 qualified-name path the declaration stays attached after the diagnostic: it is

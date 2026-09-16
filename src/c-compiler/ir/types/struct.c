@@ -74,7 +74,11 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     // rejected as a method the instance does not declare.
     nodelistInit(&newnode->nodelist, node->nodelist.avail);
     for (nodelistFor(&node->nodelist, cnt, nodesp)) {
-        iNsTypeAddFn((INsTypeNode*)newnode, (FnDclNode*)cloneNode(cstate, *nodesp));
+        INode *member = cloneNode(cstate, *nodesp);
+        if (member->tag == MacroDclTag)
+            iNsTypeAddMacro((INsTypeNode*)newnode, (MacroDclNode*)member);
+        else
+            iNsTypeAddFn((INsTypeNode*)newnode, (FnDclNode*)member);
     }
 
     cstate->selftype = svselftype;
@@ -103,8 +107,9 @@ void structPrint(StructNode *node) {
     INode **nodesp;
     uint32_t cnt;
     for (nodelistFor(&node->nodelist, cnt, nodesp)) {
-        FnDclNode *fn = (FnDclNode*)*nodesp;
-        inodeFprint(cnt == node->nodelist.used ? "fn %s" : ", fn %s", fn->namesym ? &fn->namesym->namestr : "");
+        Name *namesym = inodeGetName(*nodesp);
+        char *kind = (*nodesp)->tag == MacroDclTag ? "macro" : "fn";
+        inodeFprint(cnt == node->nodelist.used ? "%s %s" : ", %s %s", kind, namesym ? &namesym->namestr : "");
         dclInfoPrint(*nodesp);
     }
     inodeFprint("}");
@@ -532,6 +537,9 @@ void structMakeVtable(StructNode *node) {
     INode **nodesp;
     uint32_t cnt;
     for (nodelistFor(&node->nodelist, cnt, nodesp)) {
+        // A macro expands where it is used and has nothing to dispatch to
+        if ((*nodesp)->tag != FnDclTag)
+            continue;
         FnDclNode *meth = (FnDclNode *)*nodesp;
         if (meth->namesym->namestr != '_') {
             meth->vtblidx = vtblidx++;
@@ -628,6 +636,8 @@ TypeCompare structMatches(StructNode *to, INode *fromdcl, SubtypeConstraint cons
     for (nodelistFor(&to->nodelist, cnt, nodesp)) {
         // Locate the corresponding method with matching name and vtype
         // Note, we need to be flexible in matching the self parameter
+        if ((*nodesp)->tag != FnDclTag)
+            continue;
         FnDclNode *meth = (FnDclNode *)*nodesp;
         INode *frombinding = namespaceFind(&from->namespace, meth->namesym);
         if (iNsTypeFindVrefMethod(frombinding, meth) == NULL)

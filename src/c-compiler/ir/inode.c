@@ -494,6 +494,8 @@ Name *inodeGetName(INode *node) {
         return ((ConstDclNode*)node)->namesym;
     case GenVarDclTag:
         return ((GenVarDclNode *)node)->namesym;
+    case MacroDclTag:
+        return ((MacroDclNode *)node)->namesym;
 
     // Type declarations
     case LifetimeTag:
@@ -561,6 +563,24 @@ int inodeIsDcl(INode *node) {
 int inodeIsPrivate(INode *node) {
     Name *namesym = inodeGetName(node);
     return namesym && namesym->namestr == '_';
+}
+
+// Determine whether a declaration is a member reached through a receiver: a
+// field, a method, a macro method, or an overload set whose candidates are
+// methods. A static function or macro declared in a type is not one.
+int inodeIsMember(INode *node) {
+    switch (node->tag) {
+    case FieldDclTag:
+    case FnDclTag:
+    case MacroDclTag:
+        return (node->flags & FlagMethFld) != 0;
+    case FnOverloadDclTag: {
+        Nodes *overloads = ((FnOverloadDclNode*)node)->overloads;
+        return overloads->used > 0 && (nodesGet(overloads, 0)->flags & FlagMethFld) != 0;
+    }
+    default:
+        return 0;
+    }
 }
 
 // Determine whether an earlier diagnostic already marked this node as bad.

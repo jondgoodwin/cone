@@ -103,9 +103,24 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     case FloatNbrTag:
         node = cloneNbrNode(cstate, (NbrNode *)nodep);  break; // Don't clone for now
 
-    case GenVarUseTag:
-        node = cloneNode(cstate, ((GenVarDclNode*)nodep)->namesym->node);
+    case GenVarUseTag: {
+        // The parameter's name is hooked to what stands in for it. In an
+        // instantiation or expansion that is the argument, which is cloned in
+        // place of the use. In a copy of a template -- a generic type's macro,
+        // copied along with the instance's methods -- cloneMacroDclNode hooks each
+        // parameter to its own copy, and the use is copied as a use of that.
+        INode *hooked = ((GenVarDclNode*)nodep)->namesym->node;
+        if (hooked && hooked->tag == GenVarDclTag) {
+            node = cloneNameUseNode(cstate, (NameUseNode *)nodep);
+            ((NameUseNode*)node)->dclnode = hooked;
+            break;
+        }
+        node = cloneNode(cstate, hooked);
         return node;
+    }
+
+    case MacroDclTag:
+        node = cloneMacroDclNode(cstate, (MacroDclNode *)nodep); break;
 
     case AbsenceTag:
     case UnknownTag:
@@ -135,6 +150,7 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
 void clonePushState(CloneState *cstate, INode *instnode, INode *selftype, uint32_t scope, Nodes *parms, Nodes *args) {
     cstate->instnode = instnode;
     cstate->selftype = selftype;
+    cstate->selfparm = NULL;
     cstate->scope = scope;
     nametblHookPush();
 

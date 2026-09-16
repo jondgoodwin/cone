@@ -127,6 +127,7 @@ typedef struct NameResState {
     ModuleNode *mod;        // Current module
     INode *typenode;        // Current type (e.g., struct)
     BlockNode *loopblock;   // Most current loop block (or NULL)
+    INode *macromethod;     // The macro method whose body is being resolved (or NULL)
     uint16_t scope;         // The current block scope (0=global, 1=fnsig, 2+=blocks)
 } NameResState;
 

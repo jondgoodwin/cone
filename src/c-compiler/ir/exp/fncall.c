@@ -59,6 +59,11 @@ INode *cloneFnCallNode(CloneState *cstate, FnCallNode *node) {
     FnCallNode *newnode;
     newnode = memAllocBlk(sizeof(FnCallNode));
     memcpy(newnode, node, sizeof(FnCallNode));
+    // Read before the receiver is cloned, since cloning is what substitutes the
+    // use site's expression for 'self'
+    if (cstate->selfparm && node->objfn && node->objfn->tag == GenVarUseTag
+        && ((NameUseNode*)node->objfn)->dclnode == cstate->selfparm)
+        newnode->flags |= FlagSelfRecv;
     newnode->objfn = cloneNode(cstate, node->objfn);
     if (node->args)
         newnode->args = cloneNodes(cstate, node->args);
@@ -367,7 +372,9 @@ int fnCallLowerMethod(FnCallNode *callnode) {
 
     // Visibility is checked against the spelling the caller actually used.
     // A public overload name may therefore select a private concrete candidate.
-    if (methsym->namestr == '_'
+    // A member is reached through 'self': the method's own, or a macro method's,
+    // which its expansion has already replaced with the use site's receiver.
+    if (methsym->namestr == '_' && !(callnode->flags & FlagSelfRecv)
         && !(obj->tag==VarNameUseTag && ((VarDclNode*)((NameUseNode*)obj)->dclnode)->namesym == selfName)) {
         errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/field `%s`.", &methsym->namestr);
     }
@@ -610,6 +617,38 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         return;
     }
 
+    // An overload name has no value of its own, so it is only legal here, naming what
+    // is called. Skipping the ordinary name-use check leaves that check free to reject
+    // the overload name everywhere else.
+    int calleeIsOverload = node->objfn->tag == VarNameUseTag
+        && ((NameUseNode*)node->objfn)->dclnode->tag == FnOverloadDclTag;
+
+    // A member named on a receiver may be a macro method, and a macro's
+    // arguments stay unchecked until they have been substituted -- so the
+    // receiver alone is checked first, its type asked what the name binds, and
+    // only then are the arguments checked. An operator is never a macro, and
+    // keeps the order the arguments always had.
+    int objfnChecked = 0;
+    if (node->methfld && node->methfld->tag == MbrNameUseTag
+        && !(node->flags & FlagOperator) && !calleeIsOverload) {
+        inodeTypeCheckAny(pstate, &node->objfn);
+        objfnChecked = 1;
+        if (inodeIsError(node->objfn)) {
+            node->vtype = errorType;
+            return;
+        }
+        if (isExpNode(node->objfn)) {
+            INode *rcvtype = iexpGetDerefTypeDcl(node->objfn);
+            if (isMethodType(rcvtype)) {
+                INode *found = iNsTypeFindFnField((INsTypeNode*)rcvtype, ((NameUseNode*)node->methfld)->namesym);
+                if (found && found->tag == MacroDclTag && (found->flags & FlagMethFld)) {
+                    macroMethodTypeCheck(pstate, nodep, (MacroDclNode*)found);
+                    return;
+                }
+            }
+        }
+    }
+
     // Type check arguments (methfld is handled later)
     INode **argsp;
     uint32_t cnt;
@@ -623,12 +662,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     if (genericSubstitute(pstate, nodep))
         return;
 
-    // An overload name has no value of its own, so it is only legal here, naming what
-    // is called. Skipping the ordinary name-use check leaves that check free to reject
-    // the overload name everywhere else.
-    int calleeIsOverload = node->objfn->tag == VarNameUseTag
-        && ((NameUseNode*)node->objfn)->dclnode->tag == FnOverloadDclTag;
-    if (!calleeIsOverload)
+    if (!calleeIsOverload && !objfnChecked)
         inodeTypeCheckAny(pstate, &node->objfn);
 
     // A callee already reported as bad -- a generic that could not be
