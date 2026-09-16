@@ -246,6 +246,18 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                     iNsTypeAddFn((INsTypeNode*)strnode, fn);
                 }
             }
+            else if (lexIsToken(MacroToken)) {
+                // A macro is a member by the same rule as a function: it is a
+                // method when its first parameter is 'self', and the receiver
+                // stands in for that parameter when it is expanded
+                MacroDclNode *macro = parseMacro(parse);
+                if (macro->namesym != anonName) {
+                    Nodes *parms = macro->parms;
+                    if (parms->used > 0 && ((GenVarDclNode*)nodesGet(parms, 0))->namesym == selfName)
+                        macro->flags |= FlagMethFld;
+                    iNsTypeAddMacro((INsTypeNode*)strnode, macro);
+                }
+            }
             else if (lexIsToken(MixinToken)) {
                 // Handle a trait mixin, capturing it in a field-like node
                 FieldDclNode *field = newFieldDclNode(anonName, (INode*)immPerm);

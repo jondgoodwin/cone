@@ -233,8 +233,21 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
         // For non-qualified names (current module), should already be hooked in global name table
         name->dclnode = name->namesym->node;
 
-    if (!name->dclnode)
+    if (!name->dclnode) {
         errorMsgNode((INode*)name, ErrorUnkName, "The name %s does not refer to a declared name", &name->namesym->namestr);
+        return;
+    }
+
+    // In a method, a bare member name means 'self.member', and type check reaches
+    // it through the method's own receiver. A macro method's body is expanded into
+    // whichever function uses it, whose self -- if it has one -- is not this
+    // type's, so the body has to write 'self.member' itself. Refused here, where
+    // the name is known to be a member, rather than left to expand into a
+    // reference to the wrong receiver.
+    if (pstate->macromethod && name->qualNames == NULL && inodeIsMember(name->dclnode))
+        errorMsgNode((INode*)name, ErrorBareMbr,
+            "In a macro method, %s must be reached through self, as self.%s",
+            &name->namesym->namestr, &name->namesym->namestr);
 }
 
 // Handle type check for variable/function name use references

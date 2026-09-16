@@ -579,6 +579,24 @@ int inodeIsPrivate(INode *node) {
     return nameSpellsPrivate(inodeGetName(node));
 }
 
+// Determine whether a declaration is a member reached through a receiver: a
+// field, a method, a macro method, or an overload set whose candidates are
+// methods. A static function or macro declared in a type is not one.
+int inodeIsMember(INode *node) {
+    switch (node->tag) {
+    case FieldDclTag:
+    case FnDclTag:
+    case MacroDclTag:
+        return (node->flags & FlagMethFld) != 0;
+    case FnOverloadDclTag: {
+        Nodes *overloads = ((FnOverloadDclNode*)node)->overloads;
+        return overloads->used > 0 && (nodesGet(overloads, 0)->flags & FlagMethFld) != 0;
+    }
+    default:
+        return 0;
+    }
+}
+
 // Determine whether an earlier diagnostic already marked this node as bad.
 // A check that would complain about such a node has nothing new to report.
 int inodeIsError(INode *node) {

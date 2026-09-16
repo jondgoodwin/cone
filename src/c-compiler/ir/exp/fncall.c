@@ -59,6 +59,11 @@ INode *cloneFnCallNode(CloneState *cstate, FnCallNode *node) {
     FnCallNode *newnode;
     newnode = memAllocBlk(sizeof(FnCallNode));
     memcpy(newnode, node, sizeof(FnCallNode));
+    // Read before the receiver is cloned, since cloning is what substitutes the
+    // use site's expression for 'self'
+    if (cstate->selfparm && nameUseNames(node->objfn, GenVarDclTag)
+        && ((NameUseNode*)node->objfn)->dclnode == cstate->selfparm)
+        newnode->flags |= FlagSelfRecv;
     newnode->objfn = cloneNode(cstate, node->objfn);
     if (node->args)
         newnode->args = cloneNodes(cstate, node->args);
@@ -369,10 +374,12 @@ int fnCallLowerMethod(FnCallNode *callnode) {
     // DclPrivate bit, or the spelling of a field or an overload name. A public
     // overload name may therefore select a private concrete candidate. A name
     // that binds nothing has only its spelling, and is still refused as private
-    // before it is reported missing.
+    // before it is reported missing. A private member is reached through 'self':
+    // the method's own, or a macro method's, which its expansion has already
+    // replaced with the use site's receiver (FlagSelfRecv).
     INode *foundnode = iNsTypeFindFnField((INsTypeNode*)objdereftype, methsym);
     int isprivate = foundnode ? inodeIsPrivate(foundnode) : nameSpellsPrivate(methsym);
-    if (isprivate
+    if (isprivate && !(callnode->flags & FlagSelfRecv)
         && !(isNameUseNode(obj) && isExpNode(obj)
              && ((VarDclNode*)((NameUseNode*)obj)->dclnode)->namesym == selfName)) {
         errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/field `%s`.", &methsym->namestr);
@@ -611,6 +618,38 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         return;
     }
 
+    // An overload name has no value of its own, so it is only legal here, naming what
+    // is called. Skipping the ordinary name-use check leaves that check free to reject
+    // the overload name everywhere else.
+    int calleeIsOverload = nameUseNames(node->objfn, FnOverloadDclTag);
+
+    // A member named on a receiver may be a macro method, and a macro's
+    // arguments stay unchecked until they have been substituted -- so the
+    // receiver alone is checked first, its type asked what the name binds, and
+    // only then are the arguments checked. An operator is never a macro, and
+    // keeps the order the arguments always had. A member slot holding a tuple
+    // index rather than a name is not a member access by name.
+    int objfnChecked = 0;
+    if (node->methfld && isNameUseNode(node->methfld)
+        && !(node->flags & FlagOperator) && !calleeIsOverload) {
+        inodeTypeCheckAny(pstate, &node->objfn);
+        objfnChecked = 1;
+        if (inodeIsError(node->objfn)) {
+            node->vtype = errorType;
+            return;
+        }
+        if (isExpNode(node->objfn)) {
+            INode *rcvtype = iexpGetDerefTypeDcl(node->objfn);
+            if (isMethodType(rcvtype)) {
+                INode *found = iNsTypeFindFnField((INsTypeNode*)rcvtype, ((NameUseNode*)node->methfld)->namesym);
+                if (found && found->tag == MacroDclTag && (found->flags & FlagMethFld)) {
+                    macroMethodTypeCheck(pstate, nodep, (MacroDclNode*)found);
+                    return;
+                }
+            }
+        }
+    }
+
     // Type check arguments (methfld is handled later)
     INode **argsp;
     uint32_t cnt;
@@ -624,11 +663,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     if (genericSubstitute(pstate, nodep))
         return;
 
-    // An overload name has no value of its own, so it is only legal here, naming what
-    // is called. Skipping the ordinary name-use check leaves that check free to reject
-    // the overload name everywhere else.
-    int calleeIsOverload = nameUseNames(node->objfn, FnOverloadDclTag);
-    if (!calleeIsOverload)
+    if (!calleeIsOverload && !objfnChecked)
         inodeTypeCheckAny(pstate, &node->objfn);
 
     // A callee already reported as bad -- a generic that could not be

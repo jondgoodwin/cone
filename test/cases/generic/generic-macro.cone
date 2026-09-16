@@ -143,6 +143,158 @@ fn macroArgumentInstantiatesGeneric() {
   show("macro-argument-is-a-generic-call", one[max(2i64, 6i64)])
 }
 
+// -------- macros as methods --------
+
+// A macro declared inside a type is a member of it. As with a function, it is
+// a method when its first parameter is 'self': the receiver of 'x.name(args)'
+// is substituted for that parameter, the arguments for the rest, and the body
+// expands where the call was written. Everything true of a macro stays true.
+// The receiver is a piece of source substituted wherever 'self' appears, so a
+// body naming it twice evaluates it twice, and the call is written with
+// parentheses, since brackets after a member index what it names.
+
+struct Tally {
+  n i64
+  _hidden i64 = 40i64
+
+  fn _tenfold(self &) i64 {
+    self.n * 10i64
+  }
+
+  fn bump(self &mut) {
+    self.n = self.n + 1i64
+  }
+
+  // One parameter beyond self
+  macro plus[self, k] {
+    self.n + k
+  }
+
+  // No parameter beyond self: the name alone is the use, as for a
+  // parameterless macro, and an empty argument list means the same thing
+  macro doubled[self] {
+    self.n * 2i64
+  }
+
+  // 'self' twice, so the receiver is evaluated twice
+  macro twiceSelf[self] {
+    self.n + self.n
+  }
+
+  // A member reached through self is reached as the method would reach it: a
+  // private field and a private method are in reach, wherever the expansion
+  // lands
+  macro secret[self] {
+    self._hidden + self._tenfold()
+  }
+
+  // Calls a method through self, then reads a field: two statements, one value
+  macro bumped[self] {
+    self.bump()
+    self.n
+  }
+
+  // Inside a method, a bare macro method name means 'self.name', as a bare
+  // method name does, with and without arguments
+  fn viaBareNames(self &) i64 {
+    plus(100i64) + doubled
+  }
+}
+
+mut tallies = 0i64
+
+fn newTally() Tally {
+  tallies = tallies + 1i64
+  Tally[n: tallies]
+}
+
+fn macroMethodWithArgument() {
+  mut t = Tally[n: 3i64]
+  show("macro-method-argument", t.plus(4i64))
+}
+
+fn macroMethodWithoutArguments() {
+  mut t = Tally[n: 3i64]
+  show("macro-method-name-alone", t.doubled)
+  show("macro-method-empty-arguments", t.doubled())
+}
+
+fn macroMethodReceiverSubstituted() {
+  // newTally() runs twice: n is 1 then 2, so the sum is 3 and the count 2
+  show("macro-method-receiver-substituted", newTally().twiceSelf)
+  show("macro-method-receiver-evaluations", tallies)
+}
+
+fn macroMethodReachesPrivateMembers() {
+  mut t = Tally[n: 3i64]
+  show("macro-method-private-members", (&t).secret)
+}
+
+fn macroMethodCallsAMethod() {
+  mut t = Tally[n: 3i64]
+  show("macro-method-calls-a-method", (&mut t).bumped)
+}
+
+fn macroMethodNamedBareInsideMethod() {
+  mut t = Tally[n: 3i64]
+  show("macro-method-bare-inside-method", (&t).viaBareNames())
+}
+
+fn macroMethodThroughReference() {
+  mut t = Tally[n: 3i64]
+  imm r = &t
+  show("macro-method-through-reference", r.plus(1i64))
+}
+
+// A generic type's instance takes a copy of its macros along with its methods,
+// with the type argument substituted in the body, so each instance's macro
+// names the instance's type
+struct Cell[T] {
+  v T
+
+  macro get[self] {
+    self.v
+  }
+
+  macro put[self, x] {
+    self.v = x
+  }
+}
+
+fn macroMethodOnAGenericType() {
+  mut c = Cell[i64][5i64]
+  show("macro-method-generic-instance", c.get)
+  c.put(9i64)
+  show("macro-method-generic-instance-assigns", c.get)
+  mut f = Cell[f64][2.5]
+  f.put(1.5)
+  show("macro-method-generic-second-instance", i64[f.get * 2.0])
+}
+
+// A macro declared on a union is a member of the union itself -- it is not
+// copied into each variant as a method is -- so a match on the receiver inside
+// it sees the union and is exhaustive. The receiver is captured first, as the
+// reference page advises for any macro parameter used more than once.
+union Maybe {
+  struct Nothing {}
+  struct Just {value i64}
+
+  macro orElse[self, dflt] {
+    imm s = self
+    match s {
+      case imm j &Just {j.value}
+      case imm n &Nothing {dflt}
+    }
+  }
+}
+
+fn macroMethodOnAUnion() {
+  mut m Maybe = Just[11i64]
+  show("macro-method-union-variant", (&m).orElse(0i64))
+  m = Nothing[]
+  show("macro-method-union-empty-variant", (&m).orElse(-1i64))
+}
+
 fn main() i32 {
   takesNoParameters()
   everyValuePosition()
@@ -152,5 +304,14 @@ fn main() i32 {
   takesAType()
   resolvesAtDeclaration()
   macroArgumentInstantiatesGeneric()
+  macroMethodWithArgument()
+  macroMethodWithoutArguments()
+  macroMethodReceiverSubstituted()
+  macroMethodReachesPrivateMembers()
+  macroMethodCallsAMethod()
+  macroMethodNamedBareInsideMethod()
+  macroMethodThroughReference()
+  macroMethodOnAGenericType()
+  macroMethodOnAUnion()
   0i32
 }

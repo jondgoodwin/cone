@@ -59,7 +59,14 @@ sits at the same offset as `VarDclNode.namesym` and `NameUseNode.namesym`, which
 is what makes the casts in the three `*NameRes` functions safe.
 
 **`MacroDclNode`** carries `namesym`, `parms`, `body`, and a `memonodes` that is
-**dead** — macros are never memoized; every expansion is a fresh clone.
+**dead** — macros are never memoized; every expansion is a fresh clone. Declared
+inside a type it is a member of that type, listed in the type's `nodelist` and
+bound in its `namespace` beside the methods, and it carries `FlagMethFld` when
+its first parameter is `self` — the same rule that makes a `fn` a method.
+`cloneMacroDclNode` copies it along with the instance's methods when a generic
+type is instantiated, hooking each parameter to its own copy first so that the
+body's uses of them are copied as uses rather than substituted, while the
+enclosing type's parameters *are* substituted.
 
 **`CloneState`** carries `instnode` (stamped into every cloned node, and what
 `errorMsgNode` walks to print the instantiation trace), `selftype`, and `scope`.
@@ -151,6 +158,33 @@ being types, never type checked before substitution, and never memoized. That is
 what makes `twice[bump()]` call `bump()` twice, and what lets a macro parameter
 be used in type position.
 
+**A macro method expands the same way, with the receiver as the first
+argument.** `x.name(args)` reaches `macroMethodTypeCheck` from `fnCallTypeCheck`,
+which for a member access checks the receiver *before* the arguments and asks the
+receiver's type what the name binds — a macro's arguments must stay unchecked
+until substituted, so the receiver is the only thing checked ahead of the
+lookup. The receiver is inserted at the front of the argument list and
+`macroExpand` substitutes it for `self` like any other argument: a body naming
+`self` twice evaluates the receiver twice. The call is written with parentheses
+or as the bare member (`x.name`); `x.name[i]` indexes what the member names.
+Three things follow the method it stands in for. A bare `name` or `name(args)`
+inside a method of the type is rewritten to `self.name…` from the enclosing
+method's parameter 0, and where no method encloses it — a static function of the
+type — it is `ErrorUnkName`, as a bare field is. A member access the body wrote
+on `self` carries `FlagSelfRecv` on its clone (set by `cloneFnCallNode` while
+`CloneState.selfparm` names the `self` parameter), which is what lets
+`fnCallLowerMethod` grant the expansion a private member exactly where the method
+could reach it: through `self`, and nowhere else. And the body may not name a
+member bare — `nameUseNameRes` refuses it with `ErrorBareMbr` while
+`NameResState.macromethod` is set — because the expansion lands in another
+function whose `self`, if any, is not this type's. A macro without a `self`
+parameter is a static macro of the type: bound in the namespace, expanded by
+nothing today, and `x.name` on it is `ErrorNoMbr`, as a static function would
+be. A macro declared on a trait is a member of the trait alone: `structTypeCheck`
+folds only `FnDcl` defaults into implementing types and variants, so a union's
+macro is found on the union's own namespace, which is what lets a `match` on its
+receiver see the union rather than one variant.
+
 ## Flow
 
 **Templates are never flowed** — the only `blockFlow` entry point is the tail of
@@ -187,9 +221,11 @@ are [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols".
 
 ## Hazards
 
-- **`cloneNode`'s generic-parameter substitution has no guard.** It re-enters
-  `cloneNode` on a *global* whose value at type-check time need not be what name
-  resolution saw. NULL yields NULL silently; an unhandled tag kills the compile.
+- **`cloneNode`'s generic-parameter substitution re-enters `cloneNode` on a
+  *global*** — the parameter name's hooked node — whose value at type-check time
+  need not be what name resolution saw. Its one guard is for the name being
+  hooked to a `GenVarDclNode`, a template being copied, which it copies as a use.
+  Otherwise NULL yields NULL silently, and an unhandled tag kills the compile.
   This one path is where an unrelated defect elsewhere becomes a hard abort.
 - **A clone must clear the type check marks**, or the instance silently skips
   its own check. Only four clone functions do; every other copies `flags`

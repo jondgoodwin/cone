@@ -19,6 +19,9 @@ typedef struct MacroDclNode {
 // Create a new macro declaraction node
 MacroDclNode *newMacroDclNode(Name *namesym);
 
+// Deep copy a macro declaration, for a generic type's instance
+INode *cloneMacroDclNode(CloneState *cstate, MacroDclNode *node);
+
 void macroPrint(MacroDclNode *fn);
 
 // Name resolution
@@ -27,10 +30,13 @@ void macroNameRes(NameResState *pstate, MacroDclNode *node);
 // Type check generic
 void macroTypeCheck(TypeCheckState *pstate, MacroDclNode *node);
 
-// Type check generic name use
+// Expand a macro named where a value is expected
 void macroNameTypeCheck(TypeCheckState *pstate, NameUseNode **macro);
 
-// Instantiate a generic using passed arguments
+// Expand a macro called by name, substituting the arguments for its parameters
 void macroCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep);
+
+// Expand a macro method called on a receiver, which stands in for 'self'
+void macroMethodTypeCheck(TypeCheckState *pstate, FnCallNode **nodep, MacroDclNode *macro);
 
 #endif

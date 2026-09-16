@@ -350,6 +350,8 @@ void genlGlobalSyms(GenState *gen, INode *node) {
     // name holds only public candidates (fnOverloadDclAdd), and a private name
     // is filtered along with its private candidates.
     case FnOverloadDclTag:
+    // A macro expands where it is used and leaves no symbol behind
+    case MacroDclTag:
         break;
     }
 }

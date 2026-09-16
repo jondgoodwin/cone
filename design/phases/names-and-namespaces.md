@@ -116,8 +116,8 @@ Named types expose a member namespace. The documented model includes fields, met
 
 Current compiler behavior:
 
-- Structs and traits have one namespace containing fields, methods, static functions, inherited members, and `Self`.
-- A field or static function cannot collide with another member name.
+- Structs and traits have one namespace containing fields, methods, static functions, macros, inherited members, and `Self`.
+- A field, static function or macro cannot collide with another member name. A macro declared in a type is a macro method when its first parameter is `self`, by the same rule as a function; it joins no overload set, and it is not inherited from a trait.
 - Methods and static functions each declare a namespace-unique concrete name. A declaration may additionally name an overload set with `fn concrete overload shared(...)`. The concrete name binds directly to its `FnDclNode`; the overload name binds to a separate `FnOverloadDclNode` holding every candidate declared for it, including a set that currently has only one candidate. Two declarations claiming the same concrete name are a duplicate-name error, and an overload name already bound to anything other than an overload node is a collision error.
 - Every executable implementation remains a separate `FnDclNode`. The overload node is only a namespace binding, so lookup, call lowering, trait reconciliation, vtables, and code generation always record the selected concrete node.
 - A method cannot share a spelling with a field.

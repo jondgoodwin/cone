@@ -43,8 +43,8 @@ at index 0 of the arm. **`parseIf` returns the wrapping block, not the
 `parseMatch` lowers the whole construct into a block plus one `IfNode`:
 `case is T` → an `is` node, `case == v` → an `==` call, `case imm x T` → a bound
 pattern, `case <expr>` → the expression, `else` → `elseCond`. **Every arm shares
-one scrutinee node pointer**, which is what makes the exhaustiveness check below
-work.
+one scrutinee node pointer**, a use of the variable the lowering declared to hold
+the matched value.
 
 ## Name resolution
 
@@ -76,9 +76,11 @@ flow later injects wraps the already-coerced node.
 
 Given an `is` condition on a **closed** variant set — a trait with no base of
 its own, carrying `HasTagField` or `SameSize` — it checks whether every entry of
-`derived` is matched by some arm, comparing scrutinees by **pointer identity**
-(which is why `parseMatch` shares one node across arms). If they all are, and
-one of the variant tests is the **last** condition, it **overwrites that
+`derived` is matched by some arm testing **the same scrutinee**: the same node,
+or two name uses of one declaration (`ifSameScrutinee`). The second
+form is what a clone of the match presents — a generic instance's or a macro
+expansion's — since cloning copies the shared node once per arm. If they all
+are, and one of the variant tests is the **last** condition, it **overwrites that
 condition with `elseCond`**.
 
 Because `ifTypeCheck` calls this *before* testing for `elseCond`, the rewrite
@@ -124,9 +126,10 @@ may have split the block. The phi is built only when something was recorded.
   The target is fixed at the second-to-last slot, so today it can only be the
   condition currently being processed. Anything that made the target a non-final
   slot would corrupt the walk.
-- **Exhaustiveness matches the scrutinee by pointer identity.** Any lowering
-  that replaces one arm's scrutinee with a copy or a coercion silently breaks
-  detection — and it surfaces as `ErrorNoElse`, not as a defect.
+- **Exhaustiveness recognizes a scrutinee only as the shared node or as a use
+  of the lowering's variable.** A lowering that wraps one arm's scrutinee in a
+  coercion or a deref silently breaks detection — and it surfaces as
+  `ErrorNoElse`, not as a defect.
 - **`ErrorNoElse` returns with `vtype` still `unknownType`.**
 - **`ifFlow` has no join**, so conditional moves are not tracked per path.
 - **`ifRemoveReturns` calls `nodesLast` without an emptiness guard.**

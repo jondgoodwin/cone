@@ -16,9 +16,19 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     // A use of a generic parameter is replaced by a clone of the argument its
     // name is hooked to. Every other name use clones as the same struct,
     // re-pointed at the cloned declaration.
-    if (nameUseNames(nodep, GenVarDclTag))
-        return cloneNode(cstate, ((NameUseNode*)nodep)->namesym->node);
-    if (isNameUseNode(nodep)) {
+    //
+    // One exception: in a copy of a template -- a generic type's macro, copied
+    // along with the instance's methods -- cloneMacroDclNode hooks each of the
+    // macro's own parameters to its copy, and a use of one is copied as a use of
+    // that copy rather than substituted.
+    if (nameUseNames(nodep, GenVarDclTag)) {
+        INode *hooked = ((NameUseNode*)nodep)->namesym->node;
+        if (!(hooked && hooked->tag == GenVarDclTag))
+            return cloneNode(cstate, hooked);
+        node = cloneNameUseNode(cstate, (NameUseNode *)nodep);
+        ((NameUseNode*)node)->dclnode = hooked;
+    }
+    else if (isNameUseNode(nodep)) {
         node = cloneNameUseNode(cstate, (NameUseNode *)nodep);
         // For traits as mixins, repoint 'Self' to the struct node
         if (cstate->selftype && ((NameUseNode*)node)->namesym == selfTypeName)
@@ -101,6 +111,9 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
     case FloatNbrTag:
         node = cloneNbrNode(cstate, (NbrNode *)nodep);  break; // Don't clone for now
 
+    case MacroDclTag:
+        node = cloneMacroDclNode(cstate, (MacroDclNode *)nodep); break;
+
     case AbsenceTag:
     case UnknownTag:
     case BorrowRegTag:
@@ -129,6 +142,7 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
 void clonePushState(CloneState *cstate, INode *instnode, INode *selftype, uint32_t scope, Nodes *parms, Nodes *args) {
     cstate->instnode = instnode;
     cstate->selftype = selftype;
+    cstate->selfparm = NULL;
     cstate->scope = scope;
     nametblHookPush();
 

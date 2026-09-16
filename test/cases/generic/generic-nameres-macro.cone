@@ -1,0 +1,56 @@
+// What a macro method's body may not do: name a member of its type bare.
+//
+// In a method, a bare field or method name means 'self.name', and type check
+// reaches it through the method's own receiver. A macro method's body is
+// expanded into whichever function uses it, whose self -- if it has one -- is
+// not this type's, so the body has to write 'self.name' itself. It is refused
+// at name resolution, where the name is known to be a member, which is why
+// this is its own stage rather than part of generic-typecheck-macro.
+//
+// Bare names that are not members stay legal in the body: a static function of
+// the type, a global, a function, and the macro's own parameters.
+
+imm limit = 100i64
+
+fn twice(n i64) i64 {
+  n + n
+}
+
+struct Gauge {
+  level i64
+  _floor i64 = 0i64
+
+  fn reading(self &) i64 {
+    self.level
+  }
+
+  fn _hidden(self &) i64 {
+    self._floor
+  }
+
+  fn cap(n i64) i64 {
+    if n > limit {limit} else {n}
+  }
+
+  // A field, a method, a private method and another macro method, each bare
+  macro bareField[self] {
+    level                      //~ ErrorBareMbr:5 "through self"
+  }
+
+  macro bareMethod[self] {
+    reading()                  //~ ErrorBareMbr:5 "through self"
+  }
+
+  macro barePrivateMethod[self] {
+    _hidden()                  //~ ErrorBareMbr:5 "through self"
+  }
+
+  macro bareMacroMethod[self] {
+    bareField                  //~ ErrorBareMbr:5 "through self"
+  }
+
+  // Through self, and the non-members bare: nothing to report
+  macro allowed[self, extra] {
+    cap(self.level + self.reading() + self._hidden() + twice(extra) + limit)
+  }
+}

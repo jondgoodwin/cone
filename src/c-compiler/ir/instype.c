@@ -60,6 +60,17 @@ void iNsTypeAddFn(INsTypeNode *type, FnDclNode *fnnode) {
     iNsTypeAddFnDict(type, fnnode);
 }
 
+// Add a macro to type's dictionary and owned list. It shares the one namespace
+// with fields and methods, so it duplicates anything already bound there, and
+// it takes part in no overload set. A macro leaves no symbol behind, so there
+// is no owner to record.
+void iNsTypeAddMacro(INsTypeNode *type, MacroDclNode *macro) {
+    nodelistAdd(&type->nodelist, (INode*)macro);
+    if (namespaceAdd(&type->namespace, macro->namesym, (INode*)macro) != NULL)
+        errorMsgNode((INode*)macro, ErrorDupName,
+            "Duplicate name %s: a macro shares its type's namespace with fields and methods.", &macro->namesym->namestr);
+}
+
 // Find the named node (could be method or field)
 // Return the node, if found or NULL if not found
 INode *iNsTypeFindFnField(INsTypeNode *type, Name *name) {

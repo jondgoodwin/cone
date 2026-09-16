@@ -142,6 +142,9 @@ enum ErrorCode {
     // means a compiler defect, not a bad program. See errorUnreachable.
     ErrorUnreachable = 1075,    // A state the compiler had established cannot happen
 
+    // Macro methods
+    ErrorBareMbr = 1076,        // A macro method's body names a member of its type without 'self.'
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name
