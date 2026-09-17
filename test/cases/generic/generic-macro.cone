@@ -165,6 +165,14 @@ struct Tally {
     self.n = self.n + 1i64
   }
 
+  // No 'self' at all, so it belongs to the type rather than to a value of it:
+  // reached as 'Counter::WIDTH' from outside and by its bare name within, the
+  // way a static function is. Recorded as accepted-but-never-expanded, which
+  // measuring found untrue.
+  macro WIDTH {
+    7i64
+  }
+
   // One parameter beyond self
   macro plus[self, k] {
     self.n + k
@@ -199,6 +207,12 @@ struct Tally {
   fn viaBareNames(self &) i64 {
     plus(100i64) + doubled
   }
+
+  // A macro with no 'self' is reached by its bare name here too, but it is the
+  // type's rather than the receiver's: nothing is substituted into it
+  fn viaStaticMacro(self &) i64 {
+    self.n + WIDTH
+  }
 }
 
 mut tallies = 0i64
@@ -211,6 +225,14 @@ fn newTally() Tally {
 fn macroMethodWithArgument() {
   mut t = Tally[n: 3i64]
   show("macro-method-argument", t.plus(4i64))
+}
+
+// A macro of the type, not of a value: qualified from outside, bare inside a
+// method. Neither use has a receiver to substitute.
+fn staticMacroOfAType() {
+  mut t = Tally[n: 5i64]
+  show("static-macro-qualified", Tally::WIDTH)
+  show("static-macro-bare-in-method", (&t).viaStaticMacro())
 }
 
 fn macroMethodWithoutArguments() {
@@ -305,6 +327,7 @@ fn main() i32 {
   resolvesAtDeclaration()
   macroArgumentInstantiatesGeneric()
   macroMethodWithArgument()
+  staticMacroOfAType()
   macroMethodWithoutArguments()
   macroMethodReceiverSubstituted()
   macroMethodReachesPrivateMembers()
