@@ -26,10 +26,19 @@ monomorphization cheap for the compiler**, and it is where
 [Performance](../topics/performance.md)'s "generics are monomorphized" bet is
 paid for.
 
-**A template is never type checked — only its instances are.** ▸ **Settles**
-that a generic body containing an error valid for no type argument goes
-undiagnosed until instantiated, and **forbids** expecting C++-concept or
-Rust-trait-bound style checking of the template itself.
+**Instances are type checked, never the template** [differs: the author intends
+to check the template as defined; it was deferred as work, not chosen]. A generic
+body holding an error valid for no type argument goes undiagnosed until something
+instantiates it.
+
+⚠ **This is a current limitation, not a principle, and the rest of this section
+is principles.** It was written here as one — *forbidding* C++-concept and
+Rust-trait-bound style checking of the template — which is an implementation
+state promoted to a rule, the hazard `_index.md` gives as the whole reason
+`[derived]` exists. **The author has since said he expects to check templates as
+defined and sees advantages in it.** ▸ **For whoever builds it: checking a
+template requires knowing what its parameters guarantee, so it arrives with
+parameter constraints rather than ahead of them.**
 
 **Instances are reachable only through `memonodes`.** ▸ **Settles** that
 deduplication happens in the IR rather than in the linker, which is why
