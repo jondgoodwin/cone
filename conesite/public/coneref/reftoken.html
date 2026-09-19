@@ -16,11 +16,10 @@
 			The job of the lexer is to group adjacent characters together into distinct 
 			<a href="#tokens">tokens</a>, separated by 
 			<a href="#whitespace">white-space</a> and <a href="#comment">comments</a>.
-			For the most part, the compiler's grammar-driven parser only uses the tokens, 
+			The compiler's grammar-driven parser only uses the tokens,
 			and ignores all human-friendly white-space.
-			A notable exception to this is when <a href="#indent">line indentation</a>
-			is significant when processing multi-line strings,
-			and determining the end of some blocks or multi-line statements.</p>
+			The one place white-space carries meaning is inside a
+			<a href="#string">multi-line string literal</a>, whose content is what its lines hold.</p>
 
 		<h2 id="tokens">Tokens</h2>
 		<p>The type of every token is determined by its first characters:</p>
@@ -407,7 +406,8 @@ balance toReturn True _temp_ $ π `*`
 		</dl>
 		
 		<h4>Statement terminator</h4>
-		<p>The semicolon <span class="pre">;</span> is the lowest priority "operator".</p>
+		<p>The semicolon <span class="pre">;</span> ends every statement that does not end in a block.
+			See <a href="#line">lines, statements and blocks</a>.</p>
 		
 		<h3 id="eof">End-of-File</h3>
 		<p>The program code ends when it reaches a null character (U+0000), end-of-file character (U+001A) 
@@ -420,10 +420,9 @@ balance toReturn True _temp_ $ π `*`
 			Whitespace comes in two forms:</p>
 		<ul>
 		<li><b>Whitespace characters.</b> These are all the ASCII control codes (1 - 32),
-			including space, tab, new-line and carriage return. These are primarily useful
-			for fashioning a human-digestible layout to the program and separating two tokens.
-			However, spaces and tabs found at the beginning of a line can sometimes be significant
-			to determining where a statement or block ends.
+			including space, tab, new-line and carriage return. These are useful
+			for fashioning a human-digestible layout to the program and for separating two tokens,
+			and that is all they do: the indentation of a line means nothing to the compiler.
 			<p><b>Note:</b> If the program source begins with the UTF-8 byte-order mark (U+FEFF), it is ignored.
 			</p>
 		</li>
@@ -432,95 +431,52 @@ balance toReturn True _temp_ $ π `*`
 		    Cone supports both line and block comments.</li>
 		</ul>
 
-		<h3 id="indent">Significant Indentation</h3>
-		<p>The newline character separates one line from the next (carriage returns are ignored).
-			Every line's indentation is the count of all spaces or tabs found at the start of each line.
-			To reduce errors, a source program should be consistent in the indentation character it uses;
-			either use only spaces or only tabs.
-			A warning is produced when a source program uses both tabs and spaces as indentation characters.</p>
-		<p>Most of the time, a line's indentation is irrelevant to the grammar and is ignored.
-			However, there are times the parser will pay attention to indentation to
-			determine when a statement or block ends.</p>
-		
-		<h4 id="line">End-of-Statement Determination</h4>
+		<h3 id="indent">Lines, statements and blocks</h3>
+		<p id="line">The newline character separates one line from the next (carriage returns are ignored).
+			Lines are counted so that a diagnostic can name the one it is about, and that is
+			the only use the compiler has for them. A line's indentation is formatting for the
+			reader; it never decides where a statement or a block ends.</p>
 		<p>Some statements (e.g., <span class="pre">if</span>) finish with a block.
-			The rest are terminated by a semi-colon.
-			If multiple statements are found on the same line, they must be separated by semi-colons.</p>
+			Every other statement is terminated by a semicolon, and the semicolon is never
+			optional: not when the statement finishes at the end of a line, and not on the
+			last statement before a block's closing brace. Several statements may share a line,
+			each ended by its own semicolon:</p>
 <pre>
-isEmpty = true; count = repl * elements
+isEmpty = true; count = repl * elements;
 </pre>
-		<p>However, a semi-colon may be omitted when it would normally be placed at the end of a line.
-			In most cases, the parser uses grammar rules to correctly determine when one statement
-			ends and another begins, consuming as many lines as needed to finish each statement.
-			Most of the time, this works out well and accurately.
-			However, sometimes it can be grammatically ambiguous whether a statement
-			should consume the next line, as it could validly be a separate statement or part of
-			the existing one. This occurs when the follow-on line begins with any operator
+		<p>Since nothing but the semicolon ends a statement, a statement may run on across
+			as many lines as it needs, whatever the follow-on line begins with. An operator
+			that could serve as either a prefix or an infix operator
 			(such as '*', '-', '.', '?.', '&lt;-', '(', or '[')
-			that may serve as either a prefix or infix operator.</p>
+			at the start of a line is always read as continuing the statement in progress:</p>
 <pre>
 mut a = b
-*c
+  * c;       // One statement: mut a = b * c;
 </pre>
-		<p>Should this be understood to be <span class="pre">mut a = b * c</span>
-		or <span class="pre">mut a = b; *c</span>? Both are grammatically valid.</p>
-		<p>To make this determination, the compiler looks at whether the follow-on
-			line(s) are indented from the first line of the statement.
-			If so, it interprets it as a continuation of the statement.
-			If not, it interprets it as a new statement.</p>
-		<p>These rules mean the above example is considered to be two statements.
-			To make it a single statement, use indentation (which also helps people):</p>
+		<p>To write two statements instead, end the first one:</p>
 <pre>
-mut a = b
-  * c
+mut a = b;
+*c;
 </pre>
+		<p>A forgotten semicolon is reported rather than inferred. The diagnostic is placed
+			at the end of the statement the semicolon belongs to, not on the line that follows it.</p>
 
-		<h3>Blocks and Significant Indentation</h3>
-		<p>Cone, like many languages, supports the use of curly braces to delimit
-			a block consisting of multiple statements:</p>
+		<h3>Blocks</h3>
+		<p>A block is delimited by curly braces, and by nothing else:</p>
 <pre>
 if a == 0 {
-  break
+  break;
 }
 </pre>
-		<p>Some people really prefer how nicely braces visually delimit the begin and end of blocks.
-			However, for very small blocks, like this one, this approach wastes precious vertical
-			space viewable in an editor. The '}' closing brace takes up a whole line by itself.
-			And for some style guides, the '{' opening brace is also put on its own second line.
-			These wasted lines mean less of the program's logic is viewable in an editor without scrolling.
-		</p>
-		<p>For those eager to compact lines together more readably, Cone provides
-			an alternative syntax for delimiting blocks.
-			Instead of beginning the block with '{', use ':' instead.
-			This can either be followed by the block statement(s) on the same line,
-			or one or more statements indented on the following lines.</p>
-		<p>Here is the above example where the block statement follows on the same line.</p>
+		<p>A small block may sit on one line, its statements each ended by a semicolon:</p>
 <pre>
-if a == 0: break
+if a == 0 { break; }
+if onSameLine { doSomething(); doSomethingElse(); }
 </pre>
-		<p>One can also specify multiple statements for the block on the same line, 
-			separated by semicolons:</p>
-<pre>
-if onSameLine: doSomething(); doSomethingElse()
-</pre>
-		<p>The other approach is to put the block's statement(s) on follow-on lines,
-			indented from the previous line. The block ends when the indentation goes back to its
-			original amount.
-		</p>
-<pre>
-if a == 0:
-  outlier = current
-  break
-b = 5
-</pre>
-		<p>This example is equivalent to this curly-brace version:</p>
-<pre>
-if a == 0 {
-  outlier = current
-  break
-}
-b = 5
-</pre>
+		<p>Earlier versions of Cone also accepted a colon in place of the opening brace,
+			with the block's extent given by the indentation of the lines that followed.
+			That form is gone: a colon where a block should start is reported as such,
+			with the braces to write instead.</p>
 
 		<h3 id="comment">Comments</h3>
 		<p>Comments make the code's logic easier to understand and maintain.

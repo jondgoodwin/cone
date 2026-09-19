@@ -17,7 +17,7 @@
 	
 	<p>To allocate a new value, we ask a region to get it done:</p>
 <pre>
-imm nbrref = +rc-imm 5  // the 'rc' region counts references
+imm nbrref = +rc-imm 5;  // the 'rc' region counts references
 </pre>
 	<p>There are many kinds of regions, each using a different strategy for allocating memory
 		and then later safely reclaiming that memory after an object has no references that point to it.
@@ -62,11 +62,14 @@ imm nbrref = +rc-imm 5  // the 'rc' region counts references
 	    the memory for that value can be automatically finalized and freed when the reference expires.</p>
 	<p>Here is the simple definition of a single-owner region:</p>
 <pre>
-region @move so:      // @move ensures move semantics on references, i.e. no aliasing
-    fn alloc(size usize) Option[*u8]:
-	    malloc(size)  // May use any general-purpose memory allocator
-	fn free(self &amp;uni rc):
-	    free()
+region @move so {      // @move ensures move semantics on references, i.e. no aliasing
+    fn alloc(size usize) Option[*u8] {
+	    malloc(size);  // May use any general-purpose memory allocator
+    }
+	fn free(self &amp;uni rc) {
+	    free();
+	}
+}
 </pre>
 	<p>Single owner is a good choice if you are looking for:</p>
 	<ul>
@@ -103,19 +106,26 @@ region @move so:      // @move ensures move semantics on references, i.e. no ali
 		When the counter reaches 0, the object is reclaimed.</p>
 	<p>Here is the simple definition of a reference counting region, where aliasing happens automatically:</p>
 <pre>
-region rc:
-    cnt u32
-    fn alloc(size usize) Option[*u8]:
-	    malloc(size)
-	fn init(self &amp;uni rc):
-	    cnt = 1
-	fn alias(self &amp;uni rc):
-	    ++cnt
-	fn dealias(self &amp;uni rc):
-	    if (--cnt == 0)
-		  free()
-	fn free(self &amp;uni rc):
-	    free()
+region rc {
+    cnt u32;
+    fn alloc(size usize) Option[*u8] {
+	    malloc(size);
+    }
+	fn init(self &amp;uni rc) {
+	    cnt = 1;
+	}
+	fn alias(self &amp;uni rc) {
+	    ++cnt;
+	}
+	fn dealias(self &amp;uni rc) {
+	    if (--cnt == 0) {
+		  free();
+	    }
+	}
+	fn free(self &amp;uni rc) {
+	    free();
+	}
+}
 </pre>
 	<p>Variations on this algorithm may be built to support multi-threaded use (with atomics) and
 		leverage move semantics and explicit aliasing (to improve throughput).</p>
@@ -135,7 +145,7 @@ region rc:
 		<a href="refweakref.html">weak references</a> to make any cycle breakable.
 		A weak reference may be obtained from any owning reference:</p>
 <pre>
-childnode.parent = parentnoderef.weak
+childnode.parent = parentnoderef.weak;
 </pre>
 
 	<h2>Tracing Garbage Collection</h2>
@@ -195,7 +205,7 @@ childnode.parent = parentnoderef.weak
 		uses a bump pointer to carve out a new slot from the unused area.</p>
 	<p>A pool region must be created before using it to allocate values:</p>
 <pre>
-mut eventPool RcPool&lt;Event&gt;
+mut eventPool RcPool&lt;Event&gt;;
 </pre>
 	<p>This example creates a new region called <span class="pre">eventPool</span>.
 		All its allocated object have the type <span class="pre">Event</span> 
@@ -206,7 +216,7 @@ mut eventPool RcPool&lt;Event&gt;
 		An <span class="pre">SoPool</span> would use single-owner references, and so on.</p>
 	<p>Once a pool region is defined, the region may be specified to allocate a new value:</p>
 <pre>
-imm newevent = &eventPool mut Event::QuitEvent[]
+imm newevent = &amp;eventPool mut Event::QuitEvent[];
 </pre>
 	<p>Pools are a good choice if you are looking for:</p>
 	<ul>
