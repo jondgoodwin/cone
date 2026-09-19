@@ -25,13 +25,13 @@ char *stdiolib =
 "extern {fn printStr(str &[]u8); fn printCStr(str *u8); fn printFloat(a f64); fn printInt(a i64); fn printUInt(a u64); fn printChar(code u64);}\n"
 "struct IOStream{"
 "  fd i32;"
-"  fn appendStr overload `<-`(self &mut, str &[]u8) {printStr(str)}"
-"  fn appendCStr overload `<-`(self &mut, str *u8) {printCStr(str)}"
-"  fn appendInt overload `<-`(self &mut, i i64) {printInt(i)}"
-"  fn appendFloat overload `<-`(self &mut, n f64) {printFloat(n)}"
-"  fn appendUInt overload `<-`(self &mut, i u64) {printUInt(i)}"
+"  fn appendStr overload `<-`(self &mut, str &[]u8) {printStr(str);}"
+"  fn appendCStr overload `<-`(self &mut, str *u8) {printCStr(str);}"
+"  fn appendInt overload `<-`(self &mut, i i64) {printInt(i);}"
+"  fn appendFloat overload `<-`(self &mut, n f64) {printFloat(n);}"
+"  fn appendUInt overload `<-`(self &mut, i u64) {printUInt(i);}"
 "}"
-"mut print = IOStream[0]"
+"mut print = IOStream[0];"
 ;
 
 void parseGlobalStmts(ParseState *parse, ModuleNode *mod);

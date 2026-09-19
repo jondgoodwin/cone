@@ -114,6 +114,7 @@ ConstDclNode *parseConstDcl(ParseState *parse) {
     else {
         errorMsgLex(ErrorNoInit, "Must specify const value.");
     }
+    parseEndOfStatement();
 
     return constnode;
 }
