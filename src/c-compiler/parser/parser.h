@@ -71,13 +71,13 @@ TypedefNode *parseTypedef(ParseState *parse);
 void parseSkipToNextStmt();
 // Is this end-of-statement? if ';', '}', or end-of-file
 int parseIsEndOfStatement();
-// We expect optional semicolon since statement has run its course
+// Require the ';' that ends every statement not ending in a block
 void parseEndOfStatement();
-// Return true on '{' or ':'
+// Return true if a block starts here: '{', or the ':' the language no longer has
 int parseHasBlock();
-// Expect a block to start, consume its token and set lexer mode
+// Expect '{' and consume it
 void parseBlockStart();
-// Are we at end of block yet? If so, consume token and reset lexer mode
+// Are we at end of block yet? If so, consume '}'
 int parseBlockEnd();
 // Expect closing token (e.g., right parenthesis). If not found, search for it or '}' or ';'
 void parseCloseTok(uint16_t closetok);

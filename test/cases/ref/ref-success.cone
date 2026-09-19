@@ -13,170 +13,170 @@
 // fewest that can also give a defined address ordering. Nest adds one level so
 // a borrow can be shown reaching through a chain of fields.
 
-import stdio::*
+import stdio::*;
 
 struct Pair {
-  x i32
-  y i32
+  x i32;
+  y i32;
 }
 
 struct Nest {
-  pair Pair
+  pair Pair;
 }
 
 fn show(label &[]u8, n i64) {
-  printStr(label)
-  printStr(" = ")
-  printInt(n)
-  printStr("\n")
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
 }
 
 // -------- borrowing and dereference --------
 
 fn borrows() {
   // '&mut' borrows a reference that may write; '*' reads and writes through it
-  mut a = 3
-  imm rw = &mut a
-  show("read-through-mut", *rw)
-  *rw = 7
-  show("write-through-mut", a)
+  mut a = 3;
+  imm rw = &mut a;
+  show("read-through-mut", *rw);
+  *rw = 7;
+  show("write-through-mut", a);
 
   // A reference type may also be stated on the variable rather than inferred
-  imm stated &mut i32 = &mut a
-  *stated = 8
-  show("stated-ref-type", a)
+  imm stated &mut i32 = &mut a;
+  *stated = 8;
+  show("stated-ref-type", a);
 
   // Dereference is an expression like any other, so it composes
-  imm other = &a
-  show("deref-in-expression", *rw + *other)
+  imm other = &a;
+  show("deref-in-expression", *rw + *other);
 }
 
 // A reference is borrowed from a variable, and a parameter is a variable
 fn borrowParm(n i32) i32 {
-  imm r = &n
-  *r
+  imm r = &n;
+  *r;
 }
 
 fn borrowsFromParm() {
-  show("borrow-from-parm", borrowParm(21))
+  show("borrow-from-parm", borrowParm(21));
 }
 
 // -------- borrowing from a reference --------
 
 fn chained() {
-  mut a = 5
-  imm r = &mut a
+  mut a = 5;
+  imm r = &mut a;
 
   // '&*r' borrows a new reference from the one r holds
-  imm reborrowed = &*r
-  show("borrow-from-deref", *reborrowed)
+  imm reborrowed = &*r;
+  show("borrow-from-deref", *reborrowed);
 
   // A reference is itself a value, so a reference may point at one
-  imm rr = &r
-  show("ref-to-ref", **rr)
+  imm rr = &r;
+  show("ref-to-ref", **rr);
 }
 
 // -------- borrowing part of a value --------
 
 fn parts() {
-  mut p = Pair[1, 2]
+  mut p = Pair[1, 2];
 
   // A borrow applies to the whole suffixed term, so '&mut p.x' references the
   // field. Parentheses change nothing, and both forms are here because the bare
   // one used to borrow p and then take the field of that borrow -- typed as the
   // field while codegen answered with its address.
-  imm fx = &mut (p.x)
-  *fx = 10
-  show("write-through-field-ref", p.x)
+  imm fx = &mut (p.x);
+  *fx = 10;
+  show("write-through-field-ref", p.x);
 
-  mut q = Pair[1, 2]
-  imm qx = &mut q.x
-  *qx = 11
-  show("write-through-bare-field-ref", q.x)
+  mut q = Pair[1, 2];
+  imm qx = &mut q.x;
+  *qx = 11;
+  show("write-through-bare-field-ref", q.x);
 
   // The second field, so the reference is not merely the struct's own address
-  imm qy = &mut q.y
-  *qy = 12
-  show("write-through-bare-second-field-ref", q.y)
-  show("bare-field-ref-left-first-field", q.x)
+  imm qy = &mut q.y;
+  *qy = 12;
+  show("write-through-bare-second-field-ref", q.y);
+  show("bare-field-ref-left-first-field", q.x);
 
   // Field of a field, so the borrow reaches through the whole chain
-  mut n = Nest[Pair[3, 4]]
-  imm inner = &mut n.pair.y
-  *inner = 13
-  show("write-through-nested-field-ref", n.pair.y)
-  show("nested-field-ref-left-sibling", n.pair.x)
+  mut n = Nest[Pair[3, 4]];
+  imm inner = &mut n.pair.y;
+  *inner = 13;
+  show("write-through-nested-field-ref", n.pair.y);
+  show("nested-field-ref-left-sibling", n.pair.x);
 
   // A field is read and written through a reference to the whole struct, which
   // dereferences the reference on the way
-  imm pr = &mut p
-  show("read-field-through-ref", pr.y)
-  pr.y = 20
-  show("write-field-through-ref", p.y)
+  imm pr = &mut p;
+  show("read-field-through-ref", pr.y);
+  pr.y = 20;
+  show("write-field-through-ref", p.y);
 }
 
 // -------- permissions --------
 
-imm frozen = 30
-mut movable = 40
+imm frozen = 30;
+mut movable = 40;
 
-fn onlyReads(n &i32) i32 { *n }
-fn alsoWrites(n &mut i32) { *n = *n + 1 }
-fn ignoresValue(n &opaq i32) i32 { 99 }
+fn onlyReads(n &i32) i32 { *n; }
+fn alsoWrites(n &mut i32) { *n = *n + 1; }
+fn ignoresValue(n &opaq i32) i32 { 99; }
 
 fn permissions() {
-  mut source = 3
-  imm readonly = 4
+  mut source = 3;
+  imm readonly = 4;
 
   // 'ro' is the default, and may be written out
-  imm implied = &source
-  imm explicit = &ro source
-  show("default-perm-reads", *implied)
-  show("ro-perm-reads", *explicit)
+  imm implied = &source;
+  imm explicit = &ro source;
+  show("default-perm-reads", *implied);
+  show("ro-perm-reads", *explicit);
 
   // 'imm' may be borrowed from an immutable variable, 'mut' from a mutable one
-  imm immref = &imm readonly
-  imm mutref = &mut source
-  show("imm-perm-reads", *immref)
-  *mutref = 6
-  show("mut-perm-writes", source)
+  imm immref = &imm readonly;
+  imm mutref = &mut source;
+  show("imm-perm-reads", *immref);
+  *mutref = 6;
+  show("mut-perm-writes", source);
 
   // 'opaq' may be borrowed from anything, and promises to look at nothing
-  show("opaq-perm-borrows", ignoresValue(&opaq source))
+  show("opaq-perm-borrows", ignoresValue(&opaq source));
 
   // A 'mut' reference coerces to the 'ro' a reading function asks for, which
   // is what lets one function serve every permission
-  show("mut-coerces-to-ro", onlyReads(&mut source))
-  show("imm-coerces-to-ro", onlyReads(&imm readonly))
+  show("mut-coerces-to-ro", onlyReads(&mut source));
+  show("imm-coerces-to-ro", onlyReads(&imm readonly));
 
   // A 'mut' reference passes unchanged to a parameter that will write
-  alsoWrites(&mut source)
-  show("mut-passed-to-writer", source)
+  alsoWrites(&mut source);
+  show("mut-passed-to-writer", source);
 }
 
 fn globalPermissions() {
   // A global is borrowed exactly like a local, with the same permission rule
-  imm gro = &frozen
-  imm gmut = &mut movable
-  *gmut = 41
-  show("global-imm-borrow", *gro)
-  show("global-mut-borrow", movable)
+  imm gro = &frozen;
+  imm gmut = &mut movable;
+  *gmut = 41;
+  show("global-imm-borrow", *gro);
+  show("global-mut-borrow", movable);
 }
 
 // The variable's permission and the reference's permission are separate: this
 // variable may be re-pointed, and what it points at may not be written
 fn variableVersusReference() {
-  mut a = 1
-  mut b = 2
-  mut which = &a
-  show("mut-var-first-target", *which)
-  which = &b
-  show("mut-var-second-target", *which)
+  mut a = 1;
+  mut b = 2;
+  mut which = &a;
+  show("mut-var-first-target", *which);
+  which = &b;
+  show("mut-var-second-target", *which);
 
   // ... and the reverse: the variable may not be re-pointed, the value may
-  imm fixed = &mut a
-  *fixed = 100
-  show("imm-var-mut-referent", a)
+  imm fixed = &mut a;
+  *fixed = 100;
+  show("imm-var-mut-referent", a);
 }
 
 // -------- lifetime --------
@@ -184,89 +184,89 @@ fn variableVersusReference() {
 // A reference borrowed from a global has a global lifetime, so a function may
 // return one
 fn refToGlobal() &i32 {
-  &frozen
+  &frozen;
 }
 
 // A reference may also travel through a function and come back out
 fn passThrough(r &mut i32) &mut i32 {
-  r
+  r;
 }
 
 fn lifetimes() {
-  mut a = 1
-  mut outer = &a
+  mut a = 1;
+  mut outer = &a;
 
   // A reference borrowed in an inner block may be stored in a variable of that
   // same block, because the variable dies no later than what it points at
   {
-    mut inner = 2
-    imm sameBlock = &mut inner
-    *sameBlock = 3
-    show("inner-borrow-inner-store", inner)
+    mut inner = 2;
+    imm sameBlock = &mut inner;
+    *sameBlock = 3;
+    show("inner-borrow-inner-store", inner);
   }
 
   // A reference to a global carries no lifetime constraint, so it may be
   // stored in a variable that outlives every block
   {
-    outer = &frozen
+    outer = &frozen;
   }
-  show("global-borrow-outlives-block", *outer)
+  show("global-borrow-outlives-block", *outer);
 
-  show("ref-returned-from-fn", *refToGlobal())
-  imm back = passThrough(&mut a)
-  *back = 9
-  show("ref-through-fn-and-back", a)
+  show("ref-returned-from-fn", *refToGlobal());
+  imm back = passThrough(&mut a);
+  *back = 9;
+  show("ref-through-fn-and-back", a);
 }
 
 // -------- function references --------
 
-fn twice(n u32) u32 { n * 2u }
-fn thrice(n u32) u32 { n * 3u }
+fn twice(n u32) u32 { n * 2u; }
+fn thrice(n u32) u32 { n * 3u; }
 
 // A parameter's reference type spells out the signature it accepts. It is the
 // last parameter because the return type of the signature would otherwise
 // swallow the comma.
 fn applyTo(n u32, f &fn(n u32) u32) u32 {
-  f(n)
+  f(n);
 }
 
 fn fnrefs() {
   // '&' on a function name borrows a reference that can be called
-  imm fr = &twice
-  show("call-through-fnref", i64[fr(4u)])
+  imm fr = &twice;
+  show("call-through-fnref", i64[fr(4u)]);
 
   // The reference is a value: it passes to a function expecting that signature
-  show("fnref-as-argument", i64[applyTo(5u, &thrice)])
+  show("fnref-as-argument", i64[applyTo(5u, &thrice)]);
 
   // ... and a mutable variable holding one selects the function at runtime
-  mut chosen = &twice
-  show("fnref-var-first", i64[chosen(6u)])
-  chosen = &thrice
-  show("fnref-var-second", i64[chosen(6u)])
+  mut chosen = &twice;
+  show("fnref-var-first", i64[chosen(6u)]);
+  chosen = &thrice;
+  show("fnref-var-second", i64[chosen(6u)]);
 
   // A function with no name is written where the reference is taken
-  imm square = &fn(n u32) u32 {n * n}
-  show("anonymous-fnref", i64[square(7u)])
-  show("anonymous-fnref-as-argument", i64[applyTo(8u, &fn(n u32) u32 {n + 1u})])
+  imm square = &fn(n u32) u32 {n * n;};
+  show("anonymous-fnref", i64[square(7u)]);
+  show("anonymous-fnref-as-argument", i64[applyTo(8u, &fn(n u32) u32 {n + 1u;})]);
 }
 
 // -------- comparison --------
 
 fn compares() {
-  mut a = 1
-  mut b = 2
-  imm first = &a
-  imm alias = &a
-  imm second = &b
+  mut a = 1;
+  mut b = 2;
+  imm first = &a;
+  imm alias = &a;
+  imm second = &b;
 
   // References compare by the address they carry, so two borrows of one
   // variable are equal and a borrow of another is not
-  mut n = 0
-  if first == alias { n = n + 1 }
-  if first != second { n = n + 2 }
-  if first == second { n = n + 4 }
-  if first != alias { n = n + 8 }
-  show("ref-equality-bits", n)
+  mut n = 0;
+  if first == alias { n = n + 1; }
+  if first != second { n = n + 2; }
+  if first == second { n = n + 4; }
+  if first != alias { n = n + 8; }
+  show("ref-equality-bits", n);
 
   // The block above cannot tell address comparison from value comparison: 'a'
   // and 'b' hold different numbers, so both readings answer the same. This one
@@ -274,53 +274,53 @@ fn compares() {
   // number, so identity says the two references are unequal while a '==' that
   // read through to the values would say they are equal. The equal values are
   // the whole assertion -- make them differ and the case stops discriminating.
-  mut twinA = 5
-  mut twinB = 5
-  imm twin1 = &twinA
-  imm twin2 = &twinB
-  mut d = 0
-  if twin1 != twin2 { d = d + 1 }
-  if twin1 == twin2 { d = d + 2 }
-  show("ref-equality-is-identity-not-value", d)
+  mut twinA = 5;
+  mut twinB = 5;
+  imm twin1 = &twinA;
+  imm twin2 = &twinB;
+  mut d = 0;
+  if twin1 != twin2 { d = d + 1; }
+  if twin1 == twin2 { d = d + 2; }
+  show("ref-equality-is-identity-not-value", d);
 
   // Ordering compares the same addresses. Two locals have no defined order
   // relative to each other, but two fields of one struct do, so the ordered
   // pair is borrowed from within a single value.
-  mut p = Pair[1, 2]
-  imm low = &(p.x)
-  imm high = &(p.y)
-  mut m = 0
-  if low < high { m = m + 1 }
-  if high > low { m = m + 2 }
-  if low <= high { m = m + 4 }
-  if low >= high { m = m + 8 }
-  show("ref-ordering-bits", m)
+  mut p = Pair[1, 2];
+  imm low = &(p.x);
+  imm high = &(p.y);
+  mut m = 0;
+  if low < high { m = m + 1; }
+  if high > low { m = m + 2; }
+  if low <= high { m = m + 4; }
+  if low >= high { m = m + 8; }
+  show("ref-ordering-bits", m);
 
   // And the same separation for ordering. 'rev.x' sits at the lower address but
   // holds the LARGER number, so address order and value order disagree on every
   // one of the four: by address this is the same 7 as above, by value it would
   // be 8. Restoring an ascending pair would quietly cost the distinction.
-  mut rev = Pair[9, 4]
-  imm revlow = &(rev.x)
-  imm revhigh = &(rev.y)
-  mut r = 0
-  if revlow < revhigh { r = r + 1 }
-  if revhigh > revlow { r = r + 2 }
-  if revlow <= revhigh { r = r + 4 }
-  if revlow >= revhigh { r = r + 8 }
-  show("ref-ordering-is-identity-not-value", r)
+  mut rev = Pair[9, 4];
+  imm revlow = &(rev.x);
+  imm revhigh = &(rev.y);
+  mut r = 0;
+  if revlow < revhigh { r = r + 1; }
+  if revhigh > revlow { r = r + 2; }
+  if revlow <= revhigh { r = r + 4; }
+  if revlow >= revhigh { r = r + 8; }
+  show("ref-ordering-is-identity-not-value", r);
 }
 
 fn main() i32 {
-  borrows()
-  borrowsFromParm()
-  chained()
-  parts()
-  permissions()
-  globalPermissions()
-  variableVersusReference()
-  lifetimes()
-  fnrefs()
-  compares()
-  0i32
+  borrows();
+  borrowsFromParm();
+  chained();
+  parts();
+  permissions();
+  globalPermissions();
+  variableVersusReference();
+  lifetimes();
+  fnrefs();
+  compares();
+  0i32;
 }

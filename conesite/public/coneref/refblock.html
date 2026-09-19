@@ -30,32 +30,31 @@
 			such as <a href="refterm.html#vardcl">variable declarations</a>, 
 			a block treated as a statement,
 			or various statements used to control <a href="refflow.html">execution flow</a>.</p>
-		<p>Most statements may be explicitly terminated with a semi-colon.
-			However, specifying the semi-colon is not needed when the statement
-			finishes at the end of a line, as is typically the case.
-			This example show two expression statements:</p>
+		<p>Every statement that does not finish with a block is terminated by a semicolon.
+			The semicolon is never optional: not at the end of a line, and not on the
+			last statement before a block's closing brace.
+			This example shows two expression statements:</p>
 <pre>
-mut a = 12   // Equivalent to: mut a = 12;
-mut b = 5    // Equivalent to: mut b = 5;
+mut a = 12;
+mut b = 5;
 </pre>
-		<p>A single line may hold more than one statement. When this is done,
-			use semi-colons to separate the statements:</p>
+		<p>A single line may hold more than one statement,
+			each ended by its own semicolon:</p>
 <pre>
-a = 24; b = 6    // Equivalent to:  a = 24; b = 6;
+a = 24; b = 6;
 </pre>
-		<p>A statement may span multiple lines.
-			When this is required, continuation lines should be indented to visually signal that all the lines
-			constitute a single statement.</p>
+		<p>A statement may span as many lines as it needs, since nothing but the semicolon ends it.
+			Indenting the continuation lines helps a reader see that they belong to one statement,
+			but the compiler pays no attention to indentation or to where a line ends:</p>
 <pre>
 a = b + c + d
-    - e + f     // Equivalent to a = b + c + d - e + f;
+    - e + f;     // One statement: a = b + c + d - e + f;
 </pre>
-		<p>A failure to indent continuation lines may sometimes lead the compiler
-			to incorrectly believe the continuation line begins a new statement, rather than
-			continuing one already in progress:</p>
+		<p>So a missing semicolon is never silently inferred. Leave one out and the compiler
+			reports it, at the end of the statement the semicolon belongs to:</p>
 <pre>
-a = b + c + d    // Equivalent to: a = b + c + d;
-- e + f          // Equivalent to: - e + f;
+a = b + c + d     // Error: expected ';' to end the statement
+e = f;
 </pre>
 
 		<h2>Blocks</h2>
@@ -76,27 +75,21 @@ a = b + c + d    // Equivalent to: a = b + c + d;
 	<h3>Ordered Collection of Statements</h3>
 	<p>At its simplest, a block is merely a ordered set of statements which are
 		executed one after another, in order.
-		There are two ways to mark that several statements belong to the same block:
-	<ul>
-		<li>Wrap the block's statements inside curly braces:
+		The block's statements are wrapped inside curly braces, which is the only way
+		to mark that several statements belong to one block:</p>
 <pre>
 {
-	a = 12
-	b = 5
+	a = 12;
+	b = 5;
 }
 </pre>
-		</li>
-	<li>When a statement ends with a block, signal the start of the block
-		with a colon, and then indent all of the block's statements which follow on separate lines.
+	<p>Indentation is for the reader. Where a block begins and ends is decided by the braces alone:</p>
 <pre>
-if a == 0:
-	a = 12
-b = 5        // Not part of if's inner block, since it is not indented.
+if a == 0 {
+	a = 12;
+}
+b = 5;        // Not part of if's inner block: it follows the closing brace.
 </pre>
-	<p>This convention makes more efficient use of vertical space,
-		particularly for small blocks.</p>
-	</li>
-	</ul>
 	<p>Blocks may be specified within blocks:</p>
 <pre>
 {
@@ -131,12 +124,12 @@ b = 5        // Not part of if's inner block, since it is not indented.
 		This silly example illustrates the block scope of declared variables:</p>
 <pre>
 {
-	mut result = 0
+	mut result = 0;
 	{
-		mut sum = a + b
-		result = sum
+		mut sum = a + b;
+		result = sum;
 	}
-	++result    // sum cannot be referenced in outer block
+	++result;    // sum cannot be referenced in outer block
 }
 </pre>
 	<p>The block where a variable is defined is considered to be its lexical scope.
@@ -167,8 +160,8 @@ b = 5        // Not part of if's inner block, since it is not indented.
 <pre>
 // Using a block as an expression
 a = {
-	3.14
-	6      // a's value will become 6
+	3.14;
+	6;      // a's value will become 6
 }
 </pre>
 
@@ -194,16 +187,17 @@ a = {
 		the evaluated value of that expression.</p>
 <pre>
 // Calculate the value of 'this' (0.174533)
-with Float.Pi/180:
-	quarter = 90f * this // Use 'this' to convert to radians
-	acute = 10f * this
+with Float.Pi/180 {
+	quarter = 90f * this; // Use 'this' to convert to radians
+	acute = 10f * this;
+}
 </pre>
 	<p>The above example is short-hand for:</p>
 <pre>
 {
-	imm this = Float.Pi/180
-	quarter = 90f * this // Use 'this' to convert to radians
-	acute = 10f * this
+	imm this = Float.Pi/180;
+	quarter = 90f * this; // Use 'this' to convert to radians
+	acute = 10f * this;
 }
 </pre>
 	<p>Since <span class="pre">with</span> blocks can be nested within each other,
@@ -222,11 +216,13 @@ with Float.Pi/180:
 		taking advantage of this shortcut:</p>
 <pre>
 // Normalize point to unit length
-with &amp;mut point:
-	imm len = (.x * .x + .y * .y).sqrt
-	if len > 0:
-		.x /= len
-		.y /= len
+with &amp;mut point {
+	imm len = (.x * .x + .y * .y).sqrt;
+	if len &gt; 0 {
+		.x /= len;
+		.y /= len;
+	}
+}
 </pre>
 	<p>There are several things happening in this example:</p>
 	<ul>
@@ -250,10 +246,11 @@ with &amp;mut point:
 	<h2>'.[]' indexing</h2>
 	<p>'.[]' may be used to access or modify some element of a collection:</p>
 <pre>
-with myScene.numbers:
-	.[4] = 1.6      // Equivalent to: myScene.numbers[4] = 1.6
-	.[6] = 1.9
-	.sort       // Sort the list of numbers
+with myScene.numbers {
+	.[4] = 1.6;      // Equivalent to: myScene.numbers[4] = 1.6
+	.[6] = 1.9;
+	.sort;       // Sort the list of numbers
+}
 </pre>
 
 	<h2>'&lt;-' Prefix Operator</h2>
@@ -261,11 +258,12 @@ with myScene.numbers:
 		If no collection is specified on the left, <span class="pre">this</span> is assumed.</p>
 <pre>
 // numbers is a vector of floating-point numbers
-with myScene.numbers:
-	&lt;- 3.4
-	&lt;- 2.6
-	&lt;- 1.4
-	.sort
+with myScene.numbers {
+	&lt;- 3.4;
+	&lt;- 2.6;
+	&lt;- 1.4;
+	.sort;
+}
 </pre>
 	<p>This appends three floating point numbers to the list of numbers held in
 		<span class="pre">myscene.numbers</span> and then re-sorts the numbers list 
@@ -274,10 +272,10 @@ with myScene.numbers:
 	<p><b>Note:</b> If we just want to append three numbers without sorting:</p>
 <pre>
 myScene.numbers &lt;- [
-	3.4
-	2.6
-	1.4
-]
+	3.4;
+	2.6;
+	1.4;
+];
 </pre>
 
 		<p style="text-align: right; margin-top: 2em;">

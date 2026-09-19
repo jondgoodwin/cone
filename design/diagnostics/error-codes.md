@@ -38,15 +38,16 @@ analysis gate and the two `fnDclTypeCheck` early returns all compare `errors`.
 
 Exit codes are their own thing and they abort immediately rather than being
 counted: `ExitError` (1), `ExitNF` (2, source file not found), `ExitOpts` (4),
-`ExitIndent` (5, past 1024 nested blocks), `ExitGen` (6). `ExitGen` covers
-both unrecoverable internal failures: code generation that could not proceed,
-and a compiler invariant that did not hold.
+`ExitGen` (6); 5 is a retired code and stays a hole. `ExitGen` covers both
+unrecoverable internal failures: code generation that could not proceed, and a
+compiler invariant that did not hold.
 
 ## Reporting
 
 | Function | Position from | Use for |
 | --- | --- | --- |
 | `errorMsgLex` | the lexer's current token | the parser — this is its workhorse |
+| `errorMsgLexAfter` | the end of the token before the lexer's current one | something that should have followed a token: the `;` ending a statement, reported at the end of the statement rather than on the next line's first token |
 | `errorMsgNode` | a node's stored position, **plus the instantiation trace** | every phase after parsing |
 | `errorMsg` | nothing | when there is no position to give, which should be rare |
 | `errorExit` | prints and exits | only where continuing is impossible |

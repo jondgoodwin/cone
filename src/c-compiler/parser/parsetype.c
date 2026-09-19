@@ -114,6 +114,7 @@ ConstDclNode *parseConstDcl(ParseState *parse) {
     else {
         errorMsgLex(ErrorNoInit, "Must specify const value.");
     }
+    parseEndOfStatement();
 
     return constnode;
 }
@@ -124,7 +125,6 @@ INode *parseTypeName(ParseState *parse) {
         FnCallNode *fncall = newFnCallNode(node, 8);
         fncall->flags |= FlagIndex;
         lexNextToken();
-        lexIncrParens();
         if (!lexIsToken(RBracketToken)) {
             nodesAdd(&fncall->args, parseType(parse));
             while (lexIsToken(CommaToken)) {
@@ -236,7 +236,6 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     if (parseHasBlock()) {
         parseBlockStart();
         while (!parseBlockEnd()) {
-            lexStmtStart();
             if (lexIsToken(FnToken)) {
                 FnDclNode *fn = (FnDclNode*)parseFn(parse, methflags);
                 if (fn && isNamedNode(fn)) {
@@ -361,7 +360,6 @@ INode *parseFnSig(ParseState *parse) {
     // Process parameter declarations
     if (lexIsToken(LParenToken)) {
         lexNextToken();
-        lexIncrParens();
         while (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
             VarDclNode *parm = parseVarDcl(parse, immPerm, parseflags);
             parm->flowtempflags |= VarInitialized;   // parameter vars always start with a valid value

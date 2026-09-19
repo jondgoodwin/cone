@@ -117,6 +117,17 @@ void errorMsgNode(INode *node, int code, const char *msg, ...) {
     }
 }
 
+// Report at the end of the token before the lexer's current one: for what
+// should have followed that token, such as the ';' that ends a statement.
+// Reported at the current token instead, a missing ';' would point at the
+// first token of the next line, which is not where the fix goes.
+void errorMsgLexAfter(int code, const char *msg, ...) {
+    va_list argptr;
+    va_start(argptr, msg);
+    errorOutCode(lex->prevend, lex->prevlinenbr, lex->prevlinep, lex->url, code, msg, argptr);
+    va_end(argptr);
+}
+
 // Send an error message to stderr
 void errorMsgLex(int code, const char *msg, ...) {
     va_list argptr;

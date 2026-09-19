@@ -61,7 +61,6 @@ INode *parseNameUse(ParseState *parse) {
 INode *parseArrayLit(ParseState *parse) {
     ArrayNode *array = newArrayNode();
     lexNextToken();
-    lexIncrParens();
 
     // Gather comma-separated expressions that are likely elements or element type
     while (1) {
@@ -141,8 +140,7 @@ INode *parseTerm(ParseState *parse) {
         {
             INode *node;
             lexNextToken();
-            lexIncrParens();
-            node = parseAnyExpr(parse);
+                    node = parseAnyExpr(parse);
             parseCloseTok(RParenToken);
             return node;
         }
@@ -182,7 +180,6 @@ INode *parseArg(ParseState *parse) {
 Nodes *parseArgs(ParseState *parse) {
     int closetok = lex->toktype == LBracketToken ? RBracketToken : RParenToken;
     lexNextToken();
-    lexIncrParens();
     Nodes *args = newNodes(8);
     if (!lexIsToken(closetok)) {
         nodesAdd(&args, parseArg(parse));
@@ -224,12 +221,12 @@ INode *parseSuffix(ParseState *parse, INode *node, uint16_t flags) {
 
     // Process as many suffixes as we have, each applying to the term before
     while (1) {
-        if (lexIsToken(DotToken) && !lexIsStmtBreak()) {
+        if (lexIsToken(DotToken)) {
             node = parseDotCall(parse, node, flags);
         }
 
         // Handle () suffix and enclosed arguments
-        else if (lexIsToken(LParenToken) && !lexIsStmtBreak()) {
+        else if (lexIsToken(LParenToken)) {
             FnCallNode *fncall = newFnCallNode(node, 0);
             fncall->flags |= flags;
             fncall->args = parseArgs(parse);
@@ -237,7 +234,7 @@ INode *parseSuffix(ParseState *parse, INode *node, uint16_t flags) {
         }
 
         // Handle [] indexing suffix and enclosed arguments
-        else if (lexIsToken(LBracketToken) && !lexIsStmtBreak()) {
+        else if (lexIsToken(LBracketToken)) {
             FnCallNode *fncall = newFnCallNode(node, 0);
             fncall->flags |= flags | FlagIndex;
             fncall->args = parseArgs(parse);
@@ -245,14 +242,14 @@ INode *parseSuffix(ParseState *parse, INode *node, uint16_t flags) {
         }
 
         // Handle postfix ++
-        else if (lexIsToken(IncrToken) && !lexIsStmtBreak()) {
+        else if (lexIsToken(IncrToken)) {
             node = (INode*)newFnCallOpname(node, incrPostName, 0);
             node->flags |= FlagLvalOp;
             lexNextToken();
         }
 
         // Handle postfix --
-        else if (lexIsToken(DecrToken) && !lexIsStmtBreak()) {
+        else if (lexIsToken(DecrToken)) {
             node = (INode*)newFnCallOpname(node, decrPostName, 0);
             node->flags |= FlagLvalOp;
             lexNextToken();
@@ -499,7 +496,7 @@ INode *parseCast(ParseState *parse) {
 INode *parseMult(ParseState *parse) {
     INode *lhnode = parseCast(parse);
     while (1) {
-        if (lexIsToken(StarToken) && !lexIsStmtBreak()) {
+        if (lexIsToken(StarToken)) {
             FnCallNode *node = newFnCallOpname(lhnode, multName, 2);
             lexNextToken();
             nodesAdd(&node->args, parseCast(parse));
@@ -526,13 +523,13 @@ INode *parseMult(ParseState *parse) {
 INode *parseAdd(ParseState *parse) {
     INode *lhnode = parseMult(parse);
     while (1) {
-        if (lexIsToken(PlusToken) && !lexIsStmtBreak()) {
+        if (lexIsToken(PlusToken)) {
             FnCallNode *node = newFnCallOpname(lhnode, plusName, 2);
             lexNextToken();
             nodesAdd(&node->args, parseMult(parse));
             lhnode = (INode*)node;
         }
-        else if (lexIsToken(DashToken) && !lexIsStmtBreak()) {
+        else if (lexIsToken(DashToken)) {
             FnCallNode *node = newFnCallOpname(lhnode, minusName, 2);
             lexNextToken();
             nodesAdd(&node->args, parseMult(parse));
@@ -573,7 +570,7 @@ INode *parseShift(ParseState *parse) {
 INode *parseAnd(ParseState *parse) {
     INode *lhnode = parseShift(parse);
     while (1) {
-        if (lexIsToken(AmperToken) && !lexIsStmtBreak()) {
+        if (lexIsToken(AmperToken)) {
             FnCallNode *node = newFnCallOpname(lhnode, andName, 2);
             lexNextToken();
             nodesAdd(&node->args, parseShift(parse));
@@ -603,7 +600,7 @@ INode *parseXor(ParseState *parse) {
 INode *parseOr(ParseState *parse) {
     INode *lhnode = parseXor(parse);
     while (1) {
-        if (lexIsToken(BarToken) && !lexIsStmtBreak()) {
+        if (lexIsToken(BarToken)) {
             FnCallNode *node = newFnCallOpname(lhnode, orName, 2);
             lexNextToken();
             nodesAdd(&node->args, parseXor(parse));
@@ -627,7 +624,7 @@ INode *parseCmp(ParseState *parse) {
     case GtToken:  cmpop = ">"; break;
     case GeToken:  cmpop = ">="; break;
     default:
-        if (lexIsToken(IsToken) && !lexIsStmtBreak()) {
+        if (lexIsToken(IsToken)) {
             CastNode *node = newIsNode(lhnode, unknownType);
             lexNextToken();
             node->typ = parseType(parse);

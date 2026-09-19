@@ -49,7 +49,7 @@ as that group's own subject requires.
 
 | Tier | Group | Owns |
 | --- | --- | --- |
-| 0 | `lexical` | Literals, identifiers, comments, operators as tokens, statement inference |
+| 0 | `lexical` | Literals, identifiers, comments, operators as tokens, statement termination |
 | 0 | `core` | Operators and expressions, blocks and statements, functions and function overload, `if`, `while`/`break`/`continue`, number types and enum, void, tuples, local and global vars |
 | 1 | `struct` | Structs, method definition, operator methods, initializers and finalizers, delegated inheritance |
 | 1 | `union` | Unions, `Option`, `Result`, pattern matching |
@@ -175,7 +175,7 @@ all late in the file, check that gate first.
 - **Mutually exclusive structure.** `ErrorNoEof` needs the file to end wrongly.
   There is one end of file, so it is one per file and it must be last.
 - **Aborting diagnostics.** `errorExit` terminates immediately instead of
-  accumulating — `ExitNF`, `ExitMem`, `ExitIndent`. Nothing after one of these
+  accumulating — `ExitNF`, `ExitMem`. Nothing after one of these
   runs, so it gets its own file and never shares with accumulating errors.
 - **One diagnostic's whole story.** Where a single `ErrorCode` covers several
   distinct causes with different remedies, the cases belong side by side, so that
@@ -215,8 +215,10 @@ whose assertion is "this takes twenty seconds" asserts nothing worth having.
 
 ## 3. Write the source
 
-**Braces only.** Never rely on indentation or `:` for block structure — the
-language is moving to free-form only.
+**Braces and semicolons.** A block is delimited by braces and every statement
+that does not end in a block ends with `;`, the last one before a `}`
+included. The language has no other way to write either, so a scenario that
+omits a `;` is asserting `ErrorNoSemi`.
 
 **Use no construct you are not testing.** Simplest syntax that exercises the
 feature. Incidental scaffolding is what a language change has to be dragged

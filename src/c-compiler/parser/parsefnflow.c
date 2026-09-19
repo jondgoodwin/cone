@@ -190,7 +190,6 @@ INode *parseMatch(ParseState *parse) {
     // Parse all cases
     parseBlockStart();
     while (!parseBlockEnd()) {
-        lexStmtStart();
         // Handle pattern that begins with 'case'
         if (lexIsToken(CaseToken)) {
             lexNextToken(); // consume the 'case' token
@@ -363,7 +362,6 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
     parseBlockStart();
 
     while (!parseBlockEnd()) {
-        lexStmtStart();
         switch (lex->toktype) {
         case SemiToken:
             lexNextToken();

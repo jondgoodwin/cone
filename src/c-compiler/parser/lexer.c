@@ -56,14 +56,9 @@ void lexInject(char *src, char *url) {
     lex->srcp = lex->tokp = lex->linep = src;
     lex->linenbr = 1;
     lex->flags = 0;
-    lex->tokPosInLine = 0;
-    lex->indentch = '\0';
-    lex->curindent = 0;
-    lex->stmtindent = 0;
-    lex->blkStackLvl = 0;
-    lex->blkStack[0].blkindent = 0;
-    lex->blkStack[0].paranscnt = 0;
-    lex->blkStack[0].blkmode = FreeFormBlock;
+    lex->prevend = src;
+    lex->prevlinep = src;
+    lex->prevlinenbr = 1;
 
     // Prime the pump with the first token
     lexNextToken();
@@ -183,110 +178,14 @@ void lexPop() {
         lex = lex->prev;
 }
 
-// ******  SIGNIFICANT WHITESPACE HANDLING ***********
-
-// Parser indicates new block starts here, e.g., '{'
-void lexBlockStart(LexBlockMode mode) {
-    if (lex->blkStackLvl >= LEX_MAX_BLOCKS)
-        errorExit(ExitIndent, "Too many indent levels in source file.");
-    int level = ++lex->blkStackLvl;
-    lex->blkStack[level].blkindent = lex->stmtindent;
-    lex->blkStack[level].paranscnt = 0;
-    lex->blkStack[level].blkmode = mode;
-}
-
-// Parser indicates block finishes here, e.g., '}'
-void lexBlockEnd() {
-    int level = lex->blkStackLvl--;
-    lex->stmtindent = lex->blkStack[level].blkindent;
-}
-
-// Does block end here, based on block mode?
-int lexIsBlockEnd() {
-    switch (lex->blkStack[lex->blkStackLvl].blkmode) {
-    case FreeFormBlock: 
-        return 0;
-    case SameStmtBlock:
-        if (lexIsToken(EofToken))
-            return 1;
-        // It is not end-of-block if we are still on same line as block started on
-        if (!lexIsEndOfLine()) 
-            return 0;
-        // Switch mode for next line, using indentation to drive end-of-block
-        lex->blkStack[lex->blkStackLvl].blkmode = SigIndentBlock;
-        // Deliberate fallthrough
-    case SigIndentBlock:
-        if (lexIsToken(EofToken))
-            return 1;
-        return lexIsEndOfLine() && lex->curindent <= lex->blkStack[lex->blkStackLvl].blkindent;
-    }
-    return 0;
-}
-
-// Decrement counter for parentheses/brackets
-void lexDecrParens() {
-    if (lex->blkStack[lex->blkStackLvl].paranscnt > 0)
-        --lex->blkStack[lex->blkStackLvl].paranscnt;
-}
-
-// Increment counter for parentheses/brackets
-void lexIncrParens() {
-    ++lex->blkStack[lex->blkStackLvl].paranscnt;
-}
-
-// Is next token at start of line?
-int lexIsEndOfLine() {
-    return lex->tokPosInLine == 0;
-}
-
-// Parser indicates the start of a new statement
-// This allows lexIsStmtBreak to know if a continuation line is indented
-void lexStmtStart() {
-    lex->stmtindent = lex->curindent;
-}
-
-// Return true if current token is first on a line that has not been indented
-// and does not have any open parantheses or brackets
-int lexIsStmtBreak() {
-    return lexIsEndOfLine() && lex->curindent <= lex->stmtindent 
-        && lex->blkStack[lex->blkStackLvl].paranscnt == 0;
-}
-
-// Handle new line character.
-// Update lexer state, including indentation count for current line
+// Handle new line character: count it, and remember where the line starts.
+// Indentation is not measured. The grammar has no use for it: a block is
+// delimited by braces and a statement ends at ';', so a line's leading
+// whitespace is formatting and nothing more.
 char *lexNewLine(char *srcp) {
     srcp++;
     lex->linep = srcp;
-    lex->tokPosInLine = 0;
     ++lex->linenbr;
-    // Count line's indentation
-    lex->curindent = 0;
-    while (1) {
-        if (*srcp == '\r')
-            srcp++;
-        else if (*srcp == ' ' || *srcp == '\t') {
-            // Issue warning if inconsistent use of indentation character
-            switch (lex->indentch) {
-            case '\0':
-                lex->indentch = *srcp;
-                break;
-            case ' ':
-            case '\t':
-                if (*srcp != lex->indentch) {
-                    lex->tokp = srcp;
-                    errorMsgLex(WarnIndent, "Inconsistent indentation - use either spaces or tabs, not both.");
-                    lex->indentch = '*'; // Only issue warning once
-                }
-                break;
-            default:
-                break;
-            }
-            srcp++;
-            lex->curindent++;
-        }
-        else
-            break;
-    }
     return srcp;
 }
 
@@ -419,6 +318,7 @@ void lexScanString(char *srcp) {
         if ((unsigned char)*srcp < ' ') {
             if (*srcp++ == '\n') {
                 ++lex->linenbr;
+                lex->linep = srcp;
                 while (*srcp <= ' ' && *srcp)
                     ++srcp;
             }
@@ -682,11 +582,14 @@ void lexScanTickedIdent(char *srcp) {
     lex->srcp = srcp+1;
 }
 
-// Skip over nested block comment
+// Skip over nested block comment. Every line inside it is counted, so the
+// first diagnostic after the comment names the right line.
 char *lexBlockComment(char *srcp) {
     int nest = 1;
     while (*srcp) {
-        if (*srcp == '*' && *(srcp + 1) == '/') {
+        if (*srcp == '\n')
+            srcp = lexNewLine(srcp);
+        else if (*srcp == '*' && *(srcp + 1) == '/') {
             if (--nest == 0)
                 return srcp+2;
             ++srcp; ++srcp;
@@ -698,15 +601,22 @@ char *lexBlockComment(char *srcp) {
         // ignore tokens inside line comment
         else if (*srcp == '/' && *(srcp + 1) == '/') {
             srcp += 2;
-            while (*srcp && *srcp++ != '\n');
+            while (*srcp && *srcp != '\n')
+                ++srcp;
         }
         // ignore tokens inside string literal
         else if (*srcp == '"') {
             ++srcp;
-            while (*srcp && *srcp++ != '"') {
-                if (*(srcp - 1) == '\\' && *srcp == '"')
-                    srcp++;
+            while (*srcp && *srcp != '"') {
+                if (*srcp == '\n')
+                    srcp = lexNewLine(srcp);
+                else if (*srcp == '\\' && *(srcp + 1))
+                    srcp += 2;
+                else
+                    ++srcp;
             }
+            if (*srcp)
+                ++srcp;
         }
         else
             ++srcp;
@@ -726,7 +636,9 @@ char *lexBlockComment(char *srcp) {
 void lexNextTokenx() {
     char *srcp;
     srcp = lex->srcp;
-    ++lex->tokPosInLine;
+    lex->prevend = srcp;
+    lex->prevlinep = lex->linep;
+    lex->prevlinenbr = lex->linenbr;
     while (1) {
         switch (*srcp) {
 

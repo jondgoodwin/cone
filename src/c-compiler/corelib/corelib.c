@@ -60,23 +60,25 @@ void stdPermInit() {
 char *corelibSource =
 "union Option[T] {\n"
   "struct None {}\n"
-  "struct Some {value T}\n"
+  "struct Some {value T;}\n"
 "}\n"
 
 "union Result[T,E] {\n"
-  "struct Ok {value T}\n"
-  "struct Error {value E}\n"
+  "struct Ok {value T;}\n"
+  "struct Error {value E;}\n"
 "}\n"
 
-"extern fn malloc(size usize) *u8\n"
+"extern fn malloc(size usize) *u8;\n"
 
-"struct @move so:\n"
-"  fn _alloc(size usize) *u8 inline {malloc(size)}\n"
+"struct @move so {\n"
+"  fn _alloc(size usize) *u8 inline {malloc(size);}\n"
+"}\n"
 
-"struct rc:\n"
-"  cnt usize\n"
-"  fn _alloc(size usize) *u8 inline {malloc(size)}\n"
-"  fn init() rc inline {rc[1usize]}\n"
+"struct rc {\n"
+"  cnt usize;\n"
+"  fn _alloc(size usize) *u8 inline {malloc(size);}\n"
+"  fn init() rc inline {rc[1usize];}\n"
+"}\n"
 ;
 
 // Set up the standard library, whose names are always shared by all modules
