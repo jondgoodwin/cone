@@ -77,6 +77,8 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
         INode *member = cloneNode(cstate, *nodesp);
         if (member->tag == MacroDclTag)
             iNsTypeAddMacro((INsTypeNode*)newnode, (MacroDclNode*)member);
+        else if (member->tag == VarDclTag)
+            iNsTypeAddStatic((INsTypeNode*)newnode, (VarDclNode*)member);
         else
             iNsTypeAddFn((INsTypeNode*)newnode, (FnDclNode*)member);
     }
@@ -108,7 +110,7 @@ void structPrint(StructNode *node) {
     uint32_t cnt;
     for (nodelistFor(&node->nodelist, cnt, nodesp)) {
         Name *namesym = inodeGetName(*nodesp);
-        char *kind = (*nodesp)->tag == MacroDclTag ? "macro" : "fn";
+        char *kind = (*nodesp)->tag == MacroDclTag ? "macro" : (*nodesp)->tag == VarDclTag ? "static" : "fn";
         inodeFprint(cnt == node->nodelist.used ? "%s %s" : ", %s %s", kind, namesym ? &namesym->namestr : "");
         dclInfoPrint(*nodesp);
     }

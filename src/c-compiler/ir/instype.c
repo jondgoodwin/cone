@@ -71,6 +71,19 @@ void iNsTypeAddMacro(INsTypeNode *type, MacroDclNode *macro) {
             "Duplicate name %s: a macro shares its type's namespace with fields and methods.", &macro->namesym->namestr);
 }
 
+// Add a static variable to type's dictionary and owned list. It shares the one
+// namespace with fields, methods and macros. The type is its owner, so its
+// symbol is spelled after the type, and a generic instance's static is the
+// instance's own, since the instance is a clone with a list of its own.
+void iNsTypeAddStatic(INsTypeNode *type, VarDclNode *var) {
+    nodelistAdd(&type->nodelist, (INode*)var);
+    dclInfoJoin((INode*)var, (INode*)type);
+    var->flowtempflags |= VarInitialized;   // Holds a valid value from the start, as a global does
+    if (namespaceAdd(&type->namespace, var->namesym, (INode*)var) != NULL)
+        errorMsgNode((INode*)var, ErrorDupName,
+            "Duplicate name %s: a static shares its type's namespace with fields and methods.", &var->namesym->namestr);
+}
+
 // Find the named node (could be method or field)
 // Return the node, if found or NULL if not found
 INode *iNsTypeFindFnField(INsTypeNode *type, Name *name) {

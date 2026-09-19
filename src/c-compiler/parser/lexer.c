@@ -81,6 +81,7 @@ void keywordInit() {
     keyAdd("import", ImportToken);
     keyAdd("extern", ExternToken);
     keyAdd("pub", PubToken);
+    keyAdd("static", StaticToken);
     keyAdd("macro", MacroToken);
     keyAdd("fn", FnToken);
     keyAdd("overload", OverloadToken);

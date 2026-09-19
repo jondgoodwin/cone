@@ -237,6 +237,19 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         parseBlockStart();
         while (!parseBlockEnd()) {
             uint16_t pubflag = parsePub();
+            uint16_t staticflag = parseStatic();
+            if (staticflag && (lexIsToken(PermToken) || lexIsToken(IdentToken))) {
+                // One copy shared by every value of the type: a variable in the
+                // type's namespace, reached as Type::name from outside and by its
+                // bare name from the type's own functions and methods. It is not
+                // a field, so it has no slot in the value and no receiver.
+                VarDclNode *var = parseVarDcl(parse, immPerm, ParseMayImpl | ParseMaySig);
+                var->flags |= FlagStatic | pubflag;
+                iNsTypeAddStatic((INsTypeNode*)strnode, var);
+                parseEndOfStatement();
+                continue;
+            }
+            parseBadStatic(staticflag);
             if (lexIsToken(FnToken)) {
                 FnDclNode *fn = (FnDclNode*)parseFn(parse, methflags);
                 if (fn && isNamedNode(fn)) {

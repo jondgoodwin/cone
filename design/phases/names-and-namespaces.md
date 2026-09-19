@@ -334,8 +334,9 @@ Rules for Cone-consumed names; C FFI names have their own (S5).
   wrapping its type arguments around its own component. Nothing else is
   encoded — no signature, no visibility, no lifetime, no suffix.
 - **S2.** The owner chain is the enclosing modules, outermost first, then the
-  enclosing types; a module never sits inside a type. **There is no package
-  name.** The compiler knows only module names declared in source; the version
+  enclosing types, then — for a function's `static` alone — the function that
+  declares it, since that is the one declaration a function owns a symbol for;
+  a module never sits inside a type. **There is no package name.** The compiler knows only module names declared in source; the version
   slot is v0's disambiguator, `s<base62>_` before the top module's identifier,
   and nothing fills it.
 - **S3.** A source file with no `mod` declaration contributes no module name,

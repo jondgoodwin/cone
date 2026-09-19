@@ -670,6 +670,17 @@ LLVMValueRef genlLogic(GenState *gen, LogicNode* node) {
 LLVMValueRef genlLocalVar(GenState *gen, VarDclNode *var) {
     assert(var->tag == VarDclTag);
     LLVMValueRef val = NULL;
+    // A static's storage is a global, named after the function that owns it and
+    // initialized once, before anything runs. The declaration statement
+    // itself does nothing at run time; every use loads or stores the global
+    // through llvmvar exactly as it would an alloca.
+    if (var->flags & FlagStatic) {
+        if (var->llvmvar == NULL) {
+            genlGloVarName(gen, var);
+            genlGloVar(gen, var);
+        }
+        return NULL;
+    }
     var->llvmvar = genlAlloca(gen, genlType(gen, var->vtype), &var->namesym->namestr);
     if (var->value) {
         val = genlExpr(gen, var->value);

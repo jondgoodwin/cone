@@ -374,6 +374,23 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
             lexNextToken();
             break;
 
+        // One copy shared by every call of the function, rather than one per
+        // call. Storage is a global (genlLocalVar), so the initializer is a
+        // literal as a global's is, and the block does not release it.
+        case StaticToken: {
+            uint16_t staticflag = parseStatic();
+            if (!lexIsToken(PermToken) && !lexIsToken(IdentToken)) {
+                parseBadStatic(staticflag);
+                break;
+            }
+            VarDclNode *var = parseVarDcl(parse, immPerm, ParseMaySig | ParseMayImpl);
+            var->flags |= staticflag;
+            var->flowtempflags |= VarInitialized;   // A static holds a valid value from the start, as a global does
+            parseEndOfStatement();
+            nodesAdd(&blk->stmts, (INode*)var);
+            break;
+        }
+
         case RetToken:
             nodesAdd(&blk->stmts, parseReturn(parse));
             break;
