@@ -64,9 +64,16 @@ owes both halves, the mark clearing above included; `const.c` carries that note.
 
 | Site | Flags | Stamps |
 | --- | --- | --- |
-| global (`parseFnOrVar`) | impl/sig, or sig alone for an `extern` | `VarInitialized`, then `modAddNode`, which records the module as owner and writes the declaration facts. `scope` stays 0 |
+| global (`parseFnOrVar`) | impl/sig, or sig alone for an `extern` | `VarInitialized`, then `modAddNode`, which records the module as owner and writes the declaration facts. `scope` stays 0. A `static` global carries `FlagStatic` and is otherwise the same: one copy per instantiation of the module, which is one copy today |
 | local (`parseExprBlock`) | sig/impl | nothing — scope comes from name resolution |
+| static local (`parseExprBlock`, after `static`) | sig/impl | `FlagStatic`, `VarInitialized`. One copy shared by every call of the function; the function becomes its owner in type check, and its storage is a global |
+| type static (`parseStruct`, after `static`) | sig/impl | `FlagStatic`, then `iNsTypeAddStatic`, which records the type as owner, marks it initialized and binds it in the type's namespace beside the fields and methods. Not a field: no slot, no `index`, no receiver. Reached as `Type::name` from outside and by bare name from the type's own functions |
 | parameter (`parseFnSig`) | sig/impl, dropping to impl once one parameter has a default | `VarInitialized`, `scope = 1`, `index`, `Self` inference |
+
+`static` before anything that is not a variable — a function, a type, a
+statement — is `ErrorBadStatic`, and the declaration is then parsed as if the
+word were not there. A function has no per-call copy to share, so `static fn`
+means nothing; a type's functions are the ones declared without `self`.
 
 **The permission rule is the same at all three.** `parseDclPerm` takes whatever
 was written, substitutes the default for nothing, and reports `ErrorInvType` for
@@ -118,9 +125,16 @@ parameter names**.
 4. With a `value`: coerce it to the declared type; **infer only on success and
    only when the type is still `unknownType`**.
 5. **Literal rule.** `scope <= 1` — that is, a global or a parameter default —
-   requires `litIsLiteral(value)`. It admits literals, literal array and type
-   literals, and a use resolved to a `ConstDclTag`, which is what makes
-   `imm g i32 = K` legal.
+   or `FlagStatic` requires `litIsLiteral(value)`. It admits literals, literal
+   array and type literals, and a use resolved to a `ConstDclTag`, which is what
+   makes `imm g i32 = K` legal. A static's value is its storage's initializer,
+   written once before anything runs, which is why it is held to a global's rule
+   wherever it is declared.
+5a. **A function's static joins the function.** `dclInfoJoin` with the function
+   as owner, so its symbol is spelled after the function (`tick::calls`) and two
+   functions' statics of one name stay apart. In an `inline` function the body
+   is copied into every caller, so a static there would be one copy per call
+   site: `ErrorBadStatic`.
 6. **Size rule.** `itypeNoSizeCause` — this is where a struct that holds itself
    by value is caught, and where one recursing through a reference correctly is
    not.
@@ -145,7 +159,9 @@ constant, and a variable or field with an inferred type. See
 
 `varDclFlow` is four steps: push onto the flow stack; flow the initializer;
 `flowHandleMoveOrCopy` it — a move deactivates its source, an lvalue read of a
-counted reference gets a `+1`; then set `VarInitialized`.
+counted reference gets a `+1`; then set `VarInitialized`. A static takes none
+of them: its storage outlives every call, so it is not the block's to release,
+its literal initializer moves nothing, and it was marked initialized at parse.
 
 `nameuseFlow` is the only place the two flags are *diagnosed*.
 `assignlvalrtype` also writes them, and is what makes deferred initialization
@@ -157,6 +173,12 @@ Fields and constants have no flow participation at all.
 ## Generation
 
 - **`genlLocalVar`** — alloca, then store the initializer if there is one.
+  A static instead goes through `genlGloVarName` and `genlGloVar` the first
+  time its declaration is reached, and the statement itself emits nothing:
+  every use loads or stores `llvmvar` as it would an alloca, and `llvmvar` is
+  the global. A type's static never comes this way: it is in the type's
+  `nodelist`, which `genlGlobalSyms` and `genlGlobalImpl` walk as they do for
+  a method, so it is named and initialized with the module's globals.
 - **`genlParmVar`** — alloca **and store** `LLVMGetParam(fn, index)`, for every
   parameter unconditionally. A parameter arrives as an SSA value but Cone lets
   you assign to it and borrow from it, so it needs storage. `genlAlloca` hoists
@@ -184,7 +206,7 @@ Fields and constants have no flow participation at all.
   `structTypeCheck` after mixin flattening moves fields. Only the second is
   trustworthy.
 - **`vtblidx` is uninitialized** unless `structMakeVtable` assigned it, which it
-  does not for `_`-prefixed or enum-typed fields.
+  does not for private or enum-typed fields.
 - **No duplicate check on parameter names.** `fn f(a i32, a i32)` compiles.
 - **`scope` is stamped by two different phases**, and the type check's
   `scope <= 1` literal rule silently reclassifies anything whose stamping was

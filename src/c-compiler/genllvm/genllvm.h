@@ -71,6 +71,7 @@ void genlComdat(GenState *gen, LLVMValueRef global);
 // node's facts (NULL for a vtable); 'defined' says this object file defines it
 void genlLinkage(LLVMValueRef global, INode *dclnode, int defined);
 void genlGloVarName(GenState *gen, VarDclNode *glovar);
+void genlGloVar(GenState *gen, VarDclNode *varnode);
 void genlGloFnName(GenState *gen, FnDclNode *glofn);
 
 // genlstmt.c

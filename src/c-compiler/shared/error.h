@@ -151,6 +151,9 @@ enum ErrorCode {
     // Visibility
     ErrorBadPub = 1079,         // 'pub' on something that has no namespace to be visible outside of
 
+    // Storage
+    ErrorBadStatic = 1080,      // 'static' where there is no per-instance copy to share: not a variable, or in an inline fn
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

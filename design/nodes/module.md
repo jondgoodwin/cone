@@ -240,14 +240,19 @@ because they remove work rather than adding it:
   generics, interfaces and name folding, so that the layers look alike rather
   than each inventing its own.
 
-**What separates a module from a type is state, not namespace.** A module's
-state is global and singleton: gathered by the link editor, reached at a fixed
-address, and its functions take no `self`. A type's state is per-instance and
-may live anywhere in memory, reached through `self`. That distinction is what
-makes a module the natural shape for a region or a subsystem and a type the
-natural shape for a value, and it is why a module cannot be nested inside a
-type. A module holding a single type is therefore not a special construct — it
-is a type sitting at the package's top level.
+**What separates a module from a type is instantiability, not state and not
+namespace.** A type can be instantiated: a value of it may live anywhere in
+memory, and its methods reach that value through `self`. A module cannot: it
+exists once, its state is gathered by the link editor and reached at a fixed
+address, and its functions take no `self`. Singleton state is not what tells
+them apart, because a type holds it too — a `static` in a type is one copy
+shared by every value of the type, exactly as a module's globals are one copy
+shared by everything in the module — and a generic module will hold one copy
+per instantiation as a generic type's instances each hold their own. That
+distinction is what makes a module the natural shape for a region or a
+subsystem and a type the natural shape for a value, and it is why a module
+cannot be nested inside a type. A module holding a single type is therefore
+not a special construct — it is a type sitting at the package's top level.
 
 ### Source files and folders
 

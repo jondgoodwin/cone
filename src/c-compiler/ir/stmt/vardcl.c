@@ -60,6 +60,8 @@ INode *cloneVarDclNode(CloneState *cstate, VarDclNode *node) {
 
 // Serialize a variable node
 void varDclPrint(VarDclNode *name) {
+    if (name->flags & FlagStatic)
+        inodeFprint("static ");
     inodePrintNode((INode*)name->perm);
     inodeFprint(" %s", &name->namesym->namestr);
     dclInfoPrint((INode*)name);
@@ -103,6 +105,18 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
     if (itypeTypeCheck(pstate, &name->vtype) == 0)
         return;
 
+    // A function's static is owned by the function, which is what its symbol is
+    // spelled after and what keeps two functions' statics of one name apart. An
+    // inline function's body is copied into every caller, so a static in it
+    // would be one copy per call site rather than one for all: refused.
+    if ((name->flags & FlagStatic) && name->scope > 0 && pstate->fn) {
+        if (pstate->fn->flags & FlagInline)
+            errorMsgNode((INode*)name, ErrorBadStatic,
+                "A static in an inline function would be one copy per call site, not one shared copy.");
+        if (name->dclinfo.owner == NULL)
+            dclInfoJoin((INode*)name, (INode*)pstate->fn);
+    }
+
     // An initializer need not be specified, but if not, it must have a declared type
     if (name->value == NULL) {
         if (name->vtype == unknownType) {
@@ -117,8 +131,10 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
             errorMsgNode(name->value, ErrorInvType, "Initialization value's type does not match variable's declared type");
         else if (name->vtype == unknownType)
             name->vtype = ((IExpNode *)name->value)->vtype;
-        // Global variables and function parameters require literal initializers
-        if (name->scope <= 1 && !litIsLiteral(name->value))
+        // Global variables, function parameters and statics require literal
+        // initializers: the value is the storage's initializer, written once
+        // before anything runs
+        if ((name->scope <= 1 || (name->flags & FlagStatic)) && !litIsLiteral(name->value))
             errorMsgNode((INode*)name, ErrorNotLit, "Variable may only be initialized with a literal value.");
     }
 
@@ -135,6 +151,11 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
 
 // Perform data flow analysis
 void varDclFlow(FlowState *fstate, VarDclNode **vardclnode) {
+    // A static is not the block's to release: its storage outlives every call,
+    // and its literal initializer moves nothing. It holds a value from the
+    // start, as a global does, which the parser already recorded.
+    if ((*vardclnode)->flags & FlagStatic)
+        return;
     flowAddVar(*vardclnode);
     if ((*vardclnode)->value) {
         flowLoadValue(fstate, &((*vardclnode)->value));

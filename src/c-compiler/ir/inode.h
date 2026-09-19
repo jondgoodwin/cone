@@ -194,6 +194,12 @@ enum NodeTags {
 // 0x0200 is free of every block here: the declaration flags above stop at
 // 0x0020 and the type flags skip it.
 #define FlagPub       0x0200        // Any declaration: visible outside the namespace that owns it
+// One copy shared by every instance of the thing that encloses the variable --
+// every call of a function, every value of a type, every instantiation of a
+// module -- rather than one copy each. Storage is a global either way; what the
+// flag changes is that a local's storage is not an alloca and is not released
+// when its block ends. 0x0400 is free as 0x0200 is.
+#define FlagStatic    0x0400        // VarDcl: one copy shared across the enclosing thing's instances
 
 #define FlagGenMod    0x0001        // Module: Generate code for the module, if true
 

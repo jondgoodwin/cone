@@ -142,10 +142,33 @@ uint16_t parsePub() {
     return FlagPub;
 }
 
+// Consume a 'static' that precedes a declaration, returning the flag it sets.
+// 'static' means one copy shared by every instance of the enclosing thing, so
+// it applies to a variable and to nothing else; the caller refuses the rest.
+uint16_t parseStatic() {
+    if (!lexIsToken(StaticToken))
+        return 0;
+    lexNextToken();
+    return FlagStatic;
+}
+
+// Report 'static' on a declaration that has no per-instance copies to share
+void parseBadStatic(uint16_t staticflag) {
+    if (staticflag)
+        errorMsgLex(ErrorBadStatic, "'static' applies to a variable, which has a copy per instance to share; this declaration has none");
+}
+
 void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
     // Create and populate a Module node for the program
     while (lex->toktype!=EofToken && !parseBlockEnd()) {
         uint16_t pubflag = parsePub();
+        // At module scale a static is shared across every instantiation of the
+        // module. An ordinary module is instantiated once, so today it is a
+        // global like any other; the flag is recorded for the generic module
+        // that will make the distinction real.
+        uint16_t staticflag = parseStatic();
+        if (staticflag && !lexIsToken(PermToken) && !lexIsToken(FnToken))
+            parseBadStatic(staticflag);
         switch (lex->toktype) {
 
         // Re-export is the module work's to define: 'pub' has no meaning here yet
@@ -228,8 +251,11 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
 
         // Function or variable
         case FnToken:
-        case PermToken:
+            parseBadStatic(staticflag);
             parseFnOrVar(parse, pubflag);
+            break;
+        case PermToken:
+            parseFnOrVar(parse, pubflag | staticflag);
             break;
 
         // Named const declaration

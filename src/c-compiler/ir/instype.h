@@ -48,6 +48,10 @@ void iNsTypeAddFn(INsTypeNode *type, FnDclNode *fnnode);
 // Add a macro to type's dictionary and owned list
 void iNsTypeAddMacro(INsTypeNode *type, MacroDclNode *macro);
 
+// Add a static variable to type's dictionary and owned list: one copy shared
+// by every value of the type, owned and named by the type
+void iNsTypeAddStatic(INsTypeNode *type, VarDclNode *var);
+
 // Find the named node (could be method or field)
 // Return the node, if found or NULL if not found
 INode *iNsTypeFindFnField(INsTypeNode *type, Name *name);
