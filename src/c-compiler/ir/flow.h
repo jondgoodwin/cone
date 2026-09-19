@@ -46,13 +46,15 @@ int flowScopeDealias(size_t pos, Nodes **varlist, INode *retexp);
 // Back out of current scope
 void flowScopePop(size_t pos);
 
-// Alias Node structure
+// Reference-count node: wraps an expression that yields a counted reference and
+// adds 'amt' holders to its count when evaluated. Injected by flow analysis,
+// never parsed; generation lowers it to the count adjustment.
 typedef struct {
     IExpNodeHdr;
     INode *exp;
     int16_t *counts;   // points to array of counts. NULL if not tuple
-    int16_t aliasamt;  // count nbr if not a tuple, # of counts if tuple
-} AliasNode;
+    int16_t amt;       // count nbr if not a tuple, # of counts if tuple
+} RefCountNode;
 
 // Handle when moving or copying a value to a new destination
 void flowHandleMoveOrCopy(INode **nodep);
@@ -60,7 +62,7 @@ void flowHandleMoveOrCopy(INode **nodep);
 // Does this expression still hold its value after it is read?
 int flowIsLvalRead(INode *node);
 
-// If needed, inject an alias node for rc references, adjusting the count by amt
-void flowInjectAliasAmt(INode **nodep, int16_t amt);
+// If needed, inject a reference-count node for rc references, adjusting the count by amt
+void flowInjectRefCountAmt(INode **nodep, int16_t amt);
 
 #endif

@@ -160,8 +160,8 @@ static void checkNode(INode *node) {
     case NamedValTag:
         checkNode(((NamedValNode*)node)->val); break;
 
-    case AliasTag:
-        checkNode(((AliasNode*)node)->exp); break;
+    case RefCountTag:
+        checkNode(((RefCountNode*)node)->exp); break;
 
     // Everything else is a leaf here: a literal, a name use whose declaration is
     // reached through the owning module anyway, or a type node

@@ -141,7 +141,7 @@ enum NodeTags {
     IsTag,          // ~~
     BlockTag,       // Block (list of statements)
     IfTag,          // if .. elif .. else statement
-    AliasTag,       // (injected) alias count tag
+    RefCountTag,    // (injected) adds holders to a counted reference's count
     NamedValTag,    // Named value (e.g., for a struct literal)
     AbsenceTag,     // unique, unclonable node for absence of info
 
