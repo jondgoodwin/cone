@@ -19,11 +19,12 @@ claim that these rule rather than describe.**
    separate type grammar, no backtracking. ▸ **Forbids** a syntax that can only
    be disambiguated by knowing whether a type or a value is expected, and
    **settles** that a new type form costs an arm in the value parser.
-2. **The parser drives the lexer's block mode.** Indentation is not tokenized;
-   the parser tells the lexer when a block starts and what kind, and asks whether
-   it has ended. ▸ **Forbids** a standalone lexer — token stream and parse state
-   are not separable here, which is what a second front end would have to
-   reproduce.
+2. **The lexer is line-blind.** It counts lines for diagnostics and nothing
+   else: a block is delimited by braces and a statement ends at `;`, so
+   indentation, line ends and columns carry no meaning to the grammar. ▸
+   **Forbids** any syntax that reads where a line begins or ends, and
+   **settles** that the token stream is separable from parse state — the lexer
+   never needs to be told what the parser is doing.
 3. **The parser desugars.** `match`, `each`, `while`, `with`, bound patterns and
    several prefix forms are lowered here into blocks and `if` chains. ▸
    **Settles** that later phases never see those forms, so a new sugar costs no
@@ -78,27 +79,25 @@ by it.
 
 ### Blocks and statement ends
 
-Cone has brace blocks *and* significant-indentation blocks, mixable **per
-block**, not per file. The lexer emits no INDENT/DEDENT tokens. Instead it keeps
-a block-mode stack the parser drives:
+A block is `{`, statements, `}`. A statement that does not end in a block ends
+at `;`, and nothing stands in for the `;`: not the end of a line, not the `}`
+that closes the block, not the end of the file. The lexer records no
+indentation and no column; `lexNewLine` counts the line for diagnostics and
+that is all, so a statement runs on across lines until its `;` arrives, and an
+operator that starts a line — `-`, `*`, `&`, `.`, `(`, `[`, each of which also
+reads as a prefix — continues the expression before it. The `;` before a
+closing `}` is required like any other; a block's value is its last
+statement's value with or without one (see [block](../nodes/block.md)), so
+requiring it costs nothing.
 
-| Mode | Started by | Ends when |
-| --- | --- | --- |
-| `FreeFormBlock` | `{` | never, by indentation — only `}`, tested by `parseBlockEnd` |
-| `SigIndentBlock` | `:` at end of line | a line's first token is indented no deeper than the block |
-| `SameStmtBlock` | `:` with statements following on the same line | at the first newline it **converts itself** into `SigIndentBlock` |
-
-That conversion is what makes `if x: a` followed by an indented continuation
-work. A token-emitting INDENT/DEDENT design could not do it without the parser
-telling the lexer what it is doing, which is the whole argument for this shape.
-
-Statement ends are inferred rather than required. `lexStmtStart` records the
-statement's indent; `lexIsStmtBreak` is true when the current token is first on
-its line, is not indented past that, and the current block's paren count is
-zero. A semicolon is optional. `parseAdd` consults it for `+` and `-` alike, to
-decide whether a leading sign continues the previous statement or starts a new
-one — both are prefix operators, so guarding only one of them absorbs a line
-that begins with the other.
+`parseBlockStart` consumes the `{` and `parseBlockEnd` the `}`, reporting
+`ErrorNoRCurly` at end of file. `parseEndOfStatement` consumes the `;`, and
+otherwise reports `ErrorNoSemi` **after the token the `;` should have
+followed**: `errorMsgLexAfter` reads the end of the previous token, which the
+lexer keeps in `prevend`, so the diagnostic lands at the end of the statement
+rather than on whatever the next line happens to start with. A `:` where a
+block should start is `ErrorColonBlock`, reported by name because that is the
+one syntax a reader of older Cone will reach for.
 
 ## 3. The precedence cascade
 
@@ -241,9 +240,9 @@ never be analyzed.
 
 | Mechanism | Behavior |
 | --- | --- |
-| `parseSkipToNextStmt` | the main resync; guarantees forward progress, then consumes to `;`, end of line, `}` or EOF |
+| `parseSkipToNextStmt` | the main resync; consumes through the next `;`, or stops short of a `}` or EOF for the enclosing block to handle |
 | `parseCloseTok` | reports `ErrorNoRParen`, scans for the closer, gives up at `;`, `}`, EOF |
-| `parseBlockStart` | on a missing `{`/`:`, pretends an indented block started, else scans forward for one |
+| `parseBlockStart` | on `:`, reports `ErrorColonBlock` and reads what follows as the block; on anything else that is not `{`, reports `ErrorNoLCurly` and scans forward for one |
 | `parseTerm` default | reports `ErrorBadTerm`, consumes one token to avoid an infinite loop, returns `NULL` |
 | anonymous placeholders | the declaration parsers substitute `anonName` so the caller always gets a node |
 | `parsePgm`'s end-of-file test | `ErrorNoEof` when the main file's global statements stopped short of EOF — a stray `}` ends `parseGlobalStmts`, and this is the one place the parser refuses to finish quietly |
@@ -253,12 +252,11 @@ anonymous name rather than abandoned, so the body is still parsed — leaving
 would drop the whole body on the floor and turn its opening brace into the next
 global statement.
 
-**Three conditions abort the process outright**, with no recovery:
-`lexInjectFile` on a source file that cannot be found or read (`ExitNF`),
+**Two conditions abort the process outright**, with no recovery:
+`lexInjectFile` on a source file that cannot be found or read (`ExitNF`), and
 `parseFilename` when `import` or `include` is followed by something that is
 neither an identifier nor a string (`ExitNF` as well, despite being a malformed
-token rather than a missing file), and `lexBlockStart` past 1024 nested blocks
-(`ExitIndent`).
+token rather than a missing file).
 
 Diagnostics come from `errorMsgLex` (position from the lexer — the parser's
 workhorse), `errorMsgNode` (position from a node, plus the instantiation trace),
@@ -274,14 +272,13 @@ numbers.
 | | `lexNextToken` | the scan dispatch; whitespace, comments, maximal-munch operators |
 | | `lexScanIdent` | identifier scan and name-table classification; reserved-word release |
 | | `lexScanNumber`, `lexScanString`, `lexScanChar`, `lexScanEscape` | literals; UTF-8 re-encoding of escapes; lifetime-vs-char disambiguation |
-| | `lexBlockStart`, `lexBlockEnd`, `lexIsBlockEnd` | the parser-driven block-mode stack |
-| | `lexStmtStart`, `lexIsStmtBreak`, `lexNewLine` | statement-end inference and indent tracking |
+| | `lexNewLine`, `lexBlockComment` | line counting for diagnostics, inside comments included |
 | `parser/parsemod.c` | `parsePgm` | **entry point** — tables, program, main module, corelib, main file |
 | | `parseGlobalStmts` | the global statement dispatch loop |
 | | `parseLoadAndParseModuleFile` | per-module unit: de-dup, naming, injection, corelib import, `modHook` |
 | | `parseImport`, `parseInclude` | the two source-composition forms |
-| `parser/parsehelper.c` | `parseBlockStart`, `parseBlockEnd` | `{` vs `:` entry and exit, with recovery |
-| | `parseEndOfStatement`, `parseSkipToNextStmt`, `parseCloseTok` | statement termination and the two resyncs |
+| `parser/parsehelper.c` | `parseBlockStart`, `parseBlockEnd` | `{` and `}`, with recovery |
+| | `parseEndOfStatement`, `parseSkipToNextStmt`, `parseCloseTok` | the required `;`, and the two resyncs |
 | `parser/parseexpr.c` | `parseAnyExpr`, `parseSimpleExpr` | the two expression entry points |
 | | `parseAssign` … `parseMult`, `parseCast` | the precedence cascade (section 3) |
 | | `parsePrefix`, `parseAmper`, `parsePlus` | prefix operators; borrowed and region-managed references |

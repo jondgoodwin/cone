@@ -1,8 +1,8 @@
 /** Parser helpers
  * @file
  *
- * - Statement end handling (; and inference)
- * - Block start and end (indented vs. free-flow)
+ * - Statement end handling
+ * - Block start and end
  * - Closing paren vs. bracket
  *
  * This source file is part of the Cone Programming Language C compiler
@@ -21,90 +21,69 @@
 #include <stdio.h>
 #include <string.h>
 
-// Skip to next statement for error recovery
+// Skip to next statement for error recovery: consume through the next ';',
+// or stop short of a '}' or end-of-file, which the enclosing block handles
 void parseSkipToNextStmt() {
-    // Ensure we are always moving forwards, line by line
-    if (lexIsEndOfLine() && !lexIsToken(SemiToken) && !lexIsToken(EofToken) && !lexIsToken(RCurlyToken))
-        lexNextToken();
     while (1) {
-        // Consume semicolon as end-of-statement
         if (lexIsToken(SemiToken)) {
             lexNextToken();
             return;
         }
-        // Treat end-of-line, end-of-file, or '}' as end-of-statement
-        // (clearly end-of-line might *not* be end-of-statement)
-        if (lexIsEndOfLine() || lexIsToken(EofToken) || lexIsToken(RCurlyToken))
+        if (lexIsToken(EofToken) || lexIsToken(RCurlyToken))
             return;
-
         lexNextToken();
     }
 }
 
 // Is this end-of-statement? if ';', '}', or end-of-file
 int parseIsEndOfStatement() {
-    return (lex->toktype == SemiToken || lex->toktype == RCurlyToken || lex->toktype == EofToken
-        || lexIsStmtBreak());
+    return lexIsToken(SemiToken) || lexIsToken(RCurlyToken) || lexIsToken(EofToken);
 }
 
-// We expect optional semicolon since statement has run its course
+// Require the ';' that ends every statement not ending in a block.
+// Nothing stands in for it: not the end of a line, not the '}' that closes the
+// block, not the end of the file. The diagnostic is placed after the token the
+// ';' should follow, which is where the fix goes.
 void parseEndOfStatement() {
-    // Consume semicolon as end-of-statement signifier, if found
-    if (lex->toktype == SemiToken) {
+    if (lexIsToken(SemiToken)) {
         lexNextToken();
         return;
     }
-    // If no semi-colon specified, we expect to be at end-of-line,
-    // unless next token is '}' or end-of-file
-    if (!lexIsEndOfLine() && lex->toktype != RCurlyToken && lex->toktype != EofToken)
-        errorMsgLex(ErrorNoSemi, "Statement finished? Expected semicolon or end of line.");
+    errorMsgLexAfter(ErrorNoSemi, "Expected ';' to end the statement");
 }
 
-// Return true on '{' or ':'
+// Return true if a block starts here. ':' counts so that the off-side form
+// reaches parseBlockStart and is diagnosed as what it is, rather than falling
+// through to whatever a construct does when it has no block.
 int parseHasBlock() {
-    return (lex->toktype == LCurlyToken || lex->toktype == ColonToken);
+    return lexIsToken(LCurlyToken) || lexIsToken(ColonToken);
 }
 
-// Expect a block to start, consume its token and set lexer mode
+// Expect '{' and consume it
 void parseBlockStart() {
-    if (lex->toktype == LCurlyToken) {
+    if (lexIsToken(LCurlyToken)) {
         lexNextToken();
-        lexBlockStart(FreeFormBlock);
         return;
     }
-    else if (lex->toktype == ColonToken) {
+    if (lexIsToken(ColonToken)) {
+        errorMsgLex(ErrorColonBlock, "A block starts with '{', not ':'. Indentation does not delimit a block: write '{' here and '}' after the block's last statement");
         lexNextToken();
-        lexBlockStart(lexIsEndOfLine() ? SigIndentBlock : SameStmtBlock);
         return;
     }
-
-    // Generate error and try to recover
-    errorMsgLex(ErrorNoLCurly, "Expected ':' or '{' to start a block");
-    if (lexIsEndOfLine() && lex->curindent > lex->stmtindent) {
-        lexBlockStart(SigIndentBlock);
-        return;
-    }
-    // Skip forward to find something we can use
-    while (1) {
-        if (lexIsToken(LCurlyToken) || lexIsToken(ColonToken)) {
-            parseBlockStart();
-            return;
-        }
+    errorMsgLex(ErrorNoLCurly, "Expected '{' to start a block");
+    // Recover by skipping forward to the '{' the block was meant to have
+    while (!lexIsToken(LCurlyToken)) {
         if (lexIsToken(EofToken))
-            break;
+            return;
         lexNextToken();
     }
+    lexNextToken();
 }
 
-// Are we at end of block yet? If so, consume token and reset lexer mode
+// Are we at end of block yet? If so, consume '}'
 int parseBlockEnd() {
-    if (lexIsToken(RCurlyToken) && lex->blkStack[lex->blkStackLvl].blkmode == FreeFormBlock) {
+    if (lexIsToken(RCurlyToken)) {
         lexNextToken();
-        lexBlockEnd();
-        return 1;
-    }
-    if (lexIsBlockEnd()) {
-        lexBlockEnd();
         return 1;
     }
     if (lexIsToken(EofToken)) {
@@ -124,5 +103,4 @@ void parseCloseTok(uint16_t closetok) {
         lexNextToken();
     }
     lexNextToken();
-    lexDecrParens();
 }

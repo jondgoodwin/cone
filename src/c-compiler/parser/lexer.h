@@ -14,22 +14,6 @@ typedef struct Name Name;    // ../ast/nametbl.h
 #include "../coneopts.h"
 #include <stdint.h>
 
-#define LEX_MAX_BLOCKS 1024
-
-// What sort of block the lexer is working with
-typedef enum {
-    FreeFormBlock,    // Indentation is irrelevent
-    SigIndentBlock,   // Indentation is significant
-    SameStmtBlock     // Block statements on same line as statement
-} LexBlockMode;
-
-// Information about a block on the block stack
-typedef struct {
-    uint16_t blkindent;       // Indentation of stmt that started block
-    uint16_t paranscnt;       // How many open parantheses/brackets in block
-    LexBlockMode blkmode;     // Lexer block mode
-} LexBlockInfo;
-
 // Lexer state (one per source file)
 typedef struct Lexer {
     // Value info about a discovered token
@@ -59,13 +43,12 @@ typedef struct Lexer {
     uint32_t flags;        // Lexer flags
     uint16_t toktype;    // TokenTypes
 
-    // ** Significant indentation state -->
-    int16_t curindent;       // Indentation level of current line
-    int16_t stmtindent;      // Indentation level of current statement
-    int16_t tokPosInLine;    // 0=First token in line, 1=Second, etc.
-    char indentch;           // Are we using spaces or tabs?
-    int16_t blkStackLvl;     // How deep are we into block stack
-    LexBlockInfo blkStack[LEX_MAX_BLOCKS];  // Block stack
+    // Where the previous token ended. A diagnostic about what should have
+    // followed a token - the ';' ending a statement - is reported here, after
+    // that token, rather than at whatever the next line happens to start with.
+    char *prevend;
+    char *prevlinep;
+    uint32_t prevlinenbr;
 } Lexer;
 
 // All the possible types for a token
@@ -197,28 +180,5 @@ void lexInjectFile(char *url);
 void lexInject(char *src, char *url);
 void lexPop();
 void lexNextToken();
-
-// Parser indicates new block starts here, e.g., '{'
-void lexBlockStart(LexBlockMode mode);
-// Does block end here, based on block mode?
-int lexIsBlockEnd();
-// Parser indicates block finishes here, e.g., '}'
-void lexBlockEnd();
-
-// Decrement counter for parentheses/brackets
-void lexDecrParens();
-// Increment counter for parentheses/brackets
-void lexIncrParens();
-
-// Is next token at start of line?
-int lexIsEndOfLine();
-
-// Parser signals the start of a new statement (for continuation analysis)
-void lexStmtStart();
-
-// Return true if current token is first on a line that has not been indented
-// This is used by parser to determine whether an operator that starts a new line
-// should be treated as a continuation (infix) or a new statement (prefix).
-int lexIsStmtBreak();
 
 #endif

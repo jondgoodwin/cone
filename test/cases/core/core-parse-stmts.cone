@@ -5,10 +5,38 @@
 // Each condition sits in its own function so recovery from one cannot swallow
 // the next.
 
-// Two statements on one line need a semicolon between them
+// Every statement ends with ';'. Two on one line with none between them, and
+// the diagnostic is placed where the ';' belongs: after the first statement's
+// last token, not on the token that followed it.
 fn missingSemicolon() i32 {
-  mut x = 1 mut y = 2; //~ ErrorNoSemi:13 "Expected semicolon or end of line"
+  mut x = 1 mut y = 2; //~ ErrorNoSemi:12 "Expected ';' to end the statement"
   x + y;
+}
+
+// The ';' is not optional before the '}' that closes the block either: the
+// block's value is its last statement's value with or without one, so nothing
+// is lost by always writing it
+fn missingLastSemicolon() i32 {
+  imm x = 1;
+  x + 1                //~ ErrorNoSemi:8 "Expected ';' to end the statement"
+}
+
+// Nor at the end of a line. The statement runs on into the next line, and the
+// diagnostic still lands at the end of the line the ';' belongs on.
+fn missingSemicolonAtLineEnd() i32 {
+  mut x = 1            //~ ErrorNoSemi:12 "Expected ';' to end the statement"
+  mut y = 2;
+  x + y;
+}
+
+// A block starts with '{'. The ':' that once opened an indented block is
+// refused as what it is, rather than as some other missing token.
+fn colonBlock(a i32) i32 {
+  mut n = a;
+  if n == 1:           //~ ErrorColonBlock:12 "A block starts with '{', not ':'"
+    n = 2;
+  }
+  n;
 }
 
 // An operator is not a term
@@ -30,11 +58,19 @@ fn missingMember(a i32) i32 {
   a;
 }
 
-// 'if' needs a block, and there is neither '{' nor ':'. This diagnostic also
-// lands on the following line, where the missing block would have started.
+// 'if' needs a block and there is no '{'. This diagnostic also lands on the
+// following line, where the missing block would have started. Recovery then
+// skips forward to the next '{' it can find, which is the following function's,
+// and reads that body as the block -- so the function here is never closed
+// and the file ends with it still open. Last in the file for that reason.
 fn missingBlock(a i32) i32 {
   mut n = a;
   if n == 1
-    n = 2;             //~ ErrorNoLCurly:5 "Expected ':' or '{' to start a block"
+    n = 2;             //~ ErrorNoLCurly:5 "Expected '{' to start a block"
   n;
 }
+
+fn swallowed() i32 {
+  1;
+}
+//~ ErrorNoRCurly follow-on

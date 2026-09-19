@@ -135,7 +135,6 @@ void parseFnOrVar(ParseState *parse, uint16_t flags) {
 void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
     // Create and populate a Module node for the program
     while (lex->toktype!=EofToken && !parseBlockEnd()) {
-        lexStmtStart();
         switch (lex->toktype) {
 
         case IncludeToken:
@@ -195,7 +194,6 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
             if (lexIsToken(ColonToken) || lexIsToken(LCurlyToken)) {
                 parseBlockStart();
                 while (!parseBlockEnd()) {
-                    lexStmtStart();
                     if (lexIsToken(FnToken) || lexIsToken(PermToken))
                         parseFnOrVar(parse, extflag);
                     else {

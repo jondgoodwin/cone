@@ -24,7 +24,7 @@ enum ErrorCode {
     ExitNF = 2,        // Could not find specified source files
     ExitMem = 3,    // Out of memory
     ExitOpts = 4,    // Invalid compiler options
-    ExitIndent = 5,    // Too many indent levels in lexer
+    // 5 was ExitIndent, the lexer's block-stack overflow; there is no block stack
     // Unrecoverable internal failure: code generation could not proceed, or a
     // compiler invariant did not hold. Both mean the compiler has nothing
     // further it can honestly say about this source, so both stop here rather
@@ -145,10 +145,13 @@ enum ErrorCode {
     // Macro methods
     ErrorBareMbr = 1077,        // A macro method's body names a member of its type without 'self.'
 
+    // Syntax the language no longer has
+    ErrorColonBlock = 1078,     // ':' where a block should start; indentation does not delimit a block
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name
-    WarnIndent = 3002,        // Inconsistent indent character
+    // 3002 was WarnIndent, mixed tabs and spaces; indentation means nothing to the compiler
     WarnCopy = 3003,       // Unsafe attempt to copy a CopyMethod or CopyMove typed value
     WarnLoop = 3004,       // Infinite loop with no break
 
@@ -162,6 +165,7 @@ extern int errors;
 void errorExit(int exitcode, const char *msg, ...);
 void errorMsgNode(INode *node, int code, const char *msg, ...);
 void errorMsgLex(int code, const char *msg, ...);
+void errorMsgLexAfter(int code, const char *msg, ...);
 void errorMsg(int code, const char *msg, ...);
 void errorUnreachable(INode *node, const char *msg);
 void errorSummary();
