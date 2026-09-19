@@ -555,7 +555,7 @@ void structMakeVtable(StructNode *node) {
         if (!((*nodesp)->flags & FlagMethFld))
             continue;
         FnDclNode *meth = (FnDclNode *)*nodesp;
-        if (meth->namesym->namestr != '_') {
+        if (!inodeIsPrivate((INode*)meth)) {
             meth->vtblidx = vtblidx++;
             nodesAdd(&vtable->methfld, *nodesp);
         }
@@ -563,7 +563,7 @@ void structMakeVtable(StructNode *node) {
     for (nodelistFor(&node->fields, cnt, nodesp)) {
         FieldDclNode *field = (FieldDclNode *)*nodesp;
         INode *fieldtyp = itypeGetTypeDcl(field->vtype);
-        if (field->namesym->namestr != '_' && fieldtyp->tag != EnumTag) {
+        if (!inodeIsPrivate((INode*)field) && fieldtyp->tag != EnumTag) {
             field->vtblidx = vtblidx++;
             nodesAdd(&vtable->methfld, *nodesp);
         }
