@@ -125,6 +125,7 @@ enum TokenTypes {
     IncludeToken,  // 'include'
     ImportToken,   // 'import'
     ExternToken,   // 'extern'
+    PubToken,      // 'pub'
     MacroToken,    // 'macro'
     FnToken,       // 'fn'
     OverloadToken, // 'overload'

@@ -371,14 +371,14 @@ int fnCallLowerMethod(FnCallNode *callnode) {
     }
 
     // Visibility is that of the binding the caller's name reaches: a method's
-    // DclPrivate bit, or the spelling of a field or an overload name. A public
+    // DclPrivate bit, or the 'pub' flag of a field or an overload name. A public
     // overload name may therefore select a private concrete candidate. A name
-    // that binds nothing has only its spelling, and is still refused as private
-    // before it is reported missing. A private member is reached through 'self':
-    // the method's own, or a macro method's, which its expansion has already
-    // replaced with the use site's receiver (FlagSelfRecv).
+    // that binds nothing has no visibility to refuse, and is reported missing.
+    // A private member is reached through 'self': the method's own, or a macro
+    // method's, which its expansion has already replaced with the use site's
+    // receiver (FlagSelfRecv).
     INode *foundnode = iNsTypeFindFnField((INsTypeNode*)objdereftype, methsym);
-    int isprivate = foundnode ? inodeIsPrivate(foundnode) : nameSpellsPrivate(methsym);
+    int isprivate = foundnode && inodeIsPrivate(foundnode);
     if (isprivate && !(callnode->flags & FlagSelfRecv)
         && !(isNameUseNode(obj) && isExpNode(obj)
              && ((VarDclNode*)((NameUseNode*)obj)->dclnode)->namesym == selfName)) {

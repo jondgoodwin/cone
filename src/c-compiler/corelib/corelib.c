@@ -58,25 +58,25 @@ void stdPermInit() {
 }
 
 char *corelibSource =
-"union Option[T] {\n"
+"pub union Option[T] {\n"
   "struct None {}\n"
-  "struct Some {value T;}\n"
+  "struct Some {pub value T;}\n"
 "}\n"
 
-"union Result[T,E] {\n"
-  "struct Ok {value T;}\n"
-  "struct Error {value E;}\n"
+"pub union Result[T,E] {\n"
+  "struct Ok {pub value T;}\n"
+  "struct Error {pub value E;}\n"
 "}\n"
 
-"extern fn malloc(size usize) *u8;\n"
+"pub extern fn malloc(size usize) *u8;\n"
 
-"struct @move so {\n"
-"  fn _alloc(size usize) *u8 inline {malloc(size);}\n"
+"pub struct @move so {\n"
+"  fn alloc(size usize) *u8 inline {malloc(size);}\n"
 "}\n"
 
-"struct rc {\n"
+"pub struct rc {\n"
 "  cnt usize;\n"
-"  fn _alloc(size usize) *u8 inline {malloc(size);}\n"
+"  fn alloc(size usize) *u8 inline {malloc(size);}\n"
 "  fn init() rc inline {rc[1usize];}\n"
 "}\n"
 ;

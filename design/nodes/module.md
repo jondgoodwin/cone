@@ -332,29 +332,32 @@ module, and two sibling module folders can declare the same module name.
 There are no header files and no export list: a package's public interface is
 what its definitions say it is.
 
-- **`_` is private to its module**, always — not to the package. A nested module
-  neither sees its parent's private names nor exposes its own to it, so nesting
-  is a real boundary. An organizational subfolder is how files are grouped
-  *without* erecting one, which is why the boundary needs no escape hatch: no one
-  is forced to nest for layout reasons.
-- **A `_`-named submodule is private to its parent**, which is how a package
-  keeps internals internal without a second visibility level.
+- **A declaration is private to its module unless `pub`**, always — private to
+  the module, not to the package. A nested module neither sees its parent's
+  private names nor exposes its own to it, so nesting is a real boundary. An
+  organizational subfolder is how files are grouped *without* erecting one,
+  which is why the boundary needs no escape hatch: no one is forced to nest for
+  layout reasons.
+- **A submodule is private to its parent unless `pub`** `[planned]`, which is
+  how a package keeps internals internal without a second visibility level.
 - **A folded or imported name is private to the module that folded it**,
   whatever its visibility at the origin. `import B use c as d` binds both `B` and
   `d` in A, and neither is reachable as `A::B` or `A::d`. `pub` opts in:
-  `import pub B use pub c as d`. A module's public surface is therefore what it
-  declares and deliberately re-exports, never what it happens to depend on.
-- **Folding never widens visibility beyond the origin** — only a public name can
+  `import pub B use pub c as d` `[planned]`. A module's public surface is
+  therefore what it declares and deliberately re-exports, never what it happens
+  to depend on.
+- **Folding never widens visibility beyond the origin** — only a pub name can
   be folded at all, so no chain of re-exports can escalate.
-- **`pub` marks a binding; `_` marks a declaration.** `pub` never appears on a
-  declaration, and is contextual to `import`/`use` so it stays usable as an
-  identifier.
+- **`pub` has one meaning, on a declaration and on a binding alike: this entry
+  is visible outside this namespace.** A declaration and a fold are both entries
+  in a namespace, so re-export is `pub` on an imported entry and needs no form
+  of its own.
 
-**Visibility is a bit on the binding, and every check reads it.** The `_`
-spelling writes that bit once, when a declared name's binding is built, and is
-never consulted again. It could not be: the binding for `B` inside A must be
-private while `B` is a public package in its own right, and no `_` appears
-anywhere in the spelling to say so.
+**Visibility is a bit on the binding, and every check reads it.** The `pub`
+keyword writes that bit once, when a declared name's binding is built, and is
+never consulted again. It could not be otherwise: the binding for `B` inside A
+must be private while `B` is a public package in its own right, and nothing in
+the spelling of either says so.
 
 **The binding chain has two ends, and different questions want different ones.**
 
@@ -383,11 +386,11 @@ function. What does work is the multi-module *generation* path, exercised by
 which is what the accumulation rule above asks for.
 
 **A binding has no visibility bit, and whether a fold transits is decided by
-load order.** A declaration has one — `DclPrivate`, written from the `_` when
-it joins its namespace, and what every visibility check reads through
-`inodeIsPrivate`. There is nowhere to record a folded binding's own visibility,
-because `importNameRes` inserts the imported declaration node itself into the
-receiving namespace.
+load order.** A declaration has one — `DclPrivate`, written from the absence of
+`pub` when it joins its namespace, and what every visibility check reads
+through `inodeIsPrivate`. There is nowhere to record a folded binding's own
+visibility, because `importNameRes` inserts the imported declaration node
+itself into the receiving namespace.
 
 Measured: `modNameRes` folds a module's imports at the start of *that module's*
 resolution and `pgmNameRes` walks modules in load order, so a fold is invisible

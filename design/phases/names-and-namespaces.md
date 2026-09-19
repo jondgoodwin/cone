@@ -204,15 +204,16 @@ Implicit `self` is therefore lowering performed after ordinary name resolution h
 
 ## Visibility
 
-Documented Cone visibility is spelling-based:
+A declaration is private to the namespace that owns it unless it is written `pub`:
 
-- A name declared in a module and beginning with `_` is private to that module.
-- A type member beginning with `_` is private to its type.
-- Other names are public.
+- A name declared in a module is private to that module unless declared `pub`.
+- A type member is private to its type unless declared `pub`. A variant declared inside a trait or union is as visible as the trait, and may be declared `pub` itself.
+- `pub` has one meaning wherever it appears: this entry is visible from outside the namespace that owns it. A local declaration has no outside to be visible from, so `pub` on one is `ErrorBadPub`; so is `pub` before `import` or `include`, whose meaning as re-export belongs to the module work.
+- A name's spelling says nothing about its visibility. A leading underscore is a character like any other.
 
-The compiler enforces this on the paths that can reach a private name: `nameUseNameRes` reports `ErrorNotPublic` for a private declaration reached through a module qualifier from outside its module, `importNameRes` skips private nodes when folding, `fnCallLowerMethod` refuses a private member on a receiver that is not `self`, and `typeLitStructReorder` refuses a value for a private field outside the type's methods. The spelling is read once, where a declaration joins its namespace (`dclInfoJoin`), into its `DclPrivate` bit; every check after that asks `inodeIsPrivate`, which answers from the bit for a declaration that carries `DclInfo` and from the spelling only for a node that carries none — a field, a const, a macro, a typedef, an overload name, a generic parameter. Generation reads the same bit — see "Symbols".
+The compiler enforces this on the paths that can reach a private name: `nameUseNameRes` reports `ErrorNotPublic` for a private declaration reached through a module qualifier from outside its module, `importNameRes` skips private nodes when folding, `fnCallLowerMethod` refuses a private member on a receiver that is not `self`, and `typeLitStructReorder` refuses a value for a private field outside the type's methods. The parser sets `FlagPub` on whatever declaration the keyword precedes; where a declaration joins its namespace (`dclInfoJoin`) the flag is read once into its `DclPrivate` bit, and every check after that asks `inodeIsPrivate`, which answers from the bit for a declaration that carries `DclInfo` and from the flag for a node that carries none — a field, a const, a macro, a typedef, an overload name. Generation reads the same bit — see "Symbols".
 
-One consequence is deliberate and worth knowing: **visibility is checked on the binding the caller's name reaches**, not on the candidate overload selection then picks, which is why a public overload name may not hold a private concrete candidate (`ErrorPrivOverload`) — through the public name the private one would be reachable.
+An overload name's visibility is its candidates': the first candidate declares it, and every later candidate must agree (`ErrorPrivOverload`, either way round). A compiler-defined intrinsic candidate counts as `pub` for the name and is exempt from agreeing, which is how the core types keep a private `_neg` behind a pub `-`. One consequence is deliberate and worth knowing: **visibility is checked on the binding the caller's name reaches**, not on the candidate overload selection then picks, which is why a pub overload name may not hold a private concrete candidate — through the pub name the private one would be reachable.
 
 Visibility should belong to the original definition or declaration, while access is evaluated from the use site. A folded or renamed NameDef must not make a private definition public merely by changing its local spelling. The design must also decide whether an alias may deliberately narrow visibility.
 
@@ -291,7 +292,7 @@ stored as a string — and five bits:
 
 | Bit | Meaning | Written from |
 | --- | --- | --- |
-| `DclPrivate` | visible only within its owner | the leading `_`, once |
+| `DclPrivate` | visible only within its owner | the absence of `pub`, once |
 | `DclExternal` | externally supplied: this compile emits no definition | `extern` |
 | `DclCName` | C-style name: no owner prefix, never mangled | `extern` [differs: the regime is meant to be declared on a module, and is inferred per declaration from `extern` until it is] |
 | `DclSystemCC` | system calling convention | `extern system` |

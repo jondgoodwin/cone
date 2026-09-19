@@ -1,38 +1,44 @@
-// A private candidate joining a public overload name.
+// An overload name's candidates must agree with it about visibility.
 //
 // Parse-stage: an overload set is built as each declaration is parsed, so the
-// rejection is reported there, on the candidate. A concrete name beginning with
-// '_' is reachable only inside its owner, and a public overload name would make
-// it reachable from anywhere the name is: an importer selecting it through the
-// name would be calling a function it may not see, and the symbol would have
-// no sound linkage -- private, yet needed from outside. So the two must agree,
-// both private or both public. The refused candidate is left out of the set;
-// the set itself, and its other candidates, stand.
+// rejection is reported there, on the candidate. The name's visibility is its
+// first candidate's. A private candidate may not then join a pub name: the name
+// would make it reachable from anywhere the name is, so an importer selecting
+// it through the name would be calling a function it may not see, and the
+// symbol would have no sound linkage -- private, yet needed from outside. Nor
+// may a pub candidate join a private name, which would hide what it declared
+// visible. The refused candidate is left out of the set; the set itself, and
+// its other candidates, stand.
 //
 // The rule is the same for a method; struct-parse carries that case.
 
-// A public candidate on a public name is the ordinary case
-fn scaleInt overload scale(n i64) i64 {
+// A pub candidate on a pub name is the ordinary case: the first candidate is
+// what made the name pub
+pub fn scaleInt overload scale(n i64) i64 {
   n * 2i64;
 }
 
-// A private candidate on the same public name is refused
-fn _scaleFloat overload scale(n f64) f64 {  //~ ErrorPrivOverload:1 "_scaleFloat is private, so it may not join the public overload name scale"
+// A private candidate on the same pub name is refused
+fn scaleFloat overload scale(n f64) f64 {  //~ ErrorPrivOverload:1 "scaleFloat is private, so it may not join the pub overload name scale"
   n * 2.0d;
 }
 
 // A private name with private candidates is legal; core-overload selects
 // through one
-fn _hideInt overload _hide(n i64) i64 {
+fn hideInt overload hide(n i64) i64 {
   n;
 }
 
-fn _hideFloat overload _hide(n f64) f64 {
+fn hideFloat overload hide(n f64) f64 {
   n;
 }
 
-// The rule is about the candidate's own name, so it applies to the first
-// candidate too, before the set has anything else in it
-fn _lonely overload alone(n i32) i32 {  //~ ErrorPrivOverload:1 "_lonely is private, so it may not join the public overload name alone"
+// The other direction: the first candidate left the name private, so a pub
+// candidate may not join it
+fn lonely overload alone(n i32) i32 {
+  n;
+}
+
+pub fn loud overload alone(n f64) f64 {  //~ ErrorPrivOverload:5 "loud is pub, so it may not join the private overload name alone"
   n;
 }

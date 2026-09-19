@@ -241,7 +241,9 @@ void structSetDropFn(StructNode *node) {
             nodesAdd(&fnsig->parms, (INode*)selfDcl);
             fnsig->rettype = (INode*)newVoidNode();
             block = newBlockNode();
-            INode *newdropfn = (INode*)newFnDclNode(dropName, FlagMethFld, (INode*)fnsig, (INode*)block);
+            // Pub, because the value may be dropped wherever it travels: the
+            // symbol is reached from any module that holds one of these.
+            INode *newdropfn = (INode*)newFnDclNode(dropName, FlagMethFld | FlagPub, (INode*)fnsig, (INode*)block);
             // Owned by the type it drops, so its symbol is spelled after that
             // type and stays unique among all the program's drop functions
             nodelistAdd(&node->nodelist, newdropfn);
@@ -553,7 +555,7 @@ void structMakeVtable(StructNode *node) {
         if (!((*nodesp)->flags & FlagMethFld))
             continue;
         FnDclNode *meth = (FnDclNode *)*nodesp;
-        if (meth->namesym->namestr != '_') {
+        if (!inodeIsPrivate((INode*)meth)) {
             meth->vtblidx = vtblidx++;
             nodesAdd(&vtable->methfld, *nodesp);
         }
@@ -561,7 +563,7 @@ void structMakeVtable(StructNode *node) {
     for (nodelistFor(&node->fields, cnt, nodesp)) {
         FieldDclNode *field = (FieldDclNode *)*nodesp;
         INode *fieldtyp = itypeGetTypeDcl(field->vtype);
-        if (field->namesym->namestr != '_' && fieldtyp->tag != EnumTag) {
+        if (!inodeIsPrivate((INode*)field) && fieldtyp->tag != EnumTag) {
             field->vtblidx = vtblidx++;
             nodesAdd(&vtable->methfld, *nodesp);
         }

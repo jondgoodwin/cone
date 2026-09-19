@@ -61,9 +61,9 @@ large**, which is why the interesting decisions are at the bottom of this table.
 | --- | --- | --- | --- | --- | --- | --- |
 | **control block** | statements in sequence, blocks nested | locals | single entry, single exit; locals released at exit | n/a by design — promote it to a function | n/a | n/a |
 | **function** | the block it holds, and the calls in it | parameters and locals | body invisible; the signature is the interface | function references | generics | overload sets ⚠ *unconfirmed reading* |
-| **type** | fields; `extends` and `mixin` flattened at compile time | members | `_`-prefixed members are private | traits and virtual references | generics; trait defaults cloned into implementers | ⚠ **unknown** — whether a type can gain methods outside its own declaration is not established |
+| **type** | fields; `extends` and `mixin` flattened at compile time | members | members are private unless `pub` | traits and virtual references | generics; trait defaults cloned into implementers | ⚠ **unknown** — whether a type can gain methods outside its own declaration is not established |
 | **thread** | **absent** | **absent** | **absent** | **absent** | **absent** | **absent** |
-| **module** | **[planned]** — the folder walk makes a module span files; today a module *is* one file | yes — this is what a module is today | `_`-prefixed names are private | **absent** — module traits are planned | **absent** — generic modules are planned | **absent** |
+| **module** | **[planned]** — the folder walk makes a module span files; today a module *is* one file | yes — this is what a module is today | names are private unless `pub` | **absent** — module traits are planned | **absent** — generic modules are planned | **absent** |
 | **program / library** | linking; `extern` and the C ABI | ⚠ **absent — the linker has one flat symbol space**, and nothing in a generated name carries the package | partial — a program's definitions are internal to its object, but what a package exports is undecided | **absent** | **absent** | **absent** |
 
 ⚠ **The six-column table shows something the three-column one could not.**
@@ -116,9 +116,11 @@ That is the largest single distance between the modularity aim and the code.
 **A namespace is one uniqueness domain** whatever a name refers to — a module
 cannot hold a type and a function of the same name.
 
-**Encapsulation is spelling, not a keyword.** A leading `_` makes a name private
-to its module or its type. It is visible at every use site, needs no export
-list, and costs no syntax.
+**Encapsulation is the default, and `pub` is the one keyword that opens it.** A
+name is private to its module or its type unless its declaration says `pub`,
+so the interface of a namespace is exactly what its author declared it to be,
+and the default is the smallest interface rather than the largest. There is no
+export list; the declarations are the list.
 
 **Composition is compile-time flattening, and it is the same operation at two
 layers.** `extends` and `mixin` are one mechanism — a synthetic mixin field at
@@ -141,10 +143,10 @@ names are private to the including module.
 
 | Boundary | Guaranteed | Enforced by |
 | --- | --- | --- |
-| module, `_` name | not reachable by qualified name from outside | `nameUseNameRes` |
-| module, `_` name | not copied by a wildcard import | `importNameRes` |
-| type, `_` member | not reachable except through `self` | `fnCallLowerMethod` |
-| type, `_` field | not settable from outside in a type literal | `typeLitStructReorder` |
+| module, name not `pub` | not reachable by qualified name from outside | `nameUseNameRes` |
+| module, name not `pub` | not copied by a wildcard import | `importNameRes` |
+| type, member not `pub` | not reachable except through `self` | `fnCallLowerMethod` |
+| type, field not `pub` | not settable from outside in a type literal | `typeLitStructReorder` |
 | any namespace | no duplicate name, whatever the kind | `namespaceAdd`, `modAddNamedNode` |
 
 Visibility is checked against **the spelling the caller used**, which is why a

@@ -27,7 +27,7 @@ typedef struct DclInfo {
 } DclInfo;
 
 enum DclFacts {
-    DclPrivate    = 0x0001,   // Name begins with '_': visible only within its owner
+    DclPrivate    = 0x0001,   // Not declared 'pub': visible only within its owner
     DclExternal   = 0x0002,   // Externally supplied: this compile emits no definition
     DclCName      = 0x0004,   // C-style name: no owner prefix, never mangled
     DclSystemCC   = 0x0008,   // System calling convention (stdcall and dllimport today)
@@ -37,7 +37,7 @@ enum DclFacts {
 #define dclInfoInit(dclinfo) ((dclinfo)->owner = NULL, (dclinfo)->facts = 0)
 
 // Record that a declaration has joined the namespace of 'owner': set its owner
-// and write its facts from its name and parser flags. No-op for a node without DclInfo.
+// and write its facts from its parser flags. No-op for a node without DclInfo.
 // Modules are not joined this way; their facts are set where they are created (parsemod.c).
 void dclInfoJoin(INode *node, INode *owner);
 

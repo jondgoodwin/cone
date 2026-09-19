@@ -367,6 +367,13 @@ INode *parseExprBlock(ParseState *parse, int isloop) {
             lexNextToken();
             break;
 
+        // A local is seen by its block and by nothing else, so there is nothing
+        // for 'pub' to make visible
+        case PubToken:
+            errorMsgLex(ErrorBadPub, "'pub' may not precede a local declaration; only a module's or a type's members have an outside to be visible from");
+            lexNextToken();
+            break;
+
         case RetToken:
             nodesAdd(&blk->stmts, parseReturn(parse));
             break;

@@ -80,6 +80,7 @@ void keywordInit() {
     keyAdd("include", IncludeToken);
     keyAdd("import", ImportToken);
     keyAdd("extern", ExternToken);
+    keyAdd("pub", PubToken);
     keyAdd("macro", MacroToken);
     keyAdd("fn", FnToken);
     keyAdd("overload", OverloadToken);

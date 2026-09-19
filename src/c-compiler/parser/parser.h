@@ -30,6 +30,8 @@ enum ParseFlags {
 // parsemod.c
 ProgramNode *parsePgm(ConeOptions *opt);
 ModuleNode *parseModuleBlk(ParseState *parse, ModuleNode *mod);
+// Consume a 'pub' that precedes a declaration, returning FlagPub, or 0
+uint16_t parsePub();
 
 // parsefnflow.c
 INode *parseFn(ParseState *parse, uint16_t mayflags);

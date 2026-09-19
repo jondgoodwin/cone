@@ -67,7 +67,7 @@ enum ErrorCode {
     // 1032 was ErrorNotLval, 1033 ErrorAddr; both conditions are ErrorBadLval
     ErrorBadPerm = 1034,    // Permission not allowed
     // 1035 was ErrorNoFlds; a type with no such field is ErrorNoMbr
-    ErrorBadAlloc = 1036,  // Region cannot allocate: missing or ill-formed _alloc method
+    ErrorBadAlloc = 1036,  // Region cannot allocate: missing or ill-formed alloc method
     // 1037 was ErrorNoDbl; no construct requires a '::' that could be missing
     ErrorNoVar = 1038,        // Missing variable name
     ErrorNoEof = 1039,        // Missing end-of-file
@@ -147,6 +147,9 @@ enum ErrorCode {
 
     // Syntax the language no longer has
     ErrorColonBlock = 1078,     // ':' where a block should start; indentation does not delimit a block
+
+    // Visibility
+    ErrorBadPub = 1079,         // 'pub' on something that has no namespace to be visible outside of
 
     // Warnings
     WarnCode = 3000,

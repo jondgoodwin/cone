@@ -15,8 +15,9 @@ void dclInfoJoin(INode *node, INode *owner) {
     dclinfo->owner = owner;
 
     uint16_t facts = 0;
-    // The spelling, not inodeIsPrivate: this is where the bit inodeIsPrivate reads is written
-    if (nameSpellsPrivate(inodeGetName(node)))
+    // The parser's flag, read once: this is where the bit inodeIsPrivate reads
+    // is written. A module declares no visibility yet, so none is recorded for it.
+    if (node->tag != ModuleTag && !(node->flags & FlagPub))
         facts |= DclPrivate;
     // 'extern' and 'extern system' are fn/var flags; the same bits mean other things on a type
     if (node->tag == FnDclTag || node->tag == VarDclTag) {
