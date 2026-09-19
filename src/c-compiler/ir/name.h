@@ -21,11 +21,6 @@ typedef struct Name {
     char namestr;            // First byte of name's string (the rest follows)
 } Name;
 
-// Does the name begin with '_', the spelling that declares it private?
-// Read where the DclPrivate bit is written (dclInfoJoin) and for a name that
-// has no declaration bit to read; every other visibility check asks inodeIsPrivate.
-int nameSpellsPrivate(Name *namesym);
-
 // Common symbols - see nametbl.c
 extern Name *anonName;  // "_" - the absence of a name
 extern Name *tempName;    // "-_"
@@ -81,7 +76,7 @@ extern Name *optionName;   // "Option"
 
 extern Name *rcName;       // "rc"
 extern Name *soName;       // "so"
-extern Name *allocMethodName;  // "_alloc"
+extern Name *allocMethodName;  // "alloc"
 extern Name *initMethodName;   // "init"
 
 typedef struct VarDclNode VarDclNode;

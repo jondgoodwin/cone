@@ -151,7 +151,7 @@ selection be a pure filter.
 A field, rather than a method, retags the node `FldAccessTag` and injects a
 deref on the receiver if needed.
 
-A private member (`_name`) is granted to a receiver that is the enclosing
+A private member (one not declared `pub`) is granted to a receiver that is the enclosing
 method's own `self`, and to an access that a macro method's body wrote on *its*
 `self` — the clone carries `FlagSelfRecv`, stamped by `cloneFnCallNode` at
 expansion, since by then the receiver is the use site's expression. Every other

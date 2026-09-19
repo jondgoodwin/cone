@@ -22,16 +22,16 @@
 
 // Temporary hack:  The source for the importable stdio package
 char *stdiolib =
-"extern {fn printStr(str &[]u8); fn printCStr(str *u8); fn printFloat(a f64); fn printInt(a i64); fn printUInt(a u64); fn printChar(code u64);}\n"
-"struct IOStream{"
-"  fd i32;"
-"  fn appendStr overload `<-`(self &mut, str &[]u8) {printStr(str);}"
-"  fn appendCStr overload `<-`(self &mut, str *u8) {printCStr(str);}"
-"  fn appendInt overload `<-`(self &mut, i i64) {printInt(i);}"
-"  fn appendFloat overload `<-`(self &mut, n f64) {printFloat(n);}"
-"  fn appendUInt overload `<-`(self &mut, i u64) {printUInt(i);}"
+"pub extern {fn printStr(str &[]u8); fn printCStr(str *u8); fn printFloat(a f64); fn printInt(a i64); fn printUInt(a u64); fn printChar(code u64);}\n"
+"pub struct IOStream{"
+"  pub fd i32;"
+"  pub fn appendStr overload `<-`(self &mut, str &[]u8) {printStr(str);}"
+"  pub fn appendCStr overload `<-`(self &mut, str *u8) {printCStr(str);}"
+"  pub fn appendInt overload `<-`(self &mut, i i64) {printInt(i);}"
+"  pub fn appendFloat overload `<-`(self &mut, n f64) {printFloat(n);}"
+"  pub fn appendUInt overload `<-`(self &mut, i u64) {printUInt(i);}"
 "}"
-"mut print = IOStream[0];"
+"pub mut print = IOStream[0];"
 ;
 
 void parseGlobalStmts(ParseState *parse, ModuleNode *mod);
@@ -132,44 +132,59 @@ void parseFnOrVar(ParseState *parse, uint16_t flags) {
 
 // Parse a global area statement (within a module)
 // modAddNode adds node to module, as needed, including error message for dupes
+// Consume a 'pub' that precedes a declaration, returning the flag it sets.
+// The flag is on the node before the node joins its namespace, since that is
+// when dclInfoJoin reads it.
+uint16_t parsePub() {
+    if (!lexIsToken(PubToken))
+        return 0;
+    lexNextToken();
+    return FlagPub;
+}
+
 void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
     // Create and populate a Module node for the program
     while (lex->toktype!=EofToken && !parseBlockEnd()) {
+        uint16_t pubflag = parsePub();
         switch (lex->toktype) {
 
+        // Re-export is the module work's to define: 'pub' has no meaning here yet
         case IncludeToken:
-            parseInclude(parse);
+        case ImportToken:
+            if (pubflag)
+                errorMsgLex(ErrorBadPub, "'pub' may not precede include or import");
+            if (lexIsToken(IncludeToken))
+                parseInclude(parse);
+            else {
+                ImportNode *newnode = parseImport(parse);
+                modAddNode(mod, NULL, (INode*)newnode);
+            }
             break;
-
-        case ImportToken: {
-            ImportNode *newnode = parseImport(parse);
-            modAddNode(mod, NULL, (INode*)newnode);
-            break;
-        }
 
         case TypedefToken: {
             TypedefNode *newnode = parseTypedef(parse);
+            newnode->flags |= pubflag;
             modAddNode(mod, newnode->namesym, (INode*)newnode);
             break;
         }
 
         // 'struct'-style type definition
         case StructToken: {
-            INode *node = parseStruct(parse, 0);
+            INode *node = parseStruct(parse, pubflag);
             modAddNode(mod, inodeGetName(node), node);
             break;
         }
 
         // 'trait' type definition
         case TraitToken: {
-            INode *node = parseStruct(parse, TraitType);
+            INode *node = parseStruct(parse, TraitType | pubflag);
             modAddNode(mod, inodeGetName(node), node);
             break;
         }
 
         // 'union' type definition
         case UnionToken: {
-            INode *node = parseStruct(parse, TraitType | SameSize);
+            INode *node = parseStruct(parse, TraitType | SameSize | pubflag);
             modAddNode(mod, inodeGetName(node), node);
             break;
         }
@@ -177,15 +192,18 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
         // 'macro'
         case MacroToken: {
             MacroDclNode *macro = parseMacro(parse);
+            macro->flags |= pubflag;
             modAddNode(mod, macro->namesym, (INode*)macro);
             break;
         }
 
-        // 'extern' qualifier in front of fn or var (block)
+        // 'extern' qualifier in front of fn or var (block). A 'pub' before
+        // 'extern' reaches every declaration in the block; one inside it
+        // reaches that declaration alone.
         case ExternToken:
         {
             lexNextToken();
-            uint16_t extflag = FlagExtern;
+            uint16_t extflag = FlagExtern | pubflag;
             if (lexIsToken(IdentToken)) {
                 if (strcmp(&lex->val.ident->namestr, "system")==0)
                     extflag |= FlagSystem;
@@ -194,8 +212,9 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
             if (lexIsToken(ColonToken) || lexIsToken(LCurlyToken)) {
                 parseBlockStart();
                 while (!parseBlockEnd()) {
+                    uint16_t itemflag = extflag | parsePub();
                     if (lexIsToken(FnToken) || lexIsToken(PermToken))
-                        parseFnOrVar(parse, extflag);
+                        parseFnOrVar(parse, itemflag);
                     else {
                         errorMsgLex(ErrorNoSemi, "Extern expects only functions and variables");
                         parseSkipToNextStmt();
@@ -210,12 +229,13 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
         // Function or variable
         case FnToken:
         case PermToken:
-            parseFnOrVar(parse, 0);
+            parseFnOrVar(parse, pubflag);
             break;
 
         // Named const declaration
         case ConstToken: {
             ConstDclNode *constnode = parseConstDcl(parse);
+            constnode->flags |= pubflag;
             modAddNode(parse->mod, constnode->namesym, (INode*)constnode);
             break;
         }

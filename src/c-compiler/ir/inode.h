@@ -187,6 +187,13 @@ enum NodeTags {
 #define FlagExtern    0x0002        // FnDcl, VarDcl: C ABI extern (no value, no mangle)
 #define FlagSystem    0x0004        // FnDcl: imported system call (+stdcall on Winx86)
 #define FlagInline    0x0008        // FnDcl: "inline" fn/method
+// A declaration written 'pub' is visible from outside the namespace that owns
+// it; unmarked, it is private to that namespace. Set by the parser on whatever
+// declaration the keyword precedes -- fn, variable, field, type, typedef, const
+// or macro -- and on an overload name by its candidates (fnOverloadDclAdd).
+// 0x0200 is free of every block here: the declaration flags above stop at
+// 0x0020 and the type flags skip it.
+#define FlagPub       0x0200        // Any declaration: visible outside the namespace that owns it
 
 #define FlagGenMod    0x0001        // Module: Generate code for the module, if true
 

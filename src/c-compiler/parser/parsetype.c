@@ -236,12 +236,14 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     if (parseHasBlock()) {
         parseBlockStart();
         while (!parseBlockEnd()) {
+            uint16_t pubflag = parsePub();
             if (lexIsToken(FnToken)) {
                 FnDclNode *fn = (FnDclNode*)parseFn(parse, methflags);
                 if (fn && isNamedNode(fn)) {
                     Nodes *parms = ((FnSigNode *)fn->vtype)->parms;
                     if (parms->used > 0 && ((VarDclNode*)nodesGet(parms, 0))->namesym == selfName)
                         fn->flags |= FlagMethFld;  // function is a method if first parm is 'self'
+                    fn->flags |= pubflag;
                     iNsTypeAddFn((INsTypeNode*)strnode, fn);
                 }
             }
@@ -254,11 +256,15 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                     Nodes *parms = macro->parms;
                     if (parms->used > 0 && ((GenVarDclNode*)nodesGet(parms, 0))->namesym == selfName)
                         macro->flags |= FlagMethFld;
+                    macro->flags |= pubflag;
                     iNsTypeAddMacro((INsTypeNode*)strnode, macro);
                 }
             }
             else if (lexIsToken(MixinToken)) {
-                // Handle a trait mixin, capturing it in a field-like node
+                // Handle a trait mixin, capturing it in a field-like node.
+                // It binds no name, so there is nothing for 'pub' to expose.
+                if (pubflag)
+                    errorMsgLex(ErrorBadPub, "'pub' may not precede a mixin, which declares no name");
                 FieldDclNode *field = newFieldDclNode(anonName, (INode*)immPerm);
                 field->flags |= IsMixin | FlagMethFld;
                 lexNextToken();
@@ -271,7 +277,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
             else if (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
                 FieldDclNode *field = parseFieldDcl(parse, mutPerm);
                 field->index = fieldnbr++;
-                field->flags |= FlagMethFld;
+                field->flags |= FlagMethFld | pubflag;
                 if (field->vtype->tag == EnumTag)
                     hasEnumFld = 1;
                 structAddField(strnode, field);
@@ -282,7 +288,9 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 if (strnode->flags & TraitType) {
                     strnode->flags |= HasTagField;
 
-                    StructNode *substruct = (StructNode *)parseStruct(parse, 0); // Parse sub-struct
+                    // A variant is as visible as its trait: a use that can name
+                    // the trait can match on it. It may also be declared 'pub' itself.
+                    StructNode *substruct = (StructNode *)parseStruct(parse, pubflag | (strnode->flags & FlagPub)); // Parse sub-struct
                     substruct->flags |= HasTagField | (strnode->flags & SameSize);
 
                     // Build node that indicates this struct extends from trait

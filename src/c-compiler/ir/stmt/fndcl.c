@@ -38,15 +38,25 @@ FnOverloadDclNode *newFnOverloadDclNode(Name *namesym) {
 // The set is a method set when any of its candidates is a method, which is
 // what lets an unqualified use be rewritten to 'self.name'.
 //
-// A private candidate may not join a public name: the name would make it
-// reachable from outside its owner, and a symbol that is private and reachable
-// has no sound linkage. A compiler-defined intrinsic is exempt, as it is not a
-// symbol at all, which is what lets the core types hide '_neg' behind '-'.
+// The name's visibility is its candidates': the first candidate declares it,
+// and every later one must agree. A private candidate may not join a pub name,
+// since the name would make it reachable from outside its owner and a symbol
+// that is private and reachable has no sound linkage; and a pub candidate may
+// not join a private name, which would hide what it declares visible. A
+// compiler-defined intrinsic is not a symbol at all: it counts as pub for the
+// name it joins, which is what lets the core types hide '_neg' behind a pub
+// '-', and it is exempt from agreeing.
 void fnOverloadDclAdd(FnOverloadDclNode *ovlnode, FnDclNode *fnnode) {
-    if (inodeIsPrivate((INode*)fnnode) && !inodeIsPrivate((INode*)ovlnode)
-        && !(fnnode->value && fnnode->value->tag == IntrinsicTag)) {
-        errorMsgNode((INode*)fnnode, ErrorPrivOverload,
-            "%s is private, so it may not join the public overload name %s; make both private or both public.",
+    int intrinsic = fnnode->value && fnnode->value->tag == IntrinsicTag;
+    int ispub = intrinsic || (fnnode->flags & FlagPub) != 0;
+    if (ovlnode->overloads->used == 0) {
+        if (ispub)
+            ovlnode->flags |= FlagPub;
+    }
+    else if (!intrinsic && ispub != ((ovlnode->flags & FlagPub) != 0)) {
+        errorMsgNode((INode*)fnnode, ErrorPrivOverload, ispub
+            ? "%s is pub, so it may not join the private overload name %s; make both pub or neither."
+            : "%s is private, so it may not join the pub overload name %s; make both pub or neither.",
             &fnnode->namesym->namestr, &ovlnode->namesym->namestr);
         return;
     }

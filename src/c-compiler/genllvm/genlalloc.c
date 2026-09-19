@@ -129,7 +129,7 @@ void genlAllocFillArray(GenState *gen, LLVMValueRef nbrelems, ArrayNode *arrayli
 // This is roughly what it does:
 //
 // fn allocate(size usize) +region-uni T
-//   imm ref = region::_alloc(T.size) as +region-uni T
+//   imm ref = region::alloc(T.size) as +region-uni T
 //   if (ref is None)
 //     panic or return None
 //   ref.region.init()
@@ -171,7 +171,7 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
         sizeval = LLVMBuildAdd(gen->builder, sizeval, extra, "");
     }
 
-    // Do region allocation (using its _alloc method) and then bitcast to multi-layered-struct ptr
+    // Do region allocation (using its alloc method) and then bitcast to multi-layered-struct ptr
     FnDclNode *allocmeth = (FnDclNode*)iTypeFindFnField(region, allocMethodName);
     LLVMValueRef malloc = genlFnCallInternal(gen, SimpleDispatch, (INode*)allocmeth, 1, &sizeval);
     LLVMValueRef ptrstructype = LLVMBuildBitCast(gen->builder, malloc, reftype->typeinfo->ptrstructype, "");
