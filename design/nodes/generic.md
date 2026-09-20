@@ -189,10 +189,11 @@ member bare — `nameUseNameRes` refuses it with `ErrorBareMbr` while
 function whose `self`, if any, is not this type's. A macro without a `self`
 parameter is a static macro of the type: bound in the namespace, expanded by
 nothing today, and `x.name` on it is `ErrorNoMbr`, as a static function would
-be. A macro declared on a trait is a member of the trait alone: `structTypeCheck`
-folds only `FnDcl` defaults into implementing types and variants, so a union's
-macro is found on the union's own namespace, which is what lets a `match` on its
-receiver see the union rather than one variant.
+be. A macro declared on a trait is a member of the trait alone: a trait's
+expansion into an implementing type or variant (`structInheritTrait`) folds
+only `FnDcl` defaults, so a union's macro is found on the union's own namespace,
+which is what lets a `match` on its receiver see the union rather than one
+variant.
 
 ## Flow
 

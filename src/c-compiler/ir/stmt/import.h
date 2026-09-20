@@ -23,6 +23,9 @@ void importPrint(ImportNode *pgm);
 
 void importNameRes(NameResState *pstate, ImportNode *mod);
 
+// Hook every name the import will fold, without folding it
+void importHookFolds(ImportNode *node);
+
 void importTypeCheck(TypeCheckState *pstate, ImportNode *mod);
 
 #endif

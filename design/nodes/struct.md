@@ -5,10 +5,13 @@ live here.
 
 **At a glance.** `parseStruct` does a great deal — tag synthesis, mixin
 placeholders, nested variants, generic parameter copying. Name resolution
-inserts `Self` and hooks the whole namespace. Type check expands mixins, indexes
-fields, computes infectious flags, sets `TypeChecked` **before** methods, then
-synthesizes a drop function. Generation lowers to a named LLVM struct, or to
-padded variants, or to nothing at all.
+builds the dictionary whole: it inserts `Self`, mixes in the trait the type
+extends and any it names with `mixin` — the trait's fields spliced in, its
+default methods cloned — and only then resolves the method bodies, so an
+inherited member may be named bare. Type check indexes fields, computes
+infectious flags, sets `TypeChecked` **before** methods, verifies the traits'
+method requirements, then synthesizes a drop function. Generation lowers to a
+named LLVM struct, or to padded variants, or to nothing at all.
 
 *Provenance: read from source.*
 
@@ -61,6 +64,7 @@ stops conforming the moment a trait declares one. It is reached as
 | `dclinfo` | owner and the facts its symbols are spelled from — [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols". The owner is a module, or the trait for a variant declared inside one. Read for one thing besides naming: rejecting a variant declared outside its closed trait's module, through `dclInfoGetModule` |
 | `basetrait` | the `extends` **type expression** — a `NameUseNode`, or an `FnCallNode` for a generic base. **Not a `StructNode*`.** Two helpers unwrap it and they answer different questions: `structBaseTraitDcl` takes **one hop**, to the declaration of the trait this type extends, while `structGetBaseTrait` recurses to the **bottom-most** one. Picking the wrong one is how the infection loop hangs |
 | `derived` | for a **closed** trait, its variants in declaration order. The index *is* the `tagnbr` |
+| `traits` | every trait whose members were mixed in — the base trait first, then each `mixin` in field order — or NULL. Written where the members are spliced in (`structInheritTrait`) and read once, by type check's requirement check, which is the only thing that still needs to know which trait a member came from |
 | `fields` | all fields in layout order |
 | `vtable` | NULL until `structMakeVtable` |
 | `tagnbr` | discriminant value, assigned at parse |
@@ -102,7 +106,8 @@ LLVM struct, which is why a reference to a trait could not be lowered.
 - Each method joins the type through `iNsTypeAddFn`, which records the type as
   its owner; that is what spells its symbol `Type_meth` at generation.
 - `mixin T` becomes a `FieldDclNode` named `_` flagged `IsMixin`, a **placeholder
-  that survives to type check**.
+  that name resolution replaces with the trait's members** — or type check
+  does, when the trait is an instance of a generic.
 - A **nested `struct` inside a trait** sets `HasTagField` on the enclosing trait,
   synthesizes the variant's `basetrait`, assigns `tagnbr` from `derived->used`,
   and registers the variant at module scope — bound in the module, but owned
@@ -113,23 +118,67 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   `flags & (TraitType | HasTagField)` — a two-bit mask, so **every trait gets
   one, open or closed**, and every `extends` struct inherits it through mixin
   expansion. That is why `%Box = { i8, i32, i32 }` for a struct extending a
-  trait declaring one `i32`.
+  trait declaring one `i32`. **The discriminant is marked `IsTagField` here** —
+  a base trait's first enum-typed field, synthesized or written — because a
+  variant copies the trait's fields as soon as it is name resolved, before the
+  trait is type checked; type check validates the mark and refuses any other
+  enum-typed field.
 
 ## Name resolution
 
-`structNameRes`, in a strict order that matters:
+`structNameRes`, in a strict order that matters. **The dictionary is built
+whole before any method body is resolved**, so that a body may name an
+inherited member bare, exactly as it names the type's own.
 
-1. Push the hook table.
-2. Resolve generic parameters **inside** the push — resolving one hooks it, so
+1. Return at once if the type is already resolved or under way — it may have
+   been reached by demand before the module's walk got to it — and mark it
+   `NameResolving`.
+2. Push the hook table.
+3. Resolve generic parameters **inside** the push — resolving one hooks it, so
    doing it beforehand would bind it in the enclosing scope and the matching pop
    would never remove it.
-3. **Resolve `basetrait` now**, before the type's own namespace is hooked — the
+4. **Resolve `basetrait` now**, before the type's own namespace is hooked — the
    comment says "before any other name in type is hooked", and the reason is
-   scoping: once step 5 hooks the members, they shadow module scope, and the
-   type's own name is among them.
-4. Insert `Self` into the namespace, aliasing the struct to itself. This is what
+   scoping: once step 7 hooks the members, they shadow module scope, and the
+   type's own name is among them. When it names a trait declaration this type
+   may extend (a trait, and closed only if this type is), **insert a mixin
+   placeholder for it at position 0**, exactly as `mixin` does — which is how
+   `extends` and `mixin` become one mechanism.
+5. **Demand each trait a placeholder names** (`structNameResDemand`): resolve it
+   now, in its own module's scope if it lives elsewhere, so that its own members
+   are complete before they are copied. Still before this type's names are
+   hooked, so the trait's bodies bind in the trait's scope and not in this
+   type's. A trait already under way is a cycle — `A extends B extends A`, or a
+   trait mixing itself in — and is `ErrorCircular` where it is named; the
+   compiler used to loop here without end.
+6. Insert `Self` into the namespace, aliasing the struct to itself. This is what
    `parseFnSig`'s `Self` inference for a method parameter depends on.
-5. Hook the whole namespace, then resolve fields and members.
+7. Hook the whole namespace.
+8. **Walk the fields backwards** — so that splicing does not move a field not
+   yet reached — resolving each ordinary field and **replacing each placeholder
+   whose trait is resolved** with the trait's members (`structInheritTrait`,
+   under a clone state whose `Self` is this type): clones of its fields in its
+   order, entered in the namespace (a name the type already declared is
+   `ErrorDupName`, reported on the clone, which keeps the trait's position), and
+   a clone of each default method whose name the type does not declare. A
+   requirement with no body is inherited as it is, so that the name is in the
+   dictionary: a trait passes it on, and a struct is told to implement it by
+   type check. The new entries are hooked as they land. A placeholder whose
+   trait is an instance of a generic is left for type check, since the instance
+   does not exist yet.
+9. Resolve the methods declared here — only those; the clones arrived resolved
+   in the trait's scope, and this walk cannot be repeated on a node.
+10. Pop, and mark `NameResolved`.
+
+**Reached by demand.** `structNameResDemand` is the one place name resolution
+leaves walk order, and it is confined to a type declaration reached from
+another type declaration, so what is hooked at the jump is known: module names,
+and the demanding type's generic parameters. A type in another module resolves
+with that module's namespace hooked over the current one and, if that module has
+not begun its own resolution — modules resolve in load order, the root first —
+with the names its wildcard imports *will* fold hooked too (`importHookFolds`),
+without folding them. Folding early would change which names a qualifier can
+reach in that module; see [module](module.md).
 
 ## Type check
 
@@ -138,24 +187,35 @@ LLVM struct, which is why a reference to a trait could not be lowered.
 1. **A template returns immediately** — only clones are checked.
 2. Type check `basetrait`; require a trait; require the closed-ness to match;
    propagate `SameSize`/`HasTagField` down from the bottom-most base, and
-   require a closed trait's derived types to share its module. Then **insert a
-   synthetic mixin field for the base trait at index 0** — which is how
-   `extends` and `mixin` become one mechanism.
-3. **Walk fields backwards.** Backwards so that splicing does not invalidate the
-   cursor. A mixin field is replaced in place by **clones** of the trait's
-   fields, and the trait's default methods are folded in — a name already
-   present must match the required signature; a trait method with no body that
-   nothing implements is an unmet requirement.
-4. **Walk forwards**: assign `FieldDclNode.index` over the final order, OR the
-   field types' infectious flags together, and identify the tag field.
-5. `final` forces `MoveType`; `clone` clears it. Then propagate up the base
+   require a closed trait's derived types to share its module. A base trait
+   name resolution did not mix in — it is in `traits` when it did — is an
+   instance of a generic that exists only now, so **insert a mixin placeholder
+   for it at index 0** as name resolution would have.
+3. Type check every trait in `traits`, so each is laid out before this type is.
+4. **Walk fields backwards.** Backwards so that splicing does not invalidate the
+   cursor. An ordinary field is type checked. A placeholder still standing —
+   the generic case — is replaced by the trait's members exactly as name
+   resolution replaces one (`structInheritTrait`), except that nothing is
+   hooked: no body is resolved after this. Such a type's inherited members
+   cannot be named bare (see Hazards).
+5. **Walk forwards**: assign `FieldDclNode.index` over the final order, OR the
+   field types' infectious flags together, and validate the tag field: the one
+   marked at parse is the discriminant, and any other enum-typed field is
+   refused.
+6. `final` forces `MoveType`; `clone` clears it. Then propagate up the base
    chain, one `structBaseTraitDcl` hop per iteration.
-6. **`TypeChecked` is set here, before the methods.** The placement is
+7. **`TypeChecked` is set here, before the methods.** The placement is
    load-bearing, not an optimization: fields are indexed, size is known, and the
    method set is complete, so a method may use its own type by value —
    `fn twin(self) Self`.
-7. Type check every method.
-8. **`structSetDropFn`** — validate a `final` method, then, if any field's type
+8. Type check every method.
+9. **Verify the traits' method requirements** (`structCheckTraitReqs`), now
+   that every signature has its types: for each method of each trait in
+   `traits`, the type's binding for the name must have the one candidate of the
+   trait's signature — an inherited default meets that by construction — and a
+   requirement with no body, inherited as such, is unmet in a struct; a trait
+   may pass it on.
+10. **`structSetDropFn`** — validate a `final` method, then, if any field's type
    has a drop function, synthesize a `drop` method, owned by the type so its
    symbol is spelled as any method's — `Bundle::drop`, `_CNvNt6Bundle4drop` —
    calling `final` and then each droppable field. The
@@ -220,7 +280,18 @@ order — `genlallocref` hard-codes `derived[1]` as `Option`'s `Some`.
   runs after the method loop, so `dropfn` is still NULL while method bodies are
   checked and flow-analyzed.
 - **Multiple mixins produce multiple tag fields**, and no duplicate-name error
-  fires because `namespaceAdd` silently ignores `_`.
+  fires because `namespaceAdd` silently ignores `_`. A trait extending a trait
+  meets this on its own: it synthesizes a tag field and inherits its base's, so
+  the second is refused at type check.
+- **A member inherited from an instance of a generic trait cannot be named
+  bare.** The instance exists only when type check instantiates it, so its
+  members join the type's dictionary after every body has been resolved; they
+  are reached as `self.name`. A trait that is a declaration when the type is
+  resolved has no such limit.
+- **The demanding type's generic parameters stay hooked while a trait is
+  resolved by demand.** A name the trait fails to declare that happens to spell
+  one of them binds to it silently, where it would otherwise be `ErrorUnkName`.
+  Only a program already in error can meet it.
 - **A trait's `TypeChecked` does not mean it has a size.** A union's size is
   computed at generation from `derived`. `itypeVariantPending` exists for
   exactly this.

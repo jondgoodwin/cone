@@ -1,0 +1,42 @@
+// What a type inherits from its trait is bound while the type is name resolved
+// -- the trait's fields and default methods join the type's dictionary before
+// any of its method bodies is resolved -- so what can go wrong in that binding
+// is reported at this stage: a trait's field arriving under a name the type
+// already declares, and types that each extend the other, so that neither can
+// be completed first.
+//
+// Name-resolution stage only: name resolution returns before type checking, so
+// nothing about signatures or layout belongs here. Those are in
+// trait-typecheck-conform.
+
+trait Tagged {
+  // Mixing this field into Redeclares below, which declares 'tag' itself, is
+  // the duplicate. The field is cloned from here into the struct, and the clone
+  // keeps this location, so the diagnostic lands on the trait's declaration
+  // rather than on the struct that caused it.
+  tag i32;  //~ ErrorDupName:3 "Trait may not mix in a duplicate field name"
+}
+
+// The trait's field is mixed in, so declaring it again is a duplicate rather
+// than an override
+struct Redeclares extends Tagged {
+  tag i32;
+}
+
+// Two traits that each extend the other. The first declared is resolved first
+// and demands the second, which demands the first back and finds it still under
+// way, so the second is refused where it names the first. The compiler used to
+// loop here without end.
+trait Loop extends Back {
+  a i32;
+}
+
+trait Back extends Loop {  //~ ErrorCircular:20 "each depends on the other"
+  b i32;
+}
+
+// The shortest cycle, through a mixin: a trait mixing itself in
+trait Ring {
+  mixin Ring;  //~ ErrorCircular:9 "each depends on the other"
+  r i32;
+}

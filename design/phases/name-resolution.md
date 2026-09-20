@@ -1,6 +1,7 @@
 Name resolution binds every name to its declaration and settles which
 parser-ambiguous nodes are types and which are values. It is one eager pass over
-the whole program, in source order.
+the whole program, in source order, with one departure: a type reached by
+another type that extends or mixes it in is resolved when it is first needed.
 
 This note is the **mechanism**: how the walk works, what it mutates, where it
 stops. [Names and Namespaces](../phases/names-and-namespaces.md) is the **rules** — what a
@@ -25,7 +26,9 @@ with the author is the claim that these rule rather than describe.**
    single `node` slot and stacks the previous; leaving restores it. ▸ **Settles**
    that scope entry and exit must be perfectly paired, and **forbids** resolving
    a node out of walk order, since the slot's contents are only correct inside
-   the right scope.
+   the right scope. The one departure is a type declaration reached from
+   another type declaration (section 3), where what is plugged in at the jump
+   is known and the target's scope is hooked over it.
 3. **It binds and retags in place; it does not rewrite.** A name use is bound —
    `dclnode` is set and the node keeps its tag, since what it is can be asked of
    the declaration — and the parser-ambiguous shapes are retagged. Either way the
@@ -55,7 +58,9 @@ with the author is the claim that these rule rather than describe.**
 | `nametblHookPop` | restore every saved pair in reverse, drop the table |
 
 Push and pop sites: `modNameRes` (via `modHook`, the whole module namespace),
-`structNameRes` (generic parms, then the whole type namespace), `fnDclNameRes`
+`structNameRes` (generic parms, then the whole type namespace, then each
+inherited member as it lands), `structNameResDemand` (another module's
+namespace, via `modHook`, over whatever is current), `fnDclNameRes`
 (generic parms, then value parms), `macroNameRes` (parms), `blockNameRes`
 (locals, accumulated one at a time as they are reached), and
 `clonePushState`/`clonePopState` — **which run during type check**, for generic
@@ -87,15 +92,32 @@ locals. Each intermediate must be a module or a struct.
 | Kind | Owns a `Namespace` hash table? | Populated |
 | --- | --- | --- |
 | Module | yes, `ModuleNode.namespace` | at **parse** time by `modAddNamedNode`; extended by `importNameRes` folding |
-| Namespaced type | yes, `INsTypeNode.namespace` | at **parse** time; `structNameRes` adds `Self` |
+| Namespaced type | yes, `INsTypeNode.namespace` | at **parse** time; `structNameRes` adds `Self` and the fields and default methods of every trait the type extends or mixes in |
 | Lexical block / parameter list | **no** | not a namespace at all — locals are hooked one at a time |
 
 That a module's and a type's names exist before the pass runs is what lets the
-pass be a single source-order walk with no forward-reference machinery: binding
+pass be a source-order walk with no forward-reference machinery: binding
 a name needs the declaration to *exist*, not to be analyzed, and the parser
 guarantees that. Locals are the exception and are deliberately order-dependent —
 `varDclNameRes` resolves the initializer **before** hooking the name, so
 `imm x = x` binds the outer `x` or fails.
+
+**Inherited members are the other exception, and they are why the pass has one
+use of demand.** A type's dictionary is built whole before any of its method
+bodies is resolved, so that a body may name an inherited field or default
+method bare as it names the type's own — and the members it inherits are
+*copies*, of a trait whose own members must therefore be complete first. So
+`structNameRes` demands the trait (`structNameResDemand`): resolves it now if
+the walk has not reached it, in its own module's scope when it lives elsewhere.
+Two marks on the type make that safe, `NameResolving` and `NameResolved`, and a
+trait found still under way is a cycle, `ErrorCircular`. The demand is confined
+to a type reached from a type, so what is hooked at the jump is always module
+names and the demanding type's generic parameters, and the target's module
+namespace is hooked over them; a module not yet begun also has the names its
+wildcard imports will fold hooked for the occasion (`importHookFolds`), never
+folded, since when a fold runs decides what a qualifier reaches. What a
+demanded type copies in arrives bound and is not walked again. The steps are in
+[struct](../nodes/struct.md), "Name resolution".
 
 ## 4. What it retags
 
@@ -150,9 +172,15 @@ is the contract; there is never a second name resolution pass.
 - `return`/`break`/`continue` appear only as a block's last statement, modulo
   the `FlagLoopStep` allowance for `each`'s synthesized step.
 - Every local `VarDclNode` carries its `scope`.
-- Every `StructNode` namespace contains `Self`.
+- Every `StructNode` namespace contains `Self`, and the fields and default
+  methods of every trait it extends or mixes in that was a declaration when the
+  type was resolved — the members of an instance of a generic trait join at
+  type check.
+- Every `StructNode` and `ModuleNode` carries `NameResolved`, the phase's own
+  mark; `NameResolving` is never left set.
 - Wildcard import folding is done, so module namespaces are complete.
-- **Nothing is typed.** No `vtype` is established, no mark is set.
+- **Nothing is typed.** No `vtype` is established, and no type check mark is
+  set.
 
 **The global gate.** `doAnalysis` returns before type check if this pass
 reported anything, so type check never meets an unbound name. That is what lets
@@ -173,8 +201,11 @@ The phase owns one `ErrorCode` exclusively: `ErrorBareMbr` (1076), raised by
 known to be a member here, where type check would only see the wrong receiver.
 It also raises `ErrorUnkName` (three sites in `nameUseNameRes`),
 `ErrorNotPublic`, `ErrorDupName` (duplicate local, duplicate lifetime label,
-colliding folded import), `ErrorRetNotLast`, `ErrorNoLoop`, `ErrorBadElems`,
-`ErrorBadTerm` and `ErrorInvType`.
+colliding folded import, a trait's field arriving under a name the type
+declares), `ErrorCircular` (two types that each extend or mix in the other —
+the same code type check gives a declaration defined in terms of itself),
+`ErrorRetNotLast`, `ErrorNoLoop`, `ErrorBadElems`, `ErrorBadTerm` and
+`ErrorInvType`.
 
 **A failed lookup does not un-resolve a successful one.** On the private
 qualified-name path the declaration stays attached after the diagnostic: it is
@@ -186,7 +217,14 @@ next pass a null to trip over.
 - **The pass is not idempotent, and cannot be.** `inodeNameRes` has no arm for
   `DerefTag`, `PtrTag`, `BorrowTag`, `AllocateTag`, `ArrayLitTag`, `VTupleTag`
   or `TTupleTag` — **all of which it produces**. A second walk falls into the
-  `default:` arm, which reports `ErrorUnreachable` and stops.
+  `default:` arm, which reports `ErrorUnreachable` and stops. This is why
+  `structNameRes` walks only the methods the type declared and never the
+  clones a trait's expansion appended, and why those clones are made from a
+  trait already resolved.
+- **A demanded trait is resolved with the demanding type's generic parameters
+  still hooked.** A name the trait fails to declare that spells one of them
+  binds to it silently instead of failing. Nothing correct can meet it; a
+  program that does is already in error.
 - **`blockContinueStep` is the one re-entry.** After the statement loop,
   `blockNameRes` clones an `each` loop's trailing step ahead of a `continue` and
   re-runs `inodeNameRes` on the copy. It works because resolved `NameUseNode`s
@@ -217,12 +255,13 @@ next pass a null to trip over.
 | `ir/namespace.c` | `namespaceFind`, `namespaceSet` | the hash table a module or type owns |
 | `ir/exp/nameuse.c` | `nameUseNameRes` | the whole resolution decision: early-out, qualified walk, privacy; it binds `dclnode` and changes nothing else |
 | `ir/exp/nameuse.c` | `nameUseGroup` | what a resolved name answers to `isExpNode`, `isTypeNode` and `isMetaNode`, asked of its declaration |
-| `ir/stmt/module.c` | `modNameRes`, `modHook` | imports walked before nodes; module hook push/pop |
-| `ir/stmt/import.c` | `importNameRes` | wildcard folding; skips private and unnamed nodes |
+| `ir/stmt/module.c` | `modNameRes`, `modHook` | imports walked before nodes; module hook push/pop; the module's `NameResolving`/`NameResolved` marks, which say whether its folds are in its namespace yet |
+| `ir/stmt/import.c` | `importNameRes`, `importHookFolds` | wildcard folding, and hooking what a fold would bring without folding it; both skip private and unnamed nodes |
 | `ir/exp/block.c` | `blockNameRes`, `blockContinueStep` | scope push/pop, lifetime labels, jump placement, the one re-entry |
 | `ir/stmt/vardcl.c` | `varDclNameRes` | value before name; duplicate check; local hooking and `scope` stamping |
 | `ir/stmt/fndcl.c` | `fnDclNameRes` | generic parms, signature, body with parms hooked at scope 1 |
-| `ir/types/struct.c` | `structNameRes` | base trait → `Self` → namespace hooked → fields → methods |
+| `ir/types/struct.c` | `structNameRes` | base trait → traits demanded → `Self` → namespace hooked → fields, each trait's members spliced in and hooked → the type's own methods |
+| | `structNameResDemand`, `structInheritTrait` | resolve a trait ahead of the walk, in its own module's scope; copy its members into the type |
 | `ir/types/fnsig.c` | `fnSigNameRes` | forces scope 0 |
 | `ir/itype.c` | `itypeIsGenericType` | makes an unlowered `Box[i64]` count as a type |
 | `ir/exp/allocate.c` | `allocateQuesNameRes` | the one parent-pointer rewrite |

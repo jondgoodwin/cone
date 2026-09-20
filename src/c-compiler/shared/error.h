@@ -122,7 +122,8 @@ enum ErrorCode {
     ErrorInstDepth = 1067,      // Expansion nested deeper than the compiler will follow
 
     // Demand-driven analysis
-    ErrorCircular = 1068,       // A declaration whose type comes from a value that names it back
+    ErrorCircular = 1068,       // A declaration whose type comes from a value that names it back,
+                                // or two types that each extend or mix in the other
 
     // Layout
     ErrorNoSize = 1069,         // A value whose type cannot report a size

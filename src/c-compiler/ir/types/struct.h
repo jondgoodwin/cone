@@ -36,6 +36,7 @@ typedef struct StructNode {
     DclInfo dclinfo;        // Owner and the facts that decide the linker symbol
     INode *basetrait;       // Which trait has fields embedded at start of this trait/struct
     Nodes *derived;         // If a closed, base trait, this lists all structs derived from it
+    Nodes *traits;          // Every trait whose members were mixed in, base trait first (NULL if none)
     NodeList fields;        // Ordered list of all fields
     Vtable *vtable;         // Pointer to vtable info (may be NULL)
     GenericInfo *genericinfo;     // Link to generic parms, etc (or NULL if not generic)
@@ -56,6 +57,10 @@ void structPrint(StructNode *node);
 
 // Name resolution of a struct type
 void structNameRes(NameResState *pstate, StructNode *node);
+
+// Resolve a type's declaration now, because another type's resolution needs its
+// members complete. Returns 0 when the type is already being resolved.
+int structNameResDemand(NameResState *pstate, StructNode *type);
 
 // Unwrap one inheritance hop: the declaration of the trait this type extends
 StructNode *structBaseTraitDcl(StructNode *node);

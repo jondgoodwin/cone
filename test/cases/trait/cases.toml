@@ -62,7 +62,7 @@
 # already covered by core-parse-fns, struct-parse and closure-parse-sig, and a
 # trait is the one place the construct is legal.
 
-support = []
+support = ["traitmeter.cone", "traitscale.cone"]
 
 # -------- success --------
 
@@ -226,6 +226,28 @@ excludes = [
   "define internal i32 @baseLevel(%Beta* %0)",
 ]
 
+# A trait in an imported module, extended by a type in the root. The root is
+# resolved first, so the trait is resolved by demand from the type, in its own
+# module's scope, with what that module folds in visible to the trait's default
+# method. What is asserted is that the compile succeeds at all, and what the
+# root declares for the names the inherited default reached.
+[scenario.trait-import-inherit]
+category = "compile"
+description = "A type extending a trait from an imported module, whose inherited default names what that module folded in"
+tags = ["parse", "nameres", "typecheck", "genllvm"]
+
+# The inherited default is the root type's own clone, and the function it
+# reached by the other module's fold is declared under the module that
+# declares it. Nothing is spelled after traitmeter for the fold.
+[[scenario.trait-import-inherit.check]]
+name = "inherited-default-reaches-the-other-modules-fold"
+target = "symbols"
+contains = [
+  "define internal Gauge::doubled comdat nodeduplicate",
+  "declare traitscale::twice",
+]
+excludes = ["traitmeter::twice", "traitmeter::Meter::doubled"]
+
 [scenario.trait-variants]
 category = "run"
 description = "A base type's abstract method implemented per variant, dispatched and then narrowed back"
@@ -276,13 +298,22 @@ description = "A trait's static function, named through an implementer or a vari
 tags = ["nameres"]
 diagnostics = 2
 
+# A type's inherited members are bound while the type is name resolved, so a
+# duplicate between a trait's field and the type's own, and two types that each
+# extend the other, are this stage's. The cycle used to hang the compiler.
+[scenario.trait-nameres-inherit]
+category = "reject"
+description = "A trait's field duplicating the type's own, and types that each extend or mix in the other"
+tags = ["nameres"]
+diagnostics = 3
+
 # -------- type check stage --------
 
 [scenario.trait-typecheck-conform]
 category = "reject"
 description = "Types whose declarations do not satisfy the trait they extend"
 tags = ["typecheck"]
-diagnostics = 4
+diagnostics = 3
 
 [scenario.trait-typecheck-vref]
 category = "reject"
