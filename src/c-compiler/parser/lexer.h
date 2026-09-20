@@ -139,6 +139,8 @@ enum TokenTypes {
     OpaqueToken,   // '@opaque'
     ExtendsToken,  // 'extends'
     MixinToken,    // 'mixin'
+    UseToken,      // 'use'
+    ButToken,      // 'but'
     EnumToken,     // 'enum'
     RegionToken,   // 'region'
     RetToken,      // 'return'

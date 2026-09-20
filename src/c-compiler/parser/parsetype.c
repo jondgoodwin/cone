@@ -87,6 +87,14 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
             errorMsgLex(ErrorNoInit, "Must specify default/initial value.");
     }
 
+    // Only a field folds. Refused here, on a global, a local, a parameter and a
+    // type's static alike, so that the diagnostic is the fold's own rather than
+    // a missing semicolon; the clause is read and dropped to recover.
+    if (lexIsToken(UseToken)) {
+        errorMsgLex(ErrorBadFold, "Only a struct's field may fold names in with 'use'.");
+        parseFoldClause(parse);
+    }
+
     return varnode;
 }
 
@@ -145,6 +153,67 @@ INode* parseEnum(ParseState *parse) {
     return (INode*)node;
 }
 
+// Parse a field's fold clause, with the lexer on its 'use': '*' with an
+// optional 'but name, name', or 'name [as name], name [as name]'. Each listed
+// name becomes an alias under its local spelling, positioned at the item,
+// whose target spells the name in the field's type; whether that is a field
+// or a method is not known until the field's type is, so the fold is expanded
+// by name resolution (structFoldExpand), which is what binds each target.
+FoldClause *parseFoldClause(ParseState *parse) {
+    FoldClause *fold = newFoldClause();
+    lexNextToken();
+    if (lexIsToken(StarToken)) {
+        fold->star = 1;
+        lexNextToken();
+        if (lexIsToken(ButToken)) {
+            lexNextToken();
+            fold->excludes = newNodes(4);
+            while (1) {
+                if (!lexIsToken(IdentToken)) {
+                    errorMsgLex(ErrorNoIdent, "Expected the name of a member to leave out of the fold");
+                    break;
+                }
+                nodesAdd(&fold->excludes, (INode*)newMemberUseNode(lex->val.ident));
+                lexNextToken();
+                if (!lexIsToken(CommaToken))
+                    break;
+                lexNextToken();
+            }
+        }
+        return fold;
+    }
+    while (1) {
+        if (!lexIsToken(IdentToken)) {
+            errorMsgLex(ErrorNoIdent, "Expected the name of a member to fold in");
+            break;
+        }
+        NameUseNode *target = newMemberUseNode(lex->val.ident);
+        AliasDclNode *alias = newAliasDclNode(lex->val.ident, (INode*)target);
+        lexNextToken();
+        if (lexIsToken(AsToken)) {
+            lexNextToken();
+            if (!lexIsToken(IdentToken)) {
+                errorMsgLex(ErrorNoIdent, "Expected the name the folded member is known by here");
+                break;
+            }
+            alias->namesym = lex->val.ident;
+            lexNextToken();
+        }
+        nodesAdd(&fold->items, (INode*)alias);
+        if (!lexIsToken(CommaToken))
+            break;
+        lexNextToken();
+    }
+    // 'but' leaves a name out of everything; a list admits only what it names
+    if (lexIsToken(ButToken)) {
+        errorMsgLex(ErrorBadFold, "'but' leaves a name out of 'use *'. A listed fold admits only the names it lists.");
+        lexNextToken();
+        while (lexIsToken(IdentToken) || lexIsToken(CommaToken))
+            lexNextToken();
+    }
+    return fold;
+}
+
 // Parse a field declaration
 FieldDclNode *parseFieldDcl(ParseState *parse, PermNode *defperm) {
     FieldDclNode *fldnode;
@@ -169,6 +238,13 @@ FieldDclNode *parseFieldDcl(ParseState *parse, PermNode *defperm) {
     if (lexIsToken(AssgnToken)) {
         lexNextToken();
         fldnode->value = parseAnyExpr(parse);
+    }
+
+    // A fold clause takes its names from the field's type, so the type is written
+    if (lexIsToken(UseToken)) {
+        fldnode->fold = parseFoldClause(parse);
+        if (fldnode->vtype == unknownType)
+            errorMsgNode(fldnode->fold->at, ErrorBadFold, "A field that folds names in must write its type, which is where the names come from.");
     }
 
     return fldnode;
@@ -284,6 +360,12 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 INode *vtype;
                 if ((vtype = parseType(parse)))
                     field->vtype = vtype;
+                // A mixin brings the trait's members in already; there is
+                // nothing left for a fold to admit
+                if (lexIsToken(UseToken)) {
+                    errorMsgLex(ErrorBadFold, "A mixin brings in every member of the trait; it does not fold.");
+                    parseFoldClause(parse);
+                }
                 structAddField(strnode, field);
                 parseEndOfStatement();
             }
@@ -291,6 +373,10 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 FieldDclNode *field = parseFieldDcl(parse, mutPerm);
                 field->index = fieldnbr++;
                 field->flags |= FlagMethFld | pubflag;
+                // Only a struct folds: a trait is an abstraction, with no
+                // organizing details of its own to fold through
+                if (field->fold && (strnode->flags & TraitType))
+                    errorMsgNode(field->fold->at, ErrorBadFold, "Only a struct folds a field's members in. A trait or union is an abstraction and has no organizing details to fold through.");
                 // A base trait's first enum-typed field is its discriminant.
                 // Marked here because a variant copies the trait's fields as
                 // soon as it is name resolved, ahead of the trait's type check;

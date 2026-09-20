@@ -94,6 +94,8 @@ void keywordInit() {
     keyAdd("@opaque", OpaqueToken);
     keyAdd("extends", ExtendsToken);
     keyAdd("mixin", MixinToken);
+    keyAdd("use", UseToken);
+    keyAdd("but", ButToken);
     keyAdd("enum", EnumToken);
     keyAdd("region", RegionToken);
     keyAdd("return", RetToken);
