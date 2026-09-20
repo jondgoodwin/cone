@@ -78,6 +78,8 @@ INode *cloneNode(CloneState *cstate, INode *nodep) {
         node = cloneContinueNode(cstate, (BreakRetNode *)nodep); break;
     case FieldDclTag:
         node = cloneFieldDclNode(cstate, (FieldDclNode *)nodep); break;
+    case AliasDclTag:
+        node = cloneAliasDclNode(cstate, (AliasDclNode *)nodep); break;
     case FnDclTag:
         node = cloneFnDclNode(cstate, (FnDclNode *)nodep); break;
     case ReturnTag:

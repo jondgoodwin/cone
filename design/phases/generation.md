@@ -197,6 +197,17 @@ indexed by tag number for the trait-to-virtref coercion. `nameVtable`,
 `nameVtableImpl` and `nameVtableList` spell the three from the trait and
 implementing type nodes.
 
+**A slot a folded method fills holds a thunk** (`genlVtableThunk`). Through the
+fat pointer the concrete type is erased, so the shift from the object to the
+field the method was folded through cannot happen at the call site; the thunk
+is a function of the slot's own type that shifts the receiver one hop per field
+on the recorded path (`VtableImpl.foldpaths`) — a `structgep` for a field held
+by value, a load for one held through a reference — and tail-calls the method.
+It is internal with a COMDAT like any definition, spelled by `nameVtableThunk`
+after the type, the trait and the slot, and nothing in the language can name it.
+The vtable's shape and the virtual call are untouched; a slot a declared method
+fills is the bitcast it always was, and a folded field fills no slot.
+
 ### The allocation header
 
 `genlRefTypeSetup` builds, per interned reference type:
@@ -388,6 +399,7 @@ variables.
 | `genllvm/genltype.c` | `genlType`, `_genlType` | the memoizing entry and the per-tag lowering switch |
 | | `genlSetupTaggedTrait`, `genlSameSizeTrait` | the three union shapes |
 | | `genlVtable`, `genlVtableImpl` | vtable type, per-struct constants, the virtref fat pointer |
+| | `genlVtableThunk` | the function filling a slot a folded method satisfies: shift the receiver along the recorded field path, tail-call the method |
 | `genllvm/genlstmt.c` | `genlBlock` | block creation, phi state, terminator suppression |
 | | `genlBreak`, `genlReturn` | phi edges and dealias; inlined-return-as-break |
 | `genllvm/genlexpr.c` | `genlExpr`, `genlAddr`, `genlStore` | the value / address / store trio — section 4 |

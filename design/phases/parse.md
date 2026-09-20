@@ -287,7 +287,8 @@ numbers.
 | `parser/parsetype.c` | `parseType` | the type dispatcher that delegates to `parsePrefix` — principle 1 |
 | | `parseStruct` | struct/trait/union: generics, `extends`, fields, methods, macros (a method when parameter 0 is `self`), tag-field synthesis and the `IsTagField` mark on a base trait's discriminant |
 | | `parseFnSig` | parameters, `Self` inference, single or tuple return type |
-| | `parseVarDcl`, `parseFieldDcl`, `parseConstDcl`, `parsePerm` | the declaration forms |
+| | `parseVarDcl`, `parseFieldDcl`, `parseConstDcl`, `parsePerm` | the declaration forms; a field's trailing `use` clause goes to `parseFoldClause`, and `use` anywhere else is `ErrorBadFold` |
+| | `parseFoldClause` | `use *` with an optional `but` list, or a list of names each with an optional `as`; builds the clause on the field and an alias per listed name, bound by name resolution |
 | `parser/parsefnflow.c` | `parseFn` | function/method declaration — **despite the file name, this is where declarations and control flow are parsed, not data flow analysis** |
 | | `parseExprBlock` | the statement-block loop — the parser's second dispatch table |
 | | `parseIf`, `parseMatch`, `parseBoundMatch` | `if`/`elif`/`else` and the `match`-to-`if` desugaring |

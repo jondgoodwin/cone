@@ -340,7 +340,9 @@ Steps marked **→** are where a demand can leave and re-enter.
    **backwards**: expand any placeholder still standing — splicing in the
    trait's fields and inheriting its methods, as name resolution does — and
    **→** analyze each ordinary field. Backwards so that splicing does not
-   invalidate the position.
+   invalidate the position. Then expand any fold clause name resolution left
+   (a field whose type was an instance of a generic), and refresh every folded
+   copy from the field it stands for, **→** demanding that field's check.
 5. Index the fields. Compute infectious flags from them: `ThreadBound`,
    `MoveType`, `OpaqueType`, `ZeroSizeType`. Validate the tag field marked at
    parse; any other enum-typed field is refused.

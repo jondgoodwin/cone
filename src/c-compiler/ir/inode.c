@@ -83,6 +83,8 @@ void inodePrintNode(INode *node) {
         varDclPrint((VarDclNode *)node); break;
     case ConstDclTag:
         constDclPrint((ConstDclNode *)node); break;
+    case AliasDclTag:
+        aliasDclPrint((AliasDclNode *)node); break;
     case FieldDclTag:
         fieldDclPrint((FieldDclNode *)node); break;
     case ImportTag:
@@ -222,6 +224,10 @@ void inodeNameRes(NameResState *pstate, INode **node) {
         constDclNameRes(pstate, (ConstDclNode *)*node); break;
     case FieldDclTag:
         fieldDclNameRes(pstate, (FieldDclNode *)*node); break;
+    // An alias's target is a member name, bound where the fold that made the
+    // alias is expanded, exactly as a call's member slot is left alone here
+    case AliasDclTag:
+        break;
     case TypeLitTag:
         typeLitNameRes(pstate, (FnCallNode *)*node); break;
     case ImportTag:
@@ -375,6 +381,10 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
         constDclTypeCheck(pstate, (ConstDclNode *)*node); break;
     case FieldDclTag:
         fieldDclTypeCheck(pstate, (FieldDclNode *)*node); break;
+    // An alias has nothing of its own to check; what it stands for is checked
+    // as itself, by whatever reaches it through the alias
+    case AliasDclTag:
+        break;
     case ImportTag:
         importTypeCheck(pstate, (ImportNode *)*node); break;
     case ArrayLitTag:
@@ -393,6 +403,13 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
         assignTypeCheck(pstate, (AssignNode *)*node); break;
     case SwapTag:
         swapTypeCheck(pstate, (SwapNode *)*node); break;
+    // A call already lowered to a field access or an index by an earlier check
+    // is complete: its type is set and its parts were checked. It is reached
+    // again when a macro method's receiver, lowered before the expansion cloned
+    // it into the body, is checked as part of that body.
+    case FldAccessTag:
+    case ArrIndexTag:
+        break;
     case VTupleTag:
         vtupleTypeCheck(pstate, (TupleNode *)*node); break;
     case FnCallTag:
@@ -499,6 +516,8 @@ Name *inodeGetName(INode *node) {
         return ((FieldDclNode*)node)->namesym;
     case ConstDclTag:
         return ((ConstDclNode*)node)->namesym;
+    case AliasDclTag:
+        return ((AliasDclNode*)node)->namesym;
     case MacroDclTag:
         return ((MacroDclNode*)node)->namesym;
     case TypedefTag:
@@ -583,6 +602,14 @@ int inodeIsPrivate(INode *node) {
 // field, a method, a macro method, or an overload set whose candidates are
 // methods. A static function or macro declared in a type is not one.
 int inodeIsMember(INode *node) {
+    // An alias answers for what it stands for; one not yet bound answers from
+    // its own flag, which says what it was made to stand for
+    if (node->tag == AliasDclTag) {
+        INode *target = aliasDclResolve(node);
+        if (target == NULL)
+            return (node->flags & FlagMethFld) != 0;
+        node = target;
+    }
     switch (node->tag) {
     case FieldDclTag:
     case FnDclTag:
@@ -637,6 +664,7 @@ static NodeTagFacts nodeTagFacts[NodeTagCount] = {
     [VarDclTag] = {StmtGroup, 1, 0},
     [FieldDclTag] = {StmtGroup, 1, 0},
     [ConstDclTag] = {StmtGroup, 1, 0},
+    [AliasDclTag] = {StmtGroup, 1, 0},
 
     [NilLitTag] = {ExpGroup, 0, 0},
     [ULitTag] = {ExpGroup, 0, 0},

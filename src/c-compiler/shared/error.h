@@ -155,6 +155,9 @@ enum ErrorCode {
     // Storage
     ErrorBadStatic = 1080,      // 'static' where there is no per-instance copy to share: not a variable, or in an inline fn
 
+    // Name folding
+    ErrorBadFold = 1081,        // A 'use' clause where none may be written, or naming what cannot fold
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

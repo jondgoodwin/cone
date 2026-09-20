@@ -66,6 +66,8 @@ INode *parsePerm();
 // Parse the permission a declaration carries, defaulting to 'defperm'
 INode *parseDclPerm(PermNode *defperm);
 VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags);
+// Parse a field's fold clause, with the lexer on its 'use'
+FoldClause *parseFoldClause(ParseState *parse);
 ConstDclNode *parseConstDcl(ParseState *parse);
 INode *parseFnSig(ParseState *parse);
 INode *parseStruct(ParseState *parse, uint16_t flags);

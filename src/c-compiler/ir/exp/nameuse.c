@@ -86,8 +86,16 @@ INode *cloneNameUseNode(CloneState *cstate, NameUseNode *node) {
 // or NULL while it is unresolved
 INode *nameUseGetDcl(NameUseNode *name) {
     INode *dcl = name->dclnode;
-    while (dcl && isNameUseNode(dcl))
-        dcl = ((NameUseNode*)dcl)->dclnode;
+    // An alias stands for what its target names, so a use bound to one answers
+    // for that: a folded method's alias is asked and answers as the method
+    while (dcl) {
+        if (isNameUseNode(dcl))
+            dcl = ((NameUseNode*)dcl)->dclnode;
+        else if (dcl->tag == AliasDclTag)
+            dcl = ((AliasDclNode*)dcl)->target;
+        else
+            break;
+    }
     return dcl;
 }
 
@@ -253,6 +261,17 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
 // Handle type check for variable/function name use references
 void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
     NameUseNode *name = *namep;
+    // A use bound to an alias is a use of what the alias stands for, from here
+    // on: everything below reads the declaration's type and tag
+    if (name->dclnode->tag == AliasDclTag) {
+        INode *dcl = aliasDclResolve(name->dclnode);
+        if (dcl == NULL) {
+            // The fold that made the alias failed to bind it, and said so
+            name->vtype = errorType;
+            return;
+        }
+        name->dclnode = dcl;
+    }
     // An overload name has no value of its own: it names a set of concrete
     // declarations. Only a call may use it, and the call type check selects and
     // rewrites this use to the concrete declaration before reaching here.

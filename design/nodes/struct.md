@@ -25,17 +25,32 @@ coercion to a same-size base trait a pure recast** — no conversion, no copy.
 derived layout.
 
 **Composition is compile-time flattening; polymorphism moves out to traits.**
-The author's term is **delegated inheritance**, and the insight driving it is
-that this is *the same name-folding* a module fold does — see
-[Modularity](../topics/modularity.md), which owns that symmetry as an aim. ▸
-**Forbids** "pure composition plus extra magic", which is how the note describes
-conventional inheritance.
+The author's term is **delegated inheritance**: a field's `use` clause folds
+members of the field's type in as names of this type, reached through the
+field, with no forwarding method generated. It is *the same name-folding* a
+module fold does — see [Modularity](../topics/modularity.md), which owns that
+symmetry as an aim. ▸ **Forbids** "pure composition plus extra magic", which is
+how the note describes conventional inheritance.
 
-**A type's namespace and a module's are meant to be the same machinery.** ▸
-**Settles** why folding a member into a type is expected to be one operation
-with folding a name into a module, and **forbids** each layer inventing its own
-namespace rules. [Names and Namespaces](../phases/names-and-namespaces.md) owns
-the rules themselves.
+**A type's namespace and a module's are the same machinery, and the two folds
+differ in exactly one place.** Measured by building the type side: the
+namespace insertion, the collision rule and the aliasing are one operation, and
+the binding node — the alias — serves both. What differs is what the binding
+holds. A module fold binds the declaration itself; a type fold binds a copy of
+a field, or an alias whose *use* has a receiver to shift, because only a type
+fold reaches its target through a value. ▸ **Settles** that the module work
+reuses the alias node unchanged and never calls the receiver rewrite, and
+**forbids** each layer inventing its own namespace rules. [Names and
+Namespaces](../phases/names-and-namespaces.md) owns the rules themselves.
+
+**A fold grants names, and nothing else.** A folded method counts toward
+structural conformance with a trait, because conformance is a question about
+names and signatures; a folded field satisfies no field requirement, because it
+is a name for storage inside another type's value; and a fold grants no
+subtyping to the field's concrete type, since subtyping in Cone is between a
+concrete type and an abstraction, never between two concrete types. ▸
+**Forbids** the flat constructor the old reference page offered for `use *`,
+and any layout rule that would put a folded field at a position.
 
 ⚠ **The layout consequence is a hazard, not a free lunch:** a mixin brings
 fields in *at a position*, so adding one shifts every later field index and
@@ -59,13 +74,13 @@ nowhere** (`genlGlobalSyms` and `genlGlobalImpl`). Miss the last and
 stops conforming the moment a trait declares one. It is reached as
 `Trait::name`, and an implementer or variant cannot name it at all:
 `trait-nameres-static` pins both spellings, `trait-success` the call.
-| `namespace` | every named member: fields, methods, macros, overload sets, and `Self` |
+| `namespace` | every named member: fields, methods, macros, overload sets, `Self`, and what a fold admits — a **copy** of a folded field (a `FieldDclNode` with a `hop`) and an **alias** (`AliasDclNode`) for a folded method, overload set or macro method. The copies and aliases live here only; `fields` and `nodelist` never hold one |
 | `dropfn` | NULL until the last step of type check |
 | `dclinfo` | owner and the facts its symbols are spelled from — [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols". The owner is a module, or the trait for a variant declared inside one. Read for one thing besides naming: rejecting a variant declared outside its closed trait's module, through `dclInfoGetModule` |
 | `basetrait` | the `extends` **type expression** — a `NameUseNode`, or an `FnCallNode` for a generic base. **Not a `StructNode*`.** Two helpers unwrap it and they answer different questions: `structBaseTraitDcl` takes **one hop**, to the declaration of the trait this type extends, while `structGetBaseTrait` recurses to the **bottom-most** one. Picking the wrong one is how the infection loop hangs |
 | `derived` | for a **closed** trait, its variants in declaration order. The index *is* the `tagnbr` |
 | `traits` | every trait whose members were mixed in — the base trait first, then each `mixin` in field order — or NULL. Written where the members are spliced in (`structInheritTrait`) and read once, by type check's requirement check, which is the only thing that still needs to know which trait a member came from |
-| `fields` | all fields in layout order |
+| `fields` | all fields in layout order. A declared field may carry a fold clause (`FieldDclNode.fold`); a folded copy is never here |
 | `vtable` | NULL until `structMakeVtable` |
 | `tagnbr` | discriminant value, assigned at parse |
 | `llvmtype` | generation memoizes here; non-NULL means "already generated" |
@@ -108,6 +123,12 @@ LLVM struct, which is why a reference to a trait could not be lowered.
 - `mixin T` becomes a `FieldDclNode` named `_` flagged `IsMixin`, a **placeholder
   that name resolution replaces with the trait's members** — or type check
   does, when the trait is an instance of a generic.
+- A field's trailing `use` clause (`parseFoldClause`) is stored on the field,
+  with an alias per listed name positioned at the item; **nothing enters the
+  namespace at parse**, since whether a name is a field or a method is not
+  known until the field's type is. `use` on anything that is not a struct's
+  field — a variable, a parameter, a static, a mixin, a trait's or union's
+  field — is `ErrorBadFold` there, so the diagnostic is the fold's own.
 - A **nested `struct` inside a trait** sets `HasTagField` on the enclosing trait,
   synthesizes the variant's `basetrait`, assigns `tagnbr` from `derived->used`,
   and registers the variant at module scope — bound in the module, but owned
@@ -144,14 +165,17 @@ inherited member bare, exactly as it names the type's own.
    may extend (a trait, and closed only if this type is), **insert a mixin
    placeholder for it at position 0**, exactly as `mixin` does — which is how
    `extends` and `mixin` become one mechanism.
-5. **Demand each trait a placeholder names** (`structNameResDemand`): resolve it
-   now, in its own module's scope if it lives elsewhere, so that its own members
-   are complete before they are copied. Still before this type's names are
-   hooked, so the trait's bodies bind in the trait's scope and not in this
-   type's. A trait already under way is a cycle — `A extends B extends A`, or a
-   trait mixing itself in — and is `ErrorCircular` where it is named; the
-   compiler used to loop here without end.
-6. Insert `Self` into the namespace, aliasing the struct to itself. This is what
+5. **Demand each trait a placeholder names, and the type of each field that
+   carries a fold clause** (`structNameResDemand`): resolve it now, in its own
+   module's scope if it lives elsewhere, so that its own members are complete
+   before they are copied. Still before this type's names are hooked, so the
+   trait's bodies bind in the trait's scope and not in this type's. A trait
+   already under way is a cycle — `A extends B extends A`, or a trait mixing
+   itself in — and is `ErrorCircular` where it is named; the compiler used to
+   loop here without end. A fold from a type still under way is refused at
+   step 9 instead.
+6. Insert `Self` into the namespace, aliasing the struct to itself — done
+   ahead of step 4, in fact, since a field's type may name it. This is what
    `parseFnSig`'s `Self` inference for a method parameter depends on.
 7. Hook the whole namespace.
 8. **Walk the fields backwards** — so that splicing does not move a field not
@@ -165,10 +189,16 @@ inherited member bare, exactly as it names the type's own.
    dictionary: a trait passes it on, and a struct is told to implement it by
    type check. The new entries are hooked as they land. A placeholder whose
    trait is an instance of a generic is left for type check, since the instance
-   does not exist yet.
-9. Resolve the methods declared here — only those; the clones arrived resolved
-   in the trait's scope, and this walk cannot be repeated on a node.
-10. Pop, and mark `NameResolved`.
+   does not exist yet. Then index the fields, so that a copy made next takes
+   the index of the field it stands for.
+9. **Expand each fold clause, in field order** (`structFoldExpand`, under
+   "Name folding" below), after every trait's members are in place, so a folded
+   name colliding with an inherited one is reported at the fold. A clause on a
+   field whose type is not a declaration yet — an instance of a generic — waits
+   for the instance's type check.
+10. Resolve the methods declared here — only those; the clones arrived resolved
+    in the trait's scope, and this walk cannot be repeated on a node.
+11. Pop, and mark `NameResolved`.
 
 **Reached by demand.** `structNameResDemand` is the one place name resolution
 leaves walk order, and it is confined to a type declaration reached from
@@ -197,7 +227,13 @@ reach in that module; see [module](module.md).
    the generic case — is replaced by the trait's members exactly as name
    resolution replaces one (`structInheritTrait`), except that nothing is
    hooked: no body is resolved after this. Such a type's inherited members
-   cannot be named bare (see Hazards).
+   cannot be named bare (see Hazards). Then expand any fold clause name
+   resolution left — a field whose type was an instance of a generic — and
+   **refresh every folded copy** (`structFoldRefresh`): a copy took its
+   origin's type node and index when the fold was expanded, and type check may
+   have replaced that node (an instantiation becomes its instance) and
+   re-indexed the fields, so each copy takes its origin's type, permission and
+   index over again, the origin demanded first.
 5. **Walk forwards**: assign `FieldDclNode.index` over the final order, OR the
    field types' infectious flags together, and validate the tag field: the one
    marked at parse is the discriminant, and any other enum-typed field is
@@ -222,6 +258,85 @@ reach in that module; see [module](module.md).
    generated body is built pre-lowered and is **never type checked or flow
    analyzed**.
 
+## Name folding
+
+A field's `use` clause (`FoldClause`, on the `FieldDclNode`) admits names of
+the field's type as names of this type. The language is in
+[refinherit](../../conesite/public/coneref/refinherit.html); this is the
+mechanism, in `structFoldExpand` and what reads its results.
+
+**Two kinds of entry, by what a fold has to do with them.** A folded *field*
+becomes a **copy** in this type's namespace: a `FieldDclNode` carrying the
+field's own type, permission and index within its own type, plus a `hop` to
+the field of this type it is reached through. A fold of a fold copies the whole
+chain — `A` folding `b` through `a`, where `B` had folded `b` through `c`,
+gets a copy of `c` hopping to `a` and a copy of `b` hopping to that — so the
+chain always ends at a declared field of this type, and only the outermost copy
+is entered under the local name. A folded *method, overload set or macro
+method* becomes an **alias** (`AliasDclNode`): a local spelling and a target,
+a member name use bound to the declaration. The method itself is untouched.
+Jon's rule, and why the two differ: position lives in field nodes and only
+there; a method has no position, so what it needs is a receiver, and the
+receiver is data, found through the field's clause.
+
+**Expansion**, in field order once every trait's members are in place: the
+field must be `pub` (`ErrorNotPublic`), its type a struct that is not a trait
+(`ErrorBadFold`) and complete — not this type, not one still being resolved
+(`ErrorCircular`). For `use *`, an alias is made for every public member of
+the source's namespace, its own copies and aliases included so a fold chains,
+less what `but` names (`ErrorNoMbr` for a name the source lacks) and less
+`Self`, the statics, macros without `self`, and the source's own `final` and
+`clone`. Then each item: the name looked up in the source (`ErrorNoMbr`), must
+be public (`ErrorNotPublic`), resolved through the source's own aliases, and
+sorted by tag — a field is copied, a member method or macro binds the alias, a
+static or anything else is `ErrorBadFold` — and entered in the namespace,
+where a name already taken, by a declared member, an inherited one or another
+fold, is `ErrorDupName` at the fold. Name resolution hooks each entry as it
+lands, so a method body may name it bare.
+
+**Reading an entry.** Every site that reads a namespace binding resolves an
+alias to its declaration first, by one function, `aliasDclResolve`:
+`iNsTypeCandidates` (so overload selection, trait conformance and vtable
+matching), `fnCallLowerMethod`, the macro-method probe in `fnCallTypeCheck`,
+`borrowRefIndexDispatches`, the `isTrue` coercion, and `nameUseGetDcl` for a
+use bound to an alias. Visibility is *not* resolved: it is the alias's own bit,
+public by construction. A copy needs no such step — it carries the tag, type
+and permission every reader wants — so the sites that only read type or
+permission are right unchanged, and only the sites that build an access or an
+offset look at the `hop`.
+
+**Building the access** is `fnCallFieldAccess`: for a copy, an access per hop,
+root first, then one for the copy itself — the nesting the hand-written path
+produces, so borrowing, permissions and generation see the true target. The
+field arm of `fnCallLowerMethod` calls it; a bare `self.x` arrives there through
+`nameUseTypeCheck`.
+
+**The receiver of a folded method** is found from the clauses, read in place
+(`structFoldReceiver`): the field of this type whose clause admits the name,
+then on into that field's type where the name is folded there too, then the
+call continues exactly as today from overload selection. A reference receiver
+dereferences and reborrows the field it lands on with the reference's own
+permission, so `(&mut car).thrust()` reaches `thrust(self &mut)` as
+`(&mut car.engine).thrust()` does; a field that is itself a reference is the
+receiver as it stands; a value receiver stays a value, which reaches a method
+taking `self` by value. The fold adds no borrowing rule the language lacks.
+
+**A generic instance expands its clauses in type check**, since a field of type
+`T` has no declaration until the instance exists (`cloneFieldDclNode` clones the
+clause unexpanded; a star clause makes its items over). The template's own
+bodies were resolved before that, so a folded name of such a field is reached as
+`self.name` inside them, as an inherited member of a generic trait is.
+
+**Generation is untouched except the vtable.** A folded field never fills a
+slot (`structAddVtableImpl` refuses a copy, as `structMatches` does). A folded
+method fills one through a thunk: `structAddVtableImpl` records the field path
+beside the method (`VtableImpl.foldpaths`), and `genlVtableThunk` emits a
+function of the slot's own type that shifts the receiver one hop per field — an
+address for a field held by value, a load for one held through a reference —
+and tail-calls the method. Spelled `nameVtableThunk`, after the type, the trait
+and the slot; nothing in the language can name it. The direct call has no
+thunk: the compiler knows the type and shifts the receiver at compile time.
+
 ### Matching
 
 `structMatches` refuses anything but "a trait is a supertype of a struct".
@@ -232,10 +347,11 @@ reach in that module; see [module](module.md).
 - **Under `Coercion`, that is the only path.** A by-value struct coercion works
   only through a same-size base trait.
 - **Structurally**, otherwise: every method of the target must have a
-  signature-matching counterpart. Then `Monomorph` compares fields **by name,
-  order irrelevant**, while `Regref` requires a positional, same-named
-  **prefix**. So width subtyping always; depth subtyping only where no
-  conversion is needed.
+  signature-matching counterpart — a folded method counts, through its alias.
+  Then `Monomorph` compares fields **by name, order irrelevant**, while
+  `Regref` requires a positional, same-named **prefix**; a folded copy meets
+  neither, since it is not a field of the type. So width subtyping always;
+  depth subtyping only where no conversion is needed.
 
 **`structVirtRefMatches` mutates.** Asking whether a struct conforms to a trait
 also *registers* the vtable implementation — which is why narrowing a
@@ -283,11 +399,19 @@ order — `genlallocref` hard-codes `derived[1]` as `Option`'s `Some`.
   fires because `namespaceAdd` silently ignores `_`. A trait extending a trait
   meets this on its own: it synthesizes a tag field and inherits its base's, so
   the second is refused at type check.
-- **A member inherited from an instance of a generic trait cannot be named
-  bare.** The instance exists only when type check instantiates it, so its
-  members join the type's dictionary after every body has been resolved; they
-  are reached as `self.name`. A trait that is a declaration when the type is
-  resolved has no such limit.
+- **A member inherited from an instance of a generic trait, or folded from a
+  field whose type is a generic's parameter, cannot be named bare.** The
+  instance exists only when type check instantiates it, so its members join
+  the type's dictionary after every body has been resolved; they are reached
+  as `self.name`. A trait or field type that is a declaration when the type
+  is resolved has no such limit.
+- **A folded copy is a snapshot until the folding type is laid out.** It takes
+  its origin's type node and index at expansion, in name resolution; if the
+  origin's type is an instantiation of a generic, type check replaces that node
+  in the origin and the copy is refreshed only when this type's field walk ends
+  (`structFoldRefresh`). Nothing reads a copy's type before then except through
+  a cycle of references between two folding types, where the refresh demands
+  the origin field's own check and reads it, whatever its type's check has got to.
 - **The demanding type's generic parameters stay hooked while a trait is
   resolved by demand.** A name the trait fails to declare that happens to spell
   one of them binds to it silently, where it would otherwise be `ErrorUnkName`.

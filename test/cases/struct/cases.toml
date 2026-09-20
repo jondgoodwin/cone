@@ -15,18 +15,20 @@
 # is a fourth success scenario and a 'compile' one, because an opaque type's
 # values cannot be created and so nothing about it can run.
 #
+# struct-fold is the fifth success scenario: delegated inheritance, a field's
+# 'use' clause folding members of its type in as names of the type that holds
+# it. It is its own file because the fold's claims -- which receiver a folded
+# call runs with, that no forwarder is generated, what a vtable slot a folded
+# method fills holds -- are all about lowering, and its checks read the IR.
+#
 # The reject scenarios are split by pipeline stage, because analysis halts
 # between stages and an expectation from a later stage would never be reached.
 # The type-check stage is split again by what is wrong: the declaration itself,
-# a constructor, or a call.
+# a constructor, or a call. A fold clause gets one file per stage: where it may
+# be written (parse), what it may admit (name resolution, which is where a
+# type's dictionary is built), and what a folded name is not (type check).
 #
 # Left out, with reasons:
-#
-# - Delegated inheritance -- a field carrying 'use' to forward names from the
-#   type it holds. conesite/public/coneref/refinherit.html says outright that
-#   none of it is implemented, and 'use' after a field's type does not parse:
-#   it ends the field's statement and the rest is an unknown struct statement.
-#   Nothing about the feature exists to test.
 #
 # - Initializers -- a 'fn init(self &new)' method. There is no 'new'
 #   permission: it does not resolve as a name, so the method cannot be written
@@ -226,6 +228,52 @@ category = "compile"
 description = "An opaque struct, whose values cannot be created and are only reached by reference"
 tags = ["parse", "nameres", "typecheck", "genllvm"]
 
+[scenario.struct-fold]
+category = "run"
+description = "Names folded in from a field's type: selective, renamed, chained, 'use *' with 'but', through a reference-held field, satisfying a trait, and in a generic instance"
+tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+# No forwarder exists: a folded call reaches the field type's own method,
+# spelled after the field's type, and nothing is spelled after the folding
+# type for a folded name. The printed values say which receiver each call ran
+# with; the symbols say no method was minted to get it there.
+[[scenario.struct-fold.check]]
+name = "no-forwarder-is-generated-for-a-folded-name"
+target = "symbols"
+contains = [
+  "define internal Engine::thrust comdat nodeduplicate",
+  "define internal Engine::power comdat nodeduplicate",
+  "define internal Engine::rating comdat nodeduplicate",
+]
+excludes = [
+  "Car::thrust", "Car::fuel", "Car::horsepower", "Car::power",
+  "Plane::leftThrust", "Fleet::leftThrust", "Fleet::rightPower",
+  "Hybrid::thrust", "Hybrid::rating", "Hybrid::fuel",
+  "Bay::thrust", "Truck::power ",
+  "Holder[Engine]::fuel", "Holder[Engine]::power",
+]
+
+# The one thing generated for a fold: a vtable slot a folded method fills
+# holds a thunk, spelled after the type, the trait and the slot, which nothing
+# in the language can name. The vtable itself is the type's, as for any
+# implementer. Truck holds its engine second, so the thunk shifts the receiver
+# by an offset; Bay holds it through a reference, so its thunk loads.
+[[scenario.struct-fold.check]]
+name = "vtable-slot-of-a-folded-method-holds-a-thunk"
+target = "symbols"
+contains = [
+  "define internal Truck as Powered::power (thunk) comdat nodeduplicate",
+  "define internal Bay as Powered::power (thunk) comdat nodeduplicate",
+  "constant internal Truck as Powered (vtable) comdat nodeduplicate",
+  "constant internal Bay as Powered (vtable) comdat nodeduplicate",
+]
+
+# The thunk's body is the shift and a tail call of the folded method
+[[scenario.struct-fold.check]]
+name = "thunk-tail-calls-the-folded-method"
+target = "preir"
+contains = ["tail call i32 @_CNvNt6Engine5power("]
+
 # -------- parse stage --------
 
 [scenario.struct-parse]
@@ -233,6 +281,12 @@ category = "reject"
 description = "Struct declaration syntax the parser cannot accept, and member names it cannot declare twice"
 tags = ["parse"]
 diagnostics = 16
+
+[scenario.struct-parse-fold]
+category = "reject"
+description = "A fold clause written where none may be, and 'but' after a list"
+tags = ["parse"]
+diagnostics = 9
 
 # -------- name resolution stage --------
 
@@ -242,7 +296,23 @@ description = "'Self' used as a qualifier, which a qualified path cannot see"
 tags = ["nameres"]
 diagnostics = 1
 
+# A fold is expanded into the type's dictionary while the type is name
+# resolved, so what a clause may admit is this stage's: visibility, a name
+# the field's type has not got, a static, a collision, a cycle, and a source
+# that is not a struct.
+[scenario.struct-nameres-fold]
+category = "reject"
+description = "What a fold clause may not admit, and the names that collide"
+tags = ["nameres"]
+diagnostics = 14
+
 # -------- type check stage --------
+
+[scenario.struct-typecheck-fold]
+category = "reject"
+description = "A folded field named in a type literal, or offered where a trait requires a field"
+tags = ["typecheck"]
+diagnostics = 2
 
 # -------- flow stage --------
 

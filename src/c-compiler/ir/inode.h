@@ -115,6 +115,7 @@ enum NodeTags {
     VarDclTag,      // Variable declaration (global, local, parm)
     FieldDclTag,    // Field declaration in a struct, etc.
     ConstDclTag,    // Constant declaration
+    AliasDclTag,    // A binding that stands for another declaration under a spelling of its own
 
     // Expression nodes (having value type - or sometimes nullType)
     NilLitTag,      // 'nil' literal (of void type)

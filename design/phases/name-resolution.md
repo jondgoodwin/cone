@@ -102,13 +102,15 @@ guarantees that. Locals are the exception and are deliberately order-dependent �
 `varDclNameRes` resolves the initializer **before** hooking the name, so
 `imm x = x` binds the outer `x` or fails.
 
-**Inherited members are the other exception, and they are why the pass has one
-use of demand.** A type's dictionary is built whole before any of its method
-bodies is resolved, so that a body may name an inherited field or default
-method bare as it names the type's own — and the members it inherits are
-*copies*, of a trait whose own members must therefore be complete first. So
-`structNameRes` demands the trait (`structNameResDemand`): resolves it now if
-the walk has not reached it, in its own module's scope when it lives elsewhere.
+**Inherited and folded members are the other exception, and they are why the
+pass has one use of demand.** A type's dictionary is built whole before any of
+its method bodies is resolved, so that a body may name an inherited field, a
+default method or a member folded in from a field's type bare, as it names the
+type's own — and those members are *copies*, or aliases bound to members, of a
+trait or a field type whose own members must therefore be complete first. So
+`structNameRes` demands the trait, and the type of each field carrying a `use`
+clause (`structNameResDemand`): resolves it now if the walk has not reached
+it, in its own module's scope when it lives elsewhere.
 Two marks on the type make that safe, `NameResolving` and `NameResolved`, and a
 trait found still under way is a cycle, `ErrorCircular`. The demand is confined
 to a type reached from a type, so what is hooked at the jump is always module
@@ -172,10 +174,12 @@ is the contract; there is never a second name resolution pass.
 - `return`/`break`/`continue` appear only as a block's last statement, modulo
   the `FlagLoopStep` allowance for `each`'s synthesized step.
 - Every local `VarDclNode` carries its `scope`.
-- Every `StructNode` namespace contains `Self`, and the fields and default
-  methods of every trait it extends or mixes in that was a declaration when the
-  type was resolved — the members of an instance of a generic trait join at
-  type check.
+- Every `StructNode` namespace contains `Self`, the fields and default
+  methods of every trait it extends or mixes in, and the copies and aliases
+  every fold clause admits, wherever the trait or the field's type was a
+  declaration when the type was resolved — the members of an instance of a
+  generic trait, and the names folded from a field of a generic's parameter
+  type, join at type check.
 - Every `StructNode` and `ModuleNode` carries `NameResolved`, the phase's own
   mark; `NameResolving` is never left set.
 - Wildcard import folding is done, so module namespaces are complete.
@@ -200,10 +204,15 @@ The phase owns one `ErrorCode` exclusively: `ErrorBareMbr` (1076), raised by
 `NameResState.macromethod` is set for the duration of the body, and the name is
 known to be a member here, where type check would only see the wrong receiver.
 It also raises `ErrorUnkName` (three sites in `nameUseNameRes`),
-`ErrorNotPublic`, `ErrorDupName` (duplicate local, duplicate lifetime label,
+`ErrorNotPublic` (a private name through a qualifier; a private field or member
+in a fold), `ErrorDupName` (duplicate local, duplicate lifetime label,
 colliding folded import, a trait's field arriving under a name the type
-declares), `ErrorCircular` (two types that each extend or mix in the other —
-the same code type check gives a declaration defined in terms of itself),
+declares, a folded name already taken), `ErrorCircular` (two types that each
+extend or mix in the other, or a type folding from a field of a type not yet
+complete — the same code type check gives a declaration defined in terms of
+itself), `ErrorNoMbr` (a fold naming a member the field's type lacks),
+`ErrorBadFold` (a fold admitting what cannot fold: a static, a macro without
+`self`, the value's own `final` or `clone`, or a source that is not a struct),
 `ErrorRetNotLast`, `ErrorNoLoop`, `ErrorBadElems`, `ErrorBadTerm` and
 `ErrorInvType`.
 
@@ -260,8 +269,10 @@ next pass a null to trip over.
 | `ir/exp/block.c` | `blockNameRes`, `blockContinueStep` | scope push/pop, lifetime labels, jump placement, the one re-entry |
 | `ir/stmt/vardcl.c` | `varDclNameRes` | value before name; duplicate check; local hooking and `scope` stamping |
 | `ir/stmt/fndcl.c` | `fnDclNameRes` | generic parms, signature, body with parms hooked at scope 1 |
-| `ir/types/struct.c` | `structNameRes` | base trait → traits demanded → `Self` → namespace hooked → fields, each trait's members spliced in and hooked → the type's own methods |
-| | `structNameResDemand`, `structInheritTrait` | resolve a trait ahead of the walk, in its own module's scope; copy its members into the type |
+| `ir/types/struct.c` | `structNameRes` | `Self` → base trait → traits and fold sources demanded → namespace hooked → fields, each trait's members spliced in and hooked → fields indexed → each fold clause expanded and hooked → the type's own methods |
+| | `structNameResDemand`, `structInheritTrait` | resolve a trait or a fold's source type ahead of the walk, in its own module's scope; copy a trait's members into the type |
+| | `structFoldExpand` | expand a field's `use` clause: a copy per folded field, an alias per folded method, entered and hooked — [struct](../nodes/struct.md), "Name folding" |
+| `ir/stmt/aliasdcl.c` | `aliasDclResolve` | the declaration at the end of a chain of aliases, which every reader of a namespace binding asks for first |
 | `ir/types/fnsig.c` | `fnSigNameRes` | forces scope 0 |
 | `ir/itype.c` | `itypeIsGenericType` | makes an unlowered `Box[i64]` count as a type |
 | `ir/exp/allocate.c` | `allocateQuesNameRes` | the one parent-pointer rewrite |

@@ -18,8 +18,23 @@ FieldDclNode *newFieldDclNode(Name *namesym, INode *perm) {
     fldnode->namesym = namesym;
     fldnode->perm = perm;
     fldnode->value = NULL;
+    fldnode->fold = NULL;
+    fldnode->hop = NULL;
     fldnode->index = 0;
     return fldnode;
+}
+
+// Create an empty fold clause, positioned where the lexer is
+FoldClause *newFoldClause() {
+    FoldClause *fold = memAllocBlk(sizeof(FoldClause));
+    INode *at;
+    newNode(at, INode, KeywordTag);
+    fold->at = at;
+    fold->items = newNodes(4);
+    fold->excludes = NULL;
+    fold->star = 0;
+    fold->expanded = 0;
+    return fold;
 }
 
 // Create a new field node that is a copy of an existing one
@@ -32,6 +47,19 @@ INode *cloneFieldDclNode(CloneState *cstate, FieldDclNode *node) {
     newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
     newnode->vtype = cloneNode(cstate, node->vtype);
     newnode->value = cloneNode(cstate, node->value);
+    // The clone's clause is expanded afresh, into the clone's own namespace:
+    // the copies and aliases the original's expansion made are the original's.
+    // A listed item keeps its position; a star clause makes its items over.
+    if (node->fold) {
+        FoldClause *fold = memAllocBlk(sizeof(FoldClause));
+        memcpy(fold, node->fold, sizeof(FoldClause));
+        fold->expanded = 0;
+        fold->items = node->fold->star ? newNodes(4) : cloneNodes(cstate, node->fold->items);
+        fold->excludes = node->fold->excludes ? cloneNodes(cstate, node->fold->excludes) : NULL;
+        newnode->fold = fold;
+    }
+    // A folded copy is never in a field list, so nothing clones one
+    newnode->hop = NULL;
     return (INode*)newnode;
 }
 
@@ -46,6 +74,27 @@ void fieldDclPrint(FieldDclNode *name) {
             inodePrintNL();
         inodePrintNode(name->value);
     }
+    if (name->fold) {
+        INode **nodesp;
+        uint32_t cnt;
+        inodeFprint(name->fold->star ? " use *" : " use");
+        if (name->fold->star && name->fold->excludes) {
+            inodeFprint(" but");
+            for (nodesFor(name->fold->excludes, cnt, nodesp))
+                inodeFprint(cnt == name->fold->excludes->used ? " %s" : ", %s", &((NameUseNode*)*nodesp)->namesym->namestr);
+        }
+        else if (!name->fold->star) {
+            for (nodesFor(name->fold->items, cnt, nodesp)) {
+                AliasDclNode *alias = (AliasDclNode*)*nodesp;
+                Name *from = ((NameUseNode*)alias->target)->namesym;
+                inodeFprint(cnt == name->fold->items->used ? " %s" : ", %s", &from->namestr);
+                if (alias->namesym != from)
+                    inodeFprint(" as %s", &alias->namesym->namestr);
+            }
+        }
+    }
+    if (name->hop)
+        inodeFprint(" (folded through %s)", &name->hop->namesym->namestr);
 }
 
 // Enable name resolution of field declarations

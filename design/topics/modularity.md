@@ -25,8 +25,8 @@ adopted here and the change has not yet been passed on by him.**
 
 ▸ **Why six rather than three.** The three cannot classify two of Cone's most
 distinctive mechanisms. **Name-folding is a *namespace* operation**, and
-delegated inheritance is name-folding applied to types — under the three it has
-nowhere to sit. **`extends` and `mixin` being one mechanism, a synthetic field at
+delegated inheritance is name-folding applied to types, built as such — under
+the three it has nowhere to sit. **`extends` and `mixin` being one mechanism, a synthetic field at
 position 0, is a *composition* fact** and files under none of the three. The
 three were a coarsening that dropped exactly the categories Cone innovates in.
 
@@ -134,6 +134,16 @@ the symmetry goal is that it is *the same name-folding* a module `using` does:
 delegated inheritance capability." Inheritance is treated as "pure composition
 plus 'extra magic'"; Cone keeps composition and delegation, and moves
 polymorphism out to traits.
+
+**The type side is built, and the claim held where it was tested.** A field's
+`use` clause folds members of its type in as names of the struct, with `as`,
+`but` and one collision rule ([struct](../nodes/struct.md), "Name folding").
+At the namespace the two folds are one operation: insertion, collision,
+aliasing, and the alias node that binds a folded method is the binding record
+the module fold needs. They differ in what the binding holds and in resolution
+— a type fold reaches its target through a value, so a use of the name lowers
+to an access path or shifts a call's receiver, which a module fold never does.
+Same namespace, same rule, same node; different resolution.
 
 **`import` composes; `include` does not.** `import` loads a file as a module in
 its own right and binds its name; `::*` folds its public names into the
