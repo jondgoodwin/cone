@@ -402,7 +402,9 @@ resolution and `pgmNameRes` walks modules in load order, so a fold is invisible
 to modules resolved earlier and visible to those resolved later. A root module
 naming `mid::plain`, where `plain` was folded into `mid`, is rejected as an
 unknown name; the same reference from a sibling module loaded after the folding
-one compiles.
+one compiles. A type resolved by demand ahead of its module — a trait the root
+extends, say — does not move this line: `structNameResDemand` hooks what the
+module's imports will fold for the trait's own bodies to see, and folds nothing.
 
 ## What the model has not decided
 

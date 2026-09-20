@@ -64,8 +64,9 @@ void nodelistMakeSpace(NodeList *nodes, size_t pos, int32_t amt) {
         while (nodes->used + amt >= newsize)
             newsize <<= 1;
         INode **oldnodes = nodes->nodes;
-        nodes->nodes = memAllocBlk(newsize);
+        nodes->nodes = memAllocBlk(newsize * sizeof(INode*));
         memcpy(nodes->nodes, oldnodes, (nodes->used) * sizeof(INode*));
+        nodes->avail = newsize;
     }
 
     // Move nodes after pos up or down accordingly

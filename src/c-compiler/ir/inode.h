@@ -276,6 +276,16 @@ enum NodeTags {
 #define TypeChecked        0x8000  // Type check of this declaration finished
 #define TypeChecking       0x4000  // This declaration's type check has begun
 
+// Name resolution progress, carried by a module and by a struct or trait only:
+// the two declarations name resolution reaches by demand rather than in walk
+// order. A type's members must be complete -- its trait's fields and defaults in
+// place -- before a type that extends or mixes it in copies them, so that type
+// is resolved when it is first needed, and a module ahead of the modules that
+// import it. Set and tested by modNameRes and structNameRes, and read nowhere
+// else. 0x1000 and 0x2000 are free of every block above.
+#define NameResolved       0x2000  // Name resolution of this module or type finished
+#define NameResolving      0x1000  // Name resolution of this module or type has begun
+
 // Allocate and initialize the INode portion of a new node
 #define newNode(node, nodestruct, nodetype) {\
     node = (nodestruct*) memAllocBlk(sizeof(nodestruct)); \

@@ -24,14 +24,20 @@ if it reports anything, `conec.c` returns before type check begins. So type chec
 never meets an unbound name and nothing has to reason about a partly-bound
 declaration.
 
-It stays a single source-order pass deliberately. Binding a name needs the
-declaration to *exist*, not to be analyzed, and the parser guarantees that — so
-name resolution has no use for demand. But it also could not have it cheaply:
-**it binds through a global slot**, and jumping out of a function body into an
-unrelated declaration would leave that function's locals still plugged in, so a
-matching name in the declaration jumped to would bind to one of them. Demand
-would mean saving and restoring the whole hook stack at every jump. The
-mechanism is [Name Resolution](name-resolution.md) section 2.
+It stays a source-order pass deliberately, with one use of demand. Binding a
+name needs the declaration to *exist*, not to be analyzed, and the parser
+guarantees that — so a name never needs demand. What does is a type's
+dictionary: the members it inherits are copies of a trait's, so the trait must
+be complete first, and `structNameRes` resolves it when it is first needed.
+That is affordable only because it is confined to a type reached from a type:
+**name resolution binds through a global slot**, and jumping out of a function
+body into an unrelated declaration would leave that function's locals still
+plugged in, so a matching name in the declaration jumped to would bind to one
+of them. A type reached from a type has only module names and the demanding
+type's generic parameters plugged in, and the target's own scope is hooked over
+them. Demand from anywhere else would mean saving and restoring the whole hook
+stack at every jump. The mechanism is [Name Resolution](name-resolution.md)
+section 3.
 
 **Type check has no such constraint**, so it can be suspended anywhere and
 re-entered with nothing to save. The one place it hooks at all is generic
@@ -104,10 +110,11 @@ resolution is in progress.
 That is safe rather than an oversight, and the global gate is what makes it so:
 name resolution finishes over the whole program before type check starts, so
 every declaration is fully bound before any mark is set. There is no cross-phase
-state to keep consistent because there is no overlap. Were the two walks ever
-merged (section 1), these marks would not survive the merge unchanged — a
-declaration could then be name-resolved but not type checked, which is a third
-state neither bit can express.
+state to keep consistent because there is no overlap. Name resolution keeps two
+marks of its own for the one place it leaves walk order — `NameResolving` and
+`NameResolved`, on a module and a struct only, distinct bits that type check
+never reads — so were the two walks ever merged (section 1), the four would
+still not meet.
 
 `TypeChecked` returns at once — type check lowers and replaces nodes, so a second
 walk of a declaration corrupts it, which makes the mark a correctness requirement
@@ -146,8 +153,9 @@ A name use analyzes the declaration it names, then reads what it needs:
 
 Because the declaration is analyzed at the moment a use has to decide anything
 about it, each decision is locally justified. A namespace asked for a member is
-complete — mixins expanded, trait methods inherited. A type read for its size has
-one, or says why not.
+complete — the traits mixed in by name resolution, or, for an instance of a
+generic trait, at step 4 below. A type read for its size has one, or says why
+not.
 
 **Source order does not decide what is analyzed, only when.** The driver still
 visits every declaration; one already analyzed by demand returns at once. So an
@@ -325,20 +333,29 @@ Steps marked **→** are where a demand can leave and re-enter.
 1. If it is a generic template, stop. Only instances are analyzed.
 2. **→** Analyze the base trait.
 3. Propagate the base trait's closed-type flags (`SameSize`, `HasTagField`). A
-   derived type of a closed trait must be declared in the same module.
-4. Insert a mixin field for the base trait at position 0.
-5. Walk fields **backwards**: expand mixins in place — splicing in the trait's
-   fields and inheriting its methods — and **→** analyze each ordinary field.
-   Backwards so that splicing does not invalidate the position.
-6. Index the fields. Compute infectious flags from them: `ThreadBound`,
-   `MoveType`, `OpaqueType`, `ZeroSizeType`. Identify the tag field.
-7. `final` forces `MoveType`; `clone` clears it. Propagate infection up to base
+   derived type of a closed trait must be declared in the same module. If name
+   resolution did not mix the base trait in — it was an instance of a generic,
+   which exists only now — insert a mixin placeholder for it at position 0.
+4. **→** Analyze every trait name resolution mixed in, then walk fields
+   **backwards**: expand any placeholder still standing — splicing in the
+   trait's fields and inheriting its methods, as name resolution does — and
+   **→** analyze each ordinary field. Backwards so that splicing does not
+   invalidate the position.
+5. Index the fields. Compute infectious flags from them: `ThreadBound`,
+   `MoveType`, `OpaqueType`, `ZeroSizeType`. Validate the tag field marked at
+   parse; any other enum-typed field is refused.
+6. `final` forces `MoveType`; `clone` clears it. Propagate infection up to base
    traits.
-8. **Size is now known**, and `TypeChecked` is set here — meaning laid out.
-9. **→** Analyze the methods.
+7. **Size is now known**, and `TypeChecked` is set here — meaning laid out.
+8. **→** Analyze the methods.
+9. Verify each mixed-in trait's method requirements against the signatures now
+   known: a name the type declares itself must have the one candidate of the
+   trait's signature, and a requirement with no body is unmet in a struct.
 
-Steps 2 and 5 are where recursion arrives; step 8 is why a method at step 9 may
-use its own type by value.
+Steps 2 and 4 are where recursion arrives; step 7 is why a method at step 8 may
+use its own type by value. The members themselves — which fields and which
+default methods a type inherits — were settled by name resolution, which builds
+the dictionary whole before any body is resolved; see [struct](../nodes/struct.md).
 
 ### 10.2 Closed traits, unions and variants
 
@@ -404,7 +421,7 @@ elsewhere, whichever walk arrived at it.
 | --- | --- |
 | `ErrorNoRefType` (1074) | a reference or slice type never says what it refers to — `refTypeCheck` and `arrayRefTypeCheck` are its only two sites |
 | `ErrorNoSize` (1069) | a value's type cannot say how large it is — five causes, named in the message |
-| `ErrorCircular` (1068) | a constant or inferred declaration is defined in terms of itself |
+| `ErrorCircular` (1068) | a constant or inferred declaration is defined in terms of itself. Name resolution raises the same code for two types that each extend or mix in the other |
 | `ErrorInstDepth` (1067) | generic or macro expansion nests past `TypeCheckLoopMax` |
 
 **`ErrorRecurse` (1049) is retired and its number must not be reused.** It
@@ -424,7 +441,7 @@ Kept so that reopening one is a decision rather than a rediscovery.
 | Question | Answer |
 | --- | --- |
 | Does the name-resolution gate change? | No. One eager pass, global gate. |
-| Is name binding tracked as its own state? | No. It is the first thing analyzing a declaration does, and nothing else asks. |
+| Is name binding tracked as its own state? | For a module and a type only, by name resolution's own two marks, so that a type may be resolved ahead of the walk when another type extends it. Nothing else asks, and type check never reads them. |
 | What state does demand need? | None beyond the two marks, read rather than refused. |
 | Does anything need "complete" beyond "laid out"? | No consumer exists. A `SizeKnown` field on `ITypeNodeHdr` would separate "laid out" from "methods checked", but `TypeChecked` at the layout point already says the first and nothing asks for the second. Do not add one. |
 | Should a size question have five codes? | No. One code, cause in the message. |
@@ -465,7 +482,7 @@ Kept so that reopening one is a decision rather than a rediscovery.
 | | `itypeNoSizeCause`, `itypeNoSizeExplain` | the five causes of section 6, and the hop-by-hop trace |
 | | `itypeVariantPending` | whether every variant of a union is laid out — section 10.2 |
 | `ir/iexp.c` | `iexpTypeCheckAny` | check a node expected to be an expression |
-| `ir/types/struct.c` | `structTypeCheck` | the nine steps of section 10.1; sets `TypeChecked` at the layout point |
+| `ir/types/struct.c` | `structTypeCheck` | the nine steps of section 10.1; sets `TypeChecked` at the layout point; `structCheckTraitReqs` is step 9 |
 | `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the eight steps of section 10.3, including both error-delta gates |
 | `ir/stmt/vardcl.c` | `varDclTypeCheck` | section 10.4 |
 | `ir/stmt/module.c` | `modTypeCheck` | imports first, then declarations — section 10.5 |

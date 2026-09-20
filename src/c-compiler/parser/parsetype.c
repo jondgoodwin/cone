@@ -291,8 +291,15 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 FieldDclNode *field = parseFieldDcl(parse, mutPerm);
                 field->index = fieldnbr++;
                 field->flags |= FlagMethFld | pubflag;
-                if (field->vtype->tag == EnumTag)
+                // A base trait's first enum-typed field is its discriminant.
+                // Marked here because a variant copies the trait's fields as
+                // soon as it is name resolved, ahead of the trait's type check;
+                // type check validates the mark and refuses a second enum field.
+                if (field->vtype->tag == EnumTag) {
+                    if (!hasEnumFld && (strnode->flags & TraitType) && strnode->basetrait == NULL)
+                        field->flags |= IsTagField;
                     hasEnumFld = 1;
+                }
                 structAddField(strnode, field);
                 parseEndOfStatement();
             }
@@ -362,6 +369,8 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     if ((strnode->flags & (TraitType | HasTagField)) && !hasEnumFld) {
         FieldDclNode *fldnode = newFieldDclNode(anonName, (INode*)immPerm);
         fldnode->vtype = (INode*)newEnumNode();
+        if ((strnode->flags & TraitType) && strnode->basetrait == NULL)
+            fldnode->flags |= IsTagField;
         nodelistInsert(&strnode->fields, 0, (INode*)fldnode);
     }
 

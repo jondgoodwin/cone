@@ -20,6 +20,7 @@ StructNode *newStructNode(Name *namesym) {
     dclInfoInit(&snode->dclinfo);
     snode->basetrait = NULL;
     snode->derived = NULL;
+    snode->traits = NULL;
     snode->vtable = NULL;
     snode->genericinfo = NULL;
     snode->tagnbr = 0;
@@ -48,6 +49,17 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     newnode->basetrait = cloneNode(cstate, node->basetrait);
     if (node->derived)
         newnode->derived = newNodes(node->derived->used);
+    // The traits name resolution mixed into the template are the instance's
+    // too, since their members are cloned below with everything else. The list
+    // is the instance's own, because a generic base trait is mixed in only once
+    // the instance exists (structTypeCheck) and is appended here.
+    if (node->traits) {
+        newnode->traits = newNodes(node->traits->used);
+        INode **traitp;
+        uint32_t traitcnt;
+        for (nodesFor(node->traits, traitcnt, traitp))
+            nodesAdd(&newnode->traits, *traitp);
+    }
 
     // Recreate clones of fields/mixins and methods, sequentially and in namespace dictionary
     namespaceInit(&newnode->namespace, node->namespace.avail);
@@ -117,10 +129,149 @@ void structPrint(StructNode *node) {
     inodeFprint("}");
 }
 
+// Splice a trait's members into this type in place of the placeholder field at
+// 'fldpos' that stands for it: the trait's fields replace the placeholder as
+// clones, in the trait's order, and each method the trait gives a body to is
+// cloned into this type's method list unless the type declares the name itself.
+// A required method the type does declare is left for type check to compare
+// against the requirement, since that needs the signatures' types. The trait is
+// recorded so type check can find every requirement it imposes.
+//
+// Called from name resolution for a trait that is a declaration when the type
+// is resolved, and from type check for an instance of a generic trait, which is
+// not one until the instantiation is type checked. Either way the trait's own
+// members are already resolved, so the clones arrive bound.
+static void structInheritTrait(StructNode *node, uint32_t fldpos, StructNode *trait, CloneState *cstate) {
+    INode **nodesp;
+    uint32_t cnt;
+
+    // Replace the placeholder with all the trait's fields
+    nodelistMakeSpace(&node->fields, fldpos, trait->fields.used - 1);
+    INode **insertp = &nodelistGet(&node->fields, fldpos);
+    for (nodelistFor(&trait->fields, cnt, nodesp)) {
+        FieldDclNode *newfld = (FieldDclNode*)cloneNode(cstate, *nodesp);
+        *insertp++ = (INode *)newfld;
+        if (namespaceAdd(&node->namespace, newfld->namesym, (INode*)newfld)) {
+            errorMsgNode((INode*)newfld, ErrorDupName, "Trait may not mix in a duplicate field name");
+        }
+    }
+
+    // Fold in the trait's default methods
+    for (nodelistFor(&trait->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag != FnDclTag)
+            continue;
+        // Only a method is inherited. A static function of the trait takes no
+        // receiver, so there is nothing about it to specialize per implementer
+        // and nothing that dispatches it: it stays the trait's own, reached as
+        // 'Trait::name'. Copying it gave every implementer a symbol no name could
+        // reach, since a qualified name on the implementer does not find it either.
+        if (!((*nodesp)->flags & FlagMethFld))
+            continue;
+        FnDclNode *traitmeth = (FnDclNode*)*nodesp;
+        // A requirement with no body is inherited as it is, so that the name is
+        // in the namespace: a trait passes the requirement on to its own
+        // implementers, and a struct is told to implement it by type check.
+        if (iNsTypeFindFnField((INsTypeNode *)node, traitmeth->namesym) == NULL)
+            iNsTypeAddFn((INsTypeNode *)node, (FnDclNode*)cloneNode(cstate, (INode*)traitmeth));
+    }
+
+    if (node->traits == NULL)
+        node->traits = newNodes(2);
+    nodesAdd(&node->traits, (INode*)trait);
+}
+
+// The trait declaration a base-trait or mixin type expression names, or NULL
+// when it names something else: a generic instantiation, which is a call node
+// until type check instantiates it; a type that is not a trait, which type
+// check reports; or a name that did not resolve.
+static StructNode *structNameResTrait(INode *typeexp) {
+    if (typeexp->tag == FnCallTag || !isTypeNode(typeexp))
+        return NULL;
+    INode *dcl = itypeGetTypeDcl(typeexp);
+    if (dcl->tag != StructTag || !(dcl->flags & TraitType))
+        return NULL;
+    return (StructNode*)dcl;
+}
+
+// Resolve a type's declaration now, ahead of the walk, because another type's
+// resolution needs its members: what a type extends or mixes in must have its
+// own members in place before they are copied. Returns 0 when the type is
+// already being resolved, which means the two depend on each other.
+//
+// Demand is confined to type declarations reached from type declarations, so
+// what is hooked at the jump is known: module names, and the demanding type's
+// generic parameters. A type declared in another module resolves in that
+// module's own scope: its namespace is hooked over the current one, and when
+// the module has not begun its own resolution -- modules resolve in load order
+// and the root loads first -- the names its wildcard imports will fold are
+// hooked too, without being folded, so that the module's namespace is exactly
+// what its own resolution makes it.
+int structNameResDemand(NameResState *pstate, StructNode *type) {
+    if (type->flags & NameResolved)
+        return 1;
+    if (type->flags & NameResolving)
+        return 0;
+    ModuleNode *mod = dclInfoGetModule((INode*)type);
+    if (mod == NULL || mod == pstate->mod) {
+        structNameRes(pstate, type);
+        return 1;
+    }
+    ModuleNode *svmod = pstate->mod;
+    pstate->mod = mod;
+    modHook(NULL, mod);
+    if (!(mod->flags & (NameResolved | NameResolving))) {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(mod->imports, cnt, nodesp))
+            importHookFolds((ImportNode*)*nodesp);
+    }
+    structNameRes(pstate, type);
+    modHook(mod, NULL);
+    pstate->mod = svmod;
+    return 1;
+}
+
+// Hook the entries a trait's expansion added to the namespace, so that a method
+// body resolved afterwards can name an inherited member bare. What the
+// namespace binds for the name is what is hooked: a name the type already
+// declared keeps its own binding, and the collision was reported.
+static void structHookInherited(StructNode *node, uint32_t fldpos, uint32_t fldcnt, uint32_t methpos) {
+    uint32_t cnt;
+    for (cnt = 0; cnt < fldcnt; ++cnt) {
+        Name *name = ((FieldDclNode*)nodelistGet(&node->fields, fldpos + cnt))->namesym;
+        if (name != anonName)
+            nametblHookNode(name, namespaceFind(&node->namespace, name));
+    }
+    for (cnt = methpos; cnt < node->nodelist.used; ++cnt) {
+        FnDclNode *meth = (FnDclNode*)nodelistGet(&node->nodelist, cnt);
+        nametblHookNode(meth->namesym, namespaceFind(&node->namespace, meth->namesym));
+        if (meth->overloadsym)
+            nametblHookNode(meth->overloadsym, namespaceFind(&node->namespace, meth->overloadsym));
+    }
+}
+
 // Name resolution of a struct type
+//
+// The dictionary is built whole here, before any method body is resolved: the
+// members declared in the type, and every field and default method of the trait
+// it extends or mixes in. A method body may then name an inherited member bare,
+// exactly as it names the type's own. That needs each such trait resolved
+// first, so the trait is demanded (structNameResDemand); the members copied in
+// arrive bound and are not walked again, since name resolution cannot be
+// repeated on a node.
+//
+// A trait that is not yet a declaration -- an instance of a generic trait,
+// which exists only once type check instantiates the call -- is left for type
+// check to expand by the same steps. Its members cannot be named bare.
 void structNameRes(NameResState *pstate, StructNode *node) {
     INode **nodesp;
     uint32_t cnt;
+
+    // Reached once: by demand from a type that extends or mixes it in, or by
+    // the module's walk, whichever comes first
+    if (node->flags & (NameResolved | NameResolving))
+        return;
+    node->flags |= NameResolving;
 
     INode *svtypenode = pstate->typenode;
     pstate->typenode = (INode*)node;
@@ -132,20 +283,76 @@ void structNameRes(NameResState *pstate, StructNode *node) {
         for (nodesFor(node->genericinfo->parms, cnt, nodesp))
             inodeNameRes(pstate, nodesp);
     }
-    // Resolve base trait before any other name in type is hooked
-    if (node->basetrait)
+
+    // Resolve the base trait before any other name in the type is hooked, and
+    // when it is a trait declaration this type may extend, stand a placeholder
+    // field for it at position 0, as an explicit 'mixin' stands for its trait.
+    // The walk below replaces each placeholder with the trait's members.
+    // Anything else about the base -- an instance of a generic, a base that is
+    // not a trait, a closed trait extended from outside -- is type check's.
+    if (node->basetrait) {
         inodeNameRes(pstate, &node->basetrait);
+        StructNode *trait = structNameResTrait(node->basetrait);
+        if (trait && (node->flags & HasTagField) == (trait->flags & HasTagField)) {
+            FieldDclNode *mixin = newFieldDclNode(trait->namesym, (INode*)immPerm);
+            inodeLexCopy((INode*)mixin, node->basetrait);
+            mixin->flags |= IsMixin;
+            mixin->vtype = node->basetrait;
+            nodelistInsert(&node->fields, 0, (INode*)mixin);
+        }
+    }
+
+    // Each trait to be mixed in is resolved before this type's own names are
+    // hooked, so that its bodies bind in its own scope rather than this type's.
+    // Two types that each extend or mix in the other can never both be first.
+    for (nodelistFor(&node->fields, cnt, nodesp)) {
+        if (!((*nodesp)->flags & IsMixin))
+            continue;
+        FieldDclNode *field = (FieldDclNode*)*nodesp;
+        inodeNameRes(pstate, (INode**)nodesp);
+        StructNode *trait = structNameResTrait(field->vtype);
+        if (trait && !structNameResDemand(pstate, trait))
+            errorMsgNode(field->vtype, ErrorCircular,
+                "Cannot extend or mix in %s here: %s is not complete until %s is, so each depends on the other.",
+                &trait->namesym->namestr, &trait->namesym->namestr, &node->namesym->namestr);
+    }
+
     // Now hook names inside the type
     namespaceAdd(&node->namespace, selfTypeName, (INode*)node);
     nametblHookNamespace(&node->namespace);
-    for (nodelistFor(&node->fields, cnt, nodesp)) {
-        inodeNameRes(pstate, (INode**)nodesp);
+
+    // The methods declared here, to be resolved below once every inherited
+    // name is in the dictionary. What the walk splices in after this count
+    // arrives already resolved.
+    uint32_t ownmethods = node->nodelist.used;
+
+    // Walk the fields backwards, so that replacing a placeholder with the
+    // trait's fields does not move a field not yet reached
+    int32_t fldpos;
+    for (fldpos = node->fields.used - 1; fldpos >= 0; --fldpos) {
+        INode **fldnodesp = &nodelistGet(&node->fields, fldpos);
+        FieldDclNode *field = (FieldDclNode*)*fldnodesp;
+        if (!(field->flags & IsMixin)) {
+            inodeNameRes(pstate, fldnodesp);
+            continue;
+        }
+        StructNode *trait = structNameResTrait(field->vtype);
+        if (trait == NULL || !(trait->flags & NameResolved))
+            continue;   // type check's to expand, or to refuse
+        uint32_t methpos = node->nodelist.used;
+        CloneState cstate;
+        clonePushState(&cstate, (INode*)node, (INode*)node, 0, NULL, NULL);
+        structInheritTrait(node, fldpos, trait, &cstate);
+        clonePopState();
+        structHookInherited(node, fldpos, trait->fields.used, methpos);
     }
-    for (nodelistFor(&node->nodelist, cnt, nodesp)) {
-        inodeNameRes(pstate, (INode**)nodesp);
+
+    for (cnt = 0; cnt < ownmethods; ++cnt) {
+        inodeNameRes(pstate, &nodelistGet(&node->nodelist, cnt));
     }
     nametblHookPop();
     pstate->typenode = svtypenode;
+    node->flags = (node->flags & ~NameResolving) | NameResolved;
 }
 
 // Unwrap one inheritance hop: the declaration of the trait this type extends.
@@ -188,14 +395,41 @@ void structTypeCheckBaseTrait(StructNode *node) {
     }
 }
 
-// Add method at end of strnode's method chain for this name
-void structInheritMethod(StructNode *strnode, FnDclNode *traitmeth, StructNode *trait, CloneState *cstate) {
-    // Add default method, so long as it implements logic
-    if (traitmeth->value == NULL) {
-        errorMsgNode((INode*)strnode, ErrorInvType, "Type must implement %s method, as required by %s",
-            &traitmeth->namesym->namestr, &trait->namesym->namestr);
+// Verify that this type meets every method requirement of the traits mixed
+// into it. A default the type did not declare was cloned in at expansion and
+// meets its requirement by construction. What is left is a name the type
+// declares itself, which must have the one candidate of the trait's signature,
+// and a requirement with no default, which a struct must implement and a trait
+// may pass on to its own implementers. Run after the methods are type checked,
+// so that the signatures compared have their types.
+static void structCheckTraitReqs(StructNode *node) {
+    if (node->traits == NULL)
+        return;
+    INode **traitp;
+    uint32_t traitcnt;
+    for (nodesFor(node->traits, traitcnt, traitp)) {
+        StructNode *trait = (StructNode*)*traitp;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&trait->nodelist, cnt, nodesp)) {
+            if ((*nodesp)->tag != FnDclTag || !((*nodesp)->flags & FlagMethFld))
+                continue;
+            FnDclNode *traitmeth = (FnDclNode*)*nodesp;
+            INode *binding = namespaceFind(&node->namespace, traitmeth->namesym);
+            if (!(node->flags & TraitType) && binding && binding->tag == FnDclTag
+                && ((FnDclNode*)binding)->value == NULL) {
+                errorMsgNode((INode*)node, ErrorInvType, "Type must implement %s method, as required by %s",
+                    &traitmeth->namesym->namestr, &trait->namesym->namestr);
+                continue;
+            }
+            // A trait method is one named requirement. The type satisfies it with
+            // a directly named method or the one overload candidate of that signature.
+            if (iNsTypeFindVrefMethod(binding, traitmeth) == NULL)
+                errorMsgNode((INode*)node, ErrorInvType,
+                    "Type declares %s, but none of what it declares has the signature %s requires",
+                    &traitmeth->namesym->namestr, &trait->namesym->namestr);
+        }
     }
-    iNsTypeAddFn((INsTypeNode *)strnode, (FnDclNode*)cloneNode(cstate, (INode*)traitmeth));
 }
 
 void structSetDropFn(StructNode *node) {
@@ -303,6 +537,19 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
 
     // Handle when a base trait is specified
     if (node->basetrait) {
+        // Name resolution mixed in a base trait that was a declaration then, and
+        // recorded it. One that was not -- an instance of a generic trait, which
+        // exists only once the instantiation is type checked here -- is mixed in
+        // below, through a placeholder field inserted at position 0 as name
+        // resolution would have.
+        int pending = 1;
+        if (node->traits) {
+            INode **traitp;
+            uint32_t traitcnt;
+            for (nodesFor(node->traits, traitcnt, traitp))
+                if (isTypeNode(node->basetrait) && *traitp == itypeGetTypeDcl(node->basetrait))
+                    pending = 0;
+        }
         if (itypeTypeCheck(pstate, &node->basetrait) == 0) {
             pstate->typenode = svtypenode;
             return;
@@ -319,79 +566,50 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
             // For closed types, the trait and derived node need info from each other
             structTypeCheckBaseTrait(node);
 
-            // Insert "mixin" field for basetrait at start, to trigger mixin logic below
-            FieldDclNode *mixin = newFieldDclNode(basetrait->namesym, (INode*)immPerm);
-            mixin->flags |= IsMixin;
-            mixin->vtype = node->basetrait;
-            nodelistInsert(&node->fields, 0, (INode*)mixin);
+            if (pending) {
+                FieldDclNode *mixin = newFieldDclNode(basetrait->namesym, (INode*)immPerm);
+                inodeLexCopy((INode*)mixin, node->basetrait);
+                mixin->flags |= IsMixin;
+                mixin->vtype = node->basetrait;
+                nodelistInsert(&node->fields, 0, (INode*)mixin);
+            }
         }
     }
 
-    // Iterate backwards through all fields to type check and handle trait/field inheritance
-    // We go backwards to prevent index invalidation and to ensure method inheritance stays in correct order.
-    // When done, all trait mixins are replaced with the trait's fields
-    // And trait/field inheritance are appropriately added to the dictionary in the correct order
-    CloneState cstate;
-    clonePushState(&cstate, (INode*)node, (INode*)node, 0, NULL, NULL);
-    int32_t fldpos = node->fields.used - 1;
-    INode **fldnodesp = &nodelistGet(&node->fields, fldpos);
-    while (fldpos >= 0) {
+    // Every trait name resolution mixed in is type checked before this type's
+    // layout is settled, as the one mixed in below is by its placeholder
+    if (node->traits) {
+        INode **traitp;
+        uint32_t traitcnt;
+        for (nodesFor(node->traits, traitcnt, traitp))
+            inodeTypeCheckAny(pstate, traitp);
+    }
+
+    // Iterate backwards through all fields to type check them and to mix in any
+    // trait still standing as a placeholder. Backwards, so that replacing a
+    // placeholder with the trait's fields does not move a field not yet reached.
+    int32_t fldpos;
+    for (fldpos = node->fields.used - 1; fldpos >= 0; --fldpos) {
+        INode **fldnodesp = &nodelistGet(&node->fields, fldpos);
         FieldDclNode *field = (FieldDclNode*)*fldnodesp;
-        if (field->flags & IsMixin) {
-            if (itypeTypeCheck(pstate, &field->vtype) == 0) {
-                clonePopState();
-                pstate->typenode = svtypenode;
-                return;
-            }
-            // A dummy mixin field requesting we mixin its fields and methods
-            StructNode *trait = (StructNode*)itypeGetTypeDcl(field->vtype);
-            if (trait->tag != StructTag || !(trait->flags & TraitType)) {
-                errorMsgNode(field->vtype, ErrorInvType, "mixin must be a trait");
-            }
-            else {
-                // Replace the "mixin" field with all the trait's fields
-                nodelistMakeSpace(&node->fields, fldpos, trait->fields.used - 1);
-                INode **insertp = fldnodesp;
-                for (nodelistFor(&trait->fields, cnt, nodesp)) {
-                    FieldDclNode *newfld = (FieldDclNode*)cloneNode(&cstate, *nodesp);
-                    *insertp++ = (INode *)newfld;
-                    if (namespaceAdd(&node->namespace, newfld->namesym, (INode*)newfld)) {
-                        errorMsgNode((INode*)newfld, ErrorDupName, "Trait may not mix in a duplicate field name");
-                    }
-                }
-                // Fold in trait's default methods
-                for (nodelistFor(&trait->nodelist, cnt, nodesp)) {
-                    if ((*nodesp)->tag != FnDclTag)
-                        continue;
-                    // Only a method is inherited. A static function of the trait
-                    // takes no receiver, so there is nothing about it to specialize
-                    // per implementer and nothing that dispatches it: it stays the
-                    // trait's own, reached as 'Trait::name'. Copying it gave every
-                    // implementer a symbol no name could reach, since a qualified
-                    // name on the implementer does not find it either.
-                    if (!((*nodesp)->flags & FlagMethFld))
-                        continue;
-                    FnDclNode *traitmeth = (FnDclNode*)*nodesp;
-                    // A trait method is one named requirement. The type satisfies it with
-                    // a directly named method or the one overload candidate of that signature.
-                    INode *structmeth = iNsTypeFindFnField((INsTypeNode *)node, traitmeth->namesym);
-                    if (structmeth == NULL)
-                        // Nothing is declared for the name, so inherit the trait's default
-                        structInheritMethod(node, traitmeth, trait, &cstate);
-                    else if (iNsTypeFindVrefMethod(structmeth, traitmeth) == NULL)
-                        errorMsgNode((INode*)node, ErrorInvType,
-                            "Type declares %s, but none of what it declares has the signature %s requires",
-                            &traitmeth->namesym->namestr, &trait->namesym->namestr);
-                }
-            }
-        }
-        // Type check a normal field
-        else
+        if (!(field->flags & IsMixin)) {
             inodeTypeCheckAny(pstate, fldnodesp);
-
-        --fldpos; --fldnodesp;
+            continue;
+        }
+        if (itypeTypeCheck(pstate, &field->vtype) == 0) {
+            pstate->typenode = svtypenode;
+            return;
+        }
+        StructNode *trait = (StructNode*)itypeGetTypeDcl(field->vtype);
+        if (trait->tag != StructTag || !(trait->flags & TraitType)) {
+            errorMsgNode(field->vtype, ErrorInvType, "mixin must be a trait");
+            continue;
+        }
+        CloneState cstate;
+        clonePushState(&cstate, (INode*)node, (INode*)node, 0, NULL, NULL);
+        structInheritTrait(node, fldpos, trait, &cstate);
+        clonePopState();
     }
-    clonePopState();
 
     // Go through all fields to index them and calculate infection flags for ThreadBound/MoveType
     int isZeroSize = 1;  // Start with assumption it is zero size, unless proven otherwise
@@ -410,15 +628,15 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
         if (!itypeIsZeroSize((INode*)fldtype))
             isZeroSize = 0;
 
-        if (fldtype->tag == EnumTag && !((*nodesp)->flags & IsTagField)) {
-            if ((node->flags & TraitType) && node->basetrait == NULL && !hasEnumFld) {
-                hasEnumFld = 1;
-                (*nodesp)->flags |= IsTagField;
-            }
-            else {
+        // The discriminant was marked at parse: a base trait's first enum-typed
+        // field, and the one a variant copies from it. Any other enum-typed
+        // field is a second discriminant, or one where no discriminant belongs.
+        if (fldtype->tag == EnumTag) {
+            if (!((*nodesp)->flags & IsTagField) || hasEnumFld)
                 errorMsgNode(*nodesp, ErrorInvType, "Empty enum type only allowed once in a base trait");
-            }
-            if (((FieldDclNode*)(*nodesp))->namesym != anonName)
+            else
+                hasEnumFld = 1;
+            if (((*nodesp)->flags & IsTagField) && ((FieldDclNode*)(*nodesp))->namesym != anonName)
                 errorMsgNode(*nodesp, ErrorInvType, "The tag discriminant field name should be '_'");
         }
     }
@@ -475,6 +693,7 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
             fnOverloadDclTypeCheck(pstate, (FnOverloadDclNode*)binding);
     }
 
+    structCheckTraitReqs(node);
     structSetDropFn(node);
 
     pstate->typenode = svtypenode;
