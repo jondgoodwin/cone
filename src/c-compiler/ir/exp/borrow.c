@@ -96,7 +96,7 @@ static int borrowRefIndexDispatches(RefNode *node) {
     INode *lvaltype = iexpGetTypeDcl(node->vtexp);
     if (!isMethodType(lvaltype))
         return 0;
-    INode *found = iNsTypeFindFnField((INsTypeNode*)lvaltype, refIndexName);
+    INode *found = aliasDclResolve(iNsTypeFindFnField((INsTypeNode*)lvaltype, refIndexName));
     if (found == NULL || !(found->flags & FlagMethFld)
         || (found->tag != FnDclTag && found->tag != FnOverloadDclTag))
         return 0;

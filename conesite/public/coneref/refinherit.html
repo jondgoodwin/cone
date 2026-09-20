@@ -13,8 +13,6 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Note: None of this has been implemented.</i></p>
-	
 	<p>Inheritance makes it easy to declare
 		a new type that reuses (inherits) the fields or methods defined by some other type.</p>
 	<p>Cone's version of inheritance looks and behaves somewhat differently than
@@ -22,8 +20,10 @@
 		At its heart, Cone's inheritance is a composition-based approach that offers
 		convenient namespace "sugar" for automatically forwarding certain method (or field) access requests.
 		This makes method reuse (forwarding) easy to accomplish, where needed,
-		while side-stepping the tightly-coupled complexity and fragility 
+		while side-stepping the tightly-coupled complexity and fragility
 		sometimes experienced when using traditional inheritance.</p>
+	<p>It is the same operation a module performs when it folds another module's names into its own:
+		"the names in there are now names in here." Folding into a type does it through a field.</p>
 
 	<h2>Selective Inheritance</h2>
 	<p>Imagine we have this <span class="pre">Engine</span> type:</p>
@@ -32,12 +32,12 @@ struct Engine {
   pub fuel   f32;
   pub torque f32;
 
-  pub fn thrust(amt f32) { ... }
-  pub fn power(on Bool) { ... }
+  pub fn thrust(self &mut, amt f32) { ... }
+  pub fn power(self &) f32 { ... }
 }
 </pre>
 
-	<p>Now, let's create a new <span class="pre">Car</span> type that includes, 
+	<p>Now, let's create a new <span class="pre">Car</span> type that includes,
 		and inherits from, an <span class="pre">Engine</span>:</p>
 <pre>
 struct Car {
@@ -46,22 +46,29 @@ struct Car {
   pub wheels RimWheels;
 }
 </pre>
-	<p>The use of the <span class="pre">use</span> keyword on the <span class="pre">engine</span>
-		field ensures that every Car object inherits the 
-		<span class="pre">fuel</span> field and <span class="pre">thrust</span> method
-		from <span class="pre">Engine</span> by way of <span class="pre">engine</span>. 
-		Effectively, we are requesting automatic namespace-forwarding magic, such that:</p>
+	<p>The <span class="pre">use</span> clause on the <span class="pre">engine</span>
+		field makes the <span class="pre">fuel</span> field and the <span class="pre">thrust</span> method
+		of <span class="pre">Engine</span> names of <span class="pre">Car</span>, reached by way of
+		<span class="pre">engine</span>:</p>
 	<ul>
 		<li>any access to <span class="pre">car.fuel</span>
-			is treated as equivalent to <span class="pre">car.engine.fuel</span>.</li>
-		<li><span class="pre">car.thrust(23.2)</span>
-			is treated as equivalent to <span class="pre">car.engine.thrust(23.2)</span>
-			It is important to note that the thrust will be called with self being the
-			engine, and not the car. If one needs a thrust method that operates on car,
+			is treated as equivalent to <span class="pre">car.engine.fuel</span>.
+			It reads and writes the engine's own field; no second copy of the value exists.</li>
+		<li><span class="pre">(&mut car).thrust(23.2)</span>
+			is treated as equivalent to <span class="pre">(&mut car.engine).thrust(23.2)</span>.
+			It is important to note that <span class="pre">thrust</span> runs with <span class="pre">self</span> being the
+			engine, and not the car. If one needs a thrust method that operates on the car,
 			then don't have Car inherit it from engine. Implement it in Car and then explicitly
 			call engine's thrust as part of its logic, if desired.</li>
 	</ul>
-	<p>A type may inherit names from more than one field.</p>
+	<p>No forwarding method is generated for a folded name: a call to <span class="pre">thrust</span>
+		through a Car is a call to Engine's own method, with its receiver shifted to the engine.
+		Inside Car's own methods a folded name is named bare, exactly as Car's own members are.</p>
+	<p>A type may inherit names from more than one field. One clause reaches one level:
+		<span class="pre">use temp</span> admits <span class="pre">engine.temp</span>, not
+		<span class="pre">engine.core.temp</span>, unless <span class="pre">Engine</span> itself folded
+		<span class="pre">temp</span> in from <span class="pre">core</span>. Folds chain through the types,
+		not through the clause.</p>
 
 	<h3>Name Aliasing</h3>
 	<p>Inherited names must be unique. It is an error to inherit names that are
@@ -69,31 +76,77 @@ struct Car {
 		name from two different fields.</p>
 	<p>To avoid such name conflicts, a name may be inherited using an alias.
 		For example <span class="pre">use fuel as fuelamt, thrust</span> would support
-		the use of <span class="pre">car.fuelamt</span> as an alias for 
+		the use of <span class="pre">car.fuelamt</span> as an alias for
 		<span class="pre">car.engine.fuel</span>.</p>
 
 	<h2>Total Inheritance</h2>
-	<p>If a field specifies <span class="pre">use *</span>, all fields are inherited.
-		Additionally, this inherits every method not explicitly implemented by the new type.
+	<p>If a field specifies <span class="pre">use *</span>, every public field and method
+		of the field's type is inherited, less any named after <span class="pre">but</span>.
+		The rule for names is the same as for a listed fold: an inherited name may not
+		collide with a name the type declares, so a type that implements a method of its own
+		leaves the inherited one out by name.
 		For example:
 	</p>
 <pre>
 struct SuperEngine {
-  pub engine Engine use *;
-  pub fn power(on Bool) { ... }
+  pub engine Engine use * but power;
+  pub fn power(self &) f32 { ... }
 }
 </pre>
 	<p><span class="pre">SuperEngine</span> inherits the fields
-		<span class="pre">fuel</span> and <span class="pre">torque</span>, 
+		<span class="pre">fuel</span> and <span class="pre">torque</span>,
 		as well as the <span class="pre">thrust</span> method from <span class="pre">engine</span>.
 		It does not inherit the <span class="pre">power</span> method,
-		since it has its own implementation of it.</p>
+		since it has its own implementation of it and says so.
+		Should <span class="pre">Engine</span> later gain a member whose name
+		<span class="pre">SuperEngine</span> also declares, the fold is refused where it is written
+		rather than one quietly overriding the other.</p>
 
-	<p>When a type inherits all the fields of another type, 
-		its constructor may name those fields individually or collectively.
-	  Thus, <span class="pre">SuperEngine[engine: Engine[fuel: 1.0, torgue: 2.0]]</span>
-		and <span class="pre">SuperEngine[fuel: 1.0, torgue: 2.0]</span>
-		are equivalent and equally acceptable.</p>
+	<h2>What folds, and what does not</h2>
+	<ul>
+		<li><b>The field must be <span class="pre">pub</span>, and only public members fold.</b>
+			Visibility is transitive: a folded name is reached through the field, so a private
+			field cannot lend its members out, and a private member of the field's type stays private.
+			A folded name is public because its path is.</li>
+		<li><b>Fields, methods and macro methods fold.</b> A static function or variable of the
+			field's type does not: it is reached through the type rather than through a value,
+			so there is no receiver to shift. Neither does a macro without a <span class="pre">self</span>
+			parameter, nor <span class="pre">Self</span>, nor the field type's own
+			<span class="pre">final</span> or <span class="pre">clone</span>.</li>
+		<li><b>A field held through a reference folds.</b> With
+			<span class="pre">pub engine &mut Engine use fuel, thrust</span>, the hop reaches through
+			the reference as <span class="pre">car.engine.fuel</span> does, and the reference itself is
+			the receiver of a folded method.</li>
+		<li><b>Only a struct folds.</b> A trait or union is an abstraction, with no organizing
+			details of its own to fold through; a <span class="pre">use</span> clause on one of its
+			fields is refused.</li>
+		<li><b>A fold needs the field's type complete.</b> A type cannot fold from a field of its
+			own type, nor may two types each fold from the other.</li>
+	</ul>
+
+	<h2>Receivers</h2>
+	<p>A folded method is reached exactly as the path written out would reach it.
+		Through a reference to the folding type, the field is reborrowed with the reference's
+		own permission, so <span class="pre">(&mut car).thrust(1.0)</span> and
+		<span class="pre">c.thrust(1.0)</span> for a <span class="pre">c &mut Car</span> both hand
+		<span class="pre">thrust</span> a <span class="pre">&mut Engine</span>. From a value of the
+		folding type, the receiver is the field's value, which reaches a method that takes
+		<span class="pre">self</span> by value and copies the field, as
+		<span class="pre">car.engine.rating()</span> would. The fold adds no borrowing rule of its own.</p>
+
+	<h2>What a fold grants</h2>
+	<p>A fold grants names, and with them structural compliance with any trait those names satisfy:
+		a type whose folded <span class="pre">power</span> matches a trait's requirement conforms to that
+		trait, and may be reached through a virtual reference to it. Behind the virtual reference the
+		compiler supplies the shift to the field, since the call site cannot know the type folded the
+		method; nothing in the language can name what it supplies.</p>
+	<p>A fold grants no subtyping to the field's concrete type, and no layout: a Car is not an Engine,
+		and <span class="pre">&Car</span> does not recast to <span class="pre">&Engine</span>. Subtyping
+		in Cone is between a concrete type and an abstraction, a trait, never between two concrete types.</p>
+	<p>A folded field is not a field of the type. It is a name for storage inside another type's value,
+		so it cannot be named in the type's literal
+		(<span class="pre">SuperEngine[engine: Engine[fuel: 1.0, torque: 2.0]]</span> is the literal),
+		and it meets no trait's field requirement. A folded method does count toward conformance.</p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="refmove.html"><img alt="_" src="next.png" /></a>

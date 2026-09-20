@@ -76,11 +76,12 @@ That is the whole of it: `dclnode` is set and nothing else on the node changes.
 
 `isExpNode`, `isTypeNode` and `isMetaNode` ask `nameUseGroup`, which follows
 `dclnode` to the declaration at the end of the chain of names (`nameUseGetDcl`)
-and classifies that: a variable, function, overload set, field or constant →
-expression; a macro or generic parameter → meta; **everything else, including a
-module, → type** by fallthrough. A use bound to nothing — unresolved, or a
-member name before type check selects the member — is in no group: none of the
-three answers true.
+— through an alias too, since an alias stands for its target — and classifies
+that: a variable, function, overload set, field or constant → expression; a
+macro or generic parameter → meta; **everything else, including a module, →
+type** by fallthrough. A use bound to nothing — unresolved, or a member name
+before type check selects the member — is in no group: none of the three
+answers true.
 
 `nameUseNames(node, dcltag)` asks the sharper question a reader usually means —
 does this name a `ConstDclTag`, an `FnOverloadDclTag`, a `MacroDclTag`, a
@@ -89,7 +90,9 @@ bound to nothing.
 
 The use is asked rather than stamped because an alias has nothing to stamp: a
 name that resolves to a binding pointing at a declaration is whatever the
-declaration is, and only the declaration can say.
+declaration is, and only the declaration can say. The alias exists now
+(`AliasDclNode`), for a method a type holds by folding, and a bare use of one
+answers as the method.
 
 Privacy is checked on the qualified path: a `_`-prefixed name reached through a
 qualifier from outside its module is `ErrorNotPublic`. **The declaration stays
@@ -102,6 +105,9 @@ Two entry points, because a type name and a value name want different things.
 
 `nameUseTypeCheck` (value position), in order:
 
+0. **A use bound to an alias is re-pointed at what the alias stands for**, so
+   everything below reads a declaration's type and tag. An alias its fold
+   failed to bind was reported there; the use takes `errorType`.
 1. **An overload name is refused here.** It names a set, not a value; only a
    call may use it, and `fnCallTypeCheck` rewrites the use to the concrete
    declaration before this is reached. `ErrorOverloadUse`.

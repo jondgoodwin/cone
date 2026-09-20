@@ -1,0 +1,181 @@
+// Name folding: a field's 'use' clause makes members of the field's type
+// names of the type that holds the field. 'car.fuel' reaches 'car.engine.fuel'
+// and 'car.thrust(2)' calls 'car.engine.thrust(2)' with the engine as thrust's
+// self, and no forwarding method is generated for either. It is composition
+// with the namespace sugar of inheritance, which is why the manual calls it
+// delegated inheritance.
+//
+// Everything is printed, because a fold that compiles is not a fold that
+// reached the right storage or ran with the right receiver.
+
+import stdio::*;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// The type folded from: fields, methods taking self three ways, a macro
+// method, a private member and a static, which are what a fold has to sort
+struct Engine {
+  pub fuel i32;
+  pub torque i32;
+  secret i32 = 7;
+
+  pub fn thrust(self &mut, amt i32) i32 {fuel = fuel - amt; fuel;}
+  pub fn power(self &) i32 {torque * 2;}
+  pub fn rating(self) i32 {fuel + torque;}
+  pub macro boost[self, n] {self.torque + n;}
+  pub fn count() i32 {4;}
+}
+
+// -------- selective folding, with renaming --------
+
+struct Car {
+  pub engine Engine use fuel, thrust, power as horsepower;
+  pub seats i32;
+
+  // A folded name is a name of Car inside its own methods, bare
+  pub fn report(self &) i32 {fuel + horsepower();}
+}
+
+// A method taking self by reference is reached through a reference, as
+// everywhere in the language; the fold adds no borrowing of its own. Through a
+// reference to the folding type, the receiver becomes a reborrow of the field
+// with the reference's own permission -- '(&mut car).thrust(5)' runs thrust on
+// '&mut car.engine'.
+fn selective() {
+  mut car = Car[Engine[10, 3], 4];
+  show("folded-field-read", car.fuel);
+  car.fuel = 20;
+  show("folded-field-written", car.engine.fuel);
+  show("folded-method-mut-self-through-mut-ref", (&mut car).thrust(5));
+  show("folded-method-changed-the-field", car.engine.fuel);
+  show("renamed-folded-method", (&car).horsepower());
+  show("folded-names-bare-in-own-method", (&car).report());
+  show("own-field-beside-the-fold", car.seats);
+}
+
+// The same folded method reached through a reference parameter
+fn throughRef(c &mut Car) i32 {
+  c.thrust(1);
+}
+
+// -------- a fold chains through the types --------
+
+struct Plane {
+  pub left Engine use fuel as leftFuel, thrust as leftThrust;
+  pub right Engine use fuel as rightFuel, power as rightPower;
+}
+
+// Fleet folds from Plane what Plane itself holds by folding: one clause reaches
+// one level, and the fold chains through the types
+struct Fleet {
+  pub lead Plane use leftFuel, leftThrust, rightPower;
+  pub size i32;
+}
+
+fn chained() {
+  mut fleet = Fleet[Plane[Engine[30, 1], Engine[40, 2]], 3];
+  show("chained-folded-field", fleet.leftFuel);
+  fleet.leftFuel = 31;
+  show("chained-folded-field-written", fleet.lead.left.fuel);
+  show("chained-folded-method", (&mut fleet).leftThrust(1));
+  show("chained-folded-method-other-field", (&fleet).rightPower());
+}
+
+// -------- everything, less what is named after 'but' --------
+
+struct Hybrid {
+  pub engine Engine use * but power;
+  pub cell i32;
+
+  // The one name left out is the one Hybrid declares itself
+  pub fn power(self &) i32 {cell;}
+}
+
+fn star() {
+  mut h = Hybrid[Engine[50, 5], 99];
+  show("star-folded-field", h.torque);
+  show("star-folded-method", (&mut h).thrust(10));
+  // A method taking self by value copies the field, as the path written out would
+  show("star-folded-by-value-method-copies", h.rating());
+  show("star-folded-macro-method", h.boost(1));
+  show("excluded-name-is-the-types-own", (&h).power());
+}
+
+// -------- a field held through a reference --------
+
+// The field is the receiver as it stands: a reference already, so a method
+// taking self by reference is reached from a value of the folding type
+struct Bay {
+  pub id i32;
+  pub engine &mut Engine use fuel, thrust, power;
+}
+
+fn throughReferenceField() {
+  mut e = Engine[70, 7];
+  mut bay = Bay[1, &mut e];
+  show("folded-through-reference-field", bay.fuel);
+  show("folded-method-through-reference-field", bay.thrust(20));
+  show("reference-field-target-changed", bay.engine.fuel);
+}
+
+// -------- a folded method satisfies a trait, through a virtual reference --------
+
+trait Powered {
+  pub fn power(self &) i32;
+}
+
+// Truck holds its engine second, so a virtual call cannot reach the engine at
+// the object's own address: the vtable slot holds a thunk that shifts it
+struct Truck {
+  pub load i32;
+  pub engine Engine use power;
+}
+
+// Bay's engine is held through a reference, so its thunk's shift is a load
+fn poweredBy(p &<Powered) i32 {
+  p.power();
+}
+
+fn virtual() {
+  imm truck = Truck[500, Engine[1, 6]];
+  show("folded-method-through-virtual-ref", poweredBy(&truck));
+  mut e = Engine[2, 8];
+  imm bay = Bay[2, &mut e];
+  show("folded-method-through-virtual-ref-reference-field", poweredBy(&bay));
+}
+
+// -------- a generic struct folding from a field of its parameter's type --------
+
+// The field's type exists only when the instance does, so the fold is expanded
+// then. A folded name of it is reached through self inside the template's
+// own methods, since the template's bodies are resolved before any instance.
+struct Holder[T] {
+  pub item T use fuel, power;
+  pub tag i32;
+
+  pub fn read(self &) i32 {self.fuel + self.power();}
+}
+
+fn generic() {
+  imm h = Holder[Engine][Engine[9, 4], 1];
+  show("generic-instance-folded-field", h.fuel);
+  show("generic-instance-folded-method", (&h).power());
+  show("generic-instance-folded-in-own-method", (&h).read());
+}
+
+fn main() i32 {
+  selective();
+  mut car = Car[Engine[10, 3], 4];
+  show("folded-method-through-ref-to-folder", throughRef(&mut car));
+  chained();
+  star();
+  throughReferenceField();
+  virtual();
+  generic();
+  0i32;
+}

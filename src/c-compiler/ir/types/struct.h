@@ -12,6 +12,7 @@
 typedef struct {
     INode *structdcl;          // struct that implements
     Nodes *methfld;            // specific methods and fields in same order as vtable
+    Nodes *foldpaths;          // per slot: for a folded method, the fields (Nodes of FieldDclNode) its receiver is reached through; else NULL
     LLVMValueRef llvmvtablep;  // generates a pointer to the implemented vtable
 } VtableImpl;
 
@@ -61,6 +62,12 @@ void structNameRes(NameResState *pstate, StructNode *node);
 // Resolve a type's declaration now, because another type's resolution needs its
 // members complete. Returns 0 when the type is already being resolved.
 int structNameResDemand(NameResState *pstate, StructNode *type);
+
+// Rewrite the receiver of a call to a method 'type' holds by folding: '*objp'
+// becomes the access to the field the name was folded through, recursing into
+// that field's type where the name is folded there too. Nothing happens for a
+// name the type declares itself.
+void structFoldReceiver(StructNode *type, Name *name, INode **objp, INode *lexnode);
 
 // Unwrap one inheritance hop: the declaration of the trait this type extends
 StructNode *structBaseTraitDcl(StructNode *node);

@@ -94,6 +94,13 @@ INode *iNsTypeFindFnField(INsTypeNode *type, Name *name) {
 // returning how many there are. Returns 0 when the binding declares no method.
 static uint32_t iNsTypeCandidates(INode **bindingp, INode ***candidatesp) {
     INode *binding = *bindingp;
+    // A folded method's binding is an alias; the candidates are its target's.
+    // This is the one place overload selection reads a binding, so resolving
+    // here serves every caller: a method call, a trait requirement, a vtable slot.
+    while (binding && binding->tag == AliasDclTag) {
+        bindingp = &((NameUseNode*)((AliasDclNode*)binding)->target)->dclnode;
+        binding = *bindingp;
+    }
     if (binding == NULL)
         return 0;
     if (binding->tag == FnDclTag) {

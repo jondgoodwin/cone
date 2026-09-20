@@ -57,7 +57,8 @@ changing it.
 | `src/c-compiler/parser/lexer.c` | Interns keywords and identifier spellings through `nametblFind`, so equal spellings share one `Name`. |
 | `src/c-compiler/ir/nametbl.c` | Owns the global intern table and the push/hook/pop mechanism used to expose the nearest lexical or namespace binding through `Name.node`. |
 | `src/c-compiler/ir/namespace.c` | Implements the hash table owned by each module or namespaced type: initialize, find, set, add, duplicate detection, and growth. |
-| `src/c-compiler/ir/name.c` | Defines well-known interned names and spells every declared symbol — `nameSymbol`, `nameVtable`, `nameVtableImpl` — from a declaration's owner chain and facts. See "Symbols". |
+| `src/c-compiler/ir/name.c` | Defines well-known interned names and spells every declared symbol — `nameSymbol`, `nameVtable`, `nameVtableImpl`, `nameVtableThunk` — from a declaration's owner chain and facts. See "Symbols". |
+| `src/c-compiler/ir/stmt/aliasdcl.c` | The alias: a binding that stands for another declaration under a spelling of its own, with a visibility of its own. Made for the members a field's `use` clause folds in; `aliasDclResolve` follows a chain to the declaration. |
 | `src/c-compiler/ir/dclinfo.c` | The declaration facts a symbol is derived from: sets them where a declaration joins its namespace (`dclInfoJoin`), walks to the enclosing module, prints them in the IR dump. |
 | `src/c-compiler/ir/inode.c` | Dispatches the name-resolution pass by IR node tag. Start here when a new node kind must participate in name resolution. |
 | `src/c-compiler/ir/clone.c` | Rebinds generic/macro parameters during cloning and repairs resolved declaration references in cloned `NameUse` nodes. |
@@ -116,7 +117,7 @@ Named types expose a member namespace. The documented model includes fields, met
 
 Current compiler behavior:
 
-- Structs and traits have one namespace containing fields, methods, static functions, macros, inherited members, and `Self`.
+- Structs and traits have one namespace containing fields, methods, static functions, macros, inherited members, folded members (a copy of a folded field, an alias for a folded method), and `Self`.
 - A field, static function or macro cannot collide with another member name. A macro declared in a type is a macro method when its first parameter is `self`, by the same rule as a function; it joins no overload set, and it is not inherited from a trait.
 - Methods and static functions each declare a namespace-unique concrete name. A declaration may additionally name an overload set with `fn concrete overload shared(...)`. The concrete name binds directly to its `FnDclNode`; the overload name binds to a separate `FnOverloadDclNode` holding every candidate declared for it, including a set that currently has only one candidate. Two declarations claiming the same concrete name are a duplicate-name error, and an overload name already bound to anything other than an overload node is a collision error.
 - Every executable implementation remains a separate `FnDclNode`. The overload node is only a namespace binding, so lookup, call lowering, trait reconciliation, vtables, and code generation always record the selected concrete node.
@@ -249,13 +250,21 @@ The intended NameDef behavior is:
 
 Thus import aliasing duplicates a binding, not the underlying type, function, module, or other IR value.
 
+### Folding into a type
+
+A struct's field may carry a `use` clause folding members of the field's type in as names of the struct — delegated inheritance, [refinherit](../../conesite/public/coneref/refinherit.html). It is built, and it is the same operation as the module fold above at the namespace: one collision domain, an error at the fold for a name already taken, renaming with `as`, exclusion with `but`, visibility transitive so only what the field's type shows through a `pub` field folds. The clause is expanded into the struct's dictionary while the struct is name resolved, before any of its method bodies, so a folded name is usable bare inside the type ([struct](../nodes/struct.md), "Name folding").
+
+**Where the two folds differ, measured by building this one: in what the binding holds.** A module fold binds the declaration itself. A type fold binds a *copy* of a folded field, carrying a hop to the field it is reached through, or an *alias* for a folded method — because only a type fold reaches its target through a value, and a use of the name must be lowered to an access path or to a call whose receiver is shifted to the field. The alias node is the binding record this note asks for: a local spelling, a visibility bit of its own, a target. The module work reuses it as it is, with a qualified name as the target, and never calls the receiver rewrite.
+
 ## Aliases
 
 Current `typedef` creates a module-scoped structural alias for a type. Type resolution follows the alias to its underlying type.
 
+`AliasDclNode` (`ir/stmt/aliasdcl.c`) is the general binding: a local spelling and a target, a name use bound to the declaration it stands for, with the `FlagPub` bit as its own visibility and everything else the target's. Chains resolve through `aliasDclResolve`; a use bound to one answers as its target (`nameUseGroup`), and every site that reads a namespace binding resolves it first. Today it is made for a folded method, overload set or macro method of a field's type, and for nothing else.
+
 The aspirational model generalizes aliases: a new NameDef may denote anything nameable. Alias chains should preserve each local binding for diagnostics and visibility while semantic operations can reach the final IR value. A type-valued alias remains structural; creating a distinct nominal type should use a separate construct.
 
-Import folding/renaming is a namespace alias operation with an explicit source definition. Other aliases may bind expressions or declarations directly. The exact syntax and compile-time restrictions for general aliases remain open.
+Import folding/renaming is a namespace alias operation with an explicit source definition, and is the alias above with a qualified name use as its target. Other aliases may bind expressions or declarations directly. The exact syntax and compile-time restrictions for general aliases remain open.
 
 ## Generics and macros
 
@@ -364,7 +373,10 @@ Rules for Cone-consumed names; C FFI names have their own (S5).
   bare wherever it is declared]
 - **S6. Vtables.** A vtable is the implementing type then the trait's path,
   `Y<type><trait-path>` — this type as that trait — and a trait's vtable list
-  is the trait's path alone, `L<trait-path>`. The vtable's LLVM *type* is
+  is the trait's path alone, `L<trait-path>`. The thunk that fills a slot a
+  folded method satisfies is the vtable's spelling followed by the slot's
+  identifier, `Y<type><trait-path><ident>` (`nameVtableThunk`): this type as
+  that trait, at that slot. The vtable's LLVM *type* is
   named `<Trait>:Vtable` from the trait's declared name (`nameVtable`): an
   LLVM type name, not an object-file symbol, so it is not encoded.
 - **S7.** Overloaded functions need no signature encoding: a concrete candidate
@@ -389,6 +401,7 @@ back.
 ```
 symbol   = "_C" [version] path                   a fn, a global, a method
          | "_C" [version] "Y" type path          a vtable: this type as that trait
+         | "_C" [version] "Y" type path ident    the thunk filling that vtable's named slot
          | "_C" [version] "L" path               a trait's vtable list
 version  = decimal                               absent = 0, and only 0 is spelled
 
@@ -499,6 +512,7 @@ demangler in `test/run.py`:
 | the `drop` the compiler synthesizes for `Bundle` | `_CNvNt6Bundle4drop` | `Bundle::drop` |
 | `Vec::-`, `Vec::+=`, `List::&[]` | `_CNvNt3Vecomi`, `_CNvNt3VecopL`, `_CNvNt4Listorx` | `Vec::-`, `Vec::+=`, `List::&[]` |
 | `Gauge`'s vtable for trait `Meter` | `_CYNt5GaugeNt5Meter` | `Gauge as Meter (vtable)` |
+| the thunk filling `Powered`'s `thrust` slot in `Car`'s vtable, `thrust` being folded from a field | `_CYNt3CarNt7Powered6thrust` | `Car as Powered::thrust (thunk)` — a method in everything but name and namespace |
 | `Meter`'s vtable list | `_CLNt5Meter` | `Meter (vtable list)` |
 | the vtable of `Variant1`, a variant of tagged trait `Extense` | `_CYNtNt7Extense8Variant1Nt7Extense` | `Extense::Variant1 as Extense (vtable)` — a variant is owned by its trait |
 | `passThrough[T]` at `&opaq fn(i64) i64` | `_CINv11passThroughR04opaqFxExE` | `passThrough[&opaq fn(i64) i64]` — borrowed, so the region is `0` |
@@ -723,8 +737,8 @@ would see little but `main`.
 	- A generic function may not declare an overload name; the parser reports that combination.
 	- Extending a type's overload sets from an extension, generic candidates, and merging matching `extern` declarations with implementations remain deferred.
 - Compile unit handling of duplicate, consistent type `extern` vs. value-specified names.
-- Selective import folding and `as` renaming are documented but unimplemented.
+- Selective import folding and `as` renaming are documented but unimplemented. The binding node they need exists (`AliasDclNode`, built for the type fold); import does not use it yet.
 - Nested named modules are documented but lack clear declaration syntax and parser support.
-- General aliases beyond `typedef` are not implemented.
-- Generic, macro, union, inheritance, and metaprogram namespace behavior is partly implemented, incomplete, or aspirational.
+- General aliases beyond `typedef` and the folded-member alias are not implemented.
+- Generic, macro, union, and metaprogram namespace behavior is partly implemented, incomplete, or aspirational. Delegated inheritance is built; see "Folding into a type" above.
 - Packages organize importable libraries but are not yet defined as a distinct namespace layer.

@@ -1,0 +1,105 @@
+// What a fold clause may admit, decided while the type is name resolved: the
+// clause is expanded into the type's dictionary before any method body is, so
+// every refusal here is this stage's. What a folded name then is, and is not,
+// at type check is in struct-typecheck-fold.
+//
+// Name-resolution stage only: name resolution returns before type checking,
+// so nothing about types belongs here. Each condition is its own struct,
+// because a clause that fails leaves its names unbound and a second condition
+// in the same type would be reported against that.
+
+struct Engine {
+  pub fuel i32;
+  pub torque i32;
+  secret i32 = 7;
+
+  pub fn thrust(self &mut, amt i32) i32 {fuel = fuel - amt; fuel;}
+  pub fn power(self &) i32 {torque * 2;}
+  pub fn count() i32 {4;}
+  pub macro tally[n] {n + 1;}
+  pub fn final(self &uni) {return;}
+}
+
+// Visibility is transitive: a folded name is reached through the field, so the
+// field must be pub...
+struct Hidden {
+  engine Engine use fuel;           //~ ErrorNotPublic:17 "Only a pub field folds"
+}
+
+// ...and only what the field's type shows folds
+struct Peeking {
+  pub engine Engine use secret;     //~ ErrorNotPublic:25 "private to Engine"
+}
+
+struct Missing {
+  pub engine Engine use nosuch;     //~ ErrorNoMbr:25 "has no member named nosuch to fold"
+}
+
+// A static is reached through the type, not through a value, so there is no
+// receiver to shift; a macro without self is a static the same way
+struct Static {
+  pub engine Engine use count;      //~ ErrorBadFold:25 "is a static of Engine"
+}
+
+struct Macro {
+  pub engine Engine use tally;      //~ ErrorBadFold:25 "is a static of Engine"
+}
+
+// The finalizer runs on the value it belongs to
+struct Final {
+  pub engine Engine use final;      //~ ErrorBadFold:25 "own lifecycle"
+}
+
+// A folded name may collide with nothing: not with a member the type declares
+struct Clash {
+  pub fuel i32;
+  pub engine Engine use fuel;       //~ ErrorDupName:25 "already a name of Clash"
+}
+
+// ...nor with a name another fold supplies
+struct Twin {
+  pub left Engine use fuel;
+  pub right Engine use fuel;        //~ ErrorDupName:24 "already a name of Twin"
+}
+
+// ...and under 'use *' the rule is the same, so an override is spelled as an
+// exclusion: a base gaining a member later breaks the build here, never
+// silently overrides
+struct Override {
+  pub engine Engine use *;          //~ ErrorDupName:21 "power is already a name of Override"
+  pub fn power(self &) i32 {1;}
+}
+
+// 'but' leaves out a name the type has
+struct Excluding {
+  pub engine Engine use * but nosuch;   //~ ErrorNoMbr:31 "has no member named nosuch to leave out"
+}
+
+// A fold needs the field's type complete, and a type is not complete while it
+// is being resolved -- which folding from itself, through a reference, asks
+struct Loop {
+  pub inner &Loop use fuel;         //~ ErrorCircular:19 "cannot fold from itself"
+  pub fuel i32;
+}
+
+// A trait is an abstraction, with no organizing details to fold through
+trait Meter {
+  pub level i32;
+}
+
+struct Reading {
+  pub meter &Meter use level;       //~ ErrorBadFold:20 "Meter is a trait"
+}
+
+// A fold takes names from a struct
+struct Plain {
+  pub n i32 use abs;                //~ ErrorBadFold:13 "is not one"
+}
+
+// A generic's parameter type exists only when an instance does, so the fold is
+// expanded then; inside the template's own methods a folded name is not bare
+struct Box[T] {
+  pub item T use fuel;
+
+  pub fn read(self &) i32 {fuel;}   //~ ErrorUnkName:28 "does not refer to a declared name"
+}

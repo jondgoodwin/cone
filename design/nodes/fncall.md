@@ -84,10 +84,12 @@ Macro call (only when `methfld` is NULL — with it set, the name is a receiver
 and expands like any other value; a macro *method* named bare is first rewritten
 to `self.name`); `<-` on a value tuple, which becomes a block of applications.
 Then, for a member access by name that is not an operator, the **receiver is
-checked ahead of the arguments** and its type asked what the name binds: a macro
-method expands here, through `macroMethodTypeCheck`, with its arguments still
-unchecked, as a macro's must be. Then every argument is checked; then generic
-substitution, which may finish the node entirely.
+checked ahead of the arguments** and its type asked what the name binds — an
+alias, for a macro method the type holds by folding, is resolved first, and the
+receiver shifted to the field it was folded through (`structFoldReceiver`): a
+macro method expands here, through `macroMethodTypeCheck`, with its arguments
+still unchecked, as a macro's must be. Then every argument is checked; then
+generic substitution, which may finish the node entirely.
 
 **Stage 2 — make the callee knowable.**
 Check `objfn`, *unless* it names an overload set — that one path deliberately
@@ -137,9 +139,16 @@ and the remedy: obtain a virtual reference first. **A field takes none of this**
 ### Selecting a candidate
 
 `fnCallLowerMethod`: look the name up in the receiver's namespace, check
-the visibility of **the binding the name reaches** (`inodeIsPrivate`), then `iNsTypeFindMethod`,
+the visibility of **the binding the name reaches** (`inodeIsPrivate`), resolve
+an alias to the method it stands for (`aliasDclResolve` — the binding for a
+method the type holds by folding), then `iNsTypeFindMethod`,
 which tests every candidate with `fnSigViableCall` and **alters nothing**. One
 viable candidate is a match; two are `OverloadAmbiguous`. There is no ranking.
+For a folded method the receiver is rewritten before any candidate is tried:
+`structFoldReceiver` makes it the access to the field the name was folded
+through, reborrowed with a reference receiver's permission, so selection,
+borrowing and the permission checks see the receiver the method was declared
+for. [struct](struct.md), "Name folding", has the rule.
 
 Then the node is rewritten: the receiver is inserted at `args[0]`, `methfld`'s
 name-use node is repurposed into `objfn` pointing at the selected function,
@@ -149,7 +158,12 @@ defaults. **Coercion happens once, after selection** — which is what lets
 selection be a pure filter.
 
 A field, rather than a method, retags the node `FldAccessTag` and injects a
-deref on the receiver if needed.
+deref on the receiver if needed. A folded copy of a field is reached through
+the field it was folded through: `fnCallFieldAccess` makes the receiver the
+access to that field — an access per hop, root first — and this node the
+access to the copy on it, the nesting `p.left.fuel` written out produces. The
+copy carries the index, type and permission of the field it stands for, so
+generation and the permission read treat the last access as one to that field.
 
 A private member (one not declared `pub`) is granted to a receiver that is the enclosing
 method's own `self`, and to an access that a macro method's body wrote on *its*

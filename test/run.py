@@ -1515,7 +1515,9 @@ def object_extension(options: tuple[str, ...]) -> str:
 #
 # The grammar, version 0:
 #
-#   symbol  = '_C' [version] ( path | 'Y' type path | 'L' path )
+#   symbol  = '_C' [version] ( path | 'Y' type path [ident] | 'L' path )
+#             a fn or global; a vtable, or with a slot's ident the thunk filling
+#             that slot; a vtable list
 #   path    = 'C' ident                  a top module
 #           | 'N' ('v'|'t') [path] ident a value / a type, nested in its owner;
 #                                        no parent path when the owner is the root
@@ -1745,7 +1747,13 @@ class Demangler:
         ch = self.peek()
         if ch == "Y":
             self.take()
-            reading = f"{self.type()} as {self.path()} (vtable)"
+            impl = self.type()
+            trait = self.path()
+            # A slot's thunk: the type as the trait, then the slot's name
+            if self.pos != len(self.text):
+                reading = f"{impl} as {trait}::{self.ident()} (thunk)"
+            else:
+                reading = f"{impl} as {trait} (vtable)"
         elif ch == "L":
             self.take()
             reading = f"{self.path()} (vtable list)"
@@ -1795,6 +1803,7 @@ DEMANGLE_EXAMPLES = [
     ("_CNvNt3Vecopl", "Vec::+"),
     ("_CNvNt4Listorx", "List::&[]"),
     ("_CYNt5GaugeNt5Meter", "Gauge as Meter (vtable)"),
+    ("_CYNt3CarNt7Powered6thrust", "Car as Powered::thrust (thunk)"),
     ("_CLNt5Meter", "Meter (vtable list)"),
     ("_CINv4pickR2so3mutlE", "pick[&so mut i32]"),
     ("_CINv4pickR02roNt6HolderE", "pick[&ro Holder]"),

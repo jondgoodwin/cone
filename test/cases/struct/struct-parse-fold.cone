@@ -1,0 +1,62 @@
+// Where a fold clause may not be written, and the one shape it may not take.
+//
+// Parse stage: each of these is refused as it is read, and the clause is read
+// through so that the declaration carrying it recovers. Only a struct's field
+// folds; every other declaration that could carry a clause is here once, so
+// that the diagnostic is the fold's own rather than a missing semicolon.
+
+struct Engine {
+  pub fuel i32;
+  pub fn thrust(self &mut, amt i32) i32 {fuel = fuel - amt; fuel;}
+}
+
+// A global, a local and a parameter are reached by their own names; there is
+// no type they are a part of for a name to fold into
+mut engine Engine = Engine[1] use fuel;   //~ ErrorBadFold:31 "Only a struct's field may fold"
+
+fn inFunction() {
+  imm e Engine = Engine[2] use fuel;      //~ ErrorBadFold:28 "Only a struct's field may fold"
+  return;
+}
+
+fn parameter(e Engine use fuel) i32 {     //~ ErrorBadFold:23 "Only a struct's field may fold"
+  1;
+}
+
+trait Meter {
+  pub level i32;
+}
+
+// A mixin brings every member of the trait in already
+struct Gauge {
+  mixin Meter use level;                  //~ ErrorBadFold:15 "does not fold"
+  pub x i32;
+}
+
+// A type's static is a variable, reached through the type
+struct Counted {
+  static made Engine = Engine[3] use fuel;   //~ ErrorBadFold:34 "Only a struct's field may fold"
+  pub y i32;
+}
+
+// Only a struct folds: a trait or union is an abstraction
+trait Powered {
+  pub engine Engine use fuel;             //~ ErrorBadFold:21 "Only a struct folds"
+}
+
+union Shape {
+  pub engine Engine use fuel;             //~ ErrorBadFold:21 "Only a struct folds"
+  struct Rect {
+    pub w i32;
+  }
+}
+
+// 'but' leaves a name out of 'use *'; a list admits only what it names
+struct Listed {
+  pub engine Engine use fuel but thrust;  //~ ErrorBadFold:30 "'but' leaves a name out"
+}
+
+// A fold takes its names from the field's type, so the type is written
+struct Untyped {
+  pub engine use fuel;                    //~ ErrorBadFold:14 "must write its type"
+}

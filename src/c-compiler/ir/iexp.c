@@ -51,7 +51,7 @@ TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constrain
     // Handle implicit coercion to boolean, if type supports "isTrue" method
     INode *foundnode;
     if (totype == (INode*)boolType) {
-        if ((foundnode = iTypeFindFnField(fromtype, istrueName))
+        if ((foundnode = aliasDclResolve(iTypeFindFnField(fromtype, istrueName)))
             && (foundnode->tag == FnDclTag || foundnode->tag == FnOverloadDclTag))
             return ConvByMeth;
         else

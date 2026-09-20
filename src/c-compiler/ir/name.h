@@ -102,5 +102,9 @@ char *nameVtableImpl(char *buf, INode *impl, INode *trait);
 // Spell the symbol of a trait's vtable list into buf, which is returned: '_CL<trait-path>'
 char *nameVtableList(char *buf, INode *trait);
 
+// Spell the symbol of the thunk filling one vtable slot into buf, which is
+// returned: '_CY<type><trait-path><slot-ident>'
+char *nameVtableThunk(char *buf, INode *impl, INode *trait, Name *slot);
+
 
 #endif

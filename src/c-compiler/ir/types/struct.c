@@ -231,6 +231,340 @@ int structNameResDemand(NameResState *pstate, StructNode *type) {
     return 1;
 }
 
+// ---- Name folding: a field's 'use' clause ----------------------------------
+//
+// A fold clause admits names of the field's type as names of this type. A
+// folded field becomes a copy in this type's namespace: the field's own type,
+// permission and index, plus a hop to the field of this type it is reached
+// through, so an access to it is lowered to the access path written out. A
+// folded method, overload set or macro method becomes an alias whose target
+// is bound to the declaration; a call resolves the alias and shifts its
+// receiver to the field (structFoldReceiver). Expansion runs in name
+// resolution once the field's type is a declaration, so that a method body may
+// name a folded member bare, and in type check for an instance of a generic,
+// whose field types exist only then.
+
+// The declaration of the field's type, through a reference or pointer if the
+// field holds one, or NULL when it is not a declaration yet: an instance of a
+// generic still to be instantiated, or a name that did not resolve.
+static INode *structFoldSourceDcl(FieldDclNode *field) {
+    INode *vtype = field->vtype;
+    if (vtype->tag == FnCallTag || !isTypeNode(vtype))
+        return NULL;
+    INode *dcl = itypeGetTypeDcl(vtype);
+    if (dcl->tag == RefTag || dcl->tag == VirtRefTag)
+        vtype = ((RefNode*)dcl)->vtexp;
+    else if (dcl->tag == PtrTag)
+        vtype = ((StarNode*)dcl)->vtexp;
+    else
+        return dcl;
+    if (vtype->tag == FnCallTag || !isTypeNode(vtype))
+        return NULL;
+    return itypeGetTypeDcl(vtype);
+}
+
+// Is this name one a clause's 'but' leaves out?
+static int structFoldExcluded(FoldClause *fold, Name *name) {
+    if (fold->excludes == NULL)
+        return 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(fold->excludes, cnt, nodesp))
+        if (((NameUseNode*)*nodesp)->namesym == name)
+            return 1;
+    return 0;
+}
+
+// The alias a clause of 'type' admits under 'name', and the field carrying
+// that clause, or NULL when no clause of the type admits it. Unique when it
+// exists, since a folded name may collide with nothing.
+static AliasDclNode *structFoldItemOf(StructNode *type, Name *name, FieldDclNode **fieldp) {
+    INode **fldp;
+    uint32_t fldcnt;
+    for (nodelistFor(&type->fields, fldcnt, fldp)) {
+        FieldDclNode *field = (FieldDclNode*)*fldp;
+        if (field->fold == NULL)
+            continue;
+        INode **itemp;
+        uint32_t itemcnt;
+        for (nodesFor(field->fold->items, itemcnt, itemp)) {
+            if (((AliasDclNode*)*itemp)->namesym == name) {
+                *fieldp = field;
+                return (AliasDclNode*)*itemp;
+            }
+        }
+    }
+    return NULL;
+}
+
+// A copy in this type of the field 'orig' of the fold's source type, reached
+// through 'field': orig's own type, permission and index, with a hop to a copy
+// of orig's own hop, or to 'field' itself where orig is a declared field. So
+// a chain of folds is copied whole, and the chain always ends at a declared
+// field of this type. Positioned on the fold item, so a diagnostic lands there.
+static FieldDclNode *structFoldCopy(FieldDclNode *orig, FieldDclNode *field, INode *at) {
+    FieldDclNode *copy = memAllocBlk(sizeof(FieldDclNode));
+    memcpy(copy, orig, sizeof(FieldDclNode));
+    inodeLexCopy((INode*)copy, at);
+    copy->flags = (copy->flags | FlagMethFld | FlagPub) & (0xffff - (TypeChecked | TypeChecking | IsTagField | IsMixin));
+    copy->fold = NULL;
+    copy->hop = orig->hop ? structFoldCopy(orig->hop, field, at) : field;
+    return copy;
+}
+
+// Expand one item of a fold clause: bind its target in the source type and
+// enter it in this type's namespace, as a copy for a field and as the alias
+// itself for a method, overload set or macro method.
+static void structFoldItem(StructNode *node, FieldDclNode *field, StructNode *src, AliasDclNode *alias, int hook) {
+    NameUseNode *target = (NameUseNode*)alias->target;
+    Name *srcname = target->namesym;
+    INode *found = namespaceFind(&src->namespace, srcname);
+    if (found == NULL) {
+        errorMsgNode((INode*)alias, ErrorNoMbr, "%s has no member named %s to fold in.",
+            &src->namesym->namestr, &srcname->namestr);
+        return;
+    }
+    // Visibility is transitive: only what the field's type shows is folded
+    if (inodeIsPrivate(found)) {
+        errorMsgNode((INode*)alias, ErrorNotPublic, "%s is private to %s, so it does not fold.",
+            &srcname->namestr, &src->namesym->namestr);
+        return;
+    }
+    // Through the source's own aliases to the declaration; a source alias the
+    // source's fold failed to bind was reported there
+    INode *dcl = aliasDclResolve(found);
+    if (dcl == NULL)
+        return;
+    INode *entry;
+    switch (dcl->tag) {
+    case FieldDclTag: {
+        FieldDclNode *copy = structFoldCopy((FieldDclNode*)dcl, field, (INode*)alias);
+        copy->namesym = alias->namesym;
+        target->dclnode = (INode*)copy;
+        entry = (INode*)copy;
+        break;
+    }
+    case FnDclTag:
+    case FnOverloadDclTag:
+    case MacroDclTag:
+        // A static is reached through the type rather than a value, so there
+        // is no receiver to shift; a finalizer or clone is the value's own
+        if (!inodeIsMember(dcl)) {
+            errorMsgNode((INode*)alias, ErrorBadFold, "%s is a static of %s: it is reached through the type, not through a value, so it does not fold.",
+                &srcname->namestr, &src->namesym->namestr);
+            return;
+        }
+        if (srcname == finalName || srcname == cloneName) {
+            errorMsgNode((INode*)alias, ErrorBadFold, "%s belongs to %s's own lifecycle, so it does not fold.",
+                &srcname->namestr, &src->namesym->namestr);
+            return;
+        }
+        target->dclnode = dcl;
+        entry = (INode*)alias;
+        break;
+    default:
+        errorMsgNode((INode*)alias, ErrorBadFold, "%s is not a field or method of %s, so it does not fold.",
+            &srcname->namestr, &src->namesym->namestr);
+        return;
+    }
+    INode *prior = namespaceAdd(&node->namespace, alias->namesym, entry);
+    if (prior) {
+        errorMsgNode((INode*)alias, ErrorDupName, "%s is already a name of %s. A folded name must be unique: rename it with 'as', or leave it out with 'but'.",
+            &alias->namesym->namestr, &node->namesym->namestr);
+        return;
+    }
+    if (hook)
+        nametblHookNode(alias->namesym, entry);
+}
+
+// Make the items of a 'use *' clause: an alias for every public member of the
+// source type not left out by 'but' -- fields and methods, its own folded
+// copies and aliases included, so a fold chains through the types. Not a
+// static, a macro without self, Self, or the value's own finalizer or clone.
+static void structFoldStar(StructNode *node, FieldDclNode *field, StructNode *src) {
+    FoldClause *fold = field->fold;
+    INode **nodesp;
+    uint32_t cnt;
+    if (fold->excludes) {
+        for (nodesFor(fold->excludes, cnt, nodesp)) {
+            Name *name = ((NameUseNode*)*nodesp)->namesym;
+            if (namespaceFind(&src->namespace, name) == NULL)
+                errorMsgNode(*nodesp, ErrorNoMbr, "%s has no member named %s to leave out.",
+                    &src->namesym->namestr, &name->namestr);
+        }
+    }
+    namespaceFor(&src->namespace) {
+        NameNode *nn = &src->namespace.namenodes[__i];
+        if (nn->name == NULL || nn->name == selfTypeName || nn->name == anonName
+            || nn->name == finalName || nn->name == cloneName)
+            continue;
+        if (inodeIsPrivate(nn->node) || !inodeIsMember(nn->node) || structFoldExcluded(fold, nn->name))
+            continue;
+        NameUseNode *target = newMemberUseNode(nn->name);
+        inodeLexCopy((INode*)target, fold->at);
+        AliasDclNode *alias = newAliasDclNode(nn->name, (INode*)target);
+        inodeLexCopy((INode*)alias, fold->at);
+        nodesAdd(&fold->items, (INode*)alias);
+    }
+}
+
+// Expand a field's fold clause into this type's namespace, hooking each entry
+// when name resolution asks. Nothing happens while the field's type is not yet
+// a declaration; the clause is then expanded when the instance is type checked.
+static void structFoldExpand(StructNode *node, FieldDclNode *field, int hook) {
+    FoldClause *fold = field->fold;
+    INode *srcdcl = structFoldSourceDcl(field);
+    if (srcdcl == NULL)
+        return;
+    fold->expanded = 1;
+    // Visibility is transitive: a folded name is reached through the field
+    if (inodeIsPrivate((INode*)field)) {
+        errorMsgNode(fold->at, ErrorNotPublic, "Only a pub field folds names in: a folded name is reached through the field, and %s is private.",
+            &field->namesym->namestr);
+        return;
+    }
+    if (srcdcl->tag != StructTag) {
+        errorMsgNode(fold->at, ErrorBadFold, "A fold takes its names from a struct, and the type of %s is not one.",
+            &field->namesym->namestr);
+        return;
+    }
+    StructNode *src = (StructNode*)srcdcl;
+    if (src->flags & TraitType) {
+        errorMsgNode(fold->at, ErrorBadFold, "%s is a trait. A fold reaches through a value's own members, and an abstraction has none to reach.",
+            &src->namesym->namestr);
+        return;
+    }
+    // A fold needs the field's type complete: its own folds expanded, so that
+    // a fold chains, which a type still under way cannot offer
+    if (src == node) {
+        errorMsgNode(fold->at, ErrorCircular, "%s cannot fold from itself: a fold needs the field's type complete first.",
+            &node->namesym->namestr);
+        return;
+    }
+    if (!(src->flags & NameResolved)) {
+        errorMsgNode(fold->at, ErrorCircular, "A fold needs %s complete, and %s is not complete until %s is.",
+            &src->namesym->namestr, &src->namesym->namestr, &node->namesym->namestr);
+        return;
+    }
+    if (fold->star)
+        structFoldStar(node, field, src);
+    INode **itemp;
+    uint32_t cnt;
+    for (nodesFor(fold->items, cnt, itemp))
+        structFoldItem(node, field, src, (AliasDclNode*)*itemp, hook);
+}
+
+// Bring a folded copy up to date with the declared field it stands for. A copy
+// is made when the fold is expanded, in name resolution, and takes the field's
+// type node and index as they are then; type check may replace that node (an
+// instantiation of a generic becomes the instance) and re-index the fields.
+// So once every field of this type is checked, each copy takes its origin's
+// type, permission and index over again, the origin being demanded first: a
+// copy in the source type is refreshed the same way, and a declared field is
+// type checked, wherever its own type's check has got to.
+static void structFoldRefreshCopy(TypeCheckState *pstate, StructNode *type, AliasDclNode *item, FieldDclNode *field) {
+    NameUseNode *target = (NameUseNode*)item->target;
+    FieldDclNode *copy = (FieldDclNode*)target->dclnode;
+    if (copy == NULL || copy->tag != FieldDclTag || copy->hop == NULL)
+        return;
+    INode *srcdcl = structFoldSourceDcl(field);
+    if (srcdcl == NULL || srcdcl->tag != StructTag)
+        return;
+    StructNode *src = (StructNode*)srcdcl;
+    INode *origbind = namespaceFind(&src->namespace, target->namesym);
+    if (origbind == NULL || origbind->tag != FieldDclTag)
+        return;
+    FieldDclNode *orig = (FieldDclNode*)origbind;
+    if (orig->hop) {
+        FieldDclNode *srcfield;
+        AliasDclNode *srcitem = structFoldItemOf(src, target->namesym, &srcfield);
+        if (srcitem)
+            structFoldRefreshCopy(pstate, src, srcitem, srcfield);
+    }
+    else {
+        INode *origp = (INode*)orig;
+        inodeTypeCheckAny(pstate, &origp);
+    }
+    for (; orig; orig = orig->hop, copy = copy->hop) {
+        copy->vtype = orig->vtype;
+        copy->perm = orig->perm;
+        copy->index = orig->index;
+    }
+}
+
+// Refresh every folded copy of this type (above)
+static void structFoldRefresh(TypeCheckState *pstate, StructNode *node) {
+    INode **fldp;
+    uint32_t fldcnt;
+    for (nodelistFor(&node->fields, fldcnt, fldp)) {
+        FieldDclNode *field = (FieldDclNode*)*fldp;
+        if (field->fold == NULL || !field->fold->expanded)
+            continue;
+        INode **itemp;
+        uint32_t itemcnt;
+        for (nodesFor(field->fold->items, itemcnt, itemp))
+            structFoldRefreshCopy(pstate, node, (AliasDclNode*)*itemp, field);
+    }
+}
+
+// Walk the receiver of a call to a method 'type' holds by folding down to the
+// field the method was folded through: the access to the field whose clause
+// admits the name, then on into that field's type where the name is folded
+// there too. The clauses of each type are read in place; nothing about the
+// method is copied.
+static void structFoldReceiverWalk(StructNode *type, Name *name, INode **objp, INode *lexnode) {
+    FieldDclNode *field;
+    AliasDclNode *item = structFoldItemOf(type, name, &field);
+    if (item == NULL)
+        return;
+    *objp = fnCallFieldAccess(*objp, field, lexnode);
+    INode *srcdcl = structFoldSourceDcl(field);
+    if (srcdcl == NULL || srcdcl->tag != StructTag)
+        return;
+    Name *srcname = ((NameUseNode*)item->target)->namesym;
+    INode *entry = namespaceFind(&((StructNode*)srcdcl)->namespace, srcname);
+    if (entry && entry->tag == AliasDclTag)
+        structFoldReceiverWalk((StructNode*)srcdcl, srcname, objp, lexnode);
+}
+
+// Rewrite the receiver of a call to a method 'type' holds by folding (above).
+// A reference receiver dereferences and reborrows the field it lands on with
+// the reference's own permission, so a method wanting 'self &mut' is reached
+// through '&mut c' exactly as through '&mut c.engine' written out; a field
+// that is itself a reference is the receiver as it stands. A value receiver
+// stays a value, as the path written out would, and reaches only what a value
+// reaches: a method taking self by value. The fold adds no rule of its own.
+void structFoldReceiver(StructNode *type, Name *name, INode **objp, INode *lexnode) {
+    INode *objtype = iexpGetTypeDcl(*objp);
+    structFoldReceiverWalk(type, name, objp, lexnode);
+    if (objtype->tag == RefTag) {
+        INode *fldtype = iexpGetTypeDcl(*objp);
+        if (fldtype->tag != RefTag && fldtype->tag != PtrTag && fldtype->tag != VirtRefTag)
+            borrowMutRef(objp, ((IExpNode*)*objp)->vtype, ((RefNode*)objtype)->perm);
+    }
+}
+
+// The fields a folded method's receiver is reached through, outermost first:
+// what structFoldReceiver walks, recorded for a vtable slot's thunk. NULL for
+// a name the type declares itself.
+static Nodes *structFoldPath(StructNode *type, Name *name, Nodes *path) {
+    FieldDclNode *field;
+    AliasDclNode *item = structFoldItemOf(type, name, &field);
+    if (item == NULL)
+        return path;
+    if (path == NULL)
+        path = newNodes(2);
+    nodesAdd(&path, (INode*)field);
+    INode *srcdcl = structFoldSourceDcl(field);
+    if (srcdcl == NULL || srcdcl->tag != StructTag)
+        return path;
+    Name *srcname = ((NameUseNode*)item->target)->namesym;
+    INode *entry = namespaceFind(&((StructNode*)srcdcl)->namespace, srcname);
+    if (entry && entry->tag == AliasDclTag)
+        return structFoldPath((StructNode*)srcdcl, srcname, path);
+    return path;
+}
+
 // Hook the entries a trait's expansion added to the namespace, so that a method
 // body resolved afterwards can name an inherited member bare. What the
 // namespace binds for the name is what is hooked: a name the type already
@@ -284,6 +618,11 @@ void structNameRes(NameResState *pstate, StructNode *node) {
             inodeNameRes(pstate, nodesp);
     }
 
+    // 'Self' first: a field's type may name it, and a type resolved by demand
+    // below hooks its own 'Self' over this one for the duration
+    namespaceAdd(&node->namespace, selfTypeName, (INode*)node);
+    nametblHookNode(selfTypeName, (INode*)node);
+
     // Resolve the base trait before any other name in the type is hooked, and
     // when it is a trait declaration this type may extend, stand a placeholder
     // field for it at position 0, as an explicit 'mixin' stands for its trait.
@@ -302,23 +641,30 @@ void structNameRes(NameResState *pstate, StructNode *node) {
         }
     }
 
-    // Each trait to be mixed in is resolved before this type's own names are
-    // hooked, so that its bodies bind in its own scope rather than this type's.
-    // Two types that each extend or mix in the other can never both be first.
+    // Each trait to be mixed in, and the type of each field that folds names
+    // in, is resolved before this type's own names are hooked, so that its
+    // bodies bind in its own scope rather than this type's. Two types that
+    // each extend or mix in the other can never both be first; a fold from a
+    // type still under way is refused when the clause is expanded below.
     for (nodelistFor(&node->fields, cnt, nodesp)) {
-        if (!((*nodesp)->flags & IsMixin))
-            continue;
         FieldDclNode *field = (FieldDclNode*)*nodesp;
-        inodeNameRes(pstate, (INode**)nodesp);
-        StructNode *trait = structNameResTrait(field->vtype);
-        if (trait && !structNameResDemand(pstate, trait))
-            errorMsgNode(field->vtype, ErrorCircular,
-                "Cannot extend or mix in %s here: %s is not complete until %s is, so each depends on the other.",
-                &trait->namesym->namestr, &trait->namesym->namestr, &node->namesym->namestr);
+        if (field->flags & IsMixin) {
+            inodeNameRes(pstate, (INode**)nodesp);
+            StructNode *trait = structNameResTrait(field->vtype);
+            if (trait && !structNameResDemand(pstate, trait))
+                errorMsgNode(field->vtype, ErrorCircular,
+                    "Cannot extend or mix in %s here: %s is not complete until %s is, so each depends on the other.",
+                    &trait->namesym->namestr, &trait->namesym->namestr, &node->namesym->namestr);
+        }
+        else if (field->fold) {
+            inodeNameRes(pstate, &field->vtype);
+            INode *srcdcl = structFoldSourceDcl(field);
+            if (srcdcl && srcdcl->tag == StructTag)
+                structNameResDemand(pstate, (StructNode*)srcdcl);
+        }
     }
 
     // Now hook names inside the type
-    namespaceAdd(&node->namespace, selfTypeName, (INode*)node);
     nametblHookNamespace(&node->namespace);
 
     // The methods declared here, to be resolved below once every inherited
@@ -332,6 +678,13 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     for (fldpos = node->fields.used - 1; fldpos >= 0; --fldpos) {
         INode **fldnodesp = &nodelistGet(&node->fields, fldpos);
         FieldDclNode *field = (FieldDclNode*)*fldnodesp;
+        if (field->fold) {
+            // The type was resolved above; the rest of the field here
+            inodeNameRes(pstate, (INode**)&field->perm);
+            if (field->value)
+                inodeNameRes(pstate, &field->value);
+            continue;
+        }
         if (!(field->flags & IsMixin)) {
             inodeNameRes(pstate, fldnodesp);
             continue;
@@ -345,6 +698,23 @@ void structNameRes(NameResState *pstate, StructNode *node) {
         structInheritTrait(node, fldpos, trait, &cstate);
         clonePopState();
         structHookInherited(node, fldpos, trait->fields.used, methpos);
+    }
+
+    // Every field now has its place, and a copy a fold makes below takes the
+    // index of the field it stands for, so the fields are indexed here. Type
+    // check indexes them again after any trait it splices in for an instance.
+    uint16_t index = 0;
+    for (nodelistFor(&node->fields, cnt, nodesp))
+        ((FieldDclNode*)*nodesp)->index = index++;
+
+    // Each fold clause, in field order, after every trait's members are in
+    // place: a folded name colliding with an inherited one is reported at the
+    // fold. A clause whose field type is not a declaration yet waits for the
+    // instance's type check.
+    for (nodelistFor(&node->fields, cnt, nodesp)) {
+        FieldDclNode *field = (FieldDclNode*)*nodesp;
+        if (field->fold)
+            structFoldExpand(node, field, 1);
     }
 
     for (cnt = 0; cnt < ownmethods; ++cnt) {
@@ -611,6 +981,16 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
         clonePopState();
     }
 
+    // A fold clause name resolution could not expand -- the field's type was an
+    // instance of a generic, which exists only now -- is expanded here, and
+    // every folded copy is brought up to date with the field it stands for
+    for (nodelistFor(&node->fields, cnt, nodesp)) {
+        FieldDclNode *field = (FieldDclNode*)*nodesp;
+        if (field->fold && !field->fold->expanded)
+            structFoldExpand(node, field, 0);
+    }
+    structFoldRefresh(pstate, node);
+
     // Go through all fields to index them and calculate infection flags for ThreadBound/MoveType
     int isZeroSize = 1;  // Start with assumption it is zero size, unless proven otherwise
     int hasEnumFld = 0;
@@ -711,6 +1091,7 @@ int structAddVtableImpl(StructNode *basenode, StructNode *strnode) {
 
     // For every field/method in the vtable, find its matching one in strnode
     impl->methfld = newNodes(vtable->methfld->used);
+    impl->foldpaths = newNodes(vtable->methfld->used);
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(vtable->methfld, cnt, nodesp)) {
@@ -722,14 +1103,20 @@ int structAddVtableImpl(StructNode *basenode, StructNode *strnode) {
             FnDclNode *strmeth = iNsTypeFindVrefMethod(strbinding, meth);
             if (strmeth == NULL)
                 return 0;
-            // it matches, add the method to the implementation
+            // it matches, add the method to the implementation. A method the
+            // type holds by folding satisfies the slot too, and the fields its
+            // receiver is reached through are recorded for the slot's thunk
             nodesAdd(&impl->methfld, (INode*)strmeth);
+            nodesAdd(&impl->foldpaths, strbinding->tag == AliasDclTag
+                ? (INode*)structFoldPath(strnode, meth->namesym, NULL) : NULL);
         }
         else {
-            // Find the corresponding field with matching name and vtype
+            // Find the corresponding field with matching name and vtype. A
+            // folded copy is a name for storage inside another type's value,
+            // not a field of this type, and fills no slot.
             FieldDclNode *fld = (FieldDclNode *)*nodesp;
             INode *strfld = namespaceFind(&strnode->namespace, fld->namesym);
-            if (strfld == NULL || strfld->tag != FieldDclTag) {
+            if (strfld == NULL || strfld->tag != FieldDclTag || ((FieldDclNode*)strfld)->hop) {
                 //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to a %s virtual reference. Missing field %s.",
                 //    &strnode->namesym->namestr, &trait->namesym->namestr, &fld->namesym->namestr);
                 return 0;
@@ -742,6 +1129,7 @@ int structAddVtableImpl(StructNode *basenode, StructNode *strnode) {
             }
             // it matches, add the corresponding field to the implementation
             nodesAdd(&impl->methfld, (INode*)strfld);
+            nodesAdd(&impl->foldpaths, NULL);
         }
     }
 
@@ -890,7 +1278,8 @@ TypeCompare structMatches(StructNode *to, INode *fromdcl, SubtypeConstraint cons
             // Find the corresponding field with matching name and vtype
             FieldDclNode *tofld = (FieldDclNode *)*nodesp;
             INode *fromfld = namespaceFind(&from->namespace, tofld->namesym);
-            if (fromfld == NULL || fromfld->tag != FieldDclTag) {
+            // A folded copy is not a field of the type and meets no requirement
+            if (fromfld == NULL || fromfld->tag != FieldDclTag || ((FieldDclNode*)fromfld)->hop) {
                 //errorMsgNode(errnode, ErrorInvType, "%s cannot be coerced to %s. Missing field %s.",
                 //    &to->namesym->namestr, &to->namesym->namestr, &fld->namesym->namestr);
                 return NoMatch;

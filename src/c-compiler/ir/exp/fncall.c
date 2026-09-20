@@ -357,6 +357,24 @@ static void fnCallNoCandidate(INode *callnode, enum OverloadMatch status, Name *
 // A receiver held through a reference or pointer is dereferenced where the selected
 // method declared 'self' by value; nothing is borrowed on the receiver's behalf, and
 // an operator written on a pointer does not reach through at all.
+// The access reaching field 'fld' on 'obj', positioned on 'lexnode'. For a
+// declared field that is one field access; for a folded copy it is an access
+// per hop, root first, and then one for the copy itself -- the nesting the
+// hand-written path 'obj.hop.field' produces, so that borrowing, permissions
+// and generation see the true target. The copy carries the index, type and
+// permission of the field it stands for, so the access naming it is generated
+// as an access to that field.
+INode *fnCallFieldAccess(INode *obj, FieldDclNode *fld, INode *lexnode) {
+    if (fld->hop)
+        obj = fnCallFieldAccess(obj, fld->hop, lexnode);
+    derefInject(&obj);  // reach through a reference or pointer, as any field access does
+    FnCallNode *access = newFnCallLower(lexnode, obj, 0);
+    access->methfld = newNameUseFromDclNode((INode*)fld, lexnode);
+    access->vtype = fld->vtype;
+    access->tag = FldAccessTag;
+    return (INode*)access;
+}
+
 // Returns 1 when lowered, 0 when the receiver's type supports no methods at all
 // (so the caller may try another way), and -1 when a diagnostic was reported.
 int fnCallLowerMethod(FnCallNode *callnode) {
@@ -384,6 +402,12 @@ int fnCallLowerMethod(FnCallNode *callnode) {
              && ((VarDclNode*)((NameUseNode*)obj)->dclnode)->namesym == selfName)) {
         errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/field `%s`.", &methsym->namestr);
     }
+    // A method the type holds by folding is bound to an alias; the visibility
+    // just checked was the alias's own, and everything from here on is the
+    // method's. A folded field is a copy in the namespace directly.
+    int folded = foundnode && foundnode->tag == AliasDclTag;
+    if (folded)
+        foundnode = aliasDclResolve(foundnode);
     if (!foundnode
         || !(foundnode->tag == FnDclTag || foundnode->tag == FnOverloadDclTag || foundnode->tag == FieldDclTag)
         || !(foundnode->flags & FlagMethFld)) {
@@ -396,11 +420,26 @@ int fnCallLowerMethod(FnCallNode *callnode) {
         if (callnode->args != NULL)
             errorMsgNode((INode*)callnode, ErrorFldArgs, "May not provide arguments for a field access");
 
+        // A folded copy is reached through the field it was folded through:
+        // the receiver becomes the access to that field, and this node the
+        // access to the copy on it, as if the path had been written out
+        FieldDclNode *fld = (FieldDclNode*)foundnode;
+        if (fld->hop)
+            callnode->objfn = fnCallFieldAccess(callnode->objfn, fld->hop, (INode*)callnode);
         derefInject(&callnode->objfn);  // automatically deref any reference/ptr, if needed
         methfld->dclnode = foundnode;
         callnode->vtype = methfld->vtype = ((IExpNode*)foundnode)->vtype;
         callnode->tag = FldAccessTag;
         return 1;
+    }
+
+    // A folded method runs with the field it was folded through as its self:
+    // the receiver becomes the access to that field before any candidate is
+    // tried, and selection, borrowing and the permission checks then see the
+    // receiver the method was declared for
+    if (folded) {
+        structFoldReceiver((StructNode*)objdereftype, methsym, &callnode->objfn, (INode*)callnode);
+        obj = callnode->objfn;
     }
 
     // Test every candidate the name declares, without altering the call
@@ -695,8 +734,16 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         if (isExpNode(node->objfn)) {
             INode *rcvtype = iexpGetDerefTypeDcl(node->objfn);
             if (isMethodType(rcvtype)) {
-                INode *found = iNsTypeFindFnField((INsTypeNode*)rcvtype, ((NameUseNode*)node->methfld)->namesym);
+                Name *membersym = ((NameUseNode*)node->methfld)->namesym;
+                INode *found = iNsTypeFindFnField((INsTypeNode*)rcvtype, membersym);
+                int folded = found && found->tag == AliasDclTag;
+                if (folded)
+                    found = aliasDclResolve(found);
                 if (found && found->tag == MacroDclTag && (found->flags & FlagMethFld)) {
+                    // A folded macro method expands with the field it was
+                    // folded through as its self, as a folded method runs with it
+                    if (folded)
+                        structFoldReceiver((StructNode*)rcvtype, membersym, &node->objfn, (INode*)node);
                     macroMethodTypeCheck(pstate, nodep, (MacroDclNode*)found);
                     return;
                 }

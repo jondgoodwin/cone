@@ -50,6 +50,11 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **node);
 // (so the caller may try another way), and -1 when a diagnostic was reported.
 int fnCallLowerMethod(FnCallNode *callnode);
 
+// The access reaching field 'fld' on 'obj', positioned on 'lexnode': for a
+// declared field one field access, for a folded copy an access per hop and
+// then one for the copy -- the nesting the hand-written path would produce.
+INode *fnCallFieldAccess(INode *obj, FieldDclNode *fld, INode *lexnode);
+
 // We have a reference or pointer, and a method to find (comparison or arithmetic)
 // If found, lower the node to a function call (objfn+args)
 // Otherwise try again against the type it points to

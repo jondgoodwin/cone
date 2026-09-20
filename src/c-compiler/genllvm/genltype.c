@@ -23,6 +23,68 @@
 #include <string.h>
 #include <assert.h>
 
+// Generate the thunk that fills a vtable slot a folded method satisfies.
+//
+// Through a virtual reference the concrete type is erased: the call site holds
+// an object pointer and a vtable and cannot know that this type folded the
+// method through a field, so the shift from the object to that field has to
+// happen behind the slot. The thunk is a function of the slot's own type whose
+// body shifts the receiver one hop per field on the path -- an address for a
+// field held by value, a load for one held through a reference or pointer --
+// and tail-calls the method. It is a method in everything but name and
+// namespace: nothing in the language can name it, and no slot a declared method
+// fills has one.
+static LLVMValueRef genlVtableThunk(GenState *gen, Vtable *vtable, VtableImpl *impl, unsigned int pos,
+        FnDclNode *meth, Nodes *path, LLVMTypeRef slottype) {
+    char symbol[2048];
+    FnDclNode *slot = (FnDclNode*)nodesGet(vtable->methfld, pos);
+    LLVMValueRef fn = LLVMAddFunction(gen->module, nameVtableThunk(symbol, impl->structdcl, vtable->trait, slot->namesym),
+        LLVMGetElementType(slottype));
+    genlLinkage(fn, NULL, 1);
+    genlComdat(gen, fn);
+
+    // Its own builder: a vtable is built while some other function may be
+    LLVMBuilderRef svbuilder = gen->builder;
+    gen->builder = LLVMCreateBuilder();
+    LLVMPositionBuilderAtEnd(gen->builder, LLVMAppendBasicBlockInContext(gen->context, fn, "entry"));
+
+    // The receiver arrives erased; shift it to the field the method was folded through
+    LLVMValueRef recv = LLVMBuildBitCast(gen->builder, LLVMGetParam(fn, 0),
+        LLVMPointerType(genlType(gen, impl->structdcl), 0), "");
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(path, cnt, nodesp)) {
+        FieldDclNode *field = (FieldDclNode*)*nodesp;
+        recv = LLVMBuildStructGEP(gen->builder, recv, field->index, &field->namesym->namestr);
+        INode *fldtype = itypeGetTypeDcl(field->vtype);
+        if (fldtype->tag == RefTag || fldtype->tag == PtrTag)
+            recv = LLVMBuildLoad(gen->builder, recv, "");
+    }
+
+    // The method takes its self as it declared it: a pointer, or the value
+    if (meth->llvmvar == NULL)
+        genlGloFnName(gen, meth);
+    LLVMTypeRef selftype = LLVMTypeOf(LLVMGetParam(meth->llvmvar, 0));
+    if (LLVMGetTypeKind(selftype) == LLVMPointerTypeKind)
+        recv = LLVMBuildBitCast(gen->builder, recv, selftype, "");
+    else
+        recv = LLVMBuildLoad(gen->builder, recv, "");
+
+    unsigned int argcnt = LLVMCountParams(fn);
+    LLVMValueRef *args = (LLVMValueRef *)memAllocBlk(argcnt * sizeof(LLVMValueRef));
+    args[0] = recv;
+    unsigned int argi;
+    for (argi = 1; argi < argcnt; ++argi)
+        args[argi] = LLVMGetParam(fn, argi);
+    LLVMValueRef call = LLVMBuildCall(gen->builder, meth->llvmvar, args, argcnt, "");
+    LLVMSetTailCall(call, 1);
+    LLVMBuildRet(gen->builder, call);
+
+    LLVMDisposeBuilder(gen->builder);
+    gen->builder = svbuilder;
+    return fn;
+}
+
 // Generate a specific vtable value for some struct
 void genlVtableImpl(GenState *gen, Vtable *vtable, VtableImpl *impl, LLVMTypeRef vtableRef) {
     // Ensure the struct has been "built", as we need to point to its fields and methods
@@ -54,7 +116,13 @@ void genlVtableImpl(GenState *gen, Vtable *vtable, VtableImpl *impl, LLVMTypeRef
             if (meth->llvmvar == NULL)
                 genlGloFnName(gen, meth);
             LLVMTypeRef newfntyp = LLVMStructGetTypeAtIndex(vtableRef, pos);
-            val = LLVMBuildBitCast(gen->builder, meth->llvmvar, newfntyp, "");
+            // A slot a folded method fills holds a thunk that shifts the
+            // receiver to the field the method was folded through
+            Nodes *path = impl->foldpaths ? (Nodes*)nodesGet(impl->foldpaths, pos) : NULL;
+            if (path)
+                val = genlVtableThunk(gen, vtable, impl, pos, meth, path, newfntyp);
+            else
+                val = LLVMBuildBitCast(gen->builder, meth->llvmvar, newfntyp, "");
         }
         implRef = LLVMBuildInsertValue(gen->builder, implRef, val, pos++, "vtable entry");
     }

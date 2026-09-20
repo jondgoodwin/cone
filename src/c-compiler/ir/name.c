@@ -476,6 +476,24 @@ char *nameVtableImpl(char *buf, INode *impl, INode *trait) {
     return buf;
 }
 
+// Spell the symbol of the thunk that fills one slot of an implementing type's
+// vtable for a trait into buf, which is returned: '_CY<type><trait-path><ident>',
+// this type as that trait, then the slot's name. Only a slot a folded method
+// fills has one: the thunk shifts the receiver to the field the method was
+// folded through and tail-calls the method, and nothing in the language can
+// name it.
+char *nameVtableThunk(char *buf, INode *impl, INode *trait, Name *slot) {
+    char *bufp = buf;
+    *bufp++ = '_';
+    *bufp++ = 'C';
+    *bufp++ = 'Y';
+    bufp = nameType(bufp, impl);
+    bufp = namePath(bufp, trait);
+    bufp = nameIdent(bufp, slot);
+    *bufp = '\0';
+    return buf;
+}
+
 // Spell the symbol of a trait's list of vtables into buf, which is returned:
 // '_CL<trait-path>'. One per trait per compilation unit.
 char *nameVtableList(char *buf, INode *trait) {
