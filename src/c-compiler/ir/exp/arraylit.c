@@ -200,7 +200,7 @@ void arrayLitFlow(FlowState *fstate, ArrayNode **nodep) {
     }
     int16_t amt = flowIsLvalRead(*valp) ? (int16_t)nbrelems : (int16_t)(nbrelems - 1);
     if (amt != 0)
-        flowInjectAliasAmt(valp, amt);
+        flowInjectRefCountAmt(valp, amt);
 }
 
 // Is the array actually a literal?

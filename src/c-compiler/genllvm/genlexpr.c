@@ -1084,16 +1084,16 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
     {
         return LLVMBuildLoad(gen->builder, genlAddr(gen, termnode), "");
     }
-    case AliasTag:
+    case RefCountTag:
     {
-        AliasNode *anode = (AliasNode*)termnode;
+        RefCountNode *anode = (RefCountNode*)termnode;
         LLVMValueRef val = genlExpr(gen, anode->exp);
         RefNode *reftype = (RefNode*)iexpGetTypeDcl(termnode);
         if (reftype->tag == RefTag) {
             if (isRegion(reftype->region, soName))
                 genlDealiasOwn(gen, val, reftype);
             else
-                genlRcCounter(gen, val, anode->aliasamt, reftype);
+                genlRcCounter(gen, val, anode->amt, reftype);
         }
         else if (reftype->tag == TTupleTag) {
             TupleNode *tuple = (TupleNode*)reftype;

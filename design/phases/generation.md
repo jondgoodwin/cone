@@ -405,5 +405,5 @@ variables.
 | Question | Note |
 | --- | --- |
 | What a region and a permission mean before they are erased | [References and Regions](../topics/references-and-regions.md) |
-| What injected the alias nodes and dealias lists | [Flow Analysis](flow.md) |
+| What injected the reference-count nodes and dealias lists | [Flow Analysis](flow.md) |
 | What guarantees every node has a `vtype` | [IR Nodes](../nodes/_index.md), "--checktree" |
