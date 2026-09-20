@@ -70,6 +70,7 @@ add_executable(conec
 	src/c-compiler/ir/nodes.c
 	src/c-compiler/ir/typetbl.c
 
+	src/c-compiler/ir/stmt/aliasdcl.c
 	src/c-compiler/ir/stmt/break.c
 	src/c-compiler/ir/stmt/const.c
 	src/c-compiler/ir/stmt/continue.c

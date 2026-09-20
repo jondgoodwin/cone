@@ -297,7 +297,7 @@ phase notes for mechanism rather than restating it:
 | `ir/exp/fncall.c` | [fncall](fncall.md) | one shape serves eight syntaxes; the largest function in the compiler decides which |
 | `ir/types/struct.c` | [struct](struct.md) | struct, trait and union are one node; layout, inheritance, vtables and drops |
 | `ir/types/reference.c`, `arrayref.c`, `ir/exp/borrow.c`, `allocate.c` | [references](references.md) | seven tags on one struct, across two node groups |
-| `ir/stmt/vardcl.c`, `fielddcl.c`, `const.c` | [vardcl](vardcl.md) | three declaration nodes that differ mostly in what they lack |
+| `ir/stmt/vardcl.c`, `fielddcl.c`, `const.c`, `aliasdcl.c` | [vardcl](vardcl.md) | three declaration nodes that differ mostly in what they lack, and the alias, which lacks everything but a name and a target |
 | `ir/stmt/module.c`, `import.c`, `program.c` | [module](module.md) | the module, package and compilation-unit model has no other home; what is generated is gated on a flag set at parse |
 | `ir/exp/nameuse.c` | [nameuse](nameuse.md) | one tag, bound at name resolution and asked for what it names; two lowerings and the move diagnostics |
 | `ir/exp/assign.c` | [assign](assign.md) | mutability and ownership are enforced in flow, not type check |
