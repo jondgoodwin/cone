@@ -152,7 +152,7 @@ finalizer, a move-typed field or element, and — for references —
 
 ```c
 if (iexpIsMove(*nodep))          flowHandleMove(*nodep);      // deactivate source
-else if (flowIsLvalRead(*nodep)) flowInjectAliasNode(nodep);  // +1
+else if (flowIsLvalRead(*nodep)) flowInjectRefCount(nodep);   // +1
 ```
 
 `flowIsLvalRead` asks "does this expression still hold its value after it is
@@ -166,7 +166,7 @@ allocated value), `typeLitFlow` (per field) and `arrayLitFlow` (per element, in
 the list form only). The array **fill** form does its own arithmetic instead,
 because one value goes to n holders.
 
-**Decrements are never alias nodes.** They come from generation: walking a
+**Decrements are never reference-count nodes.** They come from generation: walking a
 `dealias` list at scope exit, and `genlStore` releasing an lval's previous value
 unless `FlagFirstAssign` says there was none.
 
@@ -178,14 +178,14 @@ depends on:
 | Injection | Where | Generation uses it for |
 | --- | --- | --- |
 | `BlockRetTag` | `blockFlow`, for any block not already ending in one | a loop block, **and** a regular block ending in an expression, both get theirs here — it is where the dealias list hangs |
-| `AliasTag` | `flowInjectAliasAmt` | `genlRcCounter(val, aliasamt)` |
+| `RefCountTag` | `flowInjectRefCountAmt` | `genlRcCounter(val, amt)` |
 | `dealias` lists | `flowScopeDealias`, onto every `BreakRetNode` | `genlDealiasNodes` replays them |
 | `FlagFirstAssign` | `assignlvalrtype` | `genlStore` skips releasing a previous value that never existed |
 
-**An alias node is built only for a counted reference.** `flowInjectAliasAmt`
+**A reference-count node is built only for a counted reference.** `flowInjectRefCountAmt`
 returns early unless the type is `RefTag` in region `rc`. A `+so` reference and
 a `uni`-permissioned `+rc` reference are both move types and take the move path
-instead. Two arms of generation's `AliasTag` case — the `so` arm and the tuple
+instead. Two arms of generation's `RefCountTag` case — the `so` arm and the tuple
 `counts` arm — are therefore unreachable as the code stands.
 
 **Scope dealiasing.** `flowScopeDealias` walks the variable stack downward from
@@ -251,7 +251,7 @@ populated; regular blocks already end in a jump but loop blocks do not; globals,
 parameters and fields already carry `VarInitialized`.
 
 **After flow, for a function that ran it:** every block ends in a node carrying
-a `dealias` list; every recognized counted acquisition has an `AliasNode`; every
+a `dealias` list; every recognized counted acquisition has a `RefCountNode`; every
 first-assignment target carries `FlagFirstAssign`.
 
 **What generation relies on.** `genlBlock`, `genlBreak` and `genlReturn` call
@@ -280,7 +280,7 @@ the built-in permissions are zero-sized. See [Generation](generation.md),
 - **`fnCallFlow` does not flow `objfn`**, so a call through an uninitialized
   function-reference variable is not reported.
 - **`flowScopeDealias` reads `vtype` raw**, without `itypeGetTypeDcl`, while
-  `flowInjectAliasAmt` resolves it. A variable declared through a typedef alias
+  `flowInjectRefCountAmt` resolves it. A variable declared through a typedef alias
   to an owning reference is likely missed.
 - **`flowLoadValue`'s `default:` arm reports `ErrorUnreachable` and stops.** An
   unhandled tag therefore fails the compile rather than passing through it —
@@ -297,7 +297,7 @@ the built-in permissions are zero-sized. See [Generation](generation.md),
 | | `flowHandleMoveOrCopy` | move vs. alias, for a value going to a new holder |
 | | `flowHandleMove` | deactivate the source; refuse a move out of a global |
 | | `flowIsLvalRead` | the temporary-vs-lvalue test that makes counting correct |
-| | `flowInjectAliasAmt` | wrap a counted reference in an `AliasNode` |
+| | `flowInjectRefCountAmt` | wrap a counted reference in a `RefCountNode` |
 | | `flowScopePush`, `flowScopePop`, `flowAddVar` | the variable stack |
 | | `flowScopeDealias` | build a scope's release list; skip moved vars; cancel for a returned name |
 | `ir/exp/block.c` | `blockFlow` | scope push/pop, `blockret` injection, dealias capture |

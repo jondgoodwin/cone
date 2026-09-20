@@ -37,29 +37,29 @@ void flowHandleMove(INode *node) {
     }
 }
 
-// If needed, inject an alias node for rc/own references, adjusting the count by amt.
+// If needed, inject a reference-count node for rc/own references, adjusting the count by amt.
 // One value can become more than one holder at once: an array fill literal stores
 // the reference it evaluates once into every one of its elements.
-void flowInjectAliasAmt(INode **nodep, int16_t amt) {
+void flowInjectRefCountAmt(INode **nodep, int16_t amt) {
     INode *vtype = ((IExpNode*)*nodep)->vtype;
     // No need for injected node if we are not dealing with rc references
     RefNode *reftype = (RefNode *)itypeGetTypeDcl(vtype);
     if (reftype->tag != RefTag || !isRegion(reftype->region, rcName))
         return;
 
-    // Inject alias count node
-    AliasNode *aliasnode;
-    newNode(aliasnode, AliasNode, AliasTag);
-    aliasnode->exp = *nodep;
-    aliasnode->vtype = vtype;
-    aliasnode->aliasamt = amt;
-    aliasnode->counts = NULL;
-    *nodep = (INode*)aliasnode;
+    // Inject the reference-count node
+    RefCountNode *rcnode;
+    newNode(rcnode, RefCountNode, RefCountTag);
+    rcnode->exp = *nodep;
+    rcnode->vtype = vtype;
+    rcnode->amt = amt;
+    rcnode->counts = NULL;
+    *nodep = (INode*)rcnode;
 }
 
-// If needed, inject an alias node for rc/own references
-void flowInjectAliasNode(INode **nodep) {
-    flowInjectAliasAmt(nodep, 1);
+// If needed, inject a reference-count node for rc/own references, adding one holder
+void flowInjectRefCount(INode **nodep) {
+    flowInjectRefCountAmt(nodep, 1);
 }
 
 // Handle when we know we are either copying or moving a value
@@ -91,7 +91,7 @@ void flowHandleMoveOrCopy(INode **nodep) {
         // the reference it was born holding, and counting that again would
         // count one holder twice.
         if (flowIsLvalRead(*nodep))
-            flowInjectAliasNode(nodep);
+            flowInjectRefCount(nodep);
     }
 }
 

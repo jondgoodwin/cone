@@ -162,14 +162,14 @@ void inodePrintNode(INode *node) {
         voidPrint((VoidTypeNode *)node); break;
     case NamedValTag:
         namedValPrint((NamedValNode *)node); break;
-    case AliasTag:
+    case RefCountTag:
     {
-        AliasNode *anode = (AliasNode *)node;
-        inodeFprint("(alias ");
+        RefCountNode *anode = (RefCountNode *)node;
+        inodeFprint("(refcount ");
         if (anode->counts == NULL)
-            inodeFprint("%d ", (int)anode->aliasamt);
+            inodeFprint("%d ", (int)anode->amt);
         else {
-            int16_t count = anode->aliasamt;
+            int16_t count = anode->amt;
             int16_t *countp = anode->counts;
             while (count--)
                 inodeFprint("%d ", (int)*countp++);
@@ -662,7 +662,7 @@ static NodeTagFacts nodeTagFacts[NodeTagCount] = {
     [IsTag] = {ExpGroup, 0, 0},
     [BlockTag] = {ExpGroup, 0, 0},
     [IfTag] = {ExpGroup, 0, 0},
-    [AliasTag] = {ExpGroup, 0, 0},
+    [RefCountTag] = {ExpGroup, 0, 0},
     [NamedValTag] = {ExpGroup, 0, 0},
     [AbsenceTag] = {ExpGroup, 0, 0},
 
