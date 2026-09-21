@@ -337,6 +337,7 @@ ProgramNode *parsePgm(ConeOptions *opt) {
     parse.pgm = pgm;
     parse.mod = NULL;
     parse.typenode = NULL;
+    parse.inrettype = 0;
 
     // Create module node and set up for parsing main source file.
     // The root is named after its file, as an imported module is, so that an

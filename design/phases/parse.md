@@ -18,7 +18,11 @@ claim that these rule rather than describe.**
    type-starting token to `parsePrefix` — the *value* expression parser. No
    separate type grammar, no backtracking. ▸ **Forbids** a syntax that can only
    be disambiguated by knowing whether a type or a value is expected, and
-   **settles** that a new type form costs an arm in the value parser.
+   **settles** that a new type form costs an arm in the value parser. The one
+   bit of position the parser carries is `ParseState.inrettype`, set while
+   `parseFnSig` reads a return type: a `{` there opens the body of the function
+   being declared, so `&fn` is read as a signature alone and leaves the block to
+   its owner.
 2. **The lexer is line-blind.** It counts lines for diagnostics and nothing
    else: a block is delimited by braces and a statement ends at `;`, so
    indentation, line ends and columns carry no meaning to the grammar. ▸
@@ -160,7 +164,8 @@ Also left undecided: **which method an operator names** — every operator is an
 `FnCallNode` with `methfld` set to the operator's interned name and
 `FlagOperator` set, and selection is type check's. And **whether `&fn` is a
 closure or a function-signature type** — `parseAmper` decides by whether a body
-was parsed.
+follows, except in a return type (`ParseState.inrettype`), where it is always a
+signature because the block that follows is the declared function's own.
 
 ## 5. Adding an operator: the six edits
 

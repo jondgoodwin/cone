@@ -473,6 +473,11 @@ INode *parseFnSig(ParseState *parse) {
     // Set up memory block for the function's type signature
     fnsig = newFnSigNode();
 
+    // A parameter's type is bounded by the parentheses around it, so a '{'
+    // there opens no enclosing block, whoever this signature belongs to.
+    int svinrettype = parse->inrettype;
+    parse->inrettype = 0;
+
     // Process parameter declarations
     if (lexIsToken(LParenToken)) {
         lexNextToken();
@@ -507,7 +512,10 @@ INode *parseFnSig(ParseState *parse) {
     else
         errorMsgLex(ErrorNoLParen, "Expected left parenthesis for parameter declarations");
 
-    // Parse return type info - turn into void if none specified
+    // Parse return type info - turn into void if none specified.
+    // A '{' after the return type opens the body of the function being
+    // declared, so nothing read here may claim it as its own.
+    parse->inrettype = 1;
     if ((fnsig->rettype = parseType(parse)) != unknownType) {
         // Handle multiple return types
         if (lexIsToken(CommaToken)) {
@@ -524,6 +532,7 @@ INode *parseFnSig(ParseState *parse) {
         fnsig->rettype = (INode*)newVoidNode();
         inodeLexCopy(fnsig->rettype, (INode*)fnsig);  // Make invisible void show up in error msg
     }
+    parse->inrettype = svinrettype;
 
     return (INode*)fnsig;
 }

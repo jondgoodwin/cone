@@ -293,6 +293,19 @@ INode *parseAmper(ParseState *parse) {
     // Handle borrowed reference to anonymous function/closure
     // Note: This could also be a ref to a function signature. We sort this out later.
     if (lexIsToken(FnToken)) {
+        // In a return type, '&fn' is a function-signature type and nothing
+        // more: a '{' after the signature opens the body of the function whose
+        // return type this is. The signature is read here rather than by
+        // parseFn, which would take that block as an anonymous function's own.
+        if (parse->inrettype) {
+            lexNextToken();
+            if (lexIsToken(IdentToken)) {
+                errorMsgLex(WarnName, "Unnecessary function name is ignored");
+                lexNextToken();
+            }
+            anode->vtexp = parseFnSig(parse);
+            return (INode *)anode;
+        }
         FnDclNode *fndcl = (FnDclNode*)parseFn(parse, ParseMayAnon | ParseMayImpl | ParseMaySig | ParseEmbedded);
         if (fndcl->value) {
             // If we have an implemented function, we need to move it to the module so it gets generated
