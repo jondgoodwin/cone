@@ -70,7 +70,9 @@
 # allocated struct's 'rc' owning field is released through the reference it holds
 # rather than its address, and an owning reference coerces to a borrowed one.
 # region-typecheck-coerce pins the direction that must stay refused, which could
-# not be asserted while the coercion rule read backwards.
+# not be asserted while the coercion rule read backwards. region-so-reassign
+# is the other half of the first-assignment one: a variable that does hold an
+# 'so' value releases it when reassigned, and one moved out does not.
 #
 # The pair of owning-field scenarios are the same shape in the two regions, and
 # together they are what reference counting means here: region-owning-field's 'rc'
@@ -299,6 +301,36 @@ contains = ["call void @free(i8* %12)"]
 name = "rc-slice-copy-counts-a-holder-and-releases-each"
 target = "preir"
 contains = ["%10 = add i64 %9, 1", "%24 = add i64 %23, -1", "%29 = add i64 %28, -1"]
+
+# Reassigning a variable that holds an 'so' reference frees the value it held,
+# in every spelling the store has: a single reference, a slice, a struct field,
+# and each iteration of a loop. The run shows the new values arrive, and that
+# nothing is freed twice -- a first assignment to a declared-but-empty variable
+# and a reassignment after a move both release nothing first, and on Windows a
+# double free dies of heap corruption. What the run cannot show is that the
+# release is emitted at all, since a leak prints the same, so the first check
+# names four frees only the fix emits -- reassign's two, the loop body's, and
+# the slice's scope exit, whose register moved when the reassignment's free
+# preceded it; the numbers were read out of the pre-optimization dump, and
+# before the fix the module holds none of them (the field's %8 is reassign's
+# too). The second check is the 'uni' 'rc' spelling of the moved-out gate: a
+# count is not dropped a second time by the reassignment, which the run cannot
+# see because the decrement lands in freed memory. Its one decrement is the
+# scope exit's, at the register it has only when no other precedes it.
+[scenario.region-so-reassign]
+category = "run"
+description = "Reassigning an 'so' reference, slice or field frees the value it held; a variable holding nothing -- uninitialized or moved out -- releases nothing first"
+tags = ["flow", "genllvm", "runtime"]
+
+[[scenario.region-so-reassign.check]]
+name = "reassignment-frees-the-previous-so-value"
+target = "preir"
+contains = ["call void @free(i8* %8)", "call void @free(i8* %11)", "call void @free(i8* %9)", "call void @free(i8* %20)"]
+
+[[scenario.region-so-reassign.check]]
+name = "moved-out-uni-rc-not-dropped-again-on-reassignment"
+target = "preir"
+contains = ["%15 = add i64 %14, -1"]
 
 # The other half: a slice moved out is not released by its source. Every
 # allocation in the file is handed on and returned, so the module may hold no

@@ -185,8 +185,9 @@ because one value goes to n holders.
 
 **Decrements are never reference-count nodes.** They come from generation: walking a
 `dealias` list at scope exit, and `genlStore` releasing an lval's previous value
-unless `FlagFirstAssign` says there was none. Both release a tuple's rc
-elements one by one, through `genlReleaseOwning`.
+unless `FlagFirstAssign` says there was none. Both go through
+`genlReleaseOwning`: an `so` reference is freed, an `rc` one drops a holder, a
+tuple's owning elements one by one.
 
 ## 5. What it injects
 
@@ -198,7 +199,7 @@ depends on:
 | `BlockRetTag` | `blockFlow`, for any block not already ending in one | a loop block, **and** a regular block ending in an expression, both get theirs here — it is where the dealias list hangs |
 | `RefCountTag` | `flowInjectRefCountAmt` | `genlRcCounter(val, amt)` |
 | `dealias` lists | `flowScopeDealias`, onto every `BreakRetNode` | `genlDealiasNodes` replays them |
-| `FlagFirstAssign` | `assignlvalrtype` | `genlStore` skips releasing a previous value that never existed |
+| `FlagFirstAssign` | `assignlvalrtype`, when the variable is uninitialized or moved out | `genlStore` skips releasing a previous value the variable does not hold |
 
 **A reference-count node is built only for a counted reference, or a tuple
 carrying one.** `flowInjectRefCountAmt` returns early unless the type is a
@@ -290,11 +291,12 @@ first-assignment target carries `FlagFirstAssign`.
 `genlDealiasNodes` and do no analysis of their own. If flow did not run, the
 lists are NULL, `genlDealiasNodes` returns immediately, and **nothing is ever
 released** — there is no fallback. Likewise, without `FlagFirstAssign` every
-first assignment to an uninitialized owning variable decrements garbage.
-
-Without `FlagFirstAssign`, `genlStore` decrements a count that was never
-initialized — for an `rc`-region lval or a tuple lval's rc elements, which are
-the only kinds it releases there at all.
+first assignment to an uninitialized owning variable releases garbage, and a
+reassignment after a move releases what the new owner holds: `genlStore` frees
+an `so` lval's previous value and drops a holder of an `rc` one — single,
+slice, or tuple element — whenever the flag is absent. `assignlvalrtype` sets
+it when the variable is not `VarInitialized`, or is `VarMoved`, at the
+assignment.
 
 **One layout invariant generation depends on and flow does not state.**
 `genlRcCounter` finds the count by bitcasting the reference to `usize*` and
@@ -306,7 +308,14 @@ the built-in permissions are zero-sized. See [Generation](generation.md),
 
 - **A moved-out variable is skipped at scope exit on every path**, because
   `VarMoved` is a whole-function summary. That leaks rather than double-frees,
-  which is the deliberate choice; the in-code comment says so.
+  which is the deliberate choice; the in-code comment says so. A reassignment
+  reads the same summary at its own site: moved before the assignment in
+  source order, the variable is released there on no path. Moved only *after*
+  it in source order — by an earlier iteration of a loop both sit in — the
+  reassignment releases on every iteration, and from the second one frees what
+  the move handed over. That is the loop-carried move the table above lists as
+  unenforced, in the one place it double-frees rather than leaks; it is the
+  same in both regions.
 - **A variable initialized on only one path is released on every path**, because
   `VarInitialized` is the same kind of summary: once an assignment anywhere
   before the scope exit has set it, the exit releases the variable whether or

@@ -99,11 +99,11 @@ which every path calls. Per assignment:
    `MayWrite`, `ErrorNoMut`. The exception is a variable that holds nothing yet,
    which is how an `imm` local gets initialized once.
 3. **Initialization tracking.** Set `VarInitialized`, clear `VarMoved`.
-4. **`FlagFirstAssign`** on the lval's name-use node when the variable held
-   nothing before. Generation reads this to *skip* releasing a previous value
-   that never existed. It has to be a per-site flag because flow state is a
-   running summary over the whole function — only the assignment site itself can
-   carry it.
+4. **`FlagFirstAssign`** on the lval's name-use node when the variable holds
+   nothing: never initialized, or moved out. Generation reads this to *skip*
+   releasing a previous value that never existed or that another owner now
+   holds. It has to be a per-site flag because flow state is a running summary
+   over the whole function — only the assignment site itself can carry it.
 5. **Borrow lifetime.** When both sides are references and the lval is a borrow,
    `lvalscope < rvaltype->scope` is `ErrorInvType`, "lval outlives the borrowed
    reference you are storing". A slice carries the same scope as a single
@@ -129,18 +129,21 @@ content first, that is the node's value) and tuple destructuring on either side
 via `extractvalue`, then `genlStore`.
 
 `genlStore` **skips a store to the anonymous name entirely**, and otherwise
-releases the lval's previous value before overwriting — but only for an
-`rc`-region reference or the rc elements of a tuple, and only when
-`FlagFirstAssign` is absent.
+releases the lval's previous value before overwriting, through the
+`genlReleaseOwning` scope exit uses — an `so` reference or slice is freed, an
+`rc` one drops a holder, a tuple's owning elements each — unless
+`FlagFirstAssign` is present. The lval need not be a variable: a field or a
+dereference of owning type releases what it held just the same, and never
+carries the flag.
 
 ## Hazards
 
 - **Mutability is enforced in flow, not type check.** Looking for `ErrorNoMut`
   in `*TypeCheck` will not find it.
 - **A function that fails its flow gate gets no mutability checking at all**,
-  and no `FlagFirstAssign` — so generation then decrements an uninitialized
-  count on first assignment. Safe only because generation does not run when
-  errors were reported.
+  and no `FlagFirstAssign` — so generation then releases uninitialized storage
+  on first assignment. Safe only because generation does not run when errors
+  were reported.
 - **`+=` is not an `AssignNode`.** It is an `FnCallNode`. Code matching on
   `AssignTag` to find "all writes" misses every op-assign and every swap.
 - **`iexpGetLvalInfo` and `iexpIsLval` are different questions.** The first

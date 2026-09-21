@@ -315,7 +315,7 @@ void genlRcCounter(GenState *gen, LLVMValueRef ref, long long amount, RefNode *r
 // Release what a variable holds: free an 'so' reference, drop a holder of an
 // 'rc' one, single or slice. A tuple is one holder of each owning reference it
 // carries, so each is released.
-static void genlReleaseOwning(GenState *gen, LLVMValueRef val, INode *type) {
+void genlReleaseOwning(GenState *gen, LLVMValueRef val, INode *type) {
     INode *typedcl = itypeGetTypeDcl(type);
     if (typedcl->tag == RefTag || typedcl->tag == ArrayRefTag) {
         RefNode *reftype = (RefNode *)typedcl;
