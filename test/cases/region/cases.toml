@@ -45,11 +45,13 @@
 #   is all of it that can be provoked. A struct permission otherwise has
 #   undefined static meaning, because permGetFlags reads a PermTag node's flag
 #   word out of whatever it is handed.
-# - Array allocation, '+[]'. Array references and slices belong to collection.
-#   region-flow-fill is the one line of it here, and it is there for the count a
-#   fill literal asks for rather than for the array reference: it is the only
-#   syntax that reaches a run-time element count, because the plain literal form
-#   insists its dimension be a constant.
+# - Array allocation, '+[]', as a value. What a slice is and does belongs to
+#   collection; what is here is the region's part of it. region-flow-fill is
+#   there for the count a fill literal asks for rather than for the array
+#   reference: it is the only syntax that reaches a run-time element count,
+#   because the plain literal form insists its dimension be a constant. The
+#   two region-slice scenarios are there for the release of an owning slice,
+#   which is the same scope-exit release the single-reference scenarios assert.
 # - Virtual owning references, '+<'. They belong to trait.
 # - A global holding an owning reference. A global may only be initialized with
 #   a literal, so 'mut g = +rc-mut 80' is ErrorNotLit -- a fact about global
@@ -236,6 +238,47 @@ contains = ["%7 = add i64 %6, -1"]
 name = "break-releases-the-scopes-between"
 target = "preir"
 contains = ["%11 = add i64 %10, -1", "%16 = add i64 %15, -1"]
+
+# An owning slice released at scope exit, in both regions and every spelling a
+# single reference has: held, moved to a variable, into a parameter, returned,
+# copied, reassigned. The run shows the values survive every hand-over; the
+# checks below show the releases are emitted at all, which the run cannot,
+# because a leak prints the same as a free. The register numbers were read out
+# of the pre-optimization dump: the free is soScope's, and the three counter
+# adjustments are rcCopied's -- one holder added, then each of its two variables
+# released. Without the fix the module frees nothing and adjusts no count.
+[scenario.region-slice-release]
+category = "run"
+description = "An owning slice is released when its owner's scope ends: freed for 'so', counted down for 'rc', once per holder"
+tags = ["flow", "genllvm", "runtime"]
+
+[[scenario.region-slice-release.check]]
+name = "so-slice-freed-at-scope-exit"
+target = "preir"
+contains = ["call void @free(i8* %12)"]
+
+[[scenario.region-slice-release.check]]
+name = "rc-slice-copy-counts-a-holder-and-releases-each"
+target = "preir"
+contains = ["%10 = add i64 %9, 1", "%24 = add i64 %23, -1", "%29 = add i64 %28, -1"]
+
+# The other half: a slice moved out is not released by its source. Every
+# allocation in the file is handed on and returned, so the module may hold no
+# release at all -- no free, no count adjustment, and no 'allocref', the load
+# that begins every scope-exit release. As region-tuple-return does, the file
+# is shaped so the exclude can cover the whole module. It moves to an argument
+# as a statement, 'imm r = hold(a); r', rather than returning the call itself:
+# a move made inside a block's final expression is listed for release before
+# it is seen, in either region and for a single reference just the same.
+[scenario.region-slice-move]
+category = "compile"
+description = "A '+[]so' or 'uni' '+[]rc' slice moved to a variable, a parameter or a caller is not released by the variable it left"
+tags = ["flow", "genllvm"]
+
+[[scenario.region-slice-move.check]]
+name = "moved-slice-not-released-by-its-source"
+target = "preir"
+excludes = ["call void @free", "allocref", "add i64"]
 
 # -------- parse stage --------
 

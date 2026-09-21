@@ -55,9 +55,10 @@ void flowHandleMove(INode *node) {
 // the reference it evaluates once into every one of its elements.
 void flowInjectRefCountAmt(INode **nodep, int16_t amt) {
     INode *vtype = ((IExpNode*)*nodep)->vtype;
-    // No need for injected node if we are not dealing with rc references
+    // No need for injected node if we are not dealing with rc references.
+    // An owning slice (ArrayRefTag) is counted exactly as a single reference is.
     RefNode *reftype = (RefNode *)itypeGetTypeDcl(vtype);
-    if (reftype->tag != RefTag || !isRegion(reftype->region, rcName))
+    if ((reftype->tag != RefTag && reftype->tag != ArrayRefTag) || !isRegion(reftype->region, rcName))
         return;
 
     // Inject the reference-count node
@@ -282,7 +283,8 @@ int flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp) {
         VarFlowInfo *avar = &gVarFlowStackp[--pos];
         INode *vartype = avar->node->vtype;
         RefNode *reftype = (RefNode*)vartype;
-        if (reftype->tag == RefTag && (isRegion(reftype->region, soName) || isRegion(reftype->region, rcName))) {
+        if ((reftype->tag == RefTag || reftype->tag == ArrayRefTag)
+            && (isRegion(reftype->region, soName) || isRegion(reftype->region, rcName))) {
             // A variable that was never given a value owns nothing, so there is
             // nothing to release: freeing its storage would free garbage.
             if (!(avar->node->flowtempflags & VarInitialized))

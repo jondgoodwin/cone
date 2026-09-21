@@ -959,7 +959,8 @@ void genlStore(GenState *gen, INode *lval, LLVMValueRef rval) {
     LLVMValueRef lvalptr = genlAddr(gen, lval);
     RefNode *reftype = (RefNode *)((IExpNode*)lval)->vtype;
     // A first assignment has no previous value to release (see FlagFirstAssign)
-    if (reftype->tag == RefTag && isRegion(reftype->region, rcName) && !(lval->flags & FlagFirstAssign))
+    if ((reftype->tag == RefTag || reftype->tag == ArrayRefTag) && isRegion(reftype->region, rcName)
+        && !(lval->flags & FlagFirstAssign))
         genlRcCounter(gen, LLVMBuildLoad(gen->builder, lvalptr, "dealiasref"), -1, reftype);
     LLVMBuildStore(gen->builder, rval, lvalptr);
 }
@@ -1091,7 +1092,7 @@ LLVMValueRef genlExpr(GenState *gen, INode *termnode) {
         RefCountNode *anode = (RefCountNode*)termnode;
         LLVMValueRef val = genlExpr(gen, anode->exp);
         RefNode *reftype = (RefNode*)iexpGetTypeDcl(termnode);
-        if (reftype->tag == RefTag) {
+        if (reftype->tag == RefTag || reftype->tag == ArrayRefTag) {
             if (isRegion(reftype->region, soName))
                 genlDealiasOwn(gen, val, reftype);
             else

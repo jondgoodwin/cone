@@ -47,8 +47,21 @@ void genlRefTypeSetup(GenState *gen, RefNode *reftype) {
 // Function declarations for malloc() and free()
 LLVMValueRef genlfreeval = NULL;
 
+// The pointer a release routine works on. A single reference is its pointer;
+// an owning slice is a fat {T*, usize} value whose pointer word is what the
+// allocation header sits before.
+static LLVMValueRef genlRefPtr(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
+    if (refnode->tag == ArrayRefTag)
+        return LLVMBuildExtractValue(gen->builder, ref, 0, "sliceptr");
+    return ref;
+}
+
 // If ref type is struct, dealias any fields holding rc/own references
 void genlDealiasFlds(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
+    // A slice's elements are not walked: releasing what each element owns is
+    // the same element-granularity work an array of owning references needs.
+    if (refnode->tag != RefTag)
+        return;
     StructNode *strnode = (StructNode*)itypeGetTypeDcl(refnode->vtexp);
     if (strnode->tag != StructTag)
         return;
@@ -265,12 +278,14 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
 
 // Dealias an own allocated reference
 void genlDealiasOwn(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
+    ref = genlRefPtr(gen, ref, refnode);
     genlDealiasFlds(gen, ref, refnode);
     genlFree(gen, ref);
 }
 
 // Add to the counter of an rc allocated reference
 void genlRcCounter(GenState *gen, LLVMValueRef ref, long long amount, RefNode *refnode) {
+    ref = genlRefPtr(gen, ref, refnode);
     // Point backwards to ref counter
     LLVMTypeRef ptrusize = LLVMPointerType(genlType(gen, (INode*)usizeType), 0);
     LLVMValueRef refcast = LLVMBuildBitCast(gen->builder, ref, ptrusize, "");
@@ -308,7 +323,7 @@ void genlDealiasNodes(GenState *gen, Nodes *nodes) {
         if ((*nodesp)->tag == VarDclTag) {
             VarDclNode *var = (VarDclNode *)*nodesp;
             RefNode *reftype = (RefNode *)var->vtype;
-            if (reftype->tag == RefTag) {
+            if (reftype->tag == RefTag || reftype->tag == ArrayRefTag) {
                 LLVMValueRef ref = LLVMBuildLoad(gen->builder, var->llvmvar, "allocref");
                 if (isRegion(reftype->region, soName)) {
                     genlDealiasOwn(gen, ref, reftype);

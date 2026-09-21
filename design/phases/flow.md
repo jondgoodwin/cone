@@ -190,16 +190,18 @@ depends on:
 | `FlagFirstAssign` | `assignlvalrtype` | `genlStore` skips releasing a previous value that never existed |
 
 **A reference-count node is built only for a counted reference.** `flowInjectRefCountAmt`
-returns early unless the type is `RefTag` in region `rc`. A `+so` reference and
+returns early unless the type is a `RefTag` or `ArrayRefTag` in region `rc` — an
+owning slice is counted exactly as a single reference is. A `+so` reference and
 a `uni`-permissioned `+rc` reference are both move types and take the move path
 instead. Two arms of generation's `RefCountTag` case — the `so` arm and the tuple
 `counts` arm — are therefore unreachable as the code stands.
 
 **Scope dealiasing.** `flowScopeDealias` walks the variable stack downward from
 the top to a start position, so release order is the reverse of declaration
-order. Per variable: an `so` or `rc` reference is added to the list, unless it
-was never initialized or was moved out; anything else asks `itypeGetDropFnDcl`
-and, if there is one, builds a call to the drop fn on a `&uni` borrow.
+order. Per variable: an `so` or `rc` reference, single (`RefTag`) or slice
+(`ArrayRefTag`), is added to the list, unless it was never initialized or was
+moved out; anything else asks `itypeGetDropFnDcl` and, if there is one, builds
+a call to the drop fn on a `&uni` borrow.
 
 **Where a jump's start position comes from.** `BlockNode.flowmark` is the flow
 stack position `blockFlow` recorded on entering that block. A `break` or
@@ -225,7 +227,7 @@ one, but each still needs the move and initialization check that walk makes.
 | --- | --- | --- | --- |
 | **Move / ownership** | yes | `ErrorMove` on use of a moved-out or uninitialized variable; move out of a global refused | field granularity — moving `p.x` deactivates all of `p`; conditional moves; loop-carried moves |
 | **Escape / lifetime** | representation in type check, enforcement here | storing a borrow into a longer-lived lval; returning a borrow of a local | a borrow laundered through a variable; anything across a function boundary — there is no lifetime annotation syntax; freezing a borrow's source |
-| **De-aliasing / drops** | flow decides, generation executes | scope-exit release of `so`/`rc` refs and drop-fn structs, from a jump down to the block it names | arrays of owning references; a variable moved out, or initialized, on only one path — see Hazards |
+| **De-aliasing / drops** | flow decides, generation executes | scope-exit release of `so`/`rc` refs and slices, and of drop-fn structs, from a jump down to the block it names | arrays of owning references; a variable moved out, or initialized, on only one path — see Hazards |
 | **Permission** | `MayWrite` and `MayRead` | `ErrorNoMut` on assignment and swap; `ErrorNoRead` on a read through a reference — a dereference, an index, or a field of a virtual reference | `MayAliasWrite`, `RaceSafe`, `IsLockless` are populated and read nowhere |
 | **Initialization** | yes | `ErrorMove` "has not been initialized" | "initialized on one branch" reads as initialized everywhere; the unused-variable warning in `flow.h`'s header does not exist |
 | **Array fill rules** | yes | `ErrorBadFill` for a repeated move value; `ErrorFillCount` for a non-constant count | — |

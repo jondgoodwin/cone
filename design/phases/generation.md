@@ -238,6 +238,12 @@ Two consequences that are easy to get wrong:
 - **`genlDealiasOwn` calls `free(ref)` directly**, correct only because `so`'s
   region struct is empty, so the payload offset is 0 and the reference *is* the
   allocation base.
+- **An owning slice is the fat `{T*, usize}` value, and the header sits before
+  its pointer word.** `genlRefPtr`, at the entry of `genlDealiasOwn` and
+  `genlRcCounter`, `extractvalue`s word 0 of an `ArrayRefTag` reference, so every
+  release site — scope exit, a `RefCountNode`, `genlStore` — hands over the
+  value as generated. `genlDealiasFlds` walks no slice's elements: what an
+  element owns is left where an array of owning references leaves it.
 
 A region is any struct with a suitable `_alloc`; `so` and `rc` are declared in
 Cone source inside `corelibSource`, not built into the compiler. `malloc` is an
@@ -256,6 +262,7 @@ This is what the CLAUDE.md warning is about. The conventions:
 | `&T` value | `T*` |
 | `&[]T` value, `&<Trait` value | an **aggregate value**, not a pointer |
 | owning reference value | `T*` pointing **past** the header |
+| owning slice value | `{T*, usize}`, its `T*` pointing past the header |
 | allocation base | `((usize*)ref) - 1` for `rc`; `ref` itself for `so` |
 | vtable field slot | an `i32` **byte offset**, applied to an `i8*` |
 | vtable method slot | reached by `structgep` **then load** |
