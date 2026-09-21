@@ -118,15 +118,17 @@ int iexpCoerce(INode **from, INode *totype) {
     }
     case ConvByMeth: 
     {
-        FnCallNode *istrue = newFnCallNode(*from, 1);
+        // The injected call takes the operand's position before it is lowered,
+        // because lowering is what reports a private or unmatched isTrue
+        FnCallNode *istrue = newFnCallLower(*from, *from, 1);
         istrue->methfld = (INode *)newMemberUseNode(istrueName);
+        inodeLexCopy(istrue->methfld, *from);
         int success;
         if (iexpGetTypeDcl(*from)->tag == PtrTag)
             success = fnCallLowerPtrMethod(istrue, ptrType);
         else
             success = fnCallLowerMethod(istrue) == 1;
         if (success) {
-            inodeLexCopy((INode*)istrue, *from);
             *from = (INode*)istrue;
             return 1;
         }
