@@ -290,8 +290,15 @@ INode *iexpGetLvalInfo(INode *lval, INode **lvalperm, uint16_t *scope) {
     {
         INode *lvalvar = iexpGetLvalInfo(((StarNode *)lval)->vtexp, lvalperm, scope);
         RefNode *vtype = (RefNode*)iexpGetTypeDcl(((StarNode *)lval)->vtexp);
-        if (vtype->tag == RefTag || vtype->tag == ArrayRefTag)
+        if (vtype->tag == RefTag || vtype->tag == ArrayRefTag) {
             *lvalperm = vtype->perm;
+            // A reference held in no variable -- a borrow expression, a call's
+            // result -- has its lifetime on its own type node, where borrowTypeCheck
+            // or fnCallFinalizeArgs put it. A variable's declared type carries
+            // none, so a reference held in one keeps the variable's scope.
+            if (lvalvar == NULL && vtype->region == borrowRef)
+                *scope = vtype->scope;
+        }
         else if (vtype->tag == PtrTag)
             *lvalperm = (INode*)mutPerm;
         return lvalvar;

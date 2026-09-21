@@ -63,7 +63,10 @@ are `ExpGroup`. **The `scope` that matters is the one on a borrow's
 `newRefNode` seeds `borrowRef`, `roPerm`, `scope = 0` — and the comment says why
 the zero matters: left uninitialized, the lifetime checks read allocator
 garbage. `newRefNodeFull` additionally sets the three fields and runs
-`refAdoptInfections`. `newBorrowMutRef` builds the pair by hand and
+`refAdoptInfections`. `borrowMutRef` and `borrowAuto` build the pair by hand
+for a borrow the compiler injects — an operator's `&mut` receiver, a folded
+method's field, an array coerced to a slice argument — and record the lval's
+scope on it, since the node they build is never type checked; `borrowMutRef`
 short-circuits `&*p` to `p`.
 
 **Interning collapses permissions.** `refTypeCheck` and `arrayRefTypeCheck` end
@@ -228,8 +231,13 @@ argument that points at a longer-lived place. Two sites propagate scope into a
 reference type they build: `fnCallArrIndex` into a borrowed element's, and
 `fnCallFinalizeArgs` into a call's result, which takes the narrowest scope among
 the borrowed arguments on a `RefNode` of the call's own — the declared return
-type is shared by every call site and cannot carry it. Nothing checks a borrow
-stored in a field or captured.
+type is shared by every call site and cannot carry it. A borrow the compiler
+injects records its lval's scope where it is built (`borrowMutRef`,
+`borrowAuto`), so it reaches a call as the written borrow would; and
+`iexpGetLvalInfo` gives a dereferenced borrow expression or call result the
+scope on that reference's own type, since no variable holds it — a reference
+held in a variable keeps the variable's scope, because a declared type carries
+none. Nothing checks a borrow stored in a field or captured.
 
 ## Generation
 

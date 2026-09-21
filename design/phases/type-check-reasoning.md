@@ -126,7 +126,8 @@ monomorphization branch.
    without coercing: overload resolution, struct field matching and the branch
    meet.
 4. **Auto-borrow** (`borrowAutoMatches`): can a borrow of the source produce the
-   target reference?
+   target reference? The borrow `borrowAuto` then injects carries the source
+   lval's scope, as `&[]arr` written out would.
 
 `iexpCoerce` then switches on the verdict and injects, copying source position
 onto every node it creates with `inodeLexCopy` so the diagnostic still points at

@@ -34,11 +34,18 @@ void borrowMutRef(INode **nodep, INode* type, INode *perm) {
     // Verify lval is mutable
     INode *lvalperm = (INode*)immPerm;
     uint16_t scope = 0;
-    INode *lvalvar = iexpGetLvalInfo(node, &lvalperm, &scope);
+    iexpGetLvalInfo(node, &lvalperm, &scope);
     if (!permMatches(perm, lvalperm))
         errorMsgNode((INode *)node, ErrorBadPerm, "Cannot borrow mutable reference to this.");
 
-    RefNode *reftype = type != unknownType? newRefNodeFull(RefTag, node, borrowRef, perm, type) : (RefNode*)unknownType;
+    // The lval's scope is the borrow's lifetime, as borrowTypeCheck records it
+    // for a borrow written in source. This node is never type checked, so
+    // nothing else would set it, and newRefNode's default means global.
+    RefNode *reftype = (RefNode*)unknownType;
+    if (type != unknownType) {
+        reftype = newRefNodeFull(RefTag, node, borrowRef, perm, type);
+        reftype->scope = scope;
+    }
     RefNode *borrownode = newRefNodeFull(BorrowTag, node, borrowRef, perm, node);
     borrownode->vtype = (INode*)reftype;
     *nodep = (INode*)borrownode;
@@ -49,6 +56,12 @@ void borrowAuto(INode **from, INode *totypedcl) {
     // Borrow from array to create arrayref (only one supported currently)
     RefNode *arrreftype = (RefNode*)totypedcl;
     RefNode *addrtype = newRefNodeFull(ArrayRefTag, *from, borrowRef, newPermUseNode(roPerm), arrreftype->vtexp);
+    // The slice lives as long as the array it borrows, as '&[]arr' written out
+    // would; borrowAutoMatches has already established that 'from' is an lval
+    INode *lvalperm = (INode*)immPerm;
+    uint16_t scope = 0;
+    iexpGetLvalInfo(*from, &lvalperm, &scope);
+    addrtype->scope = scope;
     RefNode *borrownode = newRefNode(ArrayBorrowTag);
     borrownode->vtype = (INode*)addrtype;
     borrownode->vtexp = *from;

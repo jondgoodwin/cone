@@ -117,7 +117,9 @@ Put these first, because every one of them is load-bearing.
 | `scope` | `blockFlow`, only as `if (++fstate->scope == 2)` — the test for "this is the main block" |
 
 **Flow computes no lifetimes of its own.** `VarDclNode.scope` is set during name
-resolution; `RefNode.scope` during type check by `borrowTypeCheck`. Flow only
+resolution; `RefNode.scope` during type check by `borrowTypeCheck`, by
+`borrowMutRef` and `borrowAuto` for a borrow the compiler injects, and by
+`fnCallArrIndex` and `fnCallFinalizeArgs` for a type derived from one. Flow only
 compares them.
 
 The live state is on the declarations, in `VarDclNode.flowtempflags`:
