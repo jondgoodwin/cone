@@ -87,8 +87,18 @@ int iexpCoerce(INode **from, INode *totype) {
     if (totype == unknownType || totype == noCareType)
         return 1;
 
-    // Are types equivalent, or is 'to' a subtype of fromtypedcl?
     INode *totypedcl = itypeGetTypeDcl(totype);
+
+    // An untyped integer literal still on its i32 default -- a call's argument
+    // is type checked before its callee is resolved, so litTypeCheck had no
+    // expected type to give it -- takes the number type it is wanted as rather
+    // than being converted to it, which would build the constant at 32 bits
+    // first. Bool is not a width to adopt: a literal meets it as any number
+    // does, through isTrue.
+    if (totypedcl != (INode*)boolType && litAdoptNumberType(from, totypedcl))
+        return 1;
+
+    // Are types equivalent, or is 'to' a subtype of fromtypedcl?
     switch (iexpMatches(from, totypedcl, Coercion)) {
     case NoMatch:
         return 0;

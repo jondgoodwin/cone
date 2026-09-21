@@ -437,7 +437,7 @@ void inodeTypeCheck(TypeCheckState *pstate, INode **node, INode *expectType) {
     case NilLitTag:
     case ULitTag:
     case FLitTag:
-        litTypeCheck(pstate, (IExpNode*)*node, expectType); break;
+        litTypeCheck(pstate, node, expectType); break;
 
     case TypedefTag:
         typedefTypeCheck(pstate, (TypedefNode *)*node); break;

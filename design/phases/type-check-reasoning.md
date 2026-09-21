@@ -72,8 +72,11 @@ So the normal path is `iexpTypeCheckCoerce`:
 4. `iexpCoerce(from, totype)`.
 
 `litTypeCheck` uses `expectType` for one case: an untyped integer literal takes
-an integer expected type and keeps it, so its constant is built at that width.
-Every other literal is typed by the coercion in section 5.
+a number expected type and keeps it — an integer type by retyping, a float type
+by becoming a float literal — so its constant is built at that width.
+`iexpCoerce` does the same for a literal that reaches it still untyped, because
+a call's argument is checked before its callee is resolved. Every other literal
+is typed by the coercion in section 5.
 
 ## 4. The verdict vocabulary
 
@@ -118,9 +121,10 @@ monomorphization branch.
    fallbacks below.
 3. **Source is an untyped integer literal** (`ULitTag` with `FlagUnkType`) and
    the target is any number type: `ConvSubtype`. Deliberately not a subtype
-   check — a literal goes wherever the author wrote it. An integer target has
-   already taken the flag in `litTypeCheck`, so what reaches here is a float
-   target.
+   check — a literal goes wherever the author wrote it. `iexpCoerce` retypes
+   such a literal before it asks, so this answers only the callers that ask
+   without coercing: overload resolution, struct field matching and the branch
+   meet.
 4. **Auto-borrow** (`borrowAutoMatches`): can a borrow of the source produce the
    target reference?
 
@@ -289,8 +293,6 @@ expression.
   auto-borrow fallbacks. Adding a fallback below it will not apply to `Bool`.
 - **Adding a value path to a block means adding it to two loops** — the fold and
   the re-coercion pass in section 6.
-- **`litTypeCheck` accepts `expectType` and ignores it.** The parameter reads as
-  though literals are context-typed. They are not.
 - **A node injected during type check takes the lexer's position**, which is end
   of file by then. Call `inodeLexCopy` or the diagnostic points at nothing.
 

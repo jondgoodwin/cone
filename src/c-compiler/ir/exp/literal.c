@@ -111,30 +111,58 @@ void litNameRes(NameResState* pstate, IExpNode *node) {
     inodeNameRes(pstate, &node->vtype);
 }
 
-// Type check lit node
-void litTypeCheck(TypeCheckState* pstate, IExpNode *node, INode *expectType) {
-    itypeTypeCheck(pstate, &node->vtype);
-
-    // An integer literal the source gave no suffix to becomes the integer type
-    // it is wanted as, rather than being converted to it. FlagUnkType says the
-    // i32 it was built with was newULitNode's default and never the source's
-    // choice, and iexpMatches already lets such a literal stand for any number
-    // type -- but as a conversion, and a conversion builds the constant at the
-    // default width first. Every bit above the low 32 was dropped there and the
-    // result widened back: 'mut n i64 = 9223372036854775807' stored -1, u64's
-    // maximum stored 4294967295, and i64's minimum stored 0. Adopting the type
-    // here builds the constant once, at the width it is stored at.
-    //
-    // Integer targets only. Coercion to a float is a real conversion, changing
-    // representation rather than width, and stays on the conversion path.
-    if (node->tag == ULitTag && (node->flags & FlagUnkType) && expectType != NULL
-        && expectType != unknownType && expectType != noCareType) {
-        INode *expect = itypeGetTypeDcl(expectType);
-        if (expect->tag == IntNbrTag || expect->tag == UintNbrTag) {
-            node->vtype = expect;
-            node->flags &= ~FlagUnkType;
-        }
+// Give an untyped integer literal the number type it is wanted as, in place of
+// converting it to that type. FlagUnkType says the i32 the literal was built
+// with was newULitNode's default and never the source's choice, and iexpMatches
+// lets such a literal stand for any number type -- but as a conversion, and a
+// conversion builds the constant at the default width first. Every bit above
+// the low 32 was dropped there and the result widened back: 'i64arg(5000000000)'
+// passed 705032704, 'mut n i64 = 9223372036854775807' stored -1, and
+// 'mut n f64 = 5000000000' held 705032704.0. Adopting the type builds the
+// constant once, at the width it is stored at.
+//
+// An integer target retypes the node. A float target replaces it with a float
+// literal built from the full 64-bit value, read as signed because that is how
+// the i32 default read it and how parsePrefix folded a unary minus into it.
+// Returns 1 when *nodep is now a literal of the wanted type, 0 when it was not
+// an untyped integer literal or the type is not a number.
+int litAdoptNumberType(INode **nodep, INode *totype) {
+    INode *node = *nodep;
+    if (node->tag != ULitTag || !(node->flags & FlagUnkType))
+        return 0;
+    INode *nbrtype = itypeGetTypeDcl(totype);
+    switch (nbrtype->tag) {
+    case IntNbrTag:
+    case UintNbrTag:
+        ((ULitNode*)node)->vtype = nbrtype;
+        node->flags &= ~FlagUnkType;
+        return 1;
+    case FloatNbrTag: {
+        int64_t value = (int64_t)((ULitNode*)node)->uintlit;
+        FLitNode *flit;
+        newNode(flit, FLitNode, FLitTag);
+        // Rounded once, at the target's own precision: rounding to double first
+        // and to float after can land a value above 2^53 on the wrong neighbour
+        flit->floatlit = ((NbrNode*)nbrtype)->bits == 32 ? (double)(float)value : (double)value;
+        flit->vtype = nbrtype;
+        inodeLexCopy((INode*)flit, node);
+        *nodep = (INode*)flit;
+        return 1;
     }
+    default:
+        return 0;
+    }
+}
+
+// Type check lit node
+void litTypeCheck(TypeCheckState* pstate, INode **nodep, INode *expectType) {
+    itypeTypeCheck(pstate, &((IExpNode*)*nodep)->vtype);
+
+    // An untyped integer literal takes the number type it is wanted as. One that
+    // arrives with no expected type -- a call's argument, checked before its
+    // callee is resolved -- is given it by iexpCoerce instead.
+    if (expectType != NULL && expectType != unknownType && expectType != noCareType)
+        litAdoptNumberType(nodep, expectType);
 }
 
 // Create a new string literal node

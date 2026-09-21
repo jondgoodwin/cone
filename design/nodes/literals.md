@@ -54,26 +54,31 @@ bound, because it is matched against a field by symbol later.
 
 ## Type check
 
-**`litTypeCheck` context-types an untyped integer literal, and nothing else.**
-When `expectType` is an integer type and the node is a `ULitTag` carrying
-`FlagUnkType`, the literal takes that type and drops the flag. Every other
-literal is typed by `itypeTypeCheck(&node->vtype)` alone.
+**An untyped integer literal takes the number type it is wanted as, wherever it
+meets it, and no other literal is context-typed.** `litAdoptNumberType` is the
+one rule: a `ULitTag` carrying `FlagUnkType` against an integer type takes that
+type and drops the flag; against a float type it is replaced by an `FLitNode`
+holding the full 64-bit value, read as signed, rounded once at the target's own
+precision. `litTypeCheck` applies it when `expectType` is a number type, and
+`iexpCoerce` applies it to a literal that reaches coercion still untyped — a
+call's argument, which is type checked before its callee is resolved, and a
+struct literal's field. Every other literal is typed by
+`itypeTypeCheck(&node->vtype)` alone.
 
 **Adopting the type is what builds the constant at the right width.** The
 alternative, converting from the `i32` default, materializes the constant at 32
 bits first and widens what is left, which silently drops every bit above the low
 32 — `i64`'s maximum stored as `-1`, `u64`'s as `4294967295`, `i64`'s minimum as
-`0`. `typemgmt-success` pins the four cases that tell the two apart.
-
-**A float target is left to the conversion path**, because widening a literal to
-`f32`/`f64` changes its representation rather than its width. ⚠ **So a literal
-too wide for `i32` still loses its high bits on the way to a float**:
-`mut n f64 = 5000000000` yields `705032704.0` [differs].
+`0`, and `5000000000` as `705032704` on its way to an `i64` parameter or an
+`f64`. `typemgmt-success` pins the cases that tell the two apart, in every
+position a literal meets a type: initializer, assignment, argument, return value
+and struct field, for `i64`, `u64`, `f32` and `f64`.
 
 **`FlagUnkType` is also read by `iexpMatches`**, which returns `ConvSubtype` for
-an untyped integer literal against any number type — now reached only for a
-float target, since an integer target has already consumed the flag. It
-deliberately ignores subtype direction "for user convenience".
+an untyped integer literal against any number type. `iexpCoerce` adopts before
+it asks, so this answers only the callers that ask without coercing: overload
+resolution, struct field matching and the branch meet. It deliberately ignores
+subtype direction "for user convenience".
 
 ⚠ **Nothing asks whether the value fits the type it lands on.** `mut n u8 = 300`
 stores `44` and `mut n i32 = 3000000000` stores `-1294967296`, both silently

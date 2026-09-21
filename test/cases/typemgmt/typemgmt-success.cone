@@ -244,6 +244,34 @@ fn wantF64(n f64) f64 {
   n;
 }
 
+fn wantF32(n f32) f32 {
+  n;
+}
+
+// Each returns an unsuffixed literal too wide for i32, so the return value is
+// a position where the literal meets its type
+fn fillI64() i64 {
+  5000000000;
+}
+
+fn fillU64() u64 {
+  18446744073709551615;
+}
+
+fn fillF64() f64 {
+  5000000000;
+}
+
+fn fillF32() f32 {
+  5000000000;
+}
+
+// A struct literal's field is the last position where a literal meets its type
+struct Span {
+  pub big i64;
+  pub wide f64;
+}
+
 fn coercions() {
   // A narrower number widens into a wider one of the same kind, silently
   mut small i16 = 300;
@@ -279,6 +307,39 @@ fn coercions() {
   showU("literal-fills-u64", unsignedWidest);
   mut aboveI32 i64 = 5000000000;
   show("literal-above-i32-range", aboveI32);
+
+  // The width is adopted wherever the literal meets its type, not only in an
+  // initializer. A call's argument is the position that used to differ: it is
+  // type checked before its callee is resolved, so the parameter type reaches
+  // it by coercion, and the coercion converted from the 32-bit default.
+  show("literal-fills-i64-argument", wantI64(5000000000));
+  showU("literal-fills-u64-argument", wantU64(18446744073709551615));
+  show("literal-fills-i64-return", fillI64());
+  showU("literal-fills-u64-return", fillU64());
+  aboveI32 = 6000000000;
+  show("literal-fills-i64-assignment", aboveI32);
+  imm span = Span[5000000000, 5000000000];
+  show("literal-fills-i64-field", span.big);
+
+  // A float target is the same rule: the literal becomes a float of the whole
+  // value, not a float of its low 32 bits. Each is read back through i64 so the
+  // value printed is exact; 5000000000 is 9765625 * 2^9 and 6000000000 is
+  // 5859375 * 2^10, both of which f32 holds exactly.
+  mut asWideDouble f64 = 5000000000;
+  show("literal-fills-f64", i64[asWideDouble]);
+  mut asWideSingle f32 = 5000000000;
+  show("literal-fills-f32", i64[asWideSingle]);
+  asWideDouble = 6000000000;
+  show("literal-fills-f64-assignment", i64[asWideDouble]);
+  asWideSingle = 6000000000;
+  show("literal-fills-f32-assignment", i64[asWideSingle]);
+  show("literal-fills-f64-argument", i64[wantF64(5000000000)]);
+  show("literal-fills-f32-argument", i64[wantF32(5000000000)]);
+  show("literal-fills-f64-return", i64[fillF64()]);
+  show("literal-fills-f32-return", i64[fillF32()]);
+  show("literal-fills-f64-field", i64[span.wide]);
+  mut negativeDouble f64 = -5000000000;
+  show("literal-fills-f64-negative", i64[negativeDouble]);
 
   // A number coerces to Bool in a condition, by way of its 'isTrue' method
   mut n i32 = 3;

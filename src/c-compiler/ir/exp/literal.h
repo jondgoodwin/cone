@@ -58,8 +58,12 @@ INode *cloneFLitNode(CloneState *cstate, FLitNode *lit);
 // Name resolution of lit node
 void litNameRes(NameResState* pstate, IExpNode *node);
 
+// Give an untyped integer literal the number type it is wanted as.
+// Returns 1 when *nodep is now a literal of that type, 0 otherwise.
+int litAdoptNumberType(INode **nodep, INode *totype);
+
 // Type check lit node
-void litTypeCheck(TypeCheckState* pstate, IExpNode *node, INode *expectType);
+void litTypeCheck(TypeCheckState* pstate, INode **nodep, INode *expectType);
 
 SLitNode *newSLitNode(char *str, uint32_t strlen);
 
