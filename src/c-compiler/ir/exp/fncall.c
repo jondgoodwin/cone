@@ -255,6 +255,27 @@ void fnCallArrIndex(FnCallNode *node) {
     node->tag = ArrIndexTag;
 }
 
+// Is this the type of a borrowed reference, whose scope is a lifetime?
+static int fnCallIsBorrowType(INode *type) {
+    return (type->tag == RefTag || type->tag == ArrayRefTag) && ((RefNode*)type)->region == borrowRef;
+}
+
+// The narrowest lifetime among a call's borrowed-reference arguments, as the
+// highest scope number: 0 when no argument is a borrow. Without annotations
+// every borrowed reference in a signature shares one lifetime, and the only
+// lifetime the arguments have in common is the shortest (coneref/reflifefn.html).
+static uint16_t fnCallNarrowestBorrowScope(FnCallNode *node) {
+    uint16_t narrowest = 0;
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor(node->args, cnt, argsp)) {
+        INode *argtype = iexpGetTypeDcl(*argsp);
+        if (fnCallIsBorrowType(argtype) && ((RefNode*)argtype)->scope > narrowest)
+            narrowest = ((RefNode*)argtype)->scope;
+    }
+    return narrowest;
+}
+
 // At this point, we have a properly-lowered function call. objfn could be:
 // - nameuse to a function dcl
 // - an indirect ref/ptr to a function
@@ -301,6 +322,21 @@ void fnCallFinalizeArgs(FnCallNode *node) {
                 parmp++;
             }
         }
+    }
+
+    // A returned borrowed reference lives as long as the narrowest borrow the
+    // call was handed. The declared return type is one node shared by every
+    // call site, so the scope goes on a reference node of the call's own,
+    // exactly as fnCallArrIndex builds one for an element borrow; the lifetime
+    // checks in assignlvalrtype and returnFlowEscape then read it from there.
+    // With no borrowed argument the declaration's own global scope stands.
+    uint16_t narrowest = fnCallNarrowestBorrowScope(node);
+    INode *rettype = itypeGetTypeDcl(fnsig->rettype);
+    if (narrowest > 0 && fnCallIsBorrowType(rettype)) {
+        RefNode *retref = (RefNode*)rettype;
+        RefNode *callref = newRefNodeFull(rettype->tag, (INode*)node, borrowRef, retref->perm, retref->vtexp);
+        callref->scope = narrowest;
+        node->vtype = (INode*)callref;
     }
 }
 
@@ -995,6 +1031,31 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     }
 }
 
+// A '&mut &T' argument is a place the callee may store any other borrowed
+// reference it was handed, and without annotations it is free to: every
+// borrowed reference in the signature shares one lifetime (coneref/reflifefn.html,
+// "Mutable borrowed reference parameters"). So what that argument points at may
+// not outlive the narrowest borrow passed alongside it -- the same comparison
+// assignlvalrtype makes for the store the callee might write.
+static void fnCallFlowStoredBorrow(FnCallNode *node) {
+    uint16_t narrowest = fnCallNarrowestBorrowScope(node);
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor(node->args, cnt, argsp)) {
+        INode *argtype = iexpGetTypeDcl(*argsp);
+        if (argtype->tag != RefTag || ((RefNode*)argtype)->region != borrowRef
+            || !(permGetFlags(((RefNode*)argtype)->perm) & MayWrite))
+            continue;
+        if (!fnCallIsBorrowType(itypeGetTypeDcl(((RefNode*)argtype)->vtexp)))
+            continue;
+        if (((RefNode*)argtype)->scope < narrowest) {
+            errorMsgNode((INode*)node, ErrorCallEscape,
+                "Call could store a borrowed reference where it would outlive the value it points to");
+            return;
+        }
+    }
+}
+
 // Do data flow analysis for fncall node (only real function calls)
 void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     // Handle function call aliasing
@@ -1005,6 +1066,7 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
         flowLoadValue(fstate, argsp);
         flowHandleMoveOrCopy(argsp);  // Argument values are moved or copied
     }
+    fnCallFlowStoredBorrow(node);
 }
 
 // Perform data flow analysis on array index node

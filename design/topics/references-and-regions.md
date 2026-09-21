@@ -276,7 +276,8 @@ gap:
 | move-ness infection | `refAdoptInfections` | type check |
 | may not write through this reference | `assignlvalrtype`, `swapFlow` | **flow** |
 | a moved-out value may not be used | `nameuseFlow` | **flow** |
-| a borrow may not outlive what it points at | `assignlvalrtype`, `returnFlowEscape` | **flow**, at two sites only |
+| a borrow may not outlive what it points at | `assignlvalrtype`, `returnFlowEscape`, `fnCallFlowStoredBorrow` | **flow**, at three sites only |
+| a call's returned borrow lives as long as the narrowest borrow it was handed | `fnCallFinalizeArgs`, on a reference node of the call's own | type check |
 | aliasing of borrows | — | **nowhere** |
 | freezing a borrow's source | — | **nowhere** |
 
@@ -288,9 +289,10 @@ gap:
   semantics you did not ask for.
 - **`&mut T` is invariant.** Coming from a language where mutability implies
   more permissive subtyping, this is backwards.
-- **A borrow's lifetime is checked at two sites only.** Storing and returning.
-  Passing one as an argument, capturing it, or laundering it through a variable
-  are all unchecked — see [Safety](safety.md).
+- **A borrow's lifetime is checked at three sites only.** Storing, returning,
+  and passing one beside a `&mut &T` argument. Capturing it, storing it in a
+  field, or laundering it through a variable are all unchecked — see
+  [Safety](safety.md).
 - **The permission on a reference is not the permission on the binding.**
   `imm fixed = &mut target` is a writable target through an unrebindable name.
 - **`&[]x` on a non-array is legal** and yields a one-element slice.

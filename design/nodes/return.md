@@ -97,8 +97,8 @@ Two jobs, both in `blockFlow` and `flowScopeDealias`:
 returned borrowed reference may not point at a local.** Scope 0 is a global, 1 a
 parameter, 2+ a local, so the test is `region == borrowRef && scope > 1`,
 reported as `ErrorEscape`. A returned value tuple is checked element by element.
-[Flow Analysis](../phases/flow.md) owns the borrow-lifetime rule these two sites
-implement.
+[Flow Analysis](../phases/flow.md) owns the borrow-lifetime rule this site,
+`assignlvalrtype` and `fnCallFlowStoredBorrow` implement.
 
 ## Generation
 

@@ -47,8 +47,9 @@ void returnNameRes(NameResState *nstate, BreakRetNode *retnode) {
 }
 
 // A borrowed reference may not travel beyond the scope it was borrowed from.
-// assignlvalrtype enforces that between two variables; this enforces it at the
-// only other place a borrow can escape, the function's own return value.
+// assignlvalrtype enforces that between two variables and fnCallFlowStoredBorrow
+// at a call that could store one; this enforces it at the function's own
+// return value.
 //
 // Borrow scopes count outward from the value borrowed from: 0 is a global, 1 is
 // a parameter (parseFnSig stamps every parameter with scope 1), and 2 or more is

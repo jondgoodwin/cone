@@ -83,7 +83,11 @@ Put these first, because every one of them is load-bearing.
    written.
 2. **A lifetime is a `uint16_t` block-nesting depth on the borrow expression's
    type node.** Not a constraint variable, not region inference. 0 is global, 1
-   is a parameter, 2+ is a local. The rule is a numeric comparison at two sites.
+   is a parameter, 2+ is a local. The rule is a numeric comparison at three
+   sites. A call's result carries the narrowest scope among its borrowed
+   arguments, on a reference node `fnCallFinalizeArgs` builds for that call:
+   without annotation syntax every borrowed reference in a signature shares one
+   lifetime, and the shortest is the only one they have in common.
    `lifeMatches` exists and is called from nowhere.
 3. **Lifetime tracking does not survive a variable.**
    `mut r &i32; r = &local; return r` compiles clean: assignment does not carry
@@ -240,7 +244,7 @@ one, but each still needs the move and initialization check that walk makes.
 | Analysis | In flow? | Enforced | Not enforced |
 | --- | --- | --- | --- |
 | **Move / ownership** | yes | `ErrorMove` on use of a moved-out or uninitialized variable; move out of a global refused | field granularity — moving `p.x` deactivates all of `p`; conditional moves; loop-carried moves |
-| **Escape / lifetime** | representation in type check, enforcement here | storing a borrow into a longer-lived lval; returning a borrow of a local | a borrow laundered through a variable; anything across a function boundary — there is no lifetime annotation syntax; freezing a borrow's source |
+| **Escape / lifetime** | representation in type check, enforcement here | storing a borrow into a longer-lived lval; returning a borrow of a local; a borrow arriving through a call's result, which carries the narrowest argument borrow's scope; a `&mut &T` argument whose pointee would outlive another borrow passed with it | a borrow laundered through a variable; a borrow stored in a field or captured; distinguishing parameter lifetimes — there is no lifetime annotation syntax; freezing a borrow's source |
 | **De-aliasing / drops** | flow decides, generation executes | scope-exit release of `so`/`rc` refs and slices, and of drop-fn structs, from a jump down to the block it names | arrays of owning references; a variable moved out, or initialized, on only one path — see Hazards |
 | **Permission** | `MayWrite` and `MayRead` | `ErrorNoMut` on assignment and swap; `ErrorNoRead` on a read through a reference — a dereference, an index, or a field of a virtual reference | `MayAliasWrite`, `RaceSafe`, `IsLockless` are populated and read nowhere |
 | **Initialization** | yes | `ErrorMove` "has not been initialized" | "initialized on one branch" reads as initialized everywhere; the unused-variable warning in `flow.h`'s header does not exist |
@@ -261,6 +265,7 @@ Everything else about permissions is type check's: `permMatches` in
 | `ErrorBadFill` | `arrayLitFlow` | a fill may not repeat a move value |
 | `ErrorFillCount` | `arrayLitFlow` | fill count not constant, or too large |
 | `ErrorEscape` | `returnFlowEscape` | returned borrow outlives the local it points at |
+| `ErrorCallEscape` | `fnCallFlowStoredBorrow` | a `&mut &T` argument points at a place that outlives another borrow passed to the same call |
 
 `ErrorBadFill` and `ErrorFillCount` are deliberately distinct: the first is a
 language rule, the second an implementation limit that should disappear when a
@@ -336,6 +341,7 @@ the built-in permissions are zero-sized. See [Generation](generation.md),
 | `ir/exp/nameuse.c` | `nameuseFlow` | the only place the two flags are *diagnosed* on; both `ErrorMove` messages |
 | `ir/exp/borrow.c` | `borrowFlow` | **empty** |
 | `ir/stmt/return.c` | `returnFlowEscape` | `ErrorEscape` for a returned borrow of a local |
+| `ir/exp/fncall.c` | `fnCallFlowStoredBorrow` | `ErrorCallEscape` for a `&mut &T` argument the callee could store a narrower borrow through |
 | `ir/exp/arraylit.c` | `arrayLitFlow` | fill-form rules and the n / n-1 alias amount |
 | `ir/types/reference.c` | `refAdoptInfections` | where a reference type acquires `MoveType` |
 | `ir/types/region.c` | `isRegion`, `regionAllocTypeCheck` | region identity; `_alloc`/`init` validation |

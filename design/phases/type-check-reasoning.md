@@ -261,10 +261,15 @@ from the lval; check the requested permission with `permMatches`; build the
 `RefNode` carrying `borrowRef` as its region and the lval's scope.
 
 **The scope it records is checked by flow analysis, not here — and not at the
-borrow site either.** `borrowFlow` is an empty function. The two places a
-borrowed reference can outlive what it points at are storing it and returning
-it, and those are the two places checked, both during flow.
-[Flow Analysis](flow.md) owns that rule; do not restate it here.
+borrow site either.** `borrowFlow` is an empty function. A borrowed reference
+can outlive what it points at by being stored, returned, or handed to a call
+that stores it through a `&mut &T` parameter, and those are the places checked,
+all during flow. Type check's other contribution is the scope a call's result
+carries: `fnCallFinalizeArgs` types a call that returns a borrowed reference
+with a reference node of the call's own, whose scope is the narrowest among
+the borrowed arguments, because the declared return type is one node every
+call site shares. [Flow Analysis](flow.md) owns the rule; do not restate it
+here.
 
 ## 10. Tuples and multi-value assignment
 

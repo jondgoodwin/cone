@@ -51,10 +51,11 @@ most consequential thing this note settles.
 | read through a reference lacking `MayRead` | **yes** | `flowLoadThroughRef`, from `derefFlow`, `fnCallArrIndexFlow` and `fnCallFldAccessFlow` — a pointer carries no permission and is not asked |
 | a borrow stored into a longer-lived place | **yes** | `assignlvalrtype`, one site |
 | a borrow returned from a function | **yes** | `returnFlowEscape`, one site |
-| a borrow **passed as an argument** | **no** | `fnCallFlow` never looks at scope |
+| a borrow returned through a call | **yes** | `fnCallFinalizeArgs` types the call with the narrowest argument borrow's scope, which the two rows above then read |
+| a borrow passed beside a `&mut &T` argument the callee could store it through | **yes** | `fnCallFlowStoredBorrow`, one site |
 | a borrow **laundered through a variable** | **no** | assignment does not carry scope onto the variable's declared type |
 | a borrow **captured or stored in a field** | **no** | — |
-| a borrow across a function boundary | **no** | there is no lifetime annotation syntax to express it |
+| two parameter borrows with different lifetimes | **no** | there is no lifetime annotation syntax to express it; every borrow in a signature is taken to share one lifetime |
 | aliasing of borrows | **no** | `borrowFlow` is an empty function |
 | freezing a borrow's source | **no** | documented; never implemented |
 | array and slice bounds | **yes** | `genlBoundsCheck`, per dimension |
@@ -77,8 +78,8 @@ These look like working machinery in a grep and are inert.
 
 **2. A rule enforced at some sites and not others.** Borrow lifetime is the
 worst case: the scope is recorded correctly on every borrow, and checked at
-exactly two of the many places a reference can escape. The check that exists is
-correct, which makes the absence harder to notice.
+three of the many places a reference can escape. The checks that exist are
+correct, which makes the absences harder to notice.
 
 **3. A rule enforced on a summary rather than a path.** Initialization and move
 state live on the declaration and are never saved or restored, so they describe

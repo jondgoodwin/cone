@@ -1,0 +1,103 @@
+// A borrowed reference returned through a call lives as long as the narrowest
+// borrow the call was handed.
+//
+// ref-flow asserts the lifetime rule between two variables and ref-flow-return
+// at a function's own return; this file is the call site. A function's declared
+// return type is one node shared by every call, so it carries no scope of its
+// own, and a call used to be typed with it directly: 'same(&inner)' read as a
+// global reference, and storing or returning it past 'inner' compiled clean
+// while 'r = &inner' in the same shape was refused. coneref/reflifefn.html
+// gives the rule the compiler applies: without lifetime annotations, which have
+// no syntax, every borrowed reference in a signature shares one lifetime, so a
+// returned reference is understood to have the shortest lifetime among the
+// borrowed-reference arguments. fnCallFinalizeArgs puts that scope on a
+// reference node built for the call, where the two existing checks read it.
+//
+// Every diagnostic here is a flow diagnostic. Flow keeps going after one of its
+// own within a function, so the stores share one function; the returning case
+// has its own, because a function has one return.
+
+fn same(x &i32) &i32 { x; }
+fn pick(a &i32, b &i32) &i32 { a; }
+fn sameSlice(s &[]i32) &[]i32 { s; }
+fn refstore(dst &mut &i32, src &i32) { *dst = src; }
+
+mut G i32 = 7;
+fn fromGlobal() &i32 { &G; }
+
+struct S {
+  pub x i32;
+  pub fn get(self &) &i32 { &self.x; }
+}
+
+fn storesCallResults() {
+  imm outer = 0;
+  imm outerArr [2; i32] = [0, 0];
+  mut r &i32 = &outer;
+  mut slice &[]i32 = &[]outerArr;
+  {
+    imm inner = 1;
+    imm innerArr [2; i32] = [1, 2];
+    imm s = S[2];
+
+    // The call's result carries the argument borrow's scope, so the store is
+    // refused exactly as 'r = &inner' is in ref-flow
+    r = same(&inner);               //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
+
+    // ... and the scope survives a call nested in a call
+    r = same(same(&inner));         //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
+
+    // Two borrows of different scopes: the result takes the narrower, whichever
+    // parameter the body happens to return
+    r = pick(&outer, &inner);       //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
+
+    // A slice borrows exactly as a single reference does
+    slice = sameSlice(&[]innerArr); //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
+
+    // A method call is a call: the receiver borrow is its first argument
+    r = (&s).get();                 //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
+
+    // What is not refused, and what makes the above a lifetime rule rather than
+    // a refusal of calls: a borrow of a global keeps its global lifetime through
+    // a call, a call handed no borrow returns one of the declaration's own
+    // global scope, a borrow of the lval's own scope is fine, and so is holding
+    // the result inside the block it was borrowed in
+    r = same(&G);
+    r = fromGlobal();
+    r = same(&outer);
+    imm kept = same(&inner);
+  }
+}
+
+// Returning the call's result meets returnFlowEscape, as returning '&inner'
+// would
+fn returnsCallResult() &i32 {
+  imm inner = 1;
+  same(&inner);                     //~ ErrorEscape:7 "Returned borrowed reference outlives the local value it points to"
+}
+
+// The other half: a parameter's borrow passed straight through stays returnable
+fn returnsParameterThroughCall(p &i32) &i32 {
+  same(p);
+}
+
+// A '&mut &T' argument is a place the callee may store any other borrow it was
+// handed, and without annotations nothing says it will not. So what it points
+// at may not outlive the narrowest borrow passed alongside it: the store the
+// callee might write, checked at the call (coneref/reflifefn.html, "Mutable
+// borrowed reference parameters").
+fn storesThroughMutableParameter() {
+  imm i = 5;
+  mut a = &i;
+  {
+    imm b = 10;
+    mut c = &b;
+    refstore(&mut a, &b);           //~ ErrorCallEscape:13 "Call could store a borrowed reference"
+
+    // Storing a longer-lived borrow, or storing into a place as short-lived as
+    // the borrow, is what assignlvalrtype would let the callee write
+    refstore(&mut a, &i);
+    refstore(&mut c, &i);
+    refstore(&mut c, &b);
+  }
+}

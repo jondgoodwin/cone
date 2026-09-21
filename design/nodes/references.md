@@ -7,7 +7,7 @@ memory model.
 whether it is a type or a constructor. Name resolution decides by asking whether
 the operand is a type. Type check builds the *result* type, records a lifetime,
 and interns. Flow moves or copies an allocation's value and enforces the
-lifetime at two consumers. Generation lowers a plain reference to a bare
+lifetime at three consumers. Generation lowers a plain reference to a bare
 pointer and two others to fat pointers.
 
 *Provenance: read from source; the LLVM shapes and the allocation header were
@@ -220,11 +220,16 @@ refuses the read; `opaq` is the permission that fails it. `assignlvalrtype` and
 copying, comparing and passing a reference never read through it, so an `opaq`
 reference does all of those.
 
-**The `scope` a borrow recorded is enforced at two consumers, neither of them
+**The `scope` a borrow recorded is enforced at three consumers, none of them
 the borrow site**: `assignlvalrtype` when a borrow is stored into a
-longer-lived lval, and `returnFlowEscape` when one is returned. `fnCallArrIndex`
-propagates scope into a borrowed element's type. Nothing checks a borrow passed
-as an argument, stored in a field, or captured.
+longer-lived lval, `returnFlowEscape` when one is returned, and
+`fnCallFlowStoredBorrow` when one is passed to a call beside a `&mut &T`
+argument that points at a longer-lived place. Two sites propagate scope into a
+reference type they build: `fnCallArrIndex` into a borrowed element's, and
+`fnCallFinalizeArgs` into a call's result, which takes the narrowest scope among
+the borrowed arguments on a `RefNode` of the call's own — the declared return
+type is shared by every call site and cannot carry it. Nothing checks a borrow
+stored in a field or captured.
 
 ## Generation
 
@@ -263,7 +268,7 @@ paths call libc `free`.
 - **Coming from Rust:** `&mut T` is invariant and `&ro T` covariant; `uni` is
   not `&mut` but the *unique* permission, which is what makes owning references
   move; lifetimes are a block-nesting integer that is not part of type identity
-  and is checked at two sites; and there is no borrow checker.
+  and is checked at three sites; and there is no borrow checker.
 
 ## What lives elsewhere
 
