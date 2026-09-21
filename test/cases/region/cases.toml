@@ -45,11 +45,6 @@
 #   is all of it that can be provoked. A struct permission otherwise has
 #   undefined static meaning, because permGetFlags reads a PermTag node's flag
 #   word out of whatever it is handed.
-# - Fallible allocation, '?+rc-mut value'. The parser and name resolution lower
-#   it into Option, and then the compiler dies on an access violation before
-#   emitting anything. coneref/refallocref.html already says allocation error
-#   handling is the unimplemented part; an xfail here would record a crash
-#   rather than a defect in a feature that otherwise works.
 # - Array allocation, '+[]'. Array references and slices belong to collection.
 #   region-flow-fill is the one line of it here, and it is there for the count a
 #   fill literal asks for rather than for the array reference: it is the only
@@ -89,6 +84,13 @@
 # region-nested-alloc joined them: genlallocref's phi named a predecessor that the
 # inner allocation's own branches had already displaced, so it read the block back
 # from the builder instead.
+#
+# region-fallible-alloc is the '?+' form, which this file used to list as left
+# out because the compiler died generating it: genlallocref read the owning
+# reference's type out of the first field of the instantiated 'Some', which is
+# the tag the union gives every variant, and the reference is its second. The
+# scenario measures every spelling of the form and reaches the empty variant by
+# declaring a region whose 'alloc' returns null.
 #
 # No xfail remains. The last one was region-fill-count, and what it was waiting
 # on was not this group's: an array literal built as a constant array could not
@@ -143,6 +145,23 @@ tags = ["flow", "genllvm", "runtime"]
 name = "never-assigned-variables-not-released"
 target = "preir"
 excludes = ["call void @free", "add i64"]
+
+# The run is the claim: without the fix the compiler faults before emitting
+# anything. The check is the layout, which the run cannot see: an Option of an
+# owning reference takes the nullable-pointer shape union-nullable-ptr owns, so
+# the readers take a pointer to a bare pointer and no tag or wrapper struct is
+# emitted for the Option or either variant. Read before optimization, where the
+# readers still exist as definitions.
+[scenario.region-fallible-alloc]
+category = "run"
+description = "'?+region-perm value' yields an Option holding the owning reference, or empty when the region's alloc returns null"
+tags = ["nameres", "typecheck", "genllvm", "runtime"]
+
+[[scenario.region-fallible-alloc.check]]
+name = "option-of-owning-ref-is-a-bare-pointer"
+target = "preir"
+contains = ["@readRcMut(i32**", "@readSoMut(i32**", "@readNever(i32**"]
+excludes = ["%Option", "%Some", "%None"]
 
 [scenario.region-borrow-coerce]
 category = "compile"

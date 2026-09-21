@@ -145,7 +145,14 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
         assert(reftype->tag == StructTag && (allocatenode->flags & FlagQues) && "Should be Option type");
         StructNode *optionTrait = (StructNode*)reftype;
         StructNode *someStruct = (StructNode*)nodesGet(optionTrait->derived, 1);
-        reftype = (RefNode*)itypeGetTypeDcl(((IExpNode*)nodelistGet(&someStruct->fields, 0))->vtype);
+        // Some's first field is the tag the union gave every variant; the
+        // reference is the field it declared for itself.
+        INode **fldp;
+        uint32_t cnt;
+        for (nodelistFor(&someStruct->fields, cnt, fldp)) {
+            if (!((*fldp)->flags & IsTagField))
+                reftype = (RefNode*)itypeGetTypeDcl(((IExpNode*)*fldp)->vtype);
+        }
         assert(reftype->tag == RefTag && "Option type did not have reftype");
     }
     INode *region = itypeGetTypeDcl(reftype->region);

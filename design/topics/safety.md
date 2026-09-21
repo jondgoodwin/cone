@@ -62,7 +62,7 @@ most consequential thing this note settles.
 | raw pointer deref / arithmetic gated by `trust` | **no** | `trust` is not a keyword and has no parse rule |
 | allocation failure | **yes** | null test then `llvm.trap`, unless `?` asked for an `Option` |
 | thread-safety of a shared reference | **no** | `RaceSafe` is populated and read nowhere; `ThreadBound` is now infected correctly and nothing consumes it either |
-| release of an owning reference at scope exit | **partly** | leaks on a conditionally-moved variable, and for arrays of owning references |
+| release of an owning reference at scope exit | **partly** | leaks on a conditionally-moved variable, for arrays of owning references, and for an `Option` holding one (a `?+` allocation) |
 
 ## The four shapes the gaps take
 
