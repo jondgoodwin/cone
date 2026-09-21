@@ -277,7 +277,7 @@ gap:
 | may not write through this reference | `assignlvalrtype`, `swapFlow` | **flow** |
 | a moved-out value may not be used | `nameuseFlow` | **flow** |
 | a borrow may not outlive what it points at | `assignlvalrtype`, `returnFlowEscape`, `fnCallFlowStoredBorrow` | **flow**, at three sites only |
-| a call's returned borrow lives as long as the narrowest borrow it was handed | `fnCallFinalizeArgs`, on a reference node of the call's own | type check |
+| a call's returned borrow lives as long as the narrowest borrow it was handed | `fnCallFinalizeArgs`, on a reference node of the call's own — or on the borrowed elements of a tuple of its own, where the call returns several values | type check |
 | aliasing of borrows | — | **nowhere** |
 | freezing a borrow's source | — | **nowhere** |
 

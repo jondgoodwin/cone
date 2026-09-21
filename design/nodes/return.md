@@ -96,7 +96,10 @@ Two jobs, both in `blockFlow` and `flowScopeDealias`:
 `returnFlow` → `returnFlowEscape` enforces the one rule `return` owns: **a
 returned borrowed reference may not point at a local.** Scope 0 is a global, 1 a
 parameter, 2+ a local, so the test is `region == borrowRef && scope > 1`,
-reported as `ErrorEscape`. A returned value tuple is checked element by element.
+reported as `ErrorEscape`. A returned value tuple is checked element by element;
+where the several values arrive as one expression instead — a call returning a
+tuple — there are no element expressions to walk, so the elements of the tuple
+type `fnCallFinalizeArgs` built for that call are read in their place.
 [Flow Analysis](../phases/flow.md) owns the borrow-lifetime rule this site,
 `assignlvalrtype` and `fnCallFlowStoredBorrow` implement.
 

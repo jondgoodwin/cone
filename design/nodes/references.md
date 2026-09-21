@@ -231,7 +231,10 @@ argument that points at a longer-lived place. Two sites propagate scope into a
 reference type they build: `fnCallArrIndex` into a borrowed element's, and
 `fnCallFinalizeArgs` into a call's result, which takes the narrowest scope among
 the borrowed arguments on a `RefNode` of the call's own — the declared return
-type is shared by every call site and cannot carry it. A borrow the compiler
+type is shared by every call site and cannot carry it. A call returning several
+values gets a `TupleNode` of its own on the same terms, each borrowed element
+carrying that scope, because a multi-value assignment checks every element
+against its own lval. A borrow the compiler
 injects records its lval's scope where it is built (`borrowMutRef`,
 `borrowAuto`), so it reaches a call as the written borrow would; and
 `iexpGetLvalInfo` gives a dereferenced borrow expression or call result the

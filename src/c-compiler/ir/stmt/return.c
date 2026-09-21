@@ -67,7 +67,26 @@ static void returnFlowEscape(INode *exp) {
         return;
     }
     RefNode *reftype = (RefNode *)((IExpNode*)exp)->vtype;
-    if (reftype == NULL || (reftype->tag != RefTag && reftype->tag != ArrayRefTag))
+    if (reftype == NULL)
+        return;
+    // Several values arriving as one expression -- a call returning a tuple --
+    // have no element expressions to walk, so the lifetimes are read from the
+    // elements of the type fnCallFinalizeArgs built for that call
+    if (reftype->tag == TTupleTag) {
+        INode **elemp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode*)reftype)->elems, cnt, elemp)) {
+            RefNode *elemtype = (RefNode *)itypeGetTypeDcl(*elemp);
+            if ((elemtype->tag == RefTag || elemtype->tag == ArrayRefTag)
+                && elemtype->region == borrowRef && elemtype->scope > 1) {
+                errorMsgNode(exp, ErrorEscape,
+                    "Returned borrowed reference outlives the local value it points to");
+                return;
+            }
+        }
+        return;
+    }
+    if (reftype->tag != RefTag && reftype->tag != ArrayRefTag)
         return;
     if (reftype->region == borrowRef && reftype->scope > 1)
         errorMsgNode(exp, ErrorEscape,

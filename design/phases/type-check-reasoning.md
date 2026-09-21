@@ -269,8 +269,9 @@ all during flow. Type check's other contribution is the scope a call's result
 carries: `fnCallFinalizeArgs` types a call that returns a borrowed reference
 with a reference node of the call's own, whose scope is the narrowest among
 the borrowed arguments, because the declared return type is one node every
-call site shares. [Flow Analysis](flow.md) owns the rule; do not restate it
-here.
+call site shares. A call returning several values gets a tuple type of its own
+for the same reason, its borrowed elements carrying that scope.
+[Flow Analysis](flow.md) owns the rule; do not restate it here.
 
 ## 10. Tuples and multi-value assignment
 

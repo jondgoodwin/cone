@@ -51,7 +51,7 @@ most consequential thing this note settles.
 | read through a reference lacking `MayRead` | **yes** | `flowLoadThroughRef`, from `derefFlow`, `fnCallArrIndexFlow` and `fnCallFldAccessFlow` — a pointer carries no permission and is not asked |
 | a borrow stored into a longer-lived place | **yes** | `assignlvalrtype`, one site |
 | a borrow returned from a function | **yes** | `returnFlowEscape`, one site |
-| a borrow returned through a call | **yes** | `fnCallFinalizeArgs` types the call with the narrowest argument borrow's scope, which the two rows above then read |
+| a borrow returned through a call, singly or as one of several values | **yes** | `fnCallFinalizeArgs` types the call with the narrowest argument borrow's scope, on a reference node or on a tuple's borrowed elements, which the two rows above then read |
 | a borrow passed beside a `&mut &T` argument the callee could store it through | **yes** | `fnCallFlowStoredBorrow`, one site |
 | a borrow **laundered through a variable** | **no** | assignment does not carry scope onto the variable's declared type |
 | a borrow **captured or stored in a field** | **no** | — |

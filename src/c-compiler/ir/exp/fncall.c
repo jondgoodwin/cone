@@ -287,6 +287,39 @@ static uint16_t fnCallNarrowestBorrowScope(FnCallNode *node) {
     return narrowest;
 }
 
+// A copy of a returned borrowed reference's type belonging to this call site,
+// carrying the lifetime this call gives it. The declared return type is one
+// node shared by every call, so the scope cannot be written there.
+static INode *fnCallScopedBorrow(FnCallNode *node, INode *rettype, uint16_t scope) {
+    RefNode *retref = (RefNode*)rettype;
+    RefNode *callref = newRefNodeFull(rettype->tag, (INode*)node, borrowRef, retref->perm, retref->vtexp);
+    callref->scope = scope;
+    return (INode*)callref;
+}
+
+// Several returned values need the same per-call-site treatment element by
+// element, because a multi-value assignment checks each returned borrow against
+// the lifetime of its own lval. Elements that are not borrows are shared with
+// the declaration's tuple, which nothing writes a scope onto.
+static void fnCallScopeRetTuple(FnCallNode *node, TupleNode *rettuple, uint16_t scope) {
+    INode **elemp;
+    uint32_t cnt;
+    int anyborrow = 0;
+    for (nodesFor(rettuple->elems, cnt, elemp))
+        anyborrow |= fnCallIsBorrowType(itypeGetTypeDcl(*elemp));
+    if (!anyborrow)
+        return;
+    TupleNode *calltuple = newTupleNode(rettuple->elems->used);
+    calltuple->tag = TTupleTag;
+    copyNodeLex((INode*)calltuple, (INode*)node);
+    for (nodesFor(rettuple->elems, cnt, elemp)) {
+        INode *elemtype = itypeGetTypeDcl(*elemp);
+        nodesAdd(&calltuple->elems, fnCallIsBorrowType(elemtype)
+            ? fnCallScopedBorrow(node, elemtype, scope) : *elemp);
+    }
+    node->vtype = (INode*)calltuple;
+}
+
 // At this point, we have a properly-lowered function call. objfn could be:
 // - nameuse to a function dcl
 // - an indirect ref/ptr to a function
@@ -337,18 +370,19 @@ void fnCallFinalizeArgs(FnCallNode *node) {
 
     // A returned borrowed reference lives as long as the narrowest borrow the
     // call was handed. The declared return type is one node shared by every
-    // call site, so the scope goes on a reference node of the call's own,
-    // exactly as fnCallArrIndex builds one for an element borrow; the lifetime
-    // checks in assignlvalrtype and returnFlowEscape then read it from there.
+    // call site, so the scope goes on a type node of the call's own, exactly as
+    // fnCallArrIndex builds one for an element borrow; the lifetime checks in
+    // assignlvalrtype and returnFlowEscape then read it from there. A call
+    // returning several values gets a tuple of its own on the same terms.
     // With no borrowed argument the declaration's own global scope stands.
     uint16_t narrowest = fnCallNarrowestBorrowScope(node);
     INode *rettype = itypeGetTypeDcl(fnsig->rettype);
-    if (narrowest > 0 && fnCallIsBorrowType(rettype)) {
-        RefNode *retref = (RefNode*)rettype;
-        RefNode *callref = newRefNodeFull(rettype->tag, (INode*)node, borrowRef, retref->perm, retref->vtexp);
-        callref->scope = narrowest;
-        node->vtype = (INode*)callref;
-    }
+    if (narrowest == 0)
+        return;
+    if (fnCallIsBorrowType(rettype))
+        node->vtype = fnCallScopedBorrow(node, rettype, narrowest);
+    else if (rettype->tag == TTupleTag)
+        fnCallScopeRetTuple(node, (TupleNode*)rettype, narrowest);
 }
 
 // objfn is a function or a pointer to one. Make sure it is called correctly.
