@@ -167,9 +167,6 @@ interning, and constant merging is not in the pass list.
   bit *N*-1 repeats to the top), but `mut n i64 = 18446744073709551615` is
   indistinguishable from `mut n i64 = -1` and would have to pass. Deciding that
   one needs the parser to record that it negated.
-- **The lexer wraps a literal too big for 64 bits**, accumulating into a
-  `uint64_t` with no overflow test, so `99999999999999999999999` becomes
-  `200376420520689663` with no diagnostic.
 - **An array literal is not given the expected type.** `inodeTypeCheck`
   dispatches `arrayLitTypeCheck` without `expectType`, where the `BlockTag` and
   `IfTag` arms beside it pass it through. So the elements fold among themselves

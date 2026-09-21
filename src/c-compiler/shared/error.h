@@ -158,6 +158,9 @@ enum ErrorCode {
     // Name folding
     ErrorBadFold = 1081,        // A 'use' clause where none may be written, or naming what cannot fold
 
+    // Lexer
+    ErrorLitOverflow = 1082,    // An integer literal whose digits do not fit in 64 bits
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

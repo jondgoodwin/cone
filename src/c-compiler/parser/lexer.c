@@ -394,7 +394,9 @@ void lexScanNumber(char *srcp) {
     char *srcbeg;        // Pointer to the start of the token
     uint64_t base;        // Radix for integer (10 or 16)
     uint64_t intval;    // Calculated integer value for integer literal
+    uint64_t digit;     // Value of the digit being accumulated
     char isFloat;        // nonzero when number token is a float, 'e' when in exponent
+    char overflow;      // nonzero once the digits no longer fit in intval
 
     lex->tokp = srcbeg = srcp;
 
@@ -407,6 +409,7 @@ void lexScanNumber(char *srcp) {
 
     // Validate and process remaining numeric digits
     isFloat = '\0';
+    overflow = '\0';
     intval = 0;
     while (1) {
         // Only one exponent allowed
@@ -428,19 +431,24 @@ void lexScanNumber(char *srcp) {
         }
         // Extract a number digit value from the character
         if (*srcp>='0' && *srcp<='9')
-            intval = intval*base + *srcp++ - '0';
-        else if (*srcp=='_')
+            digit = *srcp++ - '0';
+        else if (*srcp=='_') {
             srcp++;
-        else if (base==16) {
-            if (*srcp>='A' && *srcp<='F')
-                intval = (intval<<4) + *srcp++ - 'A'+10;
-            else if (*srcp>='a' && *srcp<='f')
-                intval = (intval<<4) + *srcp++ - 'a'+10;
-            else
-                break;
+            continue;
         }
+        else if (base==16 && *srcp>='A' && *srcp<='F')
+            digit = *srcp++ - 'A'+10;
+        else if (base==16 && *srcp>='a' && *srcp<='f')
+            digit = *srcp++ - 'a'+10;
         else
             break;
+        // Accumulate the digit unless it would carry past 64 bits. The digits
+        // are still consumed so the token ends where it should, and an integer
+        // that overflowed is reported once, below, once its suffix is known.
+        if (intval > (UINT64_MAX - digit) / base)
+            overflow = '\1';
+        else if (!overflow)
+            intval = intval*base + digit;
     }
 
     // Process number's explicit type as part of the token
@@ -493,6 +501,8 @@ void lexScanNumber(char *srcp) {
         lex->toktype = FloatLitToken;
     }
     else {
+        if (overflow)
+            errorMsgLex(ErrorLitOverflow, "Integer literal '%.*s' does not fit in 64 bits", (int)(srcp - srcbeg), srcbeg);
         lex->val.uintlit = intval;
         lex->toktype = IntLitToken;
     }
