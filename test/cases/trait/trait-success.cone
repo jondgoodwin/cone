@@ -5,9 +5,11 @@
 // different paths through the compiler. A type may conform structurally, by
 // simply declaring what the trait requires and never naming it; or nominally,
 // with 'extends', which mixes the trait's fields into the type and inherits any
-// method the trait gave a body to. Only the nominal form gives '&Trait', a
-// plain reference to a base trait; both give '&<Trait', the fat pointer that
-// carries a vtable.
+// method the trait gave a body to. Both give '&<Trait', the fat pointer that
+// carries a vtable, and both can give '&Trait', the plain reference that reads
+// the trait's own fields out of the implementer's layout -- 'extends' by
+// construction, and a structural conformer when its own fields happen to begin
+// with the trait's, which is all a plain reference needs.
 //
 // Everything is printed, because a virtual call that compiles is not a virtual
 // call that reached the right implementation.
@@ -306,6 +308,112 @@ fn nominal() {
   show("virtual-field-written-through-imm-local", setLevelLocally());
 }
 
+// -------- composing more than one trait --------
+
+// 'extends' and 'mixin' are one mechanism, and neither is limited to one hop or
+// one trait: a trait may extend a trait, and a struct may mix in several. Both
+// shapes were refused until 21 Sept 2026, because every trait was given a
+// discriminant tag field and a type ended up with more than one of them.
+// reftraitvar.html says an open trait has no tag, so there is nothing for a
+// second trait to duplicate.
+
+// The bottom of a two-hop chain. It declares a field, so the layout the hops
+// build has something in it to find.
+trait Sensor {
+  pub id i32;
+
+  pub fn reading(self &) i32;
+}
+
+// The middle hop. It adds a requirement of its own and a default, so what
+// reaches an implementer comes from two different traits.
+trait Logger extends Sensor {
+  pub fn logged(self &) i32 {id * 3;}
+  pub fn tag(self &) i32;
+}
+
+// Probe takes Logger's default; Relay replaces it. Both must supply the
+// requirement Sensor declared two hops down.
+struct Probe extends Logger {
+  pub depth i32;
+
+  fn reading(self &) i32 {depth;}
+  fn tag(self &) i32 {1;}
+}
+
+struct Relay extends Logger {
+  pub gain i32;
+
+  fn reading(self &) i32 {gain * 2;}
+  fn logged(self &) i32 {gain + 100;}
+  fn tag(self &) i32 {2;}
+}
+
+// Dispatch through a virtual reference to each hop of the chain: the vtable a
+// call loads must hold the implementation whichever trait named the requirement.
+fn sensedBy(s &<Sensor) i32 {
+  s.reading();
+}
+
+fn loggedBy(l &<Logger) i32 {
+  l.logged();
+}
+
+// A plain reference to the bottom trait, which reads the field directly: the
+// chain has to leave Sensor's layout a prefix of the implementer's through both
+// hops, not just the last one.
+fn sensorId(s &Sensor) i32 {
+  s.id;
+}
+
+// Narrowing back to the concrete type from the bottom of the chain, which is
+// two hops from where the type named its base
+fn whichSensor(s &<Sensor) i32 {
+  match s {
+    case imm p &Probe {p.depth * 10;}
+    case imm r &Relay {r.gain * 20;}
+    else {0;}
+  }
+}
+
+// Two traits mixed into one struct. Neither declares a field, so neither adds
+// anything to Tally's layout -- cases.toml pins that as '%Tally = type { i32 }'.
+trait Named {
+  pub fn label(self &) i32;
+}
+
+trait Counted {
+  pub fn count(self &) i32;
+}
+
+struct Tally {
+  mixin Named;
+  mixin Counted;
+
+  pub n i32;
+
+  pub fn label(self &) i32 {n;}
+  pub fn count(self &) i32 {n + 1;}
+}
+
+fn composed() {
+  imm probe = Probe[7, 4];
+  imm relay = Relay[8, 5];
+
+  show("two-hop-vref-to-bottom-trait", sensedBy(&probe));
+  show("two-hop-vref-to-bottom-trait-other", sensedBy(&relay));
+  show("two-hop-vref-to-middle-trait-default", loggedBy(&probe));
+  show("two-hop-vref-to-middle-trait-override", loggedBy(&relay));
+  show("two-hop-plain-ref-reads-inherited-field", sensorId(&probe));
+  show("two-hop-plain-ref-other-type", sensorId(&relay));
+  show("two-hop-narrow-first-arm", whichSensor(&probe));
+  show("two-hop-narrow-second-arm", whichSensor(&relay));
+
+  imm tally = Tally[9];
+  show("two-mixins-first-trait", (&tally).label());
+  show("two-mixins-second-trait", (&tally).count());
+}
+
 // -------- a virtual reference as data --------
 
 // A virtual reference is an ordinary value: it can be a struct's field, and the
@@ -365,6 +473,7 @@ fn main() i32 {
   structural();
   parameterized();
   nominal();
+  composed();
   storedVirtualRefs();
   interactions();
   0i32;

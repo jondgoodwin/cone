@@ -451,12 +451,18 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     else
         parseEndOfStatement();
 
-    // If a trait that needs a tag field doesn't have one, insert default enum field as first field
-    if ((strnode->flags & (TraitType | HasTagField)) && !hasEnumFld) {
+    // The tag field belongs to the closed-variant machinery: it is the
+    // discriminant a match on a plain reference reads to pick the variant, and
+    // only a closed type -- a union, or a trait whose variants are declared
+    // inside it -- can assign each variant a value. An open trait's variants
+    // may be extended by another module, so there is no tag to synthesize:
+    // dispatch and narrowing go through a virtual reference instead
+    // (coneref/reftraitvar.html). One is inserted here unless the type wrote
+    // its own enum-typed field, which the walk above has already marked.
+    if ((strnode->flags & HasTagField) && !hasEnumFld) {
         FieldDclNode *fldnode = newFieldDclNode(anonName, (INode*)immPerm);
         fldnode->vtype = (INode*)newEnumNode();
-        if ((strnode->flags & TraitType) && strnode->basetrait == NULL)
-            fldnode->flags |= IsTagField;
+        fldnode->flags |= IsTagField;
         nodelistInsert(&strnode->fields, 0, (INode*)fldnode);
     }
 

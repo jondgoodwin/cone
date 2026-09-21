@@ -1,10 +1,11 @@
-// What 'extends' demands of the type that names a trait as its base, where the
-// demand is about types: a base that is not a trait, and a method requirement
-// the type meets with nothing or with the wrong signature. Every diagnostic is
-// reported against the struct declaration itself rather than the method that
-// is wrong, so each needs its own struct. A trait's field arriving under a name
-// the type already declares is caught earlier, while the type is name
-// resolved, and is in trait-nameres-inherit.
+// What composing a trait demands of the type that names it, where the demand is
+// about types: a base that is not a trait, a method requirement the type meets
+// with nothing or with the wrong signature, and a second discriminant arriving
+// from a second closed trait. Every diagnostic is reported against the struct
+// declaration itself rather than the member that is wrong, so each needs its own
+// struct. A trait's field arriving under a name the type already declares is
+// caught earlier, while the type is name resolved, and is in
+// trait-nameres-inherit.
 //
 // These are checked when the struct type is checked, which is the same pass
 // that checks function bodies -- but not the same pass that checks function
@@ -46,4 +47,29 @@ struct Mismatched extends Measured {  //~ ErrorInvType:8 "none of what it declar
   r i32;
 
   fn sizeScaled overload size(self &, scale i32) i32 {r * scale;}
+}
+
+// A discriminant belongs to one closed family. An open trait carries none, so a
+// type may extend a chain of them and mix in as many as it likes; a union or a
+// closed trait carries one, and mixing in two brings two into the same layout
+// with no variant number that could mean anything in either family.
+union Left {
+  pub l i32;
+
+  struct LeftOne { pub a i32; }
+  struct LeftTwo { pub b i32; }
+}
+
+union Right {
+  pub r i32;
+
+  struct RightOne { pub c i32; }
+  struct RightTwo { pub d i32; }
+}
+
+struct Both {  //~ ErrorInvType:1 "Empty enum type only allowed once in a base trait"
+  mixin Left;
+  mixin Right;
+
+  pub n i32;
 }

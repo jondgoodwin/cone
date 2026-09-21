@@ -200,7 +200,9 @@ discipline — unstructured concurrency being "similar to GOTO."
 - **`include` and `import` look alike and are not.**
 - **A mixin brings fields in at a position**, so adding one shifts every later
   field index, and positional type literals move with it.
-- **Two mixins can each bring a discriminant field**, and nothing rejects it.
+- **Two mixins of closed types each bring a discriminant field**, reported as a
+  second tag rather than as a composition that cannot work. An open trait
+  carries no discriminant, so any number of those compose.
 - **A use of a module's name answers `isTypeNode` true** — `nameUseGroup`'s
   fallthrough for every declaration that is not a value, a macro or a generic
   parameter, not because a module is a type.

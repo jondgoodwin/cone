@@ -135,15 +135,17 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   by the trait, so its symbols are spelled after it. For a generic trait it copies the
   trait's generic parameters into the variant and builds `basetrait` as
   `Trait[P1,P2,…]`.
-- **A tag field is synthesized at position 0** when
-  `flags & (TraitType | HasTagField)` — a two-bit mask, so **every trait gets
-  one, open or closed**, and every `extends` struct inherits it through mixin
-  expansion. That is why `%Box = { i8, i32, i32 }` for a struct extending a
-  trait declaring one `i32`. **The discriminant is marked `IsTagField` here** —
-  a base trait's first enum-typed field, synthesized or written — because a
-  variant copies the trait's fields as soon as it is name resolved, before the
-  trait is type checked; type check validates the mark and refuses any other
-  enum-typed field.
+- **A tag field is synthesized at position 0 only for a closed type** —
+  `flags & HasTagField`, a union or a trait whose variants are declared inside
+  it — and every variant inherits it through mixin expansion. An open trait's
+  variants may be extended by another module, so no value could be unique and
+  there is nothing to synthesize; `%Box = { i32, i32 }` for a struct extending a
+  trait declaring one `i32`, and composing several open traits costs nothing,
+  because there is no discriminant for a second one to duplicate. **The
+  discriminant is marked `IsTagField` here** — the synthesized field, or a base
+  trait's first enum-typed field where one is written — because a variant copies
+  the trait's fields as soon as it is name resolved, before the trait is type
+  checked; type check validates the mark and refuses any other enum-typed field.
 
 ## Name resolution
 
@@ -397,10 +399,10 @@ order — `genlallocref` hard-codes `derived[1]` as `Option`'s `Some`.
 - **A method of a type never gets that type's drop calls** — `structSetDropFn`
   runs after the method loop, so `dropfn` is still NULL while method bodies are
   checked and flow-analyzed.
-- **Multiple mixins produce multiple tag fields**, and no duplicate-name error
-  fires because `namespaceAdd` silently ignores `_`. A trait extending a trait
-  meets this on its own: it synthesizes a tag field and inherits its base's, so
-  the second is refused at type check.
+- **Mixing in two closed types brings two tag fields**, and no duplicate-name
+  error fires because `namespaceAdd` silently ignores `_`, so what reports it is
+  type check's "only once in a base trait". Open traits carry no tag, so a chain
+  of `extends` and any number of open `mixin`s meet nothing here.
 - **A member inherited from an instance of a generic trait, or folded from a
   field whose type is a generic's parameter, cannot be named bare.** The
   instance exists only when type check instantiates it, so its members join

@@ -170,6 +170,22 @@ contains = [
   'internal constant [2 x %"Scaler:Vtable"*] [',
 ]
 
+# Composing traits costs no storage. An open trait carries no discriminant, so a
+# chain of them contributes only the fields actually declared -- Sensor's 'id',
+# and nothing at all for Logger -- and two field-less traits mixed into one
+# struct leave it the width of its own field. A run cannot see this: every
+# printed number would be the same whatever sat in front of it, and what each
+# trait used to add was a constant zero byte nothing ever read.
+[[scenario.trait-success.check]]
+name = "composing-traits-adds-no-hidden-field"
+target = "preir"
+contains = [
+  "%Sensor = type { i32 }",
+  "%Probe = type { i32, i32 }",
+  "%Relay = type { i32, i32 }",
+  "%Tally = type { i32 }",
+]
+
 [scenario.trait-inherited-defaults]
 category = "compile"
 description = "Two types inheriting one trait default each get their own copy of it, spelled after the type"
@@ -208,7 +224,7 @@ contains = [
 ]
 
 # A plain reference to a trait is compiled with the trait's own layout, which is
-# the tag field plus the fields the trait declares, and is a prefix of every
+# the fields the trait declares and nothing else, and is a prefix of every
 # implementer. One function serves implementers of two different sizes, so any
 # implementer's type here would be wrong for the other -- and being the larger of
 # the two, '%Beta' would read past the end of an Alpha.
@@ -216,9 +232,9 @@ contains = [
 name = "a-trait-reference-takes-the-traits-own-layout"
 target = "llvmir"
 contains = [
-  "%Meter = type { i8, i32 }",
-  "%Alpha = type { i8, i32 }",
-  "%Beta = type { i8, i32, i32 }",
+  "%Meter = type { i32 }",
+  "%Alpha = type { i32 }",
+  "%Beta = type { i32, i32 }",
   "define internal i32 @baseLevel(%Meter* %0)",
 ]
 excludes = [
@@ -311,9 +327,9 @@ diagnostics = 3
 
 [scenario.trait-typecheck-conform]
 category = "reject"
-description = "Types whose declarations do not satisfy the trait they extend"
+description = "Types whose declarations do not satisfy the trait they extend or mix in"
 tags = ["typecheck"]
-diagnostics = 3
+diagnostics = 4
 
 [scenario.trait-typecheck-vref]
 category = "reject"
