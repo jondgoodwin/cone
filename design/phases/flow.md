@@ -135,11 +135,18 @@ re-entrantly — it never descends into a callee. `VarFlowInfo.flags` and
 ## 4. Moves and counting
 
 **Move-ness is a type property, derived not declared.** `iexpIsMove` is
-`vtype`'s `MoveType` flag and nothing else. A type acquires it from `@move`, a
-finalizer, a move-typed field or element, and — for references —
-`refAdoptInfections`: **a reference is a move type when its permission lacks
-`MayAlias` or its region is itself a move type.** That single sentence is why
-`+rc x` moves while `+rc-mut x` copies, on the same region.
+`vtype`'s `MoveType` flag and nothing else — except for a tuple type, which has
+no declaration to carry a flag, so `itypeIsMove` asks its elements and answers
+yes if any of them does. A type acquires it from `@move`, a finalizer, a
+move-typed field or array element, a move-typed tuple element, and — for
+references — `refAdoptInfections`: **a reference is a move type when its
+permission lacks `MayAlias` or its region is itself a move type.** That single
+sentence is why `+rc x` moves while `+rc-mut x` copies, on the same region.
+
+A tuple literal has no storage of its own, so `flowHandleMove` on one
+deactivates the source of each element that is itself a move value and leaves
+a copyable element's alone; it is the `VTupleTag` arm beside the field, index
+and dereference arms that walk inwards to the variable.
 
 **The count counts holders.** From the ownership work:
 
@@ -302,7 +309,7 @@ the built-in permissions are zero-sized. See [Generation](generation.md),
 | `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the only entry point; the per-function error-delta gate |
 | `ir/flow.c` | `flowLoadValue` | the walk's spine — tag dispatch for a value being read |
 | | `flowHandleMoveOrCopy` | move vs. alias, for a value going to a new holder |
-| | `flowHandleMove` | deactivate the source; refuse a move out of a global |
+| | `flowHandleMove` | deactivate the source — each move-typed element's, for a tuple literal; refuse a move out of a global |
 | | `flowIsLvalRead` | the temporary-vs-lvalue test that makes counting correct |
 | | `flowInjectRefCountAmt` | wrap a counted reference in a `RefCountNode` |
 | | `flowScopePush`, `flowScopePop`, `flowAddVar` | the variable stack |

@@ -31,6 +31,19 @@ void flowHandleMove(INode *node) {
         flowHandleMove(((StarNode*)node)->vtexp);
         break;
 
+    // A tuple literal has no storage of its own: its sources are its elements,
+    // and only a move-typed element is moved out of, the rest are copied
+    case VTupleTag:
+    {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode*)node)->elems, cnt, nodesp)) {
+            if (iexpIsMove(*nodesp))
+                flowHandleMove(*nodesp);
+        }
+        break;
+    }
+
     // For any other node, no source variable to mark as moved
     default:
         break;

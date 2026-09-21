@@ -450,7 +450,19 @@ int itypeIsZeroSize(INode *type) {
 
 // Return true if type implements move semantics
 int itypeIsMove(INode *type) {
-    return itypeGetTypeDcl(type)->flags & MoveType;
+    INode *dcltype = itypeGetTypeDcl(type);
+    // A tuple is like a struct: it moves when any of its elements does. It has
+    // no declaration to carry the flag, so the question is asked of its elements.
+    if (dcltype->tag == TTupleTag) {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode*)dcltype)->elems, cnt, nodesp)) {
+            if (itypeIsMove(*nodesp))
+                return 1;
+        }
+        return 0;
+    }
+    return dcltype->flags & MoveType;
 }
 
 // Return true if this is an instantiation of a generic type, such as 'Box[i64]'.
