@@ -110,6 +110,13 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
 
 }
 
+// Is an lval operator's receiver already a reference? Then it is passed as it
+// is, the way a named method call takes a reference receiver, rather than
+// borrowed again into a reference to a reference.
+static int fnCallIsRefReceiver(INode *objtype) {
+    return objtype->tag == RefTag || objtype->tag == VirtRefTag || objtype->tag == ArrayRefTag;
+}
+
 // Is this '<-' applied to a value tuple, which lowers to one application per
 // element rather than one call taking a tuple?
 static int fnCallIsAppendTuple(FnCallNode *node) {
@@ -130,11 +137,15 @@ static void fnCallLowerAppendTuple(TypeCheckState *pstate, FnCallNode **nodep) {
     // The receiver is analyzed first, because its type is what the borrow needs
     inodeTypeCheckAny(pstate, &node->objfn);
 
-    // Create block and start it with a variable that mutably borrows address of append receiver
+    // Create block and start it with a variable that mutably borrows address of append receiver.
+    // A receiver that is already a reference is held as it is, so its permission,
+    // not the binding's, is what each application is checked against.
     INode *lval = node->objfn;
     BlockNode *blk = newBlockNode();
     inodeLexCopy((INode*)blk, (INode*)node);
-    borrowMutRef(&lval, iexpGetTypeDcl(node->objfn), (INode*)mutPerm);
+    INode *lvaltype = iexpGetTypeDcl(node->objfn);
+    if (!fnCallIsRefReceiver(lvaltype))
+        borrowMutRef(&lval, lvaltype, (INode*)mutPerm);
     INode *lvalvar = newNameUseAndDcl(&blk->stmts, lval, pstate->scope + 1);
 
     // Use dereferenced name as receiver for sequence of appends
@@ -900,9 +911,11 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             return;
         }
 
-        // Turn objfn into &mut objfn
-        borrowMutRef(&node->objfn, objtype, newPermUseNode(mutPerm));
-        objtype = iexpGetTypeDcl(node->objfn);
+        // Turn objfn into &mut objfn, unless it already is a reference
+        if (!fnCallIsRefReceiver(objtype)) {
+            borrowMutRef(&node->objfn, objtype, newPermUseNode(mutPerm));
+            objtype = iexpGetTypeDcl(node->objfn);
+        }
     }
 
     // Dispatch for correct handling based on the type of the object

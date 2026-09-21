@@ -34,9 +34,14 @@ void borrowMutRef(INode **nodep, INode* type, INode *perm) {
     // Verify lval is mutable
     INode *lvalperm = (INode*)immPerm;
     uint16_t scope = 0;
-    iexpGetLvalInfo(node, &lvalperm, &scope);
-    if (!permMatches(perm, lvalperm))
-        errorMsgNode((INode *)node, ErrorBadPerm, "Cannot borrow mutable reference to this.");
+    INode *lvalvar = iexpGetLvalInfo(node, &lvalperm, &scope);
+    if (!permMatches(perm, lvalperm)) {
+        if (lvalvar && lvalvar->tag == VarDclTag)
+            errorMsgNode((INode *)node, ErrorBadPerm, "Cannot borrow a mutable reference to `%s`, which is not mutable",
+                &((VarDclNode *)lvalvar)->namesym->namestr);
+        else
+            errorMsgNode((INode *)node, ErrorBadPerm, "Cannot borrow a mutable reference to a value that is not mutable");
+    }
 
     // The lval's scope is the borrow's lifetime, as borrowTypeCheck records it
     // for a borrow written in source. This node is never type checked, so

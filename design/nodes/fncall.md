@@ -104,7 +104,12 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
   `self.method`, synthesizing a resolved `self` from parameter 0.
 - **An overload set** → `fnCallLowerOverloadFn` picks the concrete candidate.
 - **`FlagLvalOp`** → borrow the receiver as `&mut`, or hand an operator-assign
-  on a method type to `fnCallOpAssgn`.
+  on a method type to `fnCallOpAssgn`. A receiver that is already a reference
+  (`fnCallIsRefReceiver`) is passed as it is, exactly as the reference arm of
+  stage 3 takes a named method's receiver: its own permission is what candidate
+  selection checks, not the permission of the binding that holds it. The `<-`
+  tuple lowering holds such a receiver in its temporary unborrowed for the same
+  reason.
 
 **Stage 3 — dispatch on the receiver's type tag.**
 
