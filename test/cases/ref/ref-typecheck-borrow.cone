@@ -67,3 +67,29 @@ fn derefFunctionRef() {
   imm f = &twice;
   imm g = *f;            //~ ErrorNoSize:7 "a function signature is not a value at all"
 }
+
+// An inline function has no code of its own: its body is copied into each
+// caller and no symbol is emitted, so there is nothing for a reference to
+// point at. The refusal is the same wherever the borrow is written -- an
+// initializer, an argument, a return value, or an anonymous 'inline' function
+// borrowed where it is written. Passing a bare 'incr' where a reference is
+// expected is refused already, for any function: a name is never auto-borrowed.
+fn incr(n i32) i32 inline { n + 1; }
+fn applyTo(n i32, f &fn(n i32) i32) i32 { f(n); }
+typedef Incr &fn(n i32) i32;
+
+fn borrowInlineInit() {
+  imm r = &incr;         //~ ErrorInlineRef:12 "May not borrow a reference to an inline function"
+}
+
+fn borrowInlineArg() i32 {
+  applyTo(3, &incr);     //~ ErrorInlineRef:15
+}
+
+fn borrowInlineReturn() Incr {
+  &incr;                 //~ ErrorInlineRef:4
+}
+
+fn borrowInlineAnon() {
+  imm r = &fn(n i32) i32 inline { n + 1; };  //~ ErrorInlineRef:12
+}

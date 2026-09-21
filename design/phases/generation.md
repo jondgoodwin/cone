@@ -338,7 +338,9 @@ Short-circuit `and`/`or` are two blocks and a 2-way `i1` phi. `not` is
 **`FlagInline` functions are inlined by the Cone generator, not by LLVM.** They
 get no symbol at all: their parameters become allocas at the call site and their
 body is generated inline. This is how the region allocator becomes a direct
-`malloc` call at each allocation.
+`malloc` call at each allocation. Having no symbol, one cannot be borrowed:
+`borrowTypeCheck` refuses `&name` on an inline function (`ErrorInlineRef`), so
+`genlAddr`'s function arm never meets a declaration without an `llvmvar`.
 
 **`llvm.trap` is emitted as a call, not a terminator.** Both panic sites —
 allocation failure and bounds check — rely on the block falling through and

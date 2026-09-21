@@ -164,6 +164,17 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
         return;
     }
 
+    // An inline function has no code of its own: generation copies its body
+    // into each caller and emits no symbol, so a reference to it would point at
+    // nothing. An anonymous 'inline' function arrives the same way, as a name
+    // use of the lifted declaration. The reference type is still built below,
+    // so the rest of the function type checks without follow-on noise.
+    if (nameUseNames(node->vtexp, FnDclTag)
+        && (nameUseGetDcl((NameUseNode*)node->vtexp)->flags & FlagInline)) {
+        errorMsgNode(node->vtexp, ErrorInlineRef,
+            "May not borrow a reference to an inline function. Its body is copied into each caller, so it has no code of its own to point at.");
+    }
+
     // Where '&[]value' dispatches to the value's own '&[]' method, the receiver
     // that method wants is a plain borrow of the value. Retag to build exactly
     // that, so the lval, permission and lifetime checks below are the ones a

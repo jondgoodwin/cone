@@ -833,6 +833,8 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
     // module scope and reached the same way, so no bare FnDclNode arrives here.
     // The one that used to be here called genlFn, which is not idempotent and
     // would have appended a second entry block to an already-generated function.
+    // An inline function has no llvmvar, and never arrives: borrowTypeCheck
+    // refuses a borrow of one (ErrorInlineRef).
     if (isNameUseNode(lval) && isExpNode(lval)) {
         INode *dclnode = ((NameUseNode *)lval)->dclnode;
         if (dclnode->tag == FnDclTag)

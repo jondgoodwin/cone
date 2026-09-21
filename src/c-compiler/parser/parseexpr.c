@@ -300,6 +300,10 @@ INode *parseAmper(ParseState *parse) {
             nodesAdd(&parse->mod->nodes, (INode*)fndcl);
             dclInfoJoin((INode*)fndcl, (INode*)parse->mod);
             NameUseNode *fnname = newNameUseNode(anonName);
+            // The name use is built after the whole function was parsed, so
+            // it would otherwise point at the token after the body. Anything
+            // reported on the use should point at the function it names.
+            inodeLexCopy((INode*)fnname, (INode*)fndcl);
             fnname->dclnode = (INode*)fndcl;
             fnname->vtype = fndcl->vtype;
             anode->vtexp = (INode*)fnname;

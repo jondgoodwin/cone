@@ -136,7 +136,12 @@ own pointee, which is what makes two checks cover all of them.
 In order: re-associate `&v[i]` into `(&v)[i]` when the operand is an index, so a
 type's own `` `&[]` `` method receives the borrowed receiver; check the operand;
 **refuse a temporary** with its own message rather than "must be lval", because
-every operand a borrow refuses is refused for that one reason; retag a
+every operand a borrow refuses is refused for that one reason; **refuse an
+inline function** (`ErrorInlineRef`), which generation gives no symbol, so a
+reference to it would point at nothing — the anonymous `&fn(…) inline {…}`
+form arrives as a name use of the lifted declaration and is refused the same
+way, and the reference type is still built so nothing downstream reports it
+again; retag a
 whole-value `&[]` that dispatches to a method so the checks below are the ones a
 hand-written `&mut value` gets; auto-deref a suffixed borrow through a
 reference; extract lval, permission and scope with `iexpGetLvalInfo`; infer the
