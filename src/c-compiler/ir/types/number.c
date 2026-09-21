@@ -14,30 +14,11 @@ INode *cloneNbrNode(CloneState *cstate, NbrNode *node) {
     return (INode *)newnode;
 }
 
-// Serialize a numeric literal node
+// Serialize a number type as its name. Every number type is declared with one
+// (stdNbrInit), so this covers usize and isize, which a list of the fixed-width
+// types left printing as nothing.
 void nbrTypePrint(NbrNode *node) {
-    if (node == i8Type)
-        inodeFprint("i8");
-    else if (node == i16Type)
-        inodeFprint("i16");
-    else if (node == i32Type)
-        inodeFprint("i32");
-    else if (node == i64Type)
-        inodeFprint("i64");
-    else if (node == u8Type)
-        inodeFprint("u8");
-    else if (node == u16Type)
-        inodeFprint("u16");
-    else if (node == u32Type)
-        inodeFprint("u32");
-    else if (node == u64Type)
-        inodeFprint("u64");
-    else if (node == f32Type)
-        inodeFprint("f32");
-    else if (node == f64Type)
-        inodeFprint("f64");
-    else if (node == boolType)
-        inodeFprint("Bool");
+    inodeFprint("%s", &node->namesym->namestr);
 }
 
 // Is a number-typed node

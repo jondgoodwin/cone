@@ -7,6 +7,8 @@
 
 #include "../ir.h"
 
+#include <inttypes.h>
+
 // Create a new nil literal node
 NilLitNode *newNilLitNode() {
     NilLitNode *nil;
@@ -71,12 +73,20 @@ INode *cloneULitNode(CloneState *cstate, ULitNode *lit) {
     return (INode *)newlit;
 }
 
-// Serialize an Unsigned literal
+// Serialize an integer literal. The value is held unsigned whatever its type,
+// so it is printed by the signedness of the type it was built with, at the
+// full 64 bits: 'long' is 32 bits on Windows, and '%ld' printed 5000000000 as
+// 705032704 and u64's maximum as -1. The type may still be a name use, so it
+// is resolved before its width or signedness is read.
 void ulitPrint(ULitNode *lit) {
-    if (((NbrNode*)lit->vtype)->bits == 1)
+    INode *type = itypeGetTypeDcl(lit->vtype);
+    if ((type->tag == IntNbrTag || type->tag == UintNbrTag) && ((NbrNode*)type)->bits == 1)
         inodeFprint(lit->uintlit == 1 ? "true" : "false");
     else {
-        inodeFprint("%ld", lit->uintlit);
+        if (type->tag == UintNbrTag)
+            inodeFprint("%" PRIu64, lit->uintlit);
+        else
+            inodeFprint("%" PRId64, (int64_t)lit->uintlit);
         inodePrintNode(lit->vtype);
     }
 }

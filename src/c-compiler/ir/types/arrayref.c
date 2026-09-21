@@ -18,6 +18,18 @@ void arrayRefPrint(RefNode *node) {
     inodeFprint(")");
 }
 
+// Serialize a dereferenced array reference: the slice itself, so the same
+// three parts as the reference without its '&'
+void arrayDerefPrint(RefNode *node) {
+    inodeFprint("[](");
+    inodePrintNode(node->region);
+    inodeFprint(" ");
+    inodePrintNode((INode*)node->perm);
+    inodeFprint(" ");
+    inodePrintNode(node->vtexp);
+    inodeFprint(")");
+}
+
 // Name resolution of an array reference node
 void arrayRefNameRes(NameResState *pstate, RefNode *node) {
     inodeNameRes(pstate, &node->region);

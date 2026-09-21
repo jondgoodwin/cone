@@ -142,6 +142,8 @@ void inodePrintNode(INode *node) {
         refPrint((RefNode *)node); break;
     case ArrayRefTag:
         arrayRefPrint((RefNode *)node); break;
+    case ArrayDerefTag:
+        arrayDerefPrint((RefNode *)node); break;
     case PtrTag:
         ptrPrint((StarNode *)node); break;
     case StructTag:
@@ -149,6 +151,7 @@ void inodePrintNode(INode *node) {
     case EnumTag:
         enumPrint((EnumNode *)node); break;
     case ArrayTag:
+    case ArrayLitTag:
         arrayPrint((ArrayNode *)node); break;
     case IntNbrTag: case UintNbrTag: case FloatNbrTag:
         nbrTypePrint((NbrNode *)node); break;
@@ -156,6 +159,8 @@ void inodePrintNode(INode *node) {
         permPrint((PermNode *)node); break;
     case LifetimeTag:
         lifePrint((LifetimeNode *)node); break;
+    case BorrowRegTag:
+        inodeFprint("borrow"); break;
     case TTupleTag:
         ttuplePrint((TupleNode *)node); break;
     case AbsenceTag:

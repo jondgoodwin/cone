@@ -178,8 +178,6 @@ interning, and constant merging is not in the pass list.
   and the result is matched against the declared type afterward rather than
   coerced to it — which is why `imm a [4; u8] = [4, 10, 12, 40]` needs the `u8`
   suffix on every element, and `imm a [3; i64] = [1, 2, 3]` is refused.
-- **`ArrayLitTag` has no arm in `inodePrintNode`**, so an array literal
-  serializes as `**** UNKNOWN NODE ****` in an `--ir` dump.
 - **`TypeLitTag` has no arm in `inodeTypeCheck`**, so it falls to the default,
   which reports `ErrorUnreachable` and stops. `typeLitNameRes` *is* dispatched,
   so an already-retagged literal in a cloned generic body can be name-resolved

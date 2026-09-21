@@ -11,6 +11,9 @@
 // Serialize an array reference type
 void arrayRefPrint(RefNode *node);
 
+// Serialize a dereferenced array reference (the slice itself)
+void arrayDerefPrint(RefNode *node);
+
 // Name resolution of an array reference node
 void arrayRefNameRes(NameResState *pstate, RefNode *node);
 
