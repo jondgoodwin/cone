@@ -1008,13 +1008,17 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
 }
 
 // Perform data flow analysis on array index node
+// A reference to a fixed-size array and a slice are indexed without a
+// dereference being injected, so the element is read through the reference here
 void fnCallArrIndexFlow(FlowState *fstate, FnCallNode **node) {
-    flowLoadValue(fstate, &(*node)->objfn);
+    flowLoadThroughRef(fstate, &(*node)->objfn);
     flowLoadValue(fstate, &nodesGet((*node)->args, 0));
 }
 
 // Perform data flow analysis on field access node
+// A plain reference had a dereference injected, which derefFlow reads through;
+// a virtual reference did not, so the field is read through it here
 void fnCallFldAccessFlow(FlowState *fstate, FnCallNode **node) {
-    flowLoadValue(fstate, &(*node)->objfn);
+    flowLoadThroughRef(fstate, &(*node)->objfn);
 }
 

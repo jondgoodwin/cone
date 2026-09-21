@@ -226,7 +226,7 @@ one, but each still needs the move and initialization check that walk makes.
 | **Move / ownership** | yes | `ErrorMove` on use of a moved-out or uninitialized variable; move out of a global refused | field granularity — moving `p.x` deactivates all of `p`; conditional moves; loop-carried moves |
 | **Escape / lifetime** | representation in type check, enforcement here | storing a borrow into a longer-lived lval; returning a borrow of a local | a borrow laundered through a variable; anything across a function boundary — there is no lifetime annotation syntax; freezing a borrow's source |
 | **De-aliasing / drops** | flow decides, generation executes | scope-exit release of `so`/`rc` refs and drop-fn structs, from a jump down to the block it names | arrays of owning references; a variable moved out, or initialized, on only one path — see Hazards |
-| **Permission** | `MayWrite` only | `ErrorNoMut` on assignment and swap | `MayRead` is never consulted as an access check anywhere; `MayAliasWrite`, `RaceSafe`, `IsLockless` are populated and read nowhere |
+| **Permission** | `MayWrite` and `MayRead` | `ErrorNoMut` on assignment and swap; `ErrorNoRead` on a read through a reference — a dereference, an index, or a field of a virtual reference | `MayAliasWrite`, `RaceSafe`, `IsLockless` are populated and read nowhere |
 | **Initialization** | yes | `ErrorMove` "has not been initialized" | "initialized on one branch" reads as initialized everywhere; the unused-variable warning in `flow.h`'s header does not exist |
 | **Array fill rules** | yes | `ErrorBadFill` for a repeated move value; `ErrorFillCount` for a non-constant count | — |
 
@@ -240,6 +240,7 @@ Everything else about permissions is type check's: `permMatches` in
 | `ErrorInvType` | `flowHandleMove` | move out of a global variable |
 | `ErrorInvType` | `assignlvalrtype` | lval outlives the borrowed reference stored into it |
 | `ErrorNoMut` | `assignlvalrtype`, `swapFlow` | no write permission |
+| `ErrorNoRead` | `flowLoadThroughRef` | no read permission on the reference a dereference, an index or a virtual-reference field reads through |
 | `ErrorMove` | `nameuseFlow` | uninitialized, or moved out |
 | `ErrorBadFill` | `arrayLitFlow` | a fill may not repeat a move value |
 | `ErrorFillCount` | `arrayLitFlow` | fill count not constant, or too large |
@@ -308,6 +309,7 @@ the built-in permissions are zero-sized. See [Generation](generation.md),
 | --- | --- | --- |
 | `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the only entry point; the per-function error-delta gate |
 | `ir/flow.c` | `flowLoadValue` | the walk's spine — tag dispatch for a value being read |
+| | `flowLoadThroughRef` | `MayRead` on the reference a value is read through; called from `derefFlow`, `fnCallArrIndexFlow` and `fnCallFldAccessFlow` |
 | | `flowHandleMoveOrCopy` | move vs. alias, for a value going to a new holder |
 | | `flowHandleMove` | deactivate the source — each move-typed element's, for a tuple literal; refuse a move out of a global |
 | | `flowIsLvalRead` | the temporary-vs-lvalue test that makes counting correct |

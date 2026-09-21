@@ -48,7 +48,7 @@ most consequential thing this note settles.
 | move out of a global | **yes** | `flowHandleMove` |
 | write through a read-only reference | **yes** | `assignlvalrtype`, `swapFlow` — `MayWrite` only |
 | write through an `imm` *field* | **yes** | `iexpGetLvalInfo`, taking the minimum of the field's permission and its container's |
-| **read** through a reference lacking `MayRead` | **no** | `MayRead` is never consulted as an access check anywhere |
+| read through a reference lacking `MayRead` | **yes** | `flowLoadThroughRef`, from `derefFlow`, `fnCallArrIndexFlow` and `fnCallFldAccessFlow` — a pointer carries no permission and is not asked |
 | a borrow stored into a longer-lived place | **yes** | `assignlvalrtype`, one site |
 | a borrow returned from a function | **yes** | `returnFlowEscape`, one site |
 | a borrow **passed as an argument** | **no** | `fnCallFlow` never looks at scope |

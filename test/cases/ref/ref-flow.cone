@@ -1,4 +1,5 @@
-// What a reference is allowed to write, and how long it is allowed to live.
+// What a reference is allowed to read and write, and how long it is allowed to
+// live.
 //
 // These are data-flow diagnostics, and data flow runs on a function only when
 // that function's own type check raised nothing (fnDclTypeCheck compares the
@@ -46,4 +47,34 @@ fn writesAndLifetimes(readOnly &i32) {
 fn writesThroughUninitialized() {
   mut p &mut i32;
   *p = 5;                 //~ ErrorMove:4 "has not been initialized"
+}
+
+// Reading through a reference is governed by the reference's permission just
+// as writing is, and 'opaq' grants neither. Every spelling of a read through
+// one is refused, and the diagnostic points at the reference rather than at the
+// '*', '.' or '[', because the reference is what lacks the permission. Holding,
+// copying, comparing and passing an '&opaq' stay allowed -- that is what it is
+// for -- and ref-success does all four.
+struct Point {
+  pub x i32;
+  pub y i32;
+}
+
+fn readsThroughOpaq() {
+  imm value = 1;
+  imm point = Point[1, 2];
+  imm array = [1, 2, 3];
+
+  // A dereference
+  imm hidden = &opaq value;
+  imm v = *hidden;               //~ ErrorNoRead:12 "does not allow reading"
+
+  // A field, reached through the dereference injected for a plain reference
+  imm hiddenPoint = &opaq point;
+  imm x = hiddenPoint.x;         //~ ErrorNoRead:11 "does not allow reading"
+
+  // An element of a fixed-size array, which is indexed through the reference
+  // with no dereference injected
+  imm hiddenArray = &opaq array;
+  imm e = hiddenArray[0];        //~ ErrorNoRead:11 "does not allow reading"
 }

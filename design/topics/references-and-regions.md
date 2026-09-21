@@ -190,9 +190,10 @@ threads; `opaq` as the universal receiver. Transitions are irreversible under a
 move, but **temporary and reversible when done by borrowing** — which is how a
 `uni` reference is recovered after being lent out.
 
-**Only two of the seven bits are consulted today.** `MayWrite` gates assignment,
-swap and a field write; `MayAlias` decides move-ness. `MayRead` is read only by
-the variance rule below, never as an access check, and `MayAliasWrite`,
+**Only three of the seven bits are consulted today.** `MayWrite` gates assignment,
+swap and a field write; `MayRead` gates a read through a reference — a
+dereference, an index, or a field of a virtual reference — and feeds the
+variance rule below; `MayAlias` decides move-ness. `MayAliasWrite`,
 `RaceSafe`, `MayIntRefSum` and `IsLockless` are populated and read nowhere. That
 is not a judgement on the design — it is that the concurrency half is unbuilt,
 and those are the bits it would consult. One consequence is worth stating

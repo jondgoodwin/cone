@@ -44,5 +44,5 @@ void derefTypeCheck(TypeCheckState *pstate, StarNode *node) {
 
 // Perform data flow analysis on deref node
 void derefFlow(FlowState *fstate, StarNode **node) {
-    flowLoadValue(fstate, &(*node)->vtexp);
+    flowLoadThroughRef(fstate, &(*node)->vtexp);
 }

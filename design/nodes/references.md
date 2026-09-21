@@ -211,6 +211,15 @@ Where a reference type acquires `MoveType`: **when its permission lacks
 **empty function body** with a comment describing deactivation that was never
 written — a borrow deactivates nothing and reads nothing.
 
+A reference's permission is enforced at the access, not at the borrow.
+`flowLoadThroughRef` asks it for `MayRead` wherever a value is read through a
+reference — `derefFlow`, `fnCallArrIndexFlow`, and `fnCallFldAccessFlow` for a
+virtual reference, which has no dereference injected — and `ErrorNoRead`
+refuses the read; `opaq` is the permission that fails it. `assignlvalrtype` and
+`swapFlow` ask `iexpGetLvalInfo` for `MayWrite` on the write side. Holding,
+copying, comparing and passing a reference never read through it, so an `opaq`
+reference does all of those.
+
 **The `scope` a borrow recorded is enforced at two consumers, neither of them
 the borrow site**: `assignlvalrtype` when a borrow is stored into a
 longer-lived lval, and `returnFlowEscape` when one is returned. `fnCallArrIndex`

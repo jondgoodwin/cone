@@ -195,8 +195,13 @@ Three entry points, by what the node became:
 
 - `fnCallFlow` — for each argument: `flowLoadValue`, then
   `flowHandleMoveOrCopy`. Arguments are moved or copied into the callee.
-- `fnCallArrIndexFlow` — the receiver and the index.
-- `fnCallFldAccessFlow` — the receiver only.
+- `fnCallArrIndexFlow` — the receiver, through `flowLoadThroughRef` because a
+  reference to a fixed-size array and a slice are indexed with no dereference
+  injected, and the index.
+- `fnCallFldAccessFlow` — the receiver only, also through `flowLoadThroughRef`:
+  a plain reference's field access had a dereference injected and `derefFlow`
+  reads through that, but a virtual reference's did not, so this is where its
+  `MayRead` is asked.
 
 **`fnCallFlow` does not flow `objfn`**, so a call through an uninitialized
 function-reference variable goes unreported. See Hazards.

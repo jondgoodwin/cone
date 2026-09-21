@@ -138,6 +138,7 @@ enum ErrorCode {
     // Reference types
     ErrorNoRefType = 1074,      // A reference type did not name what it refers to
     ErrorInlineRef = 1083,      // A borrow of an inline function, which has no code of its own to point at
+    ErrorNoRead = 1084,         // A read through a reference whose permission grants no read
 
     // The compiler's own invariants. This is the one code no source is supposed
     // to be able to produce, and so the one code with no scenario: reaching it

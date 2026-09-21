@@ -34,6 +34,10 @@ typedef struct FlowState {
 // If copied, we may need to alias it. If moved, we may have to deactivate its source.
 void flowLoadValue(FlowState *fstate, INode **nodep);
 
+// Load a reference that a value is about to be read through, and refuse the
+// read when the reference's permission grants none
+void flowLoadThroughRef(FlowState *fstate, INode **refp);
+
 // Add a just declared variable to the data flow stack
 void flowAddVar(VarDclNode *varnode);
 

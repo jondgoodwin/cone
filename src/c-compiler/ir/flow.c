@@ -109,6 +109,19 @@ void flowHandleMoveOrCopy(INode **nodep) {
 }
 
 
+// Load a reference that a value is about to be read through, and refuse the
+// read when the reference's permission grants none. The reference's own
+// permission governs what may be done through it, whatever the permission of
+// the binding that holds it -- the read-side twin of the MayWrite test in
+// assignlvalrtype. A pointer carries no permission and is not checked here.
+void flowLoadThroughRef(FlowState *fstate, INode **refp) {
+    flowLoadValue(fstate, refp);
+    RefNode *reftype = (RefNode *)iexpGetTypeDcl(*refp);
+    if ((reftype->tag == RefTag || reftype->tag == ArrayRefTag || reftype->tag == VirtRefTag)
+        && !(permGetFlags(reftype->perm) & MayRead))
+        errorMsgNode(*refp, ErrorNoRead, "This reference's permission does not allow reading the value it points to");
+}
+
 // Perform data flow analysis on a node whose value we intend to load
 // At minimum, we check that any expression node holds an accessible, "readable" value
 void flowLoadValue(FlowState *fstate, INode **nodep) {
