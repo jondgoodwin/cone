@@ -362,9 +362,11 @@ the diagnostics are commented out.
 
 Flow does little with a struct as such. The one mechanism that matters:
 `flowScopeDealias` asks `itypeGetDropFnDcl` for any non-reference variable
-leaving scope, and appends a synthesized `dropfn(&uni var)` call to the block's
-dealias list. **That is the entire mechanism by which struct destruction
-happens.**
+leaving scope that was initialized and not moved out, and appends a synthesized
+`dropfn(&uni var)` call to the block's dealias list. A variable that was only
+declared, or whose value now lives in another variable, gets no call: the drop
+fn would run over storage that holds no value of the type. **That is the
+entire mechanism by which struct destruction happens.**
 
 Per-field release is not flow's — it is `genlDealiasFlds` at generation, walking
 `fields` by `index`.

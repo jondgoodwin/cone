@@ -212,11 +212,12 @@ stands.
 
 **Scope dealiasing.** `flowScopeDealias` walks the variable stack downward from
 the top to a start position, so release order is the reverse of declaration
-order. Per variable: an `so` or `rc` reference, single (`RefTag`) or slice
+order. Per variable: one that was never initialized or was moved out is
+skipped, whatever its type, because it owns nothing to release or finalize.
+Otherwise an `so` or `rc` reference, single (`RefTag`) or slice
 (`ArrayRefTag`), or a tuple carrying one (`flowIsOwningType`), is added to the
-list, unless it was never initialized or was moved out; anything else asks
-`itypeGetDropFnDcl` and, if there is one, builds a call to the drop fn on a
-`&uni` borrow. Generation releases a tuple variable element by element
+list; anything else asks `itypeGetDropFnDcl` and, if there is one, builds a
+call to the drop fn on a `&uni` borrow. Generation releases a tuple variable element by element
 (`genlReleaseOwning`); a tuple carrying a `so` reference is a move type, so
 destructuring or copying it deactivates the variable and the scope releases
 nothing of it.

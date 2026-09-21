@@ -325,20 +325,21 @@ int flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp) {
     while (pos > startpos) {
         VarFlowInfo *avar = &gVarFlowStackp[--pos];
         INode *vartype = avar->node->vtype;
+        // A variable that was never given a value owns nothing, so there is
+        // nothing to release or finalize: freeing its storage, or running a
+        // drop fn over it, would act on garbage.
+        if (!(avar->node->flowtempflags & VarInitialized))
+            continue;
+        // Stopgap: a variable whose value was moved out no longer owns it, so
+        // releasing or finalizing it here would act on the new owner's value a
+        // second time. VarMoved, like VarInitialized, is the state at scope exit
+        // rather than at each program point, so a value moved on only one
+        // branch is skipped on all of them -- that leaks rather than
+        // double-frees -- and one assigned on only one branch is released on
+        // all of them. Precise deactivation belongs to the region redesign.
+        if (avar->node->flowtempflags & VarMoved)
+            continue;
         if (flowIsOwningType(vartype)) {
-            // A variable that was never given a value owns nothing, so there is
-            // nothing to release: freeing its storage would free garbage.
-            if (!(avar->node->flowtempflags & VarInitialized))
-                continue;
-            // Stopgap: a variable whose value was moved out no longer owns it, so
-            // releasing it here would free the new owner's allocation a second
-            // time. VarMoved, like VarInitialized, is the state at scope exit
-            // rather than at each program point, so a value moved on only one
-            // branch is skipped on all of them -- that leaks rather than
-            // double-frees -- and one assigned on only one branch is released on
-            // all of them. Precise deactivation belongs to the region redesign.
-            if (avar->node->flowtempflags & VarMoved)
-                continue;
             if (!flowIsScopeResult(retexp, avar->node)) {
                 if (*varlist == NULL)
                     *varlist = newNodes(4);

@@ -1,0 +1,129 @@
+// A finalizer runs once, at the end of the value's life, and never over storage
+// that holds no value.
+//
+// flowScopeDealias built a drop call for every variable in scope whose type has
+// a drop fn, whether or not the variable had ever been given a value and whether
+// or not its value had been moved out. A struct with 'final' that was only
+// declared had its finalizer run over whatever its slot happened to hold, and
+// one whose value was moved to another variable was finalized twice: once as
+// the source, once as the destination. The owning-reference arm of the same
+// loop already skipped both; the drop-fn arm now does too.
+//
+// Each finalizer counts in a global, because nothing it does is visible any
+// other way. 'mut' and 'imm' are both here because delayed initialization is
+// allowed for either. A '@move' struct is here because move-ness is inferred
+// from 'final' and declared by the attribute, and either could reach a different
+// path. A struct holding a finalized field is here because its drop fn is the
+// generated one, not the finalizer itself.
+
+import stdio::*;
+
+mut finalized = 0;
+
+struct Fin {
+  pub id i32;
+
+  fn final(self &uni) {
+    finalized = finalized + 1;
+  }
+}
+
+struct @move Handle {
+  pub id i32;
+
+  fn final(self &uni) {
+    finalized = finalized + 10;
+  }
+}
+
+// No finalizer of its own: its drop fn is generated to finalize 'held'
+struct Outer {
+  pub held Fin;
+  pub tag i32;
+}
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn neverAssignedMut() {
+  mut f Fin;
+}
+
+fn neverAssignedImm() {
+  imm f Fin;
+}
+
+fn assignedLater() {
+  mut f Fin;
+  f = Fin[1];
+}
+
+fn initialized() {
+  imm f = Fin[2];
+}
+
+// 'g' owns the value at scope exit; 'f' no longer does
+fn movedOut() {
+  imm f = Fin[3];
+  imm g = f;
+}
+
+fn moveNeverAssigned() {
+  mut h Handle;
+}
+
+fn moveInitialized() {
+  imm h = Handle[4];
+}
+
+fn nestedNeverAssigned() {
+  mut o Outer;
+}
+
+fn nestedInitialized() {
+  imm o = Outer[Fin[5], 6];
+}
+
+fn main() i32 {
+  finalized = 0;
+  neverAssignedMut();
+  show("mut-never-assigned", finalized);
+
+  finalized = 0;
+  neverAssignedImm();
+  show("imm-never-assigned", finalized);
+
+  finalized = 0;
+  assignedLater();
+  show("assigned-later", finalized);
+
+  finalized = 0;
+  initialized();
+  show("initialized", finalized);
+
+  finalized = 0;
+  movedOut();
+  show("moved-out", finalized);
+
+  finalized = 0;
+  moveNeverAssigned();
+  show("move-never-assigned", finalized);
+
+  finalized = 0;
+  moveInitialized();
+  show("move-initialized", finalized);
+
+  finalized = 0;
+  nestedNeverAssigned();
+  show("nested-never-assigned", finalized);
+
+  finalized = 0;
+  nestedInitialized();
+  show("nested-initialized", finalized);
+
+  0i32;
+}
