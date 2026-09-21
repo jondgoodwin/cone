@@ -369,6 +369,78 @@ fn emptyBody() {
   show("after-empty-body", 1);
 }
 
+// -------- a bound at the type's extreme --------
+
+// An inclusive range's last value is its bound, and nothing stops the bound
+// being the largest value its type holds. The rewrite steps the loop variable
+// after every visit, so a step past that bound would wrap around to the
+// smallest value, satisfy the comparison again, and never end -- the optimizer
+// folds a comparison against the type's maximum to true and emits a loop with
+// no exit. The step of an inclusive range is therefore guarded by an equality
+// test against the bound. Every count below is two claims at once: the right
+// number of values were visited, and the loop ended at all. u8 keeps the runs
+// short; the i32 case is the one that was measured.
+fn atTheExtreme() {
+  mut count = 0;
+  each x in 250u8 <= 255u8 {
+    count += 1;
+  }
+  show("le-u8-max-count", count);
+
+  mut count2 = 0;
+  each x in 5u8 >= 0u8 {
+    count2 += 1;
+  }
+  show("ge-u8-min-count", count2);
+
+  mut count3 = 0;
+  each x in 2147483640 <= 2147483647 {
+    count3 += 1;
+  }
+  show("le-i32-max-count", count3);
+}
+
+// The guard is an equality test and not a strict comparison, so a bound the
+// steps never land on is still passed rather than stopped short of: 0., 1. and
+// 2. are visited and 3. is not, the same three visits the comparison alone made.
+fn floatBoundNotLandedOn() {
+  mut count = 0;
+  each x in 0. <= 2.5 {
+    count += 1;
+  }
+  show("le-float-passed-count", count);
+}
+
+// 'continue' carries a copy of the whole step, the guard included, so a
+// 'continue' on the visit at the bound ends the loop rather than wrapping.
+fn continueAtTheBound() {
+  mut count = 0;
+  each x in 253u8 <= 255u8 {
+    count += 1;
+    continue;
+  }
+  show("continue-at-max-count", count);
+
+  // A labelled 'continue' from an inner loop carries the outer step, and the
+  // copied guard must leave the outer loop rather than the inner one it was
+  // copied into: bound to the wrong loop, it would let the outer body's tail
+  // run once more.
+  mut tails = 0;
+  'outer: each i in 254u8 <= 255u8 {
+    each j in 0 < 2 {
+      continue 'outer;
+    }
+    tails += 1;
+  }
+  show("labeled-continue-at-max-tails", tails);
+}
+
+// An inclusive 'each' may be a function's last statement.
+fn lastInFunction() {
+  each x in 0u8 <= 255u8 {
+  }
+}
+
 fn main() i32 {
   ascending();
   descending();
@@ -385,5 +457,10 @@ fn main() i32 {
   continueOnlyBody();
   nesting();
   emptyBody();
+  atTheExtreme();
+  floatBoundNotLandedOn();
+  continueAtTheBound();
+  lastInFunction();
+  show("after-last-in-function", 1);
   0i32;
 }

@@ -18,22 +18,36 @@
 
 INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag);
 
-// This helper routine inserts 'break if !condexp' at beginning of block
-void parseInsertWhileBreak(INode *blk, INode *condexp) {
+// Build 'if condexp {break}', or 'if !condexp {break}' when 'unless' is set.
+// The break names the loop's lifetime when it has one, so that a copy of it
+// carried into an inner loop -- ahead of a labelled 'continue' -- still leaves
+// the loop it was built for rather than the innermost one.
+static IfNode *parseBreakIf(INode *condexp, int unless, Name *lifesym) {
     BreakRetNode *breaknode = newBreakNode();
     inodeLexCopy((INode*)breaknode, condexp);
     breaknode->exp = (INode*)newNilLitNode();
+    if (lifesym)
+        breaknode->life = (INode*)newNameUseFromLex(lifesym, condexp);
     BlockNode *ifblk = newBlockNode();
     inodeLexCopy((INode*)ifblk, condexp);
     nodesAdd(&ifblk->stmts, (INode*)breaknode);
-    LogicNode *notiter = newLogicNode(NotLogicTag);
-    inodeLexCopy((INode*)notiter, condexp);
-    notiter->lexp = condexp;
+    INode *cond = condexp;
+    if (unless) {
+        LogicNode *notiter = newLogicNode(NotLogicTag);
+        inodeLexCopy((INode*)notiter, condexp);
+        notiter->lexp = condexp;
+        cond = (INode*)notiter;
+    }
     IfNode *ifnode = newIfNode();
     inodeLexCopy((INode*)ifnode, condexp);
-    nodesAdd(&ifnode->condblk, (INode *)notiter);
+    nodesAdd(&ifnode->condblk, cond);
     nodesAdd(&ifnode->condblk, (INode *)ifblk);
-    nodesInsert(&((BlockNode*)blk)->stmts, (INode*)ifnode, 0);
+    return ifnode;
+}
+
+// This helper routine inserts 'break if !condexp' at beginning of block
+void parseInsertWhileBreak(INode *blk, INode *condexp) {
+    nodesInsert(&((BlockNode*)blk)->stmts, (INode*)parseBreakIf(condexp, 1, NULL), 0);
 }
 
 // Parse an expression statement within a function
@@ -303,6 +317,30 @@ INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag) {
             INode *incr = (INode *)newFnCallOpnameLower(iter, (INode *)newNameUseFromLex(elemname, iter),
                 isrange > 0 ? incrPostName : decrPostName, 0);
             incr->flags |= FlagLvalOp;
+            Name *cmpname = ((NameUseNode*)itercmp->methfld)->namesym;
+            if (cmpname == leName || cmpname == geName) {
+                // An inclusive range's last value is its bound, and the bound may
+                // be the type's maximum (or minimum, counting down). Stepping past
+                // it wraps, the wrapped value passes the guard again, and the loop
+                // never ends -- LLVM folds 'x <= MAX' to true and emits a loop with
+                // no exit. So the step is guarded: '{ if x == bound {break}; x++ }'.
+                // The two stay one statement, because the trailing statement is
+                // what a 'continue' carries a copy of. The bound is cloned rather
+                // than shared with the guard: a node reachable twice in the tree
+                // is type checked twice.
+                CloneState cstate;
+                cstate.instnode = NULL;
+                cstate.selftype = NULL;
+                cstate.selfparm = NULL;
+                cstate.scope = 0;
+                FnCallNode *atbound = newFnCallOpnameLower(iter, (INode*)newNameUseFromLex(elemname, iter), eqName, 1);
+                nodesAdd(&atbound->args, cloneNode(&cstate, nodesGet(itercmp->args, 0)));
+                BlockNode *stepblk = newBlockNode();
+                inodeLexCopy((INode*)stepblk, iter);
+                nodesAdd(&stepblk->stmts, (INode*)parseBreakIf((INode*)atbound, 0, lifesym));
+                nodesAdd(&stepblk->stmts, incr);
+                incr = (INode*)stepblk;
+            }
             nodesAdd(&loopnode->stmts, incr);
         }
         // The step is now the block's last statement and stays there: the guard
