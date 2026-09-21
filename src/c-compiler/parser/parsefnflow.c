@@ -512,6 +512,22 @@ Nodes *parseGenericParms(ParseState *parse) {
         lexNextToken();
         if (lexIsToken(CommaToken))
             lexNextToken();
+        // A second name straight after the first is what a constraint or a
+        // parameter type is spelled as -- 'fn max[T Comparable]', which the
+        // reference manual shows. Neither is implemented, and reading the two
+        // names as two parameters instead turned that into an arity or
+        // inference complaint about a declaration written in the documented
+        // form. Refuse it here and resync to the next ',' or ']'.
+        else if (lexIsToken(IdentToken)) {
+            errorMsgLex(ErrorGenParmConstr, "A type parameter may not carry a constraint or a type: neither is implemented. Separate two parameters with a comma.");
+            while (!lexIsToken(CommaToken) && !lexIsToken(RBracketToken)) {
+                if (lexIsToken(SemiToken) || lexIsToken(LCurlyToken) || lexIsToken(RCurlyToken) || lexIsToken(EofToken))
+                    break;
+                lexNextToken();
+            }
+            if (lexIsToken(CommaToken))
+                lexNextToken();
+        }
     }
     if (lexIsToken(RBracketToken))
         lexNextToken();

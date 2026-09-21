@@ -102,6 +102,7 @@ enum ErrorCode {
 
     // Generics
     ErrorNoGenParms = 1061,     // Type parameter list declares no parameters
+    ErrorGenParmConstr = 1086,  // Type parameter carries a constraint or a type, neither implemented
 
     // Iteration
     ErrorNotIterable = 1062,    // Value cannot be iterated over by 'each'

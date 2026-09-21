@@ -84,8 +84,20 @@ globals in `clone.c`.
 
 ## Parse
 
-`parseGenericParms` is `[ Ident (,? Ident)* ]`. **No bounds, no constraints, no
+`parseGenericParms` is `[ Ident (, Ident)* ]`. **No bounds, no constraints, no
 defaults, no kinds.** An empty list is `ErrorNoGenParms`.
+
+**The comma is required, and a second name straight after the first is refused**
+with `ErrorGenParmConstr`, reported at that second name. Two names side by side
+is how both a supertype constraint (`[T Comparable]`, which the reference manual
+shows) and a typed macro parameter (`[a i32]`) are spelled, so the parser says
+the constraint or the type is unimplemented rather than reading the two names as
+two parameters — which is what it did, turning a declaration written in the
+documented form into an arity or inference complaint about its *calls*. Recovery
+skips to the next `,` or `]`, stopping at `;`, `{`, `}` or EOF, so a whole
+`+`-combined constraint costs one diagnostic and each parameter carrying one is
+reported. The parameter survives; whatever followed its name is dropped.
+Anything else after a parameter name is still the unclosed-list `ErrorBadTok`.
 
 Attached by `parseFn` only in the named branch — so an anonymous function can
 never be generic — and by `parseStruct` after the type name. Nothing about the
