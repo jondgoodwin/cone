@@ -416,7 +416,7 @@ variables.
 | | `genlConvert`, `genlRecast`, `genlIsType` | the three cast forms |
 | | `genlArrayIndex`, `genlBoundsCheck` | multi-dimensional GEP and its checks |
 | `genllvm/genlalloc.c` | `genlRefTypeSetup`, `genlallocref` | the `{region, perm, value}` header and its emission |
-| | `genlRcCounter`, `genlDealiasOwn`, `genlDealiasNodes` | count adjustment, free, and replaying flow's lists |
+| | `genlRcCounter`, `genlDealiasOwn`, `genlReleaseOwning`, `genlDealiasNodes` | count adjustment, free, releasing what a variable (or a tuple's rc elements) holds, and replaying flow's lists |
 | `ir/types/reference.h` | `enum ManagedRefFields` | `RegionField`, `PermField`, `ValueField` |
 | `ir/name.c` | `nameSymbol`, `nameType`, `nameVtable`, `nameVtableImpl`, `nameVtableList` | spelling a symbol from a node's owner chain and facts, and a type argument within it — the rules are in [Names and Namespaces](names-and-namespaces.md), "Symbols" |
 | `ir/dclinfo.c` | `dclInfoJoin` | writes the declaration facts where a declaration joins its namespace |

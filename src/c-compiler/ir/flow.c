@@ -50,15 +50,58 @@ void flowHandleMove(INode *node) {
     }
 }
 
+// Is this type a counted (rc) reference? An owning slice (ArrayRefTag) is
+// counted exactly as a single reference is.
+int flowIsRcRef(INode *type) {
+    RefNode *reftype = (RefNode *)itypeGetTypeDcl(type);
+    return (reftype->tag == RefTag || reftype->tag == ArrayRefTag) && isRegion(reftype->region, rcName);
+}
+
+// Does a variable of this type hold something its scope must release: an rc
+// or so reference, single or slice, or a tuple carrying one?
+int flowIsOwningType(INode *type) {
+    INode *typedcl = itypeGetTypeDcl(type);
+    if (typedcl->tag == RefTag || typedcl->tag == ArrayRefTag) {
+        RefNode *reftype = (RefNode *)typedcl;
+        return isRegion(reftype->region, soName) || isRegion(reftype->region, rcName);
+    }
+    if (typedcl->tag == TTupleTag) {
+        INode **elemp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)typedcl)->elems, cnt, elemp)) {
+            if (flowIsOwningType(*elemp))
+                return 1;
+        }
+    }
+    return 0;
+}
+
 // If needed, inject a reference-count node for rc/own references, adjusting the count by amt.
 // One value can become more than one holder at once: an array fill literal stores
 // the reference it evaluates once into every one of its elements.
 void flowInjectRefCountAmt(INode **nodep, int16_t amt) {
     INode *vtype = ((IExpNode*)*nodep)->vtype;
-    // No need for injected node if we are not dealing with rc references.
-    // An owning slice (ArrayRefTag) is counted exactly as a single reference is.
-    RefNode *reftype = (RefNode *)itypeGetTypeDcl(vtype);
-    if ((reftype->tag != RefTag && reftype->tag != ArrayRefTag) || !isRegion(reftype->region, rcName))
+    INode *typedcl = itypeGetTypeDcl(vtype);
+    int16_t *counts = NULL;
+    if (typedcl->tag == TTupleTag) {
+        // A tuple value is one holder of each counted reference it carries, so
+        // every rc element gets the adjustment and every other element none.
+        Nodes *elems = ((TupleNode *)typedcl)->elems;
+        counts = (int16_t *)memAllocBlk(elems->used * sizeof(int16_t));
+        int16_t *countp = counts;
+        int anycounted = 0;
+        INode **elemp;
+        uint32_t cnt;
+        for (nodesFor(elems, cnt, elemp)) {
+            *countp = flowIsRcRef(*elemp) ? amt : 0;
+            anycounted |= *countp++;
+        }
+        if (!anycounted)
+            return;
+        amt = (int16_t)elems->used;
+    }
+    // No need for injected node if we are not dealing with rc references
+    else if (!flowIsRcRef(vtype))
         return;
 
     // Inject the reference-count node
@@ -67,7 +110,7 @@ void flowInjectRefCountAmt(INode **nodep, int16_t amt) {
     rcnode->exp = *nodep;
     rcnode->vtype = vtype;
     rcnode->amt = amt;
-    rcnode->counts = NULL;
+    rcnode->counts = counts;
     *nodep = (INode*)rcnode;
 }
 
@@ -282,9 +325,7 @@ int flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp) {
     while (pos > startpos) {
         VarFlowInfo *avar = &gVarFlowStackp[--pos];
         INode *vartype = avar->node->vtype;
-        RefNode *reftype = (RefNode*)vartype;
-        if ((reftype->tag == RefTag || reftype->tag == ArrayRefTag)
-            && (isRegion(reftype->region, soName) || isRegion(reftype->region, rcName))) {
+        if (flowIsOwningType(vartype)) {
             // A variable that was never given a value owns nothing, so there is
             // nothing to release: freeing its storage would free garbage.
             if (!(avar->node->flowtempflags & VarInitialized))

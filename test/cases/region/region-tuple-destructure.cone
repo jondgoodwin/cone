@@ -1,0 +1,110 @@
+// A tuple variable is one holder of each counted reference it carries, so
+// destructuring it, copying it whole, or overwriting it counts as assigning
+// each element would, and the variable releases its elements at scope exit.
+//
+// Destructuring straight from a call is the other spelling, and was already
+// right: the call's temporary hands over the references it was born holding,
+// and nothing is counted. Destructuring from a variable copies out of an lvalue
+// that keeps its value, and each rc element gains a holder -- the same '+1' a
+// single-value 'a = t' gets. The releases are the balancing side: each new
+// holder releases at scope exit, and so does the tuple variable itself, element
+// by element. Without either half the run cannot tell: too few adjustments
+// leak, too many free what is still held, and stdout shows neither. The
+// register numbers in cases.toml were read out of the pre-optimization dump.
+//
+// 'twiceFromVariable' is the shape that was measured: two objects born at 1,
+// destructured into four variables. Each object now gets two '+1' and three
+// '-1', and is freed once, by the last release. Before, the elements were never
+// counted and 't' never released, so four decrements freed each object twice.
+//
+// 'mixed' pairs an rc reference with a plain value: only the reference is
+// counted, the integer is copied and nothing else.
+//
+// 'wholeCopy' copies the tuple without destructuring it, once into a new
+// variable and once over a variable that already holds one, which is what
+// releases the previous value.
+//
+// 'soFromVariable' and 'soWholeVariable' are the 'so' spelling. A tuple carrying
+// a 'so' reference is a move type, so destructuring it moves each element to
+// its new owner and deactivates 't', so a later use of 't' is refused and the
+// scope releases nothing of 't': the two frees are the owners'. Left in its
+// variable, the tuple is the owner, and the scope frees both elements through
+// it.
+
+import stdio::*;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn pair() +rc-mut i32, +rc-mut i32 {
+  imm a = +rc-mut 1i32;
+  imm b = +rc-mut 2i32;
+  a, b;
+}
+
+fn twiceFromVariable() {
+  imm t = pair();
+  imm a +rc-mut i32;
+  imm b +rc-mut i32;
+  imm c +rc-mut i32;
+  imm d +rc-mut i32;
+  a, b = t;
+  c, d = t;
+  show("rc-destructured-twice", i64[*a + *b + *c + *d]);
+}
+
+fn pairMixed() +rc-mut i32, i32 {
+  imm a = +rc-mut 10i32;
+  a, 5i32;
+}
+
+fn mixed() {
+  imm t = pairMixed();
+  imm a +rc-mut i32;
+  imm n i32;
+  imm b +rc-mut i32;
+  imm m i32;
+  a, n = t;
+  b, m = t;
+  show("rc-and-plain-destructured-twice", i64[*a + n + *b + m]);
+}
+
+fn wholeCopy() {
+  imm t = pair();
+  imm u = t;
+  mut v = t;
+  v = u;
+  show("tuple-copied-whole", i64[*u.0 + *v.1]);
+}
+
+fn pairSo() +so i32, +so i32 {
+  imm a = +so 100i32;
+  imm b = +so 200i32;
+  a, b;
+}
+
+fn soFromVariable() {
+  imm t = pairSo();
+  imm a +so i32;
+  imm b +so i32;
+  a, b = t;
+  show("so-destructured", i64[*a + *b]);
+}
+
+fn soWholeVariable() {
+  imm t = pairSo();
+  show("so-left-in-tuple", i64[*t.0 + *t.1]);
+}
+
+fn main() i32 {
+  twiceFromVariable();
+  mixed();
+  wholeCopy();
+  soFromVariable();
+  soWholeVariable();
+  0i32;
+}

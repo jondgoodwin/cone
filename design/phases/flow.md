@@ -154,6 +154,9 @@ and dereference arms that walk inwards to the variable.
 - `imm a = +rc[2]` adds no holder — the temporary hands over the reference it
   was born with. Still 1.
 - `imm b = a` adds one — `a` keeps its reference, `b` gets another. Now 2.
+- A tuple is one holder of each counted reference it carries. `imm t = pair()`
+  adds nothing (a temporary again); `a, b = t` and `imm u = t` add one per rc
+  element, and `t` releases each at scope exit.
 
 `flowHandleMoveOrCopy` is the whole decision:
 
@@ -167,15 +170,17 @@ read?" — true for a name use, deref, index and field access; false for a
 temporary. Counting a temporary would add a holder that never existed, and the
 allocation would never reach zero.
 
-It is called from exactly six places — `varDclFlow` (the initializer),
-`assignSingleFlow` (the rval), `fnCallFlow` (per argument), `allocateFlow` (the
+It is called from exactly seven places — `varDclFlow` (the initializer),
+`assignSingleFlow` (the rval), `assignMultRetFlow` (the one rval a
+destructuring takes apart), `fnCallFlow` (per argument), `allocateFlow` (the
 allocated value), `typeLitFlow` (per field) and `arrayLitFlow` (per element, in
 the list form only). The array **fill** form does its own arithmetic instead,
 because one value goes to n holders.
 
 **Decrements are never reference-count nodes.** They come from generation: walking a
 `dealias` list at scope exit, and `genlStore` releasing an lval's previous value
-unless `FlagFirstAssign` says there was none.
+unless `FlagFirstAssign` says there was none. Both release a tuple's rc
+elements one by one, through `genlReleaseOwning`.
 
 ## 5. What it injects
 
@@ -189,19 +194,28 @@ depends on:
 | `dealias` lists | `flowScopeDealias`, onto every `BreakRetNode` | `genlDealiasNodes` replays them |
 | `FlagFirstAssign` | `assignlvalrtype` | `genlStore` skips releasing a previous value that never existed |
 
-**A reference-count node is built only for a counted reference.** `flowInjectRefCountAmt`
-returns early unless the type is a `RefTag` or `ArrayRefTag` in region `rc` — an
-owning slice is counted exactly as a single reference is. A `+so` reference and
-a `uni`-permissioned `+rc` reference are both move types and take the move path
-instead. Two arms of generation's `RefCountTag` case — the `so` arm and the tuple
-`counts` arm — are therefore unreachable as the code stands.
+**A reference-count node is built only for a counted reference, or a tuple
+carrying one.** `flowInjectRefCountAmt` returns early unless the type is a
+`RefTag` or `ArrayRefTag` in region `rc` (`flowIsRcRef` — an owning slice is
+counted exactly as a single reference is), or a `TTupleTag` with at least one
+such element; for the tuple it fills the node's `counts` array with `amt` per
+rc element and `0` per other element, `amt` then holding the element count,
+and generation's tuple arm adjusts each counted element after an
+`extractvalue`. A `+so` reference and a `uni`-permissioned `+rc` reference are
+both move types and take the move path instead, as does a tuple carrying one,
+so the `so` arm of generation's `RefCountTag` case is unreachable as the code
+stands.
 
 **Scope dealiasing.** `flowScopeDealias` walks the variable stack downward from
 the top to a start position, so release order is the reverse of declaration
 order. Per variable: an `so` or `rc` reference, single (`RefTag`) or slice
-(`ArrayRefTag`), is added to the list, unless it was never initialized or was
-moved out; anything else asks `itypeGetDropFnDcl` and, if there is one, builds
-a call to the drop fn on a `&uni` borrow.
+(`ArrayRefTag`), or a tuple carrying one (`flowIsOwningType`), is added to the
+list, unless it was never initialized or was moved out; anything else asks
+`itypeGetDropFnDcl` and, if there is one, builds a call to the drop fn on a
+`&uni` borrow. Generation releases a tuple variable element by element
+(`genlReleaseOwning`); a tuple carrying a `so` reference is a move type, so
+destructuring or copying it deactivates the variable and the scope releases
+nothing of it.
 
 **Where a jump's start position comes from.** `BlockNode.flowmark` is the flow
 stack position `blockFlow` recorded on entering that block. A `break` or
@@ -271,8 +285,8 @@ released** — there is no fallback. Likewise, without `FlagFirstAssign` every
 first assignment to an uninitialized owning variable decrements garbage.
 
 Without `FlagFirstAssign`, `genlStore` decrements a count that was never
-initialized — for an `rc`-region lval, which is the only kind it releases there
-at all.
+initialized — for an `rc`-region lval or a tuple lval's rc elements, which are
+the only kinds it releases there at all.
 
 **One layout invariant generation depends on and flow does not state.**
 `genlRcCounter` finds the count by bitcasting the reference to `usize*` and
@@ -296,9 +310,6 @@ the built-in permissions are zero-sized. See [Generation](generation.md),
   `objfn` and on string literals. Do not substitute one for the other.
 - **`fnCallFlow` does not flow `objfn`**, so a call through an uninitialized
   function-reference variable is not reported.
-- **`flowScopeDealias` reads `vtype` raw**, without `itypeGetTypeDcl`, while
-  `flowInjectRefCountAmt` resolves it. A variable declared through a typedef alias
-  to an owning reference is likely missed.
 - **`flowLoadValue`'s `default:` arm reports `ErrorUnreachable` and stops.** An
   unhandled tag therefore fails the compile rather than passing through it —
   passing through would mean no move check, no alias injection and no
@@ -315,7 +326,8 @@ the built-in permissions are zero-sized. See [Generation](generation.md),
 | | `flowHandleMoveOrCopy` | move vs. alias, for a value going to a new holder |
 | | `flowHandleMove` | deactivate the source — each move-typed element's, for a tuple literal; refuse a move out of a global |
 | | `flowIsLvalRead` | the temporary-vs-lvalue test that makes counting correct |
-| | `flowInjectRefCountAmt` | wrap a counted reference in a `RefCountNode` |
+| | `flowInjectRefCountAmt` | wrap a counted reference, or a tuple carrying one, in a `RefCountNode` |
+| | `flowIsRcRef`, `flowIsOwningType` | is this type counted; must a variable of this type be released |
 | | `flowScopePush`, `flowScopePop`, `flowAddVar` | the variable stack |
 | | `flowScopeDealias` | build a scope's release list; skip moved vars; cancel for a returned name |
 | `ir/exp/block.c` | `blockFlow` | scope push/pop, `blockret` injection, dealias capture |

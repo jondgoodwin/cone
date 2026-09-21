@@ -69,4 +69,11 @@ int flowIsLvalRead(INode *node);
 // If needed, inject a reference-count node for rc references, adjusting the count by amt
 void flowInjectRefCountAmt(INode **nodep, int16_t amt);
 
+// Is this type a counted (rc) reference, single or slice?
+int flowIsRcRef(INode *type);
+
+// Does a variable of this type hold something its scope must release:
+// an rc or so reference, single or slice, or a tuple carrying one?
+int flowIsOwningType(INode *type);
+
 #endif

@@ -312,6 +312,30 @@ void genlRcCounter(GenState *gen, LLVMValueRef ref, long long amount, RefNode *r
     }
 }
 
+// Release what a variable holds: free an 'so' reference, drop a holder of an
+// 'rc' one, single or slice. A tuple is one holder of each owning reference it
+// carries, so each is released.
+static void genlReleaseOwning(GenState *gen, LLVMValueRef val, INode *type) {
+    INode *typedcl = itypeGetTypeDcl(type);
+    if (typedcl->tag == RefTag || typedcl->tag == ArrayRefTag) {
+        RefNode *reftype = (RefNode *)typedcl;
+        if (isRegion(reftype->region, soName))
+            genlDealiasOwn(gen, val, reftype);
+        else if (isRegion(reftype->region, rcName))
+            genlRcCounter(gen, val, -1, reftype);
+    }
+    else if (typedcl->tag == TTupleTag) {
+        INode **elemp;
+        uint32_t cnt;
+        unsigned index = 0;
+        for (nodesFor(((TupleNode *)typedcl)->elems, cnt, elemp)) {
+            if (flowIsOwningType(*elemp))
+                genlReleaseOwning(gen, LLVMBuildExtractValue(gen->builder, val, index, ""), *elemp);
+            ++index;
+        }
+    }
+}
+
 // Progressively dealias or drop all declared variables in nodes list
 void genlDealiasNodes(GenState *gen, Nodes *nodes) {
     if (nodes == NULL)
@@ -322,16 +346,7 @@ void genlDealiasNodes(GenState *gen, Nodes *nodes) {
         // Hack for dealias on local variables holding region-owning reference
         if ((*nodesp)->tag == VarDclTag) {
             VarDclNode *var = (VarDclNode *)*nodesp;
-            RefNode *reftype = (RefNode *)var->vtype;
-            if (reftype->tag == RefTag || reftype->tag == ArrayRefTag) {
-                LLVMValueRef ref = LLVMBuildLoad(gen->builder, var->llvmvar, "allocref");
-                if (isRegion(reftype->region, soName)) {
-                    genlDealiasOwn(gen, ref, reftype);
-                }
-                else if (isRegion(reftype->region, rcName)) {
-                    genlRcCounter(gen, ref, -1, reftype);
-                }
-            }
+            genlReleaseOwning(gen, LLVMBuildLoad(gen->builder, var->llvmvar, "allocref"), var->vtype);
         }
         // Generate function calls that drop/dealias values
         else {

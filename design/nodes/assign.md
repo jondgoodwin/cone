@@ -112,11 +112,15 @@ which every path calls. Per assignment:
 Then `assignSingleFlow` calls `flowHandleMoveOrCopy` on the rval: a move type
 deactivates its source; an lvalue read of a counted reference gets a `+1`.
 
-**`assignMultRetFlow` calls `assignlvalrtype` only** — no move-or-copy at all,
-so the holders a destructuring creates are never counted. `flowScopeDealias`
-walks a `VTupleTag` return element by element and exempts each from release, so
-the return side does not free what it is handing back. The caller-side hole is
-what remains.
+`assignMultRetFlow` runs `assignlvalrtype` per lval, then the same
+`flowHandleMoveOrCopy` on the one rval: a destructured call result is a
+temporary and counts nothing, while a destructured tuple *variable* gets one
+`RefCountNode` over the whole tuple whose `counts` array carries a `+1` per rc
+element — see [Flow Analysis](../phases/flow.md), "Moves and counting". An
+element assigned to `_` has its count zeroed, since it is stored nowhere. On the
+return side, `flowScopeDealias` walks a `VTupleTag` return element by element
+and exempts each from release, so the callee does not free what it is handing
+back.
 
 ## Generation
 
@@ -126,7 +130,8 @@ via `extractvalue`, then `genlStore`.
 
 `genlStore` **skips a store to the anonymous name entirely**, and otherwise
 releases the lval's previous value before overwriting — but only for an
-`rc`-region reference, and only when `FlagFirstAssign` is absent.
+`rc`-region reference or the rc elements of a tuple, and only when
+`FlagFirstAssign` is absent.
 
 ## Hazards
 
@@ -136,8 +141,6 @@ releases the lval's previous value before overwriting — but only for an
   and no `FlagFirstAssign` — so generation then decrements an uninitialized
   count on first assignment. Safe only because generation does not run when
   errors were reported.
-- **`assignMultRetFlow` does no move-or-copy.** Ownership is unaccounted for on
-  that one path; the other three call it.
 - **`+=` is not an `AssignNode`.** It is an `FnCallNode`. Code matching on
   `AssignTag` to find "all writes" misses every op-assign and every swap.
 - **`iexpGetLvalInfo` and `iexpIsLval` are different questions.** The first

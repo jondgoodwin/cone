@@ -217,6 +217,44 @@ name = "returned-tuple-elements-not-released"
 target = "preir"
 excludes = ["add i64"]
 
+# The caller's side of region-tuple-return: a tuple held in a variable is one
+# holder of each rc reference it carries. Destructuring it, or copying it whole,
+# adds a holder per rc element, and the variable releases its elements at scope
+# exit. The run says the program frees nothing twice; the checks say the counts
+# are what make that so, since a leak would print the same. Register numbers
+# were read out of the pre-optimization dump. In 'twiceFromVariable' the two
+# '+1' lines are the second destructuring's, and the two '-1' lines are the
+# tuple variable's own release, the last in the function; in 'wholeCopy' the two
+# '-1' lines are the previous value released when 'v' is overwritten. Without
+# the fix the module holds no '+1' at all and no tuple release. The 'so'
+# spelling is a move, so the destructured 't' releases nothing and the run is
+# the whole claim there; a 'so' tuple left in its variable is freed through it,
+# and the last check names the two elements 'soWholeVariable' extracts to free.
+[scenario.region-tuple-destructure]
+category = "run"
+description = "Destructuring or copying a tuple variable counts each rc element it carries, and the variable releases what it holds at scope exit"
+tags = ["flow", "genllvm", "runtime"]
+
+[[scenario.region-tuple-destructure.check]]
+name = "destructured-elements-gain-a-holder"
+target = "preir"
+contains = ["%17 = add i64 %16, 1", "%22 = add i64 %21, 1", "%12 = add i64 %11, 1"]
+
+[[scenario.region-tuple-destructure.check]]
+name = "tuple-variable-releases-its-elements"
+target = "preir"
+contains = ["%54 = add i64 %53, -1", "%60 = add i64 %59, -1", "%34 = add i64 %33, -1"]
+
+[[scenario.region-tuple-destructure.check]]
+name = "overwritten-tuple-releases-previous-elements"
+target = "preir"
+contains = ["%35 = add i64 %34, -1", "%41 = add i64 %40, -1"]
+
+[[scenario.region-tuple-destructure.check]]
+name = "so-tuple-left-in-variable-is-freed-through-it"
+target = "preir"
+contains = ["%6 = extractvalue { i32*, i32* } %allocref, 0", "%8 = extractvalue { i32*, i32* } %allocref, 1"]
+
 # What a break or a continue releases. Two counts, in two functions, and neither
 # is visible to a run for the reason region-fill-count gives: too few releases
 # leaks, too many frees what is still held, and stdout shows neither. The

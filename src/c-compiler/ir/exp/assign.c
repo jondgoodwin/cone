@@ -228,9 +228,25 @@ void assignMultRetFlow(TupleNode *lval, INode **rval) {
     uint32_t lcnt;
     INode **lnodesp;
     INode **rtypep = &nodesGet(rtypes, 0);
+    int anyanon = 0;
     for (nodesFor(lnodes, lcnt, lnodesp)) {
         // Need mutability check and borrowed lifetime check
-        assignlvalrtype(*lnodesp, *rtypep++);
+        anyanon |= assignlvalrtype(*lnodesp, *rtypep++);
+    }
+
+    // The elements are moved or copied into their lvals as one value would be:
+    // a move deactivates the source, a copy out of an lvalue adds a holder per
+    // counted element (flowInjectRefCountAmt fills the per-element counts).
+    flowHandleMoveOrCopy(rval);
+
+    // An element swallowed by '_' is stored nowhere, so it gains no holder
+    if (anyanon && (*rval)->tag == RefCountTag && ((RefCountNode *)*rval)->counts != NULL) {
+        int16_t *countp = ((RefCountNode *)*rval)->counts;
+        for (nodesFor(lnodes, lcnt, lnodesp)) {
+            if (isNameUseNode(*lnodesp) && isExpNode(*lnodesp) && ((NameUseNode *)*lnodesp)->namesym == anonName)
+                *countp = 0;
+            ++countp;
+        }
     }
 }
 

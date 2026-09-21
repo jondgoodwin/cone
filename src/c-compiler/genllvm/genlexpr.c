@@ -962,6 +962,22 @@ void genlStore(GenState *gen, INode *lval, LLVMValueRef rval) {
     if ((reftype->tag == RefTag || reftype->tag == ArrayRefTag) && isRegion(reftype->region, rcName)
         && !(lval->flags & FlagFirstAssign))
         genlRcCounter(gen, LLVMBuildLoad(gen->builder, lvalptr, "dealiasref"), -1, reftype);
+    else if (reftype->tag == TTupleTag && !(lval->flags & FlagFirstAssign)) {
+        // A tuple's previous value held every rc element it carried
+        LLVMValueRef oldval = NULL;
+        INode **elemp;
+        uint32_t cnt;
+        unsigned index = 0;
+        for (nodesFor(((TupleNode *)reftype)->elems, cnt, elemp)) {
+            if (flowIsRcRef(*elemp)) {
+                if (oldval == NULL)
+                    oldval = LLVMBuildLoad(gen->builder, lvalptr, "dealiastuple");
+                LLVMValueRef elemval = LLVMBuildExtractValue(gen->builder, oldval, index, "");
+                genlRcCounter(gen, elemval, -1, (RefNode *)itypeGetTypeDcl(*elemp));
+            }
+            ++index;
+        }
+    }
     LLVMBuildStore(gen->builder, rval, lvalptr);
 }
 
