@@ -94,9 +94,12 @@ last node is not a jump, flow wraps it (if it is an expression) or appends
 does a regular block ending in an expression. `blockTypeCheck` handles only the
 third case. Looking in one place misses two.
 
-The final node's `dealias` is then built — `return` unwinds from position 0, the
-whole function; `blockret` unwinds this block; a `break` or `continue` unwinds
-from where it stands down to its target block's `flowmark`.
+The final node's value expression is walked, and its `dealias` built after —
+`return` unwinds from position 0, the whole function; `blockret` unwinds this
+block; a `break` or `continue` unwinds from where it stands down to its target
+block's `flowmark`. **That order is what makes a tail call correct**: the walk
+is what marks a variable moved, so a local handed to a call in final position is
+known to have left the scope before the list that would release it is built.
 
 ## Generation
 

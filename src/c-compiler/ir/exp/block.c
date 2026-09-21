@@ -372,9 +372,10 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
         case BreakTag: {
             BreakRetNode *brknode = (BreakRetNode *)*nodesp;
             INode **brkexp = &brknode->exp;
-            int doalias = flowScopeDealias(blockJumpMark(brknode, svpos), &brknode->dealias, *brkexp);
-            if ((*brkexp)->tag != NilLitTag && doalias)
+            INode *result = *brkexp;
+            if (result->tag != NilLitTag)
                 flowLoadValue(fstate, brkexp);
+            flowScopeDealias(blockJumpMark(brknode, svpos), &brknode->dealias, result);
             break;
         }
         case ContinueTag: {
@@ -392,32 +393,42 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
 
     // Capture any scope-ending dealiasing in block's last node
     // That last node must now be a return, break, continue or an injected "block return"
+    //
+    // The result expression is walked first and the dealias list built after it.
+    // The walk is what marks a variable moved, so a value handed to a call in the
+    // result -- 'hold(a)' as the last expression -- is known to have left 'a'
+    // before the list that would have released 'a' at scope exit is built.
+    // The list is built against the result node as it stood before the walk,
+    // which is the node whose name the release exemption is about.
     switch ((*nodesp)->tag) {
     case ReturnTag:
     {
         INode **retexp = &((BreakRetNode *)*nodesp)->exp;
         // Check the borrow's lifetime before flowLoadValue can replace the node
         returnFlow((BreakRetNode *)*nodesp);
-        int doalias = flowScopeDealias(0, &((BreakRetNode *)*nodesp)->dealias, *retexp);
-        if (*retexp != unknownType && doalias) {
+        INode *result = *retexp;
+        if (result != unknownType) {
             flowLoadValue(fstate, retexp);
         }
+        flowScopeDealias(0, &((BreakRetNode *)*nodesp)->dealias, result);
         break;
     }
     case BlockRetTag:
     {
         INode **retexp = &((BreakRetNode *)*nodesp)->exp;
-        int doalias = flowScopeDealias(svpos, &((BreakRetNode *)*nodesp)->dealias, *retexp);
-        if ((*retexp)->tag != NilLitTag && doalias)
+        INode *result = *retexp;
+        if (result->tag != NilLitTag)
             flowLoadValue(fstate, retexp);
+        flowScopeDealias(svpos, &((BreakRetNode *)*nodesp)->dealias, result);
         break;
     }
     case BreakTag: {
         BreakRetNode *brknode = (BreakRetNode *)*nodesp;
         INode **brkexp = &brknode->exp;
-        int doalias = flowScopeDealias(blockJumpMark(brknode, svpos), &brknode->dealias, *brkexp);
-        if ((*brkexp)->tag != NilLitTag && doalias)
+        INode *result = *brkexp;
+        if (result->tag != NilLitTag)
             flowLoadValue(fstate, brkexp);
+        flowScopeDealias(blockJumpMark(brknode, svpos), &brknode->dealias, result);
         break;
     }
     case ContinueTag:

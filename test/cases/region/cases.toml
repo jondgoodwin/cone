@@ -257,6 +257,40 @@ name = "so-tuple-left-in-variable-is-freed-through-it"
 target = "preir"
 contains = ["%6 = extractvalue { i32*, i32* } %allocref, 0", "%8 = extractvalue { i32*, i32* } %allocref, 1"]
 
+# A local moved into a call that is the block's final expression. The claim is
+# that nothing in this module is released: every allocation is handed on, to a
+# callee that returns its parameter or straight back to the caller. The file
+# holds nothing else, which is what lets the check exclude the free and the
+# counter adjustment across the whole module rather than having to name a
+# register. Without the fix each of the four final-position spellings frees or
+# decrements what it just handed over -- a double free for 'so', a count too
+# many for 'rc' -- in a program that compiled clean. Read before optimization,
+# as region-tuple-return is: after it the module holds nothing at all and the
+# exclude would pass for the wrong reason.
+[scenario.region-tail-move]
+category = "compile"
+description = "A local moved into a call in a block's final position is handed over, not also released"
+tags = ["flow", "genllvm"]
+
+[[scenario.region-tail-move.check]]
+name = "tail-call-move-releases-nothing"
+target = "preir"
+excludes = ["call void @free", "add i64"]
+
+# The same release list, for a value whose type has a drop fn, where a run can
+# see it: the drop fn prints. Two claims share the file because one list makes
+# both decisions. A value the scope hands back is the caller's to finalize --
+# the exemption the owning-reference arm had and the drop-fn arm did not, so a
+# struct returned by name was finalized by its maker and again by its receiver.
+# And a local moved into a call in final position has left, while a local that
+# stayed has not, which is region-tail-move's claim in the spelling that prints.
+# The .out file is the whole assertion: the order is reverse declaration order
+# and each tag appears once.
+[scenario.region-tail-move-drop]
+category = "run"
+description = "A value with a drop fn that the scope hands back is finalized by the caller, once, and only a local that stayed is finalized on the way out"
+tags = ["flow", "genllvm", "runtime"]
+
 # What a break or a continue releases. Two counts, in two functions, and neither
 # is visible to a run for the reason region-fill-count gives: too few releases
 # leaks, too many frees what is still held, and stdout shows neither. The

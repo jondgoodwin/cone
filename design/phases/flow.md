@@ -218,14 +218,25 @@ stands.
 **Scope dealiasing.** `flowScopeDealias` walks the variable stack downward from
 the top to a start position, so release order is the reverse of declaration
 order. Per variable: one that was never initialized or was moved out is
-skipped, whatever its type, because it owns nothing to release or finalize.
-Otherwise an `so` or `rc` reference, single (`RefTag`) or slice
-(`ArrayRefTag`), or a tuple carrying one (`flowIsOwningType`), is added to the
-list; anything else asks `itypeGetDropFnDcl` and, if there is one, builds a
-call to the drop fn on a `&uni` borrow. Generation releases a tuple variable element by element
+skipped, whatever its type, because it owns nothing to release or finalize; so
+is one the scope hands back, which is the caller's to release or finalize, and
+`flowIsScopeResult` matches it by name against the result expression, walking a
+`VTupleTag` element by element. What survives both is an `so` or `rc`
+reference, single (`RefTag`) or slice (`ArrayRefTag`), or a tuple carrying one
+(`flowIsOwningType`), added to the list; anything else asks
+`itypeGetDropFnDcl` and, if there is one, builds a call to the drop fn on a
+`&uni` borrow. Generation releases a tuple variable element by element
 (`genlReleaseOwning`); a tuple carrying a `so` reference is a move type, so
 destructuring or copying it deactivates the variable and the scope releases
 nothing of it.
+
+**The result expression is walked before the list is built.** `blockFlow` calls
+`flowLoadValue` over a block's result — a `return`'s, a `break`'s or an injected
+`blockret`'s — and only then `flowScopeDealias`, because the walk is what marks
+a variable moved. A local handed to a call in final position, `hold(a)` as the
+last expression, has left the scope by the time the list that would release it
+is built. The list is built against the result node as it stood before the
+walk, which is the node whose name the exemption above is about.
 
 **Where a jump's start position comes from.** `BlockNode.flowmark` is the flow
 stack position `blockFlow` recorded on entering that block. A `break` or
@@ -235,15 +246,6 @@ scope alone; `return` passes 0, the whole function. The mark is transient — se
 by `blockFlow` and valid only while flow is inside that block — and
 `blockJumpMark` falls back to the current position for a jump whose target
 failed to resolve.
-
-The `doalias` return is a real optimization: returning a named owning variable
-cancels both the `+1` alias and the `-1` dealias rather than emitting both. It
-answers **only for a lone returned name**, because it gates `flowLoadValue` over
-the whole return expression: a tuple's elements are exempted from release one by
-one, but each still needs the move and initialization check that walk makes.
-
-> `flow.h` and `flow.c` disagree about what `flowScopeDealias` returns. The code
-> matches `flow.c`.
 
 ## 6. What it decides, and what it does not
 
@@ -348,8 +350,8 @@ the built-in permissions are zero-sized. See [Generation](generation.md),
 | | `flowInjectRefCountAmt` | wrap a counted reference, or a tuple carrying one, in a `RefCountNode` |
 | | `flowIsRcRef`, `flowIsOwningType` | is this type counted; must a variable of this type be released |
 | | `flowScopePush`, `flowScopePop`, `flowAddVar` | the variable stack |
-| | `flowScopeDealias` | build a scope's release list; skip moved vars; cancel for a returned name |
-| `ir/exp/block.c` | `blockFlow` | scope push/pop, `blockret` injection, dealias capture |
+| | `flowScopeDealias` | build a scope's release list; skip an uninitialized, moved-out or handed-back variable |
+| `ir/exp/block.c` | `blockFlow` | scope push/pop, `blockret` injection, result walk then dealias capture |
 | `ir/exp/if.c` | `ifFlow` | both arms against one shared state |
 | `ir/exp/assign.c` | `assignlvalrtype` | `MayWrite`, `VarInitialized`/`VarMoved`, `FlagFirstAssign`, borrow lifetime |
 | `ir/exp/nameuse.c` | `nameuseFlow` | the only place the two flags are *diagnosed* on; both `ErrorMove` messages |

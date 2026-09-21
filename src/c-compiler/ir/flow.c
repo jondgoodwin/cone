@@ -318,9 +318,7 @@ static int flowIsScopeResult(INode *retexp, VarDclNode *varnode) {
 }
 
 // Create de-alias list of all own/rc reference variables (except the retexp name(s))
-// As a simple optimization: returns 0 if retexp name was not de-aliased
-int flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp) {
-    int doalias = 1;
+void flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp) {
     size_t pos = gVarFlowStackPos;
     while (pos > startpos) {
         VarFlowInfo *avar = &gVarFlowStackp[--pos];
@@ -339,19 +337,14 @@ int flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp) {
         // all of them. Precise deactivation belongs to the region redesign.
         if (avar->node->flowtempflags & VarMoved)
             continue;
+        // A variable the scope hands back is the caller's to release or finalize,
+        // whether it owns a region reference or is a value the drop fn finalizes.
+        if (flowIsScopeResult(retexp, avar->node))
+            continue;
         if (flowIsOwningType(vartype)) {
-            if (!flowIsScopeResult(retexp, avar->node)) {
-                if (*varlist == NULL)
-                    *varlist = newNodes(4);
-                nodesAdd(varlist, (INode*)avar->node);
-            }
-            // 'doalias' answers only for a lone returned name, because it gates
-            // flowLoadValue over the whole return expression. A tuple's elements
-            // are exempted from release one by one above, but each still needs
-            // the move and initialization check flowLoadValue makes -- and the
-            // elements that are not names need the rest of what it does.
-            else if (isNameUseNode(retexp) && isExpNode(retexp))
-                doalias = 0;
+            if (*varlist == NULL)
+                *varlist = newNodes(4);
+            nodesAdd(varlist, (INode*)avar->node);
         }
         else {
             // Add call to type's drop fn to dealias list, if there is one
@@ -367,7 +360,6 @@ int flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp) {
             }
         }
     }
-    return doalias;
 }
 
 // Back out of current scope
