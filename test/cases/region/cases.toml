@@ -278,17 +278,33 @@ target = "preir"
 excludes = ["call void @free", "add i64"]
 
 # The same release list, for a value whose type has a drop fn, where a run can
-# see it: the drop fn prints. Two claims share the file because one list makes
-# both decisions. A value the scope hands back is the caller's to finalize --
+# see it: the drop fn prints. Three claims share the file because one list makes
+# all of them. A value the scope hands back is the caller's to finalize --
 # the exemption the owning-reference arm had and the drop-fn arm did not, so a
 # struct returned by name was finalized by its maker and again by its receiver.
 # And a local moved into a call in final position has left, while a local that
 # stayed has not, which is region-tail-move's claim in the spelling that prints.
+# The third is which local the exemption is for: it matched the result by name,
+# and a 'return' asks it over the whole function's stack, so an outer name a
+# nested block shadowed was exempted along with the inner one the return named,
+# and was never finalized at all.
 # The .out file is the whole assertion: the order is reverse declaration order
 # and each tag appears once.
 [scenario.region-tail-move-drop]
 category = "run"
 description = "A value with a drop fn that the scope hands back is finalized by the caller, once, and only a local that stayed is finalized on the way out"
+tags = ["flow", "genllvm", "runtime"]
+
+# The drop-fn side of region-jump-release, which a run can see for the same
+# reason: the drop fn prints, where a release of an owning reference does not.
+# flowScopeDealias positions its injected drop call on the scope's result
+# expression, and a 'continue' has none, so a 'continue' in a loop holding a
+# local with a 'final' method dereferenced NULL and crashed the compiler. Every
+# spelling that reaches the same arm is here: bare and labelled, in a 'while' and
+# in an 'each', with a local declared inside the loop body and one outside it.
+[scenario.region-jump-drop]
+category = "run"
+description = "A break or continue finalizes the drop-fn local in every scope it leaves, once, and none in a scope it does not"
 tags = ["flow", "genllvm", "runtime"]
 
 # What a break or a continue releases. Two counts, in two functions, and neither

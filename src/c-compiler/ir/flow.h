@@ -45,7 +45,8 @@ void flowAddVar(VarDclNode *varnode);
 size_t flowScopePush();
 
 // Create de-alias list of all own/rc reference variables, except var found in retexp
-void flowScopeDealias(size_t pos, Nodes **varlist, INode *retexp);
+// 'lexnode' positions an injected drop call where there is no retexp to position it on
+void flowScopeDealias(size_t pos, Nodes **varlist, INode *retexp, INode *lexnode);
 // Back out of current scope
 void flowScopePop(size_t pos);
 

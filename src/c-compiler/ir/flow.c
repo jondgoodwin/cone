@@ -302,6 +302,9 @@ size_t flowScopePush() {
 // nothing is exempt, not that nothing is released.
 // A multi-value return hands back a value tuple, whose elements are exempt one
 // by one -- the same walk returnFlowEscape does for the borrow check.
+// The match is on the declaration the name resolves to, not on the name: a
+// 'return' exempts from the whole function's stack, where an inner block's 'a'
+// and an outer 'a' both sit, and only the one named is handed back.
 static int flowIsScopeResult(INode *retexp, VarDclNode *varnode) {
     if (retexp == NULL)
         return 0;
@@ -314,11 +317,15 @@ static int flowIsScopeResult(INode *retexp, VarDclNode *varnode) {
         }
         return 0;
     }
-    return isNameUseNode(retexp) && isExpNode(retexp) && ((NameUseNode *)retexp)->namesym == varnode->namesym;
+    return isNameUseNode(retexp) && isExpNode(retexp) && ((NameUseNode *)retexp)->dclnode == (INode *)varnode;
 }
 
 // Create de-alias list of all own/rc reference variables (except the retexp name(s))
-void flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp) {
+// A drop call built here is positioned on the result expression, and on 'lexnode'
+// -- the jump that ends the scope -- where there is no result expression to take
+// a position from. A 'continue' hands back no value, so it is the jump or nothing.
+void flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp, INode *lexnode) {
+    INode *dropat = retexp != NULL ? retexp : lexnode;
     size_t pos = gVarFlowStackPos;
     while (pos > startpos) {
         VarFlowInfo *avar = &gVarFlowStackp[--pos];
@@ -350,8 +357,8 @@ void flowScopeDealias(size_t startpos, Nodes **varlist, INode *retexp) {
             // Add call to type's drop fn to dealias list, if there is one
             INode *dropfn = itypeGetDropFnDcl(vartype);
             if (dropfn != NULL) {
-                FnCallNode *dropfncall = newFnCallLower(retexp, dropfn, 1);
-                INode *dropnameuse = (INode*)newNameUseFromDclNode((INode*)avar->node, retexp);
+                FnCallNode *dropfncall = newFnCallLower(dropat, dropfn, 1);
+                INode *dropnameuse = (INode*)newNameUseFromDclNode((INode*)avar->node, dropat);
                 INode *borrow = newBorrowMutRef(dropnameuse, ((IExpNode*)avar->node)->vtype, (INode*)uniPerm);
                 nodesAdd(&dropfncall->args, borrow);
                 if (*varlist == NULL)

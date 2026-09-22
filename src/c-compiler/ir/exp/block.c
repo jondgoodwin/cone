@@ -375,13 +375,13 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
             INode *result = *brkexp;
             if (result->tag != NilLitTag)
                 flowLoadValue(fstate, brkexp);
-            flowScopeDealias(blockJumpMark(brknode, svpos), &brknode->dealias, result);
+            flowScopeDealias(blockJumpMark(brknode, svpos), &brknode->dealias, result, *nodesp);
             break;
         }
         case ContinueTag: {
             // A continue node carries no expression, so it de-aliases against none
             BreakRetNode *brknode = (BreakRetNode *)*nodesp;
-            flowScopeDealias(blockJumpMark(brknode, svpos), &brknode->dealias, NULL);
+            flowScopeDealias(blockJumpMark(brknode, svpos), &brknode->dealias, NULL, *nodesp);
             break;
         }
         default:
@@ -410,7 +410,7 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
         if (result != unknownType) {
             flowLoadValue(fstate, retexp);
         }
-        flowScopeDealias(0, &((BreakRetNode *)*nodesp)->dealias, result);
+        flowScopeDealias(0, &((BreakRetNode *)*nodesp)->dealias, result, *nodesp);
         break;
     }
     case BlockRetTag:
@@ -419,7 +419,7 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
         INode *result = *retexp;
         if (result->tag != NilLitTag)
             flowLoadValue(fstate, retexp);
-        flowScopeDealias(svpos, &((BreakRetNode *)*nodesp)->dealias, result);
+        flowScopeDealias(svpos, &((BreakRetNode *)*nodesp)->dealias, result, *nodesp);
         break;
     }
     case BreakTag: {
@@ -428,11 +428,11 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
         INode *result = *brkexp;
         if (result->tag != NilLitTag)
             flowLoadValue(fstate, brkexp);
-        flowScopeDealias(blockJumpMark(brknode, svpos), &brknode->dealias, result);
+        flowScopeDealias(blockJumpMark(brknode, svpos), &brknode->dealias, result, *nodesp);
         break;
     }
     case ContinueTag:
-        flowScopeDealias(blockJumpMark((BreakRetNode *)*nodesp, svpos), &((BreakRetNode *)*nodesp)->dealias, NULL);
+        flowScopeDealias(blockJumpMark((BreakRetNode *)*nodesp, svpos), &((BreakRetNode *)*nodesp)->dealias, NULL, *nodesp);
         break;
     }
 

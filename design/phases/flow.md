@@ -220,12 +220,17 @@ the top to a start position, so release order is the reverse of declaration
 order. Per variable: one that was never initialized or was moved out is
 skipped, whatever its type, because it owns nothing to release or finalize; so
 is one the scope hands back, which is the caller's to release or finalize, and
-`flowIsScopeResult` matches it by name against the result expression, walking a
-`VTupleTag` element by element. What survives both is an `so` or `rc`
+`flowIsScopeResult` matches it against the result expression, walking a
+`VTupleTag` element by element. The match is on the declaration the result's
+name resolves to, not on the name: a `return` asks over the whole function's
+stack, where an inner block's `a` and an outer `a` both sit, and only the one
+handed back is exempt. What survives both is an `so` or `rc`
 reference, single (`RefTag`) or slice (`ArrayRefTag`), or a tuple carrying one
 (`flowIsOwningType`), added to the list; anything else asks
 `itypeGetDropFnDcl` and, if there is one, builds a call to the drop fn on a
-`&uni` borrow. Generation releases a tuple variable element by element
+`&uni` borrow, positioned on the result expression, or on the jump that ends the
+scope where there is no result expression — a `continue` hands back no value.
+Generation releases a tuple variable element by element
 (`genlReleaseOwning`); a tuple carrying a `so` reference is a move type, so
 destructuring or copying it deactivates the variable and the scope releases
 nothing of it.
