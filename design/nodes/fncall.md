@@ -111,6 +111,14 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
   tuple lowering holds such a receiver in its temporary unborrowed for the same
   reason.
 
+  **An operator-assign is routed by what the receiver's type or its referent
+  declares** (`fnCallOpAssgnMethodType`), so a reference to a method type goes
+  to `fnCallOpAssgn` too, and stage 3's reference arm never sees it. That is
+  what makes the derivation an operator-assign is entitled to — `a += b`
+  rewritten to `a = a + b` where the type declares no `+=` — reachable through
+  a reference as it is by value. Stage 3's arm loses nothing by not seeing it:
+  of the operator names, `refType` declares only the identity comparisons.
+
 **Stage 3 — dispatch on the receiver's type tag.**
 
 | Receiver type | Goes to |

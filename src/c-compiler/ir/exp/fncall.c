@@ -117,6 +117,15 @@ static int fnCallIsRefReceiver(INode *objtype) {
     return objtype->tag == RefTag || objtype->tag == VirtRefTag || objtype->tag == ArrayRefTag;
 }
 
+// The type an operator-assign looks its operator up on: the receiver's own
+// type, or, when the receiver is a reference, the type it refers to. NULL when
+// neither declares methods, and the operator-assign lowering does not own the call.
+static INode *fnCallOpAssgnMethodType(INode *objtype) {
+    if (objtype->tag == RefTag)
+        objtype = itypeGetTypeDcl(((RefNode *)objtype)->vtexp);
+    return isMethodType(objtype) ? objtype : NULL;
+}
+
 // Is this '<-' applied to a value tuple, which lowers to one application per
 // element rather than one call taking a tuple?
 static int fnCallIsAppendTuple(FnCallNode *node) {
@@ -725,8 +734,14 @@ void fnCallOpAssgn(FnCallNode **nodep) {
     NameUseNode *methfld = (NameUseNode*)callnode->methfld;
     Name *methsym = methfld->namesym;
 
-    // Change first argument to &mut obj
-    borrowMutRef(&callnode->objfn, objtype, newPermUseNode(mutPerm));
+    // Change first argument to &mut obj, unless the receiver already is a
+    // reference, which is taken as it is. Either way the rest of this works on
+    // a reference to the method-declaring type: the operator is looked up on
+    // that type, and the rewrite below dereferences the reference to reach it.
+    if (objtype->tag == RefTag)
+        objtype = itypeGetTypeDcl(((RefNode *)objtype)->vtexp);
+    else
+        borrowMutRef(&callnode->objfn, objtype, newPermUseNode(mutPerm));
 
     // Lower to op-assign, if method supported by type
     if (iNsTypeFindFnField((INsTypeNode*)objtype, methsym)) {
@@ -736,11 +751,14 @@ void fnCallOpAssgn(FnCallNode **nodep) {
 
     // Let's try rewriting to: {imm tmp = lval; *tmp = *tmp + expr}
     VarDclNode *tmpvar = newVarDclFull(tempName, VarDclTag, ((IExpNode*)callnode->objfn)->vtype, (INode*)immPerm, callnode->objfn);
+    inodeLexCopy((INode*)tmpvar, (INode*)callnode);
     NameUseNode *tmpname = newNameUseNode(tempName);
     tmpname->vtype = tmpvar->vtype;
     tmpname->dclnode = (INode *)tmpvar;
+    inodeLexCopy((INode*)tmpname, (INode*)callnode);
     INode *derefvar = (INode *)tmpname;
     derefInject(&derefvar);
+    inodeLexCopy(derefvar, (INode*)callnode);
     callnode->objfn = derefvar;
     methfld->namesym = fnCallOpEqMethod(methsym);
     if (fnCallLowerMethod(callnode) == 0) {
@@ -751,8 +769,11 @@ void fnCallOpAssgn(FnCallNode **nodep) {
     }
     INode *dereflval = (INode *)tmpname;
     derefInject(&dereflval);
+    inodeLexCopy(dereflval, (INode*)callnode);
     AssignNode *tmpassgn = newAssignNode(NormalAssign, dereflval, (INode*)callnode);
+    inodeLexCopy((INode*)tmpassgn, (INode*)callnode);
     BlockNode *blk = newBlockNode();
+    inodeLexCopy((INode*)blk, (INode*)callnode);
     blk->vtype = callnode->vtype;
     nodesAdd(&blk->stmts, (INode*)tmpvar);
     nodesAdd(&blk->stmts, (INode*)tmpassgn);
@@ -939,8 +960,10 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     // This is true for ++, --, <- and operator-equals (+=)
     INode *objtype = iexpGetTypeDcl(node->objfn);
     if (node->flags & FlagLvalOp) {
-        // Lower opassign for method-based types with extra logic
-        if (isMethodType(objtype) && (node->flags & FlagOpAssgn)) {
+        // Lower opassign for method-based types with extra logic. A reference
+        // to such a type takes the same path, so a type that declares no '+='
+        // reaches the rewrite to '+' through a reference as it does by value.
+        if ((node->flags & FlagOpAssgn) && fnCallOpAssgnMethodType(objtype)) {
             fnCallOpAssgn(nodep);
             return;
         }

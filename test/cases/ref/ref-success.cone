@@ -31,6 +31,13 @@ fn show(label &[]u8, n i64) {
   printStr("\n");
 }
 
+fn showF(label &[]u8, n f64) {
+  printStr(label);
+  printStr(" = ");
+  printFloat(n);
+  printStr("\n");
+}
+
 // -------- borrowing and dereference --------
 
 fn borrows() {
@@ -74,6 +81,53 @@ fn chained() {
   // A reference is itself a value, so a reference may point at one
   imm rr = &r;
   show("ref-to-ref", **rr);
+}
+
+// -------- operators needing an lval, through a reference --------
+
+// An operator-assignment on a number falls back to the base operator, because
+// no number type declares '+='. Through a reference the fallback reaches the
+// referent: 'r += 5' is '*r = *r + 5'. The binding holding the reference is
+// immutable throughout; it is the reference's own 'mut' that permits the write.
+fn opAssignsThroughRef() {
+  mut n = 20;
+  imm r = &mut n;
+  r += 5;
+  show("plus-eq-through-ref", n);
+  r -= 3;
+  show("minus-eq-through-ref", n);
+  r *= 2;
+  show("mult-eq-through-ref", n);
+  r /= 4;
+  show("div-eq-through-ref", n);
+
+  // '++' and '--' need an lval too, and take the reference the same way
+  r++;
+  show("postfix-incr-through-ref", n);
+  --r;
+  show("prefix-decr-through-ref", n);
+
+  // Every remaining op-assign spelling derives the same way. What each one
+  // computes belongs to core; asserted here is only that each reaches the
+  // derivation through the reference, so they run as one chain: 0x3C % 7 is 4,
+  // and & | ^ << >> carry that to 101.
+  mut bits = 0x3C;
+  imm br = &mut bits;
+  br %= 7;
+  br &= 0x0F;
+  br |= 0x30;
+  br ^= 0xFF;
+  br <<= 1;
+  br >>= 2;
+  show("bitwise-op-eq-chain-through-ref", bits);
+
+  // The same holds of a float, whose '/' is not the integer one
+  mut f = 10.0;
+  imm fr = &mut f;
+  fr += 5.0;
+  showF("float-plus-eq-through-ref", f);
+  fr /= 4.0;
+  showF("float-div-eq-through-ref", f);
 }
 
 // -------- borrowing part of a value --------
@@ -323,6 +377,7 @@ fn main() i32 {
   borrows();
   borrowsFromParm();
   chained();
+  opAssignsThroughRef();
   parts();
   permissions();
   globalPermissions();
