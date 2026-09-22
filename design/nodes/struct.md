@@ -74,6 +74,17 @@ nowhere** (`genlGlobalSyms` and `genlGlobalImpl`). Miss the last and
 stops conforming the moment a trait declares one. It is reached as
 `Trait::name`, and an implementer or variant cannot name it at all:
 `trait-nameres-static` pins both spellings, `trait-success` the call.
+
+⚠ **A generic method costs a trait its virtual reference, and `structMakeVtable`
+is where that is said.** A vtable slot holds one machine signature and a generic
+method has one per instantiation, so no slot can be filled from it. The slot is
+counted anyway, which leaves a requirement no type satisfies and every coercion
+to `&<Trait` refused; `ErrorGenericVtable` names the method at its declaration in
+the trait, once per trait, when the first virtual reference to it asks for a
+vtable. A **private** generic method and a generic **static** function are
+neither slots nor requirements and cost the trait nothing.
+`trait-typecheck-vref` pins all three, and
+`conesite/public/coneref/refvirtref.html`, "Type Restrictions", is the rule.
 | `namespace` | every named member: fields, methods, macros, overload sets, `Self`, and what a fold admits — a **copy** of a folded field (a `FieldDclNode` with a `hop`) and an **alias** (`AliasDclNode`) for a folded method, overload set or macro method. The copies and aliases live here only; `fields` and `nodelist` never hold one |
 | `dropfn` | NULL until the last step of type check |
 | `dclinfo` | owner and the facts its symbols are spelled from — [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols". The owner is a module, or the trait for a variant declared inside one. Read for one thing besides naming: rejecting a variant declared outside its closed trait's module, through `dclInfoGetModule` |

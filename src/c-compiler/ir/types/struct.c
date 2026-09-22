@@ -1165,6 +1165,16 @@ void structMakeVtable(StructNode *node) {
             continue;
         FnDclNode *meth = (FnDclNode *)*nodesp;
         if (!inodeIsPrivate((INode*)meth)) {
+            // A vtable slot holds one machine signature and a generic method has
+            // one per instantiation, so there is nothing to put in the slot. The
+            // trait's declaration is what is wrong, so that is where this is
+            // said, once, when the first virtual reference to it asks for a
+            // vtable. The slot is still counted, leaving the requirement one no
+            // type can satisfy, so no reference coerces to '&<' this trait.
+            if (meth->genericinfo)
+                errorMsgNode((INode*)meth, ErrorGenericVtable,
+                    "Generic method %s makes %s unusable behind a virtual reference: a vtable slot holds one signature, a generic method one per instantiation.",
+                    &meth->namesym->namestr, &node->namesym->namestr);
             meth->vtblidx = vtblidx++;
             nodesAdd(&vtable->methfld, *nodesp);
         }

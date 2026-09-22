@@ -165,6 +165,9 @@ enum ErrorCode {
     // Lexer
     ErrorLitOverflow = 1082,    // An integer literal whose digits do not fit in 64 bits
 
+    // Virtual dispatch
+    ErrorGenericVtable = 1087,  // A trait requiring a generic method, which has no one signature a vtable slot could hold
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name
