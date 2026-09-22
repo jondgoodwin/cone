@@ -31,9 +31,9 @@ INode *itypeGetTypeDcl(INode *type) {
 INode *itypeGetDerefTypeDcl(INode *node) {
     INode *typnode = itypeGetTypeDcl(node);
     if (typnode->tag == RefTag || typnode->tag == VirtRefTag)
-        return itypeGetTypeDcl(((RefNode*)node)->vtexp);
-    else if (node->tag == PtrTag)
-        return itypeGetTypeDcl(((StarNode*)node)->vtexp);
+        return itypeGetTypeDcl(((RefNode*)typnode)->vtexp);
+    else if (typnode->tag == PtrTag)
+        return itypeGetTypeDcl(((StarNode*)typnode)->vtexp);
     return typnode;
 }
 

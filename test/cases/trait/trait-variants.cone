@@ -237,6 +237,43 @@ fn narrowingUnion() {
   }
 }
 
+// The same narrowing with the arm types spelled through a typedef. A virtual
+// reference to a union is the one virtual reference an exhaustiveness check
+// runs on -- the variants are closed and tagged -- so this is where an alias in
+// a pattern reaches the narrowing through '&<'. The alias used to be read as
+// the reference rather than as what it points at, no arm matched a variant, and
+// the match was refused as a value-producing expression. The scrutinee is
+// spelled through an alias too, and that side was always right.
+
+typedef Variant1Ref &Variant1;
+typedef Variant2Ref &Variant2;
+typedef ExtenseVirt &<Extense;
+
+fn narrowedSum(v &<Extense) i32 {
+  match v {
+    case imm v1 Variant1Ref {v1.nbr;}
+    case imm v2 Variant2Ref {v2.x + v2.y;}
+  }
+}
+
+fn narrowedSumThroughAliasedVref(v ExtenseVirt) i32 {
+  match v {
+    case imm v1 &Variant1 {v1.nbr;}
+    case imm v2 &Variant2 {v2.x + v2.y;}
+  }
+}
+
+fn narrowingUnionThroughAlias() {
+  mut one = Variant1[10, 33];
+  mut two = Variant2[20, 4, 5];
+  imm v1ref &<Extense = &one;
+  imm v2ref &<Extense = &two;
+  show("narrow-union-vref-alias-variant1", narrowedSum(v1ref));
+  show("narrow-union-vref-alias-variant2", narrowedSum(v2ref));
+  show("narrow-union-aliased-vref-variant1", narrowedSumThroughAliasedVref(v1ref));
+  show("narrow-union-aliased-vref-variant2", narrowedSumThroughAliasedVref(v2ref));
+}
+
 // -------- interaction with the constructs below this tier --------
 
 // Dispatch and narrowing driven by a loop, so the vtable a call loads and the
@@ -263,6 +300,7 @@ fn main() i32 {
   structuralConformer();
   narrowingTrait();
   narrowingUnion();
+  narrowingUnionThroughAlias();
   interactions();
   0i32;
 }

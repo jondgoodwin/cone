@@ -186,6 +186,119 @@ fn matching() {
   show("mut-binding-writes-through-rect", area(&sr));
 }
 
+// -------- matching through a type alias --------
+
+// A typedef is a transparent alias and nothing rewrites it away, so a pattern
+// spelled through one has to name the same variant the concrete spelling names.
+// Exhaustiveness is where that shows: a match naming every variant needs no
+// 'else', and it is the exhaustiveness check that has to see through the alias.
+// It did not -- it read the reference's target off the name use rather than off
+// the type the name resolves to, which yields the reference type itself, so no
+// arm ever matched a variant and the match was refused as a value-producing
+// expression. Every spelling is paired with the concrete one above, because a
+// match that compiles is not a match that dispatched to the right arm.
+
+typedef CircleRef &Circle;
+typedef RectRef &Rect;
+typedef CircleRefAgain CircleRef;
+typedef CircleMut &mut Circle;
+typedef RectMut &mut Rect;
+typedef CircleVal Circle;
+typedef RectVal Rect;
+
+// The same match as 'area', with both arms spelled through an alias
+fn areaAlias(s &Shape) i32 {
+  match s {
+    case imm c CircleRef {c.radius * c.radius;}
+    case imm r RectRef {r.w * r.h;}
+  }
+}
+
+// An alias of an alias, followed to its end
+fn areaAliasOfAlias(s &Shape) i32 {
+  match s {
+    case imm c CircleRefAgain {c.radius * c.radius;}
+    case imm r RectRef {r.w * r.h;}
+  }
+}
+
+// One arm concrete and one aliased: exhaustiveness has to account for both
+fn areaMixedSpelling(s &Shape) i32 {
+  match s {
+    case imm c &Circle {c.radius * c.radius;}
+    case imm r RectRef {r.w * r.h;}
+  }
+}
+
+// 'case is', which binds no name, through an alias
+fn whichAlias(s &Shape) i32 {
+  match s {
+    case is CircleRef {1;}
+    case is RectRef {2;}
+  }
+}
+
+// A 'mut' binding through an alias of '&mut Variant', which writes through
+fn growAlias(s &mut Shape) {
+  match s {
+    case mut c CircleMut {c.radius = c.radius + 10;}
+    case mut r RectMut {r.w = r.w + 10;}
+  }
+}
+
+// Matched by value, where the alias names the variant struct rather than a
+// reference to it. This spelling was already right, and is here as the control
+// on the two that were not.
+fn whichValueAlias(s Shape) i32 {
+  match s {
+    case imm c CircleVal {1;}
+    case imm r RectVal {2;}
+  }
+}
+
+// The single-pattern 'if' form
+fn circleRadiusAlias(s &Shape) i32 {
+  if imm c CircleRef = s {
+    c.radius;
+  }
+  else {
+    0;
+  }
+}
+
+// A match that names one variant is not exhaustive however it is spelled, so
+// the 'else' is still required
+fn radiusOrAlias(s &Shape, dflt i32) i32 {
+  match s {
+    case imm c CircleRef {c.radius;}
+    else {dflt;}
+  }
+}
+
+fn aliasMatching() {
+  mut c = Circle[1, 5];
+  mut r = Rect[2, 3, 4];
+  show("alias-match-circle", areaAlias(&c));
+  show("alias-match-rect", areaAlias(&r));
+  show("alias-of-alias-match", areaAliasOfAlias(&c));
+  show("alias-mixed-with-concrete", areaMixedSpelling(&r));
+  show("alias-case-is-circle", whichAlias(&c));
+  show("alias-case-is-rect", whichAlias(&r));
+  show("alias-by-value-circle", whichValueAlias(c));
+  show("alias-by-value-rect", whichValueAlias(r));
+  show("alias-if-binding-taken", circleRadiusAlias(&c));
+  show("alias-if-binding-not-taken", circleRadiusAlias(&r));
+  show("alias-else-arm-taken", radiusOrAlias(&r, 99));
+  show("alias-named-arm-taken", radiusOrAlias(&c, 99));
+
+  mut sc Shape = c;
+  mut sr Shape = r;
+  growAlias(&mut sc);
+  growAlias(&mut sr);
+  show("alias-mut-binding-writes-through-circle", radiusOrAlias(&sc, 99));
+  show("alias-mut-binding-writes-through-rect", areaAlias(&sr));
+}
+
 // A match on a value rather than a variant compares with '=='
 fn classify(n i32) i32 {
   match n {
@@ -374,6 +487,7 @@ fn main() i32 {
   construction();
   unionValues();
   matching();
+  aliasMatching();
   valueMatching();
   optionAndResult();
   interactions();
