@@ -311,7 +311,33 @@ INode *parseEach(ParseState *parse, Name *lifesym, int stmtflag) {
             FnCallNode *pluseq = newFnCallOpnameLower(iter, (INode*)newNameUseFromLex(elemname, iter), plusEqName, 1);
             pluseq->flags |= FlagOpAssgn | FlagLvalOp;
             nodesAdd(&pluseq->args, step);
-            nodesAdd(&loopnode->stmts, (INode*)pluseq);
+            // A step of more than one need never land on the bound, so nothing
+            // stops it carrying the loop variable past the type's extreme: it
+            // wraps to the other end, satisfies the comparison again, and the
+            // loop never ends. The bound cannot be consulted ahead of the step
+            // to see that coming -- the distance to it overflows on a signed
+            // range wider than half its type, and whether the step adds or
+            // subtracts is not known until it has been evaluated -- but the wrap
+            // is plain afterwards: the loop variable moved against the range's
+            // direction. So the step is '{ imm prev = x; x += s; if x < prev
+            // {break} }', with '>' for a range counting down. The three stay one
+            // statement, because the trailing statement is what a 'continue'
+            // carries a copy of, and 'prev' is a phantom variable the copy
+            // re-points at its own declaration.
+            VarDclNode *prevdcl = newVarDclFull(anonName, VarDclTag, unknownType, (INode*)immPerm,
+                (INode*)newNameUseFromLex(elemname, iter));
+            inodeLexCopy((INode*)prevdcl, iter);
+            NameUseNode *prevuse = newNameUseFromLex(anonName, iter);
+            prevuse->dclnode = (INode*)prevdcl;
+            FnCallNode *wrapped = newFnCallOpnameLower(iter, (INode*)newNameUseFromLex(elemname, iter),
+                isrange > 0 ? ltName : gtName, 1);
+            nodesAdd(&wrapped->args, (INode*)prevuse);
+            BlockNode *stepblk = newBlockNode();
+            inodeLexCopy((INode*)stepblk, iter);
+            nodesAdd(&stepblk->stmts, (INode*)prevdcl);
+            nodesAdd(&stepblk->stmts, (INode*)pluseq);
+            nodesAdd(&stepblk->stmts, (INode*)parseBreakIf((INode*)wrapped, 0, lifesym));
+            nodesAdd(&loopnode->stmts, (INode*)stepblk);
         }
         else {
             INode *incr = (INode *)newFnCallOpnameLower(iter, (INode *)newNameUseFromLex(elemname, iter),

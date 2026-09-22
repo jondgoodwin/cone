@@ -191,11 +191,15 @@ built-in types. Selection among candidates is
 plus an `if` chain. `while c {…}` becomes a loop block with `if not c {break
 nil}` inserted first. `each x in a < b by s` becomes an outer block holding the
 loop variable plus a loop block whose last statement is the synthesized step,
-flagged `FlagLoopStep`. For an inclusive range without `by` — `a <= b`, `a >= b`
-— the step is the block `{ if x == b {break}; x++ }`, because a bound at the
-type's extreme would otherwise be stepped past, wrap, and pass the guard again;
-the bound is cloned for the second comparison, and the block stays one statement
-so a `continue` carries the guard with the step. `with e {…}` becomes a block with a `this` declaration
+flagged `FlagLoopStep`. That step is a block wherever the value it steps to could
+wrap past the type's extreme and pass the guard again. For an inclusive range
+without `by` — `a <= b`, `a >= b` — it is `{ if x == b {break}; x++ }`, with the
+bound cloned for the second comparison. With `by` it is `{ imm prev = x; x += s;
+if x < prev {break} }`, `>` for a range counting down, since a step of more than
+one need not land on the bound and the wrap is only visible after the step, as a
+move against the range's direction; `prev` is a phantom variable the parser
+resolves itself. Either block stays one statement so a `continue` carries the
+guard with the step. `with e {…}` becomes a block with a `this` declaration
 first. Prefix `.f` becomes `this.f`. `else if` folds into `elif`. Unary minus on
 a literal is constant-folded in place.
 

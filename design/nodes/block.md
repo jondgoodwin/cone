@@ -34,12 +34,18 @@ a macro body, and the wrapper blocks pattern-matching builds — is regular.
 **`while` and `each` are lowered here, not later.** `while cond {…}` gets
 `if not cond { break }` inserted at index 0. `each x in a < b by s` becomes an
 outer block holding the loop variable plus a loop block whose **last statement
-is the synthesized step**, flagged `FlagLoopStep`. For an inclusive range
-without `by`, that step is itself a block, `{ if x == b {break}; x++ }`: a bound
-at the type's extreme would otherwise be stepped past and wrap, and the two are
-one statement so that the `continue` repair below carries the guard too. The
-synthesized `break` names the loop's lifetime when it has one, since a copy of
-it can land inside an inner loop.
+is the synthesized step**, flagged `FlagLoopStep`. Where stepping past the bound
+could wrap the loop variable around the type's extreme, and so satisfy the
+comparison again, that step is itself a block. For an inclusive range without
+`by` it is `{ if x == b {break}; x++ }`. With `by` it is `{ imm prev = x; x += s;
+if x < prev {break} }`, `>` in place of `<` for a range counting down: a step of
+more than one need never land on the bound, and neither the distance to the bound
+nor the step's sign may be computed ahead of the step, so the wrap is recognized
+afterwards instead — as the variable having moved against the range's direction.
+The statements are one block so that the `continue` repair below carries the
+guard too, and `prev` is a phantom variable, resolved as the parser builds it, so
+that a copy reads its own. The synthesized `break` names the loop's lifetime when
+it has one, since a copy of it can land inside an inner loop.
 
 ## Name resolution
 
