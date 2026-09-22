@@ -7,20 +7,22 @@
 #ifndef nameuse_h
 #define nameuse_h
 
-typedef struct NameList NameList;
-
 // Name use node: every appearance of a name, which name resolution points at
 // the declaration it names. One tag, NameUseTag, throughout; whether the use is
-// a type, a value or a macro is asked of that declaration (nameUseGroup). The
-// name may carry module qualifiers. A member name -- a field, method or
-// operator applied to a value -- is the same node, held in a call's member
-// slot and bound only when type check selects the member against the
-// receiver's type.
+// a type, a value or a macro is asked of that declaration (nameUseGroup). A
+// member name -- a field, method or operator applied to a value -- is the same
+// node, held in a call's member slot and bound only when type check selects the
+// member against the receiver's type.
+//
+// A name reached through a namespace -- 'math3d.Point3' -- is parsed as a
+// member access and collapsed into one of these by fnCallNameRes, which stamps
+// FlagQualified on it. Nothing after that needs to know which namespace it came
+// through, only that it was not written bare: a bare method or field name is
+// lowered to 'self.name' and a qualified one never is.
 typedef struct NameUseNode {
     IExpNodeHdr;
     Name *namesym;          // Pointer to the global name table entry
     INode *dclnode;         // Node that declares this name (NULL until names are resolved)
-    NameList *qualNames;    // Pointer to list of module qualifiers (NULL if none)
 } NameUseNode;
 
 NameUseNode *newNameUseNode(Name *name);
@@ -48,8 +50,6 @@ NodeGroup nameUseGroup(NameUseNode *name);
 // not a name use, and for a name use bound to nothing yet
 int nameUseNames(INode *node, uint16_t dcltag);
 
-void nameUseBaseMod(NameUseNode *node, ModuleNode *basemod);
-void nameUseAddQual(NameUseNode *node, Name *name);
 // Create a member name, to be applied to a value and bound by type check
 NameUseNode *newMemberUseNode(Name *namesym);
 void nameUsePrint(NameUseNode *name);

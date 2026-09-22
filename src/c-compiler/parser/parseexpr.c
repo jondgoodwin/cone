@@ -17,43 +17,18 @@
 #include <stdio.h>
 #include <assert.h>
 
-// Parse a name use, which may be qualified with module names
+// Parse a name use: one identifier, bound to nothing until name resolution.
+// A path through namespaces is written with periods and parses as a chain of
+// member accesses, which fnCallNameRes collapses once it knows what the base
+// name is. Every caller has already established that a name is here.
 INode *parseNameUse(ParseState *parse) {
     NameUseNode *nameuse = newNameUseNode(NULL);
-
-    int baseset = 0;
-    if (lexIsToken(DblColonToken)) {
-        nameUseBaseMod(nameuse, parse->pgmmod);
-        baseset = 1;
+    if (lexIsToken(IdentToken)) {
+        nameuse->namesym = lex->val.ident;
         lexNextToken();
     }
-    while (1) {
-        if (lexIsToken(IdentToken)) {
-            Name *name = lex->val.ident;
-            lexNextToken();
-            // Identifier is a module qualifier
-            if (lexIsToken(DblColonToken)) {
-                // The list is made once, on the first qualifier. Making it again
-                // on the second would discard the first.
-                if (!baseset) {
-                    nameUseBaseMod(nameuse, parse->mod); // relative to current module
-                    baseset = 1;
-                }
-                nameUseAddQual(nameuse, name);
-                lexNextToken();
-            }
-            // Identifier is the actual name itself
-            else {
-                nameuse->namesym = name;
-                break;
-            }
-        }
-        // Can only get here if previous token was double quotes
-        else {
-            errorMsgLex(ErrorNoVar, "Missing variable name after module qualifiers");
-            break;
-        }
-    }
+    else
+        errorMsgLex(ErrorNoVar, "Missing variable name");
     return (INode*)nameuse;
 }
 
@@ -134,7 +109,6 @@ INode *parseTerm(ParseState *parse) {
             return (INode *)node;
         }
     case IdentToken:
-    case DblColonToken:
         return (INode*)parseNameUse(parse);
     case LParenToken:
         {

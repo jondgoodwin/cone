@@ -16,8 +16,13 @@ state are diagnosed. Generation loads.
 | --- | --- |
 | `namesym` | the interned name — compared by pointer identity, never by string |
 | `dclnode` | the declaration it names. **NULL until name resolution**, and NULL for a member name until type check selects the member |
-| `qualNames` | module qualifier list for `a::b::name`, else NULL |
 | `vtype` | the declaration's type, taken during type check |
+
+`FlagQualified` says the name was reached through a namespace — `math3d.Point3`
+— rather than written bare. The path collapse in `fnCallNameRes` stamps it, and
+the two lowerings that insert an implicit `self` read it: neither may fire on a
+name the source qualified. *Which* namespace it came through is not kept,
+because nothing asks.
 
 One tag serves three situations, told apart by `dclnode` and by where the node
 sits:
@@ -48,12 +53,12 @@ the call's `objfn`, and answers as a value from then on.
 | `newNameUseAndDcl` | a working variable plus a use of it, for desugaring |
 | `cloneNameUseNode` | instantiation — calls `cloneDclFix` to re-point at the correspondingly cloned declaration |
 
-`nameUseBaseMod` and `nameUseAddQual` build `qualNames` during parsing.
-
 ## Parse
 
-`parseNameUse` builds it, attaching a `basemod` — the root module for a leading
-`::`, the current module otherwise — and each qualifier.
+`parseNameUse` builds it from one identifier, and that is the whole production.
+A path through namespaces is written with periods, parses as a chain of member
+accesses, and is collapsed by `fnCallNameRes` — see [fncall](fncall.md), "Name
+resolution".
 
 **Some uses arrive already resolved.** The anonymous variables desugaring
 synthesizes — `match`'s subject capture, a bound pattern's value, a lifted
@@ -62,13 +67,14 @@ immediately for these.
 
 ## Name resolution
 
-`nameUseNameRes` has two paths and no scope walk:
+`nameUseNameRes` is one pointer read and no scope walk:
+`name->dclnode = name->namesym->node`. Ordering falls out of hook push order,
+not from a written rule.
 
-- **Unqualified**: `name->dclnode = name->namesym->node`. One pointer read.
-  Ordering falls out of hook push order, not from a written rule.
-- **Qualified**: walk `qualNames` from `basemod` with `namespaceFind`. Each
-  intermediate must be a module or a struct. This **bypasses the hook table**,
-  so it is not shadowed by locals.
+Every name that reaches it is a bare one. A name reached through a namespace
+was bound by the path collapse, and the node it left behind arrives here with
+`dclnode` already set, so the pass returns at once — the same early return the
+pre-resolved desugaring synthesizes take.
 
 That is the whole of it: `dclnode` is set and nothing else on the node changes.
 
@@ -94,10 +100,11 @@ declaration is, and only the declaration can say. The alias exists now
 (`AliasDclNode`), for a method a type holds by folding, and a bare use of one
 answers as the method.
 
-Privacy is checked on the qualified path: a `_`-prefixed name reached through a
-qualifier from outside its module is `ErrorNotPublic`. **The declaration stays
-attached after that diagnostic** — it is the one the program asked for, and
-leaving the use unresolved would hand the next pass a null.
+Privacy is checked where the path is collapsed, not here: a declaration not
+written `pub`, reached through a namespace from outside its module, is
+`ErrorNotPublic`. **The declaration stays attached after that diagnostic** — it
+is the one the program asked for, and leaving the use unresolved would hand the
+next pass a null.
 
 ## Type check
 
@@ -116,7 +123,9 @@ Two entry points, because a type name and a value name want different things.
    here rather than in name resolution, which had no type to work from. It
    synthesizes a resolved `self` from parameter 0 and re-reads the name as a
    member. Outside a method there is no receiver, so it is `ErrorUnkName`: "there
-   is no self here to reach it through."
+   is no self here to reach it through." **Bare is the whole of the condition:
+   `FlagQualified` excludes a field named through its type, `Gadget.w`, which
+   asked for that type's field and not for this method's receiver.**
 3. **Demand the declaration.** `inodeTypeCheckAny` on `dclnode` — this is what
    puts the work in dependency order rather than source order.
 4. **Circularity.** A declaration still under check whose type is *still*

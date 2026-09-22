@@ -23,7 +23,7 @@ ImportNode *newImportNode() {
 void importPrint(ImportNode *node) {
     inodeFprint("import %s", node->module? &node->module->namesym->namestr : "stdio");
     if (node->foldall)
-        inodeFprint("::*");
+        inodeFprint(".*");
 }
 
 // The name under which a wildcard import folds a node of the source module, or

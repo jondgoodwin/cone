@@ -1,31 +1,25 @@
-// A path with two qualifiers, 'mod::Type::name', reaching a static function
-// through the module that declares the type, and the same path rooted.
+// A path with two hops, 'mod.Type.name', reaching a static function through
+// the module that declares the type.
 //
-// A qualifier list is built one name at a time as the parser reads the path,
-// and two defects between them broke every path with more than one qualifier.
-// The parser made a fresh list on each relative qualifier rather than only the
-// first, so 'modulesyms::Gadget::make' reached name resolution as
-// 'Gadget::make' relative to this module and was refused with "Namespace
-// Gadget does not exist". And the list stored its second name two slots along
-// instead of one, so even the rooted form, which makes its list once, left the
-// slot the walk reads unset. This scenario is what fails without the fixes,
-// and it pins the one-qualifier and two-qualifier forms side by side so a
-// regression in either shows.
+// A path is written with periods and parses as a chain of member accesses, one
+// node per hop, and name resolution collapses each hop as soon as it knows what
+// the name before it binds to. The two-hop form is the one that exercises the
+// collapse feeding itself: the inner hop has to leave a resolved type name
+// behind for the outer hop to find a namespace in. This pins the one-hop and
+// two-hop forms side by side so a regression in either shows.
 //
 // It compiles rather than runs for the reason module-qualified.cone does: the
 // imported module's bodies are not generated here. The symbol check records
-// that the two-qualifier call lowered to the type's static function.
+// that the two-hop call lowered to the type's static function.
 //
 // The imported module is modulesyms.cone.
 
 import modulesyms;
 
 fn nested() i32 {
-  // One qualifier, then the type as the final component
-  imm made modulesyms::Gadget = modulesyms::Gadget[1];
-  // Two qualifiers: module, then type, then the static function
-  imm built = modulesyms::Gadget::make(2);
-  // The same path from the root
-  imm rooted = ::modulesyms::Gadget::make(3);
-  made.x + built.x + rooted.x;
+  // One hop, with the type as the final name
+  imm made modulesyms.Gadget = modulesyms.Gadget[1];
+  // Two hops: module, then type, then the static function
+  imm built = modulesyms.Gadget.make(2);
+  made.x + built.x;
 }

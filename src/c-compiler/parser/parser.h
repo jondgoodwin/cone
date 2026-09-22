@@ -13,7 +13,6 @@ typedef struct ConeOptions ConeOptions;
 
 typedef struct ParseState {
     ProgramNode *pgm;       // Program node
-    ModuleNode *pgmmod;     // Root module for program
     ModuleNode *mod;        // Current module
     INsTypeNode *typenode;  // Current type
     int inrettype;          // Non-zero while parseFnSig reads a return type, where a '{' opens the declared function's body
@@ -54,8 +53,10 @@ INode *parseLifetime(ParseState *parse, int stmtflag);
 // parseexpr.c
 INode *parseSimpleExpr(ParseState *parse);
 INode *parseAnyExpr(ParseState *parse);
-// Parse a name use, which may be qualified with module names
+// Parse a name use: one identifier
 INode *parseNameUse(ParseState *parse);
+// Parse a '.'-based member access or namespace hop, applied to an existing node
+INode *parseDotCall(ParseState *parse, INode *node, uint16_t flags);
 // Parse a term: literal, identifier, etc.
 INode *parseTerm(ParseState *parse);
 // Parse a prefix operator

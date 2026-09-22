@@ -370,7 +370,7 @@ subprograms, and the file name is hardcoded.
 and the root module contributes no name to it — [Names and Namespaces](names-and-namespaces.md),
 "Symbols". So compiling `modulesub.cone` directly makes it the root and emits
 `@scaleInt`, bare; compiling a `main.cone` that imports it makes it an imported
-module and emits `@_CNvC9modulesub8scaleInt`, `modulesub::scaleInt`. The two
+module and emits `@_CNvC9modulesub8scaleInt`, `modulesub.scaleInt`. The two
 object files never resolve against each other. Compounding it, an ordinary
 imported module does not get `FlagGenMod`,
 so only a `declare` is emitted for it. Separate compilation is what has to

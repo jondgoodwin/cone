@@ -68,7 +68,6 @@ enum TokenTypes {
     // Punctuation tokens
     SemiToken,         // ';'
     ColonToken,        // ':'
-    DblColonToken,     // '::'
     LCurlyToken,       // '{'
     RCurlyToken,       // '}'
     LBracketToken,     // '['

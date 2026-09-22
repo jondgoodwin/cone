@@ -322,7 +322,7 @@ void genlGlobalSyms(GenState *gen, INode *node) {
                 // no body, and a default was cloned into each implementer, which
                 // owns and names the copy. Its static functions are its own --
                 // nothing inherits or dispatches them -- so they are generated
-                // here or nowhere, and 'Trait::name()' loaded a null without this.
+                // here or nowhere, and 'Trait.name()' loaded a null without this.
                 if (istrait && ((*nodesp)->flags & FlagMethFld))
                     continue;
                 genlGlobalSyms(gen, *nodesp);

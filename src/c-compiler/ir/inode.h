@@ -245,6 +245,14 @@ enum NodeTags {
 #define FlagUnkType   0x0001        // ULit: type is unspecified and may be converted to other number
 
 #define FlagFirstAssign 0x0080      // VarNameUse: assignment target held no prior value
+// A name reached through a namespace is written 'math3d.Point3', which parses as
+// a member access and is collapsed into a single bound name use by fnCallNameRes.
+// This flag is all that survives of the path, and it is all that is wanted: the
+// two lowerings that put an implicit 'self' in front of a bare method or field
+// name must not fire on a name the source qualified. 0x0001 is free on a name
+// use -- the blocks it belongs to are the declaration flags and FnCall's, and a
+// NameUseNode is neither.
+#define FlagQualified 0x0001        // NameUse: reached through a namespace, not written bare
 
 // Flags used across all types
 #define MoveType           0x0001  // Type's values impose move semantics (vs. copy)

@@ -845,12 +845,9 @@ void lexNextTokenx() {
         case ')': 
             lexReturnPuncTok(RParenToken, 1);
 
-        // ':' and '::'
+        // ':' and ':='
         case ':':
-            if (*(srcp + 1) == ':') {
-                lexReturnPuncTok(DblColonToken, 2);
-            }
-            else if (*(srcp + 1) == '=') {
+            if (*(srcp + 1) == '=') {
                 lexReturnPuncTok(LAssgnToken, 2);
             }
             else {

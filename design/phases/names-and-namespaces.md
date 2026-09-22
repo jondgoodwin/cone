@@ -67,7 +67,7 @@ changing it.
 
 | C file | Name/namespace capability |
 | --- | --- |
-| `src/c-compiler/parser/parseexpr.c` | Parses unqualified, relative-qualified, and root-qualified name paths plus dotted member names. |
+| `src/c-compiler/parser/parseexpr.c` | Parses a name as one identifier, and everything after a period as a member access — a path and a member of a value are the same production here. |
 | `src/c-compiler/parser/parsemod.c` | Parses module-level declarations, `include`, `import`, and wildcard folding; loads/reuses modules, names each one, and establishes module hooks. |
 | `src/c-compiler/parser/parsetype.c` | Parses struct/trait/union members and inserts fields and methods into the type namespace. |
 | `src/c-compiler/ir/stmt/program.c` | Owns the program's module list, reuses modules by interned name, and initiates name resolution for every module. |
@@ -78,7 +78,7 @@ changing it.
 
 | C file | Name/namespace capability |
 | --- | --- |
-| `src/c-compiler/ir/exp/nameuse.c` | Represents name and member uses, stores qualification paths, resolves qualified paths through module/type namespaces, resolves unqualified names through hooks, and answers what a use is — type, value, macro — from the declaration it is bound to (`nameUseGroup`, `nameUseNames`). Binding a bare field name is here; **lowering it to `self.field` is `nameUseTypeCheck`'s**, because building that call node needs a type to check it against. |
+| `src/c-compiler/ir/exp/nameuse.c` | Represents name and member uses, resolves a bare name through the hooks, and answers what a use is — type, value, macro — from the declaration it is bound to (`nameUseGroup`, `nameUseNames`). Binding a bare field name is here; **lowering it to `self.field` is `nameUseTypeCheck`'s**, because building that call node needs a type to check it against. Walking a path through module and type namespaces is `fncall.c`'s, with the collapse. |
 | `src/c-compiler/ir/exp/block.c` | Pushes lexical scope hooks, binds labeled lifetimes, resolves statements in declaration order, and restores outer bindings on block exit. |
 | `src/c-compiler/ir/stmt/fndcl.c` | Establishes function generic-parameter and value-parameter bindings while resolving signatures and bodies. |
 | `src/c-compiler/ir/stmt/vardcl.c` | Resolves an initializer before binding its local variable, enforces same-scope uniqueness, and permits nested shadowing through scope hooks. |
@@ -109,11 +109,11 @@ Function parameters, generic parameters, blocks, and nested blocks establish lex
 
 The compiler currently implements lexical lookup by temporarily hooking declarations onto the globally interned `Name` while traversing the scope's IR. It restores the previous binding when leaving the scope. This is a lookup optimization, not a reason for lexical bindings to differ semantically from namespace NameDefs.
 
-Unqualified lookup selects the nearest active binding. Function parameters may therefore shadow names from the containing type or module, and a local in an inner block may shadow a parameter or outer local. A second declaration of the spelling within the same lexical scope is an error. Explicit qualification remains available to reach a hidden namespace member where the language provides a qualified form.
+Unqualified lookup selects the nearest active binding. Function parameters may therefore shadow names from the containing type or module, and a local in an inner block may shadow a parameter or outer local. A second declaration of the spelling within the same lexical scope is an error. A hidden member of a *type* is still reachable, through `self` or through the type's own name; a hidden member of the enclosing *module* is not reachable at all, because a path begins with the name of the namespace it walks and a module has no name of its own until it carries a `mod` header.
 
 ### Types
 
-Named types expose a member namespace. The documented model includes fields, methods, static functions, and potentially nested types. Instance members use `.`, while static/type members use `::`.
+Named types expose a member namespace. The documented model includes fields, methods, static functions, and potentially nested types. One operator reaches all of them: `p.x` is a member of a value, `Point.make` a member of the type, and what the name before the period binds to is what tells them apart.
 
 Current compiler behavior:
 
@@ -177,18 +177,19 @@ Visibility is checked on the name the caller uses, so an overload set and its ca
 
 Extending a type's overload sets from an extension is intended, but its ownership and collision rules are deferred until extensions are designed. Generic candidates and merging matching `extern` declarations with implementations are likewise deferred; a generic declaration may not currently name an overload set at all.
 
-## Lookup and qualified paths
+## Lookup and paths
 
-An unqualified name is resolved through nested lexical contexts and then the enclosing namespace. A qualified path uses `::` to walk namespaces.
+An unqualified name is resolved through nested lexical contexts and then the enclosing namespace. A path walks namespaces with the period, which is also how a member of a value is reached: one operator, and which of the two a period is depends entirely on what the name before it binds to.
 
 Current compiler behavior:
 
 - `name` begins in the active lexical/module context.
-- `module::name` begins in the current module.
-- `::module::name` begins in the program's root module.
-- Qualification supports multiple components.
-- Each intermediate component must currently resolve to a module or struct-like type.
-- A resolved `NameUseNode` points directly to a heterogeneous declaration node. It keeps its one tag; whether it is a type, a value, a macro or a generic parameter is asked of that node (`nameUseGroup`, `nameUseNames`), never stamped on the use.
+- `module.name` begins wherever `module` is in scope, which is the ordinary bare-name rule and nothing else. A local, a parameter or a type member of that spelling therefore hides the module, and there is no way to reach past it.
+- There is no root anchor and no way to name the enclosing module: a module has no name of its own until it carries a `mod` header, and a path starts with the name of the namespace it walks.
+- A path may have any number of hops, each of which must resolve to a module or a struct-like type. A hop through anything else — an alias, a number type, a generic instance, a generic parameter — is `ErrorUnkName` at type check.
+- A resolved `NameUseNode` points directly to a heterogeneous declaration node. It keeps its one tag; whether it is a type, a value, a macro or a generic parameter is asked of that node (`nameUseGroup`, `nameUseNames`), never stamped on the use. The one thing stamped on it is `FlagQualified`, which says the name was reached through a namespace rather than written bare.
+
+A path is parsed as a chain of member accesses and collapsed during name resolution, hop by hop, by `fnCallNameResPath` — [fncall](../nodes/fncall.md), "The path collapse", has the mechanism and the reason it cannot wait for type check.
 
 The NameDef design instead makes lookup return a stable NameDef. A resolved reference remains one kind of `NameUse` node pointing to that definition — as it already does — but the definition or its IR value explicitly indicates whether it is usable as a type, runtime value, callable, macro, namespace, generic, or other semantic kind, and the surrounding use validates that role, where today the use classifies the declaration by its tag.
 
@@ -214,7 +215,7 @@ A declaration is private to the namespace that owns it unless it is written `pub
 - `pub` has one meaning wherever it appears: this entry is visible from outside the namespace that owns it. A local declaration has no outside to be visible from, so `pub` on one is `ErrorBadPub`; so is `pub` before `import` or `include`, whose meaning as re-export belongs to the module work.
 - A name's spelling says nothing about its visibility. A leading underscore is a character like any other.
 
-The compiler enforces this on the paths that can reach a private name: `nameUseNameRes` reports `ErrorNotPublic` for a private declaration reached through a module qualifier from outside its module, `importNameRes` skips private nodes when folding, `fnCallLowerMethod` refuses a private member on a receiver that is not `self`, and `typeLitStructReorder` refuses a value for a private field outside the type's methods. The parser sets `FlagPub` on whatever declaration the keyword precedes; where a declaration joins its namespace (`dclInfoJoin`) the flag is read once into its `DclPrivate` bit, and every check after that asks `inodeIsPrivate`, which answers from the bit for a declaration that carries `DclInfo` and from the flag for a node that carries none — a field, a const, a macro, a typedef, an overload name. Generation reads the same bit — see "Symbols".
+The compiler enforces this on the routes that can reach a private name: `fnCallNameResPath` reports `ErrorNotPublic` for a private declaration reached by a path from outside its module, `importNameRes` skips private nodes when folding, `fnCallLowerMethod` refuses a private member on a receiver that is not `self`, and `typeLitStructReorder` refuses a value for a private field outside the type's methods. The parser sets `FlagPub` on whatever declaration the keyword precedes; where a declaration joins its namespace (`dclInfoJoin`) the flag is read once into its `DclPrivate` bit, and every check after that asks `inodeIsPrivate`, which answers from the bit for a declaration that carries `DclInfo` and from the flag for a node that carries none — a field, a const, a macro, a typedef, an overload name. Generation reads the same bit — see "Symbols".
 
 An overload name's visibility is its candidates': the first candidate declares it, and every later candidate must agree (`ErrorPrivOverload`, either way round). A compiler-defined intrinsic candidate counts as `pub` for the name and is exempt from agreeing, which is how the core types keep a private `_neg` behind a pub `-`. One consequence is deliberate and worth knowing: **visibility is checked on the binding the caller's name reaches**, not on the candidate overload selection then picks, which is why a pub overload name may not hold a private concrete candidate — through the pub name the private one would be reachable.
 
@@ -224,18 +225,18 @@ Visibility should belong to the original definition or declaration, while access
 
 `include` contributes declarations to the current module. It does not introduce a namespace.
 
-Plain `import math` binds the imported module as `math`; public members are intended to be accessed as `math::name`.
+Plain `import math` binds the imported module as `math`; public members are intended to be accessed as `math.name`.
 
 Documented folding supports:
 
 - Selectively bringing a member into the importing namespace.
-- Renaming while folding, such as importing `math3d::Point3` as `Point`.
-- Folding all public names with `::*`.
+- Renaming while folding, such as importing `math3d.Point3` as `Point`.
+- Folding all public names with `.*`.
 - Folding any category of name, subject to the importing namespace's single collision domain.
 
 Current compiler behavior is narrower:
 
-- Plain module import and wildcard `::*` folding are parsed.
+- Plain module import and wildcard `.*` folding are parsed.
 - Selective folding and `as` renaming are not implemented.
 - Wildcard folding inserts the imported declaration's existing IR node directly into the receiving module namespace.
 - Imported modules are loaded once and reused.
@@ -365,7 +366,7 @@ Rules for Cone-consumed names; C FFI names have their own (S5).
   nothing carries a suffix, so such a module cannot declare a generic. The flag
   may carry a literal prefix — `SDL_` — prepended to every name, written by the
   author and never derived. The flag affects the symbol only; resolution is
-  through the ordinary module, so a caller writes `sdl::Init`. Inbound (a C
+  through the ordinary module, so a caller writes `sdl.Init`. Inbound (a C
   library's symbols) and outbound (a Cone declaration published to C) are one
   mechanism in two directions, and `main` is the existing outbound case.
   [differs: there is no module flag and no literal prefix; the regime is per
@@ -456,7 +457,7 @@ are read by the demangler and spelled by nothing.
 
 **Paths.** The root module contributes nothing, so a component whose parent is
 the root has an empty parent path: `Nv` followed by a digit is a root fn's
-identifier, `NvNt2Pt3get` is `Pt::get`. `I` wraps the instance's own component
+identifier, `NvNt2Pt3get` is `Pt.get`. `I` wraps the instance's own component
 — `INv4pickxE` — and an instance that is an owner carries its arguments in
 place, `NvINt6HolderxE5tally`. A method of a generic type's instance carries
 the instantiating node its owner's cloning stamped on it, which is the owner's
@@ -500,26 +501,26 @@ demangler in `test/run.py`:
 | Cone declaration | Symbol | Read as |
 | --- | --- | --- |
 | `fn plainPub()` in the root, `fn main`, root `mut pubGlobal` | `@plainPub` `@main` `@pubGlobal` | bare: nothing to encode (D2) |
-| `fn subFn()` in file module `sub` | `_CNvC3sub5subFn` | `sub::subFn` |
-| `mut subGlobal` in module `sub` | `_CNvC3sub9subGlobal` | `sub::subGlobal` |
-| `struct Pt { fn get(self) }` in the root | `_CNvNt2Pt3get` | `Pt::get` — the root contributes nothing |
-| `SubPt::get` in module `sub` | `_CNvNtC3sub5SubPt3get` | `sub::SubPt::get` |
-| private `SubPt::_hid` | `_CNvNtC3sub5SubPt4__hid` | `sub::SubPt::_hid` — the separator `_` is required before a name beginning with `_` or a digit, so two underscores; privacy is a fact, not a spelling |
+| `fn subFn()` in file module `sub` | `_CNvC3sub5subFn` | `sub.subFn` |
+| `mut subGlobal` in module `sub` | `_CNvC3sub9subGlobal` | `sub.subGlobal` |
+| `struct Pt { fn get(self) }` in the root | `_CNvNt2Pt3get` | `Pt.get` — the root contributes nothing |
+| `SubPt.get` in module `sub` | `_CNvNtC3sub5SubPt3get` | `sub.SubPt.get` |
+| private `SubPt._hid` | `_CNvNtC3sub5SubPt4__hid` | `sub.SubPt._hid` — the separator `_` is required before a name beginning with `_` or a digit, so two underscores; privacy is a fact, not a spelling |
 | root generic `fn pick[T](a T, b T)` at `i64` | `_CINv4pickxE` | `pick[i64]` — the type *argument*, once |
 | `fn pickSecond[T,U]` at `i64`, `f64` | `_CINv10pickSecondxdE` | `pickSecond[i64,f64]` |
-| `Holder[i64]::tally` | `_CNvINt6HolderxE5tally` | `Holder[i64]::tally` — the instance is the owner |
-| `Meter`'s default `reading` inherited by `Gauge` | `_CNvNt5Gauge7reading` | `Gauge::reading` — spelled as an override written there |
-| the `drop` the compiler synthesizes for `Bundle` | `_CNvNt6Bundle4drop` | `Bundle::drop` |
-| `Vec::-`, `Vec::+=`, `List::&[]` | `_CNvNt3Vecomi`, `_CNvNt3VecopL`, `_CNvNt4Listorx` | `Vec::-`, `Vec::+=`, `List::&[]` |
+| `Holder[i64].tally` | `_CNvINt6HolderxE5tally` | `Holder[i64].tally` — the instance is the owner |
+| `Meter`'s default `reading` inherited by `Gauge` | `_CNvNt5Gauge7reading` | `Gauge.reading` — spelled as an override written there |
+| the `drop` the compiler synthesizes for `Bundle` | `_CNvNt6Bundle4drop` | `Bundle.drop` |
+| `Vec.-`, `Vec.+=`, `List.&[]` | `_CNvNt3Vecomi`, `_CNvNt3VecopL`, `_CNvNt4Listorx` | `Vec.-`, `Vec.+=`, `List.&[]` |
 | `Gauge`'s vtable for trait `Meter` | `_CYNt5GaugeNt5Meter` | `Gauge as Meter (vtable)` |
-| the thunk filling `Powered`'s `thrust` slot in `Car`'s vtable, `thrust` being folded from a field | `_CYNt3CarNt7Powered6thrust` | `Car as Powered::thrust (thunk)` — a method in everything but name and namespace |
+| the thunk filling `Powered`'s `thrust` slot in `Car`'s vtable, `thrust` being folded from a field | `_CYNt3CarNt7Powered6thrust` | `Car as Powered.thrust (thunk)` — a method in everything but name and namespace |
 | `Meter`'s vtable list | `_CLNt5Meter` | `Meter (vtable list)` |
-| the vtable of `Variant1`, a variant of tagged trait `Extense` | `_CYNtNt7Extense8Variant1Nt7Extense` | `Extense::Variant1 as Extense (vtable)` — a variant is owned by its trait |
+| the vtable of `Variant1`, a variant of tagged trait `Extense` | `_CYNtNt7Extense8Variant1Nt7Extense` | `Extense.Variant1 as Extense (vtable)` — a variant is owned by its trait |
 | `passThrough[T]` at `&opaq fn(i64) i64` | `_CINv11passThroughR04opaqFxExE` | `passThrough[&opaq fn(i64) i64]` — borrowed, so the region is `0` |
 | `passThrough` at `(i64,i64)`, at `[2] i64`, at `void` | `_CINv11passThroughTxxEE`, `_CINv11passThroughAx2_E`, `_CINv11passThroughuE` | `passThrough[(i64,i64)]`, `passThrough[[2] i64]`, `passThrough[void]` |
-| `fn größe(self)` and `` fn `a b`(self) `` on `Umlaut` | `_CNvNt6Umlautu9_gre_6ka8i`, `_CNvNt6Umlautu8_ab_eh24y` | `Umlaut::größe`, ``Umlaut::`a b` `` — punycode, read back in backticks where source needs them |
+| `fn größe(self)` and `` fn `a b`(self) `` on `Umlaut` | `_CNvNt6Umlautu9_gre_6ka8i`, `_CNvNt6Umlautu8_ab_eh24y` | `Umlaut.größe`, ``Umlaut.`a b` `` — punycode, read back in backticks where source needs them |
 | `extern fn abs`, `extern system GetTickCount` | `@abs`, `@GetTickCount` | C names, bare (S5) |
-| `modulex::y_z` and `modulex_y::z` | `_CNvC7modulex3y_z`, `_CNvC9modulex_y1z` | distinct by construction |
+| `modulex.y_z` and `modulex_y.z` | `_CNvC7modulex3y_z`, `_CNvC9modulex_y1z` | distinct by construction |
 | `modulesub.cone` compiled as root, then imported | `@scaleInt` vs `_CNvC9modulesub8scaleInt` | two spellings for one declaration; a module name declared in source is what would reunite them |
 
 #### Decisions
@@ -547,7 +548,7 @@ punycode over the safe basic set, so a non-ASCII name is byte-identical to v0
 and a backticked ASCII name, which v0 cannot spell, encodes instead of failing;
 and `o<code>` for operator methods. Not Rust's trait-method names (`add`,
 `index`) for operators: a user may declare a method literally named `add`, and
-then `Vec::+` and `Vec::add` spell one symbol. Not punycoding operators
+then `Vec.+` and `Vec.add` spell one symbol. Not punycoding operators
 through `u`: decodable, but unreadable in an object file, and the object file
 is meant to be read.
 
@@ -555,7 +556,7 @@ is meant to be read.
 arguments and never the parameter types (S7); an instance as owner carries its
 arguments (S4). Not Rust's `M`/`X` impl paths for methods: Cone's methods live
 in the type's namespace, so `Nt` then `Nv` says it directly and reads as
-`Type::method`; the impl productions encode a Rust concept Cone does not have.
+`Type.method`; the impl productions encode a Rust concept Cone does not have.
 
 **D5 · Types.** v0's letters where the type coincides, and Cone's own `R`,
 `S`, `V` and `P` for what v0 cannot say, region and permission spelled as the
@@ -595,7 +596,7 @@ linkage case (L5).
 
 **D10 · The demangler** lives in `test/run.py`, and `symbols` is a check
 target: one line per global with its linkage and its demangled name, so the
-suite asserts `Holder[i64]::tally` rather than bytes. Not a C demangler in
+suite asserts `Holder[i64].tally` rather than bytes. Not a C demangler in
 `conec`: a second implementation of the grammar to maintain before the first
 has settled, with no second consumer to justify it.
 
@@ -702,15 +703,15 @@ which is where the `symbols` check target reads them.
 | root `fn`, public or private | `define internal i64 @plainPub(i64 %0) comdat {` · `define internal i64 @_plainPriv(i64 %0) comdat {` — bare, nothing to encode | internal · `nodeduplicate` |
 | `fn main` | `define i32 @main() comdat {` — the one definition `genlLinkage` leaves external, by its bare name | external · `nodeduplicate` |
 | root global: `mut`, `imm`, private | `@pubGlobal = internal global i64 5, comdat` · `@constGlobal = internal constant i64 7, comdat` · `@_privGlobal = internal global i64 6, comdat` | internal · `nodeduplicate` |
-| struct method, static fn, private method | `@_CNvNt2Pt3get` · `@_CNvNt2Pt4make` · `define internal i32 @_CNvNt2Pt4__hid(%Pt* %0) comdat {` — `Pt::get`, `Pt::make`, `Pt::_hid` | internal · `nodeduplicate` |
-| imported module's `fn` | `declare i64 @_CNvC3sub5subFn(i64)` — `sub::subFn`; a private top-level `fn` or global leaves no symbol | external · none |
+| struct method, static fn, private method | `@_CNvNt2Pt3get` · `@_CNvNt2Pt4make` · `define internal i32 @_CNvNt2Pt4__hid(%Pt* %0) comdat {` — `Pt.get`, `Pt.make`, `Pt._hid` | internal · `nodeduplicate` |
+| imported module's `fn` | `declare i64 @_CNvC3sub5subFn(i64)` — `sub.subFn`; a private top-level `fn` or global leaves no symbol | external · none |
 | imported module's global | `@_CNvC3sub9subGlobal = external global i64`; `imm` is `external constant` | external · none |
 | method on a struct in an imported module | `declare i32 @_CNvNtC3sub5SubPt3get(%SubPt*)`; the private method **is** declared, `declare i32 @_CNvNtC3sub5SubPt4__hid(%SubPt*)`, because the privacy filter in `genlProgram` tests only the module's top-level node | external · none |
 | the same file as root and as import | `define internal i64 @scaleInt(i64 %0) comdat {` as root; `declare i64 @_CNvC9modulesub8scaleInt(i64)` when imported — one declaration, two symbols, depending on which compilation the module was the root of | |
 | instance of a generic `fn` | `define internal i64 @_CINv4pickxE(i64 %0, i64 %1) comdat {` — `pick[i64]` | internal · `nodeduplicate` |
-| method of a generic type's instance | `define internal i64 @_CNvINt6HolderxE5tally(%Holder %0) comdat {` — `Holder[i64]::tally`; the instance is the owner, so `fn tally(self) i64` is told apart across instances | internal · `nodeduplicate` |
-| trait default cloned into an implementer | `define internal i32 @_CNvNt5Gauge7reading(%Gauge* %0) comdat {` — spelled exactly as an override written there, `Gauge::reading`; no arguments, since a copy is not an instance | internal · `nodeduplicate` |
-| synthesized drop function | `_CNvNt6Bundle4drop` — `Bundle::drop` | as its type's methods |
+| method of a generic type's instance | `define internal i64 @_CNvINt6HolderxE5tally(%Holder %0) comdat {` — `Holder[i64].tally`; the instance is the owner, so `fn tally(self) i64` is told apart across instances | internal · `nodeduplicate` |
+| trait default cloned into an implementer | `define internal i32 @_CNvNt5Gauge7reading(%Gauge* %0) comdat {` — spelled exactly as an override written there, `Gauge.reading`; no arguments, since a copy is not an instance | internal · `nodeduplicate` |
+| synthesized drop function | `_CNvNt6Bundle4drop` — `Bundle.drop` | as its type's methods |
 | vtable | `@_CYNt5GaugeNt5Meter = internal constant %"Meter:Vtable" { ... }, comdat` — `Gauge as Meter` | internal · `nodeduplicate` |
 | vtable list | `@_CLNt5Meter = internal constant [2 x %"Meter:Vtable"*] [...], comdat` — one per trait, so LLVM never uniquifies one | internal · `nodeduplicate` |
 | `extern` | `declare i32 @abs(i32)` — bare inside a module too | external · none |
@@ -721,7 +722,7 @@ which is where the `symbols` check target reads them.
 | overload name | no symbol; each candidate is spelled as an ordinary `fn`, and a public name holds only public candidates (L5) | |
 | `stdio` | defined in every importer, since `stdio` is a generating module: `@_CNvC5stdio5print = internal global %IOStream zeroinitializer, comdat`, `define internal %void @_CNvNtC5stdio8IOStream9appendInt(...) comdat {` — internal, so two such objects cannot clash | internal · `nodeduplicate` |
 | corelib's `extern fn malloc`, `free` from `genlFree`, `llvm.trap`, `llvm.sqrt.*` | `declare i8* @malloc(i64)` and so on — C and LLVM names, minted outside these rules | external · none |
-| `a_b::c` and `a::b_c` | `_CNvC3a_b1c` and `_CNvC1a3b_c` — distinct by construction | |
+| `a_b.c` and `a.b_c` | `_CNvC3a_b1c` and `_CNvC1a3b_c` — distinct by construction | |
 | an import cycle back to the root | the root is found by name, and each root declaration is defined once | |
 
 Read on COFF: `nodeduplicate` is selection 1, `internal` becomes `Static`, and
@@ -742,3 +743,5 @@ would see little but `main`.
 - General aliases beyond `typedef` and the folded-member alias are not implemented.
 - Generic, macro, union, and metaprogram namespace behavior is partly implemented, incomplete, or aspirational. Delegated inheritance is built; see "Folding into a type" above.
 - Packages organize importable libraries but are not yet defined as a distinct namespace layer.
+- A path may only pass through a module or a struct-like type. One whose base is an alias, a number type, a generic instance or a generic parameter is refused at type check, because none of those names a namespace at the point the collapse runs. Finishing those at type check, where they do, is the natural other half of the collapse and is not built.
+- There is no way to name the module a declaration is in, so a module-level name hidden by a local or by a type member cannot be reached. The `mod` header, which would give the module a name, is not built.

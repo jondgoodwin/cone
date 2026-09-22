@@ -36,7 +36,8 @@ ModuleNode *dclInfoGetModule(INode *node) {
     return (ModuleNode*)node;
 }
 
-// Print the owner chain outermost first, '::'-separated. Returns whether anything was printed:
+// Print the owner chain outermost first, '.'-separated, as the source writes a path.
+// Returns whether anything was printed:
 // a module that contributes no name to the chain (the root) and the compiler's unnamed
 // pointer/reference types contribute nothing, as in nameOwnerChain (name.c).
 static int dclInfoPrintChain(INode *owner) {
@@ -48,7 +49,7 @@ static int dclInfoPrintChain(INode *owner) {
     Name *name = isNamedNode(owner) ? inodeGetName(owner) : NULL;
     if (name == NULL)
         return printed;
-    inodeFprint(printed ? "::%s" : "%s", &name->namestr);
+    inodeFprint(printed ? ".%s" : "%s", &name->namestr);
     return 1;
 }
 

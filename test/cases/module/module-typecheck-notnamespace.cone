@@ -1,0 +1,41 @@
+// A period whose left side names neither a module nor a type.
+//
+// A path and a member access are written the same way, so the decision is name
+// resolution's and it is made from what the name before the period binds to: a
+// module or a type is a namespace to walk, and anything else is a receiver to
+// reach into. These two are the anything else, and so they reach type check as
+// ordinary member accesses and fail there, against the receiver's type.
+//
+// That is the trade the one operator makes, and it is worth pinning: under a
+// separate qualifier operator the compiler knew a namespace was meant and could
+// say "not a valid namespace". It cannot know now, and the message it gives
+// instead is the one for what the source actually wrote.
+//
+// Type-check stage: name resolution finds every name here.
+
+import modulesub;
+
+fn notFolded() i64 {
+  7i64;
+}
+
+mut shared i64 = 3i64;
+
+// A function is not a namespace, so this is a method call on a function value
+fn functionAsBase() {
+  notFolded.plain(7i64);   //~ ErrorNoMeth:3 "A function may not be called using indexing or a method"
+}
+
+// Nor is a global, so this is a field access on an i64
+fn globalAsBase() {
+  shared.x;                //~ ErrorNoMbr:9 "Method or field `x` not found"
+}
+
+// A path's first name is found the way any bare name is, so a local of the
+// module's spelling hides the module and the period reaches into the local.
+// Under a separate qualifier operator the module won whatever was in scope;
+// one operator means one lookup rule, and this is what it costs.
+fn localShadowsModule() {
+  imm modulesub i64 = 1i64;
+  modulesub.plain(7i64);   //~ ErrorNoMbr:12 "Method or field `plain` not found"
+}
