@@ -1,0 +1,184 @@
+// A typedef is a transparent alias, so dereference reads it exactly as it reads
+// the type it names: '*p' for a 'p' declared through an alias of a reference or
+// a pointer, the deref the compiler injects for a field access or a method call
+// through one, and a write through '*p'.
+//
+// Nothing resolves the alias for the code. A declaration keeps the name it was
+// written with as its 'vtype' -- the IR dump prints 'imm p Ro' -- so every site
+// that asks what a variable holds must resolve it with itypeGetTypeDcl.
+// derefTypeCheck read a raw 'vtype', so '*p' through an alias matched neither
+// RefTag nor PtrTag and was refused outright; derefInject tested the resolved
+// type but then read 'vtexp' off the raw one, which is a NameUseNode read as a
+// RefNode -- landing on its 'dclnode' -- so the injected deref came out typed as
+// the reference rather than as what it points at. That cost the two paths that
+// consult the injected deref's own type: the retry that lets a receiver held
+// through a reference satisfy a method declaring 'self' by value, and an
+// operator reaching a value's arithmetic through a reference.
+//
+// Every spelling is printed, because a dereference that compiles is not a
+// dereference that read the right place. Each alias case is followed by the same
+// spelling written with the concrete type, which must answer identically -- that
+// pairing is the whole assertion, so dropping either half of a pair costs it.
+//
+// An owning reference and a raw pointer appear here although region and safety
+// own them. They are not here for ownership or for pointer safety: the deref
+// site resolves an alias whatever the alias names, and the four kinds reach two
+// different arms of the same two functions. A spelling left out is a spelling
+// unmeasured.
+
+import stdio::*;
+
+struct Pair {
+  pub x i32;
+  pub y i32;
+
+  pub fn byval(self Pair) i32 { self.x + self.y; }
+  pub fn getx(self &) i32 { self.x; }
+  pub fn sety(self &mut, n i32) { self.y = n; }
+}
+
+typedef Ro &i32;
+typedef Mu &mut i32;
+typedef Pt *i32;
+typedef Sole +so i32;
+typedef Counted +rc-mut i32;
+typedef Again Ro;
+typedef PRef &Pair;
+typedef PMut &mut Pair;
+
+imm global = 60;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// -------- explicit dereference, one kind per arm --------
+
+fn readRo() {
+  mut a = 3;
+  imm p Ro = &a;
+  imm q &i32 = &a;
+  show("alias-ro", i64[*p]);
+  show("concrete-ro", i64[*q]);
+}
+
+fn readMut() {
+  mut a = 4;
+  imm p Mu = &mut a;
+  show("alias-mut", i64[*p]);
+  mut b = 4;
+  imm q &mut i32 = &mut b;
+  show("concrete-mut", i64[*q]);
+}
+
+fn readPtr() {
+  mut a = 5;
+  imm p Pt = (&mut a) as *i32;
+  imm q *i32 = (&mut a) as *i32;
+  show("alias-ptr", i64[*p]);
+  show("concrete-ptr", i64[*q]);
+}
+
+// The owning kinds: 'so' is the sole owner, 'rc' is counted. Both are RefTag,
+// so both reach the same arm, and both are read through '*' the same way.
+fn readOwning() {
+  imm s Sole = +so 6;
+  imm c Counted = +rc-mut 7;
+  imm s2 +so i32 = +so 6;
+  imm c2 +rc-mut i32 = +rc-mut 7;
+  show("alias-owning", i64[*s] + i64[*c]);
+  show("concrete-owning", i64[*s2] + i64[*c2]);
+}
+
+// An alias of an alias: resolution follows the chain, it does not take one step
+fn readNested() {
+  mut a = 8;
+  imm p Again = &a;
+  show("alias-nested", i64[*p]);
+}
+
+// A parameter is a variable, so it is a second declaration site that can carry
+// the alias; a borrow of a global is a third source for one to point at
+fn throughParm(p Ro) i64 { i64[*p]; }
+
+fn readOtherDclSites() {
+  mut a = 9;
+  show("alias-parm", throughParm(&a));
+  imm g Ro = &global;
+  show("alias-global-borrow", i64[*g]);
+}
+
+// -------- writing through the dereference --------
+
+fn writeThrough() {
+  mut a = 0;
+  imm p Mu = &mut a;
+  *p = 10;
+  show("alias-write", i64[a]);
+  mut b = 0;
+  imm q &mut i32 = &mut b;
+  *q = 10;
+  show("concrete-write", i64[b]);
+}
+
+// -------- the dereference the compiler injects --------
+
+// A field access and a method call taking 'self' by reference reach through the
+// alias; so does a write to a field. These already worked, and are here because
+// they share derefInject with the two below.
+fn injectedThatWorked() {
+  mut q = Pair[11, 12];
+  imm p PRef = &q;
+  show("alias-field", i64[p.x] + i64[p.y]);
+  show("alias-method-ref-self", i64[p.getx()]);
+  imm m PMut = &mut q;
+  m.sety(13);
+  m.x = 14;
+  show("alias-method-mut-self", i64[q.x] + i64[q.y]);
+}
+
+// A receiver held through a reference satisfies a method declaring 'self' by
+// value only because selection retries after derefInject, and the retry asks
+// the injected deref for its type
+fn injectedValueSelf() {
+  mut q = Pair[15, 16];
+  imm p PRef = &q;
+  imm r &Pair = &q;
+  show("alias-method-value-self", i64[p.byval()]);
+  show("concrete-method-value-self", i64[r.byval()]);
+}
+
+// An operator on a reference reaches the value's operator the same way
+fn injectedOperator() {
+  mut a = 17;
+  imm p Ro = &a;
+  imm q &i32 = &a;
+  show("alias-operator", i64[p + 1]);
+  show("concrete-operator", i64[q + 1]);
+}
+
+// The explicit and the injected deref compose: '(*p).y' dereferences by hand and
+// then accesses a field of the value
+fn derefThenField() {
+  mut q = Pair[18, 19];
+  imm p PRef = &q;
+  show("alias-deref-then-field", i64[(*p).y]);
+}
+
+fn main() i32 {
+  readRo();
+  readMut();
+  readPtr();
+  readOwning();
+  readNested();
+  readOtherDclSites();
+  writeThrough();
+  injectedThatWorked();
+  injectedValueSelf();
+  injectedOperator();
+  derefThenField();
+  0i32;
+}

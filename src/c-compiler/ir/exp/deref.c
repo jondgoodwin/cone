@@ -15,9 +15,9 @@ int derefInject(INode **node) {
     StarNode *deref = newStarNode(DerefTag);
     deref->vtexp = *node;
     if (nodetype->tag == PtrTag)
-        deref->vtype = ((StarNode*)((IExpNode *)*node)->vtype)->vtexp;
+        deref->vtype = ((StarNode*)nodetype)->vtexp;
     else
-        deref->vtype = ((RefNode*)((IExpNode *)*node)->vtype)->vtexp;
+        deref->vtype = ((RefNode*)nodetype)->vtexp;
     *node = (INode*)deref;
     return 1;
 }
@@ -33,7 +33,7 @@ void derefTypeCheck(TypeCheckState *pstate, StarNode *node) {
     if (iexpTypeCheckAny(pstate, &node->vtexp) == 0)
         return;
 
-    INode *ptype = ((IExpNode *)node->vtexp)->vtype;
+    INode *ptype = iexpGetTypeDcl(node->vtexp);
     if (ptype->tag == RefTag)
         node->vtype = ((RefNode*)ptype)->vtexp;
     else if (ptype->tag == PtrTag)
