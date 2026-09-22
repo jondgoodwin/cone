@@ -65,6 +65,18 @@ call's argument, which is type checked before its callee is resolved, and a
 struct literal's field. Every other literal is typed by
 `itypeTypeCheck(&node->vtype)` alone.
 
+**`Bool` is the one number type it refuses.** `Bool` is a 1-bit unsigned, so it
+answers `UintNbrTag` like any other, but its only values are `true` and `false`
+and a literal reaches it the way every other number does — through the `isTrue`
+coercion in [Type Check Reasoning](../phases/type-check-reasoning.md),
+"Coercion", which makes any non-zero value true. `litAdoptNumberType` returns 0
+for it, so both of its callers fall through to that coercion and every position
+agrees. `typemgmt-success` pins all of them — initializer, assignment, argument,
+return value, struct-literal field, `if`, `not`, `and` and `or` — each with a
+value whose low bit is 0, because `1` and `-1` read the same either way.
+`true` and `false` are built carrying `Bool`, never `FlagUnkType`, so the rule
+never reaches them.
+
 **Adopting the type is what builds the constant at the right width.** The
 alternative, converting from the `i32` default, materializes the constant at 32
 bits first and widens what is left, which silently drops every bit above the low

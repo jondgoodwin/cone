@@ -356,6 +356,56 @@ fn coercions() {
   showF("float-right-operand-widens", double + single);
 }
 
+// -------- an unsuffixed literal meeting Bool --------
+
+// Bool is a 1-bit unsigned number type, so it is the one number type an
+// unsuffixed integer literal must not be built at: its only values are true and
+// false, and every other value reaches it through 'isTrue' -- non-zero is true.
+// Built at Bool's width instead, the constant was masked to its low bit, and
+// the positions that coerce disagreed with the positions that do not: 2 read as
+// false in an initializer, an assignment, a return, 'not' and 'and', and as
+// true as an argument, in a struct literal and in an 'if'. So every position is
+// asserted here, and each with a value whose low bit is 0, because 1 and -1
+// happen to survive the masking and would show nothing.
+
+fn wantBool(b Bool) Bool {
+  b;
+}
+
+fn fillBool() Bool {
+  2;
+}
+
+struct Gauge {
+  pub flag Bool;
+}
+
+fn literalToBool() {
+  mut initialized Bool = 2;
+  showB("literal-to-bool-initializer", initialized);
+  mut assigned Bool = true;
+  assigned = 2;
+  showB("literal-to-bool-assignment", assigned);
+  showB("literal-to-bool-argument", wantBool(2));
+  showB("literal-to-bool-return", fillBool());
+  imm gauge = Gauge[2];
+  showB("literal-to-bool-field", gauge.flag);
+  show("literal-to-bool-condition", if 2 {1;} else {0;});
+  show("literal-to-bool-not", if not 2 {1;} else {0;});
+  show("literal-to-bool-and", if 2 and 4 {1;} else {0;});
+  show("literal-to-bool-or", if 0 or 2 {1;} else {0;});
+
+  // Zero is the false end of the same rule, and a literal Bool is untouched by
+  // it -- 'true' and 'false' carry Bool from the parser and were never untyped
+  mut zeroed Bool = 0;
+  showB("zero-literal-to-bool", zeroed);
+  showB("zero-literal-to-bool-argument", wantBool(0));
+  mut yes Bool = true;
+  showB("true-stays-true", yes);
+  mut no Bool = false;
+  showB("false-stays-false", no);
+}
+
 // -------- branches agreeing on one type --------
 
 fn branches() {
@@ -526,6 +576,7 @@ fn main() i32 {
   referenceToBool();
   reinterpretation();
   coercions();
+  literalToBool();
   branches();
   disambiguate();
   typedefs();

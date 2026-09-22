@@ -116,9 +116,9 @@ int iexpCoerce(INode **from, INode *totype) {
     // is type checked before its callee is resolved, so litTypeCheck had no
     // expected type to give it -- takes the number type it is wanted as rather
     // than being converted to it, which would build the constant at 32 bits
-    // first. Bool is not a width to adopt: a literal meets it as any number
-    // does, through isTrue.
-    if (totypedcl != (INode*)boolType && litAdoptNumberType(from, totypedcl))
+    // first. Bool is refused by litAdoptNumberType itself, so a literal meets it
+    // as any number does, through isTrue.
+    if (litAdoptNumberType(from, totypedcl))
         return 1;
 
     // Are types equivalent, or is 'to' a subtype of fromtypedcl?

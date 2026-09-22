@@ -136,11 +136,20 @@ void litNameRes(NameResState* pstate, IExpNode *node) {
 // the i32 default read it and how parsePrefix folded a unary minus into it.
 // Returns 1 when *nodep is now a literal of the wanted type, 0 when it was not
 // an untyped integer literal or the type is not a number.
+//
+// Bool is a number type by tag -- a 1-bit unsigned -- but it is not a width to
+// adopt: its only values are true and false, and a literal reaches it the way
+// any other number does, through isTrue. Adopting it masked the constant to its
+// low bit, so 'mut b Bool = 2', 'b = 2', a Bool return of 2, 'not 2' and
+// '2 and 3' all read as false, while 'boolarg(2)' and 'Gauge[2]', which reach
+// Bool through coercion instead, read as true.
 int litAdoptNumberType(INode **nodep, INode *totype) {
     INode *node = *nodep;
     if (node->tag != ULitTag || !(node->flags & FlagUnkType))
         return 0;
     INode *nbrtype = itypeGetTypeDcl(totype);
+    if (nbrtype == (INode*)boolType)
+        return 0;
     switch (nbrtype->tag) {
     case IntNbrTag:
     case UintNbrTag:
