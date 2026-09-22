@@ -26,8 +26,22 @@ fn pick(a &i32, b &i32) &i32, &i32 { a, b; }
 fn mixed(x &i32) &i32, i32 { x, 1; }
 fn same(x &i32) &i32 { x; }
 
+// The same signatures with the tuple named by a typedef. A typedef is a
+// transparent alias and nothing rewrites it away, so a return type written this
+// way stands in the IR as the name it was written with, and both assignment
+// paths resolve it to reach the element list: the type check asked whether the
+// call's type was a tuple and the alias answered no, refusing the assignment
+// for not having enough values, and the flow pass read the same field with no
+// test at all. A call handed a borrow gets a tuple of its own, which is not the
+// alias, so the lifetimes here were already read from a real tuple; a call
+// handed none keeps the alias, which is why 'globalPairAlias' below is the one
+// that could not be written at all.
+typedef RefPair (&i32, &i32);
+fn twoAlias(x &i32) RefPair { x, x; }
+
 mut G i32 = 7;
 fn globalPair() &i32, &i32 { &G, &G; }
+fn globalPairAlias() RefPair { &G, &G; }
 
 fn storesTupleResults() {
   imm outer = 0;
@@ -56,6 +70,12 @@ fn storesTupleResults() {
     // A tuple mixing a borrow with a plain value refuses only the borrow
     r1, n = mixed(&inner);            //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
 
+    // The tuple named by a typedef is refused on the same terms, in either
+    // position, since resolving the name is all that stands between the
+    // assignment and the element list the check reads
+    r1, near = twoAlias(&inner);      //~ ErrorInvType:5 "lval outlives the borrowed reference you are storing"
+    near, r2 = twoAlias(&inner);      //~ ErrorInvType:11 "lval outlives the borrowed reference you are storing"
+
     // What is not refused, and what makes the above a lifetime rule rather than
     // a refusal of multi-value assignment: elements borrowed from a global keep
     // their global lifetime, a call handed no borrow returns the declaration's
@@ -65,6 +85,9 @@ fn storesTupleResults() {
     r1, r2 = globalPair();
     r1, r2 = two(&outer);
     near, near2 = two(&inner);
+    r1, r2 = globalPairAlias();
+    r1, r2 = twoAlias(&outer);
+    near, near2 = twoAlias(&inner);
   }
 }
 
@@ -84,4 +107,14 @@ fn returnsParameterPair(p &i32) &i32, &i32 {
 // ... and so does a pair borrowed from a global
 fn returnsGlobalPair() &i32, &i32 {
   globalPair();
+}
+
+// The return side through the alias, on both halves
+fn returnsAliasedTupleResult() RefPair {
+  imm inner = 1;
+  twoAlias(&inner);                   //~ ErrorEscape "Returned borrowed reference outlives the local value it points to"
+}
+
+fn returnsAliasedGlobalPair() RefPair {
+  globalPairAlias();
 }

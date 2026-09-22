@@ -13,6 +13,20 @@
 // a function that raises one reports no further flow diagnostics of its own,
 // while a later function still gets its own flow pass.
 
+typedef SoPair (+so i32, +so i32);
+
+fn soPair() +so i32, +so i32 {
+  imm a = +so 1i32;
+  imm b = +so 2i32;
+  a, b;
+}
+
+fn soPairAlias() SoPair {
+  imm a = +so 1i32;
+  imm b = +so 2i32;
+  a, b;
+}
+
 fn moving() {
   // 'so' is declared 'struct @move' in corelib, so every reference into it is a
   // move type however aliasable its permission: the second read of the source
@@ -47,4 +61,25 @@ fn moving() {
   imm slice +[]so i32 = +[]so [3; 1i32];
   imm grabbed = slice;
   imm reused = slice;           //~ ErrorMove "has been moved out"
+
+  // A tuple carrying an owning reference is a move type too, so destructuring
+  // it hands every element to a new owner and leaves nothing to destructure a
+  // second time. Written as a typedef of the tuple it moves the same way: a
+  // typedef is transparent, and the two assignment paths that read the tuple's
+  // element list resolve it to find one.
+  imm pair = soPair();
+  imm first +so i32;
+  imm second +so i32;
+  first, second = pair;
+  imm third +so i32;
+  imm fourth +so i32;
+  third, fourth = pair;         //~ ErrorMove "has been moved out"
+
+  imm aliased = soPairAlias();
+  imm fifth +so i32;
+  imm sixth +so i32;
+  fifth, sixth = aliased;
+  imm seventh +so i32;
+  imm eighth +so i32;
+  seventh, eighth = aliased;    //~ ErrorMove "has been moved out"
 }

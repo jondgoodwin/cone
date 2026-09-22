@@ -85,13 +85,15 @@ void assignParaCheck(TypeCheckState *pstate, TupleNode *lval, TupleNode *rval) {
 void assignMultRetCheck(TypeCheckState *pstate, TupleNode *lval, INode **rval) {
     if (iexpTypeCheckAny(pstate, rval) == 0)
         return;;
-    INode *rtype = ((IExpNode *)*rval)->vtype;
+    // Resolved, because the rval's type may be a name standing for the tuple
+    // rather than the tuple itself
+    INode *rtype = iexpGetTypeDcl(*rval);
     if (rtype->tag != TTupleTag) {
         errorMsgNode(*rval, ErrorBadTerm, "Not enough values for lvals");
         return;
     }
     Nodes *lnodes = lval->elems;
-    Nodes *rtypes = ((TupleNode*)((IExpNode *)*rval)->vtype)->elems;
+    Nodes *rtypes = ((TupleNode*)rtype)->elems;
     if (lnodes->used > rtypes->used) {
         errorMsgNode(*rval, ErrorBadTerm, "Not enough tuple values for lvals");
         return;
@@ -227,8 +229,9 @@ void assignParaFlow(TupleNode *lval, TupleNode *rval) {
 // Handle when single function/expression returns to multiple lval
 void assignMultRetFlow(TupleNode *lval, INode **rval) {
     Nodes *lnodes = lval->elems;
-    INode *rtype = ((IExpNode *)*rval)->vtype;
-    Nodes *rtypes = ((TupleNode*)((IExpNode *)*rval)->vtype)->elems;
+    // Resolved, because the rval's type may be a name standing for the tuple
+    // rather than the tuple itself
+    Nodes *rtypes = ((TupleNode*)iexpGetTypeDcl(*rval))->elems;
     uint32_t lcnt;
     INode **lnodesp;
     INode **rtypep = &nodesGet(rtypes, 0);

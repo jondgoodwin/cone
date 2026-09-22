@@ -86,6 +86,12 @@ Then `vtype` becomes the rval's type.
 **Type check does not check mutability.** It coerces and it types. Everything
 about whether the write is *allowed* is flow's.
 
+**The rval's type is resolved before it is asked whether it is a tuple.** A
+typedef is a transparent alias and nothing rewrites it away, so a call whose
+return type was written as a name for the tuple carries that name as its type.
+`assignMultRetCheck` and `assignMultRetFlow` both reach the element list through
+`iexpGetTypeDcl`.
+
 ## Flow
 
 `assignFlow` mirrors the same two-by-two, and the work is in `assignlvalrtype`,

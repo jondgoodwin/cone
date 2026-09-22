@@ -501,6 +501,27 @@ fn minmax(a i32, b i32) i32, i32 {
   b, a;
 }
 
+// The same signature spelled through a type alias, and through an alias of an
+// alias. A typedef is transparent and nothing rewrites it away, so a return
+// type written this way stands in the IR as the name it was written with; the
+// tuple is found by resolving it.
+typedef Pair (i32, i32);
+typedef PairAgain Pair;
+
+fn minmaxAlias(a i32, b i32) Pair {
+  if a < b {
+    return a, b;
+  }
+  b, a;
+}
+
+fn minmaxAliasAgain(a i32, b i32) PairAgain {
+  if a < b {
+    return a, b;
+  }
+  b, a;
+}
+
 fn factorial(n i32) i32 {
   if n <= 1 {
     return 1;
@@ -561,6 +582,25 @@ fn tuples() {
   lo, hi = minmax(12, 3);
   show("multi-return-lo", lo);
   show("multi-return-hi", hi);
+
+  // ... and received the same way when the return type is a name standing for
+  // the tuple. The type check read the call's type raw and asked whether it was
+  // a tuple, so the alias answered no and the assignment was refused for not
+  // having enough values; the flow pass read the same field with no test at all
+  // and walked the alias's own node as if it were the element list.
+  lo, hi = minmaxAlias(12, 3);
+  show("multi-return-alias-lo", lo);
+  show("multi-return-alias-hi", hi);
+  lo, hi = minmaxAliasAgain(12, 3);
+  show("multi-return-alias-of-alias-lo", lo);
+  show("multi-return-alias-of-alias-hi", hi);
+
+  // The other side of the flow read: destructuring a variable of the aliased
+  // type, where the value is not a call's temporary
+  mut aliased Pair = minmax(9, 4);
+  lo, hi = aliased;
+  show("destructured-alias-variable-lo", lo);
+  show("destructured-alias-variable-hi", hi);
 }
 
 // -------- statics --------
