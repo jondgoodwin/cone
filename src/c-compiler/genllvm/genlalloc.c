@@ -69,7 +69,9 @@ void genlDealiasFlds(GenState *gen, LLVMValueRef ref, RefNode *refnode) {
     uint32_t cnt;
     for (nodelistFor(&strnode->fields, cnt, nodesp)) {
         FieldDclNode *field = (FieldDclNode *)*nodesp;
-        RefNode *vartype = (RefNode *)field->vtype;
+        // Resolved, because a field's declared type may be a name standing for
+        // the reference type rather than the reference type itself
+        RefNode *vartype = (RefNode *)itypeGetTypeDcl(field->vtype);
         if (vartype->tag != RefTag || !(isRegion(vartype->region, rcName) || isRegion(vartype->region, soName)))
             continue;
         // The GEP yields the field's address; the release routines want the

@@ -384,6 +384,30 @@ name = "moved-slice-not-released-by-its-source"
 target = "preir"
 excludes = ["call void @free", "allocref", "add i64"]
 
+# A typedef is a transparent alias, so an owning type reached through one is
+# released exactly as the type it names is. Nothing rewrites the alias away: a
+# declaration keeps the name it was written with as its 'vtype', so every site
+# that asks what a variable or field holds must resolve it. The run covers the
+# spellings that already did -- a local, a reassignment and a move-out, in 'so',
+# 'rc', an owning slice, an alias of an alias, and a struct with a finalizer --
+# and the check covers the one that did not: genlDealiasFlds read a field's
+# declared type raw, so a struct's owning field spelled through an alias leaked
+# on every release. A leak prints what correct code prints, so the check names
+# the field GEPs that begin the two releases, whose registers were read out of
+# the pre-optimization dump; before the fix the module holds neither.
+[scenario.region-typedef-release]
+category = "run"
+description = "An owning reference, slice or finalized struct declared through a typedef is released as the aliased type is, as a variable and as a struct field"
+tags = ["flow", "genllvm", "runtime"]
+
+[[scenario.region-typedef-release.check]]
+name = "aliased-owning-fields-released-with-their-struct"
+target = "preir"
+contains = [
+  "%r20 = getelementptr inbounds %Held, %Held* %allocref, i32 0, i32 0",
+  "%s21 = getelementptr inbounds %Held, %Held* %allocref, i32 0, i32 1",
+]
+
 # -------- parse stage --------
 
 [scenario.region-parse]

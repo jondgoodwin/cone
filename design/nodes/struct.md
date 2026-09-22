@@ -384,7 +384,10 @@ and finalizes. **That is the entire mechanism by which struct destruction
 happens.**
 
 Per-field release is not flow's — it is `genlDealiasFlds` at generation, walking
-`fields` by `index`.
+`fields` by `index`. It resolves each field's declared type with
+`itypeGetTypeDcl` before asking which region owns it: a field's `vtype` is the
+name it was written with, so a typedef of an owning reference stands there as a
+`NameUseNode` and matches no region read raw.
 
 ## Generation
 
