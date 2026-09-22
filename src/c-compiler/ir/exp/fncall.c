@@ -277,7 +277,8 @@ void fnCallArrIndex(FnCallNode *node) {
 
 // Is this the type of a borrowed reference, whose scope is a lifetime?
 static int fnCallIsBorrowType(INode *type) {
-    return (type->tag == RefTag || type->tag == ArrayRefTag) && ((RefNode*)type)->region == borrowRef;
+    return (type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag)
+        && ((RefNode*)type)->region == borrowRef;
 }
 
 // The narrowest lifetime among a call's borrowed-reference arguments, as the

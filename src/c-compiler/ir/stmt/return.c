@@ -77,7 +77,7 @@ static void returnFlowEscape(INode *exp) {
         uint32_t cnt;
         for (nodesFor(((TupleNode*)reftype)->elems, cnt, elemp)) {
             RefNode *elemtype = (RefNode *)itypeGetTypeDcl(*elemp);
-            if ((elemtype->tag == RefTag || elemtype->tag == ArrayRefTag)
+            if ((elemtype->tag == RefTag || elemtype->tag == ArrayRefTag || elemtype->tag == VirtRefTag)
                 && elemtype->region == borrowRef && elemtype->scope > 1) {
                 errorMsgNode(exp, ErrorEscape,
                     "Returned borrowed reference outlives the local value it points to");
@@ -86,7 +86,7 @@ static void returnFlowEscape(INode *exp) {
         }
         return;
     }
-    if (reftype->tag != RefTag && reftype->tag != ArrayRefTag)
+    if (reftype->tag != RefTag && reftype->tag != ArrayRefTag && reftype->tag != VirtRefTag)
         return;
     if (reftype->region == borrowRef && reftype->scope > 1)
         errorMsgNode(exp, ErrorEscape,

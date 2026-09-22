@@ -73,6 +73,29 @@ TypeCompare iexpMatches(INode **from, INode *totype, SubtypeConstraint constrain
     return NoMatch;
 }
 
+// Is this the type of a borrowed reference, whose scope is a lifetime?
+static int iexpIsBorrowType(INode *type) {
+    return (type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag)
+        && ((RefNode*)type)->region == borrowRef;
+}
+
+// The type a coercion's result carries. A borrowed reference keeps the lifetime
+// it was borrowed with when it is widened to a base trait's reference or turned
+// into a virtual reference: the value still points at what it was borrowed from.
+// The type coerced to is a declared node, normalized by typetblFind and shared
+// by everything written with it, so the scope goes on a copy belonging to this
+// coercion -- exactly as fnCallFinalizeArgs builds one for a call's result.
+static INode *iexpCoerceType(INode *from, INode *totypedcl) {
+    INode *fromtype = iexpGetTypeDcl(from);
+    if (!iexpIsBorrowType(totypedcl) || !iexpIsBorrowType(fromtype)
+        || ((RefNode*)fromtype)->scope == 0)
+        return totypedcl;
+    RefNode *toref = (RefNode*)totypedcl;
+    RefNode *scoped = newRefNodeFull(totypedcl->tag, from, borrowRef, toref->perm, toref->vtexp);
+    scoped->scope = ((RefNode*)fromtype)->scope;
+    return (INode*)scoped;
+}
+
 // Coerce from-node's type to 'to' expected type, if needed
 // Return 1 if type "matches", 0 otherwise
 int iexpCoerce(INode **from, INode *totype) {
@@ -105,13 +128,13 @@ int iexpCoerce(INode **from, INode *totype) {
     case EqMatch:
         return 1;
     case CastSubtype: {
-        INode *newfrom = (INode*)newRecastNode(*from, totypedcl);
+        INode *newfrom = (INode*)newRecastNode(*from, iexpCoerceType(*from, totypedcl));
         inodeLexCopy(newfrom, *from);
         *from = newfrom;
         return 1;
     }
     case ConvSubtype: {
-        INode *newfrom = (INode*)newConvCastNode(*from, totypedcl);
+        INode *newfrom = (INode*)newConvCastNode(*from, iexpCoerceType(*from, totypedcl));
         inodeLexCopy(newfrom, *from);
         *from = newfrom;
         return 1;

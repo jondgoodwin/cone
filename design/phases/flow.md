@@ -89,7 +89,10 @@ Put these first, because every one of them is load-bearing.
    where the call returns several values, on the borrowed elements of a tuple
    type it builds for it: without annotation syntax every borrowed reference in a
    signature shares one lifetime, and the shortest is the only one they have in
-   common.
+   common. A borrow coerced to another reference type — widened to a base
+   trait's reference, or turned into a virtual reference — keeps its scope on a
+   copy of the target type that `iexpCoerce` gives the cast, the declared type
+   being shared and unable to carry one.
    `lifeMatches` exists and is called from nowhere.
 3. **Lifetime tracking does not survive a variable.**
    `mut r &i32; r = &local; return r` compiles clean: assignment does not carry
@@ -121,8 +124,8 @@ Put these first, because every one of them is load-bearing.
 **Flow computes no lifetimes of its own.** `VarDclNode.scope` is set during name
 resolution; `RefNode.scope` during type check by `borrowTypeCheck`, by
 `borrowMutRef` and `borrowAuto` for a borrow the compiler injects, and by
-`fnCallArrIndex` and `fnCallFinalizeArgs` for a type derived from one. Flow only
-compares them.
+`fnCallArrIndex`, `fnCallFinalizeArgs` and `iexpCoerce` for a type derived from
+one. Flow only compares them.
 
 The live state is on the declarations, in `VarDclNode.flowtempflags`:
 
@@ -257,7 +260,7 @@ failed to resolve.
 | Analysis | In flow? | Enforced | Not enforced |
 | --- | --- | --- | --- |
 | **Move / ownership** | yes | `ErrorMove` on use of a moved-out or uninitialized variable; move out of a global refused | field granularity — moving `p.x` deactivates all of `p`; conditional moves; loop-carried moves |
-| **Escape / lifetime** | representation in type check, enforcement here | storing a borrow into a longer-lived lval; returning a borrow of a local; a borrow arriving through a call's result, singly or as one of several values destructured into lvals, each carrying the narrowest argument borrow's scope; a `&mut &T` argument whose pointee would outlive another borrow passed with it | a borrow laundered through a variable; a borrow stored in a field or captured; distinguishing parameter lifetimes — there is no lifetime annotation syntax; freezing a borrow's source |
+| **Escape / lifetime** | representation in type check, enforcement here | storing a borrow into a longer-lived lval; returning a borrow of a local; a borrow arriving through a call's result, singly or as one of several values destructured into lvals, each carrying the narrowest argument borrow's scope; a `&mut &T` argument whose pointee would outlive another borrow passed with it; a borrow coerced to another reference type, whether widened to a base trait's reference or made a virtual reference | a borrow laundered through a variable; a borrow stored in a field or captured; distinguishing parameter lifetimes — there is no lifetime annotation syntax; freezing a borrow's source |
 | **De-aliasing / drops** | flow decides, generation executes | scope-exit release of `so`/`rc` refs and slices, and of drop-fn structs, from a jump down to the block it names | arrays of owning references; a variable moved out, or initialized, on only one path — see Hazards |
 | **Permission** | `MayWrite` and `MayRead` | `ErrorNoMut` on assignment and swap; `ErrorNoRead` on a read through a reference — a dereference, an index, or a field of a virtual reference | `MayAliasWrite`, `RaceSafe`, `IsLockless` are populated and read nowhere |
 | **Initialization** | yes | `ErrorMove` "has not been initialized" | "initialized on one branch" reads as initialized everywhere; the unused-variable warning in `flow.h`'s header does not exist |

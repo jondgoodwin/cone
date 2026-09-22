@@ -31,6 +31,12 @@ Five forms:
 check may clear it: a reference-to-reference conversion drops the flag on the
 spot, because it is a bitcast after all.
 
+An injected cast over a **borrowed reference** is typed with a copy of the
+target reference type carrying the source borrow's scope, not with the declared
+type node itself, which is interned and shared and holds no lifetime. That is
+what lets flow check a `&<Trait`, or a reference widened to a base trait's,
+against the value it was borrowed from.
+
 ## Parse
 
 `parseCast` sits between `parseMult` and `parsePrefix` in the precedence

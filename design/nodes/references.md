@@ -227,11 +227,18 @@ reference does all of those.
 the borrow site**: `assignlvalrtype` when a borrow is stored into a
 longer-lived lval, `returnFlowEscape` when one is returned, and
 `fnCallFlowStoredBorrow` when one is passed to a call beside a `&mut &T`
-argument that points at a longer-lived place. Two sites propagate scope into a
-reference type they build: `fnCallArrIndex` into a borrowed element's, and
-`fnCallFinalizeArgs` into a call's result, which takes the narrowest scope among
-the borrowed arguments on a `RefNode` of the call's own — the declared return
-type is shared by every call site and cannot carry it. A call returning several
+argument that points at a longer-lived place. Each reads `RefTag`, `ArrayRefTag`
+and `VirtRefTag` alike: a virtual reference is a borrowed reference carrying a
+vtable, and a slice borrows as a single reference does. Three sites propagate
+scope into a reference type they build: `fnCallArrIndex` into a borrowed
+element's; `fnCallFinalizeArgs` into a call's result, which takes the narrowest
+scope among the borrowed arguments on a `RefNode` of the call's own, the
+declared return type being shared by every call site and unable to carry it;
+and `iexpCoerce` into the `CastNode` it injects for a borrow coerced to another
+reference type — which is how a virtual reference is built at all, and how one
+is widened to a base trait's reference — the type coerced to being a declared
+node, interned and shared by everything written with it, so the scope goes on a
+copy of it belonging to that coercion. A call returning several
 values gets a `TupleNode` of its own on the same terms, each borrowed element
 carrying that scope, because a multi-value assignment checks every element
 against its own lval. A borrow the compiler

@@ -53,6 +53,7 @@ most consequential thing this note settles.
 | a borrow returned from a function | **yes** | `returnFlowEscape`, one site |
 | a borrow returned through a call, singly or as one of several values | **yes** | `fnCallFinalizeArgs` types the call with the narrowest argument borrow's scope, on a reference node or on a tuple's borrowed elements, which the two rows above then read |
 | a borrow passed beside a `&mut &T` argument the callee could store it through | **yes** | `fnCallFlowStoredBorrow`, one site |
+| a borrow coerced to another reference type — widened to a base trait's reference, or made a `&<Trait` | **yes** | `iexpCoerce` types the injected cast with a copy of the target reference type carrying the source borrow's scope, which the rows above then read |
 | a borrow **laundered through a variable** | **no** | assignment does not carry scope onto the variable's declared type |
 | a borrow **captured or stored in a field** | **no** | — |
 | two parameter borrows with different lifetimes | **no** | there is no lifetime annotation syntax to express it; every borrow in a signature is taken to share one lifetime |

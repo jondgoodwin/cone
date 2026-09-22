@@ -131,7 +131,10 @@ monomorphization branch.
 
 `iexpCoerce` then switches on the verdict and injects, copying source position
 onto every node it creates with `inodeLexCopy` so the diagnostic still points at
-the author's text.
+the author's text. A cast over a borrowed reference is typed with a copy of the
+target reference type carrying the source borrow's scope, since the declared
+type is interned and shared and cannot hold a lifetime — that is what keeps a
+`&<Trait` or a widening to a base trait's reference from reading as global.
 
 `fnSigMatches` is the one matcher whose variance is easy to get backwards:
 **parameters are contravariant** (it flips `to` and `from`), **the return type is

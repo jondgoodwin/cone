@@ -180,12 +180,14 @@ int assignlvalrtype(INode *lval, INode *rtype) {
     }
 
     // Handle lifetime enforcement for borrowed references
-    // A slice (ArrayRefTag) borrows exactly as a single reference does and
-    // carries the same scope, so both tags are subject to the same rule.
+    // A slice (ArrayRefTag) borrows exactly as a single reference does, and so
+    // does a virtual reference (VirtRefTag), which coneref/refvirtref.html
+    // describes as a borrowed reference carrying a vtable; all three tags carry
+    // the same scope and are subject to the same rule.
     RefNode* rvaltype = (RefNode *)rtype;
     RefNode* lvaltype = (RefNode *)((IExpNode*)lval)->vtype;
-    if ((rvaltype->tag == RefTag || rvaltype->tag == ArrayRefTag)
-        && (lvaltype->tag == RefTag || lvaltype->tag == ArrayRefTag)
+    if ((rvaltype->tag == RefTag || rvaltype->tag == ArrayRefTag || rvaltype->tag == VirtRefTag)
+        && (lvaltype->tag == RefTag || lvaltype->tag == ArrayRefTag || lvaltype->tag == VirtRefTag)
         && lvaltype->region == borrowRef) {
         if (lvalscope < rvaltype->scope) {
             errorMsgNode(lval, ErrorInvType, "lval outlives the borrowed reference you are storing");
