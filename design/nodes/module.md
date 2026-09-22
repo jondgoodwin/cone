@@ -48,7 +48,7 @@ generate it.
 `newModuleNode` never sets `vtype`, and nothing reads it.
 
 **`ImportNode`** holds `module` — the loaded `ModuleNode` — and `foldall`,
-recording whether `::*` was written. That is the whole of import: there is no
+recording whether `.*` was written. That is the whole of import: there is no
 selective name list, no rename, and no exclusion.
 
 ## Constructors
@@ -93,11 +93,11 @@ module is denied it.
 That asymmetry is the whole of the separate-compilation gap, and both sides of
 it are visible in emitted IR:
 
-- `import stdio::*` emits `stdio::print` **and definitions** for
-  `stdio::IOStream::appendStr` and its siblings, all internal. The multi-module
+- `import stdio.*` emits `stdio.print` **and definitions** for
+  `stdio.IOStream.appendStr` and its siblings, all internal. The multi-module
   generation path works, and is exercised on every compile that prints.
 - Importing an ordinary module emits **only `declare`s** —
-  `declare i64 @_CNvC9modulesub8scaleInt(i64)`, read `modulesub::scaleInt` —
+  `declare i64 @_CNvC9modulesub8scaleInt(i64)`, read `modulesub.scaleInt` —
   because its bodies are never reached.
   Measured, that is the module's *public* surface whether or not the importer
   calls it: a public function nothing references is still declared, and a private
@@ -116,8 +116,9 @@ declaration, and the linkage it gets, is
 [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols".
 
 `parseImport` derives the module name from the filename through `fileName`,
-accepts `::` only when `*` follows it, and binds the loaded module into the
-importing module's namespace with `modAddNamedNode`.
+accepts a period only when `*` follows it — anything else after it is
+`ErrorBadTerm`, since selective import is unbuilt — and binds the loaded module
+into the importing module's namespace with `modAddNamedNode`.
 
 `parseInclude` injects the named file's tokens and parses its global statements
 into the *current* module. It builds no node, creates no namespace, and leaves
@@ -311,8 +312,8 @@ module, and two sibling module folders can declare the same module name.
   standing alone for a namespace already in scope:
 
   ```
-  import opengl use setColor, sub::* except green
-  use matrix::*
+  import opengl use setColor, sub.* except green
+  use matrix.*
   ```
 
   The fold lives with the declaration when there is one, which is what keeps a
@@ -347,7 +348,7 @@ what its definitions say it is.
   how a package keeps internals internal without a second visibility level.
 - **A folded or imported name is private to the module that folded it**,
   whatever its visibility at the origin. `import B use c as d` binds both `B` and
-  `d` in A, and neither is reachable as `A::B` or `A::d`. `pub` opts in:
+  `d` in A, and neither is reachable as `A.B` or `A.d`. `pub` opts in:
   `import pub B use pub c as d` `[planned]`. A module's public surface is
   therefore what it declares and deliberately re-exports, never what it happens
   to depend on.
@@ -366,7 +367,7 @@ the spelling of either says so.
 
 **The binding chain has two ends, and different questions want different ones.**
 
-- **Access** is decided by the binding the caller *traversed*: X reaching `A::T`
+- **Access** is decided by the binding the caller *traversed*: X reaching `A.T`
   asks A's binding, never B's declaration. That is what makes a default-private
   fold enforceable, and it generalizes the existing rule that an overload name's
   visibility is checked against the spelling the caller used.
@@ -385,7 +386,7 @@ namespace, where folding a member is delegated inheritance.
 **Almost none of it.** A module is a source file today. There is no `mod`
 declaration, no nesting, no package, no manifest, no interface artifact, and no
 `use`; `import` takes a file path rather than a package name, folds only with
-`::*`, and cannot rename or exclude. Sections and COMDATs are not emitted per
+`.*`, and cannot rename or exclude. Sections and COMDATs are not emitted per
 function. What does work is the multi-module *generation* path, exercised by
 `stdio` on every compile that prints, and folding into a single module namespace,
 which is what the accumulation rule above asks for.
@@ -400,7 +401,7 @@ itself into the receiving namespace.
 Measured: `modNameRes` folds a module's imports at the start of *that module's*
 resolution and `pgmNameRes` walks modules in load order, so a fold is invisible
 to modules resolved earlier and visible to those resolved later. A root module
-naming `mid::plain`, where `plain` was folded into `mid`, is rejected as an
+naming `mid.plain`, where `plain` was folded into `mid`, is rejected as an
 unknown name; the same reference from a sibling module loaded after the folding
 one compiles. A type resolved by demand ahead of its module — a trait the root
 extends, say — does not move this line: `structNameResDemand` hooks what the
@@ -415,23 +416,23 @@ area starts from what is actually open.
 ### The idiom for reaching a package's members
 
 A package named after the thing it provides puts that name in every path twice —
-`bigint::BigInt`. This is not an edge case: a module with no global state is
+`bigint.BigInt`. This is not an edge case: a module with no global state is
 pure namespace, and a great deal of library code needs none, so single-type
 packages will be common.
 
 Four answers are available, and none is chosen:
 
-- **Fold at import.** `import bigint::BigInt`, then write `BigInt`. Needs
+- **Fold at import.** `import bigint.BigInt`, then write `BigInt`. Needs
   nothing beyond selective folding, and is what Rust does with `use`.
 - **Name the top-level module independently of the package's distribution
   name**, so what you install and what you path through need not match.
 - **Convention.** Name the package for the domain and the type for the thing, so
-  the repetition never arises — `math3d::Point3`, Go's `bytes.Buffer`.
+  the repetition never arises — `math3d.Point3`, Go's `bytes.Buffer`.
 - **A shortcut rule**: a member whose name matches its module is reachable by
   the module name alone.
 
 Prior art splits. Go accepts `time.Time` and tunes names so the qualified form
-reads well; Rust accepts `regex::Regex` and leans on `use`; Python's
+reads well; Rust accepts `regex.Regex` and leans on `use`; Python's
 `datetime.datetime` is the cautionary case. Whether the answer should differ for
 a package and for a nested module is part of the question.
 

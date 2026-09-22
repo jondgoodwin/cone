@@ -68,7 +68,7 @@ enum ErrorCode {
     ErrorBadPerm = 1034,    // Permission not allowed
     // 1035 was ErrorNoFlds; a type with no such field is ErrorNoMbr
     ErrorBadAlloc = 1036,  // Region cannot allocate: missing or ill-formed alloc method
-    // 1037 was ErrorNoDbl; no construct requires a '::' that could be missing
+    // 1037 was ErrorNoDbl, for a missing '::'; the language has no '::'
     ErrorNoVar = 1038,        // Missing variable name
     ErrorNoEof = 1039,        // Missing end-of-file
     ErrorNoImpl = 1040,    // Function must be implemented

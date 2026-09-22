@@ -332,8 +332,8 @@ source line to attach to. Write it as a named check in `cases.toml`:
 [[scenario.struct-methods.check]]
 name = "methods-lower-to-concrete-symbols"
 target = "symbols"
-contains = ["define internal Point::addValue comdat nodeduplicate"]
-excludes = ["Point::add "]
+contains = ["define internal Point.addValue comdat nodeduplicate"]
+excludes = ["Point.add "]
 ```
 
 The name is what failure output reports and what selection matches.
@@ -351,7 +351,7 @@ references and folds the rest into `main`, which leaves a `compile` scenario's
 dump empty of functions and a `run` scenario's holding little but `main`, its
 globals and its constants. A check on anything else belongs on `preir`.
 **Never write an encoded symbol's bytes into it** — `@_CNvNt2Pt3get` is a
-`symbols` assertion, below, and the reader of a check is owed `Pt::get`. Bare
+`symbols` assertion, below, and the reader of a check is owed `Pt.get`. Bare
 names (`@main`, a root `fn`, a C name) are their own spelling and may appear
 where the check is about a `$name = comdat` line or a call.
 
@@ -388,8 +388,8 @@ Each line is, in order, separated by single spaces:
    nothing to merge, so `hidden` and `linkonce` are what an `excludes` guards
    against;
 3. the **demangled name**: the symbol read back through the scheme in
-   `design/phases/names-and-namespaces.md`, "Symbols" — `sub::SubPt::get`,
-   `Holder[i64]::tally`, `pick[&so mut i32]`, `Vec::+`, a vtable as
+   `design/phases/names-and-namespaces.md`, "Symbols" — `sub.SubPt.get`,
+   `Holder[i64].tally`, `pick[&so mut i32]`, `Vec.+`, a vtable as
    `Gauge as Meter (vtable)`, a vtable list as `Meter (vtable list)`, a name
    Cone source could only write in backticks in its backticks. A symbol the
    scheme does not spell — `main`, a root `fn`, a C name, `string`, `anon` — is
@@ -399,20 +399,20 @@ Each line is, in order, separated by single spaces:
 
 ```
 define main comdat nodeduplicate
-define internal Pt::_hid comdat nodeduplicate
-define internal Holder[i64]::tally comdat nodeduplicate
-declare sub::subFn
+define internal Pt._hid comdat nodeduplicate
+define internal Holder[i64].tally comdat nodeduplicate
+declare sub.subFn
 declare dllimport x86_stdcallcc GetTickCount
 global internal _privGlobal comdat nodeduplicate
-external global sub::subGlobal
+external global sub.subGlobal
 constant internal Gauge as Meter (vtable) comdat nodeduplicate
 constant internal Meter (vtable list) comdat nodeduplicate
 ```
 
 Since a definition's name is followed by its COMDAT and a declaration's ends
-the line, an `excludes` for a name that is a prefix of another — `Pair::sum`
-beside `Pair::sumValue` — writes the trailing space or newline:
-`"Pair::sum "`, `"modulesub::scale\n"`.
+the line, an `excludes` for a name that is a prefix of another — `Pair.sum`
+beside `Pair.sumValue` — writes the trailing space or newline:
+`"Pair.sum "`, `"modulesub.scale\n"`.
 
 The demangler lives in `test/run.py`, and every run begins by reading the
 scheme's worked examples through it (`--selftest` does only that). A grammar

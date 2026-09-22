@@ -83,9 +83,11 @@ block locals → outer block locals → function value parms → generic parms �
 type members including `Self` → module names, own and folded → the permanently
 bound corelib names.
 
-**Qualified lookup bypasses the hook table entirely.** `a::b::name` walks
-`qualNames` from `basemod` with `namespaceFind`, so it is not shadowed by
-locals. Each intermediate must be a module or a struct.
+**A path starts in the hook table like anything else.** `a.b.name` looks `a` up
+as the bare name it is, so a local of that spelling shadows a module of it.
+Only the hops after the first use `namespaceFind`, and each of those must land
+on a module or a struct. The collapse that walks them is `fnCallNameResPath` —
+[fncall](../nodes/fncall.md), "The path collapse".
 
 ## 3. Three namespace kinds, two mechanisms
 
@@ -136,20 +138,29 @@ functions included.
 | `RefTag` | `BorrowTag` / `AllocateTag`, by region | `refNameRes` |
 | `ArrayRefTag` | `ArrayBorrowTag` / `ArrayAllocTag` | `arrayRefNameRes` |
 | `QuesTag` | `FnCallTag` for `Option[T]` | `allocateQuesNameRes` |
+| `FnCallTag` that is a namespace hop | the bound name use, or a plain call of it | `fnCallNameResPath` |
+
+The last is the path collapse, and it is a *replacement* rather than a retag:
+a period whose left side names a module or a type is a path, and the hop is
+folded away — [fncall](../nodes/fncall.md), "The path collapse". It is in this
+pass and not in type check because the rows above ask `isTypeNode` of their
+operands, and `&mut mymod.Gadget` has to be a resolved type name by then.
 
 Every one of these hinges on `isTypeNode`. For a name use it asks the
 declaration the name was bound to, and an unlowered `FnCallNode` naming a
 generic struct counts as a type (`itypeIsGenericType`). Without the latter,
 `*Box[i64]` reads as a dereference and `[2; Box[i64]]` as an array literal.
 
-**One site rewrites a parent's pointer**: `allocateQuesNameRes` collapses `&x?`
-into the allocation node with `FlagQues` set. Everything else mutates in place.
+**Two sites rewrite a parent's pointer**: `allocateQuesNameRes` collapses `&x?`
+into the allocation node with `FlagQues` set, and `fnCallNameResPath` replaces
+an argument-less namespace hop with the name it bound. Everything else mutates
+in place.
 
 ## 5. Where it stops, and why
 
 | Deferred to type check | Because |
 | --- | --- |
-| `.field` and `.method` — `fnCallNameRes` never walks the call's member slot, so `inodeNameRes` never meets a member name | selecting a member needs the receiver's type. `fnCallLowerMethod` does the lookup, the visibility check and the overload selection together |
+| `.field` and `.method` on a *value* — `fnCallNameRes` never walks the call's member slot, so `inodeNameRes` never meets a member name | selecting a member needs the receiver's type. `fnCallLowerMethod` does the lookup, the visibility check and the overload selection together. A period on a *namespace* is settled here instead: the receiver's type is not what it needs |
 | Rewriting a bare field name to `self.field` | that is lowering — it builds a call node and takes its type from what the call resolves to, and there is no type here to work from |
 | Overload selection | needs argument types. The name binds to the `FnOverloadDclNode`; `fnCallLowerOverloadFn` picks the candidate |
 | Generic instantiation and macro expansion | there is no `NameRes` function in `ir/meta/generic.c` at all |
@@ -166,7 +177,11 @@ is the contract; there is never a second name resolution pass.
 **Guaranteed when the pass finishes without errors:**
 
 - Every reachable `NameUseNode` has a non-NULL `dclnode`, **except** a member
-  name — the `methfld` of a call — which this pass never visits.
+  name — the `methfld` of a call — which this pass never visits. A member the
+  path collapse bound is no longer in a member slot: it has become the node, or
+  the call's `objfn`.
+- No `FnCallNode` left in the tree has a member name whose receiver is a module
+  or a struct's *name*. Every one of those was a path and is gone.
 - A `NameUseNode` is still a `NameUseTag`: it is bound, not retagged, and
   answers `isTypeNode`, `isExpNode` and `isMetaNode` for its declaration.
 - No `TupleTag`, `StarTag` or `QuesTag` remains.

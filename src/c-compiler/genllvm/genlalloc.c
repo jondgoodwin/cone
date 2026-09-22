@@ -144,12 +144,12 @@ void genlAllocFillArray(GenState *gen, LLVMValueRef nbrelems, ArrayNode *arrayli
 // This is roughly what it does:
 //
 // fn allocate(size usize) +region-uni T
-//   imm ref = region::alloc(T.size) as +region-uni T
+//   imm ref = region.alloc(T.size) as +region-uni T
 //   if (ref is None)
 //     panic or return None
 //   ref.region.init()
 //   ref.perm.init()
-//   T::init(&mut ref.TValue, initvalue)
+//   T.init(&mut ref.TValue, initvalue)
 //   &ref.TValue or Some[&ref.TValue]
 //
 LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {

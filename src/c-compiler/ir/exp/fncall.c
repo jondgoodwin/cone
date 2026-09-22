@@ -91,9 +91,87 @@ void fnCallPrint(FnCallNode *node) {
     }
 }
 
+// A '.' whose left side names a namespace is a path through it, not an access
+// to a value: 'math3d.Point3', 'Tally.make(1)', 'Tally.made'. The parser cannot
+// tell the two apart, so the decision is made here, as soon as the base name is
+// bound, and what it binds to is the whole of the test -- a module or a type is
+// a namespace, anything else is a receiver.
+//
+// The member is looked up in that namespace and the hop disappears: with no
+// arguments the node becomes the bound name, and with arguments it becomes a
+// plain call of it. Either way the shape handed on is the one an unqualified
+// name of the same declaration would have produced, so nothing downstream
+// learns that a path was written -- except FlagQualified, which the two
+// implicit-'self' lowerings ask.
+//
+// It has to happen here rather than in type check, because name resolution
+// itself asks isTypeNode of an operand: '&mut mymod.Gadget' and
+// '(mymod.A, mymod.B)' are settled by refNameRes and ttupleNameRes, which run
+// after this and need a resolved type name to look at.
+//
+// Returns 1 when the node was replaced outright, so the caller stops.
+static int fnCallNameResPath(NameResState *pstate, FnCallNode **nodep) {
+    FnCallNode *node = *nodep;
+
+    // An operator, a tuple index, or a call with no member name is never a path
+    if (node->methfld == NULL || !isNameUseNode(node->methfld) || (node->flags & FlagOperator))
+        return 0;
+    if (!isNameUseNode(node->objfn))
+        return 0;
+    INode *basedcl = nameUseGetDcl((NameUseNode*)node->objfn);
+    if (basedcl == NULL)
+        return 0;
+    Namespace *namespace;
+    if (basedcl->tag == ModuleTag)
+        namespace = &((ModuleNode*)basedcl)->namespace;
+    else if (basedcl->tag == StructTag)
+        namespace = &((StructNode*)basedcl)->namespace;
+    else
+        return 0;  // a value: this '.' is a member access, and type check binds it
+
+    NameUseNode *member = (NameUseNode*)node->methfld;
+    member->dclnode = namespaceFind(namespace, member->namesym);
+    if (member->dclnode == NULL) {
+        errorMsgNode((INode*)member, ErrorUnkName,
+            "The name %s does not refer to a declared name", &member->namesym->namestr);
+        return 0;
+    }
+    member->flags |= FlagQualified;
+
+    // A private name belongs to the module that declares it, and naming a path
+    // through that module reaches past it. Refusing it here is what
+    // refmodule.html says, and is also the only answer generation can honour:
+    // it emits no symbol for a private declaration of a module whose bodies
+    // this compile does not generate, so the call site would otherwise be left
+    // with nothing to call. A private candidate selected through a *public*
+    // overload name is untouched by this, because the program never names it.
+    //
+    // A type's own namespace is measured by the module that owns the type, so
+    // 'modulesyms.Gadget.make' is judged against modulesyms, one hop back.
+    //
+    // The declaration stays attached after the diagnostic: it is the one the
+    // program asked for, and leaving the use unresolved would only hand the
+    // next pass a null to trip over.
+    ModuleNode *qualmod = dclInfoGetModule(basedcl);
+    if (qualmod && qualmod != pstate->mod && inodeIsPrivate(member->dclnode))
+        errorMsgNode((INode*)member, ErrorNotPublic,
+            "%s is private to its module and may not be named from outside it.",
+            &member->namesym->namestr);
+
+    if (node->args == NULL) {
+        *((INode**)nodep) = (INode*)member;
+        return 1;
+    }
+    node->objfn = (INode*)member;
+    node->methfld = NULL;
+    return 0;
+}
+
 // Name resolution on 'fncall'
 // - If node is indexing on a type, retag node as a typelit
-// Note: this never name resolves .methfld, which is handled in type checking
+// Note: this never name resolves .methfld, which is handled in type checking --
+// except for a member that turns out to be a namespace hop, which is this
+// pass's to bind (fnCallNameResPath)
 void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
     FnCallNode *node = *nodep;
     INode **argsp;
@@ -101,6 +179,11 @@ void fnCallNameRes(NameResState *pstate, FnCallNode **nodep) {
 
     // Name resolve objfn so we know what it is to vary subsequent processing
     inodeNameRes(pstate, &node->objfn);
+
+    // A '.' through a module or a type is a path, and collapses here
+    if (fnCallNameResPath(pstate, nodep))
+        return;
+    node = *nodep;
 
     // Name resolve arguments/statements
     if (node->args) {
@@ -901,8 +984,19 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             typeLitTypeCheck(pstate, *nodep);
             return;
         }
+        // A member named on a type is a path through that type's namespace, and
+        // name resolution collapses every path whose base it can see: a module,
+        // a struct or a trait. One that arrives here is one it could not -- an
+        // alias, a number type, a generic instance, a generic parameter.
+        // Diagnosed rather than left to read as a bad call.
+        if (node->methfld != NULL) {
+            errorMsgNode(node->objfn, ErrorUnkName,
+                "A path may pass through a module, a struct or a trait; reaching a member through anything else is not built.");
+            node->vtype = errorType;
+            return;
+        }
         // Only a type that was named can be asked for its 'init'
-        if (node->methfld != NULL || !isNameUseNode(node->objfn)) {
+        if (!isNameUseNode(node->objfn)) {
             errorMsgNode(node->objfn, ErrorBadTerm, "May not do a function call on a type");
             node->vtype = errorType;
             return;
@@ -910,7 +1004,6 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
 
         // Initializer:  Change nameuse to refer to type's 'init' function
         NameUseNode *nameuse = (NameUseNode *)node->objfn;
-        //nameUseAddQual(nameuse, nameuse->namesym);
         nameuse->namesym = initMethodName;
         Namespace *namespace = &((StructNode*)nameuse->dclnode)->namespace;
         nameuse->dclnode = namespaceFind(namespace, nameuse->namesym);
@@ -931,7 +1024,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     // If objfn is the name of a method/field, rewrite to: self.method
     if (isNameUseNode(node->objfn) && isExpNode(node->objfn)
         && ((NameUseNode*)node->objfn)->dclnode->flags & FlagMethFld
-        && ((NameUseNode*)node->objfn)->qualNames == NULL) {
+        && !(node->objfn->flags & FlagQualified)) {
         // Build a resolved 'self' node
         NameUseNode *selfnode = newNameUseNode(selfName);
         selfnode->dclnode = nodesGet(((FnSigNode*)pstate->fn->vtype)->parms, 0);

@@ -1410,10 +1410,10 @@ def execute(cmd: list[str], cwd: Path, out_dir: Path, stem: str,
             timeout: float, max_bytes: int, env: dict | None = None) -> Completed:
     """Run one process with stdin from null and a wall-clock timeout (R1.3).
 
-    The timeout is not optional. ``::name`` at the start of a statement makes
-    the parser loop forever emitting unbounded output, so output volume is
-    capped too: a 20-second unbounded write would otherwise fill a pipe buffer
-    or a disk before the clock ran out.
+    The timeout is not optional. A malformed source can put the parser in a
+    loop emitting unbounded output, so output volume is capped too: a 20-second
+    unbounded write would otherwise fill a pipe buffer or a disk before the
+    clock ran out.
     """
     out_path = out_dir / f"{stem}.stdout"
     err_path = out_dir / f"{stem}.stderr"
@@ -1511,7 +1511,7 @@ def object_extension(options: tuple[str, ...]) -> str:
 # encoder; design/phases/names-and-namespaces.md "Symbols" is the standard). A
 # 'symbols' check reads the pre-optimization .preir and asserts against one line
 # per global symbol, each carrying the symbol's demangled reading rather than its
-# bytes, so a check says 'Pt::get' where the IR says '_CNvNt2Pt3get'.
+# bytes, so a check says 'Pt.get' where the IR says '_CNvNt2Pt3get'.
 #
 # The grammar, version 0:
 #
@@ -1686,7 +1686,7 @@ class Demangler:
                 raise DemangleError(f"namespace {kind!r} at {self.pos - 1}")
             parent = self.path() if self.peek() in ("C", "N", "I") else ""
             name = self.ident()
-            return f"{parent}::{name}" if parent else name
+            return f"{parent}.{name}" if parent else name
         if ch == "I":
             base = self.path()
             args = []
@@ -1751,7 +1751,7 @@ class Demangler:
             trait = self.path()
             # A slot's thunk: the type as the trait, then the slot's name
             if self.pos != len(self.text):
-                reading = f"{impl} as {trait}::{self.ident()} (thunk)"
+                reading = f"{impl} as {trait}.{self.ident()} (thunk)"
             else:
                 reading = f"{impl} as {trait} (vtable)"
         elif ch == "L":
@@ -1786,24 +1786,24 @@ DEMANGLE_EXAMPLES = [
     ("plainPub", "plainPub"),
     ("main", "main"),
     ("counter", "counter"),
-    ("_CNvC3sub5subFn", "sub::subFn"),
-    ("_CNvC3sub9subGlobal", "sub::subGlobal"),
-    ("_CNvNt2Pt3get", "Pt::get"),
-    ("_CNvNtC3sub5SubPt3get", "sub::SubPt::get"),
+    ("_CNvC3sub5subFn", "sub.subFn"),
+    ("_CNvC3sub9subGlobal", "sub.subGlobal"),
+    ("_CNvNt2Pt3get", "Pt.get"),
+    ("_CNvNtC3sub5SubPt3get", "sub.SubPt.get"),
     # D3: the '_' separator precedes bytes that begin with '_' or a digit, as
     # in v0, so '_hid' is '4__hid' (the decided table's '4_hid' is a slip)
-    ("_CNvNtC3sub5SubPt4__hid", "sub::SubPt::_hid"),
-    ("_CNvNt2Pt3_1st", "Pt::1st"),
+    ("_CNvNtC3sub5SubPt4__hid", "sub.SubPt._hid"),
+    ("_CNvNt2Pt3_1st", "Pt.1st"),
     ("_CINv4pickxE", "pick[i64]"),
-    ("_CINvC4gsub4pickxE", "gsub::pick[i64]"),
-    ("_CINvC4gsub4pickxxE", "gsub::pick[i64,i64]"),
-    ("_CNvINt6HolderxE5tally", "Holder[i64]::tally"),
-    ("_CNvNt5Gauge7reading", "Gauge::reading"),
-    ("_CNvNt6Bundle4drop", "Bundle::drop"),
-    ("_CNvNt3Vecopl", "Vec::+"),
-    ("_CNvNt4Listorx", "List::&[]"),
+    ("_CINvC4gsub4pickxE", "gsub.pick[i64]"),
+    ("_CINvC4gsub4pickxxE", "gsub.pick[i64,i64]"),
+    ("_CNvINt6HolderxE5tally", "Holder[i64].tally"),
+    ("_CNvNt5Gauge7reading", "Gauge.reading"),
+    ("_CNvNt6Bundle4drop", "Bundle.drop"),
+    ("_CNvNt3Vecopl", "Vec.+"),
+    ("_CNvNt4Listorx", "List.&[]"),
     ("_CYNt5GaugeNt5Meter", "Gauge as Meter (vtable)"),
-    ("_CYNt3CarNt7Powered6thrust", "Car as Powered::thrust (thunk)"),
+    ("_CYNt3CarNt7Powered6thrust", "Car as Powered.thrust (thunk)"),
     ("_CLNt5Meter", "Meter (vtable list)"),
     ("_CINv4pickR2so3mutlE", "pick[&so mut i32]"),
     ("_CINv4pickR02roNt6HolderE", "pick[&ro Holder]"),
@@ -1816,13 +1816,13 @@ DEMANGLE_EXAMPLES = [
     ("_CINv11passThroughFEuE", "passThrough[fn()]"),
     ("_CINv11passThroughuE", "passThrough[void]"),
     ("_CINv11passThroughPhE", "passThrough[*u8]"),
-    ("_CNvC1mu9_gre_6ka8i", "m::größe"),
-    ("_CNvNt6Umlautu8_ab_eh24y", "Umlaut::`a b`"),
-    ("_CNvNt6Umlautu8_bo32gvah", "Umlaut::`+ -`"),
-    ("_CNvC3a_b1c", "a_b::c"),
-    ("_CNvC1a3b_c", "a::b_c"),
-    ("_CNvNtC5stdio8IOStream10__appendInt", "stdio::IOStream::_appendInt"),
-    ("_CNvC3sub5subFn.1", "sub::subFn.1"),
+    ("_CNvC1mu9_gre_6ka8i", "m.größe"),
+    ("_CNvNt6Umlautu8_ab_eh24y", "Umlaut.`a b`"),
+    ("_CNvNt6Umlautu8_bo32gvah", "Umlaut.`+ -`"),
+    ("_CNvC3a_b1c", "a_b.c"),
+    ("_CNvC1a3b_c", "a.b_c"),
+    ("_CNvNtC5stdio8IOStream10__appendInt", "stdio.IOStream._appendInt"),
+    ("_CNvC3sub5subFn.1", "sub.subFn.1"),
     ("abs", "abs"),
 ]
 

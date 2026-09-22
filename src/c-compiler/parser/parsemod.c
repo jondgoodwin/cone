@@ -84,12 +84,14 @@ ImportNode *parseImport(ParseState *parse) {
     char *modstr = fileName(filename);
 
     // Process name folding instructions
-    if (lexIsToken(DblColonToken)) {
+    if (lexIsToken(DotToken)) {
         lexNextToken();
         if (lexIsToken(StarToken)) {
             importnode->foldall = 1;
             lexNextToken();
         }
+        else
+            errorMsgLex(ErrorBadTerm, "Expected '*' after '.': selective import is not supported yet.");
     }
     parseEndOfStatement();
 
@@ -346,7 +348,6 @@ ProgramNode *parsePgm(ConeOptions *opt) {
     // contributes no prefix, so its declarations are spelled bare.
     ModuleNode *mod = pgmAddMod(pgm, FlagGenMod);
     mod->namesym = nametblFind(opt->srcname, strlen(opt->srcname));
-    parse.pgmmod = mod;
     lexInjectFile(opt->srcpath);
     modHook(NULL, mod);
 

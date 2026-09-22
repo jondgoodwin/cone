@@ -35,7 +35,6 @@ INode *newLifetimeUseNode(LifetimeNode *lifedcl) {
     life->vtype = NULL;
     life->namesym = lifedcl->namesym;
     life->dclnode = (INode*)lifedcl;
-    life->qualNames = NULL;
     return (INode*)life;
 }
 

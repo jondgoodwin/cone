@@ -22,9 +22,9 @@
 #
 # Left out deliberately:
 #
-# - Selective import, 'import mod::name'. The parser accepts '::' only before
-#   '*', so this form is rejected as a malformed statement rather than resolved.
-#   Asserting today's rejection would pin a placeholder.
+# - Selective import, 'import mod.name'. The parser accepts a period only
+#   before '*', so this form is rejected rather than resolved. Asserting
+#   today's rejection would pin a placeholder.
 # - A name-fold clash between two wildcard imports. It is diagnosed, but both
 #   diagnostics are attributed to a source module and one of them carries the
 #   wrong file url, so a scenario built on it would pin a reporting bug.
@@ -66,21 +66,21 @@ tags = ["parse", "nameres", "typecheck", "genllvm"]
 name = "imported-candidates-declared"
 target = "symbols"
 contains = [
-  "declare modulesub::scaleInt",
-  "declare modulesub::scaleFloat",
-  "declare modulesub::plain",
-  "declare modulesub::_leading",
+  "declare modulesub.scaleInt",
+  "declare modulesub.scaleFloat",
+  "declare modulesub.plain",
+  "declare modulesub._leading",
 ]
 
 # An overload name has no symbol of its own; a private overload name is not
 # folded by the import at all, so neither it nor its candidate is declared; and
 # a private function nothing public reaches leaves no symbol either. A
 # declaration's line ends at its name, so the newline is what stops
-# 'modulesub::scale' from matching 'modulesub::scaleInt'.
+# 'modulesub.scale' from matching 'modulesub.scaleInt'.
 [[scenario.module-imports.check]]
 name = "no-symbol-for-imported-overload-name"
 target = "symbols"
-excludes = ["modulesub::scale\n", "modulesub::hidden", "hiddenOne", "hiddenScaleFloat"]
+excludes = ["modulesub.scale\n", "modulesub.hidden", "hiddenOne", "hiddenScaleFloat"]
 
 # The other half of the COMDAT rule core-overload states: only a definition may
 # lead one. An imported module's functions have bodies in the IR, but this
@@ -89,9 +89,9 @@ excludes = ["modulesub::scale\n", "modulesub::hidden", "hiddenOne", "hiddenScale
 name = "imported-declarations-carry-no-comdat"
 target = "symbols"
 excludes = [
-  "modulesub::scaleInt comdat",
-  "modulesub::scaleFloat comdat",
-  "modulesub::plain comdat",
+  "modulesub.scaleInt comdat",
+  "modulesub.scaleFloat comdat",
+  "modulesub.plain comdat",
 ]
 
 [scenario.module-imports-macro]
@@ -108,8 +108,8 @@ tags = ["parse", "nameres", "typecheck", "genllvm"]
 [[scenario.module-imports-macro.check]]
 name = "folded-function-declared-and-macro-leaves-no-symbol"
 target = "symbols"
-contains = ["declare modulemacro::bump"]
-excludes = ["modulemacro::four"]
+contains = ["declare modulemacro.bump"]
+excludes = ["modulemacro.four"]
 
 # The same import carries a function that uses an anonymous function, and the
 # lift of that anonymous function into a module this compile generates nothing
@@ -119,7 +119,7 @@ excludes = ["modulemacro::four"]
 [[scenario.module-imports-macro.check]]
 name = "importing-an-anonymous-function-declares-only-its-owner"
 target = "symbols"
-contains = ["declare modulemacro::useAnon"]
+contains = ["declare modulemacro.useAnon"]
 excludes = ["declare anon"]
 
 # The macro's body, the literal 4, is what the one call passes: the fold
@@ -133,7 +133,7 @@ contains = ["(i64 4)"]
 
 [scenario.module-qualified]
 category = "compile"
-description = "An import without '::*', whose members are reached by qualifying them"
+description = "An import without '.*', whose members are reached by qualifying them"
 tags = ["parse", "nameres", "typecheck", "genllvm"]
 
 # A qualified call reaches the same namespaced concrete symbol a folded one
@@ -147,39 +147,38 @@ tags = ["parse", "nameres", "typecheck", "genllvm"]
 name = "qualified-global-lowers-to-the-declaration"
 target = "symbols"
 contains = [
-  "external global modulesyms::shared",
-  "external constant modulesyms::fixed",
+  "external global modulesyms.shared",
+  "external constant modulesyms.fixed",
 ]
 
 [[scenario.module-qualified.check]]
 name = "qualified-type-name-is-the-type"
 target = "preir"
 contains = ["%Gadget = type", "@gadgetOf(%Gadget"]
-excludes = ["modulesyms_Gadget", '"modulesyms::Gadget"']
+excludes = ["modulesyms_Gadget", '"modulesyms.Gadget"']
 
 [[scenario.module-qualified.check]]
 name = "qualified-call-lowers-to-namespaced-symbol"
 target = "symbols"
-contains = ["declare modulesub::plain", "declare modulesub::scaleInt"]
-excludes = ["modulesub::scale\n"]
+contains = ["declare modulesub.plain", "declare modulesub.scaleInt"]
+excludes = ["modulesub.scale\n"]
 
 [scenario.module-qualified-nested]
 category = "compile"
-description = "A two-qualifier path, 'mod::Type::name', relative and rooted, reaching a type's static function"
+description = "A two-hop path, 'mod.Type.name', reaching a type's static function"
 tags = ["parse", "nameres", "typecheck", "genllvm"]
 
-# The parser used to drop the first qualifier when it read the second, and
-# the list stored the second two slots along. The call now resolves through
-# module then type to the static function, which the importer declares under
-# both.
+# The call resolves through module then type to the static function, which the
+# importer declares under both. This is the collapse feeding itself: the inner
+# hop has to leave a resolved type name for the outer hop to find.
 [[scenario.module-qualified-nested.check]]
 name = "two-qualifier-call-lowers-to-the-static-function"
 target = "symbols"
-contains = ["declare modulesyms::Gadget::make"]
+contains = ["declare modulesyms.Gadget.make"]
 
 # -------- the load-order trio --------
 #
-# Three scenarios reach one name, 'moduletransit::plain', which moduletransit
+# Three scenarios reach one name, 'moduletransit.plain', which moduletransit
 # holds only by folding modulesub. Whether the qualifier can see it depends
 # today on whether the asking module was loaded before or after moduletransit:
 # the root and moduleearly (loaded first) are refused, modulelate (loaded
@@ -193,19 +192,19 @@ description = "A folded name reached through its module's qualifier from a modul
 tags = ["parse", "nameres", "typecheck", "genllvm"]
 
 # What the root names lowers to the declaring modules' symbols, and the name
-# modulelate reached through 'moduletransit::' is declared under the module
+# modulelate reached through 'moduletransit.' is declared under the module
 # that declares it -- a fold binds a name, it declares nothing, so nothing is
 # spelled after moduletransit for it or after modulelate.
 [[scenario.module-transit.check]]
 name = "transit-name-declares-under-its-declaring-module"
 target = "symbols"
 contains = [
-  "declare modulelate::viaMid",
-  "declare moduletransit::midOwn",
-  "declare modulesub::plain",
-  "declare modulesub::scaleInt",
+  "declare modulelate.viaMid",
+  "declare moduletransit.midOwn",
+  "declare modulesub.plain",
+  "declare modulesub.scaleInt",
 ]
-excludes = ["moduletransit::plain", "moduletransit::scale", "modulelate::plain"]
+excludes = ["moduletransit.plain", "moduletransit.scale", "modulelate.plain"]
 
 # -------- symbol kinds --------
 #
@@ -240,12 +239,12 @@ tags = ["parse", "nameres", "typecheck", "genllvm"]
 name = "imported-global-is-an-external-declaration"
 target = "symbols"
 contains = [
-  "external global modulesyms::shared",
-  "external constant modulesyms::fixed",
+  "external global modulesyms.shared",
+  "external constant modulesyms.fixed",
 ]
 excludes = [
-  "modulesyms::shared comdat",
-  "modulesyms::fixed comdat",
+  "modulesyms.shared comdat",
+  "modulesyms.fixed comdat",
 ]
 
 # An imported module's private top-level function and global leave no symbol
@@ -253,7 +252,7 @@ excludes = [
 [[scenario.module-symbols.check]]
 name = "imported-private-top-level-names-are-absent"
 target = "symbols"
-contains = ["declare modulesyms::pubFn"]
+contains = ["declare modulesyms.pubFn"]
 excludes = ["privFn", "privGlobal"]
 
 # A struct's methods are declared after the module and then the type, and the
@@ -263,13 +262,13 @@ excludes = ["privFn", "privGlobal"]
 name = "imported-private-method-is-declared"
 target = "symbols"
 contains = [
-  "declare modulesyms::Gadget::get",
-  "declare modulesyms::Gadget::hid",
-  "declare modulesyms::Gadget::make",
+  "declare modulesyms.Gadget.get",
+  "declare modulesyms.Gadget.hid",
+  "declare modulesyms.Gadget.make",
 ]
 excludes = [
-  "modulesyms::Gadget::get comdat",
-  "modulesyms::Gadget::hid comdat",
+  "modulesyms.Gadget.get comdat",
+  "modulesyms.Gadget.hid comdat",
 ]
 
 # The struct's LLVM type is named after the type alone: an LLVM type name is
@@ -278,7 +277,7 @@ excludes = [
 name = "imported-struct-type-carries-no-module-path"
 target = "llvmir"
 contains = ["%Gadget = type"]
-excludes = ["%modulesyms_Gadget", '%"modulesyms::Gadget"']
+excludes = ["%modulesyms_Gadget", '%"modulesyms.Gadget"']
 
 # An 'extern' declared inside an imported module is still the bare C name,
 # with no module path.
@@ -286,7 +285,7 @@ excludes = ["%modulesyms_Gadget", '%"modulesyms::Gadget"']
 name = "extern-inside-an-imported-module-takes-no-prefix"
 target = "symbols"
 contains = ["declare labs"]
-excludes = ["modulesyms::labs"]
+excludes = ["modulesyms.labs"]
 
 [scenario.module-cycle]
 category = "compile"
@@ -302,7 +301,7 @@ contains = [
   "global internal counter comdat nodeduplicate",
   "define internal rootFn comdat nodeduplicate",
   "define internal caller comdat nodeduplicate",
-  "declare modulecyc::subFn",
+  "declare modulecyc.subFn",
 ]
 
 # ... and each of them exactly once. The root module is named after its file,
@@ -333,8 +332,8 @@ tags = ["parse", "nameres", "genllvm"]
 name = "distinct-modules-spell-distinct-symbols"
 target = "symbols"
 contains = [
-  "declare modulex_y::z",
-  "declare modulex::y_z",
+  "declare modulex_y.z",
+  "declare modulex.y_z",
 ]
 excludes = [".1"]
 
@@ -342,9 +341,9 @@ excludes = [".1"]
 
 [scenario.module-parse]
 category = "reject"
-description = "Module qualifier and 'extern' declaration syntax the parser cannot accept"
+description = "'extern' declaration syntax the parser cannot accept"
 tags = ["parse"]
-diagnostics = 4
+diagnostics = 2
 
 [scenario.module-import-missing]
 category = "reject"
@@ -381,9 +380,9 @@ diagnostics = 1
 
 [scenario.module-nameres]
 category = "reject"
-description = "Module and type qualifiers and imported names that resolve to nothing, or to something private"
+description = "Paths through a module and a type that resolve to nothing, or to something private"
 tags = ["nameres"]
-diagnostics = 7
+diagnostics = 5
 
 # Once left out as re-asserting what notFolded establishes; pinned now because
 # a fold that ran and a fold that never happened are two different reasons for
@@ -420,3 +419,13 @@ category = "reject"
 description = "A diagnostic in an imported module names that module's file, not the last one parsed"
 tags = ["typecheck"]
 diagnostics = 1
+
+# The other half of module-nameres: a period whose left side is a value, which
+# is a member access and fails against the receiver's type rather than as a
+# lookup. Separate because name resolution halts the pipeline, so the two
+# stages' failures cannot share a file.
+[scenario.module-typecheck-notnamespace]
+category = "reject"
+description = "A period whose left side names neither a module nor a type"
+tags = ["nameres", "typecheck"]
+diagnostics = 3

@@ -10,14 +10,6 @@
 #include <string.h>
 #include <assert.h>
 
-// A list of module names (qualifiers)
-typedef struct NameList {
-    uint16_t avail;     // Max. number of names allocated for
-    uint16_t used;      // Number of names stored in list
-    ModuleNode *basemod;  // base module (root or current) holding qualifiers
-    // Name* pointers for qualifiers follow, starting here
-} NameList;
-
 // Create a new name use node
 NameUseNode *newNameUseNode(Name *namesym) {
     NameUseNode *name;
@@ -26,7 +18,6 @@ NameUseNode *newNameUseNode(Name *namesym) {
     // template that is only ever cloned -- a trait's default method, a generic's
     // body -- is never type checked at all, and keeps it.
     name->vtype = unknownType;
-    name->qualNames = NULL;
     name->dclnode = NULL;
     name->namesym = namesym;
     return name;
@@ -135,111 +126,31 @@ int nameUseNames(INode *node, uint16_t dcltag) {
     return dcl != NULL && dcl->tag == dcltag;
 }
 
-// If a NameUseNode has module name qualifiers, it will first set basemod
-// (either root module or the current module scope). This allocates an area
-// for qualifiers to be added.
-void nameUseBaseMod(NameUseNode *node, ModuleNode *basemod) {
-    node->qualNames = (NameList *)memAllocBlk(sizeof(NameList) + 4 * sizeof(Name*));
-    node->qualNames->avail = 4;
-    node->qualNames->used = 0;
-    node->qualNames->basemod = basemod;
-}
-
-// Add a module name qualifier to the end of the list
-void nameUseAddQual(NameUseNode *node, Name *name) {
-    uint16_t used = node->qualNames->used;
-    if (used + 1 >= node->qualNames->avail) {
-        NameList *oldlist = node->qualNames;
-        uint16_t newavail = oldlist->avail << 1;
-        node->qualNames = (NameList *)memAllocBlk(sizeof(NameList) + newavail * sizeof(Name*));
-        node->qualNames->avail = newavail;
-        node->qualNames->used = used;
-        node->qualNames->basemod = oldlist->basemod;
-        Name **oldp = (Name**)(oldlist + 1);
-        Name **newp = (Name**)(node->qualNames + 1);
-        uint16_t cnt = used;
-        while (cnt--)
-            *newp++ = *oldp++;
-    }
-    // The names follow the header as Name* slots, so step in Name* strides.
-    // Indexing (qualNames + 1) directly steps in whole-NameList strides, which
-    // put the second qualifier two slots along and left slot 1 unset for the
-    // walk in nameUseNameRes to read.
-    Name **namep = (Name**)(node->qualNames + 1) + used;
-    *namep = name;
-    ++node->qualNames->used;
-}
-
 // Serialize a name use node
 void nameUsePrint(NameUseNode *name) {
-    if (name->qualNames) {
-        // if root: inodeFprint("::");
-        uint16_t cnt = name->qualNames->used;
-        Name **namep = (Name**)(name->qualNames + 1);
-        while (cnt--)
-            inodeFprint("%s::", &(*namep++)->namestr);
-    }
     inodeFprint("%s", &name->namesym->namestr);
 }
 
 // Handle name resolution for name use references: point dclnode at the name's
-// declaration, in this module or another. That is all a use needs -- whether
-// it is a type, a value or a macro is asked of the declaration (nameUseGroup),
-// and a bare field name is lowered to 'self.field' by type check, which has
-// the type that lowering needs.
+// declaration. That is all a use needs -- whether it is a type, a value or a
+// macro is asked of the declaration (nameUseGroup), and a bare field name is
+// lowered to 'self.field' by type check, which has the type that lowering needs.
+//
+// Every name that reaches here is a bare one. A name reached through a
+// namespace was written as a member access and is bound by fnCallNameRes, which
+// collapses the path; the node it leaves behind arrives here already resolved.
 void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
     NameUseNode *name = *namep;
 
-    // If name is already "resolved", we are done.
-    // This will happen with de-sugaring logic that creates pre-resolved phantom variables
+    // If name is already "resolved", we are done. This happens for de-sugaring
+    // logic that creates pre-resolved phantom variables, and for a name the
+    // path collapse bound.
     if (name->dclnode)
         return;
 
-    // For module-qualified names, look up name in that module
-    if (name->qualNames) {
-        // Do iterative look ups of module qualifiers beginning with basemod
-        ModuleNode *qualmod = name->qualNames->basemod;
-        Namespace *namespace = &qualmod->namespace;
-        uint16_t cnt = name->qualNames->used;
-        Name **namep = (Name**)(name->qualNames + 1);
-        while (cnt--) {
-            INode *foundnode = namespaceFind(namespace, *namep++);
-            if (foundnode == NULL) {
-                errorMsgNode((INode*)name, ErrorUnkName, "Namespace %s does not exist", &(*--namep)->namestr);
-                return;
-            }
-            else if (foundnode->tag == ModuleTag) {
-                qualmod = (ModuleNode*)foundnode;
-                namespace = &qualmod->namespace;
-            }
-            else if (foundnode->tag == StructTag)
-                namespace = &((StructNode*)foundnode)->namespace;
-            else {
-                errorMsgNode((INode*)name, ErrorUnkName, "%s is not a valid namespace", &(*--namep)->namestr);
-                return;
-            }
-        }
-        name->dclnode = namespaceFind(namespace, name->namesym);
-
-        // A private name belongs to the module that declares it, and qualifying
-        // reaches past that. Refusing it here is what refmodule.html says, and
-        // is also the only answer generation can honour: it emits no symbol for
-        // a private declaration of a module whose bodies this compile does not
-        // generate, so the call site would otherwise be left with nothing to
-        // call. A private candidate selected through a *public* overload name is
-        // untouched by this, because the program never names it.
-        //
-        // The declaration stays attached after the diagnostic: it is the one the
-        // program asked for, and leaving the use unresolved would only hand the
-        // next pass a null to trip over.
-        if (name->dclnode && qualmod != pstate->mod && inodeIsPrivate(name->dclnode))
-            errorMsgNode((INode*)name, ErrorNotPublic,
-                "%s is private to its module and may not be named from outside it.",
-                &name->namesym->namestr);
-    }
-    else
-        // For non-qualified names (current module), should already be hooked in global name table
-        name->dclnode = name->namesym->node;
+    // A bare name is already hooked into the global name table by whichever
+    // scope owns it, innermost last, so this is one pointer read and no walk
+    name->dclnode = name->namesym->node;
 
     if (!name->dclnode) {
         errorMsgNode((INode*)name, ErrorUnkName, "The name %s does not refer to a declared name", &name->namesym->namestr);
@@ -252,7 +163,7 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
     // type's, so the body has to write 'self.member' itself. Refused here, where
     // the name is known to be a member, rather than left to expand into a
     // reference to the wrong receiver.
-    if (pstate->macromethod && name->qualNames == NULL && inodeIsMember(name->dclnode))
+    if (pstate->macromethod && inodeIsMember(name->dclnode))
         errorMsgNode((INode*)name, ErrorBareMbr,
             "In a macro method, %s must be reached through self, as self.%s",
             &name->namesym->namestr, &name->namesym->namestr);
@@ -287,7 +198,11 @@ void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
     // -- so it belongs to type check. Name resolution did it, with no type to
     // work from. Its counterpart in fnCallTypeCheck covers the disjoint case, a
     // bare *method* name being called.
-    if (name->dclnode->tag == FieldDclTag && (name->dclnode->flags & FlagMethFld)) {
+    //
+    // 'bare' is the whole of the condition: a field named through its type,
+    // 'Gadget.w', asked for that type's field and not for this method's self.
+    if (name->dclnode->tag == FieldDclTag && (name->dclnode->flags & FlagMethFld)
+        && !(name->flags & FlagQualified)) {
         // Only a method has a receiver to reach a field through. A field's own
         // default value is analyzed with no function around it, so a name that
         // resolved to a sibling field there has nothing to qualify it.

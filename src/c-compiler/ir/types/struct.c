@@ -163,7 +163,7 @@ static void structInheritTrait(StructNode *node, uint32_t fldpos, StructNode *tr
         // Only a method is inherited. A static function of the trait takes no
         // receiver, so there is nothing about it to specialize per implementer
         // and nothing that dispatches it: it stays the trait's own, reached as
-        // 'Trait::name'. Copying it gave every implementer a symbol no name could
+        // 'Trait.name'. Copying it gave every implementer a symbol no name could
         // reach, since a qualified name on the implementer does not find it either.
         if (!((*nodesp)->flags & FlagMethFld))
             continue;

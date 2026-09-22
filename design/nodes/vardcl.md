@@ -83,7 +83,7 @@ owes both halves, the mark clearing above included; `const.c` carries that note.
 | global (`parseFnOrVar`) | impl/sig, or sig alone for an `extern` | `VarInitialized`, then `modAddNode`, which records the module as owner and writes the declaration facts. `scope` stays 0. A `static` global carries `FlagStatic` and is otherwise the same: one copy per instantiation of the module, which is one copy today |
 | local (`parseExprBlock`) | sig/impl | nothing — scope comes from name resolution |
 | static local (`parseExprBlock`, after `static`) | sig/impl | `FlagStatic`, `VarInitialized`. One copy shared by every call of the function; the function becomes its owner in type check, and its storage is a global |
-| type static (`parseStruct`, after `static`) | sig/impl | `FlagStatic`, then `iNsTypeAddStatic`, which records the type as owner, marks it initialized and binds it in the type's namespace beside the fields and methods. Not a field: no slot, no `index`, no receiver. Reached as `Type::name` from outside and by bare name from the type's own functions |
+| type static (`parseStruct`, after `static`) | sig/impl | `FlagStatic`, then `iNsTypeAddStatic`, which records the type as owner, marks it initialized and binds it in the type's namespace beside the fields and methods. Not a field: no slot, no `index`, no receiver. Reached as `Type.name` from outside and by bare name from the type's own functions |
 | parameter (`parseFnSig`) | sig/impl, dropping to impl once one parameter has a default | `VarInitialized`, `scope = 1`, `index`, `Self` inference |
 
 `static` before anything that is not a variable — a function, a type, a
@@ -147,7 +147,7 @@ parameter names**.
    written once before anything runs, which is why it is held to a global's rule
    wherever it is declared.
 5a. **A function's static joins the function.** `dclInfoJoin` with the function
-   as owner, so its symbol is spelled after the function (`tick::calls`) and two
+   as owner, so its symbol is spelled after the function (`tick.calls`) and two
    functions' statics of one name stay apart. In an `inline` function the body
    is copied into every caller, so a static there would be one copy per call
    site: `ErrorBadStatic`.

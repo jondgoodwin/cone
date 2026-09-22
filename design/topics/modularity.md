@@ -146,7 +146,7 @@ to an access path or shifts a call's receiver, which a module fold never does.
 Same namespace, same rule, same node; different resolution.
 
 **`import` composes; `include` does not.** `import` loads a file as a module in
-its own right and binds its name; `::*` folds its public names into the
+its own right and binds its name; `.*` folds its public names into the
 importer. `include` injects a file's global statements into the *current*
 module, producing no module and no namespace — so an included file's private
 names are private to the including module.
@@ -170,12 +170,12 @@ outside its owner. Both are private, or both public.
 enclosing modules, then enclosing types, then the name — and **the root module
 contributes nothing to it**. Compiling `modulesub.cone` directly emits
 `@scaleInt`, bare; compiling a `main.cone` that imports it emits
-`@_CNvC9modulesub8scaleInt`, `modulesub::scaleInt`, and the two never resolve.
+`@_CNvC9modulesub8scaleInt`, `modulesub.scaleInt`, and the two never resolve.
 **A program spanning modules cannot be linked today.**
 
 The generation machinery, though, is not the missing part. An imported module's
 bodies are emitted whenever it is flagged for generation, and `stdio` is flagged
-— a compile that prints emits `stdio::print` and full definitions for the
+— a compile that prints emits `stdio.print` and full definitions for the
 `IOStream` methods, alongside the caller. Every other imported module is denied
 the flag by a `strcmp` on its filename. So what blocks a multi-package program
 is the symbol rule and that one condition, not the absence of a mechanism.

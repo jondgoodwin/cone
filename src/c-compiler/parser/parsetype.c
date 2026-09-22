@@ -129,6 +129,10 @@ ConstDclNode *parseConstDcl(ParseState *parse) {
 
 INode *parseTypeName(ParseState *parse) {
     INode *node = parseNameUse(parse);
+    // A path through namespaces parses as a chain of member accesses, which
+    // name resolution collapses once it knows what the base name is
+    while (lexIsToken(DotToken))
+        node = parseDotCall(parse, node, 0);
     if (lexIsToken(LBracketToken)) {
         FnCallNode *fncall = newFnCallNode(node, 8);
         fncall->flags |= FlagIndex;
@@ -316,7 +320,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
             uint16_t staticflag = parseStatic();
             if (staticflag && (lexIsToken(PermToken) || lexIsToken(IdentToken))) {
                 // One copy shared by every value of the type: a variable in the
-                // type's namespace, reached as Type::name from outside and by its
+                // type's namespace, reached as Type.name from outside and by its
                 // bare name from the type's own functions and methods. It is not
                 // a field, so it has no slot in the value and no receiver.
                 VarDclNode *var = parseVarDcl(parse, immPerm, ParseMayImpl | ParseMaySig);

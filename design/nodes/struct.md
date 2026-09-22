@@ -70,9 +70,9 @@ a value for it to assert. It is **not** folded into implementers
 requirement a subtype must satisfy (`structMatches`), and — unlike a trait's
 methods, which the implementers own clones of — **it is generated here or
 nowhere** (`genlGlobalSyms` and `genlGlobalImpl`). Miss the last and
-`Trait::name()` calls a null; miss any of the first three and every implementer
+`Trait.name()` calls a null; miss any of the first three and every implementer
 stops conforming the moment a trait declares one. It is reached as
-`Trait::name`, and an implementer or variant cannot name it at all:
+`Trait.name`, and an implementer or variant cannot name it at all:
 `trait-nameres-static` pins both spellings, `trait-success` the call.
 
 ⚠ **A generic method costs a trait its virtual reference, and `structMakeVtable`
@@ -266,7 +266,7 @@ reach in that module; see [module](module.md).
    may pass it on.
 10. **`structSetDropFn`** — validate a `final` method, then, if any field's type
    has a drop function, synthesize a `drop` method, owned by the type so its
-   symbol is spelled as any method's — `Bundle::drop`, `_CNvNt6Bundle4drop` —
+   symbol is spelled as any method's — `Bundle.drop`, `_CNvNt6Bundle4drop` —
    calling `final` and then each droppable field. The
    generated body is built pre-lowered and is **never type checked or flow
    analyzed**.

@@ -146,6 +146,11 @@ and the wrong tag, and name resolution retags once the names inside have bound.
 `inode.h` labels `NameUseTag`, `TupleTag` and `StarTag` explicitly as
 "parser-ambiguous".
 
+**The period is undecided in the same way.** `a.b` is a member of a value when
+`a` is one and a path through a namespace when `a` names a module or a type,
+and the parser builds the member-access shape for both. Name resolution folds
+away the ones that were paths.
+
 | Built as | Becomes | Retagged in |
 | --- | --- | --- |
 | `TupleTag` | `TTupleTag` (all types) or `VTupleTag` (all values); mixed is `ErrorBadElems` | `ttupleNameRes` |
@@ -154,6 +159,7 @@ and the wrong tag, and name resolution retags once the names inside have bound.
 | `RefTag` | stays a ref type, or becomes `BorrowTag`/`AllocateTag` by region | `refNameRes` |
 | `ArrayRefTag` | stays a ref type, or becomes `ArrayBorrowTag`/`ArrayAllocTag` | `arrayRefNameRes` |
 | `QuesTag` | `FnCallTag` for `Option[T]`, or folds into an `AllocateTag` with `FlagQues` | `allocateQuesNameRes` |
+| `FnCallTag` holding `a.b` | a bound name use, when `a` names a module or a type: the period was a path | `fnCallNameResPath` |
 | `FnCallTag` | `ArrIndexTag`, `FldAccessTag`, `TypeLitTag`, an instantiation, or a real call | `fnCallTypeCheck` |
 
 This is what principle 1 costs, and it is the whole cost: because a type and a
@@ -211,8 +217,8 @@ module as its owner. The stated reason is that permissions and allocators do not
 support forward references, so their names must be in the table as they are
 read.
 
-This is why `nameUseNameRes`'s unqualified path is a single assignment from
-`namesym->node` — see [Name Resolution](name-resolution.md).
+This is why `nameUseNameRes` is a single assignment from `namesym->node` —
+see [Name Resolution](name-resolution.md).
 
 **It loads every module.** `import` recursively loads and *fully parses* the
 imported module during the parse of the importing one, then adds an `ImportNode`
@@ -303,8 +309,8 @@ numbers.
 | `parser/parseexpr.c` | `parseAnyExpr`, `parseSimpleExpr` | the two expression entry points |
 | | `parseAssign` … `parseMult`, `parseCast` | the precedence cascade (section 3) |
 | | `parsePrefix`, `parseAmper`, `parsePlus` | prefix operators; borrowed and region-managed references |
-| | `parseSuffix`, `parseDotCall`, `parseArgs`, `parseArg` | postfix `.`, `()`, `[]`, `++`, `--`; named values |
-| | `parseTerm`, `parseNameUse`, `parseArrayLit` | literals, parens, blocks-as-expressions, qualified names |
+| | `parseSuffix`, `parseDotCall`, `parseArgs`, `parseArg` | postfix `.`, `()`, `[]`, `++`, `--`; named values. The `.` production serves a member of a value and a path through a namespace alike |
+| | `parseTerm`, `parseNameUse`, `parseArrayLit` | literals, parens, blocks-as-expressions, names |
 | `parser/parsetype.c` | `parseType` | the type dispatcher that delegates to `parsePrefix` — principle 1 |
 | | `parseStruct` | struct/trait/union: generics, `extends`, fields, methods, macros (a method when parameter 0 is `self`), tag-field synthesis and the `IsTagField` mark on a base trait's discriminant |
 | | `parseFnSig` | parameters, `Self` inference, single or tuple return type |

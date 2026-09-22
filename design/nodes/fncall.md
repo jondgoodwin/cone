@@ -66,14 +66,51 @@ Nothing about which of those it is has been decided yet.
 
 ## Name resolution
 
-`fnCallNameRes` resolves `objfn` and each argument. That is all.
-
-**It never resolves `methfld`** — its own comment says so, and since nothing
-else hands a member name to `inodeNameRes`, a member name is a `NameUseNode`
-name resolution never meets. Selecting a member needs the receiver's *type*,
-which does not exist yet. Resolving `objfn` first is what lets
+`fnCallNameRes` resolves `objfn`, collapses the node if that turned out to be a
+path, and resolves each argument. Resolving `objfn` first is what lets
 `itypeIsGenericType` recognize an unlowered `Box[i64]` as a type, which the
 type-versus-value decisions elsewhere depend on.
+
+**It never resolves `methfld` as a member** — selecting a member needs the
+receiver's *type*, which does not exist yet — so a member name is a
+`NameUseNode` name resolution never meets, since nothing else hands one to
+`inodeNameRes`.
+
+### The path collapse
+
+**A period whose left side names a namespace is a path through it, not an
+access to a value**: `math3d.Point3`, `Tally.make(1)`, `Tally.made`. The parser
+cannot tell the two apart, so `fnCallNameResPath` decides as soon as `objfn` is
+bound, and **what it binds to is the whole test** — a `ModuleTag` or a
+`StructTag` is a namespace, anything else is a receiver. An operator, a tuple
+index and a call with no member name are never paths.
+
+The member is looked up with `namespaceFind` in that namespace, bound, stamped
+`FlagQualified`, and the hop disappears:
+
+| | Becomes |
+| --- | --- |
+| no arguments — `f32.pi`, `mymod.Gadget` | the bound name use, replacing the node outright |
+| arguments — `Tally.make(1)` | a plain call: `methfld` moves to `objfn` and becomes NULL |
+
+**Either way the shape handed on is the one an unqualified name of the same
+declaration produces**, so nothing downstream learns a path was written. A
+chain falls out of that for free: `mymod.Gadget.make(2)` parses innermost
+first, so the inner hop has left a resolved type name in `objfn` before the
+outer hop looks at it.
+
+**Privacy is checked here**, against `dclInfoGetModule` of the base — so
+`modulesyms.Gadget.make` is judged against `modulesyms`, one hop back, which is
+the module that owns the type.
+
+⚠ **This cannot wait for type check.** Name resolution itself asks `isTypeNode`
+of an operand: `&mut mymod.Gadget` and `(mymod.A, mymod.B)` are settled by
+`refNameRes` and `ttupleNameRes`, which run after this and need a resolved type
+name to look at.
+
+**What it does not reach** is a base that is not a namespace *yet* — an alias,
+a number type, a generic instance, a generic parameter. Those arrive at type
+check as member accesses and are refused there by stage 2's type receiver.
 
 ## Type check
 
@@ -99,9 +136,13 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
 
 - **A type**, with `FlagIndex` → retag `TypeLitTag` and hand to
   `typeLitTypeCheck`.
-- **A type**, without → rewrite the name to the type's `init` method.
-- **A bare method or field name** (`FlagMethFld`, unqualified) → rewrite to
-  `self.method`, synthesizing a resolved `self` from parameter 0.
+- **A type**, with a member name → a path the collapse could not take, because
+  the base is not a namespace until later: an alias, a number type, a generic
+  instance, a generic parameter. `ErrorUnkName`, naming what a path may pass
+  through.
+- **A type**, with neither → rewrite the name to the type's `init` method.
+- **A bare method or field name** (`FlagMethFld`, not `FlagQualified`) →
+  rewrite to `self.method`, synthesizing a resolved `self` from parameter 0.
 - **An overload set** → `fnCallLowerOverloadFn` picks the concrete candidate.
 - **`FlagLvalOp`** → borrow the receiver as `&mut`, or hand an operator-assign
   on a method type to `fnCallOpAssgn`. A receiver that is already a reference
