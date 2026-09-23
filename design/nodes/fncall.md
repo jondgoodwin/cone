@@ -166,16 +166,25 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
   what makes the derivation an operator-assign is entitled to — `a += b`
   rewritten to `a = a + b` where the type declares no `+=` — reachable through
   a reference as it is by value. Stage 3's arm loses nothing by not seeing it:
-  of the operator names, `refType` declares only the identity comparisons.
+  of the operator names, `refType` declares only the identity comparisons,
+  `===` and `!==`.
+- **`===` and `!==` on a receiver that is neither a reference, a slice, a
+  virtual reference nor a pointer** → `ErrorSameNotRef`: identity asks about
+  places, and it is not an operator a type declares, so the type's own
+  namespace is never asked. `!==` is never derived from anything.
 - **`!=` on a type that declares `==` and no `!=`** (`fnCallNeFromEq`) → the
   node is renamed to `==` and a `NotLogicTag` node takes its place in the
   tree, wrapping it; stage 3 then lowers the `==` like any other operator, and
-  its answer is coerced to `Bool` (through `isTrue` if need be). Only a struct
-  receiver's own type is asked: a reference, a pointer and a slice declare
-  their own `!=`, selected in stage 3 before any referent is. A type declaring
-  its own `!=` keeps it, an enum's intrinsic pair is declared together, and a
-  type declaring neither is reported missing its `!=`. A `==` that selects
-  nothing is reported once, under `==`, and the `not` carries `errorType` on.
+  its answer is coerced to `Bool` (through `isTrue` if need be). The type asked
+  is a struct receiver's own, or the struct a reference refers to, through any
+  number of references — `!=` on references compares the values, so
+  `fnCallLowerRefCompare` lowers the renamed `==` exactly as it would a written
+  one, and its diagnostics name `==`. A pointer declares its own `!=`, on the
+  pointer, and a slice or a virtual reference refuses it, so none of them asks
+  a referent. A type declaring its own `!=` keeps it, an enum's intrinsic pair
+  is declared together, and a type declaring neither is reported missing its
+  `!=`. A `==` that selects nothing is reported once, under `==`, and the `not`
+  carries `errorType` on.
 
 **Stage 3 — dispatch on the receiver's type tag.**
 
@@ -185,9 +194,48 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
 | struct, number | fill in `()`/`[]`/`&[]` as `methfld` if absent, then `fnCallLowerMethod` |
 | `TTupleTag` | `fnCallLowerIntField` — element by literal index |
 | `ArrayTag` | `fnCallArrIndex`, only under `FlagIndex` |
-| `ArrayRefTag` | index, or `fnCallLowerPtrMethod` against `arrayRefType` |
-| `RefTag` | function-by-ref, array index, or `fnCallLowerPtrMethod`, then `fnCallLowerTraitMethod` and failing that `fnCallLowerMethod` |
-| `VirtRefTag` | `fnCallLowerPtrMethod`, else set `FlagVDisp` and `fnCallLowerMethod` |
+| `ArrayRefTag` | index; `==`, `!=` or an ordering is `ErrorRefNoCompare`; else `fnCallLowerPtrMethod` against `arrayRefType` |
+| `RefTag` | function-by-ref, array index, a comparison to `fnCallLowerRefCompare`, or `fnCallLowerPtrMethod`, then `fnCallLowerTraitMethod` and failing that `fnCallLowerMethod` |
+| `VirtRefTag` | `==`, `!=` or an ordering is `ErrorRefNoCompare`; else `fnCallLowerPtrMethod`, else set `FlagVDisp` and `fnCallLowerMethod` |
+| `PtrTag` | the pointer's own operators first, then the value's fields and named methods |
+
+**A comparison on a reference compares what it refers to.** A reference reads
+as its value everywhere else — `r.x`, `r.method()` — so `==`, `!=` and the four
+orderings do too, and `===`/`!==` are what ask whether two references point to
+the same place; `refType` and `arrayRefType` declare only those two, as
+`EqIntrinsic` and `NeIntrinsic` on the address (on both words, for a slice).
+Identity is selected by `iNsTypeFindPtrMethod`, which wants the two operands of
+the same type, permission included, so `&i32 === &mut i32` is refused as no
+candidate. `fnCallLowerRefCompare`:
+
+- **Both operands must be references.** One side a reference and the other a
+  value is `ErrorRefCompareMixed`, rather than read through on one side only, so
+  `r == v` never says something `*r == v` does not. The mirror, a value on the
+  left and a reference on the right, reaches the value's own operator and is
+  refused there as no candidate.
+- **A referent that is a pointer or a reference is read through** on both sides,
+  and the result compared as it would be by value: a pointer by its own
+  operators, a reference by this same function again.
+- **A referent whose type declares the operator** is asked first with the
+  operands as written, so a method declared for references (`self &`,
+  `other &T`) takes them unchanged. Only when no candidate matches are both
+  operands dereferenced (`derefInject`, positioned on the comparison) and the
+  value's operator selected by `fnCallLowerMethod`, as for `*a == *b`. An
+  enum's compiler-declared `==` is reached that way, and so is its refusal,
+  `ErrorEnumEquality`, for one whose variants carry fields.
+- **Anything else is `ErrorRefNoCompare`**, whose message names `===` for `==`
+  and `!=`: a referent with no such operator, a referent with no methods at all
+  (an array, a function), and a trait other than an enum, whose comparison would
+  be dispatched on the variant and is not built. A slice (whose `==` would
+  compare elements) and a virtual reference are refused the same way in their
+  own arms.
+
+The permission a reference carries is enforced on the dereference, by flow, so
+`==` through an `opaq` reference is `ErrorNoRead` while `===` on it is allowed.
+
+**A raw pointer is the exception**: its operators are on the pointer (see the
+deref retry below), so its `==` already asks about places, and `ptrType`
+declares `===` and `!==` as synonyms for its `==` and `!=`.
 
 **A method called on a plain reference to a trait dispatches on the variant**,
 and `fnCallLowerTraitMethod` is what routes it there. Neither of the trait's own
@@ -205,7 +253,6 @@ refusal is reported rather than left to fail later. The same page states the rul
 and the remedy: obtain a virtual reference first. **A field takes none of this**
 — it lives in the trait's own layout, a prefix of every implementer, so
 `fnCallLowerMethod` reaches it directly.
-| `PtrTag` | the pointer's own operators first, then the value's fields and named methods |
 
 ### Selecting a candidate
 
@@ -254,7 +301,10 @@ Two asymmetries that are deliberate:
   out of reach of a value.
 - **An operator on a pointer does not reach through.** `p + 2` offsets the
   pointer; `p * 2` is an error rather than becoming `(*p) * 2`. `FlagOperator`
-  on a pointer receiver is what skips the retry.
+  on a pointer receiver is what skips the retry. A reference's comparison is
+  the other way round, reading through both operands, which the retry cannot
+  do because it dereferences only the receiver — `fnCallLowerRefCompare` does
+  it before `fnCallLowerMethod` is reached.
 
 ### What the node becomes
 

@@ -286,6 +286,32 @@ static ImportNode *parseImportPrior(ModuleNode *mod, ModuleNode *imported) {
     return NULL;
 }
 
+// Hold an import of a name of the parent, to be bound in the fold passes: an
+// alias under the name, not yet pointing at anything (importBindName). Two
+// imports of one name are refused here, as two imports of one module are
+static ImportNode *parseImportName(ParseState *parse, ImportNode *importnode, Name *name) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(parse->mod->imports, cnt, nodesp)) {
+        ImportNode *prior = (ImportNode*)*nodesp;
+        if (prior->binding == NULL || prior->binding->namesym != name)
+            continue;
+        errorMsgNode((INode*)importnode, ErrorDupImport,
+            "%s is imported already, at %s:%u. A module imports a name once: leave out the second.",
+            &name->namestr, prior->lexer->url, prior->linenbr);
+        return NULL;
+    }
+    NameUseNode *target = newNameUseNode(name);
+    inodeLexCopy((INode*)target, (INode*)importnode);
+    AliasDclNode *alias = newNameAliasDclNode(name, (INode*)target);
+    inodeLexCopy((INode*)alias, (INode*)importnode);
+    alias->flags |= FlagImportName;
+    if (importnode->ispub)
+        alias->flags |= FlagPub;
+    importnode->binding = alias;
+    return importnode;
+}
+
 // Parse import statement. 'pubflag' re-exports what the import binds: the
 // module's name here, and every name it folds in.
 //
@@ -351,6 +377,19 @@ ImportNode *parseImport(ParseState *parse, uint16_t pubflag) {
         return NULL;
     }
 
+    // THE REGISTRY HOLDS MORE THAN MODULES [Jon 23 Sep]. A submodule's bare name
+    // may be any public name of its parent -- a type, a function, a global -- and
+    // is bound as an alias rather than loaded. The submodule is parsed before its
+    // parent's own files, so only its sisters are there to be found yet: a name
+    // no file answers either is held, and bound in the fold passes once the
+    // parent's namespace is complete (importBindName)
+    int builtin = filesym == corelibName || strcmp(filename, "stdio") == 0;
+    if (newmod == NULL && isname && !builtin && parse->mod->dclinfo.owner != NULL
+        && fileFindSrc(lex ? lex->url : NULL, filename) == NULL)
+        return parseImportName(parse, importnode, filesym);
+    if (newmod == NULL && isname && !builtin && parse->mod->dclinfo.owner != NULL)
+        importnode->isnamedfile = 1;
+
     if (newmod == NULL) {
         // Nothing of that name in the registry, so the name is a FILE PATH: what
         // reaches an external module today, and what will reach a package
@@ -399,18 +438,21 @@ ImportNode *parseImport(ParseState *parse, uint16_t pubflag) {
         }
     }
 
-    // ONE IMPORT OF A MODULE PER MODULE. An identical repeat says nothing new,
-    // so it is dropped, binding nothing a second time. One that differs would
-    // leave the module's name and its folds meaning two things, so it is
-    // refused, naming where the first one is.
+    // ONE IMPORT OF A MODULE PER MODULE, and a second is refused, naming where
+    // the first one is. An identical repeat is two ways of bringing in the same
+    // thing, which is a cleanliness issue [Jon 23 Sep]; one that differs would
+    // leave the module's name and its folds meaning two things.
     importnode->module = newmod;
     ImportNode *prior = parseImportPrior(parse->mod, newmod);
     if (prior != NULL) {
         if (importSame(prior, importnode))
-            return NULL;
-        errorMsgNode((INode*)importnode, ErrorDupImport,
-            "Module %s is imported already, differently, at %s:%u. A module imports another once: write what both say in one import.",
-            &newmod->namesym->namestr, prior->lexer->url, prior->linenbr);
+            errorMsgNode((INode*)importnode, ErrorDupImport,
+                "Module %s is imported already, the same way, at %s:%u. A module imports another once: leave out the second.",
+                &newmod->namesym->namestr, prior->lexer->url, prior->linenbr);
+        else
+            errorMsgNode((INode*)importnode, ErrorDupImport,
+                "Module %s is imported already, differently, at %s:%u. A module imports another once: write what both say in one import.",
+                &newmod->namesym->namestr, prior->lexer->url, prior->linenbr);
         return NULL;
     }
 
@@ -517,6 +559,11 @@ void parseSkipDclBody() {
 // what makes a module-level name a local or a type member hides reachable again,
 // as 'name.x'.
 //
+// 'mod name extends base;' makes this module one that reuses another: every
+// declaration and fold of the base becomes a name of this one, as visible here as
+// there and still the base's declaration, while the base's imports stay its own
+// dependencies (modExtendsResolve, modFoldNames). One base, named by one name.
+//
 // Two shapes the grammar admits are refused because nothing is behind them: a
 // nested 'mod name { ... }' block, which needs a namespace of its own and paths
 // through it, and 'mod trait', a module's abstraction. Reporting each where it
@@ -534,11 +581,11 @@ void parseSkipDclBody() {
 // declares nothing about a subfolder -- the folder is the declaration. A module
 // with no parent has nothing to be visible outside of.
 void parseModuleDcl(ModuleNode *mod, int atmodstart, uint16_t pubflag) {
-    // Where the declaration is written. The module node was made before any of
-    // its files was read, so it has no source position of its own; an accepted
-    // declaration gives it this one, and a duplicate of the module's name is then
-    // reported against the declaration rather than against wherever the lexer was
-    // when the node was made
+    // Where the declaration is written. The module node was made positioned at
+    // the first line of its designated file, which is the nearest thing a module
+    // named by its folder has to a declaration; an accepted declaration is a
+    // nearer one, so it gives the node this position, and a duplicate of the
+    // module's name is then reported against the declaration
     INode dclat;
     dclat.lexer = lex;
     dclat.srcp = lex->tokp;
@@ -574,6 +621,35 @@ void parseModuleDcl(ModuleNode *mod, int atmodstart, uint16_t pubflag) {
     else
         errorMsgLex(ErrorNoName, "Expected a name for the module this file declares");
 
+    // 'extends' names the one module this one reuses, by the name it is reached
+    // by: a sister, or a module this module imports. What it names is resolved
+    // with the module's other names, once every import is bound, so it is only
+    // recorded here
+    NameUseNode *extendsname = NULL;
+    if (lexIsToken(ExtendsToken)) {
+        lexNextToken();
+        if (lexIsToken(IdentToken)) {
+            extendsname = newNameUseNode(lex->val.ident);
+            lexNextToken();
+            // Each refusal passes over what it refused, so the declaration still
+            // names the module and the statement still ends where it was written
+            if (lexIsToken(DotToken)) {
+                errorMsgLex(ErrorModExtends,
+                    "A module's 'extends' names a module by one name: a sister, or a module this module imports. Import a module further away, and name it here.");
+                extendsname = NULL;
+                while (lexIsToken(DotToken) || lexIsToken(IdentToken))
+                    lexNextToken();
+            }
+            if (lexIsToken(CommaToken)) {
+                errorMsgLex(ErrorExtends, "A module extends one module.");
+                while (lexIsToken(CommaToken) || lexIsToken(IdentToken) || lexIsToken(DotToken))
+                    lexNextToken();
+            }
+        }
+        else
+            errorMsgLex(ErrorNoName, "Expected the name of the module this one extends");
+    }
+
     // A nested module. Its namespace, the hook push and pop its parse needs, and
     // the paths reaching through it are all unbuilt
     if (lexIsToken(LCurlyToken) || lexIsToken(ColonToken)) {
@@ -590,6 +666,7 @@ void parseModuleDcl(ModuleNode *mod, int atmodstart, uint16_t pubflag) {
                 "A 'mod' declaration must be its module's designated file's first statement, and a module declares itself once. A file the folder swept in declares nothing.");
         else {
             mod->flags |= FlagModDcl;
+            mod->extendsname = (INode*)extendsname;
             // What 'pub' does, where there is a parent for it to speak to: the
             // submodule joins its parent's namespace as a public name, which its
             // parent's neighbours may then name a path through
@@ -788,15 +865,38 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
     }
 }
 
+// Give a module the position of the file that makes it one, line 1 column 1:
+// its designated file, or the one file of a module that is a file. A module
+// named by its folder has no declaration in any source, and the file that makes
+// the folder a module is the nearest thing it has to one, so that is where a
+// diagnostic about the module -- the module's half of a duplicate name -- is
+// reported. A 'mod' declaration, where the file makes one, moves it there.
+//
+// The file is read now, when the module is made, because a module's name is
+// bound before any of its files is parsed and a collision is reported as the
+// second binding is made. The block that holds it is what parseModuleFilesParse
+// later makes current, so the file is still read once
+Lexer *parseModulePosition(ModuleNode *mod, char *path) {
+    Lexer *file = lexLoadPath(path);
+    mod->lexer = file;
+    mod->srcp = mod->linep = file->source;
+    mod->linenbr = 1;
+    return file;
+}
+
 // Parse every file of a module, in the order the sweep collected them: the
 // designated file first, since it is the only one that may declare the module,
 // and then each file the folder brought in. A file dropped by registration --
-// one another module holds, or one whose basename collides -- is skipped
-void parseModuleFilesParse(ParseState *parse, ModuleNode *mod, FileNames *files) {
+// one another module holds, or one whose basename collides -- is skipped.
+// 'dsgfile' is the designated file's block, read when the module was made
+void parseModuleFilesParse(ParseState *parse, ModuleNode *mod, Lexer *dsgfile, FileNames *files) {
     for (uint32_t i = 0; i < files->count; ++i) {
         if (files->names[i] == NULL)
             continue;
-        lexInjectPath(files->names[i]);
+        if (i == 0 && dsgfile != NULL)
+            lexPush(dsgfile);
+        else
+            lexInjectPath(files->names[i]);
         parseGlobalStmts(parse, mod, i == 0);
         if (lex->toktype != EofToken) {
             errorMsgLex(ErrorNoEof, "Expected end-of-file");
@@ -809,6 +909,7 @@ void parseModuleFilesParse(ParseState *parse, ModuleNode *mod, FileNames *files)
 // files it will be parsed from
 typedef struct DrawnModule {
     ModuleNode *mod;          // NULL where the subfolder's file could not join
+    Lexer *dsgfile;           // Its designated file, read to give it its position
     FileNames files;
     FileNames submodules;
 } DrawnModule;
@@ -844,18 +945,19 @@ void parseAddCorelibImport(ParseState *parse, ModuleNode *mod) {
 // The submodules also come before this module's own files, and both reasons are
 // about what a name means before a file is read. A subfolder's module is a name
 // of this namespace that no statement in any of these files declares, so binding
-// it ahead of them makes a collision with a declaration report against the
-// declaration, which has a position in a source that a folder does not. And it
-// registers the submodule's files, so a file of this module that names one of
-// them reaches the module that holds it rather than reading it a second time
-void parseModuleTree(ParseState *parse, ModuleNode *mod, FileNames *files, FileNames *submodules) {
+// it ahead of them makes a collision with a declaration report the declaration
+// as the duplicate and the submodule, at its designated file's first line, as
+// the name it met. And it registers the submodule's files, so a file of this
+// module that names one of them reaches the module that holds it rather than
+// reading it a second time
+void parseModuleTree(ParseState *parse, ModuleNode *mod, Lexer *dsgfile, FileNames *files, FileNames *submodules) {
     DrawnModule *drawn = submodules->count
         ? (DrawnModule*)memAllocBlk(submodules->count * sizeof(DrawnModule)) : NULL;
     for (uint32_t i = 0; i < submodules->count; ++i)
         parseSubmoduleDraw(parse, mod, submodules->names[i], &drawn[i]);
     for (uint32_t i = 0; i < submodules->count; ++i)
         parseSubmoduleParse(parse, &drawn[i]);
-    parseModuleFilesParse(parse, mod, files);
+    parseModuleFilesParse(parse, mod, dsgfile, files);
 }
 
 // Draw the submodule a subfolder's designated file names: a module of its own,
@@ -874,6 +976,7 @@ void parseModuleTree(ParseState *parse, ModuleNode *mod, FileNames *files, FileN
 // is bound and registered before any of their files is read
 void parseSubmoduleDraw(ParseState *parse, ModuleNode *parent, char *path, DrawnModule *drawn) {
     drawn->mod = NULL;
+    drawn->dsgfile = NULL;
     Name *pathsym = nametblFind(path, strlen(path));
     ModuleNode *held = pgmFindFile(parse->pgm, pathsym);
     if (held) {
@@ -887,6 +990,9 @@ void parseSubmoduleDraw(ParseState *parse, ModuleNode *parent, char *path, Drawn
     }
 
     ModuleNode *mod = pgmAddMod(parse->pgm, FlagGenMod);
+    // Positioned before it is bound, since the binding is where a collision
+    // with its parent's own name is found
+    drawn->dsgfile = parseModulePosition(mod, path);
     char *basename = fileName(path);
     mod->filesym = nametblFind(basename, strlen(basename));
     // The folder names the module, as it does for any module a designated file
@@ -923,7 +1029,7 @@ void parseSubmoduleParse(ParseState *parse, DrawnModule *drawn) {
     modHook(svmod, mod);
     if (mod->foldersym)
         modAddNamedNode(mod, mod->namesym, (INode*)mod);
-    parseModuleTree(parse, mod, &drawn->files, &drawn->submodules);
+    parseModuleTree(parse, mod, drawn->dsgfile, &drawn->files, &drawn->submodules);
     modHook(mod, svmod);
     parse->mod = svmod;
 }
@@ -959,6 +1065,8 @@ ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name 
     // Create and add this new module to list of modules, and make it the current one
     ModuleNode *svmod = parse->mod;
     mod = pgmAddMod(parse->pgm, filesym==corelibName || strcmp(filename, "stdio")? 0 : FlagGenMod);
+    // A built-in has no file to take a position from, and keeps the importer's
+    Lexer *dsgfile = builtin ? NULL : parseModulePosition(mod, path);
     mod->filesym = filesym;
     // The module's name is a filesystem fact: its folder's, where a designated
     // file drew the module out of a folder, and its file's otherwise. Filename
@@ -999,7 +1107,7 @@ ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name 
         lexPop();
     }
     else
-        parseModuleTree(parse, mod, &files, &submodules);
+        parseModuleTree(parse, mod, dsgfile, &files, &submodules);
     modHook(mod, svmod);
 
     // Restore focus to original module we were working on
@@ -1039,6 +1147,7 @@ ProgramNode *parsePgm(ConeOptions *opt) {
     char *path = fileFindSrc(lex ? lex->url : NULL, opt->srcpath);
     if (path == NULL)
         errorExit(ExitNF, "Cannot find or read source file %s", opt->srcpath);
+    Lexer *dsgfile = parseModulePosition(mod, path);
     mod->foldersym = parseDesignatedFolder(path);
     mod->namesym = mod->foldersym ? mod->foldersym : mod->filesym;
     FileNames files, submodules;
@@ -1061,7 +1170,7 @@ ProgramNode *parsePgm(ConeOptions *opt) {
     // A stray '}' at global scope ends a file's statement loop. Without the
     // end-of-file check inside, the rest of that file would be silently
     // discarded
-    parseModuleTree(&parse, mod, &files, &submodules);
+    parseModuleTree(&parse, mod, dsgfile, &files, &submodules);
     modHook(mod, NULL);
     return pgm;
 }

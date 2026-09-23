@@ -1,0 +1,80 @@
+// A RE-EXPORT TRAVELS ROUND A CYCLE OF IMPORTS.
+//
+// Every module's folds run before any body is resolved, dependency-first: what a
+// module imports is folded before the module reads it, so what it re-exported is
+// there. A cycle of imports is legal, and there dependency-first cannot be had:
+// of two modules that import each other, the one whose folds start first is
+// still mid-fold when the other reads it, so what it re-exports is not there yet.
+// The folds are therefore run again, pass after pass, until one binds nothing
+// new, and the name arrives. Each case here is one that a single pass lost.
+//
+// The subfolders are drawn in sorted order and their folds start in that order,
+// which is what decides who reads whom mid-fold:
+//   gamma/gamma.cone       the names re-exported: shared, more, Tone, Config; in
+//                          no cycle
+//   alpha/alpha.cone       imports beta and bravo, THEN re-exports gamma's shared,
+//                          Tone and Config
+//   beta/beta.cone         imports alpha and folds from it by a listed clause, and
+//                          folds Tone's variants through the path alpha.Tone
+//   bravo/bravo.cone       a wildcard of alpha, and a global's fold and an enum's
+//                          'use' naming bare what the wildcard has not brought yet
+//   delta/delta.cone       the other order: delta folds first and reads epsilon
+//   epsilon/epsilon.cone   imports delta, then re-exports gamma's shared
+//   kappa/kappa.cone       imports lambda and relay, THEN re-exports gamma's more
+//   lambda/lambda.cone     a wildcard 'pub use' of kappa: kappa -> lambda -> kappa
+//   onward/onward.cone     a wildcard of lambda, one wildcard further on, in no cycle
+//   relay/relay.cone       folds more privately from gamma, and publicly from kappa
+//                          round the cycle kappa -> relay -> kappa
+//   plinth/plinth.cone     imports tower with 'use *', THEN re-exports gamma's more
+//   tower/tower.cone       extends plinth: a cycle an 'extends' edge closes
+//   tri1/tri1.cone         three modules round one cycle, each carrying on the
+//   tri2/tri2.cone           next one's names with 'pub use *': tri1 -> tri2 ->
+//   tri3/tri3.cone           tri3 -> tri1, and tri1 re-exports gamma's shared too
+//
+// module-import-cycle-nameres holds what a cycle still leaves missing, and a
+// collision a cycle brings.
+
+import stdio.*;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn main() i32 {
+  // beta read alpha mid-fold, and its listed clause names what alpha re-exports,
+  // one of them under a local spelling: own 3 + common 1
+  show("listed-clause", beta.b());
+  // beta folds Tone's variants through a path naming alpha's re-export: High
+  show("enum-use-through-a-path", beta.tone());
+  // bravo's global and its 'use' of Tone waited for alpha's Config and Tone:
+  // speed 5 + twice 10 + High 20
+  show("global-and-enum-use-wait", bravo.b());
+  // The other order: delta folds first, so it reads epsilon complete. five 5 +
+  // common 1, the same as it would be the other way round
+  show("reader-first", delta.d());
+
+  // lambda's wildcard read kappa mid-fold: k 4 + more 2, bare in lambda ...
+  show("wildcard", lambda.f());
+  // ... carried on by its 'pub use *', reached by a path ...
+  show("wildcard-by-path", lambda.more());
+  // ... and one wildcard further on, from a module in no cycle: more 2 * 100 + k 4
+  show("one-wildcard-further", onward.g());
+  // relay folded more privately from gamma, and publicly from kappa round the
+  // cycle. The same declaration by two routes is one binding, public if either
+  // route is, whichever arrived first
+  show("public-route-wins", relay.more());
+
+  // tower extends plinth, which imports tower: tower read plinth mid-fold, and
+  // still takes the more plinth re-exports: more 2 through tower's path, and
+  // height 20 + base 7 from inside plinth, which reads tower's name back
+  show("extends-closed-cycle", tower.more());
+  show("extends-closed-cycle-body", plinth.viaTower());
+
+  // Three modules round one cycle: tri3 has two from tri2 by way of tri1, and
+  // the shared tri1 re-exports; tri2 has one by way of tri3. 200 + 10 + 1
+  show("three-module-cycle", tri3.two() * 100i64 + tri3.shared() * 10i64 + tri2.one());
+  0i32;
+}

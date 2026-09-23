@@ -502,21 +502,25 @@ static void parseAddVariant(ParseState *parse, StructNode *strnode, StructNode *
             &name->namestr, &strnode->namesym->namestr);
 }
 
-// An enum that extends another declares variants and nothing else. Report what it
-// may not declare, at the token the member starts on, and then let the member be
-// parsed as any other: one diagnostic is the whole of it.
-//
-// A member every variant has to carry -- a common field, spliced into each of
-// them, or a method each of them implements or inherits -- would have to reach the
-// copies of the base's variants too, and a requirement declared here would need
-// every copy to implement what the base's variants were never told about. That is
-// not built, so it is declared on the base, whose common members come along with
-// the copies.
+// Is this an enum that extends another? What such an enum declares beside its
+// variants is what can be given to every variant of its set, the copies of its
+// base's included: a method with a body, which is cloned into each of them, and a
+// static function or a static, which stay the extension's own.
+static int parseIsEnumExtension(int isenum, StructNode *strnode) {
+    return isenum && strnode->extendsbase != NULL;
+}
+
+// Report a member an enum extension may not declare, at the token the member
+// starts on, and then let the member be parsed as any other: one diagnostic is the
+// whole of it. For a macro and a mixin: neither reaches the copies of the base's
+// variants, so each belongs on the base, whose members come along with the copies.
+// A common field and a requirement each have a reason of their own, said where
+// they are recognized.
 static void parseEnumExtensionMember(int isenum, StructNode *strnode, char *what) {
-    if (!isenum || strnode->extendsbase == NULL)
+    if (!parseIsEnumExtension(isenum, strnode))
         return;
     errorMsgLex(ErrorEnumExtends,
-        "%s extends an enum, so it adds variants and nothing else: %s belongs on the enum it extends, and comes along with the variants it copies from there.",
+        "%s extends an enum, so beside its variants it declares methods with a body, static functions and statics: %s belongs on the enum it extends, and comes along with the variants it copies from there.",
         &strnode->namesym->namestr, what);
 }
 
@@ -734,7 +738,6 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 // type's namespace, reached as Type.name from outside and by its
                 // bare name from the type's own functions and methods. It is not
                 // a field, so it has no slot in the value and no receiver.
-                parseEnumExtensionMember(isenum, strnode, "a static");
                 VarDclNode *var = parseVarDcl(parse, immPerm, ParseMayImpl | ParseMaySig);
                 var->flags |= FlagStatic | pubflag;
                 iNsTypeAddStatic((INsTypeNode*)strnode, var);
@@ -743,12 +746,20 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
             }
             parseBadStatic(staticflag);
             if (lexIsToken(FnToken)) {
-                parseEnumExtensionMember(isenum, strnode, "a method");
                 FnDclNode *fn = (FnDclNode*)parseFn(parse, methflags);
                 if (fn && isNamedNode(fn)) {
                     Nodes *parms = ((FnSigNode *)fn->vtype)->parms;
                     if (parms->used > 0 && ((VarDclNode*)nodesGet(parms, 0))->namesym == selfName)
                         fn->flags |= FlagMethFld;  // function is a method if first parm is 'self'
+                    // A method an extension declares is given to every variant of
+                    // its set, and most of those are copies of the base's, written
+                    // against the base with no body of their own to meet it in. So a
+                    // requirement declared here could never be met: it is declared on
+                    // the base, which is where the variants that implement it are.
+                    if (parseIsEnumExtension(isenum, strnode) && (fn->flags & FlagMethFld) && fn->value == NULL)
+                        errorMsgNode((INode*)fn, ErrorEnumExtends,
+                            "%s extends an enum, so the method %s needs a body: every variant of %s answers it, and the copies of its base's variants were written without it, with no body of their own to implement it in. Declare the requirement on the enum it extends.",
+                            &strnode->namesym->namestr, &fn->namesym->namestr, &strnode->namesym->namestr);
                     fn->flags |= pubflag;
                     iNsTypeAddFn((INsTypeNode*)strnode, fn);
                 }
@@ -857,8 +868,21 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                     continue;
                 }
 
-                parseEnumExtensionMember(isenum, strnode, "a field");
                 parseFieldDclBody(parse, field);
+                // A common field is part of every variant's layout, the copies of the
+                // base's included, and their methods were written against the
+                // base's: the fields they read sit where the base put them. The
+                // discriminant is one of those fields, and the base's.
+                if (parseIsEnumExtension(isenum, strnode)) {
+                    if (field->vtype->tag == EnumTag)
+                        errorMsgNode((INode*)field, ErrorEnumExtends,
+                            "%s takes its base's discriminant, so where its tag is laid out was settled on the enum it extends.",
+                            &strnode->namesym->namestr);
+                    else
+                        errorMsgNode((INode*)field, ErrorEnumExtends,
+                            "%s extends an enum, so it declares no common field: %s would change the layout of the copies of its base's variants, whose methods were written against the base's. Declare it on the enum it extends.",
+                            &strnode->namesym->namestr, &field->namesym->namestr);
+                }
                 field->index = fieldnbr++;
                 field->flags |= FlagMethFld | pubflag;
                 // Only a struct folds: a trait and an enum are abstractions over

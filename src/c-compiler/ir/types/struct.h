@@ -107,6 +107,12 @@ StructNode *structEnumBaseDcl(StructNode *node);
 // check and generation reach them.
 uint32_t structEnumCopyCount(StructNode *node);
 
+// The member of a generic base's instance standing for 'dcl', a member of the
+// base's template that a bare name inside an extension's braces was bound to, as
+// seen from 'where', the type whose function is being checked; NULL when 'where'
+// extends no instance of that template
+INode *structEnumBaseInstanceMember(INode *where, INode *dcl);
+
 // Type check an extension's copies of its base's variants, which the module
 // walk reaches through the extension
 void structEnumCheckCopies(TypeCheckState *pstate, StructNode *node);

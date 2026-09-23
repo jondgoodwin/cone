@@ -65,7 +65,11 @@ today only by a match's range pattern. A number stops scanning at a `..`, so
 restores. **Blocks are never recycled**, deliberately: every IR node stores the
 `Lexer` current when it was built and reads `url` from it whenever a diagnostic
 is reported, so reusing a popped block rewrites the file name out from under
-every node still pointing at it.
+every node still pointing at it. A block can also exist before it is current:
+`lexLoadPath` reads a file into one without pushing it, so a module can take
+its designated file's first line as its position before that file is parsed,
+and `lexPush` makes the same block current later — see `nodes/module.md`,
+"Parse".
 
 **An identifier may be spelled in any letters UTF-8 can carry**, which is
 `utf8IsLetter`: ASCII letters, or the start of a well-formed multi-byte
@@ -173,6 +177,10 @@ tightest, in `parseexpr.c`:
 - **Assignment is right-associative.** `parseAssign` does not loop; it recurses
   into `parseAnyExpr` for the right-hand side, as do `:=`, `<=>` and every
   op-assign form.
+
+`parseCmpOp` is the comparison level's one list of operators — `==`, `!=`,
+`===`, `!==` and the four orderings — and a `match` pattern reads the same list
+(section 6). The lexer takes `===` and `!==` whole ahead of `==` and `!=`.
 
 Two entry points: `parseAnyExpr` (= `parseAssign`) is the full expression;
 `parseSimpleExpr` (= `parseOrExpr`) excludes comma and assignment and is what
@@ -379,14 +387,14 @@ numbers.
 
 | File | Function | Purpose |
 | --- | --- | --- |
-| `parser/lexer.c` | `lexInject`, `lexInjectPath`, `lexPop` | push and pop a source on the lexer chain. `lexInjectPath` reads an already-located file: locating one is the caller's, since the path is what the file registry is keyed by |
+| `parser/lexer.c` | `lexInject`, `lexInjectPath`, `lexPop`; `lexLoadPath`, `lexPush` | push and pop a source on the lexer chain. `lexInjectPath` reads an already-located file: locating one is the caller's, since the path is what the file registry is keyed by. `lexLoadPath` and `lexPush` are its two halves apart — read a file into a block that is not yet current, and later make that block current |
 | | `lexNextToken` | the scan dispatch; whitespace, comments, maximal-munch operators |
 | | `lexScanIdent` | identifier scan and name-table classification; reserved-word release; a `@` or `#` word that names nothing reported and dropped |
 | | `lexScanNumber`, `lexScanString`, `lexScanChar`, `lexScanEscape` | literals; UTF-8 re-encoding of escapes; lifetime-vs-char disambiguation |
 | | `lexNewLine`, `lexBlockComment` | line counting for diagnostics, inside comments included |
 | `parser/parsemod.c` | `parsePgm` | **entry point** — tables, program, main module, corelib, main file |
 | | `parseGlobalStmts` | the global statement dispatch loop; `trait` by itself enters `parseStruct` with `TraitType` already set, and `actor` is the unbuilt kind refused here. It is told whether it is reading the start of a module's own source, which is what decides where a `mod` declaration may stand |
-| | `parseModuleDcl` | `mod name;`, the declaration a module's designated file makes: the placement rule, the check against the folder's name, the rename a one-file module still gets, the module's own name bound into its namespace, what `pub` does for a submodule and why it is refused on any other module, and the refusal of the nested block and `mod trait` |
+| | `parseModuleDcl` | `mod name;`, the declaration a module's designated file makes: the placement rule, the check against the folder's name, the rename a one-file module still gets, the module's own name bound into its namespace, what `pub` does for a submodule and why it is refused on any other module, the `extends` it records for name resolution to resolve, and the refusal of the nested block and `mod trait` |
 | | `parseSkipDclBody` | skip an unbuilt form's `{ … }` whole, or resync at the next `;` |
 | | `parseLoadAndParseModuleFile` | per-module unit: locate, register by path, naming, the folder sweep, corelib import, `modHook`, and a parse per file |
 | | `parseDesignatedFolder`, `parseCollectFolder`, `parseModuleFiles` | the folder sweep: whether the file is its folder's designated file, which files the folder brings in, which subfolders draw submodules, and the designated file too deep to draw one |

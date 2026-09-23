@@ -157,9 +157,7 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
         // which only type check knows: castPatternBind binds it or reports it
         if (name->flags & FlagPattern)
             return;
-        // A bare name a clause of this module would have folded in may be a
-        // re-export lost round a cycle of imports, and the report says so where it is
-        modNameMissing(pstate->mod, pstate->mod, name->namesym, (INode*)name, ErrorUnkName,
+        errorMsgNode((INode*)name, ErrorUnkName,
             "The name %s does not refer to a declared name", &name->namesym->namestr);
         return;
     }
@@ -192,6 +190,22 @@ int nameUseTemplateMember(NameUseNode *name, INode *dcl) {
     return 1;
 }
 
+// A generic base's name, bare inside an extension's braces, was bound by name
+// resolution to the base's template, whose members only its instances have. What
+// it names in the function being checked is the member of the base instance this
+// extension stands on, so the use is pointed there (structEnumBaseInstanceMember).
+// A qualified name is left alone: 'Base.name' asks for the template's own member.
+void nameUseBaseInstanceMember(TypeCheckState *pstate, NameUseNode *name) {
+    if (name->flags & FlagQualified)
+        return;
+    INode *where = pstate->fn ? inodeGetOwner((INode*)pstate->fn) : NULL;
+    if (where == NULL || where->tag != StructTag)
+        where = pstate->typenode;
+    INode *member = structEnumBaseInstanceMember(where, name->dclnode);
+    if (member)
+        name->dclnode = member;
+}
+
 // Handle type check for variable/function name use references
 void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
     NameUseNode *name = *namep;
@@ -220,6 +234,7 @@ void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
         inodeTypeCheckAny(pstate, (INode**)namep);
         return;
     }
+    nameUseBaseInstanceMember(pstate, name);
     if (nameUseTemplateMember(name, name->dclnode)) {
         name->vtype = errorType;
         return;

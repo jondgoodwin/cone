@@ -125,8 +125,7 @@ enum ErrorCode {
 
     // Demand-driven analysis
     ErrorCircular = 1068,       // A declaration whose type comes from a value that names it back,
-                                // or two types that each extend or mix in the other,
-                                // or a re-export missing because it was read round a cycle of imports
+                                // or two types that each extend or mix in the other
 
     // Layout
     ErrorNoSize = 1069,         // A value whose type cannot report a size
@@ -191,13 +190,13 @@ enum ErrorCode {
     // 'extends': enriching a concrete type with methods
     ErrorExtendsBase = 1101,    // What an 'extends' names cannot serve as a concrete base
     ErrorExtendsField = 1102,   // A field declared by a type that extends a concrete base, which may add none
-    ErrorExtendsOverride = 1103,// A member of the base redeclared by the enriching type, which may not override
+    ErrorExtendsOverride = 1103,// A name of the base redeclared by the enriching type, enum extension or module, which may not override
 
     // A type body's 'use': folding a sibling enrichment's methods in
     ErrorUseSibling = 1104,     // A type-body 'use' naming what is not a sibling of this type, or a member that does not fold from one
 
     // 'extends': an enum adding variants to another enum's variant set
-    ErrorEnumExtends = 1105,    // What an enum's 'extends' names cannot be its base, or what such an enum's body may not declare beside variants
+    ErrorEnumExtends = 1105,    // What an enum's 'extends' names cannot be its base, or what such an enum's body may not declare: a requirement, a common field, a discriminant, a macro or a mixin
     // 1106 was ErrorEnumExtendsSize; an extension's variants are copies with their own layout, so an added one may be any size
 
     // 'mod': the declaration that names a file's module
@@ -226,8 +225,8 @@ enum ErrorCode {
     // A pattern's bare variant, looked up in the matched value's enum
     ErrorPatArgs = 1115,        // A pattern's variant found only in the matched value's enum, written with type arguments that value supplies
 
-    // One import of a module per module: an identical repeat is ignored
-    ErrorDupImport = 1116,      // A second import of one module that differs from the first: in what its 'use' clause folds, or in its 'pub'
+    // One import of a module per module: a second is refused, identical or not [Jon 23 Sep]
+    ErrorDupImport = 1116,      // A second import of one module: the same import again, or one that differs in what its 'use' clause folds or in its 'pub'
 
     // A match's patterns: 'is', comparison and range patterns joined by 'or'
     ErrorPatBare = 1117,        // A value alone where a match expects a pattern, after an 'or': whether a bare value means '==' is not decided
@@ -237,6 +236,17 @@ enum ErrorCode {
 
     // Attributes, which are keywords: '@move', '@opaque', '@unsized'
     ErrorUnkAttr = 1119,        // A '@' word that names no attribute
+
+    // Moves: what a move-typed value may be moved out of
+    ErrorMoveOut = 1120,        // A move-typed value moved out through a borrowed reference, which does not own it
+
+    // 'mod A extends B': a module reusing another module's public names
+    ErrorModExtends = 1122,     // What a module's 'extends' names cannot be reused: not a module, a trait (conforming to a module trait is not built), the module itself or one it contains, a path, or a cycle of extends
+
+    // Comparing references: '==' and ordering read through to the values, '===' asks whether they are the same place
+    ErrorRefNoCompare = 1123,   // '==', '!=' or an ordering on references whose referent has no such operator, or on a slice or virtual reference, whose referents have no comparison built
+    ErrorRefCompareMixed = 1124, // A comparison with a reference on one side and a value on the other: both are read through, or neither
+    ErrorSameNotRef = 1125,     // '===' or '!==' on a value that is neither a reference nor a pointer, which has no place to be the same as
 
     // Warnings
     WarnCode = 3000,

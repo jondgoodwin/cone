@@ -25,43 +25,55 @@
 // Global lexer state
 Lexer *lex = NULL;        // Current lexer
 
-// Inject a new source stream into the lexer
-void lexInject(char *src, char *url) {
-    Lexer *prev;
-
-    // Every injected source gets its own block, never a recycled one. A block
-    // outlives parsing: each IR node stores the Lexer that was current when it
-    // was built and reads ->url from it whenever a diagnostic is reported, and
-    // conec.c reads ->fname off the program node to name its output files. So
-    // re-using a popped block rewrote the url out from under every node still
-    // pointing at it, and a diagnostic against an earlier module named a later
-    // module's file while echoing the earlier one's source line.
-    prev = lex;
-    lex = (Lexer*) memAllocBlk(sizeof(Lexer));
-    if (prev)
-        prev->next = lex;
-    lex->next = NULL;
-    lex->prev = prev;
+// A lexer block for a source, positioned at its start and not yet current.
+//
+// Every source gets its own block, never a recycled one. A block outlives
+// parsing: each IR node stores the Lexer that was current when it was built and
+// reads ->url from it whenever a diagnostic is reported, and conec.c reads
+// ->fname off the program node to name its output files. So re-using a popped
+// block rewrote the url out from under every node still pointing at it, and a
+// diagnostic against an earlier module named a later module's file while
+// echoing the earlier one's source line.
+Lexer *lexNew(char *src, char *url) {
+    Lexer *newlex = (Lexer*) memAllocBlk(sizeof(Lexer));
+    newlex->next = NULL;
+    newlex->prev = NULL;
 
     // Skip over UTF8 Byte-order mark (BOM = U+FEFF) at start of source, if there
     if (*src=='\xEF' && *(src+1)=='\xBB' && *(src+2)=='\xBF')
         src += 3;
 
     // Initialize lexer's source info
-    lex->url = url;
-    lex->fname = fileName(url);
-    lex->source = src;
+    newlex->url = url;
+    newlex->fname = fileName(url);
+    newlex->source = src;
 
     // Initialize lexer context
-    lex->srcp = lex->tokp = lex->linep = src;
-    lex->linenbr = 1;
-    lex->flags = 0;
-    lex->prevend = src;
-    lex->prevlinep = src;
-    lex->prevlinenbr = 1;
+    newlex->srcp = newlex->tokp = newlex->linep = src;
+    newlex->linenbr = 1;
+    newlex->flags = 0;
+    newlex->prevend = src;
+    newlex->prevlinep = src;
+    newlex->prevlinenbr = 1;
+    return newlex;
+}
+
+// Make a block lexNew built the current lexer, and read its first token
+void lexPush(Lexer *newlex) {
+    Lexer *prev = lex;
+    lex = newlex;
+    if (prev)
+        prev->next = lex;
+    lex->next = NULL;
+    lex->prev = prev;
 
     // Prime the pump with the first token
     lexNextToken();
+}
+
+// Inject a new source stream into the lexer
+void lexInject(char *src, char *url) {
+    lexPush(lexNew(src, url));
 }
 
 // Add a reserved identifier and its node to the global name table
@@ -177,13 +189,21 @@ void lexInit(ConeOptions *opt) {
 // every diagnostic against the file names: it has to be in hand, and asked
 // about, before the file is read
 void lexInjectPath(char *path) {
+    lexPush(lexLoadPath(path));
+}
+
+// Read an already-located source file into a block of its own that is not yet
+// current. A module takes its position from its designated file's block before
+// that file is parsed, and lexPush later makes the same block current, so the
+// file is read once
+Lexer *lexLoadPath(char *path) {
     timerBegin(LoadTimer);
     char *src = fileLoad(path);
     if (!src)
         errorExit(ExitNF, "Cannot read source file %s", path);
 
     timerBegin(ParseTimer);
-    lexInject(src, path);
+    return lexNew(src, path);
 }
 
 // Restore previous lexer's stream
@@ -821,19 +841,29 @@ void lexNextTokenx() {
                 lexReturnPuncTok(BarToken, 1);
             }
 
-        // '=' and '=='
+        // '=', '==' and '==='
         case '=':
             if (*(srcp + 1) == '=')    {
-                lexReturnPuncTok(EqToken, 2);
+                if (*(srcp + 2) == '=') {
+                    lexReturnPuncTok(SameToken, 3);
+                }
+                else {
+                    lexReturnPuncTok(EqToken, 2);
+                }
             }
             else {
                 lexReturnPuncTok(AssgnToken, 1);
             }
 
-        // '!' and '!='
+        // '!', '!=' and '!=='
         case '!':
             if (*(srcp + 1) == '=') {
-                lexReturnPuncTok(NeToken, 2);
+                if (*(srcp + 2) == '=') {
+                    lexReturnPuncTok(NotSameToken, 3);
+                }
+                else {
+                    lexReturnPuncTok(NeToken, 2);
+                }
             }
             else {
                 lexReturnPuncTok(NotToken, 1);

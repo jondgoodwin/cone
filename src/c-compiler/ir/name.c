@@ -52,6 +52,8 @@ Name *incrPostName;
 Name *decrPostName;
 Name *eqName;
 Name *neName;
+Name *sameName;
+Name *notSameName;
 Name *leName;
 Name *ltName;
 Name *geName;
