@@ -6,8 +6,8 @@
 // enum-typecheck-extends holds those refusals in both directions. What this file
 // claims is what the copies give: each enum lays out its own set, so the base is
 // never constrained by what extends it and the extension by what the base chose.
-// The last section does the same with a generic enum on either side of the
-// clause, Option itself among them.
+// A later section does the same with a generic enum on either side of the
+// clause, Option itself among them, and the last extends an extension.
 //
 // Everything is printed, because a match that compiles is not a match that
 // dispatched to the right arm. What runtime cannot see -- that an Option-shaped
@@ -458,6 +458,104 @@ fn genericExtensions() {
   show("generic-over-plain-dispatch-added", weighWeighed(&carry));
 }
 
+// -------- an extension may itself be extended --------
+
+// Each level copies the one below it: Rich's copies of Colors' three, then Cyan
+// and Magenta; Richer's copies of Rich's five, then Gold. So Richer has six
+// variants, the deepest copies two hops from where they were declared, and every
+// one keeps the tag value it had where it was declared. Green pins 0x100 and
+// Colors declared no integer type, so the shared discriminant is two bytes wide at
+// every level; numbering resumes after it, so Blue is 257, Cyan 258, Magenta 259
+// and Gold 260.
+enum Colors {
+  Red, Green = 0x100, Blue;
+}
+
+enum Rich extends Colors {
+  Cyan, Magenta;
+}
+
+enum Richer extends Rich {
+  Gold;
+}
+
+// A bare pattern on a Richer finds Richer's own: a copy of a copy, a copy, and
+// the one it added
+fn richerCode(c Richer) i32 {
+  match c {
+    case is Red {1;}
+    case is Green {2;}
+    case is Blue {3;}
+    case is Cyan {4;}
+    case is Magenta {5;}
+    case is Gold {6;}
+  }
+}
+
+// The middle enum is still exhaustive over its own five, with no arm for Gold
+fn richCode(c Rich) i32 {
+  match c {
+    case is Red {1;}
+    case is Green {2;}
+    case is Blue {3;}
+    case is Cyan {4;}
+    case is Magenta {5;}
+  }
+}
+
+// The same with a generic enum at every level, each passing its parameter on
+enum Box[T] {
+  struct Has { pub v T; }
+  Empty;
+}
+
+enum Box2[T] extends Box[T] {
+  Soon;
+}
+
+enum Box3[T] extends Box2[T] {
+  Later;
+}
+
+fn box3(b Box3[i32]) i32 {
+  match b {
+    case imm h Has {h.v;}
+    case is Empty {0i32;}
+    case is Soon {-1i32;}
+    case is Later {77i32;}
+  }
+}
+
+fn box2(b Box2[i32]) i32 {
+  match b {
+    case imm h Has {h.v;}
+    case is Empty {0i32;}
+    case is Soon {-1i32;}
+  }
+}
+
+fn extensionChains() {
+  show("chain-base-variant", richerCode(Richer.Red[]));
+  show("chain-pinned-copy", richerCode(Richer.Green[]));
+  show("chain-middle-variant", richerCode(Richer.Cyan[]));
+  show("chain-deepest-variant", richerCode(Richer.Gold[]));
+  show("chain-middle-own-set", richCode(Rich.Magenta[]));
+
+  // A copy of a copy keeps the pinned value and the numbering after it, so a
+  // comparison still tells each apart
+  imm g Richer = Richer.Green[];
+  show("chain-pinned-tag-equal", if g == Richer.Green[] {1;} else {0;});
+  show("chain-pinned-tag-unequal", if g == Richer.Red[] {1;} else {0;});
+  imm d Richer = Richer.Gold[];
+  show("chain-deepest-tag-unequal", if d == Richer.Magenta[] {1;} else {0;});
+
+  show("generic-chain-base-payload", box3(Box3.Has[i32][42]));
+  show("generic-chain-base-empty", box3(Box3.Empty[i32][]));
+  show("generic-chain-middle-variant", box3(Box3.Soon[i32][]));
+  show("generic-chain-deepest-variant", box3(Box3.Later[i32][]));
+  show("generic-chain-middle-own-set", box2(Box2.Has[i32][9]));
+}
+
 fn main() i32 {
   copiesAndMembership();
   foldedNames();
@@ -466,5 +564,6 @@ fn main() i32 {
   largerAddedVariant();
   unsizedDisagreement();
   genericExtensions();
+  extensionChains();
   0i32;
 }
