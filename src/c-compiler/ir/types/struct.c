@@ -401,6 +401,12 @@ static void structFoldExpand(StructNode *node, FieldDclNode *field, int hook) {
         return;
     }
     StructNode *src = (StructNode*)srcdcl;
+    // An enum before an abstraction, because an enum carries 'TraitType' too
+    if (src->flags & EnumType) {
+        errorMsgNode(fold->at, ErrorBadFold, "%s is an enum, and its variant set is its identity rather than a set of members to fold.",
+            &src->namesym->namestr);
+        return;
+    }
     if (src->flags & TraitType) {
         errorMsgNode(fold->at, ErrorBadFold, "%s is a trait. A fold reaches through a value's own members, and an abstraction has none to reach.",
             &src->namesym->namestr);
