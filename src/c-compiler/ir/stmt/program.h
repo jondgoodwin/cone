@@ -18,8 +18,10 @@ typedef struct {
 ProgramNode *newProgramNode();
 void pgmPrint(ProgramNode *pgm);
 
-// Find an already parsed module, or return NULL if not found
-ModuleNode *pgmFindMod(ProgramNode *pgm, Name *modname);
+// Find the module already loaded from a file of this name, or NULL. The key is
+// the filename-derived name, never the module's declared one: loading twice is
+// what must not happen, and a 'mod' declaration may name the module anything
+ModuleNode *pgmFindModFile(ProgramNode *pgm, Name *filesym);
 
 // Add a new module to the program
 ModuleNode *pgmAddMod(ProgramNode *pgm, int16_t flags);

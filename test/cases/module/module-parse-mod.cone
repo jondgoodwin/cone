@@ -1,0 +1,41 @@
+// What a 'mod' declaration refuses, and the two shapes of it the grammar admits
+// and the compiler does not build.
+//
+// 'mod name;' names the module a source file belongs to, and it claims the whole
+// file: it is the file's first statement, and a file declares one module. A 'mod'
+// anywhere else is ErrorModDcl, whether it is a second one or merely late.
+//
+// A nested 'mod name { ... }' block and 'mod trait' are both admitted so that
+// their spelling is settled rather than designed later, and both are reported
+// where they are written rather than accepted with nothing under them. The nested
+// block needs a namespace of its own, a hook pushed and popped around its parse,
+// and paths reaching through it, none of which exists.
+//
+// Parse stage, which is why this is its own file: a parse diagnostic stops the
+// compile before name resolution, so nothing here resolves and nothing else could
+// be asserted alongside. Each declaration is at the top level, where recovery from
+// one reaches the next -- a refused form's body is skipped whole rather than read
+// on as global statements.
+//
+// The accepted header is first, so that everything after it is refused for its own
+// reason and not for following a bad one.
+
+mod modparse;
+
+mod inner {                  //~ ErrorUnbuiltKind "nested 'mod' block"
+  fn helper() i64 {
+    1i64;
+  }
+}
+
+mod trait Served;            //~ ErrorUnbuiltKind "names a module's abstraction"
+
+mod again;                   //~ ErrorModDcl "first statement"
+
+mod;                         //~ ErrorNoName
+
+// A declaration after the last refusal, so that recovery is shown to land back on
+// the global statement stream rather than swallowing the rest of the file.
+fn tail() i64 {
+  2i64;
+}

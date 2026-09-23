@@ -185,7 +185,7 @@ enum ErrorCode {
 
     // 'trait' as a modifier on the kind
     ErrorDupTrait = 1099,       // 'trait' written twice: by itself it already means 'struct trait'
-    ErrorUnbuiltKind = 1100,    // A kind of declaration the grammar admits and the compiler does not build: 'mod', 'actor'
+    ErrorUnbuiltKind = 1100,    // A kind of declaration the grammar admits and the compiler does not build: 'actor', a nested 'mod', 'mod trait'
 
     // 'extends': enriching a concrete type with methods
     ErrorExtendsBase = 1101,    // What an 'extends' names cannot serve as a concrete base
@@ -198,6 +198,9 @@ enum ErrorCode {
     // 'extends': an enum adding variants to another enum's variant set
     ErrorEnumExtends = 1105,    // What an enum's 'extends' names cannot be its base, or what such an enum's body may not declare beside variants
     ErrorEnumExtendsSize = 1106,// An added variant larger than the base's largest, which the shared layout has no room for
+
+    // 'mod': the declaration that names a file's module
+    ErrorModDcl = 1107,         // A 'mod' declaration that is not its file's first statement, or a second one in one file
 
     // Warnings
     WarnCode = 3000,

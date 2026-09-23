@@ -28,12 +28,18 @@
 # - A name-fold clash between two wildcard imports. It is diagnosed, but both
 #   diagnostics are attributed to a source module and one of them carries the
 #   wrong file url, so a scenario built on it would pin a reporting bug.
+# - A 'mod' declaration in an *included* file, which is ErrorModDcl because an
+#   included file's declarations join the including module and so it names no
+#   module of its own. The condition module-parse-mod pins is the same one by the
+#   same rule; what an included file adds is a second route to it, and reaching it
+#   costs a support file whose annotation would then be imposed on every scenario
+#   that includes it.
 
 support = ["moduleinc.cone", "modulesub.cone", "moduleeof.cone",
            "moduleprov.cone", "moduleprov2.cone", "modulenoname.cone",
            "modulesyms.cone", "modulecyc.cone", "modulex_y.cone", "modulex.cone",
            "moduletransit.cone", "modulelate.cone", "moduleearly.cone",
-           "modulemacro.cone"]
+           "modulemacro.cone", "moduledeclared.cone"]
 
 # -------- success --------
 
@@ -51,6 +57,46 @@ name = "extern-declares-the-bare-c-name"
 target = "llvmir"
 contains = ["declare i32 @abs(i32)", "declare i64 @labs(i64)"]
 excludes = ["$abs", "$labs", "@abs(i32) comdat", "@labs(i64) comdat"]
+
+# What the file's 'mod' header does not do. It names the module, which is what
+# makes 'onemod.counted' reach the global a local hides; it does not put the
+# module in the owner chain a symbol is spelled from, so the root's declarations
+# stay bare and 'main' stays linkable. Nothing is spelled after 'onemod'.
+[[scenario.module-success.check]]
+name = "a-root-mod-header-does-not-prefix-the-root-symbols"
+target = "symbols"
+contains = [
+  "global internal counted comdat nodeduplicate",
+  "define internal twice comdat nodeduplicate",
+]
+excludes = ["onemod."]
+
+[scenario.module-declared]
+category = "compile"
+description = "A module named by its 'mod' declaration rather than by its filename, beside one still named by its file"
+tags = ["parse", "nameres", "typecheck", "genllvm"]
+
+# The declared name is the module's identity at every point it is used: the
+# importer binds it, a path is written with it, and the owner chain a symbol is
+# spelled from carries it. The filename it replaced is nowhere -- not as a symbol
+# prefix, and not as a name this file could have qualified with.
+[[scenario.module-declared.check]]
+name = "a-declared-module-name-replaces-its-filename"
+target = "symbols"
+contains = [
+  "declare renamed.scaleBy",
+  "declare renamed.timesFactor",
+  "external constant renamed.factor",
+]
+excludes = ["moduledeclared"]
+
+# The transitional half: a module that declares none keeps the name its filename
+# gave it, so both kinds of neighbour are reached the same way. This goes when the
+# folder walk replaces filename naming altogether.
+[[scenario.module-declared.check]]
+name = "a-module-with-no-declaration-keeps-its-filename"
+target = "symbols"
+contains = ["declare modulesub.plain"]
 
 [scenario.module-imports]
 category = "compile"
@@ -344,6 +390,18 @@ category = "reject"
 description = "'extern' declaration syntax the parser cannot accept"
 tags = ["parse"]
 diagnostics = 2
+
+# Separate from module-parse because the subject is the 'mod' declaration rather
+# than 'extern', and because it needs an accepted header first: what follows is
+# then refused for its own reason instead of for following a bad declaration. The
+# 'mod trait' spelling is asserted in trait-parse-kind-modifier as well, where the
+# subject is 'trait' as a modifier on a kind; here it is one of the two shapes of
+# 'mod' that are admitted and unbuilt.
+[scenario.module-parse-mod]
+category = "reject"
+description = "A 'mod' declaration that is misplaced or has no name, and the nested block and abstraction shapes that are unbuilt"
+tags = ["parse"]
+diagnostics = 4
 
 [scenario.module-import-missing]
 category = "reject"

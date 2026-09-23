@@ -34,8 +34,8 @@ char *stdiolib =
 "pub mut print = IOStream[0];"
 ;
 
-void parseGlobalStmts(ParseState *parse, ModuleNode *mod);
-ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name *modname);
+void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart);
+ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name *filesym);
 
 // Parse source filename/path as identifier or string literal
 char *parseFilename() {
@@ -64,9 +64,11 @@ void parseInclude(ParseState *parse) {
     filename = parseFilename();
     parseEndOfStatement();
 
-    // Inject source of include file, parse its global statements, then pop lexer
+    // Inject source of include file, parse its global statements, then pop lexer.
+    // An included file never starts a module -- its declarations join the
+    // including one -- so a 'mod' declaration in it has nothing to name
     lexInjectFile(filename);
-    parseGlobalStmts(parse, parse->mod);
+    parseGlobalStmts(parse, parse->mod, 0);
     if (lex->toktype != EofToken) {
         errorMsgLex(ErrorNoEof, "Expected end-of-file");
     }
@@ -96,11 +98,14 @@ ImportNode *parseImport(ParseState *parse) {
     parseEndOfStatement();
 
     // Parse the imported modules
-    Name *modname = nametblFind(modstr, strlen(modstr));
-    ModuleNode *newmod = parseLoadAndParseModuleFile(parse, filename, modname);
+    Name *filesym = nametblFind(modstr, strlen(modstr));
+    ModuleNode *newmod = parseLoadAndParseModuleFile(parse, filename, filesym);
 
-    // Add imported module to namespace of existing module
-    modAddNamedNode(parse->mod, modname, (INode*)newmod);
+    // Add imported module to namespace of existing module, under the name the
+    // module declares for itself. That is the filename-derived one until the
+    // file carries a 'mod' declaration: the declaration wins, and the file is
+    // only where the module was found
+    modAddNamedNode(parse->mod, newmod->namesym, (INode*)newmod);
     importnode->module = newmod;
 
     return importnode;
@@ -160,9 +165,95 @@ void parseBadStatic(uint16_t staticflag) {
         errorMsgLex(ErrorBadStatic, "'static' applies to a variable, which has a copy per instance to share; this declaration has none");
 }
 
-void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
+// Skip a declaration's body whole, counting depth, so nothing inside it is read
+// as a global statement and reported a second time. Used where a declaration's
+// shape is admitted and its semantics are not built
+void parseSkipDclBody() {
+    if (!lexIsToken(LCurlyToken)) {
+        parseSkipToNextStmt();
+        return;
+    }
+    uint32_t depth = 0;
+    do {
+        if (lexIsToken(LCurlyToken))
+            ++depth;
+        else if (lexIsToken(RCurlyToken))
+            --depth;
+        lexNextToken();
+    } while (depth > 0 && !lexIsToken(EofToken));
+}
+
+// Parse a 'mod' declaration, which names the module a source file belongs to.
+//
+// Only the header form is built: 'mod name;' as a source file's first
+// statement. It names the module the file was loaded as, so that a module's
+// identity comes from its declaration rather than from its filename, and it
+// binds that name into the module's own namespace -- a module is the registry
+// its own contents resolve against, and it publishes itself into it. That
+// binding is what makes a module-level name a local or a type member hides
+// reachable again, as 'name.x'.
+//
+// Two shapes the grammar admits are refused because nothing is behind them: a
+// nested 'mod name { ... }' block, which needs a namespace of its own and paths
+// through it, and 'mod trait', a module's abstraction. Reporting each where it
+// is written is what settles its spelling without accepting it.
+//
+// 'atmodstart' is whether this is the first statement of the module's own
+// source. The header claims the whole file, so nothing may precede it, and an
+// included file -- whose declarations join the including module -- may carry
+// none at all.
+void parseModuleDcl(ModuleNode *mod, int atmodstart) {
+    lexNextToken();
+
+    // 'mod trait' is a module's abstraction: the spelling is settled by 'trait'
+    // being a modifier on the kind, and there is nothing behind it
+    if (lexIsToken(TraitToken)) {
+        errorMsgLex(ErrorUnbuiltKind,
+            "'mod trait' names a module's abstraction, which the compiler does not build yet.");
+        lexNextToken();
+        if (lexIsToken(IdentToken))
+            lexNextToken();
+        parseSkipDclBody();
+        return;
+    }
+
+    Name *modname = NULL;
+    if (lexIsToken(IdentToken)) {
+        modname = lex->val.ident;
+        lexNextToken();
+    }
+    else
+        errorMsgLex(ErrorNoName, "Expected a name for the module this file declares");
+
+    // A nested module. Its namespace, the hook push and pop its parse needs, and
+    // the paths reaching through it are all unbuilt
+    if (lexIsToken(LCurlyToken) || lexIsToken(ColonToken)) {
+        errorMsgLex(ErrorUnbuiltKind,
+            "A nested 'mod' block is not built yet. 'mod name;' names the module of the whole file.");
+        parseSkipDclBody();
+        return;
+    }
+    // Reported before the statement's ';' is consumed, so that the diagnostic
+    // lands on this declaration rather than on the token that follows it
+    if (modname != NULL) {
+        if (!atmodstart || (mod->flags & FlagModDcl))
+            errorMsgLex(ErrorModDcl,
+                "A 'mod' declaration must be its source file's first statement, and a file declares one module.");
+        else {
+            // The declaration names the module, replacing what its filename gave it
+            mod->flags |= FlagModDcl;
+            mod->namesym = modname;
+            modAddNamedNode(mod, modname, (INode*)mod);
+        }
+    }
+    parseEndOfStatement();
+}
+
+void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
     // Create and populate a Module node for the program
     while (lex->toktype!=EofToken && !parseBlockEnd()) {
+        int atstart = atmodstart;
+        atmodstart = 0;
         uint16_t pubflag = parsePub();
         // At module scale a static is shared across every instantiation of the
         // module. An ordinary module is instantiated once, so today it is a
@@ -208,37 +299,31 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
             break;
         }
 
-        // 'mod' and 'actor' are kinds the grammar admits and the compiler does
-        // not build. Naming them here is what makes 'trait' a modifier on the
-        // kind rather than a keyword of its own: the abstraction of each kind is
-        // that kind's keyword followed by 'trait'. There is nothing behind
-        // either yet, so the declaration is reported and its body skipped rather
-        // than accepted with no semantics under it.
+        // 'mod' names the module this file belongs to. 'pub' would say that the
+        // module is visible outside a parent it does not have yet, and a module
+        // has no instances for a 'static' to be shared across
         case ModToken:
+            if (pubflag)
+                errorMsgLex(ErrorBadPub, "'pub' may not precede a module declaration");
+            parseBadStatic(staticflag);
+            parseModuleDcl(mod, atstart);
+            break;
+
+        // 'actor' is a kind the grammar admits and the compiler does not build.
+        // Naming it here is what makes 'trait' a modifier on the kind rather
+        // than a keyword of its own: the abstraction of each kind is that kind's
+        // keyword followed by 'trait'. There is nothing behind it yet, so the
+        // declaration is reported and its body skipped rather than accepted with
+        // no semantics under it.
         case ActorToken: {
-            char *kind = lexIsToken(ModToken) ? "mod" : "actor";
             errorMsgLex(ErrorUnbuiltKind,
-                "'%s' names a kind the compiler does not build yet. Its abstraction is spelled '%s trait'.",
-                kind, kind);
+                "'actor' names a kind the compiler does not build yet. Its abstraction is spelled 'actor trait'.");
             lexNextToken();
             if (lexIsToken(TraitToken))
                 lexNextToken();
             if (lexIsToken(IdentToken))
                 lexNextToken();
-            if (lexIsToken(LCurlyToken)) {
-                // Skip the body whole, so nothing inside it is read as a global
-                // statement and reported a second time
-                uint32_t depth = 0;
-                do {
-                    if (lexIsToken(LCurlyToken))
-                        ++depth;
-                    else if (lexIsToken(RCurlyToken))
-                        --depth;
-                    lexNextToken();
-                } while (depth > 0 && !lexIsToken(EofToken));
-            }
-            else
-                parseSkipToNextStmt();
+            parseSkipDclBody();
             break;
         }
 
@@ -315,24 +400,29 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
     }
 }
 
-// If we don't have it, load an imported module by its path/name, then fully parse it
-ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name *modname) {
+// If we don't have it, load an imported module by its path/name, then fully parse it.
+// The de-dup key is the filename-derived name, because what must happen once is
+// reading the file; a 'mod' declaration inside may name the module anything
+ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name *filesym) {
     // If we already have module, don't re-parse. Just return it.
-    ModuleNode *mod = pgmFindMod(parse->pgm, modname);
+    ModuleNode *mod = pgmFindModFile(parse->pgm, filesym);
     if (mod)
         return mod;
 
     // Create and add this new module to list of modules, and make it the current one
     ModuleNode *svmod = parse->mod;
-    mod = pgmAddMod(parse->pgm, modname==corelibName || strcmp(filename, "stdio")? 0 : FlagGenMod);
-    mod->namesym = modname;
+    mod = pgmAddMod(parse->pgm, filesym==corelibName || strcmp(filename, "stdio")? 0 : FlagGenMod);
+    mod->filesym = filesym;
+    // The filename names the module until its own 'mod' declaration does.
+    // Transitional: the folder walk replaces filename naming altogether
+    mod->namesym = filesym;
     // Every loaded module names itself in the owner chain; only the root does not
     dclInfoJoin((INode*)mod, NULL);
     mod->dclinfo.facts |= DclNamesChain;
     parse->mod = mod;
 
     // Inject the module's source into the lexer
-    if (modname == corelibName)
+    if (filesym == corelibName)
         lexInject(corelibSource, "corelib");
     else if (strcmp(filename, "stdio") == 0)
         lexInject(stdiolib, "stdio");
@@ -340,7 +430,7 @@ ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name 
         lexInjectFile(filename);
 
     // Before parsing, all modules (except corelib) get an auto-import of core lib
-    ModuleNode *corelib = pgmFindMod(parse->pgm, corelibName);
+    ModuleNode *corelib = pgmFindModFile(parse->pgm, corelibName);
     if (corelib && corelib != mod) {
         ImportNode *importnode = newImportNode();
         importnode->foldall = 1;
@@ -350,7 +440,7 @@ ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name 
 
     // Parse the imported module's source, then pop lexer and name hook
     modHook(svmod, mod);
-    parseGlobalStmts(parse, mod);
+    parseGlobalStmts(parse, mod, 1);
     if (lex->toktype != EofToken) {
         errorMsgLex(ErrorNoEof, "Expected end-of-file");
     }
@@ -381,11 +471,14 @@ ProgramNode *parsePgm(ConeOptions *opt) {
 
     // Create module node and set up for parsing main source file.
     // The root is named after its file, as an imported module is, so that an
-    // import cycle back to this file finds it (pgmFindMod) instead of reading
+    // import cycle back to this file finds it (pgmFindModFile) instead of reading
     // the file again as a second module. It sets no DclNamesChain: the root
-    // contributes no prefix, so its declarations are spelled bare.
+    // contributes no prefix, so its declarations are spelled bare -- and a 'mod'
+    // declaration in the root file changes what the module is called, never how
+    // the program's symbols are spelled.
     ModuleNode *mod = pgmAddMod(pgm, FlagGenMod);
-    mod->namesym = nametblFind(opt->srcname, strlen(opt->srcname));
+    mod->filesym = nametblFind(opt->srcname, strlen(opt->srcname));
+    mod->namesym = mod->filesym;
     lexInjectFile(opt->srcpath);
     modHook(NULL, mod);
 
@@ -399,7 +492,7 @@ ProgramNode *parsePgm(ConeOptions *opt) {
     // Now actually parse main source file
     parse.mod = mod;
     modHook(NULL, mod);
-    parseGlobalStmts(&parse, mod);
+    parseGlobalStmts(&parse, mod, 1);
     // A stray '}' at global scope ends the statement loop. Without this the rest
     // of the main file is silently discarded, exactly as an include would be --
     // parseInclude and parseLoadAndParseModuleFile already make the same check.

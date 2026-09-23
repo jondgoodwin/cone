@@ -64,7 +64,7 @@ large**, which is why the interesting decisions are at the bottom of this table.
 | **function** | the block it holds, and the calls in it | parameters and locals | body invisible; the signature is the interface | function references | generics | overload sets ⚠ *unconfirmed reading* |
 | **type** | fields; an enum's spliced into its variants at compile time | members | members are private unless `pub` | traits and virtual references, asserted with `is` or noticed structurally | generics; trait defaults cloned into implementers | ⚠ **unknown** — whether a type can gain methods outside its own declaration is not established |
 | **thread** | **absent** | **absent** | **absent** | **absent** | **absent** | **absent** |
-| **module** | **[planned]** — the folder walk makes a module span files; today a module *is* one file | yes — this is what a module is today | names are private unless `pub` | **absent** — module traits are planned | **absent** — generic modules are planned | **absent** |
+| **module** | **[planned]** — the folder walk makes a module span files; today a module *is* one file, which names itself with `mod` | yes — this is what a module is today, and `mod` gives it a name of its own to be reached by | names are private unless `pub` | **absent** — module traits are planned | **absent** — generic modules are planned | **absent** |
 | **program / library** | linking; `extern` and the C ABI | ⚠ **absent — the linker has one flat symbol space**, and nothing in a generated name carries the package | partial — a program's definitions are internal to its object, but what a package exports is undecided | **absent** | **absent** | **absent** |
 
 ⚠ **The six-column table shows something the three-column one could not.**

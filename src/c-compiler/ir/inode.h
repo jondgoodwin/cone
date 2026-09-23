@@ -203,6 +203,7 @@ enum NodeTags {
 #define FlagStatic    0x0400        // VarDcl: one copy shared across the enclosing thing's instances
 
 #define FlagGenMod    0x0001        // Module: Generate code for the module, if true
+#define FlagModDcl    0x0002        // Module: a 'mod' declaration named it, rather than its filename
 
 #define IsTagField    0x0010        // FieldNode: This field is the trait's discriminant tag
 #define IsMixin       0x0020        // FieldNode: Is a trait mixin, vs. an instantiated field

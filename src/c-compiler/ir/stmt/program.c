@@ -26,13 +26,13 @@ ModuleNode *pgmAddMod(ProgramNode *pgm, int16_t flags) {
     return mod;
 }
 
-// Find an already parsed module, or return NULL if not found
-ModuleNode *pgmFindMod(ProgramNode *pgm, Name *modname) {
+// Find the module already loaded from a file of this name, or NULL if not found
+ModuleNode *pgmFindModFile(ProgramNode *pgm, Name *filesym) {
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(pgm->modules, cnt, nodesp)) {
         ModuleNode *mod = (ModuleNode *)*nodesp;
-        if (mod->namesym == modname)
+        if (mod->filesym == filesym)
             return mod;
     }
     return NULL;
