@@ -16,6 +16,7 @@ ModuleNode *newModuleNode() {
     newNode(mod, ModuleNode, ModuleTag);
     mod->namesym = NULL;
     mod->filesym = NULL;
+    mod->foldersym = NULL;
     mod->imports = newNodes(8);
     mod->nodes = newNodes(64);
     namespaceInit(&mod->namespace, 64);

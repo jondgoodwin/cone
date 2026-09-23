@@ -131,6 +131,51 @@ error, so a forgotten registration fails loudly instead of sitting unrun.
 **Extend the success program before adding a file.** Split it only at a natural
 seam — one parse error zeroes a whole file's coverage.
 
+### A scenario that is a folder
+
+A module is the files of a folder, so some scenarios are folders. **A name the
+suite uses reaches either `<name>.cone` or `<name>/<name>.cone`** — the designated
+file of a folder named for it. That is the compiler's own lookup, so a name means
+the same thing to the runner and to `conec`, and it holds for a scenario and for a
+support module alike:
+
+```
+test/cases/module/
+  module-folder-sweep/          a folder scenario
+    module-folder-sweep.cone      its designated file: what the runner compiles
+    module-folder-sweep.out       expected stdout, beside its source as always
+    sibling.cone                  swept in by the compiler
+    deep/nested.cone              and at any depth
+  modfolder/                    a folder support module, imported by a scenario
+    modfolder.cone
+    helper.cone
+```
+
+- **The designated file is what the runner compiles**, and the compiler finds the
+  rest. Output filenames and the `.out` file derive from it exactly as from a flat
+  scenario's source.
+- **`cases.toml` registers the folder under its own name** — as a scenario table,
+  or in `support` — and registers nothing inside it. The sweep is what finds those
+  files; listing them would restate the thing under test. A folder in a group
+  directory that is registered under neither is an error, as a stray `.cone` file
+  is, and so is a folder with no designated file.
+- **Both spellings of one name is an error.** The compiler takes `<name>.cone` and
+  never looks in the folder, so the folder's files would sit unread while looking
+  like coverage.
+- **An annotation may live in any file of the folder**, for the reason it may live
+  in a support module: a diagnostic carries the path of the file it was reported
+  against, and an annotation matches only a diagnostic reported against its own
+  file. A support module that is a folder contributes every file of it the same
+  way.
+- **A folder scenario may be a `run` scenario**, which a multi-module one may not:
+  a folder module is one module however many files it spans, so it links like any
+  single-file program.
+
+**Write a folder scenario when the file layout is the subject** — which files a
+module holds, what names them, what collides. Anything else belongs in a flat
+scenario, because a folder costs a reader a directory listing before they can see
+what the case says.
+
 **Never mix compiler stages in one failure scenario.** Analysis halts between
 phases: parse errors skip semantic analysis, name-resolution errors return before
 type checking. A type-check expectation sharing a file with a parse error never
@@ -228,8 +273,9 @@ through.
 
 Runtime programs print one `name = value` line per fact established.
 
-A runnable program cannot span modules until separate compilation lands, so every
-`run` scenario is a single file.
+A runnable program cannot span **modules** until separate compilation lands, so
+every `run` scenario is one module — which is one file, or the files of one
+folder.
 
 ## 4. Assert
 
@@ -422,8 +468,9 @@ actually emits; `struct-methods` is where a punycoded name does so.
 
 ### `cases.toml` keys
 
-One table per scenario, keyed by the source's basename, plus a `support` list of
-modules that are imported and never compiled on their own.
+One table per scenario, keyed by the source's basename — or by the folder's name,
+for a folder scenario — plus a `support` list of modules that are imported and
+never compiled on their own, each of which may likewise be a file or a folder.
 
 ```toml
 support = []

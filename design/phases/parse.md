@@ -92,8 +92,9 @@ by it.
 **A word held for an unimplemented feature is reserved; a word that names an
 unbuilt *kind of declaration* is a token.** `mod` and `actor` are the two kinds
 that carry abstractions, so both are ordinary keywords with an arm of their own in
-the global dispatch. `mod` builds a declaration — it names the module a source
-file belongs to, [module](../nodes/module.md), "The `mod` declaration". `actor`
+the global dispatch. `mod` builds a declaration — it declares the module a
+folder's files belong to, [module](../nodes/module.md), "The `mod` declaration".
+`actor`
 does not, and its arm reports `ErrorUnbuiltKind` where the declaration is written
 and names the abstraction's spelling, `actor trait`; the two shapes of `mod` that
 are unbuilt, a nested block and `mod trait`, report the same code the same way.
@@ -235,20 +236,30 @@ statement.
 This is why `nameUseNameRes` is a single assignment from `namesym->node` —
 see [Name Resolution](name-resolution.md).
 
-**It loads every module.** `import` recursively loads and *fully parses* the
-imported module during the parse of the importing one, then adds an `ImportNode`
-to a list kept separate from the module's own nodes, so folding can run before
-the module's own names resolve. `include` is different: it injects the file and
-parses its global statements straight into the **current** module, producing no
-node. Corelib is parsed before the main file and `foldall`-imported into every
-module.
+**It loads every module, and it finds a module's files itself.** `import`
+recursively loads and *fully parses* the imported module during the parse of the
+importing one, then adds an `ImportNode` to a list kept separate from the module's
+own nodes, so folding can run before the module's own names resolve. `include` is
+different: it injects the file and parses its global statements straight into the
+**current** module, producing no node. Corelib is parsed before the main file and
+`foldall`-imported into every module.
+
+**A module is the files of a folder**, so loading one module means reading
+several files. Loading is three steps — locate the file, ask the **file registry**
+which module holds it, parse each of the module's files into it — and the registry
+is keyed by the path, so a file is read exactly once and belongs to exactly one
+module. What decides whether a folder is swept is the **designated-file
+convention**: the file the compiler is given sweeps its folder when it is the file
+named for that folder. [module](../nodes/module.md), "The folder sweep", owns the
+rules and the diagnostics.
 
 ## 7. Contract
 
 **True when `parsePgm` returns:**
 
-- One `ProgramNode`; every module reachable by import is parsed. No later phase
-  reads a source file.
+- One `ProgramNode`; every module reachable by import is parsed, and every file
+  of every one of those modules with it. No later phase reads a source file, and
+  the file registry holds every file that was read.
 - Every node carries `lexer`, `srcp`, `linep`, `linenbr`, `tag`, `flags`, and
   `instnode == NULL`.
 - Every identifier is an interned `Name*`. String comparison never happens
@@ -296,7 +307,7 @@ would drop the whole body on the floor and turn its opening brace into the next
 global statement.
 
 **Two conditions abort the process outright**, with no recovery:
-`lexInjectFile` on a source file that cannot be found or read (`ExitNF`), and
+a source file `fileFindSrc` cannot find, or `lexInjectPath` cannot read (`ExitNF`), and
 `parseFilename` when `import` or `include` is followed by something that is
 neither an identifier nor a string (`ExitNF` as well, despite being a malformed
 token rather than a missing file).
@@ -311,16 +322,19 @@ numbers.
 
 | File | Function | Purpose |
 | --- | --- | --- |
-| `parser/lexer.c` | `lexInject`, `lexInjectFile`, `lexPop` | push and pop a source on the lexer chain |
+| `parser/lexer.c` | `lexInject`, `lexInjectPath`, `lexPop` | push and pop a source on the lexer chain. `lexInjectPath` reads an already-located file: locating one is the caller's, since the path is what the file registry is keyed by |
 | | `lexNextToken` | the scan dispatch; whitespace, comments, maximal-munch operators |
 | | `lexScanIdent` | identifier scan and name-table classification; reserved-word release |
 | | `lexScanNumber`, `lexScanString`, `lexScanChar`, `lexScanEscape` | literals; UTF-8 re-encoding of escapes; lifetime-vs-char disambiguation |
 | | `lexNewLine`, `lexBlockComment` | line counting for diagnostics, inside comments included |
 | `parser/parsemod.c` | `parsePgm` | **entry point** — tables, program, main module, corelib, main file |
 | | `parseGlobalStmts` | the global statement dispatch loop; `trait` by itself enters `parseStruct` with `TraitType` already set, and `actor` is the unbuilt kind refused here. It is told whether it is reading the start of a module's own source, which is what decides where a `mod` declaration may stand |
-| | `parseModuleDcl` | `mod name;`, the declaration that names a file's module: the placement rule, the rename, the module's own name bound into its namespace, and the refusal of the nested block and `mod trait` |
+| | `parseModuleDcl` | `mod name;`, the declaration a module's designated file makes: the placement rule, the check against the folder's name, the rename a one-file module still gets, the module's own name bound into its namespace, and the refusal of the nested block and `mod trait` |
 | | `parseSkipDclBody` | skip an unbuilt form's `{ … }` whole, or resync at the next `;` |
-| | `parseLoadAndParseModuleFile` | per-module unit: de-dup by filename, naming, injection, corelib import, `modHook` |
+| | `parseLoadAndParseModuleFile` | per-module unit: locate, register by path, naming, the folder sweep, corelib import, `modHook`, and a parse per file |
+| | `parseDesignatedFolder`, `parseCollectFolder`, `parseModuleFiles` | the folder sweep: whether the file is its folder's designated file, and which files the folder brings in |
+| | `parseRegisterModuleFiles` | the file registry entries for a module's files, and the two collisions that stop a file joining |
+| `shared/fileio.c` | `fileFindSrc`, `fileFolderScan` | locate a source file without reading it; list a folder's `.cone` files and subfolders, sorted |
 | | `parseImport`, `parseInclude` | the two source-composition forms |
 | `parser/parsehelper.c` | `parseBlockStart`, `parseBlockEnd` | `{` and `}`, with recovery |
 | | `parseEndOfStatement`, `parseSkipToNextStmt`, `parseCloseTok` | the required `;`, and the two resyncs |

@@ -200,10 +200,15 @@ enum ErrorCode {
     ErrorEnumExtendsSize = 1106,// An added variant larger than the base's largest, which the shared layout has no room for
 
     // 'mod': the declaration that names a file's module
-    ErrorModDcl = 1107,         // A 'mod' declaration that is not its file's first statement, or a second one in one file
+    ErrorModDcl = 1107,         // A 'mod' declaration where the module is already established: not its file's first statement, a second one, or in a file the module's folder swept in
 
     // A module's 'use' on a global: folding a singleton's members in as its own names
     ErrorUseGlobal = 1108,      // A global whose type cannot be a fold's source: not a struct, or an abstraction
+
+    // The folder sweep: a module's files are the files of its folder
+    ErrorModName = 1109,        // A 'mod' declaration naming something other than the module's folder, which is what names it
+    ErrorDupFile = 1110,        // Two files of one module sharing a basename, which leaves neither nameable
+    ErrorModFile = 1111,        // A file brought into a module that another module already holds, or that this one already swept in
 
     // Warnings
     WarnCode = 3000,

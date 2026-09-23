@@ -9,8 +9,20 @@
 #include "memory.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stddef.h>
+
+#ifdef _WIN32
+#include <io.h>
+#include <direct.h>
+#define fileGetCwd _getcwd
+#else
+#include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#define fileGetCwd getcwd
+#endif
 
 char **fileSearchPaths = NULL;
 
@@ -130,32 +142,149 @@ char *fileSrcUrl(char *cururl, char *srcfn, int newfolder) {
     return outnm;
 }
 
-// Load source file, where srcfn is relative to cururl
-// - Look at fn+.cone or fn+/fn.cone
-// - return full pathname for source file
-char *fileLoadSrcWithFolder(char *cururl, char *srcfn, char **fn) {
-    char *src;
-    *fn = fileSrcUrl(cururl, srcfn, 0);
-    if (src = fileLoad(*fn))
-        return src;
-    *fn = fileSrcUrl(cururl, srcfn, 1);
-    return fileLoad(*fn);
+// Whether a path names a file that can be opened for reading
+static int fileReadable(char *fn) {
+    FILE *file = fopen(fn, "rb");
+    if (file == NULL)
+        return 0;
+    fclose(file);
+    return 1;
 }
 
-// Search for and load source file, where srcfn is relative to cururl
-// - Use search paths
-// - Look at fn+.cone or fn+/mod.cone
-// - return full pathname for source file
-char *fileLoadSrc(char *cururl, char *srcfn, char **fn) {
-    char *src;
-    if (src = fileLoadSrcWithFolder(cururl, srcfn, fn))
-        return src;
+// Find the source file srcfn names relative to cururl: 'srcfn.cone' first, then
+// 'srcfn/srcfn.cone', which is the designated file of the folder srcfn names
+static char *fileFindSrcWithFolder(char *cururl, char *srcfn) {
+    char *fn = fileSrcUrl(cururl, srcfn, 0);
+    if (fileReadable(fn))
+        return fn;
+    fn = fileSrcUrl(cururl, srcfn, 1);
+    return fileReadable(fn) ? fn : NULL;
+}
+
+// Find the source file srcfn names, relative to cururl and then on each search path
+char *fileFindSrc(char *cururl, char *srcfn) {
+    char *fn = fileFindSrcWithFolder(cururl, srcfn);
+    if (fn)
+        return fn;
     char **searchPaths = fileSearchPaths;
     if (searchPaths == NULL)
         return NULL;
     while (*searchPaths) {
-        if (src = fileLoadSrcWithFolder(*searchPaths++, srcfn, fn))
-            return src;
+        if (fn = fileFindSrcWithFolder(*searchPaths++, srcfn))
+            return fn;
     }
     return NULL;
+}
+
+// The name of the current directory, or NULL where there is none to read. A file
+// named with no folder in front of it sits here, and this is the only place its
+// folder's name can be read: a file's module must not depend on the spelling of
+// the path used to reach it
+char *fileCurFolderName() {
+    char buf[1024];
+    if (fileGetCwd(buf, sizeof(buf)) == NULL)
+        return NULL;
+    // Drop the trailing separator a filesystem root carries
+    size_t len = strlen(buf);
+    while (len && (buf[len - 1] == '/' || buf[len - 1] == '\\'))
+        buf[--len] = '\0';
+    char *name = buf + len;
+    while (name != buf && name[-1] != '/' && name[-1] != '\\')
+        --name;
+    return *name ? memAllocStr(name, strlen(name)) : NULL;
+}
+
+// Order two names, so that a folder's contents are read in one order whatever
+// order the filesystem reports them in
+static int fileNameCmp(const void *left, const void *right) {
+    return strcmp(*(const char **)left, *(const char **)right);
+}
+
+void fileNamesInit(FileNames *list) {
+    list->names = NULL;
+    list->count = 0;
+    list->avail = 0;
+}
+
+// Append a copy of name to a list, growing it
+void fileNamesAdd(FileNames *list, char *name) {
+    if (list->count == list->avail) {
+        list->avail = list->avail ? list->avail * 2 : 8;
+        char **grown = (char **)memAllocBlk(list->avail * sizeof(char *));
+        for (uint32_t i = 0; i < list->count; ++i)
+            grown[i] = list->names[i];
+        list->names = grown;
+    }
+    list->names[list->count++] = memAllocStr(name, strlen(name));
+}
+
+// Whether a name ends in '.cone'. The extension rule is what keeps '.orig',
+// '.rej', 'foo.cone~' and editor droppings out of a module's file set
+static int fileIsCone(char *name) {
+    size_t len = strlen(name);
+    return len > 5 && strcmp(name + len - 5, ".cone") == 0;
+}
+
+// Scan a folder for the '.cone' files and the subfolders it holds
+int fileFolderScan(char *folder, FileNames *cones, FileNames *folders) {
+    if (cones)
+        fileNamesInit(cones);
+    if (folders)
+        fileNamesInit(folders);
+    // Every composed path below is folder + a name, so the folder carries its
+    // trailing slash. An empty folder is the current directory
+    if (folder == NULL || *folder == '\0')
+        folder = "./";
+    else if (folder[strlen(folder) - 1] != '/' && folder[strlen(folder) - 1] != '\\') {
+        char *slashed = memAllocStr(folder, strlen(folder) + 1);
+        strcat(slashed, "/");
+        folder = slashed;
+    }
+
+#ifdef _WIN32
+    char *pattern = memAllocStr(folder, strlen(folder) + 1);
+    strcat(pattern, "*");
+    struct _finddata_t found;
+    intptr_t handle = _findfirst(pattern, &found);
+    if (handle == -1)
+        return 0;
+    do {
+        if (found.name[0] == '.')
+            continue;
+        if (found.attrib & _A_SUBDIR) {
+            if (folders)
+                fileNamesAdd(folders, found.name);
+        }
+        else if (cones && fileIsCone(found.name))
+            fileNamesAdd(cones, found.name);
+    } while (_findnext(handle, &found) == 0);
+    _findclose(handle);
+#else
+    DIR *dir = opendir(folder);
+    if (dir == NULL)
+        return 0;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_name[0] == '.')
+            continue;
+        char *path = memAllocStr(folder, strlen(folder) + strlen(entry->d_name) + 1);
+        strcat(path, entry->d_name);
+        struct stat info;
+        if (stat(path, &info) != 0)
+            continue;
+        if (S_ISDIR(info.st_mode)) {
+            if (folders)
+                fileNamesAdd(folders, entry->d_name);
+        }
+        else if (cones && fileIsCone(entry->d_name))
+            fileNamesAdd(cones, entry->d_name);
+    }
+    closedir(dir);
+#endif
+
+    if (cones && cones->count > 1)
+        qsort(cones->names, cones->count, sizeof(char *), fileNameCmp);
+    if (folders && folders->count > 1)
+        qsort(folders->names, folders->count, sizeof(char *), fileNameCmp);
+    return 1;
 }

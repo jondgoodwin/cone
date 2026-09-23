@@ -20,8 +20,9 @@
 // It also supports name resolution of namespace qualified, public names.
 typedef struct ModuleNode {
     IExpNodeHdr;
-    Name *namesym;           // The module's name: what its 'mod' declaration names it, else filesym
-    Name *filesym;           // The name derived from the module's filename, which is the load key
+    Name *namesym;           // The module's name: its folder's for a module folder, else its file's
+    Name *filesym;           // The name derived from the module's filename
+    Name *foldersym;         // The module's folder, when its designated file drew it; else NULL
     Nodes *imports;          // All import nodes
     Nodes *nodes;            // All parsed nodes owned by the module
     Namespace namespace;     // The module's named nodes, owned or "used"

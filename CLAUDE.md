@@ -40,7 +40,8 @@ here goes stale without anyone noticing.
 - `test/run.py`: the test suite runner. `design/diagnostics/test-suite.md` is
   its authoring guide.
 - `test/cases/<group>/`: one directory per coverage group, each with a
-  `cases.toml` listing its scenarios.
+  `cases.toml` listing its scenarios. A scenario is one `.cone` file, or a folder
+  named for it holding the files of one module.
 - `test/codes.toml`: the pinned `ErrorCode` name-to-number table the runner
   checks `error.h` against before any case runs.
 
@@ -164,7 +165,8 @@ link prog.obj build\x64-release\conestd.lib /OUT:prog.exe /SUBSYSTEM:CONSOLE msv
 ```
 
 A program that spans modules cannot be linked yet, so runtime checks live in a
-single source file. `design/nodes/module.md` explains why.
+single module — one source file, or the files of one folder, which the compiler
+sweeps into one module. `design/nodes/module.md` explains why.
 
 ## Change discipline
 
