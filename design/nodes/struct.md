@@ -972,10 +972,12 @@ it does for every generic enum: an instance is type checked before `genericMemoi
 fills its `derived` list, so `structSetTagWidth` finds no variant to measure, and a
 pinned value past the discriminant's width is truncated where it is stored.
 
-⚠ **A chain — an extension of an extension — is neither built for nor refused.**
-It works by the same demand: the middle enum makes its copies while it is resolved,
-and they are what the outer one copies. It is untested and unclaimed; the language
-does not document it.
+**A chain — an extension of an extension — needs no mechanism of its own.** It
+works by the same demand: the middle enum makes its copies while it is resolved,
+and they are what the outer one copies, so every copy keeps the tag value it was
+declared with and the whole chain shares the bottom enum's discriminant. It is
+claimed language (refenum.html, "Extending an extension"), plain and generic, and
+enum-extends pins it.
 
 ## Flow
 
