@@ -193,17 +193,52 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
             break;
         }
 
-        // 'struct'-style type definition
+        // 'struct'-style type definition, optionally modified by 'trait'
         case StructToken: {
             INode *node = parseStruct(parse, pubflag);
             modAddNode(mod, inodeGetName(node), node);
             break;
         }
 
-        // 'trait' type definition: the open abstraction
+        // 'trait' by itself is a synonym for 'struct trait': one node, one flag,
+        // and the struct family by default
         case TraitToken: {
             INode *node = parseStruct(parse, TraitType | pubflag);
             modAddNode(mod, inodeGetName(node), node);
+            break;
+        }
+
+        // 'mod' and 'actor' are kinds the grammar admits and the compiler does
+        // not build. Naming them here is what makes 'trait' a modifier on the
+        // kind rather than a keyword of its own: the abstraction of each kind is
+        // that kind's keyword followed by 'trait'. There is nothing behind
+        // either yet, so the declaration is reported and its body skipped rather
+        // than accepted with no semantics under it.
+        case ModToken:
+        case ActorToken: {
+            char *kind = lexIsToken(ModToken) ? "mod" : "actor";
+            errorMsgLex(ErrorUnbuiltKind,
+                "'%s' names a kind the compiler does not build yet. Its abstraction is spelled '%s trait'.",
+                kind, kind);
+            lexNextToken();
+            if (lexIsToken(TraitToken))
+                lexNextToken();
+            if (lexIsToken(IdentToken))
+                lexNextToken();
+            if (lexIsToken(LCurlyToken)) {
+                // Skip the body whole, so nothing inside it is read as a global
+                // statement and reported a second time
+                uint32_t depth = 0;
+                do {
+                    if (lexIsToken(LCurlyToken))
+                        ++depth;
+                    else if (lexIsToken(RCurlyToken))
+                        --depth;
+                    lexNextToken();
+                } while (depth > 0 && !lexIsToken(EofToken));
+            }
+            else
+                parseSkipToNextStmt();
             break;
         }
 

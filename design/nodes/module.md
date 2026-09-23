@@ -384,7 +384,10 @@ namespace, where folding a member is delegated inheritance.
 ### What is implemented
 
 **Almost none of it.** A module is a source file today. There is no `mod`
-declaration, no nesting, no package, no manifest, no interface artifact, and no
+declaration — `mod` is a keyword and a `mod` at the top level is
+`ErrorUnbuiltKind`, which holds the word and settles the `mod trait` spelling of
+a module's abstraction against the day there is something behind either — no
+nesting, no package, no manifest, no interface artifact, and no
 `use`; `import` takes a file path rather than a package name, folds only with
 `.*`, and cannot rename or exclude. Sections and COMDATs are not emitted per
 function. What does work is the multi-module *generation* path, exercised by

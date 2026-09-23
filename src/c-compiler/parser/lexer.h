@@ -132,6 +132,8 @@ enum TokenTypes {
     ConstToken,    // 'const'
     TypedefToken,  // 'typedef'
     StructToken,   // 'struct'
+    ModToken,      // 'mod'
+    ActorToken,    // 'actor'
     TraitToken,    // 'trait'
     MoveToken,     // '@move'
     OpaqueToken,   // '@opaque'
