@@ -6,7 +6,8 @@
 // may not take a name one of the copies already has: the copies are names of the
 // extension, as the variants it declares are. A generic base is named with as many
 // type arguments as it has parameters, because the copies are made from its
-// variant templates with the arguments in their place.
+// variant templates with the arguments in their place. And a method or static the
+// extension declares may not take a name its base has, down the whole chain.
 //
 // Name-resolution stage: the copies are made while this enum is resolved. A
 // name-resolution diagnostic stops the compile before type checking, so nothing
@@ -57,4 +58,68 @@ enum Argued extends Colors[i32] {  //~ ErrorArgCount:27 "is not generic"
 
 enum Overargued[T] extends Option[T, T] {  //~ ErrorArgCount:34 "has 1 type parameters, and 2 arguments"
   Extra;
+}
+
+// -------- a name the base has --------
+
+// An extension adds names to its base's and never redeclares or overloads one: its
+// copies of the base's variants answer every name of the base the base's way, so
+// a second declaration would give one name two meanings in one set. Reported at
+// the extension's declaration, whatever kind of member the base's name is.
+enum Tones {
+  pub fn level(self &) i32 {1;}
+  fn make() i32 {2;}
+  Low, High;
+}
+
+// Redeclared with the same signature
+enum Redeclared extends Tones {
+  pub fn level(self &) i32 {3;}   //~ ErrorExtendsOverride:7 "level is already a name of Tones, which Redeclared extends"
+  Mid;
+}
+
+// Overloaded with another
+enum Overloaded extends Tones {
+  pub fn level(self &, n i32) i32 {n;}     //~ ErrorExtendsOverride:7 "never redeclares or overloads one"
+  Mid;
+}
+
+// A base's variant and a base's static function are names of the base as well
+enum Renamed extends Tones {
+  pub fn High(self &) i32 {4;}    //~ ErrorExtendsOverride:7 "High is already a name of Tones"
+  fn make() i32 {5;}              //~ ErrorExtendsOverride:3 "make is already a name of Tones"
+  Mid;
+}
+
+// And so is the comparison every enum is given
+enum Recompared extends Tones {
+  fn `==`(self, other Recompared) Bool {true;}  //~ ErrorExtendsOverride:3 "== is already a name of Tones"
+  Mid;
+}
+
+// Down a chain, a name any level below has: here the middle's own method, and the
+// bottom's, which a generic middle holds only per instance
+enum Tones2 extends Tones {
+  pub fn pitch(self &) i32 {6;}
+  Mid;
+}
+
+enum Tones3 extends Tones2 {
+  pub fn pitch(self &) i32 {7;}   //~ ErrorExtendsOverride:7 "pitch is already a name of Tones2"
+  Top;
+}
+
+enum Box[T] {
+  pub fn low(self &) i32 {1;}
+  Empty;
+}
+
+enum Box2[T] extends Box[T] {
+  pub fn mid(self &) i32 {2;}
+  Soon;
+}
+
+enum Box3[T] extends Box2[T] {
+  pub fn low(self &) i32 {3;}     //~ ErrorExtendsOverride:7 "low is already a name of Box, which Box3 extends"
+  Later;
 }

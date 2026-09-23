@@ -102,8 +102,9 @@ that an extension may add a variant larger than anything its base holds, may dif
 from its base about `@unsized`, and never changes the base's layout: an
 `Option`-shaped base keeps the bare-pointer layout whatever extends it. ▸ **Forbids**
 only what the two still share: the discriminant's type node, so an extension may not
-widen it, and — a narrowing rather than a principle — any member of its own, since a
-requirement declared on the extension would need every copy to implement it.
+widen it, and — narrowings rather than principles — a requirement or a common field
+of its own, since the first would need every copy to implement it and the second
+would move what the copies' methods read.
 
 **An enrichment is inside its base's encapsulation boundary; its own clients are
 not.** It is acting as the base, which is what declaring the base verifies, so it
@@ -287,12 +288,18 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   `extendsbase` like any other base. A **variant** writing it is `ErrorVariantDcl`
   beside the `is` it may not write either: its fields are its enum's, so it has no
   representation of its own to stand on.
-- **An enum that extends another declares variants and nothing else.** A field, a
-  method, a static, a macro or a mixin in its body is `ErrorEnumExtends` where it is
-  written, and so is an integer type for its tag: its layout is its base's, shared
-  with the variants it takes from it, so no discriminant is synthesized here either.
-  A body with no variant at all is the same code, reported at the declaration's own
-  name — the block has ended by then, so the lexer is on whatever follows it.
+- **An enum that extends another declares, beside its variants, only what can be
+  given to its copies of its base's variants**: a method with a body, a static
+  function and a static (`parseIsEnumExtension`). The rest is `ErrorEnumExtends`
+  where it is written, each with its reason: a **requirement** (a method with no
+  body), because the copies were written against the base and have no body to meet
+  it in; a **common field**, because it would move what the copies' methods read;
+  a **discriminant** field, or an integer type for its tag, because its layout is
+  its base's, shared with the variants it takes from it, so no discriminant is
+  synthesized here either; and a **macro** or a **mixin**, which reach no copy
+  (`parseEnumExtensionMember`). A body with no variant at all is the same code,
+  reported at the declaration's own name — the block has ended by then, so the
+  lexer is on whatever follows it.
 - A field's trailing `use` clause (`parseFoldClause`) is stored on the field,
   with an alias per listed name positioned at the item; **nothing enters the
   namespace at parse**, since whether a name is a field or a method is not
@@ -421,7 +428,9 @@ inherited member bare, exactly as it names the type's own.
    in the field list by then is a field this type declared — which is what
    `extends` forbids.
 4c. **An enum's `extends` is taken here, whole** (`structEnumWrittenBase`,
-   `structEnumSeedVariants`): the base is resolved and demanded as at 4a, each of its
+   `structEnumOwnNamesFresh`, `structEnumSeedVariants`): the base is resolved and
+   demanded as at 4a, a method or static this enum declares under a name the base
+   has, anywhere down its chain, is `ErrorExtendsOverride`, each of its
    variants is demanded and **copied** (`structEnumCopyVariant`) to the front of this
    enum's `derived` list and bound in its namespace, this enum's own are numbered from
    the base's last value, its `==` is made, and the base stands as a **mixin
@@ -479,7 +488,10 @@ inherited member bare, exactly as it names the type's own.
    field whose type is not a declaration yet — an instance of a generic — waits
    for the instance's type check.
 10. Resolve the methods declared here — only those; the clones arrived resolved
-    in the trait's scope, and this walk cannot be repeated on a node.
+    in the trait's scope, and this walk cannot be repeated on a node. **An enum
+    extending one that is not generic then clones its own bodied methods into its
+    copies** (`structEnumCloneOwnMethods`), which arrived resolved at step 4c with
+    their enum's members already spliced; see "An enum extending an enum".
 11. Pop, and mark `NameResolved`.
 
 **Reached by demand.** `structNameResDemand` is the one place name resolution
@@ -960,10 +972,51 @@ name the same enum.
 ▸ **What the refusals buy is the exhaustive match.** A base-typed value can only hold
 one of the base's own variants, so a match naming those is exhaustive with no `else`.
 
+**An extension's own methods reach every variant of its set, its copies included.**
+A method with a body declared on the extension is a default of the extension, as a
+base's is of the base, so each of its variants has its own clone, with `Self` the
+variant; the base's variants never see it, and neither does the base. The variants
+it adds get it the ordinary way, from their enum's placeholder (`structInheritTrait`).
+The copies need it given, and when depends on how the copy was made:
+
+- **Over a base that is not generic**, a copy arrives resolved with its enum's
+  members already spliced, and its `traits` names the extension, so nothing would
+  splice the extension's in. `structEnumCloneOwnMethods` clones them in at the end
+  of the extension's name resolution, once its own methods are resolved, under a
+  clone state whose `Self` is the copy. That holds for a generic extension of such
+  a base too (`Tagged[T] extends Shape`): its copies are templates, and an instance
+  of one clones what it holds, so the method's `T` is substituted by name like the
+  rest of the copy.
+- **Over a generic base**, a copy is made from the base's variant template, which
+  was never spliced, so it is spliced at its own type check from the extension —
+  or the extension's instance — that its `basetrait` names, and the extension's
+  methods come with the base's, as they do for an added variant. Nothing new.
+
+A name the copy already answers is left to it, as a variant's own method wins over
+its enum's default: a base's variant may have declared the name itself, and keeps
+its own in every copy of it. Called through a reference to the extension, the
+variant's clone runs, selected by the tag, exactly as for a base's method. **That
+the clone is in every copy is what keeps the vtable whole**: `structMakeVtable`
+gives every public method of the extension a slot and prewires one implementation
+per variant, in tag order, and `structAddVtableImpl` adds nothing for a variant that
+lacks the method, which would shift every later variant's vtable onto the wrong
+tag. A static function and a static stay the extension's own, as a base's do: named
+bare inside its braces and qualified from outside, and never cloned.
+
+**A name the base has is not declared again** (`structEnumOwnNamesFresh`,
+`ErrorExtendsOverride`, at step 4c, before the copies are made): not a method's —
+whether redeclared or overloaded — and not a variant's, a static's or a static
+function's, nor the `==` every enum is given. The copies answer each such name the
+base's way, so a second declaration would give it two meanings in one set. The
+check walks the whole chain rather than the base's namespace alone, because a
+generic base holds what it inherits from its own generic base only per instance.
+
 **What an extension may not do**, all `ErrorEnumExtends` unless named otherwise:
-declare a member of its own — a field, method, static, macro or mixin — since a
-requirement declared there would need every copy to implement it, which is not built;
-declare a discriminant or the integer type one is laid out in; extend anything but an
+declare a requirement, since a copy has no body to meet it in; declare a common
+field, since it would move what the copies' methods read; declare a macro or a
+mixin, neither of which reaches a copy; declare a name its base has, down the chain
+(`ErrorExtendsOverride`); declare a discriminant or the integer type one is laid out
+in; extend anything but an
 enum, or itself; name a generic base without its arguments, or with the wrong number
 (`ErrorArgCount`); pin a value the set already holds (`ErrorDupTag`) or one too wide
 for the shared discriminant (`ErrorTagWidth`); or add a variant named as a copy is
@@ -975,9 +1028,20 @@ pinned value past the discriminant's width is truncated where it is stored.
 **A chain — an extension of an extension — needs no mechanism of its own.** It
 works by the same demand: the middle enum makes its copies while it is resolved,
 and they are what the outer one copies, so every copy keeps the tag value it was
-declared with and the whole chain shares the bottom enum's discriminant. It is
-claimed language (refenum.html, "Extending an extension"), plain and generic, and
-enum-extends pins it.
+declared with and the whole chain shares the bottom enum's discriminant. A method
+the middle declares comes along the same way: its copies and the variants it adds
+have it by the time the outer enum copies them. It is claimed language
+(refenum.html, "Extending an extension"), plain and generic, and enum-extends pins
+it.
+
+⚠ **Two kinds of the base's names are not bare in an extension's own bodies.** A
+generic base's methods: `Crate3[T] extends Crate2[T]` reaches `Crate2`'s through
+`self.`, since a generic base's members arrive per instance, at type check — the
+same as a member inherited from an instance of a generic trait. And a base's static
+function or static, generic or not: statics are not inherited (`structInheritTrait`
+clones methods only), so they are no names of the extension, and its bodies write
+`Colors.make()`. A variant the extension adds was in the same position before the
+extension could declare bodies of its own.
 
 ## Flow
 

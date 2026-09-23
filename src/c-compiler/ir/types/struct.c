@@ -1062,12 +1062,13 @@ static void structEnumSeedVariants(NameResState *pstate, StructNode *node, Struc
             StructNode *copy = structEnumCopyVariant(node, base, variant, basecall);
             nodesAdd(&node->derived, (INode*)copy);
             nexttag = copy->tagnbr + 1;
-            // One namespace holds an enum's variants, fields and methods. An
-            // extension declares no field or method, so what a copy can meet here
-            // is a variant the extension declared under the same name -- or, down a
-            // chain, another copy, where the base already reported its own clash.
+            // One namespace holds an enum's variants, fields and methods. What a copy
+            // can meet here is a variant the extension declared under the same name
+            // -- or, down a chain, another copy, where the base already reported its
+            // own clash. A method or static the extension named after a base variant
+            // was reported before the copies were made (structEnumOwnNamesFresh).
             INode *prior = namespaceAdd(&node->namespace, copy->namesym, (INode*)copy);
-            if (prior && prior->instnode != (INode*)node)
+            if (prior && prior->tag == StructTag && prior->instnode != (INode*)node)
                 errorMsgNode(prior, ErrorDupName,
                     "%s is already a variant of %s, copied from %s: an extension holds its base's variants under their own names.",
                     &copy->namesym->namestr, &node->namesym->namestr, &base->namesym->namestr);
@@ -1089,6 +1090,90 @@ static void structEnumSeedVariants(NameResState *pstate, StructNode *node, Struc
         }
         nodesAdd(&node->derived, *nodesp);
         nexttag = variant->tagnbr + 1;
+    }
+}
+
+// The enum a resolved enum's 'extends' names, generic or not: the template of a
+// base written with its arguments. NULL for an enum that extends nothing.
+static StructNode *structEnumWrittenBaseDcl(StructNode *node) {
+    if (!(node->flags & EnumType) || node->extendsbase == NULL)
+        return NULL;
+    INode *written = node->extendsbase;
+    if (written->tag == FnCallTag)
+        written = ((FnCallNode*)written)->objfn;
+    if (!isTypeNode(written) || written->tag == FnCallTag)
+        return NULL;
+    INode *dcl = itypeGetTypeDcl(written);
+    return (dcl != NULL && dcl->tag == StructTag && (dcl->flags & EnumType)) ? (StructNode*)dcl : NULL;
+}
+
+// Report a name this extension declares that its base already has, anywhere down
+// the chain it extends. An extension adds to what its base declares and neither
+// redeclares nor overloads it: the copies of the base's variants already answer
+// the name the base's way, so a second declaration would make one value answer it
+// two ways, depending on which enum's copy it was. Reported before the copies are
+// made, so a copy named like a method here is not reported again.
+//
+// Down the chain and not only one level, because a generic enum's namespace holds
+// what it inherits only per instance: 'Box3[T] extends Box2[T]' reaches Box's
+// methods through Box2's instances, never through the template it names.
+static void structEnumOwnNamesFresh(StructNode *node, StructNode *base) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&node->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag != FnDclTag && (*nodesp)->tag != VarDclTag)
+            continue;
+        Name *names[2];
+        names[0] = inodeGetName(*nodesp);
+        names[1] = (*nodesp)->tag == FnDclTag ? ((FnDclNode*)*nodesp)->overloadsym : NULL;
+        int n;
+        for (n = 0; n < 2; ++n) {
+            if (names[n] == NULL || names[n] == anonName)
+                continue;
+            StructNode *level;
+            for (level = base; level; level = structEnumWrittenBaseDcl(level)) {
+                if (namespaceFind(&level->namespace, names[n]) == NULL)
+                    continue;
+                errorMsgNode(*nodesp, ErrorExtendsOverride,
+                    "%s is already a name of %s, which %s extends: an extension adds names to its base's and never redeclares or overloads one, so a name of the base means one thing in every enum that extends it.",
+                    &names[n]->namestr, &level->namesym->namestr, &node->namesym->namestr);
+                break;
+            }
+        }
+    }
+}
+
+// Give each copy of the base's variants the methods this extension declares, cloned
+// as an enum's methods are into the variants it declares itself (structInheritTrait):
+// resolved, with the copy as 'Self'. The variants it adds get them that way; a copy
+// arrives resolved with its enum's members already spliced in, so it is given this
+// enum's here, once they are resolved. The base never sees them: they are cloned
+// into the extension's copies and not into the variants they were copied from.
+//
+// A name the copy already answers is left to it, as a variant's own method is left
+// to the variant it is declared in: a base's variant may have declared it. A name
+// the base's own members have was refused before the copies were made.
+//
+// Only where the copies were spliced when made: a copy of a generic base's variant
+// template is spliced at its own type check, where the extension's methods reach it
+// as they reach the variants the extension adds.
+static void structEnumCloneOwnMethods(StructNode *node, uint32_t ownmethods) {
+    uint32_t copies = structEnumCopyCount(node);
+    uint32_t pos;
+    for (pos = 0; pos < copies; ++pos) {
+        StructNode *copy = (StructNode*)nodesGet(node->derived, pos);
+        uint32_t cnt;
+        for (cnt = 0; cnt < ownmethods; ++cnt) {
+            FnDclNode *meth = (FnDclNode*)nodelistGet(&node->nodelist, cnt);
+            if (meth->tag != FnDclTag || !(meth->flags & FlagMethFld) || meth->value == NULL)
+                continue;
+            if (iNsTypeFindFnField((INsTypeNode*)copy, meth->namesym) != NULL)
+                continue;
+            CloneState cstate;
+            clonePushState(&cstate, (INode*)copy, (INode*)copy, 0, NULL, NULL);
+            iNsTypeAddFn((INsTypeNode*)copy, (FnDclNode*)cloneNode(&cstate, (INode*)meth));
+            clonePopState();
+        }
     }
 }
 
@@ -1469,8 +1554,9 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     }
 
     // An enum's 'extends' names the enum whose variants this one copies into its
-    // own set. Resolved and demanded here for the reason a base trait is -- the
-    // base's variants and fields have to be complete before they are copied -- and
+    // own set, and gives its copies the methods it declares once those are
+    // resolved, at the end (structEnumCloneOwnMethods). Resolved and demanded here
+    // for the reason a base trait is -- the base's variants and fields have to be complete before they are copied -- and
     // then the base stands as a placeholder at position 0, exactly as a variant's
     // enum does, so that the base's discriminant and common fields are spliced in by
     // the one mechanism. Before the namespace is hooked below, so the copies are
@@ -1483,6 +1569,7 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     // check replaces the placeholder's type with the instance and 'extendsbase'
     // with it separately. The copies are made here all the same, from the base's
     // variant templates (structEnumCopyVariant).
+    int clonecopies = 0;
     if (node->flags & EnumType) {
         if (node->extendsbase) {
             inodeNameRes(pstate, &node->extendsbase);
@@ -1497,7 +1584,9 @@ void structNameRes(NameResState *pstate, StructNode *node) {
             if (enumbase == NULL)
                 node->extendsbase = NULL;   // Reported; nothing downstream asks again
             else {
+                structEnumOwnNamesFresh(node, enumbase);
                 structEnumSeedVariants(pstate, node, enumbase, basecall);
+                clonecopies = basecall == NULL;
                 structEnumAddEquality(node);
                 FieldDclNode *mixin = newFieldDclNode(enumbase->namesym, (INode*)immPerm);
                 inodeLexCopy((INode*)mixin, node->extendsbase);
@@ -1652,6 +1741,8 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     for (cnt = 0; cnt < ownmethods; ++cnt) {
         inodeNameRes(pstate, &nodelistGet(&node->nodelist, cnt));
     }
+    if (clonecopies)
+        structEnumCloneOwnMethods(node, ownmethods);
     nametblHookPop();
     if (enclosing)
         nametblHookPop();

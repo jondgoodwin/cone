@@ -191,13 +191,13 @@ enum ErrorCode {
     // 'extends': enriching a concrete type with methods
     ErrorExtendsBase = 1101,    // What an 'extends' names cannot serve as a concrete base
     ErrorExtendsField = 1102,   // A field declared by a type that extends a concrete base, which may add none
-    ErrorExtendsOverride = 1103,// A member of the base redeclared by the enriching type, which may not override
+    ErrorExtendsOverride = 1103,// A name of the base redeclared by the enriching type or enum extension, which may not override
 
     // A type body's 'use': folding a sibling enrichment's methods in
     ErrorUseSibling = 1104,     // A type-body 'use' naming what is not a sibling of this type, or a member that does not fold from one
 
     // 'extends': an enum adding variants to another enum's variant set
-    ErrorEnumExtends = 1105,    // What an enum's 'extends' names cannot be its base, or what such an enum's body may not declare beside variants
+    ErrorEnumExtends = 1105,    // What an enum's 'extends' names cannot be its base, or what such an enum's body may not declare: a requirement, a common field, a discriminant, a macro or a mixin
     // 1106 was ErrorEnumExtendsSize; an extension's variants are copies with their own layout, so an added one may be any size
 
     // 'mod': the declaration that names a file's module
