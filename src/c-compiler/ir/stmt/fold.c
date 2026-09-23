@@ -225,3 +225,153 @@ void foldGlobalExpand(NameResState *pstate, ModuleNode *mod, VarDclNode *global)
     for (nodesFor(fold->items, cnt, itemp))
         foldGlobalItem(mod, global, src, (AliasDclNode*)*itemp);
 }
+
+// ---- A module's 'use' of an enum -------------------------------------------
+//
+// An enum's variants are names of the ENUM, so 'Colors.Red' is the spelling
+// everywhere, the declaring module included. 'use Colors;' is how a module asks
+// for them bare: each variant it admits becomes an alias in the module's
+// namespace, reached with no receiver -- the binding an import's fold makes --
+// private to the module unless the statement says 'use pub'.
+
+// Create a module's 'use' of an enum, positioned at its 'use'
+EnumUseNode *newEnumUseNode() {
+    EnumUseNode *node;
+    newNode(node, EnumUseNode, EnumUseTag);
+    node->source = NULL;
+    node->fold = newFoldClause();
+    return node;
+}
+
+// Serialize a module's 'use' of an enum
+void enumUsePrint(EnumUseNode *node) {
+    inodeFprint(node->fold->ispub ? "use pub " : "use ");
+    inodePrintNode(node->source);
+}
+
+// Is this entry of an enum's namespace one of its variants? The enum's own
+// 'Self' is a struct too, and it is the enum.
+static int foldIsVariant(StructNode *src, INode *member) {
+    return member->tag == StructTag && member != (INode*)src;
+}
+
+// Enter one variant in the module's namespace, under its alias's spelling
+static void foldEnumUseBind(ModuleNode *mod, FoldClause *fold, AliasDclNode *alias, INode *variant) {
+    ((NameUseNode*)alias->target)->dclnode = variant;
+    // Reached with no receiver, and as visible as the statement says: a fold is
+    // private to the module that made it unless it is 'use pub'
+    alias->flags &= 0xffff - (FlagPub | FlagMethFld);
+    if (fold->ispub)
+        alias->flags |= FlagPub;
+    INode *prior = namespaceAdd(&mod->namespace, alias->namesym, (INode*)alias);
+    if (prior) {
+        errorMsgNode((INode*)alias, ErrorDupName,
+            "%s is already a name of this module. A folded name must be unique: rename it with 'as', or leave it out with 'but'.",
+            &alias->namesym->namestr);
+        return;
+    }
+    nametblHookNode(alias->namesym, (INode*)alias);
+}
+
+// Check a variant a clause names -- one it lists, or one its 'but' leaves out --
+// returning it, or NULL once what is wrong with the name is reported
+static INode *foldEnumUseVariant(StructNode *src, INode *at, Name *name, char *what) {
+    INode *found = namespaceFind(&src->namespace, name);
+    if (found == NULL) {
+        errorMsgNode(at, ErrorNoMbr, "%s has no variant named %s to %s.",
+            &src->namesym->namestr, &name->namestr, what);
+        return NULL;
+    }
+    // A field or a method is reached through a value, and a static through the
+    // enum; neither is a name the module could hold on its own
+    if (!foldIsVariant(src, found)) {
+        errorMsgNode(at, ErrorBadFold,
+            "%s is a member of %s, not one of its variants. A module's 'use' folds in variants and nothing else of an enum.",
+            &name->namestr, &src->namesym->namestr);
+        return NULL;
+    }
+    return found;
+}
+
+// Expand a module's 'use' of an enum: resolve the enum it names, then bind each
+// variant it admits in the module's namespace.
+void foldEnumUseExpand(NameResState *pstate, ModuleNode *mod, EnumUseNode *use) {
+    FoldClause *fold = use->fold;
+    if (fold->expanded)
+        return;
+    fold->expanded = 1;
+
+    // The enum is named as a type is, and a path is collapsed like any other
+    inodeNameRes(pstate, &use->source);
+    if (!isNameUseNode(use->source)) {
+        errorMsgNode(use->source, ErrorUseEnum,
+            "A module's 'use' names an enum declaration. A generic enum's variants are folded in by naming the enum alone, as in 'use Option;'.");
+        return;
+    }
+    NameUseNode *srcname = (NameUseNode*)use->source;
+    if (srcname->dclnode == NULL)
+        return;     // reported where the name is written
+    // A typedef's target is resolved with the module's other nodes, after every
+    // fold, so what it names is not known here. Refused rather than resolved out
+    // of turn: the enum is named by its own name.
+    INode *binding = srcname->dclnode;
+    while (binding && binding->tag == AliasDclTag && !(binding->flags & FlagTypeAlias))
+        binding = ((NameUseNode*)((AliasDclNode*)binding)->target)->dclnode;
+    if (binding && binding->tag == AliasDclTag) {
+        errorMsgNode(use->source, ErrorUseEnum,
+            "%s is a typedef. A module's 'use' names the enum declaration itself.",
+            &srcname->namesym->namestr);
+        return;
+    }
+    INode *dcl = nameUseGetDcl(srcname);
+    if (dcl == NULL || dcl->tag != StructTag || !(dcl->flags & EnumType)) {
+        errorMsgNode(use->source, ErrorUseEnum,
+            "%s is not an enum. A module's 'use' folds an enum's variants in as names of the module, and nothing else has variants to fold.",
+            &srcname->namesym->namestr);
+        return;
+    }
+    StructNode *src = (StructNode*)dcl;
+
+    // A 'pub' fold publishes the variants under this module's names, which may
+    // not widen them past the enum they belong to
+    if (fold->ispub && inodeIsPrivate((INode*)src)) {
+        errorMsgNode(fold->at, ErrorNotPublic,
+            "A 'use pub' makes the variants of %s public names of this module, and %s is private. Declare it 'pub', or fold privately.",
+            &src->namesym->namestr, &src->namesym->namestr);
+        return;
+    }
+
+    INode **nodesp;
+    uint32_t cnt;
+    if (fold->star) {
+        if (fold->excludes) {
+            for (nodesFor(fold->excludes, cnt, nodesp))
+                foldEnumUseVariant(src, *nodesp, ((NameUseNode*)*nodesp)->namesym, "leave out");
+        }
+        // Only a variant another module may name folds from there. A variant is
+        // as visible as its enum, and a private enum is not reached from outside
+        // at all, so this passes nothing over unless something else is wrong.
+        ModuleNode *srcmod = dclInfoGetModule((INode*)src);
+        int crossmod = srcmod != NULL && srcmod != mod;
+        namespaceFor(&src->namespace) {
+            NameNode *nn = &src->namespace.namenodes[__i];
+            if (nn->name == NULL || !foldIsVariant(src, nn->node) || foldExcluded(fold, nn->name))
+                continue;
+            if (crossmod && inodeIsPrivate(nn->node))
+                continue;
+            NameUseNode *target = newMemberUseNode(nn->name);
+            inodeLexCopy((INode*)target, fold->at);
+            AliasDclNode *alias = newNameAliasDclNode(nn->name, (INode*)target);
+            inodeLexCopy((INode*)alias, fold->at);
+            foldEnumUseBind(mod, fold, alias, nn->node);
+        }
+        return;
+    }
+    for (nodesFor(fold->items, cnt, nodesp)) {
+        AliasDclNode *alias = (AliasDclNode*)*nodesp;
+        INode *variant = foldEnumUseVariant(src, (INode*)alias,
+            ((NameUseNode*)alias->target)->namesym, "fold in");
+        if (variant)
+            foldEnumUseBind(mod, fold, alias, variant);
+    }
+}

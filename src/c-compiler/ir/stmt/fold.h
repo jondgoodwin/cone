@@ -44,4 +44,23 @@ void foldStarItems(Namespace *ns, Name *srcname, FoldClause *fold, int admit);
 // when name resolution asks
 void foldGlobalExpand(NameResState *pstate, ModuleNode *mod, VarDclNode *global);
 
+// A module's 'use' of an enum: 'use Colors;', 'use pub Colors Red, Green as
+// Verde;'. It folds the enum's variants in as names of the module, and nothing
+// else of the enum. It is a statement of the module rather than a clause on a
+// declaration, so it is a node of its own, held on the module's 'enumuses' list
+// beside its imports and never in its walks: it is neither a field nor a
+// declaration, and what it declares is bindings, made in the fold pass.
+typedef struct EnumUseNode {
+    INodeHdr;
+    INode *source;      // The enum, as written: a name or a path, resolved when the fold is expanded
+    FoldClause *fold;   // Which variants, under which spellings; 'ispub' from 'use pub'
+} EnumUseNode;
+
+EnumUseNode *newEnumUseNode();
+void enumUsePrint(EnumUseNode *node);
+
+// Expand a module's 'use' of an enum into the module's namespace, hooking each
+// variant it folds in. Run by modFoldNames, after the imports and the globals
+void foldEnumUseExpand(NameResState *pstate, ModuleNode *mod, EnumUseNode *use);
+
 #endif

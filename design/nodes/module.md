@@ -59,8 +59,9 @@ name its diagnostics are reported against — `corelib`, `stdio`.
 | `foldersym` | the module's folder, when that folder's designated file drew it; NULL for a module that is one file. It is what a `mod` declaration's name is checked against, and what says a folder was swept |
 | `dclinfo` | the declaration facts — [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols". `owner` is **the parent module for a submodule**, and NULL for the root, for a module that is one file and for one an `import` reached. **The root is the module without `DclNamesChain`**: it has a name and contributes it to no symbol. `DclPrivate` is set on a submodule that does not write `pub`, and on no other module, because a module with no parent has nothing to be visible outside of |
 | `imports` | `ImportNode`s only, held apart from `nodes` so folding can run before anything else resolves |
-| `nodes` | every declaration the module owns, in source order. This is what printing and generation iterate |
-| `namespace` | every name *visible* in the module: what it declares, **the module an import bound and every name an import folded in, each an `AliasDclNode` carrying the import's own visibility**, what a global's `use` clause folded in, **each submodule its subfolders drew**, and — when a folder or a `mod` declaration named it — the module's own name |
+| `enumuses` | `EnumUseNode`s only — every `use` of an enum written at module scope — held apart from `nodes` for the same reason, and because the statement is neither a declaration nor a field: what it declares is bindings, made in the fold pass |
+| `nodes` | every declaration the module owns, in source order, **an enum's variants among them**: a variant is walked, checked and generated as the module's, though its name is bound in its enum. This is what printing and generation iterate |
+| `namespace` | every name *visible* in the module: what it declares, **the module an import bound and every name an import folded in, each an `AliasDclNode` carrying the import's own visibility**, what a global's `use` clause folded in, **the variants a `use` of an enum folded in**, **each submodule its subfolders drew**, and — when a folder or a `mod` declaration named it — the module's own name. **Not an enum's variants by themselves**: those are names of the enum |
 | `flags` | `FlagGenMod`; `FlagModDcl` for a module a `mod` declaration named; `FlagPub` for a submodule its declaration opened |
 | `foldstate` | how far `modFoldNames` has got: not begun, running, done. *Running* is what stops a cycle of re-exports going round |
 
@@ -73,8 +74,8 @@ prints, generates or folds the module into itself.
 **`nodes` and `namespace` are not the same set, and the difference is exactly
 where folding lives.** A folded name is added to `namespace` and never to
 `nodes`, so the receiving module can resolve it but does not own, print or
-generate it. That holds for both folds a module has — a wildcard import's, and a
-global's `use` clause. **A fold transits**, because `importNameRes` reads the
+generate it. That holds for all three folds a module has — a wildcard import's, a
+global's `use` clause, and a `use` of an enum. **A fold transits**, because `importNameRes` reads the
 source module's `namespace`: it carries across every *public* binding, whether
 the source declared that name or folded it in.
 
@@ -90,6 +91,13 @@ clause, so there is still no selective name list, no rename and no exclusion.
 public too** — one keyword for every binding the import creates, which is `pub`
 with the one meaning it has everywhere.
 
+**`EnumUseNode`** (`ir/stmt/fold.h`) is a module's `use Colors;`: `source`, the
+enum as written — a name or a path, resolved only when the fold is expanded — and
+`fold`, the `FoldClause` of what it admits, parsed by the grammar a type body's
+sibling `use` has (`parseUseEnum`). Its `ispub` comes from `use pub`; a `pub`
+*before* the statement is `ErrorBadPub`, naming the spelling, because the
+bindings are the fold's and every fold says its visibility the one way.
+
 ## Constructors
 
 | Function | Note |
@@ -99,6 +107,7 @@ with the one meaning it has everywhere.
 | `pgmFindFile` / `pgmSetFile` | the file registry, by path. **This is what makes a file read once** however many modules name it, and what makes it belong to one module |
 | `newModuleNode` | `namesym`, `filesym` and `foldersym` NULL, `dclinfo` cleared, empty `imports`, `nodes` and `namespace` |
 | `newImportNode` | `module` NULL, `fold` NULL |
+| `newEnumUseNode` | `source` NULL, an empty `fold` positioned at the `use` |
 
 ## Parse
 
@@ -402,8 +411,9 @@ are resolved in the order they were loaded — so a module resolved earlier, the
 root among them, looked a folded name up before it was there, and one resolved
 later found it.
 
-`modFoldNames` runs two passes: the module's `imports`, then every global
-carrying a `use` clause. `modNameRes` then hooks the namespace, runs the type
+`modFoldNames` runs three passes: the module's `imports`, then every global
+carrying a `use` clause, then every `use` of an enum on `enumuses` — last, so the
+enum may be named through anything the first two folded in. `modNameRes` then hooks the namespace, runs the type
 alias pass and the everything-else pass, and unhooks. **The fold passes go first
 for one reason** — a name folded in, and a name a `typedef` binds, must be in
 place before any declaration that uses it is resolved, and a module's names do
@@ -417,6 +427,15 @@ of the name is lowered to `global.name`. The rules, the diagnostics and why it i
 cheaper than a field's fold are in
 [Names and Namespaces](../phases/names-and-namespaces.md), "Folding through a
 global", which owns them.
+
+**A `use` of an enum is a module's third fold**, and the whole of it is
+`foldEnumUseExpand` (`ir/stmt/fold.c`). It name resolves the source, which must
+be an enum declaration (`ErrorUseEnum` otherwise, an instance of a generic enum
+included), and binds each variant it admits as an `AliasDclNode` in the module's
+namespace — the no-receiver binding an import's fold makes, private unless the
+statement is `use pub`. It admits variants and nothing else of the enum. The rules
+are in [Names and Namespaces](../phases/names-and-namespaces.md), "Folding an
+enum's variants into a module".
 
 **A type alias's target is resolved in a pass of its own, and then checked for a
 cycle.** A forward reference to a `typedef` is ordinary, so the target has to be
@@ -945,9 +964,6 @@ annotation on a reference names is a type.
   there, and dependency-ordered initialization across modules. `initpure`
   appears nowhere in the source. Region modules with global state — arenas,
   pools, collectors — cannot work without it.
-- **Whether folding transits is unanswered.** If A folds B's public names and Z
-  folds A's, whether Z sees B's names is posed in `modules-vs-types.md` and left
-  as "option on which". A prelude for a core library is exactly this question.
 - **Dependency fan-out is unmeasured.** Section GC decides what reaches the
   binary; it does not decide what must resolve at link time. Archive member
   extraction precedes it, so calling one function from a package pulls its whole

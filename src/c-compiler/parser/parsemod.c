@@ -606,6 +606,20 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             }
             break;
 
+        // 'use' folds an enum's variants in as names of this module. The
+        // bindings it makes are the fold's, so their visibility is the fold's
+        // to say, and it says it the way every fold clause does: 'use pub'.
+        // A 'pub' before the statement would be a second spelling of that.
+        case UseToken: {
+            if (pubflag)
+                errorMsgLex(ErrorBadPub,
+                    "A 'use' is made public by the fold it declares: write 'use pub', as in 'use pub Colors;'.");
+            parseBadStatic(staticflag);
+            EnumUseNode *use = parseUseEnum(parse);
+            modAddNode(mod, NULL, (INode*)use);
+            break;
+        }
+
         // 'typedef' declares an alias: the same binding record a fold makes,
         // with a type expression as its target. 'pub' is its own bit on that
         // binding, as it is on any declaration.

@@ -37,6 +37,11 @@ enum Shape {
   }
 }
 
+// A variant is a name of its enum, 'Shape.Circle', and a module that wants the
+// variants bare says so with 'use'. Every enum in this program is followed by
+// one; "naming a variant" below writes them qualified instead.
+use Shape;
+
 // An enum with no common field at all, whose variants hold different numbers of
 // fields of different types: the tag alone tells them apart, and every variant
 // is padded out to the size of the largest.
@@ -52,6 +57,7 @@ enum Signal {
     pub rateY f32;
   }
 }
+use Signal;
 
 // -------- the payload-free form --------
 
@@ -61,6 +67,7 @@ enum Signal {
 enum PhoneType {
   Home, Work, Mobile;
 }
+use PhoneType;
 
 // The integer type an enum lays its tag values out in, with the values written
 // rather than assigned -- which is what lines an enum up with an external
@@ -72,6 +79,7 @@ enum Colors u32 {
   Blue  = 0x0000FF,
   Cyan;
 }
+use Colors;
 
 // An enum compares for equivalence and never for order: which variant a value
 // holds is what a comparison can answer, and declaration order is not a
@@ -123,6 +131,7 @@ enum Signals u32 {
     fn weight(self &) i32 {n * 100;}
   }
 }
+use Signals;
 
 // Dispatch through a plain reference, which is where the compiler inserts the
 // coercion to a virtual reference and therefore where the tag selects a vtable
@@ -171,6 +180,7 @@ enum Reading {
 
   pub fn scaled(self &) i32 {scale * 2;}
 }
+use Reading;
 
 fn commonMembersAnywhere() {
   mut s = Spot[3, 7];
@@ -198,6 +208,7 @@ enum Aligned {
   struct Small { pub n i32; }
   struct Large { pub a i64; pub b i64; }
 }
+use Aligned;
 
 fn widthOf(a &Aligned) i32 {
   match a {
@@ -229,6 +240,7 @@ enum @unsized Packet {
   struct Ping {}
   struct Payload { pub a i64; pub b i64; pub c i64; }
 }
+use Packet;
 
 fn packetSize(p &Packet) i32 {
   match p {
@@ -265,10 +277,14 @@ fn unsizedEnum() {
 enum Suit {
   Clubs, Diamonds, Hearts, Spades;
 }
+use Suit;
 
+// An extension's own namespace holds the variants it adds; the ones it shares are
+// its base's, and folded by the base's 'use' above
 enum CardKind extends Suit {
   Joker, Back;
 }
+use CardKind;
 
 // Exhaustive over the base's own variants, with no arm for the added ones
 fn suitRank(s Suit) i32 {
@@ -304,11 +320,13 @@ enum Message {
   pub struct Text { pub len i32; }
   pub struct Blob { pub a i64; }
 }
+use Message;
 
 enum MoreMessages extends Message {
   pub struct Empty;
   pub struct Pair { pub x i32; pub y i32; }
 }
+use MoreMessages;
 
 fn messageSize(m &Message) i32 {
   match m {
@@ -331,6 +349,7 @@ fn moreMessageSize(m &MoreMessages) i32 {
 enum @unsized MorePackets extends Packet {
   struct Wide { pub a i64; pub b i64; pub c i64; pub d i64; }
 }
+use MorePackets;
 
 fn morePacketSize(p &MorePackets) i32 {
   match p {
@@ -649,7 +668,9 @@ fn valueMatching() {
 // -------- Option and Result --------
 
 // Option[T] and Result[T,E] are enums declared by the core library, so they
-// match exactly like an enum declared here.
+// match exactly like an enum declared here. Their variants are bare with no
+// 'use' written here: core writes 'use pub Option;' and 'use pub Result;', and
+// every module's automatic import of core carries a public fold on.
 fn unwrapOr(o Option[i32], dflt i32) i32 {
   match o {
     case imm s Some[i32] {s.value;}
@@ -712,6 +733,125 @@ fn optionAndResult() {
   show("option-nested-outer", unwrapNested(nested, 99));
   imm nestedEmpty Option[Option[i32]] = Some[Option[i32]][None[i32][]];
   show("option-nested-inner-none", unwrapNested(nestedEmpty, 99));
+}
+
+// -------- naming a variant --------
+
+// A variant is a name of its enum, so 'Enum.Variant' reaches it wherever the enum
+// can be named, with no 'use' at all. Signs is folded by nothing in this program.
+enum Signs {
+  Plus, Minus;
+}
+
+// Two enums may each have a variant of one spelling, since each is a name of its
+// own enum. Only a fold of both into one module would collide.
+enum KeyEvent {
+  Quit, Press;
+}
+
+enum WindowEvent {
+  Quit, Resize;
+}
+
+fn signOf(s Signs) i32 {
+  match s {
+    case is Signs.Plus {1;}
+    case is Signs.Minus {-1i32;}
+  }
+}
+
+fn qualifiedArea(s &Shape) i32 {
+  match s {
+    case imm c &Shape.Circle {c.radius * c.radius * 3;}
+    case imm r &Shape.Rect {r.w * r.h;}
+  }
+}
+
+fn quits(k KeyEvent, w WindowEvent) i32 {
+  mut n = 0;
+  if k is KeyEvent.Quit {n = n + 1;}
+  if w is WindowEvent.Quit {n = n + 10;}
+  n;
+}
+
+// A generic enum's variant, reached through the enum and instantiated as the bare
+// name is
+fn unwrapQualified(o Option[i32], dflt i32) i32 {
+  match o {
+    case imm s Option.Some[i32] {s.value;}
+    case imm n Option.None[i32] {dflt;}
+  }
+}
+
+fn namingVariants() {
+  show("qualified-construct-and-match", signOf(Signs.Minus[]));
+  imm c Shape = Shape.Circle[1, 2];
+  imm r Shape = Shape.Rect[2, 3, 4];
+  show("qualified-pattern-circle", qualifiedArea(&c));
+  show("qualified-pattern-rect", qualifiedArea(&r));
+  show("same-spelling-in-two-enums", quits(KeyEvent.Quit[], WindowEvent.Resize[]));
+  show("same-spelling-other-enum", quits(KeyEvent.Press[], WindowEvent.Quit[]));
+  show("qualified-generic-variant", unwrapQualified(Option.Some[5], 99));
+  show("qualified-generic-empty", unwrapQualified(Option.None[i32][], 99));
+  show("qualified-result", signedResult(Result.Error[i32, i32][6]));
+}
+
+// -------- folding some of the variants --------
+
+// A 'use' may admit some of an enum's variants rather than all of them, rename
+// one with 'as', spread its list over lines in a block, or take every variant
+// 'but' some. What it leaves out is still reached through the enum.
+enum Compass {
+  North, East, South, West;
+}
+use Compass North as Up, South;
+
+enum Level {
+  Low, Mid, High;
+}
+use Level {
+  Low,
+  High as Top,
+};
+
+enum Weather {
+  Sun, Rain, Snow;
+}
+use Weather but Snow;
+
+fn heading(c Compass) i32 {
+  match c {
+    case is Up {1;}
+    case is Compass.East {2;}
+    case is South {3;}
+    else {4;}
+  }
+}
+
+fn height(l Level) i32 {
+  match l {
+    case is Low {1;}
+    case is Level.Mid {2;}
+    case is Top {3;}
+  }
+}
+
+fn wetness(w Weather) i32 {
+  match w {
+    case is Sun {0;}
+    case is Rain {1;}
+    case is Weather.Snow {2;}
+  }
+}
+
+fn foldingSome() {
+  show("folded-under-a-new-name", heading(Up[]));
+  show("folded-by-its-own-name", heading(South[]));
+  show("left-out-reached-through-the-enum", heading(Compass.West[]));
+  show("folded-in-a-block", height(Top[]));
+  show("left-out-of-a-block", height(Level.Mid[]));
+  show("folded-all-but", wetness(Rain[]));
+  show("the-but-reached-through-the-enum", wetness(Weather.Snow[]));
 }
 
 // -------- interaction with the constructs below this tier --------
@@ -791,6 +931,7 @@ enum Held {
     n i32;
   }
 }
+use Held;
 
 // An enum may reach itself through a reference, which is how a tree is written.
 // The enum's size is the largest of its variants, so a variant holding it by
@@ -811,7 +952,8 @@ enum Tree {
   }
 }
 
-fn forkDepth(f &Fork) i32 {
+// Named through its enum, which is the spelling wherever no 'use' is in force
+fn forkDepth(f &Tree.Fork) i32 {
   f.left.depth + f.right.depth;
 }
 
@@ -828,6 +970,8 @@ fn main() i32 {
   aliasMatching();
   valueMatching();
   optionAndResult();
+  namingVariants();
+  foldingSome();
   interactions();
   0i32;
 }

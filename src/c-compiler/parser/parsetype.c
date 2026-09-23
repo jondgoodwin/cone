@@ -277,6 +277,22 @@ FoldClause *parseFoldClause(ParseState *parse, int maypub) {
     return fold;
 }
 
+// Parse what a 'use' statement admits of the source it has just named, and the
+// end of the statement. Naming the source is what asks for its members, so every
+// one of them is the default and there is no second spelling for it: '*' is
+// refused with 'starmsg'. A name after the source starts a list.
+static void parseUseAdmits(ParseState *parse, FoldClause *fold, char *starmsg) {
+    fold->star = 1;
+    if (lexIsToken(StarToken)) {
+        errorMsgLex(ErrorBadFold, "%s", starmsg);
+        lexNextToken();
+    }
+    else if (lexIsToken(IdentToken))
+        fold->star = 0;
+    parseFoldItems(parse, fold, 0);
+    parseEndOfStatement();
+}
+
 // Parse a type body's 'use' clause, with the lexer on the 'use': the sibling
 // enrichment it folds in, then what it admits of it. Held in a field-like node,
 // as 'mixin' and a further 'is' are, because that is what carries a type
@@ -296,17 +312,34 @@ static FieldDclNode *parseUseSibling(ParseState *parse) {
         lexNextToken();
     }
     use->vtype = parseTypeName(parse);
-    // Naming the sibling is what asks for its members, so every one of them is
-    // the default and there is no second spelling for it
-    fold->star = 1;
-    if (lexIsToken(StarToken)) {
-        errorMsgLex(ErrorBadFold, "A type body's 'use' brings in every member of what it names already; '*' says nothing more.");
+    parseUseAdmits(parse, fold,
+        "A type body's 'use' brings in every member of what it names already; '*' says nothing more.");
+    return use;
+}
+
+// Parse a module's 'use' statement, with the lexer on the 'use': the enum whose
+// variants it folds in as names of the module, then which of them. What follows
+// the enum is a type body's 'use' exactly -- every variant by default, a list
+// with 'as', a block, or every variant 'but' some.
+//
+// 'use pub' makes the bindings public names of this module, so a module that
+// imports this one with '.*' receives them too. It is how core makes Some, None,
+// Ok and Error bare in every program.
+//
+// The enum is a type expression, a path included, and nothing about what it
+// names is known until name resolution; so the statement is held as written and
+// expanded in the module's fold pass (foldEnumUseExpand).
+EnumUseNode *parseUseEnum(ParseState *parse) {
+    EnumUseNode *use = newEnumUseNode();
+    FoldClause *fold = use->fold;
+    lexNextToken();
+    if (lexIsToken(PubToken)) {
+        fold->ispub = 1;
         lexNextToken();
     }
-    else if (lexIsToken(IdentToken))
-        fold->star = 0;
-    parseFoldItems(parse, fold, 0);
-    parseEndOfStatement();
+    use->source = parseTypeName(parse);
+    parseUseAdmits(parse, fold,
+        "A module's 'use' brings in every variant of the enum it names already; '*' says nothing more.");
     return use;
 }
 
@@ -342,7 +375,7 @@ static FieldDclNode *parseFieldDclBody(ParseState *parse, FieldDclNode *fldnode)
 
 
 // Join a variant to the enum that declares it: the closed-type flags, the
-// base link back to the enum, the tag number, and the module binding.
+// base link back to the enum, the tag number, and its name.
 //
 // The enum owns the layout, so the variant states none of it. Its tag number is
 // assigned ascending from zero across the body unless the author pins one, after
@@ -418,10 +451,23 @@ static void parseAddVariant(ParseState *parse, StructNode *strnode, StructNode *
     if (!deferred)
         *nexttag = substruct->tagnbr + 1;
 
-    modAddNode(parse->mod, inodeGetName((INode*)substruct), (INode*)substruct);
-    // Bound in the module, but declared inside the enum: the variant's symbols
-    // are spelled after the enum, so the enum is its owner
+    // A MODULE NODE, BUT NOT A MODULE NAME. The variant stays on the module's
+    // list, so the module's walks resolve, check and generate it as they always
+    // have; what changes is where its name is bound, which is the enum's
+    // namespace. So it is reached as 'Colors.Red', two enums may each have a
+    // 'Quit', and a module that wants the name bare says so with 'use Colors;'.
+    modAddNode(parse->mod, NULL, (INode*)substruct);
+    // Declared inside the enum: the variant's symbols are spelled after the enum,
+    // so the enum is its owner
     dclInfoJoin((INode*)substruct, (INode*)strnode);
+    // One namespace for the enum's variants, fields and methods, so a variant may
+    // not share a spelling with any of them. A member declared later in the body
+    // reports the clash where it joins.
+    Name *name = inodeGetName((INode*)substruct);
+    if (name != anonName && namespaceAdd(&strnode->namespace, name, (INode*)substruct) != NULL)
+        errorMsgNode((INode*)substruct, ErrorDupName,
+            "%s is already a name of %s: a variant shares its enum's namespace with the enum's fields and methods.",
+            &name->namestr, &strnode->namesym->namestr);
 }
 
 // An enum that extends another declares variants and nothing else. Report what it

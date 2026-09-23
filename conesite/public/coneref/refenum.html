@@ -13,9 +13,9 @@
 
     <div class="text">
 	<p style="margin-left: 40px;"><i>Note: All of this capability is implemented except:
-		comparing two values of an enum whose variants carry fields, and reaching a variant by a
-		name qualified with its enum's. The examples that will not compile today are marked where
-		they appear.</i></p>
+		comparing two values of an enum whose variants carry fields, and naming a variant bare in a
+		match's pattern without a <span class="pre">use</span>. The examples that will not compile
+		today are marked where they appear.</i></p>
 
 	<p>An <span class="pre">enum</span> declares a <b>closed set of variants</b>: a value of the
 		enum is exactly one of them, and the whole set is written inside the declaration, so
@@ -135,19 +135,47 @@ enum Aligned {
 	<h3>Initialization</h3>
 	<p>A value is built using a constructor for one of the variants:</p>
 <pre>
-mut event = QuitEvent[timestamp];
-oddval = KeyEvent[timestamp, 's'];
-imm phone = Work[];
+mut event = Event.QuitEvent[timestamp];
+oddval = Event.KeyEvent[timestamp, 's'];
+imm phone = PhoneType.Work[];
 </pre>
 	<p>Notice that the constructor supplies a value for every common field, and never for the tag:
 		that one is settled by which variant was named.</p>
-	<p>The variants are part of the module's namespace rather than the enum's, so they are named
-		without qualifying them.</p>
-	<p style="margin-left: 40px;"><i>Note: a variant will move into its enum's namespace, reached as
-		<span class="pre">Event.KeyEvent</span> and folded into a module deliberately with
-		<span class="pre">use</span>, so that two enums each declaring a <span class="pre">Quit</span>
-		do not crowd a namespace neither of them was asked to share. That waits on the
-		<span class="pre">use</span> that folds names into a module.</i></p>
+
+	<h3 id="naming">Naming a variant</h3>
+	<p>A variant is a name of its enum, not of the module around it, so it is reached through the
+		enum: <span class="pre">Event.KeyEvent</span>, <span class="pre">PhoneType.Work</span>. Two enums
+		may therefore each declare a <span class="pre">Quit</span> without either crowding a namespace
+		neither of them was asked to share. Inside the enum's own methods its variants are named
+		bare.</p>
+	<p>A module that wants an enum's variants as names of its own says so with
+		<span class="pre">use</span>, which names the enum and then, optionally, which variants:</p>
+<pre>
+use PhoneType;                         // Home, Work and Mobile, bare
+use Event KeyEvent as Key, QuitEvent;  // only these, one of them renamed
+use Point {XyPoint, AngPoint};         // a list may be spread over lines in braces
+use Colors but Blue;                   // every variant but one
+</pre>
+	<p>After <span class="pre">use PhoneType;</span>, <span class="pre">Work[]</span> means
+		<span class="pre">PhoneType.Work[]</span>. The module that declares the enum is no exception:
+		it writes <span class="pre">use</span> like any other module to have the variants bare. A
+		<span class="pre">use</span> folds variants and nothing else of the enum, and a variant it
+		leaves out is still reached through the enum. The enum may be named through a module,
+		<span class="pre">use shapes.Colors;</span>. A folded name must not be one the module already
+		has, whatever brought that one in; two enums that each have a <span class="pre">Quit</span>
+		are both folded by renaming one or leaving it out.</p>
+	<p>The names a <span class="pre">use</span> makes belong to the module that wrote it and are
+		private to it. Written <span class="pre">use pub</span>, they are public names of the module:
+		another module reaches them through it, <span class="pre">shapes.Red</span>, and an import of
+		the module with <span class="pre">.*</span> brings them in bare. That is how
+		<span class="pre">Some</span>, <span class="pre">None</span>, <span class="pre">Ok</span> and
+		<span class="pre">Error</span> are bare in every program: the core library writes
+		<span class="pre">use pub Option;</span> and <span class="pre">use pub Result;</span>, and every
+		module imports it with <span class="pre">.*</span>.</p>
+	<p style="margin-left: 40px;"><i>Note: a match knows the enum of the value it matches, so a
+		variant named in one of its patterns is meant to need no <span class="pre">use</span>. That is
+		not implemented: today a pattern names a variant through a <span class="pre">use</span> or
+		through its enum, as any other code does.</i></p>
 
 	<h3>Copying</h3>
 	<p>A value may be passed around, by copy, just like any other value. This is possible because
@@ -196,7 +224,7 @@ enum Number {
 	<p>Where every variant is empty, the value <i>is</i> the tag, so the comparison is exactly a tag
 		comparison:</p>
 <pre>
-if phone == Mobile[] { ... }
+if phone == PhoneType.Mobile[] { ... }
 </pre>
 	<p style="margin-left: 40px;"><i>Note: where a variant carries fields, comparing two values would
 		have to compare those fields as well, and Cone has no comparison of a struct's contents for
@@ -248,13 +276,16 @@ enum RichColors extends Colors {
 </pre>
 	<p>The base's variants come first in the extension's set and <b>keep their tag values</b> there, so
 		one variant is one thing however it is reached. A value built as
-		<span class="pre">Green[]</span> is a value of <span class="pre">Colors</span> and a value of
+		<span class="pre">Colors.Green[]</span> is a value of <span class="pre">Colors</span> and a value of
 		<span class="pre">RichColors</span>, and a match on either recovers it:</p>
 <pre>
-imm plain Colors = Green[];
-imm rich RichColors = Green[];    // the same variant, the same tag value
-imm added RichColors = Magenta[];
+imm plain Colors = Colors.Green[];
+imm rich RichColors = Colors.Green[];    // the same variant, the same tag value
+imm added RichColors = RichColors.Magenta[];
 </pre>
+	<p>An extension's own names are the variants it adds. The ones it shares are the base's, named
+		through the base, so a module wanting all five bare writes both
+		<span class="pre">use Colors;</span> and <span class="pre">use RichColors;</span>.</p>
 	<p><b>No substitutability runs between a base enum and its extension, in either direction.</b>
 		They are two distinct types, and the compiler enforces it: neither a value nor a reference nor
 		a virtual reference of one may stand where the other is expected. What a variant belongs to is

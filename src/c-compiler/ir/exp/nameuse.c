@@ -275,7 +275,18 @@ void nameUseTypeCheckType(TypeCheckState *pstate, NameUseNode **namep) {
     // name resolves to the same declaration either way. What such a type cannot
     // answer is its size, and that is asked by whatever wants to hold a value of
     // it -- a field, a variable, an array element -- not here.
-    inodeTypeCheckAny(pstate, &(*namep)->dclnode);
+    NameUseNode *name = *namep;
+    inodeTypeCheckAny(pstate, &name->dclnode);
+    // A type a fold brought in -- a variant a module's 'use' of its enum folded,
+    // or a type an import folded -- is named through an alias, which has nothing
+    // of its own to check. The type it stands for is what has to be analyzed, as
+    // it is when the type is named directly. A typedef's alias checks its own
+    // target, which is a type expression and reaches here by itself.
+    if (name->dclnode->tag == AliasDclTag && !(name->dclnode->flags & FlagTypeAlias)) {
+        INode *dcl = aliasDclResolve(name->dclnode);
+        if (dcl)
+            inodeTypeCheckAny(pstate, &dcl);
+    }
 }
 
 // Ensure variable has a usable value

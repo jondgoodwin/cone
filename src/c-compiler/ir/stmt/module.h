@@ -24,6 +24,7 @@ typedef struct ModuleNode {
     Name *filesym;           // The name derived from the module's filename
     Name *foldersym;         // The module's folder, when its designated file drew it; else NULL
     Nodes *imports;          // All import nodes
+    Nodes *enumuses;         // Every 'use' of an enum written at module scope, expanded by modFoldNames
     Nodes *nodes;            // All parsed nodes owned by the module
     Namespace namespace;     // The module's named nodes, owned or "used"
     DclInfo dclinfo;         // Owner and the facts that decide the linker symbols it prefixes
@@ -42,7 +43,8 @@ void modAddFn(ModuleNode *mod, FnDclNode *fnnode);
 void modHook(ModuleNode *oldmod, ModuleNode *newmod);
 
 // Put every name this module holds by FOLDING into its namespace: what its
-// imports admit, and what its globals' 'use' clauses do. Ahead of any module's
+// imports admit, what its globals' 'use' clauses do, and the variants its
+// 'use' statements fold in from enums. Ahead of any module's
 // name resolution, and dependency-first, so that what a name reaches through a
 // qualifier does not depend on the order the files were loaded in
 void modFoldNames(NameResState *pstate, ModuleNode *mod);
