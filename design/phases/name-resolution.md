@@ -133,12 +133,12 @@ functions included.
 
 | Before | After | Function |
 | --- | --- | --- |
-| `TupleTag` | `TTupleTag` / `VTupleTag`; mixed is `ErrorBadElems` and the tag is left alone | `ttupleNameRes` |
+| `TupleTag` | `TTupleTag` / `VTupleTag`; mixed is `ErrorBadElems` and the tag is left alone; a generic parameter abstains, and all abstaining is `VTupleTag` | `ttupleNameRes` |
 | `StarTag` | `PtrTag` / `DerefTag` | `ptrNameRes` |
 | `ArrayTag` | `ArrayLitTag` when the first element is not a type | `arrayNameRes` |
 | `RefTag` | `BorrowTag` / `AllocateTag`, by region | `refNameRes` |
 | `ArrayRefTag` | `ArrayBorrowTag` / `ArrayAllocTag` | `arrayRefNameRes` |
-| `QuesTag` | `FnCallTag` for `Option[T]` | `allocateQuesNameRes` |
+| `QuesTag` | `FnCallTag` for `Option[T]`, including a generic parameter's `?T` | `allocateQuesNameRes` |
 | `FnCallTag` that is a namespace hop | the bound name use, or a plain call of it | `fnCallNameResPath` |
 
 The last is the path collapse, and it is a *replacement* rather than a retag:
@@ -151,6 +151,11 @@ Every one of these hinges on `isTypeNode`. For a name use it asks the
 declaration the name was bound to, and an unlowered `FnCallNode` naming a
 generic struct counts as a type (`itypeIsGenericType`). Without the latter,
 `*Box[i64]` reads as a dereference and `[2; Box[i64]]` as an array literal.
+A use of a generic parameter is not a type either, so in a generic's template
+these votes are provisional: the instance's clone takes the tuple, array,
+reference and pointer votes again, and the tuple and `?` votes, whose losing
+side is an error, let such an operand abstain (`inodeIsProvisionalType`) —
+[generic](../nodes/generic.md), "phase boundary".
 
 **A reference in a pattern stays a reference type** whatever its referent's
 name means for now: `refNameRes` asks `castPatternPending` too, because a

@@ -110,6 +110,15 @@ if (!isTypeNode(node->vtexp)) {
 A value means this is a *constructor*, and the region picks which. The array
 forms produce `ArrayBorrowTag`/`ArrayAllocTag`.
 
+**In a generic's template the answer is provisional.** `&T` asks the question
+of a use of a generic parameter, which is not a type (`nameUseGroup` puts
+`GenVarDclTag` in the meta group), so the template holds a borrow. Templates
+are never type checked, so nothing reads that; `cloneRefNode` decides again once
+the operand is the type argument, flipping a borrow or allocate whose original
+operand was not a type and whose clone is back to `RefTag`/`ArrayRefTag`.
+`cloneStarNode` does the same for `*T`. The inner clone runs first, which is
+what carries `&&T`.
+
 **A virtual reference may not be borrowed or allocated** — `ErrorBadTerm`,
 "Coerce from a regular ref." There is nothing to construct *from*: the fat
 pointer's second word is a vtable, selected either by scanning the trait's

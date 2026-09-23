@@ -215,6 +215,8 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
         // For tag-based trait/struct, instantiate the base trait and all its variants
         // Begin by instantiating the base trait
         StructNode *basetrait = structGetBaseTrait((StructNode*)nodetoclone);
+        Nodes *basememo = basetrait->genericinfo->memonodes;
+        int firstinstance = basememo == NULL || basememo->used == 0;
         INode *instrait = genericInstantiate(pstate, srcgencall, (INode*)basetrait, basetrait->genericinfo, name);
         if (basetrait == (StructNode*)nodetoclone)
             retinstance = instrait;
@@ -227,6 +229,15 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
             if (*nodesp == (INode*)nodetoclone)
                 retinstance = instance;
         }
+
+        // The discriminant's width follows the largest tag value, and the instance
+        // was type checked above before it had any variants to measure it by. It
+        // is settled once per generic: the discriminant node is shared by the
+        // template and every instance, and their tag values are the template's,
+        // so a later instance could only report a declared integer type's
+        // overflow a second time.
+        if (firstinstance)
+            structSetTagWidth((StructNode*)instrait);
     }
     genericInstantiateExit();
 

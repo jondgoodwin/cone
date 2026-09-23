@@ -21,6 +21,12 @@ INode *cloneStarNode(CloneState *cstate, StarNode *node) {
     StarNode *newnode = memAllocBlk(sizeof(StarNode));
     memcpy(newnode, node, sizeof(StarNode));
     newnode->vtexp = cloneNode(cstate, node->vtexp);
+    // ptrNameRes asked whether the operand is a type, and in a template '*T'
+    // asked it of a generic parameter, which is not one, so the template holds
+    // a dereference. Cloning stands in for name resolution on an instance:
+    // decide again now that the operand is the type argument (see cloneRefNode).
+    if (newnode->tag == DerefTag && !isTypeNode(node->vtexp) && isTypeNode(newnode->vtexp))
+        newnode->tag = PtrTag;
     return (INode *)newnode;
 }
 
