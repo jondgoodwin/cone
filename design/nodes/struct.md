@@ -1100,7 +1100,9 @@ privacy boundary (Principles), so `structEnumSeesPrivate` walks from the enum th
 owns the code being checked down `structEnumBaseDcl` looking for the enum the
 receiver's type belongs to. A copy's clone of a base variant's method is owned by
 the copy, whose enum is the extension, so it reaches what the extension's own code
-reaches — the base's variants' privates included. The walk never goes the other way,
+reaches — the base's variants' privates included. So does the extension's own code:
+its method's clone in a copy is owned by the copy, and its static function by the
+extension. The walk never goes the other way,
 so the base does not reach an added variant's privates, and two extensions of one
 base do not reach each other's: the sibling rule an enrichment keeps (Name folding)
 holds here too. enum-privacy and enum-typecheck-privacy pin both directions.
