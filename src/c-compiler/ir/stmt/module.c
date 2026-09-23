@@ -261,7 +261,11 @@ void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod) {
     //
     // Order still does not decide what is analyzed, only when: this loop reaches
     // every declaration, and one already analyzed by demand returns at once.
+    // An enum that extends another holds copies of its base's variants that are
+    // no module's nodes, and they are reached through it.
     for (nodesFor(mod->nodes, cnt, nodesp)) {
         inodeTypeCheckAny(pstate, nodesp);
+        if ((*nodesp)->tag == StructTag)
+            structEnumCheckCopies(pstate, (StructNode*)*nodesp);
     }
 }

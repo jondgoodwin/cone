@@ -341,6 +341,16 @@ void foldEnumUseExpand(NameResState *pstate, ModuleNode *mod, EnumUseNode *use) 
         return;
     }
 
+    // An enum that extends another holds copies of its base's variants, made
+    // while it is resolved, so it is resolved now: every one of its variants
+    // folds, the copies with the ones it declared
+    if (!structEnumDemandSet(pstate, src)) {
+        errorMsgNode(use->source, ErrorCircular,
+            "A 'use' needs the variants of %s, and its resolution is what reached this 'use'.",
+            &src->namesym->namestr);
+        return;
+    }
+
     INode **nodesp;
     uint32_t cnt;
     if (fold->star) {

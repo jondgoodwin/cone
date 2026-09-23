@@ -480,9 +480,12 @@ an import write one is what remains. See
 ## Type check
 
 `modTypeCheck` type checks the imported modules first, then every declaration
-the module owns, in source order. As everywhere in this phase, **order decides
-when a declaration is checked, not whether** — a name reached from elsewhere
-pulls its declaration forward. See [Type Check Phase](../phases/type-check.md).
+the module owns, in source order, and right after an enum that extends another,
+that enum's copies of its base's variants, which the module does not own
+([struct](struct.md), "An enum extending an enum"). As everywhere in this phase,
+**order decides when a declaration is checked, not whether** — a name reached
+from elsewhere pulls its declaration forward. See
+[Type Check Phase](../phases/type-check.md).
 
 **Nothing detects an import cycle.** Reuse by file in the registry stops the
 parser recursing forever, but no phase asserts that module dependencies form a

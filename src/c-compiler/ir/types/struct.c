@@ -712,21 +712,26 @@ StructNode *structExtendsRoot(StructNode *node) {
 
 // ---- 'extends': an enum adding variants to another enum's set --------------
 //
-// An enum declared with 'extends' over another enum takes that enum's variants
-// into its own set, keeping their tag values, and appends its own. So the two
-// carry the same variants at the same tag values and the same layout -- and they
-// are nonetheless TWO DISTINCT TYPES that do not substitute for each other in
-// either direction. The language is in conesite/public/coneref/refenum.html,
-// "Extending an enum"; why the layout is shared while the substitution is
-// forbidden is in design/nodes/struct.md, "An enum extending an enum".
+// An enum declared with 'extends' over another enum holds COPIES of that enum's
+// variants, keeping their tag values, and then its own. So 'RichColors.Red' is a
+// variant of RichColors and 'Colors.Red' a variant of Colors: two declarations,
+// each in one set, each with a layout of its own. The two enums are TWO DISTINCT
+// TYPES that do not substitute for each other in either direction, and a variant
+// is a value of the one enum whose set holds it. The language is in
+// conesite/public/coneref/refenum.html, "Extending an enum"; the mechanism is in
+// design/nodes/struct.md, "An enum extending an enum".
 //
-// What it costs the compiler is the splice an enum already does. The base's
-// variant declarations are SHARED -- the extension's 'derived' list holds the very
-// nodes the base's holds, base's first -- so a variant has one declaration, one
-// tag value and one layout whichever enum it is reached through. The extension's
-// own fields are the base's, spliced in by the placeholder at position 0 exactly
-// as a variant's are, which is what puts the base's discriminant and common
-// fields ahead of every added variant's own.
+// A copy is made the way a generic instance is: the base's variant is resolved
+// first, then cloned, so every name inside it stays bound to what it named in the
+// base's scope and nothing is resolved again in the wrong module. The copy is then
+// made the extension's -- its enum, its owner, its padding -- and bound in the
+// extension's namespace. The extension's own fields are the base's, spliced in by
+// the placeholder at position 0 exactly as a variant's are, which is what puts the
+// base's discriminant and common fields ahead of every added variant's own.
+//
+// A copy is no module's node. Like a generic instance it is reached through what
+// made it: the extension's type check checks it (structTypeCheck), and generation
+// reaches it from the extension (genlGlobalSyms, genlGlobalImpl).
 //
 // 'extendsdcl' stays NULL here, and that is deliberate: it is what
 // structExtendsRoot walks and structExtendsEquiv compares, and those answer which
@@ -742,59 +747,42 @@ StructNode *structEnumBaseDcl(StructNode *node) {
     return (dcl != NULL && dcl->tag == StructTag && (dcl->flags & EnumType)) ? (StructNode*)dcl : NULL;
 }
 
-// Does this enum's variant set include this variant?
-//
-// Membership, not subtyping: a variant belongs to the enum it is declared inside,
-// and to every enum that extends that one, since an extension's set contains its
-// base's. The 'derived' list answers it whole, because an extension's list holds
-// its base's variants -- and so, down a chain, the base's base's.
-int structEnumIncludes(StructNode *enumdcl, INode *variant) {
-    if (!(enumdcl->flags & EnumType) || enumdcl->derived == NULL)
+// How many of this enum's variants are copies of its base's: the first that many
+// of its 'derived' list, and 0 for an enum that extends nothing. They are what the
+// extension's own passes reach and no module's walk does.
+uint32_t structEnumCopyCount(StructNode *node) {
+    StructNode *base = structEnumBaseDcl(node);
+    if (base == NULL || base->derived == NULL || node->derived == NULL)
         return 0;
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodesFor(enumdcl->derived, cnt, nodesp)) {
-        if (*nodesp == variant)
-            return 1;
-    }
-    return 0;
+    return base->derived->used < node->derived->used ? base->derived->used : node->derived->used;
 }
 
-// The enum whose variant set holds both of these variants, or NULL where none
-// does: two variants of one enum answer that enum, and a variant of a base enum
-// beside a variant added by an extension of it answers the EXTENSION, which is the
-// only set that holds them both. What two values of differing variant type have in
-// common, where an 'if' has to infer one type from its branches.
-INode *structEnumSharedSet(INode *type1, INode *type2) {
-    if (type1->tag != StructTag || type2->tag != StructTag)
-        return NULL;
-    StructNode *enum1 = structGetBaseTrait((StructNode*)type1);
-    StructNode *enum2 = structGetBaseTrait((StructNode*)type2);
-    if (enum1 == NULL || enum2 == NULL || enum1 == enum2)
-        return NULL;
-    if (structEnumIncludes(enum1, type2))
-        return (INode*)enum1;
-    if (structEnumIncludes(enum2, type1))
-        return (INode*)enum2;
-    return NULL;
-}
-
-// The type of this enum's discriminant, or NULL where it has none.
+// Resolve an enum that extends another now, wherever its variants are first
+// needed by name: a path 'RichColors.Red', or a module's 'use RichColors;'. Its
+// copies of its base's variants exist only once it is resolved.
 //
-// One node is shared by the enum, every variant of it and every enum that extends
-// it (clone.c), so it is where the facts their layouts must agree on live: the
-// tag's width, and whether the family has an extension in it.
-EnumNode *structEnumTagNode(StructNode *node) {
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodelistFor(&node->fields, cnt, nodesp)) {
-        if (!((*nodesp)->flags & IsTagField))
-            continue;
-        INode *tagtype = itypeGetTypeDcl(((FieldDclNode*)*nodesp)->vtype);
-        if (tagtype->tag == EnumTag)
-            return (EnumNode*)tagtype;
-    }
-    return NULL;
+// The need may arise in the middle of a function body, so the enum is resolved
+// with nothing of the body in force: no block scope, no enclosing type, and its
+// own module's names hooked over whatever the body declared. Returns 0 when the
+// enum is already being resolved, which means the two depend on each other.
+int structEnumDemandSet(NameResState *pstate, StructNode *node) {
+    if (!(node->flags & EnumType) || node->extendsbase == NULL || (node->flags & NameResolved))
+        return 1;
+    if (node->flags & NameResolving)
+        return 0;
+    NameResState dstate = *pstate;
+    dstate.typenode = NULL;
+    dstate.loopblock = NULL;
+    dstate.macromethod = NULL;
+    dstate.scope = 0;
+    ModuleNode *mod = dclInfoGetModule((INode*)node);
+    int samemod = mod != NULL && mod == pstate->mod;
+    if (samemod)
+        modHook(NULL, mod);
+    int done = structNameResDemand(&dstate, node);
+    if (samemod)
+        modHook(mod, NULL);
+    return done;
 }
 
 // May this enum extend the declaration its 'extends' names? Report why not,
@@ -811,34 +799,51 @@ static int structEnumExtendsEligible(StructNode *node, INode *basedcl, INode *at
             &node->namesym->namestr);
         return 0;
     }
-    // An extension's variants are its base's declarations, whose padding is
-    // decided by what the base declared. So the two must agree about it: a
-    // variant cannot be padded to one size in one of the sets and unpadded in
-    // the other.
-    if ((node->flags & SameSize) != (base->flags & SameSize)) {
-        if (base->flags & SameSize)
-            errorMsgNode(at, ErrorEnumExtends,
-                "%s pads its variants to one size and %s shares them, so %s cannot decline the padding. Remove '@unsized'.",
-                &base->namesym->namestr, &node->namesym->namestr, &node->namesym->namestr);
-        else
-            errorMsgNode(at, ErrorEnumExtends,
-                "%s is '@unsized' and %s shares its variants, so %s takes that layout too. Write '@unsized' on %s.",
-                &base->namesym->namestr, &node->namesym->namestr, &node->namesym->namestr, &node->namesym->namestr);
-        return 0;
-    }
     return 1;
 }
 
-// Take the base's variants into this enum's set, ahead of its own, and number its
+// This enum's copy of one of its base's variants, already resolved.
+//
+// Cloned as a generic template is cloned into an instance, with 'Self' inside the
+// copy meaning the copy (cloneStructNode). Then made the extension's: its enum is
+// the extension, which is what its membership, its type check and its layout all
+// follow; it answers the requirements the extension inherited; it is padded or
+// not as the extension says; and its owner is the extension, so its methods'
+// symbols are spelled after the extension and never collide with the base's.
+static StructNode *structEnumCopyVariant(StructNode *node, StructNode *base, StructNode *variant) {
+    CloneState cstate;
+    clonePushState(&cstate, (INode*)node, NULL, 0, NULL, NULL);
+    StructNode *copy = (StructNode*)cloneNode(&cstate, (INode*)variant);
+    clonePopState();
+
+    copy->basetrait = newNameUseFromDclNode((INode*)node, (INode*)variant);
+    if (copy->traits) {
+        INode **traitp;
+        uint32_t traitcnt;
+        for (nodesFor(copy->traits, traitcnt, traitp)) {
+            if (*traitp == (INode*)base)
+                *traitp = (INode*)node;
+        }
+    }
+    copy->flags = (copy->flags & ~SameSize) | (node->flags & SameSize);
+    dclInfoJoin((INode*)copy, (INode*)node);
+    return copy;
+}
+
+// Copy the base's variants into this enum's set, ahead of its own, and number its
 // own from there.
 //
-// The base's variants come FIRST and in the base's order, which is what makes the
-// tag values agree in both sets by construction: numbering runs ascending across
-// the set, so seeding the base's list and continuing from its last value gives
-// every shared variant the value it already had. An added variant may pin a value
-// as any variant may, which resets the numbering from there and is refused where
-// it collides with a value the set already holds.
-static void structEnumSeedVariants(StructNode *node, StructNode *base) {
+// The copies come FIRST and in the base's order, which is what makes the tag
+// values agree in both sets by construction: numbering runs ascending across the
+// set, so copying the base's list and continuing from its last value gives every
+// copy the value its original has. An added variant may pin a value as any variant
+// may, which resets the numbering from there and is refused where it collides with
+// a value the set already holds.
+//
+// Each base variant is resolved first, by demand, so what is copied is complete.
+// A chain works by the same demand: the middle enum makes its own copies while it
+// is resolved, and they are what the outer one copies.
+static void structEnumSeedVariants(NameResState *pstate, StructNode *node, StructNode *base) {
     Nodes *own = node->derived;
     uint32_t basecnt = base->derived ? base->derived->used : 0;
     node->derived = newNodes(basecnt + (own ? own->used : 0) + 2);
@@ -847,8 +852,25 @@ static void structEnumSeedVariants(StructNode *node, StructNode *base) {
     uint32_t nexttag = 0;
     if (base->derived) {
         for (nodesFor(base->derived, cnt, nodesp)) {
-            nodesAdd(&node->derived, *nodesp);
-            nexttag = ((StructNode*)*nodesp)->tagnbr + 1;
+            StructNode *variant = (StructNode*)*nodesp;
+            if (!structNameResDemand(pstate, variant)) {
+                errorMsgNode(node->extendsbase, ErrorCircular,
+                    "Cannot extend %s here: its variant %s is not complete until %s is, so each depends on the other.",
+                    &base->namesym->namestr, &variant->namesym->namestr, &node->namesym->namestr);
+                continue;
+            }
+            StructNode *copy = structEnumCopyVariant(node, base, variant);
+            nodesAdd(&node->derived, (INode*)copy);
+            nexttag = copy->tagnbr + 1;
+            // One namespace holds an enum's variants, fields and methods. An
+            // extension declares no field or method, so what a copy can meet here
+            // is a variant the extension declared under the same name -- or, down a
+            // chain, another copy, where the base already reported its own clash.
+            INode *prior = namespaceAdd(&node->namespace, copy->namesym, (INode*)copy);
+            if (prior && prior->instnode != (INode*)node)
+                errorMsgNode(prior, ErrorDupName,
+                    "%s is already a variant of %s, copied from %s: an extension holds its base's variants under their own names.",
+                    &copy->namesym->namestr, &node->namesym->namestr, &base->namesym->namestr);
         }
     }
     if (own == NULL)
@@ -1193,16 +1215,17 @@ void structNameRes(NameResState *pstate, StructNode *node) {
         }
     }
 
-    // An enum's 'extends' names the enum whose variants join its own set. Resolved
-    // and demanded here for the reason a base trait is -- the base's variants and
-    // fields have to be complete before they are taken -- and then the base stands
-    // as a placeholder at position 0, exactly as a variant's enum does, so that the
-    // base's discriminant and common fields are spliced in by the one mechanism.
+    // An enum's 'extends' names the enum whose variants this one copies into its
+    // own set. Resolved and demanded here for the reason a base trait is -- the
+    // base's variants and fields have to be complete before they are copied -- and
+    // then the base stands as a placeholder at position 0, exactly as a variant's
+    // enum does, so that the base's discriminant and common fields are spliced in by
+    // the one mechanism. Before the namespace is hooked below, so the copies are
+    // names of this enum like the variants it declares.
     //
-    // A generic is left out on purpose and refused rather than deferred: an
-    // instance's variant set is made over per instantiation (meta/generic.c), and
-    // what a shared variant means across two instantiations is a question this
-    // relationship has not been asked yet.
+    // A generic is refused on either side of the clause: a generic enum's copies
+    // would be made from its variant templates with the written arguments
+    // substituted, which is not built.
     if (node->flags & EnumType) {
         if (node->extendsbase) {
             inodeNameRes(pstate, &node->extendsbase);
@@ -1222,11 +1245,8 @@ void structNameRes(NameResState *pstate, StructNode *node) {
             if (enumbase == NULL)
                 node->extendsbase = NULL;   // Reported; nothing downstream asks again
             else {
-                structEnumSeedVariants(node, enumbase);
+                structEnumSeedVariants(pstate, node, enumbase);
                 structEnumAddEquality(node);
-                EnumNode *tagnode = structEnumTagNode(enumbase);
-                if (tagnode)
-                    tagnode->extended = 1;
                 FieldDclNode *mixin = newFieldDclNode(enumbase->namesym, (INode*)immPerm);
                 inodeLexCopy((INode*)mixin, node->extendsbase);
                 mixin->flags |= IsMixin;
@@ -1729,8 +1749,9 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
 
     // An enum this one extends is type checked first: the discriminant's width is
     // settled there, and this enum shares the node it is settled on. Name
-    // resolution took the base's variants and members already, so there is nothing
-    // left to take here.
+    // resolution copied the base's variants and took its members already, so there
+    // is nothing left to take here; the copies are checked after this enum, by
+    // structEnumCheckCopies.
     StructNode *enumbase = structEnumBaseDcl(node);
     if (enumbase) {
         INode *basedcl = (INode*)enumbase;
@@ -1947,6 +1968,21 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     pstate->typenode = svtypenode;
 }
 
+// Type check an extension's copies of its base's variants. They are no module's
+// nodes, so the module walk reaches them through the extension, right after it.
+//
+// Not from the extension's own type check, which is often demanded from inside a
+// variant's: a variant the extension declares checks its enum first. Checking the
+// copies there would check their method bodies nested inside that variant's check,
+// and a body that builds the variant by value would find it still in flight. A
+// copy a use reaches earlier is checked then, and returns here.
+void structEnumCheckCopies(TypeCheckState *pstate, StructNode *node) {
+    uint32_t copies = structEnumCopyCount(node);
+    uint32_t pos;
+    for (pos = 0; pos < copies; ++pos)
+        inodeTypeCheckAny(pstate, &nodesGet(node->derived, pos));
+}
+
 // Add a vtable implementation to a base struct's vtable
 // Return 1 if it successfully type matches, 0 if not
 int structAddVtableImpl(StructNode *basenode, StructNode *strnode) {
@@ -2159,14 +2195,24 @@ TypeCompare structMatches(StructNode *to, INode *fromdcl, SubtypeConstraint cons
         }
     }
 
-    // A variant belongs to the enum it is declared inside AND to every enum that
-    // extends that one, since an extension's set holds its base's variants. The
-    // walk above follows 'basetrait', which names the enum the variant was
-    // declared inside and knows nothing of an extension, so membership in an
-    // extension is answered here. By value it wants the padding, exactly as the
-    // walk above does.
-    if ((to->flags & EnumType) && (to->flags & SameSize) && structEnumIncludes(to, fromdcl))
-        return CastSubtype;
+    // An enum's values are its own variants and nothing else. A variant's enum is
+    // the one its 'basetrait' names -- for an extension's copy of a base variant,
+    // the extension -- so a variant the walk above did not reach is not a value of
+    // this enum, whatever its shape. Refused here rather than left to the
+    // structural test below, which would say yes to a variant of a base enum or of
+    // an extension of this one: the discriminant is one shared node and the common
+    // fields are clones, so the prefix matches. An '@unsized' enum is not walked
+    // above, and it asks the same question of its variants by reference.
+    if (to->flags & EnumType) {
+        StructNode *super = (StructNode *)fromdcl;
+        while (super->basetrait) {
+            StructNode *base = (StructNode*)itypeGetTypeDcl(super->basetrait);
+            if (to == base)
+                return constraint == Coercion && !(to->flags & SameSize) ? NoMatch : CastSubtype;
+            super = base;
+        }
+        return NoMatch;
+    }
 
     // If the above test fails, non-ref coercion is not valid
     if (constraint == Coercion)
@@ -2255,12 +2301,6 @@ INode *structFindSuper(INode *type1, INode *type2) {
         && structGetBaseTrait((StructNode*)itypeGetTypeDcl(typ1->basetrait)) == structGetBaseTrait((StructNode*)itypeGetTypeDcl(typ2->basetrait))
         && (typ1->flags & SameSize))
         return typ1->basetrait;
-    // ... or one is a variant of an enum whose set holds the other as well, which
-    // is the case where the two were declared in a base enum and an extension of
-    // it. The extension is the answer: it is the only set that holds both.
-    INode *sharedset = structEnumSharedSet((INode*)typ1, (INode*)typ2);
-    if (sharedset && (typ1->flags & SameSize))
-        return sharedset;
     // ... or one of them is already the other's base. An
     // inferred type in common meets this the moment a third value arrives: two
     // variants widen the type to their trait, and the third is then being
@@ -2287,11 +2327,6 @@ INode *structRefFindSuper(INode *type1, INode *type2) {
     if (typ1->basetrait && typ2->basetrait
         && structGetBaseTrait((StructNode*)itypeGetTypeDcl(typ1->basetrait)) == structGetBaseTrait((StructNode*)itypeGetTypeDcl(typ2->basetrait)))
         return typ1->basetrait;
-    // ... or the two are variants of a base enum and an extension of it; see
-    // structFindSuper. A reference has its own size, so nothing is asked of theirs.
-    INode *sharedset = structEnumSharedSet((INode*)typ1, (INode*)typ2);
-    if (sharedset)
-        return sharedset;
     // ... or one is already the other's base; see structFindSuper.
     // Size is not a requirement here, because a reference has its own.
     if (typ2->basetrait && structGetBaseTrait(typ2) == typ1)

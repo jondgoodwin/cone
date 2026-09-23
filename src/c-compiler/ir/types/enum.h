@@ -17,15 +17,13 @@
 //
 // This node is SHARED rather than cloned (clone.c), so an enum, every variant of
 // it and every enum that extends it read one of these. That is what makes it the
-// place for a layout fact the whole family must agree on: the tag's width, and
-// whether the family has an extension in it at all.
+// place for a layout fact the whole family must agree on: the tag's width.
 typedef struct EnumNode {
     INsTypeNodeHdr;
     Name *namesym;
     INode *underlying;     // The integer type the enum declared, or NULL for none
     uint8_t bytes;         // Width in bytes: 1, 2, 4 or 8
     uint8_t fixedwidth;    // Set when 'underlying' pinned the width, so nothing widens it
-    uint8_t extended;      // Set when an enum extends this one: their variants and layout are shared
 } EnumNode;
 
 // Create a new discriminant type node

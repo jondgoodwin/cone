@@ -1,34 +1,33 @@
 // A base enum and an extension of it are TWO DISTINCT TYPES, and no substitution
-// runs between them in either direction.
+// runs between them in either direction -- not between the two enums, and not
+// between a variant of one and the other enum.
 //
-// This is the half of the relationship that has to be enforced rather than merely
-// documented. Underneath, the two share the variants' declarations, the tag values
-// and the layout -- so an extension's fields are clones of its base's and its
-// members are its base's, which makes the two structurally identical and a
-// structural test say yes in both directions. Every line below is that test being
-// refused.
+// The extension holds copies of its base's variants: RichColors.Red is a variant
+// of RichColors and Colors.Red a variant of Colors, and each is a value of its own
+// enum alone. That has to be enforced rather than merely documented, because the
+// discriminant is one shared node and the common fields are clones, so a
+// structural test would say yes in both directions -- to the two enums, and to a
+// variant of either standing for the other enum. Every line below is that test
+// being refused.
 //
 // It is worth saying why the language refuses it rather than allowing the one
 // direction that is sound. Adding variants to a set makes a SUPERTYPE: every value
-// of the base is a value of the extension, and no value of the extension is a value
-// of the base. That is the reverse of the direction every subtype relationship in
-// Cone runs, and Cone does not take it here -- which is what keeps a match on the
-// base exhaustive over the base's own variants, since a base-typed value can then
-// only ever hold one of them.
+// of the base could be a value of the extension, and no value of the extension is a
+// value of the base. That is the reverse of the direction every subtype
+// relationship in Cone runs, and Cone does not take it here -- which is what keeps
+// a match on the base exhaustive over the base's own variants, since a base-typed
+// value can then only ever hold one of them.
 //
 // Type-check stage: this file parses and resolves cleanly. What an extension may
-// declare is enum-parse-extends, what it may extend is enum-nameres-extends, and
-// the size an added variant may reach is enum-genllvm-extends.
+// declare is enum-parse-extends, and what it may extend is enum-nameres-extends.
 
 enum Colors {
   Red, Green, Blue;
 }
-use Colors;
 
 enum RichColors extends Colors {
   Cyan, Magenta;
 }
-use RichColors;
 
 fn takesBase(c Colors) i32 {1;}
 fn takesExtension(c RichColors) i32 {2;}
@@ -38,8 +37,8 @@ fn takesBaseVirtRef(c &<Colors) i32 {5;}
 
 // Neither enum's values are the other's, by value ...
 fn byValue() {
-  imm rich RichColors = Cyan[];
-  imm plain Colors = Red[];
+  imm rich RichColors = RichColors.Cyan[];
+  imm plain Colors = Colors.Red[];
   imm a Colors = rich;          //~ ErrorInvType:18 "does not match variable's declared type"
   imm b RichColors = plain;     //~ ErrorInvType:22 "does not match variable's declared type"
   imm c = takesBase(rich);      //~ ErrorInvType:21 "does not match declared parameter"
@@ -49,8 +48,8 @@ fn byValue() {
 // ... nor through a reference, which is where a structural prefix would otherwise
 // make one a view of the other
 fn byReference() {
-  imm rich RichColors = Magenta[];
-  imm plain Colors = Blue[];
+  imm rich RichColors = RichColors.Magenta[];
+  imm plain Colors = Colors.Blue[];
   imm a &Colors = &rich;        //~ ErrorInvType:19 "does not match variable's declared type"
   imm b &RichColors = &plain;   //~ ErrorInvType:23 "does not match variable's declared type"
   imm c = takesBaseRef(&rich);  //~ ErrorInvType:24 "does not match declared parameter"
@@ -59,14 +58,51 @@ fn byReference() {
 
 // ... nor through a virtual reference, which is a view of a value too
 fn byVirtualReference() {
-  imm rich RichColors = Cyan[];
+  imm rich RichColors = RichColors.Cyan[];
   imm e = takesBaseVirtRef(&rich);  //~ ErrorInvType:28 "does not match declared parameter"
 }
 
+// A variant is a value of its own enum only. The base's Red is a Colors and not a
+// RichColors; the extension's copy is a RichColors and not a Colors. Both ways, by
+// value and by reference.
+fn membership() {
+  imm a RichColors = Colors.Red[];      //~ ErrorInvType:32 "does not match variable's declared type"
+  imm b Colors = RichColors.Red[];      //~ ErrorInvType:32 "does not match variable's declared type"
+  imm base = Colors.Green[];
+  imm copy = RichColors.Green[];
+  imm c &RichColors = &base;            //~ ErrorInvType:23 "does not match variable's declared type"
+  imm d &Colors = &copy;                //~ ErrorInvType:19 "does not match variable's declared type"
+}
+
+// The same holds where nothing is padded, which is where a structural test on a
+// reference is otherwise the only question asked: neither a copy nor an added
+// variant of the extension is a Packet
+enum @unsized Packet {
+  pub id i32;
+
+  struct Ping {}
+  struct Payload { pub a i64; }
+}
+
+enum @unsized MorePackets extends Packet {
+  struct Wide { pub a i64; pub b i64; }
+}
+
+fn readId(p &Packet) i32 {
+  p.id;
+}
+
+fn unsizedMembership() {
+  imm ping = MorePackets.Ping[1];
+  imm wide = MorePackets.Wide[2, 3i64, 4i64];
+  imm a = readId(&ping);                //~ ErrorInvType:18 "does not match declared parameter"
+  imm b = readId(&wide);                //~ ErrorInvType:18 "does not match declared parameter"
+}
+
 // A tag value an added variant pins must fit the discriminant the base lays its
-// variants out in, because that discriminant is the one the shared variants have.
-// Widening it here would relay out the base's own values for the sake of a set the
-// base knows nothing about.
+// variants out in, because the discriminant's type is one node the two enums
+// share. Widening it here would relay out the base's own values behind it, for
+// the sake of a set the base knows nothing about.
 enum Narrow {
   One, Two;
 }

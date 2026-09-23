@@ -56,8 +56,11 @@ here, before parsing.
 2. **Implementations** — `genlGlobalImpl`, only for modules flagged
    `FlagGenMod`.
 
-Both recurse into a type's method list and into a generic's
-`genericinfo->memonodes`. An uninstantiated generic generates nothing.
+Both recurse into a type's method list, into a generic's
+`genericinfo->memonodes`, and into an enum extension's copies of its base's
+variants, the front of its `derived` list (`structEnumCopyCount`): neither
+instances nor copies are any module's nodes. An uninstantiated generic generates
+nothing.
 
 ### Symbols, linkage and COMDATs
 
@@ -180,11 +183,9 @@ Three shapes, the first two chosen in `genlSetupTaggedTrait`:
 - **Nullable pointer.** Exactly two variants under `SameSize`, one with one
   field and one with two whose second is a pointer-like: **no struct is emitted
   at all**, and the value *is* the pointer. A null pointer is the empty variant.
-  **Declined where an enum in the family is extended**: the layout works only while
-  those two variants are the whole set, and an extension holds the same two variant
-  declarations plus another, for which there is no pointer to be. Asked of the
-  discriminant, which the base, its variants and every extension share, so the answer
-  does not depend on which of them generation reaches first.
+  Each enum decides this for its own set: an extension's variants are copies, so an
+  `Option`-shaped base keeps the layout whatever extends it, and the extension, with
+  a third variant for which there is no pointer to be, is tagged.
 - **Same size.** Each variant is re-emitted as a named struct with `[N x i8]`
   trailing padding to one size: the largest variant's store size, rounded up to
   the strictest alignment of any variant's field, or a byte-aligned largest
@@ -200,13 +201,8 @@ Three shapes, the first two chosen in `genlSetupTaggedTrait`:
     byte 1 beside an `i32` at byte 4 — was lost in the copy. The enum's own
     fields are the discriminant and any common fields, which begin every variant
     at the same offsets, so a common field or the tag is still read by index.
-  - **A variant an enum and an extension of it share is laid out once.** Both list
-    it, so whichever is generated first creates its named struct and fills it, and
-    the other leaves it alone; the memoized `llvmtype` is one slot per variant, and
-    one variant has one layout. **This is the one place the size restriction on an
-    extension is checked** — an added variant larger than the base's largest is
-    `ErrorEnumExtendsSize` — because the padding is only the same from either side
-    while that holds, and a size exists nowhere earlier than here.
+  - **Every variant is in exactly one enum's list**, so an extension's copies are
+    padded to the extension's size and the base's own variants to the base's.
 - **Unpadded**, for an `@unsized` enum: each variant keeps its own size, the
   discriminant still first. Measured, for an empty variant beside one holding
   three `i64`s: `%Ping = { i8, i32 }` and

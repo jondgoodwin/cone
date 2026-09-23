@@ -270,9 +270,7 @@ imm shape &amp;Shape = &amp;someDot;
 		<a href="reftrait.html">trait</a> and structs that are-a it: once a type is reached by
 		reference anyway, there is little left for a closed set to buy. So
 		<span class="pre">@unsized</span> is for the case that is genuinely closed, wants exhaustive
-		matching, and has variants whose sizes differ enough to matter &mdash; and it is what an
-		<b>extensible</b> enum whose variants carry fields is written with, as the next section
-		explains.</p>
+		matching, and has variants whose sizes differ enough to matter.</p>
 
 	<h3 id="extends">Extending an enum</h3>
 	<p>An enum may be declared as an extension of another, adding variants to the ones the base
@@ -286,24 +284,30 @@ enum RichColors extends Colors {
 	Cyan, Magenta;
 }
 </pre>
-	<p>The base's variants come first in the extension's set and <b>keep their tag values</b> there, so
-		one variant is one thing however it is reached. A value built as
-		<span class="pre">Colors.Green[]</span> is a value of <span class="pre">Colors</span> and a value of
-		<span class="pre">RichColors</span>, and a match on either recovers it:</p>
+	<p>The extension has <b>its own copy of each of the base's variants</b>, followed by the ones it
+		adds. So <span class="pre">RichColors</span> has five variants,
+		<span class="pre">RichColors.Red</span>, <span class="pre">RichColors.Green</span>,
+		<span class="pre">RichColors.Blue</span>, <span class="pre">RichColors.Cyan</span> and
+		<span class="pre">RichColors.Magenta</span>, each a type of its own. The copies come first and
+		<b>keep the base's tag values</b>, and each carries whatever the base's variant does: its
+		fields, and its methods.</p>
+	<p>A variant is a value of its own enum and of no other. <span class="pre">Colors.Green</span> is
+		a <span class="pre">Colors</span>; the <span class="pre">RichColors</span> value is
+		<span class="pre">RichColors.Green</span>:</p>
 <pre>
 imm plain Colors = Colors.Green[];
-imm rich RichColors = Colors.Green[];    // the same variant, the same tag value
+imm rich RichColors = RichColors.Green[];     // the extension's own Green
 imm added RichColors = RichColors.Magenta[];
 </pre>
-	<p>An extension's own names are the variants it adds. The ones it shares are the base's, named
-		through the base, so a module wanting all five bare writes both
-		<span class="pre">use Colors;</span> and <span class="pre">use RichColors;</span>. A pattern
-		on a <span class="pre">RichColors</span> names all five bare with neither.</p>
+	<p>All five are names of <span class="pre">RichColors</span>, so <span class="pre">use RichColors;</span>
+		makes all five bare. A module that also folds <span class="pre">Colors</span> in would have two
+		of each name the two enums share, so it chooses with <span class="pre">as</span> or
+		<span class="pre">but</span>. A pattern on a <span class="pre">RichColors</span> names all five
+		bare with neither, and means the extension's own.</p>
 	<p><b>No substitutability runs between a base enum and its extension, in either direction.</b>
 		They are two distinct types, and the compiler enforces it: neither a value nor a reference nor
-		a virtual reference of one may stand where the other is expected. What a variant belongs to is
-		every set it was declared or taken into &mdash; that is membership, not substitution between
-		the two enums.</p>
+		a virtual reference of one may stand where the other is expected, and neither may one's
+		variant.</p>
 	<p>So <b>a match on the base is still exhaustive over the base's own variants</b>, which is the
 		property the whole construct rests on: a value typed as the base can only ever hold one of the
 		base's variants, so a match naming those needs no <span class="pre">else</span>. A match on the
@@ -315,29 +319,23 @@ imm added RichColors = RichColors.Magenta[];
 		take that direction, and the two types stay unrelated.</p>
 
 	<h4>What an extension may declare</h4>
-	<p>An extension declares <b>variants and nothing else</b>. The variants it shares with its base are
-		the base's own declarations, so anything every variant would have to carry &mdash; a common
-		field, a method each variant answers &mdash; belongs on the base, whose common members come
-		along with the variants. Its discriminant is the base's too, so an extension writes neither a
-		tag field nor the integer type tag values are laid out in.</p>
+	<p>An extension declares <b>variants and nothing else</b>. Anything every variant would have to
+		carry &mdash; a common field, a method each variant answers &mdash; belongs on the base, whose
+		common members come along with the variants it copies. Its discriminant is the base's too, so
+		an extension writes neither a tag field nor the integer type tag values are laid out in. An
+		added variant may not take the name of one the extension already has from its base.</p>
 	<p>The base's common members work through the extension exactly as through the base: a common field
 		is readable from a value whose variant is not yet known, a default method is available, and a
 		<a href="#dispatch">requirement</a> dispatches on the variant &mdash; which an added variant
 		must therefore implement, as the base's own variants do.</p>
-	<p>Two restrictions follow from the variants being shared, and both are about padding:</p>
-	<ul>
-		<li>An extension <b>agrees with its base about <span class="pre">@unsized</span></b>: a variant
-			cannot be padded in one of the two sets and unpadded in the other.</li>
-		<li>Where the variants <i>are</i> padded, an extension <b>may not add a variant larger than the
-			base's largest</b>. Every variant is laid out to that size, the shared ones included, so a
-			wider one has nowhere to live.</li>
-	</ul>
-	<p><b>An <span class="pre">@unsized</span> enum has neither restriction</b>, because nothing is
-		padded: an extension of one adds variants of any size at all. That is what makes
-		<span class="pre">@unsized</span> the way to write a payload-carrying enum you intend others to
-		extend.</p>
+	<p><b>Each of the two enums is laid out on its own</b>, since neither holds the other's variants.
+		So extending an enum never changes the base: an <span class="pre">Option</span>-shaped enum
+		of an empty variant and one holding a single reference stays a bare pointer, however many
+		enums extend it. And the base never constrains the extension: an added variant may be larger
+		than anything the base holds, and the two may differ about
+		<span class="pre">@unsized</span>.</p>
 <pre>
-enum @unsized Packet {
+enum Packet {
 	pub id i32;
 
 	struct Ping;
@@ -345,7 +343,7 @@ enum @unsized Packet {
 }
 
 enum @unsized MorePackets extends Packet {
-	struct Wide {pub a i64; pub b i64; pub c i64; pub d i64;}   // larger than either, and free
+	struct Wide {pub a i64; pub b i64; pub c i64; pub d i64;}   // larger than either
 }
 </pre>
 	<p>A tag value pinned by an added variant must still fit the discriminant the base lays its
