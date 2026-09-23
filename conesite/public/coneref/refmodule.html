@@ -18,11 +18,13 @@
 		subfolder holding its own designated file is a submodule of it. A module
 		reaches its own submodules by name, and a
 		<a href="refinclude.html#sister">sister by importing her</a>. A module
+		may <a href="#extends">extend</a> another, reusing its names as
+		its own. A module
 		cannot yet name a declaration of the module that contains it, so what a
 		parent shares downward has to be a module.
 		Modules nested within a source <b>file</b>, module initializers, and
-		a module's abstraction (<span class="pre">mod trait</span>) are not
-		implemented.</i></p>
+		a module's abstraction (<span class="pre">mod trait</span>), and so a
+		module conforming to one, are not implemented.</i></p>
 
 	<p>Many things are given names: variables, functions, types, fields, methods, etc.
 		The collection of all names defined for a scope is called a namespace.
@@ -172,13 +174,94 @@ geometry/
 		<span class="pre">pub</span>. And a submodule cannot name its parent —
 		containment runs one way.</p>
 
+	<h3 id="extends">A module extending a module</h3>
+	<p>A module can be built out of another one: it takes in everything the other
+		declares, and adds its own functionality beside it. The module's
+		declaration names the module it extends:</p>
+<pre>
+mod solids extends shapes;
+
+// area, Point and count are shapes' public names, and now names of solids too;
+// scale is private to shapes, and solids may use it as well
+pub fn volume(w i64, h i64, d i64) i64 {
+  area(w, h) * d * scale();
+}
+</pre>
+	<p>Everything <span class="pre">shapes</span> declares is now a name of
+		<span class="pre">solids</span>, and inside <span class="pre">solids</span> it is
+		written bare. So is every name a <span class="pre">use</span> clause of
+		<span class="pre">shapes</span> folded in: if <span class="pre">shapes</span>
+		writes <span class="pre">import units use metre</span>, then
+		<span class="pre">metre</span> is a name of <span class="pre">solids</span> too.
+		<span class="pre">solids</span> is inside
+		<span class="pre">shapes</span>' boundary, the way a
+		<a href="refinherit.html">type that extends a type</a> is inside its base's,
+		so it reaches <span class="pre">shapes</span>' private names too.</p>
+	<p><b>What <span class="pre">shapes</span> imports stays
+		<span class="pre">shapes</span>'.</b> A module's imports are what it depends on,
+		not what it contains, and each module says for itself what it depends on. So
+		the name <span class="pre">units</span>, which that import binds in
+		<span class="pre">shapes</span>, is not a name of <span class="pre">solids</span>:
+		to write <span class="pre">units.inch</span>, <span class="pre">solids</span>
+		imports <span class="pre">units</span> itself.</p>
+	<p>What <span class="pre">solids</span> shows is what <span class="pre">shapes</span>
+		shows. A public name of <span class="pre">shapes</span> is a public name of
+		<span class="pre">solids</span>: a module that imports
+		<span class="pre">solids</span> reaches it as <span class="pre">solids.area</span>,
+		or bare after <span class="pre">import solids use *</span>, exactly as it reaches
+		what <span class="pre">solids</span> declares itself. A private name of
+		<span class="pre">shapes</span> is private in <span class="pre">solids</span>,
+		and no module outside <span class="pre">solids</span> reaches it through
+		<span class="pre">solids</span>. A chain works the same way: if
+		<span class="pre">shapes</span> extends another module, that module's names
+		reach <span class="pre">solids</span> too, each as visible as it was.</p>
+	<p><b>For a module, extending is inheriting.</b> A module has one instance, so
+		there is nothing to copy: each name is a second name for the same thing, and
+		the function, the type and the global stay <span class="pre">shapes</span>'s.
+		A global changed through <span class="pre">solids.count</span> is the one
+		<span class="pre">shapes.count</span> reads.</p>
+	<p>The module it extends must already be in reach — a sister, found where an
+		import of her would find her, or a module this one imports — and is named by
+		that one name. The rest of the rules:</p>
+	<ul>
+		<li><b>A module extends one module.</b></li>
+		<li><b>It adds and does not redeclare.</b> A declaration spelled like one of the
+			extended module's names, public or private, is an error, as it is for a
+			<a href="refinherit.html">type that extends a type</a>: one name would
+			otherwise mean two things. That includes a name the extended module folded
+			in with a <span class="pre">use</span> clause, but not the name of a module
+			it imports, which is not one of the names it passes on.</li>
+		<li><b><span class="pre">extends</span> brings names, not the module's own
+			name.</b> <span class="pre">shapes</span> is a name of
+			<span class="pre">solids</span> only if <span class="pre">solids</span>
+			imports it.</li>
+		<li>A module may not extend itself, a module it contains, or its parent, and a
+			chain of <span class="pre">extends</span> may not come back round.</li>
+		<li><span class="pre">extends</span> names a module to reuse. A module
+			conforming to a module's abstraction —
+			<span class="pre">mod arena extends Region</span>, with
+			<span class="pre">Region</span> a <span class="pre">mod trait</span> — is a
+			different reading, and is not implemented.</li>
+	</ul>
+
 	<h3>Name rules</h3>
 	<p>Module names are:</p>
 	<ul>
 		<li><b>unique</b>. no two items in a module may have the same name.
 			Several functions may nonetheless share one
 			<a href="reffunc.html#overload">overload name</a>, which is itself
-			a single name in the module that maps to those functions.</li>
+			a single name in the module that maps to those functions.
+			A module may not bring one name in twice, even for the same item: listing
+			a name twice, writing the same <span class="pre">use</span> twice,
+			importing a module twice, or importing a module and also listing it
+			through another module that re-exports it, is an error.
+			What a module never wrote is different. When a name arrives by a
+			wildcard <span class="pre">use *</span>, by <span class="pre">extends</span>,
+			or by the automatic import of core, and it is the same item the name
+			already has, it is not two items: when two wildcard imports each
+			re-export the same function, or a module that extends this one hands
+			this one's own names back, the name is bound once, and it is public if
+			either route made it public.</li>
 		<li><b>order-independent</b>. One can reference functions, variables,
 			or types whose names are not defined until later in the module.
 			The only exception to this are permissions and regions whose

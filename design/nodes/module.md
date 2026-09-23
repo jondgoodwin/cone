@@ -61,9 +61,11 @@ name its diagnostics are reported against — `corelib`, `stdio`.
 | `imports` | `ImportNode`s only, held apart from `nodes` so folding can run before anything else resolves |
 | `enumuses` | `EnumUseNode`s only — every `use` of an enum written at module scope — held apart from `nodes` for the same reason, and because the statement is neither a declaration nor a field: what it declares is bindings, made in the fold pass |
 | `nodes` | every declaration the module owns, in source order, **an enum's variants among them**: a variant is walked, checked and generated as the module's, though its name is bound in its enum. This is what printing and generation iterate |
-| `namespace` | every name *visible* in the module: what it declares, **the module an import bound and every name an import folded in, each an `AliasDclNode` carrying the import's own visibility**, what a global's `use` clause folded in, **the variants a `use` of an enum folded in**, **each submodule its subfolders drew**, and — when a folder or a `mod` declaration named it — the module's own name. **Not an enum's variants by themselves**: those are names of the enum |
+| `namespace` | every name *visible* in the module: what it declares, **every declaration and fold of the module it extends — not the names that module's imports bind — each an `AliasDclNode` as visible here as it is there**, **the module an import bound and every name an import folded in, each an `AliasDclNode` carrying the import's own visibility**, what a global's `use` clause folded in, **the variants a `use` of an enum folded in**, **each submodule its subfolders drew**, and — when a folder or a `mod` declaration named it — the module's own name. **Not an enum's variants by themselves**: those are names of the enum |
 | `flags` | `FlagGenMod`; `FlagModDcl` for a module a `mod` declaration named; `FlagPub` for a submodule its declaration opened |
 | `foldstate` | how far `modFoldNames` has got: not begun, running, done. *Running* is what stops a cycle of re-exports going round, and an import that finds its module running records the cycle (`ImportNode.cycle`) so that what went missing is reported as lost round it |
+| `extendsname` | `mod A extends B`: B as written, a `NameUseNode` bound to the module once `modExtendsResolve` finds it; NULL where the module extends nothing |
+| `extends` | the fold `extends` makes: an `ImportNode` marked `isextends`, whose module is B and whose clause is a star clause over B's declarations and folds, private ones included, but not the names B's imports bind to their modules, made once B resolves. **Not on `imports`** — it binds no name of its own — and folded first by `modFoldNames` |
 
 **A module's own name is in its own namespace, and that is what makes a hidden
 module-level name reachable.** `mymod.x` reaches an `x` that a local or a type
@@ -74,8 +76,8 @@ prints, generates or folds the module into itself.
 **`nodes` and `namespace` are not the same set, and the difference is exactly
 where folding lives.** A folded name is added to `namespace` and never to
 `nodes`, so the receiving module can resolve it but does not own, print or
-generate it. That holds for all three folds a module has — an import's `use`
-clause, a global's, and a `use` of an enum. **A fold transits**, because `importNameRes` reads the
+generate it. That holds for all four folds a module has — what it extends, an
+import's `use` clause, a global's, and a `use` of an enum. **A fold transits**, because `importNameRes` reads the
 source module's `namespace`: it carries across every *public* binding, whether
 the source declared that name or folded it in.
 
@@ -98,9 +100,14 @@ what `pub import m use …` says, and is accepted as the same import.
 module among the module's `imports`, whatever file of the module wrote it, and
 asks `importSame`: the same `ispub` on each binding, and the same clause — star or
 not, the same `but` names, or the same listed names under the same spellings, in
-any order. An identical repeat is dropped without binding anything; one that
-differs is `ErrorDupImport`, reported at the second and naming the file and line
-of the first.
+any order. Either way the second import is `ErrorDupImport`, reported at the
+second and naming the file and line of the first; `importSame` decides only what
+the message says, the same import again or two that disagree. An identical
+repeat was once dropped without a word; it is two ways of bringing in the same
+thing, "a cleanliness issue", and is refused [Jon 23 Sep]. This is the
+parse-time face of the rule the folds follow — a name the module writes twice is
+an error — and it has to be decided here because the import binds the module's
+own name at parse, before any fold runs.
 
 **`EnumUseNode`** (`ir/stmt/fold.h`) is a module's `use Colors;`: `source`, the
 enum as written — a name or a path, resolved only when the fold is expanded — and
@@ -327,6 +334,15 @@ and one an `import` reached are each inside nothing, so there is nothing for `pu
 to open them to. It is the same `pub` every declaration carries, reaching the one
 declaration that draws a module.
 
+**`mod name extends base;` makes this a module that reuses another**, and the
+declaration only records `base`, as a `NameUseNode` on `extendsname`: what it
+names is resolved at name resolution, once every import is bound, so the
+declaration may come before the import that puts the base in reach. One base, by
+one name — a second after a comma is `ErrorExtends`, a path `ErrorModExtends`,
+nothing at all `ErrorNoName` — and each refusal passes over what it refused, so
+the declaration still names the module. What `extends` does is in "Name
+resolution" below.
+
 **Two shapes are admitted and unbuilt, each reported where it is written and its
 body skipped whole** (`ErrorUnbuiltKind`): a nested `mod name { ... }` block,
 which needs a namespace of its own, hook push and pop around its parse, and paths
@@ -412,8 +428,8 @@ rather than a pile of duplicate names.
 
 **Every module's FOLDS run before any module's body is resolved.** `pgmNameRes`
 walks the module list twice: `modFoldNames` on each, and only then `modNameRes`
-on each. `modFoldNames` is dependency-first — for each import it folds the source
-module's own names first, recursively — so a module's folds are complete before
+on each. `modFoldNames` is dependency-first — for what the module extends and for
+each import it folds the source module's own names first, recursively — so a module's folds are complete before
 anything folds from it, which is what makes a re-export transit. `foldstate`
 marks the module while it runs, so a cycle of re-exports stops there; every
 module's own *declarations* are bound at parse, so what is missing on the way
@@ -441,16 +457,66 @@ are resolved in the order they were loaded — so a module resolved earlier, the
 root among them, looked a folded name up before it was there, and one resolved
 later found it.
 
-`modFoldNames` runs three passes: the module's `imports`, then every global
-carrying a `use` clause, then every `use` of an enum on `enumuses` — last, so the
-enum may be named through anything the first two folded in. `modNameRes` then hooks the namespace, runs the type
+**Ahead of the folds, what every module's `extends` names is resolved**
+(`modExtendsResolve`, then `modExtendsCheckCycle` over the whole list), so that
+every edge the fold pass follows is known and a cycle of them is cut before the
+first fold runs.
+
+`modFoldNames` runs four passes: what the module extends, then its `imports`,
+then every global carrying a `use` clause, then every `use` of an enum on
+`enumuses` — last, so the enum may be named through anything the others folded
+in. What it extends goes first so that a name the base has and something of the
+module's own also brings in is reported at what the module wrote. `modNameRes` then hooks the namespace, runs the type
 alias pass and the everything-else pass, and unhooks. **The fold passes go first
 for one reason** — a name folded in, and a name a `typedef` binds, must be in
 place before any declaration that uses it is resolved, and a module's names do
 not depend on the order they were written in. Each pass leaves its own nodes out
 of the last one, so nothing is resolved twice.
 
-**A global's `use` clause is a module's second fold**, and the whole of it is
+**What a module extends is its first fold**, and it is an import's star fold:
+`extends` is an `ImportNode` marked `isextends`, folded by `importNameRes` after
+`modFoldNames` has run on the base, so a chain of `extends` transits exactly as a
+re-export does. It differs from an import in four things. **It takes the base's
+declarations and the base's folds, private ones included, and each alias is as
+visible here as it is there** [Jon 23 Sep]: the module is inside its base's boundary, as an enriching
+type is inside its base's, so its code reads the base's private names; a public
+name of the base is public here, since what a module extends is part of its own
+surface; and a private one stays private, so an importer of the module sees the
+base's public surface and nothing more. `foldStarItems` admits the private names
+under `FoldAdmitBase`, and `importFoldItem` sets each alias's `FlagPub` from the
+base's binding rather than from a clause. **It binds no name of its own**: the
+base is a name here only if an import binds it. And **a name the base has may not
+be redeclared**, public or private — a declaration of the module colliding with
+one of the base's aliases is `ErrorExtendsOverride`, reported at the declaration,
+the type rule; any other collision is `ErrorDupName`. A private name of the base
+named from outside the module is refused as any private name of the module is:
+`ErrorNotPublic` by path or in a listed clause, and passed over by a star clause.
+And **it does not take what the base's imports bind to their modules** [Jon 23
+Sep]. A module's imports are its dependencies, not its contents, and scoped
+imports exist so that each module states its own: the base's `import c` binds `c`
+for the base alone, and the module's code names `c` only by importing `c` itself
+(`ErrorUnkName` otherwise); the base's `pub import c` does not put `c` in the
+module's surface either. What the base's `use` clauses fold in — on an import, a
+global or an enum — is a part of the base and does come across, each fold as
+visible as it is there: the base's `import c use x` makes `x` a name of the
+module, so a declaration of the module named `x` is `ErrorExtendsOverride`, and
+one named `c` is not. The binding an import makes carries `FlagImportName`, which
+`foldStarItems` leaves out under `FoldAdmitBase`; where a fold of the base also
+brought the same module in under that name (the base imports `c` and folds `c` in
+by a wildcard of a module re-exporting it), `modFoldBind` clears the flag, since
+the name is then a fold of the base too. Listing the name in that clause instead
+writes it twice, and is `ErrorDupName` in the base [Jon 23 Sep]. The automatic
+core import binds no module name — it is a `use *` fold alone — so the base's
+core fold still arrives beside the module's own: the same declarations, which
+neither module wrote, so one binding each (below).
+**What it may name** — a module already in
+reach, looked up in this module's namespace and then in the registry its parent
+is, never loaded; not the module itself, one it contains, its parent, a trait or
+anything else that is not a module — and why, are in
+[Names and Namespaces](../phases/names-and-namespaces.md), "A module extending a
+module", which owns the rules.
+
+**A global's `use` clause is a module's third fold**, and the whole of it is
 `foldGlobalExpand` (`ir/stmt/fold.c`): the global's type supplies the members,
 every entry is an `AliasDclNode` carrying the global as its `through`, and a use
 of the name is lowered to `global.name`. The rules, the diagnostics and why it is
@@ -458,7 +524,7 @@ cheaper than a field's fold are in
 [Names and Namespaces](../phases/names-and-namespaces.md), "Folding through a
 global", which owns them.
 
-**A `use` of an enum is a module's third fold**, and the whole of it is
+**A `use` of an enum is a module's fourth fold**, and the whole of it is
 `foldEnumUseExpand` (`ir/stmt/fold.c`). It name resolves the source, which must
 be an enum declaration (`ErrorUseEnum` otherwise, an instance of a generic enum
 included), and binds each variant it admits as an `AliasDclNode` in the module's
@@ -504,9 +570,46 @@ declaration's `DclPrivate` bit where the source declared the name, the alias's o
 `ErrorNotPublic` where a selective clause names it and is passed over by a star
 clause; a name the source has not got, listed or after `but`, is `ErrorNoMbr`;
 the source module's own name is passed over by a star clause and is `ErrorBadFold`
-where a list names it, because the import bound it already. A folded name must be
-unique in the module, whatever brought the other one: `ErrorDupName`, reported at
-the listed item or, for a star clause, at its `use`. An overload name folds as one
+where a list names it, because the import bound it already. (A module's `extends`
+is the one fold that takes private names too, above.)
+
+**A name the module writes twice is an error; one it never wrote merges**
+[Jon 23 Sep]. Every fold into a module's namespace — an import's clause, star or
+listed, an `extends`, a global's clause, an enum's `use` — binds through
+`modFoldBind`, which, where the name is taken, compares what the two bindings stand
+for: the declaration at the end of each chain of fold aliases (a `typedef` counts
+as a declaration and stops the chain, since its target is resolved only after the
+folds), and the global each is reached through. Then it asks whether each binding
+was **written** by the module's own source. Everything is, except what a star
+clause made — a wildcard `use *`, an `extends`, the implicit core import — which
+`foldStarItems` marks `FlagUnlisted`. An enum's `use Colors;` is written even
+though it lists no variant, since it names the enum.
+- **Both written, same declaration**: `ErrorDupName` — the same name listed twice
+  in a clause, two identical `use Colors;` (once per variant), a module both
+  imported and listed (`import meter; import relay use meter;`), a listed name
+  that is the module's own declaration handed back, a global's clause listing a
+  member twice. "If you've got two different ways of bringing in the same thing,
+  that should be an error… it's a cleanliness issue." The message says it is the
+  same thing twice (`modFoldDupReport`).
+- **At least one unwritten, same declaration**: the binding the name has already,
+  and nothing is added. A listed name meeting a wildcard's arrival of the same
+  declaration is one binding, since that name was not written twice. Where the
+  new one was written, the binding counts as written from then on, so a third
+  that writes the name again is refused whichever order the three folded in.
+  **Where one route is public and the other private, the binding is public**, so
+  a re-export is not lost to whichever route happened to fold first. A
+  declaration of the module keeps its own visibility, since nothing folds a
+  private name of it back as a public one.
+
+That is what lets a diamond compile — `d` wildcard-importing `a` and `b`, which
+each re-export `c`'s `x` — a module wildcard-importing a module that extends it,
+which hands the module's own declarations back, and the core fold an extending
+module takes from its base meeting its own; neither the outcome nor the
+visibility depends on fold order. **Different declarations under one name collide
+everywhere**: `ErrorDupName`, reported at the listed item or, for a star clause, at
+its `use` (or `ErrorExtendsOverride` for `extends`, above), and so does one member
+folded through two different globals, since each is reached through its own. An
+overload name folds as one
 node, the `FnOverloadDclNode`, with its candidates riding inside it; a public name
 holds only public candidates (`ErrorPrivOverload`), so the fold carries nothing
 private.
@@ -690,14 +793,20 @@ children of one folder two names.
   exception: it does not extend to anything the imported package could have
   emitted itself.
 - **A module imports a given package at most once.** A second import of the same
-  package with an identical fold spec is silently ignored; a differing one is an
-  error. Identity is the resolved package plus the normalized fold spec — the
-  wildcard flag and the set of source-name/local-name pairs, order-insensitive.
+  package is an error, whether its fold spec is identical or differs: two ways of
+  bringing in the same thing is a cleanliness issue [Jon 23 Sep]. (An identical
+  one was once silently ignored.) Identity is the resolved package plus the
+  normalized fold spec — the wildcard flag and the set of source-name/local-name
+  pairs, order-insensitive — and decides only whether the error says "the same
+  way" or "differently".
 - **Folding accumulates into the one module namespace.** There is no file-level
   scope: any file may write imports, all of them fold into the module, and the
   namespace's existing uniqueness rule reports a collision. One consequence is
   deliberate — a spelling cannot be aliased two ways within one module, because
-  within one namespace it is one thing.
+  within one namespace it is one thing. A name the module writes twice is an
+  error even for the same declaration; the same declaration reaching one
+  spelling by a route the module never wrote — a wildcard, an `extends`, the
+  core import — is one binding, public if either route is [Jon 23 Sep].
 - **`use` states what to fold**, as a clause of `import` for a package and
   standing alone for a namespace already in scope:
 
@@ -808,8 +917,27 @@ module's `use` *statement* names an enum. See "Folding through a global" and
 "Include, import, and name folding" in
 [Names and Namespaces](../phases/names-and-namespaces.md).
 
-**A module imports another once.** An identical repeat is ignored; one that
-differs in its clause or its `pub` is `ErrorDupImport`, naming both.
+**A module imports another once.** A second import is `ErrorDupImport`, naming
+both: an identical repeat [Jon 23 Sep] as much as one that differs in its clause
+or its `pub`.
+
+**A name written twice is an error; one never written merges** [Jon 23 Sep].
+Every fold into a module's namespace binds through `modFoldBind`. The same
+declaration under a name already taken is `ErrorDupName` where the module's own
+source wrote both bindings — listed twice, `use Colors;` twice, imported and
+listed, listed back onto its own declaration (`module-fold-written-nameres`) —
+and is that binding, public if either route is, where a wildcard, an `extends` or
+the core import made either one. Different declarations collide everywhere. The
+diamond compiles (`module-fold-diamond`), whatever order the folds ran in.
+
+**A module may extend another**, `mod solids extends shapes;`, reusing the base's
+declarations and folds, but not its imports [Jon 23 Sep] — an alias, so the declaration, its symbol and its state stay the
+base's, and as visible here as there, so its code reads the base's private names
+while its importers see only the public ones [Jon 23 Sep] — and adding its own
+declarations beside them. The base is a module already in reach, a sister or one
+an import bound; a chain of `extends` transits, and a tree that extends links and
+runs. What it does not do: extend a trait (the module-trait reading,
+`mod arena extends Region`, is unbuilt), or extend more than one module.
 
 **Every binding has a visibility of its own, and an import's bindings are
 bindings.** A declaration has `DclPrivate`, written from the absence of `pub`
@@ -1071,6 +1199,12 @@ annotation on a reference names is a type.
   a module outside the cycle, since the victim's own clause is what is asked. Not
   one wildcard further on: a module that took the victim's names with `use *`
   and uses the missing one bare is told only that the name is missing.
+- **The cycle diagnosis reads imports and not `extends`.** An `extends` edge
+  that meets its base mid-fold records the cycle on its `ImportNode` as an import
+  does, but `modMayLoseToCycle` and `modReportMissing` walk only a module's
+  `imports`, so a name lost round a cycle closed by an `extends` is reported with
+  the plain missing-name message rather than as `ErrorCircular`. A cycle made of
+  `extends` alone is refused before any fold runs.
 - **`corelib` and `stdio` are C string literals.** A syntax error in either is
   reported against an injected pseudo-file, and editing either means rebuilding
   the compiler.

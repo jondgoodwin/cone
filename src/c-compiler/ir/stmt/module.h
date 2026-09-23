@@ -29,6 +29,8 @@ typedef struct ModuleNode {
     Namespace namespace;     // The module's named nodes, owned or "used"
     DclInfo dclinfo;         // Owner and the facts that decide the linker symbols it prefixes
     uint16_t foldstate;      // How far modFoldNames has got: 0 not begun, 1 running, 2 done
+    INode *extendsname;      // 'mod A extends B': B as written, a NameUseNode; NULL where the module extends nothing
+    struct ImportNode *extends; // The fold 'extends' makes of B's names, once B resolves (modExtendsResolve); else NULL
 } ModuleNode;
 
 ModuleNode *newModuleNode();
@@ -55,6 +57,27 @@ void modFoldNames(NameResState *pstate, ModuleNode *mod);
 // ErrorCircular instead, naming the cycle. The diagnostic given is reported as
 // it is wherever the cause is anything else.
 void modNameMissing(ModuleNode *reader, ModuleNode *mod, Name *name, INode *at, int code, const char *msg, ...);
+
+// Bind a name a fold brings into a module's namespace, and hook it. NULL once
+// bound, or where the name is bound already to the same declaration by the same
+// route and one of the two was not written by the module (a star clause made it)
+// -- the binding is then public if either route is; otherwise the binding that
+// holds the name, for the caller to report as a collision
+struct AliasDclNode;
+INode *modFoldBind(ModuleNode *mod, struct AliasDclNode *alias);
+
+// Report the binding modFoldBind returned as a collision: a name written twice
+// for the same thing, or a name meaning two things
+void modFoldDupReport(struct AliasDclNode *alias, INode *prior);
+
+// Resolve what a module's 'extends' names, refusing what cannot be reused. Run
+// for every module ahead of any fold, since what a module extends is folded first
+void modExtendsResolve(ModuleNode *mod);
+
+// Refuse a module whose chain of 'extends' comes back to it, and cut the chain
+// there. 'nmods' bounds the walk, which a cycle not through this module would
+// otherwise never leave
+void modExtendsCheckCycle(ModuleNode *mod, uint32_t nmods);
 
 void modNameRes(NameResState *pstate, ModuleNode *mod);
 void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod);

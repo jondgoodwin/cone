@@ -406,18 +406,21 @@ ImportNode *parseImport(ParseState *parse, uint16_t pubflag) {
         }
     }
 
-    // ONE IMPORT OF A MODULE PER MODULE. An identical repeat says nothing new,
-    // so it is dropped, binding nothing a second time. One that differs would
-    // leave the module's name and its folds meaning two things, so it is
-    // refused, naming where the first one is.
+    // ONE IMPORT OF A MODULE PER MODULE, and a second is refused, naming where
+    // the first one is. An identical repeat is two ways of bringing in the same
+    // thing, which is a cleanliness issue [Jon 23 Sep]; one that differs would
+    // leave the module's name and its folds meaning two things.
     importnode->module = newmod;
     ImportNode *prior = parseImportPrior(parse->mod, newmod);
     if (prior != NULL) {
         if (importSame(prior, importnode))
-            return NULL;
-        errorMsgNode((INode*)importnode, ErrorDupImport,
-            "Module %s is imported already, differently, at %s:%u. A module imports another once: write what both say in one import.",
-            &newmod->namesym->namestr, prior->lexer->url, prior->linenbr);
+            errorMsgNode((INode*)importnode, ErrorDupImport,
+                "Module %s is imported already, the same way, at %s:%u. A module imports another once: leave out the second.",
+                &newmod->namesym->namestr, prior->lexer->url, prior->linenbr);
+        else
+            errorMsgNode((INode*)importnode, ErrorDupImport,
+                "Module %s is imported already, differently, at %s:%u. A module imports another once: write what both say in one import.",
+                &newmod->namesym->namestr, prior->lexer->url, prior->linenbr);
         return NULL;
     }
 
@@ -524,6 +527,11 @@ void parseSkipDclBody() {
 // what makes a module-level name a local or a type member hides reachable again,
 // as 'name.x'.
 //
+// 'mod name extends base;' makes this module one that reuses another: every
+// declaration and fold of the base becomes a name of this one, as visible here as
+// there and still the base's declaration, while the base's imports stay its own
+// dependencies (modExtendsResolve, modFoldNames). One base, named by one name.
+//
 // Two shapes the grammar admits are refused because nothing is behind them: a
 // nested 'mod name { ... }' block, which needs a namespace of its own and paths
 // through it, and 'mod trait', a module's abstraction. Reporting each where it
@@ -582,6 +590,35 @@ void parseModuleDcl(ModuleNode *mod, int atmodstart, uint16_t pubflag) {
     else
         errorMsgLex(ErrorNoName, "Expected a name for the module this file declares");
 
+    // 'extends' names the one module this one reuses, by the name it is reached
+    // by: a sister, or a module this module imports. What it names is resolved
+    // with the module's other names, once every import is bound, so it is only
+    // recorded here
+    NameUseNode *extendsname = NULL;
+    if (lexIsToken(ExtendsToken)) {
+        lexNextToken();
+        if (lexIsToken(IdentToken)) {
+            extendsname = newNameUseNode(lex->val.ident);
+            lexNextToken();
+            // Each refusal passes over what it refused, so the declaration still
+            // names the module and the statement still ends where it was written
+            if (lexIsToken(DotToken)) {
+                errorMsgLex(ErrorModExtends,
+                    "A module's 'extends' names a module by one name: a sister, or a module this module imports. Import a module further away, and name it here.");
+                extendsname = NULL;
+                while (lexIsToken(DotToken) || lexIsToken(IdentToken))
+                    lexNextToken();
+            }
+            if (lexIsToken(CommaToken)) {
+                errorMsgLex(ErrorExtends, "A module extends one module.");
+                while (lexIsToken(CommaToken) || lexIsToken(IdentToken) || lexIsToken(DotToken))
+                    lexNextToken();
+            }
+        }
+        else
+            errorMsgLex(ErrorNoName, "Expected the name of the module this one extends");
+    }
+
     // A nested module. Its namespace, the hook push and pop its parse needs, and
     // the paths reaching through it are all unbuilt
     if (lexIsToken(LCurlyToken) || lexIsToken(ColonToken)) {
@@ -598,6 +635,7 @@ void parseModuleDcl(ModuleNode *mod, int atmodstart, uint16_t pubflag) {
                 "A 'mod' declaration must be its module's designated file's first statement, and a module declares itself once. A file the folder swept in declares nothing.");
         else {
             mod->flags |= FlagModDcl;
+            mod->extendsname = (INode*)extendsname;
             // What 'pub' does, where there is a parent for it to speak to: the
             // submodule joins its parent's namespace as a public name, which its
             // parent's neighbours may then name a path through

@@ -60,6 +60,11 @@ static int foldStarAdmits(INode *member, int admit) {
     // distinction that decides the other two has nothing here to decide
     if (admit == FoldAdmitNames)
         return 1;
+    // A module extending the source takes its declarations and what its folds
+    // brought in, but not the name an import of it binds: the module imported is
+    // a dependency of the source, not a part of it [Jon 23 Sep]
+    if (admit == FoldAdmitBase)
+        return !(member->tag == AliasDclTag && (member->flags & FlagImportName));
     // Every member reached through a value. A static is reached through the type,
     // so it is not one, and a star clause passes it over rather than refusing it
     return inodeIsMember(member);
@@ -68,7 +73,10 @@ static int foldStarAdmits(INode *member, int admit) {
 // Make the items of a star clause: an alias for every name of 'ns' that 'admit'
 // takes and 'but' does not leave out. Not Self, not an unnamed node, and never
 // the source's own finalizer or clone, which belong to its values' lifecycle.
+// Not a private name either, except to a module extending the source, which
+// takes every name but the ones the source's imports bind to their modules.
 void foldStarItems(Namespace *ns, Name *srcname, FoldClause *fold, int admit) {
+    int modnames = admit == FoldAdmitNames || admit == FoldAdmitBase;
     INode **nodesp;
     uint32_t cnt;
     if (fold->excludes) {
@@ -84,21 +92,26 @@ void foldStarItems(Namespace *ns, Name *srcname, FoldClause *fold, int admit) {
         if (nn->name == NULL || nn->name == selfTypeName || nn->name == anonName
             || nn->name == finalName || nn->name == cloneName)
             continue;
-        if (inodeIsPrivate(nn->node) || !foldStarAdmits(nn->node, admit) || foldExcluded(fold, nn->name))
+        if ((inodeIsPrivate(nn->node) && admit != FoldAdmitBase)
+            || !foldStarAdmits(nn->node, admit) || foldExcluded(fold, nn->name))
             continue;
         // A module publishes its own name into its own namespace, and an import
         // binds that name already. Nothing else has a name of its own inside it
-        if (admit == FoldAdmitNames && nn->name == srcname)
+        if (modnames && nn->name == srcname)
             continue;
         NameUseNode *target = newMemberUseNode(nn->name);
         inodeLexCopy((INode*)target, fold->at);
         // A module's name is reached with no receiver at all, and its binding's
         // visibility is the import's rather than the target's, so it is the bare
         // alias rather than the member one every other site makes
-        AliasDclNode *alias = admit == FoldAdmitNames
+        AliasDclNode *alias = modnames
             ? newNameAliasDclNode(nn->name, (INode*)target)
             : newAliasDclNode(nn->name, (INode*)target);
         inodeLexCopy((INode*)alias, fold->at);
+        // Nobody wrote this name: the clause asked for every name, so where it
+        // meets another binding of the same declaration in a module, neither was
+        // written twice and the two are one (modFoldBind)
+        alias->flags |= FlagUnlisted;
         nodesAdd(&fold->items, (INode*)alias);
     }
 }
@@ -163,14 +176,13 @@ static void foldGlobalItem(ModuleNode *mod, VarDclNode *global, StructNode *src,
     // MODULE shows the name it gave it.
     if (!global->fold->ispub)
         alias->flags &= 0xffff - FlagPub;
-    INode *prior = namespaceAdd(&mod->namespace, alias->namesym, (INode*)alias);
-    if (prior) {
-        errorMsgNode((INode*)alias, ErrorDupName,
-            "%s is already a name of this module. A folded name must be unique: rename it with 'as', or leave it out with 'but'.",
-            &alias->namesym->namestr);
-        return;
-    }
-    nametblHookNode(alias->namesym, (INode*)alias);
+    // The same member through the same global, reached a second time by a
+    // wildcard, is the binding the name has already, and listed twice it is
+    // refused (modFoldBind); through another global it is another thing, and
+    // collides
+    INode *prior = modFoldBind(mod, alias);
+    if (prior)
+        modFoldDupReport(alias, prior);
 }
 
 // Expand a global's fold clause into its module's namespace. Run before the
@@ -263,14 +275,14 @@ static void foldEnumUseBind(ModuleNode *mod, FoldClause *fold, AliasDclNode *ali
     alias->flags &= 0xffff - (FlagPub | FlagMethFld);
     if (fold->ispub)
         alias->flags |= FlagPub;
-    INode *prior = namespaceAdd(&mod->namespace, alias->namesym, (INode*)alias);
-    if (prior) {
-        errorMsgNode((INode*)alias, ErrorDupName,
-            "%s is already a name of this module. A folded name must be unique: rename it with 'as', or leave it out with 'but'.",
-            &alias->namesym->namestr);
-        return;
-    }
-    nametblHookNode(alias->namesym, (INode*)alias);
+    // 'use Colors;' names the enum, so every variant it binds is WRITTEN, even
+    // where the statement lists none: a second 'use' of the same enum, or a
+    // listed import of the same variant, is refused. The same variant brought
+    // by a wildcard -- the core import's Some and None, most often -- is the
+    // binding the name has already (modFoldBind)
+    INode *prior = modFoldBind(mod, alias);
+    if (prior)
+        modFoldDupReport(alias, prior);
 }
 
 // Check a variant a clause names -- one it lists, or one its 'but' leaves out --
