@@ -287,14 +287,21 @@ void genlGlobalSyms(GenState *gen, INode *node);
 
 // Generate the global symbols for one instance of a generic type. Each method
 // is owned by the instance, so its symbol reads as the instance then the
-// method, and it is defined by whichever module owns the generic.
+// method, and it is defined by whichever module owns the generic. An instance
+// of a generic trait or enum splits its members as a non-generic one does: its
+// methods belong to the implementers, its static functions to itself, and
+// genlGlobalImpl generates their bodies.
 static void genlGenericInstanceSyms(GenState *gen, INode *instance) {
-    if (instance->tag != StructTag || (instance->flags & TraitType))
+    if (instance->tag != StructTag)
         return;
+    int istrait = instance->flags & TraitType;
     INode **nodesp;
     uint32_t cnt;
-    for (nodelistFor(&((INsTypeNode*)instance)->nodelist, cnt, nodesp))
+    for (nodelistFor(&((INsTypeNode*)instance)->nodelist, cnt, nodesp)) {
+        if (istrait && ((*nodesp)->flags & FlagMethFld))
+            continue;
         genlGlobalSyms(gen, *nodesp);
+    }
 }
 
 // Generate module or type global symbols

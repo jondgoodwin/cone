@@ -167,11 +167,14 @@ a value for it to assert. It is **not** folded into implementers
 (`structTypeCheck`), **not** a vtable slot (`structMakeVtable`), **not** a
 requirement a subtype must satisfy (`structMatches`), and — unlike a trait's
 methods, which the implementers own clones of — **it is generated here or
-nowhere** (`genlGlobalSyms` and `genlGlobalImpl`). Miss the last and
-`Trait.name()` calls a null; miss any of the first three and every implementer
-stops conforming the moment a trait declares one. It is reached as
-`Trait.name`, and an implementer or variant cannot name it at all:
-`trait-nameres-static` pins both spellings, `trait-success` the call.
+nowhere** (`genlGlobalSyms` and `genlGlobalImpl`, and for an instance of a
+generic trait or enum `genlGenericInstanceSyms`). Miss the last and
+`Trait.name()` calls a null, or, in an instance, `genlGlobalImpl` generates a
+body for a function that was never declared and the compiler crashes; miss any
+of the first three and every implementer stops conforming the moment a trait
+declares one. It is reached as `Trait.name`, and an implementer or variant
+cannot name it at all: `trait-nameres-static` pins both spellings,
+`trait-success` the call, and `enum-success` a generic enum's.
 
 ⚠ **A generic method costs a trait its virtual reference, and `structMakeVtable`
 is where that is said.** A vtable slot holds one machine signature and a generic
