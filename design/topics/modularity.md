@@ -148,6 +148,25 @@ the module fold needs. They differ in what the binding holds and in resolution
 to an access path or shifts a call's receiver, which a module fold never does.
 Same namespace, same rule, same node; different resolution.
 
+**There are two reuse mechanisms on the type side, and the second is where the
+symmetry claim comes cheapest.** A field's clause delegates to a *part*;
+`extends` over a concrete base enriches the *whole*, adding methods and no fields
+([struct](../nodes/struct.md), "Enrichment"). Because it may not change the
+fields, the enriching type and its base have one representation and their values
+substitute for each other in both directions at no cost — so a base method
+already takes exactly the right receiver, and folding one is the same degenerate,
+one-instance case the module fold is: no dispatch to arrange and no second copy
+of the state. ▸ **What it delivers is retroactive conformance, owned rather than
+ambient**: an enrichment supplying the method a trait wants makes the base's own
+values reach that trait, by being bound to the enriched name, and two rival
+enrichments cannot collide, because each hangs off its own name and its own
+vtable. That rests on conformance staying structural, so nominal `is` and
+structural noticing are both kept on purpose. ▸ **What it costs** is a boundary
+crossed knowingly: an enrichment is inside its base's encapsulation and reads its
+private members, so a type that may be extended has its representation in its
+contract. SemVer is the protection, and it holds because two versions of one
+package may coexist in a binary.
+
 **`import` composes; `include` does not.** `import` loads a file as a module in
 its own right and binds its name; `.*` folds its public names into the
 importer. `include` injects a file's global statements into the *current*

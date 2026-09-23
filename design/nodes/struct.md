@@ -1,7 +1,7 @@
 `StructNode` is one node for **struct, trait and enum**, distinguished by three
 flag bits. It is also the compiler's most consequential node: field layout,
-method sets, trait inheritance, the closed variant family, vtables and drop
-functions all live here.
+method sets, trait inheritance, concrete enrichment, the closed variant family,
+vtables and drop functions all live here.
 
 **The three kinds in one sentence each.** A **struct** is a record of fields. A
 **trait** is an open abstraction: its implementers are declared beside it, name it
@@ -25,8 +25,9 @@ where they are written. `enum trait` is refused, and that absence is the one bel
 placeholders, variants in both of their spellings, tag numbering, generic
 parameter copying. Name resolution builds the dictionary whole: it inserts `Self`,
 gives an enum its equality, takes the default methods of every abstraction the
-type is-a or mixes in and splices an enum's fields into its variants, and only
-then resolves the method bodies, so an inherited member may be named bare. Type
+type is-a or mixes in, splices an enum's fields into its variants, takes
+everything a concrete `extends` base has, and only then resolves the method
+bodies, so an inherited member may be named bare. Type
 check indexes fields, computes infectious flags, settles the discriminant's width,
 verifies that the fields the abstractions require are declared here, sets
 `TypeChecked` **before** methods, verifies their method requirements, then
@@ -69,6 +70,34 @@ the base's own field list alone.
 its fields — the discriminant among them — are cloned into every variant, which
 declares none of them. ▸ **Forbids** giving a variant a base of its own: its
 relationship to its enum is membership, not is-a conformance.
+
+**An enrichment adds methods and no fields, and that is what makes its values
+and its base's interchangeable.** A type declared with `extends` over a concrete
+base takes the base's fields as its own and adds methods of its own; it declares
+no field, so the two have one representation and values of either substitute for
+the other, in both directions, at no cost beyond a recast. ▸ **The DECLARATION is
+the licence and identical representation is only the argument for why the licence
+is sound**, so two types that happen to look alike and named no base stay
+unrelated, and nothing lifts through a container: `Pair[Gauge]` and `Pair[Meter]`
+are two instances of one template, neither of which extends anything. ▸
+**Forbids** structural typing between concrete types, and forbids an enrichment
+overriding what it took — one value would otherwise mean two things, depending on
+which of the two names reached it.
+
+**An enrichment is inside its base's encapsulation boundary; its own clients are
+not.** It is acting as the base, which is what declaring the base verifies, so it
+reads and writes the base's private members and the names it takes keep the
+base's visibility. ▸ **Settles** the asymmetry with a field's fold, which admits
+only public members through a public field: the folder is a *client* of the part,
+and an enrichment is the *whole*. ▸ ⚠ **What it costs is the fragile base
+problem in a new place**: the base's author can no longer change the
+representation without breaking an enrichment they cannot see. The coupling is
+taken knowingly and SemVer is the protection, which holds because two versions of
+a package may coexist in one binary; the residue is that renaming or retyping a
+private field at the same size is invisible to everyone but an extender, so a
+type that may be extended has its representation in its contract. That is a
+documentation obligation and it is discharged in
+[refinherit](../../conesite/public/coneref/refinherit.html).
 
 **Composition is compile-time flattening; polymorphism moves out to traits.**
 The author's term is **delegated inheritance**: a field's `use` clause folds
@@ -137,6 +166,8 @@ neither slots nor requirements and cost the trait nothing.
 | `dropfn` | NULL until the last step of type check |
 | `dclinfo` | owner and the facts its symbols are spelled from — [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols". The owner is a module, or the enum for a variant declared inside one. Read for one thing besides naming: rejecting a variant declared outside its enum's module, through `dclInfoGetModule` |
 | `basetrait` | the **type expression** of the first abstraction an `is` names, or of the enum a variant belongs to — a `NameUseNode`, or an `FnCallNode` for a generic base. **Not a `StructNode*`.** Two helpers unwrap it and they answer different questions: `structBaseTraitDcl` takes **one hop**, to the declaration this type stands on, while `structGetBaseTrait` recurses to the **bottom-most** one. Picking the wrong one is how the infection loop hangs |
+| `extendsbase` | the **type expression** of the concrete base an `extends` enriches, on the same terms. **A separate slot from `basetrait` on purpose**: the two are different assertions, a type may write both, and every walk that reads `basetrait` is asking about an abstraction |
+| `extendsdcl` | that base's **declaration**, written once its members have been taken and NULL until then — so it says both *which* type this enriches and *that* the enrichment has happened, which is what tells name resolution's expansion from type check's. `structExtendsRoot` walks it to the bottom of the chain, and `structExtendsEquiv` compares two roots: that comparison is the whole substitution rule |
 | `derived` | for an **enum**, its variants in declaration order. The index is the `tagnbr` only where nothing pinned one, which is what generation asks before using the tag to index the vtable list |
 | `traits` | every abstraction whose members were taken — the base, each further name in the `is` list, and each `mixin` — or NULL. Written where the members are taken (`structInheritTrait`) and read by type check's two requirement checks, the only things that still need to know which trait a requirement came from. **Which entry is the base is asked of `basetrait`, not of this list's order**, since the field walk that fills it runs backwards |
 | `fields` | all fields in layout order. A declared field may carry a fold clause (`FieldDclNode.fold`); a folded copy is never here |
@@ -214,11 +245,16 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   standing for a trait, which name resolution removes once it has taken the
   trait's default methods** — or type check does, when the trait is an instance of
   a generic. It is replaced by fields rather than removed only for an enum.
-- **`extends` is refused on a struct or a trait** (`ErrorExtends`), naming `is`
-  as what to write. The word is held for enriching a concrete type with methods,
-  which is not built. An **enum** keeps it, for an enum that adds variants to
-  another's — also not built, and parsed here unchanged so that nothing about it
-  moves.
+- **`is` and `extends` are read in a loop, each once, in either order**, because
+  they are different assertions: `is` names the abstractions this type complies
+  with, `extends` names the one concrete type it enriches. A repeat of either is
+  `ErrorExtends`, as is `extends` on a **trait** — an abstraction holds no value,
+  so there is nothing of it to enrich. An **enum** keeps the keyword for an enum
+  that adds variants to another's, which is a third relationship, is not built,
+  and is read into `basetrait` here unchanged so that nothing about it moves. A
+  **variant** writing it is `ErrorVariantDcl` beside the `is` it may not write
+  either: its fields are its enum's, so it has no representation of its own to
+  stand on.
 - A field's trailing `use` clause (`parseFoldClause`) is stored on the field,
   with an alias per listed name positioned at the item; **nothing enters the
   namespace at parse**, since whether a name is a field or a method is not
@@ -293,6 +329,11 @@ inherited member bare, exactly as it names the type's own.
    on (a trait, and closed only if this type is), **insert a mixin placeholder for
    it at position 0**, exactly as `mixin` does — which is how the base, the rest
    of an `is` list and `mixin` become one mechanism.
+4a. **Resolve an `extends` base and demand it too**, for the same reason, and
+   check here that it may be enriched at all (`structExtendsEligible`). Taking
+   its members waits for step 8a, after the field walk, so that whatever is left
+   in the field list by then is a field this type declared — which is what
+   `extends` forbids.
 5. **Demand each trait a placeholder names, and the type of each field that
    carries a fold clause** (`structNameResDemand`): resolve it now, in its own
    module's scope if it lives elsewhere, so that its own members are complete
@@ -319,8 +360,14 @@ inherited member bare, exactly as it names the type's own.
    dictionary: a trait passes it on, and a struct is told to implement it by
    type check. The new entries are hooked as they land. A placeholder whose
    trait is an instance of a generic is left for type check, since the instance
-   does not exist yet. Then index the fields, so that a copy made next takes
-   the index of the field it stands for.
+   does not exist yet.
+8a. **Take the concrete base's members** (`structEnrichFromBase`, under
+   "Enrichment" below): its fields copied in at the front, every other member of
+   it entered as an alias. Here rather than in the walk, because the walk is what
+   removes the placeholders, and before the two steps below, so that the copies
+   are indexed with everything else and a fold clause that came across on a copied
+   field is expanded against the copy. Then index the fields, so that a copy a
+   fold makes next takes the index of the field it stands for.
 9. **Expand each fold clause, in field order** (`structFoldExpand`, under
    "Name folding" below), after every trait's members are in place, so a folded
    name colliding with an inherited one is reported at the fold. A clause on a
@@ -345,6 +392,12 @@ reach in that module; see [module](module.md).
 `structTypeCheck` is the longest ordered sequence in the compiler:
 
 1. **A template returns immediately** — only clones are checked.
+1a. **An `extends` base name resolution could not take is taken here** — this
+   type is an instance of a generic, or the base is, so one of them was not a
+   declaration until now. Eligibility is checked exactly as name resolution checks
+   it; the members are taken at step 4a. Nothing is hooked, because no body is
+   resolved after this, so such a member is reached as `self.name` inside this
+   type's own methods (see Hazards).
 2. Type check `basetrait`; require an abstraction — `ErrorInvType`, since a
    subtype relationship runs from a concrete type to an abstraction and never
    between two concrete types; require the closed-ness to match —
@@ -360,7 +413,10 @@ reach in that module; see [module](module.md).
    the generic case — is expanded exactly as name
    resolution expands one (`structInheritTrait`), except that nothing is
    hooked: no body is resolved after this. Such a type's inherited members
-   cannot be named bare (see Hazards). Then expand any fold clause name
+   cannot be named bare (see Hazards).
+4a. **Take the concrete base's members** where step 1a found one to take, as name
+   resolution takes them at its own step 8a and in the same place in the order.
+   Then expand any fold clause name
    resolution left — a field whose type was an instance of a generic — and
    **refresh every folded copy** (`structFoldRefresh`): a copy took its
    origin's type node and index when the fold was expanded, and type check may
@@ -491,7 +547,9 @@ thunk: the compiler knows the type and shifts the receiver at compile time.
 
 ### Matching
 
-`structMatches` refuses anything but "a trait is a supertype of a struct".
+`structMatches` answers two unrelated questions, and the second one is under
+"Substitution" below. For subtyping it refuses anything but "a trait is a
+supertype of a struct".
 
 - **Fast path**: if the target is `SameSize`, walk the source's base chain
   looking for it — found means `CastSubtype`, since the supertype's fields are a
@@ -516,6 +574,87 @@ thunk: the compiler knows the type and shifts the receiver at compile time.
 also *registers* the vtable implementation — which is why narrowing a
 `&<Shape` back to a structural conformer works at all. Its failures are silent;
 the diagnostics are commented out.
+
+## Enrichment
+
+`extends` names a concrete base whose members become this type's, and whose
+values and this type's substitute for each other freely. The language is in
+[refinherit](../../conesite/public/coneref/refinherit.html); this is the
+mechanism, in `structEnrichFromBase` and `structExtendsEquiv`.
+
+**It is a name fold and nothing else, and that is the whole finding.** One
+representation means a base method already takes exactly the right receiver, so
+there is no clone to make, no signature to retype and no receiver to shift.
+Beside the field fold above, the two are the same operation reached from opposite
+ends: a field's clause reaches the *part*, so it needs a hop and a receiver
+rewrite, and an enrichment *is* the whole, so it needs neither. Measured: a base
+method is one symbol however many types reach it, where an inherited trait default
+is a copy per implementer (`struct-extends`, `a-base-method-is-not-cloned-per-enrichment`).
+
+**Two things are not aliases.** The base's **fields are copied**, because a field
+node carries its index and its own check state and each type lays its own out;
+the copies are this type's declared fields in every respect, so they satisfy an
+`is` field requirement, fill a vtable slot and are constructed positionally
+exactly as fields written here would be. And what the base's own **fold clauses**
+admitted is left alone: the clause travels with the field it is written on, is
+cloned unexpanded (`cloneFieldDclNode`) and is expanded again here against this
+type's copy of that field — which is what keeps a folded name's hop pointing at a
+field of the type that holds it. So the base's delegated names come across too,
+and nothing about them is re-pointed by hand.
+
+**Every other member becomes an alias** — methods, overload sets, macro methods
+and statics alike, private ones included, under the base's own visibility. A
+static keeps its owner and its signature, so the base's factory reached as
+`Gauge.make()` still hands back a `Meter`; binding that value to a `Gauge` is how
+a value of an enriched type is obtained from a library that never heard of the
+enrichment. `final` and `clone` are the exception and they are not taken: they are
+the value's own lifecycle, `structSetDropFn` reads `final` off the namespace
+expecting a method there, and a generated drop function calls the `final` of the
+type it belongs to. So a base declaring either is refused outright
+(`ErrorExtendsBase`) rather than left to run its finalizer for values of one name
+and not the other.
+
+**What the enriching type may not do**: declare a field (`ErrorExtendsField`,
+which is what keeps the representations identical), or declare a name the base
+already has (`ErrorExtendsOverride`, whether the base's is a field or a method) —
+one value would otherwise mean two things, depending on which name reached it.
+**What may be enriched** is a concrete struct and nothing else: not an
+abstraction, which holds no value; not an enum, where adding is adding variants;
+not a variant, whose fields are its enum's; not a number type. A cycle, including
+a type naming itself, is `ErrorCircular` at the clause.
+
+### Substitution
+
+`structExtendsEquiv` is the whole rule: two types substitute for each other
+exactly where `structExtendsRoot` — the bottom of the `extends` chain — answers
+the same declaration for both. So it covers a chain of any depth and two
+*siblings* that named one base, and it answers about the declarations rather than
+about the shapes. **The declaration is the licence; identical representation is
+only the argument for why the licence is sound.** Two look-alikes that named no
+base have no licence, and nothing lifts through a container.
+
+Three places read it, and each is a different half of "in both directions at no
+cost":
+
+- `structMatches`, ahead of its trait test, answering `CastSubtype` under every
+  constraint including `Coercion` — a by-value crossing is a recast, which
+  `genlRecast` lowers through a store and a load, the sizes being equal by
+  construction.
+- `refMatches`, in the **invariant** `&mut` case, which is the one exception the
+  language grants to invariance: neither type adds state the other could break, so
+  a write of either through a reference to the other stores one representation.
+  It answers `CastSubtype` rather than the permission's own verdict, because the
+  two are still distinct types and the pointer has to be recast — without it
+  generation passes a pointer to one where the signature says the other, which
+  LLVM's module verifier rejects and a plain compile does not.
+- `structFindSuper` and `structRefFindSuper`, where either name stands for both,
+  so an inferred type in common is whichever was seen first.
+
+⚠ **It answers about two distinct declarations only.** One declaration is not
+substituting for anything, and every caller has asked that question already;
+`structMatches` is reached with equal types from `cast.c`'s narrowing check, and
+answering yes there swallowed the diagnostic that says a variant is already as
+narrow as it gets.
 
 ## Flow
 
@@ -579,6 +718,11 @@ and `extractvalue`, and `vtblidx` for vtable slots.
   because `namespaceAdd` silently ignores `_`, so what reports it is type check's
   one-discriminant rule. Traits carry no tag, so a chain of `is` bases and any number
   of `mixin`s meet nothing here.
+- **A member taken from an `extends` base cannot be named bare where either side
+  is a generic.** The enrichment is taken in type check there, after every body
+  has been resolved, so `self.name` is how such a member is reached inside the
+  enriching type's own methods. Where both are plain declarations there is no such
+  limit, and `struct-extends` names everything bare.
 - **A default method cloned from an instance of a generic trait, or a member
   folded from a field whose type is a generic's parameter, cannot be named bare.**
   The instance exists only when type check instantiates it, so what it contributes

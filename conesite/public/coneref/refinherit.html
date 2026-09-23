@@ -23,7 +23,11 @@
 		while side-stepping the tightly-coupled complexity and fragility
 		sometimes experienced when using traditional inheritance.</p>
 	<p>It is the same operation a module performs when it folds another module's names into its own:
-		"the names in there are now names in here." Folding into a type does it through a field.</p>
+		"the names in there are now names in here." A type can do it in two places, and they answer
+		different needs. On a <b>field</b> it delegates to a part, which is the whole of this page
+		until its last section. On the <b>type itself</b>, with <span class="pre">extends</span>, it
+		starts from a concrete type and enriches it with methods — see
+		<a href="#enrich">Enriching a concrete type</a>.</p>
 
 	<h2>Selective Inheritance</h2>
 	<p>Imagine we have this <span class="pre">Engine</span> type:</p>
@@ -147,6 +151,139 @@ struct SuperEngine {
 		so it cannot be named in the type's literal
 		(<span class="pre">SuperEngine[engine: Engine[fuel: 1.0, torque: 2.0]]</span> is the literal),
 		and it meets no trait's field requirement. A folded method does count toward conformance.</p>
+
+	<h2 id="enrich">Enriching a concrete type</h2>
+	<p>Sometimes what you want is not a part but a better version of a whole. You have somebody's
+		floating-point type, or matrix type, or parser state, and you want it plus trigonometry, plus
+		logarithms, as if they had always been one type. You do not reach into their package and add
+		methods to it. You declare a type of your own that names theirs as its base:</p>
+<pre>
+struct Meter {
+  pub mut cm i32;
+  scale     i32;
+
+  pub fn scaled(self) i32 { cm * scale; }
+  pub fn make() Meter { Meter[4, 5]; }
+}
+
+struct Gauge extends Meter {
+  pub fn doubled(self) i32 { cm + cm; }
+  pub fn reset(self &mut) { cm = 0; }
+}
+</pre>
+	<p><span class="pre">Gauge</span> <b>adds methods and no fields.</b> Everything
+		<span class="pre">Meter</span> has is a name of <span class="pre">Gauge</span> — its fields, its
+		methods, its static functions — and <span class="pre">Gauge</span>'s own methods read and write
+		those fields by bare name, as <span class="pre">doubled</span> and
+		<span class="pre">reset</span> do. What it may not do is <i>declare</i> a field. Reading and
+		writing the fields it starts with is exactly what it is for; adding one is what would make the
+		two types different shapes.</p>
+
+	<h3>The two types interchange, in both directions, at no cost</h3>
+	<p>Because the representations are identical, a <span class="pre">Gauge</span> may be used wherever
+		a <span class="pre">Meter</span> is wanted, and a <span class="pre">Meter</span> wherever a
+		<span class="pre">Gauge</span> is wanted — by value, through a <span class="pre">&</span>
+		reference, and through a <span class="pre">&mut</span> reference. No conversion runs; there is
+		nothing to convert.</p>
+<pre>
+fn wantsMeter(m Meter) i32 { m.scaled(); }
+
+imm g Gauge = Meter.make();   // a Meter value, bound to the enriched name
+wantsMeter(g);                // and a Gauge, passed as a Meter
+</pre>
+	<p>That last pair is how values of an enriched type are obtained at all. The base's own
+		constructors and static functions still return the base type — <span class="pre">Gauge.make()</span>
+		hands back a <span class="pre">Meter</span> — and binding the result to the enriched type is all
+		that is needed. A library that never heard of your enrichment can still produce values for it.</p>
+	<p>They remain <b>two distinct types</b>, and which one you name is what decides what is in view.
+		A value typed as <span class="pre">Meter</span> cannot call
+		<span class="pre">doubled</span>; you reach the added methods by naming
+		<span class="pre">Gauge</span> somewhere. That is the whole difference between this and a
+		language where extension methods drift into scope with an import: an enrichment here is
+		<i>owned</i>, and it is reached deliberately.</p>
+
+	<h3>The declaration is what licenses it</h3>
+	<p>Two types interchange because one of them <i>said</i> the other was its base, not because they
+		happen to look alike. Identical representation is why the license is safe to grant; the
+		declaration is why it is granted at all.</p>
+	<ul>
+		<li><b>Two look-alikes that named no base stay unrelated.</b> A struct with the same fields in
+			the same order as <span class="pre">Meter</span> is not a <span class="pre">Meter</span> and
+			does not substitute for one. Cone has no structural typing between concrete types.</li>
+		<li><b>Nothing lifts through a container.</b> <span class="pre">Pair[Gauge]</span> and
+			<span class="pre">Pair[Meter]</span> are two instantiations of one generic, neither of which
+			extends anything, so they are unrelated however their components are declared. Substitute at
+			the element, never at the container.</li>
+		<li><b>A type enriches one base</b>, and a chain is allowed:
+			<span class="pre">Fancy extends Gauge extends Meter</span>. Every hop adds methods only, so
+			all three are one representation and any of them substitutes for any other. Siblings
+			interchange too: two types that both extend <span class="pre">Meter</span> both have its
+			representation.</li>
+		<li><b>An enrichment may not override.</b> A name the base already has may not be redeclared,
+			whether the base's is a field or a method. One value would otherwise mean two different
+			things depending on which of the two names was used to reach it.</li>
+		<li><b>Only a concrete struct may be enriched.</b> An abstraction holds no value, so there is
+			nothing of it to enrich — what a type asserts about an abstraction is conformance, which is
+			<a href="reftrait.html"><span class="pre">is</span></a>, and a type may write both clauses.
+			An enum's variant set is its identity, so adding to an enum means adding variants, which is
+			a separate relationship (see <a href="refenum.html">enum</a>). A base that declares
+			<span class="pre">final</span> or <span class="pre">clone</span> is refused as well: those
+			belong to its own values' lifecycle and do not carry across.</li>
+	</ul>
+
+	<h3>An enrichment is inside its base's encapsulation</h3>
+	<p>An enrichment is acting as the base, so it sees what the base's own methods see. Above,
+		<span class="pre">scale</span> is private to <span class="pre">Meter</span> and
+		<span class="pre">Gauge</span>'s methods may read and write it — even when
+		<span class="pre">Meter</span> lives in another module or another package. What comes across
+		keeps the base's visibility, so <span class="pre">Gauge</span>'s own <i>clients</i> cannot
+		reach <span class="pre">scale</span> at all. The asymmetry with a field's fold is deliberate:
+		a type that folds through a field is a client of the part and sees only what is public, while
+		an enrichment is the whole.</p>
+	<p style="border: 1px solid #a00; padding: 0.6em 1em; background: #fff6f6;">
+		<b>A type that may be extended has its representation in its contract.</b> This is the price
+		of the paragraph above, and it is worth stating plainly because nothing in the language can
+		warn you about it. <span class="pre">extends</span> is an intimate relationship, and its author
+		takes the coupling knowingly. Adding a field to a base changes the size and shifts the
+		positional literal, so it is a major version change and never a quiet one. But so is
+		<i>renaming</i> or <i>retyping</i> a private field at the same size — invisible to everyone
+		except an enrichment reading it, and the base's author has every reason to think
+		<span class="pre">private</span> means free to change. If you publish a type others may extend,
+		treat its field names and types as part of what you promised. Semantic versioning is the
+		protection, and it works because two versions of one package may coexist in a binary.
+	</p>
+
+	<h3>Retroactive conformance</h3>
+	<p>Cone notices trait conformance structurally: a type that happens to have the methods a trait
+		requires may be passed where that trait is wanted, without declaring anything
+		(<a href="refvirtref.html">virtual references</a>). Put that together with the enrichment above
+		and something useful falls out. Suppose a library's type implements three of a trait's four
+		methods:</p>
+<pre>
+trait Area { pub fn area(self &) i32; }
+
+struct Framed extends Meter {
+  pub fn area(self &) i32 { cm * cm; }
+}
+
+fn areaOf(a &&lt;Area) i32 { a.area(); }
+
+imm f Framed = Meter.make();   // a Meter value
+areaOf(&f);                    // reaching a trait Meter does not satisfy
+</pre>
+	<p>You supply the fourth method in an enrichment of your own, and the library's own values reach
+		the trait by being bound to your name. You did not modify their package and you did not need
+		their permission. And because the conformance hangs off <i>your</i> named type and its own
+		vtable, two people can enrich the same base in conflicting ways without colliding: each one's
+		claim is reached only through the name that made it.</p>
+
+	<h3>Generic types</h3>
+	<p>A generic may enrich a generic — <span class="pre">struct Rich[T] extends Holder[T]</span> —
+		and the license sits on that one declaration rather than on each instantiation, because no
+		field may be added and so the shapes agree instance by instance. Inside such an enrichment,
+		a member taken from the base is reached as <span class="pre">self.name</span> rather than by
+		bare name, because the base is not a type yet when the enrichment's bodies are read. This is
+		the same limit an inherited member of a generic trait has.</p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="refmove.html"><img alt="_" src="next.png" /></a>
