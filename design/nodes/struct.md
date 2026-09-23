@@ -892,9 +892,12 @@ Three shapes, the first two chosen in `genlSetupTaggedTrait`:
   base, its variants and every extension share, so the answer does not depend on
   which of them generation reaches first.
 - **Same size** — every variant re-emitted with `[N x i8]` trailing padding to
-  the largest; the enum's body is a copy of the largest variant's fields.
+  the largest, rounded up to the strictest variant alignment; the enum's body is
+  its own fields (tag and common fields) and then bytes to that size, never a
+  copy of one variant's layout, whose padding a first-class load or store would
+  drop along with any other variant's field that sits in it.
   Measured: `%Circle = { i8, i32, i32, [4 x i8] }` beside
-  `%Rect = { i8, i32, i32, i32 }` and `%Shape = { i8, i32, i32, i32 }`.
+  `%Rect = { i8, i32, i32, i32 }` and `%Shape = { i8, i32, [8 x i8] }`.
 - **Unpadded** — each variant emitted at its own size, the tag still first.
   Measured, for an `@unsized` enum of an empty variant and one holding three
   `i64`s: `%Ping = { i8, i32 }` beside `%Payload = { i8, i32, i64, i64, i64 }`.

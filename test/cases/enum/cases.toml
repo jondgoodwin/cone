@@ -79,23 +79,40 @@ contains = ["%Ping = type { i8, i32 }", "%Payload = type { i8, i32, i64, i64, i6
 # An extension shares its base's layout, and runtime cannot see that: the same
 # lines print whether a shared variant was laid out once or twice. So it is
 # asserted in the types generation wrote. Message and MoreMessages are the same
-# struct -- the base's discriminant, the base's common field and padding to the
-# base's largest, which is Blob -- and Text, a variant the two sets share, carries
-# one padding to that size rather than one per set. Pair, which MoreMessages adds,
-# is exactly that size, which is the most an addition may be while the variants are
-# padded. Wide is what '@unsized' buys: larger than either variant of the Packet it
-# extends, and padded nowhere.
+# struct -- the base's discriminant, the base's common field, bytes out to the
+# base's largest, which is Blob, and Blob's i64 alignment -- and Text, a variant
+# the two sets share, carries one padding to that size rather than one per set.
+# Pair, which MoreMessages adds, is exactly that size, which is the most an
+# addition may be while the variants are padded. Wide is what '@unsized' buys:
+# larger than either variant of the Packet it extends, and padded nowhere.
 [[scenario.enum-success.check]]
 name = "an-extension-shares-its-base-layout"
 target = "preir"
 contains = [
-  "%Message = type { i8, i32, i64 }",
-  "%MoreMessages = type { i8, i32, i64 }",
+  "%Message = type { i8, i32, [8 x i8], [0 x i64] }",
+  "%MoreMessages = type { i8, i32, [8 x i8], [0 x i64] }",
   "%Text = type { i8, i32, i32, [4 x i8] }",
   "%Pair = type { i8, i32, i32, i32 }",
   "%Suit = type { i8 }",
   "%CardKind = type { i8 }",
   "%Wide = type { i8, i32, i64, i64, i64, i64 }",
+]
+
+# An enum value is loaded, stored and passed as a first-class LLVM value, which
+# does not carry its type's padding bytes. So the enum's own type is its own
+# fields and then bytes, never a copy of one variant's layout: Flag's Bool and u8
+# sit at bytes 1 and 2, where Count has padding before its i32. And the size
+# every variant is padded to is rounded up to the strictest variant alignment:
+# Tally, the largest at ten bytes, is byte-aligned and Count is not, so all three
+# are twelve. The run prints the fields back; this pins the layout that keeps them.
+[[scenario.enum-success.check]]
+name = "an-enum-type-has-no-padding-a-variant-uses"
+target = "preir"
+contains = [
+  "%Cell = type { i8, [11 x i8], [0 x i32] }",
+  "%Flag = type { i8, i1, i8, [9 x i8] }",
+  "%Count = type { i8, i32, [4 x i8] }",
+  "%Tally = type { i8, i8, i8, i8, i8, i8, i8, i8, i8, i8, [2 x i8] }",
 ]
 
 # Which vtable a tag names is looked up two ways, and the run cannot see which:
