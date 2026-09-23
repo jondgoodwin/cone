@@ -41,6 +41,7 @@ typedef struct StructNode {
     Nodes *derived;         // If a closed, base trait, this lists all structs derived from it
     Nodes *traits;          // Every trait whose members were mixed in (NULL if none)
     Nodes *siblings;        // A field-like node per type-body 'use': its 'vtype' the sibling named, its 'fold' what the clause admits (NULL if none)
+    Nodes *lifecycle;       // Unlowered copies of its 'final' and 'clone', set aside as its layout settles and before its methods are type checked, for an enrichment taken after that (NULL if none)
     NodeList fields;        // Ordered list of all fields
     Vtable *vtable;         // Pointer to vtable info (may be NULL)
     GenericInfo *genericinfo;     // Link to generic parms, etc (or NULL if not generic)
@@ -115,6 +116,11 @@ void structEnumCheckCopies(TypeCheckState *pstate, StructNode *node);
 // being resolved.
 int structEnumDemandSet(NameResState *pstate, StructNode *node);
 
+// May the function being checked reach a private member of 'type' through any
+// value, because both are written inside one enum's braces, or the function in
+// an extension of that enum? 'self' is granted apart from this, for every type.
+int structEnumSeesPrivate(TypeCheckState *pstate, INode *type);
+
 // Get bottom-most base trait for some trait/struct, or NULL if there is not one
 StructNode *structGetBaseTrait(StructNode *node);
 
@@ -124,6 +130,10 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *name);
 // Settle an enum's discriminant width from its variants' tag values, refusing a
 // value too large for the integer type it declared
 void structSetTagWidth(StructNode *node);
+
+// Type check an instance of a generic enum whose variants are already listed,
+// leaving its discriminant's width to the caller
+void structTypeCheckEnumInstance(TypeCheckState *pstate, StructNode *instance);
 
 // Populate the vtable for this struct
 void structMakeVtable(StructNode *node);

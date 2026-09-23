@@ -1235,6 +1235,28 @@ enum Tote[T] {
   }
 }
 
+// A static function of a generic enum that builds a variant reaches that variant
+// from the enum's own type check, before the variants are checked in turn. The
+// instance lists its variants before the enum itself is checked, so the match in
+// the variant's method is exhaustive there as well. Listed only after the enum's
+// check, the variant the static built was a miss that instantiated the enum
+// again, endlessly (ErrorInstDepth), and its match saw part of the set
+// (ErrorNoElse). Two instances, each checked the same way.
+enum Crop[T] {
+  pub rows i64;
+  pub fn sow(r i64) Crop[T] {Fallow[T][r];}
+  struct Ripe {pub grain T;}
+  struct Fallow {
+    pub fn resow(self &) Crop[T] {sow(rows + 1);}
+    pub fn weigh(self &, c Crop[T]) i64 {
+      match c {
+        case imm r Ripe[T] {i64[r.grain] + rows;}
+        case imm f Fallow[T] {f.rows * 100 + rows;}
+      }
+    }
+  }
+}
+
 // An extension's copy of a base's variant is cloned as it was resolved, inside
 // the base's braces, so the 'Low' in its method is the base's: the variant
 // 'Tier.Low' written there would be, and the only one its return type admits. A
@@ -1327,6 +1349,11 @@ fn variantBodies() {
   show("generic-variant-exhaustive-ref-last", (&totehollow).itemOr(&hollow, 99));
   show("generic-enum-method-exhaustive-first", i64[(&tote).which(stuffed)]);
   show("generic-enum-method-exhaustive-last", i64[(&totehollow).which(hollow)]);
+  imm plot = Crop.Fallow[i64][2];
+  show("generic-static-builds-variant-exhaustive-first", (&plot).weigh(Crop.Ripe[i64][5, 40]));
+  show("generic-static-builds-variant-exhaustive-last", (&plot).weigh((&plot).resow()));
+  imm plot32 = Crop.Fallow[i32][4];
+  show("generic-static-builds-variant-second-instance", (&plot32).weigh(Crop.Ripe[i32][1, 7]));
   imm high = WideTier.High[];
   show("extension-copy-means-the-base-sibling", tierCode((&high).drop()));
   imm peak = WideTier.Peak[];

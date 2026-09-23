@@ -271,7 +271,7 @@ void borrowTypeCheck(TypeCheckState *pstate, RefNode **nodep) {
     // against it, exactly as '(&mut value).`&[]`()' is.
     if (dispatchRefIndex) {
         FnCallNode *call = newFnCallOpnameLower((INode*)node, (INode*)node, refIndexName, 0);
-        fnCallLowerMethod(call);
+        fnCallLowerMethod(pstate, call);
         *nodep = (RefNode*)call;
     }
 }

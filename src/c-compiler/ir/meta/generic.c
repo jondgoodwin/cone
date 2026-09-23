@@ -223,19 +223,19 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
         retinstance = genericInstantiate(pstate, srcgencall, nodetoclone, genericinfo, name);
     }
     else {
-        // For tag-based trait/struct, instantiate the base trait and all its variants
-        // Begin by instantiating the base trait
+        // For tag-based trait/struct, instantiate the base trait and all its variants.
+        // The base trait and every variant are cloned and remembered before any of
+        // them is type checked: a variant's body may name a later sibling at these
+        // same arguments, and so may the enum's own static function, checked with
+        // the enum. A variant not yet remembered would be a miss that instantiates
+        // the whole enum again, endlessly.
         StructNode *basetrait = structGetBaseTrait((StructNode*)nodetoclone);
         Nodes *basememo = basetrait->genericinfo->memonodes;
         int firstinstance = basememo == NULL || basememo->used == 0;
-        INode *instrait = genericInstantiate(pstate, srcgencall, (INode*)basetrait, basetrait->genericinfo, name);
+        INode *instrait = genericClone(pstate, srcgencall, (INode*)basetrait, basetrait->genericinfo);
         if (basetrait == (StructNode*)nodetoclone)
             retinstance = instrait;
 
-        // Now instantiate all variants. Every one is cloned and remembered before
-        // any is type checked: a variant's body may name a later sibling at these
-        // same arguments, and a sibling not yet remembered would be a miss that
-        // instantiates the whole enum again, endlessly.
         // A variant's body may also name a static function, static or overload
         // name of the enum bare, which name resolution bound to the generic's
         // member; it is the instance's that has a symbol, so the variants are
@@ -247,11 +247,14 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
             nodesAdd(&variants, genericClone(pstate, srcgencall, *nodesp, ((StructNode*)*nodesp)->genericinfo));
         cloneDclPop(dclpos);
         // The instance's 'derived' lists its own variants, and lists all of them
-        // before any is type checked: a variant's method body may match a value
-        // of the enum, and its match is exhaustive only against the whole set.
+        // before the enum or any variant is type checked: a variant's method body
+        // may match a value of the enum, and its match is exhaustive only against
+        // the whole set -- including a variant reached first from the enum's own
+        // check, as a static function building it reaches it.
         Nodes **instraitderived = &((StructNode*)instrait)->derived;
         for (nodesFor(variants, cnt, nodesp))
             nodesAdd(instraitderived, *nodesp);
+        structTypeCheckEnumInstance(pstate, (StructNode*)instrait);
         INode **instp = &nodesGet(variants, 0);
         for (nodesFor(basetrait->derived, cnt, nodesp)) {
             inodeTypeCheckAny(pstate, instp);
@@ -260,12 +263,11 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
             ++instp;
         }
 
-        // The discriminant's width follows the largest tag value, and the instance
-        // was type checked above before it had any variants to measure it by. It
-        // is settled once per generic: the discriminant node is shared by the
-        // template and every instance, and their tag values are the template's,
-        // so a later instance could only report a declared integer type's
-        // overflow a second time.
+        // The discriminant's width follows the largest tag value, and the instance's
+        // own type check left it here (structTypeCheckEnumInstance). It is settled
+        // once per generic: the discriminant node is shared by the template and
+        // every instance, and their tag values are the template's, so a later
+        // instance could only report a declared integer type's overflow again.
         if (firstinstance)
             structSetTagWidth((StructNode*)instrait);
     }

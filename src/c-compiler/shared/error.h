@@ -235,6 +235,9 @@ enum ErrorCode {
     // Attributes, which are keywords: '@move', '@opaque', '@unsized'
     ErrorUnkAttr = 1119,        // A '@' word that names no attribute
 
+    // Moves: what a move-typed value may be moved out of
+    ErrorMoveOut = 1120,        // A move-typed value moved out through a borrowed reference, which does not own it
+
     // Comparing references: '==' and ordering read through to the values, '===' asks whether they are the same place
     ErrorRefNoCompare = 1123,   // '==', '!=' or an ordering on references whose referent has no such operator, or on a slice or virtual reference, whose referents have no comparison built
     ErrorRefCompareMixed = 1124, // A comparison with a reference on one side and a value on the other: both are read through, or neither
