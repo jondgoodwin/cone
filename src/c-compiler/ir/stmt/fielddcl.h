@@ -7,15 +7,23 @@
 #ifndef fielddcl_h
 #define fielddcl_h
 
-// The fold clause a field declaration may carry -- 'use a, b as c' or
-// 'use * but d' -- saying which names of the field's type become names of the
-// type that declares the field, under what spelling. Expanded into that type's
-// namespace by structFoldExpand, which is what binds each item's target.
+// A fold clause -- 'use a, b as c' or 'use * but d' -- saying which names of a
+// source type become names of the type it is written in, under what spelling.
+//
+// It is written at two sites, and the source differs. On a FIELD the source is
+// the field's type, and the clause follows the type: 'engine Engine use *'.
+// In a TYPE BODY the clause is the whole statement and names its source itself,
+// a SIBLING enrichment of the same base: 'use Trig but atan'. There the whole
+// member set is the default, because that is what naming a sibling asks for, so
+// a clause with no list is a star clause.
+//
+// Expanded by structFoldExpand for a field and structUseSiblingExpand for a
+// sibling, each of which is what binds an item's target.
 typedef struct FoldClause {
     INode *at;          // A node positioned at the clause's 'use': where its diagnostics land, and where a star-made alias is placed
-    Nodes *items;       // An AliasDclNode per admitted name: the local spelling, targeting the spelling in the field's type
+    Nodes *items;       // An AliasDclNode per admitted name: the local spelling, targeting the spelling in the source type
     Nodes *excludes;    // A member name use per name after 'but' (NULL when none)
-    uint16_t star;      // 'use *': every public member not excluded; the items are made at expansion
+    uint16_t star;      // Every public member not excluded; the items are made at expansion
     uint16_t expanded;  // Expansion has run on this node (a clone starts over)
 } FoldClause;
 

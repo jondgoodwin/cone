@@ -38,6 +38,16 @@
 # dispatches through a virtual reference, because what it establishes is what
 # 'extends' delivers rather than what a virtual reference reaches.
 #
+# struct-use-sibling is the eighth: folding a SIBLING enrichment in with a type
+# body's 'use'. It rests on struct-extends and is separate from it, because the
+# two answer different questions -- that one pins what one base gives one
+# enrichment, and this pins what several enrichments of one base give a type that
+# names them. Its claims are which declaration a folded call reached, what a
+# renamed or excluded name resolved to, and that a sibling's method reads the
+# shared representation through a receiver nothing rewrote. The two claims a run
+# cannot make -- that no method is copied per folding type, and that every type
+# here has the base's layout -- are checks below.
+#
 # The reject scenarios are split by pipeline stage, because analysis halts
 # between stages and an expectation from a later stage would never be reached.
 # The type-check stage is split again by what is wrong: the declaration itself,
@@ -343,6 +353,42 @@ contains = [
 ]
 excludes = ["Gauge.scaled", "Fancy.scaled", "Labeled.scaled", "Ruler.scaled"]
 
+[scenario.struct-use-sibling]
+category = "run"
+description = "Folding a sibling enrichment's methods in with a type body's 'use', selectively and under spellings of its own"
+tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+# A sibling fold is an alias and nothing more: the sibling's own declaration is
+# what the name binds to, so there is one symbol for a method however many types
+# fold it in. That is the claim that separates this from an inherited trait
+# default, which trait-success pins as a copy per implementing type, and a run
+# cannot see it -- every printed number would be the same either way.
+[[scenario.struct-use-sibling.check]]
+name = "a-folded-method-is-not-cloned-per-folding-type"
+target = "symbols"
+contains = [
+  "define internal Trig.sine comdat nodeduplicate",
+  "define internal LogExp.logOf comdat nodeduplicate",
+  "define internal Trig.cosine comdat nodeduplicate",
+]
+excludes = ["Rich.sine", "Fancy.sine", "Slim.cosine", "Rich.logOf", "Rich.wide", "Slim.near"]
+
+# The fold is licensed by the shared base, and the base is what keeps every one
+# of these types one representation -- which is why a sibling's method needs no
+# receiver rewritten. Read before optimization, where a type nothing mentions is
+# not printed.
+[[scenario.struct-use-sibling.check]]
+name = "every-sibling-shares-the-base-s-layout"
+target = "preir"
+contains = [
+  "%Meter = type { i32, i32 }",
+  "%Trig = type { i32, i32 }",
+  "%LogExp = type { i32, i32 }",
+  "%Rich = type { i32, i32 }",
+  "%Fancy = type { i32, i32 }",
+  "%Slim = type { i32, i32 }",
+]
+
 # The motivating case is enriching somebody else's type, so the pair is put on
 # opposite sides of a module boundary: the base is resolved on demand from the
 # other module's scope, and the enrichment still reads its private members. A
@@ -362,9 +408,9 @@ diagnostics = 16
 
 [scenario.struct-parse-fold]
 category = "reject"
-description = "A fold clause written where none may be, and 'but' after a list"
+description = "A fold clause written where none may be, and the shapes neither the field form nor the body form may take"
 tags = ["parse"]
-diagnostics = 9
+diagnostics = 14
 
 # -------- name resolution stage --------
 
@@ -388,6 +434,20 @@ category = "reject"
 description = "What may be enriched with 'extends', and what an enrichment may not declare"
 tags = ["nameres"]
 diagnostics = 10
+
+# A sibling fold is expanded right after the base's members are taken, so what a
+# body clause may name and what it may admit of it are both this stage's: a type
+# with no base to share, a type whose base is a different one, the base itself or
+# an ancestor, an abstraction or an enum, itself, a name the sibling lacks, a
+# private one, one the sibling took from the shared base, a lifecycle method, the
+# two collisions, and a cycle. Separate from struct-nameres-fold because the
+# receiver is the difference between the two folds: a field's clause has one to
+# find and shift, and a sibling's is already this type's by the shared base.
+[scenario.struct-nameres-use-sibling]
+category = "reject"
+description = "What a type body's 'use' may name as a sibling, and what it may admit of one"
+tags = ["nameres"]
+diagnostics = 16
 
 # -------- type check stage --------
 

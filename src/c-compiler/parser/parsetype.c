@@ -168,18 +168,23 @@ static INode* parseTagType(ParseState *parse) {
     return (INode*)node;
 }
 
-// Parse a field's fold clause, with the lexer on its 'use': '*' with an
-// optional 'but name, name', or 'name [as name], name [as name]'. Each listed
-// name becomes an alias under its local spelling, positioned at the item,
-// whose target spells the name in the field's type; whether that is a field
-// or a method is not known until the field's type is, so the fold is expanded
-// by name resolution (structFoldExpand), which is what binds each target.
-FoldClause *parseFoldClause(ParseState *parse) {
-    FoldClause *fold = newFoldClause();
-    lexNextToken();
-    if (lexIsToken(StarToken)) {
+// Parse what a fold clause admits, with the lexer past its 'use' and past the
+// source type where one is written there: '*' with an optional 'but name, name',
+// or 'name [as name], name [as name]'. Each listed name becomes an alias under
+// its local spelling, positioned at the item, whose target spells the name in
+// the source type; whether that is a field or a method is not known until the
+// source type is, so the clause is expanded during name resolution, which is
+// what binds each target.
+//
+// A star clause arrives with 'star' already set for the type-body form, whose
+// default is the whole member set: naming a sibling is what asks for it, so the
+// star has nothing left to say and may not be written.
+static void parseFoldItems(ParseState *parse, FoldClause *fold, int maystar) {
+    if (maystar && lexIsToken(StarToken)) {
         fold->star = 1;
         lexNextToken();
+    }
+    if (fold->star) {
         if (lexIsToken(ButToken)) {
             lexNextToken();
             fold->excludes = newNodes(4);
@@ -195,7 +200,7 @@ FoldClause *parseFoldClause(ParseState *parse) {
                 lexNextToken();
             }
         }
-        return fold;
+        return;
     }
     while (1) {
         if (!lexIsToken(IdentToken)) {
@@ -221,12 +226,47 @@ FoldClause *parseFoldClause(ParseState *parse) {
     }
     // 'but' leaves a name out of everything; a list admits only what it names
     if (lexIsToken(ButToken)) {
-        errorMsgLex(ErrorBadFold, "'but' leaves a name out of 'use *'. A listed fold admits only the names it lists.");
+        errorMsgLex(ErrorBadFold, "'but' leaves a name out of a fold of every member. A listed fold admits only the names it lists.");
         lexNextToken();
         while (lexIsToken(IdentToken) || lexIsToken(CommaToken))
             lexNextToken();
     }
+}
+
+// Parse a field's fold clause, with the lexer on its 'use'. The field's type is
+// the source, so the clause is nothing but what it admits, and '*' is how it
+// says every member.
+FoldClause *parseFoldClause(ParseState *parse) {
+    FoldClause *fold = newFoldClause();
+    lexNextToken();
+    parseFoldItems(parse, fold, 1);
     return fold;
+}
+
+// Parse a type body's 'use' clause, with the lexer on the 'use': the sibling
+// enrichment it folds in, then what it admits of it. Held in a field-like node,
+// as 'mixin' and a further 'is' are, because that is what carries a type
+// expression and a fold clause through cloning; it is not a field and never
+// joins the field list, since a sibling contributes no representation.
+static FieldDclNode *parseUseSibling(ParseState *parse) {
+    FieldDclNode *use = newFieldDclNode(anonName, (INode*)immPerm);
+    FoldClause *fold = newFoldClause();
+    use->fold = fold;
+    lexNextToken();
+    inodeLexCopy((INode*)use, fold->at);
+    use->vtype = parseTypeName(parse);
+    // Naming the sibling is what asks for its members, so every one of them is
+    // the default and there is no second spelling for it
+    fold->star = 1;
+    if (lexIsToken(StarToken)) {
+        errorMsgLex(ErrorBadFold, "A type body's 'use' brings in every member of what it names already; '*' says nothing more.");
+        lexNextToken();
+    }
+    else if (lexIsToken(IdentToken))
+        fold->star = 0;
+    parseFoldItems(parse, fold, 0);
+    parseEndOfStatement();
+    return use;
 }
 
 // Parse what follows a field's name: its type, an initial value and a fold
@@ -569,6 +609,30 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                     macro->flags |= pubflag;
                     iNsTypeAddMacro((INsTypeNode*)strnode, macro);
                 }
+            }
+            else if (lexIsToken(UseToken)) {
+                // A type body's 'use' folds in a SIBLING: another type that
+                // declared this type's base, whose methods therefore already
+                // take a receiver this type's values substitute for. Producer-side
+                // composition, never a consumer-side import: ordinary lookup
+                // inside a type comes from the enclosing module.
+                //
+                // It declares no name of its own, so there is nothing for 'pub'
+                // to expose; each folded name carries its target's visibility.
+                if (pubflag)
+                    errorMsgLex(ErrorBadPub, "'pub' may not precede a 'use', which declares no name of its own");
+                // Only a struct enriches a concrete base, so only a struct has a
+                // base to share with a sibling. An enum before a trait, because
+                // an enum carries TraitType too: it is the closed abstraction
+                // over its own variants.
+                if (isenum)
+                    errorMsgLex(ErrorBadFold, "An enum's variant set is its identity: it has no concrete base to share with a sibling.");
+                else if (strnode->flags & TraitType)
+                    errorMsgLex(ErrorBadFold, "A trait is an abstraction: it has no concrete base to share with a sibling, and nothing of its own to fold through.");
+                FieldDclNode *use = parseUseSibling(parse);
+                if (strnode->siblings == NULL)
+                    strnode->siblings = newNodes(4);
+                nodesAdd(&strnode->siblings, (INode*)use);
             }
             else if (lexIsToken(MixinToken)) {
                 // Handle a trait mixin, capturing it in a field-like node.

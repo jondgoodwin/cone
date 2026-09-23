@@ -162,12 +162,13 @@ vtable. A **private** generic method and a generic **static** function are
 neither slots nor requirements and cost the trait nothing.
 `trait-typecheck-vref` pins all three, and
 `conesite/public/coneref/refvirtref.html`, "Type Restrictions", is the rule.
-| `namespace` | every named member: fields, methods, macros, overload sets, `Self`, and what a fold admits — a **copy** of a folded field (a `FieldDclNode` with a `hop`) and an **alias** (`AliasDclNode`) for a folded method, overload set or macro method. The copies and aliases live here only; `fields` and `nodelist` never hold one |
+| `namespace` | every named member: fields, methods, macros, overload sets, `Self`, and what a fold admits — a **copy** of a folded field (a `FieldDclNode` with a `hop`) and an **alias** (`AliasDclNode`) for a folded method, overload set or macro method, for every member but the fields of an `extends` base, and for every member a sibling `use` admits. The copies and aliases live here only; `fields` and `nodelist` never hold one |
 | `dropfn` | NULL until the last step of type check |
 | `dclinfo` | owner and the facts its symbols are spelled from — [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols". The owner is a module, or the enum for a variant declared inside one. Read for one thing besides naming: rejecting a variant declared outside its enum's module, through `dclInfoGetModule` |
 | `basetrait` | the **type expression** of the first abstraction an `is` names, or of the enum a variant belongs to — a `NameUseNode`, or an `FnCallNode` for a generic base. **Not a `StructNode*`.** Two helpers unwrap it and they answer different questions: `structBaseTraitDcl` takes **one hop**, to the declaration this type stands on, while `structGetBaseTrait` recurses to the **bottom-most** one. Picking the wrong one is how the infection loop hangs |
 | `extendsbase` | the **type expression** of the concrete base an `extends` enriches, on the same terms. **A separate slot from `basetrait` on purpose**: the two are different assertions, a type may write both, and every walk that reads `basetrait` is asking about an abstraction |
 | `extendsdcl` | that base's **declaration**, written once its members have been taken and NULL until then — so it says both *which* type this enriches and *that* the enrichment has happened, which is what tells name resolution's expansion from type check's. `structExtendsRoot` walks it to the bottom of the chain, and `structExtendsEquiv` compares two roots: that comparison is the whole substitution rule |
+| `siblings` | a **field-like node per type-body `use`**, or NULL: its `vtype` the type expression of the sibling named, its `fold` what the clause admits. Never in `fields`, because a sibling contributes no representation; the node type is reused for what it already carries through cloning — a type expression and a clause. Read only by `structUseSiblings` |
 | `derived` | for an **enum**, its variants in declaration order. The index is the `tagnbr` only where nothing pinned one, which is what generation asks before using the tag to index the vtable list |
 | `traits` | every abstraction whose members were taken — the base, each further name in the `is` list, and each `mixin` — or NULL. Written where the members are taken (`structInheritTrait`) and read by type check's two requirement checks, the only things that still need to know which trait a requirement came from. **Which entry is the base is asked of `basetrait`, not of this list's order**, since the field walk that fills it runs backwards |
 | `fields` | all fields in layout order. A declared field may carry a fold clause (`FieldDclNode.fold`); a folded copy is never here |
@@ -259,11 +260,20 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   with an alias per listed name positioned at the item; **nothing enters the
   namespace at parse**, since whether a name is a field or a method is not
   known until the field's type is. `use` on anything that is not a struct's
-  field — a variable, a parameter, a static, a mixin, an `is` clause, a trait's
-  or an enum's field — is `ErrorBadFold` there, so the diagnostic is the fold's
-  own. **`is` names abstractions and folds nothing**: an abstraction has no
-  value for a folded name to be reached through, and delegation is what a field's
-  own clause is for.
+  field or a struct's body — a variable, a parameter, a static, a mixin, an `is`
+  clause, a trait's or an enum's field or body — is `ErrorBadFold` there, so the
+  diagnostic is the fold's own. **`is` names abstractions and folds nothing**: an
+  abstraction has no value for a folded name to be reached through, and
+  delegation is what a field's own clause is for.
+- **A `use` standing as a statement in a struct's body folds a SIBLING in**
+  (`parseUseSibling`): the type it names, then what it admits of it. Held in a
+  field-like node on `siblings`, as `mixin` and a further `is` are held in one, so
+  that one node type carries a type expression and a fold clause through cloning —
+  and off the field list, because a sibling contributes no representation. It
+  declares no name of its own, so `pub` before it is `ErrorBadPub`; each folded
+  name carries its target's visibility instead. **Naming the sibling is what asks
+  for its whole member set**, so a bare clause is a star clause and `*` written
+  out is `ErrorBadFold`: one spelling, and `but` still narrows it.
 - **A variant has two spellings and they build the same node.** A `struct` written
   inside an enum is one; so is a **bare name**, which declares an empty struct
   variant and is what lets one construct serve a plain set of named symbols as
@@ -334,8 +344,11 @@ inherited member bare, exactly as it names the type's own.
    its members waits for step 8a, after the field walk, so that whatever is left
    in the field list by then is a field this type declared — which is what
    `extends` forbids.
-5. **Demand each trait a placeholder names, and the type of each field that
-   carries a fold clause** (`structNameResDemand`): resolve it now, in its own
+4b. **Resolve each sibling a body `use` names**, for the same reason again. It is
+   demanded at step 5 with everything else, which is what makes its own `extends`
+   taken before the base it shares is compared with this type's.
+5. **Demand each trait a placeholder names, the type of each field that
+   carries a fold clause, and each sibling** (`structNameResDemand`): resolve it now, in its own
    module's scope if it lives elsewhere, so that its own members are complete
    before they are read. Still before this type's names are hooked, so the
    trait's bodies bind in the trait's scope and not in this type's. A trait
@@ -366,8 +379,12 @@ inherited member bare, exactly as it names the type's own.
    it entered as an alias. Here rather than in the walk, because the walk is what
    removes the placeholders, and before the two steps below, so that the copies
    are indexed with everything else and a fold clause that came across on a copied
-   field is expanded against the copy. Then index the fields, so that a copy a
-   fold makes next takes the index of the field it stands for.
+   field is expanded against the copy.
+8b. **Expand each body `use`, in the order written** (`structUseSiblings`, under
+   "Sibling folding" below). After the base, because the shared base is what
+   licenses the fold and this type's own members must be in place for a collision
+   to be reported at the clause that caused it. Then index the fields, so that a
+   copy a fold makes next takes the index of the field it stands for.
 9. **Expand each fold clause, in field order** (`structFoldExpand`, under
    "Name folding" below), after every trait's members are in place, so a folded
    name colliding with an inherited one is reported at the fold. A clause on a
@@ -416,7 +433,10 @@ reach in that module; see [module](module.md).
    cannot be named bare (see Hazards).
 4a. **Take the concrete base's members** where step 1a found one to take, as name
    resolution takes them at its own step 8a and in the same place in the order.
-   Then expand any fold clause name
+   **Then any body `use` name resolution could not expand** — this type or the
+   sibling was an instance of a generic, so one of them was not a declaration until
+   now. Nothing is hooked, so such a member is reached as `self.name` inside this
+   type's own methods (see Hazards). Then expand any fold clause name
    resolution left — a field whose type was an instance of a generic — and
    **refresh every folded copy** (`structFoldRefresh`): a copy took its
    origin's type node and index when the fold was expanded, and type check may
@@ -656,6 +676,56 @@ substituting for anything, and every caller has asked that question already;
 answering yes there swallowed the diagnostic that says a variant is already as
 narrow as it gets.
 
+### Sibling folding
+
+A `use` in a struct's body folds in a **sibling**: another type that declared
+this type's base. So one base plus two libraries that each enriched it become one
+type, declared once, in the namespace of whoever needs it and without either
+library being touched. The language is in
+[refinherit](../../conesite/public/coneref/refinherit.html); this is the
+mechanism, in `structUseSiblings` and what it calls.
+
+**The shared base is the whole licence, and it is the substitution rule above
+doing the work.** A sibling's method takes a receiver of the sibling's type, and
+this type's values substitute for that type because both declared one base — so
+`structExtendsEquiv` answers at the call and there is nothing else to do. Which
+is why the fold makes **only aliases**: no field copied, no receiver shifted, no
+signature retyped, no body cloned. `structUseSiblingEligible` is therefore the
+only new rule, and it asks one question — does `structExtendsRoot` answer the same
+declaration for both — plus what cannot be a sibling at all: a type with no base
+of its own to share, an abstraction, an enum, itself, and **the base or anything
+along the chain down to it**, which `extends` has reached already so that folding
+it would collide on every name rather than add one. All `ErrorUseSibling`.
+
+**Only what the sibling declares itself folds** (`structUseSiblingOwns`). A field
+in its namespace is the representation both types take from the base, so it is a
+field here already; an alias there is what the sibling took from that same base or
+delegated through a field of its own — the first arrives here by the same route,
+and the second is reached by naming the type it came from. What is left is the
+sibling's own contribution, which is the reason to name it; a listed item that
+names anything else is `ErrorBadFold`.
+
+**Otherwise it is the field fold's rules, read off the same `FoldClause`.** A
+name the sibling lacks is `ErrorNoMbr`, in the list and after `but` alike; a
+private one is `ErrorNotPublic`, because a sibling is inside the *base's*
+encapsulation boundary and not inside this type's, so what it declares privately
+stays its own; `final` and `clone` are its values' lifecycle and do not fold,
+ahead of the visibility check since that holds whether they are public or not; and
+a name already taken — by a declared member, an inherited one, the base's, or
+another sibling's — is `ErrorDupName` at the clause, **which is the collision this
+construct exists to let one declaration settle, with `as` or `but`, without
+touching either source.** A static folds and keeps its owner, as it does from a
+base: aliasing is what a static fold means everywhere, and `Rich.origin()` still
+hands back the base type.
+
+**A sibling still being resolved is `ErrorCircular`** at the clause, reported on
+whichever of a mutually folding pair was reached by demand.
+
+**Nothing in generation changes.** There is no thunk and no vtable case of its
+own: an alias resolves to the sibling's declaration, and the call is a direct call
+to it with the receiver recast, exactly as a call on a value of the sibling's own
+type is (`struct-use-sibling`, `a-folded-method-is-not-cloned-per-folding-type`).
+
 ## Flow
 
 Flow does little with a struct as such. The one mechanism that matters:
@@ -718,11 +788,12 @@ and `extractvalue`, and `vtblidx` for vtable slots.
   because `namespaceAdd` silently ignores `_`, so what reports it is type check's
   one-discriminant rule. Traits carry no tag, so a chain of `is` bases and any number
   of `mixin`s meet nothing here.
-- **A member taken from an `extends` base cannot be named bare where either side
-  is a generic.** The enrichment is taken in type check there, after every body
-  has been resolved, so `self.name` is how such a member is reached inside the
-  enriching type's own methods. Where both are plain declarations there is no such
-  limit, and `struct-extends` names everything bare.
+- **A member taken from an `extends` base, or folded from a sibling, cannot be
+  named bare where either side is a generic.** Both are taken in type check
+  there, after every body has been resolved, so `self.name` is how such a member
+  is reached inside the folding type's own methods. Where both are plain
+  declarations there is no such limit, and `struct-extends` and
+  `struct-use-sibling` name everything bare.
 - **A default method cloned from an instance of a generic trait, or a member
   folded from a field whose type is a generic's parameter, cannot be named bare.**
   The instance exists only when type check instantiates it, so what it contributes

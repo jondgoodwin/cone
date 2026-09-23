@@ -23,11 +23,13 @@
 		while side-stepping the tightly-coupled complexity and fragility
 		sometimes experienced when using traditional inheritance.</p>
 	<p>It is the same operation a module performs when it folds another module's names into its own:
-		"the names in there are now names in here." A type can do it in two places, and they answer
+		"the names in there are now names in here." A type can do it in three places, and they answer
 		different needs. On a <b>field</b> it delegates to a part, which is the whole of this page
-		until its last section. On the <b>type itself</b>, with <span class="pre">extends</span>, it
+		until its last sections. On the <b>type itself</b>, with <span class="pre">extends</span>, it
 		starts from a concrete type and enriches it with methods — see
-		<a href="#enrich">Enriching a concrete type</a>.</p>
+		<a href="#enrich">Enriching a concrete type</a>. And in the <b>type's body</b>, with
+		<span class="pre">use</span>, it folds in a <i>sibling</i>: somebody else's enrichment of that
+		same base — see <a href="#siblings">Composing several enrichments of one base</a>.</p>
 
 	<h2>Selective Inheritance</h2>
 	<p>Imagine we have this <span class="pre">Engine</span> type:</p>
@@ -284,6 +286,91 @@ areaOf(&f);                    // reaching a trait Meter does not satisfy
 		a member taken from the base is reached as <span class="pre">self.name</span> rather than by
 		bare name, because the base is not a type yet when the enrichment's bodies are read. This is
 		the same limit an inherited member of a generic trait has.</p>
+
+	<h2 id="siblings">Composing several enrichments of one base</h2>
+	<p>The motivating case for enrichment was never one library. You have somebody's floating-point
+		type. One package has already enriched it with trigonometry. Another has enriched it with
+		logarithms. Neither knows about the other, and you want all three at once, plus a method or two
+		of your own. So you enrich that same base and <span class="pre">use</span> their enrichments
+		in your body:</p>
+<pre>
+struct Trig extends Meter {
+  pub fn sine(self) i32 { cm * scale; }
+  pub fn span(self) i32 { cm * 2; }
+  pub fn tangent(self) i32 { cm * 3; }
+}
+
+struct LogExp extends Meter {
+  pub fn logOf(self) i32 { cm + scale; }
+  pub fn span(self) i32 { cm * 4; }
+}
+
+struct Rich extends Meter {
+  use Trig but tangent, span;
+  use LogExp logOf, span as wide;
+
+  pub fn both(self) i32 { sine() + logOf(); }
+}
+</pre>
+	<p>A type named by a <span class="pre">use</span> here is a <b>sibling</b>: it declared the same
+		base this type declares. That is the whole rule, and it is what makes the fold sound — a
+		sibling's method takes a receiver of the sibling's type, and values of a type that shares the
+		base substitute for that type, so <span class="pre">sine</span> may run on a
+		<span class="pre">Rich</span> exactly as it runs on a <span class="pre">Trig</span>. Nothing is
+		copied, nothing is forwarded, and no wrapper is generated.</p>
+	<p>One declaration, in your namespace, and neither library was touched. Naming
+		<span class="pre">Rich</span> is what puts all of it in view, and values still come from the
+		base the ordinary way: <span class="pre">imm r Rich = Meter.make();</span></p>
+
+	<h3>Selective, and renaming</h3>
+	<p>A bare <span class="pre">use Trig</span> takes every member the sibling adds. Naming the
+		sibling is what asks for its members, so there is no <span class="pre">*</span> to write here —
+		and the two ways to narrow it are the same two a field's clause has:</p>
+	<ul>
+		<li><b><span class="pre">use Trig but tangent, span</span></b> — everything except those.</li>
+		<li><b><span class="pre">use LogExp logOf, span as wide</span></b> — only those, the second
+			under a spelling of your own.</li>
+	</ul>
+	<p>Which is why the example needs both. <span class="pre">Trig</span> and
+		<span class="pre">LogExp</span> each declare <span class="pre">span</span>, and neither is
+		wrong to. <b>A collision between two siblings is reported at your declaration, and your
+		declaration is where it is settled</b> — leave one out, or rename it — without asking either
+		package to change anything. That is the case this construct exists for.</p>
+
+	<h3>What folds from a sibling</h3>
+	<p>Only what the sibling <i>adds</i>. Everything it took from the base is already yours by the
+		same route, so it does not arrive twice: <span class="pre">use Trig cm</span> and
+		<span class="pre">use Trig scaled</span> are both errors, and a bare
+		<span class="pre">use Trig</span> passes them over rather than colliding on every one. What
+		does fold is the sibling's own methods, its overload sets, its macro methods and its static
+		functions and variables. <b>A static keeps its owner and its signature</b>, exactly as a
+		base's does — a static folded from <span class="pre">Trig</span> that returns a
+		<span class="pre">Meter</span> still returns a <span class="pre">Meter</span>.</p>
+	<p>The other limits:</p>
+	<ul>
+		<li><b>A sibling may not add fields</b>, and cannot: it is an enrichment, so it has none of
+			its own. Every type sharing a base has one representation, which is what the whole
+			construct rests on. Folding a type that <i>could</i> add fields is a restriction for now,
+			not a wall.</li>
+		<li><b>Only a type with a base has siblings.</b> A <span class="pre">use</span> in a type that
+			declares no <span class="pre">extends</span> is refused, and so is one naming a type whose
+			base is a different one: its methods would read fields you have not got. To reuse an
+			unrelated type, declare a field of it and fold through the field.</li>
+		<li><b>Only <span class="pre">extends</span> takes siblings.</b>
+			<a href="reftrait.html"><span class="pre">is</span></a> names abstractions, which hold no
+			value for a folded name to be reached through, and it has no use for them.</li>
+		<li><b>The base itself is not a sibling of yours</b>, nor is any type along the chain down to
+			it. <span class="pre">extends</span> has brought all of it already.</li>
+		<li><b>A sibling's private members stay its own.</b> You and it are both inside the
+			<i>base's</i> encapsulation, which is why its methods may read the base's
+			<span class="pre">scale</span> on your value. Neither of you is inside the other, so only
+			what the sibling declares <span class="pre">pub</span> folds. And
+			<span class="pre">final</span> and <span class="pre">clone</span> belong to its own values'
+			lifecycle and never fold.</li>
+	</ul>
+	<p>A <span class="pre">use</span> inside a type is always this — composition, on the producer's
+		side, saying what this type is built out of. It is never an import: ordinary name lookup
+		inside a type's methods comes from the enclosing module, as it always did.</p>
 
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="refmove.html"><img alt="_" src="next.png" /></a>
