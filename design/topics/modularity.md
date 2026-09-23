@@ -185,9 +185,10 @@ made reuse across package boundaries a language problem in the first place.
 
 **`import` composes; `include` does not.** `import` binds another module's name —
 a sister found in the registry the enclosing module is, or a module loaded from a
-path — and `.*` folds its public names into the importer. Every binding it makes
-carries a visibility of its own, so what a third module sees through this one is
-what this one wrote `pub import` for. `include` injects a file's global
+path — and a `use` clause folds its public names into the importer, selected,
+renamed or excluded as a global's clause does; `.*` is `use *`. Every binding it
+makes carries a visibility of its own, so what a third module sees through this
+one is what this one wrote `pub import` or `use pub` for. `include` injects a file's global
 statements into the *current* module, producing no module and no namespace — so
 an included file's private names are private to the including module.
 

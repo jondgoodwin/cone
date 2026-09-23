@@ -31,12 +31,6 @@
 #
 # Left out deliberately:
 #
-# - Selective import, 'import mod.name'. The parser accepts a period only
-#   before '*', so this form is rejected rather than resolved. Asserting
-#   today's rejection would pin a placeholder.
-# - A name-fold clash between two wildcard imports. It is diagnosed, but both
-#   diagnostics are attributed to a source module and one of them carries the
-#   wrong file url, so a scenario built on it would pin a reporting bug.
 # - A 'mod' declaration in an *included* file, which is ErrorModDcl because an
 #   included file's declarations join the including module and so it names no
 #   module of its own. The condition module-parse-mod pins is the same one by the
@@ -251,6 +245,50 @@ category = "reject"
 description = "What an import does not put in reach: a sister's private name, a name she has not got, and a sister of an ancestor"
 tags = ["nameres"]
 diagnostics = 3
+
+# -------- an import's 'use' clause --------
+#
+# An import may carry the fold clause a global carries -- a list with 'as', '*
+# but', a block, 'use pub' -- with the imported module as the source. Every name
+# it admits is an alias with its own spelling, private to the importing module
+# unless the import says 'pub': 'pub import' reaches every binding the import
+# makes, the module's own name included, and 'use pub' only the folds.
+#
+# module-import-use runs the clause in a tree of four sisters, with a re-export
+# reached through a third module; module-import-use-nameres holds what a clause
+# does not put in reach and what it refuses to fold; module-import-use-parse
+# holds what is refused as it is parsed, and the rule for two imports of one
+# module: an identical repeat is ignored, a differing one is ErrorDupImport.
+
+[scenario.module-import-use]
+category = "run"
+description = "An import's 'use' clause: a list with 'as', '* but', a block, 'use pub' re-exported through a wildcard import, 'pub import', and identical repeats"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+# A fold binds and declares nothing, whatever its spelling. No symbol is spelled
+# after the module that folded a name, nor after the local spelling 'as' gave it;
+# every call lowers to the declaring module's own symbol.
+[[scenario.module-import-use.check]]
+name = "an-import-clause-declares-no-symbol-of-its-own"
+target = "symbols"
+contains = [
+  "define internal shapes.area comdat nodeduplicate",
+  "define internal shapes.perimeter comdat nodeduplicate",
+  "define internal units.feet comdat nodeduplicate",
+]
+excludes = ["draw.area", "draw.edge", "gallery.ft", "gallery.units", "gallery.metres", "draw.metres", "edge comdat", "ft comdat"]
+
+[scenario.module-import-use-nameres]
+category = "reject"
+description = "What an import's 'use' clause does not put in reach, and each name it refuses to fold: absent, private, colliding, the module itself"
+tags = ["nameres"]
+diagnostics = 9
+
+[scenario.module-import-use-parse]
+category = "reject"
+description = "Two imports of one module that differ, and the clause spellings refused as they are parsed"
+tags = ["parse"]
+diagnostics = 8
 
 # -------- a module's 'use' of an enum --------
 #
