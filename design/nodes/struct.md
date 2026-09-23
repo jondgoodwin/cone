@@ -296,7 +296,8 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   which is the module-level declaration alone. **`is` names abstractions and
   folds nothing**: an abstraction has no value for a folded name to be reached
   through, and delegation is what a field's own clause is for.
-- **`use pub` is refused at every type-level site**, `ErrorBadPub`: a folded
+- **`pub use` is refused at every type-level site**, and so is the retired
+  `use pub`, `ErrorBadPub`: a folded
   member of a field's type is as visible as the field it is reached through, and
   a sibling fold declares no name of its own. Only a module's global has a
   visibility of its own to declare.

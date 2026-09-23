@@ -50,7 +50,12 @@ is strictly LL(1) at the token level. What lookahead exists is character-level
 inside the scanner: a few characters for maximal-munch operators (`<=>`, `+[]`,
 `&[]`, `>>=`), and a rewind inside `lexScanChar`, which scans an alphanumeric
 run and then checks for a closing `'` to tell a lifetime (`'a`) from a character
-literal.
+literal. One reaches past the current token, still at the character level and
+lexing nothing: `lexNextIsWord` reads the source after it for a keyword, which
+`parseIsFoldClause` asks of a `pub` written after a declaration. `pub` comes
+first, so a fold clause may begin `pub use`; any other `pub` there begins the
+next statement after a missing `;`, which is still reported as the missing `;`.
+Only white space may come between the two words.
 
 **`..` and `...` are the range tokens** (`DotDotToken`, `EllipsisToken`), read
 today only by a match's range pattern. A number stops scanning at a `..`, so
