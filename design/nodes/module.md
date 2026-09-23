@@ -15,9 +15,11 @@ file of its folder into the module it draws. The registry is keyed by the file's
 path, so a file is read once and belongs to one module. The folder is what names
 the module, and a `mod` declaration in its designated file's first statement is
 checked against that name. **A subfolder holding its own designated file draws a
-submodule** (`parseSubmodule`), so the folder tree carries the module tree: the
+submodule** (`parseSubmoduleDraw`), so the folder tree carries the module tree: the
 submodule is a module like any other, owned by the module whose folder holds it,
-bound in its namespace, and reached from it by path.
+bound in its namespace, and reached from it by path. **So does a file of the
+folder whose first statement is a `mod` declaration**: a *one-file module*, named
+for its file, and in every other respect the submodule a subfolder would draw.
 Name resolution folds imports before it resolves anything else the
 module declares. Type check walks imports first, then
 every declaration in source order. Generation declares symbols for every module
@@ -55,13 +57,13 @@ name its diagnostics are reported against — `corelib`, `stdio`.
 | Field | Meaning |
 | --- | --- |
 | `namesym` | the module's name: its **folder's**, where a designated file drew the module out of a folder, and `filesym` otherwise. What an importer binds it under, what a path through it is written with, and what its declarations' symbols are spelled after |
-| `filesym` | the name derived from the module's *filename* — the source file's basename for the root, the imported file's for every other. It names a module that is one file, and nothing else reads it |
-| `foldersym` | the module's folder, when that folder's designated file drew it; NULL for a module that is one file. It is what a `mod` declaration's name is checked against, and what says a folder was swept |
-| `dclinfo` | the declaration facts — [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols". `owner` is **the parent module for a submodule**, and NULL for the root, for a module that is one file and for one an `import` reached. **The root is the module without `DclNamesChain`**: it has a name and contributes it to no symbol. `DclPrivate` is set on a submodule that does not write `pub`, and on no other module, because a module with no parent has nothing to be visible outside of |
+| `filesym` | the name derived from the module's *filename* — the source file's basename for the root, the imported file's or the one-file module's for every other. It names a module that is one file, and nothing else reads it. **For a one-file submodule it is a filesystem fact as a folder is**, and a `mod` declaration's name is checked against it; for a lone file a declaration may rename it |
+| `foldersym` | the module's folder, when that folder's designated file drew it; NULL for a module that is one file. It is what a folder module's `mod` declaration is checked against, and what says a folder was swept |
+| `dclinfo` | the declaration facts — [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols". `owner` is **the parent module for a submodule**, whether a subfolder or a one-file module drew it, and NULL for the root, for a lone file and for a module an `import` reached. **The root is the module without `DclNamesChain`**: it has a name and contributes it to no symbol. `DclPrivate` is set on a submodule that does not write `pub`, and on no other module, because a module with no parent has nothing to be visible outside of |
 | `imports` | `ImportNode`s only, held apart from `nodes` so folding can run before anything else resolves |
 | `moduses` | `ModUseNode`s only — every standalone `use` written at module scope, of an enum or of a submodule — held apart from `nodes` for the same reason, and because the statement is neither a declaration nor a field: what it declares is bindings, made in the fold pass |
 | `nodes` | every declaration the module owns, in source order, **an enum's variants among them**: a variant is walked, checked and generated as the module's, though its name is bound in its enum. This is what printing and generation iterate |
-| `namespace` | every name *visible* in the module: what it declares, **every declaration and fold of the module it extends — not the names that module's imports bind — each an `AliasDclNode` as visible here as it is there**, **the module an import bound and every name an import folded in, each an `AliasDclNode` carrying the import's own visibility**, what a global's `use` clause folded in, **the variants a `use` of an enum folded in**, **the names a `use` of a submodule folded in, each an `AliasDclNode` carrying the statement's visibility**, **each submodule its subfolders drew**, and — when a folder or a `mod` declaration named it — the module's own name. **Not an enum's variants by themselves**: those are names of the enum |
+| `namespace` | every name *visible* in the module: what it declares, **every declaration and fold of the module it extends — not the names that module's imports bind — each an `AliasDclNode` as visible here as it is there**, **the module an import bound and every name an import folded in, each an `AliasDclNode` carrying the import's own visibility**, what a global's `use` clause folded in, **the variants a `use` of an enum folded in**, **the names a `use` of a submodule folded in, each an `AliasDclNode` carrying the statement's visibility**, **each submodule its subfolders and one-file modules drew**, and — when a folder, a one-file module's file or a `mod` declaration named it — the module's own name. **Not an enum's variants by themselves**: those are names of the enum |
 | `flags` | `FlagGenMod`; `FlagModDcl` for a module a `mod` declaration named; `FlagPub` for a submodule its declaration opened |
 | `foldpass`, `folding` | the fold pass (`modFoldAll`) that last reached the module, and whether its folds are running in it. A module reached again while *folding* has closed a cycle: it is read as far as it has got, and the passes go on until they settle |
 | `extendsname` | `mod A extends B`: B as written, a `NameUseNode` bound to the module once `modExtendsResolve` finds it; NULL where the module extends nothing |
@@ -150,7 +152,8 @@ node's own clause (`foldModUseModule`).
    cycle back to any of them then finds the root in the registry.
 3. `corelib` is parsed, from the `corelibSource` string in `corelib.c`.
 4. An `ImportNode` carrying a star clause is added to the root for `corelib`.
-5. The submodules its subfolders designate are drawn, each recursively.
+5. The submodules its subfolders and one-file modules draw are drawn, each
+   recursively.
 6. The root's own files are parsed, its designated file first.
 
 `parseLoadAndParseModuleFile` is the single path by which any other module is
@@ -174,23 +177,24 @@ loaded, and it is three steps rather than one:
   adds through `modAddNode` records the module as its owner.
 
 **`parseModuleTree` is the last step of all three paths**: it draws the
-submodules the module's subfolders designate — `parseSubmoduleDraw` for every one
-of them, then `parseSubmoduleParse` for each, then the module's own files.
+submodules the module holds — `parseSubmoduleDraw` for every one of them, in the
+order of their names whichever shape each has, then `parseSubmoduleParse` for
+each, then the module's own files.
 **Every sister is drawn before any is parsed**, which is the rule the files
 follow one level down and holds for the same reason: a submodule importing a
 sister resolves that name against this namespace, so a sister drawn later would
 be a name that was not there — and her files would be unregistered, so a path
 spelled to one of them would read it a second time. **The submodules come before
 the module's own files** too, and both reasons are about what a name means before a file is read. A
-subfolder's module is a name of the namespace that no statement in any of the
-module's files declares — the folder is the declaration — so binding it ahead of
+submodule is a name of the namespace that no statement in any of the module's
+files declares — where its folder or its file sits is the declaration — so binding it ahead of
 them makes the declaration the duplicate, and the declaration is where a
 collision's first diagnostic lands. And it registers the submodule's files, so a
 file of this module that names one of them reaches the module that holds it
 rather than reading it a second time.
 
 **A module is positioned at its designated file's first line** — line 1,
-column 1 of `matrix/matrix.cone`, or of the one file of a module that is a file —
+column 1 of `matrix/matrix.cone`, or of a module's one file —
 from the moment it is made, and `parseModulePosition` is what does it, on all
 three paths. **Ruled by the author, 23 September 2026:** a module named only by
 its folder has no line in any source that declares it, and the file that makes
@@ -203,8 +207,9 @@ and a collision is reported as the second binding is made: a submodule named lik
 its parent meets the parent's own name at the draw. `lexLoadPath` reads it into a
 lexer block that is not yet current, and that block is the one
 `parseModuleFilesParse` makes current when the designated file's turn comes, so
-the file is still read once. A built-in module has no file, and keeps wherever
-the lexer stood when it was made.
+the file is still read once. The files a sweep finds are read the same way, when
+the sweep finds them (next section), and each block is the one later parsed. A
+built-in module has no file, and keeps wherever the lexer stood when it was made.
 
 ### The folder tree
 
@@ -215,9 +220,11 @@ one file and finds the rest. What makes a folder a module folder is the
 **That convention is the whole of the trigger.** The file the compiler is given
 sweeps its folder exactly when it is that folder's designated file, which is the
 same probe a subfolder would get. ▸ **So a file that is not its folder's
-designated file is a module of one file, exactly today's program**, and the files
-beside it are none of its business — which is what lets a folder hold a dozen
-unrelated programs, as every one of the test suite's group directories does.
+designated file is a lone file, a module of its own and exactly today's
+program**, and the files beside it are none of its business — which is what lets
+a folder hold a dozen unrelated programs, as every one of the test suite's group
+directories does. That holds whatever the file's first statement is: a `mod` in
+it makes it a one-file *submodule* only when a module folder's sweep finds it.
 
 ⚠ **Two other triggers were considered and are wrong, and the measurement is what
 decides it.** *Always sweep* and *sweep when the given file declares a `mod`* both
@@ -248,41 +255,71 @@ distinction:
   the enclosing module, which is what lets a large module group its files by topic
   without minting namespaces for them.
 
-**A module folder must be a direct child of its parent module's folder**, so the
-module tree's shape mirrors the folder tree's. A designated file beneath an
+**Every file gets a probe too: its first statement.** ▸ **A file of a module's
+folder whose first statement is `mod lexer;` or `pub mod lexer;` is a ONE-FILE
+MODULE** [Jon 23 Sep: "The only reason for going to a folder is if there's more
+than one file."]. It is a submodule of the folder's module in every respect a
+subfolder's would be — owned, private unless `pub`, bound under its name, drawn
+before any file is parsed — and it holds that one file and sweeps nothing: it does
+not join the folder's module, and none of that module's files join it. A file
+with no `mod` joins the folder's module, as every file did before. So **growing a
+one-file module into a folder** — moving `lexer.cone` to `lexer/lexer.cone` —
+**changes nothing for anyone who names it**: the same name, the same paths, the
+same symbols, and the same place in the order submodules are drawn, which is by
+name whichever shape each has. `module-onefile` and `module-onefile-grown` are
+that pair, and their symbols are the same.
+
+The probe is `lexOpensWithMod`, **a look at the file's text rather than a
+parse**: white space and comments are passed over, then an optional `pub`, then
+the word `mod`. Nothing is lexed, so nothing about the file is reported ahead of
+its parse, and which files a module holds still does not depend on what any
+file's parse imports. To look, the sweep reads every file it finds into its lexer
+block (`lexLoadPath`), and that block is the one `parseModuleFilesParse` or the
+drawn module later parses, so each file is still read once. The given file itself
+is not probed: a file that is not its folder's designated file is still a module
+of its own, a lone program, whatever its first statement.
+
+**A module must sit directly in its parent module's folder**, so the module
+tree's shape mirrors the folder tree's. A designated file beneath an
 organisational folder is therefore refused (`ErrorModFolder`) rather than drawing
 a module deeper than the shape allows; the folder holding it stays organisational,
 so that file is swept into the enclosing module like any other and the compile
-goes on with a coherent file set. A `mod` declaration in it is then `ErrorModDcl`,
-because a swept file declares nothing — the refusal's consequence, and the shape
-of what was wrong.
+goes on with a coherent file set. A `mod` declaration in it is then `ErrorModDcl`
+— the refusal's consequence, and the shape of what was wrong. **A one-file module
+in an organisational folder is refused under the same code**, with a message
+saying it may move up into the module's folder or drop its `mod`; it is left out
+of the compile, since the one thing it says is that it is not the enclosing
+module's file.
 
-Four conditions are diagnosed, and each names full paths, because the paths are
+Six conditions are diagnosed, and each names full paths, because the paths are
 the only thing that tells the files apart:
 
 | Condition | Code |
 | --- | --- |
 | A file another module already holds, brought into a second one — by the sweep, or by an `import` naming the importing module's own file or its own submodule | `ErrorModFile` |
 | Two files of one module sharing a basename, which leaves neither nameable | `ErrorDupFile` |
-| A designated file beneath an organisational folder, too deep to draw a module | `ErrorModFolder` |
+| A designated file or a one-file module beneath an organisational folder, too deep to be a module | `ErrorModFolder` |
+| A one-file module beside a module folder of the same name — `lexer.cone` declaring `mod` beside `lexer/lexer.cone` — naming both paths. The folder is kept and the file left out | `ErrorModFileFolder` |
 | An `import` reaching a module inside a tree by a path to its file, or naming the module that contains it | `ErrorModReach` |
-| Two of the module's files declaring one name, or a file declaring the name a subfolder's module already has | `ErrorDupName`, which is the ordinary namespace rule: a subfolder is a namespace exactly when it draws a module, and an organisational one never is |
+| Two of the module's files declaring one name, or a file declaring the name a submodule already has | `ErrorDupName`, which is the ordinary namespace rule: a subfolder is a namespace exactly when it draws a module, and an organisational one never is |
 
 ▸ **The collision between two sibling module folders needs no diagnostic, because
-it cannot be written.** A module's name is its folder's, and a filesystem gives
-two children of one folder two names — so what is left of that collision is a
-submodule's name meeting another name of the parent, which is `ErrorDupName` like
-any other duplicate.
+it cannot be written.** A module's name is its folder's or its one file's, and a
+filesystem gives two children of one folder two names — so what is left of that
+collision is a submodule's name meeting another name of the parent, which is
+`ErrorDupName` like any other duplicate. The one pair a filesystem does allow is
+`lexer.cone` beside `lexer/`, and that is `ErrorModFileFolder` above.
 
 A file that cannot join is dropped rather than parsed, and the module goes on
 with the rest of its files.
 
 ### What a submodule is, and what it is not
 
-`parseSubmodule` draws one, and it is a module in every respect — its own
-namespace, its own folder sweep, its own subfolders, its own entry in the
-program's module list, and its own turn at every later phase. **Two things make it
-a child rather than a neighbour, and they are the whole of the difference:**
+`parseSubmoduleDraw` draws one, and it is a module in every respect — its own
+namespace, its own entry in the program's module list, its own turn at every
+later phase, and, where a subfolder drew it, its own folder sweep and its own
+subfolders. **Two things make it a child rather than a neighbour, and they are
+the whole of the difference:**
 
 - **Its parent owns it** (`dclinfo.owner`), so `namePath` spells its declarations
   after the parent's name and a submodule of a submodule after both — `sub.fn`,
@@ -291,7 +328,7 @@ a child rather than a neighbour, and they are the whole of the difference:**
 - **It is private to its parent unless its declaration writes `pub`**, which
   `dclInfoJoin` writes as `DclPrivate` and `pub mod sub;` clears. Its own
   declaration is the only place that can be written, because the parent declares
-  nothing about a subfolder.
+  nothing about a subfolder or a file.
 
 **A parent reaches into it by path, and that is the ordinary rule and no new
 lookup code.** `sub.name` is a bare name that resolves to the submodule — a name
@@ -351,29 +388,33 @@ path reaches a module with no parent, which is what an external module is today.
 ### The `mod` declaration
 
 `parseModuleDcl` parses `mod name;`. **What it does with the name depends on
-whether a folder already supplied one.**
+whether the filesystem already supplied one.**
 
 - **A folder module's name is its folder's**, bound into the module's own
   namespace at load, before any of its files is parsed. A name written in the
   declaration is **checked** against it and may not replace it (`ErrorModName`):
   a name on the filesystem is one a tool that cannot parse Cone can read off a
   path, and a declaration that disagreed would be a second answer.
-- **A module that is one file is named after that file**, and its declaration
-  still renames it and binds the new name. That is transitional, and it is what
-  keeps today's programs working.
+- **A one-file module's name is its file's**, for the same reason and in the same
+  way: bound at load, and checked (`ErrorModName`, "named for its file") — `mod
+  lexer;` is written in `lexer.cone`.
+- **A lone file — the root, or a module an `import` reached by its path — is
+  named after that file**, and its declaration still renames it and binds the new
+  name. That is transitional, and it is what keeps today's programs working.
 
 Either way the bound name is duplicate-checked against the module's declarations
 like any other, and is in reach inside the module for the rest of the parse.
 
-**The declaration is the designated file's first statement, and a module declares
-itself once** (`ErrorModDcl` otherwise). It claims the module, so nothing may
-precede it, and a file the folder swept in declares nothing —
-`parseGlobalStmts` is told whether it is reading the designated file.
+**The declaration is its file's first statement, and a module declares itself
+once** (`ErrorModDcl` otherwise). It claims the module, so nothing may precede it.
+`parseGlobalStmts` is told whether it is reading the module's designated or one
+file. A file the folder swept in declares nothing: one that opened with a
+declaration would have been a one-file module instead, so a `mod` in a swept
+file is always a late one.
 
 **`pub` on the declaration opens a submodule to its parent's neighbours**, and is
-`ErrorBadPub` on any other module: the root, a module that is a file of its own
-and one an `import` reached are each inside nothing, so there is nothing for `pub`
-to open them to. It is the same `pub` every declaration carries, reaching the one
+`ErrorBadPub` on any other module: the root, a lone file and one an `import`
+reached are each inside nothing, so there is nothing for `pub` to open them to. It is the same `pub` every declaration carries, reaching the one
 declaration that draws a module.
 
 **`mod name extends base;` makes this a module that reuses another**, and the
@@ -401,8 +442,9 @@ reachable. What it names is checked once the module's names are known (below).
 **`mod trait`, a module's abstraction, is admitted and unbuilt**, reported where
 it is written and its body skipped whole (`ErrorUnbuiltKind`); its spelling is
 settled by `trait` being a modifier on the kind. **A `mod name { ... }` block does
-not exist**: a module is never declared inside a file, and nesting is by folders
-only, a nested module being a subfolder with its own designated file. The parser
+not exist**: a module is never declared inside a file, and nesting is by files
+and folders only, a nested module being a file of its own or a subfolder with its
+own designated file. The parser
 recognises the block only to say so, under the same code, and skips its body.
 
 **A `mod` declaration in the root file names the module and does not change a
@@ -411,10 +453,11 @@ bare and `main` stays linkable. Naming the module is what makes its hidden names
 reachable; what spells a symbol is the owner chain, and that is a separate
 question — see "Consequences that follow whichever way those go" below.
 
-⚠ **Filename naming is transitional, and is what a folder replaces.** A module
-that is one file is named after that file, which is what lets today's programs go
-on working unchanged. A module drawn out of a folder is named after the folder,
-and nothing about its filename is a name.
+⚠ **Filename naming that a declaration may override is transitional, and is what
+a folder replaces.** A lone file is named after that file, which is what lets
+today's programs go on working unchanged. A module drawn out of a folder is named
+after the folder, and nothing about its filename is a name; a one-file module is
+named after its file, and that name is as fixed as a folder's.
 
 **Two modules are built in, and neither is a file.** `corelib` is the
 `corelibSource` string in `corelib.c`; `stdio` is the `stdiolib` string at the
@@ -799,7 +842,7 @@ Flow analysis has no module concept; it runs per function body.
 2. **Implementations.** Only modules flagged `FlagGenMod`.
 
 **A submodule is flagged `FlagGenMod`, and an imported module is not.** A
-subfolder's module is part of the program the compiler was pointed at — its
+submodule is part of the program the compiler was pointed at — its
 bodies belong in this object exactly as a swept file's do — where an imported
 module is supplied from elsewhere and only declared. ▸ **So a program spanning a
 module TREE links and runs today, and one spanning an import does not**, which is
@@ -907,23 +950,32 @@ A module's source files are the files of a folder, and the folder tree carries
 the module tree:
 
 - **A module folder holds one designated file, named for the folder** —
-  `matrix/matrix.cone`. It alone carries the `mod` declaration. Every other
-  `.cone` file in the folder belongs to that module.
+  `matrix/matrix.cone`. It carries the folder module's `mod` declaration. Every
+  other `.cone` file in the folder belongs to that module, unless it declares a
+  module of its own.
 - **A subfolder is a submodule when it holds its own designated file**, and
   organizational otherwise. An organizational folder's files, at
   any depth beneath it, belong to the enclosing module. This is what lets a
   forty-file module group its files by topic without minting namespaces for
   them.
-- **A module folder must be a direct child of its parent module's folder.**
-  So the module tree's *shape* mirrors the folder tree's. A
-  designated file found beneath an organizational folder is an error, not a
-  deeper submodule.
-- **A module's name is its folder's name**, and a name written in its `mod`
-  declaration is checked against that rather than replacing it. The boundary is
-  declared in code — a folder is a module because it holds a designated file —
-  but the name is a filesystem fact, readable by a tool that cannot parse Cone.
+- **A file whose first statement is `mod` is a submodule of one file** [Jon 23
+  Sep: "Why do a whole ceremony around folders if there's only one file in it?"].
+  `lexer.cone` holding `mod lexer;` in a module's folder is in every respect the
+  submodule `lexer/lexer.cone` would draw, and growing it into that folder
+  changes nothing for anyone who names it. A file and a folder of one name in one
+  parent are an error naming both.
+- **A module must sit directly in its parent module's folder**, as a file there
+  or as a direct child folder. So the module tree's *shape* mirrors the folder
+  tree's. A designated file or a one-file module found beneath an organizational
+  folder is an error, not a deeper submodule.
+- **A module's name is its folder's name, or its one file's**, and a name written
+  in its `mod` declaration is checked against that rather than replacing it. The
+  boundary is declared in code — a folder is a module because it holds a
+  designated file, a file because it opens with `mod` — but the name is a
+  filesystem fact, readable by a tool that cannot parse Cone.
 - **The compiler is pointed at one file** and walks outward: the folder's other
-  files join the module, subfolders are probed for their designated file. It
+  files join the module or are modules of their own, subfolders are probed for
+  their designated file. It
   needs no package concept to do this. The layout convention that a package's top
   module lives in `src/` as `<package>.cone` is congo's, and the compiler never
   sees it.
@@ -933,7 +985,8 @@ organizational subfolders can each declare the same name into the enclosing
 module, and two files of one module can share a basename. ▸ **Two sibling module
 folders declaring one module name is not among them**, though it was listed here
 while the name was free: the folder names the module, and a filesystem gives two
-children of one folder two names.
+children of one folder two names. The one sibling pair it does allow is a
+one-file module beside a module folder of its name.
 
 ### Composing packages
 
@@ -1048,7 +1101,7 @@ public that `pub` did not.
 - **A submodule is private to its parent unless `pub`**, which is
   how a package keeps internals internal without a second visibility level.
   Written on the submodule's own `mod` declaration, since the parent declares
-  nothing about a subfolder.
+  nothing about a subfolder or a file.
 - **A folded or imported name is private to the module that folded it**,
   whatever its visibility at the origin. `import B use c as d` binds both `B` and
   `d` in A, and neither is reachable as `A.B` or `A.d`. `pub` opts in, at either
@@ -1094,7 +1147,9 @@ folder's name. **The module tree is real**: a subfolder holding its own designat
 file is a submodule, private to its parent unless it writes `pub`, spelled after
 its parent in every symbol, and reached from its parent by path — while a
 subfolder that holds none is organisational at any depth, and a designated file
-too deep to be a direct child is refused. `include` is retired and reported
+too deep to be a direct child is refused. **So is a file of the folder whose
+first statement is `mod`**: a one-file submodule, named for its file, which
+grows into a folder without anyone who names it seeing a change. `include` is retired and reported
 (`ErrorInclude`), since the folder is what brings a file in. **A module reaches SIDEWAYS too**: it
 imports a sister by name, resolved against the registry its parent is, and
 because every module of a tree is compiled into one object that import *links* —
@@ -1107,8 +1162,8 @@ a `mod name { ... }` block is refused, `ErrorUnbuiltKind` — no package, no man
 `mod trait` holds the spelling of a module's abstraction against the day there is
 something behind it; `import` takes a file path where the registry has no answer, and
 folds with a `use` clause — selecting, renaming and excluding as a global's
-clause does. A module that is one file is
-still named after that file, and its declaration still renames it. Sections and
+clause does. A lone file — the root, or a module an import reached by its
+path — is still named after that file, and its declaration still renames it. Sections and
 COMDATs are not emitted per function. What does work is the multi-module
 *generation* path, exercised by `stdio` on every compile that prints, and folding
 into a single module namespace, which is what the accumulation rule above asks
@@ -1349,7 +1404,7 @@ annotation on a reference names is a type.
   current directory.** `conec matrix.cone` run from inside `matrix/` sweeps, as
   `conec matrix/matrix.cone` and `conec matrix` do: a file's module may not depend
   on the spelling of the path used to reach it. Where the current directory cannot
-  be read the file is a module of one file.
+  be read the file is a lone file.
 - **A cycle among non-root modules is fine.** Name resolution runs after all
   parsing, so the half-parsed module the registry returns is complete before
   anything reads it. Nothing refuses a cycle; `modFoldNames` notices one only to

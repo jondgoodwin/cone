@@ -200,18 +200,18 @@ enum ErrorCode {
     // 1106 was ErrorEnumExtendsSize; an extension's variants are copies with their own layout, so an added one may be any size
 
     // 'mod': the declaration that names a file's module
-    ErrorModDcl = 1107,         // A 'mod' declaration where the module is already established: not its file's first statement, a second one, or in a file the module's folder swept in
+    ErrorModDcl = 1107,         // A 'mod' declaration where the module is already established: not its file's first statement, or a second one
 
     // A module's 'use' on a global: folding a singleton's members in as its own names
     ErrorUseGlobal = 1108,      // A global whose type cannot be a fold's source: not a struct, or an abstraction
 
     // The folder sweep: a module's files are the files of its folder
-    ErrorModName = 1109,        // A 'mod' declaration naming something other than the module's folder, which is what names it
+    ErrorModName = 1109,        // A 'mod' declaration naming something other than the module's folder, or a one-file submodule's file, which is what names it
     ErrorDupFile = 1110,        // Two files of one module sharing a basename, which leaves neither nameable
     ErrorModFile = 1111,        // A file brought into a module that another module already holds, or that this one already swept in
 
     // Folder modules: a subfolder holding its own designated file is a submodule
-    ErrorModFolder = 1112,      // A designated file beneath an organisational folder, which is no module: a module folder is a direct child of its parent module's folder
+    ErrorModFolder = 1112,      // A designated file, or a one-file module, beneath an organisational folder, which is no module: a module sits directly in its parent module's folder
 
     // Import within the tree: a module reaches its neighbours through the registry its parent is
     ErrorModReach = 1113,       // An 'import' walking a path to a file inside a module tree, or a module naming its own parent: a module in a tree is reached by name, never by a path that happened to arrive at it. Also a standalone 'use' naming a module that is not a submodule of this one: itself, an ancestor, or one beside it
@@ -250,6 +250,9 @@ enum ErrorCode {
 
     // A module's standalone 'use' folds a namespace reached without an import; an imported module is folded by its import's clause
     ErrorUseImported = 1127,    // A standalone 'use' naming a module this module reaches through an import, whose names its import's own 'use' clause folds
+
+    // One-file modules: a file of a module's folder whose first statement is 'mod' is a submodule of its own
+    ErrorModFileFolder = 1128,  // A one-file module beside a module folder of the same name in one parent's folder: 'lexer.cone' declaring 'mod' beside 'lexer/lexer.cone'
 
     // Warnings
     WarnCode = 3000,

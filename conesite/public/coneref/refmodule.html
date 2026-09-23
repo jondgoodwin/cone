@@ -15,7 +15,9 @@
 
 	<p style="margin-left: 40px;"><i>A module spans the files of its folder, its
 		designated file declares it with <span class="pre">mod</span>, and a
-		subfolder holding its own designated file is a submodule of it. A module
+		subfolder holding its own designated file is a submodule of it, as is a
+		<a href="#onefile">file of the folder that opens with its own
+		<span class="pre">mod</span></a>. A module
 		reaches its own submodules by name, folds their names in with a
 		<a href="#usesub"><span class="pre">use</span> statement</a>, and reaches a
 		<a href="refinclude.html#sister">sister by importing her</a>, and
@@ -24,7 +26,7 @@
 		may <a href="#extends">extend</a> another, reusing its names as
 		its own, and may name on its <span class="pre">mod</span> line the
 		<a href="#default">names a bare import of it folds</a>. A module is never
-		declared inside a file: nesting is by folders.
+		declared inside a file: nesting is by files and folders.
 		Module initializers, and
 		a module's abstraction (<span class="pre">mod trait</span>), and so a
 		module conforming to one, are not implemented.</i></p>
@@ -89,8 +91,10 @@ pub struct Point {
 </pre>
 	<p>Point the compiler at that file and it finds the rest itself.
 		Every other <span class="pre">.cone</span> file in the folder belongs to
-		the same module, and so does every file of every subfolder that holds no
-		designated file of its own, at any depth. Nothing lists them: putting files
+		the same module, unless it opens with a <span class="pre">mod</span> of
+		its own and so is a <a href="#onefile">module of its own</a>, and so does
+		every file of every subfolder that holds no designated file of its own, at
+		any depth. Nothing lists them: putting files
 		in a folder is what brings them together, and moving a file to another
 		folder moves it to another module. Such a subfolder groups files without
 		making a namespace of them, so a large module can be organized by topic
@@ -104,7 +108,10 @@ pub struct Point {
 		sees.</p>
 	<p>Only the designated file declares the module. Because the declaration
 		claims it, it comes before everything else in that file, and a module
-		declares itself once. A file the folder brought in declares nothing.</p>
+		declares itself once. A file the folder brought in declares nothing: a
+		file whose first statement is a <span class="pre">mod</span> is not brought
+		in at all, but is a module of its own, and a <span class="pre">mod</span>
+		anywhere later in a file is an error.</p>
 	<p>The folder is the only thing that brings a file into a module: nothing
 		written in one file brings another in, so a file's module can be told from
 		where the file sits.
@@ -126,7 +133,8 @@ fn addTo(total i32) i32 {
   counters.total + total;   // the parameter hides the global; the module's name reaches it
 }
 </pre>
-	<p>A file that is not its folder's designated file is a module of one file:
+	<p>A file the compiler is pointed at that is not its folder's designated file
+		is a module of one file:
 		a complete program or library as it always was, named after the file,
 		with the files beside it none of its business. A
 		<span class="pre">mod</span> declaration in such a file still renames its
@@ -154,8 +162,8 @@ geometry/
 		submodule declares <span class="pre">pub</span>, because a submodule is a
 		module and its private names are its own.</p>
 	<p id="usesub"><b>A parent folds a submodule's names in with
-		<span class="pre">use</span>.</b> A submodule is never imported — the
-		subfolder is what brings it in — so a parent that wants its child's names
+		<span class="pre">use</span>.</b> A submodule is never imported — its
+		subfolder or its file is what brings it in — so a parent that wants its child's names
 		bare writes a <span class="pre">use</span> statement naming the submodule,
 		and the same clause an <a href="refinclude.html#folding">import's
 		<span class="pre">use</span></a> takes follows the name:</p>
@@ -189,12 +197,47 @@ pub use detail;                  // detail's public names, re-exported as geomet
 		written <span class="pre">mod scaling;</span> only
 		<span class="pre">geometry</span> may name it. The
 		<span class="pre">pub</span> goes on the submodule's own declaration,
-		since the parent declares nothing about a subfolder, and it means what it
-		means everywhere else: this entry is visible outside this namespace.</p>
-	<p>A module folder must be a direct child of its parent module's folder, so
-		the module tree has the shape of the folder tree. A designated file
-		further down — inside a folder that holds none of its own — is an error
-		rather than a deeper submodule.</p>
+		since the parent declares nothing about a subfolder or a file, and it
+		means what it means everywhere else: this entry is visible outside this
+		namespace.</p>
+	<p id="onefile"><b>A submodule of one file needs no folder.</b> A folder is
+		only worth making when a module has more than one file, so a file of a
+		module's folder whose first statement is a <span class="pre">mod</span>
+		declaration is a submodule by itself:</p>
+<pre>
+geometry/
+  geometry.cone      the module 'geometry'
+  shapes.cone        a file of 'geometry': no 'mod' of its own
+  units.cone         'mod units;' -- the module 'geometry.units'
+  scaling/
+    scaling.cone     the module 'geometry.scaling'
+    matrix.cone      a file of 'geometry.scaling'
+</pre>
+	<p><span class="pre">units</span> is a submodule in every respect
+		<span class="pre">scaling</span> is: private to
+		<span class="pre">geometry</span> unless it is written
+		<span class="pre">pub mod units;</span>, reached by a path,
+		<span class="pre">units.metre()</span>, folded by
+		<span class="pre">use units;</span>, and imported by its sisters by name.
+		Its own <span class="pre">import</span>s follow its
+		<span class="pre">mod</span>, as a designated file's do. It does not join
+		<span class="pre">geometry</span>, and none of
+		<span class="pre">geometry</span>'s files join it. It is named for its
+		file: <span class="pre">mod units;</span> is written in
+		<span class="pre">units.cone</span>, and any other name there is an error.</p>
+	<p>When it grows past one file, move <span class="pre">units.cone</span> to
+		<span class="pre">units/units.cone</span> and put the new files beside it.
+		Nothing that names it changes: not its name, not a path through it, and
+		not the symbols the linker sees. A <span class="pre">units.cone</span> that
+		declares a module beside a <span class="pre">units/</span> folder that
+		holds its own <span class="pre">units.cone</span> is an error, since that
+		is two modules of one name.</p>
+	<p>A module must sit directly in its parent module's folder — as a file
+		there, or as a folder that is a direct child of it — so the module tree
+		has the shape of the folder tree. A designated file further down — inside
+		a folder that holds none of its own — is an error rather than a deeper
+		submodule, and so is a file that opens with <span class="pre">mod</span>
+		inside such a folder.</p>
 	<p><b>Two submodules of one module may name each other, by importing.</b> The
 		module that holds them is the registry they are found in: they are public
 		to each other and to it, and invisible outside it unless it publishes

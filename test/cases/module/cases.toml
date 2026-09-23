@@ -15,7 +15,7 @@
 # The files inside one are not registered: the sweep is what finds them, and
 # listing them would restate the thing under test.
 #
-# Only module-success, module-folder-sweep and module-submodule run. Each of them
+# Only module-success and folder scenarios run. Each of them
 # is one module or one tree of them compiled into one object, which is what a
 # program is. Everything about 'import'
 # compiles and stops there:
@@ -193,6 +193,81 @@ category = "reject"
 description = "What a path through the tree may not reach: a submodule's private declaration, an unmarked submodule from outside its parent, and a sister nobody imported"
 tags = ["nameres"]
 diagnostics = 3
+
+# -------- one-file modules --------
+#
+# A file of a module's folder whose first statement is a 'mod' declaration is a
+# submodule of its own, in every respect the submodule a subfolder draws [Jon 23
+# Sep]. module-onefile runs one tree of them; module-onefile-grown is the same
+# tree with two of them grown into folders, and its symbols check lists exactly
+# the symbols module-onefile's does, which is what pins that growing a module
+# changes nothing for anyone who names it. module-onefile-reject holds what the
+# sweep refuses at parse, and module-onefile-nameres what a path may not reach.
+
+[scenario.module-onefile]
+category = "run"
+description = "One-file submodules beside a swept file and a folder submodule: private and 'pub', reached by path, folded by 'use', imported by a sister, and importing a sister of their own"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+# A one-file module is owned by its parent, so its declarations are spelled after
+# the parent's name, exactly as a folder submodule's are. A file with no 'mod'
+# is the root's own and spelled bare. No file is a namespace beyond the module it
+# is, so nothing is spelled after a file's name that is not also its module's.
+[[scenario.module-onefile.check]]
+name = "a-one-file-modules-declarations-are-spelled-after-its-parents"
+target = "symbols"
+contains = [
+  "define internal helperAdd comdat nodeduplicate",
+  "define internal lexer.scan comdat nodeduplicate",
+  "define internal lexer.bias comdat nodeduplicate",
+  "define internal tokens.weight comdat nodeduplicate",
+  "define internal parser.parse comdat nodeduplicate",
+  "define internal parser.ast.depth comdat nodeduplicate",
+]
+excludes = ["module-onefile.", "helper."]
+
+[scenario.module-onefile-grown]
+category = "run"
+description = "module-onefile with two of its one-file modules grown into folders, and the same output and symbols"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+# The same list as module-onefile's check, entry for entry: the folder shape of a
+# module spells what its one-file shape spelled.
+[[scenario.module-onefile-grown.check]]
+name = "a-grown-modules-declarations-are-spelled-as-its-one-files-were"
+target = "symbols"
+contains = [
+  "define internal helperAdd comdat nodeduplicate",
+  "define internal lexer.scan comdat nodeduplicate",
+  "define internal lexer.bias comdat nodeduplicate",
+  "define internal tokens.weight comdat nodeduplicate",
+  "define internal parser.parse comdat nodeduplicate",
+  "define internal parser.ast.depth comdat nodeduplicate",
+]
+excludes = ["module-onefile-grown.", "helper."]
+
+[scenario.module-onefile-reject]
+category = "reject"
+description = "What a one-file module refuses: a name that is not its file's, a second declaration, a module folder of the same name beside it, a place in an organisational folder, and an import of it by its parent"
+tags = ["parse"]
+diagnostics = 5
+
+# Which files a module holds is a fact about the filesystem, so the refusal of a
+# file beside a same-named module folder, and of a one-file module in an
+# organisational folder, have no line of their own.
+[[scenario.module-onefile-reject.unlocated]]
+code = "ErrorModFileFolder"
+message = "declares module 'clash', and so does module folder"
+
+[[scenario.module-onefile-reject.unlocated]]
+code = "ErrorModFolder"
+message = "must sit directly in its parent module's folder"
+
+[scenario.module-onefile-nameres]
+category = "reject"
+description = "What a path may not reach through a one-file module: its private declaration, and an unmarked one-file module from outside its parent"
+tags = ["nameres"]
+diagnostics = 2
 
 # -------- import within the tree --------
 #

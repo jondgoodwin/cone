@@ -1019,14 +1019,76 @@ void lexNextToken() {
 // hides the keyword. The grammar needs this in one place -- a 'pub' after a
 // declaration, which is a fold clause's 'pub use' or else the start of the next
 // statement after a missing ';' -- and one keyword is all it ever looks for.
+
+// Whether the text at srcp is the keyword 'word'. The word must end where the
+// keyword does, not run on into a longer name
+static int lexIsWordAt(char *srcp, char *word) {
+    size_t len = strlen(word);
+    if (strncmp(srcp, word, len) != 0)
+        return 0;
+    char after = srcp[len];
+    return !(isalnum((unsigned char)after) || after == '_' || (after & 0x80));
+}
+
 int lexNextIsWord(char *word) {
     char *srcp = lex->srcp;
     while (*srcp == ' ' || *srcp == '\t' || *srcp == '\r' || *srcp == '\n')
         srcp++;
-    size_t len = strlen(word);
-    if (strncmp(srcp, word, len) != 0)
-        return 0;
-    // The word must end where the keyword does, not run on into a longer name
-    char after = srcp[len];
-    return !(isalnum((unsigned char)after) || after == '_' || (after & 0x80));
+    return lexIsWordAt(srcp, word);
+}
+
+// Pass over the white space and comments in front of a token, on text that is
+// not a block: nothing is counted, since there is no block to count it in
+static char *lexSkipTrivia(char *srcp) {
+    while (1) {
+        if (*srcp == ' ' || *srcp == '\t' || *srcp == '\r' || *srcp == '\n')
+            srcp++;
+        else if (*srcp == '/' && srcp[1] == '/') {
+            while (*srcp && *srcp != '\n' && *srcp != '\x1a')
+                srcp++;
+        }
+        else if (*srcp == '/' && srcp[1] == '*') {
+            // Nested, and blind to what is inside a line comment or a string,
+            // as lexBlockComment is
+            int nest = 1;
+            srcp += 2;
+            while (*srcp && nest > 0) {
+                if (*srcp == '*' && srcp[1] == '/') {
+                    --nest;
+                    srcp += 2;
+                }
+                else if (*srcp == '/' && srcp[1] == '*') {
+                    ++nest;
+                    srcp += 2;
+                }
+                else if (*srcp == '/' && srcp[1] == '/') {
+                    while (*srcp && *srcp != '\n')
+                        ++srcp;
+                }
+                else if (*srcp == '"') {
+                    ++srcp;
+                    while (*srcp && *srcp != '"')
+                        srcp += (*srcp == '\\' && srcp[1]) ? 2 : 1;
+                    if (*srcp)
+                        ++srcp;
+                }
+                else
+                    ++srcp;
+            }
+        }
+        else
+            return srcp;
+    }
+}
+
+// Does this source's first statement begin 'mod' or 'pub mod'? The folder sweep
+// asks it of every file it finds before any file is parsed, because the answer
+// decides which module the file is: one that opens with a 'mod' declaration is a
+// module of its own. It is read off the text, so nothing is lexed twice and
+// nothing about the file's first tokens is reported ahead of its parse
+int lexOpensWithMod(char *src) {
+    char *srcp = lexSkipTrivia(src);
+    if (lexIsWordAt(srcp, "pub"))
+        srcp = lexSkipTrivia(srcp + 3);
+    return lexIsWordAt(srcp, "mod");
 }

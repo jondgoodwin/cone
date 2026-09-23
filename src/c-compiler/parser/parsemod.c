@@ -62,6 +62,16 @@ ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name 
 // designated file deeper than that is refused rather than drawing a module the
 // shape could not hold.
 //
+// A folder is only worth its ceremony when a module has more than one file
+// [Jon 23 Sep], so a submodule may also be ONE FILE: a file of the module's
+// folder whose first statement is a 'mod' declaration is a submodule of its own,
+// named for its file, in every respect the submodule 'lexer/lexer.cone' would be.
+// It does not join the module its folder holds, and none of that module's files
+// join it. Growing it into a folder -- moving 'lexer.cone' to
+// 'lexer/lexer.cone' -- changes nothing for anyone who names it. What decides it
+// is the file's first statement, read off its text before anything is parsed,
+// so which files a module holds still does not depend on what any parse imports.
+//
 // A submodule is a module in every respect; what makes it a child is that its
 // parent OWNS it -- which puts the parent's name in front of its declarations'
 // symbols -- and that it is private to its parent unless its declaration says
@@ -116,35 +126,104 @@ Name *parseDesignatedFolder(char *path) {
     return nametblFind(foldername, strlen(foldername));
 }
 
-// Collect a module's files from its folder tree, and the designated file of every
-// subfolder that draws a submodule: the folder's own files first, then each
-// organisational subfolder's, at any depth.
+// The source files a sweep found, each with the block it was read into. The
+// sweep reads every file it finds, because a file's first statement decides
+// which module it is, and the block it read is the one later parsed, so each
+// file is still read once. A block is NULL for a file not read yet: the
+// designated file of a subfolder, which the module it draws reads
+typedef struct SrcFiles {
+    char **paths;
+    Lexer **blocks;
+    uint32_t count;
+    uint32_t avail;
+} SrcFiles;
+
+static void parseSrcFilesInit(SrcFiles *list) {
+    list->paths = NULL;
+    list->blocks = NULL;
+    list->count = 0;
+    list->avail = 0;
+}
+
+static void parseSrcFilesAdd(SrcFiles *list, char *path, Lexer *block) {
+    if (list->count == list->avail) {
+        list->avail = list->avail ? list->avail * 2 : 8;
+        char **paths = (char **)memAllocBlk(list->avail * sizeof(char *));
+        Lexer **blocks = (Lexer **)memAllocBlk(list->avail * sizeof(Lexer *));
+        for (uint32_t i = 0; i < list->count; ++i) {
+            paths[i] = list->paths[i];
+            blocks[i] = list->blocks[i];
+        }
+        list->paths = paths;
+        list->blocks = blocks;
+    }
+    list->paths[list->count] = path;
+    list->blocks[list->count++] = block;
+}
+
+// Collect a module's files from its folder tree, and the submodules it holds: the
+// folder's own files first, then each organisational subfolder's, at any depth.
 //
 // Every subfolder gets the same probe the file the compiler was given got. One
 // that holds its own designated file draws a module, so the sweep stops there and
 // leaves that folder's files to it; any other is organisational and its files are
 // this module's.
 //
+// Every file gets a probe too: one whose first statement is a 'mod' declaration
+// is a ONE-FILE MODULE, a submodule exactly as a subfolder's would be, and joins
+// 'submodules' rather than 'files'.
+//
 // 'organisational' says this folder is one of those, and it is what makes the
-// direct-child rule a rule rather than a convention: a designated file beneath an
-// organisational folder would be a module whose parent module's folder is not its
-// folder's parent, which the module tree has no shape for. It is refused, and the
-// folder holding it stays organisational -- its files, that one among them, belong
-// to the enclosing module, so the compile goes on with a coherent file set
-void parseCollectFolder(FileNames *files, FileNames *submodules, char *folder, char *designated, int organisational) {
+// direct-child rule a rule rather than a convention: a module beneath an
+// organisational folder would be one whose parent module's folder is not where it
+// sits, which the module tree has no shape for. A designated file there is
+// refused, and the folder holding it stays organisational -- its files, that one
+// among them, belong to the enclosing module, so the compile goes on with a
+// coherent file set. A one-file module there is refused and left out, since the
+// one thing it says is that it is not the enclosing module's
+void parseCollectFolder(SrcFiles *files, SrcFiles *submodules, char *folder, char *designated, int organisational) {
     FileNames cones, folders;
     if (!fileFolderScan(folder, &cones, &folders))
         return;    // a folder that cannot be read contributes no files
     for (uint32_t i = 0; i < cones.count; ++i) {
         char *path = parsePathJoin(folder, cones.names[i]);
-        if (strcmp(path, designated) != 0)
-            fileNamesAdd(files, path);
+        if (strcmp(path, designated) == 0)
+            continue;
+        Lexer *block = lexLoadPath(path);
+        if (!lexOpensWithMod(block->source)) {
+            parseSrcFilesAdd(files, path, block);
+            continue;
+        }
+        // A designated file here was refused already, as the folder above it was
+        // probed, and is swept in like the rest of its folder
+        if (organisational && parseDesignatedFolder(path) != NULL) {
+            parseSrcFilesAdd(files, path, block);
+            continue;
+        }
+        if (organisational) {
+            errorMsg(ErrorModFolder,
+                "Source file %s declares a module of its own, but a one-file module must sit directly in its parent module's folder. It sits in organisational folder %s, whose files are the enclosing module's: move it into the module's folder, or remove its 'mod' declaration to make it one of the enclosing module's files.",
+                path, folder);
+            continue;
+        }
+        // A file and a folder both drawing one name in one parent is two modules
+        // of one name, and the fix is to keep one of them: the folder is what the
+        // file grows into, so it is the one kept
+        char *name = fileName(path);
+        char *twin = fileDesignatedFile(parsePathJoin(parsePathJoin(folder, name), "/"), name);
+        if (twin != NULL) {
+            errorMsg(ErrorModFileFolder,
+                "Source file %s declares module '%s', and so does module folder %s beside it. A module is one file or one folder: move the file's declarations into the folder, or remove one of them.",
+                path, name, twin);
+            continue;
+        }
+        parseSrcFilesAdd(submodules, path, block);
     }
     for (uint32_t i = 0; i < folders.count; ++i) {
         char *subfolder = parsePathJoin(parsePathJoin(folder, folders.names[i]), "/");
         char *subdesignated = fileDesignatedFile(subfolder, folders.names[i]);
         if (subdesignated != NULL && !organisational) {
-            fileNamesAdd(submodules, subdesignated);
+            parseSrcFilesAdd(submodules, subdesignated, NULL);
             continue;
         }
         if (subdesignated != NULL)
@@ -155,17 +234,36 @@ void parseCollectFolder(FileNames *files, FileNames *submodules, char *folder, c
     }
 }
 
-// Every file of the module a designated file draws: the designated file first,
-// then the rest of its folder's tree, minus whatever its submodules hold.
-// 'submodules' comes back with the designated file of each subfolder that draws
-// one. A file that is nobody's designated file is a module of one file, and
-// sweeps nothing
-void parseModuleFiles(FileNames *files, FileNames *submodules, char *path, int designated) {
-    fileNamesInit(files);
-    fileNamesInit(submodules);
-    fileNamesAdd(files, path);
-    if (designated)
-        parseCollectFolder(files, submodules, memAllocStr(path, fileFolder(path)), path, 0);
+// Every file of the module a file draws: that file first, then, where it is its
+// folder's designated file, the rest of its folder's tree, minus whatever its
+// submodules hold. 'submodules' comes back with the file of each submodule: a
+// subfolder's designated file, or a one-file module's one file. A file that is
+// nobody's designated file is a module of one file, and sweeps nothing.
+// 'block' is the file's own block, where it has been read already
+void parseModuleFiles(SrcFiles *files, SrcFiles *submodules, char *path, Lexer *block, int designated) {
+    parseSrcFilesInit(files);
+    parseSrcFilesInit(submodules);
+    parseSrcFilesAdd(files, path, block);
+    if (!designated)
+        return;
+    parseCollectFolder(files, submodules, memAllocStr(path, fileFolder(path)), path, 0);
+
+    // The submodules in the order of their names, whichever shape each has: the
+    // sweep met the one-file ones among the folder's files and the others among
+    // its subfolders, and growing a module from one shape into the other must not
+    // move it in the order submodules are drawn, bound and emitted
+    for (uint32_t i = 1; i < submodules->count; ++i) {
+        char *subpath = submodules->paths[i];
+        Lexer *subblock = submodules->blocks[i];
+        uint32_t j = i;
+        while (j > 0 && strcmp(fileName(submodules->paths[j - 1]), fileName(subpath)) > 0) {
+            submodules->paths[j] = submodules->paths[j - 1];
+            submodules->blocks[j] = submodules->blocks[j - 1];
+            --j;
+        }
+        submodules->paths[j] = subpath;
+        submodules->blocks[j] = subblock;
+    }
 }
 
 // Register a module's files, so that each is read once and belongs to this
@@ -174,31 +272,31 @@ void parseModuleFiles(FileNames *files, FileNames *submodules, char *path, int d
 //
 // A path that cannot join is dropped from the list rather than parsed, and the
 // module goes on with the rest of its files
-void parseRegisterModuleFiles(ParseState *parse, ModuleNode *mod, FileNames *files) {
+void parseRegisterModuleFiles(ParseState *parse, ModuleNode *mod, SrcFiles *files) {
     for (uint32_t i = 0; i < files->count; ++i) {
-        char *path = files->names[i];
+        char *path = files->paths[i];
         Name *pathsym = nametblFind(path, strlen(path));
         ModuleNode *owner = pgmFindFile(parse->pgm, pathsym);
         if (owner) {
             errorMsg(ErrorModFile,
                 "Source file %s already belongs to module %s, and a file belongs to one module.",
                 path, &owner->namesym->namestr);
-            files->names[i] = NULL;
+            files->paths[i] = NULL;
             continue;
         }
         // Two files of one module sharing a basename leave neither nameable: a
         // basename is what a diagnostic reports against, so one of the two has
         // to be renamed
         for (uint32_t j = 0; j < i; ++j) {
-            if (files->names[j] == NULL || strcmp(fileName(files->names[j]), fileName(path)) != 0)
+            if (files->paths[j] == NULL || strcmp(fileName(files->paths[j]), fileName(path)) != 0)
                 continue;
             errorMsg(ErrorDupFile,
                 "Module %s holds two files named %s: %s and %s. A module's files are named by their basenames, so the two cannot be told apart.",
-                &mod->namesym->namestr, fileName(path), files->names[j], path);
-            files->names[i] = NULL;
+                &mod->namesym->namestr, fileName(path), files->paths[j], path);
+            files->paths[i] = NULL;
             break;
         }
-        if (files->names[i])
+        if (files->paths[i])
             pgmSetFile(parse->pgm, pathsym, mod);
     }
 }
@@ -413,7 +511,7 @@ ImportNode *parseImport(ParseState *parse, uint16_t pubflag) {
         // it, so naming it here asks for a second binding of a name it already has
         if (newmod->dclinfo.owner == (INode*)parse->mod) {
             errorMsgLexAfter(ErrorModFile,
-                "Module %s is a submodule of this one: the folder that holds it is what brings it in, so it is named without being imported.",
+                "Module %s is a submodule of this one: where its folder or its file sits is what brings it in, so it is named without being imported.",
                 &newmod->namesym->namestr);
             return NULL;
         }
@@ -576,18 +674,18 @@ static FoldClause *parseModDefaultFold(ParseState *parse) {
 // to.
 //
 // Only the header form is built: 'mod name;' as the first statement of the
-// module's designated file. What NAMES the module is its folder, which is a
-// filesystem fact a tool that cannot parse Cone can read off a path; a name
-// written here is checked against the folder's and may not replace it. A module
-// named after its file rather than its folder -- a lone file, which is today's
-// program -- has no folder name to check against, so its declaration still
-// renames it, and that is transitional.
+// module's designated file, or of a one-file module's one file. What NAMES the
+// module is its folder, or a one-file module's file, which is a filesystem fact a
+// tool that cannot parse Cone can read off a path; a name written here is checked
+// against it and may not replace it. A lone file that is no module's submodule --
+// today's program, or a file an import reached by path -- has no such name to
+// check against, so its declaration still renames it, and that is transitional.
 //
 // The declaration also binds the module's name into the module's own namespace
 // -- a module is the registry its own contents resolve against, and it publishes
-// itself into it -- except where the folder already did so at load, which is
-// what makes a module-level name a local or a type member hides reachable again,
-// as 'name.x'.
+// itself into it -- except where its folder or its file already did so at load,
+// which is what makes a module-level name a local or a type member hides
+// reachable again, as 'name.x'.
 //
 // 'mod name extends base;' makes this module one that reuses another: every
 // declaration and fold of the base becomes a name of this one, as visible here as
@@ -606,19 +704,21 @@ static FoldClause *parseModDefaultFold(ParseState *parse) {
 // is behind it yet: reporting it where it is written is what settles its
 // spelling without accepting it. A 'mod name { ... }' block is recognised only
 // to refuse it, since it does not exist: a module is never declared inside a
-// file, and a nested module is a subfolder with its own designated file.
+// file, and a nested module is a file of its own or a subfolder with its own
+// designated file.
 //
 // 'atmodstart' is whether this is the first statement of the module's designated
-// file. The declaration claims the module, so nothing may precede it, a second
-// one has nothing left to declare, and a file the folder swept in carries none at
-// all.
+// or one file. The declaration claims the module, so nothing may precede it, a
+// second one has nothing left to declare, and a file the folder swept in carries
+// none at all: a swept file that opened with one would have been a one-file
+// module rather than swept.
 //
 // 'pub' is what opens a SUBMODULE to its parent's neighbours: a submodule is
 // private to its parent unless its own declaration says otherwise, which is the
 // rule every declaration follows, reaching the declaration that draws a module.
 // Its own declaration is the only place it can be written, since the parent
-// declares nothing about a subfolder -- the folder is the declaration. A module
-// with no parent has nothing to be visible outside of.
+// declares nothing about a subfolder or a file -- where it sits is the
+// declaration. A module with no parent has nothing to be visible outside of.
 void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t pubflag) {
     // Where the declaration is written. The module node was made positioned at
     // the first line of its designated file, which is the nearest thing a module
@@ -701,11 +801,11 @@ void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t
         }
     }
 
-    // An in-file module block. Nesting is by folders only, so there is no such
-    // construct; its body is skipped so that nothing in it is reported again
+    // An in-file module block. Nesting is by files and folders only, so there is
+    // no such construct; its body is skipped so that nothing in it is reported again
     if (lexIsToken(LCurlyToken) || lexIsToken(ColonToken)) {
         errorMsgLex(ErrorUnbuiltKind,
-            "A module cannot be declared inside a file: a nested module is a subfolder with its own designated file.");
+            "A module cannot be declared inside a file: a nested module is a file of its own, or a subfolder with its own designated file.");
         parseSkipDclBody();
         return;
     }
@@ -714,7 +814,7 @@ void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t
     if (modname != NULL) {
         if (!atmodstart || (mod->flags & FlagModDcl))
             errorMsgLex(ErrorModDcl,
-                "A 'mod' declaration must be its module's designated file's first statement, and a module declares itself once. A file the folder swept in declares nothing.");
+                "A 'mod' declaration must be its file's first statement, and a module declares itself once. A file that does not open with one is a file of its folder's module, and declares nothing.");
         else {
             mod->flags |= FlagModDcl;
             mod->extendsname = (INode*)extendsname;
@@ -732,6 +832,16 @@ void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t
                     errorMsgLex(ErrorModName,
                         "This module is named for its folder, '%s'. A 'mod' declaration may restate that name; it may not change it.",
                         &mod->foldersym->namestr);
+                else
+                    copyNodeLex(mod, &dclat);
+            }
+            else if (issubmodule) {
+                // A one-file module: its file names it, as a folder would, and
+                // its parent has bound that name already
+                if (modname != mod->filesym)
+                    errorMsgLex(ErrorModName,
+                        "This module is named for its file, '%s.cone'. A 'mod' declaration may restate that name; it may not change it.",
+                        &mod->filesym->namestr);
                 else
                     copyNodeLex(mod, &dclat);
             }
@@ -927,9 +1037,10 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
 // The file is read now, when the module is made, because a module's name is
 // bound before any of its files is parsed and a collision is reported as the
 // second binding is made. The block that holds it is what parseModuleFilesParse
-// later makes current, so the file is still read once
-Lexer *parseModulePosition(ModuleNode *mod, char *path) {
-    Lexer *file = lexLoadPath(path);
+// later makes current, so the file is still read once. 'block' is the file's
+// block where the sweep that found the file has read it already
+Lexer *parseModulePosition(ModuleNode *mod, char *path, Lexer *block) {
+    Lexer *file = block ? block : lexLoadPath(path);
     mod->lexer = file;
     mod->srcp = mod->linep = file->source;
     mod->linenbr = 1;
@@ -940,15 +1051,15 @@ Lexer *parseModulePosition(ModuleNode *mod, char *path) {
 // designated file first, since it is the only one that may declare the module,
 // and then each file the folder brought in. A file dropped by registration --
 // one another module holds, or one whose basename collides -- is skipped.
-// 'dsgfile' is the designated file's block, read when the module was made
-void parseModuleFilesParse(ParseState *parse, ModuleNode *mod, Lexer *dsgfile, FileNames *files) {
+// Each file's block is the one read when the module was made or its folder swept
+void parseModuleFilesParse(ParseState *parse, ModuleNode *mod, SrcFiles *files) {
     for (uint32_t i = 0; i < files->count; ++i) {
-        if (files->names[i] == NULL)
+        if (files->paths[i] == NULL)
             continue;
-        if (i == 0 && dsgfile != NULL)
-            lexPush(dsgfile);
+        if (files->blocks[i] != NULL)
+            lexPush(files->blocks[i]);
         else
-            lexInjectPath(files->names[i]);
+            lexInjectPath(files->paths[i]);
         parseGlobalStmts(parse, mod, i == 0);
         if (lex->toktype != EofToken) {
             errorMsgLex(ErrorNoEof, "Expected end-of-file");
@@ -958,15 +1069,14 @@ void parseModuleFilesParse(ParseState *parse, ModuleNode *mod, Lexer *dsgfile, F
 }
 
 // A submodule drawn but not yet parsed: its node, bound in its parent, and the
-// files it will be parsed from
+// files it will be parsed from, its designated or one file first
 typedef struct DrawnModule {
-    ModuleNode *mod;          // NULL where the subfolder's file could not join
-    Lexer *dsgfile;           // Its designated file, read to give it its position
-    FileNames files;
-    FileNames submodules;
+    ModuleNode *mod;          // NULL where the submodule's file could not join
+    SrcFiles files;
+    SrcFiles submodules;
 } DrawnModule;
 
-void parseSubmoduleDraw(ParseState *parse, ModuleNode *parent, char *path, DrawnModule *drawn);
+void parseSubmoduleDraw(ParseState *parse, ModuleNode *parent, char *path, Lexer *block, DrawnModule *drawn);
 void parseSubmoduleParse(ParseState *parse, DrawnModule *drawn);
 
 // Add the auto-import of the core library, which every module but corelib itself
@@ -982,7 +1092,7 @@ void parseAddCorelibImport(ParseState *parse, ModuleNode *mod) {
     modAddNode(mod, NULL, (INode*)importnode);
 }
 
-// Draw the submodules this module's subfolders designate, then parse them, then
+// Draw the submodules this module holds, then parse them, then
 // parse this module's own files. The module's hook is current, so every name
 // added joins this module's namespace.
 //
@@ -995,26 +1105,28 @@ void parseAddCorelibImport(ParseState *parse, ModuleNode *mod) {
 // second time and build a duplicate module.
 //
 // The submodules also come before this module's own files, and both reasons are
-// about what a name means before a file is read. A subfolder's module is a name
-// of this namespace that no statement in any of these files declares, so binding
-// it ahead of them makes a collision with a declaration report the declaration
-// as the duplicate and the submodule, at its designated file's first line, as
-// the name it met. And it registers the submodule's files, so a file of this
+// about what a name means before a file is read. A submodule is a name of this
+// namespace that no statement in any of these files declares, so binding it
+// ahead of them makes a collision with a declaration report the declaration as
+// the duplicate and the submodule -- at its 'mod' declaration, or at its
+// designated file's first line where it has none -- as the name it met. And it registers the submodule's files, so a file of this
 // module that names one of them reaches the module that holds it rather than
 // reading it a second time
-void parseModuleTree(ParseState *parse, ModuleNode *mod, Lexer *dsgfile, FileNames *files, FileNames *submodules) {
+void parseModuleTree(ParseState *parse, ModuleNode *mod, SrcFiles *files, SrcFiles *submodules) {
     DrawnModule *drawn = submodules->count
         ? (DrawnModule*)memAllocBlk(submodules->count * sizeof(DrawnModule)) : NULL;
     for (uint32_t i = 0; i < submodules->count; ++i)
-        parseSubmoduleDraw(parse, mod, submodules->names[i], &drawn[i]);
+        parseSubmoduleDraw(parse, mod, submodules->paths[i], submodules->blocks[i], &drawn[i]);
     for (uint32_t i = 0; i < submodules->count; ++i)
         parseSubmoduleParse(parse, &drawn[i]);
-    parseModuleFilesParse(parse, mod, dsgfile, files);
+    parseModuleFilesParse(parse, mod, files);
 }
 
-// Draw the submodule a subfolder's designated file names: a module of its own,
-// holding that folder's files and whatever its own subfolders draw, bound in its
-// parent's namespace under the name the folder gives it.
+// Draw a submodule: the module a subfolder's designated file names, holding that
+// folder's files and whatever its own subfolders draw, or a one-file module,
+// holding its one file. Either is bound in its parent's namespace under the name
+// its folder or its file gives it, and nothing else tells the two apart: a module
+// grows from a file into a folder without anyone who names it seeing a change.
 //
 // Two things make it a child rather than a neighbour. Its parent OWNS it, which is
 // what puts the parent's name in front of every symbol it declares, and it is
@@ -1026,9 +1138,8 @@ void parseModuleTree(ParseState *parse, ModuleNode *mod, Lexer *dsgfile, FileNam
 // needs: the name joins the parent's namespace and is unhooked when the parent's
 // parse ends. Drawing is separated from parsing so that every sister of a level
 // is bound and registered before any of their files is read
-void parseSubmoduleDraw(ParseState *parse, ModuleNode *parent, char *path, DrawnModule *drawn) {
+void parseSubmoduleDraw(ParseState *parse, ModuleNode *parent, char *path, Lexer *block, DrawnModule *drawn) {
     drawn->mod = NULL;
-    drawn->dsgfile = NULL;
     Name *pathsym = nametblFind(path, strlen(path));
     ModuleNode *held = pgmFindFile(parse->pgm, pathsym);
     if (held) {
@@ -1044,11 +1155,12 @@ void parseSubmoduleDraw(ParseState *parse, ModuleNode *parent, char *path, Drawn
     ModuleNode *mod = pgmAddMod(parse->pgm, FlagGenMod);
     // Positioned before it is bound, since the binding is where a collision
     // with its parent's own name is found
-    drawn->dsgfile = parseModulePosition(mod, path);
+    Lexer *file = parseModulePosition(mod, path, block);
     char *basename = fileName(path);
     mod->filesym = nametblFind(basename, strlen(basename));
     // The folder names the module, as it does for any module a designated file
-    // draws -- and here the folder is a subfolder of the parent's
+    // draws -- and here the folder is a subfolder of the parent's. A one-file
+    // module has no folder of its own, and its file names it
     mod->foldersym = parseDesignatedFolder(path);
     mod->namesym = mod->foldersym ? mod->foldersym : mod->filesym;
     // The parent owns it: a submodule's declarations are spelled after the
@@ -1062,8 +1174,9 @@ void parseSubmoduleDraw(ParseState *parse, ModuleNode *parent, char *path, Drawn
     modAddNamedNode(parent, mod->namesym, (INode*)mod);
 
     // Its files, all registered before any of THIS module's or any sister's is
-    // parsed, for the reason the enclosing module's are
-    parseModuleFiles(&drawn->files, &drawn->submodules, path, 1);
+    // parsed, for the reason the enclosing module's are. A one-file module
+    // sweeps nothing: the folder it sits in is its parent's
+    parseModuleFiles(&drawn->files, &drawn->submodules, path, file, mod->foldersym != NULL);
     parseRegisterModuleFiles(parse, mod, &drawn->files);
     parseAddCorelibImport(parse, mod);
     drawn->mod = mod;
@@ -1079,9 +1192,10 @@ void parseSubmoduleParse(ParseState *parse, DrawnModule *drawn) {
     ModuleNode *svmod = parse->mod;
     parse->mod = mod;
     modHook(svmod, mod);
-    if (mod->foldersym)
-        modAddNamedNode(mod, mod->namesym, (INode*)mod);
-    parseModuleTree(parse, mod, drawn->dsgfile, &drawn->files, &drawn->submodules);
+    // Its folder or its file names it, so its name is in reach inside it whether
+    // or not a declaration restates it
+    modAddNamedNode(mod, mod->namesym, (INode*)mod);
+    parseModuleTree(parse, mod, &drawn->files, &drawn->submodules);
     modHook(mod, svmod);
     parse->mod = svmod;
 }
@@ -1118,7 +1232,7 @@ ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name 
     ModuleNode *svmod = parse->mod;
     mod = pgmAddMod(parse->pgm, filesym==corelibName || strcmp(filename, "stdio")? 0 : FlagGenMod);
     // A built-in has no file to take a position from, and keeps the importer's
-    Lexer *dsgfile = builtin ? NULL : parseModulePosition(mod, path);
+    Lexer *dsgfile = builtin ? NULL : parseModulePosition(mod, path, NULL);
     mod->filesym = filesym;
     // The module's name is a filesystem fact: its folder's, where a designated
     // file drew the module out of a folder, and its file's otherwise. Filename
@@ -1134,8 +1248,8 @@ ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name 
     // which files the module holds does not depend on what the parse of one of
     // them imports, and the designated file of every subfolder that draws a
     // submodule of it
-    FileNames files, submodules;
-    parseModuleFiles(&files, &submodules, path, mod->foldersym != NULL);
+    SrcFiles files, submodules;
+    parseModuleFiles(&files, &submodules, path, dsgfile, mod->foldersym != NULL);
     if (builtin)
         pgmSetFile(parse->pgm, pathsym, mod);
     else
@@ -1159,7 +1273,7 @@ ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name 
         lexPop();
     }
     else
-        parseModuleTree(parse, mod, dsgfile, &files, &submodules);
+        parseModuleTree(parse, mod, &files, &submodules);
     modHook(mod, svmod);
 
     // Restore focus to original module we were working on
@@ -1199,11 +1313,11 @@ ProgramNode *parsePgm(ConeOptions *opt) {
     char *path = fileFindSrc(lex ? lex->url : NULL, opt->srcpath);
     if (path == NULL)
         errorExit(ExitNF, "Cannot find or read source file %s", opt->srcpath);
-    Lexer *dsgfile = parseModulePosition(mod, path);
+    Lexer *dsgfile = parseModulePosition(mod, path, NULL);
     mod->foldersym = parseDesignatedFolder(path);
     mod->namesym = mod->foldersym ? mod->foldersym : mod->filesym;
-    FileNames files, submodules;
-    parseModuleFiles(&files, &submodules, path, mod->foldersym != NULL);
+    SrcFiles files, submodules;
+    parseModuleFiles(&files, &submodules, path, dsgfile, mod->foldersym != NULL);
     parseRegisterModuleFiles(&parse, mod, &files);
 
     // Inject and parse core library module, auto-imported into main source
@@ -1222,7 +1336,7 @@ ProgramNode *parsePgm(ConeOptions *opt) {
     // A stray '}' at global scope ends a file's statement loop. Without the
     // end-of-file check inside, the rest of that file would be silently
     // discarded
-    parseModuleTree(&parse, mod, dsgfile, &files, &submodules);
+    parseModuleTree(&parse, mod, &files, &submodules);
     modHook(mod, NULL);
     return pgm;
 }
