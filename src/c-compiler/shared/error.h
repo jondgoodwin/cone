@@ -178,10 +178,10 @@ enum ErrorCode {
     ErrorNoVariants = 1094,     // An enum declaring no variants
     ErrorEnumEquality = 1095,   // '==' on an enum whose variants carry payloads, which have no comparison
 
-    // Nominal conformance: 'is-a'
-    ErrorExtends = 1096,        // 'extends' where a nominal assertion is meant, which is 'is-a'
+    // Nominal is-a conformance, asserted with 'is'
+    ErrorExtends = 1096,        // 'extends' where a nominal assertion is meant, which is 'is'
     ErrorIsaFields = 1097,      // A trait's fields not declared by the type, in the trait's order, at position 0
-    ErrorIsaMulti = 1098,       // A trait after the first in an 'is-a' list requiring fields, which only the first may
+    ErrorIsaMulti = 1098,       // A trait after the first in an 'is' list requiring fields, which only the first may
 
     // 'trait' as a modifier on the kind
     ErrorDupTrait = 1099,       // 'trait' written twice: by itself it already means 'struct trait'
