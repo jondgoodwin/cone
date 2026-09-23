@@ -187,5 +187,7 @@ void lexInjectPath(char *path);
 void lexInject(char *src, char *url);
 void lexPop();
 void lexNextToken();
+// Is the token after the current one the keyword 'word'? The lexer is left where it was.
+int lexNextIsWord(char *word);
 
 #endif

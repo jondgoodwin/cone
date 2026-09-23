@@ -298,10 +298,10 @@ static ImportNode *parseImportPrior(ModuleNode *mod, ModuleNode *imported) {
 // module's name here, and every name it folds in.
 //
 // What follows the module is a 'use' clause, the one a global carries: '*', a
-// list with 'as', a block, '* but', and 'use pub'. '.*' is 'use *' spelled the
+// list with 'as', a block, '* but', and 'pub use'. '.*' is 'use *' spelled the
 // older way. The two 'pub's cannot disagree because they do not overlap: 'pub
-// import' reaches every binding, and 'use pub' only the folds, so both together
-// say what 'pub import' says alone.
+// import' reaches every binding, and 'pub use' only the folds, so both together
+// ('pub import m pub use ...') say what 'pub import' says alone.
 ImportNode *parseImport(ParseState *parse, uint16_t pubflag) {
     // Create import node
     ImportNode *importnode = newImportNode();
@@ -329,13 +329,13 @@ ImportNode *parseImport(ParseState *parse, uint16_t pubflag) {
                 lexNextToken();
         }
     }
-    if (lexIsToken(UseToken)) {
+    if (parseIsFoldClause()) {
         if (importnode->fold) {
             errorMsgLex(ErrorBadFold, "'.*' already folds every public name of the module. Write the 'use' clause instead of it, not beside it.");
-            parseFoldClause(parse, 1);
+            parseFoldClause(parse, FoldMayPub);
         }
         else
-            importnode->fold = parseFoldClause(parse, 1);
+            importnode->fold = parseFoldClause(parse, FoldMayPub);
     }
     if (importnode->fold && pubflag)
         importnode->fold->ispub = 1;
@@ -667,14 +667,11 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
 
         // 'use' folds an enum's variants in as names of this module. The
         // bindings it makes are the fold's, so their visibility is the fold's
-        // to say, and it says it the way every fold clause does: 'use pub'.
-        // A 'pub' before the statement would be a second spelling of that.
+        // to say, and it says it the way every declaration and every fold clause
+        // does: 'pub' first, as 'pub use'.
         case UseToken: {
-            if (pubflag)
-                errorMsgLex(ErrorBadPub,
-                    "A 'use' is made public by the fold it declares: write 'use pub', as in 'use pub Colors;'.");
             parseBadStatic(staticflag);
-            EnumUseNode *use = parseUseEnum(parse);
+            EnumUseNode *use = parseUseEnum(parse, pubflag);
             modAddNode(mod, NULL, (INode*)use);
             break;
         }

@@ -158,7 +158,7 @@ static void foldGlobalItem(ModuleNode *mod, VarDclNode *global, StructNode *src,
     target->dclnode = dcl;
     alias->through = (INode*)global;
     // A fold is private to the namespace that made it unless the clause says
-    // 'use pub'. This is the binding carrying its own visibility: the member is
+    // 'pub use'. This is the binding carrying its own visibility: the member is
     // public in its type either way, and what 'pub' decides is whether the
     // MODULE shows the name it gave it.
     if (!global->fold->ispub)
@@ -206,7 +206,7 @@ void foldGlobalExpand(NameResState *pstate, ModuleNode *mod, VarDclNode *global)
     // the default and needs nothing of it.
     if (fold->ispub && inodeIsPrivate((INode*)global)) {
         errorMsgNode(fold->at, ErrorNotPublic,
-            "A 'use pub' fold is reached from outside through %s, and %s is private. Declare it 'pub', or fold privately.",
+            "A 'pub use' fold is reached from outside through %s, and %s is private. Declare it 'pub', or fold privately.",
             &global->namesym->namestr, &global->namesym->namestr);
         return;
     }
@@ -232,7 +232,7 @@ void foldGlobalExpand(NameResState *pstate, ModuleNode *mod, VarDclNode *global)
 // everywhere, the declaring module included. 'use Colors;' is how a module asks
 // for them bare: each variant it admits becomes an alias in the module's
 // namespace, reached with no receiver -- the binding an import's fold makes --
-// private to the module unless the statement says 'use pub'.
+// private to the module unless the statement says 'pub use'.
 
 // Create a module's 'use' of an enum, positioned at its 'use'
 EnumUseNode *newEnumUseNode() {
@@ -245,7 +245,7 @@ EnumUseNode *newEnumUseNode() {
 
 // Serialize a module's 'use' of an enum
 void enumUsePrint(EnumUseNode *node) {
-    inodeFprint(node->fold->ispub ? "use pub " : "use ");
+    inodeFprint(node->fold->ispub ? "pub use " : "use ");
     inodePrintNode(node->source);
 }
 
@@ -259,7 +259,7 @@ static int foldIsVariant(StructNode *src, INode *member) {
 static void foldEnumUseBind(ModuleNode *mod, FoldClause *fold, AliasDclNode *alias, INode *variant) {
     ((NameUseNode*)alias->target)->dclnode = variant;
     // Reached with no receiver, and as visible as the statement says: a fold is
-    // private to the module that made it unless it is 'use pub'
+    // private to the module that made it unless it is 'pub use'
     alias->flags &= 0xffff - (FlagPub | FlagMethFld);
     if (fold->ispub)
         alias->flags |= FlagPub;
@@ -344,7 +344,7 @@ void foldEnumUseExpand(NameResState *pstate, ModuleNode *mod, EnumUseNode *use) 
     // not widen them past the enum they belong to
     if (fold->ispub && inodeIsPrivate((INode*)src)) {
         errorMsgNode(fold->at, ErrorNotPublic,
-            "A 'use pub' makes the variants of %s public names of this module, and %s is private. Declare it 'pub', or fold privately.",
+            "A 'pub use' makes the variants of %s public names of this module, and %s is private. Declare it 'pub', or fold privately.",
             &src->namesym->namestr, &src->namesym->namestr);
         return;
     }

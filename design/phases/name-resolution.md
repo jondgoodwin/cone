@@ -317,7 +317,7 @@ next pass a null to trip over.
 | `ir/exp/nameuse.c` | `nameUseGroup` | what a resolved name answers to `isExpNode`, `isTypeNode` and `isMetaNode`, asked of its declaration |
 | `ir/stmt/program.c` | `pgmNameRes` | two walks of the module list: every module's folds, then every module's body |
 | `ir/stmt/module.c` | `modFoldNames` | a module's folded names put in place dependency-first — its imports, then its globals' `use` clauses, then its `use` statements of enums — before any module's body resolves, so load order decides nothing |
-| `ir/stmt/fold.c` | `foldEnumUseExpand` | a module's `use` of an enum: the enum it names resolved, and each variant it admits bound as an alias in the module's namespace, private unless `use pub` |
+| `ir/stmt/fold.c` | `foldEnumUseExpand` | a module's `use` of an enum: the enum it names resolved, and each variant it admits bound as an alias in the module's namespace, private unless `pub use` |
 | `ir/stmt/module.c` | `modNameRes`, `modHook` | type aliases walked before the other nodes; module hook push/pop; the module's `NameResolving`/`NameResolved` marks |
 | `ir/stmt/import.c` | `importNameRes`, `importBindModule` | the module's own binding and each folded name, as aliases carrying the import's visibility; the source's *namespace* is what is read, and a private binding of it does not fold |
 | `ir/exp/block.c` | `blockNameRes`, `blockContinueStep` | scope push/pop, lifetime labels, jump placement, the one re-entry |

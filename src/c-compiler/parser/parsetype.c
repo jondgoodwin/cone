@@ -92,12 +92,12 @@ VarDclNode *parseVarDcl(ParseState *parse, PermNode *defperm, uint16_t flags) {
     // module, reached through the global. Refused on a local, a parameter and a
     // type's static, so that the diagnostic is the fold's own rather than a
     // missing semicolon; the clause is read and dropped to recover.
-    if (lexIsToken(UseToken)) {
+    if (parseIsFoldClause()) {
         if (flags & ParseMayFold)
-            varnode->fold = parseFoldClause(parse, 1);
+            varnode->fold = parseFoldClause(parse, FoldMayPub);
         else {
             errorMsgLex(ErrorBadFold, "Only a struct's field or a module's global may fold names in with 'use'.");
-            parseFoldClause(parse, 0);
+            parseFoldClause(parse, FoldRecover);
         }
     }
 
@@ -254,25 +254,52 @@ static void parseFoldItems(ParseState *parse, FoldClause *fold, int maystar) {
     }
 }
 
-// Parse a field's or a global's fold clause, with the lexer on its 'use'. The
-// declaration's type is the source, so the clause is nothing but what it admits,
-// and '*' is how it says every member.
+// Is the lexer on a fold clause: its 'use', or the 'pub' written before it? A
+// 'pub' after a declaration is either that or the start of the next statement
+// after a missing ';', and only the word after it can say which.
+int parseIsFoldClause() {
+    return lexIsToken(UseToken) || (lexIsToken(PubToken) && lexNextIsWord("use"));
+}
+
+// 'pub' comes first, before the keyword of whatever it makes public, as it does
+// for every declaration. 'use pub' was the fold's own spelling, now retired, and
+// it is refused at every site that admits a 'pub' fold, naming the one to write.
+static char *usePubMsg = "'pub' comes first, before the keyword of what it makes public: write 'pub use', not 'use pub'.";
+
+// A folded member of a field's type is as public as the field it is reached
+// through, so a 'pub' on a field's fold would claim what the fold does not decide
+static char *foldNoPubMsg = "A folded member is as visible as what it is reached through, so this fold has no visibility of its own to declare.";
+
+// Parse a field's, a global's or an import's fold clause, with the lexer on its
+// 'use' or on the 'pub' before it. The declaration's type is the source, so the
+// clause is nothing but what it admits, and '*' is how it says every member.
 //
-// 'use pub' says the bindings it makes are visible outside the namespace folding
-// them, which only a module's global has an answer for: a folded member of a
-// field's type is as public as the field it is reached through, so 'pub' there
-// would be claiming something the fold does not decide.
+// 'pub use' says the bindings it makes are visible outside the namespace folding
+// them, which only a module has an answer for (FoldMayPub); a field's clause
+// refuses it (FoldNoPub). 'fold->at' is the 'use', whichever was written.
 FoldClause *parseFoldClause(ParseState *parse, int maypub) {
-    FoldClause *fold = newFoldClause();
-    lexNextToken();
+    int saidpub = 0;
     if (lexIsToken(PubToken)) {
-        if (maypub)
-            fold->ispub = 1;
-        else
-            errorMsgLex(ErrorBadPub,
-                "A folded member is as visible as what it is reached through, so this fold has no visibility of its own to declare.");
+        if (maypub == FoldNoPub)
+            errorMsgLex(ErrorBadPub, "%s", foldNoPubMsg);
+        saidpub = 1;
         lexNextToken();
     }
+    FoldClause *fold = newFoldClause();
+    lexNextToken();
+    // The retired spelling. Taken as meant once refused, so that nothing after
+    // it is reported for want of the 'pub' it asked for; at a field, the refusal
+    // is the field's own, since no spelling of 'pub' is right there
+    if (lexIsToken(PubToken)) {
+        if (maypub == FoldMayPub)
+            errorMsgLex(ErrorBadPub, "%s", usePubMsg);
+        else if (maypub == FoldNoPub && !saidpub)
+            errorMsgLex(ErrorBadPub, "%s", foldNoPubMsg);
+        saidpub = 1;
+        lexNextToken();
+    }
+    if (saidpub && maypub == FoldMayPub)
+        fold->ispub = 1;
     parseFoldItems(parse, fold, 1);
     return fold;
 }
@@ -322,18 +349,23 @@ static FieldDclNode *parseUseSibling(ParseState *parse) {
 // the enum is a type body's 'use' exactly -- every variant by default, a list
 // with 'as', a block, or every variant 'but' some.
 //
-// 'use pub' makes the bindings public names of this module, so a module that
+// 'pub use' makes the bindings public names of this module, so a module that
 // imports this one with '.*' receives them too. It is how core makes Some, None,
-// Ok and Error bare in every program.
+// Ok and Error bare in every program. The 'pub' is read with the statement's
+// other leading words, before the 'use', and arrives as 'pubflag'.
 //
 // The enum is a type expression, a path included, and nothing about what it
 // names is known until name resolution; so the statement is held as written and
 // expanded in the module's fold pass (foldEnumUseExpand).
-EnumUseNode *parseUseEnum(ParseState *parse) {
+EnumUseNode *parseUseEnum(ParseState *parse, uint16_t pubflag) {
     EnumUseNode *use = newEnumUseNode();
     FoldClause *fold = use->fold;
+    fold->ispub = pubflag ? 1 : 0;
     lexNextToken();
+    // The retired spelling, refused and then taken as meant
     if (lexIsToken(PubToken)) {
+        errorMsgLex(ErrorBadPub,
+            "'pub' comes first, before the keyword of what it makes public: write 'pub use', as in 'pub use Colors;'.");
         fold->ispub = 1;
         lexNextToken();
     }
@@ -364,8 +396,8 @@ static FieldDclNode *parseFieldDclBody(ParseState *parse, FieldDclNode *fldnode)
     }
 
     // A fold clause takes its names from the field's type, so the type is written
-    if (lexIsToken(UseToken)) {
-        fldnode->fold = parseFoldClause(parse, 0);
+    if (parseIsFoldClause()) {
+        fldnode->fold = parseFoldClause(parse, FoldNoPub);
         if (fldnode->vtype == unknownType)
             errorMsgNode(fldnode->fold->at, ErrorBadFold, "A field that folds names in must write its type, which is where the names come from.");
     }
@@ -646,9 +678,9 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
             // 'is' takes no siblings to fold from: it names abstractions, and an
             // abstraction has no value to reach a folded name through. Delegation is
             // what a field's own 'use' clause is for.
-            if (lexIsToken(UseToken)) {
+            if (parseIsFoldClause()) {
                 errorMsgLex(ErrorBadFold, "'is' names abstractions and folds nothing. To delegate, declare a field of the type and write 'use' on it.");
-                parseFoldClause(parse, 0);
+                parseFoldClause(parse, FoldRecover);
             }
             continue;
         }
@@ -773,9 +805,9 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                     field->vtype = vtype;
                 // A mixin brings the trait's members in already; there is
                 // nothing left for a fold to admit
-                if (lexIsToken(UseToken)) {
+                if (parseIsFoldClause()) {
                     errorMsgLex(ErrorBadFold, "A mixin brings in every member of the trait; it does not fold.");
-                    parseFoldClause(parse, 0);
+                    parseFoldClause(parse, FoldRecover);
                 }
                 structAddField(strnode, field);
                 parseEndOfStatement();

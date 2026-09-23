@@ -50,7 +50,7 @@ void importPrint(ImportNode *node) {
     if (fold == NULL)
         return;
     // 'pub import' already made the folds public, so the clause has nothing to add
-    inodeFprint(fold->ispub && !node->ispub ? " use pub " : " use ");
+    inodeFprint(fold->ispub && !node->ispub ? " pub use " : " use ");
     if (fold->star) {
         inodeFprint("*");
         if (fold->excludes) {
@@ -131,7 +131,7 @@ int importSame(ImportNode *a, ImportNode *b) {
 // statement has been parsed and the module loaded, so the lexer has moved on to
 // whatever follows, and a duplicate of the name would otherwise be reported there.
 //
-// Only 'pub import' reaches this binding. A clause's 'use pub' speaks for the
+// Only 'pub import' reaches this binding. A clause's 'pub use' speaks for the
 // names the clause folds, and the module's own name is not one of them.
 void importBindModule(ModuleNode *mod, ImportNode *node) {
     ModuleNode *newmod = node->module;

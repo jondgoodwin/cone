@@ -87,11 +87,11 @@ the source declared that name or folded it in.
 `FoldClause` of its `use` clause, or NULL where the import folds nothing, and
 `ispub`, the visibility of the module's own binding. The clause is a global's
 exactly, parsed by `parseFoldClause`: `*`, `* but`, a list with `as`, a block, and
-`use pub`; `.*` after the module is `use *` spelled the older way, and writing it
+`pub use`; `.*` after the module is `use *` spelled the older way, and writing it
 beside a clause is `ErrorBadFold`. **Two `pub`s, and they do not overlap:**
 `pub` before the statement sets the node's `ispub` and the clause's, so it makes
 every binding the import creates public — the module's own name and each fold —
-where `use pub` sets only the clause's. `pub import m use pub …` therefore says
+where `pub use` sets only the clause's. `pub import m pub use …` therefore says
 what `pub import m use …` says, and is accepted as the same import.
 
 **A module imports another once.** `parseImport` finds a prior import of the same
@@ -105,9 +105,11 @@ of the first.
 **`EnumUseNode`** (`ir/stmt/fold.h`) is a module's `use Colors;`: `source`, the
 enum as written — a name or a path, resolved only when the fold is expanded — and
 `fold`, the `FoldClause` of what it admits, parsed by the grammar a type body's
-sibling `use` has (`parseUseEnum`). Its `ispub` comes from `use pub`; a `pub`
-*before* the statement is `ErrorBadPub`, naming the spelling, because the
-bindings are the fold's and every fold says its visibility the one way.
+sibling `use` has (`parseUseEnum`). Its `ispub` comes from the `pub` before the
+statement, `pub use Colors;`, read by `parseGlobalStmts` with every other
+declaration's and passed in: `pub` comes first, before the keyword of what it
+makes public. The retired `use pub` is `ErrorBadPub`, naming the spelling, and
+then taken as meant.
 
 ## Constructors
 
@@ -461,7 +463,7 @@ global", which owns them.
 be an enum declaration (`ErrorUseEnum` otherwise, an instance of a generic enum
 included), and binds each variant it admits as an `AliasDclNode` in the module's
 namespace — the no-receiver binding an import's fold makes, private unless the
-statement is `use pub`. It admits variants and nothing else of the enum. The rules
+statement is `pub use`. It admits variants and nothing else of the enum. The rules
 are in [Names and Namespaces](../phases/names-and-namespaces.md), "Folding an
 enum's variants into a module".
 
@@ -488,13 +490,13 @@ as its type names it, so the lowering to `global.name` reads the same from any
 module.
 
 **A fold is private to the module that made it unless the import says `pub`**,
-before the statement or as `use pub`. That is the transit rule, and it is nothing
+before the statement or as `pub use`. That is the transit rule, and it is nothing
 but the visibility rule read on a binding: what a third module sees through this
 one is what this one re-exported. A listed item is parsed as a member alias, so
 `importFoldItem` clears both bits it starts with before setting the import's.
 The import's binding of the *module's own name* is set by `pub import` alone, so
 `pub import wheels` is what lets a path walk `engine.wheels.turn`, and
-`import wheels use pub *` re-exports her names while `wheels` stays private here.
+`import wheels pub use *` re-exports her names while `wheels` stays private here.
 
 Only a public binding of the source folds, asked through `inodeIsPrivate` — the
 declaration's `DclPrivate` bit where the source declared the name, the alias's own
@@ -739,7 +741,7 @@ what its definitions say it is.
 - **A folded or imported name is private to the module that folded it**,
   whatever its visibility at the origin. `import B use c as d` binds both `B` and
   `d` in A, and neither is reachable as `A.B` or `A.d`. `pub` opts in, at either
-  of two grains: `import B use pub c as d` makes `d` public and leaves `B`
+  of two grains: `import B pub use c as d` makes `d` public and leaves `B`
   private, and `pub import B use c as d` makes both public. Both together say
   what `pub import` says alone. A module's public surface is therefore what it
   declares and deliberately re-exports, never what it happens to depend on.
@@ -800,7 +802,7 @@ for.
 
 **`use` is one clause at every module site.** A module's **global** and an
 **import** carry it whole — `*`, a list, `as`, `but`, a block form, and
-`use pub` — parsed by the one `parseFoldClause`, so a module's names are folded
+`pub use` — parsed by the one `parseFoldClause`, so a module's names are folded
 from another module the way a singleton's members are folded from its type. A
 module's `use` *statement* names an enum. See "Folding through a global" and
 "Include, import, and name folding" in
@@ -813,14 +815,14 @@ differs in its clause or its `pub` is `ErrorDupImport`, naming both.
 bindings.** A declaration has `DclPrivate`, written from the absence of `pub`
 when it joins its namespace and read by every check through `inodeIsPrivate`. A
 fold makes an `AliasDclNode`, whose `FlagPub` is its own: a global's from
-`use pub`, an import's from `use pub` or from the `pub` before the statement —
+`pub use`, an import's from `pub use` or from the `pub` before the statement —
 which alone also reaches the module's own binding. `fnCallNameResPath` enforces
 it from outside.
 
 **Transit falls out of that bit.** `importNameRes` reads the source module's
 `namespace`, so what it carries across is every public binding — declared there
 or folded there — and a fold is private to the module that made it unless the
-import said `pub` or `use pub`. What a third module sees through this one is what this one
+import said `pub` or `pub use`. What a third module sees through this one is what this one
 re-exported.
 
 **And it no longer depends on load order.** Every module's folds run before any
