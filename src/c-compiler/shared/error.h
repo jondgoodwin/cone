@@ -114,8 +114,8 @@ enum ErrorCode {
     ErrorEscape = 1064,         // A borrowed reference would outlive what it borrows from
     ErrorCallEscape = 1085,     // A call could store a borrowed-reference argument where it would outlive what it points at
 
-    // Words held for language features not yet implemented
-    ErrorReserved = 1065,       // Reserved word used as an identifier
+    // Words and spellings held for language features not yet implemented
+    ErrorReserved = 1065,       // A reserved word used as an identifier; '?.'; a '#' word
 
     // Reinterpretation, checked where the size is known
     ErrorRecastSize = 1066,     // 'as' onto a struct whose size differs from the source's
@@ -232,10 +232,13 @@ enum ErrorCode {
     // A path through an abstraction: 'Trait.name', 'Enum.name'
     ErrorAbstractMeth = 1118,   // A trait's or enum's method named through it, which owns no code for it: each implementer or variant owns a copy
 
+    // Attributes, which are keywords: '@move', '@opaque', '@unsized'
+    ErrorUnkAttr = 1119,        // A '@' word that names no attribute
+
     // Comparing references: '==' and ordering read through to the values, '===' asks whether they are the same place
-    ErrorRefNoCompare = 1119,   // '==', '!=' or an ordering on references whose referent has no such operator, or on a slice or virtual reference, whose referents have no comparison built
-    ErrorRefCompareMixed = 1120, // A comparison with a reference on one side and a value on the other: both are read through, or neither
-    ErrorSameNotRef = 1121,     // '===' or '!==' on a value that is neither a reference nor a pointer, which has no place to be the same as
+    ErrorRefNoCompare = 1123,   // '==', '!=' or an ordering on references whose referent has no such operator, or on a slice or virtual reference, whose referents have no comparison built
+    ErrorRefCompareMixed = 1124, // A comparison with a reference on one side and a value on the other: both are read through, or neither
+    ErrorSameNotRef = 1125,     // '===' or '!==' on a value that is neither a reference nor a pointer, which has no place to be the same as
 
     // Warnings
     WarnCode = 3000,

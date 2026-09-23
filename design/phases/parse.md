@@ -98,6 +98,19 @@ at first use, and then **released** — `Name.node` is cleared and the word
 continues as an ordinary identifier, so the rest of the compile is not derailed
 by it.
 
+**Every token the lexer returns has a reader.** A spelling no feature reads is
+reported in the lexer and never reaches the parser, because a token nothing
+consumes is a cascade of parse errors behind it. Three are refused this way, each
+with one diagnostic. An attribute is a keyword (`@move`, `@opaque`, `@unsized`),
+so any other `@` word is `ErrorUnkAttr` and is dropped, the declaration read
+without it; `@samesize` gets its own wording, since an enum is same-size by
+default and `@unsized` declines it. A `#` word is held for metaprogramming:
+`ErrorReserved`, and it is dropped with the rest of its line, so what `#if`
+was followed by is not reported again. `?.` is held for None propagation:
+`ErrorReserved`, and it is read as `.`. `lexScanIdent` returns 0 for a dropped
+word and `lexNextToken` scans on from where it stopped.
+`lexical-reject-unbuilt` holds all three.
+
 **A word held for an unimplemented feature is reserved; a word that names an
 unbuilt *kind of declaration* is a token.** `mod` and `actor` are the two kinds
 that carry abstractions, so both are ordinary keywords with an arm of their own in
@@ -331,6 +344,7 @@ never be analyzed.
 
 | Mechanism | Behavior |
 | --- | --- |
+| a spelling the lexer refuses | a reserved word, `?.`, or a `@` or `#` word that names nothing is reported in the lexer and handed on as what it stands for or not at all (section 2), so the parser never sees it |
 | `parseSkipToNextStmt` | the main resync; consumes through the next `;`, or stops short of a `}` or EOF for the enclosing block to handle |
 | an unbuilt form's body | `parseSkipDclBody` skips a following `{ … }` whole, counting depth, so nothing inside is read as a global statement and reported again, and resyncs at the next `;` where there is no block. `actor`, a nested `mod` block and `mod trait` all use it, so each is reported once, where it is written |
 | `parseCloseTok` | reports `ErrorNoRParen`, scans for the closer, gives up at `;`, `}`, EOF |
@@ -362,7 +376,7 @@ numbers.
 | --- | --- | --- |
 | `parser/lexer.c` | `lexInject`, `lexInjectPath`, `lexPop` | push and pop a source on the lexer chain. `lexInjectPath` reads an already-located file: locating one is the caller's, since the path is what the file registry is keyed by |
 | | `lexNextToken` | the scan dispatch; whitespace, comments, maximal-munch operators |
-| | `lexScanIdent` | identifier scan and name-table classification; reserved-word release |
+| | `lexScanIdent` | identifier scan and name-table classification; reserved-word release; a `@` or `#` word that names nothing reported and dropped |
 | | `lexScanNumber`, `lexScanString`, `lexScanChar`, `lexScanEscape` | literals; UTF-8 re-encoding of escapes; lifetime-vs-char disambiguation |
 | | `lexNewLine`, `lexBlockComment` | line counting for diagnostics, inside comments included |
 | `parser/parsemod.c` | `parsePgm` | **entry point** — tables, program, main module, corelib, main file |
@@ -420,9 +434,7 @@ numbers.
 
 ## 11. Known gaps
 
-**Four tokens are lexed and never consumed.** This is read off the source and
-**unverified** — it needs a probe before it is trusted, and it is the one claim
-in this note that does.
+None recorded.
 
 ## 12. What lives elsewhere
 

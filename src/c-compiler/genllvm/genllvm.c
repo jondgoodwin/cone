@@ -153,31 +153,48 @@ LLVMValueRef genlAlloca(GenState *gen, LLVMTypeRef type, const char *name) {
     return alloca;
 }
 
+// Whether a global's storage is a string literal's text plus a NUL. Such a
+// global is not a copy of the literal: its storage is the initialized data,
+// so like the literal's own it is one byte longer than its type, and its
+// llvmvar is its address recast to a pointer to that type.
+static int genlGloVarHasNul(VarDclNode *glovar) {
+    return !(glovar->flags & FlagExtern) && glovar->value && glovar->value->tag == StringLitTag;
+}
+
+// The LLVM global itself behind a global variable's llvmvar, which is a
+// recast of it when the global carries a NUL
+static LLVMValueRef genlGloVarGlobal(VarDclNode *glovar) {
+    return genlGloVarHasNul(glovar) ? LLVMGetOperand(glovar->llvmvar, 0) : glovar->llvmvar;
+}
+
 // Generate global variable
 void genlGloVar(GenState *gen, VarDclNode *varnode) {
+    LLVMValueRef global = genlGloVarGlobal(varnode);
+
     // An extern global is defined in some other object file; this one only
     // names it, and a declaration may not lead a COMDAT
     if (!(varnode->flags & FlagExtern))
-        genlComdat(gen, varnode->llvmvar);
+        genlComdat(gen, global);
 
     if (!varnode->value) {
         // If no value on non-extern, initialize with the zero initializer
         if (!(varnode->flags & FlagExtern))
-            LLVMSetInitializer(varnode->llvmvar, LLVMConstNull(genlType(gen,varnode->vtype)));
+            LLVMSetInitializer(global, LLVMConstNull(genlType(gen,varnode->vtype)));
         return;
     }
 
+    // The text, and the NUL after it that the variable's type does not count
     else if (varnode->value->tag == StringLitTag) {
         SLitNode *strnode = (SLitNode*)varnode->value;
-        LLVMSetInitializer(varnode->llvmvar, LLVMConstStringInContext(gen->context, strnode->strlit, strnode->strlen, 1));
+        LLVMSetInitializer(global, LLVMConstStringInContext(gen->context, strnode->strlit, strnode->strlen, 0));
     }
     else
-        LLVMSetInitializer(varnode->llvmvar, genlExpr(gen, varnode->value));
+        LLVMSetInitializer(global, genlExpr(gen, varnode->value));
 
     // Mark initialized, immutable global variable as constant,
     // so it goes into a faster memory page that we know we will never be mutated
     if (itypeGetTypeDcl(varnode->perm) == (INode*)immPerm)
-        LLVMSetGlobalConstant(varnode->llvmvar, 1);
+        LLVMSetGlobalConstant(global, 1);
 }
 
 // Whether this object file defines a declared symbol rather than merely
@@ -234,14 +251,26 @@ void genlLinkage(LLVMValueRef global, INode *dclnode, int defined) {
 // It sets appropriate visibility, linkage and constant flags for the linker
 void genlGloVarName(GenState *gen, VarDclNode *glovar) {
     char symbol[2048];
-    glovar->llvmvar = LLVMAddGlobal(gen->module, genlType(gen, glovar->vtype), nameSymbol(symbol, (INode*)glovar));
+    LLVMTypeRef vartype = genlType(gen, glovar->vtype);
+    LLVMValueRef global;
+    // A string literal's text is stored with a NUL after it, for C, as the
+    // literal's own global is. Every Cone use goes through a pointer to the
+    // variable's type, so the NUL is not counted and no Cone store reaches it.
+    if (genlGloVarHasNul(glovar)) {
+        SLitNode *strnode = (SLitNode*)glovar->value;
+        LLVMTypeRef nultype = LLVMArrayType(LLVMInt8TypeInContext(gen->context), strnode->strlen + 1);
+        global = LLVMAddGlobal(gen->module, nultype, nameSymbol(symbol, (INode*)glovar));
+        glovar->llvmvar = LLVMConstBitCast(global, LLVMPointerType(vartype, 0));
+    }
+    else
+        global = glovar->llvmvar = LLVMAddGlobal(gen->module, vartype, nameSymbol(symbol, (INode*)glovar));
 
     // Mark immutable global variables as 'constant', so they can appear in immutable blocks
     // This improves performance
     if (permIsSame(glovar->perm, (INode*) immPerm))
-        LLVMSetGlobalConstant(glovar->llvmvar, 1);
+        LLVMSetGlobalConstant(global, 1);
 
-    genlLinkage(glovar->llvmvar, (INode*)glovar, genlIsDefinedHere((INode*)glovar));
+    genlLinkage(global, (INode*)glovar, genlIsDefinedHere((INode*)glovar));
 }
 
 // Generate LLVMValueRef for a global function
