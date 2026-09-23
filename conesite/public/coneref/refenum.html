@@ -171,6 +171,34 @@ enum Traffic {
 		them only when the enum is instantiated.
 		A variant that an extension copies from its base (below) keeps what its names meant where it
 		was written, so it still means the base's variants.</p>
+	<p><b>The enum is also the privacy boundary for its variants.</b> A member not declared
+		<span class="pre">pub</span> is private, but code written anywhere inside the enum's braces
+		&mdash; the enum's methods, its static functions, and every variant's methods &mdash; reads and
+		writes the private fields of the enum and of every variant, calls their private methods, and
+		gives private fields their values when it builds a variant, through any value and not only
+		through <span class="pre">self</span>. From outside the braces they stay private, as a
+		struct's do. So <span class="pre">pub</span> means what it means everywhere: part of the
+		enum's interface to the rest of the program, and not a way for one variant to reach
+		another.</p>
+<pre>
+enum Gauge {
+	struct Low {
+		lo i32;
+		pub fn above(self &amp;, h &amp;High) Bool {h.hi &gt; lo;}   // High's private field
+	}
+	struct High {
+		hi i32;
+	}
+	pub fn level(g &amp;Gauge) i32 {                          // a static function
+		match g {
+			case imm l &amp;Low {l.lo;}
+			case imm h &amp;High {h.hi;}
+		}
+	}
+}
+</pre>
+	<p>An anonymous function written inside the braces is not part of this: like one written in a
+		struct's method, it belongs to the module.</p>
 	<p>A module that wants an enum's variants as names of its own says so with
 		<span class="pre">use</span>, which names the enum and then, optionally, which variants:</p>
 <pre>
@@ -449,6 +477,11 @@ enum RichColors extends Colors {
 		is readable from a value whose variant is not yet known, a default method is available, and a
 		<a href="#dispatch">requirement</a> dispatches on the variant &mdash; which an added variant
 		must therefore implement, as the base's own variants do.</p>
+	<p><b>An extension is inside its base's privacy boundary.</b> Its added variants' methods, and
+		the methods its copies brought with them, reach the private members of its own variants
+		&mdash; the copies among them &mdash; and of the base's, as the base's own code does. The
+		reach runs one way: the base's code does not see what an extension adds, and two extensions
+		of one base do not see each other's variants, copies included.</p>
 	<p><b>Each of the two enums is laid out on its own</b>, since neither holds the other's variants.
 		So extending an enum never changes the base: an <span class="pre">Option</span>-shaped enum
 		of an empty variant and one holding a single reference stays a bare pointer, however many

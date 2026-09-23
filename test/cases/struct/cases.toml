@@ -38,6 +38,13 @@
 # dispatches through a virtual reference, because what it establishes is what
 # 'extends' delivers rather than what a virtual reference reaches.
 #
+# struct-extends-lifecycle is beside it: enriching a base that declares 'final'
+# or 'clone'. Separate because its claims are about a different mechanism --
+# those two are copied into the enrichment with 'Self' retyped, where every other
+# member is aliased -- and about a value's life rather than what a call reaches:
+# that the base's finalizer runs once for a value typed as the enrichment, in
+# what order beside its fields', and that 'clone' produces the enrichment.
+#
 # struct-use-sibling is the eighth: folding a SIBLING enrichment in with a type
 # body's 'use'. It rests on struct-extends and is separate from it, because the
 # two answer different questions -- that one pins what one base gives one
@@ -74,7 +81,9 @@
 # - A 'clone' method, for the same reason: its first parameter is 'self &new'.
 #   The name 'clone' is recognized far enough to turn off the move-type
 #   inference a finalizer causes, but the method it refers to cannot be
-#   declared.
+#   declared as the reference describes it. A method of another shape may take
+#   the name, and struct-extends-lifecycle declares one to show what an
+#   enrichment's copy of it returns; nothing calls it implicitly.
 #
 # - Field-by-field initialization of a struct declared without a value. Flow
 #   analysis tracks the whole value, so assigning every field one at a time
@@ -361,6 +370,26 @@ contains = [
 ]
 excludes = ["Gauge.scaled", "Fancy.scaled", "Labeled.scaled", "Ruler.scaled"]
 
+[scenario.struct-extends-lifecycle]
+category = "run"
+description = "Enriching a base that declares 'final' or 'clone': the base's finalizer runs once for a value typed as the enrichment, and 'clone' produces the enrichment"
+tags = ["nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+# Where every other member of the base is aliased, 'final' and 'clone' are copied:
+# each enrichment owns one, spelled after it, and so does every type down a chain
+# and a type folding a sibling. The base's own is still one symbol of its own. A
+# run cannot tell a copy from an alias, since the finalizer's output is the same.
+[[scenario.struct-extends-lifecycle.check]]
+name = "an-enrichment-owns-a-copy-of-the-lifecycle"
+target = "symbols"
+contains = [
+  "define internal File.final comdat nodeduplicate",
+  "define internal LoggedFile.final comdat nodeduplicate",
+  "define internal AuditedFile.final comdat nodeduplicate",
+  "define internal BothFile.final comdat nodeduplicate",
+  "define internal Pt2.clone comdat nodeduplicate",
+]
+
 [scenario.struct-use-sibling]
 category = "run"
 description = "Folding a sibling enrichment's methods in with a type body's 'use', selectively and under spellings of its own"
@@ -406,6 +435,14 @@ category = "compile"
 description = "Enriching a base declared in another module, private members included"
 tags = ["nameres", "typecheck", "genllvm"]
 
+# The base's private finalizer comes across as a copy owned by the enrichment and
+# generated in this module, which is what a value of it is finalized by here. A
+# compile cannot run it; struct-extends-lifecycle runs one.
+[[scenario.struct-extends-import.check]]
+name = "a-finalizer-from-another-module-is-copied-here"
+target = "symbols"
+contains = ["define internal LoggedHandle.final comdat nodeduplicate"]
+
 # -------- parse stage --------
 
 [scenario.struct-parse]
@@ -434,14 +471,14 @@ diagnostics = 15
 
 # Taking a base's members is what builds the enriching type's dictionary, so what
 # may be enriched and what an enrichment may declare are both this stage's: a
-# field of its own, a name the base already has, an abstraction or an enum or a
-# variant or a number as the base, a base carrying a lifecycle method, and the
-# two shapes of cycle.
+# field of its own, one that owns a resource included, a name the base already
+# has, a 'final' of its own over the base's among them, an abstraction or an enum
+# or a variant or a number as the base, and the two shapes of cycle.
 [scenario.struct-nameres-extends]
 category = "reject"
 description = "What may be enriched with 'extends', and what an enrichment may not declare"
 tags = ["nameres"]
-diagnostics = 10
+diagnostics = 11
 
 # A sibling fold is expanded right after the base's members are taken, so what a
 # body clause may name and what it may admit of it are both this stage's: a type
@@ -493,10 +530,10 @@ diagnostics = 9
 category = "reject"
 description = "Struct constructors that do not agree with the type's fields"
 tags = ["typecheck"]
-diagnostics = 5
+diagnostics = 6
 
 [scenario.struct-typecheck-methods]
 category = "reject"
 description = "Method, field and operator accesses a struct's type cannot answer, including a private 'isTrue' a coercion to Bool injects a call to"
 tags = ["typecheck"]
-diagnostics = 21
+diagnostics = 23

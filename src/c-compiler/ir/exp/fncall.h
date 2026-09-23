@@ -48,7 +48,9 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **node);
 // an operator written on a pointer does not reach through at all.
 // Returns 1 when lowered, 0 when the receiver's type supports no methods at all
 // (so the caller may try another way), and -1 when a diagnostic was reported.
-int fnCallLowerMethod(FnCallNode *callnode);
+// 'pstate' says whose code the call is written in, for a private member; a
+// lowering with none to give passes NULL, which grants only what 'self' reaches.
+int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode);
 
 // The access reaching field 'fld' on 'obj', positioned on 'lexnode': for a
 // declared field one field access, for a folded copy an access per hop and

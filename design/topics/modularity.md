@@ -62,7 +62,7 @@ large**, which is why the interesting decisions are at the bottom of this table.
 | --- | --- | --- | --- | --- | --- | --- |
 | **control block** | statements in sequence, blocks nested | locals | single entry, single exit; locals released at exit | n/a by design — promote it to a function | n/a | n/a |
 | **function** | the block it holds, and the calls in it | parameters and locals | body invisible; the signature is the interface | function references | generics | overload sets ⚠ *unconfirmed reading* |
-| **type** | fields; an enum's spliced into its variants at compile time | members | members are private unless `pub` | traits and virtual references, asserted with `is` or noticed structurally | generics; trait defaults cloned into implementers | ⚠ **unknown** — whether a type can gain methods outside its own declaration is not established |
+| **type** | fields; an enum's spliced into its variants at compile time | members | members are private unless `pub`; an enum and its variants are one boundary | traits and virtual references, asserted with `is` or noticed structurally | generics; trait defaults cloned into implementers | ⚠ **unknown** — whether a type can gain methods outside its own declaration is not established |
 | **thread** | **absent** | **absent** | **absent** | **absent** | **absent** | **absent** |
 | **module** | the files of a folder, swept from the designated file the compiler is given, plus the submodules its subfolders draw; an organisational subfolder's files, at any depth, join the enclosing module | yes — the folder names the module, and a submodule is reached by a path through its parent | names are private unless `pub`, and a submodule is private to its parent unless `pub` | **absent** — module traits are planned | **absent** — generic modules are planned | **absent** |
 | **program / library** | linking; `extern` and the C ABI | ⚠ **absent — the linker has one flat symbol space**, and nothing in a generated name carries the package | partial — a program's definitions are internal to its object, but what a package exports is undecided | **absent** | **absent** | **absent** |
@@ -123,7 +123,10 @@ cannot hold a type and a function of the same name.
 name is private to its module or its type unless its declaration says `pub`,
 so the interface of a namespace is exactly what its author declared it to be,
 and the default is the smallest interface rather than the largest. There is no
-export list; the declarations are the list.
+export list; the declarations are the list. **An enum is one boundary with its
+variants**: code anywhere inside its braces, or an extension's, sees every
+variant's private members, since a closed enum is one type written in one place
+(Jon, 23 Sep 2026).
 
 **Composition is compile-time flattening, and it is the same operation at two
 layers.** A trait's fields are a requirement rather than state it hands over: the
@@ -198,8 +201,8 @@ an included file's private names are private to the including module.
 | module, name not `pub` | not folded by a wildcard import | `importNameRes` |
 | module, a fold not re-exported | not reachable from outside, and not folded on | `importFoldItem`, `fnCallNameResPath` |
 | module tree | a sister is reached by name, never by a path that walked to her file | `parseImport` |
-| type, member not `pub` | not reachable except through `self` | `fnCallLowerMethod` |
-| type, field not `pub` | not settable from outside in a type literal | `typeLitStructReorder` |
+| type, member not `pub` | not reachable except through `self` — or, for an enum and its variants, from code inside the enum's braces or an extension's | `fnCallLowerMethod`, `structEnumSeesPrivate` |
+| type, field not `pub` | not settable from outside in a type literal — an enum's braces, and an extension's, being inside | `typeLitStructReorder`, `structEnumSeesPrivate` |
 | any namespace | no duplicate name, whatever the kind | `namespaceAdd`, `modAddNamedNode` |
 
 Visibility is checked against **the spelling the caller used**, which is why a

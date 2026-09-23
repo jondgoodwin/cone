@@ -246,11 +246,15 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
         for (nodesFor(basetrait->derived, cnt, nodesp))
             nodesAdd(&variants, genericClone(pstate, srcgencall, *nodesp, ((StructNode*)*nodesp)->genericinfo));
         cloneDclPop(dclpos);
+        // The instance's 'derived' lists its own variants, and lists all of them
+        // before any is type checked: a variant's method body may match a value
+        // of the enum, and its match is exhaustive only against the whole set.
         Nodes **instraitderived = &((StructNode*)instrait)->derived;
+        for (nodesFor(variants, cnt, nodesp))
+            nodesAdd(instraitderived, *nodesp);
         INode **instp = &nodesGet(variants, 0);
         for (nodesFor(basetrait->derived, cnt, nodesp)) {
             inodeTypeCheckAny(pstate, instp);
-            nodesAdd(instraitderived, *instp); // Repair trait's derived entry to point to instantiated variant
             if (*nodesp == (INode*)nodetoclone)
                 retinstance = *instp;
             ++instp;

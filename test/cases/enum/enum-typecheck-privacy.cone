@@ -1,0 +1,86 @@
+// What the enum's privacy boundary leaves private. Code inside an enum's braces
+// reaches the private members of the enum and of every variant, and an extension
+// reaches its base's (enum-privacy). Everything else is outside: a function of
+// the module, a generic function instantiated from inside the enum, a sibling
+// extension, and the base reaching into what extends it. And a struct is
+// untouched: its private members are reached through 'self' and nothing else.
+//
+// Type-check stage only: this file parses and resolves cleanly, so every
+// diagnostic below is reached.
+
+enum Gauge {
+  pub id i32;
+  secret i32;
+
+  struct Low {
+    lo i32;
+    fn half(self &) i32 {lo / 2;}
+  }
+
+  struct High {
+    pub hi i32;
+  }
+
+  // A generic function is the module's, wherever it is instantiated from
+  pub fn viaGeneric(l &Low) i32 {peekLo[i32](l, 1);}
+}
+
+// A function of the module reads, calls and builds nothing private
+fn outside(g &Gauge, l &Gauge.Low) i32 {
+  imm a = l.lo;          //~ ErrorNotPublic:12 "May not access the private method/field `lo`"
+  imm b = l.half();      //~ ErrorNotPublic:12 "May not access the private method/field `half`"
+  imm c = g.secret;      //~ ErrorNotPublic:12 "May not access the private method/field `secret`"
+  a + b + c;
+}
+
+fn build() Gauge.Low {
+  Gauge.Low[1, 2, 3];    //~ ErrorNotTyped:16 "private field secret"
+                         //~^ ErrorNotTyped:19 "private field lo"
+}
+
+fn peekLo[T](l &Gauge.Low, t T) i32 {
+  l.lo;                  //~ ErrorNotPublic:4 "May not access the private method/field `lo`"
+}
+
+// Two extensions of one enum are siblings: each one's variants, its copies
+// among them, are its own. And the base does not reach into what extends it.
+enum Warm extends Gauge {
+  struct Ember {
+    ember i32;
+    pub fn peekFrost(self &, f &Cold.Frost) i32 {
+      f.frost;           //~ ErrorNotPublic:8 "May not access the private method/field `frost`"
+    }
+    pub fn peekColdCopy(self &, l &Cold.Low) i32 {
+      l.lo;              //~ ErrorNotPublic:8 "May not access the private method/field `lo`"
+    }
+  }
+}
+
+enum Cold extends Gauge {
+  struct Frost {
+    frost i32;
+  }
+}
+
+enum Base {
+  pub id i32;
+  struct Plain {}
+  pub fn peekAdded(a &Added.Extra) i32 {
+    a.extra;             //~ ErrorNotPublic:6 "May not access the private method/field `extra`"
+  }
+}
+
+enum Added extends Base {
+  struct Extra {
+    extra i32;
+  }
+}
+
+// A struct is unaffected: its method reaches another value's private field no
+// more than a function outside it does
+struct Meter {
+  scale i32;
+  pub fn same(self &, other &Meter) i32 {
+    other.scale;         //~ ErrorNotPublic:10 "May not access the private method/field `scale`"
+  }
+}
