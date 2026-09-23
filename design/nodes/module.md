@@ -1064,9 +1064,11 @@ annotation on a reference names is a type.
   are bound at parse and are unaffected. Nothing miscompiles: the name is
   missing, not wrong. **It is diagnosed as that**: `ErrorCircular`, naming the
   cycle, wherever the name is found missing for that reason alone ("Name
-  resolution" above). Not one hop further on: a module that read the victim of
-  the cycle complete, and so never received what the victim failed to carry on,
-  is told only that the name is missing.
+  resolution" above). Looked up in the victim itself — a clause's item or a path
+  naming the module that read round the cycle — the name is explained even from
+  a module outside the cycle, since the victim's own clause is what is asked. Not
+  one wildcard further on: a module that took the victim's names with `use *`
+  and uses the missing one bare is told only that the name is missing.
 - **`corelib` and `stdio` are C string literals.** A syntax error in either is
   reported against an injected pseudo-file, and editing either means rebuilding
   the compiler.
