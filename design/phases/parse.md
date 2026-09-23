@@ -52,6 +52,10 @@ inside the scanner: a few characters for maximal-munch operators (`<=>`, `+[]`,
 run and then checks for a closing `'` to tell a lifetime (`'a`) from a character
 literal.
 
+**`..` and `...` are the range tokens** (`DotDotToken`, `EllipsisToken`), read
+today only by a match's range pattern. A number stops scanning at a `..`, so
+`0..3` is two integers and a range, not the float `0.`.
+
 **One `Lexer` per source, on a linked list.** `lexInject` pushes, `lexPop`
 restores. **Blocks are never recycled**, deliberately: every IR node stores the
 `Lexer` current when it was built and reads `url` from it whenever a diagnostic
@@ -150,6 +154,13 @@ Two entry points: `parseAnyExpr` (= `parseAssign`) is the full expression;
 `parseSimpleExpr` (= `parseOrExpr`) excludes comma and assignment and is what
 arguments, conditions and array elements use.
 
+**`parseSimpleExprFrom` resumes the cascade** above an operand already parsed
+by `parseOr`: the comparison, `and` and `or` levels each have a `...From` form
+taking their left operand. It exists for a match's case, which cannot tell a
+range pattern (`0 .. 3`) from a condition (`n > 3`) until it has read the first
+operand and seen whether `..` or `...` follows. With one token of lookahead,
+reading the operand and then continuing is the only way to decide.
+
 ## 4. What the parser leaves undecided
 
 A name is left **bound to nothing**: `NameUseTag` with `dclnode` NULL. Name
@@ -210,7 +221,11 @@ built-in types. Selection among candidates is
 ## 6. What the parser decides that you would expect it not to
 
 **It desugars.** `match` becomes a block holding an anonymous capture variable
-plus an `if` chain. `while c {…}` becomes a loop block with `if not c {break
+plus an `if` chain, each case's patterns becoming its condition: `is T` an `is`
+node, `<v` (and every comparison) the operator call with the captured value on
+the left, `a .. b` and `a ... b` two calls joined by `and`, `or` between patterns
+a logical `or`, and an `if` guard an `and` after them ([if](../nodes/if.md)).
+`while c {…}` becomes a loop block with `if not c {break
 nil}` inserted first. `each x in a < b by s` becomes an outer block holding the
 loop variable plus a loop block whose last statement is the synthesized step,
 flagged `FlagLoopStep`. That step is a block wherever the value it steps to could
@@ -371,6 +386,7 @@ numbers.
 | | `parseGenericParms`, `parseMacro` | the type parameter list, shared by `fn`, `struct` and `macro`: comma-separated names only, with a constraint or a parameter type refused as `ErrorGenParmConstr` |
 | | `parseExprBlock` | the statement-block loop — the parser's second dispatch table |
 | | `parseIf`, `parseMatch`, `parseBoundMatch` | `if`/`elif`/`else` and the `match`-to-`if` desugaring; every pattern's root name is marked (`castPatternMark`) to be looked up in the matched value's enum at type check, as `parseCmp` marks an `is` test's |
+| | `parseMatchPattern`, `parseMatchRange` | one pattern of a case — `is`, a comparison, a range — lowered to the condition that tests the captured value; a value alone is `ErrorPatBare`, since whether it means `==` is undecided |
 | | `parseWhile`, `parseEach`, `parseWith`, `parseLifetime` | loop and scope desugaring |
 | `ir/stmt/module.c` | `modAddNode`, `modAddNamedNode`, `modAddFn`, `modHook` | parse-time namespace population and hook-stack swapping |
 | `ir/nametbl.c` | `nametblFind`, `nametblHookPush`, `nametblHookNode`, `nametblHookPop` | interning and the binding stack |

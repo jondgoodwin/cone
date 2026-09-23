@@ -42,10 +42,33 @@ and the variable takes its type from the cast ([cast](cast.md)). **`parseIf`
 returns the wrapping block, not the `IfNode`.**
 
 `parseMatch` lowers the whole construct into a block plus one `IfNode`:
-`case is T` → an `is` node, `case == v` → an `==` call, `case imm x T` → a bound
-pattern, `case <expr>` → the expression, `else` → `elseCond`. **Every arm shares
-one scrutinee node pointer**, a use of the variable the lowering declared to hold
-the matched value.
+`case is T` → an `is` node, `case == v` (or any comparison operator) → that
+operator's call with the scrutinee on the left, `case a .. b` → `>= a and < b`
+(`<=` for `...`), `case imm x T` → a bound pattern, `case <expr>` → the
+expression, `else` → `elseCond`. Patterns joined by `or` → a logical `or` of
+their conditions; an `if g` after them → `cond and g`. **Every arm shares one
+scrutinee node pointer**, a use of the variable the lowering declared to hold
+the matched value, so a range's two calls and every `or` alternative hold it too.
+
+**A case's first operand decides between a range and a condition.** A case
+beginning with neither `is` nor a comparison operator reads one operand
+(`parseOr`); a following `..` or `...` makes it a range, and otherwise the
+expression is finished (`parseSimpleExprFrom`) and is a condition, whose own
+`or` it has already taken. A value alone as an `or` alternative is refused,
+`ErrorPatBare`: read as a condition it would coerce to true, and whether it
+should mean `==` is not decided.
+
+**A bound pattern's guard binds the variable a second time.** The variable is
+declared at the head of the arm, which the condition is outside, so `case imm x
+T if g {…}` becomes the condition `is T and {imm x = [T]v; g}` — a block
+declaring its own `x`, from a second conversion that shares the pattern's type
+node (`FlagMatchBind`) — and the arm keeps its own `x` as before.
+
+**Only a bare `is` condition counts toward exhaustiveness.** A guarded arm's
+condition, and an `or` of `is` tests, are logic nodes, so `ifExhaustCheck`
+never sees them. For a guard that is the rule: the guard may fail. For `or` it is
+a gap: `case is A or is B` accounts for neither variant, and a match that relies
+on it needs an `else`.
 
 ## Name resolution
 
