@@ -650,6 +650,21 @@ int fnCallLowerMethod(FnCallNode *callnode) {
         return -1;
     }
 
+    // An enum's equality reads its discriminant, which is the whole of the value
+    // only where every variant is empty. Where a variant carries fields, those
+    // fields would have to be compared too, and Cone has no structural comparison
+    // for a struct of any kind. The comparison is declared and refused here, so
+    // that the author is told why rather than reading the absence of '==' as an
+    // oversight.
+    if (selected->value && selected->value->tag == IntrinsicTag
+        && ((IntrinsicNode*)selected->value)->intrinsicFn == NoEqIntrinsic) {
+        errorMsgNode((INode*)callnode, ErrorEnumEquality,
+            "An enum whose variants carry fields has no `%s`: that would have to compare the fields too. Use 'match' to recover the variant.",
+            &methsym->namestr);
+        callnode->vtype = errorType;
+        return 1;
+    }
+
     // For a method call, make sure object is specified as first argument
     if (callnode->args == NULL) {
         callnode->args = newNodes(1);

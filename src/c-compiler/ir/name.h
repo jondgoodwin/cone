@@ -31,6 +31,12 @@ extern Name *dropName;  // "drop"
 extern Name *cloneName; // "clone" method
 extern Name *finalName; // "final" method
 
+// "tag" -- the discriminant's type. Recognized where a field's type is written
+// and nowhere else, so 'pub tag i32' still declares a field named 'tag'. An
+// enum places its own discriminant explicitly, for alignment, by writing
+// '_ tag' for it.
+extern Name *tagName;
+
 extern Name *plusEqName;   // "+="
 extern Name *minusEqName;  // "-="
 extern Name *multEqName;   // "*="

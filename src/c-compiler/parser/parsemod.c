@@ -200,16 +200,19 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod) {
             break;
         }
 
-        // 'trait' type definition
+        // 'trait' type definition: the open abstraction
         case TraitToken: {
             INode *node = parseStruct(parse, TraitType | pubflag);
             modAddNode(mod, inodeGetName(node), node);
             break;
         }
 
-        // 'union' type definition
-        case UnionToken: {
-            INode *node = parseStruct(parse, TraitType | SameSize | pubflag);
+        // 'enum' type definition: the closed family, in both size varieties.
+        // Every variant is padded out to the size of the largest unless the
+        // declaration writes '@unsized', so SameSize is the default that
+        // attribute clears.
+        case EnumToken: {
+            INode *node = parseStruct(parse, TraitType | SameSize | EnumType | pubflag);
             modAddNode(mod, inodeGetName(node), node);
             break;
         }

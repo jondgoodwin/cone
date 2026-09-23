@@ -597,6 +597,70 @@ static void structHookInherited(StructNode *node, uint32_t fldpos, uint32_t fldc
 // A trait that is not yet a declaration -- an instance of a generic trait,
 // which exists only once type check instantiates the call -- is left for type
 // check to expand by the same steps. Its members cannot be named bare.
+// Does every value of this enum consist of nothing but its discriminant?
+//
+// That is the payload-free form -- a plain set of named symbols, where each
+// variant is an empty struct and a common field would be part of every value.
+//
+// A variant's own fields are counted past the discriminant and past the
+// placeholder standing for the enum's fields, because whether the splice has
+// happened yet depends on which of the two was reached first: a variant is bound
+// in the module ahead of the enum that declares it, and resolving the variant is
+// what demands the enum.
+static int structEnumIsTagOnly(StructNode *node) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&node->fields, cnt, nodesp)) {
+        if (!((*nodesp)->flags & IsTagField))
+            return 0;
+    }
+    if (node->derived == NULL)
+        return 0;
+    for (nodesFor(node->derived, cnt, nodesp)) {
+        INode **fldp;
+        uint32_t fldcnt;
+        for (nodelistFor(&((StructNode*)*nodesp)->fields, fldcnt, fldp)) {
+            if (!((*fldp)->flags & (IsMixin | IsTagField)))
+                return 0;
+        }
+    }
+    return 1;
+}
+
+// Give an enum its equivalence comparison.
+//
+// An enum compares for equivalence only, never for order: which variant a value
+// holds is what a comparison can answer, and the declaration order of variants is
+// not a magnitude. Reading the discriminant answers it whole for the payload-free
+// form, where the value IS the tag.
+//
+// Where a variant carries fields, comparing two values would have to compare
+// those fields, and Cone has no structural comparison for a struct of any kind.
+// So '==' is declared there too and refused when it is called, which is what
+// tells the author to use 'match' instead of leaving them to read '=='s absence
+// as an oversight.
+//
+// Entered in the namespace and not in 'nodelist', because this is the enum's own
+// comparison and not a requirement on its variants: a vtable slot, a conformance
+// requirement and a default cloned into every variant are all read off nodelist.
+static void structEnumAddEquality(StructNode *node) {
+    if (namespaceFind(&node->namespace, eqName))
+        return;
+    int tagonly = structEnumIsTagOnly(node);
+    FnSigNode *cmpsig = newFnSigNode();
+    cmpsig->rettype = (INode*)boolType;
+    nodesAdd(&cmpsig->parms, (INode*)newVarDclFull(selfName, VarDclTag, (INode*)node, newPermUseNode(immPerm), NULL));
+    nodesAdd(&cmpsig->parms, (INode*)newVarDclFull(anonName, VarDclTag, (INode*)node, newPermUseNode(immPerm), NULL));
+    FnDclNode *eqfn = newFnDclNode(eqName, FlagMethFld | FlagPub, (INode*)cmpsig,
+        (INode*)newIntrinsicNode(tagonly ? TagEqIntrinsic : NoEqIntrinsic));
+    FnDclNode *nefn = newFnDclNode(neName, FlagMethFld | FlagPub, (INode*)cmpsig,
+        (INode*)newIntrinsicNode(tagonly ? TagNeIntrinsic : NoEqIntrinsic));
+    inodeLexCopy((INode*)eqfn, (INode*)node);
+    inodeLexCopy((INode*)nefn, (INode*)node);
+    namespaceAdd(&node->namespace, eqName, (INode*)eqfn);
+    namespaceAdd(&node->namespace, neName, (INode*)nefn);
+}
+
 void structNameRes(NameResState *pstate, StructNode *node) {
     INode **nodesp;
     uint32_t cnt;
@@ -606,6 +670,8 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     if (node->flags & (NameResolved | NameResolving))
         return;
     node->flags |= NameResolving;
+    if (node->flags & EnumType)
+        structEnumAddEquality(node);
 
     INode *svtypenode = pstate->typenode;
     pstate->typenode = (INode*)node;
@@ -889,6 +955,47 @@ void structSetDropFn(StructNode *node) {
     node->dropfn = dropfn;
 }
 
+// Settle the discriminant's width, and refuse a tag value the enum's own integer
+// type cannot hold.
+//
+// The width follows the largest tag VALUE, not the variant count. A pinned value
+// is what lines an enum up with an external library's constants, so
+// 'Red = 0xFF0000' needs four bytes however few variants there are. An enum that
+// declared its integer type has the width fixed there instead, which is the point
+// of declaring it, so a value too large for it is the author's error rather than a
+// silent widening away from the layout they asked for.
+//
+// The discriminant's type node is shared rather than cloned (clone.c), so every
+// variant's copy of the tag field reads the width set here.
+static void structSetTagWidth(StructNode *node) {
+    if (node->derived == NULL || !(node->flags & HasTagField))
+        return;
+    uint32_t maxtag = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(node->derived, cnt, nodesp)) {
+        if (((StructNode*)*nodesp)->tagnbr > maxtag)
+            maxtag = ((StructNode*)*nodesp)->tagnbr;
+    }
+    uint8_t needed = enumBytesFor(maxtag);
+    for (nodelistFor(&node->fields, cnt, nodesp)) {
+        if (!((*nodesp)->flags & IsTagField))
+            continue;
+        INode *tagtype = itypeGetTypeDcl(((FieldDclNode*)*nodesp)->vtype);
+        if (tagtype->tag != EnumTag)
+            continue;
+        EnumNode *tagnode = (EnumNode*)tagtype;
+        if (tagnode->fixedwidth) {
+            if (tagnode->bytes < needed)
+                errorMsgNode(tagnode->underlying, ErrorTagWidth,
+                    "Tag value %d does not fit in this enum's %d-byte integer type.",
+                    (int)maxtag, (int)tagnode->bytes);
+        }
+        else if (tagnode->bytes < needed)
+            tagnode->bytes = needed;
+    }
+}
+
 // Type check a struct type
 void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     // Wait until a generic struct is instantiated before type checking
@@ -929,7 +1036,13 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
             errorMsgNode(node->basetrait, ErrorInvType, "Base trait must be a trait");
         }
         else if ((node->flags & HasTagField) != (basetrait->flags & HasTagField)) {
-            errorMsgNode(node->basetrait, ErrorInvType, "May not extend a closed trait or union");
+            // An enum's variants are all declared inside it, so nothing outside
+            // can join the set later. An enum extending an enum is not this case:
+            // it declares variants of its own, so both sides carry the tag.
+            errorMsgNode(node->basetrait, ErrorInvType,
+                (basetrait->flags & EnumType)
+                    ? "An enum's variants are declared inside it, so nothing outside may join the set"
+                    : "A closed set of variants is an enum, and its variants are declared inside it");
         }
         else {
             // Do type-check with bottom-most trait
@@ -1008,18 +1121,26 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
         if (!itypeIsZeroSize((INode*)fldtype))
             isZeroSize = 0;
 
-        // The discriminant was marked at parse: a base trait's first enum-typed
-        // field, and the one a variant copies from it. Any other enum-typed
-        // field is a second discriminant, or one where no discriminant belongs.
-        if (fldtype->tag == EnumTag) {
+        // The discriminant was marked at parse: an enum's first 'tag'-typed
+        // field. Any other is a second discriminant, which has no variant number
+        // that could mean anything.
+        //
+        // Asked only of the enum itself. A variant's fields are clones of its
+        // enum's, so asking it again would report the enum's mistake once more per
+        // variant, at the same position and in the same words -- and a variant
+        // writing a discriminant of its own is refused at parse, where only an
+        // enum's body accepts one at all.
+        if (fldtype->tag == EnumTag && node->basetrait == NULL) {
             if (!((*nodesp)->flags & IsTagField) || hasEnumFld)
-                errorMsgNode(*nodesp, ErrorInvType, "Empty enum type only allowed once in a base trait");
+                errorMsgNode(*nodesp, ErrorInvType, "A closed type carries one discriminant, and only an enum carries one at all");
             else
                 hasEnumFld = 1;
             if (((*nodesp)->flags & IsTagField) && ((FieldDclNode*)(*nodesp))->namesym != anonName)
-                errorMsgNode(*nodesp, ErrorInvType, "The tag discriminant field name should be '_'");
+                errorMsgNode(*nodesp, ErrorInvType, "The discriminant is anonymous: write '_ tag'");
         }
     }
+    structSetTagWidth(node);
+
     // Use inference rules to decide if struct is ThreadBound or a MoveType
     // based on whether its fields are, and whether it supports the .final or .clone method
     if (namespaceFind(&node->namespace, finalName))
@@ -1041,7 +1162,8 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     if (isZeroSize)
         node->flags |= ZeroSizeType;
 
-    // A non-same sized trait is essentially opaque
+    // No value may be held of a type whose implementations differ in size: a
+    // trait, whose implementers are open-ended, or an '@unsized' enum
     if ((node->flags & TraitType) && !(node->flags & SameSize))
         node->flags |= OpaqueType;
 

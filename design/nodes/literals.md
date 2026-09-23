@@ -113,7 +113,7 @@ requires the fill dimension to be a literal constant.
   contributes nothing. Where a supertype was reached, a second pass coerces
   every element to it, because the array's element type and the values in it
   would otherwise disagree about size. So `[Circle[..], Rect[..]]` is an array
-  of their union, while `[1, 2u8]` is still refused — signed and unsigned have
+  of their enum, while `[1, 2u8]` is still refused — signed and unsigned have
   no type in common.
 
 Every diagnostic path sets `errorType`, so the literal never leaves the pass
@@ -123,11 +123,13 @@ untyped.
 to a struct or a number check. `typeLitStructReorder` walks the struct's fields
 in declaration order and rewrites `args` to match: a `NamedValNode` is moved
 into position; a missing field takes its default; a field flagged `IsTagField`
-gets the variant's `tagnbr` **inserted** — which is how a union variant's
-discriminant is materialized. A `_`-prefixed field may not be given a value from
-outside the type. Then a positional pass runs each value through `iexpCoerce`
-against its field's type: **a field takes a value on the same terms a variable
-initializer does**, a union variant standing in for its union included.
+gets the variant's `tagnbr` **inserted** — which is how a variant's discriminant is
+materialized, and why a constructor never writes one. Inserted where the field
+sits, so an enum that placed its discriminant itself is served by the same walk. A
+`_`-prefixed field may not be given a value from outside the type. Then a
+positional pass runs each value through `iexpCoerce` against its field's type: **a
+field takes a value on the same terms a variable initializer does**, a variant
+standing in for its enum included.
 
 `litIsLiteral` is the compile-time-constant predicate the global, parameter and
 field-default rules use. It accepts a use resolved to a `ConstDclTag`, which is
@@ -164,7 +166,7 @@ kept where possible because it is cheaper and it is **the only form usable
 outside a function body**.
 
 A type literal is the same `insertvalue` chain, with one special case: a
-**nullable-pointer** union has no struct at all, so the literal is either a null
+**nullable-pointer** enum has no struct at all, so the literal is either a null
 pointer or the payload alone, with the tag discarded.
 
 **A string literal emits a fresh global on every occurrence** — there is no
@@ -210,5 +212,5 @@ interning, and constant merging is not in the pass list.
 - How an untyped literal is adapted: [Type Check Reasoning](../phases/type-check-reasoning.md), "Coercion"
 - The literal-initializer rules for globals, parameters and field defaults: [vardcl](vardcl.md)
 - What a fill literal's alias count means: [Flow Analysis](../phases/flow.md), "Moves and counting"
-- The nullable-pointer union: [struct](struct.md) and [Generation](../phases/generation.md)
+- The nullable-pointer enum: [struct](struct.md) and [Generation](../phases/generation.md)
 - Where a type literal is retagged from a call: [fncall](fncall.md)

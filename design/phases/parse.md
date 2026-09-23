@@ -312,9 +312,11 @@ numbers.
 | | `parseSuffix`, `parseDotCall`, `parseArgs`, `parseArg` | postfix `.`, `()`, `[]`, `++`, `--`; named values. The `.` production serves a member of a value and a path through a namespace alike |
 | | `parseTerm`, `parseNameUse`, `parseArrayLit` | literals, parens, blocks-as-expressions, names |
 | `parser/parsetype.c` | `parseType` | the type dispatcher that delegates to `parsePrefix` — principle 1 |
-| | `parseStruct` | struct/trait/union: generics, `extends`, fields, methods, macros (a method when parameter 0 is `self`), tag-field synthesis and the `IsTagField` mark on a base trait's discriminant |
+| | `parseStruct` | struct/trait/enum: generics, `extends`, fields, methods, macros (a method when parameter 0 is `self`), an enum's variants in both spellings, tag-field synthesis and the `IsTagField` mark on an enum's discriminant |
+| | `parseAddVariant`, `parseVariantTagPin` | joining a variant to its enum: the closed flags, the synthesized `extends`, the tag value written or assigned in sequence, the module binding |
+| | `parseIsTagType`, `parseTagType` | `tag` recognized where a field's type is written and nowhere else, so it is not a reserved word |
 | | `parseFnSig` | parameters, `Self` inference, single or tuple return type |
-| | `parseVarDcl`, `parseFieldDcl`, `parseConstDcl`, `parsePerm` | the declaration forms; a field's trailing `use` clause goes to `parseFoldClause`, and `use` anywhere else is `ErrorBadFold` |
+| | `parseVarDcl`, `parseFieldDclBody`, `parseConstDcl`, `parsePerm` | the declaration forms; a field's trailing `use` clause goes to `parseFoldClause`, and `use` anywhere else is `ErrorBadFold`. A field's node is built while the lexer is still on its name, both so a diagnostic points there and so an enum's body can decide between a field and a bare-name variant afterwards |
 | | `parseFoldClause` | `use *` with an optional `but` list, or a list of names each with an optional `as`; builds the clause on the field and an alias per listed name, bound by name resolution |
 | `parser/parsefnflow.c` | `parseFn` | function/method declaration — **despite the file name, this is where declarations and control flow are parsed, not data flow analysis** |
 | | `parseGenericParms`, `parseMacro` | the type parameter list, shared by `fn`, `struct` and `macro`: comma-separated names only, with a constraint or a parameter type refused as `ErrorGenParmConstr` |

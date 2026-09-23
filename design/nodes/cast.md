@@ -102,13 +102,13 @@ tag" — there is nothing at runtime to test.
 
 **Narrowing something already concrete is told apart from naming two
 incompatible types**, because it is usually not a downcast the author wrote. A
-method with a body on a union or closed trait is a *default*, cloned into every
-variant with `Self` repointed, so inside the copy `self` is one variant and
-`match self` asks to narrow a type that is already as narrow as it gets. The
-message names the variant and its base, and says to declare the method without a
-body and implement it per variant — the shape that dispatches. It is reported
-once per copy, so a union of two variants gives two. `union-typecheck-narrow`
-holds both this and the same mistake written directly on a variant.
+method with a body on an enum is a *default*, cloned into every variant with
+`Self` repointed, so inside the copy `self` is one variant and `match self` asks
+to narrow a type that is already as narrow as it gets. The message names the
+variant and its enum, and says to declare the method without a body and implement
+it per variant — the shape that dispatches. It is reported once per copy, so an
+enum of two variants gives two. `enum-typecheck-narrow` holds both this and the
+same mistake written directly on a variant.
 
 ## Flow
 
@@ -143,7 +143,7 @@ virtual references and fat pointers are in play.
 is `inttoptr`, everything else is `bitcast`.
 
 `genlIsType` has three paths: virtual reference (compare vtable pointers),
-nullable-pointer union (compare against null), and tagged (read the
+nullable-pointer enum (compare against null), and tagged (read the
 `IsTagField` and compare against `tagnbr`).
 
 ## Hazards

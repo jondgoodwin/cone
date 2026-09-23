@@ -74,7 +74,7 @@ flow later injects wraps the already-coerced node.
 
 ### `ifExhaustCheck`
 
-Given an `is` condition on a **closed** variant set — a trait with no base of
+Given an `is` condition on a **closed** variant set — an enum with no base of
 its own, carrying `HasTagField` or `SameSize` — it checks whether every entry of
 `derived` is matched by some arm testing **the same scrutinee**: the same node,
 or two name uses of one declaration (`ifSameScrutinee`). The second

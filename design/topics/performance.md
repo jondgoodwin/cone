@@ -140,7 +140,8 @@ them.
 | **lifetimes** | bet 1 — a compile-time scope depth, never emitted |
 | **move semantics** | bet 1 — a type flag; moving is not a runtime operation |
 | **a trait used statically** | bet 5 — a direct call; default methods are cloned into the implementer |
-| **a two-variant union with a pointer payload** | no struct is emitted at all — the value *is* the pointer, null is the empty variant |
+| **a two-variant enum with a pointer payload** | no struct is emitted at all — the value *is* the pointer, null is the empty variant |
+| **a payload-free enum's `==`** | one integer compare: every variant is empty, so the value *is* the tag |
 | **zero-size types** | `void` and an empty struct are `%void = {}` |
 | **`inline` functions** | inlined by the generator itself — no call, no symbol. This is how a region's `_alloc` becomes a direct `malloc` at each allocation site |
 
@@ -158,7 +159,8 @@ checking if it ever stops being true.
 | **virtual reference `&<Trait`** | two words; an indirect call through a loaded slot | the `<` |
 | **array or slice index** | a compare and branch per dimension | the `[i]` |
 | **raw pointer index** | nothing — unchecked, deliberately | the `*` |
-| **same-size union** | every variant padded to the largest | the `union` keyword |
+| **an enum** | every variant padded to the largest | `enum` without `@unsized` |
+| **an enum with pinned tag values** | where a virtual reference is built from a plain one, a compare per variant instead of one indexed load | the written tag values |
 | **generic instantiation** | code size — one function per type argument | the `[T]` |
 
 **Every row has a mark in the source.** That is bet 2 and bet 5 doing their

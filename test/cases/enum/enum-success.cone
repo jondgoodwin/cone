@@ -1,10 +1,11 @@
-// What a union is: a closed set of variant structs sharing a common field and
-// one size, plus the pattern matching that recovers which variant a value is.
+// What an enum is: a closed set of variants, with or without payloads, plus the
+// pattern matching that recovers which variant a value is.
 //
 // Everything is printed, because a match that compiles is not a match that
-// dispatched to the right arm. The union carries no methods: an abstract method
-// on the base and the virtual reference that dispatches it are trait's subject,
-// and this group needs only enough reference to have something to match on.
+// dispatched to the right arm. The enums here carry no abstract methods: a
+// requirement on the enum and the virtual reference that dispatches it are
+// trait's subject, and this group needs only enough reference to have something
+// to match on.
 
 import stdio.*;
 
@@ -15,11 +16,15 @@ fn show(label &[]u8, n i64) {
   printStr("\n");
 }
 
-// -------- declaring a union --------
+fn showB(label &[]u8, b Bool) {
+  show(label, if b {1;} else {0;});
+}
 
-// A field declared on the union itself is present in every variant, at the same
+// -------- declaring an enum --------
+
+// A field declared on the enum itself is present in every variant, at the same
 // offset, so it can be read from a value whose variant is not yet known.
-union Shape {
+enum Shape {
   pub kind i32;
 
   struct Circle {
@@ -32,10 +37,10 @@ union Shape {
   }
 }
 
-// A union with no common field at all, whose variants hold different numbers of
+// An enum with no common field at all, whose variants hold different numbers of
 // fields of different types: the tag alone tells them apart, and every variant
 // is padded out to the size of the largest.
-union Signal {
+enum Signal {
   struct Halt {}
 
   struct Step {
@@ -48,11 +53,209 @@ union Signal {
   }
 }
 
+// -------- the payload-free form --------
+
+// A bare name is an empty struct variant. That is what makes one construct serve
+// a plain set of named symbols as well as a set carrying payloads, and it is why
+// there is no second construct to learn. Tag values run ascending from zero.
+enum PhoneType {
+  Home, Work, Mobile;
+}
+
+// The integer type an enum lays its tag values out in, with the values written
+// rather than assigned -- which is what lines an enum up with an external
+// library's constants. Numbering resumes from the last value written, so Cyan
+// follows Blue.
+enum Colors u32 {
+  Red   = 0xFF0000,
+  Green = 0x00FF00,
+  Blue  = 0x0000FF,
+  Cyan;
+}
+
+// An enum compares for equivalence and never for order: which variant a value
+// holds is what a comparison can answer, and declaration order is not a
+// magnitude. Reading the discriminant answers it whole here, because every
+// variant is empty and the value is the tag.
+fn payloadFree() {
+  mut p PhoneType = Work[];
+  showB("payload-free-equal", p == Work[]);
+  showB("payload-free-unequal", p == Home[]);
+  showB("payload-free-not-equal-op", p != Home[]);
+
+  // A variable of the enum accepts any of its variants
+  p = Mobile[];
+  showB("payload-free-reassigned", p == Mobile[]);
+
+  // 'is' tests the variant without comparing two values
+  showB("payload-free-is", p is Mobile);
+  showB("payload-free-is-other", p is Home);
+
+  // A pinned value is still a tag: what the language can observe is which
+  // variant a value holds, and the width it is laid out in is asserted by a
+  // named check in cases.toml rather than from here.
+  mut c Colors = Green[];
+  showB("pinned-tag-equal", c == Green[]);
+  showB("pinned-tag-unequal", c == Red[]);
+  c = Cyan[];
+  showB("pinned-tag-numbering-resumed", c == Cyan[]);
+}
+
+// -------- what a pinned tag value costs --------
+
+// A pinned value is free everywhere the tag is only compared. It costs at the one
+// place the tag is used as more than a comparison: building a virtual reference
+// from a plain one has to select the variant's vtable, and the vtable list holds
+// one entry per variant, so a tag of 0x2000 cannot index it. Dispatch compares
+// against each variant's value instead. Nothing about the call changes, which is
+// what these lines assert -- and they are the only coverage of that path, so a
+// regression in it shows up as the wrong implementation being reached.
+enum Signals u32 {
+  pub fn weight(self &) i32;
+
+  pub struct Quiet = 0x10 {
+    pub n i32;
+    fn weight(self &) i32 {n;}
+  }
+
+  pub struct Loud = 0x2000 {
+    pub n i32;
+    fn weight(self &) i32 {n * 100;}
+  }
+}
+
+// Dispatch through a plain reference, which is where the compiler inserts the
+// coercion to a virtual reference and therefore where the tag selects a vtable
+fn weigh(s &Signals) i32 {
+  s.weight();
+}
+
+fn sparseTagDispatch() {
+  imm quiet Signals = Quiet[3];
+  imm loud Signals = Loud[5];
+  show("sparse-tag-dispatch-first", weigh(&quiet));
+  show("sparse-tag-dispatch-second", weigh(&loud));
+
+  // ... and through a virtual reference written by hand, which reaches the same
+  // selection from the other side
+  imm vq &<Signals = &quiet;
+  imm vl &<Signals = &loud;
+  show("sparse-tag-vref-first", vq.weight());
+  show("sparse-tag-vref-second", vl.weight());
+
+  // A sparse tag still narrows back to the variant it names
+  show("sparse-tag-matches", which(&quiet));
+  show("sparse-tag-matches-other", which(&loud));
+}
+
+fn which(s &Signals) i32 {
+  match s {
+    case is &Quiet {1;}
+    case is &Loud {2;}
+  }
+}
+
+// -------- common members anywhere in the body --------
+
+// What makes a member common is its kind, not its position: a 'struct' is a
+// variant and anything else is common. So a common field or method may be
+// written after a variant, which a positional rule would read as part of that
+// variant or drop silently. The layout still puts common fields first in every
+// variant, which is what the positional initializers below rely on.
+enum Reading {
+  struct Spot { pub at i32; }
+
+  pub scale i32;
+
+  struct Span { pub len i32; }
+
+  pub fn scaled(self &) i32 {scale * 2;}
+}
+
+fn commonMembersAnywhere() {
+  mut s = Spot[3, 7];
+  mut n = Span[4, 9];
+  show("common-field-declared-after-a-variant", s.scale);
+  show("own-field-after-the-common-one", s.at);
+  show("common-field-in-the-later-variant", n.scale);
+  show("common-method-declared-last", (&s).scaled());
+}
+
+// -------- placing the discriminant --------
+
+// An enum may place its own discriminant, which is done for alignment: the field
+// is written as type 'tag' and must be anonymous. Every variant's positional
+// initializer then supplies the common fields in the same order, with the tag
+// still supplied by the variant rather than by the caller.
+//
+// 'tag' is recognized only where a field's type is written, so it is not a
+// reserved word: 'pub tag i32' elsewhere in the suite still declares a field
+// named 'tag'.
+enum Aligned {
+  pub wide i64;
+  _ tag;
+
+  struct Small { pub n i32; }
+  struct Large { pub a i64; pub b i64; }
+}
+
+fn widthOf(a &Aligned) i32 {
+  match a {
+    case is &Small {4;}
+    case is &Large {16;}
+  }
+}
+
+fn placedDiscriminant() {
+  mut small = Small[5i64, 3];
+  mut large = Large[6i64, 7i64, 8i64];
+  show("placed-tag-common-field", i64[small.wide]);
+  show("placed-tag-own-field", small.n);
+  show("placed-tag-other-variant", i64[large.a + large.b]);
+  show("placed-tag-matches", widthOf(&small));
+  show("placed-tag-matches-other", widthOf(&large));
+}
+
+// -------- declining the padding --------
+
+// '@unsized' declines the padding, so the enum has no one size and is reached
+// only through a reference. Its variants keep the tag and the common fields, so
+// matching and reading a common field work exactly as they do padded; what is
+// given up is holding a value of the enum in a variable, copying it and passing
+// it by value. enum-typecheck-unsized holds those refusals.
+enum @unsized Packet {
+  pub id i32;
+
+  struct Ping {}
+  struct Payload { pub a i64; pub b i64; pub c i64; }
+}
+
+fn packetSize(p &Packet) i32 {
+  match p {
+    case is &Ping {0;}
+    case imm d &Payload {i32[d.a + d.b + d.c];}
+  }
+}
+
+// A common field is readable through a reference to the enum without knowing the
+// variant, which is what the tag and the shared prefix buy even unpadded
+fn readId(p &Packet) i32 {
+  p.id;
+}
+
+fn unsizedEnum() {
+  imm ping = Ping[1];
+  imm payload = Payload[2, 3i64, 4i64, 5i64];
+  show("unsized-empty-variant", packetSize(&ping));
+  show("unsized-payload-variant", packetSize(&payload));
+  show("unsized-common-field-through-ref", readId(&payload));
+}
+
 // -------- constructing and reading --------
 
 fn construction() {
-  // A variant is constructed by naming the variant, not the union. Its
-  // positional initializer starts with the union's common field.
+  // A variant is constructed by naming the variant, not the enum. Its
+  // positional initializer starts with the enum's common field.
   mut c = Circle[1, 5];
   mut r = Rect[2, 3, 4];
   show("variant-common-field", c.kind);
@@ -64,7 +267,7 @@ fn construction() {
   c.kind = 7;
   show("common-field-assigned", c.kind);
 
-  // A variant with no fields of its own still constructs, and a union with no
+  // A variant with no fields of its own still constructs, and an enum with no
   // common field is still told apart by its tag
   mut h = Halt[];
   mut st = Step[9];
@@ -74,8 +277,8 @@ fn construction() {
   show("float-variant-matched", stride(&d));
 }
 
-// A union whose variants share no field at all: only the tag distinguishes them.
-// The conversion is here because show prints integers, not because a union
+// An enum whose variants share no field at all: only the tag distinguishes them.
+// The conversion is here because show prints integers, not because an enum
 // needs one.
 fn stride(s &Signal) i32 {
   match s {
@@ -85,43 +288,43 @@ fn stride(s &Signal) i32 {
   }
 }
 
-// -------- the union type itself --------
+// -------- the enum type itself --------
 
-// A union may be passed by value: the parameter is one variant's worth of
+// An enum may be passed by value: the parameter is one variant's worth of
 // storage, and only the common field is readable without matching.
 fn kindOf(s Shape) i32 {
   s.kind;
 }
 
-fn unionValues() {
+fn enumValues() {
   mut c = Circle[1, 5];
   mut r = Rect[2, 3, 4];
 
-  // A union-typed variable accepts either variant, and accepts a different one
+  // An enum-typed variable accepts either variant, and accepts a different one
   // later, because every variant is the same size
   mut s Shape = c;
-  show("union-var-holds-circle", s.kind);
+  show("enum-var-holds-circle", s.kind);
   s = r;
-  show("union-var-reassigned-to-rect", s.kind);
+  show("enum-var-reassigned-to-rect", s.kind);
 
-  show("union-passed-by-value", kindOf(c));
-  show("union-passed-by-value-other", kindOf(r));
+  show("enum-passed-by-value", kindOf(c));
+  show("enum-passed-by-value-other", kindOf(r));
 
-  // Two branches of differing variant type infer the union as their common
+  // Two branches of differing variant type infer the enum as their common
   // supertype, both by value and by reference
   imm byValue = if true {c;} else {r;};
   show("supertype-inferred-by-value", byValue.kind);
   imm byRef = if false {&c;} else {&r;};
   show("supertype-inferred-by-ref", byRef.kind);
 
-  // A reference to a union is stated the same way as any other reference
+  // A reference to an enum is stated the same way as any other reference
   imm sref &Shape = &r;
-  show("union-reference-common-field", sref.kind);
+  show("enum-reference-common-field", sref.kind);
 }
 
 // -------- matching --------
 
-// Matching every variant of a closed union is exhaustive, so the match is a
+// Matching every variant of a closed enum is exhaustive, so the match is a
 // value-producing expression with no 'else' clause
 fn area(s &Shape) i32 {
   match s {
@@ -148,7 +351,7 @@ fn radiusOr(s &Shape, dflt i32) i32 {
 
 // A bound variable may be 'mut', which writes through to the matched value.
 // The parameter is '&mut Shape' rather than '&mut Circle' because a mutable
-// reference to a variant does not coerce to one to the union.
+// reference to a variant does not coerce to one to the enum.
 fn grow(s &mut Shape) {
   match s {
     case mut c &mut Circle {c.radius = c.radius + 10;}
@@ -316,8 +519,8 @@ fn valueMatching() {
 
 // -------- Option and Result --------
 
-// Option[T] and Result[T,E] are unions declared by the core library, so they
-// match exactly like a union declared here.
+// Option[T] and Result[T,E] are enums declared by the core library, so they
+// match exactly like an enum declared here.
 fn unwrapOr(o Option[i32], dflt i32) i32 {
   match o {
     case imm s Some[i32] {s.value;}
@@ -384,7 +587,7 @@ fn optionAndResult() {
 
 // -------- interaction with the constructs below this tier --------
 
-// A union built in one branch and matched in another, accumulated in a loop:
+// An enum built in one branch and matched in another, accumulated in a loop:
 // the intersections where variant tags and control flow have to agree.
 fn stepped(n i32) Shape {
   if n % 2 == 0 {
@@ -403,27 +606,27 @@ fn interactions() {
     total = total + area(&s);
     i++;
   }
-  show("union-returned-from-branch-summed", total);
+  show("enum-returned-from-branch-summed", total);
 
   // A match whose arms are the last statement of a function, returning the
-  // union's own common field
+  // enum's own common field
   mut acc = 0;
   mut j = 0;
   while j < 4 {
     acc = acc + kindOf(stepped(j));
     j++;
   }
-  show("union-by-value-in-loop", acc);
+  show("enum-by-value-in-loop", acc);
 
-  // A variant holding a move type infects the union with move semantics, and
-  // the infection walks up the base trait every variant has. That walk never
-  // advanced its cursor, so declaring this union hung the compiler outright --
-  // no output, no diagnostic. The assertion is therefore that this file
-  // compiles at all; the runner's timeout is what catches a regression.
+  // A variant holding a move type infects the enum with move semantics, and the
+  // infection walks up the base every variant has. That walk never advanced its
+  // cursor, so declaring this enum hung the compiler outright -- no output, no
+  // diagnostic. The assertion is therefore that this file compiles at all; the
+  // runner's timeout is what catches a regression.
   imm boxed = Boxed[1, Handle[9]];
   show("move-typed-variant", boxed.kind);
 
-  // A variant stands in for its union wherever the union is expected, and a
+  // A variant stands in for its enum wherever the enum is expected, and a
   // struct literal's field is such a place. It used to be the one place it was
   // not: a literal's values were compared for exact type equality where a
   // variable initializer coerces, so the same value the line above accepts was
@@ -434,21 +637,21 @@ fn interactions() {
   show("variant-coerces-in-struct-literal", area(&inField.s));
 }
 
-// A struct with a union-typed field, for the literal above. It is here rather
+// A struct with an enum-typed field, for the literal above. It is here rather
 // than beside Shape for the same reason Held is: the coercion is the subject,
 // not the struct.
 struct Framed {
   pub s Shape;
 }
 
-// The union whose declaration is the subject above. Declared down here with the
+// The enum whose declaration is the subject above. Declared down here with the
 // other interaction types rather than beside Shape, because it is not what this
 // group is about -- only the infection it triggers is.
 struct @move Handle {
   pub id i32;
 }
 
-union Held {
+enum Held {
   pub kind i32;
 
   struct Boxed {
@@ -460,13 +663,13 @@ union Held {
   }
 }
 
-// A union may reach itself through a reference, which is how a tree is written.
-// The union's size is the largest of its variants, so a variant holding it by
-// value would be infinite -- union-typecheck-variant holds that -- but a
+// An enum may reach itself through a reference, which is how a tree is written.
+// The enum's size is the largest of its variants, so a variant holding it by
+// value would be infinite -- enum-typecheck-variant holds that -- but a
 // reference answers its own size without asking what it points at, so the cycle
 // terminates. Declared rather than built: constructing one needs a nullable
-// reference, and union-nullable-ptr owns that shape.
-union Tree {
+// reference, and enum-nullable-ptr owns that shape.
+enum Tree {
   pub depth i32;
 
   struct Leaf {
@@ -485,7 +688,12 @@ fn forkDepth(f &Fork) i32 {
 
 fn main() i32 {
   construction();
-  unionValues();
+  payloadFree();
+  sparseTagDispatch();
+  commonMembersAnywhere();
+  placedDiscriminant();
+  unsizedEnum();
+  enumValues();
   matching();
   aliasMatching();
   valueMatching();

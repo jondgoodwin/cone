@@ -156,17 +156,23 @@ LLVMValueRef genlallocref(GenState *gen, RefNode *allocatenode) {
     RefNode *reftype = (RefNode*)itypeGetTypeDcl(allocatenode->vtype);
     LLVMTypeRef reftypellvm = genlType(gen, (INode*)reftype);  // Make sure typeinfo is populated
     if (reftype->tag != RefTag && reftype->tag != ArrayRefTag) {
-        // Extract reftype from Option type
+        // A fallible allocation is typed 'Option[&T]', and what is wanted here is
+        // the '&T' that wrapping hid. It is the field of whichever variant carries
+        // one: every variant's first field is the discriminant the enum gave it,
+        // and only the value-carrying variant declares another. Found that way
+        // rather than by position or by name, so neither the order Option declares
+        // its variants in nor what they are called is baked in here.
         assert(reftype->tag == StructTag && (allocatenode->flags & FlagQues) && "Should be Option type");
-        StructNode *optionTrait = (StructNode*)reftype;
-        StructNode *someStruct = (StructNode*)nodesGet(optionTrait->derived, 1);
-        // Some's first field is the tag the union gave every variant; the
-        // reference is the field it declared for itself.
-        INode **fldp;
-        uint32_t cnt;
-        for (nodelistFor(&someStruct->fields, cnt, fldp)) {
-            if (!((*fldp)->flags & IsTagField))
-                reftype = (RefNode*)itypeGetTypeDcl(((IExpNode*)*fldp)->vtype);
+        StructNode *optionEnum = (StructNode*)reftype;
+        INode **variantp;
+        uint32_t variantcnt;
+        for (nodesFor(optionEnum->derived, variantcnt, variantp)) {
+            INode **fldp;
+            uint32_t cnt;
+            for (nodelistFor(&((StructNode*)*variantp)->fields, cnt, fldp)) {
+                if (!((*fldp)->flags & IsTagField))
+                    reftype = (RefNode*)itypeGetTypeDcl(((IExpNode*)*fldp)->vtype);
+            }
         }
         assert(reftype->tag == RefTag && "Option type did not have reftype");
     }

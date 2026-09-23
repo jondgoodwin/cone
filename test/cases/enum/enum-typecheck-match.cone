@@ -3,13 +3,13 @@
 //
 // Type-check stage only: this file parses and resolves cleanly, so every
 // diagnostic below is reached. What a pattern may narrow to is in
-// union-typecheck-narrow; how a union relates to its variants as a type is in
-// union-typecheck-variant.
+// enum-typecheck-narrow; how an enum relates to its variants as a type is in
+// enum-typecheck-variant.
 //
 // 'match' is sugar for an 'if' chain, which is why these diagnostics say 'if'
 // and 'else' where the source says 'match' and 'case'.
 
-union Shape {
+enum Shape {
   kind i32;
 
   struct Circle {
@@ -47,12 +47,23 @@ fn armTypesDiffer(s &Shape) i32 {
   }
 }
 
-// A 'case ==' arm compares the matched value, which a union does not support:
-// which variant it holds is what 'case is' and a bound pattern are for
-fn equalityOnUnion(s Shape) i32 {
+// A 'case ==' arm compares the matched value against another value of its type.
+// An enum's comparison takes the enum, so an integer literal is not a value it
+// has a candidate for -- which variant a value holds is what 'case is' and a
+// bound pattern are for.
+fn equalityAgainstANumber(s Shape) i32 {
   match s {
-    case ==1 {1;}         //~ ErrorNoMbr:10 "Method or field `==` not found"
+    case ==1 {1;}         //~ ErrorNoCandidate:10 "No method declared by `==` accepts the call's arguments"
                          //~^ ErrorInvType:10 "Conditional expression requires true/false value" follow-on
     else {0;}
   }
+}
+
+// An enum compares for equivalence by its discriminant, which is the whole of the
+// value only where every variant is empty. Here the variants carry fields, and
+// comparing two values would have to compare those fields too, which Cone has no
+// structural comparison for on a struct of any kind. enum-success compares the
+// payload-free form, where '==' is exactly the tag and works.
+fn equalityOnPayloadEnum(a Shape, b Shape) Bool {
+  a == b;                 //~ ErrorEnumEquality:5 "Use 'match' to recover the variant"
 }

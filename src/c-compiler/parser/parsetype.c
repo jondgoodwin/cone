@@ -150,8 +150,19 @@ INode *parseTypeName(ParseState *parse) {
     return node;
 }
 
-// Parse an enum type
-INode* parseEnum(ParseState *parse) {
+// Is the lexer on 'tag', where a field's type is written?
+//
+// 'tag' is recognized here and nowhere else, so it is not a reserved word and
+// 'pub tag i32' still declares a field named 'tag'. What it names is the
+// discriminant type an enum synthesizes for itself; an author writes it, as
+// '_ tag', only to place that field somewhere other than position 0, which is
+// done for alignment.
+static int parseIsTagType() {
+    return lexIsToken(IdentToken) && lex->val.ident == tagName;
+}
+
+// Parse the discriminant type, with the lexer on its 'tag'
+static INode* parseTagType(ParseState *parse) {
     EnumNode *node = newEnumNode();
     lexNextToken();
     return (INode*)node;
@@ -218,23 +229,17 @@ FoldClause *parseFoldClause(ParseState *parse) {
     return fold;
 }
 
-// Parse a field declaration
-FieldDclNode *parseFieldDcl(ParseState *parse, PermNode *defperm) {
-    FieldDclNode *fldnode;
+// Parse what follows a field's name: its type, an initial value and a fold
+// clause. The node arrives already built, because an enum's body cannot tell a
+// field from a bare-name variant until the name has been read and what follows it
+// looked at -- and the node has to be built while the lexer is still on the name,
+// so that a diagnostic about the member points there and not at its type.
+static FieldDclNode *parseFieldDclBody(ParseState *parse, FieldDclNode *fldnode) {
     INode *vtype;
-    INode *perm = parseDclPerm(defperm);
-
-    // Obtain variable's name
-    if (!lexIsToken(IdentToken)) {
-        errorMsgLex(ErrorNoIdent, "Expected field name for declaration");
-        return newFieldDclNode(anonName, perm);
-    }
-    fldnode = newFieldDclNode(lex->val.ident, perm);
-    lexNextToken();
 
     // Get value type, if provided
-    if (lexIsToken(EnumToken))
-        fldnode->vtype = parseEnum(parse);
+    if (parseIsTagType())
+        fldnode->vtype = parseTagType(parse);
     else if ((vtype = parseType(parse)))
         fldnode->vtype = vtype;
 
@@ -254,15 +259,112 @@ FieldDclNode *parseFieldDcl(ParseState *parse, PermNode *defperm) {
     return fldnode;
 }
 
-// Parse a struct
+
+// Join a variant to the enum that declares it: the closed-type flags, the
+// 'extends' back to the enum, the tag number, and the module binding.
+//
+// The enum owns the layout, so the variant states none of it. Its tag number is
+// assigned ascending from zero across the body unless the author pins one, after
+// which numbering continues from there -- which is what lines an enum up with an
+// external library's constants without renumbering the rest by hand.
+static void parseAddVariant(ParseState *parse, StructNode *strnode, StructNode *substruct, uint32_t *nexttag) {
+    substruct->flags |= HasTagField | (strnode->flags & SameSize);
+    if (substruct->tagnbr == TagUnassigned)
+        substruct->tagnbr = *nexttag;
+
+    // The enum already says what a variant extends and what its type parameters
+    // are, so a variant restating either is refused rather than silently ignored.
+    // Reported on the variant, whose node carries the position of its name in
+    // both of its spellings, rather than at whatever token the body ended on.
+    if (substruct->basetrait)
+        errorMsgNode((INode*)substruct, ErrorVariantDcl,
+            "%s already extends the enum it is written inside; remove the 'extends'.",
+            &substruct->namesym->namestr);
+    if (substruct->genericinfo)
+        errorMsgNode((INode*)substruct, ErrorVariantDcl,
+            "%s takes its enum's type parameters; it may not declare its own.",
+            &substruct->namesym->namestr);
+
+    INode *traitref = (INode*)newNameUseNode(strnode->namesym);
+    if (strnode->genericinfo) {
+        substruct->genericinfo = newGenericInfo();
+        substruct->genericinfo->parms = newNodes(strnode->genericinfo->parms->used);
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(strnode->genericinfo->parms, cnt, nodesp)) {
+            GenVarDclNode *parm = newGVarDclNode(((GenVarDclNode*)*nodesp)->namesym);
+            nodesAdd(&substruct->genericinfo->parms, (INode*)parm);
+        }
+        // traitref needs to be a generic-qualified base trait name
+        FnCallNode *gentraitref = newFnCallNode(traitref, strnode->genericinfo->parms->used);
+        gentraitref->flags |= FlagIndex;
+        for (nodesFor(strnode->genericinfo->parms, cnt, nodesp)) {
+            nodesAdd(&gentraitref->args, (INode*)newNameUseNode(((GenVarDclNode *)*nodesp)->namesym));
+        }
+        traitref = (INode *)gentraitref;
+    }
+    substruct->basetrait = traitref;
+
+    // Two variants holding the same tag value are indistinguishable at a match,
+    // so the second one is refused where it is written
+    if (strnode->derived) {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(strnode->derived, cnt, nodesp)) {
+            if (((StructNode*)*nodesp)->tagnbr == substruct->tagnbr)
+                errorMsgNode((INode*)substruct, ErrorDupTag,
+                    "Tag value %d is already taken by variant %s.",
+                    (int)substruct->tagnbr, &((StructNode*)*nodesp)->namesym->namestr);
+        }
+    }
+    else
+        strnode->derived = newNodes(4);
+    nodesAdd(&strnode->derived, (INode*)substruct);
+    *nexttag = substruct->tagnbr + 1;
+
+    modAddNode(parse->mod, inodeGetName((INode*)substruct), (INode*)substruct);
+    // Bound in the module, but declared inside the enum: the variant's symbols
+    // are spelled after the enum, so the enum is its owner
+    dclInfoJoin((INode*)substruct, (INode*)strnode);
+}
+
+// Parse the '= value' pinning a variant's tag value, if one is written, leaving
+// the tag unassigned when none is. Written where the variant's name is, both for
+// a bare name and for a struct's.
+static void parseVariantTagPin(StructNode *substruct) {
+    substruct->tagnbr = TagUnassigned;
+    if (!lexIsToken(AssgnToken))
+        return;
+    lexNextToken();
+    if (!lexIsToken(IntLitToken)) {
+        errorMsgLex(ErrorNotLit, "A variant's tag value is an integer literal.");
+        return;
+    }
+    substruct->tagnbr = (uint32_t)lex->val.uintlit;
+    lexNextToken();
+}
+
+// Parse a struct, a trait or an enum. They are one node, and what tells them
+// apart is in 'strflags': see the flag block in ir/inode.h.
 INode *parseStruct(ParseState *parse, uint16_t strflags) {
     INsTypeNode *svtype = parse->typenode;
     StructNode *strnode;
     uint16_t fieldnbr = 0;
+    uint32_t nexttag = 0;
+    int isenum = (strflags & EnumType) != 0;
 
     // Capture the kind of type, then get next token (name)
     uint16_t tag = StructTag;
     lexNextToken();
+
+    // 'enum trait' is refused, and the absence is deliberate. An enum's identity
+    // is its variant set, so there is no abstraction that corresponds to one:
+    // anything a caller could hold behind it either is that variant set, and so
+    // is the enum, or is open, and so is a trait.
+    if (isenum && lexIsToken(TraitToken)) {
+        errorMsgLex(ErrorEnumAbstract, "An enum is concrete: its variant set is its identity. Use 'trait' for an open abstraction.");
+        lexNextToken();
+    }
 
     // Handle attributes
     while (1) {
@@ -272,6 +374,17 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         }
         else if (lex->toktype == OpaqueToken) {
             strflags |= OpaqueType | DeclaredOpaque;
+            lexNextToken();
+        }
+        else if (lex->toktype == UnsizedToken) {
+            // Every variant is padded out to the size of the largest by default,
+            // which is what lets a value of the enum be held in a variable,
+            // copied, passed and swapped in place. '@unsized' declines the
+            // padding and the value semantics with it: the enum is then reached
+            // only by reference. Nothing else has padding to decline.
+            if (!isenum)
+                errorMsgLex(ErrorBadUnsized, "'@unsized' declines an enum's padding. Only an enum pads its variants.");
+            strflags &= ~SameSize;
             lexNextToken();
         }
         else
@@ -304,6 +417,19 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         strnode->genericinfo = newGenericInfo();
         strnode->genericinfo->parms = parseGenericParms(parse);
     }
+
+    // A variant may pin its tag value, written where its name is so that the
+    // bare-name form and the struct form read the same way
+    if (svtype && ((INode*)svtype)->tag == StructTag && (((INode*)svtype)->flags & EnumType))
+        parseVariantTagPin(strnode);
+
+    // An enum may name the integer type its tag values are laid out in, which is
+    // what lines the enum up with an external library's constants. It fixes the
+    // tag's width, so a pinned value too large for it is refused rather than
+    // silently widening the tag.
+    INode *underlying = NULL;
+    if (isenum && lexIsToken(IdentToken))
+        underlying = parseTypeName(parse);
 
     // Obtain base trait, if specified
     if (lexIsToken(ExtendsToken)) {
@@ -374,19 +500,72 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 parseEndOfStatement();
             }
             else if (lexIsToken(PermToken) || lexIsToken(IdentToken)) {
-                FieldDclNode *field = parseFieldDcl(parse, mutPerm);
+                INode *perm = parseDclPerm(mutPerm);
+                if (!lexIsToken(IdentToken)) {
+                    errorMsgLex(ErrorNoIdent, "Expected field name for declaration");
+                    parseSkipToNextStmt();
+                    continue;
+                }
+                // Built while the lexer is still on the name, so that a
+                // diagnostic about this member points at the name rather than at
+                // whatever follows it
+                FieldDclNode *field = newFieldDclNode(lex->val.ident, perm);
+                lexNextToken();
+
+                // In an enum, a bare name is an empty struct variant -- which is
+                // what makes one construct serve both the payload-carrying form
+                // and the plain set of named symbols. What follows the name says
+                // which was written: a separator or a pinned tag value makes it a
+                // variant, and anything else is a common field's type.
+                if (isenum && (lexIsToken(CommaToken) || lexIsToken(SemiToken) || lexIsToken(AssgnToken))) {
+                    strnode->flags |= HasTagField;
+                    uint16_t variantflags = pubflag | (strnode->flags & FlagPub);
+                    StructNode *substruct = newStructNode(field->namesym);
+                    inodeLexCopy((INode*)substruct, (INode*)field);  // the name's position
+                    substruct->tag = StructTag;
+                    substruct->flags |= variantflags;
+                    parseVariantTagPin(substruct);
+                    parseAddVariant(parse, strnode, substruct, &nexttag);
+                    while (lexIsToken(CommaToken)) {
+                        lexNextToken();
+                        if (!lexIsToken(IdentToken)) {
+                            errorMsgLex(ErrorNoIdent, "Expected the name of the next variant");
+                            break;
+                        }
+                        // On the name, so this one needs no position copied
+                        StructNode *next = newStructNode(lex->val.ident);
+                        next->tag = StructTag;
+                        next->flags |= variantflags;
+                        lexNextToken();
+                        parseVariantTagPin(next);
+                        parseAddVariant(parse, strnode, next, &nexttag);
+                    }
+                    parseEndOfStatement();
+                    continue;
+                }
+
+                parseFieldDclBody(parse, field);
                 field->index = fieldnbr++;
                 field->flags |= FlagMethFld | pubflag;
-                // Only a struct folds: a trait is an abstraction, with no
-                // organizing details of its own to fold through
+                // Only a struct folds: a trait and an enum are abstractions over
+                // their implementers, with no organizing details of their own to
+                // fold through
                 if (field->fold && (strnode->flags & TraitType))
-                    errorMsgNode(field->fold->at, ErrorBadFold, "Only a struct folds a field's members in. A trait or union is an abstraction and has no organizing details to fold through.");
-                // A base trait's first enum-typed field is its discriminant.
-                // Marked here because a variant copies the trait's fields as
-                // soon as it is name resolved, ahead of the trait's type check;
-                // type check validates the mark and refuses a second enum field.
+                    errorMsgNode(field->fold->at, ErrorBadFold, "Only a struct folds a field's members in. A trait and an enum have no organizing details of their own to fold through.");
+                // An enum's first 'tag'-typed field is its discriminant, written
+                // only to place it somewhere other than position 0, which is done
+                // for alignment. Marked here because a variant copies the enum's
+                // fields as soon as it is name resolved, ahead of the enum's type
+                // check; type check validates the mark and refuses a second one.
+                //
+                // Only an enum carries a discriminant at all: it is the tag that
+                // says which variant a value holds, and a struct, a trait and a
+                // variant each have nothing for one to distinguish.
                 if (field->vtype->tag == EnumTag) {
-                    if (!hasEnumFld && (strnode->flags & TraitType) && strnode->basetrait == NULL)
+                    if (!isenum)
+                        errorMsgNode((INode*)field, ErrorInvType,
+                            "Only an enum carries a discriminant: there is nothing here for a tag to tell apart.");
+                    else if (!hasEnumFld && strnode->basetrait == NULL)
                         field->flags |= IsTagField;
                     hasEnumFld = 1;
                 }
@@ -394,52 +573,23 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 parseEndOfStatement();
             }
             else if (lexIsToken(StructToken)) {
-                // If we see structs in trait/union, treat them as tagged extensions/derived structs
-                if (strnode->flags & TraitType) {
+                // A struct written inside an enum is one of its variants.
+                //
+                // Only an enum: a trait is the open abstraction, and its
+                // implementers are ordinary structs declared beside it that name
+                // it with 'extends'. A closed set of variants is an enum, which
+                // is where the tag and the exhaustive match live.
+                if (isenum) {
                     strnode->flags |= HasTagField;
 
-                    // A variant is as visible as its trait: a use that can name
-                    // the trait can match on it. It may also be declared 'pub' itself.
-                    StructNode *substruct = (StructNode *)parseStruct(parse, pubflag | (strnode->flags & FlagPub)); // Parse sub-struct
-                    substruct->flags |= HasTagField | (strnode->flags & SameSize);
-
-                    // Build node that indicates this struct extends from trait
-                    if (substruct->basetrait)
-                        errorMsgLex(ErrorNoIdent, "trait's struct must not specify extends");
-                    INode *traitref = (INode*)newNameUseNode(strnode->namesym);
-
-                    // Inherit generic parms
-                    if (substruct->genericinfo)
-                        errorMsgLex(ErrorNoIdent, "trait's struct must not specify generic parms");
-                    if (strnode->genericinfo) {
-                        substruct->genericinfo = newGenericInfo();
-                        substruct->genericinfo->parms = newNodes(strnode->genericinfo->parms->used);
-                        INode **nodesp;
-                        uint32_t cnt;
-                        for (nodesFor(strnode->genericinfo->parms, cnt, nodesp)) {
-                            GenVarDclNode *parm = newGVarDclNode(((GenVarDclNode*)*nodesp)->namesym);
-                            nodesAdd(&substruct->genericinfo->parms, (INode*)parm);
-                        }
-                        // traitref needs to be a generic-qualified base trait name
-                        FnCallNode *gentraitref = newFnCallNode(traitref, strnode->genericinfo->parms->used);
-                        gentraitref->flags |= FlagIndex;
-                        for (nodesFor(strnode->genericinfo->parms, cnt, nodesp)) {
-                            nodesAdd(&gentraitref->args, (INode*)newNameUseNode(((GenVarDclNode *)*nodesp)->namesym));
-                        }
-                        traitref = (INode *)gentraitref;
-                    }
-                    substruct->basetrait = (INode*)traitref;
-
-                    // Add substruct to trait's list of derived, and capture enum value
-                    if (!strnode->derived)
-                        strnode->derived = newNodes(4);
-                    substruct->tagnbr = strnode->derived->used;
-                    nodesAdd(&strnode->derived, (INode*)substruct);
-                    modAddNode(parse->mod, inodeGetName((INode*)substruct), (INode*)substruct);
-                    // Bound in the module, but declared inside the trait: the
-                    // variant's symbols are spelled after the trait, so the trait
-                    // is its owner
-                    dclInfoJoin((INode*)substruct, (INode*)strnode);
+                    // A variant is as visible as its enum: a use that can name
+                    // the enum can match on it. It may also be declared 'pub' itself.
+                    StructNode *substruct = (StructNode *)parseStruct(parse, pubflag | (strnode->flags & FlagPub));
+                    parseAddVariant(parse, strnode, substruct, &nexttag);
+                }
+                else if (strnode->flags & TraitType) {
+                    errorMsgLex(ErrorOpenTrait, "A trait is open: its implementers are declared beside it and name it with 'extends'. A closed set of variants is an 'enum'.");
+                    parseStruct(parse, 0);
                 }
                 else {
                     errorMsgLex(ErrorNoIdent, "structs in structs not yet supported");
@@ -455,19 +605,39 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     else
         parseEndOfStatement();
 
+    // An enum's identity is its variant set, so an enum with no variants names
+    // nothing a value of it could be and nothing a match could account for
+    if (isenum && !(strnode->flags & HasTagField))
+        errorMsgLex(ErrorNoVariants, "An enum declares its variants: an empty one has no value it could hold.");
+
     // The tag field belongs to the closed-variant machinery: it is the
     // discriminant a match on a plain reference reads to pick the variant, and
-    // only a closed type -- a union, or a trait whose variants are declared
-    // inside it -- can assign each variant a value. An open trait's variants
-    // may be extended by another module, so there is no tag to synthesize:
-    // dispatch and narrowing go through a virtual reference instead
-    // (coneref/reftraitvar.html). One is inserted here unless the type wrote
-    // its own enum-typed field, which the walk above has already marked.
+    // only an enum -- whose variants are all declared inside it -- can assign
+    // each variant a value. A trait is open, so its implementers may be extended
+    // by another module and no value could be unique: there is nothing to
+    // synthesize, and dispatch and narrowing go through a virtual reference
+    // instead (coneref/refvirtref.html). One is inserted here unless the enum
+    // placed its own, which the walk above has already marked.
     if ((strnode->flags & HasTagField) && !hasEnumFld) {
         FieldDclNode *fldnode = newFieldDclNode(anonName, (INode*)immPerm);
         fldnode->vtype = (INode*)newEnumNode();
         fldnode->flags |= IsTagField;
         nodelistInsert(&strnode->fields, 0, (INode*)fldnode);
+    }
+
+    // The declared integer type belongs to the discriminant, wherever it sits
+    if (underlying) {
+        INode **nodesp;
+        uint32_t cnt;
+        int found = 0;
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            if ((*nodesp)->flags & IsTagField) {
+                ((EnumNode*)((FieldDclNode*)*nodesp)->vtype)->underlying = underlying;
+                found = 1;
+            }
+        }
+        if (!found)
+            errorMsgNode(underlying, ErrorInvType, "An integer type here lays out the enum's tag values, and this enum has no variants to number.");
     }
 
     parse->typenode = svtype;

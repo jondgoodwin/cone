@@ -69,7 +69,7 @@ changing it.
 | --- | --- |
 | `src/c-compiler/parser/parseexpr.c` | Parses a name as one identifier, and everything after a period as a member access — a path and a member of a value are the same production here. |
 | `src/c-compiler/parser/parsemod.c` | Parses module-level declarations, `include`, `import`, and wildcard folding; loads/reuses modules, names each one, and establishes module hooks. |
-| `src/c-compiler/parser/parsetype.c` | Parses struct/trait/union members and inserts fields and methods into the type namespace. |
+| `src/c-compiler/parser/parsetype.c` | Parses struct/trait/enum members and inserts fields and methods into the type namespace. |
 | `src/c-compiler/ir/stmt/program.c` | Owns the program's module list, reuses modules by interned name, and initiates name resolution for every module. |
 | `src/c-compiler/ir/stmt/module.c` | Owns module namespaces, inserts global declarations with duplicate checks, switches active module hooks, folds imports before resolving other nodes, and walks module declarations. |
 | `src/c-compiler/ir/stmt/import.c` | Implements wildcard import folding by adding imported named nodes to the receiving module namespace. |
@@ -123,7 +123,7 @@ Current compiler behavior:
 - Every executable implementation remains a separate `FnDclNode`. The overload node is only a namespace binding, so lookup, call lowering, trait reconciliation, vtables, and code generation always record the selected concrete node.
 - A method cannot share a spelling with a field.
 - Struct/trait generic parameters form an enclosing lexical context while the type is resolved.
-- Unions reuse struct-like IR flags. Documented nested union variants are intended to be hoisted into the surrounding module rather than placed in a union namespace, but union support is incomplete.
+- An enum's variants are bound in the surrounding **module** rather than in the enum's own namespace, which is why two enums each declaring a `Quit` collide. They belong in the enum's namespace, reached as `Event.KeyEvent` and folded into a module deliberately; that waits on a `use` that folds names into a module, which does not exist — the only fold today is `import mod.*`. It is what `Some`, `None`, `Ok` and `Error` being bare names currently rests on, through corelib's automatic wildcard import. `[planned]`
 ### Generics and Macros
 
 The declared name of every generic or macro is an ordinary NameDef in its containing namespace, which may be a module/package or a type. It participates in the same cross-category uniqueness rules as every other name there.
@@ -211,7 +211,7 @@ An inherited field or default method is a type member for this purpose. It joins
 A declaration is private to the namespace that owns it unless it is written `pub`:
 
 - A name declared in a module is private to that module unless declared `pub`.
-- A type member is private to its type unless declared `pub`. A variant declared inside a trait or union is as visible as the trait, and may be declared `pub` itself.
+- A type member is private to its type unless declared `pub`. A variant declared inside an enum is as visible as the enum, and may be declared `pub` itself.
 - `pub` has one meaning wherever it appears: this entry is visible from outside the namespace that owns it. A local declaration has no outside to be visible from, so `pub` on one is `ErrorBadPub`; so is `pub` before `import` or `include`, whose meaning as re-export belongs to the module work.
 - A name's spelling says nothing about its visibility. A leading underscore is a character like any other.
 
@@ -741,7 +741,7 @@ would see little but `main`.
 - Selective import folding and `as` renaming are documented but unimplemented. The binding node they need exists (`AliasDclNode`, built for the type fold); import does not use it yet.
 - Nested named modules are documented but lack clear declaration syntax and parser support.
 - General aliases beyond `typedef` and the folded-member alias are not implemented.
-- Generic, macro, union, and metaprogram namespace behavior is partly implemented, incomplete, or aspirational. Delegated inheritance is built; see "Folding into a type" above.
+- Generic, macro and metaprogram namespace behavior is partly implemented, incomplete, or aspirational. Delegated inheritance is built; see "Folding into a type" above.
 - Packages organize importable libraries but are not yet defined as a distinct namespace layer.
 - A path may only pass through a module or a struct-like type. One whose base is an alias, a number type, a generic instance or a generic parameter is refused at type check, because none of those names a namespace at the point the collapse runs. Finishing those at type check, where they do, is the natural other half of the collapse and is not built.
 - There is no way to name the module a declaration is in, so a module-level name hidden by a local or by a type member cannot be reached. The `mod` header, which would give the module a name, is not built.

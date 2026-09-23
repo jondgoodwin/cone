@@ -168,6 +168,16 @@ enum ErrorCode {
     // Virtual dispatch
     ErrorGenericVtable = 1087,  // A trait requiring a generic method, which has no one signature a vtable slot could hold
 
+    // The closed family: 'enum'
+    ErrorEnumAbstract = 1088,   // 'enum trait': an enum's variant set is its identity, so no abstraction corresponds to one
+    ErrorOpenTrait = 1089,      // Variants declared inside a trait, which is open; a closed set is an enum
+    ErrorVariantDcl = 1090,     // A variant restating what its enum decides: its base, or its type parameters
+    ErrorDupTag = 1091,         // Two variants holding the same tag value
+    ErrorTagWidth = 1092,       // A tag value too large for the integer type the enum declared
+    ErrorBadUnsized = 1093,     // '@unsized' where there is no variant padding to decline
+    ErrorNoVariants = 1094,     // An enum declaring no variants
+    ErrorEnumEquality = 1095,   // '==' on an enum whose variants carry payloads, which have no comparison
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

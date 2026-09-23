@@ -1,0 +1,38 @@
+// What '@unsized' gives up. Declining the padding means the enum has no one
+// size, so no value of it may be held: not in a variable, not in a parameter, not
+// in a field. Everything reached through a reference still works, which
+// enum-success establishes.
+//
+// Type-check stage only. The cause and the remedy are the same in every case --
+// the enum has no size, so reach it through a reference -- which is why they are
+// side by side rather than one per file: a reader checks that each site names the
+// same advice.
+
+enum @unsized Packet {
+  pub id i32;
+
+  struct Ping {}
+  struct Payload { pub a i64; pub b i64; pub c i64; }
+}
+
+// A variable of the enum
+fn heldInAVariable() {
+  mut p Packet;          //~ ErrorNoSize:7 "its variants differ in size"
+}
+
+// A parameter taking it by value
+fn takesByValue(p Packet) {   //~ ErrorNoSize:17 "its variants differ in size"
+}
+
+// A field of a struct
+struct Holder {
+  pub p Packet;          //~ ErrorNoSize:7 "its variants differ in size"
+}
+
+// A variant coerced to the enum by value has nowhere to land: the free recast a
+// padded enum allows rests on every variant already being the enum's size
+fn variantToEnumByValue() {
+  imm ping = Ping[1];
+  mut p Packet = ping;   //~ ErrorNoSize:7 "its variants differ in size"
+                        //~^ ErrorInvType:18 "does not match variable's declared type" follow-on
+}

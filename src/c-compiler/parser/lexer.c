@@ -89,9 +89,9 @@ void keywordInit() {
     keyAdd("typedef", TypedefToken),
     keyAdd("struct", StructToken);
     keyAdd("trait", TraitToken);
-    keyAdd("union", UnionToken);
     keyAdd("@move", MoveToken);
     keyAdd("@opaque", OpaqueToken);
+    keyAdd("@unsized", UnsizedToken);
     keyAdd("extends", ExtendsToken);
     keyAdd("mixin", MixinToken);
     keyAdd("use", UseToken);

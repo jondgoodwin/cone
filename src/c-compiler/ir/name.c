@@ -23,6 +23,7 @@ Name *thisName;
 Name *cloneName;
 Name *dropName;
 Name *finalName;
+Name *tagName;
 Name *plusEqName;
 Name *minusEqName;
 Name *multEqName;

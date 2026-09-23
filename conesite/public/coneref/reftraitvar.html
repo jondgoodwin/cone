@@ -13,102 +13,26 @@
 
     <div class="text">
 
-	<p>Earlier, we introduced 
-		<a href="refunion.html"><span class="pre">union</span></a> types.
-		Unions make it easy to define a fixed-number of variant structs that are all the same size.
-		Traits may be used to define variant struct types whose sizes are not necessarily identical.</p>
-	<p>There are two flavors of trait-based variant types:  closed and open.
-	
-	<h2>Closed Trait-based Variant Types</h2>
-	<p>Closed traits support only a fixed number of variant types, completely enumerated within the definition of the trait.
-		The list of variant types cannot be extended beyond this. In this sense, it is closed (or sealed).</p>
-	<p>The definition for closed trait-based variant types looks nearly identical to a union type definition. 
-		The only difference is the definition begins with <span class="pre">trait</span> instead of 
-		<span class="pre">union</span>:</p>
-<pre>
-trait Event {
-	pub time datetime;
-	pub struct ButtonEvent {
-		pub button u8;
-		pub pushed Bool;
-	}
-	pub struct KeyEvent {
-		pub key Unicode;
-	}
-	pub struct QuitEvent;
-}
-</pre>
-	<p>An initial value is created using one of the variant types' constructor or initializers,
-		exactly the same as for unions.</p>
-	<p>When the base type is a <span class="pre">trait</span> (instead of <span class="pre">union</span>)
-		ButtonEvent, KeyEvent, and QuitEvent values will have different sizes. 
-		Since they have different sizes, we cannot
-		swap out a concrete value of one type for a value of another type in the same allocated memory.</p>
-	<p>Similarly, it is illegal to define a variable as holding a value of some trait type:</p>
-<pre>
-imm event Event = ...
-</pre>
-	<p>We can only refer to trait-based values by reference:</p>
-<pre>
-imm event &amp;Event = &amp;someKeyEvent;
-</pre>
-	<p>Notice how we safely coerced a reference to a variant type automatically into a reference to the trait.</p>
-	<p>When working with a trait reference, we can only access a shared field or call a shared method
-		(for example, <span class="pre">event.time</span>). This is possible because all possible variant
-		types implement them.</p>
-	<p>To convert such a reference back to the concrete type it holds, pattern matching must be employed.
-		This uses the hidden tag field to determine the concrete type.</p>
-		
-	<h3>Virtual Method dispatch</h3>
-	<p>Sometimes we want all variant types to support a common set of methods whose signature is identical,
-		but whose implementation varies according to the variant type.
-		In such situations, the shared method is declared but not implemented as part of the trait. 
-		Then every variant type provides its own
-		distinct implementation of that method.</p>
-	<p>This is illustrated by the 'double' method in this example:</p>
-<pre>
-trait Number {
-  pub fn double(self &amp;mut Self);
-  
-  pub struct Real {
-	pub n f32;
-	pub fn double(self &amp;mut Self) {
-	  n *= 2;
-	}
-  }
-	  
-  pub struct Complex {
-    pub r f32;
-	pub i f32;
-	pub fn double(self &amp;mut Self) {
-	  r *= 2;
-	  i *= 2;
-	}
-  }
-}
-</pre>
-	<p>When we call the double method on a reference to a Number (e.g., <span class="pre">number.double()</span>,
-		the correct double method is automatically invoked based on which variant type the reference points to.
-		In effect, the tag field is used to determine the variant type.
-		That leads to the right vtable which then points to the method to call.</p>
-	<p>This kind of virtual method dispatch can be accomplished in exactly the same way with union type variants.</p>
-		
-	<h2>Open Trait-based Variant Types</h2>
-	
-	<p>Where open traits differ from closed traits lies in the fact that the list of possible variants can be
-		arbitrarily extended by other modules. This versatility carries a cost: 
-		we cannot know at compile-time how many variants there will be, and therefore we cannot assign each of them
-		a guaranteed-unique tag value. As a result, open traits have no implicit (or explicit) tag field.</p>
-	<p>With open trait-based variant types, the variant types are defined separately from the trait, rather than inside.
-		These variants may be defined anywhere, even in a different module than the trait.</p>
-	<p>To show that a variant type belongs to a specific trait, it explicitly specifies
-		that it <span class="pre">extends</span> the named trait.</p>
-	<p>An open trait version of the Event example would lay out like this:</p>
+	<p style="margin-left: 40px;"><i>Note: All of this capability is implemented.</i></p>
+
+	<p>Earlier, we introduced <a href="refenum.html"><span class="pre">enum</span></a> types, which
+		declare a closed set of variants: the whole set is written inside the declaration, and nothing
+		elsewhere can add to it.</p>
+	<p>Sometimes that is exactly what you do not want. Where <b>other modules</b> should be able to
+		add variants of their own, the set cannot be enumerated anywhere, so a
+		<a href="reftrait.html">trait</a> and the structs that <span class="pre">extends</span> it
+		are what express it.</p>
+
+	<h2>How an open set is written</h2>
+
+	<p>The variants are declared separately from the trait rather than inside it, and may live
+		anywhere &mdash; even in a different module. Each says which trait it belongs to by declaring
+		that it <span class="pre">extends</span> it.</p>
 <pre>
 trait Event {
 	pub time datetime;
 }
-	
+
 struct ButtonEvent extends Event {
 	pub button u8;
 	pub pushed Bool;
@@ -121,29 +45,35 @@ struct KeyEvent extends Event {
 struct QuitEvent extends Event;
 </pre>
 
-	<p>The absence of a tag field means that we cannot do pattern matching or method dispatch 
-		on a regular reference to an open trait. For those capabilities, we first need to obtain and then use a
-		<a href="refvirtref.html">virtual reference</a> to the trait.</p>
-	
-	<h2>Choosing the best variant type flavor</h2>
-	<p>Cone supports three flavors of variant types:  unions, closed traits and open traits.
-		How do you know which one to choose?</p>
+	<h2>What openness costs</h2>
+
+	<p>Because the variants are open-ended, the compiler cannot know at compile time how many there
+		will be, and so cannot give each one a guaranteed-unique number. <b>An open trait therefore
+		has no tag field</b>, implicit or explicit.</p>
+	<p>Everything an enum does with its tag has to be done another way. Without a tag there is nothing
+		in the value to say which variant it is, so neither pattern matching nor method dispatch works
+		on a plain reference to the trait. Both need a
+		<a href="refvirtref.html">virtual reference</a>, which carries a pointer to the variant's
+		vtable alongside the pointer to the value.</p>
+	<p>That is where the cost lands, and it is worth being concrete about it:</p>
 	<ul>
-	<li>Only choose <b>open traits</b> if you really need to allow other modules to be able to extend the number of variant types.
-		There is a memory and performance cost to this choice:  virtual references are fat pointers that take up twice the
-		space of regular references, and pattern match and dispatch are going to be slower.</li>
-	<li>Choose <b>closed traits</b> (or open traits) if you are concerned about the memory cost of making all the variants be the same size.</li>
-	<li>Otherwise, choose <b>unions</b> as often as possible:
-		<ul>
-		<li>They can be passed by reference (<span class="pre">&amp;Event</span>)
-			or value (<span class="pre">Event</span>). Field access is faster by value (vs. reference).</li>
-		<li>Allocated memory (stack or heap) can replace a value of one variant type with a value of different variant type.</li>
-		<li>They are ideal for fast pool-based memory management, because all variants are the same size.</li>
-		<li>References are half the size of fat pointers, improving performance and memory consumption.</li>
-		<li>They are fast at pattern matching and method dispatch.</li>
-		</ul>
+		<li>A virtual reference is a fat pointer, <b>twice the size</b> of a regular reference.</li>
+		<li>A match has to <b>check the possibilities one at a time</b>, because there is no number to
+			index with. An enum's tag <i>is</i> an index, so a closed set is not only exhaustive, it is
+			faster.</li>
+		<li>Variants differ in size, so no value of the trait may be held and nothing can swap one
+			variant for another in the same storage. Pool allocation, which wants one size, is out.</li>
 	</ul>
-		
+
+	<h2>Choosing between them</h2>
+	<p>Only choose an <b>open trait</b> if you really need other modules to be able to add variants.
+		Otherwise choose an <b>enum</b>, which is closed, tagged, exhaustively matchable, and by
+		default holdable by value.</p>
+	<p>The middle case is a closed set whose variants differ enough in size that padding them all to
+		the largest is not worth it. That is an enum too &mdash; written
+		<a href="refenum.html#unsized"><span class="pre">enum @unsized</span></a>, which keeps the
+		tag, the exhaustive match and the fast dispatch, and gives up only the value semantics.</p>
+
 	<p style="text-align: right; margin-top: 2em;">
 		<a href="refvirtref.html"><img alt="_" src="next.png" /></a>
 	</p>

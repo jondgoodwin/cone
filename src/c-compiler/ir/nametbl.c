@@ -152,6 +152,7 @@ void nametblInit() {
     cloneName = nametblFind("clone", 5);
     dropName = nametblFind("drop", 4);
     finalName = nametblFind("final", 5);
+    tagName = nametblFind("tag", 3);
 
     plusEqName = nametblFind("+=", 2);
     minusEqName = nametblFind("-=", 2);

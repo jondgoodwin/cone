@@ -245,26 +245,14 @@ LLVMTypeRef genlStructFields(GenState *gen, LLVMTypeRef structype, StructNode *s
     return structype;
 }
 
-// For tagged base traits (only do once, if needed):
-// - Auto-determine size of tag field
+// For a tagged enum (only do once, if needed):
 // - Optimize optional references/pointers to use 0 for lack of pointer
+//
+// The discriminant's width is not decided here. It follows the largest tag VALUE
+// rather than the variant count, which is not 'derived->used' once a tag value may
+// be pinned, so type check settles it where the pinned values and any declared
+// integer type are both known -- structSetTagWidth.
 void genlSetupTaggedTrait(GenState *gen, StructNode *base) {
-    if (base->derived->used > 0x100) {
-        INode **nodesp;
-        uint32_t cnt;
-        for (nodelistFor(&base->fields, cnt, nodesp)) {
-            if ((*nodesp)->flags & IsTagField) {
-                EnumNode *enumnode = (EnumNode *)itypeGetTypeDcl(*nodesp);
-                if (base->derived->used > 0x1000000)
-                    enumnode->bytes = 4;
-                else if (base->derived->used > 0x10000)
-                    enumnode->bytes = 3;
-                else if (base->derived->used > 0x100)
-                    enumnode->bytes = 2;
-            }
-        }
-    }
-
     // Set optimization flag if we have a nullable pointer variant types
     if (base->flags & SameSize && base->derived->used == 2) {
         // Look for 2 variants, one with one field (enum) and one with two

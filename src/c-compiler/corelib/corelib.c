@@ -58,12 +58,12 @@ void stdPermInit() {
 }
 
 char *corelibSource =
-"pub union Option[T] {\n"
+"pub enum Option[T] {\n"
   "struct None {}\n"
   "struct Some {pub value T;}\n"
 "}\n"
 
-"pub union Result[T,E] {\n"
+"pub enum Result[T,E] {\n"
   "struct Ok {pub value T;}\n"
   "struct Error {pub value E;}\n"
 "}\n"

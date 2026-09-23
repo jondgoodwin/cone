@@ -240,7 +240,7 @@ design behind it.
 | **Lexical and basic form** | `reftoken` · `refterm` · `refbasics` · `ebnf` | [Parse](phases/parse.md) |
 | **Expressions and control flow** | `refexpr` · `refif` · `refwhile` · `refeach` · `refblock` · `refmatch` · `refflow` | [block](nodes/block.md) · [if](nodes/if.md) · [return](nodes/return.md) |
 | **Functions** | `reffunc` · `refmethod` · `refmethop` · `refclosure` · `reffnref` · `refcloref` | [fncall](nodes/fncall.md) |
-| **Core types** | `reftypes` · `refnumber` · `refstruct` · `refunion` · `reftuple` · `refarray` · `reftypealias` · `refvoid` | [struct](nodes/struct.md) · [literals](nodes/literals.md) |
+| **Core types** | `reftypes` · `refnumber` · `refstruct` · `refenum` · `reftuple` · `refarray` · `reftypealias` · `refvoid` | [struct](nodes/struct.md) · [literals](nodes/literals.md) |
 | **Traits and polymorphism** | `reftrait` · `reftraitvar` · `refinherit` · `refvirtref` · `refgeneric` | [struct](nodes/struct.md) · [generic](nodes/generic.md) |
 | **References, permissions, regions** | `refrefs` · `refptr` · `refborref` · `refperm` · `refpermlock` · `refweakref` · `refarrayref` · `refallocref` · `refalloccust` · `refregionglo` · `refmove` · `reflifefn` | [references](nodes/references.md) · [References and Regions](topics/references-and-regions.md) · [Flow Analysis](phases/flow.md) |
 | **Lifetime and construction** | `refinitdrop` · `reftypemanage` | [Flow Analysis](phases/flow.md) · [vardcl](nodes/vardcl.md) |
@@ -270,7 +270,7 @@ and carries the manifest for the per-node notes beside it.
 | Node | Note |
 | --- | --- |
 | `FnCallNode` — calls, methods, operators, field access, indexing | [fncall](nodes/fncall.md) |
-| `StructNode` — struct, trait and union | [struct](nodes/struct.md) |
+| `StructNode` — struct, trait and enum | [struct](nodes/struct.md) |
 | `RefNode` — references, borrows, allocations, slices, virtual refs | [references](nodes/references.md) |
 | `VarDclNode`, `FieldDclNode`, `ConstDclNode` | [vardcl](nodes/vardcl.md) |
 | `ModuleNode`, `ImportNode`, `ProgramNode` — and the module/package/compilation-unit model | [module](nodes/module.md) |

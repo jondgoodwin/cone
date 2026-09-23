@@ -67,7 +67,7 @@ TIERS = {
     "lexical": 0,
     "core": 0,
     "struct": 1,
-    "union": 1,
+    "enum": 1,
     "array": 1,
     "closure": 1,
     "ref": 1,
