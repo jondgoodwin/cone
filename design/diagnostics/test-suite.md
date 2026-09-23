@@ -178,7 +178,9 @@ test/cases/module/
   those from running — while an import of a SISTER loads nothing and links like
   the rest of the tree, which `module-import-sister` runs.
 - **A subfolder holding its own designated file is a submodule**, not more of the
-  scenario's own files, so a folder scenario may hold a whole module tree. It is
+  scenario's own files, and so is a file whose first statement is `mod` — a
+  scenario file that opens with `mod` is a one-file module, not one of the
+  scenario's files. So a folder scenario may hold a whole module tree. It is
   registered the same way — under the scenario folder's name, with nothing inside
   it listed — and an annotation in a submodule's file works exactly as one in a
   swept file does.

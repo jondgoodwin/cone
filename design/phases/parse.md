@@ -68,8 +68,9 @@ is reported, so reusing a popped block rewrites the file name out from under
 every node still pointing at it. A block can also exist before it is current:
 `lexLoadPath` reads a file into one without pushing it, so a module can take
 its designated file's first line as its position before that file is parsed,
-and `lexPush` makes the same block current later — see `nodes/module.md`,
-"Parse".
+and the folder sweep can read a file's first statement to decide which module
+it is, and `lexPush` makes the same block current later — see
+`nodes/module.md`, "Parse".
 
 **An identifier may be spelled in any letters UTF-8 can carry**, which is
 `utf8IsLetter`: ASCII letters, or the start of a well-formed multi-byte
@@ -119,13 +120,15 @@ word and `lexNextToken` scans on from where it stopped.
 unbuilt *kind of declaration* is a token.** `mod` and `actor` are the two kinds
 that carry abstractions, so both are ordinary keywords with an arm of their own in
 the global dispatch. `mod` builds a declaration — it declares the module a
-folder's files belong to, [module](../nodes/module.md), "The `mod` declaration".
+folder's files, or one file, belong to, [module](../nodes/module.md), "The `mod`
+declaration".
 `actor`
 does not, and its arm reports `ErrorUnbuiltKind` where the declaration is written
 and names the abstraction's spelling, `actor trait`; `mod trait`, the shape of
 `mod` that is unbuilt, reports the same code the same way. An in-file
 `mod name { ... }` block is refused under that code too, though it is no unbuilt
-shape: it does not exist, since a nested module is a subfolder.
+shape: it does not exist, since a nested module is a file of its own or a
+subfolder.
 Admitting a shape is what settles its spelling now instead of leaving it to be
 designed when the semantics land, and reporting it is what keeps a declaration
 from being accepted with nothing under it. The cost is the standing one in the
@@ -310,11 +313,14 @@ compiler is given sweeps its folder when it is the file named for that folder.
 **And the same probe decides every subfolder, so the parse builds a module TREE.**
 A subfolder holding its own designated file draws a submodule — a module of its
 own, owned by its parent and bound in its namespace — and any other subfolder is
-organisational, its files joining the enclosing module at any depth. **Every
+organisational, its files joining the enclosing module at any depth. **A file
+gets a probe too**: one whose first statement is `mod` is a one-file submodule
+rather than one of the module's files, which the sweep reads off the file's text
+before anything is parsed (`lexOpensWithMod`). **Every
 submodule of a level is drawn before any of them is parsed**, so a sister is a
 name of the parent's namespace, and her files are registered, before any file can
 name her; and all of them are drawn before the parent's own files are parsed, so
-a name a subfolder put in the namespace is there before any statement can collide
+a name a submodule put in the namespace is there before any statement can collide
 with it. [module](../nodes/module.md), "The folder tree", owns the rules and the
 diagnostics.
 
@@ -394,13 +400,14 @@ numbers.
 | | `lexScanIdent` | identifier scan and name-table classification; reserved-word release; a `@` or `#` word that names nothing reported and dropped |
 | | `lexScanNumber`, `lexScanString`, `lexScanChar`, `lexScanEscape` | literals; UTF-8 re-encoding of escapes; lifetime-vs-char disambiguation |
 | | `lexNewLine`, `lexBlockComment` | line counting for diagnostics, inside comments included |
+| | `lexOpensWithMod` | whether a source's first statement begins `mod` or `pub mod`, read off its text past white space and comments with nothing lexed: the folder sweep's probe for a one-file module |
 | `parser/parsemod.c` | `parsePgm` | **entry point** — tables, program, main module, corelib, main file |
 | | `parseGlobalStmts` | the global statement dispatch loop; `trait` by itself enters `parseStruct` with `TraitType` already set, and `actor` is the unbuilt kind refused here. It is told whether it is reading the start of a module's own source, which is what decides where a `mod` declaration may stand |
-| | `parseModuleDcl` | `mod name;`, the declaration a module's designated file makes: the placement rule, the check against the folder's name, the rename a one-file module still gets, the module's own name bound into its namespace, what `pub` does for a submodule and why it is refused on any other module, the `extends` it records for name resolution to resolve, and the refusal of the in-file block, which does not exist, and of `mod trait` |
+| | `parseModuleDcl` | `mod name;`, the declaration a module's designated file or one file makes: the placement rule, the check against the folder's name or the one-file submodule's file's, the rename a lone file still gets, the module's own name bound into its namespace, what `pub` does for a submodule and why it is refused on any other module, the `extends` it records for name resolution to resolve, and the refusal of the in-file block, which does not exist, and of `mod trait` |
 | | `parseSkipDclBody` | skip an unbuilt form's `{ … }` whole, or resync at the next `;` |
 | | `parseLoadAndParseModuleFile` | per-module unit: locate, register by path, naming, the folder sweep, corelib import, `modHook`, and a parse per file |
-| | `parseDesignatedFolder`, `parseCollectFolder`, `parseModuleFiles` | the folder sweep: whether the file is its folder's designated file, which files the folder brings in, which subfolders draw submodules, and the designated file too deep to draw one |
-| | `parseSubmodule`, `parseModuleTree` | the module tree: the submodule a subfolder draws — owned by its parent, bound in its namespace, private to it unless `pub` — and the order, submodules before the module's own files |
+| | `parseDesignatedFolder`, `parseCollectFolder`, `parseModuleFiles` | the folder sweep: whether the file is its folder's designated file, which files the folder brings in, each read into its block as it is found, which files are one-file modules and which subfolders draw submodules, in the order of their names, and the refusals — a designated file or one-file module too deep to be a module, a one-file module beside a module folder of its name |
+| | `parseSubmoduleDraw`, `parseSubmoduleParse`, `parseModuleTree` | the module tree: the submodule a subfolder or a one-file module draws — owned by its parent, bound in its namespace, private to it unless `pub` — and the order, submodules before the module's own files |
 | | `parseRegisterModuleFiles` | the file registry entries for a module's files, and the two collisions that stop a file joining |
 | `shared/fileio.c` | `fileFindSrc`, `fileFolderScan`, `fileDesignatedFile` | locate a source file without reading it; list a folder's `.cone` files and subfolders, sorted; probe a folder for the designated file that makes it a module folder |
 | | `parseImport`, `parseRetiredInclude` | the one source-composition form, and the retired one reported |

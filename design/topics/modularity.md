@@ -64,7 +64,7 @@ large**, which is why the interesting decisions are at the bottom of this table.
 | **function** | the block it holds, and the calls in it | parameters and locals | body invisible; the signature is the interface | function references | generics | overload sets ⚠ *unconfirmed reading* |
 | **type** | fields; an enum's spliced into its variants at compile time | members | members are private unless `pub`; an enum and its variants are one boundary | traits and virtual references, asserted with `is` or noticed structurally | generics; trait defaults cloned into implementers | ⚠ **unknown** — whether a type can gain methods outside its own declaration is not established |
 | **thread** | **absent** | **absent** | **absent** | **absent** | **absent** | **absent** |
-| **module** | the files of a folder, swept from the designated file the compiler is given, plus the submodules its subfolders draw; an organisational subfolder's files, at any depth, join the enclosing module | yes — the folder names the module, and a submodule is reached by a path through its parent | names are private unless `pub`, and a submodule is private to its parent unless `pub` | **absent** — module traits are planned | **absent** — generic modules are planned | **absent** |
+| **module** | the files of a folder, swept from the designated file the compiler is given, plus the submodules its subfolders and its one-file modules draw; an organisational subfolder's files, at any depth, join the enclosing module | yes — the folder, or a one-file module's file, names the module, and a submodule is reached by a path through its parent | names are private unless `pub`, and a submodule is private to its parent unless `pub` | **absent** — module traits are planned | **absent** — generic modules are planned | **absent** |
 | **program / library** | linking; `extern` and the C ABI | ⚠ **absent — the linker has one flat symbol space**, and nothing in a generated name carries the package | partial — a program's definitions are internal to its object, but what a package exports is undecided | **absent** | **absent** | **absent** |
 
 ⚠ **The six-column table shows something the three-column one could not.**
@@ -75,7 +75,8 @@ invisible, because "namespace" was folded into isolation. **Composition and
 namespace being separable at the module layer is the other thing it surfaces:**
 the folder sweep is a composition mechanism, and an organisational subfolder
 proves it — it composes a module's files and makes no namespace, while the
-subfolder beside it that holds its own designated file makes one.
+subfolder beside it that holds its own designated file makes one, and so does a
+file that opens with `mod`.
 
 **The stated goal is to close the gaps by making the layers symmetric** —
 "to make modularity for types, modules and threads look the same, including how
