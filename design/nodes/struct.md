@@ -211,7 +211,7 @@ neither slots nor requirements and cost the trait nothing.
 `trait-typecheck-vref` pins all three, and
 `conesite/public/coneref/refvirtref.html`, "Type Restrictions", is the rule.
 | `namespace` | every named member: fields, methods, macros, overload sets, `Self`, **an enum's variants** — each a `StructNode`, bound at parse, and never a member of the enum's values: a lookup through a value passes one over (`fnCallLowerMethod`) — and what a fold admits — a **copy** of a folded field (a `FieldDclNode` with a `hop`) and an **alias** (`AliasDclNode`) for a folded method, overload set or macro method, for every member of an `extends` base but its fields, `final` and `clone` (those two are copied into `nodelist`, as a trait's defaults are), and for every member a sibling `use` admits. The copies and aliases live here only; `fields` and `nodelist` never hold one |
-| `dropfn` | NULL until the last step of type check |
+| `dropfn` | NULL until type check settles the layout, and set before the methods are checked |
 | `dclinfo` | owner and the facts its symbols are spelled from — [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols". The owner is a module, or the enum for a variant declared inside one — for an extension's copy of a base variant, the extension, so the copy's methods are spelled after it. Read for one thing besides naming: rejecting a variant declared outside its enum's module, through `dclInfoGetModule` |
 | `basetrait` | the **type expression** of the first abstraction an `is` names, or of the enum a variant belongs to — a `NameUseNode`, or an `FnCallNode` for a generic base. **Not a `StructNode*`.** Two helpers unwrap it and they answer different questions: `structBaseTraitDcl` takes **one hop**, to the declaration this type stands on, while `structGetBaseTrait` recurses to the **bottom-most** one. Picking the wrong one is how the infection loop hangs |
 | `extendsbase` | the **type expression** whatever base an `extends` names, on the same terms: the concrete type this enriches, or, **on an enum, the enum whose variants join this one's set**. **A separate slot from `basetrait` on purpose**: they are different assertions, a type may write both, and every walk that reads `basetrait` is asking about an abstraction — which is also why an enum's base is here and not there, since no substitution runs between the two enums. `structEnumBaseDcl` unwraps this one for an enum. A generic enum is named here with its arguments (`Option[T]`), an `FnCallNode` until type check replaces it with the instance |
@@ -600,19 +600,23 @@ another. See [module](module.md).
    `final` and `clone` aside unlowered in `lifecycle` (`structKeepLifecycle`), for
    an enrichment taken after its methods are checked; so an enrichment reads
    `TypeChecked` on its base to know which to copy.
-8. Type check every method.
-9. **Verify the traits' method requirements** (`structCheckTraitReqs`), now
+8. **`structSetDropFn`** — validate a `final` method, then, if any field's type
+   has a drop function, synthesize a `drop` method, owned by the type so its
+   symbol is spelled as any method's — `Bundle.drop`, `_CNvNt6Bundle4drop` —
+   calling `final` and then each droppable field. The
+   generated body is built pre-lowered and is **never type checked or flow
+   analyzed**. **Before the methods, and load-bearing**: each method's flow pass
+   asks `itypeGetDropFnDcl` about its by-value `self` and its locals of this
+   type, and a `dropfn` still NULL then finalizes neither. The fields are
+   checked by now, so every field's drop function is known.
+9. Type check every method — those in `nodelist` before step 8, so not the
+   generated `drop`.
+10. **Verify the traits' method requirements** (`structCheckTraitReqs`), now
    that every signature has its types: for each method of each trait in
    `traits`, the type's binding for the name must have the one candidate of the
    trait's signature — an inherited default meets that by construction — and a
    requirement with no body, inherited as such, is unmet in a struct; a trait
    may pass it on.
-10. **`structSetDropFn`** — validate a `final` method, then, if any field's type
-   has a drop function, synthesize a `drop` method, owned by the type so its
-   symbol is spelled as any method's — `Bundle.drop`, `_CNvNt6Bundle4drop` —
-   calling `final` and then each droppable field. The
-   generated body is built pre-lowered and is **never type checked or flow
-   analyzed**.
 
 ## Name folding
 
@@ -1105,9 +1109,6 @@ and `extractvalue`, and `vtblidx` for vtable slots.
 - **Whether `&<Struct` should work at all**, rather than be refused, is an open
   language question. `refvirtTypeCheck` requires a `TraitType` today, so the
   answer in force is "refused".
-- **A method of a type never gets that type's drop calls** — `structSetDropFn`
-  runs after the method loop, so `dropfn` is still NULL while method bodies are
-  checked and flow-analyzed.
 - **Mixing in two enums brings two tag fields**, and no duplicate-name error fires
   because `namespaceAdd` silently ignores `_`, so what reports it is type check's
   one-discriminant rule. Traits carry no tag, so a chain of `is` bases and any number

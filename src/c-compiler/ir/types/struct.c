@@ -2410,8 +2410,16 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
         structKeepLifecycle(node);
     node->flags |= TypeChecked;
 
+    // Settle the drop fn before any method is checked, because each method's
+    // flow pass asks for it: a by-value 'self', or a local of this type, is
+    // finalized at the method's scope exit only if the type has one by then.
+    // The fields are checked, so each field's drop fn is known. A generated drop
+    // fn joins the nodelist already lowered, so the walk below stops short of it.
+    uint32_t methcnt = node->nodelist.used;
+    structSetDropFn(node);
+
     // Type check all methods, etc.
-    for (nodelistFor(&node->nodelist, cnt, nodesp)) {
+    for (nodesp = node->nodelist.nodes, cnt = methcnt; cnt; cnt--, nodesp++) {
         inodeTypeCheckAny(pstate, (INode**)nodesp);
     }
 
@@ -2428,7 +2436,6 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     }
 
     structCheckTraitReqs(node);
-    structSetDropFn(node);
 
     pstate->typenode = svtypenode;
 }
