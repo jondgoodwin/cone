@@ -68,7 +68,36 @@ INode *cloneFnCallNode(CloneState *cstate, FnCallNode *node) {
     if (node->args)
         newnode->args = cloneNodes(cstate, node->args);
     newnode->methfld = cloneNode(cstate, node->methfld);
+
+    // Inside a generic type's braces its bare name is the instance being cloned,
+    // and the clone maps the generic to it (genericReserve). Given type arguments
+    // it is the generic again: 'Box[i32]' inside 'Box[T]' is another instance,
+    // and 'Box[T]' is this one, both reached through the memo. A bare use with a
+    // value list -- 'Mb.No[]', 'Box[v]' -- stays mapped: it builds this instance.
+    if (isNameUseNode(node->objfn) && isNameUseNode(newnode->objfn)) {
+        INode *generic = ((NameUseNode*)node->objfn)->dclnode;
+        if (generic && generic != ((NameUseNode*)newnode->objfn)->dclnode
+            && generic->tag == StructTag && ((StructNode*)generic)->genericinfo
+            && fnCallHasTypeArgs(newnode))
+            ((NameUseNode*)newnode->objfn)->dclnode = generic;
+    }
     return (INode *)newnode;
+}
+
+// Does this call give type arguments -- 'Box[i32]', 'Mb.No[T]' -- rather than
+// values? A generic's type argument list is recognized as genericSubstitute
+// recognizes it, by any argument that is a type, or a type parameter not yet
+// substituted.
+int fnCallHasTypeArgs(FnCallNode *node) {
+    if (node->args == NULL)
+        return 0;
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor(node->args, cnt, argsp)) {
+        if (*argsp && (isTypeNode(*argsp) || nameUseNames(*argsp, GenVarDclTag)))
+            return 1;
+    }
+    return 0;
 }
 
 // Serialize function call node

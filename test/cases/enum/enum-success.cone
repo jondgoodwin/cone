@@ -1223,6 +1223,13 @@ enum Tote[T] {
         case imm h Hollow {h.count + 40;}
       }
     }
+    // The enum's bare name is this instance, so the parameter's type is bare too
+    pub fn codeAllBare(self &, t Tote) i32 {
+      match t {
+        case is Stuffed {7;}
+        case imm h Tote.Hollow {h.count + 70;}
+      }
+    }
   }
 
   struct Hollow {
@@ -1232,6 +1239,45 @@ enum Tote[T] {
         case is &Hollow[T] {d;}
       }
     }
+  }
+}
+
+// Inside a generic enum's braces -- its own methods and statics, and every
+// variant's body -- the enum's bare name is the instance being defined, and so is
+// a variant's: in Crop[i64], 'Crop' is Crop[i64], and 'Fallow' and 'Crop.Fallow'
+// are Crop.Fallow[i64]. So a variant names its enum and builds a sibling with no
+// type arguments, where Slot above writes them out. Each bare name reaches the
+// instance being cloned, never a second instantiation: 'Fallow' in Ripe's body
+// names the LATER sibling, which is instantiated with the enum rather than again.
+//
+// The enum's own static builds a variant, bare in 'sow' and with its arguments
+// in 'sowFull'. The instance and all its variants are cloned and remembered
+// before the instance is type checked, so 'Fallow[T]' there finds the variant
+// already made; checked first, the instance missed it and was instantiated
+// again, endlessly (ErrorInstDepth).
+enum Crop[T] {
+  pub rows i64;
+  pub fn sow(r i64) Crop {Fallow[r];}
+  pub fn sowFull(r i64) Crop[T] {Fallow[T][r];}
+
+  struct Ripe {
+    pub grain T;
+    pub fn reap(self &) Crop {Crop.Fallow[rows + 1];}
+    pub fn replant(self &) Crop {sowFull(rows + 30);}
+    pub fn keep(self &) Ripe {Ripe[rows * 2, grain];}
+  }
+
+  struct Fallow {
+    pub fn plant(self &, y T) Crop {Ripe[rows + 5, y];}
+    pub fn resow(self &) Crop {Crop.sow(rows * 10);}
+  }
+}
+
+// Outside the braces the enum is named with its type arguments, as always
+fn cropCode(c Crop[i64]) i64 {
+  match c {
+    case imm r Ripe {r.grain * 100 + r.rows;}
+    case imm f Fallow {f.rows;}
   }
 }
 
@@ -1322,11 +1368,21 @@ fn variantBodies() {
   show("generic-variant-exhaustive-match-last", i64[(&tote).code(hollow)]);
   show("generic-variant-exhaustive-bare-first", i64[(&tote).codeBare(stuffed)]);
   show("generic-variant-exhaustive-bare-last", i64[(&tote).codeBare(hollow)]);
+  show("generic-variant-exhaustive-bare-type-first", i64[(&tote).codeAllBare(stuffed)]);
+  show("generic-variant-exhaustive-bare-type-last", i64[(&tote).codeAllBare(hollow)]);
   imm totehollow = Tote.Hollow[i64][0];
   show("generic-variant-exhaustive-ref-first", (&totehollow).itemOr(&stuffed, 99));
   show("generic-variant-exhaustive-ref-last", (&totehollow).itemOr(&hollow, 99));
   show("generic-enum-method-exhaustive-first", i64[(&tote).which(stuffed)]);
   show("generic-enum-method-exhaustive-last", i64[(&totehollow).which(hollow)]);
+  imm ripe = Crop.Ripe[i64][3, 7];
+  show("generic-variant-bare-builds-later-sibling", cropCode((&ripe).reap()));
+  imm kept Crop.Ripe[i64] = (&ripe).keep();
+  show("generic-variant-bare-is-its-own-instance", cropCode(kept));
+  imm fallow = Crop.Fallow[i64][2];
+  show("generic-variant-bare-builds-earlier-sibling", cropCode((&fallow).plant(4)));
+  show("generic-enum-static-bare-builds-variant", cropCode((&fallow).resow()));
+  show("generic-enum-static-full-builds-variant", cropCode((&ripe).replant()));
   imm high = WideTier.High[];
   show("extension-copy-means-the-base-sibling", tierCode((&high).drop()));
   imm peak = WideTier.Peak[];

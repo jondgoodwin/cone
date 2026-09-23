@@ -439,6 +439,46 @@ fn staticsNamedBare() {
   show("generic-statics-named-bare-other-instance", (&b).total());
 }
 
+// -------- a generic type's own name inside its braces --------
+
+// Inside a generic type's own braces its bare name is the instance being
+// defined: in Nest[i64], 'Nest' is Nest[i64] -- as a return type, a parameter's,
+// a referent's and a local's type, the type a literal builds, and the head of a
+// path to a static. Any other instance is written in full, a nested one too, and
+// writing this instance's own arguments names the same instance. Outside the
+// braces a generic is named with its type arguments, as always.
+struct Nest[T] {
+  pub v T;
+  pub depth i64;
+
+  pub fn deeper(self &) Nest {Nest[v, depth + 1i64];}
+  pub fn plus(self &, o &Nest) i64 {imm m Nest = *o; depth + m.depth;}
+  pub fn seed(x T) Nest {Nest[x, 40i64];}
+  pub fn reseed(self &) Nest {Nest.seed(v);}
+  pub fn spelled(self &) Nest[T] {Nest[T][v, depth + 2i64];}
+  pub fn narrow(self &) Nest[i32] {Nest[i32][7i32, depth + 3i64];}
+  pub fn nested(self &) Nest[Nest[i32]] {Nest[Nest[i32]][Nest[i32][9i32, depth], depth + 4i64];}
+}
+
+fn ownNameBare() {
+  imm n = Nest[i64][5i64, 1i64];
+  imm d Nest[i64] = (&n).deeper();
+  show("generic-own-name-bare-builds-instance", d.depth);
+  show("generic-own-name-bare-parameter-and-local", (&n).plus(&d));
+  imm r Nest[i64] = (&n).reseed();
+  show("generic-own-name-bare-path-to-static", r.depth + r.v);
+  imm s Nest[i64] = (&n).spelled();
+  show("generic-own-name-with-its-own-arguments", s.depth);
+  imm w Nest[i32] = (&n).narrow();
+  show("generic-other-instance-in-full", w.v);
+  show("generic-other-instance-in-full-reads-this-one", w.depth);
+  imm x Nest[Nest[i32]] = (&n).nested();
+  show("generic-nested-instance-in-full", x.depth * 10i64 + x.v.depth);
+  imm f = Nest[f64][2.5, 6i64];
+  imm g Nest[f64] = (&f).deeper();
+  show("generic-own-name-bare-per-instance", g.depth);
+}
+
 // A reference or pointer to a type parameter, written inside the generic.
 // Name resolution decides whether '&T' is a reference type or a borrow by
 // asking whether T is a type, and in the template T is a generic parameter,
@@ -560,6 +600,7 @@ fn main() i32 {
   unnamedTypeArguments();
   staticPerInstance();
   staticsNamedBare();
+  ownNameBare();
   referenceToTypeParameter();
   composedTypeParameter();
   0i32;

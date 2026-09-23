@@ -430,7 +430,7 @@ written inside its body.
   pinned value. `structSetTagWidth` is where, in step 5 of the struct sequence,
   after the variants' numbers are known and the enum's declared integer type is
   checked — and again from `genericMemoize` for an instance of a generic enum,
-  whose variants are instantiated only after it is checked. A value too large for a declared type is `ErrorTagWidth`, and so is one
+  whose variants are type checked only after it is. A value too large for a declared type is `ErrorTagWidth`, and so is one
   too large for the width an extension's base already settled: they share the node
   the width is written on.
 

@@ -18,7 +18,8 @@
 # generic-typecheck-infer covers type arguments that are absent and cannot be
 # derived, generic-typecheck-args covers type arguments that are written out
 # and do not match the declaration (and a generic type that writes none where
-# one is required: a member path through it, or a type position), and generic-typecheck-macro covers what
+# one is required: a member path through it, or a type position, outside its
+# own braces or inside another generic's), and generic-typecheck-macro covers what
 # expansion itself cannot serve -- an argument list that does not match, a body
 # that would expand forever, and a macro method with nothing to stand in for
 # its self.
@@ -121,6 +122,21 @@ excludes = [
   ".litSum.1 ",
 ]
 
+# Inside a generic type's braces its bare name is the instance being defined,
+# reached as the clone is made rather than by instantiating anything: Nest's
+# methods name it bare, and each instance still has exactly one copy of each
+# method. A bare name that started a second Nest[i64] would give its methods a
+# second definition, which LLVM hides with its '.1' uniquifier.
+[[scenario.generic-success.check]]
+name = "own-name-bare-is-this-instance"
+target = "symbols"
+contains = [
+  "define internal Nest[i64].deeper comdat nodeduplicate",
+  "define internal Nest[f64].deeper comdat nodeduplicate",
+  "define internal Nest[i32].deeper comdat nodeduplicate",
+]
+excludes = [" Nest.deeper ", ".deeper.1 ", ".seed.1 "]
+
 # A generic type's method instance is linked like a generic function's
 # instance: internal, a definition of this object. Both instances of Holder
 # clone every method, so 'clear' is cloned for f64 too although nothing calls
@@ -167,9 +183,9 @@ diagnostics = 4
 
 [scenario.generic-typecheck-args]
 category = "reject"
-description = "Type argument lists written out that do not match the generic's parameters, and a generic type that writes none: on a path to its member, or where a type is wanted"
+description = "Type argument lists written out that do not match the generic's parameters, and a generic type that writes none outside its own braces: on a path to its member, or where a type is wanted"
 tags = ["typecheck"]
-diagnostics = 19
+diagnostics = 22
 
 [scenario.generic-typecheck-macro]
 category = "reject"

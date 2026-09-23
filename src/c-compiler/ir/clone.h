@@ -17,7 +17,8 @@ typedef struct CloneState {
     INode *instnode;     // The node provoking instantiation (for error messages)
     INode *selftype;     // Self type (might be NULL)
     INode *selfparm;     // Expanding a macro method: the parameter standing for its receiver, else NULL
-    uint16_t scope;      // Current block level
+    INode *structshell;  // An instance of a generic type reserved in advance, which the struct cloned next fills
+    uint16_t scope;     // Current block level
 } CloneState;
 
 // Data structures used for fixing dcl pointers

@@ -125,11 +125,27 @@ void genericInstantiateExit() {
     --instantiateDepth;
 }
 
-// Clone the generic's instance for parms and remember it, without type checking it
+// Reserve the instance of a generic type before it is cloned, and map the
+// generic to it for cloneDclFix. Inside its own braces a generic type's bare
+// name means the instance being defined -- 'Box' inside 'struct Box[T]' is
+// 'Box[T]' -- so every use of the name the clone copies while the map is in
+// force names this instance, which is never a second instantiation. A use given
+// type arguments keeps naming the generic (cloneFnCallNode): 'Box[i32]' is
+// another instance, reached through the memo like any other.
+// The caller pushes and pops the map.
+static INode *genericReserve(INode *generic) {
+    StructNode *shell = memAllocBlk(sizeof(StructNode));
+    cloneDclSetMap(generic, (INode*)shell);
+    return (INode*)shell;
+}
+
+// Clone the generic's instance for parms and remember it, without type checking it.
+// 'shell' is the instance reserved for a generic type (genericReserve), else NULL.
 static INode *genericClone(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nodetoclone,
-        GenericInfo *genericinfo) {
+        GenericInfo *genericinfo, INode *shell) {
     CloneState cstate;
     clonePushState(&cstate, (INode*)srcgencall, NULL, pstate->scope, genericinfo->parms, srcgencall->args);
+    cstate.structshell = shell;
     INode *instance = cloneNode(&cstate, nodetoclone);
     clonePopState();
 
@@ -144,7 +160,12 @@ static INode *genericClone(TypeCheckState *pstate, FnCallNode *srcgencall, INode
 // Instantiate the generic based on parms and return
 INode *genericInstantiate(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nodetoclone,
         GenericInfo *genericinfo, Name *name) {
-    INode *instance = genericClone(pstate, srcgencall, nodetoclone, genericinfo);
+    // A generic function's own name is not mapped: written bare in its body, it
+    // is a call whose type arguments are inferred, as it is anywhere else
+    uint32_t dclpos = cloneDclPush();
+    INode *shell = nodetoclone->tag == StructTag ? genericReserve(nodetoclone) : NULL;
+    INode *instance = genericClone(pstate, srcgencall, nodetoclone, genericinfo, shell);
+    cloneDclPop(dclpos);
 
     // Type check the instanced declaration
     inodeTypeCheckAny(pstate, &instance);
@@ -223,29 +244,41 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
         retinstance = genericInstantiate(pstate, srcgencall, nodetoclone, genericinfo, name);
     }
     else {
-        // For tag-based trait/struct, instantiate the base trait and all its variants
-        // Begin by instantiating the base trait
+        // For tag-based trait/struct, instantiate the base trait and all its variants.
+        // The enum and every variant are cloned and remembered before any is type
+        // checked: a variant's body may name a later sibling at these same
+        // arguments, and a sibling not yet remembered would be a miss that
+        // instantiates the whole enum again, endlessly.
+        //
+        // Every instance is reserved before any is cloned, and the generic enum
+        // and each generic variant mapped to its own: inside the enum's braces --
+        // its own methods, and each variant's body -- a bare 'Mb', 'No' or 'Mb.No'
+        // names the instance at these arguments, and a sibling named bare may
+        // come later than the body naming it.
         StructNode *basetrait = structGetBaseTrait((StructNode*)nodetoclone);
         Nodes *basememo = basetrait->genericinfo->memonodes;
         int firstinstance = basememo == NULL || basememo->used == 0;
-        INode *instrait = genericInstantiate(pstate, srcgencall, (INode*)basetrait, basetrait->genericinfo, name);
+        uint32_t dclpos = cloneDclPush();
+        INode *traitshell = genericReserve((INode*)basetrait);
+        Nodes *shells = newNodes(basetrait->derived->used);
+        for (nodesFor(basetrait->derived, cnt, nodesp))
+            nodesAdd(&shells, genericReserve(*nodesp));
+        INode *instrait = genericClone(pstate, srcgencall, (INode*)basetrait, basetrait->genericinfo, traitshell);
         if (basetrait == (StructNode*)nodetoclone)
             retinstance = instrait;
 
-        // Now instantiate all variants. Every one is cloned and remembered before
-        // any is type checked: a variant's body may name a later sibling at these
-        // same arguments, and a sibling not yet remembered would be a miss that
-        // instantiates the whole enum again, endlessly.
         // A variant's body may also name a static function, static or overload
         // name of the enum bare, which name resolution bound to the generic's
         // member; it is the instance's that has a symbol, so the variants are
         // cloned with each such member mapped to the instance's.
-        uint32_t dclpos = cloneDclPush();
         structCloneMapMembers(basetrait, (StructNode*)instrait);
         Nodes *variants = newNodes(basetrait->derived->used);
+        INode **shellp = &nodesGet(shells, 0);
         for (nodesFor(basetrait->derived, cnt, nodesp))
-            nodesAdd(&variants, genericClone(pstate, srcgencall, *nodesp, ((StructNode*)*nodesp)->genericinfo));
+            nodesAdd(&variants, genericClone(pstate, srcgencall, *nodesp, ((StructNode*)*nodesp)->genericinfo, *shellp++));
         cloneDclPop(dclpos);
+
+        inodeTypeCheckAny(pstate, &instrait);
         // The instance's 'derived' lists its own variants, and lists all of them
         // before any is type checked: a variant's method body may match a value
         // of the enum, and its match is exhaustive only against the whole set.
