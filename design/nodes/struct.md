@@ -778,6 +778,14 @@ own methods no longer are, so there the copy is taken from what the base set asi
 module boundary in `struct-extends-import`. Neither folds from a **sibling**: a
 type folding one has its own copy from the base they share.
 
+The base's **`@move` and `@opaque` flags are carried** (`MoveType`, `OpaqueType`,
+`DeclaredOpaque`, OR'd onto this type as the members are taken). What the base's
+fields and `final` make of it is inferred again from the copies at layout, but an
+attribute exists only as the flag parse set on the base, and the carry is what
+makes an enrichment of an `@move` type move and one of an `@opaque` type refuse a
+value. Measured in `move-flow-infection` and `move-success` for `@move`, and
+`struct-typecheck-nosize` for `@opaque`.
+
 **Every other member becomes an alias** — methods, overload sets, macro methods
 and statics alike, private ones included, under the base's own visibility. A
 static keeps its owner and its signature, so the base's factory reached as
