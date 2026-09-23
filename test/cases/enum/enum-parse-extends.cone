@@ -1,12 +1,13 @@
 // What an enum that extends another may write in its declaration.
 //
-// An extension adds variants to the set its base declared, and the variants it
-// shares with the base are the base's own declarations. So anything that would
-// have to reach those variants -- a field spliced into every one of them, a method
-// every one of them implements or inherits, a discriminant they are laid out with
-// -- can only be declared where they are, and its base's own members come along
-// with them. What is left for an extension's body is variants, which is the whole
-// of what it is for.
+// An extension holds its own copies of its base's variants, and those copies were
+// written against the base. So what it declares beside the variants it adds is
+// what can be given to every variant of its set, copies included: a method with a
+// body, cloned into each of them, and a static function or a static, which stay
+// the extension's own. enum-extends runs those. What cannot be given to a copy --
+// a requirement it has no body to meet, a field that would move what its methods
+// read, a discriminant it was laid out with -- is refused here, where it is
+// written, each with its reason.
 //
 // Parse stage only: each of these is refused where it is written, and a parse
 // error stops the compile before name resolution, so nothing here reaches the
@@ -19,31 +20,28 @@ enum Colors {
   Red, Green, Blue;
 }
 
-// A field is part of every variant's layout, and the shared ones already have the
-// base's. Declaring one here would have to add it to a declaration this enum does
-// not own.
+// A requirement would be answered by every variant of the set, and the copies of
+// the base's variants have no body of their own to implement it in
+enum WithRequirement extends Colors {
+  Magenta;
+  pub fn describe(self &) i32;   //~ ErrorEnumExtends:7 "the method describe needs a body"
+}
+
+// A field is part of every variant's layout, the copies' included, and their
+// methods read the fields where the base put them
 enum WithField extends Colors {
   Cyan;
-  pub extra i32;          //~ ErrorEnumExtends:13 "a field belongs on the enum it extends"
+  pub extra i32;          //~ ErrorEnumExtends:7 "declares no common field: extra would change the layout"
 }
 
-// A method is either a default cloned into every variant or a requirement every
-// variant implements, and a shared variant answers to its own enum for both
-enum WithMethod extends Colors {
-  Magenta;
-  pub fn describe(self &) i32 {   //~ ErrorEnumExtends:7 "a method belongs on the enum it extends"
-    1;
-  }
+// The discriminant is a field too, and the base's
+enum WithTag extends Colors {
+  Violet;
+  _ tag;                  //~ ErrorEnumExtends:3 "takes its base's discriminant"
 }
 
-// A static belongs to the type that declares it, and this type's members are its
-// base's
-enum WithStatic extends Colors {
-  Amber;
-  pub static wide i32;    //~ ErrorEnumExtends:14 "a static belongs on the enum it extends"
-}
-
-// A mixin would splice a trait's members in, which is the same addition a field is
+// A mixin would splice a trait's fields and requirements in, which is what a field
+// and a requirement are
 enum WithMixin extends Colors {
   Teal;
   mixin Marker;           //~ ErrorEnumExtends:3 "a mixin belongs on the enum it extends"

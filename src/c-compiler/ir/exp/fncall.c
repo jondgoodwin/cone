@@ -1049,6 +1049,10 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     // is called. Skipping the ordinary name-use check leaves that check free to reject
     // the overload name everywhere else.
     int calleeIsOverload = nameUseNames(node->objfn, FnOverloadDclTag);
+    // Not checked as a name, so a generic base's overload name, bare inside an
+    // extension's braces, is pointed at its instance's set here
+    if (calleeIsOverload)
+        nameUseBaseInstanceMember(pstate, (NameUseNode*)node->objfn);
 
     // A member named on a receiver may be a macro method, and a macro's
     // arguments stay unchecked until they have been substituted -- so the

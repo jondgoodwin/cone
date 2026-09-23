@@ -141,7 +141,13 @@ Two entry points, because a type name and a value name want different things.
    body never arrives here bound to the template's member: the clone re-pointed
    it at the instance's ([generic](generic.md), "How a cloned name gets
    re-pointed"). `fnCallLowerOverloadFn` asks the same of an overload name's
-   candidates before selecting one.
+   candidates before selecting one. **Nor does a bare name inside an enum
+   extension's braces that names a generic base's member**: name resolution bound
+   it to the base template's, since the instance the extension stands on exists
+   only at type check, and `nameUseBaseInstanceMember` first points it at that
+   instance's member of the same name ([struct](struct.md), "An enum extending an
+   enum"). `fnCallTypeCheck` does the same for a bare overload name before its set
+   is selected from. A qualified use is left as written, and refused here.
 1. **An overload name is refused here.** It names a set, not a value; only a
    call may use it, and `fnCallTypeCheck` rewrites the use to the concrete
    declaration before this is reached. `ErrorOverloadUse`.

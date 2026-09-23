@@ -57,6 +57,10 @@ void nameUsePrint(NameUseNode *name);
 // declaration the name refers to, in this module or another
 void nameUseNameRes(NameResState *pstate, NameUseNode **namep);
 
+// Point a bare use of a generic base's member, made inside an extension's braces,
+// at the member of the base instance the checked function's extension stands on
+void nameUseBaseInstanceMember(TypeCheckState *pstate, NameUseNode *name);
+
 // Report a use of a generic type's own member, which only its instances have,
 // at the use 'name', and return 1 if 'dcl' is one
 int nameUseTemplateMember(NameUseNode *name, INode *dcl);

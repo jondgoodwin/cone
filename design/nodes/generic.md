@@ -176,7 +176,10 @@ A tagged trait's variants are separate clones, made after the base's instance,
 so `genericMemoize` clones them under a map from the base template's members to
 that instance's: a variant's body naming an enum's static function bare reaches
 the instance's copy. A function cloned on its own is never mapped to its copy,
-which is what the self-recursion above relies on.
+which is what the self-recursion above relies on. A bare name inside an enum
+extension's braces naming a **generic base's** member is in no map: the base's
+instance is made only when the extension's instance is type checked, after the
+clone, so type check re-points that use instead ([nameuse](nameuse.md), step 0b).
 
 ## Type check
 
