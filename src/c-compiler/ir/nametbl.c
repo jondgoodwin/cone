@@ -185,6 +185,8 @@ void nametblInit() {
 
     eqName = nametblFind("==", 2);
     neName = nametblFind("!=", 2);
+    sameName = nametblFind("===", 3);
+    notSameName = nametblFind("!==", 3);
     leName = nametblFind("<=", 2);
     ltName = nametblFind("<", 1);
     geName = nametblFind(">=", 2);

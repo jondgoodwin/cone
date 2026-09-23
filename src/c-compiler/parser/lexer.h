@@ -100,6 +100,8 @@ enum TokenTypes {
     IsToken,           // 'is'
     EqToken,           // '=='
     NeToken,           // '!='
+    SameToken,         // '==='
+    NotSameToken,      // '!=='
     LtToken,           // '<'
     LeToken,           // '<='
     GtToken,           // '>'

@@ -240,6 +240,11 @@ enum ErrorCode {
     // 'mod A extends B': a module reusing another module's public names
     ErrorModExtends = 1122,     // What a module's 'extends' names cannot be reused: not a module, a trait (conforming to a module trait is not built), the module itself or one it contains, a path, or a cycle of extends
 
+    // Comparing references: '==' and ordering read through to the values, '===' asks whether they are the same place
+    ErrorRefNoCompare = 1123,   // '==', '!=' or an ordering on references whose referent has no such operator, or on a slice or virtual reference, whose referents have no comparison built
+    ErrorRefCompareMixed = 1124, // A comparison with a reference on one side and a value on the other: both are read through, or neither
+    ErrorSameNotRef = 1125,     // '===' or '!==' on a value that is neither a reference nor a pointer, which has no place to be the same as
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

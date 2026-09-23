@@ -818,19 +818,29 @@ void lexNextTokenx() {
                 lexReturnPuncTok(BarToken, 1);
             }
 
-        // '=' and '=='
+        // '=', '==' and '==='
         case '=':
             if (*(srcp + 1) == '=')    {
-                lexReturnPuncTok(EqToken, 2);
+                if (*(srcp + 2) == '=') {
+                    lexReturnPuncTok(SameToken, 3);
+                }
+                else {
+                    lexReturnPuncTok(EqToken, 2);
+                }
             }
             else {
                 lexReturnPuncTok(AssgnToken, 1);
             }
 
-        // '!' and '!='
+        // '!', '!=' and '!=='
         case '!':
             if (*(srcp + 1) == '=') {
-                lexReturnPuncTok(NeToken, 2);
+                if (*(srcp + 2) == '=') {
+                    lexReturnPuncTok(NotSameToken, 3);
+                }
+                else {
+                    lexReturnPuncTok(NeToken, 2);
+                }
             }
             else {
                 lexReturnPuncTok(NotToken, 1);

@@ -68,6 +68,8 @@ extern Name *decrPostName; // "_--"
 
 extern Name *eqName;       // "=="
 extern Name *neName;       // "!="
+extern Name *sameName;     // "===", identity: do two references point to the same place?
+extern Name *notSameName;  // "!=="
 extern Name *leName;       // "<="
 extern Name *ltName;       // "<"
 extern Name *geName;       // ">="
