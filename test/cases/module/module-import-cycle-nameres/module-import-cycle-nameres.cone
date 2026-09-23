@@ -1,0 +1,39 @@
+// A re-export does not travel round a cycle of imports, and a name missing for
+// that reason alone is reported as that: ErrorCircular, naming the cycle, where
+// the name is written. A name missing for any other reason keeps the message it
+// always had. Nothing here says whether a cycle of imports is allowed: it is, and
+// a declaration still resolves round one.
+//
+// Name-resolution stage. Every module's folds run before any body is resolved,
+// dependency-first, and a cycle stops at the module whose folds are running: of
+// two modules that import each other, the one whose folds start first is still
+// mid-fold when the other folds from it, so what it re-exports is not there yet.
+// The subfolders are drawn in sorted order and folded in that order, so alpha
+// starts before beta and kappa before lambda: beta and lambda are the two that
+// read round a cycle.
+//
+// The folder holds:
+//   gamma/gamma.cone         the names re-exported: shared, more, Tone
+//   alpha/alpha.cone         imports beta, then re-exports gamma's shared and Tone
+//   beta/beta.cone           imports alpha and folds from it: alpha -> beta -> alpha
+//   kappa/kappa.cone         imports lambda, then re-exports gamma's more
+//   lambda/lambda.cone       a wildcard 'use pub' of kappa: kappa -> lambda -> kappa
+//   quiet/quiet.cone         imports gamma and re-exports nothing, in no cycle
+//   solo/solo.cone           folds from quiet a name quiet has not got
+//   solitary/solitary.cone   a wildcard 'use pub' of quiet, and a bare use of that name
+//
+// Each ErrorCircular is followed by uncounted notes, at the imports round the
+// cycle and at the re-export whose fold had not yet run.
+
+fn reach() i64 {
+  // Every fold has run before any body resolves, so a path from outside the
+  // cycle reaches what alpha re-exported
+  alpha.shared();
+
+  // lambda's wildcard read kappa mid-fold, so lambda never held more to pass on
+  lambda.more();            //~ ErrorCircular:10 "more is re-exported by kappa, but lambda read kappa round a cycle of imports (kappa -> lambda -> kappa)"
+
+  // The control: quiet never re-exported shared, and no cycle is involved
+  solitary.shared();        //~ ErrorUnkName:12 "The name shared does not refer to a declared name"
+  0i64;
+}

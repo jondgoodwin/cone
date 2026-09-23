@@ -125,7 +125,8 @@ enum ErrorCode {
 
     // Demand-driven analysis
     ErrorCircular = 1068,       // A declaration whose type comes from a value that names it back,
-                                // or two types that each extend or mix in the other
+                                // or two types that each extend or mix in the other,
+                                // or a re-export missing because it was read round a cycle of imports
 
     // Layout
     ErrorNoSize = 1069,         // A value whose type cannot report a size
