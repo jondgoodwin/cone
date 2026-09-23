@@ -231,8 +231,9 @@ The phase owns one `ErrorCode` exclusively: `ErrorBareMbr` (1076), raised by
 `nameUseNameRes` when a macro method's body names a member of its type bare —
 `NameResState.macromethod` is set for the duration of the body, and the name is
 known to be a member here, where type check would only see the wrong receiver.
-It also raises `ErrorUnkName` (three sites in `nameUseNameRes`; never for a
-pattern's bare root, which type check reports),
+It also raises `ErrorUnkName` (two sites: a bare name in `nameUseNameRes`, and
+a path's member in `fnCallNameResPath`; never for a pattern's bare root, which
+type check reports),
 `ErrorNotPublic` (a private name through a qualifier; a private field or member
 in a fold), `ErrorDupName` (duplicate local, duplicate lifetime label,
 colliding folded import, a trait's field arriving under a name the type
