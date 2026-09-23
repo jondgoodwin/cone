@@ -235,6 +235,9 @@ enum ErrorCode {
     // Attributes, which are keywords: '@move', '@opaque', '@unsized'
     ErrorUnkAttr = 1119,        // A '@' word that names no attribute
 
+    // Moves: what a move-typed value may be moved out of
+    ErrorMoveOut = 1120,        // A move-typed value moved out through a borrowed reference, which does not own it
+
     // 'mod A extends B': a module reusing another module's public names
     ErrorModExtends = 1122,     // What a module's 'extends' names cannot be reused: not a module, a trait (conforming to a module trait is not built), the module itself or one it contains, a path, or a cycle of extends
 

@@ -13,6 +13,7 @@ int derefInject(INode **node) {
     if (nodetype->tag != RefTag && nodetype->tag != PtrTag)
         return 0;
     StarNode *deref = newStarNode(DerefTag);
+    inodeLexCopy((INode*)deref, *node);
     deref->vtexp = *node;
     if (nodetype->tag == PtrTag)
         deref->vtype = ((StarNode*)nodetype)->vtexp;
