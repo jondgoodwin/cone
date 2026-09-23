@@ -1,0 +1,299 @@
+// An enum that extends another holds COPIES of its base's variants, then its own.
+//
+// CardKind below has variants CardKind.Clubs .. CardKind.Spades, each its own
+// type with Suit's tag value, followed by Joker and Back. Suit.Clubs is a Suit and
+// CardKind.Clubs is a CardKind; neither is a value of the other enum, and
+// enum-typecheck-extends holds those refusals in both directions. What this file
+// claims is what the copies give: each enum lays out its own set, so the base is
+// never constrained by what extends it and the extension by what the base chose.
+//
+// Everything is printed, because a match that compiles is not a match that
+// dispatched to the right arm. What runtime cannot see -- that an Option-shaped
+// base keeps the bare-pointer layout while its extension is tagged, and that each
+// set is padded to its own largest variant -- is asserted by the named checks in
+// cases.toml.
+
+import stdio.*;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// -------- the extension's set: copies, then its own --------
+
+enum Suit {
+  Clubs, Diamonds, Hearts, Spades;
+}
+
+enum CardKind extends Suit {
+  Joker, Back;
+}
+
+// Exhaustive over the base's own four, with no arm for anything the extension
+// added: a Suit only ever holds one of Suit's variants
+fn suitRank(s Suit) i32 {
+  match s {
+    case is Clubs {1;}
+    case is Diamonds {2;}
+    case is Hearts {3;}
+    case is Spades {4;}
+  }
+}
+
+// Exhaustive over the extension's six. A bare name in a pattern is looked up in
+// the matched value's enum, so on a CardKind 'Hearts' is CardKind's copy
+fn cardRank(c CardKind) i32 {
+  match c {
+    case is Clubs {1;}
+    case is Diamonds {2;}
+    case is Hearts {3;}
+    case is Spades {4;}
+    case is Joker {5;}
+    case is Back {6;}
+  }
+}
+
+// The qualified pattern names the copy the same way
+fn isHearts(c &CardKind) i32 {
+  if c is &CardKind.Hearts {1;} else {0;}
+}
+
+fn copiesAndMembership() {
+  imm hearts Suit = Suit.Hearts[];
+  show("base-variant-in-base", suitRank(hearts));
+  imm copied CardKind = CardKind.Hearts[];
+  show("copied-variant-in-extension", cardRank(copied));
+  imm added CardKind = CardKind.Back[];
+  show("added-variant-in-extension", cardRank(added));
+  show("qualified-pattern-names-the-copy", isHearts(&copied));
+  show("qualified-pattern-other-variant", isHearts(&added));
+
+  // Two branches of differing variant type, one a copy and one added, infer the
+  // extension, whose set holds both
+  imm chosen = if hearts is Hearts {CardKind.Spades[];} else {CardKind.Joker[];};
+  show("branch-inference-copy-and-added", cardRank(chosen));
+}
+
+// -------- a 'use' folds every variant, the copies too --------
+
+// This module folds no Suit; 'use CardKind;' brings in CardKind's six, so the
+// bare names below build CardKind's copies. Bare in a pattern on a Suit, 'Clubs'
+// still means Suit.Clubs: the matched value's enum is asked first.
+use CardKind;
+
+fn foldedNames() {
+  imm c CardKind = Clubs[];
+  show("folded-copy-constructs", cardRank(c));
+  imm j CardKind = Joker[];
+  show("folded-added-constructs", cardRank(j));
+  show("base-pattern-on-base-value", suitRank(Suit.Clubs[]));
+}
+
+// -------- methods on the base's variants --------
+
+// A requirement on the base, implemented by each variant, dispatches through the
+// extension's copies: each copy carries its own copy of the implementation, owned
+// by the extension. The tags are pinned sparse, so building a virtual reference
+// selects the vtable by comparing tag values -- the copies' values, which are the
+// base's.
+enum Signals u32 {
+  pub fn weight(self &) i32;
+
+  pub struct Quiet = 0x10 {
+    pub n i32;
+    pub fn weight(self &) i32 {n;}
+  }
+
+  pub struct Loud = 0x2000 {
+    pub n i32;
+    pub fn weight(self &) i32 {n * 100;}
+  }
+}
+
+enum MoreSignals extends Signals {
+  pub struct Silent {
+    pub n i32;
+    pub fn weight(self &) i32 {0;}
+  }
+}
+
+fn weigh(s &Signals) i32 {
+  s.weight();
+}
+
+fn weighMore(s &MoreSignals) i32 {
+  s.weight();
+}
+
+fn methodsThroughCopies() {
+  imm quiet Signals = Signals.Quiet[3];
+  imm loud MoreSignals = MoreSignals.Loud[5];
+  imm silent MoreSignals = MoreSignals.Silent[7];
+  show("base-method-in-base", weigh(&quiet));
+  show("base-method-through-copy", weighMore(&loud));
+  show("added-variant-method", weighMore(&silent));
+  imm vl &<MoreSignals = &loud;
+  show("copy-through-virtual-reference", vl.weight());
+  imm q = MoreSignals.Quiet[4];
+  show("copy-method-called-directly", (&q).weight());
+}
+
+// -------- the base keeps its own layout --------
+
+// Option-shaped: two variants, one empty and one holding a single reference. Maybe
+// is laid out as a bare pointer with no tag, where null is Nothing, and extending
+// it does not change that. MaybeMore has a third variant, for which there is no
+// pointer to be, so it is tagged.
+enum Maybe {
+  struct Nothing {}
+  struct Just { pub p &i32; }
+}
+
+enum MaybeMore extends Maybe {
+  struct Waiting {}
+}
+
+fn readMaybe(m &Maybe) i32 {
+  match m {
+    case imm j &Just {*j.p;}
+    case is &Nothing {-1i32;}
+  }
+}
+
+fn readMaybeMore(m &MaybeMore) i32 {
+  match m {
+    case imm j &Just {*j.p;}
+    case is &Nothing {-1i32;}
+    case is &Waiting {-2i32;}
+  }
+}
+
+fn optionShapedBase() {
+  imm v = 41;
+  imm base Maybe = Maybe.Just[&v];
+  imm none Maybe = Maybe.Nothing[];
+  show("option-shaped-base-just", readMaybe(&base));
+  show("option-shaped-base-nothing", readMaybe(&none));
+  imm ext MaybeMore = MaybeMore.Just[&v];
+  imm extnone MaybeMore = MaybeMore.Nothing[];
+  imm waiting MaybeMore = MaybeMore.Waiting[];
+  show("extension-just", readMaybeMore(&ext));
+  show("extension-nothing", readMaybeMore(&extnone));
+  show("extension-added", readMaybeMore(&waiting));
+}
+
+// -------- each set is padded to its own largest --------
+
+// A padded extension may add a variant larger than anything its base holds. The
+// extension's copies are padded to it; the base's own variants are not.
+enum Shape {
+  pub kind i32;
+
+  struct Circle { pub radius i32; }
+  struct Rect { pub w i32; pub h i32; }
+}
+
+enum Solid extends Shape {
+  struct Cube { pub a i64; pub b i64; pub c i64; }
+}
+
+fn solidSize(s &Solid) i32 {
+  match s {
+    case imm c &Circle {c.radius;}
+    case imm r &Rect {r.w * r.h;}
+    case imm q &Cube {i32[q.a + q.b + q.c];}
+  }
+}
+
+fn shapeKind(s Shape) i32 {
+  s.kind;
+}
+
+fn largerAddedVariant() {
+  imm cube Solid = Solid.Cube[1, 2i64, 3i64, 4i64];
+  imm rect Solid = Solid.Rect[2, 3, 5];
+  show("larger-added-variant", solidSize(&cube));
+  show("copy-padded-to-the-addition", solidSize(&rect));
+  show("common-field-through-the-extension", cube.kind);
+  show("base-by-value-unchanged", shapeKind(Shape.Circle[6, 1]));
+}
+
+// -------- the two may disagree about '@unsized' --------
+
+// A padded base extended by an '@unsized' enum: the copies are laid out unpadded,
+// and the base's own variants stay padded. And the other way round: an '@unsized'
+// base extended by a padded enum, whose copies are padded to its largest.
+enum Packed {
+  pub id i32;
+
+  struct Ping {}
+  struct Payload { pub a i64; }
+}
+
+enum @unsized Loose extends Packed {
+  struct Huge { pub a i64; pub b i64; pub c i64; pub d i64; }
+}
+
+fn looseSize(p &Loose) i32 {
+  match p {
+    case is &Ping {0;}
+    case imm d &Payload {i32[d.a];}
+    case imm h &Huge {i32[h.a + h.b + h.c + h.d];}
+  }
+}
+
+enum @unsized Message {
+  pub stamp i32;
+
+  struct Text { pub len i32; }
+  struct Blob { pub a i64; pub b i64; }
+}
+
+enum Framed extends Message {
+  struct Empty {}
+}
+
+fn framedSize(m Framed) i32 {
+  match m {
+    case imm t Text {t.len;}
+    case imm b Blob {i32[b.a + b.b];}
+    case is Empty {0;}
+  }
+}
+
+fn messageSize(m &Message) i32 {
+  match m {
+    case imm t &Text {t.len;}
+    case imm b &Blob {i32[b.a + b.b];}
+  }
+}
+
+fn unsizedDisagreement() {
+  imm ping = Loose.Ping[1];
+  imm huge = Loose.Huge[2, 1i64, 2i64, 3i64, 4i64];
+  show("unsized-extension-of-padded-copy", looseSize(&ping));
+  show("unsized-extension-of-padded-added", looseSize(&huge));
+  show("unsized-extension-common-field", huge.id);
+  show("padded-base-unchanged", i64[Packed.Payload[3, 9i64].a]);
+
+  // A padded extension of an '@unsized' base holds values by value
+  mut f Framed = Framed.Blob[1, 4i64, 5i64];
+  show("padded-extension-of-unsized-by-value", framedSize(f));
+  f = Framed.Text[2, 6];
+  show("padded-extension-reassigned", framedSize(f));
+  imm text = Message.Text[3, 8];
+  show("unsized-base-unchanged", messageSize(&text));
+}
+
+fn main() i32 {
+  copiesAndMembership();
+  foldedNames();
+  methodsThroughCopies();
+  optionShapedBase();
+  largerAddedVariant();
+  unsizedDisagreement();
+  0i32;
+}

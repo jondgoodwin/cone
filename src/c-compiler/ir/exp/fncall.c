@@ -131,6 +131,21 @@ static int fnCallNameResPath(NameResState *pstate, FnCallNode **nodep) {
 
     NameUseNode *member = (NameUseNode*)node->methfld;
     member->dclnode = namespaceFind(namespace, member->namesym);
+    // An enum that extends another holds its copies of the base's variants only
+    // once it is resolved, which may not have happened yet. Asked only for a name
+    // not found: a variant the enum declares is bound at parse, and demanding
+    // the enum for it would close a cycle through a base variant that names it.
+    int complete = 1;
+    if (member->dclnode == NULL && basedcl->tag == StructTag) {
+        complete = structEnumDemandSet(pstate, (StructNode*)basedcl);
+        member->dclnode = namespaceFind(namespace, member->namesym);
+    }
+    if (member->dclnode == NULL && !complete) {
+        errorMsgNode((INode*)member, ErrorCircular,
+            "%s is not complete until this is resolved, so its variants cannot be named here: each depends on the other.",
+            &inodeGetName(basedcl)->namestr);
+        return 0;
+    }
     if (member->dclnode == NULL) {
         errorMsgNode((INode*)member, ErrorUnkName,
             "The name %s does not refer to a declared name", &member->namesym->namestr);

@@ -35,13 +35,14 @@
 # one per file, per "One diagnostic's whole story": the cause and the remedy are
 # the same at every site, so what a reader checks is that each site says so.
 #
-# Extending an enum is refused at four stages and so covered at four: what such an
-# enum's body may declare is parse's, what it may extend is name resolution's, that
-# neither enum substitutes for the other is type check's, and how large an added
-# variant may be is generation's -- a size exists only where a data layout does.
-# The type-check one is the load-bearing scenario: the two enums share the variant
-# declarations and the layout underneath, so nothing but that refusal keeps them
-# from being one type in practice.
+# Extending an enum has a success program of its own, enum-extends, because what
+# it claims is about two enums at once: the extension's copies of its base's
+# variants, and that each of the two lays out its own set. It is refused at three
+# stages and so covered at three: what such an enum's body may declare is parse's,
+# what it may extend is name resolution's, and that neither enum's values are the
+# other's is type check's. The type-check one pins membership in both directions:
+# the discriminant is one shared node and the common fields are clones, so a
+# structural test would otherwise let a variant of either pass as the other.
 #
 # Left out, with reasons:
 #
@@ -76,28 +77,6 @@ name = "unsized-enum-variants-are-not-padded"
 target = "preir"
 contains = ["%Ping = type { i8, i32 }", "%Payload = type { i8, i32, i64, i64, i64 }"]
 
-# An extension shares its base's layout, and runtime cannot see that: the same
-# lines print whether a shared variant was laid out once or twice. So it is
-# asserted in the types generation wrote. Message and MoreMessages are the same
-# struct -- the base's discriminant, the base's common field and padding to the
-# base's largest, which is Blob -- and Text, a variant the two sets share, carries
-# one padding to that size rather than one per set. Pair, which MoreMessages adds,
-# is exactly that size, which is the most an addition may be while the variants are
-# padded. Wide is what '@unsized' buys: larger than either variant of the Packet it
-# extends, and padded nowhere.
-[[scenario.enum-success.check]]
-name = "an-extension-shares-its-base-layout"
-target = "preir"
-contains = [
-  "%Message = type { i8, i32, i64 }",
-  "%MoreMessages = type { i8, i32, i64 }",
-  "%Text = type { i8, i32, i32, [4 x i8] }",
-  "%Pair = type { i8, i32, i32, i32 }",
-  "%Suit = type { i8 }",
-  "%CardKind = type { i8 }",
-  "%Wide = type { i8, i32, i64, i64, i64, i64 }",
-]
-
 # Which vtable a tag names is looked up two ways, and the run cannot see which:
 # both reach the right implementation, which is the point. Signals pins 0x10 and
 # 0x2000, so the tag is not an index into a two-entry list and the selection has to
@@ -125,6 +104,33 @@ name = "nullable-ptr-has-no-tag-and-no-struct"
 target = "preir"
 contains = ["@read(i32**", "@readOption(i32**"]
 excludes = ["%Maybe", "%Just", "%Nothing", "%Some", "%Option"]
+
+[scenario.enum-extends]
+category = "run"
+description = "An enum extending another: its copies of the base's variants, membership, a fold, methods through the copies, and each enum's own layout"
+tags = ["nameres", "typecheck", "genllvm", "runtime"]
+
+# Each enum lays out its own set, and runtime cannot see that: a tagged Maybe, or
+# a Shape padded to Solid's Cube, would print the same lines. So it is asserted in
+# what generation wrote before the optimizer folds the readers into 'main'. Maybe
+# is still a bare pointer, taken as 'i32**' by reference, while MaybeMore is a
+# tagged struct. Shape is still padded to its own largest, Rect, while Solid is the
+# size of the Cube it adds. Framed is padded although the Message it extends
+# declined the padding. The copies' own struct names are not asserted: LLVM
+# numbers a second struct of one name, and which is first follows generation order.
+[[scenario.enum-extends.check]]
+name = "each-enum-lays-out-its-own-set"
+target = "preir"
+contains = [
+  "@readMaybe(i32**",
+  "@readMaybeMore(%MaybeMore*",
+  "%MaybeMore = type { i8, i32* }",
+  "%Shape = type { i8, i32, i32, i32 }",
+  "%Solid = type { i8, i32, i64, i64, i64 }",
+  "%Cube = type { i8, i32, i64, i64, i64 }",
+  "%Framed = type { i8, i32, i64, i64 }",
+]
+excludes = ["%Maybe = type"]
 
 # -------- parse stage --------
 
@@ -174,13 +180,13 @@ description = "A variant redeclaring a field its enum splices into it"
 tags = ["nameres"]
 diagnostics = 1
 
-# The base's variants join this enum's set while it is resolved, which is where
-# every question about what may be extended is answered.
+# The copies of the base's variants are made while this enum is resolved, which
+# is where every question about what may be extended is answered.
 [scenario.enum-nameres-extends]
 category = "reject"
-description = "What an enum may extend: an enum, not itself, agreeing about padding, and with no tag value already taken"
+description = "What an enum may extend: an enum, not itself, not generic, with no tag value already taken and no added variant named as a copy is"
 tags = ["nameres"]
-diagnostics = 7
+diagnostics = 6
 
 # A variant is a name of its enum, and a module's 'use' is what folds it in bare.
 # The fold is expanded in the module's fold pass, once the enum it names is known,
@@ -243,18 +249,11 @@ category = "reject"
 description = "Holding a value of an '@unsized' enum, which has no one size"
 tags = ["typecheck"]
 
-# The refusal the shared layout rests on: without it the two enums substitute for
-# each other in fact, whatever the manual says.
+# Membership, pinned both ways: without these refusals a shared discriminant and
+# cloned common fields let the two enums, and a variant of either, stand for the
+# other in fact, whatever the manual says.
 [scenario.enum-typecheck-extends]
 category = "reject"
-description = "A base enum and an extension of it substituting for each other, by value, by reference and by virtual reference, and a tag value wider than the shared discriminant"
+description = "A base enum and an extension of it substituting for each other, a variant of either standing for the other enum, and a tag value wider than the shared discriminant"
 tags = ["typecheck"]
-diagnostics = 10
-
-# -------- generation stage --------
-
-[scenario.enum-genllvm-extends]
-category = "reject"
-description = "An added variant larger than the base's largest, which the shared padding has no room for"
-tags = ["genllvm"]
-diagnostics = 1
+diagnostics = 16

@@ -372,22 +372,27 @@ written inside its body.
 - **The variant list is complete at parse time.** `parsetype.c` adds each variant
   to the enum's `derived` list and settles its tag number as it parses, whether the
   author wrote the value or it was assigned in sequence. **An enum that extends
-  another is the exception**: name resolution puts the base's variants at the front of
-  its list and numbers its own from there, since the values the base's variants hold
-  are not known until the base is resolved.
+  another is the exception**: name resolution puts its copies of the base's variants
+  at the front of its list and numbers its own from there, since the values the
+  base's variants hold are not known until the base is resolved.
+- **An extension's copies are checked by the module walk, right after the
+  extension** (`structEnumCheckCopies`, from `modTypeCheck`), since they are no
+  module's nodes. Not inside the extension's own check, which an added variant
+  demands before its own is done: a copy's method body that builds that variant by
+  value would find it still in flight.
 - **A base enum and an extension of it never substitute for each other**, in either
   direction, and type check is what enforces it: two `EnumType` declarations are
   refused in `structMatches` ahead of its structural test and in
   `structVirtRefMatches` ahead of its mapping. Both would otherwise say yes, because
   an extension's fields are clones of its base's and its members are the base's. What
   the refusal buys is the exhaustive match: a base-typed value can then only hold one
-  of the base's own variants. What does run between them is **membership** — a variant
-  is a value of the enum it was declared inside and of every enum extending that one
-  (`structEnumIncludes`). [struct](../nodes/struct.md), "An enum extending an enum".
+  of the base's own variants. **Membership is one enum per variant**: `structMatches`
+  answers a variant against an enum by its `basetrait` chain alone, padded or not, so
+  neither a base variant nor an extension's copy passes as the other enum by the
+  structural test the shared discriminant would otherwise satisfy.
+  [struct](../nodes/struct.md), "An enum extending an enum".
 - **Analysis never computes an enum's size.** `genlSameSizeTrait` sizes each
-  variant and pads to the largest at *generation* time. That is also why the one
-  restriction on an extension that is about size — no added variant larger than the
-  base's largest — is refused there and not here.
+  variant and pads to the largest at *generation* time.
 - **Analysis does settle the discriminant's width**, because that follows the
   largest tag value rather than the variant count and generation cannot see a
   pinned value. `structSetTagWidth` is where, in step 5 of the struct sequence,
@@ -442,7 +447,9 @@ elsewhere, whichever walk arrived at it.
 1. **→** Analyze imports first. Includes are not modules and are not visited
    separately.
 2. Iterate the declarations and analyze each. Demand pulls forward whatever a
-   forward reference needs; one already analyzed returns at once.
+   forward reference needs; one already analyzed returns at once. After an enum
+   that extends another, analyze its copies of the base's variants, which are no
+   module's nodes (`structEnumCheckCopies`).
 
 ## 11. Diagnostics type check owns
 
@@ -514,7 +521,7 @@ Kept so that reopening one is a decision rather than a rediscovery.
 | `ir/types/struct.c` | `structTypeCheck` | the nine steps of section 10.1; sets `TypeChecked` at the layout point; `structCheckTraitReqs` is step 9 |
 | `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the eight steps of section 10.3, including both error-delta gates |
 | `ir/stmt/vardcl.c` | `varDclTypeCheck` | section 10.4 |
-| `ir/stmt/module.c` | `modTypeCheck` | imports first, then declarations — section 10.5 |
+| `ir/stmt/module.c` | `modTypeCheck` | imports first, then declarations, and an enum extension's copies right after it (`structEnumCheckCopies`) — section 10.5 |
 | `ir/meta/generic.c` | `genericInstantiate`, `genericInstantiateEnter` | instantiation, memoization, and the depth bound |
 | `ir/clone.c` | `clonePushState`, `clonePopState` | the one place type check hooks a name |
 | `ir/ir.h` | (`TypeCheckState`) | the walk context of section 9 |

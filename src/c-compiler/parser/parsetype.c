@@ -474,16 +474,17 @@ static void parseAddVariant(ParseState *parse, StructNode *strnode, StructNode *
 // may not declare, at the token the member starts on, and then let the member be
 // parsed as any other: one diagnostic is the whole of it.
 //
-// The variants it shares with its base are the base's own declarations, so a
-// member every variant has to carry -- a common field, spliced into each of them,
-// or a method each of them implements or inherits -- can only be declared where
-// those variants are. Its base's common members come along with the variants, so
-// nothing is lost by declaring them there.
+// A member every variant has to carry -- a common field, spliced into each of
+// them, or a method each of them implements or inherits -- would have to reach the
+// copies of the base's variants too, and a requirement declared here would need
+// every copy to implement what the base's variants were never told about. That is
+// not built, so it is declared on the base, whose common members come along with
+// the copies.
 static void parseEnumExtensionMember(int isenum, StructNode *strnode, char *what) {
     if (!isenum || strnode->extendsbase == NULL)
         return;
     errorMsgLex(ErrorEnumExtends,
-        "%s extends an enum, so it adds variants and nothing else: %s belongs on the enum it extends, whose declarations its shared variants are.",
+        "%s extends an enum, so it adds variants and nothing else: %s belongs on the enum it extends, and comes along with the variants it copies from there.",
         &strnode->namesym->namestr, what);
 }
 
@@ -680,8 +681,8 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         strnode->extendsbase = parseTypeName(parse);
     }
 
-    // An extension's discriminant is its base's, shared with the variants it takes
-    // from it, so the integer type it is laid out in was settled there
+    // An extension's discriminant is its base's: the type node is shared with the
+    // base and every variant, so the integer type it is laid out in was settled there
     if (isenum && underlying && strnode->extendsbase) {
         errorMsgNode(underlying, ErrorEnumExtends,
             "%s takes its base's discriminant, so the integer type its tag values are laid out in is declared on the enum it extends.",
@@ -911,8 +912,8 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     // placed its own, which the walk above has already marked.
     //
     // An extension has no discriminant of its own to place or synthesize: its
-    // base's arrives with the fields name resolution splices in, which is what
-    // makes the tag a shared value across the two sets.
+    // base's arrives with the fields name resolution splices in, so the copies of
+    // the base's variants and the variants it adds read one discriminant type.
     if ((strnode->flags & HasTagField) && !hasEnumFld && !(isenum && strnode->extendsbase)) {
         FieldDclNode *fldnode = newFieldDclNode(anonName, (INode*)immPerm);
         fldnode->vtype = (INode*)newEnumNode();

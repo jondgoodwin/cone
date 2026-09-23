@@ -197,7 +197,7 @@ enum ErrorCode {
 
     // 'extends': an enum adding variants to another enum's variant set
     ErrorEnumExtends = 1105,    // What an enum's 'extends' names cannot be its base, or what such an enum's body may not declare beside variants
-    ErrorEnumExtendsSize = 1106,// An added variant larger than the base's largest, which the shared layout has no room for
+    // 1106 was ErrorEnumExtendsSize; an extension's variants are copies with their own layout, so an added one may be any size
 
     // 'mod': the declaration that names a file's module
     ErrorModDcl = 1107,         // A 'mod' declaration where the module is already established: not its file's first statement, a second one, or in a file the module's folder swept in

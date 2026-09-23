@@ -94,7 +94,7 @@ on a module or a struct. The collapse that walks them is `fnCallNameResPath` —
 | Kind | Owns a `Namespace` hash table? | Populated |
 | --- | --- | --- |
 | Module | yes, `ModuleNode.namespace` | at **parse** time by `modAddNamedNode`, which is also where an import binds the module it names; extended by the fold pass, `importNameRes`, `foldGlobalExpand` and `foldEnumUseExpand`, ahead of any module's body |
-| Namespaced type | yes, `INsTypeNode.namespace` | at **parse** time, an enum's variants included; `structNameRes` adds `Self`, the default methods of every abstraction the type is-a or mixes in, and, for a variant, its enum's fields |
+| Namespaced type | yes, `INsTypeNode.namespace` | at **parse** time, an enum's variants included; `structNameRes` adds `Self`, the default methods of every abstraction the type is-a or mixes in, for a variant, its enum's fields, and for an enum that extends another, its copies of the base's variants |
 | Lexical block / parameter list | **no** | not a namespace at all — locals are hooked one at a time |
 
 That a module's and a type's names exist before the pass runs is what lets the
@@ -123,6 +123,15 @@ demand asks for `modFoldNames` on that module first, which does something only
 where the fold pass itself is what reached the type. What a
 demanded type copies in arrives bound and is not walked again. The steps are in
 [struct](../nodes/struct.md), "Name resolution".
+
+**One demand reaches past a type.** An enum that extends another copies its base's
+variants while it is resolved, cloning each one resolved as a generic template is
+cloned, so the copies exist only from then on. A module's `use RichColors;` in the
+fold pass and a path `RichColors.Red` in a function body both need them, so both
+demand the enum (`structEnumDemandSet`). From a body, that demand clears the body's
+block scope and hooks the enum's own module namespace over the body's locals, so the
+enum resolves as if the walk had reached it. The copies are no module's nodes and
+are never walked. [struct](../nodes/struct.md), "An enum extending an enum".
 
 ## 4. What it retags
 
@@ -306,6 +315,7 @@ next pass a null to trip over.
 | `ir/stmt/fndcl.c` | `fnDclNameRes` | generic parms, signature, body with parms hooked at scope 1 |
 | `ir/types/struct.c` | `structNameRes` | `Self` → base trait → traits and fold sources demanded → namespace hooked → fields, each trait's members spliced in and hooked → fields indexed → each fold clause expanded and hooked → the type's own methods |
 | | `structNameResDemand`, `structInheritTrait` | resolve a trait or a fold's source type ahead of the walk, in its own module's scope; copy a trait's members into the type |
+| | `structEnumSeedVariants`, `structEnumCopyVariant`, `structEnumDemandSet` | copy an extended enum's resolved variants into the extension; resolve an extension from a fold or a path that needs its copies |
 | | `structFoldExpand` | expand a field's `use` clause: a copy per folded field, an alias per folded method, entered and hooked — [struct](../nodes/struct.md), "Name folding" |
 | `ir/stmt/aliasdcl.c` | `aliasDclResolve` | the declaration at the end of a chain of aliases, which every reader of a namespace binding asks for first |
 | `ir/types/fnsig.c` | `fnSigNameRes` | forces scope 0 |

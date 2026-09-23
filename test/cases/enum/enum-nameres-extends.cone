@@ -1,16 +1,14 @@
 // What an enum may extend.
 //
-// The base's variants join this enum's set as the declarations they already are,
-// which is what makes the tag values agree in both sets and the layout one layout.
-// So the base has to be an enum, it cannot be this enum, the two must agree about
-// whether their variants are padded, and a value an added variant pins must not be
-// one the set already holds.
+// An extension holds copies of its base's variants, made while it is resolved,
+// then its own. So the base has to be an enum, it cannot be this enum, a value an
+// added variant pins must not be one the set already holds, and an added variant
+// may not take a name one of the copies already has: the copies are names of the
+// extension, as the variants it declares are.
 //
-// Name-resolution stage: the base's variants are taken while this enum is
-// resolved, which is before any layout question could be asked. A name-resolution
-// diagnostic stops the compile before type checking, so nothing here reaches
-// enum-typecheck-extends, and the size restriction is later still -- it needs a
-// data layout, so it is enum-genllvm-extends.
+// Name-resolution stage: the copies are made while this enum is resolved. A
+// name-resolution diagnostic stops the compile before type checking, so nothing
+// here reaches enum-typecheck-extends.
 
 enum Colors {
   Red, Green, Blue;
@@ -26,28 +24,15 @@ enum FromStruct extends Plain {   //~ ErrorEnumExtends:25 "this is not an enum"
   Wat;
 }
 
-// Padding is what the shared variants are laid out with, so the two enums cannot
-// disagree about it: the extension may not decline what its base pays for ...
-enum @unsized Unpadded extends Colors {  //~ ErrorEnumExtends:32 "cannot decline the padding"
-  Cyan;
-}
-
-// ... nor take the padding where its base declined it. Loose is declared after the
-// enum extending it, which resolves it on demand.
-enum Padded extends Loose {       //~ ErrorEnumExtends:21 "takes that layout too"
-  Dense;
-}
-
-enum @unsized Loose {
-  pub id i32;
-
-  struct Thin { pub a i32; }
-}
-
 // Two variants holding one tag value are indistinguishable at a match, whichever
-// of the two sets each was declared in
+// of the two enums declared each
 enum Clash extends Colors {
   Ochre = 1;                      //~ ErrorDupTag:3 "already taken by variant Green"
+}
+
+// The extension's copy of Red is RichRed.Red already
+enum RichRed extends Colors {
+  Red;                            //~ ErrorDupName:3 "already a variant of RichRed, copied from Colors"
 }
 
 // An enum's own variants are in its set already
@@ -55,9 +40,9 @@ enum Selfish extends Selfish {    //~ ErrorEnumExtends:22 "cannot extend itself"
   Me;
 }
 
-// A generic enum's set is made over per instantiation, so what a shared variant
-// would mean across two of them is a question this relationship has not been
-// asked. Refused rather than deferred, on either side of the clause.
+// A generic enum's copies would be made from its variant templates with the
+// written arguments substituted, which is not built. Refused on either side of
+// the clause.
 enum Generic[T] extends Colors {  //~ ErrorEnumExtends:25 "extends an enum declaration"
   Only;
 }

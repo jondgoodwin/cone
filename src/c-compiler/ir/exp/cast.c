@@ -101,7 +101,7 @@ static StructNode *castMatchedEnum(INode *exp) {
 // The variant of this name among an enum's variants, or NULL. 'derived' is the
 // list, not the enum's namespace: an instance of a generic enum lists its own
 // instantiated variants there (genericMemoize), and an extension lists its
-// base's variants beside its own.
+// copies of its base's variants ahead of its own.
 static INode *castEnumVariant(StructNode *enumdcl, Name *name) {
     if (enumdcl == NULL || enumdcl->derived == NULL)
         return NULL;

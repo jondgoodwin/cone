@@ -263,141 +263,8 @@ fn unsizedEnum() {
   show("unsized-common-field-through-ref", readId(&payload));
 }
 
-// -------- extending an enum --------
-
-// An enum may be declared as an extension of another, adding variants to the set
-// the base declared. The base's variants come first in the extension's set and
-// keep their tag values there, so one declaration serves both enums and a value
-// built as a base variant is a value of either.
-//
-// The two enums are nonetheless distinct types that do not substitute for each
-// other in either direction; enum-typecheck-extends holds those refusals, and the
-// match on Suit below is still exhaustive over Suit's own four variants, which is
-// the property the whole construct rests on.
-enum Suit {
-  Clubs, Diamonds, Hearts, Spades;
-}
-use Suit;
-
-// An extension's own namespace holds the variants it adds; the ones it shares are
-// its base's, and folded by the base's 'use' above
-enum CardKind extends Suit {
-  Joker, Back;
-}
-use CardKind;
-
-// Exhaustive over the base's own variants, with no arm for the added ones
-fn suitRank(s Suit) i32 {
-  match s {
-    case imm c Clubs {1;}
-    case imm d Diamonds {2;}
-    case imm h Hearts {3;}
-    case imm p Spades {4;}
-  }
-}
-
-// Exhaustive over the extension's set, which is the base's plus its own. That the
-// shared arms are reached at all is what says the tag values agree: the value was
-// built by the base's variant and the tag is read here against the extension's set.
-fn cardRank(c CardKind) i32 {
-  match c {
-    case imm x Clubs {1;}
-    case imm d Diamonds {2;}
-    case imm h Hearts {3;}
-    case imm p Spades {4;}
-    case imm j Joker {5;}
-    case imm b Back {6;}
-  }
-}
-
-// A payload-carrying base, whose common field and padding the extension shares.
-// Pair is exactly the size of Blob, the base's largest, which is what an extension
-// may add at most while the variants are padded -- enum-genllvm-extends holds the
-// refusal of a wider one.
-enum Message {
-  pub stamp i32;
-
-  pub struct Text { pub len i32; }
-  pub struct Blob { pub a i64; }
-}
-use Message;
-
-enum MoreMessages extends Message {
-  pub struct Empty;
-  pub struct Pair { pub x i32; pub y i32; }
-}
-use MoreMessages;
-
-fn messageSize(m &Message) i32 {
-  match m {
-    case imm t &Text {t.len;}
-    case imm b &Blob {i32[b.a];}
-  }
-}
-
-fn moreMessageSize(m &MoreMessages) i32 {
-  match m {
-    case imm t &Text {t.len;}
-    case imm b &Blob {i32[b.a];}
-    case is &Empty {0;}
-    case imm p &Pair {p.x + p.y;}
-  }
-}
-
-// An '@unsized' enum extends with no size restriction at all, because nothing is
-// padded: Wide is larger than either of Packet's variants and costs them nothing
-enum @unsized MorePackets extends Packet {
-  struct Wide { pub a i64; pub b i64; pub c i64; pub d i64; }
-}
-use MorePackets;
-
-fn morePacketSize(p &MorePackets) i32 {
-  match p {
-    case is &Ping {0;}
-    case imm d &Payload {i32[d.a + d.b + d.c];}
-    case imm w &Wide {i32[w.a + w.b + w.c + w.d];}
-  }
-}
-
-// Two branches of differing variant type, one the base's and one the extension's:
-// the extension is the only set holding both, so it is the type inferred
-fn chosenMessage(flag Bool) i32 {
-  imm chosen = if flag {Text[1, 7];} else {Pair[2, 3, 5];};
-  moreMessageSize(&chosen);
-}
-
-fn extendedEnum() {
-  // A variant of the base is a value of the base and a value of the extension,
-  // with the same tag value in both sets
-  imm hearts Suit = Hearts[];
-  show("extension-base-variant-in-base", suitRank(hearts));
-  imm shared CardKind = Hearts[];
-  show("extension-base-variant-in-extension", cardRank(shared));
-  imm added CardKind = Back[];
-  show("extension-added-variant", cardRank(added));
-
-  // A payload variant the two enums share, reached through either, and the common
-  // field the base declared read through the extension's set
-  imm blob MoreMessages = Blob[3, 9i64];
-  show("extension-shared-payload-variant", moreMessageSize(&blob));
-  show("extension-shared-common-field", blob.stamp);
-  imm pair MoreMessages = Pair[4, 5, 6];
-  show("extension-added-payload-variant", moreMessageSize(&pair));
-  show("extension-added-common-field", pair.stamp);
-
-  // ... and the base's own set still reads its own variants
-  imm text Message = Text[5, 8];
-  show("extension-base-reads-its-own", messageSize(&text));
-
-  imm ping = Ping[1];
-  imm wide = Wide[2, 1i64, 2i64, 3i64, 4i64];
-  show("unsized-extension-shared-variant", morePacketSize(&ping));
-  show("unsized-extension-larger-variant", morePacketSize(&wide));
-  show("unsized-extension-common-field", readId(&wide));
-
-  show("extension-branch-inference-shared", chosenMessage(true));
-  show("extension-branch-inference-added", chosenMessage(false));
-}
+// An enum that extends another is enum-extends' subject: its copies of the base's
+// variants, and the layout each of the two then has, are asserted there.
 
 // -------- constructing and reading --------
 
@@ -1079,7 +946,6 @@ fn main() i32 {
   commonMembersAnywhere();
   placedDiscriminant();
   unsizedEnum();
-  extendedEnum();
   enumValues();
   matching();
   aliasMatching();

@@ -328,6 +328,14 @@ void genlGlobalSyms(GenState *gen, INode *node) {
                 genlGlobalSyms(gen, *nodesp);
             }
         }
+        // An extension's copies of its base's variants are reachable only
+        // through it, as a generic's instances are through memonodes
+        if (node->tag == StructTag) {
+            uint32_t copies = structEnumCopyCount((StructNode*)node);
+            uint32_t pos;
+            for (pos = 0; pos < copies; ++pos)
+                genlGlobalSyms(gen, nodesGet(((StructNode*)node)->derived, pos));
+        }
         return;
     }
 
@@ -398,6 +406,13 @@ void genlGlobalImpl(GenState *gen, INode *node) {
                     continue;
                 genlGlobalImpl(gen, *nodesp);
             }
+        }
+        // As in genlGlobalSyms: an extension's copies are reached through it
+        if (node->tag == StructTag) {
+            uint32_t copies = structEnumCopyCount((StructNode*)node);
+            uint32_t pos;
+            for (pos = 0; pos < copies; ++pos)
+                genlGlobalImpl(gen, nodesGet(((StructNode*)node)->derived, pos));
         }
         return;
     }

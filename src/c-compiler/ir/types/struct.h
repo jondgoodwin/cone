@@ -97,18 +97,19 @@ int structExtendsEquiv(INode *type1, INode *type2);
 // direction, so nothing that answers substitution reads this.
 StructNode *structEnumBaseDcl(StructNode *node);
 
-// Does this enum's variant set include this variant? Membership, not subtyping: a
-// variant belongs to the enum it is declared inside and to every enum extending it.
-int structEnumIncludes(StructNode *enumdcl, INode *variant);
+// How many of this enum's variants are its copies of its base's: the first that
+// many of its 'derived' list. No module holds them, so the extension's own type
+// check and generation reach them.
+uint32_t structEnumCopyCount(StructNode *node);
 
-// The enum whose set holds both of these variants, or NULL where none does. For
-// two variants of a base enum and an extension of it, it is the extension.
-INode *structEnumSharedSet(INode *type1, INode *type2);
+// Type check an extension's copies of its base's variants, which the module
+// walk reaches through the extension
+void structEnumCheckCopies(TypeCheckState *pstate, StructNode *node);
 
-// The type of this enum's discriminant, or NULL where it has none. One node is
-// shared by the enum, its variants and every enum that extends it, so it carries
-// what their layouts must agree on.
-EnumNode *structEnumTagNode(StructNode *node);
+// Resolve an enum that extends another now, so its copies of its base's variants
+// exist -- from anywhere, a function body included. Returns 0 when it is already
+// being resolved.
+int structEnumDemandSet(NameResState *pstate, StructNode *node);
 
 // Get bottom-most base trait for some trait/struct, or NULL if there is not one
 StructNode *structGetBaseTrait(StructNode *node);
