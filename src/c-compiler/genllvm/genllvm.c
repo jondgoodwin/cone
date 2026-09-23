@@ -257,9 +257,17 @@ void genlGloFnName(GenState *gen, FnDclNode *glofn) {
 
     // Add function to the module
     if (glofn->value == NULL || glofn->value->tag != IntrinsicTag) {
+        // Typing the signature can declare this very function. A method that
+        // fills a slot of a trait and takes a virtual reference to that trait
+        // builds the trait's vtable here, and the vtable asks for the symbol of
+        // every method in its slots, this one included. Declaring it a second
+        // time would leave that first declaration bodiless in the vtable.
+        LLVMTypeRef fntype = genlType(gen, glofn->vtype);
+        if (glofn->llvmvar)
+            return;
         char symbol[2048];
         nameSymbol(symbol, (INode*)glofn);
-        glofn->llvmvar = LLVMAddFunction(gen->module, symbol, genlType(gen, glofn->vtype));
+        glofn->llvmvar = LLVMAddFunction(gen->module, symbol, fntype);
         genlLinkage(glofn->llvmvar, (INode*)glofn, genlIsDefinedHere((INode*)glofn));
 
         // Add metadata on implemented functions (debug mode only)

@@ -140,6 +140,27 @@ void genlVtableImpl(GenState *gen, Vtable *vtable, VtableImpl *impl, LLVMTypeRef
 
 // Generate a vtable type
 void genlVtable(GenState *gen, Vtable *vtable) {
+    // Name the vtable and the virtual reference type, and publish both, before
+    // any slot is typed. A slot's type comes from its method's signature, which
+    // may name a virtual reference to this same trait ('fn cmp(self &, o &<Self)'),
+    // and that is the type being built here. Published, it is answered with a
+    // named struct whose body is filled in below, as a struct that points to
+    // itself is; unpublished, it would start this vtable again without end.
+    // The virtual reference type takes the vtable's name, which LLVM uniquifies
+    // with a suffix. It is a fat pointer:
+    // - a pointer to the object (for now *u8 - which we will recast later)
+    // - a pointer to the vtable
+    char vtablename[2048];
+    nameVtable(vtablename, vtable->trait);
+    LLVMTypeRef vtableRef = LLVMStructCreateNamed(gen->context, vtablename);
+    LLVMTypeRef vreffields[2];
+    vreffields[0] = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
+    vreffields[1] = LLVMPointerType(vtableRef, 0);
+    LLVMTypeRef virtref = LLVMStructCreateNamed(gen->context, vtablename);
+    LLVMStructSetBody(virtref, vreffields, 2, 0);
+    vtable->llvmvtable = vtableRef;
+    vtable->llvmreftype = virtref;
+
     uint32_t fieldcnt = vtable->methfld->used;
     LLVMTypeRef *field_types = (LLVMTypeRef *)memAllocBlk(fieldcnt * sizeof(LLVMTypeRef));
     LLVMTypeRef *field_type_ptr = field_types;
@@ -172,11 +193,7 @@ void genlVtable(GenState *gen, Vtable *vtable) {
             *field_type_ptr++ = LLVMInt32TypeInContext(gen->context);
     }
 
-    // Declare the vtable type itself. The virtual reference type below takes the
-    // same name, which LLVM uniquifies with a suffix.
-    char vtablename[2048];
-    nameVtable(vtablename, vtable->trait);
-    LLVMTypeRef vtableRef = LLVMStructCreateNamed(gen->context, vtablename);
+    // Fill in the vtable type's body
     if (fieldcnt > 0)
         LLVMStructSetBody(vtableRef, field_types, fieldcnt, 0);
 
@@ -197,17 +214,6 @@ void genlVtable(GenState *gen, Vtable *vtable) {
     genlLinkage(vtable->llvmvtables, NULL, 1);
     genlComdat(gen, vtable->llvmvtables);
     LLVMSetInitializer(vtable->llvmvtables, vtablelist);
-
-    // Build the virtual reference type for this vtable. It is a fat pointer:
-    // - a pointer to the object (for now *u8 - which we will recast later)
-    // - a pointer to the vtable
-    LLVMTypeRef vreffields[2];
-    vreffields[0] = LLVMPointerType(LLVMInt8TypeInContext(gen->context), 0);
-    vreffields[1] = LLVMPointerType(vtableRef, 0);
-    LLVMTypeRef virtref = LLVMStructCreateNamed(gen->context, vtablename);
-    LLVMStructSetBody(virtref, vreffields, 2, 0);
-    vtable->llvmvtable = vtableRef;
-    vtable->llvmreftype = virtref;
 }
 
 // Generate the fields for a struct and optionally add padding bytes
