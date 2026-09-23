@@ -88,6 +88,10 @@ void foldStarItems(Namespace *ns, Name *srcname, FoldClause *fold, int admit) {
         inodeLexCopy((INode*)target, fold->at);
         AliasDclNode *alias = newAliasDclNode(nn->name, (INode*)target);
         inodeLexCopy((INode*)alias, fold->at);
+        // Nobody wrote this name: the clause asked for every name, so where it
+        // meets another binding of the same declaration in a module, neither was
+        // written twice and the two are one (modFoldBind)
+        alias->flags |= FlagUnlisted;
         nodesAdd(&fold->items, (INode*)alias);
     }
 }
@@ -152,14 +156,13 @@ static void foldGlobalItem(ModuleNode *mod, VarDclNode *global, StructNode *src,
     // MODULE shows the name it gave it.
     if (!global->fold->ispub)
         alias->flags &= 0xffff - FlagPub;
-    // The same member through the same global, reached a second time, is the
-    // binding the name has already (modFoldBind); through another global it is
-    // another thing, and collides
+    // The same member through the same global, reached a second time by a
+    // wildcard, is the binding the name has already, and listed twice it is
+    // refused (modFoldBind); through another global it is another thing, and
+    // collides
     INode *prior = modFoldBind(mod, alias);
     if (prior)
-        errorMsgNode(modFoldCollisionAt(mod, (INode*)global, (INode*)alias, prior), ErrorDupName,
-            "%s is already a name of this module. A folded name must be unique: rename it with 'as', or leave it out with 'but'.",
-            &alias->namesym->namestr);
+        modFoldDupReport(modFoldCollisionAt(mod, (INode*)global, (INode*)alias, prior), alias, prior);
 }
 
 // Expand a global's fold clause into its module's namespace. Run before the
@@ -253,13 +256,14 @@ static void foldEnumUseBind(ModuleNode *mod, EnumUseNode *use, AliasDclNode *ali
     alias->flags &= 0xffff - (FlagPub | FlagMethFld);
     if (fold->ispub)
         alias->flags |= FlagPub;
-    // The same variant reached a second time, by any route, is the binding the
-    // name has already (modFoldBind)
+    // 'use Colors;' names the enum, so every variant it binds is WRITTEN, even
+    // where the statement lists none: a second 'use' of the same enum, or a
+    // listed import of the same variant, is refused. The same variant brought
+    // by a wildcard -- the core import's Some and None, most often -- is the
+    // binding the name has already (modFoldBind)
     INode *prior = modFoldBind(mod, alias);
     if (prior)
-        errorMsgNode(modFoldCollisionAt(mod, (INode*)use, (INode*)alias, prior), ErrorDupName,
-            "%s is already a name of this module. A folded name must be unique: rename it with 'as', or leave it out with 'but'.",
-            &alias->namesym->namestr);
+        modFoldDupReport(modFoldCollisionAt(mod, (INode*)use, (INode*)alias, prior), alias, prior);
 }
 
 // Check a variant a clause names -- one it lists, or one its 'but' leaves out --

@@ -226,8 +226,9 @@ static void importFoldItem(ModuleNode *mod, ImportNode *import, AliasDclNode *al
     alias->flags &= 0xffff - (FlagPub | FlagMethFld);
     if (import->isextends ? !inodeIsPrivate(found) : fold->ispub)
         alias->flags |= FlagPub;
-    // The same declaration reached a second time, by any route, is the binding
-    // the name has already, and is no collision (modFoldBind)
+    // The same declaration reached a second time by a route the module did not
+    // write -- a wildcard, an 'extends' -- is the binding the name has already;
+    // written twice, it is refused (modFoldBind)
     INode *prior = modFoldBind(mod, alias);
     if (prior == NULL)
         return;
@@ -243,16 +244,16 @@ static void importFoldItem(ModuleNode *mod, ImportNode *import, AliasDclNode *al
     }
     // Anything else holding the name was brought in by something of this
     // module's own -- an import, a fold -- and collides as any two bindings do,
-    // reported at whichever of the two a single pass would have met second
+    // reported at whichever of the two a single pass would have met second.
+    // What 'extends' brings is never written, so it collides only with a
+    // different declaration
     INode *at = modFoldCollisionAt(mod, (INode*)import, (INode*)alias, prior);
     if (import->isextends && at == (INode*)alias)
         errorMsgNode(prior, ErrorDupName,
             "%s is already a name of this module, and %s, which it extends, has that name too. A name of a module is unique.",
             &alias->namesym->namestr, &src->namesym->namestr);
     else
-        errorMsgNode(at, ErrorDupName,
-            "%s is already a name of this module. A folded name must be unique: rename it with 'as', or leave it out with 'but'.",
-            &alias->namesym->namestr);
+        modFoldDupReport(at, alias, prior);
 }
 
 // Does a star clause admit this name of its module? Not Self, not an unnamed
@@ -315,6 +316,10 @@ static void importFoldStar(ModuleNode *mod, ImportNode *import) {
         inodeLexCopy((INode*)target, fold->at);
         AliasDclNode *alias = newNameAliasDclNode(nn->name, (INode*)target);
         inodeLexCopy((INode*)alias, fold->at);
+        // Nobody wrote this name: the clause asked for every name, so where it
+        // meets another binding of the same declaration, neither was written
+        // twice and the two are one (modFoldBind)
+        alias->flags |= FlagUnlisted;
         nodesAdd(&fold->items, (INode*)alias);
         importFoldItem(mod, import, alias);
     }

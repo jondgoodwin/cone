@@ -167,6 +167,15 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
   rewritten to `a = a + b` where the type declares no `+=` — reachable through
   a reference as it is by value. Stage 3's arm loses nothing by not seeing it:
   of the operator names, `refType` declares only the identity comparisons.
+- **`!=` on a type that declares `==` and no `!=`** (`fnCallNeFromEq`) → the
+  node is renamed to `==` and a `NotLogicTag` node takes its place in the
+  tree, wrapping it; stage 3 then lowers the `==` like any other operator, and
+  its answer is coerced to `Bool` (through `isTrue` if need be). Only a struct
+  receiver's own type is asked: a reference, a pointer and a slice declare
+  their own `!=`, selected in stage 3 before any referent is. A type declaring
+  its own `!=` keeps it, an enum's intrinsic pair is declared together, and a
+  type declaring neither is reported missing its `!=`. A `==` that selects
+  nothing is reported once, under `==`, and the `not` carries `errorType` on.
 
 **Stage 3 — dispatch on the receiver's type tag.**
 
@@ -250,7 +259,8 @@ Two asymmetries that are deliberate:
 ### What the node becomes
 
 `FnCallTag` (a real call), `FldAccessTag`, `ArrIndexTag`, `TypeLitTag`, a
-generic instance, a macro expansion, or a block of applications. Anything after
+generic instance, a macro expansion, a block of applications, or — for a
+derived `!=` — a call wrapped in a `not` that replaces it in the tree. Anything after
 type check that still sees an un-lowered `FnCallTag` with `methfld` set is
 looking at a bug.
 

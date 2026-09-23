@@ -244,10 +244,35 @@ wantsMeter(g);                // and a Gauge, passed as a Meter
 			nothing of it to enrich — what a type asserts about an abstraction is conformance, which is
 			<a href="reftrait.html"><span class="pre">is</span></a>, and a type may write both clauses.
 			An enum's variant set is its identity, so adding to an enum means adding variants, which is
-			a separate relationship (see <a href="refenum.html">enum</a>). A base that declares
-			<span class="pre">final</span> or <span class="pre">clone</span> is refused as well: those
-			belong to its own values' lifecycle and do not carry across.</li>
+			a separate relationship (see <a href="refenum.html">enum</a>).</li>
 	</ul>
+
+	<h3>A finalizing base finalizes its enrichments too</h3>
+	<p>A base may declare a <a href="refinitdrop.html">finalizer</a>, and enriching it changes
+		nothing about how its values are destroyed:</p>
+<pre>
+struct File {
+  pub fd i32;
+  fn final(self &amp;uni) { close(fd); }
+}
+
+struct LoggedFile extends File {
+  pub fn describe(self &amp;) i32 { fd; }
+}
+
+imm f LoggedFile = File[open()];   // closed once, at the end of f's life
+</pre>
+	<p><span class="pre">LoggedFile</span> has its own copy of <span class="pre">File</span>'s
+		<span class="pre">final</span>, running on a <span class="pre">LoggedFile</span>, so a value is
+		finalized by the same logic whichever of the two names holds it — and, since a finalizer makes a
+		type move rather than copy, a <span class="pre">LoggedFile</span> moves too. Where the base
+		also holds fields that are finalized, the finalizer runs first and then theirs, exactly as for the
+		base. A <span class="pre">clone</span> method comes across the same way, and one that builds a
+		<span class="pre">Self</span> builds the enrichment.</p>
+	<p>Two consequences of rules already stated. The enrichment may not write a
+		<span class="pre">final</span> of its own over the base's, because that is overriding a name the
+		base has. And it may not add a field, even one that owns a resource, so what its values have to
+		release is exactly what the base's do.</p>
 
 	<h3>An enrichment is inside its base's encapsulation</h3>
 	<p>An enrichment is acting as the base, so it sees what the base's own methods see. Above,

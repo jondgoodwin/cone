@@ -406,18 +406,21 @@ ImportNode *parseImport(ParseState *parse, uint16_t pubflag) {
         }
     }
 
-    // ONE IMPORT OF A MODULE PER MODULE. An identical repeat says nothing new,
-    // so it is dropped, binding nothing a second time. One that differs would
-    // leave the module's name and its folds meaning two things, so it is
-    // refused, naming where the first one is.
+    // ONE IMPORT OF A MODULE PER MODULE, and a second is refused, naming where
+    // the first one is. An identical repeat is two ways of bringing in the same
+    // thing, which is a cleanliness issue [Jon 23 Sep]; one that differs would
+    // leave the module's name and its folds meaning two things.
     importnode->module = newmod;
     ImportNode *prior = parseImportPrior(parse->mod, newmod);
     if (prior != NULL) {
         if (importSame(prior, importnode))
-            return NULL;
-        errorMsgNode((INode*)importnode, ErrorDupImport,
-            "Module %s is imported already, differently, at %s:%u. A module imports another once: write what both say in one import.",
-            &newmod->namesym->namestr, prior->lexer->url, prior->linenbr);
+            errorMsgNode((INode*)importnode, ErrorDupImport,
+                "Module %s is imported already, the same way, at %s:%u. A module imports another once: leave out the second.",
+                &newmod->namesym->namestr, prior->lexer->url, prior->linenbr);
+        else
+            errorMsgNode((INode*)importnode, ErrorDupImport,
+                "Module %s is imported already, differently, at %s:%u. A module imports another once: write what both say in one import.",
+                &newmod->namesym->namestr, prior->lexer->url, prior->linenbr);
         return NULL;
     }
 

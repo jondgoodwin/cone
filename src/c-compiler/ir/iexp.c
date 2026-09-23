@@ -150,7 +150,7 @@ int iexpCoerce(INode **from, INode *totype) {
         if (iexpGetTypeDcl(*from)->tag == PtrTag)
             success = fnCallLowerPtrMethod(istrue, ptrType);
         else
-            success = fnCallLowerMethod(istrue) == 1;
+            success = fnCallLowerMethod(NULL, istrue) == 1;
         if (success) {
             *from = (INode*)istrue;
             return 1;

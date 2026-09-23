@@ -259,11 +259,12 @@ diagnostics = 3
 # reached through a third module; module-import-use-nameres holds what a clause
 # does not put in reach and what it refuses to fold; module-import-use-parse
 # holds what is refused as it is parsed, and the rule for two imports of one
-# module: an identical repeat is ignored, a differing one is ErrorDupImport.
+# module: a second is ErrorDupImport, a differing one and an identical repeat
+# alike [Jon 23 Sep].
 
 [scenario.module-import-use]
 category = "run"
-description = "An import's 'use' clause: a list with 'as', '* but', a block, 'pub use' re-exported through a wildcard import, 'pub import', and identical repeats"
+description = "An import's 'use' clause: a list with 'as', '* but', a block, 'pub use' re-exported through a wildcard import, and 'pub import'"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 
 # A fold binds and declares nothing, whatever its spelling. No symbol is spelled
@@ -287,9 +288,9 @@ diagnostics = 9
 
 [scenario.module-import-use-parse]
 category = "reject"
-description = "Two imports of one module that differ, and the clause spellings refused as they are parsed"
+description = "Two imports of one module, identical or differing, and the clause spellings refused as they are parsed"
 tags = ["parse"]
-diagnostics = 9
+diagnostics = 12
 
 # A re-export travels round a cycle of imports. Of two modules that import each
 # other, one reads the other while the other's folds are still running, and a
@@ -300,8 +301,10 @@ diagnostics = 9
 # 'extends' closes, three modules round one cycle -- and one cycle in the order
 # that loses nothing. module-import-cycle-nameres is what the passes do not make:
 # a name missing for good, a 'but' and a listed name judged against the module
-# once complete, and two different declarations a cycle brings under one name,
-# reported once, where a single pass would have met them.
+# once complete, two different declarations a cycle brings under one name, and
+# one declaration a cycle makes the module write twice [Jon 23 Sep], each
+# reported once, where a single pass would have met them -- beside the same
+# shape through a wildcard, which is one binding.
 [scenario.module-import-cycle]
 category = "run"
 description = "Re-exports that travel round cycles of imports: a listed clause, an enum's 'use' through a path, a wildcard and one further on, a public route winning, a cycle closed by 'extends', three modules round one cycle, and the order that loses nothing"
@@ -309,9 +312,9 @@ tags = ["nameres", "typecheck", "genllvm", "runtime"]
 
 [scenario.module-import-cycle-nameres]
 category = "reject"
-description = "What the fold passes round a cycle do not make: a name missing for good, a 'but' of a late name, a listed name that is private, and two different declarations under one name, each reported once"
+description = "What the fold passes round a cycle do not make: a name missing for good, a 'but' of a late name, a listed name that is private, two different declarations under one name, and one declaration listed twice with one listing arriving late, each reported once"
 tags = ["nameres"]
-diagnostics = 9
+diagnostics = 10
 
 # -------- a module's 'use' of an enum --------
 #
@@ -414,21 +417,37 @@ diagnostics = 3
 
 # -------- one declaration reached by two routes --------
 #
-# Two bindings of the SAME declaration under one name are not a collision: the
-# second is the binding the name has already [Jon 23 Sep]. It holds for every
-# fold into a module's namespace -- an import's clause, star or listed, an
-# 'extends', a global's clause, an enum's 'use' -- and where one route is public
-# and the other private, the binding is public, whichever was folded first.
-# module-extends-back is the same rule met through 'extends'.
+# A name the module's own source WRITES twice is an error, even for the same
+# declaration: "two different ways of bringing in the same thing... it's a
+# cleanliness issue" [Jon 23 Sep]. The same name listed twice in a clause, two
+# identical 'use Colors;', a name both imported and listed, a listed name that
+# is the module's own declaration, a global's clause listing a member twice.
 #
-# module-fold-diamond runs the diamond, and the public route winning in both
-# orders. module-fold-diamond-nameres holds what still collides: two different
-# declarations under one name, and one member folded through two globals.
+# A name the module never wrote -- one a wildcard 'use *', an 'extends' or the
+# implicit core import brought -- is one binding with another of the SAME
+# declaration under that name: the second is the binding the name has already
+# [Jon 23 Sep]. One side unwritten is enough, so a listed name meeting a
+# wildcard's arrival of the same declaration is one binding too. Where one route
+# is public and the other private, the binding is public, whichever was folded
+# first. module-extends-back is the same rule met through 'extends'.
+#
+# module-fold-diamond runs the diamond, a listed name beside a wildcard in both
+# orders, a written enum 'use' beside the core import's variants, and the public
+# route winning in both orders. module-fold-written-nameres holds what is
+# written twice; module-fold-diamond-nameres holds what collides however it was
+# reached: two different declarations under one name, and one member folded
+# through two globals.
 
 [scenario.module-fold-diamond]
 category = "run"
-description = "One declaration reaching a module through two re-exporting imports, and a private and a public route to one name in both orders"
+description = "One declaration reaching a module through two re-exporting wildcard imports, a listed name beside a wildcard in both orders, 'use Option;' beside the core import's variants, and a private and a public route to one name in both orders"
 tags = ["nameres", "typecheck", "genllvm", "runtime"]
+
+[scenario.module-fold-written-nameres]
+category = "reject"
+description = "A name the module writes twice for the same declaration: listed twice in a clause, listed through two imports, listed again after a wildcard and a listing, two identical enum 'use's, a module both imported and listed, its own declaration listed back, and a global's clause listing a member twice"
+tags = ["nameres"]
+diagnostics = 8
 
 [scenario.module-fold-diamond-nameres]
 category = "reject"

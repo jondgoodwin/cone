@@ -42,8 +42,9 @@ void importPrint(ImportNode *pgm);
 
 // Do two imports of one module say the same thing? The same clause -- the same
 // names under the same spellings, the same exclusions, star or not -- and the
-// same visibility on each binding. A module imports another once: an identical
-// repeat is ignored, and one that differs is refused.
+// same visibility on each binding. A module imports another once, and a second
+// import is refused either way [Jon 23 Sep]; this decides which the diagnostic
+// says, the same import written twice or two that disagree.
 int importSame(ImportNode *a, ImportNode *b);
 
 // Bind the imported module's name in the importing module, as an alias carrying

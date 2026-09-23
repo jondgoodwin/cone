@@ -1,0 +1,221 @@
+// Enriching a base that declares 'final' or 'clone'.
+//
+// Those two are the value's own lifecycle, so they are not aliased the way the
+// base's other members are: the enrichment gets copies of its own, with 'Self'
+// meaning the enrichment. What that buys is what each line below prints: the
+// base's finalizer runs, exactly once, for a value typed as the enrichment -- down
+// a chain, through a sibling fold, from a generic on either side of the clause --
+// and 'clone' hands back the enrichment rather than the base.
+//
+// A run, because whether a finalizer ran and how often is a runtime fact. Each
+// finalizer appends a number to 'log', two decimal digits apiece, so one line says
+// both how many ran and in what order.
+//
+// A value crossing between the two names by value is struct-extends'. What may not
+// be declared -- a field, even one that owns a resource, or a 'final' of the
+// enrichment's own over the base's -- is struct-nameres-extends.
+
+import stdio.*;
+
+mut log = 0;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn note(n i32) {
+  log = log * 100 + n;
+}
+
+// -------- a finalizing base, enriched --------
+
+struct File {
+  pub fd i32;
+  fn final(self &uni) {
+    note(fd);
+  }
+}
+
+struct LoggedFile extends File {
+  pub fn twice(self &) i32 {
+    fd + fd;
+  }
+}
+
+// Down a chain the copy is copied again, and it is still the base's body
+struct AuditedFile extends LoggedFile {
+  pub fn thrice(self &) i32 {
+    fd * 3;
+  }
+}
+
+// A sibling's 'final' does not fold; this type has its own copy from the base
+struct BothFile extends File {
+  use LoggedFile;
+}
+
+// The finalizer calls a private method bare. In the copy that call runs on the
+// enrichment's receiver, which is what shows the body was lowered once, as the
+// enrichment's own method, and not lowered a second time over the base's result.
+struct Tracked {
+  pub id i32;
+  fn code(self &) i32 {
+    id + 1;
+  }
+  fn final(self &uni) {
+    note(code());
+  }
+}
+
+struct TrackedMore extends Tracked {
+  pub fn two(self &) i32 {
+    2;
+  }
+}
+
+// A generic enrichment is enriched when an instance is type checked, after its
+// base's methods have been. What is copied then is what the base set aside
+// before they were lowered.
+struct Wrapped[T] extends Tracked {
+  pub fn three(self &) i32 {
+    3;
+  }
+}
+
+// And so is an enrichment of a generic's instance
+struct Box[T] {
+  pub v T;
+  fn seven(self &) i32 {
+    7;
+  }
+  fn final(self &uni) {
+    note(seven());
+  }
+}
+
+struct IntBox extends Box[i32] {
+  pub fn get(self &) i32 {
+    self.v;
+  }
+}
+
+// The base both finalizes itself and holds a field that finalizes. The
+// enrichment's generated drop is the base's: its own 'final' first, then the
+// field's. An enrichment cannot add a field of its own, so these are all it has.
+struct Inner {
+  pub id i32;
+  fn final(self &uni) {
+    note(id);
+  }
+}
+
+struct Outer {
+  pub k i32;
+  pub inner Inner;
+  fn final(self &uni) {
+    note(k);
+  }
+}
+
+struct RichOuter extends Outer {
+  pub fn sum(self &) i32 {
+    k + inner.id;
+  }
+}
+
+// -------- a cloning base, enriched --------
+
+// 'clone' written against 'Self' produces the enrichment in the copy: 'neg' is
+// the enrichment's alone, so calling it on the result is what shows the type
+struct Pt {
+  pub x i32;
+  pub fn clone(self &) Self {
+    Self[x + 1];
+  }
+}
+
+struct Pt2 extends Pt {
+  pub fn neg(self &) i32 {
+    0 - x;
+  }
+}
+
+// -------- each value's life --------
+
+fn enriched() {
+  imm f LoggedFile = File[11];
+}
+
+fn chained() {
+  imm f AuditedFile = File[12];
+}
+
+fn sibling() {
+  imm f BothFile = File[13];
+}
+
+// A finalizer makes its type a move type, and the enrichment is one too: the
+// value is moved rather than copied, so it is finalized once, by 'g'
+fn movedWithinName() {
+  imm f LoggedFile = File[14];
+  imm g = f;
+}
+
+fn privateCall() {
+  imm t TrackedMore = Tracked[40];
+}
+
+fn genericEnrichment() {
+  imm t Wrapped[i32] = Tracked[50];
+}
+
+fn genericBase() {
+  imm b IntBox = Box[i32][5];
+}
+
+fn finalThenFields() {
+  imm r RichOuter = Outer[21, Inner[22]];
+}
+
+fn main() i32 {
+  log = 0;
+  enriched();
+  show("enriched", log);
+
+  log = 0;
+  chained();
+  show("chained", log);
+
+  log = 0;
+  sibling();
+  show("sibling-fold", log);
+
+  log = 0;
+  movedWithinName();
+  show("moved-within-name", log);
+
+  log = 0;
+  privateCall();
+  show("private-call-in-final", log);
+
+  log = 0;
+  genericEnrichment();
+  show("generic-enrichment", log);
+
+  log = 0;
+  genericBase();
+  show("generic-base", log);
+
+  log = 0;
+  finalThenFields();
+  show("final-then-fields", log);
+
+  imm p Pt2 = Pt[4];
+  imm q = (&p).clone();
+  show("clone-is-the-enrichment", (&q).neg());
+
+  0i32;
+}
