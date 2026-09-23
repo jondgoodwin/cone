@@ -192,6 +192,9 @@ enum ErrorCode {
     ErrorExtendsField = 1102,   // A field declared by a type that extends a concrete base, which may add none
     ErrorExtendsOverride = 1103,// A member of the base redeclared by the enriching type, which may not override
 
+    // A type body's 'use': folding a sibling enrichment's methods in
+    ErrorUseSibling = 1104,     // A type-body 'use' naming what is not a sibling of this type, or a member that does not fold from one
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

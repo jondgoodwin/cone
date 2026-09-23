@@ -1,9 +1,13 @@
-// Where a fold clause may not be written, and the one shape it may not take.
+// Where a fold clause may not be written, and the shapes it may not take.
 //
 // Parse stage: each of these is refused as it is read, and the clause is read
-// through so that the declaration carrying it recovers. Only a struct's field
-// folds; every other declaration that could carry a clause is here once, so
-// that the diagnostic is the fold's own rather than a missing semicolon.
+// through so that the declaration carrying it recovers. A clause trails a
+// struct's FIELD or stands as a statement in a struct's BODY, where it folds a
+// sibling in; every other declaration that could carry one is here once, so that
+// the diagnostic is the fold's own rather than a missing semicolon.
+//
+// What a body clause may name, once the type's base is known, is
+// struct-nameres-use-sibling.
 
 struct Engine {
   pub fuel i32;
@@ -59,4 +63,36 @@ struct Listed {
 // A fold takes its names from the field's type, so the type is written
 struct Untyped {
   pub engine use fuel;                    //~ ErrorBadFold:14 "must write its type"
+}
+
+// -------- a body clause: 'use' as a statement of its own --------
+
+// It names the type it folds, so every member of it is what the clause asks for
+// already and there is no second spelling for that
+struct Starred extends Engine {
+  use Engine *;                           //~ ErrorBadFold "'*' says nothing more"
+}
+
+// It declares no name of its own -- each folded name carries its target's
+// visibility -- so there is nothing for 'pub' to expose
+struct Exposed extends Engine {
+  pub use Engine;                         //~ ErrorBadPub "declares no name of its own"
+}
+
+// Only a struct enriches a concrete base, so only a struct has one to share
+trait Abstracted {
+  use Engine;                             //~ ErrorBadFold "no concrete base to share"
+}
+
+enum Closed {
+  use Engine;                             //~ ErrorBadFold "variant set is its identity"
+  struct Only {
+    pub z i32;
+  }
+}
+
+// 'but' leaves a name out of a fold of every member; a list admits only what it
+// names, here as on a field
+struct BodyListed extends Engine {
+  use Engine thrust but fuel;             //~ ErrorBadFold "'but' leaves a name out"
 }

@@ -148,8 +148,8 @@ the module fold needs. They differ in what the binding holds and in resolution
 to an access path or shifts a call's receiver, which a module fold never does.
 Same namespace, same rule, same node; different resolution.
 
-**There are two reuse mechanisms on the type side, and the second is where the
-symmetry claim comes cheapest.** A field's clause delegates to a *part*;
+**There are three reuse mechanisms on the type side, and the later two are where
+the symmetry claim comes cheapest.** A field's clause delegates to a *part*;
 `extends` over a concrete base enriches the *whole*, adding methods and no fields
 ([struct](../nodes/struct.md), "Enrichment"). Because it may not change the
 fields, the enriching type and its base have one representation and their values
@@ -166,6 +166,20 @@ crossed knowingly: an enrichment is inside its base's encapsulation and reads it
 private members, so a type that may be extended has its representation in its
 contract. SemVer is the protection, and it holds because two versions of one
 package may coexist in a binary.
+
+**The third is what the other two were for, and it is the expression problem
+answered.** A `use` in a type's body folds in a *sibling* — another type that
+declared this type's base ([struct](../nodes/struct.md), "Sibling folding"). So a
+base type plus one package's trigonometry plus another's logarithms become one
+type, declared once, in the namespace of whoever needs it, with no package
+modified and nobody's permission asked. It costs nothing beyond `extends`: the
+shared base means a sibling's method already takes a receiver this type's values
+substitute for, so the fold makes aliases and nothing else. ▸ **And the collision
+is the feature.** Two enrichments of one base may each declare `span`, and neither
+is wrong; the type that folds both settles it with `as` or `but` in its own
+declaration. **That is the one place in the language where two independent
+libraries disagreeing is resolvable by the party who needs both** — which is what
+made reuse across package boundaries a language problem in the first place.
 
 **`import` composes; `include` does not.** `import` loads a file as a module in
 its own right and binds its name; `.*` folds its public names into the

@@ -23,6 +23,7 @@ StructNode *newStructNode(Name *namesym) {
     snode->extendsdcl = NULL;
     snode->derived = NULL;
     snode->traits = NULL;
+    snode->siblings = NULL;
     snode->vtable = NULL;
     snode->genericinfo = NULL;
     snode->tagnbr = 0;
@@ -67,6 +68,12 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
         for (nodesFor(node->traits, traitcnt, traitp))
             nodesAdd(&newnode->traits, *traitp);
     }
+    // A sibling 'use' is folded per instance, like an enrichment and for the same
+    // reason: the template's clause names a type in terms of its type parameters,
+    // so it is a declaration only once they are bound. Each clause is cloned
+    // unexpanded (cloneFieldDclNode), so the instance's aliases are its own.
+    if (node->siblings)
+        newnode->siblings = cloneNodes(cstate, node->siblings);
 
     // Recreate clones of fields/mixins and methods, sequentially and in namespace dictionary
     namespaceInit(&newnode->namespace, node->namespace.avail);
@@ -122,11 +129,19 @@ void structPrint(StructNode *node) {
     if (node->genericinfo)
         genericInfoPrint(node->genericinfo);
     dclInfoPrint((INode*)node);
+    INode **nodesp;
+    uint32_t cnt;
+    // Each sibling a type-body 'use' folds in, by the type it names: the members
+    // it admitted are in the namespace and not in any list of this type's own
+    if (node->siblings) {
+        for (nodesFor(node->siblings, cnt, nodesp)) {
+            inodeFprint(" use ");
+            inodePrintNode(((FieldDclNode*)*nodesp)->vtype);
+        }
+    }
     // Each method by name and owner only: an inherited default or a generic
     // instance's method is owned by this type, not by where it was written
     inodeFprint("{");
-    INode **nodesp;
-    uint32_t cnt;
     for (nodelistFor(&node->nodelist, cnt, nodesp)) {
         Name *namesym = inodeGetName(*nodesp);
         char *kind = (*nodesp)->tag == MacroDclTag ? "macro" : (*nodesp)->tag == VarDclTag ? "static" : "fn";
@@ -750,6 +765,196 @@ StructNode *structExtendsRoot(StructNode *node) {
     return node;
 }
 
+// The declaration a type body's 'use' names, or NULL while it is not one yet --
+// an instance of a generic, which exists only at type check
+static StructNode *structUseSiblingDcl(FieldDclNode *use) {
+    if (use->vtype->tag == FnCallTag || !isTypeNode(use->vtype))
+        return NULL;
+    INode *dcl = itypeGetTypeDcl(use->vtype);
+    return dcl != NULL && dcl->tag == StructTag ? (StructNode*)dcl : NULL;
+}
+
+// Does this member of a sibling fold from it?
+//
+// Only what the sibling declares itself. A FIELD is the representation both types
+// take from the base, so it is already a field here, and no type reads another
+// type's fields. An ALIAS is what the sibling took from that same base, or
+// delegated through a field of its own -- the first is here already by the same
+// route, and the second is reached by naming the type it came from. What is left
+// is the sibling's own contribution, which is the whole reason to name it.
+static int structUseSiblingOwns(INode *member) {
+    return member->tag != FieldDclTag && member->tag != AliasDclTag;
+}
+
+// May this type fold 'sib' in? The shared base is the whole licence: a sibling
+// declared the same base, so its methods' receiver is a type this type's values
+// substitute for (structExtendsEquiv), and nothing has to be cloned or retyped.
+static int structUseSiblingEligible(StructNode *node, StructNode *sib, INode *at) {
+    // An enum before an abstraction, because an enum carries 'TraitType' too:
+    // it is the closed abstraction over its own variants
+    if (sib->flags & EnumType) {
+        errorMsgNode(at, ErrorUseSibling,
+            "%s is an enum, and its variant set is its identity rather than a set of members to fold.",
+            &sib->namesym->namestr);
+        return 0;
+    }
+    if (sib->flags & TraitType) {
+        errorMsgNode(at, ErrorUseSibling,
+            "%s is an abstraction, and a fold reaches members a value has. To assert that %s complies with it, write 'is'.",
+            &sib->namesym->namestr, &node->namesym->namestr);
+        return 0;
+    }
+    if (node->extendsdcl == NULL) {
+        errorMsgNode(at, ErrorUseSibling,
+            "%s has no base to share, and a sibling is a type that declared the same one. Give %s an 'extends', or delegate instead by declaring a field of %s with its own 'use'.",
+            &node->namesym->namestr, &node->namesym->namestr, &sib->namesym->namestr);
+        return 0;
+    }
+    if (sib == node) {
+        errorMsgNode(at, ErrorUseSibling, "%s cannot fold itself in.", &node->namesym->namestr);
+        return 0;
+    }
+    if (structExtendsRoot(sib) != structExtendsRoot(node)) {
+        errorMsgNode(at, ErrorUseSibling,
+            "%s does not share %s's base, so its methods read fields %s does not have. A sibling is a type that declared the same base.",
+            &sib->namesym->namestr, &node->namesym->namestr, &node->namesym->namestr);
+        return 0;
+    }
+    // The base of the chain, and every type along it, is reached by 'extends'
+    // already: everything it has is here, so a fold of it would collide on every
+    // name rather than add one
+    StructNode *ancestor = (StructNode*)node->extendsdcl;
+    for (;;) {
+        if (ancestor == sib) {
+            errorMsgNode(at, ErrorUseSibling,
+                "%s has every member of %s already, through the 'extends' that starts from it.",
+                &node->namesym->namestr, &sib->namesym->namestr);
+            return 0;
+        }
+        if (ancestor->extendsdcl == NULL)
+            return 1;
+        ancestor = (StructNode*)ancestor->extendsdcl;
+    }
+}
+
+// Make the items of a sibling fold that names no member: an alias for every
+// public member the sibling declares itself, less what 'but' leaves out
+static void structUseSiblingStar(StructNode *sib, FoldClause *fold) {
+    INode **nodesp;
+    uint32_t cnt;
+    if (fold->excludes) {
+        for (nodesFor(fold->excludes, cnt, nodesp)) {
+            Name *name = ((NameUseNode*)*nodesp)->namesym;
+            if (namespaceFind(&sib->namespace, name) == NULL)
+                errorMsgNode(*nodesp, ErrorNoMbr, "%s has no member named %s to leave out.",
+                    &sib->namesym->namestr, &name->namestr);
+        }
+    }
+    namespaceFor(&sib->namespace) {
+        NameNode *nn = &sib->namespace.namenodes[__i];
+        if (nn->name == NULL || nn->name == selfTypeName || nn->name == anonName
+            || nn->name == finalName || nn->name == cloneName)
+            continue;
+        if (inodeIsPrivate(nn->node) || !structUseSiblingOwns(nn->node) || structFoldExcluded(fold, nn->name))
+            continue;
+        NameUseNode *target = newMemberUseNode(nn->name);
+        inodeLexCopy((INode*)target, fold->at);
+        AliasDclNode *alias = newAliasDclNode(nn->name, (INode*)target);
+        inodeLexCopy((INode*)alias, fold->at);
+        nodesAdd(&fold->items, (INode*)alias);
+    }
+}
+
+// Expand one item of a sibling fold: bind its target in the sibling and enter it
+// in this type's namespace as an alias.
+//
+// Always an alias, never a copy, which is what makes this fold the cheap one. The
+// sibling's method takes a receiver of the sibling's type, and this type's values
+// substitute for it because both declared the same base -- so there is no
+// receiver to shift, no signature to retype and no body to clone. A static keeps
+// its owner too, which is what a static fold means everywhere.
+static void structUseSiblingItem(StructNode *node, StructNode *sib, AliasDclNode *alias, int hook) {
+    NameUseNode *target = (NameUseNode*)alias->target;
+    Name *srcname = target->namesym;
+    INode *found = namespaceFind(&sib->namespace, srcname);
+    if (found == NULL) {
+        errorMsgNode((INode*)alias, ErrorNoMbr, "%s has no member named %s to fold in.",
+            &sib->namesym->namestr, &srcname->namestr);
+        return;
+    }
+    // Ahead of the visibility check, because a lifecycle method does not fold
+    // whether it is public or not: every type may have one of its own
+    if (srcname == finalName || srcname == cloneName) {
+        errorMsgNode((INode*)alias, ErrorBadFold, "%s belongs to %s's own values' lifecycle, so it does not fold.",
+            &srcname->namestr, &sib->namesym->namestr);
+        return;
+    }
+    // A sibling is inside the BASE's boundary, not inside this type's: what it
+    // declares privately is its own, and only what it shows folds
+    if (inodeIsPrivate(found)) {
+        errorMsgNode((INode*)alias, ErrorNotPublic, "%s is private to %s, so it does not fold.",
+            &srcname->namestr, &sib->namesym->namestr);
+        return;
+    }
+    if (!structUseSiblingOwns(found)) {
+        errorMsgNode((INode*)alias, ErrorBadFold,
+            "%s comes to %s from the base they share, and %s reaches it by that same route. A sibling fold admits what the sibling adds.",
+            &srcname->namestr, &sib->namesym->namestr, &node->namesym->namestr);
+        return;
+    }
+    target->dclnode = found;
+    if (!inodeIsMember(found))
+        alias->flags &= 0xffff - FlagMethFld;
+    INode *prior = namespaceAdd(&node->namespace, alias->namesym, (INode*)alias);
+    if (prior) {
+        errorMsgNode((INode*)alias, ErrorDupName,
+            "%s is already a name of %s. A folded name must be unique: rename it with 'as', or leave it out with 'but'.",
+            &alias->namesym->namestr, &node->namesym->namestr);
+        return;
+    }
+    if (hook)
+        nametblHookNode(alias->namesym, (INode*)alias);
+}
+
+// Expand one type-body 'use' into this type's namespace. Nothing happens while
+// the sibling is not a declaration yet; the clause is then expanded when the
+// instance is type checked.
+static void structUseSiblingExpand(StructNode *node, FieldDclNode *use, int hook) {
+    FoldClause *fold = use->fold;
+    StructNode *sib = structUseSiblingDcl(use);
+    if (sib == NULL)
+        return;
+    fold->expanded = 1;
+    // The sibling's own members must be complete before they are read, and a
+    // sibling still under way cannot offer them
+    if (sib->tag == StructTag && !(sib->flags & NameResolved) && sib != node) {
+        errorMsgNode(fold->at, ErrorCircular, "A fold needs %s complete, and %s is not complete until %s is.",
+            &sib->namesym->namestr, &sib->namesym->namestr, &node->namesym->namestr);
+        return;
+    }
+    if (!structUseSiblingEligible(node, sib, fold->at))
+        return;
+    if (fold->star)
+        structUseSiblingStar(sib, fold);
+    INode **itemp;
+    uint32_t cnt;
+    for (nodesFor(fold->items, cnt, itemp))
+        structUseSiblingItem(node, sib, (AliasDclNode*)*itemp, hook);
+}
+
+// Expand every type-body 'use' this type carries, in the order written
+static void structUseSiblings(StructNode *node, int hook) {
+    if (node->siblings == NULL)
+        return;
+    INode **usep;
+    uint32_t cnt;
+    for (nodesFor(node->siblings, cnt, usep)) {
+        FieldDclNode *use = (FieldDclNode*)*usep;
+        if (!use->fold->expanded)
+            structUseSiblingExpand(node, use, hook);
+    }
+}
+
 // Do two types substitute for each other because of an 'extends'?
 //
 // THE DECLARATION IS THE LICENCE, and identical representation is only the
@@ -969,6 +1174,19 @@ void structNameRes(NameResState *pstate, StructNode *node) {
         }
     }
 
+    // And every sibling a type-body 'use' names, on the same terms and for the
+    // same reason. Its own 'extends' has to have been taken before the base it
+    // shares can be compared with this type's, which is what demanding it does.
+    if (node->siblings) {
+        for (nodesFor(node->siblings, cnt, nodesp)) {
+            FieldDclNode *use = (FieldDclNode*)*nodesp;
+            inodeNameRes(pstate, &use->vtype);
+            StructNode *sib = structUseSiblingDcl(use);
+            if (sib && sib != node)
+                structNameResDemand(pstate, sib);
+        }
+    }
+
     // Now hook names inside the type
     nametblHookNamespace(&node->namespace);
 
@@ -1012,6 +1230,11 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     // came across with a copied field is expanded against the copy.
     if (extbase)
         structEnrichFromBase(node, extbase, 1);
+
+    // Then each sibling a type-body 'use' names: after the base, because the
+    // shared base is what licenses the fold and this type's own members must be
+    // in place for a collision to be reported at the clause that caused it.
+    structUseSiblings(node, 1);
 
     // Every field now has its place, and a copy a fold makes below takes the
     // index of the field it stands for, so the fields are indexed here. Type
@@ -1455,6 +1678,17 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     // name resolution would have taken them, and before the fold clauses below
     if (extbase)
         structEnrichFromBase(node, extbase, 0);
+
+    // A sibling 'use' name resolution could not expand -- this type or the
+    // sibling was an instance of a generic -- is expanded here, in the same place
+    // in the order. Nothing is hooked, so such a name is reached as 'self.name'
+    // inside this type's own methods (see Hazards).
+    if (node->siblings) {
+        for (nodesFor(node->siblings, cnt, nodesp))
+            if (itypeTypeCheck(pstate, &((FieldDclNode*)*nodesp)->vtype) == 0)
+                ((FieldDclNode*)*nodesp)->fold->expanded = 1;
+        structUseSiblings(node, 0);
+    }
 
     // A fold clause name resolution could not expand -- the field's type was an
     // instance of a generic, which exists only now -- is expanded here, and

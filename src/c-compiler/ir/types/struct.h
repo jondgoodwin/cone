@@ -40,6 +40,7 @@ typedef struct StructNode {
     INode *extendsdcl;      // That base's declaration, set once its members have been taken; NULL until then
     Nodes *derived;         // If a closed, base trait, this lists all structs derived from it
     Nodes *traits;          // Every trait whose members were mixed in (NULL if none)
+    Nodes *siblings;        // A field-like node per type-body 'use': its 'vtype' the sibling named, its 'fold' what the clause admits (NULL if none)
     NodeList fields;        // Ordered list of all fields
     Vtable *vtable;         // Pointer to vtable info (may be NULL)
     GenericInfo *genericinfo;     // Link to generic parms, etc (or NULL if not generic)
