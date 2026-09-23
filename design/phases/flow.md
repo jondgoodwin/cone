@@ -159,6 +159,29 @@ deactivates the source of each element that is itself a move value and leaves
 a copyable element's alone; it is the `VTupleTag` arm beside the field, index
 and dereference arms that walk inwards to the variable.
 
+**Only an owner may be moved out of.** The same inward walk refuses two
+sources. A global has no scope in which a deactivated state could be recovered.
+A place reached through a **borrowed reference** — a dereference of one, or a
+field or element read straight through one, as a slice's element is — belongs
+to whatever was borrowed, which releases or finalizes it at the end of its own
+scope, so a move out of it would make a second owner (`ErrorMoveOut`). The
+borrow's permission does not matter: a `&uni` is the only path to its value
+while it lives, and still does not own it. An owning reference is not refused;
+moving out through one deactivates the reference's variable like any other
+source. Copy values are never walked, so they read out through a borrow freely,
+and swap and left-assignment take a move value out of a borrowed place because
+they leave it holding one.
+
+The walk has two entries. `flowHandleMove` is the one `flowHandleMoveOrCopy`
+takes, for a value going to a new holder, and it deactivates the source.
+`flowResultMove` is `blockFlow`'s, for the value a `return` hands the caller:
+it refuses the same sources but deactivates nothing, because a local handed
+back is exempted from the scope's release by `flowScopeDealias` instead. A
+block or an `if` used as a value has no source of its own either, so the walk
+goes on into what it hands back — a block's final expression and the value of
+each `break` that leaves it, each branch of an `if` — checking those values
+without deactivating anything.
+
 **A recast is its operand.** Type check hands a value between an enrichment and
 its base, in either direction, wrapped in a `CastTag` with no `FlagConvert`: the
 two share one representation, so nothing is converted. Every walk here that
@@ -234,7 +257,12 @@ order. Per variable: one that was never initialized or was moved out is
 skipped, whatever its type, because it owns nothing to release or finalize; so
 is one the scope hands back, which is the caller's to release or finalize, and
 `flowIsScopeResult` matches it against the result expression, walking a
-`VTupleTag` element by element and a recast to its operand. The match is on the
+`VTupleTag` element by element and a recast to its operand. A move-typed field
+or element handed back matches the variable it is taken from
+(`flowIsScopeResultOwner`, the walk through fields, elements and owning
+dereferences that `flowMoveSource` takes), because moving a part out gives up
+the whole variable; releasing it would finalize the part again in the caller,
+and what else it held is not released. A copied part matches nothing. The match is on the
 declaration the result's name resolves to, not on the name: a `return` asks over the whole function's
 stack, where an inner block's `a` and an outer `a` both sit, and only the one
 handed back is exempt. What survives both is an `so` or `rc`
@@ -269,7 +297,7 @@ failed to resolve.
 
 | Analysis | In flow? | Enforced | Not enforced |
 | --- | --- | --- | --- |
-| **Move / ownership** | yes | `ErrorMove` on use of a moved-out or uninitialized variable; move out of a global refused | field granularity — moving `p.x` deactivates all of `p`; conditional moves; loop-carried moves |
+| **Move / ownership** | yes | `ErrorMove` on use of a moved-out or uninitialized variable; move out of a global, or out through a borrowed reference, refused | field granularity — moving `p.x` deactivates all of `p`; conditional moves; loop-carried moves |
 | **Escape / lifetime** | representation in type check, enforcement here | storing a borrow into a longer-lived lval; returning a borrow of a local; a borrow arriving through a call's result, singly or as one of several values destructured into lvals, each carrying the narrowest argument borrow's scope; a `&mut &T` argument whose pointee would outlive another borrow passed with it; a borrow coerced to another reference type, whether widened to a base trait's reference or made a virtual reference | a borrow laundered through a variable; a borrow stored in a field or captured; distinguishing parameter lifetimes — there is no lifetime annotation syntax; freezing a borrow's source |
 | **De-aliasing / drops** | flow decides, generation executes | scope-exit release of `so`/`rc` refs and slices, and of drop-fn structs, from a jump down to the block it names | arrays of owning references; a variable moved out, or initialized, on only one path — see Hazards |
 | **Permission** | `MayWrite` and `MayRead` | `ErrorNoMut` on assignment and swap; `ErrorNoRead` on a read through a reference — a dereference, an index, or a field of a virtual reference | `MayAliasWrite`, `RaceSafe`, `IsLockless` are populated and read nowhere |
@@ -283,7 +311,8 @@ Everything else about permissions is type check's: `permMatches` in
 
 | Code | Site | Condition |
 | --- | --- | --- |
-| `ErrorInvType` | `flowHandleMove` | move out of a global variable |
+| `ErrorInvType` | `flowHandleMove`, `flowResultMove` | move out of a global variable |
+| `ErrorMoveOut` | `flowHandleMove`, `flowResultMove` | move out through a borrowed reference |
 | `ErrorInvType` | `assignlvalrtype` | lval outlives the borrowed reference stored into it |
 | `ErrorNoMut` | `assignlvalrtype`, `swapFlow` | no write permission |
 | `ErrorNoRead` | `flowLoadThroughRef` | no read permission on the reference a dereference, an index or a virtual-reference field reads through |
@@ -363,13 +392,14 @@ the built-in permissions are zero-sized. See [Generation](generation.md),
 | `ir/flow.c` | `flowLoadValue` | the walk's spine — tag dispatch for a value being read |
 | | `flowLoadThroughRef` | `MayRead` on the reference a value is read through; called from `derefFlow`, `fnCallArrIndexFlow` and `fnCallFldAccessFlow` |
 | | `flowHandleMoveOrCopy` | move vs. alias, for a value going to a new holder |
-| | `flowHandleMove` | deactivate the source — each move-typed element's, for a tuple literal; refuse a move out of a global |
+| | `flowHandleMove` | deactivate the source — each move-typed element's, for a tuple literal; refuse a move out of a global or out through a borrowed reference |
+| | `flowResultMove` | the same refusals for a returned value, deactivating nothing |
 | | `flowIsLvalRead` | the temporary-vs-lvalue test that makes counting correct |
 | | `flowInjectRefCountAmt` | wrap a counted reference, or a tuple carrying one, in a `RefCountNode` |
 | | `flowIsRcRef`, `flowIsOwningType` | is this type counted; must a variable of this type be released |
 | | `flowScopePush`, `flowScopePop`, `flowAddVar` | the variable stack |
 | | `flowScopeDealias` | build a scope's release list; skip an uninitialized, moved-out or handed-back variable |
-| `ir/exp/block.c` | `blockFlow` | scope push/pop, `blockret` injection, result walk then dealias capture |
+| `ir/exp/block.c` | `blockFlow` | scope push/pop, `blockret` injection, result walk then dealias capture; a `return`'s move source |
 | `ir/exp/if.c` | `ifFlow` | both arms against one shared state |
 | `ir/exp/assign.c` | `assignlvalrtype` | `MayWrite`, `VarInitialized`/`VarMoved`, `FlagFirstAssign`, borrow lifetime |
 | `ir/exp/nameuse.c` | `nameuseFlow` | the only place the two flags are *diagnosed* on; both `ErrorMove` messages |

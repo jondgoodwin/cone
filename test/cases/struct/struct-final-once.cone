@@ -23,6 +23,22 @@
 // result, only through a name, field, index or dereference, so the recast hid
 // the variable and it was never deactivated. The value was finalized twice,
 // once under each name, and the source stayed usable after the move.
+//
+// A field moved out as the value a function hands back leaves the variable
+// that held it, exactly as a field moved into a local does. The scope's result
+// was exempted from release only when it named a variable whole, so a variable
+// whose field was handed back was finalized with that field still in it, and
+// the caller finalized the field again. Whatever else the variable held is not
+// finalized: moving a field out gives up the whole variable.
+//
+// A method whose 'self' is taken by value owns the value it was called on, as a
+// function owns a by-value parameter, and finalizes it as it returns unless it
+// hands it on. Nothing finalized inside a type's own methods, because the
+// type's drop fn was settled only after they had been checked and flow
+// analyzed: a by-value 'self' leaked, and so did a local of the type's own
+// type. Every such method below is on a type with a finalizer, its own or a
+// field's, and on a generic's instance and an enum's variant, whose methods are
+// checked by the same step.
 
 import stdio.*;
 
@@ -157,6 +173,188 @@ fn assignedIntoEnrichment() {
   r = o;
 }
 
+// A field handed back moves out of the variable holding it, which the scope
+// then leaves alone; the caller's variable finalizes the field
+fn heldOfParam(o Outer) Fin {
+  o.held;
+}
+
+fn heldOfLocal() Fin {
+  imm o = Outer[Fin[21], 22];
+  o.held;
+}
+
+fn heldReturned(o Outer) Fin {
+  return o.held;
+}
+
+struct Nest {
+  pub outer Outer;
+}
+
+fn heldOfNested(n Nest) Fin {
+  n.outer.held;
+}
+
+fn heldInTuple(o Outer) (Fin, i32) {
+  (o.held, 1);
+}
+
+// A copied field leaves the variable owning its value, so it is finalized here
+fn tagOfParam(o Outer) i32 {
+  o.tag;
+}
+
+fn fieldOfParamHandedBack() {
+  imm f = heldOfParam(Outer[Fin[23], 24]);
+}
+
+fn fieldOfLocalHandedBack() {
+  imm f = heldOfLocal();
+}
+
+fn fieldReturned() {
+  imm f = heldReturned(Outer[Fin[25], 26]);
+}
+
+fn nestedFieldHandedBack() {
+  imm f = heldOfNested(Nest[Outer[Fin[27], 28]]);
+}
+
+fn fieldHandedBackInTuple() {
+  mut f Fin;
+  mut t i32;
+  f, t = heldInTuple(Outer[Fin[29], 30]);
+}
+
+fn copiedFieldHandedBack() {
+  tagOfParam(Outer[Fin[31], 32]);
+}
+
+// A finalizer of its own, and methods taking 'self' by value
+struct Owned {
+  pub id i32;
+
+  fn final(self &uni) {
+    finalized = finalized + 1;
+  }
+
+  pub fn idOf(self) i32 {
+    id;
+  }
+
+  // Handed on, so the caller's variable finalizes it
+  pub fn passOn(self) Owned {
+    self;
+  }
+
+  // A local of the type's own type, finalized as the method returns
+  pub fn madeInside() i32 {
+    imm o = Owned[33];
+    o.id;
+  }
+}
+
+// No finalizer of its own: its generated drop fn finalizes 'held'
+struct Keeper {
+  pub held Fin;
+  pub tag i32;
+
+  pub fn tagOf(self) i32 {
+    tag;
+  }
+
+  pub fn passOn(self) Keeper {
+    self;
+  }
+
+  // Moves the field out of 'self', which then finalizes nothing
+  pub fn giveHeld(self) Fin {
+    held;
+  }
+
+  // Moves the field into a local, which finalizes it
+  pub fn heldId(self) i32 {
+    imm h = self.held;
+    h.id;
+  }
+}
+
+struct Wrap[T] {
+  pub v T;
+  pub n i32;
+
+  pub fn nOf(self) i32 {
+    n;
+  }
+
+  pub fn unwrap(self) T {
+    v;
+  }
+}
+
+enum Slot {
+  struct Filled {
+    pub f Fin;
+    pub k i32;
+
+    pub fn kOf(self) i32 {
+      k;
+    }
+  }
+
+  struct Vacant {}
+}
+
+fn methodSelfOwnFinal() {
+  imm o = Owned[34];
+  o.idOf();
+}
+
+fn methodSelfPassedOn() {
+  imm o = Owned[35];
+  imm p = o.passOn();
+}
+
+fn methodOwnTypeLocal() {
+  Owned.madeInside();
+}
+
+fn methodSelfFieldFinal() {
+  imm k = Keeper[Fin[36], 37];
+  k.tagOf();
+}
+
+fn methodSelfFieldPassedOn() {
+  imm k = Keeper[Fin[38], 39];
+  imm p = k.passOn();
+}
+
+fn methodSelfFieldHandedBack() {
+  imm k = Keeper[Fin[40], 41];
+  imm f = k.giveHeld();
+}
+
+fn methodSelfFieldToLocal() {
+  imm k = Keeper[Fin[42], 43];
+  k.heldId();
+}
+
+fn genericMethodSelf() {
+  imm w = Wrap[Fin][Fin[44], 45];
+  w.nOf();
+}
+
+fn genericMethodSelfFieldHandedBack() {
+  imm w = Wrap[Fin][Fin[46], 47];
+  imm f = w.unwrap();
+}
+
+fn variantMethodSelf() {
+  imm s = Slot.Filled[Fin[48], 49];
+  s.kOf();
+}
+
 fn main() i32 {
   finalized = 0;
   neverAssignedMut();
@@ -221,6 +419,70 @@ fn main() i32 {
   finalized = 0;
   assignedIntoEnrichment();
   show("assigned-into-enrichment", finalized);
+
+  finalized = 0;
+  fieldOfParamHandedBack();
+  show("field-of-param-handed-back", finalized);
+
+  finalized = 0;
+  fieldOfLocalHandedBack();
+  show("field-of-local-handed-back", finalized);
+
+  finalized = 0;
+  fieldReturned();
+  show("field-returned", finalized);
+
+  finalized = 0;
+  nestedFieldHandedBack();
+  show("nested-field-handed-back", finalized);
+
+  finalized = 0;
+  fieldHandedBackInTuple();
+  show("field-handed-back-in-tuple", finalized);
+
+  finalized = 0;
+  copiedFieldHandedBack();
+  show("copied-field-handed-back", finalized);
+
+  finalized = 0;
+  methodSelfOwnFinal();
+  show("method-self-own-final", finalized);
+
+  finalized = 0;
+  methodSelfPassedOn();
+  show("method-self-passed-on", finalized);
+
+  finalized = 0;
+  methodOwnTypeLocal();
+  show("method-own-type-local", finalized);
+
+  finalized = 0;
+  methodSelfFieldFinal();
+  show("method-self-field-final", finalized);
+
+  finalized = 0;
+  methodSelfFieldPassedOn();
+  show("method-self-field-passed-on", finalized);
+
+  finalized = 0;
+  methodSelfFieldHandedBack();
+  show("method-self-field-handed-back", finalized);
+
+  finalized = 0;
+  methodSelfFieldToLocal();
+  show("method-self-field-to-local", finalized);
+
+  finalized = 0;
+  genericMethodSelf();
+  show("generic-method-self", finalized);
+
+  finalized = 0;
+  genericMethodSelfFieldHandedBack();
+  show("generic-method-self-field-handed-back", finalized);
+
+  finalized = 0;
+  variantMethodSelf();
+  show("variant-method-self", finalized);
 
   0i32;
 }

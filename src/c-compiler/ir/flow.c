@@ -10,32 +10,61 @@
 #include <assert.h>
 #include <memory.h>
 
-// Deactivate source of a moved value (or say move is illegal)
-void flowHandleMove(INode *node) {
+// Is this expression a borrowed reference -- one that does not own what it
+// points at? Its permission does not matter: a '&uni' is the only path to its
+// value while it lives, but the value still belongs to the place it borrows.
+static int flowIsBorrowedRef(INode *exp) {
+    RefNode *reftype = (RefNode *)iexpGetTypeDcl(exp);
+    return (reftype->tag == RefTag || reftype->tag == ArrayRefTag || reftype->tag == VirtRefTag)
+        && itypeGetTypeDcl(reftype->region) == borrowRef;
+}
+
+// Walk inwards from a moved value to its source: refuse a move out of a place
+// that does not own the value, and, when 'deactivate' is set, mark the source
+// variable moved. A value reached through a borrowed reference still belongs to
+// what was borrowed, so moving it out would leave two owners of one value.
+static void flowMoveSource(INode *node, int deactivate) {
     // For a variable, mark its value as moved
     if (isNameUseNode(node) && isExpNode(node)) {
         VarDclNode *vardclnode = (VarDclNode *)((NameUseNode*)node)->dclnode;
-        vardclnode->flowtempflags |= VarMoved;
+        if (deactivate)
+            vardclnode->flowtempflags |= VarMoved;
         if (vardclnode->scope == 0) {
             errorMsgNode(node, ErrorInvType, "May not move a value out of a global variable.");
         }
         return;
     }
     switch (node->tag) {
-    // Go inwards to find the variable to mark it as moved
+    // Go inwards to find the variable to mark it as moved. A field or element
+    // read straight through a reference -- a slice or a virtual reference, which
+    // take no injected dereference -- is read through that reference.
     case FldAccessTag:
-    case ArrIndexTag: 
-        flowHandleMove(((FnCallNode*)node)->objfn);
+    case ArrIndexTag:
+    {
+        INode *objfn = ((FnCallNode*)node)->objfn;
+        if (flowIsBorrowedRef(objfn)) {
+            errorMsgNode(node, ErrorMoveOut, "May not move a value out through a borrowed reference, which does not own it.");
+            return;
+        }
+        flowMoveSource(objfn, deactivate);
         break;
+    }
     case DerefTag:
-        flowHandleMove(((StarNode*)node)->vtexp);
+    {
+        INode *ref = ((StarNode*)node)->vtexp;
+        if (flowIsBorrowedRef(ref)) {
+            errorMsgNode(node, ErrorMoveOut, "May not move a value out through a borrowed reference, which does not own it.");
+            return;
+        }
+        flowMoveSource(ref, deactivate);
         break;
+    }
 
     // A recast is its operand under another type name -- an enrichment and its
     // base, which share one representation -- so moving it moves the operand
     case CastTag:
         if (!(node->flags & FlagConvert))
-            flowHandleMove(((CastNode*)node)->exp);
+            flowMoveSource(((CastNode*)node)->exp, deactivate);
         break;
 
     // A tuple literal has no storage of its own: its sources are its elements,
@@ -46,7 +75,39 @@ void flowHandleMove(INode *node) {
         uint32_t cnt;
         for (nodesFor(((TupleNode*)node)->elems, cnt, nodesp)) {
             if (iexpIsMove(*nodesp))
-                flowHandleMove(*nodesp);
+                flowMoveSource(*nodesp, deactivate);
+        }
+        break;
+    }
+
+    // A block's value is what it hands back: its final expression and the value
+    // of each break that leaves it. A 'return' leaves the function, not the block,
+    // and blockFlow checks it there. Where each value came from is checked, but
+    // no source is deactivated: that stays as it was before this walk reached in.
+    case BlockTag:
+    {
+        BlockNode *blk = (BlockNode *)node;
+        INode **nodesp;
+        uint32_t cnt;
+        INode *last = blk->stmts->used > 0 ? nodesLast(blk->stmts) : NULL;
+        if (last != NULL && last->tag == BlockRetTag)
+            flowResultMove(((BreakRetNode *)last)->exp);
+        if (blk->breaks) {
+            for (nodesFor(blk->breaks, cnt, nodesp)) {
+                if ((*nodesp)->tag == BreakTag)
+                    flowResultMove(((BreakRetNode *)*nodesp)->exp);
+            }
+        }
+        break;
+    }
+    // An 'if' is the value of whichever branch block runs
+    case IfTag:
+    {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((IfNode *)node)->condblk, cnt, nodesp)) {
+            nodesp++; cnt--;
+            flowMoveSource(*nodesp, 0);
         }
         break;
     }
@@ -55,6 +116,20 @@ void flowHandleMove(INode *node) {
     default:
         break;
     }
+}
+
+// Deactivate source of a moved value (or say move is illegal)
+void flowHandleMove(INode *node) {
+    flowMoveSource(node, 1);
+}
+
+// Refuse a move-typed value a scope hands back -- a return's or a block's
+// result -- when its source does not own it. The source is not deactivated
+// here: a local handed back is exempted from the scope's release by
+// flowScopeDealias instead.
+void flowResultMove(INode *node) {
+    if (iexpIsMove(node))
+        flowMoveSource(node, 0);
 }
 
 // Is this type a counted (rc) reference? An owning slice (ArrayRefTag) is
@@ -306,6 +381,23 @@ size_t flowScopePush() {
     return gVarFlowStackPos;
 }
 
+// Is this variable where a part handed back is taken from? The same walk
+// inwards, through fields, elements and owning dereferences, that
+// flowMoveSource takes to the variable it deactivates.
+static int flowIsScopeResultOwner(INode *exp, VarDclNode *varnode) {
+    switch (exp->tag) {
+    case FldAccessTag:
+    case ArrIndexTag:
+        return flowIsScopeResultOwner(((FnCallNode *)exp)->objfn, varnode);
+    case DerefTag:
+        return flowIsScopeResultOwner(((StarNode *)exp)->vtexp, varnode);
+    case CastTag:
+        return !(exp->flags & FlagConvert) && flowIsScopeResultOwner(((CastNode *)exp)->exp, varnode);
+    default:
+        return isNameUseNode(exp) && isExpNode(exp) && ((NameUseNode *)exp)->dclnode == (INode *)varnode;
+    }
+}
+
 // Is this variable's value the one being handed to the caller, and therefore
 // not to be released as the scope ends?
 // 'retexp' is the value being returned, or NULL where nothing is: NULL means
@@ -330,6 +422,12 @@ static int flowIsScopeResult(INode *retexp, VarDclNode *varnode) {
     // A recast hands back its operand: a local returned as its enrichment or base
     if (retexp->tag == CastTag && !(retexp->flags & FlagConvert))
         return flowIsScopeResult(((CastNode *)retexp)->exp, varnode);
+    // A move-typed part handed back moves out of the variable that holds it,
+    // which as for any move out of a part no longer owns the whole: releasing
+    // it would finalize the part a second time, in the caller. A copied part
+    // leaves the variable owning everything it held.
+    if ((retexp->tag == FldAccessTag || retexp->tag == ArrIndexTag) && iexpIsMove(retexp))
+        return flowIsScopeResultOwner(((FnCallNode *)retexp)->objfn, varnode);
     return isNameUseNode(retexp) && isExpNode(retexp) && ((NameUseNode *)retexp)->dclnode == (INode *)varnode;
 }
 

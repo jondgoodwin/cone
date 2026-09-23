@@ -137,6 +137,10 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *name);
 // value too large for the integer type it declared
 void structSetTagWidth(StructNode *node);
 
+// Type check an instance of a generic enum whose variants are already listed,
+// leaving its discriminant's width to the caller
+void structTypeCheckEnumInstance(TypeCheckState *pstate, StructNode *instance);
+
 // Populate the vtable for this struct
 void structMakeVtable(StructNode *node);
 

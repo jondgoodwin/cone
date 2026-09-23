@@ -409,6 +409,9 @@ void blockFlow(FlowState *fstate, BlockNode **blknode) {
         INode *result = *retexp;
         if (result != unknownType) {
             flowLoadValue(fstate, retexp);
+            // A returned value is moved to the caller, so it must be one this
+            // function may move: not a value it reached through a borrow
+            flowResultMove(*retexp);
         }
         flowScopeDealias(0, &((BreakRetNode *)*nodesp)->dealias, result, *nodesp);
         break;

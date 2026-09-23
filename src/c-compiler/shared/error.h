@@ -191,7 +191,7 @@ enum ErrorCode {
     // 'extends': enriching a concrete type with methods
     ErrorExtendsBase = 1101,    // What an 'extends' names cannot serve as a concrete base
     ErrorExtendsField = 1102,   // A field declared by a type that extends a concrete base, which may add none
-    ErrorExtendsOverride = 1103,// A name of the base redeclared by the enriching type or enum extension, which may not override
+    ErrorExtendsOverride = 1103,// A name of the base redeclared by the enriching type, enum extension or module, which may not override
 
     // A type body's 'use': folding a sibling enrichment's methods in
     ErrorUseSibling = 1104,     // A type-body 'use' naming what is not a sibling of this type, or a member that does not fold from one
@@ -223,8 +223,8 @@ enum ErrorCode {
     // A pattern's bare variant, looked up in the matched value's enum
     ErrorPatArgs = 1115,        // A pattern's variant found only in the matched value's enum, written with type arguments that value supplies
 
-    // One import of a module per module: an identical repeat is ignored
-    ErrorDupImport = 1116,      // A second import of one module that differs from the first: in what its 'use' clause folds, or in its 'pub'
+    // One import of a module per module: a second is refused, identical or not [Jon 23 Sep]
+    ErrorDupImport = 1116,      // A second import of one module: the same import again, or one that differs in what its 'use' clause folds or in its 'pub'
 
     // A match's patterns: 'is', comparison and range patterns joined by 'or'
     ErrorPatBare = 1117,        // A value alone where a match expects a pattern, after an 'or': whether a bare value means '==' is not decided
@@ -234,6 +234,12 @@ enum ErrorCode {
 
     // Attributes, which are keywords: '@move', '@opaque', '@unsized'
     ErrorUnkAttr = 1119,        // A '@' word that names no attribute
+
+    // Moves: what a move-typed value may be moved out of
+    ErrorMoveOut = 1120,        // A move-typed value moved out through a borrowed reference, which does not own it
+
+    // 'mod A extends B': a module reusing another module's public names
+    ErrorModExtends = 1122,     // What a module's 'extends' names cannot be reused: not a module, a trait (conforming to a module trait is not built), the module itself or one it contains, a path, or a cycle of extends
 
     // Warnings
     WarnCode = 3000,

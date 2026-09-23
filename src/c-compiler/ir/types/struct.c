@@ -840,6 +840,12 @@ static void structEnrichFromBase(StructNode *node, StructNode *base, int hook) {
 
     structEnrichLifecycle(node, base, hook);
 
+    // What the base's '@move' and '@opaque' say is said of the one representation,
+    // so a value moves, or may not be held, under either name. What its fields and
+    // its 'final' imply is inferred again from the copies above; the attributes
+    // are only on the base's flags.
+    node->flags |= base->flags & (MoveType | OpaqueType | DeclaredOpaque);
+
     node->extendsdcl = (INode*)base;
 }
 
@@ -2290,10 +2296,11 @@ void structSetDropFn(StructNode *node) {
 // therefore refused where it was added -- which is the same question a declared
 // integer type asks, so it wears the same code.
 //
-// An instance of a generic enum is type checked before it has any variants:
-// genericMemoize instantiates the enum, then each variant, and only then fills in
-// the instance's 'derived'. Asked from that type check it finds nothing to
-// measure, so genericMemoize asks again once the list is whole.
+// An instance of a generic enum is not measured from its own type check, but by
+// genericMemoize once the instance and its variants are all checked, and only for
+// the generic's first instance: every instance shares the template's
+// discriminant node and tag values, so measuring each would report a declared
+// integer type's overflow once per instance (structTypeCheckEnumInstance).
 void structSetTagWidth(StructNode *node) {
     if (node->derived == NULL || !(node->flags & HasTagField))
         return;
@@ -2328,6 +2335,21 @@ void structSetTagWidth(StructNode *node) {
         else if (tagnode->bytes < needed)
             tagnode->bytes = needed;
     }
+}
+
+// The instance of a generic enum being type checked by
+// structTypeCheckEnumInstance, whose discriminant genericMemoize measures itself
+static StructNode *structTagWidthDeferred = NULL;
+
+// Type check an instance of a generic enum, whose 'derived' already lists its
+// variants, leaving its discriminant's width to genericMemoize (structSetTagWidth).
+// Saved and restored, as the check may instantiate another generic enum.
+void structTypeCheckEnumInstance(TypeCheckState *pstate, StructNode *instance) {
+    StructNode *saved = structTagWidthDeferred;
+    structTagWidthDeferred = instance;
+    INode *node = (INode*)instance;
+    inodeTypeCheckAny(pstate, &node);
+    structTagWidthDeferred = saved;
 }
 
 // Type check a struct type
@@ -2541,7 +2563,8 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
                 errorMsgNode(*nodesp, ErrorInvType, "The discriminant is anonymous: write '_ tag'");
         }
     }
-    structSetTagWidth(node);
+    if (node != structTagWidthDeferred)
+        structSetTagWidth(node);
 
     // The layout is settled, which is what an 'is' asserts about: the fields the
     // abstractions require are declared here, in order, at position 0
@@ -2590,8 +2613,16 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
         structKeepLifecycle(node);
     node->flags |= TypeChecked;
 
+    // Settle the drop fn before any method is checked, because each method's
+    // flow pass asks for it: a by-value 'self', or a local of this type, is
+    // finalized at the method's scope exit only if the type has one by then.
+    // The fields are checked, so each field's drop fn is known. A generated drop
+    // fn joins the nodelist already lowered, so the walk below stops short of it.
+    uint32_t methcnt = node->nodelist.used;
+    structSetDropFn(node);
+
     // Type check all methods, etc.
-    for (nodelistFor(&node->nodelist, cnt, nodesp)) {
+    for (nodesp = node->nodelist.nodes, cnt = methcnt; cnt; cnt--, nodesp++) {
         inodeTypeCheckAny(pstate, (INode**)nodesp);
     }
 
@@ -2608,7 +2639,6 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     }
 
     structCheckTraitReqs(node);
-    structSetDropFn(node);
 
     pstate->typenode = svtypenode;
 }
