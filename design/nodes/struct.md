@@ -579,7 +579,8 @@ receiver is data, found through the field's clause.
 
 **Expansion**, in field order once every trait's members are in place: the
 field must be `pub` (`ErrorNotPublic`), its type a struct that is not a trait
-(`ErrorBadFold`) and complete — not this type, not one still being resolved
+or an enum (`ErrorBadFold`, the enum tested first because it carries
+`TraitType` too) and complete — not this type, not one still being resolved
 (`ErrorCircular`). For `use *`, an alias is made for every public member of
 the source's namespace, its own copies and aliases included so a fold chains,
 less what `but` names (`ErrorNoMbr` for a name the source lacks) and less
