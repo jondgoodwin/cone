@@ -413,6 +413,47 @@ fn staticPerInstance() {
   show("generic-static-per-instance-second", (&mut c).pack());
 }
 
+// A reference or pointer to a type parameter, written inside the generic.
+// Name resolution decides whether '&T' is a reference type or a borrow by
+// asking whether T is a type, and in the template T is a generic parameter,
+// which is not one -- so the template holds a borrow, and every such field,
+// parameter and local used to fail its instance with "Expected a type". The
+// instance's clone decides again once T is the type argument. '&&T' is here
+// because the outer reference's operand is only a type once the inner one has
+// been decided; the explicit type arguments are because inference does not
+// look inside a reference type.
+struct Pointing[T] {
+  pub r &T;
+  pub p *T;
+  pub m &mut T;
+  pub s &[]T;
+  pub rr &&T;
+}
+
+fn refThrough[T](x &T) &T {
+  imm held &T = x;
+  held;
+}
+
+fn ptrThrough[T](x *T) T {
+  *x;
+}
+
+fn referenceToTypeParameter() {
+  mut v = 3i64;
+  mut w = 5i64;
+  imm arr = [7i64, 8i64];
+  imm rv = &v;
+  imm pt Pointing[i64] = Pointing[i64][&v, &v, &mut w, &arr, &rv];
+  *pt.m = 6i64;
+  show("ref-to-type-parameter-field", *pt.r);
+  show("mut-ref-to-type-parameter-field", w);
+  show("slice-of-type-parameter-field", pt.s[1]);
+  show("ref-to-ref-to-type-parameter-field", **pt.rr);
+  show("ptr-to-type-parameter-field", ptrThrough[i64](pt.p));
+  show("ref-to-type-parameter-in-signature", *refThrough[i64](&w));
+}
+
 fn main() i32 {
   inferredTypeArgument();
   explicitTypeArgument();
@@ -428,5 +469,6 @@ fn main() i32 {
   genericReturningGeneric();
   unnamedTypeArguments();
   staticPerInstance();
+  referenceToTypeParameter();
   0i32;
 }

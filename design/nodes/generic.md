@@ -127,6 +127,14 @@ Two consequences that define the phase boundary:
   done at clone time — **cloning substitutes for name resolution, using a name
   table whose hook stack is long gone.**
 
+That includes the type-or-value votes name resolution takes by asking
+`isTypeNode` of an operand. A use of a type parameter is not a type, so in the
+template `&T` and `*T` resolve as a borrow and a dereference; `cloneRefNode`
+and `cloneStarNode` take the vote again on the substituted operand. The tuple,
+array and `?` votes (`ttupleNameRes`, `arrayNameRes`, `allocateQuesNameRes`)
+are not re-taken yet, so `(T, T)`, `[2; T]` and `?T` inside a generic still
+fail.
+
 ### How a cloned name gets re-pointed — two independent mechanisms
 
 **Type parameters, through the global name table.** `clonePushState` hooks each

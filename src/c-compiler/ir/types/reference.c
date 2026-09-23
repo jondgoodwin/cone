@@ -39,6 +39,19 @@ INode *cloneRefNode(CloneState *cstate, RefNode *node) {
     newnode->region = cloneNode(cstate, node->region);
     newnode->perm = cloneNode(cstate, node->perm);
     newnode->vtexp = cloneNode(cstate, node->vtexp);
+    // refNameRes decided type or borrow by asking whether the operand is a type,
+    // and in a template '&T' asked that of a generic parameter, which is not
+    // one -- so the template holds a borrow. Cloning stands in for name
+    // resolution on an instance, and the operand is now the type argument, so
+    // decide again. An operand that was not a type and now is can only have
+    // come from substitution; the clone above has already re-decided an inner
+    // one, which is what carries '&&T' and '&*T'.
+    if (!isTypeNode(node->vtexp) && isTypeNode(newnode->vtexp)) {
+        if (newnode->tag == BorrowTag || newnode->tag == AllocateTag)
+            newnode->tag = RefTag;
+        else if (newnode->tag == ArrayBorrowTag || newnode->tag == ArrayAllocTag)
+            newnode->tag = ArrayRefTag;
+    }
     // A clone refers to something the original did not: cloning is how a trait's
     // method becomes an implementing type's and a generic's becomes an
     // instance's, and both repoint 'Self'. typeinfo is the normalized record for
