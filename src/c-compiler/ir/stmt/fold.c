@@ -303,6 +303,14 @@ void foldEnumUseExpand(NameResState *pstate, ModuleNode *mod, EnumUseNode *use) 
 
     // The enum is named as a type is, and a path is collapsed like any other
     inodeNameRes(pstate, &use->source);
+    // A path whose member did not resolve was reported where it is written, and
+    // is left uncollapsed: it is not a name of the wrong kind
+    if (use->source->tag == FnCallTag) {
+        FnCallNode *path = (FnCallNode*)use->source;
+        if (path->methfld && isNameUseNode(path->methfld)
+            && ((NameUseNode*)path->methfld)->dclnode == NULL)
+            return;
+    }
     if (!isNameUseNode(use->source)) {
         errorMsgNode(use->source, ErrorUseEnum,
             "A module's 'use' names an enum declaration. A generic enum's variants are folded in by naming the enum alone, as in 'use Option;'.");
