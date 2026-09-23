@@ -1,37 +1,43 @@
-// A re-export does not travel round a cycle of imports, and a name missing for
-// that reason alone is reported as that: ErrorCircular, naming the cycle, where
-// the name is written. A name missing for any other reason keeps the message it
-// always had. Nothing here says whether a cycle of imports is allowed: it is, and
-// a declaration still resolves round one.
+// What the fold passes round a cycle of imports do NOT make, and how each is
+// reported.
 //
-// Name-resolution stage. Every module's folds run before any body is resolved,
-// dependency-first, and a cycle stops at the module whose folds are running: of
-// two modules that import each other, the one whose folds start first is still
-// mid-fold when the other folds from it, so what it re-exports is not there yet.
-// The subfolders are drawn in sorted order and folded in that order, so alpha
-// starts before beta and kappa before lambda: beta and lambda are the two that
-// read round a cycle.
+// Name-resolution stage. A cycle of imports is legal, and a re-export travels
+// round one: the folds run pass after pass until a pass binds nothing new
+// (module-import-cycle). Until then nothing that might yet arrive is reported
+// missing, so a name that never arrives is reported once, by the pass after the
+// last, with the message it always had -- judged against the module once it is
+// complete. A collision is final as soon as it is met, and it too is reported
+// once, where a single pass would have met it.
 //
-// The folder holds:
-//   gamma/gamma.cone         the names re-exported: shared, more, Tone
-//   alpha/alpha.cone         imports beta, then re-exports gamma's shared and Tone
-//   beta/beta.cone           imports alpha and folds from it: alpha -> beta -> alpha
-//   kappa/kappa.cone         imports lambda, then re-exports gamma's more
-//   lambda/lambda.cone       a wildcard 'pub use' of kappa: kappa -> lambda -> kappa
+// The subfolders are drawn in sorted order and their folds start in that order:
+//   gamma/gamma.cone         shared, more, extra; in no cycle
+//   hush/hush.cone           hidden; in no cycle
+//   alpha/alpha.cone         imports beta, then re-exports gamma's shared
+//   beta/beta.cone           a listed clause of alpha naming a name alpha never has
+//   kappa/kappa.cone         imports lambda and nu, then re-exports more and extra
+//                            and folds hush's hidden privately
+//   lambda/lambda.cone       'pub use * but' of kappa: a late name and a name
+//                            kappa never has
+//   nu/nu.cone               a listed clause of kappa naming its private hidden
+//   delta/delta.cone         a shared of its own, a different declaration
+//   echo/echo.cone           imports fox and foxtail, then re-exports delta's shared
+//   fox/fox.cone             echo's wildcard, then gamma's shared: the collision
+//   foxtail/foxtail.cone     gamma's shared, then echo's wildcard: the collision
 //   quiet/quiet.cone         imports gamma and re-exports nothing, in no cycle
 //   solo/solo.cone           folds from quiet a name quiet has not got
 //   solitary/solitary.cone   a wildcard 'pub use' of quiet, and a bare use of that name
-//
-// Each ErrorCircular is followed by uncounted notes, at the imports round the
-// cycle and at the re-export whose fold had not yet run.
 
 fn reach() i64 {
-  // Every fold has run before any body resolves, so a path from outside the
-  // cycle reaches what alpha re-exported
+  // Every fold has settled before any body resolves, so a path from outside
+  // the cycle reaches what alpha re-exported ...
   alpha.shared();
 
-  // lambda's wildcard read kappa mid-fold, so lambda never held more to pass on
-  lambda.more();            //~ ErrorCircular:10 "more is re-exported by kappa, but lambda read kappa round a cycle of imports (kappa -> lambda -> kappa)"
+  // ... and what lambda's wildcard carried on, once kappa had it
+  lambda.more();
+
+  // lambda's 'but' left extra out, though kappa did not have it the first time
+  // lambda read it
+  lambda.extra();           //~ ErrorUnkName:10 "The name extra does not refer to a declared name"
 
   // The control: quiet never re-exported shared, and no cycle is involved
   solitary.shared();        //~ ErrorUnkName:12 "The name shared does not refer to a declared name"

@@ -163,14 +163,8 @@ static int fnCallNameResPath(NameResState *pstate, FnCallNode **nodep) {
         return 0;
     }
     if (member->dclnode == NULL) {
-        // Through a module, the name may be a re-export lost round a cycle of
-        // imports, and the report says so where it is
-        if (basedcl->tag == ModuleTag)
-            modNameMissing(pstate->mod, (ModuleNode*)basedcl, member->namesym, (INode*)member, ErrorUnkName,
-                "The name %s does not refer to a declared name", &member->namesym->namestr);
-        else
-            errorMsgNode((INode*)member, ErrorUnkName,
-                "The name %s does not refer to a declared name", &member->namesym->namestr);
+        errorMsgNode((INode*)member, ErrorUnkName,
+            "The name %s does not refer to a declared name", &member->namesym->namestr);
         return 0;
     }
     member->flags |= FlagQualified;

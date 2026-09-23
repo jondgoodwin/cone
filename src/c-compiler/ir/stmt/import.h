@@ -31,7 +31,6 @@ typedef struct ImportNode {
     INodeHdr;
     ModuleNode *module;
     FoldClause *fold;   // The names its 'use' clause folds in ('.*' is 'use *'), or NULL for none
-    Nodes *cycle;       // Set when the module's folds were still running as this import read it: the imports round that cycle, the module's own first and this one last
     uint16_t ispub;     // 'pub import': the module's own binding is public here
     uint16_t isextends; // The fold a module's 'extends' makes, rather than an import statement
 } ImportNode;
@@ -52,7 +51,9 @@ int importSame(ImportNode *a, ImportNode *b);
 // may qualify a name with it
 void importBindModule(ModuleNode *mod, ImportNode *node);
 
-// Fold the names this import admits into the importing module, as aliases
+// Fold the names this import admits into the importing module, as aliases, as
+// far as its module holds them in this fold pass (modFoldAll); in the pass that
+// reports, say what could not be folded
 void importNameRes(NameResState *pstate, ImportNode *mod);
 
 void importTypeCheck(TypeCheckState *pstate, ImportNode *mod);
