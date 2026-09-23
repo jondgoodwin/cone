@@ -356,6 +356,15 @@ char *itypeName(INode *type) {
 // unsized field, all carry OpaqueType, so each is asked before the plain
 // declared-opaque reading that would otherwise absorb it.
 static char *itypeNoSizeOwnCause(INode *dcltype, uint32_t depth) {
+    // A reference of any kind is one or two pointers wide whatever it points at,
+    // so it has a size from the moment it exists, even while its own check is in
+    // flight. That happens without any cycle: a typedef of '&Quad' written above
+    // Quad demands Quad from inside the reference, and a method of Quad taking
+    // the typedef reaches the same reference again before it finishes.
+    if (dcltype->tag == RefTag || dcltype->tag == VirtRefTag
+        || dcltype->tag == ArrayRefTag || dcltype->tag == PtrTag)
+        return NULL;
+
     // Still being laid out. Its own fields are what this walk is in the middle
     // of settling, so there is no size to give yet -- and no cycle check is
     // needed to say so, since a finished type would not be in this state.

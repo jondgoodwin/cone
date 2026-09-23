@@ -218,7 +218,7 @@ int fnSigViableCall(FnSigNode *to, INode **self, Nodes *args) {
         }
         // A virtual reference receiver is not type checked here, beyond requiring
         // that the candidate expects a reference it can be dispatched through
-        else if (((IExpNode*)*parmp)->vtype->tag != RefTag)
+        else if (iexpGetTypeDcl(*parmp)->tag != RefTag)
             return 0;
         ++parmp;
     }

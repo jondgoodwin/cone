@@ -1,0 +1,65 @@
+// A trait whose method takes a virtual reference to the trait itself.
+//
+// That is an ordinary shape -- a comparison against another value of the same
+// abstraction, a node that visits its children -- and it makes the vtable
+// recursive: the slot for 'gap' is a function taking '&<Meter', and '&<Meter'
+// is a fat pointer to the vtable being laid out. The compiler used to build
+// that vtable again from inside itself until the stack overflowed, as soon as
+// anything used the virtual reference.
+//
+// A run rather than a compile, because the claim is that the recursive slot
+// dispatches -- both through the receiver and through the argument it is
+// handed -- and which implementation each call reached is what the printed
+// numbers say.
+
+import stdio.*;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+trait Meter {
+  pub fn reading(self &) i32;
+  pub fn gap(self &, o &<Meter) i32;
+}
+
+// The two implementers read differently, so which one a slot dispatched to
+// shows in every number below
+struct Gauge {
+  pub level i32;
+
+  fn reading(self &) i32 {self.level;}
+  fn gap(self &, o &<Meter) i32 {self.level - o.reading();}
+}
+
+struct Dial {
+  pub turns i32;
+
+  fn reading(self &) i32 {self.turns * 10;}
+  fn gap(self &, o &<Meter) i32 {self.turns * 10 - o.reading() + 1000;}
+}
+
+fn readingOf(m &<Meter) i32 {
+  m.reading();
+}
+
+// The recursive slot, dispatched through a virtual reference and handed one
+fn gapOf(a &<Meter, b &<Meter) i32 {
+  a.gap(b);
+}
+
+fn main() i32 {
+  mut g = Gauge[70];
+  mut d = Dial[3];
+
+  show("self-trait-vref-reading-first-impl", readingOf(&g));
+  show("self-trait-vref-reading-other-impl", readingOf(&d));
+  show("recursive-slot-gauge-against-dial", gapOf(&g, &d));
+  show("recursive-slot-dial-against-gauge", gapOf(&d, &g));
+  show("recursive-slot-same-impl-both-sides", gapOf(&g, &g));
+
+  0i32;
+}

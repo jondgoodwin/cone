@@ -225,6 +225,17 @@ constant` per implementing struct, plus one internal list per trait, prewired in
 `derived` order for the enum-to-virtref coercion. `nameVtable`, `nameVtableImpl`
 and `nameVtableList` spell the three from the trait and implementing type nodes.
 
+**A vtable may contain itself**, through a slot whose method takes or returns a
+virtual reference to the same trait (`fn cmp(self &, o &<Self)`). So `genlVtable`
+creates the vtable struct and the fat-pointer struct as named types and stores
+both on the `Vtable` **before** it types any slot. A slot that names the trait's
+virtual reference then gets that stored type, whose vtable body is still empty
+and is filled in once every slot is typed, the same way a struct that points to
+itself is built. The same cycle runs through the symbol pass: declaring such a
+method types its signature, which builds the vtable, which asks for the symbol
+of every method in its slots. So `genlGloFnName` types the signature first and
+checks again whether the function has been declared before declaring it.
+
 **Which vtable a tag names is found two ways, and the tag values decide.** Where
 every variant's tag value is its position in `derived`, the tag indexes the list
 directly — one GEP and one load. A pinned value breaks that, since the list has one
