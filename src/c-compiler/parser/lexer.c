@@ -701,7 +701,16 @@ void lexNextTokenx() {
             lexScanTickedIdent(srcp);
             return;
 
-        case '.': lexReturnPuncTok(DotToken, 1);
+        // A range operator is two or three periods. Only a match's range
+        // pattern reads one today (refmatch.html); an integer literal already
+        // stops at '..', so '0..3' is a range and not a float.
+        case '.':
+            if (*(srcp + 1) == '.') {
+                if (*(srcp + 2) == '.')
+                    lexReturnPuncTok(EllipsisToken, 3);
+                lexReturnPuncTok(DotDotToken, 2);
+            }
+            lexReturnPuncTok(DotToken, 1);
         case ',': lexReturnPuncTok(CommaToken, 1);
         case '~': lexReturnPuncTok(TildeToken, 1);
 

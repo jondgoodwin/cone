@@ -52,6 +52,12 @@ INode *parseLifetime(ParseState *parse, int stmtflag);
 
 // parseexpr.c
 INode *parseSimpleExpr(ParseState *parse);
+// Parse an operand of a comparison: everything that binds tighter than one
+INode *parseOr(ParseState *parse);
+// Finish a simple expression whose first operand parseOr has already parsed
+INode *parseSimpleExprFrom(ParseState *parse, INode *lhnode);
+// The method a comparison token names ("==", "<", ...), or NULL
+char *parseCmpOp();
 INode *parseAnyExpr(ParseState *parse);
 // Parse a name use: one identifier
 INode *parseNameUse(ParseState *parse);
