@@ -74,8 +74,8 @@ prints, generates or folds the module into itself.
 **`nodes` and `namespace` are not the same set, and the difference is exactly
 where folding lives.** A folded name is added to `namespace` and never to
 `nodes`, so the receiving module can resolve it but does not own, print or
-generate it. That holds for all three folds a module has — a wildcard import's, a
-global's `use` clause, and a `use` of an enum. **A fold transits**, because `importNameRes` reads the
+generate it. That holds for all three folds a module has — an import's `use`
+clause, a global's, and a `use` of an enum. **A fold transits**, because `importNameRes` reads the
 source module's `namespace`: it carries across every *public* binding, whether
 the source declared that name or folded it in.
 
@@ -83,13 +83,24 @@ the source declared that name or folded it in.
 `ModuleTag` is a named node in `StmtGroup`: `isExpNode` is false,
 `newModuleNode` never sets `vtype`, and nothing reads it.
 
-**`ImportNode`** holds `module` — the `ModuleNode` it binds — and `fold`, the
-`FoldClause` that `.*` makes, or NULL where the import folds nothing. The clause
-records `star` and `ispub`, and nothing else yet: an import cannot carry a `use`
-clause, so there is still no selective name list, no rename and no exclusion.
-**`pub` before the statement sets `ispub` and makes the module's own binding
-public too** — one keyword for every binding the import creates, which is `pub`
-with the one meaning it has everywhere.
+**`ImportNode`** holds `module` — the `ModuleNode` it binds — `fold`, the
+`FoldClause` of its `use` clause, or NULL where the import folds nothing, and
+`ispub`, the visibility of the module's own binding. The clause is a global's
+exactly, parsed by `parseFoldClause`: `*`, `* but`, a list with `as`, a block, and
+`use pub`; `.*` after the module is `use *` spelled the older way, and writing it
+beside a clause is `ErrorBadFold`. **Two `pub`s, and they do not overlap:**
+`pub` before the statement sets the node's `ispub` and the clause's, so it makes
+every binding the import creates public — the module's own name and each fold —
+where `use pub` sets only the clause's. `pub import m use pub …` therefore says
+what `pub import m use …` says, and is accepted as the same import.
+
+**A module imports another once.** `parseImport` finds a prior import of the same
+module among the module's `imports`, whatever file of the module wrote it, and
+asks `importSame`: the same `ispub` on each binding, and the same clause — star or
+not, the same `but` names, or the same listed names under the same spellings, in
+any order. An identical repeat is dropped without binding anything; one that
+differs is `ErrorDupImport`, reported at the second and naming the file and line
+of the first.
 
 **`EnumUseNode`** (`ir/stmt/fold.h`) is a module's `use Colors;`: `source`, the
 enum as written — a name or a path, resolved only when the fold is expanded — and
@@ -368,8 +379,9 @@ declaration, and the linkage it gets, is
 [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols".
 
 `parseImport` accepts a period only when `*` follows it — anything else after it
-is `ErrorBadTerm`, since selective import is unbuilt — and then answers the name
-**in two places, the registry first**:
+is `ErrorBadTerm`, whose message names the `use` clause, since a selective import
+is spelled with one — and then answers the name **in two places, the registry
+first**:
 
 - **The registry.** Where the written name is a bare identifier and the importing
   module has a parent, `parseImportRegistry` looks the name up in the parent's
@@ -444,9 +456,11 @@ then reports a chain that comes back to itself and cuts it, so no later walk
 loops.
 
 `importNameRes` does nothing unless the import carries a fold clause. When it
-does, `foldStarItems` makes an item per public name of the source module's
-**`namespace`**, and `importFoldItem` binds each one as an `AliasDclNode` in the
-importing module's namespace. **Reading the namespace rather than `nodes` is what
+does, a star clause has `foldStarItems` make an item per public name of the source
+module's **`namespace`** that its `but` does not leave out, a list or a block
+arrives with its items already parsed, and `importFoldItem` binds each one as an
+`AliasDclNode` in the importing module's namespace, under the item's local
+spelling. **Reading the namespace rather than `nodes` is what
 makes a fold transit**: a fold writes to the namespace, so walking the
 declarations was exactly what left a re-exported name behind.
 
@@ -457,25 +471,27 @@ a global, this one is reached through the same global, and the member is spelled
 as its type names it, so the lowering to `global.name` reads the same from any
 module.
 
-**A fold is private to the module that made it unless the import says `pub`.**
-That is the transit rule, and it is nothing but the visibility rule read on a
-binding: what a third module sees through this one is what this one re-exported.
-The import's binding of the *module's own name* carries the same bit, so
-`pub import wheels` is what lets a path walk `engine.wheels.turn`.
+**A fold is private to the module that made it unless the import says `pub`**,
+before the statement or as `use pub`. That is the transit rule, and it is nothing
+but the visibility rule read on a binding: what a third module sees through this
+one is what this one re-exported. A listed item is parsed as a member alias, so
+`importFoldItem` clears both bits it starts with before setting the import's.
+The import's binding of the *module's own name* is set by `pub import` alone, so
+`pub import wheels` is what lets a path walk `engine.wheels.turn`, and
+`import wheels use pub *` re-exports her names while `wheels` stays private here.
 
 Only a public binding of the source folds, asked through `inodeIsPrivate` — the
 declaration's `DclPrivate` bit where the source declared the name, the alias's own
 `FlagPub` where the source folded it. A private name of the source is
 `ErrorNotPublic` where a selective clause names it and is passed over by a star
-clause; the source module's own name is passed over, because the import bound it
-already. An overload name folds as one node, the `FnOverloadDclNode`, with its
-candidates riding inside it; a public name holds only public candidates
-(`ErrorPrivOverload`), so the fold carries nothing private.
-
-A different local spelling is still not expressible, because an import cannot
-carry a `use` clause: the binding record holds one, and the wiring that would let
-an import write one is what remains. See
-[Names and Namespaces](../phases/names-and-namespaces.md).
+clause; a name the source has not got, listed or after `but`, is `ErrorNoMbr`;
+the source module's own name is passed over by a star clause and is `ErrorBadFold`
+where a list names it, because the import bound it already. A folded name must be
+unique in the module, whatever brought the other one: `ErrorDupName`, reported at
+the listed item or, for a star clause, at its `use`. An overload name folds as one
+node, the `FnOverloadDclNode`, with its candidates riding inside it; a public name
+holds only public candidates (`ErrorPrivOverload`), so the fold carries nothing
+private.
 
 ## Type check
 
@@ -704,11 +720,11 @@ what its definitions say it is.
   nothing about a subfolder.
 - **A folded or imported name is private to the module that folded it**,
   whatever its visibility at the origin. `import B use c as d` binds both `B` and
-  `d` in A, and neither is reachable as `A.B` or `A.d`. `pub` opts in:
-  `import pub B use pub c as d` `[planned]` — **built for a global's clause,
-  `config Config use pub *`, and not yet for an import's.** A module's public
-  surface is therefore what it declares and deliberately re-exports, never what
-  it happens to depend on.
+  `d` in A, and neither is reachable as `A.B` or `A.d`. `pub` opts in, at either
+  of two grains: `import B use pub c as d` makes `d` public and leaves `B`
+  private, and `pub import B use c as d` makes both public. Both together say
+  what `pub import` says alone. A module's public surface is therefore what it
+  declares and deliberately re-exports, never what it happens to depend on.
 - **Folding never widens visibility beyond the origin** — only a pub name can
   be folded at all, so no chain of re-exports can escalate.
 - **`pub` has one meaning, on a declaration and on a binding alike: this entry
@@ -755,33 +771,38 @@ immediate parent's namespace and no ancestor's, which is the scoped reading,
 adopted provisionally. There is no nesting within a *file* — a `mod name { ... }`
 block is `ErrorUnbuiltKind` — no package, no manifest and no interface artifact;
 `mod trait` holds the spelling of a module's abstraction against the day there is
-something behind it; `import` takes a file path where the registry has no answer,
-folds only with `.*`, and cannot rename or exclude. A module that is one file is
+something behind it; `import` takes a file path where the registry has no answer, and
+folds with a `use` clause — selecting, renaming and excluding as a global's
+clause does — or with `.*`, which is `use *`. A module that is one file is
 still named after that file, and its declaration still renames it. Sections and
 COMDATs are not emitted per function. What does work is the multi-module
 *generation* path, exercised by `stdio` on every compile that prints, and folding
 into a single module namespace, which is what the accumulation rule above asks
 for.
 
-**`use` exists at one of its sites.** A module's **global** carries the clause
-whole — `*`, a list, `as`, `but`, a block form, and `use pub` — so the grammar
-and the binding record are built and proved; what is missing is `use` as a clause
-of `import` and standing alone against an imported module, which is the wiring
-rather than the design. See "Folding through a global" in
+**`use` is one clause at every module site.** A module's **global** and an
+**import** carry it whole — `*`, a list, `as`, `but`, a block form, and
+`use pub` — parsed by the one `parseFoldClause`, so a module's names are folded
+from another module the way a singleton's members are folded from its type. A
+module's `use` *statement* names an enum. See "Folding through a global" and
+"Include, import, and name folding" in
 [Names and Namespaces](../phases/names-and-namespaces.md).
+
+**A module imports another once.** An identical repeat is ignored; one that
+differs in its clause or its `pub` is `ErrorDupImport`, naming both.
 
 **Every binding has a visibility of its own, and an import's bindings are
 bindings.** A declaration has `DclPrivate`, written from the absence of `pub`
 when it joins its namespace and read by every check through `inodeIsPrivate`. A
 fold makes an `AliasDclNode`, whose `FlagPub` is its own: a global's from
-`use pub`, an import's from the `pub` before the statement, which reaches the
-module's own binding and every name the import folds alike. `fnCallNameResPath`
-enforces it from outside.
+`use pub`, an import's from `use pub` or from the `pub` before the statement —
+which alone also reaches the module's own binding. `fnCallNameResPath` enforces
+it from outside.
 
 **Transit falls out of that bit.** `importNameRes` reads the source module's
 `namespace`, so what it carries across is every public binding — declared there
 or folded there — and a fold is private to the module that made it unless the
-import said `pub`. What a third module sees through this one is what this one
+import said `pub` or `use pub`. What a third module sees through this one is what this one
 re-exported.
 
 **And it no longer depends on load order.** Every module's folds run before any
@@ -807,8 +828,8 @@ packages will be common.
 
 Four answers are available, and none is chosen:
 
-- **Fold at import.** `import bigint.BigInt`, then write `BigInt`. Needs
-  nothing beyond selective folding, and is what Rust does with `use`.
+- **Fold at import.** `import bigint use BigInt`, then write `BigInt`. The
+  clause is built, and this is what Rust does with `use`.
 - **Name the top-level module independently of the package's distribution
   name**, so what you install and what you path through need not match.
 - **Convention.** Name the package for the domain and the type for the thing, so

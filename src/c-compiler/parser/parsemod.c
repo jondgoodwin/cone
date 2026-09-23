@@ -283,11 +283,29 @@ static ModuleNode *parseImportRegistry(ParseState *parse, Name *modname) {
     return (ModuleNode*)found;
 }
 
+// The import of this module that this module already holds, or NULL
+static ImportNode *parseImportPrior(ModuleNode *mod, ModuleNode *imported) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(mod->imports, cnt, nodesp)) {
+        if (((ImportNode*)*nodesp)->module == imported)
+            return (ImportNode*)*nodesp;
+    }
+    return NULL;
+}
+
 // Parse import statement. 'pubflag' re-exports what the import binds: the
-// module's name here, and every name it folds in
+// module's name here, and every name it folds in.
+//
+// What follows the module is a 'use' clause, the one a global carries: '*', a
+// list with 'as', a block, '* but', and 'use pub'. '.*' is 'use *' spelled the
+// older way. The two 'pub's cannot disagree because they do not overlap: 'pub
+// import' reaches every binding, and 'use pub' only the folds, so both together
+// say what 'pub import' says alone.
 ImportNode *parseImport(ParseState *parse, uint16_t pubflag) {
     // Create import node
     ImportNode *importnode = newImportNode();
+    importnode->ispub = pubflag ? 1 : 0;
     lexNextToken();
 
     // Parse name of imported module. A bare identifier may name a neighbour in
@@ -302,12 +320,25 @@ ImportNode *parseImport(ParseState *parse, uint16_t pubflag) {
         if (lexIsToken(StarToken)) {
             importnode->fold = newFoldClause();
             importnode->fold->star = 1;
-            importnode->fold->ispub = pubflag ? 1 : 0;
             lexNextToken();
         }
-        else
-            errorMsgLex(ErrorBadTerm, "Expected '*' after '.': selective import is not supported yet.");
+        else {
+            errorMsgLex(ErrorBadTerm, "Expected '*' after '.': a selective import is written with a 'use' clause, as in 'import mod use a, b as c'.");
+            // The name meant is passed over, so the statement still ends where it was written
+            if (lexIsToken(IdentToken))
+                lexNextToken();
+        }
     }
+    if (lexIsToken(UseToken)) {
+        if (importnode->fold) {
+            errorMsgLex(ErrorBadFold, "'.*' already folds every public name of the module. Write the 'use' clause instead of it, not beside it.");
+            parseFoldClause(parse, 1);
+        }
+        else
+            importnode->fold = parseFoldClause(parse, 1);
+    }
+    if (importnode->fold && pubflag)
+        importnode->fold->ispub = 1;
     parseEndOfStatement();
 
     Name *filesym = nametblFind(modstr, strlen(modstr));
@@ -375,11 +406,25 @@ ImportNode *parseImport(ParseState *parse, uint16_t pubflag) {
         }
     }
 
+    // ONE IMPORT OF A MODULE PER MODULE. An identical repeat says nothing new,
+    // so it is dropped, binding nothing a second time. One that differs would
+    // leave the module's name and its folds meaning two things, so it is
+    // refused, naming where the first one is.
+    importnode->module = newmod;
+    ImportNode *prior = parseImportPrior(parse->mod, newmod);
+    if (prior != NULL) {
+        if (importSame(prior, importnode))
+            return NULL;
+        errorMsgNode((INode*)importnode, ErrorDupImport,
+            "Module %s is imported already, differently, at %s:%u. A module imports another once: write what both say in one import.",
+            &newmod->namesym->namestr, prior->lexer->url, prior->linenbr);
+        return NULL;
+    }
+
     // Bind the module's name here, as an alias carrying this import's own
     // visibility. The name is the one the module declares for itself -- its
     // folder's, or its file's until a folder names it
-    importnode->module = newmod;
-    importBindModule(parse->mod, importnode, pubflag);
+    importBindModule(parse->mod, importnode);
 
     return importnode;
 }

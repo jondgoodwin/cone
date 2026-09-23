@@ -13,9 +13,8 @@
 
     <div class="text">
 
-	<p style="margin-left: 40px;"><i>Name folding for import is unfinished:
-		only <span class="pre">.*</span> is built, so an import cannot yet name
-		a few members, rename one with <span class="pre">as</span>, or leave one out.
+	<p style="margin-left: 40px;"><i>An <span class="pre">import</span> folds names in with
+		a <span class="pre">use</span> clause, as described below.
 		An <span class="pre">import</span> is intended to follow a
 		<a href="refmodule.html#dcl"><span class="pre">mod</span></a> declaration,
 		and only directly follow one, so that every dependency a module has is
@@ -95,6 +94,12 @@ import opengl
 	<p>More than one module may import the same module.
 		The imported module will only be loaded once.
 		Its information is then reused by all modules that imported it.</p>
+	<p>A module imports another module once. Writing the same
+		<span class="pre">import</span> a second time does nothing. A second
+		<span class="pre">import</span> of the same module that says something
+		different — it folds in other names, spells one differently, or is
+		<span class="pre">pub</span> where the first is not — is an error, which names
+		both. Say everything in the one <span class="pre">import</span>.</p>
 	<p>A module's own <a href="refmodule.html#submodule">submodule</a> is not
 		imported, and importing one is an error: the subfolder that holds it is
 		what brings it in, so its name is already there to be written.</p>
@@ -131,15 +136,24 @@ pub fn drive(n i64) i64 {
 		that wrote it. A module importing <i>that</i> module sees only what it
 		passed on, which it does by writing <span class="pre">pub</span>:</p>
 <pre>
-pub import wheels;        // 'wheels' is a public name here, so 'engine.wheels.turn' resolves
-pub import rims.*;        // and so is every name folded in from rims
-import bolts.*;           // while these are this module's own business
+pub import wheels;          // 'wheels' is a public name here, so 'engine.wheels.turn' resolves
+pub import rims use *;      // and so is 'rims', and every name folded in from it
+import tyres use pub *;     // every name folded in from tyres is public, and 'tyres' is not
+import bolts use *;         // while these are this module's own business
 </pre>
-	<p><span class="pre">pub</span> reaches every name the import binds: the
-		module's own name, and each name it folds in. It says what it says
-		everywhere else — this name is visible outside the module that holds
-		it — and it never makes public something that was not public where it
-		was declared.</p>
+	<p><span class="pre">pub</span> before <span class="pre">import</span> reaches every
+		name the import binds: the module's own name, and each name it folds in.
+		<span class="pre">use pub</span> reaches only the names the
+		<span class="pre">use</span> clause folds in, so a module can pass on a
+		library's names without passing on the library. Writing both is allowed and
+		means what <span class="pre">pub import</span> means alone.
+		<span class="pre">pub</span> says what it says everywhere else — this name is
+		visible outside the module that holds it — and it never makes public
+		something that was not public where it was declared.</p>
+	<p>A name made public this way travels on: a module that imports
+		<span class="pre">engine</span> with <span class="pre">use *</span> receives
+		what <span class="pre">engine</span> passed on, and nothing that it kept for
+		itself.</p>
 
 	<h3>Module-qualified names</h3>
 	<p>Unlike <span class="pre">include</span>,
@@ -168,38 +182,58 @@ fn setColor(col Color):
 		is not accessible to any other module.</p>
 
 
-	<h3>Namespace folding</h3>
+	<h3 id="folding">Namespace folding</h3>
 	<p>By default, an imported module does not pollute the namespace of the module importing it.
 		This is often what you want. However, it can become tedious to read (and type)
 		module-qualified names when they are used a lot by the importing module's code.
-		To address this, the <span class="pre">import</span> command provides several ways to fold
-		some or all of its names into the importing module.
+		To address this, an <span class="pre">import</span> may end with a
+		<span class="pre">use</span> clause, which folds
+		some or all of the module's public names into the importing module.
+		It is the same clause a <a href="refinherit.html#globals">global variable</a> carries,
+		with the imported module in the place of the variable's type.
 		The names being folded can be for anything: type, function, global variable, macro, etc.
 		However, names folded in may not collide with any name the importing module already uses.</p>
-	<p>To fold in just a few specific names, list them on the
-		<span class="pre">import</span> command, separated by commas:</p>
+	<p>To fold in just a few specific names, list them after
+		<span class="pre">use</span>, separated by commas:</p>
 <pre>
-import math3d.Point3, Mat3;
+import math3d use Point3, Mat3;
 
 fn move(pos &amp;Point3, delta Point3) {
   pos += delta;
 }
 </pre>
-	<p>Use <span class="pre">as</span> to provide an alias for a name that is already in use:</p>
+	<p>Use <span class="pre">as</span> to give a folded name another spelling here,
+		for instance when its own is already in use:</p>
 <pre>
-import math3d.Point3 as Point;
+import math3d use Point3 as Point;
 
 fn move(pos &amp;Point, delta Point) {
   pos += delta;
 }
 </pre>
-	<p>Or one can fold in all public names from the package using <span class="pre">*</span>:</p>
+	<p>A long list may be written as a block instead, which means the same thing:</p>
 <pre>
-import math3d.*;
-
-fn move(pos &amp;Point3, delta Point3):
-  pos += delta
+import math3d use {
+  Point3 as Point,
+  Mat3,
+  Quaternion,
+};
 </pre>
+	<p>Or one can fold in all public names from the module using <span class="pre">*</span>,
+		and leave some out with <span class="pre">but</span>:</p>
+<pre>
+import math3d use *;
+import opengl use * but Point3;   // math3d's Point3 is the one wanted here
+</pre>
+	<p><span class="pre">import math3d.*;</span> is another way to write
+		<span class="pre">import math3d use *;</span>.</p>
+	<p>A folded name is private to the importing module unless the import says
+		otherwise, as <a href="#reexport">Re-exporting</a> describes. A name the
+		module does not have, or does not make public, cannot be folded in, and it is
+		an error to list one. So is folding in a name the importing module already
+		has, whether it declared that name or folded it in from somewhere else:
+		rename one with <span class="pre">as</span>, or leave it out with
+		<span class="pre">but</span>.</p>
 
 <h2 id="extern">extern</h2>
 <p>Sometimes we want to make use of functions and global variables

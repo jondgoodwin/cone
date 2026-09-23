@@ -16,14 +16,106 @@ ImportNode *newImportNode() {
     newNode(node, ImportNode, ImportTag);
     node->module = NULL;
     node->fold = NULL;
+    node->ispub = 0;
     return node;
+}
+
+// Serialize a list of names a clause holds, 'but' ones or listed ones
+static void importPrintNames(Nodes *names, int listed) {
+    INode **nodesp;
+    uint32_t cnt;
+    int first = 1;
+    for (nodesFor(names, cnt, nodesp)) {
+        if (!first)
+            inodeFprint(", ");
+        first = 0;
+        if (!listed) {
+            inodeFprint("%s", &((NameUseNode*)*nodesp)->namesym->namestr);
+            continue;
+        }
+        AliasDclNode *alias = (AliasDclNode*)*nodesp;
+        Name *srcname = ((NameUseNode*)alias->target)->namesym;
+        inodeFprint("%s", &srcname->namestr);
+        if (alias->namesym != srcname)
+            inodeFprint(" as %s", &alias->namesym->namestr);
+    }
 }
 
 // Serialize a import node
 void importPrint(ImportNode *node) {
-    inodeFprint("import %s", node->module? &node->module->namesym->namestr : "stdio");
-    if (node->fold && node->fold->star)
-        inodeFprint(".*");
+    inodeFprint(node->ispub ? "pub import %s" : "import %s",
+        node->module? &node->module->namesym->namestr : "stdio");
+    FoldClause *fold = node->fold;
+    if (fold == NULL)
+        return;
+    // 'pub import' already made the folds public, so the clause has nothing to add
+    inodeFprint(fold->ispub && !node->ispub ? " use pub " : " use ");
+    if (fold->star) {
+        inodeFprint("*");
+        if (fold->excludes) {
+            inodeFprint(" but ");
+            importPrintNames(fold->excludes, 0);
+        }
+        return;
+    }
+    importPrintNames(fold->items, 1);
+}
+
+// Is every name of one list in the other? Listed items match on both spellings,
+// the source's and the local one; 'but' names on the one spelling they have.
+static int importNamesWithin(Nodes *names, Nodes *other, int listed) {
+    INode **nodesp, **othersp;
+    uint32_t cnt, othercnt;
+    for (nodesFor(names, cnt, nodesp)) {
+        int found = 0;
+        for (nodesFor(other, othercnt, othersp)) {
+            if (!listed)
+                found = ((NameUseNode*)*nodesp)->namesym == ((NameUseNode*)*othersp)->namesym;
+            else {
+                AliasDclNode *alias = (AliasDclNode*)*nodesp;
+                AliasDclNode *oalias = (AliasDclNode*)*othersp;
+                found = alias->namesym == oalias->namesym
+                    && ((NameUseNode*)alias->target)->namesym == ((NameUseNode*)oalias->target)->namesym;
+            }
+            if (found)
+                break;
+        }
+        if (!found)
+            return 0;
+    }
+    return 1;
+}
+
+// Do two lists of names hold the same names, in whatever order?
+static int importNamesSame(Nodes *a, Nodes *b, int listed) {
+    uint32_t acnt = a ? a->used : 0;
+    uint32_t bcnt = b ? b->used : 0;
+    if (acnt != bcnt)
+        return 0;
+    if (acnt == 0)
+        return 1;
+    return importNamesWithin(a, b, listed) && importNamesWithin(b, a, listed);
+}
+
+// Does this clause fold nothing at all? No clause, or an empty list
+static int importFoldsNothing(FoldClause *fold) {
+    return fold == NULL || (!fold->star && fold->items->used == 0);
+}
+
+// Do two imports of one module say the same thing? Asked at parse, before a star
+// clause's items are made, so a star clause is compared on its 'but' names.
+int importSame(ImportNode *a, ImportNode *b) {
+    if (a->module != b->module || a->ispub != b->ispub)
+        return 0;
+    FoldClause *afold = a->fold;
+    FoldClause *bfold = b->fold;
+    if (importFoldsNothing(afold) || importFoldsNothing(bfold))
+        return importFoldsNothing(afold) && importFoldsNothing(bfold);
+    if (afold->star != bfold->star || afold->ispub != bfold->ispub)
+        return 0;
+    if (afold->star)
+        return importNamesSame(afold->excludes, bfold->excludes, 0);
+    return importNamesSame(afold->items, bfold->items, 1);
 }
 
 // Bind the imported module's name in the importing module.
@@ -37,14 +129,18 @@ void importPrint(ImportNode *node) {
 // The binding is positioned at the import statement. It is built once the whole
 // statement has been parsed and the module loaded, so the lexer has moved on to
 // whatever follows, and a duplicate of the name would otherwise be reported there.
-void importBindModule(ModuleNode *mod, ImportNode *node, uint16_t pubflag) {
+//
+// Only 'pub import' reaches this binding. A clause's 'use pub' speaks for the
+// names the clause folds, and the module's own name is not one of them.
+void importBindModule(ModuleNode *mod, ImportNode *node) {
     ModuleNode *newmod = node->module;
     NameUseNode *target = newNameUseNode(newmod->namesym);
     inodeLexCopy((INode*)target, (INode*)node);
     target->dclnode = (INode*)newmod;
     AliasDclNode *alias = newNameAliasDclNode(newmod->namesym, (INode*)target);
     inodeLexCopy((INode*)alias, (INode*)node);
-    alias->flags |= pubflag;
+    if (node->ispub)
+        alias->flags |= FlagPub;
     modAddNamedNode(mod, newmod->namesym, (INode*)alias);
 }
 
@@ -93,15 +189,19 @@ static void importFoldItem(ModuleNode *mod, ModuleNode *src, FoldClause *fold, A
     }
     else
         target->dclnode = found;
-    // A fold is private to the module that made it unless the import says 'pub'.
-    // That is the transit rule, and it is nothing but the visibility rule: what a
-    // third module sees through this one is what this one re-exported
+    // A fold is private to the module that made it unless the import says 'pub',
+    // before the statement or in its clause. That is the transit rule, and it is
+    // nothing but the visibility rule: what a third module sees through this one
+    // is what this one re-exported. A listed item was parsed as a member alias,
+    // so neither of the bits it starts with is this binding's: it is reached
+    // with no receiver, and its visibility is the import's
+    alias->flags &= 0xffff - (FlagPub | FlagMethFld);
     if (fold->ispub)
         alias->flags |= FlagPub;
     INode *prior = namespaceAdd(&mod->namespace, alias->namesym, (INode*)alias);
     if (prior) {
         errorMsgNode((INode*)alias, ErrorDupName,
-            "%s is already a name of this module. A folded name must be unique.",
+            "%s is already a name of this module. A folded name must be unique: rename it with 'as', or leave it out with 'but'.",
             &alias->namesym->namestr);
         return;
     }

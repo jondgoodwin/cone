@@ -69,11 +69,11 @@ changing it.
 | C file | Name/namespace capability |
 | --- | --- |
 | `src/c-compiler/parser/parseexpr.c` | Parses a name as one identifier, and everything after a period as a member access — a path and a member of a value are the same production here. |
-| `src/c-compiler/parser/parsemod.c` | Parses module-level declarations, `include`, `import`, and wildcard folding; answers an import's name against the registry its parent is before the filesystem, loads/reuses modules by canonical path, draws the module tree, names each module, and establishes module hooks. |
-| `src/c-compiler/parser/parsetype.c` | Parses struct/trait/enum members and inserts fields, methods and an enum's variants into the type namespace; parses a module's `use` of an enum (`parseUseEnum`). |
+| `src/c-compiler/parser/parsemod.c` | Parses module-level declarations, `include`, and `import` with its `use` clause or `.*`; drops an identical repeat of an import and refuses a differing one; answers an import's name against the registry its parent is before the filesystem, loads/reuses modules by canonical path, draws the module tree, names each module, and establishes module hooks. |
+| `src/c-compiler/parser/parsetype.c` | Parses struct/trait/enum members and inserts fields, methods and an enum's variants into the type namespace; parses a module's `use` of an enum (`parseUseEnum`), and the fold clause a field, a global and an import carry (`parseFoldClause`). |
 | `src/c-compiler/ir/stmt/program.c` | Owns the program's module list and the file registry, and runs name resolution in two walks: every module's folds first, then every module's body. |
 | `src/c-compiler/ir/stmt/module.c` | Owns module namespaces, inserts global declarations with duplicate checks, switches active module hooks, puts a module's folded names in place dependency-first (`modFoldNames`) — its imports', its globals' and its `use` statements' — and walks module declarations. |
-| `src/c-compiler/ir/stmt/import.c` | Binds an imported module's name as an alias carrying the import's visibility, and folds the source module's public *namespace* into the importer, one alias per name. |
+| `src/c-compiler/ir/stmt/import.c` | Binds an imported module's name as an alias carrying the import's visibility, folds what the import's clause admits of the source module's public *namespace* into the importer, one alias per name under its local spelling, and says whether two imports of one module are the same (`importSame`). |
 | `src/c-compiler/shared/fileio.c` | Locates a source file by the designated-file convention, and gives a path its one canonical spelling so that the file registry keys it once. |
 
 ### Name uses, lexical scopes, and declarations
@@ -147,7 +147,7 @@ Current compiler behavior:
 - A module spans the files of a folder, and is named for the folder. Its **designated file** — the file named for the folder, `geometry/geometry.cone` — declares it with `mod geometry;` written as that file's first statement, and a name written there is checked against the folder's rather than replacing it. The folder's name is the module's identity: what an importer binds it under, what a path through it is written with, and what its symbols are spelled after. A file that is not its folder's designated file is a module of one file, named after the file, and its declaration still renames it — which is transitional.
 - **A module's own name is an entry in its own namespace**, so a module-level name that a local or a type member hides is reached as `modname.x`. That is the only way past a nearer binding into a module, because a path begins with the name of the namespace it walks.
 - `import` answers the name it is given **in two places, the registry first**. A bare identifier is looked up in the importing module's *parent's* namespace — the registry a module is for its children — and a module found there is bound with nothing located, read or registered: that is how a **sister** is reached. Otherwise the name is a path, and the module is loaded or reused, keyed on the file's **canonical** path, so a file is read once and belongs to one module whatever that module turns out to be called and however the path to it was spelled. An import naming a file of the importing module's own folder, or its own submodule, is `ErrorModFile`; one whose path reaches any other module inside a tree, and a bare name that is the importing module's own parent, are `ErrorModReach`.
-- **What an import binds is an `AliasDclNode` with a visibility of its own**: the module's name here, and every name a `.*` fold admits. `pub` before the statement re-exports all of them at once.
+- **What an import binds is an `AliasDclNode` with a visibility of its own**: the module's name here, and every name its `use` clause admits. `pub` before the statement re-exports all of them at once; `use pub` re-exports the folds alone.
 - A module's **global may carry a `use` clause**, folding members of its type in as names of the module: `config Config use *`. See "Folding through a global" below. No other variable may — a local, a parameter and a type's static are `ErrorBadFold` where the clause is written, because none of them is part of a namespace for a name to fold into.
 - A nested `mod name { ... }` block is admitted by the grammar and unbuilt: it needs a namespace of its own, a hook pushed and popped around its parse, and paths reaching through it. So is `mod trait`, a module's abstraction.
 - A folder creates a namespace exactly when it holds its designated file, and that holds at every level: a subfolder that holds one draws a **submodule**, with a namespace of its own; a subfolder that holds none groups a module's files without making a namespace of them, so its declarations are the enclosing module's and collide with them.
@@ -236,7 +236,7 @@ A declaration is private to the namespace that owns it unless it is written `pub
 
 - A name declared in a module is private to that module unless declared `pub`.
 - A type member is private to its type unless declared `pub`. A variant declared inside an enum is as visible as the enum, and may be declared `pub` itself.
-- `pub` has one meaning wherever it appears: this entry is visible from outside the namespace that owns it. A local declaration has no outside to be visible from, so `pub` on one is `ErrorBadPub`; so is `pub` before `import` or `include`, whose meaning as re-export belongs to the module work. `pub` before a module's `use` of an enum is `ErrorBadPub` too, naming the spelling the statement has for it, `use pub`.
+- `pub` has one meaning wherever it appears: this entry is visible from outside the namespace that owns it. A local declaration has no outside to be visible from, so `pub` on one is `ErrorBadPub`; so is `pub` before `include`, which binds no name of its own. `pub` before `import` is re-export: every binding the import makes is a public name here. `pub` before a module's `use` of an enum is `ErrorBadPub` too, naming the spelling the statement has for it, `use pub`.
 - A name's spelling says nothing about its visibility. A leading underscore is a character like any other.
 
 The compiler enforces this on the routes that can reach a private name: `fnCallNameResPath` reports `ErrorNotPublic` for a private declaration reached by a path from outside its module, `importNameRes` skips private nodes when folding, `fnCallLowerMethod` refuses a private member on a receiver that is not `self`, and `typeLitStructReorder` refuses a value for a private field outside the type's methods. The parser sets `FlagPub` on whatever declaration the keyword precedes; where a declaration joins its namespace (`dclInfoJoin`) the flag is read once into its `DclPrivate` bit, and every check after that asks `inodeIsPrivate`, which answers from the bit for a declaration that carries `DclInfo` and from the flag for a node that carries none — a field, a const, a macro, a typedef, an overload name. Generation reads the same bit — see "Symbols".
@@ -245,7 +245,7 @@ An overload name's visibility is its candidates': the first candidate declares i
 
 Visibility should belong to the original definition or declaration, while access is evaluated from the use site. A folded or renamed NameDef must not make a private definition public merely by changing its local spelling, and it does not: the alias an enrichment makes carries its target's visibility, which is what lets a private member of the base come across and stay out of the enrichment's clients' reach. Whether an alias may deliberately *narrow* visibility is still open, and nothing built asks it.
 
-**The other half of that is the binding having a visibility of its own to widen with.** A fold into a *module* is private to the module that made it unless it says `pub` — `use pub` on a global's clause and on a `use` of an enum, `pub import` on an import, which reaches the module's own binding and every name it folds alike — whatever the name's visibility where it was declared. One keyword, one meaning, on a binding as on a declaration. It never widens past the origin: only a public name folds at all. `fnCallNameResPath` is the route that reads it, since `inodeIsPrivate` answers from the alias's own `FlagPub`; a `pub` fold is reachable as `mod.name` and a plain one is not.
+**The other half of that is the binding having a visibility of its own to widen with.** A fold into a *module* is private to the module that made it unless it says `pub` — `use pub` on a global's clause, on a `use` of an enum and on an import's clause; or `pub import`, which reaches the module's own binding and every name the import folds alike — whatever the name's visibility where it was declared. The two spellings on an import do not overlap, so they cannot disagree: `import m use pub *` publishes the folds and leaves `m` private, `pub import m use *` publishes both, and `pub import m use pub *` says what `pub import` says alone. One keyword, one meaning, on a binding as on a declaration. It never widens past the origin: only a public name folds at all. `fnCallNameResPath` is the route that reads it, since `inodeIsPrivate` answers from the alias's own `FlagPub`; a `pub` fold is reachable as `mod.name` and a plain one is not.
 
 ## Include, import, and name folding
 
@@ -255,21 +255,26 @@ Plain `import math` binds the imported module under the name it declares for its
 
 **Where an `import` may be written is decided and not enforced.** An `import` follows a `mod`, and only directly after one, wherever a `mod` appears — so a file that declares no module has nowhere to spell an import and cannot create a dependency, and a module's whole inbound dependency list sits at its own declaration. It is a grammar in which the illegal thing cannot be written, not a rule with a diagnostic behind it. Today's grammar allows an `import` as any global statement, and a file that declares no module imports freely. What the folder sweep settles is where the rule would bite: a file the folder swept in has no module to declare and so nowhere to stand an import. What holds enforcement back is that every source in this repository, in the test suite and in the samples imports with no `mod` at all, so the grammar would refuse all of them for nothing. **There is no placement rule for `use`**: as a clause it is on a declaration, so it lives wherever that declaration lives, and each site already says where that is; as a statement it is in a type body or at module scope, where a module's folds do not depend on the order they were written in.
 
-Documented folding supports:
+**An import folds with a `use` clause**, the one a global carries, with the imported module as the source:
 
-- Selectively bringing a member into the importing namespace.
-- Renaming while folding, such as importing `math3d.Point3` as `Point`.
-- Folding all public names with `.*`.
-- Folding any category of name, subject to the importing namespace's single collision domain.
+- `import math3d use Point3 as Point, Vector3;` — selected names, each under its local spelling.
+- `import math3d use * but Matrix;` — every public name but some.
+- `import math3d use { Point3 as Point, Vector3 };` — a block, for a long list.
+- `import math3d use pub *;` — the folds re-exported: public names of this module, carried on by a wildcard import of it, while `math3d` itself stays private here.
+- `import math3d.*;` — `use *` spelled the older way. Writing `.*` beside a clause is `ErrorBadFold`.
 
-Current compiler behavior is narrower:
+Any category of name folds, subject to the importing namespace's single collision domain. What the clause may name and admit:
 
-- Plain module import and wildcard `.*` folding are parsed. An import cannot carry a `use` clause, so selective folding and `as` renaming are not expressible — the binding record holds a local spelling, and what is missing is the wiring that would let an import write one.
-- **Wildcard folding makes an `AliasDclNode` per name, in the receiving module's namespace**, whose target is the source's own binding and whose `FlagPub` is the import's.
+- **Only a public binding of the source folds**, whether the source declared it or folded it in with `pub`. A private one named in a list is `ErrorNotPublic`; a star clause passes it over.
+- A name the source has not got, listed or after `but`, is `ErrorNoMbr`. The source's own name is the one the import binds already, so a list naming it is `ErrorBadFold` and a star clause passes it over.
+- A folded name must be unique in the module, whatever brought the other one: a declaration, another import's fold, a global's, an enum's `use`. `ErrorDupName`, reported at the listed name, or at the `use` of a star clause; `as` or `but` settles it.
+- **Every name folds as an `AliasDclNode` in the receiving module's namespace**, whose target is the source's own binding and whose `FlagPub` is the import's.
 - **It reads the source module's *namespace*, not its declarations**, so a name the source itself folded in and re-exported travels on.
 - Imported modules are loaded once and reused, and a sister is not loaded at all.
 
-**Transit is not a rule of its own.** A fold is private to the module that made it unless the import says `pub`, which is the visibility rule; so what a third module sees through this one is what this one re-exported, and it is the same answer whatever order the files were loaded in. **Every module's folds run before any module's body is name resolved**, dependency-first, which is what removed the load order from the question — see [module](../nodes/module.md), "Name resolution".
+**A module imports another once.** An identical repeat — the same clause, its names in any order, with the same `pub` on each binding — says nothing new and is ignored. One that differs is `ErrorDupImport`, reported at the second and naming where the first is, since the module's name and its folds would otherwise mean two things.
+
+**Transit is not a rule of its own.** A fold is private to the module that made it unless the import says `pub` or `use pub`, which is the visibility rule; so what a third module sees through this one is what this one re-exported, and it is the same answer whatever order the files were loaded in. **Every module's folds run before any module's body is name resolved**, dependency-first, which is what removed the load order from the question — see [module](../nodes/module.md), "Name resolution".
 
 The intended NameDef behavior is:
 
@@ -293,7 +298,7 @@ A concrete type may be named as another's base, with `extends`, and everything i
 
 | Where the clause sits | What the receiver is | What the binding holds |
 | --- | --- | --- |
-| a **module** body — `import mod.*` | nothing; a module has one instance | an alias targeting the source's own binding, with the import's visibility |
+| a **module** body — `import mod use *` | nothing; a module has one instance | an alias targeting the source's own binding, under the clause's spelling, with the import's visibility |
 | a **module** body — `use Colors` | nothing; a variant is a type, reached through no value | an alias targeting the variant, with the statement's visibility |
 | a **type** body — `extends Meter` | the **whole**, which is already the right type | the base's declaration, under an alias; the base's fields as copies of its own |
 | a **type** body — `use Trig` | a **sibling of the whole**, which this type's values substitute for | the sibling's declaration, under an alias; nothing else |
@@ -316,7 +321,7 @@ A concrete type may be named as another's base, with `extends`, and everything i
 
 ### Folding through a global
 
-A module's global may carry the same `use` clause a field does, and it folds members of the global's type in as names of the module: `config Config use *` makes `Config`'s members names here, reached through `config`. The clause is the field's exactly — `*`, a list, `as`, `but`, and a block form for a long list — with one addition the other sites have no answer for, `use pub`.
+A module's global may carry the same `use` clause a field does, and it folds members of the global's type in as names of the module: `config Config use *` makes `Config`'s members names here, reached through `config`. The clause is the field's exactly — `*`, a list, `as`, `but`, and a block form for a long list — with one addition a field's and a sibling's have no answer for, `use pub`, which an import's clause shares.
 
 **It is the one-instance analogue of a field, and that is what makes it the cheap one.** A field's fold has to find the receiver at the call and shift it (`structFoldReceiver`), copy each folded field so the access path can be rebuilt, and emit a thunk where a folded method fills a vtable slot. A global has exactly one instance at an address known at compile time, so there is nothing to find: every entry is an **alias** carrying the global it is reached through, field and method alike, and a use of the name is **lowered to `global.name`** — `nameUseTypeCheck` for a member read, `fnCallTypeCheck` for a call, before it reads the callee. From that point the node is the path the author could have written by hand, so overload selection, the macro-method probe, borrowing, the receiver adjustments and generation see nothing new and learn nothing about folding. A chain works for the same reason: where the global's own type folded a field in, the member access resolves through that type's aliases and its receiver shift runs from the global.
 
@@ -331,7 +336,7 @@ What a clause may fold from and what it may admit:
 - A **static** does not fold, for the reason above; nor do `final` and `clone`, which belong to the type's own values' lifecycle.
 - A name the type has not got, listed or named after `but`, is `ErrorNoMbr`.
 
-**`use pub` is the binding's own visibility, and this is the site that asks for it.** A fold is private to the module that made it unless the clause says `pub`; the member is public in its type either way, and what `pub` decides is whether the *module* shows the name it gave it. A `pub` fold is reached from outside through the global, so the global must be public too — `ErrorNotPublic` otherwise, naming the global. At the other sites `pub` inside a clause is `ErrorBadPub`: a folded member of a field's type is as visible as the field it is reached through, and a sibling fold declares no name of its own.
+**`use pub` is the binding's own visibility, and this is the site that asks for it.** A fold is private to the module that made it unless the clause says `pub`; the member is public in its type either way, and what `pub` decides is whether the *module* shows the name it gave it. A `pub` fold is reached from outside through the global, so the global must be public too — `ErrorNotPublic` otherwise, naming the global. An import's clause has the same answer, since a module's fold is a module's binding like this one. At a type's sites `pub` inside a clause is `ErrorBadPub`: a folded member of a field's type is as visible as the field it is reached through, and a sibling fold declares no name of its own.
 
 **A `pub` fold is reachable as `mod.name`, and a wildcard import carries it on**, because `importNameRes` reads the source module's namespace, which is where a fold's bindings live. **Which module may see a fold does not depend on load order**: every module's folds run before any module's body is resolved. `module-nameres-fold-visibility` pins the first; `module-transit` against `module-nameres-transit` pins the second, from three positions in the load order.
 
@@ -362,7 +367,7 @@ It is made for:
 - a folded method, overload set or macro method of a field's type; every member but the fields of an `extends` base; and every member a sibling `use` admits — a static among them, which is the one case where an alias stands for something reached through the type rather than through a value, and where the `FlagMethFld` bit is therefore left off. The target is a member name use bound to the declaration.
 - **every name a global's `use` clause folds in**, field and method alike, with `through` naming the global. `FlagPub` is the clause's own, from `use pub`, rather than the target's.
 - **every variant a module's `use` of an enum folds in**, the target a name use bound to the variant. Neither flag the member aliases carry: `FlagPub` is the statement's own, from `use pub`, and there is no receiver.
-- **every binding an `import` makes** — the imported module's own name, and each name a `.*` fold admits. The target is the source module's own binding rather than the declaration at the end of the chain, so the origin is kept; `through` is copied from the source's binding where that one is reached through a global, so a re-exported global fold lowers the same way from any module. `FlagPub` is the import's, from `pub import`.
+- **every binding an `import` makes** — the imported module's own name, and each name its `use` clause admits, under the clause's spelling. The target is the source module's own binding rather than the declaration at the end of the chain, so the origin is kept; `through` is copied from the source's binding where that one is reached through a global, so a re-exported global fold lowers the same way from any module. `FlagPub` is the import's: on the module's own binding from `pub import`, on a fold from `pub import` or `use pub`.
 - **a `typedef`**, whose target is a type expression rather than a member name — the one alias with something of its own to name resolve and type check, which `FlagTypeAlias` says. A typedef therefore has no node kind of its own: it is the binding record, proved to generalise by carrying the construct that motivated the word "alias" in the first place. Its `pub` is the bit on the binding, as `pub` on any declaration is.
 
 **What making `typedef` an alias changed, visibly: an alias may now qualify what it names.** `Sample.make` walks `Reading`'s namespace where `typedef Sample Reading`, because a path's base is asked of the declaration at the end of the chain and an alias answers for its target. It used to be refused, since the collapse found a node that was neither a module nor a type and gave up.
@@ -371,7 +376,7 @@ It is made for:
 
 The aspirational model generalizes aliases: a new NameDef may denote anything nameable. Alias chains should preserve each local binding for diagnostics and visibility while semantic operations can reach the final IR value. A type-valued alias remains structural; creating a distinct nominal type should use a separate construct.
 
-Import folding is the alias above, and renaming on import is that alias with a local spelling the record already holds — what is missing is a `use` clause on `import` to write one in. Other aliases may bind expressions or declarations directly. The exact syntax and compile-time restrictions for general aliases remain open.
+Import folding is the alias above, and renaming on import is that alias with the local spelling an `as` in the import's `use` clause writes. Other aliases may bind expressions or declarations directly. The exact syntax and compile-time restrictions for general aliases remain open.
 
 `typedef` is the alias, so "current `typedef` creates a module-scoped structural alias" is now literally what the IR holds rather than a description of a separate node. What remains of the aspiration is the range of things a target may be, not the record.
 
@@ -850,8 +855,6 @@ would see little but `main`.
 	- A generic function may not declare an overload name; the parser reports that combination.
 	- Extending a type's overload sets from an extension, generic candidates, and merging matching `extern` declarations with implementations remain deferred.
 - Compile unit handling of duplicate, consistent type `extern` vs. value-specified names.
-- Selective import folding and `as` renaming are documented but unimplemented **for `import`**. The binding node they need exists, and a global's `use` clause is the second site to use it whole — selection, `as`, `but`, a block form and `pub` — so what `import` is missing is the wiring, not the grammar or the record.
-- **An import cannot rename or exclude, because it cannot carry a `use` clause.** The clause is built whole at a global, and the binding record holds a local spelling, so what is owed is the wiring — and with it the rule for two imports of one module.
 - **A re-export does not travel round a cycle of imports.** Where A and B import each other, one of the two folds before the other's own folds are in place, so a name it re-exported is not there. Declarations are unaffected: they are bound at parse.
 - Nested named modules are documented and unbuilt. The declaration syntax is settled — a `mod name { ... }` block where the singular `mod name;` header stands — and the block is refused where it is written; what it needs is a namespace of its own, hook push and pop around its parse, and qualified paths through it.
 - General aliases beyond `typedef` and the folded-member alias are not implemented: nothing yet names an expression or a declaration directly, and there is no spelling for one outside a fold clause and `typedef`.

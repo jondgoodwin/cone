@@ -222,6 +222,9 @@ enum ErrorCode {
     // A pattern's bare variant, looked up in the matched value's enum
     ErrorPatArgs = 1115,        // A pattern's variant found only in the matched value's enum, written with type arguments that value supplies
 
+    // One import of a module per module: an identical repeat is ignored
+    ErrorDupImport = 1116,      // A second import of one module that differs from the first: in what its 'use' clause folds, or in its 'pub'
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name
