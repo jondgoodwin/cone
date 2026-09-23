@@ -22,7 +22,10 @@ parse  ->  name resolution  ->  type check  ->  generation
 **Name resolution is one eager pass over the whole program**, with a global gate:
 if it reports anything, `conec.c` returns before type check begins. So type check
 never meets an unbound name and nothing has to reason about a partly-bound
-declaration.
+declaration. The exception is a pattern's bare root, whose meaning depends on the
+matched value's type: the `is` test and the conversion that hold it bind it
+first (`castPatternBind`, see [cast](../nodes/cast.md)), so nothing else meets it
+unbound either.
 
 It stays a source-order pass deliberately, with one use of demand. Binding a
 name needs the declaration to *exist*, not to be analyzed, and the parser

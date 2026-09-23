@@ -111,7 +111,12 @@ void ifExhaustCheck(IfNode *ifnode, CastNode *condition) {
         for (nodesFor(ifnode->condblk, cnt, nodesp)) {
             if ((*nodesp)->tag == IsTag) {
                 CastNode *isnode = (CastNode*)*nodesp;
-                if (ifSameScrutinee(isnode->exp, condition->exp) && itypeGetDerefTypeDcl(isnode->typ) == *varnodesp) {
+                // A later test not yet type checked may name a variant it has not
+                // been bound to yet. The check runs again as each test is checked,
+                // and the last one sees every pattern bound.
+                if (castPatternPending(isnode->typ))
+                    ;
+                else if (ifSameScrutinee(isnode->exp, condition->exp) && itypeGetDerefTypeDcl(isnode->typ) == *varnodesp) {
                     found = 1;
                     if (cnt < lowestcnt)
                         lowestcnt = cnt;

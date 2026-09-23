@@ -261,6 +261,15 @@ enum NodeTags {
 // use -- the blocks it belongs to are the declaration flags and FnCall's, and a
 // NameUseNode is neither.
 #define FlagQualified 0x0001        // NameUse: reached through a namespace, not written bare
+// A bare name at the root of a pattern -- 'Red' in 'case is Red', 'Circle' in
+// 'case imm c &Circle' -- is looked up in the enum of the value being matched
+// before it is looked up lexically, and that value's type is known only at type
+// check. So the parser marks the name (castPatternMark), name resolution leaves
+// it unbound rather than reporting it when nothing lexical answers, and
+// castPatternBind binds it at type check and clears the mark. 0x0400 because a
+// pattern's root is a type use, and each lower bit is a type flag that some check
+// reads off whatever type node it is holding; 0x0400 is read on a VarDcl only.
+#define FlagPattern   0x0400        // NameUse: a pattern's bare root name, bound against the matched value first
 
 // Flags used across all types
 #define MoveType           0x0001  // Type's values impose move semantics (vs. copy)

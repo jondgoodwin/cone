@@ -2,9 +2,10 @@
 struct; the tag and one flag tell them apart.
 
 **At a glance.** Built by `parseCast` from `as` and `into`, by `parseCmp` from
-`is`, and injected by `iexpCoerce` whenever a coercion needs a node. Name
-resolution walks both children. Type check decides whether the conversion is
-permitted at all. Generation emits the instruction — picking by **LLVM type
+`is`, by `parsefnflow.c` for patterns, and injected by `iexpCoerce` whenever a
+coercion needs a node. Name resolution walks both children. Type check binds a
+pattern's bare name against the matched value, then decides whether the
+conversion is permitted at all. Generation emits the instruction — picking by **LLVM type
 kind**, not by Cone tag.
 
 *Provenance: read from source.*
@@ -31,6 +32,12 @@ Five forms:
 check may clear it: a reference-to-reference conversion drops the flag on the
 spot, because it is a bitcast after all.
 
+**A bound pattern desugars to two of these sharing one `typ`**: `case imm c
+&Circle` is an `is` test and a conversion (`FlagMatchBind`) that initializes
+`c`. The variable itself declares no type and takes the conversion's, because a
+clone copies `typ` once per holder and a third copy would be left unbound (see
+"Type check").
+
 An injected cast over a **borrowed reference** is typed with a copy of the
 target reference type carrying the source borrow's scope, not with the declared
 type node itself, which is interned and shared and holds no lifetime. That is
@@ -45,6 +52,12 @@ prefix one. `is` is **a keyword**, not an operator symbol, and `parseCmp`
 handles it at comparison precedence. `parsefnflow.c` also builds `IsTag` nodes
 when desugaring `match` arms and bound patterns.
 
+**Every pattern's root name is marked** (`castPatternMark`, `FlagPattern`): the
+bare name, the referent's under `&` or `&<`, or the callee's where type arguments
+are written (`castPatternName` finds it). A path, `Shape.Circle`, has no root and
+is taken as written. The mark is what tells the later phases that the name is
+looked up in the matched value's enum first.
+
 **The same word declares nominal conformance**, in `parseStruct`: `struct Gauge is
 Meter` asserts of a type what `p is Mobile` asks of a value. The two cannot be
 confused. Here `is` is **infix** — `parseCmp` only looks for it once a left
@@ -55,9 +68,40 @@ nowhere an expression could be. See [struct](struct.md).
 
 ## Name resolution
 
-`castNameRes` walks `exp` and `typ`. Nothing else.
+`castNameRes` walks `exp` and `typ`, except a bound pattern's conversion
+(`FlagMatchBind`), which walks only `exp`: its `typ` is the `is` test's, already
+resolved there, and a second resolution is not idempotent — a reference whose
+referent is a value has become a borrow, which has no name resolution arm.
+
+A marked root with no lexical meaning is left unbound rather than reported
+(`nameUseNameRes`), and `refNameRes` keeps a reference over a marked root a
+reference type, whatever the name means for now.
 
 ## Type check
+
+### `castPatternBind`
+
+`castIsTypeCheck`, and `castTypeCheck` for a bound pattern's conversion
+(`FlagMatchBind`), call it after checking `exp` and before checking `typ`. For a marked root it clears the mark and binds the name:
+
+1. a variant of that name in the matched value's enum — `exp`'s type, through a
+   reference — found in the enum's `derived` list, not its namespace: an instance
+   of a generic enum lists its instantiated variants there (`genericMemoize`),
+   which is what supplies omitted type arguments, and an extension lists its
+   base's beside its own. Skipped when type arguments are written, since the
+   list holds instances;
+2. otherwise the lexical binding name resolution made;
+3. otherwise nothing: `ErrorPatArgs` if the matched enum has the variant and
+   arguments were written, else `ErrorUnkName`. A lexical binding to a value is
+   `ErrorNotType`. Either way the name is bound to `errorType` and the check
+   returns — the conversion's `vtype` becomes `errorType`, so the variable the
+   pattern declares is silenced too.
+
+**Only the `is` test reports.** In source the two nodes share `typ`, so the `is`
+test, checked first, binds it for both and the conversion finds the mark
+cleared. A clone — a generic instance's body, a default method's copy — has
+copied `typ` once per node, and then the conversion binds its own copy to the
+same answer, quietly.
 
 ### `castTypeCheck`
 
@@ -161,6 +205,9 @@ nullable-pointer enum (compare against null), and tagged (read the
   reach for the wrong one.
 - **`FlagConvert` can be cleared during type check**, so the flag on a node
   after checking does not tell you what the author wrote.
+- **A pattern's root may be unbound until its `is` test is checked.** Anything
+  that reads a pattern's `typ` before then — `ifExhaustCheck` scanning the later
+  arms — must ask `castPatternPending` first.
 - **A struct reinterpret is checked in generation, not type check.** A size
   mismatch surfaces late, as `ErrorRecastSize`.
 - **`genlConvert`'s two "unknown source" arms report `ErrorUnreachable` and

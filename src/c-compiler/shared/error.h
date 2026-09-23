@@ -219,6 +219,9 @@ enum ErrorCode {
     // A module's 'use': folding an enum's variants in as names of the module
     ErrorUseEnum = 1114,        // A module's 'use' naming what is not an enum declaration: another kind of name, a typedef, or an instance of a generic enum
 
+    // A pattern's bare variant, looked up in the matched value's enum
+    ErrorPatArgs = 1115,        // A pattern's variant found only in the matched value's enum, written with type arguments that value supplies
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

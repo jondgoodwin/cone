@@ -113,8 +113,10 @@ void refNameRes(NameResState *pstate, RefNode *node) {
     inodeNameRes(pstate, (INode**)&node->perm);
     inodeNameRes(pstate, &node->vtexp);
 
-    // If this is not a reference type, turn it into a borrow/allocate constructor
-    if (!isTypeNode(node->vtexp)) {
+    // If this is not a reference type, turn it into a borrow/allocate constructor.
+    // A pattern's reference is always a type: the name under it is bound at type
+    // check, against the matched value, and may be unbound or mean a value until then.
+    if (!isTypeNode(node->vtexp) && !castPatternPending(node->vtexp)) {
         if (node->tag == RefTag)
             node->tag = node->region == (INode*)borrowRef ? BorrowTag : AllocateTag;
         else

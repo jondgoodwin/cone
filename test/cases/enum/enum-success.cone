@@ -796,6 +796,121 @@ fn namingVariants() {
   show("qualified-result", signedResult(Result.Error[i32, i32][6]));
 }
 
+// -------- a variant bare in a pattern --------
+
+// A pattern knows the enum of the value it is matched against, so it names a
+// variant of that enum bare with no 'use'. Nothing in this section is folded.
+enum Season {
+  Spring, Summer, Autumn, Winter;
+}
+
+enum Figure {
+  struct Square {
+    pub side i32;
+  }
+
+  struct Tri {
+    pub base i32;
+    pub height i32;
+  }
+}
+
+fn warmth(s Season) i32 {
+  match s {
+    case is Summer {3;}
+    case is Spring {2;}
+    case is Autumn {1;}
+    case is Winter {0;}
+  }
+}
+
+// Through a reference, in every form a pattern takes: a 'case', a bound 'if'
+// and its 'elif', and an 'is' test
+fn figureArea(f &Figure) i32 {
+  match f {
+    case imm s &Square {s.side * s.side;}
+    case imm t &Tri {t.base * t.height / 2;}
+  }
+}
+
+fn figureWidth(f &Figure) i32 {
+  if imm s &Square = f {s.side;}
+  elif imm t &Tri = f {t.base;}
+  else {0;}
+}
+
+fn isSquare(f &Figure) Bool {
+  f is &Square;
+}
+
+// The matched value supplies a generic variant's type arguments: on an
+// Option[i32], 'Some' is 'Some[i32]'. A generic enum declared here is matched the
+// same way, with no 'use' of it.
+enum Perhaps[T] {
+  struct Surely {
+    pub value T;
+  }
+
+  struct Nothing {}
+}
+
+fn someOr(o Option[i32], dflt i32) i32 {
+  match o {
+    case imm s Some {s.value;}
+    case is None {dflt;}
+  }
+}
+
+fn surelyOr(p Perhaps[i64], dflt i64) i64 {
+  match p {
+    case imm s Surely {s.value;}
+    case is Nothing {dflt;}
+  }
+}
+
+// In a generic function each instance's body looks the variant up in its own
+// matched value's enum
+fn someOrAny[T](o Option[T], dflt T) T {
+  match o {
+    case imm s Some {s.value;}
+    else {dflt;}
+  }
+}
+
+// The matched value's enum is asked first. Colors is folded into this module and
+// has a Red too, but a Lamp is being matched, so 'Red' is the Lamp's. Its tag is
+// not Colors.Red's, so the arm taken says which one was meant.
+enum Lamp {
+  Amber, Red;
+}
+
+fn lampCode(l Lamp) i32 {
+  match l {
+    case is Red {1;}
+    case is Amber {2;}
+  }
+}
+
+fn barePatterns() {
+  show("bare-plain-enum", warmth(Season.Autumn[]));
+  imm sq Figure = Figure.Square[4];
+  imm tr Figure = Figure.Tri[6, 3];
+  show("bare-case-through-ref", figureArea(&sq));
+  show("bare-case-other-variant", figureArea(&tr));
+  show("bare-bound-if", figureWidth(&sq));
+  show("bare-bound-elif", figureWidth(&tr));
+  showB("bare-is-test-true", isSquare(&sq));
+  showB("bare-is-test-false", isSquare(&tr));
+  show("bare-generic-args-from-value", someOr(Some[7], 99));
+  show("bare-generic-empty", someOr(None[i32][], 99));
+  show("bare-own-generic-enum", surelyOr(Perhaps.Surely[i64][8], 99));
+  show("bare-own-generic-empty", surelyOr(Perhaps.Nothing[i64][], 99));
+  show("bare-in-generic-function", someOrAny[i32](Some[11], 0));
+  show("bare-in-generic-function-empty", someOrAny[i32](None[i32][], 12));
+  show("bare-matched-enum-first", lampCode(Lamp.Red[]));
+  show("bare-matched-enum-other", lampCode(Lamp.Amber[]));
+}
+
 // -------- folding some of the variants --------
 
 // A 'use' may admit some of an enum's variants rather than all of them, rename
@@ -971,6 +1086,7 @@ fn main() i32 {
   valueMatching();
   optionAndResult();
   namingVariants();
+  barePatterns();
   foldingSome();
   interactions();
   0i32;

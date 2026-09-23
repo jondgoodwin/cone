@@ -152,6 +152,11 @@ declaration the name was bound to, and an unlowered `FnCallNode` naming a
 generic struct counts as a type (`itypeIsGenericType`). Without the latter,
 `*Box[i64]` reads as a dereference and `[2; Box[i64]]` as an array literal.
 
+**A reference in a pattern stays a reference type** whatever its referent's
+name means for now: `refNameRes` asks `castPatternPending` too, because a
+pattern's bare root is bound at type check and may be unbound, or mean a value
+lexically, until then. `case imm c &Circle` is a narrowing, never a borrow.
+
 **Two sites rewrite a parent's pointer**: `allocateQuesNameRes` collapses `&x?`
 into the allocation node with `FlagQues` set, and `fnCallNameResPath` replaces
 an argument-less namespace hop with the name it bound. Everything else mutates
@@ -178,9 +183,11 @@ is the contract; there is never a second name resolution pass.
 **Guaranteed when the pass finishes without errors:**
 
 - Every reachable `NameUseNode` has a non-NULL `dclnode`, **except** a member
-  name — the `methfld` of a call — which this pass never visits. A member the
-  path collapse bound is no longer in a member slot: it has become the node, or
-  the call's `objfn`.
+  name — the `methfld` of a call — which this pass never visits, and a
+  pattern's bare root (`FlagPattern`) that has no lexical meaning, which may be
+  a variant of the matched value's enum and is left for type check to bind. A
+  member the path collapse bound is no longer in a member slot: it has become
+  the node, or the call's `objfn`.
 - No `FnCallNode` left in the tree has a member name whose receiver is a module
   or a struct's *name*. Every one of those was a path and is gone.
 - A `NameUseNode` is still a `NameUseTag`: it is bound, not retagged, and
@@ -206,7 +213,11 @@ is the contract; there is never a second name resolution pass.
 **The global gate.** `doAnalysis` returns before type check if this pass
 reported anything, so type check never meets an unbound name. That is what lets
 `nameUseNameRes` simply leave `dclnode` NULL on failure — nothing downstream
-ever sees it. The cost is that a file cannot report a name error and an
+ever sees it. The one unbound name that reaches type check is a pattern's root,
+which this pass does not report: what it means depends on the matched value's
+type. It is reached only through the `is` test and the conversion its pattern
+desugars to, and both bind it (`castPatternBind`) before anything reads it —
+to a variant, to its lexical meaning, or, reported, to `errorType`. The cost is that a file cannot report a name error and an
 unrelated type error in one run. Removing it needs a per-node
 unresolved/resolving/resolved state, and every site that reads `dclnode`
 handling an unbound one — which the gate makes impossible today.
@@ -220,7 +231,8 @@ The phase owns one `ErrorCode` exclusively: `ErrorBareMbr` (1076), raised by
 `nameUseNameRes` when a macro method's body names a member of its type bare —
 `NameResState.macromethod` is set for the duration of the body, and the name is
 known to be a member here, where type check would only see the wrong receiver.
-It also raises `ErrorUnkName` (three sites in `nameUseNameRes`),
+It also raises `ErrorUnkName` (three sites in `nameUseNameRes`; never for a
+pattern's bare root, which type check reports),
 `ErrorNotPublic` (a private name through a qualifier; a private field or member
 in a fold), `ErrorDupName` (duplicate local, duplicate lifetime label,
 colliding folded import, a trait's field arriving under a name the type
@@ -246,7 +258,9 @@ next pass a null to trip over.
   `default:` arm, which reports `ErrorUnreachable` and stops. This is why
   `structNameRes` walks only the methods the type declared and never the
   clones a trait's expansion appended, and why those clones are made from a
-  trait already resolved.
+  trait already resolved. It is also why a bound pattern's conversion
+  (`FlagMatchBind`) does not resolve its type: the node is the `is` test's, which
+  resolved it, and `&x` with `x` a value has been retagged a borrow by then.
 - **A demanded trait is resolved with the demanding type's generic parameters
   still hooked.** A name the trait fails to declare that spells one of them
   binds to it silently instead of failing. Nothing correct can meet it; a

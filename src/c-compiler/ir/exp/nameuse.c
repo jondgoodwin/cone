@@ -153,6 +153,10 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
     name->dclnode = name->namesym->node;
 
     if (!name->dclnode) {
+        // A pattern's bare root may be a variant of the matched value's enum,
+        // which only type check knows: castPatternBind binds it or reports it
+        if (name->flags & FlagPattern)
+            return;
         errorMsgNode((INode*)name, ErrorUnkName, "The name %s does not refer to a declared name", &name->namesym->namestr);
         return;
     }

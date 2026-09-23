@@ -24,12 +24,18 @@ the two lowerings that insert an implicit `self` read it: neither may fire on a
 name the source qualified. *Which* namespace it came through is not kept,
 because nothing asks.
 
+`FlagPattern` marks a pattern's bare root — `Red` in `case is Red`, `Circle` in
+`case imm c &Circle` — which is looked up in the matched value's enum before its
+lexical meaning. The parser stamps it, `nameUseNameRes` leaves such a name
+unbound instead of reporting it when nothing lexical answers, and
+`castPatternBind` binds it at type check and clears it. See [cast](cast.md).
+
 One tag serves three situations, told apart by `dclnode` and by where the node
 sits:
 
 | A use that is | Has | Because |
 | --- | --- | --- |
-| not yet resolved | `dclnode == NULL`, and is in no group | the parser built it; name resolution has not reached it, or failed to bind it |
+| not yet resolved | `dclnode == NULL`, and is in no group | the parser built it; name resolution has not reached it, or failed to bind it, or it is a pattern's root waiting for type check |
 | resolved | `dclnode` set; answers `isExpNode`, `isTypeNode` or `isMetaNode` for the declaration | `nameUseNameRes` bound it, or a constructor built it pre-resolved |
 | a member name — `.field`, `.method`, an operator | `dclnode == NULL` until `fnCallLowerMethod` selects the member; sits in a call's `methfld` | selecting a member needs the receiver's type |
 
@@ -77,6 +83,9 @@ was bound by the path collapse, and the node it left behind arrives here with
 pre-resolved desugaring synthesizes take.
 
 That is the whole of it: `dclnode` is set and nothing else on the node changes.
+A name the hooks do not answer is `ErrorUnkName`, unless it carries
+`FlagPattern`: then it stays unbound and unreported, because it may be a variant
+of the matched value's enum, which type check decides.
 
 ## What a use answers
 
@@ -178,6 +187,10 @@ the most common way to be off by an indirection here.
 - **`dclnode` is NULL for a member name** until the member is selected. Code
   that walks name uses and dereferences `dclnode` must not reach into a call's
   `methfld`; `nameUseNames` and the three group predicates are safe to ask.
+- **`dclnode` may be NULL after name resolution for a pattern's root**
+  (`FlagPattern`) until its `is` test is type checked. Only the pattern's own
+  nodes hold it, and `castPatternPending` is the question to ask before reading
+  its type.
 - **A use of a module's name answers `isTypeNode` true.** `ModuleTag` is in
   the statement group, so `isTypeNode` is false for the module itself; the use's
   answer is `nameUseGroup`'s fallthrough for every declaration that is not a

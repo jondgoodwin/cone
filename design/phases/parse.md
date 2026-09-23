@@ -180,7 +180,9 @@ This is what principle 1 costs, and it is the whole cost: because a type and a
 value parse identically, `*T` and `*p`, `&T` and `&x`, `(A,B)` and `(a,b)` are
 one production each, and one retagging pass settles all of them.
 
-Also left undecided: **which method an operator names** — every operator is an
+Also left undecided: **what a pattern's bare name means.** It may be a variant of
+the matched value's enum, which only type check knows, so the parser marks it
+(`FlagPattern`) and leaves it. And **which method an operator names** — every operator is an
 `FnCallNode` with `methfld` set to the operator's interned name and
 `FlagOperator` set, and selection is type check's. And **whether `&fn` is a
 closure or a function-signature type** — `parseAmper` decides by whether a body
@@ -368,7 +370,7 @@ numbers.
 | `parser/parsefnflow.c` | `parseFn` | function/method declaration — **despite the file name, this is where declarations and control flow are parsed, not data flow analysis** |
 | | `parseGenericParms`, `parseMacro` | the type parameter list, shared by `fn`, `struct` and `macro`: comma-separated names only, with a constraint or a parameter type refused as `ErrorGenParmConstr` |
 | | `parseExprBlock` | the statement-block loop — the parser's second dispatch table |
-| | `parseIf`, `parseMatch`, `parseBoundMatch` | `if`/`elif`/`else` and the `match`-to-`if` desugaring |
+| | `parseIf`, `parseMatch`, `parseBoundMatch` | `if`/`elif`/`else` and the `match`-to-`if` desugaring; every pattern's root name is marked (`castPatternMark`) to be looked up in the matched value's enum at type check, as `parseCmp` marks an `is` test's |
 | | `parseWhile`, `parseEach`, `parseWith`, `parseLifetime` | loop and scope desugaring |
 | `ir/stmt/module.c` | `modAddNode`, `modAddNamedNode`, `modAddFn`, `modHook` | parse-time namespace population and hook-stack swapping |
 | `ir/nametbl.c` | `nametblFind`, `nametblHookPush`, `nametblHookNode`, `nametblHookPop` | interning and the binding stack |
