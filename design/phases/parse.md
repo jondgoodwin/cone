@@ -61,7 +61,7 @@ Only white space may come between the two words.
 today only by a match's range pattern. A number stops scanning at a `..`, so
 `0..3` is two integers and a range, not the float `0.`.
 
-**One `Lexer` per source, on a linked list.** `lexInject` pushes, `lexPop`
+**One `Lexer` per source, on a linked list.** `lexPush` pushes, `lexPop`
 restores. **Blocks are never recycled**, deliberately: every IR node stores the
 `Lexer` current when it was built and reads `url` from it whenever a diagnostic
 is reported, so reusing a popped block rewrites the file name out from under
@@ -300,7 +300,11 @@ any module's names resolve. `include` is retired: it stays a keyword, and the
 statement it begins is `ErrorInclude` at the word and skipped to its `;` without
 the file it names being looked for, because the folder is what brings a module's
 files in (`parseRetiredInclude`).
-Corelib is parsed before the main file and wildcard-imported into every module.
+A path is looked for beside the importing file and then on the package search
+path, which ends at the packages folder holding `core` and `stdio`. `core`, the
+prelude, is loaded from there before the main file is parsed and
+wildcard-imported into every module ([Module](../nodes/module.md), "The packages
+folder").
 
 **A module is the files of a folder**, so loading one module means reading
 several files. Loading is three steps — locate the file, ask the **file registry**
@@ -395,21 +399,21 @@ numbers.
 
 | File | Function | Purpose |
 | --- | --- | --- |
-| `parser/lexer.c` | `lexInject`, `lexInjectPath`, `lexPop`; `lexLoadPath`, `lexPush` | push and pop a source on the lexer chain. `lexInjectPath` reads an already-located file: locating one is the caller's, since the path is what the file registry is keyed by. `lexLoadPath` and `lexPush` are its two halves apart — read a file into a block that is not yet current, and later make that block current |
+| `parser/lexer.c` | `lexInjectPath`, `lexPop`; `lexLoadPath`, `lexPush` | push and pop a source on the lexer chain. `lexInjectPath` reads an already-located file: locating one is the caller's, since the path is what the file registry is keyed by. `lexLoadPath` and `lexPush` are its two halves apart — read a file into a block that is not yet current, and later make that block current |
 | | `lexNextToken` | the scan dispatch; whitespace, comments, maximal-munch operators |
 | | `lexScanIdent` | identifier scan and name-table classification; reserved-word release; a `@` or `#` word that names nothing reported and dropped |
 | | `lexScanNumber`, `lexScanString`, `lexScanChar`, `lexScanEscape` | literals; UTF-8 re-encoding of escapes; lifetime-vs-char disambiguation |
 | | `lexNewLine`, `lexBlockComment` | line counting for diagnostics, inside comments included |
 | | `lexOpensWithMod` | whether a source's first statement begins `mod` or `pub mod`, read off its text past white space and comments with nothing lexed: the folder sweep's probe for a one-file module |
-| `parser/parsemod.c` | `parsePgm` | **entry point** — tables, program, main module, corelib, main file |
+| `parser/parsemod.c` | `parsePgm`, `parseLoadCore` | **entry point** — tables, program, main module, the `core` package from the search path, main file |
 | | `parseGlobalStmts` | the global statement dispatch loop; `trait` by itself enters `parseStruct` with `TraitType` already set, and `actor` is the unbuilt kind refused here. It is told whether it is reading the start of a module's own source, which is what decides where a `mod` declaration may stand |
 | | `parseModuleDcl` | `mod name;`, the declaration a module's designated file or one file makes: the placement rule, the check against the folder's name or the one-file submodule's file's, the rename a lone file still gets, the module's own name bound into its namespace, what `pub` does for a submodule and why it is refused on any other module, the `extends` it records for name resolution to resolve, and the refusal of the in-file block, which does not exist, and of `mod trait` |
 | | `parseSkipDclBody` | skip an unbuilt form's `{ … }` whole, or resync at the next `;` |
-| | `parseLoadAndParseModuleFile` | per-module unit: locate, register by path, naming, the folder sweep, corelib import, `modHook`, and a parse per file |
+| | `parseLoadAndParseModuleFile`, `parseLoadModulePath` | per-module unit: locate beside the importer and then on the search path, `FlagGenMod` for what the search path found, register by path, naming, the folder sweep, the `core` import, `modHook`, and a parse per file |
 | | `parseDesignatedFolder`, `parseCollectFolder`, `parseModuleFiles` | the folder sweep: whether the file is its folder's designated file, which files the folder brings in, each read into its block as it is found, which files are one-file modules and which subfolders draw submodules, in the order of their names, and the refusals — a designated file or one-file module too deep to be a module, a one-file module beside a module folder of its name |
 | | `parseSubmoduleDraw`, `parseSubmoduleParse`, `parseModuleTree` | the module tree: the submodule a subfolder or a one-file module draws — owned by its parent, bound in its namespace, private to it unless `pub` — and the order, submodules before the module's own files |
 | | `parseRegisterModuleFiles` | the file registry entries for a module's files, and the two collisions that stop a file joining |
-| `shared/fileio.c` | `fileFindSrc`, `fileFolderScan`, `fileDesignatedFile` | locate a source file without reading it; list a folder's `.cone` files and subfolders, sorted; probe a folder for the designated file that makes it a module folder |
+| `shared/fileio.c` | `fileFindSrc`, `fileFindLocal`, `fileFindPackage`, `fileFolderScan`, `fileDesignatedFile` | locate a source file without reading it — beside a file, on the package search path, or the one then the other; list a folder's `.cone` files and subfolders, sorted; probe a folder for the designated file that makes it a module folder |
 | | `parseImport`, `parseRetiredInclude` | the one source-composition form, and the retired one reported |
 | `parser/parsehelper.c` | `parseBlockStart`, `parseBlockEnd` | `{` and `}`, with recovery |
 | | `parseEndOfStatement`, `parseSkipToNextStmt`, `parseCloseTok` | the required `;`, and the two resyncs |

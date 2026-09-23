@@ -182,7 +182,6 @@ extern Lexer *lex;
 // Lexer functions
 void lexInit(ConeOptions *opt);
 void lexInjectPath(char *path);
-void lexInject(char *src, char *url);
 // The two halves of lexInjectPath, apart: read a file into a block that is not
 // yet current, and later make that block current
 Lexer *lexLoadPath(char *path);

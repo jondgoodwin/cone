@@ -228,24 +228,27 @@ contributes nothing to it**. Compiling `modulesub.cone` directly emits
 **A program spanning modules cannot be linked today.**
 
 The generation machinery, though, is not the missing part. An imported module's
-bodies are emitted whenever it is flagged for generation, and `stdio` is flagged
-— a compile that prints emits `stdio.print` and full definitions for the
-`IOStream` methods, alongside the caller. Every other imported module is denied
-the flag by a `strcmp` on its filename. So what blocks a multi-package program
-is the symbol rule and that one condition, not the absence of a mechanism.
-**A module of the same tree is flagged**, which is why an import between two
-sisters links and an import of a loaded module does not: what a folder tree holds
-this compile defines.
+bodies are emitted whenever it is flagged for generation, and **every module found
+on the package search path is flagged** — until separate compilation lands, a
+package is compiled into the object that imports it. So a compile that prints
+emits `stdio.print` and full definitions for the `IOStream` methods, alongside
+the caller, because `stdio` is a package in the repository's `packages/` folder.
+An imported module found beside its importer is denied the flag. So what blocks a
+multi-package program is the symbol rule and that one condition, not the absence
+of a mechanism. **A module of the same tree is flagged**, which is why an import
+between two sisters links and an import of a loaded module does not: what a
+folder tree holds this compile defines.
 
 The serialized interface is a separate and larger cost, and it buys build speed
 rather than the ability to link at all. The author anticipated it — "it is not a
 trivial effort to add the compiler the ability to ingest, preserve, and re-ingest
 public interface information from source files."
 
-**Packages are a search path, not a unit.** `--pkg-path` finds files and
-`--safe=package` appears in the option help, but there is no package in the
-language — no manifest, no versioning, and nothing that makes a set of source
-files one compiled, distributable thing.
+**Packages are a search path, not a unit.** The search path — every `--path`
+folder, then the packages folder, where `core` and `stdio` are folder modules —
+finds files, and `--safe=package` appears in the option help, but there is no
+package in the language — no manifest, no versioning, and nothing that makes a
+set of source files one compiled, distributable thing.
 
 **There is no thread layer.** Which of async/await, gothreads or actors Cone
 adopts is an open question the author treats as unsettled across the field; the

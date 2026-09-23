@@ -71,11 +71,6 @@ void lexPush(Lexer *newlex) {
     lexNextToken();
 }
 
-// Inject a new source stream into the lexer
-void lexInject(char *src, char *url) {
-    lexPush(lexNew(src, url));
-}
-
 // Add a reserved identifier and its node to the global name table
 Name *keyAdd(char *keyword, uint16_t toktype) {
     Name *sym;
@@ -180,7 +175,9 @@ void keywordInit() {
 // Initialize lexer
 void lexInit(ConeOptions *opt) {
     fileSearchPaths = opt->package_search_paths;
-    lexInject("", "init");
+    // An empty source for the lexer to stand on until the first file is read.
+    // Its url is what a path the command line gives is found relative to
+    lexPush(lexNew("", "init"));
     keywordInit();
 }
 

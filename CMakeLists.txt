@@ -139,6 +139,11 @@ add_executable(conec
 
 target_link_libraries(conec ${llvm_libs})
 
+# The packages folder conec searches last, where core and stdio are: this
+# repository's own, so a conec built here finds them with no setup. The
+# CONE_PACKAGES environment variable names another at run time.
+target_compile_definitions(conec PRIVATE CONE_PACKAGES_DIR="${CMAKE_SOURCE_DIR}/packages/")
+
 add_library(conestd
 	src/conestd/stdio.c
 )

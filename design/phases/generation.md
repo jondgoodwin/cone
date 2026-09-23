@@ -299,7 +299,8 @@ Two consequences that are easy to get wrong:
   element owns is left where an array of owning references leaves it.
 
 A region is any struct with a suitable `_alloc`; `so` and `rc` are declared in
-Cone source inside `corelibSource`, not built into the compiler. `malloc` is an
+Cone source in the core package, `packages/core/core.cone`, not built into the
+compiler. `malloc` is an
 ordinary `extern`; `free` is declared directly by `genlFree`. `conestd` supplies
 only stdio, no allocator.
 

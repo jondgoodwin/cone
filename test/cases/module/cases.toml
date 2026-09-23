@@ -15,9 +15,10 @@
 # The files inside one are not registered: the sweep is what finds them, and
 # listing them would restate the thing under test.
 #
-# Only module-success and folder scenarios run. Each of them
+# Only module-success, module-package-path and folder scenarios run. Each of them
 # is one module or one tree of them compiled into one object, which is what a
-# program is. Everything about 'import'
+# program is -- module-package-path's package included, since a module found on
+# the package search path is compiled in. Everything else about 'import'
 # compiles and stops there:
 # a program spanning modules cannot be linked yet, and design/diagnostics/test-suite.md
 # section 4 forbids adding a synthetic 'main' to promote a scenario's category.
@@ -35,7 +36,7 @@ support = ["modulesub.cone",
            "modulehide.cone", "modulehidelate.cone", "modselfnamed",
            "modulemacro.cone", "moduledeclared.cone",
            "modulefold.cone", "modulefoldlate.cone", "modfolder",
-           "moduleextbase.cone"]
+           "moduleextbase.cone", "modulepkgs"]
 
 # -------- success --------
 
@@ -318,6 +319,55 @@ category = "reject"
 description = "What an import does not put in reach: a sister's private name, a name she has not got, and a sister of an ancestor"
 tags = ["nameres"]
 diagnostics = 3
+
+# -------- the package search path --------
+#
+# A name the registry does not hold, and no file beside the importer answers, is
+# looked for on the package search path: each '--path' folder, then the packages
+# folder at the repository's root, which holds core and stdio as ordinary folder
+# modules. Every other scenario that prints reaches stdio that way. Until
+# separate compilation lands, a module found on the search path is compiled into
+# the object that imports it, which is why those scenarios link.
+#
+# module-package-sister is the registry winning over the packages folder: a
+# sister named stdio is what her sister's 'import stdio' reaches.
+# module-package-path is a '--path' folder winning over it: its run adds
+# modulepkgs, a support folder holding a stdio of its own, and the import reaches
+# that one while core is still found in the packages folder.
+
+[scenario.module-package-sister]
+category = "run"
+description = "A submodule's 'import stdio' reaching her sister named stdio, not the stdio package"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+# The sister is what the import bound, so her function is defined and spelled
+# after her. The package was never read: nothing of its IOStream or its print
+# global is declared.
+[[scenario.module-package-sister.check]]
+name = "the-registry-answers-before-the-packages-folder"
+target = "symbols"
+contains = [
+  "define internal stdio.marker comdat nodeduplicate",
+  "define internal user.value comdat nodeduplicate",
+]
+excludes = ["IOStream", "stdio.print"]
+
+[scenario.module-package-path]
+category = "run"
+description = "A '--path' folder searched before the packages folder: its stdio is the one 'import stdio' reaches"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+[[scenario.module-package-path.run]]
+name = "search-path"
+options = ["--path=test/cases/module/modulepkgs"]
+
+# The '--path' package is found on the search path, so its body is generated
+# here, spelled after the package; the packages folder's stdio is not read.
+[[scenario.module-package-path.check]]
+name = "a-path-folder-answers-before-the-packages-folder"
+target = "symbols"
+contains = ["define internal stdio.show comdat nodeduplicate"]
+excludes = ["IOStream", "stdio.print"]
 
 # -------- import of a parent's name --------
 #

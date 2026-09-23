@@ -198,7 +198,7 @@ void inodePrintNode(INode *node) {
 // Serialize the program's IR to dir+srcfn
 void inodePrint(char *dir, char *srcfn, INode *pgmnode) {
     // Name the dump after the source compiled. The program node's own lexer is
-    // the "init" pseudo-source corelib is injected from, so every compile used
+    // the empty "init" pseudo-source the lexer starts on, so every compile used
     // to overwrite one init.ast.
     irfile = fopen(fileMakePath(dir, srcfn, "ast"), "wb");
     inodePrintNode(pgmnode);

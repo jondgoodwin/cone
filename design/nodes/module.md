@@ -8,8 +8,9 @@ which parts of that are decided. The model spans parse, name resolution and
 generation, so no phase note owns it, and it is what a reader usually needs
 before touching any of the three nodes.
 
-**At a glance.** `parsePgm` builds the root module and injects `corelib` into
-it. `parseLoadAndParseModuleFile` loads every other module, in three steps:
+**At a glance.** `parsePgm` builds the root module and loads the `core` package,
+which every module imports. `parseLoadAndParseModuleFile` loads every other
+module, in three steps:
 locate the file, ask the **file registry** which module holds it, and parse every
 file of its folder into the module it draws. The registry is keyed by the file's
 path, so a file is read once and belongs to one module. The folder is what names
@@ -26,7 +27,8 @@ every declaration in source order. Generation declares symbols for every module
 and emits bodies only for those flagged `FlagGenMod`.
 
 *Provenance: read from source. The root-versus-import symbol asymmetry and the
-`stdio` exception were measured from emitted LLVM IR; the imported-module
+generation of a package found on the search path were measured from emitted LLVM
+IR; the imported-module
 `declare`s and the root-cycle behaviour are pinned by the `module` test group.
 See [Measuring](../diagnostics/measuring.md).*
 
@@ -48,9 +50,9 @@ declared name is not known until its file has been read. `fileCanonicalPath`
 gives one spelling — separators as `/`, a `.` segment dropped, a `..` segment
 cancelled against the one in front of it — so that a path a source writes to walk
 somewhere and back finds the entry the folder sweep made rather than missing it
-and reading the file a second time. A built-in module is a string inside the
-compiler rather than a file, and stands in the registry under the pseudo-file
-name its diagnostics are reported against — `corelib`, `stdio`.
+and reading the file a second time. The packages `core` and `stdio` are files
+like any other, registered under their canonical paths in the packages folder
+("The packages folder", below).
 
 **`ModuleNode`**
 
@@ -150,8 +152,13 @@ node's own clause (`foldModUseModule`).
    registered to the root — before anything is parsed, so that which files the
    root holds does not depend on what a parse of one of them imports. An import
    cycle back to any of them then finds the root in the registry.
-3. `corelib` is parsed, from the `corelibSource` string in `corelib.c`.
-4. An `ImportNode` carrying a star clause is added to the root for `corelib`.
+3. `core` is loaded (`parseLoadCore`): `core/core.cone`, found on the package
+   search path and nowhere else, so no file beside a program stands in for it.
+   It is loaded exactly as an imported module is, and is the one module loaded
+   with no auto-import of itself.
+4. An `ImportNode` carrying a star clause is added to the root for `core`, and
+   `ParseState.core` is set, so every module loaded from then on is given the
+   same import.
 5. The submodules its subfolders and one-file modules draw are drawn, each
    recursively.
 6. The root's own files are parsed, its designated file first.
@@ -159,18 +166,19 @@ node's own clause (`foldModUseModule`).
 `parseLoadAndParseModuleFile` is the single path by which any other module is
 loaded, and it is three steps rather than one:
 
-- **Locate.** `fileFindSrc` resolves the written name against the current file's
-  folder and then each `--pkg-path` entry, trying `name.cone` and then
-  `name/name.cone` — the designated-file convention. It returns the path and
-  reads nothing. A built-in resolves to its pseudo-file name instead.
+- **Locate.** `fileFindLocal` resolves the written name against the current
+  file's folder, and where that finds nothing `fileFindPackage` tries each folder
+  of the package search path in turn — every `--path` folder, then the packages
+  folder — each trying `name.cone` and then `name/name.cone`, the designated-file
+  convention. Either returns the path and reads nothing.
 - **Register.** The path is interned and looked up in the file registry. A hit
   *is* the answer: that module already holds the file, and the file is not read
   again. A miss makes the module, sets `filesym`, `foldersym` and `namesym`,
-  marks it `DclNamesChain`, decides `FlagGenMod`, and registers every file the
-  folder sweeps in.
+  marks it `DclNamesChain`, gives it `FlagGenMod` where the search path found it,
+  and registers every file the folder sweeps in (`parseLoadModulePath`).
 - **Parse into the module.** Each registered file is injected and its global
   statements parsed into the one module, the designated file first, since it is
-  the only one that may declare the module. The auto-import of `corelib`, a star
+  the only one that may declare the module. The auto-import of `core`, a star
   clause, is added first, and `modHook` swaps the name table once for the whole
   set — so a module neither sees nor collides with the names of the module whose
   parse reached it, parent or importer alike. Every declaration any of those files
@@ -208,8 +216,7 @@ its parent meets the parent's own name at the draw. `lexLoadPath` reads it into 
 lexer block that is not yet current, and that block is the one
 `parseModuleFilesParse` makes current when the designated file's turn comes, so
 the file is still read once. The files a sweep finds are read the same way, when
-the sweep finds them (next section), and each block is the one later parsed. A
-built-in module has no file, and keeps wherever the lexer stood when it was made.
+the sweep finds them (next section), and each block is the one later parsed.
 
 ### The folder tree
 
@@ -459,24 +466,60 @@ today's programs go on working unchanged. A module drawn out of a folder is name
 after the folder, and nothing about its filename is a name; a one-file module is
 named after its file, and that name is as fixed as a folder's.
 
-**Two modules are built in, and neither is a file.** `corelib` is the
-`corelibSource` string in `corelib.c`; `stdio` is the `stdiolib` string at the
-top of `parsemod.c`. Both are injected by `lexInject` rather than read from
-disk.
+### The packages folder
 
-**Whether an imported module's bodies are generated is decided by its filename,
-here.** The one expression in `parseLoadAndParseModuleFile` that computes the
-flag grants `FlagGenMod` to the root module, withholds it from `corelib`, and
-grants it to a module whose filename is exactly `stdio`. Every other imported
-module is denied it.
+**`core` and `stdio` are packages, and a package is a folder of Cone source.**
+The repository's root holds `packages/`, one folder per package, each an
+ordinary folder module with its designated file: `packages/core/core.cone` and
+`packages/stdio/stdio.cone`. Nothing about either is known to the compiler but
+the name `core`: the folder names each module, as any folder does, and each is
+located, registered, swept and parsed on the path every imported module takes.
+`stdio`'s printing is C, declared in its `pub extern` block and supplied by
+`conestd`.
+
+**The packages folder is found by default.** It ends the **package search
+path**, `package_search_paths` in `coneopts.c`, which `lexInit` hands to
+`fileio.c` as `fileSearchPaths`: every `--path` folder in the order given, then
+the packages folder. That folder is the one the `CONE_PACKAGES` environment
+variable names, or else `CONE_PACKAGES_DIR`, which the CMake build compiles in as
+`${CMAKE_SOURCE_DIR}/packages/` — so the test runner and a direct run of a
+`conec` built from this repository find `core` and `stdio` with no setup, from
+any directory. A build that defines nothing looks in `packages/` under the current
+directory. `--path` adds to the search path and replaces nothing, so a package in
+a `--path` folder is found ahead of the packages folder's of the same name;
+`CONE_PACKAGES` replaces the packages folder itself.
+
+**An import's name is answered in the registry first, then beside the importing
+file, then on the search path** — so `import stdio` inside a submodule whose
+parent holds a sister named `stdio` reaches the sister (`module-package-sister`),
+and a `--path` folder's `stdio` wins over the packages folder's
+(`module-package-path`).
+
+**What is still special about `core` is that it is the prelude.** `parsePgm`
+loads it before any module of the program (`parseLoadCore`), from the search path
+alone, and every other module is given a star import of it
+(`parseAddCorelibImport`). Missing, it ends the compile (`ExitNF`), naming where
+the packages folder comes from. Its name is `core`, its folder's, so an
+`import core` reaches the prelude module and binds that name; the IR dump reads
+`module core`. No symbol is spelled after it, since everything it defines is
+`inline` or `extern`.
+
+**Until separate compilation lands, every module found on the search path is
+compiled into this object.** That is the truth of today's single-object
+compiler: a package is Cone source and nothing else supplies its definitions, so
+`parseLoadAndParseModuleFile` gives `FlagGenMod` to a module `fileFindPackage`
+found, `core` included, and withholds it from one `fileFindLocal` found beside its
+importer. With the root and every submodule also generating, the one kind of
+module denied it is an import reached relative to its importer.
 
 That asymmetry is the whole of the separate-compilation gap, and both sides of
 it are visible in emitted IR:
 
 - `import stdio use *` emits `stdio.print` **and definitions** for
-  `stdio.IOStream.appendStr` and its siblings, all internal. The multi-module
-  generation path works, and is exercised on every compile that prints.
-- Importing an ordinary module emits **only `declare`s** —
+  `stdio.IOStream.appendStr` and its siblings, all internal, because the search
+  path found it. The multi-module generation path works, and is exercised on
+  every compile that prints.
+- Importing a module found beside the importer emits **only `declare`s** —
   `declare i64 @_CNvC9modulesub8scaleInt(i64)`, read `modulesub.scaleInt` —
   because its bodies are never reached.
   Measured, that is the module's *public* surface whether or not the importer
@@ -495,6 +538,8 @@ definitions those declarations name. How a symbol is spelled from its
 declaration, and the linkage it gets, is
 [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols".
 
+### What an import reaches
+
 `parseImport` refuses a period after the module, `ErrorBadTerm` whose message
 names the `use` clause: `.*` is a wildcard import, spelled `use *`, and `.name` a
 selective one, spelled with a list. `.*` is read as the `use *` it means, or
@@ -506,8 +551,9 @@ answers the name **in two places, the registry first**:
   namespace. A module found there is the answer, and nothing is located, read or
   registered. That is how a sister is reached.
 - **The filesystem.** Otherwise the name is a path, and
-  `parseLoadAndParseModuleFile` locates, registers and parses it. That is how an
-  external module is reached today, and where a package name will be resolved.
+  `parseLoadAndParseModuleFile` locates, registers and parses it: beside the
+  importing file first, then on the package search path. That is how an external
+  module is reached, and how a package is — `stdio`, from the packages folder.
   **A module the path reaches that has an owner is `ErrorModReach`** — see "What
   a submodule is" — and one resolving to a file of the importing module's own
   folder or to its own submodule is `ErrorModFile`.
@@ -533,7 +579,8 @@ written, as an alias of the same kind whose target is the parent's own binding
 which is the one place the registry-first order is not what decides: the file is
 found at parse, the declaration only after. A file relative to a submodule is one
 of its own files or its own submodule, both `ErrorModFile`, so what can arrive
-this way is a module on the package search path (`--path`). Where the parent
+this way is a module on the package search path: a package of the packages
+folder, `stdio` among them, or a module in a `--path` folder. Where the parent
 answers the same name with something else, the import is `ErrorDupName` in the
 pass that reports (`importCheckNamedFile`), rather than meaning whichever was
 parsed first; where the parent binds the same module, the two are one.
@@ -841,12 +888,16 @@ Flow analysis has no module concept; it runs per function body.
    when it is private *and* its module is not generating.
 2. **Implementations.** Only modules flagged `FlagGenMod`.
 
-**A submodule is flagged `FlagGenMod`, and an imported module is not.** A
+**A submodule is flagged `FlagGenMod`, and so is a module found on the package
+search path; a module an import found beside its importer is not.** A
 submodule is part of the program the compiler was pointed at — its
-bodies belong in this object exactly as a swept file's do — where an imported
-module is supplied from elsewhere and only declared. ▸ **So a program spanning a
-module TREE links and runs today, and one spanning an import does not**, which is
-what lets a folder scenario reaching two levels of submodule be a `run` scenario.
+bodies belong in this object exactly as a swept file's do — and a package is
+compiled in until separate compilation lands ("The packages folder" above),
+where a module found beside its importer is taken as supplied from elsewhere and
+only declared. ▸ **So a program spanning a module TREE, or importing a package,
+links and runs today, and one spanning any other import does not**, which is
+what lets a folder scenario reaching two levels of submodule be a `run` scenario,
+and `module-package-path` too.
 
 `ImportTag` is an explicit no-op in `genlGlobalImpl`. `genlLinkage` makes every
 definition of a program internal except `main` and a C-style name, and leaves
@@ -1153,12 +1204,16 @@ grows into a folder without anyone who names it seeing a change. `include` is re
 (`ErrorInclude`), since the folder is what brings a file in. **A module reaches SIDEWAYS too**: it
 imports a sister by name, resolved against the registry its parent is, and
 because every module of a tree is compiled into one object that import *links* —
-which an import between two loaded modules cannot do. **And UP**: it imports any
+which an import of a module found beside its importer cannot do. **And UP**: it imports any
 public name of its parent the same way, a type, a function or a global bound as
 an alias [Jon 23 Sep]. The registry is the
 immediate parent's namespace and no ancestor's, which is the scoped reading,
 adopted provisionally. There is no nesting within a *file*, and none is planned —
-a `mod name { ... }` block is refused, `ErrorUnbuiltKind` — no package, no manifest and no interface artifact;
+a `mod name { ... }` block is refused, `ErrorUnbuiltKind` — no package as a unit
+of compilation, no manifest and no interface artifact. What stands in for
+packages is the **packages folder**: `core` and `stdio` are folder modules there,
+found on the package search path and compiled into the importing object ("The
+packages folder" above);
 `mod trait` holds the spelling of a module's abstraction against the day there is
 something behind it; `import` takes a file path where the registry has no answer, and
 folds with a `use` clause — selecting, renaming and excluding as a global's
@@ -1316,8 +1371,9 @@ Three descriptions are live at once:
   global state, and its API.
 - `refregionglo.html` shows a **`region` declaration** — `region @move so:` —
   with `fn alloc(size usize) Option[*u8]` and `fn free(self &uni rc)`.
-- `corelibSource` implements them as **`struct @move so:`** with
-  `fn _alloc(size usize) *u8` and no `free` method at all.
+- The core package, `packages/core/core.cone`, implements them as
+  **`struct @move so`** with `fn alloc(size usize) *u8` and no `free` method at
+  all.
 
 The `region` keyword is interned by the lexer and parsed nowhere.
 
@@ -1409,8 +1465,14 @@ annotation on a reference names is a type.
   parsing, so the half-parsed module the registry returns is complete before
   anything reads it. Nothing refuses a cycle; `modFoldNames` notices one only to
   run the fold passes again ("Name resolution" above).
-- **`FlagGenMod` is decided by a `strcmp` on the filename.** A user module named
-  `stdio` would have its bodies generated.
+- **`FlagGenMod` is decided by where the import that loaded a module found its
+  file**, and the first to load it decides. A file both beside one importer and
+  in a `--path` folder is generated or only declared according to which import
+  reached it first.
+- **The packages folder a CMake build compiles in is an absolute path into the
+  source tree.** A `conec` moved away from that tree, or the tree moved away from
+  it, finds no `core` and stops, unless `CONE_PACKAGES` or `--path` names a
+  folder that holds one.
 - **A module's public names are folded whether or not anything uses them.** A
   wildcard import walks the source's whole namespace, so a name the importer
   never mentions still takes a binding and still collides with a declaration of
@@ -1433,9 +1495,6 @@ annotation on a reference names is a type.
 - **A cycle made of `extends` alone is refused before any fold runs**
   (`modExtendsCheckCycle`). A cycle an `extends` edge closes together with
   imports is folded as any cycle of imports is, and a re-export travels round it.
-- **`corelib` and `stdio` are C string literals.** A syntax error in either is
-  reported against an injected pseudo-file, and editing either means rebuilding
-  the compiler.
 - **A use of a module's name answers `isTypeNode` true** — `nameUseGroup`'s
   fallthrough for every declaration that is not a value, a macro or a generic
   parameter, not because a module is a type.

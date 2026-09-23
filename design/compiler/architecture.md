@@ -42,7 +42,7 @@ how the code happens to be arranged.**
 | `parser/` | lexer, parser | `ir/` |
 | `ir/` | the node definitions and the two semantic walks | `shared/` |
 | `ir/exp/`, `ir/stmt/`, `ir/types/`, `ir/meta/` | one pair per node family — 16, 12, 14 and 3 files | `ir/` |
-| `corelib/` | the built-in types, in C and in Cone source | `ir/` |
+| `corelib/` | the built-in types defined in C | `ir/` |
 | `genllvm/` | LLVM lowering | `ir/`, LLVM |
 | `shared/` | diagnostics, arena, files, options, timers, UTF-8 | nothing |
 
@@ -95,8 +95,11 @@ make that a compile error instead of a convention — the same reasoning that pu
 
 **`corelib/` is the line between compiler-defined and Cone-defined.** The number
 types are built in C, with every operator method hung off them as an intrinsic.
-The regions `so` and `rc`, plus `Option` and `Result`, are **Cone source
-compiled at startup**. That split is not arbitrary: a type needs C when the
+The regions `so` and `rc`, plus `Option` and `Result`, are **Cone source**: the
+core package, `packages/core/core.cone` at the repository's root, which the
+compiler reads from the package search path before any program file and
+imports into every module ([Module](../nodes/module.md), "The packages
+folder"). That split is not arbitrary: a type needs C when the
 compiler must know its identity (a number type is referenced by name from a
 dozen places), and can be Cone source when it only needs to exist.
 

@@ -20,20 +20,6 @@
 #include <stdio.h>
 #include <string.h>
 
-// Temporary hack:  The source for the importable stdio package
-char *stdiolib =
-"pub extern {fn printStr(str &[]u8); fn printCStr(str *u8); fn printFloat(a f64); fn printInt(a i64); fn printUInt(a u64); fn printChar(code u64);}\n"
-"pub struct IOStream{"
-"  pub fd i32;"
-"  pub fn appendStr overload `<-`(self &mut, str &[]u8) {printStr(str);}"
-"  pub fn appendCStr overload `<-`(self &mut, str *u8) {printCStr(str);}"
-"  pub fn appendInt overload `<-`(self &mut, i i64) {printInt(i);}"
-"  pub fn appendFloat overload `<-`(self &mut, n f64) {printFloat(n);}"
-"  pub fn appendUInt overload `<-`(self &mut, i u64) {printUInt(i);}"
-"}"
-"pub mut print = IOStream[0];"
-;
-
 void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart);
 ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name *filesym);
 
@@ -480,17 +466,18 @@ ImportNode *parseImport(ParseState *parse, uint16_t pubflag) {
     // is bound as an alias rather than loaded. The submodule is parsed before its
     // parent's own files, so only its sisters are there to be found yet: a name
     // no file answers either is held, and bound in the fold passes once the
-    // parent's namespace is complete (importBindName)
-    int builtin = filesym == corelibName || strcmp(filename, "stdio") == 0;
-    if (newmod == NULL && isname && !builtin && parse->mod->dclinfo.owner != NULL
+    // parent's namespace is complete (importBindName). A package is a file the
+    // name reaches, like any other
+    if (newmod == NULL && isname && parse->mod->dclinfo.owner != NULL
         && fileFindSrc(lex ? lex->url : NULL, filename) == NULL)
         return parseImportName(parse, importnode, filesym);
-    if (newmod == NULL && isname && !builtin && parse->mod->dclinfo.owner != NULL)
+    if (newmod == NULL && isname && parse->mod->dclinfo.owner != NULL)
         importnode->isnamedfile = 1;
 
     if (newmod == NULL) {
-        // Nothing of that name in the registry, so the name is a FILE PATH: what
-        // reaches an external module today, and what will reach a package
+        // Nothing of that name in the registry, so the name is a FILE PATH:
+        // beside the importing file, and then on the package search path, which
+        // is how 'import stdio' reaches the packages folder
         newmod = parseLoadAndParseModuleFile(parse, filename, filesym);
 
         // A file of this module's own folder is already part of this module, so
@@ -1079,10 +1066,11 @@ typedef struct DrawnModule {
 void parseSubmoduleDraw(ParseState *parse, ModuleNode *parent, char *path, Lexer *block, DrawnModule *drawn);
 void parseSubmoduleParse(ParseState *parse, DrawnModule *drawn);
 
-// Add the auto-import of the core library, which every module but corelib itself
-// carries, ahead of whatever the module's own files import
+// Add the auto-import of the core package, which every module but core itself
+// carries, ahead of whatever the module's own files import. Core is loaded
+// before any other module, and is the one loaded while parse->core is unset
 void parseAddCorelibImport(ParseState *parse, ModuleNode *mod) {
-    ModuleNode *corelib = pgmFindFile(parse->pgm, corelibName);
+    ModuleNode *corelib = parse->core;
     if (corelib == NULL || corelib == mod)
         return;
     ImportNode *importnode = newImportNode();
@@ -1200,26 +1188,16 @@ void parseSubmoduleParse(ParseState *parse, DrawnModule *drawn) {
     parse->mod = svmod;
 }
 
-// Load the module a name reaches, unless a module holds its file already, then
-// fully parse it. Three steps: locate the file, register it and every other file
-// its folder sweeps in, and parse each of them into the module.
+// Load the module whose file is at 'path', unless a module holds that file
+// already, then fully parse it: register the file and every other file its folder
+// sweeps in, and parse each of them into the module. 'genflag' is FlagGenMod
+// where this object is to hold the module's bodies, and 0 where it only declares
+// them.
 //
 // The de-dup key is the file's PATH, because what must happen exactly once is
 // reading the file; neither the filename nor a 'mod' declaration's name decides
 // it, and either may be shared by files in different folders
-ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name *filesym) {
-    // LOCATE. A built-in module is a string inside the compiler rather than a
-    // file, and stands in the registry under the pseudo-file name its
-    // diagnostics are reported against
-    int builtin = filesym == corelibName || strcmp(filename, "stdio") == 0;
-    char *path;
-    if (builtin)
-        path = filesym == corelibName ? "corelib" : "stdio";
-    else {
-        path = fileFindSrc(lex ? lex->url : NULL, filename);
-        if (path == NULL)
-            errorExit(ExitNF, "Cannot find or read source file %s", filename);
-    }
+static ModuleNode *parseLoadModulePath(ParseState *parse, char *path, Name *filesym, uint16_t genflag) {
     Name *pathsym = nametblFind(path, strlen(path));
 
     // REGISTER. If a module holds this file already, that module is what the
@@ -1230,14 +1208,13 @@ ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name 
 
     // Create and add this new module to list of modules, and make it the current one
     ModuleNode *svmod = parse->mod;
-    mod = pgmAddMod(parse->pgm, filesym==corelibName || strcmp(filename, "stdio")? 0 : FlagGenMod);
-    // A built-in has no file to take a position from, and keeps the importer's
-    Lexer *dsgfile = builtin ? NULL : parseModulePosition(mod, path, NULL);
+    mod = pgmAddMod(parse->pgm, genflag);
+    Lexer *dsgfile = parseModulePosition(mod, path, NULL);
     mod->filesym = filesym;
     // The module's name is a filesystem fact: its folder's, where a designated
     // file drew the module out of a folder, and its file's otherwise. Filename
     // naming is transitional and is what a designated file replaces
-    mod->foldersym = builtin ? NULL : parseDesignatedFolder(path);
+    mod->foldersym = parseDesignatedFolder(path);
     mod->namesym = mod->foldersym ? mod->foldersym : filesym;
     // Every loaded module names itself in the owner chain; only the root does not
     dclInfoJoin((INode*)mod, NULL);
@@ -1250,12 +1227,9 @@ ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name 
     // submodule of it
     SrcFiles files, submodules;
     parseModuleFiles(&files, &submodules, path, dsgfile, mod->foldersym != NULL);
-    if (builtin)
-        pgmSetFile(parse->pgm, pathsym, mod);
-    else
-        parseRegisterModuleFiles(parse, mod, &files);
+    parseRegisterModuleFiles(parse, mod, &files);
 
-    // Before parsing, all modules (except corelib) get an auto-import of core lib
+    // Before parsing, all modules (except core) get an auto-import of core
     parseAddCorelibImport(parse, mod);
 
     // Parse the module's source, then pop lexer and name hook
@@ -1264,21 +1238,45 @@ ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name 
     // declaration restates it, since the folder is what names it
     if (mod->foldersym)
         modAddNamedNode(mod, mod->namesym, (INode*)mod);
-    if (builtin) {
-        lexInject(filesym == corelibName ? corelibSource : stdiolib, path);
-        parseGlobalStmts(parse, mod, 1);
-        if (lex->toktype != EofToken) {
-            errorMsgLex(ErrorNoEof, "Expected end-of-file");
-        }
-        lexPop();
-    }
-    else
-        parseModuleTree(parse, mod, &files, &submodules);
+    parseModuleTree(parse, mod, &files, &submodules);
     modHook(mod, svmod);
 
     // Restore focus to original module we were working on
     parse->mod = svmod;
     return mod;
+}
+
+// Load the module a name reaches, unless a module holds its file already, then
+// fully parse it. The name is LOCATED beside the importing file first, and then
+// on the package search path: each '--path' folder, then the packages folder,
+// which is where 'import stdio' finds stdio.
+//
+// Where it was found decides whether its bodies are generated. UNTIL SEPARATE
+// COMPILATION LANDS, EVERY MODULE FOUND ON THE SEARCH PATH IS COMPILED INTO THIS
+// OBJECT: a package is Cone source and nothing else supplies its definitions, so
+// a program that imports one links. A module found beside its importer is
+// declared and not generated, which is the separate-compilation gap
+// (design/nodes/module.md)
+ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name *filesym) {
+    uint16_t genflag = 0;
+    char *path = fileFindLocal(lex ? lex->url : NULL, filename);
+    if (path == NULL) {
+        path = fileFindPackage(filename);
+        genflag = FlagGenMod;
+    }
+    if (path == NULL)
+        errorExit(ExitNF, "Cannot find or read source file %s", filename);
+    return parseLoadModulePath(parse, path, filesym, genflag);
+}
+
+// Load the core package, the prelude every module imports. It is found on the
+// package search path and nowhere else, so no file beside a program can stand in
+// for it, and like every package found there it is compiled into this object
+static ModuleNode *parseLoadCore(ParseState *parse) {
+    char *path = fileFindPackage("core");
+    if (path == NULL)
+        errorExit(ExitNF, "Cannot find the core package, core/core.cone, on the package search path. The packages folder is named by CONE_PACKAGES or built into the compiler, and '--path' adds folders ahead of it.");
+    return parseLoadModulePath(parse, path, nametblFind("core", 4), FlagGenMod);
 }
 
 // Parse a program = the main module
@@ -1297,6 +1295,7 @@ ProgramNode *parsePgm(ConeOptions *opt) {
     parse.mod = NULL;
     parse.typenode = NULL;
     parse.inrettype = 0;
+    parse.core = NULL;
 
     // Create module node and set up for parsing main source file.
     // The root's file is registered like any other, so an import cycle back to
@@ -1320,8 +1319,10 @@ ProgramNode *parsePgm(ConeOptions *opt) {
     parseModuleFiles(&files, &submodules, path, dsgfile, mod->foldersym != NULL);
     parseRegisterModuleFiles(&parse, mod, &files);
 
-    // Inject and parse core library module, auto-imported into main source
-    ModuleNode *corelib = parseLoadAndParseModuleFile(&parse, "", corelibName);
+    // Load and parse the core package, auto-imported into main source and, from
+    // here on, into every module loaded
+    ModuleNode *corelib = parseLoadCore(&parse);
+    parse.core = corelib;
     ImportNode *importnode = newImportNode();
     importnode->fold = newFoldClause();
     importnode->fold->star = 1;

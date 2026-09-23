@@ -196,7 +196,6 @@ void nametblInit() {
     indexName = nametblFind("[]", 2);
     refIndexName = nametblFind("&[]", 3);
 
-    corelibName = nametblFind("corelib", 7);
     optionName = nametblFind("Option", 6);
 
     rcName = nametblFind("rc", 2);
