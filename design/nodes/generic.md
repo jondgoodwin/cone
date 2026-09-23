@@ -108,7 +108,10 @@ The non-obvious case is a **variant of a generic tagged trait**: it may not
 write its own parameters, so the parser synthesizes a parallel list reusing the
 trait's `Name`s, and rewrites the variant's `basetrait` into `Trait[P1,P2,…]`.
 That is why base trait and every variant each carry their own `GenericInfo` and
-their own `memonodes`.
+their own `memonodes`. A generic enum that extends another gets its copies of the
+base's variants the same shape at name resolution — its own parameters and a
+`basetrait` of `Enum[P1,P2,…]` — so they instantiate with its own variants
+([struct](struct.md), "An enum extending an enum").
 
 ## Name resolution
 

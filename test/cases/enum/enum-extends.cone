@@ -6,6 +6,8 @@
 // enum-typecheck-extends holds those refusals in both directions. What this file
 // claims is what the copies give: each enum lays out its own set, so the base is
 // never constrained by what extends it and the extension by what the base chose.
+// The last section does the same with a generic enum on either side of the
+// clause, Option itself among them.
 //
 // Everything is printed, because a match that compiles is not a match that
 // dispatched to the right arm. What runtime cannot see -- that an Option-shaped
@@ -288,6 +290,174 @@ fn unsizedDisagreement() {
   show("unsized-base-unchanged", messageSize(&text));
 }
 
+// -------- a generic enum extends and is extended --------
+
+// Option is generic, so what an enum extends is one of its instances, written with
+// its arguments. Pending passes its own parameter on: its copies are Option's
+// variant templates with Pending's T in place of Option's, so each is a generic
+// template of Pending, and an instance of Pending instantiates them with the
+// variant it adds.
+enum Pending[T] extends Option[T] {
+  Waiting;
+}
+
+// A bare pattern on an instance of the extension finds the instance's copies, and
+// the matched value supplies Some's argument
+fn pendingOr(p &Pending[i32], dflt i32) i32 {
+  match p {
+    case imm s &Some {s.value;}
+    case is &None {dflt;}
+    case is &Waiting {-1i32;}
+  }
+}
+
+// The second instantiation, at a reference. Pending[&i32] is tagged, since its
+// third variant leaves no pointer to be, and Option[&i32] is still a bare pointer:
+// the two are laid out apart, as a base and its extension always are.
+fn pendingRef(p &Pending[&i32]) i32 {
+  match p {
+    case imm s &Some {*s.value;}
+    case is &None {0i32;}
+    case is &Waiting {-1i32;}
+  }
+}
+
+fn optionRef(o &Option[&i32]) i32 {
+  match o {
+    case imm s &Some {*s.value;}
+    case is &None {0i32;}
+  }
+}
+
+// Inside a generic function the pattern is bound per instance
+fn pendingAny[T](p Pending[T], dflt T) T {
+  match p {
+    case imm s Some {s.value;}
+    case is None {dflt;}
+    case is Waiting {dflt;}
+  }
+}
+
+// An extension that is not generic extends an instance: its copies are Option's
+// templates instantiated at i32 while IntOrWait is resolved, so they are ordinary
+// variants
+enum IntOrWait extends Option[i32] {
+  Waiting;
+}
+
+fn intOrWait(p IntOrWait) i32 {
+  match p {
+    case imm s Some {s.value;}
+    case is None {0i32;}
+    case is Waiting {-1i32;}
+  }
+}
+
+// A generic extension of a generic enum declared here, whose variant carries a
+// payload and a method of its own, and whose enum gives every variant a method
+enum Chance[T] {
+  pub fn weight(self) i32 {1;}
+
+  struct Miss {}
+  struct Hit {
+    pub v T;
+    pub fn twice(self) T {v + v;}
+  }
+}
+
+enum ChanceMore[T] extends Chance[T] {
+  struct Pair { pub a T; pub b T; }
+}
+
+fn chanceMore(c ChanceMore[i32]) i32 {
+  match c {
+    case is Miss {0i32;}
+    case imm h Hit {h.twice() * 10 + h.weight();}
+    case imm p Pair {p.a + p.b;}
+  }
+}
+
+// The parameters passed on crosswise: Flip's T is Result's E and Flip's E is
+// Result's T, so Flip.Ok holds an E and Flip.Error a T. Substitution goes by the
+// parameters' names, so this is the case that would take one for the other.
+enum Flip[T, E] extends Result[E, T] {
+  Neither;
+}
+
+fn flip(f Flip[i32, i64]) i64 {
+  match f {
+    case imm o Ok {o.value;}
+    case imm e Error {i64[e.value] * 10;}
+    case is Neither {-1;}
+  }
+}
+
+// A generic enum may extend one that is not. Its copies are Shape's and Signals'
+// variants, which already hold their enum's fields and methods, and each becomes a
+// generic template of the extension: the common field is read through them, and
+// the requirement dispatches through them, per instance
+enum Labeled[T] extends Shape {
+  struct Label { pub text T; }
+}
+
+fn labeledKind(s Labeled[i64]) i32 {
+  match s {
+    case imm c Circle {c.kind * 10 + c.radius;}
+    case imm r Rect {r.kind * 10 + r.w * r.h;}
+    case imm l Label {l.kind * 10 + i32[l.text];}
+  }
+}
+
+enum Weighed[T] extends Signals {
+  pub struct Carry {
+    pub n i32;
+    pub v T;
+    pub fn weight(self &) i32 {n + 1;}
+  }
+}
+
+fn weighWeighed(s &Weighed[i64]) i32 {
+  s.weight();
+}
+
+fn genericExtensions() {
+  imm some Pending[i32] = Pending.Some[5];
+  imm none Pending[i32] = Pending.None[i32][];
+  imm waiting Pending[i32] = Pending.Waiting[i32][];
+  show("generic-extension-copy", pendingOr(&some, 9));
+  show("generic-extension-empty-copy", pendingOr(&none, 9));
+  show("generic-extension-added", pendingOr(&waiting, 9));
+
+  imm v = 23;
+  imm psome Pending[&i32] = Pending.Some[&v];
+  imm pwait Pending[&i32] = Pending.Waiting[&i32][];
+  imm osome Option[&i32] = Some[&v];
+  show("second-instance-copy", pendingRef(&psome));
+  show("second-instance-added", pendingRef(&pwait));
+  show("base-instance-unchanged", optionRef(&osome));
+
+  show("generic-function-copy", pendingAny[i64](Pending.Some[7i64], 8i64));
+  show("generic-function-added", pendingAny[i64](Pending.Waiting[i64][], 8i64));
+
+  show("instance-extension-copy", intOrWait(IntOrWait.Some[4]));
+  show("instance-extension-empty-copy", intOrWait(IntOrWait.None[]));
+  show("instance-extension-added", intOrWait(IntOrWait.Waiting[]));
+
+  show("user-generic-copy-methods", chanceMore(ChanceMore.Hit[6]));
+  show("user-generic-added", chanceMore(ChanceMore.Pair[2, 3]));
+  show("user-generic-empty-copy", chanceMore(ChanceMore.Miss[i32][]));
+
+  show("crosswise-ok-holds-e", flip(Flip.Ok[i32, i64][12i64]));
+  show("crosswise-error-holds-t", flip(Flip.Error[i32, i64][4]));
+
+  show("generic-over-plain-copy", labeledKind(Labeled.Circle[i64][1, 5]));
+  show("generic-over-plain-added", labeledKind(Labeled.Label[i64][2, 6i64]));
+  imm loud Weighed[i64] = Weighed.Loud[i64][3];
+  imm carry Weighed[i64] = Weighed.Carry[i64][8, 0i64];
+  show("generic-over-plain-dispatch-copy", weighWeighed(&loud));
+  show("generic-over-plain-dispatch-added", weighWeighed(&carry));
+}
+
 fn main() i32 {
   copiesAndMembership();
   foldedNames();
@@ -295,5 +465,6 @@ fn main() i32 {
   optionShapedBase();
   largerAddedVariant();
   unsizedDisagreement();
+  genericExtensions();
   0i32;
 }

@@ -187,10 +187,10 @@ neither slots nor requirements and cost the trait nothing.
 | `dropfn` | NULL until the last step of type check |
 | `dclinfo` | owner and the facts its symbols are spelled from — [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols". The owner is a module, or the enum for a variant declared inside one — for an extension's copy of a base variant, the extension, so the copy's methods are spelled after it. Read for one thing besides naming: rejecting a variant declared outside its enum's module, through `dclInfoGetModule` |
 | `basetrait` | the **type expression** of the first abstraction an `is` names, or of the enum a variant belongs to — a `NameUseNode`, or an `FnCallNode` for a generic base. **Not a `StructNode*`.** Two helpers unwrap it and they answer different questions: `structBaseTraitDcl` takes **one hop**, to the declaration this type stands on, while `structGetBaseTrait` recurses to the **bottom-most** one. Picking the wrong one is how the infection loop hangs |
-| `extendsbase` | the **type expression** whatever base an `extends` names, on the same terms: the concrete type this enriches, or, **on an enum, the enum whose variants join this one's set**. **A separate slot from `basetrait` on purpose**: they are different assertions, a type may write both, and every walk that reads `basetrait` is asking about an abstraction — which is also why an enum's base is here and not there, since no substitution runs between the two enums. `structEnumBaseDcl` unwraps this one for an enum |
+| `extendsbase` | the **type expression** whatever base an `extends` names, on the same terms: the concrete type this enriches, or, **on an enum, the enum whose variants join this one's set**. **A separate slot from `basetrait` on purpose**: they are different assertions, a type may write both, and every walk that reads `basetrait` is asking about an abstraction — which is also why an enum's base is here and not there, since no substitution runs between the two enums. `structEnumBaseDcl` unwraps this one for an enum. A generic enum is named here with its arguments (`Option[T]`), an `FnCallNode` until type check replaces it with the instance |
 | `extendsdcl` | an **enriched** base's declaration, written once its members have been taken and NULL until then — so it says both *which* type this enriches and *that* the enrichment has happened, which is what tells name resolution's expansion from type check's. `structExtendsRoot` walks it to the bottom of the chain, and `structExtendsEquiv` compares two roots: that comparison is the whole substitution rule. **Always NULL for an enum**, deliberately: an enum extension licenses no substitution, so it writes nothing the rule reads |
 | `siblings` | a **field-like node per type-body `use`**, or NULL: its `vtype` the type expression of the sibling named, its `fold` what the clause admits. Never in `fields`, because a sibling contributes no representation; the node type is reused for what it already carries through cloning — a type expression and a clause. Read only by `structUseSiblings` |
-| `derived` | for an **enum**, its variants in declaration order — **an extension's begins with its copies of its base's list**, in the base's order, and they are in no module's node list, so this is how the module walk and generation reach them (`structEnumCopyCount` says how many). A variant is in exactly one enum's list. The index is the `tagnbr` only where nothing pinned one, which is what generation asks before using the tag to index the vtable list |
+| `derived` | for an **enum**, its variants in declaration order — **an extension's begins with its copies of its base's list**, in the base's order, and they are in no module's node list, so this is how the module walk and generation reach them (`structEnumCopyCount` says how many: those whose `instnode` is the extension). A generic instance's list holds the instances of its template's variants, copies included, put there by `genericMemoize`. A variant is in exactly one enum's list. The index is the `tagnbr` only where nothing pinned one, which is what generation asks before using the tag to index the vtable list |
 | `traits` | every abstraction whose members were taken — the base, each further name in the `is` list, and each `mixin` — or NULL. Written where the members are taken (`structInheritTrait`) and read by type check's two requirement checks, the only things that still need to know which trait a requirement came from. **Which entry is the base is asked of `basetrait`, not of this list's order**, since the field walk that fills it runs backwards |
 | `fields` | all fields in layout order. A declared field may carry a fold clause (`FieldDclNode.fold`); a folded copy is never here |
 | `vtable` | NULL until `structMakeVtable` |
@@ -395,15 +395,16 @@ inherited member bare, exactly as it names the type's own.
    its members waits for step 8a, after the field walk, so that whatever is left
    in the field list by then is a field this type declared — which is what
    `extends` forbids.
-4c. **An enum's `extends` is taken here, whole** (`structEnumExtendsEligible`,
+4c. **An enum's `extends` is taken here, whole** (`structEnumWrittenBase`,
    `structEnumSeedVariants`): the base is resolved and demanded as at 4a, each of its
    variants is demanded and **copied** (`structEnumCopyVariant`) to the front of this
    enum's `derived` list and bound in its namespace, this enum's own are numbered from
    the base's last value, its `==` is made, and the base stands as a **mixin
    placeholder at position 0** so the field walk splices its fields in exactly as a
-   variant's enum does. Before step 7, so the copies are names of this enum when its
-   namespace is hooked. A clause that is refused is cleared, so nothing downstream
-   asks about it again.
+   variant's enum does — or, for a generic base named with its arguments, leaves it
+   standing for type check, as a generic variant's enum is left. Before step 7, so
+   the copies are names of this enum when its namespace is hooked. A clause that is
+   refused is cleared, so nothing downstream asks about it again.
 4b. **Resolve each sibling a body `use` names**, for the same reason again. It is
    demanded at step 5 with everything else, which is what makes its own `extends`
    taken before the base it shares is compared with this type's.
@@ -479,7 +480,10 @@ another. See [module](module.md).
    type's own methods (see Hazards). **An enum this one extends is type checked
    here** and nothing else: name resolution took its variants and members already,
    and what is wanted from it now is its discriminant's width, settled at step 5a on
-   the node the two of them share.
+   the node the two of them share. A generic base was written with its arguments,
+   so `extendsbase` is an instantiation, type checked here into the instance it
+   names; the placeholder standing for it is expanded at step 4, as a generic
+   variant's enum is.
 2. Type check `basetrait`; require an abstraction — `ErrorInvType`, since a
    subtype relationship runs from a concrete type to an abstraction and never
    between two concrete types; require the closed-ness to match —
@@ -488,7 +492,10 @@ another. See [module](module.md).
    require a closed type's derived types to share its module. A base
    name resolution did not expand — it is in `traits` when it did — is an
    instance of a generic that exists only now, so **insert a mixin placeholder
-   for it at index 0** as name resolution would have.
+   for it at index 0** as name resolution would have. Where `traits` holds the
+   *template* of the generic `basetrait` names, the mixin was done before the copy
+   was made (a generic enum's copy of a variant of an enum that is not generic), and
+   the entry becomes the instance.
 3. Type check every trait in `traits`, so each is laid out before this type is.
 4. **Walk fields backwards.** Backwards so that splicing does not invalidate the
    cursor. An ordinary field is type checked. A placeholder still standing —
@@ -840,11 +847,61 @@ original's tag value by construction**. The base stands as a mixin placeholder a
 position 0, so the field walk gives the extension its base's discriminant and common
 fields.
 
+**A generic enum may stand on either side of the clause.** A generic base is written
+with its arguments — `extends Option[i32]`, or `extends Option[T]` from an enum
+passing its own parameter on — and what is copied is then the base's variant
+*template* (`Some`, a name-resolved `StructNode` with its own `genericinfo`, built
+by `parseAddVariant`), cloned with the base's parameters substituted by those
+arguments: the substitution `genericInstantiate` performs, through
+`clonePushState(parms, args)`. Two passes, because substitution hooks a
+parameter's **name** to its argument, and an argument may name one of the
+extension's parameters spelled like the base's (`Pending[T] extends Option[T]`,
+or crosswise, `Flip[T, E] extends Result[E, T]`). In one pass the `T` inside the
+argument would be taken for the base's `T` and substituted again, without end. The
+first pass renames the base's parameters to stand-ins (`-extends-T`, which no source
+can spell); the second puts the arguments in their place.
+
+- **A generic extension's copy is a generic template of the extension**, made as
+  `parseAddVariant` makes a variant of a generic enum: `genericinfo` for the
+  extension's parameters, and a `basetrait` written `Pending[T]`. An instance
+  `Pending[i32]` instantiates the enum and every variant in its `derived` list,
+  copies included, through `genericMemoize`'s tagged path — the path every generic
+  enum's variants take. Nothing new instantiates.
+- **An extension that is not generic, of an instance** (`IntOrWait extends
+  Option[i32]`), gets ordinary variants: the arguments are concrete, so the copy is
+  the instantiation, made at name resolution.
+- **Either way the base is an instance**, which exists only at type check. So its
+  placeholder is left standing at name resolution, as a generic variant's enum is
+  (`structNameResTrait` answers NULL for an instantiation), and holds its own clone
+  of the written instantiation; type check replaces `extendsbase` with the instance
+  and expands the placeholder. The copies inherit the same: each splices the
+  extension's fields in at its own type check.
+- **A generic extension of an enum that is not generic** (`Labeled[T] extends
+  Shape`) copies variants that already hold their enum's fields, spliced at their
+  own name resolution, and records the extension's template in `traits` where the
+  base was. So an instance of such a copy is not given the fields a second time:
+  `structTypeCheck` takes a recorded template of the generic its `basetrait` names
+  as the mixin already done, and replaces it with the instance.
+- The base's own layout is untouched: its instances' `derived` lists hold only its
+  own variants, so `Option[&i32]` is still a bare pointer beside a tagged
+  `Pending[&i32]`.
+
+The arguments must be written, as many as the base has parameters, and each a type
+or one of the extension's parameters: `extends Option` has nothing to put in
+`Option`'s `T`'s place. A count that does not match is `ErrorArgCount`, at the
+clause, and an argument that is no type is `ErrorNotType`.
+
 **A copy is no module's node.** Like a generic instance it is reached through what
 made it: `structEnumCopyCount` says how many of the extension's `derived` list are
-copies, the module walk type checks them right after the extension
-(`structEnumCheckCopies`, from `modTypeCheck`), and generation reaches them from the
-extension (`genlGlobalSyms`, `genlGlobalImpl`). Not from the extension's own type
+copies — those whose `instnode` is the extension, which is also what answers none
+for a generic extension's *instance*, whose copies' instances are reached through
+their templates' `memonodes` like every other instance. The module walk type checks
+the copies right after the extension
+(`structEnumCheckCopies`, from `modTypeCheck`; a generic extension's are templates,
+and return at once), and generation reaches them from the extension
+(`genlGlobalSyms`, `genlGlobalImpl`, ahead of a generic's early return, since a
+generic extension's copies are how their instances are reached). Not from the
+extension's own type
 check: that is often demanded from inside an added variant's, which checks its enum
 first, and a copy's method body that builds that variant by value would then find it
 still in flight.
@@ -881,10 +938,13 @@ one of the base's own variants, so a match naming those is exhaustive with no `e
 declare a member of its own — a field, method, static, macro or mixin — since a
 requirement declared there would need every copy to implement it, which is not built;
 declare a discriminant or the integer type one is laid out in; extend anything but an
-enum, or itself; be or extend a *generic* enum, whose copies would be made from its
-variant templates with the written arguments substituted, which is not built; pin a
-value the set already holds (`ErrorDupTag`) or one too wide for the shared
-discriminant (`ErrorTagWidth`); or add a variant named as a copy is (`ErrorDupName`).
+enum, or itself; name a generic base without its arguments, or with the wrong number
+(`ErrorArgCount`); pin a value the set already holds (`ErrorDupTag`) or one too wide
+for the shared discriminant (`ErrorTagWidth`); or add a variant named as a copy is
+(`ErrorDupName`). ⚠ **For a generic extension a tag too wide goes unreported**, as
+it does for every generic enum: an instance is type checked before `genericMemoize`
+fills its `derived` list, so `structSetTagWidth` finds no variant to measure, and a
+pinned value past the discriminant's width is truncated where it is stored.
 
 ⚠ **A chain — an extension of an extension — is neither built for nor refused.**
 It works by the same demand: the middle enum makes its copies while it is resolved,

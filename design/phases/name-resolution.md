@@ -131,7 +131,10 @@ fold pass and a path `RichColors.Red` in a function body both need them, so both
 demand the enum (`structEnumDemandSet`). From a body, that demand clears the body's
 block scope and hooks the enum's own module namespace over the body's locals, so the
 enum resolves as if the walk had reached it. The copies are no module's nodes and
-are never walked. [struct](../nodes/struct.md), "An enum extending an enum".
+are never walked. A generic base is written with its arguments, and its copies are
+its variant templates with the arguments substituted for its parameters, made here
+all the same: generic templates of the extension where it is generic, ordinary
+variants where it is not. [struct](../nodes/struct.md), "An enum extending an enum".
 
 ## 4. What it retags
 
@@ -320,7 +323,7 @@ next pass a null to trip over.
 | `ir/stmt/fndcl.c` | `fnDclNameRes` | generic parms, signature, body with parms hooked at scope 1 |
 | `ir/types/struct.c` | `structNameRes` | `Self` → base trait → traits and fold sources demanded → namespace hooked → fields, each trait's members spliced in and hooked → fields indexed → each fold clause expanded and hooked → the type's own methods |
 | | `structNameResDemand`, `structInheritTrait` | resolve a trait or a fold's source type ahead of the walk, in its own module's scope; copy a trait's members into the type |
-| | `structEnumSeedVariants`, `structEnumCopyVariant`, `structEnumDemandSet` | copy an extended enum's resolved variants into the extension; resolve an extension from a fold or a path that needs its copies |
+| | `structEnumWrittenBase`, `structEnumSeedVariants`, `structEnumCopyVariant`, `structEnumDemandSet` | check what an enum's `extends` names, a generic base with its arguments; copy the base's resolved variants into the extension, substituting a generic base's parameters; resolve an extension from a fold or a path that needs its copies |
 | | `structFoldExpand` | expand a field's `use` clause: a copy per folded field, an alias per folded method, entered and hooked — [struct](../nodes/struct.md), "Name folding" |
 | `ir/stmt/aliasdcl.c` | `aliasDclResolve` | the declaration at the end of a chain of aliases, which every reader of a namespace binding asks for first |
 | `ir/types/fnsig.c` | `fnSigNameRes` | forces scope 0 |

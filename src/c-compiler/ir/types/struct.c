@@ -6,6 +6,7 @@
 */
 
 #include "../ir.h"
+#include <stdio.h>
 #include <string.h>
 #include <assert.h>
 
@@ -750,11 +751,24 @@ StructNode *structEnumBaseDcl(StructNode *node) {
 // How many of this enum's variants are copies of its base's: the first that many
 // of its 'derived' list, and 0 for an enum that extends nothing. They are what the
 // extension's own passes reach and no module's walk does.
+//
+// A copy is known by what made it: its 'instnode' is the extension it was cloned
+// for (structEnumCopyVariant). That is also what answers 0 for an instance of a
+// generic extension, whose list holds instances of the copies: those were made by
+// an instantiation, and they are reached through their templates' memonodes, as
+// every generic's instances are.
 uint32_t structEnumCopyCount(StructNode *node) {
-    StructNode *base = structEnumBaseDcl(node);
-    if (base == NULL || base->derived == NULL || node->derived == NULL)
+    if (!(node->flags & EnumType) || node->extendsbase == NULL || node->derived == NULL)
         return 0;
-    return base->derived->used < node->derived->used ? base->derived->used : node->derived->used;
+    uint32_t copies = 0;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(node->derived, cnt, nodesp)) {
+        if ((*nodesp)->instnode != (INode*)node)
+            break;
+        ++copies;
+    }
+    return copies;
 }
 
 // Resolve an enum that extends another now, wherever its variants are first
@@ -802,6 +816,69 @@ static int structEnumExtendsEligible(StructNode *node, INode *basedcl, INode *at
     return 1;
 }
 
+// The enum declaration this enum's resolved 'extends' names, or NULL once why not
+// is reported. A generic base is named with its arguments, 'Option[i32]' or
+// 'Option[T]', and that written instantiation is handed back through 'basecallp'
+// for the copies to substitute; it is NULL for a base that is not generic.
+//
+// The arguments have to be written: the copies are made from the base's variant
+// templates with the arguments in place of its parameters, and with none written
+// there is nothing to put there. An argument may be one of this enum's own
+// parameters, which is how a generic extension passes its parameters on.
+static StructNode *structEnumWrittenBase(StructNode *node, FnCallNode **basecallp) {
+    INode *written = node->extendsbase;
+    *basecallp = NULL;
+    FnCallNode *basecall = NULL;
+    if (written->tag == FnCallTag) {
+        basecall = (FnCallNode*)written;
+        written = basecall->objfn;
+    }
+    if (!isTypeNode(written) || written->tag == FnCallTag) {
+        errorMsgNode(node->extendsbase, ErrorEnumExtends,
+            "An enum extends an enum, adding variants to its set, and this is not an enum.");
+        return NULL;
+    }
+    INode *basedcl = itypeGetTypeDcl(written);
+    if (!structEnumExtendsEligible(node, basedcl, node->extendsbase))
+        return NULL;
+    StructNode *base = (StructNode*)basedcl;
+
+    uint32_t parmcnt = base->genericinfo ? base->genericinfo->parms->used : 0;
+    uint32_t argcnt = basecall && basecall->args ? basecall->args->used : 0;
+    if (parmcnt != argcnt) {
+        if (argcnt == 0)
+            errorMsgNode(node->extendsbase, ErrorArgCount,
+                "%s is generic, so what an enum extends is one of its instances, written with its type arguments: %s[...].",
+                &base->namesym->namestr, &base->namesym->namestr);
+        else if (parmcnt == 0)
+            errorMsgNode(node->extendsbase, ErrorArgCount,
+                "%s is not generic, so it takes no type arguments.", &base->namesym->namestr);
+        else
+            errorMsgNode(node->extendsbase, ErrorArgCount,
+                "%s has %d type parameters, and %d arguments are written.",
+                &base->namesym->namestr, (int)parmcnt, (int)argcnt);
+        return NULL;
+    }
+    if (basecall) {
+        int badargs = 0;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(basecall->args, cnt, nodesp)) {
+            // A name that did not resolve was reported where it is written
+            if (isNameUseNode(*nodesp) && ((NameUseNode*)*nodesp)->dclnode == NULL)
+                badargs = 1;
+            else if (!isTypeNode(*nodesp) && !nameUseNames(*nodesp, GenVarDclTag)) {
+                errorMsgNode(*nodesp, ErrorNotType, "Expected a type for a generic parameter");
+                badargs = 1;
+            }
+        }
+        if (badargs)
+            return NULL;
+    }
+    *basecallp = basecall;
+    return base;
+}
+
 // This enum's copy of one of its base's variants, already resolved.
 //
 // Cloned as a generic template is cloned into an instance, with 'Self' inside the
@@ -810,13 +887,90 @@ static int structEnumExtendsEligible(StructNode *node, INode *basedcl, INode *at
 // follow; it answers the requirements the extension inherited; it is padded or
 // not as the extension says; and its owner is the extension, so its methods'
 // symbols are spelled after the extension and never collide with the base's.
-static StructNode *structEnumCopyVariant(StructNode *node, StructNode *base, StructNode *variant) {
+//
+// A generic base is written with its arguments ('extends Option[T]'), and what is
+// copied is then the base's variant TEMPLATE with the base's parameters replaced
+// by those arguments: the substitution generic instantiation performs, made here
+// once. 'basecall' is that written instantiation, or NULL for a base that is not
+// generic. It is made in two passes, through a stand-in parameter per base
+// parameter, because an argument may name one of this enum's own parameters, and
+// that parameter may be spelled like the base's -- 'Pending[T] extends Option[T]'.
+// Substitution hooks a parameter's NAME to its argument, so in one pass the 'T'
+// inside the argument would itself be taken for Option's 'T' and substituted
+// again, endlessly. The first pass renames the base's parameters to stand-ins no
+// source can spell; the second puts the arguments in their place, each argument
+// cloned with nothing of the base hooked.
+//
+// A generic extension's copy is then a generic template of the extension, as a
+// variant the extension declared is (parseAddVariant): parameters of its own,
+// spelled as the extension's, and a base written 'Pending[T]'. An instance of the
+// extension instantiates it with the rest of its set (genericMemoize). A copy made
+// for an extension that is not generic is an ordinary variant: over a generic
+// base, the instantiation 'Option[i32]' asks for, made while this enum is
+// resolved. Either way the base's fields are spliced into it at type check, as
+// they are into a variant of a generic enum, because the base named with
+// arguments is an instance, and an instance exists only then. A generic
+// extension of a base that is not generic is the exception: the variant it copies
+// had its fields spliced at its own name resolution, and the extension's template
+// recorded in 'traits' below is what tells structTypeCheck so.
+static StructNode *structEnumCopyVariant(StructNode *node, StructNode *base, StructNode *variant, FnCallNode *basecall) {
     CloneState cstate;
-    clonePushState(&cstate, (INode*)node, NULL, 0, NULL, NULL);
-    StructNode *copy = (StructNode*)cloneNode(&cstate, (INode*)variant);
-    clonePopState();
+    StructNode *copy;
+    if (basecall == NULL) {
+        clonePushState(&cstate, (INode*)node, NULL, 0, NULL, NULL);
+        copy = (StructNode*)cloneNode(&cstate, (INode*)variant);
+        clonePopState();
+    }
+    else {
+        Nodes *parms = base->genericinfo->parms;
+        Nodes *standins = newNodes(parms->used);
+        Nodes *standinuses = newNodes(parms->used);
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(parms, cnt, nodesp)) {
+            Name *parmname = ((GenVarDclNode*)*nodesp)->namesym;
+            char buf[300];
+            size_t len = (size_t)sprintf(buf, "-extends-%s", &parmname->namestr);
+            GenVarDclNode *standin = newGVarDclNode(nametblFind(buf, len));
+            inodeLexCopy((INode*)standin, *nodesp);
+            NameUseNode *use = newNameUseFromLex(standin->namesym, *nodesp);
+            use->dclnode = (INode*)standin;
+            nodesAdd(&standins, (INode*)standin);
+            nodesAdd(&standinuses, (INode*)use);
+        }
 
-    copy->basetrait = newNameUseFromDclNode((INode*)node, (INode*)variant);
+        clonePushState(&cstate, (INode*)node, NULL, 0, parms, standinuses);
+        for (nodesFor(standins, cnt, nodesp))
+            nametblHookNode(((GenVarDclNode*)*nodesp)->namesym, *nodesp);
+        StructNode *renamed = (StructNode*)cloneNode(&cstate, (INode*)variant);
+        clonePopState();
+
+        clonePushState(&cstate, (INode*)node, NULL, 0, standins, basecall->args);
+        copy = (StructNode*)cloneNode(&cstate, (INode*)renamed);
+        clonePopState();
+    }
+
+    if (node->genericinfo) {
+        copy->genericinfo = newGenericInfo();
+        copy->genericinfo->parms = newNodes(node->genericinfo->parms->used);
+        FnCallNode *enumref = newFnCallNode(newNameUseFromDclNode((INode*)node, (INode*)variant),
+            node->genericinfo->parms->used);
+        inodeLexCopy((INode*)enumref, (INode*)variant);
+        enumref->flags |= FlagIndex;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(node->genericinfo->parms, cnt, nodesp)) {
+            GenVarDclNode *parm = newGVarDclNode(((GenVarDclNode*)*nodesp)->namesym);
+            inodeLexCopy((INode*)parm, *nodesp);
+            nodesAdd(&copy->genericinfo->parms, (INode*)parm);
+            NameUseNode *parmuse = newNameUseFromLex(parm->namesym, (INode*)variant);
+            parmuse->dclnode = (INode*)parm;
+            nodesAdd(&enumref->args, (INode*)parmuse);
+        }
+        copy->basetrait = (INode*)enumref;
+    }
+    else
+        copy->basetrait = newNameUseFromDclNode((INode*)node, (INode*)variant);
     if (copy->traits) {
         INode **traitp;
         uint32_t traitcnt;
@@ -843,7 +997,7 @@ static StructNode *structEnumCopyVariant(StructNode *node, StructNode *base, Str
 // Each base variant is resolved first, by demand, so what is copied is complete.
 // A chain works by the same demand: the middle enum makes its own copies while it
 // is resolved, and they are what the outer one copies.
-static void structEnumSeedVariants(NameResState *pstate, StructNode *node, StructNode *base) {
+static void structEnumSeedVariants(NameResState *pstate, StructNode *node, StructNode *base, FnCallNode *basecall) {
     Nodes *own = node->derived;
     uint32_t basecnt = base->derived ? base->derived->used : 0;
     node->derived = newNodes(basecnt + (own ? own->used : 0) + 2);
@@ -859,7 +1013,7 @@ static void structEnumSeedVariants(NameResState *pstate, StructNode *node, Struc
                     &base->namesym->namestr, &variant->namesym->namestr, &node->namesym->namestr);
                 continue;
             }
-            StructNode *copy = structEnumCopyVariant(node, base, variant);
+            StructNode *copy = structEnumCopyVariant(node, base, variant, basecall);
             nodesAdd(&node->derived, (INode*)copy);
             nexttag = copy->tagnbr + 1;
             // One namespace holds an enum's variants, fields and methods. An
@@ -1223,34 +1377,40 @@ void structNameRes(NameResState *pstate, StructNode *node) {
     // the one mechanism. Before the namespace is hooked below, so the copies are
     // names of this enum like the variants it declares.
     //
-    // A generic is refused on either side of the clause: a generic enum's copies
-    // would be made from its variant templates with the written arguments
-    // substituted, which is not built.
+    // Either side of the clause may be generic. A generic base is named with its
+    // arguments, which is an instance, so its fields are spliced in at type check,
+    // where an instance exists, as a generic enum's are into its variants: the
+    // placeholder then holds its own copy of the written instantiation, since type
+    // check replaces the placeholder's type with the instance and 'extendsbase'
+    // with it separately. The copies are made here all the same, from the base's
+    // variant templates (structEnumCopyVariant).
     if (node->flags & EnumType) {
         if (node->extendsbase) {
             inodeNameRes(pstate, &node->extendsbase);
-            StructNode *enumbase = NULL;
-            if (node->genericinfo || node->extendsbase->tag == FnCallTag || !isTypeNode(node->extendsbase))
-                errorMsgNode(node->extendsbase, ErrorEnumExtends,
-                    "An enum extends an enum declaration. Extending or being a generic enum is not built.");
-            else if (structEnumExtendsEligible(node, itypeGetTypeDcl(node->extendsbase), node->extendsbase)) {
-                enumbase = (StructNode*)itypeGetTypeDcl(node->extendsbase);
-                if (!structNameResDemand(pstate, enumbase)) {
-                    errorMsgNode(node->extendsbase, ErrorCircular,
-                        "Cannot extend %s here: %s is not complete until %s is, so each depends on the other.",
-                        &enumbase->namesym->namestr, &enumbase->namesym->namestr, &node->namesym->namestr);
-                    enumbase = NULL;
-                }
+            FnCallNode *basecall = NULL;
+            StructNode *enumbase = structEnumWrittenBase(node, &basecall);
+            if (enumbase && !structNameResDemand(pstate, enumbase)) {
+                errorMsgNode(node->extendsbase, ErrorCircular,
+                    "Cannot extend %s here: %s is not complete until %s is, so each depends on the other.",
+                    &enumbase->namesym->namestr, &enumbase->namesym->namestr, &node->namesym->namestr);
+                enumbase = NULL;
             }
             if (enumbase == NULL)
                 node->extendsbase = NULL;   // Reported; nothing downstream asks again
             else {
-                structEnumSeedVariants(pstate, node, enumbase);
+                structEnumSeedVariants(pstate, node, enumbase, basecall);
                 structEnumAddEquality(node);
                 FieldDclNode *mixin = newFieldDclNode(enumbase->namesym, (INode*)immPerm);
                 inodeLexCopy((INode*)mixin, node->extendsbase);
                 mixin->flags |= IsMixin;
-                mixin->vtype = node->extendsbase;
+                if (basecall) {
+                    CloneState cstate;
+                    clonePushState(&cstate, (INode*)node, NULL, 0, NULL, NULL);
+                    mixin->vtype = cloneNode(&cstate, node->extendsbase);
+                    clonePopState();
+                }
+                else
+                    mixin->vtype = node->extendsbase;
                 nodelistInsert(&node->fields, 0, (INode*)mixin);
             }
         }
@@ -1751,7 +1911,13 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     // settled there, and this enum shares the node it is settled on. Name
     // resolution copied the base's variants and took its members already, so there
     // is nothing left to take here; the copies are checked after this enum, by
-    // structEnumCheckCopies.
+    // structEnumCheckCopies. A generic base was written with its arguments, and
+    // that instance exists only once the instantiation is type checked, here.
+    if ((node->flags & EnumType) && node->extendsbase && node->extendsbase->tag == FnCallTag
+        && itypeTypeCheck(pstate, &node->extendsbase) == 0) {
+        pstate->typenode = svtypenode;
+        return;
+    }
     StructNode *enumbase = structEnumBaseDcl(node);
     if (enumbase) {
         INode *basedcl = (INode*)enumbase;
@@ -1765,19 +1931,34 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
         // exists only once the instantiation is type checked here -- is mixed in
         // below, through a placeholder field inserted at position 0 as name
         // resolution would have.
+        //
+        // One more is mixed in already: a generic enum's copy of a variant of an
+        // enum that is not generic. That variant had its enum's fields spliced in
+        // at name resolution, before it was copied, and the copy records the
+        // extension's template in their place (structEnumCopyVariant). So an
+        // instance of the copy has its fields, and what it records is made the
+        // instance of the extension it now belongs to.
         int pending = 1;
+        INode **templatep = NULL;
         if (node->traits) {
             INode **traitp;
             uint32_t traitcnt;
-            for (nodesFor(node->traits, traitcnt, traitp))
+            for (nodesFor(node->traits, traitcnt, traitp)) {
                 if (isTypeNode(node->basetrait) && *traitp == itypeGetTypeDcl(node->basetrait))
                     pending = 0;
+                else if (node->basetrait->tag == FnCallTag && *traitp == (INode*)structBaseTraitDcl(node)) {
+                    pending = 0;
+                    templatep = traitp;
+                }
+            }
         }
         if (itypeTypeCheck(pstate, &node->basetrait) == 0) {
             pstate->typenode = svtypenode;
             return;
         }
         StructNode *basetrait = (StructNode*)itypeGetTypeDcl(node->basetrait);
+        if (templatep)
+            *templatep = (INode*)basetrait;
         if (basetrait->tag != StructTag || !(basetrait->flags & TraitType)) {
             errorMsgNode(node->basetrait, ErrorInvType, "An 'is' names an abstraction, and this is not one");
         }

@@ -59,7 +59,9 @@ here, before parsing.
 Both recurse into a type's method list, into a generic's
 `genericinfo->memonodes`, and into an enum extension's copies of its base's
 variants, the front of its `derived` list (`structEnumCopyCount`): neither
-instances nor copies are any module's nodes. An uninstantiated generic generates
+instances nor copies are any module's nodes. The copies are reached first, ahead of
+a generic's own instances, because a generic extension's copies are templates and
+their instances are reached only through them. An uninstantiated generic generates
 nothing.
 
 ### Symbols, linkage and COMDATs
@@ -185,7 +187,9 @@ Three shapes, the first two chosen in `genlSetupTaggedTrait`:
   at all**, and the value *is* the pointer. A null pointer is the empty variant.
   Each enum decides this for its own set: an extension's variants are copies, so an
   `Option`-shaped base keeps the layout whatever extends it, and the extension, with
-  a third variant for which there is no pointer to be, is tagged.
+  a third variant for which there is no pointer to be, is tagged. The same holds per
+  instance: `Option[&i32]` is a bare pointer beside a tagged instance of an enum
+  extending `Option[T]`.
 - **Same size.** Each variant is re-emitted as a named struct with `[N x i8]`
   trailing padding to one size: the largest variant's store size, rounded up to
   the strictest alignment of any variant's field, or a byte-aligned largest

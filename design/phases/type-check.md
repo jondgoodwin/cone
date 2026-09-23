@@ -388,7 +388,13 @@ written inside its body.
   extension** (`structEnumCheckCopies`, from `modTypeCheck`), since they are no
   module's nodes. Not inside the extension's own check, which an added variant
   demands before its own is done: a copy's method body that builds that variant by
-  value would find it still in flight.
+  value would find it still in flight. A generic extension's copies are templates,
+  so the walk passes over them, and each instance of the extension instantiates and
+  checks its copies with its own variants (`genericMemoize`). **A generic base is an
+  instance**, written with its arguments, so type check is where it exists: the
+  extension's `extendsbase` is checked into it, and the placeholder standing for it
+  is expanded into the extension's fields, and into each copy's through its enum, as
+  a generic enum's are into its variants.
 - **A base enum and an extension of it never substitute for each other**, in either
   direction, and type check is what enforces it: two `EnumType` declarations are
   refused in `structMatches` ahead of its structural test and in
