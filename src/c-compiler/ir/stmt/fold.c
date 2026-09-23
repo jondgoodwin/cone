@@ -72,9 +72,15 @@ void foldStarItems(Namespace *ns, Name *srcname, FoldClause *fold, int admit) {
     if (fold->excludes) {
         for (nodesFor(fold->excludes, cnt, nodesp)) {
             Name *name = ((NameUseNode*)*nodesp)->namesym;
-            if (namespaceFind(ns, name) == NULL)
+            INode *found = namespaceFind(ns, name);
+            if (found == NULL)
                 errorMsgNode(*nodesp, ErrorNoMbr, "%s has no member named %s to leave out.",
                     &srcname->namestr, &name->namestr);
+            // Seen from the fold, a private name is as absent as a missing one:
+            // the star never admits it, so leaving it out says nothing
+            else if (inodeIsPrivate(found))
+                errorMsgNode(*nodesp, ErrorNotPublic, "%s is private to %s, so '*' never folds it; there is nothing to leave out.",
+                    &name->namestr, &srcname->namestr);
         }
     }
     namespaceFor(ns) {

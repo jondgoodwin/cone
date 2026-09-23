@@ -444,7 +444,7 @@ void importBindName(ModuleNode *mod, ImportNode *node) {
 // Run in every fold pass (modFoldAll). A star clause reads its module again, and
 // a listed item not yet made tries again. The pass that reports reads nothing
 // afresh: it reports each listed item still waiting, and each 'but' naming what
-// the module does not have.
+// the module does not have or does not show.
 void importNameRes(NameResState *pstate, ImportNode *node) {
     if (node->fold == NULL || node->module == NULL)
         return;
@@ -461,9 +461,17 @@ void importNameRes(NameResState *pstate, ImportNode *node) {
         if (fold->excludes) {
             for (nodesFor(fold->excludes, cnt, itemp)) {
                 Name *name = ((NameUseNode*)*itemp)->namesym;
-                if (namespaceFind(&src->namespace, name) == NULL)
+                INode *found = namespaceFind(&src->namespace, name);
+                if (found == NULL)
                     errorMsgNode(*itemp, ErrorNoMbr, "%s has no member named %s to leave out.",
                         &src->namesym->namestr, &name->namestr);
+                // Seen from outside the module, a private name is as absent as a
+                // missing one: the star never admits it (importStarAdmits), so
+                // leaving it out says nothing. Read in the reporting pass, once
+                // no route round a cycle can still make it public
+                else if (inodeIsPrivate(found) && !node->isextends)
+                    errorMsgNode(*itemp, ErrorNotPublic, "%s is private to %s, so '*' never folds it; there is nothing to leave out.",
+                        &name->namestr, &src->namesym->namestr);
             }
         }
         return;

@@ -510,8 +510,8 @@ its type, or the enum or submodule — is named through a binding not there yet
 clause needs no waiting: each pass reads its module afresh (`importFoldStar`).
 The pass after the last REPORTS (`modFoldReporting`): it reads no module afresh,
 and each fold still waiting is made or reported with the message it always had —
-a listed name missing or private, a `but` naming what the module does not have,
-an unknown type or enum. So a `but`, a listed name and an `as` are judged against
+a listed name missing or private, a `but` naming what the module does not have
+or does not show, an unknown type or enum. So a `but`, a listed name and an `as` are judged against
 the module once it is complete, which is what a single pass over an acyclic
 program judges them against.
 
@@ -672,7 +672,9 @@ Only a public binding of the source folds, asked through `inodeIsPrivate` — th
 declaration's `DclPrivate` bit where the source declared the name, the alias's own
 `FlagPub` where the source folded it. A private name of the source is
 `ErrorNotPublic` where a selective clause names it and is passed over by a star
-clause; a name the source has not got, listed or after `but`, is `ErrorNoMbr`;
+clause, so it is `ErrorNotPublic` after `but` too: seen from outside a module a
+private name behaves as a missing one does, and there is nothing to leave out. A
+name the source has not got, listed or after `but`, is `ErrorNoMbr`;
 the source module's own name is passed over by a star clause and is `ErrorBadFold`
 where a list names it, because the import bound it already. (A module's `extends`
 is the one fold that takes private names too, above.)

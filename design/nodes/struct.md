@@ -691,7 +691,8 @@ or an enum (`ErrorBadFold`, the enum tested first because it carries
 `TraitType` too) and complete — not this type, not one still being resolved
 (`ErrorCircular`). For `use *`, an alias is made for every public member of
 the source's namespace, its own copies and aliases included so a fold chains,
-less what `but` names (`ErrorNoMbr` for a name the source lacks) and less
+less what `but` names (`ErrorNoMbr` for a name the source lacks, and
+`ErrorNotPublic` for a private one, which the star never admits) and less
 `Self`, the statics, macros without `self`, and the source's own `final` and
 `clone`. Then each item: the name looked up in the source (`ErrorNoMbr`), must
 be public (`ErrorNotPublic`), resolved through the source's own aliases, and
@@ -914,7 +915,7 @@ names anything else is `ErrorBadFold`.
 
 **Otherwise it is the field fold's rules, read off the same `FoldClause`.** A
 name the sibling lacks is `ErrorNoMbr`, in the list and after `but` alike; a
-private one is `ErrorNotPublic`, because a sibling is inside the *base's*
+private one is `ErrorNotPublic`, in the list and after `but` alike, because a sibling is inside the *base's*
 encapsulation boundary and not inside this type's, so what it declares privately
 stays its own; `final` and `clone` are its values' lifecycle and do not fold,
 ahead of the visibility check since that holds whether they are public or not; and
