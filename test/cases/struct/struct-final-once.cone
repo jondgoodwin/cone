@@ -15,6 +15,14 @@
 // from 'final' and declared by the attribute, and either could reach a different
 // path. A struct holding a finalized field is here because its drop fn is the
 // generated one, not the finalizer itself.
+//
+// A value crossing between an enrichment and its base is moved too, in either
+// direction. The two share one representation, so type check hands the value
+// over wrapped in a recast (a CastNode with no FlagConvert) rather than
+// converting it. Flow looked for the source variable, and for the scope's
+// result, only through a name, field, index or dereference, so the recast hid
+// the variable and it was never deactivated. The value was finalized twice,
+// once under each name, and the source stayed usable after the move.
 
 import stdio.*;
 
@@ -40,6 +48,12 @@ struct @move Handle {
 struct Outer {
   pub held Fin;
   pub tag i32;
+}
+
+// An enrichment of Outer: its values and Outer's are one representation, each
+// finalizing its 'held' through the drop fn generated for it
+struct RichOuter extends Outer {
+  pub fn heldId(self &) i32 { held.id; }
 }
 
 fn show(label &[]u8, n i64) {
@@ -88,6 +102,61 @@ fn nestedInitialized() {
   imm o = Outer[Fin[5], 6];
 }
 
+// 'r' owns the value at scope exit; 'o' no longer does
+fn movedIntoEnrichment() {
+  imm o = Outer[Fin[7], 8];
+  imm r RichOuter = o;
+}
+
+fn movedIntoBase() {
+  imm r = RichOuter[Fin[9], 10];
+  imm o Outer = r;
+}
+
+fn takeOuter(o Outer) {
+}
+
+fn takeRich(r RichOuter) {
+}
+
+// The parameter owns the value, and the callee finalizes it
+fn passedAsBase() {
+  imm r = RichOuter[Fin[11], 12];
+  takeOuter(r);
+}
+
+fn passedAsEnrichment() {
+  imm o = Outer[Fin[13], 14];
+  takeRich(o);
+}
+
+// The local is the function's result, so the caller's variable owns it
+fn richAsOuter() Outer {
+  imm r = RichOuter[Fin[15], 16];
+  r;
+}
+
+fn outerAsRich() RichOuter {
+  imm o = Outer[Fin[17], 18];
+  o;
+}
+
+fn returnedAsBase() {
+  imm o = richAsOuter();
+}
+
+fn returnedAsEnrichment() {
+  imm r = outerAsRich();
+}
+
+// Assigned into a variable declared without a value, so the destination held
+// nothing before and exactly one value is finalized
+fn assignedIntoEnrichment() {
+  imm o = Outer[Fin[19], 20];
+  mut r RichOuter;
+  r = o;
+}
+
 fn main() i32 {
   finalized = 0;
   neverAssignedMut();
@@ -124,6 +193,34 @@ fn main() i32 {
   finalized = 0;
   nestedInitialized();
   show("nested-initialized", finalized);
+
+  finalized = 0;
+  movedIntoEnrichment();
+  show("moved-into-enrichment", finalized);
+
+  finalized = 0;
+  movedIntoBase();
+  show("moved-into-base", finalized);
+
+  finalized = 0;
+  passedAsBase();
+  show("passed-as-base", finalized);
+
+  finalized = 0;
+  passedAsEnrichment();
+  show("passed-as-enrichment", finalized);
+
+  finalized = 0;
+  returnedAsBase();
+  show("returned-as-base", finalized);
+
+  finalized = 0;
+  returnedAsEnrichment();
+  show("returned-as-enrichment", finalized);
+
+  finalized = 0;
+  assignedIntoEnrichment();
+  show("assigned-into-enrichment", finalized);
 
   0i32;
 }

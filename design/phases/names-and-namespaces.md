@@ -876,7 +876,7 @@ which is where the `symbols` check target reads them.
 | vtable list | `@_CLNt5Meter = internal constant [2 x %"Meter:Vtable"*] [...], comdat` — one per trait, so LLVM never uniquifies one | internal · `nodeduplicate` |
 | `extern` | `declare i32 @abs(i32)` — bare inside a module too | external · none |
 | `extern system` | `declare dllimport x86_stdcallcc i32 @GetTickCount()` | external · none |
-| string literal | `@string = internal constant [5 x i8] c"hello", comdat` | internal · `nodeduplicate` |
+| string literal | `@string = internal constant [6 x i8] c"hello\00", comdat` | internal · `nodeduplicate` |
 | anonymous `fn` | `define internal i32 @anon(i32 %0) comdat {` | internal · `nodeduplicate` |
 | `inline` fn | no symbol | |
 | overload name | no symbol; each candidate is spelled as an ordinary `fn`, and a public name holds only public candidates (L5) | |

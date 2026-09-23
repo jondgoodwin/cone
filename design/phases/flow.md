@@ -159,6 +159,16 @@ deactivates the source of each element that is itself a move value and leaves
 a copyable element's alone; it is the `VTupleTag` arm beside the field, index
 and dereference arms that walk inwards to the variable.
 
+**A recast is its operand.** Type check hands a value between an enrichment and
+its base, in either direction, wrapped in a `CastTag` with no `FlagConvert`: the
+two share one representation, so nothing is converted. Every walk here that
+looks for the variable behind a value looks through that node to its `exp` —
+`flowHandleMove` (the source to deactivate), `flowIsLvalRead` (a recast of an
+lvalue still has a holder behind it) and `flowIsScopeResult` (a local returned
+as its enrichment or base is still the scope's result). Missing any one of them
+leaves one value under two names: finalized or freed twice, or counted once for
+two holders. A converting cast (`FlagConvert`) is not looked through.
+
 **The count counts holders.** From the ownership work:
 
 - `+rc[2]` creates the object *and* the first reference. Born at 1.
@@ -177,8 +187,8 @@ else if (flowIsLvalRead(*nodep)) flowInjectRefCount(nodep);   // +1
 ```
 
 `flowIsLvalRead` asks "does this expression still hold its value after it is
-read?" — true for a name use, deref, index and field access; false for a
-temporary. Counting a temporary would add a holder that never existed, and the
+read?" — true for a name use, deref, index and field access, and for a recast
+of any of them; false for a temporary. Counting a temporary would add a holder that never existed, and the
 allocation would never reach zero.
 
 It is called from exactly seven places — `varDclFlow` (the initializer),
@@ -224,8 +234,8 @@ order. Per variable: one that was never initialized or was moved out is
 skipped, whatever its type, because it owns nothing to release or finalize; so
 is one the scope hands back, which is the caller's to release or finalize, and
 `flowIsScopeResult` matches it against the result expression, walking a
-`VTupleTag` element by element. The match is on the declaration the result's
-name resolves to, not on the name: a `return` asks over the whole function's
+`VTupleTag` element by element and a recast to its operand. The match is on the
+declaration the result's name resolves to, not on the name: a `return` asks over the whole function's
 stack, where an inner block's `a` and an outer `a` both sit, and only the one
 handed back is exempt. What survives both is an `so` or `rc`
 reference, single (`RefTag`) or slice (`ArrayRefTag`), or a tuple carrying one

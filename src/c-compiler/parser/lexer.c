@@ -104,7 +104,6 @@ void keywordInit() {
     keyAdd("use", UseToken);
     keyAdd("but", ButToken);
     keyAdd("enum", EnumToken);
-    keyAdd("region", RegionToken);
     keyAdd("return", RetToken);
     keyAdd("with", WithToken);
     keyAdd("if", IfToken);
@@ -518,8 +517,10 @@ void lexScanNumber(char *srcp) {
     lex->srcp = srcp;
 }
 
-/** Tokenize an identifier or reserved token */
-void lexScanIdent(char *srcp) {
+/** Tokenize an identifier or reserved token. Returns 0 when the word was
+ * reported and dropped instead, with lex->srcp where scanning resumes: only a
+ * '@' or '#' word that names nothing is. */
+int lexScanIdent(char *srcp) {
     char *srcbeg = srcp;    // Pointer to the start of the token
     lex->tokp = srcbeg;
     srcp += utf8ByteSkip(srcp);  // Skip past already accepted first character
@@ -568,19 +569,41 @@ void lexScanIdent(char *srcp) {
                             &lex->val.ident->namestr);
                         lex->val.ident->node = NULL;
                         lex->toktype = IdentToken;
-                        return;
+                        return 1;
                     }
                 }
                 else if (identNode && identNode->tag == PermTag)
                     lex->toktype = PermToken;
-                else if (*srcbeg == '@')
-                    lex->toktype = AttrIdentToken;
-                else if (*srcbeg == '#')
-                    lex->toktype = MetaIdentToken;
+                // Every attribute is a keyword ('@move', '@opaque', '@unsized'),
+                // so a '@' word that reaches here names none. It is reported
+                // and dropped, and what follows it is read as though it were
+                // absent.
+                else if (*srcbeg == '@') {
+                    if (strcmp(&lex->val.ident->namestr, "@samesize") == 0)
+                        errorMsgLex(ErrorUnkAttr,
+                            "'@samesize' is not an attribute: an enum is same-size by default, and '@unsized' declines it");
+                    else
+                        errorMsgLex(ErrorUnkAttr, "'%s' is not a Cone attribute",
+                            &lex->val.ident->namestr);
+                    lex->srcp = srcp;
+                    return 0;
+                }
+                // '#' is held for metaprogramming. A '#' word is reported and
+                // dropped with the rest of its line, so that what is written
+                // after it ('#if x') is not reported as well.
+                else if (*srcbeg == '#') {
+                    errorMsgLex(ErrorReserved,
+                        "'%s': '#' is reserved for metaprogramming, which is not implemented yet",
+                        &lex->val.ident->namestr);
+                    while (*srcp && *srcp != '\n' && *srcp != '\x1a')
+                        srcp++;
+                    lex->srcp = srcp;
+                    return 0;
+                }
                 else
                     lex->toktype = IdentToken;
                 lex->srcp = srcp;
-                return;
+                return 1;
             }
         }
     }
@@ -692,9 +715,16 @@ void lexNextTokenx() {
         case 'K': case 'L': case 'M': case 'N': case 'O':
         case 'P': case 'Q': case 'R': case 'S': case 'T':
         case 'U': case 'V': case 'W': case 'X': case 'Y': case 'Z':
-        case '#': case '@': case '_':
+        case '_':
             lexScanIdent(srcp);
             return;
+
+        // An attribute; or a '@' or '#' word naming nothing, reported and skipped
+        case '#': case '@':
+            if (lexScanIdent(srcp))
+                return;
+            srcp = lex->srcp;
+            break;
 
         // backtick enclosed identifiers
         case '`':
@@ -848,9 +878,14 @@ void lexNextTokenx() {
                 lexReturnPuncTok(GtToken, 1);
             }
 
-        case '?': 
+        // '?.' is held for None propagation (refoption.html). It is reported
+        // and read as '.', so the member it reaches is parsed as it was meant.
+        case '?':
             if (*(srcp + 1) == '.') {
-                lexReturnPuncTok(QuesDotToken, 2);
+                lex->tokp = srcp;
+                errorMsgLex(ErrorReserved,
+                    "'?.' is reserved for None propagation, which is not implemented yet");
+                lexReturnPuncTok(DotToken, 2);
             }
             else
                 lexReturnPuncTok(QuesToken, 1);

@@ -83,7 +83,9 @@
 # makes n holders out of one value at once. The 'move' group owns the other half
 # of that literal -- a move value may not be filled at all, which move-flow-arraylit
 # asserts -- and region-flow-fill covers the two counts the constant alias amount
-# cannot carry.
+# cannot carry. region-enrich-count asks it of an alias taken under an
+# enrichment's name, which crosses in a recast: one holder more, as under the
+# same name.
 #
 # region-nested-alloc joined them: genlallocref's phi named a predecessor that the
 # inner allocation's own branches had already displaced, so it read the block back
@@ -200,6 +202,22 @@ contains = ["add i64 %6, 12"]
 name = "fill-from-temporary-counts-n-minus-one"
 target = "preir"
 contains = ["add i64 %6, 11"]
+
+# The claim is the count, because a run cannot see it: without the fix the read
+# after the early free still finds the value, and the second release decrements
+# freed memory rather than freeing it twice. 'aliasAcross' is the module's only
+# function that counts, so its one increment is the alias's. The register was
+# read from the pre-optimization dump; without the fix the module holds the two
+# releases and no increment.
+[scenario.region-enrich-count]
+category = "compile"
+description = "An rc alias taken under an enrichment's name adds a holder, as one under the same name does"
+tags = ["flow", "genllvm"]
+
+[[scenario.region-enrich-count.check]]
+name = "alias-across-an-enrichment-is-counted"
+target = "preir"
+contains = ["%8 = add i64 %7, 1"]
 
 # Returning owning references in a value tuple. The claim is that 'pair' adjusts
 # no counter at all: both allocations are handed to the caller, so neither is
@@ -479,7 +497,7 @@ diagnostics = 3
 category = "reject"
 description = "Owning references that move rather than copy, and a permission that forbids the write"
 tags = ["flow"]
-diagnostics = 6
+diagnostics = 7
 
 [scenario.region-flow-fill]
 category = "reject"
