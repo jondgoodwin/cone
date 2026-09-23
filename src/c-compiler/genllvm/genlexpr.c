@@ -1029,13 +1029,18 @@ LLVMValueRef genlAddr(GenState *gen, INode *lval) {
     }
     case StringLitTag:
     {
+        // The constant carries a NUL after the text, for C compatibility, but
+        // the literal's type [strlen] u8 does not count it. The global is one
+        // byte longer than that type, and its address is recast to a pointer
+        // to the type, so every use sees the text's length and nothing more.
         SLitNode *strnode = (SLitNode *)lval;
-        LLVMValueRef sglobal = LLVMAddGlobal(gen->module, genlType(gen, strnode->vtype), "string");
+        LLVMValueRef strconst = LLVMConstStringInContext(gen->context, strnode->strlit, strnode->strlen, 0);
+        LLVMValueRef sglobal = LLVMAddGlobal(gen->module, LLVMTypeOf(strconst), "string");
         LLVMSetLinkage(sglobal, LLVMInternalLinkage);
         LLVMSetGlobalConstant(sglobal, 1);
         genlComdat(gen, sglobal);
-        LLVMSetInitializer(sglobal, LLVMConstStringInContext(gen->context, strnode->strlit, strnode->strlen, 1));
-        return sglobal;
+        LLVMSetInitializer(sglobal, strconst);
+        return LLVMConstBitCast(sglobal, LLVMPointerType(genlType(gen, strnode->vtype), 0));
     }
     default: {
         INode *type = iexpGetTypeDcl(lval);

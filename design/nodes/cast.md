@@ -168,8 +168,12 @@ same mistake written directly on a variant.
 
 ## Flow
 
-Nothing. `flowLoadValue` descends into `exp` and that is all — a cast neither
-moves nor counts.
+`flowLoadValue` descends into `exp`, and a cast adds no flow of its own. **A
+recast (no `FlagConvert`) is transparent to the hand-over decision**: when one
+is moved, counted or returned, flow acts on its operand, because the injected
+recast between an enrichment and its base is one value under two type names
+(see [flow](../phases/flow.md), "A recast is its operand"). A conversion is not
+looked through.
 
 ## Generation
 
