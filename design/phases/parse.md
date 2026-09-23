@@ -351,7 +351,7 @@ never be analyzed.
 | a spelling the lexer refuses | a reserved word, `?.`, or a `@` or `#` word that names nothing is reported in the lexer and handed on as what it stands for or not at all (section 2), so the parser never sees it |
 | `parseSkipToNextStmt` | the main resync; consumes through the next `;`, or stops short of a `}` or EOF for the enclosing block to handle |
 | an unbuilt form's body | `parseSkipDclBody` skips a following `{ … }` whole, counting depth, so nothing inside is read as a global statement and reported again, and resyncs at the next `;` where there is no block. `actor`, a nested `mod` block and `mod trait` all use it, so each is reported once, where it is written |
-| the retired `include` | `parseRetiredInclude` reports `ErrorInclude` at the word and resyncs with `parseSkipToNextStmt`, so a statement naming one file, a path or a list is one diagnostic, and a `pub` before it adds none |
+| the retired `include` | `parseRetiredInclude` reports `ErrorInclude` at the word, then reads what the statement took — names or quoted paths, comma-separated — and its `;`, so a statement naming one file, a path or a list is one diagnostic and a `pub` before it adds none. A missing `;` ends the statement at its last name rather than swallowing the next declaration; only where no name follows does it resync with `parseSkipToNextStmt` |
 | `parseCloseTok` | reports `ErrorNoRParen`, scans for the closer, gives up at `;`, `}`, EOF |
 | `parseBlockStart` | on `:`, reports `ErrorColonBlock` and reads what follows as the block; on anything else that is not `{`, reports `ErrorNoLCurly` and scans forward for one |
 | `parseTerm` default | reports `ErrorBadTerm`, consumes one token to avoid an infinite loop, returns `NULL` |

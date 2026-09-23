@@ -229,12 +229,27 @@ char *parseFilename() {
 // The word stays a keyword so that no program can bind it, and the statement it
 // began is reported where it is written and skipped whole, whatever it names:
 // one file, a path, or a list. What it named is not looked for, because nothing
-// would be done with it
+// would be done with it.
+//
+// The skip reads what the statement took rather than scanning for a ';', so an
+// 'include' with its ';' missing ends at its last name and does not swallow the
+// declarations after it. Only where no name follows does it scan
 static void parseRetiredInclude() {
     errorMsgLex(ErrorInclude,
         "'include' is retired: the folder brings a module's files in. A file in the same folder as the file named for that folder is part of its module.");
     lexNextToken();
-    parseSkipToNextStmt();
+    int named = 0;
+    while (lexIsToken(IdentToken) || lexIsToken(StringLitToken)) {
+        named = 1;
+        lexNextToken();
+        if (!lexIsToken(CommaToken))
+            break;
+        lexNextToken();
+    }
+    if (lexIsToken(SemiToken))
+        lexNextToken();
+    else if (!named)
+        parseSkipToNextStmt();
 }
 
 // The module a name reaches in the REGISTRY this module's imports resolve
