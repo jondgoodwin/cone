@@ -1058,6 +1058,124 @@ fn foldingSome() {
   show("the-but-reached-through-the-enum", wetness(Weather.Snow[]));
 }
 
+// -------- a variant's body names its enum's other names bare --------
+
+// Anything written inside an enum's braces sees every name the enum declares
+// bare, and a variant's body is written there: a method of Traffic.Stop builds
+// Go[5] with no 'Traffic.' and calls the enum's static bare, exactly as a method
+// of Traffic itself would. Nothing here is folded with 'use', so outside the
+// braces every one of these names is written through its enum.
+enum Traffic {
+  fn base() i32 {40;}
+
+  struct Stop {
+    pub fn next(self &) Traffic {Go[5];}
+    pub fn pause(self &) i32 {base() + 2;}
+  }
+
+  struct Hold {
+    // A match on a sibling, and an arm building one
+    pub fn after(self &, t Traffic) Traffic {
+      match t {
+        case is Stop {Go[1];}
+        else {Stop[];}
+      }
+    }
+  }
+
+  struct Go {
+    // The variant's own names are the nearer scope, so 'Hold' in its method is
+    // this field and not the sibling variant
+    pub Hold i32;
+    pub fn held(self &) i32 {Hold;}
+  }
+}
+
+fn trafficCode(t Traffic) i32 {
+  match t {
+    case is Stop {1;}
+    case is Hold {2;}
+    case imm g Go {g.Hold * 10 + 3;}
+  }
+}
+
+// A generic enum's variant carries the enum's parameters, so it names a sibling
+// with them, as the enum's own methods do. A pattern's name written with its
+// arguments is taken lexically rather than from the matched value, so 'Full[T]'
+// in the match is reached only because it is written inside Slot's braces.
+//
+// The methods are on the later variant. An instance's variants are instantiated
+// in declaration order, and an earlier one naming a later one at its parameters
+// expands endlessly (ErrorInstDepth) whether the name is bare or qualified, and
+// in the enum's own methods too -- a defect of instantiation, not of naming.
+enum Slot[T] {
+  struct Full {
+    pub item T;
+  }
+
+  struct Empty {
+    pub fn fill(self &, v T) Slot[T] {Full[T][v];}
+    pub fn itemOr(self &, s Slot[T], d T) T {
+      match s {
+        case imm f Full[T] {f.item;}
+        else {d;}
+      }
+    }
+  }
+}
+
+// An extension's copy of a base's variant is cloned as it was resolved, inside
+// the base's braces, so the 'Low' in its method is the base's: the variant
+// 'Tier.Low' written there would be, and the only one its return type admits. A
+// variant the extension declares is inside the extension's braces, so its bare
+// 'High' is the extension's own copy. Inside either enum's braces its own 'Low'
+// is nearer than the Level.Low this module folds in above.
+enum Tier {
+  struct Low {}
+  struct High {
+    pub fn drop(self &) Tier {Low[];}
+  }
+}
+
+enum WideTier extends Tier {
+  struct Peak {
+    pub fn drop(self &) WideTier {High[];}
+  }
+}
+
+fn tierCode(t Tier) i32 {
+  match t {
+    case is Tier.Low {1;}
+    case is Tier.High {2;}
+  }
+}
+
+fn wideTierCode(w WideTier) i32 {
+  match w {
+    case is WideTier.Low {1;}
+    case is WideTier.High {2;}
+    case is WideTier.Peak {3;}
+  }
+}
+
+fn variantBodies() {
+  imm stop = Traffic.Stop[];
+  show("variant-builds-sibling-bare", trafficCode((&stop).next()));
+  show("variant-calls-enum-static-bare", (&stop).pause());
+  imm hold = Traffic.Hold[];
+  show("variant-matches-sibling-bare", trafficCode((&hold).after(Traffic.Stop[])));
+  show("variant-matches-sibling-else", trafficCode((&hold).after(Traffic.Hold[])));
+  imm go = Traffic.Go[8];
+  show("variant-own-name-wins-a-clash", (&go).held());
+  imm empty = Slot.Empty[i64][];
+  show("generic-variant-builds-sibling", (&empty).itemOr((&empty).fill(6), 99));
+  show("generic-variant-sibling-pattern-else", (&empty).itemOr(Slot.Empty[i64][], 99));
+  imm high = WideTier.High[];
+  show("extension-copy-means-the-base-sibling", tierCode((&high).drop()));
+  imm peak = WideTier.Peak[];
+  show("extension-variant-means-its-copy", wideTierCode((&peak).drop()));
+}
+
 // -------- interaction with the constructs below this tier --------
 
 // An enum built in one branch and matched in another, accumulated in a loop:
@@ -1213,6 +1331,7 @@ fn main() i32 {
   namingVariants();
   barePatterns();
   foldingSome();
+  variantBodies();
   interactions();
   heldAboveDeclaration();
   0i32;
