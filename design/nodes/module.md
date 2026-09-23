@@ -40,9 +40,13 @@ it is a child's `dclinfo.owner` pointing at its parent, and the parent's
 `namespace` holding the child's name.
 
 **The registry is what makes a file read once and owned once.** Its key is the
-path rather than a name, because what must happen exactly once is the *reading*:
-two folders may hold files of one basename, and a module's declared name is not
-known until its file has been read. A built-in module is a string inside the
+**canonical** path rather than a name, because what must happen exactly once is
+the *reading*: two folders may hold files of one basename, and a module's
+declared name is not known until its file has been read. `fileCanonicalPath`
+gives one spelling — separators as `/`, a `.` segment dropped, a `..` segment
+cancelled against the one in front of it — so that a path a source writes to walk
+somewhere and back finds the entry the folder sweep made rather than missing it
+and reading the file a second time. A built-in module is a string inside the
 compiler rather than a file, and stands in the registry under the pseudo-file
 name its diagnostics are reported against — `corelib`, `stdio`.
 
@@ -56,8 +60,9 @@ name its diagnostics are reported against — `corelib`, `stdio`.
 | `dclinfo` | the declaration facts — [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols". `owner` is **the parent module for a submodule**, and NULL for the root, for a module that is one file and for one an `import` reached. **The root is the module without `DclNamesChain`**: it has a name and contributes it to no symbol. `DclPrivate` is set on a submodule that does not write `pub`, and on no other module, because a module with no parent has nothing to be visible outside of |
 | `imports` | `ImportNode`s only, held apart from `nodes` so folding can run before anything else resolves |
 | `nodes` | every declaration the module owns, in source order. This is what printing and generation iterate |
-| `namespace` | every name *visible* in the module: what it declares, what an import folded in, **each submodule its subfolders drew**, and — when a folder or a `mod` declaration named it — the module's own name |
+| `namespace` | every name *visible* in the module: what it declares, **the module an import bound and every name an import folded in, each an `AliasDclNode` carrying the import's own visibility**, what a global's `use` clause folded in, **each submodule its subfolders drew**, and — when a folder or a `mod` declaration named it — the module's own name |
 | `flags` | `FlagGenMod`; `FlagModDcl` for a module a `mod` declaration named; `FlagPub` for a submodule its declaration opened |
+| `foldstate` | how far `modFoldNames` has got: not begun, running, done. *Running* is what stops a cycle of re-exports going round |
 
 **A module's own name is in its own namespace, and that is what makes a hidden
 module-level name reachable.** `mymod.x` reaches an `x` that a local or a type
@@ -69,16 +74,21 @@ prints, generates or folds the module into itself.
 where folding lives.** A folded name is added to `namespace` and never to
 `nodes`, so the receiving module can resolve it but does not own, print or
 generate it. That holds for both folds a module has — a wildcard import's, and a
-global's `use` clause — and it is why neither transits an import: `importNameRes`
-walks `nodes`.
+global's `use` clause. **A fold transits**, because `importNameRes` reads the
+source module's `namespace`: it carries across every *public* binding, whether
+the source declared that name or folded it in.
 
 `ModuleNode` extends `IExpNodeHdr` and so carries a `vtype` slot, but
 `ModuleTag` is a named node in `StmtGroup`: `isExpNode` is false,
 `newModuleNode` never sets `vtype`, and nothing reads it.
 
-**`ImportNode`** holds `module` — the loaded `ModuleNode` — and `foldall`,
-recording whether `.*` was written. That is the whole of import: there is no
-selective name list, no rename, and no exclusion.
+**`ImportNode`** holds `module` — the `ModuleNode` it binds — and `fold`, the
+`FoldClause` that `.*` makes, or NULL where the import folds nothing. The clause
+records `star` and `ispub`, and nothing else yet: an import cannot carry a `use`
+clause, so there is still no selective name list, no rename and no exclusion.
+**`pub` before the statement sets `ispub` and makes the module's own binding
+public too** — one keyword for every binding the import creates, which is `pub`
+with the one meaning it has everywhere.
 
 ## Constructors
 
@@ -88,7 +98,7 @@ selective name list, no rename, and no exclusion.
 | `pgmAddMod` | appends a module and takes its flags. The caller sets `filesym`, `foldersym` and `namesym` afterwards |
 | `pgmFindFile` / `pgmSetFile` | the file registry, by path. **This is what makes a file read once** however many modules name it, and what makes it belong to one module |
 | `newModuleNode` | `namesym`, `filesym` and `foldersym` NULL, `dclinfo` cleared, empty `imports`, `nodes` and `namespace` |
-| `newImportNode` | `module` NULL, `foldall` 0 |
+| `newImportNode` | `module` NULL, `fold` NULL |
 
 ## Parse
 
@@ -101,7 +111,7 @@ selective name list, no rename, and no exclusion.
    root holds does not depend on what a parse of one of them imports. An import
    cycle back to any of them then finds the root in the registry.
 3. `corelib` is parsed, from the `corelibSource` string in `corelib.c`.
-4. An `ImportNode` with `foldall` set is added to the root for `corelib`.
+4. An `ImportNode` carrying a star clause is added to the root for `corelib`.
 5. The submodules its subfolders designate are drawn, each recursively.
 6. The root's own files are parsed, its designated file first.
 
@@ -119,16 +129,21 @@ loaded, and it is three steps rather than one:
   folder sweeps in.
 - **Parse into the module.** Each registered file is injected and its global
   statements parsed into the one module, the designated file first, since it is
-  the only one that may declare the module. The auto-import of `corelib` with
-  `foldall` is added first, and `modHook` swaps the name table once for the whole
+  the only one that may declare the module. The auto-import of `corelib`, a star
+  clause, is added first, and `modHook` swaps the name table once for the whole
   set — so a module neither sees nor collides with the names of the module whose
   parse reached it, parent or importer alike. Every declaration any of those files
   adds through `modAddNode` records the module as its owner.
 
 **`parseModuleTree` is the last step of all three paths**: it draws the
-submodules the module's subfolders designate, each through `parseSubmodule` and
-each recursively, and then parses the module's own files. **The submodules come
-first**, and both reasons are about what a name means before a file is read. A
+submodules the module's subfolders designate — `parseSubmoduleDraw` for every one
+of them, then `parseSubmoduleParse` for each, then the module's own files.
+**Every sister is drawn before any is parsed**, which is the rule the files
+follow one level down and holds for the same reason: a submodule importing a
+sister resolves that name against this namespace, so a sister drawn later would
+be a name that was not there — and her files would be unregistered, so a path
+spelled to one of them would read it a second time. **The submodules come before
+the module's own files** too, and both reasons are about what a name means before a file is read. A
 subfolder's module is a name of the namespace that no statement in any of the
 module's files declares — the folder is the declaration — so binding it ahead of
 them puts a collision's first diagnostic on the declaration, which has a position
@@ -189,6 +204,7 @@ the only thing that tells the files apart:
 | A file another module already holds, brought into a second one — by the sweep, by `include`, or by an `import` naming the importing module's own file or its own submodule | `ErrorModFile` |
 | Two files of one module sharing a basename, which leaves neither nameable | `ErrorDupFile` |
 | A designated file beneath an organisational folder, too deep to draw a module | `ErrorModFolder` |
+| An `import` reaching a module inside a tree by a path to its file, or naming the module that contains it | `ErrorModReach` |
 | Two of the module's files declaring one name, or a file declaring the name a subfolder's module already has | `ErrorDupName`, which is the ordinary namespace rule: a subfolder is a namespace exactly when it draws a module, and an organisational one never is |
 
 ▸ **The collision between two sibling module folders needs no diagnostic, because
@@ -224,14 +240,41 @@ qualifying module is not the asking one, so a private name of the submodule is
 `ErrorNotPublic`. The same check refuses a grandparent naming a submodule that is
 not `pub`.
 
-🛑 **What a submodule cannot do is reach SIDEWAYS.** Its namespace holds what it
-declares, what a fold brought in, and its own children — never its sisters, and
-never its parent. So a sister's name does not resolve at all, which is
-`ErrorUnkName` rather than a refusal, and a parent that wants two children to
-share hands the work down or keeps it in one module. That is the boundary the
-import work moves: a module is the registry its children resolve against, and a
-sister is to arrive through that registry under the same mechanism that reaches a
-package.
+**A submodule reaches SIDEWAYS by importing a sister's name, and the registry
+that name is resolved against is its parent's namespace.** A module is the
+registry for its children: they are public to each other and to it, invisible
+outside it unless it publishes them. So `import wheels` inside a submodule is a
+*lookup* — the sweep has already drawn wheels, nothing is loaded, no path is
+composed — and it binds her name here as an alias, under the import's own
+visibility. It is the mechanism that will reach an external package, asking a
+different registry: one lookup, two kinds of neighbour.
+
+**Nothing arrives unasked.** A module's namespace holds what it declares, what a
+fold brought in, its own children and what its imports bound. A sister nobody
+imported is `ErrorUnkName`, which is the dependency being stated rather than
+handed.
+
+⚠ **The registry is SCOPED, not accumulating, and this is provisional.** It is
+the *immediate* parent's namespace and no ancestor's, so descending a level drops
+the level above out of reach: a module two deep does not see its parent's
+sisters, and a parent re-exports what its children need. That keeps a module
+liftable, because its dependencies are stated at its own `mod`. The reading was
+adopted provisionally and is to be revisited — it is decision 10 of the module
+design brief, and what would settle it is a case where a re-export is pure
+ceremony.
+
+🛑 **A module may not name its parent** (`ErrorModReach`): that is a reference back
+along the edge that contains it, which is the one shape the tree rules out, and
+it is not needed, because what the parent published is already in the registry
+the child reads.
+
+🛑 **And a neighbour may not be reached by a path to her file** (`ErrorModReach`).
+A path spelled through a folder and back out of it arrives at a module the sweep
+has already drawn, and the modules such a path can reach are exactly the ones the
+scoped rule says must not resolve — which of them it hits would be an accident of
+spelling. So a neighbour is reached because the registry holds her name, never
+because a path arrived at her. Any module with an owner is refused this way; a
+path reaches a module with no parent, which is what an external module is today.
 
 ### The `mod` declaration
 
@@ -315,14 +358,26 @@ definitions those declarations name. How a symbol is spelled from its
 declaration, and the linkage it gets, is
 [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols".
 
-`parseImport` derives the *file's* name through `fileName`, accepts a period only
-when `*` follows it — anything else after it is `ErrorBadTerm`, since selective
-import is unbuilt — and binds the loaded module into the importing module's
-namespace with `modAddNamedNode`, under the loaded module's `namesym`. So a module
-drawn out of a folder is bound and pathed through by the folder's name, and the
-file the import happened to name is only where the module was found. **An import
-resolving to a file of the importing module's own folder is `ErrorModFile`**: the
-folder already brought that file in, and a module does not import itself.
+`parseImport` accepts a period only when `*` follows it — anything else after it
+is `ErrorBadTerm`, since selective import is unbuilt — and then answers the name
+**in two places, the registry first**:
+
+- **The registry.** Where the written name is a bare identifier and the importing
+  module has a parent, `parseImportRegistry` looks the name up in the parent's
+  namespace. A module found there is the answer, and nothing is located, read or
+  registered. That is how a sister is reached.
+- **The filesystem.** Otherwise the name is a path, and
+  `parseLoadAndParseModuleFile` locates, registers and parses it. That is how an
+  external module is reached today, and where a package name will be resolved.
+  **A module the path reaches that has an owner is `ErrorModReach`** — see "What
+  a submodule is" — and one resolving to a file of the importing module's own
+  folder or to its own submodule is `ErrorModFile`.
+
+Either way the module is bound into the importing module's namespace under its
+own `namesym`, as an `AliasDclNode` carrying the import's visibility
+(`importBindModule`). So a module drawn out of a folder is bound and pathed
+through by the folder's name, and the file an import happened to name is only
+where the module was found.
 
 `parseInclude` locates the named file, registers it to the *current* module and
 parses its global statements into that module. It builds no node, creates no
@@ -332,13 +387,28 @@ rather than a pile of duplicate names.
 
 ## Name resolution
 
-`modNameRes` hooks the module's namespace, then runs four passes over it and
-unhooks: `imports`, then every global carrying a `use` clause, then every type
-alias, then everything else. **The first three go first for one reason** — a name
-folded in, and a name a `typedef` binds, must be in place before any declaration
-that uses it is resolved, and a module's names do not depend on the order they
-were written in. Each pass leaves its own nodes out of the last one, so nothing
-is resolved twice.
+**Every module's FOLDS run before any module's body is resolved.** `pgmNameRes`
+walks the module list twice: `modFoldNames` on each, and only then `modNameRes`
+on each. `modFoldNames` is dependency-first — for each import it folds the source
+module's own names first, recursively — so a module's folds are complete before
+anything folds from it, which is what makes a re-export transit. `foldstate`
+marks the module while it runs, so a cycle of re-exports stops there; every
+module's own *declarations* are bound at parse, so what is missing on the way
+round a cycle is a re-export and never a declaration.
+
+**That order is what stops the file load order deciding what a name means.** A
+module's folds used to run at the start of its own name resolution, and modules
+are resolved in the order they were loaded — so a module resolved earlier, the
+root among them, looked a folded name up before it was there, and one resolved
+later found it.
+
+`modFoldNames` runs two passes: the module's `imports`, then every global
+carrying a `use` clause. `modNameRes` then hooks the namespace, runs the type
+alias pass and the everything-else pass, and unhooks. **The fold passes go first
+for one reason** — a name folded in, and a name a `typedef` binds, must be in
+place before any declaration that uses it is resolved, and a module's names do
+not depend on the order they were written in. Each pass leaves its own nodes out
+of the last one, so nothing is resolved twice.
 
 **A global's `use` clause is a module's second fold**, and the whole of it is
 `foldGlobalExpand` (`ir/stmt/fold.c`): the global's type supplies the members,
@@ -354,19 +424,39 @@ bound before anything asks whether the name is a type at all; `aliasDclCheckCycl
 then reports a chain that comes back to itself and cuts it, so no later walk
 loops.
 
-`importNameRes` does nothing unless `foldall` is set. When it is, it walks the
-source module's `nodes`, skips anything unnamed or private, and calls
-`modAddNamedNode` on the target. **The fold binds the original declaration node
-into a second namespace**: one node, two bindings, and nothing in the receiving
-module recording where the name came from. A different local spelling is
-therefore not expressible, which is why renaming and selective folding are
-described in [Names and Namespaces](../phases/names-and-namespaces.md) and are
-not implemented.
+`importNameRes` does nothing unless the import carries a fold clause. When it
+does, `foldStarItems` makes an item per public name of the source module's
+**`namespace`**, and `importFoldItem` binds each one as an `AliasDclNode` in the
+importing module's namespace. **Reading the namespace rather than `nodes` is what
+makes a fold transit**: a fold writes to the namespace, so walking the
+declarations was exactly what left a re-exported name behind.
 
-Private is the declaration's `DclPrivate` bit, asked through `inodeIsPrivate`. An overload name
-folds as one node, the `FnOverloadDclNode`, with its candidates riding inside
-it; a public name holds only public candidates (`ErrorPrivOverload`), so the
-fold carries nothing private.
+**What each binding holds:** its local spelling, the source's own binding as its
+target — the chain rather than the declaration at the end of it, so the origin is
+kept — and a visibility of its own. Where the source's binding is reached through
+a global, this one is reached through the same global, and the member is spelled
+as its type names it, so the lowering to `global.name` reads the same from any
+module.
+
+**A fold is private to the module that made it unless the import says `pub`.**
+That is the transit rule, and it is nothing but the visibility rule read on a
+binding: what a third module sees through this one is what this one re-exported.
+The import's binding of the *module's own name* carries the same bit, so
+`pub import wheels` is what lets a path walk `engine.wheels.turn`.
+
+Only a public binding of the source folds, asked through `inodeIsPrivate` — the
+declaration's `DclPrivate` bit where the source declared the name, the alias's own
+`FlagPub` where the source folded it. A private name of the source is
+`ErrorNotPublic` where a selective clause names it and is passed over by a star
+clause; the source module's own name is passed over, because the import bound it
+already. An overload name folds as one node, the `FnOverloadDclNode`, with its
+candidates riding inside it; a public name holds only public candidates
+(`ErrorPrivOverload`), so the fold carries nothing private.
+
+A different local spelling is still not expressible, because an import cannot
+carry a `use` clause: the binding record holds one, and the wiring that would let
+an import write one is what remains. See
+[Names and Namespaces](../phases/names-and-namespaces.md).
 
 ## Type check
 
@@ -635,18 +725,21 @@ folder's name. **The module tree is real**: a subfolder holding its own designat
 file is a submodule, private to its parent unless it writes `pub`, spelled after
 its parent in every symbol, and reached from its parent by path — while a
 subfolder that holds none is organisational at any depth, and a designated file
-too deep to be a direct child is refused. 🛑 **A module still reaches only
-downward**: a sister's name does not resolve, so nothing crosses between two
-subtrees, which is the import work's. There is no nesting within a *file* either —
-a `mod name { ... }` block is `ErrorUnbuiltKind` — no package, no manifest and no
-interface artifact;
+too deep to be a direct child is refused. **A module reaches SIDEWAYS too**: it
+imports a sister by name, resolved against the registry its parent is, and
+because every module of a tree is compiled into one object that import *links* —
+which an import between two loaded modules cannot do. The registry is the
+immediate parent's namespace and no ancestor's, which is the scoped reading,
+adopted provisionally. There is no nesting within a *file* — a `mod name { ... }`
+block is `ErrorUnbuiltKind` — no package, no manifest and no interface artifact;
 `mod trait` holds the spelling of a module's abstraction against the day there is
-something behind it; `import` takes a file path rather than a package name, folds
-only with `.*`, and cannot rename or exclude. A module that is one file is still
-named after that file, and its declaration still renames it. Sections and COMDATs
-are not emitted per function. What does work is the multi-module *generation*
-path, exercised by `stdio` on every compile that prints, and folding into a
-single module namespace, which is what the accumulation rule above asks for.
+something behind it; `import` takes a file path where the registry has no answer,
+folds only with `.*`, and cannot rename or exclude. A module that is one file is
+still named after that file, and its declaration still renames it. Sections and
+COMDATs are not emitted per function. What does work is the multi-module
+*generation* path, exercised by `stdio` on every compile that prints, and folding
+into a single module namespace, which is what the accumulation rule above asks
+for.
 
 **`use` exists at one of its sites.** A module's **global** carries the clause
 whole — `*`, a list, `as`, `but`, a block form, and `use pub` — so the grammar
@@ -655,27 +748,27 @@ of `import` and standing alone against an imported module, which is the wiring
 rather than the design. See "Folding through a global" in
 [Names and Namespaces](../phases/names-and-namespaces.md).
 
-**A binding has a visibility bit where a fold made it, and none where an import
-did.** A declaration has one — `DclPrivate`, written from the absence of `pub`
-when it joins its namespace, and what every visibility check reads through
-`inodeIsPrivate`. A global's fold makes an `AliasDclNode`, which carries its own
-`FlagPub` from `use pub`, so a fold is private to the module that made it unless
-the clause says otherwise, and `fnCallNameResPath` enforces that from outside.
-**An import still has nowhere to record one**, because `importNameRes` inserts
-the imported declaration node itself into the receiving namespace.
+**Every binding has a visibility of its own, and an import's bindings are
+bindings.** A declaration has `DclPrivate`, written from the absence of `pub`
+when it joins its namespace and read by every check through `inodeIsPrivate`. A
+fold makes an `AliasDclNode`, whose `FlagPub` is its own: a global's from
+`use pub`, an import's from the `pub` before the statement, which reaches the
+module's own binding and every name the import folds alike. `fnCallNameResPath`
+enforces it from outside.
 
-**Whether a fold transits is still decided by load order**, and a fold's bindings
-are not carried by a wildcard import at all, since `importNameRes` walks `nodes`
-and a fold writes to `namespace`.
+**Transit falls out of that bit.** `importNameRes` reads the source module's
+`namespace`, so what it carries across is every public binding — declared there
+or folded there — and a fold is private to the module that made it unless the
+import said `pub`. What a third module sees through this one is what this one
+re-exported.
 
-Measured: `modNameRes` folds a module's imports at the start of *that module's*
-resolution and `pgmNameRes` walks modules in load order, so a fold is invisible
-to modules resolved earlier and visible to those resolved later. A root module
-naming `mid.plain`, where `plain` was folded into `mid`, is rejected as an
-unknown name; the same reference from a sibling module loaded after the folding
-one compiles. A type resolved by demand ahead of its module — a trait the root
-declares is-a against, say — does not move this line: `structNameResDemand` hooks what the
-module's imports will fold for the trait's own bodies to see, and folds nothing.
+**And it no longer depends on load order.** Every module's folds run before any
+module's body is resolved, dependency-first (`modFoldNames`, called from
+`pgmNameRes`), so a root module naming `mid.plain`, where `plain` was folded into
+`mid`, gets the same answer as a module loaded after `mid` does. A type resolved
+by demand ahead of its module asks for that module's folds rather than hooking
+what they would be: `structNameResDemand` calls `modFoldNames`, which is a no-op
+except where the fold pass itself is what reached the type.
 
 ## What the model has not decided
 
@@ -872,18 +965,14 @@ annotation on a reference names is a type.
 - **`include` and `import` look alike and are not.** One injects declarations
   into the current module and leaves no trace but a registry entry; the other
   builds a namespace.
-- ⚠ **The registry's key is the path as it was spelled, not a canonical one, and
-  the module tree gives that a way to bite.** Two spellings of one file — a
-  backslash path and a forward-slash one, `a/../b` and `b` — are two keys, so the
-  file is read twice and declares everything twice. The sweep's own spellings
-  agree, but a source can write one that does not: `import "../b/b"` inside
-  submodule `a` composes a path through `fileSrcUrl` that misses the registry
-  entry the sweep made for sibling `b`, so a **second module** is built from b's
-  files. Both spell the same symbols; LLVM renames the second, and the call in `a`
-  is left referencing a declaration nothing defines. **Canonicalizing the path
-  would close the duplicate and open the sideways reach** — the import would
-  simply find the sister — so the two have to be settled together, in the work
-  that gives a module a registry to resolve a sister through.
+- **A path is canonicalized before it becomes a registry key** (`fileCanonicalPath`),
+  so two spellings of one file are one key and the file is read once. What that
+  closed was a miscompile: `import "../b/b"` inside submodule `a` composed a path
+  that missed the entry the sweep made for sibling `b`, a second module was built
+  from b's files, LLVM renamed the duplicate symbols, and the call in `a` was
+  left referencing a declaration nothing defined. ⚠ **Case is not part of it**: a
+  filesystem that ignores case still gives two keys for two spellings of one
+  name.
 - **A file named with no folder in front of it takes its folder's name from the
   current directory.** `conec matrix.cone` run from inside `matrix/` sweeps, as
   `conec matrix/matrix.cone` and `conec matrix` do: a file's module may not depend
@@ -903,9 +992,16 @@ annotation on a reference names is a type.
   anything reads it. Nothing detects a cycle, and nothing needs to.
 - **`FlagGenMod` is decided by a `strcmp` on the filename.** A user module named
   `stdio` would have its bodies generated.
-- **A folded name is the same node in two namespaces.** Mutating a declaration
-  through one binding is visible through the other, and the receiving module
-  keeps no origin link.
+- **A module's public names are folded whether or not anything uses them.** A
+  wildcard import walks the source's whole namespace, so a name the importer
+  never mentions still takes a binding and still collides with a declaration of
+  the importer's own.
+- **A re-export does not travel round a cycle of imports.** `modFoldNames` marks
+  a module while it runs and returns at the mark, so where A and B import each
+  other one of the two folds from the other before the other's own folds are in
+  place, and a name it re-exported is not there. A module's own *declarations*
+  are bound at parse and are unaffected. Nothing miscompiles: the name is
+  missing, not wrong.
 - **`corelib` and `stdio` are C string literals.** A syntax error in either is
   reported against an injected pseudo-file, and editing either means rebuilding
   the compiler.

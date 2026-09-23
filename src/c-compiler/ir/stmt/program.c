@@ -51,10 +51,19 @@ void pgmPrint(ProgramNode *pgm) {
     inodePrintDecr();
 }
 
-// Name resolution of the program node
+// Name resolution of the program node.
+//
+// Every module's FOLDED names are put in place first, dependency-first, and only
+// then is any module's own body resolved. That order is what stops the file load
+// order deciding what a qualified name can reach: a fold used to run at the
+// start of the folding module's own resolution, so a module resolved earlier --
+// the root among them, since it loads first -- looked the name up before it was
+// there, and a module resolved later found it.
 void pgmNameRes(NameResState *pstate, ProgramNode *pgm) {
     INode **nodesp;
     uint32_t cnt;
+    for (nodesFor(pgm->modules, cnt, nodesp))
+        modFoldNames(pstate, (ModuleNode*)*nodesp);
     for (nodesFor(pgm->modules, cnt, nodesp)) {
         inodeNameRes(pstate, nodesp);
     }

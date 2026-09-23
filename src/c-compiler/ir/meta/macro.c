@@ -146,7 +146,8 @@ static INode *macroSelfReceiver(TypeCheckState *pstate, INode *usenode, Name *ma
 
 // Expand a macro named where a value is expected
 void macroNameTypeCheck(TypeCheckState *pstate, NameUseNode **gennode) {
-    MacroDclNode *macrodcl = (MacroDclNode*)(*gennode)->dclnode;
+    // Through the alias where a fold is what bound the name here
+    MacroDclNode *macrodcl = (MacroDclNode*)nameUseGetDcl(*gennode);
 
     // A macro method named bare inside a method means 'self.name', as a bare
     // field does. Rewritten to that call, which then expands as one.
@@ -174,7 +175,9 @@ void macroNameTypeCheck(TypeCheckState *pstate, NameUseNode **gennode) {
 
 // Expand a macro called by name, substituting the arguments for its parameters
 void macroCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
-    MacroDclNode *macrodcl = (MacroDclNode*)((NameUseNode*)(*nodep)->objfn)->dclnode;
+    // Through the alias where a fold is what bound the name here: the binding
+    // carried the visibility, and the macro is what it stands for
+    MacroDclNode *macrodcl = (MacroDclNode*)nameUseGetDcl((NameUseNode*)(*nodep)->objfn);
 
     // A macro method called bare inside a method means 'self.name(args)', as a
     // bare method call does

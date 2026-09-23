@@ -39,6 +39,12 @@ typedef struct AliasDclNode {
 // is public by construction and stands for a member, so both flags are set.
 AliasDclNode *newAliasDclNode(Name *namesym, INode *target);
 
+// Create an alias for a name of another namespace, which is what an import's
+// fold and an import's own module binding make. It stands for a declaration
+// reached with no receiver, and its visibility is its own, so it starts private
+// and a re-export is what sets the bit.
+AliasDclNode *newNameAliasDclNode(Name *namesym, INode *target);
+
 // Create an alias for a type expression, which is what 'typedef' declares. Its
 // visibility is its own, so it starts private and 'pub' is what sets the bit,
 // and it stands for a type rather than for a member reached through a receiver.

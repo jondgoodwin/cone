@@ -21,6 +21,7 @@ ModuleNode *newModuleNode() {
     mod->nodes = newNodes(64);
     namespaceInit(&mod->namespace, 64);
     dclInfoInit(&mod->dclinfo);
+    mod->foldstate = 0;
     return mod;
 }
 
@@ -128,11 +129,63 @@ void modHook(ModuleNode *oldmod, ModuleNode *newmod) {
     }
 }
 
+// Put every name this module holds by FOLDING into its namespace, and do it
+// before ANY module's own nodes are name resolved.
+//
+// What a module holds by folding used to arrive at the start of that module's
+// own resolution, and modules were resolved in the order they were loaded -- so
+// a module loaded before the one that folded a name could not reach it through
+// the qualifier and a module loaded after could, and the root, which loads
+// first, could reach none of them. That was load order deciding what a name
+// means, which is not something a program may depend on.
+//
+// DEPENDENCY-FIRST, and that is what makes transit work rather than a rule that
+// makes it work: a module's own folds are complete before anything folds FROM
+// it, so what this module re-exported is what the next one finds. A cycle stops
+// at the mark -- the module's own declarations are all bound at parse, so what
+// is missing on the way round is a re-export, never a declaration.
+void modFoldNames(NameResState *pstate, ModuleNode *mod) {
+    if (mod->foldstate != 0)
+        return;
+    mod->foldstate = 1;
+
+    ModuleNode *owningmod = pstate->mod;
+    pstate->mod = mod;
+    modHook(NULL, mod);
+
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(mod->imports, cnt, nodesp)) {
+        ImportNode *import = (ImportNode*)*nodesp;
+        if (import->module)
+            modFoldNames(pstate, import->module);
+        // The recursion above swapped the hook and this module's is current again
+        importNameRes(pstate, import);
+    }
+
+    // A global's 'use' clause folds names of its type into this namespace, and
+    // that happens before the module's other nodes are resolved so that a folded
+    // name is in place wherever it is used -- including in a function declared
+    // above the global that folded it, since a module's names do not depend on
+    // the order they were written in. Each such global is resolved here and left
+    // out of the walk in modNameRes.
+    for (nodesFor(mod->nodes, cnt, nodesp)) {
+        if ((*nodesp)->tag != VarDclTag || ((VarDclNode*)*nodesp)->fold == NULL)
+            continue;
+        inodeNameRes(pstate, nodesp);
+        foldGlobalExpand(pstate, mod, (VarDclNode*)*nodesp);
+    }
+
+    modHook(mod, NULL);
+    pstate->mod = owningmod;
+    mod->foldstate = 2;
+}
+
 // Name resolution of the module node. Modules are resolved in the order they
-// were loaded, the root first. A type in a module not yet reached may be
-// resolved earlier, by demand from a type that is-a it (structNameResDemand);
-// that runs within this module's scope, and the marks say whether its folded
-// names are in its namespace yet or must be hooked for the occasion.
+// were loaded, the root first -- and what that order no longer decides is what
+// a name reaches, because every module's folds are in place before the first of
+// them starts (modFoldNames). A type in a module not yet reached may be resolved
+// earlier, by demand from a type that is-a it (structNameResDemand).
 void modNameRes(NameResState *pstate, ModuleNode *mod) {
     ModuleNode *owningmod = pstate->mod;
     pstate->mod = mod;
@@ -140,27 +193,9 @@ void modNameRes(NameResState *pstate, ModuleNode *mod) {
     // Switch name table over to new module
     modHook(NULL, mod);
 
-    // Process all nodes
     INode **nodesp;
     uint32_t cnt;
-    // Do name folding of imports, before we name resolve rest of module
-    for (nodesFor(mod->imports, cnt, nodesp)) {
-        inodeNameRes(pstate, nodesp);
-    }
     mod->flags |= NameResolving;
-
-    // A global's 'use' clause folds names of its type into this namespace, and
-    // that happens before the module's other nodes are resolved so that a folded
-    // name is in place wherever it is used -- including in a function declared
-    // above the global that folded it, since a module's names do not depend on
-    // the order they were written in. Each such global is resolved here and left
-    // out of the walk below.
-    for (nodesFor(mod->nodes, cnt, nodesp)) {
-        if ((*nodesp)->tag != VarDclTag || ((VarDclNode*)*nodesp)->fold == NULL)
-            continue;
-        inodeNameRes(pstate, nodesp);
-        foldGlobalExpand(pstate, mod, (VarDclNode*)*nodesp);
-    }
 
     // A type alias names a type expression, and a use of the alias asks what is
     // at the end of that chain. Resolved ahead of the walk for the same reason a

@@ -236,30 +236,34 @@ statement.
 This is why `nameUseNameRes` is a single assignment from `namesym->node` —
 see [Name Resolution](name-resolution.md).
 
-**It loads every module, and it finds a module's files itself.** `import`
-recursively loads and *fully parses* the imported module during the parse of the
-importing one, then adds an `ImportNode` to a list kept separate from the module's
-own nodes, so folding can run before the module's own names resolve. `include` is
-different: it injects the file and parses its global statements straight into the
-**current** module, producing no node. Corelib is parsed before the main file and
-`foldall`-imported into every module.
+**It loads every module it must, and it finds a module's files itself.** `import`
+answers the name it is given in the **registry** first — the importing module's
+parent's namespace, where a sister is already bound — and loads nothing when that
+answers. Otherwise the name is a path, and the module is recursively loaded and
+*fully parsed* during the parse of the importing one. Either way an `ImportNode`
+joins a list kept separate from the module's own nodes, so folding can run before
+any module's names resolve. `include` is different: it injects the file and parses
+its global statements straight into the **current** module, producing no node.
+Corelib is parsed before the main file and wildcard-imported into every module.
 
 **A module is the files of a folder**, so loading one module means reading
 several files. Loading is three steps — locate the file, ask the **file registry**
 which module holds it, parse each of the module's files into it — and the registry
-is keyed by the path, so a file is read exactly once and belongs to exactly one
-module. What decides whether a folder is swept is the **designated-file
-convention**: the file the compiler is given sweeps its folder when it is the file
-named for that folder.
+is keyed by the file's **canonical** path, so a file is read exactly once and
+belongs to exactly one module however the path to it was spelled. What decides
+whether a folder is swept is the **designated-file convention**: the file the
+compiler is given sweeps its folder when it is the file named for that folder.
 
 **And the same probe decides every subfolder, so the parse builds a module TREE.**
 A subfolder holding its own designated file draws a submodule — a module of its
-own, loaded and parsed within its parent's parse, owned by it and bound in its
-namespace — and any other subfolder is organisational, its files joining the
-enclosing module at any depth. A module's submodules are drawn before its own
-files are parsed, so a name a subfolder put in the namespace is there before any
-statement can collide with it. [module](../nodes/module.md), "The folder tree",
-owns the rules and the diagnostics.
+own, owned by its parent and bound in its namespace — and any other subfolder is
+organisational, its files joining the enclosing module at any depth. **Every
+submodule of a level is drawn before any of them is parsed**, so a sister is a
+name of the parent's namespace, and her files are registered, before any file can
+name her; and all of them are drawn before the parent's own files are parsed, so
+a name a subfolder put in the namespace is there before any statement can collide
+with it. [module](../nodes/module.md), "The folder tree", owns the rules and the
+diagnostics.
 
 ## 7. Contract
 

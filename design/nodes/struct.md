@@ -452,11 +452,12 @@ inherited member bare, exactly as it names the type's own.
 leaves walk order, and it is confined to a type declaration reached from
 another type declaration, so what is hooked at the jump is known: module names,
 and the demanding type's generic parameters. A type in another module resolves
-with that module's namespace hooked over the current one and, if that module has
-not begun its own resolution — modules resolve in load order, the root first —
-with the names its wildcard imports *will* fold hooked too (`importHookFolds`),
-without folding them. Folding early would change which names a qualifier can
-reach in that module; see [module](module.md).
+with that module's namespace hooked over the current one, and that namespace
+already holds everything the module folded in, because every module's folds run
+before any module's body is resolved. What the demand asks for first is
+`modFoldNames` on that module, which is a no-op except where the fold pass itself
+is what reached the type — a global's fold in one module demanding a struct of
+another. See [module](module.md).
 
 ## Type check
 

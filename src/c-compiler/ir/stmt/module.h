@@ -27,6 +27,7 @@ typedef struct ModuleNode {
     Nodes *nodes;            // All parsed nodes owned by the module
     Namespace namespace;     // The module's named nodes, owned or "used"
     DclInfo dclinfo;         // Owner and the facts that decide the linker symbols it prefixes
+    uint16_t foldstate;      // How far modFoldNames has got: 0 not begun, 1 running, 2 done
 } ModuleNode;
 
 ModuleNode *newModuleNode();
@@ -39,6 +40,13 @@ void modAddNamedNode(ModuleNode *mod, Name *name, INode *node);
 void modAddFn(ModuleNode *mod, FnDclNode *fnnode);
 
 void modHook(ModuleNode *oldmod, ModuleNode *newmod);
+
+// Put every name this module holds by FOLDING into its namespace: what its
+// imports admit, and what its globals' 'use' clauses do. Ahead of any module's
+// name resolution, and dependency-first, so that what a name reaches through a
+// qualifier does not depend on the order the files were loaded in
+void modFoldNames(NameResState *pstate, ModuleNode *mod);
+
 void modNameRes(NameResState *pstate, ModuleNode *mod);
 void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod);
 

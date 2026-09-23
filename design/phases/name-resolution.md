@@ -57,7 +57,7 @@ with the author is the claim that these rule rather than describe.**
 | `nametblHookNamespace` | hook every occupied slot of a `Namespace` |
 | `nametblHookPop` | restore every saved pair in reverse, drop the table |
 
-Push and pop sites: `modNameRes` (via `modHook`, the whole module namespace),
+Push and pop sites: `modFoldNames` and `modNameRes` (via `modHook`, the whole module namespace),
 `structNameRes` (generic parms, then the whole type namespace, then each
 inherited member as it lands), `structNameResDemand` (another module's
 namespace, via `modHook`, over whatever is current), `fnDclNameRes`
@@ -93,7 +93,7 @@ on a module or a struct. The collapse that walks them is `fnCallNameResPath` —
 
 | Kind | Owns a `Namespace` hash table? | Populated |
 | --- | --- | --- |
-| Module | yes, `ModuleNode.namespace` | at **parse** time by `modAddNamedNode`; extended by `importNameRes` folding |
+| Module | yes, `ModuleNode.namespace` | at **parse** time by `modAddNamedNode`, which is also where an import binds the module it names; extended by the fold pass, `importNameRes` and `foldGlobalExpand`, ahead of any module's body |
 | Namespaced type | yes, `INsTypeNode.namespace` | at **parse** time; `structNameRes` adds `Self`, the default methods of every abstraction the type is-a or mixes in, and, for a variant, its enum's fields |
 | Lexical block / parameter list | **no** | not a namespace at all — locals are hooked one at a time |
 
@@ -117,9 +117,10 @@ Two marks on the type make that safe, `NameResolving` and `NameResolved`, and a
 trait found still under way is a cycle, `ErrorCircular`. The demand is confined
 to a type reached from a type, so what is hooked at the jump is always module
 names and the demanding type's generic parameters, and the target's module
-namespace is hooked over them; a module not yet begun also has the names its
-wildcard imports will fold hooked for the occasion (`importHookFolds`), never
-folded, since when a fold runs decides what a qualifier reaches. What a
+namespace is hooked over them — a namespace that already holds everything that
+module folded in, since every module's folds run before any module's body. The
+demand asks for `modFoldNames` on that module first, which does something only
+where the fold pass itself is what reached the type. What a
 demanded type copies in arrives bound and is not walked again. The steps are in
 [struct](../nodes/struct.md), "Name resolution".
 
@@ -280,8 +281,10 @@ next pass a null to trip over.
 | `ir/namespace.c` | `namespaceFind`, `namespaceSet` | the hash table a module or type owns |
 | `ir/exp/nameuse.c` | `nameUseNameRes` | the whole resolution decision: early-out, qualified walk, privacy; it binds `dclnode` and changes nothing else |
 | `ir/exp/nameuse.c` | `nameUseGroup` | what a resolved name answers to `isExpNode`, `isTypeNode` and `isMetaNode`, asked of its declaration |
-| `ir/stmt/module.c` | `modNameRes`, `modHook` | imports walked before nodes; module hook push/pop; the module's `NameResolving`/`NameResolved` marks, which say whether its folds are in its namespace yet |
-| `ir/stmt/import.c` | `importNameRes`, `importHookFolds` | wildcard folding, and hooking what a fold would bring without folding it; both skip private and unnamed nodes |
+| `ir/stmt/program.c` | `pgmNameRes` | two walks of the module list: every module's folds, then every module's body |
+| `ir/stmt/module.c` | `modFoldNames` | a module's folded names put in place dependency-first — its imports, then its globals' `use` clauses — before any module's body resolves, so load order decides nothing |
+| `ir/stmt/module.c` | `modNameRes`, `modHook` | type aliases walked before the other nodes; module hook push/pop; the module's `NameResolving`/`NameResolved` marks |
+| `ir/stmt/import.c` | `importNameRes`, `importBindModule` | the module's own binding and each folded name, as aliases carrying the import's visibility; the source's *namespace* is what is read, and a private binding of it does not fold |
 | `ir/exp/block.c` | `blockNameRes`, `blockContinueStep` | scope push/pop, lifetime labels, jump placement, the one re-entry |
 | `ir/stmt/vardcl.c` | `varDclNameRes` | value before name; duplicate check; local hooking and `scope` stamping |
 | `ir/stmt/fndcl.c` | `fnDclNameRes` | generic parms, signature, body with parms hooked at scope 1 |

@@ -183,16 +183,20 @@ declaration. **That is the one place in the language where two independent
 libraries disagreeing is resolvable by the party who needs both** — which is what
 made reuse across package boundaries a language problem in the first place.
 
-**`import` composes; `include` does not.** `import` loads a file as a module in
-its own right and binds its name; `.*` folds its public names into the
-importer. `include` injects a file's global statements into the *current*
-module, producing no module and no namespace — so an included file's private
-names are private to the including module.
+**`import` composes; `include` does not.** `import` binds another module's name —
+a sister found in the registry the enclosing module is, or a module loaded from a
+path — and `.*` folds its public names into the importer. Every binding it makes
+carries a visibility of its own, so what a third module sees through this one is
+what this one wrote `pub import` for. `include` injects a file's global
+statements into the *current* module, producing no module and no namespace — so
+an included file's private names are private to the including module.
 
 | Boundary | Guaranteed | Enforced by |
 | --- | --- | --- |
 | module, name not `pub` | not reachable by qualified name from outside | `nameUseNameRes` |
-| module, name not `pub` | not copied by a wildcard import | `importNameRes` |
+| module, name not `pub` | not folded by a wildcard import | `importNameRes` |
+| module, a fold not re-exported | not reachable from outside, and not folded on | `importFoldItem`, `fnCallNameResPath` |
+| module tree | a sister is reached by name, never by a path that walked to her file | `parseImport` |
 | type, member not `pub` | not reachable except through `self` | `fnCallLowerMethod` |
 | type, field not `pub` | not settable from outside in a type literal | `typeLitStructReorder` |
 | any namespace | no duplicate name, whatever the kind | `namespaceAdd`, `modAddNamedNode` |
@@ -217,6 +221,9 @@ bodies are emitted whenever it is flagged for generation, and `stdio` is flagged
 `IOStream` methods, alongside the caller. Every other imported module is denied
 the flag by a `strcmp` on its filename. So what blocks a multi-package program
 is the symbol rule and that one condition, not the absence of a mechanism.
+**A module of the same tree is flagged**, which is why an import between two
+sisters links and an import of a loaded module does not: what a folder tree holds
+this compile defines.
 
 The serialized interface is a separate and larger cost, and it buys build speed
 rather than the ability to link at all. The author anticipated it — "it is not a

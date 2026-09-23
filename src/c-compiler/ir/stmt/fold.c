@@ -55,6 +55,11 @@ int foldAdmitsOwn(INode *member) {
 static int foldStarAdmits(INode *member, int admit) {
     if (admit == FoldAdmitOwn)
         return foldAdmitsOwn(member);
+    // A module's names, of whatever kind. A module has one instance at a fixed
+    // address, so nothing of it is reached through a value and the member/static
+    // distinction that decides the other two has nothing here to decide
+    if (admit == FoldAdmitNames)
+        return 1;
     // Every member reached through a value. A static is reached through the type,
     // so it is not one, and a star clause passes it over rather than refusing it
     return inodeIsMember(member);
@@ -81,9 +86,18 @@ void foldStarItems(Namespace *ns, Name *srcname, FoldClause *fold, int admit) {
             continue;
         if (inodeIsPrivate(nn->node) || !foldStarAdmits(nn->node, admit) || foldExcluded(fold, nn->name))
             continue;
+        // A module publishes its own name into its own namespace, and an import
+        // binds that name already. Nothing else has a name of its own inside it
+        if (admit == FoldAdmitNames && nn->name == srcname)
+            continue;
         NameUseNode *target = newMemberUseNode(nn->name);
         inodeLexCopy((INode*)target, fold->at);
-        AliasDclNode *alias = newAliasDclNode(nn->name, (INode*)target);
+        // A module's name is reached with no receiver at all, and its binding's
+        // visibility is the import's rather than the target's, so it is the bare
+        // alias rather than the member one every other site makes
+        AliasDclNode *alias = admit == FoldAdmitNames
+            ? newNameAliasDclNode(nn->name, (INode*)target)
+            : newAliasDclNode(nn->name, (INode*)target);
         inodeLexCopy((INode*)alias, fold->at);
         nodesAdd(&fold->items, (INode*)alias);
     }

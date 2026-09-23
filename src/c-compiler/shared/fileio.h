@@ -31,8 +31,13 @@ char *fileSrcUrl(char *cururl, char *srcfn, int newfolder);
 //
 // Locating a file is separate from reading it, because what must happen exactly
 // once is the reading: the path is what the file registry is keyed by, and it
-// has to be in hand before anything can ask whether this file is already held
+// has to be in hand before anything can ask whether this file is already held.
+// What comes back is canonical, so two spellings of one file are one key
 char *fileFindSrc(char *cururl, char *srcfn);
+
+// The one spelling of a path: separators as '/', a '.' segment dropped and a
+// '..' segment cancelled against the segment in front of it
+char *fileCanonicalPath(char *path);
 
 // Number of characters in a path up to and including the slash before its
 // filename, or 0 where the path carries no folder

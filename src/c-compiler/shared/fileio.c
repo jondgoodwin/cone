@@ -161,17 +161,77 @@ static char *fileFindSrcWithFolder(char *cururl, char *srcfn) {
     return fileReadable(fn) ? fn : NULL;
 }
 
-// Find the source file srcfn names, relative to cururl and then on each search path
+// The one spelling of a path, so that two ways of writing one file are one key.
+//
+// The file registry is keyed by the path, and what must happen exactly once is
+// the reading -- so a path reaching a file the compiler already holds must hash
+// to the same key however it was written. A source can write one that does not:
+// 'import "../b/b"' composes a path down into a folder and back out of it, and
+// without this the registry misses the entry the folder sweep made for that file
+// and a SECOND module is built from it, spelling the same symbols.
+//
+// Separators become '/', a '.' segment goes, and a '..' segment cancels the
+// segment in front of it. A leading '..' has nothing to cancel and is kept, so a
+// path that climbs above where it started still names what it named.
+char *fileCanonicalPath(char *path) {
+    size_t len = strlen(path);
+    char *out = memAllocStr(path, len);
+    // Where each kept segment starts, so a '..' knows what it may cancel. What
+    // comes before the first segment -- a leading '/', a drive letter -- is not
+    // one and is never cancelled
+    size_t *starts = (size_t*)memAllocBlk((len + 2) * sizeof(size_t));
+    uint32_t depth = 0;
+    size_t o = 0;
+    size_t i = 0;
+    if (len > 1 && path[1] == ':') {
+        out[o++] = path[0];
+        out[o++] = ':';
+        i = 2;
+    }
+    while (path[i] == '/' || path[i] == '\\') {
+        out[o++] = '/';
+        ++i;
+    }
+    size_t prefix = o;
+    while (i < len) {
+        size_t seg = i;
+        while (i < len && path[i] != '/' && path[i] != '\\')
+            ++i;
+        size_t seglen = i - seg;
+        int sep = i < len;
+        while (i < len && (path[i] == '/' || path[i] == '\\'))
+            ++i;
+        if (seglen == 0 || (seglen == 1 && path[seg] == '.'))
+            continue;
+        if (seglen == 2 && path[seg] == '.' && path[seg + 1] == '.' && depth > 0) {
+            o = starts[--depth];
+            continue;
+        }
+        starts[depth++] = o;
+        memcpy(out + o, path + seg, seglen);
+        o += seglen;
+        if (sep)
+            out[o++] = '/';
+    }
+    // A relative path that cancelled itself away names the folder it started in
+    if (o == prefix && prefix == 0)
+        out[o++] = '.';
+    out[o] = '\0';
+    return out;
+}
+
+// Find the source file srcfn names, relative to cururl and then on each search
+// path, and hand back the one spelling of what it found
 char *fileFindSrc(char *cururl, char *srcfn) {
     char *fn = fileFindSrcWithFolder(cururl, srcfn);
     if (fn)
-        return fn;
+        return fileCanonicalPath(fn);
     char **searchPaths = fileSearchPaths;
     if (searchPaths == NULL)
         return NULL;
     while (*searchPaths) {
         if (fn = fileFindSrcWithFolder(*searchPaths++, srcfn))
-            return fn;
+            return fileCanonicalPath(fn);
     }
     return NULL;
 }

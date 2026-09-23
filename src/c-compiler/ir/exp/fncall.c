@@ -802,7 +802,9 @@ int fnCallLowerTraitMethod(TypeCheckState *pstate, FnCallNode *callnode, INode *
 // arguments, rewrite the call to that concrete function, then finalize its arguments.
 void fnCallLowerOverloadFn(FnCallNode *node) {
     NameUseNode *fnuse = (NameUseNode*)node->objfn;
-    FnOverloadDclNode *overloadnode = (FnOverloadDclNode*)fnuse->dclnode;
+    // Through the alias where a fold is what bound the name here. The visibility
+    // already checked was the alias's own, and the overload set is its target's
+    FnOverloadDclNode *overloadnode = (FnOverloadDclNode*)nameUseGetDcl(fnuse);
 
     if ((node->flags & FlagIndex) || node->methfld != NULL) {
         errorMsgNode((INode*)node->objfn, ErrorNoMeth, "A function may not be called using indexing or a method.");
