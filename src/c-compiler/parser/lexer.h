@@ -183,6 +183,11 @@ extern Lexer *lex;
 void lexInit(ConeOptions *opt);
 void lexInjectPath(char *path);
 void lexInject(char *src, char *url);
+// The two halves of lexInjectPath, apart: read a file into a block that is not
+// yet current, and later make that block current
+Lexer *lexLoadPath(char *path);
+Lexer *lexNew(char *src, char *url);
+void lexPush(Lexer *newlex);
 void lexPop();
 void lexNextToken();
 // Is the token after the current one the keyword 'word'? The lexer is left where it was.

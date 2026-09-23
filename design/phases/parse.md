@@ -65,7 +65,11 @@ today only by a match's range pattern. A number stops scanning at a `..`, so
 restores. **Blocks are never recycled**, deliberately: every IR node stores the
 `Lexer` current when it was built and reads `url` from it whenever a diagnostic
 is reported, so reusing a popped block rewrites the file name out from under
-every node still pointing at it.
+every node still pointing at it. A block can also exist before it is current:
+`lexLoadPath` reads a file into one without pushing it, so a module can take
+its designated file's first line as its position before that file is parsed,
+and `lexPush` makes the same block current later — see `nodes/module.md`,
+"Parse".
 
 **An identifier may be spelled in any letters UTF-8 can carry**, which is
 `utf8IsLetter`: ASCII letters, or the start of a well-formed multi-byte
@@ -374,7 +378,7 @@ numbers.
 
 | File | Function | Purpose |
 | --- | --- | --- |
-| `parser/lexer.c` | `lexInject`, `lexInjectPath`, `lexPop` | push and pop a source on the lexer chain. `lexInjectPath` reads an already-located file: locating one is the caller's, since the path is what the file registry is keyed by |
+| `parser/lexer.c` | `lexInject`, `lexInjectPath`, `lexPop`; `lexLoadPath`, `lexPush` | push and pop a source on the lexer chain. `lexInjectPath` reads an already-located file: locating one is the caller's, since the path is what the file registry is keyed by. `lexLoadPath` and `lexPush` are its two halves apart — read a file into a block that is not yet current, and later make that block current |
 | | `lexNextToken` | the scan dispatch; whitespace, comments, maximal-munch operators |
 | | `lexScanIdent` | identifier scan and name-table classification; reserved-word release; a `@` or `#` word that names nothing reported and dropped |
 | | `lexScanNumber`, `lexScanString`, `lexScanChar`, `lexScanEscape` | literals; UTF-8 re-encoding of escapes; lifetime-vs-char disambiguation |
