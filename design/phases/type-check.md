@@ -400,10 +400,19 @@ two true.
 *own* fields are laid out, which begins with the tag. Each variant is reached
 separately and pulls the enum in as its base, finishing it before walking
 its own fields — so the enum is marked long before the variants that determine
-its size are done. Anything asking an enum for a size has to ask whether every
-variant is laid out as well; `itypeVariantPending` is that question, and section
-6 is where it is asked. Without it a variant could hold its own enum by value,
-which compiled clean and generated a layout with the field dropped.
+its size are done. Anything asking an enum for a size has to ask whether a
+variant is still being laid out as well; `itypeVariantPending` is that question,
+and section 6 is where it is asked. Without it a variant could hold its own enum
+by value, which compiled clean and generated a layout with the field dropped.
+
+The question is whether a variant is *in flight* — `TypeChecking` without
+`TypeChecked` — not whether every variant has finished. A variant the module walk
+has not reached yet is neither: a parameter or field written above the enum, or
+in a module walked before the enum's, asks before any variant is begun. Such a
+variant is not on the demand stack, so it cannot close a cycle with whatever
+asked, and if it does hold the enum by value its own field asks again once it is
+in flight, and is refused there. Counting it as pending made the answer depend on
+source order, which the rules of section 2 together forbid.
 
 ### 10.3 Function and method
 
@@ -506,7 +515,7 @@ Kept so that reopening one is a decision rather than a rediscovery.
 | | `inodeTypeCheckAny` | the same with no expected type |
 | `ir/itype.c` | `itypeTypeCheck` | check a node expected to be a type |
 | | `itypeNoSizeCause`, `itypeNoSizeExplain` | the five causes of section 6, and the hop-by-hop trace |
-| | `itypeVariantPending` | whether every variant of an enum is laid out — section 10.2 |
+| | `itypeVariantPending` | whether a variant of an enum is still being laid out — section 10.2 |
 | `ir/iexp.c` | `iexpTypeCheckAny` | check a node expected to be an expression |
 | `ir/types/struct.c` | `structTypeCheck` | the nine steps of section 10.1; sets `TypeChecked` at the layout point; `structCheckTraitReqs` is step 9 |
 | `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the eight steps of section 10.3, including both error-delta gates |
