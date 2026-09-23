@@ -129,6 +129,12 @@ designed when the semantics land, and reporting it is what keeps a declaration
 from being accepted with nothing under it. The cost is the standing one in the
 hazards: holding a word takes it away from every program.
 
+**A retired statement's word is a token for the same reason.** `include` is
+retired — the folder brings a module's files in — and it stays a keyword with an
+arm of its own that reports `ErrorInclude` and skips the statement. Released to an
+identifier as a reserved word is, `include name;` would be two identifiers at
+global scope and a cascade behind the one diagnostic that matters.
+
 ### Blocks and statement ends
 
 A block is `{`, statements, `}`. A statement that does not end in a block ends
@@ -285,8 +291,10 @@ parent's namespace, where a sister is already bound — and loads nothing when t
 answers. Otherwise the name is a path, and the module is recursively loaded and
 *fully parsed* during the parse of the importing one. Either way an `ImportNode`
 joins a list kept separate from the module's own nodes, so folding can run before
-any module's names resolve. `include` is different: it injects the file and parses
-its global statements straight into the **current** module, producing no node.
+any module's names resolve. `include` is retired: it stays a keyword, and the
+statement it begins is `ErrorInclude` at the word and skipped to its `;` without
+the file it names being looked for, because the folder is what brings a module's
+files in (`parseRetiredInclude`).
 Corelib is parsed before the main file and wildcard-imported into every module.
 
 **A module is the files of a folder**, so loading one module means reading
@@ -351,11 +359,12 @@ never be analyzed.
 | a spelling the lexer refuses | a reserved word, `?.`, or a `@` or `#` word that names nothing is reported in the lexer and handed on as what it stands for or not at all (section 2), so the parser never sees it |
 | `parseSkipToNextStmt` | the main resync; consumes through the next `;`, or stops short of a `}` or EOF for the enclosing block to handle |
 | an unbuilt form's body | `parseSkipDclBody` skips a following `{ … }` whole, counting depth, so nothing inside is read as a global statement and reported again, and resyncs at the next `;` where there is no block. `actor`, a nested `mod` block and `mod trait` all use it, so each is reported once, where it is written |
+| the retired `include` | `parseRetiredInclude` reports `ErrorInclude` at the word, then reads what the statement took — names or quoted paths, comma-separated — and its `;`, so a statement naming one file, a path or a list is one diagnostic and a `pub` before it adds none. A missing `;` ends the statement at its last name rather than swallowing the next declaration; only where no name follows does it resync with `parseSkipToNextStmt` |
 | `parseCloseTok` | reports `ErrorNoRParen`, scans for the closer, gives up at `;`, `}`, EOF |
 | `parseBlockStart` | on `:`, reports `ErrorColonBlock` and reads what follows as the block; on anything else that is not `{`, reports `ErrorNoLCurly` and scans forward for one |
 | `parseTerm` default | reports `ErrorBadTerm`, consumes one token to avoid an infinite loop, returns `NULL` |
 | anonymous placeholders | the declaration parsers substitute `anonName` so the caller always gets a node |
-| `parsePgm`'s end-of-file test | `ErrorNoEof` when the main file's global statements stopped short of EOF — a stray `}` ends `parseGlobalStmts`, and this is the one place the parser refuses to finish quietly |
+| `parseModuleFilesParse`'s end-of-file test | `ErrorNoEof` when a module file's global statements stopped short of EOF — the file the compiler was given or one the folder swept in; a stray `}` ends `parseGlobalStmts`, and this is the one place the parser refuses to finish quietly |
 
 The rationale is written into `parseStruct`: an unnamed type is built under the
 anonymous name rather than abandoned, so the body is still parsed — leaving
@@ -364,7 +373,7 @@ global statement.
 
 **Two conditions abort the process outright**, with no recovery:
 a source file `fileFindSrc` cannot find, or `lexInjectPath` cannot read (`ExitNF`), and
-`parseFilename` when `import` or `include` is followed by something that is
+`parseFilename` when `import` is followed by something that is
 neither an identifier nor a string (`ExitNF` as well, despite being a malformed
 token rather than a missing file).
 
@@ -392,7 +401,7 @@ numbers.
 | | `parseSubmodule`, `parseModuleTree` | the module tree: the submodule a subfolder draws — owned by its parent, bound in its namespace, private to it unless `pub` — and the order, submodules before the module's own files |
 | | `parseRegisterModuleFiles` | the file registry entries for a module's files, and the two collisions that stop a file joining |
 | `shared/fileio.c` | `fileFindSrc`, `fileFolderScan`, `fileDesignatedFile` | locate a source file without reading it; list a folder's `.cone` files and subfolders, sorted; probe a folder for the designated file that makes it a module folder |
-| | `parseImport`, `parseInclude` | the two source-composition forms |
+| | `parseImport`, `parseRetiredInclude` | the one source-composition form, and the retired one reported |
 | `parser/parsehelper.c` | `parseBlockStart`, `parseBlockEnd` | `{` and `}`, with recovery |
 | | `parseEndOfStatement`, `parseSkipToNextStmt`, `parseCloseTok` | the required `;`, and the two resyncs |
 | `parser/parseexpr.c` | `parseAnyExpr`, `parseSimpleExpr` | the two expression entry points |

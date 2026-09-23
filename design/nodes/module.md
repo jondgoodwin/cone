@@ -223,6 +223,12 @@ then the folder's other `.cone` files by name, then each **organisational**
 subfolder's files, by name and at any depth. A `.cone` extension is what
 qualifies a file, so `.orig`, `.rej` and editor droppings never join.
 
+**The folder is the only thing that brings a file into a module.** A file joins
+by where it sits, and nothing written in one file brings another in — which is
+what lets a tool handed one file tell its module from the path. `include`, which
+did bring a named file in, is retired: the word stays a keyword, and the statement
+is `ErrorInclude` at the word and skipped, the file it names not looked for.
+
 **Every subfolder gets the same probe**, and what it answers is the whole of the
 distinction:
 
@@ -247,7 +253,7 @@ the only thing that tells the files apart:
 
 | Condition | Code |
 | --- | --- |
-| A file another module already holds, brought into a second one — by the sweep, by `include`, or by an `import` naming the importing module's own file or its own submodule | `ErrorModFile` |
+| A file another module already holds, brought into a second one — by the sweep, or by an `import` naming the importing module's own file or its own submodule | `ErrorModFile` |
 | Two files of one module sharing a basename, which leaves neither nameable | `ErrorDupFile` |
 | A designated file beneath an organisational folder, too deep to draw a module | `ErrorModFolder` |
 | An `import` reaching a module inside a tree by a path to its file, or naming the module that contains it | `ErrorModReach` |
@@ -352,9 +358,8 @@ like any other, and is in reach inside the module for the rest of the parse.
 
 **The declaration is the designated file's first statement, and a module declares
 itself once** (`ErrorModDcl` otherwise). It claims the module, so nothing may
-precede it; a file the folder swept in declares nothing, and neither does an
-*included* file, whose declarations join the including module —
-`parseGlobalStmts` is told which of the two it is reading.
+precede it, and a file the folder swept in declares nothing —
+`parseGlobalStmts` is told whether it is reading the designated file.
 
 **`pub` on the declaration opens a submodule to its parent's neighbours**, and is
 `ErrorBadPub` on any other module: the root, a module that is a file of its own
@@ -465,12 +470,6 @@ this way is a module on the package search path (`--path`). Where the parent
 answers the same name with something else, the import is `ErrorDupName` in the
 pass that reports (`importCheckNamedFile`), rather than meaning whichever was
 parsed first; where the parent binds the same module, the two are one.
-
-`parseInclude` locates the named file, registers it to the *current* module and
-parses its global statements into that module. It builds no node, creates no
-namespace, and leaves no record that it happened beyond the registry entry — which
-is what makes including a file twice, or a file another module holds, an error
-rather than a pile of duplicate names.
 
 ## Name resolution
 
@@ -913,7 +912,9 @@ children of one folder two names.
   available as a qualifier. A long list takes a block form. `using` stays
   reserved so that spelling can be diagnosed rather than merely rejected.
 - **`include` is retired.** A module spanning source files does properly what
-  `include` did by injection.
+  `include` did by injection, and it answers what `include` never could: a tool
+  handed one file knows its module from the path, where `include` was a pointer
+  written in the including file and invisible from the included one.
 - **Building a package emits an interface artifact** for importers to read
   instead of re-parsing implementation sources. Until one exists an imported
   package is parsed for its declarations and linked against its prebuilt object,
@@ -984,7 +985,8 @@ folder's name. **The module tree is real**: a subfolder holding its own designat
 file is a submodule, private to its parent unless it writes `pub`, spelled after
 its parent in every symbol, and reached from its parent by path — while a
 subfolder that holds none is organisational at any depth, and a designated file
-too deep to be a direct child is refused. **A module reaches SIDEWAYS too**: it
+too deep to be a direct child is refused. `include` is retired and reported
+(`ErrorInclude`), since the folder is what brings a file in. **A module reaches SIDEWAYS too**: it
 imports a sister by name, resolved against the registry its parent is, and
 because every module of a tree is compiled into one object that import *links* —
 which an import between two loaded modules cannot do. **And UP**: it imports any
@@ -1008,7 +1010,7 @@ for.
 `pub use` — parsed by the one `parseFoldClause`, so a module's names are folded
 from another module the way a singleton's members are folded from its type. A
 module's `use` *statement* names an enum. See "Folding through a global" and
-"Include, import, and name folding" in
+"Import and name folding" in
 [Names and Namespaces](../phases/names-and-namespaces.md).
 
 **A module imports another once.** A second import is `ErrorDupImport`, naming
@@ -1094,8 +1096,8 @@ Cone code must be able to use C-API libraries, and the mechanism must produce
 something `import` can name — a package — rather than declarations sprinkled
 through user code. `extern` therefore does not disappear so much as move: it
 becomes how a package declares that its symbols are supplied by something the
-compiler cannot read, and the `extern` block that today gets packaged into an
-include file becomes the package itself.
+compiler cannot read, and the `extern` block that today sits in a file of its own
+beside the module that uses it becomes the package itself.
 
 What that needs, and none of it is designed: how a Cone name maps to an
 unmangled C symbol, how calling convention and `trust` are stated, how opaque
@@ -1103,8 +1105,8 @@ types are declared, and whether such a package is written in Cone source or
 generated. `--safe=package`, which exists in the option help and controls which
 packages may use C FFI, is the policy half of the same question.
 
-**`include` cannot be retired before this exists**, because packaging an
-`extern` block into an include file is what the sample projects use it for.
+Until then a file holding an `extern` block needs nothing of its own: it joins
+its module the way any other file does, by being in the module's folder.
 
 ### What a package exports, and what that does to its symbols
 
@@ -1244,9 +1246,6 @@ annotation on a reference names is a type.
 
 ## Hazards
 
-- **`include` and `import` look alike and are not.** One injects declarations
-  into the current module and leaves no trace but a registry entry; the other
-  builds a namespace.
 - **A path is canonicalized before it becomes a registry key** (`fileCanonicalPath`),
   so two spellings of one file are one key and the file is read once. What that
   closed was a miscompile: `import "../b/b"` inside submodule `a` composed a path

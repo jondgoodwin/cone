@@ -89,6 +89,9 @@ Name *keyAdd(char *keyword, uint16_t toktype) {
 
 // Populate global name table with all reserved identifiers & their nodes
 void keywordInit() {
+    // Retired rather than reserved-ahead: the parser reports the statement it
+    // began and skips it, which the reserved words' release to an identifier
+    // below would turn into a cascade
     keyAdd("include", IncludeToken);
     keyAdd("import", ImportToken);
     keyAdd("extern", ExternToken);

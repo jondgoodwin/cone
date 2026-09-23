@@ -216,6 +216,9 @@ enum ErrorCode {
     // Import within the tree: a module reaches its neighbours through the registry its parent is
     ErrorModReach = 1113,       // An 'import' walking a path to a file inside a module tree, or a module naming its own parent: a module in a tree is reached by name, never by a path that happened to arrive at it
 
+    // 'include', retired: a module's files are its folder's files
+    ErrorInclude = 1126,        // An 'include' statement: a file joins a module by being in its folder, so nothing brings one in
+
     // A module's 'use': folding an enum's variants in as names of the module
     ErrorUseEnum = 1114,        // A module's 'use' naming what is not an enum declaration: another kind of name, a typedef, or an instance of a generic enum
 

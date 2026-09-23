@@ -187,8 +187,8 @@ void parseRegisterModuleFiles(ParseState *parse, ModuleNode *mod, FileNames *fil
             continue;
         }
         // Two files of one module sharing a basename leave neither nameable: a
-        // basename is what 'include' spells and what a diagnostic reports
-        // against, so one of the two has to be renamed
+        // basename is what a diagnostic reports against, so one of the two has
+        // to be renamed
         for (uint32_t j = 0; j < i; ++j) {
             if (files->names[j] == NULL || strcmp(fileName(files->names[j]), fileName(path)) != 0)
                 continue;
@@ -222,42 +222,34 @@ char *parseFilename() {
     return filename;
 }
 
-// Parse include statement
-void parseInclude(ParseState *parse) {
-    // Obtain filename of source file we want to include
-    char *filename;
+// 'include' is retired. A module's files are its folder's files, so a file joins
+// a module by where it sits and nothing in any file brings another in -- which
+// is what lets a tool handed one file tell from its path which module it is in.
+//
+// The word stays a keyword so that no program can bind it, and the statement it
+// began is reported where it is written and skipped whole, whatever it names:
+// one file, a path, or a list. What it named is not looked for, because nothing
+// would be done with it.
+//
+// The skip reads what the statement took rather than scanning for a ';', so an
+// 'include' with its ';' missing ends at its last name and does not swallow the
+// declarations after it. Only where no name follows does it scan
+static void parseRetiredInclude() {
+    errorMsgLex(ErrorInclude,
+        "'include' is retired: the folder brings a module's files in. A file in the same folder as the file named for that folder is part of its module.");
     lexNextToken();
-    filename = parseFilename();
-    parseEndOfStatement();
-
-    // Locate the file, then ask the registry for it: a file belongs to one
-    // module, so a file this module's folder already swept in, or that another
-    // module holds, cannot be injected into this one as well
-    char *path = fileFindSrc(lex ? lex->url : NULL, filename);
-    if (path == NULL)
-        errorExit(ExitNF, "Cannot find or read source file %s", filename);
-    Name *pathsym = nametblFind(path, strlen(path));
-    ModuleNode *owner = pgmFindFile(parse->pgm, pathsym);
-    if (owner) {
-        // Reported after the statement's ';' rather than at the token the parse
-        // has reached, which is the next declaration: the include is what is
-        // wrong, and the lexer has already moved past it
-        errorMsgLexAfter(ErrorModFile,
-            "Source file %s already belongs to module %s, and a file belongs to one module.",
-            path, &owner->namesym->namestr);
-        return;
+    int named = 0;
+    while (lexIsToken(IdentToken) || lexIsToken(StringLitToken)) {
+        named = 1;
+        lexNextToken();
+        if (!lexIsToken(CommaToken))
+            break;
+        lexNextToken();
     }
-    pgmSetFile(parse->pgm, pathsym, parse->mod);
-
-    // Inject source of include file, parse its global statements, then pop lexer.
-    // An included file never starts a module -- its declarations join the
-    // including one -- so a 'mod' declaration in it has nothing to name
-    lexInjectPath(path);
-    parseGlobalStmts(parse, parse->mod, 0);
-    if (lex->toktype != EofToken) {
-        errorMsgLex(ErrorNoEof, "Expected end-of-file");
-    }
-    lexPop();
+    if (lexIsToken(SemiToken))
+        lexNextToken();
+    else if (!named)
+        parseSkipToNextStmt();
 }
 
 // The module a name reaches in the REGISTRY this module's imports resolve
@@ -407,8 +399,9 @@ ImportNode *parseImport(ParseState *parse, uint16_t pubflag) {
         // naming it here asks the module to import itself. The folder is what
         // brings a sibling file in; 'import' reaches a different module
         if (newmod == parse->mod) {
-            // After the statement's ';', for parseInclude's reason: the parse has
-            // already moved on to the next declaration
+            // Reported after the statement's ';' rather than at the token the
+            // parse has reached, which is the next declaration: the import is
+            // what is wrong, and the lexer has already moved past it
             errorMsgLexAfter(ErrorModFile,
                 "This file is already part of module %s: a file of the module's folder joins it without being imported.",
                 &newmod->namesym->namestr);
@@ -578,8 +571,7 @@ void parseSkipDclBody() {
 //
 // 'atmodstart' is whether this is the first statement of the module's designated
 // file. The declaration claims the module, so nothing may precede it, a second
-// one has nothing left to declare, and a file the folder swept in -- or an
-// included one, whose declarations join the including module -- carries none at
+// one has nothing left to declare, and a file the folder swept in carries none at
 // all.
 //
 // 'pub' is what opens a SUBMODULE to its parent's neighbours: a submodule is
@@ -723,23 +715,17 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
         // this module. That is 'pub' with its one meaning, on a binding as on a
         // declaration, and it is what makes transit fall out: a third module sees
         // through this one exactly what this one re-exported.
-        //
-        // 'include' binds nothing of its own -- the included file's declarations
-        // join this module and carry their own visibility -- so there is nothing
-        // there for 'pub' to speak for.
+        case ImportToken: {
+            ImportNode *newnode = parseImport(parse, pubflag);
+            if (newnode)
+                modAddNode(mod, NULL, (INode*)newnode);
+            break;
+        }
+
+        // Retired, and reported once however it is written: a 'pub' before it
+        // speaks for a statement that is gone, so it earns no diagnostic of its own
         case IncludeToken:
-        case ImportToken:
-            if (lexIsToken(IncludeToken)) {
-                if (pubflag)
-                    errorMsgLex(ErrorBadPub,
-                        "'include' binds no name of its own: the file's declarations join this module carrying their own visibility.");
-                parseInclude(parse);
-            }
-            else {
-                ImportNode *newnode = parseImport(parse, pubflag);
-                if (newnode)
-                    modAddNode(mod, NULL, (INode*)newnode);
-            }
+            parseRetiredInclude();
             break;
 
         // 'use' folds an enum's variants in as names of this module. The
@@ -1183,7 +1169,7 @@ ProgramNode *parsePgm(ConeOptions *opt) {
         modAddNamedNode(mod, mod->namesym, (INode*)mod);
     // A stray '}' at global scope ends a file's statement loop. Without the
     // end-of-file check inside, the rest of that file would be silently
-    // discarded, exactly as an include would be
+    // discarded
     parseModuleTree(&parse, mod, dsgfile, &files, &submodules);
     modHook(mod, NULL);
     return pgm;

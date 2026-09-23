@@ -1,11 +1,11 @@
-# module - modules, namespaces, 'include'/'import'/'extern'. Tier 2.
+# module - modules, namespaces, 'import'/'extern'. Tier 2.
 #
 # Key reference: design/diagnostics/test-suite.md, "cases.toml keys".
 # The group directory supplies the feature tag, so tags carry pipeline phases.
 #
 # This is the first group with support modules: a .cone file here that is
 # neither a listed scenario nor a listed support module is an error (R2.12), so
-# every file a scenario imports or includes is named below. Support files carry
+# every file a scenario imports is named below. Support files carry
 # a 'module' prefix that an identifier can hold, because a module's name is also
 # its qualifier and 'module-importsub' is not spellable as one.
 #
@@ -26,19 +26,9 @@
 #
 # The failure scenarios are split by pipeline stage, because analysis halts
 # between stages. module-import-missing is split off again inside the parse
-# stage because its failure aborts rather than accumulates, and
-# module-include-eof because its diagnostic lands in an included file.
-#
-# Left out deliberately:
-#
-# - A 'mod' declaration in an *included* file, which is ErrorModDcl because an
-#   included file's declarations join the including module and so it names no
-#   module of its own. The condition module-parse-mod pins is the same one by the
-#   same rule; what an included file adds is a second route to it, and reaching it
-#   costs a support file whose annotation would then be imposed on every scenario
-#   that includes it.
+# stage because its failure aborts rather than accumulates.
 
-support = ["moduleinc.cone", "modulesub.cone", "moduleeof.cone",
+support = ["modulesub.cone",
            "moduleprov.cone", "moduleprov2.cone", "modulenoname.cone",
            "modulesyms.cone", "modulecyc.cone", "modulex_y.cone", "modulex.cone",
            "moduletransit.cone", "modulelate.cone", "moduleearly.cone",
@@ -51,7 +41,7 @@ support = ["moduleinc.cone", "modulesub.cone", "moduleeof.cone",
 
 [scenario.module-success]
 category = "run"
-description = "'include', 'extern' and namespace qualification inside one module"
+description = "'extern' and namespace qualification inside one module"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 
 # Pins today's spelling of an 'extern' declaration, so the symbol-generation
@@ -872,13 +862,33 @@ diagnostics = 6
 # declared below.
 [scenario.module-folder-reject]
 category = "reject"
-description = "What the folder sweep refuses: a misnaming declaration, a swept file declaring a module, importing and including one's own files, two files of one name and two subfolders declaring one name"
+description = "What the folder sweep refuses: a misnaming declaration, a swept file declaring a module, importing one's own file, two files of one name and two subfolders declaring one name"
 tags = ["parse"]
-diagnostics = 7
+diagnostics = 6
 
 [[scenario.module-folder-reject.unlocated]]
 code = "ErrorDupFile"
 message = "holds two files named same"
+
+# A stray block end in a file the folder swept in, beside module-parse-strayend,
+# which is the same condition in the file the compiler was given. A folder
+# scenario may annotate any of its files, so it is a 'reject' with the annotation
+# where the diagnostic lands.
+[scenario.module-folder-strayend]
+category = "reject"
+description = "A stray block end at global scope in a file the folder swept in"
+tags = ["parse"]
+diagnostics = 1
+
+# 'include' is retired: the folder brings a module's files in. Each way of
+# writing the statement -- a name, a 'pub' one naming a path, a list, and the
+# samples' form with no ';' -- is one diagnostic at the word, and the statement
+# is skipped whole without swallowing the declaration after it.
+[scenario.module-parse-include]
+category = "reject"
+description = "The retired 'include' statement, reported once however it is written"
+tags = ["parse"]
+diagnostics = 4
 
 [scenario.module-import-missing]
 category = "reject"
@@ -887,14 +897,7 @@ tags = ["parse"]
 diagnostics = 0
 exit = 2
 
-[scenario.module-include-eof]
-category = "recover"
-description = "An included file the parser stops reading before its end"
-tags = ["parse"]
-diagnostics = 1
-
-# Split off for module-include-eof's reason: the diagnostics land in the
-# imported file. What it pins is that a malformed global declaration there is
+# Split off because its diagnostics land in the imported file. What it pins is that a malformed global declaration there is
 # reported and stops the compile, rather than being reported and then crashing
 # the compiler while its symbol is named.
 [scenario.module-parse-noname]
@@ -903,8 +906,8 @@ description = "A global declaration with no name, in an imported module"
 tags = ["parse"]
 diagnostics = 3
 
-# The same condition in the main file rather than an included one, which is why
-# it can be a 'reject' with its own annotation where module-include-eof cannot.
+# The condition module-folder-strayend pins in a swept sibling, here in the file
+# the compiler was given.
 [scenario.module-parse-strayend]
 category = "reject"
 description = "A stray block end at global scope in the main source file"

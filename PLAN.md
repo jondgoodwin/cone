@@ -53,7 +53,7 @@ This table illustrates the current status of Cone's key features:
 | | while, break, continue | each |
 | **Names** | Global, local, extern variables | |
 | | Module & type namespaces | |
-| | include, import | |
+| | Module folders, import | |
 | **Operators** | +, -, *, /, % | |
 | | == < <= > >= | ~~ |
 | | = : << | |
