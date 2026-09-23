@@ -125,9 +125,9 @@ void genericInstantiateExit() {
     --instantiateDepth;
 }
 
-// Instantiate the generic based on parms and return
-INode *genericInstantiate(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nodetoclone,
-        GenericInfo *genericinfo, Name *name) {
+// Clone the generic's instance for parms and remember it, without type checking it
+static INode *genericClone(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nodetoclone,
+        GenericInfo *genericinfo) {
     CloneState cstate;
     clonePushState(&cstate, (INode*)srcgencall, NULL, pstate->scope, genericinfo->parms, srcgencall->args);
     INode *instance = cloneNode(&cstate, nodetoclone);
@@ -138,6 +138,13 @@ INode *genericInstantiate(TypeCheckState *pstate, FnCallNode *srcgencall, INode 
         genericinfo->memonodes = newNodes(2);
     nodesAdd(&genericinfo->memonodes, (INode*)srcgencall);
     nodesAdd(&genericinfo->memonodes, instance);
+    return instance;
+}
+
+// Instantiate the generic based on parms and return
+INode *genericInstantiate(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nodetoclone,
+        GenericInfo *genericinfo, Name *name) {
+    INode *instance = genericClone(pstate, srcgencall, nodetoclone, genericinfo);
 
     // Type check the instanced declaration
     inodeTypeCheckAny(pstate, &instance);
@@ -221,13 +228,21 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
         if (basetrait == (StructNode*)nodetoclone)
             retinstance = instrait;
 
-        // Now instantiate all variants
+        // Now instantiate all variants. Every one is cloned and remembered before
+        // any is type checked: a variant's body may name a later sibling at these
+        // same arguments, and a sibling not yet remembered would be a miss that
+        // instantiates the whole enum again, endlessly.
+        Nodes *variants = newNodes(basetrait->derived->used);
+        for (nodesFor(basetrait->derived, cnt, nodesp))
+            nodesAdd(&variants, genericClone(pstate, srcgencall, *nodesp, ((StructNode*)*nodesp)->genericinfo));
         Nodes **instraitderived = &((StructNode*)instrait)->derived;
+        INode **instp = &nodesGet(variants, 0);
         for (nodesFor(basetrait->derived, cnt, nodesp)) {
-            INode *instance = genericInstantiate(pstate, srcgencall, *nodesp, ((StructNode*)*nodesp)->genericinfo, name);
-            nodesAdd(instraitderived, instance); // Repair trait's derived entry to point to instantiated variant
+            inodeTypeCheckAny(pstate, instp);
+            nodesAdd(instraitderived, *instp); // Repair trait's derived entry to point to instantiated variant
             if (*nodesp == (INode*)nodetoclone)
-                retinstance = instance;
+                retinstance = *instp;
+            ++instp;
         }
 
         // The discriminant's width follows the largest tag value, and the instance

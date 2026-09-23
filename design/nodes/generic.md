@@ -184,8 +184,12 @@ a `newErrorNode` rather than nothing, so the caller substitutes it and keeps
 checking — `fnCallTypeCheck` has the matching `inodeIsError` guard.
 
 A **tagged trait** fans out: the base trait is instantiated, then every entry of
-its `derived` list, each registering into its own `memonodes`. The instance's
-`derived` is filled in as each variant is made, after the instance itself was type
+its `derived` list, each registering into its own `memonodes`. **Every variant is
+cloned and registered before any is type checked**, because a variant's body may
+name a later sibling at the same arguments: registered only as each was checked,
+that sibling was a miss, and a miss on any variant instantiates the whole enum
+again, so it expanded until `ErrorInstDepth`. The instance's `derived` is filled
+in as each variant is type checked, after the instance itself was type
 checked with an empty one, so the discriminant's width (`structSetTagWidth`) is
 settled here once the list is whole — on the first instance of the generic only,
 since the discriminant node and the tag values are shared by every instance.
