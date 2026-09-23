@@ -572,10 +572,161 @@ fn classify(n i32) i32 {
   }
 }
 
+// A comparison pattern writes the operator and its right operand only: the
+// matched value is the left one. Every comparison operator is one.
+fn sign(n i32) i32 {
+  match n {
+    case <0 {-1;}
+    case >0 {1;}
+    else {0;}
+  }
+}
+
+fn band(n i32) i32 {
+  match n {
+    case <=-5 {1;}
+    case >=5 {2;}
+    case !=0 {3;}
+    else {4;}
+  }
+}
+
+// A range tests both ends: '..' leaves its end out and '...' takes it in. A
+// bound is an expression like any operand.
+fn ranged(n i32, top i32) i32 {
+  match n {
+    case 0 .. 3 {1;}
+    case 3 ... 6 {2;}
+    case -3..0 {3;}
+    case 7 .. top + 1 {4;}
+    else {0;}
+  }
+}
+
+// Patterns joined by 'or' match when any one of them does, a range among them
+fn primeOrNear(n i32) i32 {
+  match n {
+    case ==2 or ==3 or ==5 or ==7 {2;}
+    case ==-6 or -1...1 or ==6 {1;}
+    case < -100 or >100 {9;}
+    else {0;}
+  }
+}
+
+// An 'if' guard after the pattern must hold too. When it does not, the cases
+// after it are tried, so the unguarded one below catches the rest.
+fn guarded(nbr i32, cnt i32) i32 {
+  match nbr {
+    case ==4 if cnt > 0 {0;}
+    case ==4 {1;}
+    else {2;}
+  }
+}
+
+// A bound pattern's guard reads the variable the pattern binds. A guarded arm
+// may fail, so it does not account for its variant: the unguarded 'Some' after
+// it does, and with 'None' that makes the match a value without an 'else'.
+fn positiveOr(o Option[i32]) i32 {
+  match o {
+    case imm x Some if x.value > 0 {x.value;}
+    case imm x Some {0 - x.value;}
+    case is None {1000;}
+  }
+}
+
+// Through a reference, and on an 'is' pattern joined by 'or'
+fn wideCircle(s &Shape) i32 {
+  match s {
+    case imm c &Circle if c.radius > 10 {c.radius * 2;}
+    case imm c &Circle {c.radius;}
+    case imm r &Rect if r.w == r.h {100;}
+    else {0;}
+  }
+}
+
+fn moving(s &Signal) i32 {
+  match s {
+    case is &Step or is &Drift {1;}
+    else {0;}
+  }
+}
+
+// A generic function's match is cloned into each instance, guard and all
+fn pickOver[T](o Option[T], floor T) T {
+  match o {
+    case imm s Some if s.value > floor {s.value;}
+    else {floor;}
+  }
+}
+
+fn inBand[T](x T, lo T, hi T) i32 {
+  match x {
+    case lo .. hi or ==hi {1;}
+    else {0;}
+  }
+}
+
 fn valueMatching() {
   show("value-match-first", classify(0));
   show("value-match-second", classify(1));
   show("value-match-else", classify(9));
+
+  show("compare-less", sign(-5));
+  show("compare-equal-falls-to-else", sign(0));
+  show("compare-greater", sign(7));
+  show("compare-at-most", band(-5));
+  show("compare-at-least", band(5));
+  show("compare-not-equal", band(1));
+  show("compare-none-hold", band(0));
+
+  show("range-exclusive-start", ranged(0, 9));
+  show("range-exclusive-inside", ranged(2, 9));
+  show("range-exclusive-end-is-next-range", ranged(3, 9));
+  show("range-inclusive-end", ranged(6, 9));
+  show("range-negative-start", ranged(-3, 9));
+  show("range-below-all", ranged(-4, 9));
+  show("range-computed-bound-inside", ranged(9, 9));
+  show("range-computed-bound-past", ranged(10, 9));
+
+  show("or-first-alternative", primeOrNear(2));
+  show("or-last-alternative", primeOrNear(7));
+  show("or-none", primeOrNear(4));
+  show("or-range-alternative", primeOrNear(0));
+  show("or-after-range", primeOrNear(6));
+  show("or-comparisons-low", primeOrNear(-101));
+  show("or-comparisons-high", primeOrNear(101));
+
+  show("guard-holds", guarded(4, 1));
+  show("guard-fails-next-case", guarded(4, 0));
+  show("guard-pattern-fails", guarded(3, 1));
+
+  show("bound-guard-holds", positiveOr(Some[5]));
+  show("bound-guard-fails", positiveOr(Some[-5]));
+  show("bound-guard-other-variant", positiveOr(None[i32][]));
+
+  mut big Shape = Circle[0, 20];
+  mut small Shape = Circle[0, 5];
+  mut square Shape = Rect[0, 3, 3];
+  mut oblong Shape = Rect[0, 3, 4];
+  show("ref-guard-holds", wideCircle(&big));
+  show("ref-guard-fails", wideCircle(&small));
+  show("ref-guard-second-variant", wideCircle(&square));
+  show("ref-guard-to-else", wideCircle(&oblong));
+
+  mut halt Signal = Halt[];
+  mut step Signal = Step[2];
+  mut drift Signal = Drift[1., 2.];
+  show("or-is-first", moving(&step));
+  show("or-is-second", moving(&drift));
+  show("or-is-neither", moving(&halt));
+
+  show("generic-guard-holds", pickOver(Some[7], 3));
+  show("generic-guard-fails", pickOver(Some[2], 3));
+  show("generic-guard-other-type", pickOver(Some[9i64], 3i64));
+  show("generic-range-inside", inBand(3, 1, 5));
+  show("generic-range-or-end", inBand(5, 1, 5));
+  show("generic-range-past", inBand(6, 1, 5));
+  show("generic-range-float", inBand(2.5, 1., 5.));
 }
 
 // -------- Option and Result --------
