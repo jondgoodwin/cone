@@ -25,6 +25,8 @@ ModuleNode *newModuleNode() {
     namespaceInit(&mod->namespace, 64);
     dclInfoInit(&mod->dclinfo);
     mod->foldstate = 0;
+    mod->extendsname = NULL;
+    mod->extends = NULL;
     return mod;
 }
 
@@ -107,6 +109,101 @@ void modAddFn(ModuleNode *mod, FnDclNode *fnnode) {
     fnOverloadDclAdd((FnOverloadDclNode*)binding, fnnode);
 }
 
+// What a binding of a module's namespace stands for: the declaration at the end
+// of a chain of fold aliases, or the binding itself where it is a declaration.
+// A typedef is a declaration of its own, and the chain stops there: its target
+// is resolved with the module's other nodes, after every fold has run
+static INode *modBindingDcl(INode *node) {
+    while (node && node->tag == AliasDclTag && !(node->flags & FlagTypeAlias)) {
+        INode *target = ((AliasDclNode*)node)->target;
+        node = (target && isNameUseNode(target)) ? ((NameUseNode*)target)->dclnode : NULL;
+    }
+    return node;
+}
+
+// Is this binding one of the same declaration, by the same route, as 'alias'?
+static int modFoldSameDcl(INode *prior, AliasDclNode *alias) {
+    INode *dcl = modBindingDcl((INode*)alias);
+    return dcl != NULL && dcl == modBindingDcl(prior) && aliasDclThrough(prior) == alias->through;
+}
+
+// Did the module's own source write this binding under its name? Everything but
+// what a star clause made: a declaration, a typedef, the name an import binds to
+// its module, a listed item of a clause, and an enum's 'use'
+static int modBindingWritten(INode *node) {
+    return !(node->tag == AliasDclTag && (node->flags & FlagUnlisted));
+}
+
+// Bind a name a fold brings into a module's namespace -- an import's clause, a
+// module's 'extends', a global's clause, an enum's 'use' -- and hook it. NULL
+// once it is bound; otherwise the binding already holding the name, which the
+// caller reports as a collision (modFoldDupReport).
+//
+// A name the module's own source WRITES twice is an error, whatever the two
+// stand for: the same name listed twice in a clause, two identical 'use
+// Colors;', a name both imported and listed, a listed name that is the module's
+// own declaration. Two ways of bringing in the same thing is a cleanliness
+// issue [Jon 23 Sep]. (Two imports of one module are refused at parse, where the
+// module's name is bound: parseImport.)
+//
+// A name the module never wrote -- one a wildcard 'use *', an 'extends' or the
+// implicit core import brought -- is one binding with another of the SAME
+// declaration under that name: the second is the binding the name has already
+// [Jon 23 Sep]. That is what lets a name reach a module by two routes nobody
+// spelled -- the diamond, two wildcard imports that each re-export it, a
+// module's own declaration handed back by a module that extends it, or the core
+// fold an extending module takes from its base meeting its own -- and it keeps
+// the order the folds ran in from deciding whether a program compiles. One side
+// unwritten is enough: a listed name meeting a wildcard's arrival of the same
+// declaration was not written twice. 'The same' is the same declaration reached
+// the same way: a member folded through two different globals is two things, and
+// collides, as two different declarations do everywhere.
+//
+// Where one route is public and the other private, the binding is public, so a
+// re-export is not lost to whichever route happened to be folded first. A
+// declaration of the module keeps its own visibility: nothing folds a private
+// name of it back as a public one. Where either route was written, the binding
+// counts as written, so a third that writes the name again is refused whichever
+// order the three were folded in.
+//
+// The same holds for the kind of binding. An import's binding of its module's
+// name is a dependency, which a module extending this one does not take; where a
+// wildcard has brought the same module in under that name too, the binding is
+// also a fold, and it does travel (FlagImportName).
+INode *modFoldBind(ModuleNode *mod, AliasDclNode *alias) {
+    INode *prior = namespaceAdd(&mod->namespace, alias->namesym, (INode*)alias);
+    if (prior == NULL) {
+        nametblHookNode(alias->namesym, (INode*)alias);
+        return NULL;
+    }
+    if (!modFoldSameDcl(prior, alias))
+        return prior;
+    if (modBindingWritten(prior) && modBindingWritten((INode*)alias))
+        return prior;
+    if (prior->tag == AliasDclTag) {
+        if (alias->flags & FlagPub)
+            prior->flags |= FlagPub;
+        if (modBindingWritten((INode*)alias))
+            prior->flags &= 0xffff - FlagUnlisted;
+        prior->flags &= 0xffff - FlagImportName;
+    }
+    return NULL;
+}
+
+// Report the binding modFoldBind found holding a fold's name. Where both stand
+// for the same declaration, the module wrote one thing twice; otherwise the name
+// means two things
+void modFoldDupReport(AliasDclNode *alias, INode *prior) {
+    if (modFoldSameDcl(prior, alias))
+        errorMsgNode((INode*)alias, ErrorDupName,
+            "%s is already a name of this module, for the same thing. A module brings a name in one way: leave out the second.",
+            &alias->namesym->namestr);
+    else
+        errorMsgNode((INode*)alias, ErrorDupName,
+            "%s is already a name of this module. A folded name must be unique: rename it with 'as', or leave it out with 'but'.",
+            &alias->namesym->namestr);
+}
+
 // Serialize a module node
 void modPrint(ModuleNode *mod) {
     INode **nodesp;
@@ -117,6 +214,8 @@ void modPrint(ModuleNode *mod) {
         inodeFprint("module %s", &mod->namesym->namestr);
     else
         inodeFprint("IR for program %s", mod->lexer->url);
+    if (mod->extendsname)
+        inodeFprint(" extends %s", &((NameUseNode*)mod->extendsname)->namesym->namestr);
     dclInfoPrint((INode*)mod);
     inodeFprint("\n");
     inodePrintIncr();
@@ -136,6 +235,127 @@ void modHook(ModuleNode *oldmod, ModuleNode *newmod) {
     if (newmod) {
         nametblHookPush();
         nametblHookNamespace(&newmod->namespace);
+    }
+}
+
+// ---- 'mod A extends B': one module reusing another -------------------------
+//
+// A module that extends another takes in the other's names -- all but the ones
+// its imports bind to their modules -- and adds its own declarations beside
+// them. For a module, extending and inheriting are one
+// thing: static folding ALIASES and keeps the original owner, and a module's
+// state is all static -- one instance, at a fixed address -- so there is no
+// second copy to make, and each name of B becomes an alias in A's namespace
+// whose declaration, symbol and state stay B's.
+//
+// B's DECLARATIONS and B's FOLDS come across -- what B declares, and every alias
+// a 'use' clause of B's made, an import's, a global's or an enum's -- but not the
+// name an import of B's binds to its module [Jon 23 Sep]. A module's imports are
+// its dependencies, not its contents: scoped imports exist so that each module
+// states its own, so A names c1 only if A imports c1, whatever B imports. What
+// 'import c1 use cx' folds into B is a name of B, and cx does come across.
+//
+// Each alias carries B's visibility: A is inside B's boundary, as an enriching
+// type is inside its base's, so A's code reads B's private names too [Jon 23
+// Sep]. What A shows is what B shows: a name public in B is public in A, because
+// what a module extends is part of its own surface, and a name private to B is
+// private in A, so A's importers see B's public surface and nothing more. A name
+// A declares that B already has, public or private, is refused, as it is for a
+// type.
+//
+// The fold is an ImportNode marked 'isextends' and held on the module rather
+// than on its imports, so modFoldNames runs it dependency-first like any import
+// and a chain of 'extends' transits: what B took from C is a name of B.
+
+// Resolve what this module's 'extends' names, and refuse what cannot be reused.
+//
+// What it names is a module this module can ALREADY reach, which is the same
+// two places an import's name is answered, looked up rather than loaded: this
+// module's own namespace, where an import bound the module's name, and then the
+// registry its parent is, which holds its sisters. Nothing is located or read:
+// 'extends' states a dependency on a module in reach, and a module out of reach
+// is named by an import first.
+void modExtendsResolve(ModuleNode *mod) {
+    if (mod->extendsname == NULL)
+        return;
+    NameUseNode *name = (NameUseNode*)mod->extendsname;
+    ModuleNode *parent = (ModuleNode*)mod->dclinfo.owner;
+    INode *binding = namespaceFind(&mod->namespace, name->namesym);
+    if (binding == NULL && parent != NULL)
+        binding = namespaceFind(&parent->namespace, name->namesym);
+    if (binding == NULL) {
+        errorMsgNode((INode*)name, ErrorUnkName,
+            "%s names no module this module can reach. A module extends a sister, which its parent holds, or a module it imports.",
+            &name->namesym->namestr);
+        return;
+    }
+    INode *found = aliasDclResolve(binding);
+    if (found == (INode*)mod) {
+        errorMsgNode((INode*)name, ErrorModExtends,
+            "A module cannot extend itself.");
+        return;
+    }
+    if (found != NULL && found == (INode*)parent) {
+        // Containment runs one way, as it does for an import
+        errorMsgNode((INode*)name, ErrorModReach,
+            "Module %s is this module's parent, and a module may not extend the module that contains it.",
+            &name->namesym->namestr);
+        return;
+    }
+    if (found != NULL && found->tag == StructTag && (found->flags & TraitType)) {
+        errorMsgNode((INode*)name, ErrorModExtends,
+            "%s is a trait. A module's 'extends' reuses a concrete module; a module conforming to a module trait, as in 'mod arena extends Region', is a different reading and is not built.",
+            &name->namesym->namestr);
+        return;
+    }
+    if (found == NULL || found->tag != ModuleTag) {
+        errorMsgNode((INode*)name, ErrorModExtends,
+            "%s is not a module. A module extends another module; a type is enriched by a type's 'extends'.",
+            &name->namesym->namestr);
+        return;
+    }
+    ModuleNode *base = (ModuleNode*)found;
+    // A module this one contains is a part of it rather than something it adds
+    // to. Folding a submodule's names into its parent is not something any other
+    // spelling does either, so it is refused rather than made a second route
+    for (ModuleNode *up = (ModuleNode*)base->dclinfo.owner; up; up = (ModuleNode*)up->dclinfo.owner) {
+        if (up == mod) {
+            errorMsgNode((INode*)name, ErrorModExtends,
+                "Module %s is inside this one. A module extends a module beside it, not one it contains.",
+                &name->namesym->namestr);
+            return;
+        }
+    }
+    name->dclnode = (INode*)base;
+
+    ImportNode *fold = newImportNode();
+    inodeLexCopy((INode*)fold, (INode*)name);
+    fold->module = base;
+    fold->isextends = 1;
+    fold->fold = newFoldClause();
+    inodeLexCopy(fold->fold->at, (INode*)name);
+    // Every declaration and fold of the base, each as visible here as it is
+    // there: the clause carries no 'pub' of its own (importFoldItem), and its
+    // star leaves out what the base's imports bind (foldStarItems)
+    fold->fold->star = 1;
+    mod->extends = fold;
+}
+
+// Refuse a module whose chain of 'extends' comes back to it: each would be
+// adding to the other, and neither has a surface to start from
+void modExtendsCheckCycle(ModuleNode *mod, uint32_t nmods) {
+    if (mod->extends == NULL)
+        return;
+    ModuleNode *base = mod->extends->module;
+    for (uint32_t i = 0; i < nmods && base != NULL; ++i) {
+        if (base == mod) {
+            errorMsgNode(mod->extendsname, ErrorModExtends,
+                "Module %s extends a module that extends it in turn. A chain of 'extends' may not come back to where it started.",
+                &mod->namesym->namestr);
+            mod->extends = NULL;
+            return;
+        }
+        base = base->extends ? base->extends->module : NULL;
     }
 }
 
@@ -395,8 +615,24 @@ void modFoldNames(NameResState *pstate, ModuleNode *mod) {
     pstate->mod = mod;
     modHook(NULL, mod);
 
+    // What this module extends comes first, and is folded exactly as an import
+    // is -- dependency-first, so a chain of 'extends' transits. First, so that a
+    // name the base has and something of this module's own also brings in is
+    // reported at what this module wrote, which is the thing to change
     INode **nodesp;
     uint32_t cnt;
+    ImportNode *extends = mod->extends;
+    if (extends) {
+        if (extends->module->foldstate == 1)
+            extends->cycle = modFoldCycle(extends);
+        else {
+            nodesAdd(&foldimps, (INode*)extends);
+            modFoldNames(pstate, extends->module);
+            --foldimps->used;
+        }
+        importNameRes(pstate, extends);
+    }
+
     for (nodesFor(mod->imports, cnt, nodesp)) {
         ImportNode *import = (ImportNode*)*nodesp;
         if (import->module && import->module->foldstate == 1)

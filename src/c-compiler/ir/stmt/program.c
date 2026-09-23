@@ -59,9 +59,17 @@ void pgmPrint(ProgramNode *pgm) {
 // start of the folding module's own resolution, so a module resolved earlier --
 // the root among them, since it loads first -- looked the name up before it was
 // there, and a module resolved later found it.
+//
+// Ahead of the folds, what each module's 'extends' names is resolved, and a
+// cycle of them refused: the fold follows that edge dependency-first, so every
+// edge has to be known, and a cycle cut, before the first fold runs.
 void pgmNameRes(NameResState *pstate, ProgramNode *pgm) {
     INode **nodesp;
     uint32_t cnt;
+    for (nodesFor(pgm->modules, cnt, nodesp))
+        modExtendsResolve((ModuleNode*)*nodesp);
+    for (nodesFor(pgm->modules, cnt, nodesp))
+        modExtendsCheckCycle((ModuleNode*)*nodesp, pgm->modules->used);
     for (nodesFor(pgm->modules, cnt, nodesp))
         modFoldNames(pstate, (ModuleNode*)*nodesp);
     for (nodesFor(pgm->modules, cnt, nodesp)) {

@@ -44,7 +44,8 @@ support = ["moduleinc.cone", "modulesub.cone", "moduleeof.cone",
            "moduletransit.cone", "modulelate.cone", "moduleearly.cone",
            "modulehide.cone", "modulehidelate.cone",
            "modulemacro.cone", "moduledeclared.cone",
-           "modulefold.cone", "modulefoldlate.cone", "modfolder"]
+           "modulefold.cone", "modulefoldlate.cone", "modfolder",
+           "moduleextbase.cone"]
 
 # -------- success --------
 
@@ -258,11 +259,12 @@ diagnostics = 3
 # reached through a third module; module-import-use-nameres holds what a clause
 # does not put in reach and what it refuses to fold; module-import-use-parse
 # holds what is refused as it is parsed, and the rule for two imports of one
-# module: an identical repeat is ignored, a differing one is ErrorDupImport.
+# module: a second is ErrorDupImport, a differing one and an identical repeat
+# alike [Jon 23 Sep].
 
 [scenario.module-import-use]
 category = "run"
-description = "An import's 'use' clause: a list with 'as', '* but', a block, 'pub use' re-exported through a wildcard import, 'pub import', and identical repeats"
+description = "An import's 'use' clause: a list with 'as', '* but', a block, 'pub use' re-exported through a wildcard import, and 'pub import'"
 tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 
 # A fold binds and declares nothing, whatever its spelling. No symbol is spelled
@@ -286,9 +288,9 @@ diagnostics = 9
 
 [scenario.module-import-use-parse]
 category = "reject"
-description = "Two imports of one module that differ, and the clause spellings refused as they are parsed"
+description = "Two imports of one module, identical or differing, and the clause spellings refused as they are parsed"
 tags = ["parse"]
-diagnostics = 9
+diagnostics = 12
 
 # A re-export does not travel round a cycle of imports: of two modules that
 # import each other, one folds from the other while the other's folds are still
@@ -323,6 +325,123 @@ category = "reject"
 description = "What a fold of an enum's variants does not put in reach: a private fold by a path or through a wildcard import, and a fold colliding with a name an import brought"
 tags = ["nameres"]
 diagnostics = 3
+
+# -------- 'extends': one module reusing another --------
+#
+# 'mod solids extends shapes' makes every declaration of shapes, and every name
+# a 'use' clause of shapes folded in, a name of solids, as an alias: the
+# declaration, its symbol and its state stay shapes'. The name an import of
+# shapes binds to its module does not come across: shapes' imports are its
+# dependencies, not its contents, and solids states its own [Jon 23 Sep]. Each
+# alias is as visible in solids as in shapes, so solids' code reads shapes'
+# private names and solids' importers see shapes' public ones [Jon 23 Sep]. For
+# a module, extending and inheriting are one thing, because a module's state is
+# static and one instance of it is all there is.
+#
+# module-extends runs one, in a tree -- a chain of two, reached from inside,
+# private names and a private fold included, by path from the parent, and
+# through two importers, with the extending module importing for itself a module
+# the base imports -- and pins that the aliases declare nothing. module-extends-import extends a module an import reached by
+# its file, which compiles and cannot link. module-extends-nameres holds what
+# 'extends' refuses once names are bound, module-extends-parse what it refuses as
+# it is written.
+
+[scenario.module-extends]
+category = "run"
+description = "A module extending a sister that extends another: the base's function, type and global reached through the extending module from inside, by path, and through an importer's path and wildcard, both bases' private names and the base's private fold reached from inside, and a module the base imports named after the extending module imports it too"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+# 'extends' binds and declares nothing. Every name reached through solids lowers
+# to the declaring module's own symbol, and nothing is spelled after solids but
+# what solids declares itself.
+[[scenario.module-extends.check]]
+name = "extends-declares-no-symbol-of-its-own"
+target = "symbols"
+contains = [
+  "define internal shapes.area comdat nodeduplicate",
+  "define internal base.unit comdat nodeduplicate",
+  "global internal shapes.count comdat nodeduplicate",
+  "define internal solids.volume comdat nodeduplicate",
+  "define internal tools.tripled comdat nodeduplicate",
+]
+excludes = ["solids.area", "solids.unit", "solids.count", "solids.Point", "shapes.unit",
+            "summary.area", "report.area", "solids.secret", "solids.hidden", "solids.deep",
+            "shapes.deep", "solids.tripled", "shapes.tripled"]
+
+# A module that imports, 'use *', a module extending it is handed its own names
+# back, and each is the binding the name has already: the same declaration
+# reached a second time is no collision. Both orders, because the order the two
+# modules' folds ran in once decided whether the program compiled: the importer
+# folded first saw its own names come home as duplicates.
+[scenario.module-extends-back]
+category = "run"
+description = "A module importing with 'use *' a module that extends it, in both fold orders: its own names come back as the bindings they already are"
+tags = ["nameres", "typecheck", "genllvm", "runtime"]
+
+[scenario.module-extends-import]
+category = "compile"
+description = "A module extending a module it imports by its file, reaching the base's function and global bare"
+tags = ["parse", "nameres", "typecheck", "genllvm"]
+
+# The base's names are the base's declarations, declared for the linker as any
+# imported module's are; nothing is spelled after the extending module
+[[scenario.module-extends-import.check]]
+name = "an-extended-imported-module-is-declared-not-copied"
+target = "symbols"
+contains = ["declare moduleextbase.twice", "external global moduleextbase.total"]
+excludes = ["app."]
+
+[scenario.module-extends-nameres]
+category = "reject"
+description = "What 'extends' refuses once names are bound: a redeclared public, private or folded name, a module the base imports named without importing it, the base's private name reached through an importer by path, a listed clause and a wildcard, a trait, a function, itself, a cycle, its own submodule, its parent, and a module out of reach"
+tags = ["nameres"]
+diagnostics = 14
+
+[scenario.module-extends-parse]
+category = "reject"
+description = "What a module's 'extends' refuses as it is parsed: two modules, a path, and no name"
+tags = ["parse"]
+diagnostics = 3
+
+# -------- one declaration reached by two routes --------
+#
+# A name the module's own source WRITES twice is an error, even for the same
+# declaration: "two different ways of bringing in the same thing... it's a
+# cleanliness issue" [Jon 23 Sep]. The same name listed twice in a clause, two
+# identical 'use Colors;', a name both imported and listed, a listed name that
+# is the module's own declaration, a global's clause listing a member twice.
+#
+# A name the module never wrote -- one a wildcard 'use *', an 'extends' or the
+# implicit core import brought -- is one binding with another of the SAME
+# declaration under that name: the second is the binding the name has already
+# [Jon 23 Sep]. One side unwritten is enough, so a listed name meeting a
+# wildcard's arrival of the same declaration is one binding too. Where one route
+# is public and the other private, the binding is public, whichever was folded
+# first. module-extends-back is the same rule met through 'extends'.
+#
+# module-fold-diamond runs the diamond, a listed name beside a wildcard in both
+# orders, a written enum 'use' beside the core import's variants, and the public
+# route winning in both orders. module-fold-written-nameres holds what is
+# written twice; module-fold-diamond-nameres holds what collides however it was
+# reached: two different declarations under one name, and one member folded
+# through two globals.
+
+[scenario.module-fold-diamond]
+category = "run"
+description = "One declaration reaching a module through two re-exporting wildcard imports, a listed name beside a wildcard in both orders, 'use Option;' beside the core import's variants, and a private and a public route to one name in both orders"
+tags = ["nameres", "typecheck", "genllvm", "runtime"]
+
+[scenario.module-fold-written-nameres]
+category = "reject"
+description = "A name the module writes twice for the same declaration: listed twice in a clause, listed through two imports, listed again after a wildcard and a listing, two identical enum 'use's, a module both imported and listed, its own declaration listed back, and a global's clause listing a member twice"
+tags = ["nameres"]
+diagnostics = 8
+
+[scenario.module-fold-diamond-nameres]
+category = "reject"
+description = "What still collides: two different declarations under one name through a diamond's two sides, and one member folded through two globals"
+tags = ["nameres"]
+diagnostics = 2
 
 [scenario.module-declared]
 category = "compile"
