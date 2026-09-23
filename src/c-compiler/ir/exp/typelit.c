@@ -107,9 +107,14 @@ int typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private) {
             // If we have a named value, insert the proper named value here where it belongs
             INode **litval = &nodesGet(arrlit->args, argi);
             if ((*litval)->tag == NamedValTag && !typeLitGetName(arrlit->args, argi, field->namesym)) {
-                // Use default value for unmatched field, if the type defined one
-                if (field->value)
+                // Use default value for unmatched field, if the type defined one.
+                // The default is the type's own value, not one the literal gives,
+                // so leaving a private field to it is allowed from anywhere.
+                if (field->value) {
                     nodesInsert(&arrlit->args, field->value, argi);
+                    ++argi;
+                    continue;
+                }
                 else {
                     errorMsgNode((INode*)arrlit, ErrorBadArray, "Cannot find named value matching the field %s", &field->namesym->namestr);
                     ++argi;
@@ -117,7 +122,7 @@ int typeLitStructReorder(FnCallNode *arrlit, StructNode *strnode, int private) {
                     continue;
                 }
             }
-            // Don't allow a value to be given for a private field outside of the type's methods
+            // Don't allow the literal to give a value for a private field outside of the type's methods
             if (!private && inodeIsPrivate((INode*)field)) {
                 errorMsgNode(*litval, ErrorNotTyped, "Only a method in the type may specify a value for the private field %s.", &field->namesym->namestr);
                 retcode = 0;
@@ -148,8 +153,11 @@ void typeLitStructCheck(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *
     // Ensure type has been type-checked, in case any rewriting/semantic analysis was needed
     itypeTypeCheck(pstate, &arrlit->vtype);
 
-    // Reorder the literal's arguments to match the type's field order
-    if (typeLitStructReorder(arrlit, strnode, (INode*)strnode == pstate->typenode) == 0)
+    // Reorder the literal's arguments to match the type's field order. A private
+    // field is given a value by the type's own code, or by any code inside the
+    // braces of the enum it belongs to (structEnumSeesPrivate).
+    int private = (INode*)strnode == pstate->typenode || structEnumSeesPrivate(pstate, (INode*)strnode);
+    if (typeLitStructReorder(arrlit, strnode, private) == 0)
         return;
 
     uint32_t cnt;

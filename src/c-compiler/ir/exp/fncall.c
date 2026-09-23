@@ -641,7 +641,7 @@ static void fnCallDemandCandidates(INode *binding) {
 
 // Returns 1 when lowered, 0 when the receiver's type supports no methods at all
 // (so the caller may try another way), and -1 when a diagnostic was reported.
-int fnCallLowerMethod(FnCallNode *callnode) {
+int fnCallLowerMethod(TypeCheckState *pstate, FnCallNode *callnode) {
     INode *obj = callnode->objfn;
     assert(isNameUseNode(callnode->methfld));
     NameUseNode *methfld = (NameUseNode*)callnode->methfld;
@@ -658,7 +658,9 @@ int fnCallLowerMethod(FnCallNode *callnode) {
     // that binds nothing has no visibility to refuse, and is reported missing.
     // A private member is reached through 'self': the method's own, or a macro
     // method's, which its expansion has already replaced with the use site's
-    // receiver (FlagSelfRecv).
+    // receiver (FlagSelfRecv). Inside an enum's braces it is reached through any
+    // value of the enum or its variants, because the enum is their privacy
+    // boundary (structEnumSeesPrivate).
     INode *foundnode = iNsTypeFindFnField((INsTypeNode*)objdereftype, methsym);
     // A type in the namespace -- an enum's variant, or 'Self' -- is a name of the
     // type and never a member of its values, so it is reported missing below and
@@ -668,7 +670,8 @@ int fnCallLowerMethod(FnCallNode *callnode) {
     int isprivate = foundnode && inodeIsPrivate(foundnode);
     if (isprivate && !(callnode->flags & FlagSelfRecv)
         && !(isNameUseNode(obj) && isExpNode(obj)
-             && ((VarDclNode*)((NameUseNode*)obj)->dclnode)->namesym == selfName)) {
+             && ((VarDclNode*)((NameUseNode*)obj)->dclnode)->namesym == selfName)
+        && !structEnumSeesPrivate(pstate, objdereftype)) {
         errorMsgNode((INode*)callnode, ErrorNotPublic, "May not access the private method/field `%s`.", &methsym->namestr);
     }
     // A method the type holds by folding is bound to an alias; the visibility
@@ -890,7 +893,7 @@ int fnCallLowerTraitMethod(TypeCheckState *pstate, FnCallNode *callnode, INode *
     }
 
     callnode->flags |= FlagVDisp;
-    fnCallLowerMethod(callnode);
+    fnCallLowerMethod(pstate, callnode);
     return 1;
 }
 
@@ -931,7 +934,7 @@ void fnCallLowerOverloadFn(FnCallNode *node) {
 }
 
 // Lower opassign method for method-based types
-void fnCallOpAssgn(FnCallNode **nodep) {
+void fnCallOpAssgn(TypeCheckState *pstate, FnCallNode **nodep) {
     FnCallNode *callnode = *nodep;
     INode *objtype = iexpGetTypeDcl(callnode->objfn);
     assert(isNameUseNode(callnode->methfld));
@@ -949,7 +952,7 @@ void fnCallOpAssgn(FnCallNode **nodep) {
 
     // Lower to op-assign, if method supported by type
     if (iNsTypeFindFnField((INsTypeNode*)objtype, methsym)) {
-        fnCallLowerMethod(callnode);
+        fnCallLowerMethod(pstate, callnode);
         return;
     }
 
@@ -965,7 +968,7 @@ void fnCallOpAssgn(FnCallNode **nodep) {
     inodeLexCopy(derefvar, (INode*)callnode);
     callnode->objfn = derefvar;
     methfld->namesym = fnCallOpEqMethod(methsym);
-    if (fnCallLowerMethod(callnode) == 0) {
+    if (fnCallLowerMethod(pstate, callnode) == 0) {
         errorMsgNode((INode*)callnode, ErrorNoMeth,
             "No method/field named %s found that matches the call's arguments.",
             &methsym->namestr);
@@ -982,6 +985,22 @@ void fnCallOpAssgn(FnCallNode **nodep) {
     nodesAdd(&blk->stmts, (INode*)tmpvar);
     nodesAdd(&blk->stmts, (INode*)tmpassgn);
     *((INode**)nodep) = (INode*)blk;
+}
+
+// A type that declares '==' and no '!=' has its '!=' derived, as 'not (a == b)'
+// (coneref/refmethop.html, "Comparison Operator Methods"). Asked of a struct
+// receiver's own type. A type that declares its own '!=' keeps it, an enum's
+// intrinsic pair is declared together, a number declares both, and a type
+// declaring neither is left to be reported missing its '!='. A reference, a
+// pointer and a slice declare their own '!=', which is selected before any
+// referent is asked.
+static int fnCallNeFromEq(FnCallNode *node, INode *objtype) {
+    if (!(node->flags & FlagOperator) || node->methfld == NULL || !isNameUseNode(node->methfld)
+        || ((NameUseNode*)node->methfld)->namesym != neName)
+        return 0;
+    return objtype->tag == StructTag
+        && iNsTypeFindFnField((INsTypeNode*)objtype, neName) == NULL
+        && iNsTypeFindFnField((INsTypeNode*)objtype, eqName) != NULL;
 }
 
 // Perform type check on function/method call node
@@ -1193,7 +1212,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         // to such a type takes the same path, so a type that declares no '+='
         // reaches the rewrite to '+' through a reference as it does by value.
         if ((node->flags & FlagOpAssgn) && fnCallOpAssgnMethodType(objtype)) {
-            fnCallOpAssgn(nodep);
+            fnCallOpAssgn(pstate, nodep);
             return;
         }
 
@@ -1202,6 +1221,17 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             borrowMutRef(&node->objfn, objtype, newPermUseNode(mutPerm));
             objtype = iexpGetTypeDcl(node->objfn);
         }
+    }
+
+    // A derived '!=': this node becomes the '==' application, lowered below like
+    // any other, and a 'not' takes its place in the tree
+    LogicNode *derivedne = NULL;
+    if (fnCallNeFromEq(node, objtype)) {
+        ((NameUseNode*)node->methfld)->namesym = eqName;
+        derivedne = newLogicNode(NotLogicTag);
+        inodeLexCopy((INode*)derivedne, (INode*)node);
+        derivedne->lexp = (INode*)node;
+        *((INode**)nodep) = (INode*)derivedne;
     }
 
     // Dispatch for correct handling based on the type of the object
@@ -1220,7 +1250,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             node->methfld = (INode*)newMemberUseNode(
                 node->flags & FlagIndex ? (node->flags & FlagBorrow ? refIndexName : indexName) : parensName);
         // Lower to a field access or function call
-        if (fnCallLowerMethod(node) == 0) {
+        if (fnCallLowerMethod(pstate, node) == 0) {
             errorMsgNode((INode*)node, ErrorNoMeth,
                 "No method/field named %s found that matches the call's arguments.",
                 &((NameUseNode*)node->methfld)->namesym->namestr);
@@ -1280,7 +1310,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
                 // answer 0 here, having already been told the deref type supports methods.
                 if (isMethodType(objdereftype)) {
                     if (fnCallLowerTraitMethod(pstate, node, objdereftype) == 0)
-                        fnCallLowerMethod(node);
+                        fnCallLowerMethod(pstate, node);
                 }
                 else if (objdereftype->tag == PtrTag)
                     fnCallLowerPtrMethod(node, ptrType);
@@ -1296,7 +1326,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
         if (node->methfld) {
             if (fnCallLowerPtrMethod(node, refType) == 0) {
                 node->flags |= FlagVDisp;
-                fnCallLowerMethod(node);
+                fnCallLowerMethod(pstate, node);
             }
         }
         else
@@ -1314,7 +1344,7 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
             // methods, reaching a value receiver by dereferencing the pointer. An
             // operator the pointer does not declare stops here rather than reaching
             // the value's; fnCallLowerMethod is what refuses it.
-            if (fnCallLowerPtrMethod(node, ptrType) == 0 && fnCallLowerMethod(node) == 0)
+            if (fnCallLowerPtrMethod(node, ptrType) == 0 && fnCallLowerMethod(pstate, node) == 0)
                 errorMsgNode((INode*)node, ErrorNoMeth, "Invalid operation on a pointer.");
         }
         else if (objdereftype->tag == FnSigTag)
@@ -1327,6 +1357,16 @@ void fnCallTypeCheck(TypeCheckState *pstate, FnCallNode **nodep) {
     default:
         errorMsgNode((INode*)node->objfn, ErrorNoMeth, "This type does not support calls or field access.");
         node->vtype = errorType;
+    }
+
+    // 'not' takes a Bool, which a '==' returning anything else reaches through
+    // isTrue. A '==' that selected nothing has been reported, and the 'not' carries
+    // that on rather than earning a second diagnostic.
+    if (derivedne) {
+        if (node->vtype == unknownType || node->vtype == errorType)
+            derivedne->vtype = errorType;
+        else if (!iexpCoerce(&derivedne->lexp, (INode*)boolType))
+            errorMsgNode((INode*)node, ErrorInvType, "Conditional expression must be coercible to boolean value.");
     }
 }
 
