@@ -152,7 +152,18 @@ A name use analyzes the declaration it names, then reads what it needs:
 | `nameUseTypeCheckType` | a type declaration |
 | `nameUseTypeCheck` | a value declaration — variable, function, field, constant |
 | `fnCallTypeCheck` | its callee, arguments and receiver |
+| `fnCallLowerMethod` | every candidate a member name declares, before selection compares signatures (`fnCallDemandCandidates`) |
 | `itypeTypeCheck` | any type named in a signature or a declared type |
+
+**A member name is a use too.** A type checks its methods in order, so from
+inside one of them a method declared later — or spliced in after the type's own,
+as an enum's are into each variant — is not yet analyzed, and an unchecked
+signature's reference parameter matches no receiver. `self.later()` was
+`ErrorNoCandidate` while the bare `later()`, which reaches it through
+`nameUseTypeCheck`, worked. Selection now demands each candidate first, under a
+walk state of the candidate's own type rather than the caller's (Rule 8:
+`fnDclTypeCheck` compares a method's `self` with `pstate->typenode`). A number
+type's methods are skipped: corenumber builds them typed and nothing checks them.
 
 Because the declaration is analyzed at the moment a use has to decide anything
 about it, each decision is locally justified. A namespace asked for a member is

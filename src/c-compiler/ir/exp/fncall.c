@@ -570,6 +570,48 @@ INode *fnCallFieldAccess(INode *obj, FieldDclNode *fld, INode *lexnode) {
     return (INode*)access;
 }
 
+// Rule 1: reaching a name analyzes its declaration, and a member name reaches
+// every candidate it declares. Selection compares each candidate's signature
+// with the receiver and arguments, so the signature has to be type checked
+// first. A method of the type whose own method is making the call may not be
+// yet: the type checks its methods in order, so one declared later -- or spliced
+// in after the type's own, as an enum's methods are into each variant -- is
+// still waiting, and its unchecked signature accepted nothing. A bare call has
+// always had this through its name use; 'self.name()' now has it too.
+//
+// The walk state is the candidate's own type's (Rule 8): the caller may be a
+// method of some other type, and fnDclTypeCheck compares a method's self with
+// the type it is checked under. A candidate already analyzed, or under way and
+// so with its signature checked, is left alone, and so is a method of a number
+// type: corenumber builds those typed, with intrinsic bodies, and nothing ever
+// type checks them.
+static void fnCallDemandCandidates(INode *binding) {
+    INode **candp;
+    uint32_t cnt;
+    if (binding->tag == FnDclTag) {
+        candp = &binding;
+        cnt = 1;
+    }
+    else if (binding->tag == FnOverloadDclTag) {
+        Nodes *overloads = ((FnOverloadDclNode*)binding)->overloads;
+        candp = &nodesGet(overloads, 0);
+        cnt = overloads->used;
+    }
+    else
+        return;
+    while (cnt--) {
+        INode *cand = *candp++;
+        INode *owner = inodeGetOwner(cand);
+        if ((cand->flags & (TypeChecked | TypeChecking)) || owner == NULL || owner->tag != StructTag)
+            continue;
+        TypeCheckState tstate;
+        tstate.typenode = owner;
+        tstate.fn = NULL;
+        tstate.scope = 0;
+        inodeTypeCheckAny(&tstate, &cand);
+    }
+}
+
 // Returns 1 when lowered, 0 when the receiver's type supports no methods at all
 // (so the caller may try another way), and -1 when a diagnostic was reported.
 int fnCallLowerMethod(FnCallNode *callnode) {
@@ -643,6 +685,7 @@ int fnCallLowerMethod(FnCallNode *callnode) {
     }
 
     // Test every candidate the name declares, without altering the call
+    fnCallDemandCandidates(foundnode);
     enum OverloadMatch status;
     FnDclNode *selected = iNsTypeFindMethod(foundnode, &callnode->objfn, callnode->args, &status);
 

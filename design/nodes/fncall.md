@@ -195,7 +195,10 @@ and the remedy: obtain a virtual reference first. **A field takes none of this**
 `fnCallLowerMethod`: look the name up in the receiver's namespace, check
 the visibility of **the binding the name reaches** (`inodeIsPrivate`), resolve
 an alias to the method it stands for (`aliasDclResolve` — the binding for a
-method the type holds by folding), then `iNsTypeFindMethod`,
+method the type holds by folding), **type check every candidate not yet
+analyzed** (`fnCallDemandCandidates` — a later method of the caller's own type
+is not, and its unchecked signature matched no reference receiver; see
+[type check](../phases/type-check.md), "Demand"), then `iNsTypeFindMethod`,
 which tests every candidate with `fnSigViableCall` and **alters nothing**. One
 viable candidate is a match; two are `OverloadAmbiguous`. There is no ranking.
 For a folded method the receiver is rewritten before any candidate is tried:
