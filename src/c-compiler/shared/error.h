@@ -183,6 +183,10 @@ enum ErrorCode {
     ErrorIsaFields = 1097,      // A trait's fields not declared by the type, in the trait's order, at position 0
     ErrorIsaMulti = 1098,       // A trait after the first in an 'is-a' list requiring fields, which only the first may
 
+    // 'trait' as a modifier on the kind
+    ErrorDupTrait = 1099,       // 'trait' written twice: by itself it already means 'struct trait'
+    ErrorUnbuiltKind = 1100,    // A kind of declaration the grammar admits and the compiler does not build: 'mod', 'actor'
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

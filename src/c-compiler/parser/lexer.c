@@ -87,7 +87,14 @@ void keywordInit() {
     keyAdd("overload", OverloadToken);
     keyAdd("const", ConstToken);
     keyAdd("typedef", TypedefToken),
+    // The kinds a type declaration may be, and the modifier that makes one
+    // abstract. 'trait' is not a kind of its own: written by itself it means
+    // 'struct trait'. 'mod' and 'actor' name kinds the grammar admits and the
+    // compiler does not build yet, so that 'mod trait' and 'actor trait' can be
+    // written the day those kinds arrive rather than having to be designed then.
     keyAdd("struct", StructToken);
+    keyAdd("mod", ModToken);
+    keyAdd("actor", ActorToken);
     keyAdd("trait", TraitToken);
     keyAdd("@move", MoveToken);
     keyAdd("@opaque", OpaqueToken);
@@ -146,13 +153,14 @@ void keywordInit() {
 
     // The second group spells the syntax of features the reference describes but
     // reftoken.html has not caught up with: refexcept.html for error handling,
-    // refcorout.html for coroutines, refconccomm.html for actors.
+    // refcorout.html for coroutines, refconccomm.html for actors. 'actor' itself
+    // is not here: it names a kind of declaration, so it is a token above and
+    // the parser reports it where the declaration is written.
     keyAdd("throw", ReservedToken);
     keyAdd("catch", ReservedToken);
     keyAdd("panic", ReservedToken);
     keyAdd("assert", ReservedToken);
     keyAdd("spawn", ReservedToken);
-    keyAdd("actor", ReservedToken);
 }
 
 // Initialize lexer

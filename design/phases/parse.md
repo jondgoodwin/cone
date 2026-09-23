@@ -89,6 +89,17 @@ at first use, and then **released** — `Name.node` is cleared and the word
 continues as an ordinary identifier, so the rest of the compile is not derailed
 by it.
 
+**A word held for an unimplemented feature is reserved; a word that names an
+unbuilt *kind of declaration* is a token.** `mod` and `actor` are the two kinds
+that will have abstractions and do not exist yet, so they are ordinary keywords
+with an arm of their own in the global dispatch, which reports
+`ErrorUnbuiltKind` where the declaration is written and names the abstraction's
+spelling — `mod trait`, `actor trait`. Admitting the shape is what settles that
+spelling now instead of leaving it to be designed when the kinds land, and the
+arm is what keeps the declaration from being accepted with no semantics under
+it. The cost is the standing one in the hazards: holding a word takes it away
+from every program.
+
 ### Blocks and statement ends
 
 A block is `{`, statements, `}`. A statement that does not end in a block ends
@@ -268,6 +279,7 @@ never be analyzed.
 | Mechanism | Behavior |
 | --- | --- |
 | `parseSkipToNextStmt` | the main resync; consumes through the next `;`, or stops short of a `}` or EOF for the enclosing block to handle |
+| an unbuilt kind's body | `mod` and `actor` skip a following `{ … }` whole, counting depth, so nothing inside is read as a global statement and reported again. The declaration is reported once, where it is written |
 | `parseCloseTok` | reports `ErrorNoRParen`, scans for the closer, gives up at `;`, `}`, EOF |
 | `parseBlockStart` | on `:`, reports `ErrorColonBlock` and reads what follows as the block; on anything else that is not `{`, reports `ErrorNoLCurly` and scans forward for one |
 | `parseTerm` default | reports `ErrorBadTerm`, consumes one token to avoid an infinite loop, returns `NULL` |
@@ -301,7 +313,7 @@ numbers.
 | | `lexScanNumber`, `lexScanString`, `lexScanChar`, `lexScanEscape` | literals; UTF-8 re-encoding of escapes; lifetime-vs-char disambiguation |
 | | `lexNewLine`, `lexBlockComment` | line counting for diagnostics, inside comments included |
 | `parser/parsemod.c` | `parsePgm` | **entry point** — tables, program, main module, corelib, main file |
-| | `parseGlobalStmts` | the global statement dispatch loop |
+| | `parseGlobalStmts` | the global statement dispatch loop; `trait` by itself enters `parseStruct` with `TraitType` already set, and `mod` and `actor` are the unbuilt kinds refused here |
 | | `parseLoadAndParseModuleFile` | per-module unit: de-dup, naming, injection, corelib import, `modHook` |
 | | `parseImport`, `parseInclude` | the two source-composition forms |
 | `parser/parsehelper.c` | `parseBlockStart`, `parseBlockEnd` | `{` and `}`, with recovery |
@@ -312,7 +324,7 @@ numbers.
 | | `parseSuffix`, `parseDotCall`, `parseArgs`, `parseArg` | postfix `.`, `()`, `[]`, `++`, `--`; named values. The `.` production serves a member of a value and a path through a namespace alike |
 | | `parseTerm`, `parseNameUse`, `parseArrayLit` | literals, parens, blocks-as-expressions, names |
 | `parser/parsetype.c` | `parseType` | the type dispatcher that delegates to `parsePrefix` — principle 1 |
-| | `parseStruct` | struct/trait/enum: generics, the `is-a` list (and `extends` refused on anything but an enum), fields, methods, macros (a method when parameter 0 is `self`), an enum's variants in both spellings, tag-field synthesis and the `IsTagField` mark on an enum's discriminant |
+| | `parseStruct` | struct/trait/enum: the optional `trait` modifier on the kind, generics, the `is-a` list (and `extends` refused on anything but an enum), fields, methods, macros (a method when parameter 0 is `self`), an enum's variants in both spellings, tag-field synthesis and the `IsTagField` mark on an enum's discriminant |
 | | `parseAddVariant`, `parseVariantTagPin` | joining a variant to its enum: the closed flags, the synthesized base link, the tag value written or assigned in sequence, the module binding |
 | | `parseIsTagType`, `parseTagType` | `tag` recognized where a field's type is written and nowhere else, so it is not a reserved word |
 | | `parseFnSig` | parameters, `Self` inference, single or tuple return type |

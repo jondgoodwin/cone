@@ -10,6 +10,17 @@ with `is-a`, and may live in another module, so nothing can number them. An
 compiler owns their layout — a discriminant, the enum's own fields spliced into
 every variant, and, unless the declaration writes `@unsized`, padding to one size.
 
+**A trait is a modifier on a kind, not a kind of its own.** `struct trait X`
+declares the abstraction of a struct, and `trait X` means exactly that — one
+node, one flag, and the same declaration either way. The word it modifies is what
+says which **family** the abstraction serves, which is what the kind-match rule
+needs: a struct composes a struct or a struct-trait, and an actor will compose an
+actor or an actor-trait. So no trait declaration carries anything to say which
+family it is for, and nothing is inferred from what it declares. `mod trait` and
+`actor trait` are admitted by the grammar so that the spelling of those
+abstractions is settled; neither kind exists, so both report `ErrorUnbuiltKind`
+where they are written. `enum trait` is refused, and that absence is the one below.
+
 **At a glance.** `parseStruct` does a great deal — tag synthesis, mixin
 placeholders, variants in both of their spellings, tag numbering, generic
 parameter copying. Name resolution builds the dictionary whole: it inserts `Self`,
@@ -176,11 +187,17 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   *clears* `SameSize`, which the caller set: padding is the default and the
   attribute declines it. On anything but an enum it is `ErrorBadUnsized`, since
   nothing else has variants to pad.
-- `enum trait` is `ErrorEnumAbstract`. **The absence is deliberate**: an enum's
-  identity is its variant set, so anything a caller could hold behind an
-  abstraction of one either is that set, and so is the enum, or is open, and so is
-  a trait. `enum-parse-decl` pins it so nobody adds one for symmetry with whatever
-  modifier a trait grows.
+- **The `trait` modifier is read before the attributes**, so it sits against the
+  kind keyword it qualifies. `struct trait` sets `TraitType`, which is the flag
+  the bare `trait` arm in `parseGlobalStmts` sets already. Written twice it is
+  `ErrorDupTrait`, since the one spelling says everything the two would.
+- `enum trait` is `ErrorEnumAbstract`, and so is `struct trait` on a **variant**.
+  **The absence is deliberate**: an enum's identity is its variant set, so
+  anything a caller could hold behind an abstraction of one either is that set,
+  and so is the enum, or is open, and so is a trait — and a variant is one
+  concrete member of such a set, which has no abstraction for the same reason.
+  `enum-parse-decl` pins both, so nobody adds an abstract enum for symmetry with
+  the kinds that do take the modifier.
 - An enum may name the **integer type its tag values are laid out in**, read with
   `parseTypeName` and attached to the discriminant's own type node. It is the
   type's, not the field's, which is why it is carried on `EnumNode` rather than

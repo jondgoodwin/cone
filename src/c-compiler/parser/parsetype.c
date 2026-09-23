@@ -357,12 +357,27 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     uint16_t tag = StructTag;
     lexNextToken();
 
-    // 'enum trait' is refused, and the absence is deliberate. An enum's identity
-    // is its variant set, so there is no abstraction that corresponds to one:
-    // anything a caller could hold behind it either is that variant set, and so
-    // is the enum, or is open, and so is a trait.
-    if (isenum && lexIsToken(TraitToken)) {
-        errorMsgLex(ErrorEnumAbstract, "An enum is concrete: its variant set is its identity. Use 'trait' for an open abstraction.");
+    // 'trait' is a modifier on the kind rather than a kind of its own: 'struct
+    // trait X' declares the abstraction of a struct, and 'trait X' by itself is
+    // a synonym for it. The family a trait serves therefore comes from the kind
+    // keyword, with nothing inferred and nothing extra carried on the
+    // declaration -- which is what lets 'mod trait' and 'actor trait' name the
+    // abstractions of those kinds when they arrive.
+    int isvariant = svtype && ((INode*)svtype)->tag == StructTag && (((INode*)svtype)->flags & EnumType);
+    while (lexIsToken(TraitToken)) {
+        // An enum's identity is its variant set, so there is no abstraction that
+        // corresponds to one: anything a caller could hold behind it either is
+        // that variant set, and so is the enum, or is open, and so is a trait.
+        // A variant is one concrete member of such a set and has no abstraction
+        // for the same reason, which is why both wear the one code.
+        if (isenum)
+            errorMsgLex(ErrorEnumAbstract, "An enum is concrete: its variant set is its identity. Use 'trait' for an open abstraction.");
+        else if (isvariant)
+            errorMsgLex(ErrorEnumAbstract, "A variant is one concrete member of its enum's set, so no abstraction corresponds to one.");
+        else if (strflags & TraitType)
+            errorMsgLex(ErrorDupTrait, "'trait' by itself already means 'struct trait'. Write one or the other.");
+        else
+            strflags |= TraitType;
         lexNextToken();
     }
 
@@ -420,7 +435,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
 
     // A variant may pin its tag value, written where its name is so that the
     // bare-name form and the struct form read the same way
-    if (svtype && ((INode*)svtype)->tag == StructTag && (((INode*)svtype)->flags & EnumType))
+    if (isvariant)
         parseVariantTagPin(strnode);
 
     // An enum may name the integer type its tag values are laid out in, which is
