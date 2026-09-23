@@ -146,6 +146,10 @@ test/cases/module/
     module-folder-sweep.out       expected stdout, beside its source as always
     sibling.cone                  swept in by the compiler
     deep/nested.cone              and at any depth
+  module-submodule/             a folder scenario holding a module TREE
+    module-submodule.cone         the root module
+    geometry/geometry.cone        a submodule of it, drawn by its own name
+    geometry/scaling/scaling.cone and a submodule of that
   modfolder/                    a folder support module, imported by a scenario
     modfolder.cone
     helper.cone
@@ -167,14 +171,20 @@ test/cases/module/
   against, and an annotation matches only a diagnostic reported against its own
   file. A support module that is a folder contributes every file of it the same
   way.
-- **A folder scenario may be a `run` scenario**, which a multi-module one may not:
-  a folder module is one module however many files it spans, so it links like any
-  single-file program.
+- **A folder scenario may be a `run` scenario**, which a scenario spanning an
+  `import` may not: what a folder holds, module tree and all, this compile
+  *defines*, so it links like any single-file program. An imported module is
+  declared and never generated, which is what stops those from running.
+- **A subfolder holding its own designated file is a submodule**, not more of the
+  scenario's own files, so a folder scenario may hold a whole module tree. It is
+  registered the same way — under the scenario folder's name, with nothing inside
+  it listed — and an annotation in a submodule's file works exactly as one in a
+  swept file does.
 
 **Write a folder scenario when the file layout is the subject** — which files a
-module holds, what names them, what collides. Anything else belongs in a flat
-scenario, because a folder costs a reader a directory listing before they can see
-what the case says.
+module holds, what names them, what collides, what a subfolder draws. Anything
+else belongs in a flat scenario, because a folder costs a reader a directory
+listing before they can see what the case says.
 
 **Never mix compiler stages in one failure scenario.** Analysis halts between
 phases: parse errors skip semantic analysis, name-resolution errors return before

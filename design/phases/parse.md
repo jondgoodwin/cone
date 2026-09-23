@@ -250,8 +250,16 @@ which module holds it, parse each of the module's files into it — and the regi
 is keyed by the path, so a file is read exactly once and belongs to exactly one
 module. What decides whether a folder is swept is the **designated-file
 convention**: the file the compiler is given sweeps its folder when it is the file
-named for that folder. [module](../nodes/module.md), "The folder sweep", owns the
-rules and the diagnostics.
+named for that folder.
+
+**And the same probe decides every subfolder, so the parse builds a module TREE.**
+A subfolder holding its own designated file draws a submodule — a module of its
+own, loaded and parsed within its parent's parse, owned by it and bound in its
+namespace — and any other subfolder is organisational, its files joining the
+enclosing module at any depth. A module's submodules are drawn before its own
+files are parsed, so a name a subfolder put in the namespace is there before any
+statement can collide with it. [module](../nodes/module.md), "The folder tree",
+owns the rules and the diagnostics.
 
 ## 7. Contract
 
@@ -329,12 +337,13 @@ numbers.
 | | `lexNewLine`, `lexBlockComment` | line counting for diagnostics, inside comments included |
 | `parser/parsemod.c` | `parsePgm` | **entry point** — tables, program, main module, corelib, main file |
 | | `parseGlobalStmts` | the global statement dispatch loop; `trait` by itself enters `parseStruct` with `TraitType` already set, and `actor` is the unbuilt kind refused here. It is told whether it is reading the start of a module's own source, which is what decides where a `mod` declaration may stand |
-| | `parseModuleDcl` | `mod name;`, the declaration a module's designated file makes: the placement rule, the check against the folder's name, the rename a one-file module still gets, the module's own name bound into its namespace, and the refusal of the nested block and `mod trait` |
+| | `parseModuleDcl` | `mod name;`, the declaration a module's designated file makes: the placement rule, the check against the folder's name, the rename a one-file module still gets, the module's own name bound into its namespace, what `pub` does for a submodule and why it is refused on any other module, and the refusal of the nested block and `mod trait` |
 | | `parseSkipDclBody` | skip an unbuilt form's `{ … }` whole, or resync at the next `;` |
 | | `parseLoadAndParseModuleFile` | per-module unit: locate, register by path, naming, the folder sweep, corelib import, `modHook`, and a parse per file |
-| | `parseDesignatedFolder`, `parseCollectFolder`, `parseModuleFiles` | the folder sweep: whether the file is its folder's designated file, and which files the folder brings in |
+| | `parseDesignatedFolder`, `parseCollectFolder`, `parseModuleFiles` | the folder sweep: whether the file is its folder's designated file, which files the folder brings in, which subfolders draw submodules, and the designated file too deep to draw one |
+| | `parseSubmodule`, `parseModuleTree` | the module tree: the submodule a subfolder draws — owned by its parent, bound in its namespace, private to it unless `pub` — and the order, submodules before the module's own files |
 | | `parseRegisterModuleFiles` | the file registry entries for a module's files, and the two collisions that stop a file joining |
-| `shared/fileio.c` | `fileFindSrc`, `fileFolderScan` | locate a source file without reading it; list a folder's `.cone` files and subfolders, sorted |
+| `shared/fileio.c` | `fileFindSrc`, `fileFolderScan`, `fileDesignatedFile` | locate a source file without reading it; list a folder's `.cone` files and subfolders, sorted; probe a folder for the designated file that makes it a module folder |
 | | `parseImport`, `parseInclude` | the two source-composition forms |
 | `parser/parsehelper.c` | `parseBlockStart`, `parseBlockEnd` | `{` and `}`, with recovery |
 | | `parseEndOfStatement`, `parseSkipToNextStmt`, `parseCloseTok` | the required `;`, and the two resyncs |

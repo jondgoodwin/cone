@@ -194,6 +194,16 @@ char *fileCurFolderName() {
     return *name ? memAllocStr(name, strlen(name)) : NULL;
 }
 
+// The path of the designated file a folder holds, or NULL where it holds none.
+// The folder's name and the file's basename are the same string, which is what
+// lets a module's name be read off a path by a tool that cannot parse Cone
+char *fileDesignatedFile(char *folder, char *name) {
+    char *path = memAllocStr(folder, strlen(folder) + strlen(name) + 5);
+    strcat(path, name);
+    strcat(path, ".cone");
+    return fileReadable(path) ? path : NULL;
+}
+
 // Order two names, so that a folder's contents are read in one order whatever
 // order the filesystem reports them in
 static int fileNameCmp(const void *left, const void *right) {
