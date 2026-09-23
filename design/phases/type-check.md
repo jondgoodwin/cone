@@ -153,6 +153,7 @@ A name use analyzes the declaration it names, then reads what it needs:
 | `nameUseTypeCheck` | a value declaration — variable, function, field, constant |
 | `fnCallTypeCheck` | its callee, arguments and receiver |
 | `fnCallLowerMethod` | every candidate a member name declares, before selection compares signatures (`fnCallDemandCandidates`) |
+| `structCheckTraitReqs` | each method a mixed-in trait requires, before the type's own is compared with it |
 | `itypeTypeCheck` | any type named in a signature or a declared type |
 
 **A member name is a use too.** A type checks its methods in order, so from
@@ -374,9 +375,14 @@ Steps marked **→** are where a demand can leave and re-enter.
    traits.
 7. **Size is now known**, and `TypeChecked` is set here — meaning laid out.
 8. **→** Analyze the methods.
-9. Verify each mixed-in trait's method requirements against the signatures now
-   known: a name the type declares itself must have the one candidate of the
-   trait's signature, and a requirement with no body is unmet in a struct.
+9. **→** Verify each mixed-in trait's method requirements against the signatures
+   now known: a name the type declares itself must have the one candidate of the
+   trait's signature, and a requirement with no body is unmet in a struct. Each
+   requirement is analyzed first, under the trait's walk state. This type may have
+   been demanded from inside the trait's own step 8 — a static function written
+   above the requirement names it in its signature — and an unchecked requirement
+   matched nothing, so whether a variant or an implementer conformed followed
+   source order.
 
 Steps 2 and 4 are where recursion arrives; step 7 is why a method at step 8 may
 use its own type by value. The members themselves — which fields and which

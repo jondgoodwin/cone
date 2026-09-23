@@ -168,11 +168,23 @@ reject an overload name everywhere else. Bail if `objfn` is already marked
   a reference as it is by value. Stage 3's arm loses nothing by not seeing it:
   of the operator names, `refType` declares only the identity comparisons,
   `===` and `!==`.
-
-Last, **`===` and `!==` on a receiver that is neither a reference, a slice, a
-virtual reference nor a pointer** is `ErrorSameNotRef`, ahead of the dispatch:
-identity asks about places, and it is not an operator a type declares, so the
-type's own namespace is never asked.
+- **`===` and `!==` on a receiver that is neither a reference, a slice, a
+  virtual reference nor a pointer** → `ErrorSameNotRef`: identity asks about
+  places, and it is not an operator a type declares, so the type's own
+  namespace is never asked. `!==` is never derived from anything.
+- **`!=` on a type that declares `==` and no `!=`** (`fnCallNeFromEq`) → the
+  node is renamed to `==` and a `NotLogicTag` node takes its place in the
+  tree, wrapping it; stage 3 then lowers the `==` like any other operator, and
+  its answer is coerced to `Bool` (through `isTrue` if need be). The type asked
+  is a struct receiver's own, or the struct a reference refers to, through any
+  number of references — `!=` on references compares the values, so
+  `fnCallLowerRefCompare` lowers the renamed `==` exactly as it would a written
+  one, and its diagnostics name `==`. A pointer declares its own `!=`, on the
+  pointer, and a slice or a virtual reference refuses it, so none of them asks
+  a referent. A type declaring its own `!=` keeps it, an enum's intrinsic pair
+  is declared together, and a type declaring neither is reported missing its
+  `!=`. A `==` that selects nothing is reported once, under `==`, and the `not`
+  carries `errorType` on.
 
 **Stage 3 — dispatch on the receiver's type tag.**
 
@@ -297,7 +309,8 @@ Two asymmetries that are deliberate:
 ### What the node becomes
 
 `FnCallTag` (a real call), `FldAccessTag`, `ArrIndexTag`, `TypeLitTag`, a
-generic instance, a macro expansion, or a block of applications. Anything after
+generic instance, a macro expansion, a block of applications, or — for a
+derived `!=` — a call wrapped in a `not` that replaces it in the tree. Anything after
 type check that still sees an un-lowered `FnCallTag` with `methfld` set is
 looking at a bug.
 

@@ -219,11 +219,16 @@ its `derived` list, each registering into its own `memonodes`. **Every variant i
 cloned and registered before any is type checked**, because a variant's body may
 name a later sibling at the same arguments: registered only as each was checked,
 that sibling was a miss, and a miss on any variant instantiates the whole enum
-again, so it expanded until `ErrorInstDepth`. The instance's `derived` is filled
-in as each variant is type checked, after the instance itself was type
-checked with an empty one, so the discriminant's width (`structSetTagWidth`) is
-settled here once the list is whole — on the first instance of the generic only,
-since the discriminant node and the tag values are shared by every instance.
+again, so it expanded until `ErrorInstDepth`. **The instance's `derived` is
+filled with every cloned variant before any is type checked**, so what a
+variant's body asks of the whole set sees all of it: a match there on a value of
+the enum is exhaustive over every variant (`ifExhaustCheck`), a bare pattern name
+finds its sibling (`castPatternBind`), and a variant holding its own enum by value
+is refused as one still being laid out (`itypeVariantPending`). The instance
+itself was type checked before, with an empty list, so the discriminant's width
+(`structSetTagWidth`) is settled here once the list is whole — on the first
+instance of the generic only, since the discriminant node and the tag values are
+shared by every instance.
 
 **Depth is the only cycle detector.** No mark can catch runaway expansion,
 because every expansion is a fresh node — nothing ever returns to the same node.

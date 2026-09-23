@@ -1194,6 +1194,47 @@ enum Slot[T] {
   }
 }
 
+// Inside a generic enum's variant, a match with an arm for every variant of a
+// value of the enum is exhaustive and needs no 'else': with the variants' type
+// arguments written, bare, and through a reference, and in a method of the enum,
+// which is copied into each variant. The instance lists all its variants before
+// any variant's body is type checked, so the match is checked against the whole
+// set, and a bare name finds its sibling in it.
+enum Tote[T] {
+  pub count i32;
+  pub fn which(self &, t Tote[T]) i32 {
+    match t {
+      case is Stuffed[T] {5;}
+      case is Hollow[T] {6;}
+    }
+  }
+
+  struct Stuffed {
+    pub item T;
+    pub fn code(self &, t Tote[T]) i32 {
+      match t {
+        case is Stuffed[T] {1;}
+        case imm h Hollow[T] {h.count + 20;}
+      }
+    }
+    pub fn codeBare(self &, t Tote[T]) i32 {
+      match t {
+        case is Stuffed {3;}
+        case imm h Hollow {h.count + 40;}
+      }
+    }
+  }
+
+  struct Hollow {
+    pub fn itemOr(self &, t &Tote[T], d T) T {
+      match t {
+        case imm s &Stuffed[T] {s.item;}
+        case is &Hollow[T] {d;}
+      }
+    }
+  }
+}
+
 // An extension's copy of a base's variant is cloned as it was resolved, inside
 // the base's braces, so the 'Low' in its method is the base's: the variant
 // 'Tier.Low' written there would be, and the only one its return type admits. A
@@ -1274,6 +1315,18 @@ fn variantBodies() {
   show("generic-variant-sibling-pattern-else", (&empty).itemOr(Slot.Empty[i64][0], 99));
   imm full = Slot.Full[i64][3, 7];
   show("generic-variant-builds-later-sibling", (&full).drain().count);
+  imm stuffed Tote[i64] = Tote.Stuffed[i64][2, 9];
+  imm hollow Tote[i64] = Tote.Hollow[i64][5];
+  imm tote = Tote.Stuffed[i64][0, 0];
+  show("generic-variant-exhaustive-match-first", i64[(&tote).code(stuffed)]);
+  show("generic-variant-exhaustive-match-last", i64[(&tote).code(hollow)]);
+  show("generic-variant-exhaustive-bare-first", i64[(&tote).codeBare(stuffed)]);
+  show("generic-variant-exhaustive-bare-last", i64[(&tote).codeBare(hollow)]);
+  imm totehollow = Tote.Hollow[i64][0];
+  show("generic-variant-exhaustive-ref-first", (&totehollow).itemOr(&stuffed, 99));
+  show("generic-variant-exhaustive-ref-last", (&totehollow).itemOr(&hollow, 99));
+  show("generic-enum-method-exhaustive-first", i64[(&tote).which(stuffed)]);
+  show("generic-enum-method-exhaustive-last", i64[(&totehollow).which(hollow)]);
   imm high = WideTier.High[];
   show("extension-copy-means-the-base-sibling", tierCode((&high).drop()));
   imm peak = WideTier.Peak[];
@@ -1395,6 +1448,40 @@ fn heldAboveDeclaration() {
   show("enum-field-above-declaration", crateWeight(s.load) + s.count);
 }
 
+// -------- a static naming a variant above an enum method --------
+
+// A static function whose signature names a variant demands that variant while
+// the enum is still checking its own members in order. The variant checks its
+// clone of each enum method and then compares it with the enum's own -- which the
+// enum has not reached yet when it is written below the static. That comparison
+// analyzes the enum's method first, so the order the two are written in does not
+// decide whether a variant conforms. It once did: Meter's Over was refused as not
+// having the 'probe' its enum requires, while Needle, the other order, compiled.
+enum Meter {
+  pub id i32;
+  struct Under {pub lo i32;}
+  struct Over {pub hi i32;}
+  fn highOf(g &Over) i32 {g.hi;}
+  pub fn probe(self &, other &Meter) i32 {id * 10 + other.id;}
+}
+
+enum Needle {
+  pub id i32;
+  struct Left {pub lo i32;}
+  struct Right {pub hi i32;}
+  pub fn probe(self &, other &Needle) i32 {id * 10 + other.id;}
+  fn rightOf(g &Right) i32 {g.hi;}
+}
+
+fn staticAboveMethod() {
+  imm under = Meter.Under[2, 5];
+  imm over = Meter.Over[3, 7];
+  show("enum-static-above-method", Meter.highOf(&over) * 100 + (&over).probe(&under));
+  imm left = Needle.Left[4, 6];
+  imm right = Needle.Right[1, 8];
+  show("enum-method-above-static", Needle.rightOf(&right) * 100 + (&right).probe(&left));
+}
+
 // An enum may reach itself through a reference, which is how a tree is written.
 // The enum's size is the largest of its variants, so a variant holding it by
 // value would be infinite -- enum-typecheck-variant holds that -- but a
@@ -1439,5 +1526,6 @@ fn main() i32 {
   variantBodies();
   interactions();
   heldAboveDeclaration();
+  staticAboveMethod();
   0i32;
 }
