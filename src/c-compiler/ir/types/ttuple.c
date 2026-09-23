@@ -21,6 +21,23 @@ INode *cloneTupleNode(CloneState *cstate, TupleNode *node) {
     newnode = memAllocBlk(sizeof(TupleNode));
     memcpy(newnode, node, sizeof(TupleNode));
     newnode->elems = cloneNodes(cstate, node->elems);
+    // ttupleNameRes decided type or value tuple by asking whether the elements
+    // are types, and in a template '(T, T)' asked that of generic parameters,
+    // which are not -- so the template holds a value tuple. Cloning stands in
+    // for name resolution on an instance, so decide again now that the
+    // elements are the type arguments (see cloneRefNode). The elements were
+    // cloned first, which is what carries '(T, &T)'.
+    if (newnode->tag == VTupleTag) {
+        int wasall = 1, nowall = 1;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(node->elems, cnt, nodesp))
+            wasall &= isTypeNode(*nodesp) ? 1 : 0;
+        for (nodesFor(newnode->elems, cnt, nodesp))
+            nowall &= isTypeNode(*nodesp) ? 1 : 0;
+        if (!wasall && nowall && newnode->elems->used > 0)
+            newnode->tag = TTupleTag;
+    }
     return (INode *)newnode;
 }
 
@@ -39,10 +56,18 @@ void ttuplePrint(TupleNode *tuple) {
 // Name resolution of the type tuple node
 void ttupleNameRes(NameResState *pstate, TupleNode *tuple) {
     int tag = -1;
+    int abstained = 0;
     INode **nodesp;
     uint32_t cnt;
     for (nodesFor(tuple->elems, cnt, nodesp)) {
         inodeNameRes(pstate, nodesp);
+        // An element that becomes a type only once a generic's parameters are
+        // substituted votes with neither side, so '(T, i32)' is a type tuple
+        // and '(T, T)' a value tuple the instance's clone decides again
+        if (!isTypeNode(*nodesp) && inodeIsProvisionalType(*nodesp)) {
+            abstained = 1;
+            continue;
+        }
         int newtag = isTypeNode(*nodesp) ? TTupleTag : VTupleTag;
         if (tag == -1)
             tag = newtag;
@@ -51,6 +76,8 @@ void ttupleNameRes(NameResState *pstate, TupleNode *tuple) {
         else if (tag != newtag)
             tag = -2;
     }
+    if (tag == -1 && abstained)
+        tag = VTupleTag;
     if (tag >= 0)
         tuple->tag = tag;
     else

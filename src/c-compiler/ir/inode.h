@@ -352,6 +352,10 @@ int inodeIsExp(INode *node);
 int inodeIsType(INode *node);
 int inodeIsMeta(INode *node);
 
+// Could this node, in a generic's template, be a type once the generic's
+// parameters are substituted, though it is not one yet?
+int inodeIsProvisionalType(INode *node);
+
 // Does this node declare a named item, and is it a type that supports methods?
 // The isNamedNode and isMethodType macros above are the way to ask.
 int inodeIsNamed(INode *node);

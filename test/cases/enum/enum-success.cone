@@ -164,6 +164,29 @@ fn which(s &Signals) i32 {
   }
 }
 
+// A generic enum that declares no integer type widens its discriminant to its
+// largest tag value exactly as a plain one does. 256 is the value that proves it:
+// a one-byte tag would hold it as 0, the tag of the first variant, and the match
+// below would take the wrong arm without any complaint.
+enum Pinned[T] {
+  struct PinnedLow {pub v T;}
+  struct PinnedHigh = 256 {}
+}
+
+fn whichPinned(p &Pinned[i32]) i32 {
+  match p {
+    case is &PinnedLow[i32] {1;}
+    case is &PinnedHigh[i32] {2;}
+  }
+}
+
+fn genericPinnedTag() {
+  imm low Pinned[i32] = PinnedLow[i32][7];
+  imm high Pinned[i32] = PinnedHigh[i32][];
+  show("generic-pinned-tag-first", whichPinned(&low));
+  show("generic-pinned-tag-wide", whichPinned(&high));
+}
+
 // -------- common members anywhere in the body --------
 
 // What makes a member common is its kind, not its position: a 'struct' is a
@@ -444,6 +467,24 @@ fn kindOf(s Shape) i32 {
   s.kind;
 }
 
+// A value of the enum keeps every byte any variant uses, whichever variant it
+// holds. Flag's two small fields sit where Count has padding before its i32, and
+// Tally, the largest, is byte-aligned where Count is not, so the one size every
+// variant is padded to is Tally's rounded up to Count's alignment.
+enum Cell {
+  struct Flag {pub on Bool; pub code u8;}
+  struct Count {pub n i32;}
+  struct Tally {pub a u8; pub b u8; pub c u8; pub d u8; pub e u8; pub f u8; pub g u8; pub h u8; pub i u8;}
+}
+
+fn cellValue(c Cell) i32 {
+  match c {
+    case imm f Flag {if f.on {i32[f.code];} else {-1;};}
+    case imm n Count {n.n;}
+    case imm t Tally {i32[t.i];}
+  }
+}
+
 fn enumValues() {
   mut c = Circle[1, 5];
   mut r = Rect[2, 3, 4];
@@ -457,6 +498,9 @@ fn enumValues() {
 
   show("enum-passed-by-value", kindOf(c));
   show("enum-passed-by-value-other", kindOf(r));
+  show("enum-by-value-keeps-fields-in-anothers-padding", cellValue(Flag[true, 7u8]));
+  show("enum-by-value-keeps-the-aligned-variant", cellValue(Count[40]));
+  show("enum-by-value-keeps-the-largest-variant", cellValue(Tally[1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8]));
 
   // Two branches of differing variant type infer the enum as their common
   // supertype, both by value and by reference
@@ -685,6 +729,14 @@ fn signedResult(r Result[i32, i32]) i32 {
   }
 }
 
+// A Bool beside a tag is at byte 1, where the i32 variant has padding
+fn boolResult(r Result[Bool, i32]) i32 {
+  match r {
+    case imm k Ok[Bool, i32] {if k.value {1;} else {2;};}
+    case imm e Error[Bool, i32] {3;}
+  }
+}
+
 // An Option whose value type is itself an Option, so the type argument is a
 // generic instantiation rather than a plain type. That is the only thing
 // separating this from 'unwrapOr' above, and it was once recorded as a defect
@@ -722,6 +774,7 @@ fn optionAndResult() {
 
   show("result-ok", signedResult(Ok[i32, i32][5]));
   show("result-error", signedResult(Error[i32, i32][3]));
+  show("result-bool-by-value", boolResult(Ok[Bool, i32][true]));
 
   imm held Option[i32] = Some[6];
   show("option-by-reference", unwrapRefOr(&held, 99));
@@ -997,6 +1050,7 @@ fn main() i32 {
   construction();
   payloadFree();
   sparseTagDispatch();
+  genericPinnedTag();
   commonMembersAnywhere();
   placedDiscriminant();
   unsizedEnum();

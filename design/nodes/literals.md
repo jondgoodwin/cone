@@ -47,7 +47,10 @@ naming `i32` or `f64` into a resolved one. A string literal's `vtype` is still
 `unknownType`, so this is a no-op for it.
 
 **`arrayNameRes` is the one retag site**: `ArrayTag` becomes `ArrayLitTag` when
-`elems[0]` is **not** a type node. Decided by the first element alone.
+`elems[0]` is **not** a type node. Decided by the first element alone. The one
+exception is a generic's template, where `[2; T]` is a literal until
+`cloneArrayNode` decides again on the substituted element
+([generic](generic.md)).
 
 `namedValNameRes` resolves the *value* only — the name is deliberately not
 bound, because it is matched against a field by symbol later.

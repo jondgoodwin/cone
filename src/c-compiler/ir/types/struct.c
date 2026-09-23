@@ -1651,7 +1651,12 @@ void structSetDropFn(StructNode *node) {
 // for the sake of a set the base knows nothing about. A value that does not fit is
 // therefore refused where it was added -- which is the same question a declared
 // integer type asks, so it wears the same code.
-static void structSetTagWidth(StructNode *node) {
+//
+// An instance of a generic enum is type checked before it has any variants:
+// genericMemoize instantiates the enum, then each variant, and only then fills in
+// the instance's 'derived'. Asked from that type check it finds nothing to
+// measure, so genericMemoize asks again once the list is whole.
+void structSetTagWidth(StructNode *node) {
     if (node->derived == NULL || !(node->flags & HasTagField))
         return;
     uint32_t maxtag = 0;
