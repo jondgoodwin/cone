@@ -338,7 +338,7 @@ What it may fold from and what it admits:
 
 **Core folds its own two enums with `use pub`**, and that is the whole reason `Some`, `None`, `Ok` and `Error` are bare in every program: the automatic import of core is a wildcard, and a wildcard carries a public fold on. No prelude rule stands behind them, and `?T` still lowers to `Option[T]` by the enum's own name.
 
-`enum-nameres-use` and `enum-parse-use` pin the refusals.
+`enum-nameres-use` and `enum-parse-use` pin the refusals; `module-use-enum` runs a public fold reached by a path and through a wildcard import, and `module-use-enum-nameres` pins what a private one keeps out of reach.
 
 ## Aliases
 
