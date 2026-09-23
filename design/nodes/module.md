@@ -168,10 +168,27 @@ spelled to one of them would read it a second time. **The submodules come before
 the module's own files** too, and both reasons are about what a name means before a file is read. A
 subfolder's module is a name of the namespace that no statement in any of the
 module's files declares — the folder is the declaration — so binding it ahead of
-them puts a collision's first diagnostic on the declaration, which has a position
-in a source that a folder has not. And it registers the submodule's files, so a
+them makes the declaration the duplicate, and the declaration is where a
+collision's first diagnostic lands. And it registers the submodule's files, so a
 file of this module that names one of them reaches the module that holds it
 rather than reading it a second time.
+
+**A module is positioned at its designated file's first line** — line 1,
+column 1 of `matrix/matrix.cone`, or of the one file of a module that is a file —
+from the moment it is made, and `parseModulePosition` is what does it, on all
+three paths. **Ruled by the author, 23 September 2026:** a module named only by
+its folder has no line in any source that declares it, and the file that makes
+the folder a module is the nearest thing it has to a declaration, so that is
+where its half of a diagnostic — `ErrorDupName` against its name — is
+reported. A `mod` declaration is nearer,
+and moves the position to itself. **The file is read when the module is made**,
+before any file of the tree is parsed, because the module's name is bound then
+and a collision is reported as the second binding is made: a submodule named like
+its parent meets the parent's own name at the draw. `lexLoadPath` reads it into a
+lexer block that is not yet current, and that block is the one
+`parseModuleFilesParse` makes current when the designated file's turn comes, so
+the file is still read once. A built-in module has no file, and keeps wherever
+the lexer stood when it was made.
 
 ### The folder tree
 
@@ -1038,17 +1055,6 @@ annotation on a reference names is a type.
   `conec matrix/matrix.cone` and `conec matrix` do: a file's module may not depend
   on the spelling of the path used to reach it. Where the current directory cannot
   be read the file is a module of one file.
-- **A module named only by its folder has no source position.** A `ModuleNode`
-  is built before any of its own files is read, so it carries wherever the lexer
-  stood then: the `init` pseudo-file for the root and for a submodule its parent's
-  subfolder drew, and the importer's next declaration for a module an `import`
-  loaded. Its `mod` declaration gives it the declaration's position, and an
-  import's binding is positioned at the `import` statement, so `ErrorDupName`
-  against a module reports both halves in the source wherever the module declares
-  itself. Where it does not, the folder is its only declaration, and the
-  module's half of the diagnostic points at that stale position. That is also why
-  submodules are bound before the parent's files are parsed: the *first*
-  diagnostic then lands on the parent's declaration, which has a position.
 - **A cycle among non-root modules is fine.** Name resolution runs after all
   parsing, so the half-parsed module the registry returns is complete before
   anything reads it. Nothing refuses a cycle; `modFoldNames` notices one only to
