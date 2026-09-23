@@ -2217,6 +2217,17 @@ void structSetDropFn(StructNode *node) {
         }
     }
 
+    // A trait's methods -- an enum's too -- belong to its implementers: each is
+    // cloned into them or required of them, and none is generated for the trait.
+    // A drop built here would be one more, a requirement none could meet, since
+    // each one's own drop takes its own self. Each already drops those fields: an
+    // enum's common fields are spliced into its variants, and the fields a trait
+    // requires are declared by its implementers.
+    if (node->flags & TraitType) {
+        node->dropfn = dropfn;
+        return;
+    }
+
     // if any field requires drop logic, build a new drop function for struct
     BlockNode *block = NULL;
     INode *selfDcl = NULL;

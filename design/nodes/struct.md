@@ -635,7 +635,14 @@ another. See [module](module.md).
    analyzed**. **Before the methods, and load-bearing**: each method's flow pass
    asks `itypeGetDropFnDcl` about its by-value `self` and its locals of this
    type, and a `dropfn` still NULL then finalizes neither. The fields are
-   checked by now, so every field's drop function is known.
+   checked by now, so every field's drop function is known. **A trait or an
+   enum synthesizes none**: its `dropfn` is its own `final` or NULL. A method
+   of a trait is its implementers' — cloned into them, required of them, never
+   generated for the trait — so a synthesized `drop` there was one more
+   requirement, which no variant or implementer could meet (its own `drop`
+   takes its own `self`), and a generic enum's instance cloned it into each
+   variant, which the pre-lowered body cannot survive. An enum's common fields
+   are spliced into each variant, so the variant's own `drop` finalizes them.
 9. Type check every method — those in `nodelist` before step 8, so not the
    generated `drop`.
 10. **Verify the traits' method requirements** (`structCheckTraitReqs`), now

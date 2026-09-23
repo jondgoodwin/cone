@@ -375,7 +375,9 @@ Steps marked **→** are where a demand can leave and re-enter.
    traits.
 7. **Size is now known**, and `TypeChecked` is set here — meaning laid out.
 8. Settle the drop fn: validate `final`, and generate a `drop` if a field needs
-   finalizing. Before the methods, because each method's flow pass finalizes a
+   finalizing — but not on a trait or an enum, whose methods are its
+   implementers' and would make that `drop` a requirement on each of them.
+   Before the methods, because each method's flow pass finalizes a
    by-value `self`, or a local of this type, only if the type has one by then.
 9. **→** Analyze the methods — not the generated `drop`, which is built lowered.
 10. **→** Verify each mixed-in trait's method requirements against the signatures

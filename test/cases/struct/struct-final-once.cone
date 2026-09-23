@@ -39,6 +39,15 @@
 // type. Every such method below is on a type with a finalizer, its own or a
 // field's, and on a generic's instance and an enum's variant, whose methods are
 // checked by the same step.
+//
+// An enum's common field is spliced into each variant, so the variant's own drop
+// fn finalizes it, once, beside the variant's own fields and finalizer. An enum
+// whose common field finalized did not compile: the enum generated a drop fn of
+// its own, which as a method of the enum became a requirement on every variant,
+// and no variant's drop, taking its own self, met it. A generic enum's instance
+// cloned it into each variant instead, and the compiler stopped on its
+// pre-lowered body. A trait requiring a finalizing field was refused the same
+// way on every implementer. A trait or an enum now generates no drop fn.
 
 import stdio.*;
 
@@ -306,6 +315,63 @@ enum Slot {
   struct Vacant {}
 }
 
+// Its common field finalizes, and so does each variant through it
+enum Held {
+  pub f Fin;
+
+  struct Full {
+    pub n i32;
+
+    pub fn nOf(self) i32 {
+      n;
+    }
+  }
+
+  struct Bare {}
+
+  // A finalizer and a finalizing field of its own, beside the common field
+  struct Both {
+    pub g Fin;
+
+    fn final(self &uni) {
+      finalized = finalized + 100;
+    }
+  }
+}
+
+// The enum's own finalizer is a default each variant inherits
+enum HeldFinal {
+  pub f Fin;
+
+  fn final(self &uni) {
+    finalized = finalized + 100;
+  }
+
+  struct Only {
+    pub n i32;
+  }
+}
+
+enum HeldGeneric[T] {
+  pub f Fin;
+
+  struct Some {
+    pub x T;
+  }
+
+  struct None {}
+}
+
+// The field is a requirement, which the implementer meets by declaring it
+trait HasFin {
+  pub f Fin;
+}
+
+struct Carrier is HasFin {
+  pub f Fin;
+  pub z i32;
+}
+
 fn methodSelfOwnFinal() {
   imm o = Owned[34];
   o.idOf();
@@ -353,6 +419,41 @@ fn genericMethodSelfFieldHandedBack() {
 fn variantMethodSelf() {
   imm s = Slot.Filled[Fin[48], 49];
   s.kOf();
+}
+
+fn commonFieldVariant() {
+  imm h = Held.Full[Fin[50], 51];
+}
+
+fn commonFieldEmptyVariant() {
+  imm h = Held.Bare[Fin[52]];
+}
+
+fn commonFieldVariantOwnFinal() {
+  imm h = Held.Both[Fin[53], Fin[54]];
+}
+
+fn commonFieldVariantMethodSelf() {
+  imm h = Held.Full[Fin[55], 56];
+  h.nOf();
+}
+
+// 'k' owns the value at scope exit; 'h' no longer does
+fn commonFieldVariantMoved() {
+  imm h = Held.Full[Fin[57], 58];
+  imm k = h;
+}
+
+fn commonFieldEnumFinal() {
+  imm h = HeldFinal.Only[Fin[59], 60];
+}
+
+fn commonFieldGenericVariant() {
+  imm h = HeldGeneric.Some[i32][Fin[61], 62];
+}
+
+fn traitFieldImplementer() {
+  imm c = Carrier[Fin[63], 64];
 }
 
 fn main() i32 {
@@ -483,6 +584,38 @@ fn main() i32 {
   finalized = 0;
   variantMethodSelf();
   show("variant-method-self", finalized);
+
+  finalized = 0;
+  commonFieldVariant();
+  show("common-field-variant", finalized);
+
+  finalized = 0;
+  commonFieldEmptyVariant();
+  show("common-field-empty-variant", finalized);
+
+  finalized = 0;
+  commonFieldVariantOwnFinal();
+  show("common-field-variant-own-final", finalized);
+
+  finalized = 0;
+  commonFieldVariantMethodSelf();
+  show("common-field-variant-method-self", finalized);
+
+  finalized = 0;
+  commonFieldVariantMoved();
+  show("common-field-variant-moved", finalized);
+
+  finalized = 0;
+  commonFieldEnumFinal();
+  show("common-field-enum-final", finalized);
+
+  finalized = 0;
+  commonFieldGenericVariant();
+  show("common-field-generic-variant", finalized);
+
+  finalized = 0;
+  traitFieldImplementer();
+  show("trait-field-implementer", finalized);
 
   0i32;
 }
