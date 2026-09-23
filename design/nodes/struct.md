@@ -84,6 +84,28 @@ are two instances of one template, neither of which extends anything. ▸
 overriding what it took — one value would otherwise mean two things, depending on
 which of the two names reached it.
 
+**An enum that extends another shares its variants and substitutes for it in
+neither direction.** The extension's set is the base's variants — the same
+declarations, at the same tag values, with the same layout — followed by the ones it
+adds. ▸ **Forbids** the substitution that sharing would otherwise make true in fact:
+adding variants to a set makes a *supertype*, the reverse of the direction every
+subtype relationship in Cone runs, and Cone does not take that direction. ▸
+**Settles** that a match on the base stays exhaustive over the base's own variants,
+which is what the whole closed family rests on: a base-typed value can only ever
+hold one of them. ▸ Membership is what does run — a variant is a value of the enum
+it is declared inside *and* of every enum extending that one — because a value of a
+variant is a value of any set that variant is in.
+
+**The extension's restrictions are the price of one layout per variant, and
+`@unsized` is how they are avoided.** A shared variant is one declaration, so it has
+one padding: the base's. ▸ **Forbids** an extension adding a variant larger than the
+base's largest while the variants are padded, declining or adding the padding its
+base chose, widening the shared discriminant, and declaring any member of its own —
+a field or method every variant would have to carry can only be declared where those
+variants are. ▸ **Settles** what `enum @unsized` is *for*: nothing is padded there,
+so an extension adds variants of any size at all, which is what an extensible
+payload-carrying enum is written with.
+
 **An enrichment is inside its base's encapsulation boundary; its own clients are
 not.** It is acting as the base, which is what declaring the base verifies, so it
 reads and writes the base's private members and the names it takes keep the
@@ -166,14 +188,14 @@ neither slots nor requirements and cost the trait nothing.
 | `dropfn` | NULL until the last step of type check |
 | `dclinfo` | owner and the facts its symbols are spelled from — [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols". The owner is a module, or the enum for a variant declared inside one. Read for one thing besides naming: rejecting a variant declared outside its enum's module, through `dclInfoGetModule` |
 | `basetrait` | the **type expression** of the first abstraction an `is` names, or of the enum a variant belongs to — a `NameUseNode`, or an `FnCallNode` for a generic base. **Not a `StructNode*`.** Two helpers unwrap it and they answer different questions: `structBaseTraitDcl` takes **one hop**, to the declaration this type stands on, while `structGetBaseTrait` recurses to the **bottom-most** one. Picking the wrong one is how the infection loop hangs |
-| `extendsbase` | the **type expression** of the concrete base an `extends` enriches, on the same terms. **A separate slot from `basetrait` on purpose**: the two are different assertions, a type may write both, and every walk that reads `basetrait` is asking about an abstraction |
-| `extendsdcl` | that base's **declaration**, written once its members have been taken and NULL until then — so it says both *which* type this enriches and *that* the enrichment has happened, which is what tells name resolution's expansion from type check's. `structExtendsRoot` walks it to the bottom of the chain, and `structExtendsEquiv` compares two roots: that comparison is the whole substitution rule |
+| `extendsbase` | the **type expression** whatever base an `extends` names, on the same terms: the concrete type this enriches, or, **on an enum, the enum whose variants join this one's set**. **A separate slot from `basetrait` on purpose**: they are different assertions, a type may write both, and every walk that reads `basetrait` is asking about an abstraction — which is also why an enum's base is here and not there, since no substitution runs between the two enums. `structEnumBaseDcl` unwraps this one for an enum |
+| `extendsdcl` | an **enriched** base's declaration, written once its members have been taken and NULL until then — so it says both *which* type this enriches and *that* the enrichment has happened, which is what tells name resolution's expansion from type check's. `structExtendsRoot` walks it to the bottom of the chain, and `structExtendsEquiv` compares two roots: that comparison is the whole substitution rule. **Always NULL for an enum**, deliberately: an enum extension licenses no substitution, so it writes nothing the rule reads |
 | `siblings` | a **field-like node per type-body `use`**, or NULL: its `vtype` the type expression of the sibling named, its `fold` what the clause admits. Never in `fields`, because a sibling contributes no representation; the node type is reused for what it already carries through cloning — a type expression and a clause. Read only by `structUseSiblings` |
-| `derived` | for an **enum**, its variants in declaration order. The index is the `tagnbr` only where nothing pinned one, which is what generation asks before using the tag to index the vtable list |
+| `derived` | for an **enum**, its variants in declaration order — **an extension's begins with its base's list, the same declarations and not copies of them**, so a variant is in the list of every enum whose set holds it. The index is the `tagnbr` only where nothing pinned one, which is what generation asks before using the tag to index the vtable list |
 | `traits` | every abstraction whose members were taken — the base, each further name in the `is` list, and each `mixin` — or NULL. Written where the members are taken (`structInheritTrait`) and read by type check's two requirement checks, the only things that still need to know which trait a requirement came from. **Which entry is the base is asked of `basetrait`, not of this list's order**, since the field walk that fills it runs backwards |
 | `fields` | all fields in layout order. A declared field may carry a fold clause (`FieldDclNode.fold`); a folded copy is never here |
 | `vtable` | NULL until `structMakeVtable` |
-| `tagnbr` | discriminant value, assigned at parse: the value the author pinned, or the next in sequence. `TagUnassigned` is the sentinel between reading a variant's name and settling its value, which is why no flag bit records whether one was written — a type has none to spare, and nothing after parse needs to know |
+| `tagnbr` | discriminant value, assigned at parse: the value the author pinned, or the next in sequence. `TagUnassigned` is the sentinel between reading a variant's name and settling its value, which is why no flag bit records whether one was written — a type has none to spare, and nothing after parse needs to know. **A variant of an extension keeps the sentinel until name resolution**, which is when the base's values are known and its own can continue from them |
 | `llvmtype` | generation memoizes here; non-NULL means "already generated" |
 
 **What tells the three apart:**
@@ -250,12 +272,17 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   they are different assertions: `is` names the abstractions this type complies
   with, `extends` names the one concrete type it enriches. A repeat of either is
   `ErrorExtends`, as is `extends` on a **trait** — an abstraction holds no value,
-  so there is nothing of it to enrich. An **enum** keeps the keyword for an enum
-  that adds variants to another's, which is a third relationship, is not built,
-  and is read into `basetrait` here unchanged so that nothing about it moves. A
-  **variant** writing it is `ErrorVariantDcl` beside the `is` it may not write
-  either: its fields are its enum's, so it has no representation of its own to
-  stand on.
+  so there is nothing of it to enrich. On an **enum** the keyword means the third
+  relationship, the enum whose variants join this one's set, and it is read into
+  `extendsbase` like any other base. A **variant** writing it is `ErrorVariantDcl`
+  beside the `is` it may not write either: its fields are its enum's, so it has no
+  representation of its own to stand on.
+- **An enum that extends another declares variants and nothing else.** A field, a
+  method, a static, a macro or a mixin in its body is `ErrorEnumExtends` where it is
+  written, and so is an integer type for its tag: its layout is its base's, shared
+  with the variants it takes from it, so no discriminant is synthesized here either.
+  A body with no variant at all is the same code, reported at the declaration's own
+  name — the block has ended by then, so the lexer is on whatever follows it.
 - A field's trailing `use` clause (`parseFoldClause`) is stored on the field,
   with an alias per listed name positioned at the item; **nothing enters the
   namespace at parse**, since whether a name is a field or a method is not
@@ -290,7 +317,9 @@ LLVM struct, which is why a reference to a trait could not be lowered.
     `is`, or its own generic parameters. One code for both, because a reader
     would not branch on which and the remedy is the same: delete it.
 - **Tag numbering runs across the whole body**, ascending from zero, and a written
-  value resets it, so numbering continues from there. Two variants holding one
+  value resets it, so numbering continues from there — **except in an extension,
+  whose numbering waits for name resolution**, since the values its base's variants
+  hold are not known until the base is. Two variants holding one
   value is `ErrorDupTag`, reported on the second. **A variant may not assert
   conformance to an unrelated trait, and the absence is deliberate** — a variant's
   relationship to its enum is membership, the enum owns its layout, and a second
@@ -311,7 +340,9 @@ LLVM struct, which is why a reference to a trait could not be lowered.
   anything but an enum it is refused here, which is what keeps the type-check rule
   below to one question: does this enum carry more than one.
 - **An enum with no variants is `ErrorNoVariants`.** Its identity is its variant
-  set, so an empty one names nothing a value of it could be.
+  set, so an empty one names nothing a value of it could be. An extension with none
+  is `ErrorEnumExtends` instead: it would hold its base's, so what it lacks is not a
+  value but a reason to exist.
 
 ## Name resolution
 
@@ -327,7 +358,9 @@ inherited member bare, exactly as it names the type's own.
    not a requirement on its variants: a vtable slot, a conformance requirement and a
    default cloned into every variant are all read off `nodelist`. Added here rather
    than at type check because name resolution finishes for every module before type
-   check begins, so nothing can look the name up too early.
+   check begins, so nothing can look the name up too early. **An extension's waits
+   for step 4c**, because which comparison it gets depends on whether any variant in
+   the whole set — its base's included — carries fields.
 2. Push the hook table.
 3. Resolve generic parameters **inside** the push — resolving one hooks it, so
    doing it beforehand would bind it in the enclosing scope and the matching pop
@@ -344,6 +377,13 @@ inherited member bare, exactly as it names the type's own.
    its members waits for step 8a, after the field walk, so that whatever is left
    in the field list by then is a field this type declared — which is what
    `extends` forbids.
+4c. **An enum's `extends` is taken here, whole** (`structEnumExtendsEligible`,
+   `structEnumSeedVariants`): the base is resolved and demanded as at 4a, its
+   variants are put at the front of this enum's `derived` list, this enum's own are
+   numbered from the base's last value, its `==` is made, the base's discriminant is
+   marked as extended, and the base stands as a **mixin placeholder at position 0**
+   so the field walk splices its fields in exactly as a variant's enum does. A clause
+   that is refused is cleared, so nothing downstream asks about it again.
 4b. **Resolve each sibling a body `use` names**, for the same reason again. It is
    demanded at step 5 with everything else, which is what makes its own `extends`
    taken before the base it shares is compared with this type's.
@@ -414,7 +454,10 @@ reach in that module; see [module](module.md).
    declaration until now. Eligibility is checked exactly as name resolution checks
    it; the members are taken at step 4a. Nothing is hooked, because no body is
    resolved after this, so such a member is reached as `self.name` inside this
-   type's own methods (see Hazards).
+   type's own methods (see Hazards). **An enum this one extends is type checked
+   here** and nothing else: name resolution took its variants and members already,
+   and what is wanted from it now is its discriminant's width, settled at step 5a on
+   the node the two of them share.
 2. Type check `basetrait`; require an abstraction — `ErrorInvType`, since a
    subtype relationship runs from a concrete type to an abstraction and never
    between two concrete types; require the closed-ness to match —
@@ -457,7 +500,11 @@ reach in that module; see [module](module.md).
    too large for it is `ErrorTagWidth` rather than a silent widening away from the
    layout the author asked for. The discriminant's type node is **shared, not
    cloned** (`clone.c`), so every variant's copy of the tag field reads the width
-   set once here.
+   set once here — **and so does every enum extending this one**, which is why an
+   extension may not widen it: the node is the base's, and widening it would relay
+   out the base's own values for the sake of a set the base knows nothing about. A
+   value that does not fit is `ErrorTagWidth` at the extension, the same question a
+   declared integer type asks.
 5b. **Verify the field requirements** (`structCheckIsaFields`), the layout having
    just settled, which is what an `is` asserts about. The base's own fields must
    be declared here, under the same names and types, in the base's order,
@@ -639,8 +686,9 @@ which is what keeps the representations identical), or declare a name the base
 already has (`ErrorExtendsOverride`, whether the base's is a field or a method) —
 one value would otherwise mean two things, depending on which name reached it.
 **What may be enriched** is a concrete struct and nothing else: not an
-abstraction, which holds no value; not an enum, where adding is adding variants;
-not a variant, whose fields are its enum's; not a number type. A cycle, including
+abstraction, which holds no value; not an enum, where adding is adding variants and
+only another enum may (see "An enum extending an enum"); not a variant, whose fields
+are its enum's; not a number type. A cycle, including
 a type naming itself, is `ErrorCircular` at the clause.
 
 ### Substitution
@@ -726,6 +774,65 @@ own: an alias resolves to the sibling's declaration, and the call is a direct ca
 to it with the receiver recast, exactly as a call on a value of the sibling's own
 type is (`struct-use-sibling`, `a-folded-method-is-not-cloned-per-folding-type`).
 
+## An enum extending an enum
+
+`extends` on an enum names the enum whose variants join this one's set. The language
+is in [refenum](../../conesite/public/coneref/refenum.html), "Extending an enum";
+this is the mechanism, in `structEnumSeedVariants`, `structEnumIncludes` and what
+reads them.
+
+**It is the splice an enum already does, plus a shared `derived` list.** The
+extension's list holds its base's variant declarations — the same nodes, first and
+in the base's order — and then its own, and the base stands as a mixin placeholder
+at position 0 so the field walk gives the extension its base's discriminant and
+common fields. So **one variant has one declaration, one tag value and one layout**,
+whichever of the two enums it is reached through. Nothing is cloned per enum and
+nothing is renumbered: numbering runs ascending across a set, so seeding the base's
+list and continuing from its last value hands every shared variant the value it
+already had, **by construction rather than by agreement**.
+
+**The two enums are nonetheless two types, and nothing substitutes between them.**
+This is the half that has to be enforced, because the sharing makes the substitution
+true in fact: the extension's fields are clones of its base's and its members are its
+base's, so `structMatches`'s structural test would say yes in *both* directions and a
+virtual reference's mapping would find every slot. Both are refused outright — two
+`EnumType` declarations never match, in `structMatches` ahead of the trait test and
+in `structVirtRefMatches` ahead of the mapping. The extension's base therefore lives
+in `extendsbase` and never in `basetrait`, and `extendsdcl` stays NULL: those are
+what the substitution walks read.
+
+▸ **What the refusal buys is the exhaustive match.** A base-typed value can only
+hold one of the base's own variants, so a match naming those is exhaustive with no
+`else` — which is the property the whole closed family rests on. It is also what
+keeps the sharing reversible: a later reading that gives each *(enum, variant)* pair
+its own layout only relaxes a restriction, so no legal program becomes illegal and
+none changes meaning.
+
+**Membership is the relationship that does run, and `structEnumIncludes` answers
+it**: a variant is a value of the enum it was declared inside *and* of every enum
+extending that one, since an extension's `derived` list holds it too. Read in two
+places — `structMatches`, after the `basetrait` walk, which only knows the enum a
+variant was declared inside; and `structEnumSharedSet`, which gives two variants from
+a base and an extension a type in common for an `if`'s branches to infer, and answers
+the extension, the only set holding both.
+
+**What an extension may not do**, all `ErrorEnumExtends` unless named otherwise:
+declare a member of its own — a field, method, static, macro or mixin — since a
+member every variant carries can only be declared where the shared variants are;
+declare a discriminant or the integer type one is laid out in; disagree with its base
+about `@unsized`, because a shared variant cannot be padded in one set and unpadded
+in the other; extend anything but an enum, or itself; be or extend a *generic* enum,
+since an instance's variant set is made over per instantiation and what a shared
+variant would mean across two of them has not been asked; pin a value the set already
+holds (`ErrorDupTag`) or one too wide for the shared discriminant (`ErrorTagWidth`);
+or add a variant larger than the base's largest (`ErrorEnumExtendsSize`, at
+generation — see below).
+
+⚠ **A chain — an extension of an extension — is neither built for nor refused.**
+The mechanisms are transitive as written: seeding takes the whole list the middle
+enum already seeded, so `derived`, the tag values and membership all compound
+correctly. It is untested and unclaimed; the language does not document it.
+
 ## Flow
 
 Flow does little with a struct as such. The one mechanism that matters:
@@ -750,7 +857,12 @@ Three shapes, the first two chosen in `genlSetupTaggedTrait`:
 
 - **Nullable pointer** — a `SameSize` enum with exactly two variants, one of
   one field and one of two whose second is pointer-like. **No struct is emitted
-  at all**; the value *is* the pointer and null is the empty variant.
+  at all**; the value *is* the pointer and null is the empty variant. **Declined
+  where an enum in the family is extended**: the layout works only while those two
+  variants are the whole set, and an extension holds those same declarations plus
+  another, for which there is no pointer to be. Asked of the discriminant, which the
+  base, its variants and every extension share, so the answer does not depend on
+  which of them generation reaches first.
 - **Same size** — every variant re-emitted with `[N x i8]` trailing padding to
   the largest; the enum's body is a copy of the largest variant's fields.
   Measured: `%Circle = { i8, i32, i32, [4 x i8] }` beside
@@ -762,6 +874,17 @@ Three shapes, the first two chosen in `genlSetupTaggedTrait`:
 **The discriminant's width is not generation's.** Type check settles it, because it
 follows the largest tag value rather than the variant count and generation cannot
 see a pinned value in `derived->used`.
+
+**A variant shared by an enum and an extension of it is laid out once**
+(`genlSameSizeTrait`): whichever enum generation reaches first creates its named
+struct and attaches its body, and the other leaves what it finds alone — the
+memoized `llvmtype` is one slot per variant and that is correct here, because one
+variant has one layout. The padding is the same from either side only because an
+extension adds no variant larger than the base's largest, **and that restriction is
+checked here**, against the sizes this is the only place to have: nothing earlier has
+a data layout to ask, which is why `genlRecast` checks a reinterpretation's size here
+too. `ErrorEnumExtendsSize`, at the variant, naming `@unsized` — which pads nothing
+and so has nothing to reconcile.
 
 **The tag selects a variant's vtable two ways, and which one is a property of the
 tag values.** `structMakeVtable` prewires the vtable list in `derived` order, so

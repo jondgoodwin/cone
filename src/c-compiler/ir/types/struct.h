@@ -36,8 +36,8 @@ typedef struct StructNode {
     Name *namesym;
     DclInfo dclinfo;        // Owner and the facts that decide the linker symbol
     INode *basetrait;       // The abstraction this type is-a, or the enum a variant belongs to
-    INode *extendsbase;     // The type expression of the concrete base an 'extends' enriches, or NULL
-    INode *extendsdcl;      // That base's declaration, set once its members have been taken; NULL until then
+    INode *extendsbase;     // The type expression an 'extends' names: a concrete base to enrich, or, on an enum, the enum whose variants join its set
+    INode *extendsdcl;      // An enriched base's declaration, set once its members have been taken; NULL until then, and always NULL for an enum, which licenses no substitution
     Nodes *derived;         // If a closed, base trait, this lists all structs derived from it
     Nodes *traits;          // Every trait whose members were mixed in (NULL if none)
     Nodes *siblings;        // A field-like node per type-body 'use': its 'vtype' the sibling named, its 'fold' what the clause admits (NULL if none)
@@ -91,6 +91,24 @@ StructNode *structExtendsRoot(StructNode *node);
 // Do two type declarations substitute for each other because one enriches the
 // other, or because both enrich one base? Nothing else answers yes.
 int structExtendsEquiv(INode *type1, INode *type2);
+
+// The enum an 'extends' on an enum adds variants to, or NULL for anything else.
+// The two are distinct types that do not substitute for each other in either
+// direction, so nothing that answers substitution reads this.
+StructNode *structEnumBaseDcl(StructNode *node);
+
+// Does this enum's variant set include this variant? Membership, not subtyping: a
+// variant belongs to the enum it is declared inside and to every enum extending it.
+int structEnumIncludes(StructNode *enumdcl, INode *variant);
+
+// The enum whose set holds both of these variants, or NULL where none does. For
+// two variants of a base enum and an extension of it, it is the extension.
+INode *structEnumSharedSet(INode *type1, INode *type2);
+
+// The type of this enum's discriminant, or NULL where it has none. One node is
+// shared by the enum, its variants and every enum that extends it, so it carries
+// what their layouts must agree on.
+EnumNode *structEnumTagNode(StructNode *node);
 
 // Get bottom-most base trait for some trait/struct, or NULL if there is not one
 StructNode *structGetBaseTrait(StructNode *node);

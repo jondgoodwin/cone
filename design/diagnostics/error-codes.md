@@ -101,6 +101,15 @@ remedy. So the test is not "is this a different condition?" but "would a caller
 ever branch on which?" If nothing would, one code and a specific message is
 right.
 
+`ErrorEnumExtends` is the same shape, over what an enum extending another may name
+and declare: a base that is not an enum, a base that is itself, a disagreement about
+`@unsized`, a generic on either side, a discriminant of its own, a member that is not
+a variant, and no variant at all. One question — is this relationship declared
+correctly — with the cause in the message. **The size an added variant may reach is a
+code of its own**, `ErrorEnumExtendsSize`, because it is answered in another phase:
+the rest are refused as the declaration is read, and that one needs a data layout and
+so waits for generation.
+
 That is a narrow licence, and the tell that it has been stretched is the
 scenarios: **when a scenario needs a message substring to tell two uses of one
 code apart, the substring is doing the code's job.** Wrong arity, a non-type

@@ -1,0 +1,66 @@
+// What an enum that extends another may write in its declaration.
+//
+// An extension adds variants to the set its base declared, and the variants it
+// shares with the base are the base's own declarations. So anything that would
+// have to reach those variants -- a field spliced into every one of them, a method
+// every one of them implements or inherits, a discriminant they are laid out with
+// -- can only be declared where they are, and its base's own members come along
+// with them. What is left for an extension's body is variants, which is the whole
+// of what it is for.
+//
+// Parse stage only: each of these is refused where it is written, and a parse
+// error stops the compile before name resolution, so nothing here reaches the
+// refusals in enum-nameres-extends.
+//
+// Grammar the clause shares with the concrete enrichment -- 'extends' written
+// twice, and 'extends' on a trait -- is in trait-parse-extends.
+
+enum Colors {
+  Red, Green, Blue;
+}
+
+// A field is part of every variant's layout, and the shared ones already have the
+// base's. Declaring one here would have to add it to a declaration this enum does
+// not own.
+enum WithField extends Colors {
+  Cyan;
+  pub extra i32;          //~ ErrorEnumExtends:13 "a field belongs on the enum it extends"
+}
+
+// A method is either a default cloned into every variant or a requirement every
+// variant implements, and a shared variant answers to its own enum for both
+enum WithMethod extends Colors {
+  Magenta;
+  pub fn describe(self &) i32 {   //~ ErrorEnumExtends:7 "a method belongs on the enum it extends"
+    1;
+  }
+}
+
+// A static belongs to the type that declares it, and this type's members are its
+// base's
+enum WithStatic extends Colors {
+  Amber;
+  pub static wide i32;    //~ ErrorEnumExtends:14 "a static belongs on the enum it extends"
+}
+
+// A mixin would splice a trait's members in, which is the same addition a field is
+enum WithMixin extends Colors {
+  Teal;
+  mixin Marker;           //~ ErrorEnumExtends:3 "a mixin belongs on the enum it extends"
+}
+
+trait Marker {
+  pub fn mark(self &) i32;
+}
+
+// The discriminant is the base's, shared with the variants taken from it, so the
+// integer type its values are laid out in was settled there
+enum Retagged u32 extends Colors {  //~ ErrorEnumExtends:15 "takes its base's discriminant"
+  Ochre;
+}
+
+// An extension that adds no variant is a second name for its base's set rather
+// than a wider one. Reported at the declaration's own name, because the body that
+// should have held a variant has ended by then.
+enum Nothing extends Colors {       //~ ErrorEnumExtends:6 "adds no variant"
+}

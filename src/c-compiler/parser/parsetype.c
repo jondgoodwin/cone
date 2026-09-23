@@ -309,7 +309,13 @@ static FieldDclNode *parseFieldDclBody(ParseState *parse, FieldDclNode *fldnode)
 // external library's constants without renumbering the rest by hand.
 static void parseAddVariant(ParseState *parse, StructNode *strnode, StructNode *substruct, uint32_t *nexttag) {
     substruct->flags |= HasTagField | (strnode->flags & SameSize);
-    if (substruct->tagnbr == TagUnassigned)
+
+    // An extension's numbering cannot be settled here. Its base's variants come
+    // first in its set and their values are not known until the base is resolved,
+    // so an unpinned variant keeps 'TagUnassigned' and name resolution numbers it
+    // after the base's last -- structEnumSeedVariants, in ir/types/struct.c.
+    int deferred = strnode->extendsbase != NULL;
+    if (substruct->tagnbr == TagUnassigned && !deferred)
         substruct->tagnbr = *nexttag;
 
     // The enum already says which enum a variant belongs to and what its type
@@ -359,7 +365,7 @@ static void parseAddVariant(ParseState *parse, StructNode *strnode, StructNode *
         INode **nodesp;
         uint32_t cnt;
         for (nodesFor(strnode->derived, cnt, nodesp)) {
-            if (((StructNode*)*nodesp)->tagnbr == substruct->tagnbr)
+            if (substruct->tagnbr != TagUnassigned && ((StructNode*)*nodesp)->tagnbr == substruct->tagnbr)
                 errorMsgNode((INode*)substruct, ErrorDupTag,
                     "Tag value %d is already taken by variant %s.",
                     (int)substruct->tagnbr, &((StructNode*)*nodesp)->namesym->namestr);
@@ -368,12 +374,30 @@ static void parseAddVariant(ParseState *parse, StructNode *strnode, StructNode *
     else
         strnode->derived = newNodes(4);
     nodesAdd(&strnode->derived, (INode*)substruct);
-    *nexttag = substruct->tagnbr + 1;
+    if (!deferred)
+        *nexttag = substruct->tagnbr + 1;
 
     modAddNode(parse->mod, inodeGetName((INode*)substruct), (INode*)substruct);
     // Bound in the module, but declared inside the enum: the variant's symbols
     // are spelled after the enum, so the enum is its owner
     dclInfoJoin((INode*)substruct, (INode*)strnode);
+}
+
+// An enum that extends another declares variants and nothing else. Report what it
+// may not declare, at the token the member starts on, and then let the member be
+// parsed as any other: one diagnostic is the whole of it.
+//
+// The variants it shares with its base are the base's own declarations, so a
+// member every variant has to carry -- a common field, spliced into each of them,
+// or a method each of them implements or inherits -- can only be declared where
+// those variants are. Its base's common members come along with the variants, so
+// nothing is lost by declaring them there.
+static void parseEnumExtensionMember(int isenum, StructNode *strnode, char *what) {
+    if (!isenum || strnode->extendsbase == NULL)
+        return;
+    errorMsgLex(ErrorEnumExtends,
+        "%s extends an enum, so it adds variants and nothing else: %s belongs on the enum it extends, whose declarations its shared variants are.",
+        &strnode->namesym->namestr, what);
 }
 
 // Parse the '= value' pinning a variant's tag value, if one is written, leaving
@@ -541,15 +565,16 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
             continue;
         }
         lexNextToken();
-        // An enum extending an enum adds variants to the ones its base declared.
-        // That is membership in a wider set rather than enrichment, it is spelled
-        // 'extends' too, and it is not implemented (coneref/refenum.html); the
-        // clause is read into 'basetrait' as it always has been so that nothing
-        // about it moves.
+        // An enum extending an enum adds variants to the ones its base declared,
+        // which is membership in a wider set rather than enrichment. It is read
+        // into 'extendsbase' -- the slot for whatever base an 'extends' names --
+        // and never into 'basetrait', because 'basetrait' is what every
+        // substitution walk follows and these two enums do not substitute for each
+        // other in either direction (coneref/refenum.html, nodes/struct.md).
         if (isenum) {
             if (sawextends++)
                 errorMsgLex(ErrorExtends, "An enum extends one enum.");
-            strnode->basetrait = parseTypeName(parse);
+            strnode->extendsbase = parseTypeName(parse);
             continue;
         }
         // A trait is an abstraction: it states requirements and holds no value, so
@@ -568,6 +593,15 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         strnode->extendsbase = parseTypeName(parse);
     }
 
+    // An extension's discriminant is its base's, shared with the variants it takes
+    // from it, so the integer type it is laid out in was settled there
+    if (isenum && underlying && strnode->extendsbase) {
+        errorMsgNode(underlying, ErrorEnumExtends,
+            "%s takes its base's discriminant, so the integer type its tag values are laid out in is declared on the enum it extends.",
+            &strnode->namesym->namestr);
+        underlying = NULL;
+    }
+
     // If block has been provided, process field or method definitions
     int hasEnumFld = 0;
     if (parseHasBlock()) {
@@ -580,6 +614,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 // type's namespace, reached as Type.name from outside and by its
                 // bare name from the type's own functions and methods. It is not
                 // a field, so it has no slot in the value and no receiver.
+                parseEnumExtensionMember(isenum, strnode, "a static");
                 VarDclNode *var = parseVarDcl(parse, immPerm, ParseMayImpl | ParseMaySig);
                 var->flags |= FlagStatic | pubflag;
                 iNsTypeAddStatic((INsTypeNode*)strnode, var);
@@ -588,6 +623,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
             }
             parseBadStatic(staticflag);
             if (lexIsToken(FnToken)) {
+                parseEnumExtensionMember(isenum, strnode, "a method");
                 FnDclNode *fn = (FnDclNode*)parseFn(parse, methflags);
                 if (fn && isNamedNode(fn)) {
                     Nodes *parms = ((FnSigNode *)fn->vtype)->parms;
@@ -601,6 +637,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 // A macro is a member by the same rule as a function: it is a
                 // method when its first parameter is 'self', and the receiver
                 // stands in for that parameter when it is expanded
+                parseEnumExtensionMember(isenum, strnode, "a macro");
                 MacroDclNode *macro = parseMacro(parse);
                 if (macro->namesym != anonName) {
                     Nodes *parms = macro->parms;
@@ -639,6 +676,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                 // It binds no name, so there is nothing for 'pub' to expose.
                 if (pubflag)
                     errorMsgLex(ErrorBadPub, "'pub' may not precede a mixin, which declares no name");
+                parseEnumExtensionMember(isenum, strnode, "a mixin");
                 FieldDclNode *field = newFieldDclNode(anonName, (INode*)immPerm);
                 field->flags |= IsMixin | FlagMethFld;
                 lexNextToken();
@@ -699,6 +737,7 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
                     continue;
                 }
 
+                parseEnumExtensionMember(isenum, strnode, "a field");
                 parseFieldDclBody(parse, field);
                 field->index = fieldnbr++;
                 field->flags |= FlagMethFld | pubflag;
@@ -761,9 +800,19 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
         parseEndOfStatement();
 
     // An enum's identity is its variant set, so an enum with no variants names
-    // nothing a value of it could be and nothing a match could account for
-    if (isenum && !(strnode->flags & HasTagField))
-        errorMsgLex(ErrorNoVariants, "An enum declares its variants: an empty one has no value it could hold.");
+    // nothing a value of it could be and nothing a match could account for. An
+    // extension that adds none is a second name for its base rather than the
+    // wider set it was written to be, which is its own mistake to name.
+    if (isenum && !(strnode->flags & HasTagField)) {
+        if (strnode->extendsbase)
+            // At the declaration's own name: the block that should have held a
+            // variant has ended, so the lexer is on whatever follows it
+            errorMsgNode((INode*)strnode, ErrorEnumExtends,
+                "%s extends an enum and adds no variant, which makes it a second name for the same set rather than a wider one.",
+                &strnode->namesym->namestr);
+        else
+            errorMsgLex(ErrorNoVariants, "An enum declares its variants: an empty one has no value it could hold.");
+    }
 
     // The tag field belongs to the closed-variant machinery: it is the
     // discriminant a match on a plain reference reads to pick the variant, and
@@ -773,7 +822,11 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     // synthesize, and dispatch and narrowing go through a virtual reference
     // instead (coneref/refvirtref.html). One is inserted here unless the enum
     // placed its own, which the walk above has already marked.
-    if ((strnode->flags & HasTagField) && !hasEnumFld) {
+    //
+    // An extension has no discriminant of its own to place or synthesize: its
+    // base's arrives with the fields name resolution splices in, which is what
+    // makes the tag a shared value across the two sets.
+    if ((strnode->flags & HasTagField) && !hasEnumFld && !(isenum && strnode->extendsbase)) {
         FieldDclNode *fldnode = newFieldDclNode(anonName, (INode*)immPerm);
         fldnode->vtype = (INode*)newEnumNode();
         fldnode->flags |= IsTagField;

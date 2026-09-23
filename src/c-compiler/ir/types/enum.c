@@ -13,6 +13,7 @@ EnumNode *newEnumNode() {
     newNode(node, EnumNode, EnumTag);
     node->bytes = 1;
     node->fixedwidth = 0;
+    node->extended = 0;
     node->underlying = NULL;
     node->namesym = anonName;
     node->llvmtype = NULL;

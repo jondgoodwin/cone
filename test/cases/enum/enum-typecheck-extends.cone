@@ -1,0 +1,74 @@
+// A base enum and an extension of it are TWO DISTINCT TYPES, and no substitution
+// runs between them in either direction.
+//
+// This is the half of the relationship that has to be enforced rather than merely
+// documented. Underneath, the two share the variants' declarations, the tag values
+// and the layout -- so an extension's fields are clones of its base's and its
+// members are its base's, which makes the two structurally identical and a
+// structural test say yes in both directions. Every line below is that test being
+// refused.
+//
+// It is worth saying why the language refuses it rather than allowing the one
+// direction that is sound. Adding variants to a set makes a SUPERTYPE: every value
+// of the base is a value of the extension, and no value of the extension is a value
+// of the base. That is the reverse of the direction every subtype relationship in
+// Cone runs, and Cone does not take it here -- which is what keeps a match on the
+// base exhaustive over the base's own variants, since a base-typed value can then
+// only ever hold one of them.
+//
+// Type-check stage: this file parses and resolves cleanly. What an extension may
+// declare is enum-parse-extends, what it may extend is enum-nameres-extends, and
+// the size an added variant may reach is enum-genllvm-extends.
+
+enum Colors {
+  Red, Green, Blue;
+}
+
+enum RichColors extends Colors {
+  Cyan, Magenta;
+}
+
+fn takesBase(c Colors) i32 {1;}
+fn takesExtension(c RichColors) i32 {2;}
+fn takesBaseRef(c &Colors) i32 {3;}
+fn takesExtensionRef(c &RichColors) i32 {4;}
+fn takesBaseVirtRef(c &<Colors) i32 {5;}
+
+// Neither enum's values are the other's, by value ...
+fn byValue() {
+  imm rich RichColors = Cyan[];
+  imm plain Colors = Red[];
+  imm a Colors = rich;          //~ ErrorInvType:18 "does not match variable's declared type"
+  imm b RichColors = plain;     //~ ErrorInvType:22 "does not match variable's declared type"
+  imm c = takesBase(rich);      //~ ErrorInvType:21 "does not match declared parameter"
+  imm d = takesExtension(plain);  //~ ErrorInvType:26 "does not match declared parameter"
+}
+
+// ... nor through a reference, which is where a structural prefix would otherwise
+// make one a view of the other
+fn byReference() {
+  imm rich RichColors = Magenta[];
+  imm plain Colors = Blue[];
+  imm a &Colors = &rich;        //~ ErrorInvType:19 "does not match variable's declared type"
+  imm b &RichColors = &plain;   //~ ErrorInvType:23 "does not match variable's declared type"
+  imm c = takesBaseRef(&rich);  //~ ErrorInvType:24 "does not match declared parameter"
+  imm d = takesExtensionRef(&plain);  //~ ErrorInvType:29 "does not match declared parameter"
+}
+
+// ... nor through a virtual reference, which is a view of a value too
+fn byVirtualReference() {
+  imm rich RichColors = Cyan[];
+  imm e = takesBaseVirtRef(&rich);  //~ ErrorInvType:28 "does not match declared parameter"
+}
+
+// A tag value an added variant pins must fit the discriminant the base lays its
+// variants out in, because that discriminant is the one the shared variants have.
+// Widening it here would relay out the base's own values for the sake of a set the
+// base knows nothing about.
+enum Narrow {
+  One, Two;
+}
+
+enum TooWide extends Narrow {   //~ ErrorTagWidth:6 "does not fit the 1-byte discriminant"
+  Far = 400;
+}
