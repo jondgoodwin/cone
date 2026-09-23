@@ -454,6 +454,70 @@ fn referenceToTypeParameter() {
   show("ref-to-type-parameter-in-signature", *refThrough[i64](&w));
 }
 
+// The same vote taken by a tuple, an array and '?'. '(T, T)' asks whether its
+// elements are types, '[2; T]' whether its element is, '?T' whether its
+// operand is -- each of a generic parameter in the template, so the template
+// held a value tuple, an array literal and a refusal, "'?' is not valid here".
+// The instance's clone decides the tuple and the array again. A generic
+// parameter abstains from name resolution's own votes instead of losing them,
+// so '(T, i64)' is a type tuple rather than a mix of types and values, and
+// '?T' stays the Option[T] type its clone substitutes into. '(T, &T)' and
+// '?&T' are here because the inner form is decided first; '[2; (T, T)]'
+// because the array's vote is taken on the tuple's.
+struct Composing[T] {
+  pub pair (T, T);
+  pub mixed (T, i64);
+  pub withRef (T, &T);
+  pub arr [2; T];
+  pub arrOfPairs [2; (T, T)];
+  pub opt ?T;
+  pub optRef ?&T;
+}
+
+fn secondOf[T](p (T, T)) T {
+  imm held (T, T) = p;
+  held.1;
+}
+
+fn lastOf[T](a [2; T]) T {
+  imm held [2; T] = a;
+  held[1];
+}
+
+fn optOr(o ?i64, d i64) i64 {
+  match o {
+    case imm s Some[i64] {s.value;}
+    case imm n None[i64] {d;}
+  }
+}
+
+fn optRefOr(o ?&i64, d i64) i64 {
+  match o {
+    case imm s Some[&i64] {*s.value;}
+    case imm n None[&i64] {d;}
+  }
+}
+
+fn optThrough[T](o ?T) ?T {
+  o;
+}
+
+fn composedTypeParameter() {
+  imm v = 9i64;
+  imm c Composing[i64] = Composing[i64][(1i64, 2i64), (3i64, 4i64), (5i64, &v),
+    [6i64, 7i64], [(10i64, 11i64), (12i64, 13i64)], Some[8i64], Some[&v]];
+  show("tuple-of-type-parameter-field", c.pair.1);
+  show("mixed-tuple-of-type-parameter-field", c.mixed.0 + c.mixed.1);
+  show("tuple-with-ref-to-type-parameter-field", *c.withRef.1);
+  show("array-of-type-parameter-field", c.arr[1]);
+  show("array-of-tuple-of-type-parameter-field", c.arrOfPairs[1].0);
+  show("option-of-type-parameter-field", optOr(c.opt, 0i64));
+  show("option-of-ref-to-type-parameter-field", optRefOr(c.optRef, 0i64));
+  show("tuple-of-type-parameter-in-signature", secondOf[i64]((14i64, 15i64)));
+  show("array-of-type-parameter-in-signature", lastOf[i64]([16i64, 17i64]));
+  show("option-of-type-parameter-in-signature", optOr(optThrough[i64](Some[18i64]), 0i64));
+}
+
 fn main() i32 {
   inferredTypeArgument();
   explicitTypeArgument();
@@ -470,5 +534,6 @@ fn main() i32 {
   unnamedTypeArguments();
   staticPerInstance();
   referenceToTypeParameter();
+  composedTypeParameter();
   0i32;
 }

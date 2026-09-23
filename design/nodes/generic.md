@@ -130,10 +130,16 @@ Two consequences that define the phase boundary:
 That includes the type-or-value votes name resolution takes by asking
 `isTypeNode` of an operand. A use of a type parameter is not a type, so in the
 template `&T` and `*T` resolve as a borrow and a dereference; `cloneRefNode`
-and `cloneStarNode` take the vote again on the substituted operand. The tuple,
-array and `?` votes (`ttupleNameRes`, `arrayNameRes`, `allocateQuesNameRes`)
-are not re-taken yet, so `(T, T)`, `[2; T]` and `?T` inside a generic still
-fail.
+and `cloneStarNode` take the vote again on the substituted operand, as
+`cloneTupleNode` and `cloneArrayNode` do for `(T, T)` and `[2; T]`, which the
+template holds as a value tuple and an array literal. A vote whose losing side
+is an error cannot wait for the clone, so there the operand abstains:
+`inodeIsProvisionalType` recognizes a use of a generic parameter, or a form
+whose own vote was cast on one, and `ttupleNameRes` lets it vote with neither
+side (so `(T, i64)` is a type tuple, not a mix) while `allocateQuesNameRes`
+leaves `?T` the `Option[T]` type instead of refusing it. A macro's parameter is
+the same declaration, so a macro given a value still clones a value: every
+re-decision flips only an operand that was not a type and now is.
 
 ### How a cloned name gets re-pointed — two independent mechanisms
 
