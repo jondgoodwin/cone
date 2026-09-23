@@ -409,7 +409,9 @@ inherited member bare, exactly as it names the type's own.
    the variant hooks itself — `Self`, its generic parameters, its fields and
    methods, what it inherits — wins a clash with one of the enum's. The enum is
    demanded before it is hooked, because an extension's namespace holds its copies
-   only once it is resolved (step 4c). Both frames are popped at the end. An
+   only once it is resolved (step 4c). **An extension's bases' names are hooked in
+   the same frame** (`structEnumHookBaseNames`, as at step 9a), so a variant the
+   extension adds sees them bare too. Both frames are popped at the end. An
    extension's copy of a base's variant never reaches here: it is cloned resolved,
    so its bodies keep what they bound in the base's scope.
 3. Resolve generic parameters **inside** the push — resolving one hooks it, so
@@ -487,6 +489,15 @@ inherited member bare, exactly as it names the type's own.
    name colliding with an inherited one is reported at the fold. A clause on a
    field whose type is not a declaration yet — an instance of a generic — waits
    for the instance's type check.
+9a. **An enum that extends another hooks its bases' names** (`structEnumHookBaseNames`),
+   down the whole chain, in the frame its own are hooked in, skipping every name it
+   already holds and every name a nearer base holds: anything written inside an
+   extension's braces sees its bases' names bare, exactly as it sees its own, and
+   the nearer name wins. Last, because by now its namespace holds everything it
+   will — the copies, the clones of a base's methods the walk spliced in — and a
+   frame is unhooked in the order it was hooked, so one name hooked twice in it
+   would be restored to the first hook rather than to what was there before. See
+   "An enum extending an enum".
 10. Resolve the methods declared here — only those; the clones arrived resolved
     in the trait's scope, and this walk cannot be repeated on a node. **An enum
     extending one that is not generic then clones its own bodied methods into its
@@ -1003,6 +1014,35 @@ lacks the method, which would shift every later variant's vtable onto the wrong
 tag. A static function and a static stay the extension's own, as a base's do: named
 bare inside its braces and qualified from outside, and never cloned.
 
+**Inside an extension's braces its bases' names are bare too**, down the whole
+chain — their static functions, statics and methods, generic or not — exactly as
+its own are, in its own methods and static functions and in the variants it adds
+(`structEnumHookBaseNames`, steps 2 and 9a). That is the rule for everything written
+inside an enum's braces, and it is the rule for `mod A extends B`, whose `A` has
+`B`'s declarations as its own names; an extension already reads its base's private
+names. A name the extension holds itself is the nearer one and wins: a copy of a
+base's variant, a clone of a base's method, a variant it adds, and a variant's own
+member or local. It cannot redeclare a base's name (`ErrorExtendsOverride`), so
+that is all a clash can be. Its copies of the base's variants keep what they bound
+in the base's braces, which are the same names. What each kind of name binds to:
+
+- **A base that is not generic** gives what it declares directly: its methods are
+  already the extension's, as clones spliced in at step 8, and its statics and
+  static functions are bound to the base's own, which have symbols.
+- **A generic base** has members only per instance, and the instance the extension
+  stands on exists only at type check, so a bare name is bound at name resolution
+  to the base template's member. Type check points it at the instance's before
+  anything reads it (`nameUseBaseInstanceMember`, `structEnumBaseInstanceMember`):
+  from the type whose function is being checked — the extension, its instance, a
+  variant it adds or a copy — up the resolved `extendsbase` chain to the instance
+  listed in the template's `memonodes`, and the member of that name there. A static or a
+  static function is then called as the instance's; a method or a field is lowered
+  to `self.name`, by name, as the extension's own are, so `self` is this variant
+  and the method its own clone. The same happens to an overload name, in
+  `fnCallTypeCheck` before the set is selected from. A **qualified** name is not
+  re-pointed: `Crate2.make()` still asks for the template's member and is still
+  refused (`nameUseTemplateMember`).
+
 **A name the base has is not declared again** (`structEnumOwnNamesFresh`,
 `ErrorExtendsOverride`, at step 4c, before the copies are made): not a method's —
 whether redeclared or overloaded — and not a variant's, a static's or a static
@@ -1032,16 +1072,7 @@ declared with and the whole chain shares the bottom enum's discriminant. A metho
 the middle declares comes along the same way: its copies and the variants it adds
 have it by the time the outer enum copies them. It is claimed language
 (refenum.html, "Extending an extension"), plain and generic, and enum-extends pins
-it.
-
-⚠ **Two kinds of the base's names are not bare in an extension's own bodies.** A
-generic base's methods: `Crate3[T] extends Crate2[T]` reaches `Crate2`'s through
-`self.`, since a generic base's members arrive per instance, at type check — the
-same as a member inherited from an instance of a generic trait. And a base's static
-function or static, generic or not: statics are not inherited (`structInheritTrait`
-clones methods only), so they are no names of the extension, and its bodies write
-`Colors.make()`. A variant the extension adds was in the same position before the
-extension could declare bodies of its own.
+it. The outer enum sees every level's names bare: the chain is walked for them.
 
 ## Flow
 

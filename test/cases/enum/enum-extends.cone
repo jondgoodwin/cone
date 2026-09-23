@@ -7,8 +7,9 @@
 // claims is what the copies give: each enum lays out its own set, so the base is
 // never constrained by what extends it and the extension by what the base chose.
 // A later section does the same with a generic enum on either side of the
-// clause, Option itself among them, the next extends an extension, and the last
-// gives an extension methods and statics of its own, which reach its copies.
+// clause, Option itself among them, the next extends an extension, the next
+// gives an extension methods and statics of its own, which reach its copies, and
+// the last names its bases' members bare inside its braces.
 //
 // Everything is printed, because a match that compiles is not a match that
 // dispatched to the right arm. What runtime cannot see -- that an Option-shaped
@@ -704,9 +705,9 @@ enum Stage3 extends Stage2 {
   Fourth;
 }
 
-// The same, generic. Crate3 calls its middle's method through 'self': a generic
-// base's members reach its extension per instance, as a generic trait's reach its
-// implementers, so they are not names inside the extension's declaration.
+// The same, generic. Crate3 calls its middle's method bare, as Stage3 does: a
+// generic base's members reach its extension per instance, and the bare name is
+// the instance's (the next section has more).
 enum Crate[T] {
   struct Full { pub v T; }
   Bare;
@@ -718,7 +719,7 @@ enum Crate2[T] extends Crate[T] {
 }
 
 enum Crate3[T] extends Crate2[T] {
-  pub fn thrice(self &, x T) T {self.twice(x) + x;}
+  pub fn thrice(self &, x T) T {twice(x) + x;}
   Last;
 }
 
@@ -742,6 +743,169 @@ fn chainExtensionMethods() {
   show("generic-chain-middle-method-in-middle", (&own).twice(7));
 }
 
+// -------- the bases' names, bare inside an extension's braces --------
+
+// Inside an extension's braces its bases' names are bare, exactly as its own are:
+// their static functions, statics, overload names and methods, down the whole
+// chain, in the extension's methods and static functions and in the variants it
+// adds. A base that is not generic gives its own members; a generic base's are the
+// members of the instance the extension stands on. A nearer name wins: a variant's
+// own member over a base's, and a base's over the module's.
+
+fn origin() i32 {1;}    // hidden by Hue's inside the braces below, and only there
+
+enum Hue {
+  static base i32 = 100;
+  fn origin() i32 {7;}    // private, and an extension reads its base's private names
+  fn scale1 overload scale(x i32) i32 {x * 2;}
+  fn scale2 overload scale(x i32, y i32) i32 {x * y;}
+  pub fn tone(self &) i32 {3;}
+  Red, Green;
+}
+
+enum Tint extends Hue {
+  static lift i32 = 10;
+  fn start() i32 {origin() + base;}
+  pub fn glow(self &) i32 {start() + tone() + scale(4) + scale(2, 3);}
+  pub struct Cyan {
+    fn origin() i32 {500;}
+    pub fn cyan(self &) i32 {origin() + base + lift;}
+  }
+}
+
+// Every level's names, from the top of a plain chain
+enum Shade extends Tint {
+  pub fn deep(self &) i32 {base + lift + origin() + start() + scale(5);}
+  pub struct Ink {
+    pub fn ink(self &) i32 {base + lift + origin() + glow();}
+  }
+}
+
+// A generic chain: Bin3 names Bin2's and Bin's statics, static functions, overload
+// names and methods bare, and so does the variant it adds
+enum Bin[T] {
+  static seed i32 = 1000;
+  fn first() i32 {40;}
+  fn pick1 overload pick(x i32) i32 {x;}
+  fn pick2 overload pick(x i32, y i32) i32 {x * y;}
+  pub fn once(self &, x T) T {x;}
+  pub fn m1 overload m(self &, x T) T {x;}
+  pub fn m2 overload m(self &, x T, y T) T {x + y;}
+  struct Full { pub v T; }
+  Empty;
+}
+
+enum Bin2[T] extends Bin[T] {
+  static bump i32 = 20;
+  fn two() i32 {2;}
+  pub fn twice(self &, x T) T {once(x) + x;}
+  Soon;
+}
+
+enum Bin3[T] extends Bin2[T] {
+  fn total() i32 {seed + first() + bump + two();}
+  pub fn thrice(self &, x T) T {twice(x) + once(x);}
+  pub fn sums(self &) i32 {total() + pick(3) + pick(2, 5);}
+  pub fn mixed(self &, x T) T {m(x) + m(x, x);}
+  struct Last {
+    pub fn lastly(self &, x T) T {twice(x) * 10 + once(x);}
+    pub fn lstat(self &) i32 {seed + bump + two() + first();}
+  }
+}
+
+fn binThrice(b &Bin3[i32], x i32) i32 {
+  b.thrice(x);
+}
+
+// An extension that is not generic, of an instance, and one more level on top of it
+enum Tab extends Bin[i32] {
+  pub fn tally(self &) i32 {once(7) + seed + first() + pick(2, 2);}
+  struct Unknown {
+    pub fn unknown(self &) i32 {once(1) + seed + first();}
+  }
+}
+
+enum TabTop extends Tab {
+  pub fn top(self &) i32 {seed + first() + once(3) + tally();}
+  TopOnly;
+}
+
+// A generic extension of a plain base
+enum Tagline[T] extends Hue {
+  pub fn line(self &) i32 {base + origin() + tone() + scale(3);}
+  struct Note {
+    pub text T;
+    pub fn note(self &) i32 {base + origin() + 2;}
+  }
+}
+
+// A generic base's common field, read bare through self as the extension's own are
+enum Measure[T] {
+  _ tag;
+  pub size T;
+  struct Big { pub extra T; }
+  Small;
+}
+
+enum Measure2[T] extends Measure[T] {
+  pub fn doubled(self &) T {size * 2;}
+  struct Huge {
+    pub fn huge(self &) T {size + 1;}
+  }
+}
+
+fn bareBaseNames() {
+  imm red = Tint.Red[];
+  show("base-names-bare-on-copy", (&red).glow());
+  imm cyan = Tint.Cyan[];
+  show("base-names-bare-on-added", (&cyan).glow());
+  show("variant-own-beats-base-static", (&cyan).cyan());
+  show("module-name-outside-the-braces", origin());
+  imm green = Shade.Green[];
+  show("chain-every-level-bare", (&green).deep());
+  imm ink = Shade.Ink[];
+  show("chain-every-level-bare-in-added", (&ink).ink());
+  imm deepcyan = Shade.Cyan[];
+  show("chain-copy-keeps-its-own", (&deepcyan).cyan());
+
+  imm full = Bin3.Full[i32][1];
+  show("generic-base-methods-bare-on-copy", (&full).thrice(5));
+  show("generic-base-statics-bare-on-copy", (&full).sums());
+  show("generic-base-method-overload-bare", (&full).mixed(4));
+  imm last = Bin3.Last[i32][];
+  show("generic-base-methods-bare-on-added", (&last).thrice(6));
+  show("generic-base-methods-bare-in-added", (&last).lastly(3));
+  show("generic-base-statics-bare-in-added", (&last).lstat());
+  imm wide = Bin3.Last[i64][];
+  show("generic-base-bare-second-instance", (&wide).lastly(4i64));
+  imm soon Bin3[i32] = Bin3.Soon[i32][];
+  show("generic-base-bare-through-extension", binThrice(&soon, 7));
+  imm mid = Bin2.Soon[i32][];
+  show("generic-middle-bare-in-middle", (&mid).twice(4));
+
+  imm counted = Tab.Full[4];
+  show("instance-base-bare-on-copy", (&counted).tally());
+  imm unknown = Tab.Unknown[];
+  show("instance-base-bare-in-added", (&unknown).unknown());
+  show("instance-base-bare-on-added", (&unknown).tally());
+  imm topped = TabTop.TopOnly[];
+  show("instance-chain-bare-on-added", (&topped).top());
+  imm topempty = TabTop.Empty[];
+  show("instance-chain-bare-on-copy", (&topempty).top());
+
+  imm tgreen = Tagline.Green[i64][];
+  show("generic-over-plain-bare-on-copy", (&tgreen).line());
+  imm note = Tagline.Note[i64][9i64];
+  show("generic-over-plain-bare-in-added", (&note).note());
+  show("generic-over-plain-bare-on-added", (&note).line());
+
+  imm big = Measure2.Big[i32][5, 9];
+  show("generic-base-field-bare-on-copy", (&big).doubled());
+  imm huge = Measure2.Huge[i32][6];
+  show("generic-base-field-bare-on-added", (&huge).doubled());
+  show("generic-base-field-bare-in-added", (&huge).huge());
+}
+
 fn main() i32 {
   copiesAndMembership();
   foldedNames();
@@ -754,5 +918,6 @@ fn main() i32 {
   plainExtensionMethods();
   genericExtensionMethods();
   chainExtensionMethods();
+  bareBaseNames();
   0i32;
 }
