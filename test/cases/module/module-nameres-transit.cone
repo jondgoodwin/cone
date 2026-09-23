@@ -1,42 +1,43 @@
-// A name folded into a module by its wildcard import, reached from the root
-// through that module's qualifier -- and refused.
+// A name folded into a module that did NOT re-export it, reached through that
+// module's qualifier -- and refused.
 //
 // Name-resolution stage only: this file parses cleanly, and name resolution
 // returns before type checking, so a type-check expectation here would never
 // run.
 //
-// moduletransit.cone has 'import modulesub.*', so 'plain' and the overload
-// name 'scale' are names of moduletransit -- but only once moduletransit's own
-// name resolution has run, because a wildcard fold is performed by the
-// importing module's name-resolution pass and not at parse time
-// (design/phases/name-resolution.md, section 3). Modules are resolved in the
-// order they were loaded, and the root loads first, so when this file's
-// 'moduletransit.plain' is looked up the fold has not happened and the name
-// is not there. moduletransit's own declaration, 'midOwn', is in its namespace
-// from parse time and resolves fine from the same position.
+// modulehide.cone has 'import modulesub.*', so 'plain' and the overload name
+// 'scale' are names of modulehide -- names it holds by FOLDING, and a fold is
+// private to the module that made it unless the import says 'pub'. Both are
+// public in modulesub, so what refuses the reach is the binding modulehide made
+// rather than the declaration it stands for. modulehide's own declaration,
+// 'hidOwn', resolves from the same position.
 //
-// THIS IS A KNOWN DEFECT, PINNED DELIBERATELY. The same two lines resolve
-// cleanly from a module loaded after moduletransit (modulelate.cone, compiled
-// by module-transit), and fail again from one loaded before it
-// (moduleearly.cone, compiled by module-nameres-transit-early), so what a
-// qualified name can reach depends on file load order. The fix -- a transit
-// rule that makes a folded name reachable through the qualifier whatever the
-// order -- will make this scenario fail, which is the point: it must change
-// this pin visibly, and update the three scenarios together.
+// THIS IS THE TRANSIT RULE, AND IT IS NOTHING BUT THE VISIBILITY RULE: what a
+// third module sees through this one is what this one re-exported.
+// moduletransit.cone is the same file with the 'pub' written, and module-transit
+// reaches the same names through it from three places in the load order.
 //
-// The imported modules are moduletransit.cone and, through it, modulesub.cone.
+// WHAT IT NO LONGER DEPENDS ON IS LOAD ORDER. These two lines used to be refused
+// from here for a different reason -- the name was not there yet -- and to
+// resolve from a module loaded after the folding one, because a module's folds
+// ran at the start of its own name resolution and modules were resolved in the
+// order they were loaded. Every module's folds are now in place before any
+// module's body is resolved. module-nameres-transit-late reaches these names
+// from the far side of the load order and is refused in the same words.
+//
+// The imported modules are modulehide.cone and, through it, modulesub.cone.
 
-import moduletransit;
+import modulehide;
 
 fn foldedConcreteName() i64 {
-  moduletransit.plain(1i64);    //~ ErrorUnkName:17 "The name plain does not refer to a declared name"
+  modulehide.plain(1i64);       //~ ErrorNotPublic:14 "private to its module"
 }
 
 fn foldedOverloadName() i64 {
-  moduletransit.scale(2i64);    //~ ErrorUnkName:17 "The name scale does not refer to a declared name"
+  modulehide.scale(2i64);       //~ ErrorNotPublic:14 "private to its module"
 }
 
-// The module's own name is there whatever the order
+// The module's own name is there whatever its folds did
 fn ownName() i64 {
-  moduletransit.midOwn(3i64);
+  modulehide.hidOwn(3i64);
 }

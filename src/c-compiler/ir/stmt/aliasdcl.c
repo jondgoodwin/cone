@@ -20,6 +20,21 @@ AliasDclNode *newAliasDclNode(Name *namesym, INode *target) {
     return node;
 }
 
+// Create an alias for a name of another namespace, which is what an import's
+// fold makes. Neither flag applies: it stands for a declaration reached with no
+// receiver at all -- a module has one instance and no address to go through --
+// and its visibility is its own, so it starts private and only a 're-export'
+// says otherwise. That default is the transit rule: a fold is private to the
+// module that made it, so what a third module sees is what was re-exported.
+AliasDclNode *newNameAliasDclNode(Name *namesym, INode *target) {
+    AliasDclNode *node;
+    newNode(node, AliasDclNode, AliasDclTag);
+    node->namesym = namesym;
+    node->target = target;
+    node->through = NULL;
+    return node;
+}
+
 // Create an alias for a type expression, which is what 'typedef' declares.
 // Neither flag the folded case sets applies: it stands for a type rather than
 // for a member reached through a receiver, and its visibility is its own, so

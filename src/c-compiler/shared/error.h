@@ -213,6 +213,9 @@ enum ErrorCode {
     // Folder modules: a subfolder holding its own designated file is a submodule
     ErrorModFolder = 1112,      // A designated file beneath an organisational folder, which is no module: a module folder is a direct child of its parent module's folder
 
+    // Import within the tree: a module reaches its neighbours through the registry its parent is
+    ErrorModReach = 1113,       // An 'import' walking a path to a file inside a module tree, or a module naming its own parent: a module in a tree is reached by name, never by a path that happened to arrive at it
+
     // Warnings
     WarnCode = 3000,
     WarnName = 3001,        // Unnecessary name

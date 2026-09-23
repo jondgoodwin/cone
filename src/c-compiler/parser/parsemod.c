@@ -66,14 +66,26 @@ ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name 
 // parent OWNS it -- which puts the parent's name in front of its declarations'
 // symbols -- and that it is private to its parent unless its declaration says
 // 'pub'. A parent reaches into it by path, 'sub.name', the ordinary path rule
-// through a namespace. Reaching SIDEWAYS is what a module cannot do yet: a
-// submodule's namespace holds its own names and its own children, not its
-// sisters, which is the import work's to give it.
+// through a namespace.
+//
+// SIDEWAYS IS AN IMPORT, AND THE REGISTRY IT RESOLVES AGAINST IS THE PARENT'S
+// NAMESPACE. A module is the registry for its children: they are public to each
+// other and to it, invisible outside unless it publishes them. So 'import log'
+// inside a submodule is a LOOKUP -- the sweep has already drawn the sister, and
+// nothing is loaded -- and a module with no parent has no registry, only the
+// filesystem, which is what reaches an external module today. The registry is
+// SCOPED and not accumulating: it is the immediate parent's namespace and no
+// ancestor's, so a module two deep does not see its parent's sisters and a
+// parent re-exports what its children need.
 //
 // Locating a file, registering it to a module and parsing it into that module
 // are three separate steps, because what must happen exactly once is the
-// reading. The registry is keyed by the file's path, so a file is read once and
-// belongs to one module however many importers name it.
+// reading. The registry is keyed by the file's CANONICAL path, so a file is read
+// once and belongs to one module however many importers name it and however they
+// spell the way there -- and a path that walks sideways to a sister therefore
+// finds her module rather than building a second one from her files. Finding her
+// that way is refused (ErrorModReach): a neighbour is reached because the
+// registry holds her name, never because a path arrived at her.
 // ---------------------------------------------------------------------------
 
 // folder + name, where folder carries its trailing slash
@@ -248,13 +260,39 @@ void parseInclude(ParseState *parse) {
     lexPop();
 }
 
-// Parse import statement
-ImportNode *parseImport(ParseState *parse) {
+// The module a name reaches in the REGISTRY this module's imports resolve
+// against, or NULL where the registry holds no module under that name.
+//
+// A module is the registry for its children: they are public to each other and
+// to it, and invisible outside unless it publishes them. So a module's registry
+// is its PARENT's namespace -- its own sisters, and whatever its parent bound
+// there -- and a module with no parent has no registry, only the outside world.
+//
+// It is SCOPED rather than accumulating: the registry is the immediate parent's
+// and no ancestor's, so a module two deep does not see its parent's sisters and
+// a parent that wants one of them reachable re-exports it. (Adopted
+// provisionally; Ruminations\modules-design-brief.md decision 10 records that it
+// is to be revisited.)
+static ModuleNode *parseImportRegistry(ParseState *parse, Name *modname) {
+    ModuleNode *parent = (ModuleNode*)parse->mod->dclinfo.owner;
+    if (parent == NULL)
+        return NULL;
+    INode *found = aliasDclResolve(namespaceFind(&parent->namespace, modname));
+    if (found == NULL || found->tag != ModuleTag)
+        return NULL;
+    return (ModuleNode*)found;
+}
+
+// Parse import statement. 'pubflag' re-exports what the import binds: the
+// module's name here, and every name it folds in
+ImportNode *parseImport(ParseState *parse, uint16_t pubflag) {
     // Create import node
     ImportNode *importnode = newImportNode();
     lexNextToken();
 
-    // Parse name of imported module
+    // Parse name of imported module. A bare identifier may name a neighbour in
+    // the registry; a quoted string is a path and nothing else
+    int isname = lexIsToken(IdentToken);
     char *filename = parseFilename();
     char *modstr = fileName(filename);
 
@@ -262,7 +300,9 @@ ImportNode *parseImport(ParseState *parse) {
     if (lexIsToken(DotToken)) {
         lexNextToken();
         if (lexIsToken(StarToken)) {
-            importnode->foldall = 1;
+            importnode->fold = newFoldClause();
+            importnode->fold->star = 1;
+            importnode->fold->ispub = pubflag ? 1 : 0;
             lexNextToken();
         }
         else
@@ -270,38 +310,76 @@ ImportNode *parseImport(ParseState *parse) {
     }
     parseEndOfStatement();
 
-    // Parse the imported modules
     Name *filesym = nametblFind(modstr, strlen(modstr));
-    ModuleNode *newmod = parseLoadAndParseModuleFile(parse, filename, filesym);
 
-    // A file of this module's own folder is already part of this module, so
-    // naming it here asks the module to import itself. The folder is what brings
-    // a sibling file in; 'import' reaches a different module
-    if (newmod == parse->mod) {
-        // After the statement's ';', for parseInclude's reason: the parse has
-        // already moved on to the next declaration
-        errorMsgLexAfter(ErrorModFile,
-            "This file is already part of module %s: a file of the module's folder joins it without being imported.",
+    // THE REGISTRY FIRST, AND THE FILESYSTEM ONLY AFTER IT. A neighbour has
+    // already been found -- the folder sweep drew it -- so reaching it is a
+    // lookup in a namespace and never a second load of its files
+    ModuleNode *newmod = isname ? parseImportRegistry(parse, filesym) : NULL;
+    if (newmod == parse->mod)
+        newmod = NULL;      // a module publishes its own name; see below
+    if (newmod != NULL && newmod == (ModuleNode*)parse->mod->dclinfo.owner) {
+        // Containment runs one way. A child naming its parent is a cycle back
+        // along the edge that contains it, which is the one shape the module
+        // tree rules out
+        errorMsgLexAfter(ErrorModReach,
+            "Module %s is this module's parent, and a module may not import the module that contains it.",
             &newmod->namesym->namestr);
         return NULL;
     }
 
-    // Nor is a submodule imported. A subfolder holding its own designated file is
-    // already a module of this one, bound under the name its folder gives it, so
-    // naming it here asks for a second binding of a name this module already has
-    if (newmod->dclinfo.owner == (INode*)parse->mod) {
-        errorMsgLexAfter(ErrorModFile,
-            "Module %s is a submodule of this one: the folder that holds it is what brings it in, so it is named without being imported.",
-            &newmod->namesym->namestr);
-        return NULL;
+    if (newmod == NULL) {
+        // Nothing of that name in the registry, so the name is a FILE PATH: what
+        // reaches an external module today, and what will reach a package
+        newmod = parseLoadAndParseModuleFile(parse, filename, filesym);
+
+        // A file of this module's own folder is already part of this module, so
+        // naming it here asks the module to import itself. The folder is what
+        // brings a sibling file in; 'import' reaches a different module
+        if (newmod == parse->mod) {
+            // After the statement's ';', for parseInclude's reason: the parse has
+            // already moved on to the next declaration
+            errorMsgLexAfter(ErrorModFile,
+                "This file is already part of module %s: a file of the module's folder joins it without being imported.",
+                &newmod->namesym->namestr);
+            return NULL;
+        }
+
+        // Nor is a submodule imported. A subfolder holding its own designated file
+        // is already a module of this one, bound under the name its folder gives
+        // it, so naming it here asks for a second binding of a name it already has
+        if (newmod->dclinfo.owner == (INode*)parse->mod) {
+            errorMsgLexAfter(ErrorModFile,
+                "Module %s is a submodule of this one: the folder that holds it is what brings it in, so it is named without being imported.",
+                &newmod->namesym->namestr);
+            return NULL;
+        }
+
+        // ANY other module inside a tree is refused, and this is the whole of the
+        // sideways rule. The registry above is what reaches a neighbour; a path
+        // that happens to arrive at one reaches it by accident of spelling, and
+        // under the scoped rule the ones it would reach are exactly those that
+        // must not resolve -- an ancestor's sister, a stranger's child.
+        //
+        // What it also closes is a MISCOMPILE. The path is canonical now, so a
+        // spelling that walks to a sister finds the module the sweep already
+        // registered instead of building a second one from her files; both spelt
+        // the same symbols, LLVM renamed the second, and the call was left
+        // referencing a declaration nothing defined
+        if (newmod->dclinfo.owner != NULL) {
+            ModuleNode *owner = (ModuleNode*)newmod->dclinfo.owner;
+            errorMsgLexAfter(ErrorModReach,
+                "Module %s is a module of %s, and a module inside a module tree is reached by its name where its parent's registry holds it, not by a path to its file.",
+                &newmod->namesym->namestr, &owner->namesym->namestr);
+            return NULL;
+        }
     }
 
-    // Add imported module to namespace of existing module, under the name the
-    // module declares for itself. That is the filename-derived one until the
-    // file carries a 'mod' declaration: the declaration wins, and the file is
-    // only where the module was found
-    modAddNamedNode(parse->mod, newmod->namesym, (INode*)newmod);
+    // Bind the module's name here, as an alias carrying this import's own
+    // visibility. The name is the one the module declares for itself -- its
+    // folder's, or its file's until a folder names it
     importnode->module = newmod;
+    importBindModule(parse->mod, importnode, pubflag);
 
     return importnode;
 }
@@ -504,15 +582,25 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
             parseBadStatic(staticflag);
         switch (lex->toktype) {
 
-        // Re-export is the module work's to define: 'pub' has no meaning here yet
+        // 'pub' on an import is RE-EXPORT: every binding the import makes -- the
+        // module's name here, and each name it folds in -- is a public name of
+        // this module. That is 'pub' with its one meaning, on a binding as on a
+        // declaration, and it is what makes transit fall out: a third module sees
+        // through this one exactly what this one re-exported.
+        //
+        // 'include' binds nothing of its own -- the included file's declarations
+        // join this module and carry their own visibility -- so there is nothing
+        // there for 'pub' to speak for.
         case IncludeToken:
         case ImportToken:
-            if (pubflag)
-                errorMsgLex(ErrorBadPub, "'pub' may not precede include or import");
-            if (lexIsToken(IncludeToken))
+            if (lexIsToken(IncludeToken)) {
+                if (pubflag)
+                    errorMsgLex(ErrorBadPub,
+                        "'include' binds no name of its own: the file's declarations join this module carrying their own visibility.");
                 parseInclude(parse);
+            }
             else {
-                ImportNode *newnode = parseImport(parse);
+                ImportNode *newnode = parseImport(parse, pubflag);
                 if (newnode)
                     modAddNode(mod, NULL, (INode*)newnode);
             }
@@ -661,7 +749,16 @@ void parseModuleFilesParse(ParseState *parse, ModuleNode *mod, FileNames *files)
     }
 }
 
-void parseSubmodule(ParseState *parse, ModuleNode *parent, char *path);
+// A submodule drawn but not yet parsed: its node, bound in its parent, and the
+// files it will be parsed from
+typedef struct DrawnModule {
+    ModuleNode *mod;          // NULL where the subfolder's file could not join
+    FileNames files;
+    FileNames submodules;
+} DrawnModule;
+
+void parseSubmoduleDraw(ParseState *parse, ModuleNode *parent, char *path, DrawnModule *drawn);
+void parseSubmoduleParse(ParseState *parse, DrawnModule *drawn);
 
 // Add the auto-import of the core library, which every module but corelib itself
 // carries, ahead of whatever the module's own files import
@@ -670,25 +767,38 @@ void parseAddCorelibImport(ParseState *parse, ModuleNode *mod) {
     if (corelib == NULL || corelib == mod)
         return;
     ImportNode *importnode = newImportNode();
-    importnode->foldall = 1;
+    importnode->fold = newFoldClause();
+    importnode->fold->star = 1;
     importnode->module = corelib;
     modAddNode(mod, NULL, (INode*)importnode);
 }
 
-// Draw the submodules this module's subfolders designate, then parse its own
-// files. The module's hook is current, so every name added joins this module's
-// namespace.
+// Draw the submodules this module's subfolders designate, then parse them, then
+// parse this module's own files. The module's hook is current, so every name
+// added joins this module's namespace.
 //
-// The submodules come FIRST, and both reasons are about what a name means before
-// a file is read. A subfolder's module is a name of this namespace that no
-// statement in any of these files declares, so binding it ahead of them makes a
-// collision with a declaration report against the declaration, which has a
-// position in a source that a folder does not. And it registers the submodule's
-// files, so a file of this module that names one of them reaches the module that
-// holds it rather than reading it a second time
+// EVERY SUBMODULE IS DRAWN BEFORE ANY IS PARSED, which is the same rule the
+// files follow and holds for the same reason at one level up: what this module's
+// namespace holds may not depend on the order its subfolders were reached in. A
+// submodule importing a SISTER resolves that name against this namespace, so a
+// sister drawn later would be a name that was not there -- and the sister's
+// files would be unregistered too, so a path spelled to one would read them a
+// second time and build a duplicate module.
+//
+// The submodules also come before this module's own files, and both reasons are
+// about what a name means before a file is read. A subfolder's module is a name
+// of this namespace that no statement in any of these files declares, so binding
+// it ahead of them makes a collision with a declaration report against the
+// declaration, which has a position in a source that a folder does not. And it
+// registers the submodule's files, so a file of this module that names one of
+// them reaches the module that holds it rather than reading it a second time
 void parseModuleTree(ParseState *parse, ModuleNode *mod, FileNames *files, FileNames *submodules) {
+    DrawnModule *drawn = submodules->count
+        ? (DrawnModule*)memAllocBlk(submodules->count * sizeof(DrawnModule)) : NULL;
     for (uint32_t i = 0; i < submodules->count; ++i)
-        parseSubmodule(parse, mod, submodules->names[i]);
+        parseSubmoduleDraw(parse, mod, submodules->names[i], &drawn[i]);
+    for (uint32_t i = 0; i < submodules->count; ++i)
+        parseSubmoduleParse(parse, &drawn[i]);
     parseModuleFilesParse(parse, mod, files);
 }
 
@@ -704,9 +814,10 @@ void parseModuleTree(ParseState *parse, ModuleNode *mod, FileNames *files, FileN
 //
 // The parent's hook is current when this is called, which is what the binding
 // needs: the name joins the parent's namespace and is unhooked when the parent's
-// parse ends. The submodule's own parse swaps the hook over, so a submodule
-// neither sees nor collides with its parent's names
-void parseSubmodule(ParseState *parse, ModuleNode *parent, char *path) {
+// parse ends. Drawing is separated from parsing so that every sister of a level
+// is bound and registered before any of their files is read
+void parseSubmoduleDraw(ParseState *parse, ModuleNode *parent, char *path, DrawnModule *drawn) {
+    drawn->mod = NULL;
     Name *pathsym = nametblFind(path, strlen(path));
     ModuleNode *held = pgmFindFile(parse->pgm, pathsym);
     if (held) {
@@ -736,19 +847,27 @@ void parseSubmodule(ParseState *parse, ModuleNode *parent, char *path) {
     // ordinary namespace rule
     modAddNamedNode(parent, mod->namesym, (INode*)mod);
 
-    // Its files, all registered before any is parsed, for the reason the enclosing
-    // module's are
-    FileNames files, submodules;
-    parseModuleFiles(&files, &submodules, path, 1);
-    parseRegisterModuleFiles(parse, mod, &files);
+    // Its files, all registered before any of THIS module's or any sister's is
+    // parsed, for the reason the enclosing module's are
+    parseModuleFiles(&drawn->files, &drawn->submodules, path, 1);
+    parseRegisterModuleFiles(parse, mod, &drawn->files);
     parseAddCorelibImport(parse, mod);
+    drawn->mod = mod;
+}
 
+// Parse a drawn submodule's files, and draw and parse its own submodules. The
+// parent's hook is current; this swaps it over, so a submodule neither sees nor
+// collides with its parent's names
+void parseSubmoduleParse(ParseState *parse, DrawnModule *drawn) {
+    ModuleNode *mod = drawn->mod;
+    if (mod == NULL)
+        return;
     ModuleNode *svmod = parse->mod;
     parse->mod = mod;
     modHook(svmod, mod);
     if (mod->foldersym)
         modAddNamedNode(mod, mod->namesym, (INode*)mod);
-    parseModuleTree(parse, mod, &files, &submodules);
+    parseModuleTree(parse, mod, &drawn->files, &drawn->submodules);
     modHook(mod, svmod);
     parse->mod = svmod;
 }
@@ -873,7 +992,8 @@ ProgramNode *parsePgm(ConeOptions *opt) {
     // Inject and parse core library module, auto-imported into main source
     ModuleNode *corelib = parseLoadAndParseModuleFile(&parse, "", corelibName);
     ImportNode *importnode = newImportNode();
-    importnode->foldall = 1;
+    importnode->fold = newFoldClause();
+    importnode->fold->star = 1;
     importnode->module = corelib;
     modAddNode(mod, NULL, (INode*)importnode);
 

@@ -239,11 +239,9 @@ static StructNode *structNameResTrait(INode *typeexp) {
 // Demand is confined to type declarations reached from type declarations, so
 // what is hooked at the jump is known: module names, and the demanding type's
 // generic parameters. A type declared in another module resolves in that
-// module's own scope: its namespace is hooked over the current one, and when
-// the module has not begun its own resolution -- modules resolve in load order
-// and the root loads first -- the names its wildcard imports will fold are
-// hooked too, without being folded, so that the module's namespace is exactly
-// what its own resolution makes it.
+// module's own scope, with its namespace hooked over the current one -- and that
+// namespace already holds everything the module folded in, because every
+// module's folds run before any module's own resolution does.
 int structNameResDemand(NameResState *pstate, StructNode *type) {
     if (type->flags & NameResolved)
         return 1;
@@ -254,15 +252,13 @@ int structNameResDemand(NameResState *pstate, StructNode *type) {
         structNameRes(pstate, type);
         return 1;
     }
+    // Ordinarily a no-op, since the fold pass has run on every module by now. It
+    // is not one when the fold pass itself is what reached this type: a global's
+    // fold in one module demanding a struct of another
+    modFoldNames(pstate, mod);
     ModuleNode *svmod = pstate->mod;
     pstate->mod = mod;
     modHook(NULL, mod);
-    if (!(mod->flags & (NameResolved | NameResolving))) {
-        INode **nodesp;
-        uint32_t cnt;
-        for (nodesFor(mod->imports, cnt, nodesp))
-            importHookFolds((ImportNode*)*nodesp);
-    }
     structNameRes(pstate, type);
     modHook(mod, NULL);
     pstate->mod = svmod;

@@ -172,9 +172,11 @@ test/cases/module/
   file. A support module that is a folder contributes every file of it the same
   way.
 - **A folder scenario may be a `run` scenario**, which a scenario spanning an
-  `import` may not: what a folder holds, module tree and all, this compile
-  *defines*, so it links like any single-file program. An imported module is
-  declared and never generated, which is what stops those from running.
+  `import` of a LOADED module may not: what a folder holds, module tree and all,
+  this compile *defines*, so it links like any single-file program. A module an
+  `import` reached by a path is declared and never generated, which is what stops
+  those from running — while an import of a SISTER loads nothing and links like
+  the rest of the tree, which `module-import-sister` runs.
 - **A subfolder holding its own designated file is a submodule**, not more of the
   scenario's own files, so a folder scenario may hold a whole module tree. It is
   registered the same way — under the scenario folder's name, with nothing inside

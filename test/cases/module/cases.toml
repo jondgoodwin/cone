@@ -48,6 +48,7 @@ support = ["moduleinc.cone", "modulesub.cone", "moduleeof.cone",
            "moduleprov.cone", "moduleprov2.cone", "modulenoname.cone",
            "modulesyms.cone", "modulecyc.cone", "modulex_y.cone", "modulex.cone",
            "moduletransit.cone", "modulelate.cone", "moduleearly.cone",
+           "modulehide.cone", "modulehidelate.cone",
            "modulemacro.cone", "moduledeclared.cone",
            "modulefold.cone", "modulefoldlate.cone", "modfolder"]
 
@@ -197,7 +198,57 @@ message = "direct child of its parent module's folder"
 
 [scenario.module-submodule-nameres]
 category = "reject"
-description = "What a path through the tree may not reach: a submodule's private declaration, an unmarked submodule from outside its parent, and a sister"
+description = "What a path through the tree may not reach: a submodule's private declaration, an unmarked submodule from outside its parent, and a sister nobody imported"
+tags = ["nameres"]
+diagnostics = 3
+
+# -------- import within the tree --------
+#
+# A module reaches a sister by importing her NAME, resolved against the registry
+# its parent is rather than against the filesystem. module-import-sister runs
+# one, so an import across the tree links exactly as a call down into it does;
+# module-import-reject holds what a written path may not reach, and
+# module-import-nameres what an import does not put in reach.
+#
+# All three are folder scenarios and could not be anything else: a sister comes
+# from a folder, so the layout IS the case.
+
+[scenario.module-import-sister]
+category = "run"
+description = "A submodule importing its sisters by name: one reached through her, one wildcard-folded, and one re-exported for the parent to walk through"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+# An import within the tree links. Every module of the tree is compiled into one
+# object, so a sister's function is DEFINED here, spelled after her, exactly as a
+# submodule's is -- which is what an import between two loaded modules could not
+# do, since an imported module's bodies are not generated.
+[[scenario.module-import-sister.check]]
+name = "a-sister-s-declarations-are-defined-and-spelled-after-her"
+target = "symbols"
+contains = [
+  "define internal engine.drive comdat nodeduplicate",
+  "define internal wheels.turn comdat nodeduplicate",
+  "define internal rims.size comdat nodeduplicate",
+]
+excludes = ["declare wheels.turn", "declare rims.size"]
+
+# An import binds names and declares nothing, and neither does a fold. Nothing is
+# spelled after the module that imported or folded a name: not the module binding
+# engine re-exported, not the name engine folded from rims.
+[[scenario.module-import-sister.check]]
+name = "an-import-declares-no-symbol-of-its-own"
+target = "symbols"
+excludes = ["engine.wheels", "engine.size", "engine.rims", "module-import-sister."]
+
+[scenario.module-import-reject]
+category = "reject"
+description = "What a written path may not reach: a sister's file, a parent, and a parent's sister"
+tags = ["parse"]
+diagnostics = 3
+
+[scenario.module-import-nameres]
+category = "reject"
+description = "What an import does not put in reach: a sister's private name, a name she has not got, and a sister of an ancestor"
 tags = ["nameres"]
 diagnostics = 3
 
@@ -352,35 +403,40 @@ name = "two-qualifier-call-lowers-to-the-static-function"
 target = "symbols"
 contains = ["declare modulesyms.Gadget.make"]
 
-# -------- the load-order trio --------
+# -------- the transit trio --------
 #
-# Three scenarios reach one name, 'moduletransit.plain', which moduletransit
-# holds only by folding modulesub. Whether the qualifier can see it depends
-# today on whether the asking module was loaded before or after moduletransit:
-# the root and moduleearly (loaded first) are refused, modulelate (loaded
-# after) resolves. module-nameres-transit.cone carries the explanation and the
-# statement that this is a known defect pinned on purpose; the other two are
-# its controls, and a fix changes all three together.
+# Three scenarios reach one name that a middle module holds only by folding
+# modulesub. What decides whether a qualifier can see it is the 'pub' on that
+# module's import and nothing else: moduletransit re-exports, modulehide is the
+# same file without the keyword, and the reaches against the two are the whole
+# of the transit rule, which is the visibility rule read on the binding a fold
+# made.
+#
+# What the trio used to pin was a load-order defect: one name, three answers,
+# decided by whether the asking module was loaded before or after the folding
+# one. Every module's folds now run ahead of any module's body, dependency
+# first, so module-transit reaches the re-exported name from all three positions
+# and module-nameres-transit and -late are refused from either side.
 
 [scenario.module-transit]
 category = "compile"
-description = "A folded name reached through its module's qualifier from a module loaded after it, which resolves"
+description = "A re-exported fold reached through its module's qualifier from before it, after it, and from the root, which loads first"
 tags = ["parse", "nameres", "typecheck", "genllvm"]
 
-# What the root names lowers to the declaring modules' symbols, and the name
-# modulelate reached through 'moduletransit.' is declared under the module
-# that declares it -- a fold binds a name, it declares nothing, so nothing is
-# spelled after moduletransit for it or after modulelate.
+# Every reach lowers to the symbol of the module that DECLARES the name: a fold
+# binds, it declares nothing, so nothing is spelled after moduletransit for a
+# name it folded, and nothing after the modules that reached it through her.
 [[scenario.module-transit.check]]
 name = "transit-name-declares-under-its-declaring-module"
 target = "symbols"
 contains = [
+  "declare moduleearly.viaEarly",
   "declare modulelate.viaMid",
   "declare moduletransit.midOwn",
   "declare modulesub.plain",
   "declare modulesub.scaleInt",
 ]
-excludes = ["moduletransit.plain", "moduletransit.scale", "modulelate.plain"]
+excludes = ["moduletransit.plain", "moduletransit.scale\n", "modulelate.plain", "moduleearly.plain"]
 
 # -------- symbol kinds --------
 #
@@ -616,18 +672,19 @@ description = "A folded name reached from another module: public only if the cla
 tags = ["nameres"]
 diagnostics = 1
 
-# The refused two-thirds of the load-order trio (see module-transit above).
+# The refused half of the transit trio (see module-transit above): the same fold
+# with the re-export left off.
 [scenario.module-nameres-transit]
 category = "reject"
-description = "A folded name reached through its module's qualifier from the root, which loads first and is refused"
+description = "A folded name its module did not re-export, reached through that module's qualifier and refused"
 tags = ["nameres"]
 diagnostics = 2
 
-# Its one diagnostic is reported against moduleearly.cone, so the annotation
+# Its one diagnostic is reported against modulehidelate.cone, so the annotation
 # lives there and this file has none.
-[scenario.module-nameres-transit-early]
+[scenario.module-nameres-transit-late]
 category = "reject"
-description = "The same reach from a module loaded before the folding one, refused although it is not the root"
+description = "The same refusal from a module loaded after the folding one, so it is the binding's visibility rather than the order"
 tags = ["nameres"]
 diagnostics = 1
 
