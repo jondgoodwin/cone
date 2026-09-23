@@ -293,6 +293,15 @@ static void genlGenericInstanceSyms(GenState *gen, INode *instance) {
 void genlGlobalSyms(GenState *gen, INode *node) {
     // Handle type nodes
     if (isTypeNode(node)) {
+        // An extension's copies of its base's variants are reachable only
+        // through it, as a generic's instances are through memonodes. A generic
+        // extension's copies are templates, and this reaches their instances.
+        if (node->tag == StructTag) {
+            uint32_t copies = structEnumCopyCount((StructNode*)node);
+            uint32_t pos;
+            for (pos = 0; pos < copies; ++pos)
+                genlGlobalSyms(gen, nodesGet(((StructNode*)node)->derived, pos));
+        }
         // A generic type is a symbol only through its instantiations, exactly as
         // a generic function is: its own methods are uncloned templates with a
         // type parameter for a receiver, and nothing can be generated for them.
@@ -327,14 +336,6 @@ void genlGlobalSyms(GenState *gen, INode *node) {
                     continue;
                 genlGlobalSyms(gen, *nodesp);
             }
-        }
-        // An extension's copies of its base's variants are reachable only
-        // through it, as a generic's instances are through memonodes
-        if (node->tag == StructTag) {
-            uint32_t copies = structEnumCopyCount((StructNode*)node);
-            uint32_t pos;
-            for (pos = 0; pos < copies; ++pos)
-                genlGlobalSyms(gen, nodesGet(((StructNode*)node)->derived, pos));
         }
         return;
     }
@@ -379,6 +380,13 @@ void genlGlobalSyms(GenState *gen, INode *node) {
 void genlGlobalImpl(GenState *gen, INode *node) {
     // Handle type nodes
     if (isTypeNode(node)) {
+        // As in genlGlobalSyms: an extension's copies are reached through it
+        if (node->tag == StructTag) {
+            uint32_t copies = structEnumCopyCount((StructNode*)node);
+            uint32_t pos;
+            for (pos = 0; pos < copies; ++pos)
+                genlGlobalImpl(gen, nodesGet(((StructNode*)node)->derived, pos));
+        }
         // As in genlGlobalSyms: a generic type has bodies to generate only in
         // its instances, which are reachable through memonodes alone
         if (node->tag == StructTag && ((StructNode*)node)->genericinfo) {
@@ -406,13 +414,6 @@ void genlGlobalImpl(GenState *gen, INode *node) {
                     continue;
                 genlGlobalImpl(gen, *nodesp);
             }
-        }
-        // As in genlGlobalSyms: an extension's copies are reached through it
-        if (node->tag == StructTag) {
-            uint32_t copies = structEnumCopyCount((StructNode*)node);
-            uint32_t pos;
-            for (pos = 0; pos < copies; ++pos)
-                genlGlobalImpl(gen, nodesGet(((StructNode*)node)->derived, pos));
         }
         return;
     }

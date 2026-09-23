@@ -42,7 +42,11 @@
 # what it may extend is name resolution's, and that neither enum's values are the
 # other's is type check's. The type-check one pins membership in both directions:
 # the discriminant is one shared node and the common fields are clones, so a
-# structural test would otherwise let a variant of either pass as the other.
+# structural test would otherwise let a variant of either pass as the other. A
+# generic enum on either side of the clause is covered beside the rest -- in the
+# success program, what it may be written as in the name-resolution file, and
+# membership in the type-check file -- since it is the same relationship, made
+# per instance.
 #
 # Left out, with reasons:
 #
@@ -107,7 +111,7 @@ excludes = ["%Maybe", "%Just", "%Nothing", "%Some", "%Option"]
 
 [scenario.enum-extends]
 category = "run"
-description = "An enum extending another: its copies of the base's variants, membership, a fold, methods through the copies, and each enum's own layout"
+description = "An enum extending another: its copies of the base's variants, membership, a fold, methods through the copies, each enum's own layout, and a generic enum extending and extended"
 tags = ["nameres", "typecheck", "genllvm", "runtime"]
 
 # Each enum lays out its own set, and runtime cannot see that: a tagged Maybe, or
@@ -131,6 +135,20 @@ contains = [
   "%Framed = type { i8, i32, i64, i64 }",
 ]
 excludes = ["%Maybe = type"]
+
+# The same holds of a generic base and a generic extension, instance by instance.
+# Option[&i32] is still taken as 'i32**'; Pending[&i32], an instance of an
+# extension of Option that adds a third variant, is a tagged struct, and so is
+# Pending[i32]. Which of the two instances LLVM names '%Pending' and which it
+# numbers follows generation order, so only the prefix is asserted.
+[[scenario.enum-extends.check]]
+name = "generic-extension-lays-out-apart-from-its-base"
+target = "preir"
+contains = [
+  "@optionRef(i32**",
+  "@pendingRef(%Pending",
+  "@pendingOr(%Pending",
+]
 
 # -------- parse stage --------
 
@@ -184,9 +202,9 @@ diagnostics = 1
 # is where every question about what may be extended is answered.
 [scenario.enum-nameres-extends]
 category = "reject"
-description = "What an enum may extend: an enum, not itself, not generic, with no tag value already taken and no added variant named as a copy is"
+description = "What an enum may extend: an enum, not itself, a generic one with its arguments written, with no tag value already taken and no added variant named as a copy is"
 tags = ["nameres"]
-diagnostics = 6
+diagnostics = 7
 
 # A variant is a name of its enum, and a module's 'use' is what folds it in bare.
 # The fold is expanded in the module's fold pass, once the enum it names is known,
@@ -254,6 +272,6 @@ tags = ["typecheck"]
 # other in fact, whatever the manual says.
 [scenario.enum-typecheck-extends]
 category = "reject"
-description = "A base enum and an extension of it substituting for each other, a variant of either standing for the other enum, and a tag value wider than the shared discriminant"
+description = "A base enum and an extension of it substituting for each other, a variant of either standing for the other enum, generic instances included, and a tag value wider than the shared discriminant"
 tags = ["typecheck"]
-diagnostics = 16
+diagnostics = 21

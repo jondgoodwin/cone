@@ -102,9 +102,11 @@ ever branch on which?" If nothing would, one code and a specific message is
 right.
 
 `ErrorEnumExtends` is the same shape, over what an enum extending another may name
-and declare: a base that is not an enum, a base that is itself, a generic on either
-side, a discriminant of its own, a member that is not a variant, and no variant at
-all. One question — is this relationship declared correctly — with the cause in the
+and declare: a base that is not an enum, a base that is itself, a discriminant of
+its own, a member that is not a variant, and no variant at all. A generic base
+written with the wrong number of arguments, none included, is not among them: it is
+`ErrorArgCount`, the code every instantiation's arity wears. One question — is this
+relationship declared correctly — with the cause in the
 message.
 
 That is a narrow licence, and the tell that it has been stretched is the
