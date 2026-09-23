@@ -858,9 +858,10 @@ static void structEnumSeedVariants(NameResState *pstate, StructNode *node, Struc
             nexttag = copy->tagnbr + 1;
             // One namespace holds an enum's variants, fields and methods. An
             // extension declares no field or method, so what a copy can meet here
-            // is a variant the extension declared under the same name.
+            // is a variant the extension declared under the same name -- or, down a
+            // chain, another copy, where the base already reported its own clash.
             INode *prior = namespaceAdd(&node->namespace, copy->namesym, (INode*)copy);
-            if (prior)
+            if (prior && prior->instnode != (INode*)node)
                 errorMsgNode(prior, ErrorDupName,
                     "%s is already a variant of %s, copied from %s: an extension holds its base's variants under their own names.",
                     &copy->namesym->namestr, &node->namesym->namestr, &base->namesym->namestr);
