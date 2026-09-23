@@ -148,8 +148,11 @@ void typeLitStructCheck(TypeCheckState *pstate, FnCallNode *arrlit, StructNode *
     // Ensure type has been type-checked, in case any rewriting/semantic analysis was needed
     itypeTypeCheck(pstate, &arrlit->vtype);
 
-    // Reorder the literal's arguments to match the type's field order
-    if (typeLitStructReorder(arrlit, strnode, (INode*)strnode == pstate->typenode) == 0)
+    // Reorder the literal's arguments to match the type's field order. A private
+    // field is given a value by the type's own code, or by any code inside the
+    // braces of the enum it belongs to (structEnumSeesPrivate).
+    int private = (INode*)strnode == pstate->typenode || structEnumSeesPrivate(pstate, (INode*)strnode);
+    if (typeLitStructReorder(arrlit, strnode, private) == 0)
         return;
 
     uint32_t cnt;

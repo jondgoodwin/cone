@@ -1375,6 +1375,52 @@ static StructNode *structEnclosingEnum(StructNode *node) {
     return (StructNode*)owner;
 }
 
+// The enum whose braces a type is written inside, as privacy counts them: an
+// enum is its own, and a variant's is its enum. A variant is asked for the enum
+// it belongs to before the one it was written in, so that a variant of a
+// generic enum's instance answers the instance, and an extension's copy the
+// extension. Any other type is in no enum, and answers NULL.
+static StructNode *structPrivacyEnum(INode *type) {
+    if (type == NULL || type->tag != StructTag)
+        return NULL;
+    StructNode *node = (StructNode*)type;
+    if (node->flags & EnumType)
+        return node;
+    StructNode *base = structBaseTraitDcl(node);
+    if (base && base->tag == StructTag && (base->flags & EnumType))
+        return base;
+    return structEnclosingEnum(node);
+}
+
+// The enum is the privacy boundary for its variants: code written anywhere
+// inside its braces -- its own methods and static functions, and every
+// variant's methods -- sees the private members of the enum and of every
+// variant, through any value, not only through 'self'. An extension sees what
+// its base's code sees, the base's own variants included, and so on down a
+// chain; its copies are its own variants. Nothing else changes: a struct's
+// privates are still reached only through 'self', a sibling extension's are its
+// own, and a base does not see what an extension adds.
+//
+// The code is the function being checked, and its owner is the type it is
+// written in: a method cloned into a variant or a copy is owned by the clone's
+// type, and an instance's by the instance. A function owned by a module -- a
+// free function, an anonymous one, or the instance of a generic function
+// instantiated from inside the enum -- is outside every enum's braces.
+int structEnumSeesPrivate(TypeCheckState *pstate, INode *type) {
+    if (pstate == NULL || pstate->fn == NULL)
+        return 0;
+    StructNode *memberenum = structPrivacyEnum(type);
+    if (memberenum == NULL)
+        return 0;
+    StructNode *siteenum = structPrivacyEnum(inodeGetOwner((INode*)pstate->fn));
+    while (siteenum) {
+        if (siteenum == memberenum)
+            return 1;
+        siteenum = structEnumBaseDcl(siteenum);
+    }
+    return 0;
+}
+
 // Hook the names of the enum a variant is written inside, beneath the variant's
 // own: its variants, its statics, its fields and whatever else it declares --
 // except the methods a value of it answers. The variant has those as its own

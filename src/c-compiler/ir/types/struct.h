@@ -115,6 +115,11 @@ void structEnumCheckCopies(TypeCheckState *pstate, StructNode *node);
 // being resolved.
 int structEnumDemandSet(NameResState *pstate, StructNode *node);
 
+// May the function being checked reach a private member of 'type' through any
+// value, because both are written inside one enum's braces, or the function in
+// an extension of that enum? 'self' is granted apart from this, for every type.
+int structEnumSeesPrivate(TypeCheckState *pstate, INode *type);
+
 // Get bottom-most base trait for some trait/struct, or NULL if there is not one
 StructNode *structGetBaseTrait(StructNode *node);
 
