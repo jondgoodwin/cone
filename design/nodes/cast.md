@@ -71,7 +71,11 @@ nowhere an expression could be. See [struct](struct.md).
 `castNameRes` walks `exp` and `typ`, except a bound pattern's conversion
 (`FlagMatchBind`), which walks only `exp`: its `typ` is the `is` test's, already
 resolved there, and a second resolution is not idempotent — a reference whose
-referent is a value has become a borrow, which has no name resolution arm.
+referent is a value has become a borrow, which has no name resolution arm. A
+path is the exception to "shared": `fnCallNameResPath` collapses `Shape.Circle`
+by replacing the slot that held it, and only the `is` test's slot is replaced.
+The conversion, still holding the hop, takes its member, which is the name the
+path collapsed to.
 
 A marked root with no lexical meaning is left unbound rather than reported
 (`nameUseNameRes`), and `refNameRes` keeps a reference over a marked root a

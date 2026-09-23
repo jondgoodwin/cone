@@ -281,6 +281,9 @@ next pass a null to trip over.
   trait already resolved. It is also why a bound pattern's conversion
   (`FlagMatchBind`) does not resolve its type: the node is the `is` test's, which
   resolved it, and `&x` with `x` a value has been retagged a borrow by then.
+  A path the test collapsed is the one thing it must pick up: the collapse
+  replaced the test's slot, not the node, so the conversion takes the hop's
+  member (`castNameRes`).
 - **A demanded trait is resolved with the demanding type's generic parameters
   still hooked.** A name the trait fails to declare that spells one of them
   binds to it silently instead of failing. Nothing correct can meet it; a

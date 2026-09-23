@@ -180,6 +180,15 @@ void castNameRes(NameResState *pstate, CastNode *node) {
     // name resolution of its own.
     if (!(node->flags & FlagMatchBind))
         inodeNameRes(pstate, &node->typ);
+    // A path, 'Shape.Circle', collapses by replacing the node that held it
+    // (fnCallNameResPath), so only the test's own slot received the name it
+    // collapsed to. This one still holds the hop, and takes its member, which
+    // is that name.
+    else if (node->typ->tag == FnCallTag) {
+        INode *member = ((FnCallNode*)node->typ)->methfld;
+        if (member && isNameUseNode(member) && (member->flags & FlagQualified))
+            node->typ = member;
+    }
 }
 
 #define ptrsize 10000
