@@ -420,8 +420,9 @@ void lexScanNumber(char *srcp) {
     overflow = '\0';
     intval = 0;
     while (1) {
-        // Only one exponent allowed
-        if (isFloat!='e' && (*srcp=='e' || *srcp=='E' || *srcp=='p' || *srcp=='P')) {
+        // Only one exponent allowed. In a hex literal 'e' and 'E' are digits,
+        // so only 'p' or 'P' can begin its exponent
+        if (isFloat!='e' && ((base==10 && (*srcp=='e' || *srcp=='E')) || *srcp=='p' || *srcp=='P')) {
             isFloat = 'e';
             if (*++srcp == '-' || *srcp == '+')
                 srcp++;
