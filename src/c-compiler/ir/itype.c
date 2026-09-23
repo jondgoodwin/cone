@@ -398,6 +398,18 @@ static char *itypeNoSizeOwnCause(INode *dcltype, uint32_t depth) {
     if ((dcltype->flags & TypeChecking) && !(dcltype->flags & TypeChecked))
         return "is still being laid out, so it would have to contain itself. Break the cycle by holding it through a reference";
 
+    // A type whose implementations differ in size has no one size: a trait,
+    // whose implementers are open-ended, or an enum that declined the padding.
+    // Asked before the pending question below: an '@unsized' enum's own members
+    // are checked while its first variant is still in flight, and a by-value
+    // 'self' there is refused because the enum will never have a size, not
+    // because that variant has not finished.
+    if (dcltype->tag == StructTag && (dcltype->flags & OpaqueType)
+        && (dcltype->flags & TraitType) && !(dcltype->flags & SameSize))
+        return (dcltype->flags & EnumType)
+            ? "is an '@unsized' enum, so its variants differ in size. Reach it through a reference"
+            : "is a trait whose implementations may differ in size. Use a virtual reference, '&<Trait>'";
+
     // An enum is laid out only once every variant is, whatever its own mark says
     if (itypeVariantPending(dcltype))
         return "is an enum with a variant still being laid out, so it would have to contain itself. Break the cycle by holding it through a reference";
@@ -410,13 +422,6 @@ static char *itypeNoSizeOwnCause(INode *dcltype, uint32_t depth) {
         return "is not a value at all. Use a reference to a function instead";
 
     if (dcltype->tag == StructTag) {
-        // A type whose implementations differ in size has no one size: a trait,
-        // whose implementers are open-ended, or an enum that declined the padding
-        if ((dcltype->flags & TraitType) && !(dcltype->flags & SameSize))
-            return (dcltype->flags & EnumType)
-                ? "is an '@unsized' enum, so its variants differ in size. Reach it through a reference"
-                : "is a trait whose implementations may differ in size. Use a virtual reference, '&<Trait>'";
-
         // Opacity is infectious. Where a field carried it, this type is not the
         // cause and the caller keeps walking.
         if (itypeNoSizeField(dcltype, depth) != NULL)
