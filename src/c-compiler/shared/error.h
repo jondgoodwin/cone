@@ -179,13 +179,18 @@ enum ErrorCode {
     ErrorEnumEquality = 1095,   // '==' on an enum whose variants carry payloads, which have no comparison
 
     // Nominal is-a conformance, asserted with 'is'
-    ErrorExtends = 1096,        // 'extends' where a nominal assertion is meant, which is 'is'
+    ErrorExtends = 1096,        // A base clause that may not stand where it is written: 'extends' on an abstraction, or either clause twice
     ErrorIsaFields = 1097,      // A trait's fields not declared by the type, in the trait's order, at position 0
     ErrorIsaMulti = 1098,       // A trait after the first in an 'is' list requiring fields, which only the first may
 
     // 'trait' as a modifier on the kind
     ErrorDupTrait = 1099,       // 'trait' written twice: by itself it already means 'struct trait'
     ErrorUnbuiltKind = 1100,    // A kind of declaration the grammar admits and the compiler does not build: 'mod', 'actor'
+
+    // 'extends': enriching a concrete type with methods
+    ErrorExtendsBase = 1101,    // What an 'extends' names cannot serve as a concrete base
+    ErrorExtendsField = 1102,   // A field declared by a type that extends a concrete base, which may add none
+    ErrorExtendsOverride = 1103,// A member of the base redeclared by the enriching type, which may not override
 
     // Warnings
     WarnCode = 3000,

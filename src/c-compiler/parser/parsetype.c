@@ -284,6 +284,14 @@ static void parseAddVariant(ParseState *parse, StructNode *strnode, StructNode *
         errorMsgNode((INode*)substruct, ErrorVariantDcl,
             "%s takes its enum's type parameters; it may not declare its own.",
             &substruct->namesym->namestr);
+    // A variant's fields are its enum's, spliced in, so it has no representation
+    // of its own for an enrichment to stand on
+    if (substruct->extendsbase) {
+        errorMsgNode((INode*)substruct, ErrorVariantDcl,
+            "%s takes its layout from the enum it is written inside; remove the 'extends'.",
+            &substruct->namesym->namestr);
+        substruct->extendsbase = NULL;
+    }
 
     INode *traitref = (INode*)newNameUseNode(strnode->namesym);
     if (strnode->genericinfo) {
@@ -462,38 +470,62 @@ INode *parseStruct(ParseState *parse, uint16_t strflags) {
     // what makes its requirement a positional prefix at position 0. Each further
     // trait is held as a mixin-style placeholder, exactly as 'mixin' is, and must
     // require no fields at all.
-    if (lexIsToken(IsToken)) {
-        lexNextToken();
-        strnode->basetrait = parseTypeName(parse);  // Type could be a qualified name or generic
-        while (lexIsToken(CommaToken)) {
+    //
+    // 'extends' names a CONCRETE base to enrich with methods, which is a different
+    // assertion, so a type may write both clauses. They are therefore read in a
+    // loop rather than as alternatives: either order, each one once.
+    int sawis = 0, sawextends = 0;
+    while (lexIsToken(IsToken) || lexIsToken(ExtendsToken)) {
+        if (lexIsToken(IsToken)) {
             lexNextToken();
-            FieldDclNode *isafld = newFieldDclNode(anonName, (INode*)immPerm);
-            isafld->flags |= IsMixin | FlagMethFld;
-            isafld->vtype = parseTypeName(parse);
-            structAddField(strnode, isafld);
+            if (sawis++) {
+                errorMsgLex(ErrorExtends, "A type names its abstractions in one 'is' list, separated by commas.");
+                parseTypeName(parse);
+                continue;
+            }
+            strnode->basetrait = parseTypeName(parse);  // Type could be a qualified name or generic
+            while (lexIsToken(CommaToken)) {
+                lexNextToken();
+                FieldDclNode *isafld = newFieldDclNode(anonName, (INode*)immPerm);
+                isafld->flags |= IsMixin | FlagMethFld;
+                isafld->vtype = parseTypeName(parse);
+                structAddField(strnode, isafld);
+            }
+            // 'is' takes no siblings to fold from: it names abstractions, and an
+            // abstraction has no value to reach a folded name through. Delegation is
+            // what a field's own 'use' clause is for.
+            if (lexIsToken(UseToken)) {
+                errorMsgLex(ErrorBadFold, "'is' names abstractions and folds nothing. To delegate, declare a field of the type and write 'use' on it.");
+                parseFoldClause(parse);
+            }
+            continue;
         }
-        // 'is' takes no siblings to fold from: it names abstractions, and an
-        // abstraction has no value to reach a folded name through. Delegation is
-        // what a field's own 'use' clause is for.
-        if (lexIsToken(UseToken)) {
-            errorMsgLex(ErrorBadFold, "'is' names abstractions and folds nothing. To delegate, declare a field of the type and write 'use' on it.");
-            parseFoldClause(parse);
-        }
-    }
-    else if (lexIsToken(ExtendsToken)) {
-        // An enum extending an enum adds variants to the ones its base declared.
-        // That relationship is spelled 'extends' and is not implemented
-        // (coneref/refenum.html); the keyword is read here so the clause parses
-        // as it always has rather than being diagnosed as the nominal assertion
-        // it is not.
         lexNextToken();
-        if (isenum)
+        // An enum extending an enum adds variants to the ones its base declared.
+        // That is membership in a wider set rather than enrichment, it is spelled
+        // 'extends' too, and it is not implemented (coneref/refenum.html); the
+        // clause is read into 'basetrait' as it always has been so that nothing
+        // about it moves.
+        if (isenum) {
+            if (sawextends++)
+                errorMsgLex(ErrorExtends, "An enum extends one enum.");
             strnode->basetrait = parseTypeName(parse);
-        else {
-            errorMsgLex(ErrorExtends, "A %s asserts conformance to an abstraction with 'is'. 'extends' is reserved for enriching a concrete type, which is not implemented.",
-                (strflags & TraitType) ? "trait" : "struct");
-            parseTypeName(parse);
+            continue;
         }
+        // A trait is an abstraction: it states requirements and holds no value, so
+        // there is nothing of it to enrich. What a trait asserts about another
+        // abstraction is conformance, which is 'is'.
+        if (strflags & TraitType) {
+            errorMsgLex(ErrorExtends, "A trait is an abstraction, so there is nothing of it to enrich. To assert conformance to another abstraction, write 'is'.");
+            parseTypeName(parse);
+            continue;
+        }
+        if (sawextends++) {
+            errorMsgLex(ErrorExtends, "A type enriches one concrete base.");
+            parseTypeName(parse);
+            continue;
+        }
+        strnode->extendsbase = parseTypeName(parse);
     }
 
     // If block has been provided, process field or method definitions

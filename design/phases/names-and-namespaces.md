@@ -117,7 +117,7 @@ Named types expose a member namespace. The documented model includes fields, met
 
 Current compiler behavior:
 
-- Structs and traits have one namespace containing fields, methods, static functions, macros, inherited members, folded members (a copy of a folded field, an alias for a folded method), and `Self`.
+- Structs and traits have one namespace containing fields, methods, static functions, macros, inherited members, folded members (a copy of a folded field, an alias for a folded method), everything an `extends` base has, and `Self`.
 - A field, static function or macro cannot collide with another member name. A macro declared in a type is a macro method when its first parameter is `self`, by the same rule as a function; it joins no overload set, and it is not inherited from a trait.
 - Methods and static functions each declare a namespace-unique concrete name. A declaration may additionally name an overload set with `fn concrete overload shared(...)`. The concrete name binds directly to its `FnDclNode`; the overload name binds to a separate `FnOverloadDclNode` holding every candidate declared for it, including a set that currently has only one candidate. Two declarations claiming the same concrete name are a duplicate-name error, and an overload name already bound to anything other than an overload node is a collision error.
 - Every executable implementation remains a separate `FnDclNode`. The overload node is only a namespace binding, so lookup, call lowering, trait reconciliation, vtables, and code generation always record the selected concrete node.
@@ -219,7 +219,7 @@ The compiler enforces this on the routes that can reach a private name: `fnCallN
 
 An overload name's visibility is its candidates': the first candidate declares it, and every later candidate must agree (`ErrorPrivOverload`, either way round). A compiler-defined intrinsic candidate counts as `pub` for the name and is exempt from agreeing, which is how the core types keep a private `_neg` behind a pub `-`. One consequence is deliberate and worth knowing: **visibility is checked on the binding the caller's name reaches**, not on the candidate overload selection then picks, which is why a pub overload name may not hold a private concrete candidate — through the pub name the private one would be reachable.
 
-Visibility should belong to the original definition or declaration, while access is evaluated from the use site. A folded or renamed NameDef must not make a private definition public merely by changing its local spelling. The design must also decide whether an alias may deliberately narrow visibility.
+Visibility should belong to the original definition or declaration, while access is evaluated from the use site. A folded or renamed NameDef must not make a private definition public merely by changing its local spelling, and it does not: the alias an enrichment makes carries its target's visibility, which is what lets a private member of the base come across and stay out of the enrichment's clients' reach. Whether an alias may deliberately *narrow* visibility is still open, and nothing built asks it.
 
 ## Include, import, and name folding
 
@@ -257,11 +257,25 @@ A struct's field may carry a `use` clause folding members of the field's type in
 
 **Where the two folds differ, measured by building this one: in what the binding holds.** A module fold binds the declaration itself. A type fold binds a *copy* of a folded field, carrying a hop to the field it is reached through, or an *alias* for a folded method — because only a type fold reaches its target through a value, and a use of the name must be lowered to an access path or to a call whose receiver is shifted to the field. The alias node is the binding record this note asks for: a local spelling, a visibility bit of its own, a target. The module work reuses it as it is, with a qualified name as the target, and never calls the receiver rewrite.
 
+### Folding a whole type in: `extends`
+
+A concrete type may be named as another's base, with `extends`, and everything it has becomes a name of the enriching type, which adds methods and no fields ([refinherit](../../conesite/public/coneref/refinherit.html); [struct](../nodes/struct.md), "Enrichment"). It is the **third** attachment site for one operation, and it lands between the other two:
+
+| Where the clause sits | What the receiver is | What the binding holds |
+| --- | --- | --- |
+| a **module** body — `import mod.*` | nothing; a module has one instance | the declaration itself |
+| a **type** body — `extends Meter` | the **whole**, which is already the right type | the base's declaration, under an alias; the base's fields as copies of its own |
+| a **field** — `engine Engine use *` | the **part**, reached through the field | a copy carrying a hop, or an alias whose call shifts its receiver |
+
+**That middle row is the finding.** The two hard things a type adds to the module case are dispatch and per-instance state, and an enrichment has neither to solve: it may not change the fields, so its values and its base's have one representation and a base method already takes exactly the right receiver. So the machinery recurs where it is easy and the hard part stays in the field row, where the receiver has to be found and shifted.
+
+**Visibility is the target's, and this is where an alias narrowing it would matter.** An enrichment is inside its base's encapsulation boundary, so a private member of the base comes across — under an alias that is private here too, so the enrichment's own methods reach it and the enrichment's clients do not. That answers "may a fold make a private definition public" with no: the alias carries the target's visibility rather than its own opinion. Whether an alias may deliberately *narrow* visibility is still open, and nothing built asks it yet.
+
 ## Aliases
 
 Current `typedef` creates a module-scoped structural alias for a type. Type resolution follows the alias to its underlying type.
 
-`AliasDclNode` (`ir/stmt/aliasdcl.c`) is the general binding: a local spelling and a target, a name use bound to the declaration it stands for, with the `FlagPub` bit as its own visibility and everything else the target's. Chains resolve through `aliasDclResolve`; a use bound to one answers as its target (`nameUseGroup`), and every site that reads a namespace binding resolves it first. Today it is made for a folded method, overload set or macro method of a field's type, and for nothing else.
+`AliasDclNode` (`ir/stmt/aliasdcl.c`) is the general binding: a local spelling and a target, a name use bound to the declaration it stands for, with the `FlagPub` bit as its own visibility and everything else the target's. Chains resolve through `aliasDclResolve`; a use bound to one answers as its target (`nameUseGroup`), and every site that reads a namespace binding resolves it first. Today it is made for a folded method, overload set or macro method of a field's type, and for every member but the fields of an `extends` base — a static among them, which is the one place an alias stands for something reached through the type rather than through a value, and where the `FlagMethFld` bit is therefore left off.
 
 The aspirational model generalizes aliases: a new NameDef may denote anything nameable. Alias chains should preserve each local binding for diagnostics and visibility while semantic operations can reach the final IR value. A type-valued alias remains structural; creating a distinct nominal type should use a separate construct.
 
@@ -741,7 +755,7 @@ would see little but `main`.
 - Selective import folding and `as` renaming are documented but unimplemented. The binding node they need exists (`AliasDclNode`, built for the type fold); import does not use it yet.
 - Nested named modules are documented but lack clear declaration syntax and parser support.
 - General aliases beyond `typedef` and the folded-member alias are not implemented.
-- Generic, macro and metaprogram namespace behavior is partly implemented, incomplete, or aspirational. Delegated inheritance is built; see "Folding into a type" above.
+- Generic, macro and metaprogram namespace behavior is partly implemented, incomplete, or aspirational. Delegated inheritance and concrete enrichment are both built; see "Folding into a type" above.
 - Packages organize importable libraries but are not yet defined as a distinct namespace layer.
 - A path may only pass through a module or a struct-like type. One whose base is an alias, a number type, a generic instance or a generic parameter is refused at type check, because none of those names a namespace at the point the collapse runs. Finishing those at type check, where they do, is the natural other half of the collapse and is not built.
 - There is no way to name the module a declaration is in, so a module-level name hidden by a local or by a type member cannot be reached. The `mod` header, which would give the module a name, is not built.

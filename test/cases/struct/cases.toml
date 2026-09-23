@@ -26,12 +26,32 @@
 # it runs exactly once, so its cases are the variables that must not be
 # finalized -- never assigned, moved out -- beside the ones that must.
 #
+# struct-extends is the seventh: enriching a concrete type with methods. It is
+# its own file rather than part of struct-fold, because the two folds differ in
+# exactly the thing each is for -- a field's clause reaches the part through a
+# receiver it has to shift, and an enrichment is the whole and shifts nothing --
+# so a failure in one says nothing about the other. Its claims are what the
+# base's members reach through the new name, what the enrichment's own methods
+# reach in the base, and that a value crosses between the two names in either
+# direction. The one claim a run cannot make, that the two types have one LLVM
+# layout, is a check below. Retroactive conformance is here too, although it
+# dispatches through a virtual reference, because what it establishes is what
+# 'extends' delivers rather than what a virtual reference reaches.
+#
 # The reject scenarios are split by pipeline stage, because analysis halts
 # between stages and an expectation from a later stage would never be reached.
 # The type-check stage is split again by what is wrong: the declaration itself,
 # a constructor, or a call. A fold clause gets one file per stage: where it may
 # be written (parse), what it may admit (name resolution, which is where a
 # type's dictionary is built), and what a folded name is not (type check).
+# struct-nameres-extends is at that same middle stage and separate from
+# struct-nameres-fold because its subject is the base rather than a clause:
+# taking the base's members is what builds the enriching type's dictionary, so
+# what may be enriched and what an enrichment may declare are both reported
+# there. Where a base clause may be written at all is a stage earlier, and in the
+# trait group, which owns the 'is' clause: trait-parse-extends. Reaching a
+# private member of the base from outside the pair is type check's, and it sits
+# with the rest of the visibility family in struct-typecheck-methods.
 #
 # Left out, with reasons:
 #
@@ -51,7 +71,7 @@
 #   still leaves the variable uninitialized. struct-success covers the whole
 #   value assignment that does work, and says so.
 
-support = []
+support = ["structmeter.cone"]
 
 # -------- success --------
 
@@ -288,6 +308,50 @@ category = "run"
 description = "A finalizer runs once at the end of its value's life, and not over a variable that was never assigned or was moved out"
 tags = ["flow", "genllvm", "runtime"]
 
+[scenario.struct-extends]
+category = "run"
+description = "Enriching a concrete type with methods: the base's members through the new name, and a value crossing between the two names in both directions"
+tags = ["parse", "nameres", "typecheck", "flow", "genllvm", "runtime"]
+
+# The whole of 'extends' rests on one representation, and this is the only place
+# it can be seen: every printed number would be the same whatever the layouts
+# were. The enrichment declares no field of its own, the base's fields are its
+# fields at the same positions, and that holds down a chain and across siblings.
+# Read before optimization, where a type nothing mentions is not printed.
+[[scenario.struct-extends.check]]
+name = "an-enrichment-has-its-base-s-layout"
+target = "preir"
+contains = [
+  "%Meter = type { i32, i32 }",
+  "%Gauge = type { i32, i32 }",
+  "%Labeled = type { i32, i32 }",
+  "%Fancy = type { i32, i32 }",
+  "%Framed = type { i32, i32 }",
+  "%Ruler = type { i32, i32 }",
+]
+
+# A base's method is neither cloned nor re-spelled: the enrichment's name binds
+# the base's own declaration, so there is one symbol for it however many types
+# reach it. That is the difference between this and an inherited default, which
+# trait-success pins as a copy per implementing type.
+[[scenario.struct-extends.check]]
+name = "a-base-method-is-not-cloned-per-enrichment"
+target = "symbols"
+contains = [
+  "define internal Meter.scaled comdat nodeduplicate",
+  "define internal Gauge.doubled comdat nodeduplicate",
+]
+excludes = ["Gauge.scaled", "Fancy.scaled", "Labeled.scaled", "Ruler.scaled"]
+
+# The motivating case is enriching somebody else's type, so the pair is put on
+# opposite sides of a module boundary: the base is resolved on demand from the
+# other module's scope, and the enrichment still reads its private members. A
+# compile, because a program spanning modules cannot be linked yet.
+[scenario.struct-extends-import]
+category = "compile"
+description = "Enriching a base declared in another module, private members included"
+tags = ["nameres", "typecheck", "genllvm"]
+
 # -------- parse stage --------
 
 [scenario.struct-parse]
@@ -313,6 +377,17 @@ category = "reject"
 description = "What a fold clause may not admit, and the names that collide"
 tags = ["nameres"]
 diagnostics = 14
+
+# Taking a base's members is what builds the enriching type's dictionary, so what
+# may be enriched and what an enrichment may declare are both this stage's: a
+# field of its own, a name the base already has, an abstraction or an enum or a
+# variant or a number as the base, a base carrying a lifecycle method, and the
+# two shapes of cycle.
+[scenario.struct-nameres-extends]
+category = "reject"
+description = "What may be enriched with 'extends', and what an enrichment may not declare"
+tags = ["nameres"]
+diagnostics = 10
 
 # -------- type check stage --------
 
@@ -356,4 +431,4 @@ diagnostics = 5
 category = "reject"
 description = "Method, field and operator accesses a struct's type cannot answer, including a private 'isTrue' a coercion to Bool injects a call to"
 tags = ["typecheck"]
-diagnostics = 19
+diagnostics = 21

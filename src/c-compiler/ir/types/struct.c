@@ -19,6 +19,8 @@ StructNode *newStructNode(Name *namesym) {
     nodelistInit(&snode->fields, 8);
     dclInfoInit(&snode->dclinfo);
     snode->basetrait = NULL;
+    snode->extendsbase = NULL;
+    snode->extendsdcl = NULL;
     snode->derived = NULL;
     snode->traits = NULL;
     snode->vtable = NULL;
@@ -47,6 +49,11 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
 
     // Fields like derived, vtable, tagnbr do not yet have useful data to clone
     newnode->basetrait = cloneNode(cstate, node->basetrait);
+    // An enrichment is taken per instance, in the instance's type check: a
+    // template's base is written in terms of its type parameters, so it is a
+    // declaration only once they are bound. 'extendsdcl' is therefore NULL in
+    // the template and is what the instance's own enrichment sets.
+    newnode->extendsbase = cloneNode(cstate, node->extendsbase);
     if (node->derived)
         newnode->derived = newNodes(node->derived->used);
     // The traits name resolution mixed into the template are the instance's
@@ -581,6 +588,191 @@ static Nodes *structFoldPath(StructNode *type, Name *name, Nodes *path) {
     return path;
 }
 
+// ---- 'extends': enriching a concrete type with methods ---------------------
+//
+// A type declared with 'extends' over a concrete base adds methods and no
+// fields. So it has the base's representation exactly, and values of the two
+// substitute for each other in both directions at no cost (structExtendsEquiv,
+// below). The language is in
+// conesite/public/coneref/refinherit.html, "Enriching a concrete type".
+//
+// What it costs the compiler is a NAME FOLD and nothing else. One representation
+// means a base method already takes exactly the right receiver, so there is no
+// clone to make, no signature to retype and no receiver to shift: the base's
+// members become names of this type, and the methods among them are reached as
+// the base's own. That is the degenerate, one-instance case of the fold a
+// field's 'use' clause does -- there the receiver is the part and has to be
+// found, here the receiver is the whole and already is one.
+//
+// Two things are not aliases. The base's FIELDS are copied, because a field node
+// carries its index and its own check state and each type lays its own out; the
+// copies are this type's declared fields in every respect, so they satisfy an
+// 'is' field requirement, fill a vtable slot and are constructed positionally
+// exactly as fields written here would be. And what the base's own FOLD CLAUSES
+// admitted is left alone, because the clause travels with the field it is
+// written on and is expanded again here, into this type's namespace and against
+// this type's copy of the field -- which is what keeps a folded name's hop
+// pointing at a field of the type that holds it.
+//
+// The enrichment is INSIDE the base's encapsulation boundary: it is acting as
+// the base, which the declaration is what verifies. So a private member comes in
+// too, under an alias that is private here as well -- the enrichment's own
+// methods read and write the base's private state, while the enrichment's
+// clients see only what the base showed them. Down a chain the same rule
+// compounds, because what C takes from B includes the private aliases B took
+// from A.
+
+// May this declaration be enriched? Report why not, positioned at the clause.
+//
+// Only a concrete struct can be: an abstraction holds no value, so there is
+// nothing of it to enrich and what a type asserts about one is conformance; an
+// enum's variant set is its identity, so adding to an enum is adding variants,
+// which is a relationship of its own and is not built; and a variant's fields
+// are its enum's, so it has no representation of its own to stand on.
+//
+// A base declaring 'final' or 'clone' is refused, and this is a restriction
+// rather than a rule: those two are the value's own lifecycle, so they are not
+// aliased, and a generated drop function calls the 'final' of the type it
+// belongs to. Enriching such a base would leave the base's finalizer unrun for
+// every value typed as the enrichment, silently. Carrying a lifecycle across
+// wants a clone with the receiver retyped, which nothing here needs otherwise.
+static int structExtendsEligible(StructNode *node, INode *basedcl, INode *at) {
+    if (basedcl->tag != StructTag) {
+        errorMsgNode(at, ErrorExtendsBase, "An 'extends' enriches a concrete struct type, and this is not one.");
+        return 0;
+    }
+    StructNode *base = (StructNode*)basedcl;
+    if (base->flags & EnumType) {
+        errorMsgNode(at, ErrorExtendsBase,
+            "%s is an enum, and its variant set is its identity: adding to it adds variants, which is not implemented.",
+            &base->namesym->namestr);
+        return 0;
+    }
+    if (base->flags & TraitType) {
+        errorMsgNode(at, ErrorExtendsBase,
+            "%s is an abstraction, so there is nothing of it to enrich. To assert that %s complies with it, write 'is'.",
+            &base->namesym->namestr, &node->namesym->namestr);
+        return 0;
+    }
+    if (base->flags & HasTagField) {
+        errorMsgNode(at, ErrorExtendsBase,
+            "%s is a variant, and its fields are its enum's: it has no representation of its own to enrich.",
+            &base->namesym->namestr);
+        return 0;
+    }
+    Name *lifecycle = namespaceFind(&base->namespace, finalName) ? finalName
+        : namespaceFind(&base->namespace, cloneName) ? cloneName : NULL;
+    if (lifecycle) {
+        errorMsgNode(at, ErrorExtendsBase,
+            "%s declares %s, which belongs to its own values' lifecycle and does not carry across to an enrichment.",
+            &base->namesym->namestr, &lifecycle->namestr);
+        return 0;
+    }
+    return 1;
+}
+
+// Take everything the base has: its fields as this type's own, and every other
+// member as an alias. 'hook' when name resolution asks, so that a method body
+// resolved afterwards may name an inherited member bare.
+static void structEnrichFromBase(StructNode *node, StructNode *base, int hook) {
+    INode **nodesp;
+    uint32_t cnt;
+
+    // An enrichment adds methods and no fields: that is what keeps the two
+    // representations identical, and the substitution free. Every placeholder is
+    // gone by now, so whatever is left in the list was declared here.
+    for (nodelistFor(&node->fields, cnt, nodesp)) {
+        FieldDclNode *field = (FieldDclNode*)*nodesp;
+        errorMsgNode(*nodesp, ErrorExtendsField,
+            "%s extends %s, so its representation is %s's: its methods read and write the fields it starts with, and it declares none of its own. Remove %s.",
+            &node->namesym->namestr, &base->namesym->namestr, &base->namesym->namestr, &field->namesym->namestr);
+    }
+
+    // The base's fields, in the base's order, as this type's own
+    uint32_t fldpos = 0;
+    for (nodelistFor(&base->fields, cnt, nodesp)) {
+        FieldDclNode *orig = (FieldDclNode*)*nodesp;
+        CloneState cstate;
+        clonePushState(&cstate, (INode*)node, (INode*)node, 0, NULL, NULL);
+        FieldDclNode *copy = (FieldDclNode*)cloneNode(&cstate, (INode*)orig);
+        clonePopState();
+        nodelistInsert(&node->fields, fldpos++, (INode*)copy);
+        INode *prior = namespaceAdd(&node->namespace, copy->namesym, (INode*)copy);
+        if (prior)
+            errorMsgNode(prior, ErrorExtendsOverride,
+                "%s is already a name of %s, and %s declares a field of that name.",
+                &copy->namesym->namestr, &node->namesym->namestr, &base->namesym->namestr);
+        else if (hook && copy->namesym != anonName)
+            nametblHookNode(copy->namesym, (INode*)copy);
+    }
+
+    // Every other member, as an alias: the name is this type's, the declaration
+    // stays the base's, and a call through it needs no receiver shift
+    namespaceFor(&base->namespace) {
+        NameNode *nn = &base->namespace.namenodes[__i];
+        if (nn->name == NULL || nn->name == selfTypeName || nn->name == anonName)
+            continue;
+        // A declared field was copied above; a folded copy and a folded method
+        // are remade by the clause that admitted them, which came across with
+        // the field it is written on
+        FieldDclNode *foldfld;
+        if (nn->node->tag == FieldDclTag || structFoldItemOf(base, nn->name, &foldfld))
+            continue;
+        NameUseNode *target = newMemberUseNode(nn->name);
+        inodeLexCopy((INode*)target, node->extendsbase);
+        target->dclnode = nn->node;
+        AliasDclNode *alias = newAliasDclNode(nn->name, (INode*)target);
+        inodeLexCopy((INode*)alias, node->extendsbase);
+        // Visibility is the base's: the enrichment is inside the boundary and
+        // its clients are not
+        if (inodeIsPrivate(nn->node))
+            alias->flags &= 0xffff - FlagPub;
+        if (!inodeIsMember(nn->node))
+            alias->flags &= 0xffff - FlagMethFld;
+        INode *prior = namespaceAdd(&node->namespace, nn->name, (INode*)alias);
+        if (prior) {
+            errorMsgNode(prior, ErrorExtendsOverride,
+                "%s is already a name of %s, and an enrichment adds to its base rather than overriding it: one value would otherwise mean two things, depending on which name reached it.",
+                &nn->name->namestr, &node->namesym->namestr);
+            continue;
+        }
+        if (hook)
+            nametblHookNode(nn->name, (INode*)alias);
+    }
+
+    node->extendsdcl = (INode*)base;
+}
+
+// The concrete type at the bottom of this type's 'extends' chain
+StructNode *structExtendsRoot(StructNode *node) {
+    while (node->extendsdcl)
+        node = (StructNode*)node->extendsdcl;
+    return node;
+}
+
+// Do two types substitute for each other because of an 'extends'?
+//
+// THE DECLARATION IS THE LICENCE, and identical representation is only the
+// argument for why the licence is sound. So this asks whether the declarations
+// relate them -- one enriching the other, or both enriching one base, at any
+// depth -- and never whether two types happen to look alike. Two look-alikes
+// that named no base stay unrelated, and Cone does not get structural typing for
+// concrete types out of this.
+//
+// Nothing lifts through a container either: 'Vec3[Gauge]' and 'Vec3[Meter]' are
+// two instances of one template, neither of which extends anything, so they are
+// unrelated however their components are declared.
+// It answers about two DISTINCT types, which is what an enrichment and its base
+// are. One declaration is not substituting for anything, and every caller has
+// asked that question already, by identity or through itypeIsSame.
+int structExtendsEquiv(INode *type1, INode *type2) {
+    INode *dcl1 = itypeGetTypeDcl(type1);
+    INode *dcl2 = itypeGetTypeDcl(type2);
+    if (dcl1 == dcl2 || dcl1->tag != StructTag || dcl2->tag != StructTag)
+        return 0;
+    return structExtendsRoot((StructNode*)dcl1) == structExtendsRoot((StructNode*)dcl2);
+}
+
 // Hook the entries a trait's expansion added to the namespace, so that a method
 // body resolved afterwards can name an inherited member bare. What the
 // namespace binds for the name is what is hooked: a name the type already
@@ -726,6 +918,34 @@ void structNameRes(NameResState *pstate, StructNode *node) {
         }
     }
 
+    // The concrete base an 'extends' enriches is resolved and demanded here, for
+    // the same reason a trait is: its members have to be complete before they are
+    // taken. Taking them waits until the field walk below has removed every
+    // placeholder, so that whatever is left in the field list is a field this
+    // type declared -- which is what 'extends' forbids.
+    StructNode *extbase = NULL;
+    if (node->extendsbase) {
+        inodeNameRes(pstate, &node->extendsbase);
+        if (!(node->genericinfo) && node->extendsbase->tag != FnCallTag && isTypeNode(node->extendsbase)) {
+            INode *basedcl = itypeGetTypeDcl(node->extendsbase);
+            if (structExtendsEligible(node, basedcl, node->extendsbase)) {
+                extbase = (StructNode*)basedcl;
+                if (extbase == node) {
+                    errorMsgNode(node->extendsbase, ErrorCircular,
+                        "%s cannot extend itself: an enrichment starts from a type that is already complete.",
+                        &node->namesym->namestr);
+                    extbase = NULL;
+                }
+                else if (!structNameResDemand(pstate, extbase)) {
+                    errorMsgNode(node->extendsbase, ErrorCircular,
+                        "Cannot extend %s here: %s is not complete until %s is, so each depends on the other.",
+                        &extbase->namesym->namestr, &extbase->namesym->namestr, &node->namesym->namestr);
+                    extbase = NULL;
+                }
+            }
+        }
+    }
+
     // Each trait to be mixed in, and the type of each field that folds names
     // in, is resolved before this type's own names are hooked, so that its
     // bodies bind in its own scope rather than this type's. Two types that
@@ -784,6 +1004,14 @@ void structNameRes(NameResState *pstate, StructNode *node) {
         clonePopState();
         structHookInherited(node, fldpos, structBaseGivesFields(trait) ? trait->fields.used : 0, methpos);
     }
+
+    // Now that every placeholder is gone, the concrete base's members are taken:
+    // its fields become this type's, at the front and in its order, and every
+    // other member becomes an alias. Before the indexing below, so the copies are
+    // indexed with everything else, and before the fold clauses, so a clause that
+    // came across with a copied field is expanded against the copy.
+    if (extbase)
+        structEnrichFromBase(node, extbase, 1);
 
     // Every field now has its place, and a copy a fold makes below takes the
     // index of the field it stands for, so the fields are indexed here. Type
@@ -1122,6 +1350,25 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
     if ((node->flags & TraitType) && node->derived == NULL)
         node->derived = newNodes(2);
 
+    // An 'extends' base name resolution could not take -- this type is an
+    // instance of a generic, or the base is, so one of them was not a declaration
+    // until now -- is taken here, before the layout below is settled. Nothing is
+    // hooked: no body is resolved after this, so what it brings in is reached as
+    // 'self.name' inside this type's own methods, exactly as a member inherited
+    // from an instance of a generic trait is.
+    StructNode *extbase = NULL;
+    if (node->extendsbase && node->extendsdcl == NULL) {
+        if (itypeTypeCheck(pstate, &node->extendsbase) == 0) {
+            pstate->typenode = svtypenode;
+            return;
+        }
+        INode *basedcl = itypeGetTypeDcl(node->extendsbase);
+        if (structExtendsEligible(node, basedcl, node->extendsbase)) {
+            extbase = (StructNode*)basedcl;
+            inodeTypeCheckAny(pstate, &basedcl);
+        }
+    }
+
     // Handle when a base trait is specified
     if (node->basetrait) {
         // Name resolution mixed in a base trait that was a declaration then, and
@@ -1203,6 +1450,11 @@ void structTypeCheck(TypeCheckState *pstate, StructNode *node) {
         structInheritTrait(node, fldpos, trait, &cstate);
         clonePopState();
     }
+
+    // Every placeholder is gone, so the concrete base's members are taken here as
+    // name resolution would have taken them, and before the fold clauses below
+    if (extbase)
+        structEnrichFromBase(node, extbase, 0);
 
     // A fold clause name resolution could not expand -- the field's type was an
     // instance of a generic, which exists only now -- is expanded here, and
@@ -1467,6 +1719,15 @@ TypeCompare structVirtRefMatches(StructNode *trait, StructNode *strnode) {
 TypeCompare structMatches(StructNode *to, INode *fromdcl, SubtypeConstraint constraint) {
     assert((StructNode*)fromdcl != to);  // We know the types are not equivalent
 
+    // An enrichment and its base substitute for each other in BOTH directions,
+    // under every constraint, at no cost: 'extends' may not touch the fields, so
+    // the two have one representation and a recast is the whole of the
+    // conversion. This is not subtyping in either direction -- neither type is an
+    // abstraction of the other -- which is why it is answered here, ahead of the
+    // trait test, rather than by finding a supertype.
+    if (structExtendsEquiv((INode*)to, fromdcl))
+        return CastSubtype;
+
     // Only a struct may be a subtype of a trait supertype
     if (fromdcl->tag != StructTag || !(to->flags & TraitType))
         return NoMatch;
@@ -1570,6 +1831,12 @@ INode *structFindSuper(INode *type1, INode *type2) {
     StructNode *typ1 = (StructNode *)itypeGetTypeDcl(type1);
     StructNode *typ2 = (StructNode *)itypeGetTypeDcl(type2);
 
+    // An enrichment and its base are not one another's supertype, but either
+    // stands for both: they have one representation and substitute freely, so an
+    // inferred type in common is whichever was seen first
+    if (structExtendsEquiv(type1, type2))
+        return type1;
+
     // The only supertype supported with structs is they both use the same, same-sized base trait
     if (typ1->basetrait && typ2->basetrait 
         && structGetBaseTrait((StructNode*)itypeGetTypeDcl(typ1->basetrait)) == structGetBaseTrait((StructNode*)itypeGetTypeDcl(typ2->basetrait))
@@ -1592,6 +1859,10 @@ INode *structFindSuper(INode *type1, INode *type2) {
 INode *structRefFindSuper(INode *type1, INode *type2) {
     StructNode *typ1 = (StructNode *)itypeGetTypeDcl(type1);
     StructNode *typ2 = (StructNode *)itypeGetTypeDcl(type2);
+
+    // As in structFindSuper: either name stands for both
+    if (structExtendsEquiv(type1, type2))
+        return type1;
 
     // The only supertype supported with structs is they both use the same base trait
     if (typ1->basetrait && typ2->basetrait

@@ -233,7 +233,17 @@ TypeCompare refMatches(RefNode *to, RefNode *from, SubtypeConstraint constraint)
         match = itypeMatches(from->vtexp, to->vtexp, Regref); // contravariant
         break;
     case MayRead | MayWrite:
-        return itypeIsSame(to->vtexp, from->vtexp) ? result : NoMatch; // invariant
+        // Invariant, because a write through the reference must not leave a
+        // different shape where a read expects this one. An enrichment and its
+        // base are the exception the language does have: 'extends' may not touch
+        // the fields, so neither adds state the other could break, and a write of
+        // either through a reference to the other stores one representation.
+        // CastSubtype rather than the permission's own answer, because the two
+        // are still distinct types: the pointer has to be recast, or generation
+        // passes a pointer to one where the function's signature says the other.
+        if (itypeIsSame(to->vtexp, from->vtexp))
+            return result;
+        return structExtendsEquiv(to->vtexp, from->vtexp) ? CastSubtype : NoMatch;
     }
     switch (match) {
     case EqMatch:

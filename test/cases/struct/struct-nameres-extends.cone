@@ -1,0 +1,88 @@
+// What may be enriched, and what an enrichment may declare.
+//
+// Name resolution stage: taking a base's members is what builds the enriching
+// type's dictionary, so every one of these is reported while that type is
+// resolved. A name-resolution diagnostic stops the compile before type checking,
+// so nothing here reaches it and no type-check expectation would be met.
+//
+// The base clause grammar -- 'extends' on an abstraction, and either base clause
+// written twice -- is a stage earlier, in trait-parse-extends. Reaching a private
+// member of the base from outside the pair is type check's, in
+// struct-typecheck-methods.
+
+struct Box {
+  pub mut w i32;
+  pub fn wide(self) i32 {
+    w;
+  }
+}
+
+trait Shape {
+  pub fn area(self &) i32;
+}
+
+enum Event {
+  tag i32;
+  pub struct Click { pub x i32; }
+}
+
+struct Held {
+  pub n i32;
+  fn final(self &uni) {
+  }
+}
+
+// An enrichment adds methods and no fields: that is what keeps the two
+// representations identical, and so what keeps the substitution free
+struct AddsField extends Box {
+  pub extra i32;               //~ ErrorExtendsField:7 "it declares none of its own"
+}
+
+// No override. One value would otherwise mean two things, depending on which of
+// the two names reached it
+struct Overrides extends Box {
+  pub fn wide(self) i32 {      //~ ErrorExtendsOverride:7 "adds to its base rather than overriding it"
+    1;
+  }
+}
+
+// A method of the enrichment colliding with a field of the base is the same rule
+// reached from the other side: one namespace, one name
+struct FieldClash extends Box {
+  pub fn w(self) i32 {         //~ ErrorExtendsOverride:7 "declares a field of that name"
+    1;
+  }
+}
+
+// An abstraction holds no value, so there is nothing of it to enrich; what a
+// concrete type asserts about one is conformance
+struct OnTrait extends Shape {   //~ ErrorExtendsBase:24 "there is nothing of it to enrich"
+}
+
+// An enum's variant set is its identity, so adding to one adds variants. That is
+// a relationship of its own and it is not built (coneref/refenum.html)
+struct OnEnum extends Event {    //~ ErrorExtendsBase:23 "adding to it adds variants"
+}
+
+// A variant's fields are its enum's, spliced in, so it has no representation of
+// its own to stand on
+struct OnVariant extends Click { //~ ErrorExtendsBase:26 "no representation of its own"
+}
+
+// A base declaring 'final' or 'clone' is refused rather than silently leaving
+// the base's finalizer unrun for every value typed as the enrichment
+struct OnFinal extends Held {    //~ ErrorExtendsBase:24 "does not carry across to an enrichment"
+}
+
+// Only a struct has members to take and a representation to share
+struct OnNumber extends i32 {    //~ ErrorExtendsBase:25 "enriches a concrete struct type"
+}
+
+// An enrichment starts from a type that is already complete
+struct Itself extends Itself {   //~ ErrorCircular:23 "cannot extend itself"
+}
+
+struct Ring1 extends Ring2 {
+}
+struct Ring2 extends Ring1 {     //~ ErrorCircular:22 "each depends on the other"
+}

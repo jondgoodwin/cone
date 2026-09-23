@@ -1,0 +1,238 @@
+// Enriching a concrete type with methods: 'extends'.
+//
+// A type declared with 'extends' over a concrete base adds methods and no
+// fields, so the two have one representation and their values substitute for
+// each other in both directions at no cost. Everything here is about what that
+// buys and what it costs: the enrichment's own name is what puts the added
+// methods in view, the base's members are all reachable through it, and a value
+// crosses between the two names in either direction, by value and through a
+// reference.
+//
+// A run rather than a compile, because almost none of this can be seen by
+// compiling: which declaration a call reached, which field it read and whether a
+// value survived the crossing intact are all runtime facts. What compiling alone
+// does show -- that the two types have one LLVM layout -- is a check in
+// cases.toml, because a run would print the same numbers whatever the layouts
+// were.
+//
+// Field folding, which this shares its mechanism with, is struct-fold's. The one
+// thing about it here is what happens to a base's fold clause when the base is
+// enriched: it comes across with the field it is written on, so RaceCar reaches
+// Car's delegated names too.
+//
+// What is refused is split by stage: the base clause grammar is
+// trait-parse-extends, and what may be enriched and what an enrichment may
+// declare is struct-nameres-extends.
+
+import stdio.*;
+
+fn show(label &[]u8, n i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+// -------- the base, and an enrichment of it --------
+
+// 'scale' is private, and stays private outside the pair: an enrichment is
+// inside the base's encapsulation boundary, and the enrichment's own clients are
+// not. struct-nameres-extends has the refusal from outside.
+struct Meter {
+  pub mut cm i32;
+  scale i32;
+
+  pub fn scaled(self) i32 {
+    cm * scale;
+  }
+  pub fn bump(self &mut) {
+    cm = cm + 1;
+  }
+  fn hidden(self) i32 {
+    scale + scale;
+  }
+  // A static of the base is reached through the enrichment's name too, and it
+  // still returns the base type -- which is how a value of an enriched type is
+  // obtained from a library that never heard of the enrichment
+  pub fn make() Meter {
+    Meter[4, 5];
+  }
+}
+
+struct Gauge extends Meter {
+  // The base's fields are this type's own: its methods read and write them,
+  // by bare name, private ones included
+  pub fn doubled(self) i32 {
+    cm + cm;
+  }
+  pub fn reset(self &mut) {
+    cm = 0;
+  }
+  pub fn peek(self) i32 {
+    scale;
+  }
+  pub fn viaPrivateMethod(self) i32 {
+    hidden();
+  }
+  // A positional literal of the enrichment, which can carry a value for the
+  // base's private field because this is a method of the type
+  pub fn makeG() Gauge {
+    Gauge[7, 3];
+  }
+}
+
+// A sibling enrichment: it declared the same base, so its values and Gauge's
+// substitute for each other too
+struct Labeled extends Meter {
+  pub fn tenths(self) i32 {
+    cm * 10;
+  }
+}
+
+// A chain. Every hop adds methods and no fields, so all three are one
+// representation, and what Fancy takes from Gauge includes what Gauge took
+// from Meter -- the private members among them.
+struct Fancy extends Gauge {
+  pub fn quadrupled(self) i32 {
+    doubled() + doubled();
+  }
+  pub fn deepPrivate(self) i32 {
+    scale;
+  }
+}
+
+// -------- substitution in both directions --------
+
+fn wantsMeter(m Meter) i32 {
+  m.scaled();
+}
+
+fn wantsGauge(g Gauge) i32 {
+  g.doubled();
+}
+
+fn readsMeter(m &Meter) i32 {
+  m.cm;
+}
+
+fn writesMeter(m &mut Meter) {
+  m.cm = 100;
+}
+
+// -------- what the enrichment delivers: retroactive conformance --------
+//
+// Meter declares no 'area', so a Meter value satisfies nothing that wants one.
+// Framed adds it, so a Meter value bound to a Framed reaches the trait -- owned
+// rather than ambient, because it is reached by naming Framed. Two rival
+// enrichments could not collide: each conformance hangs off its own name.
+
+trait Area {
+  pub fn area(self &) i32;
+}
+
+struct Framed extends Meter {
+  pub fn area(self &) i32 {
+    cm * cm;
+  }
+}
+
+fn areaOf(a &<Area) i32 {
+  a.area();
+}
+
+// -------- both relationships at once --------
+//
+// 'extends' names a concrete base and 'is' names abstractions. They are
+// different assertions, so a type may write both, in either order.
+
+trait Sized {
+  pub fn span(self &) i32;
+}
+
+struct Ruler extends Meter is Sized {
+  pub fn span(self &) i32 {
+    cm + 1;
+  }
+}
+
+// -------- a base whose field folds names in --------
+
+struct Engine {
+  pub mut kw i32;
+  pub fn thrust(self) i32 {
+    kw * 2;
+  }
+}
+
+struct Car {
+  pub engine Engine use *;
+  pub fn wheels(self) i32 {
+    4;
+  }
+}
+
+struct RaceCar extends Car {
+  pub fn boost(self) i32 {
+    thrust() + 1;
+  }
+}
+
+fn main() i32 {
+  // The base's members, reached through the enrichment's name
+  mut g = Gauge.makeG();
+  show("base-field-is-the-enrichment-s", g.cm);
+  show("base-method-needs-no-clone", g.scaled());
+  show("base-private-field", g.peek());
+  show("base-private-method", g.viaPrivateMethod());
+  show("enrichment-s-own-method", g.doubled());
+
+  // A base method taking a '&mut' receiver, and the enrichment's own
+  (&mut g).bump();
+  show("base-method-through-mut-ref", g.cm);
+  (&mut g).reset();
+  show("own-method-through-mut-ref", g.cm);
+
+  // Substitution by value, in both directions
+  mut m = Meter.make();
+  show("enrichment-as-base-by-value", wantsMeter(g));
+  show("base-as-enrichment-by-value", wantsGauge(m));
+
+  // And through a reference, read and write
+  show("enrichment-as-base-by-ref", readsMeter(&g));
+  writesMeter(&mut g);
+  show("enrichment-as-base-by-mut-ref", g.cm);
+
+  // Between two siblings of one base
+  mut l Labeled = g;
+  show("sibling-for-sibling", l.tenths());
+
+  // The base's static, reached by the new name: it returns the base type, and
+  // the value is bound to the enrichment
+  imm made Gauge = Gauge.make();
+  show("value-from-the-base-s-static", made.doubled());
+
+  // Down a chain
+  imm f Fancy = Meter.make();
+  show("chain-reaches-the-top", f.quadrupled());
+  show("chain-reaches-the-bottom", f.scaled());
+  show("chain-reaches-private", f.deepPrivate());
+  show("chain-substitutes-for-its-root", wantsMeter(f));
+
+  // Retroactive conformance: a value of the base, reaching a trait the base
+  // does not satisfy, through the name that added the method
+  imm fr Framed = Meter.make();
+  show("enrichment-supplies-conformance", areaOf(&fr));
+
+  // 'extends' and 'is' on one declaration
+  imm r Ruler = Meter.make();
+  show("is-beside-extends", (&r).span());
+  show("extends-beside-is", r.scaled());
+
+  // A base's fold clause comes across with the field it is written on
+  imm rc RaceCar = Car[Engine[10]];
+  show("folded-field-across-extends", rc.kw);
+  show("folded-method-across-extends", rc.thrust());
+  show("folded-name-bare-in-enrichment", rc.boost());
+  show("base-s-own-method-across", rc.wheels());
+  0;
+}

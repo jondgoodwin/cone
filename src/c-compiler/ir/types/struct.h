@@ -36,6 +36,8 @@ typedef struct StructNode {
     Name *namesym;
     DclInfo dclinfo;        // Owner and the facts that decide the linker symbol
     INode *basetrait;       // The abstraction this type is-a, or the enum a variant belongs to
+    INode *extendsbase;     // The type expression of the concrete base an 'extends' enriches, or NULL
+    INode *extendsdcl;      // That base's declaration, set once its members have been taken; NULL until then
     Nodes *derived;         // If a closed, base trait, this lists all structs derived from it
     Nodes *traits;          // Every trait whose members were mixed in (NULL if none)
     NodeList fields;        // Ordered list of all fields
@@ -77,6 +79,17 @@ void structFoldReceiver(StructNode *type, Name *name, INode **objp, INode *lexno
 
 // Unwrap one hop: the declaration of the base this type names
 StructNode *structBaseTraitDcl(StructNode *node);
+
+// The concrete type at the bottom of this type's 'extends' chain: the type
+// itself where it enriches nothing. Two types substitute for each other exactly
+// where this answers the same declaration for both -- which is what the
+// declarations licensed, chain and siblings included, and never a coincidence of
+// shape between two types that named no base.
+StructNode *structExtendsRoot(StructNode *node);
+
+// Do two type declarations substitute for each other because one enriches the
+// other, or because both enrich one base? Nothing else answers yes.
+int structExtendsEquiv(INode *type1, INode *type2);
 
 // Get bottom-most base trait for some trait/struct, or NULL if there is not one
 StructNode *structGetBaseTrait(StructNode *node);
