@@ -247,6 +247,59 @@ description = "What an import does not put in reach: a sister's private name, a 
 tags = ["nameres"]
 diagnostics = 3
 
+# -------- import of a parent's name --------
+#
+# 'import' takes ANY name the registry holds, not only a module [Jon 23 Sep]:
+# inside a submodule, 'import Point;' binds the parent's public Point -- a type,
+# a function, a global -- exactly as 'import log;' binds a sister. A private
+# name of the parent is refused (ErrorNotPublic), so 'pub' shares downward as
+# well as outward. A submodule is parsed before its parent's own files, so such
+# a name is bound in the fold passes rather than at parse.
+#
+# module-import-parent runs a struct, a function and a global, a written import
+# beside a wildcard's arrival of the same declaration, and two levels down a
+# module and a type the level above re-exported, the module folded from with its
+# 'use' clause. module-import-parent-nameres holds what binding refuses,
+# module-import-parent-parse the name imported twice, and
+# module-import-parent-file a file reached by a name the parent answers too.
+
+[scenario.module-import-parent]
+category = "run"
+description = "A submodule importing its parent's public struct, function and global, a wildcard meeting a written import, and a re-exported module and type two levels down"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+# An import of a parent's name binds and declares nothing. Each declaration is
+# the parent's alone, spelled bare because the parent is the root: one global,
+# one function, and nothing spelled after a module that imported them.
+[[scenario.module-import-parent.check]]
+name = "an-import-of-a-parent-name-declares-no-symbol"
+target = "symbols"
+contains = ["define internal area comdat nodeduplicate"]
+excludes = ["scaling.area", "scaling.count", "scaling.Point", "solids.Point",
+            "inner.Point", "inner.twice", "solids.twice"]
+
+[scenario.module-import-parent-nameres]
+category = "reject"
+description = "What an import of a parent's name refuses: a private name, a name the parent has not got, a name the submodule declares, a 'use' clause on a struct, and a name written twice"
+tags = ["nameres"]
+diagnostics = 5
+
+[scenario.module-import-parent-parse]
+category = "reject"
+description = "A name of the parent imported twice"
+tags = ["parse"]
+diagnostics = 1
+
+[scenario.module-import-parent-file]
+category = "reject"
+description = "A submodule's bare name reached as a file that the parent's registry answers with something else"
+tags = ["nameres"]
+diagnostics = 1
+
+[[scenario.module-import-parent-file.run]]
+name = "search-path"
+options = ["--path=test/cases/module"]
+
 # -------- an import's 'use' clause --------
 #
 # An import may carry the fold clause a global carries -- a list with 'as', '*

@@ -278,10 +278,21 @@ composed — and it binds her name here as an alias, under the import's own
 visibility. It is the mechanism that will reach an external package, asking a
 different registry: one lookup, two kinds of neighbour.
 
+**And it reaches UP by importing a public name of its parent** [Jon 23 Sep].
+The registry is the parent's namespace, so it holds more than modules: what the
+parent declares, what its imports bound and what its folds brought in. `import
+Point` inside a submodule binds the parent's public `Point` — a type, a function,
+a global — as an alias exactly as `import wheels` binds a sister. A private name
+of the parent is `ErrorNotPublic`, as a private submodule is outside its parent,
+so `pub` shares a name downward as well as outward. A sister and a declaration
+of the parent cannot share a name, being names of one namespace, so the import
+is never ambiguous.
+
 **Nothing arrives unasked.** A module's namespace holds what it declares, what a
 fold brought in, its own children and what its imports bound. A sister nobody
 imported is `ErrorUnkName`, which is the dependency being stated rather than
-handed.
+handed, and so is a name of the parent nobody imported: a bare name does not
+climb.
 
 ⚠ **The registry is SCOPED, not accumulating, and this is provisional.** It is
 the *immediate* parent's namespace and no ancestor's, so descending a level drops
@@ -295,7 +306,7 @@ ceremony.
 🛑 **A module may not name its parent** (`ErrorModReach`): that is a reference back
 along the edge that contains it, which is the one shape the tree rules out, and
 it is not needed, because what the parent published is already in the registry
-the child reads.
+the child reads, and each name of it is imported by that name.
 
 🛑 **And a neighbour may not be reached by a path to her file** (`ErrorModReach`).
 A path spelled through a folder and back out of it arrives at a module the sweep
@@ -411,12 +422,32 @@ first**:
   **A module the path reaches that has an owner is `ErrorModReach`** — see "What
   a submodule is" — and one resolving to a file of the importing module's own
   folder or to its own submodule is `ErrorModFile`.
+- **The registry again, for a name that is not a module** [Jon 23 Sep]. A
+  submodule is parsed before its parent's own files (`parseModuleTree`), so at
+  parse the parent's namespace holds only its children and its own name; what
+  the parent declares and what its imports bind are not there yet. So where the
+  written name is a bare identifier, the importing module has a parent, and
+  neither the registry nor a file answers it, `parseImportName` holds the import
+  with an alias not yet bound (`binding`), and `importBindName` binds it in the
+  fold passes, once the parent's own folds have run. Importing one name twice is
+  refused at parse (`ErrorDupImport`), as a module imported twice is.
 
 Either way the module is bound into the importing module's namespace under its
 own `namesym`, as an `AliasDclNode` carrying the import's visibility
 (`importBindModule`). So a module drawn out of a folder is bound and pathed
 through by the folder's name, and the file an import happened to name is only
-where the module was found.
+where the module was found. A name of the parent is bound under the name
+written, as an alias of the same kind whose target is the parent's own binding
+— see "Name resolution" below.
+
+⚠ **So a file answers a bare name before a declaration of the parent does**,
+which is the one place the registry-first order is not what decides: the file is
+found at parse, the declaration only after. A file relative to a submodule is one
+of its own files or its own submodule, both `ErrorModFile`, so what can arrive
+this way is a module on the package search path (`--path`). Where the parent
+answers the same name with something else, the import is `ErrorDupName` in the
+pass that reports (`importCheckNamedFile`), rather than meaning whichever was
+parsed first; where the parent binds the same module, the two are one.
 
 `parseInclude` locates the named file, registers it to the *current* module and
 parses its global statements into that module. It builds no node, creates no
@@ -480,6 +511,24 @@ module's folds used to run at the start of its own name resolution, and modules
 are resolved in the order they were loaded — so a module resolved earlier, the
 root among them, looked a folded name up before it was there, and one resolved
 later found it.
+
+**An import of a name of the parent is bound among the imports, in the order
+written** (`importBindName`) [Jon 23 Sep]. It reads the parent's namespace, so
+`modFoldNames` runs the parent's folds first, as it runs an imported module's:
+what the parent re-exports is there to be taken. The binding is an alias to the
+parent's own binding — the origin kept, and a global's fold reached through the
+same global — under the import's visibility and marked `FlagImportName`, since it
+states a dependency as a module's binding does, and a module extending this one
+does not take it. It is WRITTEN, so it merges with a wildcard's arrival of the
+same declaration and collides with anything else the module wrote under that
+name: its own declaration (reported at the import) or a listed item
+(`modFoldCollisionAt`, which places the import among the imports). A name the
+parent has not got, or holds privately, WAITS like a listed item, and is
+`ErrorUnkName` or `ErrorNotPublic` in the pass that reports. Where the parent's
+answer is a module — one the parent imported and re-exported — it becomes the
+import's `module`, and the import's `use` clause folds from it in the same pass
+as any import's; a clause on anything else is `ErrorBadFold`, since a type's
+members are reached through the type, not folded from it.
 
 **Ahead of the folds, what every module's `extends` names is resolved**
 (`modExtendsResolve`, then `modExtendsCheckCycle` over the whole list), so that
@@ -921,7 +970,9 @@ subfolder that holds none is organisational at any depth, and a designated file
 too deep to be a direct child is refused. **A module reaches SIDEWAYS too**: it
 imports a sister by name, resolved against the registry its parent is, and
 because every module of a tree is compiled into one object that import *links* —
-which an import between two loaded modules cannot do. The registry is the
+which an import between two loaded modules cannot do. **And UP**: it imports any
+public name of its parent the same way, a type, a function or a global bound as
+an alias [Jon 23 Sep]. The registry is the
 immediate parent's namespace and no ancestor's, which is the scoped reading,
 adopted provisionally. There is no nesting within a *file* — a `mod name { ... }`
 block is `ErrorUnbuiltKind` — no package, no manifest and no interface artifact;
@@ -945,7 +996,7 @@ module's `use` *statement* names an enum. See "Folding through a global" and
 
 **A module imports another once.** A second import is `ErrorDupImport`, naming
 both: an identical repeat [Jon 23 Sep] as much as one that differs in its clause
-or its `pub`.
+or its `pub`. So is a second import of one name of the parent.
 
 **A name written twice is an error; one never written merges** [Jon 23 Sep].
 Every fold into a module's namespace binds through `modFoldBind`. The same
