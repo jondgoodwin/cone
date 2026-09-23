@@ -428,7 +428,52 @@ def parse_annotations(source: Path, codes: dict[str, int]) -> list[Annotation]:
 MODULE_RE = re.compile(r"^\s*(?:import|include)\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)
 
 
-def support_closure(source: Path, group_dir: Path, support: set[str]) -> list[Path]:
+def named_source(group_dir: Path, name: str) -> Path | None:
+    """The source the suite refers to by ``name``, flat or as a folder.
+
+    A ``.cone`` source is either ``<name>.cone`` or the designated file of a
+    folder named for it, ``<name>/<name>.cone``. That is the compiler's own
+    lookup, so a folder scenario and a folder support module are reached exactly
+    as the language reaches a module folder, and the same name means the same
+    thing to the runner and to conec.
+
+    Both spellings at once is a configuration error rather than a preference:
+    the compiler takes the flat file and never looks in the folder, so the
+    folder's files would sit unread while looking like coverage.
+    """
+    flat = group_dir / f"{name}.cone"
+    designated = group_dir / name / f"{name}.cone"
+    if flat.exists() and designated.exists():
+        raise SuiteError(
+            f"{group_dir}: {name!r} is written both as {flat.name} and as"
+            f" {name}/{designated.name}. The compiler takes the first and never"
+            f" reads the folder, so one of them has to go")
+    if flat.exists():
+        return flat
+    if designated.exists():
+        return designated
+    folder = group_dir / name
+    if folder.is_dir():
+        raise SuiteError(
+            f"{folder}: a folder holds a module when it holds the file named for"
+            f" it, so this one needs {name}.cone as its designated file")
+    return None
+
+
+def folder_files(source: Path) -> list[Path]:
+    """Every ``.cone`` file of a folder source, its designated file first.
+
+    The compiler sweeps the folder, so these files *are* the scenario: they are
+    not registered one by one, because listing them would restate what the sweep
+    is for. They are what the runner reads annotations out of, since a diagnostic
+    reported in a swept file carries that file's path.
+    """
+    if source.parent.name != source.stem:
+        return [source]
+    return [source] + sorted(p for p in source.parent.rglob("*.cone") if p != source)
+
+
+def support_closure(sources: list[Path], group_dir: Path, support: set[str]) -> list[Path]:
     """The support modules a scenario pulls in, directly or through another.
 
     R2.12 registers a support module per group; this says which scenarios each
@@ -437,20 +482,25 @@ def support_closure(source: Path, group_dir: Path, support: set[str]) -> list[Pa
     path, and an annotation only matches a diagnostic reported against its own
     file, so without this a diagnostic in a support module could be produced
     but never expected -- which is the hole that left ErrorNoEof uncoverable.
+
+    A support module that is a folder contributes every file of it, for the same
+    reason: the compiler sweeps them into the module the scenario imported, and
+    each of them reports against itself.
     """
     seen: set[str] = set()
     found: list[Path] = []
-    queue = [source]
+    queue = list(sources)
     while queue:
         text = queue.pop().read_text(encoding="utf-8", errors="replace")
         for name in MODULE_RE.findall(normalize(text)):
             if name not in support or name in seen:
                 continue
             seen.add(name)
-            module = group_dir / f"{name}.cone"
-            if module.exists():
-                found.append(module)
-                queue.append(module)
+            module = named_source(group_dir, name)
+            if module:
+                members = folder_files(module)
+                found.extend(members)
+                queue.extend(members)
     return found
 
 
@@ -614,15 +664,17 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
                 raise SuiteError(
                     f"{where}: a 'driver' scenario takes its options from argv,"
                     f" so a [[run]] table would be silently ignored")
-            stray = group_dir / f"{name}.cone"
-            if stray.exists():
+            stray = named_source(group_dir, name)
+            if stray:
                 raise SuiteError(f"{where}: a 'driver' scenario must have no {stray.name}")
         else:
             if "argv" in table:
                 raise SuiteError(f"{where}: argv belongs to a 'driver' scenario only")
-            source = group_dir / f"{name}.cone"
-            if not source.exists():
-                raise SuiteError(f"{where}: listed scenario has no {source.name} (R2.12)")
+            source = named_source(group_dir, name)
+            if source is None:
+                raise SuiteError(
+                    f"{where}: listed scenario has neither {name}.cone nor"
+                    f" {name}/{name}.cone (R2.12)")
 
         # R2.10 names the total diagnostic count as recover's file-level
         # expectation. It asserts the count rather than each diagnostic, so
@@ -676,7 +728,11 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
             # A support module's annotations belong to every scenario that pulls
             # it in, so an imported or included file asserts its own diagnostics
             # where they are reported rather than being unassertable (R2.12).
-            scenario.annot_sources = (source, *support_closure(source, group_dir, support))
+            # A folder source's other files are read the same way: the compiler
+            # swept them into the same module, and each reports against itself.
+            members = folder_files(source)
+            scenario.annot_sources = (
+                *members, *support_closure(members, group_dir, support))
             scenario.annotations = [a for file in scenario.annot_sources
                                     for a in parse_annotations(file, codes)]
             body = source.read_text(encoding="utf-8", errors="replace")
@@ -697,13 +753,23 @@ def load_group(group_dir: Path, codes: dict[str, int]) -> list[Scenario]:
         scenarios.append(scenario)
 
     # R2.12: a .cone file that is neither a listed scenario nor a listed support
-    # module is an error, so a forgotten registration fails loudly.
+    # module is an error, so a forgotten registration fails loudly. A folder is
+    # registered the same way, under the name of the module it holds; the files
+    # inside it are not, because the compiler's sweep is what finds them and
+    # listing them would restate the thing under test.
     listed = {s.name for s in scenarios} | support
     for path in sorted(group_dir.glob("*.cone")):
         if path.stem not in listed:
             raise SuiteError(
                 f"{path}: not listed in cases.toml as a scenario or a support"
                 f" module (R2.12)"
+            )
+    for folder in sorted(p for p in group_dir.iterdir() if p.is_dir()):
+        if folder.name not in listed:
+            raise SuiteError(
+                f"{folder}: a folder in a group directory holds one scenario or"
+                f" one support module and is listed in cases.toml under its own"
+                f" name, which {folder.name!r} is not (R2.12)"
             )
     return scenarios
 

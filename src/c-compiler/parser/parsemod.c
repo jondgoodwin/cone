@@ -37,6 +37,124 @@ char *stdiolib =
 void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart);
 ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name *filesym);
 
+// ---------------------------------------------------------------------------
+// The file registry and the folder sweep
+//
+// A module's source files are the files of a folder. The compiler is given one
+// file and finds the rest itself: the folder's other '.cone' files join the
+// module, and so do the files of every subfolder, at any depth. No file set is
+// ever hand-listed, and moving a file between folders is a semantic move.
+//
+// What makes a folder a module folder is the designated file it holds, named for
+// the folder -- 'matrix/matrix.cone'. That convention is the whole of the
+// trigger: the file the compiler is given sweeps its folder exactly when it is
+// that folder's designated file, which is the same probe a subfolder gets. A
+// file that is not its folder's designated file is a module of its own, exactly
+// today's program, and its neighbours are none of its business.
+//
+// Locating a file, registering it to a module and parsing it into that module
+// are three separate steps, because what must happen exactly once is the
+// reading. The registry is keyed by the file's path, so a file is read once and
+// belongs to one module however many importers name it.
+// ---------------------------------------------------------------------------
+
+// folder + name, where folder carries its trailing slash
+char *parsePathJoin(char *folder, char *name) {
+    char *path = memAllocStr(folder, strlen(folder) + strlen(name));
+    strcat(path, name);
+    return path;
+}
+
+// The name of the folder whose designated file this path names, or NULL.
+// Where there is one, the file's basename and the folder's name are the same
+// string, which is what lets a module's name be read off its path by a tool that
+// cannot parse Cone
+Name *parseDesignatedFolder(char *path) {
+    size_t folderlen = fileFolder(path);
+    char *foldername;
+    if (folderlen > 1)
+        foldername = fileName(memAllocStr(path, folderlen - 1));
+    else if (folderlen == 0)
+        // No folder in front of the file, so it sits in the current directory and
+        // that is the folder whose name to read. A file's module may not depend on
+        // the spelling of the path used to reach it
+        foldername = fileCurFolderName();
+    else
+        foldername = NULL;    // a path rooted at the filesystem's own root
+    if (foldername == NULL || strcmp(foldername, fileName(path)) != 0)
+        return NULL;
+    return nametblFind(foldername, strlen(foldername));
+}
+
+// Collect the paths of every '.cone' file beneath a folder: the folder's own
+// files first, then each subfolder's, at any depth
+void parseCollectFolder(FileNames *files, char *folder, char *designated) {
+    FileNames cones, folders;
+    if (!fileFolderScan(folder, &cones, &folders))
+        return;    // a folder that cannot be read contributes no files
+    for (uint32_t i = 0; i < cones.count; ++i) {
+        char *path = parsePathJoin(folder, cones.names[i]);
+        if (strcmp(path, designated) != 0)
+            fileNamesAdd(files, path);
+    }
+    for (uint32_t i = 0; i < folders.count; ++i) {
+        // A subfolder holding its own designated file is a SUBMODULE, and this
+        // is the one branch the walk does not take yet: it would probe here for
+        // '<sub>/<sub>.cone' and recurse into it as a module of its own instead
+        // of absorbing the subfolder's files. Until that is built every
+        // subfolder is organisational, so its files, at any depth, belong to the
+        // enclosing module -- which is what lets a forty-file module group its
+        // files by topic without minting namespaces for them
+        char *subfolder = parsePathJoin(parsePathJoin(folder, folders.names[i]), "/");
+        parseCollectFolder(files, subfolder, designated);
+    }
+}
+
+// Every file of the module a designated file draws: the designated file first,
+// then the rest of its folder's tree. A file that is nobody's designated file is
+// a module of one file
+void parseModuleFiles(FileNames *files, char *path, int designated) {
+    fileNamesInit(files);
+    fileNamesAdd(files, path);
+    if (designated)
+        parseCollectFolder(files, memAllocStr(path, fileFolder(path)), path);
+}
+
+// Register a module's files, so that each is read once and belongs to this
+// module alone, and diagnose what cannot join it. Both diagnostics name full
+// paths, because the paths are the only thing that tells the files apart.
+//
+// A path that cannot join is dropped from the list rather than parsed, and the
+// module goes on with the rest of its files
+void parseRegisterModuleFiles(ParseState *parse, ModuleNode *mod, FileNames *files) {
+    for (uint32_t i = 0; i < files->count; ++i) {
+        char *path = files->names[i];
+        Name *pathsym = nametblFind(path, strlen(path));
+        ModuleNode *owner = pgmFindFile(parse->pgm, pathsym);
+        if (owner) {
+            errorMsg(ErrorModFile,
+                "Source file %s already belongs to module %s, and a file belongs to one module.",
+                path, &owner->namesym->namestr);
+            files->names[i] = NULL;
+            continue;
+        }
+        // Two files of one module sharing a basename leave neither nameable: a
+        // basename is what 'include' spells and what a diagnostic reports
+        // against, so one of the two has to be renamed
+        for (uint32_t j = 0; j < i; ++j) {
+            if (files->names[j] == NULL || strcmp(fileName(files->names[j]), fileName(path)) != 0)
+                continue;
+            errorMsg(ErrorDupFile,
+                "Module %s holds two files named %s: %s and %s. A module's files are named by their basenames, so the two cannot be told apart.",
+                &mod->namesym->namestr, fileName(path), files->names[j], path);
+            files->names[i] = NULL;
+            break;
+        }
+        if (files->names[i])
+            pgmSetFile(parse->pgm, pathsym, mod);
+    }
+}
+
 // Parse source filename/path as identifier or string literal
 char *parseFilename() {
     char *filename;
@@ -64,10 +182,29 @@ void parseInclude(ParseState *parse) {
     filename = parseFilename();
     parseEndOfStatement();
 
+    // Locate the file, then ask the registry for it: a file belongs to one
+    // module, so a file this module's folder already swept in, or that another
+    // module holds, cannot be injected into this one as well
+    char *path = fileFindSrc(lex ? lex->url : NULL, filename);
+    if (path == NULL)
+        errorExit(ExitNF, "Cannot find or read source file %s", filename);
+    Name *pathsym = nametblFind(path, strlen(path));
+    ModuleNode *owner = pgmFindFile(parse->pgm, pathsym);
+    if (owner) {
+        // Reported after the statement's ';' rather than at the token the parse
+        // has reached, which is the next declaration: the include is what is
+        // wrong, and the lexer has already moved past it
+        errorMsgLexAfter(ErrorModFile,
+            "Source file %s already belongs to module %s, and a file belongs to one module.",
+            path, &owner->namesym->namestr);
+        return;
+    }
+    pgmSetFile(parse->pgm, pathsym, parse->mod);
+
     // Inject source of include file, parse its global statements, then pop lexer.
     // An included file never starts a module -- its declarations join the
     // including one -- so a 'mod' declaration in it has nothing to name
-    lexInjectFile(filename);
+    lexInjectPath(path);
     parseGlobalStmts(parse, parse->mod, 0);
     if (lex->toktype != EofToken) {
         errorMsgLex(ErrorNoEof, "Expected end-of-file");
@@ -100,6 +237,18 @@ ImportNode *parseImport(ParseState *parse) {
     // Parse the imported modules
     Name *filesym = nametblFind(modstr, strlen(modstr));
     ModuleNode *newmod = parseLoadAndParseModuleFile(parse, filename, filesym);
+
+    // A file of this module's own folder is already part of this module, so
+    // naming it here asks the module to import itself. The folder is what brings
+    // a sibling file in; 'import' reaches a different module
+    if (newmod == parse->mod) {
+        // After the statement's ';', for parseInclude's reason: the parse has
+        // already moved on to the next declaration
+        errorMsgLexAfter(ErrorModFile,
+            "This file is already part of module %s: a file of the module's folder joins it without being imported.",
+            &newmod->namesym->namestr);
+        return NULL;
+    }
 
     // Add imported module to namespace of existing module, under the name the
     // module declares for itself. That is the filename-derived one until the
@@ -189,25 +338,33 @@ void parseSkipDclBody() {
     } while (depth > 0 && !lexIsToken(EofToken));
 }
 
-// Parse a 'mod' declaration, which names the module a source file belongs to.
+// Parse a 'mod' declaration, which declares the module a folder's files belong
+// to.
 //
-// Only the header form is built: 'mod name;' as a source file's first
-// statement. It names the module the file was loaded as, so that a module's
-// identity comes from its declaration rather than from its filename, and it
-// binds that name into the module's own namespace -- a module is the registry
-// its own contents resolve against, and it publishes itself into it. That
-// binding is what makes a module-level name a local or a type member hides
-// reachable again, as 'name.x'.
+// Only the header form is built: 'mod name;' as the first statement of the
+// module's designated file. What NAMES the module is its folder, which is a
+// filesystem fact a tool that cannot parse Cone can read off a path; a name
+// written here is checked against the folder's and may not replace it. A module
+// named after its file rather than its folder -- a lone file, which is today's
+// program -- has no folder name to check against, so its declaration still
+// renames it, and that is transitional.
+//
+// The declaration also binds the module's name into the module's own namespace
+// -- a module is the registry its own contents resolve against, and it publishes
+// itself into it -- except where the folder already did so at load, which is
+// what makes a module-level name a local or a type member hides reachable again,
+// as 'name.x'.
 //
 // Two shapes the grammar admits are refused because nothing is behind them: a
 // nested 'mod name { ... }' block, which needs a namespace of its own and paths
 // through it, and 'mod trait', a module's abstraction. Reporting each where it
 // is written is what settles its spelling without accepting it.
 //
-// 'atmodstart' is whether this is the first statement of the module's own
-// source. The header claims the whole file, so nothing may precede it, and an
-// included file -- whose declarations join the including module -- may carry
-// none at all.
+// 'atmodstart' is whether this is the first statement of the module's designated
+// file. The declaration claims the module, so nothing may precede it, a second
+// one has nothing left to declare, and a file the folder swept in -- or an
+// included one, whose declarations join the including module -- carries none at
+// all.
 void parseModuleDcl(ModuleNode *mod, int atmodstart) {
     lexNextToken();
 
@@ -244,12 +401,22 @@ void parseModuleDcl(ModuleNode *mod, int atmodstart) {
     if (modname != NULL) {
         if (!atmodstart || (mod->flags & FlagModDcl))
             errorMsgLex(ErrorModDcl,
-                "A 'mod' declaration must be its source file's first statement, and a file declares one module.");
+                "A 'mod' declaration must be its module's designated file's first statement, and a module declares itself once. A file the folder swept in declares nothing.");
         else {
-            // The declaration names the module, replacing what its filename gave it
             mod->flags |= FlagModDcl;
-            mod->namesym = modname;
-            modAddNamedNode(mod, modname, (INode*)mod);
+            if (mod->foldersym != NULL) {
+                // The folder names the module and has bound that name already
+                if (modname != mod->foldersym)
+                    errorMsgLex(ErrorModName,
+                        "This module is named for its folder, '%s'. A 'mod' declaration may restate that name; it may not change it.",
+                        &mod->foldersym->namestr);
+            }
+            else {
+                // A module that is one file is still named after that file,
+                // which is transitional, so its declaration may rename it
+                mod->namesym = modname;
+                modAddNamedNode(mod, modname, (INode*)mod);
+            }
         }
     }
     parseEndOfStatement();
@@ -279,7 +446,8 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
                 parseInclude(parse);
             else {
                 ImportNode *newnode = parseImport(parse);
-                modAddNode(mod, NULL, (INode*)newnode);
+                if (newnode)
+                    modAddNode(mod, NULL, (INode*)newnode);
             }
             break;
 
@@ -411,12 +579,48 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
     }
 }
 
-// If we don't have it, load an imported module by its path/name, then fully parse it.
-// The de-dup key is the filename-derived name, because what must happen once is
-// reading the file; a 'mod' declaration inside may name the module anything
+// Parse every file of a module, in the order the sweep collected them: the
+// designated file first, since it is the only one that may declare the module,
+// and then each file the folder brought in. A file dropped by registration --
+// one another module holds, or one whose basename collides -- is skipped
+void parseModuleFilesParse(ParseState *parse, ModuleNode *mod, FileNames *files) {
+    for (uint32_t i = 0; i < files->count; ++i) {
+        if (files->names[i] == NULL)
+            continue;
+        lexInjectPath(files->names[i]);
+        parseGlobalStmts(parse, mod, i == 0);
+        if (lex->toktype != EofToken) {
+            errorMsgLex(ErrorNoEof, "Expected end-of-file");
+        }
+        lexPop();
+    }
+}
+
+// Load the module a name reaches, unless a module holds its file already, then
+// fully parse it. Three steps: locate the file, register it and every other file
+// its folder sweeps in, and parse each of them into the module.
+//
+// The de-dup key is the file's PATH, because what must happen exactly once is
+// reading the file; neither the filename nor a 'mod' declaration's name decides
+// it, and either may be shared by files in different folders
 ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name *filesym) {
-    // If we already have module, don't re-parse. Just return it.
-    ModuleNode *mod = pgmFindModFile(parse->pgm, filesym);
+    // LOCATE. A built-in module is a string inside the compiler rather than a
+    // file, and stands in the registry under the pseudo-file name its
+    // diagnostics are reported against
+    int builtin = filesym == corelibName || strcmp(filename, "stdio") == 0;
+    char *path;
+    if (builtin)
+        path = filesym == corelibName ? "corelib" : "stdio";
+    else {
+        path = fileFindSrc(lex ? lex->url : NULL, filename);
+        if (path == NULL)
+            errorExit(ExitNF, "Cannot find or read source file %s", filename);
+    }
+    Name *pathsym = nametblFind(path, strlen(path));
+
+    // REGISTER. If a module holds this file already, that module is what the
+    // name reaches: the file is not read a second time
+    ModuleNode *mod = pgmFindFile(parse->pgm, pathsym);
     if (mod)
         return mod;
 
@@ -424,24 +628,28 @@ ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name 
     ModuleNode *svmod = parse->mod;
     mod = pgmAddMod(parse->pgm, filesym==corelibName || strcmp(filename, "stdio")? 0 : FlagGenMod);
     mod->filesym = filesym;
-    // The filename names the module until its own 'mod' declaration does.
-    // Transitional: the folder walk replaces filename naming altogether
-    mod->namesym = filesym;
+    // The module's name is a filesystem fact: its folder's, where a designated
+    // file drew the module out of a folder, and its file's otherwise. Filename
+    // naming is transitional and is what a designated file replaces
+    mod->foldersym = builtin ? NULL : parseDesignatedFolder(path);
+    mod->namesym = mod->foldersym ? mod->foldersym : filesym;
     // Every loaded module names itself in the owner chain; only the root does not
     dclInfoJoin((INode*)mod, NULL);
     mod->dclinfo.facts |= DclNamesChain;
     parse->mod = mod;
 
-    // Inject the module's source into the lexer
-    if (filesym == corelibName)
-        lexInject(corelibSource, "corelib");
-    else if (strcmp(filename, "stdio") == 0)
-        lexInject(stdiolib, "stdio");
+    // The module's files, all registered before any of them is parsed, so that
+    // which files the module holds does not depend on what the parse of one of
+    // them imports
+    FileNames files;
+    parseModuleFiles(&files, path, mod->foldersym != NULL);
+    if (builtin)
+        pgmSetFile(parse->pgm, pathsym, mod);
     else
-        lexInjectFile(filename);
+        parseRegisterModuleFiles(parse, mod, &files);
 
     // Before parsing, all modules (except corelib) get an auto-import of core lib
-    ModuleNode *corelib = pgmFindModFile(parse->pgm, corelibName);
+    ModuleNode *corelib = pgmFindFile(parse->pgm, corelibName);
     if (corelib && corelib != mod) {
         ImportNode *importnode = newImportNode();
         importnode->foldall = 1;
@@ -449,13 +657,22 @@ ModuleNode *parseLoadAndParseModuleFile(ParseState *parse, char *filename, Name 
         modAddNode(mod, NULL, (INode*)importnode);
     }
 
-    // Parse the imported module's source, then pop lexer and name hook
+    // Parse the module's source, then pop lexer and name hook
     modHook(svmod, mod);
-    parseGlobalStmts(parse, mod, 1);
-    if (lex->toktype != EofToken) {
-        errorMsgLex(ErrorNoEof, "Expected end-of-file");
+    // A module folder's name is in reach inside the module whether or not a
+    // declaration restates it, since the folder is what names it
+    if (mod->foldersym)
+        modAddNamedNode(mod, mod->namesym, (INode*)mod);
+    if (builtin) {
+        lexInject(filesym == corelibName ? corelibSource : stdiolib, path);
+        parseGlobalStmts(parse, mod, 1);
+        if (lex->toktype != EofToken) {
+            errorMsgLex(ErrorNoEof, "Expected end-of-file");
+        }
+        lexPop();
     }
-    lexPop();
+    else
+        parseModuleFilesParse(parse, mod, &files);
     modHook(mod, svmod);
 
     // Restore focus to original module we were working on
@@ -481,17 +698,25 @@ ProgramNode *parsePgm(ConeOptions *opt) {
     parse.inrettype = 0;
 
     // Create module node and set up for parsing main source file.
-    // The root is named after its file, as an imported module is, so that an
-    // import cycle back to this file finds it (pgmFindModFile) instead of reading
-    // the file again as a second module. It sets no DclNamesChain: the root
-    // contributes no prefix, so its declarations are spelled bare -- and a 'mod'
-    // declaration in the root file changes what the module is called, never how
-    // the program's symbols are spelled.
+    // The root's file is registered like any other, so an import cycle back to
+    // it finds the module already parsed instead of reading the file again as a
+    // second module. It sets no DclNamesChain: the root contributes no prefix, so
+    // its declarations are spelled bare -- and naming the root module changes
+    // what it is called, never how the program's symbols are spelled.
     ModuleNode *mod = pgmAddMod(pgm, FlagGenMod);
     mod->filesym = nametblFind(opt->srcname, strlen(opt->srcname));
-    mod->namesym = mod->filesym;
-    lexInjectFile(opt->srcpath);
-    modHook(NULL, mod);
+
+    // The program is one file, or a folder's worth of them: the file the
+    // compiler was pointed at sweeps its folder when it is that folder's
+    // designated file, and is a module of one file otherwise
+    char *path = fileFindSrc(lex ? lex->url : NULL, opt->srcpath);
+    if (path == NULL)
+        errorExit(ExitNF, "Cannot find or read source file %s", opt->srcpath);
+    mod->foldersym = parseDesignatedFolder(path);
+    mod->namesym = mod->foldersym ? mod->foldersym : mod->filesym;
+    FileNames files;
+    parseModuleFiles(&files, path, mod->foldersym != NULL);
+    parseRegisterModuleFiles(&parse, mod, &files);
 
     // Inject and parse core library module, auto-imported into main source
     ModuleNode *corelib = parseLoadAndParseModuleFile(&parse, "", corelibName);
@@ -500,15 +725,15 @@ ProgramNode *parsePgm(ConeOptions *opt) {
     importnode->module = corelib;
     modAddNode(mod, NULL, (INode*)importnode);
 
-    // Now actually parse main source file
+    // Now actually parse the main module's files
     parse.mod = mod;
     modHook(NULL, mod);
-    parseGlobalStmts(&parse, mod, 1);
-    // A stray '}' at global scope ends the statement loop. Without this the rest
-    // of the main file is silently discarded, exactly as an include would be --
-    // parseInclude and parseLoadAndParseModuleFile already make the same check.
-    if (lex->toktype != EofToken)
-        errorMsgLex(ErrorNoEof, "Expected end-of-file");
+    if (mod->foldersym)
+        modAddNamedNode(mod, mod->namesym, (INode*)mod);
+    // A stray '}' at global scope ends a file's statement loop. Without the
+    // end-of-file check inside, the rest of that file would be silently
+    // discarded, exactly as an include would be
+    parseModuleFilesParse(&parse, mod, &files);
     modHook(mod, NULL);
     return pgm;
 }

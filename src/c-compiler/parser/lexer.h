@@ -181,7 +181,7 @@ extern Lexer *lex;
 
 // Lexer functions
 void lexInit(ConeOptions *opt);
-void lexInjectFile(char *url);
+void lexInjectPath(char *path);
 void lexInject(char *src, char *url);
 void lexPop();
 void lexNextToken();

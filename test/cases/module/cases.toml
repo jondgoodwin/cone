@@ -9,7 +9,14 @@
 # a 'module' prefix that an identifier can hold, because a module's name is also
 # its qualifier and 'module-importsub' is not spellable as one.
 #
-# Only module-success runs. Everything about 'import' compiles and stops there:
+# It is also the first group with folder scenarios and a folder support module.
+# A name here reaches either '<name>.cone' or '<name>/<name>.cone', which is the
+# compiler's own lookup, and a folder is registered below under its own name.
+# The files inside one are not registered: the sweep is what finds them, and
+# listing them would restate the thing under test.
+#
+# Only module-success and module-folder-sweep run. Everything about 'import'
+# compiles and stops there:
 # a program spanning modules cannot be linked yet, and design/diagnostics/test-suite.md
 # section 4 forbids adding a synthetic 'main' to promote a scenario's category.
 # What running would have shown -- which symbol a call lowered to, and whether a
@@ -40,7 +47,7 @@ support = ["moduleinc.cone", "modulesub.cone", "moduleeof.cone",
            "modulesyms.cone", "modulecyc.cone", "modulex_y.cone", "modulex.cone",
            "moduletransit.cone", "modulelate.cone", "moduleearly.cone",
            "modulemacro.cone", "moduledeclared.cone",
-           "modulefold.cone", "modulefoldlate.cone"]
+           "modulefold.cone", "modulefoldlate.cone", "modfolder"]
 
 # -------- success --------
 
@@ -86,6 +93,55 @@ contains = [
   "define internal Settings.cells comdat nodeduplicate",
 ]
 excludes = ["rows", "cols", "backupRows", "backupCells"]
+
+# -------- the folder sweep --------
+#
+# A module is the files of a folder. module-folder-sweep is the folder scenario
+# compiled as the program's root, and it runs, because a folder module is one
+# module however many files it spans; module-folder-import reaches one through
+# 'import'. Between them they pin what the sweep brings in, what names it, and
+# that the files of an organisational subfolder are the enclosing module's.
+#
+# What pins the other half -- that a file which is NOT its folder's designated
+# file sweeps nothing -- is the whole rest of the corpus: every group directory
+# holds a dozen unrelated programs side by side, and each compiles alone.
+
+[scenario.module-folder-sweep]
+category = "run"
+description = "A module spanning its folder's files: a sibling and two depths of subfolder, compiled from the designated file alone"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+# A folder module is one module, so its declarations are the root's and are
+# spelled bare -- whichever of its files each was written in. Nothing is spelled
+# after the folder, after a subfolder, or after a file.
+[[scenario.module-folder-sweep.check]]
+name = "a-folder-modules-files-declare-into-one-module"
+target = "symbols"
+contains = [
+  "define internal siblingAdd comdat nodeduplicate",
+  "define internal nestedScale comdat nodeduplicate",
+  "define internal deepestOf comdat nodeduplicate",
+  "global internal siblingTotal comdat nodeduplicate",
+]
+excludes = ["module-folder-sweep.", "deep.", "sibling.", "nested."]
+
+[scenario.module-folder-import]
+category = "compile"
+description = "An import reaching a folder's module, whose sibling and subfolder files are its own"
+tags = ["parse", "nameres", "typecheck", "genllvm"]
+
+# Every file the folder swept in declares into the one module, so every one of
+# them is spelled after the FOLDER's name. Neither the subfolder nor a file
+# appears in a symbol: neither is a namespace.
+[[scenario.module-folder-import.check]]
+name = "swept-files-declare-under-the-folders-module"
+target = "symbols"
+contains = [
+  "declare modfolder.folderAdd",
+  "declare modfolder.helperScale",
+  "declare modfolder.partsOf",
+]
+excludes = ["parts.", "helper.", "scale."]
 
 [scenario.module-declared]
 category = "compile"
@@ -418,6 +474,22 @@ category = "reject"
 description = "A 'mod' declaration that is misplaced or has no name, and the nested block and abstraction shapes that are unbuilt"
 tags = ["parse"]
 diagnostics = 4
+
+# What the sweep refuses. It is a folder scenario because several of its
+# diagnostics are reported against a file the scenario's own source never names:
+# the module's files are what is under test, so they are where the expectations
+# live. Two of the six have no line of their own -- which files a module holds is
+# a fact about the filesystem rather than a position in a source -- so they are
+# declared below.
+[scenario.module-folder-reject]
+category = "reject"
+description = "What the folder sweep refuses: a misnaming declaration, a swept file declaring a module, importing and including one's own files, two files of one name and two subfolders declaring one name"
+tags = ["parse"]
+diagnostics = 7
+
+[[scenario.module-folder-reject.unlocated]]
+code = "ErrorDupFile"
+message = "holds two files named same"
 
 [scenario.module-import-missing]
 category = "reject"

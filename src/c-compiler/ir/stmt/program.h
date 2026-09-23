@@ -13,15 +13,23 @@
 typedef struct {
     INodeHdr;
     Nodes *modules;
+    Namespace files;    // The file registry: every source file read, by its path
 } ProgramNode;
 
 ProgramNode *newProgramNode();
 void pgmPrint(ProgramNode *pgm);
 
-// Find the module already loaded from a file of this name, or NULL. The key is
-// the filename-derived name, never the module's declared one: loading twice is
-// what must not happen, and a 'mod' declaration may name the module anything
-ModuleNode *pgmFindModFile(ProgramNode *pgm, Name *filesym);
+// The module a file already belongs to, or NULL. The key is the file's path, so
+// a file is read exactly once and belongs to exactly one module however many
+// importers name it; neither the module's declared name nor its filename is the
+// key, because what must happen once is the reading of the file.
+//
+// A built-in module is a string inside the compiler rather than a file, and is
+// registered under the pseudo-file name its diagnostics are reported against
+ModuleNode *pgmFindFile(ProgramNode *pgm, Name *pathsym);
+
+// Record that a file belongs to a module
+void pgmSetFile(ProgramNode *pgm, Name *pathsym, ModuleNode *mod);
 
 // Add a new module to the program
 ModuleNode *pgmAddMod(ProgramNode *pgm, int16_t flags);

@@ -170,18 +170,18 @@ void lexInit(ConeOptions *opt) {
     keywordInit();
 }
 
-// Inject a new source stream into the lexer
-void lexInjectFile(char *url) {
-    char *src;
-    char *fn;
+// Inject an already-located source file into the lexer. Locating a file is the
+// caller's, because the path is what the file registry is keyed by and what
+// every diagnostic against the file names: it has to be in hand, and asked
+// about, before the file is read
+void lexInjectPath(char *path) {
     timerBegin(LoadTimer);
-    // Load specified source file
-    src = fileLoadSrc(lex? lex->url : NULL, url, &fn);
+    char *src = fileLoad(path);
     if (!src)
-        errorExit(ExitNF, "Cannot find or read source file %s", url);
+        errorExit(ExitNF, "Cannot read source file %s", path);
 
     timerBegin(ParseTimer);
-    lexInject(src, fn);
+    lexInject(src, path);
 }
 
 // Restore previous lexer's stream

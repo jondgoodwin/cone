@@ -15,6 +15,7 @@ ProgramNode *newProgramNode() {
     ProgramNode *pgm;
     newNode(pgm, ProgramNode, ProgramTag);
     pgm->modules = newNodes(4);
+    namespaceInit(&pgm->files, 16);
     return pgm;
 }
 
@@ -26,16 +27,14 @@ ModuleNode *pgmAddMod(ProgramNode *pgm, int16_t flags) {
     return mod;
 }
 
-// Find the module already loaded from a file of this name, or NULL if not found
-ModuleNode *pgmFindModFile(ProgramNode *pgm, Name *filesym) {
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodesFor(pgm->modules, cnt, nodesp)) {
-        ModuleNode *mod = (ModuleNode *)*nodesp;
-        if (mod->filesym == filesym)
-            return mod;
-    }
-    return NULL;
+// The module a file already belongs to, or NULL if the file has not been read
+ModuleNode *pgmFindFile(ProgramNode *pgm, Name *pathsym) {
+    return (ModuleNode *)namespaceFind(&pgm->files, pathsym);
+}
+
+// Record that a file belongs to a module
+void pgmSetFile(ProgramNode *pgm, Name *pathsym, ModuleNode *mod) {
+    namespaceSet(&pgm->files, pathsym, (INode*)mod);
 }
 
 // Serialize a program node
