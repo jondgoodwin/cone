@@ -129,7 +129,9 @@ into position; a missing field takes its default; a field flagged `IsTagField`
 gets the variant's `tagnbr` **inserted** — which is how a variant's discriminant is
 materialized, and why a constructor never writes one. Inserted where the field
 sits, so an enum that placed its discriminant itself is served by the same walk. A
-`_`-prefixed field may not be given a value from outside the type. Then a
+private field may not be given a value from outside the type, by position or by
+name; leaving it to its default is allowed, because the default is the type's own
+value rather than one the literal gives. Then a
 positional pass runs each value through `iexpCoerce` against its field's type: **a
 field takes a value on the same terms a variable initializer does**, a variant
 standing in for its enum included.
