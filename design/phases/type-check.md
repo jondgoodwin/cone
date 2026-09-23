@@ -374,18 +374,21 @@ Steps marked **→** are where a demand can leave and re-enter.
 6. `final` forces `MoveType`; `clone` clears it. Propagate infection up to base
    traits.
 7. **Size is now known**, and `TypeChecked` is set here — meaning laid out.
-8. **→** Analyze the methods.
-9. **→** Verify each mixed-in trait's method requirements against the signatures
+8. Settle the drop fn: validate `final`, and generate a `drop` if a field needs
+   finalizing. Before the methods, because each method's flow pass finalizes a
+   by-value `self`, or a local of this type, only if the type has one by then.
+9. **→** Analyze the methods — not the generated `drop`, which is built lowered.
+10. **→** Verify each mixed-in trait's method requirements against the signatures
    now known: a name the type declares itself must have the one candidate of the
    trait's signature, and a requirement with no body is unmet in a struct. Each
    requirement is analyzed first, under the trait's walk state. This type may have
-   been demanded from inside the trait's own step 8 — a static function written
+   been demanded from inside the trait's own step 9 — a static function written
    above the requirement names it in its signature — and an unchecked requirement
    matched nothing, so whether a variant or an implementer conformed followed
    source order.
 
-Steps 2 and 4 are where recursion arrives; step 7 is why a method at step 8 may
-use its own type by value. The members themselves — which fields and which
+Steps 2 and 4 are where recursion arrives; step 7 is why a method at step 9 may
+use its own type by value, and step 8 why it finalizes one. The members themselves — which fields and which
 default methods a type inherits — were settled by name resolution, which builds
 the dictionary whole before any body is resolved; see [struct](../nodes/struct.md).
 
@@ -560,7 +563,7 @@ Kept so that reopening one is a decision rather than a rediscovery.
 | | `itypeNoSizeCause`, `itypeNoSizeExplain` | the five causes of section 6, and the hop-by-hop trace |
 | | `itypeVariantPending` | whether a variant of an enum is still being laid out — section 10.2 |
 | `ir/iexp.c` | `iexpTypeCheckAny` | check a node expected to be an expression |
-| `ir/types/struct.c` | `structTypeCheck` | the nine steps of section 10.1; sets `TypeChecked` at the layout point; `structCheckTraitReqs` is step 9 |
+| `ir/types/struct.c` | `structTypeCheck` | the ten steps of section 10.1; sets `TypeChecked` at the layout point; `structSetDropFn` is step 8 and `structCheckTraitReqs` step 10 |
 | `ir/stmt/fndcl.c` | `fnDclTypeCheck` | the eight steps of section 10.3, including both error-delta gates |
 | `ir/stmt/vardcl.c` | `varDclTypeCheck` | section 10.4 |
 | `ir/stmt/module.c` | `modTypeCheck` | imports first, then declarations, and an enum extension's copies right after it (`structEnumCheckCopies`) — section 10.5 |

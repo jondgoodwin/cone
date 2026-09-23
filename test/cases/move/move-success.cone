@@ -1,8 +1,10 @@
 // What move semantics permit: a move value flowing from variable to variable,
 // into and out of a call, and back into a deactivated variable; the swap and
 // left-assignment operators that exist so a move value can be taken out of a
-// field without invalidating its container; and the two ways a type escapes
-// move semantics and stays copyable.
+// field without invalidating its container; the two ways a type escapes
+// move semantics and stays copyable; and a move value handed back to a caller
+// through a block, an 'if' or a loop, which a finalizer shows is finalized once,
+// by the caller.
 //
 // A success program can only show that a move is allowed, which a copy would be
 // too. What distinguishes the two is the source becoming unusable, and that is
@@ -180,9 +182,88 @@ fn doubledThrough(r &Plain) i32 {
   r.doubled();
 }
 
+// -------- a field handed back through a block, an if or a loop --------
+
+// A finalizer makes a type a move type, and says out loud when a value is
+// finalized, so a value finalized twice prints twice. Each call below is
+// followed by a line naming what it handed back: a finalize inside the callee
+// would print before that line, and each value received is finalized once, at
+// the end of handedBack, in reverse order of declaration.
+//
+// A struct's field handed back directly is struct-final-once's. A block, an
+// 'if' or a loop used as the value handed back hands back what it yields, so a
+// field it yields -- or a whole local -- leaves the scope the same way, and the
+// struct holding it is not finalized here. Both were finalized twice.
+struct Noisy {
+  pub id i32;
+  fn final(self &uni) { show("finalized", id); }
+}
+
+struct NoisyBox {
+  pub inner Noisy;
+  pub n i32;
+}
+
+fn fieldOutOfBlock() Noisy {
+  imm b = NoisyBox[Noisy[104], 1];
+  {b.inner;};
+}
+
+fn fieldOutOfIf(pick Bool) Noisy {
+  imm b = NoisyBox[Noisy[105], 1];
+  if pick {b.inner;} else {Noisy[106];};
+}
+
+fn fieldOutOfLoop() Noisy {
+  imm b = NoisyBox[Noisy[107], 1];
+  while {
+    if true {break b.inner;};
+  };
+}
+
+fn localOutOfIf(pick Bool) Noisy {
+  imm a = Noisy[110];
+  if pick {a;} else {Noisy[106];};
+}
+
+// Each return exempts the struct only on its own way out, so a struct whose
+// field one path returns early is still there on the other
+fn fieldReturnedEarly(id i32, early Bool) Noisy {
+  imm b = NoisyBox[Noisy[id], 1];
+  if early {return b.inner;};
+  show("struct-kept-after-early-return", b.n);
+  b.inner;
+}
+
+// A block's own local hands its field back as the block's value the same way
+fn blockLocalFieldOut() {
+  imm kept = {
+    imm b = NoisyBox[Noisy[111], 1];
+    b.inner;
+  };
+  show("block-local-field-kept", kept.id);
+}
+
+fn handedBack() {
+  imm d = fieldOutOfBlock();
+  show("field-out-of-block", d.id);
+  imm e = fieldOutOfIf(true);
+  show("field-out-of-if", e.id);
+  imm f = fieldOutOfLoop();
+  show("field-out-of-loop", f.id);
+  imm l = localOutOfIf(true);
+  show("local-out-of-if", l.id);
+  imm g = fieldReturnedEarly(108, true);
+  show("field-returned-early", g.id);
+  imm h = fieldReturnedEarly(109, false);
+  show("field-returned-late", h.id);
+  blockLocalFieldOut();
+}
+
 fn main() i32 {
   moves();
   exchanges();
   copies();
+  handedBack();
   0i32;
 }
