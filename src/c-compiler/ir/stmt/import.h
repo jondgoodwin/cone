@@ -24,6 +24,7 @@ typedef struct {
     INodeHdr;
     ModuleNode *module;
     FoldClause *fold;   // The names its 'use' clause folds in ('.*' is 'use *'), or NULL for none
+    Nodes *cycle;       // Set when the module's folds were still running as this import read it: the imports round that cycle, the module's own first and this one last
     uint16_t ispub;     // 'pub import': the module's own binding is public here
 } ImportNode;
 

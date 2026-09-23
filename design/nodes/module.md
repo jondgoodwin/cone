@@ -63,7 +63,7 @@ name its diagnostics are reported against — `corelib`, `stdio`.
 | `nodes` | every declaration the module owns, in source order, **an enum's variants among them**: a variant is walked, checked and generated as the module's, though its name is bound in its enum. This is what printing and generation iterate |
 | `namespace` | every name *visible* in the module: what it declares, **the module an import bound and every name an import folded in, each an `AliasDclNode` carrying the import's own visibility**, what a global's `use` clause folded in, **the variants a `use` of an enum folded in**, **each submodule its subfolders drew**, and — when a folder or a `mod` declaration named it — the module's own name. **Not an enum's variants by themselves**: those are names of the enum |
 | `flags` | `FlagGenMod`; `FlagModDcl` for a module a `mod` declaration named; `FlagPub` for a submodule its declaration opened |
-| `foldstate` | how far `modFoldNames` has got: not begun, running, done. *Running* is what stops a cycle of re-exports going round |
+| `foldstate` | how far `modFoldNames` has got: not begun, running, done. *Running* is what stops a cycle of re-exports going round, and an import that finds its module running records the cycle (`ImportNode.cycle`) so that what went missing is reported as lost round it |
 
 **A module's own name is in its own namespace, and that is what makes a hidden
 module-level name reachable.** `mymod.x` reaches an `x` that a local or a type
@@ -417,6 +417,22 @@ marks the module while it runs, so a cycle of re-exports stops there; every
 module's own *declarations* are bound at parse, so what is missing on the way
 round a cycle is a re-export and never a declaration.
 
+**The import that meets the mark records the cycle** (`ImportNode.cycle`: the
+imports round it, the marked module's own first), and that is what lets a name
+missing for that reason be reported as one. `modNameMissing` is called where a
+name is not found in a module — a clause's item (`importFoldItem`), a path's
+member through a module (`fnCallNameResPath`), a bare name (`nameUseNameRes`) —
+and asks whether the reader read that module mid-fold, or the module read the
+source of one of its own clauses mid-fold, and whether that source holds the
+name now its folds have run. A declaration was bound at parse, so anything the
+source holds that it did not hold then, a fold of its own put there: the answer
+is exact, not a guess. Yes is `ErrorCircular`, naming the cycle, with uncounted
+notes at each import round it and at the re-export; no is the message the site
+always gave. A name found missing while folds are still running is held back and
+judged when the outermost `modFoldNames` returns, by which time every module on
+the cycle is complete. A site whose lookup could not involve a cycle reports at
+once, exactly as before.
+
 **That order is what stops the file load order deciding what a name means.** A
 module's folds used to run at the start of its own name resolution, and modules
 are resolved in the order they were loaded — so a module resolved earlier, the
@@ -503,9 +519,11 @@ that enum's copies of its base's variants, which the module does not own
 from elsewhere pulls its declaration forward. See
 [Type Check Phase](../phases/type-check.md).
 
-**Nothing detects an import cycle.** Reuse by file in the registry stops the
+**Nothing refuses an import cycle.** Reuse by file in the registry stops the
 parser recursing forever, but no phase asserts that module dependencies form a
-DAG.
+DAG. `modFoldNames` notices one — the import that meets a module mid-fold
+records it — but only to explain a re-export it lost; a cycle that loses nothing
+is not reported, and whether one should be is an open question, not this code's.
 
 ## Flow and generation
 
@@ -1031,7 +1049,8 @@ annotation on a reference names is a type.
   diagnostic then lands on the parent's declaration, which has a position.
 - **A cycle among non-root modules is fine.** Name resolution runs after all
   parsing, so the half-parsed module the registry returns is complete before
-  anything reads it. Nothing detects a cycle, and nothing needs to.
+  anything reads it. Nothing refuses a cycle; `modFoldNames` notices one only to
+  explain a re-export it lost (below).
 - **`FlagGenMod` is decided by a `strcmp` on the filename.** A user module named
   `stdio` would have its bodies generated.
 - **A module's public names are folded whether or not anything uses them.** A
@@ -1043,7 +1062,13 @@ annotation on a reference names is a type.
   other one of the two folds from the other before the other's own folds are in
   place, and a name it re-exported is not there. A module's own *declarations*
   are bound at parse and are unaffected. Nothing miscompiles: the name is
-  missing, not wrong.
+  missing, not wrong. **It is diagnosed as that**: `ErrorCircular`, naming the
+  cycle, wherever the name is found missing for that reason alone ("Name
+  resolution" above). Looked up in the victim itself — a clause's item or a path
+  naming the module that read round the cycle — the name is explained even from
+  a module outside the cycle, since the victim's own clause is what is asked. Not
+  one wildcard further on: a module that took the victim's names with `use *`
+  and uses the missing one bare is told only that the name is missing.
 - **`corelib` and `stdio` are C string literals.** A syntax error in either is
   reported against an injected pseudo-file, and editing either means rebuilding
   the compiler.

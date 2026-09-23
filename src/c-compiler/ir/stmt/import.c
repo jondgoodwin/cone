@@ -16,6 +16,7 @@ ImportNode *newImportNode() {
     newNode(node, ImportNode, ImportTag);
     node->module = NULL;
     node->fold = NULL;
+    node->cycle = NULL;
     node->ispub = 0;
     return node;
 }
@@ -157,7 +158,7 @@ static void importFoldItem(ModuleNode *mod, ModuleNode *src, FoldClause *fold, A
     Name *srcname = target->namesym;
     INode *found = namespaceFind(&src->namespace, srcname);
     if (found == NULL) {
-        errorMsgNode((INode*)alias, ErrorNoMbr, "%s has no name %s to fold in.",
+        modNameMissing(mod, src, srcname, (INode*)alias, ErrorNoMbr, "%s has no name %s to fold in.",
             &src->namesym->namestr, &srcname->namestr);
         return;
     }

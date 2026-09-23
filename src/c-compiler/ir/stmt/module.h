@@ -49,6 +49,13 @@ void modHook(ModuleNode *oldmod, ModuleNode *newmod);
 // qualifier does not depend on the order the files were loaded in
 void modFoldNames(NameResState *pstate, ModuleNode *mod);
 
+// Report that 'name' is missing from 'mod', looked up from 'reader', with the
+// diagnostic given -- unless the cause is a re-export lost round a cycle of
+// imports, which modFoldNames does not carry round and which this reports as
+// ErrorCircular instead, naming the cycle. The diagnostic given is reported as
+// it is wherever the cause is anything else.
+void modNameMissing(ModuleNode *reader, ModuleNode *mod, Name *name, INode *at, int code, const char *msg, ...);
+
 void modNameRes(NameResState *pstate, ModuleNode *mod);
 void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod);
 

@@ -255,9 +255,11 @@ type check reports),
 in a fold), `ErrorDupName` (duplicate local, duplicate lifetime label,
 colliding folded import, a trait's field arriving under a name the type
 declares, a folded name already taken), `ErrorCircular` (two types that each
-extend or mix in the other, or a type folding from a field of a type not yet
-complete — the same code type check gives a declaration defined in terms of
-itself), `ErrorNoMbr` (a fold naming a member the field's type lacks),
+extend or mix in the other, a type folding from a field of a type not yet
+complete, or — at either `ErrorUnkName` site, or an import clause's item — a
+re-export missing because it was read round a cycle of imports, which
+`modNameMissing` tells apart from a name that is simply not there; the same code
+type check gives a declaration defined in terms of itself), `ErrorNoMbr` (a fold naming a member the field's type lacks),
 `ErrorBadFold` (a fold admitting what cannot fold: a static, a macro without
 `self`, the value's own `final` or `clone`, or a source that is not a struct),
 `ErrorRetNotLast`, `ErrorNoLoop`, `ErrorBadElems`, `ErrorBadTerm` and
