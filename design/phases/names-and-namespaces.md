@@ -69,11 +69,11 @@ changing it.
 | C file | Name/namespace capability |
 | --- | --- |
 | `src/c-compiler/parser/parseexpr.c` | Parses a name as one identifier, and everything after a period as a member access — a path and a member of a value are the same production here. |
-| `src/c-compiler/parser/parsemod.c` | Parses module-level declarations, `include`, and `import` with its `use` clause or `.*`; drops an identical repeat of an import and refuses a differing one; answers an import's name against the registry its parent is before the filesystem, loads/reuses modules by canonical path, draws the module tree, names each module, and establishes module hooks. |
+| `src/c-compiler/parser/parsemod.c` | Parses module-level declarations, the `mod` declaration and its `extends`, `include`, and `import` with its `use` clause or `.*`; drops an identical repeat of an import and refuses a differing one; answers an import's name against the registry its parent is before the filesystem, loads/reuses modules by canonical path, draws the module tree, names each module, and establishes module hooks. |
 | `src/c-compiler/parser/parsetype.c` | Parses struct/trait/enum members and inserts fields, methods and an enum's variants into the type namespace; parses a module's `use` of an enum (`parseUseEnum`), and the fold clause a field, a global and an import carry (`parseFoldClause`). |
-| `src/c-compiler/ir/stmt/program.c` | Owns the program's module list and the file registry, and runs name resolution in two walks: every module's folds first, then every module's body. |
-| `src/c-compiler/ir/stmt/module.c` | Owns module namespaces, inserts global declarations with duplicate checks, switches active module hooks, puts a module's folded names in place dependency-first (`modFoldNames`) — its imports', its globals' and its `use` statements' — and walks module declarations. |
-| `src/c-compiler/ir/stmt/import.c` | Binds an imported module's name as an alias carrying the import's visibility, folds what the import's clause admits of the source module's public *namespace* into the importer, one alias per name under its local spelling, and says whether two imports of one module are the same (`importSame`). |
+| `src/c-compiler/ir/stmt/program.c` | Owns the program's module list and the file registry, and runs name resolution in three walks: what every module's `extends` names, then every module's folds, then every module's body. |
+| `src/c-compiler/ir/stmt/module.c` | Owns module namespaces, inserts global declarations with duplicate checks, switches active module hooks, resolves and checks what a module's `extends` names (`modExtendsResolve`, `modExtendsCheckCycle`), puts a module's folded names in place dependency-first (`modFoldNames`) — what it extends, its imports', its globals' and its `use` statements' — and walks module declarations. |
+| `src/c-compiler/ir/stmt/import.c` | Binds an imported module's name as an alias carrying the import's visibility, folds what the import's clause admits of the source module's public *namespace* into the importer, one alias per name under its local spelling, and says whether two imports of one module are the same (`importSame`). A module's `extends` is folded here too, as an import marked `isextends`. |
 | `src/c-compiler/shared/fileio.c` | Locates a source file by the designated-file convention, and gives a path its one canonical spelling so that the file registry keys it once. |
 
 ### Name uses, lexical scopes, and declarations
@@ -153,6 +153,7 @@ Current compiler behavior:
 - `import` answers the name it is given **in two places, the registry first**. A bare identifier is looked up in the importing module's *parent's* namespace — the registry a module is for its children — and a module found there is bound with nothing located, read or registered: that is how a **sister** is reached. Otherwise the name is a path, and the module is loaded or reused, keyed on the file's **canonical** path, so a file is read once and belongs to one module whatever that module turns out to be called and however the path to it was spelled. An import naming a file of the importing module's own folder, or its own submodule, is `ErrorModFile`; one whose path reaches any other module inside a tree, and a bare name that is the importing module's own parent, are `ErrorModReach`.
 - **What an import binds is an `AliasDclNode` with a visibility of its own**: the module's name here, and every name its `use` clause admits. `pub` before the statement re-exports all of them at once; `pub use` re-exports the folds alone.
 - A module's **global may carry a `use` clause**, folding members of its type in as names of the module: `config Config use *`. See "Folding through a global" below. No other variable may — a local, a parameter and a type's static are `ErrorBadFold` where the clause is written, because none of them is part of a namespace for a name to fold into.
+- **A module may extend another**: `mod solids extends shapes;` in its designated file makes every name `shapes` makes public a **public** name of `solids`, as an alias whose declaration, symbol and state stay `shapes`'s, and `solids` adds its own declarations beside them. See "A module extending a module" below.
 - A nested `mod name { ... }` block is admitted by the grammar and unbuilt: it needs a namespace of its own, a hook pushed and popped around its parse, and paths reaching through it. So is `mod trait`, a module's abstraction.
 - A folder creates a namespace exactly when it holds its designated file, and that holds at every level: a subfolder that holds one draws a **submodule**, with a namespace of its own; a subfolder that holds none groups a module's files without making a namespace of them, so its declarations are the enclosing module's and collide with them.
 - **A submodule is a name of its parent's namespace**, bound at load under the folder's name, so it is reached as `sub.name` by the ordinary path rule and nothing about that path knows a folder put the name there. It is **private to its parent unless its own declaration writes `pub`**, which is what a path from anywhere else is checked against. Its declarations are spelled after its parent's name, and a submodule of a submodule after both.
@@ -271,7 +272,7 @@ Any category of name folds, subject to the importing namespace's single collisio
 
 - **Only a public binding of the source folds**, whether the source declared it or folded it in with `pub`. A private one named in a list is `ErrorNotPublic`; a star clause passes it over.
 - A name the source has not got, listed or after `but`, is `ErrorNoMbr`. The source's own name is the one the import binds already, so a list naming it is `ErrorBadFold` and a star clause passes it over.
-- A folded name must be unique in the module, whatever brought the other one: a declaration, another import's fold, a global's, an enum's `use`. `ErrorDupName`, reported at the listed name, or at the `use` of a star clause; `as` or `but` settles it.
+- A folded name must be unique in the module, whatever brought the other one: a declaration, another import's fold, a global's, an enum's `use`. `ErrorDupName`, reported at the listed name, or at the `use` of a star clause; `as` or `but` settles it. **One exception: a star clause passes over the module's own declaration come back to it under its own name** — what a module that extends this one holds, most often. Whether the source had taken the name yet depends on which of the two was folded first, so refusing it would let the load order decide whether a program compiles (`module-extends-back`).
 - **Every name folds as an `AliasDclNode` in the receiving module's namespace**, whose target is the source's own binding and whose `FlagPub` is the import's.
 - **It reads the source module's *namespace*, not its declarations**, so a name the source itself folded in and re-exported travels on.
 - Imported modules are loaded once and reused, and a sister is not loaded at all.
@@ -298,11 +299,12 @@ A struct's field may carry a `use` clause folding members of the field's type in
 
 ### Folding a whole type in: `extends`, and a sibling of it: `use`
 
-A concrete type may be named as another's base, with `extends`, and everything it has becomes a name of the enriching type, which adds methods and no fields ([refinherit](../../conesite/public/coneref/refinherit.html); [struct](../nodes/struct.md), "Enrichment"). And a `use` standing as a statement in a type's body folds in a **sibling** — another type that declared this type's base — selectively, with `as` and `but` ([struct](../nodes/struct.md), "Sibling folding"). So one operation attaches at six sites:
+A concrete type may be named as another's base, with `extends`, and everything it has becomes a name of the enriching type, which adds methods and no fields ([refinherit](../../conesite/public/coneref/refinherit.html); [struct](../nodes/struct.md), "Enrichment"). And a `use` standing as a statement in a type's body folds in a **sibling** — another type that declared this type's base — selectively, with `as` and `but` ([struct](../nodes/struct.md), "Sibling folding"). A module names the module it extends the same way. So one operation attaches at seven sites:
 
 | Where the clause sits | What the receiver is | What the binding holds |
 | --- | --- | --- |
 | a **module** body — `import mod use *` | nothing; a module has one instance | an alias targeting the source's own binding, under the clause's spelling, with the import's visibility |
+| a **module** declaration — `mod solids extends shapes` | nothing; a module has one instance | an alias targeting the base's own binding, for every public name of the base, public here |
 | a **module** body — `use Colors` | nothing; a variant is a type, reached through no value | an alias targeting the variant, with the statement's visibility |
 | a **type** body — `extends Meter` | the **whole**, which is already the right type | the base's declaration, under an alias; the base's fields as copies of its own |
 | a **type** body — `use Trig` | a **sibling of the whole**, which this type's values substitute for | the sibling's declaration, under an alias; nothing else |
@@ -361,6 +363,30 @@ What it may fold from and what it admits:
 **Core folds its own two enums with `pub use`**, and that is the whole reason `Some`, `None`, `Ok` and `Error` are bare in every program: the automatic import of core is a wildcard, and a wildcard carries a public fold on. No prelude rule stands behind them, and `?T` still lowers to `Option[T]` by the enum's own name.
 
 `enum-nameres-use` and `enum-parse-use` pin the refusals; `module-use-enum` runs a public fold reached by a path and through a wildcard import, and `module-use-enum-nameres` pins what a private one keeps out of reach.
+
+### A module extending a module
+
+`mod solids extends shapes;` — the module's declaration, as its designated file's first statement — makes `solids` a module that **reuses** `shapes`: every name `shapes` makes public becomes a name of `solids`, and `solids` adds its own declarations beside them.
+
+**For a module, extending and inheriting are one thing**, by the static/dynamic rule above. Static folding aliases and keeps the original owner; a module's state is all static — one instance, at a fixed address — so there is no per-instance copy for inheritance to make, and what `extends` makes is an `AliasDclNode` per name. The declaration, its symbol and its state stay `shapes`'s: a global changed through `solids.count` is the one `shapes.count` reads, and nothing is spelled after `solids` but what `solids` declares.
+
+**It is an import's star fold with three differences**, and it is built as one — an `ImportNode` marked `isextends`, held on the module's `extends` slot rather than its `imports`, expanded by `importNameRes` in `modFoldNames`, first of the module's folds and dependency-first:
+
+- **Every alias is public.** What a module extends is part of its own surface, so an importer of `solids` reaches `shapes`'s names through it — by path, `solids.area`, and through a wildcard import — exactly as it reaches what `solids` declares. A chain transits: what `shapes` took from a module it extends is a public name of `shapes`, so it reaches `solids` too.
+- **It binds no name of its own.** `shapes` is not a name of `solids` unless an import binds it.
+- **A name the base has may not be redeclared.** A declaration of `solids` spelled like a public name of `shapes` — a submodule's name included — is `ErrorExtendsOverride`, reported at the declaration: the type rule, since one name would otherwise mean two things depending on which module reached it, and like the type rule it refuses a candidate joining the base's overload name too. Another fold of `solids`'s colliding with one of the base's names is `ErrorDupName`, reported at that fold.
+
+**Only the base's public names come across.** A private name of `shapes` named inside `solids`, through `solids` from outside, or in an importer's clause, is `ErrorNotPublic`, naming `shapes` (`modNameMissing` asks the module's `extends` chain before it calls the name undeclared). An enrichment of a type is inside its base's encapsulation boundary; a module extending a module is not, which is the conservative reading and the one that can be relaxed.
+
+**What `extends` may name** is resolved in a pass of its own, `modExtendsResolve`, run for every module before any fold (`pgmNameRes`), so every edge is known before the first fold follows one. It names a module the module can **already reach** — its own namespace, where an import bound the module's name, and then the registry its parent is, which holds its sisters — looked up, never loaded, and by one name. Refused:
+
+- a name that reaches nothing, a cousin two levels over among them — `ErrorUnkName`;
+- a name that is not a module — `ErrorModExtends`; a **trait** is refused with its own message, since `mod arena extends Region` is how a module conforming to a module trait is spelled, which is a different reading and is not built;
+- the module itself, and a module it contains — `ErrorModExtends`; its parent — `ErrorModReach`, as for an import;
+- a chain of `extends` that comes back to where it started — `ErrorModExtends`, once, at the first module on the cycle the program holds, and the chain is cut there (`modExtendsCheckCycle`);
+- as it is parsed, more than one module (`ErrorExtends`), a path (`ErrorModExtends`) and no name (`ErrorNoName`).
+
+`module-extends` runs a chain of two and both importers; `module-extends-back` runs a module importing, `use *`, the module that extends it, in both fold orders; `module-extends-import` extends a module an import reached by its file; `module-extends-nameres` and `module-extends-parse` pin the refusals.
 
 ## Aliases
 

@@ -44,7 +44,8 @@ support = ["moduleinc.cone", "modulesub.cone", "moduleeof.cone",
            "moduletransit.cone", "modulelate.cone", "moduleearly.cone",
            "modulehide.cone", "modulehidelate.cone",
            "modulemacro.cone", "moduledeclared.cone",
-           "modulefold.cone", "modulefoldlate.cone", "modfolder"]
+           "modulefold.cone", "modulefoldlate.cone", "modfolder",
+           "moduleextbase.cone"]
 
 # -------- success --------
 
@@ -322,6 +323,74 @@ tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
 category = "reject"
 description = "What a fold of an enum's variants does not put in reach: a private fold by a path or through a wildcard import, and a fold colliding with a name an import brought"
 tags = ["nameres"]
+diagnostics = 3
+
+# -------- 'extends': one module reusing another --------
+#
+# 'mod solids extends shapes' makes every name shapes makes public a PUBLIC name
+# of solids, as an alias: the declaration, its symbol and its state stay shapes'.
+# For a module, extending and inheriting are one thing, because a module's state
+# is static and one instance of it is all there is.
+#
+# module-extends runs one, in a tree -- a chain of two, reached from inside, by
+# path from the parent, and through two importers -- and pins that the aliases
+# declare nothing. module-extends-import extends a module an import reached by
+# its file, which compiles and cannot link. module-extends-nameres holds what
+# 'extends' refuses once names are bound, module-extends-parse what it refuses as
+# it is written.
+
+[scenario.module-extends]
+category = "run"
+description = "A module extending a sister that extends another: the base's function, type and global reached through the extending module from inside, by path, and through an importer's path and wildcard"
+tags = ["parse", "nameres", "typecheck", "genllvm", "runtime"]
+
+# 'extends' binds and declares nothing. Every name reached through solids lowers
+# to the declaring module's own symbol, and nothing is spelled after solids but
+# what solids declares itself.
+[[scenario.module-extends.check]]
+name = "extends-declares-no-symbol-of-its-own"
+target = "symbols"
+contains = [
+  "define internal shapes.area comdat nodeduplicate",
+  "define internal base.unit comdat nodeduplicate",
+  "global internal shapes.count comdat nodeduplicate",
+  "define internal solids.volume comdat nodeduplicate",
+]
+excludes = ["solids.area", "solids.unit", "solids.count", "solids.Point", "shapes.unit",
+            "summary.area", "report.area"]
+
+# A module that imports, 'use *', a module extending it is handed its own names
+# back, and a star clause passes them over. Both orders, because without that
+# the order the two modules' folds ran in decided whether the program compiled:
+# the importer folded first saw its own names come home as duplicates.
+[scenario.module-extends-back]
+category = "run"
+description = "A module importing with 'use *' a module that extends it, in both fold orders: its own names come back and are passed over"
+tags = ["nameres", "typecheck", "genllvm", "runtime"]
+
+[scenario.module-extends-import]
+category = "compile"
+description = "A module extending a module it imports by its file, reaching the base's function and global bare"
+tags = ["parse", "nameres", "typecheck", "genllvm"]
+
+# The base's names are the base's declarations, declared for the linker as any
+# imported module's are; nothing is spelled after the extending module
+[[scenario.module-extends-import.check]]
+name = "an-extended-imported-module-is-declared-not-copied"
+target = "symbols"
+contains = ["declare moduleextbase.twice", "external global moduleextbase.total"]
+excludes = ["app."]
+
+[scenario.module-extends-nameres]
+category = "reject"
+description = "What 'extends' refuses once names are bound: a redeclared name, a private name from inside and through an importer, a trait, a function, itself, a cycle, its own submodule, its parent, and a module out of reach"
+tags = ["nameres"]
+diagnostics = 10
+
+[scenario.module-extends-parse]
+category = "reject"
+description = "What a module's 'extends' refuses as it is parsed: two modules, a path, and no name"
+tags = ["parse"]
 diagnostics = 3
 
 [scenario.module-declared]

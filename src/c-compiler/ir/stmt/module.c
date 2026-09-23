@@ -25,6 +25,8 @@ ModuleNode *newModuleNode() {
     namespaceInit(&mod->namespace, 64);
     dclInfoInit(&mod->dclinfo);
     mod->foldstate = 0;
+    mod->extendsname = NULL;
+    mod->extends = NULL;
     return mod;
 }
 
@@ -117,6 +119,8 @@ void modPrint(ModuleNode *mod) {
         inodeFprint("module %s", &mod->namesym->namestr);
     else
         inodeFprint("IR for program %s", mod->lexer->url);
+    if (mod->extendsname)
+        inodeFprint(" extends %s", &((NameUseNode*)mod->extendsname)->namesym->namestr);
     dclInfoPrint((INode*)mod);
     inodeFprint("\n");
     inodePrintIncr();
@@ -136,6 +140,128 @@ void modHook(ModuleNode *oldmod, ModuleNode *newmod) {
     if (newmod) {
         nametblHookPush();
         nametblHookNamespace(&newmod->namespace);
+    }
+}
+
+// ---- 'mod A extends B': one module reusing another -------------------------
+//
+// A module that extends another takes in everything the other makes public, and
+// adds its own declarations beside it. For a module, extending and inheriting are
+// one thing: static folding ALIASES and keeps the original owner, and a module's
+// state is all static -- one instance, at a fixed address -- so there is no
+// second copy to make, and each name B shows becomes an alias in A's namespace
+// whose declaration, symbol and state stay B's.
+//
+// Those aliases are PUBLIC, because what a module extends is part of its own
+// surface: A's importers see B's public names through A. B's private names do
+// not come across -- the conservative reading, since nothing has settled whether
+// an extending module is inside its base's boundary as an enriching type is --
+// and a name A declares that B already has is refused, as it is for a type.
+//
+// The fold is an ImportNode marked 'isextends' and held on the module rather
+// than on its imports, so modFoldNames runs it dependency-first like any import
+// and a chain of 'extends' transits: what B took from C is a public name of B.
+
+// The module this one extends whose PRIVATE binding holds 'name', or NULL. Down
+// the chain, since what B took from C is a name of B's. modExtendsCheckCycle has
+// cut every cycle of 'extends' before any name is looked up, so the walk ends
+static ModuleNode *modExtendsPrivate(ModuleNode *mod, Name *name) {
+    for (ModuleNode *base = mod; base->extends != NULL; ) {
+        base = base->extends->module;
+        INode *found = namespaceFind(&base->namespace, name);
+        if (found && found != (INode*)base && inodeIsPrivate(found))
+            return base;
+    }
+    return NULL;
+}
+
+// Resolve what this module's 'extends' names, and refuse what cannot be reused.
+//
+// What it names is a module this module can ALREADY reach, which is the same
+// two places an import's name is answered, looked up rather than loaded: this
+// module's own namespace, where an import bound the module's name, and then the
+// registry its parent is, which holds its sisters. Nothing is located or read:
+// 'extends' states a dependency on a module in reach, and a module out of reach
+// is named by an import first.
+void modExtendsResolve(ModuleNode *mod) {
+    if (mod->extendsname == NULL)
+        return;
+    NameUseNode *name = (NameUseNode*)mod->extendsname;
+    ModuleNode *parent = (ModuleNode*)mod->dclinfo.owner;
+    INode *binding = namespaceFind(&mod->namespace, name->namesym);
+    if (binding == NULL && parent != NULL)
+        binding = namespaceFind(&parent->namespace, name->namesym);
+    if (binding == NULL) {
+        errorMsgNode((INode*)name, ErrorUnkName,
+            "%s names no module this module can reach. A module extends a sister, which its parent holds, or a module it imports.",
+            &name->namesym->namestr);
+        return;
+    }
+    INode *found = aliasDclResolve(binding);
+    if (found == (INode*)mod) {
+        errorMsgNode((INode*)name, ErrorModExtends,
+            "A module cannot extend itself.");
+        return;
+    }
+    if (found != NULL && found == (INode*)parent) {
+        // Containment runs one way, as it does for an import
+        errorMsgNode((INode*)name, ErrorModReach,
+            "Module %s is this module's parent, and a module may not extend the module that contains it.",
+            &name->namesym->namestr);
+        return;
+    }
+    if (found != NULL && found->tag == StructTag && (found->flags & TraitType)) {
+        errorMsgNode((INode*)name, ErrorModExtends,
+            "%s is a trait. A module's 'extends' reuses a concrete module; a module conforming to a module trait, as in 'mod arena extends Region', is a different reading and is not built.",
+            &name->namesym->namestr);
+        return;
+    }
+    if (found == NULL || found->tag != ModuleTag) {
+        errorMsgNode((INode*)name, ErrorModExtends,
+            "%s is not a module. A module extends another module; a type is enriched by a type's 'extends'.",
+            &name->namesym->namestr);
+        return;
+    }
+    ModuleNode *base = (ModuleNode*)found;
+    // A module this one contains is a part of it rather than something it adds
+    // to. Folding a submodule's names into its parent is not something any other
+    // spelling does either, so it is refused rather than made a second route
+    for (ModuleNode *up = (ModuleNode*)base->dclinfo.owner; up; up = (ModuleNode*)up->dclinfo.owner) {
+        if (up == mod) {
+            errorMsgNode((INode*)name, ErrorModExtends,
+                "Module %s is inside this one. A module extends a module beside it, not one it contains.",
+                &name->namesym->namestr);
+            return;
+        }
+    }
+    name->dclnode = (INode*)base;
+
+    ImportNode *fold = newImportNode();
+    inodeLexCopy((INode*)fold, (INode*)name);
+    fold->module = base;
+    fold->isextends = 1;
+    fold->fold = newFoldClause();
+    inodeLexCopy(fold->fold->at, (INode*)name);
+    fold->fold->star = 1;
+    fold->fold->ispub = 1;
+    mod->extends = fold;
+}
+
+// Refuse a module whose chain of 'extends' comes back to it: each would be
+// adding to the other, and neither has a surface to start from
+void modExtendsCheckCycle(ModuleNode *mod, uint32_t nmods) {
+    if (mod->extends == NULL)
+        return;
+    ModuleNode *base = mod->extends->module;
+    for (uint32_t i = 0; i < nmods && base != NULL; ++i) {
+        if (base == mod) {
+            errorMsgNode(mod->extendsname, ErrorModExtends,
+                "Module %s extends a module that extends it in turn. A chain of 'extends' may not come back to where it started.",
+                &mod->namesym->namestr);
+            mod->extends = NULL;
+            return;
+        }
+        base = base->extends ? base->extends->module : NULL;
     }
 }
 
@@ -327,6 +453,17 @@ void modNameMissing(ModuleNode *reader, ModuleNode *mod, Name *name, INode *at, 
     vsnprintf(text, sizeof(text), msg, args);
     va_end(args);
 
+    // A name private to a module this one extends is not missing by accident:
+    // 'extends' brings in what the base makes public and nothing more, so the
+    // report names the base and says so rather than calling the name undeclared
+    ModuleNode *base = mod ? modExtendsPrivate(mod, name) : NULL;
+    if (base) {
+        errorMsgNode(at, ErrorNotPublic,
+            "%s is private to %s, which %s extends. 'extends' brings in only the names %s makes public.",
+            &name->namestr, &base->namesym->namestr, &mod->namesym->namestr, &base->namesym->namestr);
+        return;
+    }
+
     if (reader == NULL || mod == NULL || !modMayLoseToCycle(reader, mod)) {
         errorMsgNode(at, code, "%s", text);
         return;
@@ -395,8 +532,24 @@ void modFoldNames(NameResState *pstate, ModuleNode *mod) {
     pstate->mod = mod;
     modHook(NULL, mod);
 
+    // What this module extends comes first, and is folded exactly as an import
+    // is -- dependency-first, so a chain of 'extends' transits. First, so that a
+    // name the base has and something of this module's own also brings in is
+    // reported at what this module wrote, which is the thing to change
     INode **nodesp;
     uint32_t cnt;
+    ImportNode *extends = mod->extends;
+    if (extends) {
+        if (extends->module->foldstate == 1)
+            extends->cycle = modFoldCycle(extends);
+        else {
+            nodesAdd(&foldimps, (INode*)extends);
+            modFoldNames(pstate, extends->module);
+            --foldimps->used;
+        }
+        importNameRes(pstate, extends);
+    }
+
     for (nodesFor(mod->imports, cnt, nodesp)) {
         ImportNode *import = (ImportNode*)*nodesp;
         if (import->module && import->module->foldstate == 1)

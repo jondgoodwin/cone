@@ -20,12 +20,18 @@
 // binding the import makes public, the module's name and each fold alike, and
 // 'pub use' makes only the folds public. So 'ispub' is the module binding's bit,
 // and the clause's 'ispub' is set by either spelling.
-typedef struct {
+//
+// A module's 'extends' is carried by one too, and never on the module's
+// 'imports': it binds no name of its own, and its fold is a PUBLIC star clause,
+// since what a module extends is part of its own surface. 'isextends' is what
+// tells it apart.
+typedef struct ImportNode {
     INodeHdr;
     ModuleNode *module;
     FoldClause *fold;   // The names its 'use' clause folds in ('.*' is 'use *'), or NULL for none
     Nodes *cycle;       // Set when the module's folds were still running as this import read it: the imports round that cycle, the module's own first and this one last
     uint16_t ispub;     // 'pub import': the module's own binding is public here
+    uint16_t isextends; // The fold a module's 'extends' makes, rather than an import statement
 } ImportNode;
 
 // Create a new Import node

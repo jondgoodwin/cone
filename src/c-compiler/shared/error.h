@@ -191,7 +191,7 @@ enum ErrorCode {
     // 'extends': enriching a concrete type with methods
     ErrorExtendsBase = 1101,    // What an 'extends' names cannot serve as a concrete base
     ErrorExtendsField = 1102,   // A field declared by a type that extends a concrete base, which may add none
-    ErrorExtendsOverride = 1103,// A member of the base redeclared by the enriching type, which may not override
+    ErrorExtendsOverride = 1103,// A name of the base redeclared by the enriching type or module, which may not override
 
     // A type body's 'use': folding a sibling enrichment's methods in
     ErrorUseSibling = 1104,     // A type-body 'use' naming what is not a sibling of this type, or a member that does not fold from one
@@ -231,6 +231,9 @@ enum ErrorCode {
 
     // A path through an abstraction: 'Trait.name', 'Enum.name'
     ErrorAbstractMeth = 1118,   // A trait's or enum's method named through it, which owns no code for it: each implementer or variant owns a copy
+
+    // 'mod A extends B': a module reusing another module's public names
+    ErrorModExtends = 1119,     // What a module's 'extends' names cannot be reused: not a module, a trait (conforming to a module trait is not built), the module itself or one it contains, a path, or a cycle of extends
 
     // Warnings
     WarnCode = 3000,

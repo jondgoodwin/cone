@@ -93,7 +93,7 @@ on a module or a struct. The collapse that walks them is `fnCallNameResPath` —
 
 | Kind | Owns a `Namespace` hash table? | Populated |
 | --- | --- | --- |
-| Module | yes, `ModuleNode.namespace` | at **parse** time by `modAddNamedNode`, which is also where an import binds the module it names; extended by the fold pass, `importNameRes`, `foldGlobalExpand` and `foldEnumUseExpand`, ahead of any module's body |
+| Module | yes, `ModuleNode.namespace` | at **parse** time by `modAddNamedNode`, which is also where an import binds the module it names; extended by the fold pass — `importNameRes` for what the module extends and what it imports, `foldGlobalExpand` and `foldEnumUseExpand` — ahead of any module's body |
 | Namespaced type | yes, `INsTypeNode.namespace` | at **parse** time, an enum's variants included; `structNameRes` adds `Self`, the default methods of every abstraction the type is-a or mixes in, for a variant, its enum's fields, and for an enum that extends another, its copies of the base's variants |
 | Lexical block / parameter list | **no** | not a namespace at all — locals are hooked one at a time |
 
@@ -318,8 +318,9 @@ next pass a null to trip over.
 | `ir/namespace.c` | `namespaceFind`, `namespaceSet` | the hash table a module or type owns |
 | `ir/exp/nameuse.c` | `nameUseNameRes` | the whole resolution decision: early-out, qualified walk, privacy; it binds `dclnode` and changes nothing else |
 | `ir/exp/nameuse.c` | `nameUseGroup` | what a resolved name answers to `isExpNode`, `isTypeNode` and `isMetaNode`, asked of its declaration |
-| `ir/stmt/program.c` | `pgmNameRes` | two walks of the module list: every module's folds, then every module's body |
-| `ir/stmt/module.c` | `modFoldNames` | a module's folded names put in place dependency-first — its imports, then its globals' `use` clauses, then its `use` statements of enums — before any module's body resolves, so load order decides nothing |
+| `ir/stmt/program.c` | `pgmNameRes` | three walks of the module list: what every module's `extends` names, every module's folds, then every module's body |
+| `ir/stmt/module.c` | `modExtendsResolve`, `modExtendsCheckCycle` | what a module's `extends` names, looked up in its own namespace and then its parent's, and refused where it is not a concrete module it may reuse or where a chain of them comes back round |
+| `ir/stmt/module.c` | `modFoldNames` | a module's folded names put in place dependency-first — what it extends, its imports, then its globals' `use` clauses, then its `use` statements of enums — before any module's body resolves, so load order decides nothing |
 | `ir/stmt/fold.c` | `foldEnumUseExpand` | a module's `use` of an enum: the enum it names resolved, and each variant it admits bound as an alias in the module's namespace, private unless `pub use` |
 | `ir/stmt/module.c` | `modNameRes`, `modHook` | type aliases walked before the other nodes; module hook push/pop; the module's `NameResolving`/`NameResolved` marks |
 | `ir/stmt/import.c` | `importNameRes`, `importBindModule` | the module's own binding and each folded name, as aliases carrying the import's visibility; the source's *namespace* is what is read, and a private binding of it does not fold |

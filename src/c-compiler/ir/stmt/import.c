@@ -18,6 +18,7 @@ ImportNode *newImportNode() {
     node->fold = NULL;
     node->cycle = NULL;
     node->ispub = 0;
+    node->isextends = 0;
     return node;
 }
 
@@ -153,7 +154,9 @@ void importBindModule(ModuleNode *mod, ImportNode *node) {
 // through a global, this one is reached through the same global: the access that
 // lowering builds names the global by its declaration, so it is written the same
 // from any module.
-static void importFoldItem(ModuleNode *mod, ModuleNode *src, FoldClause *fold, AliasDclNode *alias) {
+static void importFoldItem(ModuleNode *mod, ImportNode *import, AliasDclNode *alias) {
+    ModuleNode *src = import->module;
+    FoldClause *fold = import->fold;
     NameUseNode *target = (NameUseNode*)alias->target;
     Name *srcname = target->namesym;
     INode *found = namespaceFind(&src->namespace, srcname);
@@ -199,7 +202,36 @@ static void importFoldItem(ModuleNode *mod, ModuleNode *src, FoldClause *fold, A
     alias->flags &= 0xffff - (FlagPub | FlagMethFld);
     if (fold->ispub)
         alias->flags |= FlagPub;
+    // A star clause passes over this module's OWN declaration come back to it
+    // under its own name: the source only holds it because it reused this
+    // module's names -- a module that extends this one, most often -- and it is
+    // bound here already, as itself. Whether the source had taken it yet depends
+    // on which of the two was folded first, so refusing it would let the load
+    // order decide whether a program compiles
+    if (fold->star) {
+        INode *mine = namespaceFind(&mod->namespace, alias->namesym);
+        INode *dcl = aliasDclResolve(found);
+        if (mine != NULL && dcl != NULL && mine == dcl && dclInfoGetModule(dcl) == mod)
+            return;
+    }
     INode *prior = namespaceAdd(&mod->namespace, alias->namesym, (INode*)alias);
+    if (prior && import->isextends) {
+        // A module that extends another ADDS to it, as a type that extends one
+        // does: a name of the base redeclared here would make one name of this
+        // module mean two things, depending on which module reached it. Reported
+        // at the declaration, which is what has to change. Anything else holding
+        // the name was brought in by something of this module's own -- an
+        // import, a fold -- and collides as any two bindings do
+        if (prior->tag != AliasDclTag && prior != (INode*)mod)
+            errorMsgNode(prior, ErrorExtendsOverride,
+                "%s is already a name of %s, which extends %s: a module that extends another adds to it rather than redeclaring its names.",
+                &alias->namesym->namestr, &mod->namesym->namestr, &src->namesym->namestr);
+        else
+            errorMsgNode(prior, ErrorDupName,
+                "%s is already a name of this module, and %s, which it extends, has that name too. A name of a module is unique.",
+                &alias->namesym->namestr, &src->namesym->namestr);
+        return;
+    }
     if (prior) {
         errorMsgNode((INode*)alias, ErrorDupName,
             "%s is already a name of this module. A folded name must be unique: rename it with 'as', or leave it out with 'but'.",
@@ -227,7 +259,7 @@ void importNameRes(NameResState *pstate, ImportNode *node) {
     INode **itemp;
     uint32_t cnt;
     for (nodesFor(node->fold->items, cnt, itemp))
-        importFoldItem(target, src, node->fold, (AliasDclNode*)*itemp);
+        importFoldItem(target, node, (AliasDclNode*)*itemp);
 }
 
 // Type check the import node
