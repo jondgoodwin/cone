@@ -64,9 +64,11 @@ void fnOverloadDclAdd(FnOverloadDclNode *ovlnode, FnDclNode *fnnode) {
     ovlnode->flags |= fnnode->flags & FlagMethFld;
 }
 
-// Return a clone of a function/method declaration
-INode *cloneFnDclNode(CloneState *cstate, FnDclNode *oldfn) {
-    uint32_t dclpos = cloneDclPush();
+// The copy of a function/method declaration, before its signature and body are
+// copied: they still point at the original's. Split from filling it in so a
+// generic type's clone can bind every member's copy before any body that may
+// name one is copied (cloneStructNode).
+FnDclNode *cloneFnDclShell(FnDclNode *oldfn) {
     FnDclNode *newnode = memAllocBlk(sizeof(FnDclNode));
     memcpy(newnode, oldfn, sizeof(FnDclNode));
     // A clone is unchecked however far along the node it was copied from got.
@@ -74,9 +76,21 @@ INode *cloneFnDclNode(CloneState *cstate, FnDclNode *oldfn) {
     // kept them would be skipped by the guard in inodeTypeCheck.
     newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
     newnode->genericinfo = NULL;
+    return newnode;
+}
+
+// Copy the original's signature and body into its shell
+void cloneFnDclFill(CloneState *cstate, FnDclNode *newnode, FnDclNode *oldfn) {
+    uint32_t dclpos = cloneDclPush();
     newnode->vtype = cloneNode(cstate, oldfn->vtype);
     newnode->value = cloneNode(cstate, oldfn->value);
     cloneDclPop(dclpos);
+}
+
+// Return a clone of a function/method declaration
+INode *cloneFnDclNode(CloneState *cstate, FnDclNode *oldfn) {
+    FnDclNode *newnode = cloneFnDclShell(oldfn);
+    cloneFnDclFill(cstate, newnode, oldfn);
     return (INode*)newnode;
 }
 

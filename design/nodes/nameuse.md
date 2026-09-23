@@ -133,6 +133,15 @@ Two entry points, because a type name and a value name want different things.
    folded name being *called* never arrives here, because `fnCallTypeCheck`
    rewrites the call before it reads its callee, so what reaches this step is a
    member read.
+0b. **A member of a generic type itself is refused** (`nameUseTemplateMember`):
+   a function or static whose owner still carries `GenericInfo`, reached as
+   `Box.stat` on a `struct Box[T]`. Only an instance's copy of it is ever
+   generated, so the use has to name an instance — `ErrorArgCount`, since no type
+   argument list is written where one is required. A use inside the generic's own
+   body never arrives here bound to the template's member: the clone re-pointed
+   it at the instance's ([generic](generic.md), "How a cloned name gets
+   re-pointed"). `fnCallLowerOverloadFn` asks the same of an overload name's
+   candidates before selecting one.
 1. **An overload name is refused here.** It names a set, not a value; only a
    call may use it, and `fnCallTypeCheck` rewrites the use to the concrete
    declaration before this is reached. `ErrorOverloadUse`.

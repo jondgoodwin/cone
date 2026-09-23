@@ -99,19 +99,65 @@ INode *cloneStructNode(CloneState *cstate, StructNode *node) {
     // what the first had already lowered: an operator call, by then a use of the
     // operator's own FnDcl, took the "rewrite to self.method" path and was
     // rejected as a method the instance does not declare.
+    //
+    // A body may name a static function, a static or an overload name of this
+    // type bare, and name resolution bound that use to the original's member.
+    // The instance's own copy is what has a symbol; the original's never gets
+    // one, and generating a call to it crashed. So each function and static is
+    // copied in two steps: first every copy is made and bound in the namespace,
+    // and every original member mapped to its copy for cloneDclFix, and only
+    // then are the bodies copied -- a body may name a member declared after it.
+    // The map is popped with the copy: a later instance maps to its own members.
+    uint32_t dclpos = cloneDclPush();
     nodelistInit(&newnode->nodelist, node->nodelist.avail);
     for (nodelistFor(&node->nodelist, cnt, nodesp)) {
-        INode *member = cloneNode(cstate, *nodesp);
-        if (member->tag == MacroDclTag)
-            iNsTypeAddMacro((INsTypeNode*)newnode, (MacroDclNode*)member);
-        else if (member->tag == VarDclTag)
-            iNsTypeAddStatic((INsTypeNode*)newnode, (VarDclNode*)member);
-        else
-            iNsTypeAddFn((INsTypeNode*)newnode, (FnDclNode*)member);
+        switch ((*nodesp)->tag) {
+        case MacroDclTag:
+            iNsTypeAddMacro((INsTypeNode*)newnode, (MacroDclNode*)cloneNode(cstate, *nodesp));
+            break;
+        case VarDclTag:
+            iNsTypeAddStatic((INsTypeNode*)newnode, cloneVarDclShell((VarDclNode*)*nodesp));
+            break;
+        default:
+            iNsTypeAddFn((INsTypeNode*)newnode, cloneFnDclShell((FnDclNode*)*nodesp));
+        }
     }
+    structCloneMapMembers(node, newnode);
+    INode **copyp = newnode->nodelist.nodes;
+    for (nodelistFor(&node->nodelist, cnt, nodesp)) {
+        if ((*nodesp)->tag == VarDclTag)
+            cloneVarDclFill(cstate, (VarDclNode*)*copyp, (VarDclNode*)*nodesp);
+        else if ((*nodesp)->tag != MacroDclTag)
+            cloneFnDclFill(cstate, (FnDclNode*)*copyp, (FnDclNode*)*nodesp);
+        ++copyp;
+    }
+    cloneDclPop(dclpos);
 
     cstate->selftype = svselftype;
     return (INode *)newnode;
+}
+
+// Map each function, static and overload name of 'original' to the member of
+// 'copy' bound to the same name, so a use of it cloned while the map is in
+// force (cloneDclFix) names the copy's. The caller pushes and pops the map.
+void structCloneMapMembers(StructNode *original, StructNode *copy) {
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodelistFor(&original->nodelist, cnt, nodesp)) {
+        uint16_t tag = (*nodesp)->tag;
+        if (tag != FnDclTag && tag != VarDclTag)
+            continue;
+        INode *found = namespaceFind(&copy->namespace, inodeGetName(*nodesp));
+        if (found && found->tag == tag)
+            cloneDclSetMap(*nodesp, found);
+        Name *overloadsym = tag == FnDclTag ? ((FnDclNode*)*nodesp)->overloadsym : NULL;
+        if (overloadsym) {
+            INode *origset = namespaceFind(&original->namespace, overloadsym);
+            INode *copyset = namespaceFind(&copy->namespace, overloadsym);
+            if (origset && copyset && origset->tag == FnOverloadDclTag && copyset->tag == FnOverloadDclTag)
+                cloneDclSetMap(origset, copyset);
+        }
+    }
 }
 
 // Add a field

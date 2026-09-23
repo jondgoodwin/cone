@@ -176,6 +176,22 @@ void nameUseNameRes(NameResState *pstate, NameUseNode **namep) {
             &name->namesym->namestr, &name->namesym->namestr);
 }
 
+// Report a use of a member of a generic type itself, such as 'Box.stat' on a
+// 'struct Box[T]', and return 1 if it is one. The generic has no members of its
+// own to reach: every instance has its copy, the only one given a symbol, so the
+// use must say which instance. A use inside the generic's body reaches here
+// already re-pointed at its instance's member by the clone (cloneStructNode).
+int nameUseTemplateMember(NameUseNode *name, INode *dcl) {
+    INode *owner = inodeGetOwner(dcl);
+    if (owner == NULL || owner->tag != StructTag || ((StructNode*)owner)->genericinfo == NULL)
+        return 0;
+    Name *ownername = ((StructNode*)owner)->namesym;
+    errorMsgNode((INode*)name, ErrorArgCount,
+        "%s is generic, so %s belongs to each of its instances, named with type arguments as %s[...]; reaching a member through an instance is not built.",
+        &ownername->namestr, &name->namesym->namestr, &ownername->namestr);
+    return 1;
+}
+
 // Handle type check for variable/function name use references
 void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
     NameUseNode *name = *namep;
@@ -202,6 +218,10 @@ void nameUseTypeCheck(TypeCheckState *pstate, NameUseNode **namep) {
     if (alias && alias->through) {
         *((FnCallNode**)namep) = aliasDclThroughAccess(alias, (INode*)name);
         inodeTypeCheckAny(pstate, (INode**)namep);
+        return;
+    }
+    if (nameUseTemplateMember(name, name->dclnode)) {
+        name->vtype = errorType;
         return;
     }
     // An overload name has no value of its own: it names a set of concrete

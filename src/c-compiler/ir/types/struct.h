@@ -60,6 +60,10 @@ StructNode *newStructNode(Name *namesym);
 // Clone struct
 INode *cloneStructNode(CloneState *cstate, StructNode *node);
 
+// Map each function, static and overload name of 'original' to the member of
+// 'copy' of the same name, for the clones made while the map is in force
+void structCloneMapMembers(StructNode *original, StructNode *copy);
+
 // Add a field node to a struct type
 void structAddField(StructNode *type, FieldDclNode *node);
 

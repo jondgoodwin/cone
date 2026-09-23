@@ -907,6 +907,13 @@ void fnCallLowerOverloadFn(FnCallNode *node) {
         return;
     }
 
+    // A generic type's own overload name, reached from outside it, names
+    // candidates that only its instances have
+    if (nameUseTemplateMember(fnuse, nodesGet(overloadnode->overloads, 0))) {
+        node->vtype = errorType;
+        return;
+    }
+
     // Test every candidate the overload name declares, without altering the call
     enum OverloadMatch status;
     FnDclNode *selected = iNsTypeFindMethod((INode*)overloadnode, NULL, node->args, &status);

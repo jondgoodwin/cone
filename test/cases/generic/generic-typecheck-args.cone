@@ -1,5 +1,6 @@
 // Type argument lists written out, and the two things wrong with one that the
-// instantiation path refuses.
+// instantiation path refuses; and, last, a path through a generic type that
+// writes none where one is required.
 //
 // Separate from generic-typecheck-infer because the mechanism is the opposite
 // one: there the type arguments are absent and have to be derived from the value
@@ -12,8 +13,8 @@
 //
 // Each of these used to report its diagnostic and then kill the compiler: the
 // failed instantiation returned nothing, and its caller type-checked the nothing.
-// It now leaves a node marked as already-reported, which is why each function
-// below contributes exactly one diagnostic rather than a first one and then a
+// It now leaves a node marked as already-reported, which is why each use below
+// contributes exactly one diagnostic rather than a first one and then a
 // cascade about a callee that cannot be called.
 
 fn max[T](x T, y T) T {
@@ -51,4 +52,22 @@ fn tooManyTypeArgumentsOnAType() {
 
 fn typeArgumentIsNotATypeOnAType() {
   imm p = Pair[i64, 3][a: 1i64, b: 2i64];  //~ ErrorNotType:21 "Expected a type for a generic parameter"
+}
+
+// No type argument list at all, on a path through a generic type to one of its
+// members. The generic has no members of its own, only each instance has its
+// copy, so the path must name an instance -- which is not built as a path yet.
+// Each of these reached generation as a call to, or a read of, a member that is
+// never generated, and crashed the compiler.
+struct Stocked[T] {
+  v T;
+  pub fn restock() i64 {30i64;}
+  pub fn restockBy overload refill(n i64) i64 {n;}
+  pub static mut held = 0i64;
+}
+
+fn memberOfTheGenericItself() {
+  imm r = Stocked.restock();       //~ ErrorArgCount:19 "Stocked is generic, so restock belongs to each of its instances"
+  imm s = Stocked.refill(2i64);    //~ ErrorArgCount:19 "Stocked is generic, so refill belongs to each of its instances"
+  imm t = Stocked.held;            //~ ErrorArgCount:19 "Stocked is generic, so held belongs to each of its instances"
 }

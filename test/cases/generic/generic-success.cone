@@ -414,6 +414,31 @@ fn staticPerInstance() {
   show("generic-static-per-instance-second", (&mut c).pack());
 }
 
+// A static function, overload name or static of a generic type, named bare in
+// the type's own methods, is the instance's copy, whether it is declared before
+// or after the method naming it. Name resolution bound each such use to the
+// generic's member, which is never generated, and the call to it crashed the
+// compiler. The f64 instance counts its own 'hits', so a use re-pointed at
+// another instance's static would print 2313 below, not 2311.
+struct Tally[T] {
+  pub v T;
+  pub fn total(self &) i64 {early() + later() + Self.early() + scaled(2i64) + bump();}
+  fn early() i64 {100i64;}
+  fn later() i64 {early() + 10i64;}
+  fn scaleInt overload scaled(n i64) i64 {n * 1000i64;}
+  fn scaleFloat overload scaled(n f64) i64 {5i64;}
+  fn bump() i64 {hits = hits + 1i64; hits;}
+  pub static mut hits = 0i64;
+}
+
+fn staticsNamedBare() {
+  imm a = Tally[i64][1i64];
+  imm b = Tally[f64][1.5];
+  (&a).total();
+  show("generic-statics-named-bare", (&a).total());
+  show("generic-statics-named-bare-other-instance", (&b).total());
+}
+
 // A reference or pointer to a type parameter, written inside the generic.
 // Name resolution decides whether '&T' is a reference type or a borrow by
 // asking whether T is a type, and in the template T is a generic parameter,
@@ -534,6 +559,7 @@ fn main() i32 {
   genericReturningGeneric();
   unnamedTypeArguments();
   staticPerInstance();
+  staticsNamedBare();
   referenceToTypeParameter();
   composedTypeParameter();
   0i32;

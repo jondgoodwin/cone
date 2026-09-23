@@ -232,9 +232,16 @@ INode *genericMemoize(TypeCheckState *pstate, FnCallNode *srcgencall, INode *nod
         // any is type checked: a variant's body may name a later sibling at these
         // same arguments, and a sibling not yet remembered would be a miss that
         // instantiates the whole enum again, endlessly.
+        // A variant's body may also name a static function, static or overload
+        // name of the enum bare, which name resolution bound to the generic's
+        // member; it is the instance's that has a symbol, so the variants are
+        // cloned with each such member mapped to the instance's.
+        uint32_t dclpos = cloneDclPush();
+        structCloneMapMembers(basetrait, (StructNode*)instrait);
         Nodes *variants = newNodes(basetrait->derived->used);
         for (nodesFor(basetrait->derived, cnt, nodesp))
             nodesAdd(&variants, genericClone(pstate, srcgencall, *nodesp, ((StructNode*)*nodesp)->genericinfo));
+        cloneDclPop(dclpos);
         Nodes **instraitderived = &((StructNode*)instrait)->derived;
         INode **instp = &nodesGet(variants, 0);
         for (nodesFor(basetrait->derived, cnt, nodesp)) {

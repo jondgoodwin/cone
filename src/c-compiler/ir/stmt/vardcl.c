@@ -46,17 +46,32 @@ VarDclNode *newVarDclFull(Name *namesym, uint16_t tag, INode *type, INode *perm,
     return name;
 }
 
-// Create a new variable dcl node that is a copy of an existing one
-INode *cloneVarDclNode(CloneState *cstate, VarDclNode *node) {
+// The copy of a variable declaration, before its type and value are copied: they
+// still point at the original's. Split from filling it in so a generic type's
+// clone can bind a static's copy before any body that may name it is copied
+// (cloneStructNode).
+VarDclNode *cloneVarDclShell(VarDclNode *node) {
     VarDclNode *newnode = memAllocBlk(sizeof(VarDclNode));
     memcpy(newnode, node, sizeof(VarDclNode));
     // A clone is unchecked however far along the node it was copied from got.
     // memcpy carries the type check marks with everything else, and a clone that
     // kept them would be skipped by the guard in inodeTypeCheck.
     newnode->flags &= 0xffff - (TypeChecked | TypeChecking);
+    return newnode;
+}
+
+// Copy the original's type and value into its shell, and re-point every later
+// use of the original at the copy
+void cloneVarDclFill(CloneState *cstate, VarDclNode *newnode, VarDclNode *node) {
     newnode->vtype = cloneNode(cstate, node->vtype);
     newnode->value = cloneNode(cstate, node->value);
     cloneDclSetMap((INode*)node, (INode*)newnode);
+}
+
+// Create a new variable dcl node that is a copy of an existing one
+INode *cloneVarDclNode(CloneState *cstate, VarDclNode *node) {
+    VarDclNode *newnode = cloneVarDclShell(node);
+    cloneVarDclFill(cstate, newnode, node);
     return (INode*)newnode;
 }
 

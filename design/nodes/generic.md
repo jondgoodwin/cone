@@ -159,6 +159,25 @@ when not found**. That fallback is load-bearing in both directions: it is what
 makes a macro body resolve at its *declaration* site, and what makes a generic
 function's self-recursive call re-instantiate rather than point at itself.
 
+**A generic type's members are in the map too, and before any body.** A body
+may name one of its type's static functions, statics or overload names bare, or
+through `Self`, and name resolution bound the use to the template's member —
+which is never generated, so a call left pointing at it is a call to nothing.
+`cloneStructNode` therefore copies each function and static in two steps: every
+copy is made and bound in the instance's namespace first
+(`cloneFnDclShell`, `cloneVarDclShell`), `structCloneMapMembers` maps each
+template member and overload set to the instance's of the same name, and only
+then are signatures and bodies copied (`cloneFnDclFill`, `cloneVarDclFill`) —
+so a body naming a member declared after it is re-pointed too. The map is
+popped when the struct's clone ends, so one instance's members never answer for
+another's. A method named bare needs none of this, since type check rewrites it
+to `self.name` and looks it up in the instance, but it is mapped all the same.
+A tagged trait's variants are separate clones, made after the base's instance,
+so `genericMemoize` clones them under a map from the base template's members to
+that instance's: a variant's body naming an enum's static function bare reaches
+the instance's copy. A function cloned on its own is never mapped to its copy,
+which is what the self-recursion above relies on.
+
 ## Type check
 
 **Templates return early.** `fnDclTypeCheck` and `structTypeCheck` both begin

@@ -42,6 +42,9 @@ void fnOverloadDclAdd(FnOverloadDclNode *ovlnode, FnDclNode *fnnode);
 
 // Return a clone of a function/method declaration
 INode *cloneFnDclNode(CloneState *cstate, FnDclNode *oldfn);
+// The same in two steps: the copy with its original's signature and body, then those copied
+FnDclNode *cloneFnDclShell(FnDclNode *oldfn);
+void cloneFnDclFill(CloneState *cstate, FnDclNode *newnode, FnDclNode *oldfn);
 
 void fnDclPrint(FnDclNode *fn);
 

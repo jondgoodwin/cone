@@ -37,6 +37,9 @@ VarDclNode *newVarDclFull(Name *namesym, uint16_t tag, INode *sig, INode *perm, 
 
 // Create a new variable dcl node that is a copy of an existing one
 INode *cloneVarDclNode(CloneState *cstate, VarDclNode *node);
+// The same in two steps: the copy with its original's type and value, then those copied
+VarDclNode *cloneVarDclShell(VarDclNode *node);
+void cloneVarDclFill(CloneState *cstate, VarDclNode *newnode, VarDclNode *node);
 
 void varDclPrint(VarDclNode *fn);
 
