@@ -640,6 +640,36 @@ void parseSkipDclBody() {
     } while (depth > 0 && !lexIsToken(EofToken));
 }
 
+// Parse the default fold a 'mod' line's 'use' clause names, with the lexer on
+// the 'use' or on the 'pub' before it. It is an import's clause -- names, a
+// block, '*', '* but' -- read by the one clause parser, less the two things
+// nobody ruled for it: 'as', since what an importer calls a name is the
+// importer's to say in a clause of its own, and 'pub', since each import decides
+// how visible its folds are. Each is refused, and the clause taken without it.
+// Whether each name is a public name of the module is known only once its
+// declarations and folds are, so that is checked in the fold pass that reports
+// (modDefaultFoldCheck).
+static FoldClause *parseModDefaultFold(ParseState *parse) {
+    if (lexIsToken(PubToken) || lexNextIsWord("pub"))
+        errorMsgLex(ErrorBadPub,
+            "A 'mod' line's 'use' names what a bare import of this module folds, and each import decides how visible its folds are, so 'pub' has nothing to say here. Write 'pub import' where the module is imported.");
+    FoldClause *fold = parseFoldClause(parse, FoldRecover);
+    fold->ispub = 0;
+    INode **itemp;
+    uint32_t cnt;
+    for (nodesFor(fold->items, cnt, itemp)) {
+        AliasDclNode *alias = (AliasDclNode*)*itemp;
+        Name *srcname = ((NameUseNode*)alias->target)->namesym;
+        if (alias->namesym == srcname)
+            continue;
+        errorMsgNode((INode*)alias, ErrorBadFold,
+            "A 'mod' line's 'use' folds each name into its importers under the module's own spelling. An importer that wants %s as %s writes that in its own clause: 'import ... use %s as %s'.",
+            &srcname->namestr, &alias->namesym->namestr, &srcname->namestr, &alias->namesym->namestr);
+        alias->namesym = srcname;
+    }
+    return fold;
+}
+
 // Parse a 'mod' declaration, which declares the module a folder's files belong
 // to.
 //
@@ -662,6 +692,14 @@ void parseSkipDclBody() {
 // there and still the base's declaration, while the base's imports stay its own
 // dependencies (modExtendsResolve, modFoldNames). One base, named by one name.
 //
+// 'mod bigint use BigInt;' names what a BARE import of this module folds by
+// default [Jon 23 Sep]: a package holding one thing becomes that thing where it
+// is imported. The clause runs the other way from every other 'use' -- it folds
+// into the IMPORTER, not into the module it is written in -- and it is not an
+// export list: 'pub' still decides what is reachable, and the clause only picks
+// the fold an import writing none of its own gets (parseModDefaultFold). With
+// 'extends', it comes last: 'mod bigint extends base use BigInt;'.
+//
 // 'mod trait', a module's abstraction, is admitted and refused because nothing
 // is behind it yet: reporting it where it is written is what settles its
 // spelling without accepting it. A 'mod name { ... }' block is recognised only
@@ -681,7 +719,7 @@ void parseSkipDclBody() {
 // Its own declaration is the only place it can be written, since the parent
 // declares nothing about a subfolder or a file -- where it sits is the
 // declaration. A module with no parent has nothing to be visible outside of.
-void parseModuleDcl(ModuleNode *mod, int atmodstart, uint16_t pubflag) {
+void parseModuleDcl(ParseState *parse, ModuleNode *mod, int atmodstart, uint16_t pubflag) {
     // Where the declaration is written. The module node was made positioned at
     // the first line of its designated file, which is the nearest thing a module
     // named by its folder has to a declaration; an accepted declaration is a
@@ -751,6 +789,18 @@ void parseModuleDcl(ModuleNode *mod, int atmodstart, uint16_t pubflag) {
             errorMsgLex(ErrorNoName, "Expected the name of the module this one extends");
     }
 
+    // What a bare import of this module folds by default, last on the line
+    FoldClause *deffold = NULL;
+    if (parseIsFoldClause()) {
+        deffold = parseModDefaultFold(parse);
+        if (lexIsToken(ExtendsToken)) {
+            errorMsgLex(ErrorBadFold,
+                "A 'mod' line's 'use' comes last, after 'extends': 'mod name extends base use ...'.");
+            while (lexIsToken(ExtendsToken) || lexIsToken(IdentToken))
+                lexNextToken();
+        }
+    }
+
     // An in-file module block. Nesting is by files and folders only, so there is
     // no such construct; its body is skipped so that nothing in it is reported again
     if (lexIsToken(LCurlyToken) || lexIsToken(ColonToken)) {
@@ -768,6 +818,7 @@ void parseModuleDcl(ModuleNode *mod, int atmodstart, uint16_t pubflag) {
         else {
             mod->flags |= FlagModDcl;
             mod->extendsname = (INode*)extendsname;
+            mod->deffold = deffold;
             // What 'pub' does, where there is a parent for it to speak to: the
             // submodule joins its parent's namespace as a public name, which its
             // parent's neighbours may then name a path through
@@ -882,7 +933,7 @@ void parseGlobalStmts(ParseState *parse, ModuleNode *mod, int atmodstart) {
         // parent; a module has no instances for a 'static' to be shared across
         case ModToken:
             parseBadStatic(staticflag);
-            parseModuleDcl(mod, atstart, pubflag);
+            parseModuleDcl(parse, mod, atstart, pubflag);
             break;
 
         // 'actor' is a kind the grammar admits and the compiler does not build.

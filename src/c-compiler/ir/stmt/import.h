@@ -42,15 +42,23 @@
 // Where the parent's answer is a module -- one the parent imported and
 // re-exported -- 'module' is set then, and a 'use' clause folds from it as from
 // any module's.
+//
+// An import that writes NO clause folds what the imported module's 'mod' line
+// names as its default [Jon 23 Sep]: 'mod bigint use BigInt;' makes a bare
+// 'import bigint;' bind BigInt as well as bigint. The module's clause is copied
+// onto the import when its first fold pass runs (importDefaultFold), so each
+// importer's bindings are its own and carry its own visibility; 'isdefault'
+// marks the copy. A clause the import writes replaces the default whole.
 typedef struct ImportNode {
     INodeHdr;
     ModuleNode *module;
-    FoldClause *fold;   // The names its 'use' clause folds in, or NULL for none
+    FoldClause *fold;   // The names its 'use' clause folds in -- or, written with none, its module's default -- or NULL for none
     struct AliasDclNode *binding; // An import of a name of the parent: the alias it binds, bound in the fold passes; else NULL
     uint16_t ispub;     // 'pub import': the module's own binding is public here
     uint16_t isextends; // The fold a module's 'extends' makes, rather than an import statement
     uint16_t isuse;     // The fold a module's standalone 'use' of a submodule makes, rather than an import statement
     uint16_t isnamedfile; // A bare name reached as a FILE, since the registry held no module of that name at parse
+    uint16_t isdefault; // 'fold' is a copy of the module's default fold, the import having written no clause
 } ImportNode;
 
 // Create a new Import node
