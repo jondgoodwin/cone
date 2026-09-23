@@ -138,6 +138,11 @@ static INode *modBindingDcl(INode *node) {
 // re-export is not lost to whichever route happened to be folded first. A
 // declaration of the module keeps its own visibility: nothing folds a private
 // name of it back as a public one.
+//
+// The same holds for the kind of binding. An import's binding of its module's
+// name is a dependency, which a module extending this one does not take; where a
+// fold has brought the same module in under that name too, the binding is also a
+// fold, and it does travel (FlagImportName).
 INode *modFoldBind(ModuleNode *mod, AliasDclNode *alias) {
     INode *prior = namespaceAdd(&mod->namespace, alias->namesym, (INode*)alias);
     if (prior == NULL) {
@@ -147,8 +152,11 @@ INode *modFoldBind(ModuleNode *mod, AliasDclNode *alias) {
     INode *dcl = modBindingDcl((INode*)alias);
     if (dcl == NULL || dcl != modBindingDcl(prior) || aliasDclThrough(prior) != alias->through)
         return prior;
-    if ((alias->flags & FlagPub) && prior->tag == AliasDclTag)
-        prior->flags |= FlagPub;
+    if (prior->tag == AliasDclTag) {
+        if (alias->flags & FlagPub)
+            prior->flags |= FlagPub;
+        prior->flags &= 0xffff - FlagImportName;
+    }
     return NULL;
 }
 
@@ -188,20 +196,28 @@ void modHook(ModuleNode *oldmod, ModuleNode *newmod) {
 
 // ---- 'mod A extends B': one module reusing another -------------------------
 //
-// A module that extends another takes in every name the other has, and adds its
-// own declarations beside them. For a module, extending and inheriting are one
+// A module that extends another takes in the other's names -- all but the ones
+// its imports bind to their modules -- and adds its own declarations beside
+// them. For a module, extending and inheriting are one
 // thing: static folding ALIASES and keeps the original owner, and a module's
 // state is all static -- one instance, at a fixed address -- so there is no
 // second copy to make, and each name of B becomes an alias in A's namespace
 // whose declaration, symbol and state stay B's.
 //
-// EVERY name of B comes across, and each alias carries B's visibility: A is
-// inside B's boundary, as an enriching type is inside its base's, so A's code
-// reads B's private names too [Jon 23 Sep]. What A shows is what B shows: a name
-// public in B is public in A, because what a module extends is part of its own
-// surface, and a name private to B is private in A, so A's importers see B's
-// public surface and nothing more. A name A declares that B already has, public
-// or private, is refused, as it is for a type.
+// B's DECLARATIONS and B's FOLDS come across -- what B declares, and every alias
+// a 'use' clause of B's made, an import's, a global's or an enum's -- but not the
+// name an import of B's binds to its module [Jon 23 Sep]. A module's imports are
+// its dependencies, not its contents: scoped imports exist so that each module
+// states its own, so A names c1 only if A imports c1, whatever B imports. What
+// 'import c1 use cx' folds into B is a name of B, and cx does come across.
+//
+// Each alias carries B's visibility: A is inside B's boundary, as an enriching
+// type is inside its base's, so A's code reads B's private names too [Jon 23
+// Sep]. What A shows is what B shows: a name public in B is public in A, because
+// what a module extends is part of its own surface, and a name private to B is
+// private in A, so A's importers see B's public surface and nothing more. A name
+// A declares that B already has, public or private, is refused, as it is for a
+// type.
 //
 // The fold is an ImportNode marked 'isextends' and held on the module rather
 // than on its imports, so modFoldNames runs it dependency-first like any import
@@ -274,8 +290,9 @@ void modExtendsResolve(ModuleNode *mod) {
     fold->isextends = 1;
     fold->fold = newFoldClause();
     inodeLexCopy(fold->fold->at, (INode*)name);
-    // Every name of the base, each as visible here as it is there: the clause
-    // carries no 'pub' of its own (importFoldItem)
+    // Every declaration and fold of the base, each as visible here as it is
+    // there: the clause carries no 'pub' of its own (importFoldItem), and its
+    // star leaves out what the base's imports bind (foldStarItems)
     fold->fold->star = 1;
     mod->extends = fold;
 }

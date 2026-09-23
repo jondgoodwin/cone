@@ -20,7 +20,7 @@ enum FoldAdmit {
     FoldAdmitMembers,   // Every member reached through a value: a field, a method, a macro method
     FoldAdmitOwn,       // Only what the source declares itself: not a field, not an alias of its own
     FoldAdmitNames,     // Every public name of another MODULE, of whatever kind: a module has one instance, so nothing is reached through a value and nothing is left out for being an alias
-    FoldAdmitBase       // Every name of a module another EXTENDS, private ones too: the extending module is inside its base's boundary, as an enriching type is
+    FoldAdmitBase       // Every name of a module another EXTENDS, private ones too -- its declarations and its folds, but not the names its imports bind to their modules: the extending module is inside its base's boundary, as an enriching type is, and the base's imports are its dependencies, not its contents
 };
 
 // The declaration of a type expression, through a reference or pointer if it is

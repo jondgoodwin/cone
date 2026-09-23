@@ -22,10 +22,11 @@
 // and the clause's 'ispub' is set by either spelling.
 //
 // A module's 'extends' is carried by one too, and never on the module's
-// 'imports': it binds no name of its own, and its fold is a star clause over
-// EVERY name of the base, private ones included, each as visible in the
-// extending module as it is in the base [Jon 23 Sep]. 'isextends' is what tells
-// it apart.
+// 'imports': it binds no name of its own, and its fold is a star clause over the
+// base's declarations and folds, private ones included, each as visible in the
+// extending module as it is in the base -- but not over the names the base's
+// imports bind to their modules, which are the base's dependencies rather than
+// its contents [Jon 23 Sep]. 'isextends' is what tells it apart.
 typedef struct ImportNode {
     INodeHdr;
     ModuleNode *module;

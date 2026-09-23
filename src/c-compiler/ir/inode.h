@@ -211,6 +211,13 @@ enum NodeTags {
 // 0x0002 because an alias already reads 0x0001 as FlagMethFld and 0x0200 as
 // FlagPub; nothing reads 0x0002 on one.
 #define FlagTypeAlias 0x0002        // AliasDcl: target is a type expression, not a folded member name
+// The binding an import makes of the imported module's own name, and nothing
+// but that: no fold has brought the same module in under the name as well. A
+// module's imports are its dependencies, not its contents, so a module that
+// extends this one does not take the binding [Jon 23 Sep]. 0x0004 because it is
+// FlagSystem on a fn or variable and a type flag on a type, and an alias is
+// neither; nothing reads 0x0004 on one.
+#define FlagImportName 0x0004       // AliasDcl: an import's binding of its module's name, which 'extends' does not carry
 
 #define IsTagField    0x0010        // FieldNode: This field is the trait's discriminant tag
 #define IsMixin       0x0020        // FieldNode: Is a trait mixin, vs. an instantiated field

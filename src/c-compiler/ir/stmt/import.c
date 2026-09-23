@@ -134,6 +134,11 @@ int importSame(ImportNode *a, ImportNode *b) {
 //
 // Only 'pub import' reaches this binding. A clause's 'pub use' speaks for the
 // names the clause folds, and the module's own name is not one of them.
+//
+// The binding states a DEPENDENCY of this module, not a part of it, so a module
+// that extends this one does not take it (FlagImportName, foldStarItems): it
+// imports the module itself if it names it [Jon 23 Sep]. What the import's 'use'
+// clause folds in is a part of this module, and does travel.
 void importBindModule(ModuleNode *mod, ImportNode *node) {
     ModuleNode *newmod = node->module;
     NameUseNode *target = newNameUseNode(newmod->namesym);
@@ -141,6 +146,7 @@ void importBindModule(ModuleNode *mod, ImportNode *node) {
     target->dclnode = (INode*)newmod;
     AliasDclNode *alias = newNameAliasDclNode(newmod->namesym, (INode*)target);
     inodeLexCopy((INode*)alias, (INode*)node);
+    alias->flags |= FlagImportName;
     if (node->ispub)
         alias->flags |= FlagPub;
     modAddNamedNode(mod, newmod->namesym, (INode*)alias);
@@ -176,7 +182,8 @@ static void importFoldItem(ModuleNode *mod, ImportNode *import, AliasDclNode *al
     }
     // Only what the source module shows folds. A binding's own visibility is what
     // is read, so a name the source itself folded in privately does not travel.
-    // A module extending the source is inside its boundary and takes every name
+    // A module extending the source is inside its boundary and takes its
+    // private names too
     if (inodeIsPrivate(found) && !import->isextends) {
         errorMsgNode((INode*)alias, ErrorNotPublic, "%s is private to %s, so it does not fold.",
             &srcname->namestr, &src->namesym->namestr);

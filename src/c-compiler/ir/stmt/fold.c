@@ -58,8 +58,13 @@ static int foldStarAdmits(INode *member, int admit) {
     // A module's names, of whatever kind. A module has one instance at a fixed
     // address, so nothing of it is reached through a value and the member/static
     // distinction that decides the other two has nothing here to decide
-    if (admit == FoldAdmitNames || admit == FoldAdmitBase)
+    if (admit == FoldAdmitNames)
         return 1;
+    // A module extending the source takes its declarations and what its folds
+    // brought in, but not the name an import of it binds: the module imported is
+    // a dependency of the source, not a part of it [Jon 23 Sep]
+    if (admit == FoldAdmitBase)
+        return !(member->tag == AliasDclTag && (member->flags & FlagImportName));
     // Every member reached through a value. A static is reached through the type,
     // so it is not one, and a star clause passes it over rather than refusing it
     return inodeIsMember(member);
@@ -68,7 +73,8 @@ static int foldStarAdmits(INode *member, int admit) {
 // Make the items of a star clause: an alias for every name of 'ns' that 'admit'
 // takes and 'but' does not leave out. Not Self, not an unnamed node, and never
 // the source's own finalizer or clone, which belong to its values' lifecycle.
-// Not a private name either, except to a module extending the source.
+// Not a private name either, except to a module extending the source, which
+// takes every name but the ones the source's imports bind to their modules.
 void foldStarItems(Namespace *ns, Name *srcname, FoldClause *fold, int admit) {
     int modnames = admit == FoldAdmitNames || admit == FoldAdmitBase;
     INode **nodesp;

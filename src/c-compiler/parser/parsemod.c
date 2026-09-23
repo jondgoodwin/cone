@@ -524,9 +524,10 @@ void parseSkipDclBody() {
 // what makes a module-level name a local or a type member hides reachable again,
 // as 'name.x'.
 //
-// 'mod name extends base;' makes this module one that reuses another: every name
-// of the base becomes a name of this one, as visible here as there and still the
-// base's declaration (modExtendsResolve, modFoldNames). One base, named by one name.
+// 'mod name extends base;' makes this module one that reuses another: every
+// declaration and fold of the base becomes a name of this one, as visible here as
+// there and still the base's declaration, while the base's imports stay its own
+// dependencies (modExtendsResolve, modFoldNames). One base, named by one name.
 //
 // Two shapes the grammar admits are refused because nothing is behind them: a
 // nested 'mod name { ... }' block, which needs a namespace of its own and paths
