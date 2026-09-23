@@ -257,7 +257,12 @@ order. Per variable: one that was never initialized or was moved out is
 skipped, whatever its type, because it owns nothing to release or finalize; so
 is one the scope hands back, which is the caller's to release or finalize, and
 `flowIsScopeResult` matches it against the result expression, walking a
-`VTupleTag` element by element and a recast to its operand. The match is on the
+`VTupleTag` element by element and a recast to its operand. A move-typed field
+or element handed back matches the variable it is taken from
+(`flowIsScopeResultOwner`, the walk through fields, elements and owning
+dereferences that `flowMoveSource` takes), because moving a part out gives up
+the whole variable; releasing it would finalize the part again in the caller,
+and what else it held is not released. A copied part matches nothing. The match is on the
 declaration the result's name resolves to, not on the name: a `return` asks over the whole function's
 stack, where an inner block's `a` and an outer `a` both sit, and only the one
 handed back is exempt. What survives both is an `so` or `rc`

@@ -381,6 +381,23 @@ size_t flowScopePush() {
     return gVarFlowStackPos;
 }
 
+// Is this variable where a part handed back is taken from? The same walk
+// inwards, through fields, elements and owning dereferences, that
+// flowMoveSource takes to the variable it deactivates.
+static int flowIsScopeResultOwner(INode *exp, VarDclNode *varnode) {
+    switch (exp->tag) {
+    case FldAccessTag:
+    case ArrIndexTag:
+        return flowIsScopeResultOwner(((FnCallNode *)exp)->objfn, varnode);
+    case DerefTag:
+        return flowIsScopeResultOwner(((StarNode *)exp)->vtexp, varnode);
+    case CastTag:
+        return !(exp->flags & FlagConvert) && flowIsScopeResultOwner(((CastNode *)exp)->exp, varnode);
+    default:
+        return isNameUseNode(exp) && isExpNode(exp) && ((NameUseNode *)exp)->dclnode == (INode *)varnode;
+    }
+}
+
 // Is this variable's value the one being handed to the caller, and therefore
 // not to be released as the scope ends?
 // 'retexp' is the value being returned, or NULL where nothing is: NULL means
@@ -405,6 +422,12 @@ static int flowIsScopeResult(INode *retexp, VarDclNode *varnode) {
     // A recast hands back its operand: a local returned as its enrichment or base
     if (retexp->tag == CastTag && !(retexp->flags & FlagConvert))
         return flowIsScopeResult(((CastNode *)retexp)->exp, varnode);
+    // A move-typed part handed back moves out of the variable that holds it,
+    // which as for any move out of a part no longer owns the whole: releasing
+    // it would finalize the part a second time, in the caller. A copied part
+    // leaves the variable owning everything it held.
+    if ((retexp->tag == FldAccessTag || retexp->tag == ArrIndexTag) && iexpIsMove(retexp))
+        return flowIsScopeResultOwner(((FnCallNode *)retexp)->objfn, varnode);
     return isNameUseNode(retexp) && isExpNode(retexp) && ((NameUseNode *)retexp)->dclnode == (INode *)varnode;
 }
 
