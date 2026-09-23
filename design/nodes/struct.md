@@ -194,13 +194,14 @@ vtable. A **private** generic method and a generic **static** function are
 neither slots nor requirements and cost the trait nothing.
 `trait-typecheck-vref` pins all three, and
 `conesite/public/coneref/refvirtref.html`, "Type Restrictions", is the rule.
-| `namespace` | every named member: fields, methods, macros, overload sets, `Self`, **an enum's variants** — each a `StructNode`, bound at parse, and never a member of the enum's values: a lookup through a value passes one over (`fnCallLowerMethod`) — and what a fold admits — a **copy** of a folded field (a `FieldDclNode` with a `hop`) and an **alias** (`AliasDclNode`) for a folded method, overload set or macro method, for every member but the fields of an `extends` base, and for every member a sibling `use` admits. The copies and aliases live here only; `fields` and `nodelist` never hold one |
+| `namespace` | every named member: fields, methods, macros, overload sets, `Self`, **an enum's variants** — each a `StructNode`, bound at parse, and never a member of the enum's values: a lookup through a value passes one over (`fnCallLowerMethod`) — and what a fold admits — a **copy** of a folded field (a `FieldDclNode` with a `hop`) and an **alias** (`AliasDclNode`) for a folded method, overload set or macro method, for every member of an `extends` base but its fields, `final` and `clone` (those two are copied into `nodelist`, as a trait's defaults are), and for every member a sibling `use` admits. The copies and aliases live here only; `fields` and `nodelist` never hold one |
 | `dropfn` | NULL until the last step of type check |
 | `dclinfo` | owner and the facts its symbols are spelled from — [Names and Namespaces](../phases/names-and-namespaces.md), "Symbols". The owner is a module, or the enum for a variant declared inside one — for an extension's copy of a base variant, the extension, so the copy's methods are spelled after it. Read for one thing besides naming: rejecting a variant declared outside its enum's module, through `dclInfoGetModule` |
 | `basetrait` | the **type expression** of the first abstraction an `is` names, or of the enum a variant belongs to — a `NameUseNode`, or an `FnCallNode` for a generic base. **Not a `StructNode*`.** Two helpers unwrap it and they answer different questions: `structBaseTraitDcl` takes **one hop**, to the declaration this type stands on, while `structGetBaseTrait` recurses to the **bottom-most** one. Picking the wrong one is how the infection loop hangs |
 | `extendsbase` | the **type expression** whatever base an `extends` names, on the same terms: the concrete type this enriches, or, **on an enum, the enum whose variants join this one's set**. **A separate slot from `basetrait` on purpose**: they are different assertions, a type may write both, and every walk that reads `basetrait` is asking about an abstraction — which is also why an enum's base is here and not there, since no substitution runs between the two enums. `structEnumBaseDcl` unwraps this one for an enum. A generic enum is named here with its arguments (`Option[T]`), an `FnCallNode` until type check replaces it with the instance |
 | `extendsdcl` | an **enriched** base's declaration, written once its members have been taken and NULL until then — so it says both *which* type this enriches and *that* the enrichment has happened, which is what tells name resolution's expansion from type check's. `structExtendsRoot` walks it to the bottom of the chain, and `structExtendsEquiv` compares two roots: that comparison is the whole substitution rule. **Always NULL for an enum**, deliberately: an enum extension licenses no substitution, so it writes nothing the rule reads |
 | `siblings` | a **field-like node per type-body `use`**, or NULL: its `vtype` the type expression of the sibling named, its `fold` what the clause admits. Never in `fields`, because a sibling contributes no representation; the node type is reused for what it already carries through cloning — a type expression and a clause. Read only by `structUseSiblings` |
+| `lifecycle` | unlowered copies of this type's `final` and `clone`, set aside as its layout settles and before its methods are type checked (`structKeepLifecycle`), or NULL. Read only by an enrichment taken after that — in type check, where this type or its enrichment is a generic's instance — since by then the methods themselves are lowered (see Hazards) |
 | `derived` | for an **enum**, its variants in declaration order — **an extension's begins with its copies of its base's list**, in the base's order, and they are in no module's node list, so this is how the module walk and generation reach them (`structEnumCopyCount` says how many: those whose `instnode` is the extension). A generic instance's list holds the instances of its template's variants, copies included, put there by `genericMemoize`. A variant is in exactly one enum's list. The index is the `tagnbr` only where nothing pinned one, which is what generation asks before using the tag to index the vtable list |
 | `traits` | every abstraction whose members were taken — the base, each further name in the `is` list, and each `mixin` — or NULL. Written where the members are taken (`structInheritTrait`) and read by type check's two requirement checks, the only things that still need to know which trait a requirement came from. **Which entry is the base is asked of `basetrait`, not of this list's order**, since the field walk that fills it runs backwards |
 | `fields` | all fields in layout order. A declared field may carry a fold clause (`FieldDclNode.fold`); a folded copy is never here |
@@ -463,8 +464,9 @@ inherited member bare, exactly as it names the type's own.
    trait is an instance of a generic is left for type check, since the instance
    does not exist yet.
 8a. **Take the concrete base's members** (`structEnrichFromBase`, under
-   "Enrichment" below): its fields copied in at the front, every other member of
-   it entered as an alias. Here rather than in the walk, because the walk is what
+   "Enrichment" below): its fields copied in at the front, its `final` and
+   `clone` cloned into this type's methods with `Self` retyped, every other member
+   of it entered as an alias. Here rather than in the walk, because the walk is what
    removes the placeholders, and before the two steps below, so that the copies
    are indexed with everything else and a fold clause that came across on a copied
    field is expanded against the copy.
@@ -577,7 +579,10 @@ another. See [module](module.md).
 7. **`TypeChecked` is set here, before the methods.** The placement is
    load-bearing, not an optimization: fields are indexed, size is known, and the
    method set is complete, so a method may use its own type by value —
-   `fn twin(self) Self`.
+   `fn twin(self) Self`. Just before it, a type that may be enriched sets its
+   `final` and `clone` aside unlowered in `lifecycle` (`structKeepLifecycle`), for
+   an enrichment taken after its methods are checked; so an enrichment reads
+   `TypeChecked` on its base to know which to copy.
 8. Type check every method.
 9. **Verify the traits' method requirements** (`structCheckTraitReqs`), now
    that every signature has its types: for each method of each trait in
@@ -717,16 +722,16 @@ values and this type's substitute for each other freely. The language is in
 [refinherit](../../conesite/public/coneref/refinherit.html); this is the
 mechanism, in `structEnrichFromBase` and `structExtendsEquiv`.
 
-**It is a name fold and nothing else, and that is the whole finding.** One
-representation means a base method already takes exactly the right receiver, so
-there is no clone to make, no signature to retype and no receiver to shift.
+**It is a name fold, bar the value's lifecycle, and that is the whole finding.**
+One representation means a base method already takes exactly the right receiver,
+so there is no clone to make, no signature to retype and no receiver to shift.
 Beside the field fold above, the two are the same operation reached from opposite
 ends: a field's clause reaches the *part*, so it needs a hop and a receiver
 rewrite, and an enrichment *is* the whole, so it needs neither. Measured: a base
 method is one symbol however many types reach it, where an inherited trait default
 is a copy per implementer (`struct-extends`, `a-base-method-is-not-cloned-per-enrichment`).
 
-**Two things are not aliases.** The base's **fields are copied**, because a field
+**Three things are not aliases.** The base's **fields are copied**, because a field
 node carries its index and its own check state and each type lays its own out;
 the copies are this type's declared fields in every respect, so they satisfy an
 `is` field requirement, fill a vtable slot and are constructed positionally
@@ -737,22 +742,41 @@ type's copy of that field — which is what keeps a folded name's hop pointing a
 field of the type that holds it. So the base's delegated names come across too,
 and nothing about them is re-pointed by hand.
 
+And the base's **`final` and `clone` are cloned** (`structEnrichLifecycle`), with
+`Self` retyped to this type, exactly as a trait's default is cloned into an
+implementer (`structInheritTrait`). They are the value's own lifecycle rather than
+something a call reaches: `structSetDropFn` reads `final` off this type's
+namespace expecting a method whose receiver is this type, and the drop function it
+generates is this type's, called for every value typed as it. An alias would be
+read there as a malformed `final`, and leaving them out would leave the base's
+finalizer unrun for every value typed as the enrichment. So the copy is this type's
+own method, spelled after it (`LoggedFile.final`), and a value is finalized by the
+same body under either name; a `clone` written against `Self` hands back the
+enrichment. The drop this type generates is built exactly as the base's is: its
+copy of `final` first, then each field that finalizes — and those fields are the
+base's, since an enrichment adds none. The body is bound in the base's scope, so a
+private method of the base called bare from it runs on the enrichment's receiver,
+which substitutes. What is copied must be unlowered, and in type check the base's
+own methods no longer are, so there the copy is taken from what the base set aside
+(`lifecycle`; see Hazards). Measured in `struct-extends-lifecycle`, and across a
+module boundary in `struct-extends-import`. Neither folds from a **sibling**: a
+type folding one has its own copy from the base they share.
+
 **Every other member becomes an alias** — methods, overload sets, macro methods
 and statics alike, private ones included, under the base's own visibility. A
 static keeps its owner and its signature, so the base's factory reached as
 `Gauge.make()` still hands back a `Meter`; binding that value to a `Gauge` is how
 a value of an enriched type is obtained from a library that never heard of the
-enrichment. `final` and `clone` are the exception and they are not taken: they are
-the value's own lifecycle, `structSetDropFn` reads `final` off the namespace
-expecting a method there, and a generated drop function calls the `final` of the
-type it belongs to. So a base declaring either is refused outright
-(`ErrorExtendsBase`) rather than left to run its finalizer for values of one name
-and not the other.
+enrichment.
 
 **What the enriching type may not do**: declare a field (`ErrorExtendsField`,
-which is what keeps the representations identical), or declare a name the base
-already has (`ErrorExtendsOverride`, whether the base's is a field or a method) —
-one value would otherwise mean two things, depending on which name reached it.
+which is what keeps the representations identical — a field that owns a resource
+included, so what its values finalize is exactly what the base's do), or declare a
+name the base already has (`ErrorExtendsOverride`, whether the base's is a field or
+a method, and a `final` of its own over the base's among them) — one value would
+otherwise mean two things, depending on which name reached it. An enrichment of a
+base that declares no `final` may declare one, since that is not an override
+(see Hazards for what it costs).
 **What may be enriched** is a concrete struct and nothing else: not an
 abstraction, which holds no value; not an enum, where adding is adding variants and
 only another enum may (see "An enum extending an enum"); not a variant, whose fields
@@ -1067,6 +1091,23 @@ and `extractvalue`, and `vtblidx` for vtable slots.
   is resolved has no such limit. **Only cloned defaults are affected** — a trait
   contributes no fields, so a field of a generic trait is a requirement the type
   declared for itself and is an ordinary member of it.
+- **A method that has been type checked is no longer fit to copy.** Type check
+  lowers a body in place — a bare method call is given its receiver — so a copy
+  of a checked body, checked again as another type's method, is lowered twice and
+  refused (`ErrorNoCandidate` on the doubled receiver). Name resolution copies
+  before any type check begins, so it never meets this. An enrichment taken in
+  type check does, because its base was checked first, which is why a type sets
+  its `final` and `clone` aside unlowered in `lifecycle` as its layout settles
+  (`structKeepLifecycle`) and an enrichment taken after that copies those
+  (`structEnrichLifecycle`). `struct-extends-lifecycle` pins both generic
+  shapes with a finalizer that calls a method bare.
+- **A finalizer an enrichment adds runs only while the value is typed as the
+  enrichment.** Where the base declares no `final`, the enrichment may declare one,
+  and it is this type's drop and not the base's. A value that crosses to the base's
+  name by value is dropped as the base — so `imm p Plain = PlainFin[1]`, or passing
+  a `PlainFin` to a parameter typed `Plain`, runs no finalizer at all. Measured, not
+  pinned: nothing refuses it and nothing decides it. A base's own `final` has no
+  such gap, since every enrichment carries a copy.
 - **A folded copy is a snapshot until the folding type is laid out.** It takes
   its origin's type node and index at expansion, in name resolution; if the
   origin's type is an instantiation of a generic, type check replaces that node
