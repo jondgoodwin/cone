@@ -48,6 +48,13 @@
 // cloned it into each variant instead, and the compiler stopped on its
 // pre-lowered body. A trait requiring a finalizing field was refused the same
 // way on every implementer. A trait or an enum now generates no drop fn.
+//
+// Nor is an enum's own 'final' its drop fn: it is never generated for the enum,
+// only cloned into each variant, so the drop call built for a value typed as the
+// enum reached no function and the compiler crashed -- as a local, a parameter,
+// a field, and on a generic enum's instance. A value typed as the enum itself is
+// not finalized, whether or not the enum declares a 'final': that needs a drop
+// dispatching on the tag, which is not built. Typed as a variant, it is.
 
 import stdio.*;
 
@@ -362,6 +369,40 @@ enum HeldGeneric[T] {
   struct None {}
 }
 
+// Its own finalizer, and no finalizing field
+enum OwnFinal {
+  pub id i32;
+
+  fn final(self &uni) {
+    finalized = finalized + 100;
+  }
+
+  struct Some {
+    pub n i32;
+  }
+
+  struct None {}
+}
+
+enum OwnFinalGeneric[T] {
+  pub id i32;
+
+  fn final(self &uni) {
+    finalized = finalized + 100;
+  }
+
+  struct Some {
+    pub x T;
+  }
+
+  struct None {}
+}
+
+struct Pocket {
+  pub o OwnFinal;
+  pub k i32;
+}
+
 // The field is a requirement, which the implementer meets by declaring it
 trait HasFin {
   pub f Fin;
@@ -454,6 +495,35 @@ fn commonFieldGenericVariant() {
 
 fn traitFieldImplementer() {
   imm c = Carrier[Fin[63], 64];
+}
+
+// Typed as the variant, the enum's finalizer runs through the variant's clone
+fn enumFinalAsVariant() {
+  imm o = OwnFinal.Some[65, 66];
+}
+
+// Typed as the enum, nothing is finalized, as for an enum with no finalizer
+fn enumFinalAsEnum() {
+  imm o OwnFinal = OwnFinal.Some[67, 68];
+}
+
+fn takeOwnFinal(o OwnFinal) {
+}
+
+fn enumFinalAsParam() {
+  takeOwnFinal(OwnFinal.Some[69, 70]);
+}
+
+fn enumFinalAsField() {
+  imm p = Pocket[OwnFinal.Some[71, 72], 73];
+}
+
+fn enumFinalGenericAsEnum() {
+  imm o OwnFinalGeneric[i32] = OwnFinalGeneric.Some[i32][74, 75];
+}
+
+fn commonFieldAsEnum() {
+  imm h Held = Held.Full[Fin[76], 77];
 }
 
 fn main() i32 {
@@ -616,6 +686,30 @@ fn main() i32 {
   finalized = 0;
   traitFieldImplementer();
   show("trait-field-implementer", finalized);
+
+  finalized = 0;
+  enumFinalAsVariant();
+  show("enum-final-as-variant", finalized);
+
+  finalized = 0;
+  enumFinalAsEnum();
+  show("enum-final-as-enum", finalized);
+
+  finalized = 0;
+  enumFinalAsParam();
+  show("enum-final-as-param", finalized);
+
+  finalized = 0;
+  enumFinalAsField();
+  show("enum-final-as-field", finalized);
+
+  finalized = 0;
+  enumFinalGenericAsEnum();
+  show("enum-final-generic-as-enum", finalized);
+
+  finalized = 0;
+  commonFieldAsEnum();
+  show("common-field-as-enum", finalized);
 
   0i32;
 }

@@ -636,7 +636,11 @@ another. See [module](module.md).
    asks `itypeGetDropFnDcl` about its by-value `self` and its locals of this
    type, and a `dropfn` still NULL then finalizes neither. The fields are
    checked by now, so every field's drop function is known. **A trait or an
-   enum synthesizes none**: its `dropfn` is its own `final` or NULL. A method
+   enum synthesizes none**, and its `dropfn` stays NULL even when it declares
+   a `final`: that `final` is cloned into each variant or implementer and never
+   generated for the enum, so a drop call to it reached no function and the
+   compiler crashed. A value typed as the enum itself is therefore not
+   finalized; a drop dispatching on the tag to the variant's is unbuilt. A method
    of a trait is its implementers' — cloned into them, required of them, never
    generated for the trait — so a synthesized `drop` there was one more
    requirement, which no variant or implementer could meet (its own `drop`

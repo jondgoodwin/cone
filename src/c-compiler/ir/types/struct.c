@@ -2223,8 +2223,14 @@ void structSetDropFn(StructNode *node) {
     // each one's own drop takes its own self. Each already drops those fields: an
     // enum's common fields are spliced into its variants, and the fields a trait
     // requires are declared by its implementers.
+    //
+    // Nor is its own 'final' its drop: that too is never generated for it, so a
+    // call to it had no function to reach, and the compiler crashed on a value
+    // typed as the enum. Such a value is not finalized, whether or not the enum
+    // declares a 'final'; dispatching on the tag to the variant's drop is the
+    // unbuilt "final handling for union".
     if (node->flags & TraitType) {
-        node->dropfn = dropfn;
+        node->dropfn = NULL;
         return;
     }
 
