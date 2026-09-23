@@ -21,6 +21,7 @@ ImportNode *newImportNode() {
     node->isextends = 0;
     node->isuse = 0;
     node->isnamedfile = 0;
+    node->isdefault = 0;
     return node;
 }
 
@@ -191,11 +192,14 @@ static void importFoldItem(ModuleNode *mod, ImportNode *import, AliasDclNode *al
     FoldClause *fold = import->fold;
     NameUseNode *target = (NameUseNode*)alias->target;
     Name *srcname = target->namesym;
+    // What a module's default fold cannot fold is the module's error, and is
+    // reported once, at its 'mod' line (modDefaultFoldCheck); an import taking
+    // the default passes it over
     INode *found = namespaceFind(&src->namespace, srcname);
     if (found == NULL) {
         if (!modFoldReporting())
             modFoldWait();
-        else
+        else if (!import->isdefault)
             errorMsgNode((INode*)alias, ErrorNoMbr, "%s has no name %s to fold in.",
                 &src->namesym->namestr, &srcname->namestr);
         return;
@@ -206,6 +210,8 @@ static void importFoldItem(ModuleNode *mod, ImportNode *import, AliasDclNode *al
     // at once, and the item is made
     if (found == (INode*)src) {
         target->dclnode = found;
+        if (import->isdefault)
+            return;
         if (import->isuse)
             errorMsgNode((INode*)alias, ErrorBadFold,
                 "%s is the module being folded, and it is a name of this module already.",
@@ -224,7 +230,7 @@ static void importFoldItem(ModuleNode *mod, ImportNode *import, AliasDclNode *al
     if (inodeIsPrivate(found) && !import->isextends) {
         if (!modFoldReporting())
             modFoldWait();
-        else
+        else if (!import->isdefault)
             errorMsgNode((INode*)alias, ErrorNotPublic, "%s is private to %s, so it does not fold.",
                 &srcname->namestr, &src->namesym->namestr);
         return;
@@ -435,6 +441,44 @@ void importBindName(ModuleNode *mod, ImportNode *node) {
             &name->namestr);
 }
 
+// Give an import that wrote no clause its module's DEFAULT FOLD, the clause on
+// the module's 'mod' line [Jon 23 Sep]: 'mod bigint use BigInt;' makes a bare
+// 'import bigint;' bind BigInt as well as bigint. It is a copy, because a
+// clause's items are the bindings it makes and each importer makes its own:
+// under the importer's visibility -- public where it is 'pub import', as every
+// binding that import makes is -- and positioned at the import, which is what a
+// collision with the importer's own names is reported at. The names were written
+// by the imported module rather than the importer, so they are marked as a star
+// clause's are: the same declaration reaching the importer by another route it
+// did not write either merges with them (modFoldBind). A name listed twice on the
+// 'mod' line is copied once, being the module's error (modDefaultFoldCheck).
+static void importDefaultFold(ImportNode *node) {
+    FoldClause *def = node->module->deffold;
+    FoldClause *fold = newFoldClause();
+    inodeLexCopy(fold->at, (INode*)node);
+    fold->star = def->star;
+    fold->excludes = def->excludes;
+    fold->ispub = node->ispub;
+    INode **itemp, **copyp;
+    uint32_t cnt, copycnt;
+    for (nodesFor(def->items, cnt, itemp)) {
+        Name *name = ((AliasDclNode*)*itemp)->namesym;
+        int copied = 0;
+        for (nodesFor(fold->items, copycnt, copyp))
+            copied |= ((AliasDclNode*)*copyp)->namesym == name;
+        if (copied)
+            continue;
+        NameUseNode *target = newMemberUseNode(name);
+        inodeLexCopy((INode*)target, (INode*)node);
+        AliasDclNode *alias = newNameAliasDclNode(name, (INode*)target);
+        inodeLexCopy((INode*)alias, (INode*)node);
+        alias->flags |= FlagUnlisted;
+        nodesAdd(&fold->items, (INode*)alias);
+    }
+    node->fold = fold;
+    node->isdefault = 1;
+}
+
 // Fold the names this import admits into the importing module's namespace.
 //
 // The source's NAMESPACE is what is read, not its declaration list, so a name the
@@ -446,6 +490,9 @@ void importBindName(ModuleNode *mod, ImportNode *node) {
 // afresh: it reports each listed item still waiting, and each 'but' naming what
 // the module does not have or does not show.
 void importNameRes(NameResState *pstate, ImportNode *node) {
+    if (node->fold == NULL && node->module != NULL && node->module->deffold != NULL
+        && !node->isextends && !node->isuse)
+        importDefaultFold(node);
     if (node->fold == NULL || node->module == NULL)
         return;
     ModuleNode *src = node->module;
@@ -458,7 +505,8 @@ void importNameRes(NameResState *pstate, ImportNode *node) {
             importFoldStar(target, node);
             return;
         }
-        if (fold->excludes) {
+        // A default's 'but' is judged at the module's own 'mod' line
+        if (fold->excludes && !node->isdefault) {
             for (nodesFor(fold->excludes, cnt, itemp)) {
                 Name *name = ((NameUseNode*)*itemp)->namesym;
                 INode *found = namespaceFind(&src->namespace, name);

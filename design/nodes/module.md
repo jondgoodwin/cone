@@ -66,6 +66,7 @@ name its diagnostics are reported against — `corelib`, `stdio`.
 | `foldpass`, `folding` | the fold pass (`modFoldAll`) that last reached the module, and whether its folds are running in it. A module reached again while *folding* has closed a cycle: it is read as far as it has got, and the passes go on until they settle |
 | `extendsname` | `mod A extends B`: B as written, a `NameUseNode` bound to the module once `modExtendsResolve` finds it; NULL where the module extends nothing |
 | `extends` | the fold `extends` makes: an `ImportNode` marked `isextends`, whose module is B and whose clause is a star clause over B's declarations and folds, private ones included, but not the names B's imports bind to their modules, made once B resolves. **Not on `imports`** — it binds no name of its own — and folded first by `modFoldNames` |
+| `deffold` | `mod A use B`: the module's **default fold**, the `FoldClause` a bare import of it folds; NULL where its `mod` line has no `use`. Read by importers, never folded into this module |
 
 **A module's own name is in its own namespace, and that is what makes a hidden
 module-level name reachable.** `mymod.x` reaches an `x` that a local or a type
@@ -96,6 +97,10 @@ the module is refused (below). **Two `pub`s, and they do not overlap:**
 every binding the import creates public — the module's own name and each fold —
 where `pub use` sets only the clause's. `pub import m pub use …` therefore says
 what `pub import m use …` says, and is accepted as the same import.
+**An import that writes no clause takes its module's default** (`deffold`, from the
+module's `mod` line): when its first fold pass runs, `importDefaultFold` gives it
+a copy of that clause as its `fold` and sets `isdefault`. A clause the import
+writes replaces the default whole.
 
 **A module imports another once.** `parseImport` finds a prior import of the same
 module among the module's `imports`, whatever file of the module wrote it, and
@@ -129,8 +134,8 @@ node's own clause (`foldModUseModule`).
 | `newProgramNode` | one per compile, with an empty file registry |
 | `pgmAddMod` | appends a module and takes its flags. The caller sets `filesym`, `foldersym` and `namesym` afterwards |
 | `pgmFindFile` / `pgmSetFile` | the file registry, by path. **This is what makes a file read once** however many modules name it, and what makes it belong to one module |
-| `newModuleNode` | `namesym`, `filesym` and `foldersym` NULL, `dclinfo` cleared, empty `imports`, `nodes` and `namespace` |
-| `newImportNode` | `module` NULL, `fold` NULL |
+| `newModuleNode` | `namesym`, `filesym` and `foldersym` NULL, `dclinfo` cleared, empty `imports`, `nodes` and `namespace`, no `extends` and no `deffold` |
+| `newImportNode` | `module` NULL, `fold` NULL, every flag clear |
 | `newModUseNode` | `source` NULL, an empty `fold` positioned at the `use`, `modfold` NULL |
 
 ## Parse
@@ -379,6 +384,19 @@ one name — a second after a comma is `ErrorExtends`, a path `ErrorModExtends`,
 nothing at all `ErrorNoName` — and each refusal passes over what it refused, so
 the declaration still names the module. What `extends` does is in "Name
 resolution" below.
+
+**`mod bigint use BigInt;` names the module's default fold** [Jon 23 Sep]: what a
+bare `import bigint;` folds, so a package holding one thing becomes the thing
+where it is imported. With `extends`, the clause comes last, `mod bigint extends
+base use BigInt;`. `parseModDefaultFold` reads it with `parseFoldClause` — names,
+a block, `*`, `* but` — and it is recorded on `deffold` only where the declaration
+is accepted. Two spellings nobody ruled on are refused and the clause taken
+without them: `as` (`ErrorBadFold`), since what an importer calls a name is its
+own to say, and `pub use` or `use pub` (`ErrorBadPub`), since each import decides
+how visible its folds are. A clause written before `extends` is `ErrorBadFold`.
+The clause runs the other way from every other `use` — it folds into importers,
+not into this module — and it is not an export list: `pub` still decides what is
+reachable. What it names is checked once the module's names are known (below).
 
 **`mod trait`, a module's abstraction, is admitted and unbuilt**, reported where
 it is written and its body skipped whole (`ErrorUnbuiltKind`); its spelling is
@@ -655,8 +673,27 @@ bound before anything asks whether the name is a type at all; `aliasDclCheckCycl
 then reports a chain that comes back to itself and cuts it, so no later walk
 loops.
 
-`importNameRes` does nothing unless the import carries a fold clause. When it
-does, a star clause has `foldStarItems` make an item per public name of the source
+`importNameRes` does nothing unless the import carries a fold clause, or writes
+none and its module has a default fold. **A default fold is copied onto the
+import** the first time it is folded (`importDefaultFold`), because a clause's
+items are the bindings it makes and each importer makes its own: under the
+import's visibility, so `pub import bigint;` re-exports the default's names with
+`bigint`; positioned at the import, so a collision with a name of the importer is
+the ordinary `ErrorDupName` there, whose advice (`as`, `but`) now means writing a
+clause of its own; and marked `FlagUnlisted`, since the imported module wrote the
+names and the importer did not, so the same declaration arriving by another route
+merges with it. It is taken wherever an import names a module and writes no
+clause — a sister, a module bound through the parent's registry, a file — and not
+by an `extends` or a standalone `use` of a submodule, each of which carries its
+own clause. **What the default names is judged once, at the `mod` line**
+(`modDefaultFoldCheck`, run by `modFoldNames` in the pass that reports, after the
+module's own folds): each listed name and each `but` name must be a public name
+of the module — `ErrorNoMbr` for one it has not got, `ErrorNotPublic` for a
+private one, `ErrorBadFold` for the module's own name, `ErrorDupName` for a name
+listed twice. An import taking the default passes the same names over
+(`isdefault`) rather than reporting them again at every importer.
+
+Once an import has a clause, a star clause has `foldStarItems` make an item per public name of the source
 module's **`namespace`** that its `but` does not leave out, a list or a block
 arrives with its items already parsed, and `importFoldItem` binds each one as an
 `AliasDclNode` in the importing module's namespace, under the item's local
@@ -942,6 +979,45 @@ children of one folder two names.
   follows. A `use` clause does not unbind the package name, which stays
   available as a qualifier. A long list takes a block form. `using` stays
   reserved so that spelling can be diagnosed rather than merely rejected.
+- **A package may name its own default fold, on its `mod` line** [Jon 23 Sep]:
+  `mod bigint use BigInt;` is what a bare `import bigint;` folds. See "The idiom
+  for reaching a package's members" below.
+
+### The idiom for reaching a package's members
+
+A package named after the thing it provides would put that name in every path
+twice — `bigint.BigInt`. This is not an edge case: a module with no global state
+is pure namespace, and a great deal of library code needs none, so single-type
+packages will be common. Go accepts `time.Time`, Rust leans on `use`, and
+Python's `datetime.datetime` is the cautionary case.
+
+**Decided [Jon 23 Sep]: a package holding one thing just becomes the thing when
+imported, and the package says so on its own `mod` line.**
+
+```
+mod bigint use BigInt;
+mod bigint extends base use BigInt;     // with extends, the use clause comes last
+```
+
+- **The `mod` line's `use` list is what a bare `import bigint;` folds by
+  default**, however many names it holds. With one name the importer has
+  `BigInt` directly, and no special case is needed; adding a name later only adds
+  to what importers see.
+- **An importer's own clause replaces the default entirely** — `import bigint use
+  *`, `import bigint use Other`, `but` — so an importer that wants less, more or
+  other names says so where it imports.
+- **The module's name stays bound**, so `bigint.helper` still reaches what the
+  default leaves out.
+- **On the `mod` line, `use` names what importers fold**: the opposite direction
+  from every other `use`, which folds into the module where it is written.
+- **It is not an export list.** `pub` still governs what is reachable ("no header
+  files, no export list", below); the clause only chooses the default fold, among
+  names `pub` already made public.
+
+As built, the default is honoured at every import of a module, a sister's and a
+package's alike. A standalone `use sub;` of a submodule is not an import, and
+keeps its meaning of every public name; whether the default should apply there
+too has not been ruled on.
 - **`include` is retired.** A module spanning source files does properly what
   `include` did by injection, and it answers what `include` never could: a tool
   handed one file knows its module from the path, where `include` was a pointer
@@ -959,7 +1035,9 @@ children of one folder two names.
 ### Visibility
 
 There are no header files and no export list: a package's public interface is
-what its definitions say it is.
+what its definitions say it is. A `mod` line's `use` clause is not one: it
+chooses which public names a bare import folds by default, and makes nothing
+public that `pub` did not.
 
 - **A declaration is private to its module unless `pub`**, always — private to
   the module, not to the package. A nested module neither sees its parent's
@@ -1044,6 +1122,11 @@ module's `use` *statement* names an enum. See "Folding through a global" and
 "Import and name folding" in
 [Names and Namespaces](../phases/names-and-namespaces.md).
 
+**A module may name its default fold** on its `mod` line, `mod bigint use BigInt;`
+[Jon 23 Sep]: a bare `import bigint;` folds `BigInt` beside binding `bigint`, an
+importer's own clause replaces it, and `pub import` re-exports it. Each name must
+be a public name of the module, checked at the `mod` line.
+
 **A module imports another once.** A second import is `ErrorDupImport`, naming
 both: an identical repeat [Jon 23 Sep] as much as one that differs in its clause
 or its `pub`. So is a second import of one name of the parent.
@@ -1093,29 +1176,6 @@ except where the fold pass itself is what reached the type.
 Each of these is a question the current mechanism answers by accident, or that
 two documents answer differently. They are recorded here so that work in this
 area starts from what is actually open.
-
-### The idiom for reaching a package's members
-
-A package named after the thing it provides puts that name in every path twice —
-`bigint.BigInt`. This is not an edge case: a module with no global state is
-pure namespace, and a great deal of library code needs none, so single-type
-packages will be common.
-
-Four answers are available, and none is chosen:
-
-- **Fold at import.** `import bigint use BigInt`, then write `BigInt`. The
-  clause is built, and this is what Rust does with `use`.
-- **Name the top-level module independently of the package's distribution
-  name**, so what you install and what you path through need not match.
-- **Convention.** Name the package for the domain and the type for the thing, so
-  the repetition never arises — `math3d.Point3`, Go's `bytes.Buffer`.
-- **A shortcut rule**: a member whose name matches its module is reachable by
-  the module name alone.
-
-Prior art splits. Go accepts `time.Time` and tunes names so the qualified form
-reads well; Rust accepts `regex.Regex` and leans on `use`; Python's
-`datetime.datetime` is the cautionary case. Whether the answer should differ for
-a package and for a nested module is part of the question.
 
 ### How a C library becomes a Cone package, and what an interface artifact is
 

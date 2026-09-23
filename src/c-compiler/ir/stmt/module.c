@@ -27,6 +27,7 @@ ModuleNode *newModuleNode() {
     mod->folding = 0;
     mod->extendsname = NULL;
     mod->extends = NULL;
+    mod->deffold = NULL;
     return mod;
 }
 
@@ -541,6 +542,54 @@ INode *modFoldCollisionAt(ModuleNode *mod, INode *unit, INode *alias, INode *pri
     return modFoldPlace(mod, NULL, prior) > modFoldPlace(mod, unit, NULL) ? prior : alias;
 }
 
+// Check a module's DEFAULT FOLD -- the 'use' on its 'mod' line, which says what a
+// bare import of the module folds [Jon 23 Sep] -- against the module's own
+// namespace. Run in the pass that reports, after the module's own folds, so a
+// name it re-exports counts as one of its public names. Every name the clause
+// lists or leaves out with 'but' must be a public name of the module: the clause
+// chooses among what 'pub' already made reachable, and is no export list of its
+// own. What it cannot fold is reported here, once, at the 'mod' line, and an
+// import's copy of the clause passes it over (importDefaultFold).
+static void modDefaultFoldCheck(ModuleNode *mod) {
+    FoldClause *fold = mod->deffold;
+    INode **itemp;
+    uint32_t cnt;
+    for (nodesFor(fold->items, cnt, itemp)) {
+        Name *name = ((AliasDclNode*)*itemp)->namesym;
+        // Listed twice is written twice, which every clause refuses
+        INode **priorp = (INode**)(fold->items + 1);
+        while (priorp < itemp && ((AliasDclNode*)*priorp)->namesym != name)
+            ++priorp;
+        INode *found = namespaceFind(&mod->namespace, name);
+        if (priorp < itemp)
+            errorMsgNode(*itemp, ErrorDupName,
+                "%s is listed already. A 'mod' line's 'use' names each default fold once: leave out the second.",
+                &name->namestr);
+        else if (found == NULL)
+            errorMsgNode(*itemp, ErrorNoMbr, "%s has no name %s to fold in.",
+                &mod->namesym->namestr, &name->namestr);
+        else if (found == (INode*)mod)
+            errorMsgNode(*itemp, ErrorBadFold,
+                "%s is this module's own name, and an import of the module binds it already.",
+                &name->namestr);
+        else if (inodeIsPrivate(found))
+            errorMsgNode(*itemp, ErrorNotPublic, "%s is private to %s, so it cannot be a default fold.",
+                &name->namestr, &mod->namesym->namestr);
+    }
+    if (fold->excludes == NULL)
+        return;
+    for (nodesFor(fold->excludes, cnt, itemp)) {
+        Name *name = ((NameUseNode*)*itemp)->namesym;
+        INode *found = namespaceFind(&mod->namespace, name);
+        if (found == NULL)
+            errorMsgNode(*itemp, ErrorNoMbr, "%s has no member named %s to leave out.",
+                &mod->namesym->namestr, &name->namestr);
+        else if (inodeIsPrivate(found))
+            errorMsgNode(*itemp, ErrorNotPublic, "%s is private to %s, so '*' never folds it; there is nothing to leave out.",
+                &name->namestr, &mod->namesym->namestr);
+    }
+}
+
 // Run one module's folds for the current pass: what it extends first, then its
 // imports, its globals' 'use' clauses and its standalone 'use's, each in the order
 // written. Each fold it reads from is run first, and a module reached again while
@@ -616,6 +665,11 @@ void modFoldNames(NameResState *pstate, ModuleNode *mod) {
     // resolves, so a folded bare name is in place wherever it is used
     for (nodesFor(mod->moduses, cnt, nodesp))
         foldModUseExpand(pstate, mod, (ModUseNode*)*nodesp);
+
+    // What the module's own 'mod' line says a bare import of it folds is judged
+    // against the module once its namespace is complete
+    if (foldreporting && mod->deffold)
+        modDefaultFoldCheck(mod);
 
     modHook(mod, NULL);
     pstate->mod = owningmod;

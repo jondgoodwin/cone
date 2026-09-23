@@ -32,6 +32,7 @@ typedef struct ModuleNode {
     uint16_t folding;        // Its folds are running in that pass: a module reaching it now closes a cycle
     INode *extendsname;      // 'mod A extends B': B as written, a NameUseNode; NULL where the module extends nothing
     struct ImportNode *extends; // The fold 'extends' makes of B's names, once B resolves (modExtendsResolve); else NULL
+    struct FoldClause *deffold; // 'mod A use B': what a bare import of this module folds by default; NULL where the line has no 'use'
 } ModuleNode;
 
 ModuleNode *newModuleNode();
