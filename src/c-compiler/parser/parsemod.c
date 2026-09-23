@@ -542,6 +542,17 @@ void parseSkipDclBody() {
 // declares nothing about a subfolder -- the folder is the declaration. A module
 // with no parent has nothing to be visible outside of.
 void parseModuleDcl(ModuleNode *mod, int atmodstart, uint16_t pubflag) {
+    // Where the declaration is written. The module node was made before any of
+    // its files was read, so it has no source position of its own; an accepted
+    // declaration gives it this one, and a duplicate of the module's name is then
+    // reported against the declaration rather than against wherever the lexer was
+    // when the node was made
+    INode dclat;
+    dclat.lexer = lex;
+    dclat.srcp = lex->tokp;
+    dclat.linep = lex->linep;
+    dclat.linenbr = lex->linenbr;
+
     // A submodule is the module its parent owns, and the only one 'pub' can speak
     // for. The root, a module that is a file of its own and an imported module are
     // each inside nothing
@@ -600,11 +611,14 @@ void parseModuleDcl(ModuleNode *mod, int atmodstart, uint16_t pubflag) {
                     errorMsgLex(ErrorModName,
                         "This module is named for its folder, '%s'. A 'mod' declaration may restate that name; it may not change it.",
                         &mod->foldersym->namestr);
+                else
+                    copyNodeLex(mod, &dclat);
             }
             else {
                 // A module that is one file is still named after that file,
                 // which is transitional, so its declaration may rename it
                 mod->namesym = modname;
+                copyNodeLex(mod, &dclat);
                 modAddNamedNode(mod, modname, (INode*)mod);
             }
         }

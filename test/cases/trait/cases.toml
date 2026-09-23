@@ -221,6 +221,28 @@ contains = [
   "%Ledger = type { i32 }",
 ]
 
+# A trait method whose parameter is a virtual reference to its own trait makes
+# the vtable recursive: one of its slots takes the fat pointer to itself. Its
+# own file, rather than more of trait-success, because the subject is the
+# recursion and not the requirement/implementation split, and because the
+# construct used to overflow the compiler's stack, which would take every other
+# expectation in a shared file down with it.
+[scenario.trait-self-vref]
+category = "run"
+description = "A trait method taking a virtual reference to its own trait, dispatched through the receiver and the argument"
+tags = ["typecheck", "genllvm", "runtime"]
+
+# The recursive slot is typed with the virtual reference to its own vtable,
+# which LLVM can only say through the vtable's name: the reference type is
+# declared before the vtable's body is filled in.
+[[scenario.trait-self-vref.check]]
+name = "recursive-slot-takes-a-reference-to-its-own-vtable"
+target = "llvmir"
+contains = [
+  '%"Meter:Vtable" = type { i32 (i8*)*, i32 (i8*, %"Meter:Vtable.0")* }',
+  '%"Meter:Vtable.0" = type { i8*, %"Meter:Vtable"* }',
+]
+
 [scenario.trait-inherited-defaults]
 category = "compile"
 description = "Two types inheriting one trait default each get their own copy of it, spelled after the type"

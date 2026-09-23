@@ -1018,15 +1018,17 @@ annotation on a reference names is a type.
   `conec matrix/matrix.cone` and `conec matrix` do: a file's module may not depend
   on the spelling of the path used to reach it. Where the current directory cannot
   be read the file is a module of one file.
-- **A module collision is reported at the wrong place.** A `ModuleNode` is built
-  before any of its own files is read — while the lexer sits on the token after
-  the `import` that loaded it, or on nothing at all for a submodule its parent's
-  subfolder drew — so `ErrorDupName` against a module points at an injected
-  pseudo-file rather than at the module. A submodule whose name a declaration of
-  the parent also spells is the common case now, and it is why submodules are
-  bound before the parent's files are parsed: the *first* diagnostic then lands on
-  the declaration, which has a real position, and the useless one is the second.
-  The condition is diagnosed; half the position is not useful.
+- **A module named only by its folder has no source position.** A `ModuleNode`
+  is built before any of its own files is read, so it carries wherever the lexer
+  stood then: the `init` pseudo-file for the root and for a submodule its parent's
+  subfolder drew, and the importer's next declaration for a module an `import`
+  loaded. Its `mod` declaration gives it the declaration's position, and an
+  import's binding is positioned at the `import` statement, so `ErrorDupName`
+  against a module reports both halves in the source wherever the module declares
+  itself. Where it does not, the folder is its only declaration, and the
+  module's half of the diagnostic points at that stale position. That is also why
+  submodules are bound before the parent's files are parsed: the *first*
+  diagnostic then lands on the parent's declaration, which has a position.
 - **A cycle among non-root modules is fine.** Name resolution runs after all
   parsing, so the half-parsed module the registry returns is complete before
   anything reads it. Nothing detects a cycle, and nothing needs to.

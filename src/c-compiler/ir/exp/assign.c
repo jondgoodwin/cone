@@ -62,6 +62,28 @@ void assignSingleCheck(TypeCheckState *pstate, INode *lval, INode **rval) {
     }
 }
 
+// Type check the rvals no lval receives, and give the rval tuple its type.
+//
+// More values than lvals is accepted: the extra values are still evaluated,
+// and the assignment's value is the whole rval tuple. So each extra needs a
+// type of its own, and the tuple's type has to list every value. Before this,
+// nothing type checked an extra at all -- an ill-typed one crashed the
+// compiler, and 'x = 1, 2' crashed it with a tuple that had no type.
+// 'received' is how many leading values were already checked against lvals.
+static void assignExtraRvalsCheck(TypeCheckState *pstate, TupleNode *rval, uint32_t received) {
+    TupleNode *ttuple = newTupleNode(rval->elems->used);
+    ttuple->tag = TTupleTag;
+    INode **nodesp;
+    uint32_t cnt;
+    uint32_t index = 0;
+    for (nodesFor(rval->elems, cnt, nodesp)) {
+        if (index++ >= received && iexpTypeCheckAny(pstate, nodesp) == 0)
+            continue;
+        nodesAdd(&ttuple->elems, ((IExpNode *)*nodesp)->vtype);
+    }
+    rval->vtype = (INode *)ttuple;
+}
+
 // Handle parallel assignment (multiple values on both sides)
 void assignParaCheck(TypeCheckState *pstate, TupleNode *lval, TupleNode *rval) {
     Nodes *lnodes = lval->elems;
@@ -78,7 +100,11 @@ void assignParaCheck(TypeCheckState *pstate, TupleNode *lval, TupleNode *rval) {
         assignSingleCheck(pstate, *lnodesp, rnodesp++);
         rcnt--;
     }
-    rval->vtype = lval->vtype;
+    // rcnt is now the number of values no lval receives
+    if (rcnt > 0)
+        assignExtraRvalsCheck(pstate, rval, lnodes->used);
+    else
+        rval->vtype = lval->vtype;
 }
 
 // Handle when single function/expression returns to multiple lval
@@ -110,11 +136,10 @@ void assignMultRetCheck(TypeCheckState *pstate, TupleNode *lval, INode **rval) {
 }
 
 // Handle when multiple expressions assigned to single lval
+// - the lval receives the first; the rest are evaluated and stored nowhere
 void assignToOneCheck(TypeCheckState *pstate, INode *lval, TupleNode *rval) {
-    Nodes *rnodes = rval->elems;
-    INode **rnodesp = &nodesGet(rnodes, 0);
-    uint32_t rcnt = rnodes->used;
-    assignSingleCheck(pstate, lval, rnodesp++);
+    assignSingleCheck(pstate, lval, &nodesGet(rval->elems, 0));
+    assignExtraRvalsCheck(pstate, rval, 1);
 }
 
 // Type checking for assignment node
